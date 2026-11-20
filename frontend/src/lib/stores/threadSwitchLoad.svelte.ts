@@ -854,6 +854,8 @@ export function createThreadSwitchLoad(
           if (cached?.runs?.length) {
             options.activityRuns.syncRunSpans(options.getItems(), cached.runs);
           }
+          // Read under the current rule: a snapshot of the other is a miss.
+          if (cached) options.activityRuns.noteWindowRead();
         },
         // A recent outgoing live-content stamp must not make settled incoming
         // content spring. An active incoming turn stamps its first delta.

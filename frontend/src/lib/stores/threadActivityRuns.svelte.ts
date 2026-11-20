@@ -446,10 +446,20 @@ export interface ThreadActivityRuns extends ActivityRunIdentity {
   /**
    * What the runs the pane holds contribute to its held-window description
    * (§5): the physical rows it describes without holding, and their folded
-   * digest. Null when any record is dirty or carries an unusable digest —
-   * the pane then describes no window and pays one page.
+   * digest. Null when any record is dirty or carries an unusable digest,
+   * or when the window was read under another rule than the thread's
+   * (`noteWindowRead`): the server verifies physical rows only, so a
+   * window of the other rule would verify and be answered `fresh`. The
+   * pane then describes no window and pays one page.
    */
   heldRunFold(): HeldRunFold | null;
+  /**
+   * The window was just replaced by a read under the thread's current
+   * rule (a page, or a cached window of that rule). Until the next one,
+   * `heldRunFold` and `snapshotStubs` offer the window only while the rule
+   * is unchanged.
+   */
+  noteWindowRead(): void;
   /**
    * The run a pushed row belongs to without the pane holding it, or null.
    * `threadItemUpserts.ts` routes pushed rows on it: such a row is not
@@ -494,7 +504,9 @@ export interface ThreadActivityRuns extends ActivityRunIdentity {
    * Null when any record cannot state its contribution, which is the
    * signal not to persist: a window stored without a describable run
    * would paint headers that under-count and claim a held window the
-   * server refuses.
+   * server refuses. Null too while the window was read under another
+   * rule (`noteWindowRead`): a cache tagged with the current rule would
+   * hold the other rule's rows.
    */
   snapshotStubs(): ActivityRunStub[] | null;
   /**
@@ -849,6 +861,14 @@ export function createThreadActivityRuns(
   // runs the other does not have, so a rule change drops every record and
   // the next page's stubs rebuild them.
   let recordsRule: ActivityRunRule | null = null;
+  // The rule the window's rows were read under, set by `noteWindowRead`.
+  // Unlike `recordsRule`, a sync without a page does not move it: the
+  // rows a page of the other rule shipped are still the ones held.
+  let windowRule: ActivityRunRule | null = null;
+  // Whether the held window describes the rows a read under the current
+  // rule returns. A window no read describes (live rows only) is grouped
+  // by the client alone.
+  const windowReadUnderRule = () => windowRule === null || windowRule === options.activityRunRule();
 
   const memberFetch: ActivityRunMemberFetch = createActivityRunMemberFetch({
     selection: options.selection,
@@ -1886,7 +1906,8 @@ export function createThreadActivityRuns(
     activityRunRule: () => options.activityRunRule(),
     syncRunSpans,
     applyWindowCut,
-    heldRunFold: () => heldRunsFold(records),
+    heldRunFold: () => windowReadUnderRule() ? heldRunsFold(records) : null,
+    noteWindowRead: () => { windowRule = options.activityRunRule(); },
     runCoveringUnshipped,
     admitCarriedRows,
     noteRefusals: (refusals) => {
@@ -1906,9 +1927,9 @@ export function createThreadActivityRuns(
       memberFetch.scheduleRefresh();
     },
     snapshotStubs: () => {
-      // Stubs read under a rule the thread no longer groups by describe
-      // nothing a snapshot tagged with the current rule may claim.
-      if (records.size > 0 && recordsRule !== options.activityRunRule()) return null;
+      // Rows and stubs read under a rule the thread no longer groups by
+      // describe nothing a snapshot tagged with the current rule may claim.
+      if (!windowReadUnderRule()) return null;
       const spansById = projectRunSpans(options.items()).spansById;
       const stubs: ActivityRunStub[] = [];
       for (const record of records.values()) {
@@ -1953,6 +1974,7 @@ export function createThreadActivityRuns(
       // than applied to a window that no longer holds it.
       records.clear();
       recordsRule = null;
+      windowRule = null;
       windowRevision += 1;
       recordBounds.clear();
       runKeyByMemberId.clear();

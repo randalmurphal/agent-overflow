@@ -413,6 +413,8 @@ export function createThreadTimelineWindow(
     // the span it did. Folded here, after the rows are installed, so the
     // records are compared with the window the pane actually holds.
     options.activityRuns().syncRunSpans(nextItems, paged.runs);
+    // Every caller installs a whole window from this page.
+    options.activityRuns().noteWindowRead();
   }
 
   /**

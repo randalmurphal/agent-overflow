@@ -60,7 +60,13 @@ one connection apply one rule. Stubs read under one rule describe runs the
 other does not have: the run registry drops its records when the thread's
 rule changes, a cached window (L1 snapshot, replica body) records the rule
 it was read under and is not installed under the other, and the reconnect
-refresh a changed hello triggers reloads the window under the new rule.
+refresh a changed hello triggers reloads every timeline of that backend,
+root panes and scoped ones (agent panes, agent cards), under the new rule.
+The held-window check (§5) verifies physical rows and knows no rule, so the
+client never offers a window read under the other rule: the registry keeps
+the rule the window was read under (`noteWindowRead`), and while it differs
+from the thread's, `heldRunFold` and `snapshotStubs` answer null and the
+next read is a page.
 
 Runs are identified by `firstItemId`. New rows land at the write head, so
 a run grows at its newer end. The one row that can land ahead of a run's
@@ -421,8 +427,12 @@ longer a fetch size.
   every classifying store entry point under each;
   `TestHistoryReadsGroupAgentMessagesByTheRequestedRule` does the same
   through the app RPCs; `threadActivityRunRule.svelte.test.ts` drives a
-  pane against each kind of backend, a hello that changes the rule, and a
-  disagreement no reload settles.
+  pane against each kind of backend, a hello that changes the rule (over
+  partial windows of a root pane, an agent pane and a completed agent's
+  card, and a refresh that must not be answered `fresh`), and a
+  disagreement no reload settles; `activity-run-older-computer.spec.ts`
+  does it across paired harness computers, a restart across the capability
+  included.
 - Go: classification and stub fixture; page composition (whole runs, anchor
   run centered, byte trim folding into stubs, cursors on unshipped rows);
   held-window verification with stubs; members RPC in each direction;

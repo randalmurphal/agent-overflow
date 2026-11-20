@@ -4,6 +4,8 @@
 // whole history and a stub per run, and ListActivityRunMembers the way the
 // store does: refused as stale when the named run or loaded span is not
 // the server's (docs/architecture/timeline-window-pages.md §3).
+// `serveWindowedHistory` adds partial windows, scoped selections and
+// SyncThreadWindow's held-window check.
 //
 // The classifier is written out here rather than imported from the
 // client's predicates, so a test can pit the pane against a rule the
@@ -118,21 +120,108 @@ export function serveClassifiedHistory(
   };
   const pages = vi.fn(async (_threadId: string, _anchor: string, _budget: number, options: Record<string, unknown>) =>
     page(options ?? {}));
-  const members = vi.fn(async (_threadId: string, req: Record<string, unknown>) => {
-    const runs = classifyRuns([...history()], ruleOf(req));
-    const run = runs.find(candidate => candidate[0].id === req.runFirstItemId);
-    if (!run) throw staleError(`activity run ${String(req.runFirstItemId)} no longer starts there`);
-    const ids = run.map(row => row.id);
-    const first = req.loadedFirstItemId ? ids.indexOf(String(req.loadedFirstItemId)) : -1;
-    const last = req.loadedLastItemId ? ids.indexOf(String(req.loadedLastItemId)) : -1;
-    if ((req.loadedFirstItemId && first < 0) || (req.loadedLastItemId && last < 0)) {
-      throw staleError(`loaded span is not a span of activity run ${String(req.runFirstItemId)}`);
-    }
-    if (Number(req.limit ?? 0) !== 0) throw new Error('classifying backend answers stub refreshes only');
-    if (first < 0) return { items: [], stub: { ...stubFor(run, run.length, run.length - 1), loadedLastItemId: '' } };
-    return { items: [], stub: stubFor(run, first, last) };
-  });
+  const members = vi.fn(async (_threadId: string, req: Record<string, unknown>) =>
+    refreshStub(history(), ruleOf(req), req));
   setBindingMock('ListThreadSliceAround', pages);
   setBindingMock('ListActivityRunMembers', members);
   return { pages, members };
+}
+
+/** A members call's answer: a stub refresh (`limit: 0`), refused as stale like the store's. */
+function refreshStub(rows: readonly Item[], agentMessageMembers: boolean, req: Record<string, unknown>) {
+  const runs = classifyRuns(rows, agentMessageMembers);
+  const run = runs.find(candidate => candidate[0].id === req.runFirstItemId);
+  if (!run) throw staleError(`activity run ${String(req.runFirstItemId)} no longer starts there`);
+  const ids = run.map(row => row.id);
+  const first = req.loadedFirstItemId ? ids.indexOf(String(req.loadedFirstItemId)) : -1;
+  const last = req.loadedLastItemId ? ids.indexOf(String(req.loadedLastItemId)) : -1;
+  if ((req.loadedFirstItemId && first < 0) || (req.loadedLastItemId && last < 0)) {
+    throw staleError(`loaded span is not a span of activity run ${String(req.runFirstItemId)}`);
+  }
+  if (Number(req.limit ?? 0) !== 0) throw new Error('classifying backend answers stub refreshes only');
+  if (first < 0) return { items: [], stub: { ...stubFor(run, run.length, run.length - 1), loadedLastItemId: '' } };
+  return { items: [], stub: stubFor(run, first, last) };
+}
+
+/** The rows each selection reads, and the scope context a scoped page carries. */
+export interface WindowedHistory {
+  /** A selection's rows in timeline order: '' is the thread's top level, else a scope root. */
+  rows(scopeRootId: string): readonly Item[];
+  scope?(selection: { scopeRootId?: string; digestItemId?: string }): unknown;
+}
+
+export interface WindowedBackend extends ClassifyingBackend {
+  /** Every SyncThreadWindow call. */
+  readonly syncs: ReturnType<typeof vi.fn>;
+}
+
+/**
+ * Serve partial windows the way the store pages a run: every row outside
+ * a run, and the newest `runWindowRows` members of each run, with a stub
+ * for the rest. SyncThreadWindow verifies a held window as the store does
+ * (`verifyHeldWindowTx`): the physical rows between its edges, their
+ * digest and the has-more probes, with no knowledge of the grouping rule,
+ * and answers `fresh` with no page when they match.
+ */
+export function serveWindowedHistory(
+  history: WindowedHistory,
+  agentMessageMembers: AgentMessageRuleOf,
+): WindowedBackend {
+  const selectionOf = (request: Record<string, unknown>) =>
+    (request.selection ?? {}) as { scopeRootId?: string; digestItemId?: string };
+  const rowsOf = (request: Record<string, unknown>) => history.rows(selectionOf(request).scopeRootId ?? '');
+  const page = (options: Record<string, unknown>) => {
+    const rows = rowsOf(options);
+    const windowRows = Number(options.runWindowRows) || 30;
+    const unshipped = new Set<string>();
+    const stubs = classifyRuns(rows, agentMessageMembers(options)).map(run => {
+      const loadedFirst = Math.max(0, run.length - windowRows);
+      for (const row of run.slice(0, loadedFirst)) unshipped.add(row.id);
+      return stubFor(run, loadedFirst, run.length - 1);
+    });
+    const items = rows.filter(row => !unshipped.has(row.id));
+    const oldest = items[0];
+    const newest = items[items.length - 1];
+    return {
+      items,
+      runs: stubs,
+      scope: history.scope?.(selectionOf(options)),
+      oldestTurnIndex: oldest?.turnIndex ?? -1,
+      newestTurnIndex: newest?.turnIndex ?? -1,
+      hasMore: false,
+      hasMoreOlder: false,
+      hasMoreNewer: false,
+      oldestCursor: { turnIndex: oldest?.turnIndex ?? 0, itemIndex: oldest?.itemIndex ?? 0, itemId: oldest?.id ?? '' },
+      newestCursor: { turnIndex: newest?.turnIndex ?? 0, itemIndex: newest?.itemIndex ?? 0, itemId: newest?.id ?? '' },
+    };
+  };
+  const verifies = (request: Record<string, unknown>) => {
+    const held = request.haveWindow as {
+      oldestItemId: string; newestItemId: string; count: number; digest: string;
+      hasMoreOlder: boolean; hasMoreNewer: boolean;
+    } | undefined;
+    if (!held) return false;
+    const rows = rowsOf(request);
+    const first = rows.findIndex(row => row.id === held.oldestItemId);
+    const last = rows.findIndex(row => row.id === held.newestItemId);
+    if (first < 0 || last < first) return false;
+    const range = rows.slice(first, last + 1);
+    return range.length === held.count
+      && windowDigest(range.map(row => ({ id: row.id, rev: row.rev ?? 0 }))) === held.digest
+      && (first > 0) === held.hasMoreOlder
+      && (last < rows.length - 1) === held.hasMoreNewer;
+  };
+  const syncs = vi.fn(async (_threadId: string, req: Record<string, unknown>) => {
+    const stamps = { epoch: 1, rev: 1, generation: 'test-generation' };
+    if (verifies(req)) return { status: 'fresh', ...stamps, scope: history.scope?.(selectionOf(req)) };
+    return { status: 'stale', ...stamps, page: page(req) };
+  });
+  const pages = vi.fn(async (_threadId: string, _anchor: string, _budget: number, options: Record<string, unknown>) =>
+    page(options ?? {}));
+  const members = vi.fn(async (_threadId: string, req: Record<string, unknown>) =>
+    refreshStub(rowsOf(req), agentMessageMembers(req), req));
+  setBindingMock('SyncThreadWindow', syncs);
+  setBindingMock('ListThreadSliceAround', pages);
+  setBindingMock('ListActivityRunMembers', members);
+  return { pages, members, syncs };
 }

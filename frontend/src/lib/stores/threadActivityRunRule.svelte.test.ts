@@ -3,12 +3,14 @@
 // asks for that rule exactly when it is advertised. Against each kind of
 // backend it settles on that backend's runs with a bounded number of pages
 // and members calls and a held window it can describe; a hello that changes
-// the rule regroups the pane through the reconnect refresh; and a
+// the rule regroups the pane, and every agent pane and agent card of that
+// computer, through the reconnect refresh, partial windows included; a
+// window read under the other rule is never offered as held; and a
 // disagreement no reload can settle ends in one visible failure.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { activityRunProse, activityRunRow } from '../../test/helpers/activityRuns';
-import { serveClassifiedHistory, type AgentMessageRuleOf } from '../../test/helpers/activityRunBackend';
+import { serveClassifiedHistory, serveWindowedHistory, type AgentMessageRuleOf } from '../../test/helpers/activityRunBackend';
 import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
 import { installThreadPaneTestEnv } from '../../test/helpers/threadPane';
 import { makeThread } from '../../test/helpers/chat';
@@ -23,6 +25,8 @@ import { AGENT_MESSAGE_RUN_MEMBERS_CAPABILITY } from './activityRunRule';
 import { installComputerHydration } from './computerHydration';
 import { registerPaneForTest, resetPanesForTest } from './panes.svelte';
 import { createThreadPane, type ThreadPane } from './thread.svelte';
+import { createAgentScopeView, type AgentScopeView } from './agentScopeView.svelte';
+import { timelinePageShape } from './threadPaneShared';
 import { getToasts } from './toast.svelte';
 import { __setTransportHelloForTest } from './transportStatus.svelte';
 
@@ -39,7 +43,7 @@ function agentMessage(id: string, index: number): Item {
 function hello(backendId: string, members: boolean): TransportHello {
   return {
     protocolVersion: 1,
-    capabilities: ['timeline.scopes.v1', ...(members ? [AGENT_MESSAGE_RUN_MEMBERS_CAPABILITY] : [])],
+    capabilities: ['timeline.scopes.v1', 'timeline.digests.v1', ...(members ? [AGENT_MESSAGE_RUN_MEMBERS_CAPABILITY] : [])],
     backendId, backendName: '', serverTimeMs: 0, clockSkewMs: 0,
     bundleId: '', bundleVersion: '', minShellBuild: 0,
   } as TransportHello;
@@ -246,5 +250,189 @@ describe('a disagreement no reload can settle', () => {
     expect(shown.size).toBe(disagrees[name] ? 1 : 0);
     expect(projection.shape).toEqual(HISTORIES[name].members);
     expect(pane.threadId).toBe('t');
+  });
+});
+
+describe('a rule change over a partial window', () => {
+  // A prose row, an agent message and a run of 100 tools longer than a
+  // page ships of it, then an answer. Under the member rule the message
+  // opens the run and is not shipped; under the absorbed rule it is a
+  // shipped row and the run starts at the first tool.
+  const TOOLS = 100;
+  const tools = (base: number) => Array.from({ length: TOOLS }, (_, i) => activityRunRow(`t${i}`, base + i));
+  const runShape = (count: number) => {
+    const loaded = timelinePageShape().runWindowRows;
+    return `run[t${TOOLS - loaded}..t${TOOLS - 1}/${count}]`;
+  };
+  const shapes = (lead: string[]) => ({
+    members: () => [...lead, runShape(TOOLS + 1), 'a'],
+    absorbed: () => [...lead, 'm', runShape(TOOLS), 'a'],
+  });
+
+  /** Each run as its loaded edges and the member count its stub supplies. */
+  function windowShape(nodes: readonly TimelineNode[], pane: ThreadPane): string[] {
+    return nodes.map(node => {
+      if (node.kind === 'leaf') return node.item.id;
+      if (node.kind !== 'activity_run') return node.kind;
+      const ids = node.children.map(child => child.kind === 'leaf' ? child.item.id : child.kind);
+      const count = pane.activityRuns.summaryFacts(node.runId)?.memberCount ?? ids.length;
+      return `run[${ids[0]}..${ids.at(-1)}/${count}]`;
+    });
+  }
+  function mountWindowShape(pane: ThreadPane): { readonly shape: string[] } {
+    let nodes: TimelineNode[] = [];
+    const dispose = $effect.root(() => {
+      const projection = createTimelineRowProjection({ getPane: () => pane });
+      $effect(() => { nodes = projection.revealedNodes; });
+    });
+    cleanup.push(dispose);
+    return { get shape() { return windowShape(nodes, pane); } };
+  }
+
+  function stageGpu(members: boolean) {
+    const gpu = stageBackend({ id: 'gpu', hello: hello('gpu', members) });
+    setCarriedSessionScopes('gpu', ['threads:read']);
+    noteThread('t', 'gpu');
+    setBindingMock('ListThreadLiveActivity', async () => []);
+    setBindingMock('GetRateLimitsSnapshots', async () => []);
+    setBindingMock('ListUnsettledFlushes', async () => []);
+    return gpu;
+  }
+
+  async function openPane(): Promise<ThreadPane> {
+    const pane = createThreadPane({ paneId: 'main' });
+    registerPaneForTest('main', pane);
+    await pane.switchThread(makeThread({ id: 't' }));
+    cleanup.push(() => pane.clear());
+    return pane;
+  }
+
+  it.each([true, false])('regroups a root pane both ways (member rule first: %s)', async (membersFirst) => {
+    const gpu = stageGpu(membersFirst);
+    const rows = [activityRunProse('p', 0), agentMessage('m', 1), ...tools(2), activityRunProse('a', TOOLS + 2)];
+    serveWindowedHistory({ rows: root => root === '' ? rows : [] }, requestedRule);
+    const projection = mountWindowShape(await openPane());
+    cleanup.push(installComputerHydration());
+    await vi.advanceTimersByTimeAsync(5000);
+    const expected = shapes(['p']);
+    expect(projection.shape).toEqual(membersFirst ? expected.members() : expected.absorbed());
+    for (const members of [!membersFirst, membersFirst]) {
+      gpu.setHello(hello('gpu', members));
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(projection.shape).toEqual(members ? expected.members() : expected.absorbed());
+    }
+    expect(getToasts()).toEqual([]);
+  });
+
+  it.each([true, false])('does not cache a restored window across a rule change (member rule first: %s)', async (membersFirst) => {
+    const gpu = stageGpu(membersFirst);
+    noteThread('other', 'gpu');
+    const rows = [activityRunProse('p', 0), agentMessage('m', 1), ...tools(2), activityRunProse('a', TOOLS + 2)];
+    const backend = serveWindowedHistory({ rows: root => root === '' ? rows : [] }, requestedRule);
+    const pane = await openPane();
+    const projection = mountWindowShape(pane);
+    await vi.advanceTimersByTimeAsync(5000);
+    // Away and back: the cached window paints and its held window verifies.
+    await pane.switchThread(makeThread({ id: 'other' }));
+    await pane.switchThread(makeThread({ id: 't' }));
+    await vi.advanceTimersByTimeAsync(5000);
+    await expect(backend.syncs.mock.results.at(-1)?.value).resolves.toMatchObject({ status: 'fresh' });
+
+    gpu.setHello(hello('gpu', !membersFirst));
+    expect(pane.activityRuns.snapshotStubs()).toBeNull();
+    expect(pane.activityRuns.heldRunFold()).toBeNull();
+    // Away and back again: nothing of the other rule was cached to paint.
+    await pane.switchThread(makeThread({ id: 'other' }));
+    await pane.switchThread(makeThread({ id: 't' }));
+    await vi.advanceTimersByTimeAsync(5000);
+    const expected = shapes(['p']);
+    expect(projection.shape).toEqual(membersFirst ? expected.absorbed() : expected.members());
+  });
+
+  // An agent pane reads the agent's whole transcript; a completed agent's
+  // card reads its execution digest, whose prompt is the agent message.
+  const launch = (id: string, index: number) => activityRunRow(id, index, { toolName: 'Agent', status: 'completed' });
+  const rootRows = [launch('agent', 0), launch('card-agent', 1),
+    activityRunRow('card-agent-done', 2, { kind: 'tool_completion', completionOf: 'card-agent', status: 'completed' })];
+  const childOf = (parentId: string) => (row: Item): Item => ({ ...row, parentId });
+  const agentRows = [activityRunProse('p', 10), agentMessage('m', 11), ...tools(12), activityRunProse('a', TOOLS + 12)]
+    .map(childOf('agent'));
+  const cardRows = [agentMessage('m', 300), ...tools(301), activityRunProse('a', TOOLS + 301)].map(childOf('card-agent'));
+  const scopedHistory = {
+    rows: (root: string) => root === '' ? rootRows : root === 'agent' ? agentRows : root === 'card-agent' ? cardRows : [],
+    scope: (selection: { scopeRootId?: string; digestItemId?: string }) => {
+      const root = rootRows.find(row => row.id === selection.scopeRootId);
+      if (!root) return undefined;
+      if (!selection.digestItemId) return { root, lifecycle: root };
+      return { root, lifecycle: root, completion: rootRows[2], digest: { promptId: 'm', answerId: 'a' } };
+    },
+  };
+  const SURFACES = {
+    'agent pane': {
+      open: (pane: ThreadPane) => createAgentScopeView(pane, 'agent', { viewKey: 'agent', openAgentPane: () => {} }),
+      shapes: shapes(['p']),
+    },
+    'completed agent card': {
+      open: (pane: ThreadPane) => createAgentScopeView(pane, 'card-agent',
+        { viewKey: 'card:card-agent', digestItemId: 'card-agent-done', openAgentPane: () => {} }),
+      shapes: shapes([]),
+    },
+  };
+  type Surface = keyof typeof SURFACES;
+
+  async function openSurface(name: Surface): Promise<{ view: AgentScopeView; projection: { readonly shape: string[] } }> {
+    const view = SURFACES[name].open(await openPane());
+    view.start();
+    cleanup.push(() => view.dispose());
+    return { view, projection: mountWindowShape(view.pane) };
+  }
+
+  const scopedSyncs = (backend: ReturnType<typeof serveWindowedHistory>) => backend.syncs.mock.calls.filter(call =>
+    (call[1] as { selection?: { scopeRootId?: string } }).selection?.scopeRootId);
+
+  describe.each(Object.keys(SURFACES) as Surface[])('an open %s', (name) => {
+    it.each([true, false])('regroups both ways through the reconnect refresh (member rule first: %s)', async (membersFirst) => {
+      const gpu = stageGpu(membersFirst);
+      const backend = serveWindowedHistory(scopedHistory, requestedRule);
+      const { projection } = await openSurface(name);
+      cleanup.push(installComputerHydration());
+      await vi.advanceTimersByTimeAsync(5000);
+      const expected = SURFACES[name].shapes;
+      expect(projection.shape).toEqual(membersFirst ? expected.members() : expected.absorbed());
+      for (const members of [!membersFirst, membersFirst]) {
+        const before = scopedSyncs(backend).length;
+        gpu.setHello(hello('gpu', members));
+        await vi.advanceTimersByTimeAsync(5000);
+        expect(scopedSyncs(backend).length).toBeGreaterThan(before);
+        expect(projection.shape).toEqual(members ? expected.members() : expected.absorbed());
+      }
+      expect(getToasts()).toEqual([]);
+    });
+  });
+
+  it.each([true, false])('answers a refresh after a rule change with a page, not fresh (member rule first: %s)', async (membersFirst) => {
+    const gpu = stageGpu(membersFirst);
+    const backend = serveWindowedHistory(scopedHistory, requestedRule);
+    const { view, projection } = await openSurface('agent pane');
+    await vi.advanceTimersByTimeAsync(5000);
+    // Under the rule it was read by, the held window verifies.
+    await view.pane.refreshFromBackend(true);
+    await vi.advanceTimersByTimeAsync(5000);
+    await expect(backend.syncs.mock.results.at(-1)?.value).resolves.toMatchObject({ status: 'fresh' });
+
+    // The rule changes under the open view, with no reconnect refresh.
+    gpu.setHello(hello('gpu', !membersFirst));
+    expect(view.pane.activityRuns.heldRunFold()).toBeNull();
+    expect(view.pane.activityRuns.snapshotStubs()).toBeNull();
+    const calls = scopedSyncs(backend).length;
+    await view.pane.refreshFromBackend(true);
+    await vi.advanceTimersByTimeAsync(5000);
+    const sent = scopedSyncs(backend).slice(calls);
+    expect(sent.length).toBeGreaterThan(0);
+    for (const [, req] of sent) expect((req as { haveWindow?: unknown }).haveWindow).toBeUndefined();
+    const expected = SURFACES['agent pane'].shapes;
+    expect(projection.shape).toEqual(membersFirst ? expected.absorbed() : expected.members());
+    // Read under the new rule, the window is offered again.
+    expect(view.pane.activityRuns.heldRunFold()).not.toBeNull();
   });
 });
