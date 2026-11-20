@@ -158,8 +158,15 @@ func (m *Manager) restorePage(ctx context.Context, access Access, rec *suspended
 			refused = nil
 		}
 		current := !closing && held == nil
-		stale := current && !m.jarCurrentLocked(p)
-		if current && !stale {
+		// Its engine reported the page's end before this hold: a close fails
+		// the restore, leaving the tab suspended, and a crash leaves it the
+		// crashed tab a listed page's crash does.
+		ended := p.unlistedEnd
+		if current && ended.crash != "" && !ended.closed {
+			rec.failure = ended.crash
+		}
+		stale := current && !ended.ended() && !m.jarCurrentLocked(p)
+		if current && !stale && !ended.ended() {
 			delete(scope.creating, p)
 			// The record's tab position may have moved while the page loaded.
 			p.tabOrder.Store(rec.tabOrder)
@@ -180,6 +187,15 @@ func (m *Manager) restorePage(ctx context.Context, access Access, rec *suspended
 		if !current {
 			// The page was closed or the browser turned off while it loaded.
 			return errors.Join(fmt.Errorf("browser: restore page %s: %w", rec.id, errPageNotFound), m.abandonPage(scope, p))
+		}
+		if ended.ended() {
+			cause := errClosedBeforeListing
+			if !ended.closed {
+				cause = errors.New("browser: " + ended.crash)
+				// The tab shows its failure.
+				m.emitThreadState(rec.owner.id)
+			}
+			return errors.Join(fmt.Errorf("browser: restore page %s: %w", rec.id, cause), m.abandonPage(scope, p))
 		}
 		if stale {
 			m.abandonStale(scope, p, p)

@@ -58,7 +58,11 @@ mode. Product behavior and authority are defined in
   listing (`adoptPopup`), a closed page leaves the tab set before its engine
   teardown runs, and each keeps counting toward caps and holding the jar's
   profile until the engine is done. A native engine lists a page in its
-  profile, where `Dispose` finds it, only once its view is in place. A teardown that runs after its tab left
+  profile, where `Dispose` finds it, only once its view is in place. A
+  created or restored page whose engine reports its close or crash before
+  its listing, even before NewPage returns, is never listed live
+  (`creation_end.go`): a close fails it, a crash lists the crashed tab.
+  A teardown that runs after its tab left
   reports through `reportTeardown`. Loading and favicon state is
   `pagestate.go`; a page whose process ended becomes a failed suspended
   record (`crash.go`); the agent marker is `activity.go`; the closed-tab

@@ -307,14 +307,25 @@ func (m *Manager) openPageLocked(ctx context.Context, access Caller, p *managedP
 // newPage creates p's engine page in scope, laid out at its thread's
 // viewport.
 func (m *Manager) newPage(ctx context.Context, scope *jarScope, p *managedPage) error {
+	// What the engine reports ending before it answers is kept for the
+	// attach (creationWatch); the caller's startMu makes this the one
+	// creation in flight.
+	watch := &creationWatch{}
+	m.mu.Lock()
+	m.creationWatch = watch
+	m.mu.Unlock()
 	driver, err := scope.profile.NewPage(ctx, m.pageHooks(p))
+	m.mu.Lock()
+	m.creationWatch = nil
 	if err != nil {
+		m.mu.Unlock()
 		return err
 	}
 	// Under m.mu: the jar's policy resolves a request to the page being
-	// created (jarAllows) while it loads, before it is registered.
-	m.mu.Lock()
+	// created (jarAllows) while it loads, before it is registered, and a
+	// report of its end finds it from here (noteCreationEnd).
 	p.attach(driver)
+	p.unlistedEnd = watch.ends[driver.Handle()]
 	held, hasHeld := m.takeHeldInfoLocked(driver.Handle())
 	m.mu.Unlock()
 	m.applyHeldInfo(p, held, hasHeld)

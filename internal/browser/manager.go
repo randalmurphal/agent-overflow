@@ -220,6 +220,9 @@ type Manager struct {
 	popupFates *boundedMap[ids.PageHandle, popupFate]
 	// parkTimeout overrides popupParkTimeout when set (tests).
 	parkTimeout time.Duration
+	// creationWatch is the engine page creation in flight, nil for none
+	// (creation_end.go). Guarded by mu.
+	creationWatch *creationWatch
 	// heldInfo holds a CDP engine's newest report for each handle no page
 	// answers to yet (updatePageInfo). Bounded: a handle no page ever takes,
 	// a target closed before its adoption, ages out.

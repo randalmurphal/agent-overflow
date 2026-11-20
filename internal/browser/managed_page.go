@@ -24,6 +24,9 @@ type managedPage struct {
 	// page is registered; read under m.mu.
 	jarGen    uint64
 	authority *workspaceAuthority
+	// unlistedEnd is what its engine reported ending the page after its
+	// attach and before its listing (creation_end.go). Guarded by m.mu.
+	unlistedEnd creationEnd
 	// ctx is the page's lifetime, taken from its driver. Operations are
 	// bounded against it. cancelOps ends it before the driver closes, so a
 	// close cancels the operations in flight (closePageAsync).
