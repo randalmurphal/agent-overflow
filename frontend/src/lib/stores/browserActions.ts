@@ -1,4 +1,4 @@
-import { type BrowserCompanionEvent } from './bindings';
+import { type BrowserCompanionEvent, type BrowserPageInfo } from './bindings';
 import {
   browserCompanionState,
   browserPaneAttachment,
@@ -282,6 +282,32 @@ export function focusedBrowser(): FocusedBrowser | null {
 export function isBrowserPaneUnattached(): boolean {
   const focused = focusedBrowser();
   return focused !== null && focused.pane === null;
+}
+
+/**
+ * Whether `page` takes an address: a tab being created, or one that failed
+ * to open, has no page to navigate or reload yet. A crashed tab (suspended,
+ * with its error) does: it reloads or goes elsewhere.
+ */
+export function tabTakesAddress(page: Readonly<BrowserPageInfo> | null): boolean {
+  return !!page && page.creating !== true && !(page.error && !page.suspended);
+}
+
+/**
+ * Whether the keyboard's target is a browser pane whose address field
+ * cannot take focus: its chrome is inert until the attach answers, and its
+ * shown tab may take no address (tabTakesAddress). A reload needs the same.
+ * Reactive.
+ */
+export function isBrowserAddressUnavailable(): boolean {
+  const focused = focusedBrowser();
+  return focused !== null && (focused.pane === null || !tabTakesAddress(browserShownPage(focused.state)));
+}
+
+/** Whether the keyboard's target is a browser pane whose thread has no closed tab to reopen. Reactive. */
+export function isBrowserClosedTabMissing(): boolean {
+  const focused = focusedBrowser();
+  return focused !== null && (focused.state?.closedTabs ?? 0) === 0;
 }
 
 /**

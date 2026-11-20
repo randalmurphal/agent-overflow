@@ -10,7 +10,7 @@
     noteBrowserFindCleanupError,
     browserFindCleanupError,
   } from '../../stores/browserCompanion.svelte';
-  import { actInPane, openBrowserTabInPane } from '../../stores/browserActions';
+  import { actInPane, openBrowserTabInPane, tabTakesAddress } from '../../stores/browserActions';
   import { browserAction, pageIdOf, revealPageFile as revealBrowserPageFile, type BrowserAction } from '../../stores/browserActionWire';
   import { addressFocusIntent, registerBrowserAddressBar, takeAddressFocus } from '../../stores/browserAddressFocus.svelte';
   import { focusBrowserPage } from '../../stores/browserPageFocus';
@@ -198,7 +198,7 @@
     if (!pane) return;
     const page = activePage;
     const pageId = pageIdOf(page?.id);
-    if (page && pageId && !page.creating && !(page.error && !page.suspended)) void act(browserAction.navigate(pageId, path));
+    if (pageId && tabTakesAddress(page)) void act(browserAction.navigate(pageId, path));
     else void openBrowserTabInPane(pane, { address: path });
   }
 

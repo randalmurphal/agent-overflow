@@ -9,6 +9,7 @@
   import X from '@lucide/svelte/icons/x';
   import type { BrowserPageInfo } from '../../stores/bindings';
   import { browserAction, pageIdOf, type BrowserAction, type NamedTabKind } from '../../stores/browserActionWire';
+  import { tabTakesAddress } from '../../stores/browserActions';
   import { chordHintSuffix } from '../../stores/keybindings.svelte';
   import { isImeComposingEvent } from '../../utils/imeComposition';
   import { isLocalEnter } from '../../utils/localEnter';
@@ -84,12 +85,8 @@
   let addressFocused = $state(false);
   let input: HTMLInputElement | undefined = $state(undefined);
   let activeIsLocalFile = $derived((activePage?.url ?? '').toLowerCase().startsWith('file:'));
-  // A tab with no page to navigate yet (being created, or failed to open)
-  // takes no address. A crashed tab (suspended, with its error) does: it
-  // reloads or goes elsewhere.
-  let addressDisabled = $derived(
-    !activePage || activePage.creating === true || (!!activePage.error && !activePage.suspended),
-  );
+  // A tab with no page to navigate yet takes no address (tabTakesAddress).
+  let addressDisabled = $derived(!tabTakesAddress(activePage));
   let loading = $derived(activePage?.loading === true);
 
   /** The page's address as the field shows it: a blank page reads as empty. */
@@ -226,7 +223,7 @@
     {#if loading}
       <IconButton label="Stop" title="Stop loading" size="sm" testId="browser-stop" onClick={() => onActivePage('stop')}><Icon icon={X} size={15} /></IconButton>
     {:else}
-      <IconButton label="Reload" title="Reload{chordHintSuffix('browser.reload')}" size="sm" testId="browser-reload" disabled={!activePage || addressDisabled} onClick={() => onActivePage('reload')}><Icon icon={RotateCw} size={14} /></IconButton>
+      <IconButton label="Reload" title="Reload{chordHintSuffix('browser.reload')}" size="sm" testId="browser-reload" disabled={addressDisabled} onClick={() => onActivePage('reload')}><Icon icon={RotateCw} size={14} /></IconButton>
     {/if}
   </div>
   <input
