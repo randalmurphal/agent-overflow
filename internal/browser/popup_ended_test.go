@@ -1,6 +1,7 @@
 package browser
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -63,7 +64,9 @@ func TestAClosedPopupsDownloadsGoWithItsOpenerThatLeavesBeforeTheCloseIsProcesse
 	}
 	manager.downloadProgress(progressOf("dl-1", downloadInProgress, 10))
 	processing := make(chan struct{})
-	manager.pageEnds.report("popup", func() bool { return true }, func() { <-processing })
+	process := sync.OnceFunc(func() { close(processing) })
+	t.Cleanup(process)
+	manager.pageEnds.report(manager.goLife, "popup", func() bool { return true }, func() { <-processing })
 	manager.pageClosed("popup")
 	holder := listedPage(t, manager, opener)
 	if err := manager.CloseCompanionPage(t.Context(), access, holder.id); err != nil {
@@ -74,7 +77,7 @@ func TestAClosedPopupsDownloadsGoWithItsOpenerThatLeavesBeforeTheCloseIsProcesse
 	if !popupDownload(manager, engine, "popup", "dl-2", opener) {
 		t.Fatal("a download of the closed popup after its adoption ended was refused")
 	}
-	close(processing)
+	process()
 	wantCarried(t, holder)
 	if row := holderRow(t, holder, "dl-2"); row.State != downloadStateCanceled || row.Error != "page closed" {
 		t.Fatalf("the opener that left lists the popup's later download as %s %q, want it canceled by its leave", row.State, row.Error)

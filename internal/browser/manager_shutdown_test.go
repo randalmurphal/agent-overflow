@@ -160,29 +160,61 @@ func TestCloseDisposesInlineOnTheUIThread(t *testing.T) {
 	}
 }
 
-// Close ends the saved tabs: a save asked for after it, as the work of a
-// page's reported crash that Close does not join asks, is refused and
-// leaves the copy Close wrote as it is.
-func TestASaveAfterCloseWritesNothing(t *testing.T) {
-	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{FakeEngine: true})
-	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
-	mustOpen(t, manager, access, "https://example.test/")
-	if err := manager.Close(); err != nil {
+// closesAfter starts the Manager's close and fails if it returns before
+// release has run: Close joins the work release lets finish.
+func closesAfter(t *testing.T, manager *Manager, what string, release func()) {
+	t.Helper()
+	closed := make(chan error, 1)
+	go func() { closed <- manager.Close() }()
+	select {
+	case err := <-closed:
+		t.Fatalf("Close answered %v before %s ended", err, what)
+	case <-time.After(50 * time.Millisecond):
+	}
+	release()
+	if err := await(t, closed, "the Manager's close once "+what+" ended"); err != nil {
 		t.Fatal(err)
 	}
-	path := manager.recordPath("thread")
-	saved, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("the close saved no tabs: %v", err)
+}
+
+// Close waits for what a page's reported close or crash does, which may
+// end by saving its thread's tabs: nothing of it runs once Close returned.
+func TestCloseWaitsForAPagesReportedEnd(t *testing.T) {
+	manager, _, _, _ := newAdoptionManager(t)
+	working := make(chan struct{})
+	release := sync.OnceFunc(func() { close(working) })
+	t.Cleanup(release)
+	manager.pageEnds.report(manager.goLife, "page", func() bool { return true }, func() { <-working })
+	closesAfter(t, manager, "the page's reported end", release)
+	ran := false
+	manager.pageEnds.report(manager.goLife, "page", func() bool { return true }, func() { ran = true })
+	manager.pageEnds.mu.Lock()
+	queued := len(manager.pageEnds.jobs)
+	manager.pageEnds.mu.Unlock()
+	if ran || queued != 0 {
+		t.Fatalf("a page end reported after the close ran: %v, and %d pages keep work queued", ran, queued)
 	}
-	// With its tabs gone from memory, a save would remove the file.
-	manager.mu.Lock()
-	clear(manager.suspended)
-	manager.mu.Unlock()
-	if err := manager.persistThreads([]ThreadID{"thread"}); !errors.Is(err, errRecordsClosed) {
-		t.Fatalf("a save after the close answered %v, want %v", err, errRecordsClosed)
-	}
-	if after, err := os.ReadFile(path); err != nil || !bytes.Equal(after, saved) {
-		t.Fatalf("a save after the close changed the saved tabs: %q, %v", after, err)
+}
+
+// Close waits for a popup's adoption, which may end by saving its thread's
+// tabs.
+func TestCloseWaitsForAPopupsAdoption(t *testing.T) {
+	manager, engine, _, opener := newAdoptionManager(t)
+	release := engine.gate("popup")
+	t.Cleanup(release)
+	manager.popupOpened(engine.popup(opener, "popup"))
+	engine.awaitAttach(t, "popup")
+	closesAfter(t, manager, "the popup's adoption", release)
+}
+
+// A popup waiting for an opener not listed yet stops waiting as the
+// Manager closes, so the close does not wait out popupOpenerWait.
+func TestCloseEndsAPopupsWaitForItsOpener(t *testing.T) {
+	manager, engine, _, _ := newAdoptionManager(t)
+	manager.popupOpened(engine.popup("unreported", "popup"))
+	closed := make(chan error, 1)
+	go func() { closed <- manager.Close() }()
+	if err := await(t, closed, "the Manager's close"); err != nil {
+		t.Fatal(err)
 	}
 }

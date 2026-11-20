@@ -26,7 +26,9 @@ func (m *Manager) popupOpened(popup enginePopup) {
 	if !m.announcePopup(popup) {
 		return
 	}
-	go m.runAdoption(popup)
+	// Close joins the adoption. A popup reported once Close has begun
+	// waiting is of a browser already stopped, which took it.
+	m.goLife(func() { m.runAdoption(popup) })
 }
 
 // pageClosed is engineEvents.PageClosed. A popup not listed yet keeps the
@@ -34,7 +36,7 @@ func (m *Manager) popupOpened(popup enginePopup) {
 // (removeClosedPage), which for a popup never listed lists what it
 // downloaded in its opener's tab at once.
 func (m *Manager) pageClosed(handle ids.PageHandle) {
-	m.pageEnds.report(handle, func() bool {
+	m.pageEnds.report(m.goLife, handle, func() bool {
 		m.admissions.Observe(handle, popupadmit.Closed())
 		m.noteCreationEnd(handle, true, "")
 		m.mu.Lock()
@@ -80,7 +82,7 @@ type listingDriver interface {
 // keeps the crash for its listing, which lists it crashed unless it also
 // closed; any other page is handled as a crashed tab (pageCrashed).
 func (m *Manager) pageCrashedReport(handle ids.PageHandle, reason string) {
-	m.pageEnds.report(handle, func() bool {
+	m.pageEnds.report(m.goLife, handle, func() bool {
 		m.noteCreationEnd(handle, false, reason)
 		return m.admissions.Observe(handle, popupadmit.Crashed(reason)) == popupadmit.Unheld
 	}, func() { m.pageCrashed(handle, reason) })
@@ -98,21 +100,27 @@ type pageEndQueue struct {
 // report records a report of page handle (record, which answers whether
 // it leaves work to do) and queues that work behind the page's earlier
 // work, in one hold, so the work runs in the order the records were made.
-func (q *pageEndQueue) report(handle ids.PageHandle, record func() bool, work func()) {
+// The page's goroutine is started with spawn (Manager.goLife), so Close
+// joins the work, which may end by saving its thread's tabs. Work spawn
+// refuses is dropped: Close has begun waiting, with the browser stopped
+// and every page gone with it.
+func (q *pageEndQueue) report(spawn func(func()) bool, handle ids.PageHandle, record func() bool, work func()) {
 	q.mu.Lock()
+	defer q.mu.Unlock()
 	if !record() {
-		q.mu.Unlock()
+		return
+	}
+	if queued, running := q.jobs[handle]; running {
+		q.jobs[handle] = append(queued, work)
+		return
+	}
+	if !spawn(func() { q.run(handle) }) {
 		return
 	}
 	if q.jobs == nil {
 		q.jobs = make(map[ids.PageHandle][]func())
 	}
-	queued, running := q.jobs[handle]
-	q.jobs[handle] = append(queued, work)
-	q.mu.Unlock()
-	if !running {
-		go q.run(handle)
-	}
+	q.jobs[handle] = []func(){work}
 }
 
 // run does the queued work of handle until none is left.

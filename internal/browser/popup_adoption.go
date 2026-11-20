@@ -83,7 +83,8 @@ func (m *Manager) listPageLocked(scope *jarScope, p *managedPage) {
 
 // listingChangedLocked wakes the popups waiting for an opener
 // (awaitOpener): a page joined the tabs (listPageLocked), a page created
-// or restored will not (abandonPage), or an adoption ended. A listed
+// or restored will not (abandonPage), an adoption ended, or the Manager
+// closed. A listed
 // page's leaving wakes no one, since nothing waits for a listed opener.
 // The caller holds m.mu.
 func (m *Manager) listingChangedLocked() {
@@ -96,12 +97,17 @@ func (m *Manager) listingChangedLocked() {
 // awaitOpener waits until opener, a page handle, is listed, or will not be
 // (unlistedLocked), within popupOpenerWait, and answers whether it is
 // listed. An opener still being adopted, or not reported yet (an engine
-// reports each popup on a goroutine of its own), is waited for.
+// reports each popup on a goroutine of its own), is waited for, until the
+// Manager closes, which lists nothing more.
 func (m *Manager) awaitOpener(opener ids.PageHandle) bool {
 	deadline := time.NewTimer(popupOpenerWait)
 	defer deadline.Stop()
 	for {
 		m.mu.Lock()
+		if m.closed {
+			m.mu.Unlock()
+			return false
+		}
 		if m.pageByHandleLocked(opener) != nil {
 			m.mu.Unlock()
 			return true

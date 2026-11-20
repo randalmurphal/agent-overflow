@@ -93,10 +93,14 @@ func (m *Manager) forgettingLocked() bool { return m.forgetting > 0 }
 func (m *Manager) Close() error {
 	m.mu.Lock()
 	m.closed = true
+	// An adoption waiting for its opener ends (awaitOpener).
+	m.listingChangedLocked()
 	m.mu.Unlock()
 	err := errors.Join(m.saveOpenPages(), m.closeBrowser(context.Background()))
 	// The browser's close disposed every profile, closing pages included; a
-	// close or disposal still running finishes against it. On the engine's
+	// close or disposal still running finishes against it, as does what a
+	// page's reported end does and a popup's adoption, each of which may
+	// end by saving its thread's tabs. On the engine's
 	// UI thread it cannot be waited for: its engine calls dispatch to this
 	// very thread, and the engine is already stopped.
 	m.lifeGate.Lock()
@@ -120,7 +124,6 @@ func (m *Manager) Close() error {
 	m.findClosed = true
 	m.findGate.Unlock()
 	m.findWork.Wait()
-	m.closeRecords()
 	// Last: the publishes it waited for wrote through the artifact root.
 	return errors.Join(err, m.closeArtifacts())
 }

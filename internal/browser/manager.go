@@ -124,23 +124,22 @@ type Manager struct {
 	// retiring holds the teardown of each thread lifetime CloseThread
 	// detached, until it has finished (thread_close.go). Guarded by mu.
 	retiring map[*threadBrowser]*threadTeardown
-	// lifeWork joins the page closes and profile disposals that run after
-	// their caller returned (goLife). Each is admitted under lifeGate unless
-	// lifeClosed, which Close sets under it before it waits.
+	// lifeWork joins the work that runs after its caller returned (goLife):
+	// page closes and profile disposals, what a page's reported close or
+	// crash does (pageEndQueue), a popup's adoption. Each is admitted under
+	// lifeGate unless lifeClosed, which Close sets under it before it waits.
 	lifeWork   sync.WaitGroup
 	lifeGate   sync.Mutex
 	lifeClosed bool
 	// recordDir holds the durable copy of the suspended pages, one file per
 	// thread (page_records.go). persistMu orders its writes: each takes its
 	// snapshot under mu while holding persistMu, so an older snapshot never
-	// replaces a newer one. recordsClosed, guarded by persistMu, is set by
-	// Close, after which nothing writes there (writeRecordFile).
-	recordDir     string
-	persistMu     sync.Mutex
-	recordsClosed bool
-	idleTimer     *time.Timer
-	eventSink     func(CompanionEvent)
-	panes         map[MountID]paneMount
+	// replaces a newer one.
+	recordDir string
+	persistMu sync.Mutex
+	idleTimer *time.Timer
+	eventSink func(CompanionEvent)
+	panes     map[MountID]paneMount
 	// paneSeq numbers pane mounts in attach order (paneMount.seq).
 	paneSeq uint64
 	// recentGen is the forget generation of the threads' recent addresses,

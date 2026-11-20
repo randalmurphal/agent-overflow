@@ -122,17 +122,9 @@ func (r *suspendedPage) saved() pageRecord {
 	}
 }
 
-// errRecordsClosed refuses a save of a thread's tabs once the Manager has
-// closed.
-var errRecordsClosed = errors.New("browser: the browser is closed, and its tabs were saved as it closed")
-
 // writeRecordFile writes one thread's saved copy, or removes it when it
-// holds no page and the default jar. It writes nothing once Close has
-// ended the saved copies (closeRecords). The caller holds persistMu.
+// holds no page and the default jar. The caller holds persistMu.
 func (m *Manager) writeRecordFile(file pageRecordFile) error {
-	if m.recordsClosed {
-		return errRecordsClosed
-	}
 	path := m.recordPath(ThreadID(file.ThreadID))
 	if len(file.Pages) == 0 && file.Jar == "" {
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -144,16 +136,6 @@ func (m *Manager) writeRecordFile(file pageRecordFile) error {
 		return fmt.Errorf("browser: save pages: %w", err)
 	}
 	return nil
-}
-
-// closeRecords ends the saved copies, for Close: a write in flight finishes
-// first, and a save asked for after it, by work Close does not join (what
-// a page's reported close or crash does, a popup's adoption), is refused,
-// so nothing is written under the Manager's directory once Close returns.
-func (m *Manager) closeRecords() {
-	m.persistMu.Lock()
-	m.recordsClosed = true
-	m.persistMu.Unlock()
 }
 
 // savedJar is a jar kind as a saved copy writes it: the default is omitted,

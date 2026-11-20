@@ -518,9 +518,17 @@ func receiptRow(t *testing.T, state receiptState, kind receiptKind, action recei
 				process()
 			case processedBeforeSettling:
 				gate := make(chan struct{})
-				l.manager.pageEnds.report(ids.PageHandle(p.page), func() bool { return true }, func() { <-gate })
+				l.manager.pageEnds.report(l.manager.goLife, ids.PageHandle(p.page), func() bool { return true }, func() { <-gate })
 				settle = sync.OnceFunc(func() { close(gate) })
 				t.Cleanup(settle)
+				if action.stops {
+					// The close joins the page's queued end, which runs
+					// once the browser has stopped.
+					go func() {
+						awaitLifeClosed(l.manager)
+						settle()
+					}()
+				}
 				process()
 				awaitRetired(t, l.engine, p.page)
 			}
@@ -569,4 +577,17 @@ func receiptRow(t *testing.T, state receiptState, kind receiptKind, action recei
 			t.Fatalf("the thread's history is %+v, want the settlement %+v", history, settled[0])
 		}
 	})
+}
+
+// awaitLifeClosed waits, within hostedTestDeadline, until the Manager's
+// close has stopped the browser and begun waiting for the work it joins.
+func awaitLifeClosed(m *Manager) {
+	for deadline := time.Now().Add(hostedTestDeadline); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+		m.lifeGate.Lock()
+		closed := m.lifeClosed
+		m.lifeGate.Unlock()
+		if closed {
+			return
+		}
+	}
 }
