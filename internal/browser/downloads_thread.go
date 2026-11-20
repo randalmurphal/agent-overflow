@@ -320,16 +320,21 @@ func (m *Manager) publishDownloads(notes ...downloadNote) {
 
 // downloadAnnouncement is the Kind "download" event of a note's settled
 // download, numbered among the thread's states (Seq) under m.mu: its
-// DownloadsGen is its list's generation when the list still resolves it
-// at that number, and zero when a clear or the thread's close dropped it
-// since, so a client never offers an action on it.
+// DownloadsGen is its list's generation when, at that number, tb is still
+// the thread's current lifetime and its list, of that generation, still
+// has the download; zero when the thread's close detached tb or a clear
+// or the bounds dropped the download since, so a client never offers an
+// action the thread cannot resolve.
 func (m *Manager) downloadAnnouncement(tb *threadBrowser, note downloadNote) CompanionEvent {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.stateSeq++
 	event := CompanionEvent{Kind: "download", ThreadID: string(tb.id), Download: note.announce, Seq: m.stateSeq}
+	if m.currentLocked(tb.id) != tb {
+		return event
+	}
 	m.downloadsMu.Lock()
-	if downloadGenLocked(tb) == note.gen {
+	if list := tb.downloads; list != nil && list.gen == note.gen && list.find(DownloadKey(note.announce.ID)) != nil {
 		event.DownloadsGen = note.gen
 	}
 	m.downloadsMu.Unlock()

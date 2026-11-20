@@ -585,7 +585,7 @@ func TestClearingDownloadsKeepsRunningOnesAndFiles(t *testing.T) {
 // to another generation, which the next state carries, and an action on
 // the cleared download is answered ErrDownloadUnavailable; an
 // announcement made after the clear names no generation, so it offers no
-// action.
+// action, and neither does one of a download the list no longer has.
 func TestADownloadsAnnouncementResolvesUntilItsListChanges(t *testing.T) {
 	manager, log, access, page := newDownloadManager(t)
 	var revealed []string
@@ -647,6 +647,64 @@ func TestADownloadsAnnouncementResolvesUntilItsListChanges(t *testing.T) {
 	late := manager.downloadAnnouncement(access.tb, downloadNote{tb: access.tb, announce: announced.Download, gen: announced.DownloadsGen})
 	if late.DownloadsGen != 0 {
 		t.Fatalf("an announcement made after the clear names generation %d, want none", late.DownloadsGen)
+	}
+	dropped := manager.downloadAnnouncement(access.tb, downloadNote{tb: access.tb, announce: &ThreadDownload{ID: "dropped"}, gen: cleared.DownloadsGen})
+	if dropped.DownloadsGen != 0 {
+		t.Fatalf("an announcement of a download its list no longer has names generation %d, want none", dropped.DownloadsGen)
+	}
+}
+
+// A download whose publish finishes after the thread's close detached its
+// lifetime, while that lifetime's pages still close, is announced with no
+// generation: the thread can no longer resolve it, so the announcement
+// offers no action.
+func TestADownloadPublishedAfterTheThreadClosedOffersNoAction(t *testing.T) {
+	manager, log, access, page := newDownloadManager(t)
+	linking, linked := make(chan struct{}), make(chan struct{})
+	linkDownload = func(staged, candidate string) error {
+		if !placing(candidate) {
+			close(linking)
+			<-linked
+		}
+		return os.Link(staged, candidate)
+	}
+	t.Cleanup(func() { linkDownload = os.Link })
+	startDownload(t, manager, access, page, "late.txt", 10, "hold")
+	item, _ := manager.threadDownload(access, DownloadKey(threadDownloads(manager, access)[0].ID))
+	// The page's engine close waits, so the detached lifetime's teardown
+	// has not finished when the publish settles.
+	closing, closed := make(chan struct{}), make(chan struct{})
+	manager.engine.(*fakeEngine).beforePageClose = func() {
+		close(closing)
+		<-closed
+	}
+	profile := fakeProfileOf(t, manager)
+	finished := make(chan error, 1)
+	go func() { finished <- profile.finishHeld(item.engineID) }()
+	<-linking
+	log.take()
+	threadClosed := make(chan error, 1)
+	go func() { threadClosed <- manager.CloseThread(context.Background(), access.ThreadID()) }()
+	<-closing
+	close(linked)
+	if err := <-finished; err != nil {
+		t.Fatal(err)
+	}
+	var announced []CompanionEvent
+	for _, event := range log.take() {
+		if event.Kind == "download" {
+			announced = append(announced, event)
+		}
+	}
+	close(closed)
+	if err := <-threadClosed; err != nil {
+		t.Fatal(err)
+	}
+	if len(announced) != 1 || announced[0].Download == nil || announced[0].Download.State != downloadStateCompleted {
+		t.Fatalf("the publish announced %+v, want the completed download once", announced)
+	}
+	if announced[0].DownloadsGen != 0 {
+		t.Fatalf("a download published after its thread closed is announced under generation %d, want none", announced[0].DownloadsGen)
 	}
 }
 

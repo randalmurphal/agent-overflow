@@ -55,6 +55,9 @@ type fakeEngine struct {
 	// beforeNewPage is a test seam run as a profile starts making a page,
 	// before it holds the profile. Nil outside tests.
 	beforeNewPage func()
+	// beforePageClose is a test seam run as a page's first Close starts,
+	// before the page is gone. Nil outside tests.
+	beforePageClose func()
 }
 
 // DownloadSaving is the engine the fake stands in for (saving).
