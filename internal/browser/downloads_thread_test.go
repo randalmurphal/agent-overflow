@@ -116,7 +116,8 @@ func heldFile(t *testing.T, manager *Manager, engineID downloadID) string {
 	return held.file
 }
 
-// fakeDownload navigates the page to the fake engine's download address.
+// fakeDownloadURL is the fake engine's download address for a file of
+// name and bytes, with flags ("hold", "fail") as query keys.
 func fakeDownloadURL(name string, bytes int, flags ...string) string {
 	query := url.Values{"bytes": {fmt.Sprint(bytes)}}
 	for _, flag := range flags {

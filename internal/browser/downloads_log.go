@@ -16,8 +16,9 @@ import (
 // release numbers what settled, drops the earliest settled past the
 // bound and wakes the waiters, so no writer can leave the log over its
 // bound or a waiter asleep. A running download is never dropped: its
-// progress, its reservation and its cancel all need it, and the quotas
-// bound how many run.
+// progress, its reservation and its cancel all need it. Only artifact
+// downloads (downloadsAsArtifacts) have quotas, which bound how many of
+// them run.
 type pageDownloadLog struct {
 	mu      sync.Mutex
 	entries []DownloadInfo

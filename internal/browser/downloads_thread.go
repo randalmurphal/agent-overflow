@@ -25,7 +25,7 @@ import (
 const (
 	// maxThreadDownloads bounds the settled downloads the thread's list
 	// shows, the most recently settled. A running download is never
-	// dropped, and the quotas bound how many run.
+	// dropped; only artifact downloads have quotas bounding how many run.
 	maxThreadDownloads = 20
 	// maxResolvableDownloads bounds the settled downloads past the shown
 	// ones whose id still resolves (threadDownloadList.resolvable), so the
@@ -399,9 +399,9 @@ func (m *Manager) forgetThreadDownloads(tb *threadBrowser) {
 const jarDownloadingDir = "downloading"
 
 // workspaceDownloadsDir is the artifact subtree of the workspaces' finished
-// downloads. No earlier release wrote to it: one wrote its engine's running
-// downloads, and the files it finished, into "downloads", whose files
-// authorizeFile never grants and the artifact prune removes with age.
+// downloads: it holds only files AO published there, apart from the
+// engine's running downloads (jarDownloadingDir), so authorizeFile grants
+// downloads from it and from no other artifact directory.
 const workspaceDownloadsDir = "finished"
 
 // workspaceDownloadDir is the directory a workspace's finished downloads
