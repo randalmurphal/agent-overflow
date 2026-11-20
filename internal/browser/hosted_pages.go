@@ -162,13 +162,53 @@ type hostedPageRecord struct {
 	ended     []downloadID
 	// retired is closed once the page's lane retired it and the
 	// retirement's callbacks returned, or as a page being created is
-	// abandoned. Stop does not close it (receipt.stopped). retiring is set
-	// once its lane's retirement of it began (retire).
-	retired  chan struct{}
-	retiring bool
+	// abandoned. Stop does not close it (receipt.stopped).
+	retired chan struct{}
 	// stopAttach signals a popup's attach under way to end (attaching); it
 	// waits for nothing, and the attach joins its own teardown.
 	stopAttach context.CancelFunc
+}
+
+// pageDebt is what the engine owes a page in callbacks: a retirement under
+// way, until its last callback returned (retire), and each received end
+// Stop took from the page's lane, until Stop delivered it (stopAll). It is
+// the one record a close or discard of a page Stop forgot reads (receive),
+// so the discard succeeds only once every callback owed to the page
+// returned, and hears it was interrupted until then, whatever the page
+// was doing when Stop took over and whenever the discard comes.
+type pageDebt struct {
+	owed int
+	// paid closes when owed reaches zero, and stopped once Stop forgot the
+	// page's record.
+	paid    chan struct{}
+	stopped <-chan struct{}
+}
+
+// oweLocked adds n callbacks to what the engine owes page. The caller
+// holds p.mu.
+func (p *hostedPages) oweLocked(page ids.PageHandle, n int) {
+	if n == 0 {
+		return
+	}
+	d := p.debts[page]
+	if d == nil {
+		d = &pageDebt{paid: make(chan struct{})}
+		p.debts[page] = d
+	}
+	d.owed += n
+}
+
+// payLocked records one owed callback to page returned. The caller holds
+// p.mu.
+func (p *hostedPages) payLocked(page ids.PageHandle) {
+	d := p.debts[page]
+	if d == nil {
+		panic(fmt.Sprintf("browser: paid a callback page %s was not owed", page))
+	}
+	if d.owed--; d.owed == 0 {
+		close(d.paid)
+		delete(p.debts, page)
+	}
 }
 
 // to moves the record's state by event, its one writer, and answers
@@ -186,12 +226,9 @@ func (r *hostedPageRecord) to(event hostedPageEvent) bool {
 type hostedPages struct {
 	mu      sync.Mutex
 	records map[ids.PageHandle]*hostedPageRecord
-	// interrupted is, by page, each retirement Stop forgot the record of
-	// and owes a callback for, until that callback returns: one under way,
-	// until its last callback returns, and one still queued, until Stop
-	// delivered the ends it took (stopAll). A close or discard received
-	// meanwhile joins it (receive).
-	interrupted map[ids.PageHandle]receipt
+	// debts are the callbacks the engine owes each page and has not
+	// returned from (pageDebt).
+	debts map[ids.PageHandle]*pageDebt
 	// owners is the page of each download id a record holds, running or
 	// ended, so a report naming another page's id is refused.
 	owners map[downloadID]ids.PageHandle
@@ -213,13 +250,13 @@ type hostedPages struct {
 
 func newHostedPages(process func(context.Context, *acceptedWork), watch func(stop <-chan struct{}), observe func(page ids.PageHandle, closed bool, crash string, openers []ids.PageHandle)) *hostedPages {
 	return &hostedPages{
-		records:     make(map[ids.PageHandle]*hostedPageRecord),
-		interrupted: make(map[ids.PageHandle]receipt),
-		owners:      make(map[downloadID]ids.PageHandle),
-		lanes:       newReportLanes(),
-		process:     process,
-		watch:       watch,
-		observe:     observe,
+		records: make(map[ids.PageHandle]*hostedPageRecord),
+		debts:   make(map[ids.PageHandle]*pageDebt),
+		owners:  make(map[downloadID]ids.PageHandle),
+		lanes:   newReportLanes(),
+		process: process,
+		watch:   watch,
+		observe: observe,
 	}
 }
 
@@ -460,8 +497,9 @@ func (p *hostedPages) receive(page ids.PageHandle, in received) receipt {
 	defer p.mu.Unlock()
 	r := p.records[page]
 	if r == nil {
-		if joined, ok := p.interrupted[page]; ok && in.kind != acceptedSnapshot && in.kind != acceptedCrash {
-			return joined
+		// A page Stop forgot whose callbacks are still owed.
+		if d := p.debts[page]; d != nil && in.kind != acceptedSnapshot && in.kind != acceptedCrash {
+			return receipt{outcome: receiptEnding, retired: d.paid, stopped: d.stopped}
 		}
 		return receipt{outcome: receiptNoPage}
 	}
@@ -565,7 +603,7 @@ func (p *hostedPages) retire(page ids.PageHandle, why string) (gone []downloadPr
 	if r == nil {
 		return nil, func() {}
 	}
-	r.retiring = true
+	p.oweLocked(page, 1)
 	for id, d := range r.downloads {
 		switch {
 		case d.admission != hostedAdmitted:
@@ -585,10 +623,8 @@ func (p *hostedPages) retire(page ids.PageHandle, why string) (gone []downloadPr
 		p.mu.Lock()
 		defer p.mu.Unlock()
 		close(r.retired)
+		p.payLocked(page)
 		// Stop may have forgotten it first.
-		if joined, ok := p.interrupted[page]; ok && joined.retired == r.retired {
-			delete(p.interrupted, page)
-		}
 		if p.records[page] == r {
 			delete(p.records, page)
 			if r.state.pendingPopup() {
@@ -615,23 +651,21 @@ func (r *hostedPageRecord) endedHas(id downloadID) bool {
 }
 
 // stopAll forgets every page and download and ends the status loop and
-// the lanes (Stop): work still waiting is dropped, a path conversion under
-// way ends, and whoever waits for a page to go is told it was interrupted
-// (receipt.stopped); a retirement under way still closes its record's
-// retired when its last callback returns, and until then a close or
-// discard of its page joins it (interrupted), so its waiter, too, hears
-// that retirement's completion or the interruption. It answers the
-// wait for the lanes' goroutines, which the caller makes once it holds no
-// lock, and the received ends its lanes have not delivered, in each
-// lane's order, the one under way first, which the Manager may be waiting
-// for (downloadStart.EndReported): one a lane already took is that lane's
-// to deliver (takeEnd). A download's admission may still be in flight on
-// its lane, so an end is taken whether or not it was admitted; the
-// Manager drops the end of a download it has no row for. A retirement
-// still queued never runs: the caller delivers those ends in its stead,
-// and a close or discard of its page joins it (interrupted) until the
-// caller calls delivered, once it has.
-func (p *hostedPages) stopAll() (join func(), ends []downloadProgress, delivered func()) {
+// the lanes (Stop): work still waiting is dropped, a retirement still
+// queued never runs, a path conversion under way ends, and whoever waits
+// for a page to go is told it was interrupted (receipt.stopped); a
+// retirement under way still closes its record's retired when its last
+// callback returns. It answers the wait for the lanes' goroutines, which
+// the caller makes once it holds no lock, and the received ends its lanes
+// have not delivered, in each lane's order, the one under way first,
+// which the Manager may be waiting for (downloadStart.EndReported): one a
+// lane already took is that lane's to deliver (takeEnd). A download's
+// admission may still be in flight on its lane, so an end is taken
+// whether or not it was admitted; the Manager drops the end of a download
+// it has no row for. Each end is owed to its page (pageDebt) until the
+// caller, having delivered it, calls paid with it, so a close or discard
+// of the page reads the debt as a retirement under way does.
+func (p *hostedPages) stopAll() (join func(), ends []stopEnd, paid func(stopEnd)) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.stop != nil {
@@ -649,11 +683,11 @@ func (p *hostedPages) stopAll() (join func(), ends []downloadProgress, delivered
 			return
 		}
 		w.download.ending = endTaken
+		end := stopEnd{page: w.download.key.page, progress: receivedProgress(w.snapshot)}
 		if w.snapshot.State == webview2host.DownloadUnknown {
-			ends = append(ends, untrackedLocked(w.download, w.snapshot.Reason))
-			return
+			end.progress = untrackedLocked(w.download, w.snapshot.Reason)
 		}
-		ends = append(ends, receivedProgress(w.snapshot))
+		ends = append(ends, end)
 	}
 	for _, lane := range p.lanes.byKey {
 		take(lane.current)
@@ -667,32 +701,29 @@ func (p *hostedPages) stopAll() (join func(), ends []downloadProgress, delivered
 		for _, d := range r.downloads {
 			if d.pageEnd != "" && d.ending == endReceived {
 				d.ending = endTaken
-				ends = append(ends, pageGoneLocked(d, d.pageEnd))
+				ends = append(ends, stopEnd{page: d.key.page, progress: pageGoneLocked(d, d.pageEnd)})
 			}
 		}
 	}
+	for _, end := range ends {
+		p.oweLocked(end.page, 1)
+	}
 	stopped := p.lanes.ctx.Done()
-	owed := make(chan struct{})
-	var queued []ids.PageHandle
-	for page, r := range p.records {
-		switch {
-		case r.retiring:
-			p.interrupted[page] = receipt{outcome: receiptEnding, retired: r.retired, stopped: stopped}
-		case r.state == hostedPopupClosing || r.state == hostedPageClosing:
-			p.interrupted[page] = receipt{outcome: receiptEnding, retired: owed, stopped: stopped}
-			queued = append(queued, page)
-		}
+	for _, d := range p.debts {
+		d.stopped = stopped
 	}
 	p.records = make(map[ids.PageHandle]*hostedPageRecord)
 	p.owners = make(map[downloadID]ids.PageHandle)
-	return p.stopLanesLocked(), ends, func() {
+	return p.stopLanesLocked(), ends, func(end stopEnd) {
 		p.mu.Lock()
 		defer p.mu.Unlock()
-		close(owed)
-		for _, page := range queued {
-			if joined, ok := p.interrupted[page]; ok && joined.retired == owed {
-				delete(p.interrupted, page)
-			}
-		}
+		p.payLocked(end.page)
 	}
+}
+
+// stopEnd is a received end Stop took from its page's lane, which it
+// delivers in the lane's stead.
+type stopEnd struct {
+	page     ids.PageHandle
+	progress downloadProgress
 }
