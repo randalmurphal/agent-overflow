@@ -353,10 +353,12 @@ func (m *Manager) presentedPageLocked(tb *threadBrowser) PageID {
 	return session.activePage()
 }
 
-// OpenPaneDevTools opens the engine's inspector for one of the thread's pages.
-// Only engines with an inspector they can open implement paneDevTools;
-// WKWebView (Safari's Develop menu is the inspector) and the fake engine
-// answer with an explained refusal rather than a silent no-op.
+// OpenPaneDevTools opens the engine's inspector for one of the thread's
+// pages, or, on the hosted engine, asks the launcher to: nil is what the
+// engine knows (paneDevTools.OpenPageDevTools). Only engines with an
+// inspector they can open implement paneDevTools; WKWebView (Safari's
+// Develop menu is the inspector) and the fake engine answer with an
+// explained refusal rather than a silent no-op.
 func (m *Manager) OpenPaneDevTools(ctx context.Context, access Access, pageID PageID) error {
 	if err := m.bound(access); err != nil {
 		return err

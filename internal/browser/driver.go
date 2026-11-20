@@ -165,7 +165,9 @@ type paneHost interface {
 // inspectable view), so the darwin engine does not implement this and the
 // Manager's refusal, "devtools are not available on this browser engine",
 // is the answer there. OpenPageDevTools answers why the inspector did not
-// open.
+// open, or, on an engine that only sends the request to another process
+// (the hosted engine), why the request could not be sent: there nil means
+// requested.
 type paneDevTools interface {
 	OpenPageDevTools(handle ids.PageHandle) error
 }
