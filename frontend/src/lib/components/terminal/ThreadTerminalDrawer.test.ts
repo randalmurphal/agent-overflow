@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, cleanup, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ThreadTerminalDrawer from './ThreadTerminalDrawer.svelte';
-import { resetThreadTerminalStatesForTest } from './terminalStore.svelte';
+import { getThreadTerminalState, resetThreadTerminalStatesForTest } from './terminalStore.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { setupEventListeners } from '../../stores/events';
 import { emitWailsEvent, wailsListenerCount, resetWailsMocks } from '../../../test/mocks/wailsio-runtime';
@@ -586,40 +586,35 @@ describe('ThreadTerminalDrawer', () => {
     expect(pane.setVisible).not.toHaveBeenCalled();
   });
 
-  it('routes terminal:output events to the active tab', async () => {
-    const pane = makeSurface();
-    const { getByTestId } = render(ThreadTerminalDrawer, { surface: pane as never });
-    await Promise.resolve();
-    getByTestId('terminal-open').click();
-    await Promise.resolve();
-    await Promise.resolve();
+  function pendingText(threadID: string, terminalID: string): string[] {
+    const tab = getThreadTerminalState(threadID).tabs.find((t) => t.terminalID === terminalID);
+    if (!tab) throw new Error(`no tab ${terminalID} on ${threadID}`);
+    return tab.pendingOutput.map((chunk) => new TextDecoder().decode(chunk));
+  }
 
-    emitWailsEvent('terminal:output', {
-      terminalID: 't1',
-      threadID: 'thread-A',
-      sequence: 1,
-      data: btoa('hello'),
-    });
-    // No assertion on xterm internals here — that would require deep xterm
-    // instrumentation. We assert the store is consistent: drainOutput on the
-    // tab returns the decoded content.
-    // We cannot access `handle` from outside the component, so instead we
-    // confirm the event was plumbed without throwing.
+  it("routes terminal:output to its tab's queue, decoded", async () => {
+    const { getByTestId } = render(ThreadTerminalDrawer, { surface: makeSurface() as never });
+    await tick();
+    getByTestId('terminal-open').click();
+    await waitFor(() => expect(getByTestId('terminal-tab-t1')).toBeDefined());
+
+    emitWailsEvent('terminal:output', { terminalID: 't1', threadID: 'thread-A', sequence: 1, data: btoa('hello') });
+    expect(pendingText('thread-A', 't1')).toEqual(['hello']);
   });
 
-  it('filters events for other threads', async () => {
-    const pane = makeSurface();
-    render(ThreadTerminalDrawer, { surface: pane as never });
-    await Promise.resolve();
+  it("keeps another thread's output off this drawer's tabs", async () => {
+    const { getByTestId } = render(ThreadTerminalDrawer, { surface: makeSurface() as never });
+    await tick();
+    getByTestId('terminal-open').click();
+    await waitFor(() => expect(getByTestId('terminal-tab-t1')).toBeDefined());
+    getThreadTerminalState('thread-B').addTab({
+      terminalID: 'u1', threadID: 'thread-B', shell: '/bin/bash', cwd: '/tmp', rows: 24, cols: 80,
+      pid: 2, startedAt: 0, running: true, exitCode: 0, exitReason: '',
+    });
 
-    // Emitting an event for a different thread must not crash even if no tabs
-    // match: the payload is simply ignored.
-    expect(() => emitWailsEvent('terminal:output', {
-      terminalID: 'other',
-      threadID: 'thread-B',
-      sequence: 1,
-      data: btoa('x'),
-    })).not.toThrow();
+    emitWailsEvent('terminal:output', { terminalID: 'u1', threadID: 'thread-B', sequence: 1, data: btoa('x') });
+    expect(pendingText('thread-B', 'u1')).toEqual(['x']);
+    expect(pendingText('thread-A', 't1')).toEqual([]);
   });
 
   // Stage 4 refactor: the drawer chrome is now composed from the Drawer
