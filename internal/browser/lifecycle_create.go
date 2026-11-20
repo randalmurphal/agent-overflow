@@ -230,10 +230,11 @@ func (m *Manager) createReserved(r *tabReservation) (*managedPage, error) {
 		_ = m.lockStructure(context.Background(), tb)
 		closed = pending.closed
 		verdict = p.unlistedEnd.Verdict(err != nil)
-		outcome = m.unlistedOutcomeLocked(p, !closed, scope, verdict)
+		outcome = m.unlistedOutcomeLocked(p, !closed, verdict)
 		if outcome == retryStale {
-			// The thread switched jars while the engine created the page in the
-			// old one: it is created again, under the same tab, in the new one.
+			// The thread switched jars during the attempt, whatever it
+			// answered: the page is created again, under the same tab, in the
+			// new jar.
 			stale := p
 			p = m.freshPendingPageLocked(pending)
 			m.mu.Unlock()
@@ -362,10 +363,11 @@ func (m *Manager) freshPendingPageLocked(pending *pendingPage) *managedPage {
 }
 
 // abandonStale closes a page created in a jar its thread has left, before it
-// was registered; a failure to release that jar's profile reports as the
-// teardown of the tab's page.
+// was registered, and ends its reservation there (releaseUnlisted; nothing
+// for an attempt that failed before its attach, nil scope); a failure to
+// release that jar's profile reports as the teardown of the tab's page.
 func (m *Manager) abandonStale(scope *jarScope, stale, tab *managedPage) {
-	if err := m.abandonPage(scope, stale); err != nil {
+	if err := m.releaseUnlisted(scope, stale); err != nil {
 		m.reportTeardown(tab.owner.id, tab.id, err)
 	}
 }

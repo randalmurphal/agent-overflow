@@ -108,9 +108,9 @@ func (m *Manager) runRestore(ctx context.Context, access Access, rec *suspendedP
 // dropped, in one m.mu hold and only once it is fully loaded; any failure
 // leaves the record as it was, carrying the crash its engine reported
 // first when there was one. Every return of the setup, its failure
-// included, is decided in that hold (unlistedOutcomeLocked). A page loaded
-// in a jar its thread switched away from meanwhile is closed and the
-// restore starts again in the new jar.
+// included, is decided in that hold (unlistedOutcomeLocked). An attempt
+// made under a jar its thread switched away from meanwhile, whatever it
+// answered, is abandoned and the restore starts again in the new jar.
 //
 // Each attempt waits for its thread's jar teardown (awaitJarTeardown) and
 // is admitted by openPageLocked only while rec is still the page's record
@@ -162,7 +162,7 @@ func (m *Manager) restorePage(ctx context.Context, access Access, rec *suspended
 		// its engine reported fails the restore, leaving the tab suspended,
 		// and a crash leaves it the crashed tab a listed page's crash does.
 		verdict := p.unlistedEnd.Verdict(err != nil)
-		outcome := m.unlistedOutcomeLocked(p, !closing && held == nil, scope, verdict)
+		outcome := m.unlistedOutcomeLocked(p, !closing && held == nil, verdict)
 		failure := crashFailure(verdict.CrashReason())
 		switch outcome {
 		case listLive:
