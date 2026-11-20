@@ -245,6 +245,13 @@ Other:
 - Measured the same day. A 1.98 MB search answer with descriptions and
   comments (259 KB compressed) held no `\u` escape: `<`, `>` and `&` are
   sent as themselves and text outside ASCII as UTF-8.
+- Measured the same day, reads only, on what moves an issue's `updated`.
+  Of 80 issues read with all their comments, none had `updated` earlier
+  than its newest comment, and 7 had it within a second of that comment.
+  Of 84 issues read with their changelog, none had `updated` earlier than
+  the newest entry; where that entry was a link (6 issues), an attachment
+  (1) or a worklog (33), `updated` was within a second of it in 6, 1 and
+  32. A comment, a link, an attachment and a worklog each move `updated`.
 - Measured the same day, on who an answer was made for. Every answer to
   a request with a valid token carried `X-AAccountId`, equal to
   `myself.accountId`: a search, a board configuration, a board issue list
@@ -430,6 +437,11 @@ Source for schema facts: the
   earlier issue left the filter. In a document of several aliased
   `issue(id:)` fields that name nothing, the answer reports only the first
   as an error, so the missing ones cannot be told apart in one request.
+- Measured the same day with one throwaway issue. A comment does not move
+  the issue's `updatedAt`: it read the same 4 and 24 seconds after
+  `commentCreate` as before it, and `issues(filter: {updatedAt: {gte:
+  <the comment's createdAt>}})` did not list the issue. An issue's
+  `updatedAt` therefore does not say whether its comments changed.
 
 ## Tempo
 
