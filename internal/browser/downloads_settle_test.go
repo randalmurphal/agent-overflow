@@ -81,7 +81,8 @@ func TestOpeningADownloadRefusesAFileReplacedWhileItsTabOpens(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			manager.downloadOpening = func() {
+			// Opening the download makes its tab first, then opens the file.
+			manager.engine.(*fakeEngine).beforeNewPage = func() {
 				replacement := item.path + ".new"
 				if err := os.WriteFile(replacement, []byte("not the download"), 0o600); err != nil {
 					t.Error(err)

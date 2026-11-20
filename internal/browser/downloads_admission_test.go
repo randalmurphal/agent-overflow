@@ -181,19 +181,6 @@ func headlessUnownedRig(t *testing.T, wait time.Duration, lifetime context.Conte
 	}
 }
 
-// awaitGone waits for path to be removed.
-func awaitGone(t *testing.T, path, what string) {
-	t.Helper()
-	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(requestOwnerPoll) {
-		if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s: the download's file is still on disk", what)
-		}
-	}
-}
-
 // Headless Chromium offers an unowned start again for a bounded time, then
 // cancels it and removes the file it wrote once its end arrives; a
 // connection that ends first leaves it to the browser's stop. Neither path ever
@@ -213,7 +200,7 @@ func TestAnUnownedHeadlessDownloadIsCanceledWithItsFileOnceItsWaitEnds(t *testin
 			t.Fatal("the start was never canceled after the owner wait")
 		}
 		d.progress(cdpbrowser.EventDownloadProgress{GUID: "G1", State: cdpbrowser.DownloadProgressStateCanceled})
-		awaitGone(t, file, "after the canceled download's end")
+		awaitRemoved(t, file)
 		settled := offers()
 		if settled < 2 {
 			t.Fatalf("the start was offered %d times, want it offered again while it waited", settled)

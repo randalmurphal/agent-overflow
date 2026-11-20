@@ -52,6 +52,9 @@ type fakeEngine struct {
 	// complete and before its finish is reported, with that file's path:
 	// where an engine's report waits in its queue. Nil outside tests.
 	beforeFinishReport func(file string)
+	// beforeNewPage is a test seam run as a profile starts making a page,
+	// before it holds the profile. Nil outside tests.
+	beforeNewPage func()
 }
 
 // DownloadSaving is the engine the fake stands in for (saving).
@@ -115,6 +118,9 @@ type fakeProfile struct {
 func (p *fakeProfile) Handle() profileHandle { return p.handle }
 
 func (p *fakeProfile) NewPage(_ context.Context, hooks pageHooks) (pageDriver, error) {
+	if hook := p.engine.beforeNewPage; hook != nil {
+		hook()
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.disposed {
