@@ -43,11 +43,7 @@ func TestRemovingAMadeDirectoryTakesOnlyAnEmptyDirectory(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
-			parent, err := os.OpenRoot(dir)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer parent.Close()
+			parent := openRootForTest(t, dir)
 			path := filepath.Join(dir, "room")
 			tc.put(t, path)
 			// The identity removeMadeIn compares is the entry's own, so the
@@ -66,11 +62,7 @@ func TestRemovingAMadeDirectoryTakesOnlyAnEmptyDirectory(t *testing.T) {
 		})
 	}
 	t.Run("a name that is a path", func(t *testing.T) {
-		parent, err := os.OpenRoot(t.TempDir())
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer parent.Close()
+		parent := openRootForTest(t, t.TempDir())
 		if err := rmdirIn(parent, "a/b"); err == nil {
 			t.Fatal("rmdirIn took a path")
 		}
