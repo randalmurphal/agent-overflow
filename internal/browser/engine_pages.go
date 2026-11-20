@@ -21,14 +21,24 @@ import (
 // so a listed tab that closed and then crashed is gone, not crashed.
 
 // popupOpened is engineEvents.PopupOpened: it registers the popup's
-// admission and adopts it on a goroutine of its own.
+// admission and adopts it on a goroutine of its own, which Close joins.
+// The adoption is admitted as that work before the popup is announced, so
+// the two are one decision: a popup reported once Close has begun waiting
+// is of a browser already stopped, which took it, and registers no
+// admission that nothing would end.
 func (m *Manager) popupOpened(popup enginePopup) {
-	if !m.announcePopup(popup) {
+	done, ok := m.beginLife()
+	if !ok {
 		return
 	}
-	// Close joins the adoption. A popup reported once Close has begun
-	// waiting is of a browser already stopped, which took it.
-	m.goLife(func() { m.runAdoption(popup) })
+	if !m.announcePopup(popup) {
+		done()
+		return
+	}
+	go func() {
+		defer done()
+		m.runAdoption(popup)
+	}()
 }
 
 // pageClosed is engineEvents.PageClosed. A popup not listed yet keeps the

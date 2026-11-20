@@ -107,18 +107,27 @@ const maxPageErrorBytes = 1 << 10
 // disposeTimeout bounds the disposal of a profile released by a close.
 const disposeTimeout = 20 * time.Second
 
+// beginLife admits one piece of work Close joins and answers its end,
+// which the caller calls once, or false once Close has begun waiting.
+func (m *Manager) beginLife() (done func(), ok bool) {
+	m.lifeGate.Lock()
+	defer m.lifeGate.Unlock()
+	if m.lifeClosed {
+		return nil, false
+	}
+	m.lifeWork.Add(1)
+	return m.lifeWork.Done, true
+}
+
 // goLife runs fn on a goroutine Close joins, and reports false without
 // running it once Close has begun waiting.
 func (m *Manager) goLife(fn func()) bool {
-	m.lifeGate.Lock()
-	if m.lifeClosed {
-		m.lifeGate.Unlock()
+	done, ok := m.beginLife()
+	if !ok {
 		return false
 	}
-	m.lifeWork.Add(1)
-	m.lifeGate.Unlock()
 	go func() {
-		defer m.lifeWork.Done()
+		defer done()
 		fn()
 	}()
 	return true
