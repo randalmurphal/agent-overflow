@@ -108,8 +108,11 @@ func (m *Manager) Locator(ctx context.Context, access Access, opts LocatorOption
 		return LocatorResult{}, err
 	}
 	if opts.ExpectNavigation {
-		if err := m.waitForNavigation(opCtx, p, before, opts.URL, opts.WaitUntil); err != nil {
-			return LocatorResult{}, fmt.Errorf("browser: expected navigation: %w", err)
+		navigated, err := m.waitForNavigation(opCtx, p, before, opts.URL, opts.WaitUntil)
+		if err != nil {
+			// A navigation that happened is reported as one, and the
+			// error says what the wait did not reach.
+			return LocatorResult{Navigated: navigated}, fmt.Errorf("browser: expected navigation: %w", err)
 		}
 		result.Navigated = true
 	}

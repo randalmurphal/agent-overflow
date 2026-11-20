@@ -287,28 +287,62 @@ func (n pageNavigation) movedFrom(before pageNavigation) bool {
 	return before.mark.Loader != "" && n.mark.Loader != "" && n.mark.Loader != before.mark.Loader
 }
 
-func (m *Manager) waitForNavigation(ctx context.Context, p *managedPage, before pageNavigation, urlPattern, loadState string) error {
+// navigatedNotReady is an expected navigation that happened while the page
+// did not reach the load state or address the caller waited for before
+// the deadline: the navigation is a fact, the wait's failure another.
+type navigatedNotReady struct {
+	loadState, urlPattern string
+	err                   error
+}
+
+func (e *navigatedNotReady) Error() string {
+	state := strings.ToLower(strings.TrimSpace(e.loadState))
+	if state == "" {
+		state = "load"
+	}
+	target := fmt.Sprintf("the load state %q", state)
+	if e.urlPattern != "" {
+		target += fmt.Sprintf(" at an address matching %q", e.urlPattern)
+	}
+	return fmt.Sprintf("the page navigated but did not reach %s: %v", target, e.err)
+}
+
+func (e *navigatedNotReady) Unwrap() error { return e.err }
+
+// waitForNavigation waits until p has navigated since before, then for its
+// load state and address (waitForPage), and answers whether it navigated:
+// a navigation known to have happened is reported whatever the load wait
+// answers, which a navigatedNotReady error carries. The Manager's own
+// count of main-frame commits is read first, free and final: a commit it
+// counted is a navigation whatever the engine's mark answers. The mark is
+// read only while the count has not moved, and the count again after it,
+// since a mark read can take the rest of the deadline. A failed mark read
+// is no evidence either way: the wait reads again, and a wait that ends
+// on one says so.
+func (m *Manager) waitForNavigation(ctx context.Context, p *managedPage, before pageNavigation, urlPattern, loadState string) (bool, error) {
 	ticker := time.NewTicker(25 * time.Millisecond)
 	defer ticker.Stop()
-	// readErr is the last read's failure. A page in the middle of a
-	// navigation can fail one; it is no evidence either way, so the wait
-	// reads again, and a wait that ends on one says so. A main-frame commit
-	// the Manager counted is a navigation whether or not the engine's mark
-	// can be read; an unreadable mark only adds no evidence of its own.
+	committed := func() bool { return p.docEpoch.Load() != before.commits }
 	var readErr error
 	for {
-		current, err := readNavigation(ctx, p)
-		readErr = err
-		committed := p.docEpoch.Load() != before.commits
-		if committed || err == nil && current.movedFrom(before) {
-			return m.waitForPage(ctx, p, urlPattern, loadState)
+		moved := committed()
+		if !moved {
+			current, err := readNavigation(ctx, p)
+			readErr = err
+			moved = committed() || err == nil && current.movedFrom(before)
+		}
+		if moved {
+			if err := m.waitForPage(ctx, p, urlPattern, loadState); err != nil {
+				return true, &navigatedNotReady{loadState: loadState, urlPattern: urlPattern, err: err}
+			}
+			return true, nil
 		}
 		select {
 		case <-ctx.Done():
 			if readErr != nil {
-				return errors.Join(ctx.Err(), fmt.Errorf("read the page's navigation: %w", readErr))
+				return false, errors.Join(ctx.Err(), fmt.Errorf("read the page's navigation: %w", readErr))
 			}
-			return ctx.Err()
+			return false, ctx.Err()
 		case <-ticker.C:
 		}
 	}
