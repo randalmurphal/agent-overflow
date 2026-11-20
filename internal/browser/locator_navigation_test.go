@@ -18,6 +18,9 @@ type navigationDriver struct {
 	first, later navigationMark
 	firstErr     error
 	laterErr     error
+	// commit, when set, commits a new document as the click runs.
+	commit bool
+	hooks  pageHooks
 }
 
 func (d *navigationDriver) ResolveLocator(context.Context, Locator, string) ([]LocatorMatch, error) {
@@ -26,8 +29,15 @@ func (d *navigationDriver) ResolveLocator(context.Context, Locator, string) ([]L
 
 func (d *navigationDriver) ActOnNode(context.Context, LocatorMatch, Locator, nodeAction) error {
 	d.mu.Lock()
-	defer d.mu.Unlock()
 	d.acted++
+	commit, hooks := d.commit, d.hooks
+	d.mu.Unlock()
+	if commit {
+		// As an engine reports a main-frame commit.
+		if finish := hooks.DocumentCommitted(); finish != nil {
+			finish()
+		}
+	}
 	return nil
 }
 
@@ -45,7 +55,8 @@ func (d *navigationDriver) NavigationMark(context.Context) (navigationMark, erro
 // read of the page's navigation before the click refuses the click, and
 // failed reads after it are no navigation, so a page that never moved fails
 // the expectation with the read's error. A read that finds the page moved
-// is one.
+// is one, and so is a document commit its marks do not show (a reload on
+// WebKit, whose mark is the address and the history length).
 func TestExpectedNavigationCountsOnlyANavigationItRead(t *testing.T) {
 	refused := errors.New("frame tree unreadable")
 	here := navigationMark{URL: "https://example.test/a", Loader: "1"}
@@ -59,12 +70,19 @@ func TestExpectedNavigationCountsOnlyANavigationItRead(t *testing.T) {
 		{"the read before the click fails", &navigationDriver{firstErr: refused}, 0, false, true},
 		{"every read after the click fails", &navigationDriver{first: here, laterErr: refused}, 1, false, true},
 		{"a read after the click finds the page moved", &navigationDriver{first: here, later: navigationMark{URL: "https://example.test/b", Loader: "2"}}, 1, true, false},
+		{"a reload its marks do not show counts by its commit", &navigationDriver{first: here, later: here, commit: true}, 1, true, false},
+		{"no commit and the same marks are no navigation", &navigationDriver{first: here, later: here}, 1, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m, engine := newLifecycleManager(t)
 			access := m.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 			driver := tc.driver
 			engine.mu.Lock()
+			engine.onNewPage = func(hooks pageHooks) {
+				driver.mu.Lock()
+				driver.hooks = hooks
+				driver.mu.Unlock()
+			}
 			engine.wrapDriver = func(inner pageDriver) pageDriver {
 				driver.pageDriver = inner
 				return driver

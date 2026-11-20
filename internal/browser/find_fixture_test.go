@@ -43,6 +43,7 @@ func newFindFixtureWith(t *testing.T, address string, configure func(*Manager)) 
 			t.Errorf("close manager: %v", err)
 		}
 	})
+	checkSelectionAtEnd(t, manager)
 	f := &findFixture{
 		manager: manager,
 		access:  manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()}),

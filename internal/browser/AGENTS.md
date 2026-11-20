@@ -44,6 +44,9 @@ of the functions and types named below are their doc comments.
 - A created, restored or adopted page is listed only by its one decision
   (`unlistedOutcomeLocked`, from `createReserved`, `restorePage` and
   `commitPopup`). Do not add another listing path.
+- Select a tab only from the tabs as the selecting hold finds them
+  (`ensureActivePageLocked`, `repairActivePageLocked`), never from an id
+  remembered across a hold.
 - A pane command that reads or changes the tab strip takes its turn in its
   mount's order (`selection.go`) and commits in the hold that applies it.
 - `jar.go` alone maps a thread's jar choice to a jar. Engines see only the

@@ -100,7 +100,9 @@ func (m *Manager) NewCompanionPage(ctx context.Context, access Access, address s
 	}
 	defer turn.Release()
 	info, err := m.openUserTab(ctx, access, turn, address, "", -1, nil)
-	if errors.Is(err, errSelectionPassed) {
+	if errors.Is(err, errSelectionPassed) || errors.Is(err, errTabReplaced) {
+		// Nothing to report: the pane detached, or the new tab was closed or
+		// replaced before its address loaded, which then loads nowhere.
 		return PageInfo{}, nil
 	}
 	return info, err

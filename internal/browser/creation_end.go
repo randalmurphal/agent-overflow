@@ -57,16 +57,23 @@ const (
 
 // unlistedOutcomeLocked is the one decision on p, created, restored or
 // adopted and not listed yet, in the hold that lists it. current is
-// whether its tab is still the creation's, and verdict its end's
-// (popupadmit.Ending.Verdict with its setup's failure: the page's own
-// unlistedEnd, or a popup's admission's Commit), read in this hold. A
-// crash lists the crashed tab only while a page of its lifetime may
-// become a record, and a page set up is listed live only in its thread's
-// current jar. The caller holds m.mu and acts on the outcome in the same
-// hold.
-func (m *Manager) unlistedOutcomeLocked(p *managedPage, current bool, verdict popupadmit.Verdict) listingOutcome {
+// whether its tab is still the creation's, scope the jar its setup
+// reserved it in (nil for a setup refused before that), and verdict its
+// end's (popupadmit.Ending.Verdict with its setup's failure: the page's
+// own unlistedEnd, or a popup's admission's Commit), read in this hold.
+// The attempt is asked first whether it is still its tab's: its tab, and
+// for a page set up in a jar, its thread's current jar; only a current
+// attempt's end decides its tab. A crash lists the crashed tab only while
+// a page of its lifetime may become a record. The caller holds m.mu and
+// acts on the outcome in the same hold.
+func (m *Manager) unlistedOutcomeLocked(p *managedPage, current bool, scope *jarScope, verdict popupadmit.Verdict) listingOutcome {
 	if !current {
 		return refuseGone
+	}
+	if scope != nil && !m.jarCurrentLocked(p) {
+		// Set up in a jar its thread left: whatever ended it there, its tab
+		// is set up again in the current one.
+		return retryStale
 	}
 	switch verdict.Kind() {
 	case popupadmit.ListCrashed:
@@ -80,9 +87,6 @@ func (m *Manager) unlistedOutcomeLocked(p *managedPage, current bool, verdict po
 		}
 		return refuseFailed
 	case popupadmit.List:
-	}
-	if !m.jarCurrentLocked(p) {
-		return retryStale
 	}
 	return listLive
 }
@@ -98,12 +102,14 @@ func (m *Manager) recordsAdmittedLocked(tb *threadBrowser) bool {
 
 // listCrashedLocked lists p, not listed yet and its process ended, as the
 // crashed tab a listed page's crash leaves: a suspended record carrying
-// failure. The caller holds m.mu and has taken p out of the creating
-// pages it listed, and closes p's engine page after the hold.
+// failure, selected when its thread has no active tab. The caller holds
+// m.mu and has taken p out of the creating pages it listed, and closes
+// p's engine page after the hold.
 func (m *Manager) listCrashedLocked(p *managedPage, failure string) {
 	rec := recordOf(p, p.cachedInfo())
 	rec.failure = failure
 	m.suspended[p.id] = rec
+	m.ensureActivePageLocked(p.owner, p.id)
 }
 
 // releaseUnlisted closes the engine page of p, set up in scope and not

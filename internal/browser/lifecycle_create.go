@@ -230,7 +230,7 @@ func (m *Manager) createReserved(r *tabReservation) (*managedPage, error) {
 		_ = m.lockStructure(context.Background(), tb)
 		closed = pending.closed
 		verdict = p.unlistedEnd.Verdict(err != nil)
-		outcome = m.unlistedOutcomeLocked(p, !closed, verdict)
+		outcome = m.unlistedOutcomeLocked(p, !closed, scope, verdict)
 		if outcome == retryStale {
 			// The thread switched jars while the engine created the page in the
 			// old one: it is created again, under the same tab, in the new one.
@@ -259,8 +259,10 @@ func (m *Manager) createReserved(r *tabReservation) (*managedPage, error) {
 // is listed, a crashed one becomes the crashed tab, a user's tab whose
 // setup failed keeps the failure as its error, and any other tab leaves,
 // except a tab closed while it was created, whose entry holds its
-// thread's slot until its engine page is closed (finishUnlisted). setupErr
-// is what the page's setup answered. The caller holds m.mu.
+// thread's slot until its engine page is closed (finishUnlisted). The
+// thread's selection is settled in the same hold, from its tabs as the
+// hold leaves them. setupErr is what the page's setup answered. The caller
+// holds m.mu.
 func (m *Manager) settleCreationLocked(r *tabReservation, scope *jarScope, outcome listingOutcome, verdict popupadmit.Verdict, setupErr error) {
 	pending := r.pending
 	p := pending.p
@@ -279,6 +281,8 @@ func (m *Manager) settleCreationLocked(r *tabReservation, scope *jarScope, outco
 	default:
 		delete(m.pending, p.id)
 	}
+	// The selection follows the tabs as this hold leaves them.
+	m.repairActivePageLocked(p.owner)
 }
 
 // finishUnlisted finishes r's creation that listed no live page
@@ -314,11 +318,6 @@ func (m *Manager) finishUnlisted(r *tabReservation, scope *jarScope, outcome lis
 	if outcome == refuseGone && pending.closed && setupErr == nil {
 		// Closed while the engine created it: the close published the tab.
 		return errClosedWhileCreating
-	}
-	if outcome == listCrashed {
-		m.ensureActivePage(p.owner, p.id)
-	} else {
-		m.repairActivePage(p.owner)
 	}
 	m.emitThreadState(threadID)
 	m.syncPanePresentation(threadID)

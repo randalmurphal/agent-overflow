@@ -268,7 +268,8 @@ const webkitPageStatusScript = `return {url:location.href,ready:document.readySt
 
 // webkitNavigationMarkScript captures the page's navigation identity. WebKit
 // has no loader id, so the history length stands in: it changes on a pushState
-// or a same-URL navigation the URL alone would hide.
+// or a new history entry at the same URL. A reload changes neither; the
+// Manager counts it by its document commit (pageNavigation).
 const webkitNavigationMarkScript = `return {url:location.href,loader:String(history.length)};`
 
 // webkitPointerScript dispatches a raw pointer gesture at viewport

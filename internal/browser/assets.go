@@ -212,6 +212,16 @@ func (m *Manager) bundleAssets(ctx context.Context, p *managedPage, opts AssetOp
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return AssetBundle{}, err
 	}
+	// The manifest's name is taken before any asset's, so an asset named
+	// like it gets the next variant name (uniqueArtifactPath).
+	manifestPath := filepath.Join(dir, "manifest.json")
+	reserved, err := os.OpenFile(manifestPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return AssetBundle{}, fmt.Errorf("browser: reserve the asset manifest: %w", err)
+	}
+	if err := reserved.Close(); err != nil {
+		return AssetBundle{}, fmt.Errorf("browser: reserve the asset manifest: %w", err)
+	}
 	bundle := AssetBundle{DirectoryPath: dir, Assets: make([]BundledAsset, 0, len(selected)), Failures: make([]AssetFailure, 0)}
 	started := time.Now()
 	// total is the bundle's bytes; stranded the bytes of failed files that
@@ -270,7 +280,6 @@ func (m *Manager) bundleAssets(ctx context.Context, p *managedPage, opts AssetOp
 		settledBytes += written
 		bundle.Assets = append(bundle.Assets, BundledAsset{AssetInfo: asset, Path: path, ContentType: contentType})
 	}
-	manifestPath := filepath.Join(dir, "manifest.json")
 	manifest, err := json.MarshalIndent(map[string]any{"inventoryId": inventory.ID, "pageUrl": inventory.PageURL, "assets": bundle.Assets, "failures": bundle.Failures}, "", "  ")
 	if err != nil {
 		return AssetBundle{}, fmt.Errorf("browser: encode the asset manifest: %w", err)

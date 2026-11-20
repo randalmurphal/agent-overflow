@@ -37,7 +37,10 @@ type jarEngine struct {
 	disposeGate chan struct{}
 	// lastPage is the handle of the page NewPage created last.
 	lastPage ids.PageHandle
-	cleared  atomic.Int64
+	// afterNewPage, when set, runs once with the next created page's handle
+	// before NewPage returns.
+	afterNewPage func(ids.PageHandle)
+	cleared      atomic.Int64
 	// clearGate, when set, holds the engine's site-data clear, signalling
 	// clearing first; profileInClear records a profile created during it.
 	clearGate      chan struct{}
@@ -61,6 +64,7 @@ func newJarManager(t *testing.T, dir string, config Config) (*Manager, *jarEngin
 	t.Helper()
 	manager := NewManager(dir, config, ManagerOptions{FakeEngine: true})
 	t.Cleanup(func() { _ = manager.Close() })
+	checkSelectionAtEnd(t, manager)
 	// Downloads AO keeps, whose directories and quotas are per workspace.
 	fake := newFakeEngine()
 	fake.saving = downloadsAsArtifacts
@@ -176,7 +180,12 @@ func (p *jarProfile) NewPage(ctx context.Context, hooks pageHooks) (pageDriver, 
 	}
 	p.engine.mu.Lock()
 	p.engine.lastPage = driver.Handle()
+	after := p.engine.afterNewPage
+	p.engine.afterNewPage = nil
 	p.engine.mu.Unlock()
+	if after != nil {
+		after(driver.Handle())
+	}
 	return &jarPage{pageDriver: driver, engine: p.engine}, nil
 }
 

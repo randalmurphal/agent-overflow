@@ -288,3 +288,44 @@ func TestClearSiteDataLeavesNoTabOfACreationThatCrashedDuringIt(t *testing.T) {
 		})
 	}
 }
+
+// The crashed tab of a creation, closed while the creation still closes
+// its engine page, leaves no selection behind: the thread selects no tab
+// once the creation returns, since it has none.
+func TestClosingACrashedCreationsTabLeavesNoSelectionOfIt(t *testing.T) {
+	for _, user := range []bool{true, false} {
+		t.Run(map[bool]string{true: "user", false: "agent"}[user], func(t *testing.T) {
+			m, engine := newLifecycleManager(t)
+			access := m.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
+			release := engine.hold(&engine.closeGate)
+			defer release()
+			engine.mu.Lock()
+			engine.onNewFakePage = func(page *fakePage) { reportEnd(m, page.Handle(), "oom") }
+			engine.mu.Unlock()
+			created := make(chan error, 1)
+			go func() {
+				var err error
+				if user {
+					_, err = m.NewCompanionPage(context.Background(), access, "")
+				} else {
+					_, err = m.NewPage(context.Background(), access)
+				}
+				created <- err
+			}()
+			receive(t, engine.closing, "the crashed page's engine close")
+			tabs := m.CompanionState(access.Caller()).Pages
+			if len(tabs) != 1 || !tabs[0].Suspended {
+				t.Fatalf("tabs %+v, want the crashed tab", tabs)
+			}
+			if err := m.ClosePage(t.Context(), access, PageID(tabs[0].ID)); err != nil {
+				t.Fatalf("close the crashed tab: %v", err)
+			}
+			release()
+			<-created
+			state := m.CompanionState(access.Caller())
+			if len(state.Pages) != 0 || state.ActivePageID != "" {
+				t.Fatalf("tabs %+v selecting %q, want no tab and no selection", state.Pages, state.ActivePageID)
+			}
+		})
+	}
+}

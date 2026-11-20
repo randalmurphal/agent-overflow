@@ -22,6 +22,7 @@ func newTabsManager(t *testing.T, addresses ...string) (*Manager, Access, []stri
 	t.Helper()
 	m := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{FakeEngine: true})
 	t.Cleanup(func() { _ = m.Close() })
+	checkSelectionAtEnd(t, m)
 	tabPushes.Store(m, countStatePushes(m))
 	t.Cleanup(func() { tabPushes.Delete(m) })
 	access := m.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir(), ProjectID: "project"})

@@ -31,6 +31,7 @@ func newRestoreManager(t *testing.T, dir string, opts ManagerOptions) (*Manager,
 	opts.FakeEngine = true
 	manager := NewManager(dir, Config{Enabled: true}, opts)
 	t.Cleanup(func() { _ = manager.Close() })
+	checkSelectionAtEnd(t, manager)
 	engine := &restoreEngine{fakeEngine: newFakeEngine(), navigating: make(chan string, 16), reading: make(chan struct{}, 16)}
 	manager.engine = engine
 	return manager, engine
