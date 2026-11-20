@@ -8,17 +8,23 @@ import (
 	"time"
 
 	"agent-overflow/internal/browser/ids"
+	"agent-overflow/internal/browser/popupadmit"
 	"agent-overflow/internal/webview2host"
 )
 
 // The hosted engine's pages as the launcher's reports see them
 // (hostedPages): each page's lifecycle, its admission of downloads, its
 // downloads, and the lanes their reports run on (hosted_report_lanes.go).
-// A report is received and processed apart. Receipt, in Report, changes
-// only this record, under its one lock, and does no I/O: a close or a
-// discard seals the page's admission at once, so nothing the launcher
-// reports after it starts a download, and a pending popup's close or crash
-// reaches the Manager's popup admission there (engineEvents.PageEndReceived).
+// A report is received and processed apart. Receipt, in Report, takes no
+// engine lock (a create's or clear's answer goes to its waiter under
+// hostWaiters' own lock) and does three things in one hold of this
+// record's lock, waiting for nothing: a
+// pending popup's close or crash is recorded in the Manager's popup
+// admission (engineEvents.PageEndReceived), first, so no listing commits
+// after the page is sealed; a close or a discard seals the page's
+// admission, so nothing the launcher reports after it starts a download;
+// and the page's attach, if one runs, is signaled to end, its teardown
+// joined by the attach's own caller.
 // Processing, on the page's lane in the order received, does the effects:
 // a snapshot's path conversion and the Manager's download events, and a
 // close's or discard's settlement of the page's downloads, which runs after
@@ -164,6 +170,9 @@ type hostedPageRecord struct {
 	// retired is closed once the page's lane retired it, the retirement's
 	// callbacks returned, or at Stop.
 	retired chan struct{}
+	// stopAttach signals a popup's attach under way to end (attaching); it
+	// waits for nothing, and the attach joins its own teardown.
+	stopAttach context.CancelFunc
 }
 
 // to moves the record's state by event, its one writer, and answers
@@ -186,20 +195,24 @@ type hostedPages struct {
 	owners map[downloadID]ids.PageHandle
 	lanes  *reportLanes
 	// process runs one accepted report on its lane; watch starts the
-	// status loop, which runs until stop closes or no download runs.
+	// status loop, which runs until stop closes or no download runs;
+	// observe records a pending popup's end in the Manager's admission
+	// (engineEvents.PageEndReceived) and takes no lock of the engine's.
 	process  func(context.Context, *acceptedWork)
 	watch    func(stop <-chan struct{})
+	observe  func(ids.PageHandle, popupadmit.Observation)
 	watching bool
 	stop     chan struct{}
 }
 
-func newHostedPages(process func(context.Context, *acceptedWork), watch func(stop <-chan struct{})) *hostedPages {
+func newHostedPages(process func(context.Context, *acceptedWork), watch func(stop <-chan struct{}), observe func(ids.PageHandle, popupadmit.Observation)) *hostedPages {
 	return &hostedPages{
 		records: make(map[ids.PageHandle]*hostedPageRecord),
 		owners:  make(map[downloadID]ids.PageHandle),
 		lanes:   newReportLanes(),
 		process: process,
 		watch:   watch,
+		observe: observe,
 	}
 }
 
@@ -275,6 +288,29 @@ func (p *hostedPages) admits(page ids.PageHandle) bool {
 	defer p.mu.Unlock()
 	r := p.records[page]
 	return r != nil && r.state.admits()
+}
+
+// attaching records stop, which ends the attach of pending popup page, for
+// the page's close or discard to signal, and answers false, stop unkept,
+// for a page that no longer admits: its close or discard was received.
+func (p *hostedPages) attaching(page ids.PageHandle, stop context.CancelFunc) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	r := p.records[page]
+	if r == nil || !r.state.admits() {
+		return false
+	}
+	r.stopAttach = stop
+	return true
+}
+
+// attached forgets page's attach, which returned.
+func (p *hostedPages) attached(page ids.PageHandle) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if r := p.records[page]; r != nil {
+		r.stopAttach = nil
+	}
 }
 
 // listed records the Manager's listing of popup page: its later work runs
@@ -354,9 +390,12 @@ type endReceipt struct {
 }
 
 // acceptEnd receives a page's end of kind (acceptedClose, acceptedDiscard
-// or acceptedCrash): a close or discard seals its admission and queues its
-// retirement behind its work already accepted, once; a crash queues the
-// Manager's report of it.
+// or acceptedCrash). A pending popup's close or crash is recorded in the
+// Manager's admission first, in the hold that seals the page, so the
+// listing's commit reads it whenever the page is seen sealed. A close or
+// discard then seals its admission, signals its attach to end and queues
+// its retirement behind its work already accepted, once; a crash queues
+// the Manager's report of it.
 func (p *hostedPages) acceptEnd(page ids.PageHandle, kind acceptedKind, crash string) endReceipt {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -366,9 +405,28 @@ func (p *hostedPages) acceptEnd(page ids.PageHandle, kind acceptedKind, crash st
 	}
 	receipt := endReceipt{pendingPopup: r.state.pendingPopup(), retired: r.retired}
 	switch kind {
+	case acceptedClose:
+		if receipt.pendingPopup && r.state.admits() {
+			p.observe(page, popupadmit.Closed())
+		}
+	case acceptedCrash:
+		if receipt.pendingPopup {
+			p.observe(page, popupadmit.Crashed(crash))
+		}
+	case acceptedDiscard:
+	case acceptedSnapshot:
+		panic("browser: a snapshot is no page end")
+	default:
+		panic(fmt.Sprintf("browser: a page end of kind %d", kind))
+	}
+	switch kind {
 	case acceptedClose, acceptedDiscard:
 		if !r.to(pageEnding) {
 			return receipt
+		}
+		if r.stopAttach != nil {
+			r.stopAttach()
+			r.stopAttach = nil
 		}
 	case acceptedCrash:
 	case acceptedSnapshot:
@@ -444,6 +502,9 @@ func (p *hostedPages) stopAll() func() {
 	}
 	p.watching = false
 	for _, r := range p.records {
+		if r.stopAttach != nil {
+			r.stopAttach()
+		}
 		close(r.retired)
 	}
 	p.records = make(map[ids.PageHandle]*hostedPageRecord)

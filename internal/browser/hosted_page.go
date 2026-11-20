@@ -22,11 +22,11 @@ import (
 // attached to the target the report named.
 func (e *hostedEngine) createPage(ctx context.Context, profile *hostedProfile, hooks pageHooks) (pageDriver, error) {
 	pageID := newHostedPageID()
-	waiter, err := e.watch(pageID)
+	waiter, err := e.waiters.watch(pageID)
 	if err != nil {
 		return nil, err
 	}
-	defer e.unwatch(pageID)
+	defer e.waiters.unwatch(pageID)
 	// Before the directive: a close the launcher reports once the page is
 	// created ends this record, and with it the bind.
 	if !e.pages.addCreating(pageID) {
@@ -125,19 +125,19 @@ func (e *hostedEngine) DiscardPage(ctx context.Context, handle ids.PageHandle) e
 func (e *hostedEngine) Report(pageID ids.PageHandle, kind webview2host.ReportKind, detail string) {
 	switch kind {
 	case webview2host.ReportCreated:
-		if !e.deliver(pageID, hostReport{kind: kind, detail: detail}) {
+		if !e.waiters.deliver(pageID, hostReport{kind: kind, detail: detail}) {
 			// Nobody is waiting: the create already timed out or was
 			// abandoned. The controller is real, so close it rather than
 			// leaving an orphan window in the launcher.
 			e.closePage(pageID)
 		}
 	case webview2host.ReportCreateFailed:
-		e.deliver(pageID, hostReport{kind: kind, detail: detail})
+		e.waiters.deliver(pageID, hostReport{kind: kind, detail: detail})
 	case webview2host.ReportProcessFailed:
 		// A process death can land on a page still being created, which
 		// fails its creation, OR on a live one, whose tab turns crashed
 		// (crash.go) when the page's own process ended.
-		if e.deliver(pageID, hostReport{kind: kind, detail: detail}) {
+		if e.waiters.deliver(pageID, hostReport{kind: kind, detail: detail}) {
 			return
 		}
 		if !processFailureCrashes(detail) {
@@ -146,7 +146,7 @@ func (e *hostedEngine) Report(pageID ids.PageHandle, kind webview2host.ReportKin
 		}
 		e.acceptCrash(pageID, detail)
 	case webview2host.ReportClosed:
-		if !e.deliver(pageID, hostReport{kind: kind, detail: detail}) {
+		if !e.waiters.deliver(pageID, hostReport{kind: kind, detail: detail}) {
 			e.acceptClose(pageID)
 		}
 	case webview2host.ReportAccelerator:
@@ -179,7 +179,7 @@ func (e *hostedEngine) Report(pageID ids.PageHandle, kind webview2host.ReportKin
 		// A clear names a correlation id, not a page: there is no controller
 		// to close and no page to retire. Nobody waiting means ClearSiteData
 		// already gave up on its own bound and has reported that.
-		if !e.deliver(pageID, hostReport{kind: kind, detail: detail}) {
+		if !e.waiters.deliver(pageID, hostReport{kind: kind, detail: detail}) {
 			e.logf("browser: pane host reported %s for an abandoned clear %s", kind, pageID)
 		}
 	default:
@@ -212,38 +212,68 @@ func (e *hostedEngine) forgetPageLocked(pageID ids.PageHandle) {
 	delete(e.pageProfile, pageID)
 }
 
-func (e *hostedEngine) watch(pageID ids.PageHandle) (chan hostReport, error) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if _, exists := e.pending[pageID]; exists {
+// hostWaiters are the creates and clears waiting for the launcher's answer,
+// by page or correlation id. Its lock is its own and nothing is called
+// under it, so a report's receipt (deliver) waits for no engine lock.
+type hostWaiters struct {
+	mu     sync.Mutex
+	byPage map[ids.PageHandle]chan hostReport
+}
+
+func (w *hostWaiters) watch(pageID ids.PageHandle) (chan hostReport, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if _, exists := w.byPage[pageID]; exists {
 		return nil, fmt.Errorf("browser: pane page %s is already being created", pageID)
 	}
+	if w.byPage == nil {
+		w.byPage = make(map[ids.PageHandle]chan hostReport)
+	}
 	waiter := make(chan hostReport, 1)
-	e.pending[pageID] = waiter
+	w.byPage[pageID] = waiter
 	return waiter, nil
 }
 
-func (e *hostedEngine) unwatch(pageID ids.PageHandle) {
-	e.mu.Lock()
-	delete(e.pending, pageID)
-	e.mu.Unlock()
+func (w *hostWaiters) unwatch(pageID ids.PageHandle) {
+	w.mu.Lock()
+	delete(w.byPage, pageID)
+	w.mu.Unlock()
 }
 
-// deliver hands one report to a pending create. Reports whether a waiter
-// took it, which is what tells the caller a late or unmatched report needs
-// its own handling.
-func (e *hostedEngine) deliver(pageID ids.PageHandle, report hostReport) bool {
-	e.mu.Lock()
-	waiter, ok := e.pending[pageID]
+// has reports whether pageID waits for an answer.
+func (w *hostWaiters) has(pageID ids.PageHandle) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	_, ok := w.byPage[pageID]
+	return ok
+}
+
+// deliver hands one report to its waiter. Reports whether a waiter took
+// it, which is what tells the caller a late or unmatched report needs its
+// own handling.
+func (w *hostWaiters) deliver(pageID ids.PageHandle, report hostReport) bool {
+	w.mu.Lock()
+	waiter, ok := w.byPage[pageID]
 	if ok {
-		delete(e.pending, pageID)
+		delete(w.byPage, pageID)
 	}
-	e.mu.Unlock()
-	if !ok {
-		return false
+	w.mu.Unlock()
+	if ok {
+		waiter <- report
 	}
-	waiter <- report
-	return true
+	return ok
+}
+
+// interrupt closes every waiter, which its caller reads as the launcher
+// interrupted (awaitHostReport).
+func (w *hostWaiters) interrupt() {
+	w.mu.Lock()
+	waiters := w.byPage
+	w.byPage = nil
+	w.mu.Unlock()
+	for _, waiter := range waiters {
+		close(waiter)
+	}
 }
 
 // claimTarget pairs a page the engine is creating with the CDP target the
@@ -333,16 +363,12 @@ func (e *hostedEngine) closePage(pageID ids.PageHandle) <-chan struct{} {
 	if receipt.retired == nil {
 		e.mu.Lock()
 		e.endCloseFallbackLocked(pageID)
-		cancelAttach := e.forgetPopupLocked(pageID)
+		e.forgetPopupLocked(pageID)
 		e.forgetPageLocked(pageID)
 		e.mu.Unlock()
-		cancelAttach()
 		retired := make(chan struct{})
 		close(retired)
 		return retired
-	}
-	if receipt.accepted {
-		e.endPageWaits(pageID)
 	}
 	return receipt.retired
 }

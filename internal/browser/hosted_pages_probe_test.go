@@ -119,6 +119,19 @@ func bindForTest(e *hostedEngine, page ids.PageHandle, targetID target.ID, conn 
 	return nil
 }
 
+// attachingPages answers the pages whose attach is recorded as under way.
+func (p *hostedPages) attachingPages() []ids.PageHandle {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var out []ids.PageHandle
+	for page, r := range p.records {
+		if r.stopAttach != nil {
+			out = append(out, page)
+		}
+	}
+	return out
+}
+
 // watchingNow reports whether the status loop runs.
 func (p *hostedPages) watchingNow() bool {
 	p.mu.Lock()

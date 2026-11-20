@@ -251,10 +251,9 @@ func (e *hostedEngine) retirePage(page ids.PageHandle, why string, closed bool) 
 	pageID := page
 	e.mu.Lock()
 	e.endCloseFallbackLocked(pageID)
-	cancelAttach := e.forgetPopupLocked(pageID)
+	e.forgetPopupLocked(pageID)
 	e.forgetPageLocked(pageID)
 	e.mu.Unlock()
-	cancelAttach()
 	for _, id := range running {
 		e.events.DownloadProgress(downloadProgress{ID: id, State: downloadPageGone, Error: why})
 	}

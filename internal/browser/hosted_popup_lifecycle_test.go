@@ -6,57 +6,123 @@ import (
 	"time"
 
 	"agent-overflow/internal/browser/ids"
+	"agent-overflow/internal/browser/popupadmit"
 	"agent-overflow/internal/webview2host"
 )
 
-// A popup's attach is canceled outside the engine's lock: chromedp's cancel
-// waits for the target's cleanup, and no other engine call waits for it,
-// whether the popup's close, its discard or Stop cancels it.
-func TestHostedPopupAttachCancelHoldsNoEngineLock(t *testing.T) {
-	for _, how := range []string{"close", "discard", "stop"} {
+// A popup's close or discard received while its attach is under way only
+// signals the attach to end: with the attached target's detach held at the
+// fake CDP socket, the close's acknowledgment, the discard's deadline and
+// an unrelated page's report all return at once, and the attach's caller
+// joins its teardown once the detach is answered. Nothing is listed.
+func TestAPopupsEndAtReceiptWaitsForNoDetach(t *testing.T) {
+	for _, how := range []string{"close", "discard"} {
 		t.Run(how, func(t *testing.T) {
-			engine, _ := newTestHostedEngine(t, stubRelay{}, engineEvents{PageClosed: func(ids.PageHandle) {}})
-			if err := engine.Start(context.Background()); err != nil {
-				t.Fatal(err)
+			l := newPopupLauncher(t)
+			access := l.access("thread")
+			_, opener := l.open(access)
+			l.stallFrameTree.Store(true)
+			releaseDetach := l.holdDetach()
+			defer releaseDetach()
+			popupID, _ := l.popup(opener, "https://example.test/popup")
+			awaitSessionCall(t, l.endpoint, "S-PT-1", "Page.getFrameTree")
+			switch how {
+			case "close":
+				returnsWithin(t, time.Second, "the close's acknowledgment", func() {
+					l.report(popupID, webview2host.ReportClosed, "")
+				})
+			case "discard":
+				returnsWithin(t, time.Second, "the discard past its deadline", func() {
+					ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+					defer cancel()
+					_ = l.engine.DiscardPage(ctx, ids.PageHandle(popupID))
+				})
 			}
-			t.Cleanup(engine.Stop)
-			entered, release := make(chan struct{}), make(chan struct{})
-			defer close(release)
-			pendingTestPopup(engine, "popup", "T-popup", "opener")
-			engine.mu.Lock()
-			engine.popups["popup"].cancelAttach = func() {
-				close(entered)
-				<-release
+			returnsWithin(t, time.Second, "an unrelated page's report", func() {
+				sendDownload(t, l.engine, opener, snapshot("dl-opener", webview2host.DownloadRunning, 1))
+			})
+			l.awaitHeldDetach()
+			releaseDetach()
+			l.stallFrameTree.Store(false)
+			if d, _ := l.manager.admissions.Disposition(ids.PageHandle(popupID)); d == popupadmit.Listed {
+				t.Fatal("the popup whose end was received was listed")
 			}
-			engine.mu.Unlock()
-			go func() {
-				switch how {
-				case "close":
-					engine.Report("popup", webview2host.ReportClosed, "")
-				case "discard":
-					if err := engine.DiscardPage(context.Background(), "popup"); err != nil {
-						t.Errorf("discard: %v", err)
-					}
-				case "stop":
-					engine.Stop()
-				}
-			}()
-			select {
-			case <-entered:
-			case <-time.After(hostedTestDeadline):
-				t.Fatal("the attach was never canceled")
-			}
-			answered := make(chan struct{})
-			go func() {
-				engine.Running()
-				close(answered)
-			}()
-			select {
-			case <-answered:
-			case <-time.After(time.Second):
-				t.Fatal("an engine call waited for an attach's cancel")
+			l.settledEngine()
+			if _, listed := l.tabs(string(access.ThreadID))[ids.PageHandle(popupID)]; listed {
+				t.Fatal("the popup whose end was received is a tab")
 			}
 		})
+	}
+}
+
+// A popup's close received while the engine's lock is held, as the
+// Manager reads its history before listing it, is in the Manager's
+// admission before the page is seen sealed: the listing that follows is
+// refused, and the receipt waited for no engine lock.
+func TestAPopupSealedAtReceiptIsNeverListed(t *testing.T) {
+	l := newPopupLauncher(t)
+	access := l.access("thread")
+	_, opener := l.open(access)
+	releaseHistory := l.gateHistory("PT-1")
+	defer releaseHistory()
+	popupID, _ := l.popup(opener, "https://example.test/popup")
+	l.awaitAttach("history PT-1")
+	l.engine.mu.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			l.engine.mu.Unlock()
+		}
+	}()
+	received := make(chan struct{})
+	go func() {
+		defer close(received)
+		l.report(popupID, webview2host.ReportClosed, "")
+	}()
+	for deadline := time.Now().Add(hostedTestDeadline); ; time.Sleep(time.Millisecond) {
+		if state, _ := l.engine.pages.state(ids.PageHandle(popupID)); state == hostedPopupClosing {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the popup's close was never received")
+		}
+	}
+	releaseHistory()
+	for deadline := time.Now().Add(hostedTestDeadline); ; time.Sleep(time.Millisecond) {
+		if d, _ := l.manager.admissions.Disposition(ids.PageHandle(popupID)); d != popupadmit.Pending {
+			if d == popupadmit.Listed {
+				t.Fatal("the Manager listed a popup sealed at receipt")
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the popup's listing never committed")
+		}
+	}
+	awaitClosed(t, received, "the close's receipt under the engine's lock")
+	l.engine.mu.Unlock()
+	locked = false
+	settleReports(t, l.engine, "")
+	if _, listed := l.tabs(string(access.ThreadID))[ids.PageHandle(popupID)]; listed {
+		t.Fatal("the closed popup is a tab")
+	}
+}
+
+// awaitSessionCall waits until the fake endpoint received method on
+// session.
+func awaitSessionCall(t *testing.T, endpoint *fakeCDPEndpoint, session, method string) {
+	t.Helper()
+	deadline := time.Now().Add(hostedTestDeadline)
+	for {
+		for _, call := range endpoint.calls() {
+			if call.Method == method && call.SessionID == session {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the endpoint never received %s on %s", method, session)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 

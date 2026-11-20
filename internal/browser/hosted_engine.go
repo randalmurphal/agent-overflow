@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/browser/ids"
+	"agent-overflow/internal/browser/popupadmit"
 	"agent-overflow/internal/keybindings"
 	"agent-overflow/internal/webview2host"
 
@@ -120,6 +121,9 @@ type hostedEngine struct {
 	// setups are the page attaches under way, which Interrupt ends.
 	setups cdpPageSetups
 
+	// waiters are the creates and clears waiting for the launcher's answer.
+	waiters hostWaiters
+
 	// infoOrder numbers the page info reports (engineEvents.PageInfoChanged).
 	infoOrder atomic.Uint64
 
@@ -129,7 +133,6 @@ type hostedEngine struct {
 	browserCtx    context.Context
 	browserCancel context.CancelFunc
 	attachCancel  context.CancelFunc
-	pending       map[ids.PageHandle]chan hostReport
 	pageByTarget  map[target.ID]ids.PageHandle
 	targetByPage  map[ids.PageHandle]target.ID
 	// pageConn is the browser connection each bound page's session runs on
@@ -204,7 +207,6 @@ func newHostedEngine(relay hostRelay, send func(webview2host.Directive), acceler
 		clearTimeout:  hostClearTimeout,
 		closeFallback: hostClosedFallback,
 
-		pending:      make(map[ids.PageHandle]chan hostReport),
 		pageByTarget: make(map[target.ID]ids.PageHandle),
 		targetByPage: make(map[ids.PageHandle]target.ID),
 		pageConn:     make(map[ids.PageHandle]context.Context),
@@ -227,7 +229,11 @@ func newHostedEngine(relay hostRelay, send func(webview2host.Directive), acceler
 		backendPath:   func(ctx context.Context, path string) (string, error) { return runWSLPath(ctx, "-u", path) },
 	}
 	e.targets = e.newTargets()
-	e.pages = newHostedPages(e.process, func(stop <-chan struct{}) { go e.askQuietDownloads(stop) })
+	e.pages = newHostedPages(e.process, func(stop <-chan struct{}) { go e.askQuietDownloads(stop) }, func(page ids.PageHandle, end popupadmit.Observation) {
+		if e.events.PageEndReceived != nil {
+			e.events.PageEndReceived(page, end)
+		}
+	})
 	return e
 }
 
@@ -283,18 +289,11 @@ func (e *hostedEngine) Running() bool {
 func (e *hostedEngine) Interrupt() {
 	e.mu.Lock()
 	cancel := e.attachCancel
-	pending := make([]chan hostReport, 0, len(e.pending))
-	for id, waiter := range e.pending {
-		pending = append(pending, waiter)
-		delete(e.pending, id)
-	}
 	e.mu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
-	for _, waiter := range pending {
-		close(waiter)
-	}
+	e.waiters.interrupt()
 	e.setups.interrupt()
 }
 
@@ -313,10 +312,6 @@ func (e *hostedEngine) Stop() {
 	e.scales = make(map[ids.PageHandle]*viewScaleState)
 	e.noFind = make(map[ids.PageHandle]bool)
 	e.pageProfile = make(map[ids.PageHandle]profileHandle)
-	var cancelAttaches []func()
-	for _, popup := range e.popups {
-		cancelAttaches = append(cancelAttaches, popup.takeAttachCancelLocked())
-	}
 	e.popups = make(map[ids.PageHandle]*hostedPopup)
 	e.popupByTarget = make(map[target.ID]ids.PageHandle)
 	for pageID := range e.closeFallbacks {
@@ -325,9 +320,6 @@ func (e *hostedEngine) Stop() {
 	e.targets = e.newTargets()
 	joinLanes := e.pages.stopAll()
 	e.mu.Unlock()
-	for _, cancel := range cancelAttaches {
-		cancel()
-	}
 	if browserCancel != nil {
 		browserCancel()
 	}

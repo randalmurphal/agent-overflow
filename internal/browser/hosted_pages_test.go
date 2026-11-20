@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/browser/ids"
+	"agent-overflow/internal/browser/popupadmit"
 	"agent-overflow/internal/webview2host"
 )
 
@@ -66,7 +68,7 @@ func blockedPages(t *testing.T) (pages *hostedPages, taken <-chan *acceptedWork,
 		case <-next:
 		case <-ctx.Done():
 		}
-	}, func(<-chan struct{}) {})
+	}, func(<-chan struct{}) {}, func(ids.PageHandle, popupadmit.Observation) {})
 	t.Cleanup(func() { pages.stopAll()() })
 	return pages, works, next
 }

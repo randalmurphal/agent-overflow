@@ -6,7 +6,6 @@ import (
 	"sync"
 
 	"agent-overflow/internal/browser/ids"
-	"agent-overflow/internal/browser/popupadmit"
 	"agent-overflow/internal/webview2host"
 )
 
@@ -222,44 +221,19 @@ func (e *hostedEngine) process(ctx context.Context, w *acceptedWork) {
 	}
 }
 
-// acceptClose receives the launcher's close of page: its admission seals
-// now, and a popup the Manager has not listed is recorded closed in the
-// Manager's admission, so its listing is refused; the page retires on its
-// lane after its work already received (retirePage). Its attach and its
-// wait for the close end now.
+// acceptClose receives the launcher's close of page (hostedPages.acceptEnd):
+// a popup the Manager has not listed is recorded closed in the Manager's
+// admission, so its listing is refused, its admission seals and its attach
+// is signaled to end, at once; the page retires on its lane after its work
+// already received (retirePage).
 func (e *hostedEngine) acceptClose(page ids.PageHandle) {
-	receipt := e.pages.acceptEnd(page, acceptedClose, "")
-	if !receipt.accepted {
-		return
-	}
-	e.endPageWaits(page)
-	if receipt.pendingPopup {
-		e.events.PageEndReceived(page, popupadmit.Closed())
-	}
+	e.pages.acceptEnd(page, acceptedClose, "")
 }
 
 // acceptCrash receives the process failure that ended page, which the
 // Manager hears after the page's work already received
 // (engineEvents.PageCrashed); a popup the Manager has not listed is
-// recorded crashed in its admission now.
+// recorded crashed in its admission at once.
 func (e *hostedEngine) acceptCrash(page ids.PageHandle, reason string) {
-	receipt := e.pages.acceptEnd(page, acceptedCrash, reason)
-	if receipt.accepted && receipt.pendingPopup {
-		e.events.PageEndReceived(page, popupadmit.Crashed(reason))
-	}
-}
-
-// endPageWaits ends what page waits for as it goes: its popup attach and
-// its wait for the launcher's close (awaitLauncherClose).
-func (e *hostedEngine) endPageWaits(page ids.PageHandle) {
-	e.mu.Lock()
-	e.endCloseFallbackLocked(page)
-	var cancelAttach func()
-	if popup := e.popups[page]; popup != nil {
-		cancelAttach = popup.takeAttachCancelLocked()
-	}
-	e.mu.Unlock()
-	if cancelAttach != nil {
-		cancelAttach()
-	}
+	e.pages.acceptEnd(page, acceptedCrash, reason)
 }

@@ -259,8 +259,9 @@ made while its admission is in flight is kept and sent as it is admitted.
 Cancels are numbered, and the refusal of the last one sent withdraws the
 Manager's cancel from whichever snapshot first carries it. A launcher
 report is acknowledged at receipt, never after its processing
-(`hosted_pages.go`, `hosted_report_lanes.go`): receipt changes only the
-page's record, and a snapshot, close, discard or crash runs afterwards on
+(`hosted_pages.go`, `hosted_report_lanes.go`): receipt takes no engine
+lock and changes only the page's record, an unlisted popup's admission and
+the signal that ends its attach, and a snapshot, close, discard or crash runs afterwards on
 its page's lane, in order, with an unlisted popup's on its opener's, so no
 path conversion holds another page's report and a discard settles after
 the work received before it. `DiscardPage` waits for that within its
