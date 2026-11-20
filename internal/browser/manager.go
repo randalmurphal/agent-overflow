@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sync"
 	"sync/atomic"
+	"testing"
 	"time"
 	"unsafe"
 
@@ -251,8 +252,8 @@ type Manager struct {
 	// switchWritten is a test seam run between a jar switch's write of its
 	// saved copy and its commit (SetJar). Production leaves it nil.
 	switchWritten func()
-	// revealFileInFileManager is the test seam over the production subprocess
-	// hand-off in companion_reveal.go. Production leaves it nil.
+	// revealFileInFileManager hands a file to the OS file manager
+	// (fileRevealer). A test replaces it with a recorder.
 	revealFileInFileManager func(ctx context.Context, path string) error
 	// downloadAdmitting is a test seam run between a download start's page
 	// lookup and its admission. Production leaves it nil.
@@ -345,8 +346,10 @@ func NewManager(configDir string, config Config, opts ManagerOptions) *Manager {
 		viewportSyncs:  make(map[ThreadID]*viewportSync),
 		artifactRoot:   filepath.Join(configDir, "browser-artifacts"),
 		findTimeout:    findActionTimeout,
-		agentLinger:    agentActivityLinger,
-		recentLaunch:   uuid.NewString(),
+
+		revealFileInFileManager: fileRevealer(opts.FakeEngine, testing.Testing()),
+		agentLinger:             agentActivityLinger,
+		recentLaunch:            uuid.NewString(),
 	}
 	m.selectionGapTimer = turnorder.NewGapTimer
 	m.accelerators = opts.Accelerators
