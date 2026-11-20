@@ -13,14 +13,17 @@ import (
 )
 
 // A write's refresh reads again every resource the write may have changed,
-// each through the read sync uses (resources.go), batched by read:
+// each through the read sync uses (resources.go), batched by read, and
+// accounts for each (write_account.go):
 //
 //   - a board's structure: one structure read;
 //   - rows: one rows read per board for every issue the write names on it,
 //     whether named by its row or by its card;
 //   - a card: through every board the mirror shows the issue on, joined
 //     with those boards' rows above; one cards read for the issues the
-//     mirror keeps on no board; nothing for an issue it does not keep;
+//     mirror keeps that no rows read answered with a row (on no board, or
+//     answered missing by every board it was on, or on boards retired
+//     meanwhile); nothing for an issue it does not keep;
 //   - a detail: when a ticket is open on it or the mirror holds it, all of
 //     them in one full read (verifiedDetails), the open tickets settled
 //     with what it found;
@@ -28,53 +31,14 @@ import (
 //
 // Where each lives in the mirror, and the board lifetimes and root sweep
 // its writes name, come from one store read made before any of them
-// (store ReadMirrorRefreshTargets). A resource the mirror does not show (a
-// board no project lists, an issue it does not keep) is not read. A read
-// that fails leaves its resources stale and the others still run; a
-// mirror that ended (the connection turned off) stops the refresh.
+// (store ReadMirrorRefreshTargets). A read that fails leaves its resources
+// stale and the others still run; a board retired meanwhile ends that
+// board's reads alone; the write's context ending stops the refresh, and
+// so does the mirror ending (the connection turned off).
 
 // worklogSpan is the most days one worklogs read stores (the store's
 // bound on one ReplaceMirrorWorklogs).
 const worklogSpan = 31
-
-// refreshed is what a write's refresh did.
-type refreshed struct {
-	// ch is everything it stored, and own what its reads through each
-	// board stored.
-	ch  Changes
-	own []boardChanges
-	// pumps are the open tickets whose detail it read, began the read's
-	// place among those settled into ticket pumps, and reads their reads
-	// in the order of pumps, then those of the details only the mirror
-	// holds. details and detailsErr are how that read ended.
-	pumps      []*ticketPump
-	began      uint64
-	reads      []*ticketRead
-	details    detailsRead
-	detailsErr error
-	// stale are the resources it could not read again.
-	stale []staleRead
-	// ended reports a mirror that ended during the refresh.
-	ended bool
-}
-
-// staleRead is resources a refresh did not read again, and why: the
-// tracker's failure (a *callError) or one outside the tracker.
-type staleRead struct {
-	resources []tracker.Resource
-	err       error
-}
-
-// lastCallError is the tracker's failure of the refresh's last failed
-// read; nil when none failed.
-func (f *refreshed) lastCallError() error {
-	for _, st := range slices.Backward(f.stale) {
-		if c, ok := errors.AsType[*callError](st.err); ok {
-			return c.err
-		}
-	}
-	return nil
-}
 
 // refreshPlan is a refresh's resources by kind, each list sorted without
 // repeats.
@@ -118,148 +82,217 @@ func sortedUnique[T cmp.Ordered](s []T) []T {
 	return slices.Compact(s)
 }
 
-// fail records resources left stale by err and reports whether the
-// refresh goes on: not once the mirror ended or the run's context did.
-func (r *run) fail(f *refreshed, err error, resources []tracker.Resource) bool {
-	if endsMirror(err) {
-		f.ended = true
-		return false
-	}
-	f.stale = append(f.stale, staleRead{resources: resources, err: err})
-	return r.ctx.Err() == nil
-}
-
-// refresh reads resources again and stores them.
+// refresh reads resources again, stores them and accounts for each.
 func (r *run) refresh(resources []tracker.Resource) *refreshed {
-	f := &refreshed{}
+	f := newRefreshed(resources)
 	p := planRefresh(resources)
-	if len(p.cards)+len(p.details)+len(p.rows)+len(p.structures) > 0 && !r.refreshMirrored(f, p) {
-		return f
+	err := r.refreshMirrored(f, p)
+	if err == nil {
+		err = r.refreshWorklogs(f, p)
 	}
-	for _, author := range slices.Sorted(maps.Keys(p.worklogs)) {
-		for span := range daySpans(p.worklogs[author]) {
-			if err := r.worklogs(author, span[0], span[len(span)-1]); err != nil {
-				stale := make([]tracker.Resource, len(span))
-				for i, d := range span {
-					stale[i] = tracker.WorklogsOf(author, d)
-				}
-				if !r.fail(f, err, stale) {
-					return f
-				}
-			}
-		}
-	}
+	f.close(err)
 	return f
 }
 
-// refreshMirrored refreshes p's structures, rows, cards and details, and
-// reports whether the refresh goes on.
-func (r *run) refreshMirrored(f *refreshed, p refreshPlan) bool {
+// refreshMirrored refreshes p's structures, rows, cards and details. It
+// returns why the refresh stops, nil to go on.
+func (r *run) refreshMirrored(f *refreshed, p refreshPlan) error {
+	if len(p.cards)+len(p.details)+len(p.rows)+len(p.structures) == 0 {
+		return nil
+	}
 	// The open tickets are taken before the targets are read: a ticket
 	// opened after the connection was turned off and on again is one of a
 	// later mirror, which the targets read then refuses.
-	f.pumps = r.s.openTickets(r.row.ID, p.details)
+	open := r.s.openTickets(r.row.ID, p.details)
 	boards := slices.Concat(slices.Collect(maps.Keys(p.rows)), p.structures)
 	t, err := r.refreshTargets(slices.Concat(p.cards, p.details), boards)
-	if err != nil {
-		var all []tracker.Resource
-		for _, id := range p.cards {
-			all = append(all, tracker.CardOf(id))
-		}
-		for b, ids := range p.rows {
-			for _, id := range ids {
-				all = append(all, tracker.RowOf(b, id))
-			}
-		}
-		for _, b := range p.structures {
-			all = append(all, tracker.StructureOf(b))
-		}
-		for _, id := range p.details {
-			all = append(all, tracker.DetailOf(id))
-		}
-		f.pumps = nil
-		return r.fail(f, err, all)
+	if errors.Is(err, store.ErrTrackerCacheGone) {
+		f.ended = true
+		return err
 	}
-	shown := map[tracker.BoardID]bool{}
+	if err != nil {
+		// Nothing mirrored is read; the worklogs, which need no target, are.
+		f.fail(err, f.openWhere(func(res tracker.Resource) bool { return res.Kind() != tracker.ResourceWorklogs })...)
+		return nil
+	}
+	shown, gone := map[tracker.BoardID]bool{}, map[tracker.BoardID]bool{}
 	for _, b := range t.Boards {
 		shown[tracker.BoardID(b.BoardID)] = true
 	}
 	for _, b := range p.structures {
 		if !shown[b] {
+			f.covered(tracker.StructureOf(b))
 			continue
 		}
 		ch, err := r.structure(b)
 		f.add(b, ch)
-		if err != nil && !r.fail(f, err, []tracker.Resource{tracker.StructureOf(b)}) {
-			return false
-		}
-	}
-	rows, stale := map[tracker.BoardID][]tracker.IssueID{}, map[tracker.BoardID][]tracker.Resource{}
-	for b, ids := range p.rows {
-		if shown[b] {
-			rows[b] = ids
-			for _, id := range ids {
-				stale[b] = append(stale[b], tracker.RowOf(b, id))
+		switch {
+		case err == nil:
+			f.covered(tracker.StructureOf(b))
+		case retired(err):
+			gone[b] = true
+			f.covered(tracker.StructureOf(b))
+		default:
+			if stop := r.failedRead(f, err, tracker.StructureOf(b)); stop != nil {
+				return stop
 			}
 		}
 	}
-	onBoard := map[tracker.IssueID]bool{}
-	for _, row := range t.Rows {
-		id, b := tracker.IssueID(row.IssueID), tracker.BoardID(row.BoardID)
-		if _, ok := slices.BinarySearch(p.cards, id); ok {
-			onBoard[id] = true
-			rows[b] = append(rows[b], id)
-			stale[b] = append(stale[b], tracker.CardOf(id))
-		}
+	if stop := r.refreshRows(f, p, t, shown, gone); stop != nil {
+		return stop
 	}
-	for _, b := range slices.Sorted(maps.Keys(rows)) {
-		ch, err := r.boardRows(b, sortedUnique(rows[b]))
-		f.add(b, ch)
-		if err != nil && !r.fail(f, err, stale[b]) {
-			return false
-		}
-	}
-	var offBoard []tracker.IssueID
-	for _, id := range t.Kept {
-		if _, named := slices.BinarySearch(p.cards, tracker.IssueID(id)); named && !onBoard[tracker.IssueID(id)] {
-			offBoard = append(offBoard, tracker.IssueID(id))
-		}
-	}
-	if len(offBoard) > 0 {
-		ch, err := r.cards(offBoard)
-		f.ch.add(ch)
-		if err != nil && !r.fail(f, err, cardResources(offBoard)) {
-			return false
-		}
-	}
-	return r.refreshDetails(f, t.Details)
+	return r.refreshDetails(f, open, t.Details, p.details)
 }
 
-// refreshDetails reads in full, together, the details of f's open tickets
-// and of cached, the issues named whose detail the mirror holds, and
-// reports whether the refresh goes on.
-func (r *run) refreshDetails(f *refreshed, cached []string) bool {
-	f.began, f.reads = r.s.ticketReads(f.pumps)
+// refreshRows reads p's rows on the boards asked that the mirror shows
+// (shown), and p's cards through every shown board holding a row of them
+// (t.Rows), except the boards retired since (gone); a card the mirror
+// keeps that no rows read answered with a row is read through the cards
+// read. It returns why the refresh stops, nil to go on.
+func (r *run) refreshRows(f *refreshed, p refreshPlan, t store.MirrorRefreshTargets, shown, gone map[tracker.BoardID]bool) error {
+	asked := map[tracker.BoardID][]tracker.IssueID{}
+	for b, ids := range p.rows {
+		if shown[b] && !gone[b] {
+			asked[b] = slices.Clone(ids)
+		} else {
+			f.covered(rowResources(b, ids)...)
+		}
+	}
+	for _, row := range t.Rows {
+		id, b := tracker.IssueID(row.IssueID), tracker.BoardID(row.BoardID)
+		if _, named := slices.BinarySearch(p.cards, id); named && !gone[b] {
+			asked[b] = append(asked[b], id)
+		}
+	}
+	kept := map[tracker.IssueID]bool{}
+	for _, id := range t.Kept {
+		kept[tracker.IssueID(id)] = true
+	}
+	for _, id := range p.cards {
+		if !kept[id] {
+			f.covered(tracker.CardOf(id))
+		}
+	}
+	found := map[tracker.IssueID]bool{}
+	var failedVia []error
+	cardFailed := map[tracker.IssueID]int{}
+	for _, b := range slices.Sorted(maps.Keys(asked)) {
+		ch, read, err := r.boardRows(b, sortedUnique(asked[b]))
+		f.add(b, ch)
+		// A card is refreshed by the first row of it a read returns.
+		for _, id := range read {
+			found[id] = true
+			f.covered(tracker.CardOf(id))
+		}
+		switch {
+		case err == nil, retired(err):
+			// A retired board's rows are not shown; its cards are answered
+			// by another board or the cards read.
+			f.covered(rowResources(b, p.rows[b])...)
+		default:
+			if stop := r.failedRead(f, err, rowResources(b, p.rows[b])...); stop != nil {
+				return stop
+			}
+			failedVia = append(failedVia, err)
+			for _, id := range asked[b] {
+				if _, ok := cardFailed[id]; !ok {
+					cardFailed[id] = len(failedVia) - 1
+				}
+			}
+		}
+	}
+	// A kept card no read returned a row of is stale with the failure of a
+	// board it was asked through, or else (no board, answered missing on
+	// every board, or on boards retired meanwhile) read by itself.
+	var unread []tracker.IssueID
+	failed := make([][]tracker.Resource, len(failedVia))
+	for _, id := range p.cards {
+		i, viaFailed := cardFailed[id]
+		switch {
+		case found[id], !kept[id]:
+		case viaFailed:
+			failed[i] = append(failed[i], tracker.CardOf(id))
+		default:
+			unread = append(unread, id)
+		}
+	}
+	for i, err := range failedVia {
+		f.fail(err, failed[i]...)
+	}
+	if len(unread) == 0 {
+		return nil
+	}
+	ch, err := r.cards(unread)
+	f.ch.add(ch)
+	if err != nil {
+		return r.failedRead(f, err, cardResources(unread)...)
+	}
+	f.covered(cardResources(unread)...)
+	return nil
+}
+
+// refreshDetails reads in full, together, the details of the open
+// tickets open and of cached, the issues named whose detail the mirror
+// holds; a detail named that is neither is not shown. It returns why the
+// refresh stops, nil to go on.
+func (r *run) refreshDetails(f *refreshed, open []*ticketPump, cached []string, named []tracker.IssueID) error {
+	for _, id := range named {
+		if !slices.Contains(cached, string(id)) && !slices.ContainsFunc(open, func(tp *ticketPump) bool { return tp.key.issue == id }) {
+			f.covered(tracker.DetailOf(id))
+		}
+	}
+	f.pumps = open
+	f.began, f.reads = r.s.ticketReads(open)
 	for _, id := range cached {
-		if !slices.ContainsFunc(f.pumps, func(tp *ticketPump) bool { return string(tp.key.issue) == id }) {
+		if !slices.ContainsFunc(open, func(tp *ticketPump) bool { return string(tp.key.issue) == id }) {
 			f.reads = append(f.reads, &ticketRead{issue: tracker.IssueID(id)})
 		}
 	}
 	if len(f.reads) == 0 {
-		return true
+		return nil
 	}
 	ch, err := r.verifiedDetails(f.reads, true, 0)
 	f.ch.add(ch)
 	f.details = detailsRead{ch: ch, root: r.root, kind: r.row.Kind}
 	if err == nil {
-		return true
+		f.covered(detailResources(f.reads)...)
+		return nil
 	}
 	f.detailsErr = err
 	var o Outcome
 	if _, _, ferr := r.failed(&o, err); ferr == nil && o.Failure != nil {
 		f.details.failure, f.details.retryAt = o.Failure, o.RetryAt
 	}
-	return r.fail(f, err, detailResources(f.reads))
+	return r.failedRead(f, err, detailResources(f.reads)...)
+}
+
+// refreshWorklogs reads p's worklogs, one read per author and span of
+// days. It returns why the refresh stops, nil to go on.
+func (r *run) refreshWorklogs(f *refreshed, p refreshPlan) error {
+	for _, author := range slices.Sorted(maps.Keys(p.worklogs)) {
+		for span := range daySpans(p.worklogs[author]) {
+			res := make([]tracker.Resource, len(span))
+			for i, d := range span {
+				res[i] = tracker.WorklogsOf(author, d)
+			}
+			if err := r.worklogs(author, span[0], span[len(span)-1]); err != nil {
+				if stop := r.failedRead(f, err, res...); stop != nil {
+					return stop
+				}
+				continue
+			}
+			f.covered(res...)
+		}
+	}
+	return nil
+}
+
+func rowResources(b tracker.BoardID, ids []tracker.IssueID) []tracker.Resource {
+	out := make([]tracker.Resource, len(ids))
+	for i, id := range ids {
+		out[i] = tracker.RowOf(b, id)
+	}
+	return out
 }
 
 // add merges ch, stored by a read through board b.

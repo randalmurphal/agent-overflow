@@ -587,20 +587,30 @@ call; the path does the rest.
    through that resource's read and stored (`write_refresh.go`), batched:
    one store read of where the mirror holds them
    (`ReadMirrorRefreshTargets`), one rows read per board for the rows
-   named on it and the cards the mirror has on it, one cards read for
-   kept cards on no shown board, one details read for the open tickets
-   and the stored details named, a structure read per shown board named,
-   and a worklogs read per author and span of consecutive days. A card or
-   detail the mirror neither keeps nor holds is not read. An issue a
-   create made is read through the board the create was made from. A
-   write adds no history read.
+   named on it and the cards the mirror has on it, one cards read for the
+   kept cards no rows read returned a row of (on no shown board, answered
+   missing by every board, or on boards retired meanwhile), one details
+   read for the open tickets and the stored details named, a structure
+   read per shown board named, and a worklogs read per author and span
+   of consecutive days. A card or detail the mirror neither keeps nor
+   holds is not read. An issue a create made is read through the board
+   the create was made from. A write adds no history read.
+
+   The refresh keeps an account of every resource named
+   (`write_account.go`): each ends refreshed, not shown (nothing to read),
+   or stale with why, exactly once. A failed read leaves its resources
+   stale and the other reads run. A board no longer listed or retired
+   during the refresh ends that board's reads alone. The write's context
+   ending stops the refresh, and every resource not yet read is stale.
+   The open tickets are settled only from a details read that was made.
 4. The last tracker call settles the connection's problem: a failed
    refresh read, else a part that could not reach the tracker. A write
    whose every part was refused before sending (invalid input, a write
    the tracker cannot make) settles nothing.
 5. The stored changes pass through the change funnel once, with each
    board the refresh read through as that board's own changes, and the
-   open tickets the refresh read are settled by it.
+   open tickets the refresh read are settled by it. What a refresh stored
+   is published however it stopped, as a tick's is.
 6. The caller gets a `WriteView`: each part's issue, step, state and
    refusal (reason, message, field messages, candidates, lost content),
    the issue a create made, `CreateUnknown`, and the resources a refresh
@@ -613,9 +623,12 @@ call; the path does the rest.
 
 A connection turned off, removed or stopped during the provider call
 answers a write that may have happened with its parts and `Ended`, and
-reads nothing; one where nothing happened is refused by name. A refresh
-writes under the root, sweep and board lifetimes the hold captured, so
-nothing lands in a mirror made after the write began.
+reads nothing; one where nothing happened is refused by name. One whose
+mirror ends during the refresh stops it and answers `Ended` the same
+way, which stands for every resource, since the mirror holds none of
+them any more. A refresh writes under the root, sweep and board
+lifetimes the hold captured, so nothing lands in a mirror made after the
+write began.
 
 The mirror is never written ahead of the tracker. A client that shows a
 drop before the answer owns that preview and replaces it with the event.

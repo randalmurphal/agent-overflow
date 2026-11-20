@@ -117,7 +117,7 @@ func (r *run) reconcile(board tracker.BoardID) (UnitResult, error) {
 	if limit := reconcileBatches * readBatch; len(missing) > limit {
 		missing, out.More = missing[:limit], true
 	}
-	ch, err = r.boardRows(board, missing)
+	ch, _, err = r.boardRows(board, missing)
 	out.Changes.add(ch)
 	if err != nil {
 		return out, err

@@ -38,33 +38,36 @@ func mirrorRows(board tracker.BoardID, rows []tracker.Row, missing []tracker.Iss
 // board no longer lists lose their row. A write the store finds due a
 // structure read marks the run's structure due (run.cascade). The board's
 // structure must be in the mirror (store.ErrTrackerCacheNoBoard
-// otherwise).
-func (r *run) boardRows(board tracker.BoardID, issues []tracker.IssueID) (Changes, error) {
-	var out Changes
+// otherwise). found are the issues whose row the tracker returned, of
+// the batches stored.
+func (r *run) boardRows(board tracker.BoardID, issues []tracker.IssueID) (out Changes, found []tracker.IssueID, _ error) {
 	lifetime, err := r.lifetime(board)
 	if err != nil {
-		return out, err
+		return out, nil, err
 	}
 	for batch := range slices.Chunk(issues, readBatch) {
 		read := r.readAt()
 		r.calls++
 		rows, err := r.p.BoardRows(r.ctx, board, batch)
 		if err != nil {
-			return out, fmt.Errorf("trackerapp: read %d rows of board %s: %w", len(batch), board, call(err))
+			return out, found, fmt.Errorf("trackerapp: read %d rows of board %s: %w", len(batch), board, call(err))
 		}
 		page, err := mirrorRows(board, rows.Rows, rows.Missing, rows.Catalog, read)
 		if err != nil {
-			return out, err
+			return out, found, err
 		}
 		page.Lifetime = lifetime
 		stored, err := r.s.store.WriteMirrorRows(r.root, page)
 		if err != nil {
-			return out, fmt.Errorf("trackerapp: store rows of board %s: %w", board, err)
+			return out, found, fmt.Errorf("trackerapp: store rows of board %s: %w", board, err)
 		}
 		r.markStructureDue(stored)
 		out.add(changesOf(stored))
+		for _, row := range rows.Rows {
+			found = append(found, row.Card.ID)
+		}
 	}
-	return out, nil
+	return out, found, nil
 }
 
 // cards reads the cards of issues with no board and stores those of the

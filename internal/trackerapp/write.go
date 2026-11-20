@@ -101,16 +101,11 @@ func (s *Service) write(ctx context.Context, id string, op writeOp) (WriteView, 
 	}
 	writeCalls := r.calls
 	f := r.refresh(resources)
-	if f.ended || !r.inUse() {
-		// The mirror was cleared with the connection: nothing stored is
-		// shown, and nobody is told.
-		view.Ended = true
-		if !happened(res) {
-			return WriteView{}, s.endedNow(id)
-		}
-		return view, nil
-	}
-	if r.ctx.Err() == nil {
+	// The mirror ended with the connection: what the refresh stored before
+	// is still published below, as a tick's is, and the outcome answers
+	// for every resource (Ended).
+	ended := f.ended || !r.inUse()
+	if !ended && r.ctx.Err() == nil {
 		callErr := f.lastCallError()
 		if callErr == nil && r.calls == writeCalls {
 			callErr = writeProblem(r.row.Kind, res)
@@ -131,6 +126,13 @@ func (s *Service) write(ctx context.Context, id string, op writeOp) (WriteView, 
 		// A refresh that could not read an open ticket is retried by the
 		// connection's round.
 		s.oweFailedRead(id, s.settleTickets(ctx, id, f.pumps, f.began, f.reads[:len(f.pumps)], f.details, f.detailsErr, millis(s.now())))
+	}
+	if ended {
+		view.Ended = true
+		if !happened(res) {
+			return WriteView{}, s.endedNow(id)
+		}
+		return view, nil
 	}
 	view.Stale = s.staleViews(r.row.Kind, f.stale)
 	finish()
@@ -281,14 +283,22 @@ func (s *Service) staleViews(kind string, stale []staleRead) []StaleView {
 	return out
 }
 
-// staleView is resources left stale by err: the tracker's failure as
-// ClassifyFailure sorts it, and any other as a failure outside the
-// tracker, which is logged.
+// refreshStopped is the failure of resources a refresh did not read
+// because the write's context ended.
+const refreshStopped = "The refresh stopped before it read this; reading it again shows the change."
+
+// staleView is resources left stale by err: the write's context ending,
+// the tracker's failure as ClassifyFailure sorts it, and any other as a
+// failure outside the tracker, which is logged.
 func (s *Service) staleView(kind string, resources []ResourceView, err error) StaleView {
 	at := millis(s.now())
 	var c *callError
 	var fe *failureError
 	switch {
+	case errors.Is(err, context.Canceled):
+		// The write's caller went away, or the service stopped, before the
+		// read was made or answered.
+		return StaleView{Resources: resources, Failure: FailureView{Kind: string(FailureTransient), Message: refreshStopped, At: at}}
 	case errors.As(err, &fe):
 		return StaleView{Resources: resources, Failure: FailureView{Kind: string(fe.f.Kind), Message: fe.f.Message, At: at}}
 	case errors.As(err, &c):

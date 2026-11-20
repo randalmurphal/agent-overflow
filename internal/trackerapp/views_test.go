@@ -304,7 +304,9 @@ func TestAStaleCardShowsItsColumns(t *testing.T) {
 	// The next read of the row replaces it.
 	m.p.set(func(p *scripted) { p.boardRows = boardOf(row("10002", 1_799_000_000_002, "b")) })
 	r := m.begun(t, m.scope())
-	must[Changes](t)(r.boardRows(testBoard, ids("10002")))
+	if _, _, err := r.boardRows(testBoard, ids("10002")); err != nil {
+		t.Fatal(err)
+	}
 	r.finish()
 	if v := must[IssueView](t)(m.svc.Issue(m.conn.ID, "10002")); v.Stale || v.Card.Title != "Issue 10002" {
 		t.Fatalf("issue after a read %+v", v)

@@ -225,11 +225,13 @@ func TestAWriteSettlesTheProblem(t *testing.T) {
 }
 
 // A read that fails after an applied write is reported beside the
-// outcomes, as stale resources, and settled as the connection's problem;
-// the write stands, and the other resources are still read again.
+// outcomes, each resource once, as stale, and settled as the connection's
+// problem; the write stands, and the other resources are still read
+// again.
 func TestARefreshThatFailsAfterAnAppliedWrite(t *testing.T) {
 	t.Parallel()
 	f := newWriteFixture(t)
+	f.openDetail(t, "10001")
 	f.p.set(func(p *scripted) {
 		p.boardRows = func(tracker.BoardID, []tracker.IssueID) (tracker.Rows, error) {
 			return tracker.Rows{}, &trackerapi.TransientError{Err: errors.New("reset")}
@@ -243,16 +245,14 @@ func TestARefreshThatFailsAfterAnAppliedWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(states(v), []string{"10001 edit applied"}) || len(v.Stale) != 2 {
+	if !slices.Equal(states(v), []string{"10001 edit applied"}) || len(v.Stale) != 1 {
 		t.Fatalf("view %+v", v)
 	}
-	for i, b := range []string{"1", "2"} {
-		if s := v.Stale[i]; len(s.Resources) != 1 || s.Resources[0] != (ResourceView{Kind: "card", Issue: "10001"}) ||
-			s.Failure.Kind != string(FailureTransient) {
-			t.Errorf("board %s's stale entry %+v", b, s)
-		}
+	if s := v.Stale[0]; len(s.Resources) != 1 || s.Resources[0] != (ResourceView{Kind: "card", Issue: "10001"}) ||
+		s.Failure.Kind != string(FailureTransient) {
+		t.Errorf("stale entry %+v", s)
 	}
-	if got := f.callsSince(before); !slices.Equal(got, []string{"Edit", "BoardRows", "BoardRows"}) {
+	if got := f.callsSince(before); !slices.Equal(got, []string{"Edit", "BoardRows", "BoardRows", "Details"}) {
 		t.Fatalf("calls %v", got)
 	}
 	if f.problem() != FailureTransient {

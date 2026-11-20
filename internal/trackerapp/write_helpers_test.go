@@ -134,6 +134,9 @@ type scriptedTime struct {
 
 func (tt *scriptedTime) Worklogs(ctx context.Context, q tracker.WorklogQuery) ([]tracker.Worklog, error) {
 	tt.p.called(ctx, "Worklogs", func() bool { return true })
+	if err := tt.p.wait(ctx, "Worklogs"); err != nil {
+		return nil, err
+	}
 	tt.mu.Lock()
 	defer tt.mu.Unlock()
 	tt.reads = append(tt.reads, q)
