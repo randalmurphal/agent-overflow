@@ -155,20 +155,6 @@ func TestParsePaneColor(t *testing.T) {
 	}
 }
 
-// TestParsePaneColorAcceptsEverythingValidateDoes keeps the two halves of
-// the same rule together: a bg the wire contract admits must never reach
-// the COM call as "not a color".
-func TestParsePaneColorAcceptsEverythingValidateDoes(t *testing.T) {
-	for _, bg := range []string{"#000000", "#abcdef", "#ABCDEF", "#012345", "#987654"} {
-		if err := validateBg(bg); err != nil {
-			t.Fatalf("validateBg(%q) = %v", bg, err)
-		}
-		if _, ok := parsePaneColor(bg); !ok {
-			t.Fatalf("parsePaneColor(%q) refused a value Validate accepts", bg)
-		}
-	}
-}
-
 func TestPaneColorMarshalsAsCOREWEBVIEW2COLOR(t *testing.T) {
 	// COREWEBVIEW2_COLOR is four bytes {A,R,G,B} and is passed BY VALUE.
 	// On win64 a 4-byte struct travels in the low half of one register

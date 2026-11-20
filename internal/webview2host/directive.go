@@ -344,14 +344,8 @@ func validateBg(bg string) error {
 	if bg == "" {
 		return nil
 	}
-	if len(bg) != 7 || bg[0] != '#' {
+	if _, ok := parsePaneColor(bg); !ok {
 		return fmt.Errorf("background %q is not #rrggbb", bg)
-	}
-	for i := 1; i < 7; i++ {
-		c := bg[i]
-		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
-			return fmt.Errorf("background %q is not #rrggbb", bg)
-		}
 	}
 	return nil
 }

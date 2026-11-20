@@ -9,9 +9,10 @@ import (
 	"net"
 	"net/url"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
+
+	"agent-overflow/internal/secret"
 
 	"github.com/coder/websocket"
 )
@@ -143,7 +144,7 @@ func (t *CDPTunnel) Run(ctx context.Context) {
 			return
 		}
 		if err != nil {
-			t.logf("browser cdp tunnel: disconnected: %s", redactToken(err, t.token))
+			t.logf("browser cdp tunnel: disconnected: %s", secret.RedactError(err, t.token))
 		}
 		if connected && time.Since(started) >= 5*time.Second {
 			wait = t.minWait
@@ -177,7 +178,7 @@ func (t *CDPTunnel) runConnection(ctx context.Context) (bool, error) {
 
 	conn, _, err := websocket.Dial(ctx, parsed.String(), nil)
 	if err != nil {
-		return false, fmt.Errorf("connect to cdp tunnel: %s", redactToken(err, t.token))
+		return false, fmt.Errorf("connect to cdp tunnel: %s", secret.RedactError(err, t.token))
 	}
 	conn.SetReadLimit(MaxTunnelFrameBytes)
 
@@ -468,18 +469,4 @@ func (s *tunnelSession) writeFrame(ctx context.Context, kind websocket.MessageTy
 	ctx, cancel := context.WithTimeout(ctx, tunnelWriteTimeout)
 	defer cancel()
 	return s.conn.Write(ctx, kind, payload)
-}
-
-// redactToken keeps the launch token out of launcher.log, the same rule
-// the notification bridge's error path follows.
-func redactToken(err error, token string) string {
-	if err == nil {
-		return "unknown error"
-	}
-	message := err.Error()
-	if token == "" {
-		return message
-	}
-	message = strings.ReplaceAll(message, token, "[redacted]")
-	return strings.ReplaceAll(message, url.QueryEscape(token), "[redacted]")
 }

@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -17,6 +16,7 @@ import (
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/notify"
 	"agent-overflow/internal/relaysession"
+	"agent-overflow/internal/secret"
 	"agent-overflow/internal/selfupdate"
 	"agent-overflow/internal/webview2host"
 
@@ -298,7 +298,7 @@ func (c *NotificationClient) runConnection(ctx context.Context) (bool, error) {
 		// Mark it so the next attempt in the ladder fetches a live one
 		// rather than replaying the dead one until the launcher restarts.
 		c.session.Stale()
-		return false, fmt.Errorf("connect to notification bridge: %s", redactNotificationBridgeError(err, c.token))
+		return false, fmt.Errorf("connect to notification bridge: %s", secret.RedactError(err, c.token))
 	}
 	conn.SetReadLimit(notificationBridgeReadLimit)
 	defer func() {
@@ -396,19 +396,6 @@ func (c *NotificationClient) handleReplayEvents(events []notificationEvent) erro
 		}
 	}
 	return nil
-}
-
-func redactNotificationBridgeError(err error, token string) string {
-	if err == nil {
-		return "unknown error"
-	}
-	message := err.Error()
-	if token == "" {
-		return message
-	}
-	message = strings.ReplaceAll(message, token, "[redacted]")
-	message = strings.ReplaceAll(message, url.QueryEscape(token), "[redacted]")
-	return message
 }
 
 func (c *NotificationClient) handleEvent(event notificationEvent) error {

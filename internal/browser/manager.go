@@ -33,11 +33,13 @@ const browserProfileDir = "browser-profiles"
 var screenshotTimeout = 10 * time.Second
 
 const (
-	operationTimeout          = 30 * time.Second
-	idleBrowserDelay          = 2 * time.Minute
-	maxPagesPerThread         = 8
-	maxPagesPerWorkspace      = 24
-	maxPagesTotal             = 64
+	operationTimeout     = 30 * time.Second
+	idleBrowserDelay     = 2 * time.Minute
+	maxPagesPerThread    = 8
+	maxPagesPerWorkspace = 24
+	// maxPagesTotal is the launcher's bound on its controllers too, so a
+	// page the launcher refuses is one the Manager would refuse.
+	maxPagesTotal             = webview2host.MaxHostPages
 	maxWorkspaceContexts      = 12
 	maxSnapshotText           = 100_000
 	maxSnapshotElements       = 500

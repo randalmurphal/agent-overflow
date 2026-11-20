@@ -69,6 +69,7 @@ func TestDirectiveValidateRejects(t *testing.T) {
 		{"background not hex", Directive{Op: OpBackground, PageID: "p", Bg: "red"}, "not #rrggbb"},
 		{"background short", Directive{Op: OpBackground, PageID: "p", Bg: "#fff"}, "not #rrggbb"},
 		{"background alpha", Directive{Op: OpBackground, PageID: "p", Bg: "#11223344"}, "not #rrggbb"},
+		{"background with a non-hex digit", Directive{Op: OpBackground, PageID: "p", Bg: "#12345g"}, "not #rrggbb"},
 		{"background without color", Directive{Op: OpBackground, PageID: "p"}, "must name a color"},
 		{"background without page", Directive{Op: OpBackground, Bg: "#000000"}, "page id is required"},
 		{"page id with path", Directive{Op: OpShow, PageID: "../evil"}, "disallowed byte"},
