@@ -307,12 +307,32 @@ func TestRealBrowserEngineIsOptInAndNeverArmedForTheSoak(t *testing.T) {
 	}
 }
 
-// The pin is the NEGATION of the opt-in, so the zero isolationOptions —
-// what a caller that forgot to fill it in would pass — must still pin the
-// fake engine.
-func TestZeroIsolationOptionsKeepTheFakeBrowserEngine(t *testing.T) {
-	if (isolationOptions{}).RealBrowserEngine {
-		t.Fatal("zero isolationOptions requests a real browser engine; the safe default must be the zero value")
+// The isolation an isolated boot applies pins the fake engine unless the
+// opt-in lifted it: the zero isolationOptions, what a caller that forgot to
+// fill it in would pass, and every boot the opt-in refuses keep the pin.
+func TestIsolationConfigPinsTheFakeBrowserEngineUnlessLifted(t *testing.T) {
+	if !isolationConfig(harnessPaths{}, isolationOptions{}).MockBrowserEngine {
+		t.Fatal("zero isolationOptions lifted the fake browser engine pin")
+	}
+	cases := []struct {
+		name  string
+		env   string
+		flags cliFlags
+		mock  bool
+	}{
+		{"harness, no opt-in", "", cliFlags{harness: true}, true},
+		{"harness, opt-in", "1", cliFlags{harness: true}, false},
+		{"launcher-shell harness, opt-in", "1", cliFlags{soak: true}, false},
+		{"soak autopilot, opt-in", "1", cliFlags{soak: true, autopilot: true}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(diagenv.HarnessRealBrowser, tc.env)
+			if got := isolationConfig(harnessPaths{}, isolationOptionsFor(tc.flags)).MockBrowserEngine; got != tc.mock {
+				t.Fatalf("MockBrowserEngine for %+v with %s=%q = %v, want %v",
+					tc.flags, diagenv.HarnessRealBrowser, tc.env, got, tc.mock)
+			}
+		})
 	}
 }
 
