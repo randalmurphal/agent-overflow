@@ -27,6 +27,10 @@ export interface ForgeFactReader<F = unknown> {
 	get(key: string): ForgeFactState<F>;
 	/** A value that changes exactly when the answer for `key` changes. */
 	signature(key: string): string;
+	/** A lex decided from this reader's answer for `key` that something the
+	 * answer would hold does not exist (a title a complete list lacks).
+	 * Called during the lex, once per such decision. */
+	denied?(key: string): void;
 }
 
 export interface DocumentScope {
@@ -98,6 +102,12 @@ export const readFact = <F = unknown>(lexer: Lexer, key: string): ForgeFactState
 	if (!scope) return undefined;
 	lexer.documentReads?.add(`x:${key}`);
 	return scope.facts?.get(key) as ForgeFactState<F>;
+};
+
+/** Tells the host that the current lex, from the fact for `key` it read
+ * (`readFact`), decided that something that fact would hold does not exist. */
+export const factDenied = (lexer: Lexer, key: string): void => {
+	lexer.document?.facts?.denied?.(key);
 };
 
 const resolve = (scope: DocumentScope | null, key: string): string => {

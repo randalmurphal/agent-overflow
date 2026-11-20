@@ -124,12 +124,14 @@ a reader is asked for that no snapshot body named (a draft, an editor
 preview, a form the scan missed) is asked for once, by the next
 microtask. Nothing asks per mount or timer, and nothing on a computer
 whose binding answered null until its connection changes. A found answer
-about one thing is never asked for again by the clock; only an answer
-that can change on its own is (unavailable, or an LFS object not local, a
-minute after it; absent, or a GitLab label list, ten minutes after it),
-and the reader's refresh or reload asks again for everything the PR holds
-(`reloadForgeFacts`). A GitLab body's labels are one fact, the project's
-label list, whose answer object the PRs of a project share. CI is sourced only by
+is never asked for again by the clock; only an answer that can change on
+its own is (unavailable, or an LFS object not local, a minute after it;
+absent ten minutes after it), and the reader's refresh or reload asks the
+forge again for everything the PR holds (`reloadForgeFacts`, `fresh`). A
+GitLab body's labels are one fact, the project's label list, whose answer
+object the PRs of a project share. A found list counts as absent while a
+lex under it decided a label a body names is not in it (the tokenizer
+calls `factDenied`, the store marks that answer until it changes). CI is sourced only by
 that subscription, or for a repository pipeline by its `SubscribePipeline`
 handle (`pipelineCI.svelte.ts`), whose `ci:pipeline_updated` frames rank
 the same way against one watermark per pipeline key, seeded by the result,

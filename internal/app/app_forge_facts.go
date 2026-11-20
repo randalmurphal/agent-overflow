@@ -17,10 +17,11 @@ import (
 // without the network. rev may be zero. One fact per key, in keys'
 // order; a fact nobody could read is unavailable, and the call fails only
 // on arguments it cannot run with (more than 256 keys, an invalid PR or
-// revision, a workspace that does not resolve).
+// revision, a workspace that does not resolve). fresh is the person's
+// reload of the PR: a held fact that can change is read again.
 //
 //ao:scope git:operate
-func (a *App) ResolveForgeFacts(ctx context.Context, ws WorkspaceRef, pr gitops.PRReference, rev gitops.PRRevision, keys []string) (gitops.ForgeFacts, error) {
+func (a *App) ResolveForgeFacts(ctx context.Context, ws WorkspaceRef, pr gitops.PRReference, rev gitops.PRRevision, keys []string, fresh bool) (gitops.ForgeFacts, error) {
 	const action = "resolve forge facts"
 	if a.shuttingDown.Load() {
 		return gitops.ForgeFacts{}, ErrShuttingDown
@@ -29,7 +30,7 @@ func (a *App) ResolveForgeFacts(ctx context.Context, ws WorkspaceRef, pr gitops.
 	if err != nil {
 		return gitops.ForgeFacts{}, err
 	}
-	return a.gitCore().ResolveFacts(ctx, workspace, pr, rev, keys)
+	return a.gitCore().ResolveFacts(ctx, workspace, pr, rev, keys, fresh)
 }
 
 // GetGitBlobImage serves blob oid of ws's repository for display, as

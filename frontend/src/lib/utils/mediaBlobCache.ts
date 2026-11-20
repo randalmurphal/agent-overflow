@@ -39,8 +39,9 @@ export interface ImageSize {
    * Pixel size an <img> renders at before its bytes decode (its `width`
    * and `height` attributes), so a remount reserves the box in the same
    * frame it mounts. From the file header when the backend could read it,
-   * else what the first <img> to decode it measured (rememberDecodedSize);
-   * 0 until either.
+   * else, for a raster image, what the first <img> to decode it measured
+   * (rememberDecodedSize); 0 until either, and always for an svg the
+   * backend did not size.
    */
   width: number;
   height: number;
@@ -245,13 +246,16 @@ export function __mediaBlobCacheKeysForTest(): string[] {
 }
 
 /**
- * Records the size an <img> decoded for a value whose header the backend
- * could not read, so the next mount of the same bytes reserves the box. A
- * fluid value's terms are its answer: the decoded size of an image with
- * no pixel size is the container's, not the image's.
+ * Records the size an <img> decoded for a raster value whose header the
+ * backend could not read, so the next mount of the same bytes reserves the
+ * box. An svg's is never recorded: one with no pixel size decodes at the
+ * browser's default object size (300x150, or 150 high at its viewBox's
+ * ratio), not a size of its own, so an unknown svg stays unknown and
+ * every mount lays it out as the first did.
  */
-export function rememberDecodedSize(size: ImageSize, img: HTMLImageElement): void {
+export function rememberDecodedSize(size: ImageSize & { mimeType: string }, img: HTMLImageElement): void {
   if (size.width > 0 && size.height > 0) return;
+  if (SVG_MIME.test(size.mimeType)) return;
   if (img.naturalWidth > 0 && img.naturalHeight > 0) {
     size.width = img.naturalWidth;
     size.height = img.naturalHeight;
@@ -307,6 +311,8 @@ function revoke(url: string): void {
   if (typeof URL.revokeObjectURL === 'function') URL.revokeObjectURL(url);
 }
 
+const SVG_MIME = /^image\/svg\+xml\b/i;
+
 /**
  * SVG becomes a `data:` URL; everything else an object URL.
  *
@@ -318,7 +324,7 @@ function revoke(url: string): void {
  * a base64 string a third larger than the file.
  */
 export async function objectOrDataUrl(blob: Blob, mimeType: string): Promise<string> {
-  const svg = /^image\/svg\+xml\b/i.test(mimeType);
+  const svg = SVG_MIME.test(mimeType);
   if (!svg && typeof URL.createObjectURL === 'function') {
     return URL.createObjectURL(blob);
   }

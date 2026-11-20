@@ -1121,15 +1121,15 @@ describe('reviewPane store — PR scope', () => {
     await waitLoaded(state);
     await state.setScope('pr');
     await flushPane();
-    const calls = resolve.mock.calls.map(([ws, , rev, keys]) => [ws, (rev as { headSHA: string }).headSHA, keys]);
+    const calls = resolve.mock.calls.map(([ws, , rev, keys, fresh]) => [ws, (rev as { headSHA: string }).headSHA, keys, fresh]);
     expect(calls).toEqual([
-      [REVIEW_WS, '', ['ref:owner/repo#1', 'commit:abc1234']],
-      [REVIEW_WS, 'sha-a', ['commit:abc1234']],
+      [REVIEW_WS, '', ['ref:owner/repo#1', 'commit:abc1234'], false],
+      [REVIEW_WS, 'sha-a', ['commit:abc1234'], false],
     ]);
     disposeReviewStateForPane('pane-1', state);
   });
 
-  it("asks again for every fact the PR holds on the reader's refresh and reload, once each", async () => {
+  it("asks the forge again for every fact the PR holds on the reader's refresh and reload, once each", async () => {
     installPRMocks();
     setBindingMock('SubscribePRUpdates', async () => ({
       id: 'sub-1',
@@ -1145,15 +1145,16 @@ describe('reviewPane store — PR scope', () => {
     await waitLoaded(state);
     await state.setScope('pr');
     await flushPane();
-    const asked = () => resolve.mock.calls.map(([, , , keys]) => keys);
+    // `fresh`: the computer reads them from the forge, not its cache.
+    const asked = () => resolve.mock.calls.map(([, , , keys, fresh]) => [keys, fresh]);
     resolve.mockClear();
     await state.refreshPRThreads({ explicit: true });
     await flushPane();
-    expect(asked()).toEqual([['ref:owner/repo#1', 'commit:abc1234']]);
+    expect(asked()).toEqual([[['ref:owner/repo#1', 'commit:abc1234'], true]]);
     resolve.mockClear();
     await state.reload({ userInitiated: true });
     await flushPane();
-    expect(asked()).toEqual([['ref:owner/repo#1', 'commit:abc1234']]);
+    expect(asked()).toEqual([[['ref:owner/repo#1', 'commit:abc1234'], true]]);
     disposeReviewStateForPane('pane-1', state);
   });
 

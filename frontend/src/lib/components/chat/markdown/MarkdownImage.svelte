@@ -241,8 +241,9 @@
   }
 
   // The <img> box: the original's size when known, else the served size,
-  // else what an earlier mount decoded (rememberDecodedSize). A fluid
-  // image's terms are a ratio, no size: the browser sizes it.
+  // else what an earlier mount decoded a raster image at
+  // (rememberDecodedSize). A fluid image's terms are a ratio, no size: the
+  // browser sizes it, as it does an svg the backend did not size.
   const box = $derived.by((): { width?: number; height?: number } => {
     if (!image || image.fluid) return {};
     if (image.originalWidth > 0 && image.originalHeight > 0) {

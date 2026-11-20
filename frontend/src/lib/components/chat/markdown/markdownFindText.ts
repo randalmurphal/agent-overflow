@@ -326,6 +326,7 @@ export function markdownFindText(source: string, options: MarkdownFindTextOption
       return facts.get(key);
     },
     signature: (key) => facts.signature(key),
+    denied: (key) => facts.denied?.(key),
   };
   const document = documentContextOf(body.cache, extensions, createDocumentContextCache(), documentForge, recording);
   const walkBlocks = ({ blocks, cache }: ReturnType<typeof blocksOf>, context: DocumentContext | null) => {

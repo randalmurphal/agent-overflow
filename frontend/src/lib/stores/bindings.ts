@@ -1512,15 +1512,17 @@ export function GetThreadRequestStates(threadId: string, tokens: string[]): Prom
 
 /**
  * ResolveForgeFacts; null from a computer without it, which the facts
- * store remembers so it stops asking that computer.
+ * store remembers so it stops asking that computer. `fresh` reads the
+ * answers that can change from the forge rather than the computer's cache.
  */
 export function ResolveForgeFacts(
   ws: Parameters<typeof ResolveForgeFactsRaw>[0],
   pr: GitPRReference,
   rev: GitPRRevision,
   keys: string[],
+  fresh: boolean,
 ): Promise<ForgeFactsClass | null> {
-  return orOlder(() => ResolveForgeFactsRaw(ws, pr, rev, keys), () => null);
+  return orOlder(() => ResolveForgeFactsRaw(ws, pr, rev, keys, fresh), () => null);
 }
 
 /** GetGitBlobImage; a computer without it serves no repository image, and the call rejects. */

@@ -204,5 +204,12 @@ test('GitLab: labels are chips in their colors; issues, merge requests, mileston
   expect(calls.find((call) => call.route === 'glab graphql ForgeFactsLabels')!.variables).toEqual({ p: project, after: null });
   await nextPoll(harness, 'glab api merge request');
   expect((await factsCalls(harness)).length).toBe(2);
+
+  // The user's reload asks the forge again, inside the time the computer
+  // would answer from its cache: a label recolored since shows its color.
+  await seedForge(harness, [{ ...published, labels: [{ name: 'bug', color: '#00aa55' }, { name: 'type::feature', color: '#1f75cb' }] }]);
+  await page.getByTestId('review-reload').click();
+  await expect.poll(() => chips.nth(0).locator('.md-label-chip-key').evaluate((el) => getComputedStyle(el).backgroundColor), { timeout: 30_000 }).toBe('rgb(0, 170, 85)');
+  expect((await factsCalls(harness)).filter((call) => call.route === 'glab graphql ForgeFactsLabels').length).toBe(2);
   await expectEveryForgeCallHandled(harness);
 });

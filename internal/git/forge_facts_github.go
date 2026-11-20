@@ -81,7 +81,7 @@ type githubFactOwnerRaw struct {
 	Name     string `json:"name"`
 }
 
-func (f *githubForge) resolveFacts(ctx context.Context, pr PRReference, keys []forgeFactKey) []ForgeFact {
+func (f *githubForge) resolveFacts(ctx context.Context, pr PRReference, keys []forgeFactKey, fresh bool) []ForgeFact {
 	client, err := f.core.githubAPI(pr.Host)
 	if err != nil {
 		out := make([]ForgeFact, len(keys))
@@ -90,7 +90,7 @@ func (f *githubForge) resolveFacts(ctx context.Context, pr PRReference, keys []f
 		}
 		return out
 	}
-	return f.core.cachedForgeFacts(ctx, f.facts, client, pr, keys, f.sendFacts)
+	return f.core.cachedForgeFacts(ctx, f.facts, client, pr, keys, fresh, f.sendFacts)
 }
 
 func (f *githubForge) sendFacts(ctx context.Context, client *forgeapi.Client, pr PRReference, keys []forgeFactKey) ([]ForgeFact, string) {

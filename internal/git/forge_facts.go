@@ -111,8 +111,11 @@ var (
 // loaded revision): the local kinds that name head or base then answer
 // unavailable. Every failure to read a fact makes that fact unavailable
 // and is logged by its reader; the call fails only on arguments it cannot
-// run with.
-func (c *Core) ResolveFacts(ctx context.Context, cwd string, pr PRReference, rev PRRevision, keys []string) (ForgeFacts, error) {
+// run with. With fresh (the person reloading the PR) a held fact that can
+// change is read again, not answered from the caches; a fact held for
+// good (a local one named by a full object id) still answers from them,
+// and a fresh read that fails leaves the held fact for later calls.
+func (c *Core) ResolveFacts(ctx context.Context, cwd string, pr PRReference, rev PRRevision, keys []string, fresh bool) (ForgeFacts, error) {
 	if len(keys) > MaxFactKeys {
 		return ForgeFacts{}, fmt.Errorf("resolve facts: %d keys exceeds %d", len(keys), MaxFactKeys)
 	}
@@ -145,9 +148,9 @@ func (c *Core) ResolveFacts(ctx context.Context, cwd string, pr PRReference, rev
 	var forgeFacts []ForgeFact
 	var wg sync.WaitGroup
 	if len(forgeKeys) > 0 {
-		wg.Go(func() { forgeFacts = c.resolveForgeFacts(ctx, pr, forgeKeys) })
+		wg.Go(func() { forgeFacts = c.resolveForgeFacts(ctx, pr, forgeKeys, fresh) })
 	}
-	localFacts := c.resolveLocalFacts(ctx, cwd, rev, localKeys)
+	localFacts := c.resolveLocalFacts(ctx, cwd, rev, localKeys, fresh)
 	wg.Wait()
 	for _, fact := range append(forgeFacts, localFacts...) {
 		facts[first[fact.Key]] = fact
@@ -161,15 +164,15 @@ func (c *Core) ResolveFacts(ctx context.Context, cwd string, pr PRReference, rev
 }
 
 // factResolver is a forge adapter that answers forge facts: one fact per
-// key, in keys' order.
+// key, in keys' order, read again past its cache with fresh.
 type factResolver interface {
-	resolveFacts(ctx context.Context, pr PRReference, keys []forgeFactKey) []ForgeFact
+	resolveFacts(ctx context.Context, pr PRReference, keys []forgeFactKey, fresh bool) []ForgeFact
 }
 
 // resolveForgeFacts answers keys, each a forge kind's, from pr's forge.
 // A key that does not parse, or names a kind pr's forge has not, answers
 // as forgeFactKey says without a request.
-func (c *Core) resolveForgeFacts(ctx context.Context, pr PRReference, keys []string) []ForgeFact {
+func (c *Core) resolveForgeFacts(ctx context.Context, pr PRReference, keys []string, fresh bool) []ForgeFact {
 	out := make([]ForgeFact, 0, len(keys))
 	parsed := make([]forgeFactKey, 0, len(keys))
 	others := map[string]bool{}
@@ -202,7 +205,7 @@ func (c *Core) resolveForgeFacts(ctx context.Context, pr PRReference, keys []str
 		}
 		return out
 	}
-	return append(out, resolver.resolveFacts(ctx, pr, parsed)...)
+	return append(out, resolver.resolveFacts(ctx, pr, parsed, fresh)...)
 }
 
 // maxFactOtherProjects is how many projects (or groups) other than the

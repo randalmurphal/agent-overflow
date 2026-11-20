@@ -320,14 +320,14 @@ func TestWorktreeBlobIDsAreTheBytesOnDisk(t *testing.T) {
 	}
 }
 
-func TestHasFilterReadsTheFilterAttribute(t *testing.T) {
+func TestFilterReadsTheFilterAttribute(t *testing.T) {
 	t.Parallel()
 	repo := testutil.InitGitRepo(t)
-	commitFile(t, repo, ".gitattributes", "*.png filter=lfs diff=lfs merge=lfs -text\nplain.png -filter\n", "attributes")
+	commitFile(t, repo, ".gitattributes", "*.png filter=lfs diff=lfs merge=lfs -text\nplain.png -filter\n*.gif filter=crypt\nbare.svg filter\n", "attributes")
 	sides := OpenedSides(repo, Pin{Old: headSHA(t, repo)})
-	for path, want := range map[string]bool{"a.png": true, "dir/b.png": true, "plain.png": false, "c.svg": false} {
-		if got, err := sides.HasFilter(context.Background(), path); err != nil || got != want {
-			t.Errorf("HasFilter(%s) = %v, %v; want %v", path, got, err, want)
+	for path, want := range map[string]string{"a.png": "lfs", "dir/b.png": "lfs", "plain.png": "", "c.svg": "", "d.gif": "crypt", "bare.svg": "set"} {
+		if got, err := sides.Filter(context.Background(), path); err != nil || got != want {
+			t.Errorf("Filter(%s) = %q, %v; want %q", path, got, err, want)
 		}
 	}
 }

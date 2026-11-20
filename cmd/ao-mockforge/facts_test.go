@@ -65,7 +65,7 @@ func TestForgeFactsSendEveryDocument(t *testing.T) {
 			tc.keys[i] = strings.ReplaceAll(key, "%s", project)
 		}
 		since := len(r.engine.Invocations(0).Invocations)
-		got, err := r.core.ResolveFacts(t.Context(), t.TempDir(), tc.pr, gitops.PRRevision{}, tc.keys)
+		got, err := r.core.ResolveFacts(t.Context(), t.TempDir(), tc.pr, gitops.PRRevision{}, tc.keys, false)
 		if err != nil {
 			t.Fatalf("%s: %v", tc.route, err)
 		}

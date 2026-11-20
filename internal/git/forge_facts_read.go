@@ -44,10 +44,37 @@ func newForgeFactCache() *factCache[ForgeFact] {
 // request answered).
 type factSender func(ctx context.Context, client *forgeapi.Client, pr PRReference, keys []forgeFactKey) ([]ForgeFact, string)
 
+// mixedCredential is a factSender credential no login has: its reads
+// answered under two, so nothing they read is held.
+const mixedCredential = "\x00mixed"
+
+// joinCredential is the credential reads answered under, held so far,
+// after one more answered under answered (empty when no request
+// answered): mixedCredential once two differ.
+func joinCredential(held, answered string) string {
+	switch {
+	case answered == "" || answered == held:
+		return held
+	case held == "":
+		return answered
+	}
+	return mixedCredential
+}
+
+// responseCredential is the credential resp was answered under, empty
+// for no response.
+func responseCredential(resp *forgeapi.Response) string {
+	if resp == nil {
+		return ""
+	}
+	return resp.Credential
+}
+
 // cachedForgeFacts answers keys through cache (resolveCached), keyed by
 // forge, host and login: only found and absent facts read under the
-// login the call started with are held, for their TTLs.
-func (c *Core) cachedForgeFacts(ctx context.Context, cache *factCache[ForgeFact], client *forgeapi.Client, pr PRReference, keys []forgeFactKey, send factSender) []ForgeFact {
+// login the call started with are held, for their TTLs. With fresh, held
+// facts are read again (factCache.claim).
+func (c *Core) cachedForgeFacts(ctx context.Context, cache *factCache[ForgeFact], client *forgeapi.Client, pr PRReference, keys []forgeFactKey, fresh bool, send factSender) []ForgeFact {
 	fp, err := client.CredentialFingerprint(ctx)
 	if err != nil {
 		log.Printf("forge facts: %s %s: credential: %v", pr.Forge, pr.Host, err)
@@ -59,7 +86,7 @@ func (c *Core) cachedForgeFacts(ctx context.Context, cache *factCache[ForgeFact]
 	}
 	prefix := pr.Forge + "\x00" + pr.Host + "\x00" + fp + "\x00"
 	credential := ""
-	return resolveCached(ctx, cache, c.nowFn, keys,
+	return resolveCached(ctx, cache, c.nowFn, keys, fresh,
 		func(k forgeFactKey) string { return prefix + k.key },
 		func(k forgeFactKey) string { return k.key },
 		func(owned []forgeFactKey) []ForgeFact {
@@ -83,11 +110,12 @@ func (c *Core) cachedForgeFacts(ctx context.Context, cache *factCache[ForgeFact]
 }
 
 // resolveCached answers one fact per key through cache: a held fact at
-// once, a key another call is reading from that read's answer, and every
-// other key from one read of them all, whose facts (one per key, in
-// order) settle their flights and are held as hold says. A waiter whose
-// context ends, or whose owner's read failed, answers unavailable.
-func resolveCached[K any](ctx context.Context, cache *factCache[ForgeFact], now func() time.Time, keys []K,
+// once (with fresh, only one held without expiry: factCache.claim), a key
+// another call is reading from that read's answer, and every other key
+// from one read of them all, whose facts (one per key, in order) settle
+// their flights and are held as hold says. A waiter whose context ends,
+// or whose owner's read failed, answers unavailable.
+func resolveCached[K any](ctx context.Context, cache *factCache[ForgeFact], now func() time.Time, keys []K, fresh bool,
 	cacheKey, factKey func(K) string, read func(owned []K) []ForgeFact, hold func(fact ForgeFact, readAt time.Time) (bool, time.Time)) []ForgeFact {
 	out := make([]ForgeFact, len(keys))
 	type waiting struct {
@@ -100,7 +128,7 @@ func resolveCached[K any](ctx context.Context, cache *factCache[ForgeFact], now 
 	var flights []*factFlight[ForgeFact]
 	at := now()
 	for i, k := range keys {
-		fact, hit, wait, own := cache.claim(cacheKey(k), at)
+		fact, hit, wait, own := cache.claim(cacheKey(k), at, fresh)
 		switch {
 		case hit:
 			out[i] = fact
@@ -169,7 +197,8 @@ func (s factSlots) largest() int { return s[len(s)-1].slots }
 // read the forge refuses as too costly or too slow (tooLarge) is read
 // again once, in halves, so a forge that keeps refusing costs at most
 // three requests per read. Each failed read is logged once, by operation,
-// with no titles: its keys answer unavailable.
+// with no titles: its keys answer unavailable. The credential is the
+// reads' (joinCredential).
 func sendFactSlots(ctx context.Context, pr PRReference, slots factSlots, keys []forgeFactKey, tooLarge func(error) bool,
 	read func(ctx context.Context, doc forgeapi.Document, slots int, keys []forgeFactKey) ([]ForgeFact, *forgeapi.Response, error)) ([]ForgeFact, string) {
 	out := make([]ForgeFact, 0, len(keys))
@@ -178,9 +207,7 @@ func sendFactSlots(ctx context.Context, pr PRReference, slots factSlots, keys []
 	run = func(keys []forgeFactKey, depth int) {
 		doc, n := slots.pick(len(keys))
 		facts, resp, err := read(ctx, doc, n, keys)
-		if resp != nil && resp.Credential != "" {
-			credential = resp.Credential
-		}
+		credential = joinCredential(credential, responseCredential(resp))
 		if err != nil && tooLarge(err) && len(keys) > 1 && depth == 0 {
 			half := len(keys) / 2
 			run(keys[:half], depth+1)

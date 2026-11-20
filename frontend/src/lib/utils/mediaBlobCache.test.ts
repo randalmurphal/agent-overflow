@@ -268,15 +268,23 @@ describe('the media blob cache', () => {
     });
   });
 
+  it('never remembers what an svg decoded at', () => {
+    for (const mimeType of ['image/svg+xml', 'IMAGE/SVG+XML; charset=utf-8']) {
+      const svg = { mimeType, width: 0, height: 0 };
+      rememberDecodedSize(svg, { naturalWidth: 267, naturalHeight: 150 } as HTMLImageElement);
+      expect(svg).toEqual({ mimeType, width: 0, height: 0 });
+    }
+  });
+
   it('remembers a decoded size only while the size is unknown', () => {
-    const size = { width: 0, height: 0 };
+    const size = { mimeType: 'image/png', width: 0, height: 0 };
     const img = { naturalWidth: 120, naturalHeight: 80 } as HTMLImageElement;
     rememberDecodedSize(size, img);
-    expect(size).toEqual({ width: 120, height: 80 });
+    expect(size).toEqual({ mimeType: 'image/png', width: 120, height: 80 });
     rememberDecodedSize(size, { naturalWidth: 1, naturalHeight: 1 } as HTMLImageElement);
-    expect(size).toEqual({ width: 120, height: 80 });
-    const unknown = { width: 0, height: 0 };
+    expect(size).toEqual({ mimeType: 'image/png', width: 120, height: 80 });
+    const unknown = { mimeType: 'image/png', width: 0, height: 0 };
     rememberDecodedSize(unknown, { naturalWidth: 0, naturalHeight: 0 } as HTMLImageElement);
-    expect(unknown).toEqual({ width: 0, height: 0 });
+    expect(unknown).toEqual({ mimeType: 'image/png', width: 0, height: 0 });
   });
 });

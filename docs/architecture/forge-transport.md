@@ -1055,23 +1055,28 @@ comment `url`, GitLab's merge request URL with `#note_<id>`.
 
 ## Facts
 
-`ResolveForgeFacts(ws, pr, rev, keys)` (`git.Core.ResolveFacts`,
+`ResolveForgeFacts(ws, pr, rev, keys, fresh)` (`git.Core.ResolveFacts`,
 `internal/git/forge_facts*.go`, `local_facts.go`) answers what a PR's
 bodies and comments name: one `ForgeFact` per key, in the keys' order,
 each `found`, `absent` (the owner said it does not exist) or
 `unavailable` (nobody could say: a failed or refused read, an object
 that is not local, a cap, a kind this release does not know). At most
 256 keys a call; a repeated key is resolved once. The forge kinds and
-the local kinds run concurrently.
+the local kinds run concurrently. `fresh` is the person's reload of the
+PR: a held answer with an expiry is read again rather than answered from
+the caches below (a read in flight for the key is joined), and the new
+answer replaces it under the same hold rules; a fresh read that fails
+answers `unavailable` and leaves the held answer for later calls. An
+answer held without expiry answers either way.
 
 | Key | Answered by |
 |---|---|
 | `ref:<project>#<n>` | GitHub `issueOrPullRequest` (kind `issue` or `pull`); GitLab `issue` |
 | `mr:<project>!<n>`, `label:<project>~<title>`, `milestone:<project>%<title>`, `snippet:<project>$<id>`, `epic:<group>&<n>` | GitLab only (`unavailable` on GitHub): `mergeRequest`, `labels(title:, includeAncestorGroups: true)`, `milestones(title:, includeAncestors: true)`, `snippets(ids:)`, `group { workItem(iid:) }` |
-| `labels:<project>` | GitLab only: the project's whole label list with its ancestor groups' (`labels(includeAncestorGroups: true)`, the set and order by title `labels(title:)` searches), each label's `title`, `color` and `textColor` in `labels`, and `complete` when that is all of them; read 100 a page by cursor, at most 10 pages and 256 KiB of estimated label bytes (64 a label plus its strings), past which it is the labels read so far, not complete; a project GitLab answers null is `absent`, and any failed page makes the whole list `unavailable` |
+| `labels:<project>` | GitLab only: the project's whole label list with its ancestor groups' (`labels(includeAncestorGroups: true)`, the set and order by title `labels(title:)` searches), each label's `title`, `color` and `textColor` in `labels`, and `complete` when that is all of them; read 100 a page by cursor, at most 10 pages and 256 KiB of estimated label bytes (64 a label plus its strings), past which it is the labels read so far, not complete; a project GitLab answers null is `absent`, and any failed page, or pages answered under two logins, makes the whole list `unavailable` |
 | `user:<name>` | GitHub `repositoryOwner` (kind `user` or `org`); GitLab `user`, else `group` (kind `group`) |
 | `commit:<hex>` | local: 7 to 64 lowercase hex naming exactly one local commit; missing or ambiguous is `unavailable` and not held |
-| `image:<head\|base\|sha>:<path>` | local: the blob's size, sniffed type and how an `<img>` of it is sized (`attachment.DisplaySize`): a raster's header dimensions, an avif's primary item `ispe` (rotated by `irot`; 0 with `clap`, for an image sequence, or past a 256 KiB `meta`), an svg's CSS default sizing from its root `width`, `height` and `viewBox` (absolute units to px, a missing side 300 or 150), or, for an svg with only a ratio, `fluid` with the ratio's smallest integer terms as `width` and `height`; 0 for ico, an svg sized by font or viewport units, and anything past the pixel budget; a Git LFS pointer whose object is in the local LFS store answers as that object (its size and header, the pointer blob's `oid`), any other pointer `lfs`, decided on every call; a blob over 25 MiB is `unavailable` |
+| `image:<head\|base\|sha>:<path>` | local: the blob's size, sniffed type and how an `<img>` of it is sized (`attachment.DisplaySize`): a raster's header dimensions, an avif's primary item `ispe` (rotated by `irot`; 0 with `clap`, for an image sequence, or past a 256 KiB `meta`), an svg's CSS default sizing from its root `width`, `height` and `viewBox` (absolute units to px, a missing side 300 or 150), or, for an svg with only a ratio, `fluid` with the ratio's smallest integer terms as `width` and `height`; 0 for ico and an svg sized by font or viewport units; a header whose size is read and past the pixel budget, a raster's or an avif's, is `absent`, as bytes that are no image are; a Git LFS pointer whose object is in the local LFS store answers as that object (its size and header, the pointer blob's `oid`), any other pointer `lfs`, decided on every call; a blob over 25 MiB is `unavailable` |
 | `lines:<sha>:<path>:<start>-<end>` | local: at most 200 lines and 64 KiB of text from a blob of at most 2 MiB; binary or past the end is `absent` |
 
 A key that does not parse is `unavailable`; a project path or login the
@@ -1093,9 +1098,9 @@ logged once with its operation and no titles.
 | Call | GitHub | GitLab |
 |---|---|---|
 | Forge keys not held | 1 `ForgeFacts8`, `ForgeFacts32` or `ForgeFacts128` per 128 keys | 1 `ForgeFacts4`, `ForgeFacts16` or `ForgeFacts32` per 32 keys, and beside them 1 `ForgeFactsLabels` per 100 labels of each `labels:` key (at most 10) |
-| Every forge key held | none | none |
+| Every forge key held | none, or with `fresh` as if none were held | none, or with `fresh` as if none were held |
 | Local keys not held | 1 `git cat-file --batch-check` for every key's object, 1 `git cat-file --batch` for the commits' subjects and the lines' blobs (streamed), 1 header read per image blob the blob image cache does not hold (stopped after at most 1 MiB, 4 at a time), 1 lstat per LFS pointer blob (an `image:` key through a pointer is never held) and a header read of its object when it is present and its header is not held, 1 `git config` for `lfs.storage` per workspace per 10 minutes when a key reaches a pointer, 1 `git ls-tree` per 200 paths or 64 KiB of paths of a commit whose path the batch-check called missing | same |
-| Every local key held | no git | no git |
+| Every local key held | no git; with `fresh`, a held abbreviated `commit:` is read as if not held | same |
 
 Every git read sets `GIT_NO_LAZY_FETCH=1`: in a partial clone a path
 whose blob is not local is `unavailable`, never fetched.
@@ -1114,7 +1119,8 @@ The caches (`factCache`, `forge_facts_cache.go`) are LRU, bounded by
 entries and estimated bytes (an entry over 1/64 of the bytes is never
 held; a forge facts entry may also hold a label list's 256 KiB), and
 share one read among concurrent calls for a key, in one call or
-overlapping ones:
+overlapping ones. A `fresh` call skips a held entry with an expiry
+(`factCache.claim`), never one without:
 
 | Cache | Key | Bound | Held |
 |---|---|---|---|

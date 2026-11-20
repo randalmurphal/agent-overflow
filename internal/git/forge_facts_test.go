@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -226,7 +228,18 @@ func gitlabFactsFixture() forgefake.Fixture {
 
 func resolveFacts(t testing.TB, core *Core, pr PRReference, keys ...string) map[string]ForgeFact {
 	t.Helper()
-	got, err := core.ResolveFacts(t.Context(), t.TempDir(), pr, PRRevision{}, keys)
+	return resolveFactsAs(t, core, pr, false, keys...)
+}
+
+// resolveFreshFacts resolves keys as the person's reload does.
+func resolveFreshFacts(t testing.TB, core *Core, pr PRReference, keys ...string) map[string]ForgeFact {
+	t.Helper()
+	return resolveFactsAs(t, core, pr, true, keys...)
+}
+
+func resolveFactsAs(t testing.TB, core *Core, pr PRReference, fresh bool, keys ...string) map[string]ForgeFact {
+	t.Helper()
+	got, err := core.ResolveFacts(t.Context(), t.TempDir(), pr, PRRevision{}, keys, fresh)
 	if err != nil {
 		t.Fatalf("ResolveFacts: %v", err)
 	}
@@ -465,6 +478,179 @@ func TestGitLabLabelListAbsentAndFailedPage(t *testing.T) {
 	}
 }
 
+// loginSwitchForge is the fake GitLab behind a token source whose login a
+// test replaces mid-read: a request carrying a token other than the
+// current login's is a 401, so its retry re-reads the token and answers
+// under the new login.
+type loginSwitchForge struct {
+	core     *Core
+	source   *swappableTokenSource
+	accepted atomic.Value // string
+	mu       sync.Mutex
+	served   map[string]int
+	// refuse answers the nth request of an operation with body in place of
+	// the fake's answer when it says so; after runs once each request is
+	// answered. Both are set before the first call.
+	refuse func(op string, n int) (body string, ok bool)
+	after  func(op string, n int)
+}
+
+func newLoginSwitchForge(t *testing.T, fixture forgefake.Fixture) *loginSwitchForge {
+	t.Helper()
+	engine := forgefake.New(forgefake.Options{APIToken: factsToken})
+	if _, err := engine.Seed(fixture); err != nil {
+		t.Fatalf("Seed: %v", err)
+	}
+	f := &loginSwitchForge{
+		source: &swappableTokenSource{},
+		served: map[string]int{},
+		refuse: func(string, int) (string, bool) { return "", false },
+		after:  func(string, int) {},
+	}
+	f.login("token-alice")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/graphql" {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+			http.Error(w, "unexpected", http.StatusNotFound)
+			return
+		}
+		if r.Header.Get("Private-Token") != f.accepted.Load().(string) {
+			http.Error(w, `{"message":"401 Unauthorized"}`, http.StatusUnauthorized)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		var payload struct {
+			Query         string `json:"query"`
+			OperationName string `json:"operationName"`
+		}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Errorf("a GraphQL request that is not JSON: %v", err)
+		}
+		f.mu.Lock()
+		f.served[payload.OperationName]++
+		n := f.served[payload.OperationName]
+		f.mu.Unlock()
+		if refusal, ok := f.refuse(payload.OperationName, n); ok {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, refusal)
+		} else {
+			// The fake takes its fixed token on its own mount for the host.
+			fwd := r.Clone(r.Context())
+			fwd.URL.Path, fwd.Host = "/gitlab/api/graphql", gitlabFactsPR.Host
+			fwd.Header.Set("Private-Token", factsToken)
+			fwd.Body = io.NopCloser(bytes.NewReader(body))
+			rec := httptest.NewRecorder()
+			engine.ServeHTTP(rec, fwd)
+			if problems, err := forgeschema.AnswerProblems("gitlab", payload.Query, rec.Body.Bytes()); err != nil || len(problems) > 0 {
+				t.Errorf("the fake's GraphQL answer: %v %v", problems, err)
+			}
+			maps.Copy(w.Header(), rec.Header())
+			w.WriteHeader(rec.Code)
+			_, _ = w.Write(rec.Body.Bytes())
+		}
+		f.after(payload.OperationName, n)
+	}))
+	t.Cleanup(srv.Close)
+	f.source.apiHost = strings.TrimPrefix(srv.URL, "http://")
+	svc, err := forgeapi.New(forgeapi.Options{Version: "test", TokenSource: f.source})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(svc.Close)
+	f.core = NewCore(WithForgeAPI(svc))
+	return f
+}
+
+// login makes token the login: the source answers it, and the forge
+// refuses every other token from now on.
+func (f *loginSwitchForge) login(token string) {
+	f.source.token.Store(token)
+	f.accepted.Store(token)
+}
+
+func (f *loginSwitchForge) answered(op string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.served[op]
+}
+
+func (f *loginSwitchForge) held() int {
+	entries, _ := f.core.forges["gitlab"].(*gitlabForge).facts.held()
+	return entries
+}
+
+// A label list whose pages answered under two logins is no one login's
+// list: it answers unavailable, logged once by operation with no titles,
+// and nothing the call read is held. Here the login changes after the
+// first page.
+func TestGitLabLabelListPagesUnderTwoLogins(t *testing.T) {
+	var logged strings.Builder
+	prev := log.Writer()
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(prev) })
+
+	f := newLoginSwitchForge(t, labelsFixture(150, labelTitleOf))
+	f.after = func(op string, n int) {
+		if op == "ForgeFactsLabels" && n == 1 {
+			f.login("token-bob")
+		}
+	}
+	got := resolveFacts(t, f.core, gitlabFactsPR, "labels:grp/app", "ref:grp/app#1")
+	expectFacts(t, got, ForgeFact{Key: "labels:grp/app", Status: FactUnavailable})
+	if n := f.answered("ForgeFactsLabels"); n != 2 {
+		t.Fatalf("%d label pages answered, want 2", n)
+	}
+	if n := f.held(); n != 0 {
+		t.Fatalf("a call whose list read under two logins held %d facts", n)
+	}
+	lines := 0
+	for line := range strings.Lines(logged.String()) {
+		if strings.Contains(line, "ForgeFactsLabels") {
+			lines++
+			if strings.Contains(line, labelTitleOf(0)) {
+				t.Errorf("the log names a title: %s", line)
+			}
+		}
+	}
+	if lines != 1 {
+		t.Fatalf("logged %d lines of the list read, want 1:\n%s", lines, logged.String())
+	}
+}
+
+// A read refused as too costly is read again in halves; when the halves
+// answered under two logins, each key is answered and none is held, even
+// when the last half answered under the login the call started with.
+func TestForgeFactsHalvesUnderTwoLoginsAreNotHeld(t *testing.T) {
+	t.Parallel()
+	f := newLoginSwitchForge(t, gitlabFactsFixture())
+	f.refuse = func(op string, n int) (string, bool) {
+		if op == "ForgeFacts4" && n == 1 {
+			return `{"errors":[{"message":"Query has complexity of 300, which exceeds max complexity of 250"}]}`, true
+		}
+		return "", false
+	}
+	f.after = func(op string, n int) {
+		switch {
+		case op != "ForgeFacts4":
+		case n == 1:
+			f.login("token-bob")
+		case n == 2:
+			f.login("token-alice")
+		}
+	}
+	got := resolveFacts(t, f.core, gitlabFactsPR, "ref:grp/app#1", "mr:grp/app!5")
+	expectFacts(t, got,
+		ForgeFact{Key: "ref:grp/app#1", Status: FactFound, Kind: "issue", Title: "Issue one", State: "open", URL: "https://gitlab.com/grp/app/-/issues/1"},
+		ForgeFact{Key: "mr:grp/app!5", Status: FactFound, Title: "MR five", State: "open", URL: "https://gitlab.com/grp/app/-/merge_requests/5"},
+	)
+	if n := f.answered("ForgeFacts4"); n != 3 {
+		t.Fatalf("%d facts reads answered, want the read and its two halves", n)
+	}
+	if n := f.held(); n != 0 {
+		t.Fatalf("halves read under two logins held %d facts", n)
+	}
+}
+
 // Concurrent calls naming one list share one read of it; a list key on
 // GitHub, or with no project, is unavailable without a request.
 func TestGitLabLabelListSharedAndRefused(t *testing.T) {
@@ -564,6 +750,137 @@ func TestForgeFactsCacheByStatus(t *testing.T) {
 	if len(reqs) != 2 || reqs[0].Operation != "ForgeFacts128" || len(reqs[0].Used) != 128 || reqs[1].Operation != "ForgeFacts8" || len(reqs[1].Used) != 1 {
 		t.Fatalf("129 keys: %+v", reqs)
 	}
+}
+
+// Within the TTL an ordinary call answers held facts with no request; a
+// reload (fresh) reads them again, a label list included, and its answer
+// replaces the held one for the calls after it.
+func TestFreshForgeFactsReadAgain(t *testing.T) {
+	t.Parallel()
+	t.Run("github", func(t *testing.T) {
+		t.Parallel()
+		fixture := githubFactsFixture()
+		f := newFactsForge(t, fixture)
+		keys := []string{"ref:acme/app#1", "user:octo", "ref:acme/app#99"}
+		resolveFacts(t, f.core, githubFactsPR, keys...)
+		fixture.Repos[0].Issues[0].Title = "Issue one, renamed"
+		if _, err := f.engine.Seed(fixture); err != nil {
+			t.Fatal(err)
+		}
+		since := f.seq()
+		if got := resolveFacts(t, f.core, githubFactsPR, keys...); got["ref:acme/app#1"].Title != "Issue one" {
+			t.Fatalf("an ordinary call within the TTL = %+v, want the held title", got["ref:acme/app#1"])
+		}
+		if reqs := f.requests(t, since); len(reqs) != 0 {
+			t.Fatalf("an ordinary call within the TTL sent %+v", reqs)
+		}
+		got := resolveFreshFacts(t, f.core, githubFactsPR, keys...)
+		if reqs := f.requests(t, since); len(reqs) != 1 || len(reqs[0].Used) != 3 {
+			t.Fatalf("a reload sent %+v, want one request for every key", reqs)
+		}
+		expectFacts(t, got, ForgeFact{Key: "ref:acme/app#1", Status: FactFound, Kind: "issue", Title: "Issue one, renamed", State: "open", URL: "https://github.com/acme/app/issues/1"},
+			ForgeFact{Key: "ref:acme/app#99", Status: FactAbsent})
+		since = f.seq()
+		got = resolveFacts(t, f.core, githubFactsPR, keys...)
+		if reqs := f.requests(t, since); len(reqs) != 0 || got["ref:acme/app#1"].Title != "Issue one, renamed" {
+			t.Fatalf("after the reload: %+v, sent %+v; want its answer held", got["ref:acme/app#1"], reqs)
+		}
+	})
+	t.Run("gitlab", func(t *testing.T) {
+		t.Parallel()
+		fixture := gitlabFactsFixture()
+		f := newFactsForge(t, fixture)
+		keys := []string{"labels:grp/app", "mr:grp/app!5"}
+		resolveFacts(t, f.core, gitlabFactsPR, keys...)
+		fixture.Repos[0].Labels[0].Color = "#00F"
+		if _, err := f.engine.Seed(fixture); err != nil {
+			t.Fatal(err)
+		}
+		since := f.seq()
+		if got := resolveFacts(t, f.core, gitlabFactsPR, keys...); got["labels:grp/app"].Labels[0].Color != "#ff0000" {
+			t.Fatalf("an ordinary call within the TTL = %+v, want the held list", got["labels:grp/app"])
+		}
+		if reqs := f.requests(t, since); len(reqs) != 0 {
+			t.Fatalf("an ordinary call within the TTL sent %+v", reqs)
+		}
+		got := resolveFreshFacts(t, f.core, gitlabFactsPR, keys...)
+		if pages, reqs := f.labelListRequests(since), f.requests(t, since); pages != 1 || len(reqs) != 2 {
+			t.Fatalf("a reload read %d label pages and sent %+v, want the list's page and one facts read", pages, reqs)
+		}
+		if list := got["labels:grp/app"]; list.Status != FactFound || list.Labels[0].Color != "#0000ff" || got["mr:grp/app!5"].Status != FactFound {
+			t.Fatalf("a reload = %+v", got)
+		}
+		since = f.seq()
+		got = resolveFacts(t, f.core, gitlabFactsPR, keys...)
+		if reqs := f.requests(t, since); len(reqs) != 0 || got["labels:grp/app"].Labels[0].Color != "#0000ff" {
+			t.Fatalf("after the reload: %+v, sent %+v; want its answer held", got["labels:grp/app"], reqs)
+		}
+	})
+}
+
+// Two reloads at once share one read of the keys they name.
+func TestFreshForgeFactsShareOneRead(t *testing.T) {
+	t.Parallel()
+	f := newFactsForge(t, githubFactsFixture())
+	keys := []string{"ref:acme/app#1", "user:octo"}
+	resolveFacts(t, f.core, githubFactsPR, keys...)
+	joined := make(chan string, 8)
+	f.core.forges["github"].(*githubForge).facts.onJoin = func(key string) { joined <- key }
+	since := f.seq()
+	release := f.hold()
+	defer release()
+	answers := make(chan map[string]ForgeFact, 2)
+	go func() { answers <- resolveFreshFacts(t, f.core, githubFactsPR, keys...) }()
+	select {
+	case <-f.arrived:
+	case got := <-answers:
+		t.Fatalf("a reload answered %+v with no request", got)
+	}
+	go func() { answers <- resolveFreshFacts(t, f.core, githubFactsPR, keys...) }()
+	for range 2 {
+		select {
+		case <-joined:
+		case <-f.arrived:
+			t.Fatal("a second reload sent its own request")
+		case got := <-answers:
+			t.Fatalf("a second reload answered %+v without joining the read in flight", got)
+		}
+	}
+	release()
+	for range 2 {
+		if got := <-answers; got["ref:acme/app#1"].Status != FactFound || got["user:octo"].Status != FactFound {
+			t.Fatalf("a shared reload = %+v", got)
+		}
+	}
+	if reqs := f.requests(t, since); len(reqs) != 1 {
+		t.Fatalf("two concurrent reloads sent %+v, want one request", reqs)
+	}
+}
+
+// A reload whose read fails answers unavailable and leaves the held
+// answer for the ordinary calls after it.
+func TestFailedFreshForgeFactsKeepTheHeldAnswer(t *testing.T) {
+	t.Parallel()
+	f := newFactsForge(t, githubFactsFixture())
+	keys := []string{"ref:acme/app#1", "user:octo"}
+	held := resolveFacts(t, f.core, githubFactsPR, keys...)
+	f.mu.Lock()
+	f.failAt["ForgeFacts8"] = f.seen["ForgeFacts8"] + 1
+	f.mu.Unlock()
+	got := resolveFreshFacts(t, f.core, githubFactsPR, keys...)
+	expectFacts(t, got, ForgeFact{Key: "ref:acme/app#1", Status: FactUnavailable}, ForgeFact{Key: "user:octo", Status: FactUnavailable})
+	f.mu.Lock()
+	failed := f.seen["ForgeFacts8"]
+	f.mu.Unlock()
+	if failed != 2 {
+		t.Fatalf("%d facts reads, want the first and the failed reload", failed)
+	}
+	since := f.seq()
+	got = resolveFacts(t, f.core, githubFactsPR, keys...)
+	if reqs := f.requests(t, since); len(reqs) != 0 {
+		t.Fatalf("after a failed reload an ordinary call sent %+v", reqs)
+	}
+	expectFacts(t, got, held["ref:acme/app#1"], held["user:octo"])
 }
 
 // Concurrent calls share the reads of the keys they share: two identical
@@ -709,16 +1026,16 @@ func TestResolveFactsArguments(t *testing.T) {
 	t.Parallel()
 	core := NewCore()
 	cwd := t.TempDir()
-	if _, err := core.ResolveFacts(t.Context(), cwd, githubFactsPR, PRRevision{}, make([]string, MaxFactKeys+1)); err == nil {
+	if _, err := core.ResolveFacts(t.Context(), cwd, githubFactsPR, PRRevision{}, make([]string, MaxFactKeys+1), false); err == nil {
 		t.Fatal("ResolveFacts took more than MaxFactKeys keys")
 	}
-	if _, err := core.ResolveFacts(t.Context(), cwd, PRReference{Forge: "github"}, PRRevision{}, nil); err == nil {
+	if _, err := core.ResolveFacts(t.Context(), cwd, PRReference{Forge: "github"}, PRRevision{}, nil, false); err == nil {
 		t.Fatal("ResolveFacts took an invalid PR")
 	}
-	if _, err := core.ResolveFacts(t.Context(), cwd, githubFactsPR, PRRevision{HeadSHA: "abc"}, nil); err == nil {
+	if _, err := core.ResolveFacts(t.Context(), cwd, githubFactsPR, PRRevision{HeadSHA: "abc"}, nil, false); err == nil {
 		t.Fatal("ResolveFacts took an abbreviated head")
 	}
-	got, err := core.ResolveFacts(t.Context(), cwd, githubFactsPR, PRRevision{}, []string{"x:1", "", "x:1", "commit:zz"})
+	got, err := core.ResolveFacts(t.Context(), cwd, githubFactsPR, PRRevision{}, []string{"x:1", "", "x:1", "commit:zz"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -751,7 +1068,7 @@ func TestFactCacheBounds(t *testing.T) {
 			t.Parallel()
 			for i := range 10_000 {
 				key := fmt.Sprintf("forge\x00github.com\x00fp\x00ref:acme/app#%d", i)
-				_, _, _, own := tc.cache.claim(key, at)
+				_, _, _, own := tc.cache.claim(key, at, false)
 				tc.cache.settle(key, own, tc.fact(i), true, true, at.Add(time.Hour))
 			}
 			entries, bytes := tc.cache.held()
@@ -831,7 +1148,7 @@ func TestForgeFactsCachedAllocations(t *testing.T) {
 	since := f.seq()
 	cwd := t.TempDir()
 	allocs := testing.AllocsPerRun(20, func() {
-		if _, err := f.core.ResolveFacts(t.Context(), cwd, githubFactsPR, PRRevision{}, keys); err != nil {
+		if _, err := f.core.ResolveFacts(t.Context(), cwd, githubFactsPR, PRRevision{}, keys, false); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -851,7 +1168,7 @@ func BenchmarkResolveFactsCached(b *testing.B) {
 	cwd := b.TempDir()
 	b.ReportAllocs()
 	for b.Loop() {
-		if _, err := f.core.ResolveFacts(b.Context(), cwd, githubFactsPR, PRRevision{}, keys); err != nil {
+		if _, err := f.core.ResolveFacts(b.Context(), cwd, githubFactsPR, PRRevision{}, keys, false); err != nil {
 			b.Fatal(err)
 		}
 	}

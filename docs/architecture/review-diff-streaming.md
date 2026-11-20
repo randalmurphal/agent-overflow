@@ -124,10 +124,12 @@ pointer's sha256, held under `lfs\x00<sha256>` as `GetGitBlobImage` holds
 them, so prose and diff share one copy, with the object's size. An object
 not local, not an image, over 25 MiB or failing verification answers
 `unavailable` ("Stored with Git LFS; the image is not in the repository.")
-and nothing is held. A working-tree file with a `filter` attribute (an
-LFS-tracked path included) answers `unavailable` ("This file passes
-through a git filter, so its image is not shown.") before any read; nothing
-is downloaded or smudged. Other image bytes are held in
+and nothing is held. A working-tree file whose `filter` attribute is
+`lfs` is classified by its bytes on disk like any other side: a smudged
+image shows, a pointer shows its local object as above. A working-tree
+file with any other `filter` attribute answers `unavailable` ("This file
+passes through a git filter, so its image is not shown.") before any
+read. Nothing is downloaded or smudged. Other image bytes are held in
 `reviewimage.Store`, keyed by the blob the record names: one 100 MiB
 budget covers held entries, loads in flight and entries a response is
 still sending. A load reserves its size before it reads, concurrent loads

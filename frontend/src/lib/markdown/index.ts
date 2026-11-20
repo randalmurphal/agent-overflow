@@ -122,7 +122,7 @@ export { createDocumentContextCache, documentContextOf, mayNeedDocumentContext }
 export type { DocumentContext, DocumentContextCache, DocumentForge } from './parser/index';
 // What a host knows about the names a document mentions, read by a
 // host's tokenizer through its block's scope (parser/documentScope.ts).
-export { readFact } from './parser/index';
+export { factDenied, readFact } from './parser/index';
 export type { DocumentReading, ForgeFactReader, ForgeFactState } from './parser/index';
 // A label's chip, which a host's extension builds and both renderers draw.
 export type { LabelChipToken } from './parser/extensions/labelChip';

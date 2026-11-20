@@ -3,6 +3,7 @@ package attachment
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 )
@@ -25,24 +26,30 @@ const (
 // height swapped by an irot of an odd quarter turn. It reads r only as far
 // as the end of the meta box, never past what r yields, so the caller's
 // reader is the byte bound; a top-level box before meta is skipped by
-// discarding, never buffered. Unknown (the zero DisplaySize) for anything
-// it cannot answer exactly: an image sequence (major brand avis), a
-// primary item with a clap (its crop), with no ispe or more than one, a
-// size outside the pixel budget, meta past avifMetaMax or after
-// avifTopBoxesMax other boxes, and every malformed or truncated structure.
-// Unknown is no error: the caller serves the image as it would without a
-// size. Every count and size read from the bytes is checked against what
-// remains before it drives a loop or an allocation.
-func AVIFSize(r io.Reader) DisplaySize {
+// discarding, never buffered. A size it read past the pixel budget is an
+// error wrapping ErrPixelBudget, as an oversized raster header is.
+// Unknown (the zero DisplaySize and no error) for anything it cannot
+// answer exactly: an image sequence (major brand avis), a primary item
+// with a clap (its crop), with no ispe or more than one, a zero side,
+// meta past avifMetaMax or after avifTopBoxesMax other boxes, and every
+// malformed or truncated structure; the caller serves such an image as it
+// would without a size. Every count and size read from the bytes is
+// checked against what remains before it drives a loop or an allocation.
+func AVIFSize(r io.Reader) (DisplaySize, error) {
 	meta, ok := avifMeta(r)
 	if !ok {
-		return DisplaySize{}
+		return DisplaySize{}, nil
 	}
 	width, height, ok := avifPrimarySize(meta)
-	if !ok || width == 0 || height == 0 || width > thumbPixelBudget || height > thumbPixelBudget || !WithinPixelBudget(int(width), int(height)) {
-		return DisplaySize{}
+	if !ok || width == 0 || height == 0 {
+		return DisplaySize{}, nil
 	}
-	return DisplaySize{Width: int(width), Height: int(height)}
+	// One side past the whole budget is checked first: the product of two
+	// 32-bit sides can overflow an int64.
+	if width > thumbPixelBudget || height > thumbPixelBudget || !WithinPixelBudget(int(width), int(height)) {
+		return DisplaySize{}, fmt.Errorf("%w: %dx%d exceeds %d pixels", ErrPixelBudget, width, height, thumbPixelBudget)
+	}
+	return DisplaySize{Width: int(width), Height: int(height)}, nil
 }
 
 var errAVIFBox = errors.New("malformed box")

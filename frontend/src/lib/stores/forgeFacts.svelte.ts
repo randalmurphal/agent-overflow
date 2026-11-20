@@ -9,14 +9,15 @@
 // changed since the last one, marks the keys nobody asked about `pending`
 // in the same task, so a body mounting in that frame already reads
 // `pending`, and asks for every key it needs in ONE `resolveForgeFacts`
-// call (chunks of 256). A found answer about one thing (an issue, a user,
-// a commit, an image, a per-title label) is never asked for again by the
+// call (chunks of 256). A found answer is never asked for again by the
 // clock: a frame asks again only for an answer that can change on its own,
 // an unavailable one or an image whose Git LFS object is not local a
-// minute after it, an absent one or a label list ten minutes after it
-// (`dueAgain`), once per frame, the old answer in use meanwhile. The
-// user's reload of the PR (`reloadForgeFacts`) asks again for everything
-// it holds, once. Local
+// minute after it, an absent one ten minutes after it (`dueAgain`), once
+// per frame, the old answer in use meanwhile. A found label list counts as
+// absent while a lex under it decided a label a body names is not in it
+// (the reader's `denied`, marked on the entry until the answer changes).
+// The user's reload of the PR (`reloadForgeFacts`) asks the forge again
+// for everything it holds, once. Local
 // kinds (commits) need the pane's workspace and loaded revision, which
 // arrive after the first frame: `noteForgeFactsRevision` asks for those
 // once when the revision becomes known or its head moves. Nothing here
@@ -75,7 +76,6 @@ import type { PRDetail, ReviewThread } from '../types/models';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import {
   factKind,
-  isLabelsFactKey,
   isLocalFactKey,
   NO_REVISION,
   REVISION_FACT_KEY,
@@ -102,7 +102,7 @@ export const FACTS_PER_CALL = 256;
 export const MAX_FACT_TEXT_PER_PR = 2 * 1024 * 1024;
 /** The facts of one PR held for readers alone at most (within `MAX_FACTS_PER_PR`). */
 export const MAX_READ_FACTS_PER_PR = 1024;
-/** An absent answer or a label list older than this is asked for again by the next frame holding it. */
+/** An absent answer, or a found one a lex read as denying a name (a label list lacking a title), older than this is asked for again by the next frame holding it. */
 export const FACT_FRESH_MS = 10 * 60 * 1000;
 /** An unavailable answer, or an image whose Git LFS object is not local, is asked for again no sooner than this after it. */
 export const FACT_RETRY_MS = 60 * 1000;
@@ -113,6 +113,7 @@ export type ResolveForgeFactsCall = (
   pr: PRRef,
   revision: PRRevision | null,
   keys: readonly string[],
+  fresh: boolean,
 ) => Promise<ForgeFacts | null>;
 
 const ZERO_REVISION: PRRevision = { baseRef: '', baseSHA: '', headSHA: '' };
@@ -120,10 +121,10 @@ const ZERO_REVISION: PRRevision = { baseRef: '', baseSHA: '', headSHA: '' };
 // The computer's answer; null when it has no `ResolveForgeFacts`. Without
 // the checkout to read in (a PR attached by no pane) nothing can be asked,
 // and every key is unavailable.
-const bound: ResolveForgeFactsCall = async (backend, workspace, pr, revision, keys) => {
+const bound: ResolveForgeFactsCall = async (backend, workspace, pr, revision, keys, fresh) => {
   if (!workspace) return { facts: keys.map(UNAVAILABLE) };
   const answer: { facts?: unknown } | null = await withBackendTarget(backend, () =>
-    ResolveForgeFacts(workspace, prReferenceWire(pr), revision ?? ZERO_REVISION, [...keys]),
+    ResolveForgeFacts(workspace, prReferenceWire(pr), revision ?? ZERO_REVISION, [...keys], fresh),
   );
   if (answer === null) return null;
   return { facts: (Array.isArray(answer.facts) ? answer.facts : []) as ForgeFact[] };
@@ -133,8 +134,10 @@ let resolver: ResolveForgeFactsCall = bound;
 /**
  * Asks `backend` for the facts `keys` name, about `pr` at `revision` in
  * `workspace` (null and null when the pane has not loaded one: local kinds
- * answer `unavailable`). The one seam the `ResolveForgeFacts` binding
- * plugs into; null when the computer does not have it.
+ * answer `unavailable`); `fresh` reads the answers that can change from
+ * the forge again rather than the computer's cache (a user's reload). The
+ * one seam the `ResolveForgeFacts` binding plugs into; null when the
+ * computer does not have it.
  */
 export function resolveForgeFacts(
   backend: BackendKey,
@@ -142,8 +145,9 @@ export function resolveForgeFacts(
   pr: PRRef,
   revision: PRRevision | null,
   keys: readonly string[],
+  fresh: boolean,
 ): Promise<ForgeFacts | null> {
-  return resolver(backend, workspace, pr, revision, keys);
+  return resolver(backend, workspace, pr, revision, keys, fresh);
 }
 
 /** Test seam: answer calls with `call`, or restore the default with null. */
@@ -165,6 +169,10 @@ interface Entry {
   /** Its answer's text was past the PR's text bound: held as unavailable
    * and not asked for again until text is dropped. */
   over?: true;
+  /** A lex decided from this found answer that a name it would hold does
+   * not exist (a label a complete list lacks): due again as an absent
+   * answer is. A changed answer is a new entry, without it. */
+  denies?: true;
 }
 
 interface Body {
@@ -383,7 +391,7 @@ export function observePRFacts(
   // Readers answer the revision from their snapshot: a moved one is a new one.
   if (moved && !marked) pr.reader = null;
   if (marked || moved) bump(pr);
-  if (ask) send(pr, ask);
+  if (ask) send(pr, ask, false);
 }
 
 function pendingEntry(head: string): Entry {
@@ -429,18 +437,19 @@ function textChars(state: ForgeFact | 'pending'): number {
 }
 
 /**
- * When the answer for `key` is due to be asked for again by the clock: an
- * unavailable one, or an image whose Git LFS object is not local (a pull
- * changes it, which the backend sees on its next look), a minute after it;
- * an absent one, or a label list (a label or an issue can be made), ten
- * minutes after it; a found thing never (only `reloadForgeFacts` asks
- * again), nor one the text bound turned away.
+ * When an answer is due to be asked for again by the clock: an unavailable
+ * one, or an image whose Git LFS object is not local (a pull changes it,
+ * which the backend sees on its next look), a minute after it; an absent
+ * one, or a found one a lex read as denying a name (a label list lacking a
+ * title a body names; a label or an issue can be made), ten minutes after
+ * it; any other found thing never (only `reloadForgeFacts` asks again),
+ * nor one the text bound turned away.
  */
-function dueAgain(key: string, entry: Entry & { state: ForgeFact }): number {
+function dueAgain(entry: Entry & { state: ForgeFact }): number {
   if (entry.over) return Infinity;
   const { status } = entry.state;
   if (status === 'unavailable' || entry.state.lfs === true) return entry.at + FACT_RETRY_MS;
-  if (status === 'absent' || isLabelsFactKey(key)) return entry.at + FACT_FRESH_MS;
+  if (status === 'absent' || entry.denies) return entry.at + FACT_FRESH_MS;
   return Infinity;
 }
 
@@ -450,7 +459,7 @@ function askAgain(pr: PRFacts, now: number, ask: string[] | null): string[] | nu
   const head = headOf(pr);
   for (const [key, entry] of pr.entries) {
     if (entry.request !== 0 || entry.state === 'pending') continue;
-    const again = dueAgain(key, entry as Entry & { state: ForgeFact });
+    const again = dueAgain(entry as Entry & { state: ForgeFact });
     if (now >= again) {
       entry.askedHead = head;
       (ask ??= newRequest()).push(key);
@@ -494,12 +503,13 @@ export function noteForgeFactsRevision(key: string, workspace: WorkspaceRef, rev
     }
   }
   if (marked) bump(pr);
-  if (ask) send(pr, ask);
+  if (ask) send(pr, ask, false);
 }
 
 /**
  * The user reloaded the PR `key`: asks once again for every answer it
- * holds, in the fewest calls. The held answers stay in use until theirs
+ * holds, in the fewest calls, each `fresh`, so the computer reads what can
+ * change from the forge rather than its cache. The held answers stay in use until theirs
  * arrive, and one answered the same keeps its signature, so nothing
  * rebuilds. A key already asked for, or still unanswered, is not asked
  * twice, so a second reload while the first is out asks nothing.
@@ -514,12 +524,13 @@ export function reloadForgeFacts(key: string): void {
     entry.askedHead = head;
     (ask ??= newRequest()).push(factKey);
   }
-  if (ask) send(pr, ask);
+  if (ask) send(pr, ask, true);
 }
 
-/** Asks for `keys` as one request: its answer applies to each of them
- * only while no later request has asked for it. */
-function send(pr: PRFacts, keys: string[]): void {
+/** Asks for `keys` as one request, every chunk `fresh` or none: its
+ * answer applies to each of them only while no later request has asked
+ * for it. */
+function send(pr: PRFacts, keys: string[], fresh: boolean): void {
   const request = ++pr.requests;
   for (const key of keys) {
     const entry = pr.entries.get(key);
@@ -531,7 +542,7 @@ function send(pr: PRFacts, keys: string[]): void {
     forgeFactsCounters.keysAsked += chunk.length;
     let call: Promise<ForgeFacts | null>;
     try {
-      call = resolveForgeFacts(pr.backend, pr.workspace, pr.ref, pr.revision, chunk);
+      call = resolveForgeFacts(pr.backend, pr.workspace, pr.ref, pr.revision, chunk, fresh);
     } catch (err) {
       call = Promise.reject(err);
     }
@@ -618,9 +629,9 @@ function sharedList(self: PRFacts, key: string, fact: ForgeFact): ForgeFact {
 
 function nextDue(pr: PRFacts): number {
   let due = Infinity;
-  for (const [key, entry] of pr.entries) {
+  for (const entry of pr.entries.values()) {
     if (entry.request !== 0 || entry.state === 'pending') continue;
-    const again = dueAgain(key, entry as Entry & { state: ForgeFact });
+    const again = dueAgain(entry as Entry & { state: ForgeFact });
     if (again < due) due = again;
   }
   return due;
@@ -660,8 +671,24 @@ export function forgeFactReader(key: string | null): ForgeFactReader | null {
   pr.reader = {
     get: (factKey) => (factKey === REVISION_FACT_KEY ? revision : (entries.get(factKey)?.state ?? readMissed(pr, factKey))),
     signature: (factKey) => (factKey === REVISION_FACT_KEY ? revisionSig : (entries.get(factKey)?.sig ?? '')),
+    denied: (factKey) => readDenied(pr, entries.get(factKey)),
   };
   return pr.reader;
+}
+
+/**
+ * A lex under a snapshot decided from its found answer `entry` that a
+ * name the answer would hold does not exist: the entry is due again as an
+ * absent answer is (`dueAgain`), and the next frame past that asks. The
+ * mark lasts while the answer does; a changed answer is a new entry, and
+ * the blocks that read it lex again and mark it again if a name is still
+ * missing. Runs inside a lex: it writes no reactive state.
+ */
+function readDenied(pr: PRFacts, entry: Entry | undefined): void {
+  if (!entry || entry.denies || entry.state === 'pending' || entry.state.status !== 'found') return;
+  entry.denies = true;
+  // With a request out, its answer sets when the next one is due.
+  if (entry.request === 0) pr.dueAt = Math.min(pr.dueAt, dueAgain(entry as Entry & { state: ForgeFact }));
 }
 
 /**
@@ -699,7 +726,7 @@ function askMissed(pr: PRFacts): void {
   });
   if (ask.length === 0) return;
   bump(pr);
-  send(pr, ask);
+  send(pr, ask, false);
 }
 
 /** Makes room for a body's key by dropping the fact held longest for

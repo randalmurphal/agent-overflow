@@ -956,8 +956,10 @@ and anti-changes that live only here:
   repository at a full commit id shows those lines, read from the local
   git objects. GitLab: a label reference as a chip in the label's
   colors, decided from the project's label list (its first 1,000
-  labels, read once per project; past that a title is looked up on its
-  own), milestone, snippet and epic references,
+  labels or 256 KiB of them, read once per project; past that a title is
+  looked up on its own; asked again ten minutes after its answer only while a body names
+  a label it lacks, which is text until then), milestone, snippet and
+  epic references,
   the `{width=… height=…}` list, playable video and audio images,
   inline diff as a highlight, `>>>` quotes, front matter, `[~]` and table-cell tasks,
   description lists, JSON tables, titled alerts, `[[_TOC_]]`, and a

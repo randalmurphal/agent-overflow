@@ -86,8 +86,6 @@ export const userFactKey = (name: string): string => `user:${name}`;
 export const labelFactKey = (project: string, title: string): string => `label:${project}~${title}`;
 /** A GitLab project's whole label list, which decides every `~label` of the project. */
 export const labelsFactKey = (project: string): string => `labels:${project}`;
-const LABELS_KIND = 'labels:';
-export const isLabelsFactKey = (key: string): boolean => key.startsWith(LABELS_KIND);
 export const milestoneFactKey = (project: string, title: string): string => `milestone:${project}%${title}`;
 export const snippetFactKey = (project: string, id: string): string => `snippet:${project}$${id}`;
 export const epicFactKey = (group: string, number: string): string => `epic:${group}&${number}`;

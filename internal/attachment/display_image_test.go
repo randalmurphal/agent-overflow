@@ -73,8 +73,8 @@ func TestValidateDisplayImage(t *testing.T) {
 		{"fluid svg", "image/svg+xml", []byte(`<svg viewBox="0 0 64 32"></svg>`), DisplaySize{Width: 2, Height: 1, Fluid: true}},
 		{"svg sized by its font", "image/svg+xml", []byte(`<svg width="2em" height="1em"></svg>`), DisplaySize{}},
 		{"avif", "image/avif", fixture(t, "solid-8x3.avif"), DisplaySize{Width: 8, Height: 3}},
-		// Over the pixel budget: shown as it is, with no size.
-		{"avif over the pixel budget", "image/avif", avifFile(avifMetaBox(1, avifItemProperties(1, avifIspe(60000, 60000)))), DisplaySize{}},
+		// A size the reader cannot read is shown as it is, with no size.
+		{"avif with a clap", "image/avif", avifFile(avifMetaBox(1, avifItemProperties(1, avifIspe(60000, 60000), avifClap()))), DisplaySize{}},
 		{"ico", "image/x-icon", append([]byte{0, 0, 1, 0, 1, 0}, make([]byte, 16)...), DisplaySize{}},
 	} {
 		got, err := ValidateDisplayImage(tc.data, tc.mime)
@@ -82,10 +82,20 @@ func TestValidateDisplayImage(t *testing.T) {
 			t.Errorf("%s: ValidateDisplayImage = %+v, %v; want %+v", tc.name, got, err, tc.want)
 		}
 	}
-	// A PNG header declaring an absurd size trips the pixel budget.
-	_, err := ValidateDisplayImage(hugePNGHeader(), "image/png")
-	if err == nil || !strings.Contains(err.Error(), "image/png") || !errors.Is(err, ErrPixelBudget) {
-		t.Fatalf("oversized png: err = %v, want ErrPixelBudget naming the format", err)
+	// A header declaring an absurd size trips the pixel budget, whatever
+	// the format: the product, or one side past what the product allows.
+	for _, tc := range []struct {
+		name, mime string
+		data       []byte
+	}{
+		{"png", "image/png", hugePNGHeader()},
+		{"avif", "image/avif", avifFile(avifMetaBox(1, avifItemProperties(1, avifIspe(60000, 60000))))},
+		{"avif one side", "image/avif", avifFile(avifMetaBox(1, avifItemProperties(1, avifIspe(1, 0xffffffff))))},
+	} {
+		got, err := ValidateDisplayImage(tc.data, tc.mime)
+		if err == nil || !strings.Contains(err.Error(), tc.mime) || !errors.Is(err, ErrPixelBudget) {
+			t.Errorf("oversized %s: ValidateDisplayImage = %+v, %v; want ErrPixelBudget naming the format", tc.name, got, err)
+		}
 	}
 }
 

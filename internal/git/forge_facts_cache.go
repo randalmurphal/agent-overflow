@@ -58,17 +58,26 @@ func newFactCache[V any](maxEntries int, maxBytes int64, size func(string, V) in
 
 // claim answers key's held value (hit), the flight another caller reads
 // it in (wait), or a new flight this caller now owns and must settle
-// (own). Exactly one of the three is set.
-func (c *factCache[V]) claim(key string, now time.Time) (value V, hit bool, wait, own *factFlight[V]) {
+// (own). Exactly one of the three is set. With fresh, a held value that
+// can change (one with an expiry) is not answered: the key is read again,
+// or the read in flight joined, and the held value stays until that read
+// settles a value that replaces it. A value held without expiry answers
+// either way.
+func (c *factCache[V]) claim(key string, now time.Time, fresh bool) (value V, hit bool, wait, own *factFlight[V]) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if element, ok := c.entries[key]; ok {
 		entry := element.Value.(*factEntry[V])
-		if entry.expires.IsZero() || now.Before(entry.expires) {
+		switch {
+		case entry.expires.IsZero():
+			c.lru.MoveToFront(element)
+			return entry.value, true, nil, nil
+		case !now.Before(entry.expires):
+			c.removeLocked(element)
+		case !fresh:
 			c.lru.MoveToFront(element)
 			return entry.value, true, nil, nil
 		}
-		c.removeLocked(element)
 	}
 	if flight, ok := c.flights[key]; ok {
 		if c.onJoin != nil {

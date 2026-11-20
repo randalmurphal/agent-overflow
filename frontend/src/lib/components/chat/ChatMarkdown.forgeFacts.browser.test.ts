@@ -295,6 +295,40 @@ describe('text inside HTML under the facts', () => {
   });
 });
 
+describe('a mounted body under a found label list', () => {
+  /** After `minutes` of frames, the keys each frame's call asked for. */
+  async function askedOver(body: string, minutes: number): Promise<(readonly string[])[]> {
+    for (let minute = 1; minute <= minutes; minute++) {
+      vi.setSystemTime(Date.now() + 60 * 1000);
+      applySnapshot(GITLAB, body, `frame ${minute}`);
+    }
+    return calls.map((call) => call.keys);
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // The asking follows what the lexes decided: a list every named label is
+  // in is never asked again by the clock, one that lacks a label a block
+  // names, in a paragraph or in HTML text, ten minutes after its answer.
+  it.each([
+    ['a paragraph names a label it lacks', 'Labels ~bug and ~docs.\n\nAfter.', true],
+    ['HTML text names a label it lacks', 'Labels ~bug.\n\n<div>In HTML ~docs.</div>\n\nAfter.', true],
+    ['every label named is in it', 'Labels ~bug and ~docs.\n\n<div>In HTML ~bug.</div>\n\nAfter.', false],
+  ] as const)('asks again by the clock when %s: %j', async (_name, body, missing) => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const key = applySnapshot(GITLAB, body);
+    const root = mount(GITLAB, key, body, hostOf());
+    await waitFor(() => expect(root.querySelectorAll('[data-streamdown-label-chip]').length).toBeGreaterThan(0));
+    await answer(() => [labelList(missing ? ['bug'] : ['bug', 'docs'])]);
+    await waitFor(() => expect(root.querySelector('[data-streamdown-label-chip] .md-label-chip-key')?.getAttribute('style') ?? '').toContain('background-color'));
+    expect(root.querySelectorAll('[data-streamdown-label-chip]')).toHaveLength(missing ? 1 : 3);
+    expect(await askedOver(body, 9)).toEqual([]);
+    expect(await askedOver(body, 51)).toEqual(missing ? [[LABELS]] : []);
+  });
+});
+
 describe('a computer without ResolveForgeFacts', () => {
   it('renders later bodies by shape from the first paint, asks nothing and moves nothing', async () => {
     let asked = 0;

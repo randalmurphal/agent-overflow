@@ -3,6 +3,7 @@ package git
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 
 	"agent-overflow/internal/attachment"
@@ -32,7 +33,9 @@ func DisplayImageMIME(buf []byte) (string, error) {
 // from its first byte, which is read only as far as the image header:
 // the MIME type and how an <img> of it is sized (an svg's from head,
 // attachment.SVGDisplaySize; an avif's from its meta box,
-// attachment.AVIFSize; unknown for ico).
+// attachment.AVIFSize; unknown for ico). A header that cannot be read, or
+// that declares a size past the pixel budget, is ErrNotDisplayImage, the
+// latter also wrapping attachment.ErrPixelBudget.
 func classifyDisplayImage(head []byte, blob io.Reader) (mime string, size attachment.DisplaySize, err error) {
 	if gitdiff.IsLFSPointer(head) {
 		return "", attachment.DisplaySize{}, ErrLFSPointer
@@ -45,13 +48,14 @@ func classifyDisplayImage(head []byte, blob io.Reader) (mime string, size attach
 	case "image/svg+xml":
 		return mime, attachment.SVGDisplaySize(head), nil
 	case "image/avif":
-		return mime, attachment.AVIFSize(blob), nil
+		size, err = attachment.AVIFSize(blob)
 	case "image/x-icon", "image/vnd.microsoft.icon":
 		return mime, attachment.DisplaySize{}, nil
+	default:
+		size.Width, size.Height, err = attachment.ImageDimensionsFrom(blob)
 	}
-	width, height, err := attachment.ImageDimensionsFrom(blob)
 	if err != nil {
-		return "", attachment.DisplaySize{}, ErrNotDisplayImage
+		return "", attachment.DisplaySize{}, fmt.Errorf("%w: %w", ErrNotDisplayImage, err)
 	}
-	return mime, attachment.DisplaySize{Width: width, Height: height}, nil
+	return mime, size, nil
 }

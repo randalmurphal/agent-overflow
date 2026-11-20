@@ -30,6 +30,9 @@ import type { PRDetail, ReviewComment, ReviewThread } from '../types/models';
 import { labelIndex, labelIndexCounters, linesFactKey, type ForgeFact } from '../utils/forgeFacts';
 import type { WorkspaceRef } from '../types/git';
 import * as diagnostics from '../utils/frontendErrorCapture';
+import { createDocumentContextCache, createParseBlocksCache, documentContextOf, lex, parseBlocks } from '../markdown';
+import { chatMarkdownExtensions, chatMarkdownForgeOptions } from '../components/chat/markdown/chatMarkdownOptions';
+import type { ForgeAttachmentSource } from '../utils/forgeAttachments';
 
 // The facts store's lifecycle, held to counts: what one applied snapshot
 // scans and asks, what an answer changes, and what dropping the PR leaves.
@@ -64,9 +67,9 @@ const snapshot = (body: string, comments: ReviewComment[] = []) => ({ detail: de
 
 /** A resolver whose calls wait until the test answers them. */
 function heldResolver() {
-  const calls: { keys: readonly string[]; head: string; answer: (facts: ForgeFact[]) => void; reject: (err: unknown) => void }[] = [];
-  const call: ResolveForgeFactsCall = (_backend, _ws, _pr, revision, keys) =>
-    new Promise((resolve, reject) => calls.push({ keys: [...keys], head: revision?.headSHA ?? '', answer: (facts) => resolve({ facts }), reject }));
+  const calls: { keys: readonly string[]; head: string; fresh: boolean; answer: (facts: ForgeFact[]) => void; reject: (err: unknown) => void }[] = [];
+  const call: ResolveForgeFactsCall = (_backend, _ws, _pr, revision, keys, fresh) =>
+    new Promise((resolve, reject) => calls.push({ keys: [...keys], head: revision?.headSHA ?? '', fresh, answer: (facts) => resolve({ facts }), reject }));
   __setResolveForgeFactsForTest(call);
   return calls;
 }
@@ -379,6 +382,16 @@ const LABELS = 'labels:group/widget';
 const list = (titles: string[], complete = true, color = '#d9534f'): ForgeFact =>
   JSON.parse(JSON.stringify({ key: LABELS, status: 'found', complete, labels: titles.map((title) => ({ title, color, textColor: '#ffffff' })) })) as ForgeFact;
 
+const SOURCE: ForgeAttachmentSource = { pr: REF, backend: 'home', webBase: 'https://gitlab.com/group/widget/-/merge_requests/3' };
+/** `body` lexed as a mounted body lexes, under the PR's facts now. */
+function lexBody(body: string): void {
+  const extensions = chatMarkdownExtensions({ forge: chatMarkdownForgeOptions(SOURCE, true) });
+  const cache = createParseBlocksCache();
+  const blocks = parseBlocks(body, extensions, cache);
+  const context = documentContextOf(cache, extensions, createDocumentContextCache(), 'gitlab', forgeFactReader(KEY));
+  blocks.forEach((block, index) => lex(block, extensions, context.scope(index)));
+}
+
 describe('asking again', () => {
   const MINUTE = 60 * 1000;
 
@@ -396,13 +409,16 @@ describe('asking again', () => {
     expect(calls).toHaveLength(1);
   });
 
-  it('asks again for an absent answer and the label list at ten minutes, once each time', async () => {
+  it('asks again for an absent answer and a label list that denied a title at ten minutes, once each time', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const calls = heldResolver();
-    const frame = (n: number) => observePRFacts(KEY, REF, snapshot('#1 #2 ~bug', [comment('c1', `frame ${n}`)]));
+    const body = '#1 #2 ~bug ~docs';
+    const frame = (n: number) => observePRFacts(KEY, REF, snapshot(body, [comment('c1', `frame ${n}`)]));
     frame(0);
     calls[0].answer([found('ref:group/widget#1'), { key: 'ref:group/widget#2', status: 'absent' }, list(['bug'])]);
     await settle();
+    // The body lexes under the answer: `docs` is not in the list.
+    lexBody(body);
     const start = Date.now();
     vi.setSystemTime(start + FACT_FRESH_MS - 1);
     frame(1);
@@ -422,6 +438,115 @@ describe('asking again', () => {
     frame(20);
     expect(calls.map((call) => call.keys)).toHaveLength(3);
     expect(calls[2].keys).toEqual(['ref:group/widget#2', LABELS]);
+    // A frame's asks, the clock's among them, take the computer's cache.
+    expect(calls.map((call) => call.fresh)).toEqual([false, false, false]);
+  });
+
+  describe('a found label list', () => {
+    const frames = (body: string, from: number, minutes: number) => {
+      for (let minute = 1; minute <= minutes; minute++) {
+        vi.setSystemTime(Date.now() + MINUTE);
+        observePRFacts(KEY, REF, snapshot(body, [comment('c1', `frame ${from + minute}`)]));
+      }
+    };
+
+    it('that every named label was found in is not asked again by the clock', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      const calls = heldResolver();
+      const body = '~bug and ~docs';
+      observePRFacts(KEY, REF, snapshot(body));
+      calls[0].answer([list(['bug', 'docs'])]);
+      await settle();
+      lexBody(body);
+      frames(body, 0, 60);
+      expect(calls).toHaveLength(1);
+    });
+
+    it('that denied a title is asked again by the first frame ten minutes after its answer, and not before', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      const calls = heldResolver();
+      const body = '~bug and ~docs';
+      observePRFacts(KEY, REF, snapshot(body));
+      calls[0].answer([list(['bug'])]);
+      await settle();
+      const answered = Date.now();
+      lexBody(body);
+      vi.setSystemTime(answered + FACT_FRESH_MS - 1);
+      observePRFacts(KEY, REF, snapshot(body, [comment('c1', 'early')]));
+      expect(calls).toHaveLength(1);
+      vi.setSystemTime(answered + FACT_FRESH_MS);
+      observePRFacts(KEY, REF, snapshot(body, [comment('c1', 'due')]));
+      observePRFacts(KEY, REF, snapshot(body, [comment('c1', 'after')]));
+      expect(calls.map((call) => call.keys)).toEqual([[LABELS], [LABELS]]);
+    });
+
+    it('answered the same again keeps being asked every ten minutes, with no new lex', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      const calls = heldResolver();
+      const body = '~bug and ~docs';
+      observePRFacts(KEY, REF, snapshot(body));
+      calls[0].answer([list(['bug'])]);
+      await settle();
+      lexBody(body);
+      for (let round = 1; round <= 3; round++) {
+        frames(body, round * 100, 10);
+        expect(calls).toHaveLength(round + 1);
+        calls[round].answer([list(['bug'])]);
+        await settle();
+      }
+    });
+
+    it('that denied a title while a reload was out is asked again ten minutes after that answer', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      const calls = heldResolver();
+      const body = '~bug and ~docs';
+      observePRFacts(KEY, REF, snapshot(body));
+      calls[0].answer([list(['bug'])]);
+      await settle();
+      reloadForgeFacts(KEY);
+      lexBody(body);
+      frames(body, 0, 15);
+      expect(calls).toHaveLength(2);
+      calls[1].answer([list(['bug'])]);
+      await settle();
+      frames(body, 100, 9);
+      expect(calls).toHaveLength(2);
+      frames(body, 200, 1);
+      expect(calls).toHaveLength(3);
+    });
+
+    it('answered anew with the title stops being asked once the block has lexed again', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      const calls = heldResolver();
+      const body = '~bug and ~docs';
+      observePRFacts(KEY, REF, snapshot(body));
+      calls[0].answer([list(['bug'])]);
+      await settle();
+      lexBody(body);
+      frames(body, 0, 10);
+      expect(calls).toHaveLength(2);
+      calls[1].answer([list(['bug', 'docs'])]);
+      await settle();
+      lexBody(body);
+      frames(body, 100, 60);
+      expect(calls).toHaveLength(2);
+    });
+
+    it('answered anew still without the title is asked again once the block has lexed again', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      const calls = heldResolver();
+      const body = '~bug and ~docs';
+      observePRFacts(KEY, REF, snapshot(body));
+      calls[0].answer([list(['bug'])]);
+      await settle();
+      lexBody(body);
+      frames(body, 0, 10);
+      calls[1].answer([list(['bug', 'other'])]);
+      await settle();
+      lexBody(body);
+      frames(body, 100, 10);
+      expect(calls.map((call) => call.keys)).toEqual([[LABELS], [LABELS], [LABELS]]);
+    });
   });
 
   it('asks for every held key on a reload, in the fewest calls, and changes no signature when the answers are the same', async () => {
@@ -436,6 +561,9 @@ describe('asking again', () => {
     const version = __forgeFactsHeldForTest(KEY)!.version;
     reloadForgeFacts(KEY);
     expect(calls.slice(2).map((call) => call.keys.length)).toEqual([FACTS_PER_CALL, 300 - FACTS_PER_CALL]);
+    // A reload asks the forge, past the computer's cache, in every chunk;
+    // the frame's own asks did not.
+    expect(calls.map((call) => call.fresh)).toEqual([false, false, true, true]);
     // Meanwhile the held answers stay in use.
     expect(forgeFactReader(KEY)!.get('ref:group/widget#1')).toMatchObject({ status: 'found' });
     for (const call of calls.slice(2)) call.answer(call.keys.map((key) => found(key)));
@@ -470,7 +598,6 @@ describe('the label list', () => {
   });
 
   it('refreshed with the same labels keeps its answer object, signature and index', async () => {
-    vi.useFakeTimers({ toFake: ['Date'] });
     const calls = heldResolver();
     observePRFacts(KEY, REF, snapshot('~bug'));
     calls[0].answer([list(['bug', 'docs'])]);
@@ -480,8 +607,7 @@ describe('the label list', () => {
     const builds = labelIndexCounters.builds;
     const signature = forgeFactReader(KEY)!.signature(LABELS);
     const version = __forgeFactsHeldForTest(KEY)!.version;
-    vi.setSystemTime(Date.now() + FACT_FRESH_MS);
-    observePRFacts(KEY, REF, snapshot('~bug', [comment('c1', 'a frame')]));
+    reloadForgeFacts(KEY);
     calls[1].answer([list(['bug', 'docs'])]);
     await settle();
     const reader = forgeFactReader(KEY)!;
@@ -579,6 +705,7 @@ describe('a key a reader is asked for that no body named', () => {
     expect(calls).toHaveLength(0);
     await settle();
     expect(calls.map((call) => call.keys)).toEqual([[seven, eight]]);
+    expect(calls[0].fresh).toBe(false);
     expect(__forgeFactsHeldForTest(KEY)).toMatchObject({ facts: 2, version: version + 1 });
     expect(forgeFactReader(KEY)!.get(seven)).toBe('pending');
     // Readers asking while it is out, old snapshot and new, ask nothing more.
@@ -786,7 +913,7 @@ describe('local facts and the loaded revision', () => {
     await settle();
     noteForgeFactsRevision(KEY, WS, revision('h1'));
     noteForgeFactsRevision(KEY, WS, revision('h1'));
-    expect(calls.slice(1).map((call) => [call.keys, call.head])).toEqual([[[`commit:${SHA}`], 'h1']]);
+    expect(calls.slice(1).map((call) => [call.keys, call.head, call.fresh])).toEqual([[[`commit:${SHA}`], 'h1', false]]);
     calls[1].answer([found(`commit:${SHA}`, { oid: SHA.padEnd(40, '0'), title: 'Subject' })]);
     await settle();
     noteForgeFactsRevision(KEY, WS, revision('h2'));

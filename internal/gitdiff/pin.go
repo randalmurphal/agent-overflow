@@ -456,26 +456,28 @@ func (s *Sides) ReadWorktreeFile(path, blob string, buf []byte) error {
 	return nil
 }
 
-// HasFilter reports whether path has a `filter` attribute in the working
-// tree, so its bytes on disk are not the bytes git stores for it.
-func (s *Sides) HasFilter(ctx context.Context, path string) (bool, error) {
+// Filter answers the value of path's `filter` attribute in the working
+// tree, the name of the filter driver its bytes on disk pass through on
+// their way to and from git ("lfs" for Git LFS, "set" for the attribute
+// with no value), or "" when it has none.
+func (s *Sides) Filter(ctx context.Context, path string) (string, error) {
 	if _, err := CleanPath(path); err != nil {
-		return false, err
+		return "", err
 	}
 	stdout, _, _, err := runGit(ctx, s.workspace, nil, false, "check-attr", "-z", "filter", "--", path)
 	if err != nil {
-		return false, fmt.Errorf("gitdiff: read attributes of %s: %w", path, err)
+		return "", fmt.Errorf("gitdiff: read attributes of %s: %w", path, err)
 	}
 	// <path> NUL filter NUL <value> NUL
 	fields := strings.Split(strings.TrimSuffix(stdout, "\x00"), "\x00")
 	if len(fields) != 3 {
-		return false, fmt.Errorf("gitdiff: malformed check-attr output %q", stdout)
+		return "", fmt.Errorf("gitdiff: malformed check-attr output %q", stdout)
 	}
 	switch fields[2] {
 	case "unspecified", "unset":
-		return false, nil
+		return "", nil
 	}
-	return true, nil
+	return fields[2], nil
 }
 
 // lfsPointerPrefix opens every Git LFS pointer file

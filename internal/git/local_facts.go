@@ -207,8 +207,9 @@ func lowerHex(s string) bool {
 }
 
 // resolveLocalFacts answers keys, each a local kind's, from the
-// repository at cwd at rev: one fact per key, in keys' order.
-func (c *Core) resolveLocalFacts(ctx context.Context, cwd string, rev PRRevision, keys []string) []ForgeFact {
+// repository at cwd at rev: one fact per key, in keys' order, a held fact
+// that can change read again with fresh.
+func (c *Core) resolveLocalFacts(ctx context.Context, cwd string, rev PRRevision, keys []string, fresh bool) []ForgeFact {
 	out := make([]ForgeFact, 0, len(keys))
 	parsed := make([]localFactKey, 0, len(keys))
 	for _, key := range keys {
@@ -224,7 +225,7 @@ func (c *Core) resolveLocalFacts(ctx context.Context, cwd string, rev PRRevision
 	}
 	prefix := cwd + "\x00"
 	var holds map[string]localHold
-	facts := resolveCached(ctx, c.localFacts, c.nowFn, parsed,
+	facts := resolveCached(ctx, c.localFacts, c.nowFn, parsed, fresh,
 		func(k localFactKey) string { return prefix + k.cacheKey },
 		func(k localFactKey) string { return k.key },
 		func(owned []localFactKey) []ForgeFact {

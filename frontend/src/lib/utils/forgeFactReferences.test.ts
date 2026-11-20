@@ -27,16 +27,22 @@ const SHA = '0123456789abcdef0123456789abcdef01234567';
 
 const extensionsFor = (source: ForgeAttachmentSource): Extension[] => chatMarkdownExtensions({ forge: chatMarkdownForgeOptions(source, true) });
 
-/** A reader over `facts`, answering `rest` for every other key, recording each key read. */
-function reader(facts: Record<string, ForgeFactState>, rest: ForgeFactState = undefined): ForgeFactReader & { read: Set<string> } {
+/** A reader over `facts`, answering `rest` for every other key, recording
+ * each key read and each key whose answer a lex said denied a name. */
+function reader(facts: Record<string, ForgeFactState>, rest: ForgeFactState = undefined): ForgeFactReader & { read: Set<string>; denials: Set<string> } {
   const read = new Set<string>();
+  const denials = new Set<string>();
   return {
     read,
+    denials,
     get: (key) => {
       read.add(key);
       return key in facts ? facts[key] : rest;
     },
     signature: (key) => JSON.stringify(key in facts ? facts[key] : rest) ?? '',
+    denied: (key) => {
+      denials.add(key);
+    },
   };
 }
 
@@ -135,6 +141,31 @@ describe('GitLab labels, milestones, snippets and epics', () => {
       { type: 'labelChip', text: '|asked', href: `${GL}/-/issues?label_name=asked`, style: null },
     ]);
     expect([...facts.read].sort()).toEqual([LABELS, 'label:group/widget~asked', 'label:group/widget~gone', 'label:group/widget~late'].sort());
+  });
+
+  it('tells the reader a complete list denied a title only when the list lacks one the body names', () => {
+    const every = reader({ [LABELS]: list(['bug', 'docs']) });
+    lexUnder('~bug and ~docs\n\n~"bug"', GITLAB, every);
+    expect([...every.denials]).toEqual([]);
+    const lacking = reader({ [LABELS]: list(['bug']) });
+    lexUnder('~bug\n\nand ~docs', GITLAB, lacking);
+    expect([...lacking.denials]).toEqual([LABELS]);
+    // Prose that opens with a digit is no label a list is asked again for;
+    // quoted, it is one.
+    const prose = reader({ [LABELS]: list(['bug']) });
+    lexUnder('takes ~5 minutes, ~2x faster', GITLAB, prose);
+    expect([...prose.denials]).toEqual([]);
+    lexUnder('~"5 minutes"', GITLAB, prose);
+    expect([...prose.denials]).toEqual([LABELS]);
+    // A list cut short denies nothing: the title's own fact decides it.
+    const short = reader({ [LABELS]: list(['bug'], false), 'label:group/widget~docs': absent('label:group/widget~docs') });
+    lexUnder('~bug ~docs', GITLAB, short);
+    expect([...short.denials]).toEqual([]);
+    for (const state of [absent(LABELS), unavailable(LABELS), 'pending' as const, undefined]) {
+      const facts = reader({ [LABELS]: state });
+      lexUnder('~bug ~docs', GITLAB, facts);
+      expect([...facts.denials], JSON.stringify(state)).toEqual([]);
+    }
   });
 
   it('builds a list\'s title index once, however many lexes read it', () => {

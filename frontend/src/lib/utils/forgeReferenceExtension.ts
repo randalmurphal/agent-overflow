@@ -34,7 +34,7 @@
 // position inside them reaches this tokenizer.
 
 import type { DestinationHook, Extension, LabelChipToken, Lexer, Token, Tokens, TokensList } from '../markdown';
-import { isOpenableScheme, markedStrikethrough, readFact } from '../markdown';
+import { factDenied, isOpenableScheme, markedStrikethrough, readFact } from '../markdown';
 import type { ForgeAttachmentSource } from './forgeAttachments';
 import {
   FACT_KEYS_PER_BODY,
@@ -567,9 +567,12 @@ export function buildForgeGitlabReferences(source: ForgeAttachmentSource): Exten
 
   const labelsKey = labelsFactKey(project);
   // A label is decided by the project's label list: in it, a chip in its
-  // colors; not in a complete one, text; not in one cut short, by its own
-  // per-title fact, which the store asks for as a key no scan named. While
-  // the list is asked, the chip; the list unavailable or absent, text.
+  // colors; not in a complete one, text, and the reader is told the list
+  // denied a title (`factDenied`: a label can be made, so the host asks
+  // for that list again), unless it reads as prose (`proseNumber`, as in
+  // "~5 minutes"); not in one cut short, by its own per-title fact,
+  // which the store asks for as a key no scan named. While the list is
+  // asked, the chip; the list unavailable or absent, text.
   const label = (lexer: Lexer, src: string): LabelChipToken | undefined => {
     const match = LABEL.exec(src);
     if (!match) return undefined;
@@ -587,7 +590,10 @@ export function buildForgeGitlabReferences(source: ForgeAttachmentSource): Exten
         color = listed.color ?? null;
         textColor = listed.textColor ?? null;
       }
-      else if (list.complete === true) return undefined;
+      else if (list.complete === true) {
+        if (match[1] !== undefined || !proseNumber(title)) factDenied(lexer, labelsKey);
+        return undefined;
+      }
       else {
         const fact = readFact<ForgeFact>(lexer, labelFactKey(project, title));
         const found = typeof fact === 'object' && fact.status === 'found' ? fact : null;

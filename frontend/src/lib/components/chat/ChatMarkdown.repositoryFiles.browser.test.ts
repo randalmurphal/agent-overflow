@@ -526,14 +526,16 @@ type SizeAnswer = { width: number; height: number; fluid?: boolean };
 
 /** Renders `write`'s body in `kind`'s host with its image's bytes `doc`,
  * answered as `size`, and answers its root. The bytes wait for the
- * returned `land`. */
-async function mountImage(kind: ImageHost, write: (src: string) => string, className: string, size: SizeAnswer, doc = FLUID_SVG): Promise<{ root: Element; land: () => void }> {
+ * returned `land`. `remount` unmounts it and renders the same body again
+ * in a new host, answering that root. */
+async function mountImage(kind: ImageHost, write: (src: string) => string, className: string, size: SizeAnswer, doc = FLUID_SVG): Promise<{ root: Element; land: () => void; remount: () => Element }> {
   const blob = svgBlob(doc);
   const fluid = size.fluid === undefined ? {} : { fluid: size.fluid };
-  const host = hostOf();
+  let show: (host: HTMLElement) => { unmount: () => void };
+  let land: () => void;
   if (kind === 'repository') {
     mockGitBlobImage(() => ({ blob, width: size.width, height: size.height, ...fluid }));
-    const land = holdTransfers();
+    land = holdTransfers();
     const body = write('docs/a.svg');
     applySnapshot(body);
     await answer((key) =>
@@ -541,9 +543,8 @@ async function mountImage(kind: ImageHost, write: (src: string) => string, class
         ? { key, status: 'found', oid: OID, mime: 'image/svg+xml', size: doc.length, ...(size.width > 0 ? { width: size.width, height: size.height } : {}), ...fluid }
         : factFor(key),
     );
-    return { root: mount(body, host, className).root(), land };
-  }
-  if (kind === 'forge attachment') {
+    show = (host) => mount(body, host, className);
+  } else if (kind === 'forge attachment') {
     let ticket = 0;
     const fetch = globalThis.fetch;
     vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) =>
@@ -553,14 +554,23 @@ async function mountImage(kind: ImageHost, write: (src: string) => string, class
       url: `/attachments/forge/tok${++ticket}?ticket=t`, mimeType: 'image/svg+xml', kind: 'image', sizeBytes: blob.size, filename: 'shot.svg',
       width: size.width, height: size.height, originalWidth: size.width, originalHeight: size.height, derived: false, ...fluid,
     }));
-    const land = holdTransfers();
-    render(ChatMarkdown, { target: host, props: { source: write(ASSET), pathRefs: EMPTY_PATH_REFS, embeddedHtml: true, class: className }, context: new Map([[FORGE_ATTACHMENT_SOURCE_CONTEXT, () => SOURCE]]) });
-    return { root: host.querySelector('.markdown-body')!, land };
+    land = holdTransfers();
+    show = (host) => render(ChatMarkdown, { target: host, props: { source: write(ASSET), pathRefs: EMPTY_PATH_REFS, embeddedHtml: true, class: className }, context: new Map([[FORGE_ATTACHMENT_SOURCE_CONTEXT, () => SOURCE]]) });
+  } else {
+    mockLocalImage(() => ({ blob, width: size.width, height: size.height, ...fluid }));
+    land = holdTransfers();
+    show = (host) => render(ChatMarkdown, { target: host, props: { source: write('shots/a.svg'), pathRefs: EMPTY_PATH_REFS, embeddedHtml: true, class: className, workspacePath: '/workspace' } });
   }
-  mockLocalImage(() => ({ blob, width: size.width, height: size.height, ...fluid }));
-  const land = holdTransfers();
-  render(ChatMarkdown, { target: host, props: { source: write('shots/a.svg'), pathRefs: EMPTY_PATH_REFS, embeddedHtml: true, class: className, workspacePath: '/workspace' } });
-  return { root: host.querySelector('.markdown-body')!, land };
+  let host = hostOf();
+  let shown = show(host);
+  const remount = () => {
+    shown.unmount();
+    host.remove();
+    host = hostOf();
+    shown = show(host);
+    return host.querySelector('.markdown-body')!;
+  };
+  return { root: host.querySelector('.markdown-body')!, land, remount };
 }
 
 /** `element`'s box from `container`'s corner. */
@@ -633,6 +643,38 @@ describe('a fluid svg', () => {
         const { painted, bare } = await paintedAndBare(root, style);
         expect(painted).toEqual(bare);
         expect([painted.width, painted.height]).toEqual([rectOf(img).width, rectOf(img).height]);
+      });
+    }
+  }
+
+  // An svg with no pixel size decodes at the browser's default object size,
+  // not a size of its own: a remount lays it out as the first mount did.
+  for (const kind of IMAGE_HOSTS) {
+    for (const className of ['review-prose', '']) {
+      it(`${kind}: lays out a remount of an unsized svg an older computer answered 0x0 as the first mount (class "${className}")`, async () => {
+        const { root, land, remount } = await mountImage(kind, FLUID_CONTEXTS[0][1], className, { width: 0, height: 0 });
+        // The first <img>'s load event, where a decoded size would be
+        // remembered, has run before the remount.
+        const loaded = new Promise<void>((resolve) => {
+          const seen = (event: Event) => {
+            if (!(event.target instanceof HTMLImageElement) || !root.contains(event.target)) return;
+            document.removeEventListener('load', seen, true);
+            setTimeout(resolve, 0);
+          };
+          document.addEventListener('load', seen, true);
+        });
+        land();
+        const first = await paintedSvg(root);
+        await loaded;
+        const box = rectIn(first, root);
+        const below = rectIn(after(root)!, root);
+        expect(box.width).toBeGreaterThan(500);
+        expect(mediaBlobCacheStats().loading).toBe(0);
+        const again = remount();
+        const img = await paintedSvg(again);
+        expect(rectIn(img, again)).toEqual(box);
+        expect(rectIn(after(again)!, again)).toEqual(below);
+        expect(img.hasAttribute('width')).toBe(false);
       });
     }
   }

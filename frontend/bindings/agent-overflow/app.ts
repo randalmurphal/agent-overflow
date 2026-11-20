@@ -1780,8 +1780,8 @@ export function GetGitActionOutcome(ws: app$0.WorkspaceRef, action: string, atte
  * read once while it is held and a new head that keeps it costs nothing.
  * A Git LFS pointer whose object is in the local LFS store serves that
  * object, verified against the pointer (gitops.Core.ReadImage), under the
- * object's own key: the pointer blob's key is the review diff's, which
- * shows the pointer. A positive maxWidth serves a derivative at the next
+ * object's own key, the one the review diff shows a pointer side's object
+ * by (reviewDiffLFSSide). A positive maxWidth serves a derivative at the next
  * ladder width (attachment.Derive), held in the same store under the blob
  * and tier and looked up first: the original is read only to derive a
  * tier not held. Concurrent calls share one read and one derivation. The
@@ -5201,10 +5201,11 @@ export function ResizeTerminal(terminalID: string, rows: number, cols: number): 
  * without the network. rev may be zero. One fact per key, in keys'
  * order; a fact nobody could read is unavailable, and the call fails only
  * on arguments it cannot run with (more than 256 keys, an invalid PR or
- * revision, a workspace that does not resolve).
+ * revision, a workspace that does not resolve). fresh is the person's
+ * reload of the PR: a held fact that can change is read again.
  */
-export function ResolveForgeFacts(ws: app$0.WorkspaceRef, pr: git$0.PRReference, rev: git$0.PRRevision, keys: string[]): $CancellablePromise<git$0.ForgeFacts> {
-    return $Call.ByID(1279729209, ws, pr, rev, keys).then(($result: any) => {
+export function ResolveForgeFacts(ws: app$0.WorkspaceRef, pr: git$0.PRReference, rev: git$0.PRRevision, keys: string[], fresh: boolean): $CancellablePromise<git$0.ForgeFacts> {
+    return $Call.ByID(1279729209, ws, pr, rev, keys, fresh).then(($result: any) => {
         return $$createType230($result);
     });
 }

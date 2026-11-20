@@ -144,7 +144,7 @@ type gitlabFactAccountRaw struct {
 	Epic   *gitlabFactItemRaw `json:"epic"`
 }
 
-func (f *gitlabForge) resolveFacts(ctx context.Context, pr PRReference, keys []forgeFactKey) []ForgeFact {
+func (f *gitlabForge) resolveFacts(ctx context.Context, pr PRReference, keys []forgeFactKey, fresh bool) []ForgeFact {
 	client, err := f.core.gitlabAPI(pr.Host)
 	if err != nil {
 		out := make([]ForgeFact, len(keys))
@@ -153,13 +153,13 @@ func (f *gitlabForge) resolveFacts(ctx context.Context, pr PRReference, keys []f
 		}
 		return out
 	}
-	return f.core.cachedForgeFacts(ctx, f.facts, client, pr, keys, f.sendFacts)
+	return f.core.cachedForgeFacts(ctx, f.facts, client, pr, keys, fresh, f.sendFacts)
 }
 
 // sendFacts reads keys: each labels: key's list (readLabelList) and the
 // other keys' slots (sendSlotFacts) concurrently, one fact per key in
-// keys' order. The credential is the one every read answered with, or
-// gitlabMixedCredential when two differ, so nothing they read is held.
+// keys' order. The credential is the reads' (joinCredential): mixed when
+// two differ, so nothing they read is held.
 func (f *gitlabForge) sendFacts(ctx context.Context, client *forgeapi.Client, pr PRReference, keys []forgeFactKey) ([]ForgeFact, string) {
 	out := make([]ForgeFact, len(keys))
 	var slotKeys []forgeFactKey
@@ -189,20 +189,10 @@ func (f *gitlabForge) sendFacts(ctx context.Context, client *forgeapi.Client, pr
 	wg.Wait()
 	credential := ""
 	for _, each := range credentials {
-		switch {
-		case each == "" || each == credential:
-		case credential == "":
-			credential = each
-		default:
-			return out, gitlabMixedCredential
-		}
+		credential = joinCredential(credential, each)
 	}
 	return out, credential
 }
-
-// gitlabMixedCredential is a sendFacts credential no login has: its reads
-// answered under two.
-const gitlabMixedCredential = "\x00mixed"
 
 func (f *gitlabForge) sendSlotFacts(ctx context.Context, client *forgeapi.Client, pr PRReference, keys []forgeFactKey) ([]ForgeFact, string) {
 	return sendFactSlots(ctx, pr, gitlabFactsQueries, keys, gitlabFactsTooCostly, func(ctx context.Context, doc forgeapi.Document, slots int, keys []forgeFactKey) ([]ForgeFact, *forgeapi.Response, error) {
@@ -384,8 +374,9 @@ type gitlabLabelPageRaw struct {
 // readLabelList answers k, a labels: key, from its project's label list,
 // read page by page by cursor: found with the labels and whether that is
 // all of them, absent for a project GitLab answers null, unavailable when
-// any page fails (nothing read is answered). It answers the credential its
-// requests were read under.
+// any page fails or the pages answered under two logins (nothing read is
+// answered). It answers the credential its requests were read under
+// (joinCredential).
 func readLabelList(ctx context.Context, client *forgeapi.Client, pr PRReference, k forgeFactKey) (ForgeFact, string) {
 	fact := ForgeFact{Key: k.key, Status: FactFound}
 	credential := ""
@@ -394,10 +385,11 @@ func readLabelList(ctx context.Context, client *forgeapi.Client, pr PRReference,
 	for page := range maxLabelListPages {
 		var raw gitlabLabelPageRaw
 		resp, err := client.GraphQL(ctx, gitlabLabelListQuery, map[string]any{"p": k.namespace, "after": after}, &raw)
-		if resp != nil && resp.Credential != "" {
-			credential = resp.Credential
-		}
+		credential = joinCredential(credential, responseCredential(resp))
 		switch {
+		case credential == mixedCredential:
+			log.Printf("forge facts: %s %s %s: a label list unavailable: page %d answered under another login", pr.Forge, pr.Host, gitlabLabelListQuery.Operation(), page+1)
+			return unavailableFact(k.key), credential
 		case err != nil:
 			log.Printf("forge facts: %s %s %s: a label list unavailable: %v", pr.Forge, pr.Host, gitlabLabelListQuery.Operation(), err)
 			return unavailableFact(k.key), credential

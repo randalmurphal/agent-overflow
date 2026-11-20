@@ -191,11 +191,15 @@ func (a *App) GetReviewDiffImage(ctx context.Context, ws WorkspaceRef, handle st
 	}
 	if current.Exists {
 		if record.blobs != nil {
-			filtered, err := sides.HasFilter(ctx, file.Path)
+			// The snapshot recorded the bytes on disk, unfiltered. Git
+			// LFS leaves on disk the image or its pointer, each of which
+			// the side's classification answers; another filter's bytes
+			// on disk are its own.
+			filter, err := sides.Filter(ctx, file.Path)
 			if err != nil {
 				return ReviewDiffImage{}, fmt.Errorf("%s: %w", action, err)
 			}
-			if filtered {
+			if filter != "" && filter != "lfs" {
 				answer.New = ReviewDiffImageSide{Exists: true, Size: current.Size, Unavailable: unavailableFilter}
 				return answer, nil
 			}

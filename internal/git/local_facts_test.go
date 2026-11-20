@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha1"
+	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"hash/crc32"
 	"image"
 	"image/png"
 	"maps"
@@ -20,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/attachment"
 	"agent-overflow/internal/gitdiff"
 	"agent-overflow/internal/testutil"
 )
@@ -128,7 +132,12 @@ func (r factsRepo) blob(t *testing.T, commit, path string) string {
 
 func resolveLocal(t *testing.T, core *Core, cwd string, rev PRRevision, keys ...string) map[string]ForgeFact {
 	t.Helper()
-	got, err := core.ResolveFacts(t.Context(), cwd, githubFactsPR, rev, keys)
+	return resolveLocalAs(t, core, cwd, rev, false, keys...)
+}
+
+func resolveLocalAs(t *testing.T, core *Core, cwd string, rev PRRevision, fresh bool, keys ...string) map[string]ForgeFact {
+	t.Helper()
+	got, err := core.ResolveFacts(t.Context(), cwd, githubFactsPR, rev, keys, fresh)
 	if err != nil {
 		t.Fatalf("ResolveFacts: %v", err)
 	}
@@ -219,6 +228,53 @@ func TestLocalFactsAnswerEveryKind(t *testing.T) {
 	}
 	if runs := calls.take(); len(runs) != 1 || runs[0] != "cat-file --batch-check=%(objectname) %(objecttype) %(objectsize)" {
 		t.Fatalf("the cached call ran %q, want only the batch-check of the unavailable keys", runs)
+	}
+}
+
+// oversized is data with the first box or chunk header it holds for kind
+// (an avif's ispe, a png's IHDR) declaring 60000x60000, the png's CRC
+// recomputed.
+func oversized(t *testing.T, data []byte, kind string) []byte {
+	t.Helper()
+	out := bytes.Clone(data)
+	at := bytes.Index(out, []byte(kind))
+	if at < 0 {
+		t.Fatalf("no %s in the fixture", kind)
+	}
+	sizeAt := at + 4
+	if kind == "ispe" {
+		// A full box: version and flags before the size.
+		sizeAt += 4
+	}
+	binary.BigEndian.PutUint32(out[sizeAt:], 60000)
+	binary.BigEndian.PutUint32(out[sizeAt+4:], 60000)
+	if kind == "IHDR" {
+		binary.BigEndian.PutUint32(out[at+17:], crc32.ChecksumIEEE(out[at:at+17]))
+	}
+	return out
+}
+
+// An image whose header declares a size past the pixel budget is no image
+// a browser is handed, whatever its format: an avif answers as a png does.
+func TestImageFactPastThePixelBudget(t *testing.T) {
+	t.Parallel()
+	repo := initGitRepo(t)
+	hugeAVIF, hugePNG := oversized(t, avifFixture(t), "ispe"), oversized(t, pngOf(t, 3, 2), "IHDR")
+	writeFactFile(t, repo, "huge.avif", hugeAVIF)
+	writeFactFile(t, repo, "huge.png", hugePNG)
+	testutil.RunGit(t, repo, "add", ".")
+	testutil.RunGit(t, repo, "commit", "-q", "-m", "huge")
+	head := strings.TrimSpace(runGitStdout(t, repo, "rev-parse", "HEAD"))
+	got := resolveLocal(t, NewCore(), repo, PRRevision{HeadSHA: head, BaseSHA: head}, "image:head:huge.png", "image:head:huge.avif")
+	for _, key := range []string{"image:head:huge.png", "image:head:huge.avif"} {
+		if want := (ForgeFact{Key: key, Status: FactAbsent}); !reflect.DeepEqual(got[key], want) {
+			t.Errorf("%s = %+v, want %+v", key, got[key], want)
+		}
+	}
+	for name, data := range map[string][]byte{"png": hugePNG, "avif": hugeAVIF} {
+		if mime, err := DisplayImageMIME(data); !errors.Is(err, ErrNotDisplayImage) || !errors.Is(err, attachment.ErrPixelBudget) {
+			t.Errorf("DisplayImageMIME(%s) = %q, %v; want ErrNotDisplayImage and ErrPixelBudget", name, mime, err)
+		}
 	}
 }
 
@@ -460,7 +516,7 @@ func TestResolveFactsMixedBatch(t *testing.T) {
 	r := newFactsRepo(t)
 	f := newFactsForge(t, githubFactsFixture())
 	keys := []string{"image:head:docs/head.png", "ref:acme/app#1", "commit:" + r.head[:7], "user:octo", "ref:acme/app#1", "unknown:x", "lines:" + r.head + ":code.go:4-4"}
-	got, err := f.core.ResolveFacts(t.Context(), r.dir, githubFactsPR, r.rev(), keys)
+	got, err := f.core.ResolveFacts(t.Context(), r.dir, githubFactsPR, r.rev(), keys, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -564,6 +620,38 @@ func TestLocalFactsHoldAnAbbreviatedCommitForTheWindow(t *testing.T) {
 	}
 	if runs := calls.take(); len(runs) != 2 {
 		t.Fatalf("after the window the abbreviation ran %q, want a batch-check and a batch read", runs)
+	}
+}
+
+// A reload reads again a local fact held for a window (an abbreviated
+// commit id) and not one held for good (keys named by a full object id).
+func TestFreshLocalFactsReadOnlyWhatCanChange(t *testing.T) {
+	t.Parallel()
+	r := newFactsRepo(t)
+	core := NewCore()
+	calls := countFactGit(core)
+	forGood := []string{"commit:" + r.head, "image:" + r.head + ":docs/head.png", "lines:" + r.head + ":code.go:4-4"}
+	abbreviated := "commit:" + r.head[:12]
+	resolveLocal(t, core, r.dir, PRRevision{}, append(forGood, abbreviated)...)
+	calls.take()
+
+	got := resolveLocalAs(t, core, r.dir, PRRevision{}, true, forGood...)
+	if runs := calls.take(); len(runs) != 0 {
+		t.Fatalf("a reload read facts held for good: %q", runs)
+	}
+	if got[forGood[1]].Status != FactFound || got[forGood[1]].Width != 3 {
+		t.Fatalf("a held image on a reload = %+v", got[forGood[1]])
+	}
+	got = resolveLocalAs(t, core, r.dir, PRRevision{}, true, abbreviated)
+	if got[abbreviated].Status != FactFound || got[abbreviated].OID != r.head {
+		t.Fatalf("abbreviated on a reload = %+v", got[abbreviated])
+	}
+	if runs := calls.take(); len(runs) != 2 {
+		t.Fatalf("a reload of the abbreviation ran %q, want a batch-check and a batch read", runs)
+	}
+	resolveLocal(t, core, r.dir, PRRevision{}, abbreviated)
+	if runs := calls.take(); len(runs) != 0 {
+		t.Fatalf("the reload's answer is not held: an ordinary call ran %q", runs)
 	}
 }
 

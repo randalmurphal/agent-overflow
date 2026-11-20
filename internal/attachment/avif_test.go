@@ -3,6 +3,7 @@ package attachment
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"io"
 	"runtime"
 	"testing"
@@ -57,7 +58,7 @@ func TestAVIFSizeOfRealFiles(t *testing.T) {
 		// Behind a megabyte of picture data, it still reads only to meta's end.
 		padded := append(append([]byte(nil), data...), make([]byte, 1<<20)...)
 		counted := &readCounter{r: bytes.NewReader(padded)}
-		got := AVIFSize(counted)
+		got := avifSizeOrUnknown(t, counted)
 		if got != (DisplaySize{Width: f.width, Height: f.height}) {
 			t.Errorf("%s: AVIFSize = %+v, want %dx%d", f.name, got, f.width, f.height)
 		}
@@ -78,7 +79,7 @@ func TestAVIFSizeTruncatedAtEveryByte(t *testing.T) {
 		end := metaEnd(t, data)
 		for cut := 0; cut <= len(data); cut++ {
 			counted := &readCounter{r: bytes.NewReader(data[:cut])}
-			got := AVIFSize(counted)
+			got := avifSizeOrUnknown(t, counted)
 			want := DisplaySize{}
 			if int64(cut) >= end {
 				want = DisplaySize{Width: f.width, Height: f.height}
@@ -266,16 +267,43 @@ func TestAVIFSizeOfBuiltStructures(t *testing.T) {
 		{"two ispe on the item", meta(avifItemProperties(1, ispe, avifIspe(40, 10))), unknown},
 		{"an index past ipco", meta(avifIprp([][]byte{ispe}, avifIpma(0, 0, avifEntry{1, []uint16{1, 2}}))), unknown},
 		{"zero width", meta(avifItemProperties(1, avifIspe(0, 10))), unknown},
-		{"over the pixel budget", meta(avifItemProperties(1, avifIspe(60000, 60000))), unknown},
 		{"a short ispe", meta(avifItemProperties(1, avifFullBox("ispe", 0, 0, u32(40)))), unknown},
 		{"too many boxes before meta", append(append(avifFtyp("avif"), bytes.Repeat(avifBox("free"), avifTopBoxesMax)...), avifMetaBox(1, avifItemProperties(1, ispe))...), unknown},
 		{"a box to the end before meta", append(avifFtyp("avif"), avifToEndBox("free")...), unknown},
 		{"empty", nil, unknown},
+		// A size past the budget it cannot read stays unknown.
+		{"over the pixel budget with a clap", meta(avifItemProperties(1, avifIspe(60000, 60000), avifClap())), unknown},
+		{"over the pixel budget in a sequence", append(avifFtyp("avis"), avifMetaBox(1, avifItemProperties(1, avifIspe(60000, 60000)))...), unknown},
 	} {
-		if got := AVIFSize(bytes.NewReader(tc.data)); got != tc.want {
+		if got := avifSizeOrUnknown(t, bytes.NewReader(tc.data)); got != tc.want {
 			t.Errorf("%s: AVIFSize = %+v, want %+v", tc.name, got, tc.want)
 		}
 	}
+	// A size it reads past the budget is refused as an oversized raster
+	// header is: the product, or one side past what the product allows.
+	for _, tc := range []struct {
+		name string
+		data []byte
+	}{
+		{"over the pixel budget", meta(avifItemProperties(1, avifIspe(60000, 60000)))},
+		{"over the pixel budget rotated", meta(avifItemProperties(1, avifIspe(60000, 60000), avifIrot(1)))},
+		{"one side past the budget", meta(avifItemProperties(1, avifIspe(1, thumbPixelBudget+1)))},
+		{"both sides at 2^32-1, past int64 multiplied", meta(avifItemProperties(1, avifIspe(0xffffffff, 0xffffffff)))},
+	} {
+		if got, err := AVIFSize(bytes.NewReader(tc.data)); !errors.Is(err, ErrPixelBudget) || got != unknown {
+			t.Errorf("%s: AVIFSize = %+v, %v; want ErrPixelBudget", tc.name, got, err)
+		}
+	}
+}
+
+// avifSizeOrUnknown is AVIFSize where no error is expected.
+func avifSizeOrUnknown(t *testing.T, r io.Reader) DisplaySize {
+	t.Helper()
+	size, err := AVIFSize(r)
+	if err != nil {
+		t.Errorf("AVIFSize: %v", err)
+	}
+	return size
 }
 
 // Sizes and counts declared far past the data are refused before they
@@ -315,7 +343,7 @@ func TestAVIFSizeRefusesDeclaredSizesPastTheData(t *testing.T) {
 		{"255 associations in 2 bytes", avifFile(avifMetaBox(1, avifIprp([][]byte{ispe}, avifFullBox("ipma", 0, 0, u32(1), u16(1), []byte{255, 0x81, 0x81}))))},
 	} {
 		counted := &readCounter{r: bytes.NewReader(tc.data)}
-		if got := AVIFSize(counted); got != (DisplaySize{}) {
+		if got := avifSizeOrUnknown(t, counted); got != (DisplaySize{}) {
 			t.Errorf("%s: AVIFSize = %+v, want unknown", tc.name, got)
 		}
 		// Never past the data, nor past ftyp, a header and the cap and a byte.
@@ -350,7 +378,7 @@ func TestAVIFSizeWorkload(t *testing.T) {
 	}
 	data := append(append(avifFtyp("avif"), atCap...), avifBox("mdat", make([]byte, 4<<20))...)
 	counted := &readCounter{r: bytes.NewReader(data)}
-	if got := AVIFSize(counted); got != (DisplaySize{Width: 40, Height: 10}) {
+	if got := avifSizeOrUnknown(t, counted); got != (DisplaySize{Width: 40, Height: 10}) {
 		t.Fatalf("meta at the cap: AVIFSize = %+v, want 40x10", got)
 	}
 	if want := int64(len(avifFtyp("avif")) + len(atCap)); counted.n != want {

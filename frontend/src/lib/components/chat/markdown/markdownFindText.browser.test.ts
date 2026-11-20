@@ -453,4 +453,14 @@ describe('markdownFindText under the PR\'s facts', () => {
     expect(texts(reads)).toBe(after);
     expect(texts(plain)).toBe(plainBefore);
   });
+
+  it('tells the facts\' reader what its lexes decided a label list lacks', () => {
+    const list: ForgeFact = { key: 'labels:group/widget', status: 'found', complete: true, labels: [{ title: 'bug', color: '#123456' }] };
+    const denied: string[] = [];
+    const facts: ForgeFactReader = { get: (key) => (key === list.key ? list : undefined), signature: () => 's', denied: (key) => denied.push(key) };
+    markdownFindText('~bug only', { embeddedHtml: true, forgeSource: FORGE, facts: () => facts });
+    expect(denied).toEqual([]);
+    markdownFindText('~bug and ~docs\n\n<div>~gone</div>', { embeddedHtml: true, forgeSource: FORGE, facts: () => facts });
+    expect(denied).toEqual([list.key, list.key]);
+  });
 });

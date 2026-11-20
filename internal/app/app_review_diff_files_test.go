@@ -450,15 +450,18 @@ func TestGetReviewDiffImageReadsNothingOverTheCap(t *testing.T) {
 	}
 }
 
-// A committed Git LFS pointer and a working-tree file under a filter are
-// unavailable with their reason; a CRLF file under core.autocrlf is
-// served as the bytes on disk.
-func TestFilteredAndLFSFilesAreUnavailable(t *testing.T) {
+// A committed Git LFS pointer whose object is not local is unavailable
+// with its reason. A working-tree file under the LFS filter is classified
+// by its bytes on disk: a smudged image shows, a pointer shows its local
+// object or the pointer's reason. A working-tree file under any other
+// filter is unavailable with its reason. A CRLF file under core.autocrlf
+// is served as the bytes on disk.
+func TestLFSAndFilteredFilesInTheReviewDiff(t *testing.T) {
 	t.Parallel()
 	app, base := reviewDiffFilesApp(t)
 	repo := testutil.InitGitRepo(t)
 	pointer := "version https://git-lfs.github.com/spec/v1\noid sha256:" + strings.Repeat("a", 64) + "\nsize 4096\n"
-	writeRepoBytes(t, repo, ".gitattributes", []byte("*.png filter=lfs diff=lfs merge=lfs -text\n"))
+	writeRepoBytes(t, repo, ".gitattributes", []byte("*.png filter=lfs diff=lfs merge=lfs -text\nsealed.png filter=crypt\n"))
 	writeRepoBytes(t, repo, "stored.png", []byte(pointer))
 	testutil.RunGit(t, repo, "add", "-A")
 	testutil.RunGit(t, repo, "commit", "-qm", "lfs")
@@ -474,18 +477,43 @@ func TestFilteredAndLFSFilesAreUnavailable(t *testing.T) {
 		t.Fatalf("a committed LFS pointer = %+v, want %+v", got.New, want)
 	}
 
+	lfsPointerTo := func(data []byte) []byte {
+		sum := sha256.Sum256(data)
+		oid := hex.EncodeToString(sum[:])
+		return fmt.Appendf(nil, "version https://git-lfs.github.com/spec/v1\noid sha256:%s\nsize %d\n", oid, len(data))
+	}
+	inStore := func(data []byte) {
+		sum := sha256.Sum256(data)
+		oid := hex.EncodeToString(sum[:])
+		writeRepoBytes(t, repo, filepath.Join(".git", "lfs", "objects", oid[:2], oid[2:4], oid), data)
+	}
 	smudged := sizedPNG(t, 6, 6)
 	writeRepoBytes(t, repo, "drawn.png", smudged)
+	local, missing := sizedPNG(t, 7, 3), sizedPNG(t, 3, 7)
+	inStore(local)
+	writeRepoBytes(t, repo, "local.png", lfsPointerTo(local))
+	writeRepoBytes(t, repo, "missing.png", lfsPointerTo(missing))
+	sealed := sizedPNG(t, 4, 4)
+	writeRepoBytes(t, repo, "sealed.png", sealed)
 	crlf := []byte("<svg xmlns=\"http://www.w3.org/2000/svg\">\r\n<rect/>\r\n</svg>\r\n")
 	writeRepoBytes(t, repo, "crlf.svg", crlf)
 	opened, err = app.OpenWorkspaceDiff(ctx, ref, false)
 	handle := filesHandle(t, opened, err)
-	got, err = app.GetReviewDiffImage(ctx, ref, handle, ReviewDiffFile{Path: "drawn.png"})
-	if err != nil {
-		t.Fatal(err)
+	read := func(path string) ReviewDiffImageSide {
+		t.Helper()
+		got, err := app.GetReviewDiffImage(ctx, ref, handle, ReviewDiffFile{Path: path})
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		return got.New
 	}
-	if want := (ReviewDiffImageSide{Exists: true, Size: int64(len(smudged)), Unavailable: "This file passes through a git filter, so its image is not shown."}); got.New != want {
-		t.Fatalf("a filtered working-tree file = %+v, want %+v", got.New, want)
+	expectSide(t, base, "a smudged LFS file", read("drawn.png"), smudged, "image/png")
+	expectSide(t, base, "an LFS pointer on disk with its object local", read("local.png"), local, "image/png")
+	if want := (ReviewDiffImageSide{Exists: true, Size: int64(len(lfsPointerTo(missing))), Unavailable: "Stored with Git LFS; the image is not in the repository."}); read("missing.png") != want {
+		t.Fatalf("an LFS pointer on disk without its object = %+v, want %+v", read("missing.png"), want)
+	}
+	if want := (ReviewDiffImageSide{Exists: true, Size: int64(len(sealed)), Unavailable: "This file passes through a git filter, so its image is not shown."}); read("sealed.png") != want {
+		t.Fatalf("a working-tree file under another filter = %+v, want %+v", read("sealed.png"), want)
 	}
 	got, err = app.GetReviewDiffImage(ctx, ref, handle, ReviewDiffFile{Path: "crlf.svg"})
 	if err != nil {
