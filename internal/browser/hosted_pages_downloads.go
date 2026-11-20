@@ -51,9 +51,11 @@ type hostedDownload struct {
 	seq             uint64
 	received, total int64
 	// ending is how far the report that ends its tracking, a terminal
-	// snapshot or the launcher's DownloadUnknown, has come. Guarded by
-	// hostedPages.mu.
-	ending hostedEnding
+	// snapshot or the launcher's DownloadUnknown, or its popup's received
+	// end, has come; pageEnd is why that popup's end ends it, when it does
+	// (popupEndingLocked). Guarded by hostedPages.mu.
+	ending  hostedEnding
+	pageEnd string
 	// The lane's alone: applied is the number of the last snapshot
 	// applied, and refused the cancel attempt whose refusal the Manager has.
 	applied uint64
@@ -95,6 +97,12 @@ func (p *hostedPages) untracked(d *hostedDownload, reason string) downloadProgre
 
 func untrackedLocked(d *hostedDownload, reason string) downloadProgress {
 	return downloadProgress{ID: d.key.id, State: downloadUntracked, Error: reason, Received: float64(d.received), Total: float64(d.total)}
+}
+
+// pageGoneLocked is the end of d that its page's end makes, for why, at
+// the counts last received. The caller holds p.mu.
+func pageGoneLocked(d *hostedDownload, why string) downloadProgress {
+	return downloadProgress{ID: d.key.id, State: downloadPageGone, Error: why, Received: float64(d.received), Total: float64(d.total)}
 }
 
 // takeEnd answers whether the caller delivers d's received end, which

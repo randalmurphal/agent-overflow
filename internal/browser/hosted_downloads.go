@@ -277,7 +277,7 @@ func (e *hostedEngine) askQuietDownloads(stop <-chan struct{}) {
 // popup's it never listed settle here. Whoever waits for the page to go
 // (DiscardPage) is woken last.
 func (e *hostedEngine) retirePage(page ids.PageHandle, why string, closed bool) {
-	running, finish := e.pages.retire(page)
+	gone, finish := e.pages.retire(page, why)
 	defer finish()
 	pageID := page
 	e.mu.Lock()
@@ -285,8 +285,8 @@ func (e *hostedEngine) retirePage(page ids.PageHandle, why string, closed bool) 
 	e.forgetPopupLocked(pageID)
 	e.forgetPageLocked(pageID)
 	e.mu.Unlock()
-	for _, id := range running {
-		e.events.DownloadProgress(downloadProgress{ID: id, State: downloadPageGone, Error: why})
+	for _, end := range gone {
+		e.events.DownloadProgress(end)
 	}
 	if closed {
 		e.events.PageClosed(pageID)

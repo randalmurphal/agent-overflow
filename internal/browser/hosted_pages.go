@@ -464,9 +464,13 @@ func (p *hostedPages) receive(page ids.PageHandle, in received) receipt {
 	}
 	ended := receipt{outcome: receiptQueued, retired: r.retired, stopped: p.lanes.ctx.Done()}
 	if in.kind != acceptedCrash {
+		pending := r.state == hostedPopupPending
 		if !r.to(pageEnding) {
 			ended.outcome = receiptEnding
 			return ended
+		}
+		if pending {
+			p.popupEndingLocked(r, in.kind)
 		}
 		if r.stopAttach != nil {
 			r.stopAttach()
@@ -475,6 +479,25 @@ func (p *hostedPages) receive(page ids.PageHandle, in received) receipt {
 	}
 	p.submitLocked(&acceptedWork{kind: in.kind, page: page, crash: in.crash})
 	return ended
+}
+
+// popupEndingLocked records the end of r, a popup the Manager has not
+// listed whose close or discard of kind was received, as the end of each
+// of its downloads whose own end was not received: the launcher cancels
+// them with the page, and its retirement delivers that (retire), so the
+// leave of the page that takes them waits for it (downloadStart.EndReported)
+// and it reads as the popup's close or discard whatever left meanwhile.
+// The caller holds p.mu.
+func (p *hostedPages) popupEndingLocked(r *hostedPageRecord, kind acceptedKind) {
+	why := pageClosedReason
+	if kind == acceptedDiscard {
+		why = popupDiscardedReason
+	}
+	for _, d := range r.downloads {
+		if d.ending == endNotReceived {
+			d.ending, d.pageEnd = endReceived, why
+		}
+	}
 }
 
 // snapshotLocked receives one snapshot of a download of page, whose record
@@ -522,12 +545,14 @@ func (p *hostedPages) snapshotLocked(page ids.PageHandle, r *hostedPageRecord, r
 }
 
 // retire ends page's record on its lane, after every report accepted
-// before its close or discard: it answers the downloads the Manager
-// admitted that still run, and finish, which the caller calls once it has
-// settled them. The record stays, closing and with no download, until
-// finish drops it and wakes whoever waits for the page to go, so a close
-// received meanwhile joins this one.
-func (p *hostedPages) retire(page ids.PageHandle) (running []downloadID, finish func()) {
+// before its close or discard: it answers the ends, for why, of the
+// downloads the Manager admitted that still run, at their newest counts,
+// but for one whose received page end Stop took and delivers (stopAll),
+// and finish, which the caller calls once it has delivered them. The
+// record stays, closing and with no download, until finish drops it and
+// wakes whoever waits for the page to go, so a close received meanwhile
+// joins this one.
+func (p *hostedPages) retire(page ids.PageHandle, why string) (gone []downloadProgress, finish func()) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	r := p.records[page]
@@ -536,8 +561,13 @@ func (p *hostedPages) retire(page ids.PageHandle) (running []downloadID, finish 
 	}
 	r.retiring = true
 	for id, d := range r.downloads {
-		if d.admission == hostedAdmitted {
-			running = append(running, id)
+		switch {
+		case d.admission != hostedAdmitted:
+		case d.pageEnd == "":
+			gone = append(gone, pageGoneLocked(d, why))
+		case d.ending == endReceived:
+			d.ending = endTaken
+			gone = append(gone, pageGoneLocked(d, d.pageEnd))
 		}
 		p.dropOwnerLocked(id, page)
 	}
@@ -545,7 +575,7 @@ func (p *hostedPages) retire(page ids.PageHandle) (running []downloadID, finish 
 		p.dropOwnerLocked(id, page)
 	}
 	r.downloads, r.ended = make(map[downloadID]*hostedDownload), nil
-	return running, func() {
+	return gone, func() {
 		p.mu.Lock()
 		defer p.mu.Unlock()
 		close(r.retired)
@@ -620,6 +650,16 @@ func (p *hostedPages) stopAll() (join func(), ends []downloadProgress) {
 		take(lane.current)
 		for _, w := range lane.jobs {
 			take(w)
+		}
+	}
+	// The received end of a pending popup's page, whose retirement no lane
+	// runs now.
+	for _, r := range p.records {
+		for _, d := range r.downloads {
+			if d.pageEnd != "" && d.ending == endReceived {
+				d.ending = endTaken
+				ends = append(ends, pageGoneLocked(d, d.pageEnd))
+			}
 		}
 	}
 	stopped := p.lanes.ctx.Done()

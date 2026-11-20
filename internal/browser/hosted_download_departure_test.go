@@ -117,8 +117,8 @@ func TestHostedEngineConnectionLossMidDownload(t *testing.T) {
 	}
 	reportDownload(t, engine, "page1", webview2host.DownloadReport{ID: "dl-a-1", State: webview2host.DownloadInterrupted, End: webview2host.DownloadEndCanceled, Path: `C:\Users\dev\Downloads\x.bin`, Received: 3, Reason: "the download was canceled"})
 	_, progress := recorder.take()
-	if len(progress) != 2 || progress[0].Received != 3 || progress[1] != (downloadProgress{ID: "dl-a-1", State: downloadPageGone, Error: popupDiscardedReason}) {
-		t.Fatalf("progress %+v, want the one progress and the end of the close, none of the launcher's late report", progress)
+	if len(progress) != 2 || progress[0].Received != 3 || progress[1] != (downloadProgress{ID: "dl-a-1", State: downloadPageGone, Error: popupDiscardedReason, Received: 3}) {
+		t.Fatalf("progress %+v, want the one progress and the end of the close at its counts, none of the launcher's late report", progress)
 	}
 	ops := sink.ops()
 	if len(ops) < 2 || ops[len(ops)-2] != webview2host.OpCancelDownload || ops[len(ops)-1] != webview2host.OpClose {

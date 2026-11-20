@@ -22,10 +22,11 @@ import (
 // pending popup; and an end applied through a lookup that found its tab
 // listed still clears what the tab's leave waits for. Each row holds the
 // report's processing after its acknowledgment, acts, then lets the
-// processing go. A pair missing here has no record to read: a listed
-// tab's close or crash and the Manager's own close of it both remove the
-// tab, and a popup's or a created page's download has no tab until its
-// listing.
+// processing go, at each point the processing can be held at. A pair
+// missing here has no record to read: a listed tab's close or crash and
+// the Manager's own close of it both remove the tab. Where a download of
+// each page state lists, for each report kind and action, is
+// TestEveryReceivedDownloadIsListedByItsHolder's.
 
 // receivedScene is a page whose reports were received and acknowledged,
 // their processing held until release.

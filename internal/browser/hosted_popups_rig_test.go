@@ -119,6 +119,17 @@ func (l *popupLauncher) respond(call fakeCDPCall) any {
 		}
 		return map[string]any{}
 	case "Runtime.evaluate":
+		var params struct {
+			Expression string `json:"expression"`
+		}
+		_ = json.Unmarshal(call.Params, &params)
+		// A page's address and title, as a read of its state asks them.
+		switch params.Expression {
+		case "document.location.toString()":
+			return map[string]any{"result": map[string]any{"type": "string", "value": "about:blank"}}
+		case "document.title":
+			return map[string]any{"result": map[string]any{"type": "string", "value": ""}}
+		}
 		return map[string]any{"result": map[string]any{"type": "object", "className": "Window"}}
 	case "Page.getNavigationHistory":
 		targetID := strings.TrimPrefix(call.SessionID, "S-")
