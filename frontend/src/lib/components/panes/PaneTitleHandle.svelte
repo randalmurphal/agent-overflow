@@ -4,7 +4,7 @@
   // start of a pane header. Extracted from ChatHeader so the terminal pane
   // header (and any future pane surface) gets the exact same behavior —
   // left-click is the drag handle (reorder the pane), right-click renames
-  // inline (Enter submits via RenameThread, Escape/blur cancels). Pane focus
+  // inline (Enter and blur submit via RenameThread, Escape cancels). Pane focus
   // is marked on the header's separator by PaneHeaderLine, not here.
   //
   // Wrapper-less on purpose: it emits the input-or-button directly into the
