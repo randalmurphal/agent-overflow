@@ -153,7 +153,9 @@ func (h *Host) teardown(page *hostPage) {
 		// After the controller, always: closing it destroys the window
 		// inside the container, and a container that outlives its page
 		// is an invisible window eating every click over its rectangle.
-		destroyWindow(page.container)
+		if err := destroyWindow(page.container); err != nil {
+			h.config.Logf("browser host: close page %s clip container: %v", page.id, err)
+		}
 		page.container = 0
 		h.releaseFocus(page, held)
 	}

@@ -315,6 +315,7 @@ type fakeWindowArgs struct {
 	handled     bool
 	newWindow   *fakeView
 	putErr      uintptr
+	handledErr  uintptr
 	deferralErr uintptr
 	deferral    *fakeDeferral
 }
@@ -337,6 +338,9 @@ var fakeWindowArgsVtbl = iNewWindowRequestedEventArgsVtbl{
 		return 0
 	}),
 	PutHandled: newComProc(func(this *fakeWindowArgs, value uintptr) uintptr {
+		if this.handledErr != 0 {
+			return this.handledErr
+		}
 		this.handled = value != 0
 		return 0
 	}),
@@ -462,7 +466,11 @@ func messageWindow(t *testing.T) uintptr {
 	if hwnd == 0 {
 		t.Fatalf("create a message-only window: %v", callErr)
 	}
-	t.Cleanup(func() { destroyWindow(hwnd) })
+	t.Cleanup(func() {
+		if err := destroyWindow(hwnd); err != nil {
+			t.Error(err)
+		}
+	})
 	return hwnd
 }
 

@@ -81,7 +81,10 @@ func (a *launcherApp) acquireHarnessReservation(distro string) error {
 	if a.memoryLease != nil {
 		a.mu.Unlock()
 		cancel()
-		_ = manager.Release(lease)
+		// Already reserved: this lease was a duplicate of the one held.
+		if err := manager.Release(lease); err != nil {
+			log.Printf("launcher: release a duplicate harness memory lease: %v", err)
+		}
 		return nil
 	}
 	a.memoryGovernor = manager

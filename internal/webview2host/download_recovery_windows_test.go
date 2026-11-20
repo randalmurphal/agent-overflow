@@ -159,7 +159,7 @@ func TestAPopupGoneWithItsOpenerReadsItsDownloadsFirst(t *testing.T) {
 		op.refs++ // the reference DownloadStarting hands over
 		r.host.attachOperation(d, op.com())
 		popup.downloads[d.id] = d
-		r.host.report(popup, d.snapshot())
+		r.host.report(popup, r.host.snapshot(d))
 	}
 	finished.received, finished.st = 100, downloadStateCompleted
 	r.host.Apply(Directive{Op: OpClose, PageID: openerPage.id})

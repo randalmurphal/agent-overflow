@@ -257,7 +257,11 @@ func startSmokeUIThread(t *testing.T) *smokeUIThread {
 			ready <- err
 			return
 		}
-		defer destroyWindow(hwnd)
+		defer func() {
+			if err := destroyWindow(hwnd); err != nil {
+				t.Errorf("smoke window: %v", err)
+			}
+		}()
 		ui.hwnd, ui.tid = hwnd, windows.GetCurrentThreadId()
 		ready <- nil
 		var msg [smokeMessageWords]uint64 // MSG is 48 bytes on 64-bit

@@ -67,7 +67,9 @@ func TestARefusedHideIsAppliedAgain(t *testing.T) {
 			defer r.done()
 			page, controller := r.createPage("page-1", "jar", false)
 			if path == "parented" {
-				destroyWindow(page.container)
+				if err := destroyWindow(page.container); err != nil {
+					t.Fatal(err)
+				}
 				page.container = 0
 			}
 			hidden := func() bool {
@@ -131,6 +133,36 @@ func TestARefusedHideIsAppliedAgain(t *testing.T) {
 }
 
 // A, then B with one native write refused, then A, for each write in turn:
+// A show whose raise failed leaves the page hidden in the host's view, so
+// the next show raises it again.
+func TestAShowWhoseRaiseFailedIsAppliedAgain(t *testing.T) {
+	r := newPopupRig(t)
+	defer r.done()
+	page, _ := r.createPage("page-1", "jar", false)
+	if err := destroyWindow(page.container); err != nil {
+		t.Fatal(err)
+	}
+	page.container = 0
+	gone, err := createClipContainer(r.host.config.HostWindow())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := destroyWindow(gone); err != nil {
+		t.Fatal(err)
+	}
+	page.child = gone
+	r.host.Apply(Directive{Op: OpBounds, PageID: "page-1", X: 10, Y: 20, W: 300, H: 200, DPR: 1, VW: 1000, VH: 800})
+	r.host.Apply(Directive{Op: OpShow, PageID: "page-1"})
+	if page.shown.visible {
+		t.Fatal("a show whose raise failed is shown in the host's view")
+	}
+	page.child = 0
+	r.host.Apply(Directive{Op: OpShow, PageID: "page-1"})
+	if !page.shown.visible {
+		t.Fatal("the show again did not show the page")
+	}
+}
+
 // from B's first write the page is at no known place, so it is hidden
 // there, whichever of its clip and controller moved, and a focus asked
 // meanwhile waits; A again moves both back, shows the page and applies the

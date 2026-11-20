@@ -26,7 +26,12 @@ func (h *Host) observe(d *hostDownload) downloadObservation {
 	}
 	switch state {
 	case downloadStateCompleted:
-		return observeCompleted(d.op.resultFilePath())
+		path, err := d.op.resultFilePath()
+		if err != nil {
+			// Completed at the file it started with.
+			h.config.Logf("browser host: download %s: %v", d.id, err)
+		}
+		return observeCompleted(path)
 	case downloadStateInterrupted:
 		reason, err := d.op.interruptReason()
 		if err != nil {
@@ -102,7 +107,7 @@ func (h *Host) answerDownload(page *hostPage, id string, attempt CancelAttempt) 
 	if attempt > d.cancel.Attempt() && d.op != nil && !h.cancelDownload(d, attempt) {
 		return
 	}
-	answer := d.snapshot()
+	answer := h.snapshot(d)
 	answer.Answer = true
 	h.report(page, answer)
 }
@@ -120,7 +125,7 @@ func (h *Host) cancelDownload(d *hostDownload, attempt CancelAttempt) bool {
 		d.cancel = CancelRefused(attempt, err)
 		h.reconcileDownload(d, sampleStatus)
 		if d.page.downloads[d.id] == d {
-			refused := d.snapshot()
+			refused := h.snapshot(d)
 			refused.Answer = true
 			h.report(d.page, refused)
 		}

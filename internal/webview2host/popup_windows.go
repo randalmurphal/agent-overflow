@@ -112,7 +112,15 @@ func (p *hostPage) unannounced() bool {
 // it fails for is not created (controllerCompleted): a window it opened
 // would be WebView2's own.
 func (h *Host) watchWindows(page *hostPage, view *iCoreWebView2) error {
-	opened := newNewWindowRequestedHandler(func(args *iNewWindowRequestedEventArgs) { h.newWindowRequested(page, args) })
+	// The refusal outlives the page's detach, so it keeps the page's id,
+	// never the page.
+	id := page.id
+	opened := newNewWindowRequestedHandler(
+		func(args *iNewWindowRequestedEventArgs) { h.newWindowRequested(page, args) },
+		func(err error) {
+			h.config.Logf("browser host: page %s: refuse a new window after the page went: %v", id, err)
+		},
+	)
 	page.newWindow = opened
 	err := view.addNewWindowRequested(opened)
 	opened.ref.release()
@@ -155,7 +163,12 @@ func (h *Host) newWindowRequested(opener *hostPage, args *iNewWindowRequestedEve
 	}
 	args.addRef()
 	h.popupSeq++
-	uri := strings.ToValidUTF8(args.uri(), "\uFFFD")
+	rawURI, err := args.uri()
+	if err != nil {
+		// The popup still opens; it is reported with no address.
+		h.config.Logf("browser host: page %s: %v", opener.id, err)
+	}
+	uri := strings.ToValidUTF8(rawURI, "\uFFFD")
 	prefix := truncateUTF8(uri, MaxPopupURLBytes)
 	if len(prefix) < len(uri) {
 		prefix = strings.Clone(prefix)

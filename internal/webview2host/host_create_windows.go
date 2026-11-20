@@ -145,7 +145,9 @@ func (h *Host) controllerCompleted(page *hostPage, hwnd uintptr, hr uintptr, con
 			h.config.Logf("browser host: page %s close raced controller: %v", page.id, err)
 		}
 		controller.release()
-		destroyWindow(page.container)
+		if err := destroyWindow(page.container); err != nil {
+			h.config.Logf("browser host: page %s clip container: %v", page.id, err)
+		}
 		page.container = 0
 		return
 	}
@@ -166,7 +168,9 @@ func (h *Host) controllerCompleted(page *hostPage, hwnd uintptr, hr uintptr, con
 	if page.container != 0 {
 		// Normal path: the container was the controller's parent from its
 		// creation call, so no live WebView2 window is ever reparented.
-		raiseChild(page.container)
+		if err := raiseChild(page.container); err != nil {
+			h.config.Logf("browser host: page %s may render behind the app: %v", page.id, err)
+		}
 	} else {
 		// Container creation failed before the controller started. The
 		// controller is a direct child of the host, so identify and raise it
@@ -176,8 +180,8 @@ func (h *Host) controllerCompleted(page *hostPage, hwnd uintptr, hr uintptr, con
 		if page.child == 0 {
 			h.config.Logf("browser host: page %s child window not identified; "+
 				"the pane may render behind the app and cannot be clipped", page.id)
-		} else {
-			raiseChild(page.child)
+		} else if err := raiseChild(page.child); err != nil {
+			h.config.Logf("browser host: page %s may render behind the app: %v", page.id, err)
 		}
 	}
 
@@ -188,7 +192,10 @@ func (h *Host) controllerCompleted(page *hostPage, hwnd uintptr, hr uintptr, con
 	}
 	page.view = view
 
-	failHandler := newProcessFailedHandler(func(kind uint32) {
+	failHandler := newProcessFailedHandler(func(kind uint32, err error) {
+		if err != nil {
+			h.config.Logf("browser host: page %s process failed: %v", page.id, err)
+		}
 		h.pageReport(page, ReportProcessFailed, processFailedKindName(kind))
 	})
 	page.failHandler = failHandler
@@ -268,7 +275,9 @@ func (h *Host) failUncreated(page *hostPage, detail string) {
 	if mine {
 		delete(h.pages, page.id)
 	}
-	destroyWindow(page.container)
+	if err := destroyWindow(page.container); err != nil {
+		h.config.Logf("browser host: page %s clip container: %v", page.id, err)
+	}
 	page.container = 0
 	if page.popup != nil {
 		// Never created, so it made no report: it goes unheard, its window

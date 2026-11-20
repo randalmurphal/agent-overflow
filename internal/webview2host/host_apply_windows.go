@@ -178,8 +178,12 @@ func (h *Host) showPage(page *hostPage) {
 	}
 	// Every backend show re-raises: Wails' own recovery path can recreate
 	// the SPA controller, which would land it above the pane again, and a
-	// raise is cheap.
-	raiseChild(page.raiseTarget())
+	// raise is cheap. A failed raise leaves the page hidden in the host's
+	// view, so the next present shows and raises it again.
+	if err := raiseChild(page.raiseTarget()); err != nil {
+		h.config.Logf("browser host: page %s show: %v", page.id, err)
+		return
+	}
 	page.shown.visible = true
 }
 

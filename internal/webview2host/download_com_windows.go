@@ -108,8 +108,12 @@ func (a *iDownloadStartingEventArgs) downloadOperation() (*iCoreWebView2Download
 	return op, nil
 }
 
-func (a *iDownloadStartingEventArgs) resultFilePath() string {
-	return comString(a.vtbl.GetResultFilePath, unsafe.Pointer(a))
+func (a *iDownloadStartingEventArgs) resultFilePath() (string, error) {
+	path, err := comString(a.vtbl.GetResultFilePath, unsafe.Pointer(a))
+	if err != nil {
+		return "", fmt.Errorf("read its file: %w", err)
+	}
+	return path, nil
 }
 
 // putResultFilePath is put_ResultFilePath([in] LPCWSTR): the file the
@@ -194,28 +198,38 @@ func (o *iCoreWebView2DownloadOperation) removeStateChanged(token eventRegistrat
 
 // uri is get_Uri, or an error when the runtime does not answer it.
 func (o *iCoreWebView2DownloadOperation) uri() (string, error) {
-	uri, err := comStringResult(o.vtbl.GetURI, unsafe.Pointer(o))
+	uri, err := comString(o.vtbl.GetURI, unsafe.Pointer(o))
 	if err != nil {
 		return "", fmt.Errorf("read its address: %w", err)
 	}
 	return uri, nil
 }
 
-func (o *iCoreWebView2DownloadOperation) resultFilePath() string {
-	return comString(o.vtbl.GetResultFilePath, unsafe.Pointer(o))
+func (o *iCoreWebView2DownloadOperation) resultFilePath() (string, error) {
+	path, err := comString(o.vtbl.GetResultFilePath, unsafe.Pointer(o))
+	if err != nil {
+		return "", fmt.Errorf("read its file: %w", err)
+	}
+	return path, nil
 }
 
-func (o *iCoreWebView2DownloadOperation) totalBytes() int64 {
+// totalBytes is get_TotalBytesToReceive, 0 when the size is unknown (-1).
+func (o *iCoreWebView2DownloadOperation) totalBytes() (int64, error) {
 	var value int64
-	_, _, _ = o.vtbl.GetTotalBytesToReceive.Call(uintptr(unsafe.Pointer(o)), uintptr(unsafe.Pointer(&value)))
-	// -1 when the size is unknown.
-	return max(value, 0)
+	hr, _, _ := o.vtbl.GetTotalBytesToReceive.Call(uintptr(unsafe.Pointer(o)), uintptr(unsafe.Pointer(&value)))
+	if err := hresult(hr); err != nil {
+		return 0, fmt.Errorf("read its size: %w", err)
+	}
+	return max(value, 0), nil
 }
 
-func (o *iCoreWebView2DownloadOperation) bytesReceived() int64 {
+func (o *iCoreWebView2DownloadOperation) bytesReceived() (int64, error) {
 	var value int64
-	_, _, _ = o.vtbl.GetBytesReceived.Call(uintptr(unsafe.Pointer(o)), uintptr(unsafe.Pointer(&value)))
-	return max(value, 0)
+	hr, _, _ := o.vtbl.GetBytesReceived.Call(uintptr(unsafe.Pointer(o)), uintptr(unsafe.Pointer(&value)))
+	if err := hresult(hr); err != nil {
+		return 0, fmt.Errorf("read its bytes received: %w", err)
+	}
+	return max(value, 0), nil
 }
 
 func (o *iCoreWebView2DownloadOperation) state() (uint32, error) {
@@ -242,14 +256,8 @@ func (o *iCoreWebView2DownloadOperation) cancel() error {
 }
 
 // comString calls a getter of an LPWSTR the callee allocated and the caller
-// frees, answering "" on failure.
-func comString(getter comProc, this unsafe.Pointer) string {
-	value, _ := comStringResult(getter, this)
-	return value
-}
-
-// comStringResult is comString with the failure: an HRESULT, or no string.
-func comStringResult(getter comProc, this unsafe.Pointer) (string, error) {
+// frees. It fails with the getter's HRESULT, or when it returned no string.
+func comString(getter comProc, this unsafe.Pointer) (string, error) {
 	var value *uint16
 	hr, _, _ := getter.Call(uintptr(this), uintptr(unsafe.Pointer(&value)))
 	if err := hresult(hr); err != nil {

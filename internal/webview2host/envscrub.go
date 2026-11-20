@@ -1,6 +1,8 @@
 package webview2host
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"sort"
 	"strings"
@@ -30,11 +32,13 @@ var EnvOverrideNames = []string{
 }
 
 // ScrubEnvOverrides unsets every name in EnvOverrideNames and returns the
-// ones that were present, sorted, for logging. Presence is decided with
-// LookupEnv, not by comparing to "": an empty value is exactly the case
-// that overrides silently.
-func ScrubEnvOverrides() []string {
+// ones that were present and removed, sorted, for logging, and an error
+// naming each one it could not unset. Presence is decided with LookupEnv,
+// not by comparing to "": an empty value is exactly the case that
+// overrides silently.
+func ScrubEnvOverrides() ([]string, error) {
 	var removed []string
+	var failed []error
 	for _, name := range EnvOverrideNames {
 		value, ok := os.LookupEnv(name)
 		if !ok {
@@ -42,11 +46,14 @@ func ScrubEnvOverrides() []string {
 		}
 		// The value goes into launcher.log, and it came from the user's
 		// shell: strip control characters so it cannot forge a log line.
+		if err := os.Unsetenv(name); err != nil {
+			failed = append(failed, fmt.Errorf("unset %s: %w", name, err))
+			continue
+		}
 		removed = append(removed, name+"="+strings.Map(printableOnly, value))
-		_ = os.Unsetenv(name)
 	}
 	sort.Strings(removed)
-	return removed
+	return removed, errors.Join(failed...)
 }
 
 // FormatScrub renders ScrubEnvOverrides' result for launcher.log.

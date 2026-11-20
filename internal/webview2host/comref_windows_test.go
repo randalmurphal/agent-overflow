@@ -36,13 +36,13 @@ var comObjectKinds = []struct {
 	{"accelerator key pressed", func() unsafe.Pointer {
 		return unsafe.Pointer(newAcceleratorKeyPressedHandler(func(*iAcceleratorKeyPressedEventArgs) {}))
 	}},
-	{"process failed", func() unsafe.Pointer { return unsafe.Pointer(newProcessFailedHandler(func(uint32) {})) }},
+	{"process failed", func() unsafe.Pointer { return unsafe.Pointer(newProcessFailedHandler(func(uint32, error) {})) }},
 	{"download starting", func() unsafe.Pointer {
 		return unsafe.Pointer(newDownloadStartingHandler(func(*iDownloadStartingEventArgs) {}))
 	}},
 	{"download event", func() unsafe.Pointer { return unsafe.Pointer(newDownloadEventHandler(func() {})) }},
 	{"new window requested", func() unsafe.Pointer {
-		return unsafe.Pointer(newNewWindowRequestedHandler(func(*iNewWindowRequestedEventArgs) {}))
+		return unsafe.Pointer(newNewWindowRequestedHandler(func(*iNewWindowRequestedEventArgs) {}, func(error) {}))
 	}},
 	{"view event", func() unsafe.Pointer { return unsafe.Pointer(newViewEventHandler(func() {})) }},
 }
@@ -130,7 +130,7 @@ func TestALateInvokeOfADetachedHandlerIsANoOp(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	failed := newProcessFailedHandler(func(uint32) { count() })
+	failed := newProcessFailedHandler(func(uint32, error) { count() })
 	pressed := newAcceleratorKeyPressedHandler(func(*iAcceleratorKeyPressedEventArgs) { count() })
 	find := newFindStartCompletedHandler(func(uintptr) { count() })
 	devtools := newDevToolsCompletedHandler(func(uintptr, string) { count() })
@@ -188,7 +188,7 @@ func TestRepeatedPagesDoNotGrowTheRootSet(t *testing.T) {
 		controller := newControllerCompletedHandler(func(uintptr, *iCoreWebView2Controller) {})
 		held = append(held, webView2Holds(unsafe.Pointer(controller)))
 		controller.ref.release()
-		page.failHandler = newProcessFailedHandler(func(uint32) { _ = page })
+		page.failHandler = newProcessFailedHandler(func(uint32, error) { _ = page })
 		held = append(held, webView2Holds(unsafe.Pointer(page.failHandler)))
 		page.failHandler.ref.release()
 		page.keyHandler = newAcceleratorKeyPressedHandler(func(*iAcceleratorKeyPressedEventArgs) { _ = page })

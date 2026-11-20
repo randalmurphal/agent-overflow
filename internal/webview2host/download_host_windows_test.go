@@ -35,8 +35,9 @@ type fakeOp struct {
 	uri       string
 	canceled  int
 	// refuseStateSub fails AddStateChanged; stateErr fails GetState;
-	// refuseCancel fails Cancel; uriErr fails get_Uri.
-	refuseStateSub, stateErr, refuseCancel, uriErr bool
+	// refuseCancel fails Cancel; uriErr fails get_Uri; readErr fails the
+	// byte counts and get_ResultFilePath.
+	refuseStateSub, stateErr, refuseCancel, uriErr, readErr bool
 }
 
 func fakeHandlerAddRef(h *iDownloadEventHandler) {
@@ -89,11 +90,26 @@ var fakeOpVtbl = iCoreWebView2DownloadOperationVtbl{
 		return 0
 	}),
 	GetResultFilePath: newComProc(func(this *fakeOp, out *uintptr) uintptr {
+		if this.readErr {
+			return 0x80004005 // E_FAIL
+		}
 		*out = coTaskMemString(this.path)
 		return 0
 	}),
-	GetTotalBytesToReceive: newComProc(func(this *fakeOp, out *int64) uintptr { *out = this.total; return 0 }),
-	GetBytesReceived:       newComProc(func(this *fakeOp, out *int64) uintptr { *out = this.received; return 0 }),
+	GetTotalBytesToReceive: newComProc(func(this *fakeOp, out *int64) uintptr {
+		if this.readErr {
+			return 0x80004005 // E_FAIL
+		}
+		*out = this.total
+		return 0
+	}),
+	GetBytesReceived: newComProc(func(this *fakeOp, out *int64) uintptr {
+		if this.readErr {
+			return 0x80004005 // E_FAIL
+		}
+		*out = this.received
+		return 0
+	}),
 	GetState: newComProc(func(this *fakeOp, out *uint32) uintptr {
 		if this.stateErr {
 			return 0x80004005 // E_FAIL
@@ -279,6 +295,35 @@ func TestALauncherDownloadReportsSnapshotsAndLetsItsOperationGo(t *testing.T) {
 	}
 	if last := reports[2]; last.Received != 100 {
 		t.Fatalf("completion %+v", last)
+	}
+	r.done(t, op)
+}
+
+// A byte count or file the runtime does not answer keeps the last one
+// read, and the failure is logged: a failed read is never reported as no
+// bytes or no file.
+func TestADownloadReadThatFailsKeepsTheLastValues(t *testing.T) {
+	r := newDownloadRig(t)
+	var failed []string
+	r.host.config.Logf = func(format string, a ...any) {
+		if line := fmt.Sprintf(format, a...); strings.Contains(line, "read its") {
+			failed = append(failed, line)
+		}
+	}
+	op := newFakeOp(`C:\D\f.bin`)
+	start(t, r.page, op)
+	op.received = 40
+	r.host.answerDownload(r.page, "dl-t-1", 0)
+	op.readErr = true
+	op.received, op.total, op.path = 90, 200, `C:\D\other.bin`
+	op.set(downloadStateCompleted, 0)
+	reports := r.take()
+	last := reports[len(reports)-1]
+	if last.State != DownloadCompleted || last.Received != 40 || last.Total != 100 || last.Path != `C:\D\f.bin` {
+		t.Fatalf("a completion whose reads failed reports %+v, want the last values read", last)
+	}
+	if len(failed) != 3 {
+		t.Fatalf("logged %q, want each failed read", failed)
 	}
 	r.done(t, op)
 }

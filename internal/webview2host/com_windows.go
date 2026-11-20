@@ -35,6 +35,7 @@ package webview2host
 
 import (
 	"errors"
+	"fmt"
 	"strconv"
 	"syscall"
 	"unsafe"
@@ -911,16 +912,22 @@ const (
 	keyEventKindSystemKeyDown uint32 = 2
 )
 
-func (a *iAcceleratorKeyPressedEventArgs) keyEventKind() uint32 {
-	value := uint32(0xffffffff)
-	_, _, _ = a.vtbl.GetKeyEventKind.Call(uintptr(unsafe.Pointer(a)), uintptr(unsafe.Pointer(&value)))
-	return value
+func (a *iAcceleratorKeyPressedEventArgs) keyEventKind() (uint32, error) {
+	var value uint32
+	hr, _, _ := a.vtbl.GetKeyEventKind.Call(uintptr(unsafe.Pointer(a)), uintptr(unsafe.Pointer(&value)))
+	if err := hresult(hr); err != nil {
+		return 0, fmt.Errorf("read the key event kind: %w", err)
+	}
+	return value, nil
 }
 
-func (a *iAcceleratorKeyPressedEventArgs) virtualKey() uint32 {
+func (a *iAcceleratorKeyPressedEventArgs) virtualKey() (uint32, error) {
 	var value uint32
-	_, _, _ = a.vtbl.GetVirtualKey.Call(uintptr(unsafe.Pointer(a)), uintptr(unsafe.Pointer(&value)))
-	return value
+	hr, _, _ := a.vtbl.GetVirtualKey.Call(uintptr(unsafe.Pointer(a)), uintptr(unsafe.Pointer(&value)))
+	if err := hresult(hr); err != nil {
+		return 0, fmt.Errorf("read the virtual key: %w", err)
+	}
+	return value, nil
 }
 
 func (a *iAcceleratorKeyPressedEventArgs) putHandled(handled bool) error {
@@ -966,19 +973,29 @@ type iProcessFailedEventArgs struct {
 	vtbl *iProcessFailedEventArgsVtbl
 }
 
-func (a *iProcessFailedEventArgs) kind() uint32 {
-	value := uint32(0xffffffff)
-	_, _, _ = a.vtbl.GetProcessFailedKind.Call(
+// unknownProcessFailedKind is the kind of a failure whose kind could not be
+// read.
+const unknownProcessFailedKind = uint32(0xffffffff)
+
+func (a *iProcessFailedEventArgs) kind() (uint32, error) {
+	var value uint32
+	hr, _, _ := a.vtbl.GetProcessFailedKind.Call(
 		uintptr(unsafe.Pointer(a)),
 		uintptr(unsafe.Pointer(&value)),
 	)
-	return value
+	if err := hresult(hr); err != nil {
+		return unknownProcessFailedKind, fmt.Errorf("read the process failure's kind: %w", err)
+	}
+	return value, nil
 }
 
+// iProcessFailedHandler is ICoreWebView2ProcessFailedEventHandler. done
+// gets the failure's kind, unknownProcessFailedKind with the read's error
+// when it cannot be read.
 type iProcessFailedHandler struct {
 	vtbl *handlerVtbl
 	ref  comRef
-	done callback[func(kind uint32)]
+	done callback[func(kind uint32, err error)]
 }
 
 var processFailedVtbl = handlerVtbl{
@@ -988,16 +1005,16 @@ var processFailedVtbl = handlerVtbl{
 		if !ok {
 			return 0
 		}
-		kind := uint32(0xffffffff)
-		if args != nil {
-			kind = args.kind()
+		if args == nil {
+			done(unknownProcessFailedKind, errors.New("the process failure has no event args"))
+			return 0
 		}
-		done(kind)
+		done(args.kind())
 		return 0
 	}),
 }
 
-func newProcessFailedHandler(done func(uint32)) *iProcessFailedHandler {
+func newProcessFailedHandler(done func(uint32, error)) *iProcessFailedHandler {
 	h := &iProcessFailedHandler{vtbl: &processFailedVtbl}
 	h.done.set(done)
 	h.ref.own()

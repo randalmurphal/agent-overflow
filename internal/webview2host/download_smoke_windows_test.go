@@ -553,6 +553,10 @@ func startDownloadSmoke(t *testing.T) *downloadSmoke {
 	t.Cleanup(func() { close(release) })
 
 	s.ui = startSmokeUIThread(t)
+	// Checked after the host's close, while the UI thread still pumps the
+	// releases WebView2 makes.
+	base := comRootCount()
+	t.Cleanup(func() { awaitComRoots(t, base) })
 	s.host, err = New(Config{
 		HostWindow:  func() uintptr { return s.ui.hwnd },
 		UserDataDir: dataDir,
@@ -1038,8 +1042,24 @@ func watchSmokePermissions(t *testing.T, ui *smokeUIThread, page *hostPage) *smo
 		hr, _, _ := page.view.vtbl.AddPermissionRequested.Call(uintptr(unsafe.Pointer(page.view)), uintptr(unsafe.Pointer(handler)), uintptr(unsafe.Pointer(&token)))
 		err = hresult(hr)
 	})
+	// The view holds its own reference from a registration that succeeded.
+	handler.ref.release()
 	if err != nil {
 		t.Fatalf("add_PermissionRequested: %v", err)
 	}
 	return handler
+}
+
+// awaitComRoots waits for the Go-backed COM objects to return to base once
+// WebView2 lets go of what the smoke handed it.
+func awaitComRoots(t *testing.T, base int) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for comRootCount() != base {
+		if time.Now().After(deadline) {
+			t.Errorf("%d Go-backed COM objects are rooted after the smoke, want %d", comRootCount(), base)
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }

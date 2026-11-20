@@ -261,8 +261,13 @@ func main() {
 	// overrides the folder we just pinned, and a SET BUT EMPTY one does it
 	// silently: every environment collapses onto the default profile, the
 	// pane would read the app's cookies, and nothing reports an error.
-	if removed := webview2host.ScrubEnvOverrides(); len(removed) > 0 {
+	removed, err := webview2host.ScrubEnvOverrides()
+	if len(removed) > 0 {
 		log.Printf("launcher: cleared inherited WebView2 env overrides: %s", webview2host.FormatScrub(removed))
+	}
+	if err != nil {
+		// The pane host refuses its environment while one is left set.
+		log.Printf("launcher: WebView2 env overrides left set: %v", err)
 	}
 	applier := flags.UpdateApply != ""
 	if err := prepareWebviewStorage(launcherWebviewDataDir(launcherRuntimeMode(), applier), renderDiagnosticsDir(launcherRuntimeMode())); err != nil {
@@ -502,7 +507,9 @@ func openLog(profile string) (*os.File, error) {
 		return nil, err
 	}
 	if err := os.Chmod(f.Name(), launcherLogFilePerm); err != nil {
-		_ = f.Close()
+		if closeErr := f.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
 		return nil, err
 	}
 	return f, nil
@@ -982,8 +989,7 @@ func (a *launcherApp) launchBackend(ctx context.Context, distro, binPath string,
 	}
 	profileArgs, err := profileBackendArgs()
 	if err != nil {
-		_ = a.releaseHarnessReservation()
-		return nil, nil, err
+		return nil, nil, errors.Join(err, a.releaseHarnessReservation())
 	}
 	args := append(profileArgs, extraArgs...)
 	if update := a.backendUpdateArgs.Load(); update != nil {
@@ -1011,8 +1017,7 @@ func (a *launcherApp) launchBackend(ctx context.Context, distro, binPath string,
 	})
 	logBootPhase("launcher.wsl_launch", phaseStarted)
 	if err != nil {
-		_ = a.releaseHarnessReservation()
-		return nil, nil, fmt.Errorf("%w: %w", errLaunchFailed, err)
+		return nil, nil, errors.Join(fmt.Errorf("%w: %w", errLaunchFailed, err), a.releaseHarnessReservation())
 	}
 
 	a.mu.Lock()
@@ -1332,7 +1337,12 @@ func (a *launcherApp) persistSuccessfulLaunch(distro, binPath string, rememberDi
 		log.Printf("launcher: profile=%s — not persisting the distro choice to wsl.json", activeProfile)
 		return nil
 	}
-	cfg, _ := loadConfig()
+	cfg, err := loadConfig()
+	if err != nil {
+		// A record that cannot be read is left as it is: writing the
+		// install fields over it would drop every field it holds.
+		return fmt.Errorf("read wsl.json before recording the launch: %w", err)
+	}
 	if cfg == nil {
 		cfg = &wsldistro.Config{}
 	}
@@ -1475,7 +1485,9 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 			// blocked on us.
 			a.closeBrowserHost()
 			if l != nil {
-				a.stopLaunchedBackend(l, bs)
+				if err := a.stopLaunchedBackend(l, bs); err != nil {
+					log.Printf("launcher: shutdown: stop backend: %v", err)
+				}
 			}
 			if cancelNotifications != nil {
 				cancelNotifications()

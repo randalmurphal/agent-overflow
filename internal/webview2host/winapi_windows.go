@@ -193,12 +193,17 @@ func newChildWindow(before []uintptr, after []uintptr) uintptr {
 // controller window at the BOTTOM of the host's child z-order, so the
 // SPA's controller (created first, by Wails) paints over every pane
 // controller, and a fully visible pane draws nothing until this call
-// runs. One call per controller, after creation.
-func raiseChild(child uintptr) {
+// runs. One call per controller, after creation. No window is nothing to
+// raise.
+func raiseChild(child uintptr) error {
 	if child == 0 {
-		return
+		return nil
 	}
-	_, _, _ = procSetWindowPo.Call(child, hwndTop, 0, 0, 0, 0, swpNoSize|swpNoMove|swpNoActivate)
+	ok, _, callErr := procSetWindowPo.Call(child, hwndTop, 0, 0, 0, 0, swpNoSize|swpNoMove|swpNoActivate)
+	if ok == 0 {
+		return fmt.Errorf("raise window: SetWindowPos: %w", callErr)
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------
@@ -361,10 +366,13 @@ func styleVisible(hwnd uintptr) bool {
 
 // destroyWindow tears a container down. A leaked container is invisible
 // and eats every click over its rectangle, so this runs on every close
-// path.
-func destroyWindow(hwnd uintptr) {
+// path. No window is nothing to destroy.
+func destroyWindow(hwnd uintptr) error {
 	if hwnd == 0 {
-		return
+		return nil
 	}
-	_, _, _ = procDestroyWindow.Call(hwnd)
+	if ok, _, callErr := procDestroyWindow.Call(hwnd); ok == 0 {
+		return fmt.Errorf("DestroyWindow: %w", callErr)
+	}
+	return nil
 }

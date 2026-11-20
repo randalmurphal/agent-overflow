@@ -111,18 +111,30 @@ func Launch(ctx context.Context, opts LaunchOptions) (*Launcher, *Bootstrap, err
 		}
 	}
 
-	if err := cmd.Start(); err != nil {
-		if platform != nil {
-			_ = platform.close()
+	// abandon ends a launch that failed: the started child is killed and
+	// the job closed, and a cleanup that fails joins cause.
+	abandon := func(cause error, started bool) error {
+		errs := []error{cause}
+		if started {
+			if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+				errs = append(errs, fmt.Errorf("kill wsl.exe: %w", err))
+			}
 		}
-		return nil, nil, fmt.Errorf("start wsl.exe: %w", err)
+		if platform != nil {
+			if err := platform.close(); err != nil {
+				errs = append(errs, fmt.Errorf("close job object: %w", err))
+			}
+		}
+		return errors.Join(errs...)
+	}
+
+	if err := cmd.Start(); err != nil {
+		return nil, nil, abandon(fmt.Errorf("start wsl.exe: %w", err), false)
 	}
 
 	if platform != nil {
 		if err := platform.adopt(cmd); err != nil {
-			_ = cmd.Process.Kill()
-			_ = platform.close()
-			return nil, nil, fmt.Errorf("adopt child into job object: %w", err)
+			return nil, nil, abandon(fmt.Errorf("adopt child into job object: %w", err), true)
 		}
 	}
 
@@ -130,11 +142,7 @@ func Launch(ctx context.Context, opts LaunchOptions) (*Launcher, *Bootstrap, err
 	// thread handle is the documented path; without this the child
 	// stays frozen indefinitely.
 	if err := resumePrimaryThread(cmd); err != nil {
-		_ = cmd.Process.Kill()
-		if platform != nil {
-			_ = platform.close()
-		}
-		return nil, nil, fmt.Errorf("resume child thread: %w", err)
+		return nil, nil, abandon(fmt.Errorf("resume child thread: %w", err), true)
 	}
 
 	go drainStderr(stderr, func(line string) {
@@ -153,15 +161,13 @@ func Launch(ctx context.Context, opts LaunchOptions) (*Launcher, *Bootstrap, err
 	if err != nil {
 		// readBootstrapLine returns on ctx cancellation but its scanner
 		// goroutine stays parked inside an in-flight Read. Closing the
-		// stdout pipe unparks it so the goroutine exits — without this,
+		// stdout pipe unparks it so the goroutine exits; without this,
 		// every bootstrap timeout leaks a goroutine for the rest of the
 		// launcher's lifetime.
-		_ = stdout.Close()
-		_ = cmd.Process.Kill()
-		if platform != nil {
-			_ = platform.close()
+		if closeErr := stdout.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close wsl.exe stdout: %w", closeErr))
 		}
-		return nil, nil, err
+		return nil, nil, abandon(err, true)
 	}
 
 	return &Launcher{
@@ -329,15 +335,18 @@ func newPlatformLauncher() (platformLauncher, error) {
 		uintptr(unsafe.Pointer(info)),
 		uint32(unsafe.Sizeof(*info)),
 	); err != nil {
-		_ = windows.CloseHandle(job)
-		return nil, fmt.Errorf("SetInformationJobObject: %w", err)
+		err = fmt.Errorf("SetInformationJobObject: %w", err)
+		if closeErr := windows.CloseHandle(job); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("CloseHandle job: %w", closeErr))
+		}
+		return nil, err
 	}
 	runtime.KeepAlive(info)
 
 	return &jobObjectLauncher{handle: job}, nil
 }
 
-func (j *jobObjectLauncher) adopt(cmd *exec.Cmd) error {
+func (j *jobObjectLauncher) adopt(cmd *exec.Cmd) (err error) {
 	if cmd == nil || cmd.Process == nil {
 		return errors.New("wsllauncher: cannot adopt nil process")
 	}
@@ -352,12 +361,20 @@ func (j *jobObjectLauncher) adopt(cmd *exec.Cmd) error {
 	if err != nil {
 		return fmt.Errorf("OpenProcess pid=%d: %w", cmd.Process.Pid, err)
 	}
-	defer windows.CloseHandle(procHandle)
+	defer closeProcessHandle(procHandle, &err)
 
 	if err := windows.AssignProcessToJobObject(j.handle, procHandle); err != nil {
 		return fmt.Errorf("AssignProcessToJobObject: %w", err)
 	}
 	return nil
+}
+
+// closeProcessHandle closes a process handle opened for one call, joining a
+// failure into that call's error.
+func closeProcessHandle(handle windows.Handle, err *error) {
+	if closeErr := windows.CloseHandle(handle); closeErr != nil {
+		*err = errors.Join(*err, fmt.Errorf("CloseHandle process: %w", closeErr))
+	}
 }
 
 func (j *jobObjectLauncher) close() error {
@@ -398,7 +415,7 @@ var (
 // touches threads that belong to the target process — the precise
 // behaviour we want. Callers must have PROCESS_SUSPEND_RESUME on the
 // target's handle; OpenProcess below requests that explicitly.
-func resumePrimaryThread(cmd *exec.Cmd) error {
+func resumePrimaryThread(cmd *exec.Cmd) (err error) {
 	if cmd == nil || cmd.Process == nil {
 		return errors.New("wsllauncher: nil process")
 	}
@@ -412,7 +429,7 @@ func resumePrimaryThread(cmd *exec.Cmd) error {
 	if err != nil {
 		return fmt.Errorf("OpenProcess(SUSPEND_RESUME) pid=%d: %w", pid, err)
 	}
-	defer windows.CloseHandle(procHandle)
+	defer closeProcessHandle(procHandle, &err)
 
 	if err := procNtResumeProcess.Find(); err != nil {
 		return fmt.Errorf("locate ntdll.NtResumeProcess: %w", err)
