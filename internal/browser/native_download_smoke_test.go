@@ -4,13 +4,9 @@ package browser
 
 import (
 	"bytes"
-	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"io/fs"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -18,50 +14,6 @@ import (
 	"testing"
 	"time"
 )
-
-// smokeStagingDir is the directory the engine writes the run's downloads
-// into before the Manager publishes them: the app's staging directory in
-// the run's Downloads folder.
-func smokeStagingDir() string {
-	return filepath.Join(os.Getenv("HOME"), "Downloads", stagingDirName)
-}
-
-// smokeStagedNames lists the staging directory, empty while it is absent:
-// a file in it by its name, and the files in a run directory but its lock
-// as "<run>/<name>".
-func smokeStagedNames(t *testing.T) []string {
-	t.Helper()
-	entries, err := os.ReadDir(smokeStagingDir())
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	var names []string
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			names = append(names, entry.Name())
-			continue
-		}
-		inRun, err := os.ReadDir(filepath.Join(smokeStagingDir(), entry.Name()))
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, file := range inRun {
-			if file.Name() != runLockName {
-				names = append(names, entry.Name()+"/"+file.Name())
-			}
-		}
-	}
-	return names
-}
-
-// smokePNG is a 1x1 PNG.
-var smokePNG, _ = base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
-
-// smokePDF is a one-page PDF.
-const smokePDF = "%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n"
 
 // TestNativeEngineRealDownloads drives this engine's downloads through the
 // pane's list: the size the response announced, a finished file published
@@ -75,133 +27,11 @@ const smokePDF = "%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<
 // link, a missing Downloads folder, and a finished file opened in a tab and
 // by browser_open_file.
 func TestNativeEngineRealDownloads(t *testing.T) {
-	window := smokeWindow(t)
-	release, gate := make(chan struct{}), make(chan struct{})
-	payload := bytes.Repeat([]byte("a"), 300_000)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		attach := func(name, kind string, size int) {
-			w.Header().Set("Content-Type", kind)
-			w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", name))
-			w.Header().Set("Content-Length", fmt.Sprint(size))
-		}
-		switch r.URL.Path {
-		case "/file.bin":
-			attach("file.bin", "application/octet-stream", len(payload))
-			_, _ = w.Write(payload)
-		case "/chart.png":
-			attach("chart.png", "image/png", len(smokePNG))
-			_, _ = w.Write(smokePNG)
-		case "/doc.pdf":
-			attach("doc.pdf", "application/pdf", len(smokePDF))
-			_, _ = w.Write([]byte(smokePDF))
-		case "/gated.bin":
-			attach("gated.bin", "application/octet-stream", len(payload))
-			_, _ = w.Write(payload[:65536])
-			w.(http.Flusher).Flush()
-			select {
-			case <-gate:
-				_, _ = w.Write(payload[65536:])
-			case <-r.Context().Done():
-			}
-		case "/slow.bin", "/broken.bin":
-			attach(strings.TrimPrefix(r.URL.Path, "/"), "application/octet-stream", 10_000_000)
-			_, _ = w.Write(payload[:65536])
-			w.(http.Flusher).Flush()
-			if r.URL.Path == "/broken.bin" {
-				// A connection dropped short of the announced length.
-				panic(http.ErrAbortHandler)
-			}
-			select {
-			case <-release:
-			case <-r.Context().Done():
-			}
-		default:
-			_, _ = fmt.Fprint(w, "<!doctype html><title>files</title><p>files</p>")
-		}
-	}))
-	t.Cleanup(func() {
-		close(release)
-		server.Close()
-	})
-	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{NativeWindow: window.NativeWindow})
-	t.Cleanup(func() {
-		if err := manager.Close(); err != nil {
-			t.Errorf("close manager: %v", err)
-		}
-	})
-	access := manager.Bind(Caller{ThreadID: "native-smoke-downloads", Workspace: resolvedTempDir(t)})
-	t.Cleanup(func() {
-		if err := manager.CloseThread(context.Background(), access.ThreadID()); err != nil {
-			t.Errorf("close the thread's pages: %v", err)
-		}
-	})
-	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
-	defer cancel()
-	page, err := manager.Open(ctx, access, server.URL+"/", OpenOptions{})
-	if err != nil {
-		t.Fatalf("open the page: %v", err)
-	}
-	download := func(path string) ThreadDownload {
-		t.Helper()
-		before := len(manager.CompanionState(access.Caller()).Downloads)
-		if _, _, err := manager.Evaluate(ctx, access, PageID(page.ID), fmt.Sprintf(`location.href = %q; true`, server.URL+path), nil); err != nil {
-			t.Fatalf("start %s: %v", path, err)
-		}
-		for {
-			if listed := manager.CompanionState(access.Caller()).Downloads; len(listed) > before {
-				return listed[0]
-			}
-			select {
-			case <-ctx.Done():
-				t.Fatalf("%s never started a download", path)
-			case <-time.After(50 * time.Millisecond):
-			}
-		}
-	}
-	settled := func(id string, want func(ThreadDownload) bool) ThreadDownload {
-		t.Helper()
-		for {
-			for _, item := range manager.CompanionState(access.Caller()).Downloads {
-				if item.ID == id && want(item) {
-					return item
-				}
-			}
-			select {
-			case <-ctx.Done():
-				t.Fatalf("download %s never reached the expected state: %+v", id, manager.CompanionState(access.Caller()).Downloads)
-			case <-time.After(50 * time.Millisecond):
-			}
-		}
-	}
+	rig := newSmokeDownloadRig(t)
+	ctx, manager, access, page, server := rig.ctx, rig.manager, rig.access, rig.page, rig.server
+	payload, gate, downloads := rig.payload, rig.gate, rig.downloads
+	download, settled, folder, unchanged := rig.download, rig.settled, rig.folder, rig.unchanged
 	notRunning := func(item ThreadDownload) bool { return item.State != downloadStateRunning }
-	downloads := filepath.Join(os.Getenv("HOME"), "Downloads")
-	// folder lists the Downloads folder, which only this run writes into.
-	folder := func() []string {
-		t.Helper()
-		entries, err := os.ReadDir(downloads)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var names []string
-		for _, entry := range entries {
-			names = append(names, entry.Name())
-		}
-		return names
-	}
-	// unchanged waits out a moment for the folder to be names again, as an
-	// engine may remove a partial file just after its report.
-	unchanged := func(want []string) {
-		t.Helper()
-		for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(50 * time.Millisecond) {
-			got := folder()
-			if slices.Equal(got, want) {
-				return
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("the Downloads folder holds %q, want %q", got, want)
-			}
-		}
-	}
 
 	t.Run("a finished download is saved in Downloads and keeps its size", func(t *testing.T) {
 		item := settled(download("/file.bin").ID, notRunning)
