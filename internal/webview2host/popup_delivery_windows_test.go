@@ -16,17 +16,12 @@ func TestAPopupWhoseReportWasNotDeliveredCloses(t *testing.T) {
 		// fail answers the sink that loses the popup's report.
 		fail func(r *popupRig) func(rigReport)
 	}{
+		// A call that failed and one that timed out after it landed both
+		// answer ReportUndelivered after the report: the launcher cannot
+		// tell them apart, so they are one case.
 		{"the call fails", func(r *popupRig) func(rigReport) {
 			return func(report rigReport) {
 				if report.kind == ReportPopup {
-					go r.host.ReportUndelivered(report.page, report.kind)
-				}
-			}
-		}},
-		{"the call times out after it landed", func(r *popupRig) func(rigReport) {
-			return func(report rigReport) {
-				if report.kind == ReportPopup {
-					// The report stays recorded: the backend has it.
 					go r.host.ReportUndelivered(report.page, report.kind)
 				}
 			}

@@ -284,7 +284,7 @@ func TestHostedPopupCloseWaitsForTerminalProgress(t *testing.T) {
 				l.report(popup, webview2host.ReportClosed, "")
 			}()
 			awaitClosed(t, closed, "the close's acknowledgment while the terminal snapshot is applied")
-			time.Sleep(50 * time.Millisecond)
+			awaitLaneQueue(t, l.engine, popup, 1)
 			// A popup still being adopted has its download parked, unlisted.
 			for _, row := range l.manager.CompanionState(access.Caller()).Downloads {
 				if row.State != downloadStateRunning {

@@ -121,6 +121,8 @@ type fakeController struct {
 	focused int
 	closed  int
 	keys    []*comObject
+	// reparented counts PutParentWindow calls.
+	reparented int
 }
 
 var fakeControllerVtbl = iCoreWebView2ControllerVtbl{
@@ -138,6 +140,10 @@ var fakeControllerVtbl = iCoreWebView2ControllerVtbl{
 	}),
 	GetBounds: newComProc(func(this *fakeController, out *rect) uintptr {
 		*out = this.bounds
+		return 0
+	}),
+	PutParentWindow: newComProc(func(this *fakeController, _ uintptr) uintptr {
+		this.reparented++
 		return 0
 	}),
 	PutBounds: newComProc(func(this *fakeController, bounds *rect) uintptr {

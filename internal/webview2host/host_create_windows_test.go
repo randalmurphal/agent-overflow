@@ -10,6 +10,30 @@ import (
 // downloads and download dialog the launcher's, against stand-in WebView2
 // objects.
 
+// A page's controller, a popup's too, is created under the page's clip
+// container, its final parent, and is never reparented as it is placed,
+// shown and hidden: a live WebView2 controller moved to another parent can
+// present stale or blank strips while it scrolls.
+func TestAControllerIsCreatedUnderItsFinalParent(t *testing.T) {
+	r := newPopupRig(t)
+	page, controller := r.createPage("page", "prof", false)
+	popup, popupController := r.openPopup(controller, newFakeWindowArgs(popupURL))
+	if page.container == 0 || popup.container == 0 {
+		t.Fatal("a page has no clip container")
+	}
+	if len(r.env.parents) != 2 || r.env.parents[0] != page.container || r.env.parents[1] != popup.container {
+		t.Fatalf("controllers created under %#x, want the containers %#x and %#x", r.env.parents, page.container, popup.container)
+	}
+	r.host.Apply(Directive{Op: OpBounds, PageID: "page", X: 10, Y: 20, W: 300, H: 200, DPR: 1, VW: 1000, VH: 800})
+	r.host.Apply(Directive{Op: OpShow, PageID: "page"})
+	r.host.Apply(Directive{Op: OpHide, PageID: "page"})
+	if controller.reparented != 0 || popupController.reparented != 0 {
+		t.Fatalf("a live controller was reparented %d and %d times", controller.reparented, popupController.reparented)
+	}
+	answerTarget(t, popupController, "T-popup")
+	r.done()
+}
+
 // A page whose new-window, close-request, download or dialog subscription
 // fails, or whose dialog state cannot be read, is not created: a backend
 // page answers create-failed and a popup's request is answered with no

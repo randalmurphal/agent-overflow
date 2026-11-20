@@ -570,6 +570,21 @@ func reportAsync(t *testing.T, engine *hostedEngine, pageID string, report webvi
 	return done
 }
 
+// awaitQueued waits until a snapshot of download id with received bytes
+// waits on page's lane: received, and not applied yet.
+func awaitQueued(t *testing.T, engine *hostedEngine, pageID, id string, received int64) {
+	t.Helper()
+	suffix := fmt.Sprintf(" %s %d", id, received)
+	for deadline := time.Now().Add(hostedTestDeadline); ; time.Sleep(time.Millisecond) {
+		if slices.ContainsFunc(engine.pages.waiting(ids.PageHandle(pageID)), func(w string) bool { return strings.HasSuffix(w, suffix) }) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no snapshot of %s at %d bytes waits on page %s's lane: %v", id, received, pageID, engine.pages.waiting(ids.PageHandle(pageID)))
+		}
+	}
+}
+
 // A completion that arrives while the download's start is being admitted
 // waits for the admission and then completes the row; a running snapshot
 // still on its way after it changes nothing.
@@ -581,7 +596,7 @@ func TestHostedEngineACompletionWaitsForItsStartsAdmission(t *testing.T) {
 	first := reportAsync(t, engine, "page1", webview2host.DownloadReport{ID: "dl-a-1", Seq: 1, State: webview2host.DownloadRunning, Path: testDownloadPath})
 	awaitClosed(t, entered, "the admission")
 	end := reportAsync(t, engine, "page1", webview2host.DownloadReport{ID: "dl-a-1", Seq: 3, State: webview2host.DownloadCompleted, Path: testDownloadPath, Received: 100})
-	time.Sleep(50 * time.Millisecond)
+	awaitQueued(t, engine, "page1", "dl-a-1", 100)
 	if _, progress := recorder.take(); len(progress) != 0 {
 		t.Fatalf("progress reached the Manager before the start was admitted: %+v", progress)
 	}
@@ -670,7 +685,7 @@ func TestHostedEngineARefusedDownloadsEndCreatesNoRow(t *testing.T) {
 	awaitClosed(t, entered, "the admission")
 	end := reportAsync(t, engine, "page1", webview2host.DownloadReport{ID: "dl-a-1", Seq: 2, State: webview2host.DownloadCompleted, Path: testDownloadPath, Received: 100})
 	// The end reaches the engine and waits its turn.
-	time.Sleep(50 * time.Millisecond)
+	awaitQueued(t, engine, "page1", "dl-a-1", 100)
 	close(release)
 	awaitClosed(t, first, "the first snapshot's apply")
 	awaitClosed(t, end, "the end's apply")
@@ -899,12 +914,16 @@ func TestHostedPopupGoingEndsADownloadReportedMeanwhile(t *testing.T) {
 			}
 			reportDownload(t, engine, "popup", snapshot("dl-1", webview2host.DownloadRunning, 10))
 			var once sync.Once
+			injected := make(chan struct{})
 			recorder.mu.Lock()
 			recorder.progressing = func(progress downloadProgress) {
-				if progress.ID == "dl-1" && progress.State == downloadCanceled {
+				if progress.ID == "dl-1" && progress.State == downloadPageGone {
 					// On the popup's lane, running its close: the report is
 					// accepted or refused, never waited for.
-					once.Do(func() { sendDownload(t, engine, "popup", snapshot("dl-2", webview2host.DownloadRunning, 10)) })
+					once.Do(func() {
+						sendDownload(t, engine, "popup", snapshot("dl-2", webview2host.DownloadRunning, 10))
+						close(injected)
+					})
 				}
 			}
 			recorder.mu.Unlock()
@@ -916,6 +935,11 @@ func TestHostedPopupGoingEndsADownloadReportedMeanwhile(t *testing.T) {
 				engine.Report("popup", webview2host.ReportClosed, "")
 			}
 			settleReports(t, engine, "")
+			select {
+			case <-injected:
+			default:
+				t.Fatal("no download was reported while the popup's downloads were ended")
+			}
 			starts, progress := recorder.take()
 			ended := map[downloadID]bool{}
 			for _, p := range progress {

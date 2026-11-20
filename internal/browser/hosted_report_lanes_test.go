@@ -201,7 +201,7 @@ func testAPendingPopupsEndPrecedesAClose(t *testing.T, closes string, kind webvi
 		bindTestPage(t, engine, "popup", "T-popup")
 	}
 	engine.Report(ids.PageHandle(closes), kind, "render-process-exited")
-	time.Sleep(20 * time.Millisecond)
+	awaitLaneQueue(t, engine, closes, 1)
 	close(release)
 	settleReports(t, engine, "")
 	mu.Lock()
@@ -301,7 +301,7 @@ func TestAPagesOwnEndFollowsItsAcceptedReports(t *testing.T) {
 			awaitClosed(t, entered, "the completion's path conversion")
 			sendDownload(t, engine, "page1", snapshot("dl-2", webview2host.DownloadCompleted, 100))
 			end(engine)
-			time.Sleep(20 * time.Millisecond)
+			awaitLaneQueue(t, engine, "page1", 2)
 			close(release)
 			settleReports(t, engine, "")
 			mu.Lock()
@@ -310,5 +310,16 @@ func TestAPagesOwnEndFollowsItsAcceptedReports(t *testing.T) {
 				t.Fatalf("the Manager heard %v, want both downloads' completions before the page's end", order)
 			}
 		})
+	}
+}
+
+// awaitLaneQueue waits until n reports wait on the lane page's work runs on,
+// behind the one it runs.
+func awaitLaneQueue(t *testing.T, engine *hostedEngine, page string, n int) {
+	t.Helper()
+	for deadline := time.Now().Add(hostedTestDeadline); len(engine.pages.waiting(ids.PageHandle(page))) < n; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("page %s's lane holds %v, want %d waiting", page, engine.pages.waiting(ids.PageHandle(page)), n)
+		}
 	}
 }

@@ -3,6 +3,7 @@
 package webview2host
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -777,11 +778,31 @@ func (s *downloadSmoke) requests(name string) int {
 	return s.hits[name]
 }
 
+// navigate opens path and waits until its document has loaded, since the
+// anchor and blob cases click in the new document. An evaluation the
+// navigation refuses, its document going, is asked again.
 func (s *downloadSmoke) navigate(path string) {
 	s.t.Helper()
-	s.cdp.call("Page.navigate", map[string]any{"url": s.server.URL + path}, s.session, nil)
-	// The anchor and blob cases click in the new document.
-	time.Sleep(500 * time.Millisecond)
+	url := s.server.URL + path
+	s.cdp.call("Page.navigate", map[string]any{"url": url}, s.session, nil)
+	quoted, err := json.Marshal(url)
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	loaded := fmt.Sprintf("location.href === %s && document.readyState === 'complete'", quoted)
+	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		var answer struct {
+			Result struct {
+				Value bool `json:"value"`
+			} `json:"result"`
+		}
+		if refusal := s.cdp.try("Runtime.evaluate", map[string]any{"expression": loaded, "returnByValue": true}, s.session, &answer); refusal == "" && answer.Result.Value {
+			return
+		}
+		if time.Now().After(deadline) {
+			s.t.Fatalf("%s did not load", url)
+		}
+	}
 }
 
 func (s *downloadSmoke) evaluate(expression string) {
