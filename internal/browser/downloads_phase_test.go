@@ -98,8 +98,10 @@ func TestACancelDuringThePublishIsNotSent(t *testing.T) {
 	manager, log, access, page := newDownloadManager(t)
 	linking, release := make(chan struct{}), make(chan struct{})
 	linkDownload = func(staged, candidate string) error {
-		close(linking)
-		<-release
+		if !placing(candidate) {
+			close(linking)
+			<-release
+		}
 		return os.Link(staged, candidate)
 	}
 	t.Cleanup(func() { linkDownload = os.Link })

@@ -229,7 +229,8 @@ writes only inside the app's private staging directory there, into the
 file the Manager names as the download starts (`download_staging.go`),
 and the Manager moves the finished file beside it without copying
 (`publishFinishedDownload`, `publishDownload` in `user_downloads.go`),
-never replacing a file; WebView2 saves there itself and only a regular
+never replacing a file, and only once a private name there is seen to
+hold the download's file (`placeNoReplace`); WebView2 saves there itself and only a regular
 file of the reported size is openable (`engineSavedDownload`, whose
 comment states the limit). Close waits for a publish under way.
 Headless Chromium alone keeps downloads as artifacts with quota
