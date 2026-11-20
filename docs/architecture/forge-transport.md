@@ -1124,7 +1124,7 @@ overlapping ones. A `fresh` call skips a held entry with an expiry
 
 | Cache | Key | Bound | Held |
 |---|---|---|---|
-| Forge facts, one per forge adapter | host, credential fingerprint, key | 4096 entries, 4 MiB; a label list counts its labels, so the worst one held is about 320 KiB | `found` 10 minutes, `absent` 2 minutes, `unavailable` never; read under another login than the call's (or a call whose reads answered under two) is not held; `ResetForgeCaches` clears it |
+| Forge facts, one per forge adapter | host, credential fingerprint, key | 4096 entries, 4 MiB; a label list counts its labels, so the worst one held is about 320 KiB | `found` 10 minutes, `absent` 2 minutes, `unavailable` never; read under another login than the call's is not held, and a call whose reads answered under two logins answers every key it read `unavailable`; `ResetForgeCaches` clears it |
 | Local facts, one per `Core` | workspace path, kind, full commit id, path, range | 2048 entries, 8 MiB | `found` and `absent` without expiry (content addressed), except a found abbreviated `commit:` (a fetch can make it ambiguous), 10 minutes; an `image:` read through an LFS pointer (a pull or prune changes it) is never held |
 | Blob images, one per `Core` | blob id; an LFS object's sha256, size and file modification time; workspace path for its LFS store | 4096 entries, 2 MiB | a blob's header answer, or a pointer blob's parsed pointer, and a present LFS object's header answer, without expiry (content addressed); a workspace's LFS store directory, 10 minutes |
 

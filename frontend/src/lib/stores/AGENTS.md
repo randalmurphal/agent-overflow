@@ -131,7 +131,8 @@ forge again for everything the PR holds (`reloadForgeFacts`, `fresh`). A
 GitLab body's labels are one fact, the project's label list, whose answer
 object the PRs of a project share. A found list counts as absent while a
 lex under it decided a label a body names is not in it (the tokenizer
-calls `factDenied`, the store marks that answer until it changes). CI is sourced only by
+calls `factDenied`, the store marks that answer until it changes or no
+body names such a label). CI is sourced only by
 that subscription, or for a repository pipeline by its `SubscribePipeline`
 handle (`pipelineCI.svelte.ts`), whose `ci:pipeline_updated` frames rank
 the same way against one watermark per pipeline key, seeded by the result,

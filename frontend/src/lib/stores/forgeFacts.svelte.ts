@@ -15,7 +15,8 @@
 // minute after it, an absent one ten minutes after it (`dueAgain`), once
 // per frame, the old answer in use meanwhile. A found label list counts as
 // absent while a lex under it decided a label a body names is not in it
-// (the reader's `denied`, marked on the entry until the answer changes).
+// (the reader's `denied`, marked on the entry until the answer changes or
+// no body names such a label any more).
 // The user's reload of the PR (`reloadForgeFacts`) asks the forge again
 // for everything it holds, once. Local
 // kinds (commits) need the pane's workspace and loaded revision, which
@@ -77,6 +78,7 @@ import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import {
   factKind,
   isLocalFactKey,
+  labelIndex,
   NO_REVISION,
   REVISION_FACT_KEY,
   sameFact,
@@ -85,7 +87,7 @@ import {
   type ForgeFactReader,
   type ForgeFacts,
 } from '../utils/forgeFacts';
-import { forgeFactScanner, type ScannedKeys } from '../utils/forgeReferenceExtension';
+import { forgeFactScanner, namesLabelOutside, type ScannedKeys } from '../utils/forgeReferenceExtension';
 import type { PRRef } from '../utils/prReference';
 import type { PRRevision } from '../utils/prRevision';
 import { workspaceKeyBackend } from '../utils/workspaceKey';
@@ -164,6 +166,8 @@ interface Entry {
   at: number;
   /** The request out for it (`PRFacts.requests`), 0 when none is. */
   request: number;
+  /** That request is a reload's, read past the computer's cache. */
+  fresh: boolean;
   /** The head the last request ran at ('' with no revision). */
   askedHead: string;
   /** Its answer's text was past the PR's text bound: held as unavailable
@@ -171,7 +175,8 @@ interface Entry {
   over?: true;
   /** A lex decided from this found answer that a name it would hold does
    * not exist (a label a complete list lacks): due again as an absent
-   * answer is. A changed answer is a new entry, without it. */
+   * answer is, while a body still names one (`bodyDenies`). A changed
+   * answer is a new entry, without it. */
   denies?: true;
 }
 
@@ -395,7 +400,7 @@ export function observePRFacts(
 }
 
 function pendingEntry(head: string): Entry {
-  return { state: 'pending', sig: PENDING_SIG, at: 0, request: 0, askedHead: head };
+  return { state: 'pending', sig: PENDING_SIG, at: 0, request: 0, fresh: false, askedHead: head };
 }
 
 function revisionId(revision: FactRevision): string {
@@ -461,6 +466,11 @@ function askAgain(pr: PRFacts, now: number, ask: string[] | null): string[] | nu
     if (entry.request !== 0 || entry.state === 'pending') continue;
     const again = dueAgain(entry as Entry & { state: ForgeFact });
     if (now >= again) {
+      // A list is asked again for a denial only while a body still makes it.
+      if (entry.denies && entry.state.status === 'found' && !bodyDenies(pr, entry.state)) {
+        delete entry.denies;
+        continue;
+      }
       entry.askedHead = head;
       (ask ??= newRequest()).push(key);
     }
@@ -468,6 +478,22 @@ function askAgain(pr: PRFacts, now: number, ask: string[] | null): string[] | nu
   }
   pr.dueAt = due;
   return ask;
+}
+
+/**
+ * Whether a body the PR holds still names a label the found list `list`
+ * lacks, read from the bodies' raw text as the scan reads labels: it may
+ * see one no lex reads (text in code), never miss one a lex denied. A
+ * denial made for a reader alone (a draft, a preview) has no body, so it
+ * lasts until its first check here. Runs when a denying list comes due,
+ * at most once per `FACT_FRESH_MS`.
+ */
+function bodyDenies(pr: PRFacts, list: ForgeFact): boolean {
+  if (!list.labels) return true;
+  const index = labelIndex(list);
+  const has = (title: string): boolean => index.has(title);
+  for (const body of pr.bodies.values()) if (namesLabelOutside(body.text, has)) return true;
+  return false;
 }
 
 /**
@@ -509,10 +535,13 @@ export function noteForgeFactsRevision(key: string, workspace: WorkspaceRef, rev
 /**
  * The user reloaded the PR `key`: asks once again for every answer it
  * holds, in the fewest calls, each `fresh`, so the computer reads what can
- * change from the forge rather than its cache. The held answers stay in use until theirs
- * arrive, and one answered the same keeps its signature, so nothing
- * rebuilds. A key already asked for, or still unanswered, is not asked
- * twice, so a second reload while the first is out asks nothing.
+ * change from the forge rather than its cache. The held answers stay in
+ * use until theirs arrive, and one answered the same keeps its signature,
+ * so nothing rebuilds. A key a reload's request is already out for is not
+ * asked twice, so a second reload while the first is out asks nothing; one
+ * an ordinary request is out for (a frame's, the clock's, a reader's) is
+ * asked again, since that request may answer from the cache, and its
+ * answer no longer applies.
  */
 export function reloadForgeFacts(key: string): void {
   const pr = prs.get(key);
@@ -520,7 +549,7 @@ export function reloadForgeFacts(key: string): void {
   const head = headOf(pr);
   let ask: string[] | null = null;
   for (const [factKey, entry] of pr.entries) {
-    if (entry.request !== 0 || entry.state === 'pending' || entry.over) continue;
+    if ((entry.request !== 0 && entry.fresh) || entry.over) continue;
     entry.askedHead = head;
     (ask ??= newRequest()).push(factKey);
   }
@@ -534,7 +563,9 @@ function send(pr: PRFacts, keys: string[], fresh: boolean): void {
   const request = ++pr.requests;
   for (const key of keys) {
     const entry = pr.entries.get(key);
-    if (entry) entry.request = request;
+    if (!entry) continue;
+    entry.request = request;
+    entry.fresh = fresh;
   }
   for (let start = 0; start < keys.length; start += FACTS_PER_CALL) {
     const chunk = start === 0 && keys.length <= FACTS_PER_CALL ? keys : keys.slice(start, start + FACTS_PER_CALL);
@@ -605,7 +636,7 @@ function settle(pr: PRFacts, request: number, keys: readonly string[], facts: re
     }
     pr.textChars += textChars(fact) - textChars(held);
     if (fact.labels) fact = sharedList(pr, key, fact);
-    writable(pr).set(key, { state: fact, sig: String(++signatures), at: now, request: 0, askedHead: entry.askedHead, ...(over ? { over: true as const } : {}) });
+    writable(pr).set(key, { state: fact, sig: String(++signatures), at: now, request: 0, fresh: false, askedHead: entry.askedHead, ...(over ? { over: true as const } : {}) });
     changed = true;
   }
   pr.dueAt = Math.min(pr.dueAt, nextDue(pr));

@@ -380,11 +380,13 @@ describe('a repository image', () => {
     const root = mount(body).root();
     const img = await painted(root);
     expect(img.title).toBe(`${GH}/blob/${HEAD}/docs/a.png`);
+    // The settled blocks retire to static HTML first: the nodes compared
+    // below are the ones on screen when the push arrives.
+    for (let i = 0; i < 3; i++) await new Promise((resolve) => setTimeout(resolve, 50));
     const intro = root.querySelector('p')!;
     const snippet = root.querySelector('.md-code-snippet')!;
     const below = after(root)!;
     expect(snippet).not.toBeNull();
-    for (let i = 0; i < 3; i++) await new Promise((resolve) => setTimeout(resolve, 50));
 
     const lexes = recordLexes();
     try {

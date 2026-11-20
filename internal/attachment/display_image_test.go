@@ -74,7 +74,7 @@ func TestValidateDisplayImage(t *testing.T) {
 		{"svg sized by its font", "image/svg+xml", []byte(`<svg width="2em" height="1em"></svg>`), DisplaySize{}},
 		{"avif", "image/avif", fixture(t, "solid-8x3.avif"), DisplaySize{Width: 8, Height: 3}},
 		// A size the reader cannot read is shown as it is, with no size.
-		{"avif with a clap", "image/avif", avifFile(avifMetaBox(1, avifItemProperties(1, avifIspe(60000, 60000), avifClap()))), DisplaySize{}},
+		{"avif with a clap", "image/avif", avifFile(avifMetaBox(1, avifItemProperties(1, avifIspe(600, 400), avifClap()))), DisplaySize{}},
 		{"ico", "image/x-icon", append([]byte{0, 0, 1, 0, 1, 0}, make([]byte, 16)...), DisplaySize{}},
 	} {
 		got, err := ValidateDisplayImage(tc.data, tc.mime)
@@ -90,6 +90,7 @@ func TestValidateDisplayImage(t *testing.T) {
 	}{
 		{"png", "image/png", hugePNGHeader()},
 		{"avif", "image/avif", avifFile(avifMetaBox(1, avifItemProperties(1, avifIspe(60000, 60000))))},
+		{"avif with a clap", "image/avif", avifFile(avifMetaBox(1, avifItemProperties(1, avifIspe(60000, 60000), avifClap())))},
 		{"avif one side", "image/avif", avifFile(avifMetaBox(1, avifItemProperties(1, avifIspe(1, 0xffffffff))))},
 	} {
 		got, err := ValidateDisplayImage(tc.data, tc.mime)

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { lex, parseBlocks, type Extension, type ForgeFactReader, type Token } from '../markdown';
 import { createDocumentContextCache, createParseBlocksCache, documentContextOf } from '../markdown';
 import { chatMarkdownExtensions, chatMarkdownForgeOptions } from '../components/chat/markdown/chatMarkdownOptions';
-import { forgeFactKeys } from './forgeReferenceExtension';
+import { forgeFactKeys, namesLabelOutside } from './forgeReferenceExtension';
 import { FACT_KEYS_PER_BODY, REVISION_FACT_KEY, labelIndexCounters, type ForgeFact, type ForgeFactState } from './forgeFacts';
 import type { ForgeAttachmentSource } from './forgeAttachments';
 import { CORPUS, findCandidateCombinations, generatedMarkdown } from '../../test/fixtures/markdownFindCorpus';
@@ -295,6 +295,28 @@ describe('forgeFactKeys', () => {
         // The frame's revision is the store's own answer, never asked for.
         expect([...facts.read].filter((key) => key !== REVISION_FACT_KEY && !keys.has(key)), body).toEqual([]);
       }
+    }
+  });
+
+  // The store drops a list's denial once no body names a label it lacks
+  // (`namesLabelOutside`), so that read must see every denial a lex makes.
+  it('sees in the raw text every label a lex denies a complete list for', () => {
+    const labels = [{ title: 'bug', color: '#d9534f' }];
+    const has = (title: string) => title === 'bug';
+    let denied = 0;
+    for (const body of BODIES) {
+      const facts = reader({ 'labels:group/widget': found('labels:group/widget', { complete: true, labels }) });
+      lexUnder(body, GITLAB, facts);
+      if (facts.denials.size === 0) continue;
+      denied++;
+      expect(namesLabelOutside(body, has), body).toBe(true);
+    }
+    expect(denied).toBeGreaterThan(100);
+    for (const body of ['', 'no labels', '~bug and (~bug) and ~"bug"', 'x~docs and a ~ b', 'about ~5 minutes, ~2x']) {
+      expect(namesLabelOutside(body, has), body).toBe(false);
+    }
+    for (const body of ['~docs', 'a ~"5 minutes" b', '~bug ~type::bug', '_~docs_']) {
+      expect(namesLabelOutside(body, has), body).toBe(true);
     }
   });
 

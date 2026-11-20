@@ -45,7 +45,8 @@ func newForgeFactCache() *factCache[ForgeFact] {
 type factSender func(ctx context.Context, client *forgeapi.Client, pr PRReference, keys []forgeFactKey) ([]ForgeFact, string)
 
 // mixedCredential is a factSender credential no login has: its reads
-// answered under two, so nothing they read is held.
+// answered under two, so nothing they read is answered or held
+// (cachedForgeFacts).
 const mixedCredential = "\x00mixed"
 
 // joinCredential is the credential reads answered under, held so far,
@@ -72,7 +73,9 @@ func responseCredential(resp *forgeapi.Response) string {
 
 // cachedForgeFacts answers keys through cache (resolveCached), keyed by
 // forge, host and login: only found and absent facts read under the
-// login the call started with are held, for their TTLs. With fresh, held
+// login the call started with are held, for their TTLs. A read whose
+// requests answered under two logins (mixedCredential) is no one login's
+// answer: every key it read is unavailable, logged once. With fresh, held
 // facts are read again (factCache.claim).
 func (c *Core) cachedForgeFacts(ctx context.Context, cache *factCache[ForgeFact], client *forgeapi.Client, pr PRReference, keys []forgeFactKey, fresh bool, send factSender) []ForgeFact {
 	fp, err := client.CredentialFingerprint(ctx)
@@ -94,6 +97,15 @@ func (c *Core) cachedForgeFacts(ctx context.Context, cache *factCache[ForgeFact]
 			defer cancel()
 			var facts []ForgeFact
 			facts, credential = send(readCtx, client, pr, owned)
+			if credential != mixedCredential {
+				return facts
+			}
+			// No one login read this answer: none of it is answered.
+			log.Printf("forge facts: %s %s: %d keys unavailable: their reads answered under two logins", pr.Forge, pr.Host, len(owned))
+			facts = make([]ForgeFact, len(owned))
+			for i, k := range owned {
+				facts[i] = unavailableFact(k.key)
+			}
 			return facts
 		},
 		func(fact ForgeFact, readAt time.Time) (bool, time.Time) {

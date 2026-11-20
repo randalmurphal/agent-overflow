@@ -272,7 +272,6 @@ func TestAVIFSizeOfBuiltStructures(t *testing.T) {
 		{"a box to the end before meta", append(avifFtyp("avif"), avifToEndBox("free")...), unknown},
 		{"empty", nil, unknown},
 		// A size past the budget it cannot read stays unknown.
-		{"over the pixel budget with a clap", meta(avifItemProperties(1, avifIspe(60000, 60000), avifClap())), unknown},
 		{"over the pixel budget in a sequence", append(avifFtyp("avis"), avifMetaBox(1, avifItemProperties(1, avifIspe(60000, 60000)))...), unknown},
 	} {
 		if got := avifSizeOrUnknown(t, bytes.NewReader(tc.data)); got != tc.want {
@@ -287,6 +286,9 @@ func TestAVIFSizeOfBuiltStructures(t *testing.T) {
 	}{
 		{"over the pixel budget", meta(avifItemProperties(1, avifIspe(60000, 60000)))},
 		{"over the pixel budget rotated", meta(avifItemProperties(1, avifIspe(60000, 60000), avifIrot(1)))},
+		// The coded image is decoded whole before a crop applies.
+		{"over the pixel budget with a clap", meta(avifItemProperties(1, avifIspe(60000, 60000), avifClap()))},
+		{"over the pixel budget with a clap before its ispe", meta(avifItemProperties(1, avifClap(), avifIspe(60000, 60000)))},
 		{"one side past the budget", meta(avifItemProperties(1, avifIspe(1, thumbPixelBudget+1)))},
 		{"both sides at 2^32-1, past int64 multiplied", meta(avifItemProperties(1, avifIspe(0xffffffff, 0xffffffff)))},
 	} {

@@ -547,6 +547,68 @@ describe('asking again', () => {
       frames(body, 100, 10);
       expect(calls.map((call) => call.keys)).toEqual([[LABELS], [LABELS], [LABELS]]);
     });
+
+    it('stops being asked once the body no longer names the label it lacks', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      const calls = heldResolver();
+      const body = '~bug and ~docs';
+      observePRFacts(KEY, REF, snapshot(body));
+      calls[0].answer([list(['bug'])]);
+      await settle();
+      lexBody(body);
+      const edited = '~bug alone';
+      observePRFacts(KEY, REF, snapshot(edited));
+      lexBody(edited);
+      frames(edited, 0, 60);
+      expect(calls).toHaveLength(1);
+      // Named again, it is asked for again ten minutes after its answer.
+      observePRFacts(KEY, REF, snapshot(body));
+      lexBody(body);
+      frames(body, 100, 1);
+      expect(calls.map((call) => call.keys)).toEqual([[LABELS], [LABELS]]);
+    });
+
+    it('stops being asked once the body that named the label it lacks is gone, while another still reads the list', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      const calls = heldResolver();
+      observePRFacts(KEY, REF, snapshot('~bug', [comment('c2', 'needs ~docs')]));
+      calls[0].answer([list(['bug'])]);
+      await settle();
+      lexBody('~bug');
+      lexBody('needs ~docs');
+      frames('~bug', 0, 60);
+      expect(calls).toHaveLength(1);
+      expect(forgeFactReader(KEY)!.get(LABELS)).toMatchObject({ status: 'found' });
+    });
+
+    it('keeps being asked while one of two bodies that named a label it lacks still does', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      const calls = heldResolver();
+      const both = () => snapshot('~bug ~docs', [comment('c2', 'and ~later')]);
+      observePRFacts(KEY, REF, both());
+      calls[0].answer([list(['bug'])]);
+      await settle();
+      lexBody('~bug ~docs');
+      lexBody('and ~later');
+      // The description drops its missing label; the comment keeps its own.
+      for (let minute = 1; minute <= 10; minute++) {
+        vi.setSystemTime(Date.now() + MINUTE);
+        observePRFacts(KEY, REF, snapshot('~bug', [comment('c2', 'and ~later'), comment('c3', `frame ${minute}`)]));
+      }
+      expect(calls.map((call) => call.keys)).toEqual([[LABELS], [LABELS]]);
+    });
+
+    it('is not asked again for prose a body writes with a tilde', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      const calls = heldResolver();
+      const body = '~bug took ~5 minutes';
+      observePRFacts(KEY, REF, snapshot(body));
+      calls[0].answer([list(['bug'])]);
+      await settle();
+      lexBody(body);
+      frames(body, 0, 60);
+      expect(calls).toHaveLength(1);
+    });
   });
 
   it('asks for every held key on a reload, in the fewest calls, and changes no signature when the answers are the same', async () => {
@@ -585,6 +647,59 @@ describe('asking again', () => {
     await settle();
     reloadForgeFacts(KEY);
     expect(calls).toHaveLength(3);
+  });
+
+  it('asks the forge on a reload for a key a frame\'s request is still out for, and takes the reload\'s answer', async () => {
+    const calls = heldResolver();
+    observePRFacts(KEY, REF, snapshot('#1'));
+    reloadForgeFacts(KEY);
+    reloadForgeFacts(KEY);
+    expect(calls.map((call) => [call.keys, call.fresh])).toEqual([[['ref:group/widget#1'], false], [['ref:group/widget#1'], true]]);
+    // The frame's request may answer from the computer's cache: it no longer applies.
+    calls[0].answer([found('ref:group/widget#1', { title: 'cached' })]);
+    await settle();
+    expect(forgeFactReader(KEY)!.get('ref:group/widget#1')).toBe('pending');
+    calls[1].answer([found('ref:group/widget#1', { title: 'read now' })]);
+    await settle();
+    expect(forgeFactReader(KEY)!.get('ref:group/widget#1')).toMatchObject({ title: 'read now' });
+  });
+
+  it('asks the forge on a reload for a key the clock asked again, keeping its answer in use, whichever answers first', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const calls = heldResolver();
+    observePRFacts(KEY, REF, snapshot('#1'));
+    calls[0].answer([{ key: 'ref:group/widget#1', status: 'absent' }]);
+    await settle();
+    vi.setSystemTime(Date.now() + FACT_FRESH_MS);
+    observePRFacts(KEY, REF, snapshot('#1', [comment('c1', 'later')]));
+    reloadForgeFacts(KEY);
+    expect(calls.map((call) => call.fresh)).toEqual([false, false, true]);
+    expect(forgeFactReader(KEY)!.get('ref:group/widget#1')).toMatchObject({ status: 'absent' });
+    calls[2].answer([found('ref:group/widget#1', { title: 'read now' })]);
+    await settle();
+    calls[1].answer([{ key: 'ref:group/widget#1', status: 'absent' }]);
+    await settle();
+    expect(forgeFactReader(KEY)!.get('ref:group/widget#1')).toMatchObject({ status: 'found', title: 'read now' });
+  });
+
+  it('asks the forge on a reload for every key of a first ask whose chunks are partly answered', async () => {
+    const calls = heldResolver();
+    const refs = Array.from({ length: 300 }, (_, i) => `#${i + 1}`);
+    observePRFacts(KEY, REF, snapshot(refs.slice(0, 150).join(' '), [comment('c1', refs.slice(150).join(' '))]));
+    expect(calls).toHaveLength(2);
+    calls[0].answer(calls[0].keys.map((key) => found(key)));
+    await settle();
+    reloadForgeFacts(KEY);
+    expect(calls.slice(2).map((call) => [call.keys.length, call.fresh])).toEqual([[FACTS_PER_CALL, true], [300 - FACTS_PER_CALL, true]]);
+    expect(new Set(calls.slice(2).flatMap((call) => call.keys)).size).toBe(300);
+    // The chunk still out answers after the reload asked: it does not apply.
+    const late = calls[1].keys[0];
+    calls[1].answer(calls[1].keys.map((key) => found(key, { title: 'cached' })));
+    await settle();
+    expect(forgeFactReader(KEY)!.get(late)).toBe('pending');
+    for (const call of calls.slice(2)) call.answer(call.keys.map((key) => found(key, { title: 'read now' })));
+    await settle();
+    expect(forgeFactReader(KEY)!.get(late)).toMatchObject({ title: 'read now' });
   });
 });
 

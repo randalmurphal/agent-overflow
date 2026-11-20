@@ -581,8 +581,8 @@ func (f *loginSwitchForge) held() int {
 
 // A label list whose pages answered under two logins is no one login's
 // list: it answers unavailable, logged once by operation with no titles,
-// and nothing the call read is held. Here the login changes after the
-// first page.
+// and nothing the call read is answered or held. Here the login changes
+// after the first page.
 func TestGitLabLabelListPagesUnderTwoLogins(t *testing.T) {
 	var logged strings.Builder
 	prev := log.Writer()
@@ -596,7 +596,10 @@ func TestGitLabLabelListPagesUnderTwoLogins(t *testing.T) {
 		}
 	}
 	got := resolveFacts(t, f.core, gitlabFactsPR, "labels:grp/app", "ref:grp/app#1")
-	expectFacts(t, got, ForgeFact{Key: "labels:grp/app", Status: FactUnavailable})
+	expectFacts(t, got,
+		ForgeFact{Key: "labels:grp/app", Status: FactUnavailable},
+		ForgeFact{Key: "ref:grp/app#1", Status: FactUnavailable},
+	)
 	if n := f.answered("ForgeFactsLabels"); n != 2 {
 		t.Fatalf("%d label pages answered, want 2", n)
 	}
@@ -618,9 +621,10 @@ func TestGitLabLabelListPagesUnderTwoLogins(t *testing.T) {
 }
 
 // A read refused as too costly is read again in halves; when the halves
-// answered under two logins, each key is answered and none is held, even
-// when the last half answered under the login the call started with.
-func TestForgeFactsHalvesUnderTwoLoginsAreNotHeld(t *testing.T) {
+// answered under two logins the call is no one login's answer: every key
+// is unavailable and none is held, even when the last half answered under
+// the login the call started with.
+func TestForgeFactsHalvesUnderTwoLoginsAnswerNothing(t *testing.T) {
 	t.Parallel()
 	f := newLoginSwitchForge(t, gitlabFactsFixture())
 	f.refuse = func(op string, n int) (string, bool) {
@@ -640,8 +644,8 @@ func TestForgeFactsHalvesUnderTwoLoginsAreNotHeld(t *testing.T) {
 	}
 	got := resolveFacts(t, f.core, gitlabFactsPR, "ref:grp/app#1", "mr:grp/app!5")
 	expectFacts(t, got,
-		ForgeFact{Key: "ref:grp/app#1", Status: FactFound, Kind: "issue", Title: "Issue one", State: "open", URL: "https://gitlab.com/grp/app/-/issues/1"},
-		ForgeFact{Key: "mr:grp/app!5", Status: FactFound, Title: "MR five", State: "open", URL: "https://gitlab.com/grp/app/-/merge_requests/5"},
+		ForgeFact{Key: "ref:grp/app#1", Status: FactUnavailable},
+		ForgeFact{Key: "mr:grp/app!5", Status: FactUnavailable},
 	)
 	if n := f.answered("ForgeFacts4"); n != 3 {
 		t.Fatalf("%d facts reads answered, want the read and its two halves", n)

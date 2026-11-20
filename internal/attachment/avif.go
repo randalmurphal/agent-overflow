@@ -27,7 +27,8 @@ const (
 // as the end of the meta box, never past what r yields, so the caller's
 // reader is the byte bound; a top-level box before meta is skipped by
 // discarding, never buffered. A size it read past the pixel budget is an
-// error wrapping ErrPixelBudget, as an oversized raster header is.
+// error wrapping ErrPixelBudget, as an oversized raster header is, with a
+// clap or without: the coded image is decoded whole before a crop applies.
 // Unknown (the zero DisplaySize and no error) for anything it cannot
 // answer exactly: an image sequence (major brand avis), a primary item
 // with a clap (its crop), with no ispe or more than one, a zero side,
@@ -40,7 +41,7 @@ func AVIFSize(r io.Reader) (DisplaySize, error) {
 	if !ok {
 		return DisplaySize{}, nil
 	}
-	width, height, ok := avifPrimarySize(meta)
+	width, height, cropped, ok := avifPrimarySize(meta)
 	if !ok || width == 0 || height == 0 {
 		return DisplaySize{}, nil
 	}
@@ -48,6 +49,11 @@ func AVIFSize(r io.Reader) (DisplaySize, error) {
 	// 32-bit sides can overflow an int64.
 	if width > thumbPixelBudget || height > thumbPixelBudget || !WithinPixelBudget(int(width), int(height)) {
 		return DisplaySize{}, fmt.Errorf("%w: %dx%d exceeds %d pixels", ErrPixelBudget, width, height, thumbPixelBudget)
+	}
+	// The coded size bounds the decode; the displayed one is the crop,
+	// which this does not compute.
+	if cropped {
+		return DisplaySize{}, nil
 	}
 	return DisplaySize{Width: int(width), Height: int(height)}, nil
 }
@@ -145,17 +151,18 @@ func nextBox(b []byte) (isoBox, []byte, error) {
 }
 
 // avifPrimarySize reads meta's payload (a full box: version and flags,
-// then boxes) for the primary item's ispe, swapped by an odd irot.
-func avifPrimarySize(meta []byte) (width, height uint32, ok bool) {
+// then boxes) for the primary item's ispe, the coded size, swapped by an
+// odd irot, and whether a clap crops what is displayed of it.
+func avifPrimarySize(meta []byte) (width, height uint32, cropped, ok bool) {
 	if len(meta) < 4 {
-		return 0, 0, false
+		return 0, 0, false, false
 	}
 	var pitm, iprp []byte
 	var pitms, iprps int
 	for rest := meta[4:]; len(rest) > 0; {
 		box, next, err := nextBox(rest)
 		if err != nil {
-			return 0, 0, false
+			return 0, 0, false, false
 		}
 		rest = next
 		switch string(box.kind) {
@@ -166,11 +173,11 @@ func avifPrimarySize(meta []byte) (width, height uint32, ok bool) {
 		}
 	}
 	if pitms != 1 || iprps != 1 {
-		return 0, 0, false
+		return 0, 0, false, false
 	}
 	primary, ok := avifPrimaryItem(pitm)
 	if !ok {
-		return 0, 0, false
+		return 0, 0, false, false
 	}
 	var ipco []byte
 	var ipcos int
@@ -180,7 +187,7 @@ func avifPrimarySize(meta []byte) (width, height uint32, ok bool) {
 	for rest := iprp; len(rest) > 0; {
 		box, next, err := nextBox(rest)
 		if err != nil {
-			return 0, 0, false
+			return 0, 0, false, false
 		}
 		rest = next
 		switch string(box.kind) {
@@ -189,21 +196,21 @@ func avifPrimarySize(meta []byte) (width, height uint32, ok bool) {
 		case "ipma":
 			found, ok := avifAssociations(box.body, primary, &wanted, &maxIndex)
 			if !ok {
-				return 0, 0, false
+				return 0, 0, false, false
 			}
 			entries += found
 		}
 	}
 	// An item is listed once; twice is no answer to trust.
 	if ipcos != 1 || entries != 1 {
-		return 0, 0, false
+		return 0, 0, false, false
 	}
 	index, ispes := 0, 0
 	rotated := false
 	for rest := ipco; len(rest) > 0; {
 		box, next, err := nextBox(rest)
 		if err != nil {
-			return 0, 0, false
+			return 0, 0, false, false
 		}
 		rest = next
 		index++
@@ -214,28 +221,27 @@ func avifPrimarySize(meta []byte) (width, height uint32, ok bool) {
 		case "ispe":
 			// A full box: version and flags, then width and height.
 			if len(box.body) < 12 {
-				return 0, 0, false
+				return 0, 0, false, false
 			}
 			width, height = binary.BigEndian.Uint32(box.body[4:8]), binary.BigEndian.Uint32(box.body[8:12])
 			ispes++
 		case "irot":
 			if len(box.body) < 1 {
-				return 0, 0, false
+				return 0, 0, false, false
 			}
 			rotated = box.body[0]&1 == 1
 		case "clap":
-			// The displayed image is the crop, which this does not compute.
-			return 0, 0, false
+			cropped = true
 		}
 	}
 	// An association to a property ipco does not hold is malformed.
 	if ispes != 1 || maxIndex > index {
-		return 0, 0, false
+		return 0, 0, false, false
 	}
 	if rotated {
 		width, height = height, width
 	}
-	return width, height, true
+	return width, height, cropped, true
 }
 
 // avifPrimaryItem reads pitm's payload: the item id, 16 bits in version 0

@@ -542,6 +542,10 @@ const proseNumber = (title: string): boolean => {
   return first >= 48 && first <= 57;
 };
 
+/** Whether a label reference a complete list lacks is a denial of that
+ * list: quoted, or a word that is not prose (`proseNumber`, "~5 minutes"). */
+const deniesLabel = (match: RegExpExecArray, title: string): boolean => match[1] !== undefined || !proseNumber(title);
+
 /**
  * GitLab's references that read as prose without the forge's answer:
  * `~label`, `~"multi word"` and scoped `~type::bug` labels, `%milestone`,
@@ -591,7 +595,7 @@ export function buildForgeGitlabReferences(source: ForgeAttachmentSource): Exten
         textColor = listed.textColor ?? null;
       }
       else if (list.complete === true) {
-        if (match[1] !== undefined || !proseNumber(title)) factDenied(lexer, labelsKey);
+        if (deniesLabel(match, title)) factDenied(lexer, labelsKey);
         return undefined;
       }
       else {
@@ -816,6 +820,29 @@ const scanReferences = (body: string, shapes: ForgeShapes, _revision: FactRevisi
     if (!PATH_CHAR.test(body[index])) pathStart = index + 1;
   }
 };
+
+/**
+ * Whether `body`'s raw text names a GitLab label the tokenizer would deny
+ * a complete list for (`deniesLabel`) whose title `has` does not hold.
+ * Read as `scanReferences` reads labels, each shorter reading included:
+ * it may see one no lex reads (text in code), never miss one a lex reads.
+ */
+export function namesLabelOutside(body: string, has: (title: string) => boolean): boolean {
+  let outside = false;
+  const title = (match: RegExpExecArray): string | null => {
+    const named = labelTitle(match);
+    return named !== '' && deniesLabel(match, named) ? named : null;
+  };
+  const check: FactKeySink = (named) => {
+    if (!has(named)) outside = true;
+    return !outside;
+  };
+  for (let index = body.indexOf('~'); index !== -1 && !outside; index = body.indexOf('~', index + 1)) {
+    if (index > 0 && isAlnum(body.charCodeAt(index - 1))) continue;
+    addWord(body, index, LABEL_AT, LABEL, title, check);
+  }
+  return outside;
+}
 
 /** Every kind's scan, in order: references, repository images (keyed by
  * the frame's commits) and permalink lines (forgeRepositoryFiles.ts). */

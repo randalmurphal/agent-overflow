@@ -159,7 +159,7 @@ func (f *gitlabForge) resolveFacts(ctx context.Context, pr PRReference, keys []f
 // sendFacts reads keys: each labels: key's list (readLabelList) and the
 // other keys' slots (sendSlotFacts) concurrently, one fact per key in
 // keys' order. The credential is the reads' (joinCredential): mixed when
-// two differ, so nothing they read is held.
+// two differ, so nothing they read is answered or held.
 func (f *gitlabForge) sendFacts(ctx context.Context, client *forgeapi.Client, pr PRReference, keys []forgeFactKey) ([]ForgeFact, string) {
 	out := make([]ForgeFact, len(keys))
 	var slotKeys []forgeFactKey
