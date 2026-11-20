@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"agent-overflow/internal/browser/ids"
-	"agent-overflow/internal/browser/popupadmit"
 	"agent-overflow/internal/keybindings"
 	"agent-overflow/internal/webview2host"
 
@@ -118,7 +117,7 @@ func newTestHostedEngine(t *testing.T, relay hostRelay, events engineEvents) (*h
 	sink := newDirectiveSink()
 	if events.PageEndReceived == nil {
 		// The Manager's popup admission, which these engines have none of.
-		events.PageEndReceived = func(ids.PageHandle, popupadmit.Observation) {}
+		events.PageEndReceived = func(ids.PageHandle, bool, string) {}
 	}
 	engine := newHostedEngine(relay, sink.send, nil, events)
 	engine.logf = func(format string, args ...any) { t.Logf(format, args...) }

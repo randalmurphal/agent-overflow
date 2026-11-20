@@ -786,11 +786,11 @@ func TestHostedEngineCancelAsksTheLauncher(t *testing.T) {
 func TestHostedEnginePageDepartureLeavesAnotherPagesDownload(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
-		leave func(engine *hostedEngine)
+		leave func(t *testing.T, engine *hostedEngine)
 		why   string
 	}{
-		{"the Manager closes it", func(engine *hostedEngine) { <-engine.closePage("page1") }, popupDiscardedReason},
-		{"the launcher reports it closed", func(engine *hostedEngine) {
+		{"the Manager closes it", func(t *testing.T, engine *hostedEngine) { mustRetire(t, engine.closePage("page1")) }, popupDiscardedReason},
+		{"the launcher reports it closed", func(_ *testing.T, engine *hostedEngine) {
 			engine.Report("page1", webview2host.ReportClosed, "")
 			reportsProcessed(engine, "page1")
 		}, pageClosedReason},
@@ -805,7 +805,7 @@ func TestHostedEnginePageDepartureLeavesAnotherPagesDownload(t *testing.T) {
 			reportDownload(t, engine, "page2", webview2host.DownloadReport{ID: "dl-a-2", State: webview2host.DownloadRunning, Path: `C:\Users\dev\Downloads\two.bin`})
 			recorder.take()
 
-			tc.leave(engine)
+			tc.leave(t, engine)
 			if _, progress := recorder.take(); len(progress) != 1 || progress[0] != (downloadProgress{ID: "dl-a-1", State: downloadPageGone, Error: tc.why}) {
 				t.Fatalf("the departure reported %+v, want the running download's end", progress)
 			}

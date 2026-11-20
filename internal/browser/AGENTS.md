@@ -274,14 +274,17 @@ made while its admission is in flight is kept and sent as it is admitted.
 Cancels are numbered, and the refusal of the last one sent withdraws the
 Manager's cancel from whichever snapshot first carries it. A launcher
 report is acknowledged at receipt, never after its processing
-(`hosted_pages.go`, `hosted_report_lanes.go`): receipt takes no engine
-lock and changes only the page's record, an unlisted popup's admission and
-the signal that ends its attach, and a snapshot, close, discard or crash runs afterwards on
+(`hosted_pages.go`, `hosted_report_lanes.go`): one receipt function
+(`receive`) takes no engine lock and records what a Manager action before
+the processing must find, a close or crash with the Manager for any
+page's listing (`PageEndReceived`), and a download in the page's record,
+which the page's leave lists if its lane has not (`receivingDriver`), and
+a snapshot, close, discard or crash runs afterwards on
 its page's lane, in order, with an unlisted popup's on its opener's, so no
 path conversion holds another page's report and a discard settles after
 the work received before it. `DiscardPage` waits for that within its
 context, then answers that the discard is pending while the lane still
-finishes it. A hosted page ends at the launcher's close, which follows
+finishes it, or, at Stop, that it was interrupted. A hosted page ends at the launcher's close, which follows
 its downloads' ends; its CDP target's destroy ends it only past
 `hostClosedFallback`. One status loop asks for a quiet download's snapshot,
 or one whose last cancel no snapshot names yet, and names that cancel, so a

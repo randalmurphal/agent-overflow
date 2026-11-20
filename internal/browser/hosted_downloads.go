@@ -67,23 +67,24 @@ func (e *hostedEngine) acceptDownload(page ids.PageHandle, detail string) {
 		e.logf("browser: pane host download report for page %s: %v", page, err)
 		return
 	}
-	receipt := e.pages.acceptSnapshot(page, report)
-	switch receipt {
-	case snapshotAccepted, snapshotNoPage, snapshotEnded, snapshotUnasked, snapshotSealed:
+	outcome := e.pages.receive(page, receivedSnapshot(report)).outcome
+	switch outcome {
+	case receiptQueued, receiptNoPage, receiptDownloadEnded, receiptUnasked, receiptSealed:
 		// A page no record has went or was never this engine's, and a
 		// sealed page's downloads the launcher cancels itself.
-	case snapshotOtherPage:
+	case receiptOtherPage:
 		e.logf("browser: pane host page %s reported download %s, which another page owns; refused", page, report.ID)
+	case receiptEnding:
+		panic("browser: a snapshot's receipt answered a page's end")
 	default:
-		panic(fmt.Sprintf("browser: snapshot receipt %d", receipt))
+		panic(fmt.Sprintf("browser: snapshot receipt %d", outcome))
 	}
 }
 
 // applySnapshot applies one received snapshot of download d, on its page's
 // lane. A finished download's path conversion ends with ctx (Stop).
 func (e *hostedEngine) applySnapshot(ctx context.Context, report webview2host.DownloadReport, d *hostedDownload) {
-	// The page is the frame its downloads name (hostedPage.OwnsFrame).
-	frame, id := frameID(d.key.page), d.key.id
+	id := d.key.id
 	live, admission, cancels := e.pages.live(d, report.Cancel.Attempt())
 	if !live {
 		// Ended, refused, or its page retired, before this snapshot's turn.
@@ -108,28 +109,25 @@ func (e *hostedEngine) applySnapshot(ctx context.Context, report webview2host.Do
 		e.events.DownloadProgress(downloadProgress{ID: id, State: downloadCancelRefused, Error: refusal})
 	}
 	if !admitted {
-		name := report.Name
-		if name == "" {
-			name = windowsBase(report.Path)
-		}
-		start := e.pages.popupStart(d.key.page)
-		start.Frame, start.ID, start.URL, start.SuggestedName = frame, id, report.URI, name
-		start.EndReported = func() bool { return e.pages.endReported(d) }
-		if e.events.DownloadStarted(start) != downloadAdmitted {
+		switch {
+		case e.events.DownloadStarted(e.pages.start(d)) == downloadAdmitted:
+			if e.pages.admit(d) {
+				// No caller waits on this cancel any more.
+				if err := e.sendDownloadCancel(d); err != nil {
+					e.logf("%v", err)
+				}
+			}
+		case e.pages.refuse(d):
 			// The Manager refused it: nothing later reaches a row.
-			e.pages.end(d)
 			if !report.Terminal() {
 				if err := e.sendDownloadCancel(d); err != nil {
 					e.logf("%v", err)
 				}
 			}
 			return
-		}
-		if e.pages.admit(d) {
-			// No caller waits on this cancel any more.
-			if err := e.sendDownloadCancel(d); err != nil {
-				e.logf("%v", err)
-			}
+		default:
+			// Its page left meanwhile, and its leave listed it
+			// (takeReceived): this snapshot goes to that row.
 		}
 	}
 	d.applied = report.Seq

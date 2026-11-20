@@ -59,6 +59,16 @@ func completedAt(id, name string) webview2host.DownloadReport {
 	return webview2host.DownloadReport{ID: id, Seq: 1, State: webview2host.DownloadCompleted, URI: "https://example.test/" + name, Name: name, Path: `C:\Users\dev\Downloads\` + name, Received: 10, Total: 10}
 }
 
+// mustRetire waits for the retirement a page's end was received for.
+func mustRetire(t *testing.T, ended receipt) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), hostedTestDeadline)
+	defer cancel()
+	if err := ended.wait(ctx); err != nil {
+		t.Fatalf("the page did not retire: %v", err)
+	}
+}
+
 func awaitClosed(t *testing.T, ch <-chan struct{}, what string) {
 	t.Helper()
 	select {

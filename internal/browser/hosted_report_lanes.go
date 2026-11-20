@@ -269,19 +269,17 @@ func (e *hostedEngine) process(ctx context.Context, w *acceptedWork) {
 	}
 }
 
-// acceptClose receives the launcher's close of page (hostedPages.acceptEnd):
-// a popup the Manager has not listed is recorded closed in the Manager's
-// admission, so its listing is refused, its admission seals and its attach
-// is signaled to end, at once; the page retires on its lane after its work
-// already received (retirePage).
+// acceptClose receives the launcher's close of page (hostedPages.receive):
+// the Manager records it at once, so no listing of the page commits after
+// it, its admission seals and its attach is signaled to end; the page
+// retires on its lane after its work already received (retirePage).
 func (e *hostedEngine) acceptClose(page ids.PageHandle) {
-	e.pages.acceptEnd(page, acceptedClose, "")
+	e.pages.receive(page, receivedClose())
 }
 
 // acceptCrash receives the process failure that ended page, which the
-// Manager hears after the page's work already received
-// (engineEvents.PageCrashed); a popup the Manager has not listed is
-// recorded crashed in its admission at once.
+// Manager records at once and hears after the page's work already
+// received (engineEvents.PageCrashed).
 func (e *hostedEngine) acceptCrash(page ids.PageHandle, reason string) {
-	e.pages.acceptEnd(page, acceptedCrash, reason)
+	e.pages.receive(page, receivedCrash(reason))
 }

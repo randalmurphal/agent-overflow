@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"agent-overflow/internal/browser/ids"
-	"agent-overflow/internal/browser/popupadmit"
 	"agent-overflow/internal/keybindings"
 	"agent-overflow/internal/webview2host"
 
@@ -229,10 +228,8 @@ func newHostedEngine(relay hostRelay, send func(webview2host.Directive), acceler
 		backendPath:   func(ctx context.Context, path string) (string, error) { return runWSLPath(ctx, "-u", path) },
 	}
 	e.targets = e.newTargets()
-	e.pages = newHostedPages(e.process, func(stop <-chan struct{}) { go e.askQuietDownloads(stop) }, func(page ids.PageHandle, end popupadmit.Observation) {
-		if e.events.PageEndReceived != nil {
-			e.events.PageEndReceived(page, end)
-		}
+	e.pages = newHostedPages(e.process, func(stop <-chan struct{}) { go e.askQuietDownloads(stop) }, func(page ids.PageHandle, closed bool, crash string) {
+		e.events.PageEndReceived(page, closed, crash)
 	})
 	return e
 }

@@ -8,24 +8,17 @@ import (
 	"time"
 
 	"agent-overflow/internal/browser/ids"
-	"agent-overflow/internal/browser/popupadmit"
 	"agent-overflow/internal/webview2host"
 )
 
 // The hosted engine's pages as the launcher's reports see them
 // (hostedPages): each page's lifecycle, its admission of downloads, its
 // downloads, and the lanes their reports run on (hosted_report_lanes.go).
-// A report is received and processed apart. Receipt, in Report, takes no
-// engine lock (a create's or clear's answer goes to its waiter under
-// hostWaiters' own lock) and does three things in one hold of this
-// record's lock, waiting for nothing: a
-// pending popup's close or crash is recorded in the Manager's popup
-// admission (engineEvents.PageEndReceived), first, so no listing commits
-// after the page is sealed; a close or a discard seals the page's
-// admission, so nothing the launcher reports after it starts a download;
-// and the page's attach, if one runs, is signaled to end, its teardown
-// joined by the attach's own caller.
-// Processing, on the page's lane in the order received, does the effects:
+// A report is received and processed apart. Receipt (receive) records
+// what the Manager's own actions meanwhile must find, takes no engine lock
+// and waits for nothing (a create's or clear's answer goes to its waiter
+// under hostWaiters' own lock). Processing, on the page's lane in the
+// order received, does the effects:
 // a snapshot's path conversion and the Manager's download events, and a
 // close's or discard's settlement of the page's downloads, which runs after
 // every report accepted before it. Whether a download is gone is decided
@@ -167,8 +160,9 @@ type hostedPageRecord struct {
 	// admission in flight; ended its ended or refused ids, oldest first.
 	downloads map[downloadID]*hostedDownload
 	ended     []downloadID
-	// retired is closed once the page's lane retired it, the retirement's
-	// callbacks returned, or at Stop.
+	// retired is closed once the page's lane retired it and the
+	// retirement's callbacks returned, or as a page being created is
+	// abandoned. Stop does not close it (receipt.stopped).
 	retired chan struct{}
 	// stopAttach signals a popup's attach under way to end (attaching); it
 	// waits for nothing, and the attach joins its own teardown.
@@ -196,16 +190,19 @@ type hostedPages struct {
 	lanes  *reportLanes
 	// process runs one accepted report on its lane; watch starts the
 	// status loop, which runs until stop closes or no download runs;
-	// observe records a pending popup's end in the Manager's admission
-	// (engineEvents.PageEndReceived) and takes no lock of the engine's.
+	// observe records a page's received close or crash with the Manager
+	// (engineEvents.PageEndReceived), called with no lock of the engine's.
 	process  func(context.Context, *acceptedWork)
 	watch    func(stop <-chan struct{})
-	observe  func(ids.PageHandle, popupadmit.Observation)
+	observe  func(page ids.PageHandle, closed bool, crash string)
 	watching bool
 	stop     chan struct{}
+	// receivedDownloads numbers the downloads in the order their first
+	// snapshot was received (hostedDownload.order).
+	receivedDownloads uint64
 }
 
-func newHostedPages(process func(context.Context, *acceptedWork), watch func(stop <-chan struct{}), observe func(ids.PageHandle, popupadmit.Observation)) *hostedPages {
+func newHostedPages(process func(context.Context, *acceptedWork), watch func(stop <-chan struct{}), observe func(page ids.PageHandle, closed bool, crash string)) *hostedPages {
 	return &hostedPages{
 		records: make(map[ids.PageHandle]*hostedPageRecord),
 		owners:  make(map[downloadID]ids.PageHandle),
@@ -324,122 +321,187 @@ func (p *hostedPages) listed(page ids.PageHandle) {
 	}
 }
 
-// snapshotReceipt is what acceptSnapshot did with a snapshot.
-type snapshotReceipt int
+// received is one report the engine receives for a page's lane: a download
+// snapshot, the launcher's close, the engine's own discard, or the process
+// failure that ended the page.
+type received struct {
+	kind     acceptedKind
+	snapshot webview2host.DownloadReport
+	crash    string
+}
+
+func receivedSnapshot(report webview2host.DownloadReport) received {
+	return received{kind: acceptedSnapshot, snapshot: report}
+}
+
+func receivedClose() received   { return received{kind: acceptedClose} }
+func receivedDiscard() received { return received{kind: acceptedDiscard} }
+
+func receivedCrash(reason string) received {
+	return received{kind: acceptedCrash, crash: reason}
+}
+
+// receiptOutcome is what receive did with a report.
+type receiptOutcome int
 
 const (
-	// snapshotAccepted: queued on its page's lane.
-	snapshotAccepted snapshotReceipt = iota + 1
-	// snapshotNoPage: no record has the page (never bound, or retired).
-	snapshotNoPage
-	// snapshotOtherPage: another page owns the download id.
-	snapshotOtherPage
-	// snapshotEnded: the download ended here.
-	snapshotEnded
-	// snapshotUnasked: an answer about a download the page does not have,
+	// receiptQueued: queued on its page's lane.
+	receiptQueued receiptOutcome = iota + 1
+	// receiptNoPage: no record has the page (never this engine's, or
+	// retired).
+	receiptNoPage
+	// receiptOtherPage: a snapshot naming a download id another page owns.
+	receiptOtherPage
+	// receiptDownloadEnded: a snapshot of a download that ended here.
+	receiptDownloadEnded
+	// receiptUnasked: an answer about a download the page does not have,
 	// which creates nothing.
-	snapshotUnasked
-	// snapshotSealed: a first snapshot on a page that admits no download.
-	snapshotSealed
+	receiptUnasked
+	// receiptSealed: a first snapshot on a page that admits no download.
+	receiptSealed
+	// receiptEnding: a close or discard of a page whose close or discard
+	// was received before, which that one retires.
+	receiptEnding
 )
 
-// acceptSnapshot receives one snapshot of a download of page: in one hold
-// it checks the download's owner, starts a download its page admits, and
-// queues the snapshot on the page's lane.
-func (p *hostedPages) acceptSnapshot(page ids.PageHandle, report webview2host.DownloadReport) snapshotReceipt {
-	id := downloadID(report.ID)
+// receipt is what receive answers: its outcome, and for a page's end,
+// retired, which closes once the page's lane retired it and the
+// retirement's last callback returned, and stopped, which closes at Stop,
+// after which a retirement not under way never runs; both nil for a page
+// with no record.
+type receipt struct {
+	outcome receiptOutcome
+	retired <-chan struct{}
+	stopped <-chan struct{}
+}
+
+// errDiscardInterrupted is the answer of a wait for a page's retirement
+// that Stop ended first: the engine forgot the page, and its retirement
+// either never runs or finishes after the wait returned.
+var errDiscardInterrupted = errors.New("the engine stopped before the page's lane retired it")
+
+// wait waits within ctx for the retirement r names: nil once it returned
+// or for a page with no record, errDiscardInterrupted when Stop came
+// first, and errDiscardPending past ctx.
+func (r receipt) wait(ctx context.Context) error {
+	if r.retired == nil {
+		return nil
+	}
+	select {
+	case <-r.retired:
+		return nil
+	default:
+	}
+	select {
+	case <-r.retired:
+		return nil
+	case <-r.stopped:
+		return errDiscardInterrupted
+	case <-ctx.Done():
+		return fmt.Errorf("%w: %w", errDiscardPending, ctx.Err())
+	}
+}
+
+// receive is the receipt of every report of a page that its lane processes
+// (hosted_report_lanes.go). It records what each Manager action that can
+// come before that processing must find (hosted_receipt_test.go walks each
+// pair):
+//
+//   - A close or crash goes to the Manager first (observe, which is
+//     engineEvents.PageEndReceived), for every page: a pending popup's
+//     listing and a created or restored page's listing read it
+//     (popupadmit, creation_end.go), so neither lists a page whose close
+//     was received, and one whose crash was is listed crashed. It is made
+//     outside p.mu, which the Manager takes under its own lock, and before
+//     the seal, so whoever sees the page sealed finds it recorded.
+//   - A close or a discard seals the page's admission, signals its attach
+//     to end and queues its retirement behind the work already received,
+//     once; a crash queues the Manager's report of it.
+//   - A snapshot checks the download's owner and starts a download its page
+//     admits, with its address and name, numbered in the order received:
+//     the page's leave lists it from that record (takeReceived) when the
+//     lane has not admitted it yet, so a download received before its tab
+//     closed, was suspended or the browser closed is listed in that tab. A
+//     terminal snapshot marks the download's end received, which then
+//     settles its row (downloadStart.EndReported) whatever left the page
+//     meanwhile.
+//
+// A report the engine processes in full at receipt (a create's or clear's
+// answer, a popup, a key chord, a focus) does not come here. Nothing here
+// takes the engine's lock or waits.
+func (p *hostedPages) receive(page ids.PageHandle, in received) receipt {
+	switch in.kind {
+	case acceptedClose:
+		p.observe(page, true, "")
+	case acceptedCrash:
+		p.observe(page, false, in.crash)
+	case acceptedSnapshot, acceptedDiscard:
+	default:
+		panic(fmt.Sprintf("browser: received a report of kind %d", in.kind))
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	r := p.records[page]
 	if r == nil {
-		return snapshotNoPage
+		return receipt{outcome: receiptNoPage}
 	}
+	if in.kind == acceptedSnapshot {
+		return receipt{outcome: p.snapshotLocked(page, r, in.snapshot)}
+	}
+	ended := receipt{outcome: receiptQueued, retired: r.retired, stopped: p.lanes.ctx.Done()}
+	if in.kind != acceptedCrash {
+		if !r.to(pageEnding) {
+			ended.outcome = receiptEnding
+			return ended
+		}
+		if r.stopAttach != nil {
+			r.stopAttach()
+			r.stopAttach = nil
+		}
+	}
+	p.submitLocked(&acceptedWork{kind: in.kind, page: page, crash: in.crash})
+	return ended
+}
+
+// snapshotLocked receives one snapshot of a download of page, whose record
+// is r: it checks the download's owner, starts a download its page admits,
+// and queues the snapshot on the page's lane. The caller holds p.mu.
+func (p *hostedPages) snapshotLocked(page ids.PageHandle, r *hostedPageRecord, report webview2host.DownloadReport) receiptOutcome {
+	id := downloadID(report.ID)
 	if owner, known := p.owners[id]; known && owner != page {
-		return snapshotOtherPage
+		return receiptOtherPage
 	}
 	d := r.downloads[id]
 	if d == nil {
 		switch {
 		case r.endedHas(id):
-			return snapshotEnded
+			return receiptDownloadEnded
 		case report.Answer:
-			return snapshotUnasked
+			return receiptUnasked
 		case !r.state.admits():
-			return snapshotSealed
+			return receiptSealed
 		}
-		d = &hostedDownload{key: hostedDownloadKey{page: page, id: id}, admission: hostedAnnouncing}
+		p.receivedDownloads++
+		d = &hostedDownload{key: hostedDownloadKey{page: page, id: id}, admission: hostedAnnouncing, order: p.receivedDownloads}
 		r.downloads[id] = d
 		p.owners[id] = page
 		p.watchLocked()
+	}
+	if d.url == "" {
+		d.url = report.URI
+	}
+	if d.name == "" {
+		d.name = report.Name
+		if d.name == "" {
+			d.name = windowsBase(report.Path)
+		}
 	}
 	d.heard = time.Now()
 	if report.Terminal() && d.ending == endNotReceived {
 		d.ending = endReceived
 	}
 	p.submitLocked(&acceptedWork{kind: acceptedSnapshot, page: page, snapshot: report, download: d})
-	return snapshotAccepted
-}
-
-// endReceipt is what acceptEnd did with a page's close, discard or crash.
-type endReceipt struct {
-	// accepted: queued on the page's lane; a close or discard sealed it.
-	accepted bool
-	// pendingPopup: the page is a popup the Manager has not listed.
-	pendingPopup bool
-	// retired closes once the page's lane retired it and the retirement's
-	// callbacks returned; nil for a page with no record, which is not this
-	// engine's or has retired.
-	retired <-chan struct{}
-}
-
-// acceptEnd receives a page's end of kind (acceptedClose, acceptedDiscard
-// or acceptedCrash). A pending popup's close or crash is recorded in the
-// Manager's admission first, in the hold that seals the page, so the
-// listing's commit reads it whenever the page is seen sealed. A close or
-// discard then seals its admission, signals its attach to end and queues
-// its retirement behind its work already accepted, once; a crash queues
-// the Manager's report of it.
-func (p *hostedPages) acceptEnd(page ids.PageHandle, kind acceptedKind, crash string) endReceipt {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	r := p.records[page]
-	if r == nil {
-		return endReceipt{}
-	}
-	receipt := endReceipt{pendingPopup: r.state.pendingPopup(), retired: r.retired}
-	switch kind {
-	case acceptedClose:
-		if receipt.pendingPopup && r.state.admits() {
-			p.observe(page, popupadmit.Closed())
-		}
-	case acceptedCrash:
-		if receipt.pendingPopup {
-			p.observe(page, popupadmit.Crashed(crash))
-		}
-	case acceptedDiscard:
-	case acceptedSnapshot:
-		panic("browser: a snapshot is no page end")
-	default:
-		panic(fmt.Sprintf("browser: a page end of kind %d", kind))
-	}
-	switch kind {
-	case acceptedClose, acceptedDiscard:
-		if !r.to(pageEnding) {
-			return receipt
-		}
-		if r.stopAttach != nil {
-			r.stopAttach()
-			r.stopAttach = nil
-		}
-	case acceptedCrash:
-	case acceptedSnapshot:
-		panic("browser: a snapshot is no page end")
-	default:
-		panic(fmt.Sprintf("browser: a page end of kind %d", kind))
-	}
-	receipt.accepted = true
-	p.submitLocked(&acceptedWork{kind: kind, page: page, crash: crash})
-	return receipt
+	return receiptQueued
 }
 
 // retire ends page's record on its lane, after every report accepted
@@ -468,10 +530,10 @@ func (p *hostedPages) retire(page ids.PageHandle) (running []downloadID, finish 
 	return running, func() {
 		p.mu.Lock()
 		defer p.mu.Unlock()
-		// Stop may have woken its waiters and dropped it first.
+		close(r.retired)
+		// Stop may have dropped it first.
 		if p.records[page] == r {
 			delete(p.records, page)
-			close(r.retired)
 			if r.state.pendingPopup() {
 				// Its popups' lane key turns to its page id.
 				p.gateLocked(page)
@@ -497,7 +559,9 @@ func (r *hostedPageRecord) endedHas(id downloadID) bool {
 
 // stopAll forgets every page and download and ends the status loop and
 // the lanes (Stop): work still waiting is dropped, a path conversion under
-// way ends, and whoever waits for a page to go is woken. It answers the
+// way ends, and whoever waits for a page to go is told it was interrupted
+// (receipt.stopped); a retirement under way still closes its record's
+// retired when its last callback returns. It answers the
 // wait for the lanes' goroutines, which the caller makes once it holds no
 // lock, and the received ends its lanes have not delivered, in each
 // lane's order, the one under way first, which the Manager may be waiting
@@ -517,7 +581,6 @@ func (p *hostedPages) stopAll() (join func(), ends []webview2host.DownloadReport
 		if r.stopAttach != nil {
 			r.stopAttach()
 		}
-		close(r.retired)
 	}
 	take := func(w *acceptedWork) {
 		if w != nil && w.kind == acceptedSnapshot && w.download.ending == endReceived && w.snapshot.Terminal() {

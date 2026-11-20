@@ -83,7 +83,7 @@ func TestHostedEngineFindUnavailableReport(t *testing.T) {
 	if unknown {
 		t.Fatal("a report for an unknown page was recorded")
 	}
-	<-engine.closePage("page2")
+	mustRetire(t, engine.closePage("page2"))
 	engine.mu.Lock()
 	_, kept := engine.noFind["page2"]
 	engine.mu.Unlock()

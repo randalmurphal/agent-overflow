@@ -1,7 +1,9 @@
 package browser
 
 import (
+	"cmp"
 	"fmt"
+	"slices"
 	"time"
 
 	"agent-overflow/internal/browser/ids"
@@ -39,6 +41,11 @@ type hostedDownload struct {
 	heard              time.Time
 	admission          hostedDownloadAdmission
 	cancels, reflected webview2host.CancelAttempt
+	// url and name are the address and file name its reports gave, and
+	// order numbers it among the downloads received. Guarded by
+	// hostedPages.mu.
+	url, name string
+	order     uint64
 	// ending is how far its terminal snapshot has come. Guarded by
 	// hostedPages.mu.
 	ending hostedEnding
@@ -102,11 +109,56 @@ func (p *hostedPages) admit(d *hostedDownload) (canceled bool) {
 	return canceled
 }
 
+// refuse ends d, which the Manager did not admit from its lane, and answers
+// true, unless its page's leave listed it meanwhile (takeReceived), which
+// it answers false: d is then admitted.
+func (p *hostedPages) refuse(d *hostedDownload) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if d.admission == hostedAdmitted {
+		return false
+	}
+	p.endLocked(d)
+	return true
+}
+
+// takeReceived hands the caller, page's leave (receivingDriver), the
+// downloads of page received and not admitted, but for those listed says
+// the page lists already (one its lane is admitting), oldest first, each
+// now admitted: the lane applies their snapshots to the rows the caller
+// lists for them.
+func (p *hostedPages) takeReceived(page ids.PageHandle, listed func(downloadID) bool) []downloadStart {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	r := p.records[page]
+	if r == nil {
+		return nil
+	}
+	var taken []*hostedDownload
+	for id, d := range r.downloads {
+		if d.admission == hostedAnnouncing && !listed(id) {
+			d.admission = hostedAdmitted
+			taken = append(taken, d)
+		}
+	}
+	slices.SortFunc(taken, func(a, b *hostedDownload) int { return cmp.Compare(a.order, b.order) })
+	starts := make([]downloadStart, 0, len(taken))
+	for _, d := range taken {
+		starts = append(starts, p.startLocked(d))
+	}
+	return starts
+}
+
 // end records d's end: it leaves its page's running downloads for its
 // ended ones, the oldest past maxHostedEndedDownloads forgotten.
 func (p *hostedPages) end(d *hostedDownload) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.endLocked(d)
+}
+
+// endLocked is end for a caller that holds p.mu.
+func (p *hostedPages) endLocked(d *hostedDownload) {
 	r := p.records[d.key.page]
 	if r == nil || r.downloads[d.key.id] != d {
 		return
@@ -169,17 +221,27 @@ func (p *hostedPages) unsent(d *hostedDownload, attempt webview2host.CancelAttem
 	}
 }
 
-// popupStart answers, for a download of page, the start naming the popup
-// it began in, that popup's openers, nearest first, and its profile, when
-// page is a popup the Manager has not listed; empty otherwise.
-func (p *hostedPages) popupStart(page ids.PageHandle) downloadStart {
+// start answers the Manager's start of d (startLocked).
+func (p *hostedPages) start(d *hostedDownload) downloadStart {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	return p.startLocked(d)
+}
+
+// startLocked answers the Manager's start of d: its page as its frame
+// (hostedPage.OwnsFrame), its id, address and name, whether its end was
+// received, and, when its page is a popup the Manager has not listed, that
+// popup, its openers, nearest first, and its profile. The caller holds
+// p.mu.
+func (p *hostedPages) startLocked(d *hostedDownload) downloadStart {
+	page := d.key.page
+	start := downloadStart{Frame: frameID(page), ID: d.key.id, URL: d.url, SuggestedName: d.name}
+	start.EndReported = func() bool { return p.endReported(d) }
 	r := p.records[page]
 	if r == nil || !r.state.pendingPopup() {
-		return downloadStart{}
+		return start
 	}
-	start := downloadStart{Popup: page, Profile: r.profile}
+	start.Popup, start.Profile = page, r.profile
 	// Each opener is reported before its popups, so the chain ends; the
 	// bound stops a cycle all the same.
 	for opener := r.opener; opener != "" && len(start.Openers) <= len(p.records); {

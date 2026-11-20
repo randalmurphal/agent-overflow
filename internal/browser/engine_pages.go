@@ -42,10 +42,16 @@ func (m *Manager) pageClosed(handle ids.PageHandle) {
 }
 
 // pageEndReceived is engineEvents.PageEndReceived: the close or crash is
-// recorded in the popup's admission now; its PageClosed or PageCrashed
+// recorded now where the page's listing reads it, a popup's admission or a
+// created or restored page's creation end; its PageClosed or PageCrashed
 // follows and acts.
-func (m *Manager) pageEndReceived(handle ids.PageHandle, end popupadmit.Observation) {
+func (m *Manager) pageEndReceived(handle ids.PageHandle, closed bool, crash string) {
+	end := popupadmit.Crashed(crash)
+	if closed {
+		end = popupadmit.Closed()
+	}
 	m.admissions.Observe(handle, end)
+	m.noteCreationEnd(handle, closed, crash)
 }
 
 // listingDriver is a page driver whose engine schedules a popup's work by
