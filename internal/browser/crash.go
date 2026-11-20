@@ -78,7 +78,7 @@ func (m *Manager) pageCrashed(handle ids.PageHandle, reason string) {
 			break
 		}
 	}
-	if scope == nil || m.closed || m.forgettingLocked() || p.owner.detached.Load() {
+	if scope == nil || !m.recordsAdmittedLocked(p.owner) {
 		m.mu.Unlock()
 		p.mu.Unlock()
 		return

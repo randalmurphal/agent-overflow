@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"agent-overflow/internal/browser/popupadmit"
 )
 
 // A tab's page as the Manager holds it (managedPage): the AO-owned half,
@@ -26,7 +28,7 @@ type managedPage struct {
 	authority *workspaceAuthority
 	// unlistedEnd is what its engine reported ending the page after its
 	// attach and before its listing (creation_end.go). Guarded by m.mu.
-	unlistedEnd creationEnd
+	unlistedEnd popupadmit.Ending
 	// ctx is the page's lifetime, taken from its driver. Operations are
 	// bounded against it. cancelOps ends it before the driver closes, so a
 	// close cancels the operations in flight (closePageAsync).

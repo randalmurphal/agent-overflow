@@ -1,6 +1,7 @@
 package browser
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -105,9 +106,11 @@ func (m *Manager) runRestore(ctx context.Context, access Access, rec *suspendedP
 // restorePage replaces rec with a live page of the same id at rec's address,
 // in its thread's jar. The page is registered, and the record
 // dropped, in one m.mu hold and only once it is fully loaded; any failure
-// leaves the record as it was. A page loaded in a jar its thread switched
-// away from meanwhile is closed and the restore starts again in the new
-// jar.
+// leaves the record as it was, carrying the crash its engine reported
+// first when there was one. Every return of the setup, its failure
+// included, is decided in that hold (unlistedOutcomeLocked). A page loaded
+// in a jar its thread switched away from meanwhile is closed and the
+// restore starts again in the new jar.
 //
 // Each attempt waits for its thread's jar teardown (awaitJarTeardown) and
 // is admitted by openPageLocked only while rec is still the page's record
@@ -139,17 +142,15 @@ func (m *Manager) restorePage(ctx context.Context, access Access, rec *suspended
 		p.info = PageInfo{ID: string(rec.id), URL: "about:blank", Label: label}
 		scope, err := m.openAndLoad(ctx, access.Caller(), p, target, title, func() error { return m.restoreAdmissionLocked(access, rec) })
 		if errors.Is(err, errJarTeardown) {
+			// Refused at its admission, before any page existed.
 			continue
-		}
-		if err != nil {
-			return fmt.Errorf("browser: restore page %s: %w", rec.id, err)
 		}
 
 		// The commit waits for a jar switch writing the thread's saved copy:
 		// a restore is a change of the tabs it captured. It replaces the
 		// record it was admitted for and no other (tabHold).
-		if err := m.lockStructure(ctx, access.tb); err != nil {
-			return errors.Join(fmt.Errorf("browser: restore page %s: %w", rec.id, err), m.abandonPage(scope, p))
+		if lerr := m.lockStructure(ctx, access.tb); lerr != nil {
+			return errors.Join(fmt.Errorf("browser: restore page %s: %w", rec.id, cmp.Or(err, lerr)), m.releaseUnlisted(scope, p))
 		}
 		closing := m.closed
 		held := m.heldLocked(access, tabHold{rec: rec})
@@ -157,58 +158,60 @@ func (m *Manager) restorePage(ctx context.Context, access Access, rec *suspended
 		if errors.Is(held, errTabReplaced) {
 			refused = nil
 		}
-		current := !closing && held == nil
-		// Its engine reported the page's end before this hold: a close fails
-		// the restore, leaving the tab suspended, and a crash leaves it the
-		// crashed tab a listed page's crash does.
-		ended := p.unlistedEnd
-		if current && ended.crash != "" && !ended.closed {
-			rec.failure = ended.crash
-		}
-		stale := current && !ended.ended() && !m.jarCurrentLocked(p)
-		if current && !stale && !ended.ended() {
+		// The one decision on the page, whatever its setup answered: a close
+		// its engine reported fails the restore, leaving the tab suspended,
+		// and a crash leaves it the crashed tab a listed page's crash does.
+		verdict := p.unlistedEnd.Verdict(err != nil)
+		outcome := m.unlistedOutcomeLocked(p, !closing && held == nil, verdict)
+		failure := crashFailure(verdict.CrashReason())
+		switch outcome {
+		case listLive:
 			delete(scope.creating, p)
 			// The record's tab position may have moved while the page loaded.
 			p.tabOrder.Store(rec.tabOrder)
 			delete(m.suspended, rec.id)
 			m.listPageLocked(scope, p)
+		case listCrashed:
+			rec.failure = failure
 		}
 		m.mu.Unlock()
-		if closing {
-			// Close saved the record before this page loaded; it stays suspended
-			// for the next boot.
-			return errors.Join(fmt.Errorf("browser: restore page %s: the browser is shutting down", rec.id), m.abandonPage(scope, p))
-		}
-		if refused != nil {
-			// The thread's pages were closed (deleted, archived, handed off)
-			// while the page loaded.
-			return errors.Join(fmt.Errorf("browser: restore page %s: %w", rec.id, refused), m.abandonPage(scope, p))
-		}
-		if !current {
-			// The page was closed or the browser turned off while it loaded.
-			return errors.Join(fmt.Errorf("browser: restore page %s: %w", rec.id, errPageNotFound), m.abandonPage(scope, p))
-		}
-		if ended.ended() {
-			cause := errClosedBeforeListing
-			if !ended.closed {
-				cause = errors.New("browser: " + ended.crash)
-				// The tab shows its failure.
-				m.emitThreadState(rec.owner.id)
+		switch outcome {
+		case listLive:
+			// The tab leaves its suspended state.
+			m.pageAdded(p)
+			if err := m.persistThreads([]ThreadID{p.owner.id}); err != nil {
+				// The page is live; its saved copy still lists it as suspended,
+				// which only brings it back as a suspended page after a crash.
+				log.Printf("browser: restore page %s: update saved pages: %v", p.id, err)
 			}
-			return errors.Join(fmt.Errorf("browser: restore page %s: %w", rec.id, cause), m.abandonPage(scope, p))
-		}
-		if stale {
+			return nil
+		case retryStale:
 			m.abandonStale(scope, p, p)
 			continue
 		}
-		// The tab leaves its suspended state.
-		m.pageAdded(p)
-		if err := m.persistThreads([]ThreadID{p.owner.id}); err != nil {
-			// The page is live; its saved copy still lists it as suspended, which
-			// only brings it back as a suspended page after a crash.
-			log.Printf("browser: restore page %s: update saved pages: %v", p.id, err)
+		var cause error
+		switch {
+		case closing:
+			// Close saved the record before this page loaded; it stays
+			// suspended for the next boot.
+			cause = errors.New("the browser is shutting down")
+		case refused != nil:
+			// The thread's pages were closed (deleted, archived, handed off)
+			// while the page loaded.
+			cause = refused
+		case outcome == refuseGone:
+			// The page was closed or the browser turned off while it loaded.
+			cause = errPageNotFound
+		case outcome == refuseClosed:
+			cause = errClosedBeforeListing
+		case outcome == listCrashed:
+			cause = errors.New("browser: " + failure)
+			// The tab shows its failure.
+			m.emitThreadState(rec.owner.id)
+		default:
+			cause = err
 		}
-		return nil
+		return errors.Join(fmt.Errorf("browser: restore page %s: %w", rec.id, cause), m.releaseUnlisted(scope, p))
 	}
 }
 
@@ -265,8 +268,8 @@ func (m *Manager) awaitJarTeardown(ctx context.Context, tb *threadBrowser) error
 // openAndLoad creates p's engine page (openPageLocked, which runs admit) and
 // loads target in it when target is set, with title shown while it loads.
 // The load runs outside startMu, as any navigation does; the scope stays
-// reserved for the page until the caller registers or abandons it. A failed
-// load abandons the page.
+// reserved for the page, the load's failure included, until the caller
+// decides it and registers or abandons it.
 func (m *Manager) openAndLoad(ctx context.Context, access Caller, p *managedPage, target, title string, admit func() error) (*jarScope, error) {
 	m.startMu.Lock()
 	scope, err := m.openPageLocked(ctx, access, p, admit)
@@ -285,7 +288,7 @@ func (m *Manager) openAndLoad(ctx context.Context, access Caller, p *managedPage
 	}
 	cancel()
 	if err != nil {
-		return nil, errors.Join(fmt.Errorf("load %s: %w", target, err), m.abandonPage(scope, p))
+		return scope, fmt.Errorf("load %s: %w", target, err)
 	}
 	return scope, nil
 }

@@ -123,10 +123,12 @@ func (m *Manager) readyPopup(r popupReservation) (pageDriver, error) {
 // (popupListableLocked): the thread's close is one such close, which
 // closes every live page of the lifetime it detached until none is left.
 // The admission's commit, in the same hold, reads what ended the popup
-// before it: a close refuses it; a crash alone lists it crashed, never
-// live first, whether its setup succeeded or failed; a setup that failed
-// with no crash refuses it. A popup not listed live is closed (its driver)
-// or discarded (no driver), and a reservation no listing took ends.
+// before it, and the decision a created or restored page takes decides it
+// (unlistedOutcomeLocked): a close refuses it; a crash alone lists it
+// crashed, never live first, whether its setup succeeded or failed, while
+// its lifetime may have records; a setup that failed with no crash
+// refuses it. A popup not listed live is closed (its driver) or discarded
+// (no driver), and a reservation no listing took ends.
 func (m *Manager) commitPopup(r popupReservation, driver pageDriver, setupErr error) *managedPage {
 	p, handle := r.page, r.popup.Handle
 	if setupErr != nil {
@@ -134,21 +136,16 @@ func (m *Manager) commitPopup(r popupReservation, driver pageDriver, setupErr er
 	}
 	m.parkMu.Lock()
 	_ = m.lockStructure(context.Background(), r.opener.owner)
-	kind := popupadmit.Refuse
+	listable := m.popupListableLocked(r.scope, r.popup)
 	var verdict popupadmit.Verdict
-	if m.popupListableLocked(r.scope, r.popup) {
-		if setupErr != nil {
-			verdict = m.admissions.CommitFailed(handle)
-		} else {
-			verdict = m.admissions.Commit(handle)
-		}
-		kind = verdict.Kind()
+	if listable {
+		verdict = m.admissions.Commit(handle, setupErr != nil)
 	}
 	var listed *managedPage
 	listedCrashed, reserved := false, true
 	var released *jarScope
-	switch kind {
-	case popupadmit.List:
+	switch m.unlistedOutcomeLocked(p, listable, verdict) {
+	case listLive:
 		delete(r.scope.creating, p)
 		m.adopting[handle] = nil
 		reserved = false
@@ -157,12 +154,9 @@ func (m *Manager) commitPopup(r popupReservation, driver pageDriver, setupErr er
 		// A report made while the popup was adopted joins the listing,
 		// whose push carries it.
 		m.commitHeldInfoLocked(p, handle)
-	case popupadmit.ListCrashed:
-		listedCrashed, released = m.listCrashedPopupLocked(r.scope, p, handle, verdict.CrashReason())
-		reserved = !listedCrashed
-	case popupadmit.Refuse:
-	default:
-		panic("browser: a popup commit of unknown kind")
+	case listCrashed:
+		released = m.listCrashedPopupLocked(r.scope, p, handle, verdict.CrashReason())
+		listedCrashed, reserved = true, false
 	}
 	m.mu.Unlock()
 	if listed == nil {

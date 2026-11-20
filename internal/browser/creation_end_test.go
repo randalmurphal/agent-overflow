@@ -1,7 +1,9 @@
 package browser
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -120,6 +122,169 @@ func TestARestoreWhosePageEndsBeforeItsListingStaysSuspended(t *testing.T) {
 			if failed := strings.Contains(tabs[0].Error, "oom"); failed != (crash != "") {
 				t.Fatalf("the tab shows %q", tabs[0].Error)
 			}
+		})
+	}
+}
+
+// setupStep is a step of a page's setup after its attach, which fail makes
+// fail for the page its engine is creating.
+type setupStep struct {
+	name string
+	fail func(e *lifecycleEngine, page *fakePage)
+}
+
+var (
+	sizingStep = setupStep{"sizing", func(_ *lifecycleEngine, page *fakePage) {
+		page.mu.Lock()
+		page.viewportErr = errors.New("sizing refused")
+		page.mu.Unlock()
+	}}
+	loadingStep = setupStep{"loading", func(_ *lifecycleEngine, page *fakePage) {
+		page.mu.Lock()
+		page.navigateHook = func(context.Context, string) error { return errors.New("load refused") }
+		page.mu.Unlock()
+	}}
+	readingStep = setupStep{"reading", func(e *lifecycleEngine, _ *fakePage) {
+		e.mu.Lock()
+		e.infoErr = errors.New("read refused")
+		e.mu.Unlock()
+	}}
+)
+
+// endThenFail has the next page e creates report its close (crash empty)
+// or crash before NewPage returns, and then fail step.
+func endThenFail(m *Manager, e *lifecycleEngine, crash string, step setupStep) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.onNewFakePage = func(page *fakePage) {
+		reportEnd(m, page.Handle(), crash)
+		step.fail(e, page)
+	}
+}
+
+// noneReserved fails when a page is still reserved in a jar.
+func noneReserved(t *testing.T, m *Manager) {
+	t.Helper()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, scope := range m.scopes {
+		if len(scope.creating) != 0 {
+			t.Fatalf("%d pages are still reserved in a jar", len(scope.creating))
+		}
+	}
+}
+
+// A setup step that fails after the engine reported the page's end does
+// not decide the page: the end does. A close fails the creation with
+// errClosedBeforeListing and leaves no tab, a crash leaves the crashed tab
+// with its reason, for the user's tab and an agent's; a restore keeps its
+// tab suspended, carrying the crash when there was one.
+func TestAFailedSetupStepAfterAPagesEndAnswersTheEnd(t *testing.T) {
+	ends := map[string]string{"close": "", "crash": "oom"}
+	for endName, crash := range ends {
+		for _, user := range []bool{true, false} {
+			name := fmt.Sprintf("create %s %s %s", map[bool]string{true: "user", false: "agent"}[user], endName, sizingStep.name)
+			t.Run(name, func(t *testing.T) {
+				m, engine := newLifecycleManager(t)
+				access := m.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
+				endThenFail(m, engine, crash, sizingStep)
+				var err error
+				if user {
+					_, err = m.NewCompanionPage(t.Context(), access, "")
+				} else {
+					_, err = m.NewPage(t.Context(), access)
+				}
+				noneReserved(t, m)
+				tabs := m.CompanionState(access.Caller()).Pages
+				if crash == "" {
+					if !errors.Is(err, errClosedBeforeListing) || len(tabs) != 0 {
+						t.Fatalf("answered %v with tabs %+v, want errClosedBeforeListing and none", err, tabs)
+					}
+					return
+				}
+				if user != (err == nil) || (!user && !strings.Contains(err.Error(), "oom")) {
+					t.Fatalf("answered %v, want the crash (shown on the user's tab)", err)
+				}
+				if len(tabs) != 1 || !tabs[0].Suspended || !strings.Contains(tabs[0].Error, "oom") {
+					t.Fatalf("tabs %+v, want one crashed tab", tabs)
+				}
+			})
+		}
+		for _, step := range []setupStep{sizingStep, loadingStep, readingStep} {
+			t.Run(fmt.Sprintf("restore %s %s", endName, step.name), func(t *testing.T) {
+				m, engine := newLifecycleManager(t)
+				access := m.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
+				page := mustOpen(t, m, access, "https://example.test/a")
+				suspendTab(t, m, access, page.ID)
+				endThenFail(m, engine, crash, step)
+				err := <-restore(m, access, page.ID)
+				engine.mu.Lock()
+				engine.infoErr = nil
+				engine.mu.Unlock()
+				noneReserved(t, m)
+				if crash == "" && !errors.Is(err, errClosedBeforeListing) {
+					t.Fatalf("the restore answered %v, want errClosedBeforeListing", err)
+				}
+				if crash != "" && (err == nil || !strings.Contains(err.Error(), "oom")) {
+					t.Fatalf("the restore answered %v, want the crash", err)
+				}
+				tabs := m.CompanionState(access.Caller()).Pages
+				if len(tabs) != 1 || !tabs[0].Suspended {
+					t.Fatalf("tabs %+v, want the one suspended tab", tabs)
+				}
+				if failed := strings.Contains(tabs[0].Error, "oom"); failed != (crash != "") {
+					t.Fatalf("the tab shows %q", tabs[0].Error)
+				}
+			})
+		}
+	}
+}
+
+// A creation whose page crashes while site data is cleared, after the
+// clear dropped the suspended tabs and before it closes the browser, lists
+// no crashed tab: the clear answers success and leaves no tab at all.
+func TestClearSiteDataLeavesNoTabOfACreationThatCrashedDuringIt(t *testing.T) {
+	for _, user := range []bool{true, false} {
+		t.Run(map[bool]string{true: "user", false: "agent"}[user], func(t *testing.T) {
+			m, engine := newLifecycleManager(t)
+			access := m.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
+			old := mustOpen(t, m, access, "https://example.test/old")
+			suspendTab(t, m, access, old.ID)
+			release := engine.hold(&engine.newPageGate)
+			defer release()
+			engine.mu.Lock()
+			engine.onNewFakePage = func(page *fakePage) { reportEnd(m, page.Handle(), "oom") }
+			engine.mu.Unlock()
+			created := make(chan error, 1)
+			go func() {
+				var err error
+				if user {
+					_, err = m.NewCompanionPage(context.Background(), access, "")
+				} else {
+					_, err = m.NewPage(context.Background(), access)
+				}
+				created <- err
+			}()
+			receive(t, engine.creating, "the new page's creation")
+			cleared := make(chan error, 1)
+			go func() { cleared <- m.ClearSiteData(context.Background()) }()
+			eventually(t, "the clear to drop the suspended tab", func() bool {
+				m.mu.Lock()
+				defer m.mu.Unlock()
+				return m.suspended[PageID(old.ID)] == nil
+			})
+			release()
+			err := <-created
+			if user && err != nil || !user && !errors.Is(err, errClosedWhileCreating) {
+				t.Fatalf("the creation answered %v", err)
+			}
+			if err := <-cleared; err != nil {
+				t.Fatalf("clear site data: %v", err)
+			}
+			if tabs := m.CompanionState(access.Caller()).Pages; len(tabs) != 0 {
+				t.Fatalf("the clear left tabs %+v", tabs)
+			}
+			noneReserved(t, m)
 		})
 	}
 }

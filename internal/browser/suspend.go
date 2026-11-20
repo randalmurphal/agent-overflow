@@ -128,7 +128,7 @@ func (m *Manager) suspendPage(ctx context.Context, p *managedPage) (bool, error)
 	}
 	// A page a mounted pane came to show meanwhile stays live, as it would
 	// have had it been shown from the start (SuspendThread).
-	if scope == nil || m.closed || m.forgettingLocked() || p.owner.detached.Load() || m.presentedPageLocked(p.owner) == p.id {
+	if scope == nil || !m.recordsAdmittedLocked(p.owner) || m.presentedPageLocked(p.owner) == p.id {
 		m.mu.Unlock()
 		p.mu.Unlock()
 		return false, nil

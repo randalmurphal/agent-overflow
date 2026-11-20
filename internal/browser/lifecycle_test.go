@@ -26,7 +26,7 @@ type lifecycleEngine struct {
 	navGate, infoGate, evalGate              chan struct{}
 	creating, closing, disposing, navigating chan struct{}
 	reading, evaluating                      chan struct{}
-	newPageErr, disposeErr                   error
+	newPageErr, disposeErr, infoErr          error
 	favicon                                  string
 	onNewPage                                func(pageHooks)
 	onNewFakePage                            func(*fakePage)
@@ -164,6 +164,12 @@ func (d *lifecycleDriver) Navigate(ctx context.Context, rawURL string) error {
 func (d *lifecycleDriver) Info(ctx context.Context) (string, string, error) {
 	if err := d.engine.pass(ctx, &d.engine.infoGate, d.engine.reading); err != nil {
 		return "", "", err
+	}
+	d.engine.mu.Lock()
+	failure := d.engine.infoErr
+	d.engine.mu.Unlock()
+	if failure != nil {
+		return "", "", failure
 	}
 	return d.pageDriver.Info(ctx)
 }
