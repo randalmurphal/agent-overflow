@@ -64,7 +64,7 @@ func (a *App) ListThreadSliceAround(ctx context.Context, threadID, anchorItemID 
 	shape := options.PageShape.normalize()
 	paged, err := a.store.ListThreadSliceAround(ctx,
 		threadID, anchorItemID, clampSliceItemBudget(targetItemCount), shape.RunWindowRows, options.Selection,
-		shape.activityRunRule())
+		a.activityRunRule(shape))
 	if err != nil {
 		return store.PagedItems{}, fmt.Errorf("list thread slice around: %w", err)
 	}
@@ -119,7 +119,7 @@ func (a *App) ListItemsBeforeCursor(ctx context.Context, threadID string, before
 	shape := options.PageShape.normalize()
 	paged, err := a.store.ListItemsBeforeCursor(ctx,
 		threadID, before, clampPaginationItemBudget(itemBudget), shape.RunWindowRows, options.Selection,
-		shape.activityRunRule())
+		a.activityRunRule(shape))
 	if err != nil {
 		return store.PagedItems{}, fmt.Errorf("list items before cursor: %w", err)
 	}
@@ -139,7 +139,7 @@ func (a *App) ListItemsAfterCursor(ctx context.Context, threadID string, after s
 	shape := options.PageShape.normalize()
 	paged, err := a.store.ListItemsAfterCursor(ctx,
 		threadID, after, clampPaginationItemBudget(itemBudget), shape.RunWindowRows, options.Selection,
-		shape.activityRunRule())
+		a.activityRunRule(shape))
 	if err != nil {
 		return store.PagedItems{}, fmt.Errorf("list items after cursor: %w", err)
 	}

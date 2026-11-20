@@ -967,6 +967,11 @@ type App struct {
 	// ownerOpsOmitted answers agent_owner_op as a build before owner
 	// operations does (IsolationConfig.OmitOwnerOps). False serves them.
 	ownerOpsOmitted bool
+	// agentMessageRunMembersOmitted groups every history read by the
+	// absorbed rule, as a build before the agent-message membership rule
+	// does (IsolationConfig.OmitAgentMessageRunMembers). False serves the
+	// rule a request asks for.
+	agentMessageRunMembersOmitted bool
 	// remoteWatchPoll replaces the remote-job watcher's cadence for a
 	// running job (IsolationConfig.RemoteWatchPoll). Zero keeps the
 	// product cadence.

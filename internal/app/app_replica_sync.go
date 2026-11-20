@@ -108,7 +108,7 @@ func (a *App) SyncThreadWindow(callerCtx context.Context, threadID string, req S
 		clampSliceItemBudget(req.ItemBudget), shape.RunWindowRows, store.HistoryStamp{
 			Rev:   req.HaveRev,
 			Epoch: req.HaveEpoch,
-		}, req.HaveWindow, req.Selection, shape.activityRunRule())
+		}, req.HaveWindow, req.Selection, a.activityRunRule(shape))
 	if err != nil {
 		return SyncThreadWindowResponse{}, normalizeThreadWindowSyncError(ctx, err)
 	}

@@ -513,7 +513,10 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		// had. Gated on the harness receiver, so an ordinary boot cannot be
 		// talked out of a capability it has.
 		ThreadToolsOlderThan: harnessThreadToolsOlderThan(opts),
-		WatermarkInterval:    opts.HarnessTiming.Watermark,
+		// The same boot's App groups by the absorbed rule
+		// (app.IsolationConfig.OmitAgentMessageRunMembers).
+		OmitAgentMessageRunMembers: opts.HarnessReceiver != nil && opts.HarnessOlderComputer,
+		WatermarkInterval:          opts.HarnessTiming.Watermark,
 		// Late-bound for the same reason: the store opens during
 		// ServiceStartup, after this config is built. The transport only
 		// ever sees two strings.

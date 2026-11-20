@@ -78,6 +78,7 @@ func TestHarnessTimingOnlyInHarnessBoot(t *testing.T) {
 			`PRLookupRetryBase:\s+opts\.Timing\.PRLookupRetry,`,
 			`UsageProbeGap:\s+opts\.Timing\.UsageProbeGap,`,
 			`OmitOwnerOps:\s+opts\.OlderComputer,`,
+			`OmitAgentMessageRunMembers:\s+opts\.OlderComputer,`,
 			`isolation\.OlderComputer = envTruthy\(os\.Getenv\(diagenv\.HarnessOlderComputer\)\)`,
 			`HarnessOlderComputer:\s+isolation\.OlderComputer,`,
 		},
@@ -86,6 +87,7 @@ func TestHarnessTimingOnlyInHarnessBoot(t *testing.T) {
 			`bootAttachedBackends\(opts\.HarnessTiming\.PairingProbe\)`,
 			`manager\.SetActivationProbe\(activationProbe\)`,
 			`if opts\.HarnessOlderComputer \{\s+appOptions\.Skip, appOptions\.Reshape = olderComputerSurface\(\)`,
+			`OmitAgentMessageRunMembers:\s+opts\.HarnessReceiver != nil && opts\.HarnessOlderComputer,`,
 		},
 	} {
 		source := readRootSource(t, file)

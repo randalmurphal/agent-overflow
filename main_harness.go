@@ -500,6 +500,10 @@ func newIsolatedProviderApp(paths harnessPaths, opts isolationOptions) (*App, *i
 		ProviderEventDrainStall: opts.Timing.DrainStall,
 		UsageProbeGap:           opts.Timing.UsageProbeGap,
 		OmitOwnerOps:            opts.OlderComputer,
+		// v0.0.19 groups agent messages by the absorbed rule and never
+		// reads agentMessageMembers; bootTransport leaves the capability
+		// out of its hello for the same boot.
+		OmitAgentMessageRunMembers: opts.OlderComputer,
 	})
 	window := &isolatedNativeWindow{}
 	appservice.SetBrowserNativeWindow(appService.App, window.pointer)

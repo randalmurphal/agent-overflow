@@ -332,7 +332,21 @@ func TestListActivityRunMembers_ReportsAStaleRun(t *testing.T) {
 // client groups by.
 func TestHistoryReadsGroupAgentMessagesByTheRequestedRule(t *testing.T) {
 	t.Parallel()
+	checkHistoryReadsRule(t, newTestAppWithStore(t), false)
+}
+
+// A computer standing in for a build before the rule
+// (IsolationConfig.OmitAgentMessageRunMembers) reads no field: every read
+// groups by the absorbed rule, a request asking for members included.
+func TestHistoryReadsOfAnOlderBuildStandInAreAbsorbed(t *testing.T) {
+	t.Parallel()
 	app := newTestAppWithStore(t)
+	ConfigureIsolation(app, IsolationConfig{OmitAgentMessageRunMembers: true})
+	checkHistoryReadsRule(t, app, true)
+}
+
+func checkHistoryReadsRule(t *testing.T, app *App, omitted bool) {
+	t.Helper()
 	thread, err := createTestThread(t, app, "claude", "/tmp/w-agent-rule", "claude-sonnet-4-6", "")
 	if err != nil {
 		t.Fatalf("createTestThread: %v", err)
@@ -359,11 +373,16 @@ func TestHistoryReadsGroupAgentMessagesByTheRequestedRule(t *testing.T) {
 		{members: true, wantFirst: "m1", wantCount: 2},
 		{members: false, wantFirst: "t2", wantCount: 1},
 	} {
+		if omitted {
+			// A build before the field groups by the absorbed rule whatever
+			// the request says.
+			tc.wantFirst, tc.wantCount = "t2", 1
+		}
 		shape := PageShape{AgentMessageMembers: tc.members}
 		checkRuns := func(read string, runs []store.ActivityRunStub) {
 			t.Helper()
 			if len(runs) != 1 || runs[0].FirstItemID != tc.wantFirst || runs[0].MemberCount != tc.wantCount {
-				t.Errorf("members=%v: %s runs = %+v, want one run from %s of %d", tc.members, read, runs, tc.wantFirst, tc.wantCount)
+				t.Errorf("omitted=%v members=%v: %s runs = %+v, want one run from %s of %d", omitted, tc.members, read, runs, tc.wantFirst, tc.wantCount)
 			}
 		}
 		slice, err := app.ListThreadSliceAround(ctx, thread.ID, "", 50, TimelinePageOptions{PageShape: shape})
@@ -402,7 +421,7 @@ func TestHistoryReadsGroupAgentMessagesByTheRequestedRule(t *testing.T) {
 		if _, err := app.ListActivityRunMembers(ctx, thread.ID, ActivityRunMembersRequest{
 			RunFirstItemID: other, Direction: store.ActivityRunMembersBefore, Shape: shape,
 		}); !errors.Is(err, store.ErrActivityRunStale) {
-			t.Errorf("members=%v: members of the other rule's run %s: err = %v, want stale", tc.members, other, err)
+			t.Errorf("omitted=%v members=%v: members of the other rule's run %s: err = %v, want stale", omitted, tc.members, other, err)
 		}
 	}
 }

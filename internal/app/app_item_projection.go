@@ -66,6 +66,17 @@ func (s PageShape) activityRunRule() store.ActivityRunRule {
 	return store.ActivityRunRuleFor(s.AgentMessageMembers)
 }
 
+// activityRunRule is the rule this computer groups a read by: the one the
+// shape asks for, or the absorbed rule on a computer standing in for a
+// build before the field, which never read it
+// (IsolationConfig.OmitAgentMessageRunMembers).
+func (a *App) activityRunRule(shape PageShape) store.ActivityRunRule {
+	if a.agentMessageRunMembersOmitted {
+		return store.AgentMessagesAbsorbed
+	}
+	return shape.activityRunRule()
+}
+
 // normalize is the one place a caller-supplied shape becomes the shape a
 // read is served under. The store clamps `RunWindowRows` again, and this
 // clamp is what the contract documents: every binding goes through here,

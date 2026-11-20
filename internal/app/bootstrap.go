@@ -111,6 +111,13 @@ type IsolationConfig struct {
 	// spawner's archive or delete names it as running an older version.
 	// Only a harness boot sets it (diagenv.HarnessOlderComputer).
 	OmitOwnerOps bool
+	// OmitAgentMessageRunMembers makes this computer group every history
+	// read by store.AgentMessagesAbsorbed whatever the request asks, as a
+	// build before transport.CapabilityAgentMessageRunMembers does; its
+	// transport leaves that capability out of the hello
+	// (transport.Config.OmitAgentMessageRunMembers). Only a harness boot
+	// sets it (diagenv.HarnessOlderComputer).
+	OmitAgentMessageRunMembers bool
 }
 
 // ConfigureIsolation applies every mocked-provider safety pin before Start.
@@ -132,6 +139,7 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 	a.downloadsIsolated = true
 	a.threadPollOverride = config.ThreadRequestPoll
 	a.ownerOpsOmitted = config.OmitOwnerOps
+	a.agentMessageRunMembersOmitted = config.OmitAgentMessageRunMembers
 	a.usageProbeGap = config.UsageProbeGap
 	a.transferPendingRetry = config.TransferPendingRetry
 	a.prUpdates.interval = config.PRUpdateInterval

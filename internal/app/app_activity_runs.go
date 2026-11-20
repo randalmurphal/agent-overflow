@@ -85,7 +85,7 @@ func (a *App) ListActivityRunMembers(ctx context.Context, threadID string, req A
 		return store.ActivityRunMembers{}, err
 	}
 	shape := req.Shape.normalize()
-	members, err := a.store.ListActivityRunMembers(ctx, threadID, req.storeRequest(req.Limit), shape.activityRunRule())
+	members, err := a.store.ListActivityRunMembers(ctx, threadID, req.storeRequest(req.Limit), a.activityRunRule(shape))
 	if err != nil {
 		return store.ActivityRunMembers{}, activityRunMembersError(err)
 	}
