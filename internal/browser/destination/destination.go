@@ -36,11 +36,15 @@ func NewDecisions[ID comparable, D any]() *Decisions[ID, D] {
 }
 
 // Hold keeps decision d under id and answers true, or answers false once
-// the set is closed: the caller then cancels the decision itself.
+// the set is closed or while id already holds an open decision, which
+// stays held: the caller then cancels d itself.
 func (s *Decisions[ID, D]) Hold(id ID, d D) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
+		return false
+	}
+	if _, open := s.open[id]; open {
 		return false
 	}
 	s.open[id] = d

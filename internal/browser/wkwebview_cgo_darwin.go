@@ -366,8 +366,8 @@ func aoWKVDownloadDestination(profileID, pageID, popupID, downloadID C.uint64_t,
 	}
 	pending := wkPendingDownload{ptr: download, page: uint64(pageID), popup: uint64(popupID), handle: handle, url: target, name: name}
 	if !profile.destinations.Hold(handle, pending) {
-		// The profile is closing: Dispose cancels what it holds, and this
-		// one goes the same way.
+		// The profile is closing, and Dispose cancels what it holds, or the
+		// id already has an open decision, which stays: this one is canceled.
 		C.ao_wkv_download_decide(download, nil)
 		C.ao_wkv_download_release(download)
 		return
