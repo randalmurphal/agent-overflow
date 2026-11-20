@@ -319,8 +319,8 @@ func (p *hostedPages) attached(page ids.PageHandle) {
 func (p *hostedPages) listed(page ids.PageHandle) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if r := p.records[page]; r != nil {
-		r.to(pageListed)
+	if r := p.records[page]; r != nil && r.to(pageListed) {
+		p.gateLocked(page)
 	}
 }
 
@@ -469,6 +469,10 @@ func (p *hostedPages) retire(page ids.PageHandle) (running []downloadID, finish 
 		if p.records[page] == r {
 			delete(p.records, page)
 			close(r.retired)
+			if r.state.pendingPopup() {
+				// Its popups' lane key turns to its page id.
+				p.gateLocked(page)
+			}
 		}
 	}
 }

@@ -22,13 +22,13 @@ func (p *hostedPages) running() int {
 	return n
 }
 
-// waiting answers the kinds and downloads of the work waiting on page's
-// lane, in order.
+// waiting answers the kinds and downloads of the work waiting on the lane
+// page's work runs on, in order.
 func (p *hostedPages) waiting(page ids.PageHandle) []string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	var out []string
-	if lane := p.lanes.pages[page]; lane != nil {
+	if lane := p.lanes.byKey[p.laneKeyLocked(page)]; lane != nil {
 		for _, w := range lane.jobs {
 			out = append(out, fmt.Sprintf("%d %s %d", w.kind, w.snapshot.ID, w.snapshot.Received))
 		}
@@ -36,15 +36,23 @@ func (p *hostedPages) waiting(page ids.PageHandle) []string {
 	return out
 }
 
-// laneOf answers the key of the lane page's work runs on now, and false
-// when it has none.
+// laneOf answers the key of the lane page's next work runs on, and whether
+// any of its work waits or runs on any lane.
 func (p *hostedPages) laneOf(page ids.PageHandle) (ids.PageHandle, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if lane := p.lanes.pages[page]; lane != nil {
-		return lane.key, true
+	key := p.laneKeyLocked(page)
+	for _, lane := range p.lanes.byKey {
+		if lane.current != nil && lane.current.page == page {
+			return key, true
+		}
+		for _, w := range lane.jobs {
+			if w.page == page {
+				return key, true
+			}
+		}
 	}
-	return "", false
+	return key, false
 }
 
 // busy reports whether any lane has work.
