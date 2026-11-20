@@ -25,10 +25,15 @@ import (
 // The adoption is admitted as that work before the popup is announced, so
 // the two are one decision: a popup reported once Close has begun waiting
 // is of a browser already stopped, which took it, and registers no
-// admission that nothing would end.
+// admission that nothing would end; it will not be listed, so no report is
+// held for it.
 func (m *Manager) popupOpened(popup enginePopup) {
 	done, ok := m.beginLife()
 	if !ok {
+		m.mu.Lock()
+		m.unlistedLocked().put(popup.Handle, struct{}{})
+		m.heldInfo.delete(popup.Handle)
+		m.mu.Unlock()
 		return
 	}
 	if !m.announcePopup(popup) {

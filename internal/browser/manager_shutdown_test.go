@@ -219,15 +219,23 @@ func TestCloseEndsAPopupsWaitForItsOpener(t *testing.T) {
 	}
 }
 
-// A popup reported once the Manager has closed registers no admission:
-// nothing would adopt it and end the admission.
+// A popup reported once the Manager has closed registers no admission,
+// which nothing would adopt and end, and the report its engine made of it
+// before is let go.
 func TestAPopupReportedAfterCloseRegistersNoAdmission(t *testing.T) {
 	manager, engine, _, opener := newAdoptionManager(t)
 	if err := manager.Close(); err != nil {
 		t.Fatal(err)
 	}
+	manager.updatePageInfo("late", "https://example.test/late", "Late", 1)
 	manager.popupOpened(engine.popup(opener, "late"))
 	if !manager.admissions.Announce("late", opener) {
 		t.Fatal("a popup reported after the close registered an admission")
+	}
+	manager.mu.Lock()
+	_, held := manager.heldInfo.get("late")
+	manager.mu.Unlock()
+	if held {
+		t.Fatal("the closed Manager holds the report of a popup it will not list")
 	}
 }
