@@ -204,35 +204,61 @@ func (m *Manager) makeArtifactDir(dir string) error {
 // directory inside the artifact root that dir named as it was opened:
 // each through the directory's handle, wherever its name was moved since,
 // and nothing else in it. Then dir's own entry goes, only while that name
-// still holds this directory, and empty (removeMadeIn). It answers
-// removed, whether none of wrote is left, and what failed; anything else
-// in the directory, and whatever took dir's name meanwhile, stays.
-func (m *Manager) removeHeldArtifacts(held *os.Root, dir string, wrote []string) (removed bool, err error) {
+// still holds this directory, and empty (removeMadeIn). It answers left,
+// the bytes of the files the directory still holds, measured through its
+// handle, which the artifact quota is charged whatever their names, or -1
+// when they could not be measured; and what failed. Anything else in the
+// directory, and whatever took dir's name meanwhile, stays.
+func (m *Manager) removeHeldArtifacts(held *os.Root, dir string, wrote []string) (left int64, err error) {
 	var errs []error
 	for _, name := range wrote {
 		if err := held.Remove(name); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			errs = append(errs, err)
+			errs = append(errs, fmt.Errorf("browser: remove %s from %s: %w", name, dir, err))
 		}
 	}
-	if err := errors.Join(errs...); err != nil {
-		return false, fmt.Errorf("browser: remove what was written in %s: %w", dir, err)
+	left, err = heldFileBytes(held)
+	if err != nil {
+		return -1, errors.Join(append(errs, fmt.Errorf("browser: measure what is left in %s: %w", dir, err))...)
 	}
 	self, err := held.Stat(".")
 	if err != nil {
-		return true, fmt.Errorf("browser: read %s: %w", dir, err)
+		return left, errors.Join(append(errs, fmt.Errorf("browser: read %s: %w", dir, err))...)
 	}
 	root, rel, err := m.artifactsIn(dir)
 	if err != nil {
-		return true, err
+		return left, errors.Join(append(errs, err)...)
 	}
 	parent, err := root.OpenRoot(filepath.Dir(rel))
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return true, nil
-		}
-		return true, fmt.Errorf("browser: remove %s: %w", dir, err)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return left, errors.Join(errs...)
+	case err != nil:
+		return left, errors.Join(append(errs, fmt.Errorf("browser: remove %s: %w", dir, err))...)
 	}
-	return true, errors.Join(removeMadeIn(parent, filepath.Base(rel), self), parent.Close())
+	return left, errors.Join(append(errs, removeMadeIn(parent, filepath.Base(rel), self), parent.Close())...)
+}
+
+// heldFileBytes is the size of every regular file in the directory held
+// holds, at any depth.
+func heldFileBytes(held *os.Root) (int64, error) {
+	var total int64
+	err := fs.WalkDir(held.FS(), ".", func(_ string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		info, err := entry.Info()
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode().IsRegular() {
+			total += info.Size()
+		}
+		return nil
+	})
+	return total, err
 }
 
 // removeMadeIn removes name from parent, held open, while it is still the

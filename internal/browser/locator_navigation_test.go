@@ -25,7 +25,20 @@ type navigationDriver struct {
 	// laterBlocks, when set, holds every read after the click until its
 	// context ends.
 	laterBlocks bool
-	hooks       pageHooks
+	// infoErr, when set, fails every read of the page's info after the
+	// click.
+	infoErr error
+	hooks   pageHooks
+}
+
+func (d *navigationDriver) Info(ctx context.Context) (string, string, error) {
+	d.mu.Lock()
+	acted, err := d.acted, d.infoErr
+	d.mu.Unlock()
+	if acted > 0 && err != nil {
+		return "", "", err
+	}
+	return d.pageDriver.Info(ctx)
 }
 
 func (d *navigationDriver) ResolveLocator(context.Context, Locator, string) ([]LocatorMatch, error) {
@@ -229,6 +242,17 @@ func TestAWaitForTheCommitAloneEndsOnTheNavigation(t *testing.T) {
 			t.Fatalf("answered %v, %v; want the navigation", navigated, err)
 		}
 	})
+}
+
+// A click whose expected navigation happened answers the navigation with
+// the failure of the page's last read, when that read fails.
+func TestANavigationIsReportedWhenThePageCannotBeReadAfter(t *testing.T) {
+	here := navigationMark{URL: "https://example.test/a", Loader: "1"}
+	unreadable := errors.New("the page is gone")
+	result, err := clickExpectingNavigation(t, &navigationDriver{first: here, later: here, commit: true, infoErr: unreadable})
+	if !result.Navigated || !errors.Is(err, unreadable) || !strings.Contains(err.Error(), "the page navigated") {
+		t.Fatalf("answered %+v, %v; want the navigation, and the read's failure", result, err)
+	}
 }
 
 // A click that expects a navigation and a download, navigates and starts

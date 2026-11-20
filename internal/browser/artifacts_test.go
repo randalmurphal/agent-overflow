@@ -82,8 +82,9 @@ func TestAnArtifactRootRedirectedAfterItsScanChangesNothing(t *testing.T) {
 // A bundle's own folder moved aside as it is written, with another folder
 // put at its name and another file put beside the bundle's: the bundle is
 // refused, the files it wrote are removed where they now are, through the
-// folder held, their bytes are released, and the file put beside them and
-// the folder that took the bundle's name keep what is in them.
+// folder held, and the file put beside them and the folder that took the
+// bundle's name keep what is in them. The quota is charged what the
+// bundle's folder still holds, whatever its files are named.
 func TestABundleFolderMovedAsItIsWrittenIsRemovedWhereItIs(t *testing.T) {
 	m, engine := newLifecycleManager(t)
 	access := m.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
@@ -132,8 +133,8 @@ func TestABundleFolderMovedAsItIsWrittenIsRemovedWhereItIs(t *testing.T) {
 	if got, err := os.ReadFile(theirs); err != nil || string(got) != "not AO's" {
 		t.Fatalf("the folder that took the bundle's name lost its file: %q, %v", got, err)
 	}
-	if used := m.artifactBytes.Used(); used != 0 {
-		t.Fatalf("the quota holds %d bytes after the refused bundle was removed", used)
+	if used, want := m.artifactBytes.Used(), int64(len("not AO's")); used != want {
+		t.Fatalf("the quota holds %d bytes after the refused bundle was removed, want the %d its folder still holds", used, want)
 	}
 }
 

@@ -230,8 +230,10 @@ func (m *Manager) bundleAssets(ctx context.Context, p *managedPage, opts AssetOp
 	bundle := AssetBundle{DirectoryPath: dir, Assets: make([]BundledAsset, 0, len(selected)), Failures: make([]AssetFailure, 0)}
 	started := time.Now()
 	// total is the bundle's bytes; stranded the bytes of failed files that
-	// could not be removed, which still hold the reservation.
+	// could not be removed, which still hold the reservation, and
+	// strandedNames those files.
 	var total, stranded int64
+	var strandedNames []string
 	if err := p.mu.LockContext(ctx); err != nil {
 		return AssetBundle{}, fmt.Errorf("browser: bundle assets: %w", err)
 	}
@@ -279,6 +281,7 @@ func (m *Manager) bundleAssets(ctx context.Context, p *managedPage, opts AssetOp
 				log.Printf("browser: remove the partial asset %s: %v", path, err)
 				copyErr = fmt.Errorf("%w; its partial file %s could not be removed: %v", copyErr, path, err)
 				stranded += written
+				strandedNames = append(strandedNames, fileName)
 				settledBytes += written
 			}
 			bundle.Failures = append(bundle.Failures, AssetFailure{ID: asset.ID, Name: name, URL: asset.URL, Reason: copyErr.Error(), ContentType: contentType})
@@ -299,17 +302,18 @@ func (m *Manager) bundleAssets(ctx context.Context, p *managedPage, opts AssetOp
 	bundle.ManifestPath = manifestPath
 	// Every path the bundle hands out must name the file written, in the
 	// folder held; when a name on the way to it was moved since it was
-	// held, the bundle is not kept, and the files it wrote go through the
-	// held folder itself, their bytes settled as kept unless they are
-	// gone. A partial file that could not be removed stays settled.
+	// held, the bundle is not kept. The files it wrote go through the held
+	// folder itself, a partial one that could not be removed before
+	// included, and the bundle settles as the bytes that folder still
+	// holds, or as written when they cannot be measured.
 	if err := bundleNamesReach(held, bundle, manifestName); err != nil {
-		wrote := []string{manifestName}
+		wrote := append([]string{manifestName}, strandedNames...)
 		for _, asset := range bundle.Assets {
 			wrote = append(wrote, filepath.Base(asset.Path))
 		}
-		removed, removeErr := m.removeHeldArtifacts(held, dir, wrote)
-		if removed {
-			settledBytes = stranded
+		left, removeErr := m.removeHeldArtifacts(held, dir, wrote)
+		if left >= 0 {
+			settledBytes = left
 		}
 		return AssetBundle{}, errors.Join(err, removeErr)
 	}

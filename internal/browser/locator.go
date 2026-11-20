@@ -129,7 +129,11 @@ func (m *Manager) Locator(ctx context.Context, access Access, opts LocatorOption
 	}
 	info, infoErr := m.finishPageOperation(opCtx, p)
 	if infoErr != nil {
-		return LocatorResult{}, infoErr
+		if result.Navigated {
+			// The navigation is a fact whatever the page's last read answers.
+			infoErr = fmt.Errorf("browser: the page navigated, and it could not be read after: %w", infoErr)
+		}
+		return LocatorResult{Navigated: result.Navigated, Download: result.Download}, infoErr
 	}
 	result.Page = info
 	return result, nil
