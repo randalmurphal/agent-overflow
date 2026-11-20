@@ -296,3 +296,43 @@ func TestAnArtifactFolderThatCannotBeMeasuredRefusesWithTheReason(t *testing.T) 
 		t.Fatalf("a reservation under an artifact folder that cannot be created answered %v", err)
 	}
 }
+
+// Writes follow a link and the scan would not, so an artifact folder that
+// is a link, or holds a link to a folder, is refused rather than measured
+// as nearly empty while the folder it reaches is full.
+func TestAnArtifactFolderReachedThroughALinkIsRefused(t *testing.T) {
+	for _, linked := range []string{"the folder", "a folder inside it"} {
+		t.Run(linked, func(t *testing.T) {
+			full := t.TempDir()
+			sparse, err := os.Create(filepath.Join(full, "full.bin"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := sparse.Truncate(maxArtifactRootBytes); err != nil {
+				t.Fatal(err)
+			}
+			if err := sparse.Close(); err != nil {
+				t.Fatal(err)
+			}
+			manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{FakeEngine: true})
+			t.Cleanup(func() {
+				if err := manager.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			link := manager.artifactRoot
+			if linked == "a folder inside it" {
+				if err := os.MkdirAll(manager.artifactRoot, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				link = filepath.Join(manager.artifactRoot, "finished")
+			}
+			if err := os.Symlink(full, link); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := manager.reserveArtifacts(1); err == nil || !strings.Contains(err.Error(), "is a link") {
+				t.Fatalf("a reservation through %s linked to a full one answered %v, with %d bytes measured", linked, err, manager.artifactBytes.Used())
+			}
+		})
+	}
+}
