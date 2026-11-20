@@ -360,7 +360,9 @@ Mechanism in
   [standing agents](specs/standing-agents.md#owned-workers)): a worker a
   thread spawns on another computer is owned there through the receipt's
   link, with no sidebar row in any window. Its prompts go to the spawner,
-  pulled by the spawner's computer, for as long as the link stands. The
+  pulled by the spawner's computer, by the rule of a local worker's (the
+  sidebar row decides it): in every run while the link owns it, and with
+  a sidebar row in a run the spawner started. The
   spawner's computer owes it the spawner's archive and delete, and that
   computer admits them through its own archive and delete. An archive or
   delete that computer refuses or cannot receive stands here, is named as

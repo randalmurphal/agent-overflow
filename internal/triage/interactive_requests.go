@@ -189,9 +189,9 @@ func (r *Router) ReroutePrompts(from string) int {
 // (its placement): each whose route that changes moves and is announced
 // again, as reroutePrompts announces. fromPerson says the router's route
 // also applies to a prompt that is the user's; otherwise such a prompt
-// stays the user's. A route to or from another computer is left to the
-// link that set it. skip names prompts left as they are, read outside the
-// router's lock. It returns how many moved.
+// stays the user's. A route to or from another computer moves by the same
+// rule. skip names prompts left as they are, read outside the router's
+// lock. It returns how many moved.
 func (r *Router) RouteThreadPrompts(threadID string, fromPerson bool, skip func(PromptRef) bool) int {
 	if r == nil || threadID == "" {
 		return 0
@@ -230,8 +230,7 @@ func (r *Router) RouteThreadPrompts(threadID string, fromPerson bool, skip func(
 	st := r.threadStateIfPresent(threadID)
 	for _, ref := range open {
 		current, isOpen := r.promptRouteLocked(ref)
-		if st == nil || !isOpen || sameRoute(current, to) || (current == nil && !fromPerson) ||
-			(current != nil && current.ComputerID != "") || (to != nil && to.ComputerID != "") {
+		if st == nil || !isOpen || sameRoute(current, to) || (current == nil && !fromPerson) {
 			continue
 		}
 		if pending, ok := st.pendingApprovals[ref.RequestID]; ok {

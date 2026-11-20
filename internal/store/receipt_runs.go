@@ -29,6 +29,19 @@ const receiptRunStartSQL = `CASE
                                     AND sl.owner_device_id = ?2 AND sl.source_thread_id = ?5) THEN 1
   END`
 
+// spawnRunOpenSQL matches a paired computer's spawn receipt alias while a
+// run its source thread started is open on its thread here: a receipt of
+// that thread's, the spawn's or a later send's, whose run is open, or, for
+// a link written before v159 that tracks none, the spawn until it settles.
+// A release ends those runs (releaseSpawnLinksTx).
+func spawnRunOpenSQL(alias string) string {
+	a := alias + "."
+	return `((` + a + `run_open IS NULL AND ` + a + `spawn_link = 1 AND ` + a + `settled_at IS NULL)
+	    OR EXISTS (SELECT 1 FROM thread_request_receipts ro INDEXED BY idx_thread_request_receipts_run_open
+	                WHERE ro.target_thread_id = ` + a + `target_thread_id AND ro.run_open = 1
+	                  AND ro.owner_device_id = ` + a + `owner_device_id AND ro.source_thread_id = ` + a + `source_thread_id))`
+}
+
 // endReceiptRunsTx ends the open runs of the settled receipts to thread,
 // and the open nudge run of its link, recording its figures over its life
 // at now.
@@ -61,15 +74,13 @@ func endReceiptRunsTx(tx *sql.Tx, threadID string, now int64) error {
 // link a message to thread from by is a nudge through, as `link`
 // (idx_thread_request_receipts_spawn_link): the link stands, the worker is
 // owned, by is not the link's source thread, no nudge of it is open, and no
-// run of the source thread's is open on its receipts to the worker.
+// run of the source thread's is open on the worker (spawnRunOpenSQL).
 func peerNudgeLinkSQL(thread, by string) string {
 	return `FROM thread_request_receipts AS link INDEXED BY idx_thread_request_receipts_spawn_link
 		   CROSS JOIN threads AS w ON w.id = link.target_thread_id
 		  WHERE link.spawn_link = 1 AND link.target_thread_id IS NOT NULL AND link.target_thread_id = ` + thread + `
 		    AND w.placement = 'owned' AND link.source_thread_id <> ` + by + ` AND link.nudge_open IS NOT 1
-		    AND NOT EXISTS (SELECT 1 FROM thread_request_receipts ro INDEXED BY idx_thread_request_receipts_run_open
-		                     WHERE ro.target_thread_id = link.target_thread_id AND ro.run_open = 1
-		                       AND ro.owner_device_id = link.owner_device_id AND ro.source_thread_id = link.source_thread_id)`
+		    AND NOT ` + spawnRunOpenSQL("link")
 }
 
 // startPeerNudgeRun records on the link of threadID the run a nudge by

@@ -63,12 +63,9 @@ type SpawnReach struct {
 	TargetThreadID string
 	// State is the receipt's state; an open one can still name a thread.
 	State string
-	// Linked is whether the spawn's link stands (spawn_link).
+	// Linked is whether the spawn's link stands (spawn_link). Whether the
+	// thread's prompts route to the spawner is SpawnOwnerOf's to say.
 	Linked bool
-	// Owned is whether the link owns its thread: it stands and the thread
-	// is owned, not given a sidebar row or a group. Only then do the
-	// thread's prompts route to the spawner (SpawnOwnerOf).
-	Owned bool
 }
 
 // Open reports whether the receipt can still name a thread.
@@ -85,11 +82,10 @@ func (r SpawnReach) Open() bool {
 // (touchSpawnLinkOwner).
 func (s *Store) ReachSpawnLink(token, deviceID, sourceThreadID string, now int64) (SpawnReach, bool, error) {
 	var reach SpawnReach
-	err := s.reader().QueryRow(`SELECT COALESCE(r.target_thread_id, ''), r.state, r.spawn_link,
-		    r.spawn_link = 1 AND COALESCE(t.placement = 'owned', 0)
+	err := s.reader().QueryRow(`SELECT COALESCE(r.target_thread_id, ''), r.state, r.spawn_link
 		  FROM thread_request_receipts AS r LEFT JOIN threads t ON t.id = r.target_thread_id
 		 WHERE (r.target_thread_id IS NULL OR t.id IS NOT NULL) AND r.token = ? AND r.owner_device_id = ? AND r.source_thread_id = ? AND r.kind = ?`,
-		token, deviceID, sourceThreadID, ThreadRequestSpawn).Scan(&reach.TargetThreadID, &reach.State, &reach.Linked, &reach.Owned)
+		token, deviceID, sourceThreadID, ThreadRequestSpawn).Scan(&reach.TargetThreadID, &reach.State, &reach.Linked)
 	if errors.Is(err, sql.ErrNoRows) {
 		return SpawnReach{}, false, nil
 	}
@@ -108,8 +104,11 @@ func (s *Store) ReachSpawnLink(token, deviceID, sourceThreadID string, now int64
 // thread_request_receipts, with args) selects, and returns the threads they
 // named, sorted: the trigger has made each owned one standalone, so the
 // caller announces their placement. A link's open nudge run ends with it,
-// with its thread's figures over its life now.
+// and so do the open runs of its source thread on its thread, each with the
+// thread's figures over its life now: its spawner there no longer asks for
+// that thread's rest, so none of its prompts go there (spawnOwnerRemoteSQL).
 func releaseSpawnLinksTx(tx *sql.Tx, where string, args ...any) (released []string, err error) {
+	now := nowMillis()
 	tally := tallyFiguresSQL("thread_request_receipts.target_thread_id", "?1")
 	ending := func(column, figure string) string {
 		return column + ` = CASE WHEN nudge_open = 1 THEN ` + figure + ` ELSE ` + column + ` END`
@@ -118,22 +117,37 @@ func releaseSpawnLinksTx(tx *sql.Tx, where string, args ...any) (released []stri
 		    `+ending("nudge_tool_calls", tally[0])+`, `+ending("nudge_tokens", tally[1])+`, `+ending("nudge_turn_ms", tally[2])+`,
 		    nudge_open = CASE WHEN nudge_open = 1 THEN 0 ELSE nudge_open END
 		 WHERE spawn_link = 1 AND `+where+`
-		 RETURNING COALESCE(target_thread_id, '')`, append([]any{nowMillis()}, args...)...)
+		 RETURNING COALESCE(target_thread_id, ''), owner_device_id, source_thread_id`, append([]any{now}, args...)...)
 	if err != nil {
 		return nil, fmt.Errorf("store: release spawn links: %w", err)
 	}
 	defer closeAgentWakeRows(rows, "store: release spawn links", &err)
+	type link struct{ target, owner, source string }
+	var links []link
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		var l link
+		if err := rows.Scan(&l.target, &l.owner, &l.source); err != nil {
 			return nil, fmt.Errorf("store: release spawn links: scan: %w", err)
 		}
-		if id != "" && !slices.Contains(released, id) {
-			released = append(released, id)
+		if l.target == "" {
+			continue
+		}
+		links = append(links, l)
+		if !slices.Contains(released, l.target) {
+			released = append(released, l.target)
 		}
 	}
-	if err := rows.Err(); err != nil {
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return nil, fmt.Errorf("store: release spawn links: %w", err)
+	}
+	runTally := tallyFiguresSQL("?2", "?1")
+	for _, l := range links {
+		if _, err := tx.Exec(`UPDATE thread_request_receipts INDEXED BY idx_thread_request_receipts_run_open
+			    SET run_open = 0, run_tool_calls = `+runTally[0]+`, run_tokens = `+runTally[1]+`, run_turn_ms = `+runTally[2]+`
+			  WHERE target_thread_id = ?2 AND run_open = 1 AND owner_device_id = ?3 AND source_thread_id = ?4`,
+			now, l.target, l.owner, l.source); err != nil {
+			return nil, fmt.Errorf("store: end the runs of the released link to %s: %w", l.target, err)
+		}
 	}
 	slices.Sort(released)
 	return released, nil

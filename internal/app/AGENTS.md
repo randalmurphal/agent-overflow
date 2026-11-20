@@ -273,9 +273,10 @@ names a fork's thread adopts the questions it carries
 (`adoptAsyncQuestionPrompts`). Shutdown joins the reconcile queue before
 the store closes.
 
-A worker a paired computer's spawn owns routes its prompts to that
-computer's thread. The worker's computer holds each for as long as the
-link stands (`app_worker_prompts_peer.go`); the spawner's wait records
+A worker a paired computer's thread spawned routes its prompts to that
+thread by the local spawner's rule (`store.SpawnOwnerOf`). The worker's
+computer holds each for as long as they route there
+(`app_worker_prompts_peer.go`); the spawner's wait records
 changes in `app_owner_session.go`. Its prompt reader runs during ordinary
 reads and recovery. The spawner queues the
 wake to the spawn's caller and forwards its `thread_reply`

@@ -62,14 +62,26 @@ func needYouOf(t *testing.T, app *App, threadID string) int {
 
 // The spawn row of a thread on a paired computer carries that thread's
 // placement and archive state there, and the prompt it waits on as that
-// computer reads it: an approval the person owns, counted as needing the
-// person here too, and a question routed back to the spawner here, named
-// as this computer names it and counted as no one's but that spawner's.
+// computer reads it: a prompt routed back to the spawner here, named as
+// this computer names it and counted as no one's but that spawner's,
+// whether its worker is owned there or shown in the sidebar there during
+// its spawn's run; and an approval the person owns, of a thread there
+// nobody spawned, counted as needing the person here too.
 func TestARemoteRowReportsWhereItsThreadIsAndWhatItWaitsOn(t *testing.T) {
 	t.Parallel()
 	pair := newAgentPeerPair(t, func(t *testing.T, app *App) *pairedBackend { return servePairedApp(t, app) })
 	second := pair.spawnThere(t, "more over there", map[string]any{"notify": true})
 	routed := pair.receipt(t, second.Token).TargetThreadID
+	// A spawn made with a sidebar row there, in its own run, asks the
+	// spawner here too.
+	shownSpawn := pair.spawnThere(t, "with a row over there", map[string]any{"notify": true, "placement": "standalone"})
+	shownWorker := pair.receipt(t, shownSpawn.Token).TargetThreadID
+	plain := testThread(entityid.New())
+	plain.Provider, plain.WorkspacePath = "claude", t.TempDir()
+	if err := pair.dest.store.CreateThread(plain); err != nil {
+		t.Fatal(err)
+	}
+	sent := pair.sendThere(t, plain.ID, "check the changelog")
 	routeUnheld(pair.dest)
 
 	rowOf := func(rows ThreadAgentRows, token string) ThreadAgentRow {
@@ -79,24 +91,37 @@ func TestARemoteRowReportsWhereItsThreadIsAndWhatItWaitsOn(t *testing.T) {
 	pair.listRowsUntil(t, func(rows ThreadAgentRows) bool {
 		return rowOf(rows, pair.spawn.Token).Placement == store.PlacementOwned && rowOf(rows, second.Token).Placement == store.PlacementOwned
 	})
-	// Shown in the sidebar there, the first worker's prompts are the
-	// person's there.
+	// Shown in the sidebar there while its spawn's run is open, the first
+	// worker's prompts are still its spawner's here.
 	if _, err := pair.dest.store.SetThreadPlacement([]string{pair.child}, store.PlacementStandalone); err != nil {
 		t.Fatal(err)
 	}
 
 	askOn(t, pair.dest, pair.child, "approval-1", false)
 	askOn(t, pair.dest, routed, "question-1", true)
+	askOn(t, pair.dest, plain.ID, "approval-2", false)
+	askOn(t, pair.dest, shownWorker, "approval-3", false)
 	listing := pair.listRowsUntil(t, func(rows ThreadAgentRows) bool {
 		pair.poll(t)
-		return rowOf(rows, pair.spawn.Token).BlockedOn == "approval" && rowOf(rows, second.Token).BlockedOn == "question"
+		return rowOf(rows, pair.spawn.Token).BlockedOn == "approval" && rowOf(rows, second.Token).BlockedOn == "question" &&
+			rowOf(rows, sent.Token).State == threadtools.RequestBlocked && rowOf(rows, shownSpawn.Token).BlockedOn == "approval"
 	})
-	person, back := rowOf(listing, pair.spawn.Token), rowOf(listing, second.Token)
-	if person.BlockedDetail != "Bash: make deploy" || person.BlockedRoutedTo != "" || person.BlockedRoutedHere {
-		t.Fatalf("the row blocked on the person's approval = %+v", person)
+	if made := rowOf(listing, shownSpawn.Token); made.Placement != store.PlacementStandalone ||
+		made.BlockedRoutedTo != pair.caller.Title || !made.BlockedRoutedHere {
+		t.Fatalf("the row of the spawn made with a sidebar row = %+v; want its approval routed to %q here", made, pair.caller.Title)
+	}
+	shown, back, person := rowOf(listing, pair.spawn.Token), rowOf(listing, second.Token), rowOf(listing, sent.Token)
+	if shown.Placement != store.PlacementStandalone || shown.BlockedDetail != "Bash: make deploy" ||
+		shown.BlockedRoutedTo != pair.caller.Title || !shown.BlockedRoutedHere {
+		t.Fatalf("the sidebar worker's row in its spawn's run = %+v; want its approval routed to %q here", shown, pair.caller.Title)
 	}
 	if back.BlockedDetail != "Which module?" || back.BlockedRoutedTo != pair.caller.Title || !back.BlockedRoutedHere {
 		t.Fatalf("the row whose question came back here = %+v; want it routed to %q here", back, pair.caller.Title)
+	}
+	// A send's row reads from its request's poll only that it waits on the
+	// person there.
+	if person.BlockedOn != "person" || person.BlockedRoutedTo != "" || person.BlockedRoutedHere {
+		t.Fatalf("the row blocked on the person's approval = %+v", person)
 	}
 	if got := needYouOf(t, pair.source, pair.caller.ID); got != 1 {
 		t.Fatalf("the summary counts %d rows needing the person, want the approval alone", got)

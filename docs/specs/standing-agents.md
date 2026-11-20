@@ -793,8 +793,8 @@ Ruling 36, as built:
     it to the spawner again (`parkWorkerPrompt`); a wake whose session
     start failed stays queued for the spawner's next session; a paused
     assistant's waits in its queue until assistants are on; a paired
-    computer's spawner holds it for as long as the link stands, and one
-    that computer gives back is the person's there. The person can
+    computer's spawner holds it for as long as the worker's prompts are
+    its, and one that computer gives back is the person's there. The person can
     answer it in the worker throughout.
   - An async question an earlier run of the app recorded is asked of
     nobody: it holds neither the worker nor its spawner, and no boot
@@ -805,7 +805,14 @@ Ruling 36, as built:
   (`endNudgeRunsTx`), and gives the person the prompts the spawner holds
   outside its runs; Remove from Sidebar puts the person's prompts to the
   spawner, and a message after it is a nudge
-  (`routeWorkerPromptsAgain`).
+  (`routeWorkerPromptsAgain`). A spawner on a paired computer is one by
+  the same rule, through its spawn's receipt here: owned through the
+  spawn's link, the worker is its in every run; with a sidebar row, in a
+  run its spawn or its later send opened on a receipt here, whether the
+  spawn made the worker owned, standalone or grouped, while its device
+  can still reach this computer (`spawnOwnerRemoteSQL`). Listing,
+  answering and returning a held prompt read the same rule. A link's
+  release ends those runs here, so its prompts then go to the person.
 - A placement or group change is announced with
   `ThreadAnnouncer.AnnouncePlaced`: `listed` while the row is unarchived
   and not owned, else `full`. Never `unlisted`, the archive frame that

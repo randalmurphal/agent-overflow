@@ -18,10 +18,11 @@ import (
 )
 
 // The prompts this computer's workers route to a thread on a paired
-// computer, whose owned spawn's link owns them (store.SpawnOwnerOf). They
-// are pulled, never pushed: this computer cannot call the spawner's
-// computer, and that computer already asks about its spawn at the poll's
-// pace (agent_rows).
+// computer that spawned them, by the rule a local spawner's are
+// (store.SpawnOwnerOf): always while the spawn's link owns the worker, and
+// with a sidebar row in a run that thread started. They are pulled, never
+// pushed: this computer cannot call the spawner's computer, and that
+// computer already asks about its spawn at the poll's pace (agent_rows).
 //
 //   - A prompt announced routed there is registered held for that computer
 //     (holdPeerWorkerPrompt) and nothing is queued here.
@@ -33,12 +34,14 @@ import (
 //   - Listing, renewing, answering and returning need the calling session
 //     to hold approvals:respond, as answering the person's own prompts
 //     does; agent_rows without it lists no prompt content.
-//   - The worker is owned, so its prompt stays held for the spawner there
-//     however long that computer takes: one that stops answering leaves it
-//     waiting on the spawner, and the person here can still answer it in
-//     the worker. A link that ends hands its prompts back at once
-//     (handBackLinkPrompts, through announceReleasedWorkers), and a return
-//     from that computer, which no thread there could hold, hands it back.
+//   - While the worker's prompts are that thread's, its prompt stays held
+//     for the spawner there however long that computer takes: one that
+//     stops answering leaves it waiting on the spawner, and the person here
+//     can still answer it in the worker. A link that ends hands its prompts
+//     back at once (handBackLinkPrompts, through announceReleasedWorkers), a
+//     placement that routes them elsewhere moves them as it moves a local
+//     spawner's (routeWorkerPromptsAgain), and a return from that computer,
+//     which no thread there could hold, hands it back.
 //
 // One binding (remotePromptFor) is the only door for an answer and a
 // return.
@@ -143,9 +146,9 @@ func (a *App) promptLinkStands(prompt workerPrompt) bool {
 
 // remotePromptFor is the binding every answer and return passes:
 // the prompt under promptToken is held for a paired computer through the
-// spawn spawnToken names, and that spawn's link, reached for the calling
-// device and its source thread (store.ReachSpawnLink), still owns its
-// worker.
+// spawn spawnToken names, that spawn, reached for the calling device and
+// its source thread (store.ReachSpawnLink), names the prompt's worker, and
+// the worker's prompts are that spawn's thread's now (spawnAsks).
 func (a *App) remotePromptFor(device, source, spawnToken, promptToken string) (workerPrompt, error) {
 	prompt, found := a.workerPrompts.get(promptToken)
 	if !found || prompt.remote == nil || prompt.remote.spawnToken != spawnToken ||
@@ -156,19 +159,39 @@ func (a *App) remotePromptFor(device, source, spawnToken, promptToken string) (w
 	if err != nil {
 		return workerPrompt{}, fmt.Errorf("read the link of thread %s: %w", prompt.workerID, err)
 	}
-	if !found || !reach.Owned || reach.TargetThreadID != prompt.workerID {
+	if !found || reach.TargetThreadID != prompt.workerID {
+		return workerPrompt{}, errPeerPromptNotYours
+	}
+	asks, err := a.spawnAsks(prompt.workerID, spawnToken, device)
+	if err != nil {
+		return workerPrompt{}, err
+	}
+	if !asks {
 		return workerPrompt{}, errPeerPromptNotYours
 	}
 	return prompt, nil
 }
 
+// spawnAsks reports whether threadID's prompts go to the thread on a paired
+// computer whose spawn spawnToken names, made from device: the worker is
+// owned through that spawn's link, or a run that thread started is open on
+// it (store.SpawnOwnerOf).
+func (a *App) spawnAsks(threadID, spawnToken, device string) (bool, error) {
+	owner, found, err := a.store.SpawnOwnerOf(threadID)
+	if err != nil {
+		return false, fmt.Errorf("read whom thread %s asks: %w", threadID, err)
+	}
+	return found && owner.Token == spawnToken && owner.DeviceID == device, nil
+}
+
 // peerPromptsOf answers the prompts part of agent_rows. A call that names
 // the spawn whose link reaches threadID, from that link's device and source
 // thread, is its owner's contact, whatever the thread's placement
-// (store.ReachSpawnLink). While the link owns the thread, a calling session
-// that may answer prompts (approvals:respond) gets the link's held prompts;
-// one that may not gets none, and still reads the thread's blocked state
-// from the row. Any other call lists none. The prompts a call names as held
+// (store.ReachSpawnLink). While the thread's prompts are that spawn's
+// thread's (spawnAsks), a calling session that may answer prompts
+// (approvals:respond) gets the ones held for it; one that may not gets
+// none, and still reads the thread's blocked state from the row. Any other
+// call lists none. The prompts a call names as held
 // (threadAgentPeerArgs.Held) renew the lease of a computer on an older
 // version; this one keeps no lease.
 func (a *App) peerPromptsOf(ctx context.Context, owner, source, title string, args threadAgentPeerArgs) ([]ThreadAgentPrompt, error) {
@@ -179,8 +202,11 @@ func (a *App) peerPromptsOf(ctx context.Context, owner, source, title string, ar
 	if err != nil {
 		return nil, fmt.Errorf("read the link of thread %s: %w", args.ThreadID, err)
 	}
-	if !found || !reach.Owned || reach.TargetThreadID != args.ThreadID {
+	if !found || reach.TargetThreadID != args.ThreadID {
 		return nil, nil
+	}
+	if asks, err := a.spawnAsks(args.ThreadID, args.Spawn, owner); err != nil || !asks {
+		return nil, err
 	}
 	if a.requireScope(ctx, transport.ScopeApprovalsRespond, "") != nil {
 		return nil, nil

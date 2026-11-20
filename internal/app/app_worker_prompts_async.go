@@ -326,9 +326,8 @@ func (a *App) rerouteAsyncQuestions(from string, refs []triage.PromptRef, reject
 // routeAsyncQuestionsAgain is routeWorkerPromptsAgain for workerID's async
 // question prompts: each whose route the router now changes moves, a
 // person's only when fromPerson, and one that moved to the person settles
-// the registration its agent held and withdraws that wake. A route to or
-// from a paired computer is its link's to change (handBackLinkPrompts). It
-// returns how many moved.
+// the registration its agent held and withdraws that wake, a hold for a
+// paired computer included. It returns how many moved.
 func (a *App) routeAsyncQuestionsAgain(workerID string, fromPerson bool) int {
 	routes := &a.workerPrompts.async
 	routes.mu.Lock()
@@ -353,11 +352,10 @@ func (a *App) routeAsyncQuestionsAgain(workerID string, fromPerson bool) int {
 	sameRoute := func(x, y *provider.PromptRoute) bool {
 		return (x == nil) == (y == nil) && (x == nil || (x.ThreadID == y.ThreadID && x.ComputerID == y.ComputerID))
 	}
-	remote := func(route *provider.PromptRoute) bool { return route != nil && route.ComputerID != "" }
 	var moved []asyncQuestionPrompt
 	routes.mu.Lock()
 	for key, prompt := range routes.open {
-		if key.workerID != workerID || sameRoute(prompt.route, to) || (prompt.route == nil && !fromPerson) || remote(prompt.route) || remote(to) {
+		if key.workerID != workerID || sameRoute(prompt.route, to) || (prompt.route == nil && !fromPerson) {
 			continue
 		}
 		if answering[triage.PromptRef{ThreadID: workerID, RequestID: key.requestID, Occurrence: prompt.request.Occurrence}] {

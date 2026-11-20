@@ -375,8 +375,11 @@ func (a *App) redeliverParkedPrompts(agentID string) {
 // a prompt asked outside its spawner's runs to the person, and Remove from
 // Sidebar puts the person's to the spawner. A prompt of a worker with a
 // sidebar row that is the person's stays the person's, one being answered
-// is left to its answer's end, and a route to or from a paired computer is
-// left to its link. A worker asking nothing costs no store read.
+// is left to its answer's end, and a worker being deleted keeps its
+// prompts until they end with it. A spawner on a paired computer is
+// one by the same rule: its hold there moves with the announcement
+// (deliverWorkerPrompt, settleWorkerPrompt). A worker asking nothing costs
+// no store read.
 func (a *App) routeWorkerPromptsAgain(workerID string) {
 	if !a.workerAsks(workerID) {
 		return
@@ -385,6 +388,16 @@ func (a *App) routeWorkerPromptsAgain(workerID string) {
 	if err != nil {
 		// Its prompts stay where they are until its next thread frame.
 		log.Printf("worker prompts: read %s to route its prompts for its placement: %v", workerID, err)
+		return
+	}
+	// A worker a delete claimed takes no placement move, and its prompts end
+	// with it: its spawn reads as gone meanwhile, which routes nowhere.
+	claim, committed, err := a.store.ThreadDeleteClaim(workerID)
+	if err != nil {
+		log.Printf("worker prompts: read the delete of %s to route its prompts for its placement: %v", workerID, err)
+		return
+	}
+	if claim != "" || committed {
 		return
 	}
 	owned := worker.Placement == store.PlacementOwned
