@@ -311,6 +311,14 @@ problem on that record, which stays usable.
   `CredentialMark` it was drawn under and is handed out only while the
   transport's own mark equals it, so a credential that is read again,
   forgotten or replaced retires them all, whichever call caused it.
+- **Walks.** A read that composes one answer from several requests (a
+  listing's pages, a search to its end, the batches of a bulk read) draws
+  every answer under one credential mark. When a later answer's mark
+  differs, the read starts again from its first request under the current
+  credential, once; a second change fails it with an error matching
+  `trackerapi.ErrCredentialChanged`. Tempo follows the same rule, and its
+  page-at-a-time worklog read, which cannot restart, fails instead. A
+  provider read made of several client reads is not one walk.
 - **Write answers.** A write is applied when its answer is a success form
   the spec documents and names what was written, or is a documented empty
   success such as a 204. One that names it but fails to decode elsewhere
