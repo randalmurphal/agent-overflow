@@ -6,6 +6,8 @@ import (
 	"errors"
 	"io"
 	"net/url"
+	"strings"
+	"unsafe"
 
 	"agent-overflow/internal/secret"
 )
@@ -15,26 +17,37 @@ import (
 // client, the credential and the generation of the read that stored it.
 // The client and credential are pointers, which every fmt path prints as
 // an address, and the secret stays in the Credential's secret.Bytes: none
-// of them holds a copy.
+// of them holds a copy. A nil scrubRef, and the zero one, is a request
+// that carried no credential.
 type scrubRef struct {
 	c    *Client
 	cred *Credential
 	read uint64
 }
 
-// scrubRef is what an answer to a hop that sent sent keeps; nil when the
-// request carried no credential.
+// refOf is what an answer to a hop that sent sent keeps; the zero
+// scrubRef when the request carried no credential.
+func (c *Client) refOf(sent sentWith) scrubRef {
+	if !sent.carried {
+		return scrubRef{}
+	}
+	return scrubRef{c: c, cred: sent.cred, read: sent.read}
+}
+
+// scrubRef is refOf for an error, nil when the request carried no
+// credential.
 func (c *Client) scrubRef(sent sentWith) *scrubRef {
 	if !sent.carried {
 		return nil
 	}
-	return &scrubRef{c: c, cred: sent.cred, read: sent.read}
+	r := c.refOf(sent)
+	return &r
 }
 
 // mark is the CredentialMark of every type that keeps r; zero when the
 // request carried no credential.
 func (r *scrubRef) mark() CredentialMark {
-	if r == nil {
+	if r == nil || r.c == nil {
 		return CredentialMark{}
 	}
 	return CredentialMark{client: r.c.tag, read: r.read}
@@ -70,10 +83,11 @@ func (e *AuthError) CredentialMark() CredentialMark {
 // text unchanged when the request carried none (r is nil), and
 // secret.Redacted for any non-empty text once the credential is zeroed.
 func (r *scrubRef) text(text string) string {
-	if r == nil {
+	if r == nil || r.c == nil {
 		return text
 	}
-	s := r.c.scrubber(sentWith{carried: true, cred: r.cred})
+	var s scrubber
+	r.c.loadScrubber(&s, sentWith{carried: true, cred: r.cred})
 	defer s.clear()
 	return s.text(text)
 }
@@ -99,31 +113,69 @@ func (r *Response) Scrub(text string) string {
 // scrubber replaces, in text an answer supplied, the credential its
 // request carried, in each form Credential.forms names. Its forms are
 // copies made for one use and cleared after it.
+//
+// The forms lie back to back in buf, or in big when they do not fit, and
+// form i ends at ends[i]. A scrubber declared as a local variable stays
+// on the stack, since it holds no pointer into itself, so the common
+// credential is copied without allocating.
 type scrubber struct {
-	forms [][]byte
 	// lost is a credential zeroed since it was sent: it can no longer be
 	// found, so every text is withheld.
 	lost bool
+	n    int
+	ends [maxForms]int
+	buf  [1 << 10]byte
+	big  []byte
 }
 
-// scrubber derives the forms of the credential a hop carried, under the
-// credential lock that guards its zeroing.
-func (c *Client) scrubber(sent sentWith) *scrubber {
-	s := &scrubber{}
+// loadScrubber sets s, a zero scrubber, to the forms of the credential a
+// hop carried, copied under the credential lock that guards its zeroing.
+// The caller clears s after use.
+func (c *Client) loadScrubber(s *scrubber, sent sentWith) {
 	if !sent.carried {
-		return s
+		return
 	}
 	c.credMu.RLock()
 	defer c.credMu.RUnlock()
 	if sent.cred.secret.Len() == 0 {
 		s.lost = true
-		return s
+		return
 	}
-	s.forms = sent.cred.forms()
-	return s
+	s.load(sent.cred)
 }
 
-func (s *scrubber) clear() { clearForms(s.forms) }
+// load copies cr's forms into s, a zero scrubber. The caller holds the
+// credential lock, or owns cr.
+func (s *scrubber) load(cr *Credential) {
+	wire := cr.wire.Reveal()
+	if len(wire) > len(s.buf) {
+		s.big = bytes.Clone(wire)
+	} else {
+		copy(s.buf[:], wire)
+	}
+	s.n, s.ends = cr.n, cr.ends
+}
+
+// form is form i, a view into s.
+func (s *scrubber) form(i int) []byte {
+	start := 0
+	if i > 0 {
+		start = s.ends[i-1]
+	}
+	backing := s.buf[:]
+	if s.big != nil {
+		backing = s.big
+	}
+	return backing[start:s.ends[i]:s.ends[i]]
+}
+
+// clear zeroes the forms' copy.
+func (s *scrubber) clear() {
+	if s.n > 0 && s.big == nil {
+		clear(s.buf[:s.ends[s.n-1]])
+	}
+	clear(s.big)
+}
 
 // text is v with every form replaced by secret.Redacted.
 func (s *scrubber) text(v string) string {
@@ -133,8 +185,12 @@ func (s *scrubber) text(v string) string {
 	if s.lost {
 		return secret.Redacted
 	}
+	if !s.holds(v) {
+		return v
+	}
 	b := []byte(v)
-	for _, form := range s.forms {
+	for i := range s.n {
+		form := s.form(i)
 		if bytes.Contains(b, form) {
 			next := bytes.ReplaceAll(b, form, []byte(secret.Redacted))
 			clear(b)
@@ -146,12 +202,13 @@ func (s *scrubber) text(v string) string {
 	return out
 }
 
-// holds reports whether v holds a form.
+// holds reports whether v holds a form. It copies neither: each form is
+// searched for through a string view of the scrubber's own copy, which
+// nothing changes during the search.
 func (s *scrubber) holds(v string) bool {
-	b := []byte(v)
-	defer clear(b)
-	for _, form := range s.forms {
-		if bytes.Contains(b, form) {
+	for i := range s.n {
+		form := s.form(i)
+		if strings.Contains(v, unsafe.String(unsafe.SliceData(form), len(form))) {
 			return true
 		}
 	}
@@ -182,7 +239,8 @@ func (s *scrubber) holdsEncoded(v string) bool {
 // the cut split so no whole form matches.
 func (s *scrubber) trimCut(body []byte) []byte {
 	keep := len(body)
-	for _, form := range s.forms {
+	for i := range s.n {
+		form := s.form(i)
 		for n := min(len(form)-1, len(body)); n > 0; n-- {
 			if bytes.HasSuffix(body, form[:n]) {
 				keep = min(keep, len(body)-n)
@@ -192,10 +250,6 @@ func (s *scrubber) trimCut(body []byte) []byte {
 	}
 	return body[:keep]
 }
-
-// sentinels are the errors whose identity a scrubbed cause keeps. Their
-// text is fixed, never the tracker's.
-var sentinels = []error{context.Canceled, context.DeadlineExceeded, errClosed, errStalled, io.EOF, io.ErrUnexpectedEOF}
 
 // cause is how an error from another package (net/http, net, crypto/tls,
 // encoding/json, io) enters an error this package returns, and the only
@@ -207,13 +261,16 @@ func (c *Client) cause(sent sentWith, err error) error {
 	if err == nil {
 		return nil
 	}
-	s := c.scrubber(sent)
+	var s scrubber
+	c.loadScrubber(&s, sent)
 	defer s.clear()
 	if !s.lost && !s.inChain(err) {
 		return err
 	}
 	scrubbed := &scrubbedError{text: s.text(err.Error())}
-	for _, sentinel := range sentinels {
+	// The errors whose identity a scrubbed cause keeps: their text is
+	// fixed, never the tracker's.
+	for _, sentinel := range [...]error{context.Canceled, context.DeadlineExceeded, errClosed, errStalled, io.EOF, io.ErrUnexpectedEOF} {
 		if errors.Is(err, sentinel) {
 			scrubbed.matches = append(scrubbed.matches, sentinel)
 		}
@@ -257,7 +314,8 @@ func (e *scrubbedError) Unwrap() []error { return e.matches }
 // carried as Response.Body is, so decoding it finds none either. Every
 // error built from an answer's text takes it from here.
 func (c *Client) answerText(a *answer) (Problem, string) {
-	s := c.scrubber(a.sent)
+	var s scrubber
+	c.loadScrubber(&s, a.sent)
 	defer s.clear()
 	body := a.body
 	if a.cut {

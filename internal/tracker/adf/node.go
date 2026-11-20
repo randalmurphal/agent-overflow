@@ -67,18 +67,20 @@ func hasMark(n *Node, typ string) bool {
 
 // markRank orders marks the way the Atlassian editor schema does, so
 // output is stable.
-var markRank = map[string]int{
-	"link": 0, "em": 1, "strong": 2, "textColor": 3, "strike": 4,
-	"subsup": 5, "underline": 6, "code": 7, "backgroundColor": 8,
-	"annotation": 9,
-}
+var markRank = lazy[map[string]int]{build: func() map[string]int {
+	return map[string]int{
+		"link": 0, "em": 1, "strong": 2, "textColor": 3, "strike": 4,
+		"subsup": 5, "underline": 6, "code": 7, "backgroundColor": 8,
+		"annotation": 9,
+	}
+}}
 
 func sortMarks(ms []Mark) {
 	rank := func(m Mark) int {
-		if r, ok := markRank[m.Type]; ok {
+		if r, ok := markRank.get()[m.Type]; ok {
 			return r
 		}
-		return len(markRank)
+		return len(markRank.get())
 	}
 	slices.SortStableFunc(ms, func(a, b Mark) int {
 		return cmp.Compare(rank(a), rank(b))

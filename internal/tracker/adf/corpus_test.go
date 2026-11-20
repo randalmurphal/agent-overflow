@@ -19,7 +19,7 @@ func canon(ns []*Node) []*Node {
 		delete(n.Attrs, "localId")
 		var ms []Mark
 		for _, m := range n.Marks {
-			if _, lossyMark := markPhrases[m.Type]; !lossyMark {
+			if _, lossyMark := markPhrases.get()[m.Type]; !lossyMark {
 				ms = append(ms, m)
 			}
 		}

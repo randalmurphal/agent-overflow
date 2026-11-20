@@ -69,8 +69,9 @@ func edit(ctx context.Context, orig *Node, md string, r Resolver) (*Node,
 	// With nothing taken from md and nothing lost, the result is the
 	// original's own nodes: there is nothing to restore or check.
 	changed := len(e.used) > 0 || len(e.losses) > 0 || e.patched > 0
+	texts := newEditTexts(orig, md)
 	if changed {
-		e.restoreInline(orig, out)
+		e.restoreInline(texts, out)
 		restoreMoved(orig, &Node{Type: "doc", Content: out})
 	}
 	for _, b := range e.used {
@@ -83,7 +84,7 @@ func edit(ctx context.Context, orig *Node, md string, r Resolver) (*Node,
 		return nil, nil, fmt.Errorf("adf: edit built invalid ADF: %w", err)
 	}
 	if changed {
-		warns = append(warns, checkKept(orig, doc, md, e.warned())...)
+		warns = append(warns, checkKept(texts, doc, e.warned())...)
 	}
 	return doc, warns, nil
 }

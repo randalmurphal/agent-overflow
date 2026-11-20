@@ -12,9 +12,11 @@ type mentionNode struct {
 	who string
 }
 
-var kindMention = gast.NewNodeKind("Mention")
+var kindMention = lazy[gast.NodeKind]{build: func() gast.NodeKind {
+	return gast.NewNodeKind("Mention")
+}}
 
-func (n *mentionNode) Kind() gast.NodeKind { return kindMention }
+func (n *mentionNode) Kind() gast.NodeKind { return kindMention.get() }
 
 func (n *mentionNode) Dump(src []byte, level int) {
 	gast.DumpHelper(n, src, level, map[string]string{"Who": n.who}, nil)

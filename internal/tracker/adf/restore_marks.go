@@ -263,11 +263,13 @@ func restoreRuns(orig, norm, fresh []*Node) []*Node {
 
 // wordMarks are the marks md can't show that belong to a text's words: a
 // color, a highlight, an inline comment.
-var wordMarks = map[string]bool{"textColor": true, "backgroundColor": true, "annotation": true}
+var wordMarks = lazy[map[string]bool]{build: func() map[string]bool {
+	return map[string]bool{"textColor": true, "backgroundColor": true, "annotation": true}
+}}
 
 // withoutWordMarks is ms without the marks of wordMarks.
 func withoutWordMarks(ms []Mark) []Mark {
-	return slices.DeleteFunc(slices.Clone(ms), func(m Mark) bool { return wordMarks[m.Type] })
+	return slices.DeleteFunc(slices.Clone(ms), func(m Mark) bool { return wordMarks.get()[m.Type] })
 }
 
 // restoreMoved gives the changed paragraphs and headings of doc the word
@@ -393,7 +395,7 @@ func restoreMoved(orig, doc *Node) {
 				}
 			}
 			f.Marks = append(slices.DeleteFunc(slices.Clone(f.Marks), func(m Mark) bool {
-				return blockMarkTypes[m.Type]
+				return blockMarkTypes.get()[m.Type]
 			}), want...)
 			sortMarks(f.Marks)
 			if len(f.Marks) == 0 {
@@ -415,12 +417,14 @@ func hiddenState(n *Node) string {
 }
 
 // blockMarkTypes are the marks of a paragraph or heading itself.
-var blockMarkTypes = map[string]bool{"alignment": true, "indentation": true}
+var blockMarkTypes = lazy[map[string]bool]{build: func() map[string]bool {
+	return map[string]bool{"alignment": true, "indentation": true}
+}}
 
 func blockMarks(ms []Mark) []Mark {
 	var out []Mark
 	for _, m := range ms {
-		if blockMarkTypes[m.Type] {
+		if blockMarkTypes.get()[m.Type] {
 			out = append(out, m)
 		}
 	}

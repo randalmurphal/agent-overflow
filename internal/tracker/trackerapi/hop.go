@@ -50,8 +50,14 @@ type exchange struct {
 	// transfer.
 	st *stall
 	// cancel ends the hop's request and its body read.
-	cancel context.CancelCauseFunc
+	cancel context.CancelFunc
+	// trace tells connected once the transport holds a connection for
+	// the request.
+	trace     httptrace.ClientTrace
+	connected atomic.Bool
 }
+
+func (x *exchange) gotConn(httptrace.GotConnInfo) { x.connected.Store(true) }
 
 // close ends the hop. A remainder left unread, over a bound or past an
 // error's read, can be slow to come and would hold the call, so the body
@@ -59,7 +65,7 @@ type exchange struct {
 // connection reusable.
 func (x *exchange) close() {
 	_ = x.resp.Body.Close()
-	x.cancel(nil)
+	x.cancel()
 	x.st.stop()
 }
 
@@ -109,45 +115,42 @@ func (c *Client) attempt(ctx context.Context, k *call, state *retries, recv rece
 // have reached the tracker before, and a context already ended fails
 // there too. After that the outcome of a write is unknown.
 func (c *Client) hop(ctx context.Context, k *call, state *retries, target *url.URL) (*exchange, error) {
-	where := c.where(k.method, target)
 	if err := c.admit(ctx, k, state); err != nil {
 		return nil, err
 	}
-	var st *stall
+	x := &exchange{}
 	if k.transfer {
-		st = newStall(ctx, len(k.body) > 0)
+		x.st = newStall(ctx, len(k.body) > 0)
 	}
-	hopCtx, cancel := context.WithCancelCause(st.context(ctx))
+	hopCtx, cancel := context.WithCancel(x.st.context(ctx))
+	x.cancel = cancel
 	fail := func(err error) (*exchange, error) {
-		cancel(nil)
-		st.stop()
+		cancel()
+		x.st.stop()
 		return nil, err
 	}
-	var connected atomic.Bool
-	traced := httptrace.WithClientTrace(hopCtx, &httptrace.ClientTrace{
-		GotConn: func(httptrace.GotConnInfo) { connected.Store(true) },
-	})
-	req, err := k.request(traced, target, st, c.userAgent)
+	x.trace.GotConn = x.gotConn
+	req, err := k.request(httptrace.WithClientTrace(hopCtx, &x.trace), target, x.st, c.userAgent)
 	if err != nil {
-		return fail(&NotSentError{Err: fmt.Errorf("%s: %w", where, c.cause(sentWith{}, err))})
+		return fail(&NotSentError{Err: fmt.Errorf("%s: %w", c.where(k.method, target), c.cause(sentWith{}, err))})
 	}
-	var with sentWith
 	if originOf(target) == c.origin {
 		c.credMu.RLock()
-		with = sentWith{onBase: true, cred: c.cred, gen: c.credGen, read: c.credRead, carried: c.cred.authorize(req.Header)}
+		x.sent = sentWith{onBase: true, cred: c.cred, gen: c.credGen, read: c.credRead, carried: c.cred.authorize(req.Header)}
 		c.credMu.RUnlock()
 	}
-	resp, err := c.transport.RoundTrip(req)
+	resp, err := c.conns.transport.RoundTrip(req)
 	if err != nil {
-		failure := c.sendError(ctx, where, st, with, err)
-		if !connected.Load() {
+		failure := c.sendError(ctx, c.where(k.method, target), x.st, x.sent, err)
+		if !x.connected.Load() {
 			failure = &NotSentError{Err: failure}
 		}
 		return fail(failure)
 	}
-	st.receiving()
-	c.report(resp, with)
-	return &exchange{resp: resp, sent: with, st: st, cancel: cancel}, nil
+	x.resp = resp
+	x.st.receiving()
+	c.report(resp, x.sent)
+	return x, nil
 }
 
 // report hands an answer's status and the headers ReportHeaders names to
@@ -164,7 +167,8 @@ func (c *Client) report(resp *http.Response, sent sentWith) {
 	if c.reportsOff {
 		return
 	}
-	s := c.scrubber(sent)
+	var s scrubber
+	c.loadScrubber(&s, sent)
 	defer s.clear()
 	header := make(http.Header, len(c.reported))
 	for _, name := range c.reported {
@@ -241,7 +245,7 @@ func (c *Client) receive(ctx context.Context, k *call, state *retries, x *exchan
 	case a.status >= 300 && k.redirects == refuseRedirect:
 		return a, nil
 	}
-	if err := recv(ctx, resp, x.st, a); err != nil {
+	if err := recv(c, ctx, k, resp, x.st, a); err != nil {
 		return nil, err
 	}
 	return a, nil
@@ -254,8 +258,8 @@ func (c *Client) receive(ctx context.Context, k *call, state *retries, x *exchan
 // the call's own time; a failure to read it, the call ending included,
 // changes nothing.
 func (c *Client) readLimitBody(k *call, x *exchange, a *answer, until time.Time) {
-	timer := time.AfterFunc(limitBodyWait, func() { x.cancel(nil) })
-	body, _ := readUpTo(x.st.reader(x.resp.Body), min(k.limit, errorReadLimit))
+	timer := time.AfterFunc(limitBodyWait, x.cancel)
+	body, _ := readUpTo(x.st.reader(x.resp.Body), declaredSize(x.resp), min(k.limit, errorReadLimit))
 	timer.Stop()
 	a.limited, a.until = true, until
 	if named, limited := c.dialect.RateLimited(a.status, a.header, body); limited {

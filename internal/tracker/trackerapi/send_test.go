@@ -37,8 +37,8 @@ func TestWriteIsNotReplayedOnAReusedConnection(t *testing.T) {
 	}
 	// Past the header check, as a caller could not: the request alone must
 	// not be replayable.
-	k.header.Set("Idempotency-Key", "1")
-	_, err = c.execute(t.Context(), k, c.readBody(k))
+	k.header = http.Header{"Idempotency-Key": {"1"}}
+	_, err = c.execute(t.Context(), k, (*Client).readBody)
 	if err == nil || WriteNotApplied(err) {
 		t.Fatalf("execute = %v, want an unknown outcome", err)
 	}

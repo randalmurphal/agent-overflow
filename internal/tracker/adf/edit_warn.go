@@ -1,7 +1,6 @@
 package adf
 
 import (
-	"regexp"
 	"slices"
 )
 
@@ -78,7 +77,7 @@ func lozengeText(orig *Node, repl []*Node) string {
 			if found != "" || t.Type != "text" || hasMark(t, "code") {
 				return
 			}
-			for _, m := range lozengeRe.FindAllString(t.Text, -1) {
+			for _, m := range lozengeRe.get().FindAllString(t.Text, -1) {
 				if !was[m] {
 					found = m
 					return
@@ -89,7 +88,7 @@ func lozengeText(orig *Node, repl []*Node) string {
 	return found
 }
 
-var lozengeRe = regexp.MustCompile(`\[[A-Z][A-Z0-9 ]*\]`)
+var lozengeRe = lazyRegexp{pattern: `\[[A-Z][A-Z0-9 ]*\]`}
 
 // notIn drops from feats those the replacement still has: restored
 // lozenges and macros are not lost.

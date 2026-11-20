@@ -356,7 +356,7 @@ func visibleEqual(a, b []Mark) bool {
 	vis := func(ms []Mark) []string {
 		var out []string
 		for _, m := range ms {
-			if _, hidden := markPhrases[m.Type]; hidden {
+			if _, hidden := markPhrases.get()[m.Type]; hidden {
 				continue
 			}
 			s := m.Type

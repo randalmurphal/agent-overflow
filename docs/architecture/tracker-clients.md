@@ -32,7 +32,15 @@ following the same contract, not code.
 ## Rules for every package
 
 - A client is a value built by its caller and safe for concurrent use. No
-  package state, no environment reads, no files outside what a call names.
+  package state beyond the transport's pool of cleared read buffers, no
+  environment reads, no files outside what a call names.
+- No package does work when the program starts: the app links these
+  packages whether or not a tracker is connected. Tables and regular
+  expressions are built on first use; `TestInitCost` in `trackerapi` and
+  `adf` fails when either package's init allocates.
+- Cost is pinned. Each provider method's request count and the hot paths'
+  allocations are asserted in the packages' cost tests, so a change that
+  adds a request or an allocation fails a test.
 - Nothing prints. A call returns values and errors; there is no dry run, no
   prompt and no progress line.
 - Every exported call takes a leading `context.Context` and stops when it
@@ -70,6 +78,7 @@ type Options struct {
 }
 
 func New(opts Options) (*Client, error) // misconfiguration is a construction error
+func NewSharing(peer *Client, opts Options) (*Client, error) // a second client on peer's connections
 func (c *Client) Do(ctx context.Context, r Request) (*Response, error)
 func (c *Client) JSON(ctx context.Context, r Request, out any) (*Response, error)
 func (c *Client) Stream(ctx context.Context, r Request, dst io.Writer, limit int64) (*Response, error)
@@ -120,7 +129,10 @@ type Request struct {
   other body, and does not keep the answer as sent, so no client can decode
   an answer that repeats its credential. `StatusError.Body` is scrubbed the
   same way. A body that holds no form of the credential is returned as
-  read, without a copy. A streamed download is the file's bytes and is not
+  read, without a copy or an allocation. That check is exact: a body is
+  decoded only when it holds a form as bytes, an escape that decodes to a
+  byte some form holds, invalid UTF-8 while a form holds a byte of the
+  replacement character, or a malformed escape. A streamed download is the file's bytes and is not
   scrubbed. `Response.Scrub`, `StatusError.Scrub` and `AuthError.Scrub`
   remove the credential from other text a client builds about an answer,
   such as a decode error. They return text unchanged when the request
@@ -167,7 +179,22 @@ type Request struct {
 - **Bodies are bounded.** `Do` and `JSON` refuse a body over the bound
   instead of reading it. `Stream` copies to its writer up to its limit.
   An error answer's body is read up to the bound or 64 KiB, whichever is
-  less; the status stays the answer.
+  less; the status stays the answer. A body that declares its length is
+  read into one buffer of that length. A compressed one, whose length is
+  unknown, grows in a pooled buffer and the caller gets a copy of exactly
+  its size; the pooled buffer is cleared before reuse, since it held text
+  the scrub had not seen, and one grown past the reuse cap is dropped.
+- **Connections.** Each client has its own pool: HTTP/2, at most 8
+  connections a host, closed after 90 seconds idle, with a TLS session
+  cache so the next connection resumes its session. An idle client holds
+  no goroutine or timer of its own. `NewSharing` builds a second client on
+  an open peer's connections for two clients of one owner that call one
+  origin (a client and the client that checks a key for it): credentials,
+  marks, pacing, the rate gate, `OnAnswer`, timeouts and the body bound
+  stay separate, closing either ends only its own calls, and the idle
+  connections close with the last client sharing them. It refuses another
+  origin than the peer's, a `Proxy` (the connections take the peer's) and
+  a closed peer.
 - **Transfers.** A `Transfer` request has no total timeout. It fails when
   no byte moves for the stall timeout, or when the answer's headers take
   longer than the header timeout after the request is sent. The timers

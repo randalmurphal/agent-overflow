@@ -31,31 +31,86 @@ type Credential struct {
 	scheme authScheme
 	user   string
 	secret *secret.Bytes
+	// wire holds the forms back to back: every form a request carries the
+	// credential in and a tracker can repeat it in, longest first. They
+	// are the Authorization value, the value without its scheme, and the
+	// secret alone; form i ends at ends[i]. They are derived once, with
+	// the Credential, so a request and a scrub copy them instead of
+	// deriving them again, and they are zeroed with the secret.
+	wire *secret.Bytes
+	ends [maxForms]int
+	n    int
 }
+
+// maxForms is the most forms a scheme has: Basic's three.
+const maxForms = 3
 
 // Basic presents user and token as "Authorization: Basic". The Credential
 // takes ownership of token.
 func Basic(user string, token *secret.Bytes) *Credential {
-	return &Credential{scheme: schemeBasic, user: user, secret: token}
+	return newCredential(schemeBasic, user, token)
 }
 
 // Bearer presents token as "Authorization: Bearer <token>". The Credential
 // takes ownership of token.
 func Bearer(token *secret.Bytes) *Credential {
-	return &Credential{scheme: schemeBearer, secret: token}
+	return newCredential(schemeBearer, "", token)
 }
 
 // Key presents key alone as "Authorization: <key>". The Credential takes
 // ownership of key.
 func Key(key *secret.Bytes) *Credential {
-	return &Credential{scheme: schemeKey, secret: key}
+	return newCredential(schemeKey, "", key)
 }
 
-// Zero overwrites the secret. A zeroed Credential authorizes nothing.
-// Safe on nil.
+// newCredential builds a Credential with its forms. An empty secret has
+// none: check refuses it and authorize sends nothing for it.
+func newCredential(scheme authScheme, user string, token *secret.Bytes) *Credential {
+	cr := &Credential{scheme: scheme, user: user, secret: token}
+	raw := token.Reveal()
+	if len(raw) == 0 {
+		return cr
+	}
+	var wire []byte
+	add := func(parts ...[]byte) {
+		for _, part := range parts {
+			wire = append(wire, part...)
+		}
+		cr.ends[cr.n] = len(wire)
+		cr.n++
+	}
+	switch scheme {
+	case schemeBasic:
+		plain := make([]byte, 0, len(user)+1+len(raw))
+		plain = append(append(append(plain, user...), ':'), raw...)
+		encoded := make([]byte, base64.StdEncoding.EncodedLen(len(plain)))
+		base64.StdEncoding.Encode(encoded, plain)
+		clear(plain)
+		wire = make([]byte, 0, len("Basic ")+2*len(encoded)+len(raw))
+		add([]byte("Basic "), encoded)
+		add(encoded)
+		clear(encoded)
+		add(raw)
+	case schemeBearer:
+		wire = make([]byte, 0, len("Bearer ")+2*len(raw))
+		add([]byte("Bearer "), raw)
+		add(raw)
+	case schemeKey:
+		wire = make([]byte, 0, len(raw))
+		add(raw)
+	default:
+		return cr
+	}
+	cr.wire = secret.Adopt(wire)
+	return cr
+}
+
+// Zero overwrites the secret and its forms. A zeroed Credential
+// authorizes nothing. Safe on nil.
 func (cr *Credential) Zero() {
 	if cr != nil {
 		cr.secret.Zero()
+		cr.wire.Zero()
 	}
 }
 
@@ -110,41 +165,13 @@ func hasControl(s string) bool {
 // authorize sets h's Authorization and reports whether it did. A nil or
 // zeroed credential sets nothing, so the tracker answers 401 and the
 // client reads again. The header's string is a copy net/http requires;
-// it lives as long as the request.
+// it lives as long as the request. The caller holds the credential lock.
 func (cr *Credential) authorize(h http.Header) bool {
-	if cr == nil || cr.secret.Len() == 0 {
+	if cr == nil || cr.secret.Len() == 0 || cr.wire.Len() == 0 {
 		return false
 	}
-	forms := cr.forms()
-	h.Set("Authorization", string(forms[0]))
-	clearForms(forms)
+	h["Authorization"] = []string{string(cr.wire.Reveal()[:cr.ends[0]])}
 	return true
-}
-
-// forms is every form a request carries the credential in and a tracker
-// can repeat it in, longest first: the Authorization value, the value
-// without its scheme, and the secret alone. They are copies; the caller
-// holds the credential lock while reading them out and clears them.
-func (cr *Credential) forms() [][]byte {
-	raw := cr.secret.Reveal()
-	switch cr.scheme {
-	case schemeBasic:
-		plain := make([]byte, 0, len(cr.user)+1+len(raw))
-		plain = append(append(append(plain, cr.user...), ':'), raw...)
-		encoded := make([]byte, base64.StdEncoding.EncodedLen(len(plain)))
-		base64.StdEncoding.Encode(encoded, plain)
-		clear(plain)
-		return [][]byte{append([]byte("Basic "), encoded...), encoded, bytes.Clone(raw)}
-	case schemeBearer:
-		return [][]byte{append([]byte("Bearer "), raw...), bytes.Clone(raw)}
-	}
-	return [][]byte{bytes.Clone(raw)}
-}
-
-func clearForms(forms [][]byte) {
-	for _, form := range forms {
-		clear(form)
-	}
 }
 
 func (cr *Credential) equal(other *Credential) bool {
@@ -186,7 +213,7 @@ func (s staticCredentials) Credential(context.Context) (*Credential, error) {
 	if s.cred == nil {
 		return nil, errors.New("trackerapi: StaticCredentials holds no credential")
 	}
-	return &Credential{scheme: s.cred.scheme, user: s.cred.user, secret: secret.New(s.cred.secret.Reveal())}, nil
+	return newCredential(s.cred.scheme, s.cred.user, secret.New(s.cred.secret.Reveal())), nil
 }
 
 // credentialRead is one credential read in flight; err is set before done
@@ -225,8 +252,8 @@ func (c *Client) loadCredential(ctx context.Context, refresh bool, sentGen uint6
 			c.readMu.Unlock()
 			return nil
 		}
-		f := &credentialRead{done: make(chan struct{})}
-		if !c.startRead(func() { c.runRead(f, epoch, refresh) }) {
+		f := c.beginRead(epoch, refresh)
+		if f == nil {
 			c.readMu.Unlock()
 			return errClosed
 		}
@@ -244,6 +271,17 @@ func (c *Client) loadCredential(ctx context.Context, refresh bool, sentGen uint6
 			return ctx.Err()
 		}
 	}
+}
+
+// beginRead starts a shared read, or returns nil after Close. Its own
+// function, so only a call that starts a read allocates what the read's
+// goroutine holds.
+func (c *Client) beginRead(epoch uint64, refresh bool) *credentialRead {
+	f := &credentialRead{done: make(chan struct{})}
+	if !c.startRead(func() { c.runRead(f, epoch, refresh) }) {
+		return nil
+	}
+	return f
 }
 
 // runRead is one shared read. A refresh that fails drops the credential

@@ -1,7 +1,6 @@
 package adf
 
 import (
-	"regexp"
 	"slices"
 	"strings"
 
@@ -128,7 +127,7 @@ func cellItems(ns []*Node) []*Node {
 		if n.Type != "text" || hasMark(n, "code") || i > 0 && ns[i-1].Type != "hardBreak" {
 			continue
 		}
-		m := cellItemRe.FindStringSubmatchIndex(n.Text)
+		m := cellItemRe.get().FindStringSubmatchIndex(n.Text)
 		if m == nil {
 			continue
 		}
@@ -142,7 +141,7 @@ func cellItems(ns []*Node) []*Node {
 	return out
 }
 
-var cellItemRe = regexp.MustCompile(`^([-*+]|\d{1,9}[.)])  +`)
+var cellItemRe = lazyRegexp{pattern: `^([-*+]|\d{1,9}[.)])  +`}
 
 // trimBreaks drops the spaces beside each line break, which a rendered
 // page hides: "a <br> b" is "a", a break, "b".
@@ -214,13 +213,15 @@ func (c *converter) codeBlock(n gast.Node) *Node {
 	return cb
 }
 
-var alertRe = regexp.MustCompile(`^\[!([A-Za-z]+)\][ \t]*`)
+var alertRe = lazyRegexp{pattern: `^\[!([A-Za-z]+)\][ \t]*`}
 
-var alertTypes = map[string]string{
-	"INFO": "info", "NOTE": "note", "TIP": "tip", "WARNING": "warning",
-	"ERROR": "error", "SUCCESS": "success", "IMPORTANT": "note",
-	"CAUTION": "error",
-}
+var alertTypes = lazy[map[string]string]{build: func() map[string]string {
+	return map[string]string{
+		"INFO": "info", "NOTE": "note", "TIP": "tip", "WARNING": "warning",
+		"ERROR": "error", "SUCCESS": "success", "IMPORTANT": "note",
+		"CAUTION": "error",
+	}
+}}
 
 // quote converts a blockquote, or a GitHub alert (> [!NOTE]) to a panel.
 func (c *converter) quote(q *gast.Blockquote, line int) ([]*Node, error) {
@@ -228,9 +229,9 @@ func (c *converter) quote(q *gast.Blockquote, line int) ([]*Node, error) {
 	if ok && p.Lines().Len() > 0 {
 		seg := p.Lines().At(0)
 		raw := seg.Value(c.src)
-		if m := alertRe.FindSubmatchIndex(raw); m != nil {
+		if m := alertRe.get().FindSubmatchIndex(raw); m != nil {
 			name := strings.ToUpper(string(raw[m[2]:m[3]]))
-			typ, ok := alertTypes[name]
+			typ, ok := alertTypes.get()[name]
 			if !ok {
 				return nil, errAt(line, "unknown alert type [!%s]; use "+
 					"NOTE, INFO, TIP, WARNING, ERROR or SUCCESS", name)

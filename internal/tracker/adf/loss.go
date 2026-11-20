@@ -108,7 +108,7 @@ func markerLoss(m marker) LossSet {
 func nodeLoss(n *Node) LossSet {
 	var s LossSet
 	content := func(p string, _ bool) {
-		if !cosmeticPhrases[p] && p != "expand nesting" {
+		if !cosmeticPhrases.get()[p] && p != "expand nesting" {
 			s |= lossMarkers
 		}
 	}

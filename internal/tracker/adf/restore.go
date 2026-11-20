@@ -9,8 +9,10 @@ import (
 // a comment) that the parser can't rebuild: a status lozenge reads back
 // as "[DONE]", a date as 2026-10-22, an emoji as its character, an inline
 // macro as its marker.
-var restorable = map[string]bool{"status": true, "date": true, "emoji": true,
-	"inlineExtension": true}
+var restorable = lazy[map[string]bool]{build: func() map[string]bool {
+	return map[string]bool{"status": true, "date": true, "emoji": true,
+		"inlineExtension": true}
+}}
 
 // restoreInline puts back, in the blocks taken from md, the original
 // inline rich nodes that the edit would otherwise turn into plain text:
@@ -26,11 +28,11 @@ var restorable = map[string]bool{"status": true, "date": true, "emoji": true,
 // candidate there is alike (same attributes); never from another block,
 // deleted or edited elsewhere, whose literal text happens to match. What
 // can't come back stays text, and the edit invariant refuses the loss.
-func (e *editor) restoreInline(orig *Node, out []*Node) {
-	lost, _ := unkept(orig, Doc(out...), goneFrom(ToMarkdown(orig), e.c.st.src))
+func (e *editor) restoreInline(texts *editTexts, out []*Node) {
+	lost, _ := unkept(texts.orig, Doc(out...), texts.gone)
 	var cands []rich
 	for _, r := range lost {
-		if restorable[r.n.Type] {
+		if restorable.get()[r.n.Type] {
 			cands = append(cands, r)
 		}
 	}

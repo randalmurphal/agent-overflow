@@ -155,7 +155,7 @@ func plainCard(raw string) bool {
 		return false
 	}
 	u, ok = strings.CutSuffix(u, ">")
-	return ok && autolinkRe.MatchString(u)
+	return ok && autolinkRe.get().MatchString(u)
 }
 
 func isASCIIAlnum(b byte) bool {

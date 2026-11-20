@@ -1,7 +1,6 @@
 package adf
 
 import (
-	"regexp"
 	"strconv"
 	"strings"
 	"unicode"
@@ -184,16 +183,16 @@ func (w *writer) afterText(i, limit int) string {
 }
 
 var (
-	reATX      = regexp.MustCompile(`^#{1,6}(\s|$)`)
-	reBullet   = regexp.MustCompile(`^[-+*](\s|$)`)
-	reOrdered  = regexp.MustCompile(`^[0-9]{1,9}([.)])(\s|$)`)
-	reFence    = regexp.MustCompile("^(```|~~~)")
-	reThematic = regexp.MustCompile(`^([-*_])([ \t]*([-*_]))*[ \t]*$`)
-	reSetext   = regexp.MustCompile(`^(=+|-+)[ \t]*$`)
+	reATX      = lazyRegexp{pattern: `^#{1,6}(\s|$)`}
+	reBullet   = lazyRegexp{pattern: `^[-+*](\s|$)`}
+	reOrdered  = lazyRegexp{pattern: `^[0-9]{1,9}([.)])(\s|$)`}
+	reFence    = lazyRegexp{pattern: "^(```|~~~)"}
+	reThematic = lazyRegexp{pattern: `^([-*_])([ \t]*([-*_]))*[ \t]*$`}
+	reSetext   = lazyRegexp{pattern: `^(=+|-+)[ \t]*$`}
 	// goldmark reads "[x]" at an item start as a task box whatever
 	// follows it: "[x]foo" and "[x](url)" are tasks too.
-	reTaskBox = regexp.MustCompile(`^\[[ xX]\]`)
-	reRefDef  = regexp.MustCompile(`^\[[^\]]*\]:`)
+	reTaskBox = lazyRegexp{pattern: `^\[[ xX]\]`}
+	reRefDef  = lazyRegexp{pattern: `^\[[^\]]*\]:`}
 )
 
 // lineStart marks characters that would start block syntax when the
@@ -208,27 +207,29 @@ func (w *writer) lineStart(i int, rs []rune, esc []bool) {
 		esc[0] = true
 	}
 	switch {
-	case reATX.MatchString(line), rs[0] == '>', reBullet.MatchString(line),
-		reFence.MatchString(line), reSetext.MatchString(line),
-		reTaskBox.MatchString(line), strings.HasPrefix(line, "[!"),
-		reRefDef.MatchString(line):
+	case reATX.get().MatchString(line), rs[0] == '>', reBullet.get().MatchString(line),
+		reFence.get().MatchString(line), reSetext.get().MatchString(line),
+		reTaskBox.get().MatchString(line), strings.HasPrefix(line, "[!"),
+		reRefDef.get().MatchString(line):
 		esc[0] = true
 	case thematic(line):
 		esc[0] = true
 	}
-	if m := reOrdered.FindStringSubmatchIndex(line); m != nil &&
+	if m := reOrdered.get().FindStringSubmatchIndex(line); m != nil &&
 		m[2] < len(rs) {
 		esc[m[2]] = true
 	}
 }
 
-var blankRemover = strings.NewReplacer(" ", "", "\t", "")
+var blankRemover = lazy[*strings.Replacer]{build: func() *strings.Replacer {
+	return strings.NewReplacer(" ", "", "\t", "")
+}}
 
 func thematic(line string) bool {
-	if !reThematic.MatchString(line) {
+	if !reThematic.get().MatchString(line) {
 		return false
 	}
-	t := blankRemover.Replace(line)
+	t := blankRemover.get().Replace(line)
 	return len(t) >= 3 && strings.Count(t, t[:1]) == len(t)
 }
 

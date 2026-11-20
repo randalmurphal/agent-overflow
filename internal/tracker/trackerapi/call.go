@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
+	"sync"
 	"time"
 )
 
@@ -24,8 +26,8 @@ func (c *Client) Do(ctx context.Context, r Request) (*Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	k.accept = "application/json"
-	a, err := c.execute(ctx, k, c.readBody(k))
+	k.acceptJSON = true
+	a, err := c.execute(ctx, k, (*Client).readBody)
 	if err != nil {
 		return nil, err
 	}
@@ -40,8 +42,8 @@ func (c *Client) JSON(ctx context.Context, r Request, out any) (*Response, error
 	if err != nil {
 		return nil, err
 	}
-	k.accept = "application/json"
-	a, err := c.execute(ctx, k, c.readBody(k))
+	k.acceptJSON = true
+	a, err := c.execute(ctx, k, (*Client).readBody)
 	if err != nil {
 		return nil, err
 	}
@@ -90,14 +92,15 @@ type answer struct {
 // could be checked fails with ErrCredentialChanged and the Response
 // without its body; for a write the outcome is then unknown.
 func (c *Client) response(k *call, a *answer) (*Response, error) {
-	s := c.scrubber(a.sent)
+	var s scrubber
+	c.loadScrubber(&s, a.sent)
 	defer s.clear()
 	body, err := s.body(a.body)
 	if err != nil || len(body) > 0 && &body[0] != &a.body[0] {
 		// The answer as sent may repeat the credential: nothing keeps it.
 		clear(a.body)
 	}
-	resp := &Response{Status: a.status, Header: a.header, Body: body, scrub: c.scrubRef(a.sent)}
+	resp := &Response{Status: a.status, Header: a.header, Body: body, scrub: c.refOf(a.sent)}
 	if err != nil {
 		return resp, fmt.Errorf("%s: %w", c.where(k.method, a.url), err)
 	}
@@ -107,7 +110,7 @@ func (c *Client) response(k *call, a *answer) (*Response, error) {
 // receiver reads a successful answer (below 400 and not a refused login)
 // into a, and sets a.limited from the dialect. Its error fails the
 // attempt.
-type receiver func(ctx context.Context, resp *http.Response, st *stall, a *answer) error
+type receiver func(c *Client, ctx context.Context, k *call, resp *http.Response, st *stall, a *answer) error
 
 // retries is a call's retry state.
 type retries struct {
@@ -121,18 +124,19 @@ type retries struct {
 // execute runs k until an answer settles it: retries reads after a
 // connection failure, a 429 and a 503, any call after a 429 when it is
 // interactive, and any call once after a refused credential is replaced.
+// Close ends it through the client's lifetime, which ended then reports.
 func (c *Client) execute(ctx context.Context, k *call, recv receiver) (*answer, error) {
-	ctx, cancel := context.WithCancelCause(ctx)
-	stop := context.AfterFunc(c.life, func() { cancel(errClosed) })
+	var cancel context.CancelFunc
+	if k.transfer {
+		ctx, cancel = context.WithCancel(ctx)
+	} else {
+		ctx, cancel = context.WithTimeout(ctx, k.timeout)
+	}
+	stop := context.AfterFunc(c.life, cancel)
 	defer func() {
 		stop()
-		cancel(nil)
+		cancel()
 	}()
-	if !k.transfer {
-		var cancelTimeout context.CancelFunc
-		ctx, cancelTimeout = context.WithTimeout(ctx, k.timeout)
-		defer cancelTimeout()
-	}
 	state := &retries{}
 	for {
 		a, err := c.attempt(ctx, k, state, recv)
@@ -153,29 +157,27 @@ func (c *Client) execute(ctx context.Context, k *call, recv receiver) (*answer, 
 
 // readBody is the receiver of Do and JSON: the answer whole, refused
 // unread when its length is over the bound.
-func (c *Client) readBody(k *call) receiver {
-	return func(ctx context.Context, resp *http.Response, st *stall, a *answer) error {
-		if resp.ContentLength > k.limit {
-			return c.tooLarge(k, a)
-		}
-		body, err := readUpTo(st.reader(resp.Body), k.limit)
-		over := false
-		if err == nil && int64(len(body)) == k.limit {
-			over, err = hasMore(st.reader(resp.Body))
-		}
-		if err == nil {
-			err = cutOff(ctx, st)
-		}
-		switch {
-		case err != nil:
-			return c.readError(ctx, k, st, a, err)
-		case over:
-			return c.tooLarge(k, a)
-		}
-		a.body = body
-		a.until, a.limited = c.limitOf(a.status, a.header, a.body)
-		return nil
+func (c *Client) readBody(ctx context.Context, k *call, resp *http.Response, st *stall, a *answer) error {
+	if resp.ContentLength > k.limit {
+		return c.tooLarge(k, a)
 	}
+	body, err := readUpTo(st.reader(resp.Body), declaredSize(resp), k.limit)
+	over := false
+	if err == nil && int64(len(body)) == k.limit {
+		over, err = hasMore(st.reader(resp.Body))
+	}
+	if err == nil {
+		err = cutOff(ctx, st)
+	}
+	switch {
+	case err != nil:
+		return c.readError(ctx, k, st, a, err)
+	case over:
+		return c.tooLarge(k, a)
+	}
+	a.body = body
+	a.until, a.limited = c.limitOf(a.status, a.header, a.body)
+	return nil
 }
 
 // readErrorBody reads an error answer's body, up to the call's bound or
@@ -185,7 +187,7 @@ func (c *Client) readBody(k *call) receiver {
 // read is reported as its end.
 func (c *Client) readErrorBody(ctx context.Context, k *call, st *stall, resp *http.Response, a *answer) error {
 	limit := min(k.limit, errorReadLimit)
-	body, err := readUpTo(st.reader(resp.Body), limit)
+	body, err := readUpTo(st.reader(resp.Body), declaredSize(resp), limit)
 	if err == nil {
 		err = cutOff(ctx, st)
 	}
@@ -197,9 +199,109 @@ func (c *Client) readErrorBody(ctx context.Context, k *call, st *stall, resp *ht
 	return nil
 }
 
-// readUpTo reads r to its end or limit bytes, whichever comes first.
-func readUpTo(r io.Reader, limit int64) ([]byte, error) {
-	return io.ReadAll(io.LimitReader(r, limit))
+const (
+	// answerBufferStart is the first size of a pooled answer buffer.
+	answerBufferStart = 32 << 10
+	// answerBufferKeep bounds a pooled answer buffer: one grown past it
+	// is dropped after its read, so one large answer is not retained. It
+	// holds the largest page a client asks for as a matter of course (500
+	// board rows of Jira, measured at 1.27 MB), so a walk of such pages
+	// reuses one buffer.
+	answerBufferKeep = 2 << 20
+)
+
+// answerBuffers holds the buffers readUpTo grows an answer of unknown
+// length in, each cleared before it goes back. The garbage collector
+// empties the pool of what two cycles did not use, so an idle client
+// retains none.
+var answerBuffers sync.Pool // of *[]byte
+
+// readUpTo reads r to its end or limit bytes, whichever comes first, and
+// returns a slice of exactly what it read, with the error that stopped
+// it short of the end. size is the length the answer declared, or below
+// zero when it declared none, as for a compressed answer, which net/http
+// decodes as it is read. A declared length is read into one buffer of
+// that length and a byte past it, which sees the end. Otherwise the read
+// grows a pooled buffer and the caller gets a copy of what it read; the
+// pooled buffer is cleared before it is pooled again, since it held
+// answer text the scrub has not seen.
+func readUpTo(r io.Reader, size, limit int64) ([]byte, error) {
+	if size < 0 {
+		return readGrowing(r, nil, limit)
+	}
+	buf := make([]byte, min(size, limit-1)+1)
+	n, err := readInto(r, buf)
+	if err != nil || n < len(buf) || int64(n) == limit {
+		return buf[:n:n], err
+	}
+	// Longer than it declared: read on.
+	return readGrowing(r, buf, limit)
+}
+
+// declaredSize is the length resp's body declares, zero for a body that
+// has none (a HEAD's, a 204's), and below zero when unknown.
+func declaredSize(resp *http.Response) int64 {
+	if resp.Body == http.NoBody {
+		return 0
+	}
+	return resp.ContentLength
+}
+
+// readGrowing is readUpTo of an answer of unknown length whose first
+// bytes, prefix, were read already.
+func readGrowing(r io.Reader, prefix []byte, limit int64) ([]byte, error) {
+	held, _ := answerBuffers.Get().(*[]byte)
+	if held == nil {
+		buf := make([]byte, 0, answerBufferStart)
+		held = &buf
+	}
+	buf := append((*held)[:0], prefix...)
+	var err error
+	for int64(len(buf)) < limit {
+		if len(buf) == cap(buf) {
+			// Exactly double, so a buffer that began at answerBufferStart
+			// reaches answerBufferKeep and not past it, and a growing
+			// read discards less than twice its answer.
+			grown := make([]byte, len(buf), 2*cap(buf))
+			copy(grown, buf)
+			buf = grown
+		}
+		end := min(cap(buf), len(buf)+int(min(limit-int64(len(buf)), math.MaxInt32)))
+		var n int
+		n, err = r.Read(buf[len(buf):end])
+		buf = buf[:len(buf)+n]
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				err = nil
+			}
+			break
+		}
+	}
+	out := make([]byte, len(buf))
+	copy(out, buf)
+	if cap(buf) <= answerBufferKeep {
+		clear(buf)
+		*held = buf[:0]
+		answerBuffers.Put(held)
+	}
+	return out, err
+}
+
+// readInto reads r into buf until buf is full or r ends: what it read,
+// and r's error, nil at its end.
+func readInto(r io.Reader, buf []byte) (int, error) {
+	n := 0
+	for n < len(buf) {
+		m, err := r.Read(buf[n:])
+		n += m
+		if errors.Is(err, io.EOF) {
+			return n, nil
+		}
+		if err != nil {
+			return n, err
+		}
+	}
+	return n, nil
 }
 
 // hasMore reports whether r holds another byte.
@@ -262,13 +364,14 @@ func (c *Client) sendError(ctx context.Context, where string, st *stall, sent se
 }
 
 // ended is the error of a call whose context ended: closed by Close,
-// out of time (transient), or cancelled by its caller.
+// out of time (transient), or cancelled by its caller. A cancellation
+// once the client's lifetime ended is Close's.
 func (c *Client) ended(ctx context.Context, where string) error {
 	switch {
-	case errors.Is(context.Cause(ctx), errClosed):
-		return fmt.Errorf("%s: %w", where, errClosed)
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
 		return &TransientError{Err: fmt.Errorf("%s: %w", where, context.DeadlineExceeded)}
+	case c.life.Err() != nil:
+		return fmt.Errorf("%s: %w", where, errClosed)
 	}
 	return fmt.Errorf("%s: %w", where, ctx.Err())
 }

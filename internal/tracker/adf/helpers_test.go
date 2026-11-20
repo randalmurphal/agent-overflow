@@ -211,3 +211,8 @@ func schemaAll(t testing.TB, docs [][]byte) []error {
 	wg.Wait()
 	return errs
 }
+
+// checkKeptMD is checkKept of out against orig edited as md.
+func checkKeptMD(orig, out *Node, md string, skip map[*Node]bool) []Warning {
+	return checkKept(newEditTexts(orig, md), out, skip)
+}

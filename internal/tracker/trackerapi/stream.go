@@ -27,8 +27,8 @@ func (c *Client) Stream(ctx context.Context, r Request, dst io.Writer, limit int
 	if err != nil {
 		return nil, err
 	}
-	k.limit = limit
-	a, err := c.execute(ctx, k, c.copyBody(k, dst))
+	k.limit, k.dst = limit, dst
+	a, err := c.execute(ctx, k, (*Client).copyBody)
 	if err != nil {
 		return nil, err
 	}
@@ -51,36 +51,35 @@ func (c *Client) prepareGet(r Request, name string) (*call, error) {
 	return k, nil
 }
 
-// copyBody is the receiver of Stream. An answer its headers mark as a
-// rate limit never reaches it, so no byte of one is copied.
-func (c *Client) copyBody(k *call, dst io.Writer) receiver {
-	return func(ctx context.Context, resp *http.Response, st *stall, a *answer) error {
-		if resp.ContentLength > k.limit {
+// copyBody is the receiver of Stream: it copies the answer to k.dst. An
+// answer its headers mark as a rate limit never reaches it, so no byte of
+// one is copied.
+func (c *Client) copyBody(ctx context.Context, k *call, resp *http.Response, st *stall, a *answer) error {
+	if resp.ContentLength > k.limit {
+		return c.tooLarge(k, a)
+	}
+	body := st.reader(resp.Body)
+	written, err := io.Copy(&committingWriter{w: k.dst, k: k}, io.LimitReader(body, k.limit))
+	if err == nil {
+		err = cutOff(ctx, st)
+	}
+	if err != nil {
+		if wErr, ok := errors.AsType[*destinationError](err); ok {
+			return fmt.Errorf("%s: write the answer: %w", c.where(k.method, a.url), wErr.err)
+		}
+		return c.readError(ctx, k, st, a, err)
+	}
+	if written == k.limit {
+		var probe [1]byte
+		n, err := io.ReadFull(body, probe[:])
+		if n > 0 {
 			return c.tooLarge(k, a)
 		}
-		body := st.reader(resp.Body)
-		written, err := io.Copy(&committingWriter{w: dst, k: k}, io.LimitReader(body, k.limit))
-		if err == nil {
-			err = cutOff(ctx, st)
-		}
-		if err != nil {
-			if wErr, ok := errors.AsType[*destinationError](err); ok {
-				return fmt.Errorf("%s: write the answer: %w", c.where(k.method, a.url), wErr.err)
-			}
+		if err != nil && !errors.Is(err, io.EOF) {
 			return c.readError(ctx, k, st, a, err)
 		}
-		if written == k.limit {
-			var probe [1]byte
-			n, err := io.ReadFull(body, probe[:])
-			if n > 0 {
-				return c.tooLarge(k, a)
-			}
-			if err != nil && !errors.Is(err, io.EOF) {
-				return c.readError(ctx, k, st, a, err)
-			}
-		}
-		return nil
 	}
+	return nil
 }
 
 // committingWriter marks the call committed at its first write and tells
@@ -117,7 +116,7 @@ func (c *Client) Location(ctx context.Context, r Request) (string, error) {
 		return "", err
 	}
 	k.redirects = answerRedirect
-	discard := func(context.Context, *http.Response, *stall, *answer) error { return nil }
+	discard := func(*Client, context.Context, *call, *http.Response, *stall, *answer) error { return nil }
 	a, err := c.execute(ctx, k, discard)
 	if err != nil {
 		return "", err
@@ -132,7 +131,8 @@ func (c *Client) Location(ctx context.Context, r Request) (string, error) {
 		// Not quoted: the target can be signed.
 		return "", fmt.Errorf("%s: the redirect target is not a URL", where)
 	}
-	s := c.scrubber(a.sent)
+	var s scrubber
+	c.loadScrubber(&s, a.sent)
 	defer s.clear()
 	text := target.String()
 	if s.lost || s.holdsEncoded(text) {

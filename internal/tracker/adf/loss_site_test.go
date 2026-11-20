@@ -153,7 +153,7 @@ func TestRichLossByNode(t *testing.T) {
 			plain, "text color", 0},
 	} {
 		orig := doc(tc.orig)
-		ws := checkKept(orig, doc(tc.out), ToMarkdown(orig), nil)
+		ws := checkKeptMD(orig, doc(tc.out), ToMarkdown(orig), nil)
 		found := false
 		for _, w := range ws {
 			if strings.Contains(w.Msg, tc.msg) {

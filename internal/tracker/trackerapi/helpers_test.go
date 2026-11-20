@@ -13,6 +13,25 @@ import (
 	"agent-overflow/internal/secret"
 )
 
+// scrubberFor is the scrubber of an answer to a request that carried cr.
+func scrubberFor(cr *Credential) *scrubber {
+	s := &scrubber{}
+	s.load(cr)
+	return s
+}
+
+// scrubberOf is a scrubber of the given forms, at most maxForms.
+func scrubberOf(forms ...[]byte) *scrubber {
+	s := &scrubber{}
+	end := 0
+	for i, form := range forms {
+		end += copy(s.buf[end:], form)
+		s.ends[i] = end
+	}
+	s.n = len(forms)
+	return s
+}
+
 const (
 	testSecret  = "fake-token-1"
 	testSecret2 = "fake-token-2"

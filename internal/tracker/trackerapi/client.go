@@ -87,7 +87,7 @@ type Options struct {
 // releases it.
 type Client struct {
 	name        string
-	userAgent   string
+	userAgent   []string // the User-Agent header value every request shares
 	base        *url.URL // ends in "/"
 	origin      origin
 	source      CredentialSource
@@ -95,10 +95,9 @@ type Client struct {
 	readTimeout time.Duration
 	maxBody     int64
 
-	// transport sends each hop as built: it follows no redirect and adds
-	// no credential.
-	transport http.RoundTripper
-	closeIdle func()
+	// conns sends each hop as built: it follows no redirect and adds no
+	// credential. NewSharing hands it to another client.
+	conns *connections
 
 	onAnswer func(status int, header http.Header)
 	reported []string // canonical names of the headers OnAnswer receives
@@ -150,41 +149,125 @@ type Client struct {
 // BaseURL that is not https unless its host is a loopback IP address, and
 // a negative or non-finite limit.
 func New(opts Options) (*Client, error) {
-	transport := &http.Transport{
-		Proxy:               opts.Proxy,
-		DialContext:         (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
-		TLSClientConfig:     &tls.Config{MinVersion: tls.VersionTLS12},
+	return newClientOn(opts, ownConnections(newTransport(opts.Proxy)))
+}
+
+// NewSharing builds a Client from opts, as New does, that sends its
+// requests over peer's connections: one pool of connections and TLS
+// sessions for two clients of one owner that call one origin, such as a
+// client and the client that checks a key for it. Everything else is its
+// own: its credentials and their marks, pacing, rate gate, OnAnswer,
+// timeouts and body bound. Closing either client ends only its own calls
+// and leaves the other working; the idle connections close when the last
+// client sharing them closes. It refuses what New refuses, a BaseURL on
+// an origin other than peer's, a Proxy (the connections take peer's), and
+// a peer that is closed.
+func NewSharing(peer *Client, opts Options) (*Client, error) {
+	switch {
+	case peer == nil:
+		return nil, errors.New("trackerapi: NewSharing needs a peer")
+	case opts.Proxy != nil:
+		return nil, errors.New("trackerapi: a client that shares connections takes its peer's proxy; Options.Proxy must be nil")
+	}
+	base, err := checkOptions(opts)
+	if err != nil {
+		return nil, err
+	}
+	if originOf(base) != peer.origin {
+		return nil, fmt.Errorf("trackerapi: %s shares connections only on its peer's origin, not %s", opts.Name, redact(base))
+	}
+	peer.mu.Lock()
+	defer peer.mu.Unlock()
+	// An open peer holds its own share, so the connections are open too.
+	if peer.closed {
+		return nil, fmt.Errorf("trackerapi: %s: the peer whose connections it would share is closed", opts.Name)
+	}
+	peer.conns.join()
+	c, err := newClientOn(opts, peer.conns)
+	if err != nil {
+		peer.conns.leave()
+		return nil, err
+	}
+	return c, nil
+}
+
+// tlsSessions bounds a transport's TLS session cache, one session per
+// host: the base origin and the hosts its redirects name.
+const tlsSessions = 4
+
+// newTransport is the transport New gives a client. Its session cache
+// lets a connection made after the idle close resume its TLS session
+// instead of a full handshake.
+func newTransport(proxy func(*http.Request) (*url.URL, error)) *http.Transport {
+	return &http.Transport{
+		Proxy:       proxy,
+		DialContext: (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		TLSClientConfig: &tls.Config{
+			MinVersion:         tls.VersionTLS12,
+			ClientSessionCache: tls.NewLRUClientSessionCache(tlsSessions),
+		},
 		TLSHandshakeTimeout: 10 * time.Second,
 		ForceAttemptHTTP2:   true,
 		MaxConnsPerHost:     maxConnsPerHost,
 		MaxIdleConnsPerHost: maxConnsPerHost,
 		IdleConnTimeout:     90 * time.Second,
 	}
-	c, err := newClient(opts, transport)
-	if err != nil {
-		return nil, err
-	}
-	c.closeIdle = transport.CloseIdleConnections
-	return c, nil
 }
 
-// newClient builds a Client on transport, which every hop goes through.
+// connections is a transport and the count of open clients that send
+// through it. The last to leave closes its idle connections.
+type connections struct {
+	transport http.RoundTripper
+	closeIdle func()
+	mu        sync.Mutex
+	users     int
+}
+
+// ownConnections is t for one client.
+func ownConnections(t *http.Transport) *connections {
+	return &connections{transport: t, closeIdle: t.CloseIdleConnections, users: 1}
+}
+
+// join adds a client. The caller holds an open client that shares them.
+func (p *connections) join() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.users++
+}
+
+// leave removes a client and closes the idle connections after the last.
+func (p *connections) leave() {
+	p.mu.Lock()
+	p.users--
+	last := p.users == 0
+	p.mu.Unlock()
+	if last {
+		p.closeIdle()
+	}
+}
+
+// newClient builds a Client on transport, which every hop goes through,
+// closing nothing at Close.
 func newClient(opts Options, transport http.RoundTripper) (*Client, error) {
+	return newClientOn(opts, &connections{transport: transport, closeIdle: func() {}, users: 1})
+}
+
+// newClientOn builds a Client on conns, which it leaves at Close.
+func newClientOn(opts Options, conns *connections) (*Client, error) {
 	baseURL, err := checkOptions(opts)
 	if err != nil {
 		return nil, err
 	}
 	c := &Client{
 		name:        opts.Name,
-		userAgent:   "agent-overflow/" + opts.Version,
+		userAgent:   []string{"agent-overflow/" + opts.Version},
 		base:        baseURL,
 		origin:      originOf(baseURL),
 		source:      opts.Credentials,
 		dialect:     opts.Dialect,
 		readTimeout: opts.ReadTimeout,
 		maxBody:     opts.MaxBodyBytes,
-		transport:   transport,
-		closeIdle:   func() {},
+		conns:       conns,
 		onAnswer:    opts.OnAnswer,
 		reported:    canonicalNames(opts.ReportHeaders),
 		tag:         &clientTag{},
@@ -269,8 +352,9 @@ func (c *Client) ForgetCredential() {
 }
 
 // Close cancels the calls in flight, ends and joins the credential read in
-// flight, zeroes the credential and closes idle connections. Every later
-// call fails with a *NotSentError. Close may be called more than once.
+// flight, zeroes the credential and closes idle connections, unless a
+// client made by NewSharing still sends over them. Every later call fails
+// with a *NotSentError. Close may be called more than once.
 func (c *Client) Close() {
 	c.closeOnce.Do(func() {
 		c.reportMu.Lock()
@@ -282,7 +366,7 @@ func (c *Client) Close() {
 		c.stop()
 		c.reads.Wait()
 		c.ForgetCredential()
-		c.closeIdle()
+		c.conns.leave()
 	})
 }
 

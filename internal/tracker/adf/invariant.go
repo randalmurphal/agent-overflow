@@ -91,26 +91,47 @@ func unkept(orig, out *Node, gone func(rich) bool) (lost, compared []rich) {
 	return lost, compared
 }
 
-// goneFrom reports whether an entry's representation shows fewer times in
-// md than in before, the original's Markdown: the user removed it.
-func goneFrom(before, md string) func(rich) bool {
-	plainBefore, plainMD := unescapeMD(before), unescapeMD(md)
-	return func(r rich) bool {
-		if r.plain {
-			return countRep(plainMD, r.rep) < countRep(plainBefore, r.rep)
-		}
-		return countRep(md, r.rep) < countRep(before, r.rep)
-	}
+// editTexts are the texts an edit's invariant compares: the original's
+// Markdown and the edited Markdown, each also unescaped. The original's
+// is rendered at first use and once per edit, so an edit whose every rich
+// node is kept as it was never renders the whole original again.
+type editTexts struct {
+	orig *Node
+	md   string
+	done bool
+	// before is ToMarkdown(orig); the plain forms are unescapeMD's.
+	before, plainBefore, plainMD string
 }
 
-// checkKept warns, as Flattens, about each rich node of orig missing
-// from out whose representation md still shows as often as before: the
+func newEditTexts(orig *Node, md string) *editTexts { return &editTexts{orig: orig, md: md} }
+
+// texts renders what was not yet rendered. orig is not changed while an
+// edit runs, so the rendering stands for the edit's whole length.
+func (t *editTexts) texts() (before, plainBefore, md, plainMD string) {
+	if !t.done {
+		t.before = ToMarkdown(t.orig)
+		t.plainBefore, t.plainMD = unescapeMD(t.before), unescapeMD(t.md)
+		t.done = true
+	}
+	return t.before, t.plainBefore, t.md, t.plainMD
+}
+
+// gone reports whether an entry's representation shows fewer times in
+// the edited Markdown than in the original's: the user removed it.
+func (t *editTexts) gone(r rich) bool {
+	before, plainBefore, md, plainMD := t.texts()
+	if r.plain {
+		return countRep(plainMD, r.rep) < countRep(plainBefore, r.rep)
+	}
+	return countRep(md, r.rep) < countRep(before, r.rep)
+}
+
+// checkKept warns, as Flattens, about each rich node of t.orig missing
+// from out whose representation t.md still shows as often as before: the
 // user didn't remove it, so the edit would lose it unasked. Nodes in skip
 // already have a warning of their own.
-func checkKept(orig, out *Node, md string, skip map[*Node]bool) []Warning {
-	before := ToMarkdown(orig)
-	plainBefore, plainMD := unescapeMD(before), unescapeMD(md)
-	lostList, all := unkept(orig, out, goneFrom(before, md))
+func checkKept(t *editTexts, out *Node, skip map[*Node]bool) []Warning {
+	lostList, all := unkept(t.orig, out, t.gone)
 	lost := map[string]int{}
 	for _, r := range lostList {
 		lost[r.id()]++
@@ -118,6 +139,7 @@ func checkKept(orig, out *Node, md string, skip map[*Node]bool) []Warning {
 	if len(lost) == 0 {
 		return nil
 	}
+	before, plainBefore, md, plainMD := t.texts()
 	budget := map[[2]string]int{}
 	dropped := func(r rich) bool {
 		if r.pinned {
@@ -203,7 +225,7 @@ func checkKept(orig, out *Node, md string, skip map[*Node]bool) []Warning {
 	for _, k := range order {
 		_, phrase, _ := strings.Cut(k.kind, "|")
 		msg := "dropped the " + phrase + " of " + strings.Join(*words[k], ", ")
-		if phrase == markPhrases["annotation"] {
+		if phrase == markPhrases.get()["annotation"] {
 			msg += ": the edit changed the words they comment on"
 		} else {
 			msg += ", which Markdown can't show"
@@ -273,7 +295,7 @@ func blockGone(block, before, md string) bool {
 		}
 	}
 	words := map[string]bool{}
-	for _, w := range blockWordRe.FindAllString(block, -1) {
+	for _, w := range blockWordRe.get().FindAllString(block, -1) {
 		words[w] = true
 	}
 	gone := 0
@@ -285,7 +307,7 @@ func blockGone(block, before, md string) bool {
 	return gone*2 >= len(words)
 }
 
-var blockWordRe = regexp.MustCompile(`[\p{L}\p{N}]{3,}`)
+var blockWordRe = lazyRegexp{pattern: `[\p{L}\p{N}]{3,}`}
 
 // unescapeMD is md without the backslash before escaped punctuation, so
 // text as typed counts where it shows.

@@ -2,7 +2,6 @@ package adf
 
 import (
 	"fmt"
-	"regexp"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -146,10 +145,12 @@ func (w *inlineWalk) text(s string, line int, code bool) {
 	w.out = append(w.out, textNode(s, w.active(line, code)...))
 }
 
-var markNames = map[string]string{
-	"strong": "bold", "em": "italic", "strike": "struck through",
-	"underline": "underlined", "subsup": "sub/superscript",
-}
+var markNames = lazy[map[string]string]{build: func() map[string]string {
+	return map[string]string{
+		"strong": "bold", "em": "italic", "strike": "struck through",
+		"underline": "underlined", "subsup": "sub/superscript",
+	}
+}}
 
 // active returns the marks in force. Inline code combines only with
 // link in Jira, so anything else is dropped with a warning.
@@ -175,7 +176,7 @@ func (w *inlineWalk) active(line int, code bool) []Mark {
 			if m.Type == "link" {
 				kept = append(kept, m)
 			} else {
-				dropped = append(dropped, markNames[m.Type])
+				dropped = append(dropped, markNames.get()[m.Type])
 			}
 		}
 		if len(dropped) > 0 {
@@ -280,36 +281,38 @@ func (w *inlineWalk) autoLink(n *gast.AutoLink, line int) {
 	w.marks = w.marks[:len(w.marks)-1]
 }
 
-var tagRe = regexp.MustCompile(`^<(/?)([A-Za-z][A-Za-z0-9]*)\s*(/?)>$`)
+var tagRe = lazyRegexp{pattern: `^<(/?)([A-Za-z][A-Za-z0-9]*)\s*(/?)>$`}
 
-var lineBreakRe = regexp.MustCompile(`\r?\n`)
+var lineBreakRe = lazyRegexp{pattern: `\r?\n`}
 
 // tagNameRe is the element name of a tag, with or without attributes.
-var tagNameRe = regexp.MustCompile(`^</?([A-Za-z][A-Za-z0-9]*)`)
+var tagNameRe = lazyRegexp{pattern: `^</?([A-Za-z][A-Za-z0-9]*)`}
 
 // htmlHints names the Markdown for HTML elements people paste, which are
 // kept as literal text.
-var htmlHints = map[string]string{
-	"b": "**bold**", "strong": "**bold**", "i": "*italics*", "em": "*italics*",
-	"a": "[text](url)", "img": "![](path)", "pre": "a ``` fence",
-	"code": "`code`", "s": "~~strike~~", "del": "~~strike~~", "strike": "~~strike~~",
-	"ul": "- items", "ol": "1. items", "li": "- items",
-	"table": "a | table |", "tr": "a | table |", "td": "a | table |", "th": "a | table |",
-	"h1": "# headings", "h2": "# headings", "h3": "# headings", "h4": "# headings",
-	"h5": "# headings", "h6": "# headings",
-	"p": "blank lines between paragraphs", "div": "blank lines between paragraphs",
-	"span": "plain text",
-}
+var htmlHints = lazy[map[string]string]{build: func() map[string]string {
+	return map[string]string{
+		"b": "**bold**", "strong": "**bold**", "i": "*italics*", "em": "*italics*",
+		"a": "[text](url)", "img": "![](path)", "pre": "a ``` fence",
+		"code": "`code`", "s": "~~strike~~", "del": "~~strike~~", "strike": "~~strike~~",
+		"ul": "- items", "ol": "1. items", "li": "- items",
+		"table": "a | table |", "tr": "a | table |", "td": "a | table |", "th": "a | table |",
+		"h1": "# headings", "h2": "# headings", "h3": "# headings", "h4": "# headings",
+		"h5": "# headings", "h6": "# headings",
+		"p": "blank lines between paragraphs", "div": "blank lines between paragraphs",
+		"span": "plain text",
+	}
+}}
 
 // htmlAsText warns, once per element, that a pasted HTML tag such as <b>
 // stays literal text, and names the Markdown to use instead.
 func (w *inlineWalk) htmlAsText(s string, line int) {
-	m := tagNameRe.FindStringSubmatch(s)
+	m := tagNameRe.get().FindStringSubmatch(s)
 	if m == nil {
 		return
 	}
 	name := strings.ToLower(m[1])
-	hint, ok := htmlHints[name]
+	hint, ok := htmlHints.get()[name]
 	if !ok {
 		return
 	}
@@ -325,7 +328,7 @@ func (w *inlineWalk) htmlAsText(s string, line int) {
 // literalTag is tag-shaped text kept as text. A soft line break inside it
 // (<T extends\nComparable>) is a space, as it is anywhere in a paragraph.
 func literalTag(s string) string {
-	return lineBreakRe.ReplaceAllString(s, " ")
+	return lineBreakRe.get().ReplaceAllString(s, " ")
 }
 
 // rawHTML maps the inline tags ADF can hold (<u>, <ins>, <sub>, <sup>,
@@ -338,7 +341,7 @@ func (w *inlineWalk) rawHTML(s string, line int) error {
 			Attrs: map[string]any{"text": strings.TrimSpace(body)}})
 		return nil
 	}
-	m := tagRe.FindStringSubmatch(s)
+	m := tagRe.get().FindStringSubmatch(s)
 	if m == nil {
 		w.htmlAsText(s, line)
 		w.text(literalTag(s), line, false)
@@ -437,12 +440,11 @@ func unescape(b []byte) string {
 	return out.String()
 }
 
-var charRefRe = regexp.MustCompile(
-	`^&(?:#[xX]([0-9a-fA-F]{1,6});|#([0-9]{1,7});|([A-Za-z][A-Za-z0-9]*);)`)
+var charRefRe = lazyRegexp{pattern: `^&(?:#[xX]([0-9a-fA-F]{1,6});|#([0-9]{1,7});|([A-Za-z][A-Za-z0-9]*);)`}
 
 // charRef decodes an entity or numeric reference at the start of b.
 func charRef(b []byte) (string, int) {
-	m := charRefRe.FindSubmatchIndex(b)
+	m := charRefRe.get().FindSubmatchIndex(b)
 	if m == nil {
 		return "", 0
 	}

@@ -7,7 +7,7 @@ import "strings"
 // bold paragraph, a nested quote is unwrapped) with a warning, or is an
 // error when nothing sensible fits (a table in a list item).
 func (c *converter) fit(n *Node) error {
-	if specs[n.Type].content == nil || isInlineParent(n.Type) {
+	if specs.get()[n.Type].content == nil || isInlineParent(n.Type) {
 		return nil
 	}
 	var out []*Node

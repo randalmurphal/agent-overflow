@@ -1,7 +1,6 @@
 package adf
 
 import (
-	"regexp"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -15,9 +14,9 @@ func emitTokens(toks []tok, ctx inlineCtx, lvl escLevel) string {
 }
 
 var (
-	tagsOnly = regexp.MustCompile(`^(\s*(</?[A-Za-z][A-Za-z0-9-]*` +
-		`(\s[^>]*)?/?>|<!--.*?-->))+\s*$`)
-	htmlBlockish = regexp.MustCompile(`^(<!--|<\?|<![A-Za-z]|<!\[CDATA\[)`)
+	tagsOnly = lazyRegexp{pattern: `^(\s*(</?[A-Za-z][A-Za-z0-9-]*` +
+		`(\s[^>]*)?/?>|<!--.*?-->))+\s*$`}
+	htmlBlockish = lazyRegexp{pattern: `^(<!--|<\?|<![A-Za-z]|<!\[CDATA\[)`}
 )
 
 // guardHTMLLines keeps a line that holds only tags (or starts a comment)
@@ -26,14 +25,14 @@ var (
 // guard: the write path reads that HTML block as hard breaks.
 func guardHTMLLines(s string, ctx inlineCtx) string {
 	if ctx == ctxCell || ctx == ctxHeading || !strings.Contains(s, "<") ||
-		brOnlyRe.MatchString(s) {
+		brOnlyRe.get().MatchString(s) {
 		return s
 	}
 	ls := strings.Split(s, "\n")
 	for i, l := range ls {
 		first := i == 0 && ctx == ctxPara
-		if (first && tagsOnly.MatchString(l)) || (i > 0 || first) &&
-			htmlBlockish.MatchString(l) {
+		if (first && tagsOnly.get().MatchString(l)) || (i > 0 || first) &&
+			htmlBlockish.get().MatchString(l) {
 			ls[i] = "&#32;" + l
 		}
 	}
@@ -165,7 +164,7 @@ func (w *writer) closeText(i int) string {
 		href, _ := m.Attrs["href"].(string)
 		s := "](" + linkDest(href, w.ctx == ctxCell)
 		if title, ok := m.Attrs["title"].(string); ok && title != "" {
-			s += ` "` + titleEscaper.Replace(title) + `"`
+			s += ` "` + titleEscaper.get().Replace(title) + `"`
 		}
 		return s + ")"
 	}
@@ -216,7 +215,7 @@ func codeSpan(s string, inCell bool) string {
 	return fence + pad + s + pad + fence
 }
 
-var needsAngle = regexp.MustCompile(`[\s<>]`)
+var needsAngle = lazyRegexp{pattern: `[\s<>]`}
 
 // linkDest writes a link destination so it parses back unchanged.
 func linkDest(href string, inCell bool) string {
@@ -236,7 +235,7 @@ func linkDest(href string, inCell bool) string {
 		}
 		return b.String()
 	}
-	if href == "" || needsAngle.MatchString(href) || !balanced(href) {
+	if href == "" || needsAngle.get().MatchString(href) || !balanced(href) {
 		return "<" + esc(strings.ReplaceAll(href, "\n", "%0A"), `\<>`) + ">"
 	}
 	return esc(href, `\`)

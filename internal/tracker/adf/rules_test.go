@@ -173,7 +173,7 @@ func checkAgainstSchema(t *testing.T, cases []ruleCase,
 // and checks that Validate and the published schema agree.
 func TestRulesMatchSchema(t *testing.T) {
 	var types []string
-	for k := range specs {
+	for k := range specs.get() {
 		if k != "doc" {
 			types = append(types, k)
 		}
@@ -181,7 +181,7 @@ func TestRulesMatchSchema(t *testing.T) {
 	sort.Strings(types)
 	var cases []ruleCase
 	for _, parent := range append([]string{"doc"}, types...) {
-		if specs[parent].content == nil {
+		if specs.get()[parent].content == nil {
 			continue
 		}
 		for _, child := range types {

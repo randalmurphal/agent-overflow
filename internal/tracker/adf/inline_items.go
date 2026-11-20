@@ -2,7 +2,6 @@ package adf
 
 import (
 	"cmp"
-	"regexp"
 	"strconv"
 	"strings"
 	"unicode/utf16"
@@ -27,10 +26,12 @@ type item struct {
 }
 
 // renderable lists the marks Markdown can show; the rest are dropped.
-var renderable = map[string]bool{
-	"link": true, "strong": true, "em": true, "strike": true,
-	"underline": true, "subsup": true,
-}
+var renderable = lazy[map[string]bool]{build: func() map[string]bool {
+	return map[string]bool{
+		"link": true, "strong": true, "em": true, "strike": true,
+		"underline": true, "subsup": true,
+	}
+}}
 
 func inlineItems(ns []*Node, ctx inlineCtx) []item {
 	var out []item
@@ -41,7 +42,7 @@ func inlineItems(ns []*Node, ctx inlineCtx) []item {
 		case "text":
 			var ms []Mark
 			for _, m := range n.Marks {
-				if renderable[m.Type] {
+				if renderable.get()[m.Type] {
 					ms = append(ms, m)
 				}
 			}
@@ -88,9 +89,15 @@ func inlineItems(ns []*Node, ctx inlineCtx) []item {
 }
 
 var (
-	newlineSpacer  = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ")
-	bracketEscaper = strings.NewReplacer(`\`, `\\`, `[`, `\[`, `]`, `\]`)
-	titleEscaper   = strings.NewReplacer(`\`, `\\`, `"`, `\"`)
+	newlineSpacer = lazy[*strings.Replacer]{build: func() *strings.Replacer {
+		return strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ")
+	}}
+	bracketEscaper = lazy[*strings.Replacer]{build: func() *strings.Replacer {
+		return strings.NewReplacer(`\`, `\\`, `[`, `\[`, `]`, `\]`)
+	}}
+	titleEscaper = lazy[*strings.Replacer]{build: func() *strings.Replacer {
+		return strings.NewReplacer(`\`, `\\`, `"`, `\"`)
+	}}
 )
 
 // newlinesToSpaces replaces line breaks inside a text node, which
@@ -99,7 +106,7 @@ func newlinesToSpaces(s string) string {
 	if !strings.ContainsAny(s, "\r\n") {
 		return s
 	}
-	return newlineSpacer.Replace(s)
+	return newlineSpacer.get().Replace(s)
 }
 
 func cellPipes(s string, ctx inlineCtx) string {
@@ -114,7 +121,7 @@ func mentionMarkdown(n *Node, ctx inlineCtx) string {
 	if name == "" {
 		name = "accountid:" + n.attrStr("id")
 	}
-	return cellPipes("@["+bracketEscaper.Replace(name)+"]", ctx)
+	return cellPipes("@["+bracketEscaper.get().Replace(name)+"]", ctx)
 }
 
 // mentionName is the name @[...] is written with: the display text
@@ -124,18 +131,18 @@ func mentionName(n *Node) string {
 	return strings.Join(strings.Fields(name), " ")
 }
 
-var autolinkRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.-]{1,31}:[^\s<>]*$`)
+var autolinkRe = lazyRegexp{pattern: `^[A-Za-z][A-Za-z0-9+.-]{1,31}:[^\s<>]*$`}
 
 func cardMarkdown(n *Node, ctx inlineCtx) string {
 	u := n.attrStr("url")
 	if u == "" {
 		return "<!-- adf: inlineCard -->"
 	}
-	if autolinkRe.MatchString(u) && (ctx != ctxCell ||
+	if autolinkRe.get().MatchString(u) && (ctx != ctxCell ||
 		!strings.Contains(u, "|")) {
 		return "<" + u + ">"
 	}
-	label := bracketEscaper.Replace(u)
+	label := bracketEscaper.get().Replace(u)
 	return cellPipes("["+label+"]("+linkDest(u, ctx == ctxCell)+")", ctx)
 }
 

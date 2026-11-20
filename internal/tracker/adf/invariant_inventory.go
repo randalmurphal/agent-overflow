@@ -115,7 +115,7 @@ func payloadOf(n, parent *Node, outer string, inCell, covered bool) []rich {
 		out = append(out, rich{n: n, kind: n.Type + "|" + phrase,
 			sig: n.Type + "|" + phrase + "|" + data, rep: rep, outer: borrowed, plain: plain,
 			label: "the " + phrase + " of " + strconv.Quote(rep), block: block,
-			pinned: phrase == markPhrases["annotation"], cosmetic: cosmetic(phrase)})
+			pinned: phrase == markPhrases.get()["annotation"], cosmetic: cosmetic(phrase)})
 	}
 	if len(nodePh) > 0 {
 		data := jsonText(unshown(n.Attrs, func(a map[string]any) *Node {
@@ -128,7 +128,7 @@ func payloadOf(n, parent *Node, outer string, inCell, covered bool) []rich {
 		}
 	}
 	for i, m := range n.Marks {
-		if len(markPh[i]) == 0 || n.Type == "text" && wordMarks[m.Type] &&
+		if len(markPh[i]) == 0 || n.Type == "text" && wordMarks.get()[m.Type] &&
 			strings.IndexFunc(n.Text, isAlnum) >= 0 {
 			continue // by word, in wordEntries
 		}
@@ -154,7 +154,7 @@ func wordEntries(p *Node) []rich {
 	ts := runeToks(p.Content, false)
 	var out []rich
 	add := func(m Mark, rep string, plain, borrowed bool, n *Node) {
-		phrase := markPhrases[m.Type]
+		phrase := markPhrases.get()[m.Type]
 		out = append(out, rich{n: n, kind: "text|" + phrase,
 			sig: "text|" + phrase + "|" + m.Type + jsonText(m.Attrs), rep: rep,
 			plain: plain, outer: borrowed, word: plain,

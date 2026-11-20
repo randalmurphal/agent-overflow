@@ -3,7 +3,6 @@ package adf
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -195,13 +194,15 @@ func renderPanel(n *Node) blk {
 	return lines(quoteLines(append(ls, body.lines...))...)
 }
 
-var panelLabels = map[string]string{
-	"info": "INFO", "note": "NOTE", "tip": "TIP", "warning": "WARNING",
-	"error": "ERROR", "success": "SUCCESS",
-}
+var panelLabels = lazy[map[string]string]{build: func() map[string]string {
+	return map[string]string{
+		"info": "INFO", "note": "NOTE", "tip": "TIP", "warning": "WARNING",
+		"error": "ERROR", "success": "SUCCESS",
+	}
+}}
 
 func panelLabel(t string) string {
-	if l, ok := panelLabels[t]; ok {
+	if l, ok := panelLabels.get()[t]; ok {
 		return l
 	}
 	return "NOTE"
@@ -390,13 +391,17 @@ func renderDetails(n *Node) blk {
 }
 
 var (
-	htmlEscaper    = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", "\n", " ")
-	commentEscaper = strings.NewReplacer("--", "- -", ">", "")
+	htmlEscaper = lazy[*strings.Replacer]{build: func() *strings.Replacer {
+		return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", "\n", " ")
+	}}
+	commentEscaper = lazy[*strings.Replacer]{build: func() *strings.Replacer {
+		return strings.NewReplacer("--", "- -", ">", "")
+	}}
 )
 
-func htmlEscape(s string) string { return htmlEscaper.Replace(s) }
+func htmlEscape(s string) string { return htmlEscaper.get().Replace(s) }
 
-func commentSafe(s string) string { return commentEscaper.Replace(s) }
+func commentSafe(s string) string { return commentEscaper.get().Replace(s) }
 
 func macroComment(n *Node) string {
 	return "<!-- " + macroName(n) + " -->"
@@ -508,9 +513,9 @@ func imageSrc(m *Node) string {
 
 // schemeRe is a URL scheme of two or more characters, so a Windows drive
 // (C:\x.png) is still a path.
-var schemeRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9+.-]+:`)
+var schemeRe = lazyRegexp{pattern: `^[a-zA-Z][a-zA-Z0-9+.-]+:`}
 
-func hasScheme(s string) bool { return schemeRe.MatchString(s) }
+func hasScheme(s string) bool { return schemeRe.get().MatchString(s) }
 
 func mediaSrc(m *Node) string {
 	if m.attrStr("type") == "external" {

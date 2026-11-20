@@ -3,7 +3,6 @@ package adf
 import (
 	"context"
 	"maps"
-	"regexp"
 	"slices"
 	"strings"
 )
@@ -361,7 +360,7 @@ func gapPairs(p editPlan, norm normalized, old, fresh []*Node) (solo map[int]boo
 }
 
 // wordsRe is a word for contentPairs: letters and digits, in any case.
-var wordsRe = regexp.MustCompile(`[\p{L}\p{N}]+`)
+var wordsRe = lazyRegexp{pattern: `[\p{L}\p{N}]+`}
 
 // contentPairs pairs originals (by index into norm) with fresh blocks of
 // their type in one gap by what they share, as assign does, never on a
@@ -375,7 +374,7 @@ func contentPairs(norm normalized, is []int, fs []*Node) map[*Node]int {
 	shape := func(at int, n *Node) shaped {
 		words := map[string]int{}
 		walk(n, func(t, _ *Node) {
-			for _, w := range wordsRe.FindAllString(strings.ToLower(t.Text), -1) {
+			for _, w := range wordsRe.get().FindAllString(strings.ToLower(t.Text), -1) {
 				words[w]++
 			}
 		})

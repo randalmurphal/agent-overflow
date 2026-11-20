@@ -2,7 +2,6 @@ package adf
 
 import (
 	"cmp"
-	"regexp"
 	"slices"
 	"strings"
 	"unicode"
@@ -26,10 +25,12 @@ func findMark(ms []Mark, m Mark) bool {
 	return false
 }
 
-var openRank = map[string]int{
-	"link": 0, "strong": 1, "em": 2, "strike": 3, "underline": 4,
-	"subsup": 5,
-}
+var openRank = lazy[map[string]int]{build: func() map[string]int {
+	return map[string]int{
+		"link": 0, "strong": 1, "em": 2, "strike": 3, "underline": 4,
+		"subsup": 5,
+	}
+}}
 
 // tagMark reports marks written as HTML tags (<u>, <sub>, <sup>).
 func tagMark(m Mark) bool { return m.Type == "underline" || m.Type == "subsup" }
@@ -100,7 +101,7 @@ func markTokens(items []item, lvl escLevel) []tok {
 			}
 			return cmp.Or(
 				cmp.Compare(runLength(items, i, b), runLength(items, i, a)),
-				cmp.Compare(openRank[a.Type], openRank[b.Type]))
+				cmp.Compare(openRank.get()[a.Type], openRank.get()[b.Type]))
 		})
 		for _, m := range add {
 			toks = append(toks, tok{kind: tkOpen, mark: m})
@@ -164,9 +165,9 @@ func bareLinks(items []item, lvl escLevel) []item {
 }
 
 var (
-	bareURLRe   = regexp.MustCompile(`^(https?|ftp)://[^\s<>|\\` + "`" + `]+$`)
-	bareMailRe  = regexp.MustCompile(`^[A-Za-z0-9._+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$`)
-	bareWWWRe   = regexp.MustCompile(`^www\.[^\s<>|\\` + "`" + `]+$`)
+	bareURLRe   = lazyRegexp{pattern: `^(https?|ftp)://[^\s<>|\\` + "`" + `]+$`}
+	bareMailRe  = lazyRegexp{pattern: `^[A-Za-z0-9._+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$`}
+	bareWWWRe   = lazyRegexp{pattern: `^www\.[^\s<>|\\` + "`" + `]+$`}
 	urlTailPunc = "?!.,:*_~'\";)"
 )
 
@@ -176,11 +177,11 @@ func bareURL(text, href string) bool {
 	}
 	switch {
 	case text == href:
-		return bareURLRe.MatchString(text)
+		return bareURLRe.get().MatchString(text)
 	case "mailto:"+text == href:
-		return bareMailRe.MatchString(text)
+		return bareMailRe.get().MatchString(text)
 	case "http://"+text == href:
-		return bareWWWRe.MatchString(text)
+		return bareWWWRe.get().MatchString(text)
 	}
 	return false
 }

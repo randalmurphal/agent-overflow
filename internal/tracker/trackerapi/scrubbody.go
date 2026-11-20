@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"unicode/utf8"
 
 	"agent-overflow/internal/secret"
 )
@@ -37,7 +38,7 @@ func (s *scrubber) body(body []byte) ([]byte, error) {
 		return body, nil
 	case s.lost:
 		return nil, ErrCredentialChanged
-	case len(s.forms) == 0 || !s.mayHold(body):
+	case s.n == 0 || !s.mayHold(body):
 		return body, nil
 	}
 	values, ok := jsonValues(body)
@@ -66,50 +67,122 @@ func (s *scrubber) body(body []byte) ([]byte, error) {
 }
 
 // mayHold reports whether body could hold a form once its JSON strings
-// decode: it holds one as bytes, or holds an escape that decodes to a
-// byte some form holds. A \u escape can spell any byte, so it always
-// counts; the others decode to one byte each.
+// decode. A form in the decoded text is a run of bytes, each written in
+// body as itself or produced by decoding: an escape, or an invalid UTF-8
+// sequence, which a decoder replaces by U+FFFD. When no escape and no
+// replacement produces a byte any form holds, every run of decoded bytes
+// that could be a form is written in body as itself, and the byte search
+// finds it. So body may hold a form when:
+//   - it holds a form as bytes;
+//   - a form holds a byte of U+FFFD's encoding and body is not valid
+//     UTF-8;
+//   - an escape decodes to a byte a form holds: a one-letter escape to
+//     its byte, a \u escape below U+0080 to that byte, and any other \u
+//     escape (a surrogate half, paired or not, included) to bytes of
+//     0x80 and above, which count when a form holds any such byte;
+//   - an escape is malformed (a \u without four hex digits, an unknown
+//     letter, a backslash that ends the body), which no decoder accepts
+//     but which is not shown to be clean.
 func (s *scrubber) mayHold(body []byte) bool {
-	for _, form := range s.forms {
+	for i := range s.n {
+		form := s.form(i)
 		if bytes.Contains(body, form) {
 			return true
 		}
 	}
-	for i := bytes.IndexByte(body, '\\'); i >= 0 && i+1 < len(body); {
-		c := body[i+1]
-		if c == 'u' {
+	held := s.heldBytes()
+	if (held.has(0xEF) || held.has(0xBF) || held.has(0xBD)) && !utf8.Valid(body) {
+		return true
+	}
+	for i := bytes.IndexByte(body, '\\'); i >= 0; {
+		n, decoded, ok := jsonEscape(body[i:])
+		switch {
+		case !ok:
+			return true
+		case decoded < utf8.RuneSelf && held.has(byte(decoded)):
+			return true
+		case decoded >= utf8.RuneSelf && held.high:
 			return true
 		}
-		if d, ok := escapes[c]; ok && s.formHolds(d) {
-			return true
-		}
-		next := bytes.IndexByte(body[i+2:], '\\')
+		next := bytes.IndexByte(body[i+n:], '\\')
 		if next < 0 {
-			break
+			return false
 		}
-		i += 2 + next
+		i += n + next
 	}
 	return false
 }
 
-// escapes are JSON's one-byte escapes by the letter after the backslash.
-var escapes = map[byte]byte{'"': '"', '\\': '\\', '/': '/', 'b': '\b', 'f': '\f', 'n': '\n', 'r': '\r', 't': '\t'}
+// byteSet is the bytes the forms hold.
+type byteSet struct {
+	in   [256]bool
+	high bool // a form holds a byte of 0x80 or above
+}
 
-// formHolds reports whether a form holds byte b.
-func (s *scrubber) formHolds(b byte) bool {
-	for _, form := range s.forms {
-		if bytes.IndexByte(form, b) >= 0 {
-			return true
+func (b *byteSet) has(c byte) bool { return b.in[c] }
+
+func (s *scrubber) heldBytes() byteSet {
+	var set byteSet
+	for i := range s.n {
+		form := s.form(i)
+		for _, c := range form {
+			set.in[c] = true
+			set.high = set.high || c >= utf8.RuneSelf
 		}
 	}
-	return false
+	return set
+}
+
+// jsonEscape reads the escape at the start of e, which begins with a
+// backslash: its length and the code point it spells, the code unit for
+// a \u escape. ok is false when it is malformed.
+func jsonEscape(e []byte) (n int, decoded rune, ok bool) {
+	if len(e) < 2 {
+		return len(e), 0, false
+	}
+	switch e[1] {
+	case '"', '\\', '/':
+		return 2, rune(e[1]), true
+	case 'b':
+		return 2, '\b', true
+	case 'f':
+		return 2, '\f', true
+	case 'n':
+		return 2, '\n', true
+	case 'r':
+		return 2, '\r', true
+	case 't':
+		return 2, '\t', true
+	case 'u':
+		if len(e) < 6 {
+			return len(e), 0, false
+		}
+		var cp rune
+		for _, c := range e[2:6] {
+			var d byte
+			switch {
+			case '0' <= c && c <= '9':
+				d = c - '0'
+			case 'a' <= c && c <= 'f':
+				d = c - 'a' + 10
+			case 'A' <= c && c <= 'F':
+				d = c - 'A' + 10
+			default:
+				return 2, 0, false
+			}
+			cp = cp<<4 | rune(d)
+		}
+		return 6, cp, true
+	}
+	return 2, 0, false
 }
 
 // bytes is body with every form replaced as bytes; body itself when it
 // holds none. A copy it replaces in is cleared.
 func (s *scrubber) bytes(body []byte) []byte {
 	out := body
-	for _, form := range s.forms {
+	for i := range s.n {
+		form := s.form(i)
 		if bytes.Contains(out, form) {
 			next := bytes.ReplaceAll(out, form, []byte(secret.Redacted))
 			if &out[0] != &body[0] {

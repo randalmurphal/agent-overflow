@@ -94,43 +94,47 @@ func lossPhrases(n *Node) []string {
 // macro, a lozenge, a mention, a header cell, a merged cell, an
 // attachment) loses content, which an edit refuses (a Flattens warning)
 // unless the user accepts it.
-var cosmeticPhrases = map[string]bool{
-	"text color": true, "highlighting": true, "inline comments": true,
-	"alignment": true, "indentation": true, "small text": true,
-	"full-width layout": true, "image borders": true,
-	"link details": true, "links on attachments": true,
-	"formatting on inline code": true, "formatting Markdown can't show": true,
-	"emphasis starting or ending mid-word with punctuation": true,
-	"line breaks inside text":                               true, "empty paragraphs": true,
-	"code block settings": true, "list numbering": true,
-	"table width or layout": true, "numbered table rows": true,
-	"table column widths": true, "cell colors": true, "cell alignment": true,
-	"image size or position": true, "image dimensions": true,
-	"paragraph breaks in table cells": true, "checklist nesting": true,
-	"list items starting with a block": true, "misplaced headings": true,
-}
+var cosmeticPhrases = lazy[map[string]bool]{build: func() map[string]bool {
+	return map[string]bool{
+		"text color": true, "highlighting": true, "inline comments": true,
+		"alignment": true, "indentation": true, "small text": true,
+		"full-width layout": true, "image borders": true,
+		"link details": true, "links on attachments": true,
+		"formatting on inline code": true, "formatting Markdown can't show": true,
+		"emphasis starting or ending mid-word with punctuation": true,
+		"line breaks inside text":                               true, "empty paragraphs": true,
+		"code block settings": true, "list numbering": true,
+		"table width or layout": true, "numbered table rows": true,
+		"table column widths": true, "cell colors": true, "cell alignment": true,
+		"image size or position": true, "image dimensions": true,
+		"paragraph breaks in table cells": true, "checklist nesting": true,
+		"list items starting with a block": true, "misplaced headings": true,
+	}
+}}
 
 // cosmetic reports whether losing every feature in phrases loses no
 // content (see cosmeticPhrases).
 func cosmetic(phrases ...string) bool {
 	for _, p := range phrases {
-		if !cosmeticPhrases[p] {
+		if !cosmeticPhrases.get()[p] {
 			return false
 		}
 	}
 	return true
 }
 
-var markPhrases = map[string]string{
-	"textColor": "text color", "backgroundColor": "highlighting",
-	"alignment": "alignment", "breakout": "full-width layout",
-	"indentation": "indentation", "fontSize": "small text",
-	"annotation": "inline comments", "border": "image borders",
-	"dataConsumer": "macro data links", "fragment": "macro data links",
-}
+var markPhrases = lazy[map[string]string]{build: func() map[string]string {
+	return map[string]string{
+		"textColor": "text color", "backgroundColor": "highlighting",
+		"alignment": "alignment", "breakout": "full-width layout",
+		"indentation": "indentation", "fontSize": "small text",
+		"annotation": "inline comments", "border": "image borders",
+		"dataConsumer": "macro data links", "fragment": "macro data links",
+	}
+}}
 
 func markFeatures(m Mark, n *Node, add func(string, bool)) {
-	if p, ok := markPhrases[m.Type]; ok {
+	if p, ok := markPhrases.get()[m.Type]; ok {
 		add(p, true)
 		return
 	}
@@ -153,52 +157,56 @@ func markFeatures(m Mark, n *Node, add func(string, bool)) {
 	}
 }
 
-var nodePhrases = map[string]string{
-	"status": "a status lozenge", "date": "a date", "emoji": "an emoji",
-	"placeholder": "placeholder text", "extension": "a macro",
-	"bodiedExtension": "a macro", "inlineExtension": "a macro",
-	"layoutSection": "a column layout", "decisionList": "decisions",
-	"mediaGroup": "an attachment group", "blockCard": "a link card",
-	"embedCard": "an embedded link", "caption": "an image caption",
-	"blockTaskItem": "a checklist item with blocks",
-	"syncBlock":     "a synced block", "bodiedSyncBlock": "a synced block",
-}
+var nodePhrases = lazy[map[string]string]{build: func() map[string]string {
+	return map[string]string{
+		"status": "a status lozenge", "date": "a date", "emoji": "an emoji",
+		"placeholder": "placeholder text", "extension": "a macro",
+		"bodiedExtension": "a macro", "inlineExtension": "a macro",
+		"layoutSection": "a column layout", "decisionList": "decisions",
+		"mediaGroup": "an attachment group", "blockCard": "a link card",
+		"embedCard": "an embedded link", "caption": "an image caption",
+		"blockTaskItem": "a checklist item with blocks",
+		"syncBlock":     "a synced block", "bodiedSyncBlock": "a synced block",
+	}
+}}
 
 // shapePhrases are the features about how content is arranged (a line
 // break inside text, a ragged table), which an edit that rewrites the
 // content may change. Every other feature is data Markdown drops (a mark,
 // an attribute, a node it can't write), which the edit invariant
 // inventories: a new feature is inventoried unless it is listed here.
-var shapePhrases = map[string]bool{
-	"line breaks inside text":                               true,
-	"emphasis starting or ending mid-word with punctuation": true,
-	"empty paragraphs":                                      true,
-	"formatting Markdown can't show":                        true,
-	"checklist nesting":                                     true,
-	"list items starting with a block":                      true,
-	"expand nesting":                                        true,
-	"misplaced headings":                                    true,
-	"header cells outside the first row":                    true,
-	"an empty header row":                                   true,
-	"empty table rows":                                      true,
-	"ragged table rows":                                     true,
-	"blocks inside table cells":                             true,
-	"paragraph breaks in table cells":                       true,
-}
+var shapePhrases = lazy[map[string]bool]{build: func() map[string]bool {
+	return map[string]bool{
+		"line breaks inside text":                               true,
+		"emphasis starting or ending mid-word with punctuation": true,
+		"empty paragraphs":                                      true,
+		"formatting Markdown can't show":                        true,
+		"checklist nesting":                                     true,
+		"list items starting with a block":                      true,
+		"expand nesting":                                        true,
+		"misplaced headings":                                    true,
+		"header cells outside the first row":                    true,
+		"an empty header row":                                   true,
+		"empty table rows":                                      true,
+		"ragged table rows":                                     true,
+		"blocks inside table cells":                             true,
+		"paragraph breaks in table cells":                       true,
+	}
+}}
 
 // payloadFeatures lists n's own features that are data Markdown drops:
 // those of the node (its type or attributes), and per mark index those of
 // each mark.
 func payloadFeatures(n, parent *Node) (node []string, marks map[int][]string) {
 	add := func(p string, _ bool) {
-		if !shapePhrases[p] && !slices.Contains(node, p) {
+		if !shapePhrases.get()[p] && !slices.Contains(node, p) {
 			node = append(node, p)
 		}
 	}
 	nodeFeatures(n, parent, add, false)
 	for i, m := range n.Marks {
 		markFeatures(m, n, func(p string, _ bool) {
-			if !shapePhrases[p] && !slices.Contains(marks[i], p) {
+			if !shapePhrases.get()[p] && !slices.Contains(marks[i], p) {
 				if marks == nil {
 					marks = map[int][]string{}
 				}
@@ -212,10 +220,10 @@ func payloadFeatures(n, parent *Node) (node []string, marks map[int][]string) {
 // nodeFeatures adds n's own features; shape adds those that need n's
 // content laid out (mid-word emphasis, formatting Markdown can't show).
 func nodeFeatures(n, parent *Node, add func(string, bool), shape bool) {
-	if p, ok := nodePhrases[n.Type]; ok {
+	if p, ok := nodePhrases.get()[n.Type]; ok {
 		add(p, true)
 	}
-	if _, ok := specs[n.Type]; !ok {
+	if _, ok := specs.get()[n.Type]; !ok {
 		add("unsupported content ("+n.Type+")", true)
 	}
 	switch n.Type {
@@ -276,7 +284,7 @@ func nodeFeatures(n, parent *Node, add func(string, bool), shape bool) {
 		mediaFeatures(n, add)
 	case "inlineCard":
 		// A URL that can't be an autolink is written as a plain link.
-		if u := n.attrStr("url"); !autolinkRe.MatchString(u) ||
+		if u := n.attrStr("url"); !autolinkRe.get().MatchString(u) ||
 			strings.Contains(u, "|") {
 			add("a link card", true)
 		}
@@ -309,7 +317,7 @@ func nodeFeatures(n, parent *Node, add func(string, bool), shape bool) {
 		if k == "localId" {
 			continue
 		}
-		if !slices.Contains(specs[n.Type].attrs, k) {
+		if !slices.Contains(specs.get()[n.Type].attrs, k) {
 			add("unknown attributes", false)
 		}
 	}
@@ -318,7 +326,7 @@ func nodeFeatures(n, parent *Node, add func(string, bool), shape bool) {
 // customPanel reports a panel Markdown can't write: an unknown type, or
 // attributes (an icon, a color) beyond its type and localId.
 func customPanel(n *Node) bool {
-	_, ok := panelLabels[n.attrStr("panelType")]
+	_, ok := panelLabels.get()[n.attrStr("panelType")]
 	return !ok || len(n.Attrs) > 2 || (len(n.Attrs) == 2 && n.attr("localId") == nil)
 }
 

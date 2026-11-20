@@ -18,15 +18,15 @@ func TestCheckKeptNamesUnexplainedLoss(t *testing.T) {
 	}
 	orig := Doc(para("Intro"), toc("2"))
 	md := ToMarkdown(orig)
-	ws := checkKept(orig, Doc(para("Intro"), toc("3")), md, nil)
+	ws := checkKeptMD(orig, Doc(para("Intro"), toc("3")), md, nil)
 	if len(ws) != 1 || !ws[0].Flattens() || ws[0].Line != 3 ||
 		ws[0].Msg != `the macro "toc" is still in the Markdown, but the edit would lose it` {
 		t.Errorf("changed parameters: %v", ws)
 	}
-	if ws := checkKept(orig, Doc(para("Intro")), "Intro\n", nil); len(ws) != 0 {
+	if ws := checkKeptMD(orig, Doc(para("Intro")), "Intro\n", nil); len(ws) != 0 {
 		t.Errorf("removed marker: %v", ws)
 	}
-	if ws := checkKept(orig, Doc(para("Intro")), md, map[*Node]bool{orig.Content[1]: true}); len(ws) != 0 {
+	if ws := checkKeptMD(orig, Doc(para("Intro")), md, map[*Node]bool{orig.Content[1]: true}); len(ws) != 0 {
 		t.Errorf("already warned: %v", ws)
 	}
 }
@@ -51,16 +51,16 @@ func TestCheckKeptCellSettingsFollowText(t *testing.T) {
 	orig := table(cell("Build", "#e3fcef"), cell("pending", "#ffebe6"))
 	md := ToMarkdown(orig)
 	swapped := table(cell("Build", "#ffebe6"), cell("pending", "#e3fcef"))
-	if ws := checkKept(orig, swapped, md, nil); len(ws) != 2 || ws[0].Flattens() {
+	if ws := checkKeptMD(orig, swapped, md, nil); len(ws) != 2 || ws[0].Flattens() {
 		t.Errorf("traded colors, dress, warn without refusing: %v", ws)
 	}
 	edited := strings.Replace(md, "pending", "pending review", 1)
 	kept := table(cell("Build", "#e3fcef"), cell("pending review", "#ffebe6"))
-	if ws := checkKept(orig, kept, edited, nil); len(ws) != 0 {
+	if ws := checkKeptMD(orig, kept, edited, nil); len(ws) != 0 {
 		t.Errorf("edited cell keeping its color: %v", ws)
 	}
 	lostColor := table(cell("Build", "#e3fcef"), cell("pending", "#e3fcef"))
-	if ws := checkKept(orig, lostColor, md, nil); len(ws) != 1 {
+	if ws := checkKeptMD(orig, lostColor, md, nil); len(ws) != 1 {
 		t.Errorf("unchanged cell taking another's color: %v", ws)
 	}
 }
@@ -172,7 +172,7 @@ func TestCheckKeptStateStaysWithItsText(t *testing.T) {
 			item("Use Go", a), item("Ship weekly", b)}})
 	}
 	orig := decisions("DECIDED", "UNDECIDED")
-	if ws := checkKept(orig, decisions("UNDECIDED", "DECIDED"), ToMarkdown(orig), nil); len(ws) == 0 ||
+	if ws := checkKeptMD(orig, decisions("UNDECIDED", "DECIDED"), ToMarkdown(orig), nil); len(ws) == 0 ||
 		!ws[0].Flattens() {
 		t.Errorf("decisions that traded states: %v", ws)
 	}
@@ -183,7 +183,7 @@ func TestCheckKeptStateStaysWithItsText(t *testing.T) {
 	moved := Doc(para("Both agree"), &Node{Type: "paragraph", Content: []*Node{
 		{Type: "text", Text: "B", Marks: red}, {Type: "text", Text: "UG NOTED in the parser"}}})
 	md := "Both agree\n\nBUG NOTED in the parser\n"
-	if ws := checkKept(colored, moved, md, nil); len(ws) != 1 || ws[0].Flattens() {
+	if ws := checkKeptMD(colored, moved, md, nil); len(ws) != 1 || ws[0].Flattens() {
 		t.Errorf("a color moved onto a fragment: %v", ws)
 	}
 }
@@ -211,7 +211,7 @@ func namesContent(w Warning) bool {
 			return false
 		}
 	}
-	for p := range cosmeticPhrases {
+	for p := range cosmeticPhrases.get() {
 		if strings.HasPrefix(m, "the "+p+" of ") {
 			return false
 		}
@@ -314,7 +314,7 @@ func TestDressLossWarnsContentLossRefuses(t *testing.T) {
 		if err := Validate(orig); err != nil {
 			t.Fatalf("%s: %v", c.name, err)
 		}
-		ws := checkKept(orig, out, ToMarkdown(orig), nil)
+		ws := checkKeptMD(orig, out, ToMarkdown(orig), nil)
 		if len(ws) == 0 {
 			t.Errorf("%s: lost unwarned", c.name)
 			continue

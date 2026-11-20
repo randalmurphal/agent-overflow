@@ -1,7 +1,6 @@
 package adf
 
 import (
-	"regexp"
 	"strings"
 
 	gast "github.com/yuin/goldmark/ast"
@@ -11,27 +10,27 @@ import (
 // HTML blocks may hold only <details>, <summary>, </details>, comments
 // and, alone on a line, <br> tags. Markdown between those tags (written without the blank lines
 // CommonMark needs to end an HTML block) is parsed as Markdown.
-var htmlTokRe = regexp.MustCompile(`(?is)<!--(.*?)-->|` +
-	`<details(?:\s[^>]*)?>\s*(?:<summary>(.*?)</summary>)?|</details\s*>`)
+var htmlTokRe = lazyRegexp{pattern: `(?is)<!--(.*?)-->|` +
+	`<details(?:\s[^>]*)?>\s*(?:<summary>(.*?)</summary>)?|</details\s*>`}
 
 // brOnlyRe is a line of nothing but <br> tags: CommonMark reads it as an
 // HTML block, but it is a paragraph of hard breaks.
-var brOnlyRe = regexp.MustCompile(`(?i)^[ \t]*(<br\s*/?>[ \t]*)+\n?$`)
+var brOnlyRe = lazyRegexp{pattern: `(?i)^[ \t]*(<br\s*/?>[ \t]*)+\n?$`}
 
 // brStartRe is an HTML block that starts with a <br> tag: CommonMark
 // reads it, and every line up to a blank one, as HTML, but it is a
 // paragraph that starts with hard breaks.
-var brStartRe = regexp.MustCompile(`(?i)^[ \t]*<br\s*/?>`)
+var brStartRe = lazyRegexp{pattern: `(?i)^[ \t]*<br\s*/?>`}
 
 // brLineEndRe is a line end right after a <br>: the break is the line
 // break, so the newline adds no space.
-var brLineEndRe = regexp.MustCompile(`(?i)(<br\s*/?>)[ \t]*\r?\n`)
+var brLineEndRe = lazyRegexp{pattern: `(?i)(<br\s*/?>)[ \t]*\r?\n`}
 
 // blockStartRe is a line that starts a block of its own (a list item, a
 // heading, a quote, a fence), which a <br> line end must not pull into
 // the paragraph.
-var blockStartRe = regexp.MustCompile("^[ \t]*([-*+][ \t]|[0-9]{1,9}[.)][ \t]|" +
-	"#{1,6}([ \t]|$)|>|```|~~~)")
+var blockStartRe = lazyRegexp{pattern: "^[ \t]*([-*+][ \t]|[0-9]{1,9}[.)][ \t]|" +
+	"#{1,6}([ \t]|$)|>|```|~~~)"}
 
 // joinBrLines drops each line end after a <br>, except before a line
 // that starts a block: a list nested under a break-only item stays a list.
@@ -39,13 +38,13 @@ func joinBrLines(s string) string {
 	var b strings.Builder
 	rest := s
 	for {
-		m := brLineEndRe.FindStringSubmatchIndex(rest)
+		m := brLineEndRe.get().FindStringSubmatchIndex(rest)
 		if m == nil {
 			b.WriteString(rest)
 			return b.String()
 		}
 		next := rest[m[1]:]
-		if blockStartRe.MatchString(next) {
+		if blockStartRe.get().MatchString(next) {
 			b.WriteString(rest[:m[1]])
 		} else {
 			b.WriteString(rest[:m[3]])
@@ -73,12 +72,12 @@ func (c *converter) htmlBlock(n *gast.HTMLBlock) ([]*Node, error) {
 	// A comment in the block is a marker (a macro, a section); the <br>
 	// text before it goes through htmlChunk, which takes this path again
 	// without the comment.
-	if brStartRe.MatchString(raw) && !strings.Contains(raw, "<!--") {
+	if brStartRe.get().MatchString(raw) && !strings.Contains(raw, "<!--") {
 		return c.brParagraph(raw, start)
 	}
 	var out []*Node
 	pos := 0
-	for _, m := range htmlTokRe.FindAllStringSubmatchIndex(raw, -1) {
+	for _, m := range htmlTokRe.get().FindAllStringSubmatchIndex(raw, -1) {
 		chunk, err := c.htmlChunk(raw[pos:m[0]], start+pos, raw)
 		if err != nil {
 			return nil, err

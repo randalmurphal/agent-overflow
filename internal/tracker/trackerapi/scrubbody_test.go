@@ -100,7 +100,7 @@ func noSecret(t *testing.T, what, text, basic string) {
 // credential of bodySecret.
 func bodyScrubber(t *testing.T) *scrubber {
 	t.Helper()
-	s := &scrubber{forms: Basic("user-1", secret.New([]byte(bodySecret))).forms()}
+	s := scrubberFor(Basic("user-1", secret.New([]byte(bodySecret))))
 	t.Cleanup(s.clear)
 	return s
 }
@@ -123,15 +123,12 @@ func TestCleanBodyIsKeptAsRead(t *testing.T) {
 		{"clean", s, clean, 0},
 		{"not JSON", s, notJSON, 0},
 		{"no credential carried", none, escaped, 0},
-		// A \u escape could spell any byte, so it is decoded to be sure.
-		{"harmless escape", s, escaped, -1},
+		// The escape spells a byte no form holds.
+		{"harmless escape", s, escaped, 0},
 	} {
 		out, err := tc.s.body(tc.body)
 		if err != nil || len(out) != len(tc.body) || &out[0] != &tc.body[0] {
 			t.Errorf("%s: got a copy or an error: %q %v", tc.name, out, err)
-		}
-		if tc.allocs < 0 {
-			continue
 		}
 		if n := testing.AllocsPerRun(100, func() { _, _ = tc.s.body(tc.body) }); n != tc.allocs {
 			t.Errorf("%s: %v allocations, want %v", tc.name, n, tc.allocs)
@@ -146,7 +143,7 @@ func TestCleanBodyIsKeptAsRead(t *testing.T) {
 // is replaced as bytes, and the body no longer decodes.
 func TestCredentialOutsideStrings(t *testing.T) {
 	t.Parallel()
-	s := &scrubber{forms: [][]byte{[]byte("424242424242")}}
+	s := scrubberOf([]byte("424242424242"))
 	for _, body := range []string{`{"a":"x","n":424242424242}`, `[1,424242424242]`, `{"a":"x 424242424242","n":424242424242}`} {
 		out, err := s.body([]byte(body))
 		if err != nil || bytes.Contains(out, []byte("424242424242")) || json.Valid(out) {
@@ -161,7 +158,7 @@ func TestCredentialOutsideStrings(t *testing.T) {
 func TestCredentialThatJSONEscapes(t *testing.T) {
 	t.Parallel()
 	const form = `tok"en`
-	s := &scrubber{forms: [][]byte{[]byte(form)}}
+	s := scrubberOf([]byte(form))
 	q := bs + `"`
 	out, err := s.body([]byte(`{"tok` + q + `en":{"v":["x tok` + q + `en"]}}`))
 	values, ok := jsonValues(out)

@@ -3,7 +3,6 @@ package adf
 import (
 	"errors"
 	"fmt"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -71,7 +70,7 @@ func (v *validator) node(n *Node, parent string, path *nodePath) {
 		v.fail(path, "nil node")
 		return
 	}
-	s, ok := specs[n.Type]
+	s, ok := specs.get()[n.Type]
 	if !ok {
 		v.fail(path, "unknown node type %q", n.Type)
 		return
@@ -147,10 +146,9 @@ func (v *validator) attrs(n *Node, s spec, path *nodePath) {
 }
 
 var (
-	hexColor    = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
-	statusColor = regexp.MustCompile(
-		`^(neutral|purple|blue|red|yellow|green|#[0-9a-fA-F]{6})$`)
-	layouts = []string{
+	hexColor    = lazyRegexp{pattern: `^#[0-9a-fA-F]{6}$`}
+	statusColor = lazyRegexp{pattern: `^(neutral|purple|blue|red|yellow|green|#[0-9a-fA-F]{6})$`}
+	layouts     = []string{
 		"wide", "full-width", "center", "wrap-right", "wrap-left",
 		"align-end", "align-start",
 	}
@@ -210,7 +208,7 @@ func (v *validator) attrValues(n *Node, path *nodePath) {
 		str("state", false)
 	case "status":
 		str("text", true)
-		if c, _ := n.Attrs["color"].(string); !statusColor.MatchString(c) {
+		if c, _ := n.Attrs["color"].(string); !statusColor.get().MatchString(c) {
 			v.fail(path, "status color %q is not allowed", c)
 		}
 	case "date":
@@ -369,7 +367,7 @@ func otherMark(ms []Mark, m Mark) string {
 }
 
 func (v *validator) markAttrs(m Mark, path *nodePath) {
-	s, ok := markSpecs[m.Type]
+	s, ok := markSpecs.get()[m.Type]
 	if !ok {
 		v.fail(path, "unknown mark %q", m.Type)
 		return
@@ -394,7 +392,7 @@ func (v *validator) markAttrs(m Mark, path *nodePath) {
 			v.fail(path, "link href must be a string")
 		}
 	case "textColor", "backgroundColor":
-		if !hexColor.MatchString(get("color")) {
+		if !hexColor.get().MatchString(get("color")) {
 			v.fail(path, "%s color must be #rrggbb", m.Type)
 		}
 	case "subsup":

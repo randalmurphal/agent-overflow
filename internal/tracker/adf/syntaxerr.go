@@ -57,7 +57,7 @@ func syntaxError(err error) *SyntaxError {
 		strings.Contains(le.msg, "which is not available here") {
 		return nil
 	}
-	msg := internalNames.Replace(le.msg)
+	msg := internalNames.get().Replace(le.msg)
 	hint := "fix the Markdown at that line and try again"
 	if le.line <= 0 {
 		hint = "fix the Markdown and try again"

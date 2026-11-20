@@ -54,7 +54,7 @@ func wordSpans(ts []runeTok) []wordSpan {
 func hiddenOf(ms []Mark) []Mark {
 	var out []Mark
 	for _, m := range ms {
-		if wordMarks[m.Type] {
+		if wordMarks.get()[m.Type] {
 			out = append(out, m)
 		}
 	}

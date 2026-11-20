@@ -1,7 +1,6 @@
 package adf
 
 import (
-	"regexp"
 	"strconv"
 	"strings"
 )
@@ -32,7 +31,7 @@ type marker struct {
 }
 
 // macroIDRe is a macro marker's ID: four hex digits after the key.
-var macroIDRe = regexp.MustCompile(`^[0-9a-f]{4}$`)
+var macroIDRe = lazyRegexp{pattern: `^[0-9a-f]{4}$`}
 
 func parseMarker(n *Node) (marker, bool) {
 	switch n.Type {
@@ -69,7 +68,7 @@ func parseMarker(n *Node) (marker, bool) {
 	}
 	m.kind, m.arg = name, strings.TrimSpace(arg)
 	if name == "macro" {
-		if f := strings.Fields(m.arg); len(f) >= 2 && macroIDRe.MatchString(f[len(f)-1]) {
+		if f := strings.Fields(m.arg); len(f) >= 2 && macroIDRe.get().MatchString(f[len(f)-1]) {
 			m.id = f[len(f)-1]
 			m.arg = strings.Join(f[:len(f)-1], " ")
 		}

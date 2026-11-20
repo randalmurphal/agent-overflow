@@ -392,7 +392,7 @@ func finish(n *Node) *Node {
 	if isInlineParent(n.Type) {
 		n.Content = mergeText(n.Content)
 	}
-	if len(n.Content) == 0 && n.Type != "doc" && specs[n.Type].min > 0 &&
+	if len(n.Content) == 0 && n.Type != "doc" && specs.get()[n.Type].min > 0 &&
 		allowed(n.Type, "paragraph") {
 		n.Content = []*Node{{Type: "paragraph"}}
 	}

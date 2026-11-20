@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -72,9 +73,9 @@ type Response struct {
 	// the credential. Nil with ErrCredentialChanged, and for Stream, which
 	// writes the answer to its destination as it arrives.
 	Body []byte
-	// scrub is what Scrub removes; nil when the request carried no
+	// scrub is what Scrub removes; zero when the request carried no
 	// credential.
-	scrub *scrubRef
+	scrub scrubRef
 }
 
 // call is one prepared Request, sent by each attempt.
@@ -88,9 +89,10 @@ type call struct {
 	read        bool // retried on a connection failure and a 503
 	transfer    bool
 	timeout     time.Duration
-	limit       int64 // the body bound of Do and JSON, or Stream's limit
+	limit       int64     // the body bound of Do and JSON, or Stream's limit
+	dst         io.Writer // where Stream copies the answer
 	redirects   redirectMode
-	accept      string // Accept when the caller sets none
+	acceptJSON  bool // Accept application/json when the caller sets no Accept
 	// committed is set once Stream wrote to its destination, after which
 	// the call is never retried.
 	committed bool
@@ -138,7 +140,9 @@ func (c *Client) prepare(r Request) (*call, error) {
 	if err := k.setBody(r); err != nil {
 		return nil, err
 	}
-	k.header = make(http.Header, len(r.Header))
+	if len(r.Header) > 0 {
+		k.header = make(http.Header, len(r.Header))
+	}
 	for name, values := range r.Header {
 		if err := checkHeader(name, values); err != nil {
 			return nil, err
@@ -263,13 +267,17 @@ func isTokenChar(r rune) bool {
 // credential. It has no GetBody, so net/http never sends its body again:
 // a request with a body is replayed only through GetBody. A transfer's
 // body reports its progress to st.
-func (k *call) request(ctx context.Context, target *url.URL, st *stall, userAgent string) (*http.Request, error) {
+//
+// The header values are shared, never copied per hop: k's own copies of
+// the caller's, the client's User-Agent and acceptJSON. Nothing changes a
+// request's header once it is built.
+func (k *call) request(ctx context.Context, target *url.URL, st *stall, userAgent []string) (*http.Request, error) {
 	req, err := http.NewRequestWithContext(ctx, k.method, "", nil)
 	if err != nil {
 		return nil, fmt.Errorf("build the request: %w", err)
 	}
-	u := *target
-	req.URL = &u
+	// The request's URL is its own copy, in the URL that parsing "" made.
+	*req.URL = *target
 	switch {
 	case !k.hasBody:
 	case len(k.body) == 0:
@@ -277,20 +285,28 @@ func (k *call) request(ctx context.Context, target *url.URL, st *stall, userAgen
 	case st != nil:
 		req.Body, req.ContentLength = st.upload(k.body), int64(len(k.body))
 	default:
-		req.Body, req.ContentLength = io.NopCloser(bytes.NewReader(k.body)), int64(len(k.body))
+		body := &requestBody{}
+		body.Reset(k.body)
+		req.Body, req.ContentLength = body, int64(len(k.body))
 	}
-	for name, values := range k.header {
-		req.Header[name] = append([]string(nil), values...)
-	}
-	req.Header.Set("User-Agent", userAgent)
-	if k.accept != "" && req.Header.Get("Accept") == "" {
-		req.Header.Set("Accept", k.accept)
+	maps.Copy(req.Header, k.header)
+	req.Header["User-Agent"] = userAgent
+	if k.acceptJSON && req.Header.Get("Accept") == "" {
+		req.Header["Accept"] = acceptJSON
 	}
 	if k.hasBody {
 		req.Header.Set("Content-Type", k.contentType)
 	}
 	return req, nil
 }
+
+// acceptJSON is the Accept value of Do and JSON when the caller sets none.
+var acceptJSON = []string{"application/json"}
+
+// requestBody is a request body read from bytes, with nothing to close.
+type requestBody struct{ bytes.Reader }
+
+func (*requestBody) Close() error { return nil }
 
 // origin is a URL's scheme, host and port, the unit a credential is
 // confined to.
