@@ -43,9 +43,9 @@ type popupLauncher struct {
 	gatedHistory map[string]chan struct{}
 	gatedMethods map[string]chan struct{}
 	// calls counts the CDP calls the endpoint answered, by method.
-	calls map[string]int
-	reached      chan string
-	seq          int
+	calls   map[string]int
+	reached chan string
+	seq     int
 	// detach, when set, holds every Target.detachFromTarget until closed,
 	// and detaching hears each one held.
 	detach    chan struct{}
