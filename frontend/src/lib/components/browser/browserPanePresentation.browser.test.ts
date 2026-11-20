@@ -5,8 +5,11 @@
 // compact thread list is the screen shown, though the strip keeps its
 // bounds under it; and a toast over the pane hides the view while it covers
 // it, judged again as the stack appears, grows and goes, without taking the
-// pane's keyboard commands. The engines show and hide the native
-// view from exactly these reports (internal/browser `paneCanShow`).
+// pane's keyboard commands; and a thread two computers come to claim
+// releases its mount, which detaches the native view, and attaches again
+// once this computer owns it. The engines show and hide the native
+// view from exactly these reports and the detach (internal/browser
+// `paneCanShow`).
 
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { mount, unmount } from 'svelte';
@@ -23,6 +26,10 @@ import { addToast, removeToast, resetToastsForTest } from '../../stores/toast.sv
 import Toast from '../shared/Toast.svelte';
 import { raf, waitFor } from '../../../test/helpers/browserFrames';
 import { mountBrowserPaneStrip, type BrowserPaneStrip } from '../../../test/helpers/browserPaneStrip';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { forgetBackendEntities, forgetThread, noteThread } from '../../transport/entityIndex';
+import { HOME_BACKEND } from '../../transport/backendKey';
+import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 
 const THREAD = 'thread-browser';
 
@@ -120,5 +127,33 @@ it('hides the view while a toast covers it, as the stack appears, grows and goes
   } finally {
     await unmount(toasts);
     resetToastsForTest();
+  }
+});
+
+it('detaches the native view when two computers claim the thread, and attaches again once this one owns it', async () => {
+  answerAttach();
+  await waitFor(() => reports.at(-1)?.visible === true, 'the browser view shown');
+  const detached: string[] = [];
+  setBindingMock('BrowserCompanionPaneDetach', async (mount: string) => {
+    detached.push(mount);
+  });
+  let attaches = 0;
+  setBindingMock('BrowserCompanionPaneAttach', async () => {
+    attaches += 1;
+    return { id: 'mount-2', state: shown };
+  });
+  stageBackend({ id: 'remote', backendId: 'remote' });
+  try {
+    noteThread(THREAD, HOME_BACKEND, 4);
+    noteThread(THREAD, 'remote', 4);
+    await waitFor(() => detached.includes('mount-1'), 'the mount released');
+    expect(attaches).toBe(0);
+    noteThread(THREAD, HOME_BACKEND, 5);
+    await waitFor(() => reports.some((report) => report.mount === 'mount-2' && report.visible), 'the view shown from a new mount');
+    expect(attaches).toBe(1);
+  } finally {
+    forgetThread(THREAD);
+    forgetBackendEntities('remote');
+    resetStagedBackends();
   }
 });
