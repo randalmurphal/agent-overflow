@@ -225,8 +225,8 @@ func newHostedEngine(relay hostRelay, send func(webview2host.Directive), acceler
 		backendPath:   func(ctx context.Context, path string) (string, error) { return runWSLPath(ctx, "-u", path) },
 	}
 	e.targets = e.newTargets()
-	e.pages = newHostedPages(e.process, func(stop <-chan struct{}) { go e.askQuietDownloads(stop) }, func(page ids.PageHandle, closed bool, crash string) {
-		e.events.PageEndReceived(page, closed, crash)
+	e.pages = newHostedPages(e.process, func(stop <-chan struct{}) { go e.askQuietDownloads(stop) }, func(page ids.PageHandle, closed bool, crash string, openers []ids.PageHandle) {
+		e.events.PageEndReceived(page, closed, crash, openers)
 	})
 	return e
 }

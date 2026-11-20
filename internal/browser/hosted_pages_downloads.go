@@ -158,25 +158,24 @@ func (p *hostedPages) refuse(d *hostedDownload) bool {
 // downloads received and not admitted, but for those listed says the page
 // lists already (one its lane is admitting), oldest first, each now
 // admitted: the lane applies their snapshots to the rows the caller lists
-// for them. They are page's own and those of each popup the Manager has
-// not listed whose close or discard was received while page was its
-// nearest listed opener (carriedLocked), which page's leave carries, as
-// it would had the popup's end been processed first; carried names those
-// popups.
-func (p *hostedPages) takeReceived(page ids.PageHandle, listed func(downloadID) bool) (starts []downloadStart, carried []ids.PageHandle) {
+// for them. They are page's own and those of each of popups, the popups
+// the Manager has not listed whose downloads page's leave carries
+// (popupCarrier), of which only a record still pending is taken from.
+func (p *hostedPages) takeReceived(page ids.PageHandle, listed func(downloadID) bool, popups []ids.PageHandle) []downloadStart {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.records[page] == nil {
-		return nil, nil
+	own := p.records[page]
+	if own == nil {
+		return nil
+	}
+	records := []*hostedPageRecord{own}
+	for _, popup := range popups {
+		if r := p.records[popup]; r != nil && popup != page && r.state.pendingPopup() {
+			records = append(records, r)
+		}
 	}
 	var taken []*hostedDownload
-	for handle, r := range p.records {
-		if handle != page {
-			if !p.carriedLocked(r, page) {
-				continue
-			}
-			carried = append(carried, handle)
-		}
+	for _, r := range records {
 		for id, d := range r.downloads {
 			if d.admission == hostedAnnouncing && !listed(id) {
 				d.admission = hostedAdmitted
@@ -185,31 +184,35 @@ func (p *hostedPages) takeReceived(page ids.PageHandle, listed func(downloadID) 
 		}
 	}
 	slices.SortFunc(taken, func(a, b *hostedDownload) int { return cmp.Compare(a.order, b.order) })
-	starts = make([]downloadStart, 0, len(taken))
+	starts := make([]downloadStart, 0, len(taken))
 	for _, d := range taken {
 		starts = append(starts, p.startLocked(d))
 	}
-	return starts, carried
+	return starts
 }
 
-// carriedLocked reports whether r is a popup the Manager has not listed
-// whose close or discard was received and whose nearest listed opener,
-// past the pending popups between them, is page. The caller holds p.mu.
-func (p *hostedPages) carriedLocked(r *hostedPageRecord, page ids.PageHandle) bool {
-	if r.state != hostedPopupClosing {
-		return false
+// pendingOpeners answers the openers of page while it is a popup the
+// Manager has not listed: its opener, and past each opener that is such a
+// popup too, that one's, nearest first, ending at the first that is not.
+// It answers nil for any other page.
+func (p *hostedPages) pendingOpeners(page ids.PageHandle) []ids.PageHandle {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	r := p.records[page]
+	if r == nil || !r.state.pendingPopup() || r.opener == "" {
+		return nil
 	}
+	openers := []ids.PageHandle{r.opener}
 	// Each opener is reported before its popups, so the chain ends; the
 	// bound stops a cycle all the same.
-	opener := r.opener
 	for range len(p.records) {
-		next := p.records[opener]
-		if next == nil || !next.state.pendingPopup() {
+		next := p.records[openers[len(openers)-1]]
+		if next == nil || !next.state.pendingPopup() || next.opener == "" || slices.Contains(openers, next.opener) {
 			break
 		}
-		opener = next.opener
+		openers = append(openers, next.opener)
 	}
-	return opener == page
+	return openers
 }
 
 // end records d's end: it leaves its page's running downloads for its

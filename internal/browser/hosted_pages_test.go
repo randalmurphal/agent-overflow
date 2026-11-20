@@ -69,7 +69,7 @@ func blockedPages(t *testing.T) (pages *hostedPages, taken <-chan *acceptedWork,
 		case <-next:
 		case <-ctx.Done():
 		}
-	}, func(<-chan struct{}) {}, func(ids.PageHandle, bool, string) {})
+	}, func(<-chan struct{}) {}, func(ids.PageHandle, bool, string, []ids.PageHandle) {})
 	t.Cleanup(func() {
 		join, _, delivered := pages.stopAll()
 		join()
@@ -174,7 +174,7 @@ func heldPages(t *testing.T) (pages *hostedPages, taken <-chan *acceptedWork, re
 			_, finish := pages.retire(w.page, pageClosedReason)
 			finish()
 		}
-	}, func(<-chan struct{}) {}, func(ids.PageHandle, bool, string) {})
+	}, func(<-chan struct{}) {}, func(ids.PageHandle, bool, string, []ids.PageHandle) {})
 	t.Cleanup(func() {
 		join, _, delivered := pages.stopAll()
 		join()

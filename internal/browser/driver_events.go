@@ -208,8 +208,12 @@ type engineEvents struct {
 	// (crash, its reason) an engine received for a page and reports
 	// through PageClosed or PageCrashed only once it has processed what it
 	// received before (the hosted engine's report lanes), so a popup's or
-	// a created page's listing that commits meanwhile reads it.
-	PageEndReceived func(handle ids.PageHandle, closed bool, crash string)
+	// a created page's listing that commits meanwhile reads it. openers,
+	// for a popup the Manager has not listed, are the pages that opened
+	// it, nearest first: from a close's record until the popup's parked
+	// downloads settle, a leave of its nearest listed opener carries them
+	// (popupCarrier).
+	PageEndReceived func(handle ids.PageHandle, closed bool, crash string, openers []ids.PageHandle)
 	// PageInfoChanged is a CDP engine's report of a page's address and
 	// title, from the browser's target events, by the page's handle; a
 	// native engine reports through the page's own hook (pageHooks.Info).

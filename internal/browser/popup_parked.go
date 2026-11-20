@@ -44,14 +44,17 @@ import (
 // launcher cancels it with the popup's page and the engine ends it
 // (hosted_popups.go); headless Chromium and WebKit let it finish.
 //
-// An engine that processes a popup's reports after receiving them (the
-// hosted engine's report lanes) can have received the popup's close while
-// its nearest listed opener was live and that opener leave before the
-// close is processed. The opener's leave carries the popup's downloads
-// then, as it would had the close come first: those the engine has not
-// had admitted it lists itself (receivingDriver), and those parked here
-// are listed at the popup's fate in the left page's log, as its leave
-// would have (popupCarrier).
+// A popup never listed can end (its close received, or the Manager's
+// refusal) while its nearest listed opener is live and that opener leave
+// before the popup's downloads settle: before its engine processed the
+// close, or after its engine page retired and before its fate runs. The
+// Manager records the end, with the popup's openers (endedPopupLocked),
+// and holds it until its engine has reported all it will of the popup
+// (forgetEndedPopup), so the opener's leave carries the popup's
+// downloads, as it would had the popup's fate come first: those the
+// engine has not had admitted it lists itself (receivingDriver), and
+// those parked here or reported after the fate are listed in the left
+// page's log, as its leave would have (popupCarrier).
 
 // popupCarrier is the leave of the page that carries a popup's downloads:
 // the page, and why it left.
@@ -69,11 +72,72 @@ func (m *Manager) carriersLocked() *boundedMap[ids.PageHandle, popupCarrier] {
 	return m.carriers
 }
 
-// takeCarrier answers and forgets the carrier of popup handle.
-func (m *Manager) takeCarrier(handle ids.PageHandle) (popupCarrier, bool) {
+// endedPopupsLocked is the record of popups never listed whose end the
+// Manager knows and whose parked downloads have not settled, with the
+// openers each was reported with, the newest orderSlack. The caller holds
+// m.mu.
+func (m *Manager) endedPopupsLocked() *boundedMap[ids.PageHandle, []ids.PageHandle] {
+	if m.endedPopups == nil {
+		m.endedPopups = newBoundedMap[ids.PageHandle, []ids.PageHandle](orderSlack)
+	}
+	return m.endedPopups
+}
+
+// endedPopupLocked records the end of popup handle, never listed, opened
+// by openers, nearest first, until its parked downloads settle: a leave of
+// its nearest listed opener meanwhile carries them
+// (carryEndedPopupsLocked). A popup carried already keeps its carrier. The
+// caller holds m.mu.
+func (m *Manager) endedPopupLocked(handle ids.PageHandle, openers []ids.PageHandle) {
+	if _, carried := m.carriersLocked().get(handle); carried {
+		return
+	}
+	known, _ := m.endedPopupsLocked().get(handle)
+	m.endedPopupsLocked().put(handle, mergeOpeners(slices.Clone(known), openers))
+}
+
+// carryEndedPopupsLocked makes p's leave for reason the carrier of each
+// ended popup whose nearest listed opener (popupLineage) is p, and
+// answers those popups. The caller holds m.mu, with p out of its tabs.
+func (m *Manager) carryEndedPopupsLocked(p *managedPage, reason string) []ids.PageHandle {
+	if m.endedPopups == nil {
+		return nil
+	}
+	leaving := p.driver.Handle()
+	var carried []ids.PageHandle
+	for handle, openers := range m.endedPopups.all() {
+		for _, opener := range m.popupLineage(handle, openers) {
+			if opener == leaving {
+				carried = append(carried, handle)
+				break
+			}
+			if m.pageByHandleLocked(opener) != nil {
+				break
+			}
+		}
+	}
+	for _, handle := range carried {
+		m.endedPopups.delete(handle)
+		m.carriersLocked().put(handle, popupCarrier{page: p, reason: reason})
+	}
+	return carried
+}
+
+// carrierOf answers the carrier of popup handle.
+func (m *Manager) carrierOf(handle ids.PageHandle) (popupCarrier, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.carriersLocked().take(handle)
+	return m.carriersLocked().get(handle)
+}
+
+// forgetEndedPopup forgets the end of popup handle (endedPopupLocked) and
+// its carrier once its engine reports nothing more of it: its close was
+// processed (removeClosedPage), or its discard returned (finishAdoption).
+func (m *Manager) forgetEndedPopup(handle ids.PageHandle) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.endedPopupsLocked().delete(handle)
+	m.carriersLocked().delete(handle)
 }
 
 // parkedPopup holds the downloads a popup started before its fate.
@@ -149,6 +213,17 @@ func (m *Manager) parkDownload(event downloadStart) downloadAdmission {
 	m.parkMu.Lock()
 	defer m.parkMu.Unlock()
 	if fate, known := m.fates().get(event.Popup); known {
+		if carrier, carried := m.carrierOf(event.Popup); carried && fate.listed == "" {
+			// After its fate: listed as its carrier's leave would have.
+			m.mu.Lock()
+			scope := m.profileScopeLocked(event.Profile)
+			m.mu.Unlock()
+			d := &parkedDownload{start: event, scope: scope, file: m.downloadFileOf(scope, event.ID)}
+			if discard, canceled := m.listCarried(carrier, d); canceled {
+				m.stopRefused(d, discard)
+			}
+			return downloadAdmitted
+		}
 		fate.openers = mergeOpeners(fate.openers, event.Openers)
 		target := m.fateTarget(event.Popup, fate)
 		if target == nil {
@@ -292,7 +367,7 @@ func (m *Manager) resolveParkedLocked(handle ids.PageHandle, p *managedPage, ope
 		fate.openers = mergeOpeners(fate.openers, popup.openers)
 	}
 	m.fates().put(handle, fate)
-	carrier, carried := m.takeCarrier(handle)
+	carrier, carried := m.carrierOf(handle)
 	if popup == nil {
 		return
 	}
@@ -434,7 +509,7 @@ func (m *Manager) dropParked() []downloadDiscard {
 	var discards []downloadDiscard
 	for handle, popup := range m.parked {
 		popup.timer.Stop()
-		carrier, carried := m.takeCarrier(handle)
+		carrier, carried := m.carrierOf(handle)
 		for _, d := range popup.downloads {
 			if carried {
 				if discard, canceled := m.listCarried(carrier, d); canceled {
@@ -448,7 +523,7 @@ func (m *Manager) dropParked() []downloadDiscard {
 	}
 	m.parked, m.parkedIDs, m.popupFates = nil, nil, nil
 	m.mu.Lock()
-	m.carriers = nil
+	m.carriers, m.endedPopups = nil, nil
 	m.mu.Unlock()
 	return discards
 }

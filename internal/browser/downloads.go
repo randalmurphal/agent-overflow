@@ -162,10 +162,9 @@ type receivingDriver interface {
 	// received and has not had admitted, but for those listed says the page
 	// lists, oldest first, and hands each to the caller: the engine applies
 	// its later reports to the row the caller lists for it. They are the
-	// page's own and those of carried, the popups never listed whose end
-	// the engine received while this page was their nearest listed opener:
-	// the page's leave carries what they started (popupCarrier).
-	TakeReceivedDownloads(listed func(downloadID) bool) (starts []downloadStart, carried []ids.PageHandle)
+	// page's own and those of popups, the popups never listed whose
+	// downloads the page's leave carries (popupCarrier).
+	TakeReceivedDownloads(listed func(downloadID) bool, popups []ids.PageHandle) []downloadStart
 }
 
 // pageLeftLocked takes p out of scope's live pages. Every way a page stops
@@ -188,7 +187,9 @@ func (m *Manager) pageLeftLocked(scope *jarScope, p *managedPage, reason string)
 }
 
 // downloadsLeftLocked ends p's download log as p leaves scope, listed or
-// not: a download its engine received and has not had admitted is listed
+// not: it carries the downloads of each ended popup it is the nearest
+// listed opener of (carryEndedPopupsLocked), a download its engine
+// received and has not had admitted, its own or such a popup's, is listed
 // first (receivingDriver), and a carried popup's parked downloads are
 // listed at that popup's fate as this leave would have (popupCarrier);
 // every row then running settles as the leave settles it (departLocked),
@@ -197,17 +198,17 @@ func (m *Manager) downloadsLeftLocked(scope *jarScope, p *managedPage, reason st
 	ended := endedDownloads{scope: scope}
 	held := p.downloads.hold()
 	held.end()
+	var carried []ids.PageHandle
+	if p.driver != nil {
+		carried = m.carryEndedPopupsLocked(p, reason)
+	}
 	if receiving, ok := p.driver.(receivingDriver); ok {
 		listed := func(id downloadID) bool { return held.entry(id) != nil }
-		starts, carried := receiving.TakeReceivedDownloads(listed)
-		for _, start := range starts {
+		for _, start := range receiving.TakeReceivedDownloads(listed, carried) {
 			start = boundedStart(start)
 			entry := m.downloadEntry(start)
 			entry.source = m.downloadFileOf(scope, start.ID)
 			ended.notes = append(ended.notes, m.noteDownloadStartLocked(p, held.add(entry), downloadSource(p, start)))
-		}
-		for _, popup := range carried {
-			m.carriersLocked().put(popup, popupCarrier{page: p, reason: reason})
 		}
 	}
 	for _, entry := range held.running() {

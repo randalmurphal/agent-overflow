@@ -51,9 +51,15 @@ func (m *Manager) startAdoption(handle ids.PageHandle) {
 // or not at all, lists the downloads it started meanwhile, and wakes the
 // popups it opened (awaitOpener). The downloads are listed while its
 // admission still keeps its chain live. A popup not listed lets go of the
-// report held for it, and none is held for it after (updatePageInfo).
-func (m *Manager) finishAdoption(handle, opener ids.PageHandle, p *managedPage) {
+// report held for it, and none is held for it after (updatePageInfo); one
+// its engine retired (retired, discardPopup) has its end forgotten
+// (forgetEndedPopup), and any other's stays until its close is processed
+// (removeClosedPage) or the record's bound drops it.
+func (m *Manager) finishAdoption(handle, opener ids.PageHandle, p *managedPage, retired bool) {
 	m.resolveParked(handle, p, opener)
+	if retired {
+		m.forgetEndedPopup(handle)
+	}
 	m.mu.Lock()
 	delete(m.adopting, handle)
 	if p == nil {

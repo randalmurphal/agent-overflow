@@ -129,6 +129,18 @@ func (m *boundedMap[K, V]) take(key K) (V, bool) {
 
 func (m *boundedMap[K, V]) delete(key K) { delete(m.entries, key) }
 
+// all yields every entry, in no order; yield may delete the entry it is
+// given.
+func (m *boundedMap[K, V]) all() iter.Seq2[K, V] {
+	return func(yield func(K, V) bool) {
+		for key, entry := range m.entries {
+			if !yield(key, entry.value) {
+				return
+			}
+		}
+	}
+}
+
 func (m *boundedMap[K, V]) len() int { return len(m.entries) }
 
 // networkTracker is the in-flight request set the network-idle wait reads.
