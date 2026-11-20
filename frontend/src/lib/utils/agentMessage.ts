@@ -379,9 +379,10 @@ const agentMessageRows = new WeakMap<Pick<Item, 'kind' | 'meta'>, { meta: string
 
 /**
  * Whether a user_text row renders as an agent message: the meta test
- * agentMessageFromItem keys on, without reading the text. Such a row is an
- * activity-run member (`isActivityRunMemberRow`); the store's twin of this
- * test for that rule is `agentMessageRowExpr`.
+ * agentMessageFromItem keys on, without reading the text. How such a row
+ * groups into activity runs depends on the thread's `ActivityRunRule`
+ * (`isActivityRunMemberRow`); the store's twin of this test is
+ * `agentMessageRowExpr`.
  */
 export function isAgentMessageItem(item: Pick<Item, 'kind' | 'meta'>): boolean {
   if (item.kind !== 'user_text') return false;

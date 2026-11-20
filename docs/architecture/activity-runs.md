@@ -59,6 +59,15 @@ person's message, opening or closing the window) it is a run of one, a
 member on either side shares its run, and two in a row are one run. It does
 not sit on the rail. The person's own messages end a run.
 
+That is the member rule, the rule of a backend with the
+`activity-runs.agent-message-members.v1` capability. A thread whose backend
+lacks it is grouped by that backend's absorbed rule, under which an agent
+message joins a run only when a member sits right before it, as a bell
+does. Every grouping pass takes the thread's rule explicitly
+(`ActivityRunRule`, from `threadActivityRunRule`); how the rule is chosen
+per connection is in
+[timeline-window-pages.md §1](timeline-window-pages.md#1-run-membership-on-the-server).
+
 One absorption rides on top of the predicate: a `notification` leaf with a
 run member before it joins the open run (`isActivityRunAbsorbedRow`,
 applied by `isAbsorbedRow` in `activityRunGrouping.ts`). Bells land at the
@@ -171,8 +180,8 @@ projection pass. The registry is the only thing that carries a run across
 passes, and identity is the load-bearing part.
 
 No member id is stable: lazy older-paging extends a run backward (new first
-member), so does an agent message placed ahead of a run's first member,
-and the live-window prune trims its head, the last happening
+member), so does an agent message placed ahead of a run's first member
+under the member rule, and the live-window prune trims its head, the last happening
 mid-stream on exactly the long runs this feature exists to bound. Keying on
 any member would remount the row and recreate its scroll controller mid-turn.
 So the registry mints a `runId` once and migrates it by membership: an entry
@@ -1147,7 +1156,9 @@ absorption, composition with
 read/subagent/wait groups, identity migration across backfill / prune /
 split / merge, window resolution in row space),
 `activityRunVectors.test.ts` and Go's `TestActivityRunVectors` (the shared
-membership and stub vectors),
+membership and stub vectors, under each rule a case names),
+`threadActivityRunRule.svelte.test.ts` (a pane against a backend of each
+rule, a hello that changes it, a disagreement no reload settles),
 `activityRunSummary.test.ts` (count aggregation, failure, running label),
 `AgentMessageRow.test.ts` (an agent message inside a run, collapsed and
 expanded, a lone one's header, a jump to one), `editResendFlow.test.ts` (the dim of a run a cut goes through),

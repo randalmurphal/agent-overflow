@@ -10,6 +10,7 @@ import { createThreadItemStreamApply } from './threadItemStreamApply';
 import { createThreadPaneScroll } from './threadPaneScroll.svelte';
 import { activityRunDefaultCollapsed, activityRunWindowRows } from './activityRunPrefs.svelte';
 import { timelinePageShape, nowForLiveContent } from './threadPaneShared';
+import { threadActivityRunRule } from './activityRunRule';
 import { attachTimelineWindow, type WindowObservation } from './timelineWindowResource.svelte';
 import { registerTimelineSurface, type TimelineMutation } from './timelineSurfaces';
 import { refreshWatchedThreads } from './watchedThreads';
@@ -92,6 +93,7 @@ export function createScopedTimeline(thread: Thread, selection: TimelineSelectio
     windowVerified: () => !loading, scrollController: () => scroll.controller, items: getItems,
     windowBounds: () => ({ oldest: window.oldestLoadedCursor, newest: window.newestLoadedCursor }),
     threadId: () => disposed ? null : thread.id, selection: () => selection,
+    activityRunRule: () => threadActivityRunRule(thread.id),
     pageShape: timelinePageShape, mountRunMembers: window.mountActivityRunMembers,
     reloadWindow: () => refresh(),
     reportFetchFailure: (message, error, silent) => {

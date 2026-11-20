@@ -49,7 +49,7 @@ func TestActivityRunScanGrowsChunksWithoutLosingMembers(t *testing.T) {
 	}
 	answer, err := s.ListActivityRunMembers(context.Background(), "t", ActivityRunMembersRequest{
 		RunFirstItemID: "row-1", Direction: ActivityRunMembersBefore, Limit: 25,
-	})
+	}, AgentMessagesAreMembers)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -503,7 +503,8 @@ export function createThreadTimelineWindow(
     start: number,
     end: number,
   ): { start: number; end: number } {
-    const spans = groupActivityRunSpans(topLevel, item => options.activityRuns().isLoadedMember(item.id), includes);
+    const runs = options.activityRuns();
+    const spans = groupActivityRunSpans(topLevel, runs.activityRunRule(), item => runs.isLoadedMember(item.id), includes);
     if (spans.length === 0) return { start, end };
     const indexById = new Map<string, number>();
     for (let index = 0; index < topLevel.length; index += 1) {

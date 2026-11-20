@@ -1,5 +1,6 @@
 import { retainedItemChars, snapshotItem } from '../utils/itemMemory';
 import type { ActivityRunStub } from '../../../bindings/agent-overflow/internal/store/models';
+import type { ActivityRunRule } from '../utils/activityRunSpans';
 import type { Item } from '../types/models';
 import type { TimelineCursorLike } from './threadItems';
 import type { SettledTurn } from './threadTurnProjection';
@@ -43,6 +44,11 @@ export interface ThreadItemSnapshot {
    * every unshipped member.
    */
   runs?: ActivityRunStub[] | null;
+  /**
+   * The membership rule `runs` were read under. A snapshot of another
+   * rule is not installed: its stubs describe runs this rule does not have.
+   */
+  activityRunRule: ActivityRunRule;
   /**
    * The history stamp that described `items` at the moment they were
    * snapshotted (docs/architecture/thread-replica-sync.md §3). Paired here
@@ -167,6 +173,7 @@ export function createThreadItemCache(cap: number = THREAD_ITEM_CACHE_CAP): Thre
         // Reference-shared, not cloned: every producer hands over freshly
         // built plain stubs.
         runs: snapshot.runs ?? null,
+        activityRunRule: snapshot.activityRunRule,
         historyStamp: snapshot.historyStamp ? { ...snapshot.historyStamp } : null,
       };
       const existing = byThread.get(threadId);

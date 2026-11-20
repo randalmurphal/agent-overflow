@@ -32,19 +32,40 @@ cannot drift.
 
 A row is a **rail row** when `kind` is `tool_call`, `tool_completion`,
 `terminal_interaction` or `thinking` and its payload kind is not
-`proposed_plan`. A row is a **member** when it is a rail row or an agent
-message (a `user_text` row an agent wrote, not the person;
-`agentMessageRowExpr`, the reading of the client's `isAgentMessageItem`).
-A run is a maximal consecutive stretch of rows that are members, or
-`notification` rows with a run member immediately before them (absorbed
-bells). Any other row ends the run. Payload kind is only known after the
-payload join, so classification happens in Go over a narrow scan, never in
-SQL alone.
+`proposed_plan`. An **agent message** is a `user_text` row an agent wrote,
+not the person (`agentMessageRowExpr`, the reading of the client's
+`isAgentMessageItem`). A run is a maximal consecutive stretch of members,
+plus **absorbed** rows: a `notification`, or an agent message under the
+absorbed rule, with a run member immediately before it. Any other row ends
+the run. Payload kind is only known after the payload join, so
+classification happens in Go over a narrow scan, never in SQL alone.
+
+Which rows are members depends on the **membership rule**
+(`store.ActivityRunRule`, `ActivityRunRule` on the client), which every
+classifying read takes explicitly:
+
+- `AgentMessagesAreMembers`: a rail row or an agent message is a member.
+- `AgentMessagesAbsorbed`: only a rail row is; an agent message is
+  absorbed. This is the rule of a backend or client from before the
+  `activity-runs.agent-message-members.v1` capability.
+
+A backend with the capability groups by the member rule only for a request
+that asks for it: `agentMessageMembers` on `PageShape` (pages, the members
+call's `shape`) and on `SyncThreadWindowRequest`. A request without the
+field, which every older client sends, is grouped by the absorbed rule. The
+client groups a thread by the rule of its owning backend's hello
+(`threadActivityRunRule`) and sets the field exactly when that hello
+advertises the capability (`agentMessageMembersField`), so both sides of
+one connection apply one rule. Stubs read under one rule describe runs the
+other does not have: the run registry drops its records when the thread's
+rule changes, a cached window (L1 snapshot, replica body) records the rule
+it was read under and is not installed under the other, and the reconnect
+refresh a changed hello triggers reloads the window under the new rule.
 
 Runs are identified by `firstItemId`. New rows land at the write head, so
 a run grows at its newer end. The one row that can land ahead of a run's
 first member is an agent message placed at the head of its turn, which
-joins the run there; the old `firstItemId` then no longer starts a run,
+under the member rule joins the run there; the old `firstItemId` then no longer starts a run,
 `ListActivityRunMembers` refuses it as stale, and the pane reloads its
 window (§3).
 
@@ -372,7 +393,12 @@ Rules:
   server refuses a members call whose run or span no longer matches the
   store with the public code `activity_run_stale`
   (`app.ActivityRunStaleCode`); the pane branches on the code, never on
-  the message, and answers it with a window reload.
+  the message, and answers it with a window reload. A reload that leaves
+  the same run holding the same span, still dirty, asked the server the
+  same question: when the server refuses that span again, the pane and the
+  server group those rows differently and no reload can change it. The
+  pane reports it once and refreshes that run's stub no more until its
+  span changes (`activityRunMemberFetch.ts`).
 - **Signatures and priors.** The run row signature and size prior include
   `MemberCount`, the loaded span edges, and the mount window; the trace
   schema records stub counts beside loaded counts.
@@ -390,6 +416,13 @@ longer a fetch size.
 
 ## 8. Tests
 
+- Both membership rules: the shared vectors name the rules each case
+  holds under (`rules`); `TestAgentMessagesPageByTheCallersRule` reads
+  every classifying store entry point under each;
+  `TestHistoryReadsGroupAgentMessagesByTheRequestedRule` does the same
+  through the app RPCs; `threadActivityRunRule.svelte.test.ts` drives a
+  pane against each kind of backend, a hello that changes the rule, and a
+  disagreement no reload settles.
 - Go: classification and stub fixture; page composition (whole runs, anchor
   run centered, byte trim folding into stubs, cursors on unshipped rows);
   held-window verification with stubs; members RPC in each direction;

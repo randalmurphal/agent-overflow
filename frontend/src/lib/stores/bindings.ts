@@ -11,6 +11,7 @@ import {
   SearchTimelineItems as SearchTimelineItemsRaw,
 } from '../../../bindings/agent-overflow/app.js';
 import { requireThreadFindSupport, requireTimelineSelectionSupport } from './timelineSelectionSupport';
+import { agentMessageMembersField } from './activityRunRule';
 // Re-export Wails v3 generated bindings used by components.
 //
 // Every entry here is produced by `wails3 generate bindings -ts`. When
@@ -1207,7 +1208,7 @@ export function SyncThreadWindow(
   requireTimelineSelectionSupport(threadId, req.selection);
   return SyncThreadWindowRaw(
     threadId,
-    new SyncThreadWindowRequestClass(req),
+    new SyncThreadWindowRequestClass({ ...req, ...agentMessageMembersField(threadId) }),
   ) as unknown as Promise<SyncThreadWindowResult>;
 }
 
@@ -1256,22 +1257,28 @@ export function ListActivityRunMembers(
   requireTimelineSelectionSupport(threadId, req.selection);
   return ListActivityRunMembersRaw(
     threadId,
-    new ActivityRunMembersRequestClass(req),
+    new ActivityRunMembersRequestClass({
+      ...req,
+      shape: { ...req.shape, ...agentMessageMembersField(threadId) },
+    }),
   ) as unknown as Promise<ActivityRunMembers>;
 }
 
 
 export function ListThreadSliceAround(threadId: string, anchor: string, budget: number, shape: PageShape, selection: TimelineSelection = {}) {
   requireTimelineSelectionSupport(threadId, selection);
-  return ListThreadSliceAroundRaw(threadId, anchor, budget, { ...shape, selection });
+  return ListThreadSliceAroundRaw(threadId, anchor, budget,
+    { ...shape, selection, ...agentMessageMembersField(threadId) });
 }
 export function ListItemsBeforeCursor(threadId: string, cursor: TimelineCursor, budget: number, shape: PageShape, selection: TimelineSelection = {}) {
   requireTimelineSelectionSupport(threadId, selection);
-  return ListItemsBeforeCursorRaw(threadId, cursor, budget, { ...shape, selection });
+  return ListItemsBeforeCursorRaw(threadId, cursor, budget,
+    { ...shape, selection, ...agentMessageMembersField(threadId) });
 }
 export function ListItemsAfterCursor(threadId: string, cursor: TimelineCursor, budget: number, shape: PageShape, selection: TimelineSelection = {}) {
   requireTimelineSelectionSupport(threadId, selection);
-  return ListItemsAfterCursorRaw(threadId, cursor, budget, { ...shape, selection });
+  return ListItemsAfterCursorRaw(threadId, cursor, budget,
+    { ...shape, selection, ...agentMessageMembersField(threadId) });
 }
 
 export function GetThreadUserMessageTicks(threadId: string, selection: TimelineSelection = {}) {

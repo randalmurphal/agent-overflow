@@ -1,9 +1,13 @@
 {
-  "note": "Shared activity-run vectors. Each case is a sequence of visible top-level rows in timeline order. `runs` is the maximal-run classification of docs/architecture/timeline-window-pages.md §1: a row is a member when it is a rail row (kind tool_call, tool_completion, terminal_interaction or thinking, payload kind not proposed_plan) or an agent message (a user_text row an agent wrote, not the person: its meta `origin` is agent-thread, agent-wake or peer-session without `expandComposerCommands`, or it carries `agent_message.sender`), or a notification with a member immediately before it. Each run's `stubs` state §4's aggregate for one shipped span: `shippedIds` are the members a page shipped, in order, and the remaining fields are what the server's ActivityRunStub and the client's own classification of the same rows must both produce. `unshippedGroups` is sorted by (kind, toolName, mcp) and `unshippedPairedLaunchIds` by id. Shared by internal/store/activity_runs.go and frontend/src/lib/utils/activityRunGrouping.ts with components/chat/activityRunSummary.ts; the two copies of this file must stay byte-identical.",
+  "note": "Shared activity-run vectors. Each case is a sequence of visible top-level rows in timeline order, and `rules` names the membership rules it holds under. `runs` is the maximal-run classification of docs/architecture/timeline-window-pages.md §1: a row is a member when it is a rail row (kind tool_call, tool_completion, terminal_interaction or thinking, payload kind not proposed_plan) or, under `agent-message-members`, an agent message (a user_text row an agent wrote, not the person: its meta `origin` is agent-thread, agent-wake or peer-session without `expandComposerCommands`, or it carries `agent_message.sender`); a notification, and under `agent-messages-absorbed` (the v0.0.19 rule, for a backend or client without the activity-runs.agent-message-members.v1 capability) an agent message, is a member when a member is immediately before it. Each run's `stubs` state §4's aggregate for one shipped span: `shippedIds` are the members a page shipped, in order, and the remaining fields are what the server's ActivityRunStub and the client's own classification of the same rows must both produce. `unshippedGroups` is sorted by (kind, toolName, mcp) and `unshippedPairedLaunchIds` by id. Shared by internal/store/activity_runs.go and frontend/src/lib/utils/activityRunGrouping.ts with components/chat/activityRunSummary.ts; the two copies of this file must stay byte-identical.",
   "cases": [
     {
       "name": "a proposed plan breaks the run",
       "why": "A tool_call whose payload is a proposed_plan renders as a full-width card, so it leaves the rail and ends the run it sits in rather than joining it.",
+      "rules": [
+        "agent-message-members",
+        "agent-messages-absorbed"
+      ],
       "items": [
         {
           "id": "u1",
@@ -174,6 +178,10 @@
     {
       "name": "bells are absorbed only after a member",
       "why": "A notification with a run member immediately before it joins the run and stays joined once prose settles it; one after prose is a standalone row and no run at all.",
+      "rules": [
+        "agent-message-members",
+        "agent-messages-absorbed"
+      ],
       "items": [
         {
           "id": "a0",
@@ -330,6 +338,10 @@
     {
       "name": "a shipped completion supersedes its unshipped failed launch",
       "why": "A completion in the same run covers the launch's status and counts zero rows of its own; the launch still counts its rows, is not reported failed, and is named so a client holding only the completion can apply the same rule.",
+      "rules": [
+        "agent-message-members",
+        "agent-messages-absorbed"
+      ],
       "items": [
         {
           "id": "c1",
@@ -456,6 +468,10 @@
     {
       "name": "an orphan completion and an unsuperseded failure count",
       "why": "A completion whose launch is not a member of the run counts under its own identity, and a launch nothing completed reports its failure.",
+      "rules": [
+        "agent-message-members",
+        "agent-messages-absorbed"
+      ],
       "items": [
         {
           "id": "o1",
@@ -561,6 +577,10 @@
     {
       "name": "file-change rows count files, not calls",
       "why": "inlineDiff.totalFiles wins, then inlineDiff.files, then the non-empty string paths of meta.input.files, then one row. A zero totalFiles does not stop the next source, and a tool that is not a file-change tool is always one row.",
+      "rules": [
+        "agent-message-members",
+        "agent-messages-absorbed"
+      ],
       "items": [
         {
           "id": "f1",
@@ -711,6 +731,10 @@
     {
       "name": "MCP tools group by server and tool, and running is per side",
       "why": "meta.mcp is part of the group identity because the client builds an MCP tool's label from it; the newest running member on each side of the shipped span is reported separately.",
+      "rules": [
+        "agent-message-members",
+        "agent-messages-absorbed"
+      ],
       "items": [
         {
           "id": "m1",
@@ -889,6 +913,10 @@
     {
       "name": "a background launch stays running until a member completes it",
       "why": "A detached launch is persisted running forever, so a run that holds it reports running; the run that holds its completion supersedes it, exactly as the client's own classification does.",
+      "rules": [
+        "agent-message-members",
+        "agent-messages-absorbed"
+      ],
       "items": [
         {
           "id": "b1",
@@ -983,6 +1011,10 @@
     {
       "name": "a parked stop pairs with its launch and leaves it running",
       "why": "A background agent's parked stop (status parked) is a completion of its launch that pauses the agent's run rather than ending it. It pairs with the launch and counts zero rows like any completion, but it does not supersede the launch's status: while the agent is parked or running again after a wake, the run's running member is the launch.",
+      "rules": [
+        "agent-message-members",
+        "agent-messages-absorbed"
+      ],
       "items": [
         {
           "id": "a1",
@@ -1155,6 +1187,10 @@
     {
       "name": "only the ending stop supersedes a launch its parked stops pair with",
       "why": "A launch with parked stops and an ending completion is superseded by the ending one alone: a page that ships the launch and a parked stop but not the ending completion names the launch as superseded, and one that ships a parked stop but not the launch names the launch as paired.",
+      "rules": [
+        "agent-message-members",
+        "agent-messages-absorbed"
+      ],
       "items": [
         {
           "id": "b1",
@@ -1294,6 +1330,10 @@
     {
       "name": "a discard record joins the run of the rows it names",
       "why": "The abandoned-blocks record lands right after the rows Claude discarded. After discarded thinking or tool rows it has a member before it and joins that run like any notification, and the retry continues the same run; after discarded prose it follows a row that already ended the run and stands alone.",
+      "rules": [
+        "agent-message-members",
+        "agent-messages-absorbed"
+      ],
       "items": [
         {
           "id": "u1",
@@ -1487,6 +1527,9 @@
     {
       "name": "agent messages are run members",
       "why": "A message the app wrote into the thread for an agent (another thread's reply, a wake, a Claude peer session's or a Codex collab agent's message) is a run member on sight, like a tool row: a member before or after it shares its run, after prose or the person's own message it opens one, and the header counts it by its row kind. A row that holds the person's composer message is the person's and ends the run.",
+      "rules": [
+        "agent-message-members"
+      ],
       "items": [
         {
           "id": "u1",
@@ -1921,6 +1964,9 @@
     {
       "name": "a lone agent message is a run of one",
       "why": "With prose or the person's message on both sides, an agent message is still a run: one member, its own stub, counted as an agent message. Two in a row are one run.",
+      "rules": [
+        "agent-message-members"
+      ],
       "items": [
         {
           "id": "a1",
@@ -2102,6 +2148,9 @@
     {
       "name": "an agent message opening the window opens its run",
       "why": "The first visible row is an agent message: it starts the run the tool rows after it continue, and a bell after it joins that run.",
+      "rules": [
+        "agent-message-members"
+      ],
       "items": [
         {
           "id": "r1",
@@ -2308,6 +2357,9 @@
     {
       "name": "thread tool calls are members in every state",
       "why": "The thread tools' own calls are tool rows whether running, answered or errored, and the replies and requests they carry join them; the header names a failed call and the running one on the side it sits.",
+      "rules": [
+        "agent-message-members"
+      ],
       "items": [
         {
           "id": "a1",
@@ -2497,6 +2549,380 @@
               "unshippedPairedLaunchIds": [],
               "shippedSupersededLaunchIds": [],
               "unshippedFailed": true,
+              "runningBefore": null,
+              "runningAfter": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "under the absorbed rule an agent message joins the run it follows",
+      "why": "A message the app wrote into the thread for an agent (another thread's reply, a wake, a Claude peer session's or a Codex collab agent's message) lands at the write head like a notification: with a member before it, it joins that run, so the work before and after it is one run, and the header counts it by its row kind. After prose or the person's own message it stands alone. A row that holds the person's composer message is the person's and ends the run.",
+      "rules": [
+        "agent-messages-absorbed"
+      ],
+      "items": [
+        {
+          "id": "u1",
+          "kind": "user_text",
+          "toolName": "",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "t1",
+          "kind": "tool_call",
+          "toolName": "Bash",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "r1",
+          "kind": "user_text",
+          "toolName": "",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{\"origin\":\"agent-thread\",\"originThread\":{\"threadId\":\"t-review\",\"title\":\"Rule 5 review\",\"kind\":\"wake\",\"token\":\"tok-1\"}}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "k1",
+          "kind": "thinking",
+          "toolName": "",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "t2",
+          "kind": "tool_call",
+          "toolName": "Bash",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "a1",
+          "kind": "assistant_text",
+          "toolName": "",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "r2",
+          "kind": "user_text",
+          "toolName": "",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{\"origin\":\"agent-wake\",\"originWake\":{\"kind\":\"loop\",\"label\":\"nightly\"}}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "t3",
+          "kind": "tool_call",
+          "toolName": "Read",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "u2",
+          "kind": "user_text",
+          "toolName": "",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "r3",
+          "kind": "user_text",
+          "toolName": "",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{\"origin\":\"agent-thread\",\"originThread\":{\"threadId\":\"t-review\",\"title\":\"Rule 5 review\",\"kind\":\"wake\",\"token\":\"tok-1\"}}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "t4",
+          "kind": "tool_call",
+          "toolName": "Bash",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "r4",
+          "kind": "user_text",
+          "toolName": "",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{\"origin\":\"peer-session\",\"cross_session_from_name\":\"other\"}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "r5",
+          "kind": "user_text",
+          "toolName": "",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{\"wire_only\":true,\"agent_message\":{\"sender\":\"/root/worker\",\"messageType\":\"MESSAGE\"}}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "j1",
+          "kind": "user_text",
+          "toolName": "",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{\"origin\":\"agent-thread\",\"originThread\":{\"threadId\":\"t-review\",\"title\":\"Rule 5 review\",\"kind\":\"send\"},\"expandComposerCommands\":true}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "t5",
+          "kind": "tool_call",
+          "toolName": "Bash",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        }
+      ],
+      "runs": [
+        {
+          "firstItemId": "t1",
+          "lastItemId": "t2",
+          "memberIds": [
+            "t1",
+            "r1",
+            "k1",
+            "t2"
+          ],
+          "stubs": [
+            {
+              "shippedIds": [
+                "t1",
+                "r1",
+                "k1",
+                "t2"
+              ],
+              "memberCount": 4,
+              "loadedFirstItemId": "t1",
+              "loadedLastItemId": "t2",
+              "unshippedBefore": 0,
+              "unshippedAfter": 0,
+              "unshippedGroups": [],
+              "unshippedPairedLaunchIds": [],
+              "shippedSupersededLaunchIds": [],
+              "unshippedFailed": false,
+              "runningBefore": null,
+              "runningAfter": null
+            },
+            {
+              "shippedIds": [
+                "k1",
+                "t2"
+              ],
+              "memberCount": 4,
+              "loadedFirstItemId": "k1",
+              "loadedLastItemId": "t2",
+              "unshippedBefore": 2,
+              "unshippedAfter": 0,
+              "unshippedGroups": [
+                {
+                  "kind": "tool_call",
+                  "toolName": "Bash",
+                  "mcp": "",
+                  "rows": 1
+                },
+                {
+                  "kind": "user_text",
+                  "toolName": "",
+                  "mcp": "",
+                  "rows": 1
+                }
+              ],
+              "unshippedPairedLaunchIds": [],
+              "shippedSupersededLaunchIds": [],
+              "unshippedFailed": false,
+              "runningBefore": null,
+              "runningAfter": null
+            },
+            {
+              "shippedIds": [
+                "t1"
+              ],
+              "memberCount": 4,
+              "loadedFirstItemId": "t1",
+              "loadedLastItemId": "t1",
+              "unshippedBefore": 0,
+              "unshippedAfter": 3,
+              "unshippedGroups": [
+                {
+                  "kind": "thinking",
+                  "toolName": "",
+                  "mcp": "",
+                  "rows": 1
+                },
+                {
+                  "kind": "tool_call",
+                  "toolName": "Bash",
+                  "mcp": "",
+                  "rows": 1
+                },
+                {
+                  "kind": "user_text",
+                  "toolName": "",
+                  "mcp": "",
+                  "rows": 1
+                }
+              ],
+              "unshippedPairedLaunchIds": [],
+              "shippedSupersededLaunchIds": [],
+              "unshippedFailed": false,
+              "runningBefore": null,
+              "runningAfter": null
+            }
+          ]
+        },
+        {
+          "firstItemId": "t3",
+          "lastItemId": "t3",
+          "memberIds": [
+            "t3"
+          ],
+          "stubs": [
+            {
+              "shippedIds": [
+                "t3"
+              ],
+              "memberCount": 1,
+              "loadedFirstItemId": "t3",
+              "loadedLastItemId": "t3",
+              "unshippedBefore": 0,
+              "unshippedAfter": 0,
+              "unshippedGroups": [],
+              "unshippedPairedLaunchIds": [],
+              "shippedSupersededLaunchIds": [],
+              "unshippedFailed": false,
+              "runningBefore": null,
+              "runningAfter": null
+            }
+          ]
+        },
+        {
+          "firstItemId": "t4",
+          "lastItemId": "r5",
+          "memberIds": [
+            "t4",
+            "r4",
+            "r5"
+          ],
+          "stubs": [
+            {
+              "shippedIds": [
+                "t4",
+                "r4",
+                "r5"
+              ],
+              "memberCount": 3,
+              "loadedFirstItemId": "t4",
+              "loadedLastItemId": "r5",
+              "unshippedBefore": 0,
+              "unshippedAfter": 0,
+              "unshippedGroups": [],
+              "unshippedPairedLaunchIds": [],
+              "shippedSupersededLaunchIds": [],
+              "unshippedFailed": false,
+              "runningBefore": null,
+              "runningAfter": null
+            },
+            {
+              "shippedIds": [
+                "t4"
+              ],
+              "memberCount": 3,
+              "loadedFirstItemId": "t4",
+              "loadedLastItemId": "t4",
+              "unshippedBefore": 0,
+              "unshippedAfter": 2,
+              "unshippedGroups": [
+                {
+                  "kind": "user_text",
+                  "toolName": "",
+                  "mcp": "",
+                  "rows": 2
+                }
+              ],
+              "unshippedPairedLaunchIds": [],
+              "shippedSupersededLaunchIds": [],
+              "unshippedFailed": false,
+              "runningBefore": null,
+              "runningAfter": null
+            }
+          ]
+        },
+        {
+          "firstItemId": "t5",
+          "lastItemId": "t5",
+          "memberIds": [
+            "t5"
+          ],
+          "stubs": [
+            {
+              "shippedIds": [
+                "t5"
+              ],
+              "memberCount": 1,
+              "loadedFirstItemId": "t5",
+              "loadedLastItemId": "t5",
+              "unshippedBefore": 0,
+              "unshippedAfter": 0,
+              "unshippedGroups": [],
+              "unshippedPairedLaunchIds": [],
+              "shippedSupersededLaunchIds": [],
+              "unshippedFailed": false,
               "runningBefore": null,
               "runningAfter": null
             }

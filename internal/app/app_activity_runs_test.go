@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -321,5 +322,113 @@ func TestListActivityRunMembers_ReportsAStaleRun(t *testing.T) {
 	}
 	if message != activityRunStaleMessage {
 		t.Errorf("public message %q is not the sentence a person is shown", message)
+	}
+}
+
+// Every history read that classifies runs groups agent messages by the
+// rule its request names: AgentMessageMembers set (a client that read
+// the capability) makes the message a member on sight, and a request
+// without it, which is an older client's, gets the absorbed rule that
+// client groups by.
+func TestHistoryReadsGroupAgentMessagesByTheRequestedRule(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	thread, err := createTestThread(t, app, "claude", "/tmp/w-agent-rule", "claude-sonnet-4-6", "")
+	if err != nil {
+		t.Fatalf("createTestThread: %v", err)
+	}
+	for index, row := range []store.Item{
+		{ID: "p0", Kind: "assistant_text", Role: "assistant"},
+		{ID: "m1", Kind: "user_text", Role: "user",
+			Meta: `{"origin":"agent-thread","originThread":{"threadId":"t-w","title":"Worker","kind":"wake","token":"tok"}}`},
+		{ID: "t2", Kind: "tool_call", Role: "assistant", ToolName: "Bash"},
+		{ID: "p3", Kind: "assistant_text", Role: "assistant"},
+	} {
+		row.ThreadID, row.TurnIndex, row.ItemIndex, row.Status, row.Summary = thread.ID, 0, index, "completed", row.ID
+		row.CreatedAt, row.UpdatedAt = int64(index+1), int64(index+1)
+		if err := app.store.InsertItem(row); err != nil {
+			t.Fatalf("seed %s: %v", row.ID, err)
+		}
+	}
+	ctx := context.Background()
+	for _, tc := range []struct {
+		members   bool
+		wantFirst string
+		wantCount int
+	}{
+		{members: true, wantFirst: "m1", wantCount: 2},
+		{members: false, wantFirst: "t2", wantCount: 1},
+	} {
+		shape := PageShape{AgentMessageMembers: tc.members}
+		checkRuns := func(read string, runs []store.ActivityRunStub) {
+			t.Helper()
+			if len(runs) != 1 || runs[0].FirstItemID != tc.wantFirst || runs[0].MemberCount != tc.wantCount {
+				t.Errorf("members=%v: %s runs = %+v, want one run from %s of %d", tc.members, read, runs, tc.wantFirst, tc.wantCount)
+			}
+		}
+		slice, err := app.ListThreadSliceAround(ctx, thread.ID, "", 50, TimelinePageOptions{PageShape: shape})
+		if err != nil {
+			t.Fatalf("slice: %v", err)
+		}
+		checkRuns("slice", slice.Runs)
+		before, err := app.ListItemsBeforeCursor(ctx, thread.ID, store.TimelineCursor{TurnIndex: 0, ItemIndex: 4}, 50, TimelinePageOptions{PageShape: shape})
+		if err != nil {
+			t.Fatalf("before: %v", err)
+		}
+		checkRuns("before cursor", before.Runs)
+		after, err := app.ListItemsAfterCursor(ctx, thread.ID, store.TimelineCursor{TurnIndex: 0, ItemIndex: -1}, 50, TimelinePageOptions{PageShape: shape})
+		if err != nil {
+			t.Fatalf("after: %v", err)
+		}
+		checkRuns("after cursor", after.Runs)
+		synced, err := app.SyncThreadWindow(ctx, thread.ID, SyncThreadWindowRequest{
+			ItemBudget: 50, HaveEpoch: -1, HaveRev: -1, AgentMessageMembers: tc.members,
+		})
+		if err != nil {
+			t.Fatalf("sync: %v", err)
+		}
+		if synced.Page == nil {
+			t.Fatalf("sync answered %s with no page", synced.Status)
+		}
+		checkRuns("sync", synced.Page.Runs)
+		members, err := app.ListActivityRunMembers(ctx, thread.ID, ActivityRunMembersRequest{
+			RunFirstItemID: tc.wantFirst, Direction: store.ActivityRunMembersBefore, Shape: shape,
+		})
+		if err != nil {
+			t.Fatalf("members: %v", err)
+		}
+		checkRuns("members", []store.ActivityRunStub{members.Stub})
+		other := map[string]string{"m1": "t2", "t2": "m1"}[tc.wantFirst]
+		if _, err := app.ListActivityRunMembers(ctx, thread.ID, ActivityRunMembersRequest{
+			RunFirstItemID: other, Direction: store.ActivityRunMembersBefore, Shape: shape,
+		}); !errors.Is(err, store.ErrActivityRunStale) {
+			t.Errorf("members=%v: members of the other rule's run %s: err = %v, want stale", tc.members, other, err)
+		}
+	}
+}
+
+// An older client's request carries no agentMessageMembers at all; it
+// must decode to the absorbed rule that client groups by.
+func TestPageShapeWithoutTheRuleFieldIsTheAbsorbedRule(t *testing.T) {
+	t.Parallel()
+	var options TimelinePageOptions
+	if err := json.Unmarshal([]byte(`{"inlinePreviews":true,"runWindowRows":30,"maxBytes":1024}`), &options); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got := options.PageShape.normalize().activityRunRule(); got != store.AgentMessagesAbsorbed {
+		t.Errorf("page options without the field = rule %d, want AgentMessagesAbsorbed", got)
+	}
+	var sync SyncThreadWindowRequest
+	if err := json.Unmarshal([]byte(`{"anchorItemId":"","itemBudget":50,"haveEpoch":-1,"haveRev":-1}`), &sync); err != nil {
+		t.Fatalf("decode sync: %v", err)
+	}
+	if got := sync.shape().activityRunRule(); got != store.AgentMessagesAbsorbed {
+		t.Errorf("sync request without the field = rule %d, want AgentMessagesAbsorbed", got)
+	}
+	if err := json.Unmarshal([]byte(`{"agentMessageMembers":true}`), &options); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got := options.PageShape.normalize().activityRunRule(); got != store.AgentMessagesAreMembers {
+		t.Errorf("page options with the field = rule %d, want AgentMessagesAreMembers", got)
 	}
 }

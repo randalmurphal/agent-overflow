@@ -18,7 +18,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, tick } from 'svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { installTimelineScopeCapability, buildPane, installPaneMocks, makeItem } from '../../../test/helpers/chat';
+import {
+  installAgentMessageRunMembersCapability,
+  installTimelineScopeCapability,
+  buildPane,
+  installPaneMocks,
+  makeItem,
+} from '../../../test/helpers/chat';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import type { TimelineNode } from '../../utils/subagentGrouping';
 import { createTimelineRowProjection } from './timelineRowProjection.svelte';
@@ -305,6 +311,7 @@ it('shows a dispatched agent message at once and keeps its entry until the echo'
   const agent = makeItem({ id: 'user:0:flush:wake', kind: 'user_text', role: 'user', itemIndex: 1,
     meta: '{"pendingFlush":true,"origin":"agent-thread","originThread":{"threadId":"t-w","kind":"wake"}}' });
   const person = makeItem({ id: 'user:0:flush:mine', kind: 'user_text', role: 'user', itemIndex: 2, meta: '{"pendingFlush":true}' });
+  installAgentMessageRunMembersCapability();
   const pane = await buildPane(undefined, [agent, person]);
   markItemsFlushed(pane.threadId!, [
     { queueItemId: 'q-wake', userItemId: agent.id, message: agent.summary, agentMessage: true },
@@ -324,6 +331,7 @@ it('shows a dispatched agent message at once and keeps its entry until the echo'
   } finally {
     view.dispose();
     clearForThread(pane.threadId!);
+    installTimelineScopeCapability();
   }
 });
 

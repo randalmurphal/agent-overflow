@@ -18,6 +18,7 @@ import type {
   ActivityRunMembers,
   ActivityRunStub,
 } from '../../../bindings/agent-overflow/internal/store/models';
+import { AGENT_MESSAGE_MEMBERS_RULE } from '../utils/activityRunSpans';
 
 interface MembersRequest {
   runFirstItemId: string;
@@ -133,6 +134,7 @@ function pane(initial: Item[], windowRows = 1) {
   let items = [...initial];
   const reports: string[] = [];
   const runs = createThreadActivityRuns({
+    activityRunRule: () => AGENT_MESSAGE_MEMBERS_RULE,
     defaultCollapsed: () => false,
     windowRows: () => windowRows,
     windowVerified: () => true,

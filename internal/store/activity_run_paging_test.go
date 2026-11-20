@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"strconv"
@@ -139,7 +140,7 @@ func TestTrimShippedTracksSplitPairsInFoldOrder(t *testing.T) {
 	spec[2], spec[30] = 'c', 'c'
 	ids := seedRunThread(t, s, "t", string(spec))
 
-	page, err := s.ListThreadSliceAround(context.Background(), "t", ids[15], 60, 30, TimelineSelection{})
+	page, err := s.ListThreadSliceAround(context.Background(), "t", ids[15], 60, 30, TimelineSelection{}, AgentMessagesAreMembers)
 	if err != nil {
 		t.Fatalf("anchored slice: %v", err)
 	}
@@ -200,7 +201,7 @@ func TestTailPageShipsTheNewestMembersOfAWholeRun(t *testing.T) {
 	s := newTestStore(t)
 	ids := seedRunThread(t, s, "t", "p"+strings.Repeat("t", 50))
 
-	page, err := s.ListThreadSliceAround(context.Background(), "t", "", 10, 10, TimelineSelection{})
+	page, err := s.ListThreadSliceAround(context.Background(), "t", "", 10, 10, TimelineSelection{}, AgentMessagesAreMembers)
 	if err != nil {
 		t.Fatalf("tail slice: %v", err)
 	}
@@ -237,7 +238,7 @@ func TestAnchoredPageCentersTheAnchorRun(t *testing.T) {
 	s := newTestStore(t)
 	ids := seedRunThread(t, s, "t", runSpec(50))
 
-	page, err := s.ListThreadSliceAround(context.Background(), "t", ids[26], 10, 10, TimelineSelection{})
+	page, err := s.ListThreadSliceAround(context.Background(), "t", ids[26], 10, 10, TimelineSelection{}, AgentMessagesAreMembers)
 	if err != nil {
 		t.Fatalf("anchored slice: %v", err)
 	}
@@ -277,7 +278,7 @@ func TestCursorPagesResolveACursorOnAnUnshippedRow(t *testing.T) {
 	s := newTestStore(t)
 	ids := seedRunThread(t, s, "t", runSpec(50))
 
-	page, err := s.ListThreadSliceAround(context.Background(), "t", ids[26], 10, 10, TimelineSelection{})
+	page, err := s.ListThreadSliceAround(context.Background(), "t", ids[26], 10, 10, TimelineSelection{}, AgentMessagesAreMembers)
 	if err != nil {
 		t.Fatalf("anchored slice: %v", err)
 	}
@@ -297,7 +298,7 @@ func TestCursorPagesResolveACursorOnAnUnshippedRow(t *testing.T) {
 		}
 	}
 
-	older, err := s.ListItemsBeforeCursor(context.Background(), "t", page.OldestCursor, 10, 10, TimelineSelection{})
+	older, err := s.ListItemsBeforeCursor(context.Background(), "t", page.OldestCursor, 10, 10, TimelineSelection{}, AgentMessagesAreMembers)
 	if err != nil {
 		t.Fatalf("page before an unshipped cursor: %v", err)
 	}
@@ -308,7 +309,7 @@ func TestCursorPagesResolveACursorOnAnUnshippedRow(t *testing.T) {
 		t.Errorf("older page carries %d runs, want none", len(older.Runs))
 	}
 
-	newer, err := s.ListItemsAfterCursor(context.Background(), "t", page.NewestCursor, 10, 10, TimelineSelection{})
+	newer, err := s.ListItemsAfterCursor(context.Background(), "t", page.NewestCursor, 10, 10, TimelineSelection{}, AgentMessagesAreMembers)
 	if err != nil {
 		t.Fatalf("page after an unshipped cursor: %v", err)
 	}
@@ -324,7 +325,7 @@ func TestCursorPagesAdmitWholeUnits(t *testing.T) {
 	ids := seedRunThread(t, s, "t", runSpec(40))
 	tail := TimelineCursor{TurnIndex: 0, ItemIndex: 41, ItemID: ids[41]}
 
-	older, err := s.ListItemsBeforeCursor(context.Background(), "t", tail, 5, 10, TimelineSelection{})
+	older, err := s.ListItemsBeforeCursor(context.Background(), "t", tail, 5, 10, TimelineSelection{}, AgentMessagesAreMembers)
 	if err != nil {
 		t.Fatalf("older page: %v", err)
 	}
@@ -338,7 +339,7 @@ func TestCursorPagesAdmitWholeUnits(t *testing.T) {
 	assertPageAccounts(t, s, "t", older, ids[1:41])
 
 	head := TimelineCursor{TurnIndex: 0, ItemIndex: 0, ItemID: ids[0]}
-	newer, err := s.ListItemsAfterCursor(context.Background(), "t", head, 5, 10, TimelineSelection{})
+	newer, err := s.ListItemsAfterCursor(context.Background(), "t", head, 5, 10, TimelineSelection{}, AgentMessagesAreMembers)
 	if err != nil {
 		t.Fatalf("newer page: %v", err)
 	}
@@ -365,7 +366,7 @@ func TestAbandonedBlocksRecordJoinsTheRunItFollows(t *testing.T) {
 		s := newTestStore(t)
 		ids := seedRunThread(t, s, "t", tc.spec)
 		tail := TimelineCursor{TurnIndex: 0, ItemIndex: len(ids), ItemID: "after-tail"}
-		page, err := s.ListItemsBeforeCursor(context.Background(), "t", tail, 10, 10, TimelineSelection{})
+		page, err := s.ListItemsBeforeCursor(context.Background(), "t", tail, 10, 10, TimelineSelection{}, AgentMessagesAreMembers)
 		if err != nil {
 			t.Fatalf("%s: page: %v", tc.spec, err)
 		}
@@ -382,83 +383,174 @@ func TestAbandonedBlocksRecordJoinsTheRunItFollows(t *testing.T) {
 	}
 }
 
-// TestAgentMessagesPageAsRunMembers: an agent message is a run member on
-// sight wherever it sits, and every walk agrees: a page read backward from
-// the tail, forward from before the first row, and centered on the
-// message itself, and the members read of a run the message opens.
-func TestAgentMessagesPageAsRunMembers(t *testing.T) {
+// TestAgentMessagesPageByTheCallersRule: agent messages group by the rule
+// the caller names, and every classifying read agrees under each: a page
+// read backward from the tail, forward from before the first row, centered
+// on each message and on the tail, the sync's page, and the members read
+// of every run. Under AgentMessagesAreMembers a message is a member on
+// sight; under AgentMessagesAbsorbed it joins only the run before it.
+func TestAgentMessagesPageByTheCallersRule(t *testing.T) {
 	type run struct {
 		first, last string
 		members     int
 	}
+	type want struct {
+		members, absorbed []run
+	}
 	for _, tc := range []struct {
 		spec string
-		want []run
+		want want
 	}{
-		{spec: "pmp", want: []run{{"m1", "m1", 1}}},
-		{spec: "pmtp", want: []run{{"m1", "t2", 2}}},
-		{spec: "umtp", want: []run{{"m1", "t2", 2}}},
-		{spec: "mtp", want: []run{{"m0", "t1", 2}}},
-		{spec: "pm", want: []run{{"m1", "m1", 1}}},
-		{spec: "pmmp", want: []run{{"m1", "m2", 2}}},
-		{spec: "ptumtp", want: []run{{"t1", "t1", 1}, {"m3", "t4", 2}}},
-		{spec: "ptmtp", want: []run{{"t1", "t3", 3}}},
-		{spec: "pmnp", want: []run{{"m1", "n2", 2}}},
-		{spec: "pmptp", want: []run{{"m1", "m1", 1}, {"t3", "t3", 1}}},
+		{spec: "pmp", want: want{members: []run{{"m1", "m1", 1}}, absorbed: []run{}}},
+		{spec: "pmtp", want: want{members: []run{{"m1", "t2", 2}}, absorbed: []run{{"t2", "t2", 1}}}},
+		{spec: "umtp", want: want{members: []run{{"m1", "t2", 2}}, absorbed: []run{{"t2", "t2", 1}}}},
+		{spec: "mtp", want: want{members: []run{{"m0", "t1", 2}}, absorbed: []run{{"t1", "t1", 1}}}},
+		{spec: "pm", want: want{members: []run{{"m1", "m1", 1}}, absorbed: []run{}}},
+		{spec: "pmmp", want: want{members: []run{{"m1", "m2", 2}}, absorbed: []run{}}},
+		{spec: "ptumtp", want: want{members: []run{{"t1", "t1", 1}, {"m3", "t4", 2}}, absorbed: []run{{"t1", "t1", 1}, {"t4", "t4", 1}}}},
+		{spec: "ptmtp", want: want{members: []run{{"t1", "t3", 3}}, absorbed: []run{{"t1", "t3", 3}}}},
+		{spec: "ptmmp", want: want{members: []run{{"t1", "m3", 3}}, absorbed: []run{{"t1", "m3", 3}}}},
+		{spec: "pmnp", want: want{members: []run{{"m1", "n2", 2}}, absorbed: []run{}}},
+		{spec: "pmptp", want: want{members: []run{{"m1", "m1", 1}, {"t3", "t3", 1}}, absorbed: []run{{"t3", "t3", 1}}}},
 	} {
-		s := newTestStore(t)
-		ids := seedRunThread(t, s, "t", tc.spec)
-		runsOf := func(page PagedItems) []run {
-			got := []run{}
-			for _, stub := range page.Runs {
-				got = append(got, run{stub.FirstItemID, stub.LastItemID, stub.MemberCount})
+		for _, rule := range []ActivityRunRule{AgentMessagesAreMembers, AgentMessagesAbsorbed} {
+			wantRuns := tc.want.members
+			if rule == AgentMessagesAbsorbed {
+				wantRuns = tc.want.absorbed
 			}
-			return got
-		}
-		tail := TimelineCursor{TurnIndex: 0, ItemIndex: len(ids), ItemID: "after-tail"}
-		older, err := s.ListItemsBeforeCursor(context.Background(), "t", tail, 50, 10, TimelineSelection{})
-		if err != nil {
-			t.Fatalf("%s: older page: %v", tc.spec, err)
-		}
-		if got := runsOf(older); !reflect.DeepEqual(got, tc.want) {
-			t.Errorf("%s: older page runs = %v, want %v", tc.spec, got, tc.want)
-		}
-		assertPageAccounts(t, s, "t", older, ids)
-
-		head := TimelineCursor{TurnIndex: 0, ItemIndex: -1, ItemID: "before-head"}
-		newer, err := s.ListItemsAfterCursor(context.Background(), "t", head, 50, 10, TimelineSelection{})
-		if err != nil {
-			t.Fatalf("%s: newer page: %v", tc.spec, err)
-		}
-		if got := runsOf(newer); !reflect.DeepEqual(got, tc.want) {
-			t.Errorf("%s: newer page runs = %v, want %v", tc.spec, got, tc.want)
-		}
-		assertPageAccounts(t, s, "t", newer, ids)
-
-		for _, id := range ids {
-			if id[0] != 'm' {
-				continue
+			name := fmt.Sprintf("%s rule %d", tc.spec, rule)
+			s := newTestStore(t)
+			ids := seedRunThread(t, s, "t", tc.spec)
+			runsOf := func(page PagedItems) []run {
+				got := []run{}
+				for _, stub := range page.Runs {
+					got = append(got, run{stub.FirstItemID, stub.LastItemID, stub.MemberCount})
+				}
+				return got
 			}
-			around, err := s.ListThreadSliceAround(context.Background(), "t", id, 50, 10, TimelineSelection{})
+			check := func(read string, page PagedItems) {
+				t.Helper()
+				if got := runsOf(page); !reflect.DeepEqual(got, wantRuns) {
+					t.Errorf("%s: %s runs = %v, want %v", name, read, got, wantRuns)
+				}
+			}
+			ctx := context.Background()
+			tail := TimelineCursor{TurnIndex: 0, ItemIndex: len(ids), ItemID: "after-tail"}
+			older, err := s.ListItemsBeforeCursor(ctx, "t", tail, 50, 10, TimelineSelection{}, rule)
 			if err != nil {
-				t.Fatalf("%s: slice around %s: %v", tc.spec, id, err)
+				t.Fatalf("%s: older page: %v", name, err)
 			}
-			if got := runsOf(around); !reflect.DeepEqual(got, tc.want) {
-				t.Errorf("%s: slice around %s runs = %v, want %v", tc.spec, id, got, tc.want)
+			check("older page", older)
+			assertPageAccounts(t, s, "t", older, ids)
+
+			head := TimelineCursor{TurnIndex: 0, ItemIndex: -1, ItemID: "before-head"}
+			newer, err := s.ListItemsAfterCursor(ctx, "t", head, 50, 10, TimelineSelection{}, rule)
+			if err != nil {
+				t.Fatalf("%s: newer page: %v", name, err)
+			}
+			check("newer page", newer)
+			assertPageAccounts(t, s, "t", newer, ids)
+
+			for _, id := range append([]string{""}, ids...) {
+				if id != "" && id[0] != 'm' {
+					continue
+				}
+				around, err := s.ListThreadSliceAround(ctx, "t", id, 50, 10, TimelineSelection{}, rule)
+				if err != nil {
+					t.Fatalf("%s: slice around %q: %v", name, id, err)
+				}
+				check("slice around "+id, around)
+			}
+
+			synced, err := s.SyncThreadWindow(ctx, "t", "", 50, 10, HistoryStamp{Epoch: -1, Rev: -1}, nil, TimelineSelection{}, rule)
+			if err != nil {
+				t.Fatalf("%s: sync: %v", name, err)
+			}
+			if synced.Page == nil {
+				t.Fatalf("%s: sync answered %s with no page", name, synced.Status)
+			}
+			check("sync page", *synced.Page)
+
+			for _, want := range wantRuns {
+				members, err := s.ListActivityRunMembers(ctx, "t", ActivityRunMembersRequest{
+					RunFirstItemID: want.first, Direction: ActivityRunMembersBefore,
+				}, rule)
+				if err != nil {
+					t.Fatalf("%s: members of %s: %v", name, want.first, err)
+				}
+				if members.Stub.MemberCount != want.members || members.Stub.LastItemID != want.last {
+					t.Errorf("%s: members of %s = %d ending %s, want %d ending %s", name, want.first,
+						members.Stub.MemberCount, members.Stub.LastItemID, want.members, want.last)
+				}
 			}
 		}
+	}
+}
 
-		for _, want := range tc.want {
-			members, err := s.ListActivityRunMembers(context.Background(), "t", ActivityRunMembersRequest{
-				RunFirstItemID: want.first, Direction: ActivityRunMembersBefore,
-			})
-			if err != nil {
-				t.Fatalf("%s: members of %s: %v", tc.spec, want.first, err)
-			}
-			if members.Stub.MemberCount != want.members || members.Stub.LastItemID != want.last {
-				t.Errorf("%s: members of %s = %d ending %s, want %d ending %s", tc.spec, want.first,
-					members.Stub.MemberCount, members.Stub.LastItemID, want.members, want.last)
-			}
+// TestActivityRunMembersRefuseARunOfTheOtherRule: a run the other rule
+// found is not this caller's run. A message that opens a run only under
+// AgentMessagesAreMembers names no run to a caller grouping by
+// AgentMessagesAbsorbed, and the run a member-rule caller holds from the
+// message is not a span of the absorbed rule's run, so both are refused as
+// stale instead of answered with a stub the caller would fold into a
+// different span.
+func TestActivityRunMembersRefuseARunOfTheOtherRule(t *testing.T) {
+	s := newTestStore(t)
+	seedRunThread(t, s, "t", "pmtp")
+	ctx := context.Background()
+	if _, err := s.ListActivityRunMembers(ctx, "t", ActivityRunMembersRequest{
+		RunFirstItemID: "m1", Direction: ActivityRunMembersBefore,
+	}, AgentMessagesAbsorbed); !errors.Is(err, ErrActivityRunStale) {
+		t.Fatalf("absorbed members of the message's run: err = %v, want ErrActivityRunStale", err)
+	}
+	if _, err := s.ListActivityRunMembers(ctx, "t", ActivityRunMembersRequest{
+		RunFirstItemID: "t2", LoadedFirstItemID: "m1", LoadedLastItemID: "t2", Direction: ActivityRunMembersBefore,
+	}, AgentMessagesAbsorbed); !errors.Is(err, ErrActivityRunStale) {
+		t.Fatalf("absorbed members over a member-rule span: err = %v, want ErrActivityRunStale", err)
+	}
+	if _, err := s.ListActivityRunMembers(ctx, "t", ActivityRunMembersRequest{
+		RunFirstItemID: "t2", Direction: ActivityRunMembersBefore,
+	}, AgentMessagesAreMembers); !errors.Is(err, ErrActivityRunStale) {
+		t.Fatalf("member-rule members of the absorbed rule's run: err = %v, want ErrActivityRunStale", err)
+	}
+}
+
+// TestClassifyingReadsRefuseNoRule: the rule has no default. Every read
+// that classifies refuses the zero rule rather than picking one.
+func TestClassifyingReadsRefuseNoRule(t *testing.T) {
+	s := newTestStore(t)
+	seedRunThread(t, s, "t", "pmtp")
+	ctx := context.Background()
+	var none ActivityRunRule
+	cursor := TimelineCursor{TurnIndex: 0, ItemIndex: 1, ItemID: "m1"}
+	reads := map[string]func() error{
+		"slice around": func() error {
+			_, err := s.ListThreadSliceAround(ctx, "t", "", 50, 10, TimelineSelection{}, none)
+			return err
+		},
+		"before cursor": func() error {
+			_, err := s.ListItemsBeforeCursor(ctx, "t", cursor, 50, 10, TimelineSelection{}, none)
+			return err
+		},
+		"after cursor": func() error {
+			_, err := s.ListItemsAfterCursor(ctx, "t", cursor, 50, 10, TimelineSelection{}, none)
+			return err
+		},
+		"sync": func() error {
+			_, err := s.SyncThreadWindow(ctx, "t", "", 50, 10, HistoryStamp{Epoch: -1, Rev: -1}, nil, TimelineSelection{}, none)
+			return err
+		},
+		"members": func() error {
+			// t2 starts a run under every reading, so only the rule check refuses it.
+			_, err := s.ListActivityRunMembers(ctx, "t", ActivityRunMembersRequest{
+				RunFirstItemID: "t2", Direction: ActivityRunMembersBefore,
+			}, none)
+			return err
+		},
+	}
+	for name, read := range reads {
+		if err := read(); err == nil {
+			t.Errorf("%s with no rule: want an error", name)
 		}
 	}
 }
@@ -472,7 +564,7 @@ func TestForwardPageKeepsAGrownRunWhole(t *testing.T) {
 	ids := seedRunThread(t, s, "t", "p"+strings.Repeat("t", 20))
 	cursor := TimelineCursor{TurnIndex: 0, ItemIndex: 10, ItemID: ids[10]}
 
-	page, err := s.ListItemsAfterCursor(context.Background(), "t", cursor, 50, 10, TimelineSelection{})
+	page, err := s.ListItemsAfterCursor(context.Background(), "t", cursor, 50, 10, TimelineSelection{}, AgentMessagesAreMembers)
 	if err != nil {
 		t.Fatalf("forward page: %v", err)
 	}
@@ -497,7 +589,7 @@ func TestTrimShippedFoldsDroppedRowsIntoTheStub(t *testing.T) {
 	// The anchor unit spends the at-or-before budget on its own 20
 	// centered members, so the page is t5..t24 plus the prose row after
 	// the run, over a range of the whole run plus that row.
-	page, err := s.ListThreadSliceAround(context.Background(), "t", ids[15], 40, 20, TimelineSelection{})
+	page, err := s.ListThreadSliceAround(context.Background(), "t", ids[15], 40, 20, TimelineSelection{}, AgentMessagesAreMembers)
 	if err != nil {
 		t.Fatalf("anchored slice: %v", err)
 	}
@@ -562,7 +654,7 @@ func TestTrimShippedDropsARunThatLosesItsWholeSpan(t *testing.T) {
 	s := newTestStore(t)
 	ids := seedRunThread(t, s, "t", "ttppp")
 
-	page, err := s.ListThreadSliceAround(context.Background(), "t", "", 10, 10, TimelineSelection{})
+	page, err := s.ListThreadSliceAround(context.Background(), "t", "", 10, 10, TimelineSelection{}, AgentMessagesAreMembers)
 	if err != nil {
 		t.Fatalf("tail slice: %v", err)
 	}
@@ -640,7 +732,7 @@ func TestImportedRowsClassifyThroughTheirOwnArm(t *testing.T) {
 	}
 
 	const runWindow = 10
-	page, err := s.ListThreadSliceAround(context.Background(), "imp", "", 200, runWindow, TimelineSelection{})
+	page, err := s.ListThreadSliceAround(context.Background(), "imp", "", 200, runWindow, TimelineSelection{}, AgentMessagesAreMembers)
 	if err != nil {
 		t.Fatalf("window: %v", err)
 	}
@@ -668,7 +760,7 @@ func TestImportedRowsClassifyThroughTheirOwnArm(t *testing.T) {
 	if err := s.UpdatePayloadMeta("imp", "pay-edit", `{"inlineDiff":{"totalFiles":7}}`); err != nil {
 		t.Fatalf("overlay the imported payload: %v", err)
 	}
-	page, err = s.ListThreadSliceAround(context.Background(), "imp", "", 200, runWindow, TimelineSelection{})
+	page, err = s.ListThreadSliceAround(context.Background(), "imp", "", 200, runWindow, TimelineSelection{}, AgentMessagesAreMembers)
 	if err != nil {
 		t.Fatalf("window after the overlay: %v", err)
 	}
@@ -707,7 +799,7 @@ func TestTrimShippedKeepsTheNewestRunningRowPerSide(t *testing.T) {
 	}
 	ids := seedRunThread(t, s, "t", string(spec))
 
-	page, err := s.ListThreadSliceAround(context.Background(), "t", ids[15], 60, 30, TimelineSelection{})
+	page, err := s.ListThreadSliceAround(context.Background(), "t", ids[15], 60, 30, TimelineSelection{}, AgentMessagesAreMembers)
 	if err != nil {
 		t.Fatalf("anchored slice: %v", err)
 	}
@@ -761,7 +853,7 @@ func TestAnchoredPageCentersOnTheRowAChildAnchorRendersInside(t *testing.T) {
 		t.Fatalf("insert child: %v", err)
 	}
 
-	page, err := s.ListThreadSliceAround(context.Background(), "t", child.ID, 10, 10, TimelineSelection{})
+	page, err := s.ListThreadSliceAround(context.Background(), "t", child.ID, 10, 10, TimelineSelection{}, AgentMessagesAreMembers)
 	if err != nil {
 		t.Fatalf("slice around child: %v", err)
 	}

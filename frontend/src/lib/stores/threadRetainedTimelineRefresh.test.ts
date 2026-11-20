@@ -6,6 +6,7 @@ import { setBindingMock } from '../../test/mocks/bindings-app';
 import { PagedItems } from '../../../bindings/agent-overflow/internal/store/models';
 import type { ThreadPane } from './thread.svelte';
 import type { Item } from '../types/models';
+import { AGENT_MESSAGE_MEMBERS_RULE } from '../utils/activityRunSpans';
 
 const shape = { runWindowRows: 30, inlinePreviews: false, maxBytes: 160 << 10 };
 const row = (i: number, overrides: Partial<Item> = {}) => makeItem({ id: `r${i}`, threadId: 't',
@@ -71,7 +72,7 @@ it('captures coordinates by value and counts only direct selected rows', () => {
   const window = { oldestLoadedCursor: cursor(0), newestLoadedCursor: cursor(99) };
   const selected = [row(0, { parentId: 'agent', kind: 'tool_call' }), row(1, { parentId: 'agent' }), row(2)];
   const captured = captureRetainedTimelineWindow(selected, window,
-    { loadedItems: items => [...items], isLoadedMember: () => false, readerPinnedSpan: () => false }, true, { scopeRootId: 'agent', tools: true });
+    { loadedItems: items => [...items], isLoadedMember: () => false, readerPinnedSpan: () => false, activityRunRule: () => AGENT_MESSAGE_MEMBERS_RULE }, true, { scopeRootId: 'agent', tools: true });
   window.oldestLoadedCursor.itemIndex = 50;
   expect(captured.oldest).toEqual(cursor(0));
   expect(captured.count).toBe(1);
@@ -83,6 +84,7 @@ it('carries a reader pin into the retained run decision', () => {
       loadedItems: items => [...items],
       isLoadedMember: () => true,
       readerPinnedSpan: (first, last) => first === 'r0' && last === 'r2',
+      activityRunRule: () => AGENT_MESSAGE_MEMBERS_RULE,
     }, true);
   expect(captured.runs).toMatchObject([{ firstItemId: 'r0', lastItemId: 'r2', readerPinned: true }]);
 });

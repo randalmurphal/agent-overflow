@@ -12,8 +12,8 @@
 // reactivity, no fetching, no rendering.
 //
 // Keyed by the run's `firstItemId`. Runs grow at their newer end (new rows
-// land at the write head); an agent message placed at the head of its turn
-// can join a run ahead of its first member, and the record's next members
+// land at the write head); under the member rule an agent message placed at
+// the head of its turn can join a run ahead of its first member, and the record's next members
 // call is then refused as stale, which reloads the window
 // (docs/architecture/timeline-window-pages.md §1).
 

@@ -7,11 +7,13 @@ import {
 import type { ActivityRunNode, TimelineNode } from './subagentGrouping';
 import type { Item } from '../../lib/types/models';
 import { makeItem } from '../../test/helpers/chat';
+import { AGENT_MESSAGE_MEMBERS_RULE, type ActivityRunRule } from './activityRunSpans';
 
 // The real per-pane registry, not a stand-in: identity migration is the
 // subtlest part of this pass, and a fake would only prove the fake works.
 function identity(): ThreadActivityRuns {
   return createThreadActivityRuns({
+    activityRunRule: () => AGENT_MESSAGE_MEMBERS_RULE,
     defaultCollapsed: () => false,
     windowRows: () => 30,
     windowVerified: () => true,
@@ -133,11 +135,14 @@ function project(
     withheld?: TimelineNode[];
     /** Default true; false models a window loaded short of the thread's tail. */
     windowReachesTail?: boolean;
+    /** Default the member-on-sight rule. */
+    rule?: ActivityRunRule;
   } = {},
 ): TimelineNode[] {
   const live = new Map((options.live ?? []).map((item) => [item.id, item]));
   return groupActivityRuns(nodes, {
     identity: options.identity ?? identity(),
+    rule: options.rule ?? AGENT_MESSAGE_MEMBERS_RULE,
     getItem: (id) => live.get(id),
     withheld: options.withheld ?? [],
     windowReachesTail: options.windowReachesTail ?? true,
@@ -630,6 +635,7 @@ describe('a window short of the thread tail', () => {
   // settled run and record a hold nobody watched.
   it('stamps neither tail nor live, and records no hold', () => {
     const id = createThreadActivityRuns({
+      activityRunRule: () => AGENT_MESSAGE_MEMBERS_RULE,
       defaultCollapsed: () => true,
       windowRows: () => 30,
       windowVerified: () => true,
@@ -827,6 +833,7 @@ describe('identity migration', () => {
     // would look settled: the working one would close on the spot and nothing
     // would ever fold.
     const id = createThreadActivityRuns({
+      activityRunRule: () => AGENT_MESSAGE_MEMBERS_RULE,
       defaultCollapsed: () => true,
       windowRows: () => 30,
       windowVerified: () => true,
@@ -855,6 +862,7 @@ describe('identity migration', () => {
     // in front of the reader who watched it stream. The hold is keyed on
     // tail-ness instead: the newest revealed run shows its work.
     const id = createThreadActivityRuns({
+      activityRunRule: () => AGENT_MESSAGE_MEMBERS_RULE,
       defaultCollapsed: () => true,
       windowRows: () => 30,
       windowVerified: () => true,

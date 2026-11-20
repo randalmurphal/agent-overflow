@@ -337,8 +337,9 @@ export class ActivityRunMembersRequest {
 
     /**
      * Shape applies as it does to a page: InlinePreviews projects the
-     * rows, MaxBytes bounds them. RunWindowRows has no meaning here — the
-     * caller names the count it wants with Limit.
+     * rows, MaxBytes bounds them, AgentMessageMembers names the rule the
+     * run is found by. RunWindowRows has no meaning here — the caller
+     * names the count it wants with Limit.
      */
     "shape": PageShape;
 
@@ -5267,7 +5268,7 @@ export class PRUpdateSubscriptionResult {
  * 
  * It rides `ListThreadSliceAround`, `ListItemsBeforeCursor`,
  * `ListItemsAfterCursor` and `ListActivityRunMembers` as a parameter, and
- * `SyncThreadWindow` as three fields of its flat JSON request body.
+ * `SyncThreadWindow` as fields of its flat JSON request body.
  */
 export class PageShape {
     /**
@@ -5292,6 +5293,16 @@ export class PageShape {
      * to it.
      */
     "maxBytes"?: number;
+
+    /**
+     * AgentMessageMembers asks for agent messages grouped as activity-run
+     * members on sight (store.AgentMessagesAreMembers). A client sets it
+     * exactly when this backend advertised
+     * transport.CapabilityAgentMessageRunMembers; a request without it,
+     * which is every older client's, is grouped by
+     * store.AgentMessagesAbsorbed, the rule that client applies.
+     */
+    "agentMessageMembers"?: boolean;
 
     /** Creates a new PageShape instance. */
     constructor($$source: Partial<PageShape> = {}) {
@@ -8117,6 +8128,12 @@ export class SyncThreadWindowRequest {
     "maxBytes"?: number;
 
     /**
+     * AgentMessageMembers is PageShape.AgentMessageMembers: the run
+     * membership rule the page is grouped by.
+     */
+    "agentMessageMembers"?: boolean;
+
+    /**
      * HaveWindow describes the ROWS the caller already holds, and is nil
      * when it holds none. It is the answer to the case the stamps cannot
      * serve: a turn on the open thread moves the thread's rev, so the
@@ -8153,13 +8170,13 @@ export class SyncThreadWindowRequest {
      */
     static createFrom($$source: any = {}): SyncThreadWindowRequest {
         const $$createField0_0 = $$createType9;
-        const $$createField8_0 = $$createType142;
+        const $$createField9_0 = $$createType142;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("selection" in $$parsedSource) {
             $$parsedSource["selection"] = $$createField0_0($$parsedSource["selection"]);
         }
         if ("haveWindow" in $$parsedSource) {
-            $$parsedSource["haveWindow"] = $$createField8_0($$parsedSource["haveWindow"]);
+            $$parsedSource["haveWindow"] = $$createField9_0($$parsedSource["haveWindow"]);
         }
         return new SyncThreadWindowRequest($$parsedSource as Partial<SyncThreadWindowRequest>);
     }
@@ -10285,6 +10302,16 @@ export class TimelinePageOptions {
      * to it.
      */
     "maxBytes"?: number;
+
+    /**
+     * AgentMessageMembers asks for agent messages grouped as activity-run
+     * members on sight (store.AgentMessagesAreMembers). A client sets it
+     * exactly when this backend advertised
+     * transport.CapabilityAgentMessageRunMembers; a request without it,
+     * which is every older client's, is grouped by
+     * store.AgentMessagesAbsorbed, the rule that client applies.
+     */
+    "agentMessageMembers"?: boolean;
     "selection"?: store$0.TimelineSelection;
 
     /** Creates a new TimelinePageOptions instance. */
@@ -10297,10 +10324,10 @@ export class TimelinePageOptions {
      * Creates a new TimelinePageOptions instance from a string or object.
      */
     static createFrom($$source: any = {}): TimelinePageOptions {
-        const $$createField3_0 = $$createType9;
+        const $$createField4_0 = $$createType9;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("selection" in $$parsedSource) {
-            $$parsedSource["selection"] = $$createField3_0($$parsedSource["selection"]);
+            $$parsedSource["selection"] = $$createField4_0($$parsedSource["selection"]);
         }
         return new TimelinePageOptions($$parsedSource as Partial<TimelinePageOptions>);
     }

@@ -551,6 +551,7 @@ export function createThreadSwitchLoad(
       hasMoreOlder: options.timelineWindow.hasMoreHistory,
       hasMoreNewer: options.timelineWindow.hasMoreNewer,
       runs,
+      activityRunRule: options.activityRuns.activityRunRule(),
       latestSettledTurn: options.getLatestSettledTurn(),
     });
   }
@@ -652,6 +653,7 @@ export function createThreadSwitchLoad(
         // stubs are the only account of the rest
         // (docs/architecture/timeline-window-pages.md §6).
         runs: runStubs,
+        activityRunRule: options.activityRuns.activityRunRule(),
         // Paired, not looked up on the next open: the stamp is only
         // usable as `haveEpoch`/`haveRev` for the rows it described when
         // it was read. See ThreadItemSnapshot#historyStamp.
@@ -808,7 +810,10 @@ export function createThreadSwitchLoad(
     cached: ThreadItemSnapshot | null;
     sliceAnchorId: string;
   } {
-    const cached = threadItemCache.get(newThread.id);
+    // A window cached under the other membership rule is a miss: its stubs
+    // describe runs the thread's backend no longer groups.
+    const snapshot = threadItemCache.get(newThread.id);
+    const cached = snapshot?.activityRunRule === options.activityRuns.activityRunRule() ? snapshot : null;
     const scrollSnapshot = getThreadScrollSnapshot(newThread.id);
     const sliceAnchorId =
       scrollSnapshot?.kind === 'anchor' ? scrollSnapshot.itemId : '';
@@ -1096,7 +1101,8 @@ export function createThreadSwitchLoad(
       if (!cached) {
         const body = await getReplicaWindow(threadId);
         if (gen !== options.getSwitchGeneration()) return;
-        if (body && options.getItems().length === 0 && !liveTouchedDuringSync?.size && !liveRemovedDuringSync?.size) {
+        if (body && body.activityRunRule === options.activityRuns.activityRunRule()
+          && options.getItems().length === 0 && !liveTouchedDuringSync?.size && !liveRemovedDuringSync?.size) {
           installReplicaWindow(body, threadId);
           paintSource = 'replica';
           haveStamp = { epoch: body.epoch, rev: body.rev, attested: true };

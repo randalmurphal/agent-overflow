@@ -133,12 +133,12 @@ func TestPointerForkOfALongThreadIsConstantTime(t *testing.T) {
 
 	ctx := context.Background()
 	started := time.Now()
-	forkPage, err := s.ListThreadSliceAround(ctx, "fork-0", "", 40, testRunWindowRows, TimelineSelection{})
+	forkPage, err := s.ListThreadSliceAround(ctx, "fork-0", "", 40, testRunWindowRows, TimelineSelection{}, AgentMessagesAreMembers)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Logf("fork first page: %v", time.Since(started))
-	sourcePage, err := s.ListThreadSliceAround(ctx, "source", "", 40, testRunWindowRows, TimelineSelection{})
+	sourcePage, err := s.ListThreadSliceAround(ctx, "source", "", 40, testRunWindowRows, TimelineSelection{}, AgentMessagesAreMembers)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,12 +154,12 @@ func TestPointerForkOfALongThreadIsConstantTime(t *testing.T) {
 
 	agent := TimelineSelection{ScopeRootID: "agent"}
 	started = time.Now()
-	forkScoped, err := s.ListThreadSliceAround(ctx, "fork-0", "", 40, testRunWindowRows, agent)
+	forkScoped, err := s.ListThreadSliceAround(ctx, "fork-0", "", 40, testRunWindowRows, agent, AgentMessagesAreMembers)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Logf("fork agent page: %v", time.Since(started))
-	sourceScoped, err := s.ListThreadSliceAround(ctx, "source", "", 40, testRunWindowRows, agent)
+	sourceScoped, err := s.ListThreadSliceAround(ctx, "source", "", 40, testRunWindowRows, agent, AgentMessagesAreMembers)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +221,7 @@ func TestPointerForkChainDepthIsCapped(t *testing.T) {
 		t.Fatalf("depth=%d err=%v", depth, err)
 	}
 	requireIDs(t, "deepest fork rows", itemIDs(forkRows(t, s, deepest)), []string{"u0", "a0"})
-	page, err := s.ListThreadSliceAround(context.Background(), deepest, "", 100, testRunWindowRows, TimelineSelection{})
+	page, err := s.ListThreadSliceAround(context.Background(), deepest, "", 100, testRunWindowRows, TimelineSelection{}, AgentMessagesAreMembers)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -246,7 +246,7 @@ func TestColdWindowWireBudget_ProjectionIsWhatMakesIt(t *testing.T) {
 	}
 	// The same page from the store, so the difference measured is the
 	// projection alone and not the run window the shape already applied.
-	unprojected, err := app.store.ListThreadSliceAround(context.Background(), thread.ID, "", 200, wireRunWindowRows, store.TimelineSelection{})
+	unprojected, err := app.store.ListThreadSliceAround(context.Background(), thread.ID, "", 200, wireRunWindowRows, store.TimelineSelection{}, store.AgentMessagesAreMembers)
 	if err != nil {
 		t.Fatalf("store.ListThreadSliceAround: %v", err)
 	}

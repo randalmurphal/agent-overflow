@@ -14,6 +14,13 @@ import { threadBackend } from '../transport/entityIndex';
 // pushed rows into held runs costs one round trip per run rather than one
 // per row, and a busy stream still lands on the scheduler's absolute
 // deadline instead of starving.
+//
+// A refusal is answered with one window reload. When the reload leaves the
+// same run holding the same span, still dirty, and the server refuses that
+// span again, a second reload would read the same page: the pane and the
+// server group those rows differently, and no reload can change that. The
+// disagreement is then reported and the run's stub is not refreshed again
+// until its span changes (`unreconciled`).
 
 import type { TimelineSelection } from '../../../bindings/agent-overflow/internal/store/models';
 import type { Item } from '../types/models';
@@ -111,6 +118,11 @@ export interface ActivityRunMemberFetch {
   dispose(): void;
 }
 
+/** The run and span a members call describes, which is what a refusal refuses. */
+function spanKey(record: Pick<ActivityRunRecord, 'runFirstItemId' | 'loadedFirstItemId' | 'loadedLastItemId'>): string {
+  return `${record.runFirstItemId}\u0000${record.loadedFirstItemId}\u0000${record.loadedLastItemId}`;
+}
+
 function completionSignal() {
   let finish!: () => void;
   const done = new Promise<void>(resolve => { finish = resolve; });
@@ -127,6 +139,14 @@ export function createActivityRunMemberFetch(
   let disposed = false;
   let recovery: Promise<void> | null = null;
   let refreshAfterRecovery = false;
+  // Spans the current recovery reloads for.
+  let recovering = new Set<string>();
+  // Spans a reload left dirty: the next refusal of one is answered by
+  // nothing a reload can read, so it settles instead of reloading again.
+  const reloaded = new Set<string>();
+  // Spans that settled that way. Their stub is not refreshed in the
+  // background; a span that moves is a new question.
+  const unreconciled = new Set<string>();
 
   const scheduler: RefreshScheduler = createRefreshScheduler({
     name: 'activityRunStubRefresh',
@@ -135,12 +155,20 @@ export function createActivityRunMemberFetch(
     run: async () => {
       if (recovery) { refreshAfterRecovery = true; return; }
       await Promise.all([...options.records().values()]
-        .filter(record => record.dirty)
+        .filter(record => record.dirty && !unreconciled.has(spanKey(record)))
         .map(record => call(record, { direction: 'before', limit: 0 }, true)));
     },
   });
 
-  async function recover(err: unknown): Promise<void> {
+  async function recover(err: unknown, span: string): Promise<void> {
+    if (reloaded.delete(span)) {
+      // A reload already answered this span and the server refuses it
+      // again: report it once, and refresh it no more.
+      unreconciled.add(span);
+      options.reportFailure('Activity history could not be reconciled with this computer', err, false);
+      return;
+    }
+    recovering.add(span);
     if (recovery) return recovery;
     // A stale refusal is a reconciliation signal. Only a failed recovery
     // needs a toast; every other refusal in this cycle joins this refresh.
@@ -162,6 +190,16 @@ export function createActivityRunMemberFetch(
       .finally(() => {
         if (recovery !== pending) return;
         recovery = null;
+        const spans = recovering;
+        recovering = new Set();
+        if (succeeded && !disposed && generation === gen) {
+          // A span the reload left clean was answered by it; one still
+          // dirty asks the same question of the server again.
+          for (const record of options.records().values()) {
+            const key = spanKey(record);
+            if (record.dirty && spans.has(key)) reloaded.add(key);
+          }
+        }
         const requested = refreshAfterRecovery;
         refreshAfterRecovery = false;
         if (succeeded && requested && !disposed && generation === gen) scheduler.request();
@@ -208,6 +246,7 @@ export function createActivityRunMemberFetch(
     const cutVersion = record.cutVersion;
     const loadedFirstItemId = record.loadedFirstItemId;
     const loadedLastItemId = record.loadedLastItemId;
+    const span = spanKey(record);
     const sameRequestedEdge = () =>
       (request.direction === 'after' || record.loadedFirstItemId === loadedFirstItemId)
       && (request.direction === 'before' || record.loadedLastItemId === loadedLastItemId);
@@ -230,6 +269,8 @@ export function createActivityRunMemberFetch(
         shape: options.shape(),
       });
       if (!current() || recovery) return [];
+      reloaded.delete(span);
+      unreconciled.delete(span);
       const rows = (answer.items ?? []) as Item[];
       if (rows.length > 0) options.mountMembers(record, rows, request.direction === 'around');
       // Reconcile against the actual loaded span. Folding the answer
@@ -249,13 +290,13 @@ export function createActivityRunMemberFetch(
       if (refusedPastRun) {
         // A row refused as this run's member belongs after the run, where
         // the window holds nothing for it: the window reload restores it.
-        await recover(new Error(`activity run ${runKey} ends before a row refused as its member`));
+        await recover(new Error(`activity run ${runKey} ends before a row refused as its member`), span);
         return [];
       }
       return held;
     } catch (err) {
       if (!current()) return [];
-      if (isStaleActivityRunError(err)) await recover(err);
+      if (isStaleActivityRunError(err)) await recover(err, span);
       else options.reportFailure('Failed to load activity', err, silent);
       return [];
     } finally {
@@ -282,6 +323,9 @@ export function createActivityRunMemberFetch(
       waiting.clear();
       recovery = null;
       refreshAfterRecovery = false;
+      recovering = new Set();
+      reloaded.clear();
+      unreconciled.clear();
       scheduler.reset();
       inFlight.clear();
       refreshAfterFlight.clear();
@@ -293,6 +337,9 @@ export function createActivityRunMemberFetch(
       waiting.clear();
       recovery = null;
       refreshAfterRecovery = false;
+      recovering = new Set();
+      reloaded.clear();
+      unreconciled.clear();
       scheduler.dispose();
       inFlight.clear();
       refreshAfterFlight.clear();

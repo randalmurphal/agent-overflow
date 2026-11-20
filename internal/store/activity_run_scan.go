@@ -74,7 +74,8 @@ type activityScanRow struct {
 	// from the three file-change sources.
 	DisplayRows int
 	// AgentMessage is true for a user_text row an agent wrote rather than
-	// the person (agentMessageRowExpr), which is a run member on sight.
+	// the person (agentMessageRowExpr), which groups by the read's
+	// ActivityRunRule.
 	AgentMessage bool
 }
 
@@ -271,13 +272,15 @@ func clampDisplayRows(count int64) int {
 // as far as its units reach.
 //
 // It buffers unconsumed rows and supports lookahead, which the older-side
-// classification needs: a notification's membership depends on the row
-// BEFORE it, so walking older means holding a chain of undecided bells
-// until a rail row decides them or a prose row refuses them.
+// classification needs: an absorbed row's membership depends on the row
+// BEFORE it, so walking older means holding a chain of undecided absorbed
+// rows until a member decides them or a prose row refuses them.
 type activityScanWalk struct {
 	q        sqlQueryer
 	threadID string
 	scope    timelineScope
+	// rule is the membership rule every unit read from this walk applies.
+	rule ActivityRunRule
 	// newer picks the direction: true walks (turn_index, item_index)
 	// ascending, false descending.
 	newer bool
@@ -294,8 +297,8 @@ type activityScanWalk struct {
 // newActivityScanWalk starts a walk strictly outside `from`. `from` may
 // name a row that no longer exists or was never visible: only its
 // coordinate is used.
-func newActivityScanWalk(q sqlQueryer, threadID string, from TimelineCursor, newer bool, scope timelineScope) *activityScanWalk {
-	return &activityScanWalk{q: q, threadID: threadID, newer: newer, from: from, scope: scope, chunkRows: activityScanChunkRows}
+func newActivityScanWalk(q sqlQueryer, threadID string, from TimelineCursor, newer bool, scope timelineScope, rule ActivityRunRule) *activityScanWalk {
+	return &activityScanWalk{q: q, threadID: threadID, newer: newer, from: from, scope: scope, rule: rule, chunkRows: activityScanChunkRows}
 }
 
 // peekAt returns the k-th unconsumed row in walk order without consuming

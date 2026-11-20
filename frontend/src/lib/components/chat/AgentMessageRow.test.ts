@@ -4,11 +4,12 @@ import { tick } from 'svelte';
 import fixture from '../../../../../internal/threadtools/testdata/agent_messages.json';
 import servedRows from '../../../../../internal/agentmeta/testdata/served_rows.json';
 import labels from '../../../../../internal/app/testdata/agent_message_labels.json';
-import { buildPane, makeItem, makeThread } from '../../../test/helpers/chat';
+import { buildPane, installAgentMessageRunMembersCapability, makeItem, makeThread } from '../../../test/helpers/chat';
 import { resetBindingMocks } from '../../../test/mocks/bindings-app';
 import { stageBackend, resetStagedBackends } from '../../../test/helpers/backends';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import type { Item } from '../../types/models';
+import { __setTransportHelloForTest } from '../../stores/transportStatus.svelte';
 import TimelineLeaf from './TimelineLeaf.svelte';
 import MessageTimeline from './MessageTimeline.svelte';
 
@@ -424,8 +425,12 @@ describe('<AgentMessageRow> inside an activity run', () => {
     resetBindingMocks();
     openThreadInPane.mockClear();
     stageBackend({ id: HOME_BACKEND, name: 'This computer', backendId: 'home-uuid' });
+    installAgentMessageRunMembersCapability();
   });
-  afterEach(() => resetStagedBackends());
+  afterEach(() => {
+    resetStagedBackends();
+    __setTransportHelloForTest(null);
+  });
 
   /** The person asks, a tool runs, the worker's reply opens the next turn, the work goes on. */
   function workAroundReply(): Item[] {

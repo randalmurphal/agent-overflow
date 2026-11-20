@@ -1,6 +1,7 @@
 package store
 
 import (
+	"fmt"
 	"sort"
 )
 
@@ -43,15 +44,54 @@ const (
 	toolCompletionKind = "tool_completion"
 )
 
+// ActivityRunRule is how a classifying read groups agent messages into
+// runs. Every read that classifies takes it from its caller, because the
+// client that asks groups the rows it receives by its own rule and the two
+// must agree (docs/architecture/timeline-window-pages.md §1). The zero
+// value is no rule: a read refuses it.
+type ActivityRunRule uint8
+
+const (
+	// AgentMessagesAreMembers makes an agent message a run member on
+	// sight, wherever it lands: alone it is a run of one, and a member on
+	// either side shares its run.
+	AgentMessagesAreMembers ActivityRunRule = iota + 1
+	// AgentMessagesAbsorbed is the v0.0.19 rule: an agent message joins a
+	// run only when a member immediately precedes it, as a notification
+	// does, and stands alone otherwise. It exists for clients that do not
+	// ask for AgentMessagesAreMembers, which predate the
+	// activity-runs.agent-message-members.v1 capability.
+	AgentMessagesAbsorbed
+)
+
+// ActivityRunRuleFor is the rule a request names: AgentMessagesAreMembers
+// when it asks for it, AgentMessagesAbsorbed when it does not, which is
+// what an older client's request means.
+func ActivityRunRuleFor(agentMessageMembers bool) ActivityRunRule {
+	if agentMessageMembers {
+		return AgentMessagesAreMembers
+	}
+	return AgentMessagesAbsorbed
+}
+
+func (rule ActivityRunRule) validate() error {
+	switch rule {
+	case AgentMessagesAreMembers, AgentMessagesAbsorbed:
+		return nil
+	default:
+		return fmt.Errorf("store: activity run rule %d is not a rule", rule)
+	}
+}
+
 // isMember reports a row that is a run member on sight, wherever it lands:
-// a rail row, or an agent message (AgentMessage, a message the app wrote
-// into the thread for an agent). An agent message is the thread tools'
-// traffic, so it groups exactly as a tool row does; the person's own
-// messages end a run. The client's twin is isActivityRunMemberRow
-// (frontend/src/lib/utils/activityRunSpans.ts).
-func (r activityScanRow) isMember() bool {
+// a rail row, or under AgentMessagesAreMembers an agent message
+// (AgentMessage, a message the app wrote into the thread for an agent). An
+// agent message is the thread tools' traffic, so it groups exactly as a
+// tool row does; the person's own messages end a run. The client's twin is
+// isActivityRunMemberRow (frontend/src/lib/utils/activityRunSpans.ts).
+func (r activityScanRow) isMember(rule ActivityRunRule) bool {
 	if r.AgentMessage {
-		return true
+		return rule == AgentMessagesAreMembers
 	}
 	if _, ok := railRowKinds[r.Kind]; !ok {
 		return false
@@ -59,16 +99,17 @@ func (r activityScanRow) isMember() bool {
 	return r.PayloadKind != railExemptPayloadKind
 }
 
-// isAbsorbed reports a notification, which an activity run absorbs when a
-// member immediately precedes it and which stands alone otherwise. The
+// isAbsorbed reports a row an activity run absorbs when a member
+// immediately precedes it, and that stands alone otherwise: a
+// notification, and under AgentMessagesAbsorbed an agent message. The
 // client's twin is isActivityRunAbsorbedRow.
 //
 // The abandoned-blocks record (discarded_rows.go) is a notification: it
 // lands right after the rows it names, so it joins the run of discarded
 // thinking or tool rows and stands alone after discarded prose, which has
 // already ended the run.
-func (r activityScanRow) isAbsorbed() bool {
-	return r.Kind == notificationKind
+func (r activityScanRow) isAbsorbed(rule ActivityRunRule) bool {
+	return r.Kind == notificationKind || (r.AgentMessage && rule == AgentMessagesAbsorbed)
 }
 
 // isFailedStatus and isRunningStatus are §4's status rules.
@@ -132,8 +173,9 @@ type ActivityRunStub struct {
 	// FirstItemID and LastItemID are the run's physical edges. A run is
 	// identified by FirstItemID. Runs grow at their newer end; the one
 	// row that can join ahead of the first member is an agent message
-	// placed at the head of its turn, after which a call naming the old
-	// first member is refused as stale (ErrActivityRunStale).
+	// placed at the head of its turn under AgentMessagesAreMembers, after
+	// which a call naming the old first member is refused as stale
+	// (ErrActivityRunStale).
 	FirstItemID string `json:"firstItemId"`
 	LastItemID  string `json:"lastItemId"`
 	// FirstTurnIndex/FirstItemIndex and LastTurnIndex/LastItemIndex are

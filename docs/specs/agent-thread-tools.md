@@ -1760,7 +1760,9 @@ agent message beside it shares that run, and alone it is a run of one
 whose collapsed header shows the row's kind, sender and first line. The
 run's header counts it as an agent message; the person's messages and
 assistant prose end a run
-([activity runs](../architecture/activity-runs.md#shape)). It
+([activity runs](../architecture/activity-runs.md#shape)). A thread on a
+computer from before this rule keeps that computer's grouping, where the
+row joins only a run it follows. It
 renders from the row's facts, never from its text. Every read and push
 of the row (`itemwire.Project`, a meta patch) serves its meta as
 `agentmeta.Describe` reads it, the one reading the Edits selector and

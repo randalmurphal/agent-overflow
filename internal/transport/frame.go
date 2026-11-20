@@ -135,6 +135,13 @@ const CapabilityPRSuggestionsReactions = "pr-suggestions-reactions.v1"
 // client reading a backend without it offers no tags.
 const CapabilityGitTags = "git-tags.v1"
 
+// CapabilityAgentMessageRunMembers names agent messages as activity-run
+// members on sight: a page, members or sync request whose shape sets
+// agentMessageMembers groups them so, and one that does not groups them
+// by the v0.0.19 absorbed rule. A client reading a backend without it
+// groups agent messages by the absorbed rule and does not set the field.
+const CapabilityAgentMessageRunMembers = "activity-runs.agent-message-members.v1"
+
 var serverCapabilities = []string{
 	CapabilityRemoteNotifications,
 	CapabilityPasskeys,
@@ -157,6 +164,7 @@ var serverCapabilities = []string{
 	CapabilityPRCommentActions,
 	CapabilityPRSuggestionsReactions,
 	CapabilityGitTags,
+	CapabilityAgentMessageRunMembers,
 }
 
 // serverCapabilitiesWithBrowser is that list plus the one flag whose

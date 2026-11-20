@@ -28,26 +28,50 @@ export function isActivityRailRow(item: Item): boolean {
 }
 
 /**
- * A row that is a run member on sight, wherever it lands: a rail row, or an
- * agent message (`isAgentMessageItem`: a message the app wrote into the
- * thread for an agent, such as another thread's reply or request, a wake, a
- * reminder, a loop or a watch). An agent message is the thread tools'
- * traffic, so it groups exactly as a tool row does: alone it is a run of
- * one, and a member on either side shares its run. It does not sit on the
- * rail (`timelineRail.ts`). The person's own messages end a run. The
- * store's twin is `activityScanRow.isMember`.
+ * How agent messages group into activity runs. It is the rule of the
+ * backend that owns the thread's history, because that backend's stubs and
+ * members answers describe runs by it (`threadActivityRunRule`); the
+ * store's twin is `store.ActivityRunRule`.
  */
-export function isActivityRunMemberRow(item: Item): boolean {
-  return isActivityRailRow(item) || isAgentMessageItem(item);
+export type ActivityRunRule = typeof AGENT_MESSAGE_MEMBERS_RULE | typeof AGENT_MESSAGES_ABSORBED_RULE;
+
+/**
+ * An agent message is a run member on sight, wherever it lands: alone it
+ * is a run of one, and a member on either side shares its run.
+ */
+export const AGENT_MESSAGE_MEMBERS_RULE = 'agent-message-members' as const;
+
+/**
+ * The v0.0.19 rule: an agent message joins a run only when a member sits
+ * right before it, as a notification does, and stands alone otherwise. It
+ * exists for backends without the `activity-runs.agent-message-members.v1`
+ * capability, which classify their history this way.
+ */
+export const AGENT_MESSAGES_ABSORBED_RULE = 'agent-messages-absorbed' as const;
+
+/**
+ * A row that is a run member on sight, wherever it lands: a rail row, or
+ * under `AGENT_MESSAGE_MEMBERS_RULE` an agent message
+ * (`isAgentMessageItem`: a message the app wrote into the thread for an
+ * agent, such as another thread's reply or request, a wake, a reminder, a
+ * loop or a watch). An agent message is the thread tools' traffic, so it
+ * groups exactly as a tool row does. It does not sit on the rail
+ * (`timelineRail.ts`). The person's own messages end a run. The store's
+ * twin is `activityScanRow.isMember`.
+ */
+export function isActivityRunMemberRow(item: Item, rule: ActivityRunRule): boolean {
+  return isActivityRailRow(item) || (rule === AGENT_MESSAGE_MEMBERS_RULE && isAgentMessageItem(item));
 }
 
 /**
- * A row an open run absorbs: a `notification` bell joins the run when a
- * member sits right before it, and stands alone otherwise. The store's twin
- * is `activityScanRow.isAbsorbed`.
+ * A row an open run absorbs: it joins the run when a member sits right
+ * before it, and stands alone otherwise. A `notification` bell, and under
+ * `AGENT_MESSAGES_ABSORBED_RULE` an agent message. The store's twin is
+ * `activityScanRow.isAbsorbed`.
  */
-export function isActivityRunAbsorbedRow(item: Item): boolean {
-  return item.kind === 'notification';
+export function isActivityRunAbsorbedRow(item: Item, rule: ActivityRunRule): boolean {
+  return item.kind === 'notification'
+    || (rule === AGENT_MESSAGES_ABSORBED_RULE && isAgentMessageItem(item));
 }
 
 /**
@@ -67,9 +91,9 @@ export interface ActivityRunSpan {
  *
  * A run is a maximal consecutive stretch of members
  * (`isActivityRunMemberRow`), plus absorbed rows (`isActivityRunAbsorbedRow`)
- * with a run member immediately before them. `knownMember` admits an
- * absorbed row a history page says is a member though the row before it is
- * not loaded. Anything else
+ * with a run member immediately before them, both under `rule`.
+ * `knownMember` admits an absorbed row a history page says is a member
+ * though the row before it is not loaded. Anything else
  * ends the run. Rows a history page would not return (subagent children,
  * `plan_update` notifications) are skipped without breaking a run: they
  * are not part of any page's range, so they cannot split one.
@@ -79,6 +103,7 @@ export interface ActivityRunSpan {
  */
 export function groupActivityRunSpans(
   items: readonly Item[],
+  rule: ActivityRunRule,
   knownMember: (item: Item) => boolean = () => false,
   includes: (item: Item) => boolean = isWindowedTimelineRow,
 ): ActivityRunSpan[] {
@@ -86,7 +111,7 @@ export function groupActivityRunSpans(
   let open: ActivityRunSpan | null = null;
   for (const item of items) {
     if (!includes(item)) continue;
-    if (isActivityRunMemberRow(item) || (knownMember(item) && isActivityRunAbsorbedRow(item))) {
+    if (isActivityRunMemberRow(item, rule) || (knownMember(item) && isActivityRunAbsorbedRow(item, rule))) {
       if (open === null) {
         open = { firstItemId: item.id, lastItemId: item.id, items: [item] };
         spans.push(open);
@@ -96,7 +121,7 @@ export function groupActivityRunSpans(
       }
       continue;
     }
-    if (open !== null && isActivityRunAbsorbedRow(item)) {
+    if (open !== null && isActivityRunAbsorbedRow(item, rule)) {
       open.items.push(item);
       open.lastItemId = item.id;
       continue;

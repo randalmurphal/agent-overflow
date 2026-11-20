@@ -164,12 +164,16 @@ export function createTimelineRowProjection(
     // tail's open hold would wait for an unrelated structural change.
     const windowReachesTail = !pane.hasMoreNewer;
     void pane.loading;
+    // The thread's membership rule follows its backend's hello, which a
+    // reconnect to an upgraded backend changes with no structural change.
+    const rule = pane.activityRuns.activityRunRule();
     return untrack(() => {
       const runs = groupActivityRuns(nodes, {
         identity: pane.activityRuns,
         getItem: (id) => pane.getItemById(id),
         withheld,
         windowReachesTail,
+        rule,
       });
       // Last thing before Svelte sees the projection. Every keyed block
       // downstream (the virtualizer's root list, a run's `{#each}`, a

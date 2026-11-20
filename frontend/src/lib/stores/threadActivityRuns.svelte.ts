@@ -43,6 +43,7 @@ import {
   groupActivityRunSpans,
   isActivityRunAbsorbedRow,
   isActivityRunMemberRow,
+  type ActivityRunRule,
   type ActivityRunSpan,
 } from '../utils/activityRunSpans';
 import {
@@ -93,12 +94,12 @@ function firstIndexAfter(rows: readonly Item[], cursor: RunCoordinate): number {
 }
 
 /**
- * Whether a windowed row continues a run it follows: a member
- * (`isActivityRunMemberRow`), or a bell the run absorbs
+ * Whether a windowed row continues a run it follows under `rule`: a member
+ * (`isActivityRunMemberRow`), or a row the run absorbs
  * (`isActivityRunAbsorbedRow`). Any other row ends it.
  */
-function continuesRun(item: Item): boolean {
-  return isActivityRunMemberRow(item) || isActivityRunAbsorbedRow(item);
+function continuesRun(item: Item, rule: ActivityRunRule): boolean {
+  return isActivityRunMemberRow(item, rule) || isActivityRunAbsorbedRow(item, rule);
 }
 
 /** Where a record's run starts: its stub's first member. */
@@ -150,7 +151,7 @@ function coversUnshipped(
  * gained since, while the stub counts members after the pane's span. The
  * pane holds none of the members between that span and the row, so
  * admitting it would place it next to members it does not follow. A run
- * grows through its members and the bells it absorbs (`continuesRun`), and
+ * grows through its members and the rows it absorbs (`continuesRun`), and
  * any other row ends it, so the row is a member unless a row that ends the run lies
  * between the edge and it: in `held`, the window in timeline order, or
  * anywhere in `batch`, rows the window has not admitted yet.
@@ -161,15 +162,16 @@ function continuesUnshippedEnd(
   held: readonly Item[],
   batch: readonly Item[],
   selection: TimelineSelection | undefined,
+  rule: ActivityRunRule,
 ): boolean {
-  if (stub.unshippedAfter === 0 || !continuesRun(item)) return false;
+  if (stub.unshippedAfter === 0 || !continuesRun(item, rule)) return false;
   const edge = { turnIndex: stub.lastTurnIndex, itemIndex: stub.lastItemIndex };
   if (compareCoordinates(item, edge) <= 0) return false;
   const endsRunBefore = (row: Item) => row.threadId === item.threadId
     && compareCoordinates(row, edge) > 0
     && compareCoordinates(row, item) < 0
     && isWindowedTimelineRow(row, selection)
-    && !continuesRun(row);
+    && !continuesRun(row, rule);
   if (batch.some(endsRunBefore)) return false;
   for (let index = firstIndexAfter(held, edge); index < held.length; index += 1) {
     if (compareCoordinates(held[index], item) >= 0) break;
@@ -219,6 +221,13 @@ export interface ThreadActivityRunsOptions {
   windowBounds(): RunWindowBounds;
   /** The pane's thread, or null while it holds none. */
   threadId(): string | null;
+  /**
+   * How the thread's agent messages group (`threadActivityRunRule`): the
+   * rule of the backend that owns it, whose stubs and members answers
+   * describe runs by it. Read per call, so a hello that changes it applies
+   * to the next span sync.
+   */
+  activityRunRule(): ActivityRunRule;
   selection?(): TimelineSelection;
   /** The pane's page shape (`timelinePageShape()`), for member fetches. */
   pageShape(): PageShape;
@@ -252,6 +261,8 @@ export interface ThreadActivityRunsOptions {
 
 export interface ThreadActivityRuns extends ActivityRunIdentity {
   readonly windowRevision: number;
+  /** The rule this registry groups runs by (`ThreadActivityRunsOptions.activityRunRule`). */
+  activityRunRule(): ActivityRunRule;
   loadedItems(items: readonly Item[]): readonly Item[];
 
   /**
@@ -834,6 +845,10 @@ export function createThreadActivityRuns(
   // span has already moved.
   const runKeyByMemberId = new Map<string, string>();
   const recordBounds = new Map<string, RunBounds>();
+  // The rule the records' stubs were read under. A stub of one rule names
+  // runs the other does not have, so a rule change drops every record and
+  // the next page's stubs rebuild them.
+  let recordsRule: ActivityRunRule | null = null;
 
   const memberFetch: ActivityRunMemberFetch = createActivityRunMemberFetch({
     selection: options.selection,
@@ -869,7 +884,7 @@ export function createThreadActivityRuns(
     const includes = (item: Item) => isWindowedTimelineRow(item, selection);
     const windowed = activityRunLoadedItems(items, bounds, lookup, runKeyByMemberId, includes).filter(includes);
     const spansById = new Map<string, ActivityRunSpan>();
-    for (const span of groupActivityRunSpans(windowed, item => lookup.find(item) !== undefined, includes)) {
+    for (const span of groupActivityRunSpans(windowed, options.activityRunRule(), item => lookup.find(item) !== undefined, includes)) {
       for (const item of span.items) spansById.set(item.id, span);
     }
     return { windowed, spansById };
@@ -926,6 +941,15 @@ export function createThreadActivityRuns(
     stubs?: readonly ActivityRunStub[],
     bounds = options.windowBounds(),
   ): ReadonlyMap<string, ActivityRunSpan> {
+    const rule = options.activityRunRule();
+    if (recordsRule !== rule) {
+      recordsRule = rule;
+      if (records.size > 0) {
+        records.clear();
+        recordBounds.clear();
+        memberFetch.reset();
+      }
+    }
     if (!stubs?.length && records.size === 0) {
       // No record to re-point and no stub to fold; the indexes derived
       // from records only need emptying.
@@ -1134,7 +1158,7 @@ export function createThreadActivityRuns(
       const bounds = recordBounds.get(key);
       if (!bounds) continue;
       if (coversUnshipped(record.stub, record.shed.length, bounds, item)
-        || continuesUnshippedEnd(record.stub, item, held, batch, selection)) return key;
+        || continuesUnshippedEnd(record.stub, item, held, batch, selection, options.activityRunRule())) return key;
     }
     return null;
   }
@@ -1172,9 +1196,10 @@ export function createThreadActivityRuns(
       if (first && last) runs.push({ key: stub.firstItemId, stub, bounds: { first, last } });
     }
     const refusals: RunRefusal[] = [];
+    const rule = options.activityRunRule();
     for (const item of carried) {
       const run = runs.find(({ stub, bounds }) => coversUnshipped(stub, 0, bounds, item)
-        || continuesUnshippedEnd(stub, item, rows, NO_ITEMS, selection));
+        || continuesUnshippedEnd(stub, item, rows, NO_ITEMS, selection, rule));
       if (run) refusals.push({ runKey: run.key, item });
     }
     if (refusals.length === 0) return { items: rows, refusals: NO_REFUSALS };
@@ -1569,11 +1594,12 @@ export function createThreadActivityRuns(
 
   function noteLiveAppend(items: readonly Item[], previousTail: Item | undefined): void {
     if (!options.windowVerified()) return;
+    const rule = options.activityRunRule();
     let changed = false;
     for (const item of items) {
       if (item.threadId !== options.threadId()
         || (previousTail && compareItemsByTimelinePosition(item, previousTail) <= 0)
-        || !isActivityRunMemberRow(item)) continue;
+        || !isActivityRunMemberRow(item, rule)) continue;
       pendingLiveMembers.add(item.id);
       changed = true;
     }
@@ -1857,6 +1883,7 @@ export function createThreadActivityRuns(
       return record ? stubFacts(record) : null;
     },
     isLoadedMember: (itemId) => runKeyByMemberId.has(itemId),
+    activityRunRule: () => options.activityRunRule(),
     syncRunSpans,
     applyWindowCut,
     heldRunFold: () => heldRunsFold(records),
@@ -1879,6 +1906,9 @@ export function createThreadActivityRuns(
       memberFetch.scheduleRefresh();
     },
     snapshotStubs: () => {
+      // Stubs read under a rule the thread no longer groups by describe
+      // nothing a snapshot tagged with the current rule may claim.
+      if (records.size > 0 && recordsRule !== options.activityRunRule()) return null;
       const spansById = projectRunSpans(options.items()).spansById;
       const stubs: ActivityRunStub[] = [];
       for (const record of records.values()) {
@@ -1922,6 +1952,7 @@ export function createThreadActivityRuns(
       // refresh in flight for a run of the old thread is dropped rather
       // than applied to a window that no longer holds it.
       records.clear();
+      recordsRule = null;
       windowRevision += 1;
       recordBounds.clear();
       runKeyByMemberId.clear();

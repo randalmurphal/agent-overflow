@@ -220,25 +220,28 @@ func pageEdgeCursor(edge Item, runs []ActivityRunStub, oldestSide bool) Timeline
 // The page's newest unit is expanded whole, so its range can reach back
 // across `before` when the row immediately older than the cursor belongs
 // to a run that continues past it. Those rows are counted by the run's
-// stub, never re-shipped.
-func (s *Store) ListItemsBeforeCursor(ctx context.Context, threadID string, before TimelineCursor, itemBudget, runWindowRows int, selection TimelineSelection) (PagedItems, error) {
+// stub, never re-shipped. `rule` is how the caller groups agent messages.
+func (s *Store) ListItemsBeforeCursor(ctx context.Context, threadID string, before TimelineCursor, itemBudget, runWindowRows int, selection TimelineSelection, rule ActivityRunRule) (PagedItems, error) {
+	if err := rule.validate(); err != nil {
+		return PagedItems{}, err
+	}
 	return historyReadSnapshot(ctx, s, "before cursor page", func(q sqlQueryer) (PagedItems, error) {
 		scope, err := s.resolveTimelineScope(q, threadID, selection)
 		if err != nil {
 			return PagedItems{}, err
 		}
-		page, err := s.listItemsBeforeCursor(q, threadID, before, itemBudget, runWindowRows, scope)
+		page, err := s.listItemsBeforeCursor(q, threadID, before, itemBudget, runWindowRows, scope, rule)
 		page.Scope = scope.context
 		return page, err
 	})
 }
 
-func (s *Store) listItemsBeforeCursor(q sqlQueryer, threadID string, before TimelineCursor, itemBudget, runWindowRows int, scope timelineScope) (PagedItems, error) {
+func (s *Store) listItemsBeforeCursor(q sqlQueryer, threadID string, before TimelineCursor, itemBudget, runWindowRows int, scope timelineScope, rule ActivityRunRule) (PagedItems, error) {
 	if itemBudget <= 0 || !cursorIsValid(before) {
 		return emptyPagedItems(), nil
 	}
 	runWindowRows = clampActivityRunWindowRows(runWindowRows)
-	unit, older, found, err := lastOlderUnit(q, threadID, before, scope)
+	unit, older, found, err := lastOlderUnit(q, threadID, before, scope, rule)
 	if err != nil {
 		return PagedItems{}, err
 	}
@@ -257,24 +260,27 @@ func (s *Store) listItemsBeforeCursor(q sqlQueryer, threadID string, before Time
 // `after`, in whole units, until `itemBudget` shipped rows have been
 // selected. It is the forward pager companion to ListItemsBeforeCursor
 // and expands its oldest unit whole for the same reason.
-func (s *Store) ListItemsAfterCursor(ctx context.Context, threadID string, after TimelineCursor, itemBudget, runWindowRows int, selection TimelineSelection) (PagedItems, error) {
+func (s *Store) ListItemsAfterCursor(ctx context.Context, threadID string, after TimelineCursor, itemBudget, runWindowRows int, selection TimelineSelection, rule ActivityRunRule) (PagedItems, error) {
+	if err := rule.validate(); err != nil {
+		return PagedItems{}, err
+	}
 	return historyReadSnapshot(ctx, s, "after cursor page", func(q sqlQueryer) (PagedItems, error) {
 		scope, err := s.resolveTimelineScope(q, threadID, selection)
 		if err != nil {
 			return PagedItems{}, err
 		}
-		page, err := s.listItemsAfterCursor(q, threadID, after, itemBudget, runWindowRows, scope)
+		page, err := s.listItemsAfterCursor(q, threadID, after, itemBudget, runWindowRows, scope, rule)
 		page.Scope = scope.context
 		return page, err
 	})
 }
 
-func (s *Store) listItemsAfterCursor(q sqlQueryer, threadID string, after TimelineCursor, itemBudget, runWindowRows int, scope timelineScope) (PagedItems, error) {
+func (s *Store) listItemsAfterCursor(q sqlQueryer, threadID string, after TimelineCursor, itemBudget, runWindowRows int, scope timelineScope, rule ActivityRunRule) (PagedItems, error) {
 	if itemBudget <= 0 || !cursorIsValid(after) {
 		return emptyPagedItems(), nil
 	}
 	runWindowRows = clampActivityRunWindowRows(runWindowRows)
-	unit, newer, found, err := firstNewerUnit(q, threadID, after, scope)
+	unit, newer, found, err := firstNewerUnit(q, threadID, after, scope, rule)
 	if err != nil {
 		return PagedItems{}, err
 	}
@@ -448,14 +454,18 @@ func hasItemsBeyond(q sqlQueryer, threadID string, cursor TimelineCursor, scope 
 //
 // When `anchorItemID` is "" or the item doesn't belong to `threadID`
 // (bottom-snapshot restore, stale snapshot whose anchor has been
-// deleted), the function returns the tail window.
-func (s *Store) ListThreadSliceAround(ctx context.Context, threadID, anchorItemID string, targetItemCount, runWindowRows int, selection TimelineSelection) (PagedItems, error) {
+// deleted), the function returns the tail window. `rule` is how the caller
+// groups agent messages.
+func (s *Store) ListThreadSliceAround(ctx context.Context, threadID, anchorItemID string, targetItemCount, runWindowRows int, selection TimelineSelection, rule ActivityRunRule) (PagedItems, error) {
+	if err := rule.validate(); err != nil {
+		return PagedItems{}, err
+	}
 	return historyReadSnapshot(ctx, s, "thread slice", func(q sqlQueryer) (PagedItems, error) {
 		scope, err := s.resolveTimelineScope(q, threadID, selection)
 		if err != nil {
 			return PagedItems{}, err
 		}
-		page, err := s.listThreadSliceAround(q, threadID, anchorItemID, targetItemCount, runWindowRows, scope)
+		page, err := s.listThreadSliceAround(q, threadID, anchorItemID, targetItemCount, runWindowRows, scope, rule)
 		page.Scope = scope.context
 		return page, err
 	})
@@ -464,20 +474,20 @@ func (s *Store) ListThreadSliceAround(ctx context.Context, threadID, anchorItemI
 // listThreadSliceAround is ListThreadSliceAround against a caller-chosen
 // queryer, so SyncThreadWindow can run the same window inside the
 // transaction its stamps are read in.
-func (s *Store) listThreadSliceAround(q sqlQueryer, threadID, anchorItemID string, targetItemCount, runWindowRows int, scope timelineScope) (PagedItems, error) {
+func (s *Store) listThreadSliceAround(q sqlQueryer, threadID, anchorItemID string, targetItemCount, runWindowRows int, scope timelineScope, rule ActivityRunRule) (PagedItems, error) {
 	if targetItemCount <= 0 {
 		targetItemCount = 50
 	}
 	runWindowRows = clampActivityRunWindowRows(runWindowRows)
 	if anchorItemID == "" {
-		return s.listTailSlice(q, threadID, targetItemCount, runWindowRows, scope)
+		return s.listTailSlice(q, threadID, targetItemCount, runWindowRows, scope, rule)
 	}
 	anchor, found, err := s.getThreadItem(q, threadID, anchorItemID)
 	if err != nil {
 		return PagedItems{}, fmt.Errorf("store: list thread slice for %s anchor=%s: %w", threadID, anchorItemID, err)
 	}
 	if !found {
-		return s.listTailSlice(q, threadID, targetItemCount, runWindowRows, scope)
+		return s.listTailSlice(q, threadID, targetItemCount, runWindowRows, scope, rule)
 	}
 
 	if scope.selection.ScopeRootID != "" && anchor.ParentID != scope.selection.ScopeRootID {
@@ -493,14 +503,14 @@ func (s *Store) listThreadSliceAround(q sqlQueryer, threadID, anchorItemID strin
 		afterBudget = 1
 	}
 	anchorCursor := cursorFromItem(anchor)
-	unit, older, newer, found, err := unitAtOrBefore(q, threadID, anchorCursor, scope)
+	unit, older, newer, found, err := unitAtOrBefore(q, threadID, anchorCursor, scope, rule)
 	if err != nil {
 		return PagedItems{}, err
 	}
 	if !found {
 		// Nothing visible at or before the anchor — a child anchor in the
 		// thread's first turn. The whole budget goes to the newer side.
-		return s.listSliceAfter(q, threadID, anchorCursor, targetItemCount, runWindowRows, scope)
+		return s.listSliceAfter(q, threadID, anchorCursor, targetItemCount, runWindowRows, scope, rule)
 	}
 	unit.shipWindow(runWindowRows, 0, len(unit.rows), &anchorCursor)
 	olderUnits, err := walkUnitsOlder(older, atOrBeforeBudget-unit.shippedRows(), runWindowRows)
@@ -517,8 +527,8 @@ func (s *Store) listThreadSliceAround(q sqlQueryer, threadID, anchorItemID strin
 
 // listSliceAfter is the whole-budget forward window, used when an anchor
 // coordinate has no visible top-level row at or before it.
-func (s *Store) listSliceAfter(q sqlQueryer, threadID string, after TimelineCursor, targetItemCount, runWindowRows int, scope timelineScope) (PagedItems, error) {
-	w := newActivityScanWalk(q, threadID, after, true, scope)
+func (s *Store) listSliceAfter(q sqlQueryer, threadID string, after TimelineCursor, targetItemCount, runWindowRows int, scope timelineScope, rule ActivityRunRule) (PagedItems, error) {
+	w := newActivityScanWalk(q, threadID, after, true, scope, rule)
 	units, err := walkUnitsNewer(w, targetItemCount, runWindowRows)
 	if err != nil {
 		return PagedItems{}, err
@@ -530,8 +540,8 @@ func (s *Store) listSliceAfter(q sqlQueryer, threadID string, after TimelineCurs
 // run's newest `runWindowRows` members, until `targetItemCount` rows have
 // been selected. Used when the snapshot is a bottom-restore or the anchor
 // item has been deleted.
-func (s *Store) listTailSlice(q sqlQueryer, threadID string, targetItemCount, runWindowRows int, scope timelineScope) (PagedItems, error) {
-	w := newActivityScanWalk(q, threadID, timelineTailBound(), false, scope)
+func (s *Store) listTailSlice(q sqlQueryer, threadID string, targetItemCount, runWindowRows int, scope timelineScope, rule ActivityRunRule) (PagedItems, error) {
+	w := newActivityScanWalk(q, threadID, timelineTailBound(), false, scope, rule)
 	units, err := walkUnitsOlder(w, targetItemCount, runWindowRows)
 	if err != nil {
 		return PagedItems{}, err

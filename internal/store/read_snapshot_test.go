@@ -84,17 +84,20 @@ func TestTimelineReadsHonorCallerCancellation(t *testing.T) {
 		name string
 		read func() error
 	}{
-		{"slice", func() error { _, err := s.ListThreadSliceAround(ctx, "t", "", 20, 5, TimelineSelection{}); return err }},
+		{"slice", func() error {
+			_, err := s.ListThreadSliceAround(ctx, "t", "", 20, 5, TimelineSelection{}, AgentMessagesAreMembers)
+			return err
+		}},
 		{"before", func() error {
-			_, err := s.ListItemsBeforeCursor(ctx, "t", TimelineCursor{TurnIndex: 0}, 20, 5, TimelineSelection{})
+			_, err := s.ListItemsBeforeCursor(ctx, "t", TimelineCursor{TurnIndex: 0}, 20, 5, TimelineSelection{}, AgentMessagesAreMembers)
 			return err
 		}},
 		{"after", func() error {
-			_, err := s.ListItemsAfterCursor(ctx, "t", TimelineCursor{TurnIndex: 0}, 20, 5, TimelineSelection{})
+			_, err := s.ListItemsAfterCursor(ctx, "t", TimelineCursor{TurnIndex: 0}, 20, 5, TimelineSelection{}, AgentMessagesAreMembers)
 			return err
 		}},
 		{"members", func() error {
-			_, err := s.ListActivityRunMembers(ctx, "t", ActivityRunMembersRequest{RunFirstItemID: "r", Direction: ActivityRunMembersBefore, Limit: 5})
+			_, err := s.ListActivityRunMembers(ctx, "t", ActivityRunMembersRequest{RunFirstItemID: "r", Direction: ActivityRunMembersBefore, Limit: 5}, AgentMessagesAreMembers)
 			return err
 		}},
 	}
@@ -206,23 +209,23 @@ func TestHistoryReadsLeaveAConnectionForOtherReads(t *testing.T) {
 		read func(context.Context) error
 	}{
 		{"window", func(ctx context.Context) error {
-			_, err := s.SyncThreadWindow(ctx, "t", "", 20, 5, HistoryStamp{}, nil, TimelineSelection{})
+			_, err := s.SyncThreadWindow(ctx, "t", "", 20, 5, HistoryStamp{}, nil, TimelineSelection{}, AgentMessagesAreMembers)
 			return err
 		}},
 		{"slice", func(ctx context.Context) error {
-			_, err := s.ListThreadSliceAround(ctx, "t", "", 20, 5, TimelineSelection{})
+			_, err := s.ListThreadSliceAround(ctx, "t", "", 20, 5, TimelineSelection{}, AgentMessagesAreMembers)
 			return err
 		}},
 		{"before", func(ctx context.Context) error {
-			_, err := s.ListItemsBeforeCursor(ctx, "t", TimelineCursor{TurnIndex: 9}, 20, 5, TimelineSelection{})
+			_, err := s.ListItemsBeforeCursor(ctx, "t", TimelineCursor{TurnIndex: 9}, 20, 5, TimelineSelection{}, AgentMessagesAreMembers)
 			return err
 		}},
 		{"after", func(ctx context.Context) error {
-			_, err := s.ListItemsAfterCursor(ctx, "t", TimelineCursor{TurnIndex: 0}, 20, 5, TimelineSelection{})
+			_, err := s.ListItemsAfterCursor(ctx, "t", TimelineCursor{TurnIndex: 0}, 20, 5, TimelineSelection{}, AgentMessagesAreMembers)
 			return err
 		}},
 		{"members", func(ctx context.Context) error {
-			_, err := s.ListActivityRunMembers(ctx, "t", ActivityRunMembersRequest{RunFirstItemID: "r", Direction: ActivityRunMembersBefore, Limit: 5})
+			_, err := s.ListActivityRunMembers(ctx, "t", ActivityRunMembersRequest{RunFirstItemID: "r", Direction: ActivityRunMembersBefore, Limit: 5}, AgentMessagesAreMembers)
 			return err
 		}},
 		{"recompute", func(ctx context.Context) error {

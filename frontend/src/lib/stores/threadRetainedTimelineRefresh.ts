@@ -15,7 +15,7 @@ import { threadBackend } from '../transport/entityIndex';
 export function captureRetainedTimelineWindow(
   items: readonly Item[],
   window: Pick<ThreadTimelineWindow, 'oldestLoadedCursor' | 'newestLoadedCursor'>,
-  runs: Pick<ThreadActivityRuns, 'loadedItems' | 'isLoadedMember' | 'readerPinnedSpan'>,
+  runs: Pick<ThreadActivityRuns, 'loadedItems' | 'isLoadedMember' | 'readerPinnedSpan' | 'activityRunRule'>,
   followingTail: boolean,
   selection: TimelineSelection = {},
 ) {
@@ -25,7 +25,7 @@ export function captureRetainedTimelineWindow(
     oldest: window.oldestLoadedCursor ? { ...window.oldestLoadedCursor } : null,
     newest: window.newestLoadedCursor ? { ...window.newestLoadedCursor } : null,
     count: loaded.filter(includes).length,
-    runs: groupActivityRunSpans(loaded, item => runs.isLoadedMember(item.id), includes).map(span => ({
+    runs: groupActivityRunSpans(loaded, runs.activityRunRule(), item => runs.isLoadedMember(item.id), includes).map(span => ({
       ...span,
       readerPinned: runs.readerPinnedSpan(span.firstItemId, span.lastItemId),
     })),

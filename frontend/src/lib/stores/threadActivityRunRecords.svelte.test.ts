@@ -14,6 +14,7 @@ import { formatFnv1a64 } from '../utils/fnv1a';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import type { Item } from '../types/models';
 import type { TimelineSelection } from '../../../bindings/agent-overflow/internal/store/models';
+import { AGENT_MESSAGE_MEMBERS_RULE } from '../utils/activityRunSpans';
 
 /** The pane's window, mutable so the registry's getters see the change. */
 const registries: ReturnType<typeof createThreadActivityRuns>[] = [];
@@ -25,6 +26,7 @@ function fixture(initial: Item[] = [], bounds = { oldest: null, newest: null } a
   const failures: { message: string; silent: boolean }[] = [];
   const reloads = vi.fn(async () => {});
   const runs = createThreadActivityRuns({
+    activityRunRule: () => AGENT_MESSAGE_MEMBERS_RULE,
     selection: () => selection ?? {},
     defaultCollapsed: () => false,
     windowRows: () => 30,
