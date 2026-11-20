@@ -281,13 +281,20 @@ func (m *Manager) Pages(ctx context.Context, access Access) ([]PageInfo, error) 
 	return out, nil
 }
 
-// ensureActivePage makes pageID tb's active page when it has none, and
-// reports whether it did. A selection is a structural change: it waits out
-// a jar switch writing the active tab (lockStructure).
+// ensureActivePage is ensureActivePageLocked in a hold of its own. A
+// selection is a structural change: it waits out a jar switch writing the
+// active tab (lockStructure).
 func (m *Manager) ensureActivePage(tb *threadBrowser, pageID PageID) bool {
 	_ = m.lockStructure(context.Background(), tb)
 	defer m.mu.Unlock()
-	if tb.session.activePage() != "" {
+	return m.ensureActivePageLocked(tb, pageID)
+}
+
+// ensureActivePageLocked makes pageID tb's active page when it has none
+// and pageID is one of its tabs in this hold, and reports whether it did.
+// The caller holds m.mu.
+func (m *Manager) ensureActivePageLocked(tb *threadBrowser, pageID PageID) bool {
+	if tb.session.activePage() != "" || !m.hasTabLocked(tb, pageID) {
 		return false
 	}
 	tb.session.ActivePageID = string(pageID)

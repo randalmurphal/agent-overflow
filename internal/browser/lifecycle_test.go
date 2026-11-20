@@ -40,6 +40,7 @@ func newLifecycleManager(t *testing.T) (*Manager, *lifecycleEngine) {
 	t.Helper()
 	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{FakeEngine: true})
 	t.Cleanup(func() { _ = manager.Close() })
+	checkSelectionAtEnd(t, manager)
 	engine := &lifecycleEngine{
 		recordingPaneHost: &recordingPaneHost{fakeEngine: manager.engine.(*fakeEngine)},
 		creating:          make(chan struct{}, 16),
@@ -51,6 +52,22 @@ func newLifecycleManager(t *testing.T) (*Manager, *lifecycleEngine) {
 	}
 	manager.engine = engine
 	return manager, engine
+}
+
+// checkSelectionAtEnd fails t when, as it ends, a thread of m selects a
+// tab that is none of its tabs. Registered after the Manager's close, it
+// runs before it.
+func checkSelectionAtEnd(t *testing.T, m *Manager) {
+	t.Helper()
+	t.Cleanup(func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		for _, tb := range m.threads {
+			if active := tb.session.activePage(); active != "" && !m.hasTabLocked(tb, active) {
+				t.Errorf("thread %s selects %s, which is none of its tabs", tb.id, active)
+			}
+		}
+	})
 }
 
 // hold sets *gate and answers its release.

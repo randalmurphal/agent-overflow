@@ -48,6 +48,7 @@ func newAdoptionManagerSaving(t *testing.T, saving downloadSaving) (*Manager, *a
 	t.Helper()
 	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{FakeEngine: true})
 	t.Cleanup(func() { _ = manager.Close() })
+	checkSelectionAtEnd(t, manager)
 	engine := &adoptionEngine{
 		fakeEngine: newFakeEngine(), gates: map[ids.PageHandle]chan struct{}{},
 		reached: make(chan ids.PageHandle, 16), failing: map[ids.PageHandle]bool{}, histories: map[ids.PageHandle][]string{},

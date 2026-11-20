@@ -100,6 +100,7 @@ func TestFindNeverCallsTheDriverOfAPageClosedWhileItWaited(t *testing.T) {
 			p.driver.Close()
 			f.manager.mu.Lock()
 			delete(scope.pages, p.id)
+			f.manager.repairActivePageLocked(p.owner)
 			f.manager.mu.Unlock()
 			p.mu.Unlock()
 			if err := <-answered; !errors.Is(err, errPageNotFound) {

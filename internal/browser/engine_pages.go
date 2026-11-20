@@ -162,7 +162,6 @@ func (m *Manager) crashedPopupListed(p *managedPage, released *jarScope) {
 	if released != nil {
 		m.disposeReleased(endedDownloads{}, released, p.owner.id, p.id)
 	}
-	m.ensureActivePage(p.owner, p.id)
 	m.emitThreadState(p.owner.id)
 	m.syncPanePresentation(p.owner.id)
 	if err := m.persistThreads([]ThreadID{p.owner.id}); err != nil {

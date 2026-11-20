@@ -43,12 +43,12 @@ func (m *Manager) publishPages(threadID ThreadID) {
 }
 
 // pageAdded follows p joining its thread's tabs (created, adopted or
-// restored): its base, a use, the thread's active page when it has none, and
-// a push. The base comes first, so a page shown at once shows on it.
+// restored), whose hold selected it when its thread had no active tab
+// (listPageLocked): its base, a use and a push. The base comes first, so a
+// page shown at once shows on it.
 func (m *Manager) pageAdded(p *managedPage) {
 	m.applyPageBase(p)
 	p.touch()
-	m.ensureActivePage(p.owner, p.id)
 	m.emitThreadState(p.owner.id)
 	m.syncPanePresentation(p.owner.id)
 }

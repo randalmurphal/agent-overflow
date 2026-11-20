@@ -64,9 +64,12 @@ mode. Product behavior and authority are defined in
   (`creation_end.go`): a close fails it, a crash lists the crashed tab,
   also when a setup step then fails. Every return of a created, restored
   or adopted page's setup reaches one decision in the hold that lists it
-  (`unlistedOutcomeLocked`), which reads that end, the lifetime's state,
-  the forget fence and the jar generation.
-  A teardown that runs after its tab left
+  (`unlistedOutcomeLocked`), which first asks whether the attempt is
+  still its tab's (the tab, the lifetime, the jar generation) and only
+  then reads that end and the forget fence: a stale attempt is set up
+  again in the current jar, whatever ended it. The same hold settles the
+  thread's selection from its tabs as the hold leaves them, never later
+  from a remembered id. A teardown that runs after its tab left
   reports through `reportTeardown`. Loading and favicon state is
   `pagestate.go`; a page whose process ended becomes a failed suspended
   record (`crash.go`); the agent marker is `activity.go`; the closed-tab

@@ -66,10 +66,12 @@ func (m *Manager) finishAdoption(handle, opener ids.PageHandle, p *managedPage) 
 }
 
 // listPageLocked makes p a tab of scope, the one way a page joins the
-// tabs (a create, a restore, an adoption), and wakes the popups waiting
-// for it as their opener. The caller holds m.mu.
+// tabs (a create, a restore, an adoption), selects it when its thread has
+// no active tab, and wakes the popups waiting for it as their opener. The
+// caller holds m.mu.
 func (m *Manager) listPageLocked(scope *jarScope, p *managedPage) {
 	scope.pages[p.id] = p
+	m.ensureActivePageLocked(p.owner, p.id)
 	m.listingChangedLocked()
 }
 
