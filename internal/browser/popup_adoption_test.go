@@ -201,7 +201,7 @@ func progressOf(id downloadID, state downloadState, received float64) downloadPr
 // handle, as "id state bytes".
 func downloadsOf(m *Manager, handle ids.PageHandle) []string {
 	m.mu.Lock()
-	p := m.listedPageLocked(handle)
+	p := m.pageByHandleLocked(handle)
 	m.mu.Unlock()
 	if p == nil {
 		return nil
@@ -223,7 +223,7 @@ func wantDownloads(t *testing.T, m *Manager, handle ids.PageHandle, want ...stri
 func listed(m *Manager, handle ids.PageHandle) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.listedPageLocked(handle) != nil
+	return m.pageByHandleLocked(handle) != nil
 }
 
 // A download a popup started and finished before its adoption began is
@@ -975,7 +975,7 @@ func TestAPopupIsListedWithItsHistory(t *testing.T) {
 // pageInfoOf answers the info of the tab whose driver has handle.
 func pageInfoOf(m *Manager, access Access, handle ids.PageHandle) PageInfo {
 	m.mu.Lock()
-	p := m.listedPageLocked(handle)
+	p := m.pageByHandleLocked(handle)
 	m.mu.Unlock()
 	if p == nil {
 		return PageInfo{}
