@@ -175,13 +175,16 @@ func TestCDPPageReportsOnlyMainFrameDocumentCommits(t *testing.T) {
 	send := func(method string, params map[string]any) {
 		browser.send(map[string]any{"method": method, "sessionId": "S-1", "params": params})
 	}
-	send("Page.navigatedWithinDocument", map[string]any{"frameId": "F-1", "url": "https://example.test/#part", "navigationType": "fragment"})
-	send("Page.frameNavigated", map[string]any{"frame": frame("F-child", "F-1"), "type": "Navigation"})
-	send("Page.frameNavigated", map[string]any{"frame": frame("F-1", ""), "type": "Navigation"})
-	eventually(t, "the main frame's commit", func() bool { return commits.Load() >= 1 })
-	time.Sleep(50 * time.Millisecond)
-	if got := commits.Load(); got != 1 {
-		t.Fatalf("document commits = %d, want 1 (the main frame's only)", got)
+	// The page reads these in the order sent, so once the second main-frame
+	// navigation, the marker, is reported, everything before it was handled.
+	for range 2 {
+		send("Page.navigatedWithinDocument", map[string]any{"frameId": "F-1", "url": "https://example.test/#part", "navigationType": "fragment"})
+		send("Page.frameNavigated", map[string]any{"frame": frame("F-child", "F-1"), "type": "Navigation"})
+		send("Page.frameNavigated", map[string]any{"frame": frame("F-1", ""), "type": "Navigation"})
+	}
+	eventually(t, "the marker's commit", func() bool { return commits.Load() >= 2 })
+	if got := commits.Load(); got != 2 {
+		t.Fatalf("document commits = %d, want 2 (the main frame's only)", got)
 	}
 }
 

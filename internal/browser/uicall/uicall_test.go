@@ -144,10 +144,17 @@ func TestASettledReleaseAnswersWhenItRan(t *testing.T) {
 	gone := &loop{}
 	thread = NewThread(gone.post, gone.alive, short)
 	go func() { answered <- thread.Settle(func() {}) }()
-	time.Sleep(2 * short)
-	gone.mu.Lock()
-	gone.gone = true
-	gone.mu.Unlock()
+	// The loop goes away once the release is queued on it.
+	for {
+		gone.mu.Lock()
+		if len(gone.queued) > 0 {
+			gone.gone = true
+			gone.mu.Unlock()
+			break
+		}
+		gone.mu.Unlock()
+		time.Sleep(time.Millisecond)
+	}
 	if <-answered {
 		t.Fatal("a settle whose loop went away answered that its release ran")
 	}

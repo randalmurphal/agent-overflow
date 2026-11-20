@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -156,21 +157,50 @@ func TestHeadlessJarPolicyAnswersWithTheRequestsOwner(t *testing.T) {
 		ResourceType string `json:"resourceType"`
 		RequestStage string `json:"requestStage"`
 	}
-	var want []pattern
-	for _, p := range navigationPolicyPatterns {
-		want = append(want, pattern{p.URLPattern, string(p.ResourceType), string(p.RequestStage)})
+	// subresources are the requests made as something other than a
+	// document.
+	subresources := map[string]string{"R-image": "Image", "R-image-other": "Image"}
+	// Every document, and every local file whatever loads it: a page may
+	// embed a file it could not open as an image or a script.
+	required := []pattern{
+		{ResourceType: "Document", RequestStage: "Request"},
+		{URLPattern: "file://*", RequestStage: "Request"},
 	}
 	enabled := browserCallParams[struct{ Patterns []pattern }](t, browser.calls(), "Fetch.enable")
-	if len(enabled) != 1 || !slices.Equal(enabled[0].Patterns, want) {
-		t.Fatalf("Fetch.enable on the browser session: %+v, want once with %+v", enabled, want)
+	if len(enabled) != 1 {
+		t.Fatalf("Fetch.enable on the browser session: %+v, want once", enabled)
+	}
+	installed := enabled[0].Patterns
+	for _, p := range required {
+		if !slices.Contains(installed, p) {
+			t.Fatalf("Fetch.enable installed %+v, which lacks %+v", installed, p)
+		}
+	}
+	// pauses answers whether Chromium pauses a request for url of
+	// resourceType under the installed patterns, as it matches them: a
+	// pattern's URL glob, where * is any run of characters, and its
+	// resource type, each when it names one.
+	pauses := func(url, resourceType string) bool {
+		return slices.ContainsFunc(installed, func(p pattern) bool {
+			return (p.ResourceType == "" || p.ResourceType == resourceType) && (p.URLPattern == "" || globMatch(p.URLPattern, url))
+		})
 	}
 
-	// expect sends each request and waits until every one is answered, so a
-	// later event cannot be handled before them.
+	// expect sends each request Chromium would pause, a document unless it
+	// names another resource type, and waits until every one is answered,
+	// so a later event cannot be handled before them. A request no pattern
+	// pauses would load unchecked, which fails the step.
 	expect := func(step string, requests map[string][3]string) {
 		t.Helper()
 		for id, r := range requests {
-			browser.send(pausedRequest(id, r[0], r[1]))
+			resourceType := "Document"
+			if kind, ok := subresources[id]; ok {
+				resourceType = kind
+			}
+			if !pauses(r[1], resourceType) {
+				t.Fatalf("%s: frame %s requesting %s as %s is paused by no installed pattern, so it loads unchecked", step, r[0], r[1], resourceType)
+			}
+			browser.send(pausedRequestOf(id, r[0], r[1], resourceType))
 		}
 		answers := map[string]bool{}
 		eventually(t, step+": the paused requests to be answered", func() bool {
@@ -201,6 +231,8 @@ func TestHeadlessJarPolicyAnswersWithTheRequestsOwner(t *testing.T) {
 		"R-unknown-frame": {"F-unknown", files["one"], "refuse"},
 		"R-frame":         {"F-of-A", files["one"], "allow"},
 		"R-frame-other":   {"F-of-A", files["two"], "refuse"},
+		"R-image":         {"F-of-A", files["one"], "allow"},
+		"R-image-other":   {"F-of-A", files["two"], "refuse"},
 	})
 
 	// A request paused before its popup's creation is handled waits for it.
@@ -303,4 +335,34 @@ func TestHeadlessReportsAPopupsCrashAfterItsCreation(t *testing.T) {
 	if !slices.Equal(heard, want) {
 		t.Fatalf("the Manager heard %q, want %q", heard, want)
 	}
+}
+
+// pausedRequestOf is Chromium's Fetch.requestPaused for a request of
+// resourceType.
+func pausedRequestOf(id, frame, url, resourceType string) map[string]any {
+	return map[string]any{"method": "Fetch.requestPaused", "params": map[string]any{
+		"requestId": id, "frameId": frame, "resourceType": resourceType,
+		"request": map[string]any{"url": url, "method": "GET", "headers": map[string]any{}},
+	}}
+}
+
+// globMatch matches s against a Fetch URL pattern, where * stands for any
+// run of characters and every other character for itself.
+func globMatch(pattern, s string) bool {
+	parts := strings.Split(pattern, "*")
+	if !strings.HasPrefix(s, parts[0]) {
+		return false
+	}
+	s = s[len(parts[0]):]
+	for i, part := range parts[1:] {
+		if i == len(parts)-2 {
+			return strings.HasSuffix(s, part)
+		}
+		at := strings.Index(s, part)
+		if at < 0 {
+			return false
+		}
+		s = s[at+len(part):]
+	}
+	return s == ""
 }
