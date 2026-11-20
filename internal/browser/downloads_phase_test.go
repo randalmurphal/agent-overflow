@@ -29,6 +29,8 @@ func TestADownloadRowMovesOnlyByItsLifecycle(t *testing.T) {
 				t.Errorf("%v to %v answered %v", from, to, err)
 			} else if err != nil && (!errors.Is(err, errDownloadPhase) || entry.phase != from) {
 				t.Errorf("a refused %v to %v answered %v and left %v", from, to, err, entry.phase)
+			} else if err == nil && entry.phase != to {
+				t.Errorf("an allowed %v to %v left %v", from, to, entry.phase)
 			}
 		}
 	}

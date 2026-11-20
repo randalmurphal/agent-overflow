@@ -1086,12 +1086,16 @@ func TestOpenFileAllowsAListedDownloadAndNotItsNeighbor(t *testing.T) {
 	if _, err := manager.authorizeFile(access.Caller(), link); err != nil {
 		t.Fatalf("a link to the download is refused: %v", err)
 	}
-	// A file put in its place is not the download.
+	// A file put in its place is not the download, even on the download's
+	// inode, at another time.
 	if err := os.Remove(item.path); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(10 * time.Millisecond)
 	if err := os.WriteFile(item.path, bytes.Repeat([]byte("x"), 10), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	replacedAt := item.file.ModTime().Add(time.Minute)
+	if err := os.Chtimes(item.path, replacedAt, replacedAt); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := manager.authorizeFile(access.Caller(), item.path); err == nil {

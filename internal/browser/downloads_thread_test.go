@@ -943,16 +943,11 @@ func TestADownloadRowRefusesALaterDownloadOnAReusedInode(t *testing.T) {
 	if err := os.Remove(olderItem.path); err != nil {
 		t.Fatal(err)
 	}
-	// Apart in time, as two downloads are.
-	time.Sleep(10 * time.Millisecond)
 	startDownload(t, manager, access, page, "report.pdf", 10)
 	newer := threadDownloads(manager, access)[0]
 	newerItem, _ := manager.threadDownload(access, DownloadKey(newer.ID))
 	if newerItem.path != olderItem.path {
 		t.Fatalf("the second download is at %s, not the freed name %s", newerItem.path, olderItem.path)
-	}
-	if olderItem.file.ModTime().Equal(newerItem.file.ModTime()) {
-		t.Fatal("the two downloads share a modification time")
 	}
 
 	for _, record := range []struct {
@@ -960,7 +955,9 @@ func TestADownloadRowRefusesALaterDownloadOnAReusedInode(t *testing.T) {
 		size    int64
 		modTime time.Time
 	}{
-		{"same size, earlier", olderItem.file.Size(), olderItem.file.ModTime()},
+		// Apart in time, as two downloads are, however fine the
+		// filesystem's timestamps.
+		{"same size, earlier", olderItem.file.Size(), newerItem.file.ModTime().Add(-time.Minute)},
 		{"other size, same time", newerItem.file.Size() + 1, newerItem.file.ModTime()},
 	} {
 		reused := statReshaped(t, newerItem.path, record.size, record.modTime, newerItem.file)
