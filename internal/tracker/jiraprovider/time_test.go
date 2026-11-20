@@ -1,6 +1,7 @@
 package jiraprovider
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -70,10 +71,22 @@ func TestJiraWorklogs(t *testing.T) {
 			jiraWorklog("304", user1JSON, "2026-11-11T00:00:00.000-0500", 600, "Next day")+`]}`)(w, r, b)
 	})
 	f.On("POST", searchPath, func(w http.ResponseWriter, r *http.Request, b []byte) {
-		if jql := bodyOf(t, b)["jql"]; jql != `worklogAuthor = "acc-user1" AND worklogDate >= "2026-11-09" AND worklogDate <= "2026-11-11" ORDER BY id ASC` {
+		v := bodyOf(t, b)
+		if jql := v["jql"]; jql != `worklogAuthor = "acc-user1" AND worklogDate >= "2026-11-09" AND worklogDate <= "2026-11-11" ORDER BY id ASC` {
 			t.Errorf("jql %v", jql)
 		}
-		jiratest.Reply(200, page("", issue("10001", "WEB-1", updatedAt, nil)))(w, r, b)
+		if fmt.Sprint(v["fields"]) != "[worklog]" {
+			t.Errorf("fields %v", v["fields"])
+		}
+		// 10001 has more worklogs than Jira embeds, so it is read again;
+		// 10002's are all embedded.
+		jiratest.Reply(200, page("",
+			issue("10001", "WEB-1", updatedAt, map[string]any{"worklog": json.RawMessage(`{"startAt":0,"maxResults":20,"total":4,"worklogs":[` +
+				jiraWorklog("300", user1JSON, "2026-11-10T09:00:00.000-0500", 3600, "Review") + `]}`)}),
+			issue("10002", "WEB-2", updatedAt, map[string]any{"worklog": json.RawMessage(`{"startAt":0,"maxResults":20,"total":2,"worklogs":[` +
+				jiraWorklog("310", user1JSON, "2026-11-10T12:00:00.000-0500", 900, "Embedded") + "," +
+				jiraWorklog("311", user2JSON, "2026-11-10T12:00:00.000-0500", 900, "Theirs") + `]}`)}),
+		))(w, r, b)
 	})
 	got, err := p.Time().Worklogs(t.Context(), tracker.WorklogQuery{Author: "acc-user1", From: day(t, 2026, 11, 10), To: day(t, 2026, 11, 10)})
 	if err != nil {
@@ -83,8 +96,11 @@ func TestJiraWorklogs(t *testing.T) {
 	for _, w := range got {
 		ids = append(ids, fmt.Sprintf("%s %s %s %v %q", w.ID, w.Issue, w.Day, w.Spent, strings.TrimSpace(w.Description)))
 	}
-	if want := []string{`300 10001 2026-11-10 1h0m0s "Review"`, `301 10001 2026-11-10 30m0s "Late"`}; !slices.Equal(ids, want) {
+	if want := []string{`300 10001 2026-11-10 1h0m0s "Review"`, `301 10001 2026-11-10 30m0s "Late"`, `310 10002 2026-11-10 15m0s "Embedded"`}; !slices.Equal(ids, want) {
 		t.Errorf("worklogs %q", ids)
+	}
+	if n := f.Count("GET", worklogsPath); n != 1 {
+		t.Errorf("%d worklog reads, want one for the issue with more than Jira embeds", n)
 	}
 	f.On("POST", searchPath, jiratest.Reply(200, `{"isLast":true,"issues":[],"warnings":[{"type":"x","message":"partial"}]}`))
 	if _, err := p.Time().Worklogs(t.Context(), tracker.WorklogQuery{Author: "acc-user1", From: day(t, 2026, 11, 10), To: day(t, 2026, 11, 10)}); err == nil {
@@ -255,11 +271,12 @@ func TestTempoWorklogWrites(t *testing.T) {
 }
 
 // TestTempoIssues proves the adapter maps keys to IDs by the issue's
-// current key, case ignored, and IDs to keys, leaving out what Jira
-// does not return.
+// current key, case ignored, leaving out what Jira does not return, and
+// fails on a failed read.
 func TestTempoIssues(t *testing.T) {
 	f, _ := newSite(t)
 	f.On("POST", bulkFetchPath, func(w http.ResponseWriter, r *http.Request, b []byte) {
+		jiratest.WantJSON(t, b, `{"issueIdsOrKeys":["web-1","WEB-5"],"fields":["status"]}`)
 		moved := issue("10005", "APP-5", updatedAt, nil)
 		jiratest.Reply(200, page("", issue("10001", "WEB-1", updatedAt, nil), moved))(w, r, b)
 	})
@@ -268,12 +285,8 @@ func TestTempoIssues(t *testing.T) {
 	if err != nil || len(ids) != 1 || ids["web-1"] != 10001 {
 		t.Errorf("IDs %v %v", ids, err)
 	}
-	keys, err := ti.Keys(t.Context(), []int64{10001, 10005, 10009})
-	if err != nil || len(keys) != 2 || keys[10005] != "APP-5" {
-		t.Errorf("keys %v %v", keys, err)
-	}
 	f.On("POST", bulkFetchPath, jiratest.Reply(400, `{}`))
-	if _, err := ti.Keys(t.Context(), []int64{10001}); err == nil {
+	if _, err := ti.IDs(t.Context(), []string{"WEB-1"}); err == nil {
 		t.Error("a failed read was taken")
 	}
 }

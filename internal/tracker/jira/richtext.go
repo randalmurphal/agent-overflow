@@ -182,10 +182,11 @@ func (r ctxReader) Read(p []byte) (int, error) {
 type markdownResolver struct{ b *builder }
 
 func (r markdownResolver) Mention(ctx context.Context, who string) (string, string, error) {
+	r.b.asked = true
 	var u User
 	var err error
 	if who == "me" {
-		u, err = r.b.c.Myself(ctx)
+		u, err = r.b.c.Me(ctx)
 	} else {
 		u, err = r.b.c.FindUser(ctx, who)
 	}
@@ -208,7 +209,7 @@ func (r markdownResolver) Upload(ctx context.Context, ref string) (string, error
 // unchanged, and a new document otherwise.
 func buildRich(ctx context.Context, b *builder, f FieldMeta, in Input, v *Value) (any, error) {
 	base := b.opts.Base
-	if in.from != nil && !adf.Equal(in.from, base) {
+	if in.from != nil && adf.ToMarkdown(base) != *in.from {
 		return nil, &StaleError{Issue: b.opts.Issue, What: f.Name}
 	}
 	doc, ws, err := b.markdown(ctx, in.texts[0], base)

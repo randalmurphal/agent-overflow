@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"iter"
 	"net/url"
 	"slices"
 	"strconv"
@@ -37,45 +38,100 @@ func (s Schema) customType() string {
 // environment and textarea custom fields).
 func (s Schema) RichText() bool { return kindOf(s) == kindRich }
 
-// Field is one entry of the site's field catalog.
+// Field is one entry of the site's field catalog. It holds no reference
+// type, so a copy shares nothing with the catalog it came from.
 type Field struct {
-	ID          string   `json:"id"`
-	Key         string   `json:"key"`
-	Name        string   `json:"name"`
-	Custom      bool     `json:"custom"`
-	Schema      Schema   `json:"schema"`
-	ClauseNames []string `json:"clauseNames"`
-	Navigable   bool     `json:"navigable"`
-	Searchable  bool     `json:"searchable"`
-	Orderable   bool     `json:"orderable"`
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Custom bool   `json:"custom"`
+	Schema Schema `json:"schema"`
 }
 
-// cloneFields is a copy of fs sharing no memory with it.
-func cloneFields(fs []Field) []Field {
-	out := slices.Clone(fs)
-	for i := range out {
-		out[i].ClauseNames = slices.Clone(out[i].ClauseNames)
+// Catalog is the site's field catalog as one read returned it. It cannot
+// be changed: its fields are reached only through methods that return
+// copies, so the one value the client caches is handed to every caller
+// as it is. Field finds an entry by ID through an index built once.
+type Catalog struct {
+	fields []Field
+	byID   map[string]int
+	// firstCustom is the first field of each custom type, by type key.
+	firstCustom map[string]int
+}
+
+// NewCatalog is a catalog of a copy of fields, for a caller that builds
+// one (a test of code that reads the catalog); the client builds its own
+// from Jira's answer.
+func NewCatalog(fields []Field) *Catalog { return newCatalog(slices.Clone(fields)) }
+
+// newCatalog is a catalog that owns fields.
+func newCatalog(fields []Field) *Catalog {
+	c := &Catalog{fields: fields, byID: make(map[string]int, len(fields)), firstCustom: map[string]int{}}
+	for i, f := range fields {
+		if _, dup := c.byID[f.ID]; !dup {
+			c.byID[f.ID] = i
+		}
+		if t := f.Schema.Custom; t != "" {
+			if _, seen := c.firstCustom[t]; !seen {
+				c.firstCustom[t] = i
+			}
+		}
 	}
-	return out
+	return c
 }
 
-// Fields returns every field the user can see, with its schema, from the
-// client's cache once read. Callers that miss the cache together each
-// read it. The slice is the caller's own.
-func (c *Client) Fields(ctx context.Context) ([]Field, error) {
+// Len is the number of fields.
+func (c *Catalog) Len() int { return len(c.fields) }
+
+// All yields every field in Jira's order.
+func (c *Catalog) All() iter.Seq[Field] {
+	return func(yield func(Field) bool) {
+		for _, f := range c.fields {
+			if !yield(f) {
+				return
+			}
+		}
+	}
+}
+
+// Field is the field with exactly id.
+func (c *Catalog) Field(id string) (Field, bool) {
+	i, ok := c.byID[id]
+	if !ok {
+		return Field{}, false
+	}
+	return c.fields[i], true
+}
+
+// OfCustomType is the first field, in Jira's order, of the custom field
+// type custom (its full key, such as
+// com.pyxis.greenhopper.jira:gh-sprint).
+func (c *Catalog) OfCustomType(custom string) (Field, bool) {
+	i, ok := c.firstCustom[custom]
+	if !ok {
+		return Field{}, false
+	}
+	return c.fields[i], true
+}
+
+// Fields returns the field catalog, every field the user can see with its
+// schema, from the client's cache once read. Callers that miss the cache
+// together each read it. Every caller shares the one Catalog, which no
+// caller can change.
+func (c *Client) Fields(ctx context.Context) (*Catalog, error) {
 	if err := c.admit(ctx); err != nil {
 		return nil, err
 	}
-	if fields, ok := c.catalog.get(struct{}{}); ok {
-		return fields, nil
+	if cat, ok := c.catalog.get(struct{}{}); ok {
+		return cat, nil
 	}
 	epoch := c.catalog.epoch()
 	var fields []Field
 	if err := c.get(ctx, "field", nil, &fields); err != nil {
 		return nil, fmt.Errorf("jira: field catalog: %w", err)
 	}
-	c.catalog.put(epoch, struct{}{}, fields)
-	return fields, nil
+	cat := newCatalog(fields)
+	c.catalog.put(epoch, struct{}{}, cat)
+	return cat, nil
 }
 
 // ForgetFields drops the cached field catalog; a read in flight stores

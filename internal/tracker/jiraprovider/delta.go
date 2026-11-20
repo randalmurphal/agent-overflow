@@ -23,32 +23,47 @@ import (
 // page tokens are never used, so nothing a cursor holds expires, and a
 // result set that shifts between pages skips nothing.
 //
-// At the end of a walk that delivered a row, on its last page or an
-// earlier one, the cursor steps back by walkOverlap and forgets the last
-// ID, so the next walk delivers again every row updated in that last
-// stretch. Jira documents that its search may not yet show a recent
-// update: an issue whose update the index took only after the walk passed
-// its time is read then.
+// A walk is the pages from one with no position inside a walk to the
+// first that says no more follow. Its first page records walkStart, the
+// Date header of Jira's answer to it: Jira's own clock, so this
+// computer's has no part. At the end of a walk that delivered a row, on
+// its last page or an earlier one, tracker.DeltaResume decides where the
+// next walk starts from the newest row delivered and walkStart: exactly
+// after that row when every update it could have missed was visible to
+// the whole walk, so a board nobody changed delivers nothing; otherwise at
+// the time it returns, with no ID, so the next walk delivers again every
+// row updated since. Jira documents that its search may not yet show a
+// recent update: an issue whose update the index took only after the walk
+// passed its time is read then. A walk that delivered no row keeps its
+// cursor, so an idle cursor does not drift back.
 
 const (
 	// cursorVersion is the version of the cursor's encoding.
-	cursorVersion = 2
-	// deltaPage is the most issues one delta page asks for.
-	deltaPage = 100
-	// walkOverlap is how far back the next walk starts from the newest
-	// row a walk delivered.
-	walkOverlap = time.Minute
+	cursorVersion = 3
+	// deltaPage is the most issues one delta page asks for. The board
+	// issue list is not clamped the way search is: 500 issues with ten
+	// card fields came back in 0.99 s and 1.27 MB against 0.50 s and
+	// 214 KB for 100 (docs/references/tracker-api-measurements.md), so a
+	// first walk takes a fifth of the requests for about twice the time
+	// per page.
+	deltaPage = 500
 )
 
 // cursor is a delta's position on one board. AfterMS is the update time
 // of the last row delivered, in milliseconds since the epoch, and AfterID
 // its issue ID: the walk resumes with the rows after that pair. AfterID
-// zero starts a walk, delivering every row updated at or after AfterMS.
+// zero delivers every row updated at or after AfterMS. InWalk is set
+// between the pages of a walk: StartMS is then walkStart in milliseconds,
+// zero when Jira sent no Date, and Delivered reports a row delivered so
+// far.
 type cursor struct {
-	V       int    `json:"v"`
-	Board   string `json:"board"`
-	AfterMS int64  `json:"after_ms"`
-	AfterID int64  `json:"after_id,omitempty"`
+	V         int    `json:"v"`
+	Board     string `json:"board"`
+	AfterMS   int64  `json:"after_ms"`
+	AfterID   int64  `json:"after_id,omitempty"`
+	InWalk    bool   `json:"in_walk,omitempty"`
+	StartMS   int64  `json:"start_ms,omitempty"`
+	Delivered bool   `json:"delivered,omitempty"`
 }
 
 // readCursor decodes q's cursor, or starts a walk at q.Start's
@@ -72,10 +87,30 @@ func readCursor(q tracker.DeltaQuery) (cursor, error) {
 		return cursor{}, invalidf("the cursor of board %s has version %d, not %d", q.Board, c.V, cursorVersion)
 	case c.Board != string(q.Board):
 		return cursor{}, invalidf("the cursor is board %q's, not board %s's", c.Board, q.Board)
-	case c.AfterMS <= 0 || c.AfterID < 0:
+	case c.AfterMS <= 0 || c.AfterID < 0 || c.StartMS < 0:
 		return cursor{}, invalidf("the cursor of board %s names no position", q.Board)
+	case !c.InWalk && (c.StartMS != 0 || c.Delivered):
+		return cursor{}, invalidf("the cursor of board %s holds a walk it is not in", q.Board)
 	}
 	return c, nil
+}
+
+// end is the cursor the next walk starts from, once the walk c is in
+// ends.
+func (c cursor) end() cursor {
+	next := cursor{V: c.V, Board: c.Board, AfterMS: c.AfterMS, AfterID: c.AfterID}
+	if !c.Delivered {
+		return next
+	}
+	var walkStart time.Time
+	if c.StartMS > 0 {
+		walkStart = time.UnixMilli(c.StartMS)
+	}
+	restart, exact := tracker.DeltaResume(time.UnixMilli(c.AfterMS), walkStart)
+	if !exact {
+		next.AfterMS, next.AfterID = max(restart.UnixMilli(), 1), 0
+	}
+	return next
 }
 
 func (c cursor) bytes() tracker.Cursor {
@@ -135,6 +170,12 @@ func (p *Provider) ChangedRows(ctx context.Context, q tracker.DeltaQuery) (track
 	cat := newCatalog()
 	var out tracker.RowPage
 	next := cur
+	if !next.InWalk {
+		next.InWalk, next.StartMS = true, 0
+		if !page.Date.IsZero() {
+			next.StartMS = max(page.Date.UnixMilli(), 0)
+		}
+	}
 	for _, is := range page.Issues {
 		row, err := b.rowOf(s, is, cat)
 		if err != nil {
@@ -148,16 +189,14 @@ func (p *Provider) ChangedRows(ctx context.Context, q tracker.DeltaQuery) (track
 		if at < next.AfterMS || at == next.AfterMS && id <= next.AfterID {
 			return tracker.RowPage{}, fmt.Errorf("jiraprovider: changes of board %s: Jira returned issue %s out of update order", q.Board, is.Key)
 		}
-		next.AfterMS, next.AfterID = at, id
+		next.AfterMS, next.AfterID, next.Delivered = at, id, true
 		out.Rows = append(out.Rows, row)
 	}
 	// A page with no rows ends the walk whatever its token says: the next
-	// page would ask the same. A walk that ends past its start, on this
-	// page or an earlier one, steps back; one that never left its start
-	// stays, so an idle cursor does not drift back.
+	// page would ask the same.
 	out.More = page.NextPageToken != "" && len(out.Rows) > 0
-	if !out.More && next.AfterID > 0 {
-		next.AfterMS, next.AfterID = max(next.AfterMS-walkOverlap.Milliseconds(), 1), 0
+	if !out.More {
+		next = next.end()
 	}
 	out.Catalog = cat.out
 	out.Next = next.bytes()

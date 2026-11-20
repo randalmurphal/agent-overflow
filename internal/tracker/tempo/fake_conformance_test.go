@@ -42,16 +42,6 @@ func (f staticIssues) IDs(_ context.Context, keys []string) (map[string]int64, e
 	return out, nil
 }
 
-func (f staticIssues) Keys(_ context.Context, ids []int64) (map[int64]string, error) {
-	out := map[int64]string{}
-	for k, id := range f {
-		if slices.Contains(ids, id) {
-			out[id] = k
-		}
-	}
-	return out, nil
-}
-
 type fakeWorld struct {
 	e   *trackerfake.Engine
 	c   *Client
@@ -170,7 +160,7 @@ var conformanceCases = map[string]func(t *testing.T, f *fakeWorld){
 		}
 	},
 	"Worklog": func(t *testing.T, f *fakeWorld) {
-		if w := called(f.c.Worklog(f.ctx, 7001)).must(t); w.Issue.Key != "WEB-1" || w.Spent != time.Hour {
+		if w := called(f.c.Worklog(f.ctx, 7001)).must(t); w.Issue != (Issue{ID: 10101}) || w.Spent != time.Hour {
 			t.Fatalf("worklog %+v", w)
 		}
 	},

@@ -19,19 +19,20 @@ func TestFieldCatalogIsCachedAndDroppable(t *testing.T) {
 	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
 	f.On("GET", "/rest/api/3/field", jiratest.Reply(200, catalogJSON))
+	var first *Catalog
 	for range 2 {
-		fs, err := c.Fields(t.Context())
-		if err != nil || len(fs) != 2 || fs[1].Schema.CustomID != 10001 || fs[1].Schema.customType() != "float" {
-			t.Fatalf("got %+v %v", fs, err)
+		cat, err := c.Fields(t.Context())
+		sp, ok := cat.Field("customfield_10001")
+		if err != nil || cat.Len() != 2 || !ok || sp.Schema.CustomID != 10001 || sp.Schema.customType() != "float" {
+			t.Fatalf("got %+v %v", cat, err)
 		}
-		fs[0].Name = "changed by a caller"
+		if first != nil && cat != first {
+			t.Error("a cached catalog was copied")
+		}
+		first = cat
 	}
 	if n := f.Count("GET", "/rest/api/3/field"); n != 1 {
 		t.Errorf("%d reads, want 1", n)
-	}
-	fs, _ := c.Fields(t.Context())
-	if fs[0].Name != "Summary" {
-		t.Error("a caller's change reached the cache")
 	}
 	c.ForgetFields()
 	if _, err := c.Fields(t.Context()); err != nil {
@@ -113,8 +114,8 @@ func TestCreateMetaEmptyPageStops(t *testing.T) {
 	}
 }
 
-// TestFieldCatalogCopiesShareNothing proves a catalog handed out shares
-// no memory with the cache or with another caller's copy.
+// TestFieldCatalogCopiesShareNothing proves what a catalog hands out is
+// a copy: changing it changes nothing the next caller reads.
 func TestFieldCatalogCopiesShareNothing(t *testing.T) {
 	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
@@ -123,12 +124,20 @@ func TestFieldCatalogCopiesShareNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first[1].ClauseNames[0] = "changed"
-	second, _ := c.Fields(t.Context())
-	second[1].ClauseNames[1] = "changed too"
-	third, _ := c.Fields(t.Context())
-	if third[1].ClauseNames[0] != "cf[10001]" || third[1].ClauseNames[1] != "Story Points" {
-		t.Errorf("a caller's change reached the cache: %v", third[1].ClauseNames)
+	sp, _ := first.Field("customfield_10001")
+	sp.Name, sp.Schema.Custom = "changed", "changed"
+	for f := range first.All() {
+		f.Name = "changed too"
+	}
+	again, _ := c.Fields(t.Context())
+	if sp, _ := again.Field("customfield_10001"); sp.Name != "Story Points" || sp.Schema.Custom == "changed" {
+		t.Errorf("a caller's change reached the cache: %+v", sp)
+	}
+	if got, ok := again.OfCustomType("com.atlassian.jira.plugin.system.customfieldtypes:float"); !ok || got.ID != "customfield_10001" {
+		t.Errorf("by custom type: %+v %v", got, ok)
+	}
+	if _, ok := again.Field("customfield_404"); ok {
+		t.Error("found a field the catalog lacks")
 	}
 }
 

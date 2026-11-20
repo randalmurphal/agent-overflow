@@ -35,7 +35,7 @@ func (p *Provider) StartSprint(ctx context.Context, in tracker.SprintStart) trac
 	if err != nil {
 		return sprintPart(in.Board, beforeSend(err))
 	}
-	_, err = p.jira.StartSprint(ctx, jira.SprintStart{ID: sprint, Start: in.Start, End: in.End})
+	_, err = p.jira.StartSprint(ctx, jira.SprintStart{ID: sprint.ID, Start: in.Start, End: in.End, Current: sprint})
 	return sprintPart(in.Board, outcome(err))
 }
 
@@ -51,7 +51,7 @@ func (p *Provider) EditSprint(ctx context.Context, in tracker.SprintEdit) tracke
 	if err != nil {
 		return sprintPart(in.Board, beforeSend(err))
 	}
-	_, err = p.jira.UpdateSprint(ctx, jira.SprintUpdate{ID: sprint, Name: in.Name, Goal: in.Goal, Start: in.Start, End: in.End})
+	_, err = p.jira.UpdateSprint(ctx, jira.SprintUpdate{ID: sprint.ID, Name: in.Name, Goal: in.Goal, Start: in.Start, End: in.End, Current: sprint})
 	return sprintPart(in.Board, outcome(err))
 }
 
@@ -100,7 +100,11 @@ func (p *Provider) CompleteSprint(ctx context.Context, in tracker.SprintCompleti
 	if err != nil {
 		return sprintPart(in.Board, beforeSend(err))
 	}
-	res, err := p.jira.CompleteSprint(ctx, jira.SprintCompletion{Sprint: sprint, MoveTo: moveTo, Board: board})
+	c := jira.SprintCompletion{Sprint: sprint.ID, Board: board, Current: sprint}
+	if moveTo != nil {
+		c.MoveTo, c.MoveToCurrent = moveTo.ID, moveTo
+	}
+	res, err := p.jira.CompleteSprint(ctx, c)
 	moveErr, moveFailed := errors.AsType[*jira.BatchError](err)
 	moved := make([]tracker.IssueID, len(res.Unfinished))
 	for i, is := range res.Unfinished {
@@ -128,23 +132,27 @@ func (p *Provider) CompleteSprint(ctx context.Context, in tracker.SprintCompleti
 }
 
 // completionSprints are in's sprint and the sprint it moves issues to
-// (zero for the backlog) by number, read from one listing of the board's
-// open sprints: the sprint must be an active one of the board, MoveTo an
-// active or future one.
-func (p *Provider) completionSprints(ctx context.Context, in tracker.SprintCompletion) (sprint, moveTo int64, err error) {
+// (nil for the backlog) as one listing of the board's open sprints holds
+// them: the sprint must be an active one of the board, MoveTo an active or
+// future one. The client takes both as read rather than reading them again.
+func (p *Provider) completionSprints(ctx context.Context, in tracker.SprintCompletion) (sprint, moveTo *jira.Sprint, err error) {
 	open, err := p.boardSprints(ctx, in.Board, jira.SprintActive, jira.SprintFuture)
 	if err != nil {
-		return 0, 0, err
+		return nil, nil, err
 	}
-	sprint, _ = sprintNumber(in.Sprint)
-	if open[sprint] != jira.SprintActive {
-		return 0, 0, notBoardSprint(in.Board, in.Sprint, []jira.SprintState{jira.SprintActive})
+	n, _ := sprintNumber(in.Sprint)
+	s, ok := open[n]
+	if !ok || s.State != jira.SprintActive {
+		return nil, nil, notBoardSprint(in.Board, in.Sprint, []jira.SprintState{jira.SprintActive})
 	}
+	sprint = &s
 	if in.MoveTo != "" {
-		moveTo, _ = sprintNumber(in.MoveTo)
-		if _, ok := open[moveTo]; !ok {
-			return 0, 0, notBoardSprint(in.Board, in.MoveTo, []jira.SprintState{jira.SprintActive, jira.SprintFuture})
+		n, _ = sprintNumber(in.MoveTo)
+		to, ok := open[n]
+		if !ok {
+			return nil, nil, notBoardSprint(in.Board, in.MoveTo, []jira.SprintState{jira.SprintActive, jira.SprintFuture})
 		}
+		moveTo = &to
 	}
 	return sprint, moveTo, nil
 }
@@ -171,8 +179,9 @@ func (p *Provider) AddComment(ctx context.Context, in tracker.CommentInput) trac
 }
 
 // EditComment replaces a comment's body when it still renders to the
-// Markdown the edit was written from; the client checks it again as its
-// last read before the write.
+// Markdown the edit was written from. That read is the last before the
+// first write: the client takes the comment as read (Current) and reads
+// it again only when resolving a mention read Jira since.
 func (p *Provider) EditComment(ctx context.Context, in tracker.CommentEdit) tracker.Result {
 	if err := in.Check(); err != nil {
 		return tracker.Invalid(tracker.StepComment, err, in.Issue)
@@ -191,7 +200,7 @@ func (p *Provider) EditComment(ctx context.Context, in tracker.CommentEdit) trac
 		return commentParts(in.Issue, nil, err)
 	}
 	res, err := p.jira.EditComment(ctx, jira.CommentEdit{
-		Issue: string(in.Issue), ID: string(in.Comment), Markdown: in.Markdown, From: &read,
+		Issue: string(in.Issue), ID: string(in.Comment), Markdown: in.Markdown, Current: &read,
 		AcceptLoss: in.AcceptLoss, ImageDir: in.ImageDir,
 	})
 	return commentParts(in.Issue, res.Uploaded, err)

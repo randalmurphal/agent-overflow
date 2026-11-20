@@ -131,7 +131,7 @@ func (c *Client) boards(ctx context.Context, q BoardQuery) (BoardList, error) {
 	if q.Name != "" {
 		v.Set("name", q.Name)
 	}
-	found, complete, err := offsetPages[boardJSON](ctx, c, agilePath+"board", v, 50, q.Limit)
+	found, complete, _, err := offsetPages[boardJSON](ctx, c, agilePath+"board", v, 50, q.Limit)
 	out := BoardList{Boards: make([]Board, len(found)), Complete: complete}
 	for i, b := range found {
 		out.Boards[i] = b.board()
@@ -203,11 +203,44 @@ type Estimation struct {
 	Custom bool
 }
 
+// LocationType is what a board is located in.
+type LocationType string
+
+const (
+	LocatedInProject LocationType = "project"
+	LocatedOnUser    LocationType = "user"
+)
+
+// ConfigLocation is where a board's configuration says the board is: a
+// project (Type LocatedInProject, ID the project's ID) or a user (Type
+// LocatedOnUser, or any other type Jira names, whose ID is not a
+// project's). Measured on Jira Cloud: the configuration's location has
+// id (a string), key, name, self and type (docs/references/
+// tracker-api-measurements.md); the spec documents type and
+// projectKeyOrId.
+type ConfigLocation struct {
+	Type LocationType
+	ID   string
+	Key  string
+	Name string
+}
+
+// ProjectID is the ID of the project the board is located in; empty for
+// a board located anywhere else.
+func (l ConfigLocation) ProjectID() string {
+	if l.Type != LocatedInProject {
+		return ""
+	}
+	return l.ID
+}
+
 // BoardConfig is a board's configuration.
 type BoardConfig struct {
 	BoardID int64
 	Name    string
 	Type    BoardType
+	// Location is where the board is; zero when Jira does not say.
+	Location ConfigLocation
 	// FilterID is the saved filter that selects the board's issues.
 	FilterID string
 	// SubQuery is a kanban board's JQL sub-query; empty elsewhere.
@@ -240,9 +273,15 @@ func cloneBoardConfig(b BoardConfig) BoardConfig {
 }
 
 type boardConfigJSON struct {
-	ID     int64     `json:"id"`
-	Name   string    `json:"name"`
-	Type   BoardType `json:"type"`
+	ID       int64     `json:"id"`
+	Name     string    `json:"name"`
+	Type     BoardType `json:"type"`
+	Location struct {
+		Type LocationType `json:"type"`
+		ID   string       `json:"id"`
+		Key  string       `json:"key"`
+		Name string       `json:"name"`
+	} `json:"location"`
 	Filter struct {
 		ID string `json:"id"`
 	} `json:"filter"`
@@ -277,6 +316,7 @@ func (j boardConfigJSON) config() BoardConfig {
 		BoardID: j.ID, Name: j.Name, Type: j.Type, FilterID: j.Filter.ID, SubQuery: j.SubQuery.Query,
 		Constraint: j.ColumnConfig.Constraint, RankFieldID: j.Ranking.RankCustomFieldID,
 		Estimation: Estimation{Type: j.Estimation.Type, FieldID: j.Estimation.Field.FieldID, FieldName: j.Estimation.Field.DisplayName},
+		Location:   ConfigLocation{Type: j.Location.Type, ID: j.Location.ID, Key: j.Location.Key, Name: j.Location.Name},
 	}
 	out.Estimation.Custom = strings.HasPrefix(out.Estimation.FieldID, "customfield_")
 	for _, col := range j.ColumnConfig.Columns {
@@ -290,7 +330,7 @@ func (j boardConfigJSON) config() BoardConfig {
 }
 
 // BoardConfig returns a board's configuration, from the client's cache
-// once read; ForgetBoards drops it. The value is the caller's own.
+// once read; ForgetBoard drops it. The value is the caller's own.
 func (c *Client) BoardConfig(ctx context.Context, board int64) (BoardConfig, error) {
 	if err := c.admit(ctx); err != nil {
 		return BoardConfig{}, err
@@ -316,6 +356,10 @@ func (c *Client) boardConfig(ctx context.Context, board int64) (BoardConfig, err
 	return cfg, nil
 }
 
-// ForgetBoards drops the cached board configurations, so the next read
-// asks Jira; a read in flight stores nothing.
-func (c *Client) ForgetBoards() { c.configs.clear() }
+// ForgetBoard drops what the client holds of one board, its
+// configuration and its sprint listing, so the next read asks Jira; the
+// other boards' stay. A read in flight stores nothing.
+func (c *Client) ForgetBoard(board int64) {
+	c.configs.drop(board)
+	c.sprintLists.drop(board)
+}

@@ -14,14 +14,12 @@ import (
 
 const testToken = "fake-tempo-token"
 
-// fakeIssues is an IssueIDs over fixed maps that counts its calls.
+// fakeIssues is an IssueIDs over a fixed map that counts its calls.
 type fakeIssues struct {
-	mu       sync.Mutex
-	ids      map[string]int64
-	keys     map[int64]string
-	err      error
-	idCalls  [][]string
-	keyCalls [][]int64
+	mu      sync.Mutex
+	ids     map[string]int64
+	err     error
+	idCalls [][]string
 }
 
 func (f *fakeIssues) IDs(_ context.Context, keys []string) (map[string]int64, error) {
@@ -40,32 +38,15 @@ func (f *fakeIssues) IDs(_ context.Context, keys []string) (map[string]int64, er
 	return out, nil
 }
 
-func (f *fakeIssues) Keys(_ context.Context, ids []int64) (map[int64]string, error) {
+func (f *fakeIssues) calls() [][]string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.keyCalls = append(f.keyCalls, slices.Clone(ids))
-	if f.err != nil {
-		return nil, f.err
-	}
-	out := map[int64]string{}
-	for _, id := range ids {
-		if k, ok := f.keys[id]; ok {
-			out[id] = k
-		}
-	}
-	return out, nil
-}
-
-func (f *fakeIssues) calls() (ids [][]string, keys [][]int64) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return slices.Clone(f.idCalls), slices.Clone(f.keyCalls)
+	return slices.Clone(f.idCalls)
 }
 
 func newIssues() *fakeIssues {
 	return &fakeIssues{
-		ids:  map[string]int64{"WEB-1": 10001, "WEB-2": 10002, "APP-7": 20007},
-		keys: map[int64]string{10001: "WEB-1", 10002: "WEB-2", 20007: "APP-7"},
+		ids: map[string]int64{"WEB-1": 10001, "WEB-2": 10002, "APP-7": 20007},
 	}
 }
 

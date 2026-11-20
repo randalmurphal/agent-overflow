@@ -36,7 +36,7 @@ var jiraRoutes = []jiraRoute{
 	{method: "GET", pattern: api + "issueLinkType", handle: listLinkTypes},
 
 	{method: "POST", pattern: api + "issue", handle: createIssue},
-	{method: "GET", pattern: api + "issue/{issue}", query: []string{"fields"}, repeat: []string{"fields"}, anonymous404: true, handle: getIssue},
+	{method: "GET", pattern: api + "issue/{issue}", query: []string{"fields", "expand"}, repeat: []string{"fields"}, anonymous404: true, handle: getIssue},
 	{method: "PUT", pattern: api + "issue/{issue}", query: []string{"returnIssue", "fields"}, handle: editIssue},
 	{method: "GET", pattern: api + "issue/{issue}/editmeta", anonymous404: true, handle: editMeta},
 	{method: "PUT", pattern: api + "issue/{issue}/assignee", handle: assignIssue},
@@ -88,11 +88,11 @@ var jiraRoutes = []jiraRoute{
 	{method: "PUT", pattern: agile + "issue/rank", handle: rankIssues},
 	{method: "PUT", pattern: agile + "issue/{issue}/estimation", query: []string{"boardId"}, handle: setEstimation},
 
-	{method: "GET", pattern: software + "board/{board}/issue", query: listQuery, repeat: []string{"fields"}, handle: softwareList(false)},
-	{method: "GET", pattern: software + "board/{board}/backlog", query: listQuery, repeat: []string{"fields"}, handle: softwareList(true)},
-	{method: "GET", pattern: software + "sprint/{sprint}/issue", query: listQuery, repeat: []string{"fields"}, handle: softwareList(false)},
-	{method: "GET", pattern: software + "board/{board}/sprint/{sprint}/issue", query: listQuery, repeat: []string{"fields"}, handle: softwareList(false)},
-	{method: "GET", pattern: software + "epic/{epic}/issue", query: listQuery, repeat: []string{"fields"}, handle: softwareList(false)},
+	{method: "GET", pattern: software + "board/{board}/issue", query: listQuery, repeat: []string{"fields"}, handle: softwareList(false, true)},
+	{method: "GET", pattern: software + "board/{board}/backlog", query: listQuery, repeat: []string{"fields"}, handle: softwareList(true, false)},
+	{method: "GET", pattern: software + "sprint/{sprint}/issue", query: listQuery, repeat: []string{"fields"}, handle: softwareList(false, false)},
+	{method: "GET", pattern: software + "board/{board}/sprint/{sprint}/issue", query: listQuery, repeat: []string{"fields"}, handle: softwareList(false, false)},
+	{method: "GET", pattern: software + "epic/{epic}/issue", query: listQuery, repeat: []string{"fields"}, handle: softwareList(false, false)},
 	{method: "GET", pattern: software + "board/{board}/issue/approximate-count", query: []string{"jql"}, handle: softwareCount(false)},
 	{method: "GET", pattern: software + "board/{board}/backlog/approximate-count", query: []string{"jql"}, handle: softwareCount(true)},
 }

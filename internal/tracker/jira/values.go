@@ -18,7 +18,8 @@ type Input struct {
 	kind  inputKind
 	texts []string
 	raw   json.RawMessage
-	from  *adf.Node
+	// from is the Markdown a rich text edit was written from.
+	from *string
 }
 
 type inputKind uint8
@@ -53,12 +54,14 @@ func RawJSON(v json.RawMessage) Input {
 	return Input{kind: inputRaw, raw: slices.Clone(v)}
 }
 
-// EditedFrom records the stored document the Markdown of a rich text
-// Text was written from. A plan refuses with a *StaleError when the field
-// holds another document by then, so the edit never undoes a change made
-// meanwhile.
-func (in Input) EditedFrom(doc *adf.Node) Input {
-	in.from = doc
+// EditedFrom records the Markdown the Markdown of a rich text Text was
+// written from: the field as the writer saw it. A plan refuses with a
+// *StaleError when the stored document renders to other Markdown by
+// then, an empty field rendering to the empty string, so the edit never
+// undoes a change made meanwhile. Content Markdown cannot show is kept
+// whatever it holds, since the edit is applied to the stored document.
+func (in Input) EditedFrom(md string) Input {
+	in.from = &md
 	return in
 }
 
@@ -179,6 +182,9 @@ type builder struct {
 	c     *Client
 	opts  ValueOptions
 	stage *imageStage
+	// asked reports a conversion that may have read Jira: it resolved a
+	// mention.
+	asked bool
 }
 
 func (b *builder) build(ctx context.Context, f FieldMeta, in Input) (Value, error) {

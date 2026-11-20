@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"agent-overflow/internal/tracker"
 	"agent-overflow/internal/tracker/adf"
 	"agent-overflow/internal/tracker/jira"
@@ -36,18 +38,52 @@ func zone(u jira.User) (*time.Location, error) {
 }
 
 // Worklogs finds the issues the author logged time on around the days
-// asked, then reads each issue's worklogs that started then and keeps the
-// author's whose day is q.From to q.To. worklogDate is a date field, with
-// no time to give as milliseconds, and JQL reads a date in the reader's
+// asked, with the worklogs Jira embeds in each, while it reads the
+// author's time zone, and keeps the author's worklogs whose day is q.From
+// to q.To. Jira embeds an issue's first 20 worklogs with their total
+// (measured), so only an issue with more is read again, its worklogs
+// that started around the days. worklogDate is a date field, with no
+// time to give as milliseconds, and JQL reads a date in the reader's
 // zone, not the author's, so the search widens the days by one either
-// side and the worklogs' start times decide.
+// side and the worklogs' start times decide. Jira's worklog/updated feed
+// is not used: it lists every worklog of the site changed since a time,
+// not the author's of the days asked.
 func (t *jiraTime) Worklogs(ctx context.Context, q tracker.WorklogQuery) ([]tracker.Worklog, error) {
 	if err := q.Check(); err != nil {
 		return nil, err
 	}
-	author, err := t.jira.User(ctx, string(q.Author))
-	if err != nil {
-		return nil, fmt.Errorf("jiraprovider: worklogs of %s: %w", q.Author, err)
+	// The search names only the account and the days, a day either side,
+	// so it runs while the author's zone is read.
+	wide := func(d tracker.Date, days int) string {
+		return jira.QuoteJQL(time.Date(d.Year(), d.Month(), d.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, days).Format(time.DateOnly))
+	}
+	jql := "worklogAuthor = " + jira.QuoteJQL(string(q.Author)) +
+		" AND worklogDate >= " + wide(q.From, -1) + " AND worklogDate <= " + wide(q.To, 1) +
+		// Paged in an order that cannot change between pages: Jira returns
+		// an unordered search in no stable order (measured).
+		" ORDER BY id ASC"
+	var (
+		author jira.User
+		res    jira.SearchResult
+	)
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() (err error) {
+		if author, err = t.jira.User(gctx, string(q.Author)); err != nil {
+			return fmt.Errorf("jiraprovider: worklogs of %s: %w", q.Author, err)
+		}
+		return nil
+	})
+	g.Go(func() (err error) {
+		if res, err = t.jira.SearchAll(gctx, jira.SearchQuery{JQL: jql, Fields: []string{"worklog"}}, 0); err != nil {
+			return fmt.Errorf("jiraprovider: issues %s logged time on: %w", q.Author, err)
+		}
+		return nil
+	})
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+	if !res.Complete {
+		return nil, fmt.Errorf("jiraprovider: issues %s logged time on: Jira warned that the search is incomplete", q.Author)
 	}
 	loc, err := zone(author)
 	if err != nil {
@@ -55,24 +91,16 @@ func (t *jiraTime) Worklogs(ctx context.Context, q tracker.WorklogQuery) ([]trac
 	}
 	from := time.Date(q.From.Year(), q.From.Month(), q.From.Day(), 0, 0, 0, 0, loc)
 	to := time.Date(q.To.Year(), q.To.Month(), q.To.Day(), 0, 0, 0, 0, loc).AddDate(0, 0, 1)
-	jql := "worklogAuthor = " + jira.QuoteJQL(author.AccountID) +
-		" AND worklogDate >= " + jira.QuoteJQL(from.AddDate(0, 0, -1).Format(time.DateOnly)) +
-		" AND worklogDate <= " + jira.QuoteJQL(to.Format(time.DateOnly)) +
-		// Paged in an order that cannot change between pages: Jira returns
-		// an unordered search in no stable order (measured).
-		" ORDER BY id ASC"
-	res, err := t.jira.SearchAll(ctx, jira.SearchQuery{JQL: jql, Fields: []string{"status"}}, 0)
-	if err != nil {
-		return nil, fmt.Errorf("jiraprovider: issues %s logged time on: %w", q.Author, err)
-	}
-	if !res.Complete {
-		return nil, fmt.Errorf("jiraprovider: issues %s logged time on: Jira warned that the search is incomplete", q.Author)
-	}
 	var out []tracker.Worklog
 	for _, is := range res.Issues {
-		list, err := t.jira.Worklogs(ctx, jira.WorklogQuery{Issue: is.ID, StartedAfter: from.Add(-time.Millisecond), StartedBefore: to})
+		list, err := is.Field("worklog").Worklogs()
 		if err != nil {
 			return nil, fmt.Errorf("jiraprovider: worklogs of %s: %w", is.Key, err)
+		}
+		if !list.Complete {
+			if list, err = t.jira.Worklogs(ctx, jira.WorklogQuery{Issue: is.ID, StartedAfter: from.Add(-time.Millisecond), StartedBefore: to}); err != nil {
+				return nil, fmt.Errorf("jiraprovider: worklogs of %s: %w", is.Key, err)
+			}
 		}
 		for _, w := range list.Worklogs {
 			if w.Author == nil || w.Author.AccountID != author.AccountID {
@@ -99,7 +127,7 @@ func (t *jiraTime) AddWorklog(ctx context.Context, in tracker.WorklogInput) trac
 	if err := checkIssue(in.Issue); err != nil {
 		return tracker.Invalid(tracker.StepWorklog, err, in.Issue)
 	}
-	me, err := t.jira.Myself(ctx)
+	me, err := t.jira.Me(ctx)
 	if err != nil {
 		return worklogResult(in.Issue, "", beforeSend(fmt.Errorf("jiraprovider: who logs the time: %w", err)))
 	}
@@ -115,8 +143,9 @@ func (t *jiraTime) AddWorklog(ctx context.Context, in tracker.WorklogInput) trac
 }
 
 // EditWorklog changes a Jira worklog that still holds what From says,
-// keeping its start's time of day when it moves to another day; the
-// client checks it again as its last read before the write.
+// keeping its start's time of day when it moves to another day. The read
+// that checks it is the last of the worklog before the write; the
+// author's zone (cached by the client) is read after it.
 func (t *jiraTime) EditWorklog(ctx context.Context, in tracker.WorklogEdit) tracker.Result {
 	if err := in.Check(); err != nil {
 		return tracker.Invalid(tracker.StepWorklog, err, in.From.Issue)
@@ -132,7 +161,9 @@ func (t *jiraTime) EditWorklog(ctx context.Context, in tracker.WorklogEdit) trac
 	if err != nil {
 		return worklogResult(in.From.Issue, in.From.Author, beforeSend(err), days...)
 	}
-	edit := jira.WorklogEdit{Issue: string(in.From.Issue), ID: string(in.From.ID), From: &read, Markdown: in.Description, AcceptLoss: in.AcceptLoss}
+	// The worklog was just read, so the client takes it as it is and reads
+	// it again only when the description names someone.
+	edit := jira.WorklogEdit{Issue: string(in.From.Issue), ID: string(in.From.ID), Current: &read, Markdown: in.Description, AcceptLoss: in.AcceptLoss}
 	if in.Spent != nil {
 		edit.TimeSpent = *in.Spent
 	}

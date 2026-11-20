@@ -80,26 +80,45 @@ func detailIssue() map[string]any {
 	})
 }
 
-// commentsJSON answers comment reads from a list of n, by offset.
+// commentsJSON answers comment reads from a list of n, by offset, oldest
+// first or, for orderBy=-created, newest first.
 func commentsJSON(t *testing.T, n int) jiratest.Handler {
 	return func(w http.ResponseWriter, r *http.Request, b []byte) {
 		start, _ := strconv.Atoi(r.URL.Query().Get("startAt"))
 		size, _ := strconv.Atoi(r.URL.Query().Get("maxResults"))
-		jiratest.WantQuery(t, r, "orderBy", "created")
+		order := r.URL.Query().Get("orderBy")
+		if order != "created" && order != "-created" {
+			t.Errorf("comments ordered by %q", order)
+		}
 		var out []string
 		for i := start; i < min(start+size, n); i++ {
+			at := i
+			if order == "-created" {
+				at = n - 1 - i
+			}
 			out = append(out, fmt.Sprintf(`{"id":"%d","author":%s,"body":%s,"created":%q,"updated":%q}`,
-				900+i, user1JSON, mustJSON(adf.Doc(para(fmt.Sprint("comment ", i)))), updatedAt, updatedAt))
+				900+at, user1JSON, mustJSON(adf.Doc(para(fmt.Sprint("comment ", at)))), updatedAt, updatedAt))
 		}
 		jiratest.Reply(200, fmt.Sprintf(`{"startAt":%d,"total":%d,"comments":[%s]}`, start, n, strings.Join(out, ",")))(w, r, b)
 	}
 }
 
+// detailChangelog is issue 10001's one change, as the changelog read
+// pages it and as an issue read embeds it.
+const detailChange = `{"id":"100","author":` + user2JSON + `,"created":"2026-11-02T09:00:00.000+0000",
+	"items":[{"field":"status","fieldId":"status","fieldtype":"jira","from":"10000","fromString":"To Do","to":"10001","toString":"In Progress"}]}`
+
 func detailSite(t *testing.T, comments int) (*jiratest.Server, *Provider) {
 	f, p := newSite(t)
 	f.On("GET", issuePath, func(w http.ResponseWriter, r *http.Request, b []byte) {
-		jiratest.WantQuery(t, r, "fields", "*all")
-		jiratest.Reply(200, mustJSON(detailIssue()))(w, r, b)
+		// Every field but the comments and worklogs, which Detail reads
+		// or leaves out, with the screen, the moves and the changelog
+		// embedded (the server embeds the routes below).
+		jiratest.WantQuery(t, r, "fields", "*all,-comment,-worklog")
+		jiratest.WantQuery(t, r, "expand", "editmeta,changelog,transitions,transitions.fields")
+		is := detailIssue()
+		is["changelog"] = json.RawMessage(`{"startAt":0,"maxResults":1,"total":1,"histories":[` + detailChange + `]}`)
+		jiratest.Reply(200, mustJSON(is))(w, r, b)
 	})
 	var fields []string
 	for _, id := range []string{"summary", "description", "priority", "customfield_10016"} {
@@ -107,8 +126,7 @@ func detailSite(t *testing.T, comments int) (*jiratest.Server, *Provider) {
 	}
 	f.On("GET", editMetaPath, jiratest.Reply(200, `{"fields":{`+strings.Join(fields, ",")+`}}`))
 	f.On("GET", "/rest/api/3/issue/10001/comment", commentsJSON(t, comments))
-	f.On("GET", "/rest/api/3/issue/10001/changelog", jiratest.Reply(200, `{"startAt":0,"total":1,"isLast":true,"values":[{"id":"100","author":`+user2JSON+`,"created":"2026-11-02T09:00:00.000+0000",
-		"items":[{"field":"status","fieldId":"status","fieldtype":"jira","from":"10000","fromString":"To Do","to":"10001","toString":"In Progress"}]}]}`))
+	f.On("GET", "/rest/api/3/issue/10001/changelog", jiratest.Reply(200, `{"startAt":0,"total":1,"isLast":true,"values":[`+detailChange+`]}`))
 	f.On("GET", "/rest/api/3/issue/10001/transitions", jiratest.Reply(200, `{"transitions":[
 		{"id":"31","name":"Resolve","to":{"id":"10002","name":"Done","statusCategory":{"key":"done"}},"isAvailable":true,"fields":{
 		 "resolution":{"key":"resolution","name":"Resolution","required":true,"schema":{"type":"resolution","system":"resolution"},"operations":["set"],"allowedValues":[{"id":"1","name":"Fixed"}]}}},
@@ -226,8 +244,9 @@ func TestComments(t *testing.T) {
 			t.Fatalf("comment %s after %s", got[i], got[i-1])
 		}
 	}
-	if n := f.Count("GET", "/rest/api/3/issue/10001/comment"); n != 4 {
-		t.Errorf("%d reads, want 4", n)
+	// The newest 50 in one read, then 50 and 20 by offset.
+	if n := f.Count("GET", "/rest/api/3/issue/10001/comment"); n != 3 {
+		t.Errorf("%d reads, want 3", n)
 	}
 	for _, bad := range []tracker.PageToken{"x", "0", "-5", "07"} {
 		if _, err := p.Comments(t.Context(), "10001", bad); !errors.Is(err, tracker.ErrInvalidInput) {

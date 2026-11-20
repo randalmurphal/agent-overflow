@@ -1,8 +1,11 @@
 package jira
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"encoding/json/jsontext"
+	jsonv2 "encoding/json/v2"
 	"fmt"
 	"net/url"
 	"strings"
@@ -113,63 +116,140 @@ func (is *Issue) Field(id string) FieldValue { return FieldValue(is.Raw[id]) }
 
 // issueJSON is an issue as the API sends it.
 type issueJSON struct {
-	ID     string                     `json:"id"`
-	Key    string                     `json:"key"`
-	Fields map[string]json.RawMessage `json:"fields"`
+	ID     string      `json:"id"`
+	Key    string      `json:"key"`
+	Fields issueFields `json:"fields"`
 }
 
-// systemFields decode the typed fields; one entry per field ID. Each
-// reads a value that is not null.
-var systemFields = map[string]func(is *Issue, raw json.RawMessage) error{
-	"summary":     func(is *Issue, raw json.RawMessage) error { return json.Unmarshal(raw, &is.Summary) },
-	"labels":      func(is *Issue, raw json.RawMessage) error { return json.Unmarshal(raw, &is.Labels) },
-	"status":      func(is *Issue, raw json.RawMessage) error { return decodeInto(raw, &is.Status, statusJSON.status) },
-	"issuetype":   func(is *Issue, raw json.RawMessage) error { return decodeInto(raw, &is.Type, issueTypeJSON.issueType) },
-	"priority":    func(is *Issue, raw json.RawMessage) error { return decodeInto(raw, &is.Priority, priorityOf) },
-	"assignee":    func(is *Issue, raw json.RawMessage) error { return decodeInto(raw, &is.Assignee, userJSON.user) },
-	"reporter":    func(is *Issue, raw json.RawMessage) error { return decodeInto(raw, &is.Reporter, userJSON.user) },
-	"parent":      func(is *Issue, raw json.RawMessage) error { return decodeInto(raw, &is.Parent, issueRefJSON.ref) },
-	"resolution":  func(is *Issue, raw json.RawMessage) error { return decodeInto(raw, &is.Resolution, resolutionOf) },
-	"project":     func(is *Issue, raw json.RawMessage) error { return decodeInto(raw, &is.Project, projectJSON.project) },
-	"description": func(is *Issue, raw json.RawMessage) error { return decodeDoc(raw, &is.Description) },
-	"created":     func(is *Issue, raw json.RawMessage) error { return decodeTime(raw, &is.Created) },
-	"updated":     func(is *Issue, raw json.RawMessage) error { return decodeTime(raw, &is.Updated) },
-	"duedate":     func(is *Issue, raw json.RawMessage) error { return json.Unmarshal(raw, &is.DueDate) },
-	"components":  func(is *Issue, raw json.RawMessage) error { return decodeList(raw, &is.Components, componentOf) },
-	"fixVersions": func(is *Issue, raw json.RawMessage) error {
-		return decodeList(raw, &is.FixVersions, versionJSON.version)
+// fieldDecoder decodes one typed field's value, which is not null, into
+// is, with the options of the answer it is part of.
+type fieldDecoder func(is *Issue, raw jsontext.Value, opts jsonv2.Options) error
+
+// systemFields decode the typed fields; one entry per field ID.
+var systemFields = map[string]fieldDecoder{
+	"summary": func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
+		return jsonv2.Unmarshal(raw, &is.Summary, o)
 	},
-	"attachment": func(is *Issue, raw json.RawMessage) error {
-		return decodeList(raw, &is.Attachments, attachmentJSON.attachment)
+	"labels": func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
+		return jsonv2.Unmarshal(raw, &is.Labels, o)
 	},
-	"subtasks":   func(is *Issue, raw json.RawMessage) error { return decodeList(raw, &is.Subtasks, issueRefJSON.ref) },
-	"issuelinks": func(is *Issue, raw json.RawMessage) error { return decodeList(raw, &is.Links, issueLinkJSON.link) },
+	"status": func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
+		return decodeInto(raw, o, &is.Status, statusJSON.status)
+	},
+	"issuetype": func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
+		return decodeInto(raw, o, &is.Type, issueTypeJSON.issueType)
+	},
+	"priority": func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
+		return decodeInto(raw, o, &is.Priority, priorityOf)
+	},
+	"assignee": func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
+		return decodeInto(raw, o, &is.Assignee, userJSON.user)
+	},
+	"reporter": func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
+		return decodeInto(raw, o, &is.Reporter, userJSON.user)
+	},
+	"parent": func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
+		return decodeInto(raw, o, &is.Parent, issueRefJSON.ref)
+	},
+	"resolution": func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
+		return decodeInto(raw, o, &is.Resolution, resolutionOf)
+	},
+	"project": func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
+		return decodeInto(raw, o, &is.Project, projectJSON.project)
+	},
+	"description": func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
+		return decodeDocWith(raw, o, &is.Description)
+	},
+	"created": func(is *Issue, raw jsontext.Value, o jsonv2.Options) error { return decodeTime(raw, o, &is.Created) },
+	"updated": func(is *Issue, raw jsontext.Value, o jsonv2.Options) error { return decodeTime(raw, o, &is.Updated) },
+	"duedate": func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
+		return jsonv2.Unmarshal(raw, &is.DueDate, o)
+	},
+	"components": func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
+		return decodeList(raw, o, &is.Components, componentOf)
+	},
+	"fixVersions": func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
+		return decodeList(raw, o, &is.FixVersions, versionJSON.version)
+	},
+	"attachment": func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
+		return decodeList(raw, o, &is.Attachments, attachmentJSON.attachment)
+	},
+	"subtasks": func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
+		return decodeList(raw, o, &is.Subtasks, issueRefJSON.ref)
+	},
+	"issuelinks": func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
+		return decodeList(raw, o, &is.Links, issueLinkJSON.link)
+	},
 }
 
-// decode turns v into an Issue, field by field.
-func (v issueJSON) decode() *Issue {
-	is := &Issue{ID: v.ID, Key: v.Key}
-	for id, raw := range v.Fields {
-		dec, typed := systemFields[id]
-		if !typed {
-			if is.Raw == nil {
-				is.Raw = map[string]json.RawMessage{}
-			}
-			is.Raw[id] = raw
-			continue
+// issueFields is an issue's fields object, read in one pass over the
+// answer: each typed field decodes from its value where it lies in the
+// answer, and every other field is kept raw. A typed field whose value
+// does not decode stays zero, keeps its value in Raw and is named in
+// Problems.
+type issueFields struct {
+	is Issue
+}
+
+// UnmarshalJSONFrom reads the fields object, or null, from dec.
+func (f *issueFields) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
+	opts := dec.Options()
+	if dec.PeekKind() == 'n' {
+		_, err := dec.ReadToken()
+		return err
+	}
+	tok, err := dec.ReadToken()
+	if err != nil {
+		return err
+	}
+	if tok.Kind() != '{' {
+		return fmt.Errorf("jira: an issue's fields are a JSON %s, not an object", tok.Kind())
+	}
+	is := &f.is
+	for dec.PeekKind() != '}' {
+		name, err := dec.ReadToken()
+		if err != nil {
+			return err
 		}
-		if isNull(raw) {
-			continue
+		id := name.String()
+		raw, err := dec.ReadValue()
+		if err != nil {
+			return err
 		}
-		if err := dec(is, raw); err != nil {
-			if is.Raw == nil {
-				is.Raw = map[string]json.RawMessage{}
+		decode, typed := systemFields[id]
+		switch {
+		case !typed:
+			is.keep(id, raw)
+		case nullValue(raw):
+		default:
+			if err := decode(is, raw, opts); err != nil {
+				is.keep(id, raw)
+				is.Problems = append(is.Problems, FieldProblem{Field: id, Err: err})
 			}
-			is.Raw[id] = raw
-			is.Problems = append(is.Problems, FieldProblem{Field: id, Err: err})
 		}
 	}
-	return is
+	_, err = dec.ReadToken()
+	return err
+}
+
+// keep stores a copy of raw, which is only valid until the decoder reads
+// on, as the raw value of field id.
+func (is *Issue) keep(id string, raw jsontext.Value) {
+	if is.Raw == nil {
+		is.Raw = map[string]json.RawMessage{}
+	}
+	is.Raw[id] = json.RawMessage(bytes.Clone(raw))
+}
+
+// nullValue reports a JSON null; a value from the decoder carries no
+// surrounding space.
+func nullValue(raw jsontext.Value) bool { return string(raw) == "null" }
+
+// decode is v as an Issue.
+func (v issueJSON) decode() *Issue {
+	is := v.Fields.is
+	is.ID, is.Key = v.ID, v.Key
+	return &is
 }
 
 func isNull(raw json.RawMessage) bool {
@@ -179,9 +259,9 @@ func isNull(raw json.RawMessage) bool {
 
 // decodeInto decodes raw as J and stores conv of it in *dst. A failure
 // leaves *dst nil.
-func decodeInto[J, T any](raw json.RawMessage, dst **T, conv func(J) T) error {
+func decodeInto[J, T any](raw jsontext.Value, opts jsonv2.Options, dst **T, conv func(J) T) error {
 	var j J
-	if err := json.Unmarshal(raw, &j); err != nil {
+	if err := jsonv2.Unmarshal(raw, &j, opts); err != nil {
 		return err
 	}
 	v := conv(j)
@@ -190,9 +270,9 @@ func decodeInto[J, T any](raw json.RawMessage, dst **T, conv func(J) T) error {
 }
 
 // decodeList decodes raw as a list of J and stores conv of each in *dst.
-func decodeList[J, T any](raw json.RawMessage, dst *[]T, conv func(J) T) error {
+func decodeList[J, T any](raw jsontext.Value, opts jsonv2.Options, dst *[]T, conv func(J) T) error {
 	var js []J
-	if err := json.Unmarshal(raw, &js); err != nil {
+	if err := jsonv2.Unmarshal(raw, &js, opts); err != nil {
 		return err
 	}
 	out := make([]T, len(js))
@@ -203,9 +283,26 @@ func decodeList[J, T any](raw json.RawMessage, dst *[]T, conv func(J) T) error {
 	return nil
 }
 
+// decodeDoc decodes raw, read on its own, as an ADF document.
 func decodeDoc(raw json.RawMessage, dst **adf.Node) error {
+	return docOf(raw, nil, dst)
+}
+
+// decodeDocWith decodes raw, a value of an answer read with opts, as an
+// ADF document.
+func decodeDocWith(raw jsontext.Value, opts jsonv2.Options, dst **adf.Node) error {
+	return docOf(json.RawMessage(raw), opts, dst)
+}
+
+func docOf(raw json.RawMessage, opts jsonv2.Options, dst **adf.Node) error {
 	var doc adf.Node
-	if err := json.Unmarshal(raw, &doc); err != nil {
+	var err error
+	if opts == nil {
+		err = json.Unmarshal(raw, &doc)
+	} else {
+		err = jsonv2.Unmarshal(raw, &doc, opts)
+	}
+	if err != nil {
 		return err
 	}
 	if doc.Type != "doc" {
@@ -215,9 +312,9 @@ func decodeDoc(raw json.RawMessage, dst **adf.Node) error {
 	return nil
 }
 
-func decodeTime(raw json.RawMessage, dst *time.Time) error {
+func decodeTime(raw jsontext.Value, opts jsonv2.Options, dst *time.Time) error {
 	var s string
-	if err := json.Unmarshal(raw, &s); err != nil {
+	if err := jsonv2.Unmarshal(raw, &s, opts); err != nil {
 		return err
 	}
 	t, err := parseTime(s)

@@ -207,9 +207,14 @@ type JiraIssue struct {
 	Resolution string    `json:"resolution,omitempty"`
 	Created    time.Time `json:"created,omitzero"`
 	Updated    time.Time `json:"updated,omitzero"`
-	Resolved   time.Time `json:"resolved,omitzero"`
-	Sprints    []int64   `json:"sprints,omitempty"`
-	Rank       string    `json:"rank,omitempty"`
+	// Indexed, when set, is when searches and issue lists first show the
+	// issue: before it they leave it out, as an update Jira's index has
+	// not taken yet. Reads by key show it all along. How long Jira's
+	// index lags is unverified; a fixture picks the lag.
+	Indexed  time.Time `json:"indexed,omitzero"`
+	Resolved time.Time `json:"resolved,omitzero"`
+	Sprints  []int64   `json:"sprints,omitempty"`
+	Rank     string    `json:"rank,omitempty"`
 	// OriginalEstimate and RemainingEstimate are in seconds; nil is none.
 	OriginalEstimate  *int64                     `json:"originalEstimate,omitempty"`
 	RemainingEstimate *int64                     `json:"remainingEstimate,omitempty"`

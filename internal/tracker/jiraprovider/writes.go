@@ -318,7 +318,7 @@ func (p *Provider) MoveToSprint(ctx context.Context, in tracker.SprintMoveInput)
 	if err != nil {
 		return notSent(err)
 	}
-	var sprint int64
+	var sprint *jira.Sprint
 	if in.Sprint != "" {
 		if sprint, err = p.boardSprint(ctx, in.Board, in.Sprint, jira.SprintActive, jira.SprintFuture); err != nil {
 			return notSent(err)
@@ -331,10 +331,10 @@ func (p *Provider) MoveToSprint(ctx context.Context, in tracker.SprintMoveInput)
 	return boardParts(in.Board, tracker.StepSprintMove, in.Issues, listed, func(send []tracker.IssueID) tracker.Result {
 		var res jira.BatchResult
 		var err error
-		if sprint == 0 {
+		if sprint == nil {
 			res, err = p.jira.MoveToBacklog(ctx, jira.BacklogMove{Board: board, Issues: refs(send)})
 		} else {
-			res, err = p.jira.MoveToSprint(ctx, jira.SprintMove{Sprint: sprint, Issues: refs(send)})
+			res, err = p.jira.MoveToSprint(ctx, jira.SprintMove{Sprint: sprint.ID, Issues: refs(send), Current: sprint})
 		}
 		return batchParts(in.Board, tracker.StepSprintMove, send, res, err)
 	})

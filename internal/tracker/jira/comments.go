@@ -1,6 +1,7 @@
 package jira
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -81,7 +82,16 @@ func (c *Client) Comments(ctx context.Context, issue string, startAt, max int) (
 	if startAt < 0 || max < 0 {
 		return CommentPage{}, notSent("comments of %s: a negative page", issue)
 	}
-	q := url.Values{"startAt": {strconv.Itoa(startAt)}, "maxResults": {strconv.Itoa(pageSize(max, 100, 5000))}, "orderBy": {"created"}}
+	q := url.Values{"startAt": {strconv.Itoa(startAt)}, "maxResults": {strconv.Itoa(pageSize(max, 100, maxCommentPage))}, "orderBy": {"created"}}
+	return c.commentPage(ctx, issue, path, q)
+}
+
+// maxCommentPage is the most comments a page asks for.
+const maxCommentPage = 5000
+
+// commentPage reads the page of issue's comments q names; path is the
+// issue's path.
+func (c *Client) commentPage(ctx context.Context, issue, path string, q url.Values) (CommentPage, error) {
 	var v struct {
 		Comments []commentJSON `json:"comments"`
 		StartAt  int           `json:"startAt"`
@@ -227,9 +237,13 @@ func (c *Client) AddComment(ctx context.Context, in CommentInput) (CommentResult
 	if err != nil {
 		return res, err
 	}
-	props, _, err := c.commentAudience(ctx, in.Issue, in.Audience)
-	if err != nil {
-		return res, notSentErr(fmt.Errorf("jira: comment on %s: %w", in.Issue, err))
+	// A public comment is taken by every project and carries no property,
+	// so only the other audiences read the project.
+	var props []map[string]any
+	if in.Audience != AudiencePublic {
+		if props, _, err = c.commentAudience(ctx, in.Issue, in.Audience); err != nil {
+			return res, notSentErr(fmt.Errorf("jira: comment on %s: %w", in.Issue, err))
+		}
 	}
 	b := &builder{c: c, opts: ValueOptions{Issue: in.Issue, ImageDir: in.ImageDir}, stage: newImageStage(in.ImageDir, c.maxUpload)}
 	doc, _, err := b.markdown(ctx, in.Markdown, nil)
@@ -300,16 +314,22 @@ func (c *Client) uploadInto(ctx context.Context, issue string, doc *adf.Node, im
 	return out, nil
 }
 
-// CommentEdit replaces a comment's text. From is the comment as read
-// when the Markdown was written, which the edit checks: a comment that
-// holds another body by now (an absent one included) is a *StaleError.
-// Unchecked edits whatever is stored, with no check. One of the two is
-// required.
+// CommentEdit replaces a comment's text. It says what it is based on,
+// with no default; exactly one of From, Current and Unchecked is set.
+// From is the comment as read when the Markdown was written, which the
+// edit checks: a comment that holds another body by now (an absent one
+// included) is a *StaleError. Current is the comment as the caller read
+// it just now, as its last read before the edit: the edit is based on
+// it, and the comment is read again and checked against it only when
+// converting the Markdown read Jira (a mention), so the read the edit
+// rests on stays the last before the write. Unchecked edits whatever is
+// stored, with no check.
 type CommentEdit struct {
 	Issue     string
 	ID        string
 	Markdown  string
 	From      *Comment
+	Current   *Comment
 	Unchecked bool
 	// AcceptLoss is the user's explicit acceptance that the edit loses
 	// content Markdown cannot show; without it such an edit is a
@@ -325,7 +345,8 @@ type CommentEdit struct {
 // comment's visibility. With From, the Markdown is converted against its
 // body (its mentions read first) and the comment is read as the last read
 // before the first write: a comment that holds another body by then is a
-// *StaleError. This narrows the window for a lost update and does not
+// *StaleError. Current is the same with that read left out unless the
+// conversion read Jira. This narrows the window for a lost update and does not
 // close it, since Jira takes no precondition on the write. Unchecked
 // reads the stored body first and edits it with no check. An edit that would
 // store the body already stored sends nothing and returns Unchanged with
@@ -339,13 +360,13 @@ func (c *Client) EditComment(ctx context.Context, in CommentEdit) (CommentResult
 	if err != nil {
 		return res, err
 	}
+	base := cmp.Or(in.From, in.Current)
 	switch {
-	case (in.From == nil) == !in.Unchecked:
-		return res, notSent("edit comment %s: give From, the comment the edit is based on, or Unchecked, not both", in.ID)
-	case in.From != nil && in.From.ID != in.ID:
-		return res, notSent("edit comment %s: From is comment %s", in.ID, in.From.ID)
+	case editBases(in.From != nil, in.Current != nil, in.Unchecked) != 1:
+		return res, notSent("edit comment %s: give one of From, Current and Unchecked", in.ID)
+	case base != nil && base.ID != in.ID:
+		return res, notSent("edit comment %s: its base is comment %s", in.ID, base.ID)
 	}
-	base := in.From
 	if in.Unchecked {
 		if base, err = c.readComment(ctx, in.Issue, in.ID); err != nil {
 			return res, err
@@ -360,11 +381,11 @@ func (c *Client) EditComment(ctx context.Context, in CommentEdit) (CommentResult
 	if err != nil {
 		return res, notSentErr(fmt.Errorf("jira: edit comment %s on %s: %w", in.ID, in.Issue, err))
 	}
-	if !in.Unchecked {
+	if in.From != nil || in.Current != nil && b.asked {
 		if cur, err = c.readComment(ctx, in.Issue, in.ID); err != nil {
 			return res, err
 		}
-		if !adf.Equal(in.From.Body, cur.Body) {
+		if !adf.Equal(base.Body, cur.Body) {
 			return res, notSentErr(&StaleError{Issue: in.Issue, What: "comment " + in.ID})
 		}
 	}
@@ -416,4 +437,15 @@ func (c *Client) DeleteComment(ctx context.Context, issue, id string) error {
 		return fmt.Errorf("jira: delete comment %s on %s: %w", id, issue, err)
 	}
 	return nil
+}
+
+// editBases counts the bases an edit names.
+func editBases(bases ...bool) int {
+	n := 0
+	for _, b := range bases {
+		if b {
+			n++
+		}
+	}
+	return n
 }

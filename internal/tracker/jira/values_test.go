@@ -148,7 +148,7 @@ func TestValueRefusals(t *testing.T) {
 		"unknown type as text":     {unknownField, Text("Main account")},
 		"raw that is not JSON":     {textField, RawJSON(json.RawMessage(`{`))},
 		"set not offered":          {addOnly, Texts("a")},
-		"EditedFrom on plain text": {textField, Text("x").EditedFrom(layoutDoc())},
+		"EditedFrom on plain text": {textField, Text("x").EditedFrom("x")},
 		"parent that is no key":    {parentField, Text("not a key")},
 	} {
 		_, err := c.Value(t.Context(), tc.f, tc.in, ValueOptions{})

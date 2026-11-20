@@ -344,8 +344,10 @@ func TestPlanEditFieldSetTwice(t *testing.T) {
 	if !trackerapi.WriteNotApplied(err) || !strings.Contains(fmt.Sprint(err), "twice") {
 		t.Errorf("got %v", err)
 	}
-	if n := f.Count("GET", "/rest/api/3/issue/WEB-1"); n != 0 {
-		t.Errorf("read the issue for a plan already refused: %d", n)
+	// The screen comes with the issue's read, so a refused plan reads it
+	// once and nothing more.
+	if n := len(f.Requests()); n != 1 || f.Count("GET", "/rest/api/3/issue/WEB-1") != 1 {
+		t.Errorf("a plan refused on its screen sent %d requests, want the one screen read", n)
 	}
 }
 
@@ -425,7 +427,7 @@ func TestStalePlanIsRefused(t *testing.T) {
 		t.Error("a stale plan was written")
 	}
 	// The Markdown says which document it was written from.
-	_, err = c.PlanEdit(t.Context(), EditInput{Issue: "WEB-1", Fields: []FieldInput{{Field: "description", Value: Text(md).EditedFrom(layoutDoc())}}})
+	_, err = c.PlanEdit(t.Context(), EditInput{Issue: "WEB-1", Fields: []FieldInput{{Field: "description", Value: Text(md).EditedFrom(adf.ToMarkdown(layoutDoc()))}}})
 	if _, stale := errors.AsType[*StaleError](err); !stale {
 		t.Errorf("EditedFrom: %v", err)
 	}

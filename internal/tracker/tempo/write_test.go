@@ -71,14 +71,14 @@ func TestUpdateKeepsWhatItDoesNotChange(t *testing.T) {
 			attrs: [][2]string{{"_Category_", "mtg"}, {"_Note_", "keep"}}}.json())
 	ctx := context.Background()
 	read, err := c.Worklog(ctx, 70)
-	if err != nil || read.Issue.Key != "WEB-2" {
+	if err != nil || read.Issue != (Issue{ID: 10002}) {
 		t.Fatalf("read %+v %v", read, err)
 	}
 	stored, err := c.Update(ctx, Change{From: read, Spent: ptr(2 * time.Hour)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored.Spent != 2*time.Hour || stored.Issue.Key != "WEB-2" {
+	if stored.Spent != 2*time.Hour || stored.Issue != (Issue{ID: 10002}) {
 		t.Errorf("stored %+v", stored)
 	}
 }

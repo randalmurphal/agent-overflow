@@ -90,30 +90,22 @@ func preReads() []preRead {
 		{"Rank", "board check", onSite, func(ctx context.Context, p *Provider) tracker.Result { return p.Rank(ctx, rank) }, true},
 		{"MoveToSprint", "board", nil, func(ctx context.Context, p *Provider) tracker.Result { return p.MoveToSprint(ctx, toSprint) }, true},
 		{"MoveToSprint", "sprint check", onSite, func(ctx context.Context, p *Provider) tracker.Result { return p.MoveToSprint(ctx, toSprint) }, true},
+		// The board's sprint listing holds the sprint, so the client reads
+		// it no more: the board check is the last read.
 		{"MoveToSprint", "board check", sprints, func(ctx context.Context, p *Provider) tracker.Result { return p.MoveToSprint(ctx, toSprint) }, true},
-		{"MoveToSprint", "sprint", func(t *testing.T, f *jiratest.Server, ts *tempotest.Server, s int) {
-			sprints(t, f, ts, s)
-			listsIssues(t, f, board3Issues, "10001")
-		}, func(ctx context.Context, p *Provider) tracker.Result { return p.MoveToSprint(ctx, toSprint) }, true},
 		{"CreateSprint", "none", nil, func(ctx context.Context, p *Provider) tracker.Result {
 			return p.CreateSprint(ctx, tracker.SprintInput{Board: "3", Name: "x"})
 		}, false},
 		{"StartSprint", "sprint check", nil, func(ctx context.Context, p *Provider) tracker.Result {
 			return p.StartSprint(ctx, tracker.SprintStart{Board: "3", Sprint: "8", Start: start, End: end})
 		}, true},
-		{"StartSprint", "sprint", sprints, func(ctx context.Context, p *Provider) tracker.Result {
-			return p.StartSprint(ctx, tracker.SprintStart{Board: "3", Sprint: "8", Start: start, End: end})
-		}, true},
 		{"EditSprint", "sprint check", nil, func(ctx context.Context, p *Provider) tracker.Result {
-			return p.EditSprint(ctx, tracker.SprintEdit{Board: "3", Sprint: "7", Goal: ptr("")})
-		}, true},
-		{"EditSprint", "sprint", sprints, func(ctx context.Context, p *Provider) tracker.Result {
 			return p.EditSprint(ctx, tracker.SprintEdit{Board: "3", Sprint: "7", Goal: ptr("")})
 		}, true},
 		{"CompleteSprint", "sprint check", nil, func(ctx context.Context, p *Provider) tracker.Result {
 			return p.CompleteSprint(ctx, tracker.SprintCompletion{Board: "3", Sprint: "7"})
 		}, true},
-		{"CompleteSprint", "sprint", sprints, func(ctx context.Context, p *Provider) tracker.Result {
+		{"CompleteSprint", "done column", sprints, func(ctx context.Context, p *Provider) tracker.Result {
 			return p.CompleteSprint(ctx, tracker.SprintCompletion{Board: "3", Sprint: "7"})
 		}, true},
 		{"AddComment", "project", nil, func(ctx context.Context, p *Provider) tracker.Result {
@@ -125,9 +117,10 @@ func preReads() []preRead {
 		{"DeleteComment", "comment", nil, func(ctx context.Context, p *Provider) tracker.Result {
 			return p.DeleteComment(ctx, tracker.CommentDelete{Issue: "10001", Comment: "900"})
 		}, true},
-		{"Link", "link types", nil, func(ctx context.Context, p *Provider) tracker.Result {
+		// The link type is given by ID, which the client sends with no read.
+		{"Link", "none", nil, func(ctx context.Context, p *Provider) tracker.Result {
 			return p.Link(ctx, tracker.LinkInput{Type: "10000", Outward: "10001", Inward: "10002"})
-		}, true},
+		}, false},
 		{"Unlink", "links", nil, func(ctx context.Context, p *Provider) tracker.Result {
 			return p.Unlink(ctx, tracker.UnlinkInput{Issue: "10001", Link: "300", Other: "10002"})
 		}, true},

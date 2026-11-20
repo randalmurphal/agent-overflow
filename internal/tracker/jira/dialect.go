@@ -21,6 +21,19 @@ import (
 // (https://developer.atlassian.com/cloud/jira/platform/rate-limiting/).
 type dialect struct{}
 
+// accountHeader names the account an answer was made for. Measured on
+// Jira Cloud (docs/references/tracker-api-measurements.md): every answer
+// to a request with a valid token carries it, equal to myself's
+// accountId, a 404 included; no answer to a request with no credential
+// does, and an anonymous search answers 200 with no issues and no
+// login-reason header. Answers to a wrong or revoked token were not
+// measured.
+const accountHeader = "X-AAccountId"
+
+// answeredFor is the account the answer with header h was made for;
+// empty when it names none, which proves nothing about who was asked.
+func answeredFor(h http.Header) string { return strings.TrimSpace(h.Get(accountHeader)) }
+
 // refusedLogins are the X-Seraph-LoginReason values that mean the
 // credential was refused. AUTHORISATION_FAILED is a signed-in user
 // without permission, not a refused credential.

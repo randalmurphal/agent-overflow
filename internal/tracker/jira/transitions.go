@@ -41,29 +41,37 @@ func (c *Client) transitions(ctx context.Context, issue string) ([]Transition, e
 		return nil, err
 	}
 	var v struct {
-		Transitions []struct {
-			ID          string                   `json:"id"`
-			Name        string                   `json:"name"`
-			To          statusJSON               `json:"to"`
-			HasScreen   bool                     `json:"hasScreen"`
-			Available   *bool                    `json:"isAvailable"`
-			Conditional bool                     `json:"isConditional"`
-			Global      bool                     `json:"isGlobal"`
-			Fields      map[string]fieldMetaJSON `json:"fields"`
-		} `json:"transitions"`
+		Transitions transitionList `json:"transitions"`
 	}
 	if err := c.get(ctx, path+"/transitions", url.Values{"expand": {"transitions.fields"}}, &v); err != nil {
 		return nil, fmt.Errorf("jira: transitions of %s: %w", issue, err)
 	}
-	out := make([]Transition, len(v.Transitions))
-	for i, t := range v.Transitions {
+	return v.Transitions.transitions(), nil
+}
+
+// transitionList are an issue's transitions with their screens' fields,
+// as the transitions read and an issue read that expands them send them.
+type transitionList []struct {
+	ID          string                   `json:"id"`
+	Name        string                   `json:"name"`
+	To          statusJSON               `json:"to"`
+	HasScreen   bool                     `json:"hasScreen"`
+	Available   *bool                    `json:"isAvailable"`
+	Conditional bool                     `json:"isConditional"`
+	Global      bool                     `json:"isGlobal"`
+	Fields      map[string]fieldMetaJSON `json:"fields"`
+}
+
+func (ts transitionList) transitions() []Transition {
+	out := make([]Transition, len(ts))
+	for i, t := range ts {
 		out[i] = Transition{
 			ID: t.ID, Name: t.Name, To: t.To.status(), HasScreen: t.HasScreen,
 			Available: t.Available == nil || *t.Available, Conditional: t.Conditional, Global: t.Global,
 			Fields: screenOf(t.Fields),
 		}
 	}
-	return out, nil
+	return out
 }
 
 // TransitionInput moves an issue.
@@ -260,7 +268,9 @@ func (c *Client) checkRequired(ctx context.Context, issue string, t Transition, 
 	for i, f := range open {
 		ids[i] = f.ID
 	}
-	var is issueJSON
+	var is struct {
+		Fields map[string]json.RawMessage `json:"fields"`
+	}
 	if err := c.get(ctx, path, url.Values{"fields": {strings.Join(ids, ",")}}, &is); err != nil {
 		return fmt.Errorf("jira: transition %s: read its required fields: %w", issue, err)
 	}

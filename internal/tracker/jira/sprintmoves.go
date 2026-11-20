@@ -17,12 +17,16 @@ type SprintMove struct {
 	// RankFieldID is the rank field's number when Position is set; zero
 	// uses Jira's default.
 	RankFieldID int64
+	// Current is the sprint as the caller read it just now; nil reads it
+	// (see SprintUpdate.Current).
+	Current *Sprint
 }
 
 // MoveToSprint moves issues into a future or active sprint, in groups of
 // 50 that chain as Rank's do. Jira documents only a 204 for it, so any
-// other answer leaves a group's outcome unknown. The sprint is read first, and a closed one
-// is refused before anything is sent. A failure is a *BatchError with the
+// other answer leaves a group's outcome unknown. The sprint is read first,
+// or taken from Current, and a closed one is refused before anything is
+// sent. A failure is a *BatchError with the
 // result saying what happened to each issue.
 func (c *Client) MoveToSprint(ctx context.Context, in SprintMove) (BatchResult, error) {
 	if err := c.admit(ctx); err != nil {
@@ -35,7 +39,7 @@ func (c *Client) MoveToSprint(ctx context.Context, in SprintMove) (BatchResult, 
 	if err := checkBatch(in.Issues, in.Position, in.RankFieldID); err != nil {
 		return BatchResult{}, err
 	}
-	sp, err := c.sprint(ctx, in.Sprint)
+	sp, err := c.sprintOr(ctx, in.Sprint, in.Current)
 	if err != nil {
 		return BatchResult{}, notSentErr(err)
 	}
@@ -98,6 +102,9 @@ type SprintCompletion struct {
 	// Board is the board whose done column says which issues are
 	// finished; zero takes the sprint's own board.
 	Board int64
+	// Current and MoveToCurrent are the sprint and MoveTo as the caller
+	// read them just now; nil reads each (see SprintUpdate.Current).
+	Current, MoveToCurrent *Sprint
 }
 
 // SprintIssue is an issue of a sprint by its numeric ID and its key.
@@ -132,8 +139,8 @@ func sprintIssueIDs(issues []SprintIssue) []string {
 
 // CompleteSprint completes an active sprint. Jira's API takes no
 // destination for unfinished issues, so this moves them first: it reads
-// the sprint, the destination, the board's done column and every issue of
-// the sprint, refusing before any write when one of them is not as
+// the sprint and the destination (or takes them as the caller read
+// them), the board's done column and every issue of the sprint, refusing before any write when one of them is not as
 // needed; moves the issues whose status is not in the done column to
 // MoveTo or the backlog, by ID; lists the sprint's issues again; and closes the
 // sprint only when every move was done and no unfinished issue is left
@@ -197,7 +204,7 @@ func (c *Client) completionChecks(ctx context.Context, in SprintCompletion) ([]s
 	case in.MoveTo == in.Sprint:
 		return nil, notSent("unfinished issues cannot move to the sprint being completed")
 	}
-	sp, err := c.sprint(ctx, in.Sprint)
+	sp, err := c.sprintOr(ctx, in.Sprint, in.Current)
 	if err != nil {
 		return nil, err
 	}
@@ -205,7 +212,7 @@ func (c *Client) completionChecks(ctx context.Context, in SprintCompletion) ([]s
 		return nil, notSent("sprint %d is %s; only an active sprint completes", sp.ID, sp.State)
 	}
 	if in.MoveTo > 0 {
-		to, err := c.sprint(ctx, in.MoveTo)
+		to, err := c.sprintOr(ctx, in.MoveTo, in.MoveToCurrent)
 		if err != nil {
 			return nil, err
 		}

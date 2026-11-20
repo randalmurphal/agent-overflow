@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"strconv"
+	"time"
 
 	"agent-overflow/internal/tracker/trackerapi"
 )
@@ -146,7 +147,7 @@ func (c *Client) Projects(ctx context.Context, q ProjectQuery) (ProjectList, err
 	if q.Query != "" {
 		v.Set("query", q.Query)
 	}
-	found, complete, err := offsetPages[projectJSON](ctx, c, apiPath+"project/search", v, 100, q.Limit)
+	found, complete, _, err := offsetPages[projectJSON](ctx, c, apiPath+"project/search", v, 100, q.Limit)
 	out := ProjectList{Projects: make([]Project, len(found)), Complete: complete}
 	for i, p := range found {
 		out.Projects[i] = p.project()
@@ -227,7 +228,7 @@ func (c *Client) Priorities(ctx context.Context) ([]Priority, error) {
 	if err := c.admit(ctx); err != nil {
 		return nil, err
 	}
-	found, _, err := offsetPages[priorityJSON](ctx, c, apiPath+"priority/search", url.Values{}, 100, 0)
+	found, _, _, err := offsetPages[priorityJSON](ctx, c, apiPath+"priority/search", url.Values{}, 100, 0)
 	out := make([]Priority, len(found))
 	for i, p := range found {
 		out[i] = Priority(p)
@@ -264,9 +265,9 @@ func (c *Client) IssueLinkTypes(ctx context.Context) ([]LinkType, error) {
 // offsetPages reads path's pages (a path from the site root, under any
 // of the APIs that page by offset) of size from the start until the last
 // one, or until limit items when limit is above zero; complete reports
-// that the last page was read with every item kept. A failure returns
-// the items read before it.
-func offsetPages[T any](ctx context.Context, c *Client, path string, q url.Values, size, limit int) (out []T, complete bool, err error) {
+// that the last page was read with every item kept, and date is the first
+// answer's (answerDate). A failure returns the items read before it.
+func offsetPages[T any](ctx context.Context, c *Client, path string, q url.Values, size, limit int) (out []T, complete bool, date time.Time, err error) {
 	for start := 0; ; {
 		q.Set("startAt", strconv.Itoa(start))
 		q.Set("maxResults", strconv.Itoa(size))
@@ -275,25 +276,29 @@ func offsetPages[T any](ctx context.Context, c *Client, path string, q url.Value
 			IsLast bool  `json:"isLast"`
 			Total  int64 `json:"total"`
 		}
-		if _, err := c.call(ctx, trackerapi.Request{Path: path, Query: q}, &page); err != nil {
-			return out, false, err
+		resp, err := c.call(ctx, trackerapi.Request{Path: path, Query: q}, &page)
+		if err != nil {
+			return out, false, date, err
+		}
+		if start == 0 {
+			date = answerDate(resp)
 		}
 		next := start + len(page.Values)
 		last := page.IsLast || (page.Total > 0 && int64(next) >= page.Total)
 		for _, item := range page.Values {
 			if limit > 0 && len(out) == limit {
-				return out, false, nil // items past the limit
+				return out, false, date, nil // items past the limit
 			}
 			out = append(out, item)
 		}
 		switch {
 		case last:
-			return out, true, nil
+			return out, true, date, nil
 		case limit > 0 && len(out) == limit:
-			return out, false, nil
+			return out, false, date, nil
 		}
 		if len(page.Values) == 0 {
-			return out, false, fmt.Errorf("an empty page at %d that is not the last", start)
+			return out, false, date, fmt.Errorf("an empty page at %d that is not the last", start)
 		}
 		start = next
 	}

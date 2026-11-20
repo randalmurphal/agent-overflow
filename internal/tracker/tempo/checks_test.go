@@ -112,54 +112,29 @@ func (b blockingIssues) IDs(ctx context.Context, _ []string) (map[string]int64, 
 	return nil, ctx.Err()
 }
 
-func (b blockingIssues) Keys(ctx context.Context, _ []int64) (map[int64]string, error) {
-	b.started <- "Keys"
-	<-ctx.Done()
-	return nil, ctx.Err()
-}
-
 // TestCloseEndsIssueIDs: Close cancels the context of a call into the
-// caller's IssueIDs, so the call waiting on it returns.
+// caller's IssueIDs, so the write waiting on it returns.
 func TestCloseEndsIssueIDs(t *testing.T) {
-	for _, method := range []string{"IDs", "Keys"} {
-		t.Run(method, func(t *testing.T) {
-			f := tempotest.NewServer(t, testToken)
-			issues := blockingIssues{started: make(chan string, 1)}
-			c := testClient(t, f, issues)
-			done := make(chan error, 1)
-			if method == "Keys" {
-				f.On("GET", "/4/worklogs/5", nil, "", 200, stored(5))
-				go func() {
-					_, err := c.Worklog(context.Background(), 5)
-					done <- err
-				}()
-			} else {
-				go func() {
-					out := c.Apply(context.Background(), []Op{CreateOp(weekDraft(t, "WEB-1", "x"))})[0]
-					if out.Status != NotAttempted {
-						t.Errorf("status %v", out.Status)
-					}
-					done <- out.Err
-				}()
-			}
-			if got := <-issues.started; got != method {
-				t.Fatalf("called %s", got)
-			}
-			c.Close()
-			select {
-			case err := <-done:
-				// Apply stops at admission once Close ended its checks;
-				// Worklog returns the cancelled IssueIDs call's error.
-				want := context.Canceled
-				if method == "IDs" {
-					want = ErrClosed
-				}
-				if !errors.Is(err, want) {
-					t.Fatalf("err %v", err)
-				}
-			case <-time.After(10 * time.Second):
-				t.Fatal("the call into IssueIDs outlived Close")
-			}
-		})
+	f := tempotest.NewServer(t, testToken)
+	issues := blockingIssues{started: make(chan string, 1)}
+	c := testClient(t, f, issues)
+	done := make(chan error, 1)
+	go func() {
+		out := c.Apply(context.Background(), []Op{CreateOp(weekDraft(t, "WEB-1", "x"))})[0]
+		if out.Status != NotAttempted {
+			t.Errorf("status %v", out.Status)
+		}
+		done <- out.Err
+	}()
+	<-issues.started
+	c.Close()
+	select {
+	case err := <-done:
+		// Apply stops at admission once Close ended its checks.
+		if !errors.Is(err, ErrClosed) {
+			t.Fatalf("err %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the call into IssueIDs outlived Close")
 	}
 }

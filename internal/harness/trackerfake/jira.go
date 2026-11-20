@@ -42,7 +42,9 @@ func (j jiraService) tenant(e *Engine) *jiraSite { return e.jira[j.site] }
 
 // authenticate admits Basic with the account's email and the site's
 // token. Any other credential is anonymous: Jira answers an issue read
-// as not found for it and anything else 401.
+// as not found for it, a search with no issues, and anything else 401
+// (measured with no credential; a wrong token is unverified and answered
+// the same).
 func (j jiraService) authenticate(e *Engine, x *exchange) *answer {
 	s := j.tenant(e)
 	if s == nil {
@@ -55,8 +57,13 @@ func (j jiraService) authenticate(e *Engine, x *exchange) *answer {
 		x.tenant = s.Site
 		return nil
 	}
-	if r, _, ok := findRoute(jiraRoutes, x); ok && r.anonymous404 {
+	r, _, routed := findRoute(jiraRoutes, x)
+	switch {
+	case routed && r.anonymous404:
 		a := jiraErrors(http.StatusNotFound, issueNotFound)
+		return &a
+	case routed && r.name() == "POST "+api+"search/jql":
+		a := jsonAnswer(http.StatusOK, map[string]any{"issues": []any{}, "isLast": true})
 		return &a
 	}
 	a := answer{status: http.StatusUnauthorized, header: http.Header{"Content-Type": {"text/plain;charset=UTF-8"}}, body: []byte(jiraAuthText)}
@@ -94,7 +101,33 @@ func (j jiraService) route(e *Engine, x *exchange) match {
 		return match{unhandled: why}
 	}
 	c := &jiraCall{e: e, s: s, x: x, params: params, query: q, viewer: s.Account}
-	return match{name: r.name(), run: func() answer { return r.handle(c) }}
+	return match{name: r.name(), run: func() answer { return forAccount(dated(r.handle(c), e.now()), c.viewer) }}
+}
+
+// forAccount is a naming the account it was made for. Measured: every
+// answer to a request with a valid token carries X-AAccountId, equal to
+// myself's accountId (a search, a board configuration, a board issue
+// list, a 404 for a missing issue), and no answer to a request with no
+// credential does. route runs only for an authenticated request, so the
+// answers authenticate makes carry none.
+func forAccount(a answer, account string) answer {
+	if a.header == nil {
+		a.header = http.Header{}
+	}
+	a.header.Set("X-AAccountId", account)
+	return a
+}
+
+// dated is a with the Date header every HTTP answer carries (RFC 9110),
+// from the engine clock, so a client that takes the tracker's time from
+// it follows the fake's clock and not the computer's. It is taken after
+// the handler ran, so it is never before a time the answer holds.
+func dated(a answer, now time.Time) answer {
+	if a.header == nil {
+		a.header = http.Header{}
+	}
+	a.header.Set("Date", now.UTC().Format(http.TimeFormat))
+	return a
 }
 
 func (jiraService) rateLimited(e *Engine, x *exchange, retryAfter int) answer {

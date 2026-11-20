@@ -89,7 +89,7 @@ func searchJQL(c *jiraCall) answer {
 		return jiraErrors(http.StatusBadRequest, "The provided next page token is invalid or expired.")
 	}
 	sel := parseFields(in.Fields, selectNone)
-	issues, next, last := c.tokenPage(c.s.search(q), "search "+in.JQL, offset, searchSize(in.MaxResults, sel, c.s), sel)
+	issues, next, last := c.tokenPage(c.indexed(c.s.search(q)), "search "+in.JQL, offset, searchSize(in.MaxResults, sel, c.s), sel)
 	out := map[string]any{"issues": issues, "isLast": last}
 	if next != "" {
 		out["nextPageToken"] = next
@@ -108,7 +108,7 @@ func countJQL(c *jiraCall) answer {
 	if err != nil {
 		return jqlAnswer(err)
 	}
-	return jsonAnswer(http.StatusOK, map[string]any{"count": len(c.s.search(q))})
+	return jsonAnswer(http.StatusOK, map[string]any{"count": len(c.indexed(c.s.search(q)))})
 }
 
 func bulkFetch(c *jiraCall) answer {

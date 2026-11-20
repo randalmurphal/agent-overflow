@@ -14,10 +14,11 @@ import (
 
 // historySettle is how long before a history read began its changes are
 // taken as final. Whether Jira records a change in its changelog at once
-// is not measured; Jira documents that a search can lag a recent update,
-// and the margin also covers a skew between this computer's clock and
-// Jira's, since the caller compares CompleteTo with Jira's update times.
-// A larger margin costs only a second read of an issue's history.
+// is not measured; Jira documents that a search can lag a recent update.
+// The time is Jira's own, the Date of its answer that carried the
+// changes, so a skew between this computer's clock and Jira's does not
+// enter it. A larger margin costs only a second read of an issue's
+// history.
 const historySettle = time.Minute
 
 // boardEstimate is one board's estimate field, whose changes are that
@@ -35,14 +36,18 @@ type boardEstimate struct {
 // History reads the status, assignee, sprint and estimate changes of the
 // issues q names with Jira's bulk changelog, which records every change
 // from an issue's creation, so CompleteFrom is zero, and each history is
-// final through historySettle before the read began. Estimate changes are
-// read for each board q names through that board's estimate field; two
-// boards on one field each get the field's changes.
+// final through historySettle before Jira answered: the Date of its first
+// changelog answer, or this computer's clock when Jira sent none.
+// Estimate changes are read for each board q names through that board's
+// estimate field; two boards on one field each get the field's changes.
 //
 // Jira's bulk changelog leaves out an issue with no change of the fields
-// asked for and an issue the user cannot see alike. The issues it leaves
-// out are read with a bulk fetch: those it returns have no changes and
-// get an empty history, and the others are not visible and get none.
+// asked for and an issue the user cannot see alike, and the caller holds
+// nothing that tells them apart: an empty history claims no change since
+// creation, which is false of an issue deleted or hidden since the caller
+// listed it. So the issues it leaves out, and only those, are read with a
+// bulk fetch: those it returns have no changes and get an empty history,
+// and the others are not visible and get none.
 func (p *Provider) History(ctx context.Context, q tracker.HistoryQuery) (tracker.History, error) {
 	if len(q.Issues) == 0 {
 		return tracker.History{}, invalidf("a history read needs issues")
@@ -77,10 +82,14 @@ func (p *Provider) History(ctx context.Context, q tracker.HistoryQuery) (tracker
 	for i, id := range ids {
 		refs[i] = string(id)
 	}
-	completeTo := p.now().Add(-historySettle)
+	local := p.now()
 	logs, err := p.jira.BulkChangelogs(ctx, jira.ChangelogQuery{Issues: refs, Fields: fields})
 	if err != nil {
 		return tracker.History{}, fmt.Errorf("jiraprovider: history: %w", err)
+	}
+	completeTo := local.Add(-historySettle)
+	if !logs.Date.IsZero() {
+		completeTo = logs.Date.Add(-historySettle)
 	}
 	visible, err := p.visible(ctx, ids, logs.ByIssue)
 	if err != nil {

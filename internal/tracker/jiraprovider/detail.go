@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strconv"
 
+	"golang.org/x/sync/errgroup"
+
 	"agent-overflow/internal/tracker"
 	"agent-overflow/internal/tracker/adf"
 	"agent-overflow/internal/tracker/jira"
@@ -22,26 +24,42 @@ const commentPage = 50
 var detailSkipped = append(slices.Clone(cardFieldIDs), "description", "comment", "attachment", "issuelinks", "worklog")
 
 // Detail reads one issue whole: every field with the edit screen's
-// metadata, the first page of comments, links, attachments, the whole
-// changelog, and the moves its workflow allows now.
+// metadata, its links and attachments, the whole changelog and the moves
+// its workflow allows now in one read (jira.IssueDetail, which reads the
+// older changelog when Jira embeds only its newest entries), and the
+// newest page of comments in another, run together with the field
+// catalog's read; the first to fail ends the others and is the error.
 func (p *Provider) Detail(ctx context.Context, issue tracker.IssueID) (tracker.Detail, error) {
 	if err := checkIssue(issue); err != nil {
 		return tracker.Detail{}, err
 	}
-	s, err := p.site(ctx)
-	if err != nil {
+	var (
+		s        site
+		full     jira.IssueDetail
+		comments tracker.CommentPage
+	)
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() (err error) {
+		s, err = p.site(gctx)
+		return err
+	})
+	g.Go(func() (err error) {
+		if full, err = p.jira.IssueDetail(gctx, string(issue)); err != nil {
+			return fmt.Errorf("jiraprovider: detail of %s: %w", issue, err)
+		}
+		return nil
+	})
+	g.Go(func() (err error) {
+		comments, err = p.commentPage(gctx, issue, "")
+		return err
+	})
+	if err := g.Wait(); err != nil {
 		return tracker.Detail{}, err
 	}
-	is, err := p.jira.GetIssue(ctx, string(issue))
-	if err != nil {
-		return tracker.Detail{}, fmt.Errorf("jiraprovider: detail of %s: %w", issue, err)
-	}
-	screen, err := p.jira.EditMeta(ctx, string(issue))
-	if err != nil {
-		return tracker.Detail{}, fmt.Errorf("jiraprovider: detail of %s: %w", issue, err)
-	}
+	is := full.Issue
 	cat := newCatalog()
 	d := tracker.Detail{URL: p.origin + "/browse/" + url.PathEscape(is.Key)}
+	var err error
 	if d.Card, err = s.cardOf(is, cat); err != nil {
 		return tracker.Detail{}, err
 	}
@@ -52,23 +70,17 @@ func (p *Provider) Detail(ctx context.Context, issue tracker.IssueID) (tracker.D
 	}
 	d.Description = adf.ToMarkdown(is.Description)
 	cat.user(is.Reporter)
-	d.Fields = detailFields(s, is, screen, cat)
+	d.Fields = detailFields(s, is, full.Edit, cat)
 	for _, l := range is.Links {
 		d.Links = append(d.Links, linkOf(l, cat))
 	}
 	for _, a := range is.Attachments {
 		d.Attachments = append(d.Attachments, attachmentOf(a, cat))
 	}
-	if d.Comments, err = p.commentPage(ctx, issue, ""); err != nil {
-		return tracker.Detail{}, err
-	}
+	d.Comments = comments
 	cat.merge(d.Comments.Catalog)
-	if d.History, err = p.events(ctx, issue, cat); err != nil {
-		return tracker.Detail{}, err
-	}
-	if d.Moves, err = p.moves(ctx, issue, cat); err != nil {
-		return tracker.Detail{}, err
-	}
+	d.History = events(full.Changelog, cat)
+	d.Moves = movesOf(full.Transitions, cat)
 	d.Catalog = cat.out
 	return d, nil
 }
@@ -153,12 +165,8 @@ func attachmentOf(a jira.Attachment, cat *catalog) tracker.Attachment {
 	return out
 }
 
-// events is issue's whole changelog as history events, oldest first.
-func (p *Provider) events(ctx context.Context, issue tracker.IssueID, cat *catalog) ([]tracker.Event, error) {
-	log, err := p.jira.Changelog(ctx, string(issue))
-	if err != nil {
-		return nil, fmt.Errorf("jiraprovider: history of %s: %w", issue, err)
-	}
+// events is a changelog as history events, oldest first.
+func events(log jira.Changelog, cat *catalog) []tracker.Event {
 	var out []tracker.Event
 	for _, e := range log.Entries {
 		var author tracker.UserID
@@ -170,7 +178,7 @@ func (p *Provider) events(ctx context.Context, issue tracker.IssueID, cat *catal
 			out = append(out, tracker.Event{At: e.Created, Author: author, Field: it.Field, From: it.FromText, To: it.ToText})
 		}
 	}
-	return out, nil
+	return out
 }
 
 // Comments is a page of issue's comments, newest first.
@@ -183,16 +191,15 @@ func (p *Provider) Comments(ctx context.Context, issue tracker.IssueID, page tra
 
 // commentPage reads a page of comments newest first. Jira pages them
 // oldest first by offset, so a page token is the offset at which the
-// page ends; the first page is read from the end of the list, which
-// takes a second request when the issue has more comments than a page.
-// A comment deleted between pages can make one repeat; none is skipped.
+// page ends; the first page is the newest comments, read newest first in
+// one request (jira.LatestComments). A comment deleted between pages can
+// make one repeat; none is skipped.
 func (p *Provider) commentPage(ctx context.Context, issue tracker.IssueID, page tracker.PageToken) (tracker.CommentPage, error) {
 	var got jira.CommentPage
 	var err error
 	if page == "" {
-		got, err = p.comments(ctx, issue, 0, commentPage)
-		if err == nil && got.Total > len(got.Comments) {
-			got, err = p.comments(ctx, issue, got.Total-commentPage, commentPage)
+		if got, err = p.jira.LatestComments(ctx, string(issue), commentPage); err != nil {
+			err = fmt.Errorf("jiraprovider: comments of %s: %w", issue, err)
 		}
 	} else {
 		end, perr := strconv.Atoi(string(page))
@@ -255,6 +262,11 @@ func (p *Provider) moves(ctx context.Context, issue tracker.IssueID, cat *catalo
 	if err != nil {
 		return nil, fmt.Errorf("jiraprovider: moves of %s: %w", issue, err)
 	}
+	return movesOf(ts, cat), nil
+}
+
+// movesOf are the transitions of ts the user can make now.
+func movesOf(ts []jira.Transition, cat *catalog) []tracker.Move {
 	var out []tracker.Move
 	for _, t := range ts {
 		if !t.Available {
@@ -267,5 +279,5 @@ func (p *Provider) moves(ctx context.Context, issue tracker.IssueID, cat *catalo
 		}
 		out = append(out, m)
 	}
-	return out, nil
+	return out
 }

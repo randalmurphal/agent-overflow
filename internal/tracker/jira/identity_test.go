@@ -17,6 +17,16 @@ const (
 	myselfURL    = "/rest/api/3/myself"
 )
 
+// unnamedSite is a fake site whose answers name no account, as Jira's do
+// for a request it answered to nobody: the 404s it answers are the ones a
+// sign-in check decides.
+func unnamedSite(t testing.TB) *jiratest.Server {
+	t.Helper()
+	f := jiratest.NewServer(t)
+	f.SetAccount("")
+	return f
+}
+
 // tokenState is a fake site whose credential can be revoked.
 type tokenState struct{ revoked atomic.Bool }
 
@@ -31,7 +41,7 @@ func (s *tokenState) myself(w http.ResponseWriter, r *http.Request, b []byte) {
 // TestSequentialNotFoundsEachCheck proves nothing is reused between
 // checks: every 404 is decided by a check that started after it.
 func TestSequentialNotFoundsEachCheck(t *testing.T) {
-	f := jiratest.NewServer(t)
+	f := unnamedSite(t)
 	c := newTestClient(t, f)
 	tokens := &tokenState{}
 	f.On("GET", myselfURL, tokens.myself)
@@ -50,7 +60,7 @@ func TestSequentialNotFoundsEachCheck(t *testing.T) {
 // TestRevokedRightAfterConfirmedNotFound proves a 404 right after a
 // confirmed one, once the credential is revoked, is an AuthError.
 func TestRevokedRightAfterConfirmedNotFound(t *testing.T) {
-	f := jiratest.NewServer(t)
+	f := unnamedSite(t)
 	c := newTestClient(t, f)
 	tokens := &tokenState{}
 	f.On("GET", myselfURL, tokens.myself)
@@ -71,7 +81,7 @@ func TestRevokedRightAfterConfirmedNotFound(t *testing.T) {
 // TestNotFoundCheckCannotLoop proves a sign-in check answered with 404
 // fails as unconfirmed, after exactly one check, and is not "not found".
 func TestNotFoundCheckCannotLoop(t *testing.T) {
-	f := jiratest.NewServer(t)
+	f := unnamedSite(t)
 	c := newTestClient(t, f)
 	f.On("GET", myselfURL, jiratest.Reply(404, `{}`))
 	f.On("GET", issuePath404, jiratest.Reply(404, `{}`))
@@ -89,7 +99,7 @@ func TestNotFoundCheckCannotLoop(t *testing.T) {
 // applied whatever the sign-in check says, while the 404 still does not
 // read as "not found" and the check's own failure stays reachable.
 func TestUnconfirmedWriteWasNotApplied(t *testing.T) {
-	f := jiratest.NewServer(t)
+	f := unnamedSite(t)
 	c := newTestClient(t, f)
 	f.On("GET", myselfURL, jiratest.Reply(500, `{"errorMessages":["down"]}`))
 	f.On("DELETE", "/rest/api/3/issueLink/77", jiratest.Reply(404, `{}`))
@@ -181,7 +191,7 @@ func newGate(t *testing.T) (<-chan struct{}, func()) {
 // the next, so a burst of N costs two, not N.
 func TestNotFoundBurstCostsTwoChecks(t *testing.T) {
 	const n = 8
-	f := jiratest.NewServer(t)
+	f := unnamedSite(t)
 	c := newTestClient(t, f)
 	joins := newJoinRecorder(c)
 	release, open := newGate(t)
@@ -217,7 +227,7 @@ func TestNotFoundBurstCostsTwoChecks(t *testing.T) {
 // TestCallerThatGivesUpLeavesTheCheck proves a waiter that stops waiting
 // does not end the check for the others sharing it.
 func TestCallerThatGivesUpLeavesTheCheck(t *testing.T) {
-	f := jiratest.NewServer(t)
+	f := unnamedSite(t)
 	c := newTestClient(t, f)
 	joins := newJoinRecorder(c)
 	release, open := newGate(t)
@@ -253,7 +263,7 @@ func TestCallerThatGivesUpLeavesTheCheck(t *testing.T) {
 // runs: it must not join that check, and the new credential's refusal
 // decides it.
 func TestForgetDetachesTheCheckInFlight(t *testing.T) {
-	f := jiratest.NewServer(t)
+	f := unnamedSite(t)
 	c := newTestClient(t, f)
 	joins := newJoinRecorder(c)
 	release, open := newGate(t)
@@ -304,7 +314,7 @@ func TestForgetDetachesTheCheckInFlight(t *testing.T) {
 // ForgetCredential, ending while the new credential's check runs, does
 // not displace that check or start the one queued behind it early.
 func TestDetachedCheckLeavesTheNewOne(t *testing.T) {
-	f := jiratest.NewServer(t)
+	f := unnamedSite(t)
 	c := newTestClient(t, f)
 	joins := newJoinRecorder(c)
 	oldGate, openOld := newGate(t)
@@ -369,7 +379,7 @@ func TestDetachedCheckLeavesTheNewOne(t *testing.T) {
 // when the credential is dropped, since no later check can speak for the
 // credential their requests carried.
 func TestForgetEndsQueuedNotFounds(t *testing.T) {
-	f := jiratest.NewServer(t)
+	f := unnamedSite(t)
 	c := newTestClient(t, f)
 	joins := newJoinRecorder(c)
 	release, open := newGate(t)
@@ -409,7 +419,7 @@ func TestForgetEndsQueuedNotFounds(t *testing.T) {
 }
 
 func TestAuthErrorDetachesTheCheck(t *testing.T) {
-	f := jiratest.NewServer(t)
+	f := unnamedSite(t)
 	c := newTestClient(t, f)
 	joins := newJoinRecorder(c)
 	release, open := newGate(t)
@@ -443,7 +453,7 @@ func TestAuthErrorDetachesTheCheck(t *testing.T) {
 // TestNotFoundAfterCloseStartsNoCheck covers a 404 that lands as the
 // client closes: nothing is sent and the 404 stays unconfirmed.
 func TestNotFoundAfterCloseStartsNoCheck(t *testing.T) {
-	f := jiratest.NewServer(t)
+	f := unnamedSite(t)
 	c := newTestClient(t, f)
 	joins := newJoinRecorder(c)
 	c.Close()

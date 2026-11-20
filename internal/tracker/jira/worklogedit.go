@@ -1,6 +1,7 @@
 package jira
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"net/http"
@@ -11,15 +12,19 @@ import (
 )
 
 // WorklogEdit changes a worklog; a zero or nil field keeps the stored
-// value. The edit says what it is based on, and has no default: From is
-// the worklog as the caller read it, so a worklog changed since (its
-// comment, an absent one included, its start or its time spent) is a
-// *StaleError; Unchecked edits whatever is stored, with no check. One of
-// the two is required.
+// value. The edit says what it is based on, with no default; exactly one
+// of From, Current and Unchecked is set. From is the worklog as the
+// caller read it, so a worklog changed since (its comment, an absent one
+// included, its start or its time spent) is a *StaleError. Current is the
+// worklog as the caller read it just now, as its last read before the
+// edit: the worklog is read again and checked against it only when
+// converting the Markdown read Jira (a mention). Unchecked edits whatever
+// is stored, with no check.
 type WorklogEdit struct {
 	Issue     string
 	ID        string
 	From      *Worklog
+	Current   *Worklog
 	Unchecked bool
 	Started   time.Time
 	TimeSpent time.Duration
@@ -45,9 +50,9 @@ type WorklogUpdate struct {
 }
 
 // UpdateWorklog converts the Markdown (its mentions read first), then
-// reads the worklog as the last read before the write, refuses a stale
-// base, and writes the fields that change, keeping the worklog's
-// visibility. The check narrows the window for a lost update and does not
+// reads the worklog as the last read before the write (with Current, only
+// when the conversion read Jira), refuses a stale base, and writes the
+// fields that change, keeping the worklog's visibility. The check narrows the window for a lost update and does not
 // close it: Jira takes no precondition on the write, so a change between
 // that read and the write is overwritten. An edit that asks for nothing is
 // refused before anything is sent.
@@ -67,18 +72,22 @@ func (c *Client) UpdateWorklog(ctx context.Context, in WorklogEdit) (WorklogUpda
 	if err := in.Estimate.query(q, adjustAuto, adjustLeave, adjustNew); err != nil {
 		return res, err
 	}
-	base, cur := in.From, (*Worklog)(nil)
-	if base == nil {
+	base, cur := cmp.Or(in.From, in.Current), (*Worklog)(nil)
+	if in.Unchecked {
 		if cur, err = c.readWorklog(ctx, in.Issue, in.ID); err != nil {
 			return res, err
 		}
 		base = cur
 	}
 	var doc *adf.Node
+	asked := false
 	if in.Markdown != nil {
-		if doc, err = c.worklogEditDoc(ctx, in, base); err != nil {
+		if doc, asked, err = c.worklogEditDoc(ctx, in, base); err != nil {
 			return res, err
 		}
+	}
+	if in.Current != nil && !asked {
+		cur = in.Current
 	}
 	if cur == nil {
 		if cur, err = c.readWorklog(ctx, in.Issue, in.ID); err != nil {
@@ -105,11 +114,12 @@ func (c *Client) UpdateWorklog(ctx context.Context, in WorklogEdit) (WorklogUpda
 
 // check refuses an edit without a base or that asks for nothing.
 func (in WorklogEdit) check() error {
+	base := cmp.Or(in.From, in.Current)
 	switch {
-	case (in.From == nil) == !in.Unchecked:
-		return notSent("edit worklog %s: give From, the worklog the edit is based on, or Unchecked, not both", in.ID)
-	case in.From != nil && in.From.ID != in.ID:
-		return notSent("edit worklog %s: From is worklog %s", in.ID, in.From.ID)
+	case editBases(in.From != nil, in.Current != nil, in.Unchecked) != 1:
+		return notSent("edit worklog %s: give one of From, Current and Unchecked", in.ID)
+	case base != nil && base.ID != in.ID:
+		return notSent("edit worklog %s: its base is worklog %s", in.ID, base.ID)
 	case in.Started.IsZero() && in.TimeSpent == 0 && in.Markdown == nil && in.Estimate.mode != adjustNew:
 		return notSent("edit worklog %s: nothing to change", in.ID)
 	case in.TimeSpent != 0:
@@ -128,19 +138,21 @@ func (c *Client) readWorklog(ctx context.Context, issue, id string) (*Worklog, e
 	return &w, nil
 }
 
-// worklogEditDoc converts the edit's Markdown against base's comment.
-func (c *Client) worklogEditDoc(ctx context.Context, in WorklogEdit, base *Worklog) (*adf.Node, error) {
+// worklogEditDoc converts the edit's Markdown against base's comment;
+// asked reports a conversion that may have read Jira (a mention).
+func (c *Client) worklogEditDoc(ctx context.Context, in WorklogEdit, base *Worklog) (doc *adf.Node, asked bool, err error) {
 	if err := problemIn(base.Problems, "comment"); err != nil {
-		return nil, notSentErr(fmt.Errorf("jira: edit worklog %s on %s: its comment did not decode, so an edit cannot keep it: %w", in.ID, in.Issue, err))
+		return nil, false, notSentErr(fmt.Errorf("jira: edit worklog %s on %s: its comment did not decode, so an edit cannot keep it: %w", in.ID, in.Issue, err))
 	}
-	doc, ws, err := c.worklogDoc(ctx, in.Issue, *in.Markdown, base.Comment)
+	b := &builder{c: c, opts: ValueOptions{Issue: in.Issue}, stage: newImageStage("", c.maxUpload)}
+	doc, ws, err := b.markdown(ctx, *in.Markdown, base.Comment)
 	if err == nil {
 		err = adf.CheckLoss(ws, in.AcceptLoss)
 	}
 	if err != nil {
-		return nil, notSentErr(fmt.Errorf("jira: edit worklog %s on %s: %w", in.ID, in.Issue, err))
+		return nil, b.asked, notSentErr(fmt.Errorf("jira: edit worklog %s on %s: %w", in.ID, in.Issue, err))
 	}
-	return doc, nil
+	return doc, b.asked, nil
 }
 
 // sameWorklog reports a stored worklog that still holds what an edit

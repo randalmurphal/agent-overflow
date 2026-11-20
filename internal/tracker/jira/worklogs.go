@@ -97,6 +97,31 @@ type WorklogList struct {
 	Complete bool
 }
 
+// Worklogs reads the worklog field of an issue read with it: the
+// worklogs Jira embedded, oldest first. Complete reports that they are
+// every worklog of the issue; Jira embeds the first 20 with the total
+// (measured on Jira Cloud, docs/references/tracker-api-measurements.md),
+// so an issue with more is read with Client.Worklogs.
+func (v FieldValue) Worklogs() (WorklogList, error) {
+	var page struct {
+		StartAt  int           `json:"startAt"`
+		Total    *int          `json:"total"`
+		Worklogs []worklogJSON `json:"worklogs"`
+	}
+	if err := v.decode(&page); err != nil {
+		return WorklogList{}, err
+	}
+	if page.Total == nil {
+		return WorklogList{}, &AnswerError{Message: "the worklog field names no total"}
+	}
+	out := WorklogList{Worklogs: make([]Worklog, len(page.Worklogs))}
+	for i, j := range page.Worklogs {
+		out.Worklogs[i] = j.worklog()
+	}
+	out.Complete = page.StartAt == 0 && len(page.Worklogs) >= *page.Total
+	return out, nil
+}
+
 // Worklogs reads an issue's worklogs page by page. A failure after some
 // pages returns them with the error.
 func (c *Client) Worklogs(ctx context.Context, q WorklogQuery) (WorklogList, error) {

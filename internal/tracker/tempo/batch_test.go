@@ -77,7 +77,7 @@ func TestApplyOutcomes(t *testing.T) {
 			t.Errorf("op %d: status %v with err %v", i, o.Status, o.Err)
 		}
 	}
-	idCalls, _ := issues.calls()
+	idCalls := issues.calls()
 	if !reflect.DeepEqual(idCalls, [][]string{{"WEB-1", "WEB-2", "APP-7"}}) {
 		t.Errorf("the resolver was asked %v, want one call for the batch", idCalls)
 	}

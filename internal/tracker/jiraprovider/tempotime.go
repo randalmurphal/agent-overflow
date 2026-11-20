@@ -50,7 +50,7 @@ func (t *tempoTime) AddWorklog(ctx context.Context, in tracker.WorklogInput) tra
 	if err != nil {
 		return tracker.Invalid(tracker.StepWorklog, err, in.Issue)
 	}
-	me, err := t.jira.Myself(ctx)
+	me, err := t.jira.Me(ctx)
 	if err != nil {
 		return worklogResult(in.Issue, "", beforeSend(fmt.Errorf("jiraprovider: who logs the time: %w", err)))
 	}

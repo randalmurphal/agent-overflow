@@ -74,7 +74,9 @@ func TestLookupFailures(t *testing.T) {
 	if _, err := p.Lookup(t.Context(), []string{"WEB-1"}); err == nil {
 		t.Error("a refused search read as nothing found")
 	}
-	f.On("POST", searchPath, jiratest.Reply(200, `{"isLast":true,"issues":[]}`))
+	// A search that returns an issue no key asked names currently has
+	// WEB-2 read alone.
+	f.On("POST", searchPath, jiratest.Reply(200, page("", issue("10005", "APP-5", updatedAt, nil))))
 	f.On("GET", "/rest/api/3/issue/WEB-2", jiratest.Reply(403, `{"errorMessages":["no"]}`))
 	if _, err := p.Lookup(t.Context(), []string{"WEB-2"}); err == nil {
 		t.Error("a refused read read as unmatched")

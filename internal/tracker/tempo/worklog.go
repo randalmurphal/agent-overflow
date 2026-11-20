@@ -5,16 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"slices"
 	"strconv"
 	"time"
 
 	"agent-overflow/internal/tracker/trackerapi"
 )
 
-// Issue names a Jira issue. Tempo stores the numeric ID; Key is the
-// issue's key once resolved through IssueIDs, empty when the resolver
-// does not know the ID.
+// Issue names a Jira issue. Tempo stores the numeric ID. Key is the key
+// a write named the issue by, and is empty on a worklog read from Tempo,
+// which names the issue by ID only.
 type Issue struct {
 	ID  int64
 	Key string
@@ -160,9 +159,8 @@ func (q WorklogQuery) request() (trackerapi.Request, error) {
 	return trackerapi.Request{Path: path("4/worklogs/user", q.Author), Query: query}, nil
 }
 
-// WorklogPages reads q's worklogs a page at a time, each page's issue keys
-// resolved with one IssueIDs.Keys call, and hands each page to fn in
-// Tempo's order. A caller that keeps only what it needs from each page
+// WorklogPages reads q's worklogs a page at a time and hands each page to
+// fn in Tempo's order. A caller that keeps only what it needs from each page
 // bounds its memory by one page. An error from fn ends the listing and
 // is returned as is; a failure on a later page comes after fn has seen
 // the earlier ones.
@@ -181,9 +179,6 @@ func (c *Client) WorklogPages(ctx context.Context, q WorklogQuery, fn func([]Wor
 			if list[i], err = w.worklog(resp); err != nil {
 				return err
 			}
-		}
-		if err := c.fillKeys(ctx, list); err != nil {
-			return err
 		}
 		if err := fn(list); err != nil {
 			fnErr = err
@@ -228,39 +223,8 @@ func (c *Client) Worklog(ctx context.Context, id int64) (Worklog, error) {
 		return Worklog{}, fmt.Errorf("tempo: read worklog %d: %w", id, err)
 	}
 	w, err := raw.worklog(resp)
-	one := []Worklog{w}
-	if err == nil {
-		err = c.fillKeys(ctx, one)
-	}
 	if err != nil {
 		return Worklog{}, fmt.Errorf("tempo: read worklog %d: %w", id, err)
 	}
-	return one[0], nil
-}
-
-// fillKeys sets the issue key of every worklog in list that has none,
-// with one IssueIDs.Keys call for the distinct IDs, made under a context
-// Close also ends.
-func (c *Client) fillKeys(ctx context.Context, list []Worklog) error {
-	var ids []int64
-	for _, w := range list {
-		if w.Issue.Key == "" && w.Issue.ID > 0 && !slices.Contains(ids, w.Issue.ID) {
-			ids = append(ids, w.Issue.ID)
-		}
-	}
-	if len(ids) == 0 {
-		return nil
-	}
-	ctx, done := c.bound(ctx)
-	defer done()
-	keys, err := c.issues.Keys(ctx, ids)
-	if err != nil {
-		return fmt.Errorf("resolve issue keys: %w", err)
-	}
-	for i := range list {
-		if list[i].Issue.Key == "" {
-			list[i].Issue.Key = keys[list[i].Issue.ID]
-		}
-	}
-	return nil
+	return w, nil
 }

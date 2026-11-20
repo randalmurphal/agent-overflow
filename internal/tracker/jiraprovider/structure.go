@@ -13,26 +13,26 @@ import (
 // estimates by original time, in seconds.
 const timeEstimateField = "timeoriginalestimate"
 
-// Structure reads board's structure from Jira: its configuration again
-// (the jira client's cached configurations are dropped first, so later
-// row reads use what this read returns), the board, its sprints when it
-// is a scrum board, and its statuses (boardStatuses). Users are not
-// listed: Jira sends them with the records.
+// Structure reads board's structure from Jira: its configuration again,
+// which names the board and where it is located (the jira client's cached
+// configuration and sprint listing of this board are dropped first, so
+// later row reads use what this read returns; other boards keep theirs),
+// its sprints when it is a scrum board, and its statuses (boardStatuses).
+// Users are not listed: Jira sends them with the records.
 func (p *Provider) Structure(ctx context.Context, id tracker.BoardID, window time.Time) (tracker.Structure, error) {
 	n, err := boardNumber(id)
 	if err != nil {
 		return tracker.Structure{}, err
 	}
-	p.jira.ForgetBoards()
+	p.jira.ForgetBoard(n)
 	cfg, err := p.jira.BoardConfig(ctx, n)
 	if err != nil {
 		return tracker.Structure{}, fmt.Errorf("jiraprovider: structure of board %s: %w", id, err)
 	}
-	b, err := p.jira.Board(ctx, n)
-	if err != nil {
-		return tracker.Structure{}, fmt.Errorf("jiraprovider: structure of board %s: %w", id, err)
+	if cfg.BoardID != n {
+		return tracker.Structure{}, fmt.Errorf("jiraprovider: structure of board %s: the configuration read is of board %d", id, cfg.BoardID)
 	}
-	out := tracker.Structure{Board: boardOf(b), Estimate: estimateOf(cfg)}
+	out := tracker.Structure{Board: configBoard(cfg), Estimate: estimateOf(cfg)}
 	for _, col := range cfg.Columns {
 		c := tracker.Column{Name: col.Name}
 		for _, s := range col.StatusIDs {
@@ -40,28 +40,38 @@ func (p *Provider) Structure(ctx context.Context, id tracker.BoardID, window tim
 		}
 		out.Columns = append(out.Columns, c)
 	}
-	if b.Type == jira.BoardScrum {
-		if out.Sprints, err = p.sprints(ctx, id, n, window); err != nil {
+	if cfg.Type == jira.BoardScrum {
+		// The board was just dropped, so the listing is read now.
+		if out.Sprints, err = p.sprints(ctx, id, n, window, true); err != nil {
 			return tracker.Structure{}, err
 		}
 	}
-	if out.Statuses, err = p.boardStatuses(ctx, b, cfg); err != nil {
+	if out.Statuses, err = p.boardStatuses(ctx, cfg); err != nil {
 		return tracker.Structure{}, fmt.Errorf("jiraprovider: structure of board %s: %w", id, err)
 	}
 	return out, nil
 }
 
-// boardStatuses are the statuses of the project board b is located in
+// configBoard is the board a configuration names. A board located on a
+// user has no project.
+func configBoard(cfg jira.BoardConfig) tracker.Board {
+	return tracker.Board{
+		ID: tracker.BoardID(decimal(cfg.BoardID)), Name: cfg.Name, Sprints: cfg.Type == jira.BoardScrum,
+		Project: tracker.ProjectID(cfg.Location.ProjectID()),
+	}
+}
+
+// boardStatuses are the statuses of the project the board is located in
 // and every status its columns name. A column status outside that
-// project, every one of a board located under a user, is read from the
+// project, every one of a board located on a user, is read from the
 // site's statuses, once, only when one is missing. A column status the
 // site does not list (in no active workflow, or in projects the user
 // cannot browse) is left out: Jira gives no name or category for it, and
 // a card in it names it with both.
-func (p *Provider) boardStatuses(ctx context.Context, b jira.Board, cfg jira.BoardConfig) ([]tracker.Status, error) {
+func (p *Provider) boardStatuses(ctx context.Context, cfg jira.BoardConfig) ([]tracker.Status, error) {
 	cat := newCatalog()
-	if b.Location.ProjectID > 0 {
-		types, err := p.jira.ProjectStatuses(ctx, decimal(b.Location.ProjectID))
+	if project := cfg.Location.ProjectID(); project != "" {
+		types, err := p.jira.ProjectStatuses(ctx, project)
 		if err != nil {
 			return nil, err
 		}
@@ -111,8 +121,24 @@ func estimateOf(cfg jira.BoardConfig) tracker.Estimate {
 // after window: completed then, or ending then when Jira gives no
 // completion. A sprint whose dates did not decode fails the read, since
 // whether it is kept cannot be told.
-func (p *Provider) sprints(ctx context.Context, id tracker.BoardID, n int64, window time.Time) ([]tracker.Sprint, error) {
-	list, err := p.jira.Sprints(ctx, jira.SprintQuery{Board: n})
+//
+// The listing is the board's the jira client holds, read by the last
+// Structure (which drops it first), or read now and held when none is.
+// Jira's clock read it at Read: a sprint created since has no issue that
+// was not updated since (measured: a sprint change moves the issue's
+// updated, 3 of 3 issues whose newest change was one), and a sprint open
+// then and closed since closed after Read, so when Read is at or after
+// window the held listing selects
+// the same issues as a fresh one would in BoardIssues, which also takes
+// every issue updated at or after window. A held listing read before
+// window, or of unknown age (Jira sent no Date), is read again; fresh
+// says the caller dropped the board just before, so the listing is new
+// whatever its Read.
+func (p *Provider) sprints(ctx context.Context, id tracker.BoardID, n int64, window time.Time, fresh bool) ([]tracker.Sprint, error) {
+	list, err := p.jira.BoardSprints(ctx, n)
+	if err == nil && !fresh && (list.Read.IsZero() || list.Read.Before(window)) {
+		list, err = p.jira.Sprints(ctx, jira.SprintQuery{Board: n})
+	}
 	if err != nil {
 		return nil, fmt.Errorf("jiraprovider: sprints of board %s: %w", id, err)
 	}

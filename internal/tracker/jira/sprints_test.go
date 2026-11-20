@@ -3,6 +3,7 @@ package jira
 import (
 	"errors"
 	"net/http"
+	"slices"
 	"testing"
 	"time"
 
@@ -249,5 +250,94 @@ func TestSprintByName(t *testing.T) {
 	}
 	if _, err := c.Value(t.Context(), sprintField, Text("Sprint 1"), ValueOptions{}); !trackerapi.WriteNotApplied(err) {
 		t.Errorf("a name with no project: %v", err)
+	}
+}
+
+// TestSprintTakenAsRead proves a sprint the caller read (Current) replaces
+// the client's own read of it: the checks run on it, no read is sent, and
+// a sprint given as read under another ID is refused before any request.
+func TestSprintTakenAsRead(t *testing.T) {
+	f := jiratest.NewServer(t)
+	c := newTestClient(t, f)
+	f.On("POST", sprint7URL, jiratest.Reply(200, `{"id":7,"name":"Sprint A","state":"active"}`))
+	f.On("POST", sprint7URL+"/issue", func(w http.ResponseWriter, _ *http.Request, _ []byte) { w.WriteHeader(204) })
+	start := time.Date(2026, 11, 16, 9, 0, 0, 0, time.UTC)
+	end := start.Add(14 * 24 * time.Hour)
+	future := &Sprint{ID: 7, Name: "Sprint 1", State: SprintFuture}
+	closed := &Sprint{ID: 7, Name: "Sprint 1", State: SprintClosed}
+	other := &Sprint{ID: 8, Name: "Sprint 2", State: SprintFuture}
+	name := "Sprint A"
+	if _, err := c.UpdateSprint(t.Context(), SprintUpdate{ID: 7, Name: &name, Current: future}); err != nil {
+		t.Errorf("update: %v", err)
+	}
+	if _, err := c.StartSprint(t.Context(), SprintStart{ID: 7, Start: start, End: end, Current: future}); err != nil {
+		t.Errorf("start: %v", err)
+	}
+	if _, err := c.MoveToSprint(t.Context(), SprintMove{Sprint: 7, Issues: []string{"WEB-1"}, Current: future}); err != nil {
+		t.Errorf("move: %v", err)
+	}
+	// The checks run on the sprint given: a closed one is refused.
+	if _, err := c.StartSprint(t.Context(), SprintStart{ID: 7, Start: start, End: end, Current: closed}); !trackerapi.WriteNotApplied(err) {
+		t.Errorf("start a closed sprint: %v", err)
+	}
+	if _, err := c.MoveToSprint(t.Context(), SprintMove{Sprint: 7, Issues: []string{"WEB-1"}, Current: closed}); !trackerapi.WriteNotApplied(err) {
+		t.Errorf("move into a closed sprint: %v", err)
+	}
+	active := &Sprint{ID: 7, State: SprintActive}
+	for what, call := range map[string]func() error{
+		"update": func() error {
+			_, err := c.UpdateSprint(t.Context(), SprintUpdate{ID: 7, Name: &name, Current: other})
+			return err
+		},
+		"start": func() error {
+			_, err := c.StartSprint(t.Context(), SprintStart{ID: 7, Start: start, End: end, Current: other})
+			return err
+		},
+		"move": func() error {
+			_, err := c.MoveToSprint(t.Context(), SprintMove{Sprint: 7, Issues: []string{"WEB-1"}, Current: other})
+			return err
+		},
+		"complete": func() error {
+			_, err := c.CompleteSprint(t.Context(), SprintCompletion{Sprint: 7, Current: other})
+			return err
+		},
+		"complete to": func() error {
+			_, err := c.CompleteSprint(t.Context(), SprintCompletion{Sprint: 7, MoveTo: 9, Current: active, MoveToCurrent: other})
+			return err
+		},
+	} {
+		if err := call(); !trackerapi.WriteNotApplied(err) {
+			t.Errorf("%s with a sprint of another ID: %v", what, err)
+		}
+	}
+	want := []string{"POST " + sprint7URL, "POST " + sprint7URL, "POST " + sprint7URL + "/issue"}
+	if got := f.Requests(); !slices.Equal(got, want) {
+		t.Errorf("requests %v, want %v", got, want)
+	}
+}
+
+// TestCompleteSprintTakenAsRead proves a completion given both sprints as
+// read sends neither read, its requests starting at the board's done
+// column, and that a destination given as closed is refused before any
+// request.
+func TestCompleteSprintTakenAsRead(t *testing.T) {
+	s := newCompletionSite(t)
+	s.On("POST", sprint7URL, jiratest.Reply(200, `{"id":7,"name":"Sprint 1","state":"closed"}`))
+	in := SprintCompletion{
+		Sprint: 7, MoveTo: 8,
+		Current:       &Sprint{ID: 7, State: SprintActive, BoardID: 3},
+		MoveToCurrent: &Sprint{ID: 8, State: SprintFuture, BoardID: 3},
+	}
+	res, err := s.c.CompleteSprint(t.Context(), in)
+	if err != nil || !res.Closed {
+		t.Fatalf("got %+v %v", res, err)
+	}
+	if got := s.Requests(); got[0] != "GET "+boardConfigURL || s.Count("GET", sprint7URL) != 0 || s.Count("GET", sprint8URL) != 0 {
+		t.Errorf("requests %v", got)
+	}
+	s = newCompletionSite(t)
+	in.MoveToCurrent = &Sprint{ID: 8, State: SprintClosed, BoardID: 3}
+	if _, err := s.c.CompleteSprint(t.Context(), in); !trackerapi.WriteNotApplied(err) || len(s.Requests()) != 0 {
+		t.Errorf("a closed destination: %v, requests %v", err, s.Requests())
 	}
 }

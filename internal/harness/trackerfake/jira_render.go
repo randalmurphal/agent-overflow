@@ -130,9 +130,11 @@ func (s *jiraSite) render(is *JiraIssue, id, viewer string) any {
 	case "subtasks":
 		return s.subtasksJSON(is)
 	case "comment":
-		return s.commentPageJSON(is, 0, len(is.Comments))
+		return s.commentPageJSON(is, 0, len(is.Comments), false)
 	case "worklog":
-		return s.worklogPageJSON(is, is.Worklogs, 0, len(is.Worklogs))
+		// Measured: the field embeds the first 20 with the total and
+		// maxResults 20.
+		return s.worklogPageJSON(is, is.Worklogs, 0, embeddedWorklogs)
 	case "watches":
 		return map[string]any{"self": s.self("issue/" + is.Key + "/watchers"), "watchCount": len(is.Watchers), "isWatching": slices.Contains(is.Watchers, viewer)}
 	}

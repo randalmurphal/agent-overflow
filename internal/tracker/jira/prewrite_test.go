@@ -44,7 +44,9 @@ func TestFailedReadBeforeAWriteIsNotSent(t *testing.T) {
 	day := time.Date(2026, 11, 16, 9, 0, 0, 0, time.UTC)
 	calls := map[string]func(context.Context) error{
 		"AddComment": func(ctx context.Context) error {
-			_, err := c.AddComment(ctx, CommentInput{Issue: "WEB-1", Markdown: md, Audience: AudiencePublic})
+			// A public comment reads nothing first; the default audience
+			// reads the project.
+			_, err := c.AddComment(ctx, CommentInput{Issue: "WEB-1", Markdown: md, Audience: AudienceUnset})
 			return err
 		},
 		"EditComment": func(ctx context.Context) error {

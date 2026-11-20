@@ -130,7 +130,7 @@ func (c *Client) Changelog(ctx context.Context, issue string) (Changelog, error)
 	if err != nil {
 		return Changelog{}, err
 	}
-	found, complete, err := offsetPages[changeEntryJSON](ctx, c, apiPath+path+"/changelog", url.Values{}, 100, 0)
+	found, complete, _, err := offsetPages[changeEntryJSON](ctx, c, apiPath+path+"/changelog", url.Values{}, 100, 0)
 	out := Changelog{Complete: complete && err == nil}
 	for _, e := range found {
 		out.Entries = append(out.Entries, e.entry())
@@ -150,10 +150,12 @@ type ChangelogQuery struct {
 
 // BulkChangelog is the changes of several issues by issue ID, each
 // issue's oldest first, an entry holding the items of the fields asked
-// for. Complete is false when a request failed.
+// for. Complete is false when a request failed. Date is Jira's clock when
+// it answered the first request, zero when the answer named none.
 type BulkChangelog struct {
 	ByIssue  map[string][]ChangeEntry
 	Complete bool
+	Date     time.Time
 }
 
 // BulkChangelogs reads the changes of many issues. Jira takes 1000 issues
@@ -185,16 +187,25 @@ func (c *Client) BulkChangelogs(ctx context.Context, q ChangelogQuery) (BulkChan
 		fieldGroups = slices.Collect(slices.Chunk(q.Fields, changelogFieldLimit))
 	}
 	merged := map[string]map[string]*ChangeEntry{}
-	var err error
+	var (
+		err   error
+		first firstDate
+		left  unnamed
+	)
 	for issues := range slices.Chunk(q.Issues, changelogIssueLimit) {
 		for _, fields := range fieldGroups {
-			if err = c.changelogPages(ctx, issues, fields, merged); err != nil {
+			if err = c.changelogPages(ctx, issues, fields, merged, &first, &left); err != nil {
 				break
 			}
 		}
 		if err != nil {
 			break
 		}
+	}
+	out.Date = first.at
+	if err == nil && len(merged) < len(q.Issues) {
+		// Some issues have no changes: unchanged, or not the user's to see.
+		err = c.prove(ctx, "a bulk changelog", left)
 	}
 	for id, byID := range merged {
 		entries := make([]ChangeEntry, 0, len(byID))
@@ -223,7 +234,8 @@ func numericOrder(id string) int64 {
 
 // changelogPages reads one bulk request to its last page into merged, by
 // issue ID and entry ID; an entry seen again adds the items it lacks.
-func (c *Client) changelogPages(ctx context.Context, issues, fields []string, merged map[string]map[string]*ChangeEntry) error {
+// Each answer is shown to first and noted in left.
+func (c *Client) changelogPages(ctx context.Context, issues, fields []string, merged map[string]map[string]*ChangeEntry, first *firstDate, left *unnamed) error {
 	seen := map[string]bool{}
 	for token := ""; ; {
 		body := map[string]any{"issueIdsOrKeys": issues, "maxResults": changelogIssueLimit}
@@ -240,10 +252,12 @@ func (c *Client) changelogPages(ctx context.Context, issues, fields []string, me
 			} `json:"issueChangeLogs"`
 			NextPageToken string `json:"nextPageToken"`
 		}
-		_, err := c.call(ctx, trackerapi.Request{Method: http.MethodPost, Path: apiPath + "changelog/bulkfetch", Body: body, ReadOnly: true}, &page)
+		resp, err := c.call(ctx, trackerapi.Request{Method: http.MethodPost, Path: apiPath + "changelog/bulkfetch", Body: body, ReadOnly: true}, &page)
 		if err != nil {
 			return err
 		}
+		first.see(resp)
+		left.note(resp)
 		n := 0
 		for _, l := range page.Logs {
 			byID := merged[l.IssueID]

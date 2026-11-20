@@ -32,8 +32,9 @@ func TestApplyCreateWithImage(t *testing.T) {
 	if len(pv.Images) != 1 || pv.Images[0].Size != int64(len(pngBytes)) || pv.Images[0].Name != "a.png" {
 		t.Fatalf("images %+v", pv.Images)
 	}
-	if n := len(f.Requests()); n != 2 {
-		t.Fatalf("planning sent %d requests, want only the metadata reads", n)
+	// The issue type is named by its ID, so only the create screen is read.
+	if n := len(f.Requests()); n != 1 {
+		t.Fatalf("planning sent %d requests, want only the create screen read", n)
 	}
 	f.On("POST", "/rest/api/3/issue", func(w http.ResponseWriter, r *http.Request, b []byte) {
 		if !strings.Contains(string(b), `[image: a.png]`) || strings.Contains(string(b), pendingPrefix) {

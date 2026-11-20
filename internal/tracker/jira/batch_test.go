@@ -335,7 +335,7 @@ func TestRankEntryIdentities(t *testing.T) {
 // is refused even when the sign-in check that follows the 404 fails
 // before it is sent: the outcome is the write's own, not the check's.
 func TestRankRefusedGroupAfterAFailedCheck(t *testing.T) {
-	f := jiratest.NewServer(t)
+	f := unnamedSite(t)
 	c := markClient(t, f, &failingReread{}, nil)
 	site := &batchSite{t: t, answer: func(int, batchBody) (int, string) { return http.StatusNotFound, `{"errorMessages":["no"]}` }}
 	f.On("PUT", rankURL, func(w http.ResponseWriter, r *http.Request, b []byte) {

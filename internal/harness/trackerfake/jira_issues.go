@@ -47,11 +47,49 @@ func getIssue(c *jiraCall) answer {
 	if err := c.noBody(); err != nil {
 		return unhandledf("%v", err)
 	}
+	expand := map[string]bool{}
+	for e := range strings.SplitSeq(c.query.Get("expand"), ",") {
+		switch e = strings.TrimSpace(e); e {
+		case "":
+		case "editmeta", "changelog", "transitions", "transitions.fields":
+			expand[e] = true
+		default:
+			return unhandledf("expand=%q", e)
+		}
+	}
 	is, nf := c.found()
 	if nf != nil {
 		return *nf
 	}
-	return jsonAnswer(http.StatusOK, c.s.issueJSON(is, parseFields(c.query["fields"], selectAll), c.viewer))
+	out := c.s.issueJSON(is, parseFields(c.query["fields"], selectAll), c.viewer)
+	// Measured: each expansion embeds what its own read returns.
+	if expand["editmeta"] {
+		t := c.s.project(is.Project).issueType(is.Type)
+		out["editmeta"] = map[string]any{"fields": c.s.screenMeta(is, t.Screen, false)}
+	}
+	if expand["transitions"] || expand["transitions.fields"] {
+		out["transitions"] = c.s.transitionsJSON(is, expand["transitions.fields"])
+	}
+	if expand["changelog"] {
+		out["changelog"] = c.s.embeddedChangelog(is)
+	}
+	return jsonAnswer(http.StatusOK, out)
+}
+
+// embeddedChangelogMost is how many changelog entries an issue read
+// embeds (measured: 100, newest first, with the total).
+const embeddedChangelogMost = 100
+
+// embeddedChangelog is is's changelog as an issue read embeds it: the
+// newest entries first. Its maxResults is the entries embedded (measured
+// with fewer than 100: 20 of 20).
+func (s *jiraSite) embeddedChangelog(is *JiraIssue) map[string]any {
+	n := min(len(is.Changelog), embeddedChangelogMost)
+	out := make([]any, 0, n)
+	for i := len(is.Changelog) - 1; i >= len(is.Changelog)-n; i-- {
+		out = append(out, s.changelogJSON(is.Changelog[i], false))
+	}
+	return map[string]any{"startAt": 0, "maxResults": n, "total": len(is.Changelog), "histories": out}
 }
 
 func createIssue(c *jiraCall) answer {
@@ -180,18 +218,24 @@ func getTransitions(c *jiraCall) answer {
 	if nf != nil {
 		return *nf
 	}
+	return jsonAnswer(http.StatusOK, map[string]any{"expand": "transitions", "transitions": c.s.transitionsJSON(is, c.query.Get("expand") != "")})
+}
+
+// transitionsJSON are the transitions is can make, with each one's screen
+// fields when fields is set.
+func (s *jiraSite) transitionsJSON(is *JiraIssue, fields bool) []any {
 	out := []any{}
-	for _, t := range c.s.available(is) {
+	for _, t := range s.available(is) {
 		tj := map[string]any{
-			"id": t.ID, "name": t.Name, "to": c.s.statusJSON(t.To), "hasScreen": len(t.Screen) > 0,
+			"id": t.ID, "name": t.Name, "to": s.statusJSON(t.To), "hasScreen": len(t.Screen) > 0,
 			"isGlobal": len(t.From) == 0, "isInitial": false, "isAvailable": true, "isConditional": false, "isLooped": false,
 		}
-		if c.query.Get("expand") != "" {
-			tj["fields"] = c.s.screenMeta(is, t.Screen, false)
+		if fields {
+			tj["fields"] = s.screenMeta(is, t.Screen, false)
 		}
 		out = append(out, tj)
 	}
-	return jsonAnswer(http.StatusOK, map[string]any{"expand": "transitions", "transitions": out})
+	return out
 }
 
 func transitionIssue(c *jiraCall) answer {

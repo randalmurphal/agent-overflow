@@ -115,7 +115,7 @@ func TestValidateRules(t *testing.T) {
 			t.Errorf("%s: unchecked %v, error %v with every read allowed", tc.name, got[i].Unchecked, got[i].Err)
 		}
 	}
-	idCalls, _ := issues.calls()
+	idCalls := issues.calls()
 	if !reflect.DeepEqual(idCalls, [][]string{{"WEB-1", "WEB-404"}}) {
 		t.Errorf("ID lookups %v", idCalls)
 	}

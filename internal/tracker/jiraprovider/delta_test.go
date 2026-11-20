@@ -22,7 +22,8 @@ import (
 // of their time literal, milliseconds since the epoch, and the ID list a
 // write's board check sends, and answers the
 // matching issues by update time then ID, two to a page, with a page
-// token while more match.
+// token while more match. Its answers carry date as their Date header,
+// and none when date is zero.
 type boardIndex struct {
 	t       *testing.T
 	mu      sync.Mutex
@@ -30,7 +31,15 @@ type boardIndex struct {
 	warn    string
 	reverse bool // answer each page in the wrong order
 	token   bool // name a next page whatever matched
+	date    time.Time
 	jql     []string
+}
+
+// at sets the Date the index answers with.
+func (x *boardIndex) at(date time.Time) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	x.date = date
 }
 
 type indexed struct {
@@ -118,6 +127,11 @@ func (x *boardIndex) serve(w http.ResponseWriter, r *http.Request, b []byte) {
 	if x.warn != "" {
 		v["warningMessages"] = []string{x.warn}
 	}
+	// A nil Date keeps net/http from adding the wall clock's.
+	w.Header()["Date"] = nil
+	if !x.date.IsZero() {
+		w.Header().Set("Date", x.date.UTC().Format(http.TimeFormat))
+	}
 	jiratest.Reply(200, mustJSON(v))(w, r, b)
 }
 
@@ -162,7 +176,9 @@ func walk(t *testing.T, f *jiratest.Server, page tracker.RowPage) ([]string, tra
 // each across pages whose cursors were stored between them; that an
 // issue a millisecond later with a lower ID follows the run; that the
 // JQL sent is exactly the documented shapes; and that only the end of a
-// walk steps back to deliver its last minute again.
+// walk steps back to deliver its last minute again: with no Date from
+// Jira, every walk that delivered a row ends tracker.DeltaOverlap before
+// its newest row.
 func TestChangedRowsResumesWithinOneMillisecond(t *testing.T) {
 	f, x := deltaSite(t)
 	at := time.Date(2026, 11, 10, 15, 0, 30, 250*int(time.Millisecond), time.UTC)
@@ -240,8 +256,8 @@ func TestChangedRowsIdleCursorStays(t *testing.T) {
 }
 
 // TestChangedRowsEmptyPageEndsWalk proves a walk whose last page is
-// empty, after a page that named a next one, steps back by walkOverlap
-// like any other walk's end, so a row the index took late, updated just
+// empty, after a page that named a next one, ends like any other walk
+// (here with no Date, stepping back by tracker.DeltaOverlap), so a row the index took late, updated just
 // before the walk's newest row, is delivered by the next walk.
 func TestChangedRowsEmptyPageEndsWalk(t *testing.T) {
 	f, x := deltaSite(t)
@@ -258,7 +274,7 @@ func TestChangedRowsEmptyPageEndsWalk(t *testing.T) {
 		t.Fatalf("the rest of the walk delivered %q", rest)
 	}
 	var c cursor
-	if err := jsonUnmarshal(last.Next, &c); err != nil || c.AfterMS != at.Add(-walkOverlap).UnixMilli() || c.AfterID != 0 {
+	if err := jsonUnmarshal(last.Next, &c); err != nil || c.AfterMS != at.Add(-tracker.DeltaOverlap).UnixMilli() || c.AfterID != 0 {
 		t.Fatalf("end cursor %+v %v", c, err)
 	}
 	x.set(10003, at.Add(-30*time.Second))
@@ -271,7 +287,8 @@ func TestChangedRowsEmptyPageEndsWalk(t *testing.T) {
 // TestChangedRowsStepBackFloor proves a walk's end never steps the cursor
 // back before the epoch's first millisecond, which a cursor needs.
 func TestChangedRowsStepBackFloor(t *testing.T) {
-	f, _ := deltaSite(t)
+	f, x := deltaSite(t)
+	x.set(10005, time.UnixMilli(1000))
 	mid := cursor{V: cursorVersion, Board: "3", AfterMS: 1000, AfterID: 10004}
 	page, err := newProvider(t, f, nil).ChangedRows(t.Context(), tracker.DeltaQuery{Board: "3", From: mid.bytes()})
 	if err != nil || page.More {
@@ -279,6 +296,103 @@ func TestChangedRowsStepBackFloor(t *testing.T) {
 	}
 	if want := (cursor{V: cursorVersion, Board: "3", AfterMS: 1}).bytes(); string(page.Next) != string(want) {
 		t.Errorf("cursor %s, want %s", page.Next, want)
+	}
+}
+
+// tick reads one delta page from c with a fresh Provider and returns
+// its rows, its cursor and the reads it sent.
+func tick(t *testing.T, f *jiratest.Server, c tracker.Cursor) (string, tracker.RowPage, int) {
+	t.Helper()
+	before := f.Count("GET", board3Issues)
+	page, err := newProvider(t, f, nil).ChangedRows(t.Context(), tracker.DeltaQuery{Board: "3", From: c})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ids(page), page, f.Count("GET", board3Issues) - before
+}
+
+// TestChangedRowsIdleBoardDeliversNothing proves that once Jira's clock
+// is past the overlap after the newest row, three idle ticks of an
+// unchanged board deliver no row at one request each, while without a
+// Date each tick delivers the newest minute again.
+func TestChangedRowsIdleBoardDeliversNothing(t *testing.T) {
+	for _, dated := range []bool{true, false} {
+		t.Run(fmt.Sprint("dated=", dated), func(t *testing.T) {
+			f, x := deltaSite(t)
+			at := time.Date(2026, 11, 10, 15, 0, 0, 0, time.UTC)
+			x.set(10001, at.Add(-time.Hour))
+			x.set(10002, at)
+			if dated {
+				x.at(at.Add(2 * time.Minute))
+			}
+			first, err := newProvider(t, f, nil).ChangedRows(t.Context(), tracker.DeltaQuery{Board: "3", Start: at.Add(-2 * time.Hour)})
+			if err != nil || ids(first) != "10001 10002" || first.More {
+				t.Fatalf("the first walk: %s more %v %v", ids(first), first.More, err)
+			}
+			c := first.Next
+			for i := range 3 {
+				if dated {
+					x.at(at.Add(time.Duration(3+i) * time.Minute))
+				}
+				got, page, reads := tick(t, f, c)
+				want := ""
+				if !dated {
+					want = "10002"
+				}
+				if got != want || reads != 1 || page.More {
+					t.Errorf("tick %d delivered %q in %d reads, want %q in 1", i+1, got, reads, want)
+				}
+				c = page.Next
+			}
+		})
+	}
+}
+
+// TestChangedRowsLateRowInsideOverlap proves a row Jira's index shows
+// only after a walk passed its update time is delivered by the next walk
+// when that time is within tracker.DeltaOverlap of the walk's start, and
+// that the walk after one whose start is past the overlap resumes
+// exactly, delivering nothing again.
+func TestChangedRowsLateRowInsideOverlap(t *testing.T) {
+	f, x := deltaSite(t)
+	at := time.Date(2026, 11, 10, 15, 0, 0, 0, time.UTC)
+	x.set(10001, at)
+	x.at(at.Add(30 * time.Second))
+	first, err := newProvider(t, f, nil).ChangedRows(t.Context(), tracker.DeltaQuery{Board: "3", Start: at.Add(-time.Hour)})
+	if err != nil || ids(first) != "10001" {
+		t.Fatalf("the first walk: %s %v", ids(first), err)
+	}
+	// Updated before the row delivered, shown only now.
+	x.set(10002, at.Add(-10*time.Second))
+	x.at(at.Add(5 * time.Minute))
+	got, page, _ := tick(t, f, first.Next)
+	if got != "10002 10001" {
+		t.Errorf("the next walk delivered %q, want the late row and the overlap again", got)
+	}
+	if got, _, _ = tick(t, f, page.Next); got != "" {
+		t.Errorf("a walk after the overlap delivered %q again", got)
+	}
+}
+
+// TestChangedRowsSameMillisecondOnceExact proves a walk that resumes
+// exactly delivers a row at the newest row's millisecond with a greater
+// ID once, and repeats neither.
+func TestChangedRowsSameMillisecondOnceExact(t *testing.T) {
+	f, x := deltaSite(t)
+	at := time.Date(2026, 11, 10, 15, 0, 0, 250*int(time.Millisecond), time.UTC)
+	x.set(10002, at)
+	x.at(at.Add(2 * time.Minute))
+	first, err := newProvider(t, f, nil).ChangedRows(t.Context(), tracker.DeltaQuery{Board: "3", Start: at.Add(-time.Hour)})
+	if err != nil || ids(first) != "10002" {
+		t.Fatalf("the first walk: %s %v", ids(first), err)
+	}
+	x.set(10003, at)
+	got, page, _ := tick(t, f, first.Next)
+	if got != "10003" {
+		t.Errorf("the next walk delivered %q, want only the new row", got)
+	}
+	if got, _, _ = tick(t, f, page.Next); got != "" {
+		t.Errorf("the walk after delivered %q again", got)
 	}
 }
 
@@ -312,16 +426,20 @@ func TestChangedRowsRefusesCursors(t *testing.T) {
 	p := newProvider(t, f, nil)
 	at := time.Date(2026, 11, 10, 15, 0, 0, 0, time.UTC).UnixMilli()
 	for name, q := range map[string]tracker.DeltaQuery{
-		"another board's":   {Board: "3", From: cursor{V: cursorVersion, Board: "4", AfterMS: at}.bytes()},
-		"not JSON":          {Board: "3", From: tracker.Cursor("o2")},
-		"an unknown key":    {Board: "3", From: tracker.Cursor(`{"v":2,"board":"3","after_ms":1,"token":"o2"}`)},
-		"trailing data":     {Board: "3", From: tracker.Cursor(`{"v":2,"board":"3","after_ms":1} {}`)},
-		"the first version": {Board: "3", From: tracker.Cursor(`{"v":1,"board":"3","after":"2026-11-10T15:00:00Z"}`)},
-		"a later version":   {Board: "3", From: cursor{V: 3, Board: "3", AfterMS: at}.bytes()},
-		"no position":       {Board: "3", From: cursor{V: cursorVersion, Board: "3"}.bytes()},
-		"a negative ID":     {Board: "3", From: cursor{V: cursorVersion, Board: "3", AfterMS: at, AfterID: -1}.bytes()},
-		"no start":          {Board: "3"},
-		"a start in 1970":   {Board: "3", Start: time.Unix(0, 0)},
+		"another board's":            {Board: "3", From: cursor{V: cursorVersion, Board: "4", AfterMS: at}.bytes()},
+		"not JSON":                   {Board: "3", From: tracker.Cursor("o2")},
+		"an unknown key":             {Board: "3", From: tracker.Cursor(`{"v":2,"board":"3","after_ms":1,"token":"o2"}`)},
+		"trailing data":              {Board: "3", From: tracker.Cursor(`{"v":2,"board":"3","after_ms":1} {}`)},
+		"the first version":          {Board: "3", From: tracker.Cursor(`{"v":1,"board":"3","after":"2026-11-10T15:00:00Z"}`)},
+		"the second version":         {Board: "3", From: tracker.Cursor(`{"v":2,"board":"3","after_ms":1}`)},
+		"a later version":            {Board: "3", From: cursor{V: cursorVersion + 1, Board: "3", AfterMS: at}.bytes()},
+		"a walk start out of a walk": {Board: "3", From: cursor{V: cursorVersion, Board: "3", AfterMS: at, StartMS: at}.bytes()},
+		"a delivery out of a walk":   {Board: "3", From: cursor{V: cursorVersion, Board: "3", AfterMS: at, Delivered: true}.bytes()},
+		"a negative walk start":      {Board: "3", From: cursor{V: cursorVersion, Board: "3", AfterMS: at, InWalk: true, StartMS: -1}.bytes()},
+		"no position":                {Board: "3", From: cursor{V: cursorVersion, Board: "3"}.bytes()},
+		"a negative ID":              {Board: "3", From: cursor{V: cursorVersion, Board: "3", AfterMS: at, AfterID: -1}.bytes()},
+		"no start":                   {Board: "3"},
+		"a start in 1970":            {Board: "3", Start: time.Unix(0, 0)},
 	} {
 		if _, err := p.ChangedRows(t.Context(), q); !errors.Is(err, tracker.ErrInvalidInput) {
 			t.Errorf("%s: %v", name, err)

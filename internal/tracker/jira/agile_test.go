@@ -108,9 +108,9 @@ func TestBoardConfig(t *testing.T) {
 	if n := f.Count("GET", boardConfigURL); n != 1 {
 		t.Errorf("%d reads, want 1", n)
 	}
-	c.ForgetBoards()
+	c.ForgetBoard(3)
 	if _, err := c.BoardConfig(t.Context(), 3); err != nil || f.Count("GET", boardConfigURL) != 2 {
-		t.Errorf("after ForgetBoards: %v", err)
+		t.Errorf("after ForgetBoard: %v", err)
 	}
 	if _, err := c.BoardConfig(t.Context(), 0); !trackerapi.WriteNotApplied(err) {
 		t.Errorf("board 0: %v", err)
@@ -118,13 +118,13 @@ func TestBoardConfig(t *testing.T) {
 }
 
 // TestBoardConfigReadInFlightIsFenced proves a configuration read that
-// was in flight when ForgetBoards dropped the cache is not kept.
+// was in flight when ForgetBoard dropped the cache is not kept.
 func TestBoardConfigReadInFlightIsFenced(t *testing.T) {
 	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
 	f.On("GET", boardConfigURL, func(w http.ResponseWriter, r *http.Request, b []byte) {
 		if f.Count("GET", boardConfigURL) == 1 {
-			c.ForgetBoards()
+			c.ForgetBoard(3)
 		}
 		jiratest.Reply(200, boardConfigBody)(w, r, b)
 	})

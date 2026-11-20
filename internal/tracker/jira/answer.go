@@ -2,6 +2,8 @@ package jira
 
 import (
 	"encoding/json"
+	"net/http"
+	"time"
 
 	"agent-overflow/internal/tracker/trackerapi"
 )
@@ -31,4 +33,35 @@ func decodeAnswer(resp *trackerapi.Response, out any) error {
 		return &AnswerError{Message: "the answer did not decode: " + resp.Scrub(err.Error())}
 	}
 	return nil
+}
+
+// answerDate is the tracker's clock when it answered resp, from its Date
+// header (one-second resolution, the second it began); zero when the
+// answer has none or one that does not parse. A delta's walk start and a
+// history's settle time are taken from it, so this computer's clock has
+// no part in comparing them with Jira's update times.
+func answerDate(resp *trackerapi.Response) time.Time {
+	if resp == nil {
+		return time.Time{}
+	}
+	t, err := http.ParseTime(resp.Header.Get("Date"))
+	if err != nil {
+		return time.Time{}
+	}
+	return t
+}
+
+// firstDate is the answerDate of the first answer a read made of several
+// requests saw: zero when that answer had none, though a later one may.
+// A later answer's clock would claim the read reflects Jira as of a time
+// after its first pages were drawn.
+type firstDate struct {
+	at   time.Time
+	seen bool
+}
+
+func (d *firstDate) see(resp *trackerapi.Response) {
+	if !d.seen {
+		d.at, d.seen = answerDate(resp), true
+	}
 }

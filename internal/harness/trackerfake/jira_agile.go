@@ -108,8 +108,12 @@ func boardConfig(c *jiraCall) answer {
 		est = map[string]any{"type": "field", "field": map[string]any{"fieldId": f.id, "displayName": f.name}}
 	}
 	rank := c.s.fieldOfType(rankFieldType)
+	p := c.s.project(b.Project)
 	return jsonAnswer(http.StatusOK, map[string]any{
 		"id": b.ID, "name": b.Name, "type": b.Type,
+		// Measured: the members of a project board's location, id a
+		// string. The fake's boards are all on a project.
+		"location":     map[string]any{"type": "project", "id": p.ID, "key": p.Key, "name": p.Name, "self": c.s.self("project/" + p.ID)},
 		"filter":       map[string]any{"id": b.FilterID, "self": c.s.self("filter/" + b.FilterID)},
 		"subQuery":     map[string]any{"query": ""},
 		"columnConfig": map[string]any{"columns": cols, "constraintType": "none"},

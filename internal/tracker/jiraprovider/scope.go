@@ -33,7 +33,7 @@ import (
 // download is checked in Download.
 
 // onBoard is the issues of ids board b lists now, by ID, with fields
-// besides their status, read through the board's issue list, a hundred
+// besides their status, read through the board's issue list, idChunk
 // IDs to a request.
 func (p *Provider) onBoard(ctx context.Context, b board, ids []tracker.IssueID, fields ...string) (map[tracker.IssueID]*jira.Issue, error) {
 	listed := map[tracker.IssueID]*jira.Issue{}
@@ -80,7 +80,7 @@ func boardParts(board tracker.BoardID, step tracker.Step, ids []tracker.IssueID,
 
 // boardSprints are the sprints board lists in states, every state when
 // none is named, by ID with their state.
-func (p *Provider) boardSprints(ctx context.Context, board tracker.BoardID, states ...jira.SprintState) (map[int64]jira.SprintState, error) {
+func (p *Provider) boardSprints(ctx context.Context, board tracker.BoardID, states ...jira.SprintState) (map[int64]jira.Sprint, error) {
 	n, err := boardNumber(board)
 	if err != nil {
 		return nil, err
@@ -89,28 +89,31 @@ func (p *Provider) boardSprints(ctx context.Context, board tracker.BoardID, stat
 	if err != nil {
 		return nil, fmt.Errorf("jiraprovider: sprints of board %s: %w", board, err)
 	}
-	out := make(map[int64]jira.SprintState, len(list.Sprints))
+	out := make(map[int64]jira.Sprint, len(list.Sprints))
 	for _, s := range list.Sprints {
-		out[s.ID] = s.State
+		out[s.ID] = s
 	}
 	return out, nil
 }
 
-// boardSprint is sprint's number when board lists it in one of states,
-// every state when none is named, and a refusal otherwise.
-func (p *Provider) boardSprint(ctx context.Context, board tracker.BoardID, sprint tracker.SprintID, states ...jira.SprintState) (int64, error) {
+// boardSprint is sprint as board lists it in one of states, every state
+// when none is named, and a refusal otherwise. The listing holds each
+// sprint whole, so the write that follows takes it as read (its Current)
+// rather than reading the sprint again.
+func (p *Provider) boardSprint(ctx context.Context, board tracker.BoardID, sprint tracker.SprintID, states ...jira.SprintState) (*jira.Sprint, error) {
 	n, err := sprintNumber(sprint)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	listed, err := p.boardSprints(ctx, board, states...)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	if _, ok := listed[n]; !ok {
-		return 0, notBoardSprint(board, sprint, states)
+	s, ok := listed[n]
+	if !ok {
+		return nil, notBoardSprint(board, sprint, states)
 	}
-	return n, nil
+	return &s, nil
 }
 
 // notBoardSprint is the refusal of a sprint board does not list in

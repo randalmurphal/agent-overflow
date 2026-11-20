@@ -38,6 +38,8 @@ import (
 type jqlQuery struct {
 	where func(s *jiraSite, is *JiraIssue) bool
 	order []jqlOrder
+	// sprints are the sprint IDs a sprint in clause names.
+	sprints []int64
 }
 
 type jqlOrder struct {
@@ -121,8 +123,9 @@ func lexJQL(src string) ([]jqlToken, error) {
 }
 
 type jqlParser struct {
-	toks []jqlToken
-	pos  int
+	toks    []jqlToken
+	pos     int
+	sprints []int64
 }
 
 func (p *jqlParser) peek() jqlToken { return p.toks[p.pos] }
@@ -183,6 +186,7 @@ func parseJQL(src string) (jqlQuery, error) {
 	if t := p.peek(); t.kind != 0 {
 		return jqlQuery{}, &jqlError{fmt.Sprintf("text from %q on is not implemented", t.text)}
 	}
+	q.sprints = p.sprints
 	return q, nil
 }
 
@@ -265,6 +269,15 @@ func (p *jqlParser) clause() (jqlFilter, error) {
 		vals, err := p.list(kind)
 		if err != nil {
 			return nil, err
+		}
+		if name == "sprint" {
+			for _, v := range vals {
+				n, err := strconv.ParseInt(v, 10, 64)
+				if err != nil {
+					return nil, &jqlError{fmt.Sprintf("sprint %q is not implemented", v)}
+				}
+				p.sprints = append(p.sprints, n)
+			}
 		}
 		return inFilter(name, vals), nil
 	}

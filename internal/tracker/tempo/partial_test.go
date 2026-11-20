@@ -234,8 +234,8 @@ func TestClosedClientFailsAtAdmission(t *testing.T) {
 				t.Errorf("%s: %v", name, err)
 			}
 		}
-		if ids, keys := issues.calls(); len(ids)+len(keys) != 0 {
-			t.Errorf("IssueIDs called after Close: %v %v", ids, keys)
+		if ids := issues.calls(); len(ids) != 0 {
+			t.Errorf("IssueIDs called after Close: %v", ids)
 		}
 		if r := f.Requests(); len(r) != 0 {
 			t.Errorf("requests after Close: %v", r)

@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
+	"regexp"
 	"slices"
+	"strings"
 	"sync/atomic"
 
 	"agent-overflow/internal/tracker/adf"
@@ -118,23 +121,17 @@ func (c *Client) PlanCreate(ctx context.Context, in CreateInput) (*CreatePlan, e
 	if err := checkProject(in.Project); err != nil {
 		return nil, err
 	}
-	types, err := c.CreateIssueTypes(ctx, in.Project)
-	if err != nil {
-		return nil, err
-	}
-	cands := make([]Candidate, len(types))
-	for i, t := range types {
-		cands[i] = Candidate{ID: t.ID, Name: t.Name}
-	}
-	hit, err := match("issue type of "+in.Project, in.IssueType, cands)
-	if err != nil {
-		return nil, notSentErr(err)
-	}
 	p := &CreatePlan{project: in.Project}
-	p.issueType = types[slices.IndexFunc(types, func(t IssueType) bool { return t.ID == hit.ID })]
-	screen, err := c.CreateMeta(ctx, in.Project, hit.ID)
+	var err error
+	if p.issueType, err = c.createIssueType(ctx, in.Project, in.IssueType); err != nil {
+		return nil, err
+	}
+	screen, err := c.CreateMeta(ctx, in.Project, p.issueType.ID)
 	if err != nil {
 		return nil, err
+	}
+	if p.issueType.Name == "" {
+		p.issueType = screenIssueType(screen, p.issueType)
 	}
 	p.owned = newOwned(c, in.ImageDir)
 	b := &builder{c: c, opts: ValueOptions{Project: in.Project, ImageDir: in.ImageDir}, stage: p.state.stage}
@@ -169,6 +166,46 @@ func (c *Client) PlanCreate(ctx context.Context, in CreateInput) (*CreatePlan, e
 	}
 	p.images = imagesOf(p.values)
 	return p, nil
+}
+
+// createIssueType is the issue type ref names in project. A numeric ref
+// is an issue type ID, taken as it is: the create screen read next
+// refuses one the project cannot create, so no listing is read for it
+// and its Name is left to screenIssueType. Any other ref is matched by
+// name against the types the user can create there.
+func (c *Client) createIssueType(ctx context.Context, project, ref string) (IssueType, error) {
+	if numericRE.MatchString(ref) {
+		return IssueType{ID: ref}, nil
+	}
+	types, err := c.CreateIssueTypes(ctx, project)
+	if err != nil {
+		return IssueType{}, err
+	}
+	cands := make([]Candidate, len(types))
+	for i, t := range types {
+		cands[i] = Candidate{ID: t.ID, Name: t.Name}
+	}
+	hit, err := match("issue type of "+project, ref, cands)
+	if err != nil {
+		return IssueType{}, notSentErr(err)
+	}
+	return types[slices.IndexFunc(types, func(t IssueType) bool { return t.ID == hit.ID })], nil
+}
+
+// screenIssueType is t named as the create screen's issue type field
+// lists it, or t as it is when the screen does not list it.
+func screenIssueType(screen Screen, t IssueType) IssueType {
+	for _, f := range screen.Fields {
+		if f.ID != "issuetype" {
+			continue
+		}
+		for _, a := range f.Allowed {
+			if a.ID == t.ID {
+				t.Name = a.Name
+			}
+		}
+	}
+	return t
 }
 
 // imagesOf is every image the values embed, each once.
@@ -251,7 +288,7 @@ func (c *Client) PlanEdit(ctx context.Context, in EditInput) (*EditPlan, error) 
 	if len(in.Fields) == 0 {
 		return nil, notSent("edit %s: no fields", in.Issue)
 	}
-	screen, err := c.EditMeta(ctx, in.Issue)
+	is, screen, asked, err := c.editRead(ctx, in.Issue, in.Fields)
 	if err != nil {
 		return nil, err
 	}
@@ -264,9 +301,12 @@ func (c *Client) PlanEdit(ctx context.Context, in EditInput) (*EditPlan, error) 
 			return nil, notSent("%s is set twice", metas[i].Name)
 		}
 	}
-	is, err := c.GetIssue(ctx, in.Issue, richFieldIDs(metas)...)
-	if err != nil {
-		return nil, err
+	if richNotAsked(asked, metas) {
+		// A rich text field named other than by its ID: its document
+		// was not asked for, so the documents are read again.
+		if is, err = c.GetIssue(ctx, in.Issue, richFieldIDs(metas)...); err != nil {
+			return nil, err
+		}
 	}
 	p := &EditPlan{issueID: is.ID, issueKey: is.Key}
 	p.owned = newOwned(c, in.ImageDir)
@@ -295,6 +335,46 @@ func (c *Client) PlanEdit(ctx context.Context, in EditInput) (*EditPlan, error) 
 	}
 	p.images = imagesOf(p.values)
 	return p, nil
+}
+
+// editRead reads, in one request, the issue's edit screen and the
+// fields an edit names by ID, which hold the documents its rich text
+// edits start from, with the summary so the read names something
+// whatever the edit names; asked are the field IDs it asked for.
+func (c *Client) editRead(ctx context.Context, issue string, fields []FieldInput) (is *Issue, screen Screen, asked []string, err error) {
+	path, err := issuePath(issue)
+	if err != nil {
+		return nil, Screen{}, nil, err
+	}
+	asked = []string{"summary"}
+	for _, f := range fields {
+		if fieldIDRE.MatchString(f.Field) && !slices.Contains(asked, f.Field) {
+			asked = append(asked, f.Field)
+		}
+	}
+	var v struct {
+		ID       string      `json:"id"`
+		Key      string      `json:"key"`
+		Fields   issueFields `json:"fields"`
+		EditMeta struct {
+			Fields map[string]fieldMetaJSON `json:"fields"`
+		} `json:"editmeta"`
+	}
+	q := url.Values{"fields": {strings.Join(asked, ",")}, "expand": {"editmeta"}}
+	if err := c.get(ctx, path, q, &v); err != nil {
+		return nil, Screen{}, nil, fmt.Errorf("jira: edit screen of %s: %w", issue, err)
+	}
+	return issueJSON{ID: v.ID, Key: v.Key, Fields: v.Fields}.decode(), screenOf(v.EditMeta.Fields), asked, nil
+}
+
+// fieldIDRE is the shape of a field ID: a system field's name or
+// customfield_<n>. A field named any other way is named by its name.
+var fieldIDRE = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*$`)
+
+// richNotAsked reports a rich text field among metas that asked does not
+// name.
+func richNotAsked(asked []string, metas []FieldMeta) bool {
+	return slices.ContainsFunc(metas, func(f FieldMeta) bool { return kindOf(f.Schema) == kindRich && !slices.Contains(asked, f.ID) })
 }
 
 // richFieldIDs are the IDs of the rich text fields among metas, or

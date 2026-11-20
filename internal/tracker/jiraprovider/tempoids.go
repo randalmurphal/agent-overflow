@@ -47,25 +47,3 @@ func (t tempoIssues) IDs(ctx context.Context, keys []string) (map[string]int64, 
 	}
 	return out, nil
 }
-
-// Keys reads ids and returns each one's current key.
-func (t tempoIssues) Keys(ctx context.Context, ids []int64) (map[int64]string, error) {
-	out := map[int64]string{}
-	if len(ids) == 0 {
-		return out, nil
-	}
-	refs := make([]string, len(ids))
-	for i, id := range ids {
-		refs[i] = decimal(id)
-	}
-	res, err := t.jira.BulkFetch(ctx, refs, "status")
-	if err != nil {
-		return nil, fmt.Errorf("jiraprovider: issue keys for Tempo: %w", err)
-	}
-	for _, is := range res.Issues {
-		if id, err := strconv.ParseInt(is.ID, 10, 64); err == nil && slices.Contains(ids, id) {
-			out[id] = is.Key
-		}
-	}
-	return out, nil
-}

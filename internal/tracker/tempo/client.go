@@ -9,7 +9,8 @@
 // rule that a change replaces the whole record, and Tempo's error and
 // rate limit conventions (its trackerapi.Dialect). It does not know Jira:
 // Tempo stores a worklog's issue by numeric ID, and the caller's IssueIDs
-// maps keys to IDs and back. The HTTP transport, credentials, retries and
+// maps the keys a write names to IDs. A worklog read names its issue by
+// ID only. The HTTP transport, credentials, retries and
 // the rate gate are trackerapi's. Nothing is stored on disk and nothing is
 // printed.
 //
@@ -43,18 +44,16 @@ const (
 // per IP address, shared by every integration on that address.
 const maxPerSecond = 5
 
-// IssueIDs maps Jira issue keys to the numeric IDs Tempo stores, and
-// back. The caller implements it, usually over its Jira client or local
-// mirror. The client asks once per call with every distinct value that
-// call needs (a batch, one page of a listing), never once per worklog.
+// IssueIDs maps Jira issue keys to the numeric IDs Tempo stores. The
+// caller implements it, usually over its Jira client or local mirror. The
+// client asks once per write call with every distinct key that call
+// names (a batch), never once per worklog, and only for a write that
+// names an issue by key.
 type IssueIDs interface {
 	// IDs returns the numeric ID of each key it knows, keyed by the key
 	// as asked. A key it does not know is absent, not an error; an error
 	// is a failure to look the keys up at all.
 	IDs(ctx context.Context, keys []string) (map[string]int64, error)
-	// Keys returns the current key of each issue ID it knows. An ID it
-	// does not know (a deleted issue, one the user cannot see) is absent.
-	Keys(ctx context.Context, ids []int64) (map[int64]string, error)
 }
 
 // Options configures a Client.

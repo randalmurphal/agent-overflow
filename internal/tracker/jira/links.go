@@ -14,7 +14,8 @@ import (
 // LinkInput links two issues: Outward relates to Inward by the type's
 // Outward phrase ("WEB-1 blocks WEB-2").
 type LinkInput struct {
-	// Type is the link type's name or ID.
+	// Type is the link type's ID, a number sent as it is, or its name,
+	// matched against the site's link types.
 	Type    string
 	Outward string
 	Inward  string
@@ -32,17 +33,9 @@ func (c *Client) LinkIssues(ctx context.Context, in LinkInput) error {
 			return err
 		}
 	}
-	types, err := c.IssueLinkTypes(ctx)
+	hit, err := c.linkType(ctx, in.Type)
 	if err != nil {
-		return notSentErr(err)
-	}
-	cands := make([]Candidate, len(types))
-	for i, t := range types {
-		cands[i] = Candidate{ID: t.ID, Name: t.Name}
-	}
-	hit, err := match("issue link type", in.Type, cands)
-	if err != nil {
-		return notSentErr(err)
+		return err
 	}
 	body := map[string]any{
 		"type":         idRef{hit.ID},
@@ -60,6 +53,29 @@ func (c *Client) LinkIssues(ctx context.Context, in LinkInput) error {
 		return fmt.Errorf("jira: link %s %s %s: %w", in.Outward, hit.Name, in.Inward, err)
 	}
 	return nil
+}
+
+// linkType is the link type ref names. A numeric ref is the type's ID,
+// sent with no read: Jira refuses an ID it does not know with a 4xx, so
+// the write is known not applied. A name is matched against the site's
+// link types.
+func (c *Client) linkType(ctx context.Context, ref string) (Candidate, error) {
+	if numericRE.MatchString(ref) {
+		return Candidate{ID: ref, Name: "link type " + ref}, nil
+	}
+	types, err := c.IssueLinkTypes(ctx)
+	if err != nil {
+		return Candidate{}, notSentErr(err)
+	}
+	cands := make([]Candidate, len(types))
+	for i, t := range types {
+		cands[i] = Candidate{ID: t.ID, Name: t.Name}
+	}
+	hit, err := match("issue link type", ref, cands)
+	if err != nil {
+		return Candidate{}, notSentErr(err)
+	}
+	return hit, nil
 }
 
 // UnlinkIssues deletes an issue link by its ID.

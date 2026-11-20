@@ -44,6 +44,10 @@ func spentText(secs int64) string {
 	return strings.Join(parts, " ")
 }
 
+// embeddedWorklogs is how many worklogs the worklog field holds: the
+// first 20, with the total (measured).
+const embeddedWorklogs = 20
+
 // worklogPageJSON is the page of ws from start, at most size long: a
 // worklog list page, or the worklog field's value.
 func (s *jiraSite) worklogPageJSON(is *JiraIssue, ws []JiraWorklog, start, size int) map[string]any {

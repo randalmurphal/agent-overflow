@@ -50,13 +50,13 @@ func TestWorklogPagesToTheEnd(t *testing.T) {
 	if !slices.Equal(sizes, []int{2, 2, 1}) {
 		t.Fatalf("pages %v", sizes)
 	}
-	_, keyCalls := issues.calls()
-	if !reflect.DeepEqual(keyCalls, [][]int64{{10001}, {10001, 99999}, {20007}}) {
-		t.Errorf("key lookups %v", keyCalls)
+	// A read names each issue by ID and asks the caller for nothing.
+	if calls := issues.calls(); len(calls) != 0 {
+		t.Errorf("a read looked up keys %v", calls)
 	}
 	first := all[0]
 	want := Worklog{
-		ID: 1, Issue: Issue{ID: 10001, Key: "WEB-1"}, Author: "acc-user1",
+		ID: 1, Issue: Issue{ID: 10001}, Author: "acc-user1",
 		Start:    Start{Date: mustDate(t, "2026-11-09"), Time: mustClock(t, "09:00:00")},
 		StartUTC: time.Date(2026, 11, 9, 9, 0, 0, 0, time.UTC),
 		Spent:    time.Hour, Billable: ptr(time.Hour), Description: "Review",
@@ -69,9 +69,6 @@ func TestWorklogPagesToTheEnd(t *testing.T) {
 	}
 	if all[2].Start.Time.IsSet() || all[2].Billable != nil {
 		t.Errorf("worklog 3 without start time or billable: %+v", all[2])
-	}
-	if all[3].Issue.Key != "" {
-		t.Errorf("an ID the resolver does not know got key %q", all[3].Issue.Key)
 	}
 }
 
@@ -136,14 +133,17 @@ func TestWorklogQueryChecks(t *testing.T) {
 	}
 }
 
-func TestWorklogResolverFailure(t *testing.T) {
+// TestWorklogReadNamesNoKey proves a worklog read names its issue by ID
+// and never asks IssueIDs, so a resolver that fails does not fail it.
+func TestWorklogReadNamesNoKey(t *testing.T) {
 	f := tempotest.NewServer(t, testToken)
 	issues := newIssues()
 	issues.err = errors.New("jira is down")
 	c := testClient(t, f, issues)
 	f.On("GET", "/4/worklogs/42", nil, "", 200, wl{id: 42, issue: 10001, author: "acc-user1", date: "2026-11-09", spent: 60}.json())
-	if _, err := c.Worklog(context.Background(), 42); !errors.Is(err, issues.err) {
-		t.Fatalf("err %v", err)
+	w, err := c.Worklog(context.Background(), 42)
+	if err != nil || w.Issue != (Issue{ID: 10001}) || len(issues.calls()) != 0 {
+		t.Fatalf("read %+v %v, %d resolver calls", w.Issue, err, len(issues.calls()))
 	}
 }
 

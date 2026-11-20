@@ -32,11 +32,16 @@ func orString(v, fallback string) string {
 	return v
 }
 
-// commentPageJSON is a page of is's comments, oldest first.
-func (s *jiraSite) commentPageJSON(is *JiraIssue, start, size int) map[string]any {
+// commentPageJSON is a page of is's comments, oldest first unless
+// newestFirst.
+func (s *jiraSite) commentPageJSON(is *JiraIssue, start, size int, newestFirst bool) map[string]any {
 	list := make([]any, len(is.Comments))
 	for i := range is.Comments {
 		list[i] = s.commentJSON(is, &is.Comments[i])
+	}
+	if newestFirst {
+		// Measured: orderBy=-created lists the newest first.
+		slices.Reverse(list)
 	}
 	page := listPage("comments", list, start, size)
 	page["self"] = s.self("issue/" + is.ID + "/comment")
@@ -57,7 +62,8 @@ func (s *jiraSite) addComment(e *Engine, is *JiraIssue, author string, body, vis
 }
 
 func listComments(c *jiraCall) answer {
-	if ob := c.query.Get("orderBy"); ob != "" && ob != "created" && ob != "+created" {
+	ob := c.query.Get("orderBy")
+	if ob != "" && ob != "created" && ob != "+created" && ob != "-created" {
 		return unhandledf("orderBy=%q", ob)
 	}
 	is, nf := c.found()
@@ -68,7 +74,7 @@ func listComments(c *jiraCall) answer {
 	if err != nil {
 		return unhandledf("%v", err)
 	}
-	return jsonAnswer(http.StatusOK, c.s.commentPageJSON(is, start, size))
+	return jsonAnswer(http.StatusOK, c.s.commentPageJSON(is, start, size, ob == "-created"))
 }
 
 // commentProperty is the one comment property implemented: the service

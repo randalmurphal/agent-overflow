@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
+	"slices"
 	"sync"
 
 	"agent-overflow/internal/tracker/trackerapi"
@@ -136,25 +137,98 @@ func (e *UnconfirmedError) As(target any) bool {
 	return true
 }
 
-// checkNotFound decides notFound, a 404: the same error when a check
-// drawn under the same credential read succeeds, an error holding the
+// checkNotFound decides notFound, a 404. One that names the account it
+// was made for (answeredFor) is the same error, with nothing sent. One
+// that names none gets a sign-in check: the same error when a check drawn
+// under the same credential read succeeds, an error holding the
 // *trackerapi.AuthError when that credential is refused, and an
 // *UnconfirmedError otherwise: the check failed, or its answer was drawn
 // under another read of the credential than the 404 was.
 func (c *Client) checkNotFound(ctx context.Context, notFound error) error {
 	status, _ := errors.AsType[*trackerapi.StatusError](notFound)
-	mark, err := c.confirmSignedIn(ctx)
-	if err == nil {
-		if sameRead(status.CredentialMark(), mark) {
-			return notFound
-		}
-		return &UnconfirmedError{NotFound: status, Err: errCredentialReplaced}
+	if answeredFor(status.Header) != "" {
+		return notFound
 	}
-	if ae, ok := outcomeOf(err).(*trackerapi.AuthError); ok && sameRead(status.CredentialMark(), ae.CredentialMark()) {
+	refused, err := c.checkRead(ctx, status.CredentialMark())
+	switch {
+	case err == nil:
+		return notFound
+	case refused:
 		return fmt.Errorf("jira: the answer was 404 because the credential was refused: %w", err)
 	}
 	return &UnconfirmedError{NotFound: status, Err: err}
 }
+
+// checkRead runs a sign-in check for an answer drawn under mark: nil when
+// one that starts now succeeds under the same read of the credential; the
+// check's *trackerapi.AuthError, refused true, when that credential is
+// refused; otherwise why the check does not speak for the answer (it
+// failed, or was drawn under another read, errCredentialReplaced).
+func (c *Client) checkRead(ctx context.Context, mark trackerapi.CredentialMark) (refused bool, err error) {
+	checked, err := c.confirmSignedIn(ctx)
+	if err == nil {
+		if sameRead(mark, checked) {
+			return false, nil
+		}
+		return false, errCredentialReplaced
+	}
+	if ae, ok := outcomeOf(err).(*trackerapi.AuthError); ok && sameRead(mark, ae.CredentialMark()) {
+		return true, err
+	}
+	return false, err
+}
+
+// unnamed are the credential reads of the answers to one read that name
+// no account (answeredFor). What such an answer leaves out (an empty
+// search, a bulk read missing issues) may be what an anonymous request
+// sees, not what the user's does: Jira answers a search with no
+// credential 200 with no issues and no login-reason header (measured).
+type unnamed []trackerapi.CredentialMark
+
+// note records resp when it names no account.
+func (u *unnamed) note(resp *trackerapi.Response) {
+	if resp == nil || answeredFor(resp.Header) != "" {
+		return
+	}
+	if m := resp.CredentialMark(); !slices.Contains(*u, m) {
+		*u = append(*u, m)
+	}
+}
+
+// prove is nil when every answer u noted is shown to be the user's by a
+// sign-in check under the same read of the credential (checkRead), so
+// what the read left out is missing for the user. It costs one check per
+// distinct read noted, none when every answer named its account. A
+// refused credential is an error holding the *trackerapi.AuthError, and
+// any other failure an *UnprovenError.
+func (c *Client) prove(ctx context.Context, what string, u unnamed) error {
+	for _, mark := range u {
+		refused, err := c.checkRead(ctx, mark)
+		switch {
+		case err == nil:
+			continue
+		case refused:
+			return fmt.Errorf("jira: %s left out what was asked because the credential was refused: %w", what, err)
+		}
+		return &UnprovenError{What: what, Err: err}
+	}
+	return nil
+}
+
+// UnprovenError is an answer that left out what was asked, named no
+// account it was made for, and could not be shown to be the user's: the
+// sign-in check failed or was drawn under another read of the
+// credential. Nothing is known to be missing.
+type UnprovenError struct {
+	What string
+	Err  error
+}
+
+func (e *UnprovenError) Error() string {
+	return fmt.Sprintf("jira: %s left out what was asked, named no account, and the sign-in check failed: %v", e.What, e.Err)
+}
+
+func (e *UnprovenError) Unwrap() error { return e.Err }
 
 // confirmSignedIn returns the credential mark of a sign-in check that
 // starts after this call and succeeds: a new one when none runs, else

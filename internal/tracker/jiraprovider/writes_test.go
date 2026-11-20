@@ -221,7 +221,7 @@ func TestCreateRefusals(t *testing.T) {
 // call ended, is not sent rather than refused or unknown.
 func TestCreateNotSent(t *testing.T) {
 	f, p := newSite(t)
-	f.On("GET", "/rest/api/3/issue/createmeta/10000/issuetypes", jiratest.Reply(500, `{}`))
+	f.On("GET", createMetaPath, jiratest.Reply(500, `{}`))
 	res := checked(t, p.Create(t.Context(), tracker.CreateInput{Project: "10000", Type: "10002", Title: "New"}))
 	if states(res) != "create:not sent" {
 		t.Errorf("a failed screen read: %s", states(res))
@@ -308,7 +308,11 @@ func TestEditParent(t *testing.T) {
 	f.On("GET", editMetaPath, jiratest.Reply(200, `{"fields":{"parent":`+parentMeta+`}}`))
 	for _, is := range []string{`"10001","key":"WEB-1","fields":{"summary":"Story"}`, `"10005","key":"WEB-5","fields":{"summary":"Epic"}`} {
 		f.On("GET", "/rest/api/3/issue/"+is[1:6], func(w http.ResponseWriter, r *http.Request, b []byte) {
-			jiratest.WantQuery(t, r, "fields", "summary")
+			// The edit's own read asks for the fields it names by ID; the
+			// parent's read, for its summary.
+			if want := map[string]string{"10001": "summary,parent", "10005": "summary"}[is[1:6]]; r.URL.Query().Get("fields") != want {
+				t.Errorf("%s: fields %q, want %q", r.URL.Path, r.URL.Query().Get("fields"), want)
+			}
 			jiratest.Reply(200, `{"id":`+is+`}`)(w, r, b)
 		})
 	}

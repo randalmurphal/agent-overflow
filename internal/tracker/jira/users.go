@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+
+	"agent-overflow/internal/tracker/trackerapi"
 )
 
 // userCacheSize bounds the users a Client keeps by account ID.
@@ -64,18 +66,46 @@ func users(in []userJSON) []User {
 	return out
 }
 
-// Myself returns the user the credential belongs to.
+// Myself asks Jira who the credential belongs to; every call is a
+// request, so it verifies the credential. Me answers from what it read.
 func (c *Client) Myself(ctx context.Context) (User, error) {
 	if err := c.admit(ctx); err != nil {
 		return User{}, err
 	}
-	epoch := c.users.epoch()
+	epoch, meEpoch := c.users.epoch(), c.me.epoch()
 	var u userJSON
-	if err := c.get(ctx, "myself", nil, &u); err != nil {
+	resp, err := c.call(ctx, trackerapi.Request{Path: myselfPath}, &u)
+	if err != nil {
 		return User{}, fmt.Errorf("jira: who the credential belongs to: %w", err)
 	}
-	c.keepUsers(epoch, u.user())
-	return u.user(), nil
+	me := u.user()
+	c.keepUsers(epoch, me)
+	if mark := resp.CredentialMark(); mark != (trackerapi.CredentialMark{}) {
+		c.me.put(meEpoch, struct{}{}, signedIn{user: me, mark: mark})
+	}
+	return me, nil
+}
+
+// signedIn is the user Myself read and the credential read its answer
+// was drawn under.
+type signedIn struct {
+	user User
+	mark trackerapi.CredentialMark
+}
+
+// Me is the user the credential belongs to, read once per credential:
+// Myself's last answer while every answer since came under the same read
+// of the credential, and a Myself otherwise. ForgetCredential and a
+// refused credential drop it, and an answer drawn under another read of
+// the credential (the transport read it again after a 401) retires it.
+func (c *Client) Me(ctx context.Context) (User, error) {
+	if err := c.admit(ctx); err != nil {
+		return User{}, err
+	}
+	if s, ok := c.me.get(struct{}{}); ok && s.mark == c.lastMark() {
+		return s.user, nil
+	}
+	return c.Myself(ctx)
 }
 
 // User returns the user with accountID, from the client's cache when it

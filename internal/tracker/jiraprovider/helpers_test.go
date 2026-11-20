@@ -68,10 +68,15 @@ const fieldsJSON = `[
 // boardConfig is the configuration of a scrum board ranked by
 // customfield_10019 and estimated by field.
 func boardConfig(id int, field string) string {
-	return fmt.Sprintf(`{"id":%d,"name":"Board %d","type":"scrum","filter":{"id":"1%d"},
+	return boardConfigIn(id, field, `{"type":"project","id":"10000","key":"WEB","name":"Web","self":"x"}`)
+}
+
+// boardConfigIn is boardConfig located at location.
+func boardConfigIn(id int, field, location string) string {
+	return fmt.Sprintf(`{"id":%d,"name":"Board %d","type":"scrum","location":%s,"filter":{"id":"1%d"},
 "columnConfig":{"columns":[{"name":"To Do","statuses":[{"id":"10000"}]},{"name":"In Progress","statuses":[{"id":"10001"}]},{"name":"Done","statuses":[{"id":"10002"}]}],"constraintType":"issueCount"},
 "estimation":{"type":"field","field":{"fieldId":%q,"displayName":"Estimate"}},
-"ranking":{"rankCustomFieldId":10019}}`, id, id, id, field)
+"ranking":{"rankCustomFieldId":10019}}`, id, id, location, id, field)
 }
 
 // newSite is a fake Jira serving the catalog, the user and the two

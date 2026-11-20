@@ -75,8 +75,10 @@ func TestEveryCallPassesTheGuard(t *testing.T) {
 	closed := newTestClient(t, f)
 	for _, cl := range []*Client{c, closed} {
 		cl.users.put(cl.users.epoch(), "acc-user1", User{AccountID: "acc-user1", DisplayName: "User 1", Active: true})
-		cl.catalog.put(cl.catalog.epoch(), struct{}{}, []Field{{ID: "summary"}})
+		cl.catalog.put(cl.catalog.epoch(), struct{}{}, newCatalog([]Field{{ID: "summary"}}))
 		cl.configs.put(cl.configs.epoch(), 3, BoardConfig{BoardID: 3})
+		cl.sprintLists.put(cl.sprintLists.epoch(), 3, SprintList{Complete: true})
+		cl.me.put(cl.me.epoch(), struct{}{}, signedIn{user: User{AccountID: "acc-user1"}})
 	}
 	closed.Close()
 	// Calls a cache could answer.
@@ -84,6 +86,11 @@ func TestEveryCallPassesTheGuard(t *testing.T) {
 		"User":     func(c *Client, ctx context.Context) error { _, err := c.User(ctx, "acc-user1"); return err },
 		"FindUser": func(c *Client, ctx context.Context) error { _, err := c.FindUser(ctx, "acc-user1"); return err },
 		"Fields":   func(c *Client, ctx context.Context) error { _, err := c.Fields(ctx); return err },
+		"Me":       func(c *Client, ctx context.Context) error { _, err := c.Me(ctx); return err },
+		"BoardSprints": func(c *Client, ctx context.Context) error {
+			_, err := c.BoardSprints(ctx, 3)
+			return err
+		},
 		"BoardConfig": func(c *Client, ctx context.Context) error {
 			_, err := c.BoardConfig(ctx, 3)
 			return err
@@ -161,7 +168,7 @@ func TestConcurrentAgileCalls(t *testing.T) {
 				errs <- err
 			}
 			if i%5 == 0 {
-				c.ForgetBoards()
+				c.ForgetBoard(3)
 			}
 		})
 	}

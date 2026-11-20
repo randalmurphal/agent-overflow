@@ -27,7 +27,8 @@ var cardFieldIDs = []string{
 
 // site is what the field catalog says about the fields a read needs.
 type site struct {
-	fields []jira.Field
+	// fields is the client's cached catalog, shared and read-only.
+	fields *jira.Catalog
 	// sprint is the sprint field's ID; empty on a site without Jira
 	// Software.
 	sprint string
@@ -40,23 +41,14 @@ func (p *Provider) site(ctx context.Context) (site, error) {
 		return site{}, fmt.Errorf("jiraprovider: field catalog: %w", err)
 	}
 	s := site{fields: fields}
-	for _, f := range fields {
-		if f.Schema.Custom == sprintType {
-			s.sprint = f.ID
-			break
-		}
+	if f, ok := fields.OfCustomType(sprintType); ok {
+		s.sprint = f.ID
 	}
 	return s, nil
 }
 
 // field is the catalog's entry for id.
-func (s site) field(id string) (jira.Field, bool) {
-	i := slices.IndexFunc(s.fields, func(f jira.Field) bool { return f.ID == id })
-	if i < 0 {
-		return jira.Field{}, false
-	}
-	return s.fields[i], true
-}
+func (s site) field(id string) (jira.Field, bool) { return s.fields.Field(id) }
 
 // cardFields are the fields a card read asks for.
 func (s site) cardFields() []string {

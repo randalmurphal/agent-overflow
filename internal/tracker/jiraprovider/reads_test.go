@@ -80,7 +80,7 @@ func TestDirectoryReads(t *testing.T) {
 // statuses, one of which is in a category Jira does not document.
 func structureSite(t *testing.T) *jiratest.Server {
 	f, _ := newSite(t)
-	f.On("GET", "/rest/agile/1.0/board/3", jiratest.Reply(200, `{"id":3,"name":"Board 3","type":"scrum","location":{"projectId":10000}}`))
+	f.On("GET", board3Config, jiratest.Reply(200, boardConfigIn(3, "customfield_10016", `{"type":"project","id":"10000","key":"WEB","name":"Web","self":"x"}`)))
 	f.On("GET", "/rest/agile/1.0/board/3/sprint", jiratest.Reply(200, `{"isLast":true,"values":[
 		{"id":5,"name":"Old","state":"closed","startDate":"2026-09-01T09:00:00.000Z","endDate":"2026-09-15T09:00:00.000Z","completeDate":"2026-09-15T10:00:00.000Z"},
 		{"id":6,"name":"Recent","state":"closed","startDate":"2026-10-20T09:00:00.000Z","endDate":"2026-11-03T09:00:00.000Z","completeDate":"2026-11-03T10:00:00.000Z"},
@@ -154,8 +154,8 @@ func TestStructure(t *testing.T) {
 // list is left out.
 func TestStructureOfBoardUnderUser(t *testing.T) {
 	f, p := newSite(t)
-	f.On("GET", "/rest/agile/1.0/board/4", jiratest.Reply(200, `{"id":4,"name":"Board 4","type":"kanban","location":{"userId":"acc-user1"}}`))
-	f.On("GET", board4Config, jiratest.Reply(200, `{"id":4,"type":"kanban","estimation":{"type":"field","field":{"fieldId":"timeoriginalestimate"}},
+	f.On("GET", board4Config, jiratest.Reply(200, `{"id":4,"name":"Board 4","type":"kanban","location":{"type":"user","id":"acc-user1","name":"User 1"},
+"estimation":{"type":"field","field":{"fieldId":"timeoriginalestimate"}},
 "columnConfig":{"columns":[{"name":"Open","statuses":[{"id":"10000"},{"id":"10001"}]},{"name":"Gone","statuses":[{"id":"10077"}]},{"name":"Done","statuses":[{"id":"10002"}]}]}}`))
 	f.On("GET", "/rest/api/3/status", jiratest.Reply(200, `[
 		{"id":"10000","name":"To Do","statusCategory":{"key":"new"}},
@@ -171,8 +171,11 @@ func TestStructureOfBoardUnderUser(t *testing.T) {
 		{ID: "10001", Name: "In Progress", Group: tracker.GroupInProgress},
 		{ID: "10002", Name: "Done", Group: tracker.GroupDone},
 	}
-	if s.Board.Project != "" || !slices.Equal(s.Statuses, want) {
+	if s.Board != (tracker.Board{ID: "4", Name: "Board 4"}) || !slices.Equal(s.Statuses, want) {
 		t.Errorf("board %+v statuses %+v", s.Board, s.Statuses)
+	}
+	if n := f.Count("GET", "/rest/api/3/project/10000/statuses"); n != 0 {
+		t.Errorf("%d project status reads for a board in no project", n)
 	}
 	if len(s.Columns) != 3 || !slices.Equal(s.Columns[1].Statuses, []tracker.StatusID{"10077"}) {
 		t.Errorf("columns %+v", s.Columns)
@@ -190,7 +193,8 @@ func TestBoardIssues(t *testing.T) {
 	var warn bool
 	f.On("GET", board3Issues, func(w http.ResponseWriter, r *http.Request, b []byte) {
 		jiratest.WantQuery(t, r, "jql", `statusCategory != Done OR updated >= 1790812800000 OR sprint in (6, 7, 8)`)
-		jiratest.WantQuery(t, r, "fields", "status")
+		jiratest.WantQuery(t, r, "fields", "id")
+		jiratest.WantQuery(t, r, "maxResults", "5000")
 		v := map[string]any{"isLast": true, "issues": []map[string]any{{"id": "10001", "key": "WEB-1"}, {"id": "10002", "key": "WEB-2"}}}
 		if warn {
 			v["warningMessages"] = []string{"The value 'x' does not exist for the field 'sprint'."}

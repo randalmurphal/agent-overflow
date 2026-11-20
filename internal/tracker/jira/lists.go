@@ -134,10 +134,11 @@ func (c *Client) listPage(ctx context.Context, q ListQuery) (SearchPage, error) 
 		IsLast        bool        `json:"isLast"`
 		Warnings      []string    `json:"warningMessages"`
 	}
-	if _, err := c.call(ctx, trackerapi.Request{Path: path, Query: v}, &j); err != nil {
+	resp, err := c.call(ctx, trackerapi.Request{Path: path, Query: v}, &j)
+	if err != nil {
 		return SearchPage{}, fmt.Errorf("jira: issue list: %w", err)
 	}
-	page := SearchPage{Issues: make([]*Issue, len(j.Issues))}
+	page := SearchPage{Issues: make([]*Issue, len(j.Issues)), Date: answerDate(resp)}
 	for i, is := range j.Issues {
 		page.Issues[i] = is.decode()
 	}

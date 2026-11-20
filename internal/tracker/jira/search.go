@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"agent-overflow/internal/tracker/trackerapi"
 )
@@ -42,11 +43,14 @@ type SearchWarning struct {
 }
 
 // SearchPage is one page of results. NextPageToken is empty on the last
-// page; a token expires seven days after Jira hands it out.
+// page; a token expires seven days after Jira hands it out. Date is
+// Jira's clock when it answered the page, zero when the answer named
+// none.
 type SearchPage struct {
 	Issues        []*Issue
 	NextPageToken string
 	Warnings      []SearchWarning
+	Date          time.Time
 }
 
 // Search runs one page of q on the enhanced search endpoint. Recent
@@ -77,13 +81,20 @@ func (c *Client) Search(ctx context.Context, q SearchQuery) (SearchPage, error) 
 			Message string `json:"message"`
 		} `json:"warnings"`
 	}
-	_, err := c.call(ctx, trackerapi.Request{
+	resp, err := c.call(ctx, trackerapi.Request{
 		Method: http.MethodPost, Path: apiPath + "search/jql", Body: body, ReadOnly: true,
 	}, &v)
 	if err != nil {
 		return SearchPage{}, fmt.Errorf("jira: search: %w", err)
 	}
-	page := SearchPage{Issues: make([]*Issue, len(v.Issues))}
+	if len(v.Issues) == 0 {
+		var u unnamed
+		u.note(resp)
+		if err := c.prove(ctx, "a search", u); err != nil {
+			return SearchPage{}, err
+		}
+	}
+	page := SearchPage{Issues: make([]*Issue, len(v.Issues)), Date: answerDate(resp)}
 	for i, is := range v.Issues {
 		page.Issues[i] = is.decode()
 	}
@@ -111,11 +122,13 @@ func nextToken(isLast bool, token string) (string, error) {
 
 // SearchResult is what a search run to its end returned. Complete is
 // false when the limit cut the search or Jira attached any warning, since
-// a warning may say the results were cut; Warnings are every page's.
+// a warning may say the results were cut; Warnings are every page's. Date
+// is the first page's.
 type SearchResult struct {
 	Issues   []*Issue
 	Warnings []SearchWarning
 	Complete bool
+	Date     time.Time
 }
 
 // SearchAll runs q from its first page (or q.PageToken) to the last, at
@@ -150,6 +163,9 @@ func tokenPages(what, first string, limit int, next func(token string, room int)
 		page, err := next(token, room)
 		if err != nil {
 			return out, err
+		}
+		if token == first {
+			out.Date = page.Date
 		}
 		out.Issues = append(out.Issues, page.Issues...)
 		out.Warnings = append(out.Warnings, page.Warnings...)
@@ -234,7 +250,10 @@ func (c *Client) BulkFetch(ctx context.Context, refs []string, fields ...string)
 	}
 	refs = distinct
 	returned := make(map[string]bool, len(refs))
-	var out BulkResult
+	var (
+		out  BulkResult
+		left unnamed
+	)
 	for start := 0; start < len(refs); start += bulkFetchBatch {
 		batch := refs[start:min(start+bulkFetchBatch, len(refs))]
 		body := map[string]any{"issueIdsOrKeys": batch}
@@ -248,11 +267,14 @@ func (c *Client) BulkFetch(ctx context.Context, refs []string, fields ...string)
 				Message string `json:"errorMessage"`
 			} `json:"issueErrors"`
 		}
-		_, err := c.call(ctx, trackerapi.Request{
+		resp, err := c.call(ctx, trackerapi.Request{
 			Method: http.MethodPost, Path: apiPath + "issue/bulkfetch", Body: body, ReadOnly: true,
 		}, &v)
 		if err != nil {
 			return out, fmt.Errorf("jira: bulk fetch from %s: %w", batch[0], err)
+		}
+		if len(v.Issues)+len(v.Errors) < len(batch) {
+			left.note(resp)
 		}
 		for _, is := range v.Issues {
 			got := is.decode()
@@ -264,6 +286,9 @@ func (c *Client) BulkFetch(ctx context.Context, refs []string, fields ...string)
 		for _, e := range v.Errors {
 			out.Failed = append(out.Failed, BulkFailure(e))
 		}
+	}
+	if err := c.prove(ctx, "a bulk fetch", left); err != nil {
+		return BulkResult{}, err
 	}
 	out.Complete = len(out.Failed) == 0 && len(out.Issues) == len(refs)
 	return out, nil

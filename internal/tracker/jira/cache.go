@@ -7,14 +7,16 @@ import (
 
 // cache is every cache of the package: at most size values by key, the
 // least recently used dropped first. It hands out and stores copies made
-// by clone, so no caller shares memory with it or with another caller.
+// by clone, so no caller shares memory it can change with the cache or
+// with another caller; a value no caller can change (a *Catalog) needs
+// no clone.
 // A generation fences it: a reader takes the epoch before its request
 // and stores under it, and a clear in between makes that store a no-op,
 // so a read that started before a clear never undoes it.
 type cache[K comparable, V any] struct {
 	mu    sync.Mutex
 	size  int
-	clone func(V) V // nil when V shares no memory
+	clone func(V) V // nil when V shares no memory a caller can change
 	order *list.List
 	byKey map[K]*list.Element
 	gen   uint64
@@ -77,6 +79,20 @@ func (c *cache[K, V]) put(epoch uint64, k K, v V) {
 		c.order.Remove(last)
 		delete(c.byKey, last.Value.(cacheEntry[K, V]).key)
 	}
+}
+
+// drop drops the value under k and fences off the reads in flight, of
+// every key: a read that started before cannot tell which key it was
+// for once it stores, so none stores, and each is read again on its
+// next get.
+func (c *cache[K, V]) drop(k K) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if e, ok := c.byKey[k]; ok {
+		c.order.Remove(e)
+		delete(c.byKey, k)
+	}
+	c.gen++
 }
 
 // clear drops every value and fences off the reads in flight.

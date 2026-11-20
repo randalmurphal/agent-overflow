@@ -27,7 +27,7 @@ func (s *rotatingCredentials) Credential(context.Context) (*trackerapi.Credentia
 // markSite is a fake site that answers every issue with 404 and the
 // sign-in check by user: myself[user] is its status.
 func markSite(t *testing.T, myself map[string]int) *jiratest.Server {
-	f := jiratest.NewServer(t)
+	f := unnamedSite(t)
 	f.On("GET", issuePath404, jiratest.Reply(404, `{}`))
 	f.On("DELETE", "/rest/api/3/attachment/404", jiratest.Reply(404, `{}`))
 	f.On("GET", myselfURL, func(w http.ResponseWriter, r *http.Request, b []byte) {

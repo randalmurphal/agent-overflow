@@ -16,6 +16,15 @@ import (
 func changeWorld(t *testing.T) *world {
 	t.Helper()
 	w := newWorld(t)
+	if err := w.e.Seed(changeFixture()); err != nil {
+		t.Fatal(err)
+	}
+	return w
+}
+
+// changeFixture is testFixture with two boards on WEB, a sprint and
+// three issues.
+func changeFixture() Fixture {
 	f := testFixture()
 	s := &f.Jira[0]
 	s.Users = append(s.Users, JiraUser{AccountID: "acc-user2", DisplayName: "User 2", Email: "user2@example.com"})
@@ -31,10 +40,7 @@ func changeWorld(t *testing.T) *world {
 	s.Issues = append(s.Issues,
 		JiraIssue{ID: "10102", Key: "WEB-2", Project: "WEB", Type: "10001", Summary: "Second"},
 		JiraIssue{ID: "10103", Key: "WEB-3", Project: "WEB", Type: "10000", Summary: "An epic"})
-	if err := w.e.Seed(f); err != nil {
-		t.Fatal(err)
-	}
-	return w
+	return f
 }
 
 // lastItem is the newest changelog item of key's issue whose fieldId, or

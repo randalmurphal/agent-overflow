@@ -3,9 +3,13 @@ package jira
 import (
 	"bytes"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/harness/trackerfake"
+	"agent-overflow/internal/tracker/adf"
 )
 
 // issueCases are the conformance cases of the platform API: users,
@@ -15,6 +19,49 @@ var issueCases = map[string]func(t *testing.T, f *fakeEnv){
 	"Myself": func(t *testing.T, f *fakeEnv) {
 		if u := got(f.c.Myself(f.ctx)).must(t); u.AccountID != "acc-user1" {
 			t.Fatalf("myself is %+v", u)
+		}
+	},
+	"Me": func(t *testing.T, f *fakeEnv) {
+		for range 2 {
+			if u := got(f.c.Me(f.ctx)).must(t); u.AccountID != "acc-user1" {
+				t.Fatalf("me is %+v", u)
+			}
+		}
+		if n := len(f.e.Requests(0).Requests); n != 1 {
+			t.Fatalf("two calls of Me sent %d requests, want 1", n)
+		}
+	},
+	"IssueDetail": func(t *testing.T, f *fakeEnv) {
+		// More changes than an issue read embeds, so the older ones are
+		// read from the changelog and joined, oldest first.
+		site := conformanceSite(f.clock.Now())
+		is := &site.Issues[0]
+		from := is.Changelog[0].Created
+		for i := range 130 {
+			is.Changelog = append(is.Changelog, trackerfake.JiraChange{Author: "acc-user1", Created: from.Add(time.Duration(i+1) * time.Minute),
+				Items: []trackerfake.JiraChangeItem{{FieldID: "summary", Field: "summary", FieldType: "jira", ToString: ptr(strconv.Itoa(i))}}})
+		}
+		check(t, f.e.Seed(trackerfake.Fixture{Jira: []trackerfake.JiraSite{site}}))
+		before := len(f.e.Requests(0).Requests)
+		d := got(f.c.IssueDetail(f.ctx, "WEB-1")).must(t)
+		if d.Issue.Summary != "First story" || len(d.Issue.Field("comment")) != 0 || len(d.Issue.Field("worklog")) != 0 || len(d.Transitions) == 0 || !d.Changelog.Complete {
+			t.Fatalf("detail %+v", d)
+		}
+		got(d.Edit.Field("Area")).must(t)
+		if e := d.Changelog.Entries; len(e) != 131 || !slices.IsSortedFunc(e, func(a, b ChangeEntry) int { return a.Created.Compare(b.Created) }) {
+			t.Fatalf("%d changelog entries, oldest first: %v", len(e), slices.IsSortedFunc(e, func(a, b ChangeEntry) int { return a.Created.Compare(b.Created) }))
+		}
+		if n := len(f.e.Requests(0).Requests) - before; n != 2 {
+			t.Fatalf("detail sent %d requests, want the issue read and one older changelog page", n)
+		}
+	},
+	"LatestComments": func(t *testing.T, f *fakeEnv) {
+		for _, text := range []string{"second", "third"} {
+			got(f.c.AddComment(f.ctx, CommentInput{Issue: "WEB-1", Markdown: text, Audience: AudiencePublic})).must(t)
+		}
+		p := got(f.c.LatestComments(f.ctx, "WEB-1", 2)).must(t)
+		if p.Total != 3 || p.StartAt != 1 || len(p.Comments) != 2 || !strings.Contains(adf.ToMarkdown(p.Comments[1].Body), "third") {
+			t.Fatalf("latest comments %+v", p)
 		}
 	},
 	"User": func(t *testing.T, f *fakeEnv) {
@@ -39,7 +86,7 @@ var issueCases = map[string]func(t *testing.T, f *fakeEnv){
 	},
 	"ForgetUsers":      func(t *testing.T, f *fakeEnv) { f.c.ForgetUsers() },
 	"ForgetFields":     func(t *testing.T, f *fakeEnv) { f.c.ForgetFields() },
-	"ForgetBoards":     func(t *testing.T, f *fakeEnv) { f.c.ForgetBoards() },
+	"ForgetBoard":      func(t *testing.T, f *fakeEnv) { f.c.ForgetBoard(1) },
 	"ForgetCredential": func(t *testing.T, f *fakeEnv) { f.c.ForgetCredential(); got(f.c.Myself(f.ctx)).must(t) },
 	"Close": func(t *testing.T, f *fakeEnv) {
 		f.c.Close()
@@ -48,8 +95,8 @@ var issueCases = map[string]func(t *testing.T, f *fakeEnv){
 		}
 	},
 	"Fields": func(t *testing.T, f *fakeEnv) {
-		fs := got(f.c.Fields(f.ctx)).must(t)
-		if !slices.ContainsFunc(fs, func(x Field) bool { return x.ID == "customfield_10016" }) {
+		cat := got(f.c.Fields(f.ctx)).must(t)
+		if sp, ok := cat.Field("customfield_10016"); !ok || sp.Name == "" {
 			t.Fatal("no story points field")
 		}
 	},
@@ -306,6 +353,22 @@ var boardCases = map[string]func(t *testing.T, f *fakeEnv){
 		cfg := got(f.c.BoardConfig(f.ctx, 1)).must(t)
 		if cfg.Estimation.FieldID != "customfield_10016" || len(cfg.Columns) != 3 {
 			t.Fatalf("config %+v", cfg)
+		}
+	},
+	"BoardSprints": func(t *testing.T, f *fakeEnv) {
+		for range 2 {
+			l := got(f.c.BoardSprints(f.ctx, 1)).must(t)
+			if len(l.Sprints) != 2 || !l.Complete || !l.Read.Equal(f.clock.Now().Truncate(time.Second)) {
+				t.Fatalf("sprints %+v", l)
+			}
+		}
+		if n := len(f.e.Requests(0).Requests); n != 1 {
+			t.Fatalf("a cached listing read again: %d requests", n)
+		}
+		f.c.ForgetBoard(1)
+		got(f.c.BoardSprints(f.ctx, 1)).must(t)
+		if n := len(f.e.Requests(0).Requests); n != 2 {
+			t.Fatalf("a forgotten board's listing was not read again: %d requests", n)
 		}
 	},
 	"Sprints": func(t *testing.T, f *fakeEnv) {
