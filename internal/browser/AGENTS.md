@@ -248,9 +248,11 @@ writes only inside the app's private staging directory there, into the
 file the Manager names as the download starts (`download_staging.go`),
 and the Manager moves the finished file beside it without copying
 (`publishFinishedDownload`, `publishDownload` in `user_downloads.go`),
-never replacing a file, and only once a private name beside the staged
-file is seen to hold it; the row trusts only the identity checked on the
-held staged file, never what a name answers later (`placeNoReplace`).
+never replacing a file: on Linux it links the open, checked staged file
+itself, elsewhere it moves it only once a private name beside it is seen
+to hold it, and the row trusts only the identity checked on the held
+staged file, never what a name answers later (`placeNoReplace`, whose
+comment states the limit by name).
 WebView2 saves there itself and only a regular file of the reported size
 is openable (`engineSavedDownload`, whose comment states the limit).
 Close waits for a publish under way.
