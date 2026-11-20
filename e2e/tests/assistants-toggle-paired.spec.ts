@@ -6,8 +6,10 @@
 // fires while this one's is hidden and does not fire. The Settings page
 // turns the setting of the computer its picker shows. A standalone frontend
 // attached to two computers does the same and has no switch of its own.
-// With this computer's assistants off, an assistant's worker on the other
-// computer asks the person there at once, and the assistant is not woken
+// With this computer's assistants off, the approval of an assistant's worker
+// on the other computer stays the assistant's: the person there is not
+// asked, the assistant is woken for it once assistants are on, and the
+// person there can answer it in the worker throughout
 // (docs/specs/standing-agents.md, "Owned workers").
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -165,7 +167,7 @@ test('a standalone frontend turns the setting of the computer it picks and has n
   }
 });
 
-test('with this computer\'s assistants off, an assistant\'s worker on the other computer asks the person there at once', async () => {
+test('with this computer\'s assistants off, an assistant\'s worker on the other computer waits for the assistant, which takes its approval once assistants are on', async () => {
   test.setTimeout(240_000);
   const [here, there] = await startTogether(launchHarness(), launchHarness());
   try {
@@ -189,20 +191,29 @@ test('with this computer\'s assistants off, an assistant\'s worker on the other 
     const worker = String(spawn.thread_id);
     const held = await awaitGate(there, 'paused-owner-hold', work.path);
 
-    // Assistants off here: this computer gives the worker's approval back
-    // the first time it sees it, so the person there has it well inside
-    // the two-minute lease, and the assistant is not woken for it.
+    // Assistants off here: the worker's approval stays the assistant's. It
+    // waits in the assistant's queue, the person there is not asked, and
+    // the assistant is not woken while the setting is off.
     await here.rpc('UpdateSettings', { assistantsEnabled: false });
-    const woken = wakeInput(here, assistant.home, 'Paused owner worker', 20_000).then(() => true, () => false);
+    const wokenWhileOff = wakeInput(here, assistant.home, 'Paused owner worker', 20_000).then(() => true, () => false);
     await advanceGate(there, held.mockId, 'paused-owner-hold');
     type Pending = { requestId: string; routedTo?: { threadId: string } | null };
     const approvals = async () => (await there.rpc<{ approvals: Pending[] }>('ListPendingInteractiveRequests', worker)).approvals;
-    await expect.poll(async () => {
+    const holder = async () => {
       const [approval] = await approvals();
       return approval ? (approval.routedTo?.threadId ?? 'the person') : 'none';
-    }, { timeout: 30_000 }).toBe('the person');
-    expect(await woken, 'the paused assistant was woken for its worker\'s approval').toBe(false);
+    };
+    await expect.poll(holder, { timeout: 30_000 }).toBe(assistant.thread);
+    expect(await wokenWhileOff, 'the paused assistant was woken for its worker\'s approval').toBe(false);
+    expect(await holder(), 'the approval left the paused assistant').toBe(assistant.thread);
 
+    // Assistants on: the assistant is woken for the approval that waited.
+    const woken = wakeInput(here, assistant.home, 'Paused owner worker', 60_000);
+    await here.rpc('UpdateSettings', { assistantsEnabled: true });
+    await woken;
+    expect(await holder(), 'the approval left the assistant that was woken for it').toBe(assistant.thread);
+
+    // The person there can answer it in the worker.
     const done = awaitTurnCompleted(there, worker);
     await there.rpc('RespondToApproval', worker, { requestId: (await approvals())[0].requestId, decision: 'allow' });
     await done;

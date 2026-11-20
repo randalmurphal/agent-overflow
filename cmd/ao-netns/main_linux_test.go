@@ -263,12 +263,27 @@ func TestKilledLauncherEndsTheRun(t *testing.T) {
 		_, err := os.Stat(marker)
 		return err == nil
 	})
-	// The next run removes the Go work directory the killed one left.
+	// The next run removes the Go work directory the killed one left, so it
+	// has nothing to report about it.
 	t.Setenv(roleEnv, "exit7")
 	var stderr bytes.Buffer
-	if code := run([]string{binary, "-test.run=^$"}, nil, io.Discard, &stderr); code != 7 || stderr.Len() > 0 {
-		t.Fatalf("next run: exit %d, want 7\n%s", code, stderr.String())
+	code := run([]string{binary, "-test.run=^$"}, nil, io.Discard, &stderr)
+	if rest := withoutDiskNotice(stderr.String()); code != 7 || rest != "" {
+		t.Fatalf("next run: exit %d, want 7 and nothing reported\n%s", code, rest)
 	}
+}
+
+// withoutDiskNotice is a run's stderr without the notice that its temp
+// directory is on disk. A host with RAM for one run's temp directory gives
+// it to the run these tests are part of, so a run a test starts gets disk.
+func withoutDiskNotice(stderr string) string {
+	var rest strings.Builder
+	for line := range strings.Lines(stderr) {
+		if !strings.HasPrefix(line, "netisolate: this run's temp directory is on disk ") {
+			rest.WriteString(line)
+		}
+	}
+	return rest.String()
 }
 
 func waitFor(t *testing.T, what string, done func() bool) {
