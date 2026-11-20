@@ -25,13 +25,14 @@ func linkFile(from, to string) error {
 
 // placeHeld is placeNoReplace's placement from the held source: it opens
 // source in its held directory, checks the open file is source's, and
-// links that open file, through its /proc/self/fd name, into dir opened
-// as a directory, through that one's, under the first free name. The name
-// it publishes then holds the bytes it checked whatever happens to
-// source's name or dir's path meanwhile, and no private name is made. It
+// links that open file, through its /proc/self/fd name, into dir's held
+// directory, through that one's, under the first free name. The name it
+// publishes then holds the bytes it checked, in the directory held,
+// whatever happens to source's name or dir's path meanwhile, and no
+// private name is made. It
 // answers errNoHeldLink where /proc does not show the open files or the
 // filesystem refuses hard links, for placeNoReplace to place by name.
-func placeHeld(source placeSource, dir, where string, name func(i int) string) (string, os.FileInfo, error) {
+func placeHeld(source placeSource, dir placeDir, where string, name func(i int) string) (string, os.FileInfo, error) {
 	// Non-blocking, so a FIFO swapped in at the name cannot hold the open.
 	file, err := source.dir.OpenFile(filepath.Base(source.path), os.O_RDONLY|unix.O_NONBLOCK, 0)
 	if err != nil {
@@ -45,9 +46,9 @@ func placeHeld(source placeSource, dir, where string, name func(i int) string) (
 	if !os.SameFile(opened, source.info) {
 		return "", nil, fmt.Errorf("browser: %s changed before the download was saved, so it is not saved", source.path)
 	}
-	target, err := os.OpenFile(dir, os.O_RDONLY|unix.O_DIRECTORY, 0)
+	target, err := dir.root.Open(".")
 	if err != nil {
-		return "", nil, fmt.Errorf("browser: open %s %s: %w", where, dir, err)
+		return "", nil, fmt.Errorf("browser: open %s %s: %w", where, dir.path, err)
 	}
 	defer closeHeld(target)
 	from, into := fdPath(file), fdPath(target)
@@ -67,21 +68,21 @@ func placeHeld(source placeSource, dir, where string, name func(i int) string) (
 				return "", nil, fmt.Errorf("browser: save in %s: %w", where, err)
 			}
 			if !os.SameFile(placed, source.info) {
-				return "", nil, fmt.Errorf("browser: %s changed as the download was saved there, so the download is not saved", filepath.Join(dir, public))
+				return "", nil, fmt.Errorf("browser: %s changed as the download was saved there, so the download is not saved", filepath.Join(dir.path, public))
 			}
-			return filepath.Join(dir, public), source.info, nil
+			return filepath.Join(dir.path, public), source.info, nil
 		case errors.Is(err, fs.ErrExist):
 		case linksRefused(err):
 			return "", nil, errNoHeldLink
 		case errors.Is(err, fs.ErrNotExist):
 			// The checked file has no name left (Linux links no file whose
 			// last name went), or dir went.
-			return "", nil, fmt.Errorf("browser: %s, or %s %s, went before the download was saved, so it is not saved: %w", source.path, where, dir, err)
+			return "", nil, fmt.Errorf("browser: %s, or %s %s, went before the download was saved, so it is not saved: %w", source.path, where, dir.path, err)
 		default:
 			return "", nil, fmt.Errorf("browser: save in %s: %w", where, err)
 		}
 	}
-	return "", nil, fmt.Errorf("browser: %d files named like %q are already in %s", maxNameVariants, name(0), dir)
+	return "", nil, fmt.Errorf("browser: %d files named like %q are already in %s", maxNameVariants, name(0), dir.path)
 }
 
 // fdPath is the /proc/self/fd name of f, "" where /proc does not show it.

@@ -217,30 +217,56 @@ type placeSource struct {
 	dir  *os.Root
 }
 
-// placeNoReplace gives the regular file source the first name in dir that
-// nobody holds, of name(0), name(1), ..., and answers its path and
+// placeDir is the directory a placement publishes into
+// (placeNoReplaceIn): its path, which names the published file, and the
+// directory itself held open, where the public name is checked.
+type placeDir struct {
+	path string
+	root *os.Root
+}
+
+// placeNoReplace is placeNoReplaceIn into dir, opened by its path for the
+// placement.
+func placeNoReplace(source placeSource, dir, where string, name func(i int) string) (path string, file os.FileInfo, err error) {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return "", nil, fmt.Errorf("browser: open %s %s: %w", where, dir, err)
+	}
+	defer func() {
+		if closeErr := root.Close(); closeErr != nil {
+			log.Printf("browser: close %s %s: %v", where, dir, closeErr)
+		}
+	}()
+	return placeNoReplaceIn(source, placeDir{path: dir, root: root}, where, name)
+}
+
+// placeNoReplaceIn gives the regular file source the first name in dir
+// that nobody holds, of name(0), name(1), ..., and answers its path and
 // source's identity, the one identity the caller trusts: never what a name
 // answers afterwards. It never replaces a file: it hard-links, or, on a
 // filesystem that refuses hard links, renames with a rename that refuses
 // to replace; either way a name that is taken (EEXIST) moves on to the
 // next, so two placements at once never take one name. The public name is
-// checked to hold source's file: one that holds anything else, swapped in
-// at it or reached through a directory moved meanwhile, fails the
-// placement and stays as it is, since it may not be AO's. A link leaves
-// source's own name for the caller to remove. where names dir in an error.
+// checked, in the held directory, to hold source's file: one that holds
+// anything else, swapped in at it or reached through a directory moved
+// meanwhile, fails the placement and stays as it is, since it may not be
+// AO's. A link leaves source's own name for the caller to remove. where
+// names dir in an error.
 //
-// On Linux it links the open, checked source file itself (placeHeld), so
-// the public name holds the bytes it checked. Elsewhere, and on Linux
-// where /proc is missing or the filesystem refuses hard links, it places
-// by name: the file takes a private name beside source first
-// (placingName), where the recovery of source's owner removes it if the
-// placement never finishes, and only once that name is checked, in the
-// held directory, to hold source's file does it take a public one; a file
-// swapped in at source before that is refused with nothing public made.
-// The limit by name: a file swapped in at the private name after its check
-// takes the public name, and the public check then fails the placement
-// and leaves that file there.
-func placeNoReplace(source placeSource, dir, where string, name func(i int) string) (path string, file os.FileInfo, err error) {
+// On Linux it links the open, checked source file itself into the held
+// directory (placeHeld), so the public name holds the bytes it checked, in
+// the directory held. Elsewhere, and on Linux where /proc is missing or
+// the filesystem refuses hard links, it places by name: the file takes a
+// private name beside source first (placingName), where the recovery of
+// source's owner removes it if the placement never finishes, and only once
+// that name is checked, in the held directory, to hold source's file does
+// it take a public one; a file swapped in at source before that is refused
+// with nothing public made. The limits by name: a file swapped in at the
+// private name after its check takes the public name, and so does a
+// directory put at dir's path in place of the held one; the public check
+// in the held directory then fails the placement and leaves that file
+// there.
+func placeNoReplaceIn(source placeSource, dir placeDir, where string, name func(i int) string) (path string, file os.FileInfo, err error) {
 	if path, file, err := placeHeld(source, dir, where, name); !errors.Is(err, errNoHeldLink) {
 		return path, file, err
 	}
@@ -250,16 +276,16 @@ func placeNoReplace(source placeSource, dir, where string, name func(i int) stri
 		return "", nil, err
 	}
 	for i := 0; i < maxNameVariants; i++ {
-		candidate := filepath.Join(dir, name(i))
+		candidate := filepath.Join(dir.path, name(i))
 		err := place.move(private, candidate)
 		switch {
 		case err == nil:
-			placed, err := os.Lstat(candidate)
+			placed, err := dir.root.Lstat(name(i))
 			place.dropPrivate(private)
 			if err == nil && os.SameFile(placed, source.info) {
 				return candidate, source.info, nil
 			}
-			if err != nil {
+			if err != nil && !errors.Is(err, fs.ErrNotExist) {
 				return "", nil, fmt.Errorf("browser: save in %s: %w", where, err)
 			}
 			return "", nil, fmt.Errorf("browser: %s changed as the download was saved there, so the download is not saved", candidate)
@@ -270,7 +296,7 @@ func placeNoReplace(source placeSource, dir, where string, name func(i int) stri
 		}
 	}
 	place.undo(private)
-	return "", nil, fmt.Errorf("browser: %d files named like %q are already in %s", maxNameVariants, name(0), dir)
+	return "", nil, fmt.Errorf("browser: %d files named like %q are already in %s", maxNameVariants, name(0), dir.path)
 }
 
 // placingNamePrefix starts the private name a file takes beside its source

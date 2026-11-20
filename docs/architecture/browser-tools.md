@@ -745,7 +745,10 @@ machine that runs the page's engine puts it: that user's Downloads folder (`down
   pages are in. Downloads and asset bundles share a 4 GiB artifact quota
   per backend process. Files older than seven days are pruned at the
   process's first artifact use, while newer files are never silently
-  evicted to make quota room. Under the artifact root, `browser_open_file`
+  evicted to make quota room. The process holds the artifact root open
+  from its first use, and the quota's measurement and every write AO
+  makes there go through it (`artifacts.go`), so a later rename or link
+  of its name moves neither. Under the artifact root, `browser_open_file`
   opens only a file AO moved into a workspace's `finished` directory
   (`authorizeFile`); any other file there never opens and goes with the
   seven-day prune.

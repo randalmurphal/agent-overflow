@@ -334,13 +334,14 @@ func artifactNames(name string) func(i int) string {
 	}
 }
 
-// uniqueArtifactPath answers the first variant of name not in dir. A caller
-// creates it exclusively; one that moves a file there uses placeNoReplace.
-func uniqueArtifactPath(dir, name string) (string, error) {
+// uniqueArtifactName answers the first variant of name not in dir, held
+// open. A caller creates it exclusively; one that moves a file there uses
+// placeNoReplace.
+func uniqueArtifactName(dir *os.Root, name string) (string, error) {
 	names := artifactNames(name)
 	for i := 0; i < maxNameVariants; i++ {
-		candidate := filepath.Join(dir, names(i))
-		if _, err := os.Lstat(candidate); os.IsNotExist(err) {
+		candidate := names(i)
+		if _, err := dir.Lstat(candidate); errors.Is(err, os.ErrNotExist) {
 			return candidate, nil
 		} else if err != nil {
 			return "", err

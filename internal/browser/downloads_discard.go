@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
-	"os"
 	"path/filepath"
 
 	"agent-overflow/internal/browser/quota"
@@ -105,15 +104,23 @@ func (m *Manager) removeDownloadFile(f downloadFile) (int64, error) {
 		m.releaseStagedDownload(f.id)
 		return 0, nil
 	case artifactDownloadFile:
-		// Every name Chromium writes it under, its partial file too.
+		// Every name Chromium writes it under, its partial file too, removed
+		// through the held artifact root, where the quota measured it.
 		var remaining int64
 		var errs []error
 		for _, name := range chromiumDownloadNames(f.path) {
-			info, statErr := os.Lstat(name)
+			root, rel, err := m.artifactsIn(name)
+			if err != nil {
+				// Its size is unknown: it keeps what it reserved.
+				remaining += maxDownloadBytes
+				errs = append(errs, err)
+				continue
+			}
+			info, statErr := root.Lstat(rel)
 			if errors.Is(statErr, fs.ErrNotExist) {
 				continue
 			}
-			err := os.Remove(name)
+			err = root.Remove(rel)
 			switch {
 			case err == nil || errors.Is(err, fs.ErrNotExist):
 			case statErr != nil:

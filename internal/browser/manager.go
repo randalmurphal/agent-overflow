@@ -166,7 +166,12 @@ type Manager struct {
 	artifactRoot   string
 	artifactInitMu sync.Mutex
 	artifactReady  bool
-	artifactBytes  *quota.Pool
+	// artifactDir is the artifact root held open (artifacts.go), and
+	// artifactsClosed whether Close let it go. artifactsClosed is guarded
+	// by artifactInitMu.
+	artifactDir     atomic.Pointer[os.Root]
+	artifactsClosed bool
+	artifactBytes   *quota.Pool
 	// workspacePools hands each workspace its one download pool
 	// (workspaceAuthority).
 	workspacePools *quota.Registry

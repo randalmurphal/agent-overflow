@@ -162,17 +162,21 @@ func TestParityBoundsAndPureHelpers(t *testing.T) {
 	if got := safeArtifactName("CON.txt", "download"); got != "_CON.txt" {
 		t.Fatalf("Windows device name=%q", got)
 	}
-	dir := t.TempDir()
-	first, err := uniqueArtifactPath(dir, "file.txt")
+	dir, err := os.OpenRoot(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(first, []byte("x"), 0o600); err != nil {
+	defer dir.Close()
+	first, err := uniqueArtifactName(dir, "file.txt")
+	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := uniqueArtifactPath(dir, "file.txt")
-	if err != nil || filepath.Base(second) != "file-1.txt" {
-		t.Fatalf("collision path=%q err=%v", second, err)
+	if err := dir.WriteFile(first, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	second, err := uniqueArtifactName(dir, "file.txt")
+	if err != nil || second != "file-1.txt" {
+		t.Fatalf("collision name=%q err=%v", second, err)
 	}
 	for _, button := range []string{"left", "middle", "right", "back", "forward"} {
 		if _, err := inputButton(button); err != nil {

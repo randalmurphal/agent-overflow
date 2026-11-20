@@ -217,7 +217,7 @@ func (m *Manager) openPageLocked(ctx context.Context, access Caller, p *managedP
 	authorityDir := ""
 	if m.downloadsToArtifacts() {
 		authorityDir = m.workspaceDownloadDir(workspace)
-		if err := os.MkdirAll(authorityDir, 0o700); err != nil {
+		if err := m.makeArtifactDir(authorityDir); err != nil {
 			m.scheduleIdleClose()
 			return nil, fmt.Errorf("browser: create download directory: %w", err)
 		}
@@ -379,7 +379,7 @@ func (m *Manager) createScope(jar jarIdentity) (*jarScope, error) {
 	downloadDir := ""
 	if m.downloadsToArtifacts() {
 		downloadDir = filepath.Join(m.artifactRoot, jarDownloadingDir, jarDirName(jar.key))
-		if err := os.MkdirAll(downloadDir, 0o700); err != nil {
+		if err := m.makeArtifactDir(downloadDir); err != nil {
 			return nil, fmt.Errorf("browser: create download directory: %w", err)
 		}
 	}

@@ -208,14 +208,19 @@ func (m *Manager) bundleAssets(ctx context.Context, p *managedPage, opts AssetOp
 	}
 	var settledBytes int64
 	defer func() { reservation.Settle(settledBytes) }()
+	// Every file of the bundle is written in its directory held open in the
+	// held artifact root (openArtifactDir), where the quota measures it.
 	dir := filepath.Join(m.artifactRoot, "assets", uuid.NewString())
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	held, err := m.openArtifactDir(dir)
+	if err != nil {
 		return AssetBundle{}, err
 	}
+	defer closeArtifactDir(held, dir)
 	// The manifest's name is taken before any asset's, so an asset named
-	// like it gets the next variant name (uniqueArtifactPath).
-	manifestPath := filepath.Join(dir, "manifest.json")
-	reserved, err := os.OpenFile(manifestPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	// like it gets the next variant name (uniqueArtifactName).
+	const manifestName = "manifest.json"
+	manifestPath := filepath.Join(dir, manifestName)
+	reserved, err := held.OpenFile(manifestName, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return AssetBundle{}, fmt.Errorf("browser: reserve the asset manifest: %w", err)
 	}
@@ -249,13 +254,14 @@ func (m *Manager) bundleAssets(ctx context.Context, p *managedPage, opts AssetOp
 		}
 		contentType := stream.ContentType
 		name := safeArtifactName(asset.Name, asset.Kind)
-		path, pathErr := uniqueArtifactPath(dir, name)
+		fileName, pathErr := uniqueArtifactName(held, name)
 		if pathErr != nil {
 			stream.Close()
 			bundle.Failures = append(bundle.Failures, AssetFailure{ID: asset.ID, Name: name, URL: asset.URL, Reason: pathErr.Error(), ContentType: contentType})
 			continue
 		}
-		file, fileErr := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		path := filepath.Join(dir, fileName)
+		file, fileErr := held.OpenFile(fileName, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if fileErr != nil {
 			stream.Close()
 			bundle.Failures = append(bundle.Failures, AssetFailure{ID: asset.ID, Name: name, URL: asset.URL, Reason: fileErr.Error(), ContentType: contentType})
@@ -268,7 +274,7 @@ func (m *Manager) bundleAssets(ctx context.Context, p *managedPage, opts AssetOp
 			copyErr = closeErr
 		}
 		if copyErr != nil {
-			if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			if err := held.Remove(fileName); err != nil && !errors.Is(err, fs.ErrNotExist) {
 				// The partial file stays on disk and is settled as kept.
 				log.Printf("browser: remove the partial asset %s: %v", path, err)
 				copyErr = fmt.Errorf("%w; its partial file %s could not be removed: %v", copyErr, path, err)
@@ -286,7 +292,7 @@ func (m *Manager) bundleAssets(ctx context.Context, p *managedPage, opts AssetOp
 	if err != nil {
 		return AssetBundle{}, fmt.Errorf("browser: encode the asset manifest: %w", err)
 	}
-	if err := os.WriteFile(manifestPath, append(manifest, '\n'), 0o600); err != nil {
+	if err := held.WriteFile(manifestName, append(manifest, '\n'), 0o600); err != nil {
 		return AssetBundle{}, err
 	}
 	settledBytes += int64(len(manifest) + 1)
