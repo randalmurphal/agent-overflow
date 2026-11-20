@@ -1,0 +1,276 @@
+package store
+
+import (
+	"database/sql"
+	"fmt"
+)
+
+// A history too long for one transaction is staged. An issue's history is
+// the generation of its changes that tracker_cache_issues.history_gen
+// names; other generations exist only while history_dirty is set. Staging
+// writes the new history to the next generation a chunk per transaction,
+// makes it the issue's history in one more, and then deletes the old one a
+// chunk per transaction, so no read sees part of a history and no
+// transaction deletes more than clearMirrorChunk changes. A crash between
+// transactions leaves history_dirty set and the old history visible (or
+// the new one, once made); FinishMirrorCleanup deletes the other
+// generations. Staging runs with the cleanup's lock, and a batch write
+// stages every issue with history_dirty set rather than write it, so
+// nothing else changes the issue's changes while it runs.
+
+var (
+	// mirrorHistoryProbeSQL reads, of a chunk ?2 of a history's changes at
+	// the issue's generation, those the stored history lacks or holds
+	// otherwise.
+	mirrorHistoryProbeSQL = `SELECT c.value ->> 'k', c.value ->> 'q', s.root_id IS NOT NULL FROM json_each(?2) c
+		LEFT JOIN tracker_cache_changes s ON s.root_id = ?1 AND s.issue_id = c.value ->> 'i' AND s.gen = c.value ->> 'g'
+		  AND s.kind = c.value ->> 'k' AND s.seq = c.value ->> 'q'
+		WHERE s.root_id IS NULL OR s.at IS NOT c.value ->> 't' OR s.author_id IS NOT c.value ->> 'a'
+		   OR s.board_id IS NOT c.value ->> 'b' OR s.from_value IS NOT c.value ->> 'f' OR s.to_value IS NOT c.value ->> 'o'
+		   OR s.from_number IS NOT c.value ->> 'x' OR s.to_number IS NOT c.value ->> 'y'`
+	// mirrorHistoryPurgeSQL deletes a chunk of an issue's changes of the
+	// generations other than ?3, walking the key ranges below and above it.
+	mirrorHistoryPurgeSQL = `DELETE FROM tracker_cache_changes WHERE root_id = ?1 AND issue_id = ?2 AND (gen, kind, seq) IN (
+		SELECT gen, kind, seq FROM (
+		  SELECT gen, kind, seq FROM tracker_cache_changes WHERE root_id = ?1 AND issue_id = ?2 AND gen < ?3
+		  UNION ALL
+		  SELECT gen, kind, seq FROM tracker_cache_changes WHERE root_id = ?1 AND issue_id = ?2 AND gen > ?3)
+		LIMIT ` + fmt.Sprint(clearMirrorChunk) + `)`
+	// mirrorHistorySwitchSQL makes generation ?3, complete from ?4 and
+	// final through ?5, the issue's history, deriving its status time
+	// from it.
+	mirrorHistorySwitchSQL = `UPDATE tracker_cache_issues SET history_gen = ?3, history_from = ?4, history_to = ?5,
+		status_since = ` + mirrorStatusSinceSQL(mirrorStatusSinceOf{issue: "tracker_cache_issues.issue_id",
+		status: "tracker_cache_issues.status_id", updatedAt: "tracker_cache_issues.updated_at",
+		createdAt: "tracker_cache_issues.created_at", from: "?4", to: "?5", gen: "?3"}) + `
+		WHERE root_id = ?1 AND issue_id = ?2`
+)
+
+// mirrorHistoryProbe is how a history compares with the stored one: the
+// changes the stored history holds otherwise (differs), those it lacks, and
+// whether it holds changes the history does not (extra).
+type mirrorHistoryProbe struct {
+	differs, extra bool
+	missing        []mirrorChangeRow
+}
+
+// identical reports that the stored changes are the history's.
+func (p mirrorHistoryProbe) identical() bool { return !p.differs && !p.extra && len(p.missing) == 0 }
+
+// replaceStagedHistory writes in's history as ReplaceMirrorHistories
+// promises, for a history too long for a batch transaction or an issue
+// with generations to delete. The caller holds s.mirrorCleanup, so no
+// sweep runs meanwhile: the write that marks the issue names sweep, the
+// root's sweep the caller captured, and those after it follow it.
+func (s *Store) replaceStagedHistory(rootID, sweep int64, in mirrorHistoryInput, result *MirrorHistoryResult) error {
+	action := fmt.Sprintf("store: replace tracker mirror %d issue %s history", rootID, in.h.IssueID)
+	st, admitted, err := s.stagedHistoryState(rootID, in, result)
+	if err != nil || !admitted {
+		return err
+	}
+	if st.dirty {
+		if err := s.purgeMirrorHistoryGens(rootID, in.h.IssueID, st.gen, func() {}); err != nil {
+			return fmt.Errorf("%s: %w", action, err)
+		}
+	}
+	sameTimes := st.storedFrom == in.h.CompleteFrom && st.storedTo == in.h.CompleteTo
+	if sameTimes && st.removes == 0 {
+		probe, err := s.probeMirrorHistory(rootID, in, st.gen)
+		if err != nil {
+			return fmt.Errorf("%s: %w", action, err)
+		}
+		if probe.identical() {
+			return nil
+		}
+	}
+	// From here no batch write changes the issue's changes: it stages the
+	// issue instead, behind this one.
+	err = s.mirrorSweptWrite(rootID, sweep, action, func(tx *sql.Tx) error {
+		_, err := tx.Exec(`UPDATE tracker_cache_issues SET history_dirty = 1 WHERE root_id = ?1 AND issue_id = ?2`, rootID, in.h.IssueID)
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	if st, admitted, err = s.stagedHistoryState(rootID, in, result); err != nil || !admitted {
+		return err
+	}
+	result.Changed = true
+	if st.storedTo == 0 {
+		// No history is stored, so none of it can be kept in place.
+		return s.stageMirrorHistory(rootID, in, st.gen, action)
+	}
+	probe, err := s.probeMirrorHistory(rootID, in, st.gen)
+	if err != nil {
+		return fmt.Errorf("%s: %w", action, err)
+	}
+	if !probe.differs && !probe.extra && len(probe.missing) <= clearMirrorChunk {
+		return s.mirrorWrite(rootID, action, func(tx *sql.Tx) error {
+			return finishMirrorHistoryInPlaceTx(tx, rootID, in, st.gen, probe.missing)
+		})
+	}
+	return s.stageMirrorHistory(rootID, in, st.gen, action)
+}
+
+// stagedHistoryState reads the issue's stored history and records in
+// result whether in is admitted: a kept issue and a history final through
+// no earlier time than the stored one.
+func (s *Store) stagedHistoryState(rootID int64, in mirrorHistoryInput, result *MirrorHistoryResult) (mirrorHistoryState, bool, error) {
+	listed, err := encodeMirrorJSON([]mirrorHistoryRow{in.row})
+	if err != nil {
+		return mirrorHistoryState{}, false, err
+	}
+	states, err := readMirrorHistoryStatesTx(s.db, rootID, listed)
+	if err != nil {
+		return mirrorHistoryState{}, false, fmt.Errorf("store: replace tracker mirror %d issue %s history: %w", rootID, in.h.IssueID, err)
+	}
+	st, ok := states[in.h.IssueID]
+	switch {
+	case !ok || !st.kept:
+		result.Unkept, result.Superseded = true, false
+		return st, false, nil
+	case in.h.CompleteTo < st.storedTo:
+		result.Unkept, result.Superseded = false, true
+		return st, false, nil
+	}
+	result.Unkept, result.Superseded = false, false
+	return st, true, nil
+}
+
+// probeMirrorHistory compares in's changes with the issue's stored history
+// at generation gen, a read of clearMirrorChunk changes at a time.
+func (s *Store) probeMirrorHistory(rootID int64, in mirrorHistoryInput, gen int64) (mirrorHistoryProbe, error) {
+	row, changes := in.at(gen)
+	var probe mirrorHistoryProbe
+	listed, err := encodeMirrorJSON([]mirrorHistoryRow{row})
+	if err != nil {
+		return probe, err
+	}
+	var removes int
+	if err := s.reader().QueryRow(`SELECT `+mirrorRemovalsSQL+` FROM json_each(?2) h
+		CROSS JOIN tracker_cache_issues i ON i.root_id = ?1 AND i.issue_id = h.value ->> 'i'`, rootID, listed).Scan(&removes); err != nil {
+		return probe, fmt.Errorf("count changes to remove: %w", err)
+	}
+	probe.extra = removes > 0
+	type key struct{ kind, seq int }
+	at := make(map[key]int, len(changes))
+	for i, c := range changes {
+		at[key{c.Kind, c.Seq}] = i
+	}
+	// It stops once the history cannot be kept in place: no caller acts on
+	// more than that.
+	for start := 0; start < len(changes) && !probe.differs && !probe.extra && len(probe.missing) <= clearMirrorChunk; start += clearMirrorChunk {
+		chunk, err := encodeMirrorJSON(changes[start:min(start+clearMirrorChunk, len(changes))])
+		if err != nil {
+			return probe, err
+		}
+		err = scanMirrorRows(s.reader(), mirrorHistoryProbeSQL, []any{rootID, chunk}, func(r rowScanner) error {
+			var k key
+			var stored bool
+			if err := r.Scan(&k.kind, &k.seq, &stored); err != nil {
+				return err
+			}
+			if stored {
+				probe.differs = true
+			} else {
+				probe.missing = append(probe.missing, changes[at[k]])
+			}
+			return nil
+		})
+		if err != nil {
+			return probe, fmt.Errorf("compare changes: %w", err)
+		}
+	}
+	return probe, nil
+}
+
+// finishMirrorHistoryInPlaceTx adds the missing changes of a history whose
+// stored changes it otherwise holds, writes its times and clears
+// history_dirty, in one transaction.
+func finishMirrorHistoryInPlaceTx(tx *sql.Tx, rootID int64, in mirrorHistoryInput, gen int64, missing []mirrorChangeRow) error {
+	if len(missing) > 0 {
+		rows, err := encodeMirrorJSON(missing)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(mirrorChangesUpsertSQL, rootID, rows); err != nil {
+			return fmt.Errorf("add changes: %w", err)
+		}
+	}
+	row, _ := in.at(gen)
+	listed, err := encodeMirrorJSON([]mirrorHistoryRow{row})
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(mirrorHistoryTimesSQL, rootID, listed); err != nil {
+		return fmt.Errorf("write history times: %w", err)
+	}
+	if _, err := tx.Exec(`UPDATE tracker_cache_issues SET history_dirty = 0 WHERE root_id = ?1 AND issue_id = ?2`, rootID, in.h.IssueID); err != nil {
+		return fmt.Errorf("clear the staging mark: %w", err)
+	}
+	return nil
+}
+
+// stageMirrorHistory writes in's changes to generation gen+1 a chunk per
+// transaction, makes it the issue's history, and deletes the old one.
+func (s *Store) stageMirrorHistory(rootID int64, in mirrorHistoryInput, gen int64, action string) error {
+	next := gen + 1
+	_, changes := in.at(next)
+	for start := 0; start < len(changes); start += clearMirrorChunk {
+		chunk, err := encodeMirrorJSON(changes[start:min(start+clearMirrorChunk, len(changes))])
+		if err != nil {
+			return err
+		}
+		err = s.mirrorWrite(rootID, action, func(tx *sql.Tx) error {
+			if _, err := tx.Exec(mirrorChangesUpsertSQL, rootID, chunk); err != nil {
+				return fmt.Errorf("stage changes: %w", err)
+			}
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+	}
+	err := s.mirrorWrite(rootID, action, func(tx *sql.Tx) error {
+		if _, err := tx.Exec(mirrorHistorySwitchSQL, rootID, in.h.IssueID, next, in.h.CompleteFrom, in.h.CompleteTo); err != nil {
+			return fmt.Errorf("make the staged history the issue's: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	return s.purgeMirrorHistoryGens(rootID, in.h.IssueID, next, func() {})
+}
+
+// purgeMirrorHistoryGens deletes the issue's changes of every generation
+// but keep, a chunk per transaction after between, and clears
+// history_dirty in the transaction that leaves none, while keep is still
+// the issue's generation.
+func (s *Store) purgeMirrorHistoryGens(rootID int64, issueID string, keep int64, between func()) error {
+	action := fmt.Sprintf("store: delete tracker mirror %d issue %s replaced history", rootID, issueID)
+	for done := false; !done; {
+		between()
+		err := s.mirrorWrite(rootID, action, func(tx *sql.Tx) error {
+			res, err := tx.Exec(mirrorHistoryPurgeSQL, rootID, issueID, keep)
+			if err != nil {
+				return fmt.Errorf("delete changes: %w", err)
+			}
+			n, err := res.RowsAffected()
+			if err != nil {
+				return err
+			}
+			if done = n < clearMirrorChunk; done {
+				if _, err := tx.Exec(`UPDATE tracker_cache_issues SET history_dirty = 0
+					WHERE root_id = ?1 AND issue_id = ?2 AND history_gen = ?3 AND history_dirty = 1`, rootID, issueID, keep); err != nil {
+					return fmt.Errorf("clear the staging mark: %w", err)
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}

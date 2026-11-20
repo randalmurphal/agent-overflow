@@ -31,12 +31,12 @@ type MirrorSection struct {
 	Column   int
 }
 
-// MirrorRowKey is a row's place in a board's order at a revision of the
-// board: a page continues after it. A key with no issue starts at the
-// first row, at the board's current revision.
+// MirrorRowKey is a row's place in a board's order at a revision of one
+// lifetime of the board: a page continues after it. A key with no issue
+// starts at the first row, at the board's current lifetime and revision.
 type MirrorRowKey struct {
-	OrderKey, IssueID string
-	Revision          int64
+	OrderKey, IssueID  string
+	Lifetime, Revision int64
 }
 
 // MirrorSectionPage is a page of a section's rows in order-key order, read
@@ -81,30 +81,37 @@ var mirrorSectionSQL = map[MirrorSectionKind]string{
 		mirrorSectionOrderSQL + strconv.Itoa(mirrorSectionPageSize+1),
 }
 
-// mirrorShownBoardSQL reads the revision and estimate unit of a board the
-// mirror shows.
-var mirrorShownBoardSQL = `SELECT b.revision, b.estimate_unit FROM tracker_cache_boards b
+// mirrorShownBoardSQL reads the lifetime, revision and estimate unit of a
+// board the mirror shows.
+var mirrorShownBoardSQL = `SELECT b.lifetime, b.revision, b.estimate_unit FROM tracker_cache_boards b
 	WHERE b.root_id = ?1 AND b.board_id = ?2 AND ` + mirrorBoardShown("?1", "?2")
 
-// readMirrorShownBoardTx reads a shown board's revision and estimate unit;
-// ok is false for a board the mirror does not show.
-func readMirrorShownBoardTx(tx *sql.Tx, rootID int64, boardID string) (revision int64, unit int, ok bool, err error) {
-	err = tx.QueryRow(mirrorShownBoardSQL, rootID, boardID).Scan(&revision, &unit)
+// mirrorShownBoard is a shown board's state as a read of its rows needs it.
+type mirrorShownBoard struct {
+	lifetime, revision int64
+	unit               int
+}
+
+// readMirrorShownBoardTx reads a shown board's lifetime, revision and
+// estimate unit; ok is false for a board the mirror does not show.
+func readMirrorShownBoardTx(tx *sql.Tx, rootID int64, boardID string) (board mirrorShownBoard, ok bool, err error) {
+	err = tx.QueryRow(mirrorShownBoardSQL, rootID, boardID).Scan(&board.lifetime, &board.revision, &board.unit)
 	if errors.Is(err, sql.ErrNoRows) {
-		return 0, 0, false, nil
+		return mirrorShownBoard{}, false, nil
 	}
 	if err != nil {
-		return 0, 0, false, fmt.Errorf("read board: %w", err)
+		return mirrorShownBoard{}, false, fmt.Errorf("read board: %w", err)
 	}
-	return revision, unit, true, nil
+	return board, true, nil
 }
 
 // ListMirrorSection reads up to mirrorSectionPageSize rows of one section
 // of a board, in order-key order, after after, in one snapshot with the
 // board's revision. A continuation (after names an issue) read at another
-// revision fails with ErrTrackerCacheStale: a change between the pages
-// could have moved a row across the cursor. A board the mirror does not
-// show has no rows.
+// lifetime or revision fails with ErrTrackerCacheStale: a change between
+// the pages could have moved a row across the cursor, and a board unlisted
+// and listed again holds other rows. A board the mirror does not show has
+// no rows.
 func (s *Store) ListMirrorSection(rootID int64, boardID string, section MirrorSection, after MirrorRowKey) (page MirrorSectionPage, err error) {
 	query, ok := mirrorSectionSQL[section.Kind]
 	if !ok {
@@ -123,16 +130,16 @@ func (s *Store) ListMirrorSection(rootID int64, boardID string, section MirrorSe
 		return MirrorSectionPage{}, fmt.Errorf("%s: begin: %w", action, err)
 	}
 	defer rollbackTx(tx, action, &err)
-	revision, _, shown, err := readMirrorShownBoardTx(tx, rootID, boardID)
+	board, shown, err := readMirrorShownBoardTx(tx, rootID, boardID)
 	switch {
 	case err != nil:
 		return MirrorSectionPage{}, fmt.Errorf("%s: %w", action, err)
-	case after.IssueID != "" && (!shown || revision != after.Revision):
+	case after.IssueID != "" && (!shown || board.lifetime != after.Lifetime || board.revision != after.Revision):
 		return MirrorSectionPage{}, fmt.Errorf("%s: %w", action, ErrTrackerCacheStale)
 	case !shown:
 		return MirrorSectionPage{}, tx.Commit()
 	}
-	page.Revision = revision
+	page.Revision = board.revision
 	err = scanMirrorRows(tx, query, args, func(r rowScanner) error {
 		var row MirrorRow
 		var err error
@@ -147,7 +154,8 @@ func (s *Store) ListMirrorSection(rootID int64, boardID string, section MirrorSe
 		page.Rows, page.More = page.Rows[:mirrorSectionPageSize], true
 	}
 	if n := len(page.Rows); n > 0 {
-		page.Next = MirrorRowKey{OrderKey: page.Rows[n-1].OrderKey, IssueID: page.Rows[n-1].Card.IssueID, Revision: revision}
+		page.Next = MirrorRowKey{OrderKey: page.Rows[n-1].OrderKey, IssueID: page.Rows[n-1].Card.IssueID,
+			Lifetime: board.lifetime, Revision: board.revision}
 	}
 	return page, tx.Commit()
 }
@@ -196,14 +204,14 @@ func (s *Store) CountMirrorSections(rootID int64, boardID string) (counts Mirror
 	}
 	defer rollbackTx(tx, action, &err)
 	counts.Sprints, counts.Columns = map[string]MirrorSectionTotal{}, map[int]MirrorSectionTotal{}
-	revision, unit, shown, err := readMirrorShownBoardTx(tx, rootID, boardID)
+	board, shown, err := readMirrorShownBoardTx(tx, rootID, boardID)
 	if err != nil || !shown {
 		return counts, errors.Join(err, tx.Commit())
 	}
-	counts.Revision = revision
+	counts.Revision = board.revision
 	add := func(t MirrorSectionTotal, estimate sql.NullFloat64) MirrorSectionTotal {
 		t.Rows++
-		if unit != MirrorEstimateNone {
+		if board.unit != MirrorEstimateNone {
 			t.Estimate += estimate.Float64
 		}
 		return t

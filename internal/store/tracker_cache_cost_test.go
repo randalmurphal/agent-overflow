@@ -29,6 +29,16 @@ func init() {
 	}
 }
 
+// countMirrorStatements runs fn and returns the statements it ran. The
+// count is of every cached statement the process runs (cachedStmtRuns), so
+// its callers are not parallel: Go starts the parallel tests after them.
+func countMirrorStatements(t *testing.T, fn func()) int {
+	t.Helper()
+	before := cachedStmtRuns.Load()
+	fn()
+	return int(cachedStmtRuns.Load() - before)
+}
+
 // runEveryMirrorAccessor calls every mirror accessor on s, with work for
 // each stage of the cleanup, so each of their statements runs.
 func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root int64) {
@@ -40,6 +50,15 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 			t.Fatalf("%s: %v", name, err)
 		}
 	}
+	// The other paths of a long history: staged new, appended in place,
+	// shortened, identical, and a staging left for the cleanup.
+	for _, h := range []MirrorHistory{statusHistory("10002", clearMirrorChunk+100), statusHistory("10002", clearMirrorChunk+150),
+		statusHistory("10002", clearMirrorChunk+150), statusHistory("10002", 3)} {
+		if _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), []MirrorHistory{h}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustExec(t, s.db, `UPDATE tracker_cache_issues SET history_dirty = 1 WHERE issue_id = '10002'`)
 	reads := []func() error{
 		func() error { _, _, err := s.GetMirrorRoot(jira.ID); return err },
 		func() error { _, _, err := s.GetMirrorSync(root, "10"); return err },
@@ -55,7 +74,7 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 		func() error { _, err := s.GetMirrorCatalog(root, []string{"acc-user1"}, []string{"1"}); return err },
 		func() error { _, err := s.ListMirrorCards(root, []string{"10001"}); return err },
 		func() error { _, _, err := s.ListMirrorIssueRows(root, "10001", ""); return err },
-		func() error { _, _, err := s.ListMirrorLinkedIssues(root, ""); return err },
+		func() error { _, _, err := s.ListMirrorOffBoardLinkedIssues(root, ""); return err },
 		func() error { _, err := s.CountMirrorSections(root, "10"); return err },
 	}
 	for _, section := range []MirrorSection{{Kind: MirrorSectionSprint, SprintID: "21"}, {Kind: MirrorSectionBacklog}, {Kind: MirrorSectionColumn}} {
@@ -69,7 +88,7 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 	// Work for every cleanup stage: an unkept issue, a retired board and a
 	// detached root.
 	writeMirrorBoard(t, s, root, "11", []MirrorRow{webRow("20001", 5, "a")})
-	if _, err := s.WriteMirrorRows(root, MirrorRowPage{BoardID: "10", Missing: []string{"10002"}, ReadAt: 3}); err != nil {
+	if _, err := s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Missing: []string{"10002"}, ReadAt: 3})); err != nil {
 		t.Fatal(err)
 	}
 	listMirrorBoards(t, s, defaultTestProjectID, jira.ID, "10")
@@ -150,8 +169,18 @@ var mirrorPlanAllowed = []struct{ fragment, line, why string }{
 	{"DELETE FROM tracker_cache_roots WHERE id = ? AND connection_id IS NULL", "",
 		"the foreign key probes of a drained root, whose tables the drain emptied"},
 	{"INSERT INTO tracker_cache_roots", "", "the foreign key probes of a new root, which has no rows"},
-	{"UPDATE tracker_cache_boards SET revision = revision + 1 WHERE root_id = ?", "SEARCH tracker_cache_boards USING INDEX sqlite_autoindex_tracker_cache_boards_1 (root_id=?)",
-		"a status group change moves every board of the root: the listed ones and those awaiting their drain"},
+	{"FROM tracker_cache_issues WHERE history_dirty = 1", "SCAN tracker_cache_issues USING COVERING INDEX idx_tracker_cache_issues_history_dirty",
+		"the partial index holds only the issues whose history staging was cut short, the work itself"},
+	{"WHERE i.history_dirty = 1", "SCAN i USING INDEX idx_tracker_cache_issues_history_dirty",
+		"the partial index holds only the issues whose history staging was cut short, the work itself"},
+	{"UPDATE tracker_cache_boards SET revision = revision + 1 WHERE root_id = ?1 AND board_id IN (", "SEARCH i USING INDEX sqlite_autoindex_tracker_cache_issues_1 (root_id=?)",
+		"a status entering or leaving the done groups is rare; finding the boards whose rows have it walks the root's issues once, " +
+			"where an index by status would cost every card write"},
+	{"INSERT INTO tracker_cache_boards(root_id, board_id)", "SEARCH tracker_cache_board_issues USING PRIMARY KEY (root_id=?)",
+		"the foreign key probe of a board lifetime's start, on a listing or a drain: the order index leaves out read_at, so it " +
+			"does not cover the cascade and the probe walks the root's board rows"},
+	{"DELETE FROM tracker_cache_boards WHERE root_id = ?1 AND board_id = ?2 AND retired = 1", "SEARCH tracker_cache_board_issues USING PRIMARY KEY (root_id=?)",
+		"the foreign key probe of a drained board's delete, whose rows the drain removed"},
 }
 
 func mirrorPlanLineAllowed(query, line string) bool {
@@ -214,7 +243,7 @@ func TestMirrorReadsUseTheirIndexes(t *testing.T) {
 		"sweep candidates":  {mirrorSweepCandidatesSQL, "idx_tracker_cache_issues_boardless (root_id=? AND issue_id>?)"},
 		"cleanup probe":     {mirrorCleanupPendingSQL, "idx_tracker_cache_boards_retired"},
 		"listing check":     {mirrorBoardWriteSQL, "idx_project_tracker_boards_board (connection_id=? AND board_id=?)"},
-		"linked issues":     {mirrorLinkedIssuesSQL, "idx_thread_tickets_issue (kind=? AND site=? AND issue_id>?)"},
+		"linked issues":     {mirrorOffBoardLinkedSQL, "idx_thread_tickets_issue (kind=? AND site=? AND issue_id>?)"},
 		"detail eviction":   {mirrorDetailEvictSQL, "idx_tracker_cache_issue_details_opened (root_id=?)"},
 		"issue rows":        {mirrorIssueRowsSQL, "PRIMARY KEY (root_id=? AND issue_id=? AND board_id>?)"},
 		"keep rule":         {`SELECT ` + mirrorIssueKept("?1", "?2"), "PRIMARY KEY (root_id=? AND issue_id=?)"},

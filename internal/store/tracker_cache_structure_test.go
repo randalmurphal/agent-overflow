@@ -18,7 +18,7 @@ func mustGetMirrorBoard(t *testing.T, s *Store, root int64, boardID string) Mirr
 
 func assertMirrorBoard(t *testing.T, s *Store, root int64, want MirrorStructure) {
 	t.Helper()
-	want.Catalog, want.ReadAt = MirrorCatalog{}, 0
+	want.Catalog, want.ReadAt, want.Lifetime = MirrorCatalog{}, 0, currentLifetime(s, root, want.Board.ID)
 	if got := mustGetMirrorBoard(t, s, root, want.Board.ID); !reflect.DeepEqual(got, want) {
 		t.Fatalf("board = %+v\nwant %+v", got, want)
 	}
@@ -61,16 +61,16 @@ func TestReplaceMirrorStructureReportsChanges(t *testing.T) {
 		edited := webStructure()
 		edit(&edited)
 		edited.ReadAt = 2
-		if got, err := s.ReplaceMirrorStructure(root, edited); err != nil || got != (MirrorWrite{Changed: true}) {
+		if got, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, edited)); err != nil || got != (MirrorWrite{Changed: true}) {
 			t.Errorf("%s: %+v, %v", name, got, err)
 			continue
 		}
 		readBack := edited
-		readBack.Catalog, readBack.ReadAt = MirrorCatalog{}, 0
+		readBack.Catalog, readBack.ReadAt, readBack.Lifetime = MirrorCatalog{}, 0, currentLifetime(s, root, "10")
 		if got := mustGetMirrorBoard(t, s, root, "10"); !reflect.DeepEqual(got, readBack) {
 			t.Errorf("%s: board = %+v\nwant %+v", name, got, readBack)
 		}
-		if got, err := s.ReplaceMirrorStructure(root, edited); err != nil || got != (MirrorWrite{}) {
+		if got, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, edited)); err != nil || got != (MirrorWrite{}) {
 			t.Errorf("%s again: %+v, %v", name, got, err)
 		}
 	}
@@ -78,7 +78,8 @@ func TestReplaceMirrorStructureReportsChanges(t *testing.T) {
 
 // A structure read that began before the one that stored the board is
 // superseded and stores nothing; one that began later replaces it, and
-// an identical later read leaves the stored read time.
+// an identical later read is admitted too: it moves the read time, so a
+// different read that began between the two is superseded.
 func TestMirrorStructureFollowsItsReadOrder(t *testing.T) {
 	t.Parallel()
 	s, _, root := newMirror(t)
@@ -89,17 +90,24 @@ func TestMirrorStructureFollowsItsReadOrder(t *testing.T) {
 	early.ReadAt = 10
 	early.Board.Name = "Old name"
 	early.Catalog.Users[0].Name = "Old user"
-	if got, err := s.ReplaceMirrorStructure(root, early); err != nil || got != (MirrorWrite{Superseded: true}) {
+	if got, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, early)); err != nil || got != (MirrorWrite{Superseded: true}) {
 		t.Fatalf("earlier read = %+v, %v", got, err)
 	}
 	assertMirrorBoard(t, s, root, webStructure())
 	assertRows(t, s.db, `SELECT name FROM tracker_cache_users`, "User 1")
 	st.ReadAt = 30
 	mustReplaceStructure(t, s, root, st, false)
-	assertRows(t, s.db, `SELECT read_at FROM tracker_cache_boards`, "20")
+	assertRows(t, s.db, `SELECT read_at FROM tracker_cache_boards WHERE board_id = '10'`, "30")
+	assertRows(t, s.db, `SELECT read_at || ' ' || changed_at FROM tracker_cache_users`, "30 20")
 	early.ReadAt = 25
+	if got, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, early)); err != nil || got != (MirrorWrite{Superseded: true}) {
+		t.Fatalf("read between the two = %+v, %v", got, err)
+	}
+	assertRows(t, s.db, `SELECT read_at || ' ' || name FROM tracker_cache_boards WHERE board_id = '10'`, "30 WEB board")
+	assertRows(t, s.db, `SELECT name FROM tracker_cache_users`, "User 1")
+	early.ReadAt = 35
 	mustReplaceStructure(t, s, root, early, true)
-	assertRows(t, s.db, `SELECT read_at || ' ' || name FROM tracker_cache_boards`, "25 Old name")
+	assertRows(t, s.db, `SELECT read_at || ' ' || name FROM tracker_cache_boards WHERE board_id = '10'`, "35 Old name")
 }
 
 // A board no project lists, or one whose root is retired by its last
@@ -109,7 +117,7 @@ func TestReplaceMirrorStructureRefusesAnUnlistedBoard(t *testing.T) {
 	s, jira, root := newMirror(t)
 	unlisted := webStructure()
 	unlisted.Board.ID = "13"
-	if _, err := s.ReplaceMirrorStructure(root, unlisted); !errors.Is(err, ErrTrackerCacheUnlisted) {
+	if _, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, unlisted)); !errors.Is(err, ErrTrackerCacheUnlisted) {
 		t.Fatalf("unlisted board: %v", err)
 	}
 	if _, err := s.CreateProject(newProject("p2", "/tmp/p2", "P2")); err != nil {
@@ -145,19 +153,19 @@ func TestMirrorCatalogIsNeverRemovedByAStructure(t *testing.T) {
 		t.Fatalf("statuses by ID = %+v, %v", catalog, err)
 	}
 
-	if changes, err := s.UpsertMirrorCards(root, nil, MirrorCatalog{Users: []MirrorUser{{ID: "acc-user1", Name: "Newer name"}}}, 3); err != nil || !changes.Catalog {
+	if changes, err := s.UpsertMirrorCards(root, currentSweep(s, root), nil, MirrorCatalog{Users: []MirrorUser{{ID: "acc-user1", Name: "Newer name"}}}, 3); err != nil || !changes.Catalog {
 		t.Fatalf("later catalog = %+v, %v", changes, err)
 	}
-	if changes, err := s.UpsertMirrorCards(root, nil, MirrorCatalog{Users: []MirrorUser{{ID: "acc-user1", Name: "Older name"}}}, 2); err != nil || changes.Catalog {
+	if changes, err := s.UpsertMirrorCards(root, currentSweep(s, root), nil, MirrorCatalog{Users: []MirrorUser{{ID: "acc-user1", Name: "Older name"}}}, 2); err != nil || changes.Catalog {
 		t.Fatalf("earlier catalog = %+v, %v", changes, err)
 	}
 	assertRows(t, s.db, `SELECT name || ' ' || read_at FROM tracker_cache_users`, "Newer name 3")
 	newer, older := want.Statuses[0], want.Statuses[0]
 	newer.Name, older.Name = "Newer status", "Older status"
-	if changes, err := s.UpsertMirrorCards(root, nil, MirrorCatalog{Statuses: []MirrorStatus{newer}}, 3); err != nil || !changes.Catalog {
+	if changes, err := s.UpsertMirrorCards(root, currentSweep(s, root), nil, MirrorCatalog{Statuses: []MirrorStatus{newer}}, 3); err != nil || !changes.Catalog {
 		t.Fatalf("later status = %+v, %v", changes, err)
 	}
-	if changes, err := s.UpsertMirrorCards(root, nil, MirrorCatalog{Statuses: []MirrorStatus{older}}, 2); err != nil || changes.Catalog {
+	if changes, err := s.UpsertMirrorCards(root, currentSweep(s, root), nil, MirrorCatalog{Statuses: []MirrorStatus{older}}, 2); err != nil || changes.Catalog {
 		t.Fatalf("earlier status = %+v, %v", changes, err)
 	}
 	assertRows(t, s.db, `SELECT name || ' ' || read_at FROM tracker_cache_statuses WHERE status_id = '`+newer.ID+`'`, "Newer status 3")
@@ -215,7 +223,7 @@ func TestReplaceMirrorStructureRefusesInvalidReads(t *testing.T) {
 		bad.Board.Name = "Changed"
 		bad.ReadAt = 2
 		edit(&bad)
-		if _, err := s.ReplaceMirrorStructure(root, bad); !errors.Is(err, ErrInvalidTrackerCache) {
+		if _, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, bad)); !errors.Is(err, ErrInvalidTrackerCache) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
@@ -233,7 +241,7 @@ func TestReplaceMirrorStructureIsAtomic(t *testing.T) {
 	edited.Board.Name = "Renamed"
 	edited.Catalog.Users[0].Name = "Renamed user"
 	edited.Sprints = append(edited.Sprints, MirrorSprint{ID: "23", State: MirrorSprintFuture})
-	if _, err := s.ReplaceMirrorStructure(root, edited); err == nil {
+	if _, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, edited)); err == nil {
 		t.Fatal("structure stored with a sprint refused")
 	}
 	assertMirrorBoard(t, s, root, webStructure())

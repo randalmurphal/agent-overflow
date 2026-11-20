@@ -326,10 +326,27 @@ A board whose last listing goes is retired: absent to reads and writes,
 its sync state deleted, its rows drained by `FinishMirrorCleanup`. Listed
 again before the drain, it stays refused until drained.
 
-Each row's `read_at` is when the read that stored it began: a write from a
-read that began earlier is superseded, and an identical write writes
-nothing. A section page carries the board's revision; continuing it at
-another revision fails with `ErrTrackerCacheStale`.
+Each board row is one lifetime of the board, with an ID never reused. A
+caller captures it with the scope's sync state (`MirrorSync.Lifetime`)
+before its reads and names it in every write and section continuation, so
+nothing read in one lifetime lands in a later one.
+
+A card, detail or history written outside a board is fenced by the root's
+`sweep`, which advances in every cleanup transaction that deletes an issue
+or part of its history and is never repeated. The write names the value
+its caller read before the read (`MirrorSync.Sweep`), and one naming an
+earlier value fails with `ErrTrackerCacheSwept`, so content read before
+its issue was swept is not stored after the issue is kept again. Only an
+opening starts a detail.
+
+Each row's `read_at` is when the latest read admitted for it began, whether
+it changed the row or found it identical; an absence is admitted the same
+way, as the board's `rows_removed_at`, rows removed or not. A write from a
+read that began earlier is superseded, an identical read that began later
+moves `read_at` alone, and a duplicate from the same read writes nothing. A
+section page carries the board's revision; continuing it at another
+revision fails with `ErrTrackerCacheStale`. A card's status time is derived
+from the card and the stored history by every write of either.
 
 A board's backlog is its rows in no future or active sprint of that board
 whose status is not in the done or canceled group, by the group the mirror
@@ -355,7 +372,9 @@ and writes share:
   cursor. One transaction stores a page's rows and the cursor that page
   returned, so a restart resumes exactly after the last stored page. A
   card is never replaced by a version with an earlier update time; a board
-  row is stored whenever it is read through its board.
+  row is stored whenever it is read through its board. A page with no rows
+  that returned the stored cursor is not written: the tick's recorded read
+  admits the cursor.
 - **Reconcile.** A delta sees only issues whose update time moved. An
   issue enters or leaves a board without that: the board's filter is
   edited, an issue is deleted, a board is newly listed while its issues are
@@ -369,9 +388,19 @@ and writes share:
 - **History** is read whole for an issue new to the mirror and again for
   an issue whose update time is later than the time its stored history is
   final through, limited to the four change kinds. It is written in
-  batches of up to 50 issues (`ReplaceMirrorHistories`), and a scope's
-  read, reconcile and failure are recorded by `RecordMirrorSyncAttempt` in
-  one statement.
+  batches of up to 50 issues (`ReplaceMirrorHistories`). A caller sends an
+  issue's whole history in one call, however long; one over 500 changes is
+  staged in transactions of at most 500 and made the issue's history in
+  one more, so a reader sees the old history until the switch, never part
+  of either.
+- **Linked issues.** The cards unit reads the linked issues no shown board
+  has a row of (`ListMirrorOffBoardLinkedIssues`).
+- **A tick's record.** A tick's successes and the failure that followed
+  them are recorded by one `RecordMirrorSyncAttempt` statement, which
+  writes nothing when nothing changes. An idle tick reads its state in one
+  statement (`GetMirrorSync`; `ErrTrackerCacheGone` sends it back to
+  `GetOrCreateMirrorRoot`) and writes one row, the read time the board's
+  "last synced" shows.
 - **Cadence.** A board polls every 45 seconds while a client shows it and
   not at all otherwise. A failed read retries on the doubling delay the
   pull request pumps use; a rate limit waits for its release. Linked issues

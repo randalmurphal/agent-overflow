@@ -52,8 +52,8 @@ func scanMirrorCard(row rowScanner, extra ...any) (MirrorCard, error) {
 }
 
 // GetMirrorBoard reads the structure of a board the mirror shows: the
-// board, its columns with their statuses and its sprints. The catalog is
-// read by ID (GetMirrorCatalog).
+// board, its columns with their statuses, its sprints and its lifetime.
+// The catalog is read by ID (GetMirrorCatalog).
 func (s *Store) GetMirrorBoard(rootID int64, boardID string) (st MirrorStructure, ok bool, err error) {
 	action := fmt.Sprintf("store: read tracker mirror %d board %s", rootID, boardID)
 	tx, err := s.reader().Begin()
@@ -62,9 +62,9 @@ func (s *Store) GetMirrorBoard(rootID int64, boardID string) (st MirrorStructure
 	}
 	defer rollbackTx(tx, action, &err)
 	b := &st.Board
-	err = tx.QueryRow(`SELECT b.board_id, b.project_id, b.name, b.plans_sprints, b.estimate_unit, b.data FROM tracker_cache_boards b
+	err = tx.QueryRow(`SELECT b.board_id, b.project_id, b.name, b.plans_sprints, b.estimate_unit, b.data, b.lifetime FROM tracker_cache_boards b
 		WHERE b.root_id = ?1 AND b.board_id = ?2 AND `+mirrorBoardShown("?1", "?2"), rootID, boardID).Scan(
-		&b.ID, &b.ProjectID, &b.Name, &b.PlansSprints, &b.EstimateUnit, &b.Data)
+		&b.ID, &b.ProjectID, &b.Name, &b.PlansSprints, &b.EstimateUnit, &b.Data, &st.Lifetime)
 	if errors.Is(err, sql.ErrNoRows) {
 		return MirrorStructure{}, false, nil
 	}
@@ -255,17 +255,26 @@ func (s *Store) ListMirrorIssueRows(rootID int64, issueID, afterBoard string) (r
 	return rows, false, nil
 }
 
-// mirrorLinkedIssuesSQL reads a page of the issues the links of a root
-// name (mirrorLinksSQL, the keep rule's own), by issue ID after ?2.
-var mirrorLinkedIssuesSQL = `SELECT DISTINCT link_ticket.issue_id FROM ` + mirrorLinksSQL("?1") + `
-	AND link_ticket.issue_id > ?2 ORDER BY link_ticket.issue_id LIMIT ` + strconv.Itoa(mirrorLinkedPage+1)
+// mirrorOffBoardLinkedSQL reads a page of the issues the links of a root
+// name (mirrorLinksSQL, the keep rule's own) that have no row on a board
+// the mirror shows, by issue ID after ?2: the tickets' issue index in
+// order, and per ticket a probe of the issue's rows by key.
+var mirrorOffBoardLinkedSQL = `SELECT DISTINCT link_ticket.issue_id FROM ` + mirrorLinksSQL("?1") + `
+	AND link_ticket.issue_id > ?2
+	AND NOT EXISTS (SELECT 1 FROM tracker_cache_board_issues on_board
+	                 WHERE on_board.root_id = ?1 AND on_board.issue_id = link_ticket.issue_id
+	                   AND ` + mirrorBoardShown("on_board.root_id", "on_board.board_id") + `)
+	ORDER BY link_ticket.issue_id LIMIT ` + strconv.Itoa(mirrorLinkedPage+1)
 
-// ListMirrorLinkedIssues reads up to mirrorLinkedPage of the distinct
-// issues that threads this computer owns link through rootID's connection,
-// sorted, after after (empty for the first); more reports that issues
-// follow the last. A detached root has none.
-func (s *Store) ListMirrorLinkedIssues(rootID int64, after string) (issueIDs []string, more bool, err error) {
-	issueIDs, err = queryIDs(s.reader(), mirrorLinkedIssuesSQL, rootID, after)
+// ListMirrorOffBoardLinkedIssues reads up to mirrorLinkedPage of the
+// distinct issues that threads this computer owns link through rootID's
+// connection and that no board the mirror shows has a row of, so no board
+// read keeps their cards fresh; sorted, after after (empty for the
+// first); more reports that issues follow the last. A detached root has
+// none. A page reads the links in issue order until it has a page, so it
+// reads at most every link of the connection.
+func (s *Store) ListMirrorOffBoardLinkedIssues(rootID int64, after string) (issueIDs []string, more bool, err error) {
+	issueIDs, err = queryIDs(s.reader(), mirrorOffBoardLinkedSQL, rootID, after)
 	if err != nil {
 		return nil, false, fmt.Errorf("store: list tracker mirror %d linked issues: %w", rootID, err)
 	}

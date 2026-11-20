@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -193,7 +194,7 @@ func TestMirrorSectionContinuationIsRefusedAfterAChange(t *testing.T) {
 			st := webStructure()
 			st.ReadAt = 2
 			edit(&st)
-			_, err := s.ReplaceMirrorStructure(root, st)
+			_, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, st))
 			return err
 		}
 	}
@@ -203,13 +204,13 @@ func TestMirrorSectionContinuationIsRefusedAfterAChange(t *testing.T) {
 			r.OrderKey = map[string]string{"10001": "a", "10002": "b", "10003": "c"}[id]
 			r.Card.UpdatedAt = 6
 			edit(&r)
-			_, err := s.WriteMirrorRowPage(root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{r}, ReadAt: 2}, nil)
+			_, err := s.WriteMirrorRowPage(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{r}, ReadAt: 2}), nil)
 			return err
 		}
 	}
 	catalog := func(st MirrorStatus) func(s *Store, root int64) error {
 		return func(s *Store, root int64) error {
-			_, err := s.UpsertMirrorCards(root, nil, MirrorCatalog{Statuses: []MirrorStatus{st}}, 2)
+			_, err := s.UpsertMirrorCards(root, currentSweep(s, root), nil, MirrorCatalog{Statuses: []MirrorStatus{st}}, 2)
 			return err
 		}
 	}
@@ -219,11 +220,11 @@ func TestMirrorSectionContinuationIsRefusedAfterAChange(t *testing.T) {
 		stale  bool
 	}{
 		{"row added", func(s *Store, root int64) error {
-			_, err := s.WriteMirrorRowPage(root, webPage("10", sectionRow("10004", "0", "1", -1)), nil)
+			_, err := s.WriteMirrorRowPage(root, currentPage(s, root, webPage("10", sectionRow("10004", "0", "1", -1))), nil)
 			return err
 		}, true},
 		{"row removed", func(s *Store, root int64) error {
-			_, err := s.WriteMirrorRows(root, MirrorRowPage{BoardID: "10", Missing: []string{"10003"}, ReadAt: 2})
+			_, err := s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Missing: []string{"10003"}, ReadAt: 2}))
 			return err
 		}, true},
 		{"row moved before the cursor", card("10003", func(r *MirrorRow) { r.OrderKey = "0" }), true},
@@ -238,13 +239,15 @@ func TestMirrorSectionContinuationIsRefusedAfterAChange(t *testing.T) {
 		{"column status added", structure(func(st *MirrorStructure) { st.Columns[0].Statuses = []string{"1", "99"} }), true},
 		{"column status removed", structure(func(st *MirrorStructure) { st.Columns[2].Statuses = []string{"10001"} }), true},
 		{"column status moved", structure(func(st *MirrorStructure) { st.Columns[0].Statuses, st.Columns[1].Statuses = []string{"1", "3"}, nil }), true},
-		{"status added", catalog(MirrorStatus{ID: "99", Name: "Blocked", Group: MirrorGroupInProgress}), true},
-		{"status regrouped", catalog(MirrorStatus{ID: "3", Name: "In Progress", Group: MirrorGroupDone}), true},
+		{"status of a row done", catalog(MirrorStatus{ID: "1", Name: "To Do", Group: MirrorGroupDone}), true},
+		{"status added", catalog(MirrorStatus{ID: "99", Name: "Blocked", Group: MirrorGroupInProgress}), false},
+		{"status of no row done", catalog(MirrorStatus{ID: "3", Name: "In Progress", Group: MirrorGroupDone}), false},
+		{"status of a row still open", catalog(MirrorStatus{ID: "1", Name: "To Do", Group: MirrorGroupInProgress}), false},
 		{"card retitled", card("10001", func(r *MirrorRow) { r.Card.Sprints, r.Card.Data = []string{"21"}, []byte(`{"title":"Renamed"}`) }), false},
 		{"status renamed", catalog(MirrorStatus{ID: "3", Name: "Doing", Group: MirrorGroupInProgress}), false},
 		{"sprint renamed", structure(func(st *MirrorStructure) { st.Sprints[0].Name = "Renamed" }), false},
 		{"another board's row", func(s *Store, root int64) error {
-			_, err := s.WriteMirrorRowPage(root, webPage("11", sectionRow("10009", "a", "1", -1)), nil)
+			_, err := s.WriteMirrorRowPage(root, currentPage(s, root, webPage("11", sectionRow("10009", "a", "1", -1))), nil)
 			return err
 		}, false},
 	} {
@@ -259,7 +262,7 @@ func TestMirrorSectionContinuationIsRefusedAfterAChange(t *testing.T) {
 		if err != nil || sectionIDs(first) != "10001,10002,10003" {
 			t.Fatalf("%s: first page = %s, %v", tc.name, sectionIDs(first), err)
 		}
-		after := MirrorRowKey{OrderKey: "a", IssueID: "10001", Revision: first.Revision}
+		after := MirrorRowKey{OrderKey: "a", IssueID: "10001", Lifetime: currentLifetime(s, root, "10"), Revision: first.Revision}
 		if err := tc.change(s, root); err != nil {
 			t.Fatalf("%s: %v", tc.name, err)
 		}
@@ -316,21 +319,30 @@ func TestListMirrorIssueRowsPages(t *testing.T) {
 	}
 }
 
-// The linked issues read a page at a time, each once however many threads
-// link it.
-func TestListMirrorLinkedIssuesPages(t *testing.T) {
+// The linked issues no shown board has a row of read a page at a time,
+// each once however many threads link it; one with a row on a shown board
+// is left out, and one whose only row is on a board no project lists any
+// more is not.
+func TestListMirrorOffBoardLinkedIssuesPages(t *testing.T) {
 	t.Parallel()
-	s, _, root := newMirror(t)
-	for i := range mirrorLinkedPage + 1 {
+	s, jira, root := newMirror(t)
+	for i := range mirrorLinkedPage + 2 {
 		linkIssue(t, s, fmt.Sprint("t", i), strconv.Itoa(10000+i))
 	}
 	linkIssue(t, s, "again", "10000")
-	first, more, err := s.ListMirrorLinkedIssues(root, "")
-	if err != nil || !more || len(first) != mirrorLinkedPage || first[0] != "10000" || first[1] != "10001" {
+	mustReplaceStructure(t, s, root, webStructure(), true)
+	mustWriteRowPage(t, s, root, webPage("10", webRow("10001", 5, "a")), nil)
+	other := webStructure()
+	other.Board.ID = "11"
+	mustReplaceStructure(t, s, root, other, true)
+	mustWriteRowPage(t, s, root, webPage("11", webRow("10002", 5, "a")), nil)
+	listMirrorBoards(t, s, defaultTestProjectID, jira.ID, "10", "12")
+	first, more, err := s.ListMirrorOffBoardLinkedIssues(root, "")
+	if err != nil || !more || len(first) != mirrorLinkedPage || first[0] != "10000" || first[1] != "10002" || slices.Contains(first, "10001") {
 		t.Fatalf("first page = %d from %v, more %v, %v", len(first), first[:2], more, err)
 	}
-	rest, more, err := s.ListMirrorLinkedIssues(root, first[len(first)-1])
-	if err != nil || more || !reflect.DeepEqual(rest, []string{strconv.Itoa(10000 + mirrorLinkedPage)}) {
+	rest, more, err := s.ListMirrorOffBoardLinkedIssues(root, first[len(first)-1])
+	if err != nil || more || !reflect.DeepEqual(rest, []string{strconv.Itoa(10001 + mirrorLinkedPage)}) {
 		t.Fatalf("second page = %v, %v, %v", rest, more, err)
 	}
 }

@@ -823,7 +823,7 @@ export const coverageAllowlist: CoverageAllowance[] = [
   { table: 'tracker_cache_changes', reason: 'a tracker issue\'s status, sprint, estimate or assignee change (v159); no app method syncs a tracker yet' },
   { table: 'tracker_cache_issue_details', reason: 'the detail of a recently opened tracker issue (v159); no app method syncs a tracker yet' },
   { table: 'tracker_cache_worklogs', reason: 'time logged in a tracker (v159); no app method syncs a tracker yet' },
-  { table: 'tracker_cache_worklog_days', reason: 'the read that last changed a day of a tracker author\'s worklogs (v159); no app method syncs a tracker yet' },
+  { table: 'tracker_cache_worklog_days', reason: 'the latest read of a day of a tracker author\'s worklogs (v159); no app method syncs a tracker yet' },
   { table: 'tracker_cache_sync', reason: 'a tracker mirror scope\'s sync state (v159); no app method syncs a tracker yet' },
   { table: 'chat_bar_favorites', values: { provider: ['codex', 'claude-tui'] }, reason: 'favorites of other providers; one favorite proves the table' },
   { table: 'chat_model_profiles', values: { provider: ['claude-tui'], reasoning_effort: ['none', 'minimal', 'low', 'high', 'xhigh'], runtime_mode: ['read-only', 'approval-required', 'auto-accept-edits'] }, reason: 'one remembered profile per provider and model holds the settings used last; the claude-tui provider has no mock' },

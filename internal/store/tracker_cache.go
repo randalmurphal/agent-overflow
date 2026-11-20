@@ -13,9 +13,12 @@ import (
 // started, and every write fails with ErrTrackerCacheGone once that root
 // is detached, so a result that arrives late cannot fill a cleared mirror.
 // Inside a live root each record carries its own order: a write of a read
-// that began before the read which stored the record's content is
-// superseded and changes nothing (see MirrorWrite), and a write identical
-// to what is stored changes no row and fires no trigger. The store does
+// that began before the latest read admitted for the record is superseded
+// and changes nothing (see MirrorWrite); an identical write from a later
+// read moves the record's read time alone, and one from the same read
+// changes no row. A board has lifetimes inside a root (MirrorSync.Lifetime):
+// each board write names the lifetime its caller captured, so a write
+// captured before the board was unlisted and listed again is refused. The store does
 // not read the data columns: the caller encodes them. Times are Unix
 // milliseconds, zero for none.
 
@@ -36,11 +39,20 @@ var ErrInvalidTrackerCache = errors.New("store: invalid tracker mirror write")
 var ErrTrackerCacheNoBoard = errors.New("store: tracker mirror has no such board")
 
 // ErrTrackerCacheUnlisted is returned by a write naming a board no project
-// lists through the root's connection, or one whose last listing went and
-// whose rows FinishMirrorCleanup has yet to remove. The caller stops
-// syncing the board; a board listed again is synced again once the
+// lists through the root's connection, one whose last listing went and
+// whose rows FinishMirrorCleanup has yet to remove, or a lifetime of the
+// board other than its current one. The caller stops syncing the board; a
+// board listed again is synced again, under its new lifetime, once the
 // cleanup has removed it.
 var ErrTrackerCacheUnlisted = errors.New("store: no project lists the tracker board")
+
+// ErrTrackerCacheSwept is returned by a write of content read outside a
+// board (UpsertMirrorCards, StoreMirrorDetail, ReplaceMirrorHistories)
+// naming a root sweep earlier than the root's: a sweep deleted issues
+// since the caller captured MirrorSync.Sweep, so the read may describe an
+// issue's earlier lifetime. The caller reads the sync state and the
+// content again.
+var ErrTrackerCacheSwept = errors.New("store: tracker mirror swept issues since the read began; read it again")
 
 // ErrTrackerCacheStale is returned by ListMirrorSection for a continuation
 // read at another revision of the board than the page it continues: the
@@ -85,6 +97,12 @@ func (s *Store) GetOrCreateMirrorRoot(connectionID string) (rootID int64, create
 		connectionID, nowMillis()).Scan(&rootID); err != nil {
 		return 0, false, fmt.Errorf("%s: insert root: %w", action, err)
 	}
+	// Each board listed now starts its lifetime with the root; one listed
+	// later starts its own (trg_project_tracker_boards_list).
+	if _, err := tx.Exec(`INSERT INTO tracker_cache_boards(root_id, board_id)
+		SELECT ?1, board_id FROM project_tracker_boards WHERE connection_id = ?2 ON CONFLICT DO NOTHING`, rootID, connectionID); err != nil {
+		return 0, false, fmt.Errorf("%s: start board lifetimes: %w", action, err)
+	}
 	if err := tx.Commit(); err != nil {
 		return 0, false, fmt.Errorf("%s: commit: %w", action, err)
 	}
@@ -121,19 +139,33 @@ func (s *Store) DetachMirror(connectionID string) (detached bool, err error) {
 // is a live root, so every mirror writer refuses a detached root with
 // ErrTrackerCacheGone the same way. A root cannot be detached while the
 // transaction holds the writer.
-func (s *Store) mirrorWrite(rootID int64, action string, fn func(tx *sql.Tx) error) (err error) {
+func (s *Store) mirrorWrite(rootID int64, action string, fn func(tx *sql.Tx) error) error {
+	return s.mirrorSweptWrite(rootID, 0, action, fn)
+}
+
+// mirrorSweptWrite is mirrorWrite for a write of content read outside a
+// board: sweep is the root's sweep its caller captured before the read
+// (MirrorSync.Sweep), and the write is refused with ErrTrackerCacheSwept
+// when a sweep has deleted issues since, in the same statement as the
+// root's check. Zero checks no sweep, for the mirror's own writes.
+func (s *Store) mirrorSweptWrite(rootID, sweep int64, action string, fn func(tx *sql.Tx) error) (err error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("%s: begin: %w", action, err)
 	}
 	defer rollbackTx(tx, action, &err)
 	var live bool
-	err = tx.QueryRow(`SELECT connection_id IS NOT NULL FROM tracker_cache_roots WHERE id = ?`, rootID).Scan(&live)
-	if errors.Is(err, sql.ErrNoRows) || err == nil && !live {
+	var current int64
+	err = tx.QueryRow(`SELECT connection_id IS NOT NULL, sweep FROM tracker_cache_roots WHERE id = ?`, rootID).Scan(&live, &current)
+	switch {
+	case errors.Is(err, sql.ErrNoRows) || err == nil && !live:
 		return fmt.Errorf("%s: root %d: %w", action, rootID, ErrTrackerCacheGone)
-	}
-	if err != nil {
+	case err != nil:
 		return fmt.Errorf("%s: read root: %w", action, err)
+	case sweep > current:
+		return fmt.Errorf("%s: %w: sweep %d was never reached (the root is at %d)", action, ErrInvalidTrackerCache, sweep, current)
+	case sweep > 0 && sweep < current:
+		return fmt.Errorf("%s: sweep %d, root at %d: %w", action, sweep, current, ErrTrackerCacheSwept)
 	}
 	if err := fn(tx); err != nil {
 		return fmt.Errorf("%s: %w", action, err)
@@ -148,27 +180,32 @@ func (s *Store) mirrorWrite(rootID int64, action string, fn func(tx *sql.Tx) err
 type mirrorBoard struct {
 	// stored reports that the mirror holds the board's structure.
 	stored bool
-	// readAt is when the read of the stored structure began.
+	// readAt is when the latest read of the structure admitted began.
 	readAt int64
-	// rowsRemovedAt is when the latest read that removed rows began.
+	// rowsRemovedAt is when the latest read that found rows gone began.
 	rowsRemovedAt int64
 }
 
 // mirrorBoardWriteSQL reads, in one statement, whether a root is live,
 // whether some project lists the board through its connection, and the
-// board's stored state.
+// state of the board's lifetime ?3.
 const mirrorBoardWriteSQL = `SELECT r.connection_id IS NOT NULL,
 	  EXISTS (SELECT 1 FROM project_tracker_boards p WHERE p.connection_id = r.connection_id AND p.board_id = ?2),
-	  coalesce(b.retired, 0), b.root_id IS NOT NULL, coalesce(b.read_at, 0), coalesce(b.rows_removed_at, 0)
-	FROM tracker_cache_roots r LEFT JOIN tracker_cache_boards b ON b.root_id = r.id AND b.board_id = ?2
+	  coalesce(b.retired, 1), coalesce(b.read_at, 0), coalesce(b.rows_removed_at, 0)
+	FROM tracker_cache_roots r LEFT JOIN tracker_cache_boards b ON b.root_id = r.id AND b.board_id = ?2 AND b.lifetime = ?3
 	WHERE r.id = ?1`
 
 // mirrorBoardWrite runs fn in one write transaction for a write naming
-// boardID: the root must be live (ErrTrackerCacheGone), and some project
-// must list the board through the root's connection, the board not being
-// retired (ErrTrackerCacheUnlisted). With needStructure, the mirror must
-// hold the board's structure (ErrTrackerCacheNoBoard).
-func (s *Store) mirrorBoardWrite(rootID int64, boardID, action string, needStructure bool, fn func(tx *sql.Tx, board mirrorBoard) error) (err error) {
+// lifetime of boardID: the root must be live (ErrTrackerCacheGone), some
+// project must list the board through the root's connection, and lifetime
+// must be the board's current one, not retired (ErrTrackerCacheUnlisted).
+// With needStructure, the mirror must hold the board's structure
+// (ErrTrackerCacheNoBoard).
+func (s *Store) mirrorBoardWrite(rootID int64, boardID string, lifetime int64, action string, needStructure bool,
+	fn func(tx *sql.Tx, board mirrorBoard) error) (err error) {
+	if boardID == "" || lifetime <= 0 {
+		return fmt.Errorf("%s: %w: a board write names the board and the lifetime its caller captured", action, ErrInvalidTrackerCache)
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("%s: begin: %w", action, err)
@@ -176,7 +213,8 @@ func (s *Store) mirrorBoardWrite(rootID int64, boardID, action string, needStruc
 	defer rollbackTx(tx, action, &err)
 	var live, listed, retired bool
 	var board mirrorBoard
-	err = tx.QueryRow(mirrorBoardWriteSQL, rootID, boardID).Scan(&live, &listed, &retired, &board.stored, &board.readAt, &board.rowsRemovedAt)
+	err = tx.QueryRow(mirrorBoardWriteSQL, rootID, boardID, lifetime).Scan(&live, &listed, &retired, &board.readAt, &board.rowsRemovedAt)
+	board.stored = board.readAt > 0
 	switch {
 	case errors.Is(err, sql.ErrNoRows) || err == nil && !live:
 		return fmt.Errorf("%s: root %d: %w", action, rootID, ErrTrackerCacheGone)
@@ -205,7 +243,8 @@ func mirrorBoardShown(root, board string) string {
 	  JOIN tracker_cache_roots shown_root ON shown_root.id = shown_board.root_id
 	  JOIN project_tracker_boards shown_listing ON shown_listing.connection_id = shown_root.connection_id
 	   AND shown_listing.board_id = shown_board.board_id
-	 WHERE shown_board.root_id = ` + root + ` AND shown_board.board_id = ` + board + ` AND shown_board.retired = 0)`
+	 WHERE shown_board.root_id = ` + root + ` AND shown_board.board_id = ` + board + `
+	   AND shown_board.retired = 0 AND shown_board.read_at > 0)`
 }
 
 // mirrorLinksSQL is the FROM and WHERE of the links that keep issues in a

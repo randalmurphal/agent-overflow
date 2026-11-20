@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -32,6 +33,17 @@ type MirrorWorklog struct {
 // were because a read that began later changed them, sorted.
 type MirrorWorklogChanges struct {
 	Changed, Removed, SupersededDays []string
+}
+
+// mirrorDays lists the days from fromDay to toDay, both included, which
+// checkMirrorWorklogRange has checked.
+func mirrorDays(fromDay, toDay string) []string {
+	from, _ := time.Parse(time.DateOnly, fromDay)
+	var days []string
+	for day := from; day.Format(time.DateOnly) <= toDay; day = day.AddDate(0, 0, 1) {
+		days = append(days, day.Format(time.DateOnly))
+	}
+	return days
 }
 
 func parseMirrorDay(day string) (time.Time, error) {
@@ -80,7 +92,7 @@ type mirrorWorklogRow struct {
 
 // The worklog statements: ?1 root, ?2 author, ?3 first day, ?4 last day,
 // ?5 when the read began, ?6 the JSON list. A day is superseded when a
-// read that began later changed it (tracker_cache_worklog_days).
+// read that began later replaced it (tracker_cache_worklog_days).
 const (
 	mirrorWorklogDaySupersededSQL = `EXISTS (SELECT 1 FROM tracker_cache_worklog_days wd
 		WHERE wd.root_id = ?1 AND wd.author_id = ?2 AND wd.day = %s AND wd.read_at > ?5)`
@@ -110,6 +122,8 @@ var (
 		  AND worklog_id NOT IN (SELECT w.value ->> 'i' FROM json_each(?6) w)
 		  AND NOT ` + fmt.Sprintf(mirrorWorklogDaySupersededSQL, `tracker_cache_worklogs.day`) + `
 		RETURNING worklog_id, day`
+	// mirrorWorklogDaysSQL records the read as the latest of each day ?4
+	// (a JSON list) it replaced, empty or unchanged days included.
 	mirrorWorklogDaysSQL = `INSERT INTO tracker_cache_worklog_days(root_id, author_id, day, read_at)
 		SELECT ?1, ?2, value, ?3 FROM json_each(?4) WHERE true
 		ON CONFLICT(root_id, author_id, day) DO UPDATE SET read_at = excluded.read_at WHERE excluded.read_at > read_at`
@@ -120,9 +134,11 @@ var (
 // found them. Every log must be the author's and inside the range; the
 // range covers at most mirrorMaxWorklogDays days and clearMirrorChunk
 // logs, and must hold at most clearMirrorChunk stored logs (a longer one
-// is replaced in shorter ranges). A day a read that began later changed
-// is left as it was and reported in SupersededDays; an identical read
-// writes nothing.
+// is replaced in shorter ranges). Each day of the range records the read
+// as its latest, whether it changed, stayed the same or is empty, so no
+// read that began earlier repopulates it. A day a read that began later
+// replaced is left as it was and reported in SupersededDays; a replace
+// from the same read as the stored one writes nothing.
 func (s *Store) ReplaceMirrorWorklogs(rootID int64, authorID, fromDay, toDay string, readAt int64, logs []MirrorWorklog) (changes MirrorWorklogChanges, err error) {
 	if err := checkMirrorWorklogRange(authorID, fromDay, toDay, readAt, logs); err != nil {
 		return MirrorWorklogChanges{}, err
@@ -132,6 +148,10 @@ func (s *Store) ReplaceMirrorWorklogs(rootID int64, authorID, fromDay, toDay str
 		rows[i] = mirrorWorklogRow{ID: w.ID, Issue: w.IssueID, Day: w.Day, Spent: w.SpentSeconds, Description: w.Description, UpdatedAt: w.UpdatedAt}
 	}
 	encoded, err := encodeMirrorJSON(rows)
+	if err != nil {
+		return MirrorWorklogChanges{}, err
+	}
+	rangeDays, err := encodeMirrorIDs(mirrorDays(fromDay, toDay))
 	if err != nil {
 		return MirrorWorklogChanges{}, err
 	}
@@ -149,7 +169,6 @@ func (s *Store) ReplaceMirrorWorklogs(rootID int64, authorID, fromDay, toDay str
 		if changes.SupersededDays, err = queryIDs(tx, mirrorWorklogSupersededDaysSQL, args[:5]...); err != nil {
 			return fmt.Errorf("read superseded days: %w", err)
 		}
-		days := map[string]bool{}
 		for _, step := range []struct {
 			what  string
 			query string
@@ -162,28 +181,14 @@ func (s *Store) ReplaceMirrorWorklogs(rootID int64, authorID, fromDay, toDay str
 				var id, day string
 				err := r.Scan(&id, &day)
 				*step.out = append(*step.out, id)
-				days[day] = true
 				return err
 			})
 			if err != nil {
 				return fmt.Errorf("%s: %w", step.what, err)
 			}
 		}
-		if len(days) == 0 {
-			return nil
-		}
-		changedDays, err := encodeMirrorIDs(slices.Sorted(func(yield func(string) bool) {
-			for day := range days {
-				if !yield(day) {
-					return
-				}
-			}
-		}))
-		if err != nil {
-			return err
-		}
-		if _, err := tx.Exec(mirrorWorklogDaysSQL, rootID, authorID, readAt, changedDays); err != nil {
-			return fmt.Errorf("record the changed days: %w", err)
+		if _, err := tx.Exec(mirrorWorklogDaysSQL, rootID, authorID, readAt, rangeDays); err != nil {
+			return fmt.Errorf("record the days' read: %w", err)
 		}
 		return nil
 	})
@@ -258,107 +263,151 @@ type MirrorSyncFailure struct {
 }
 
 // MirrorSync is a scope's sync state. A scope is a board, or with board ID
-// empty the root's linked issues.
+// empty the root's linked issues. Lifetime is a listed board's current
+// lifetime (zero for the linked scope or a board not listed): the caller
+// captures it before its reads and names it in every write of the board,
+// so nothing read in an earlier lifetime is stored in a later one. Sweep
+// is the root's sweep, set for every scope, ok or not: the caller captures
+// it before reading content outside a board (cards, details, histories)
+// and names it in the write, so nothing read before an issue was swept is
+// stored after it is kept again (ErrTrackerCacheSwept).
 type MirrorSync struct {
+	Lifetime     int64
+	Sweep        int64
 	Cursor       []byte
 	ReadAt       int64
 	ReconciledAt int64
 	Failure      MirrorSyncFailure
 }
 
+// mirrorSyncStateSQL reads whether the root is live (NULL: no root), a
+// scope's sync state and, for a board listed through a live root and not
+// retired, the board's lifetime.
+var mirrorSyncStateSQL = `SELECT rt.connection_id IS NOT NULL, coalesce(rt.sweep, 0),
+	  coalesce(bl.lifetime, 0), s.root_id IS NOT NULL, s.cursor, coalesce(s.read_at, 0),
+	  coalesce(s.reconciled_at, 0), coalesce(s.failed_at, 0), coalesce(s.failure_kind, ''), coalesce(s.failure_message, '')
+	FROM (SELECT 1)
+	LEFT JOIN tracker_cache_roots rt ON rt.id = ?1
+	LEFT JOIN tracker_cache_boards bl ON bl.root_id = ?1 AND bl.board_id = ?2 AND bl.retired = 0
+	  AND EXISTS (SELECT 1 FROM tracker_cache_roots lr JOIN project_tracker_boards lp ON lp.connection_id = lr.connection_id
+	               WHERE lr.id = ?1 AND lp.board_id = ?2)
+	LEFT JOIN tracker_cache_sync s ON s.root_id = ?1 AND s.board_id = ?2 AND ` + mirrorRootLiveSQL + `
+	  AND (?2 = '' OR ` + mirrorBoardShown("?1", "?2") + `)`
+
 // GetMirrorSync reads a scope's sync state, if any was written: none for a
-// detached root or a board the mirror does not show.
+// board the mirror does not show. Lifetime is set whenever the board is
+// listed, ok or not. A root that is detached or gone fails with
+// ErrTrackerCacheGone, so a caller that keeps the root's ID reads a tick's
+// whole state in this one statement and looks the root up again
+// (GetOrCreateMirrorRoot) only then.
 func (s *Store) GetMirrorSync(rootID int64, boardID string) (MirrorSync, bool, error) {
 	var st MirrorSync
-	err := s.reader().QueryRow(`SELECT s.cursor, s.read_at, s.reconciled_at, s.failed_at, s.failure_kind, s.failure_message
-		FROM tracker_cache_sync s WHERE s.root_id = ?1 AND s.board_id = ?2 AND `+mirrorRootLiveSQL+`
-		  AND (?2 = '' OR `+mirrorBoardShown("?1", "?2")+`)`, rootID, boardID).Scan(
+	var live sql.NullBool
+	var ok bool
+	err := s.reader().QueryRow(mirrorSyncStateSQL, rootID, boardID).Scan(&live, &st.Sweep, &st.Lifetime, &ok,
 		&st.Cursor, &st.ReadAt, &st.ReconciledAt, &st.Failure.At, &st.Failure.Kind, &st.Failure.Message)
-	if errors.Is(err, sql.ErrNoRows) {
-		return MirrorSync{}, false, nil
+	if err == nil && !live.Bool {
+		err = ErrTrackerCacheGone
 	}
 	if err != nil {
 		return MirrorSync{}, false, fmt.Errorf("store: read tracker mirror %d sync of board %q: %w", rootID, boardID, err)
 	}
+	if !ok {
+		return MirrorSync{Lifetime: st.Lifetime, Sweep: st.Sweep}, false, nil
+	}
 	return st, true, nil
 }
 
-// MirrorSyncAttempt is the outcome of one read or reconcile of a scope:
-// At is when it began, Reconcile tells a reconcile from a read, and a
-// failure has its kind (MirrorFailure*) and message; an attempt with no
-// failure kind succeeded.
+// MirrorSyncAttempt is the outcome of one tick of a scope: ReadAt is when
+// a read that succeeded began, ReconciledAt when a reconcile that
+// succeeded began, and Failure a failure that followed them (its kind one
+// of MirrorFailure*); a zero time is none, and an attempt names at least
+// one. Lifetime is the board's lifetime its caller captured (zero for the
+// linked scope).
 type MirrorSyncAttempt struct {
-	At                          int64
-	Reconcile                   bool
-	FailureKind, FailureMessage string
+	Lifetime             int64
+	ReadAt, ReconciledAt int64
+	Failure              MirrorSyncFailure
 }
 
-// The attempt statements: ?1 root, ?2 board, ?3 when the attempt began.
-// Every SET expression reads the row as it was.
-const (
-	// A success moves the read or reconcile time forward and clears a
-	// failure recorded no later than it. The WHERE keeps the time forward:
-	// a stored failure is never older than the read and reconcile times
-	// (mirrorSyncFailureSQL), so the clear's arm admits no earlier one.
-	mirrorSyncSuccessSQL = `INSERT INTO tracker_cache_sync(root_id, board_id, %[1]s) VALUES (?1, ?2, ?3)
-		ON CONFLICT(root_id, board_id) DO UPDATE SET %[1]s = excluded.%[1]s,
-		    failed_at = iif(failure_kind <> '' AND ?3 >= outcome_at, 0, failed_at),
-		    failure_message = iif(failure_kind <> '' AND ?3 >= outcome_at, '', failure_message),
-		    outcome_at = iif(failure_kind <> '' AND ?3 >= outcome_at, ?3, outcome_at),
-		    failure_kind = iif(failure_kind <> '' AND ?3 >= outcome_at, '', failure_kind)
-		WHERE ?3 > %[1]s OR (failure_kind <> '' AND ?3 >= outcome_at)
-		RETURNING board_id`
-	// A failure replaces the stored one unless the scope was read,
-	// reconciled, failed or cleared later.
-	mirrorSyncFailureSQL = `INSERT INTO tracker_cache_sync(root_id, board_id, failed_at, failure_kind, failure_message, outcome_at)
-		VALUES (?1, ?2, ?3, ?4, ?5, ?3)
-		ON CONFLICT(root_id, board_id) DO UPDATE SET failed_at = excluded.failed_at, failure_kind = excluded.failure_kind,
-		    failure_message = excluded.failure_message, outcome_at = excluded.outcome_at
-		WHERE excluded.failed_at >= max(outcome_at, read_at, reconciled_at)
-		  AND (failed_at IS NOT excluded.failed_at OR failure_kind IS NOT excluded.failure_kind OR failure_message IS NOT excluded.failure_message)
-		RETURNING board_id`
-)
-
-var (
-	mirrorSyncReadSQL      = fmt.Sprintf(mirrorSyncSuccessSQL, "read_at")
-	mirrorSyncReconcileSQL = fmt.Sprintf(mirrorSyncSuccessSQL, "reconciled_at")
-)
-
-// RecordMirrorSyncAttempt records the outcome of a read or reconcile of a
-// scope in one statement and reports whether the scope's state changed;
-// an attempt that changes nothing writes nothing. A success moves the read
-// or reconcile time forward, never back, and clears a failure recorded no
-// later than it. A failure replaces the stored one unless the scope was
-// read, reconciled, failed or cleared later (superseded). A board scope
-// must be listed (ErrTrackerCacheUnlisted).
-func (s *Store) RecordMirrorSyncAttempt(rootID int64, boardID string, a MirrorSyncAttempt) (changed bool, err error) {
-	if a.At <= 0 {
-		return false, fmt.Errorf("%w: an attempt needs its time", ErrInvalidTrackerCache)
+func (a MirrorSyncAttempt) check(boardID string) error {
+	f := a.Failure
+	switch {
+	case a.ReadAt < 0 || a.ReconciledAt < 0 || f.At < 0 || a.ReadAt+a.ReconciledAt+f.At == 0:
+		return fmt.Errorf("%w: an attempt needs the time of its success or failure", ErrInvalidTrackerCache)
+	case boardID == "" && a.Lifetime != 0:
+		return fmt.Errorf("%w: the linked scope has no lifetime", ErrInvalidTrackerCache)
+	case f.At == 0 && (f.Kind != "" || f.Message != ""):
+		return fmt.Errorf("%w: a failure with no time", ErrInvalidTrackerCache)
 	}
-	query, values := mirrorSyncReadSQL, []any{a.At}
-	switch a.FailureKind {
-	case "":
-		if a.FailureMessage != "" {
-			return false, fmt.Errorf("%w: a success with a failure message", ErrInvalidTrackerCache)
-		}
-		if a.Reconcile {
-			query = mirrorSyncReconcileSQL
-		}
+	switch f.Kind {
 	case MirrorFailureTransient, MirrorFailureRateLimited, MirrorFailureSetup, MirrorFailureForbidden, MirrorFailureTracker:
-		query, values = mirrorSyncFailureSQL, []any{a.At, a.FailureKind, a.FailureMessage}
-	default:
-		return false, fmt.Errorf("%w: failure kind %q", ErrInvalidTrackerCache, a.FailureKind)
+		return nil
+	case "":
+		if f.At == 0 {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: failure kind %q", ErrInvalidTrackerCache, f.Kind)
+}
+
+// mirrorSyncAttemptSQL records an attempt in one statement: ?1 root, ?2
+// board, ?3 the read, ?4 the reconcile, ?5 to ?7 the failure's time, kind
+// and message. Every SET expression reads the row as it was, so the
+// fragments below are spelled out where they are used:
+//   - {cleared}: a success clears a failure recorded no later than it;
+//   - {admitted}: the failure replaces the stored one (after the clear)
+//     unless the scope was read, reconciled, failed or cleared later, this
+//     attempt's successes included, and it differs from it;
+//   - {failed_at} and the other failure columns: their new values.
+//
+// The WHERE writes the row only when a value changes.
+const mirrorSyncAttemptTemplate = `INSERT INTO tracker_cache_sync(root_id, board_id, read_at, reconciled_at,
+	    failed_at, failure_kind, failure_message, outcome_at)
+	SELECT ?1, ?2, ?3, ?4, iif(f, ?5, 0), iif(f, ?6, ''), iif(f, ?7, ''), iif(f, ?5, 0)
+	  FROM (SELECT ?5 > 0 AND ?5 >= max(?3, ?4) AS f) WHERE true
+	ON CONFLICT(root_id, board_id) DO UPDATE SET read_at = max(read_at, ?3), reconciled_at = max(reconciled_at, ?4),
+	    failed_at = {failed_at}, failure_kind = {failure_kind}, failure_message = {failure_message}, outcome_at = {outcome_at}
+	WHERE ?3 > read_at OR ?4 > reconciled_at OR {failed_at} IS NOT failed_at OR {failure_kind} IS NOT failure_kind
+	   OR {failure_message} IS NOT failure_message OR {outcome_at} IS NOT outcome_at
+	RETURNING board_id`
+
+var mirrorSyncAttemptSQL = strings.NewReplacer(
+	"{cleared}", `(failure_kind <> '' AND max(?3, ?4) > 0 AND max(?3, ?4) >= outcome_at)`,
+).Replace(strings.NewReplacer(
+	"{admitted}", `(?5 > 0 AND ?5 >= max(iif({cleared}, max(?3, ?4), outcome_at), read_at, reconciled_at, ?3, ?4)
+		AND (iif({cleared}, 0, failed_at) IS NOT ?5 OR iif({cleared}, '', failure_kind) IS NOT ?6
+		  OR iif({cleared}, '', failure_message) IS NOT ?7))`,
+).Replace(strings.NewReplacer(
+	"{failed_at}", `iif({admitted}, ?5, iif({cleared}, 0, failed_at))`,
+	"{failure_kind}", `iif({admitted}, ?6, iif({cleared}, '', failure_kind))`,
+	"{failure_message}", `iif({admitted}, ?7, iif({cleared}, '', failure_message))`,
+	"{outcome_at}", `iif({admitted}, ?5, iif({cleared}, max(?3, ?4), outcome_at))`,
+).Replace(mirrorSyncAttemptTemplate)))
+
+// RecordMirrorSyncAttempt records the outcome of one tick of a scope in
+// one statement and reports whether the scope's state changed; an attempt
+// that changes nothing writes nothing. A success moves the read or
+// reconcile time forward, never back, and clears a failure recorded no
+// later than it. A failure replaces the stored one unless the scope was
+// read, reconciled, failed or cleared later, by this attempt's successes
+// included (superseded). A board scope must be listed in a.Lifetime
+// (ErrTrackerCacheUnlisted).
+func (s *Store) RecordMirrorSyncAttempt(rootID int64, boardID string, a MirrorSyncAttempt) (changed bool, err error) {
+	if err := a.check(boardID); err != nil {
+		return false, err
 	}
 	action := fmt.Sprintf("store: record tracker mirror %d sync attempt of board %q", rootID, boardID)
 	write := func(tx *sql.Tx) error {
 		var err error
-		changed, err = execChangedTx(tx, query, append([]any{rootID, boardID}, values...)...)
+		changed, err = execChangedTx(tx, mirrorSyncAttemptSQL, rootID, boardID, a.ReadAt, a.ReconciledAt,
+			a.Failure.At, a.Failure.Kind, a.Failure.Message)
 		return err
 	}
 	if boardID == "" {
 		err = s.mirrorWrite(rootID, action, write)
 	} else {
-		err = s.mirrorBoardWrite(rootID, boardID, action, false, func(tx *sql.Tx, _ mirrorBoard) error { return write(tx) })
+		err = s.mirrorBoardWrite(rootID, boardID, a.Lifetime, action, false, func(tx *sql.Tx, _ mirrorBoard) error { return write(tx) })
 	}
 	return changed, err
 }

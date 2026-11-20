@@ -41,8 +41,18 @@ var mirrorDetailEvictSQL = `DELETE FROM tracker_cache_issue_details WHERE root_i
 var (
 	mirrorDetailStateSQL = `SELECT ` + mirrorIssueKept("?1", "?2") + `, d.opened_at, d.read_at, d.data IS NOT ?3
 		FROM (SELECT 1) LEFT JOIN tracker_cache_issue_details d ON d.root_id = ?1 AND d.issue_id = ?2`
-	mirrorDetailStoreSQL = `INSERT INTO tracker_cache_issue_details(root_id, issue_id, opened_at, read_at, data) VALUES (?1, ?2, ?3, ?3, ?4)
-		ON CONFLICT(root_id, issue_id) DO UPDATE SET read_at = excluded.read_at, data = excluded.data`
+	// mirrorDetailStoreSQL stores the document ?4 read from ?3 and moves the
+	// opening forward to ?5 (zero: none). Only an opening starts a detail;
+	// a write that is none reaches the insert for a held detail alone, whose
+	// conflict keeps its opening, so its inserted 1 only meets the CHECK,
+	// which SQLite applies before the conflict.
+	mirrorDetailStoreSQL = `INSERT INTO tracker_cache_issue_details(root_id, issue_id, opened_at, read_at, data)
+		VALUES (?1, ?2, max(?5, 1), ?3, ?4)
+		ON CONFLICT(root_id, issue_id) DO UPDATE SET read_at = excluded.read_at, data = excluded.data, opened_at = max(opened_at, ?5)`
+	// mirrorDetailMoveSQL moves a held detail's read time to ?3 and its
+	// opening to ?4, each only forward, leaving the document.
+	mirrorDetailMoveSQL = `UPDATE tracker_cache_issue_details SET read_at = max(read_at, ?3), opened_at = max(opened_at, ?4)
+		WHERE root_id = ?1 AND issue_id = ?2`
 )
 
 // mirrorDetailState is an issue's detail as a write of it reads it.
@@ -103,32 +113,44 @@ func (s *Store) TouchMirrorDetail(rootID int64, issueID string, openedAt int64) 
 }
 
 // StoreMirrorDetail stores the document of an issue the mirror keeps, read
-// from readAt, unless the stored one came from a read that began later
-// (Superseded); an identical document writes nothing. It leaves when the
-// issue was opened, except that an issue with no detail yet counts as
-// opened at readAt. A new detail drops those beyond the mirrorDetailCap
-// most recently opened.
-func (s *Store) StoreMirrorDetail(rootID int64, issueID string, readAt int64, data []byte) (result MirrorDetailWrite, err error) {
-	if issueID == "" || readAt <= 0 {
-		return MirrorDetailWrite{}, fmt.Errorf("%w: a detail needs its issue and the time its read began", ErrInvalidTrackerCache)
+// from readAt, unless a read that began later was admitted for it
+// (Superseded when that read stored another document); the same document
+// from a later read moves its read time alone. openedAt is when the issue
+// was opened, recorded in the same write as TouchMirrorDetail records it
+// (zero: the write is no opening). Only an opening starts a detail: a
+// write that is none stores nothing for an issue whose detail the mirror
+// does not hold, so a document read before its detail was dropped (the
+// cap) or swept does not come back. sweep is the root's sweep captured
+// before the read (ErrTrackerCacheSwept). Each outcome is one statement.
+// A new detail drops those beyond the mirrorDetailCap most recently
+// opened.
+func (s *Store) StoreMirrorDetail(rootID, sweep int64, issueID string, openedAt, readAt int64, data []byte) (result MirrorDetailWrite, err error) {
+	if issueID == "" || readAt <= 0 || openedAt < 0 || sweep <= 0 {
+		return MirrorDetailWrite{}, fmt.Errorf("%w: a detail needs its issue, the time its read began and the root's sweep", ErrInvalidTrackerCache)
 	}
 	data = mirrorData(data)
 	action := fmt.Sprintf("store: store tracker mirror %d issue %s detail", rootID, issueID)
-	err = s.mirrorWrite(rootID, action, func(tx *sql.Tx) error {
+	err = s.mirrorSweptWrite(rootID, sweep, action, func(tx *sql.Tx) error {
 		st, err := readMirrorDetailTx(tx, rootID, issueID, data)
 		switch {
 		case err != nil:
 			return err
-		case !st.kept:
+		case !st.kept || (!st.held && openedAt == 0):
 			return nil
-		case st.held && !st.differs:
-			result.Stored = true
-			return nil
-		case st.held && st.readAt > readAt:
-			result.Stored, result.Superseded = true, true
+		case st.held && (st.readAt > readAt || !st.differs):
+			// A later read's document, or the same one: the opening and the
+			// read time move forward, a narrow write that the opened index
+			// reads only when the opening moves.
+			result.Stored, result.Superseded = true, st.readAt > readAt && st.differs
+			if st.readAt >= readAt && st.openedAt >= openedAt {
+				return nil
+			}
+			if _, err := tx.Exec(mirrorDetailMoveSQL, rootID, issueID, readAt, openedAt); err != nil {
+				return fmt.Errorf("record the detail's read: %w", err)
+			}
 			return nil
 		}
-		if _, err := tx.Exec(mirrorDetailStoreSQL, rootID, issueID, readAt, data); err != nil {
+		if _, err := tx.Exec(mirrorDetailStoreSQL, rootID, issueID, readAt, data, openedAt); err != nil {
 			return fmt.Errorf("write detail: %w", err)
 		}
 		result.Stored, result.Changed = true, true

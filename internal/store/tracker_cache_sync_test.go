@@ -108,8 +108,9 @@ func replaceOne(s *Store, root int64, w MirrorWorklog) error {
 
 // A day a read that began later changed is left as that read stored it
 // and reported, its worklogs neither replaced nor removed nor moved; the
-// other days of the range follow the replace. An identical later read
-// moves no day's read time.
+// other days of the range follow the replace. A later read is admitted
+// for every day of its range, an identical one and a day with no worklogs
+// included, so a read that began between the two is superseded there.
 func TestMirrorWorklogDaysFollowTheirReadOrder(t *testing.T) {
 	t.Parallel()
 	s, _, root := newMirror(t)
@@ -127,8 +128,18 @@ func TestMirrorWorklogDaysFollowTheirReadOrder(t *testing.T) {
 	if want := []MirrorWorklog{early[0], edited, early[1]}; err != nil || !reflect.DeepEqual(logs, want) {
 		t.Fatalf("worklogs = %+v, %v\nwant %+v", logs, err, want)
 	}
-	mustReplaceWorklogs(t, s, root, "2026-01-05", "2026-01-09", 30, []MirrorWorklog{early[0], edited, early[1]}, MirrorWorklogChanges{})
-	assertRows(t, s.db, `SELECT day || '@' || read_at FROM tracker_cache_worklog_days ORDER BY day`, "2026-01-05@15,2026-01-06@20,2026-01-09@15")
+	kept := []MirrorWorklog{early[0], edited, early[1]}
+	mustReplaceWorklogs(t, s, root, "2026-01-05", "2026-01-09", 30, kept, MirrorWorklogChanges{})
+	days := `SELECT day || '@' || read_at FROM tracker_cache_worklog_days ORDER BY day`
+	assertRows(t, s.db, days, "2026-01-05@30,2026-01-06@30,2026-01-07@30,2026-01-08@30,2026-01-09@30")
+	mustReplaceWorklogs(t, s, root, "2026-01-05", "2026-01-09", 25, nil, MirrorWorklogChanges{
+		SupersededDays: []string{"2026-01-05", "2026-01-06", "2026-01-07", "2026-01-08", "2026-01-09"}})
+	mustReplaceWorklogs(t, s, root, "2026-01-08", "2026-01-08", 25, []MirrorWorklog{webWorklog("w5", "2026-01-08", 60)},
+		MirrorWorklogChanges{SupersededDays: []string{"2026-01-08"}})
+	if logs, _, err := s.ListMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-09"); err != nil || !reflect.DeepEqual(logs, kept) {
+		t.Fatalf("after the earlier reads: %+v, %v", logs, err)
+	}
+	assertRows(t, s.db, days, "2026-01-05@30,2026-01-06@30,2026-01-07@30,2026-01-08@30,2026-01-09@30")
 }
 
 // A range is replaced only while it holds at most clearMirrorChunk stored
@@ -178,10 +189,10 @@ func TestMirrorSyncStateMovesForward(t *testing.T) {
 	s, _, root := newMirror(t)
 	mustReplaceStructure(t, s, root, webStructure(), true)
 	mustWriteRowPage(t, s, root, webPage("10"), []byte("c1"))
-	read := func(at int64) MirrorSyncAttempt { return MirrorSyncAttempt{At: at} }
-	reconcile := func(at int64) MirrorSyncAttempt { return MirrorSyncAttempt{At: at, Reconcile: true} }
+	read := func(at int64) MirrorSyncAttempt { return MirrorSyncAttempt{ReadAt: at} }
+	reconcile := func(at int64) MirrorSyncAttempt { return MirrorSyncAttempt{ReconciledAt: at} }
 	failed := func(at int64, kind, message string) MirrorSyncAttempt {
-		return MirrorSyncAttempt{At: at, FailureKind: kind, FailureMessage: message}
+		return MirrorSyncAttempt{Failure: MirrorSyncFailure{At: at, Kind: kind, Message: message}}
 	}
 	limited := failed(30, MirrorFailureRateLimited, "The tracker asked to wait.")
 	for _, step := range []struct {
@@ -199,10 +210,10 @@ func TestMirrorSyncStateMovesForward(t *testing.T) {
 		{"failure again", limited, false},
 		{"failure before the reconcile", failed(15, MirrorFailureTransient, ""), false},
 	} {
-		changed, err := s.RecordMirrorSyncAttempt(root, "10", step.attempt)
+		changed, err := s.RecordMirrorSyncAttempt(root, "10", currentAttempt(s, root, "10", step.attempt))
 		mustSyncWrite(t, step.name, changed, err, step.want)
 	}
-	want := MirrorSync{Cursor: []byte("c1"), ReadAt: 10, ReconciledAt: 20, Failure: MirrorSyncFailure{At: 30, Kind: MirrorFailureRateLimited, Message: "The tracker asked to wait."}}
+	want := MirrorSync{Lifetime: currentLifetime(s, root, "10"), Sweep: 1, Cursor: []byte("c1"), ReadAt: 10, ReconciledAt: 20, Failure: MirrorSyncFailure{At: 30, Kind: MirrorFailureRateLimited, Message: "The tracker asked to wait."}}
 	if got, ok, err := s.GetMirrorSync(root, "10"); err != nil || !ok || !reflect.DeepEqual(got, want) {
 		t.Fatalf("state = %+v, %v, %v\nwant %+v", got, ok, err, want)
 	}
@@ -221,35 +232,105 @@ func TestMirrorSyncStateMovesForward(t *testing.T) {
 		{"later read", read(60), true},
 		{"failure before the read", failed(58, MirrorFailureTransient, ""), false},
 	} {
-		changed, err := s.RecordMirrorSyncAttempt(root, "10", step.attempt)
+		changed, err := s.RecordMirrorSyncAttempt(root, "10", currentAttempt(s, root, "10", step.attempt))
 		mustSyncWrite(t, step.name, changed, err, step.want)
 	}
 	assertRows(t, s.db, `SELECT read_at || ':' || reconciled_at || ':' || failure_kind || ':' || outcome_at FROM tracker_cache_sync WHERE board_id = '10'`, "60:55::55")
-	mustWriteRowPage(t, s, root, webPage("10"), []byte("c2"))
-	want = MirrorSync{Cursor: []byte("c2"), ReadAt: 60, ReconciledAt: 55}
+	next := webPage("10")
+	next.ReadAt = 60
+	mustWriteRowPage(t, s, root, next, []byte("c2"))
+	want = MirrorSync{Lifetime: want.Lifetime, Sweep: 1, Cursor: []byte("c2"), ReadAt: 60, ReconciledAt: 55}
 	if got, _, err := s.GetMirrorSync(root, "10"); err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("state = %+v, %v\nwant %+v", got, err, want)
 	}
 
 	// The linked issues are a scope of their own, with no board; a board
 	// no project lists has none.
-	changed, err := s.RecordMirrorSyncAttempt(root, "", read(40))
+	changed, err := s.RecordMirrorSyncAttempt(root, "", currentAttempt(s, root, "", read(40)))
 	mustSyncWrite(t, "linked scope read", changed, err, true)
-	if got, ok, err := s.GetMirrorSync(root, ""); err != nil || !ok || !reflect.DeepEqual(got, MirrorSync{ReadAt: 40}) {
+	if got, ok, err := s.GetMirrorSync(root, ""); err != nil || !ok || !reflect.DeepEqual(got, MirrorSync{Sweep: 1, ReadAt: 40}) {
 		t.Fatalf("linked scope = %+v, %v, %v", got, ok, err)
 	}
-	if _, err := s.RecordMirrorSyncAttempt(root, "13", read(40)); !errors.Is(err, ErrTrackerCacheUnlisted) {
+	if _, err := s.RecordMirrorSyncAttempt(root, "13", currentAttempt(s, root, "13", read(40))); !errors.Is(err, ErrTrackerCacheUnlisted) {
 		t.Fatalf("read of an unlisted board: %v", err)
 	}
 	for name, attempt := range map[string]MirrorSyncAttempt{
 		"unknown kind":         failed(70, "flaky", ""),
 		"failure no time":      failed(0, MirrorFailureSetup, ""),
 		"message with no kind": failed(70, "", "x"),
-		"read no time":         read(0),
-		"reconcile no time":    reconcile(0),
+		"no time":              read(0),
+		"negative read":        {ReadAt: -1, ReconciledAt: 70},
+		"negative reconcile":   {ReadAt: 70, ReconciledAt: -1},
+		"negative failure":     {ReadAt: 70, Failure: MirrorSyncFailure{At: -1, Kind: MirrorFailureSetup}},
 	} {
-		if _, err := s.RecordMirrorSyncAttempt(root, "10", attempt); !errors.Is(err, ErrInvalidTrackerCache) {
+		if _, err := s.RecordMirrorSyncAttempt(root, "10", currentAttempt(s, root, "10", attempt)); !errors.Is(err, ErrInvalidTrackerCache) {
 			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+// One attempt records a tick whole, its successes and the failure that
+// followed them, in one statement beside the listing check: at most one
+// row written, none when nothing would change.
+func TestMirrorSyncAttemptRecordsATickInOneStatement(t *testing.T) {
+	s, _, root := newMirror(t)
+	mustReplaceStructure(t, s, root, webStructure(), true)
+	recorder := recordMirrorWrites(t, s)
+	state := `SELECT read_at || ':' || reconciled_at || ':' || failed_at || ':' || failure_kind || ':' || outcome_at
+		FROM tracker_cache_sync WHERE board_id = '10'`
+	failure := func(at int64, kind string) MirrorSyncFailure { return MirrorSyncFailure{At: at, Kind: kind} }
+	for _, step := range []struct {
+		name    string
+		attempt MirrorSyncAttempt
+		changed bool
+		state   string
+	}{
+		{"read then a failure", MirrorSyncAttempt{ReadAt: 10, Failure: failure(10, MirrorFailureTransient)}, true, "10:0:10:transient:10"},
+		{"the same tick again", MirrorSyncAttempt{ReadAt: 10, Failure: failure(10, MirrorFailureTransient)}, false, "10:0:10:transient:10"},
+		{"reconcile, read, then another failure", MirrorSyncAttempt{ReadAt: 20, ReconciledAt: 20, Failure: failure(21, MirrorFailureTracker)},
+			true, "20:20:21:tracker:21"},
+		{"a success clears it", MirrorSyncAttempt{ReadAt: 30}, true, "30:20:0::30"},
+		{"an earlier tick", MirrorSyncAttempt{ReadAt: 25, Failure: failure(25, MirrorFailureTransient)}, false, "30:20:0::30"},
+		{"a failure before the tick's read", MirrorSyncAttempt{ReadAt: 40, ReconciledAt: 35, Failure: failure(38, MirrorFailureSetup)},
+			true, "40:35:0::30"},
+		{"a failure alone", MirrorSyncAttempt{Failure: failure(45, MirrorFailureRateLimited)}, true, "40:35:45:rate_limited:45"},
+		{"a reconcile that clears it", MirrorSyncAttempt{ReconciledAt: 50}, true, "40:50:0::50"},
+	} {
+		attempt := currentAttempt(s, root, "10", step.attempt)
+		recorder.reset()
+		var changed bool
+		var err error
+		statements := countMirrorStatements(t, func() { changed, err = s.RecordMirrorSyncAttempt(root, "10", attempt) })
+		mustSyncWrite(t, step.name, changed, err, step.changed)
+		writes, want := recorder.rowWrites(), map[string]int{}
+		if step.changed {
+			want["tracker_cache_sync"] = 1
+		}
+		if statements != 2 || !reflect.DeepEqual(writes, want) {
+			t.Errorf("%s: %d statements, rows %v; want 2 and %v", step.name, statements, writes, want)
+		}
+		assertRows(t, s.db, state, step.state)
+	}
+}
+
+// A tick's state read fails with ErrTrackerCacheGone for a root that is
+// detached or was never made, so a caller that keeps the root's ID learns
+// from that one read to look the root up again.
+func TestGetMirrorSyncOfAGoneRoot(t *testing.T) {
+	t.Parallel()
+	s, jira, root := newMirror(t)
+	mustReplaceStructure(t, s, root, webStructure(), true)
+	if _, ok, err := s.GetMirrorSync(root, "10"); err != nil || ok {
+		t.Fatalf("a live root never synced: %v, %v", ok, err)
+	}
+	if _, err := s.DetachMirror(jira.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, gone := range []int64{root, 9999} {
+		for _, board := range []string{"10", ""} {
+			if _, _, err := s.GetMirrorSync(gone, board); !errors.Is(err, ErrTrackerCacheGone) {
+				t.Errorf("root %d board %q: %v; want ErrTrackerCacheGone", gone, board, err)
+			}
 		}
 	}
 }

@@ -88,16 +88,65 @@ func webPage(board string, rows ...MirrorRow) MirrorRowPage {
 	return MirrorRowPage{BoardID: board, Rows: rows, ReadAt: 1}
 }
 
+// noMirrorLifetime is a lifetime no board has, for a board with none.
+const noMirrorLifetime = 1 << 62
+
+// currentLifetime is board's lifetime in root as a caller would capture it
+// now: the live one, else the retired one awaiting its drain, else one no
+// board has.
+func currentLifetime(s *Store, root int64, board string) int64 {
+	var lifetime int64
+	err := s.db.QueryRow(`SELECT lifetime FROM tracker_cache_boards WHERE root_id = ? AND board_id = ? ORDER BY retired LIMIT 1`,
+		root, board).Scan(&lifetime)
+	if err != nil {
+		return noMirrorLifetime
+	}
+	return lifetime
+}
+
+// currentSweep is root's sweep as a caller would capture it now, or the
+// first one for a root with no row, whose every write is refused as gone.
+func currentSweep(s *Store, root int64) int64 {
+	var sweep int64
+	if err := s.db.QueryRow(`SELECT sweep FROM tracker_cache_roots WHERE id = ?`, root).Scan(&sweep); err != nil {
+		return 1
+	}
+	return sweep
+}
+
+// currentStructure, currentPage and currentAttempt name the board's
+// current lifetime in a write that names none.
+func currentStructure(s *Store, root int64, st MirrorStructure) MirrorStructure {
+	if st.Lifetime == 0 {
+		st.Lifetime = currentLifetime(s, root, st.Board.ID)
+	}
+	return st
+}
+
+func currentPage(s *Store, root int64, p MirrorRowPage) MirrorRowPage {
+	if p.Lifetime == 0 {
+		p.Lifetime = currentLifetime(s, root, p.BoardID)
+	}
+	return p
+}
+
+func currentAttempt(s *Store, root int64, board string, a MirrorSyncAttempt) MirrorSyncAttempt {
+	if a.Lifetime == 0 && board != "" {
+		a.Lifetime = currentLifetime(s, root, board)
+	}
+	return a
+}
+
 func mustReplaceStructure(t *testing.T, s *Store, root int64, st MirrorStructure, want bool) {
 	t.Helper()
-	if got, err := s.ReplaceMirrorStructure(root, st); err != nil || got != (MirrorWrite{Changed: want}) {
+	if got, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, st)); err != nil || got != (MirrorWrite{Changed: want}) {
 		t.Fatalf("replace board %s structure: %+v, %v; want changed %v", st.Board.ID, got, err, want)
 	}
 }
 
 func mustWriteRowPage(t *testing.T, s *Store, root int64, page MirrorRowPage, cursor []byte) MirrorChanges {
 	t.Helper()
-	changes, err := s.WriteMirrorRowPage(root, page, cursor)
+	changes, err := s.WriteMirrorRowPage(root, currentPage(s, root, page), cursor)
 	if err != nil {
 		t.Fatalf("write board %s rows: %v", page.BoardID, err)
 	}
@@ -138,7 +187,7 @@ func seedFullMirror(t *testing.T, s *Store, root int64) {
 	if _, err := replaceHistory(s, root, MirrorHistory{IssueID: "10001", CompleteTo: 5, Changes: []MirrorChange{{Kind: MirrorChangeStatus, At: 2, From: "1", To: "3"}}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.StoreMirrorDetail(root, "10001", 7, []byte(`{}`)); err != nil {
+	if _, err := s.StoreMirrorDetail(root, currentSweep(s, root), "10001", 7, 7, []byte(`{}`)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-05", 1, []MirrorWorklog{
@@ -161,6 +210,7 @@ type mirrorWriteRecorder struct {
 	mu      sync.Mutex
 	writes  map[string]int
 	deletes map[uint64]int
+	changes map[uint64]int
 }
 
 func recordMirrorWrites(t *testing.T, s *Store) *mirrorWriteRecorder {
@@ -195,6 +245,9 @@ func recordMirrorWrites(t *testing.T, s *Store) *mirrorWriteRecorder {
 		if d.Op == sqlite3.SQLITE_DELETE && strings.HasPrefix(d.TableName, "tracker_cache_") {
 			r.deletes[s.CommitCount()]++
 		}
+		if d.TableName == "tracker_cache_changes" {
+			r.changes[s.CommitCount()]++
+		}
 	})
 	t.Cleanup(func() { hook(nil) })
 	return r
@@ -203,7 +256,7 @@ func recordMirrorWrites(t *testing.T, s *Store) *mirrorWriteRecorder {
 func (r *mirrorWriteRecorder) reset() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.writes, r.deletes = map[string]int{}, map[uint64]int{}
+	r.writes, r.deletes, r.changes = map[string]int{}, map[uint64]int{}, map[uint64]int{}
 }
 
 // rowWrites are the rows written since the last reset, by table.
@@ -222,6 +275,18 @@ func (r *mirrorWriteRecorder) mostDeletedInATransaction() (most, total int) {
 		most, total = max(most, n), total+n
 	}
 	return most, total
+}
+
+// mostChangesInATransaction is the most history changes one transaction
+// wrote (inserted, updated or deleted) since the last reset, and the
+// transactions that wrote any.
+func (r *mirrorWriteRecorder) mostChangesInATransaction() (most, transactions int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, n := range r.changes {
+		most = max(most, n)
+	}
+	return most, len(r.changes)
 }
 
 func TestGetOrCreateMirrorRoot(t *testing.T) {
@@ -278,7 +343,7 @@ func TestDetachMirrorThenCleanupDrainsInBatches(t *testing.T) {
 	for _, board := range []string{"10", "11"} {
 		st := webStructure()
 		st.Board.ID = board
-		if _, err := s.ReplaceMirrorStructure(root, st); err != nil {
+		if _, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, st)); err != nil {
 			t.Fatal(err)
 		}
 		mustWriteRowPage(t, s, root, webPage(board, rows...), nil)
@@ -291,7 +356,7 @@ func TestDetachMirrorThenCleanupDrainsInBatches(t *testing.T) {
 	if after := countMirrorRows(t, s.db); !reflect.DeepEqual(after, before) {
 		t.Fatalf("the detach deleted rows: %v, was %v", after, before)
 	}
-	if _, err := s.WriteMirrorRowPage(root, webPage("10", webRow("30001", 9, "c")), nil); !errors.Is(err, ErrTrackerCacheGone) {
+	if _, err := s.WriteMirrorRowPage(root, currentPage(s, root, webPage("10", webRow("30001", 9, "c"))), nil); !errors.Is(err, ErrTrackerCacheGone) {
 		t.Fatalf("write after the detach: %v", err)
 	}
 	if cards, err := s.ListMirrorCards(root, []string{"10001"}); err != nil || len(cards) != 0 {
@@ -318,9 +383,10 @@ func TestDetachMirrorThenCleanupDrainsInBatches(t *testing.T) {
 	if pauses < len(mirrorTableKeys)+2 {
 		t.Fatalf("%d pauses; want one before each of at least %d transactions", pauses, len(mirrorTableKeys)+2)
 	}
-	if counts := countMirrorRows(t, s.db); counts["tracker_cache_roots"] != 1 || mirrorRowTotal(counts) != 1 {
-		t.Fatalf("after the cleanup: %v; want only the new root", counts)
+	if counts := countMirrorRows(t, s.db); counts["tracker_cache_roots"] != 1 || mirrorRowTotal(counts) != 1+counts["tracker_cache_boards"] {
+		t.Fatalf("after the cleanup: %v; want only the new root and its boards", counts)
 	}
+	assertRows(t, s.db, fmt.Sprintf(`SELECT count(*) FROM tracker_cache_boards WHERE root_id IS NOT %d OR read_at > 0`, newRoot), "0")
 	if got, ok, err := s.GetMirrorRoot(jira.ID); err != nil || !ok || got != newRoot {
 		t.Fatalf("root after the cleanup = %d, %v, %v; want %d", got, ok, err, newRoot)
 	}
@@ -372,43 +438,61 @@ func TestMirrorDrainCoversEveryTable(t *testing.T) {
 // valid write for a root holding webStructure.
 func mirrorWriters(s *Store) map[string]func(root int64) error {
 	return map[string]func(root int64) error{
-		"ReplaceMirrorStructure": func(root int64) error { _, err := s.ReplaceMirrorStructure(root, webStructure()); return err },
+		"ReplaceMirrorStructure": func(root int64) error {
+			_, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, webStructure()))
+			return err
+		},
 		"WriteMirrorRowPage": func(root int64) error {
-			_, err := s.WriteMirrorRowPage(root, webPage("10", webRow("10002", 5, "b")), []byte("c2"))
+			_, err := s.WriteMirrorRowPage(root, currentPage(s, root, webPage("10", webRow("10002", 5, "b"))), []byte("c2"))
 			return err
 		},
 		"WriteMirrorRows": func(root int64) error {
-			_, err := s.WriteMirrorRows(root, webPage("10", webRow("10003", 5, "c")))
+			_, err := s.WriteMirrorRows(root, currentPage(s, root, webPage("10", webRow("10003", 5, "c"))))
 			return err
 		},
 		"UpsertMirrorCards": func(root int64) error {
-			_, err := s.UpsertMirrorCards(root, []MirrorCard{webCard("10001", 6)}, MirrorCatalog{}, 1)
+			_, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{webCard("10001", 6)}, MirrorCatalog{}, 1)
 			return err
 		},
 		"ReconcileMirrorBoard": func(root int64) error {
-			_, err := s.ReconcileMirrorBoard(root, "10", []string{"10001"}, true, 1)
+			_, err := s.ReconcileMirrorBoard(root, "10", currentLifetime(s, root, "10"), []string{"10001"}, true, 1)
 			return err
 		},
 		"ReplaceMirrorHistories": func(root int64) error {
-			_, err := s.ReplaceMirrorHistories(root, []MirrorHistory{{IssueID: "10001", CompleteTo: 9}, {IssueID: "10009", CompleteTo: 9}})
+			_, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), []MirrorHistory{{IssueID: "10001", CompleteTo: 9}, {IssueID: "10009", CompleteTo: 9}})
+			return err
+		},
+		"ReplaceMirrorHistories staged": func(root int64) error {
+			_, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), []MirrorHistory{statusHistory("10001", clearMirrorChunk+100)})
+			return err
+		},
+		"UpsertMirrorCards regroup": func(root int64) error {
+			_, err := s.UpsertMirrorCards(root, currentSweep(s, root), nil, MirrorCatalog{Statuses: []MirrorStatus{{ID: "1", Name: "To Do", Group: MirrorGroupDone}}}, 2)
 			return err
 		},
 		"TouchMirrorDetail": func(root int64) error { _, err := s.TouchMirrorDetail(root, "10001", 9); return err },
-		"StoreMirrorDetail": func(root int64) error { _, err := s.StoreMirrorDetail(root, "10001", 9, []byte(`{}`)); return err },
+		"StoreMirrorDetail": func(root int64) error {
+			_, err := s.StoreMirrorDetail(root, currentSweep(s, root), "10001", 0, 9, []byte(`{}`))
+			return err
+		},
+		"StoreMirrorDetail opened": func(root int64) error {
+			_, err := s.StoreMirrorDetail(root, currentSweep(s, root), "10001", 20, 7, []byte(`{}`))
+			return err
+		},
 		"ReplaceMirrorWorklogs": func(root int64) error {
 			_, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-06", 1, nil)
 			return err
 		},
 		"RecordMirrorSyncAttempt": func(root int64) error {
-			_, err := s.RecordMirrorSyncAttempt(root, "10", MirrorSyncAttempt{At: 9})
+			_, err := s.RecordMirrorSyncAttempt(root, "10", currentAttempt(s, root, "10", MirrorSyncAttempt{ReadAt: 9}))
 			return err
 		},
 		"RecordMirrorSyncAttempt reconcile": func(root int64) error {
-			_, err := s.RecordMirrorSyncAttempt(root, "", MirrorSyncAttempt{At: 9, Reconcile: true})
+			_, err := s.RecordMirrorSyncAttempt(root, "", currentAttempt(s, root, "", MirrorSyncAttempt{ReconciledAt: 9}))
 			return err
 		},
 		"RecordMirrorSyncAttempt failure": func(root int64) error {
-			_, err := s.RecordMirrorSyncAttempt(root, "11", MirrorSyncAttempt{At: 9, FailureKind: MirrorFailureTransient, FailureMessage: "timed out"})
+			_, err := s.RecordMirrorSyncAttempt(root, "11", currentAttempt(s, root, "11", MirrorSyncAttempt{ReadAt: 8, Failure: MirrorSyncFailure{At: 9, Kind: MirrorFailureTransient, Message: "timed out"}}))
 			return err
 		},
 	}
@@ -420,7 +504,7 @@ var mirrorNonWriters = []string{
 	"GetOrCreateMirrorRoot", "GetMirrorRoot", "DetachMirror", "FinishMirrorCleanup",
 	"GetMirrorSync", "ListMirrorHistoryDue", "GetMirrorDetail", "ListMirrorWorklogs", "ListMirrorIssueWorklogs",
 	"GetMirrorBoard", "GetMirrorCatalog", "ListMirrorCards", "ListMirrorIssueRows", "ListMirrorSection", "CountMirrorSections",
-	"ListMirrorLinkedIssues",
+	"ListMirrorOffBoardLinkedIssues",
 }
 
 // Every writer refuses a detached root, and a root that never existed,
@@ -610,7 +694,7 @@ func TestRestoreEmptiesTheMirror(t *testing.T) {
 	}
 	assertRows(t, st.db, `SELECT board_id FROM project_tracker_boards`, "10")
 	assertRows(t, st.db, `SELECT issue_id FROM thread_tickets`, "10001")
-	if _, err := st.WriteMirrorRowPage(root, webPage("10"), nil); !errors.Is(err, ErrTrackerCacheGone) {
+	if _, err := st.WriteMirrorRowPage(root, currentPage(st, root, webPage("10")), nil); !errors.Is(err, ErrTrackerCacheGone) {
 		t.Fatalf("write to the pre-restore root: %v", err)
 	}
 	if again, created, err := st.GetOrCreateMirrorRoot(jira.ID); err != nil || !created || again <= root {

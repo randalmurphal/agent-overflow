@@ -122,7 +122,7 @@ func fillBenchMirror(s *Store) error {
 		return err
 	}
 	for board := range benchBoards {
-		if _, err := s.ReplaceMirrorStructure(root, benchStructure(board)); err != nil {
+		if _, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, benchStructure(board))); err != nil {
 			return err
 		}
 		rows := make([]MirrorRow, 0, benchBoardIssues)
@@ -130,7 +130,7 @@ func fillBenchMirror(s *Store) error {
 			rows = append(rows, benchRow(board, i, 1000))
 		}
 		for page := range slices.Chunk(rows, 100) {
-			if _, err := s.WriteMirrorRowPage(root, MirrorRowPage{BoardID: benchBoardID(board), Rows: page, ReadAt: 1}, []byte("cursor")); err != nil {
+			if _, err := s.WriteMirrorRowPage(root, currentPage(s, root, MirrorRowPage{BoardID: benchBoardID(board), Rows: page, ReadAt: 1}), []byte("cursor")); err != nil {
 				return err
 			}
 		}
@@ -139,7 +139,7 @@ func fillBenchMirror(s *Store) error {
 			for i := first; i < min(first+mirrorHistoryBatch, benchBoardIssues); i++ {
 				batch = append(batch, benchHistory(benchIssueID(board, i), 100, benchChanges))
 			}
-			if _, err := s.ReplaceMirrorHistories(root, batch); err != nil {
+			if _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), batch); err != nil {
 				return err
 			}
 		}
@@ -153,7 +153,7 @@ func fillBenchMirror(s *Store) error {
 			IssueKey: "WEB-" + id, Origin: TicketOriginManual, LinkedAt: 10}); err != nil {
 			return err
 		}
-		if _, err := s.UpsertMirrorCards(root, []MirrorCard{benchCard(id, 1000, 0, i)}, MirrorCatalog{}, 1); err != nil {
+		if _, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{benchCard(id, 1000, 0, i)}, MirrorCatalog{}, 1); err != nil {
 			return err
 		}
 	}
@@ -240,8 +240,8 @@ func benchPage(board int, rows []MirrorRow) MirrorRowPage {
 	return MirrorRowPage{BoardID: benchBoardID(board), Rows: rows, ReadAt: 1}
 }
 
-// A 100-row page: all new, identical to what is stored, or with 10 rows
-// changed.
+// A 100-row page: all new, identical to what is stored from the same read
+// or from a later one (each row's read time moves), or with 10 rows changed.
 func BenchmarkMirrorWritePage(b *testing.B) {
 	b.Run("new", func(b *testing.B) {
 		s, root := openBenchMirror(b)
@@ -250,7 +250,7 @@ func BenchmarkMirrorWritePage(b *testing.B) {
 			for r := range rows {
 				rows[r] = benchRow(0, benchBoardIssues*benchBoards+i*100+r, 1000)
 			}
-			_, err := s.WriteMirrorRowPage(root, benchPage(0, rows), []byte("cursor"))
+			_, err := s.WriteMirrorRowPage(root, currentPage(s, root, benchPage(0, rows)), []byte("cursor"))
 			return err
 		})
 	})
@@ -261,7 +261,20 @@ func BenchmarkMirrorWritePage(b *testing.B) {
 			rows[r] = benchRow(0, r, 1000)
 		}
 		measureMirror(b, func(int) error {
-			_, err := s.WriteMirrorRowPage(root, benchPage(0, rows), []byte("cursor"))
+			_, err := s.WriteMirrorRowPage(root, currentPage(s, root, benchPage(0, rows)), []byte("cursor"))
+			return err
+		})
+	})
+	b.Run("identical-later", func(b *testing.B) {
+		s, root := openBenchMirror(b)
+		rows := make([]MirrorRow, 100)
+		for r := range rows {
+			rows[r] = benchRow(0, r, 1000)
+		}
+		measureMirror(b, func(i int) error {
+			page := benchPage(0, rows)
+			page.ReadAt = int64(2 + i)
+			_, err := s.WriteMirrorRowPage(root, currentPage(s, root, page), []byte("cursor"))
 			return err
 		})
 	})
@@ -275,7 +288,7 @@ func BenchmarkMirrorWritePage(b *testing.B) {
 			for r := range 10 {
 				rows[r*10].Card.UpdatedAt = int64(2000 + i)
 			}
-			_, err := s.WriteMirrorRowPage(root, benchPage(0, rows), []byte("cursor"))
+			_, err := s.WriteMirrorRowPage(root, currentPage(s, root, benchPage(0, rows)), []byte("cursor"))
 			return err
 		})
 	})
@@ -291,7 +304,7 @@ func BenchmarkMirrorReconcile(b *testing.B) {
 	b.Run("nothing", func(b *testing.B) {
 		s, root := openBenchMirror(b)
 		measureMirror(b, func(int) error {
-			_, err := s.ReconcileMirrorBoard(root, benchBoardID(0), listing, true, 1)
+			_, err := s.ReconcileMirrorBoard(root, benchBoardID(0), currentLifetime(s, root, benchBoardID(0)), listing, true, 1)
 			return err
 		})
 	})
@@ -302,14 +315,14 @@ func BenchmarkMirrorReconcile(b *testing.B) {
 			back[r] = benchRow(0, r, 1000)
 		}
 		measureMirror(b, func(i int) error {
-			got, err := s.ReconcileMirrorBoard(root, benchBoardID(0), listing[50:], true, int64(10+2*i))
+			got, err := s.ReconcileMirrorBoard(root, benchBoardID(0), currentLifetime(s, root, benchBoardID(0)), listing[50:], true, int64(10+2*i))
 			if err != nil || len(got.Removed) != 50 {
 				return fmt.Errorf("removed %d, %v", len(got.Removed), err)
 			}
 			b.StopTimer()
 			page := benchPage(0, back)
 			page.ReadAt = int64(11 + 2*i)
-			_, err = s.WriteMirrorRows(root, page)
+			_, err = s.WriteMirrorRows(root, currentPage(s, root, page))
 			b.StartTimer()
 			return err
 		})
@@ -322,12 +335,12 @@ func BenchmarkMirrorReplaceHistory(b *testing.B) {
 	for _, n := range []int{1, mirrorHistoryBatch} {
 		b.Run(fmt.Sprint(n, "-issues"), func(b *testing.B) {
 			s, root := openBenchMirror(b)
-			batch := make([]MirrorHistory, n)
+			batch, sweep := make([]MirrorHistory, n), currentSweep(s, root)
 			measureMirror(b, func(i int) error {
 				for k := range batch {
 					batch[k] = benchHistory(benchIssueID(0, k), int64(2000+i), 20)
 				}
-				_, err := s.ReplaceMirrorHistories(root, batch)
+				_, err := s.ReplaceMirrorHistories(root, sweep, batch)
 				return err
 			})
 		})
@@ -391,18 +404,62 @@ func BenchmarkMirrorCleanupIdle(b *testing.B) {
 func BenchmarkMirrorListingCheck(b *testing.B) {
 	b.Run("statement", func(b *testing.B) {
 		s, root := openBenchMirror(b)
+		lifetime := currentLifetime(s, root, benchBoardID(0))
 		measureMirror(b, func(int) error {
-			var live, listed, retired, stored bool
+			var live, listed, retired bool
 			var readAt, removedAt int64
-			return s.db.QueryRow(mirrorBoardWriteSQL, root, benchBoardID(0)).Scan(&live, &listed, &retired, &stored, &readAt, &removedAt)
+			return s.db.QueryRow(mirrorBoardWriteSQL, root, benchBoardID(0), lifetime).Scan(&live, &listed, &retired, &readAt, &removedAt)
 		})
 	})
 	b.Run("write", func(b *testing.B) {
 		s, root := openBenchMirror(b)
 		measureMirror(b, func(int) error {
-			_, err := s.RecordMirrorSyncAttempt(root, benchBoardID(0), MirrorSyncAttempt{At: 1})
+			_, err := s.RecordMirrorSyncAttempt(root, benchBoardID(0), currentAttempt(s, root, benchBoardID(0), MirrorSyncAttempt{ReadAt: 1}))
 			return err
 		})
+	})
+}
+
+// A read of the catalog's statuses with a later read time: identical (each
+// status's read time moves), and with status 3 moved into the done group
+// and back, which advances the revision of the five boards with a row in
+// it after a walk of the root's 5,050 issues.
+func BenchmarkMirrorStatusRead(b *testing.B) {
+	catalog := func(group int) MirrorCatalog {
+		st := benchStructure(0).Catalog
+		st.Users = nil
+		st.Statuses[2].Group = group
+		return st
+	}
+	for name, groups := range map[string][]int{"identical": {MirrorGroupInProgress}, "done-flip": {MirrorGroupDone, MirrorGroupInProgress}} {
+		b.Run(name, func(b *testing.B) {
+			s, root := openBenchMirror(b)
+			sweep := currentSweep(s, root)
+			measureMirror(b, func(i int) error {
+				_, err := s.UpsertMirrorCards(root, sweep, nil, catalog(groups[i%len(groups)]), int64(10+i))
+				return err
+			})
+		})
+	}
+}
+
+// A board's lifetime: listed (its row's insert, whose foreign key probe
+// walks the root's board rows), unlisted, and drained with no rows.
+func BenchmarkMirrorBoardLifetime(b *testing.B) {
+	s, _ := openBenchMirror(b)
+	jira := benchConnectionID(b, s)
+	listing := []ProjectTrackerBoard{}
+	for board := range benchBoards {
+		listing = append(listing, ProjectTrackerBoard{ConnectionID: jira, BoardID: benchBoardID(board)})
+	}
+	measureMirror(b, func(int) error {
+		if _, err := s.ReplaceProjectTrackerBoards(defaultTestProjectID, append(slices.Clone(listing), ProjectTrackerBoard{ConnectionID: jira, BoardID: "99"})); err != nil {
+			return err
+		}
+		if _, err := s.ReplaceProjectTrackerBoards(defaultTestProjectID, listing); err != nil {
+			return err
+		}
+		return s.FinishMirrorCleanup(nil)
 	})
 }
 

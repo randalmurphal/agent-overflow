@@ -25,7 +25,7 @@ func writeMirrorBoard(t *testing.T, s *Store, root int64, board string, rows []M
 	t.Helper()
 	st := webStructure()
 	st.Board.ID = board
-	if _, err := s.ReplaceMirrorStructure(root, st); err != nil {
+	if _, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, st)); err != nil {
 		t.Fatal(err)
 	}
 	for page := range slices.Chunk(rows, mirrorMaxPageRows) {
@@ -61,7 +61,7 @@ func TestDeleteTrackerConnectionDetachesItsMirror(t *testing.T) {
 			t.Fatalf("the removal deleted %s rows: %v, was %v", table, after, before)
 		}
 	}
-	if _, err := s.RecordMirrorSyncAttempt(root, "", MirrorSyncAttempt{At: 1}); !errors.Is(err, ErrTrackerCacheGone) {
+	if _, err := s.RecordMirrorSyncAttempt(root, "", currentAttempt(s, root, "", MirrorSyncAttempt{ReadAt: 1})); !errors.Is(err, ErrTrackerCacheGone) {
 		t.Fatalf("write after the removal: %v", err)
 	}
 	if err := s.FinishMirrorCleanup(nil); err != nil {
@@ -132,13 +132,13 @@ func TestUnlistedBoardIsRetiredThenDrained(t *testing.T) {
 	writeMirrorBoard(t, s, root, "11", mirrorRows(20000, 1, "a"))
 	listMirrorBoards(t, s, mustCreateTrackerProject(t, s, "p2"), jira.ID, "11")
 	for _, board := range []string{"10", "11"} {
-		if _, err := s.RecordMirrorSyncAttempt(root, board, MirrorSyncAttempt{At: 5}); err != nil {
+		if _, err := s.RecordMirrorSyncAttempt(root, board, currentAttempt(s, root, board, MirrorSyncAttempt{ReadAt: 5})); err != nil {
 			t.Fatal(err)
 		}
 	}
 	// A new order that keeps a board keeps its listing, so nothing retires.
 	listMirrorBoards(t, s, defaultTestProjectID, jira.ID, "12", "11", "10")
-	assertRows(t, s.db, `SELECT board_id || ':' || retired FROM tracker_cache_boards ORDER BY 1`, "10:0,11:0")
+	assertRows(t, s.db, `SELECT board_id || ':' || retired FROM tracker_cache_boards ORDER BY 1`, "10:0,11:0,12:0")
 	assertRows(t, s.db, `SELECT board_id FROM tracker_cache_sync ORDER BY 1`, "10,11")
 	before := countMirrorRows(t, s.db)
 	recorder := recordMirrorWrites(t, s)
@@ -147,7 +147,7 @@ func TestUnlistedBoardIsRetiredThenDrained(t *testing.T) {
 		writes["tracker_cache_boards"] != 1 {
 		t.Fatalf("unlisting wrote %v; want the board's flag and its sync state only", writes)
 	}
-	assertRows(t, s.db, `SELECT board_id || ':' || retired FROM tracker_cache_boards ORDER BY 1`, "10:1,11:0")
+	assertRows(t, s.db, `SELECT board_id || ':' || retired FROM tracker_cache_boards ORDER BY 1`, "10:1,11:0,12:0")
 	if after := countMirrorRows(t, s.db); after["tracker_cache_board_issues"] != before["tracker_cache_board_issues"] {
 		t.Fatalf("unlisting deleted rows: %v", after)
 	}
@@ -171,10 +171,22 @@ func TestUnlistedBoardIsRetiredThenDrained(t *testing.T) {
 		t.Errorf("rows of 20000 = %+v, %v; want board 11's", rows, err)
 	}
 	for name, write := range map[string]func() error{
-		"structure": func() error { _, err := s.ReplaceMirrorStructure(root, webStructure()); return err },
-		"rows":      func() error { _, err := s.WriteMirrorRows(root, webPage("10", webRow("20001", 9, "b"))); return err },
-		"reconcile": func() error { _, err := s.ReconcileMirrorBoard(root, "10", nil, true, 9); return err },
-		"sync":      func() error { _, err := s.RecordMirrorSyncAttempt(root, "10", MirrorSyncAttempt{At: 9}); return err },
+		"structure": func() error {
+			_, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, webStructure()))
+			return err
+		},
+		"rows": func() error {
+			_, err := s.WriteMirrorRows(root, currentPage(s, root, webPage("10", webRow("20001", 9, "b"))))
+			return err
+		},
+		"reconcile": func() error {
+			_, err := s.ReconcileMirrorBoard(root, "10", currentLifetime(s, root, "10"), nil, true, 9)
+			return err
+		},
+		"sync": func() error {
+			_, err := s.RecordMirrorSyncAttempt(root, "10", currentAttempt(s, root, "10", MirrorSyncAttempt{ReadAt: 9}))
+			return err
+		},
 	} {
 		if err := write(); !errors.Is(err, ErrTrackerCacheUnlisted) {
 			t.Errorf("%s of a retired board: %v", name, err)
@@ -187,13 +199,13 @@ func TestUnlistedBoardIsRetiredThenDrained(t *testing.T) {
 	if most, _ := recorder.mostDeletedInATransaction(); most > clearMirrorChunk {
 		t.Fatalf("a drain transaction deleted %d rows", most)
 	}
-	assertRows(t, s.db, `SELECT board_id FROM tracker_cache_boards`, "11")
+	assertRows(t, s.db, `SELECT board_id FROM tracker_cache_boards ORDER BY 1`, "11,12")
 	assertRows(t, s.db, `SELECT issue_id FROM tracker_cache_issues`, "20000")
 	assertRows(t, s.db, `SELECT DISTINCT board_id FROM tracker_cache_sprints`, "11")
 
 	// A project's delete unlists its boards the same way.
 	mustExec(t, s.db, `DELETE FROM projects WHERE id = 'p2'`)
-	assertRows(t, s.db, `SELECT board_id || ':' || retired FROM tracker_cache_boards`, "11:1")
+	assertRows(t, s.db, `SELECT board_id || ':' || retired FROM tracker_cache_boards ORDER BY 1`, "11:1,12:0")
 }
 
 // A structure read captured before its board was unlisted cannot bring the
@@ -206,10 +218,10 @@ func TestLateStructureCannotRestoreAnUnlistedBoard(t *testing.T) {
 	writeMirrorBoard(t, s, root, "10", mirrorRows(10001, 1, "a"))
 	listMirrorBoards(t, s, defaultTestProjectID, jira.ID, "11")
 	for _, stage := range []string{"retired", "drained"} {
-		if _, err := s.ReplaceMirrorStructure(root, captured); !errors.Is(err, ErrTrackerCacheUnlisted) {
+		if _, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, captured)); !errors.Is(err, ErrTrackerCacheUnlisted) {
 			t.Fatalf("late structure, board %s: %v", stage, err)
 		}
-		if _, err := s.WriteMirrorRows(root, webPage("10", webRow("10001", 5, "a"))); !errors.Is(err, ErrTrackerCacheUnlisted) {
+		if _, err := s.WriteMirrorRows(root, currentPage(s, root, webPage("10", webRow("10001", 5, "a")))); !errors.Is(err, ErrTrackerCacheUnlisted) {
 			t.Fatalf("late rows, board %s: %v", stage, err)
 		}
 		if err := s.FinishMirrorCleanup(nil); err != nil {
@@ -225,7 +237,7 @@ func TestLateStructureCannotRestoreAnUnlistedBoard(t *testing.T) {
 	writeMirrorBoard(t, s, root, "10", mirrorRows(10001, 1, "a"))
 	listMirrorBoards(t, s, defaultTestProjectID, jira.ID, "11")
 	listMirrorBoards(t, s, defaultTestProjectID, jira.ID, "10", "11")
-	if _, err := s.ReplaceMirrorStructure(root, captured); !errors.Is(err, ErrTrackerCacheUnlisted) {
+	if _, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, captured)); !errors.Is(err, ErrTrackerCacheUnlisted) {
 		t.Fatalf("structure of a board listed again before its drain: %v", err)
 	}
 	if _, ok, err := s.GetMirrorBoard(root, "10"); err != nil || ok {
@@ -258,10 +270,10 @@ func TestCleanupSweepsIssuesWhoseLinksGo(t *testing.T) {
 	linkIssue(t, s, "kept", "10005")
 	mustWriteRowPage(t, s, root, webPage("10", webRow("10006", 5, "a")), nil)
 	cards := []MirrorCard{webCard("10001", 5), webCard("10002", 5), webCard("10003", 5), webCard("10004", 5), webCard("10005", 5)}
-	if changes, err := s.UpsertMirrorCards(root, cards, MirrorCatalog{}, 1); err != nil || len(changes.Cards) != len(cards) {
+	if changes, err := s.UpsertMirrorCards(root, currentSweep(s, root), cards, MirrorCatalog{}, 1); err != nil || len(changes.Cards) != len(cards) {
 		t.Fatalf("linked cards = %+v, %v", changes, err)
 	}
-	if linked, more, err := s.ListMirrorLinkedIssues(root, ""); err != nil || more || strings.Join(linked, ",") != "10001,10002,10003,10004,10005" {
+	if linked, more, err := s.ListMirrorOffBoardLinkedIssues(root, ""); err != nil || more || strings.Join(linked, ",") != "10001,10002,10003,10004,10005" {
 		t.Fatalf("linked issues = %v, %v, %v", linked, more, err)
 	}
 
@@ -297,10 +309,10 @@ func TestCleanupSweepIsLeafFirstAndBounded(t *testing.T) {
 	for _, id := range []string{"10001", "10002", "10003"} {
 		linkIssue(t, s, "link-"+id, id)
 	}
-	if _, err := s.UpsertMirrorCards(root, []MirrorCard{webCard("10001", 5), webCard("10002", 5), webCard("10003", 5)}, MirrorCatalog{}, 1); err != nil {
+	if _, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{webCard("10001", 5), webCard("10002", 5), webCard("10003", 5)}, MirrorCatalog{}, 1); err != nil {
 		t.Fatal(err)
 	}
-	for id, n := range map[string]int{"10001": mirrorMaxChanges, "10002": 400, "10003": 10} {
+	for id, n := range map[string]int{"10001": clearMirrorChunk, "10002": 400, "10003": 10} {
 		if _, err := replaceHistory(s, root, statusHistory(id, n)); err != nil {
 			t.Fatal(err)
 		}
@@ -321,7 +333,7 @@ func TestCleanupSweepIsLeafFirstAndBounded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if most, total := recorder.mostDeletedInATransaction(); most > clearMirrorChunk || total != mirrorMaxChanges+400+10+2 {
+	if most, total := recorder.mostDeletedInATransaction(); most > clearMirrorChunk || total != clearMirrorChunk+400+10+2 {
 		t.Fatalf("sweep deleted %d rows, at most %d in one transaction", total, most)
 	}
 	assertRows(t, s.db, `SELECT issue_id FROM tracker_cache_issues`, "10001")
@@ -372,11 +384,11 @@ func TestEveryMirrorDeleteIsBounded(t *testing.T) {
 	writeMirrorBoard(t, s, root, "10", large)
 	writeMirrorBoard(t, s, root, "11", large)
 	for _, row := range large[:3] {
-		if _, err := replaceHistory(s, root, statusHistory(row.Card.IssueID, mirrorMaxChanges)); err != nil {
+		if _, err := replaceHistory(s, root, statusHistory(row.Card.IssueID, clearMirrorChunk)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := s.ReconcileMirrorBoard(root, "10", []string{large[0].Card.IssueID}, true, 2); err != nil {
+	if _, err := s.ReconcileMirrorBoard(root, "10", currentLifetime(s, root, "10"), []string{large[0].Card.IssueID}, true, 2); err != nil {
 		t.Fatal(err)
 	}
 	check("reconcile")
@@ -395,10 +407,10 @@ func TestEveryMirrorDeleteIsBounded(t *testing.T) {
 	for i := range mirrorMaxSprints {
 		full.Sprints = append(full.Sprints, MirrorSprint{ID: fmt.Sprintf("p%d", i), State: MirrorSprintClosed})
 	}
-	if _, err := s.ReplaceMirrorStructure(root, full); err != nil {
+	if _, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, full)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ReplaceMirrorStructure(root, MirrorStructure{Board: MirrorBoard{ID: "12"}, ReadAt: 2}); err != nil {
+	if _, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, MirrorStructure{Board: MirrorBoard{ID: "12"}, ReadAt: 2})); err != nil {
 		t.Fatal(err)
 	}
 	check("structure replace")
@@ -406,7 +418,7 @@ func TestEveryMirrorDeleteIsBounded(t *testing.T) {
 	for _, row := range large[len(large)-mirrorMaxPageRows:] {
 		missing = append(missing, row.Card.IssueID)
 	}
-	if _, err := s.WriteMirrorRows(root, MirrorRowPage{BoardID: "11", Missing: missing, ReadAt: 2}); err != nil {
+	if _, err := s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "11", Missing: missing, ReadAt: 2})); err != nil {
 		t.Fatal(err)
 	}
 	check("missing rows")

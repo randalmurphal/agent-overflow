@@ -15,8 +15,9 @@ package store
 //     unique by (kind, site, account) and a Tempo connection by its parent:
 //     two Jira sites can share one Tempo region.
 //   - project_tracker_boards: the boards an app project lists, in picker
-//     order, with at most one that opens first. The delete of a board's
-//     last listing retires the board in its mirror
+//     order, with at most one that opens first. A listing gives the board
+//     a row in its connection's mirror (trg_project_tracker_boards_list),
+//     and the delete of a board's last listing retires it
 //     (trg_project_tracker_boards_retire).
 //   - thread_tickets: one ticket per thread. It names the tracker kind and
 //     site, not a connection, so a link survives a connection removed and
@@ -32,31 +33,53 @@ package store
 // every row and index entry that names it. Times are Unix milliseconds,
 // zero for none. Columns hold what a query filters, joins, sorts or orders
 // writes by; data is the rest of a record, in a format only the caller
-// knows. A read_at column is when the read that stored the row's content
-// began: a later write of other content from a read that began earlier is
-// refused (superseded), and an identical write changes nothing.
+// knows. A read_at column is when the latest read admitted for the row
+// began, whether or not it changed the content: a write from a read that
+// began earlier is refused (superseded), an identical write from a later
+// read moves read_at alone, and one from the same read changes nothing.
 //
 //   - tracker_cache_roots: one per mirror. connection_id is NULL once the
 //     root is detached, by DetachMirror or by the connection's removal (ON
 //     DELETE SET NULL); FinishMirrorCleanup then drains it in batches.
-//   - tracker_cache_boards: revision advances, through the
-//     trg_tracker_cache_revision_* triggers, with every change that can
-//     add, remove or move a row in one of the board's sections, so a
-//     section page continued at another revision is refused. retired is
-//     set when the board's last listing goes; a retired board is absent to
-//     reads and writes and FinishMirrorCleanup drains it.
-//     rows_removed_at is the latest read that removed rows: a read that
-//     began before it adds no row (a row it would add was removed or is
-//     read again).
+//     sweep advances with every sweep transaction that deletes an issue or
+//     its history, so it is never repeated: a card, detail or history
+//     written outside a board names the value its caller captured before
+//     the read, and one naming an earlier value is refused, so content
+//     read before an issue was swept never lands after it is kept again.
+//   - tracker_cache_users, tracker_cache_statuses: changed_at is the read
+//     that last changed the content, and done_changed_at the read that
+//     last moved a status into or out of the done and canceled groups, so
+//     a write's RETURNING tells a change from a newer identical read.
+//   - tracker_cache_boards: one row per lifetime of a board in a root,
+//     from its listing (or the root's creation while it is listed) to its
+//     drain. lifetime is an AUTOINCREMENT ID, never reused: every board
+//     write and section continuation names the lifetime its caller
+//     captured, so nothing captured before the board was unlisted and
+//     listed again is admitted or continued. read_at is zero until the
+//     structure is stored. revision advances, through the
+//     trg_tracker_cache_revision_* triggers and a status group change,
+//     with every change that can add, remove or move a row in one of the
+//     board's sections, so a section page continued at another revision is
+//     refused. retired is set when the board's last listing goes; a retired
+//     board is absent to reads and writes, FinishMirrorCleanup drains it,
+//     and a board listed again gets a new lifetime then. rows_removed_at
+//     is the latest read that found issues gone from the board: a read
+//     that began before it adds no row.
 //   - tracker_cache_board_column_statuses: a status sits in at most one
 //     column of a board; rank is its place within the column.
 //   - tracker_cache_sprints: a sprint as one board shows it; a Jira sprint
 //     can show on several boards and names the board it was made on
 //     (origin_board_id). position is the order the structure read gave.
 //   - tracker_cache_issues: status_since is when the card's status began,
-//     set from a stored history and zeroed when the card's status changes.
-//     history_from and history_to are the times the stored changes are
-//     complete from (zero: from creation) and final through (zero: none).
+//     derived from the card and the stored history whenever either is
+//     written (mirrorStatusSinceSQL), zero when the history does not cover
+//     the card. history_from and history_to are the times the stored
+//     changes are complete from (zero: from creation) and final through
+//     (zero: none). history_gen is the generation of changes that is the
+//     issue's history; history_dirty marks an issue whose other
+//     generations, staged or replaced, the history write or
+//     FinishMirrorCleanup has yet to delete
+//     (idx_tracker_cache_issues_history_dirty).
 //     board_rows counts the issue's board rows, kept by the
 //     trg_tracker_cache_board_rows_* triggers (a row's keys are never
 //     updated); idx_tracker_cache_issues_boardless holds the issues only a
@@ -64,14 +87,18 @@ package store
 //   - tracker_cache_board_issues: keyed by issue first, so the primary key
 //     serves the keep rule and an issue's rows; idx_..._order serves a
 //     section page, the counts, a reconcile and a board's drain. It covers
-//     every column: SQLite plans a lookup through an index that does not
-//     cover a WITHOUT ROWID table's row as dearer than a walk of the
-//     primary key's root_id prefix, which reads every row of the root.
+//     every column those read: SQLite plans a lookup through an index that
+//     does not cover a WITHOUT ROWID table's row as dearer than a walk of
+//     the primary key's root_id prefix, which reads every row of the root.
+//     read_at is left out, so moving it costs no index write; a reconcile
+//     reads it by key for the unlisted rows only.
 //   - tracker_cache_issue_sprints: the sprints an issue's card names. A
 //     sprint the mirror does not keep can be named, so it has no key to
 //     tracker_cache_sprints.
-//   - tracker_cache_changes: kind is 1 status, 2 sprint, 3 estimate, 4
-//     assignee; seq orders one kind's changes of one issue. A status or
+//   - tracker_cache_changes: gen is the generation the change belongs to
+//     (the issue's history_gen is its history); kind is 1 status, 2
+//     sprint, 3 estimate, 4 assignee; seq orders one kind's changes of one
+//     issue. A status or
 //     assignee change holds IDs in from_value and to_value, a sprint change
 //     the sorted sprint IDs as a JSON array, an estimate change its numbers
 //     and the board it was made on.
@@ -80,8 +107,8 @@ package store
 //     is stored, and read_at when its read began.
 //   - tracker_cache_worklogs: logged time; issue_id has no key, since a
 //     worklog's issue need not be in the mirror.
-//     tracker_cache_worklog_days holds, per author and day, the read that
-//     last changed that day's logs.
+//     tracker_cache_worklog_days holds, per author and day, the latest read
+//     that replaced the day, empty or not.
 //   - tracker_cache_sync: one row per scope, an empty board_id being the
 //     root's linked issues. A board scope's row goes when the board's last
 //     listing goes. outcome_at is the time of the last failure or clear.
@@ -93,7 +120,8 @@ const trackerCacheTablesV159SQL = `
 CREATE TABLE tracker_cache_roots (
  id INTEGER PRIMARY KEY AUTOINCREMENT,
  connection_id TEXT UNIQUE REFERENCES tracker_connections(id) ON DELETE SET NULL,
- created_at INTEGER NOT NULL CHECK(created_at > 0)
+ created_at INTEGER NOT NULL CHECK(created_at > 0),
+ sweep INTEGER NOT NULL DEFAULT 1 CHECK(sweep >= 1)
 );
 
 CREATE TABLE tracker_cache_users (
@@ -102,6 +130,7 @@ CREATE TABLE tracker_cache_users (
  name TEXT NOT NULL DEFAULT '',
  data BLOB NOT NULL DEFAULT x'',
  read_at INTEGER NOT NULL CHECK(read_at > 0),
+ changed_at INTEGER NOT NULL CHECK(changed_at BETWEEN 1 AND read_at),
  PRIMARY KEY (root_id, user_id)
 ) WITHOUT ROWID;
 
@@ -111,10 +140,13 @@ CREATE TABLE tracker_cache_statuses (
  name TEXT NOT NULL DEFAULT '',
  status_group INTEGER NOT NULL CHECK(status_group BETWEEN 1 AND 5),
  read_at INTEGER NOT NULL CHECK(read_at > 0),
+ changed_at INTEGER NOT NULL CHECK(changed_at BETWEEN 1 AND read_at),
+ done_changed_at INTEGER NOT NULL CHECK(done_changed_at BETWEEN 0 AND changed_at),
  PRIMARY KEY (root_id, status_id)
 ) WITHOUT ROWID;
 
 CREATE TABLE tracker_cache_boards (
+ lifetime INTEGER PRIMARY KEY AUTOINCREMENT,
  root_id INTEGER NOT NULL REFERENCES tracker_cache_roots(id) ON DELETE CASCADE,
  board_id TEXT NOT NULL CHECK(board_id <> ''),
  project_id TEXT NOT NULL DEFAULT '',
@@ -122,11 +154,11 @@ CREATE TABLE tracker_cache_boards (
  plans_sprints INTEGER NOT NULL DEFAULT 0 CHECK(plans_sprints IN (0, 1)),
  estimate_unit INTEGER NOT NULL DEFAULT 0 CHECK(estimate_unit IN (0, 1, 2)),
  data BLOB NOT NULL DEFAULT x'',
- read_at INTEGER NOT NULL CHECK(read_at > 0),
+ read_at INTEGER NOT NULL DEFAULT 0 CHECK(read_at >= 0),
  rows_removed_at INTEGER NOT NULL DEFAULT 0 CHECK(rows_removed_at >= 0),
  revision INTEGER NOT NULL DEFAULT 0 CHECK(revision >= 0),
  retired INTEGER NOT NULL DEFAULT 0 CHECK(retired IN (0, 1)),
- PRIMARY KEY (root_id, board_id)
+ UNIQUE (root_id, board_id)
 );
 CREATE INDEX idx_tracker_cache_boards_retired ON tracker_cache_boards(root_id, board_id) WHERE retired = 1;
 
@@ -183,12 +215,15 @@ CREATE TABLE tracker_cache_issues (
  status_since INTEGER NOT NULL DEFAULT 0 CHECK(status_since >= 0),
  history_from INTEGER NOT NULL DEFAULT 0 CHECK(history_from >= 0),
  history_to INTEGER NOT NULL DEFAULT 0 CHECK(history_to >= 0),
+ history_gen INTEGER NOT NULL DEFAULT 0 CHECK(history_gen >= 0),
+ history_dirty INTEGER NOT NULL DEFAULT 0 CHECK(history_dirty IN (0, 1)),
  board_rows INTEGER NOT NULL DEFAULT 0 CHECK(board_rows >= 0),
  data BLOB NOT NULL DEFAULT x'',
  PRIMARY KEY (root_id, issue_id)
 );
 CREATE INDEX idx_tracker_cache_issues_history_due ON tracker_cache_issues(root_id, issue_id) WHERE history_to < updated_at;
 CREATE INDEX idx_tracker_cache_issues_boardless ON tracker_cache_issues(root_id, issue_id) WHERE board_rows = 0;
+CREATE INDEX idx_tracker_cache_issues_history_dirty ON tracker_cache_issues(root_id, issue_id) WHERE history_dirty = 1;
 
 CREATE TABLE tracker_cache_board_issues (
  root_id INTEGER NOT NULL,
@@ -201,7 +236,7 @@ CREATE TABLE tracker_cache_board_issues (
  FOREIGN KEY (root_id, board_id) REFERENCES tracker_cache_boards(root_id, board_id) ON DELETE CASCADE,
  FOREIGN KEY (root_id, issue_id) REFERENCES tracker_cache_issues(root_id, issue_id) ON DELETE CASCADE
 ) WITHOUT ROWID;
-CREATE INDEX idx_tracker_cache_board_issues_order ON tracker_cache_board_issues(root_id, board_id, order_key, issue_id, estimate, read_at);
+CREATE INDEX idx_tracker_cache_board_issues_order ON tracker_cache_board_issues(root_id, board_id, order_key, issue_id, estimate);
 
 CREATE TABLE tracker_cache_issue_sprints (
  root_id INTEGER NOT NULL,
@@ -214,6 +249,7 @@ CREATE TABLE tracker_cache_issue_sprints (
 CREATE TABLE tracker_cache_changes (
  root_id INTEGER NOT NULL,
  issue_id TEXT NOT NULL,
+ gen INTEGER NOT NULL CHECK(gen >= 0),
  kind INTEGER NOT NULL CHECK(kind BETWEEN 1 AND 4),
  seq INTEGER NOT NULL CHECK(seq >= 0),
  at INTEGER NOT NULL CHECK(at > 0),
@@ -223,7 +259,7 @@ CREATE TABLE tracker_cache_changes (
  to_value TEXT NOT NULL DEFAULT '',
  from_number REAL,
  to_number REAL,
- PRIMARY KEY (root_id, issue_id, kind, seq),
+ PRIMARY KEY (root_id, issue_id, gen, kind, seq),
  FOREIGN KEY (root_id, issue_id) REFERENCES tracker_cache_issues(root_id, issue_id) ON DELETE CASCADE,
  CHECK((kind = 3) = (board_id <> '')),
  CHECK(kind = 3 OR (from_number IS NULL AND to_number IS NULL)),
@@ -325,12 +361,9 @@ CREATE TRIGGER trg_tracker_cache_revision_column_move AFTER UPDATE OF position O
  WHEN OLD.position IS NOT NEW.position BEGIN
  UPDATE tracker_cache_boards SET revision = revision + 1 WHERE root_id = NEW.root_id AND board_id = NEW.board_id;
 END;
-CREATE TRIGGER trg_tracker_cache_revision_group_insert AFTER INSERT ON tracker_cache_statuses BEGIN
- UPDATE tracker_cache_boards SET revision = revision + 1 WHERE root_id = NEW.root_id;
-END;
-CREATE TRIGGER trg_tracker_cache_revision_group AFTER UPDATE OF status_group ON tracker_cache_statuses
- WHEN OLD.status_group IS NOT NEW.status_group BEGIN
- UPDATE tracker_cache_boards SET revision = revision + 1 WHERE root_id = NEW.root_id;
+CREATE TRIGGER trg_project_tracker_boards_list AFTER INSERT ON project_tracker_boards BEGIN
+ INSERT INTO tracker_cache_boards(root_id, board_id) SELECT id, NEW.board_id FROM tracker_cache_roots
+  WHERE connection_id = NEW.connection_id ON CONFLICT DO NOTHING;
 END;
 CREATE TRIGGER trg_project_tracker_boards_retire AFTER DELETE ON project_tracker_boards
  WHEN NOT EXISTS (SELECT 1 FROM project_tracker_boards WHERE connection_id = OLD.connection_id AND board_id = OLD.board_id) BEGIN
