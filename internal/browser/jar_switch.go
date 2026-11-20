@@ -63,7 +63,7 @@ import (
 // (jarCurrentLocked), and a popup needs a live opener, which the switch has
 // closed.
 func (m *Manager) SetJar(ctx context.Context, access Access, kind string, consent JarConsent) error {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return err
 	}
 	if err := consent.valid(); err != nil {

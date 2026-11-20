@@ -128,7 +128,7 @@ func (m *Manager) goLife(fn func()) bool {
 // finish with it, answering a failure of that teardown. A suspended page has
 // no engine page to close; closing it forgets its record.
 func (m *Manager) ClosePage(ctx context.Context, access Access, pageID PageID) error {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return err
 	}
 	return m.closePage(ctx, access, pageID, true, false)

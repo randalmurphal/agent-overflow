@@ -95,7 +95,7 @@ const (
 // gone as for one with no search, still ending the mount's search on the
 // thread's other pages.
 func (m *Manager) Find(ctx context.Context, access Access, pageID PageID, kind, query string, mount MountID, seq uint64) (FindState, error) {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return FindState{}, err
 	}
 	kind = strings.ToLower(strings.TrimSpace(kind))

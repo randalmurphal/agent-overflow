@@ -33,7 +33,7 @@ const (
 // show never names a page the user did not see. It answers the tab it
 // showed or opened.
 func (m *Manager) ShowCompanion(ctx context.Context, access Access) (ShowOutcome, PageID, error) {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return ShowPassed, "", err
 	}
 	if strings.TrimSpace(access.Workspace()) == "" {

@@ -30,7 +30,7 @@ type revealCommand struct {
 // live 2026-09-01 against both this app's clipboard copy and Explorer's own).
 // Only file:// pages qualify: there is nothing to reveal for a remote URL.
 func (m *Manager) RevealPageFile(ctx context.Context, access Access, pageID PageID) error {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return err
 	}
 	p, _, err := m.lookupOrSelectPage(ctx, access, pageID)

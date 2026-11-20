@@ -27,6 +27,15 @@ func testThreads(sessions map[string]SessionInfo) map[ThreadID]*threadBrowser {
 	return threads
 }
 
+// ownThreads makes m the Manager of the lifetimes a hand-built m was given
+// (testThreads), as its own registry's begin would, so its entries accept
+// an Access bound to them.
+func ownThreads(m *Manager) {
+	for _, tb := range m.threads {
+		tb.manager = m
+	}
+}
+
 // setActiveTab selects pageID in access's lifetime with no turn and no push.
 func setActiveTab(m *Manager, access Access, pageID string) {
 	m.mu.Lock()

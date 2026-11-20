@@ -53,6 +53,7 @@ func TestRevealPageFileResolvesTheDisplayedFileAndRefusesTheRest(t *testing.T) {
 			return nil
 		},
 	}
+	ownThreads(m)
 	access := m.Bind(Caller{ThreadID: "thread", Workspace: "/repo"})
 
 	// A symlinked address resolves to the real file: the file manager must
@@ -122,6 +123,7 @@ func TestRevealPageFileResolvesRendererFormURLsThroughTheEngine(t *testing.T) {
 			return nil
 		},
 	}
+	ownThreads(m)
 	access := m.Bind(Caller{ThreadID: "thread", Workspace: "/repo"})
 	p.commitInfo(pageUpdate{Location: &pageLocation{URL: "file://renderer.host/report.pdf"}})
 	if err := m.RevealPageFile(context.Background(), access, p.id); err != nil {

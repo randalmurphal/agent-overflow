@@ -12,7 +12,7 @@ import (
 )
 
 func (m *Manager) Open(ctx context.Context, access Access, rawURL string, opts OpenOptions) (PageInfo, error) {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return PageInfo{}, err
 	}
 	parsed, err := url.Parse(strings.TrimSpace(rawURL))
@@ -29,7 +29,7 @@ func (m *Manager) Open(ctx context.Context, access Access, rawURL string, opts O
 }
 
 func (m *Manager) NewPage(ctx context.Context, access Access) (PageInfo, error) {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return PageInfo{}, err
 	}
 	p, err := m.pageForOpen(ctx, access, "", false)
@@ -50,7 +50,7 @@ func (m *Manager) NewPage(ctx context.Context, access Access) (PageInfo, error) 
 }
 
 func (m *Manager) OpenFile(ctx context.Context, access Access, path string, opts OpenOptions) (PageInfo, error) {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return PageInfo{}, err
 	}
 	return m.openFile(ctx, access, path, nil, opts)

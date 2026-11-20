@@ -11,7 +11,7 @@ import (
 )
 
 func (m *Manager) Pointer(ctx context.Context, access Access, opts PointerOptions) (PageInfo, error) {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return PageInfo{}, err
 	}
 	p, _, err := m.lookupOrSelectPage(ctx, access, opts.PageID)
@@ -39,7 +39,7 @@ func (m *Manager) Pointer(ctx context.Context, access Access, opts PointerOption
 }
 
 func (m *Manager) DOMAction(ctx context.Context, access Access, opts DOMActionOptions) (any, error) {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return nil, err
 	}
 	if len(opts.Text) > maxBrowserInputBytes {
@@ -113,7 +113,7 @@ func (m *Manager) scrollNodeReference(ctx context.Context, p *managedPage, ref n
 }
 
 func (m *Manager) Clipboard(ctx context.Context, access Access, opts ClipboardOptions) (any, error) {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return nil, err
 	}
 	p, _, err := m.lookupOrSelectPage(ctx, access, opts.PageID)
@@ -181,7 +181,7 @@ func cloneClipboard(items []ClipboardItem) []ClipboardItem {
 }
 
 func (m *Manager) WaitAdvanced(ctx context.Context, access Access, opts WaitOptions) (PageInfo, error) {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return PageInfo{}, err
 	}
 	p, _, err := m.lookupOrSelectPage(ctx, access, opts.PageID)

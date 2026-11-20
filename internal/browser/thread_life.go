@@ -46,6 +46,10 @@ var errUnbound = errors.New("browser: the action is not bound to its thread's br
 // downloads (m.downloadsMu).
 type threadBrowser struct {
 	id ThreadID
+	// manager is the Manager whose registry began the lifetime: only its
+	// entries accept an Access bound to it (Manager.bound). Nil for a
+	// lifetime no Manager holds (a default session read).
+	manager *Manager
 	// detached is set when CloseThread took the lifetime out of the
 	// registry; it is never cleared.
 	detached atomic.Bool
@@ -93,6 +97,7 @@ func (m *Manager) threadLocked(threadID ThreadID) *threadBrowser {
 		m.threads = make(map[ThreadID]*threadBrowser)
 	}
 	tb := newThreadBrowser(threadID)
+	tb.manager = m
 	m.threads[threadID] = tb
 	return tb
 }
@@ -153,7 +158,8 @@ func (m *Manager) lockStructure(ctx context.Context, tb *threadBrowser) error {
 // Only a bind (Bind, BindThread) makes one, and its fields are unexported:
 // which thread it acts for is its lifetime's (ThreadID), so no assignment
 // and no copy can point it at another thread. Its zero value is bound to no
-// lifetime: every entry point refuses it with errUnbound.
+// lifetime, and one a bind of another Manager made to none of this one's:
+// every entry point refuses both with errUnbound (Manager.bound).
 type Access struct {
 	// caller is the action's workspace and project; its ThreadID is never
 	// read (Caller).
@@ -183,9 +189,11 @@ func (a Access) Caller() Caller {
 	return c
 }
 
-// bound refuses the zero Access, which no bind made.
-func (a Access) bound() error {
-	if a.tb == nil {
+// bound refuses an Access no bind of m made: the zero one, and one another
+// Manager bound, whose lifetime m's registry and thread teardown never
+// reach. Every entry point that takes an Access checks it first.
+func (m *Manager) bound(a Access) error {
+	if a.tb == nil || a.tb.manager != m {
 		return errUnbound
 	}
 	return nil
@@ -194,8 +202,8 @@ func (a Access) bound() error {
 // End answers ErrThreadClosed when the thread's pages were closed while the
 // action held a: what it changed before the close, the close closed.
 func (a Access) End() error {
-	if err := a.bound(); err != nil {
-		return err
+	if a.tb == nil {
+		return errUnbound
 	}
 	if a.tb.detached.Load() {
 		return ErrThreadClosed

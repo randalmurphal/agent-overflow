@@ -207,7 +207,7 @@ func (m *Manager) stopEndedDownloads(ended endedDownloads) {
 }
 
 func (m *Manager) Downloads(ctx context.Context, access Access, opts DownloadOptions) (any, error) {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return nil, err
 	}
 	p, _, err := m.lookupOrSelectPage(ctx, access, opts.PageID)

@@ -42,7 +42,7 @@ func (s *AssetSource) UnmarshalJSON(data []byte) error {
 }
 
 func (m *Manager) Assets(ctx context.Context, access Access, opts AssetOptions) (any, error) {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return nil, err
 	}
 	p, _, err := m.lookupOrSelectPage(ctx, access, opts.PageID)

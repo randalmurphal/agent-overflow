@@ -17,7 +17,7 @@ import (
 // presents it first; a suspended page then restores, a page that lags the
 // pane takes its size and is shown, and its info is read.
 func (m *Manager) SelectPage(ctx context.Context, access Access, pageID PageID) (PageInfo, error) {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return PageInfo{}, err
 	}
 	pageID = pageID.trim()
@@ -121,7 +121,7 @@ func (m *Manager) labelHolderLocked(tb *threadBrowser, pageID PageID, label stri
 }
 
 func (m *Manager) LabelPage(ctx context.Context, access Access, pageID PageID, label string) (PageInfo, error) {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return PageInfo{}, err
 	}
 	label = strings.TrimSpace(label)
@@ -158,7 +158,7 @@ func (m *Manager) LabelPage(ctx context.Context, access Access, pageID PageID, l
 }
 
 func (m *Manager) NameSession(_ context.Context, access Access, name string) (SessionInfo, error) {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return SessionInfo{}, err
 	}
 	name = strings.TrimSpace(name)
@@ -183,7 +183,7 @@ func (m *Manager) NameSession(_ context.Context, access Access, name string) (Se
 // cannot be restored still opens the companion, where its refusal shows and
 // the user can navigate or close it. Hiding touches no page.
 func (m *Manager) Visibility(ctx context.Context, access Access, visible *bool, pageID PageID) (SessionInfo, error) {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return SessionInfo{}, err
 	}
 	pageID = pageID.trim()
@@ -235,7 +235,7 @@ func (m *Manager) Visibility(ctx context.Context, access Access, visible *bool, 
 // Pages lists the thread's pages, suspended ones included as they were saved:
 // listing is not a touch, so it restores nothing.
 func (m *Manager) Pages(ctx context.Context, access Access) ([]PageInfo, error) {
-	if err := access.bound(); err != nil {
+	if err := m.bound(access); err != nil {
 		return nil, err
 	}
 	m.mu.Lock()
