@@ -10,61 +10,116 @@ import (
 	"agent-overflow/internal/webview2host"
 )
 
-// hostedScaleRecorder counts the scales a hosted page is asked for, through
-// the engine's seam.
-type hostedScaleRecorder struct {
-	mu    sync.Mutex
-	asked []viewScale
+// hostedScaleRig is a tab of the hosted engine against the fake launcher:
+// the view scales it is asked for are the device metrics overrides its
+// CDP endpoint answers, and ratio stands in for the page's own pixel ratio.
+type hostedScaleRig struct {
+	l    *popupLauncher
+	page ids.PageHandle
 }
 
-func (r *hostedScaleRecorder) record(_ ids.PageHandle, want viewScale) {
-	r.mu.Lock()
-	r.asked = append(r.asked, want)
-	r.mu.Unlock()
+func newHostedScaleRig(t *testing.T, ratio func(context.Context, *cdpPage) (float64, error)) *hostedScaleRig {
+	t.Helper()
+	l := newPopupLauncher(t)
+	l.engine.readPageRatio = ratio
+	_, page := l.open(l.access("thread"))
+	r := &hostedScaleRig{l: l, page: ids.PageHandle(page)}
+	r.idle(t)
+	return r
 }
 
-func (r *hostedScaleRecorder) count() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return len(r.asked)
+// overrides counts the device metrics overrides sent so far.
+func (r *hostedScaleRig) overrides() int {
+	return r.l.called("Emulation.setDeviceMetricsOverride")
 }
 
-func newHostedGeometryEngine(t *testing.T) (*hostedEngine, *directiveSink, *hostedScaleRecorder) {
+// idle waits until no view scale is being applied to the page.
+func (r *hostedScaleRig) idle(t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(hostedTestDeadline)
+	for {
+		r.l.engine.mu.Lock()
+		st := r.l.engine.scales[r.page]
+		busy := st != nil && st.busy
+		r.l.engine.mu.Unlock()
+		if !busy {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the scale drain never went idle")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// scale answers the scale the page's override draws it at.
+func (r *hostedScaleRig) scale() float64 {
+	r.l.engine.mu.Lock()
+	page := r.l.engine.drivers[r.page]
+	r.l.engine.mu.Unlock()
+	page.metricsMu.Lock()
+	defer page.metricsMu.Unlock()
+	return page.viewScale
+}
+
+// newHostedBoundsEngine is an engine with one bound page whose directives
+// sink records.
+func newHostedBoundsEngine(t *testing.T) (*hostedEngine, *directiveSink) {
 	t.Helper()
 	engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{})
 	bindTestPage(t, engine, "page1", "TARGET-1")
-	recorder := &hostedScaleRecorder{}
-	engine.mu.Lock()
-	engine.drivers["page1"] = &cdpPage{ctx: t.Context()}
-	engine.viewScaleAsked = recorder.record
-	engine.readPageRatio = func(context.Context, *cdpPage) (float64, error) { return 1.25, nil }
-	engine.mu.Unlock()
-	return engine, sink, recorder
+	return engine, sink
+}
+
+func fixedRatio(ratio float64) func(context.Context, *cdpPage) (float64, error) {
+	return func(context.Context, *cdpPage) (float64, error) { return ratio, nil }
 }
 
 // A pane that only moves (the strip scrolling, a neighbor's divider) sends
 // the launcher its new place and asks the page for nothing: no device
-// metrics override, no pixel-ratio read.
+// metrics override. A resize that changes the scale sends one.
 func TestHostedPositionOnlyChangeDoesNoMetricsWork(t *testing.T) {
-	engine, sink, recorder := newHostedGeometryEngine(t)
+	r := newHostedScaleRig(t, fixedRatio(1.25))
+	engine := r.l.engine
+	before := r.overrides()
 	pane := PaneRect{X: 10, Y: 20, Width: 800, Height: 600, ClipX: 10, ClipY: 20, ClipWidth: 800, ClipHeight: 600,
 		ViewportWidth: 1600, ViewportHeight: 900, DevicePixelRatio: 1.25, Visible: true}
 	placement, _ := placePage(pane, 800, 600)
-	engine.SetPageBounds("page1", placement)
-	engine.ShowPage("page1")
-	asked := recorder.count()
-	if asked == 0 {
-		t.Fatal("the first presentation must ask for a scale")
+	engine.SetPageBounds(r.page, placement)
+	engine.ShowPage(r.page)
+	r.idle(t)
+	shown := r.overrides()
+	if shown == before {
+		t.Fatal("the first presentation sent no device metrics override")
 	}
 	for x := 11.0; x < 60; x++ {
 		pane.X, pane.ClipX = x, x
 		moved, _ := placePage(pane, 800, 600)
+		engine.SetPageBounds(r.page, moved)
+	}
+	r.idle(t)
+	if got := r.overrides(); got != shown {
+		t.Fatalf("moving the pane sent %d device metrics overrides", got-shown)
+	}
+	pane.Width, pane.Height = 400, 300
+	resized, _ := placePage(pane, 800, 600)
+	engine.SetPageBounds(r.page, resized)
+	r.idle(t)
+	if got := r.overrides(); got != shown+1 {
+		t.Fatalf("a scale change sent %d device metrics overrides, want one", got-shown)
+	}
+}
+
+// Every move of a pane still reaches the launcher as its bounds.
+func TestHostedEveryPlacementReachesTheLauncher(t *testing.T) {
+	engine, sink := newHostedBoundsEngine(t)
+	pane := PaneRect{X: 10, Y: 20, Width: 800, Height: 600, ClipX: 10, ClipY: 20, ClipWidth: 800, ClipHeight: 600,
+		ViewportWidth: 1600, ViewportHeight: 900, DevicePixelRatio: 1.25, Visible: true}
+	for x := 10.0; x < 60; x++ {
+		pane.X, pane.ClipX = x, x
+		moved, _ := placePage(pane, 800, 600)
 		engine.SetPageBounds("page1", moved)
 	}
-	if got := recorder.count(); got != asked {
-		t.Fatalf("moving the pane asked for %d more scales", got-asked)
-	}
-	// Every move still reaches the launcher.
 	bounds := 0
 	for _, op := range sink.ops() {
 		if op == webview2host.OpBounds {
@@ -74,70 +129,37 @@ func TestHostedPositionOnlyChangeDoesNoMetricsWork(t *testing.T) {
 	if bounds != 50 {
 		t.Fatalf("sent %d bounds directives, want one per placement (50)", bounds)
 	}
-	// A resize that changes the scale is metrics work.
-	pane.Width, pane.Height = 400, 300
-	resized, _ := placePage(pane, 800, 600)
-	engine.SetPageBounds("page1", resized)
-	if got := recorder.count(); got != asked+1 {
-		t.Fatalf("a scale change asked %d times, want once", got-asked)
-	}
 }
 
 // A scale that did not apply (here the page's pixel ratio could not be read)
 // is not remembered, so the next placement asks for it again rather than the
 // dedupe leaving the page at the wrong zoom.
 func TestHostedFailedScaleIsAskedAgain(t *testing.T) {
-	engine, _, recorder := newHostedGeometryEngine(t)
 	var mu sync.Mutex
 	fail := true
-	engine.mu.Lock()
-	engine.readPageRatio = func(context.Context, *cdpPage) (float64, error) {
+	r := newHostedScaleRig(t, func(context.Context, *cdpPage) (float64, error) {
 		mu.Lock()
 		defer mu.Unlock()
 		if fail {
 			return 0, context.DeadlineExceeded
 		}
 		return 1.25, nil
-	}
-	engine.mu.Unlock()
+	})
+	engine := r.l.engine
 	pane := PaneRect{X: 0, Y: 0, Width: 640, Height: 360, ClipX: 0, ClipY: 0, ClipWidth: 640, ClipHeight: 360,
 		ViewportWidth: 1600, ViewportHeight: 900, DevicePixelRatio: 2.5, Visible: true}
 	placement, _ := placePage(pane, 640, 360)
-	engine.SetPageBounds("page1", placement)
-	engine.ShowPage("page1")
-	idle := func() {
-		t.Helper()
-		deadline := time.Now().Add(5 * time.Second)
-		for {
-			engine.mu.Lock()
-			busy := engine.scales["page1"].busy
-			engine.mu.Unlock()
-			if !busy {
-				return
-			}
-			if time.Now().After(deadline) {
-				t.Fatal("the scale drain never went idle")
-			}
-			time.Sleep(time.Millisecond)
-		}
-	}
-	idle()
-	asked := recorder.count()
+	engine.SetPageBounds(r.page, placement)
+	engine.ShowPage(r.page)
+	r.idle(t)
 	mu.Lock()
 	fail = false
 	mu.Unlock()
 	pane.X, pane.ClipX = 5, 5
 	moved, _ := placePage(pane, 640, 360)
-	engine.SetPageBounds("page1", moved)
-	if got := recorder.count(); got != asked+1 {
-		t.Fatalf("after a failed scale a move asked %d times, want once", got-asked)
-	}
-	idle()
-	page := engine.driverFor("page1")
-	page.metricsMu.Lock()
-	got := page.viewScale
-	page.metricsMu.Unlock()
-	if got != 2 {
+	engine.SetPageBounds(r.page, moved)
+	r.idle(t)
+	if got := r.scale(); got != 2 {
 		t.Fatalf("view scale = %v, want 1 x (2.5 / 1.25)", got)
 	}
 }
@@ -146,27 +168,28 @@ func TestHostedFailedScaleIsAskedAgain(t *testing.T) {
 // so a presentation pass (which holds the thread's presentation) never waits
 // on it.
 func TestHostedPresentationNeverWaitsOnThePagePixelRatio(t *testing.T) {
-	engine, _, _ := newHostedGeometryEngine(t)
 	release := make(chan struct{})
 	reading := make(chan struct{}, 1)
-	engine.mu.Lock()
-	engine.readPageRatio = func(ctx context.Context, _ *cdpPage) (float64, error) {
-		reading <- struct{}{}
+	r := newHostedScaleRig(t, func(ctx context.Context, _ *cdpPage) (float64, error) {
+		select {
+		case reading <- struct{}{}:
+		default:
+		}
 		select {
 		case <-release:
 			return 1.25, nil
 		case <-ctx.Done():
 			return 0, ctx.Err()
 		}
-	}
-	engine.mu.Unlock()
+	})
+	engine := r.l.engine
 	pane := PaneRect{X: 0, Y: 0, Width: 640, Height: 360, ClipX: 0, ClipY: 0, ClipWidth: 640, ClipHeight: 360,
 		ViewportWidth: 1600, ViewportHeight: 900, DevicePixelRatio: 3.75, Visible: true}
 	placement, _ := placePage(pane, 1280, 720)
 	returned := make(chan struct{})
 	go func() {
-		engine.SetPageBounds("page1", placement)
-		engine.ShowPage("page1")
+		engine.SetPageBounds(r.page, placement)
+		engine.ShowPage(r.page)
 		close(returned)
 	}()
 	select {
@@ -182,19 +205,9 @@ func TestHostedPresentationNeverWaitsOnThePagePixelRatio(t *testing.T) {
 	}
 	close(release)
 	// The drain then applies the zoomed scale: 0.5 x (3.75 / 1.25).
-	deadline := time.Now().Add(5 * time.Second)
-	page := engine.driverFor("page1")
-	for {
-		page.metricsMu.Lock()
-		got := page.viewScale
-		page.metricsMu.Unlock()
-		if got == 1.5 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("view scale = %v, want 1.5", got)
-		}
-		time.Sleep(time.Millisecond)
+	r.idle(t)
+	if got := r.scale(); got != 1.5 {
+		t.Fatalf("view scale = %v, want 1.5", got)
 	}
 }
 
@@ -237,7 +250,7 @@ func TestOverlayPaneLayoutSnapsEdges(t *testing.T) {
 // that mount can place the page itself, and carries the pixel ratio the
 // launcher converts CSS pixels with.
 func TestHostedBoundsDirectiveNamesTheMountAndPage(t *testing.T) {
-	engine, sink, _ := newHostedGeometryEngine(t)
+	engine, sink := newHostedBoundsEngine(t)
 	pane := PaneRect{X: 12, Y: 34, Width: 800, Height: 600, ClipX: 12, ClipY: 34, ClipWidth: 800, ClipHeight: 600,
 		ViewportWidth: 1600, ViewportHeight: 900, DevicePixelRatio: 1.5, Visible: true, Seq: 7}
 	placement, _ := placePage(pane, 800, 600)

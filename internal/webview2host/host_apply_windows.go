@@ -178,8 +178,12 @@ func (h *Host) showPage(page *hostPage) {
 	}
 	// Every backend show re-raises: Wails' own recovery path can recreate
 	// the SPA controller, which would land it above the pane again, and a
-	// raise is cheap.
-	raiseChild(page.raiseTarget())
+	// raise is cheap. A failed raise leaves the page hidden in the host's
+	// view, so the next present shows and raises it again.
+	if err := raiseChild(page.raiseTarget()); err != nil {
+		h.config.Logf("browser host: page %s show: %v", page.id, err)
+		return
+	}
 	page.shown.visible = true
 }
 
@@ -187,7 +191,7 @@ func (h *Host) showPage(page *hostPage) {
 // controller stays IsVisible so Chromium keeps compositing the page (rAF,
 // scroll state, and the frame a screenshot copies). IsVisible=false stops
 // all of that and evicts the surface, so a hidden page's first capture would
-// wait for a frame that never comes (spike 2026-09-14). Only the unclipped
+// wait for a frame that never comes. Only the unclipped
 // fallback, with no container to hide, has to hide the controller itself.
 // The host's view says hidden, and the keyboard focus the page held goes
 // back to the app, only once the hide succeeded; a failed one leaves the

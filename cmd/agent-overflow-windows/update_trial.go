@@ -699,7 +699,7 @@ type fileStandardInfo struct {
 // fileAllocatedBytes is the space path occupies on its drive, which for a
 // sparse file is less than its length. WSL holds the disk open while the
 // distro runs, so it is opened for its attributes only.
-func fileAllocatedBytes(path string) (uint64, error) {
+func fileAllocatedBytes(path string) (_ uint64, err error) {
 	pathPtr, err := windows.UTF16PtrFromString(path)
 	if err != nil {
 		return 0, err
@@ -709,7 +709,11 @@ func fileAllocatedBytes(path string) (uint64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("open %s: %w", path, err)
 	}
-	defer windows.CloseHandle(handle)
+	defer func() {
+		if closeErr := windows.CloseHandle(handle); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close %s: %w", path, closeErr))
+		}
+	}()
 	var info fileStandardInfo
 	if err := windows.GetFileInformationByHandleEx(handle, windows.FileStandardInfo, (*byte)(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info))); err != nil {
 		return 0, fmt.Errorf("read the size of %s: %w", path, err)

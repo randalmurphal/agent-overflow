@@ -112,16 +112,24 @@ func (p *hostPage) unannounced() bool {
 // it fails for is not created (controllerCompleted): a window it opened
 // would be WebView2's own.
 func (h *Host) watchWindows(page *hostPage, view *iCoreWebView2) error {
-	opened := newNewWindowRequestedHandler(func(args *iNewWindowRequestedEventArgs) { h.newWindowRequested(page, args) })
+	// The refusal outlives the page's detach, so it keeps the page's id,
+	// never the page.
+	id := page.id
+	opened := newNewWindowRequestedHandler(
+		func(args *iNewWindowRequestedEventArgs) { h.newWindowRequested(page, args) },
+		func(err error) {
+			h.config.Logf("browser host: page %s: refuse a new window after the page went: %v", id, err)
+		},
+	)
 	page.newWindow = opened
-	_, err := view.addNewWindowRequested(opened)
+	err := view.addNewWindowRequested(opened)
 	opened.ref.release()
 	if err != nil {
 		return fmt.Errorf("new-window subscription: %w", err)
 	}
-	closing := newViewEventHandler(func() { h.windowCloseRequested(page) })
+	closing := newViewEventHandler(func() { h.closeAsked(page) })
 	page.closeRequested = closing
-	_, err = view.addWindowCloseRequested(closing)
+	err = view.addWindowCloseRequested(closing)
 	closing.ref.release()
 	if err != nil {
 		return fmt.Errorf("close-request subscription: %w", err)
@@ -155,7 +163,12 @@ func (h *Host) newWindowRequested(opener *hostPage, args *iNewWindowRequestedEve
 	}
 	args.addRef()
 	h.popupSeq++
-	uri := strings.ToValidUTF8(args.uri(), "\uFFFD")
+	rawURI, err := args.uri()
+	if err != nil {
+		// The popup still opens; it is reported with no address.
+		h.config.Logf("browser host: page %s: %v", opener.id, err)
+	}
+	uri := strings.ToValidUTF8(rawURI, "\uFFFD")
 	prefix := truncateUTF8(uri, MaxPopupURLBytes)
 	if len(prefix) < len(uri) {
 		prefix = strings.Clone(prefix)
@@ -444,13 +457,8 @@ func (h *Host) pageReport(page *hostPage, kind ReportKind, detail string) {
 	}
 }
 
-// windowCloseRequested closes a page whose document asked to close
-// (window.close()), as every engine closes a view that asks.
-func (h *Host) windowCloseRequested(page *hostPage) {
-	h.closeAsked(page)
-}
-
-// closeAsked closes a page that asked to close, in a UI-thread turn posted
+// closeAsked closes a page whose document asked to close (window.close()),
+// as every engine closes a view that asks, in a UI-thread turn posted
 // after the caller's event, since a controller must not be closed inside
 // its own event. The turn decides on the page as it is then: one already
 // gone, its downloads retired, is not in the registry to take, and one

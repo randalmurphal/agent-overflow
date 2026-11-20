@@ -31,22 +31,7 @@ func TestFocusSmokeMovesFocusIntoAShownPage(t *testing.T) {
 	if os.Getenv("AO_NATIVE_BROWSER_SMOKE") != "1" {
 		t.Skip("set AO_NATIVE_BROWSER_SMOKE=1 to run against the installed WebView2 runtime")
 	}
-	dataDir, err := os.MkdirTemp("", "ao-focus-smoke-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		for start := time.Now(); ; time.Sleep(200 * time.Millisecond) {
-			err := os.RemoveAll(dataDir)
-			if err == nil {
-				return
-			}
-			if time.Since(start) > 15*time.Second {
-				t.Errorf("remove %s: %v", dataDir, err)
-				return
-			}
-		}
-	})
+	dataDir := smokeTempDir(t, "ao-focus-smoke-")
 	ui := startSmokeUIThread(t)
 	reports := make(chan smokeReport, 16)
 	intents := NewFocusIntents()

@@ -4,9 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"strings"
 	"sync"
+
+	"agent-overflow/internal/weborigin"
 )
 
 // Local pane geometry: the SPA window and the pane controllers live in the
@@ -36,9 +37,9 @@ const GeometryCapabilityScript = "window." + GeometryCapabilityGlobal + " = 1;"
 // bytes; anything larger is not one.
 const maxGeometryMessageBytes = 4096
 
-// MaxGeometryMounts bounds the mailbox. It matches the backend's bound on
-// mounted panes (maxCompanionPanes), so a live mount is never evicted by
-// the mounts of one process.
+// MaxGeometryMounts bounds the mailbox. The backend bounds its mounted
+// panes at the same value (browser.maxCompanionPanes), so a live mount is
+// never evicted by the mounts of one process.
 const MaxGeometryMounts = 64
 
 // PaneGeometry is one report of where a mounted browser pane's host rect
@@ -117,21 +118,13 @@ func (g PaneGeometry) bounds() paneBounds {
 // on the backend page's origin (scheme and host:port). The picker, an error
 // page and any other origin are refused.
 func TrustedGeometrySource(source, topSource, pageURL string) bool {
-	want, ok := originOf(pageURL)
+	want, ok := weborigin.Of(pageURL)
 	if !ok {
 		return false
 	}
-	got, ok := originOf(source)
-	top, topOK := originOf(topSource)
+	got, ok := weborigin.Of(source)
+	top, topOK := weborigin.Of(topSource)
 	return ok && topOK && got == want && top == want
-}
-
-func originOf(raw string) (string, bool) {
-	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-		return "", false
-	}
-	return strings.ToLower(parsed.Scheme + "://" + parsed.Host), true
 }
 
 // GeometryMailbox keeps the newest report per mount. Reports arrive on

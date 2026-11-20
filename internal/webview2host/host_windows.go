@@ -238,7 +238,8 @@ const (
 )
 
 // New validates the configuration and allocates the CDP port. It creates
-// nothing: Start kicks the environment off on the UI thread.
+// nothing: the first page create starts the WebView2 environment on the UI
+// thread (paneEnvironment).
 func New(config Config) (*Host, error) {
 	if config.HostWindow == nil {
 		return nil, errors.New("browser host window resolver is required")
@@ -313,8 +314,14 @@ func (h *Host) startEnvironment(gen uint64) {
 	// error anywhere. The launcher also scrubs at boot, before Wails
 	// builds the SPA environment; this is the second half of the same
 	// rule, in the package that owns it.
-	if removed := ScrubEnvOverrides(); len(removed) > 0 {
+	removed, err := ScrubEnvOverrides()
+	if len(removed) > 0 {
 		h.config.Logf("browser host: cleared WebView2 env overrides: %s", FormatScrub(removed))
+	}
+	if err != nil {
+		// An override left set would put the pane on the SPA's profile.
+		h.env.settle(gen, fmt.Errorf("clear WebView2 env overrides: %w", err))
+		return
 	}
 
 	installed, err := webviewloader.GetInstalledVersion()

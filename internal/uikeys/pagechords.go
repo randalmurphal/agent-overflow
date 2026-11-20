@@ -1,10 +1,11 @@
 package uikeys
 
 import (
-	"net/url"
 	"strconv"
 	"strings"
 	"sync"
+
+	"agent-overflow/internal/weborigin"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
@@ -202,25 +203,17 @@ func TrustedPage(origin *application.OriginInfo, pageURL string) bool {
 	if origin == nil {
 		return false
 	}
-	want, ok := originOf(pageURL)
+	want, ok := weborigin.Of(pageURL)
 	if !ok {
 		return false
 	}
-	got, ok := originOf(origin.Origin)
+	got, ok := weborigin.Of(origin.Origin)
 	if !ok || got != want {
 		return false
 	}
 	if origin.TopOrigin == "" {
 		return true
 	}
-	top, ok := originOf(origin.TopOrigin)
+	top, ok := weborigin.Of(origin.TopOrigin)
 	return ok && top == want
-}
-
-func originOf(raw string) (string, bool) {
-	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-		return "", false
-	}
-	return strings.ToLower(parsed.Scheme + "://" + parsed.Host), true
 }

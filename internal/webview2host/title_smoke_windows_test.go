@@ -30,8 +30,8 @@ import (
 //     Runtime.bindingCalled from that world; a page script does not see
 //     the binding.
 //
-// It logs whether any Target.targetInfoChanged carried either title, the
-// observation the route exists for (none did, 2026-11-16).
+// It logs whether any Target.targetInfoChanged carried either title, which
+// is what the route exists to observe.
 //
 //	AO_NATIVE_BROWSER_SMOKE=1 go test -run TestTitleSmoke ./internal/webview2host
 func TestTitleSmokeReportsADocumentsTitleFromAnIsolatedWorld(t *testing.T) {

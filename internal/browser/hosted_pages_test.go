@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"agent-overflow/internal/browser/ids"
-	"agent-overflow/internal/browser/popupadmit"
 	"agent-overflow/internal/webview2host"
 )
 
@@ -70,7 +69,7 @@ func blockedPages(t *testing.T) (pages *hostedPages, taken <-chan *acceptedWork,
 		case <-next:
 		case <-ctx.Done():
 		}
-	}, func(<-chan struct{}) {}, func(ids.PageHandle, popupadmit.Observation) {})
+	}, func(<-chan struct{}) {}, func(ids.PageHandle, bool, string) {})
 	t.Cleanup(func() {
 		join, _ := pages.stopAll()
 		join()
@@ -103,37 +102,37 @@ func TestHostedPagesReceiveWhatIsTrueAtReceipt(t *testing.T) {
 	if !pages.addPopup("popup", "opener", "profile") || pages.addPopup("popup", "opener", "profile") {
 		t.Fatal("a popup was recorded twice")
 	}
-	if got := pages.acceptSnapshot("opener", runningSnapshot("dl-o", 1)); got != snapshotAccepted {
+	if got := pages.receive("opener", receivedSnapshot(runningSnapshot("dl-o", 1))).outcome; got != receiptQueued {
 		t.Fatalf("the opener's first snapshot: %v", got)
 	}
 	take(t, taken)
-	if got := pages.acceptSnapshot("popup", runningSnapshot("dl-1", 1)); got != snapshotAccepted {
+	if got := pages.receive("popup", receivedSnapshot(runningSnapshot("dl-1", 1))).outcome; got != receiptQueued {
 		t.Fatalf("the popup's first snapshot: %v", got)
 	}
 	if lane, _ := pages.laneOf("popup"); lane != "opener" {
 		t.Fatalf("the pending popup runs on lane %q, want its opener's", lane)
 	}
-	if got := pages.acceptSnapshot("opener", runningSnapshot("dl-1", 2)); got != snapshotOtherPage {
+	if got := pages.receive("opener", receivedSnapshot(runningSnapshot("dl-1", 2))).outcome; got != receiptOtherPage {
 		t.Fatalf("the popup's download reported by its opener: %v, want refused", got)
 	}
 	answer := runningSnapshot("dl-9", 1)
 	answer.Answer = true
-	if got := pages.acceptSnapshot("popup", answer); got != snapshotUnasked {
+	if got := pages.receive("popup", receivedSnapshot(answer)).outcome; got != receiptUnasked {
 		t.Fatalf("an answer about no download: %v", got)
 	}
-	if got := pages.acceptSnapshot("never-was", runningSnapshot("dl-1", 3)); got != snapshotNoPage {
+	if got := pages.receive("never-was", receivedSnapshot(runningSnapshot("dl-1", 3))).outcome; got != receiptNoPage {
 		t.Fatalf("a page with no record: %v", got)
 	}
 
-	first := pages.acceptEnd("popup", acceptedClose, "")
-	if !first.accepted || !first.pendingPopup || first.retired == nil {
+	first := pages.receive("popup", receivedClose())
+	if first.outcome != receiptQueued || first.retired == nil {
 		t.Fatalf("the popup's close: %+v", first)
 	}
-	if got := pages.acceptSnapshot("popup", runningSnapshot("dl-2", 1)); got != snapshotSealed {
+	if got := pages.receive("popup", receivedSnapshot(runningSnapshot("dl-2", 1))).outcome; got != receiptSealed {
 		t.Fatalf("a first snapshot after the close: %v, want sealed", got)
 	}
-	again := pages.acceptEnd("popup", acceptedDiscard, "")
-	if again.accepted || again.retired != first.retired {
+	again := pages.receive("popup", receivedDiscard())
+	if again.outcome != receiptEnding || again.retired != first.retired {
 		t.Fatalf("a discard after the close: %+v, want it joined to the close", again)
 	}
 	if _, _, ok := pages.cancel("dl-1"); ok {
@@ -174,7 +173,7 @@ func heldPages(t *testing.T) (pages *hostedPages, taken <-chan *acceptedWork, re
 			_, finish := pages.retire(w.page)
 			finish()
 		}
-	}, func(<-chan struct{}) {}, func(ids.PageHandle, popupadmit.Observation) {})
+	}, func(<-chan struct{}) {}, func(ids.PageHandle, bool, string) {})
 	t.Cleanup(func() {
 		join, _ := pages.stopAll()
 		join()
@@ -207,19 +206,19 @@ func TestAListedPopupLeavesItsOpenersLaneOnceItsOwnWorkFinishes(t *testing.T) {
 	pages, taken, release := heldPages(t)
 	openForTest(pages, "opener")
 	pages.addPopup("popup", "opener", "profile")
-	pages.acceptSnapshot("opener", runningSnapshot("dl-o1", 1))
+	pages.receive("opener", receivedSnapshot(runningSnapshot("dl-o1", 1)))
 	takeID(t, taken, "dl-o1")
-	pages.acceptSnapshot("popup", runningSnapshot("dl-p1", 1))
-	pages.acceptSnapshot("opener", runningSnapshot("dl-o2", 1))
+	pages.receive("popup", receivedSnapshot(runningSnapshot("dl-p1", 1)))
+	pages.receive("opener", receivedSnapshot(runningSnapshot("dl-o2", 1)))
 	pages.listed("popup")
-	pages.acceptSnapshot("popup", runningSnapshot("dl-p2", 1))
+	pages.receive("popup", receivedSnapshot(runningSnapshot("dl-p2", 1)))
 	if lane, _ := pages.laneOf("popup"); lane != "popup" {
 		t.Fatalf("the listed popup's later work runs on lane %q, want its own", lane)
 	}
 	release("dl-o1")
 	takeID(t, taken, "dl-p1")
 	takesNothing(t, taken, "the popup's later work ran before its earlier work finished")
-	pages.acceptSnapshot("opener", runningSnapshot("dl-o3", 1))
+	pages.receive("opener", receivedSnapshot(runningSnapshot("dl-o3", 1)))
 	release("dl-p1")
 	got := map[string]bool{}
 	for range 2 {
@@ -241,13 +240,13 @@ func TestAPopupsWorkKeepsItsOrderWhenItsUnlistedOpenerGoes(t *testing.T) {
 	openForTest(pages, "opener")
 	pages.addPopup("popup", "opener", "profile")
 	pages.addPopup("child", "popup", "profile")
-	pages.acceptSnapshot("opener", runningSnapshot("dl-o1", 1))
+	pages.receive("opener", receivedSnapshot(runningSnapshot("dl-o1", 1)))
 	takeID(t, taken, "dl-o1")
-	if !pages.acceptEnd("popup", acceptedClose, "").accepted {
+	if pages.receive("popup", receivedClose()).outcome != receiptQueued {
 		t.Fatal("the popup's close was not accepted")
 	}
-	pages.acceptSnapshot("child", runningSnapshot("dl-c1", 1))
-	pages.acceptSnapshot("opener", runningSnapshot("dl-o2", 1))
+	pages.receive("child", receivedSnapshot(runningSnapshot("dl-c1", 1)))
+	pages.receive("opener", receivedSnapshot(runningSnapshot("dl-o2", 1)))
 	release("dl-o1")
 	if w := take(t, taken); w.kind != acceptedClose || w.page != "popup" {
 		t.Fatalf("the lanes took %q of %s, want the popup's close", w.snapshot.ID, w.page)
@@ -262,7 +261,7 @@ func TestAPopupsWorkKeepsItsOrderWhenItsUnlistedOpenerGoes(t *testing.T) {
 			t.Fatal("the popup's record never went")
 		}
 	}
-	pages.acceptSnapshot("child", runningSnapshot("dl-c2", 1))
+	pages.receive("child", receivedSnapshot(runningSnapshot("dl-c2", 1)))
 	if lane, _ := pages.laneOf("child"); lane != "popup" {
 		t.Fatalf("the child's later work runs on lane %q, want its gone opener's id", lane)
 	}

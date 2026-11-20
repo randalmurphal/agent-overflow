@@ -3,7 +3,9 @@
 package webview2host
 
 import (
+	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"unsafe"
 )
@@ -285,6 +287,16 @@ func TestPopupRequestRefusals(t *testing.T) {
 		args := newFakeWindowArgs(popupURL)
 		opener.view.requestWindow(args)
 		refused(t, args)
+
+		var logged []string
+		r.host.config.Logf = func(format string, a ...any) { logged = append(logged, fmt.Sprintf(format, a...)) }
+		late := newFakeWindowArgs(popupURL)
+		late.handledErr = 0x80004005 // E_FAIL
+		opener.view.requestWindow(late)
+		if len(logged) != 1 || !strings.Contains(logged[0], "refuse a new window after the page went") || !strings.Contains(logged[0], openerPage.id) {
+			t.Fatalf("a refusal WebView2 did not take logged %q", logged)
+		}
+		r.host.config.Logf = t.Logf
 		opener.view.destroy()
 		r.done()
 	})

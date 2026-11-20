@@ -27,12 +27,12 @@ type TunnelStreamBounds struct {
 // loopback speed keeps the backlog near empty.
 var DefaultTunnelStreamBounds = TunnelStreamBounds{Backlog: 4 << 20, WriteTimeout: 30 * time.Second}
 
-// ErrTunnelStreamBacklog reports a stream whose queued data passed its
+// errTunnelStreamBacklog reports a stream whose queued data passed its
 // backlog bound.
-var ErrTunnelStreamBacklog = errors.New("the stream's peer stopped reading: its queued data passed the bound")
+var errTunnelStreamBacklog = errors.New("the stream's peer stopped reading: its queued data passed the bound")
 
-// ErrTunnelStreamStopped reports data for a stream whose writer stopped.
-var ErrTunnelStreamStopped = errors.New("the stream is closed")
+// errTunnelStreamStopped reports data for a stream whose writer stopped.
+var errTunnelStreamStopped = errors.New("the stream is closed")
 
 // TunnelStreamWriter writes one stream's data to its socket, in order, on
 // its own goroutine (Run). Write only queues, so the tunnel's reader never
@@ -74,11 +74,11 @@ func (w *TunnelStreamWriter) Write(data []byte) error {
 	w.mu.Lock()
 	if w.stopped || w.end != nil {
 		w.mu.Unlock()
-		return ErrTunnelStreamStopped
+		return errTunnelStreamStopped
 	}
 	if w.queued+len(data) > w.bounds.Backlog {
 		w.mu.Unlock()
-		err := fmt.Errorf("%w (%d bytes)", ErrTunnelStreamBacklog, w.bounds.Backlog)
+		err := fmt.Errorf("%w (%d bytes)", errTunnelStreamBacklog, w.bounds.Backlog)
 		w.failWith(err)
 		return err
 	}

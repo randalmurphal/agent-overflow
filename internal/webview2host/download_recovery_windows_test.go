@@ -100,11 +100,11 @@ func TestAnUnreadAddressMatchesNoResume(t *testing.T) {
 	r.done(t, dropped, late)
 }
 
-// A cancel bound that cannot read the download's state does not end it
-// canceled: it may have finished with no state change raised. It stays
+// A cancel bound that cannot read the download's state does not end it:
+// it may have finished with no state change raised. It stays
 // running, and the bound waits again. The status read that succeeds ends
 // it as it is, and the later bound does nothing; a download still running
-// at a later bound ends canceled then.
+// at a later bound ends untracked then.
 func TestACancelBoundThatCannotReadTheStateKeepsTheDownload(t *testing.T) {
 	r := newDownloadRig(t)
 	op := newFakeOp(`C:\D\f.bin`)
@@ -159,7 +159,7 @@ func TestAPopupGoneWithItsOpenerReadsItsDownloadsFirst(t *testing.T) {
 		op.refs++ // the reference DownloadStarting hands over
 		r.host.attachOperation(d, op.com())
 		popup.downloads[d.id] = d
-		r.host.report(popup, d.snapshot())
+		r.host.report(popup, r.host.snapshot(d))
 	}
 	finished.received, finished.st = 100, downloadStateCompleted
 	r.host.Apply(Directive{Op: OpClose, PageID: openerPage.id})

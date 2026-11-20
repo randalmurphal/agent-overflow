@@ -69,12 +69,12 @@ func (e *fakeEnv10) complete(t *testing.T, hr uintptr, controller *fakeControlle
 	}
 	handler := e.pending[0]
 	e.pending = e.pending[1:]
-	var ptr uintptr
-	if controller != nil {
-		ptr = uintptr(unsafe.Pointer(controller))
-	}
-	_, _, _ = controllerCompletedVtbl.Invoke.Call(uintptr(unsafe.Pointer(handler)), hr, ptr)
-	if controller != nil {
+	if controller == nil {
+		_, _, _ = controllerCompletedVtbl.Invoke.Call(uintptr(unsafe.Pointer(handler)), hr, 0)
+	} else {
+		// Converted in the call's arguments, so the controller is kept
+		// where it is until the call returns.
+		_, _, _ = controllerCompletedVtbl.Invoke.Call(uintptr(unsafe.Pointer(handler)), hr, uintptr(unsafe.Pointer(controller)))
 		// WebView2's own reference, held across the call.
 		controller.refs--
 	}
@@ -121,6 +121,8 @@ type fakeController struct {
 	focused int
 	closed  int
 	keys    []*comObject
+	// reparented counts PutParentWindow calls.
+	reparented int
 }
 
 var fakeControllerVtbl = iCoreWebView2ControllerVtbl{
@@ -138,6 +140,10 @@ var fakeControllerVtbl = iCoreWebView2ControllerVtbl{
 	}),
 	GetBounds: newComProc(func(this *fakeController, out *rect) uintptr {
 		*out = this.bounds
+		return 0
+	}),
+	PutParentWindow: newComProc(func(this *fakeController, _ uintptr) uintptr {
+		this.reparented++
 		return 0
 	}),
 	PutBounds: newComProc(func(this *fakeController, bounds *rect) uintptr {
@@ -315,6 +321,7 @@ type fakeWindowArgs struct {
 	handled     bool
 	newWindow   *fakeView
 	putErr      uintptr
+	handledErr  uintptr
 	deferralErr uintptr
 	deferral    *fakeDeferral
 }
@@ -337,6 +344,9 @@ var fakeWindowArgsVtbl = iNewWindowRequestedEventArgsVtbl{
 		return 0
 	}),
 	PutHandled: newComProc(func(this *fakeWindowArgs, value uintptr) uintptr {
+		if this.handledErr != 0 {
+			return this.handledErr
+		}
 		this.handled = value != 0
 		return 0
 	}),
@@ -462,7 +472,11 @@ func messageWindow(t *testing.T) uintptr {
 	if hwnd == 0 {
 		t.Fatalf("create a message-only window: %v", callErr)
 	}
-	t.Cleanup(func() { destroyWindow(hwnd) })
+	t.Cleanup(func() {
+		if err := destroyWindow(hwnd); err != nil {
+			t.Error(err)
+		}
+	})
 	return hwnd
 }
 

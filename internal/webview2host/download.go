@@ -80,10 +80,10 @@ func (e DownloadEnd) valid() bool {
 	return false
 }
 
-// DownloadProgressInterval is the most often the launcher reports one
+// downloadProgressInterval is the most often the launcher reports one
 // download's bytes. WebView2 raises BytesReceivedChanged per chunk; the
 // backend coalesces what reaches the UI further.
-const DownloadProgressInterval = 250 * time.Millisecond
+const downloadProgressInterval = 250 * time.Millisecond
 
 // MaxEndedDownloads bounds the terminal snapshots the launcher keeps per
 // page to answer a directive about an ended download; the oldest goes
@@ -133,12 +133,12 @@ type DownloadReport struct {
 // file name to 255 UTF-16 units.
 const maxDownloadNameBytes = 1024
 
-// MaxDownloadURIBytes bounds the address the launcher keeps for a download
+// maxDownloadURIBytes bounds the address the launcher keeps for a download
 // and reports with each of its snapshots.
-const MaxDownloadURIBytes = 2048
+const maxDownloadURIBytes = 2048
 
 // downloadAddress is a download's address as the launcher keeps it, taken
-// once as the download starts: at most MaxDownloadURIBytes of it, copied,
+// once as the download starts: at most maxDownloadURIBytes of it, copied,
 // for its reports and its kept terminal snapshot, so an address of any
 // length (a data URL carries its whole file) is neither retained nor
 // encoded again on every report; and, when the runtime answered it, the
@@ -170,7 +170,7 @@ func readDownloadAddress(uri string, err error) downloadAddress {
 	if err != nil || uri == "" {
 		return downloadAddress{}
 	}
-	shown := truncateUTF8(uri, MaxDownloadURIBytes)
+	shown := truncateUTF8(uri, maxDownloadURIBytes)
 	if len(shown) < len(uri) {
 		shown = strings.Clone(shown)
 	}
@@ -319,7 +319,7 @@ func downloadInterruptReason(reason uint32) string {
 	return "the download was interrupted (reason " + strconv.FormatUint(uint64(reason), 10) + ")"
 }
 
-// progressGate passes one progress report per DownloadProgressInterval.
+// progressGate passes one progress report per downloadProgressInterval.
 type progressGate struct {
 	last time.Time
 }
@@ -327,7 +327,7 @@ type progressGate struct {
 // due reports whether a progress report may go now, and if so starts the
 // next interval.
 func (g *progressGate) due(now time.Time) bool {
-	if !g.last.IsZero() && now.Sub(g.last) < DownloadProgressInterval {
+	if !g.last.IsZero() && now.Sub(g.last) < downloadProgressInterval {
 		return false
 	}
 	g.last = now

@@ -267,22 +267,7 @@ func startPopupSmoke(t *testing.T) *popupSmoke {
 			}
 		}
 	})
-	dataDir, err := os.MkdirTemp("", "ao-popup-smoke-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		for start := time.Now(); ; time.Sleep(200 * time.Millisecond) {
-			err := os.RemoveAll(dataDir)
-			if err == nil {
-				return
-			}
-			if time.Since(start) > 15*time.Second {
-				t.Errorf("remove %s: %v", dataDir, err)
-				return
-			}
-		}
-	})
+	dataDir := smokeTempDir(t, "ao-popup-smoke-")
 	s.server = httptest.NewServer(http.HandlerFunc(s.serve))
 	t.Cleanup(s.server.Close)
 	t.Cleanup(func() {

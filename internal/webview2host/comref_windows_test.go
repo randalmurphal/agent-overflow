@@ -11,6 +11,13 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+// comRootCount is how many Go-backed COM objects are alive for WebView2.
+func comRootCount() int {
+	comRoots.mu.Lock()
+	defer comRoots.mu.Unlock()
+	return len(comRoots.set)
+}
+
 // The Go-backed COM objects WebView2 holds, built the way the host builds
 // them.
 var comObjectKinds = []struct {
@@ -29,13 +36,13 @@ var comObjectKinds = []struct {
 	{"accelerator key pressed", func() unsafe.Pointer {
 		return unsafe.Pointer(newAcceleratorKeyPressedHandler(func(*iAcceleratorKeyPressedEventArgs) {}))
 	}},
-	{"process failed", func() unsafe.Pointer { return unsafe.Pointer(newProcessFailedHandler(func(uint32) {})) }},
+	{"process failed", func() unsafe.Pointer { return unsafe.Pointer(newProcessFailedHandler(func(uint32, error) {})) }},
 	{"download starting", func() unsafe.Pointer {
 		return unsafe.Pointer(newDownloadStartingHandler(func(*iDownloadStartingEventArgs) {}))
 	}},
 	{"download event", func() unsafe.Pointer { return unsafe.Pointer(newDownloadEventHandler(func() {})) }},
 	{"new window requested", func() unsafe.Pointer {
-		return unsafe.Pointer(newNewWindowRequestedHandler(func(*iNewWindowRequestedEventArgs) {}))
+		return unsafe.Pointer(newNewWindowRequestedHandler(func(*iNewWindowRequestedEventArgs) {}, func(error) {}))
 	}},
 	{"view event", func() unsafe.Pointer { return unsafe.Pointer(newViewEventHandler(func() {})) }},
 }
@@ -117,13 +124,13 @@ func TestALateInvokeOfADetachedHandlerIsANoOp(t *testing.T) {
 	base := comRootCount()
 	calls := 0
 	count := func() { calls++ }
-	fakeArgs := uintptr(unsafe.Pointer(new(iAcceleratorKeyPressedEventArgs)))
+	fakeArgs := new(iAcceleratorKeyPressedEventArgs)
 	result, err := windows.UTF16PtrFromString(`{"targetInfo":{}}`)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	failed := newProcessFailedHandler(func(uint32) { count() })
+	failed := newProcessFailedHandler(func(uint32, error) { count() })
 	pressed := newAcceleratorKeyPressedHandler(func(*iAcceleratorKeyPressedEventArgs) { count() })
 	find := newFindStartCompletedHandler(func(uintptr) { count() })
 	devtools := newDevToolsCompletedHandler(func(uintptr, string) { count() })
@@ -131,7 +138,7 @@ func TestALateInvokeOfADetachedHandlerIsANoOp(t *testing.T) {
 	controller := newControllerCompletedHandler(func(uintptr, *iCoreWebView2Controller) { count() })
 	invoke := func() {
 		_, _, _ = processFailedVtbl.Invoke.Call(uintptr(unsafe.Pointer(failed)), 0, 0)
-		_, _, _ = acceleratorKeyPressedVtbl.Invoke.Call(uintptr(unsafe.Pointer(pressed)), 0, fakeArgs)
+		_, _, _ = acceleratorKeyPressedVtbl.Invoke.Call(uintptr(unsafe.Pointer(pressed)), 0, uintptr(unsafe.Pointer(fakeArgs)))
 		_, _, _ = findStartCompletedVtbl.Invoke.Call(uintptr(unsafe.Pointer(find)), 0)
 		_, _, _ = devToolsCompletedVtbl.Invoke.Call(uintptr(unsafe.Pointer(devtools)), 0, uintptr(unsafe.Pointer(result)))
 		_, _, _ = environmentCompletedVtbl.Invoke.Call(uintptr(unsafe.Pointer(env)), 1, 0)
@@ -181,7 +188,7 @@ func TestRepeatedPagesDoNotGrowTheRootSet(t *testing.T) {
 		controller := newControllerCompletedHandler(func(uintptr, *iCoreWebView2Controller) {})
 		held = append(held, webView2Holds(unsafe.Pointer(controller)))
 		controller.ref.release()
-		page.failHandler = newProcessFailedHandler(func(uint32) { _ = page })
+		page.failHandler = newProcessFailedHandler(func(uint32, error) { _ = page })
 		held = append(held, webView2Holds(unsafe.Pointer(page.failHandler)))
 		page.failHandler.ref.release()
 		page.keyHandler = newAcceleratorKeyPressedHandler(func(*iAcceleratorKeyPressedEventArgs) { _ = page })

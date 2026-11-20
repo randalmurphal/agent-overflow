@@ -67,13 +67,6 @@ func (r *comRef) release() uint32 {
 	return 0
 }
 
-// comRootCount is how many Go-backed COM objects are alive for WebView2.
-func comRootCount() int {
-	comRoots.mu.Lock()
-	defer comRoots.mu.Unlock()
-	return len(comRoots.set)
-}
-
 var (
 	comAddRef  = newComProc(func(this *comObject) uintptr { return uintptr(this.ref.addRef()) })
 	comRelease = newComProc(func(this *comObject) uintptr { return uintptr(this.ref.release()) })

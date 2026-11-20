@@ -29,9 +29,7 @@ func (m *Manager) downloadStarted(event downloadStart) downloadAdmission {
 }
 
 func (m *Manager) admitDownload(event downloadStart) downloadAdmission {
-	// The address is display data from here, bounded once as it enters, in
-	// a copy of its own, before anything parks or lists it.
-	event.URL = strings.Clone(truncateUTF8(event.URL, maxBrowserURLBytes))
+	event = boundedStart(event)
 	p, scope := m.pageForFrame(event.Frame)
 	switch {
 	case p != nil:
@@ -50,10 +48,7 @@ func (m *Manager) admitDownload(event downloadStart) downloadAdmission {
 // listing (parked set) takes its file and reservation over.
 func (m *Manager) admitTo(p *managedPage, event downloadStart, file downloadFile, parked *parkedDownload) downloadAdmission {
 	authority := p.authority
-	source := p.cachedInfo().URL
-	if source == "" || source == "about:blank" {
-		source = event.URL
-	}
+	source := downloadSource(p, event)
 	if m.downloadAdmitting != nil {
 		m.downloadAdmitting()
 	}
@@ -63,13 +58,7 @@ func (m *Manager) admitTo(p *managedPage, event downloadStart, file downloadFile
 		held.release()
 		return downloadRefused
 	}
-	entry := DownloadInfo{
-		ID: string(event.ID), URL: event.URL,
-		SuggestedName: safeArtifactName(event.SuggestedName, "download"),
-		State:         downloadStateRunning, StartedAt: time.Now().UTC().Format(time.RFC3339Nano),
-		key:         DownloadKey(fmt.Sprintf("d%d", m.downloadKeys.Add(1))),
-		endReported: event.EndReported,
-	}
+	entry := m.downloadEntry(event)
 	switch {
 	case parked != nil:
 		// Its listing moves its file and reservation to its row: its bytes
@@ -98,6 +87,35 @@ func (m *Manager) admitTo(p *managedPage, event downloadStart, file downloadFile
 		return downloadRefused
 	}
 	return downloadAdmitted
+}
+
+// boundedStart is event with its address, display data from here, bounded
+// once as it enters, in a copy of its own, before anything parks or lists
+// it.
+func boundedStart(event downloadStart) downloadStart {
+	event.URL = strings.Clone(truncateUTF8(event.URL, maxBrowserURLBytes))
+	return event
+}
+
+// downloadSource is the Source a download starting in p lists: the page's
+// address, or the download's own while the page has none.
+func downloadSource(p *managedPage, event downloadStart) string {
+	if source := p.cachedInfo().URL; source != "" && source != "about:blank" {
+		return source
+	}
+	return event.URL
+}
+
+// downloadEntry is the running row of a download starting with event,
+// numbered for its thread's list.
+func (m *Manager) downloadEntry(event downloadStart) DownloadInfo {
+	return DownloadInfo{
+		ID: string(event.ID), URL: event.URL,
+		SuggestedName: safeArtifactName(event.SuggestedName, "download"),
+		State:         downloadStateRunning, StartedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		key:         DownloadKey(fmt.Sprintf("d%d", m.downloadKeys.Add(1))),
+		endReported: event.EndReported,
+	}
 }
 
 // errNoWorkspace refuses a download AO would keep that no workspace owns.

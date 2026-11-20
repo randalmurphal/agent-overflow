@@ -119,6 +119,6 @@ func (p *hostedProfile) Dispose(context.Context) error {
 	p.engine.mu.Lock()
 	delete(p.engine.policies, p.id)
 	p.engine.mu.Unlock()
-	p.engine.dispatch(webview2host.Directive{Op: webview2host.OpCloseProfile, ProfileID: string(p.id), Ephemeral: p.ephemeral})
+	p.engine.dispatch(webview2host.Directive{Op: webview2host.OpCloseProfile, ProfileID: string(p.id)})
 	return nil
 }

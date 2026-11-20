@@ -1,18 +1,14 @@
 package browser
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"reflect"
 	"runtime"
-	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
-	"agent-overflow/internal/browser/ids"
 	"agent-overflow/internal/webview2host"
 )
 
@@ -21,173 +17,6 @@ import (
 // download events here, and the Manager's cancel and the engine's status
 // question turned into the launcher's directives. Nothing in these tests
 // crosses CDP.
-
-// hostedDownloadLog is the Manager's side of the download events.
-type hostedDownloadLog struct {
-	mu       sync.Mutex
-	starts   []downloadStart
-	progress []downloadProgress
-	refuse   bool
-	// admitting, when set, is called as the Manager admits a download,
-	// before it answers: the admission hook.
-	admitting func(downloadStart)
-	// progressing, when set, is called as the Manager takes a download's
-	// progress, before it is recorded.
-	progressing func(downloadProgress)
-}
-
-func (r *hostedDownloadLog) events() engineEvents {
-	return engineEvents{
-		DownloadStarted: func(start downloadStart) downloadAdmission {
-			r.mu.Lock()
-			hook := r.admitting
-			r.mu.Unlock()
-			if hook != nil {
-				hook(start)
-			}
-			r.mu.Lock()
-			defer r.mu.Unlock()
-			r.starts = append(r.starts, start)
-			if r.refuse {
-				return downloadRefused
-			}
-			return downloadAdmitted
-		},
-		DownloadProgress: func(progress downloadProgress) {
-			r.mu.Lock()
-			hook := r.progressing
-			r.mu.Unlock()
-			if hook != nil {
-				hook(progress)
-			}
-			r.mu.Lock()
-			defer r.mu.Unlock()
-			r.progress = append(r.progress, progress)
-		},
-	}
-}
-
-func (r *hostedDownloadLog) take() ([]downloadStart, []downloadProgress) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	starts, progress := r.starts, r.progress
-	r.starts, r.progress = nil, nil
-	return starts, progress
-}
-
-// testBackendPath stands in for `wslpath -u` of a drive path.
-func testBackendPath(_ context.Context, path string) (string, error) {
-	drive, rest, ok := strings.Cut(path, `:\`)
-	if !ok || len(drive) != 1 {
-		return "", fmt.Errorf("wslpath: %s: not a drive path", path)
-	}
-	return "/mnt/" + strings.ToLower(drive) + "/" + strings.ReplaceAll(rest, `\`, "/"), nil
-}
-
-func newDownloadHostedEngine(t *testing.T) (*hostedEngine, *directiveSink, *hostedDownloadLog) {
-	t.Helper()
-	recorder := &hostedDownloadLog{}
-	engine, sink := newTestHostedEngine(t, stubRelay{}, recorder.events())
-	engine.backendPath = testBackendPath
-	// No status question unless a test asks for one.
-	engine.downloadQuiet = time.Hour
-	t.Cleanup(engine.Stop)
-	return engine, sink, recorder
-}
-
-// testSnapshotNumbers numbers the snapshots a test sends without one, per
-// engine and download, as the launcher numbers them. The map holds each
-// engine, so no later test's engine takes its address and continues its
-// numbers.
-var testSnapshotNumbers = struct {
-	sync.Mutex
-	last map[*hostedEngine]map[string]uint64
-}{last: map[*hostedEngine]map[string]uint64{}}
-
-// settleReports waits until the engine has processed every report of
-// pageID it accepted, or of every page when pageID is empty.
-func settleReports(t *testing.T, engine *hostedEngine, pageID string) {
-	t.Helper()
-	if !reportsProcessed(engine, pageID) {
-		t.Fatalf("the reports of page %q were not processed", pageID)
-	}
-}
-
-// reportsProcessed answers whether the engine processed every report of
-// pageID (of every page when empty) it accepted, within hostedTestDeadline.
-func reportsProcessed(engine *hostedEngine, pageID string) bool {
-	for deadline := time.Now().Add(hostedTestDeadline); ; time.Sleep(time.Millisecond) {
-		busy := engine.pages.busy()
-		if pageID != "" {
-			_, busy = engine.pages.laneOf(ids.PageHandle(pageID))
-		}
-		if !busy {
-			return true
-		}
-		if time.Now().After(deadline) {
-			return false
-		}
-	}
-}
-
-// reportDownload has the launcher send one snapshot of a page's download,
-// numbered after the download's last one unless it carries its number, and
-// waits until the engine processed it.
-func reportDownload(t *testing.T, engine *hostedEngine, pageID string, report webview2host.DownloadReport) {
-	t.Helper()
-	sendDownload(t, engine, pageID, report)
-	settleReports(t, engine, pageID)
-}
-
-// sendDownload is reportDownload without the wait: it returns once the
-// engine acknowledged the snapshot.
-func sendDownload(t *testing.T, engine *hostedEngine, pageID string, report webview2host.DownloadReport) {
-	t.Helper()
-	if report.Seq == 0 && report.State != webview2host.DownloadUnknown {
-		testSnapshotNumbers.Lock()
-		numbers := testSnapshotNumbers.last[engine]
-		if numbers == nil {
-			numbers = map[string]uint64{}
-			testSnapshotNumbers.last[engine] = numbers
-		}
-		numbers[report.ID]++
-		report.Seq = numbers[report.ID]
-		testSnapshotNumbers.Unlock()
-	}
-	detail, err := report.Encode()
-	if err != nil {
-		t.Fatal(err)
-	}
-	engine.Report(ids.PageHandle(pageID), webview2host.ReportDownload, detail)
-}
-
-// isCancelOf reports whether directive is the launcher's cancel of download
-// id in page pageID.
-func isCancelOf(directive webview2host.Directive, pageID, id string) bool {
-	return directive.Op == webview2host.OpCancelDownload && directive.PageID == pageID && directive.Download == id
-}
-
-const testDownloadPath = `C:\Users\dev\Downloads\report (1).pdf`
-
-// snapshot is a download's snapshot at testDownloadPath.
-func snapshot(id, state string, received int64) webview2host.DownloadReport {
-	report := webview2host.DownloadReport{ID: id, State: state, URI: "https://example.test/report.pdf", Name: "report (1).pdf", Path: testDownloadPath, Received: received, Total: 100}
-	if state == webview2host.DownloadInterrupted {
-		report.End, report.Reason = webview2host.DownloadEndCanceled, "the download was canceled"
-	}
-	return report
-}
-
-// terminals counts the terminal events among progress.
-func terminals(progress []downloadProgress) int {
-	n := 0
-	for _, p := range progress {
-		if p.State != downloadInProgress {
-			n++
-		}
-	}
-	return n
-}
 
 // A download's snapshots reach the Manager as its start in the page, its
 // progress and its finish at the backend's path of the file in the Windows
@@ -468,11 +297,6 @@ func TestHostedEngineStopEndsTheStatusLoop(t *testing.T) {
 	}
 }
 
-// unknownAnswer is the launcher's answer for an id it has no record of.
-func unknownAnswer(id string) webview2host.DownloadReport {
-	return webview2host.DownloadReport{ID: id, State: webview2host.DownloadUnknown, Reason: webview2host.DownloadUnknownReason, Answer: true}
-}
-
 // The engine keeps a page's last maxHostedEndedDownloads ended ids: a late
 // snapshot of any of them changes nothing; past the bound the oldest is
 // forgotten, and still no answer naming it, its kept terminal snapshot or
@@ -534,109 +358,6 @@ func TestHostedEngineADelayedAnswerNeverResurrectsAFinishedDownload(t *testing.T
 	}
 }
 
-// heldAdmission makes the Manager's next admission wait: entered closes as
-// it begins, and the admission answers once release is closed.
-func heldAdmission(recorder *hostedDownloadLog) (entered, release chan struct{}) {
-	entered, release = make(chan struct{}), make(chan struct{})
-	var once sync.Once
-	recorder.mu.Lock()
-	recorder.admitting = func(downloadStart) {
-		once.Do(func() {
-			close(entered)
-			<-release
-		})
-	}
-	recorder.mu.Unlock()
-	return entered, release
-}
-
-// reportAsync sends a snapshot from a goroutine of its own, as the
-// launcher's reports arrive, and answers a channel closed once the page's
-// accepted reports are applied.
-func reportAsync(t *testing.T, engine *hostedEngine, pageID string, report webview2host.DownloadReport) chan struct{} {
-	t.Helper()
-	detail, err := report.Encode()
-	if err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		engine.Report(ids.PageHandle(pageID), webview2host.ReportDownload, detail)
-		if !reportsProcessed(engine, pageID) {
-			t.Errorf("the reports of page %s were not processed", pageID)
-		}
-	}()
-	return done
-}
-
-func waitClosed(t *testing.T, ch chan struct{}, what string) {
-	t.Helper()
-	select {
-	case <-ch:
-	case <-time.After(hostedTestDeadline):
-		t.Fatalf("%s never happened", what)
-	}
-}
-
-// A completion that arrives while the download's start is being admitted
-// waits for the admission and then completes the row; a running snapshot
-// still on its way after it changes nothing. Before, it reached the Manager
-// ahead of the start, which dropped it, and the row stayed running.
-func TestHostedEngineACompletionWaitsForItsStartsAdmission(t *testing.T) {
-	engine, sink, recorder := newDownloadHostedEngine(t)
-	engine.downloadQuiet = 10 * time.Millisecond
-	bindTestPage(t, engine, "page1", "TARGET-1")
-	entered, release := heldAdmission(recorder)
-	first := reportAsync(t, engine, "page1", webview2host.DownloadReport{ID: "dl-a-1", Seq: 1, State: webview2host.DownloadRunning, Path: testDownloadPath})
-	waitClosed(t, entered, "the admission")
-	end := reportAsync(t, engine, "page1", webview2host.DownloadReport{ID: "dl-a-1", Seq: 3, State: webview2host.DownloadCompleted, Path: testDownloadPath, Received: 100})
-	time.Sleep(50 * time.Millisecond)
-	if _, progress := recorder.take(); len(progress) != 0 {
-		t.Fatalf("progress reached the Manager before the start was admitted: %+v", progress)
-	}
-	// Nor is it asked about: the Manager does not have it yet.
-	if asked := sink.drain(); len(asked) != 0 {
-		t.Fatalf("a download whose admission is in flight was asked about: %+v", asked)
-	}
-	close(release)
-	waitClosed(t, first, "the first snapshot's apply")
-	waitClosed(t, end, "the completion's apply")
-	reportDownload(t, engine, "page1", webview2host.DownloadReport{ID: "dl-a-1", Seq: 2, State: webview2host.DownloadRunning, Path: testDownloadPath, Received: 40})
-	starts, progress := recorder.take()
-	if len(starts) != 1 || len(progress) != 1 || progress[0].State != downloadCompleted {
-		t.Fatalf("starts %+v and progress %+v, want the row started and completed", starts, progress)
-	}
-}
-
-// The Manager lists a download's row before its admission answers, so the
-// user can cancel it then: the engine takes the cancel and sends it to the
-// launcher once the admission is done, and the launcher's answer ends the
-// row. Before, the cancel answered that the download had ended, which the
-// Manager took as settled, and the file kept downloading.
-func TestHostedEngineACancelDuringAdmissionReachesTheLauncher(t *testing.T) {
-	engine, sink, recorder := newDownloadHostedEngine(t)
-	bindTestPage(t, engine, "page1", "TARGET-1")
-	entered, release := heldAdmission(recorder)
-	first := reportAsync(t, engine, "page1", webview2host.DownloadReport{ID: "dl-a-1", Seq: 1, State: webview2host.DownloadRunning, Path: testDownloadPath, Received: 10})
-	waitClosed(t, entered, "the admission")
-	if err := testProfile(t, engine).CancelDownload("dl-a-1"); err != nil {
-		t.Fatalf("a cancel of a download being admitted answers %v", err)
-	}
-	if sent := sink.drain(); len(sent) != 0 {
-		t.Fatalf("the cancel reached the launcher before the Manager had the download: %+v", sent)
-	}
-	close(release)
-	waitClosed(t, first, "the first snapshot's apply")
-	if directive := sink.next(t); !isCancelOf(directive, "page1", "dl-a-1") {
-		t.Fatalf("after the admission the engine sent %+v, want the cancel", directive)
-	}
-	reportDownload(t, engine, "page1", webview2host.DownloadReport{ID: "dl-a-1", Seq: 2, State: webview2host.DownloadInterrupted, End: webview2host.DownloadEndCanceled, Reason: "canceled", Answer: true})
-	if _, progress := recorder.take(); terminals(progress) != 1 {
-		t.Fatalf("progress %+v, want the row ended by the launcher's answer", progress)
-	}
-}
-
 // Snapshots that arrive out of order settle as the launcher took them: the
 // completion first starts and completes the row, and the older running
 // snapshots after it change nothing; among running ones, an older one after
@@ -666,26 +387,6 @@ func TestHostedEngineAppliesOnlyNewerSnapshots(t *testing.T) {
 	}
 	if fmt.Sprint(received) != "[10 30]" {
 		t.Fatalf("running snapshots applied %v, want [10 30]", received)
-	}
-}
-
-// A download the Manager refuses stays refused whatever arrives while it
-// was being refused: its terminal snapshot creates no row.
-func TestHostedEngineARefusedDownloadsEndCreatesNoRow(t *testing.T) {
-	engine, _, recorder := newDownloadHostedEngine(t)
-	recorder.refuse = true
-	bindTestPage(t, engine, "page1", "TARGET-1")
-	entered, release := heldAdmission(recorder)
-	first := reportAsync(t, engine, "page1", webview2host.DownloadReport{ID: "dl-a-1", Seq: 1, State: webview2host.DownloadRunning, Path: testDownloadPath})
-	waitClosed(t, entered, "the admission")
-	end := reportAsync(t, engine, "page1", webview2host.DownloadReport{ID: "dl-a-1", Seq: 2, State: webview2host.DownloadCompleted, Path: testDownloadPath, Received: 100})
-	// The end reaches the engine and waits its turn.
-	time.Sleep(50 * time.Millisecond)
-	close(release)
-	waitClosed(t, first, "the first snapshot's apply")
-	waitClosed(t, end, "the end's apply")
-	if starts, progress := recorder.take(); len(starts) != 1 || len(progress) != 0 {
-		t.Fatalf("starts %+v and progress %+v, want the one refused start", starts, progress)
 	}
 }
 
@@ -732,29 +433,6 @@ func TestHostedPageOwnsItsIDAsAFrame(t *testing.T) {
 	}
 }
 
-// The Manager's refusal of a download is the launcher's cancel of it, and
-// the row never comes back; a terminal first snapshot it refuses needs no
-// cancel. A download reported for a page the engine does not hold reaches
-// nobody.
-func TestHostedEngineCancelsADownloadTheManagerRefuses(t *testing.T) {
-	engine, sink, recorder := newDownloadHostedEngine(t)
-	recorder.refuse = true
-	bindTestPage(t, engine, "page1", "TARGET-1")
-
-	reportDownload(t, engine, "page1", snapshot("dl-a-1", webview2host.DownloadRunning, 0))
-	directive := sink.next(t)
-	if !isCancelOf(directive, "page1", "dl-a-1") {
-		t.Fatalf("the refusal sent %+v, want the launcher's cancel of the download", directive)
-	}
-	reportDownload(t, engine, "page1", snapshot("dl-a-1", webview2host.DownloadInterrupted, 0))
-	reportDownload(t, engine, "page1", snapshot("dl-a-2", webview2host.DownloadCompleted, 100))
-	reportDownload(t, engine, "page9", snapshot("dl-a-3", webview2host.DownloadRunning, 0))
-	if starts, progress := recorder.take(); len(starts) != 2 || len(progress) != 0 {
-		t.Fatalf("starts %+v and progress %+v, want the two refused starts alone", starts, progress)
-	}
-	sink.expectOps(t, webview2host.OpCancelDownload)
-}
-
 // The user's cancel is the launcher's: the engine names the download's page
 // and leaves the download to the launcher's answer.
 func TestHostedEngineCancelAsksTheLauncher(t *testing.T) {
@@ -774,176 +452,5 @@ func TestHostedEngineCancelAsksTheLauncher(t *testing.T) {
 	}
 	if err := profile.CancelDownload("dl-unknown"); !errors.Is(err, errDownloadEnded) {
 		t.Fatalf("a cancel of a download the engine does not hold answers %v", err)
-	}
-}
-
-// A page that goes takes its own downloads, running and ended, from the
-// engine, whichever way it goes: one still running ends there, canceled
-// with the page as the launcher cancels it, and a later snapshot of one
-// reaches nobody. Another page's running download is left alone: its
-// progress still reaches the Manager and its cancel still reaches the
-// launcher.
-func TestHostedEnginePageDepartureLeavesAnotherPagesDownload(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		leave func(engine *hostedEngine)
-		why   string
-	}{
-		{"the Manager closes it", func(engine *hostedEngine) { <-engine.closePage("page1") }, popupDiscardedReason},
-		{"the launcher reports it closed", func(engine *hostedEngine) {
-			engine.Report("page1", webview2host.ReportClosed, "")
-			reportsProcessed(engine, "page1")
-		}, pageClosedReason},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			engine, sink, recorder := newDownloadHostedEngine(t)
-			engine.events.PageClosed = func(ids.PageHandle) {}
-			bindTestPage(t, engine, "page1", "TARGET-1")
-			bindTestPage(t, engine, "page2", "TARGET-2")
-			reportDownload(t, engine, "page1", webview2host.DownloadReport{ID: "dl-a-1", State: webview2host.DownloadRunning, Path: `C:\Users\dev\Downloads\one.bin`})
-			reportDownload(t, engine, "page1", webview2host.DownloadReport{ID: "dl-a-0", State: webview2host.DownloadCompleted, Path: `C:\Users\dev\Downloads\zero.bin`})
-			reportDownload(t, engine, "page2", webview2host.DownloadReport{ID: "dl-a-2", State: webview2host.DownloadRunning, Path: `C:\Users\dev\Downloads\two.bin`})
-			recorder.take()
-
-			tc.leave(engine)
-			if _, progress := recorder.take(); len(progress) != 1 || progress[0] != (downloadProgress{ID: "dl-a-1", State: downloadPageGone, Error: tc.why}) {
-				t.Fatalf("the departure reported %+v, want the running download's end", progress)
-			}
-			if _, kept := engine.pages.state("page1"); kept {
-				t.Fatal("the gone page's record stayed")
-			}
-			if err := engine.cancelDownload("dl-a-1"); !errors.Is(err, errDownloadEnded) {
-				t.Fatalf("the gone page's download answers a cancel with %v, want errDownloadEnded", err)
-			}
-			reportDownload(t, engine, "page1", webview2host.DownloadReport{ID: "dl-a-1", State: webview2host.DownloadInterrupted, End: webview2host.DownloadEndCanceled, Reason: "the download was canceled"})
-			reportDownload(t, engine, "page2", webview2host.DownloadReport{ID: "dl-a-2", State: webview2host.DownloadRunning, Path: `C:\Users\dev\Downloads\two.bin`, Received: 5})
-			if starts, progress := recorder.take(); len(starts) != 0 || len(progress) != 1 || progress[0].ID != "dl-a-2" || progress[0].Received != 5 {
-				t.Fatalf("after the departure, starts %+v and progress %+v", starts, progress)
-			}
-			if err := engine.cancelDownload("dl-a-2"); err != nil {
-				t.Fatal(err)
-			}
-			deadline := time.After(hostedTestDeadline)
-			for {
-				ops := sink.ops()
-				if len(ops) > 0 && ops[len(ops)-1] == webview2host.OpCancelDownload {
-					break
-				}
-				select {
-				case <-deadline:
-					t.Fatalf("directives %v, want the other page's cancel last", ops)
-				case <-time.After(5 * time.Millisecond):
-				}
-			}
-		})
-	}
-}
-
-// A browser connection lost mid-download reports the page crashed; the
-// download is the launcher's and runs on until the Manager closes the
-// crashed page, which ends it and takes it from the engine, so the
-// launcher's later report of its end reaches nobody.
-func TestHostedEngineConnectionLossMidDownload(t *testing.T) {
-	endpoint := startFakeCDPEndpoint(t, nil, nil)
-	recorder := &hostedDownloadLog{}
-	crashed := make(chan string, 4)
-	events := recorder.events()
-	events.PageCrashed = func(handle ids.PageHandle, _ string) { crashed <- string(handle) }
-	engine, sink := newTestHostedEngine(t, stubRelay{url: endpoint.wsURL}, events)
-	engine.backendPath = testBackendPath
-	engine.attachTimeout = 5 * time.Second
-	conn, err := engine.ensureBrowser()
-	if err != nil {
-		t.Fatalf("ensureBrowser: %v", err)
-	}
-	defer engine.Interrupt()
-	if err := bindForTest(engine, "page1", "TARGET-1", conn); err != nil {
-		t.Fatal(err)
-	}
-	reportDownload(t, engine, "page1", webview2host.DownloadReport{ID: "dl-a-1", State: webview2host.DownloadRunning, Path: `C:\Users\dev\Downloads\x.bin`})
-
-	endpoint.hangUp()
-	select {
-	case handle := <-crashed:
-		if handle != "page1" {
-			t.Fatalf("PageCrashed for %s", handle)
-		}
-	case <-time.After(hostedTestDeadline):
-		t.Fatal("the lost connection never reported its page")
-	}
-	// The launcher's download runs on until the page closes.
-	reportDownload(t, engine, "page1", webview2host.DownloadReport{ID: "dl-a-1", State: webview2host.DownloadRunning, Path: `C:\Users\dev\Downloads\x.bin`, Received: 3})
-	if err := engine.cancelDownload("dl-a-1"); err != nil {
-		t.Fatalf("a cancel after the connection loss answers %v", err)
-	}
-	engine.closePage("page1")
-	if err := engine.cancelDownload("dl-a-1"); !errors.Is(err, errDownloadEnded) {
-		t.Fatalf("a cancel after the page closed answers %v", err)
-	}
-	reportDownload(t, engine, "page1", webview2host.DownloadReport{ID: "dl-a-1", State: webview2host.DownloadInterrupted, End: webview2host.DownloadEndCanceled, Path: `C:\Users\dev\Downloads\x.bin`, Received: 3, Reason: "the download was canceled"})
-	_, progress := recorder.take()
-	if len(progress) != 2 || progress[0].Received != 3 || progress[1] != (downloadProgress{ID: "dl-a-1", State: downloadPageGone, Error: popupDiscardedReason}) {
-		t.Fatalf("progress %+v, want the one progress and the end of the close, none of the launcher's late report", progress)
-	}
-	ops := sink.ops()
-	if len(ops) < 2 || ops[len(ops)-2] != webview2host.OpCancelDownload || ops[len(ops)-1] != webview2host.OpClose {
-		t.Fatalf("directives %v, want the cancel then the page's close", ops)
-	}
-}
-
-// A popup the Manager never listed takes every download it started with it,
-// whether it is discarded or its page closes, and whether or not its attach
-// bound it: one whose first report arrives while the popup's running
-// downloads are being ended is refused or ended too, never left running in
-// its opener's tab.
-func TestHostedPopupGoingEndsADownloadReportedMeanwhile(t *testing.T) {
-	for _, how := range []string{"discard", "close", "discard after its bind", "close after its bind"} {
-		t.Run(how, func(t *testing.T) {
-			engine, _, recorder := newDownloadHostedEngine(t)
-			engine.events.PageClosed = func(ids.PageHandle) {}
-			bindTestPage(t, engine, "opener", "T-opener")
-			pendingTestPopup(engine, "popup", "T-popup", "opener")
-			if strings.HasSuffix(how, "after its bind") {
-				// Bound as its attach binds it, before the Manager lists it.
-				bindTestPage(t, engine, "popup", "T-popup")
-			}
-			reportDownload(t, engine, "popup", snapshot("dl-1", webview2host.DownloadRunning, 10))
-			var once sync.Once
-			recorder.mu.Lock()
-			recorder.progressing = func(progress downloadProgress) {
-				if progress.ID == "dl-1" && progress.State == downloadCanceled {
-					// On the popup's lane, running its close: the report is
-					// accepted or refused, never waited for.
-					once.Do(func() { sendDownload(t, engine, "popup", snapshot("dl-2", webview2host.DownloadRunning, 10)) })
-				}
-			}
-			recorder.mu.Unlock()
-			if strings.HasPrefix(how, "discard") {
-				if err := engine.DiscardPage(t.Context(), "popup"); err != nil {
-					t.Errorf("discard: %v", err)
-				}
-			} else {
-				engine.Report("popup", webview2host.ReportClosed, "")
-			}
-			settleReports(t, engine, "")
-			starts, progress := recorder.take()
-			ended := map[downloadID]bool{}
-			for _, p := range progress {
-				if p.State != downloadInProgress {
-					ended[p.ID] = true
-				}
-			}
-			if !slices.ContainsFunc(starts, func(start downloadStart) bool { return start.ID == "dl-1" }) {
-				t.Fatalf("the popup's first download never started: starts %+v", starts)
-			}
-			for _, start := range starts {
-				if !ended[start.ID] {
-					t.Errorf("download %s started in the popup and never ended: starts %+v, progress %+v", start.ID, starts, progress)
-				}
-			}
-			if running := engine.pages.running(); running != 0 {
-				t.Errorf("the engine still runs %d downloads of the gone popup", running)
-			}
-		})
 	}
 }

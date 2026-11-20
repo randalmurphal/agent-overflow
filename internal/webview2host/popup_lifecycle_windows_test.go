@@ -36,7 +36,7 @@ func (r *popupRig) startDownload(page *hostPage, id string) *hostDownload {
 		page.downloads = map[string]*hostDownload{}
 	}
 	page.downloads[id] = d
-	r.host.report(page, d.snapshot())
+	r.host.report(page, r.host.snapshot(d))
 	return d
 }
 
@@ -434,7 +434,7 @@ func TestAPopupHoldsTheNewestSnapshotOfEachDownload(t *testing.T) {
 	popup, _ := r.openPopup(opener, newFakeWindowArgs(popupURL))
 	d := r.startDownload(popup, "dl-0")
 	for range 100 {
-		r.host.report(popup, d.snapshot())
+		r.host.report(popup, r.host.snapshot(d))
 	}
 	finish(d)
 	if held := popup.popup.held.downloads; len(held) != 1 || held[0].State != DownloadCompleted {

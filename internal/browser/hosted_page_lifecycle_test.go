@@ -59,6 +59,16 @@ func completedAt(id, name string) webview2host.DownloadReport {
 	return webview2host.DownloadReport{ID: id, Seq: 1, State: webview2host.DownloadCompleted, URI: "https://example.test/" + name, Name: name, Path: `C:\Users\dev\Downloads\` + name, Received: 10, Total: 10}
 }
 
+// mustRetire waits for the retirement a page's end was received for.
+func mustRetire(t *testing.T, ended receipt) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), hostedTestDeadline)
+	defer cancel()
+	if err := ended.wait(ctx); err != nil {
+		t.Fatalf("the page did not retire: %v", err)
+	}
+}
+
 func awaitClosed(t *testing.T, ch <-chan struct{}, what string) {
 	t.Helper()
 	select {
@@ -433,10 +443,15 @@ func TestAPopupsFirstDownloadAfterItsEndNeverStarts(t *testing.T) {
 			if _, started := listed["dl-b"]; started {
 				t.Fatalf("a download first reported after the popup's end was listed: %v", listed)
 			}
+			if how == "targetless and closed" {
+				// The popup's fate lists its download, ended, in its
+				// opener's tab, which may come after the reports settled.
+				l.awaitDownloads(access, downloadStateCanceled)
+				return
+			}
+			// Its opener closed first, so no tab lists its download.
 			for _, d := range l.manager.CompanionState(access.Caller()).Downloads {
-				if d.State == downloadStateRunning {
-					t.Fatalf("download %+v was left running", d)
-				}
+				t.Fatalf("download %+v is listed with no open opener", d)
 			}
 		})
 	}

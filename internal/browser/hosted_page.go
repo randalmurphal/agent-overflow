@@ -34,6 +34,8 @@ func (e *hostedEngine) createPage(ctx context.Context, profile *hostedProfile, h
 	}
 
 	if !e.dispatch(webview2host.Directive{Op: webview2host.OpCreate, PageID: string(pageID), ProfileID: string(profile.id), Ephemeral: profile.ephemeral}) {
+		// Nothing was sent, so the launcher has no page to report.
+		e.pages.abandon(pageID)
 		return nil, errors.New("browser: pane host refused the create directive")
 	}
 
@@ -89,11 +91,12 @@ func (e *hostedEngine) createPage(ctx context.Context, profile *hostedProfile, h
 
 // endCreate closes a page whose create failed, the launcher asked to
 // destroy whatever it made (closePage), and waits within ctx for the
-// page's retirement, which nothing is ahead of on a page being created.
+// page's retirement, which nothing is ahead of on a page being created. A
+// wait that ends first is logged: the lane still retires the page, or Stop
+// forgot it.
 func (e *hostedEngine) endCreate(ctx context.Context, pageID ids.PageHandle) {
-	select {
-	case <-e.closePage(pageID):
-	case <-ctx.Done():
+	if err := e.closePage(pageID).wait(ctx); err != nil {
+		e.logf("browser: close pane page %s after its create failed: %v", pageID, err)
 	}
 }
 
@@ -106,15 +109,13 @@ func (e *hostedEngine) DownloadSaving() downloadSaving { return downloadsSavedBy
 // The discard is received at once (closePage) and retires the page on its
 // lane, after the reports received before it; DiscardPage waits for that
 // within ctx, and past it answers errDiscardPending while the lane still
-// finishes the discard. A second discard of the page joins the first.
+// finishes the discard. Stop ends the wait with errDiscardInterrupted. A
+// second discard of the page joins the first.
 func (e *hostedEngine) DiscardPage(ctx context.Context, handle ids.PageHandle) error {
-	retired := e.closePage(handle)
-	select {
-	case <-retired:
-		return nil
-	case <-ctx.Done():
-		return fmt.Errorf("browser: discard pane page %s: %w: %w", handle, errDiscardPending, ctx.Err())
+	if err := e.closePage(handle).wait(ctx); err != nil {
+		return fmt.Errorf("browser: discard pane page %s: %w", handle, err)
 	}
+	return nil
 }
 
 // Report routes one launcher answer. Called from the App's
@@ -353,24 +354,22 @@ func (e *hostedEngine) targetPageLocked(targetID target.ID) (ids.PageHandle, boo
 // launcher answers `closed`, which is a no-op by then: the close a page's
 // own Close already accounted for must not be reported to the Manager
 // twice. A page with no record (a create that failed before its bind, a
-// popup refused at its report) is forgotten at once. It answers what
-// closes once the page is retired; a page already closing retires once,
-// and its answer is its first close's. The launcher is asked to close the
-// page every time: a close of a page it closed already changes nothing.
-func (e *hostedEngine) closePage(pageID ids.PageHandle) <-chan struct{} {
+// popup refused at its report) is forgotten at once. It answers the
+// receipt whose wait ends once the page is retired; a page already closing
+// retires once, and its answer is its first close's. The launcher is asked
+// to close the page every time: a close of a page it closed already
+// changes nothing.
+func (e *hostedEngine) closePage(pageID ids.PageHandle) receipt {
 	defer e.dispatch(webview2host.Directive{Op: webview2host.OpClose, PageID: string(pageID)})
-	receipt := e.pages.acceptEnd(pageID, acceptedDiscard, "")
-	if receipt.retired == nil {
+	discarded := e.pages.receive(pageID, receivedDiscard())
+	if discarded.outcome == receiptNoPage {
 		e.mu.Lock()
 		e.endCloseFallbackLocked(pageID)
 		e.forgetPopupLocked(pageID)
 		e.forgetPageLocked(pageID)
 		e.mu.Unlock()
-		retired := make(chan struct{})
-		close(retired)
-		return retired
 	}
-	return receipt.retired
+	return discarded
 }
 
 // awaitHostReport waits for one report, the caller's cancellation, or the
@@ -426,4 +425,13 @@ func (p *hostedPage) Close() {
 // later reports run on its own lane.
 func (p *hostedPage) Listed() { p.engine.pages.listed(p.id) }
 
-var _ listingDriver = (*hostedPage)(nil)
+// TakeReceivedDownloads is receivingDriver: the page's leave lists what the
+// launcher reported of it that its lane has not admitted yet.
+func (p *hostedPage) TakeReceivedDownloads(listed func(downloadID) bool) []downloadStart {
+	return p.engine.pages.takeReceived(p.id, listed)
+}
+
+var (
+	_ listingDriver   = (*hostedPage)(nil)
+	_ receivingDriver = (*hostedPage)(nil)
+)

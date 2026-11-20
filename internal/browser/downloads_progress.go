@@ -32,10 +32,16 @@ func (m *Manager) applyDownloadProgress(event downloadProgress) {
 	if p == nil {
 		return
 	}
-	if scope == nil {
-		// Its page left with the row waiting for this end.
-		defer m.endDelivered(p, event.ID)
-	}
+	m.applyToRow(p, scope, event)
+}
+
+// applyToRow applies a download's progress to its row in p, which the
+// lookup found listed in scope or, with scope nil, gone with the row
+// waiting for its end. Either way the page may have left since, with the
+// row waiting for this end (pageLeftLocked), so a row this settles stops
+// waiting whichever the lookup found.
+func (m *Manager) applyToRow(p *managedPage, scope *jarScope, event downloadProgress) {
+	defer m.endDelivered(p, event.ID)
 	held := p.downloads.hold()
 	entry := held.entry(event.ID)
 	// A settled download takes no further report: AO stopped it (a quota,

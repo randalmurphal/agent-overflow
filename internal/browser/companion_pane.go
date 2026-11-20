@@ -6,6 +6,7 @@ import (
 
 	"agent-overflow/internal/browser/turnorder"
 	"agent-overflow/internal/paneplace"
+	"agent-overflow/internal/webview2host"
 
 	"github.com/google/uuid"
 )
@@ -19,7 +20,8 @@ const (
 	maxCompanionHeight = 1200
 	// maxCompanionPanes bounds the mounted pane surfaces one process tracks,
 	// so a client that never detaches cannot grow the registry without end.
-	maxCompanionPanes = 64
+	// The launcher keeps the geometry of as many mounts.
+	maxCompanionPanes = webview2host.MaxGeometryMounts
 )
 
 // PaneRect is where a mounted browser pane's host rect sits, in the SPA's own

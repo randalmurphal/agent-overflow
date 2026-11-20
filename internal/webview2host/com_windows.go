@@ -6,20 +6,17 @@
 // WebView2 bindings, but they live under github.com/wailsapp/wails/v3/
 // internal/ and Go's internal rule makes them unimportable from here. The
 // public github.com/jchv/go-webview2 has the pieces but its high-level
-// Chromium type carries the two bugs the 2026-08-31 spike found and
-// patched (/tmp/spike-webview2-dual/VERDICTS.md, "Patches applied"):
+// Chromium type has two defects this package cannot carry:
 //
 //  1. `int64(res) < 0` never detects a failed HRESULT on 64-bit, because
-//     0x80070057 widens to a POSITIVE int64. Every completion handler
-//     there fell through the guard and nil-dereferenced the controller
-//     instead of reporting the error, which is what turned a diagnosable
-//     ERROR_INVALID_STATE into a crash. Everything below tests HRESULTs
-//     as `uint32(hr) != 0`, and `hresult` is the one conversion.
-//  2. `environmentOptions` was hard-wired to 0, so
-//     AdditionalBrowserArguments — and therefore
-//     --remote-debugging-port, the entire point of the pane environment —
-//     was unreachable. Here the options object is a first-class argument
-//     (envoptions_windows.go).
+//     0x80070057 widens to a positive int64, so its completion handlers
+//     dereference a nil controller instead of reporting the error.
+//     Everything below tests HRESULTs as `uint32(hr) != 0`, and `hresult`
+//     is the one conversion.
+//  2. Its environment options are hard-wired to 0, so
+//     AdditionalBrowserArguments, and with it --remote-debugging-port,
+//     which the pane environment exists for, is unreachable. Here the
+//     options object is a first-class argument (envoptions_windows.go).
 //
 // Only the LOADER is reused, from github.com/jchv/go-webview2/
 // webviewloader: it locates or memory-loads WebView2Loader.dll, which is
@@ -38,6 +35,7 @@ package webview2host
 
 import (
 	"errors"
+	"fmt"
 	"strconv"
 	"syscall"
 	"unsafe"
@@ -373,13 +371,6 @@ func (f *iCoreWebView2Find) stop() error {
 	return hresult(hr)
 }
 
-// matchCount is get_MatchCount([out, retval] INT32* value).
-func (f *iCoreWebView2Find) matchCount() (int32, error) {
-	var value int32
-	hr, _, _ := f.vtbl.GetMatchCount.Call(uintptr(unsafe.Pointer(f)), uintptr(unsafe.Pointer(&value)))
-	return value, hresult(hr)
-}
-
 // ---------------------------------------------------------------------
 // ICoreWebView2_28 (Find)
 // ---------------------------------------------------------------------
@@ -542,14 +533,16 @@ func (c *iCoreWebView2Controller) putBounds(bounds rect) error {
 	return hresult(hr)
 }
 
-func (c *iCoreWebView2Controller) addAcceleratorKeyPressed(handler *iAcceleratorKeyPressedHandler) (eventRegistrationToken, error) {
+// addAcceleratorKeyPressed subscribes handler for the controller's life;
+// its registration token is never needed.
+func (c *iCoreWebView2Controller) addAcceleratorKeyPressed(handler *iAcceleratorKeyPressedHandler) error {
 	var token eventRegistrationToken
 	hr, _, _ := c.vtbl.AddAcceleratorKeyPressed.Call(
 		uintptr(unsafe.Pointer(c)),
 		uintptr(unsafe.Pointer(handler)),
 		uintptr(unsafe.Pointer(&token)),
 	)
-	return token, hresult(hr)
+	return hresult(hr)
 }
 
 // moveFocusProgrammatic is COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC (0)
@@ -742,14 +735,16 @@ func (v *iCoreWebView2) openDevToolsWindow() error {
 	return hresult(hr)
 }
 
-func (v *iCoreWebView2) addProcessFailed(handler *iProcessFailedHandler) (eventRegistrationToken, error) {
+// addProcessFailed subscribes handler for the view's life; its
+// registration token is never needed.
+func (v *iCoreWebView2) addProcessFailed(handler *iProcessFailedHandler) error {
 	var token eventRegistrationToken
 	hr, _, _ := v.vtbl.AddProcessFailed.Call(
 		uintptr(unsafe.Pointer(v)),
 		uintptr(unsafe.Pointer(handler)),
 		uintptr(unsafe.Pointer(&token)),
 	)
-	return token, hresult(hr)
+	return hresult(hr)
 }
 
 func (v *iCoreWebView2) callDevToolsProtocolMethod(method, paramsJSON string, handler *iDevToolsCompletedHandler) error {
@@ -917,16 +912,22 @@ const (
 	keyEventKindSystemKeyDown uint32 = 2
 )
 
-func (a *iAcceleratorKeyPressedEventArgs) keyEventKind() uint32 {
-	value := uint32(0xffffffff)
-	_, _, _ = a.vtbl.GetKeyEventKind.Call(uintptr(unsafe.Pointer(a)), uintptr(unsafe.Pointer(&value)))
-	return value
+func (a *iAcceleratorKeyPressedEventArgs) keyEventKind() (uint32, error) {
+	var value uint32
+	hr, _, _ := a.vtbl.GetKeyEventKind.Call(uintptr(unsafe.Pointer(a)), uintptr(unsafe.Pointer(&value)))
+	if err := hresult(hr); err != nil {
+		return 0, fmt.Errorf("read the key event kind: %w", err)
+	}
+	return value, nil
 }
 
-func (a *iAcceleratorKeyPressedEventArgs) virtualKey() uint32 {
+func (a *iAcceleratorKeyPressedEventArgs) virtualKey() (uint32, error) {
 	var value uint32
-	_, _, _ = a.vtbl.GetVirtualKey.Call(uintptr(unsafe.Pointer(a)), uintptr(unsafe.Pointer(&value)))
-	return value
+	hr, _, _ := a.vtbl.GetVirtualKey.Call(uintptr(unsafe.Pointer(a)), uintptr(unsafe.Pointer(&value)))
+	if err := hresult(hr); err != nil {
+		return 0, fmt.Errorf("read the virtual key: %w", err)
+	}
+	return value, nil
 }
 
 func (a *iAcceleratorKeyPressedEventArgs) putHandled(handled bool) error {
@@ -972,19 +973,29 @@ type iProcessFailedEventArgs struct {
 	vtbl *iProcessFailedEventArgsVtbl
 }
 
-func (a *iProcessFailedEventArgs) kind() uint32 {
-	value := uint32(0xffffffff)
-	_, _, _ = a.vtbl.GetProcessFailedKind.Call(
+// unknownProcessFailedKind is the kind of a failure whose kind could not be
+// read.
+const unknownProcessFailedKind = uint32(0xffffffff)
+
+func (a *iProcessFailedEventArgs) kind() (uint32, error) {
+	var value uint32
+	hr, _, _ := a.vtbl.GetProcessFailedKind.Call(
 		uintptr(unsafe.Pointer(a)),
 		uintptr(unsafe.Pointer(&value)),
 	)
-	return value
+	if err := hresult(hr); err != nil {
+		return unknownProcessFailedKind, fmt.Errorf("read the process failure's kind: %w", err)
+	}
+	return value, nil
 }
 
+// iProcessFailedHandler is ICoreWebView2ProcessFailedEventHandler. done
+// gets the failure's kind, unknownProcessFailedKind with the read's error
+// when it cannot be read.
 type iProcessFailedHandler struct {
 	vtbl *handlerVtbl
 	ref  comRef
-	done callback[func(kind uint32)]
+	done callback[func(kind uint32, err error)]
 }
 
 var processFailedVtbl = handlerVtbl{
@@ -994,16 +1005,16 @@ var processFailedVtbl = handlerVtbl{
 		if !ok {
 			return 0
 		}
-		kind := uint32(0xffffffff)
-		if args != nil {
-			kind = args.kind()
+		if args == nil {
+			done(unknownProcessFailedKind, errors.New("the process failure has no event args"))
+			return 0
 		}
-		done(kind)
+		done(args.kind())
 		return 0
 	}),
 }
 
-func newProcessFailedHandler(done func(uint32)) *iProcessFailedHandler {
+func newProcessFailedHandler(done func(uint32, error)) *iProcessFailedHandler {
 	h := &iProcessFailedHandler{vtbl: &processFailedVtbl}
 	h.done.set(done)
 	h.ref.own()

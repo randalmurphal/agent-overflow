@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"agent-overflow/internal/browser/ids"
-	"agent-overflow/internal/browser/popupadmit"
 	"agent-overflow/internal/keybindings"
 	"agent-overflow/internal/webview2host"
 
@@ -46,8 +45,8 @@ import (
 
 const (
 	// hostCreateTimeout bounds the wait for a `created` report. The FIRST
-	// create additionally pays for a cold WebView2 environment, which the
-	// spike measured in seconds; past this the launcher is wedged or gone,
+	// create additionally pays for a cold WebView2 environment, which takes
+	// seconds; past this the launcher is wedged or gone,
 	// and the tool call must fail rather than hang.
 	hostCreateTimeout = 45 * time.Second
 	// hostAttachTimeout bounds establishing the CDP browser connection
@@ -190,9 +189,6 @@ type hostedEngine struct {
 	// replaces them.
 	windowsPath func(ctx context.Context, path string) (string, error)
 	backendPath func(ctx context.Context, path string) (string, error)
-	// viewScaleAsked is a test seam called whenever a page is asked for a
-	// view scale it was not already asked for. Production leaves it nil.
-	viewScaleAsked func(handle ids.PageHandle, want viewScale)
 }
 
 func newHostedEngine(relay hostRelay, send func(webview2host.Directive), accelerators func() keybindings.AcceleratorSet, events engineEvents) *hostedEngine {
@@ -229,10 +225,8 @@ func newHostedEngine(relay hostRelay, send func(webview2host.Directive), acceler
 		backendPath:   func(ctx context.Context, path string) (string, error) { return runWSLPath(ctx, "-u", path) },
 	}
 	e.targets = e.newTargets()
-	e.pages = newHostedPages(e.process, func(stop <-chan struct{}) { go e.askQuietDownloads(stop) }, func(page ids.PageHandle, end popupadmit.Observation) {
-		if e.events.PageEndReceived != nil {
-			e.events.PageEndReceived(page, end)
-		}
+	e.pages = newHostedPages(e.process, func(stop <-chan struct{}) { go e.askQuietDownloads(stop) }, func(page ids.PageHandle, closed bool, crash string) {
+		e.events.PageEndReceived(page, closed, crash)
 	})
 	return e
 }

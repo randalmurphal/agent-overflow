@@ -4,6 +4,7 @@ package webview2host
 
 import (
 	"errors"
+	"fmt"
 	"unsafe"
 )
 
@@ -15,28 +16,30 @@ import (
 
 // addNewWindowRequested is add_NewWindowRequested([in]
 // ICoreWebView2NewWindowRequestedEventHandler*, [out]
-// EventRegistrationToken*).
-func (v *iCoreWebView2) addNewWindowRequested(handler *iNewWindowRequestedHandler) (eventRegistrationToken, error) {
+// EventRegistrationToken*), for the view's life: the token is never
+// needed.
+func (v *iCoreWebView2) addNewWindowRequested(handler *iNewWindowRequestedHandler) error {
 	var token eventRegistrationToken
 	hr, _, _ := v.vtbl.AddNewWindowRequested.Call(
 		uintptr(unsafe.Pointer(v)),
 		uintptr(unsafe.Pointer(handler)),
 		uintptr(unsafe.Pointer(&token)),
 	)
-	return token, hresult(hr)
+	return hresult(hr)
 }
 
 // addWindowCloseRequested is add_WindowCloseRequested([in]
 // ICoreWebView2WindowCloseRequestedEventHandler*, [out]
-// EventRegistrationToken*).
-func (v *iCoreWebView2) addWindowCloseRequested(handler *iViewEventHandler) (eventRegistrationToken, error) {
+// EventRegistrationToken*), for the view's life: the token is never
+// needed.
+func (v *iCoreWebView2) addWindowCloseRequested(handler *iViewEventHandler) error {
 	var token eventRegistrationToken
 	hr, _, _ := v.vtbl.AddWindowCloseRequested.Call(
 		uintptr(unsafe.Pointer(v)),
 		uintptr(unsafe.Pointer(handler)),
 		uintptr(unsafe.Pointer(&token)),
 	)
-	return token, hresult(hr)
+	return hresult(hr)
 }
 
 // ---------------------------------------------------------------------
@@ -68,8 +71,12 @@ func (a *iNewWindowRequestedEventArgs) release() {
 }
 
 // uri is get_Uri: the address the new window is asked to open.
-func (a *iNewWindowRequestedEventArgs) uri() string {
-	return comString(a.vtbl.GetURI, unsafe.Pointer(a))
+func (a *iNewWindowRequestedEventArgs) uri() (string, error) {
+	uri, err := comString(a.vtbl.GetURI, unsafe.Pointer(a))
+	if err != nil {
+		return "", fmt.Errorf("read the new window's address: %w", err)
+	}
+	return uri, nil
 }
 
 // putNewWindow is put_NewWindow([in] ICoreWebView2*): the view the new
@@ -128,11 +135,13 @@ func (d *iCoreWebView2Deferral) release() {
 
 // iNewWindowRequestedHandler is ICoreWebView2NewWindowRequestedEventHandler.
 // Detached, it still refuses the window: a request WebView2 raises after
-// the page went must not fall through to a window of WebView2's own.
+// the page went must not fall through to a window of WebView2's own, and a
+// refusal WebView2 does not take goes to refuseFailed.
 type iNewWindowRequestedHandler struct {
-	vtbl      *handlerVtbl
-	ref       comRef
-	requested callback[func(*iNewWindowRequestedEventArgs)]
+	vtbl         *handlerVtbl
+	ref          comRef
+	requested    callback[func(*iNewWindowRequestedEventArgs)]
+	refuseFailed func(error)
 }
 
 var newWindowRequestedVtbl = handlerVtbl{
@@ -143,15 +152,15 @@ var newWindowRequestedVtbl = handlerVtbl{
 		}
 		if requested, ok := this.requested.load(); ok {
 			requested(args)
-		} else {
-			_ = args.putHandled(true)
+		} else if err := args.putHandled(true); err != nil {
+			this.refuseFailed(err)
 		}
 		return 0
 	}),
 }
 
-func newNewWindowRequestedHandler(requested func(*iNewWindowRequestedEventArgs)) *iNewWindowRequestedHandler {
-	h := &iNewWindowRequestedHandler{vtbl: &newWindowRequestedVtbl}
+func newNewWindowRequestedHandler(requested func(*iNewWindowRequestedEventArgs), refuseFailed func(error)) *iNewWindowRequestedHandler {
+	h := &iNewWindowRequestedHandler{vtbl: &newWindowRequestedVtbl, refuseFailed: refuseFailed}
 	h.requested.set(requested)
 	h.ref.own()
 	return h

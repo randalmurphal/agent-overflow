@@ -95,9 +95,9 @@ const (
 // consumed unchecked.
 const maxAccelerators = 2048
 
-// MaxFindQueryBytes bounds OpFind's query. It travels as a UTF-16 string into
+// maxFindQueryBytes bounds OpFind's query. It travels as a UTF-16 string into
 // COM, which cannot carry a NUL.
-const MaxFindQueryBytes = 1024
+const maxFindQueryBytes = 1024
 
 type Directive struct {
 	Op        Op      `json:"op"`
@@ -154,9 +154,8 @@ type Directive struct {
 	// sent (0 for none): the launcher makes a cancel numbered past the last
 	// it took, so a status also makes a cancel that was lost on the way.
 	Cancel CancelAttempt `json:"cancel,omitempty"`
-	// Ephemeral asks for an InPrivate profile on create, and on
-	// close-profile says the profile directory is expected to be
-	// discarded. It is meaningless on every other op.
+	// Ephemeral asks for an InPrivate profile on create. It is
+	// meaningless on every other op.
 	Ephemeral bool `json:"ephemeral,omitempty"`
 }
 
@@ -167,9 +166,9 @@ type Directive struct {
 // COM layer, not a visibly wrong rectangle.
 const maxPaneDIP = 100000.0
 
-// ErrUnknownOp is what an unrecognised op validates to. The launcher
+// errUnknownOp is what an unrecognised op validates to. The launcher
 // logs and drops on this rather than tearing down the bridge.
-var ErrUnknownOp = errors.New("unknown browser host op")
+var errUnknownOp = errors.New("unknown browser host op")
 
 // Validate enforces the whole contract. It is the trust boundary: the
 // directive names a profile that becomes a directory on disk and a page
@@ -219,8 +218,8 @@ func (d Directive) Validate() error {
 		if err := ValidatePageID(d.PageID); err != nil {
 			return err
 		}
-		if len(d.Query) > MaxFindQueryBytes {
-			return fmt.Errorf("find query of %d bytes exceeds the %d cap", len(d.Query), MaxFindQueryBytes)
+		if len(d.Query) > maxFindQueryBytes {
+			return fmt.Errorf("find query of %d bytes exceeds the %d cap", len(d.Query), maxFindQueryBytes)
 		}
 		if !utf8.ValidString(d.Query) || strings.ContainsRune(d.Query, 0) {
 			return errors.New("find query must be UTF-8 text without NUL")
@@ -242,7 +241,7 @@ func (d Directive) Validate() error {
 		}
 		return nil
 	default:
-		return fmt.Errorf("%w: %q", ErrUnknownOp, d.Op)
+		return fmt.Errorf("%w: %q", errUnknownOp, d.Op)
 	}
 }
 
@@ -345,14 +344,8 @@ func validateBg(bg string) error {
 	if bg == "" {
 		return nil
 	}
-	if len(bg) != 7 || bg[0] != '#' {
+	if _, ok := parsePaneColor(bg); !ok {
 		return fmt.Errorf("background %q is not #rrggbb", bg)
-	}
-	for i := 1; i < 7; i++ {
-		c := bg[i]
-		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
-			return fmt.Errorf("background %q is not #rrggbb", bg)
-		}
 	}
 	return nil
 }

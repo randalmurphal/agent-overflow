@@ -110,8 +110,9 @@ func (m *Manager) pageForDownload(id downloadID) (*managedPage, *jarScope) {
 	return m.endPending[id], nil
 }
 
-// endDelivered forgets download id of p, a page that left, once its row
-// no longer waits for its end.
+// endDelivered forgets that p, a page that left, waits for the end of
+// download id, once its row no longer does; a page waiting for none is
+// left as it is.
 func (m *Manager) endDelivered(p *managedPage, id downloadID) {
 	held := p.downloads.hold()
 	entry := held.entry(id)
@@ -136,13 +137,25 @@ type endedDownloads struct {
 	discards []downloadDiscard
 }
 
+// receivingDriver is a page driver whose engine receives a download's
+// reports before it processes them (the hosted engine's report lanes), so
+// a download it received may not be admitted yet when the page leaves.
+type receivingDriver interface {
+	// TakeReceivedDownloads answers the starts of the page's downloads its
+	// engine received and has not had admitted, but for those listed says
+	// the page lists, oldest first, and hands each to the caller: the
+	// engine applies its later reports to the row the caller lists for it.
+	TakeReceivedDownloads(listed func(downloadID) bool) []downloadStart
+}
+
 // pageLeftLocked takes p out of scope's live pages. Every way a page stops
 // being the Manager's goes through it (a close, a jar switch, a suspend, the
 // engine's own close, the browser's close), so none can leave the page's
-// downloads running with nothing to settle them: they settle here as
-// canceled with reason, but for one whose end its engine received and will
-// deliver (downloadStart.EndReported), which that end settles, and the
-// page admits none after (downloadStarted).
+// downloads running with nothing to settle them: a download its engine
+// received and has not had admitted is listed first (receivingDriver), and
+// they settle here as canceled with reason, but for one whose end its
+// engine received and will deliver (downloadStart.EndReported), which that
+// end settles, and the page admits none after (downloadStarted).
 // The caller holds m.mu, publishes the answer once it is released
 // (publishDownloads), and stops it (stopEndedDownloads) before the profile
 // is disposed.
@@ -158,6 +171,15 @@ func (m *Manager) pageLeftLocked(scope *jarScope, p *managedPage, reason string)
 	ended := endedDownloads{scope: scope}
 	held := p.downloads.hold()
 	held.end()
+	if receiving, ok := p.driver.(receivingDriver); ok {
+		listed := func(id downloadID) bool { return held.entry(id) != nil }
+		for _, start := range receiving.TakeReceivedDownloads(listed) {
+			start = boundedStart(start)
+			entry := m.downloadEntry(start)
+			entry.source = m.downloadFileOf(scope, start.ID)
+			ended.notes = append(ended.notes, m.noteDownloadStartLocked(p, held.add(entry), downloadSource(p, start)))
+		}
+	}
 	for _, entry := range held.running() {
 		// One being published settles when its file is in place
 		// (publishFinishedDownload).

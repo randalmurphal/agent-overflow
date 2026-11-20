@@ -25,9 +25,9 @@ import (
 const MaxPendingPopups = 4
 
 // MaxHostPages bounds the controllers the launcher keeps, created and
-// popups, the backend's tabs and the popups it has not decided on yet. It
-// is the backend's own cap on a process's tabs (browser.maxPagesTotal), so
-// a popup refused here is one the backend would refuse.
+// popups, the backend's tabs and the popups it has not decided on yet. The
+// backend caps a process's tabs at the same value (browser.maxPagesTotal),
+// so a popup refused here is one the backend would refuse.
 const MaxHostPages = 64
 
 // PopupGoneReason is the reason of the interrupted snapshot that ends a

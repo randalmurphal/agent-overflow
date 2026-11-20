@@ -48,11 +48,8 @@ type hostDownload struct {
 // newDownloadToken is the part of a download id unique to one host.
 func newDownloadToken() string {
 	var b [6]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		// crypto/rand does not fail on Windows; a fixed token only loses
-		// uniqueness across launcher runs.
-		return "host"
-	}
+	// crypto/rand.Read always fills b and never returns an error.
+	_, _ = rand.Read(b[:])
 	return hex.EncodeToString(b[:])
 }
 
@@ -64,7 +61,8 @@ func downloadID(host string, n uint64) string {
 
 // watchDownloads takes every download the page starts, so WebView2's own
 // download dialog never opens for it. A runtime without DownloadStarting
-// keeps WebView2's dialog and the pane lists nothing.
+// fails the page's creation, so no page opens whose downloads would reach
+// that dialog.
 func (h *Host) watchDownloads(page *hostPage, view *iCoreWebView2) error {
 	view4 := view.queryWebView4()
 	if view4 == nil {
@@ -73,7 +71,7 @@ func (h *Host) watchDownloads(page *hostPage, view *iCoreWebView2) error {
 	defer view4.release()
 	handler := newDownloadStartingHandler(func(args *iDownloadStartingEventArgs) { h.downloadStarting(page, args) })
 	page.downloadStarting = handler
-	_, err := view4.addDownloadStarting(handler)
+	err := view4.addDownloadStarting(handler)
 	handler.ref.release()
 	if err != nil {
 		return fmt.Errorf("download subscription: %w", err)
@@ -114,7 +112,12 @@ func (h *Host) downloadStarting(page *hostPage, args *iDownloadStartingEventArgs
 		// Reported without an address, and never taken for a resume.
 		h.config.Logf("browser host: page %s: a starting download: %v", page.id, err)
 	}
-	path, uri := args.resultFilePath(), readDownloadAddress(rawURI, err)
+	uri := readDownloadAddress(rawURI, err)
+	path, err := args.resultFilePath()
+	if err != nil {
+		// Reported without a file until its completion's read names one.
+		h.config.Logf("browser host: page %s: a starting download: %v", page.id, err)
+	}
 	reason, err := op.interruptReason()
 	if err != nil {
 		// Read as no resume: a download of its own, nothing running touched.
@@ -141,7 +144,7 @@ func (h *Host) downloadStarting(page *hostPage, args *iDownloadStartingEventArgs
 		page.downloads = make(map[string]*hostDownload)
 	}
 	page.downloads[d.id] = d
-	h.report(page, d.snapshot())
+	h.report(page, h.snapshot(d))
 	// One that ended before its subscriptions were made reports nothing
 	// more on its own.
 	h.reconcileDownload(d, sampleChange)
@@ -211,16 +214,27 @@ func (h *Host) resumeDownload(d *hostDownload, args *iDownloadStartingEventArgs,
 
 // snapshot is the running download's whole state as a report, numbered
 // after the last one taken.
-func (d *hostDownload) snapshot() DownloadReport {
-	return d.take(DownloadRunning, "", "")
+func (h *Host) snapshot(d *hostDownload) DownloadReport {
+	return h.takeDownload(d, DownloadRunning, "", "")
 }
 
-// take is the download's whole state as a report in state, an interrupted
-// one for end, with reason, numbered after the last one taken: snapshot's
-// running one, or the terminal one endDownload makes from an end verdict.
-func (d *hostDownload) take(state string, end DownloadEnd, reason string) DownloadReport {
+// takeDownload is the download's whole state as a report in state, an
+// interrupted one for end, with reason, numbered after the last one taken:
+// snapshot's running one, or the terminal one endDownload makes from an end
+// verdict. A byte count the runtime does not answer keeps the last one read, and
+// the failure is logged.
+func (h *Host) takeDownload(d *hostDownload, state string, end DownloadEnd, reason string) DownloadReport {
 	if d.op != nil {
-		d.received, d.total = d.op.bytesReceived(), d.op.totalBytes()
+		if received, err := d.op.bytesReceived(); err != nil {
+			h.config.Logf("browser host: download %s: %v", d.id, err)
+		} else {
+			d.received = received
+		}
+		if total, err := d.op.totalBytes(); err != nil {
+			h.config.Logf("browser host: download %s: %v", d.id, err)
+		} else {
+			d.total = total
+		}
 	}
 	d.snapshots++
 	return DownloadReport{
@@ -291,12 +305,12 @@ func (h *Host) detachOperation(d *hostDownload) {
 }
 
 // downloadBytes reports a download's snapshot as its bytes change, at most
-// once per DownloadProgressInterval.
+// once per downloadProgressInterval.
 func (h *Host) downloadBytes(d *hostDownload) {
 	if d.op == nil || !d.gate.due(time.Now()) {
 		return
 	}
-	h.report(d.page, d.snapshot())
+	h.report(d.page, h.snapshot(d))
 }
 
 // report sends one snapshot of a page's download.
@@ -319,13 +333,13 @@ func (h *Host) endDownload(d *hostDownload, end downloadVerdict) {
 	if end.kind != verdictEnd {
 		panic("webview2host: a download ended by a verdict that keeps it")
 	}
-	terminal := d.take(end.state, end.end, end.reason)
+	terminal := h.takeDownload(d, end.state, end.end, end.reason)
 	h.releaseOperations(d)
 	delete(d.page.downloads, d.id)
 	d.page.ended.add(terminal)
 	h.report(d.page, terminal)
 	if d.page.closeAfterDownloads && len(d.page.downloads) == 0 {
-		// The page asked to close while this ran (windowCloseRequested).
+		// The page asked to close while this ran (closeAsked).
 		h.closeAsked(d.page)
 	}
 }
