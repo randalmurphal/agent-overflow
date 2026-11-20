@@ -36,8 +36,10 @@ interface OfferedAction {
   readonly launch: string;
 }
 
-// The offered actions by toast id; one leaves as its action is withdrawn,
-// its thread's state stops being kept here, or with its toast.
+// The offered actions by toast id; one leaves as its action is withdrawn or
+// with its toast. An offer whose thread the window stopped watching stays:
+// no state withdraws it, and its action answers that the download is gone
+// when the list no longer resolves it.
 const offered = new Map<string, OfferedAction>();
 
 function homeLaunch(): string {
@@ -63,11 +65,6 @@ observeBrowserCompanion({
       offered.delete(toastId);
       withdrawToastAction(toastId);
     }
-  },
-  // No state of the thread is admitted any more, so none withdraws its
-  // offers; an action that no longer resolves answers that it is gone.
-  threadReleased: (threadId) => {
-    for (const [toastId, offer] of offered) if (offer.threadId === threadId) offered.delete(toastId);
   },
   resetForTest: () => offered.clear(),
 });
