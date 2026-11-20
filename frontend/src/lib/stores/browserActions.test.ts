@@ -463,10 +463,17 @@ describe('pane.close on a browser companion', () => {
 
   // A page id is minted only from a nonblank string, so no page-naming
   // action can be built for an empty page.
-  it('mints no page id from a blank string', () => {
+  // Whitespace alone is blank: an empty string is refused before the
+  // validator runs, so only these reach it.
+  it('mints no page or download id from a blank string', () => {
     expect(pageIdOf('')).toBeNull();
+    expect(pageIdOf('  ')).toBeNull();
+    expect(pageIdOf('\t\n')).toBeNull();
     expect(pageIdOf('a')).toBe('a');
     expect(downloadIdOf('')).toBeNull();
+    expect(downloadIdOf('  ')).toBeNull();
+    expect(downloadIdOf('\t\n')).toBeNull();
+    expect(downloadIdOf('d')).toBe('d');
   });
 
   it('falls through when the focused pane is not a browser companion', () => {
