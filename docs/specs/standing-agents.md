@@ -2044,7 +2044,11 @@ closes up their spacing so the row holds at a phone width.
   settled it is closed for good, whatever its worker does later. It then
   holds no thread from rest, routes no prompt to its spawner, is no row,
   count or Stop, and its Past row shows no figures, which it never
-  recorded. The upgrade rewrites no row for it. A copy of the thread to
+  recorded. An open send written then to a worker its caller spawned
+  falls in that spawn's row, so the worker is one active row however many
+  such requests are open: the spawn while it is open, else its oldest open
+  send. A settled one is a Past row of its own. The upgrade rewrites no row
+  for any of them. A copy of the thread to
   another computer starts at zero; a move takes the counts with it, and a
   thread that moves back brings the work it did there. Its row is framed again, at most every 2 s, for each new
   tool call, one whose line reads as the last one did included, and for

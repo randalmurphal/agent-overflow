@@ -93,13 +93,15 @@ func runLastSettledSQL(alias string) string {
 }
 
 // agentNodeSQL is the token of the listing's row that request alias falls
-// in: for a send that tracks a run of its caller's on a thread the caller
-// spawned, that spawn, here (idx_thread_requests_spawn_link) or on another
+// in: for a send to a thread its caller spawned that tracks a run of the
+// caller's, or that tracks none (written before runs were kept) and is
+// open, that spawn, here (idx_thread_requests_spawn_link) or on another
 // computer (idx_thread_requests_remote_spawn_target), so a worker the
 // caller spawned is one row in its spawn's place; else the request itself.
+// A settled send that tracks no run is a row of its own.
 func agentNodeSQL(alias string) string {
 	a := alias + "."
-	return `(CASE WHEN ` + a + `kind = 'send' AND ` + a + `run_token IS NOT NULL THEN COALESCE(CASE
+	return `(CASE WHEN ` + a + `kind = 'send' AND (` + a + `run_token IS NOT NULL OR ` + a + `settled_at IS NULL) THEN COALESCE(CASE
 	      WHEN ` + a + `target_computer_id = '' THEN (SELECT nl.token FROM thread_requests nl INDEXED BY idx_thread_requests_spawn_link
 	            WHERE ` + agentSpawnLinkSQL("nl") + ` AND nl.target_thread_id = ` + a + `target_thread_id
 	              AND nl.caller_thread_id = ` + a + `caller_thread_id)
@@ -114,9 +116,11 @@ func agentNodeSQL(alias string) string {
 // agentNodeSQL names, shows. A spawn's row shows its caller's newest run
 // on its thread (idx_thread_requests_run_heads, a run's first request):
 // that run's oldest unsettled request, else its first while it is open,
-// else its newest settled (idx_thread_requests_run_token); the spawn when
-// no run is recorded. A spawn not yet given a thread, and any other row,
-// shows its own request.
+// else its newest settled (idx_thread_requests_run_token). When no run is
+// recorded it shows the spawn while it is open, else the oldest open send
+// of its caller's to its thread that tracks no run (untrackedOpenSendSQL),
+// else the spawn. A spawn not yet given a thread, and any other row, shows
+// its own request.
 func agentShownSQL(node string) string {
 	n := node + "."
 	return `(CASE WHEN ` + n + `kind = 'spawn' AND ` + n + `target_thread_id <> '' THEN COALESCE((SELECT COALESCE(
@@ -129,8 +133,24 @@ func agentShownSQL(node string) string {
 	      FROM thread_requests h INDEXED BY idx_thread_requests_run_heads
 	     WHERE h.caller_thread_id = ` + n + `caller_thread_id AND h.target_computer_id = ` + n + `target_computer_id
 	       AND h.target_thread_id = ` + n + `target_thread_id AND h.run_token = h.token
-	     ORDER BY h.created_at DESC LIMIT 1), ` + n + `token)
+	     ORDER BY h.created_at DESC LIMIT 1),
+	    CASE WHEN ` + n + `settled_at IS NULL THEN ` + n + `token END,
+	    (SELECT uo.token FROM thread_requests uo INDEXED BY idx_thread_requests_open_created
+	      WHERE ` + untrackedOpenSendSQL("uo", node) + ` ORDER BY uo.created_at, uo.token LIMIT 1),
+	    ` + n + `token)
 	    ELSE ` + n + `token END)`
+}
+
+// untrackedOpenSendSQL matches a request alias that is an open send of the
+// caller of spawn node to its thread that tracks no run, one written before
+// runs were kept, which a listing reads as a row (agentRowKindSQL). The
+// spawn's row stands for it (agentNodeSQL). It states the terms of
+// idx_thread_requests_open_created, the caller's open requests.
+func untrackedOpenSendSQL(alias, node string) string {
+	a, n := alias+".", node+"."
+	return a + `caller_thread_id = ` + n + `caller_thread_id AND ` + a + `lineage_only = 0 AND ` + a + `settled_at IS NULL
+	        AND ` + a + `kind = 'send' AND ` + a + `run_token IS NULL AND ` + a + `target_computer_id = ` + n + `target_computer_id
+	        AND ` + a + `target_thread_id = ` + n + `target_thread_id AND ` + agentRowKindSQL(alias)
 }
 
 // agentNodeListedSQL is agentRowListedSQL for node, a request agentNodeSQL
@@ -138,12 +158,16 @@ func agentShownSQL(node string) string {
 // newest run on its thread that matches member, alias lm, is
 // (idx_thread_requests_run_heads). That run alone can hold an open
 // request, and its requests settle after every earlier run's, so no
-// earlier run's request is listed without one of it. Below a spawn that
-// does not carry its worker the tree reads only done requests, which
-// member states as doneRowSQL("lm").
+// earlier run's request is listed without one of it. A spawn is listed for
+// an open send to its thread that tracks no run (untrackedOpenSendSQL) as
+// well, alias lm too, which is always listed. Below a spawn that does not
+// carry its worker the tree reads only done requests, which member states
+// as doneRowSQL("lm").
 func agentNodeListedSQL(node, member string) string {
 	n := node + "."
 	return `(` + agentRowListedSQL(node) + ` OR (` + n + `kind = 'spawn' AND ` + n + `target_thread_id <> '' AND EXISTS (
+	    SELECT 1 FROM thread_requests lm INDEXED BY idx_thread_requests_open_created
+	     WHERE ` + untrackedOpenSendSQL("lm", node) + ` AND ` + member + `)) OR (` + n + `kind = 'spawn' AND ` + n + `target_thread_id <> '' AND EXISTS (
 	    SELECT 1 FROM thread_requests lm INDEXED BY idx_thread_requests_run_token
 	     WHERE lm.run_token = (SELECT h.token FROM thread_requests h INDEXED BY idx_thread_requests_run_heads
 	             WHERE h.caller_thread_id = ` + n + `caller_thread_id AND h.target_computer_id = ` + n + `target_computer_id
