@@ -246,7 +246,7 @@ func TestAStagingRunReplacedAsItIsMadeIsNotHeld(t *testing.T) {
 // So is a headless browser's download room.
 func TestADownloadRoomReplacedAsItIsMadeIsNotHeld(t *testing.T) {
 	swapped := swapAsMade(t)
-	if room, err := openDownloadRoom(t.TempDir(), t.Logf); err == nil {
+	if room, err := openRoomIn(t.TempDir(), t.Logf); err == nil {
 		room.close()
 		t.Fatalf("held %s, a directory put at the room's name as it was made", room.path())
 	}
@@ -286,7 +286,7 @@ func TestADirectoryMadeHoldingAnythingIsNotHeld(t *testing.T) {
 	})
 	t.Run("download room", func(t *testing.T) {
 		filled := fillAsMade(t)
-		if room, err := openDownloadRoom(t.TempDir(), t.Logf); err == nil || !strings.Contains(err.Error(), "held theirs as it was made") {
+		if room, err := openRoomIn(t.TempDir(), t.Logf); err == nil || !strings.Contains(err.Error(), "held theirs as it was made") {
 			if err == nil {
 				room.close()
 			}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
 	"regexp"
 
 	"agent-overflow/internal/browser/ids"
@@ -206,6 +207,11 @@ type profileOptions struct {
 	// an engine that keeps them there (downloadsAsArtifacts); empty
 	// otherwise.
 	DownloadDir string
+	// OpenDownloadDir opens DownloadDir, made if it is missing, through the
+	// Manager's held artifact root (openArtifactDir), for the caller to
+	// close: an engine makes what it writes there through the directory it
+	// answers, never by DownloadDir's name. Nil when DownloadDir is empty.
+	OpenDownloadDir func() (*os.Root, error)
 	// StageDownload answers the staged file an engine that stages
 	// (downloadsStaged) writes download id into, resolved as the download
 	// starts (download_staging.go); with an error the engine cancels the

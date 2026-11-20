@@ -98,7 +98,11 @@ func (p *headlessProfile) ensureBrowser() (context.Context, error) {
 // connects to it, both bounded by launchCtx. A failed launch returns only
 // after its process is reaped.
 func (p *headlessProfile) launch(launchCtx context.Context) (*launchedBrowser, error) {
-	room, err := openDownloadRoom(p.downloadDir, p.engine.logf)
+	parent, err := p.openDownloadDir()
+	if err != nil {
+		return nil, fmt.Errorf("browser: open the download directory: %w", err)
+	}
+	room, err := openDownloadRoom(parent, p.downloadDir, p.engine.logf)
 	if err != nil {
 		return nil, err
 	}

@@ -141,8 +141,9 @@ func TestHeadlessJarPolicyAnswersWithTheRequestsOwner(t *testing.T) {
 	engine := newTestHeadlessEngine(t, browser.path)
 	engine.events.PopupOpened = func(enginePopup) {}
 	engine.ownerWait = 100 * time.Millisecond
+	downloads := filepath.Join(t.TempDir(), "downloads")
 	profile, err := engine.NewProfile(context.Background(), profileOptions{
-		Jar: "project:P", DownloadDir: filepath.Join(t.TempDir(), "downloads"), Ephemeral: true,
+		Jar: "project:P", DownloadDir: downloads, OpenDownloadDir: openDirByName(downloads), Ephemeral: true,
 		Allow: jars.profile("project:P").allow,
 	})
 	if err != nil {
@@ -273,8 +274,9 @@ func TestHeadlessJarPolicyAnswersWithTheRequestsOwner(t *testing.T) {
 // is refused rather than created.
 func TestHeadlessProfileRequiresANavigationPolicy(t *testing.T) {
 	engine := newTestHeadlessEngine(t, writeFakeChromium(t, "chromium").path)
+	downloads := filepath.Join(t.TempDir(), "downloads")
 	if _, err := engine.NewProfile(context.Background(), profileOptions{
-		Jar: "/home/dev/repo", DownloadDir: filepath.Join(t.TempDir(), "downloads"), Ephemeral: true,
+		Jar: "/home/dev/repo", DownloadDir: downloads, OpenDownloadDir: openDirByName(downloads), Ephemeral: true,
 	}); err == nil {
 		t.Fatal("a profile with no navigation policy was created")
 	}

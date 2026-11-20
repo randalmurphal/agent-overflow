@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -215,7 +216,8 @@ func (m *Manager) bundleAssets(ctx context.Context, p *managedPage, opts AssetOp
 	if err != nil {
 		return AssetBundle{}, err
 	}
-	defer closeArtifactDir(held, dir)
+	closeHeld := sync.OnceFunc(func() { closeArtifactDir(held, dir) })
+	defer closeHeld()
 	// The manifest's name is taken before any asset's, so an asset named
 	// like it gets the next variant name (uniqueArtifactName).
 	const manifestName = "manifest.json"
@@ -297,8 +299,45 @@ func (m *Manager) bundleAssets(ctx context.Context, p *managedPage, opts AssetOp
 	}
 	settledBytes += int64(len(manifest) + 1)
 	bundle.ManifestPath = manifestPath
+	// Every path the bundle hands out must name the file written, in the
+	// folder held; when the artifact folder's name was moved since it was
+	// held, the bundle is not kept, and what it wrote goes through the held
+	// root, its bytes settled as kept only if they stay.
+	if err := bundleNamesReach(held, bundle, manifestName); err != nil {
+		closeHeld()
+		removeErr := m.removeArtifactDir(dir)
+		if removeErr == nil {
+			settledBytes = 0
+		}
+		return AssetBundle{}, errors.Join(err, removeErr)
+	}
 	bundle.Summary = map[string]any{"requestedCount": len(selected), "downloadedCount": len(bundle.Assets), "failedCount": len(bundle.Failures), "elapsedMs": time.Since(started).Milliseconds(), "bytes": total}
 	return bundle, nil
+}
+
+// bundleNamesReach answers nil when the bundle's directory, manifest and
+// asset paths each reach the file or folder written through held, the
+// bundle's directory (nameReaches).
+func bundleNamesReach(held *os.Root, bundle AssetBundle, manifestName string) error {
+	reach := func(path, name string) error {
+		written, err := held.Stat(name)
+		if err != nil {
+			return fmt.Errorf("browser: read the asset bundle's %s: %w", name, err)
+		}
+		return nameReaches(path, written)
+	}
+	if err := reach(bundle.DirectoryPath, "."); err != nil {
+		return err
+	}
+	if err := reach(bundle.ManifestPath, manifestName); err != nil {
+		return err
+	}
+	for _, asset := range bundle.Assets {
+		if err := reach(asset.Path, filepath.Base(asset.Path)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func assetInventoryExpression() string {

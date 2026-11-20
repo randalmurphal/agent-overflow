@@ -75,7 +75,7 @@ func newTrackerManagerRig(t *testing.T) *trackerManagerRig {
 	r.frame, r.jarDir = string(p.driver.Handle()), scope.downloadDir
 	scope.profile = trackerProfile{engineProfile: scope.profile, rig: r}
 	manager.mu.Unlock()
-	room, err := openDownloadRoom(r.jarDir, t.Logf)
+	room, err := openRoomIn(r.jarDir, t.Logf)
 	if err != nil {
 		t.Fatal(err)
 	}

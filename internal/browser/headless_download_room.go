@@ -57,17 +57,15 @@ type downloadRoom struct {
 	handed map[downloadID]os.FileInfo
 }
 
-// openDownloadRoom makes a new room in dir, made if it is missing, for one
-// browser process, and holds only the directory it made, found empty
-// (openMadeDir).
-func openDownloadRoom(dir string, logf func(string, ...any)) (*downloadRoom, error) {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, fmt.Errorf("browser: create the download directory: %w", err)
-	}
-	parent, err := os.OpenRoot(dir)
-	if err != nil {
-		return nil, fmt.Errorf("browser: open the download directory: %w", err)
-	}
+// openDownloadRoom makes a new room for one browser process in parent,
+// the profile's download directory held open (profileOptions.
+// OpenDownloadDir), named dir, and takes parent over. It holds only the
+// directory it made, found empty (openMadeDir), and refuses the launch
+// unless the path Chromium will be told, the room's name under dir,
+// reaches the room held (nameReaches): a directory moved in at a name on
+// that path would send Chromium's writes where AO neither holds nor
+// measures them.
+func openDownloadRoom(parent *os.Root, dir string, logf func(string, ...any)) (*downloadRoom, error) {
 	name := "chromium-" + rand.Text()
 	if err := parent.Mkdir(name, 0o700); err != nil {
 		return nil, errors.Join(fmt.Errorf("browser: create the browser's download directory: %w", err), parent.Close())
@@ -76,7 +74,23 @@ func openDownloadRoom(dir string, logf func(string, ...any)) (*downloadRoom, err
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("browser: open the browser's download directory: %w", err), parent.Close())
 	}
+	if err := nameReaches(filepath.Join(dir, name), held); err != nil {
+		return nil, errors.Join(fmt.Errorf("browser: the browser is not launched: %w", err), room.Close(), removeMadeIn(parent, name, held), parent.Close())
+	}
 	return &downloadRoom{logf: logf, dir: dir, parent: parent, name: name, room: room, held: held, handed: map[downloadID]os.FileInfo{}}, nil
+}
+
+// removeMadeIn removes name from parent, held open, while it is still the
+// directory made there, held, and empty; anything else at the name stays.
+func removeMadeIn(parent *os.Root, name string, held os.FileInfo) error {
+	current, err := parent.Lstat(name)
+	if err != nil || !os.SameFile(current, held) {
+		return nil
+	}
+	if err := parent.Remove(name); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("browser: remove the browser's download directory %s: %w", name, err)
+	}
+	return nil
 }
 
 // path is the room's directory, where Chromium is told to write.

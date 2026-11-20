@@ -5,13 +5,35 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+// openDirByName is a profile's OpenDownloadDir for a download directory no
+// Manager holds: dir, made if it is missing, opened by its name.
+func openDirByName(dir string) func() (*os.Root, error) {
+	return func() (*os.Root, error) {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return nil, err
+		}
+		return os.OpenRoot(dir)
+	}
+}
+
+// openRoomIn opens a download room in dir opened by its name
+// (openDirByName).
+func openRoomIn(dir string, logf func(string, ...any)) (*downloadRoom, error) {
+	parent, err := openDirByName(dir)()
+	if err != nil {
+		return nil, err
+	}
+	return openDownloadRoom(parent, dir, logf)
+}
 
 func newTestRoom(t *testing.T) (*downloadRoom, string) {
 	t.Helper()
 	dir := t.TempDir()
-	room, err := openDownloadRoom(dir, t.Logf)
+	room, err := openRoomIn(dir, t.Logf)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +71,7 @@ func wantThere(t *testing.T, path string) {
 // file.
 func TestDownloadRoomHandsOverAndDiscards(t *testing.T) {
 	room, dir := newTestRoom(t)
-	other, err := openDownloadRoom(dir, t.Logf)
+	other, err := openRoomIn(dir, t.Logf)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +111,7 @@ func TestDownloadRoomHandsOverAndDiscards(t *testing.T) {
 // and other processes' rooms stay.
 func TestDownloadRoomEmptiesAndCloses(t *testing.T) {
 	room, dir := newTestRoom(t)
-	other, err := openDownloadRoom(dir, t.Logf)
+	other, err := openRoomIn(dir, t.Logf)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,4 +254,39 @@ func TestDownloadRoomWithdrawsOnlyWhatItPlaced(t *testing.T) {
 	}
 	room.withdraw("replaced")
 	wantBytes(t, path, "not AO's")
+}
+
+// A room is made in the download directory held, and Chromium is told its
+// path by name: when that name no longer reaches the room held, the
+// directory having moved since it was held, the launch is refused, the
+// room made is removed from the directory held, and nothing is made at the
+// name's new place.
+func TestADownloadRoomWhosePathNoLongerReachesItIsRefused(t *testing.T) {
+	base := t.TempDir()
+	dir := filepath.Join(base, "downloads")
+	parent, err := openDirByName(dir)()
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := filepath.Join(base, "held")
+	if err := os.Rename(dir, held); err != nil {
+		t.Fatal(err)
+	}
+	elsewhere := t.TempDir()
+	if err := os.Symlink(elsewhere, dir); err != nil {
+		t.Fatal(err)
+	}
+	room, err := openDownloadRoom(parent, dir, t.Logf)
+	if err == nil {
+		room.close()
+		t.Fatalf("a room at %s was opened though that path no longer reaches it", room.path())
+	}
+	if !strings.Contains(err.Error(), "AO wrote there") {
+		t.Fatalf("the launch was refused with %v, want the path's reason", err)
+	}
+	for _, place := range []string{held, elsewhere} {
+		if entries, err := os.ReadDir(place); err != nil || len(entries) != 0 {
+			t.Fatalf("%s holds %v after the refused room: %v", place, entries, err)
+		}
+	}
 }
