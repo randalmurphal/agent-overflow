@@ -536,14 +536,19 @@ behave as a desktop browser's:
   the state push each move one tab. Reload names the tab the window shows
   (or the page the chord was pressed in) as close does, and reloads
   nothing when that tab closes first. The tab menu's and the address
-  bar's reload name their tab too.
+  bar's reload name their tab too. Before the pane's attach answers, the
+  commands that send are not available (`browserPaneUnattached`): the
+  palette does not offer them, and their chords stay the pane's and do
+  nothing.
 - The desktop and Windows launcher windows bind `mod+r` to reloading the app
   before the SPA sees the key. While the browser pane is focused and the
   effective keybindings run a command for `mod+r` there, the SPA asks over
   the webview's raw message channel for the chord. The window then hands it
   over, and the SPA replays it as a keydown through the keybinding
-  dispatcher, as it does a chord claimed in the page; a chord nothing runs
-  goes back and reloads the app
+  dispatcher, as it does a chord claimed in the page. The chord is asked
+  for whether or not the pane has attached, and one the pane still
+  reserves does nothing when nothing runs it; a chord handed over after the
+  pane stopped reserving it goes back and reloads the app
   (`internal/uikeys/pagechords.go`, `frontend/src/lib/native/shellChords.svelte.ts`).
   `mod+shift+r` always reloads the app. The `--connect` window hosts no
   native page and keeps the plain binding.

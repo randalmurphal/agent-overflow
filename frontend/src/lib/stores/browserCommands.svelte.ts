@@ -5,15 +5,30 @@
 // chords keep their meaning elsewhere. A chord pressed in the native page
 // arrives as a replay after the pane was focused (browserCompanion.svelte.ts
 // replayBrowserAccelerator). Closing a tab is `pane.close`. A pane whose
-// attach has not answered has nothing to send: its chords do nothing.
+// attach has not answered has nothing to send, so its commands that send
+// are not available (`browserPaneUnattached`): the palette does not offer
+// them and running one reports that nothing ran. Its chords stay the pane's
+// (browserPaneReservesChord), so a chord pressed before the attach answers
+// does nothing rather than what it means elsewhere.
 
-import { registerCommand } from './commandRegistry.svelte';
+import { registerCommand, type CommandContext } from './commandRegistry.svelte';
+import { keyWouldDispatch } from './keybindings.svelte';
 import { actInPane, focusedBrowser, keyboardTabTarget, openBrowserTabInPane } from './browserActions';
 import { browserAction } from './browserActionWire';
 import { focusBrowserAddressBar } from './browserAddressFocus.svelte';
 
 export function isBrowserPaneFocused(): boolean {
   return focusedBrowser() !== null;
+}
+
+/**
+ * Whether the keyboard's browser pane owns `event`'s chord in `context`: a
+ * command runs for it there once the pane is attached, whether or not it is
+ * yet. The chord is then the pane's to run or to do nothing with, never one
+ * to hand on (the native shell's reload, shellChords.svelte.ts). Reactive.
+ */
+export function browserPaneReservesChord(event: KeyboardEvent, context: CommandContext): boolean {
+  return isBrowserPaneFocused() && keyWouldDispatch(event, { ...context, flags: { ...context.flags, browserPaneUnattached: false } });
 }
 
 /**
@@ -26,7 +41,10 @@ function stepTab(step: 1 | -1): void {
   if (pane) void actInPane(pane, browserAction.step(step));
 }
 
+// Focusing the address sends nothing, so it is offered attached or not; the
+// rest send from the pane's attachment and need one.
 const WHEN = 'browserPaneFocused && !overlayOpen';
+const SEND_WHEN = 'browserPaneFocused && !browserPaneUnattached && !overlayOpen';
 
 export function registerBrowserCommands(): void {
   registerCommand({
@@ -34,7 +52,7 @@ export function registerBrowserCommands(): void {
     label: 'Browser: New Tab',
     description: 'Open a new tab in the focused browser pane and put the cursor in its address bar.',
     icon: '+',
-    when: WHEN,
+    when: SEND_WHEN,
     editableReachable: true,
     run: () => {
       const pane = focusedBrowser()?.pane;
@@ -58,7 +76,7 @@ export function registerBrowserCommands(): void {
     id: 'browser.reload',
     label: 'Browser: Reload Page',
     icon: '↻',
-    when: WHEN,
+    when: SEND_WHEN,
     editableReachable: true,
     // Names the tab the window shows, or the page the chord was pressed
     // in, so a tab switch still on its way never reloads another tab.
@@ -73,7 +91,7 @@ export function registerBrowserCommands(): void {
     id: 'browser.nextTab',
     label: 'Browser: Next Tab',
     icon: '→',
-    when: WHEN,
+    when: SEND_WHEN,
     editableReachable: true,
     run: () => stepTab(1),
   });
@@ -82,7 +100,7 @@ export function registerBrowserCommands(): void {
     id: 'browser.prevTab',
     label: 'Browser: Previous Tab',
     icon: '←',
-    when: WHEN,
+    when: SEND_WHEN,
     editableReachable: true,
     run: () => stepTab(-1),
   });
@@ -92,7 +110,7 @@ export function registerBrowserCommands(): void {
     label: 'Browser: Reopen Closed Tab',
     description: 'Reopen the tab most recently closed in the focused browser pane, where it was.',
     icon: '↺',
-    when: WHEN,
+    when: SEND_WHEN,
     editableReachable: true,
     run: () => {
       const pane = focusedBrowser()?.pane;
