@@ -255,7 +255,20 @@ func (s *Store) SetTrackerConnectionTokenExpiry(id string, expiresAt int64) (Tra
 // that belongs to it, and with them the boards projects list through them.
 // It returns the IDs it deleted, the connection's first, so the caller can
 // delete their key files; none when the connection did not exist.
-func (s *Store) DeleteTrackerConnection(id string) (deleted []string, err error) {
+//
+// The removal detaches the connection's mirror root (ON DELETE SET NULL)
+// in its own transaction; once that commits, the mirror's rows are drained
+// in clearMirrorChunk batches, each its own transaction. A drain that
+// fails returns the deleted IDs with an error wrapping
+// ErrTrackerCacheDrain: the removal stands, and ResumeMirrorClears
+// finishes the drain.
+func (s *Store) DeleteTrackerConnection(id string) ([]string, error) {
+	return s.deleteTrackerConnection(id, nil)
+}
+
+// deleteTrackerConnection is DeleteTrackerConnection with pause run before
+// each transaction of the drain.
+func (s *Store) deleteTrackerConnection(id string, pause ChunkPause) (deleted []string, err error) {
 	action := fmt.Sprintf("store: delete tracker connection %s", id)
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -265,6 +278,10 @@ func (s *Store) DeleteTrackerConnection(id string) (deleted []string, err error)
 	children, err := queryIDs(tx, `SELECT id FROM tracker_connections WHERE parent_id = ? ORDER BY id`, id)
 	if err != nil {
 		return nil, fmt.Errorf("%s: list the connections it owns: %w", action, err)
+	}
+	roots, err := mirrorRootsOfConnectionTx(tx, id)
+	if err != nil {
+		return nil, fmt.Errorf("%s: list its mirrors: %w", action, err)
 	}
 	gone, err := queryIDs(tx, `DELETE FROM tracker_connections WHERE id = ? RETURNING id`, id)
 	if err != nil {
@@ -276,7 +293,13 @@ func (s *Store) DeleteTrackerConnection(id string) (deleted []string, err error)
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("%s: commit: %w", action, err)
 	}
-	return append(gone, children...), nil
+	deleted = append(gone, children...)
+	for _, root := range roots {
+		if err := s.drainMirrorRoot(root, pause); err != nil {
+			return deleted, fmt.Errorf("%s: %w: %w", action, ErrTrackerCacheDrain, err)
+		}
+	}
+	return deleted, nil
 }
 
 // applyTrackerConnectionRowWriteTx is the tracker_connections entry point of

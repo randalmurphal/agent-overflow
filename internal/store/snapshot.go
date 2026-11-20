@@ -224,6 +224,12 @@ WHERE saved.thread_id = owned.id AND saved.direction = 'incoming' AND saved.phas
 	}
 	var copied []string
 	for _, table := range tables {
+		if restoreEmptiesTable(table) {
+			if _, err := tx.Exec(`DELETE FROM main."` + table + `"`); err != nil {
+				return Identity{}, fmt.Errorf("store: restore: empty %s: %w", table, err)
+			}
+			continue
+		}
 		if restoreSkipsTable(table) {
 			continue
 		}
@@ -349,6 +355,8 @@ WHERE saved.thread_id = owned.id AND saved.direction = 'incoming' AND saved.phas
 // The `thread_search*` family is skipped for the opposite reason: it is
 // derived, and an FTS5 table's shadow tables have no meaning apart from the
 // virtual table that owns them. RestoreFrom recreates them empty instead.
+// The tracker mirror is emptied before this list is read
+// (restoreEmptiesTable).
 func restoreSkipsTable(table string) bool {
 	switch table {
 	case "thread_transfers", "thread_transfer_sessions", "remote_jobs", "remote_watches",
@@ -356,6 +364,14 @@ func restoreSkipsTable(table string) bool {
 		return true
 	}
 	return strings.HasPrefix(table, "thread_search")
+}
+
+// restoreEmptiesTable reports a table of the tracker mirror
+// (tracker_cache_*), which a restore leaves empty: it caches the trackers,
+// not the snapshot, and the connections its roots belong to were just
+// replaced. The next sync fills it.
+func restoreEmptiesTable(table string) bool {
+	return strings.HasPrefix(table, "tracker_cache_")
 }
 
 // migratedScratchCopy copies the snapshot beside itself and runs the

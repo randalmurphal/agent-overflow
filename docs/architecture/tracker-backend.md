@@ -209,10 +209,12 @@ to the computer and are rows in `tracker_connections`.
 - Editing the key file and opening the token page need the `host` scope and
   have no remote form. Every other call works from a connected browser or
   another computer and acts on the computer the call is routed to.
-- Removing a connection deletes its key file, then its row and, through
-  the schema, its mirror, with the Tempo connection that belongs to it. A
-  failure part way leaves a row with no key file, never a key file with no
-  row. Turning a connection off keeps the row and the key
+- Removing a connection deletes its key file, then its row, which
+  detaches its mirror's root in the same transaction; the mirror's rows are
+  then deleted in bounded batches, and a drain that a failure or a crash
+  cuts short is finished at the next start. The Tempo connection that
+  belongs to it goes with it. A failure part way leaves a row with no key
+  file, never a key file with no row. Turning a connection off keeps the row and the key
   file, stops its pumps, closes its clients and clears its mirror. A Jira
   connection turned off also closes the client of the Tempo connection
   that belongs to it, whose row stays as it is.
@@ -250,31 +252,36 @@ classification:
 
 - Each row belongs, directly or through its parents, to a
   `tracker_cache_roots` row, with `ON DELETE CASCADE` all the way down. A
-  connection has at most one root. Clearing a connection's mirror deletes
-  its rows in bounded batches and then its root. A test walks the schema
-  and fails for a `tracker_cache_*` table that does not reach the root this
-  way, and for any other table that references one.
-- A restore recreates these tables empty, as it does the search tables.
+  connection has at most one root. A root whose connection is cleared or
+  removed is detached first: every write naming it is refused, the
+  connection can take a new root, and the detached root's rows are deleted
+  in bounded batches and then the root. A test walks the schema and fails
+  for a `tracker_cache_*` table that does not reach a root by
+  `ON DELETE CASCADE` keys, for a `SET NULL` key other than the root's link
+  to its connection, and for any other table that references one.
+- A restore empties these tables.
 - Their shape changes by dropping and recreating them in a migration; the
   next sync fills them. They are never altered in place.
 - Rows hold columns for whatever a board, a backlog or a metric query
-  filters or sorts by, and one JSON column for the rest of a card.
+  filters or sorts by, and one opaque column for the rest of a card, which
+  `trackerapp` encodes.
 
 | Table | Holds |
 |---|---|
 | `tracker_cache_roots` | One row per mirror, with its own ID and its connection. |
 | `tracker_cache_projects`, `_users`, `_statuses` | Structure shared by a connection's boards. |
 | `tracker_cache_boards` | A board's name, kind, estimate and columns. |
-| `tracker_cache_sprints` | Sprints of a board: state and dates. |
+| `tracker_cache_sprints` | Sprints as each board shows them, with the board each was made on (a Jira sprint can show on several boards): state and dates. |
 | `tracker_cache_issues` | Cards, one per issue per mirror. |
 | `tracker_cache_board_issues` | Which issues are on which board, each with that board's order key and estimate. |
 | `tracker_cache_issue_sprints` | Which sprints an issue is or was in. |
 | `tracker_cache_changes` | Status, sprint, estimate and assignee changes with their times and authors. The issue row holds the time from which they are complete. |
 | `tracker_cache_issue_details` | The detail of recently opened issues, one JSON document each. |
-| `tracker_cache_worklogs` | Logged time by issue, author and day. |
-| `tracker_cache_sync` | Per scope: the provider's cursor, last read, last reconcile, last failure. |
+| `tracker_cache_worklogs` | Logged time by issue, author and day. A Tempo connection has no mirror of its own; its worklogs are in its Jira connection's. |
+| `tracker_cache_sync` | Per scope: the provider's cursor, last read, last reconcile, last failure. The linked-issues scope has no cursor: it reads its cards by ID. |
 
-Metric queries read versioned views over these tables, never the tables.
+Metric queries will read versioned views over these tables, never the
+tables; no view is built yet.
 
 ### What the mirror holds
 
@@ -292,9 +299,21 @@ For each board some app project lists:
   changes are complete gets none and shows the issue as not counted.
 
 Plus, per connection: the issues linked to threads, and the detail of the
-200 most recently opened issues. An issue outside every listed board is
-read from the tracker when asked for and is not kept unless a thread links
-it.
+200 most recently opened issues the mirror holds. An issue outside every
+listed board is read from the tracker when asked for and is not kept unless
+a thread links it.
+
+An issue stays while it is on a listed board or a thread this computer owns
+links it on that connection's site. It leaves at once when its last board
+row goes. When a link goes (an unlink, the thread's delete, its retire to a
+holder, a move to another computer) the linked-issues sync removes the
+issue on its next tick, by a sweep of the issues with no board row; no
+caller prunes. Its changes, sprints and detail go with it.
+
+A board's backlog is its rows in no future or active sprint of that board
+whose status is not in the done or canceled group, by the group the mirror
+holds. A status the mirror does not know yet counts as not done. A board
+that plans no sprints shows every row that is not done.
 
 ## Sync
 
@@ -372,7 +391,8 @@ The mirror is never written ahead of the tracker. A client that shows a
 drop before the answer owns that preview and replaces it with the event.
 
 A write an agent made is recorded in `tracker_agent_writes` (thread, issue,
-what changed, when), which the ticket's history view joins.
+what changed, when), which the ticket's history view joins. That table is
+added with the agent tools.
 
 ## Methods and events
 

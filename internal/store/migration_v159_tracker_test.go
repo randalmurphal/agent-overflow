@@ -1,6 +1,7 @@
 package store
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -84,6 +85,117 @@ func TestTrackerMigrationCreatesTheDurableTables(t *testing.T) {
 	mustExec(t, db, board+`('q','l2','team-b',0,1)`)
 	mustExec(t, db, `DELETE FROM projects WHERE id = 'q'`)
 	assertRows(t, db, `SELECT count(*) FROM project_tracker_boards`, "0")
+}
+
+// v159 creates the mirror. Each refused statement below is valid but for
+// the one rule it names; removing the connection takes every mirror row.
+func TestTrackerMigrationCreatesTheMirror(t *testing.T) {
+	db := migrateThrough(t, trackerMigrationVersion)
+	mustExec(t, db, `INSERT INTO tracker_connections(id,kind,site,account,created_at) VALUES
+		('j1','jira','https://example.atlassian.net','user1@example.com',1), ('l1','linear','workspace-a','',1)`)
+	for _, valid := range []string{
+		`INSERT INTO tracker_cache_roots(id,connection_id,created_at) VALUES ('r1','j1',1), ('r2','l1',1), ('d1',NULL,1), ('d2',NULL,1)`,
+		`INSERT INTO tracker_cache_projects(root_id,project_id,project_key,name) VALUES ('r1','100','WEB','Web')`,
+		`INSERT INTO tracker_cache_users(root_id,user_id,name) VALUES ('r1','acc-user1','User 1')`,
+		`INSERT INTO tracker_cache_statuses(root_id,status_id,name,status_group) VALUES ('r1','1','To Do',2)`,
+		`INSERT INTO tracker_cache_boards(root_id,board_id,project_id,name,plans_sprints,estimate_unit) VALUES ('r1','10','100','WEB board',1,1)`,
+		`INSERT INTO tracker_cache_board_columns(root_id,board_id,position,name) VALUES ('r1','10',0,'To do'), ('r1','10',1,'Done')`,
+		`INSERT INTO tracker_cache_board_column_statuses(root_id,board_id,position,status_id,rank) VALUES ('r1','10',0,'1',0)`,
+		`INSERT INTO tracker_cache_sprints(root_id,board_id,sprint_id,position,state) VALUES ('r1','10','21',0,2)`,
+		`INSERT INTO tracker_cache_issues(root_id,issue_id,issue_key,updated_at) VALUES ('r1','10001','WEB-1',5), ('r1','10003','WEB-3',5)`,
+		`INSERT INTO tracker_cache_board_issues(root_id,board_id,issue_id,order_key,estimate) VALUES ('r1','10','10001','a',3)`,
+		`INSERT INTO tracker_cache_issue_sprints(root_id,issue_id,sprint_id) VALUES ('r1','10001','21')`,
+		`INSERT INTO tracker_cache_changes(root_id,issue_id,kind,seq,at,board_id,to_number) VALUES ('r1','10001','estimate',0,2,'10',3)`,
+		`INSERT INTO tracker_cache_issue_details(root_id,issue_id,opened_at,data) VALUES ('r1','10001',7,x'7b7d')`,
+		`INSERT INTO tracker_cache_worklogs(root_id,worklog_id,issue_id,author_id,day,spent_seconds) VALUES ('r1','w1','10001','acc-user1','2026-01-05',60)`,
+		`INSERT INTO tracker_cache_sync(root_id,board_id,cursor,failed_at,failure_kind,failure_message) VALUES ('r1','10',x'01',5,'setup','Sign in again.')`,
+	} {
+		mustExec(t, db, valid)
+	}
+	for name, bad := range map[string]string{
+		"second root of a connection": `INSERT INTO tracker_cache_roots(id,connection_id,created_at) VALUES ('r3','j1',1)`,
+		"root of missing connection":  `INSERT INTO tracker_cache_roots(id,connection_id,created_at) VALUES ('r3','missing',1)`,
+		"root with no time":           `INSERT INTO tracker_cache_roots(id,connection_id,created_at) VALUES ('r3',NULL,0)`,
+		"row of missing root":         `INSERT INTO tracker_cache_users(root_id,user_id) VALUES ('gone','acc-user2')`,
+		"board of missing root":       `INSERT INTO tracker_cache_boards(root_id,board_id) VALUES ('missing','10')`,
+		"status group":                `INSERT INTO tracker_cache_statuses(root_id,status_id,status_group) VALUES ('r1','2',6)`,
+		"estimate unit":               `INSERT INTO tracker_cache_boards(root_id,board_id,estimate_unit) VALUES ('r1','11',3)`,
+		"column of missing board":     `INSERT INTO tracker_cache_board_columns(root_id,board_id,position) VALUES ('r1','11',0)`,
+		"status of missing column":    `INSERT INTO tracker_cache_board_column_statuses(root_id,board_id,position,status_id,rank) VALUES ('r1','10',5,'3',0)`,
+		"status in two columns":       `INSERT INTO tracker_cache_board_column_statuses(root_id,board_id,position,status_id,rank) VALUES ('r1','10',1,'1',0)`,
+		"sprint state":                `INSERT INTO tracker_cache_sprints(root_id,board_id,sprint_id,position,state) VALUES ('r1','10','22',1,4)`,
+		"sprint of missing board":     `INSERT INTO tracker_cache_sprints(root_id,board_id,sprint_id,position,state) VALUES ('r1','11','22',1,1)`,
+		"issue with no update time":   `INSERT INTO tracker_cache_issues(root_id,issue_id,issue_key,updated_at) VALUES ('r1','10002','WEB-2',0)`,
+		"issue with no key":           `INSERT INTO tracker_cache_issues(root_id,issue_id,issue_key,updated_at) VALUES ('r1','10002','',5)`,
+		"row of missing issue":        `INSERT INTO tracker_cache_board_issues(root_id,board_id,issue_id) VALUES ('r1','10','10002')`,
+		"row of missing board":        `INSERT INTO tracker_cache_board_issues(root_id,board_id,issue_id) VALUES ('r1','11','10001')`,
+		"sprint of missing issue":     `INSERT INTO tracker_cache_issue_sprints(root_id,issue_id,sprint_id) VALUES ('r1','10002','21')`,
+		"unknown change":              `INSERT INTO tracker_cache_changes(root_id,issue_id,kind,seq,at) VALUES ('r1','10001','priority',0,2)`,
+		"estimate with no board":      `INSERT INTO tracker_cache_changes(root_id,issue_id,kind,seq,at) VALUES ('r1','10001','estimate',1,2)`,
+		"status with a board":         `INSERT INTO tracker_cache_changes(root_id,issue_id,kind,seq,at,board_id) VALUES ('r1','10001','status',0,2,'10')`,
+		"status with numbers":         `INSERT INTO tracker_cache_changes(root_id,issue_id,kind,seq,at,to_number) VALUES ('r1','10001','status',0,2,1)`,
+		"estimate with IDs":           `INSERT INTO tracker_cache_changes(root_id,issue_id,kind,seq,at,board_id,to_value) VALUES ('r1','10001','estimate',1,2,'10','x')`,
+		"change with no time":         `INSERT INTO tracker_cache_changes(root_id,issue_id,kind,seq,at) VALUES ('r1','10001','status',0,0)`,
+		"detail of missing issue":     `INSERT INTO tracker_cache_issue_details(root_id,issue_id,opened_at,data) VALUES ('r1','10002',7,x'')`,
+		"detail with no open time":    `INSERT INTO tracker_cache_issue_details(root_id,issue_id,opened_at,data) VALUES ('r1','10003',0,x'')`,
+		"worklog day":                 `INSERT INTO tracker_cache_worklogs(root_id,worklog_id,issue_id,author_id,day,spent_seconds) VALUES ('r1','w2','1','a','2026-1-5',60)`,
+		"worklog with no time":        `INSERT INTO tracker_cache_worklogs(root_id,worklog_id,issue_id,author_id,day,spent_seconds) VALUES ('r1','w2','1','a','2026-01-05',0)`,
+		"failure kind":                `INSERT INTO tracker_cache_sync(root_id,board_id,failed_at,failure_kind) VALUES ('r1','',5,'flaky')`,
+		"failure with no time":        `INSERT INTO tracker_cache_sync(root_id,board_id,failure_kind) VALUES ('r1','','setup')`,
+		"note with no failure":        `INSERT INTO tracker_cache_sync(root_id,board_id,failure_message) VALUES ('r1','','x')`,
+
+		"empty root ID":            `UPDATE tracker_cache_roots SET id = '' WHERE id = 'd2'`,
+		"empty project":            `UPDATE tracker_cache_projects SET project_id = ''`,
+		"empty user":               `UPDATE tracker_cache_users SET user_id = ''`,
+		"empty status":             `UPDATE tracker_cache_statuses SET status_id = ''`,
+		"empty board":              `INSERT INTO tracker_cache_boards(root_id,board_id) VALUES ('r1','')`,
+		"plans sprints not a flag": `UPDATE tracker_cache_boards SET plans_sprints = 2`,
+		"negative column":          `INSERT INTO tracker_cache_board_columns(root_id,board_id,position) VALUES ('r1','10',-1)`,
+		"empty column status":      `UPDATE tracker_cache_board_column_statuses SET status_id = ''`,
+		"negative rank":            `UPDATE tracker_cache_board_column_statuses SET rank = -1`,
+		"empty sprint":             `UPDATE tracker_cache_sprints SET sprint_id = ''`,
+		"negative sprint position": `UPDATE tracker_cache_sprints SET position = -1`,
+		"negative sprint start":    `UPDATE tracker_cache_sprints SET start_at = -1`,
+		"negative sprint end":      `UPDATE tracker_cache_sprints SET end_at = -1`,
+		"negative sprint complete": `UPDATE tracker_cache_sprints SET completed_at = -1`,
+		"empty issue":              `INSERT INTO tracker_cache_issues(root_id,issue_id,issue_key,updated_at) VALUES ('r1','','WEB-2',5)`,
+		"negative created":         `UPDATE tracker_cache_issues SET created_at = -1`,
+		"negative resolved":        `UPDATE tracker_cache_issues SET resolved_at = -1`,
+		"negative history from":    `UPDATE tracker_cache_issues SET history_from = -1`,
+		"negative history to":      `UPDATE tracker_cache_issues SET history_to = -1`,
+		"empty issue sprint":       `UPDATE tracker_cache_issue_sprints SET sprint_id = ''`,
+		"negative change seq":      `UPDATE tracker_cache_changes SET seq = -1`,
+		"empty worklog":            `UPDATE tracker_cache_worklogs SET worklog_id = ''`,
+		"worklog with no issue":    `UPDATE tracker_cache_worklogs SET issue_id = ''`,
+		"worklog with no author":   `UPDATE tracker_cache_worklogs SET author_id = ''`,
+		"negative worklog update":  `UPDATE tracker_cache_worklogs SET updated_at = -1`,
+		"negative read time":       `UPDATE tracker_cache_sync SET read_at = -1`,
+		"negative reconcile time":  `UPDATE tracker_cache_sync SET reconciled_at = -1`,
+		"negative failure time":    `UPDATE tracker_cache_sync SET failed_at = -1`,
+		"negative board rows":      `UPDATE tracker_cache_issues SET board_rows = -1`,
+	} {
+		if _, err := db.Exec(bad); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+
+	// The board-row count follows the rows, a board's cascade included.
+	assertRows(t, db, `SELECT issue_id || ':' || board_rows FROM tracker_cache_issues ORDER BY 1`, "10001:1,10003:0")
+	mustExec(t, db, `INSERT INTO tracker_cache_boards(root_id,board_id) VALUES ('r1','11')`)
+	mustExec(t, db, `INSERT INTO tracker_cache_board_issues(root_id,board_id,issue_id) VALUES ('r1','11','10001'), ('r1','11','10003')`)
+	assertRows(t, db, `SELECT issue_id || ':' || board_rows FROM tracker_cache_issues ORDER BY 1`, "10001:2,10003:1")
+	mustExec(t, db, `UPDATE tracker_cache_board_issues SET order_key = 'b' WHERE board_id = '11'`)
+	mustExec(t, db, `DELETE FROM tracker_cache_boards WHERE board_id = '11'`)
+	assertRows(t, db, `SELECT issue_id || ':' || board_rows FROM tracker_cache_issues ORDER BY 1`, "10001:1,10003:0")
+
+	// Removing the connection detaches its root and leaves the rows for a
+	// drain.
+	before := countMirrorRows(t, db)
+	mustExec(t, db, `DELETE FROM tracker_connections WHERE id = 'j1'`)
+	assertRows(t, db, `SELECT id || ':' || coalesce(connection_id, '-') FROM tracker_cache_roots ORDER BY id`, "d1:-,d2:-,r1:-,r2:l1")
+	if after := countMirrorRows(t, db); !reflect.DeepEqual(after, before) {
+		t.Errorf("removing the connection changed the mirror: %v, was %v", after, before)
+	}
 }
 
 // The reads by ticket and by board probe their indexes.
