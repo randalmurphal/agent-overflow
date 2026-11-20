@@ -12,6 +12,10 @@ type pageVars struct {
 	After string `json:"after,omitempty"`
 }
 
+// cursor is the cursor a page was asked from; every variables type of a
+// document that declares $after embeds pageVars and so has it.
+func (v pageVars) cursor() string { return v.After }
+
 // Paged documents alias the connection as "page", under a parent aliased
 // as "node" when the connection hangs off one entity (a team's members,
 // an issue's comments).
@@ -23,8 +27,17 @@ type nestedPage[W any] struct {
 	Node *rootPage[W] `json:"node"`
 }
 
-// fetchPage requests one page of op and converts its nodes.
+// fetchPage requests one page of op and converts its nodes. It is the
+// one place a cursor page is read, so the rule every cursor walk needs
+// lives here: a page that says more follow from the very cursor it was
+// asked from fails, since the next request would be this one again. A
+// document that declares $after is sent only with variables that say
+// which cursor they hold.
 func fetchPage[W, T any](ctx context.Context, c *Client, op operation, vars any, typed func(W) T) (Page[T], error) {
+	asked, cursored := vars.(interface{ cursor() string })
+	if op.paged && !cursored {
+		return Page[T]{}, fmt.Errorf("linear %s: the variables of a paged document hold no cursor", op.name)
+	}
 	var conn *connection[W]
 	var r reply
 	var err error
@@ -46,8 +59,14 @@ func fetchPage[W, T any](ctx context.Context, c *Client, op operation, vars any,
 		return Page[T]{}, fmt.Errorf("linear %s: the answer holds no page", op.name)
 	}
 	p, err := page(op, *conn, r.Usage, typed)
+	if err != nil {
+		return Page[T]{}, err
+	}
+	if cursored && p.HasNextPage && p.EndCursor == asked.cursor() {
+		return Page[T]{}, fmt.Errorf("linear %s: the page cursor did not advance", op.name)
+	}
 	p.Served = r.Served
-	return p, err
+	return p, nil
 }
 
 // collect pages op to the end, for a list whose whole size a caller
@@ -67,9 +86,6 @@ func collect[W, T any](ctx context.Context, c *Client, op operation, varsFor fun
 		out = append(out, p.Items...)
 		if !p.HasNextPage {
 			return out, nil
-		}
-		if p.EndCursor == after {
-			return nil, fmt.Errorf("linear %s: the page cursor did not advance", op.name)
 		}
 		after = p.EndCursor
 	}

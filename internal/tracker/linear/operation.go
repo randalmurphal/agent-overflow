@@ -1,6 +1,9 @@
 package linear
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // operation is one GraphQL document. newQuery and newMutation are the
 // only ways to make one, and both register it, so the schema test checks
@@ -26,6 +29,9 @@ type operation struct {
 	// maxBody bounds the answer when the default 8 MiB is too small: a
 	// page of issues carries their descriptions.
 	maxBody int64
+	// paged marks a document that declares $after: fetchPage refuses to
+	// send it with variables that do not say which cursor they hold.
+	paged bool
 }
 
 // registered holds every operation by name. It is written only while
@@ -34,7 +40,7 @@ var registered = map[string]operation{}
 
 // newQuery makes and registers a query whose resource is at root.
 func newQuery(name, root, text string) operation {
-	return register(operation{name: name, root: root, text: text})
+	return register(operation{name: name, root: root, text: text, paged: strings.Contains(text, "$after")})
 }
 
 // newMutation makes and registers a mutation; its document aliases the

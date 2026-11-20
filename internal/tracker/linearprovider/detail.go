@@ -70,15 +70,11 @@ func (p *Provider) restOfHistory(ctx context.Context, id string, first linear.Pa
 	out := first.Items
 	page := first
 	for page.HasNextPage {
-		after := page.EndCursor
 		var err error
-		if page, err = p.c.IssueHistory(ctx, id, after); err != nil {
+		if page, err = p.c.IssueHistory(ctx, id, page.EndCursor); err != nil {
 			return nil, fmt.Errorf("linearprovider: history of %s: %w", id, err)
 		}
 		out = append(out, page.Items...)
-		if page.HasNextPage && page.EndCursor == after {
-			return nil, fmt.Errorf("linearprovider: history of %s: the page cursor did not advance", id)
-		}
 	}
 	return out, nil
 }

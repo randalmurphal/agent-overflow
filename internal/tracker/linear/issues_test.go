@@ -13,7 +13,8 @@ func TestListIssuesVariables(t *testing.T) {
 	page := lineartest.Data(lineartest.PageJSON([]string{lineartest.IssueJSON("issue-1", "WEB-1", "2026-11-02T10:00:00.000Z", 1)}, true, "c1"))
 	f := newFake(t,
 		lineartest.Exchange{Op: "Issues", Vars: `{"first":250,"sort":[{"manual":{"order":"Ascending"}}],"filter":{"and":[{"team":{"id":{"in":["team-web"]}}},{"state":{"id":{"in":["state-todo"]}}}]}}`, Body: page},
-		lineartest.Exchange{Op: "Issues", Vars: `{"first":250,"after":"c1","sort":[{"priority":{"order":"Ascending"}}],"includeArchived":true}`, Body: page},
+		lineartest.Exchange{Op: "Issues", Vars: `{"first":250,"after":"c1","sort":[{"priority":{"order":"Ascending"}}],"includeArchived":true}`,
+			Body: lineartest.Data(lineartest.PageJSON([]string{lineartest.IssueJSON("issue-2", "WEB-2", "2026-11-02T10:00:00.000Z", 2)}, true, "c2"))},
 		lineartest.Exchange{Op: "Issues", Vars: `{"first":250,"sort":[{"createdAt":{"order":"Descending"}}]}`, Body: page},
 		lineartest.Exchange{Op: "Issues", Vars: `{"first":250,"sort":[{"createdAt":{"order":"Ascending"}}],"filter":{"and":[{"or":[{"and":[{"state":{"type":{"in":["started"]}}}]},{"and":[{"updatedAt":{"gte":"2026-11-01T00:00:00.000Z"}}]}]}]}}`, Body: page},
 	)

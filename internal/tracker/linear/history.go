@@ -118,9 +118,6 @@ func (c *Client) issueChanges(ctx context.Context, w wireIssueChanges, served ti
 			return IssueChanges{}, err
 		}
 		out.Entries = append(out.Entries, p.Items...)
-		if p.HasNextPage && p.EndCursor == after {
-			return IssueChanges{}, fmt.Errorf("linear %s: the page cursor did not advance", opIssueHistory.name)
-		}
 		more, after = p.HasNextPage, p.EndCursor
 	}
 	return out, nil

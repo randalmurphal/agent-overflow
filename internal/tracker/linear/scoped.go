@@ -108,14 +108,11 @@ func (c *Client) IssueMembers(ctx context.Context, idOrIdentifier string) (Issue
 		return IssueScope{}, nil, err
 	}
 	members := p.Items
-	for after := p.EndCursor; p.HasNextPage; after = p.EndCursor {
-		if p, err = fetchPage(ctx, c, opTeamMembers, teamPageVars{pageVars{First: catalogPage, After: after}, scope.TeamID}, same[User]); err != nil {
+	for p.HasNextPage {
+		if p, err = fetchPage(ctx, c, opTeamMembers, teamPageVars{pageVars{First: catalogPage, After: p.EndCursor}, scope.TeamID}, same[User]); err != nil {
 			return IssueScope{}, nil, fmt.Errorf("%w (%d members were read before it)", err, len(members))
 		}
 		members = append(members, p.Items...)
-		if p.HasNextPage && p.EndCursor == after {
-			return IssueScope{}, nil, fmt.Errorf("linear %s: the page cursor did not advance", opTeamMembers.name)
-		}
 	}
 	return scope, members, nil
 }

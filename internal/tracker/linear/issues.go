@@ -387,14 +387,10 @@ func (c *Client) relations(ctx context.Context, op operation, id string, first c
 	}
 	out := p.Items
 	for p.HasNextPage {
-		after := p.EndCursor
-		if p, err = fetchPage(ctx, c, op, issuePageVars{pageVars{relationPage, after}, id}, wireRelation.typed); err != nil {
+		if p, err = fetchPage(ctx, c, op, issuePageVars{pageVars{relationPage, p.EndCursor}, id}, wireRelation.typed); err != nil {
 			return nil, fmt.Errorf("%w (%d relations were read before it)", err, len(out))
 		}
 		out = append(out, p.Items...)
-		if p.HasNextPage && p.EndCursor == after {
-			return nil, fmt.Errorf("linear %s: the page cursor did not advance", op.name)
-		}
 	}
 	return out, nil
 }

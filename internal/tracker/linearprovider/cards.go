@@ -192,7 +192,8 @@ func byKeys[T any](ctx context.Context, keys []string, read func(context.Context
 // walk reads every page read returns, from the first, until one says no
 // more follow, however short or empty; maxPages bounds the walk (zero is
 // no bound) and a walk it cuts short returns what it read with
-// errTooLong. A failed page fails the walk.
+// errTooLong. A failed page fails the walk; the client fails a page whose
+// cursor did not advance.
 func walk[T any](ctx context.Context, read func(context.Context, string) (linear.Page[T], error), maxPages int) ([]T, error) {
 	var out []T
 	after := ""
@@ -204,9 +205,6 @@ func walk[T any](ctx context.Context, read func(context.Context, string) (linear
 		out = append(out, page.Items...)
 		if !page.HasNextPage {
 			return out, nil
-		}
-		if page.EndCursor == after {
-			return nil, fmt.Errorf("linearprovider: list issues: the page cursor did not advance")
 		}
 		if maxPages > 0 && pages >= maxPages {
 			return out, errTooLong
