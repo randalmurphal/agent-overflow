@@ -311,7 +311,10 @@ func (r Result) CreateUnknown() bool {
 // A rank and an estimate change the issue on every board that shares the
 // board's rank or estimate field, which is what the card names: a card is
 // read through every board the mirror has the issue on.
-var stepChanges = map[Step][]ResourceKind{
+//
+// An array by step, so linking the package builds nothing at start; a
+// part's check refuses a step outside it before indexing.
+var stepChanges = [...][]ResourceKind{
 	StepCreate:     {ResourceCard, ResourceDetail},
 	StepUpload:     {ResourceDetail},
 	StepEdit:       {ResourceCard, ResourceDetail},

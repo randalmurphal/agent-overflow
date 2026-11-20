@@ -78,7 +78,7 @@ func bodyAnswer(names func(written) bool, status ...int) writeAnswer {
 func namesID(w written) bool { return isNumeric(w.id()) }
 
 // namesIssue accepts a body naming an issue by numeric id and key.
-func namesIssue(w written) bool { return namesID(w) && isIssueKey(w.key()) }
+func namesIssue(w written) bool { return namesID(w) && IsIssueKey(w.key()) }
 
 // namesThisID accepts a body whose id is id.
 func namesThisID(id string) func(written) bool {

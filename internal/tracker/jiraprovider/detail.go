@@ -18,10 +18,10 @@ import (
 // commentPage is the most comments a page holds.
 const commentPage = 50
 
-// detailSkipped are the fields Detail shows elsewhere than in Fields:
-// the card's, the description, and the comments, attachments, links and
-// worklogs it lists itself.
-var detailSkipped = append(slices.Clone(cardFieldIDs), "description", "comment", "attachment", "issuelinks", "worklog")
+// detailSkipped are the fields Detail shows elsewhere than in Fields,
+// besides the card's (cardFieldIDs): the description, and the comments,
+// attachments, links and worklogs it lists itself.
+var detailSkipped = []string{"description", "comment", "attachment", "issuelinks", "worklog"}
 
 // Detail reads one issue whole: every field with the edit screen's
 // metadata, its links and attachments, the whole changelog and the moves
@@ -106,7 +106,7 @@ func detailFields(s site, is *jira.Issue, screen jira.Screen, cat *catalog) []tr
 	}
 	var out []tracker.Field
 	for id := range ids {
-		if slices.Contains(detailSkipped, id) || id == s.sprint {
+		if slices.Contains(cardFieldIDs, id) || slices.Contains(detailSkipped, id) || id == s.sprint {
 			continue
 		}
 		meta, onScreen := screenField(screen, id)

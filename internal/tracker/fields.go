@@ -38,15 +38,17 @@ const (
 	KindReadOnly
 )
 
-var kindNames = map[Kind]string{
+// kindNames are the kinds' names by kind: an array, so linking the
+// package builds nothing at start.
+var kindNames = [...]string{
 	KindText: "text", KindRichText: "rich_text", KindNumber: "number", KindDate: "date",
 	KindDateTime: "date_time", KindUser: "user", KindOption: "option", KindReadOnly: "read_only",
 }
 
 // String is the kind's name, as Value's JSON writes it.
 func (k Kind) String() string {
-	if n, ok := kindNames[k]; ok {
-		return n
+	if int(k) < len(kindNames) && kindNames[k] != "" {
+		return kindNames[k]
 	}
 	return fmt.Sprintf("Kind(%d)", uint8(k))
 }

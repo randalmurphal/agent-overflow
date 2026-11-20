@@ -130,8 +130,7 @@ func (p *Provider) rows(ctx context.Context, b tracker.BoardID, issues []linear.
 			return nil, fmt.Errorf("linearprovider: issue %s: %w", is.ID, err)
 		}
 		r := tracker.Row{Card: cards[i], Order: key}
-		counted := estimate(linear.Estimation{Scale: is.TeamEstimateScale}).Unit != tracker.UnitNone
-		if counted && is.Estimate != nil {
+		if estimates(is.TeamEstimateScale) && is.Estimate != nil {
 			v := *is.Estimate
 			r.Estimate = &v
 		}

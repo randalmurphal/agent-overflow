@@ -146,26 +146,49 @@ func sprint(c linear.Cycle) tracker.Sprint {
 // estimateScales are Linear's fixed scales
 // (https://linear.app/docs/issue-property): the standard values, then
 // the two the extended scale adds. T-shirt sizes are stored as the
-// Fibonacci numbers Linear maps them to.
-var estimateScales = map[linear.EstimateScale]struct {
+// Fibonacci numbers Linear maps them to. Static values and a switch
+// rather than a map, so linking the package builds nothing at start.
+type estimateScale struct {
 	values, extended []float64
 	labels           []string
-}{
-	linear.EstimateExponential: {values: []float64{1, 2, 4, 8, 16}, extended: []float64{32, 64}},
-	linear.EstimateFibonacci:   {values: []float64{1, 2, 3, 5, 8}, extended: []float64{13, 21}},
-	linear.EstimateLinear:      {values: []float64{1, 2, 3, 4, 5}, extended: []float64{6, 7}},
-	linear.EstimateTShirt: {values: []float64{1, 2, 3, 5, 8}, extended: []float64{13, 21},
-		labels: []string{"XS", "S", "M", "L", "XL", "XXL", "XXXL"}},
+}
+
+var (
+	exponentialScale = estimateScale{values: []float64{1, 2, 4, 8, 16}, extended: []float64{32, 64}}
+	fibonacciScale   = estimateScale{values: []float64{1, 2, 3, 5, 8}, extended: []float64{13, 21}}
+	linearScale      = estimateScale{values: []float64{1, 2, 3, 4, 5}, extended: []float64{6, 7}}
+	tShirtScale      = estimateScale{values: []float64{1, 2, 3, 5, 8}, extended: []float64{13, 21},
+		labels: []string{"XS", "S", "M", "L", "XL", "XXL", "XXXL"}}
+)
+
+// estimateScales is the documented scale s names, false for another.
+func estimateScales(s linear.EstimateScale) (estimateScale, bool) {
+	switch s {
+	case linear.EstimateExponential:
+		return exponentialScale, true
+	case linear.EstimateFibonacci:
+		return fibonacciScale, true
+	case linear.EstimateLinear:
+		return linearScale, true
+	case linear.EstimateTShirt:
+		return tShirtScale, true
+	}
+	return estimateScale{}, false
+}
+
+// estimates reports whether a team with scale s estimates its issues.
+func estimates(s linear.EstimateScale) bool {
+	return s != linear.EstimateNotUsed && s != ""
 }
 
 // estimate is a team's estimate: none when estimates are off, else
 // points on the team's scale, with zero first when the team allows it.
 // A scale Linear did not document is points with no fixed choices.
 func estimate(e linear.Estimation) tracker.Estimate {
-	if e.Scale == linear.EstimateNotUsed || e.Scale == "" {
+	if !estimates(e.Scale) {
 		return tracker.Estimate{Unit: tracker.UnitNone}
 	}
-	scale, ok := estimateScales[e.Scale]
+	scale, ok := estimateScales(e.Scale)
 	if !ok {
 		return tracker.Estimate{Unit: tracker.UnitPoints}
 	}

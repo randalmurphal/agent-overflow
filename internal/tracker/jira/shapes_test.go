@@ -19,7 +19,7 @@ func shapeExpressions() map[string]struct {
 	return map[string]pair{
 		"numeric":   {regexp.MustCompile(`^[0-9]+$`), isNumeric},
 		"key name":  {regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*$`), isKeyName},
-		"issue key": {regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*-[0-9]+$`), isIssueKey},
+		"issue key": {regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*-[0-9]+$`), IsIssueKey},
 		"media ID":  {regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`), isMediaID},
 	}
 }

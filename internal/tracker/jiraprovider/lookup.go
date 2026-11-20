@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"regexp"
 	"slices"
 	"strings"
 
@@ -12,11 +11,6 @@ import (
 	"agent-overflow/internal/tracker/jira"
 	"agent-overflow/internal/tracker/trackerapi"
 )
-
-// keyShape is the shape of a Jira issue key. A text of another shape
-// names no issue and is not sent; a number in particular would be read
-// as an issue ID.
-var keyShape = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*-[0-9]+$`)
 
 // Lookup finds the issues keys name with one bulk fetch of the keys of
 // an issue key's shape, with the card fields (MaxLookupKeys is within one
@@ -42,9 +36,11 @@ func (p *Provider) Lookup(ctx context.Context, keys []string) (tracker.KeyLookup
 	}
 	cat := newCatalog()
 	found := map[string]tracker.Card{} // by key as asked
+	// Text of another shape names no issue and is not sent; a number in
+	// particular would be read as an issue ID.
 	var shaped []string
 	for _, k := range keys {
-		if keyShape.MatchString(k) {
+		if jira.IsIssueKey(k) {
 			shaped = append(shaped, k)
 		}
 	}

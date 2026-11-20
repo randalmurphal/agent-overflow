@@ -25,7 +25,7 @@ func (t tempoIssues) IDs(ctx context.Context, keys []string) (map[string]int64, 
 	out := map[string]int64{}
 	var shaped []string
 	for _, k := range keys {
-		if keyShape.MatchString(k) {
+		if jira.IsIssueKey(k) {
 			shaped = append(shaped, k)
 		}
 	}

@@ -293,7 +293,7 @@ func hasType[T error](err error) bool {
 // checkIssue refuses ref unless it is an issue key or a numeric issue
 // ID, so no caller text reaches a path as another resource.
 func checkIssue(ref string) error {
-	if isIssueKey(ref) || isNumeric(ref) {
+	if IsIssueKey(ref) || isNumeric(ref) {
 		return nil
 	}
 	return notSent("%q is not an issue key or ID", ref)

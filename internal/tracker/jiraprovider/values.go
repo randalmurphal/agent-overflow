@@ -188,7 +188,7 @@ func (p *Provider) parentChoices(ctx context.Context, scope tracker.FieldScope, 
 		return tracker.ChoiceList{More: true}, nil
 	}
 	jql := "text ~ " + jira.QuoteJQLText(text)
-	if keyShape.MatchString(text) {
+	if jira.IsIssueKey(text) {
 		jql = "(" + jql + " OR key in " + jira.QuoteJQLList(text) + ")"
 	}
 	if issue, ok := scope.Issue(); ok {

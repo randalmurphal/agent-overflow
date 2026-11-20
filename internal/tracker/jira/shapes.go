@@ -34,8 +34,10 @@ func isKeyName(s string) bool {
 	return true
 }
 
-// isIssueKey reports an issue key: ^[A-Za-z][A-Za-z0-9_]*-[0-9]+$.
-func isIssueKey(s string) bool {
+// IsIssueKey reports text of an issue key's shape, such as WEB-12:
+// ^[A-Za-z][A-Za-z0-9_]*-[0-9]+$. Text of another shape names no issue
+// by key; a number in particular is an issue ID.
+func IsIssueKey(s string) bool {
 	i := strings.IndexByte(s, '-')
 	return i > 0 && isKeyName(s[:i]) && isNumeric(s[i+1:])
 }
