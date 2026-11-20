@@ -289,6 +289,14 @@ func (t *downloadTracker) decideLocked(event cdpbrowser.EventDownloadWillBegin, 
 	if t.downloads[guid] != d {
 		return
 	}
+	if t.stopped && admission != downloadAdmitted {
+		// The browser is gone, so there is nothing to cancel: the end the
+		// stop kept for this answer (reportsEnd) goes with its file.
+		delete(t.downloads, guid)
+		t.post(func() { t.files.discard(guid) })
+		t.closeIfLastLocked()
+		return
+	}
 	switch admission {
 	case downloadAdmitted:
 		t.admitLocked(guid, d)
@@ -395,11 +403,26 @@ func (t *downloadTracker) deliverLocked(guid downloadID, d *trackedDownload, eve
 // queued or under way. The caller holds t.mu.
 func (t *downloadTracker) endingLocked() bool {
 	for _, d := range t.downloads {
-		if d.state == trackedEnding {
+		if d.reportsEnd() {
 			return true
 		}
 	}
 	return false
+}
+
+// reportsEnd is whether the tracker still reports d's received end: it is
+// being reported, or is held for the answer of an admission in flight,
+// which reports it if the answer admits d.
+func (d *trackedDownload) reportsEnd() bool {
+	return d.state == trackedEnding || (d.state == trackedOffering && d.endReceived)
+}
+
+// closeIfLastLocked queues the directory's close once the browser has
+// stopped and no end is still reported. The caller holds t.mu.
+func (t *downloadTracker) closeIfLastLocked() {
+	if t.stopped && !t.endingLocked() {
+		t.post(t.files.close)
+	}
 }
 
 // refuseLocked refuses d, sending its cancel when send says one is due,
@@ -553,16 +576,16 @@ func (t *downloadTracker) canceling(guid downloadID) (undo func(), ended bool) {
 // stop settles every download the connection still has, once its browser
 // process has exited and writes nothing more: none of them finished, so
 // everything in the process's directory goes, the Manager's running
-// downloads' files included, apart from those of the ends being reported,
-// whose last report removes what is left (deliverLocked). Later events are
-// dropped.
+// downloads' files included, apart from those of the ends still reported
+// (reportsEnd), whose last report removes what is left (deliverLocked,
+// decideLocked). Later events are dropped.
 func (t *downloadTracker) stop() {
 	defer t.flush()
 	t.mu.Lock()
 	t.stopped = true
 	keep := make(map[downloadID]bool)
 	for guid, d := range t.downloads {
-		if d.state == trackedEnding {
+		if d.reportsEnd() {
 			keep[guid] = true
 			continue
 		}

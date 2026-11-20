@@ -373,6 +373,11 @@ func TestDownloadTrackerStates(t *testing.T) {
 		// cancel: that end is listed as the failure it was.
 		{"awaiting", []string{"canceled", "cancel"}, want{"awaiting", "gone", 1, 0, failed, "discard", 0}},
 		{"offering", []string{"canceled", "cancel"}, want{"offering", "gone", 0, 0, failed, "discard", 0}},
+		// The browser's exit keeps an end held for an admission in flight,
+		// which reports it if the answer admits it and otherwise removes
+		// its file; the directory goes after either.
+		{"offering", []string{"completed", "close", "exit"}, want{"offering", "gone", 0, 0, done, "kept handOver", 1}},
+		{"offering", []string{"unowned", "completed", "exit"}, want{"offering", "gone", 0, 0, "", "kept discard", 1}},
 		// A tab closed while its download runs cancels it.
 		{"admitted", []string{"close", "canceled"}, want{"gone", "gone", 0, 0, canceled, "discard", 0}},
 	}
