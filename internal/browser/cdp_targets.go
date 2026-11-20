@@ -211,10 +211,3 @@ func (t *cdpTargets) chain(frame frameID, gone bool) []target.ID {
 	}
 	return chain
 }
-
-// retained reports how many target ids the record keeps.
-func (t *cdpTargets) retained() int {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.known.len() + t.openers.len() + t.gone.len() + t.heldInfo.len()
-}

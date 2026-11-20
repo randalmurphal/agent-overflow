@@ -187,13 +187,6 @@ func (t *networkTracker) ended(id network.RequestID, now time.Time) {
 	t.endedEarly.put(id, struct{}{})
 }
 
-// retained reports how many request ids the tracker keeps.
-func (t *networkTracker) retained() int {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return len(t.inFlight) + t.endedEarly.len()
-}
-
 // idle reports no request in flight and none started or ended for quiet.
 func (t *networkTracker) idle(now time.Time, quiet time.Duration) bool {
 	t.mu.Lock()

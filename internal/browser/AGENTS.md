@@ -286,12 +286,16 @@ its downloads' ends; its CDP target's destroy ends it only past
 `hostClosedFallback`. One status loop asks for a quiet download's snapshot,
 or one whose last cancel no snapshot names yet, and names that cancel, so a
 lost report or cancel never leaves a row running; headless Chromium's arrive over
-CDP (`headless_downloads.go`), which keeps each download, with a claim on
-its partial and its final file, from its start until its writer stops:
-its end hands an admitted download's file to the Manager and removes a
-refused one's, and the browser process's exit removes every one still
-held. It decides under its lock and runs every report out of it, to the
-Manager or the filesystem, after the lock, in order. Preserve the denial
+CDP (`headless_downloads.go`), which keeps each download from its start
+until its end as one state machine, an admission in flight being a state
+of its own, so an answer is never discarded and a cancel accepted before
+it is kept for it. Each Chromium process writes into a directory of its
+own (`headless_download_room.go`): an admitted download's finished file
+is moved out to the Manager's name for it, a refused one's is removed at
+its end, and the process's exit removes the directory with whatever is
+left, a download whose start was never processed included. The tracker
+decides under its lock and runs every report out of it, to the Manager
+or the filesystem, after the lock, in order. Preserve the denial
 of sensitive website permissions.
 
 Site data belongs to the engine and is isolated per cookie jar. Persistent and

@@ -2,7 +2,6 @@ package browser
 
 import (
 	"fmt"
-	"sync"
 	"testing"
 	"time"
 
@@ -10,32 +9,21 @@ import (
 )
 
 // trackerRig is a download tracker over a recording Manager, cancel and
-// file removal.
+// download directory.
 type trackerRig struct {
 	*downloadTracker
 	recorder *downloadRecorder
-	mu       sync.Mutex
-	removed  map[downloadID]int
+	files    *fakeDownloadFiles
 	canceled chan downloadID
 }
 
 func newTrackerRig(allow bool) *trackerRig {
-	r := &trackerRig{recorder: newDownloadRecorder(allow), removed: map[downloadID]int{}, canceled: make(chan downloadID, 1024)}
+	r := &trackerRig{recorder: newDownloadRecorder(allow), files: newFakeDownloadFiles(), canceled: make(chan downloadID, 1024)}
 	r.downloadTracker = newDownloadTracker(r.recorder.events(), func(id downloadID) {
 		r.recorder.cancel(id)
 		r.canceled <- id
-	}, func(id downloadID) {
-		r.mu.Lock()
-		r.removed[id]++
-		r.mu.Unlock()
-	})
+	}, r.files)
 	return r
-}
-
-func (r *trackerRig) removals(id downloadID) int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.removed[id]
 }
 
 func (r *trackerRig) begin(guid string) {
@@ -58,11 +46,18 @@ func (r *trackerRig) awaitCancel(t *testing.T, guid downloadID) {
 	}
 }
 
+// retained reports how many downloads the tracker keeps.
+func (t *downloadTracker) retained() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return len(t.downloads)
+}
+
 // A download's events, in the order Chromium sends them: the Manager sees
-// an admitted download start and settle and the tracker keeps it until its
-// end; a refused one is canceled once, and its file is removed once its
-// end arrives, never before; progress of a download whose start the
-// connection never saw is no one's.
+// an admitted download start and settle, its finished file handed over,
+// and the tracker keeps it until its end; a refused one is canceled once,
+// and its files are removed once its end arrives, never before; progress
+// of a download whose start the connection never saw is no one's.
 func TestDownloadTrackerFollowsTheWireOrder(t *testing.T) {
 	const guid = "G1"
 	inProgress, completed, canceled := cdpbrowser.DownloadProgressStateInProgress, cdpbrowser.DownloadProgressStateCompleted, cdpbrowser.DownloadProgressStateCanceled
@@ -77,12 +72,13 @@ func TestDownloadTrackerFollowsTheWireOrder(t *testing.T) {
 		wantState string
 		wantBytes float64
 		wantKept  int
+		wantFiles string
 	}{
-		{"a completed download", true, []step{{inProgress, 10}, {completed, 20}}, downloadCompleted.String(), 20, 0},
-		{"a download that stopped unasked", true, []step{{inProgress, 10}, {canceled, 10}}, downloadFailed.String(), 10, 0},
-		{"a download still running", true, []step{{inProgress, 10}, {inProgress, 15}}, downloadInProgress.String(), 15, 1},
-		{"a refused download that completes", false, []step{{inProgress, 10}, {completed, 20}}, "refused", 0, 0},
-		{"a refused download still running", false, []step{{inProgress, 10}}, "refused", 0, 1},
+		{"a completed download", true, []step{{inProgress, 10}, {completed, 20}}, downloadCompleted.String(), 20, 0, "handOver"},
+		{"a download that stopped unasked", true, []step{{inProgress, 10}, {canceled, 10}}, downloadFailed.String(), 10, 0, "discard"},
+		{"a download still running", true, []step{{inProgress, 10}, {inProgress, 15}}, downloadInProgress.String(), 15, 1, ""},
+		{"a refused download that completes", false, []step{{inProgress, 10}, {completed, 20}}, "refused", 0, 0, "discard"},
+		{"a refused download still running", false, []step{{inProgress, 10}}, "refused", 0, 1, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -92,8 +88,8 @@ func TestDownloadTrackerFollowsTheWireOrder(t *testing.T) {
 				r.awaitCancel(t, guid)
 			}
 			for _, s := range tc.progress {
-				if r.removals(guid) != 0 {
-					t.Fatal("the refused download's file was removed before its end")
+				if got := r.files.of(guid); got != "" {
+					t.Fatalf("the download's files were settled (%s) before its end", got)
 				}
 				r.report(guid, s.state, s.received)
 			}
@@ -104,12 +100,8 @@ func TestDownloadTrackerFollowsTheWireOrder(t *testing.T) {
 			if got := r.retained(); got != tc.wantKept {
 				t.Fatalf("kept %d downloads, want %d", got, tc.wantKept)
 			}
-			wantRemoved := 0
-			if !tc.allow && tc.wantKept == 0 {
-				wantRemoved = 1
-			}
-			if got := r.removals(guid); got != wantRemoved {
-				t.Fatalf("removed the file %d times, want %d", got, wantRemoved)
+			if got := r.files.of(guid); got != tc.wantFiles {
+				t.Fatalf("the download's files were settled as %q, want %q", got, tc.wantFiles)
 			}
 		})
 	}
@@ -141,7 +133,7 @@ func TestDownloadTrackerKeepsAnAdmittedDownloadToItsEnd(t *testing.T) {
 		return refuse(start)
 	}
 	p.engine.events = events
-	d := p.downloadTracker(t.Context(), newHeadlessTargets(p))
+	d := p.downloadTracker(t.Context(), newHeadlessTargets(p), newFakeDownloadFiles())
 	d.cancel = func(downloadID) {}
 	d.willBegin(cdpbrowser.EventDownloadWillBegin{GUID: "kept", FrameID: "F1"})
 	for i := range 2*orderSlack + 1 {
@@ -154,23 +146,20 @@ func TestDownloadTrackerKeepsAnAdmittedDownloadToItsEnd(t *testing.T) {
 }
 
 // A download's files outlive neither its end nor its browser: a refused
-// one whose cancel never returns is removed when its completion arrives,
-// and every download still running when the browser process has stopped
-// is removed then, one still waiting for its frame's owner and the
-// Manager's own alike, since none of them finished.
+// one's go when its completion arrives, before any answer to its cancel,
+// and once the browser process has stopped the whole directory goes, with
+// the files of the Manager's running downloads and of one still waiting
+// for its frame's owner, since none of them finished.
 func TestDownloadTrackerRemovesWhatNoPageTook(t *testing.T) {
 	r := newTrackerRig(false)
-	stalled := make(chan struct{})
-	defer close(stalled)
-	r.cancel = func(downloadID) { <-stalled }
 	r.begin("ended")
 	r.begin("running")
-	if r.removals("ended") != 0 {
-		t.Fatal("a refused download's file was removed at its refusal")
+	if got := r.files.of("ended"); got != "" {
+		t.Fatalf("a refused download's files were settled at its refusal: %s", got)
 	}
 	r.report("ended", cdpbrowser.DownloadProgressStateCompleted, 20)
-	if r.removals("ended") != 1 {
-		t.Fatal("a refused download's file was not removed at its completion while its cancel was unanswered")
+	if got := r.files.of("ended"); got != "discard" {
+		t.Fatalf("a refused download's files were settled as %q at its completion, want discarded", got)
 	}
 
 	r.recorder.allow = true
@@ -186,10 +175,8 @@ func TestDownloadTrackerRemovesWhatNoPageTook(t *testing.T) {
 	}
 	r.begin("waiting")
 	r.stop()
-	for id, want := range map[downloadID]int{"ended": 1, "running": 1, "waiting": 1, "admitted": 1} {
-		if got := r.removals(id); got != want {
-			t.Errorf("download %s's file was removed %d times after the browser stopped, want %d", id, got, want)
-		}
+	if got := r.files.closes(); got != 1 {
+		t.Fatalf("the download directory was closed %d times after the browser stopped, want once", got)
 	}
 	if got := r.retained(); got != 0 {
 		t.Fatalf("the stopped tracker keeps %d downloads", got)
@@ -234,5 +221,28 @@ func TestASlowDownloadReportDoesNotHoldAnotherDownloadsCancel(t *testing.T) {
 	<-done
 	if state, _ := r.recorder.outcome("A"); state != downloadCompleted.String() {
 		t.Fatalf("A reads %q at the Manager", state)
+	}
+}
+
+// CDP names a cancel and a failure alike: a started download's "canceled"
+// is the user's cancel only once AO sent one, and a failure while a cancel
+// Chromium refused was withdrawn.
+func TestDownloadTrackerTellsTheCancelItSentFromAFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		cancel  func(tr *downloadTracker, guid downloadID)
+		wantEnd downloadState
+	}{
+		{"no cancel", func(*downloadTracker, downloadID) {}, downloadFailed},
+		{"a cancel sent", func(tr *downloadTracker, guid downloadID) { tr.canceling(guid) }, downloadCanceled},
+		{"a cancel refused", func(tr *downloadTracker, guid downloadID) { tr.canceling(guid)() }, downloadFailed},
+	} {
+		r := newTrackerRig(true)
+		r.begin("G1")
+		tc.cancel(r.downloadTracker, "G1")
+		r.report("G1", cdpbrowser.DownloadProgressStateCanceled, 5)
+		if state, _ := r.recorder.outcome("G1"); state != tc.wantEnd.String() {
+			t.Errorf("%s: the Manager saw %s, want %s", tc.name, state, tc.wantEnd)
+		}
 	}
 }

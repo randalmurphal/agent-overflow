@@ -4,9 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
-	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -18,9 +15,9 @@ import (
 	"agent-overflow/internal/browser/ids"
 )
 
-// headlessProfile is one canonical workspace's Chromium: its own process,
-// its own user-data directory, its own cookie jar. The process is launched
-// by the first page and dies with the profile.
+// headlessProfile is one cookie jar's Chromium: its own process, its own
+// user-data directory. The process is launched by the first page and dies
+// with the profile.
 type headlessProfile struct {
 	engine      *headlessEngine
 	handle      profileHandle
@@ -85,8 +82,7 @@ func (p *headlessProfile) NewPage(ctx context.Context, hooks pageHooks) (pageDri
 }
 
 // AttachPage adopts a page Chromium opened by itself: a popup, reported by
-// its target events and already bound to this profile. Unlike the launcher-hosted
-// engine, this one CAN report popups, because CDP surfaces every target.
+// its target events and already bound to this profile.
 func (p *headlessProfile) AttachPage(ctx context.Context, handle ids.PageHandle, hooks pageHooks) (pageDriver, error) {
 	browserCtx, ok := p.browser()
 	if !ok {
@@ -136,23 +132,6 @@ func (p *headlessProfile) CancelDownload(id downloadID) error {
 		return fmt.Errorf("browser: profile %s: cancel download %s: %w", p.handle, id, err)
 	}
 	return nil
-}
-
-// removeDownloadFile removes every file Chromium names by download id in
-// the download directory (chromiumDownloadNames), for a download whose
-// claim the tracker settles once nothing writes it (downloadTracker): a
-// download that finished before its cancel took effect left its whole
-// file there, and one whose browser exited mid-download its partial. No
-// caller waits on it, so a failure is logged.
-func (p *headlessProfile) removeDownloadFile(id downloadID) {
-	if p.downloadDir == "" {
-		return
-	}
-	for _, name := range chromiumDownloadNames(filepath.Join(p.downloadDir, filepath.Base(string(id)))) {
-		if err := os.Remove(name); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			p.engine.logf("browser: profile %s: remove the file of download %s: %v", p.handle, id, err)
-		}
-	}
 }
 
 // chromiumPartialSuffix is the suffix of the file Chromium writes a

@@ -9,6 +9,13 @@ import (
 	"github.com/chromedp/cdproto/target"
 )
 
+// retained reports how many target ids the record keeps.
+func (t *cdpTargets) retained() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.known.len() + t.openers.len() + t.gone.len() + t.heldInfo.len()
+}
+
 // permutations answers every order of events.
 func permutations(events []string) [][]string {
 	if len(events) <= 1 {

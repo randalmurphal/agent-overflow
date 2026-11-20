@@ -57,6 +57,15 @@ func newLifetimeProfile(t *testing.T) *lifetimeProfile {
 	return lp
 }
 
+// lifetimeBrowser is a launched browser with no process of its own: its
+// connection is ctx, and its downloads go to a fake directory.
+func lifetimeBrowser(ctx context.Context, cancel, allocCancel context.CancelFunc) *launchedBrowser {
+	return &launchedBrowser{
+		ctx: ctx, cancel: cancel, allocCancel: allocCancel,
+		downloads: newDownloadTracker(engineEvents{}, func(downloadID) {}, newFakeDownloadFiles()),
+	}
+}
+
 func (lp *lifetimeProfile) closedPages() []string {
 	lp.mu.Lock()
 	defer lp.mu.Unlock()
@@ -97,7 +106,7 @@ func TestARelaunchRetiresOnlyALostBrowser(t *testing.T) {
 	lp.engine.bindPage("page-a", lp.headlessProfile)
 	browserCtx, browserCancel := context.WithCancel(context.Background())
 	var allocCancelled atomic.Bool
-	lp.publish(&launchedBrowser{ctx: browserCtx, cancel: browserCancel, allocCancel: func() { allocCancelled.Store(true) }})
+	lp.publish(lifetimeBrowser(browserCtx, browserCancel, func() { allocCancelled.Store(true) }))
 
 	lp.retireLostBrowser()
 	if _, ok := lp.browser(); !ok || allocCancelled.Load() {
@@ -132,12 +141,12 @@ func TestAProfileAdoptsOneBrowser(t *testing.T) {
 	lp := newLifetimeProfile(t)
 	firstCtx, firstCancel := context.WithCancel(context.Background())
 	defer firstCancel()
-	if err := lp.adopt(&launchedBrowser{ctx: firstCtx, cancel: firstCancel, allocCancel: func() {}}); err != nil {
+	if err := lp.adopt(lifetimeBrowser(firstCtx, firstCancel, func() {})); err != nil {
 		t.Fatalf("adopt the first browser: %v", err)
 	}
 	secondCtx, secondCancel := context.WithCancel(context.Background())
 	defer secondCancel()
-	if err := lp.adopt(&launchedBrowser{ctx: secondCtx, cancel: secondCancel, allocCancel: func() {}}); err == nil {
+	if err := lp.adopt(lifetimeBrowser(secondCtx, secondCancel, func() {})); err == nil {
 		t.Fatal("a profile adopted a second browser")
 	}
 	if got, ok := lp.browser(); !ok || got != firstCtx {
@@ -152,7 +161,7 @@ func TestAProfileAdoptsOneBrowser(t *testing.T) {
 func TestAPageBindsOnlyToTheConnectedBrowser(t *testing.T) {
 	lp := newLifetimeProfile(t)
 	browserCtx, browserCancel := context.WithCancel(context.Background())
-	lp.publish(&launchedBrowser{ctx: browserCtx, cancel: browserCancel, allocCancel: func() {}})
+	lp.publish(lifetimeBrowser(browserCtx, browserCancel, func() {}))
 	otherCtx, otherCancel := context.WithCancel(context.Background())
 	defer otherCancel()
 
@@ -189,7 +198,7 @@ func TestAProfileEndsWhenItsBrowserDies(t *testing.T) {
 	lp.engine.bindPage("page-b", lp.headlessProfile)
 
 	browserCtx, browserCancel := context.WithCancel(context.Background())
-	if err := lp.adopt(&launchedBrowser{ctx: browserCtx, cancel: browserCancel, allocCancel: func() {}}); err != nil {
+	if err := lp.adopt(lifetimeBrowser(browserCtx, browserCancel, func() {})); err != nil {
 		t.Fatalf("adopt: %v", err)
 	}
 
@@ -225,7 +234,7 @@ func TestDisposeLeavesTheWatcherSilent(t *testing.T) {
 	lp.engine.bindPage("page-a", lp.headlessProfile)
 
 	browserCtx, browserCancel := context.WithCancel(context.Background())
-	if err := lp.adopt(&launchedBrowser{ctx: browserCtx, cancel: browserCancel, allocCancel: func() {}}); err != nil {
+	if err := lp.adopt(lifetimeBrowser(browserCtx, browserCancel, func() {})); err != nil {
 		t.Fatalf("adopt: %v", err)
 	}
 	if err := lp.Dispose(context.Background()); err != nil {
