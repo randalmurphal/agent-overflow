@@ -363,6 +363,16 @@ export function isCurrentBrowserPane(pane: BrowserPaneAttachment): boolean {
   return store.snapshot(pane.threadId)?.pane === pane && canUseNativeBrowser(pane.threadId);
 }
 
+/**
+ * The thread's state with pages, as the pane attached at `pane` may show it:
+ * its tabs, downloads and jar are the home computer's browser data, so the
+ * pane's surfaces read them only through its validated attachment, and only
+ * while `pane` is still the one browserPaneAttachment answers. Reactive.
+ */
+export function browserPaneState(pane: BrowserPaneAttachment): Readonly<BrowserCompanionEvent> | null {
+  return browserPaneAttachment(pane.threadId) === pane ? browserCompanionState(pane.threadId) : null;
+}
+
 /** The backend's id of the thread's mounted pane, null while it has none. Reactive. */
 export function browserPaneMountId(threadId: string): BrowserMountId | null {
   return browserPaneAttachment(threadId)?.mount ?? null;

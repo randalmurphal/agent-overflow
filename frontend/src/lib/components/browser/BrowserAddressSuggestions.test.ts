@@ -490,6 +490,19 @@ describe('<BrowserAddressSuggestions>', () => {
       expect(rowText()).toEqual([]);
     });
 
+    it('offers none of the home computer\'s open tabs', async () => {
+      stageBackend({ id: 'remote', backendId: 'remote' });
+      noteThread(THREAD, HOME_BACKEND, 4);
+      const { input } = mount();
+      input.focus();
+      await type(input, 'local');
+      await waitFor(() => expect(rowText()).toContain('tab http://localhost:5173/settings'));
+      noteThread(THREAD, 'remote', 4);
+      await type(input, 'locall');
+      await type(input, 'local');
+      expect(rowText().filter((row) => row.startsWith('tab '))).toEqual([]);
+    });
+
     it('drops an answer that arrives after the claim', async () => {
       stageBackend({ id: 'remote', backendId: 'remote' });
       noteThread(THREAD, HOME_BACKEND, 4);

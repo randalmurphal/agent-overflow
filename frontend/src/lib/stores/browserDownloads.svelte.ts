@@ -2,8 +2,8 @@ import type { BrowserCompanionEvent, BrowserDownload } from './bindings';
 import { actInPane, browserCompanionAct, type BrowserActionFailure } from './browserActions';
 import { browserAction, downloadIdOf, type DownloadKind, type ThreadAction } from './browserActionWire';
 import {
-  browserCompanionState,
   browserPaneOpen,
+  browserPaneState,
   browserThreadSnapshot,
   canUseNativeBrowser,
   observeBrowserCompanion,
@@ -90,9 +90,9 @@ function downloadUnavailable(err: unknown): boolean {
   return err instanceof TransportError && err.code === 'browser_download_unavailable';
 }
 
-/** The thread's downloads, newest first; empty for none. */
-export function browserDownloads(threadId: string): BrowserDownload[] {
-  return browserCompanionState(threadId)?.downloads ?? [];
+/** The downloads of the thread `pane` is attached for, newest first; empty for none (browserPaneState). */
+export function browserDownloads(pane: BrowserPaneAttachment): BrowserDownload[] {
+  return browserPaneState(pane)?.downloads ?? [];
 }
 
 export function downloadRunning(download: BrowserDownload): boolean {

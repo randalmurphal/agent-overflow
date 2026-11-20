@@ -6,6 +6,9 @@ import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { applyBrowserCompanionState, resetBrowserCompanionForTest } from '../../stores/browserCompanion.svelte';
 import { airspaceSurfaces } from '../../utils/paneAirspace.svelte';
 import { attachBrowserPaneForTest } from '../../../test/helpers/browserPane';
+import { forgetBackendEntities, forgetThread, noteThread } from '../../transport/entityIndex';
+import { HOME_BACKEND } from '../../transport/backendKey';
+import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 
 const THREAD = 'thread-1';
 let seq = 0;
@@ -37,6 +40,7 @@ describe('<BrowserDownloadsControl>', () => {
 
   it('is absent until the thread has a download', async () => {
     seed([]);
+    await attachBrowserPaneForTest(THREAD, 'mount-1');
     const view = render(BrowserDownloadsControlHarness, { threadId: THREAD });
     expect(view.queryByTestId('browser-downloads')).toBeNull();
     seed([download('a')]);
@@ -46,6 +50,7 @@ describe('<BrowserDownloadsControl>', () => {
 
   it('shows the running downloads in steps, and a spinner when their size is unknown', async () => {
     seed([download('a', { state: 'in_progress', receivedBytes: 300, totalBytes: 1000 })]);
+    await attachBrowserPaneForTest(THREAD, 'mount-1');
     const view = render(BrowserDownloadsControlHarness, { threadId: THREAD });
     expect(view.getByTestId('browser-downloads').getAttribute('aria-label')).toBe('Downloads, 1 running');
     const bar = view.getByTestId('browser-downloads-progress');
@@ -114,6 +119,7 @@ describe('<BrowserDownloadsControl>', () => {
 
   it('registers the open list as airspace, so the native page yields to it', async () => {
     seed([download('a')]);
+    await attachBrowserPaneForTest(THREAD, 'mount-1');
     const view = render(BrowserDownloadsControlHarness, { threadId: THREAD });
     expect(airspaceSurfaces()).toHaveLength(0);
     await fireEvent.click(view.getByTestId('browser-downloads'));
@@ -123,8 +129,31 @@ describe('<BrowserDownloadsControl>', () => {
     await waitFor(() => expect(airspaceSurfaces()).toHaveLength(0));
   });
 
+  // The list is the home computer's: it is read through the pane's
+  // attachment, so a pane not attached yet, or a thread two computers claim,
+  // shows none.
+  it('shows no download before the attach answers or once two computers claim the thread', async () => {
+    seed([download('a')]);
+    const view = render(BrowserDownloadsControlHarness, { threadId: THREAD });
+    expect(view.queryByTestId('browser-downloads')).toBeNull();
+    await attachBrowserPaneForTest(THREAD, 'mount-1');
+    expect(view.getByTestId('browser-downloads')).not.toBeNull();
+    stageBackend({ id: 'remote', backendId: 'remote' });
+    try {
+      noteThread(THREAD, HOME_BACKEND, 4);
+      noteThread(THREAD, 'remote', 4);
+      await tick();
+      expect(view.queryByTestId('browser-downloads')).toBeNull();
+    } finally {
+      forgetThread(THREAD);
+      forgetBackendEntities('remote');
+      resetStagedBackends();
+    }
+  });
+
   it('offers no clear while every download is running', async () => {
     seed([download('a', { state: 'in_progress' })]);
+    await attachBrowserPaneForTest(THREAD, 'mount-1');
     const view = render(BrowserDownloadsControlHarness, { threadId: THREAD });
     await fireEvent.click(view.getByTestId('browser-downloads'));
     await view.findByTestId('browser-downloads-list');

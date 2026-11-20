@@ -1,6 +1,6 @@
 import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import BrowserJarControl from './BrowserJarControl.svelte';
 import BrowserJarControlHarness from './BrowserJarControlHarness.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
@@ -57,8 +57,10 @@ describe('<BrowserJarControl>', () => {
   afterEach(() => resetBrowserCompanionForTest());
 
   it('shows the current jar and lists the four with what each shares', async () => {
+    const release = await attachPane();
     seed('project', [page('a')]);
     const view = mount();
+    onTestFinished(release);
     const button = view.getByTestId('browser-jar');
     expect(button.getAttribute('aria-label')).toBe('Cookie jar: Whole project');
     await fireEvent.click(button);
