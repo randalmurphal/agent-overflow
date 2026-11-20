@@ -14,10 +14,10 @@ import (
 // for the first client's reads to settle (Deps.Settled), then runs a round
 // at once and every Cadence.Linked: while a client is connected
 // (Deps.ClientConnected), each connection that is on syncs its linked
-// issues' cards and the history due (SyncLinked), and the mirror's
-// cleanup runs (FinishMirrorCleanup). A round with no client connected is
-// skipped whole. A failure is reported to Deps.LoopFailed and logged, and
-// the loop goes on.
+// issues' cards and the history due (SyncLinked) until no unit reports
+// More, and the mirror's cleanup runs (FinishMirrorCleanup). A round with
+// no client connected is skipped whole. A failure is reported to
+// Deps.LoopFailed and logged, and the loop goes on.
 
 // loopState is the loop's state, under subMu.
 type loopState struct {
@@ -35,7 +35,8 @@ type loopState struct {
 // connection is on, and from then on with the first one turned on or
 // added, and it stops with the last one turned off or removed. Calling it
 // again does nothing more. Its cost with no connection on is the one read
-// of the connections.
+// of the connections. When that read fails, the loop runs (syncLoopLocked)
+// and the error is returned.
 func (s *Service) StartLinkedSync() error {
 	if err := s.enter(); err != nil {
 		return err
@@ -57,8 +58,13 @@ func (s *Service) StartLinkedSync() error {
 // syncLoopLocked starts or stops the armed loop to match whether a Jira
 // or Linear connection is on, one read of the connections. A loop it
 // stops is returned for the caller to join once it released opMu: the
-// loop's tick may be waiting for it. The caller holds opMu, so changes to
-// the connections and their effect on the loop apply in one order.
+// loop's tick may be waiting for it. When the read fails, the loop runs
+// (started if none runs) and the error is returned: a loop with no
+// connection on costs a read of the connections a round, and the next
+// change to the connections stops it, where a loop left stopped with a
+// connection on would wait for a change that may never come. The caller
+// holds opMu, so changes to the connections and their effect on the loop
+// apply in one order.
 func (s *Service) syncLoopLocked() (<-chan struct{}, error) {
 	s.subMu.Lock()
 	armed := s.subs.loop.armed
@@ -66,11 +72,11 @@ func (s *Service) syncLoopLocked() (<-chan struct{}, error) {
 	if !armed {
 		return nil, nil
 	}
-	rows, err := s.store.ListTrackerConnections()
-	if err != nil {
-		return nil, fmt.Errorf("trackerapp: list connections for the linked-issues loop: %w", err)
+	rows, listErr := s.store.ListTrackerConnections()
+	if listErr != nil {
+		listErr = fmt.Errorf("trackerapp: list connections for the linked-issues loop: %w", listErr)
 	}
-	on := false
+	on := listErr != nil
 	for _, row := range rows {
 		on = on || (row.Enabled && row.Kind != store.TrackerKindTempo)
 	}
@@ -85,7 +91,7 @@ func (s *Service) syncLoopLocked() (<-chan struct{}, error) {
 	case !on && l.cancel != nil:
 		return s.stopLoopLocked(), nil
 	}
-	return nil, nil
+	return nil, listErr
 }
 
 // stopLoopLocked cancels the running loop, if any, and returns the channel
@@ -137,7 +143,7 @@ func (s *Service) runLinkedLoop(ctx context.Context, done chan struct{}) {
 }
 
 // linkedRound syncs the linked issues of each Jira or Linear connection
-// that is on.
+// that is on (linkedConnection).
 func (s *Service) linkedRound(ctx context.Context) {
 	if err := s.enter(); err != nil {
 		return
@@ -152,12 +158,47 @@ func (s *Service) linkedRound(ctx context.Context) {
 		if !row.Enabled || row.Kind == store.TrackerKindTempo {
 			continue
 		}
-		_, err := s.SyncLinked(ctx, row.ID, LinkedDue{Cards: true, History: true}, Background)
+		s.linkedConnection(ctx, row.ID)
+		if ctx.Err() != nil {
+			return
+		}
+	}
+}
+
+// linkedConnection syncs connection id's linked issues: ticks of its
+// linked scope while a unit reports More, each running only the units
+// still owed one (a unit that finished is not run again), each tick
+// bounded as SyncLinked bounds it. It stops at a failure, the tracker's
+// (recorded in the scope's sync state; a rate limit's release is the next
+// round's) or any other (reported to the loop), when ctx ends, and when no
+// client is connected any more.
+func (s *Service) linkedConnection(ctx context.Context, id string) {
+	due := LinkedDue{Cards: true, History: true}
+	for {
+		out, err := s.SyncLinked(ctx, id, due, Background)
 		switch {
 		case ctx.Err() != nil:
 			return
-		case err != nil && !errors.Is(err, ErrStopped):
-			s.loopFailure(fmt.Errorf("trackerapp: sync the linked issues of %s: %w", row.ID, err))
+		case err != nil:
+			if !errors.Is(err, ErrStopped) {
+				s.loopFailure(fmt.Errorf("trackerapp: sync the linked issues of %s: %w", id, err))
+			}
+			return
+		case out.Failure != nil || out.Ended:
+			return
+		}
+		due = LinkedDue{}
+		for _, u := range out.Ran {
+			switch {
+			case !u.More:
+			case u.Unit == UnitCards:
+				due.Cards = true
+			case u.Unit == UnitHistory:
+				due.History = true
+			}
+		}
+		if !due.Cards && !due.History || !s.clientConnected() {
+			return
 		}
 	}
 }

@@ -120,8 +120,9 @@ func TestMirrorBoardPatchStatements(t *testing.T) {
 }
 
 // The boards of a list of issues come from one probe per issue of the
-// board rows' primary key, and a patch's section rows from one probe per
-// named issue: neither walks the board.
+// board rows' primary key, with their children's from one probe per issue
+// of the parent index, and a patch's section rows from one probe per named
+// issue: neither walks the board.
 func TestMirrorPatchReadsProbeByKey(t *testing.T) {
 	t.Parallel()
 	s, _, _ := newMirror(t)
@@ -132,21 +133,29 @@ func TestMirrorPatchReadsProbeByKey(t *testing.T) {
 		}
 	}
 	plan := explainMirror(t, s, mirrorIssueBoardsSQL)
-	if !strings.Contains(plan, "SEARCH b USING PRIMARY KEY (root_id=? AND issue_id=?)") {
-		t.Errorf("issue boards plan:\n%s\nwant a key prefix probe per issue", plan)
+	if !strings.Contains(plan, "SEARCH b USING PRIMARY KEY (root_id=? AND issue_id=?)") ||
+		!strings.Contains(plan, "SEARCH c USING INDEX idx_tracker_cache_issues_parent (root_id=? AND parent_id=?)") {
+		t.Errorf("issue boards plan:\n%s\nwant a key prefix probe per issue and a parent index probe per issue", plan)
 	}
 }
 
+// The boards of issues are their own rows' and their children's: a row
+// shows its parent's key and title.
 func TestMirrorIssueBoards(t *testing.T) {
 	t.Parallel()
 	s, _, root := newMirror(t)
+	child := webRow("10003", 5, "c")
+	child.Card.ParentID = "10002"
 	writeMirrorBoard(t, s, root, "10", []MirrorRow{webRow("10001", 5, "a"), webRow("10002", 5, "b")})
-	writeMirrorBoard(t, s, root, "11", []MirrorRow{webRow("10001", 5, "a")})
+	writeMirrorBoard(t, s, root, "11", []MirrorRow{webRow("10001", 5, "a"), child})
 	got, err := s.ListMirrorIssueBoards(root, []string{"10001", "10002", "10009"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []MirrorIssueBoard{{"10001", "10"}, {"10001", "11"}, {"10002", "10"}}
+	slices.SortFunc(got, func(a, b MirrorIssueBoard) int {
+		return strings.Compare(a.IssueID+" "+a.BoardID, b.IssueID+" "+b.BoardID)
+	})
+	want := []MirrorIssueBoard{{"10001", "10"}, {"10001", "11"}, {"10002", "10"}, {"10003", "11"}}
 	if !slices.Equal(got, want) {
 		t.Fatalf("boards %v, want %v", got, want)
 	}

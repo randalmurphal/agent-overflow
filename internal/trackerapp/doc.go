@@ -26,12 +26,17 @@
 // the cleanup drains what a detach, an unlisted board or an unlinked issue
 // leaves (cleanup.go).
 //
-// Clients subscribe (subscriptions.go): each subscribed board and each
-// open ticket has one pump, a goroutine that ticks on Cadence while a
-// handle shows it (pump_board.go, pump_ticket.go). What every tick stores
-// passes through one change funnel (funnel.go), which turns it into the
-// events each subscription needs, sent through Deps callbacks; a client
-// patches the sections it holds from an event with one read (patch.go).
+// Clients subscribe (subscriptions.go): each subscribed board has one
+// pump, a goroutine that ticks on Cadence while a handle shows it
+// (pump_board.go). Each open ticket has a pump goroutine with no timer for
+// its first read, a person's refresh, the reads it is nudged to make and
+// its view rebuilds (pump_ticket.go); a connection's shown tickets are
+// read together by its round, one goroutine and timer per connection
+// (ticket_round.go), in one verified read (ticket_read.go). What every
+// tick and ticket read stores passes through one change funnel
+// (funnel.go), which turns it into the events and nudges each
+// subscription needs, sent through Deps callbacks; a client patches the
+// sections it holds from an event with one read (patch.go).
 // One loop for the service syncs linked issues and finishes the mirror
 // cleanup (linked_loop.go). New starts nothing: StartLinkedSync arms the
 // loop, and a subscribe starts its pump.

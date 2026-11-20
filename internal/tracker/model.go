@@ -318,3 +318,11 @@ type Detail struct {
 	Moves       []Move
 	Catalog
 }
+
+// Details are the details of several issues read together (Provider.Details):
+// one Detail for each issue the tracker returned, in no order, and the
+// issues it did not return, deleted or not visible to the user, in Missing.
+type Details struct {
+	Details []Detail
+	Missing []IssueID
+}

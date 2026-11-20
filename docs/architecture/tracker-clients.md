@@ -438,8 +438,12 @@ payload whose `success` is false; a missing `success` is an unknown
 outcome. Not found is matched only at the root field the call asked for.
 
 Issues are listed by a filter (team, state, cycle, update time, IDs or
-identifiers), found by text with `SearchIssues`, and read one at a time in
-full, every relation each way read to its end. `ListIssuePositions` lists
+identifiers), found by text with `SearchIssues`, and read in full, every
+relation each way read to its end: one at a time with `Issue`, or up to
+`MaxIssueDetails` (10) by ID in one request with `IssueDetails`, which
+leaves out an ID that names no issue the user can see (Linear charged the
+same points for 1 and for 10,
+[measured](../references/tracker-api-measurements.md)). `ListIssuePositions` lists
 only each issue's ID and manual order. A comment, relation, cycle or team
 is read by its ID, and users, labels, projects, cycles and teams by a set
 of IDs, so a caller reads the names a result references, never a catalog.

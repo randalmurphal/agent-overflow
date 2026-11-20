@@ -147,7 +147,7 @@ func TestConnectionChangesEndSubscriptions(t *testing.T) {
 			board := m.subscribe(t, testBoard)
 			m.events.boardEvents(t, 1)
 			arrived := make(chan struct{}, 4)
-			heldCalls(m.p, arrived, "ChangedRows", "Detail")
+			heldCalls(m.p, arrived, "ChangedRows", "Details")
 			ticket, err := m.svc.SubscribeTicket(m.conn.ID, "10001")
 			if err != nil {
 				t.Fatal(err)
@@ -253,23 +253,23 @@ func TestAChangedCardWakesTheOpenTicket(t *testing.T) {
 	if err != nil || ticket.Loaded {
 		t.Fatalf("ticket answer %+v, %v", ticket, err)
 	}
-	if e := m.events.issueEvents(t, 1)[0]; !slices.Equal(e.Issues, ids("10001")) || e.Seq <= ticket.Seq {
+	if e := m.events.issueEvents(t, 1)[0]; e.Issue != "10001" || !e.Changed || e.Seq <= ticket.Seq {
 		t.Fatalf("the first read's event %+v", e)
 	}
 	held.Updated, held.Title = held.Updated.Add(time.Minute), "Renamed"
 	m.tracks([]tracker.Row{{Card: held, Order: "a"}})
-	reads := m.p.count("Detail")
+	reads := m.p.count("Details")
 	if err := m.svc.RefreshSubscription(t.Context(), board.ID); err != nil {
 		t.Fatal(err)
 	}
-	waitCalls(t, m.p, "Detail", reads+1)
+	waitCalls(t, m.p, "Details", reads+1)
 	issues := m.events.issueEvents(t, 2)
-	if !slices.Equal(issues[1].Issues, ids("10001")) {
+	if issues[1].Issue != "10001" || !issues[1].Changed {
 		t.Fatalf("the woken read's event %+v", issues[1])
 	}
-	v, _, err := m.svc.TicketDetail(ticket.ID)
-	if err != nil || v.Card.Title != "Renamed" {
-		t.Fatalf("the ticket's detail %+v, %v", v.Card, err)
+	v, err := m.svc.TicketDetail(ticket.ID)
+	if err != nil || v.Detail == nil || v.Detail.Card.Title != "Renamed" {
+		t.Fatalf("the ticket's detail %+v, %v", v, err)
 	}
 }
 
@@ -308,19 +308,19 @@ func TestAnOpenTicketPicksUpANewComment(t *testing.T) {
 				t.Fatal(err)
 			}
 			m.events.issueEvents(t, 1)
-			waitCalls(t, m.p, "Detail", 3) // reads that found no change
+			waitCalls(t, m.p, "Details", 3) // reads that found no change
 			if _, issues, _ := m.events.snapshot(); len(issues) != 1 {
 				t.Fatalf("reads that found no change told %+v", issues)
 			}
 			mu.Lock()
 			comments = append(comments, tracker.Comment{ID: "2", Author: "acc-user1", Body: "Second", Created: time.UnixMilli(1_799_000_100_000)})
 			mu.Unlock()
-			if e := m.events.issueEvents(t, 2)[1]; !slices.Equal(e.Issues, []tracker.IssueID{issue}) {
+			if e := m.events.issueEvents(t, 2)[1]; e.Issue != issue || !e.Changed {
 				t.Fatalf("the new comment's event %+v", e)
 			}
-			v, _, err := m.svc.TicketDetail(sub.ID)
-			if err != nil || len(v.Comments) != 2 {
-				t.Fatalf("the ticket's detail has %d comments: %v", len(v.Comments), err)
+			v, err := m.svc.TicketDetail(sub.ID)
+			if err != nil || v.Detail == nil || len(v.Detail.Comments) != 2 {
+				t.Fatalf("the ticket's detail %+v: %v", v, err)
 			}
 			m.svc.subMu.Lock()
 			holds := m.svc.subs.tickets[ticketKey{connection: m.conn.ID, issue: issue}].held != nil
@@ -459,6 +459,12 @@ func TestStopJoinsPumpsAndLoop(t *testing.T) {
 	}
 	for _, p := range m.svc.subs.tickets {
 		exited = append(exited, p.exited)
+	}
+	for _, rd := range m.svc.subs.rounds {
+		exited = append(exited, rd.done)
+	}
+	if len(m.svc.subs.rounds) != 1 {
+		t.Errorf("%d ticket rounds for one shown ticket", len(m.svc.subs.rounds))
 	}
 	exited = append(exited, m.svc.subs.loop.done)
 	m.svc.subMu.Unlock()

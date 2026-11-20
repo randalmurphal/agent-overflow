@@ -154,12 +154,17 @@ type MirrorIssueBoard struct {
 // mirrorIssueBoardsSQL reads the board rows of the issues of the JSON list
 // ?2, each probed by its key prefix.
 const mirrorIssueBoardsSQL = `SELECT b.issue_id, b.board_id FROM json_each(?2) l
-	CROSS JOIN tracker_cache_board_issues b ON b.root_id = ?1 AND b.issue_id = l.value`
+	CROSS JOIN tracker_cache_board_issues b ON b.root_id = ?1 AND b.issue_id = l.value
+	UNION ALL
+	SELECT b.issue_id, b.board_id FROM json_each(?2) l
+	CROSS JOIN tracker_cache_issues c ON c.root_id = ?1 AND c.parent_id = l.value AND c.parent_id <> ''
+	CROSS JOIN tracker_cache_board_issues b ON b.root_id = c.root_id AND b.issue_id = c.issue_id`
 
 // ListMirrorIssueBoards reads which boards hold a row of each of issueIDs
-// (at most mirrorMaxLookup) in one statement, by issue in list order; a
-// board no project shows may be among them. An issue with no row is
-// absent.
+// (at most mirrorMaxLookup), and of each issue whose parent is one of
+// them, whose row shows its parent's key and title, in one statement; a
+// board no project shows may be among them, and a pair may repeat. An
+// issue with no row is absent.
 func (s *Store) ListMirrorIssueBoards(rootID int64, issueIDs []string) ([]MirrorIssueBoard, error) {
 	if len(issueIDs) > mirrorMaxLookup {
 		return nil, fmt.Errorf("%w: %d issues, over %d", ErrInvalidTrackerCache, len(issueIDs), mirrorMaxLookup)

@@ -43,10 +43,11 @@ type MirrorStore interface {
 	ReplaceMirrorStructure(rootID int64, st store.MirrorStructure) (store.MirrorStructureWrite, error)
 	ReplaceMirrorHistories(rootID, sweep int64, histories []store.MirrorHistory) ([]store.MirrorHistoryResult, error)
 	ListMirrorHistoryDue(rootID int64, after string) ([]store.MirrorHistoryDue, bool, error)
-	StoreMirrorDetail(rootID, sweep int64, issueID string, openedAt, readAt int64, data []byte) (store.MirrorDetailWrite, error)
-	ConfirmMirrorDetail(rootID int64, d store.MirrorDetail, openedAt int64, replace []byte) (store.MirrorDetailWrite, error)
+	StoreMirrorDetails(rootID, sweep int64, docs []store.MirrorDetailDoc, openedAt, readAt int64) ([]store.MirrorDetailWrite, error)
+	ConfirmMirrorDetail(rootID int64, d store.MirrorDetail, openedAt int64) (store.MirrorDetailWrite, error)
 
 	GetMirrorDetail(rootID int64, issueID string) (store.MirrorDetail, bool, error)
+	ListMirrorDetailStates(rootID int64, issueIDs []string) ([]store.MirrorDetail, error)
 	GetMirrorBoard(rootID int64, boardID string) (store.MirrorStructure, bool, error)
 	GetMirrorCatalog(rootID int64, users, statuses []string) (store.MirrorCatalog, error)
 	ListMirrorCards(rootID int64, issueIDs []string) ([]store.MirrorCard, error)
@@ -188,10 +189,12 @@ type Changes struct {
 	Rows []tracker.IssueID `json:"rows,omitempty"`
 	// Removed are the issues whose row on the board was removed.
 	Removed []tracker.IssueID `json:"removed,omitempty"`
-	// Catalog reports a stored user or status that changed.
+	// Catalog reports a stored user or status that changed, whichever read
+	// stored it: every board of the connection shows them.
 	Catalog bool `json:"catalog,omitempty"`
 	// Structure reports a change to the board's structure: its columns,
-	// estimate, sprints, or the users and statuses read with them.
+	// estimate, sprints, or the users and statuses read with them (which
+	// Catalog reports too).
 	Structure bool `json:"structure,omitempty"`
 	// History are the issues whose stored changes were replaced.
 	History []tracker.IssueID `json:"history,omitempty"`

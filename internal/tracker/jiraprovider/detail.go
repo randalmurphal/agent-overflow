@@ -3,6 +3,7 @@ package jiraprovider
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"slices"
@@ -13,6 +14,7 @@ import (
 	"agent-overflow/internal/tracker"
 	"agent-overflow/internal/tracker/adf"
 	"agent-overflow/internal/tracker/jira"
+	"agent-overflow/internal/tracker/trackerapi"
 )
 
 // commentPage is the most comments a page holds.
@@ -83,6 +85,54 @@ func (p *Provider) Detail(ctx context.Context, issue tracker.IssueID) (tracker.D
 	d.Moves = movesOf(full.Transitions, cat)
 	d.Catalog = cat.out
 	return d, nil
+}
+
+// detailsAtOnce is how many issues Details reads at a time.
+const detailsAtOnce = 4
+
+// Details reads each issue as Detail does, detailsAtOnce at a time: Jira
+// reads one issue's detail a request, so N issues cost N times Detail's
+// requests. An issue Jira answers 404 for is Missing; any other failure
+// ends the reads in flight and is the error.
+func (p *Provider) Details(ctx context.Context, issues []tracker.IssueID) (tracker.Details, error) {
+	for i, issue := range issues {
+		if err := checkIssue(issue); err != nil {
+			return tracker.Details{}, err
+		}
+		if slices.Contains(issues[:i], issue) {
+			return tracker.Details{}, invalidf("issue %s is named twice", issue)
+		}
+	}
+	read := make([]tracker.Detail, len(issues))
+	missing := make([]bool, len(issues))
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(detailsAtOnce)
+	for i, issue := range issues {
+		g.Go(func() error {
+			d, err := p.Detail(gctx, issue)
+			switch {
+			case errors.Is(err, trackerapi.ErrNotFound):
+				missing[i] = true
+				return nil
+			case err != nil:
+				return err
+			}
+			read[i] = d
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return tracker.Details{}, err
+	}
+	var out tracker.Details
+	for i, issue := range issues {
+		if missing[i] {
+			out.Missing = append(out.Missing, issue)
+		} else {
+			out.Details = append(out.Details, read[i])
+		}
+	}
+	return out, nil
 }
 
 // detailFields are is's fields other than those detailSkipped names and

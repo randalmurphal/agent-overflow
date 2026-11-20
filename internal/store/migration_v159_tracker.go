@@ -106,7 +106,9 @@ package store
 //     board_rows counts the issue's board rows, kept by the
 //     trg_tracker_cache_board_rows_* triggers (a row's keys are never
 //     updated); idx_tracker_cache_issues_boardless holds the issues only a
-//     thread's link can keep, which the cleanup sweep reads.
+//     thread's link can keep, which the cleanup sweep reads;
+//     idx_tracker_cache_issues_parent finds the children of a changed
+//     issue, whose rows show its key and title.
 //   - tracker_cache_board_issues: keyed by issue first, so the primary key
 //     serves the keep rule, an issue's rows and the cascade of an issue's
 //     delete; idx_..._order serves a section page, the counts, a
@@ -266,6 +268,7 @@ CREATE INDEX idx_tracker_cache_issues_history_due ON tracker_cache_issues(root_i
  WHERE history_to < updated_at OR history_boards_rev < boards_rev;
 CREATE INDEX idx_tracker_cache_issues_boardless ON tracker_cache_issues(root_id, issue_id) WHERE board_rows = 0;
 CREATE INDEX idx_tracker_cache_issues_history_dirty ON tracker_cache_issues(root_id, issue_id) WHERE history_dirty = 1;
+CREATE INDEX idx_tracker_cache_issues_parent ON tracker_cache_issues(root_id, parent_id) WHERE parent_id <> '';
 
 CREATE TABLE tracker_cache_board_issues (
  root_id INTEGER NOT NULL,

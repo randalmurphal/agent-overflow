@@ -76,6 +76,7 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 		func() error { _, _, err := s.GetMirrorSync(root, ""); return err },
 		func() error { _, _, err := s.ListMirrorHistoryDue(root, ""); return err },
 		func() error { _, _, err := s.GetMirrorDetail(root, "10001"); return err },
+		func() error { _, err := s.ListMirrorDetailStates(root, []string{"10001", "10002"}); return err },
 		func() error {
 			_, _, err := s.ListMirrorWorklogs(root, "acc-user1", "2026-01-01", "2026-01-31")
 			return err
@@ -263,6 +264,7 @@ func TestMirrorReadsUseTheirIndexes(t *testing.T) {
 		"listing check":     {mirrorBoardWriteSQL, "idx_project_tracker_boards_board (connection_id=? AND board_id=?)"},
 		"linked issues":     {mirrorOffBoardLinkedSQL, "idx_thread_tickets_issue (kind=? AND site=? AND issue_id>?)"},
 		"detail eviction":   {mirrorDetailEvictSQL, "idx_tracker_cache_issue_details_opened (root_id=?)"},
+		"detail states":     {mirrorDetailStatesSQL, "SEARCH d USING INDEX sqlite_autoindex_tracker_cache_issue_details_1 (root_id=? AND issue_id=?)"},
 		"issue rows":        {mirrorIssueRowsSQL, "PRIMARY KEY (root_id=? AND issue_id=? AND board_id>?)"},
 		"keep rule":         {`SELECT ` + mirrorIssueKept("?1", "?2"), "PRIMARY KEY (root_id=? AND issue_id=?)"},
 		"backlog section":   {mirrorSectionSQL[MirrorSectionBacklog], "SEARCH sp USING PRIMARY KEY (root_id=? AND board_id=? AND sprint_id=?)"},

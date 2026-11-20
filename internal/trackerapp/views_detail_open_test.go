@@ -1,6 +1,7 @@
 package trackerapp
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"slices"
@@ -61,8 +62,8 @@ func TestAFirstOpenStoresTheDetail(t *testing.T) {
 		}
 		opened = append(opened, sd.OpenedAt)
 	}
-	if m.p.count("Detail") != 1 || m.p.count("Cards") != 1 || opened[1] <= opened[0] {
-		t.Fatalf("%d detail reads, %d card reads, opened %v", m.p.count("Detail"), m.p.count("Cards"), opened)
+	if m.p.count("Details") != 1 || m.p.count("Cards") != 1 || opened[1] <= opened[0] {
+		t.Fatalf("%d detail reads, %d card reads, opened %v", m.p.count("Details"), m.p.count("Cards"), opened)
 	}
 }
 
@@ -99,10 +100,10 @@ func TestAReopenAfterEvictionStoresTheDetailAgain(t *testing.T) {
 	if _, _, ok := m.storedDetail(t, "40000"); ok {
 		t.Fatal("the least recently opened detail is kept over the cap")
 	}
-	reads := m.p.count("Detail")
+	reads := m.p.count("Details")
 	open("40000")
-	if _, _, ok := m.storedDetail(t, "40000"); !ok || m.p.count("Detail") != reads+1 {
-		t.Fatalf("reopened: stored %v, %d detail reads after %d", ok, m.p.count("Detail"), reads)
+	if _, _, ok := m.storedDetail(t, "40000"); !ok || m.p.count("Details") != reads+1 {
+		t.Fatalf("reopened: stored %v, %d detail reads after %d", ok, m.p.count("Details"), reads)
 	}
 }
 
@@ -150,7 +151,7 @@ func TestAStaleInFlightDetailReadStoresNothing(t *testing.T) {
 // stored; evict opens 200 others later, which drops 40000's detail.
 func capFixture(t *testing.T) (m *mirrorFixture, evict func()) {
 	t.Helper()
-	m = newMirrorFixture(t)
+	m = newMirrorFixtureWith(t, Cadence{Delta: time.Hour, Ticket: time.Hour})
 	m.tickingClock()
 	var pages [][]tracker.Row
 	for p := range 3 {
@@ -168,10 +169,19 @@ func capFixture(t *testing.T) (m *mirrorFixture, evict func()) {
 	}
 	m.openDetail(t, "40000")
 	return m, func() {
+		// 200 other details opened later, stored as a read stores them.
+		var docs []store.MirrorDetailDoc
 		for i := 1; i <= 200; i++ {
-			if _, err := m.st.TouchMirrorDetail(m.root(), fmt.Sprintf("%05d", 40000+i), m.now().UnixMilli()); err != nil {
-				t.Error(err)
+			id := fmt.Sprintf("%05d", 40000+i)
+			data, err := mirrorDetail(tracker.Detail{Card: card(id, 1_799_000_000_000)})
+			if err != nil {
+				t.Fatal(err)
 			}
+			docs = append(docs, store.MirrorDetailDoc{IssueID: id, Data: data})
+		}
+		at := m.now().UnixMilli()
+		if _, err := m.st.StoreMirrorDetails(m.root(), m.sync("").Sweep, docs, at, at); err != nil {
+			t.Error(err)
 		}
 		if _, _, ok := m.storedDetail(t, "40000"); ok {
 			t.Error("the openings did not drop the detail")
@@ -194,8 +204,8 @@ func TestADetailDroppedDuringItsCheckIsReadAgain(t *testing.T) {
 		return cardsOf(asked)
 	})
 	_, ch := m.openDetail(t, "40000")
-	if _, _, ok := m.storedDetail(t, "40000"); !ok || m.p.count("Detail") != 2 {
-		t.Fatalf("after the check: stored %v, %d detail reads", ok, m.p.count("Detail"))
+	if _, _, ok := m.storedDetail(t, "40000"); !ok || m.p.count("Details") != 2 {
+		t.Fatalf("after the check: stored %v, %d detail reads", ok, m.p.count("Details"))
 	}
 	if !slices.Equal(ch.Dropped, ids("40001")) || !slices.Equal(ch.Details, ids("40000")) {
 		t.Fatalf("changes %+v", ch)
@@ -236,80 +246,50 @@ func TestTheMirrorsCopyDroppedBeforeItsOpeningIsNotMirrored(t *testing.T) {
 	}
 }
 
-// A check reads the cards of the issues the detail links with the issue's,
-// in one read: their key, title and status show as read and are stored
-// with the detail (its read time kept) when they changed; a linked issue
-// the tracker does not return keeps what the detail holds.
-func TestACheckShowsTheLinkedIssuesAsTheyAreNow(t *testing.T) {
+// A check reads the issue's own card only. A linked issue the mirror keeps
+// shows the mirror's card of it, read in the view's one cards lookup; one
+// it does not keep shows what the detail's last full read found. Nothing
+// rewrites the stored document.
+func TestACheckShowsTheLinkedIssuesAsTheMirrorHasThem(t *testing.T) {
 	t.Parallel()
 	m := newMirrorFixture(t)
 	m.seedBoard(t)
 	c := card("10001", 1_799_000_000_000)
-	m.p.detail = func(tracker.IssueID) (tracker.Detail, error) { return detailOfCard(c), nil }
+	d := detailOfCard(c)
+	d.Links = append(d.Links, tracker.Link{ID: "l2", Type: d.Links[0].Type, Outward: true,
+		Issue: tracker.IssueRef{ID: "50000", Key: "WEB-50", Title: "Not kept", Status: "s1"}})
+	m.p.detail = func(tracker.IssueID) (tracker.Detail, error) { return d, nil }
 	m.openDetail(t, "10001")
 	before, _, _ := m.storedDetail(t, "10001")
 	link := card("10002", 1_799_000_000_000)
-	link.Title, link.Status = "Issue 10002, renamed", "s2"
+	link.Title, link.Status, link.Updated = "Issue 10002, renamed", "s2", link.Updated.Add(time.Minute)
+	must[store.MirrorChanges](t)(m.st.UpsertMirrorCards(m.root(), m.sync("").Sweep, []store.MirrorCard{must[store.MirrorCard](t)(mirrorCard(link))}, store.MirrorCatalog{}, m.now().UnixMilli()))
 	var asked [][]tracker.IssueID
 	m.p.updatedMovesWithDetail(func(ids []tracker.IssueID) (tracker.Cards, error) {
 		asked = append(asked, ids)
-		return tracker.Cards{Cards: []tracker.Card{c, link}}, nil
+		return cardsAnswering(&c)(ids)
 	})
+	cs := newCountingStore(m.st)
+	m.svc.store = cs
 	v, ch := m.openDetail(t, "10001")
-	if got := v.Links[0].Issue; got.Key != "WEB-2" || got.Title != link.Title || got.Status.ID != "s2" || !slices.Equal(ch.Details, ids("10001")) {
-		t.Fatalf("the link %+v, changes %+v", got, ch)
+	if got := v.Links[0].Issue; got.Key != "WEB-2" || got.Title != link.Title || got.Status.ID != "s2" || len(ch.Details) != 0 {
+		t.Fatalf("the kept link %+v, changes %+v", got, ch)
 	}
-	if !slices.EqualFunc(asked, [][]tracker.IssueID{ids("10001", "10002")}, slices.Equal) || m.p.count("Detail") != 1 {
-		t.Fatalf("cards read %v, %d detail reads", asked, m.p.count("Detail"))
+	if got := v.Links[1].Issue; got.Key != "WEB-50" || got.Title != "Not kept" {
+		t.Fatalf("the link the mirror does not keep %+v", got)
 	}
-	after, d, _ := m.storedDetail(t, "10001")
-	if after.ReadAt != before.ReadAt || d.Links[0].Issue.Title != link.Title {
-		t.Fatalf("the stored detail: read %d (was %d), link %+v", after.ReadAt, before.ReadAt, d.Links[0].Issue)
+	if !slices.EqualFunc(asked, [][]tracker.IssueID{ids("10001")}, slices.Equal) || m.p.count("Details") != 1 {
+		t.Fatalf("cards read %v, %d detail reads", asked, m.p.count("Details"))
+	}
+	if n := cs.take()["ListMirrorCards"]; n != 1 {
+		t.Fatalf("%d cards lookups for the view", n)
+	}
+	after, stored, _ := m.storedDetail(t, "10001")
+	if after.ReadAt != before.ReadAt || !bytes.Equal(after.Data, before.Data) || stored.Links[0].Issue.Title != "Issue 10002" {
+		t.Fatalf("the stored detail was rewritten: read %d (was %d), link %+v", after.ReadAt, before.ReadAt, stored.Links[0].Issue)
 	}
 	if v, _, err := m.svc.MirroredDetail(m.conn.ID, "10001"); err != nil || v.Links[0].Issue.Title != link.Title {
 		t.Fatalf("the mirror's copy: %+v, %v", v.Links, err)
-	}
-	if _, ch := m.openDetail(t, "10001"); len(ch.Details) != 0 {
-		t.Fatalf("the same links changed %+v", ch)
-	}
-	m.p.set(func(p *scripted) { p.cards = cardsAnswering(&c) })
-	if v, ch := m.openDetail(t, "10001"); v.Links[0].Issue.Title != link.Title || len(ch.Details) != 0 {
-		t.Fatalf("a linked issue not returned: %+v, changes %+v", v.Links[0].Issue, ch)
-	}
-}
-
-// A detail that links more issues than one cards read takes with its own
-// is read, not checked; one fewer is checked in one read.
-func TestADetailLinkingMoreThanOneCardsReadIsRead(t *testing.T) {
-	t.Parallel()
-	m := newMirrorFixture(t)
-	m.seedBoard(t)
-	c := card("10001", 1_799_000_000_000)
-	links := readBatch
-	m.p.detail = func(tracker.IssueID) (tracker.Detail, error) {
-		d := detailOfCard(c)
-		d.Links = nil
-		for i := range links {
-			d.Links = append(d.Links, tracker.Link{ID: tracker.LinkID(fmt.Sprint(i)), Type: tracker.LinkType{ID: "10000", Name: "Blocks"},
-				Issue: tracker.IssueRef{ID: tracker.IssueID(fmt.Sprint(20000 + i)), Key: fmt.Sprint("WEB-", 20000+i), Status: "s1"}})
-		}
-		return d, nil
-	}
-	m.openDetail(t, "10001")
-	var asked []tracker.IssueID
-	m.p.updatedMovesWithDetail(func(ids []tracker.IssueID) (tracker.Cards, error) {
-		asked = ids
-		return cardsAnswering(&c)(ids)
-	})
-	m.openDetail(t, "10001")
-	if m.p.count("Cards") != 0 || m.p.count("Detail") != 2 {
-		t.Fatalf("%d links: %d card reads, %d detail reads", readBatch, m.p.count("Cards"), m.p.count("Detail"))
-	}
-	links = readBatch - 1
-	m.openDetail(t, "10001")
-	m.openDetail(t, "10001")
-	if m.p.count("Cards") != 1 || m.p.count("Detail") != 3 || len(asked) != readBatch {
-		t.Fatalf("%d links: %d card reads of %d issues, %d detail reads", links, m.p.count("Cards"), len(asked), m.p.count("Detail"))
 	}
 }
 
@@ -327,17 +307,17 @@ func TestAStoredDetailPastTheAgeBoundIsRead(t *testing.T) {
 	at := func(d time.Duration) { m.svc.now = func() time.Time { return read.Add(d) } }
 	at(detailMaxAge)
 	m.openDetail(t, "10001")
-	if m.p.count("Cards") != 1 || m.p.count("Detail") != 1 {
-		t.Fatalf("at the bound: %d card reads, %d detail reads", m.p.count("Cards"), m.p.count("Detail"))
+	if m.p.count("Cards") != 1 || m.p.count("Details") != 1 {
+		t.Fatalf("at the bound: %d card reads, %d detail reads", m.p.count("Cards"), m.p.count("Details"))
 	}
 	at(detailMaxAge + time.Millisecond)
 	m.openDetail(t, "10001")
-	if m.p.count("Cards") != 1 || m.p.count("Detail") != 2 {
-		t.Fatalf("past the bound: %d card reads, %d detail reads", m.p.count("Cards"), m.p.count("Detail"))
+	if m.p.count("Cards") != 1 || m.p.count("Details") != 2 {
+		t.Fatalf("past the bound: %d card reads, %d detail reads", m.p.count("Cards"), m.p.count("Details"))
 	}
 	m.openDetail(t, "10001")
-	if m.p.count("Cards") != 2 || m.p.count("Detail") != 2 {
-		t.Fatalf("read again: %d card reads, %d detail reads", m.p.count("Cards"), m.p.count("Detail"))
+	if m.p.count("Cards") != 2 || m.p.count("Details") != 2 {
+		t.Fatalf("read again: %d card reads, %d detail reads", m.p.count("Cards"), m.p.count("Details"))
 	}
 }
 
@@ -354,12 +334,12 @@ func TestARefreshReadsTheDetail(t *testing.T) {
 	if _, _, err := m.svc.RefreshIssueDetail(t.Context(), m.conn.ID, "10001", Interactive); err != nil {
 		t.Fatal(err)
 	}
-	if m.p.count("Cards") != 0 || m.p.count("Detail") != 2 {
-		t.Fatalf("a refresh: %d card reads, %d detail reads", m.p.count("Cards"), m.p.count("Detail"))
+	if m.p.count("Cards") != 0 || m.p.count("Details") != 2 {
+		t.Fatalf("a refresh: %d card reads, %d detail reads", m.p.count("Cards"), m.p.count("Details"))
 	}
 	m.openDetail(t, "10001")
-	if m.p.count("Cards") != 1 || m.p.count("Detail") != 2 {
-		t.Fatalf("an open after it: %d card reads, %d detail reads", m.p.count("Cards"), m.p.count("Detail"))
+	if m.p.count("Cards") != 1 || m.p.count("Details") != 2 {
+		t.Fatalf("an open after it: %d card reads, %d detail reads", m.p.count("Cards"), m.p.count("Details"))
 	}
 }
 
@@ -377,15 +357,15 @@ func TestADetailTheMirrorKnowsIsStaleIsRead(t *testing.T) {
 	c.Updated = c.Updated.Add(time.Minute)
 	newer := must[store.MirrorCard](t)(mirrorCard(c))
 	must[store.MirrorChanges](t)(m.st.UpsertMirrorCards(m.root(), m.sync("").Sweep, []store.MirrorCard{newer}, store.MirrorCatalog{}, m.now().UnixMilli()))
-	if v, _ := m.openDetail(t, "10001"); v.Card.Updated != millis(c.Updated) || m.p.count("Cards") != 0 || m.p.count("Detail") != 2 {
-		t.Fatalf("a newer mirror card: updated %d, %d card reads, %d detail reads", v.Card.Updated, m.p.count("Cards"), m.p.count("Detail"))
+	if v, _ := m.openDetail(t, "10001"); v.Card.Updated != millis(c.Updated) || m.p.count("Cards") != 0 || m.p.count("Details") != 2 {
+		t.Fatalf("a newer mirror card: updated %d, %d card reads, %d detail reads", v.Card.Updated, m.p.count("Cards"), m.p.count("Details"))
 	}
 	c.Updated = c.Updated.Add(time.Minute)
 	if _, _, err := m.svc.RefreshIssueDetail(t.Context(), m.conn.ID, "10001", Interactive); err != nil {
 		t.Fatal(err)
 	}
 	m.openDetail(t, "10001")
-	if m.p.count("Cards") != 1 || m.p.count("Detail") != 3 {
-		t.Fatalf("an older mirror card: %d card reads, %d detail reads", m.p.count("Cards"), m.p.count("Detail"))
+	if m.p.count("Cards") != 1 || m.p.count("Details") != 3 {
+		t.Fatalf("an older mirror card: %d card reads, %d detail reads", m.p.count("Cards"), m.p.count("Details"))
 	}
 }

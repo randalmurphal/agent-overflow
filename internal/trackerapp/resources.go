@@ -146,37 +146,6 @@ func (r *run) againIfSwept(read func() error) error {
 	return read()
 }
 
-// detail reads issue's detail, which a person opened, and stores it,
-// opened and read at the time the read began, in one write when the
-// mirror keeps the issue; it returns the detail either way.
-func (r *run) detail(issue tracker.IssueID) (tracker.Detail, Changes, error) {
-	read := r.readAt()
-	r.calls++
-	d, err := r.p.Detail(r.ctx, issue)
-	if err != nil {
-		return tracker.Detail{}, Changes{}, fmt.Errorf("trackerapp: read the detail of %s: %w", issue, call(err))
-	}
-	if d.Card.ID != issue {
-		return tracker.Detail{}, Changes{}, fmt.Errorf("trackerapp: the detail of %s: %w", issue,
-			call(fmt.Errorf("the tracker answered with issue %q", d.Card.ID)))
-	}
-	boundHistory(&d)
-	data, err := mirrorDetail(d)
-	if err != nil {
-		return tracker.Detail{}, Changes{}, err
-	}
-	stored, err := r.s.store.StoreMirrorDetail(r.root, r.state.Sweep, string(issue), read, read, data)
-	if err != nil {
-		return tracker.Detail{}, Changes{}, fmt.Errorf("trackerapp: store the detail of %s: %w", issue, err)
-	}
-	var out Changes
-	if stored.Changed {
-		out.Details = []tracker.IssueID{issue}
-	}
-	out.Dropped = issueIDs(stored.Dropped)
-	return d, out, nil
-}
-
 // structure reads board's structure and stores it. A structure that
 // changed the board's estimate definition, this one or a later one the
 // store holds, makes the run's walk start over: the store refuses the
@@ -211,7 +180,7 @@ func (r *run) structure(board tracker.BoardID) (Changes, error) {
 			r.state.EstimateResetAt, r.state.Cursor = stored.EstimateResetAt, nil
 		}
 	}
-	return Changes{Structure: stored.Changed}, nil
+	return Changes{Structure: stored.Changed, Catalog: stored.Catalog}, nil
 }
 
 // markStructureDue marks the run's structure due when a row write found

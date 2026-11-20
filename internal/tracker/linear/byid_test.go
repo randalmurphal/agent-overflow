@@ -198,6 +198,53 @@ func TestIssueRelationsReadToTheEnd(t *testing.T) {
 	}
 }
 
+// IssueDetails reads its issues by ID in one page as large as the IDs, and
+// each issue's relations past the first page with its ID; an ID the page
+// leaves out is not returned. A page reporting more fails the read.
+func TestIssueDetailsReadsByID(t *testing.T) {
+	t.Parallel()
+	id := func(n int) string { return fmt.Sprintf("00000000-0000-4000-8000-%012x", n) }
+	ref := func(n int) lineartest.IssueRef {
+		return lineartest.IssueRef{ID: id(n), Identifier: fmt.Sprintf("WEB-%d", n), Title: "T", State: "state-todo"}
+	}
+	rel := func(rid string, from, to int) string {
+		return lineartest.RelationJSON(rid, "blocks", ref(from), ref(to))
+	}
+	one := lineartest.DetailJSON(lineartest.NewIssue(id(1), "WEB-1", "2026-11-02T10:00:00.000Z", 1), lineartest.Detail{
+		Relations: []string{rel("rel-1", 1, 2)}, RelationCursor: "r1",
+	})
+	two := lineartest.DetailJSON(lineartest.NewIssue(id(2), "WEB-2", "2026-11-02T10:00:00.000Z", 2), lineartest.Detail{})
+	vars := func(ids ...int) string {
+		var in []string
+		for _, n := range ids {
+			in = append(in, `"`+id(n)+`"`)
+		}
+		return fmt.Sprintf(`{"filter":{"and":[{"id":{"in":[%s]}}]},"first":%d}`, strings.Join(in, ","), len(ids))
+	}
+	f := newFake(t,
+		lineartest.Exchange{Op: "IssueDetails", Vars: vars(1, 2, 3), Body: lineartest.Data(lineartest.PageJSON([]string{one, two}, false, ""))},
+		lineartest.Exchange{Op: "IssueRelations", Vars: `{"id":"` + id(1) + `","first":100,"after":"r1"}`,
+			Body: `{"data":{` + lineartest.NodePageJSON([]string{rel("rel-2", 1, 3)}, false, "") + `}}`},
+		lineartest.Exchange{Op: "IssueDetails", Vars: vars(2), Body: lineartest.Data(lineartest.PageJSON([]string{two}, true, "p1"))},
+	)
+	c := f.client(t)
+	ds, err := c.IssueDetails(context.Background(), []string{id(1), id(2), id(3)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ds) != 2 || ds[0].ID != id(1) || len(ds[0].Relations) != 2 || ds[1].ID != id(2) {
+		t.Fatalf("details %+v", ds)
+	}
+	if _, err := c.IssueDetails(context.Background(), []string{id(2)}); err == nil {
+		t.Error("a page reporting more was taken")
+	}
+	for _, ids := range [][]string{nil, make([]string, MaxIssueDetails+1), {"WEB-1"}} {
+		if _, err := c.IssueDetails(context.Background(), ids); !errors.Is(err, trackerapi.ErrInvalidInput) {
+			t.Errorf("%d IDs %v: %v", len(ids), ids, err)
+		}
+	}
+}
+
 // The lean list sends ListIssues's variables and types IDs, orders and
 // teams.
 func TestListIssuePositions(t *testing.T) {

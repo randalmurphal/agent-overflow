@@ -140,8 +140,8 @@ func (s *Service) endConnection(id string) []<-chan struct{} {
 
 // followConnectionsLocked starts or stops the linked loop after a change
 // to the connections, adding a loop it stopped to exited. A failure to
-// read the connections leaves the loop as it is, and is the loop's
-// failure: the change stands. The caller holds opMu.
+// read the connections leaves the loop running (syncLoopLocked), and is
+// the loop's failure: the change stands. The caller holds opMu.
 func (s *Service) followConnectionsLocked(exited *[]<-chan struct{}) {
 	done, err := s.syncLoopLocked()
 	if err != nil {

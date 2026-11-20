@@ -25,6 +25,9 @@ type eventLog struct {
 	// settles counts the loop's settle waits.
 	settles      atomic.Int64
 	disconnected atomic.Bool
+	// onEmit, when set, sees each event as it is emitted, before it is
+	// recorded.
+	onEmit atomic.Pointer[func(any)]
 }
 
 func newEventLog() *eventLog {
@@ -41,8 +44,21 @@ func (l *eventLog) record(f func()) {
 	l.changed = make(chan struct{})
 }
 
-func (l *eventLog) board(e BoardEvent) { l.record(func() { l.boards = append(l.boards, e) }) }
-func (l *eventLog) issue(e IssueEvent) { l.record(func() { l.issues = append(l.issues, e) }) }
+func (l *eventLog) board(e BoardEvent) {
+	l.emitted(e)
+	l.record(func() { l.boards = append(l.boards, e) })
+}
+
+func (l *eventLog) issue(e IssueEvent) {
+	l.emitted(e)
+	l.record(func() { l.issues = append(l.issues, e) })
+}
+
+func (l *eventLog) emitted(e any) {
+	if f := l.onEmit.Load(); f != nil {
+		(*f)(e)
+	}
+}
 func (l *eventLog) loopFailed(err error) {
 	l.record(func() { l.loopErrs = append(l.loopErrs, err) })
 }

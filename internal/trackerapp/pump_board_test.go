@@ -110,8 +110,8 @@ func TestBoardSubscribeAnswersFromTheMirror(t *testing.T) {
 }
 
 // An idle shown board's tick costs one request and two store calls (its
-// sync state and the read it records) and emits nothing; so does an idle
-// open ticket's read, with the store calls of IssueDetail.
+// sync state and the read it records) and emits nothing. An idle round of
+// open tickets is pinned by TestIdleRoundCosts.
 func TestIdlePumpTickCosts(t *testing.T) {
 	t.Parallel()
 	m := newMirrorFixture(t)
@@ -134,45 +134,6 @@ func TestIdlePumpTickCosts(t *testing.T) {
 		t.Errorf("an idle tick emitted %+v", b[1:])
 	}
 
-	issue := rows[0].Card.ID
-	held := rows[0].Card
-	m.p.set(func(p *scripted) {
-		p.detail = func(tracker.IssueID) (tracker.Detail, error) {
-			d := realisticDetail()
-			d.Card = held
-			return d, nil
-		}
-	})
-	m.p.updatedMovesWithDetail(cardsAnswering(&held))
-	sub, err := m.svc.SubscribeTicket(m.conn.ID, issue)
-	if err != nil {
-		t.Fatal(err)
-	}
-	m.events.issueEvents(t, 1)
-	tp := m.svc.ticketPumpOf(m.conn.ID, issue)
-	for _, c := range []struct {
-		name               string
-		moves              bool
-		provider, storeUse string
-	}{
-		{"jira-shaped", true, "Cards:1", "ConfirmMirrorDetail:1 GetMirrorCatalog:1 GetMirrorDetail:1 GetMirrorSync:1 ListMirrorCards:1 UpsertMirrorCards:1"},
-		{"linear-shaped", false, "Detail:1", "GetMirrorCatalog:1 GetMirrorSync:1 ListMirrorCards:1 StoreMirrorDetail:1"},
-	} {
-		m.p.set(func(p *scripted) { p.caps.DetailMovesUpdated = c.moves })
-		m.svc.ticketTick(tp, Background, false) // settles the change of shape
-		before, _ = len(m.p.callsInOrder()), cs.take()
-		_, issuesBefore, _ := m.events.snapshot()
-		m.svc.ticketTick(tp, Background, false)
-		provider, stored := countsOf(m.p.callsInOrder()[before:]), cs.take()
-		t.Logf("idle %s ticket read: provider %s store %s", c.name, describeCounts(provider), describeCounts(stored))
-		if describeCounts(provider) != c.provider || describeCounts(stored) != c.storeUse {
-			t.Errorf("an idle %s ticket read cost provider %s, store %s", c.name, describeCounts(provider), describeCounts(stored))
-		}
-		if _, issues, _ := m.events.snapshot(); len(issues) != len(issuesBefore) {
-			t.Errorf("an idle %s ticket read emitted %+v", c.name, issues[len(issuesBefore):])
-		}
-	}
-	m.svc.ReleaseSubscription(sub.ID)
 }
 
 // ticketPumpOf is the pump of issue on connection id; nil for none.

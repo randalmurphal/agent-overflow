@@ -25,11 +25,14 @@ type boardPump struct {
 	exited chan struct{}
 
 	// pending is what the next event carries; sync is the board's sync
-	// view as the last tick recorded it, and failure the failure the
-	// subscribers were last told of.
-	pending boardPending
-	sync    SyncView
-	failure *FailureView
+	// view as the last tick recorded it; internal is the failure of the
+	// last tick when it was not the tracker's (a store error), which the
+	// sync state cannot record; failure is the failure the subscribers
+	// were last told of (told).
+	pending  boardPending
+	sync     SyncView
+	internal *FailureView
+	failure  *FailureView
 	// over is set once the pump ended and its subscribers were told, or
 	// were not to be.
 	over bool
@@ -63,16 +66,18 @@ func (b *boardPending) add(changed, removed []tracker.IssueID, readAgain bool) {
 // BoardSubscription is a board subscribe's answer: the handle, the
 // sequence number the answer is as of, and the board view of the sections
 // asked for when the mirror holds the board's structure (Loaded), or no
-// view: the pump's first tick reads it, and its event says so. PollEvery
-// is the pump's delta interval in milliseconds: while no failure is
-// reported, the board was read within it, so the last read time needs no
-// event of its own.
+// view: the pump's first tick reads it, and its event says so. Failure is
+// the board's failure as its subscribers were last told of it, which the
+// view's sync state carries too. PollEvery is the pump's delta interval in
+// milliseconds: while no failure is reported, the board was read within
+// it, so the last read time needs no event of its own.
 type BoardSubscription struct {
-	ID        string     `json:"id"`
-	Seq       uint64     `json:"seq"`
-	Loaded    bool       `json:"loaded"`
-	View      *BoardView `json:"view,omitempty"`
-	PollEvery int64      `json:"poll_every"`
+	ID        string       `json:"id"`
+	Seq       uint64       `json:"seq"`
+	Loaded    bool         `json:"loaded"`
+	View      *BoardView   `json:"view,omitempty"`
+	Failure   *FailureView `json:"failure,omitempty"`
+	PollEvery int64        `json:"poll_every"`
 }
 
 // SubscribeBoard subscribes to scope's board for project projectID, which
@@ -106,7 +111,7 @@ func (s *Service) SubscribeBoard(projectID string, scope Scope, sections []Secti
 	}) {
 		return BoardSubscription{}, fmt.Errorf("%w: project %s, board %s of %s", ErrNotListed, projectID, scope.Board, scope.Connection)
 	}
-	id, p, start, seq, err := s.takeBoardHandle(scope)
+	id, p, start, seq, told, err := s.takeBoardHandle(scope)
 	if err != nil {
 		return BoardSubscription{}, err
 	}
@@ -115,9 +120,18 @@ func (s *Service) SubscribeBoard(projectID string, scope Scope, sections []Secti
 	switch {
 	case err == nil:
 		answer.Loaded, answer.View = true, &view
+		if start {
+			answer.Failure = view.Sync.Failure
+		} else {
+			// The subscribers were told the sync state the pump holds, as of
+			// seq.
+			answer.View.Sync, answer.Failure = told, told.Failure
+		}
 	case !errors.Is(err, ErrNotMirrored):
 		s.ReleaseSubscription(id)
 		answer = BoardSubscription{}
+	default:
+		answer.Failure = told.Failure
 	}
 	s.subMu.Lock()
 	defer s.subMu.Unlock()
@@ -136,22 +150,24 @@ func (s *Service) SubscribeBoard(projectID string, scope Scope, sections []Secti
 
 // takeBoardHandle takes a handle on scope's pump, making the pump when
 // there is none; start reports that the caller launches it. seq is the
-// answer's sequence number. The connection is read under opMu, so a turn
-// off orders entirely before (refused) or after (the pump ends).
-func (s *Service) takeBoardHandle(scope Scope) (id string, p *boardPump, start bool, seq uint64, err error) {
+// answer's sequence number, and told the board's sync state as the pump's
+// subscribers were last told of it then. The connection is read under
+// opMu, so a turn off orders entirely before (refused) or after (the pump
+// ends).
+func (s *Service) takeBoardHandle(scope Scope) (id string, p *boardPump, start bool, seq uint64, told SyncView, err error) {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
 	kind, err := s.subscribableLocked(scope.Connection)
 	if err != nil {
-		return "", nil, false, 0, err
+		return "", nil, false, 0, SyncView{}, err
 	}
 	s.subMu.Lock()
 	defer s.subMu.Unlock()
 	switch {
 	case s.subs.halted:
-		return "", nil, false, 0, ErrStopped
+		return "", nil, false, 0, SyncView{}, ErrStopped
 	case s.subs.boardHandles >= maxBoardSubscriptions:
-		return "", nil, false, 0, fmt.Errorf("%w: %d board subscriptions", ErrTooManySubscriptions, maxBoardSubscriptions)
+		return "", nil, false, 0, SyncView{}, fmt.Errorf("%w: %d board subscriptions", ErrTooManySubscriptions, maxBoardSubscriptions)
 	}
 	p = s.subs.boards[scope]
 	if p == nil {
@@ -163,7 +179,18 @@ func (s *Service) takeBoardHandle(scope Scope) (id string, p *boardPump, start b
 		start = true
 	}
 	id = s.takeHandleLocked(&handle{board: p}, &p.core)
-	return id, p, start, s.nextSeqLocked(), nil
+	return id, p, start, s.nextSeqLocked(), p.toldLocked(), nil
+}
+
+// toldLocked is p's sync view as its subscribers were last told of it:
+// the recorded state, with a failure outside the tracker in place of the
+// recorded failure. The caller holds subMu.
+func (p *boardPump) toldLocked() SyncView {
+	v := p.sync
+	if p.internal != nil {
+		v.Failure = p.internal
+	}
+	return v
 }
 
 // subscribableLocked is the kind of connection id, refusing a subscribe
@@ -296,8 +323,9 @@ type tickResult struct {
 
 // boardTick runs one tick of p's board: what is due by the board's sync
 // state, or for a refresh every unit. It settles the outcome into the
-// pump: the sync view, a failure that started, changed or cleared, the
-// event, and the pump's end when the board's mirror ended.
+// pump: the sync view, a failure that started, changed or cleared (the
+// tracker's as recorded, or one outside the tracker that the tick
+// returned), the event, and the pump's end when the board's mirror ended.
 func (s *Service) boardTick(p *boardPump, refresh bool, u Urgency) tickResult {
 	origin := &tickOrigin{board: p}
 	due := s.boardDue
@@ -308,9 +336,11 @@ func (s *Service) boardTick(p *boardPump, refresh bool, u Urgency) tickResult {
 	res := tickResult{more: out.More(), retryAt: out.RetryAt, err: err}
 	stopped := err != nil && p.core.Context().Err() != nil
 	res.failed = out.Failure != nil || (err != nil && !stopped)
-	if err != nil && !stopped && !errors.Is(err, ErrStopped) {
+	internal := err != nil && !stopped && !errors.Is(err, ErrStopped)
+	if internal {
 		s.logf("trackerapp: the sync of board %s of %s failed: %v", p.scope.Board, p.scope.Connection, err)
 	}
+	at := millis(s.now())
 	s.subMu.Lock()
 	defer s.subMu.Unlock()
 	if p.core.DeadLocked() {
@@ -320,8 +350,16 @@ func (s *Service) boardTick(p *boardPump, refresh bool, u Urgency) tickResult {
 	if origin.recorded {
 		p.sync = origin.sync
 	}
-	if !sameFailure(p.failure, p.sync.Failure) {
-		p.failure = p.sync.Failure
+	switch {
+	case internal:
+		if p.internal == nil {
+			p.internal = internalFailure(at)
+		}
+	case err == nil:
+		p.internal = nil
+	}
+	if told := p.toldLocked(); !sameFailure(p.failure, told.Failure) {
+		p.failure = told.Failure
 		p.pending.due = true
 	}
 	if out.Ended || errors.Is(err, ErrStopped) {
@@ -372,7 +410,7 @@ func (s *Service) flushBoardLocked(p *boardPump) {
 	p.pending = boardPending{}
 	s.emitBoard(BoardEvent{
 		Scope: p.scope, Seq: s.nextSeqLocked(), Changed: pending.changed, Removed: pending.removed,
-		Truncated: pending.truncated, ReadAgain: pending.readAgain, Sync: p.sync,
+		Truncated: pending.truncated, ReadAgain: pending.readAgain, Sync: p.toldLocked(),
 	})
 }
 
@@ -389,7 +427,7 @@ func (s *Service) endBoardLocked(p *boardPump) {
 	p.over, p.pending = true, boardPending{}
 	s.emitBoard(BoardEvent{
 		Scope: p.scope, Seq: s.nextSeqLocked(), Changed: pending.changed, Removed: pending.removed,
-		Truncated: pending.truncated, ReadAgain: pending.readAgain, Sync: p.sync, Ended: true,
+		Truncated: pending.truncated, ReadAgain: pending.readAgain, Sync: p.toldLocked(), Ended: true,
 	})
 	p.core.StopLocked()
 	if s.subs.boards[p.scope] == p {

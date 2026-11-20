@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -61,8 +62,11 @@ func TestReplaceMirrorStructureReportsChanges(t *testing.T) {
 		edited := webStructure()
 		edit(&edited)
 		edited.ReadAt = 2
-		if got, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, edited)); err != nil || got.MirrorWrite != (MirrorWrite{Changed: true}) {
-			t.Errorf("%s: %+v, %v", name, got, err)
+		// A change of a user or status is the catalog's, which every board
+		// of the root shows; any other is the board's alone.
+		catalog := strings.HasPrefix(name, "user") || strings.HasPrefix(name, "status regroup")
+		if got, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, edited)); err != nil || got.MirrorWrite != (MirrorWrite{Changed: true}) || got.Catalog != catalog {
+			t.Errorf("%s: %+v, %v; want catalog %v", name, got, err, catalog)
 			continue
 		}
 		readBack := edited

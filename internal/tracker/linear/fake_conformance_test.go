@@ -298,6 +298,37 @@ var linearCases = map[string]func(t *testing.T, f *conformanceEnv){
 		d = answered(f.c.Issue(f.ctx, "WEB-1")).must(t)
 		want(t, len(d.Relations) == 61, "relations %d", len(d.Relations))
 	},
+	"IssueDetails": func(t *testing.T, f *conformanceEnv) {
+		// An ID naming no issue is left out; each issue reads as Issue
+		// reads it.
+		ds := answered(f.c.IssueDetails(f.ctx, []string{cfIssue1, cfIssue2, fid(999)})).must(t)
+		byID := map[string]*IssueDetail{}
+		for _, d := range ds {
+			byID[d.ID] = d
+		}
+		one := answered(f.c.Issue(f.ctx, "WEB-1")).must(t)
+		want(t, len(ds) == 2 && byID[cfIssue2] != nil && byID[cfIssue1] != nil &&
+			len(byID[cfIssue1].Comments.Items) == len(one.Comments.Items) && len(byID[cfIssue1].Relations) == len(one.Relations) &&
+			len(byID[cfIssue1].Children) == 1 && len(byID[cfIssue1].States) == 5, "details %+v", ds)
+		// Past the first page of relations, each issue's rest is read.
+		ws := conformanceWorkspace()
+		for i := range 30 {
+			ws.Relations = append(ws.Relations,
+				trackerfake.LinearRelation{ID: fid(1000 + i), Type: "related", Issue: cfIssue1, Related: cfIssue3},
+				trackerfake.LinearRelation{ID: fid(2000 + i), Type: "related", Issue: cfIssue2, Related: cfIssue3})
+		}
+		if err := f.e.Seed(trackerfake.Fixture{Linear: []trackerfake.LinearWorkspace{ws}}); err != nil {
+			t.Fatal(err)
+		}
+		ds = answered(f.c.IssueDetails(f.ctx, []string{cfIssue1, cfIssue2})).must(t)
+		for _, d := range ds {
+			byID[d.ID] = d
+		}
+		want(t, len(ds) == 2 && len(byID[cfIssue1].Relations) == 31 && len(byID[cfIssue2].Relations) >= 30,
+			"relations %d and %d", len(byID[cfIssue1].Relations), len(byID[cfIssue2].Relations))
+		_, err := f.c.IssueDetails(f.ctx, make([]string, MaxIssueDetails+1))
+		want(t, errors.Is(err, trackerapi.ErrInvalidInput), "more than MaxIssueDetails IDs: %v", err)
+	},
 	"IssueStates": func(t *testing.T, f *conformanceEnv) {
 		scope, ss, err := f.c.IssueStates(f.ctx, "WEB-3")
 		want(t, err == nil && scope == (IssueScope{IssueID: cfIssue3, TeamID: cfTeam, StateID: cfStarted}) && len(ss) == 5, "scope %+v states %+v %v", scope, ss, err)

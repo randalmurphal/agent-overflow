@@ -518,7 +518,10 @@ func mirrorWriters(s *Store) map[string]func(root int64) error {
 			_, err := s.UpsertMirrorCards(root, currentSweep(s, root), nil, MirrorCatalog{Statuses: []MirrorStatus{{ID: "1", Name: "To Do", Group: MirrorGroupDone}}}, 2)
 			return err
 		},
-		"TouchMirrorDetail": func(root int64) error { _, err := s.TouchMirrorDetail(root, "10001", 9); return err },
+		"StoreMirrorDetails": func(root int64) error {
+			_, err := s.StoreMirrorDetails(root, currentSweep(s, root), []MirrorDetailDoc{{IssueID: "10001", Data: []byte(`{"v":2}`)}, {IssueID: "10002", Data: []byte(`{}`)}}, 9, 9)
+			return err
+		},
 		"ConfirmMirrorDetail": func(root int64) error {
 			d, ok, err := s.GetMirrorDetail(root, "10001")
 			if err != nil {
@@ -528,7 +531,7 @@ func mirrorWriters(s *Store) map[string]func(root int64) error {
 				// A gone root holds none: the detail as a live root read it.
 				d = MirrorDetail{IssueID: "10001", ReadAt: 7, row: 1, sweep: 1}
 			}
-			_, err = s.ConfirmMirrorDetail(root, d, 9, []byte(`{"v":1}`))
+			_, err = s.ConfirmMirrorDetail(root, d, 9)
 			return err
 		},
 		"StoreMirrorDetail": func(root int64) error {
@@ -562,7 +565,7 @@ func mirrorWriters(s *Store) map[string]func(root int64) error {
 // the cleanup and the reads.
 var mirrorNonWriters = []string{
 	"GetOrCreateMirrorRoot", "GetMirrorRoot", "DetachMirror", "FinishMirrorCleanup",
-	"GetMirrorSync", "ListMirrorHistoryDue", "GetMirrorDetail", "ListMirrorWorklogs", "ListMirrorIssueWorklogs",
+	"GetMirrorSync", "ListMirrorHistoryDue", "GetMirrorDetail", "ListMirrorDetailStates", "ListMirrorWorklogs", "ListMirrorIssueWorklogs",
 	"GetMirrorBoard", "GetMirrorCatalog", "ListMirrorCards", "ListMirrorIssueRows", "ListMirrorSection", "CountMirrorSections",
 	"ListMirrorOffBoardLinkedIssues", "ReadMirrorBoardView", "ReadMirrorBoardPatch", "ListMirrorIssueBoards",
 }

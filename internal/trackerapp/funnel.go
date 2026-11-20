@@ -1,6 +1,7 @@
 package trackerapp
 
 import (
+	"fmt"
 	"slices"
 
 	"agent-overflow/internal/tracker"
@@ -11,25 +12,30 @@ import (
 const lookupBatch = 500
 
 // publish is the change funnel: every tick's changes (tick.go) and every
-// open ticket's read pass through it, and it turns them into what each
+// read of open tickets pass through it, and it turns them into what each
 // subscription of the connection needs, under subMu:
 //
 //   - the board of the change's own scope gets its changed rows, cards and
 //     removed rows: a board tick's cards are rows of its board;
-//   - every other subscribed board of the connection gets the changed
-//     cards and histories (a history moves a card's status time) of the
-//     issues it has a row of, from one indexed read of the issues' boards
-//     made only when such a board is subscribed;
+//   - every subscribed board of the connection gets its rows of the
+//     changed cards and histories (a history moves a card's status time)
+//     and its rows whose parent is among them (a row shows its parent's
+//     key and title), from one indexed read of the issues' boards made
+//     only when a board of the connection is subscribed;
 //   - a change of the board's structure, or of the connection's users and
-//     statuses (a name, a status's group), moves rows no ID names: the
-//     board is to be read again, as it is when the lookup failed;
-//   - an open ticket of a changed card reads at once (its pump's nudge); one
-//     whose stored detail another read changed is told so.
+//     statuses (a name, a status's group, Changes.Catalog), moves rows no
+//     ID names: the board is to be read again, as every board is when the
+//     lookup failed;
+//   - an open ticket of a changed card reads at once (its pump's nudge);
+//     one whose stored detail another read changed, whose view shows a
+//     changed card (its parent, an issue it links), or whose names may
+//     have changed (Catalog) rebuilds its view with no tracker call.
 //
 // What changes the origin pump's own scope is left pending for that pump,
-// which sends it with its failure in one event; every other subscription
-// is sent its event here. root is the connection's mirror root the change
-// was stored under.
+// which sends it with its failure in one event, and a read of tickets
+// settles its own tickets' cards and details; every other subscription is
+// sent its event or nudge here. root is the connection's mirror root the
+// change was stored under, as the run that stored it held it.
 func (s *Service) publish(root int64, scope Scope, ch Changes, origin *tickOrigin) {
 	if ch.Empty() {
 		return
@@ -39,16 +45,13 @@ func (s *Service) publish(root int64, scope Scope, ch Changes, origin *tickOrigi
 	s.subMu.Lock()
 	var boards []*boardPump
 	var tickets []*ticketPump
-	lookup := false
 	for sc, p := range s.subs.boards {
-		if sc.Connection != conn {
-			continue
+		if sc.Connection == conn {
+			boards = append(boards, p)
 		}
-		boards = append(boards, p)
-		lookup = lookup || (sc != scope && len(cards) > 0) || (sc == scope && len(ch.History) > 0)
 	}
 	for k, tp := range s.subs.tickets {
-		if k.connection == conn && (origin == nil || origin.ticket != tp) {
+		if k.connection == conn {
 			tickets = append(tickets, tp)
 		}
 	}
@@ -58,9 +61,14 @@ func (s *Service) publish(root int64, scope Scope, ch Changes, origin *tickOrigi
 	}
 	var rowsOf map[string][]tracker.IssueID
 	lookupFailed := false
-	if lookup && root != 0 {
+	if len(boards) > 0 && len(cards) > 0 {
 		var err error
-		if rowsOf, err = s.boardsOf(root, cards); err != nil {
+		if root == 0 {
+			err = fmt.Errorf("no mirror root")
+		} else {
+			rowsOf, err = s.boardsOf(root, cards)
+		}
+		if err != nil {
 			s.logf("trackerapp: the boards of %d changed issues of %s: %v; their boards read again", len(cards), conn, err)
 			lookupFailed = true
 		}
@@ -73,7 +81,7 @@ func (s *Service) publish(root int64, scope Scope, ch Changes, origin *tickOrigi
 		}
 		changed := rowsOf[string(p.scope.Board)]
 		var removed []tracker.IssueID
-		readAgain := ch.Catalog || (lookupFailed && (p.scope != scope || len(ch.History) > 0))
+		readAgain := ch.Catalog || lookupFailed
 		if p.scope == scope {
 			changed = unite(unite(slices.Clone(ch.Rows), ch.Cards), changed)
 			removed = ch.Removed
@@ -88,16 +96,14 @@ func (s *Service) publish(root int64, scope Scope, ch Changes, origin *tickOrigi
 		if tp.over || tp.core.DeadLocked() {
 			continue
 		}
-		switch issue := tp.key.issue; {
-		case slices.Contains(ch.Cards, issue):
-			select {
-			case tp.cardChanged <- struct{}{}:
-			default:
-			}
-		case slices.Contains(ch.Details, issue):
-			// Another read stored the detail: the mirror's copy is the view.
-			tp.held, tp.changed, tp.due = nil, true, true
-			s.flushTicketLocked(tp, false)
+		issue := tp.key.issue
+		read := origin != nil && slices.Contains(origin.tickets, tp)
+		switch {
+		case !read && slices.Contains(ch.Cards, issue):
+			nudge(tp.cardChanged)
+		case !read && slices.Contains(ch.Details, issue), ch.Catalog,
+			slices.ContainsFunc(tp.shows, func(id tracker.IssueID) bool { return slices.Contains(ch.Cards, id) }):
+			nudge(tp.viewChanged)
 		}
 	}
 }

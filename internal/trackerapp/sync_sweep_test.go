@@ -133,8 +133,8 @@ func TestADetailCheckReadsItsCardAgainAfterASweep(t *testing.T) {
 	})
 	before, _, _ := m.storedDetail(t, "10005")
 	v, _ := m.openDetail(t, "10005")
-	if reads != 2 || v.Card.ID != "10005" || m.p.count("Detail") != 2 {
-		t.Fatalf("detail %+v after %d card reads, %d detail reads", v.Card, reads, m.p.count("Detail"))
+	if reads != 2 || v.Card.ID != "10005" || m.p.count("Details") != 2 {
+		t.Fatalf("detail %+v after %d card reads, %d detail reads", v.Card, reads, m.p.count("Details"))
 	}
 	if after, _, ok := m.storedDetail(t, "10005"); !ok || after.ReadAt < before.ReadAt || after.OpenedAt < after.ReadAt {
 		t.Fatalf("the detail read again: stored %v, read %d (was %d), opened %d", ok, after.ReadAt, before.ReadAt, after.OpenedAt)
@@ -161,7 +161,7 @@ func TestADetailSweptAndLinkedAgainDuringItsCheckIsReadAgain(t *testing.T) {
 		return cardsOf(asked)
 	})
 	v, ch := m.openDetail(t, "10005")
-	if _, _, ok := m.storedDetail(t, "10005"); !ok || v.Card.ID != "10005" || m.p.count("Detail") != 2 || !slices.Equal(ch.Details, ids("10005")) {
-		t.Fatalf("after the check: stored %v, %d detail reads, changes %+v", ok, m.p.count("Detail"), ch)
+	if _, _, ok := m.storedDetail(t, "10005"); !ok || v.Card.ID != "10005" || m.p.count("Details") != 2 || !slices.Equal(ch.Details, ids("10005")) {
+		t.Fatalf("after the check: stored %v, %d detail reads, changes %+v", ok, m.p.count("Details"), ch)
 	}
 }

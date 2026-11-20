@@ -74,17 +74,20 @@ type BoardEvent struct {
 	Ended     bool              `json:"ended,omitempty"`
 }
 
-// IssueEvent tells an open ticket's subscribers that the issue's view
-// changed (Issues names it; TicketDetail reads it), that its read failed
-// or recovered (Failure, sent once when it starts or changes and once
-// when it clears), or that the subscription ended.
+// IssueEvent tells an open ticket's subscribers, of Issue on Connection,
+// that its view changed (Changed; TicketDetail reads it), that its reads
+// failed or recovered, or that the subscription ended. Failure is the
+// ticket's failure as of the event, nil while its reads succeed: an event
+// is sent when it starts, changes or clears. Ended is the last event: the
+// connection was turned off or removed, and every handle on the ticket
+// ended with it.
 type IssueEvent struct {
-	Connection string            `json:"connection"`
-	Seq        uint64            `json:"seq"`
-	Issues     []tracker.IssueID `json:"issues,omitempty"`
-	Truncated  bool              `json:"truncated,omitempty"`
-	Failure    *FailureView      `json:"failure,omitempty"`
-	Ended      bool              `json:"ended,omitempty"`
+	Connection string          `json:"connection"`
+	Issue      tracker.IssueID `json:"issue"`
+	Seq        uint64          `json:"seq"`
+	Changed    bool            `json:"changed,omitempty"`
+	Failure    *FailureView    `json:"failure,omitempty"`
+	Ended      bool            `json:"ended,omitempty"`
 }
 
 // subscriptions is the registry of handles and pumps, under subMu. The
@@ -100,6 +103,10 @@ type subscriptions struct {
 	halted bool
 	// loop is the linked loop (linked_loop.go).
 	loop loopState
+	// rounds are the connections' ticket rounds (ticket_round.go), and
+	// reads the counter that orders the reads settled into ticket pumps.
+	rounds map[string]*ticketRound
+	reads  uint64
 }
 
 // handle is one subscriber's reference on a pump.
@@ -168,6 +175,9 @@ func (s *Service) SetSubscriptionVisible(id string, visible bool) error {
 		return fmt.Errorf("%w: %s", ErrUnknownSubscription, id)
 	}
 	h.ref.VoteLocked(visible)
+	if h.ticket != nil {
+		s.followRoundLocked(h.ticket.key.connection)
+	}
 	return nil
 }
 
@@ -182,14 +192,16 @@ func (s *Service) ReleaseSubscription(id string) {
 		return
 	}
 	s.forgetHandleLocked(id, h)
-	if !h.ref.ReleaseLocked() {
-		return
-	}
+	last := h.ref.ReleaseLocked()
 	switch {
-	case h.board != nil && s.subs.boards[h.board.scope] == h.board:
+	case last && h.board != nil && s.subs.boards[h.board.scope] == h.board:
 		delete(s.subs.boards, h.board.scope)
-	case h.ticket != nil && s.subs.tickets[h.ticket.key] == h.ticket:
+	case last && h.ticket != nil && s.subs.tickets[h.ticket.key] == h.ticket:
 		delete(s.subs.tickets, h.ticket.key)
+	}
+	if h.ticket != nil {
+		// A released handle that showed the ticket may leave none shown.
+		s.followRoundLocked(h.ticket.key.connection)
 	}
 }
 
@@ -237,6 +249,9 @@ func (s *Service) haltSubscriptions() {
 	for _, p := range s.subs.tickets {
 		p.core.StopLocked()
 	}
+	for conn := range s.subs.rounds {
+		s.stopRoundLocked(conn)
+	}
 	clear(s.subs.handles)
 	clear(s.subs.boards)
 	clear(s.subs.tickets)
@@ -244,11 +259,15 @@ func (s *Service) haltSubscriptions() {
 	s.stopLoopLocked()
 }
 
-// endConnectionLocked ends every pump of connection id, telling each
-// one's subscribers once, and returns the channels that close when their
-// goroutines have exited. The caller holds opMu and subMu.
+// endConnectionLocked ends every pump of connection id and its ticket
+// round, telling each pump's subscribers once, and returns the channels
+// that close when their goroutines have exited. The caller holds opMu and
+// subMu.
 func (s *Service) endConnectionLocked(id string) []<-chan struct{} {
 	var exited []<-chan struct{}
+	if done := s.stopRoundLocked(id); done != nil {
+		exited = append(exited, done)
+	}
 	for _, p := range s.subs.boards {
 		if p.scope.Connection == id {
 			s.endBoardLocked(p)

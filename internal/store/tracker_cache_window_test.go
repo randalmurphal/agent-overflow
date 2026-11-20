@@ -20,13 +20,13 @@ func TestMirrorReopenedDetailRefusesReadsFromBeforeTheOpening(t *testing.T) {
 	got, err := s.StoreMirrorDetail(root, sweep, "10000", 10, 50, []byte(`{"v":"new"}`))
 	mustDetailWrite(t, "first opening", got, err, MirrorDetailWrite{Stored: true, Changed: true})
 	for i := range mirrorDetailCap {
-		if _, err := s.TouchMirrorDetail(root, fmt.Sprint(10001+i), int64(100+i)); err != nil {
+		if _, err := s.StoreMirrorDetail(root, sweep, fmt.Sprint(10001+i), int64(100+i), int64(100+i), []byte(`{}`)); err != nil {
 			t.Fatal(err)
 		}
 	}
 	assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_issue_details WHERE issue_id = '10000'`, "0")
-	got, err = s.TouchMirrorDetail(root, "10000", 400)
-	mustDetailWrite(t, "opened again", got, err, MirrorDetailWrite{Stored: true, Dropped: []string{"10001"}})
+	got, err = s.StoreMirrorDetail(root, sweep, "10000", 400, 300, []byte(`{"v":"stale"}`))
+	mustDetailWrite(t, "opened again, its read earlier", got, err, MirrorDetailWrite{Stored: true, Superseded: true, Dropped: []string{"10001"}})
 	got, err = s.StoreMirrorDetail(root, sweep, "10000", 0, 20, []byte(`{"v":"old"}`))
 	mustDetailWrite(t, "a read from before the eviction", got, err, MirrorDetailWrite{Stored: true, Superseded: true})
 	if d, ok, err := s.GetMirrorDetail(root, "10000"); err != nil || ok {

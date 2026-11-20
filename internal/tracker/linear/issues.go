@@ -248,7 +248,14 @@ func (c *Client) SearchIssues(ctx context.Context, q SearchQuery, after string) 
 // states are aliased stateTeam beside the fragment's team so the two
 // selections decode apart.
 var opIssue = newQuery("Issue", "issue", `query Issue($id: String!) {
-  issue(id: $id) {
+  issue(id: $id) {`+issueDetailSelection+`  }
+}
+`+issueDetailFragments).withMaxBody(issueBodyBytes)
+
+// issueDetailSelection is what the ticket view reads of an issue, the
+// selection of both opIssue and opIssueDetails, with the fragments it
+// spreads in issueDetailFragments.
+const issueDetailSelection = `
     ...DescribedFields
     project { id name }
     parent { ...IssueRefFields }
@@ -259,9 +266,67 @@ var opIssue = newQuery("Issue", "issue", `query Issue($id: String!) {
     inverseRelations(first: 25) { nodes { ...RelationFields } pageInfo { hasNextPage endCursor } }
     history(first: 100) { nodes { ...HistoryFields } pageInfo { hasNextPage endCursor } }
     stateTeam: team { states(first: 50) { nodes { ...StateFields } pageInfo { hasNextPage } } }
+`
+
+const issueDetailFragments = describedFields + issueFields + issueRefFields + commentFields + attachmentFields + relationFields + historyFields + stateFields
+
+// MaxIssueDetails is the most issues one IssueDetails request reads:
+// Linear charged the same points for 1, 2, 5 and 10 issues in full
+// (measured, docs/references/tracker-api-measurements.md), and no more
+// were measured.
+const MaxIssueDetails = 10
+
+// opIssueDetails reads several issues with everything their view shows,
+// by ID, archived or not, in one request.
+var opIssueDetails = newQuery("IssueDetails", "page", `query IssueDetails($filter: IssueFilter, $first: Int!) {
+  page: issues(filter: $filter, includeArchived: true, first: $first) {
+    nodes {`+issueDetailSelection+`    }
+    pageInfo { hasNextPage }
   }
 }
-`+describedFields+issueFields+issueRefFields+commentFields+attachmentFields+relationFields+historyFields+stateFields).withMaxBody(issueBodyBytes)
+`+issueDetailFragments).withMaxBody(issueBodyBytes)
+
+type issueDetailsVars struct {
+	Filter *issueFilterInput `json:"filter"`
+	First  int               `json:"first"`
+}
+
+// IssueDetails returns the issues ids name (lowercase UUIDs, at most
+// MaxIssueDetails, each once) as Issue does, in one request and one more
+// for each further page of relations of any of them; an ID that names no
+// issue the user can see is left out, with no error. The order is
+// Linear's.
+func (c *Client) IssueDetails(ctx context.Context, ids []string) ([]*IssueDetail, error) {
+	if len(ids) == 0 || len(ids) > MaxIssueDetails {
+		return nil, invalid(opIssueDetails.name, "1 to %d issue IDs are required, not %d", MaxIssueDetails, len(ids))
+	}
+	filter, err := IssueFilter{IDs: ids}.input()
+	if err != nil {
+		return nil, invalid(opIssueDetails.name, "%w", err)
+	}
+	var data struct {
+		Page *connection[wireIssueDetail] `json:"page"`
+	}
+	r, err := c.call(ctx, opIssueDetails, issueDetailsVars{Filter: filter, First: len(ids)}, &data)
+	if err != nil {
+		return nil, err
+	}
+	if data.Page == nil {
+		return nil, fmt.Errorf("linear %s: the answer holds no issues", opIssueDetails.name)
+	}
+	if more, err := data.Page.more(opIssueDetails); err != nil || more {
+		return nil, fmt.Errorf("linear %s: %d IDs answered with more than one page: %v", opIssueDetails.name, len(ids), err)
+	}
+	out := make([]*IssueDetail, 0, len(data.Page.Nodes))
+	for i := range data.Page.Nodes {
+		d, err := c.related(ctx, opIssueDetails, &data.Page.Nodes[i], r)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, nil
+}
 
 // namedRef is a related entity selected as { id name }.
 type namedRef struct {
@@ -311,14 +376,20 @@ func (c *Client) Issue(ctx context.Context, idOrIdentifier string) (*IssueDetail
 	if data.Issue == nil {
 		return nil, fmt.Errorf("linear %s: the answer holds no issue", opIssue.name)
 	}
-	d, err := data.Issue.detail(r)
+	return c.related(ctx, opIssue, data.Issue, r)
+}
+
+// related is w, an issue op read, typed, with its relations read to their
+// end.
+func (c *Client) related(ctx context.Context, op operation, w *wireIssueDetail, r reply) (*IssueDetail, error) {
+	d, err := w.detail(op, r)
 	if err != nil {
 		return nil, err
 	}
 	for _, rel := range []struct {
 		op   operation
 		conn connection[wireRelation]
-	}{{opIssueRelations, data.Issue.Relations}, {opIssueInverseRelations, data.Issue.InverseRelations}} {
+	}{{opIssueRelations, w.Relations}, {opIssueInverseRelations, w.InverseRelations}} {
 		rels, err := c.relations(ctx, rel.op, d.ID, rel.conn)
 		if err != nil {
 			return nil, err
@@ -328,8 +399,8 @@ func (c *Client) Issue(ctx context.Context, idOrIdentifier string) (*IssueDetail
 	return d, nil
 }
 
-// detail types the answer of the single-issue read, its relations aside.
-func (w *wireIssueDetail) detail(r reply) (*IssueDetail, error) {
+// detail types the answer op read of one issue, its relations aside.
+func (w *wireIssueDetail) detail(op operation, r reply) (*IssueDetail, error) {
 	d := &IssueDetail{DescribedIssue: w.typed(), Parent: w.Parent.typedPtr()}
 	// The detail's parent and project selections shadow the fragment's
 	// { id } ones.
@@ -340,23 +411,23 @@ func (w *wireIssueDetail) detail(r reply) (*IssueDetail, error) {
 		d.ProjectID, d.ProjectName = w.Project.ID, w.Project.Name
 	}
 	var err error
-	if d.Children, d.MoreChildren, err = firstPage(opIssue, w.Children, wireIssueRef.typed); err != nil {
+	if d.Children, d.MoreChildren, err = firstPage(op, w.Children, wireIssueRef.typed); err != nil {
 		return nil, err
 	}
-	if d.Comments, err = page(opIssue, w.Comments, r.Usage, wireComment.typed); err != nil {
+	if d.Comments, err = page(op, w.Comments, r.Usage, wireComment.typed); err != nil {
 		return nil, err
 	}
-	if d.Attachments, d.MoreAttachments, err = firstPage(opIssue, w.Attachments, wireAttachment.typed); err != nil {
+	if d.Attachments, d.MoreAttachments, err = firstPage(op, w.Attachments, wireAttachment.typed); err != nil {
 		return nil, err
 	}
-	if d.History, err = page(opIssue, w.History, r.Usage, wireHistory.typed); err != nil {
+	if d.History, err = page(op, w.History, r.Usage, wireHistory.typed); err != nil {
 		return nil, err
 	}
 	d.Comments.Served, d.History.Served = r.Served, r.Served
 	if w.StateTeam == nil {
-		return nil, fmt.Errorf("linear %s: the answer holds no team", opIssue.name)
+		return nil, fmt.Errorf("linear %s: the answer holds no team", op.name)
 	}
-	if d.States, d.MoreStates, err = firstPage(opIssue, w.StateTeam.States, wireState.typed); err != nil {
+	if d.States, d.MoreStates, err = firstPage(op, w.StateTeam.States, wireState.typed); err != nil {
 		return nil, err
 	}
 	return d, nil

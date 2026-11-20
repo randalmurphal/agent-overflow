@@ -36,7 +36,26 @@ const (
 	// FailureTracker is every other answer: a status, an error the
 	// tracker reported, a body that could not be used.
 	FailureTracker FailureKind = "tracker"
+	// FailureNotFound is an open ticket the tracker did not return: deleted,
+	// moved out of reach, or not visible to the token's user.
+	FailureNotFound FailureKind = "not_found"
+	// FailureInternal is a read or write of this computer's copy of the
+	// tracker that failed: nothing the tracker or the person did.
+	FailureInternal FailureKind = "internal"
 )
+
+// internalFailure is a subscription's failure that was not the tracker's
+// (FailureInternal), at, as its subscribers read it: a sentence of this
+// package's, never the error's text.
+func internalFailure(at int64) *FailureView {
+	return &FailureView{Kind: string(FailureInternal), Message: "Agent Overflow could not read or store its copy of the tracker on this computer; it tries again", At: at}
+}
+
+// notFoundFailure is an open ticket's failure when the tracker did not
+// return it, at.
+func notFoundFailure(kind string, at int64) *FailureView {
+	return &FailureView{Kind: string(FailureNotFound), Message: trackerName(kind) + " did not return this issue: it was deleted, or the token's user may not see it", At: at}
+}
 
 // Failure is a failed tracker call as a person reads it. Message is
 // written by this package: it never holds the token, an answer body or

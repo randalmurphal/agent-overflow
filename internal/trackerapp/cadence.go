@@ -9,15 +9,16 @@ import (
 // The sync cadence, named in one place. A board polls its delta while a
 // client shows it and not at all otherwise; its reconcile and structure
 // ride the delta tick when their time comes; its history runs when the
-// mirror holds issues due one. An open ticket reads its issue while a
-// client shows it, and at once when another read stores a changed card of
-// it. Linked issues poll while a connection is on and a client is
-// connected. A failed poll retries on pump.Retry's doubling schedule from
-// RetryBase up to the poll's interval; a rate limit waits for its release.
+// mirror holds issues due one. A connection's open tickets are read
+// together by its round while a client shows one of them, and a ticket
+// reads at once when another read stores a changed card of it. Linked
+// issues poll while a connection is on and a client is connected. A failed
+// poll retries on pump.Retry's doubling schedule from RetryBase up to the
+// poll's interval; a rate limit waits for its release.
 //
-// A board's delta and an open ticket poll every JiraPollEvery on Jira and
-// every LinearPollEvery on Linear: Jira's token traffic has no hourly
-// quota, and Linear allows 2,500 requests per user an hour.
+// A board's delta and a connection's ticket round poll every JiraPollEvery
+// on Jira and every LinearPollEvery on Linear: Jira's token traffic has no
+// hourly quota, and Linear allows 2,500 requests per user an hour.
 const (
 	JiraPollEvery   = 10 * time.Second
 	LinearPollEvery = 45 * time.Second

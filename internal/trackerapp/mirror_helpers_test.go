@@ -29,6 +29,8 @@ type scripted struct {
 	history     func(tracker.HistoryQuery) (tracker.History, error)
 	detail      func(tracker.IssueID) (tracker.Detail, error)
 	structure   func(tracker.BoardID, time.Time) (tracker.Structure, error)
+	// detailReads are the issues of each Details call.
+	detailReads [][]tracker.IssueID
 	// caps are the tracker's capabilities; none unless a test sets them.
 	caps tracker.Capabilities
 	// note is closed and replaced on every call (waitCall).
@@ -211,19 +213,47 @@ func (p *scripted) History(ctx context.Context, q tracker.HistoryQuery) (tracker
 	return h(q)
 }
 
-func (p *scripted) Detail(ctx context.Context, id tracker.IssueID) (tracker.Detail, error) {
+// Details reads each issue through p.detail when called, one "Details"
+// call for the set, and answers after p's block; an issue whose read fails
+// wrapping trackerapi.ErrNotFound is Missing, and any other failure fails
+// the call.
+func (p *scripted) Details(ctx context.Context, issues []tracker.IssueID) (tracker.Details, error) {
 	p.mu.Lock()
 	h := p.detail
+	p.detailReads = append(p.detailReads, slices.Clone(issues))
 	p.mu.Unlock()
-	if !p.called(ctx, "Detail", func() bool { return h != nil }) {
-		var zero tracker.Detail
-		return zero, errUnscripted
+	if !p.called(ctx, "Details", func() bool { return h != nil }) {
+		return tracker.Details{}, errUnscripted
 	}
-	if err := p.wait(ctx, "Detail"); err != nil {
-		var zero tracker.Detail
-		return zero, err
+	// The tracker answers as the issues are when the call is made; a block
+	// delays the answer.
+	var out tracker.Details
+	var failed error
+	for _, id := range issues {
+		d, err := h(id)
+		switch {
+		case errors.Is(err, trackerapi.ErrNotFound):
+			out.Missing = append(out.Missing, id)
+		case err != nil:
+			failed = err
+		default:
+			out.Details = append(out.Details, d)
+		}
 	}
-	return h(id)
+	if err := p.wait(ctx, "Details"); err != nil {
+		return tracker.Details{}, err
+	}
+	if failed != nil {
+		return tracker.Details{}, failed
+	}
+	return out, nil
+}
+
+// detailsRead are the issues of each Details call, in order.
+func (p *scripted) detailsRead() [][]tracker.IssueID {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return slices.Clone(p.detailReads)
 }
 
 func (p *scripted) Structure(ctx context.Context, b tracker.BoardID, window time.Time) (tracker.Structure, error) {

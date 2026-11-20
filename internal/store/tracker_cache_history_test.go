@@ -270,10 +270,11 @@ func mustDetailWrite(t *testing.T, what string, got MirrorDetailWrite, err error
 }
 
 // An opening only moves the open time forward, and the first is the
-// detail's read watermark; a document is stored with the time its read
-// began, unless the stored one came from a read that began later, and the
-// time it was opened stays. A detail with no document
-// reads as absent, as does that of an issue the mirror stops keeping.
+// detail's read watermark: an opening whose read began earlier stores no
+// document. A document is stored with the time its read began, unless the
+// stored one came from a read that began later, and the time it was opened
+// stays. A detail with no document reads as absent, as does that of an
+// issue the mirror stops keeping.
 func TestMirrorDetailFollowsItsReadOrder(t *testing.T) {
 	t.Parallel()
 	s, _, root := newMirror(t)
@@ -285,13 +286,13 @@ func TestMirrorDetailFollowsItsReadOrder(t *testing.T) {
 		}
 		return at
 	}
-	got, err := s.TouchMirrorDetail(root, "10001", 100)
-	mustDetailWrite(t, "first opening", got, err, MirrorDetailWrite{Stored: true})
+	got, err := s.StoreMirrorDetail(root, currentSweep(s, root), "10001", 100, 90, []byte(`{"v":0}`))
+	mustDetailWrite(t, "first opening, its read earlier", got, err, MirrorDetailWrite{Stored: true, Superseded: true})
 	if _, ok, err := s.GetMirrorDetail(root, "10001"); err != nil || ok {
 		t.Fatalf("a detail with no document reads: %v, %v", ok, err)
 	}
-	got, err = s.TouchMirrorDetail(root, "10001", 50)
-	mustDetailWrite(t, "earlier opening", got, err, MirrorDetailWrite{Stored: true})
+	got, err = s.StoreMirrorDetail(root, currentSweep(s, root), "10001", 50, 40, []byte(`{"v":0}`))
+	mustDetailWrite(t, "earlier opening", got, err, MirrorDetailWrite{Stored: true, Superseded: true})
 	if at := opened(); at != "100 100" {
 		t.Fatalf("after an earlier opening: %s", at)
 	}
@@ -307,13 +308,17 @@ func TestMirrorDetailFollowsItsReadOrder(t *testing.T) {
 	}
 	got, err = s.StoreMirrorDetail(root, currentSweep(s, root), "10001", 0, 190, []byte(`{"v":2}`))
 	mustDetailWrite(t, "later document", got, err, MirrorDetailWrite{Stored: true, Changed: true})
-	got, err = s.TouchMirrorDetail(root, "10001", 200)
+	d, _, err := s.GetMirrorDetail(root, "10001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.ConfirmMirrorDetail(root, d, 200)
 	mustDetailWrite(t, "later opening", got, err, MirrorDetailWrite{Stored: true})
 	if at := opened(); at != "200 190" {
 		t.Fatalf("after a later opening: %s", at)
 	}
 
-	got, err = s.TouchMirrorDetail(root, "10009", 300)
+	got, err = s.StoreMirrorDetail(root, currentSweep(s, root), "10009", 300, 300, []byte(`{}`))
 	mustDetailWrite(t, "opening of an unkept issue", got, err, MirrorDetailWrite{})
 	got, err = s.StoreMirrorDetail(root, currentSweep(s, root), "10009", 0, 300, []byte(`{}`))
 	mustDetailWrite(t, "document of an unkept issue", got, err, MirrorDetailWrite{})
@@ -324,8 +329,11 @@ func TestMirrorDetailFollowsItsReadOrder(t *testing.T) {
 		t.Fatalf("detail of an unkept issue reads: %v, %v", ok, err)
 	}
 	for name, err := range map[string]error{
-		"opening with no time":  func() error { _, err := s.TouchMirrorDetail(root, "10001", 0); return err }(),
-		"opening with no issue": func() error { _, err := s.TouchMirrorDetail(root, "", 1); return err }(),
+		"no documents": func() error { _, err := s.StoreMirrorDetails(root, currentSweep(s, root), nil, 0, 1); return err }(),
+		"an issue twice": func() error {
+			_, err := s.StoreMirrorDetails(root, currentSweep(s, root), []MirrorDetailDoc{{IssueID: "10001"}, {IssueID: "10001"}}, 0, 1)
+			return err
+		}(),
 		"document with no time": func() error {
 			_, err := s.StoreMirrorDetail(root, currentSweep(s, root), "10001", 0, 0, nil)
 			return err
@@ -346,24 +354,28 @@ func TestMirrorDetailKeepsTheMostRecentlyOpened(t *testing.T) {
 	s, _, root := newMirror(t)
 	writeMirrorBoard(t, s, root, "10", mirrorRows(10000, mirrorDetailCap+2, "a"))
 	for i := range mirrorDetailCap {
-		got, err := s.TouchMirrorDetail(root, fmt.Sprint(10000+i), int64(100+i))
-		mustDetailWrite(t, fmt.Sprint("opening ", i), got, err, MirrorDetailWrite{Stored: true})
+		got, err := s.StoreMirrorDetail(root, currentSweep(s, root), fmt.Sprint(10000+i), int64(100+i), int64(100+i), []byte(`{}`))
+		mustDetailWrite(t, fmt.Sprint("opening ", i), got, err, MirrorDetailWrite{Stored: true, Changed: true})
 	}
-	got, err := s.TouchMirrorDetail(root, "10000", 1000)
+	oldest, _, err := s.GetMirrorDetail(root, "10000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.ConfirmMirrorDetail(root, oldest, 1000)
 	mustDetailWrite(t, "reopening the oldest", got, err, MirrorDetailWrite{Stored: true})
-	got, err = s.TouchMirrorDetail(root, "10200", 1001)
-	mustDetailWrite(t, "one over the cap", got, err, MirrorDetailWrite{Stored: true, Dropped: []string{"10001"}})
+	got, err = s.StoreMirrorDetail(root, currentSweep(s, root), "10200", 1001, 1001, []byte(`{}`))
+	mustDetailWrite(t, "one over the cap", got, err, MirrorDetailWrite{Stored: true, Changed: true, Dropped: []string{"10001"}})
 	got, err = s.StoreMirrorDetail(root, currentSweep(s, root), "10201", 50, 50, []byte(`{}`))
 	mustDetailWrite(t, "a new detail older than all", got, err, MirrorDetailWrite{Dropped: []string{"10201"}})
 	assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_issue_details`, fmt.Sprint(mirrorDetailCap))
 	assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_issue_details WHERE issue_id IN ('10001', '10201')`, "0")
 }
 
-// A confirmation marks a detail opened, and stores a replacement with its
-// read time, only while the mirror holds the document read: not once a
-// later read replaced it, the cap dropped it, a sweep ran or its issue
-// is no longer kept. Refused, it writes nothing, so it neither adds a
-// detail with no document nor drops another.
+// A confirmation marks a detail opened, and changes no document, only
+// while the mirror holds the document read: not once a later read
+// replaced it, the cap dropped it, a sweep ran or its issue is no longer
+// kept. Refused, it writes nothing, so it neither adds a detail with no
+// document nor drops another.
 func TestConfirmMirrorDetail(t *testing.T) {
 	t.Parallel()
 	s, _, root := newMirror(t)
@@ -385,13 +397,9 @@ func TestConfirmMirrorDetail(t *testing.T) {
 		}
 		return d
 	}
-	confirm := func(what string, d MirrorDetail, openedAt int64, replace string, want MirrorDetailWrite) {
+	confirm := func(what string, d MirrorDetail, openedAt int64, want MirrorDetailWrite) {
 		t.Helper()
-		var doc []byte
-		if replace != "" {
-			doc = []byte(replace)
-		}
-		got, err := s.ConfirmMirrorDetail(root, d, openedAt, doc)
+		got, err := s.ConfirmMirrorDetail(root, d, openedAt)
 		mustDetailWrite(t, what, got, err, want)
 	}
 	got, err := s.StoreMirrorDetail(root, currentSweep(s, root), "10000", 100, 100, []byte(`{"v":1}`))
@@ -400,22 +408,17 @@ func TestConfirmMirrorDetail(t *testing.T) {
 	if d.CardUpdatedAt != 5 {
 		t.Fatalf("the card's update time read with the detail: %d", d.CardUpdatedAt)
 	}
-	confirm("an opening", d, 150, "", MirrorDetailWrite{Stored: true})
-	confirm("an earlier opening", d, 120, "", MirrorDetailWrite{Stored: true})
+	confirm("an opening", d, 150, MirrorDetailWrite{Stored: true})
+	confirm("an earlier opening", d, 120, MirrorDetailWrite{Stored: true})
 	if at := state("10000"); at != "150 100 1" {
 		t.Fatalf("after the openings: %s", at)
-	}
-	confirm("a replacement", d, 160, `{"v":2}`, MirrorDetailWrite{Stored: true, Changed: true})
-	confirm("the same replacement", d, 160, `{"v":2}`, MirrorDetailWrite{Stored: true})
-	if at := state("10000"); at != "160 100 2" {
-		t.Fatalf("after a replacement: %s", at)
 	}
 
 	// A later read replaced the document: refused, nothing written.
 	got, err = s.StoreMirrorDetail(root, currentSweep(s, root), "10000", 0, 200, []byte(`{"v":3}`))
 	mustDetailWrite(t, "a later read", got, err, MirrorDetailWrite{Stored: true, Changed: true})
-	confirm("a replaced document", d, 300, `{"v":2}`, MirrorDetailWrite{})
-	if at := state("10000"); at != "160 200 3" {
+	confirm("a replaced document", d, 300, MirrorDetailWrite{})
+	if at := state("10000"); at != "150 200 3" {
 		t.Fatalf("after a refused confirmation: %s", at)
 	}
 
@@ -423,33 +426,33 @@ func TestConfirmMirrorDetail(t *testing.T) {
 	// another.
 	d = read("10000")
 	for i := range mirrorDetailCap {
-		if _, err := s.TouchMirrorDetail(root, fmt.Sprint(10001+i), int64(1000+i)); err != nil {
+		if _, err := s.StoreMirrorDetail(root, currentSweep(s, root), fmt.Sprint(10001+i), int64(1000+i), int64(1000+i), []byte(`{"v":1}`)); err != nil {
 			t.Fatal(err)
 		}
 	}
 	assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_issue_details WHERE issue_id = '10000'`, "0")
-	confirm("a dropped detail", d, 5000, "", MirrorDetailWrite{})
+	confirm("a dropped detail", d, 5000, MirrorDetailWrite{})
 	assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_issue_details WHERE issue_id = '10000'`, "0")
 	assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_issue_details`, fmt.Sprint(mirrorDetailCap))
 
 	// An issue no longer kept: refused.
-	got, err = s.StoreMirrorDetail(root, currentSweep(s, root), "10001", 6000, 6000, []byte(`{"v":1}`))
+	got, err = s.StoreMirrorDetail(root, currentSweep(s, root), "10001", 6000, 6000, []byte(`{"v":4}`))
 	mustDetailWrite(t, "a read of another issue", got, err, MirrorDetailWrite{Stored: true, Changed: true})
 	d = read("10001")
 	if _, err := s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Missing: []string{"10001"}, ReadAt: 2})); err != nil {
 		t.Fatal(err)
 	}
-	confirm("an unkept issue", d, 7000, "", MirrorDetailWrite{})
-	if at := state("10001"); at != "6000 6000 1" {
+	confirm("an unkept issue", d, 7000, MirrorDetailWrite{})
+	if at := state("10001"); at != "6000 6000 4" {
 		t.Fatalf("after an unkept issue's confirmation: %s", at)
 	}
 
 	for name, d := range map[string]MirrorDetail{"no detail read": {}, "a detail built by hand": {IssueID: "10002", ReadAt: 1}} {
-		if _, err := s.ConfirmMirrorDetail(root, d, 1, nil); !errors.Is(err, ErrInvalidTrackerCache) {
+		if _, err := s.ConfirmMirrorDetail(root, d, 1); !errors.Is(err, ErrInvalidTrackerCache) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-	if _, err := s.ConfirmMirrorDetail(root, d, 0, nil); !errors.Is(err, ErrInvalidTrackerCache) {
+	if _, err := s.ConfirmMirrorDetail(root, d, 0); !errors.Is(err, ErrInvalidTrackerCache) {
 		t.Errorf("no opening time: %v", err)
 	}
 }
@@ -488,10 +491,10 @@ func TestConfirmMirrorDetailRefusesADocumentFromBeforeASweep(t *testing.T) {
 		t.Fatalf("the detail stored again: row %d (was %d), read %d, sweep %d (was %d), %v, %v",
 			after.row, before.row, after.ReadAt, after.sweep, before.sweep, ok, err)
 	}
-	got, err := s.ConfirmMirrorDetail(root, before, 200, []byte(`{"v":0}`))
+	got, err := s.ConfirmMirrorDetail(root, before, 200)
 	mustDetailWrite(t, "a document from before the sweep", got, err, MirrorDetailWrite{})
 	assertRows(t, s.db, `SELECT opened_at || ' ' || (data ->> 'v') FROM tracker_cache_issue_details WHERE issue_id = '10001'`, "100 1")
-	got, err = s.ConfirmMirrorDetail(root, after, 200, nil)
+	got, err = s.ConfirmMirrorDetail(root, after, 200)
 	mustDetailWrite(t, "the document after it", got, err, MirrorDetailWrite{Stored: true})
 }
 

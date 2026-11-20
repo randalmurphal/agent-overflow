@@ -27,23 +27,83 @@ func (p *Provider) Detail(ctx context.Context, issue tracker.IssueID) (tracker.D
 	if err != nil {
 		return tracker.Detail{}, fmt.Errorf("linearprovider: detail of %s: %w", issue, err)
 	}
-	states := d.States
-	if d.MoreStates {
-		if states, err = p.c.WorkflowStates(ctx, d.TeamID); err != nil {
-			return tracker.Detail{}, fmt.Errorf("linearprovider: workflow states of team %s: %w", d.TeamID, err)
+	out, err := p.details(ctx, []*linear.IssueDetail{d})
+	if err != nil {
+		return tracker.Detail{}, err
+	}
+	return out[0], nil
+}
+
+// Details reads issues as Detail does, linear.MaxIssueDetails to a
+// request (Linear charges a request of several the points of one), then
+// what each issue needs beyond its first pages, as Detail does, and the
+// names the issues' histories need, each kind in one request for all of
+// them. An ID Linear does not return, or that is no issue ID, is Missing.
+func (p *Provider) Details(ctx context.Context, issues []tracker.IssueID) (tracker.Details, error) {
+	for i, issue := range issues {
+		if issue == "" || slices.Contains(issues[:i], issue) {
+			return tracker.Details{}, fmt.Errorf("linearprovider: details: %w: each issue is named once", tracker.ErrInvalidInput)
 		}
 	}
-	if states, err = boardStates(states); err != nil {
-		return tracker.Detail{}, err
+	valid, invalid := issueIDs(issues)
+	out := tracker.Details{Missing: invalid}
+	var read []*linear.IssueDetail
+	for chunk := range slices.Chunk(valid, linear.MaxIssueDetails) {
+		got, err := p.c.IssueDetails(ctx, chunk)
+		if err != nil {
+			return tracker.Details{}, fmt.Errorf("linearprovider: details of %d issues: %w", len(chunk), err)
+		}
+		read = append(read, got...)
 	}
-	entries, err := p.restOfHistory(ctx, d.ID, d.History)
+	for _, id := range valid {
+		if !slices.ContainsFunc(read, func(d *linear.IssueDetail) bool { return d.ID == id }) {
+			out.Missing = append(out.Missing, tracker.IssueID(id))
+		}
+	}
+	if len(read) == 0 {
+		return out, nil
+	}
+	var err error
+	if out.Details, err = p.details(ctx, read); err != nil {
+		return tracker.Details{}, err
+	}
+	return out, nil
+}
+
+// details are ds as their tickets show them: each issue's team's states
+// and history past the first page read, then the names all of them need.
+func (p *Provider) details(ctx context.Context, ds []*linear.IssueDetail) ([]tracker.Detail, error) {
+	states := make([][]linear.WorkflowState, len(ds))
+	entries := make([][]linear.HistoryEntry, len(ds))
+	for i, d := range ds {
+		st := d.States
+		var err error
+		if d.MoreStates {
+			if st, err = p.c.WorkflowStates(ctx, d.TeamID); err != nil {
+				return nil, fmt.Errorf("linearprovider: workflow states of team %s: %w", d.TeamID, err)
+			}
+		}
+		if states[i], err = boardStates(st); err != nil {
+			return nil, err
+		}
+		if entries[i], err = p.restOfHistory(ctx, d.ID, d.History); err != nil {
+			return nil, err
+		}
+	}
+	n, err := p.readNames(ctx, ds, states, entries)
 	if err != nil {
-		return tracker.Detail{}, err
+		return nil, err
 	}
-	n, err := p.readNames(ctx, d, states, entries)
-	if err != nil {
-		return tracker.Detail{}, err
+	out := make([]tracker.Detail, len(ds))
+	for i, d := range ds {
+		out[i] = n.detail(d, states[i], entries[i])
 	}
+	return out, nil
+}
+
+// detail is d as its ticket shows it, with its team's states and its
+// whole history, its IDs named by n.
+func (n names) detail(d *linear.IssueDetail, states []linear.WorkflowState, entries []linear.HistoryEntry) tracker.Detail {
 	out := tracker.Detail{
 		Card: card(d.Issue, n.labels), URL: d.URL, Description: d.Description,
 		Fields:      detailFields(d.Issue, n),
@@ -60,7 +120,7 @@ func (p *Provider) Detail(ctx context.Context, issue tracker.IssueID) (tracker.D
 	for _, s := range states {
 		out.Statuses = append(out.Statuses, status(s))
 	}
-	return out, nil
+	return out
 }
 
 // restOfHistory is every history entry of an issue, newest first: first,
@@ -180,39 +240,45 @@ func (n names) name(of map[string]string, id string) string {
 	return id
 }
 
-// readNames reads the names of what the issue and its entries name, by
-// exactly those IDs: one request for each kind something names.
-func (p *Provider) readNames(ctx context.Context, d *linear.IssueDetail, states []linear.WorkflowState, entries []linear.HistoryEntry) (names, error) {
+// readNames reads the names of what the issues of ds and their entries
+// name, by exactly those IDs: one request for each kind something names,
+// for all of them. states and entries are each issue's, in ds' order.
+func (p *Provider) readNames(ctx context.Context, ds []*linear.IssueDetail, states [][]linear.WorkflowState, entries [][]linear.HistoryEntry) (names, error) {
 	n := names{states: map[string]string{}, labels: map[string]string{}}
-	for _, l := range d.Labels {
-		n.labels[l.ID] = l.Name
-	}
-	for _, s := range states {
-		n.states[s.ID] = s.Name
-	}
-	labels := slices.Clone(d.LabelIDs)
-	var users, cycles, projects, teams, parents []string
+	var labels, users, cycles, projects, teams, parents []string
 	both := func(c *linear.Change) []string { return []string{c.From, c.To} }
-	for _, e := range entries {
-		labels = append(append(labels, e.AddedLabelIDs...), e.RemovedLabelIDs...)
-		if e.Assignee != nil {
-			users = append(users, both(e.Assignee)...)
+	for i, d := range ds {
+		for _, l := range d.Labels {
+			n.labels[l.ID] = l.Name
 		}
-		if e.Cycle != nil {
-			cycles = append(cycles, both(e.Cycle)...)
+		for _, s := range states[i] {
+			n.states[s.ID] = s.Name
 		}
-		if e.Project != nil {
-			for _, id := range both(e.Project) {
-				if id != d.ProjectID {
-					projects = append(projects, id)
-				}
+		labels = append(labels, d.LabelIDs...)
+		for _, e := range entries[i] {
+			labels = append(append(labels, e.AddedLabelIDs...), e.RemovedLabelIDs...)
+			if e.Assignee != nil {
+				users = append(users, both(e.Assignee)...)
+			}
+			if e.Cycle != nil {
+				cycles = append(cycles, both(e.Cycle)...)
+			}
+			if e.Project != nil {
+				projects = append(projects, both(e.Project)...)
+			}
+			if e.Team != nil {
+				teams = append(teams, both(e.Team)...)
+			}
+			if e.Parent != nil {
+				parents = append(parents, both(e.Parent)...)
 			}
 		}
-		if e.Team != nil {
-			teams = append(teams, both(e.Team)...)
-		}
-		if e.Parent != nil {
-			parents = append(parents, both(e.Parent)...)
+	}
+	// A project an issue is in comes with its name.
+	known := map[string]string{}
+	for _, d := range ds {
+		if d.ProjectID != "" {
+			known[d.ProjectID] = d.ProjectName
 		}
 	}
 	var err error
@@ -225,11 +291,8 @@ func (p *Provider) readNames(ctx context.Context, d *linear.IssueDetail, states 
 	if n.cycles, err = namesOf(ctx, "cycles", map[string]string{}, cycles, p.c.CyclesByID, func(c linear.Cycle) (string, string) { return c.ID, sprint(c).Name }); err != nil {
 		return names{}, err
 	}
-	if n.projects, err = namesOf(ctx, "projects", map[string]string{}, projects, p.c.ProjectsByID, func(pr linear.Project) (string, string) { return pr.ID, pr.Name }); err != nil {
+	if n.projects, err = namesOf(ctx, "projects", known, projects, p.c.ProjectsByID, func(pr linear.Project) (string, string) { return pr.ID, pr.Name }); err != nil {
 		return names{}, err
-	}
-	if d.ProjectID != "" {
-		n.projects[d.ProjectID] = d.ProjectName
 	}
 	if n.teams, err = namesOf(ctx, "teams", map[string]string{}, teams, p.c.TeamsByID, func(t linear.Team) (string, string) { return t.ID, t.Key + " " + t.Name }); err != nil {
 		return names{}, err

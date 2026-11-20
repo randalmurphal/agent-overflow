@@ -9,6 +9,7 @@ import (
 	"hash/maphash"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"agent-overflow/internal/keyfile"
@@ -80,6 +81,9 @@ var (
 	// ErrNoProvider is a Tempo connection asked for a provider: its
 	// worklogs are part of its Jira connection's.
 	ErrNoProvider = errors.New("trackerapp: a Tempo connection is used through its Jira connection")
+	// ErrIssueNotFound is an issue the tracker did not return: deleted, or
+	// not visible to the token's user.
+	ErrIssueNotFound = errors.New("trackerapp: the tracker did not return the issue")
 )
 
 // Service owns the tracker connections of this computer: their rows'
@@ -143,6 +147,8 @@ type Service struct {
 	// digestSeed keys the digests an open ticket keeps of the view it last
 	// published (ticketPump.digest).
 	digestSeed maphash.Seed
+	// detailReadAt is the last time a detail read began (detailReadAtNext).
+	detailReadAt atomic.Int64
 
 	// subMu is the one lock of the subscriptions, their pumps and the
 	// linked loop (subscriptions.go). It is held for map and flag work and

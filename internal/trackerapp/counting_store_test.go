@@ -110,14 +110,19 @@ func (c *countingStore) ListMirrorHistoryDue(root int64, after string) ([]store.
 	return c.Store.ListMirrorHistoryDue(root, after)
 }
 
-func (c *countingStore) StoreMirrorDetail(root, sweep int64, issue string, openedAt, readAt int64, data []byte) (store.MirrorDetailWrite, error) {
-	c.count("StoreMirrorDetail")
-	return c.Store.StoreMirrorDetail(root, sweep, issue, openedAt, readAt, data)
+func (c *countingStore) StoreMirrorDetails(root, sweep int64, docs []store.MirrorDetailDoc, openedAt, readAt int64) ([]store.MirrorDetailWrite, error) {
+	c.count("StoreMirrorDetails")
+	return c.Store.StoreMirrorDetails(root, sweep, docs, openedAt, readAt)
 }
 
-func (c *countingStore) ConfirmMirrorDetail(root int64, d store.MirrorDetail, openedAt int64, replace []byte) (store.MirrorDetailWrite, error) {
+func (c *countingStore) ConfirmMirrorDetail(root int64, d store.MirrorDetail, openedAt int64) (store.MirrorDetailWrite, error) {
 	c.count("ConfirmMirrorDetail")
-	return c.Store.ConfirmMirrorDetail(root, d, openedAt, replace)
+	return c.Store.ConfirmMirrorDetail(root, d, openedAt)
+}
+
+func (c *countingStore) ListMirrorDetailStates(root int64, issues []string) ([]store.MirrorDetail, error) {
+	c.count("ListMirrorDetailStates")
+	return c.Store.ListMirrorDetailStates(root, issues)
 }
 
 func (c *countingStore) GetMirrorDetail(root int64, issue string) (store.MirrorDetail, bool, error) {

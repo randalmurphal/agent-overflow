@@ -96,7 +96,10 @@ this is its shape.
   of IDs on a board, or a statement that the set is incomplete; a board's
   rows for a set of IDs; cards for a set of IDs with no board; status,
   sprint, estimate and assignee changes for a set of issues.
-- Detail: one issue's detail; pages of its comments; the moves its
+- Detail: one issue's detail, or several issues' details in one call
+  (`Details`: Linear reads 10 a request, Jira one issue at a time, four
+  at once), where an issue the tracker does not return is missing rather
+  than an error; pages of its comments; the moves its
   workflow allows now; a download of one of its attachments. On Jira a
   comment, a link, an attachment and a worklog each move the issue's
   update time; on Linear a comment does not
@@ -326,25 +329,27 @@ Plus, per connection: the issues linked to threads, and the detail of the
 listed board is read from the tracker when asked for and is not kept unless
 a thread links it.
 
-A stored detail is current only when the tracker says so in the call that
-opens it (`IssueDetail`). Where the issue's update time moves with its
-detail, that is one cards read of the issue and of the issues it links,
-stored as the card resource, in which the issue's update time equals that
-of the stored detail's card. The links then show the key, title and status
-of those cards, and the detail is stored again when they changed; a linked
-issue the tracker did not return keeps what the detail holds. The detail is
-read and stored instead when the mirror holds none, when the mirror's card
-is already newer than the stored detail's, when the stored detail's read
-began more than 30 minutes ago (its moves and field metadata come from the
-workflow and screens, which move no update time), when it links more
-issues than one cards read takes, on a person's refresh
+A stored detail is current only when the tracker says so in the read that
+shows it (`IssueDetail`, or an open ticket's read). Where the issue's
+update time moves with its detail, that is one cards read of the issue
+alone, stored as the card resource, in which the issue's update time
+equals that of the document's card. The detail is read and stored instead
+when there is no document to check, when the mirror's card is already
+newer than the document's, when the document's read began more than 30
+minutes ago (its moves and field metadata come from the workflow and
+screens, which move no update time), on a person's refresh
 (`RefreshIssueDetail`), and where the update time does not move with the
-detail. The opening is recorded only while the mirror still holds the
-document checked, the same row from the same read with no sweep since
-(`ConfirmMirrorDetail`); otherwise the detail is read again. A failed
-check leaves the stored detail as it is. `MirroredDetail` returns the
-stored detail and when it was read, with no tracker call, for a first
-paint before the check answers.
+detail. No document is written outside such a full read. A view shows its
+parent's key and title and each linked issue's key, title and status from
+the mirror's cards, read with the issue's own card in one
+`ListMirrorCards`, and else as the document holds them, so a linked issue
+the mirror keeps no card of is at most 30 minutes old. The opening is
+recorded only while the mirror still holds the document checked, the same
+row from the same read with no sweep since (`ConfirmMirrorDetail`);
+otherwise the detail is read again. A failed check leaves the stored
+detail as it is. `MirroredDetail` returns the stored detail and when it
+was read, with no tracker call, for a first paint before the check
+answers.
 
 An issue stays while it is on a listed board or a thread this computer owns
 links it on that connection's site. It is absent to every read at once
@@ -401,7 +406,7 @@ and writes share:
 |---|---|---|
 | Board row | an issue through a board | the card, and that board's order key and estimate |
 | Card | an issue with no board (a linked issue outside every listed board) | the card |
-| Detail | one issue | the detail document |
+| Detail | one issue, or a connection's open tickets together | the detail document |
 | Structure | one board | columns, statuses, estimate, sprints, users |
 
 - **Delta.** Each tick reads pages of a board's changed rows from its
@@ -453,22 +458,26 @@ and writes share:
   statement (`GetMirrorSync`; `ErrTrackerCacheGone` sends it back to
   `GetOrCreateMirrorRoot`) and writes one row, the read time the board's
   "last synced" shows.
-- **Cadence** (`trackerapp.Cadence`). A board reads its delta, and an open
-  ticket its detail, every 10 seconds on Jira and every 45 seconds on
-  Linear while a client shows it: Jira's token traffic has no hourly
-  quota, and Linear allows 2,500 requests per user an hour. A board makes
-  no read while every handle hides it. The tick that falls due also runs
+- **Cadence** (`trackerapp.Cadence`). A board reads its delta, and a
+  connection's open tickets their details together, every 10 seconds on
+  Jira and every 45 seconds on Linear while a client shows them: Jira's
+  token traffic has no hourly quota, and Linear allows 2,500 requests per
+  user an hour. Nothing hidden by every handle is read. The tick that
+  falls due also runs
   the reconcile every 10 minutes, the structure every 30 minutes or while
   the board is structure-due, and the history while an issue's is due
   (`MirrorSync.HistoryDue`). A board never read runs all four. An open
   ticket also reads at once when another read stored a changed card of
   it. A failed read retries on the doubling delay the pull
-  request pumps use; a rate limit waits for its release. One loop for the
+  request pumps use, from 5 seconds up to the interval; a rate limit
+  waits for its release. One loop for the
   service, running while a Jira or Linear connection is on, waits for the
   first client's reads to settle, then every five minutes while a client
-  is connected syncs each connection's linked issues (cards and history)
-  and finishes the mirror cleanup. The cleanup also runs once right after
-  the settle.
+  is connected syncs each connection's linked issues (cards and history),
+  running a connection's ticks again while one reports more to read, and
+  finishes the mirror cleanup. The cleanup also runs once right after
+  the settle. The loop starts when the connections cannot be read, so a
+  failed read never leaves it off.
 - **Requests are background** unless a person is waiting on them, so a
   rate limit fails a tick at once and holds the interactive budget for the
   person.
@@ -476,23 +485,47 @@ and writes share:
   setup, forbidden, tracker) and a caller-safe sentence. The last rows stay
   on screen.
 
-Each subscribed board and each open ticket has one pump: one goroutine and
-one timer for all its handles, plus a retry timer while its reads fail. A
-hidden pump's timer is not re-armed, so it makes no request and no store
-call until it is shown again, and then it runs the tick it missed. A tick
-that reports More runs again at once. Handles, visibility votes, the pause
-and the request path for a person's refresh are `internal/pump`, with the
-request type as a parameter and its lock supplied by the owner. The pull
-request pumps use the same package, so there is one implementation.
+Each subscribed board has one pump: one goroutine and one timer for all
+its handles, plus a retry timer while its reads fail. A hidden pump's
+timer is not re-armed, so it makes no request and no store call until it
+is shown again, and then it runs the tick it missed. A tick that reports
+More runs again at once. Handles, visibility votes, the pause and the
+request path for a person's refresh are `internal/pump`, with the request
+type as a parameter and its lock supplied by the owner. The pull request
+pumps use the same package, so there is one implementation.
 
-Idle ticks write only read times, and send no event:
+Each open ticket has a pump with a goroutine and no timer. It makes the
+ticket's first read, a person's refresh (always a full read), a read when
+another read stored a changed card of the ticket, the read it missed while
+hidden, and a rebuild of its view with no tracker call when its stored
+detail, a card its view shows (its parent, an issue it links) or the
+connection's users and statuses changed. Only the first read and a refresh
+record an opening. A connection's shown tickets are read by its round
+(`trackerapp/ticket_round.go`): one goroutine and one timer per
+connection, plus a retry timer while its reads fail, running from the
+first shown ticket to the last, ended before `SetEnabled(false)` or
+`Remove` returns and joined by `Stop`. The round owns the retry of every
+ticket read of its connection, a pump's own failed read included, so a
+failing Linear connection makes at most one round of requests per 45
+seconds once the delay reaches the interval. Reads that cross keep the
+later: a read that began before the last one settled into a pump changes
+nothing, and the store keeps the document of the read that began last.
+A failure is told to each ticket once and cleared by its next success.
+
+Idle ticks write only read times, and send no event. N is the number of a
+connection's shown tickets:
 
 | Tick that finds nothing changed | Requests | Store calls | Statements | Rows written |
 |---|---|---|---|---|
 | Shown board | 1 | 2 | 3 | 1 |
 | Shown board, the delta's overlap redelivering one identical row | 1 | 3 | 10 | 3 |
-| Open Jira ticket | 1 | 6 | 13 | 1 |
-| Open Linear ticket | 1 | 4 | 6 | 1 |
+| Jira round of N tickets (N up to 100) | 1 | 3 | 8 | 0 |
+| Linear round of N tickets | one per 10 tickets | 2 | 2 + 2N | N |
+
+A Jira round checks every ticket with one cards read, decodes no stored
+document and reads none in full; a Linear round reads every ticket in
+full, stores them in one transaction, and moves the read time of each
+unchanged document. A ticket that changed adds its own full read.
 
 A changed row is redelivered by the delta's overlap of one minute
 (`tracker.DeltaOverlap`), so about six Jira ticks after a change take the
@@ -558,11 +591,15 @@ The bound methods wrap these `trackerapp.Service` methods:
 - `SubscribeTicket(connection, issue)` answers the same way with the
   ticket's detail when the mirror or the ticket's pump holds one; at most
   64 ticket handles.
+- Both answers carry the failure the subscribers were last told, the
+  tracker's or one outside it, so a subscriber that joins while reads fail
+  shows the failure.
 - `SetSubscriptionVisible`, `RefreshSubscription` and `ReleaseSubscription`
   take any handle. A refresh is a person's read: a board's four units or a
   ticket's detail, interactive. It fails with `ErrSubscriptionEnded` when
   the subscription ends first.
-- `TicketDetail(handle)` is the ticket as its subscribers were last told.
+- `TicketDetail(handle)` is the ticket as its subscribers were last told:
+  its failure, and its view or not loaded.
 - `BoardPatch(scope, sections, issues)` is the patch read below.
 - `StartLinkedSync` arms the linked-issues loop; the app calls it from its
   unattended-work boot step. `New` starts nothing.
@@ -578,8 +615,11 @@ they return, and each subscriber is told once (`Ended`).
   `Ended`. Past 100 IDs it carries none, with `Truncated` and `ReadAgain`
   set. `ReadAgain` is set when the board's structure or the connection's
   users and statuses changed, since that moves rows no ID names.
-- **Issue event:** the connection, the open issue whose view changed, a
-  sequence number, the ticket pump's failure and `Ended`.
+- **Issue event:** the connection, the open issue it is about (always
+  set), a sequence number, `Changed` when its view changed, the ticket's
+  failure and `Ended`. A ticket the tracker no longer returns is told a
+  `not_found` failure; a failure outside the tracker (the store, a
+  decode) is told as `internal` with a fixed sentence, as a board's is.
 - **Sequence.** One sequence numbers every answer and event of the
   service. A subscribe takes its number before it reads the mirror. An
   event takes its number after its write committed, and is sent under the
@@ -595,11 +635,18 @@ funnel (`trackerapp/funnel.go`):
 
 - The tick's own board gets its changed rows and cards and its removed
   rows.
-- Every other subscribed board of the connection gets the changed cards
-  and histories of the issues it has a row of. These come from one indexed
-  read (`ListMirrorIssueBoards`), made only when such a board is
-  subscribed.
-- An open ticket whose card changed reads at once.
+- Every subscribed board of the connection gets its rows of the changed
+  cards and histories and its rows whose parent is among them, on this
+  board or any other. These come from one indexed read
+  (`ListMirrorIssueBoards`), made only when a board is subscribed; when it
+  fails, or no mirror root is known, every board reads again.
+- A change of the connection's users or statuses, by a row read or a
+  structure read, has every board read again.
+- An open ticket whose card changed reads at once. One whose stored
+  detail another read changed, whose view shows a changed card, or whose
+  names may have changed rebuilds its view with no tracker call.
+- The root a change is published under is the one the run that stored it
+  held, so a connection change during the read cannot lose it.
 
 ### The patch read
 
