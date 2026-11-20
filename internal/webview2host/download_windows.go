@@ -48,11 +48,8 @@ type hostDownload struct {
 // newDownloadToken is the part of a download id unique to one host.
 func newDownloadToken() string {
 	var b [6]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		// crypto/rand does not fail on Windows; a fixed token only loses
-		// uniqueness across launcher runs.
-		return "host"
-	}
+	// crypto/rand.Read always fills b and never returns an error.
+	_, _ = rand.Read(b[:])
 	return hex.EncodeToString(b[:])
 }
 
@@ -64,7 +61,8 @@ func downloadID(host string, n uint64) string {
 
 // watchDownloads takes every download the page starts, so WebView2's own
 // download dialog never opens for it. A runtime without DownloadStarting
-// keeps WebView2's dialog and the pane lists nothing.
+// fails the page's creation, so no page opens whose downloads would reach
+// that dialog.
 func (h *Host) watchDownloads(page *hostPage, view *iCoreWebView2) error {
 	view4 := view.queryWebView4()
 	if view4 == nil {
