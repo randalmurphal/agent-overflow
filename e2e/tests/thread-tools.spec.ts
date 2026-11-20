@@ -43,6 +43,11 @@ import {
   threadToolsScenario,
 } from './thread-tools-helpers.js';
 
+test.beforeEach(async ({ harness }) => {
+  // These assertions read agent message rows, which sit inside activity runs.
+  await harness.rpc('UpdateSettings', { activityRunDefault: 'expanded' });
+});
+
 const TOOL_NAMES = [
   'thread_search',
   'thread_show',

@@ -117,6 +117,9 @@ type App struct {
 	// resting holds the threads being brought to rest, which take no
 	// app-written message and start no work meanwhile (app_thread_rest_fence.go).
 	resting threadRestFence
+	// workStarts holds the threads a message is starting work on, whose
+	// runs no rest ends meanwhile (beginWork).
+	workStarts workStarts
 	// push is the PHONE half of the same path: its own ordered queue, the
 	// sender this backend wakes phones through, and the standing fault the
 	// owner reads. Its own queue because a send to Google can hang for its
@@ -775,6 +778,10 @@ type App struct {
 	// remoteReplySettledForTest, when set, runs in a parked remote call's
 	// after-response work between the dismissal and the end of its wait.
 	remoteReplySettledForTest func()
+	// peerAgentsReachedForTest, when set, runs in a paired computer's agents
+	// call after its reach check and before its answer
+	// (serveThreadAgentPeer), so a test can delete the thread at that moment.
+	peerAgentsReachedForTest func(threadID string)
 	// agentWakeClaimedForTest, when set, runs in a fire between its claim
 	// and its run's registration (fireAgentWake), under the wake lifecycle
 	// lock, so a test can cancel the row at that moment.
@@ -841,6 +848,14 @@ type App struct {
 	// and before the decision is written (readRest), so a test can admit
 	// work there.
 	restReadForTest func(roots []string)
+	// runEndsHeldForTest names threads whose runs no rest ends
+	// (endRunsAtRest), keyed by thread id: a test that settles a spawn while
+	// its worker is at rest and then gives the worker work in that run holds
+	// the state the rest pass leaves only at the worker's next rest.
+	runEndsHeldForTest sync.Map
+	// restRecoveryWaitOverride, when positive, replaces restRecoveryWait,
+	// how long a message waits for the boot's recovery of rest.
+	restRecoveryWaitOverride time.Duration
 	// sweepSleepForTest, when set, is the request sweep's clock: the sweep
 	// sleeps until the channel it returns for the delay asked sends
 	// (sweepSleep).
@@ -949,13 +964,14 @@ type App struct {
 	// end-to-end test (IsolationConfig). Zero keeps the product intervals.
 	threadPollOverride   time.Duration
 	transferPendingRetry time.Duration
-	// workerPromptLeaseOverride shortens the lease of a prompt routed to a
-	// paired computer (workerPromptLease) for a test. Zero keeps the
-	// product lease.
-	workerPromptLeaseOverride time.Duration
 	// ownerOpsOmitted answers agent_owner_op as a build before owner
 	// operations does (IsolationConfig.OmitOwnerOps). False serves them.
 	ownerOpsOmitted bool
+	// agentMessageRunMembersOmitted groups every history read by the
+	// absorbed rule, as a build before the agent-message membership rule
+	// does (IsolationConfig.OmitAgentMessageRunMembers). False serves the
+	// rule a request asks for.
+	agentMessageRunMembersOmitted bool
 	// remoteWatchPoll replaces the remote-job watcher's cadence for a
 	// running job (IsolationConfig.RemoteWatchPoll). Zero keeps the
 	// product cadence.

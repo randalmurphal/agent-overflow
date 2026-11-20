@@ -244,6 +244,61 @@ back because its new launcher is missing. An update whose trial was
 interrupted at every attempt is remembered by the recovery that rolls it
 back.
 
+### What an update logs
+
+Each phase writes one line with its duration in the log of the process
+that runs it (`supervise.PhaseLog`): `phase=<name> duration=<d>` with its
+fields, then `failed: <reason>` if it failed, or `phase=<name> skipped:
+<why>` for one that did not run. The phases run from the old version's
+`handoff`, through the new side's wait for it to exit (`wait-previous`,
+and each command's `<step>.lock`), each command's steps (the snapshot's
+per-file copy with bytes, clone and fsync; the restore's `restore.mark`,
+the durable write of its marker, then `restore.remove`, `restore.copy`,
+`restore.sync`, `restore.record` of the attempt it ends and
+`restore.clear`, the marker's removal and the sync of the layout root; a
+restore resumed at boot logs the same phases without `restore.mark`),
+the trial's `trial.start`,
+`trial.boot` and `trial.stop` and its own `shutdown`, to `first-boot`:
+the boot that follows the update, `after=committed` for the new version
+and `after=unsuccessful` for the previous version after a rollback or
+failure. It runs from the end of the desktop's `wait-helper`, or the
+process's start, until the boot is ready or fails to start, and ends once
+on every exit path. Inside the trial, the `boot: phase=` lines and the
+store's per-migration, foreign key check and WAL checkpoint lines time the
+open. On macOS and Linux all of it is in the update log; on Windows the
+WSL commands' lines reach the launcher log through their stderr.
+
+A supervised serve host runs every phase in the supervisor and logs it
+there: `accept` (the preflight and the record), `grace`, `stop-previous`,
+the snapshot's, `record-attempt`, `trial.start`, `trial.boot`,
+`trial.stop` for a trial still running, the restore's, `settle`, `discard`
+and, after a commit, `prune`. The previous version's boot after a
+rollback logs its `first-boot`.
+
+An update that takes the framework's swap instead of a trial logs in the
+old version's log, as `updater: swap to <version>`: the branch as
+`handoff` skipped with why, or with `branch=swap` when the Windows
+handoff ran and found a launcher that predates the trial; Windows'
+`verify`; the `swap`, from the framework's `Restart`, which starts its
+helper, to the app's shutdown callback; and this process's `shutdown`,
+from that callback until the app loop has returned and the transport, or
+on Windows the backend, is torn down. A teardown that fails, or an app
+loop that returns an error, fails `shutdown` and gives the summary the
+outcome `error`; the exit watchdog fails whichever phase is open. The
+helper replaces and relaunches the app without durations. The swapped
+version logs `first-boot` only if it has this logging: on Windows its WSL
+backend reads it from the install marker; a macOS or Linux relaunch has no
+record to read it from.
+
+The process applying the update ends it with one `summary` line: its wait
+for each step, its own phases, the total, the outcome and `since_begin`,
+the time since the record was written, which includes the old version's
+shutdown. A supervisor that stops with the update unsettled ends its part
+as `interrupted` or `error`, and the next supervisor continues it under a
+summary of its own; a swap's summary has the outcome `swapped`. On Windows
+a step's time beyond its command's own `command` line is spent in
+`wsl.exe`.
+
 ### Interlocks
 
 Existing checks:

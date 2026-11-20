@@ -173,6 +173,56 @@ func TestClaudeHarnessTranscriptIsDurableBeforeTheEcho(t *testing.T) {
 	p.closeStdinAndExpectExit(0, testTimeout)
 }
 
+// get_context_usage counts the conversation's user messages: none for a
+// resume of a session the harness home holds no transcript for, and the
+// transcript's user rows for the process that resumes it later.
+func TestClaudeContextUsageCountsTheConversationsUserMessages(t *testing.T) {
+	home := t.TempDir()
+	env := append(writeScenarioFile(t, claudeTwoTurnScenario(), ""), control.EnvTranscriptHome+"="+home)
+	args := append(append([]string(nil), claudeSessionArgs...), "--resume", "sess-usage")
+	userTokens := func(p *mockProc, id string) float64 {
+		t.Helper()
+		p.send(`{"type":"control_request","request_id":"` + id + `","request":{"subtype":"get_context_usage"}}`)
+		var answer struct {
+			Response struct {
+				Response struct {
+					MessageBreakdown map[string]any `json:"messageBreakdown"`
+				} `json:"response"`
+			} `json:"response"`
+		}
+		if err := json.Unmarshal([]byte(p.expectLineContaining(`"request_id":"`+id+`"`, testTimeout)), &answer); err != nil {
+			t.Fatalf("decode get_context_usage answer: %v", err)
+		}
+		tokens, ok := answer.Response.Response.MessageBreakdown["userMessageTokens"].(float64)
+		if !ok {
+			t.Fatalf("messageBreakdown = %v, want userMessageTokens", answer.Response.Response.MessageBreakdown)
+		}
+		return tokens
+	}
+
+	first := startMock(t, args, env, t.TempDir())
+	if got := userTokens(first, "usage-1"); got != 0 {
+		t.Fatalf("userMessageTokens before any message = %v, want 0", got)
+	}
+	first.send(userLine)
+	first.expectLineContaining(`"type":"user"`, testTimeout)
+	first.closeStdinAndExpectExit(0, testTimeout)
+
+	// AO moves a session it resumes under the workspace's project folder.
+	projects := filepath.Join(home, ".claude", "projects")
+	if err := os.MkdirAll(filepath.Join(projects, "-workspace"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(filepath.Join(projects, "mock", "sess-usage.jsonl"), filepath.Join(projects, "-workspace", "sess-usage.jsonl")); err != nil {
+		t.Fatal(err)
+	}
+	resumed := startMock(t, args, env, t.TempDir())
+	if got := userTokens(resumed, "usage-2"); got != claudeUserTokensPerRow {
+		t.Fatalf("userMessageTokens of the resumed conversation = %v, want %d", got, claudeUserTokensPerRow)
+	}
+	resumed.closeStdinAndExpectExit(0, testTimeout)
+}
+
 func newTestLineReader(r io.Reader) func() (string, error) {
 	br := newBufReader(r)
 	return func() (string, error) {

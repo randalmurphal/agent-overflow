@@ -410,8 +410,10 @@ func TestBackgroundFetchTellsAWindowsCredentialHelperNotToAsk(t *testing.T) {
 
 	repo := initGitRepo(t)
 	testutil.RunGit(t, repo, "remote", "add", "origin", server.URL+"/repo.git")
+	// cmd.exe starts from /: Windows cannot open a working directory in the
+	// test namespace's private temp directory, where the repository is.
 	testutil.RunGit(t, repo, "config", "--file", globalConfig, "credential.helper",
-		`!f() { cmd.exe /d /c "echo gcm=%GCM_INTERACTIVE%" >> "$AO_HELPER_LOG" 2>&1; }; f`)
+		`!f() { (cd / && cmd.exe /d /c "echo gcm=%GCM_INTERACTIVE%") >> "$AO_HELPER_LOG" 2>&1; }; f`)
 
 	if _, err := NewCore().FetchRemotesBackground(t.Context(), repo); err == nil {
 		t.Fatal("FetchRemotesBackground against a credential-requiring remote should fail")

@@ -138,8 +138,14 @@ func TestALinkReceiptOwnsItsThread(t *testing.T) {
 	if _, err := s.SetThreadPlacement([]string{"worker"}, PlacementStandalone); err != nil {
 		t.Fatal(err)
 	}
+	// With a sidebar row it asks the link's thread only in that thread's
+	// run (TestAPairedSpawnersRunMakesItsSidebarWorkerAskIt).
+	if got, found, err := s.SpawnOwnerOf("worker"); err != nil || !found || got != want {
+		t.Fatalf("SpawnOwnerOf a linked worker with a sidebar row in its spawn's run = %+v, %v, %v; want %+v", got, found, err, want)
+	}
+	endPeerRun(t, s, "tok")
 	if _, found, err := s.SpawnOwnerOf("worker"); err != nil || found {
-		t.Fatalf("SpawnOwnerOf a linked worker with a sidebar row = %v, %v; want none", found, err)
+		t.Fatalf("SpawnOwnerOf a linked worker with a sidebar row after its spawn's run = %v, %v; want none", found, err)
 	}
 	if row, err := s.GetThread("worker"); err != nil || row.SpawnedByComputerID != "pc-dev-s" {
 		t.Fatalf("a linked worker with a sidebar row is spawned on %q, %v; want its link's computer", row.SpawnedByComputerID, err)

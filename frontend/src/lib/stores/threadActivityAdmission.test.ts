@@ -1,5 +1,6 @@
 import { beforeEach, expect, it } from 'vitest';
-import { buildPane, makeItem, makeThread } from '../../test/helpers/chat';
+import { buildPane, installAgentMessageRunMembersCapability, makeItem, makeThread } from '../../test/helpers/chat';
+import { __setTransportHelloForTest } from './transportStatus.svelte';
 import { installThreadPaneTestEnv } from '../../test/helpers/threadPane';
 import { pass, registry } from '../../test/helpers/activityRuns';
 import { getSettings } from './settings.svelte';
@@ -10,7 +11,7 @@ beforeEach(installThreadPaneTestEnv);
 
 function runs(pane: ThreadPane) {
   return groupActivityRuns(pane.items.map(item => ({ kind: 'leaf' as const, item })), {
-    identity: pane.activityRuns, getItem: id => pane.getItemById(id),
+    identity: pane.activityRuns, rule: pane.activityRuns.activityRunRule(), getItem: id => pane.getItemById(id),
     windowReachesTail: true, withheld: [],
   }).filter(node => node.kind === 'activity_run');
 }
@@ -29,6 +30,30 @@ it.each(['assistant_text', 'user_text'] as const)('opens a live singleton arrivi
     pane.activityRuns.releaseOpenedLive([id]);
     expect(runs(pane)[0].collapsed).toBe(true);
   } finally { pane.clear(); }
+});
+
+it.each([true, false])('opens a live lone agent message the way it opens a live tool row when it is a member (%s)', async members => {
+  if (members) installAgentMessageRunMembersCapability();
+  getSettings().activityRunDefault = 'collapsed';
+  const pane = await buildPane(makeThread());
+  try {
+    pane.applyProviderItemUpserts([
+      makeItem({
+        id: 'reply', itemIndex: 1, kind: 'user_text', role: 'user', status: 'completed', summary: 'All green.',
+        meta: JSON.stringify({ origin: 'agent-thread', originThread: { threadId: 't-x', title: 'Review', kind: 'wake' } }),
+      }),
+      makeItem({ id: 'after', itemIndex: 2, kind: 'assistant_text', status: 'completed', summary: 'thanks' }),
+    ]);
+    // Under the absorbed rule a message with no member before it stands alone.
+    expect(runs(pane)).toHaveLength(members ? 1 : 0);
+    if (!members) return;
+    expect(runs(pane)[0].collapsed).toBe(false);
+    pane.activityRuns.releaseOpenedLive([runs(pane)[0].runId]);
+    expect(runs(pane)[0].collapsed).toBe(true);
+  } finally {
+    pane.clear();
+    __setTransportHelloForTest(null);
+  }
 });
 
 it('preserves manual collapse when more live work joins the run', async () => {

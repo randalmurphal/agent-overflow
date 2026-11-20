@@ -48,6 +48,10 @@ func (h workflowHostAdapter) StartSessionTakingLock(ctx context.Context, threadI
 	return h.app.startSessionTakingLock(ctx, threadID)
 }
 
+func (h workflowHostAdapter) EnsureProvenSession(ctx context.Context, threadID string, beforeStart func() error) (bool, error) {
+	return h.app.ensureProvenSession(ctx, threadID, beforeStart)
+}
+
 func (h workflowHostAdapter) StopSession(threadID string) error {
 	return h.app.stopSession(threadID)
 }
@@ -121,10 +125,6 @@ func (h workflowHostAdapter) LifeCtx() context.Context { return h.app.lifeCtx() 
 
 func (h workflowHostAdapter) ProcessReaper() procutil.Reaper {
 	return h.app.groupReaper("workflow command")
-}
-
-func (h workflowHostAdapter) ClaudeProjectsDir() (string, error) {
-	return h.app.claudeProjectsDir()
 }
 
 // newWorkflowAppRunner builds the workflow runner against this App. It is the

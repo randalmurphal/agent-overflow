@@ -2248,9 +2248,9 @@ func TestAStopFromAnotherComputerNamesItByThisComputersPairing(t *testing.T) {
 	}
 }
 
-// A spawn's first message there tells a worker its spawner owns that its
-// questions and approvals go to the spawner, as a spawn on one computer
-// does; one given a sidebar row there is told nothing of the kind.
+// A spawn's first message there tells its worker that its questions and
+// approvals go to the spawner, as a spawn on one computer does: owned, and
+// given a sidebar row there, whose spawn's run the message opens.
 func TestARemoteSpawnsFooterSaysItsSpawnerTakesTheWorkersPrompts(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
@@ -2279,7 +2279,7 @@ func TestARemoteSpawnsFooterSaysItsSpawnerTakesTheWorkersPrompts(t *testing.T) {
 			}
 			return false
 		})
-		if strings.Contains(first, routes) != (placement == "") {
+		if !strings.Contains(first, routes) {
 			t.Fatalf("placement %q: the spawn's message there reads\n%s", placement, first)
 		}
 		if placement != "" {

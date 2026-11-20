@@ -37,12 +37,13 @@
   let nodes = $derived.by<DigestNode[]>(() => {
     if (!view) return [];
     const scoped = view.pane;
-    scoped.activityRuns.revision;
-    scoped.loading;
+    void scoped.activityRuns.revision;
+    void scoped.loading;
+    const rule = scoped.activityRuns.activityRunRule();
     const items = scoped.items;
     const groups = untrack(() => groupActivityRuns(groupItemsBySubagent(items), {
       identity: scoped.activityRuns, getItem: scoped.getItemById, withheld: [],
-      windowReachesTail: !scoped.hasMoreNewer,
+      windowReachesTail: !scoped.hasMoreNewer, rule,
     }));
     const result: DigestNode[] = [];
     if (scoped.hasMoreHistory) result.push({ kind: 'boundary', id: 'older', direction: 'before' });

@@ -123,6 +123,21 @@ func TestServer_HelloCapabilitiesAreAnArrayNeverNull(t *testing.T) {
 	}
 }
 
+// Config.OmitAgentMessageRunMembers reaches the hello a connection reads:
+// a backend standing in for an older build does not advertise the rule.
+func TestServer_HelloOmitsAgentMessageRunMembersWhenConfigured(t *testing.T) {
+	for _, omit := range []bool{false, true} {
+		f := newServerFixtureWith(t, func(cfg *Config) { cfg.OmitAgentMessageRunMembers = omit })
+		var hello helloFrame
+		if err := json.Unmarshal(readFirstFrame(t, f.dial(t)), &hello); err != nil {
+			t.Fatalf("decode hello: %v", err)
+		}
+		if got := slices.Contains(hello.Capabilities, CapabilityAgentMessageRunMembers); got == omit {
+			t.Fatalf("omit=%v: hello advertises %s = %v", omit, CapabilityAgentMessageRunMembers, got)
+		}
+	}
+}
+
 func TestServer_HelloCarriesBackendIdentity(t *testing.T) {
 	f := newServerFixtureWith(t, func(cfg *Config) {
 		cfg.BackendIdentity = func() (string, string) {
@@ -225,12 +240,13 @@ func TestServer_AdvertisedCapabilitiesAreFrozen(t *testing.T) {
 		"pr-comment-actions.v1",
 		"pr-suggestions-reactions.v1",
 		"git-tags.v1",
+		"activity-runs.agent-message-members.v1",
 	}
 	assertCapabilities(t, serverCapabilities, want)
 	assertCapabilities(t, serverCapabilitiesWithBrowser, append(append([]string{}, want...), "browser"))
 	for _, browser := range []bool{false, true} {
-		base := advertisedCapabilities(func() bool { return browser }, false, false, "")
-		withTransfers := advertisedCapabilities(func() bool { return browser }, true, false, "")
+		base := advertisedCapabilities(func() bool { return browser }, false, false, "", false)
+		withTransfers := advertisedCapabilities(func() bool { return browser }, true, false, "", false)
 		assertCapabilities(t, withTransfers, append(slices.Clone(base), "conversation.transfer.v1", "draft.project-transfer.v1", "draft.project-transfer.v2"))
 	}
 }
@@ -238,19 +254,19 @@ func TestServer_AdvertisedCapabilitiesAreFrozen(t *testing.T) {
 func TestFilePreviewCapabilityRequiresExecutionHostSupport(t *testing.T) {
 	for _, browser := range []bool{false, true} {
 		for _, transfers := range []bool{false, true} {
-			base := advertisedCapabilities(func() bool { return browser }, transfers, false, "")
+			base := advertisedCapabilities(func() bool { return browser }, transfers, false, "", false)
 			for _, flag := range base {
 				if flag == CapabilityFilePreview {
 					t.Fatal("frontend controller advertised file previews")
 				}
 			}
-			withFiles := advertisedCapabilities(func() bool { return browser }, transfers, true, "")
+			withFiles := advertisedCapabilities(func() bool { return browser }, transfers, true, "", false)
 			assertCapabilities(t, withFiles, append(append([]string{}, base...), "preview.files.v1"))
 		}
 	}
 }
 
-// The one subtraction the set allows, and the reason it exists: an
+// A subtraction the set allows, and the reason it exists: an
 // isolated boot standing in for a build that predates a thread peer
 // protocol generation, so an end-to-end test can reach what an older
 // destination answers. It takes that generation and every later one and
@@ -259,7 +275,7 @@ func TestThreadToolsGenerationsCanBeOmittedForAnOlderPeerStandIn(t *testing.T) {
 	for _, browser := range []bool{false, true} {
 		for _, transfers := range []bool{false, true} {
 			for _, previews := range []bool{false, true} {
-				full := advertisedCapabilities(func() bool { return browser }, transfers, previews, "")
+				full := advertisedCapabilities(func() bool { return browser }, transfers, previews, "", false)
 				if !slices.Contains(full, CapabilityThreadTools) || !slices.Contains(full, CapabilityThreadToolsV2) {
 					t.Fatal("an ordinary backend did not advertise every thread tools generation")
 				}
@@ -270,7 +286,29 @@ func TestThreadToolsGenerationsCanBeOmittedForAnOlderPeerStandIn(t *testing.T) {
 					want := slices.DeleteFunc(slices.Clone(full), func(name string) bool {
 						return slices.Contains(dropped, name)
 					})
-					assertCapabilities(t, advertisedCapabilities(func() bool { return browser }, transfers, previews, older), want)
+					assertCapabilities(t, advertisedCapabilities(func() bool { return browser }, transfers, previews, older, false), want)
+				}
+			}
+		}
+	}
+}
+
+// The other subtraction: an isolated boot standing in for a build before
+// the agent-message membership rule leaves that capability out, and only
+// it, in every deployment shape and beside an older thread peer protocol.
+func TestAgentMessageRunMembersCanBeOmittedForAnOlderBuildStandIn(t *testing.T) {
+	for _, browser := range []bool{false, true} {
+		for _, transfers := range []bool{false, true} {
+			for _, previews := range []bool{false, true} {
+				for _, older := range []string{"", CapabilityThreadToolsV2} {
+					full := advertisedCapabilities(func() bool { return browser }, transfers, previews, older, false)
+					if !slices.Contains(full, CapabilityAgentMessageRunMembers) {
+						t.Fatal("an ordinary backend did not advertise the agent-message membership rule")
+					}
+					want := slices.DeleteFunc(slices.Clone(full), func(name string) bool {
+						return name == CapabilityAgentMessageRunMembers
+					})
+					assertCapabilities(t, advertisedCapabilities(func() bool { return browser }, transfers, previews, older, true), want)
 				}
 			}
 		}

@@ -6,6 +6,7 @@ import {
   THREAD_ITEM_CACHE_MAX_CHARS,
   createThreadItemCache,
 } from './threadItemCache';
+import { AGENT_MESSAGES_ABSORBED_RULE } from '../utils/activityRunSpans';
 
 function makeItem(id: string, turnIndex = 0, itemIndex = 0): Item {
   return {
@@ -38,7 +39,7 @@ function makeSnapshot(items: Item[]) {
     newestLoadedTurnIndex: items.at(-1)?.turnIndex ?? null,
     hasMoreHistory: false,
     hasMoreNewer: false,
-    latestSettledTurn: null,
+    latestSettledTurn: null, activityRunRule: AGENT_MESSAGES_ABSORBED_RULE,
   };
 }
 
@@ -237,7 +238,7 @@ describe('threadItemCache', () => {
       newestLoadedTurnIndex: 9,
       hasMoreHistory: true,
       hasMoreNewer: true,
-      latestSettledTurn: settled,
+      latestSettledTurn: settled, activityRunRule: AGENT_MESSAGES_ABSORBED_RULE,
     });
 
     const got = cache.get('t1')!;

@@ -100,7 +100,15 @@ func (a *App) stopAgentRequestBy(ctx context.Context, row store.ThreadRequest, v
 			result.Failures = append(result.Failures, "disarm its wake: "+err.Error())
 		}
 	}
-	spawned := current.Kind == store.ThreadRequestSpawn && current.TargetThreadID != ""
+	// The Stop reaches into the worker for a run the row's caller started
+	// (app_thread_agent_rows_runs.go): a spawn's until its run ended, and
+	// the open run of a send to the worker the caller spawned. A person's
+	// Stop of a row whose run ended leaves what the worker does since, a
+	// run someone else started, as it is; a cascade, which stops the
+	// lineage, reaches every spawn.
+	spawned := current.TargetThreadID != "" &&
+		((current.Kind == store.ThreadRequestSpawn && (!pressed || !current.RunEnded())) ||
+			(current.Kind == store.ThreadRequestSend && pressed && current.RunOpen()))
 	// A Stop of a spawn that already settled that finds its worker not at
 	// rest, or whose rest stopped anything of it or below it
 	// (restStoppedWork), reports it stopped, and ended otherwise. When a

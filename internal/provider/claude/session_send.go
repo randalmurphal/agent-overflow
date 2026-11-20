@@ -94,7 +94,11 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 	if err != nil {
 		return fmt.Errorf("claude: marshal user message: %w", err)
 	}
-	if err := s.proc.WriteLine(data); err != nil {
+	// A start proof reads the write's state (AwaitStart).
+	endInput := s.start.beginInput(opts.InternalCommand)
+	err = s.proc.WriteLine(data)
+	endInput(err)
+	if err != nil {
 		// The uuid never reached stdin, so no command_lifecycle bracket will
 		// ever arrive to consume it. Leaving it in the ledger would leak one
 		// entry per failed write, and the ledger is capped: 256 failures

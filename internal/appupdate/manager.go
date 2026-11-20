@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/eventchan"
+	"agent-overflow/internal/supervise"
 
 	"github.com/wailsapp/wails/v3/pkg/updater"
 )
@@ -51,7 +52,10 @@ type appUpdaterState struct {
 	installGen       uint64
 	installTimer     *time.Timer
 	applyFailure     string
-	wsl              *wslUpdateMode
+	// swap times a restart that took the framework's swap, from its start
+	// to this process's end (EndRestart); nil until one does.
+	swap *supervise.SwapTiming
+	wsl  *wslUpdateMode
 	// desktop is the macOS and Linux desktop's trial, nil without one
 	// (ConfigureDesktopTrial).
 	desktop *desktopTrialMode
@@ -583,7 +587,49 @@ func (a *Service) RestartToUpdate(onAbandoned func()) error {
 	if a.updater.handle.DownloadedPath() == "" {
 		return ErrUpdateNotReady
 	}
-	return a.restartWithExitWatchdog(a.frameworkRestart)
+	swap := supervise.NewSwapTiming(log.Printf, a.pendingVersion(), nil)
+	swap.Phases().Skip("handoff", "this app applies its updates without a trial")
+	return a.restartWithExitWatchdog(swap, a.frameworkRestart)
+}
+
+// pendingVersion is the version of the release last resolved, "" when
+// none is.
+func (a *Service) pendingVersion() string {
+	a.updater.mu.Lock()
+	defer a.updater.mu.Unlock()
+	if a.updater.pending == nil {
+		return ""
+	}
+	return a.updater.pending.Version
+}
+
+// RestartQuitting begins the shutdown of a restart to update that took the
+// framework's swap (supervise.SwapTiming), ending the swap. The host calls
+// it from its shutdown callback, which the framework's Restart reaches
+// before it returns. Without such a restart it does nothing.
+func (a *Service) RestartQuitting() {
+	if a == nil {
+		return
+	}
+	a.updater.mu.Lock()
+	swap := a.updater.swap
+	a.updater.mu.Unlock()
+	swap.Quitting()
+}
+
+// EndRestart ends the timing of a restart to update that took the
+// framework's swap (supervise.SwapTiming): its open phase, with err when
+// the shutdown failed or the process ends with one, and its summary. A
+// process whose restart did not take the swap logs nothing. Call once the
+// host's shutdown is done.
+func (a *Service) EndRestart(err error) {
+	if a == nil {
+		return
+	}
+	a.updater.mu.Lock()
+	swap := a.updater.swap
+	a.updater.mu.Unlock()
+	swap.End(err)
 }
 
 // frameworkRestart is the framework's swap and relaunch
@@ -632,12 +678,29 @@ func (a *Service) RestartReady() error {
 // source, so a hard exit that lets the swap proceed strictly beats a
 // zombie that cancels it. Disarmed only when the helper spawn itself
 // fails and the app intentionally stays alive on the old version.
-func (a *Service) restartWithExitWatchdog(restart func(ctx context.Context) error) error {
-	disarm := a.armRestartExitWatchdog(a.restartWatchdogDelay())
-	if err := restart(a.context()); err != nil {
+//
+// swap times it: the swap until the host's shutdown callback
+// (RestartQuitting), then the shutdown, which EndRestart or the watchdog
+// ends. The framework's Restart quits the host before it returns, so both
+// can run before Restart returns (supervise.SwapTiming).
+func (a *Service) restartWithExitWatchdog(swap *supervise.SwapTiming, restart func(ctx context.Context) error) error {
+	disarm := a.armRestartExitWatchdog(a.restartWatchdogDelay(), swap)
+	// Recorded before the restart, whose quit begins and can end the
+	// shutdown.
+	a.updater.mu.Lock()
+	a.updater.swap = swap
+	a.updater.mu.Unlock()
+	swap.Swapping()
+	err := restart(a.context())
+	if err != nil {
 		disarm()
+		a.updater.mu.Lock()
+		a.updater.swap = nil
+		a.updater.mu.Unlock()
+		swap.End(err)
 		return fmt.Errorf("restart to update: %w", err)
 	}
+	swap.Quitting()
 	return nil
 }
 
@@ -651,10 +714,13 @@ func (a *Service) restartWatchdogDelay() time.Duration {
 
 // armRestartExitWatchdog schedules a hard process exit after delay and
 // returns a disarm function. Fires through Deps.Exit (os.Exit when nil) so
-// tests can observe the trigger without dying.
-func (a *Service) armRestartExitWatchdog(delay time.Duration) (disarm func()) {
+// tests can observe the trigger without dying. A firing ends swap, the
+// timing of a framework swap (nil for a handoff), with its shutdown
+// failed.
+func (a *Service) armRestartExitWatchdog(delay time.Duration, swap *supervise.SwapTiming) (disarm func()) {
 	timer := time.AfterFunc(delay, func() {
 		log.Printf("updater: graceful shutdown did not finish within %s of RestartToUpdate — force-exiting so the swap helper can proceed", delay)
+		swap.End(fmt.Errorf("the shutdown did not finish within %s", delay))
 		exitFn := a.deps.Exit
 		if exitFn == nil {
 			exitFn = os.Exit

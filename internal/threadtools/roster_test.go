@@ -55,7 +55,13 @@ func testRoster() Roster {
 	}
 }
 
-func profileNames(listed []ProfileOption) []string { return ProfileNames(listed) }
+func profileNames(listed []ProfileOption) []string {
+	names := make([]string, 0, len(listed))
+	for _, option := range listed {
+		names = append(names, option.Name)
+	}
+	return names
+}
 
 // A profile is listed where its provider and model are offered and its
 // effort fits its model: a model the computer lacks leaves it out, and so
@@ -100,6 +106,32 @@ func TestListProfilesKeepsWhatTheComputerCanRun(t *testing.T) {
 		listed := ListProfiles(roster, []ProviderOption{claudeOption}, SpawnDefaults{Provider: "claude", Model: "opus-5", Effort: spawnerEffort})
 		if len(listed) != 1 || listed[0].Effort != want {
 			t.Errorf("spawner effort %q: listed %+v, want effort %q", spawnerEffort, listed, want)
+		}
+	}
+}
+
+// The guide names, in roster order, every profile whose provider is
+// offered, whatever its model: Astra's model is in no catalog here and
+// Hasty's effort does not fit its model, and both are named. A profile on a
+// provider not offered is not, and one that inherits its provider follows
+// the spawner's.
+func TestGuideProfileNamesFollowTheOfferedProviders(t *testing.T) {
+	cases := []struct {
+		name    string
+		offered []string
+		spawner string
+		want    []string
+	}{
+		{"both", []string{"claude", "codex"}, "claude", []string{"Opus", "Haiku", "Hasty", "Sol", "Astra", "Mine"}},
+		{"both, codex spawner", []string{"claude", "codex"}, "codex", []string{"Opus", "Haiku", "Hasty", "Sol", "Astra", "Mine"}},
+		{"claude only", []string{"claude"}, "claude", []string{"Opus", "Haiku", "Hasty", "Mine"}},
+		{"claude only, codex spawner", []string{"claude"}, "codex", []string{"Opus", "Haiku", "Hasty"}},
+		{"codex only", []string{"codex"}, "codex", []string{"Sol", "Astra", "Mine"}},
+		{"nothing offered", nil, "claude", []string{}},
+	}
+	for _, tc := range cases {
+		if got := GuideProfileNames(testRoster(), tc.offered, tc.spawner); !slices.Equal(got, tc.want) {
+			t.Errorf("%s: named %v, want %v", tc.name, got, tc.want)
 		}
 	}
 }

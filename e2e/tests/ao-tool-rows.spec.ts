@@ -23,6 +23,11 @@ import {
 } from './ao-tool-rows-helpers.js';
 import { RESULT_TOKEN_PATTERN, awaitToolAnswer, plainScenario, setScenario, threadToolsScenario } from './thread-tools-helpers.js';
 
+test.beforeEach(async ({ harness }) => {
+  // These assertions read agent message rows, which sit inside activity runs.
+  await harness.rpc('UpdateSettings', { activityRunDefault: 'expanded' });
+});
+
 for (const provider of ['claude', 'codex'] as const) {
   test(`${provider}: AO tool rows say what the call did and show its result as facts`, async ({ harness, page }) => {
     const run = await driveAoToolRows(harness, provider, `desktop-${provider}`);

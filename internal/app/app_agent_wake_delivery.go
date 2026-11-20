@@ -241,8 +241,7 @@ func (a *App) noteAgentWakeUndelivered(threadID, wakeID, outcome, body string) {
 //
 // A worker's prompt still queued is discarded too: the prompt it carried
 // died with the worker's session when the app quit, or, an async question,
-// is put to the agent again under a new token (seedAsyncQuestionPrompts).
-// So is an outside
+// is the person's in this run (app_worker_prompts_async.go). So is an outside
 // `thread send`, for the reason a wake is: its text is a script's, and the
 // thread gets a notice that it was not delivered. So is another thread's
 // request, whose sender the boot sweep tells.

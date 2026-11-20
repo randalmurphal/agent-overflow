@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"reflect"
+	"slices"
 	"sync"
 	"time"
 
@@ -58,6 +59,41 @@ type threadAgentPeerCache struct {
 	// rereadCallers are the callers of spawns dropped from a full queue:
 	// each is told to read again once there is room.
 	rereadCallers map[string]struct{}
+	// nudgesTaken holds, by spawn token, the ended nudge runs recorded here
+	// from the latest answer about the spawn, which its next read names so
+	// its computer forgets them (threadAgentPeerArgs.NudgesTaken). A read
+	// whose answer is lost names them again; naming one twice is harmless.
+	nudgesTaken map[string]peerNudgesTaken
+}
+
+// peerNudgesTaken is the ended nudge runs recorded here from one answer of
+// computer.
+type peerNudgesTaken struct {
+	computer string
+	tokens   []string
+}
+
+// noteNudgesTaken records the ended nudge runs of spawn's latest answer
+// that were recorded here, replacing those of the answer before: that
+// computer reported no run it had already forgotten.
+func (c *threadAgentPeerCache) noteNudgesTaken(spawn store.ThreadRequest, taken []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(taken) == 0 {
+		delete(c.nudgesTaken, spawn.Token)
+		return
+	}
+	if c.nudgesTaken == nil {
+		c.nudgesTaken = map[string]peerNudgesTaken{}
+	}
+	c.nudgesTaken[spawn.Token] = peerNudgesTaken{computer: spawn.TargetComputerID, tokens: taken}
+}
+
+// nudgesTakenOf is what spawn's next read names as taken.
+func (c *threadAgentPeerCache) nudgesTakenOf(spawn string) []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.nudgesTaken[spawn].tokens)
 }
 
 type threadAgentPeerEntry struct {
@@ -247,6 +283,11 @@ func (a *App) readPeerAgentRows(ctx context.Context, spawn store.ThreadRequest, 
 			if _, writeErr := a.store.SetThreadRequestNestedOpen(spawn.Token, err == nil && peerListingOpen(listing)); writeErr != nil {
 				return writeErr
 			}
+			if err == nil {
+				if writeErr := a.endRemoteRunsAtRest(spawn, listing); writeErr != nil {
+					return writeErr
+				}
+			}
 			prompts = a.noteRemotePrompts(read.delivery(), origin, spawn, listing, err)
 		}
 		c.mu.Lock()
@@ -395,6 +436,11 @@ func (a *App) forgetPeerAgentRows(computerID string) {
 	for token, entry := range c.entries {
 		if entry.spawn.TargetComputerID == computerID {
 			delete(c.entries, token)
+		}
+	}
+	for token, taken := range c.nudgesTaken {
+		if taken.computer == computerID {
+			delete(c.nudgesTaken, token)
 		}
 	}
 	kept := c.waiting[:0]

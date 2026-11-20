@@ -23,11 +23,14 @@
   import type { TimelineVirtualizerHandle } from '../../utils/virtual/types';
   import TimelineVirtualizer from '../virtual/TimelineVirtualizer.svelte';
   import {
-    timelineNodeItemIndex,
     timelineNodeKey,
-    timelineNodeTurnIndex,
     type TimelineNode,
   } from '../../utils/subagentGrouping';
+  import {
+    isAfterPendingCut,
+    PENDING_CUT_ROWS_CONTEXT,
+    type PendingCutRows,
+  } from './pendingCutRows';
   import { getActiveTurn } from '../../stores/threadStatuses.svelte';
   import Button from '../primitives/Button.svelte';
   import MessageNavRail from './MessageNavRail.svelte';
@@ -164,16 +167,15 @@
   /**
    * Strictly after the pending cut in DISPLAY order. Positional, not
    * per-turn: Claude's item-granular cut keeps the anchor turn's rows
-   * that precede the anchor, so those are not doomed. The anchor is a
-   * user message, so no activity run ever straddles it and comparing a
-   * node by its first item's position is exact.
+   * that precede the anchor, so those are not doomed. A node compares by
+   * its first item, so an activity run dims here only when all of it is
+   * doomed; a run the cut goes through dims its own members
+   * (`pendingCutRows.ts`).
    */
   function isPendingCutRow(node: TimelineNode): boolean {
-    if (!pendingCutAfter) return false;
-    const turnIndex = timelineNodeTurnIndex(node);
-    if (turnIndex !== pendingCutAfter.turnIndex) return turnIndex > pendingCutAfter.turnIndex;
-    return timelineNodeItemIndex(node) > pendingCutAfter.itemIndex;
+    return isAfterPendingCut(node, pendingCutAfter);
   }
+  setContext<PendingCutRows>(PENDING_CUT_ROWS_CONTEXT, { isCut: isPendingCutRow });
 
   // Inner scroll container. We own scrolling here; <TimelineVirtualizer>
   // renders its measured rows inside `contentEl` and reads scroll input

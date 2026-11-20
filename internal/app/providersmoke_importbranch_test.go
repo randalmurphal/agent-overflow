@@ -192,7 +192,7 @@ type providerSmokeClaudeTurn struct {
 
 // providerSmokeClaudeTurnResult is what one turn tells the scenario: the
 // session the CLI reported on `system/init`, the settled leaf its own live
-// tracker picked (the same value production feeds `--resume-session-at`), and
+// tracker picked (the value production pins a mid-turn fork at), and
 // the assistant text.
 type providerSmokeClaudeTurnResult struct {
 	sessionID string

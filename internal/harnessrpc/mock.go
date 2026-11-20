@@ -126,12 +126,12 @@ func StartControl(h *Harness) (*ControlServer, map[string]string, error) {
 	}
 	// CredentialHome, not HomeDir: HomeDir is empty under
 	// AO_HARNESS_KEEP_HOME, and gating the transcript home on it meant a
-	// keep-home run wrote no mock transcript at all — the cold-resume
-	// preflight silently stopped being exercised in exactly the mode most
-	// likely to be reproducing a resume bug. CredentialHome is
-	// `<dataRoot>/home` in BOTH modes and is the same home the backend's own
-	// provider-home seam resolves against (App.credentialHomeOverride), so
-	// what the mock writes is what the preflight reads — and never the
+	// keep-home run wrote no mock transcript at all, so a cold resume
+	// silently stopped being exercised in exactly the mode most likely to be
+	// reproducing a resume bug. CredentialHome is `<dataRoot>/home` in BOTH
+	// modes and is the same home the backend's own provider-home seam
+	// resolves against (App.credentialHomeOverride), so what the mock writes
+	// is what the backend moves and the resumed mock reads, and never the
 	// developer's real `~/.claude`.
 	if h.config.CredentialHome != "" {
 		env[control.EnvTranscriptHome] = h.config.CredentialHome

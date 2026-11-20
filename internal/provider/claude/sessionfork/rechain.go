@@ -22,7 +22,7 @@
 // resumes cleanly and `--resume-session-at` the final assistant row
 // succeeds (claude 2.1.167/168/170). See
 // docs/references/claude-wire.md §"Session JSONL: deferred
-// system/api_error rows" and invariant 28.
+// system/api_error rows" and §"Session JSONL: active-branch semantics".
 //
 // Scope is strictly `type=="system" && subtype=="api_error"`:
 //

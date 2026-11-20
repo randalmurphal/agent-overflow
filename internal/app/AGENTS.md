@@ -247,9 +247,13 @@ off the emit path on one serial queue so a resolution never overtakes its
 delivery. Triage's `RoutedTo` is the one
 record of a prompt's route, and the registry follows its announcements. A
 prompt whose wake cannot reach the spawner (a failed delivery, a session
-that ended with it unconfirmed, a cleared queue) is rejected
-(`triage.RejectPrompt`): it moves to where the worker's prompts route now,
-or to the user when that is the same spawner. A handoff, an archive or a
+that ended with it unconfirmed, a cleared queue) stays routed there when
+its worker is owned and its prompts still route there, parked until the
+spawner's next turn starts (`parkWorkerPrompt`, `redeliverParkedPrompts`);
+any other is rejected (`triage.RejectPrompt`): it moves to where the
+worker's prompts route now, or to the user when that is the same spawner.
+A thread frame but a patch routes the thread's open prompts again for its
+placement (`routeWorkerPromptsAgain`). A handoff, an archive or a
 delete reconciles the prompts routed to the thread it changed
 (`reroutePromptsFrom`, `triage.ReroutePrompts`): a route that still holds
 is kept, and the others move on or go to the user; none is left routed to
@@ -259,33 +263,38 @@ that asked it, never a later prompt under the same request id. A Codex
 thread's async questions are prompts on the same registry, but triage's
 live state ends with the session and they do not: their route is kept
 in `app_worker_prompts_async.go`, reconciled from the store on every
-change to them, on every thread frame but a patch, on a move away, and at
-boot. A
+change to them, on every thread frame but a patch and on a move away,
+never at boot: one not recorded by this run of the app is the person's,
+which the store says from the run mark it keeps on each question
+(`store.AsyncQuestionGroup.AskedThisRun`), never a time
+([thread_reply](../../docs/specs/agent-thread-tools.md#thread_reply-q25)). A
 reconcile of a thread asking nothing is one indexed read; a spawn that
 names a fork's thread adopts the questions it carries
 (`adoptAsyncQuestionPrompts`). Shutdown joins the reconcile queue before
 the store closes.
 
-A worker a paired computer's spawn owns routes its prompts to that
-computer's thread. The worker's computer holds each under a lease
-(`app_worker_prompts_peer.go`); the spawner's wait records changes in
-`app_owner_session.go`. Its prompt reader and lease renewal run during ordinary
+A worker a paired computer's thread spawned routes its prompts to that
+thread by the local spawner's rule (`store.SpawnOwnerOf`). The worker's
+computer holds each for as long as they route there
+(`app_worker_prompts_peer.go`); the spawner's wait records
+changes in `app_owner_session.go`. Its prompt reader runs during ordinary
 reads and recovery. The spawner queues the
 wake to the spawn's caller and forwards its `thread_reply`
-(`app_worker_prompts_remote.go`). Every renewal, answer and return passes
+(`app_worker_prompts_remote.go`); a wake its holder does not take parks
+the prompt until the holder's next turn. Every answer and return passes
 one binding (`remotePromptFor`), and each delivery has its own wake send
 id. A link that ends hands its prompts back (`handBackLinkPrompts`) through
 `announceReleasedWorkers`, the one place every write that releases a
 link's thread reports it; do not call either part alone. The spawner's
-computer gives a prompt back at once when no thread there can take it
-(`store.RemotePromptHolder`, which applies the assistants pause). Only
-`IsolationConfig.WorkerPromptLease` shortens the lease, for tests and
-harness boots. Listing, renewing, answering and returning a held prompt
-need the calling session to hold `approvals:respond`. A prompt being
-answered is skipped by every other transition, so an answer that does not
-land ends through one exit per side, which reconciles what happened
-meanwhile: `endPromptAnswer` (a hand-back asked for, the link, the lease)
-and `endRemoteAnswer` (the holder, a wake not taken). Forgetting a computer
+computer gives a prompt back at once when no thread there can hold it
+(`store.RemotePromptHolder`), marked `no_holder`; a return without the
+mark keeps the prompt the spawner's and offers it again later
+(`offerPeerPromptAgain`). Listing, answering and returning a held
+prompt need the calling session to hold `approvals:respond`. A prompt
+being answered is skipped by every other transition, so an answer that
+does not land ends through one exit per side, which reconciles what
+happened meanwhile: `endPromptAnswer` (a hand-back asked for, the link,
+the placement) and `endRemoteAnswer` (the holder, a wake not taken). Forgetting a computer
 closes the prompts its workers put here (`forgetRemotePrompts`) behind the
 recording fence.
 

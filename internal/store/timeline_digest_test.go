@@ -53,7 +53,7 @@ func TestTimelineDigestExecutionBoundaries(t *testing.T) {
 				{"resume", []string{"prompt2", "tool2", "answer2"}},
 				{"done2", []string{"prompt2", "tool2", "answer2"}},
 			} {
-				page, err := s.ListThreadSliceAround(context.Background(), thread, "", 40, 30, TimelineSelection{ScopeRootID: "root", DigestItemID: tc.anchor})
+				page, err := s.ListThreadSliceAround(context.Background(), thread, "", 40, 30, TimelineSelection{ScopeRootID: "root", DigestItemID: tc.anchor}, AgentMessagesAreMembers)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -69,7 +69,7 @@ func TestTimelineDigestExecutionBoundaries(t *testing.T) {
 				{ScopeRootID: "root", DigestItemID: "done", Tools: true},
 				{ScopeRootID: "root", DigestItemID: strings.Repeat("x", maxHeldWindowIDBytes+1)},
 			} {
-				if _, err := s.ListThreadSliceAround(context.Background(), thread, "", 40, 10, selection); err == nil {
+				if _, err := s.ListThreadSliceAround(context.Background(), thread, "", 40, 10, selection, AgentMessagesAreMembers); err == nil {
 					t.Fatalf("accepted invalid selection: %+v", selection)
 				}
 			}
@@ -110,7 +110,7 @@ func TestTimelineDigestClaudeCardCoversEveryRowUpToItsStop(t *testing.T) {
 		{"parked", []string{"prompt", "tool1", "report"}, "report"},
 		{"done", []string{"prompt", "tool1", "tool2", "answer"}, "answer"},
 	} {
-		page, err := s.ListThreadSliceAround(context.Background(), thread, "", 40, 30, TimelineSelection{ScopeRootID: "root", DigestItemID: tc.anchor})
+		page, err := s.ListThreadSliceAround(context.Background(), thread, "", 40, 30, TimelineSelection{ScopeRootID: "root", DigestItemID: tc.anchor}, AgentMessagesAreMembers)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -154,7 +154,7 @@ func TestTimelineDigestBoundlessCodexCompletionStartsAfterThePreviousOne(t *test
 			if launch.ToolName != "collab_agent" {
 				want = []string{"tool1", "tool2", "answer2"}
 			}
-			page, err := s.ListThreadSliceAround(context.Background(), thread, "", 40, 30, TimelineSelection{ScopeRootID: "root", DigestItemID: "done2"})
+			page, err := s.ListThreadSliceAround(context.Background(), thread, "", 40, 30, TimelineSelection{ScopeRootID: "root", DigestItemID: "done2"}, AgentMessagesAreMembers)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -183,7 +183,7 @@ func TestTimelineDigestCodexCompletionDoesNotGrow(t *testing.T) {
 		if err := insertCarded(s, Item{ID: tc.id, ThreadID: "digest", Kind: "tool_completion", Role: "assistant", Status: "completed", TurnIndex: 3, ItemIndex: tc.index, CompletionOf: "root", Meta: tc.meta}); err != nil {
 			t.Fatal(err)
 		}
-		page, err := s.ListThreadSliceAround(context.Background(), "digest", "", 40, 10, TimelineSelection{ScopeRootID: "root", DigestItemID: tc.id})
+		page, err := s.ListThreadSliceAround(context.Background(), "digest", "", 40, 10, TimelineSelection{ScopeRootID: "root", DigestItemID: tc.id}, AgentMessagesAreMembers)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -201,7 +201,7 @@ func TestTimelineDigestLoadsBoundedRunAndPagesEveryMember(t *testing.T) {
 		seedToolChildItem(t, s, "digest", fmt.Sprintf("tool-%04d", i), 0, i, "root", "tool", "completed")
 	}
 	selection := TimelineSelection{ScopeRootID: "root", DigestItemID: "root"}
-	page, err := s.ListThreadSliceAround(context.Background(), "digest", "", 200, 30, selection)
+	page, err := s.ListThreadSliceAround(context.Background(), "digest", "", 200, 30, selection, AgentMessagesAreMembers)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +214,7 @@ func TestTimelineDigestLoadsBoundedRunAndPagesEveryMember(t *testing.T) {
 	}
 	run := page.Runs[0]
 	for run.UnshippedBefore > 0 {
-		members, err := s.ListActivityRunMembers(context.Background(), "digest", ActivityRunMembersRequest{Selection: selection, RunFirstItemID: run.FirstItemID, LoadedFirstItemID: run.LoadedFirstItemID, LoadedLastItemID: run.LoadedLastItemID, Direction: ActivityRunMembersBefore, Limit: 25})
+		members, err := s.ListActivityRunMembers(context.Background(), "digest", ActivityRunMembersRequest{Selection: selection, RunFirstItemID: run.FirstItemID, LoadedFirstItemID: run.LoadedFirstItemID, LoadedLastItemID: run.LoadedLastItemID, Direction: ActivityRunMembersBefore, Limit: 25}, AgentMessagesAreMembers)
 		if err != nil {
 			t.Fatal(err)
 		}

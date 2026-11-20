@@ -1,6 +1,7 @@
 import type { Item } from '../types/models';
 import { userMessageIdentity } from './userMessageIdentity';
 import { isPendingFlushRow } from './userMessageMeta';
+import { isAgentMessageItem } from './agentMessage';
 import { extractClaudeTaskID } from './claudeTaskMeta';
 import { RAIL_EXEMPT_PAYLOAD_KINDS } from './timelineRail';
 import { hasForkedSkillMeta } from './subagentLaunch';
@@ -13,9 +14,10 @@ import { hasForkedSkillMeta } from './subagentLaunch';
 // (Claude task identity + a tool call's completed flag), receiver labels
 // (collab_agent metas), forked-skill detection (the fork signals on a
 // `Skill` row's meta), structural meta/payload (completion rows), and
-// rail membership (the exempt-or-not BIT of payloadKind — a payload
+// run membership (the exempt-or-not BIT of payloadKind — a payload
 // attaching mid-stream must not read as structure; leaving the rail
-// happens at most once, when a card-style payload lands).
+// happens at most once, when a card-style payload lands — and whether a
+// user row is an agent's, which makes it an activity-run member).
 //
 // Written as field-wise comparisons with early exit, NOT as two built key
 // strings: this runs per streamed upsert, and building two joined keys —
@@ -52,9 +54,12 @@ export function itemTimelineStructureChanged(previous: Item | undefined, next: I
   const kind = next.kind;
   const metaChanged = (previous.meta ?? '') !== (next.meta ?? '');
 
+  // Whether the row is an agent's is run membership: an agent message is a
+  // member, the person's message ends a run.
   if (kind === 'user_text' && metaChanged
     && (userMessageIdentity(previous) !== userMessageIdentity(next)
-      || isPendingFlushRow(previous) !== isPendingFlushRow(next))) return true;
+      || isPendingFlushRow(previous) !== isPendingFlushRow(next)
+      || isAgentMessageItem(previous) !== isAgentMessageItem(next))) return true;
 
   // Subagent grouping + receiver labels: the metas those passes read.
   if (kind === 'terminal_interaction' && metaChanged) return true;

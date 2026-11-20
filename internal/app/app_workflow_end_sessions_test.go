@@ -51,15 +51,6 @@ func TestWorkflowPauseAndEndSessionsEndsThePausedMembersSessions(t *testing.T) {
 		row, err := app.store.GetThread(threadID)
 		return err == nil && row.SessionRef == "stall"
 	})
-	// A resumable transcript, which a cold Claude resume is checked against.
-	row, err := app.store.GetThread(threadID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	writeTranscriptContent(t, testProviderHome(t, app), row.WorkspacePath, "stall",
-		`{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"stall","message":{"role":"user","content":"hold"}}
-{"type":"assistant","uuid":"a0","parentUuid":"u0","sessionId":"stall","message":{"role":"assistant","content":[{"type":"text","text":"holding"}]}}
-`)
 
 	if err := app.WorkflowPauseItem(ctx, item.ID); err != nil {
 		t.Fatal(err)
@@ -154,6 +145,11 @@ while IFS= read -r line; do
   if [[ "$line" == *'"subtype":"interrupt"'* ]]; then
     reqid=$(printf '%%s' "$line" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
     printf '{"type":"control_response","response":{"subtype":"success","request_id":"%%s","response":{}}}\n' "$reqid"
+    continue
+  fi
+  if [[ "$line" == *'"subtype":"get_context_usage"'* ]]; then
+    reqid=$(printf '%%s' "$line" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
+    printf '{"type":"control_response","response":{"subtype":"success","request_id":"%%s","response":{"messageBreakdown":{"userMessageTokens":4}}}}\n' "$reqid"
     continue
   fi
   printf '%%s\n' '{"type":"system","subtype":"init","session_id":"stall","model":"claude-opus-4-7","cwd":"/tmp","tools":[],"claude_code_version":"1.0"}'

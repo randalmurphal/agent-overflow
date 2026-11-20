@@ -100,20 +100,18 @@ func (a *App) answerRoutedPrompt(ctx context.Context, prompt workerPrompt, call 
 // back now; a prompt no longer open to its agent (the worker stopped
 // waiting, or the prompt moved) is handed back, which moves nothing for a
 // closed one; and one held for a paired computer goes back unless its link
-// still owns the worker, then has its lease checked again
-// (expirePromptLease), which a check that fired meanwhile skipped.
+// still owns the worker.
 func (a *App) endPromptAnswer(token string, state workerPromptState) {
 	prompt, routed, handBack := a.workerPrompts.endAnswer(token, state)
 	switch {
 	case !routed:
 	case handBack, !a.workerPromptOpenTo(prompt):
 		a.handBackWorkerPrompt(token)
-	case prompt.remote != nil:
-		if !a.promptLinkStands(prompt) {
-			a.handBackWorkerPrompt(token)
-			return
-		}
-		a.expirePromptLease(token)
+	case prompt.remote != nil && !a.promptLinkStands(prompt):
+		a.handBackWorkerPrompt(token)
+	case prompt.remote == nil:
+		// A placement that changed while it was answered applies now.
+		a.workerPrompts.run(func() { a.routeWorkerPromptsAgain(prompt.workerID) })
 	}
 }
 

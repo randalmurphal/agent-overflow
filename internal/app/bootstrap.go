@@ -106,16 +106,18 @@ type IsolationConfig struct {
 	// one provider, so a spec that sets a usage answer is not held behind a
 	// probe the boot just made. Zero keeps the product gap.
 	UsageProbeGap time.Duration
-	// WorkerPromptLease replaces workerPromptLease, how long a worker's
-	// prompt stays routed to its spawner on a paired computer without that
-	// computer saying it holds it, so a test can see it reach the person
-	// here without waiting minutes. Zero keeps the product lease.
-	WorkerPromptLease time.Duration
 	// OmitOwnerOps makes this computer answer agent_owner_op as a build
 	// before owner operations does, an unknown write call, so a paired
 	// spawner's archive or delete names it as running an older version.
 	// Only a harness boot sets it (diagenv.HarnessOlderComputer).
 	OmitOwnerOps bool
+	// OmitAgentMessageRunMembers makes this computer group every history
+	// read by store.AgentMessagesAbsorbed whatever the request asks, as a
+	// build before transport.CapabilityAgentMessageRunMembers does; its
+	// transport leaves that capability out of the hello
+	// (transport.Config.OmitAgentMessageRunMembers). Only a harness boot
+	// sets it (diagenv.HarnessOlderComputer).
+	OmitAgentMessageRunMembers bool
 }
 
 // ConfigureIsolation applies every mocked-provider safety pin before Start.
@@ -136,8 +138,8 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 	a.preview.scanScope = isolatedScanScope(config.ScanScopePIDs)
 	a.downloadsIsolated = true
 	a.threadPollOverride = config.ThreadRequestPoll
-	a.workerPromptLeaseOverride = config.WorkerPromptLease
 	a.ownerOpsOmitted = config.OmitOwnerOps
+	a.agentMessageRunMembersOmitted = config.OmitAgentMessageRunMembers
 	a.usageProbeGap = config.UsageProbeGap
 	a.transferPendingRetry = config.TransferPendingRetry
 	a.prUpdates.interval = config.PRUpdateInterval
@@ -457,6 +459,20 @@ func SetBootProgress(a *App, progress BootProgress) { a.bootProgress = progress 
 // ServiceShutdown canceled calls nothing. Call before the Wails
 // application runs.
 func SetStartDone(a *App, done func(error)) { a.startDone = done }
+
+// UpdateBootFollows is the install the WSL boot's update marker named and
+// whether it applied (appupdate.Service.UpdateThisBootFollows); "" before
+// InitWSLUpdater or without one.
+func UpdateBootFollows(a *App) (to string, applied bool) {
+	return a.updater.UpdateThisBootFollows()
+}
+
+// EndUpdateRestart ends the timing of a restart to update that took the
+// framework's swap (appupdate.Service.EndRestart): call once the process
+// has shut down, with the error that ends it, if any.
+func EndUpdateRestart(a *App, err error) {
+	a.updater.EndRestart(err)
+}
 
 // ConfigureTransportNotifications installs the headless launcher bridge.
 func ConfigureTransportNotifications(a *App) {

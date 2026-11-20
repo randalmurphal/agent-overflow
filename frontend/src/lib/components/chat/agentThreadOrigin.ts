@@ -116,6 +116,15 @@ function focusedPanePlacer(): ThreadPlacer {
 }
 
 /**
+ * An agent message's sender as `viewer` names it: `name`, with
+ * ` on <computer>` when the sender's thread is on another computer.
+ */
+export function agentSenderLabel(name: string, origin: UserMessageOriginThread | null, viewer: BackendKey): string {
+  const computer = origin ? agentThreadOpener(origin, viewer).computer : '';
+  return computer ? `${name} on ${computer}` : name;
+}
+
+/**
  * How a row shown by `viewer` reaches a thread another agent named: the
  * computer to name beside it, and the open action when that computer is
  * attached and up. Shared by the origin chip, the AO tool rows' links and
