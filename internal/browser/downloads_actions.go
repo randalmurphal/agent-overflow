@@ -157,10 +157,7 @@ func (m *Manager) RevealThreadDownload(ctx context.Context, access Access, id Do
 	if err != nil {
 		return err
 	}
-	if m.revealFileInFileManager != nil {
-		return m.revealFileInFileManager(ctx, item.path)
-	}
-	return revealFileInFileManager(ctx, item.path)
+	return m.revealFile(ctx, item.path)
 }
 
 // OpenThreadDownload shows a finished download in a new tab of the thread's

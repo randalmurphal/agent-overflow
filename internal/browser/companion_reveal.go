@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"testing"
 	"time"
 
 	"agent-overflow/internal/platform"
@@ -53,10 +54,36 @@ func (m *Manager) RevealPageFile(ctx context.Context, access Access, pageID Page
 	if err != nil {
 		return fmt.Errorf("browser: resolve %s to reveal: %w", path, err)
 	}
-	if m.revealFileInFileManager != nil {
-		return m.revealFileInFileManager(ctx, resolved)
+	return m.revealFile(ctx, resolved)
+}
+
+// errNoFileManager refuses a reveal in a boot that shows nothing on the
+// user's desktop.
+var errNoFileManager = errors.New("browser: this run does not open the file manager")
+
+// revealFile hands path to the file manager this Manager was built with.
+func (m *Manager) revealFile(ctx context.Context, path string) error {
+	if m.revealFileInFileManager == nil {
+		return errNoFileManager
 	}
-	return revealFileInFileManager(ctx, resolved)
+	return m.revealFileInFileManager(ctx, path)
+}
+
+// revealsFiles answers whether a boot may start the OS file manager: never
+// one on the fake engine, which is an isolated boot (the harness), and never
+// a test binary. Either would open a window on the desktop of whoever runs
+// it.
+func revealsFiles(fakeEngine, underTest bool) bool {
+	return !fakeEngine && !underTest
+}
+
+// fileRevealer is the hand-off a Manager is built with: the OS file manager
+// where revealsFiles allows it, else a refusal.
+func fileRevealer(fakeEngine, underTest bool) func(context.Context, string) error {
+	if !revealsFiles(fakeEngine, underTest) {
+		return func(context.Context, string) error { return errNoFileManager }
+	}
+	return revealFileInFileManager
 }
 
 // localFilePathForPageURL turns a page's current address into the local path it
@@ -77,9 +104,12 @@ func localFilePathForPageURL(rawURL string) (string, error) {
 }
 
 // revealFileInFileManager is the production hand-off. Every branch ends in one
-// bounded subprocess; nothing here is reachable from a test, which goes through
-// Manager.revealFileInFileManager instead.
+// bounded subprocess. A Manager reaches it only through fileRevealer, and it
+// refuses in a test binary itself, so no test can start a file manager.
 func revealFileInFileManager(ctx context.Context, path string) error {
+	if testing.Testing() {
+		return errNoFileManager
+	}
 	switch {
 	case platform.IsWSL():
 		// Explorer opens \\wsl.localhost paths directly, so the ORIGINAL
