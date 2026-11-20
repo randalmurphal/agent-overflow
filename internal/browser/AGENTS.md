@@ -142,10 +142,12 @@ ancestor however many popups come and go; only ended ones go to a bounded
 history, past which a popup's ancestry is unknown, never empty. A WebKit popup view's close and crash handlers are
 installed at its creation, and until its adoption it names itself by its
 popup number. A hosted page is one record with one state
-(`hosted_pages.go`): it admits downloads from its bind or popup report
-until its close or discard is received, and its lane retires it after
+(`hosted_pages.go`), from its create directive or popup report: it admits
+downloads from its bind or popup report until its close or discard is
+received, a bind after its close fails, and its lane retires it after
 the reports received before that, ending the downloads still running
-(`retirePage`). An engine that processes a page's end after receiving it
+(`retirePage`); the record stays until that retirement returned, so a
+later close or discard joins it. An engine that processes a page's end after receiving it
 records the end at receipt (`PageEndReceived`), and the Manager tells a
 listed popup's driver it is listed (`listingDriver`). The CDP engines answer the
 navigation policy only browser-wide (`profileOptions.Allow`), one pause per

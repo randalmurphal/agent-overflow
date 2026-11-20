@@ -8,8 +8,9 @@ import (
 	"agent-overflow/internal/webview2host"
 )
 
-// A hosted page's state moves only as the table says: listed once, ending
-// once, a pending popup's listing and close in either order ending closing.
+// A hosted page's state moves only as the table says: a page being created
+// bound once and only before its close, listed once, ending once, a pending
+// popup's listing and close in either order ending closing.
 func TestAHostedPageStateMovesOnlyByItsTransitions(t *testing.T) {
 	for _, tc := range []struct {
 		from  hostedPageState
@@ -17,6 +18,13 @@ func TestAHostedPageStateMovesOnlyByItsTransitions(t *testing.T) {
 		to    hostedPageState
 		moved bool
 	}{
+		{hostedPageCreating, pageBound, hostedPageOpen, true},
+		{hostedPageCreating, pageListed, hostedPageCreating, false},
+		{hostedPageCreating, pageEnding, hostedPageClosing, true},
+		{hostedPopupPending, pageBound, hostedPopupPending, false},
+		{hostedPageOpen, pageBound, hostedPageOpen, false},
+		{hostedPopupClosing, pageBound, hostedPopupClosing, false},
+		{hostedPageClosing, pageBound, hostedPageClosing, false},
 		{hostedPopupPending, pageListed, hostedPageOpen, true},
 		{hostedPopupPending, pageEnding, hostedPopupClosing, true},
 		{hostedPageOpen, pageListed, hostedPageOpen, false},
@@ -34,6 +42,7 @@ func TestAHostedPageStateMovesOnlyByItsTransitions(t *testing.T) {
 		state         hostedPageState
 		admits, popup bool
 	}{
+		{hostedPageCreating, false, false},
 		{hostedPopupPending, true, true},
 		{hostedPageOpen, true, false},
 		{hostedPopupClosing, false, true},
@@ -83,7 +92,7 @@ func runningSnapshot(id string, seq uint64) webview2host.DownloadReport {
 // it is listed and its work there drains.
 func TestHostedPagesReceiveWhatIsTrueAtReceipt(t *testing.T) {
 	pages, taken, _ := blockedPages(t)
-	pages.addOpen("opener")
+	openForTest(pages, "opener")
 	if !pages.addPopup("popup", "opener", "profile") || pages.addPopup("popup", "opener", "profile") {
 		t.Fatal("a popup was recorded twice")
 	}
@@ -132,7 +141,7 @@ func TestHostedPagesReceiveWhatIsTrueAtReceipt(t *testing.T) {
 // had on its opener's drains.
 func TestAListedPopupLeavesItsOpenersLaneOnceItDrains(t *testing.T) {
 	pages, taken, proceed := blockedPages(t)
-	pages.addOpen("opener")
+	openForTest(pages, "opener")
 	pages.addPopup("popup", "opener", "profile")
 	pages.acceptSnapshot("popup", runningSnapshot("dl-1", 1))
 	take(t, taken)

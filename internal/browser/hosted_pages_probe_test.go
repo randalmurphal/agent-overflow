@@ -1,9 +1,12 @@
 package browser
 
 import (
+	"context"
 	"fmt"
 
 	"agent-overflow/internal/browser/ids"
+
+	"github.com/chromedp/cdproto/target"
 )
 
 // Read-only probes of hostedPages for tests.
@@ -80,6 +83,40 @@ func (p *hostedPages) endedOf(page ids.PageHandle, id downloadID) (ended int, ru
 		return 0, false
 	}
 	return len(r.ended), r.downloads[id] != nil
+}
+
+// openForTest records page as the engine records a page it created and
+// bound.
+func openForTest(p *hostedPages, page ids.PageHandle) {
+	if !p.addCreating(page) {
+		panic("browser: a test page recorded twice")
+	}
+	if err := p.bound(page); err != nil {
+		panic(err)
+	}
+}
+
+// bindForTest binds page as createPage does, its record made first and
+// any profile a test gave it kept, or a popup as its attach binds it.
+func bindForTest(e *hostedEngine, page ids.PageHandle, targetID target.ID, conn context.Context) error {
+	if !e.pages.addCreating(page) {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		e.bindLocked(page, targetID, conn)
+		return nil
+	}
+	e.mu.Lock()
+	profile, had := e.pageProfile[page]
+	e.mu.Unlock()
+	if err := e.bind(page, targetID, conn, nil, profile); err != nil {
+		return err
+	}
+	if !had {
+		e.mu.Lock()
+		delete(e.pageProfile, page)
+		e.mu.Unlock()
+	}
+	return nil
 }
 
 // watchingNow reports whether the status loop runs.

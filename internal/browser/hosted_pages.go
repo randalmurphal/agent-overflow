@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -39,23 +40,31 @@ type hostedDownloadKey struct {
 type hostedPageState int
 
 const (
+	// hostedPageCreating is a page the engine is creating, from its create
+	// directive until its bind: it admits nothing, and its close, received
+	// once the launcher reported it created, ends it before its bind, which
+	// then fails.
+	hostedPageCreating hostedPageState = iota + 1
 	// hostedPopupPending is a popup the launcher reported that the Manager
 	// has not listed: it admits downloads, its work runs on its opener's
 	// lane, and its downloads name it as a popup.
-	hostedPopupPending hostedPageState = iota + 1
+	hostedPopupPending
 	// hostedPageOpen is a page the engine created and bound, or a popup the
 	// Manager listed: it admits downloads and its work runs on its own lane.
 	hostedPageOpen
 	// hostedPopupClosing is a pending popup whose close or discard was
 	// received: sealed, its work still on its opener's lane.
 	hostedPopupClosing
-	// hostedPageClosing is an open page whose close or discard was
-	// received: sealed.
+	// hostedPageClosing is a page being created or open whose close or
+	// discard was received: sealed. A record stays closing until its lane's
+	// retirement of it has returned (retire).
 	hostedPageClosing
 )
 
 func (s hostedPageState) String() string {
 	switch s {
+	case hostedPageCreating:
+		return "creating"
 	case hostedPopupPending:
 		return "pending popup"
 	case hostedPageOpen:
@@ -74,7 +83,7 @@ func (s hostedPageState) admits() bool {
 	switch s {
 	case hostedPopupPending, hostedPageOpen:
 		return true
-	case hostedPopupClosing, hostedPageClosing:
+	case hostedPageCreating, hostedPopupClosing, hostedPageClosing:
 		return false
 	default:
 		panic(fmt.Sprintf("browser: hosted page state %d", int(s)))
@@ -87,7 +96,7 @@ func (s hostedPageState) pendingPopup() bool {
 	switch s {
 	case hostedPopupPending, hostedPopupClosing:
 		return true
-	case hostedPageOpen, hostedPageClosing:
+	case hostedPageCreating, hostedPageOpen, hostedPageClosing:
 		return false
 	default:
 		panic(fmt.Sprintf("browser: hosted page state %d", int(s)))
@@ -98,31 +107,41 @@ func (s hostedPageState) pendingPopup() bool {
 type hostedPageEvent int
 
 const (
+	// pageBound: the engine bound the page it was creating.
+	pageBound hostedPageEvent = iota + 1
 	// pageListed: the Manager listed the popup.
-	pageListed hostedPageEvent = iota + 1
+	pageListed
 	// pageEnding: its close or discard was received.
 	pageEnding
 )
 
 // next answers the state event moves s to, and false for an event that
-// does not apply to s: a page listed twice, or ending twice.
+// does not apply to s: a page bound after its close or not being created,
+// a page listed twice, or ending twice.
 func (s hostedPageState) next(event hostedPageEvent) (hostedPageState, bool) {
 	switch event {
+	case pageBound:
+		switch s {
+		case hostedPageCreating:
+			return hostedPageOpen, true
+		case hostedPopupPending, hostedPageOpen, hostedPopupClosing, hostedPageClosing:
+			return s, false
+		}
 	case pageListed:
 		switch s {
 		case hostedPopupPending:
 			return hostedPageOpen, true
 		case hostedPopupClosing:
 			return hostedPageClosing, true
-		case hostedPageOpen, hostedPageClosing:
+		case hostedPageCreating, hostedPageOpen, hostedPageClosing:
 			return s, false
 		}
 	case pageEnding:
 		switch s {
+		case hostedPageCreating, hostedPageOpen:
+			return hostedPageClosing, true
 		case hostedPopupPending:
 			return hostedPopupClosing, true
-		case hostedPageOpen:
-			return hostedPageClosing, true
 		case hostedPopupClosing, hostedPageClosing:
 			return s, false
 		}
@@ -130,8 +149,9 @@ func (s hostedPageState) next(event hostedPageEvent) (hostedPageState, bool) {
 	panic(fmt.Sprintf("browser: hosted page event %d in state %d", int(event), int(s)))
 }
 
-// hostedPageRecord is one page from its bind or popup report until its
-// lane retires it. Guarded by hostedPages.mu.
+// hostedPageRecord is one page from its create directive or popup report
+// until its lane's retirement of it has returned. Guarded by
+// hostedPages.mu.
 type hostedPageRecord struct {
 	state hostedPageState
 	// opener and profile are a popup's.
@@ -141,7 +161,8 @@ type hostedPageRecord struct {
 	// admission in flight; ended its ended or refused ids, oldest first.
 	downloads map[downloadID]*hostedDownload
 	ended     []downloadID
-	// retired is closed once the page's lane retired it, or at Stop.
+	// retired is closed once the page's lane retired it, the retirement's
+	// callbacks returned, or at Stop.
 	retired chan struct{}
 }
 
@@ -186,13 +207,52 @@ func newPageRecord(state hostedPageState, opener ids.PageHandle, profile profile
 	return &hostedPageRecord{state: state, opener: opener, profile: profile, downloads: make(map[downloadID]*hostedDownload), retired: make(chan struct{})}
 }
 
-// addOpen records page, which the engine created and bound, as open. A
-// page id is minted once, so a record it already has stays as it is.
-func (p *hostedPages) addOpen(page ids.PageHandle) {
+// errHostedPageEnded refuses a step of a page being created whose close
+// was received, or that has no record.
+var errHostedPageEnded = errors.New("browser: the pane host closed the page before it was ready")
+
+// addCreating records page, which the engine is about to ask the launcher
+// to create, as creating, and answers false when page has a record.
+func (p *hostedPages) addCreating(page ids.PageHandle) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.records[page] == nil {
-		p.records[page] = newPageRecord(hostedPageOpen, "", "")
+	if p.records[page] != nil {
+		return false
+	}
+	p.records[page] = newPageRecord(hostedPageCreating, "", "")
+	return true
+}
+
+// creating answers errHostedPageEnded unless page is still being created.
+func (p *hostedPages) creating(page ids.PageHandle) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if r := p.records[page]; r == nil || r.state != hostedPageCreating {
+		return errHostedPageEnded
+	}
+	return nil
+}
+
+// bound moves page, being created, to open, from which it admits
+// downloads, and refuses with errHostedPageEnded a page whose close was
+// received or that has no record.
+func (p *hostedPages) bound(page ids.PageHandle) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if r := p.records[page]; r == nil || !r.to(pageBound) {
+		return errHostedPageEnded
+	}
+	return nil
+}
+
+// abandon drops page, being created, whose create the launcher answered
+// with no page; a record past creating stays for its lane.
+func (p *hostedPages) abandon(page ids.PageHandle) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if r := p.records[page]; r != nil && r.state == hostedPageCreating {
+		delete(p.records, page)
+		close(r.retired)
 	}
 }
 
@@ -287,7 +347,9 @@ type endReceipt struct {
 	accepted bool
 	// pendingPopup: the page is a popup the Manager has not listed.
 	pendingPopup bool
-	// retired closes once the page's lane retired it; nil for no record.
+	// retired closes once the page's lane retired it and the retirement's
+	// callbacks returned; nil for a page with no record, which is not this
+	// engine's or has retired.
 	retired <-chan struct{}
 }
 
@@ -322,7 +384,9 @@ func (p *hostedPages) acceptEnd(page ids.PageHandle, kind acceptedKind, crash st
 // retire ends page's record on its lane, after every report accepted
 // before its close or discard: it answers the downloads the Manager
 // admitted that still run, and finish, which the caller calls once it has
-// settled them, to wake whoever waits for the page to go.
+// settled them. The record stays, closing and with no download, until
+// finish drops it and wakes whoever waits for the page to go, so a close
+// received meanwhile joins this one.
 func (p *hostedPages) retire(page ids.PageHandle) (running []downloadID, finish func()) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -330,7 +394,6 @@ func (p *hostedPages) retire(page ids.PageHandle) (running []downloadID, finish 
 	if r == nil {
 		return nil, func() {}
 	}
-	delete(p.records, page)
 	for id, d := range r.downloads {
 		if d.admission == hostedAdmitted {
 			running = append(running, id)
@@ -340,7 +403,16 @@ func (p *hostedPages) retire(page ids.PageHandle) (running []downloadID, finish 
 	for _, id := range r.ended {
 		p.dropOwnerLocked(id, page)
 	}
-	return running, func() { close(r.retired) }
+	r.downloads, r.ended = make(map[downloadID]*hostedDownload), nil
+	return running, func() {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		// Stop may have woken its waiters and dropped it first.
+		if p.records[page] == r {
+			delete(p.records, page)
+			close(r.retired)
+		}
+	}
 }
 
 func (p *hostedPages) dropOwnerLocked(id downloadID, page ids.PageHandle) {

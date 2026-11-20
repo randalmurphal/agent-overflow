@@ -27,6 +27,11 @@ func (e *hostedEngine) createPage(ctx context.Context, profile *hostedProfile, h
 		return nil, err
 	}
 	defer e.unwatch(pageID)
+	// Before the directive: a close the launcher reports once the page is
+	// created ends this record, and with it the bind.
+	if !e.pages.addCreating(pageID) {
+		return nil, fmt.Errorf("browser: pane page %s already has a record", pageID)
+	}
 
 	if !e.dispatch(webview2host.Directive{Op: webview2host.OpCreate, PageID: string(pageID), ProfileID: string(profile.id), Ephemeral: profile.ephemeral}) {
 		return nil, errors.New("browser: pane host refused the create directive")
@@ -36,12 +41,13 @@ func (e *hostedEngine) createPage(ctx context.Context, profile *hostedProfile, h
 	if err != nil {
 		// The launcher may still be mid-create; a close for a page it has
 		// not finished is harmless, and skipping it would leak a controller.
-		e.closePage(pageID)
+		e.endCreate(ctx, pageID)
 		return nil, fmt.Errorf("browser: create pane page: %w", err)
 	}
 	if report.kind != webview2host.ReportCreated {
 		// No controller is left to close, but a find-unavailable report may
 		// have preceded the failure.
+		e.pages.abandon(pageID)
 		e.mu.Lock()
 		delete(e.noFind, pageID)
 		e.mu.Unlock()
@@ -49,18 +55,18 @@ func (e *hostedEngine) createPage(ctx context.Context, profile *hostedProfile, h
 	}
 	targetID := target.ID(strings.TrimSpace(report.detail))
 	if targetID == "" {
-		e.closePage(pageID)
+		e.endCreate(ctx, pageID)
 		return nil, errors.New("browser: pane host reported a page with no CDP target")
 	}
 	// Claimed before the attach, whose end would close the target.
 	if err := e.claimTarget(pageID, targetID); err != nil {
-		e.closePage(pageID)
+		e.endCreate(ctx, pageID)
 		return nil, err
 	}
 
 	browserCtx, err := e.ensureBrowser()
 	if err != nil {
-		e.closePage(pageID)
+		e.endCreate(ctx, pageID)
 		return nil, err
 	}
 	pageCtx, pageCancel := chromedp.NewContext(browserCtx, chromedp.WithTargetID(targetID))
@@ -68,23 +74,27 @@ func (e *hostedEngine) createPage(ctx context.Context, profile *hostedProfile, h
 	driver, err := startCDPPage(setup, browserCtx, pageCtx, pageCancel, hooks)
 	release()
 	if err != nil {
-		e.closePage(pageID)
+		e.endCreate(ctx, pageID)
 		return nil, err
 	}
-	if err := e.bind(pageID, targetID, browserCtx); err != nil {
+	if err := e.bind(pageID, targetID, browserCtx, driver, profile.id); err != nil {
 		driver.Close()
-		e.closePage(pageID)
+		e.endCreate(ctx, pageID)
 		return nil, err
 	}
-	e.mu.Lock()
-	if cdp, ok := driver.(*cdpPage); ok {
-		e.drivers[pageID] = cdp
-	}
-	e.pageProfile[pageID] = profile.id
-	e.mu.Unlock()
 	// An info change that reached the engine before the page was bound.
 	e.takeTargetInfo(pageID, targetID)
 	return &hostedPage{pageDriver: driver, engine: e, id: pageID}, nil
+}
+
+// endCreate closes a page whose create failed, the launcher asked to
+// destroy whatever it made (closePage), and waits within ctx for the
+// page's retirement, which nothing is ahead of on a page being created.
+func (e *hostedEngine) endCreate(ctx context.Context, pageID ids.PageHandle) {
+	select {
+	case <-e.closePage(pageID):
+	case <-ctx.Done():
+	}
 }
 
 // DownloadSaving: WebView2 saves to the Windows user's Downloads folder
@@ -237,11 +247,16 @@ func (e *hostedEngine) deliver(pageID ids.PageHandle, report hostReport) bool {
 }
 
 // claimTarget pairs a page the engine is creating with the CDP target the
-// launcher reported for it, unless another page, bound or a popup, has
-// that target. Its close forgets the pair (forgetPageLocked).
+// launcher reported for it, unless its close was received or another page,
+// bound or a popup, has that target. Its close forgets the pair
+// (forgetPageLocked), in an e.mu hold after it was received, so no pair
+// outlives a page closed meanwhile.
 func (e *hostedEngine) claimTarget(pageID ids.PageHandle, targetID target.ID) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if err := e.pages.creating(pageID); err != nil {
+		return err
+	}
 	if owner, claimed := e.targetPageLocked(targetID); claimed {
 		return fmt.Errorf("browser: pane host reported page %s with target %s, which page %s has", pageID, targetID, owner)
 	}
@@ -250,19 +265,27 @@ func (e *hostedEngine) claimTarget(pageID ids.PageHandle, targetID target.ID) er
 	return nil
 }
 
-// bind pairs a page the engine created with its CDP target and with conn,
-// the browser connection its session runs on, and records it open, from
-// which it admits downloads. It refuses a connection that has ended: that
+// bind pairs a page the engine created with its CDP target, its driver,
+// its profile and conn, the browser connection its session runs on, in one
+// e.mu hold, and moves its record from
+// creating to open, from which it admits downloads. It refuses a page
+// whose close was received, and a connection that has ended: that
 // connection's retirement may already have claimed its pages, and a later
 // one would never report this page.
-func (e *hostedEngine) bind(pageID ids.PageHandle, targetID target.ID, conn context.Context) error {
+func (e *hostedEngine) bind(pageID ids.PageHandle, targetID target.ID, conn context.Context, driver pageDriver, profile profileHandle) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if conn.Err() != nil {
 		return errors.New("browser: the connection to the pane browser was lost")
 	}
+	if err := e.pages.bound(pageID); err != nil {
+		return err
+	}
 	e.bindLocked(pageID, targetID, conn)
-	e.pages.addOpen(pageID)
+	if cdp, ok := driver.(*cdpPage); ok {
+		e.drivers[pageID] = cdp
+	}
+	e.pageProfile[pageID] = profile
 	return nil
 }
 

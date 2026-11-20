@@ -850,7 +850,7 @@ func TestHostedEngineConnectionLossMidDownload(t *testing.T) {
 		t.Fatalf("ensureBrowser: %v", err)
 	}
 	defer engine.Interrupt()
-	if err := engine.bind("page1", "TARGET-1", conn); err != nil {
+	if err := bindForTest(engine, "page1", "TARGET-1", conn); err != nil {
 		t.Fatal(err)
 	}
 	reportDownload(t, engine, "page1", webview2host.DownloadReport{ID: "dl-a-1", State: webview2host.DownloadRunning, Path: `C:\Users\dev\Downloads\x.bin`})

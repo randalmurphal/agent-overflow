@@ -355,3 +355,87 @@ func TestAPopupsFirstDownloadAfterItsEndNeverStarts(t *testing.T) {
 		})
 	}
 }
+
+// A page whose close the launcher reported after its created report, while
+// its CDP attach was still under way, is never listed: its record is
+// creating from the create directive, the close ends it, and the bind,
+// which is that record's transition, fails.
+func TestAPageClosedBeforeItsBindIsNotListed(t *testing.T) {
+	l := newPopupLauncher(t)
+	access := l.access("thread")
+	releases := make(chan func(), 1)
+	created := make(chan string, 1)
+	send := l.engine.send
+	l.engine.send = func(directive webview2host.Directive) {
+		if directive.Op == webview2host.OpCreate {
+			releases <- l.gate("T-" + directive.PageID)
+			created <- directive.PageID
+		}
+		send(directive)
+	}
+	opened := make(chan PageInfo, 1)
+	go func() {
+		// A failed create is shown on the tab, not returned.
+		info, _ := l.manager.NewCompanionPage(context.Background(), access, "")
+		opened <- info
+	}()
+	var pageID string
+	select {
+	case pageID = <-created:
+	case <-time.After(hostedTestDeadline):
+		t.Fatal("no page was created")
+	}
+	release := <-releases
+	defer release()
+	l.awaitAttach("T-" + pageID)
+	l.report(pageID, webview2host.ReportClosed, "")
+	release()
+	select {
+	case info := <-opened:
+		if info.ID != "" {
+			t.Errorf("a page closed before its bind was opened as tab %s", info.ID)
+		}
+	case <-time.After(hostedTestDeadline):
+		t.Fatal("the create never returned")
+	}
+	if tabs := l.tabs(string(access.ThreadID)); len(tabs) != 0 {
+		t.Fatalf("the thread lists %d tabs, want none", len(tabs))
+	}
+	settleReports(t, l.engine, "")
+	if _, kept := l.engine.pages.state(ids.PageHandle(pageID)); kept {
+		t.Fatal("the closed page's record stayed")
+	}
+}
+
+// A second discard of a page whose first discard is still settling it,
+// held in its page-gone download callback, waits for that settlement: the
+// record and its completion stay until the last callback returned.
+func TestASecondDiscardWaitsForTheFirstsLastCallback(t *testing.T) {
+	engine, _, _ := newDownloadHostedEngine(t)
+	bindTestPage(t, engine, "page1", "TARGET-1")
+	reportDownload(t, engine, "page1", snapshot("dl-1", webview2host.DownloadRunning, 10))
+	inGone, releaseGone := make(chan struct{}), make(chan struct{})
+	progress := engine.events.DownloadProgress
+	engine.events.DownloadProgress = func(event downloadProgress) {
+		if event.State == downloadPageGone {
+			close(inGone)
+			<-releaseGone
+		}
+		progress(event)
+	}
+	first := make(chan error, 1)
+	go func() { first <- engine.DiscardPage(context.Background(), "page1") }()
+	awaitClosed(t, inGone, "the first discard's page-gone callback")
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := engine.DiscardPage(ctx, "page1"); !errors.Is(err, errDiscardPending) {
+		t.Errorf("a second discard during the first's callback answered %v, want it pending", err)
+	}
+	close(releaseGone)
+	if err := <-first; err != nil {
+		t.Fatalf("the first discard answered %v", err)
+	}
+	if err := engine.DiscardPage(context.Background(), "page1"); err != nil {
+		t.Fatalf("a discard after the page retired answered %v", err)
+	}
+}

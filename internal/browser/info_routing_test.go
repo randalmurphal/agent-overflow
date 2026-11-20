@@ -180,7 +180,7 @@ func TestHostedReportsBeforeTheAttachReachThePage(t *testing.T) {
 		PageCrashed:     func(ids.PageHandle, string) {},
 	})
 	hosted.attachTimeout = 5 * time.Second
-	if err := hosted.bind("page1", "TARGET-1", context.Background()); err != nil {
+	if err := bindForTest(hosted, "page1", "TARGET-1", context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := hosted.ensureBrowser(); err != nil {
