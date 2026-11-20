@@ -24,7 +24,11 @@ owns the frame protocol in `internal/webview2host`; the browser manager consumes
   its bound or a write its timeout, so one stalled stream never holds
   another's frames or the tunnel's teardown. A peer's close or error runs
   after the data the peer sent before it (`End`), and teardown closes every
-  stream socket, so a parked write returns.
+  stream socket, so a parked write returns. A stream whose close was
+  received stays its session's, counted toward `MaxTunnelStreams` and
+  closed by teardown, until its writer finished. A data frame with no data
+  is refused at the decoder (`DecodeTunnelData`), so it never takes a
+  place in a stream's queue.
 
 Tests use loopback HTTP and WebSocket fixtures and do not start a launcher or
 WebView2. Transport admission for `/browser-cdp` remains in

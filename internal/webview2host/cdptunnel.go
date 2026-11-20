@@ -182,9 +182,10 @@ func (t *CDPTunnel) runConnection(ctx context.Context) (bool, error) {
 	conn.SetReadLimit(MaxTunnelFrameBytes)
 
 	session := &tunnelSession{
-		conn:    conn,
-		tunnel:  t,
-		streams: make(map[uint32]*tunnelStream, 8),
+		conn:     conn,
+		tunnel:   t,
+		streams:  make(map[uint32]*tunnelStream, 8),
+		draining: make(map[*tunnelStream]struct{}),
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer func() {
@@ -213,15 +214,21 @@ func (t *CDPTunnel) runConnection(ctx context.Context) (bool, error) {
 
 // tunnelSession is one connection's stream table. It dies with the
 // connection: there is no resume, so nothing here outlives runConnection.
+// A stream is the session's from its open until its socket is closed and
+// its pump or dial has ended: by its id while the backend knows it
+// (streams), then, once the backend closed it, among those draining, whose
+// writer still writes the data sent before the close. Both count toward
+// MaxTunnelStreams, and the session's close closes both.
 type tunnelSession struct {
 	conn   *websocket.Conn
 	tunnel *CDPTunnel
 
 	writeMu sync.Mutex
 
-	mu      sync.Mutex
-	streams map[uint32]*tunnelStream
-	closed  bool
+	mu       sync.Mutex
+	streams  map[uint32]*tunnelStream
+	draining map[*tunnelStream]struct{}
+	closed   bool
 
 	pumps sync.WaitGroup
 }
@@ -277,7 +284,7 @@ func (s *tunnelSession) openStream(ctx context.Context, id uint32) {
 		s.sendControl(ctx, TunnelControl{Op: TunnelError, StreamID: id, Detail: "stream id already open"})
 		return
 	}
-	if len(s.streams) >= MaxTunnelStreams {
+	if len(s.streams)+len(s.draining) >= MaxTunnelStreams {
 		s.mu.Unlock()
 		s.tunnel.logf("browser cdp tunnel: refusing stream %d, %d already open", id, MaxTunnelStreams)
 		s.sendControl(ctx, TunnelControl{Op: TunnelError, StreamID: id, Detail: "too many concurrent streams"})
@@ -312,6 +319,7 @@ func (s *tunnelSession) finishOpen(ctx context.Context, id uint32, placeholder *
 		if mine {
 			delete(s.streams, id)
 		}
+		delete(s.draining, placeholder)
 		s.mu.Unlock()
 		if mine {
 			s.sendControl(ctx, TunnelControl{Op: TunnelError, StreamID: id, Detail: TruncateDetail(err.Error())})
@@ -327,6 +335,7 @@ func (s *tunnelSession) finishOpen(ctx context.Context, id uint32, placeholder *
 	})
 	s.mu.Lock()
 	if s.closed || s.streams[id] != placeholder {
+		delete(s.draining, placeholder)
 		s.mu.Unlock()
 		stream.close()
 		return
@@ -366,11 +375,13 @@ func (s *tunnelSession) pump(ctx context.Context, stream *tunnelStream) {
 	s.mu.Lock()
 	// Settle only OUR entry: after a close-and-reopen of the same id the
 	// slot may already hold the next open's reservation, which is not
-	// this pump's to delete or to announce dead.
+	// this pump's to delete or to announce dead. A stream the backend
+	// closed is draining, and owes it no close.
 	mine := s.streams[stream.id] == stream
 	if mine {
 		delete(s.streams, stream.id)
 	}
+	delete(s.draining, stream)
 	closed := s.closed
 	s.mu.Unlock()
 	if mine && !closed {
@@ -401,10 +412,16 @@ func (s *tunnelSession) handleData(payload []byte) {
 	_ = stream.writer.Write(data)
 }
 
+// closeStream ends the stream the backend closed: it leaves the backend's
+// ids for those draining, still counted and still closed by the session's
+// close, until its pump or its dial ends.
 func (s *tunnelSession) closeStream(id uint32) {
 	s.mu.Lock()
 	stream := s.streams[id]
-	delete(s.streams, id)
+	if stream != nil {
+		delete(s.streams, id)
+		s.draining[stream] = struct{}{}
+	}
 	s.mu.Unlock()
 	switch {
 	case stream == nil:
@@ -417,16 +434,20 @@ func (s *tunnelSession) closeStream(id uint32) {
 	}
 }
 
+// closeAll closes every stream of the session, draining or not, at once.
 func (s *tunnelSession) closeAll() {
 	s.mu.Lock()
 	s.closed = true
-	streams := s.streams
-	s.streams = make(map[uint32]*tunnelStream)
+	streams := make([]*tunnelStream, 0, len(s.streams)+len(s.draining))
+	for _, stream := range s.streams {
+		streams = append(streams, stream)
+	}
+	for stream := range s.draining {
+		streams = append(streams, stream)
+	}
 	s.mu.Unlock()
 	for _, stream := range streams {
-		if stream != nil {
-			stream.close()
-		}
+		stream.close()
 	}
 }
 
