@@ -63,4 +63,4 @@ func TestRowsAllocations(t *testing.T) {
 // rowsPin is the rows' measured allocations and bytes a call, with about
 // 5% added so a run's noise passes and one more allocation an issue
 // fails.
-var rowsPin = struct{ allocs, bytes uint64 }{2377, 447_000} // measured 2,264 and 425,771
+var rowsPin = struct{ allocs, bytes uint64 }{1064, 340_000} // measured 1,014 and 323,771
