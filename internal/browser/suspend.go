@@ -95,16 +95,18 @@ func (m *Manager) SuspendThread(ctx context.Context, threadID ThreadID) error {
 }
 
 // suspendPage replaces one live page with its record and reports whether it
-// did. It waits for the page's in-flight operation, reads the page's current
-// address, and moves it from its scope to the records in one m.mu hold, so a
-// lookup finds it as one or the other. A page closed meanwhile is left
+// did. It waits for the page's in-flight operation while ctx lasts, reads
+// the page's current address, and moves it from its scope to the records in
+// one m.mu hold, so a lookup finds it as one or the other. A page closed meanwhile is left
 // closed; a page a mounted pane shows by then is left live; a page of a
 // browser that began shutting down is left for Close to save; a page a
 // forget of every page (the browser turned off, or its site data cleared)
 // or its thread's close is closing records nothing. The move waits for a
 // jar switch of the thread writing its saved copy.
 func (m *Manager) suspendPage(ctx context.Context, p *managedPage) (bool, error) {
-	p.mu.Lock()
+	if err := p.mu.LockContext(ctx); err != nil {
+		return false, fmt.Errorf("browser: suspend page %s: %w", p.id, err)
+	}
 	opCtx, cancel := operationContext(ctx, p.ctx, 5*time.Second)
 	read, err := m.settledAddress(opCtx, p)
 	cancel()

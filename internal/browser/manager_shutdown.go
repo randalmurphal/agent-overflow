@@ -120,7 +120,8 @@ func (m *Manager) Close() error {
 	m.findClosed = true
 	m.findGate.Unlock()
 	m.findWork.Wait()
-	return err
+	// Last: the publishes it waited for wrote through the artifact root.
+	return errors.Join(err, m.closeArtifacts())
 }
 
 func (m *Manager) closeBrowser(caller context.Context) error {

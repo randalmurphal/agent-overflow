@@ -140,7 +140,7 @@ func (m *Manager) applyToRow(p *managedPage, scope *jarScope, event downloadProg
 			if event.FilePath != "" && filepath.Clean(event.FilePath) != source {
 				log.Printf("browser: download %s reported finished in %s, not its file %s; refused", event.ID, event.FilePath, source)
 				end, entry.Error = downloadStateFailed, "browser returned a download path other than the file it was given"
-			} else if destination, file, moveErr := placeArtifact(source, p.authority.downloadDir, entry.SuggestedName); moveErr != nil {
+			} else if destination, file, moveErr := m.placeArtifact(source, p.authority.downloadDir, entry.SuggestedName); moveErr != nil {
 				end, entry.Error = downloadStateFailed, moveErr.Error()
 			} else {
 				entry.Path, entry.file = destination, file
@@ -198,20 +198,23 @@ func (m *Manager) applyToRow(p *managedPage, scope *jarScope, event downloadProg
 // placeArtifact moves a finished artifact download from the file its engine
 // wrote into dir under the first free variant of name, never replacing a
 // file: the downloads of a workspace's jars finish on their own engine
-// streams into one directory (placeNoReplace). The file is taken as it is
-// in its directory, held open; its private name is made there, in the
+// streams into one directory (placeNoReplaceIn). Both directories are
+// opened through the held artifact root (openArtifactDir), so the file is
+// kept where the artifact quota measures it. The file is taken as it is in
+// its directory, held open; its private name is made there, in the
 // artifact subtree the artifact prune removes with age. A file over
 // maxDownloadBytes on disk is refused, whatever the engine reported.
-func placeArtifact(source, dir, name string) (path string, file os.FileInfo, err error) {
-	held, err := os.OpenRoot(filepath.Dir(source))
+func (m *Manager) placeArtifact(source, dir, name string) (path string, file os.FileInfo, err error) {
+	held, err := m.openArtifactDir(filepath.Dir(source))
 	if err != nil {
 		return "", nil, fmt.Errorf("browser: the downloaded file's folder: %w", err)
 	}
-	defer func() {
-		if closeErr := held.Close(); closeErr != nil {
-			log.Printf("browser: close the download folder %s: %v", filepath.Dir(source), closeErr)
-		}
-	}()
+	defer closeArtifactDir(held, filepath.Dir(source))
+	into, err := m.openArtifactDir(dir)
+	if err != nil {
+		return "", nil, fmt.Errorf("browser: the download directory: %w", err)
+	}
+	defer closeArtifactDir(into, dir)
 	info, err := held.Lstat(filepath.Base(source))
 	if err != nil {
 		return "", nil, fmt.Errorf("browser: the downloaded file: %w", err)
@@ -222,7 +225,7 @@ func placeArtifact(source, dir, name string) (path string, file os.FileInfo, err
 	if info.Size() > maxDownloadBytes {
 		return "", nil, fmt.Errorf("download exceeds %d bytes", maxDownloadBytes)
 	}
-	path, file, err = placeNoReplace(placeSource{path: source, info: info, dir: held}, dir, "the download directory", artifactNames(name))
+	path, file, err = placeNoReplaceIn(placeSource{path: source, info: info, dir: held}, placeDir{path: dir, root: into}, "the download directory", artifactNames(name))
 	if err != nil {
 		return "", nil, err
 	}

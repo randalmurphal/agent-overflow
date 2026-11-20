@@ -452,28 +452,71 @@ func TestAFileSwappedInAtThePublicNameIsNotTheDownload(t *testing.T) {
 // source, in the run directory for a staged download and in the engine's
 // directory for an artifact, where the run's prune or the artifact prune
 // finds it if the publish never finishes; never in the folder it is
-// published to. One that links the held file makes no private name.
+// published to. One that links the held file makes no private name, and its
+// public name holds the file it checked. Placing by name has its limit: a
+// file swapped in at the private name after its check takes the public
+// name, and then the row fails and never takes that file as the download.
+// The assertions follow the placement that ran, which on Linux is the held
+// link.
 func TestAPublishMakesItsPrivateNameBesideItsSource(t *testing.T) {
 	for _, saving := range []downloadSaving{downloadsStaged, downloadsAsArtifacts} {
 		t.Run(fmt.Sprint(saving), func(t *testing.T) {
 			manager, _, access, page := newDownloadManagerFor(t, saving)
-			var private, source string
+			var private, source, swappedAt string
 			linkDownload = func(from, to string) error {
-				if placing(to) {
-					t.Errorf("a link made the private name %s", to)
+				switch {
+				case placing(to):
+					private, source = to, from
+				case private != "" && from == private && swappedAt == "":
+					// The public link of a placement by name, after the
+					// private name's check: another file takes that name.
+					swappedAt = to
+					replacement := private + ".swap"
+					if err := os.WriteFile(replacement, []byte("not the download"), 0o600); err != nil {
+						t.Error(err)
+					}
+					if err := os.Rename(replacement, private); err != nil {
+						t.Error(err)
+					}
 				}
 				return linkFile(from, to)
 			}
 			t.Cleanup(func() { linkDownload, renameDownload = linkFile, renameNoReplace })
 			startDownload(t, manager, access, page, "held.txt", 10)
-			if got := threadDownloads(manager, access)[0]; got.State != downloadStateCompleted {
-				t.Fatalf("the held link lists as %+v", got)
+			item, err := manager.threadDownload(access, DownloadKey(threadDownloads(manager, access)[0].ID))
+			if err != nil {
+				t.Fatal(err)
 			}
-			if !heldLinking {
-				// Placing by name is the only placement here.
-				return
+			byName := private != ""
+			if byName == heldLinking {
+				t.Fatalf("placed by name: %v; this platform links the held file: %v", byName, heldLinking)
+			}
+			if byName {
+				if item.State != downloadStateFailed || !strings.Contains(item.Error, "changed as the download was saved there") || item.Openable {
+					t.Fatalf("the download whose private name was swapped lists as %+v, want it failed", item.ThreadDownload)
+				}
+				swapped, err := os.Lstat(swappedAt)
+				if err != nil {
+					t.Fatalf("the file swapped in left the public name: %v", err)
+				}
+				if item.file != nil && os.SameFile(item.file, swapped) {
+					t.Fatal("the row took the swapped file as the download")
+				}
+			} else {
+				if item.State != downloadStateCompleted {
+					t.Fatalf("the held link lists as %+v", item.ThreadDownload)
+				}
+				published, err := os.Lstat(item.path)
+				if err != nil || item.file == nil || !os.SameFile(published, item.file) {
+					t.Fatalf("the public name %s does not hold the file the row checked: %v", item.path, err)
+				}
+				if data, err := os.ReadFile(item.path); err != nil || !bytes.Equal(data, make([]byte, 10)) {
+					t.Fatalf("the public name holds %q, %v, want the download's bytes", data, err)
+				}
 			}
 
+			// Placing by rename, where links are refused, on every platform.
+			private, source = "", ""
 			linkDownload = func(from, to string) error {
 				return &os.LinkError{Op: "link", Old: from, New: to, Err: syscall.EPERM}
 			}
@@ -484,7 +527,7 @@ func TestAPublishMakesItsPrivateNameBesideItsSource(t *testing.T) {
 				return renameNoReplace(from, to)
 			}
 			startDownload(t, manager, access, page, "report.txt", 10)
-			item, _ := manager.threadDownload(access, DownloadKey(threadDownloads(manager, access)[0].ID))
+			item, _ = manager.threadDownload(access, DownloadKey(threadDownloads(manager, access)[0].ID))
 			if item.State != downloadStateCompleted {
 				t.Fatalf("the download lists as %+v", item.ThreadDownload)
 			}

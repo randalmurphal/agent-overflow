@@ -175,18 +175,23 @@ func (m *Manager) pageForOpen(ctx context.Context, access Access, requested Page
 // openPageLocked starts the engine if it is not running, applies the jar,
 // workspace and process caps, and creates p's engine page in the jar its
 // thread's setting names, laid out at its thread's viewport. It stamps p with
-// the setting's generation and its workspace's authority, and returns with the scope reserved for p
-// (scope.creating) once p is attached, with the error of a later step when
-// one failed: the caller decides p (unlistedOutcomeLocked) and registers
-// or abandons it (abandonPage). A failure before the attach returns no
-// scope. The
-// thread's cap is the caller's: a new page is admitted when its tab appears
+// the setting's generation at the attempt's start and again in the hold that
+// chooses its jar, so however the attempt ends it carries the generation it
+// was admitted under, and stamps p with its workspace's authority. It returns with
+// the scope reserved for p (scope.creating) once p is attached, with the
+// error of a later step when one failed: the caller decides p
+// (unlistedOutcomeLocked) and registers or abandons it (abandonPage). A
+// failure before the attach returns no scope. The thread's cap is the
+// caller's: a new page is admitted when its tab appears
 // (createPage), and a restore's record already holds its thread's slot. A
 // profile of the jar still being disposed is waited for, so two profiles
 // never hold one jar's site data. admit, when set, decides the page's
 // admission under m.mu, after any such wait and before the caps. The caller
 // holds startMu.
 func (m *Manager) openPageLocked(ctx context.Context, access Caller, p *managedPage, admit func() error) (*jarScope, error) {
+	m.mu.Lock()
+	p.jarGen = p.owner.session.jarGen
+	m.mu.Unlock()
 	workspace, err := canonicalRoot(access.Workspace)
 	if err != nil {
 		return nil, fmt.Errorf("browser: resolve workspace: %w", err)
@@ -212,7 +217,7 @@ func (m *Manager) openPageLocked(ctx context.Context, access Caller, p *managedP
 	authorityDir := ""
 	if m.downloadsToArtifacts() {
 		authorityDir = m.workspaceDownloadDir(workspace)
-		if err := os.MkdirAll(authorityDir, 0o700); err != nil {
+		if err := m.makeArtifactDir(authorityDir); err != nil {
 			m.scheduleIdleClose()
 			return nil, fmt.Errorf("browser: create download directory: %w", err)
 		}
@@ -228,6 +233,7 @@ func (m *Manager) openPageLocked(ctx context.Context, access Caller, p *managedP
 			m.idleTimer.Stop()
 			m.idleTimer = nil
 		}
+		p.jarGen = p.owner.session.jarGen
 		if jar, err = m.jarForLocked(p.owner, access, jarKindOf(p.owner.session)); err != nil {
 			m.mu.Unlock()
 			m.scheduleIdleClose()
@@ -272,7 +278,6 @@ func (m *Manager) openPageLocked(ctx context.Context, access Caller, p *managedP
 		m.mu.Unlock()
 		return nil, fmt.Errorf("browser: process page limit reached (%d)", maxPagesTotal)
 	}
-	p.jarGen = p.owner.session.jarGen
 	// The reservation keeps a concurrent close of the scope's last page from
 	// disposing the profile this page is being created in, and the page's
 	// workspace authority is taken in the same hold: pruneAuthoritiesLocked
@@ -374,7 +379,7 @@ func (m *Manager) createScope(jar jarIdentity) (*jarScope, error) {
 	downloadDir := ""
 	if m.downloadsToArtifacts() {
 		downloadDir = filepath.Join(m.artifactRoot, jarDownloadingDir, jarDirName(jar.key))
-		if err := os.MkdirAll(downloadDir, 0o700); err != nil {
+		if err := m.makeArtifactDir(downloadDir); err != nil {
 			return nil, fmt.Errorf("browser: create download directory: %w", err)
 		}
 	}

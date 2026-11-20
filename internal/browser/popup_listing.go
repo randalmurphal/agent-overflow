@@ -144,7 +144,7 @@ func (m *Manager) commitPopup(r popupReservation, driver pageDriver, setupErr er
 	var listed *managedPage
 	listedCrashed, reserved := false, true
 	var released *jarScope
-	switch m.unlistedOutcomeLocked(p, listable, r.scope, verdict) {
+	switch m.unlistedOutcomeLocked(p, listable, verdict) {
 	case listLive:
 		delete(r.scope.creating, p)
 		m.adopting[handle] = nil

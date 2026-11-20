@@ -40,7 +40,12 @@ type jarEngine struct {
 	// afterNewPage, when set, runs once with the next created page's handle
 	// before NewPage returns.
 	afterNewPage func(ids.PageHandle)
-	cleared      atomic.Int64
+	// failNewPage, when set, fails the next page creation once its gate
+	// opens, before the engine makes a page.
+	failNewPage error
+	// startErr, when set, fails every engine start.
+	startErr error
+	cleared  atomic.Int64
 	// clearGate, when set, holds the engine's site-data clear, signalling
 	// clearing first; profileInClear records a profile created during it.
 	clearGate      chan struct{}
@@ -96,6 +101,16 @@ func (e *jarEngine) NewProfile(ctx context.Context, opts profileOptions) (engine
 	e.profiles = append(e.profiles, p)
 	e.mu.Unlock()
 	return p, nil
+}
+
+func (e *jarEngine) Start(ctx context.Context) error {
+	e.mu.Lock()
+	err := e.startErr
+	e.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	return e.fakeEngine.Start(ctx)
 }
 
 func (e *jarEngine) ClearSiteData(context.Context) error {
@@ -173,6 +188,13 @@ func (p *jarProfile) NewPage(ctx context.Context, hooks pageHooks) (pageDriver, 
 	if gate != nil {
 		p.engine.creating <- struct{}{}
 		<-gate
+	}
+	p.engine.mu.Lock()
+	failure := p.engine.failNewPage
+	p.engine.failNewPage = nil
+	p.engine.mu.Unlock()
+	if failure != nil {
+		return nil, failure
 	}
 	driver, err := p.fakeProfile.NewPage(ctx, hooks)
 	if err != nil {
