@@ -199,6 +199,40 @@ Other:
   and `GET /rest/api/3/issue/{A}/worklog/{id}` return the record when it
   is A's and answer not found when it is another issue's. Whether the
   matching writes refuse the same way is not measured.
+- Measured on 2026-11-20, reads only, to size requests. The board issue
+  list (`/rest/software/1.0/board/{id}/issue`) is not clamped the way
+  search is: `maxResults=5000` returned every issue of 12 boards in one
+  page (the largest 2,687) with `fields=id`, and also with ten card fields,
+  where the default page is 50. One reading of the largest board with ten
+  card fields: 100 issues 0.50 s and 214 KB of JSON, 250 in 0.66 s
+  (608 KB), 500 in 0.99 s (1.27 MB), 1,000 in 1.72 s (2.53 MB), all 2,687
+  in 3.69 s (6.4 MB, 231 KB compressed). `/rest/api/3/search/jql` with the
+  same fields and `maxResults=5000` returned 100.
+- Measured the same day. A board configuration's `location` has `id`,
+  `key`, `name`, `self` and `type`; an entry of the board list has
+  `projectId`, `projectKey` and the display members instead.
+  `GET .../board/{id}/sprint?state=active,future` returns only sprints in
+  those states.
+- Measured the same day. `GET /issue/{id}?fields=*all,-comment` leaves the
+  comments out (187 KB of one issue's 281 KB). `expand=editmeta,transitions,changelog`
+  on the same read embeds all three; `expand=transitions.fields` adds each
+  transition's screen fields. The embedded changelog is newest first, 100
+  entries at most, with `total` (222 on that issue); `GET /issue/{id}/changelog`
+  is oldest first. `GET /issue/{id}/comment?orderBy=-created` is newest
+  first, and `maxResults=100` is honored there. A changelog expanded on a
+  search is cut short the same way (39 of 100 issues had more entries than
+  were embedded).
+- Measured the same day. A search with `fields=worklog` embeds each
+  issue's first 20 worklogs with `total` and `maxResults: 20` (4 of 100
+  issues with the user's time in 60 days had more than 20). An embedded
+  entry has `id`, `issueId`, `author.accountId`, `started`,
+  `timeSpentSeconds`, `comment`, `created` and `updated`.
+- Measured the same day on one issue whose key had changed. JQL
+  `key = <old key>` and `key in (<old key>)` return the issue, and
+  `GET /issue/<old key>` answers 200 with the new key.
+- Measured the same day. A 1.98 MB search answer with descriptions and
+  comments (259 KB compressed) held no `\u` escape: `<`, `>` and `&` are
+  sent as themselves and text outside ASCII as UTF-8.
 - Mentions of the user are found with `comment ~ currentUser()`
   ([JRACLOUD-27594](https://jira.atlassian.com/browse/JRACLOUD-27594)).
   Neither spec has a notification inbox endpoint.
@@ -309,6 +343,38 @@ Source for schema facts: the
   path `["teams"]`. `issueLabels(filter: {team: {id: {eq: <team>}}})`
   returned none of the workspace's three labels, which belong to no team;
   `filter: {team: {null: true}}` returned all three.
+- Measured on 2026-11-20 to size requests. A `history` page nested in an
+  `issues` page is charged by its own `first` and not by how many issues
+  carry it: 203 points at `first: 50`, 403 at 100 and 1,003 at 250, the
+  same for 1, 20 and 42 issues. A page of 42 issues with card fields and
+  nested labels cost 8 at `first: 100` and at `first: 250`. An issue
+  filter takes `or: [...]`. `issues(filter: {id: {in: [...]}})` leaves an
+  ID that names nothing out with no error, where one aliased `issue(id:)`
+  that names nothing makes the whole `data` null (the error's `path` is
+  the alias).
+- Measured the same day with throwaway issues. Three aliased `issueUpdate`
+  fields in one document each set their own `sortOrder` and answered under
+  their alias, 7 points. With the middle one naming a missing issue the
+  answer was `data` null and one `INPUT_ERROR` at that alias, and a read
+  right after showed neither of the other two applied.
+  `issueBatchUpdate` on three issues answered `success` with the three
+  issues, 3 points; with one missing ID it answered `INPUT_ERROR`
+  "id not found" and changed none; with 51 IDs, `INVALID_INPUT`. One
+  failing case each, so a failed document's effect is read back, not
+  assumed.
+- Measured the same day with throwaway issues. A page cursor follows its
+  issue: it means "after where that issue is now", not the place the issue
+  had when the page was read. An oldest-update-first walk of three issues
+  read one, that issue was then updated (moving it to the end), and the
+  continuation from its cursor returned no issues and no next page, with
+  two issues never delivered. A walk ordered by a value that can change
+  therefore cannot page by cursor. `updatedAt` is serialized with
+  millisecond precision; filtered by an issue's own `updatedAt`, `gt`
+  leaves the issue out and `gte` includes it. `issueBatchUpdate` on three
+  issues gave them three distinct `updatedAt` values. A filter takes
+  `updatedAt: {gte: ...}` together with `id: {nin: [...]}` under an
+  oldest-update-first sort and leaves the named issues out (48 issues, 46
+  with two named).
 
 ## Tempo
 

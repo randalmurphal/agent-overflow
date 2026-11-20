@@ -21,11 +21,40 @@ type DeltaQuery struct {
 	Start time.Time
 }
 
+// DeltaOverlap bounds how late a tracker may first show an update: a
+// search index that lags, or a write that commits after a later one. A
+// delta reads again every row updated within it before a walk began.
+const DeltaOverlap = time.Minute
+
+// DeltaResume decides where the delta walk after a finished one starts.
+// newest is the update time of the newest row delivered so far, and
+// walkStart the tracker's own clock when the finished walk read its first
+// page, zero when the tracker gave none. Both are the tracker's times, so
+// this computer's clock has no part in it.
+//
+// Every update made before walkStart-DeltaOverlap was visible to the whole
+// walk. When newest is no later than that, exact is true: the next walk
+// resumes exactly after the last row delivered, so a board nobody changed
+// delivers no row. Otherwise the next walk starts at restart, inclusive,
+// and delivers again the rows updated since. With no walkStart that is
+// DeltaOverlap before newest after every walk that delivered a row.
+func DeltaResume(newest, walkStart time.Time) (restart time.Time, exact bool) {
+	if walkStart.IsZero() {
+		return newest.Add(-DeltaOverlap), false
+	}
+	visible := walkStart.Add(-DeltaOverlap)
+	if !newest.After(visible) {
+		return newest, true
+	}
+	return visible, false
+}
+
 // RowPage is one page of a board's changed rows, oldest update first,
 // with the users and statuses they name. Rows may repeat a row an earlier
-// page delivered. Next is the cursor to store with the page; More reports
-// that another page follows now, and when it is false Next is where the
-// next tick's walk starts.
+// page delivered, within DeltaOverlap of a change; a walk of a board
+// nobody changed since delivers none. Next is the cursor to store with the
+// page; More reports that another page follows now, and when it is false
+// Next is where the next tick's walk starts.
 type RowPage struct {
 	Rows []Row
 	Next Cursor
