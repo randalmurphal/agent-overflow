@@ -119,7 +119,11 @@ func (m *Manager) Locator(ctx context.Context, access Access, opts LocatorOption
 	if opts.ExpectDownload {
 		download, waitErr := p.downloads.settledAfter(opCtx, downloadAfter)
 		if waitErr != nil {
-			return LocatorResult{}, waitErr
+			if result.Navigated {
+				// The navigation is a fact whatever the download wait answers.
+				waitErr = fmt.Errorf("browser: the page navigated, and the expected download did not settle: %w", waitErr)
+			}
+			return LocatorResult{Navigated: result.Navigated}, waitErr
 		}
 		result.Download = &download
 	}

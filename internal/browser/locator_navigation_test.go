@@ -3,6 +3,7 @@ package browser
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -135,6 +136,13 @@ func TestExpectedNavigationCountsOnlyANavigationItRead(t *testing.T) {
 // Manager, expecting a navigation within 300 ms.
 func clickExpectingNavigation(t *testing.T, driver *navigationDriver) (LocatorResult, error) {
 	t.Helper()
+	return clickExpecting(t, driver, false)
+}
+
+// clickExpecting is clickExpectingNavigation, expecting a download too with
+// download.
+func clickExpecting(t *testing.T, driver *navigationDriver, download bool) (LocatorResult, error) {
+	t.Helper()
 	m, engine := newLifecycleManager(t)
 	access := m.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	engine.mu.Lock()
@@ -151,8 +159,53 @@ func clickExpectingNavigation(t *testing.T, driver *navigationDriver) (LocatorRe
 	page := mustOpen(t, m, access, "https://example.test/a")
 	return m.Locator(t.Context(), access, LocatorOptions{
 		PageID: PageID(page.ID), Action: "click", Locator: Locator{CSS: "#go"},
-		ExpectNavigation: true, TimeoutMS: 300,
+		ExpectNavigation: true, ExpectDownload: download, TimeoutMS: 300,
 	})
+}
+
+// commitAtDeadline is a context whose deadline has passed by the time it is
+// asked, and whose page commits a document just before: the commit lands
+// after the wait's last read and before it sees the deadline.
+type commitAtDeadline struct {
+	context.Context
+	commit func()
+}
+
+func (c commitAtDeadline) Done() <-chan struct{} {
+	c.commit()
+	done := make(chan struct{})
+	close(done)
+	return done
+}
+
+func (commitAtDeadline) Err() error { return context.DeadlineExceeded }
+
+// A commit counted between the wait's last read and its deadline is a
+// navigation: the wait reads the count once more as the deadline ends it,
+// and says the load state was not seen.
+func TestACommitAsTheDeadlineEndsTheWaitIsANavigation(t *testing.T) {
+	here := navigationMark{URL: "https://example.test/a", Loader: "1"}
+	p := &managedPage{driver: &navigationDriver{first: here, later: here}}
+	before, err := readNavigation(t.Context(), p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := commitAtDeadline{Context: t.Context(), commit: func() { p.docEpoch.Add(1) }}
+	navigated, err := (&Manager{}).waitForNavigation(ctx, p, before, "", "")
+	var notReady *navigatedNotReady
+	if !navigated || !errors.As(err, &notReady) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("answered %v, %v; want the navigation, and the deadline for its load state", navigated, err)
+	}
+}
+
+// A click that expects a navigation and a download, navigates and starts
+// no download answers the navigation with the download wait's failure.
+func TestANavigationIsReportedWhenItsExpectedDownloadNeverSettles(t *testing.T) {
+	here := navigationMark{URL: "https://example.test/a", Loader: "1"}
+	result, err := clickExpecting(t, &navigationDriver{first: here, later: here, commit: true}, true)
+	if !result.Navigated || !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "the page navigated") {
+		t.Fatalf("answered %+v, %v; want the navigation, and the download wait's deadline", result, err)
+	}
 }
 
 // A commit the Manager counted decides the navigation before any engine

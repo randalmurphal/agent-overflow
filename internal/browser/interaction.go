@@ -316,9 +316,9 @@ func (e *navigatedNotReady) Unwrap() error { return e.err }
 // count of main-frame commits is read first, free and final: a commit it
 // counted is a navigation whatever the engine's mark answers. The mark is
 // read only while the count has not moved, and the count again after it,
-// since a mark read can take the rest of the deadline. A failed mark read
-// is no evidence either way: the wait reads again, and a wait that ends
-// on one says so.
+// since a mark read can take the rest of the deadline, and once more as
+// the deadline ends the wait. A failed mark read is no evidence either
+// way: the wait reads again, and a wait that ends on one says so.
 func (m *Manager) waitForNavigation(ctx context.Context, p *managedPage, before pageNavigation, urlPattern, loadState string) (bool, error) {
 	ticker := time.NewTicker(25 * time.Millisecond)
 	defer ticker.Stop()
@@ -339,6 +339,11 @@ func (m *Manager) waitForNavigation(ctx context.Context, p *managedPage, before 
 		}
 		select {
 		case <-ctx.Done():
+			if committed() {
+				// Committed since the last read, with no time left to
+				// see its load state.
+				return true, &navigatedNotReady{loadState: loadState, urlPattern: urlPattern, err: ctx.Err()}
+			}
 			if readErr != nil {
 				return false, errors.Join(ctx.Err(), fmt.Errorf("read the page's navigation: %w", readErr))
 			}
