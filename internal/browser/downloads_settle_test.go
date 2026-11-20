@@ -37,6 +37,37 @@ func wantCharged(t *testing.T, m *Manager, access Access, workspace, artifacts i
 	}
 }
 
+// A completion naming another file of the jar's directory than the one the
+// row has owned since its admission publishes nothing: the sibling's bytes
+// stay where they are and are no one's download, the row fails with the
+// reason, and its own file goes with its reservation.
+func TestAnArtifactCompletionNamingAnotherFileIsRefused(t *testing.T) {
+	manager, access, file, workspaceBefore, artifactsBefore := settleRig(t)
+	sibling := filepath.Join(filepath.Dir(file), "dl-2")
+	if err := os.WriteFile(sibling, []byte("another download's bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager.downloadProgress(downloadProgress{ID: "dl-1", Received: 23, Total: 23, State: downloadCompleted, FilePath: sibling})
+	row := threadDownloads(manager, access)[0]
+	if row.State != downloadStateFailed || !strings.Contains(row.Error, "other than the file it was given") {
+		t.Fatalf("the row is %+v, want it failed for the other file", row)
+	}
+	if got, err := os.ReadFile(sibling); err != nil || string(got) != "another download's bytes" {
+		t.Fatalf("the sibling holds %q (%v), want it untouched", got, err)
+	}
+	if _, err := os.Stat(file); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the row's own file is still there: %v", err)
+	}
+	finished, err := os.ReadDir(authorityOf(t, manager, access).downloadDir)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	if len(finished) != 0 {
+		t.Fatalf("the workspace's finished downloads hold %v", finished)
+	}
+	wantCharged(t, manager, access, workspaceBefore, artifactsBefore)
+}
+
 // A finished download's file replaced while the tab it opens in is made is
 // not opened: the open refuses with the reason, and the new tab never
 // navigates to the replacement.

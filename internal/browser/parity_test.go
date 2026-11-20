@@ -172,9 +172,6 @@ func TestParityBoundsAndPureHelpers(t *testing.T) {
 	if err != nil || filepath.Base(second) != "file-1.txt" {
 		t.Fatalf("collision path=%q err=%v", second, err)
 	}
-	if !pathInside(dir, filepath.Join(dir, "nested", "file")) || pathInside(dir, filepath.Join(dir, "..", "escape")) {
-		t.Fatal("artifact path containment failed")
-	}
 	for _, button := range []string{"left", "middle", "right", "back", "forward"} {
 		if _, err := inputButton(button); err != nil {
 			t.Fatalf("pointer button %q rejected: %v", button, err)
