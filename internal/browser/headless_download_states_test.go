@@ -206,7 +206,14 @@ var downloadStateEvents = map[string]func(r *stateRig){
 	"lost": func(r *stateRig) {
 		r.offerAgain(cdpbrowser.EventDownloadWillBegin{GUID: guidG, FrameID: "F1"}, waitLost)
 	},
-	"cancel":    func(r *stateRig) { r.canceling(guidG) },
+	// cancel is a cancel Chromium accepted, refusal one it refused.
+	"cancel": func(r *stateRig) { r.canceling(guidG) },
+	"refusal": func(r *stateRig) {
+		undo, _ := r.canceling(guidG)
+		undo()
+	},
+	// unowned has the Manager answer G's offers unowned from here.
+	"unowned":   func(r *stateRig) { r.setAnswer(downloadUnowned) },
 	"progress":  func(r *stateRig) { r.report(guidG, cdpbrowser.DownloadProgressStateInProgress) },
 	"completed": func(r *stateRig) { r.report(guidG, cdpbrowser.DownloadProgressStateCompleted) },
 	"canceled":  func(r *stateRig) { r.report(guidG, cdpbrowser.DownloadProgressStateCanceled) },
@@ -239,6 +246,8 @@ func TestDownloadTrackerStates(t *testing.T) {
 		{"awaiting", []string{"expiry"}, want{"refused", "refused", 0, 1, "", "", 0}},
 		{"awaiting", []string{"lost"}, want{"refused", "refused", 0, 0, "", "", 0}},
 		{"awaiting", []string{"cancel"}, want{"awaiting", "canceling", 1, 0, "", "", 0}},
+		// A cancel Chromium refused leaves no mark for the admission.
+		{"awaiting", []string{"refusal"}, want{"awaiting", "admitted", 1, 0, "", "", 0}},
 		{"awaiting", []string{"progress"}, want{"awaiting", "admitted", 1, 0, in, "", 0}},
 		{"awaiting", []string{"completed"}, want{"awaiting", "gone", 1, 0, done, "handOver", 0}},
 		{"awaiting", []string{"canceled"}, want{"awaiting", "gone", 1, 0, failed, "discard", 0}},
@@ -259,10 +268,12 @@ func TestDownloadTrackerStates(t *testing.T) {
 
 		{"offering", []string{"retry"}, want{"offering", "admitted", 0, 0, "", "", 0}},
 		// A wait that expires while the Manager answers leaves the answer
-		// to decide: admitted, then canceled as the refusal the wait
-		// wanted, its end reported to the Manager.
-		{"offering", []string{"expiry"}, want{"offering", "canceling", 0, 1, "", "", 0}},
-		{"offering", []string{"expiry", "answered", "canceled"}, want{"gone", "gone", 0, 1, canceled, "discard", 0}},
+		// to decide: an admission stands, running and never canceled, and
+		// a later end of Chromium's own is a failure.
+		{"offering", []string{"expiry"}, want{"offering", "admitted", 0, 0, "", "", 0}},
+		{"offering", []string{"expiry", "answered", "canceled"}, want{"gone", "gone", 0, 0, failed, "discard", 0}},
+		// An answer of unowned meets the expired wait: refused and canceled.
+		{"offering", []string{"unowned", "expiry"}, want{"offering", "refused", 0, 1, "", "", 0}},
 		// One that ended by itself meanwhile is a failure, with nothing
 		// left to cancel.
 		{"offering", []string{"expiry", "canceled"}, want{"offering", "gone", 0, 0, failed, "discard", 0}},
@@ -271,6 +282,12 @@ func TestDownloadTrackerStates(t *testing.T) {
 		// A cancel Chromium accepted while the Manager answered is listed
 		// as the cancel it was.
 		{"offering", []string{"cancel", "canceled"}, want{"offering", "gone", 0, 0, canceled, "discard", 0}},
+		// One that finished all the same is the Manager's as far as its
+		// report took it; what is left of its file is withdrawn.
+		{"offering", []string{"cancel", "completed"}, want{"offering", "gone", 0, 0, done, "handOver withdraw", 0}},
+		// A refused cancel leaves no mark: a later end of Chromium's own is
+		// a failure.
+		{"offering", []string{"refusal", "answered", "canceled"}, want{"gone", "gone", 0, 0, failed, "discard", 0}},
 		{"offering", []string{"progress"}, want{"offering", "admitted", 0, 0, in, "", 0}},
 		{"offering", []string{"completed"}, want{"offering", "gone", 0, 0, done, "handOver", 0}},
 		{"offering", []string{"canceled"}, want{"offering", "gone", 0, 0, failed, "discard", 0}},
@@ -280,6 +297,8 @@ func TestDownloadTrackerStates(t *testing.T) {
 		{"admitted", []string{"expiry"}, want{"admitted", "admitted", 0, 0, "", "", 0}},
 		{"admitted", []string{"lost"}, want{"admitted", "admitted", 0, 0, "", "", 0}},
 		{"admitted", []string{"cancel"}, want{"canceling", "canceling", 0, 0, "", "", 0}},
+		{"admitted", []string{"refusal"}, want{"admitted", "admitted", 0, 0, "", "", 0}},
+		{"admitted", []string{"refusal", "canceled"}, want{"gone", "gone", 0, 0, failed, "discard", 0}},
 		{"admitted", []string{"progress"}, want{"admitted", "admitted", 0, 0, in, "", 0}},
 		{"admitted", []string{"completed"}, want{"gone", "gone", 0, 0, done, "handOver", 0}},
 		{"admitted", []string{"canceled"}, want{"gone", "gone", 0, 0, failed, "discard", 0}},
@@ -289,8 +308,11 @@ func TestDownloadTrackerStates(t *testing.T) {
 		{"canceling", []string{"expiry"}, want{"canceling", "canceling", 0, 0, "", "", 0}},
 		{"canceling", []string{"lost"}, want{"canceling", "canceling", 0, 0, "", "", 0}},
 		{"canceling", []string{"cancel"}, want{"canceling", "canceling", 0, 0, "", "", 0}},
+		// A second cancel's refusal withdraws only its own, which it never
+		// made.
+		{"canceling", []string{"refusal"}, want{"canceling", "canceling", 0, 0, "", "", 0}},
 		{"canceling", []string{"progress"}, want{"canceling", "canceling", 0, 0, in, "", 0}},
-		{"canceling", []string{"completed"}, want{"gone", "gone", 0, 0, done, "handOver", 0}},
+		{"canceling", []string{"completed"}, want{"gone", "gone", 0, 0, done, "handOver withdraw", 0}},
 		{"canceling", []string{"canceled"}, want{"gone", "gone", 0, 0, canceled, "discard", 0}},
 		{"canceling", []string{"exit"}, want{"gone", "gone", 0, 0, "", "", 1}},
 
@@ -306,7 +328,9 @@ func TestDownloadTrackerStates(t *testing.T) {
 		{"ending", []string{"retry"}, want{"ending", "gone", 0, 0, done, "handOver", 0}},
 		{"ending", []string{"expiry"}, want{"ending", "gone", 0, 0, done, "handOver", 0}},
 		{"ending", []string{"lost"}, want{"ending", "gone", 0, 0, done, "handOver", 0}},
-		{"ending", []string{"cancel"}, want{"ending", "gone", 0, 0, done, "handOver", 0}},
+		// A cancel of an end being reported has nothing to send; what the
+		// report leaves of the file is withdrawn.
+		{"ending", []string{"cancel"}, want{"ending", "gone", 0, 0, done, "handOver withdraw", 0}},
 		{"ending", []string{"progress"}, want{"ending", "gone", 0, 0, done, "handOver", 0}},
 		{"ending", []string{"completed"}, want{"ending", "gone", 0, 0, done, "handOver", 0}},
 		{"ending", []string{"canceled"}, want{"ending", "gone", 0, 0, done, "handOver", 0}},

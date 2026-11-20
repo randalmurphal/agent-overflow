@@ -126,7 +126,10 @@ func (p *headlessProfile) CancelDownload(id downloadID) error {
 	if current == nil || current.ctx.Err() != nil {
 		return fmt.Errorf("browser: profile %s has no running browser", p.handle)
 	}
-	undo := current.downloads.canceling(id)
+	undo, ended := current.downloads.canceling(id)
+	if ended {
+		return errDownloadEnded
+	}
 	if err := callBounded(current.ctx, p.engine.closeTimeout, cdpbrowser.CancelDownload, cdpbrowser.CancelDownloadParams{GUID: string(id)}); err != nil {
 		undo()
 		return fmt.Errorf("browser: profile %s: cancel download %s: %w", p.handle, id, err)
