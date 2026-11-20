@@ -532,8 +532,9 @@ behave as a desktop browser's:
   adopted, and otherwise in the tab of its nearest opener still listed, as
   it is, finished or running, or canceled with the reason when the popup's
   close ended it (WebView2 cancels a closing page's downloads). A popup
-  whose close arrived while that opener was listed lists them there even
-  when the opener closes before the backend has processed the close. A popup
+  that closed or was refused while that opener was listed lists them there
+  even when the opener closes before the popup's downloads are settled,
+  however far the backend has processed the close. A popup
   whose window went before the launcher reported it is never a tab; its
   downloads are listed at its close. Under headless Chromium such a
   download holds the quota of the workspace of the nearest page that opened
