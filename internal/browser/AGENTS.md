@@ -270,10 +270,13 @@ its downloads' ends; its CDP target's destroy ends it only past
 `hostClosedFallback`. One status loop asks for a quiet download's snapshot,
 or one whose last cancel no snapshot names yet, and names that cancel, so a
 lost report or cancel never leaves a row running; headless Chromium's arrive over
-CDP (`headless_downloads.go`), which keeps each download from its start to
-its end, and the file of one the Manager did not take until its end
-arrives or the browser has stopped, then removes it. Preserve the denial of sensitive website
-permissions.
+CDP (`headless_downloads.go`), which keeps each download, with a claim on
+its partial and its final file, from its start until its writer stops:
+its end hands an admitted download's file to the Manager and removes a
+refused one's, and the browser process's exit removes every one still
+held. It decides under its lock and runs every report out of it, to the
+Manager or the filesystem, after the lock, in order. Preserve the denial
+of sensitive website permissions.
 
 Site data belongs to the engine and is isolated per cookie jar. Persistent and
 ephemeral profiles must remain distinct; a private jar is always ephemeral.

@@ -196,7 +196,7 @@ func awaitGone(t *testing.T, path, what string) {
 
 // Headless Chromium offers an unowned start again for a bounded time, then
 // cancels it and removes the file it wrote once its end arrives; a
-// connection that ends first removes the file at once. Neither path ever
+// connection that ends first leaves it to the browser's stop. Neither path ever
 // treats it as admitted.
 func TestAnUnownedHeadlessDownloadIsCanceledWithItsFileOnceItsWaitEnds(t *testing.T) {
 	t.Run("the wait passes", func(t *testing.T) {
@@ -223,11 +223,29 @@ func TestAnUnownedHeadlessDownloadIsCanceledWithItsFileOnceItsWaitEnds(t *testin
 			t.Fatal("the start was still offered after it was refused")
 		}
 	})
+	// The connection ends before the browser process has: Chromium may
+	// still write the partial file and rename it to its final name, so
+	// both stay claimed until the process has exited (stop), and both go
+	// then.
 	t.Run("the connection ends", func(t *testing.T) {
 		lifetime, end := context.WithCancel(t.Context())
 		d, file, _ := headlessUnownedRig(t, time.Hour, lifetime)
+		partial := file + chromiumPartialSuffix
+		if err := os.Rename(file, partial); err != nil {
+			t.Fatal(err)
+		}
 		d.willBegin(cdpbrowser.EventDownloadWillBegin{GUID: "G1", FrameID: "F-unknown"})
 		end()
-		awaitGone(t, file, "after the connection ended")
+		time.Sleep(20 * requestOwnerPoll)
+		// The writer, still running, finishes the file in the interval.
+		if err := os.Rename(partial, file); err != nil {
+			t.Fatalf("the partial file went before the browser stopped: %v", err)
+		}
+		d.stop()
+		for _, name := range []string{partial, file} {
+			if _, err := os.Lstat(name); !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("%s is still there after the browser stopped: %v", name, err)
+			}
+		}
 	})
 }

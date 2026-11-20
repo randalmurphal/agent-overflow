@@ -153,11 +153,11 @@ func TestDownloadTrackerKeepsAnAdmittedDownloadToItsEnd(t *testing.T) {
 	}
 }
 
-// A refused download's file outlives neither its end nor its browser: one
-// whose cancel never returns is removed when its completion arrives, one
-// still running when the browser stops is removed then, and so is one
-// still waiting for its frame's owner; the Manager's own downloads are left
-// to it.
+// A download's files outlive neither its end nor its browser: a refused
+// one whose cancel never returns is removed when its completion arrives,
+// and every download still running when the browser process has stopped
+// is removed then, one still waiting for its frame's owner and the
+// Manager's own alike, since none of them finished.
 func TestDownloadTrackerRemovesWhatNoPageTook(t *testing.T) {
 	r := newTrackerRig(false)
 	stalled := make(chan struct{})
@@ -186,12 +186,53 @@ func TestDownloadTrackerRemovesWhatNoPageTook(t *testing.T) {
 	}
 	r.begin("waiting")
 	r.stop()
-	for id, want := range map[downloadID]int{"ended": 1, "running": 1, "waiting": 1, "admitted": 0} {
+	for id, want := range map[downloadID]int{"ended": 1, "running": 1, "waiting": 1, "admitted": 1} {
 		if got := r.removals(id); got != want {
 			t.Errorf("download %s's file was removed %d times after the browser stopped, want %d", id, got, want)
 		}
 	}
 	if got := r.retained(); got != 0 {
 		t.Fatalf("the stopped tracker keeps %d downloads", got)
+	}
+}
+
+// One download's report the Manager is slow to take (a completion whose
+// file moves on a slow filesystem) holds no lock another download's cancel
+// needs: B is marked canceling, so its cancel can be sent, while A's
+// completion is still with the Manager, and A's report lands once after.
+func TestASlowDownloadReportDoesNotHoldAnotherDownloadsCancel(t *testing.T) {
+	r := newTrackerRig(true)
+	inA, releaseA := make(chan struct{}), make(chan struct{})
+	deliver := r.events.DownloadProgress
+	r.events.DownloadProgress = func(progress downloadProgress) {
+		if progress.ID == "A" && progress.State == downloadCompleted {
+			close(inA)
+			<-releaseA
+		}
+		deliver(progress)
+	}
+	r.begin("A")
+	r.begin("B")
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.report("A", cdpbrowser.DownloadProgressStateCompleted, 20)
+	}()
+	<-inA
+	marked := make(chan struct{})
+	go func() {
+		r.canceling("B")
+		close(marked)
+	}()
+	select {
+	case <-marked:
+	case <-time.After(time.Second):
+		close(releaseA)
+		t.Fatal("B's cancel waited for A's completion to be taken")
+	}
+	close(releaseA)
+	<-done
+	if state, _ := r.recorder.outcome("A"); state != downloadCompleted.String() {
+		t.Fatalf("A reads %q at the Manager", state)
 	}
 }
