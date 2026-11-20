@@ -4,19 +4,9 @@ package browser
 
 import (
 	"strconv"
-	"unsafe"
 
 	"agent-overflow/internal/browser/ids"
 )
-
-// heldPopupView is a popup view a WebKit engine holds until the Manager
-// adopts or discards it, with the handle of the page that opened it and
-// the page number its adoption gives it.
-type heldPopupView struct {
-	view   unsafe.Pointer
-	opener ids.PageHandle
-	n      uint64
-}
 
 // pageHandle is the handle of a WebKit engine's page numbered n. A popup
 // is numbered as it is held (holdPopup) and reported and adopted under its

@@ -185,7 +185,9 @@ for unmatched events (`cdp_targets.go`).
 All GTK/WebKit and AppKit/WKWebView calls go through `uiThread`
 (`native_uithread.go`, a `uicall.Thread`): `Run` for an operation, which
 never runs it after it answered withdrawn, and `Release` for giving up
-what is held, which is never withdrawn. Nothing else in this package posts
+what is held, which is never withdrawn; a popup's discard settles through
+`Settle` and answers within its caller's context that the close is pending
+(`native_popups.go`). Nothing else in this package posts
 to the UI thread; the forbidigo rule in `.golangci.yml` refuses any other
 call of Wails' `Invoke*`. Do not call `uiThread` while holding a lock
 reachable from a native callback. A closure posted to the UI thread

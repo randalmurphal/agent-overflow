@@ -669,6 +669,18 @@ func webkitCloseViewErr(view unsafe.Pointer) error {
 	return focusReleaseError(<-released)
 }
 
+// webkitCloseViewSettled closes the view on the GTK thread and answers how
+// its focus handoff ended once the close ran, however long the thread
+// takes (uicall.Thread.Settle): errGTKUnavailable only when the loop went
+// away first. A discard's receipt runs it (heldPopups.discard).
+func webkitCloseViewSettled(view unsafe.Pointer) error {
+	var code C.int
+	if !uiThread.Settle(func() { code = C.ao_wk_view_close(view) }) {
+		return errGTKUnavailable
+	}
+	return focusReleaseError(int(code))
+}
+
 func webkitOpenInspector(view webkitView) error {
 	return view.do(func(view unsafe.Pointer) { C.ao_wk_view_open_inspector(view) })
 }

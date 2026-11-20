@@ -121,3 +121,34 @@ func TestAReleaseIsNeverWithdrawn(t *testing.T) {
 		t.Fatal("a release that ran in time answered that it did not")
 	}
 }
+
+// A settled release answers once it ran, however long past the timeout the
+// loop takes, and answers false only for a loop that went away with it
+// still queued.
+func TestASettledReleaseAnswersWhenItRan(t *testing.T) {
+	l := &loop{}
+	thread := NewThread(l.post, l.alive, short)
+	answered := make(chan bool, 1)
+	ran := false
+	go func() { answered <- thread.Settle(func() { ran = true }) }()
+	select {
+	case <-answered:
+		t.Fatal("the settle answered before its release ran")
+	case <-time.After(10 * short):
+	}
+	l.drain()
+	if !<-answered || !ran {
+		t.Fatal("the settle did not answer that its release ran")
+	}
+
+	gone := &loop{}
+	thread = NewThread(gone.post, gone.alive, short)
+	go func() { answered <- thread.Settle(func() {}) }()
+	time.Sleep(2 * short)
+	gone.mu.Lock()
+	gone.gone = true
+	gone.mu.Unlock()
+	if <-answered {
+		t.Fatal("a settle whose loop went away answered that its release ran")
+	}
+}
