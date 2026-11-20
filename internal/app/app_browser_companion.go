@@ -67,14 +67,12 @@ func (a *App) browserCaller(threadID string) (appbrowser.Caller, error) {
 // bindBrowser binds an action to the thread's browser lifetime, before it
 // reads the thread's row: a close of the thread after the read is one the
 // action's Access sees, so the action changes nothing after it and its
-// End answers appbrowser.ErrThreadClosed.
+// End answers appbrowser.ErrThreadClosed. A thread whose row cannot be read
+// leaves no lifetime behind (Manager.BindThread).
 func (a *App) bindBrowser(threadID string) (appbrowser.Access, error) {
-	binding := a.browser.manager.BindThread(appbrowser.ThreadID(strings.TrimSpace(threadID)))
-	caller, err := a.browserCaller(threadID)
-	if err != nil {
-		return appbrowser.Access{}, err
-	}
-	return binding.Access(caller)
+	return a.browser.manager.BindThread(appbrowser.ThreadID(strings.TrimSpace(threadID)), func() (appbrowser.Caller, error) {
+		return a.browserCaller(threadID)
+	})
 }
 
 // BrowserCompanionThreadState answers the thread's current page/session

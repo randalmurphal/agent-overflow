@@ -64,6 +64,13 @@ type threadBrowser struct {
 	// downloads is the thread's downloads as its pane lists them
 	// (downloads_thread.go), nil before the first. Guarded by m.downloadsMu.
 	downloads *threadDownloadList
+	// provisional is set while the lifetime was begun by a BindThread and
+	// nothing has confirmed it yet: no lookup succeeded, no tool call bound
+	// it and no saved tab loaded into it. lookups counts the BindThread
+	// lookups in flight on it; the last of them to fail takes a provisional
+	// lifetime out of the registry. Both guarded by m.mu.
+	provisional bool
+	lookups     int
 }
 
 func newThreadBrowser(id ThreadID) *threadBrowser {
@@ -78,6 +85,8 @@ func newThreadBrowser(id ThreadID) *threadBrowser {
 // has none. The caller holds m.mu.
 func (m *Manager) threadLocked(threadID ThreadID) *threadBrowser {
 	if tb := m.threads[threadID]; tb != nil {
+		// A tool call or a saved tab holds it: no failed lookup drops it.
+		tb.provisional = false
 		return tb
 	}
 	if m.threads == nil {
@@ -201,37 +210,42 @@ func (a Access) admitLocked() error {
 	return a.End()
 }
 
-// ThreadBinding is an action's hold on its thread's lifetime before the
-// action knows its Caller: an app action binds before it reads the
-// thread's row. Its Access binds the Caller to it.
-type ThreadBinding struct {
-	tb *threadBrowser
-}
-
-// BindThread binds an action to the thread's current browser lifetime. A
-// caller binds before it reads the thread's row, so a close after that read
-// is one the binding sees.
-func (m *Manager) BindThread(threadID ThreadID) ThreadBinding {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return ThreadBinding{tb: m.threadLocked(threadID.trim())}
-}
-
-// Access answers caller bound to b's lifetime. A caller of another thread
-// is refused.
-func (b ThreadBinding) Access(caller Caller) (Access, error) {
-	if b.tb == nil {
+// BindThread binds an action to the thread's current browser lifetime and
+// then reads, through lookup, the Caller it acts as: an app action reads the
+// thread's row there. Binding first means a close of the thread after that
+// read is one the Access sees (ErrThreadClosed). A failed lookup, or one
+// naming another thread, answers its error and leaves nothing of the bind:
+// a lifetime begun for it, which no lookup confirmed and no tool call holds,
+// leaves the registry, so ids of threads that do not exist are not kept.
+func (m *Manager) BindThread(threadID ThreadID, lookup func() (Caller, error)) (Access, error) {
+	threadID = threadID.trim()
+	if threadID == "" {
 		return Access{}, errUnbound
 	}
-	if b.tb.id != caller.ThreadID {
-		return Access{}, fmt.Errorf("browser: an action bound to thread %s cannot act for thread %s", b.tb.id, caller.ThreadID)
+	m.mu.Lock()
+	tb := m.threads[threadID]
+	if tb == nil {
+		tb = m.threadLocked(threadID)
+		tb.provisional = true
 	}
-	return Access{caller: caller, tb: b.tb}, nil
-}
-
-// End answers as Access.End does.
-func (b ThreadBinding) End() error {
-	return Access{tb: b.tb}.End()
+	tb.lookups++
+	m.mu.Unlock()
+	caller, err := lookup()
+	if err == nil && caller.ThreadID.trim() != threadID {
+		err = fmt.Errorf("browser: an action bound to thread %s cannot act for thread %s", threadID, caller.ThreadID)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	tb.lookups--
+	if err != nil {
+		if tb.provisional && tb.lookups == 0 && m.threads[threadID] == tb {
+			delete(m.threads, threadID)
+			tb.detached.Store(true)
+		}
+		return Access{}, err
+	}
+	tb.provisional = false
+	return Access{caller: caller, tb: tb}, nil
 }
 
 // Bind binds an action for caller to its thread's current lifetime: an MCP

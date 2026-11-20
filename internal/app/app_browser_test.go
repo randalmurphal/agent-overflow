@@ -568,14 +568,19 @@ func TestCompanionPageOpenedAfterADeleteClosesItself(t *testing.T) {
 			app.browser.manager = manager
 			t.Cleanup(func() { _ = manager.Close() })
 			var threadID string
-			var binding appbrowser.ThreadBinding
+			var access appbrowser.Access
 			if held {
 				threadID, _ = seedHeldSource(t, app, 1)
 			} else {
 				thread := makeWorkspaceThread(t, app, "thread-companion-late")
 				threadID = thread.ID
-				binding = manager.BindThread(appbrowser.ThreadID(threadID))
-				if err := app.deleteThread(threadID); err != nil {
+				// An action that read the row before the delete.
+				var err error
+				access, err = manager.BindThread(appbrowser.ThreadID(threadID), func() (appbrowser.Caller, error) {
+					caller := appbrowser.Caller{ThreadID: appbrowser.ThreadID(threadID), Workspace: t.TempDir()}
+					return caller, app.deleteThread(threadID)
+				})
+				if err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -585,12 +590,8 @@ func TestCompanionPageOpenedAfterADeleteClosesItself(t *testing.T) {
 			if held {
 				return
 			}
-			// An action that read the row before the delete opens its page
+			// The action that read the row before the delete opens its page
 			// after the delete's last close.
-			access, err := binding.Access(appbrowser.Caller{ThreadID: appbrowser.ThreadID(threadID), Workspace: t.TempDir()})
-			if err != nil {
-				t.Fatal(err)
-			}
 			if _, err := manager.NewCompanionPage(context.Background(), access, ""); !errors.Is(err, appbrowser.ErrThreadClosed) {
 				t.Fatalf("the action bound before the delete opened a tab: %v", err)
 			}
@@ -614,14 +615,15 @@ func TestACompanionActionOverlappingAPageCloseLeavesNoPage(t *testing.T) {
 	thread, access := browserTestThread(t, app, "thread-companion-retired")
 
 	caller := access.Caller()
-	stale, err := manager.BindThread(appbrowser.ThreadID(thread.ID)).Access(caller)
+	lookup := func() (appbrowser.Caller, error) { return caller, nil }
+	stale, err := manager.BindThread(appbrowser.ThreadID(thread.ID), lookup)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := app.closeThreadBrowserPages(thread.ID); err != nil {
 		t.Fatal(err)
 	}
-	later, err := manager.BindThread(appbrowser.ThreadID(thread.ID)).Access(caller)
+	later, err := manager.BindThread(appbrowser.ThreadID(thread.ID), lookup)
 	if err != nil {
 		t.Fatal(err)
 	}
