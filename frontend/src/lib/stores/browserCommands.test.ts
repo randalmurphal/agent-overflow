@@ -112,17 +112,16 @@ describe('browser commands', () => {
     ]);
   });
 
-  // The press names no tab and takes its number after the tab switch made
-  // before it, so the backend reloads the tab that switch selects, not the
-  // one the last state named.
-  it('reload reloads the tab active at its turn, after a tab switch still on its way', async () => {
+  // The press names the tab the window shows when the user presses it: a
+  // tab switch still on its way does not move the reload to another tab.
+  it('reload reloads the tab the window shows at the press', async () => {
     await attachBrowserPaneForTest(THREAD, 'mount-1');
     focusPane('browser-main');
     runCommand('browser.nextTab', ctx());
     runCommand('browser.reload', ctx());
     expect(act.mock.calls.map(([, action]) => [action.kind, action.pageId, action.mount, action.select])).toEqual([
       ['step', '', 'mount-1', 1],
-      ['reload-active', '', 'mount-1', 2],
+      ['reload', 'b', undefined, undefined],
     ]);
   });
 
@@ -184,7 +183,7 @@ describe('browser commands', () => {
     expect(dispatchKey(key({ key: 'Tab', ctrlKey: true, shiftKey: true }), ctx(), { isMac: false })).toBe(true);
     expect(act).toHaveBeenLastCalledWith(THREAD, expect.objectContaining({ kind: 'step', index: -1 }));
     expect(dispatchKey(key({ key: 'F5' }), ctx(), { isMac: false })).toBe(true);
-    expect(act).toHaveBeenLastCalledWith(THREAD, expect.objectContaining({ kind: 'reload-active', pageId: '' }));
+    expect(act).toHaveBeenLastCalledWith(THREAD, expect.objectContaining({ kind: 'reload', pageId: 'b' }));
     expect(dispatchKey(key({ key: 'r', metaKey: true }), ctx(), { isMac: true })).toBe(true);
     expect(dispatchKey(key({ key: 't', metaKey: true }), ctx(), { isMac: true })).toBe(true);
     expect(act).toHaveBeenLastCalledWith(THREAD, expect.objectContaining({ kind: 'new' }));
@@ -212,7 +211,7 @@ describe('browser commands', () => {
       noteCompactPaneShown('browser-main');
       expect(isBrowserPaneFocused()).toBe(true);
       expect(dispatchKey(key({ key: 'F5' }), ctx(), { isMac: false })).toBe(true);
-      expect(act).toHaveBeenLastCalledWith(THREAD, expect.objectContaining({ kind: 'reload-active', pageId: '', mount: 'mount-1' }));
+      expect(act).toHaveBeenLastCalledWith(THREAD, expect.objectContaining({ kind: 'reload', pageId: 'b' }));
     } finally {
       setCompactLayoutForTest(false);
     }
@@ -233,5 +232,25 @@ describe('browser commands', () => {
     }
     expect(getFocusedPaneId()).toBe('browser-main');
     expect(act).toHaveBeenLastCalledWith(THREAD, expect.objectContaining({ kind: 'step', index: 1 }));
+  });
+
+  // A chord pressed in page a reaches the window after the user switched
+  // to b: the command acts on a, the page the keys were pressed in.
+  it('a chord pressed in a page acts on that page, not on the tab selected since', async () => {
+    await attachBrowserPaneForTest(THREAD, 'mount-1');
+    focusPane('browser-main');
+    const dispatcher = (event: KeyboardEvent): void => {
+      dispatchKey(event, ctx(), { isMac: false });
+    };
+    window.addEventListener('keydown', dispatcher);
+    try {
+      applyBrowserCompanionState({ kind: 'accelerator', threadId: THREAD, mount: 'mount-1', pageId: 'a', accelerator: { key: 'r', ctrl: true } } as never);
+    } finally {
+      window.removeEventListener('keydown', dispatcher);
+    }
+    expect(act).toHaveBeenLastCalledWith(THREAD, expect.objectContaining({ kind: 'reload', pageId: 'a' }));
+    // A keypress in the window itself names the tab it shows.
+    expect(dispatchKey(key({ key: 'r', ctrlKey: true }), ctx(), { isMac: false })).toBe(true);
+    expect(act).toHaveBeenLastCalledWith(THREAD, expect.objectContaining({ kind: 'reload', pageId: 'b' }));
   });
 });

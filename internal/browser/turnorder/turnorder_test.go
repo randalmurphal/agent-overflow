@@ -3,7 +3,6 @@ package turnorder
 import (
 	"context"
 	"errors"
-	"fmt"
 	"testing"
 	"time"
 )
@@ -155,15 +154,15 @@ func TestATurnEndsOnce(t *testing.T) {
 }
 
 // The count moves past a missing number after one gap wait: the waiter
-// stands OutOfOrder, and the missing number arriving late is refused, which
-// settles it. A number arriving after that, in order, stands InOrder.
-func TestAMissingNumberMakesTheTurnsAfterItOutOfOrderUntilItSettles(t *testing.T) {
+// acts, and the missing number arriving late is refused, which settles it.
+// A number arriving after that, in order, acts too.
+func TestAMissingNumberLosesItsPlaceAndTheWaiterActs(t *testing.T) {
 	c := newClock()
 	o := New(c.timer)
 	second := await(o, at(2))
 	c.expire(t)
-	if got := admitted(t, second).Commit(); got != OutOfOrder {
-		t.Fatalf("2 past a missing 1 stands %d, want OutOfOrder", got)
+	if got := admitted(t, second).Commit(); got != InOrder {
+		t.Fatalf("2 past a missing 1 stands %d, want InOrder", got)
 	}
 	refused(t, await(o, at(1)))
 	if got := o.Stats().Outstanding; got != 0 {
@@ -171,60 +170,6 @@ func TestAMissingNumberMakesTheTurnsAfterItOutOfOrderUntilItSettles(t *testing.T
 	}
 	if got := mustAwait(t, o, at(3)).Commit(); got != InOrder {
 		t.Fatalf("3 stands %d, want InOrder", got)
-	}
-}
-
-// The review's sequence and its permutations, as the Manager sees select(B)
-// #1, reload #2 and close #3: #1 is delayed, #2 refuses after the gap wait,
-// and #3 arrives before #1, after the gap was recorded or waiting while it
-// was. #3 stands OutOfOrder whoever saw the gap, #1 is refused when it
-// arrives, and in a new epoch the next command stands InOrder.
-func TestARelativeCommandAfterARecordedGapStaysOutOfOrder(t *testing.T) {
-	for _, thirdWaits := range []bool{false, true} {
-		t.Run(fmt.Sprintf("third waits %v", thirdWaits), func(t *testing.T) {
-			c := newClock()
-			o := New(c.timer)
-			second := await(o, at(2))
-			var third <-chan admission
-			if thirdWaits {
-				waitFor(t, o, 1)
-				third = await(o, at(3))
-				waitFor(t, o, 2)
-			}
-			c.expire(t)
-			if got := admitted(t, second).Commit(); got != OutOfOrder {
-				t.Fatalf("#2 stands %d, want OutOfOrder", got)
-			}
-			if third == nil {
-				third = await(o, at(3))
-			}
-			if got := admitted(t, third).Commit(); got != OutOfOrder {
-				t.Fatalf("#3 before the late #1 stands %d, want OutOfOrder", got)
-			}
-			refused(t, await(o, at(1)))
-			if got := mustAwait(t, o, in(2, 1)).Commit(); got != InOrder {
-				t.Fatalf("the new epoch's first stands %d, want InOrder", got)
-			}
-		})
-	}
-}
-
-// A turn's standing is taken at its commit: admitted while an earlier
-// number is outstanding it stands OutOfOrder, and once that number arrives
-// and is refused it commits InOrder.
-func TestStandingFollowsTheOutstandingNumbers(t *testing.T) {
-	c := newClock()
-	o := New(c.timer)
-	second := await(o, at(2))
-	c.expire(t)
-	admitted(t, second).Commit()
-	third := mustAwait(t, o, at(3))
-	if got := third.Standing(); got != OutOfOrder {
-		t.Fatalf("#3 with #1 outstanding stands %d", got)
-	}
-	refused(t, await(o, at(1)))
-	if got := third.Commit(); got != InOrder {
-		t.Fatalf("#3 commits %d once #1 settled, want InOrder", got)
 	}
 }
 
@@ -261,7 +206,7 @@ func TestANewerEpochEndsAnUnsettledGap(t *testing.T) {
 	second := await(o, at(2))
 	c.expire(t)
 	admitted(t, second).Commit()
-	if got := mustAwait(t, o, at(3)).Commit(); got != OutOfOrder {
+	if got := mustAwait(t, o, at(3)).Commit(); got != InOrder {
 		t.Fatalf("#3 stands %d with #1 never sent", got)
 	}
 	if got := mustAwait(t, o, in(2, 1)).Commit(); got != InOrder {
@@ -272,8 +217,8 @@ func TestANewerEpochEndsAnUnsettledGap(t *testing.T) {
 	}
 }
 
-// Repeats are Passed; a number dropped from the outstanding record is lost,
-// and leaves its epoch out of order for good.
+// Repeats are Passed; a number dropped from the outstanding record is lost
+// for good, and the numbers after it act.
 func TestRepeatsPassAndDroppedNumbersAreLost(t *testing.T) {
 	c := newClock()
 	o := New(c.timer)
@@ -294,7 +239,7 @@ func TestRepeatsPassAndDroppedNumbersAreLost(t *testing.T) {
 	for seq := far - MaxSkipped; seq < far; seq++ {
 		refused(t, await(o, at(uint64(seq))))
 	}
-	if got := mustAwait(t, o, at(uint64(far+1))).Commit(); got != OutOfOrder {
+	if got := mustAwait(t, o, at(uint64(far+1))).Commit(); got != InOrder {
 		t.Fatalf("with a dropped number unsettled the next stands %d", got)
 	}
 	if _, err := o.Await(context.Background(), Place{}); err == nil {

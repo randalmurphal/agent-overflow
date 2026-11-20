@@ -4,6 +4,7 @@
     attachBrowserCompanion,
     browserActionError,
     browserPaneMountId,
+    browserShownPage,
     browserThreadState,
     noteBrowserPaneError,
     noteBrowserFindCleanupError,
@@ -52,7 +53,7 @@
   let sessionName = $derived(threadState?.sessionName ?? '');
   let activePageId = $derived(threadState?.activePageId ?? '');
   let closedTabs = $derived(threadState?.closedTabs ?? 0);
-  let activePage = $derived(pages.find((page) => page.id === activePageId) ?? pages[0] ?? null);
+  let activePage = $derived(browserShownPage(threadState));
   // The attached mount the pane's actions are sent from; null until the
   // attach answers, and the chrome is unavailable until then.
   let pane = $derived(attachment?.current?.pane ?? null);

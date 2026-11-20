@@ -100,9 +100,8 @@ func TestAShowRacingAnAgentsOpenAddsNoBlankTab(t *testing.T) {
 	}
 }
 
-// A show takes its turn after the user's earlier selection and keyboard
-// close: it shows the tab they leave active, never the one active when it
-// arrived.
+// A show takes its turn after the user's earlier selection and close: it
+// shows the tab they leave active, never the one active when it arrived.
 func TestAShowShowsTheTabItsTurnLeavesActive(t *testing.T) {
 	m, access, ids, mount := newSelectionManager(t)
 	hide(t, m, access)
@@ -114,12 +113,13 @@ func TestAShowShowsTheTabItsTurnLeavesActive(t *testing.T) {
 	}
 	mustShow(t, await(t, shownB, "the show after the selection"), ShowShown, ids[1])
 
-	// The show arrives before the keyboard close of b it follows.
+	// The show arrives before the close of b it follows.
 	hide(t, m, access)
 	shownNext := show(m, numbered(context.Background(), mount, 4), access)
 	awaitWaiting(t, m, mount, 1)
-	got, err := m.CloseActiveCompanionPage(t.Context(), access, place(mount, 3))
-	mustOutcome(t, ActiveApplied, got, err)
+	if err := m.CloseCompanionPage(numbered(t.Context(), mount, 3), access, PageID(ids[1])); err != nil {
+		t.Fatal(err)
+	}
 	if _, open := findTab(m, access, ids[1]); open {
 		t.Fatalf("the close did not close b: %v", tabIDs(m, access))
 	}

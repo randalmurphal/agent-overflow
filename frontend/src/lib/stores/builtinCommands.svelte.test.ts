@@ -3005,7 +3005,7 @@ describe('compact-gated commands', () => {
     // The same chord on the desktop closes the browser's tab.
     setCompactLayoutForTest(false);
     expect(close()).toBe(true);
-    expect(act).toHaveBeenCalledWith('thread-1', expect.objectContaining({ kind: 'close-active', pageId: '', mount: 'mount-1' }));
+    expect(act).toHaveBeenCalledWith('thread-1', expect.objectContaining({ kind: 'close', pageId: 'p1', mount: 'mount-1' }));
     attached.release();
     resetBrowserCompanionForTest();
     resetCompanionPanesForTest();
@@ -3039,7 +3039,24 @@ describe('compact-gated commands', () => {
 
     const attached = await attachBrowserPaneForTest('thread-1', 'mount-1');
     expect(dispatchKey(new KeyboardEvent('keydown', { key: 'w', ctrlKey: true, cancelable: true }), makeCommandContext(pane, {}) as CommandContext, { isMac: false })).toBe(true);
-    expect(act).toHaveBeenCalledWith('thread-1', expect.objectContaining({ kind: 'close-active', mount: 'mount-1' }));
+    expect(act).toHaveBeenCalledWith('thread-1', expect.objectContaining({ kind: 'close', pageId: 'p1', mount: 'mount-1' }));
+
+    // Mod+W pressed in page p1 reaches the window after the user switched
+    // to p2: the close names p1, the page the keys were pressed in.
+    applyBrowserCompanionState({
+      kind: 'state', threadId: 'thread-1', activePageId: 'p2', visible: true, seq: 3,
+      pages: ['p1', 'p2'].map((id) => ({ id, url: `https://example.test/${id}`, title: id, canGoBack: false, canGoForward: false })),
+    });
+    const dispatcher = (event: KeyboardEvent): void => {
+      dispatchKey(event, makeCommandContext(pane, {}) as CommandContext, { isMac: false });
+    };
+    window.addEventListener('keydown', dispatcher);
+    try {
+      applyBrowserCompanionState({ kind: 'accelerator', threadId: 'thread-1', mount: 'mount-1', pageId: 'p1', accelerator: { key: 'w', ctrl: true } } as never);
+    } finally {
+      window.removeEventListener('keydown', dispatcher);
+    }
+    expect(act).toHaveBeenLastCalledWith('thread-1', expect.objectContaining({ kind: 'close', pageId: 'p1', mount: 'mount-1' }));
     attached.release();
     resetBrowserCompanionForTest();
     resetCompanionPanesForTest();

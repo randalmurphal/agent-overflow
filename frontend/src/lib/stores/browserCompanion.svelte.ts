@@ -9,6 +9,7 @@ import {
   BrowserCompanionPaneDetach,
   BrowserCompanionThreadState,
   type BrowserCompanionEvent,
+  type BrowserPageInfo,
 } from './bindings';
 import { applyBrowserFindEvent } from './browserFind.svelte';
 import { createEntityStore, type EntityAttachment } from './entityStore.svelte';
@@ -183,6 +184,15 @@ export function browserThreadSnapshot(threadId: string): BrowserThreadSnapshot {
  */
 export function browserThreadState(threadId: string): Readonly<BrowserCompanionEvent> | null {
   return snapshots.get(threadId)?.state ?? null;
+}
+
+/**
+ * The tab the pane shows of `state`: its active tab, or with none the first
+ * in the strip; null with no tab. What the user sees as the active tab.
+ */
+export function browserShownPage(state: Readonly<BrowserCompanionEvent> | null): Readonly<BrowserPageInfo> | null {
+  const pages = state?.pages ?? [];
+  return pages.find((page) => page.id === state?.activePageId) ?? pages[0] ?? null;
 }
 
 /** The thread's last admitted state while it has pages, else null (reactive). */

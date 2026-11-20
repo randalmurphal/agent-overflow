@@ -251,16 +251,16 @@ describe('pane.close on a browser companion', () => {
     focusPane('browser-main');
 
     expect(closeFocusedBrowserTab()).toBe(true);
-    // The backend picks the tab: the close names none.
-    expect(calls).toEqual([['thread-browser', 'close-active', '']]);
+    // The close names the tab the window shows.
+    expect(calls).toEqual([['thread-browser', 'close', 'page-1']]);
     // Still open: the pane follows the backend's answer, not the keystroke.
     expect(companionForSource('main', 'browser')).not.toBeNull();
     await vi.waitFor(() => expect(companionForSource('main', 'browser')).toBeNull());
   });
 
-  // The backend moved to another tab while this client was away: the chord
-  // still names no tab, and goes in the reattached mount's order, so the
-  // backend closes the tab active there.
+  // The backend moved to another tab while this client was away: the
+  // reattach's state shows it, and the chord names that tab, in the
+  // reattached mount's order.
   it('closes through the reattached mount after the backend changed tabs', async () => {
     const tab = (id: string) => ({ id, url: `https://example.com/${id}`, title: id, canGoBack: false, canGoForward: false });
     applyBrowserCompanionState({
@@ -284,13 +284,14 @@ describe('pane.close on a browser companion', () => {
     await vi.waitFor(() => expect(browserThreadState('thread-browser')?.activePageId).toBe('page-2'));
     focusPane('browser-main');
     expect(closeFocusedBrowserTab()).toBe(true);
-    await vi.waitFor(() => expect(closes).toEqual([{ kind: 'close-active', pageId: '', mount: 'mount-1', select: 1 }]));
+    await vi.waitFor(() => expect(closes).toEqual([{ kind: 'close', pageId: 'page-2', mount: 'mount-1', select: 1 }]));
     attachment.release();
   });
 
   // The keyboard's close takes its place in the mount's order at the
-  // keypress and is sent at once; the backend closes the tab active at its
-  // turn, so nothing here waits for an earlier answer.
+  // keypress, names the tab the window shows then and is sent at once; the
+  // backend closes that tab at its turn if it is still there, so nothing
+  // here waits for an earlier answer.
   describe('right after a tab selection or another close', () => {
     const tab = (id: string) => ({ id, url: `https://example.com/${id}`, title: id, canGoBack: false, canGoForward: false });
     let sent: Array<{ kind: string; pageId: string; mount?: string; select?: number }>;
@@ -321,7 +322,7 @@ describe('pane.close on a browser companion', () => {
       void actInPane(paneForTest('thread-browser'), browserAction.select(pageIdForTest('c')));
       expect(sent).toEqual([
         { kind: 'activate', pageId: 'b', mount: 'mount-1', select: 1 },
-        { kind: 'close-active', pageId: '', mount: 'mount-1', select: 2 },
+        { kind: 'close', pageId: 'a', mount: 'mount-1', select: 2 },
         { kind: 'activate', pageId: 'c', mount: 'mount-1', select: 3 },
       ]);
     });
@@ -330,22 +331,21 @@ describe('pane.close on a browser companion', () => {
       expect(closeFocusedBrowserTab()).toBe(true);
       expect(closeFocusedBrowserTab()).toBe(true);
       expect(sent).toEqual([
-        { kind: 'close-active', pageId: '', mount: 'mount-1', select: 1 },
-        { kind: 'close-active', pageId: '', mount: 'mount-1', select: 2 },
+        { kind: 'close', pageId: 'a', mount: 'mount-1', select: 1 },
+        { kind: 'close', pageId: 'a', mount: 'mount-1', select: 2 },
       ]);
     });
 
-    // The backend refuses a keyboard command while an earlier number of its
-    // epoch never arrived; the window starts a new epoch only once every
-    // action it sent in the old one answered or failed, so nothing of the
-    // old epoch is still meant to act.
+    // The backend refuses a number that lost its place; the window starts a
+    // new epoch only once every action it sent in the old one answered or
+    // failed, so nothing of the old epoch is still meant to act.
     it('starts a new epoch only when none of the mount\'s actions is unanswered', async () => {
       const epochs: Array<{ epoch?: number; select?: number }> = [];
       const failNext: boolean[] = [];
       setBindingMock('BrowserCompanionDo', vi.fn(async (threadId: string, action: { kind: string; epoch?: number; select?: number }) => {
         epochs.push({ epoch: action.epoch, select: action.select });
         await new Promise<void>((resolve) => answers.push(resolve));
-        if (failNext.shift()) throw new Error('browser: an earlier tab action from this pane had not arrived');
+        if (failNext.shift()) throw new Error('browser: this tab action arrived too late to apply; try it again');
         return { kind: 'state', threadId, activePageId: 'a', visible: true, seq: 1, pages: ['a', 'b', 'c'].map(tab) };
       }));
       failNext.push(false, true);
@@ -365,12 +365,23 @@ describe('pane.close on a browser companion', () => {
       expect(epochs.at(-1)).toEqual({ epoch: 2, select: 1 });
     });
 
-    it('leaves a close from the tab menu on the tab it names, unnumbered', () => {
+    // The x and the tab menu's closes name their tab and take their place
+    // in the same order as the keyboard's, so Mod+W on a and then a's x
+    // close a once (internal/browser CloseCompanionPage).
+    it('numbers a close from the x or the tab menu in the same order, naming its tab', () => {
       void actInPane(paneForTest('thread-browser'), browserAction.select(pageIdForTest('b')));
-      void actInPane(paneForTest('thread-browser'), browserAction.onTab('close', pageIdForTest('c')));
+      expect(closeFocusedBrowserTab()).toBe(true);
+      void actInPane(paneForTest('thread-browser'), browserAction.onTab('close', pageIdForTest('a')));
+      void actInPane(paneForTest('thread-browser'), browserAction.onTab('close-others', pageIdForTest('c')));
+      void actInPane(paneForTest('thread-browser'), browserAction.onTab('close-right', pageIdForTest('c')));
+      void actInPane(paneForTest('thread-browser'), browserAction.onTab('reload', pageIdForTest('c')));
       expect(sent).toEqual([
         { kind: 'activate', pageId: 'b', mount: 'mount-1', select: 1 },
-        { kind: 'close', pageId: 'c', mount: undefined, select: undefined },
+        { kind: 'close', pageId: 'a', mount: 'mount-1', select: 2 },
+        { kind: 'close', pageId: 'a', mount: 'mount-1', select: 3 },
+        { kind: 'close-others', pageId: 'c', mount: 'mount-1', select: 4 },
+        { kind: 'close-right', pageId: 'c', mount: 'mount-1', select: 5 },
+        { kind: 'reload', pageId: 'c', mount: undefined, select: undefined },
       ]);
     });
   });
@@ -639,11 +650,11 @@ describe('numbering the user\'s tab selections', () => {
     expect(sent.map(order)).toEqual([
       { kind: 'activate', mount: 'mount-1', select: 1 },
       { kind: 'step', mount: 'mount-1', select: 2 },
-      { kind: 'close', mount: '', select: 0 },
-      { kind: 'new', mount: 'mount-1', select: 3 },
-      { kind: 'reopen', mount: 'mount-1', select: 4 },
-      { kind: 'duplicate', mount: 'mount-1', select: 5 },
-      { kind: 'download-open', mount: 'mount-1', select: 6 },
+      { kind: 'close', mount: 'mount-1', select: 3 },
+      { kind: 'new', mount: 'mount-1', select: 4 },
+      { kind: 'reopen', mount: 'mount-1', select: 5 },
+      { kind: 'duplicate', mount: 'mount-1', select: 6 },
+      { kind: 'download-open', mount: 'mount-1', select: 7 },
       { kind: 'restore', mount: '', select: 0 },
     ]);
 

@@ -101,6 +101,11 @@ func TestOneMountPresentsAThreadsPages(t *testing.T) {
 					if event.Mount != mount {
 						t.Fatalf("%s: a %s event names mount %q, want %q", state, event.Kind, event.Mount, mount)
 					}
+					// A chord names the page it was pressed in, which the
+					// window's close and reload act on.
+					if event.PageID != pageID {
+						t.Fatalf("%s: a %s event names page %q, want %q", state, event.Kind, event.PageID, pageID)
+					}
 				}
 			}
 

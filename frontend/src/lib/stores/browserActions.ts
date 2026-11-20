@@ -4,6 +4,7 @@ import {
   browserPaneAttachment,
   browserPaneOpen,
   browserPaneShown,
+  browserShownPage,
   browserSourcePaneShown,
   canPresentNativeBrowser,
   canUseNativeBrowser,
@@ -13,14 +14,16 @@ import {
 } from './browserCompanion.svelte';
 import {
   browserAction,
+  pageIdOf,
   sendForThread,
   sendFromPane,
-  type ActiveTabOperation,
   type BrowserAction,
   type BrowserActionAnswer,
   type BrowserJar,
+  type PageId,
   type ThreadAction,
 } from './browserActionWire';
+import { browserPageChordPage } from './browserPageChords';
 import { armAddressFocus, settleAddressFocus } from './browserAddressFocus.svelte';
 import { getCompanionPane } from './companionPanes.svelte';
 import { getPane, paneCommandTarget } from './panes.svelte';
@@ -28,7 +31,7 @@ import { TransportError } from '../transport/wsClient';
 import { addErrorToast } from './toast.svelte';
 
 // What the user's gestures on a thread's browser mean: the pane's chrome,
-// the chat header's button, the keyboard's commands on the active tab. Each
+// the chat header's button, the keyboard's commands on the shown tab. Each
 // is a BrowserAction sent through browserActionWire.ts, which checks the
 // thread's owner and the sending pane as it sends. A pane's action is sent
 // from its attachment (actInPane), and its refusal lands in that pane's
@@ -119,6 +122,8 @@ function actForThread(threadId: string, action: ThreadAction): Promise<ActionRes
 export type JarSwitchAnswer =
   | { readonly kind: 'switched' }
   | { readonly kind: 'needs-confirmation' }
+  /** The pane it was chosen in is not the thread's browser any more: nothing changed. */
+  | { readonly kind: 'pane-gone'; readonly failure: BrowserActionFailure }
   | { readonly kind: 'failed'; readonly failure: BrowserActionFailure };
 
 // The backend's refusal of an unconfirmed switch while a tab is live
@@ -128,18 +133,33 @@ function jarUnconfirmed(err: unknown): boolean {
   return err instanceof TransportError && err.code === 'browser_jar_unconfirmed';
 }
 
+// The backend's refusal of a switch whose pane detached, or whose browser
+// was closed and opened again, after the user chose it (internal/app
+// browserJarPaneGoneCode): that pane has no banner left to show it.
+function jarPaneGone(err: unknown): boolean {
+  return err instanceof TransportError && err.code === 'browser_jar_pane_gone';
+}
+
 /**
  * Sets the cookie jar the thread's browser uses, from its pane. The backend
  * closes the live tabs and reopens their addresses in the new jar. Unless
  * the user confirmed losing the live tabs' page state, the backend refuses
  * while a tab is live and the answer is 'needs-confirmation': the caller
- * asks and sends again confirmed. Any other refusal lands in the pane's
- * banner.
+ * asks and sends again confirmed. The switch names `pane`, and the backend
+ * switches the browser that pane attached to or nothing: a pane gone by
+ * then answers 'pane-gone', which a toast shows. Any other refusal lands in
+ * the pane's banner.
  */
 export async function setBrowserJar(pane: BrowserPaneAttachment, jar: BrowserJar, confirmed: boolean): Promise<JarSwitchAnswer> {
-  const { failure } = await runAction(pane.threadId, pane, () => sendFromPane(pane, browserAction.jar(jar, confirmed)), jarUnconfirmed);
+  const question = (err: unknown) => jarUnconfirmed(err) || jarPaneGone(err);
+  const { failure } = await runAction(pane.threadId, pane, () => sendFromPane(pane, browserAction.jar(jar, confirmed)), question);
   if (!failure) return { kind: 'switched' };
-  return jarUnconfirmed(failure.cause) ? { kind: 'needs-confirmation' } : { kind: 'failed', failure };
+  if (jarUnconfirmed(failure.cause)) return { kind: 'needs-confirmation' };
+  if (jarPaneGone(failure.cause)) {
+    addErrorToast(failure.error, failure.cause);
+    return { kind: 'pane-gone', failure };
+  }
+  return { kind: 'failed', failure };
 }
 
 /** Options of a new tab the user opens. */
@@ -190,32 +210,35 @@ async function openTab(
 }
 
 /**
- * A keyboard command on the active tab of the keyboard's browser pane. It
- * names no tab: it takes its number in the pane mount's order at the
- * keypress, and the backend acts on the tab active at its turn, after the
- * user's earlier selections and commands and never after their page work.
- * The tab menu's and the address bar's commands name their tab.
+ * The tab a keyboard command on the keyboard's browser pane acts on: the
+ * page a chord pressed in a page came from (browserPageChordPage), else the
+ * tab the window shows as active now, which is what the user saw when the
+ * key reached the window. Null when it shows none. The command names it,
+ * so a tab switch still on its way never moves the command to another tab.
  */
-export function actOnActiveTab(pane: BrowserPaneAttachment, operation: ActiveTabOperation): void {
-  void actInPane(pane, browserAction.onActiveTab(operation));
+export function keyboardTabTarget(focused: FocusedBrowser): PageId | null {
+  return browserPageChordPage() ?? pageIdOf(browserShownPage(focused.state)?.id);
 }
 
 /**
- * `pane.close` on the keyboard's browser companion closes its ACTIVE TAB;
- * the pane goes only with its last tab (the zero-page state push closes the
- * companion in applyBrowserCompanionState). Routed from the command, not
- * from a keydown handler on the pane: on WebKit a click on the tab strip
- * moves no DOM focus, so a pane-scoped handler missed the chord and the
- * window-level `pane.close` destroyed the whole pane instead. Returns false
- * when the keyboard's pane is no browser, or it shows no tab, and the
- * command falls through to its pane close. A browser pane not attached yet
- * has nothing to send, and `pane.close` is not offered for it
- * (browserPaneUnattached).
+ * `pane.close` on the keyboard's browser companion closes the tab it shows
+ * (keyboardTabTarget); the pane goes only with its last tab (the zero-page
+ * state push closes the companion in applyBrowserCompanionState). The close
+ * takes its number in the pane mount's order at the keypress and names the
+ * tab, so at its turn the backend closes that tab if it is still there.
+ * Routed from the command, not from a keydown handler on the pane: on
+ * WebKit a click on the tab strip moves no DOM focus, so a pane-scoped
+ * handler missed the chord and the window-level `pane.close` destroyed the
+ * whole pane instead. Returns false when the keyboard's pane is no browser,
+ * or it shows no tab, and the command falls through to its pane close. A
+ * browser pane not attached yet has nothing to send, and `pane.close` is
+ * not offered for it (browserPaneUnattached).
  */
 export function closeFocusedBrowserTab(): boolean {
   const focused = focusedBrowser();
-  if (!focused?.pane || (focused.state?.pages?.length ?? 0) === 0) return false;
-  actOnActiveTab(focused.pane, 'close');
+  const pageId = focused ? keyboardTabTarget(focused) : null;
+  if (!focused?.pane || !pageId || (focused.state?.pages?.length ?? 0) === 0) return false;
+  void actInPane(focused.pane, browserAction.onTab('close', pageId));
   return true;
 }
 

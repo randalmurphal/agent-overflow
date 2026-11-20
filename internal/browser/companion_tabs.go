@@ -5,13 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 
 	"agent-overflow/internal/browser/turnorder"
 )
 
-// The tab strip's actions on whole tabs: close one or several, reopen the
-// last closed, duplicate, reload. The keyboard's commands on the active tab
-// are active_commands.go.
+// The user's actions on whole tabs: close one or several, reopen the last
+// closed, duplicate, reload. Each names its tab: the keyboard's close and
+// reload name the tab the window showed as active when the key was pressed,
+// or the page a chord pressed in a page came from (keys.go).
 //
 // The Manager keeps, per thread and in memory only, the last maxClosedTabs
 // tabs the user closed (address, label, position). A tab an agent closes is
@@ -67,11 +69,57 @@ func reopenable(rawURL string) bool {
 	return false
 }
 
-// CloseCompanionPage is the user closing a tab: it returns once the tab is
-// gone from the state, and a failure of the teardown after it arrives as a
-// "teardown" event. The tab can be reopened (ReopenClosedTab).
+// CloseCompanionPage is the user closing pageID. From a pane it carries its
+// numbered place in the pane's order (ctx, WithSelection), so it acts after
+// the user's earlier selections, closes and reopens, never after their page
+// work. At its turn it closes pageID if it is still a tab of access's
+// lifetime and does nothing otherwise, so a second close of one tab (Mod+W
+// and the tab's x) closes nothing more. It takes the tab out of the tab set
+// and picks the next active tab in the m.mu hold that ends its turn, and
+// returns once the tab is gone from the state; a failure of the teardown
+// after it arrives as a "teardown" event. A tab still opening or restoring
+// closes at once. The tab can be reopened (ReopenClosedTab).
 func (m *Manager) CloseCompanionPage(ctx context.Context, access Access, pageID PageID) error {
-	return m.closePage(ctx, access, pageID, false, true)
+	pageID = pageID.trim()
+	return m.closeUserTabs(ctx, access, func(tabs []threadTab) []PageID {
+		if slices.ContainsFunc(tabs, func(tab threadTab) bool { return tab.id == pageID }) {
+			return []PageID{pageID}
+		}
+		return nil
+	})
+}
+
+// closeUserTabs closes, as the user, the tabs pick chooses from access's
+// tab set in strip order, at the turn of ctx's numbered place: in the m.mu
+// hold that ends the turn it takes them out of the tab set, left to right,
+// and picks the next active tab, and it runs the rest of each close after
+// that hold. A Passed turn, or a lifetime the thread's close detached,
+// closes nothing.
+func (m *Manager) closeUserTabs(ctx context.Context, access Access, pick func(tabs []threadTab) []PageID) error {
+	turn, err := m.selectionTurn(ctx, access)
+	if err != nil {
+		return err
+	}
+	defer turn.Release()
+	if err := m.lockStructure(ctx, access.tb); err != nil {
+		return err
+	}
+	if turn.Commit() == turnorder.Passed || access.admitLocked() != nil {
+		m.mu.Unlock()
+		return nil
+	}
+	ids := pick(m.companionTabsLocked(access.tb))
+	finishes := make([]func(ctx context.Context, wait bool) error, 0, len(ids))
+	for _, id := range ids {
+		finishes = append(finishes, m.closeTabLocked(access.tb, id, true))
+	}
+	m.repairActivePageLocked(access.tb)
+	m.mu.Unlock()
+	errs := make([]error, 0, len(finishes))
+	for _, finish := range finishes {
+		errs = append(errs, finish(ctx, false))
+	}
+	return errors.Join(errs...)
 }
 
 // recordUserCloseLocked keeps tb's tab pageID as the user's most recent
@@ -177,49 +225,46 @@ const (
 
 // CloseCompanionTabs closes, as the user, every tab of the thread but
 // pageID (CloseOtherTabs) or every tab after it (CloseTabsRight), left to
-// right, so reopening them one by one puts each back where it was.
+// right, so reopening them one by one puts each back where it was. It takes
+// its turn as CloseCompanionPage does and closes the tabs it finds then, in
+// that turn's hold; with pageID gone by then it closes nothing.
 func (m *Manager) CloseCompanionTabs(ctx context.Context, access Access, pageID PageID, which string) error {
 	pageID = pageID.trim()
 	if which != CloseOtherTabs && which != CloseTabsRight {
 		return fmt.Errorf("browser: unknown set of tabs to close %q", truncateUTF8(which, 32))
 	}
-	m.mu.Lock()
-	tabs := m.companionTabsLocked(access.tb)
-	m.mu.Unlock()
-	at := -1
-	for i := range tabs {
-		if tabs[i].id == pageID {
-			at = i
+	return m.closeUserTabs(ctx, access, func(tabs []threadTab) []PageID {
+		at := slices.IndexFunc(tabs, func(tab threadTab) bool { return tab.id == pageID })
+		if at < 0 {
+			return nil
 		}
-	}
-	if at < 0 {
-		return errPageNotFound
-	}
-	var errs []error
-	for i, tab := range tabs {
-		if i == at || (which == CloseTabsRight && i < at) {
-			continue
+		var ids []PageID
+		for i, tab := range tabs {
+			if i != at && (which == CloseOtherTabs || i > at) {
+				ids = append(ids, tab.id)
+			}
 		}
-		// A tab gone meanwhile was closed by someone else.
-		if err := m.CloseCompanionPage(ctx, access, tab.id); err != nil && !errors.Is(err, errPageNotFound) {
-			errs = append(errs, err)
-		}
-	}
-	return errors.Join(errs...)
+		return ids
+	})
 }
 
-// ReloadCompanionPage is the user's reload. A suspended tab, a crashed one
-// included, is restored at its address, which is its reload; a live page
-// reloads.
+// ReloadCompanionPage is the user's reload of pageID. A suspended tab, a
+// crashed one included, is restored at its address, which is its reload; a
+// live page reloads. A tab gone before the reload ran (Mod+R, then Mod+W)
+// is reloaded by nothing, and no other tab is.
 func (m *Manager) ReloadCompanionPage(ctx context.Context, access Access, pageID PageID) error {
 	pageID = pageID.trim()
 	m.mu.Lock()
 	rec := m.suspended[pageID]
 	m.mu.Unlock()
+	var err error
 	if rec != nil {
-		_, _, err := m.resolvePage(ctx, access, pageID, false)
-		return err
+		_, _, err = m.resolvePage(ctx, access, pageID, false)
+	} else {
+		_, err = m.History(ctx, access, pageID, "reload")
 	}
-	_, err := m.History(ctx, access, pageID, "reload")
+	if err != nil && !m.hasTab(access.tb, pageID) {
+		return nil
+	}
 	return err
 }

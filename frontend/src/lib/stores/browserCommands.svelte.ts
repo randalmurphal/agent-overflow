@@ -8,7 +8,7 @@
 // attach has not answered has nothing to send: its chords do nothing.
 
 import { registerCommand } from './commandRegistry.svelte';
-import { actInPane, actOnActiveTab, focusedBrowser, openBrowserTabInPane } from './browserActions';
+import { actInPane, focusedBrowser, keyboardTabTarget, openBrowserTabInPane } from './browserActions';
 import { browserAction } from './browserActionWire';
 import { focusBrowserAddressBar } from './browserAddressFocus.svelte';
 
@@ -60,11 +60,12 @@ export function registerBrowserCommands(): void {
     icon: '↻',
     when: WHEN,
     editableReachable: true,
-    // Names no tab: the backend reloads the tab active at this press's turn
-    // in the user's order, after a tab switch still on its way.
+    // Names the tab the window shows, or the page the chord was pressed
+    // in, so a tab switch still on its way never reloads another tab.
     run: () => {
-      const pane = focusedBrowser()?.pane;
-      if (pane) actOnActiveTab(pane, 'reload');
+      const focused = focusedBrowser();
+      const pageId = focused ? keyboardTabTarget(focused) : null;
+      if (focused?.pane && pageId) void actInPane(focused.pane, browserAction.onTab('reload', pageId));
     },
   });
 

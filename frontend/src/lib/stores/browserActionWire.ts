@@ -47,9 +47,6 @@ export function downloadIdOf(raw: string | null | undefined): DownloadId | null 
   return raw && isDownloadId(raw) ? raw : null;
 }
 
-/** What a keyboard command does to the tab active at its turn. */
-export type ActiveTabOperation = 'close' | 'reload';
-
 /** The commands that act on the tab they name and select nothing. */
 export type NamedTabKind = 'back' | 'forward' | 'reload' | 'stop' | 'restore' | 'close' | 'close-others' | 'close-right' | 'devtools';
 
@@ -57,13 +54,12 @@ export type NamedTabKind = 'back' | 'forward' | 'reload' | 'stop' | 'restore' | 
 export type DownloadKind = 'download-cancel' | 'download-reveal' | 'download-open';
 
 /**
- * One user action on a thread's browser. A command on the active tab names
- * no tab, so the backend resolves the tab in the user's order
- * (internal/browser/active_commands.go); every other command that acts on a
- * tab names it. Built by the constructors in `browserAction`.
+ * One user action on a thread's browser. Every command that acts on a tab
+ * names the tab the user meant when they acted; a keyboard command names
+ * the tab the window showed (browserActions.ts#keyboardTabTarget). Built by
+ * the constructors in `browserAction`.
  */
 export type BrowserAction =
-  | { readonly kind: 'active'; readonly operation: ActiveTabOperation }
   | { readonly kind: NamedTabKind; readonly pageId: PageId }
   | { readonly kind: 'navigate'; readonly pageId: PageId; readonly address: string }
   | { readonly kind: 'move'; readonly pageId: PageId; readonly index: number }
@@ -86,7 +82,6 @@ export type ThreadAction = Extract<BrowserAction, { readonly kind: 'new' | 'show
 
 /** One constructor per kind of BrowserAction. */
 export const browserAction = {
-  onActiveTab: (operation: ActiveTabOperation): BrowserAction => ({ kind: 'active', operation }),
   onTab: (kind: NamedTabKind, pageId: PageId): BrowserAction => ({ kind, pageId }),
   navigate: (pageId: PageId, address: string): BrowserAction => ({ kind: 'navigate', pageId, address }),
   move: (pageId: PageId, index: number): BrowserAction => ({ kind: 'move', pageId, index }),
@@ -107,10 +102,13 @@ export type PageFocusRequest =
   | { readonly kind: 'focus-page'; readonly pageId: PageId; readonly intent: number }
   | { readonly kind: 'focus-page-withdraw'; readonly intent: number };
 
-/** Whether action takes a number in its pane mount's order. */
+/**
+ * Whether action takes a number in its pane mount's order: what selects a
+ * tab, and what closes one, which changes the active tab and the closed
+ * tabs the next command sees.
+ */
 function ordered(action: BrowserAction | PageFocusRequest): boolean {
   switch (action.kind) {
-    case 'active':
     case 'activate':
     case 'step':
     case 'new':
@@ -118,6 +116,9 @@ function ordered(action: BrowserAction | PageFocusRequest): boolean {
     case 'duplicate':
     case 'download-open':
     case 'show-browser':
+    case 'close':
+    case 'close-others':
+    case 'close-right':
       return true;
     case 'download-cancel':
     case 'download-reveal':
@@ -126,9 +127,6 @@ function ordered(action: BrowserAction | PageFocusRequest): boolean {
     case 'reload':
     case 'stop':
     case 'restore':
-    case 'close':
-    case 'close-others':
-    case 'close-right':
     case 'devtools':
     case 'navigate':
     case 'move':
@@ -158,8 +156,6 @@ interface Place {
 function wireAction(action: BrowserAction | PageFocusRequest, origin: ActionOrigin, place: Place | null): BrowserCompanionAction {
   const base = { kind: '', pageId: '', address: '', index: 0, ...place };
   switch (action.kind) {
-    case 'active':
-      return new BrowserCompanionAction({ ...base, kind: action.operation === 'close' ? 'close-active' : 'reload-active' });
     case 'back':
     case 'forward':
     case 'reload':
@@ -186,7 +182,10 @@ function wireAction(action: BrowserAction | PageFocusRequest, origin: ActionOrig
     case 'show-browser':
       return new BrowserCompanionAction({ ...base, kind: action.kind });
     case 'jar':
-      return new BrowserCompanionAction({ ...base, kind: 'jar', jar: action.jar, confirmed: action.confirmed });
+      // The pane the user chose it in: the backend switches the browser
+      // that pane shows, or nothing once it is gone (BindMount).
+      if (origin.kind !== 'pane') throw new Error('A cookie jar switch is sent from its pane.');
+      return new BrowserCompanionAction({ ...base, kind: 'jar', jar: action.jar, confirmed: action.confirmed, mount: origin.pane.mount });
     case 'download-cancel':
     case 'download-reveal':
     case 'download-open':
