@@ -227,7 +227,9 @@ func (m *Manager) bundleAssets(ctx context.Context, p *managedPage, opts AssetOp
 	// total is the bundle's bytes; stranded the bytes of failed files that
 	// could not be removed, which still hold the reservation.
 	var total, stranded int64
-	p.mu.Lock()
+	if err := p.mu.LockContext(ctx); err != nil {
+		return AssetBundle{}, fmt.Errorf("browser: bundle assets: %w", err)
+	}
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	defer cancel()

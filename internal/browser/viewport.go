@@ -211,11 +211,14 @@ func (m *Manager) applyThreadViewport(threadID ThreadID) error {
 // schedule, calls syncViewportLocked) and, under that lock, brings the page
 // to its thread's viewport. Holding the lock is what makes the size stick: a
 // resize that lands after a check made before the lock, or while the size
-// is being applied, is seen here and applied before the operation runs. On
-// error p.mu is not held. An agent's tool call shows on the page's tab from
-// here (activity.go).
+// is being applied, is seen here and applied before the operation runs. The
+// wait for the lock ends with ctx, answering its error. On error p.mu is not
+// held. An agent's tool call shows on the page's tab from here
+// (activity.go).
 func (m *Manager) lockPageForOperation(ctx context.Context, p *managedPage) error {
-	p.mu.Lock()
+	if err := p.mu.LockContext(ctx); err != nil {
+		return err
+	}
 	m.noteAgentOperation(ctx, p)
 	if err := m.syncViewportLocked(ctx, p); err != nil {
 		p.mu.Unlock()

@@ -162,14 +162,18 @@ func (m *Manager) findTransition(actionCtx context.Context, p *managedPage, kind
 	if hook := m.findWaitHook.Load(); hook != nil {
 		(*hook)(opCtx)
 	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	// The wait for the page lock is the action's too: an operation holding
+	// the page past the deadline ends the action at it.
+	lockErr := p.mu.LockContext(opCtx)
+	if lockErr == nil {
+		defer p.mu.Unlock()
+	}
 	if !m.pageLive(p) {
 		return FindState{}, errPageNotFound
 	}
 	// The action's own context is read too: opCtx learns of its end
 	// asynchronously.
-	if err := cmp.Or(actionCtx.Err(), opCtx.Err()); err != nil {
+	if err := cmp.Or(actionCtx.Err(), lockErr, opCtx.Err()); err != nil {
 		return FindState{}, fmt.Errorf("browser: find %s: %w", kind, err)
 	}
 	// A match is scrolled into view at the page's layout, so the page takes

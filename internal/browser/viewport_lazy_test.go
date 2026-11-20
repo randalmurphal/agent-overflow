@@ -347,8 +347,8 @@ func recordScreenshotViewport(page *fakePage) func() (int, int) {
 }
 
 // awaitPageLockWaitIn reports whether a goroutine running fn waits on a
-// mutex, past the page lookup, before done delivers. done is left for the
-// caller.
+// page's lock (pageLock), past the page lookup, before done delivers. done
+// is left for the caller.
 func awaitPageLockWaitIn(fn string, done chan error) bool {
 	buf := make([]byte, 1<<20)
 	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
@@ -358,7 +358,7 @@ func awaitPageLockWaitIn(fn string, done chan error) bool {
 			continue
 		}
 		for _, stack := range strings.Split(string(buf[:n]), "\n\n") {
-			if strings.Contains(stack, fn) && strings.Contains(stack, "sync.(*Mutex).Lock") && !strings.Contains(stack, "resolvePage") {
+			if strings.Contains(stack, fn) && strings.Contains(stack, "browser.(*pageLock).Lock") && !strings.Contains(stack, "resolvePage") {
 				return true
 			}
 		}

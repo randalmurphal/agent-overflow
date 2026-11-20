@@ -34,7 +34,7 @@ type managedPage struct {
 	// close cancels the operations in flight (closePageAsync).
 	ctx       context.Context
 	cancelOps context.CancelFunc
-	mu        sync.Mutex
+	mu        pageLock
 	lastUse   atomic.Int64
 	createdAt int64
 	// tabOrder is the page's position key in the thread's tab strip: creation
