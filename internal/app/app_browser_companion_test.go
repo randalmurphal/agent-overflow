@@ -378,6 +378,24 @@ func TestBrowserCompanionShowBrowserOpensOneTabAndNamesIt(t *testing.T) {
 	}
 }
 
+// An action on a download the thread's list no longer has (a toast's,
+// after the list was cleared) answers the code the window shows as a
+// notice.
+func TestBrowserCompanionDownloadNoLongerListedIsCoded(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	manager := appbrowser.NewManager(t.TempDir(), appbrowser.Config{Enabled: true}, appbrowser.ManagerOptions{FakeEngine: true})
+	app.browser.manager = manager
+	t.Cleanup(func() { _ = manager.Close() })
+	thread := makeWorkspaceThread(t, app, "thread-companion-download-gone")
+	for _, kind := range []string{"download-reveal", "download-open", "download-cancel"} {
+		_, err := app.BrowserCompanionDo(t.Context(), thread.ID, BrowserCompanionAction{Kind: kind, DownloadID: "d-cleared"})
+		if code, _, _ := errorsx.PublicDetails(err); code != browserDownloadUnavailableCode {
+			t.Errorf("%s of a download no longer listed answered %v, want code %s", kind, err, browserDownloadUnavailableCode)
+		}
+	}
+}
+
 // The pane's "jar" sets the thread's cookie jar; the project jar is keyed by
 // the thread's project, which the app passes in with its workspace.
 func TestBrowserCompanionJarUsesTheThreadsProject(t *testing.T) {

@@ -1,8 +1,18 @@
 import type { BrowserCompanionEvent, BrowserDownload } from './bindings';
 import { actInPane, browserCompanionAct, type BrowserActionFailure } from './browserActions';
 import { browserAction, downloadIdOf, type DownloadKind, type ThreadAction } from './browserActionWire';
-import { browserCompanionState, browserPaneOpen, canUseNativeBrowser, type BrowserPaneAttachment } from './browserCompanion.svelte';
-import { addErrorToast, addToast } from './toast.svelte';
+import {
+  browserCompanionState,
+  browserPaneOpen,
+  browserThreadSnapshot,
+  canUseNativeBrowser,
+  observeBrowserCompanion,
+  type BrowserPaneAttachment,
+} from './browserCompanion.svelte';
+import { addErrorToast, addToast, toastShowing, withdrawToastAction } from './toast.svelte';
+import { getTransportHelloFor } from './transportStatus.svelte';
+import { HOME_BACKEND } from '../transport/backendKey';
+import { TransportError } from '../transport/wsClient';
 import { formatBytes } from '../utils/formatBytes';
 
 // The thread's browser downloads (internal/browser/downloads_thread.go). The
@@ -12,6 +22,76 @@ import { formatBytes } from '../utils/formatBytes';
 
 /** How long a finished download's toast stays up. */
 const FINISHED_TOAST_MS = 8000;
+
+/**
+ * A finished download's toast action, offered while the thread's list
+ * resolves it: the list's generation it was announced under, the number
+ * the backend gave the announcement among the thread's states, and the
+ * backend launch that numbered it.
+ */
+interface OfferedAction {
+  readonly threadId: string;
+  readonly gen: number;
+  readonly seq: number;
+  readonly launch: string;
+}
+
+// The offered actions by toast id; one leaves as its action is withdrawn,
+// its thread's state stops being kept here, or with its toast.
+const offered = new Map<string, OfferedAction>();
+
+function homeLaunch(): string {
+  return getTransportHelloFor(HOME_BACKEND)?.launchId ?? '';
+}
+
+/**
+ * Whether a state of the offer's thread says its list no longer resolves
+ * the download: it is numbered after the announcement and shows another
+ * generation (a clear, the thread's browser closing), or another launch
+ * of the backend made it.
+ */
+function stateDropsOffer(offer: OfferedAction, state: BrowserCompanionEvent, launch: string): boolean {
+  if (launch !== offer.launch) return true;
+  return (state.seq ?? 0) > offer.seq && (state.downloadsGen ?? 0) !== offer.gen;
+}
+
+observeBrowserCompanion({
+  stateAdmitted: (event) => {
+    const launch = homeLaunch();
+    for (const [toastId, offer] of offered) {
+      if (offer.threadId !== event.threadId || !stateDropsOffer(offer, event, launch)) continue;
+      offered.delete(toastId);
+      withdrawToastAction(toastId);
+    }
+  },
+  // No state of the thread is admitted any more, so none withdraws its
+  // offers; an action that no longer resolves answers that it is gone.
+  threadReleased: (threadId) => {
+    for (const [toastId, offer] of offered) if (offer.threadId === threadId) offered.delete(toastId);
+  },
+  resetForTest: () => offered.clear(),
+});
+
+/**
+ * Whether the announcement's action resolves as the window knows the
+ * thread now: the backend named the list generation that resolves it, and
+ * no state already admitted, numbered after it, drops it.
+ */
+function announcementResolves(offer: OfferedAction): boolean {
+  if (!offer.gen) return false;
+  const held = browserThreadSnapshot(offer.threadId);
+  return held.status !== 'known' || !stateDropsOffer(offer, held.snapshot, offer.launch);
+}
+
+function offerAction(toastId: string, offer: OfferedAction): void {
+  for (const id of offered.keys()) if (!toastShowing(id)) offered.delete(id);
+  offered.set(toastId, offer);
+}
+
+/** The backend's answer for a download its list no longer has (internal/app browserDownloadUnavailableCode). */
+function downloadUnavailable(err: unknown): boolean {
+  return err instanceof TransportError && err.code === 'browser_download_unavailable';
+}
 
 /** The thread's downloads, newest first; empty for none. */
 export function browserDownloads(threadId: string): BrowserDownload[] {
@@ -84,12 +164,15 @@ export type DownloadActionSource =
 
 /**
  * Runs one download action. A refusal lands in the pane's banner, or in a
- * toast when the thread has no pane open here (an action from a toast).
+ * toast when the thread has no pane open here (an action from a toast): a
+ * notice when the download is no longer in the list, an error otherwise.
  */
 async function act(from: DownloadActionSource, action: ThreadAction): Promise<BrowserActionFailure | null> {
   const threadId = from.kind === 'pane' ? from.pane.threadId : from.threadId;
   const failure = from.kind === 'pane' ? await actInPane(from.pane, action) : await browserCompanionAct(threadId, action);
-  if (failure && !browserPaneOpen(threadId)) addErrorToast(failure.error, failure.cause);
+  if (!failure || browserPaneOpen(threadId)) return failure;
+  if (downloadUnavailable(failure.cause)) addToast('info', 'That download is no longer in the browser\'s downloads list.');
+  else addErrorToast(failure.error, failure.cause);
   return failure;
 }
 
@@ -128,7 +211,9 @@ export function isBrowserDownloadAnnouncement(event: BrowserCompanionEvent | nul
  * A Kind "download" event: one of the thread's downloads settled other than
  * by the user's cancel. Only a page that can host the thread's browser
  * announces it; the events are not replayed, so each page announces one
- * once.
+ * once. A finished one's "Show in folder" is offered while the thread's
+ * list resolves it, and withdrawn from the toast when a state shows the
+ * list cleared or the thread's browser closed.
  */
 export function announceBrowserDownload(event: BrowserCompanionEvent): void {
   if (!event.threadId || !canUseNativeBrowser(event.threadId)) return;
@@ -141,10 +226,16 @@ export function announceBrowserDownload(event: BrowserCompanionEvent): void {
     return;
   }
   if (download.state === 'completed') {
-    addToast('success', `Downloaded ${download.name}`, FINISHED_TOAST_MS, {
+    const offer: OfferedAction = { threadId, gen: event.downloadsGen ?? 0, seq: event.seq ?? 0, launch: homeLaunch() };
+    if (!announcementResolves(offer)) {
+      addToast('success', `Downloaded ${download.name}`, FINISHED_TOAST_MS);
+      return;
+    }
+    const toastId = addToast('success', `Downloaded ${download.name}`, FINISHED_TOAST_MS, {
       label: 'Show in folder',
       run: () => void revealBrowserDownload({ kind: 'thread', threadId }, download.id),
     });
+    offerAction(toastId, offer);
     return;
   }
   const message = `${download.name} did not download: ${download.error || 'unknown error'}`;

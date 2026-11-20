@@ -82,6 +82,11 @@ type threadDownloadList struct {
 	resolvable []*threadDownload
 	// settles counts the items that settled (threadDownload.settled).
 	settles uint64
+	// gen is which settled items the list resolves: a new list and every
+	// clear take the Manager's next (Manager.downloadGens, from 1), so a
+	// download announced under one gen resolves while the list still has
+	// it (CompanionEvent.DownloadsGen).
+	gen uint64
 	// push is the pending coalesced state push, nil for none.
 	push *time.Timer
 }
@@ -159,11 +164,13 @@ func (l *threadDownloadList) find(id DownloadKey) *threadDownload {
 	return nil
 }
 
-// clear drops every settled item, shown or resolvable; running ones stay.
-func (l *threadDownloadList) clear() {
+// clear drops every settled item, shown or resolvable, and takes gen as the
+// list's; running ones stay.
+func (l *threadDownloadList) clear(gen uint64) {
 	l.shown = slices.DeleteFunc(l.shown, func(item *threadDownload) bool { return item.State != downloadStateRunning })
 	clear(l.resolvable)
 	l.resolvable = nil
+	l.gen = gen
 }
 
 // list answers the shown items, newest started first.
@@ -194,17 +201,35 @@ type downloadNote struct {
 	// progress is a change to the bytes alone, which a coalesced push carries.
 	progress bool
 	// announce is the download that just settled, to announce once; nil for
-	// none.
+	// none. gen is the generation of the list it settled in.
 	announce *ThreadDownload
+	gen      uint64
 }
 
 // threadListLocked answers the list of tb, the thread lifetime a page is a
 // tab of, made on first use. The caller holds m.downloadsMu.
 func (m *Manager) threadListLocked(tb *threadBrowser) *threadDownloadList {
 	if tb.downloads == nil {
-		tb.downloads = &threadDownloadList{}
+		tb.downloads = &threadDownloadList{gen: m.nextDownloadGenLocked()}
 	}
 	return tb.downloads
+}
+
+// nextDownloadGenLocked takes the next list generation. The caller holds
+// m.downloadsMu.
+func (m *Manager) nextDownloadGenLocked() uint64 {
+	m.downloadGens++
+	return m.downloadGens
+}
+
+// downloadGenLocked is the generation of tb's list for a state or an
+// announcement: zero for a lifetime with no list, which resolves no
+// download. The caller holds m.downloadsMu.
+func downloadGenLocked(tb *threadBrowser) uint64 {
+	if tb == nil || tb.downloads == nil {
+		return 0
+	}
+	return tb.downloads.gen
 }
 
 // noteDownloadStartLocked adds a page's new entry to its thread's list,
@@ -253,7 +278,7 @@ func (m *Manager) noteChangeLocked(p *managedPage, entry *DownloadInfo, started 
 		note.progress = true
 	case item.State != downloadStateRunning && wasRunning && entry.phase != rowUserCanceled:
 		announced := item.ThreadDownload
-		note.announce = &announced
+		note.announce, note.gen = &announced, p.owner.downloads.gen
 	}
 	return note
 }
@@ -288,9 +313,27 @@ func (m *Manager) publishDownloads(notes ...downloadNote) {
 	m.emitThreadState(threadID)
 	for _, note := range notes {
 		if note.announce != nil {
-			m.emit(CompanionEvent{Kind: "download", ThreadID: string(threadID), Download: note.announce})
+			m.emit(m.downloadAnnouncement(tb, note))
 		}
 	}
+}
+
+// downloadAnnouncement is the Kind "download" event of a note's settled
+// download, numbered among the thread's states (Seq) under m.mu: its
+// DownloadsGen is its list's generation when the list still resolves it
+// at that number, and zero when a clear or the thread's close dropped it
+// since, so a client never offers an action on it.
+func (m *Manager) downloadAnnouncement(tb *threadBrowser, note downloadNote) CompanionEvent {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.stateSeq++
+	event := CompanionEvent{Kind: "download", ThreadID: string(tb.id), Download: note.announce, Seq: m.stateSeq}
+	m.downloadsMu.Lock()
+	if downloadGenLocked(tb) == note.gen {
+		event.DownloadsGen = note.gen
+	}
+	m.downloadsMu.Unlock()
+	return event
 }
 
 // scheduleDownloadPush starts tb's coalesced state push unless one is
@@ -321,19 +364,16 @@ func (m *Manager) scheduleDownloadPush(tb *threadBrowser) {
 	list.push = timer
 }
 
-// threadDownloadsLocked answers tb's list for its state, newest first. The
-// caller holds m.mu; m.downloadsMu is taken inside it.
-func (m *Manager) threadDownloadsLocked(tb *threadBrowser) []ThreadDownload {
-	if tb == nil {
-		return nil
-	}
+// threadDownloadsLocked answers tb's list for its state, newest first, and
+// its generation. The caller holds m.mu; m.downloadsMu is taken inside it.
+func (m *Manager) threadDownloadsLocked(tb *threadBrowser) ([]ThreadDownload, uint64) {
 	m.downloadsMu.Lock()
 	defer m.downloadsMu.Unlock()
-	list := tb.downloads
-	if list == nil || len(list.shown) == 0 {
-		return nil
+	gen := downloadGenLocked(tb)
+	if gen == 0 || len(tb.downloads.shown) == 0 {
+		return nil, gen
 	}
-	return list.list()
+	return tb.downloads.list(), gen
 }
 
 // forgetThreadDownloads drops the list of tb, a lifetime CloseThread

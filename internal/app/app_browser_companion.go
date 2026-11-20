@@ -295,13 +295,14 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 		// unconfirmed, it is refused while a tab is live.
 		err = jarSwitchError(m.SetJar(ctx, access, cmd.jar, cmd.consent))
 	case kindDownloadCancel:
-		err = m.CancelThreadDownload(access, cmd.download)
+		err = downloadActionError(m.CancelThreadDownload(access, cmd.download))
 	case kindDownloadReveal:
-		err = m.RevealThreadDownload(ctx, access, cmd.download)
+		err = downloadActionError(m.RevealThreadDownload(ctx, access, cmd.download))
 	case kindDownloadOpen:
 		// A new tab showing the finished file.
 		var page appbrowser.PageInfo
 		page, err = m.OpenThreadDownload(ctx, access, cmd.download)
+		err = downloadActionError(err)
 		newPage = page.ID
 	case kindDownloadsClear:
 		err = m.ClearThreadDownloads(access)

@@ -307,7 +307,7 @@ func testCancelingADownloadSettlesItAsCanceled(t *testing.T, saving downloadSavi
 	if err := manager.CancelThreadDownload(access, DownloadKey(listed[0].ID)); err != nil {
 		t.Fatalf("a repeated cancel: %v", err)
 	}
-	if err := manager.CancelThreadDownload(access, "d-nonexistent"); !errors.Is(err, errDownloadNotFound) {
+	if err := manager.CancelThreadDownload(access, "d-nonexistent"); !errors.Is(err, ErrDownloadUnavailable) {
 		t.Fatalf("a cancel of an unknown download answers %v", err)
 	}
 }
@@ -580,6 +580,76 @@ func TestClearingDownloadsKeepsRunningOnesAndFiles(t *testing.T) {
 	}
 }
 
+// A finished download is announced under the generation of the list that
+// resolves it, numbered after the state listing it. A clear moves the list
+// to another generation, which the next state carries, and an action on
+// the cleared download is answered ErrDownloadUnavailable; an
+// announcement made after the clear names no generation, so it offers no
+// action.
+func TestADownloadsAnnouncementResolvesUntilItsListChanges(t *testing.T) {
+	manager, log, access, page := newDownloadManager(t)
+	var revealed []string
+	manager.revealFileInFileManager = func(_ context.Context, path string) error {
+		revealed = append(revealed, path)
+		return nil
+	}
+	startDownload(t, manager, access, page, "done.txt", 10)
+	var listed, announced CompanionEvent
+	for _, event := range log.take() {
+		switch event.Kind {
+		case "state":
+			listed = event
+		case "download":
+			if announced.Kind != "" {
+				t.Fatal("the download was announced twice")
+			}
+			announced = event
+		}
+	}
+	if announced.Kind == "" || announced.Download == nil || announced.Download.State != downloadStateCompleted {
+		t.Fatalf("the finish announced %+v, want the completed download", announced)
+	}
+	if announced.DownloadsGen == 0 || announced.DownloadsGen != listed.DownloadsGen || announced.Seq <= listed.Seq {
+		t.Fatalf("announced under generation %d at %d after a state of generation %d at %d, want the state's generation, numbered after it",
+			announced.DownloadsGen, announced.Seq, listed.DownloadsGen, listed.Seq)
+	}
+	id := DownloadKey(announced.Download.ID)
+	if err := manager.RevealThreadDownload(t.Context(), access, id); err != nil {
+		t.Fatalf("the announced download does not resolve before a clear: %v", err)
+	}
+	if len(revealed) != 1 || filepath.Base(revealed[0]) != "done.txt" {
+		t.Fatalf("the reveal before the clear showed %q, want done.txt", revealed)
+	}
+
+	if err := manager.ClearThreadDownloads(access); err != nil {
+		t.Fatal(err)
+	}
+	cleared := manager.CompanionState(access.Caller())
+	if cleared.DownloadsGen == announced.DownloadsGen || cleared.Seq <= announced.Seq {
+		t.Fatalf("after the clear the state has generation %d at %d, want another than %d, numbered after %d",
+			cleared.DownloadsGen, cleared.Seq, announced.DownloadsGen, announced.Seq)
+	}
+	for _, act := range []struct {
+		name string
+		do   func() error
+	}{
+		{"reveal", func() error { return manager.RevealThreadDownload(t.Context(), access, id) }},
+		{"open", func() error { _, err := manager.OpenThreadDownload(t.Context(), access, id); return err }},
+		{"cancel", func() error { return manager.CancelThreadDownload(access, id) }},
+	} {
+		if err := act.do(); !errors.Is(err, ErrDownloadUnavailable) {
+			t.Errorf("%s of the cleared download answered %v, want ErrDownloadUnavailable", act.name, err)
+		}
+	}
+	if len(revealed) != 1 {
+		t.Fatalf("the file manager was asked to show %q, want only the reveal before the clear", revealed)
+	}
+	late := manager.downloadAnnouncement(access.tb, downloadNote{tb: access.tb, announce: announced.Download, gen: announced.DownloadsGen})
+	if late.DownloadsGen != 0 {
+		t.Fatalf("an announcement made after the clear names generation %d, want none", late.DownloadsGen)
+	}
+}
+
 // The thread's list keeps maxThreadDownloads settled downloads, dropping the
 // one that settled first, and every running one.
 func TestTheThreadListIsBoundedAndKeepsRunningDownloads(t *testing.T) {
@@ -736,7 +806,7 @@ func testRevealingADownloadShowsItsFile(t *testing.T, saving downloadSaving, gon
 	}
 	// Another thread cannot reach this thread's download.
 	other := manager.Bind(Caller{ThreadID: "other", Workspace: access.Workspace})
-	if err := manager.RevealThreadDownload(t.Context(), other, DownloadKey(download.ID)); !errors.Is(err, errDownloadNotFound) {
+	if err := manager.RevealThreadDownload(t.Context(), other, DownloadKey(download.ID)); !errors.Is(err, ErrDownloadUnavailable) {
 		t.Fatalf("another thread's reveal answers %v", err)
 	}
 }

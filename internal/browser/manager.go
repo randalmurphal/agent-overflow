@@ -165,8 +165,10 @@ type Manager struct {
 	// downloadsMu guards each thread lifetime's downloads as its pane lists
 	// them (threadBrowser.downloads, downloads_thread.go). It is taken
 	// inside m.mu and inside a page's download log hold, and never held
-	// around either.
+	// around either. downloadGens is the last list generation taken
+	// (threadDownloadList.gen), guarded by it too.
 	downloadsMu  sync.Mutex
+	downloadGens uint64
 	downloadKeys atomic.Uint64
 	// staged is each running staged download's file by engine id
 	// (stageDownload in downloads.go). Guarded by stagedMu, which is taken

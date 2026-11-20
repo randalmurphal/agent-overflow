@@ -74,8 +74,15 @@ type CompanionEvent struct {
 	// one download settled other than by the user's cancel, announced once.
 	Downloads []ThreadDownload `json:"downloads,omitempty"`
 	Download  *ThreadDownload  `json:"download,omitempty"`
+	// DownloadsGen rides both: a state's is the generation of the list it
+	// shows, which a clear or the thread's close changes, zero for none; a
+	// download's is the generation that resolves it as of its Seq, zero
+	// when none does. An action announced under one resolves until a state
+	// numbered after it carries another (downloads_thread.go).
+	DownloadsGen uint64 `json:"downloadsGen,omitempty"`
 	// Seq rides a Kind "state" event: this process's number for the
-	// snapshot, taken under the manager's lock as the snapshot is read.
+	// snapshot, taken under the manager's lock as the snapshot is read. A
+	// Kind "download" event takes one from the same count as it is made.
 	// Snapshots are published after that lock is released, and calls answer
 	// with one, so a client keeps the highest Seq it has seen for a thread.
 	Seq uint64 `json:"seq,omitempty"`
