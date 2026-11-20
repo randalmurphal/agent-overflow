@@ -69,12 +69,12 @@ func (e *fakeEnv10) complete(t *testing.T, hr uintptr, controller *fakeControlle
 	}
 	handler := e.pending[0]
 	e.pending = e.pending[1:]
-	var ptr uintptr
-	if controller != nil {
-		ptr = uintptr(unsafe.Pointer(controller))
-	}
-	_, _, _ = controllerCompletedVtbl.Invoke.Call(uintptr(unsafe.Pointer(handler)), hr, ptr)
-	if controller != nil {
+	if controller == nil {
+		_, _, _ = controllerCompletedVtbl.Invoke.Call(uintptr(unsafe.Pointer(handler)), hr, 0)
+	} else {
+		// Converted in the call's arguments, so the controller is kept
+		// where it is until the call returns.
+		_, _, _ = controllerCompletedVtbl.Invoke.Call(uintptr(unsafe.Pointer(handler)), hr, uintptr(unsafe.Pointer(controller)))
 		// WebView2's own reference, held across the call.
 		controller.refs--
 	}

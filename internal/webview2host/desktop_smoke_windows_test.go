@@ -110,11 +110,14 @@ func runOnPrivateDesktop() (int, error) {
 		return 0, fmt.Errorf("CreateJobObject: %w", err)
 	}
 	defer func() { _ = windows.CloseHandle(job) }()
-	limits := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{}
+	// The limits are on the heap, where they stay put, and kept alive past
+	// the call, which receives them only as an integer.
+	limits := new(windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION)
 	limits.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-	if _, err := windows.SetInformationJobObject(job, windows.JobObjectExtendedLimitInformation, uintptr(unsafe.Pointer(&limits)), uint32(unsafe.Sizeof(limits))); err != nil {
+	if _, err := windows.SetInformationJobObject(job, windows.JobObjectExtendedLimitInformation, uintptr(unsafe.Pointer(limits)), uint32(unsafe.Sizeof(*limits))); err != nil {
 		return 0, fmt.Errorf("SetInformationJobObject: %w", err)
 	}
+	runtime.KeepAlive(limits)
 
 	exe, err := os.Executable()
 	if err != nil {

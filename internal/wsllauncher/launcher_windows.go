@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"runtime"
 	"syscall"
 	"time"
 	"unsafe"
@@ -313,7 +314,10 @@ func newPlatformLauncher() (platformLauncher, error) {
 	// managed by the Host Compute Service (HCS), not by our job —
 	// killing wsl.exe signals HCS to tear down the session regardless
 	// of whether helper processes broke away.
-	info := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{
+	//
+	// The limits are on the heap, where they stay put, and kept alive past
+	// the call, which receives them only as an integer.
+	info := &windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{
 		BasicLimitInformation: windows.JOBOBJECT_BASIC_LIMIT_INFORMATION{
 			LimitFlags: windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE |
 				windows.JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK,
@@ -322,12 +326,13 @@ func newPlatformLauncher() (platformLauncher, error) {
 	if _, err := windows.SetInformationJobObject(
 		job,
 		windows.JobObjectExtendedLimitInformation,
-		uintptr(unsafe.Pointer(&info)),
-		uint32(unsafe.Sizeof(info)),
+		uintptr(unsafe.Pointer(info)),
+		uint32(unsafe.Sizeof(*info)),
 	); err != nil {
 		_ = windows.CloseHandle(job)
 		return nil, fmt.Errorf("SetInformationJobObject: %w", err)
 	}
+	runtime.KeepAlive(info)
 
 	return &jobObjectLauncher{handle: job}, nil
 }

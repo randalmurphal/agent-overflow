@@ -117,7 +117,7 @@ func TestALateInvokeOfADetachedHandlerIsANoOp(t *testing.T) {
 	base := comRootCount()
 	calls := 0
 	count := func() { calls++ }
-	fakeArgs := uintptr(unsafe.Pointer(new(iAcceleratorKeyPressedEventArgs)))
+	fakeArgs := new(iAcceleratorKeyPressedEventArgs)
 	result, err := windows.UTF16PtrFromString(`{"targetInfo":{}}`)
 	if err != nil {
 		t.Fatal(err)
@@ -131,7 +131,7 @@ func TestALateInvokeOfADetachedHandlerIsANoOp(t *testing.T) {
 	controller := newControllerCompletedHandler(func(uintptr, *iCoreWebView2Controller) { count() })
 	invoke := func() {
 		_, _, _ = processFailedVtbl.Invoke.Call(uintptr(unsafe.Pointer(failed)), 0, 0)
-		_, _, _ = acceleratorKeyPressedVtbl.Invoke.Call(uintptr(unsafe.Pointer(pressed)), 0, fakeArgs)
+		_, _, _ = acceleratorKeyPressedVtbl.Invoke.Call(uintptr(unsafe.Pointer(pressed)), 0, uintptr(unsafe.Pointer(fakeArgs)))
 		_, _, _ = findStartCompletedVtbl.Invoke.Call(uintptr(unsafe.Pointer(find)), 0)
 		_, _, _ = devToolsCompletedVtbl.Invoke.Call(uintptr(unsafe.Pointer(devtools)), 0, uintptr(unsafe.Pointer(result)))
 		_, _, _ = environmentCompletedVtbl.Invoke.Call(uintptr(unsafe.Pointer(env)), 1, 0)

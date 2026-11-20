@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -31,7 +32,9 @@ func installHarnessBoundary(limit uint64) error {
 	if err != nil {
 		return fmt.Errorf("CreateJobObject: %w", err)
 	}
-	info := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{
+	// The limits are on the heap, where they stay put, and kept alive past
+	// the call, which receives them only as an integer.
+	info := &windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{
 		BasicLimitInformation: windows.JOBOBJECT_BASIC_LIMIT_INFORMATION{
 			LimitFlags: windows.JOB_OBJECT_LIMIT_JOB_MEMORY |
 				windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE |
@@ -42,12 +45,13 @@ func installHarnessBoundary(limit uint64) error {
 	if _, err := windows.SetInformationJobObject(
 		job,
 		windows.JobObjectExtendedLimitInformation,
-		uintptr(unsafe.Pointer(&info)),
-		uint32(unsafe.Sizeof(info)),
+		uintptr(unsafe.Pointer(info)),
+		uint32(unsafe.Sizeof(*info)),
 	); err != nil {
 		_ = windows.CloseHandle(job)
 		return fmt.Errorf("SetInformationJobObject(memory): %w", err)
 	}
+	runtime.KeepAlive(info)
 	process, err := windows.OpenProcess(
 		windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE,
 		false,
