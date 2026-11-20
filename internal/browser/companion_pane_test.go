@@ -1,6 +1,7 @@
 package browser
 
 import (
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -394,5 +395,32 @@ func TestAnOverlayPlacementWithNoPixelLeftIsHidden(t *testing.T) {
 	}
 	if layout, _, ok := overlayPaneLayout(placement, 640, 360); ok {
 		t.Fatalf("a placement with no overlay pixel lays out as %+v", layout)
+	}
+}
+
+// devToolsPaneHost is a pane host with an inspector whose open answers err.
+type devToolsPaneHost struct {
+	*recordingPaneHost
+	err error
+}
+
+func (e *devToolsPaneHost) OpenPageDevTools(ids.PageHandle) error { return e.err }
+
+// The devtools request answers what the engine's open answered, and an
+// engine with no inspector refuses.
+func TestOpenPaneDevToolsAnswersTheEngine(t *testing.T) {
+	manager, engine, access, first, _ := newPaneHostManager(t)
+	inspector := &devToolsPaneHost{recordingPaneHost: engine, err: errors.New("the inspector would not open")}
+	manager.engine = inspector
+	if err := manager.OpenPaneDevTools(t.Context(), access, PageID(first)); !errors.Is(err, inspector.err) {
+		t.Fatalf("a failed open answered %v", err)
+	}
+	inspector.err = nil
+	if err := manager.OpenPaneDevTools(t.Context(), access, PageID(first)); err != nil {
+		t.Fatalf("an open answered %v", err)
+	}
+	manager.engine = engine
+	if err := manager.OpenPaneDevTools(t.Context(), access, PageID(first)); err == nil {
+		t.Fatal("an engine with no inspector opened devtools")
 	}
 }

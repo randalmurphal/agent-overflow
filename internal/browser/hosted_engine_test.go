@@ -417,7 +417,12 @@ func TestHostedEngineBoundsAndDevToolsEmitValidDirectives(t *testing.T) {
 		t.Fatal("an 800x600 pane must place a 1280x720 page")
 	}
 	engine.SetPageBounds("page1", placement)
-	engine.OpenPageDevTools("page1")
+	if err := engine.OpenPageDevTools("page1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.OpenPageDevTools(""); err == nil {
+		t.Fatal("a devtools directive the launcher would refuse was reported sent")
+	}
 	sink.expectOps(t, webview2host.OpBounds, webview2host.OpDevTools)
 
 	bounds := sink.next(t)

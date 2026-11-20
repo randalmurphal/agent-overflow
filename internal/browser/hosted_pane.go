@@ -258,8 +258,13 @@ func (e *hostedEngine) setBounds(handle ids.PageHandle, placement PanePlacement)
 	return true
 }
 
-func (e *hostedEngine) OpenPageDevTools(handle ids.PageHandle) {
-	e.dispatch(webview2host.Directive{Op: webview2host.OpDevTools, PageID: string(handle)})
+// OpenPageDevTools sends the devtools directive; a directive the pane host
+// cannot take fails the request.
+func (e *hostedEngine) OpenPageDevTools(handle ids.PageHandle) error {
+	if !e.dispatch(webview2host.Directive{Op: webview2host.OpDevTools, PageID: string(handle)}) {
+		return fmt.Errorf("browser: open devtools: the pane host refused the request")
+	}
+	return nil
 }
 
 // setShown reports whether the visibility actually changed for a page this

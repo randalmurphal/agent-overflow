@@ -4,6 +4,7 @@ package browser
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"strconv"
 	"strings"
@@ -108,10 +109,15 @@ func (e *webkitEngine) FocusPage(handle ids.PageHandle, req focusRequest) (focus
 
 var _ paneHost = (*webkitEngine)(nil)
 
-func (e *webkitEngine) OpenPageDevTools(handle ids.PageHandle) {
-	if p := webkitPaneTarget(handle); p != nil {
-		_ = webkitOpenInspector(p.liveView())
+func (e *webkitEngine) OpenPageDevTools(handle ids.PageHandle) error {
+	p := webkitPaneTarget(handle)
+	if p == nil {
+		return fmt.Errorf("browser: open devtools: %w", errViewClosed)
 	}
+	if err := webkitOpenInspector(p.liveView()); err != nil {
+		return fmt.Errorf("browser: open devtools: %w", err)
+	}
+	return nil
 }
 
 // forgetPane drops a closed page's presentation bookkeeping. The view itself
