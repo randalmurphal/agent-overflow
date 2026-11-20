@@ -281,6 +281,6 @@ func (m *Manager) addLoadedRecords(file pageRecordFile) {
 	}
 	tb.session.ActivePageID = file.ActivePageID
 	tb.session.Jar = loadedJar(file.Jar)
+	m.repairActivePageLocked(tb)
 	m.mu.Unlock()
-	m.repairActivePage(tb)
 }

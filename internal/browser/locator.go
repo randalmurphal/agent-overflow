@@ -58,11 +58,11 @@ func (m *Manager) Locator(ctx context.Context, access Access, opts LocatorOption
 	}
 	result := LocatorResult{Count: len(matches)}
 	downloadAfter := p.downloads.lastSequence()
-	var before navigationMark
+	var before pageNavigation
 	if opts.ExpectNavigation {
 		// Without the page's navigation before the action, nothing after
 		// it could tell a navigation apart: the action is not taken.
-		if before, err = p.driver.NavigationMark(opCtx); err != nil {
+		if before, err = readNavigation(opCtx, p); err != nil {
 			return LocatorResult{}, fmt.Errorf("browser: read the page's navigation before the action: %w", err)
 		}
 	}

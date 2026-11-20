@@ -162,7 +162,7 @@ func (m *Manager) restorePage(ctx context.Context, access Access, rec *suspended
 		// its engine reported fails the restore, leaving the tab suspended,
 		// and a crash leaves it the crashed tab a listed page's crash does.
 		verdict := p.unlistedEnd.Verdict(err != nil)
-		outcome := m.unlistedOutcomeLocked(p, !closing && held == nil, verdict)
+		outcome := m.unlistedOutcomeLocked(p, !closing && held == nil, scope, verdict)
 		failure := crashFailure(verdict.CrashReason())
 		switch outcome {
 		case listLive:

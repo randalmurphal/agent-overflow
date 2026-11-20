@@ -109,7 +109,8 @@ per-platform no-op.
   the record leaves the slot to the page. Any restore is admitted only while
   its record exists, and forgetting a record (closing the tab, clearing site
   data, turning the browser off) cancels its restore. A per-thread jar generation fences a create or restore that
-  began before the switch, so it lands in the new jar; a popup is admitted
+  began before the switch, so it lands in the new jar, whatever ended it
+  in the old one (a crash or close there decides nothing); a popup is admitted
   only beside a live opener, which a switch has already closed.
 - A thread gets an opaque MCP URL capability at provider-session start, and
   session end revokes it. Its registration does not create a profile or page.

@@ -261,7 +261,33 @@ func (m *Manager) waitForPage(ctx context.Context, p *managedPage, urlPattern, l
 	}
 }
 
-func (m *Manager) waitForNavigation(ctx context.Context, p *managedPage, before navigationMark, urlPattern, loadState string) error {
+// pageNavigation tells p's navigations apart: its engine's mark and the
+// documents its main frame committed (docEpoch), which a reload advances
+// where an engine's mark (WebKit's address and history length) stays.
+type pageNavigation struct {
+	mark    navigationMark
+	commits uint64
+}
+
+// readNavigation reads p's navigation; the commits are read after the mark,
+// so a commit before the read is part of it.
+func readNavigation(ctx context.Context, p *managedPage) (pageNavigation, error) {
+	mark, err := p.driver.NavigationMark(ctx)
+	if err != nil {
+		return pageNavigation{}, err
+	}
+	return pageNavigation{mark: mark, commits: p.docEpoch.Load()}, nil
+}
+
+// movedFrom reports whether a navigation happened between before and n.
+func (n pageNavigation) movedFrom(before pageNavigation) bool {
+	if n.commits != before.commits || n.mark.URL != before.mark.URL {
+		return true
+	}
+	return before.mark.Loader != "" && n.mark.Loader != "" && n.mark.Loader != before.mark.Loader
+}
+
+func (m *Manager) waitForNavigation(ctx context.Context, p *managedPage, before pageNavigation, urlPattern, loadState string) error {
 	ticker := time.NewTicker(25 * time.Millisecond)
 	defer ticker.Stop()
 	// readErr is the last read's failure. A page in the middle of a
@@ -269,16 +295,10 @@ func (m *Manager) waitForNavigation(ctx context.Context, p *managedPage, before 
 	// reads again, and a wait that ends on one says so.
 	var readErr error
 	for {
-		current, err := p.driver.NavigationMark(ctx)
+		current, err := readNavigation(ctx, p)
 		readErr = err
-		if err == nil {
-			changed := current.URL != before.URL
-			if before.Loader != "" && current.Loader != "" && current.Loader != before.Loader {
-				changed = true
-			}
-			if changed {
-				return m.waitForPage(ctx, p, urlPattern, loadState)
-			}
+		if err == nil && current.movedFrom(before) {
+			return m.waitForPage(ctx, p, urlPattern, loadState)
 		}
 		select {
 		case <-ctx.Done():
