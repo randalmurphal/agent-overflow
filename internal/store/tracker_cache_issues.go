@@ -54,6 +54,12 @@ type MirrorChanges struct {
 	// StructureDue reports that the board is due a structure read after a
 	// row page write (MirrorSync.StructureDueAt).
 	StructureDue bool
+	// CursorRefused reports that WriteMirrorRowPage stored the page's rows
+	// but not its cursor: the board's estimate definition changed since
+	// the walk began (MirrorRowPage.EstimateResetAt), or the page's read
+	// began no later than the change. The caller stops the walk and starts
+	// again from the sync state.
+	CursorRefused bool
 }
 
 // mirrorCardRow is a card as the card statements read it from JSON, with

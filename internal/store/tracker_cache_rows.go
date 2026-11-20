@@ -18,19 +18,22 @@ type MirrorRow struct {
 // MirrorRowPage is one read of a board's rows: the rows, the issues asked
 // for that the board no longer lists (Missing), the users and statuses
 // they name, when the read began (ReadAt), and the board's lifetime its
-// caller captured before the read (MirrorSync.Lifetime).
+// caller captured before the read (MirrorSync.Lifetime). A page of a
+// cursor walk names the board's estimate reset captured with the cursor
+// the walk began from (MirrorSync.EstimateResetAt).
 type MirrorRowPage struct {
-	BoardID  string
-	Lifetime int64
-	Rows     []MirrorRow
-	Missing  []string
-	Catalog  MirrorCatalog
-	ReadAt   int64
+	BoardID         string
+	Lifetime        int64
+	EstimateResetAt int64
+	Rows            []MirrorRow
+	Missing         []string
+	Catalog         MirrorCatalog
+	ReadAt          int64
 }
 
 func (p MirrorRowPage) check() error {
 	switch {
-	case p.BoardID == "" || p.ReadAt <= 0:
+	case p.BoardID == "" || p.ReadAt <= 0 || p.EstimateResetAt < 0:
 		return fmt.Errorf("%w: rows need their board and the time their read began", ErrInvalidTrackerCache)
 	case len(p.Rows)+len(p.Missing) > mirrorMaxPageRows:
 		return fmt.Errorf("%w: a page of %d rows and %d missing issues, over %d", ErrInvalidTrackerCache, len(p.Rows), len(p.Missing), mirrorMaxPageRows)
@@ -58,7 +61,13 @@ func (p MirrorRowPage) check() error {
 // cursor that page returned (nil: the next walk starts over), in one
 // transaction: either all of it lands or none. A card is stored unless the
 // mirror holds a later version; a row's order key and estimate, and the
-// cursor, unless a read that began later was admitted for them. An
+// cursor, unless a read that began later was admitted for them. The cursor
+// is stored only when page.EstimateResetAt is the board's current estimate
+// reset and the page's read began after it: a walk begun under an earlier
+// estimate definition passed rows whose numbers are in that definition,
+// and a page read no later than the reset holds rows reads show as
+// unknown, so its cursor is refused (MirrorChanges.CursorRefused) and the
+// rows are stored. An
 // identical page from a later read moves the rows' and the cursor's read
 // times alone; one from the same read writes nothing. A read with no rows
 // that returned the stored cursor need not be written: recording it as
@@ -87,14 +96,15 @@ const (
 	// or a later read stored other content), to write (new and addable, or
 	// other content from a read no earlier), or to advance (identical
 	// content stored by an earlier read, whose read time alone moves), and
-	// whether it names a reference the mirror lacks (mirrorRowLacksSQL).
+	// whether it names a reference the mirror lacks (mirrorRowLacksSQL),
+	// with its place in the page.
 	mirrorRowsStateSQL = `SELECT c.value ->> 'i',
 		    (b.root_id IS NULL AND NOT ?5) OR i.updated_at > c.value ->> 'u'
 		      OR (b.read_at > ?4 AND (b.order_key IS NOT c.value ->> 'o' OR b.estimate IS NOT c.value ->> 'e')),
 		    (b.root_id IS NULL AND ?5)
 		      OR (b.read_at <= ?4 AND (b.order_key IS NOT c.value ->> 'o' OR b.estimate IS NOT c.value ->> 'e')),
 		    b.read_at < ?4 AND b.order_key IS c.value ->> 'o' AND b.estimate IS c.value ->> 'e',
-		    ` + mirrorRowLacksSQL + `
+		    ` + mirrorRowLacksSQL + `, c.key
 		  FROM json_each(?2) c
 		  LEFT JOIN tracker_cache_issues i ON i.root_id = ?1 AND i.issue_id = c.value ->> 'i'
 		  LEFT JOIN tracker_cache_board_issues b ON b.root_id = ?1 AND b.issue_id = c.value ->> 'i' AND b.board_id = ?3`
@@ -140,19 +150,23 @@ func (s *Store) writeMirrorRows(rootID int64, page MirrorRowPage, withCursor boo
 			return err
 		}
 		if len(rows) > 0 {
-			if err := writeMirrorRowsTx(tx, rootID, page, encoded, addsRows, board, &changes); err != nil {
+			if err := writeMirrorRowsTx(tx, rootID, page, rows, encoded, addsRows, board, &changes); err != nil {
 				return err
 			}
 		} else {
-			changes.StructureDue = board.structureDueAt > 0
+			changes.StructureDue = board.structureDueAt() > 0
 		}
 		if err := removeMirrorRowsTx(tx, rootID, page, board.rowsRemovedAt, &changes); err != nil {
 			return err
 		}
-		if withCursor {
-			return writeMirrorCursorTx(tx, rootID, page.BoardID, cursor, page.ReadAt)
+		switch {
+		case !withCursor:
+			return nil
+		case page.EstimateResetAt != board.estimateResetAt || page.ReadAt <= board.estimateResetAt:
+			changes.CursorRefused = true
+			return nil
 		}
-		return nil
+		return writeMirrorCursorTx(tx, rootID, page.BoardID, cursor, page.ReadAt)
 	})
 	if err != nil {
 		return MirrorChanges{}, err
@@ -166,35 +180,82 @@ func (s *Store) writeMirrorRows(rootID int64, page MirrorRowPage, withCursor boo
 const mirrorRowLacksSQL = `(c.value ->> 's' <> ''
 	      AND NOT EXISTS (SELECT 1 FROM tracker_cache_statuses st WHERE st.root_id = ?1 AND st.status_id = c.value ->> 's')
 	      AND NOT EXISTS (SELECT 1 FROM tracker_cache_board_unexplained u
-	                       WHERE u.root_id = ?1 AND u.board_id = ?3 AND u.kind = 1 AND u.ref_id = c.value ->> 's'))
+	                       WHERE u.root_id = ?1 AND u.board_id = ?3 AND u.kind = 1 AND u.ref_id = c.value ->> 's' AND u.named_at = 0))
 	    OR (c.value ->> 'a' <> ''
 	      AND NOT EXISTS (SELECT 1 FROM tracker_cache_users us WHERE us.root_id = ?1 AND us.user_id = c.value ->> 'a')
 	      AND NOT EXISTS (SELECT 1 FROM tracker_cache_board_unexplained u
-	                       WHERE u.root_id = ?1 AND u.board_id = ?3 AND u.kind = 2 AND u.ref_id = c.value ->> 'a'))
+	                       WHERE u.root_id = ?1 AND u.board_id = ?3 AND u.kind = 2 AND u.ref_id = c.value ->> 'a' AND u.named_at = 0))
 	    OR EXISTS (SELECT 1 FROM json_each(c.value -> 'm') m
 	      WHERE NOT EXISTS (SELECT 1 FROM tracker_cache_sprints sp WHERE sp.root_id = ?1 AND sp.board_id = ?3 AND sp.sprint_id = m.value)
 	        AND NOT EXISTS (SELECT 1 FROM tracker_cache_board_unexplained u
-	                         WHERE u.root_id = ?1 AND u.board_id = ?3 AND u.kind = 3 AND u.ref_id = m.value))`
+	                         WHERE u.root_id = ?1 AND u.board_id = ?3 AND u.kind = 3 AND u.ref_id = m.value AND u.named_at = 0))`
+
+// mirrorRowsPendingSQL marks pending each reference of the JSON list ?2
+// of mirrorRefRow, named by rows of board ?3, that the mirror lacks, as
+// named by the page's read ?4: a new mark, or a pending one the
+// structure's read ?5 began after, which makes the board due again.
+// An unexplained mark stays as it is.
+const mirrorRowsPendingSQL = `INSERT INTO tracker_cache_board_unexplained(root_id, board_id, kind, ref_id, named_at)
+	SELECT ?1, ?3, r.value ->> 'k', r.value ->> 'r', ?4 FROM json_each(?2) r
+	 WHERE CASE r.value ->> 'k'
+	   WHEN 1 THEN NOT EXISTS (SELECT 1 FROM tracker_cache_statuses st WHERE st.root_id = ?1 AND st.status_id = r.value ->> 'r')
+	   WHEN 2 THEN NOT EXISTS (SELECT 1 FROM tracker_cache_users us WHERE us.root_id = ?1 AND us.user_id = r.value ->> 'r')
+	   ELSE NOT EXISTS (SELECT 1 FROM tracker_cache_sprints sp WHERE sp.root_id = ?1 AND sp.board_id = ?3 AND sp.sprint_id = r.value ->> 'r') END
+	ON CONFLICT(root_id, board_id, kind, ref_id) DO UPDATE SET named_at = excluded.named_at
+	WHERE named_at > 0 AND named_at < ?5 AND excluded.named_at > named_at`
+
+// mirrorRefRow is a reference a row names, as mirrorRowsPendingSQL reads
+// it: its kind (1 status, 2 user, 3 sprint) and ID.
+type mirrorRefRow struct {
+	Kind int    `json:"k"`
+	ID   string `json:"r"`
+}
+
+// mirrorRefsOf is the distinct references rows name.
+func mirrorRefsOf(rows []mirrorCardRow) []mirrorRefRow {
+	seen := map[mirrorRefRow]bool{}
+	var refs []mirrorRefRow
+	add := func(kind int, id string) {
+		if ref := (mirrorRefRow{Kind: kind, ID: id}); id != "" && !seen[ref] {
+			seen[ref] = true
+			refs = append(refs, ref)
+		}
+	}
+	for _, row := range rows {
+		add(1, row.Status)
+		add(2, row.Assignee)
+		for _, sprint := range row.Sprints {
+			add(3, sprint)
+		}
+	}
+	return refs
+}
 
 // writeMirrorRowsTx stores the page's cards and rows: one statement sorts
 // the rows, then the card statements, the row upsert when a row is to be
-// written, and the read-time move when one is identical. A stored row
-// that names a reference the mirror lacks makes the board due a structure
-// read as of the page's read, one statement more.
-func writeMirrorRowsTx(tx *sql.Tx, rootID int64, page MirrorRowPage, encoded string, addsRows bool, board mirrorBoard,
-	changes *MirrorChanges) error {
-	var write, lacks bool
+// written, and the read-time move when one is identical. A row the page
+// does not supersede that names a reference the mirror lacks and has not
+// marked unexplained marks it pending (mirrorRowsPendingSQL), one
+// statement more, which makes the board due a structure read when the
+// page began no earlier than the structure's read.
+func writeMirrorRowsTx(tx *sql.Tx, rootID int64, page MirrorRowPage, rows []mirrorCardRow, encoded string, addsRows bool,
+	board mirrorBoard, changes *MirrorChanges) error {
+	var write bool
 	var advance []string
+	var lacking []mirrorCardRow
 	err := scanMirrorRows(tx, mirrorRowsStateSQL, []any{rootID, encoded, page.BoardID, page.ReadAt, addsRows}, func(r rowScanner) error {
 		var id string
 		var superseded, writes, advances, rowLacks sql.NullBool
-		if err := r.Scan(&id, &superseded, &writes, &advances, &rowLacks); err != nil {
+		var at int
+		if err := r.Scan(&id, &superseded, &writes, &advances, &rowLacks, &at); err != nil {
 			return err
 		}
 		if superseded.Bool {
 			changes.Superseded = append(changes.Superseded, id)
 		}
-		lacks = lacks || rowLacks.Bool && !superseded.Bool
+		if rowLacks.Bool && !superseded.Bool {
+			lacking = append(lacking, rows[at])
+		}
 		write = write || writes.Bool
 		if advances.Bool {
 			advance = append(advance, id)
@@ -222,13 +283,16 @@ func writeMirrorRowsTx(tx *sql.Tx, rootID int64, page MirrorRowPage, encoded str
 			return fmt.Errorf("record the rows' read: %w", err)
 		}
 	}
-	if lacks && page.ReadAt > board.structureDueAt {
-		if _, err := tx.Exec(`UPDATE tracker_cache_boards SET structure_due_at = ?3
-			WHERE root_id = ?1 AND board_id = ?2 AND structure_due_at < ?3`, rootID, page.BoardID, page.ReadAt); err != nil {
-			return fmt.Errorf("make the structure due: %w", err)
+	if len(lacking) > 0 {
+		list, err := encodeMirrorJSON(mirrorRefsOf(lacking))
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(mirrorRowsPendingSQL, rootID, list, page.BoardID, page.ReadAt, board.readAt); err != nil {
+			return fmt.Errorf("mark lacking references: %w", err)
 		}
 	}
-	changes.StructureDue = lacks || board.structureDueAt > 0
+	changes.StructureDue = board.structureDueAt() > 0 || len(lacking) > 0 && page.ReadAt >= board.readAt
 	return nil
 }
 

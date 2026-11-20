@@ -61,7 +61,7 @@ func TestReplaceMirrorStructureReportsChanges(t *testing.T) {
 		edited := webStructure()
 		edit(&edited)
 		edited.ReadAt = 2
-		if got, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, edited)); err != nil || got != (MirrorWrite{Changed: true}) {
+		if got, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, edited)); err != nil || got.MirrorWrite != (MirrorWrite{Changed: true}) {
 			t.Errorf("%s: %+v, %v", name, got, err)
 			continue
 		}
@@ -70,7 +70,7 @@ func TestReplaceMirrorStructureReportsChanges(t *testing.T) {
 		if got := mustGetMirrorBoard(t, s, root, "10"); !reflect.DeepEqual(got, readBack) {
 			t.Errorf("%s: board = %+v\nwant %+v", name, got, readBack)
 		}
-		if got, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, edited)); err != nil || got != (MirrorWrite{}) {
+		if got, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, edited)); err != nil || got.MirrorWrite != (MirrorWrite{}) {
 			t.Errorf("%s again: %+v, %v", name, got, err)
 		}
 	}
@@ -90,7 +90,7 @@ func TestMirrorStructureFollowsItsReadOrder(t *testing.T) {
 	early.ReadAt = 10
 	early.Board.Name = "Old name"
 	early.Catalog.Users[0].Name = "Old user"
-	if got, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, early)); err != nil || got != (MirrorWrite{Superseded: true}) {
+	if got, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, early)); err != nil || got.MirrorWrite != (MirrorWrite{Superseded: true}) {
 		t.Fatalf("earlier read = %+v, %v", got, err)
 	}
 	assertMirrorBoard(t, s, root, webStructure())
@@ -100,7 +100,7 @@ func TestMirrorStructureFollowsItsReadOrder(t *testing.T) {
 	assertRows(t, s.db, `SELECT read_at FROM tracker_cache_boards WHERE board_id = '10'`, "30")
 	assertRows(t, s.db, `SELECT read_at || ' ' || changed_at FROM tracker_cache_users`, "30 20")
 	early.ReadAt = 25
-	if got, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, early)); err != nil || got != (MirrorWrite{Superseded: true}) {
+	if got, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, early)); err != nil || got.MirrorWrite != (MirrorWrite{Superseded: true}) {
 		t.Fatalf("read between the two = %+v, %v", got, err)
 	}
 	assertRows(t, s.db, `SELECT read_at || ' ' || name FROM tracker_cache_boards WHERE board_id = '10'`, "30 WEB board")

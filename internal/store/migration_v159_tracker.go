@@ -63,23 +63,26 @@ package store
 //     refused. retired is set when the board's last listing goes; a retired
 //     board is absent to reads and writes, FinishMirrorCleanup drains it,
 //     and a board listed again gets a new lifetime then.
-//     structure_due_at is the latest read of a row page that named a
-//     status, user or sprint the mirror lacked and had not marked
-//     unexplained: the board is due a structure read until one that began
-//     no earlier is stored.
 //     estimate_reset_at is the read of the latest structure that changed
 //     the board's estimate definition: a row read no later than it may hold
-//     a number in the old definition, which reads show as unknown, and a
-//     row read again after it advances its issue's boards_rev
-//     (trg_tracker_cache_board_rows_estimate_reread). rows_removed_at
+//     a number in the old definition, which reads show as unknown, a row
+//     read again after it advances its issue's boards_rev
+//     (trg_tracker_cache_board_rows_estimate_reread), and a row page
+//     stores its cursor only when it names the value its walk began under.
+//     rows_removed_at
 //     is the latest read that found issues gone from the board: a read
 //     that began before it adds no row.
 //   - tracker_cache_board_unexplained: a status (kind 1), user (2) or
-//     sprint (3) the board's rows named that a complete structure read did
-//     not supply; a row naming it no longer makes the board due. A
-//     structure read that supplies it removes the mark, and each complete
-//     one that clears the board's due state replaces the board's marks
-//     with what its rows name then.
+//     sprint (3) a page of the board's rows named that the mirror lacked.
+//     named_at is the read of the page that named it while pending; the
+//     board is due a structure read while a pending mark is no earlier
+//     than the structure's read_at (idx_tracker_cache_board_unexplained_pending
+//     serves that probe). A complete structure read turns the pending
+//     marks no later than it into unexplained ones (named_at zero), a
+//     chunk per transaction; a row naming an unexplained reference no
+//     longer makes the board due. A structure read that supplies a marked
+//     sprint removes its mark. A mark no row names any more stays until
+//     its board goes.
 //   - tracker_cache_board_column_statuses: a status sits in at most one
 //     column of a board; rank is its place within the column.
 //   - tracker_cache_sprints: a sprint as one board shows it; a Jira sprint
@@ -181,7 +184,6 @@ CREATE TABLE tracker_cache_boards (
  read_at INTEGER NOT NULL DEFAULT 0 CHECK(read_at >= 0),
  rows_removed_at INTEGER NOT NULL DEFAULT 0 CHECK(rows_removed_at >= 0),
  estimate_reset_at INTEGER NOT NULL DEFAULT 0 CHECK(estimate_reset_at >= 0),
- structure_due_at INTEGER NOT NULL DEFAULT 0 CHECK(structure_due_at >= 0),
  revision INTEGER NOT NULL DEFAULT 0 CHECK(revision >= 0),
  retired INTEGER NOT NULL DEFAULT 0 CHECK(retired IN (0, 1)),
  UNIQUE (root_id, board_id)
@@ -193,9 +195,11 @@ CREATE TABLE tracker_cache_board_unexplained (
  board_id TEXT NOT NULL,
  kind INTEGER NOT NULL CHECK(kind IN (1, 2, 3)),
  ref_id TEXT NOT NULL CHECK(ref_id <> ''),
+ named_at INTEGER NOT NULL CHECK(named_at >= 0),
  PRIMARY KEY (root_id, board_id, kind, ref_id),
  FOREIGN KEY (root_id, board_id) REFERENCES tracker_cache_boards(root_id, board_id) ON DELETE CASCADE
 ) WITHOUT ROWID;
+CREATE INDEX idx_tracker_cache_board_unexplained_pending ON tracker_cache_board_unexplained(root_id, board_id, named_at) WHERE named_at > 0;
 
 CREATE TABLE tracker_cache_board_columns (
  root_id INTEGER NOT NULL,

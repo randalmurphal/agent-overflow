@@ -184,18 +184,38 @@ type mirrorBoard struct {
 	readAt int64
 	// rowsRemovedAt is when the latest read that found rows gone began.
 	rowsRemovedAt int64
-	// structureDueAt is the board's structure_due_at.
-	structureDueAt int64
-	// marked reports that the board holds unexplained references.
+	// pendingAt is the latest read of a pending mark of a reference the
+	// board's rows named that the mirror lacks (zero: none).
+	pendingAt int64
+	// marked reports that the board holds marks, pending or unexplained.
 	marked bool
+	// estimateResetAt is the board's estimate_reset_at.
+	estimateResetAt int64
 }
+
+// structureDueAt is when the board became due a structure read, zero when
+// it is not: the latest pending mark no earlier than the structure's read.
+// A page read in the structure's millisecond is not known to follow it, so
+// it keeps the board due.
+func (b mirrorBoard) structureDueAt() int64 {
+	if b.pendingAt > 0 && b.pendingAt >= b.readAt {
+		return b.pendingAt
+	}
+	return 0
+}
+
+// mirrorPendingAtSQL is the latest pending mark of board ?2 of root ?1,
+// zero for none: one probe of the end of the pending index.
+const mirrorPendingAtSQL = `coalesce((SELECT max(p.named_at) FROM tracker_cache_board_unexplained p
+	    WHERE p.root_id = ?1 AND p.board_id = ?2 AND p.named_at > 0), 0)`
 
 // mirrorBoardWriteSQL reads, in one statement, whether a root is live,
 // whether some project lists the board through its connection, and the
 // state of the board's lifetime ?3.
 const mirrorBoardWriteSQL = `SELECT r.connection_id IS NOT NULL,
 	  EXISTS (SELECT 1 FROM project_tracker_boards p WHERE p.connection_id = r.connection_id AND p.board_id = ?2),
-	  coalesce(b.retired, 1), coalesce(b.read_at, 0), coalesce(b.rows_removed_at, 0), coalesce(b.structure_due_at, 0),
+	  coalesce(b.retired, 1), coalesce(b.read_at, 0), coalesce(b.rows_removed_at, 0), coalesce(b.estimate_reset_at, 0),
+	  ` + mirrorPendingAtSQL + `,
 	  EXISTS (SELECT 1 FROM tracker_cache_board_unexplained u WHERE u.root_id = ?1 AND u.board_id = ?2)
 	FROM tracker_cache_roots r LEFT JOIN tracker_cache_boards b ON b.root_id = r.id AND b.board_id = ?2 AND b.lifetime = ?3
 	WHERE r.id = ?1`
@@ -219,7 +239,7 @@ func (s *Store) mirrorBoardWrite(rootID int64, boardID string, lifetime int64, a
 	var live, listed, retired bool
 	var board mirrorBoard
 	err = tx.QueryRow(mirrorBoardWriteSQL, rootID, boardID, lifetime).Scan(&live, &listed, &retired, &board.readAt, &board.rowsRemovedAt,
-		&board.structureDueAt, &board.marked)
+		&board.estimateResetAt, &board.pendingAt, &board.marked)
 	board.stored = board.readAt > 0
 	switch {
 	case errors.Is(err, sql.ErrNoRows) || err == nil && !live:

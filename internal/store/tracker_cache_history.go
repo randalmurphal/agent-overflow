@@ -55,8 +55,9 @@ type MirrorChange struct {
 // creation) and final through CompleteTo, which is always set. BoardsRev
 // is the issue's MirrorHistoryDue.BoardsRev the read was asked with: a
 // history read for an earlier set of boards than the stored one is
-// superseded, and one read for an earlier set than the issue's leaves it
-// due.
+// superseded, one read for an earlier set than the issue's leaves it due,
+// and one naming a revision the issue has not reached is refused with
+// ErrInvalidTrackerCache, the call storing nothing.
 type MirrorHistory struct {
 	IssueID                  string
 	CompleteFrom, CompleteTo int64
@@ -188,8 +189,10 @@ var mirrorRemovalsSQL = func() string {
 // probing by key.
 var (
 	// mirrorHistoryStateSQL reads, per listed issue the mirror holds, what
-	// admission needs and how many stored changes the history would remove.
-	mirrorHistoryStateSQL = `SELECT h.value ->> 'i', i.history_from, i.history_to, i.history_boards_rev, i.history_gen, i.history_dirty, ` +
+	// admission needs (the issue's current boards_rev included) and how
+	// many stored changes the history would remove.
+	mirrorHistoryStateSQL = `SELECT h.value ->> 'i', i.history_from, i.history_to, i.history_boards_rev, i.boards_rev, i.history_gen,
+		i.history_dirty, ` +
 		mirrorIssueKept("i.root_id", "i.issue_id") + `, ` + mirrorRemovalsSQL + `
 		FROM json_each(?2) h CROSS JOIN tracker_cache_issues i ON i.root_id = ?1 AND i.issue_id = h.value ->> 'i'`
 	mirrorChangesUpsertSQL = `INSERT INTO tracker_cache_changes(root_id, issue_id, gen, kind, seq, at, author_id, board_id,
@@ -359,6 +362,17 @@ func replaceMirrorHistoriesTx(tx *sql.Tx, rootID int64, pending []mirrorHistoryI
 	if err != nil {
 		return nil, nil, err
 	}
+	// The first transaction reads every history of the call, those it
+	// stages included, so a refusal leaves the mirror as it was; boards_rev
+	// never moves back, so a later transaction or a staging refuses
+	// nothing.
+	for _, in := range pending {
+		if st, ok := states[in.h.IssueID]; ok {
+			if err := st.checkBoardsRev(in); err != nil {
+				return nil, nil, err
+			}
+		}
+	}
 	var write []mirrorHistoryRow
 	var changes []mirrorChangeRow
 	removeBudget, writeBudget := clearMirrorChunk, mirrorMaxBatchChanges
@@ -389,9 +403,20 @@ func replaceMirrorHistoriesTx(tx *sql.Tx, rootID int64, pending []mirrorHistoryI
 // mirrorHistoryState is an issue's stored history as a write of it reads
 // it.
 type mirrorHistoryState struct {
-	storedFrom, storedTo, storedBoardsRev, gen int64
-	dirty, kept                                bool
-	removes                                    int
+	storedFrom, storedTo, storedBoardsRev, boardsRev, gen int64
+	dirty, kept                                           bool
+	removes                                               int
+}
+
+// checkBoardsRev refuses a history read for a boards revision the issue
+// has not reached: it would record boards the issue does not have yet as
+// read and suppress the history the issue is due when it gains them.
+func (st mirrorHistoryState) checkBoardsRev(in mirrorHistoryInput) error {
+	if in.h.BoardsRev > st.boardsRev {
+		return fmt.Errorf("%w: issue %s history names boards revision %d, ahead of the issue's %d (MirrorHistoryDue.BoardsRev)",
+			ErrInvalidTrackerCache, in.h.IssueID, in.h.BoardsRev, st.boardsRev)
+	}
+	return nil
 }
 
 // supersedes reports that the stored history is later than in: final
@@ -412,7 +437,7 @@ func readMirrorHistoryStatesTx(q sqlQueryer, rootID int64, listed string) (map[s
 	err := scanMirrorRows(q, mirrorHistoryStateSQL, []any{rootID, listed}, func(r rowScanner) error {
 		var id string
 		var st mirrorHistoryState
-		err := r.Scan(&id, &st.storedFrom, &st.storedTo, &st.storedBoardsRev, &st.gen, &st.dirty, &st.kept, &st.removes)
+		err := r.Scan(&id, &st.storedFrom, &st.storedTo, &st.storedBoardsRev, &st.boardsRev, &st.gen, &st.dirty, &st.kept, &st.removes)
 		states[id] = st
 		return err
 	})

@@ -346,8 +346,10 @@ read that began earlier is superseded, an identical read that began later
 moves `read_at` alone, and a duplicate from the same read writes nothing. A
 section page carries the board's revision; continuing it at another
 revision fails with `ErrTrackerCacheStale`. A board view's first paint
-reads structure, totals and first pages in one snapshot
-(`ReadMirrorBoardView`), so its totals and rows are one state. A card's
+reads structure, totals, first pages and what their cards name (statuses,
+users and parents) in one snapshot (`ReadMirrorBoardView`), so its totals,
+rows and names are one state; a section page reads its names with its rows
+(`ListMirrorSection`). A card's
 status time is derived from the card and the stored history by every write
 of either. A detail's read time starts at its opening, so a document read
 before the opening is superseded.
@@ -392,16 +394,22 @@ and writes share:
   sprint or user the mirror lacks, and that no complete structure read
   marked unexplained, makes the board due in the page's own transaction
   (`MirrorChanges.StructureDue`, durable as `MirrorSync.StructureDueAt`). A
-  structure from a read that began no earlier clears it; a failed read
-  leaves it due. A structure that changes the board's estimate unit clears
-  the cursor, and reads show each row read before it with an unknown
-  estimate until the walk reads it again.
+  structure from a read that began later clears it; a failed read leaves
+  it due. A structure that changes the board's estimate unit clears the
+  cursor, and reads show each row read before it with an unknown estimate
+  until the walk reads it again. Each page of a walk names the estimate
+  reset captured with its starting cursor (`MirrorSync.EstimateResetAt`);
+  the store refuses the cursor of a walk begun under an earlier
+  definition (`MirrorChanges.CursorRefused`), and the delta stops there
+  with More. A tick whose structure write reports a reset
+  (`MirrorStructureWrite.EstimateResetAt`) walks from the window's start.
 - **History** is read whole for an issue new to the mirror and again for
   an issue whose update time is later than the time its stored history is
   final through, that gained a board row, or whose row was read again
   after its board's estimate unit changed, limited to the four change
   kinds. The caller sends `MirrorHistoryDue.BoardsRev` back as
-  `MirrorHistory.BoardsRev`. It is written in
+  `MirrorHistory.BoardsRev`; one ahead of the issue's is refused. It is
+  written in
   batches of up to 50 issues (`ReplaceMirrorHistories`). A caller sends an
   issue's whole history in one call, however long; one over 500 changes is
   staged in transactions of at most 500 and made the issue's history in

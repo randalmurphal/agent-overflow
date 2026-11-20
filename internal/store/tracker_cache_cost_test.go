@@ -68,7 +68,7 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 		t.Fatal(err)
 	}
 	assertRows(t, s.db, fmt.Sprintf(`SELECT count(*) FROM tracker_cache_board_unexplained
-		WHERE root_id = %d AND board_id = '10' AND kind = 3 AND ref_id = '98'`, root), "1")
+		WHERE root_id = %d AND board_id = '10' AND kind = 3 AND ref_id = '98' AND named_at = 0`, root), "1")
 	mustExec(t, s.db, `UPDATE tracker_cache_issues SET history_dirty = 1 WHERE issue_id = '10002'`)
 	reads := []func() error{
 		func() error { _, _, err := s.GetMirrorRoot(jira.ID); return err },

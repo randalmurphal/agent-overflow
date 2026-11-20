@@ -86,7 +86,7 @@ func TestMirrorSprintThatLeavesAndReturnsRefusesAnEarlierStructure(t *testing.T)
 	returned := closed
 	returned.Name = "WEB Sprint 1 renamed"
 	mustReplaceStructure(t, s, root, structure(40, returned), true)
-	if got, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, structure(20, closed))); err != nil || got != (MirrorWrite{Superseded: true}) {
+	if got, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, structure(20, closed))); err != nil || got.MirrorWrite != (MirrorWrite{Superseded: true}) {
 		t.Fatalf("a structure read from before the return = %+v, %v; want superseded", got, err)
 	}
 	assertRows(t, s.db, `SELECT name FROM tracker_cache_sprints WHERE sprint_id = '20'`, "WEB Sprint 1 renamed")

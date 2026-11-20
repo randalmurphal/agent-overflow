@@ -14,11 +14,14 @@ const mirrorMaxViewSections = mirrorMaxSprints + 1 + mirrorMaxColumns
 // totals and the first page of each section asked for, in its order, read
 // in one snapshot: the totals count the rows the pages hold, and each
 // page's Next names the snapshot's lifetime and revision, so a later page
-// continues it or fails with ErrTrackerCacheStale.
+// continues it or fails with ErrTrackerCacheStale. Names are what every
+// page's cards and the columns name, from the same snapshot; the pages'
+// own Names are empty.
 type MirrorBoardView struct {
 	Structure MirrorStructure
 	Counts    MirrorSectionCounts
 	Pages     []MirrorSectionPage
+	Names     MirrorNames
 }
 
 // mirrorBoardViewSQL reads a shown board's own fields and what its rows'
@@ -28,11 +31,11 @@ var mirrorBoardViewSQL = `SELECT b.board_id, b.project_id, b.name, b.plans_sprin
 	WHERE b.root_id = ?1 AND b.board_id = ?2 AND ` + mirrorBoardShown("?1", "?2")
 
 // ReadMirrorBoardView reads, in one read transaction, a board's structure
-// (as GetMirrorBoard), its section totals (as CountMirrorSections) and the
-// first page of each of sections (as ListMirrorSection): one statement per
-// part, the board's columns and their statuses read once for the
-// structure and the totals. ok is false for a board the mirror does not
-// show.
+// (as GetMirrorBoard), its section totals (as CountMirrorSections), the
+// first page of each of sections (as ListMirrorSection) and what they name
+// (MirrorNames): one statement per part, the board's columns and their
+// statuses read once for the structure and the totals. ok is false for a
+// board the mirror does not show.
 func (s *Store) ReadMirrorBoardView(rootID int64, boardID string, sections []MirrorSection) (view MirrorBoardView, ok bool, err error) {
 	if len(sections) > mirrorMaxViewSections {
 		return MirrorBoardView{}, false, fmt.Errorf("%w: %d sections, over %d", ErrInvalidTrackerCache, len(sections), mirrorMaxViewSections)
@@ -76,10 +79,19 @@ func (s *Store) ReadMirrorBoardView(rootID int64, boardID string, sections []Mir
 		return MirrorBoardView{}, false, fmt.Errorf("%s: %w", action, err)
 	}
 	view.Pages = make([]MirrorSectionPage, len(sections))
+	rows := make([][]MirrorRow, len(sections))
 	for i, section := range sections {
 		if view.Pages[i], err = readMirrorSectionTx(tx, rootID, boardID, board, section, MirrorRowKey{}); err != nil {
 			return MirrorBoardView{}, false, fmt.Errorf("%s: section %d: %w", action, i, err)
 		}
+		rows[i] = view.Pages[i].Rows
+	}
+	var statuses []string
+	for _, column := range st.Columns {
+		statuses = append(statuses, column.Statuses...)
+	}
+	if view.Names, err = readMirrorNamesTx(tx, rootID, rows, statuses); err != nil {
+		return MirrorBoardView{}, false, fmt.Errorf("%s: %w", action, err)
 	}
 	return view, true, tx.Commit()
 }

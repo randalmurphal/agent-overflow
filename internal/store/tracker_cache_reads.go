@@ -124,61 +124,127 @@ func readMirrorSprintsTx(tx *sql.Tx, rootID int64, boardID string) ([]MirrorSpri
 	return sprints, nil
 }
 
-func encodeMirrorLookup(ids []string) (string, error) {
-	if len(ids) > mirrorMaxLookup {
-		return "", fmt.Errorf("%w: %d IDs, over %d", ErrInvalidTrackerCache, len(ids), mirrorMaxLookup)
-	}
-	return encodeMirrorIDs(ids)
-}
-
 // GetMirrorCatalog reads the users and statuses of rootID named by ID,
 // each sorted by ID; an ID the mirror does not hold is left out.
 func (s *Store) GetMirrorCatalog(rootID int64, users, statuses []string) (catalog MirrorCatalog, err error) {
 	action := fmt.Sprintf("store: read tracker mirror %d catalog", rootID)
-	userList, err := encodeMirrorLookup(users)
-	if err != nil {
-		return MirrorCatalog{}, err
-	}
-	statusList, err := encodeMirrorLookup(statuses)
-	if err != nil {
-		return MirrorCatalog{}, err
+	if len(users) > mirrorMaxLookup || len(statuses) > mirrorMaxLookup {
+		return MirrorCatalog{}, fmt.Errorf("%w: %d users and %d statuses, over %d", ErrInvalidTrackerCache, len(users), len(statuses), mirrorMaxLookup)
 	}
 	tx, err := s.reader().Begin()
 	if err != nil {
 		return MirrorCatalog{}, fmt.Errorf("%s: begin: %w", action, err)
 	}
 	defer rollbackTx(tx, action, &err)
-	if len(users) > 0 {
-		err = scanMirrorRows(tx, `SELECT u.user_id, u.name, u.data FROM json_each(?2) l
-			CROSS JOIN tracker_cache_users u ON u.root_id = ?1 AND u.user_id = l.value
-			WHERE `+mirrorRootLiveSQL, []any{rootID, userList}, func(r rowScanner) error {
-			var u MirrorUser
-			err := r.Scan(&u.ID, &u.Name, &u.Data)
-			catalog.Users = append(catalog.Users, u)
-			return err
-		})
-		if err != nil {
-			return MirrorCatalog{}, fmt.Errorf("%s: users: %w", action, err)
-		}
+	if err := readMirrorCatalogTx(tx, rootID, users, statuses, &catalog); err != nil {
+		return MirrorCatalog{}, fmt.Errorf("%s: %w", action, err)
 	}
-	if len(statuses) > 0 {
-		err = scanMirrorRows(tx, `SELECT st.status_id, st.name, st.status_group FROM json_each(?2) l
-			CROSS JOIN tracker_cache_statuses st ON st.root_id = ?1 AND st.status_id = l.value
-			WHERE `+mirrorRootLiveSQL, []any{rootID, statusList}, func(r rowScanner) error {
-			var st MirrorStatus
-			err := r.Scan(&st.ID, &st.Name, &st.Group)
-			catalog.Statuses = append(catalog.Statuses, st)
-			return err
-		})
-		if err != nil {
-			return MirrorCatalog{}, fmt.Errorf("%s: statuses: %w", action, err)
-		}
+	sortMirrorCatalog(&catalog)
+	return catalog, tx.Commit()
+}
+
+// mirrorCatalogByIDSQL reads users ?2 and statuses ?3 (JSON lists of IDs)
+// of root ?1, each list driving its arm by key: a user's group is NULL, a
+// status's data.
+var mirrorCatalogByIDSQL = `SELECT u.user_id, u.name, u.data, NULL FROM json_each(?2) l
+	CROSS JOIN tracker_cache_users u ON u.root_id = ?1 AND u.user_id = l.value
+	WHERE ` + mirrorRootLiveSQL + `
+	UNION ALL
+	SELECT st.status_id, st.name, NULL, st.status_group FROM json_each(?3) l
+	CROSS JOIN tracker_cache_statuses st ON st.root_id = ?1 AND st.status_id = l.value
+	WHERE ` + mirrorRootLiveSQL
+
+// readMirrorCatalogTx appends to catalog the users and statuses of rootID
+// named by ID, at most mirrorMaxLookup of each, in one statement.
+func readMirrorCatalogTx(tx *sql.Tx, rootID int64, users, statuses []string, catalog *MirrorCatalog) error {
+	if len(users)+len(statuses) == 0 {
+		return nil
 	}
-	// Sorted here, not by the statements: the ID list drives each, so an
-	// ORDER BY would sort in a temporary b-tree.
+	userList, err := encodeMirrorIDs(users)
+	if err != nil {
+		return err
+	}
+	statusList, err := encodeMirrorIDs(statuses)
+	if err != nil {
+		return err
+	}
+	err = scanMirrorRows(tx, mirrorCatalogByIDSQL, []any{rootID, userList, statusList}, func(r rowScanner) error {
+		var id, name string
+		var data []byte
+		var group sql.NullInt64
+		if err := r.Scan(&id, &name, &data, &group); err != nil {
+			return err
+		}
+		if group.Valid {
+			catalog.Statuses = append(catalog.Statuses, MirrorStatus{ID: id, Name: name, Group: int(group.Int64)})
+		} else {
+			catalog.Users = append(catalog.Users, MirrorUser{ID: id, Name: name, Data: data})
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("users and statuses: %w", err)
+	}
+	return nil
+}
+
+// sortMirrorCatalog sorts a catalog's users and statuses by ID, here
+// rather than in the statements: the ID list drives each, so an ORDER BY
+// would sort in a temporary b-tree.
+func sortMirrorCatalog(catalog *MirrorCatalog) {
 	slices.SortFunc(catalog.Users, func(a, b MirrorUser) int { return strings.Compare(a.ID, b.ID) })
 	slices.SortFunc(catalog.Statuses, func(a, b MirrorStatus) int { return strings.Compare(a.ID, b.ID) })
-	return catalog, tx.Commit()
+}
+
+// MirrorNames are what a set of cards name, read in their snapshot: the
+// users and statuses (Catalog, sorted by ID) and the cards of the parents
+// the mirror keeps (sorted by issue ID). An ID the mirror does not hold is
+// left out.
+type MirrorNames struct {
+	Catalog MirrorCatalog
+	Parents []MirrorCard
+}
+
+// readMirrorNamesTx reads what the cards of rows name, and the statuses
+// also, in tx's snapshot, mirrorMaxLookup IDs of a kind per statement: a
+// board view's pages and columns name at most a few, a page one each.
+func readMirrorNamesTx(tx *sql.Tx, rootID int64, rows [][]MirrorRow, also []string) (MirrorNames, error) {
+	var names MirrorNames
+	users, statuses, parents := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	var userIDs, statusIDs, parentIDs []string
+	add := func(seen map[string]bool, ids *[]string, id string) {
+		if id != "" && !seen[id] {
+			seen[id] = true
+			*ids = append(*ids, id)
+		}
+	}
+	for _, id := range also {
+		add(statuses, &statusIDs, id)
+	}
+	for _, page := range rows {
+		for _, row := range page {
+			add(users, &userIDs, row.Card.AssigneeID)
+			add(statuses, &statusIDs, row.Card.StatusID)
+			add(parents, &parentIDs, row.Card.ParentID)
+		}
+	}
+	for len(userIDs)+len(statusIDs) > 0 {
+		u, st := userIDs[:min(len(userIDs), mirrorMaxLookup)], statusIDs[:min(len(statusIDs), mirrorMaxLookup)]
+		userIDs, statusIDs = userIDs[len(u):], statusIDs[len(st):]
+		if err := readMirrorCatalogTx(tx, rootID, u, st, &names.Catalog); err != nil {
+			return MirrorNames{}, err
+		}
+	}
+	sortMirrorCatalog(&names.Catalog)
+	for batch := range slices.Chunk(parentIDs, mirrorMaxLookup) {
+		cards, err := readMirrorCardsTx(tx, rootID, batch)
+		if err != nil {
+			return MirrorNames{}, fmt.Errorf("parents: %w", err)
+		}
+		names.Parents = append(names.Parents, cards...)
+	}
+	slices.SortFunc(names.Parents, func(a, b MirrorCard) int { return strings.Compare(a.IssueID, b.IssueID) })
+	return names, nil
 }
 
 // scanMirrorRows runs query and calls scan for each row.
@@ -207,21 +273,31 @@ func (s *Store) ListMirrorCards(rootID int64, issueIDs []string) ([]MirrorCard, 
 	if len(issueIDs) == 0 {
 		return nil, nil
 	}
-	encoded, err := encodeMirrorLookup(issueIDs)
-	if err != nil {
-		return nil, err
+	if len(issueIDs) > mirrorMaxLookup {
+		return nil, fmt.Errorf("%w: %d IDs, over %d", ErrInvalidTrackerCache, len(issueIDs), mirrorMaxLookup)
 	}
-	cards := make([]MirrorCard, 0, len(issueIDs))
-	err = scanMirrorRows(s.reader(), mirrorCardsSQL, []any{rootID, encoded}, func(r rowScanner) error {
-		card, err := scanMirrorCard(r)
-		cards = append(cards, card)
-		return err
-	})
+	cards, err := readMirrorCardsTx(s.reader(), rootID, issueIDs)
 	if err != nil {
 		return nil, fmt.Errorf("store: read tracker mirror %d cards: %w", rootID, err)
 	}
 	slices.SortFunc(cards, func(a, b MirrorCard) int { return strings.Compare(a.IssueID, b.IssueID) })
 	return cards, nil
+}
+
+// readMirrorCardsTx reads the cards of the kept issues among issueIDs, in
+// no order, in one statement.
+func readMirrorCardsTx(q sqlQueryer, rootID int64, issueIDs []string) ([]MirrorCard, error) {
+	encoded, err := encodeMirrorIDs(issueIDs)
+	if err != nil {
+		return nil, err
+	}
+	cards := make([]MirrorCard, 0, len(issueIDs))
+	err = scanMirrorRows(q, mirrorCardsSQL, []any{rootID, encoded}, func(r rowScanner) error {
+		card, err := scanMirrorCard(r)
+		cards = append(cards, card)
+		return err
+	})
+	return cards, err
 }
 
 // MirrorIssueRow is an issue's row on one board, without its card.

@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql/driver"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -236,6 +237,20 @@ func measureMirror(b *testing.B, op func(i int) error) {
 	b.ReportMetric(float64(runs)/float64(b.N), "stmts/op")
 }
 
+// benchApplied fails a row write that stored other than cards cards and
+// rows rows, or superseded or refused anything: a benchmark of a write
+// that silently did not apply measures nothing.
+func benchApplied(got MirrorChanges, err error, cards, rows int) error {
+	switch {
+	case err != nil:
+		return err
+	case len(got.Cards) != cards || len(got.Rows) != rows || len(got.Superseded) > 0 || got.CursorRefused:
+		return fmt.Errorf("the write applied %d cards and %d rows, superseded %d, cursor refused %v; want %d cards and %d rows",
+			len(got.Cards), len(got.Rows), len(got.Superseded), got.CursorRefused, cards, rows)
+	}
+	return nil
+}
+
 func benchPage(board int, rows []MirrorRow) MirrorRowPage {
 	return MirrorRowPage{BoardID: benchBoardID(board), Rows: rows, ReadAt: 1}
 }
@@ -250,8 +265,8 @@ func BenchmarkMirrorWritePage(b *testing.B) {
 			for r := range rows {
 				rows[r] = benchRow(0, benchBoardIssues*benchBoards+i*100+r, 1000)
 			}
-			_, err := s.WriteMirrorRowPage(root, currentPage(s, root, benchPage(0, rows)), []byte("cursor"))
-			return err
+			got, err := s.WriteMirrorRowPage(root, currentPage(s, root, benchPage(0, rows)), []byte("cursor"))
+			return benchApplied(got, err, 100, 100)
 		})
 	})
 	b.Run("identical", func(b *testing.B) {
@@ -261,8 +276,8 @@ func BenchmarkMirrorWritePage(b *testing.B) {
 			rows[r] = benchRow(0, r, 1000)
 		}
 		measureMirror(b, func(int) error {
-			_, err := s.WriteMirrorRowPage(root, currentPage(s, root, benchPage(0, rows)), []byte("cursor"))
-			return err
+			got, err := s.WriteMirrorRowPage(root, currentPage(s, root, benchPage(0, rows)), []byte("cursor"))
+			return benchApplied(got, err, 0, 0)
 		})
 	})
 	b.Run("identical-later", func(b *testing.B) {
@@ -274,8 +289,8 @@ func BenchmarkMirrorWritePage(b *testing.B) {
 		measureMirror(b, func(i int) error {
 			page := benchPage(0, rows)
 			page.ReadAt = int64(2 + i)
-			_, err := s.WriteMirrorRowPage(root, currentPage(s, root, page), []byte("cursor"))
-			return err
+			got, err := s.WriteMirrorRowPage(root, currentPage(s, root, page), []byte("cursor"))
+			return benchApplied(got, err, 0, 0)
 		})
 	})
 	b.Run("10-changed", func(b *testing.B) {
@@ -288,8 +303,8 @@ func BenchmarkMirrorWritePage(b *testing.B) {
 			for r := range 10 {
 				rows[r*10].Card.UpdatedAt = int64(2000 + i)
 			}
-			_, err := s.WriteMirrorRowPage(root, currentPage(s, root, benchPage(0, rows)), []byte("cursor"))
-			return err
+			got, err := s.WriteMirrorRowPage(root, currentPage(s, root, benchPage(0, rows)), []byte("cursor"))
+			return benchApplied(got, err, 10, 0)
 		})
 	})
 }
@@ -322,9 +337,9 @@ func BenchmarkMirrorReconcile(b *testing.B) {
 			b.StopTimer()
 			page := benchPage(0, back)
 			page.ReadAt = int64(11 + 2*i)
-			_, err = s.WriteMirrorRows(root, currentPage(s, root, page))
+			put, err := s.WriteMirrorRows(root, currentPage(s, root, page))
 			b.StartTimer()
-			return err
+			return benchApplied(put, err, 0, 50)
 		})
 	})
 }
@@ -336,6 +351,9 @@ func BenchmarkMirrorReplaceHistory(b *testing.B) {
 		b.Run(fmt.Sprint(n, "-issues"), func(b *testing.B) {
 			s, root := openBenchMirror(b)
 			batch, sweep := make([]MirrorHistory, n), currentSweep(s, root)
+			for k := range batch {
+				batch[k].IssueID = benchIssueID(0, k)
+			}
 			revs := make([]int64, n)
 			for k, h := range dueHistories(s, root, batch) {
 				revs[k] = h.BoardsRev
@@ -345,8 +363,16 @@ func BenchmarkMirrorReplaceHistory(b *testing.B) {
 					batch[k] = benchHistory(benchIssueID(0, k), int64(2000+i), 20)
 					batch[k].BoardsRev = revs[k]
 				}
-				_, err := s.ReplaceMirrorHistories(root, sweep, batch)
-				return err
+				results, err := s.ReplaceMirrorHistories(root, sweep, batch)
+				if err != nil {
+					return err
+				}
+				for _, r := range results {
+					if !r.Changed || r.Superseded || r.Unkept {
+						return fmt.Errorf("history of %s not applied: %+v", r.IssueID, r)
+					}
+				}
+				return nil
 			})
 		})
 	}
@@ -411,15 +437,19 @@ func BenchmarkMirrorListingCheck(b *testing.B) {
 		s, root := openBenchMirror(b)
 		lifetime := currentLifetime(s, root, benchBoardID(0))
 		measureMirror(b, func(int) error {
-			var live, listed, retired bool
-			var readAt, removedAt int64
-			return s.db.QueryRow(mirrorBoardWriteSQL, root, benchBoardID(0), lifetime).Scan(&live, &listed, &retired, &readAt, &removedAt)
+			var live, listed, retired, marked bool
+			var readAt, removedAt, resetAt, pendingAt int64
+			return s.db.QueryRow(mirrorBoardWriteSQL, root, benchBoardID(0), lifetime).Scan(&live, &listed, &retired, &readAt, &removedAt,
+				&resetAt, &pendingAt, &marked)
 		})
 	})
 	b.Run("write", func(b *testing.B) {
 		s, root := openBenchMirror(b)
-		measureMirror(b, func(int) error {
-			_, err := s.RecordMirrorSyncAttempt(root, benchBoardID(0), currentAttempt(s, root, benchBoardID(0), MirrorSyncAttempt{ReadAt: 1}))
+		measureMirror(b, func(i int) error {
+			changed, err := s.RecordMirrorSyncAttempt(root, benchBoardID(0), currentAttempt(s, root, benchBoardID(0), MirrorSyncAttempt{ReadAt: int64(10 + i)}))
+			if err == nil && !changed {
+				err = errors.New("the attempt was not recorded")
+			}
 			return err
 		})
 	})
@@ -441,7 +471,10 @@ func BenchmarkMirrorStatusRead(b *testing.B) {
 			s, root := openBenchMirror(b)
 			sweep := currentSweep(s, root)
 			measureMirror(b, func(i int) error {
-				_, err := s.UpsertMirrorCards(root, sweep, nil, catalog(groups[i%len(groups)]), int64(10+i))
+				got, err := s.UpsertMirrorCards(root, sweep, nil, catalog(groups[i%len(groups)]), int64(10+i))
+				if err == nil && got.Catalog != (len(groups) > 1) {
+					err = fmt.Errorf("catalog changed %v", got.Catalog)
+				}
 				return err
 			})
 		})

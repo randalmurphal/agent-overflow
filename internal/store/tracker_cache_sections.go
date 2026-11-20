@@ -40,12 +40,15 @@ type MirrorRowKey struct {
 }
 
 // MirrorSectionPage is a page of a section's rows in order-key order, read
-// at the board's Revision. More reports that rows follow Next.
+// at the board's Revision. More reports that rows follow Next. Names are
+// what the rows' cards name, read in the same snapshot (ListMirrorSection;
+// a board view names its pages together, in MirrorBoardView.Names).
 type MirrorSectionPage struct {
 	Rows     []MirrorRow
 	Next     MirrorRowKey
 	More     bool
 	Revision int64
+	Names    MirrorNames
 }
 
 // mirrorSectionRowsSQL reads ?1 root, ?2 board, after (?3, ?4), a
@@ -110,7 +113,8 @@ func readMirrorShownBoardTx(tx *sql.Tx, rootID int64, boardID string) (board mir
 
 // ListMirrorSection reads up to mirrorSectionPageSize rows of one section
 // of a board, in order-key order, after after, in one snapshot with the
-// board's revision. A continuation (after names an issue) read at another
+// board's revision and what the rows' cards name (MirrorNames). A
+// continuation (after names an issue) read at another
 // lifetime or revision fails with ErrTrackerCacheStale: a change between
 // the pages could have moved a row across the cursor, and a board unlisted
 // and listed again holds other rows. A board the mirror does not show has
@@ -135,6 +139,9 @@ func (s *Store) ListMirrorSection(rootID int64, boardID string, section MirrorSe
 		return MirrorSectionPage{}, tx.Commit()
 	}
 	if page, err = readMirrorSectionTx(tx, rootID, boardID, board, section, after); err != nil {
+		return MirrorSectionPage{}, fmt.Errorf("%s: %w", action, err)
+	}
+	if page.Names, err = readMirrorNamesTx(tx, rootID, [][]MirrorRow{page.Rows}, nil); err != nil {
 		return MirrorSectionPage{}, fmt.Errorf("%s: %w", action, err)
 	}
 	return page, tx.Commit()

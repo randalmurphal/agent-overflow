@@ -104,6 +104,18 @@ func currentLifetime(s *Store, root int64, board string) int64 {
 	return lifetime
 }
 
+// currentEstimateReset is board's estimate reset in root as a caller
+// would capture it now, zero for a board with none.
+func currentEstimateReset(s *Store, root int64, board string) int64 {
+	var reset int64
+	err := s.db.QueryRow(`SELECT estimate_reset_at FROM tracker_cache_boards WHERE root_id = ? AND board_id = ? ORDER BY retired LIMIT 1`,
+		root, board).Scan(&reset)
+	if err != nil {
+		return 0
+	}
+	return reset
+}
+
 // currentSweep is root's sweep as a caller would capture it now, or the
 // first one for a root with no row, whose every write is refused as gone.
 func currentSweep(s *Store, root int64) int64 {
@@ -132,7 +144,8 @@ func dueHistories(s *Store, root int64, hs []MirrorHistory) []MirrorHistory {
 }
 
 // currentStructure, currentPage and currentAttempt name the board's
-// current lifetime in a write that names none.
+// current lifetime in a write that names none; currentPage then names the
+// board's current estimate reset too, as a walk captured now would.
 func currentStructure(s *Store, root int64, st MirrorStructure) MirrorStructure {
 	if st.Lifetime == 0 {
 		st.Lifetime = currentLifetime(s, root, st.Board.ID)
@@ -143,6 +156,7 @@ func currentStructure(s *Store, root int64, st MirrorStructure) MirrorStructure 
 func currentPage(s *Store, root int64, p MirrorRowPage) MirrorRowPage {
 	if p.Lifetime == 0 {
 		p.Lifetime = currentLifetime(s, root, p.BoardID)
+		p.EstimateResetAt = currentEstimateReset(s, root, p.BoardID)
 	}
 	return p
 }
@@ -156,7 +170,7 @@ func currentAttempt(s *Store, root int64, board string, a MirrorSyncAttempt) Mir
 
 func mustReplaceStructure(t *testing.T, s *Store, root int64, st MirrorStructure, want bool) {
 	t.Helper()
-	if got, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, st)); err != nil || got != (MirrorWrite{Changed: want}) {
+	if got, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, st)); err != nil || got.MirrorWrite != (MirrorWrite{Changed: want}) {
 		t.Fatalf("replace board %s structure: %+v, %v; want changed %v", st.Board.ID, got, err, want)
 	}
 }
@@ -201,7 +215,7 @@ func seedFullMirror(t *testing.T, s *Store, root int64) {
 	t.Helper()
 	mustReplaceStructure(t, s, root, webStructure(), true)
 	mustWriteRowPage(t, s, root, webPage("10", webRow("10001", 5, "a", "21")), []byte("c1"))
-	mustExec(t, s.db, `INSERT INTO tracker_cache_board_unexplained(root_id, board_id, kind, ref_id) VALUES (?, '10', 3, '99')`, root)
+	mustExec(t, s.db, `INSERT INTO tracker_cache_board_unexplained(root_id, board_id, kind, ref_id, named_at) VALUES (?, '10', 3, '99', 0)`, root)
 	if _, err := replaceHistory(s, root, MirrorHistory{IssueID: "10001", CompleteTo: 5, Changes: []MirrorChange{{Kind: MirrorChangeStatus, At: 2, From: "1", To: "3"}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -221,14 +235,16 @@ func seedFullMirror(t *testing.T, s *Store, root int64) {
 
 // mirrorWriteRecorder counts, through SQLite's pre-update hook on the
 // writer connection, every row the writer inserts, updates or deletes,
-// triggers and foreign key actions included, and the deletes of mirror rows
-// per committed transaction.
+// triggers and foreign key actions included, and per committed
+// transaction the deletes of mirror rows and the writes of history changes
+// and of board marks.
 type mirrorWriteRecorder struct {
 	s       *Store
 	mu      sync.Mutex
 	writes  map[string]int
 	deletes map[uint64]int
 	changes map[uint64]int
+	marks   map[uint64]int
 }
 
 func recordMirrorWrites(t *testing.T, s *Store) *mirrorWriteRecorder {
@@ -263,8 +279,11 @@ func recordMirrorWrites(t *testing.T, s *Store) *mirrorWriteRecorder {
 		if d.Op == sqlite3.SQLITE_DELETE && strings.HasPrefix(d.TableName, "tracker_cache_") {
 			r.deletes[s.CommitCount()]++
 		}
-		if d.TableName == "tracker_cache_changes" {
+		switch d.TableName {
+		case "tracker_cache_changes":
 			r.changes[s.CommitCount()]++
+		case "tracker_cache_board_unexplained":
+			r.marks[s.CommitCount()]++
 		}
 	})
 	t.Cleanup(func() { hook(nil) })
@@ -274,7 +293,7 @@ func recordMirrorWrites(t *testing.T, s *Store) *mirrorWriteRecorder {
 func (r *mirrorWriteRecorder) reset() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.writes, r.deletes, r.changes = map[string]int{}, map[uint64]int{}, map[uint64]int{}
+	r.writes, r.deletes, r.changes, r.marks = map[string]int{}, map[uint64]int{}, map[uint64]int{}, map[uint64]int{}
 }
 
 // rowWrites are the rows written since the last reset, by table.
@@ -305,6 +324,17 @@ func (r *mirrorWriteRecorder) mostChangesInATransaction() (most, transactions in
 		most = max(most, n)
 	}
 	return most, len(r.changes)
+}
+
+// mostMarksInATransaction is the most board marks one transaction wrote
+// since the last reset, and the transactions that wrote any.
+func (r *mirrorWriteRecorder) mostMarksInATransaction() (most, transactions int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, n := range r.marks {
+		most = max(most, n)
+	}
+	return most, len(r.marks)
 }
 
 func TestGetOrCreateMirrorRoot(t *testing.T) {

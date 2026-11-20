@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 )
@@ -76,5 +77,28 @@ func TestMirrorLongHistoryRecordsItsBoards(t *testing.T) {
 	mustReplaceHistory(t, s, root, long, MirrorWrite{Changed: true})
 	if due := mirrorDue(t, s, root); due != "[]" {
 		t.Fatalf("due after the same long history read for both boards = %s", due)
+	}
+}
+
+// A history naming a boards revision its issue has not reached is invalid:
+// it would record boards the issue does not have yet as read. The call is
+// refused before it stores anything, a short history in a batch and a
+// long one the call would stage alike.
+func TestMirrorHistoryAheadOfItsBoardsIsRefused(t *testing.T) {
+	t.Parallel()
+	s, _, root := newMirror(t)
+	writeMirrorBoard(t, s, root, "10", []MirrorRow{webRow("10001", 5, "a"), webRow("10002", 5, "b")})
+	for name, ahead := range map[string]MirrorHistory{"short": webHistory("10001"), "long": statusHistory("10001", clearMirrorChunk+100)} {
+		ahead.BoardsRev = 2
+		valid := webHistory("10002")
+		valid.BoardsRev = 1
+		_, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), []MirrorHistory{valid, ahead})
+		if !errors.Is(err, ErrInvalidTrackerCache) {
+			t.Fatalf("%s: a history ahead of its issue's boards: %v; want invalid", name, err)
+		}
+		assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_changes`, "0")
+		if due := mirrorDue(t, s, root); due != "[{10001 [10] 1} {10002 [10] 1}]" {
+			t.Fatalf("%s: due after the refusal = %s", name, due)
+		}
 	}
 }
