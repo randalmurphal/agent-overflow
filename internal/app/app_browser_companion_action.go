@@ -39,8 +39,6 @@ const (
 	kindDownloadsClear
 	kindFocusPage
 	kindFocusPageWithdraw
-	kindCloseActive
-	kindReloadActive
 	kindShowBrowser
 )
 
@@ -54,20 +52,34 @@ const (
 	targetNamed
 	// targetOptional may name a tab (show).
 	targetOptional
-	// targetActive acts on the tab active at its numbered turn: it names
-	// none and must carry its pane mount and number.
-	targetActive
+)
+
+// companionPlace is what a kind carries of the pane it came from.
+type companionPlace int
+
+const (
+	// placeNone carries no pane mount: it keeps arrival order.
+	placeNone companionPlace = iota
+	// placeIfFromPane is a selection: from a pane it carries the pane's
+	// mount, epoch and number, and with none it keeps arrival order.
+	placeIfFromPane
+	// placeNumbered comes only from a pane and carries its mount, epoch and
+	// number: a close, which takes its turn in the user's order.
+	placeNumbered
+	// placeMount comes only from a pane and carries its mount alone: a jar
+	// switch, which acts on the lifetime that pane attached to (BindMount).
+	placeMount
+	// placeFocus carries the pane's mount and an Intent (page focus).
+	placeFocus
 )
 
 // companionSpec is what a kind requires of its action.
 type companionSpec struct {
 	kind   companionKind
 	target companionTarget
-	// selects is a selection, which may carry its pane mount and number
-	// (both or neither) and otherwise keeps arrival order.
-	selects bool
-	// download requires a DownloadID; focus a Mount and an Intent.
-	download, focus bool
+	place  companionPlace
+	// download requires a DownloadID.
+	download bool
 }
 
 var companionSpecs = map[string]companionSpec{
@@ -76,31 +88,29 @@ var companionSpecs = map[string]companionSpec{
 	"forward":             {kind: kindForward, target: targetNamed},
 	"reload":              {kind: kindReload, target: targetNamed},
 	"stop":                {kind: kindStop, target: targetNamed},
-	"activate":            {kind: kindActivate, target: targetNamed, selects: true},
+	"activate":            {kind: kindActivate, target: targetNamed, place: placeIfFromPane},
 	"restore":             {kind: kindRestore, target: targetNamed},
-	"step":                {kind: kindStep, selects: true},
+	"step":                {kind: kindStep, place: placeIfFromPane},
 	"move":                {kind: kindMove, target: targetNamed},
 	"show":                {kind: kindShow, target: targetOptional},
 	"hide":                {kind: kindHide},
-	"new":                 {kind: kindNew, selects: true},
-	"close":               {kind: kindClose, target: targetNamed},
-	"close-others":        {kind: kindCloseOthers, target: targetNamed},
-	"close-right":         {kind: kindCloseRight, target: targetNamed},
-	"reopen":              {kind: kindReopen, selects: true},
-	"duplicate":           {kind: kindDuplicate, target: targetNamed, selects: true},
+	"new":                 {kind: kindNew, place: placeIfFromPane},
+	"close":               {kind: kindClose, target: targetNamed, place: placeNumbered},
+	"close-others":        {kind: kindCloseOthers, target: targetNamed, place: placeNumbered},
+	"close-right":         {kind: kindCloseRight, target: targetNamed, place: placeNumbered},
+	"reopen":              {kind: kindReopen, place: placeIfFromPane},
+	"duplicate":           {kind: kindDuplicate, target: targetNamed, place: placeIfFromPane},
 	"devtools":            {kind: kindDevtools, target: targetNamed},
-	"jar":                 {kind: kindJar},
+	"jar":                 {kind: kindJar, place: placeMount},
 	"download-cancel":     {kind: kindDownloadCancel, download: true},
 	"download-reveal":     {kind: kindDownloadReveal, download: true},
-	"download-open":       {kind: kindDownloadOpen, download: true, selects: true},
+	"download-open":       {kind: kindDownloadOpen, download: true, place: placeIfFromPane},
 	"downloads-clear":     {kind: kindDownloadsClear},
-	"focus-page":          {kind: kindFocusPage, target: targetNamed, focus: true},
-	"focus-page-withdraw": {kind: kindFocusPageWithdraw, target: targetOptional, focus: true},
-	"close-active":        {kind: kindCloseActive, target: targetActive},
-	"reload-active":       {kind: kindReloadActive, target: targetActive},
+	"focus-page":          {kind: kindFocusPage, target: targetNamed, place: placeFocus},
+	"focus-page-withdraw": {kind: kindFocusPageWithdraw, target: targetOptional, place: placeFocus},
 	// The chat header's show: names no tab; the Manager shows the one
 	// selected at its turn or opens one blank tab (ShowCompanion).
-	"show-browser": {kind: kindShowBrowser, selects: true},
+	"show-browser": {kind: kindShowBrowser, place: placeIfFromPane},
 }
 
 // companionCommand is a BrowserCompanionAction that parseCompanionAction
@@ -113,10 +123,11 @@ type companionCommand struct {
 	jar      string
 	download appbrowser.DownloadKey
 	// place is the command's numbered place in its pane mount's order:
-	// always set for targetActive, and for a selection that carries one.
+	// always set for placeNumbered, and for a selection that carries one.
 	place    appbrowser.Numbered
 	numbered bool
-	// mount and intent name a page focus intent (focus kinds).
+	// mount is the pane a jar switch was chosen in (placeMount); with
+	// intent it names a page focus intent (placeFocus).
 	mount  appbrowser.MountID
 	intent uint64
 	// consent is a jar switch's: confirmed when the user agreed that it
@@ -131,8 +142,8 @@ var errCompanionActionShape = errors.New("browser: malformed companion action")
 var errNoCompanionHandler = errors.New("browser: companion action has no handler")
 
 // parseCompanionAction validates action against its kind's spec: a named
-// command names its tab and an active-tab command names none and carries
-// its mount, epoch and number; a selection carries all three or none.
+// command names its tab, a close carries its pane's mount, epoch and
+// number, a selection all three or none, and a jar switch its pane's mount.
 func parseCompanionAction(action BrowserCompanionAction) (companionCommand, error) {
 	name := strings.ToLower(strings.TrimSpace(action.Kind))
 	spec, ok := companionSpecs[name]
@@ -149,7 +160,7 @@ func parseCompanionAction(action BrowserCompanionAction) (companionCommand, erro
 		if page == "" {
 			return refuse("names the tab it acts on")
 		}
-	case targetActive, targetNone:
+	case targetNone:
 		if page != "" {
 			return refuse("names no tab")
 		}
@@ -161,20 +172,36 @@ func parseCompanionAction(action BrowserCompanionAction) (companionCommand, erro
 		kind: spec.kind, page: appbrowser.PageID(page), address: action.Address, index: action.Index,
 		jar: strings.TrimSpace(action.Jar), download: appbrowser.DownloadKey(strings.TrimSpace(action.DownloadID)),
 	}
-	switch {
-	case spec.focus:
+	fromPane := mount != "" || action.Select != 0 || action.Epoch != 0
+	switch spec.place {
+	case placeFocus:
 		if mount == "" || action.Intent == 0 || action.Select != 0 || action.Epoch != 0 {
 			return refuse("needs its pane mount and intent")
 		}
 		cmd.mount, cmd.intent = mount, action.Intent
-	case spec.target == targetActive || (spec.selects && (mount != "" || action.Select != 0 || action.Epoch != 0)):
+	case placeMount:
+		if mount == "" || action.Select != 0 || action.Epoch != 0 || action.Intent != 0 {
+			return refuse("needs the pane mount it was chosen in")
+		}
+		cmd.mount = mount
+	case placeNumbered, placeIfFromPane:
+		if action.Intent != 0 {
+			return refuse("carries no focus intent")
+		}
+		if spec.place == placeIfFromPane && !fromPane {
+			break
+		}
 		place, err := appbrowser.NewNumbered(mount, action.Epoch, action.Select)
 		if err != nil {
 			return companionCommand{}, fmt.Errorf("%w: %s: %w", errCompanionActionShape, name, err)
 		}
 		cmd.place, cmd.numbered = place, true
-	case mount != "" || action.Select != 0 || action.Epoch != 0 || action.Intent != 0:
-		return refuse("is not numbered in a pane")
+	case placeNone:
+		if fromPane || action.Intent != 0 {
+			return refuse("is not numbered in a pane")
+		}
+	default:
+		return refuse("has no pane rule")
 	}
 	if spec.download && cmd.download == "" {
 		return refuse("names its download")
@@ -197,12 +224,20 @@ func parseCompanionAction(action BrowserCompanionAction) (companionCommand, erro
 // Manager refused because a tab is live; the pane asks the user on it.
 const browserJarUnconfirmedCode = "browser_jar_unconfirmed"
 
+// browserJarPaneGoneCode is the code of a jar switch refused because the
+// pane it was chosen in is no longer the thread's: it detached, or the
+// thread's browser it showed was closed (BindMount).
+const browserJarPaneGoneCode = "browser_jar_pane_gone"
+
 // jarSwitchError is the answer to a jar switch: the Manager's refusal of an
-// unconfirmed one as a coded error the pane recognizes, any other error as
-// it is.
+// unconfirmed one, and of one whose pane is gone, as coded errors the pane
+// recognizes, any other error as it is.
 func jarSwitchError(err error) error {
-	if errors.Is(err, appbrowser.ErrJarSwitchUnconfirmed) {
+	switch {
+	case errors.Is(err, appbrowser.ErrJarSwitchUnconfirmed):
 		return errorsx.Public(browserJarUnconfirmedCode, "Switching the cookie jar closes the open tabs and loses their page state", err)
+	case errors.Is(err, appbrowser.ErrMountGone), errors.Is(err, appbrowser.ErrThreadClosed):
+		return errorsx.Public(browserJarPaneGoneCode, "The cookie jar was not changed: the browser pane it was chosen in has closed", err)
 	}
 	return err
 }
@@ -226,22 +261,4 @@ func truncateKind(kind string) string {
 		return string(runes[:32])
 	}
 	return kind
-}
-
-// errActiveOutOfOrder refuses a keyboard command on the active tab whose
-// turn came before an earlier command of its pane had arrived.
-var errActiveOutOfOrder = errors.New("browser: an earlier tab action from this pane had not arrived, so the active tab was not known; nothing was changed. Try again")
-
-// activeOutcomeError is the answer to a keyboard command on the active tab:
-// a refusal for ActiveOutOfOrder, nothing for every outcome that is the
-// state the user asked for or a quiet no-op.
-func activeOutcomeError(outcome appbrowser.ActiveOutcome) error {
-	switch outcome {
-	case appbrowser.ActiveApplied, appbrowser.ActiveNoTab, appbrowser.ActivePassed:
-		return nil
-	case appbrowser.ActiveOutOfOrder:
-		return errActiveOutOfOrder
-	default:
-		return fmt.Errorf("browser: unknown outcome %d of a tab action", outcome)
-	}
 }

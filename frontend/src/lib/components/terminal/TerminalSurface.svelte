@@ -63,7 +63,9 @@
   //     keyboard tab commands (terminal.newTab / closeTab / nextTab / prevTab),
   //     which run in builtinCommands and have no handle to this component.
   //   • In-component mouse handlers (＋ click, tab click, close-to-sibling) set
-  //     it directly, since they already hold this $state.
+  //     it directly, since they already hold this $state. Each takes its
+  //     intent at the click, before any call it waits on, so a focus choice
+  //     made during that call (a dialog) cancels it.
   let pendingFocus = $state.raw<FocusIntent | null>(null);
 
   // A focus this surface asks for itself: the latest focus intent, which a
@@ -131,6 +133,12 @@
     const threadId = surface.threadId;
     if (!threadId) return;
     const workspacePath = surface.workspacePath;
+    // The ＋ button passes focus:true so the freshly opened tab grabs the
+    // cursor; its intent is the click's. The mount auto-open leaves it unset:
+    // its focus is driven by the pane's consume-once intent (see pendingFocus
+    // above), not here.
+    const intent = opts.focus ? intendTerminalFocus() : null;
+    let opened = false;
     try {
       let usable = false;
       const th = await startTerminal(
@@ -158,20 +166,23 @@
         if (handle.tabs.length === 0) collapseDrawer();
         return;
       }
-      // The ＋ button passes focus:true so the freshly opened tab grabs the
-      // cursor. The mount auto-open leaves it unset — its focus is driven by
-      // the pane's consume-once intent (see pendingFocus above), not here.
-      if (opts.focus) pendingFocus = intendTerminalFocus();
+      opened = true;
+      if (intent) pendingFocus = intent;
     } catch (err) {
       console.error('terminal: OpenTerminal failed', err);
       // A surface that is gone asked for nothing any more: its thread may have
       // been deleted while the open was in flight.
       if (!canUseTerminalResult(threadId, workspacePath)) return;
       addErrorToast(`Could not open terminal: ${userFacingError(err)}`, err);
+    } finally {
+      if (!opened) intent?.end();
     }
   }
 
   async function closeTerminal(terminalID: string) {
+    // The cursor follows into the sibling a close leaves; the intent is the
+    // click's, taken before the close is answered.
+    const intent = intendTerminalFocus();
     try {
       await CloseTerminal(terminalID);
     } catch (err) {
@@ -185,9 +196,10 @@
     // promotes it to active (a remount); re-latch focus so the cursor follows
     // into it.
     if (handle.tabs.length === 0) {
+      intent.end();
       collapseDrawer();
     } else {
-      pendingFocus = intendTerminalFocus();
+      pendingFocus = intent;
     }
   }
 

@@ -930,20 +930,22 @@ export class BrowserCompanionAction {
     /**
      * Mount and Intent name a page focus intent for "focus-page" and
      * "focus-page-withdraw": the pane mount and its number for the request.
+     * Mount alone is the pane a "jar" switch was chosen in, which it acts
+     * on the browser of (Manager.BindMount).
      */
     "mount"?: string;
     "intent"?: number;
 
     /**
      * Select numbers a user's tab selection made in Mount ("activate",
-     * "step", and the "new", "reopen", "duplicate" and "download-open" that
-     * select the tab they open) and a keyboard command on the active tab
-     * ("close-active", "reload-active"), consecutive from 1 in each Epoch of
-     * a mount in the order the user acted. The Manager admits a mount's
-     * commands in that order (internal/browser/selection.go). A keyboard
-     * command on the active tab requires Mount, Epoch and Select; a
-     * selection carries all three or none, and with none applies in arrival
-     * order. Validated by parseCompanionAction.
+     * "step", "show-browser", and the "new", "reopen", "duplicate" and
+     * "download-open" that select the tab they open) and a close ("close",
+     * "close-others", "close-right"), consecutive from 1 in each Epoch of a
+     * mount in the order the user acted. The Manager admits a mount's
+     * commands in that order (internal/browser/selection.go). A close
+     * requires Mount, Epoch and Select; a selection carries all three or
+     * none, and with none applies in arrival order. Validated by
+     * parseCompanionAction.
      */
     "select"?: number;
 

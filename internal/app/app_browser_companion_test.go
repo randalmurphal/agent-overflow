@@ -96,7 +96,8 @@ func TestBrowserCompanionNewNamesAShownTabAndCloseRemovesIt(t *testing.T) {
 			t.Fatalf("the new tab is at %q, want the link", page.URL)
 		}
 	}
-	state, err = app.BrowserCompanionDo(ctx, thread.ID, BrowserCompanionAction{Kind: "close", PageID: first})
+	pane := attachPane(t, app, thread.ID)
+	state, err = app.BrowserCompanionDo(ctx, thread.ID, pane.next(BrowserCompanionAction{Kind: "close", PageID: first}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,17 +134,18 @@ func TestBrowserCompanionTabMenuActions(t *testing.T) {
 
 	first := do(BrowserCompanionAction{Kind: "new", Address: "https://example.test/a"}).PageID
 	do(BrowserCompanionAction{Kind: "new", Address: "https://example.test/b"})
+	pane := attachPane(t, app, thread.ID)
 	if got := urls(do(BrowserCompanionAction{Kind: "duplicate", PageID: first})); got != "a a b" {
 		t.Fatalf("after duplicate: %s", got)
 	}
-	if got := urls(do(BrowserCompanionAction{Kind: "close-right", PageID: first})); got != "a" {
+	if got := urls(do(pane.next(BrowserCompanionAction{Kind: "close-right", PageID: first}))); got != "a" {
 		t.Fatalf("after close to the right: %s", got)
 	}
 	state := do(BrowserCompanionAction{Kind: "reopen"})
 	if got := urls(state); got != "a b" || state.ClosedTabs != 1 {
 		t.Fatalf("after reopen: %s, %d closed", got, state.ClosedTabs)
 	}
-	if got := urls(do(BrowserCompanionAction{Kind: "close-others", PageID: first})); got != "a" {
+	if got := urls(do(pane.next(BrowserCompanionAction{Kind: "close-others", PageID: first}))); got != "a" {
 		t.Fatalf("after close others: %s", got)
 	}
 	if got := urls(do(BrowserCompanionAction{Kind: "reload", PageID: first})); got != "a" {
@@ -152,38 +154,39 @@ func TestBrowserCompanionTabMenuActions(t *testing.T) {
 }
 
 // The decoder accepts an action only with the fields its kind requires: a
-// named command names its tab, a keyboard command on the active tab names
-// none and carries its mount, epoch and number, a selection carries all
-// three or none, and nothing else is numbered.
+// named command names its tab, a close carries its pane's mount, epoch and
+// number, a selection all three or none, a jar switch its pane's mount
+// alone, and nothing else is numbered.
 func TestParseCompanionActionRequiresEachKindsFields(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		action BrowserCompanionAction
 		ok     bool
 	}{
-		{BrowserCompanionAction{Kind: "close", PageID: "p"}, true},
-		{BrowserCompanionAction{Kind: "close"}, false},
+		{BrowserCompanionAction{Kind: "close", PageID: "p", Mount: "m", Select: 1, Epoch: 1}, true},
+		{BrowserCompanionAction{Kind: "close", PageID: "p"}, false},
+		{BrowserCompanionAction{Kind: "close", PageID: "p", Mount: "m"}, false},
+		{BrowserCompanionAction{Kind: "close", PageID: "p", Mount: "m", Select: 1}, false},
+		{BrowserCompanionAction{Kind: "close", Mount: "m", Select: 1, Epoch: 1}, false},
+		{BrowserCompanionAction{Kind: "close", PageID: "p", Mount: "m", Select: 1, Epoch: 1, Intent: 1}, false},
+		{BrowserCompanionAction{Kind: "close-others", PageID: "p", Mount: "m", Select: 2, Epoch: 1}, true},
+		{BrowserCompanionAction{Kind: "close-right", PageID: "p"}, false},
+		{BrowserCompanionAction{Kind: "reload", PageID: "p"}, true},
 		{BrowserCompanionAction{Kind: "reload"}, false},
+		{BrowserCompanionAction{Kind: "reload", PageID: "p", Mount: "m", Select: 1, Epoch: 1}, false},
+		{BrowserCompanionAction{Kind: "close-active", Mount: "m", Select: 1, Epoch: 1}, false},
+		{BrowserCompanionAction{Kind: "reload-active", Mount: "m", Select: 1, Epoch: 1}, false},
 		{BrowserCompanionAction{Kind: "navigate", PageID: "p", Address: "https://example.test/"}, true},
 		{BrowserCompanionAction{Kind: "navigate", Address: "https://example.test/"}, false},
-		{BrowserCompanionAction{Kind: "close-active", Mount: "m", Select: 1, Epoch: 1}, true},
-		{BrowserCompanionAction{Kind: "reload-active", Mount: "m", Select: 4, Epoch: 1}, true},
-		{BrowserCompanionAction{Kind: "close-active"}, false},
-		{BrowserCompanionAction{Kind: "close-active", Mount: "m"}, false},
-		{BrowserCompanionAction{Kind: "close-active", Mount: "m", Select: 1}, false},
 		{BrowserCompanionAction{Kind: "activate", PageID: "p", Mount: "m", Select: 2}, false},
 		{BrowserCompanionAction{Kind: "close", PageID: "p", Epoch: 1}, false},
 		{BrowserCompanionAction{Kind: "focus-page", PageID: "p", Mount: "m", Intent: 1, Epoch: 1}, false},
-		{BrowserCompanionAction{Kind: "close-active", Select: 1}, false},
-		{BrowserCompanionAction{Kind: "close-active", PageID: "p", Mount: "m", Select: 1, Epoch: 1}, false},
-		{BrowserCompanionAction{Kind: "reload-active", PageID: "p", Mount: "m", Select: 1, Epoch: 1}, false},
 		{BrowserCompanionAction{Kind: "activate", PageID: "p"}, true},
 		{BrowserCompanionAction{Kind: "activate", PageID: "p", Mount: "m", Select: 2, Epoch: 1}, true},
 		{BrowserCompanionAction{Kind: "activate", PageID: "p", Select: 2}, false},
 		{BrowserCompanionAction{Kind: "activate", PageID: "p", Mount: "m"}, false},
 		{BrowserCompanionAction{Kind: "new"}, true},
 		{BrowserCompanionAction{Kind: "new", PageID: "p"}, false},
-		{BrowserCompanionAction{Kind: "close", PageID: "p", Mount: "m", Select: 1, Epoch: 1}, false},
 		{BrowserCompanionAction{Kind: "show"}, true},
 		{BrowserCompanionAction{Kind: "show", PageID: "p"}, true},
 		{BrowserCompanionAction{Kind: "show-browser"}, true},
@@ -193,13 +196,15 @@ func TestParseCompanionActionRequiresEachKindsFields(t *testing.T) {
 		{BrowserCompanionAction{Kind: "show-browser", Mount: "m"}, false},
 		{BrowserCompanionAction{Kind: "download-open", DownloadID: "d", Mount: "m", Select: 1, Epoch: 1}, true},
 		{BrowserCompanionAction{Kind: "download-cancel"}, false},
-		{BrowserCompanionAction{Kind: "jar"}, false},
-		{BrowserCompanionAction{Kind: "jar", Jar: "thread", Confirmed: true}, true},
-		{BrowserCompanionAction{Kind: "close", PageID: "p", Confirmed: true}, false},
+		{BrowserCompanionAction{Kind: "jar", Mount: "m"}, false},
+		{BrowserCompanionAction{Kind: "jar", Jar: "thread", Mount: "m", Confirmed: true}, true},
+		{BrowserCompanionAction{Kind: "jar", Jar: "thread", Confirmed: true}, false},
+		{BrowserCompanionAction{Kind: "jar", Jar: "thread", Mount: "m", Select: 1, Epoch: 1}, false},
+		{BrowserCompanionAction{Kind: "close", PageID: "p", Mount: "m", Select: 1, Epoch: 1, Confirmed: true}, false},
 		{BrowserCompanionAction{Kind: "focus-page", PageID: "p", Mount: "m", Intent: 1}, true},
 		{BrowserCompanionAction{Kind: "focus-page-withdraw", Mount: "m", Intent: 1}, true},
 		{BrowserCompanionAction{Kind: "focus-page", PageID: "p", Mount: "m"}, false},
-		{BrowserCompanionAction{Kind: "Close-Active", Mount: "m", Select: 1, Epoch: 1}, true},
+		{BrowserCompanionAction{Kind: "Close", PageID: "p", Mount: "m", Select: 1, Epoch: 1}, true},
 		{BrowserCompanionAction{Kind: "shut"}, false},
 	} {
 		_, err := parseCompanionAction(tc.action)
@@ -217,8 +222,8 @@ func TestParseCompanionActionTypesTheJarConsent(t *testing.T) {
 		action BrowserCompanionAction
 		want   appbrowser.JarConsent
 	}{
-		{BrowserCompanionAction{Kind: "jar", Jar: "thread"}, appbrowser.JarSwitchIfNoLiveTab},
-		{BrowserCompanionAction{Kind: "jar", Jar: "thread", Confirmed: true}, appbrowser.JarSwitchConfirmed},
+		{BrowserCompanionAction{Kind: "jar", Jar: "thread", Mount: "m"}, appbrowser.JarSwitchIfNoLiveTab},
+		{BrowserCompanionAction{Kind: "jar", Jar: "thread", Mount: "m", Confirmed: true}, appbrowser.JarSwitchConfirmed},
 		{BrowserCompanionAction{Kind: "new"}, appbrowser.JarConsent(0)},
 	} {
 		cmd, err := parseCompanionAction(tc.action)
@@ -245,11 +250,14 @@ func TestEveryCompanionKindHasAHandler(t *testing.T) {
 		if spec.target == targetNamed || spec.target == targetOptional {
 			action.PageID = "none"
 		}
-		if spec.target == targetActive {
+		switch spec.place {
+		case placeNumbered:
 			action.Mount, action.Epoch, action.Select = "none", 1, 1
-		}
-		if spec.focus {
+		case placeMount:
+			action.Mount = "none"
+		case placeFocus:
 			action.Mount, action.Intent = "none", 1
+		case placeNone, placeIfFromPane:
 		}
 		if spec.download {
 			action.DownloadID = "none"
@@ -267,9 +275,10 @@ func TestEveryCompanionKindHasAHandler(t *testing.T) {
 	}
 }
 
-// A keyboard command on the active tab carries its mount and number to the
-// Manager, which closes the tab active at its turn.
-func TestBrowserCompanionCloseActiveClosesTheActiveTab(t *testing.T) {
+// A close carries its pane's mount and number and the tab it names: the
+// Manager closes that tab, not the active one, and a second close of it
+// closes nothing more.
+func TestBrowserCompanionCloseClosesTheTabItNames(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
 	manager := appbrowser.NewManager(t.TempDir(), appbrowser.Config{Enabled: true}, appbrowser.ManagerOptions{FakeEngine: true})
@@ -281,27 +290,51 @@ func TestBrowserCompanionCloseActiveClosesTheActiveTab(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.BrowserCompanionDo(ctx, thread.ID, BrowserCompanionAction{Kind: "new", Address: "https://example.test/b"}); err != nil {
-		t.Fatal(err)
-	}
-	mount, err := app.BrowserCompanionPaneAttach(ctx, thread.ID)
+	second, err := app.BrowserCompanionDo(ctx, thread.ID, BrowserCompanionAction{Kind: "new", Address: "https://example.test/b"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.BrowserCompanionDo(ctx, thread.ID, BrowserCompanionAction{Kind: "close-active", PageID: first.PageID, Mount: mount.ID, Select: 1, Epoch: 1}); err == nil {
-		t.Fatal("a keyboard close naming a tab was accepted")
+	pane := attachPane(t, app, thread.ID)
+	if _, err := app.BrowserCompanionDo(ctx, thread.ID, BrowserCompanionAction{Kind: "close", PageID: first.PageID}); err == nil {
+		t.Fatal("a close with no pane number was accepted")
 	}
-	state, err := app.BrowserCompanionDo(ctx, thread.ID, BrowserCompanionAction{Kind: "close-active", Mount: mount.ID, Select: 1, Epoch: 1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(state.Pages) != 1 || state.Pages[0].ID != first.PageID {
-		t.Fatalf("after the keyboard close: %+v, want a alone", state.Pages)
+	for range 2 {
+		state, err := app.BrowserCompanionDo(ctx, thread.ID, pane.next(BrowserCompanionAction{Kind: "close", PageID: first.PageID}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(state.Pages) != 1 || state.Pages[0].ID != second.PageID {
+			t.Fatalf("after closing a: %+v, want b alone", state.Pages)
+		}
 	}
 }
 
-// Every kind that selects a tab or acts on the active one carries its mount
-// and number to the Manager, which admits each number once: a number
+// paneNumbers numbers one attached pane mount's commands as the window
+// does, consecutive from 1 in epoch 1.
+type paneNumbers struct {
+	mount string
+	seq   uint64
+}
+
+// attachPane attaches a pane to the thread and answers its numbering.
+func attachPane(t *testing.T, app *App, threadID string) *paneNumbers {
+	t.Helper()
+	mount, err := app.BrowserCompanionPaneAttach(t.Context(), threadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &paneNumbers{mount: mount.ID}
+}
+
+// next is action as the pane's next numbered command.
+func (p *paneNumbers) next(action BrowserCompanionAction) BrowserCompanionAction {
+	p.seq++
+	action.Mount, action.Epoch, action.Select = p.mount, 1, p.seq
+	return action
+}
+
+// Every kind that selects or closes a tab carries its mount and number to
+// the Manager, which admits each number once: a number
 // already admitted does nothing.
 func TestBrowserCompanionSelectionsCarryTheirOrder(t *testing.T) {
 	t.Parallel()
@@ -321,13 +354,11 @@ func TestBrowserCompanionSelectionsCarryTheirOrder(t *testing.T) {
 	}
 	first := do(BrowserCompanionAction{Kind: "new", Address: "https://example.test/a"}).PageID
 	second := do(BrowserCompanionAction{Kind: "new", Address: "https://example.test/b"}).PageID
-	do(BrowserCompanionAction{Kind: "close", PageID: do(BrowserCompanionAction{Kind: "new"}).PageID})
-	mount, err := app.BrowserCompanionPaneAttach(ctx, thread.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	before := do(BrowserCompanionAction{Kind: "activate", PageID: first, Mount: mount.ID, Select: 1, Epoch: 1})
-	// Number 1 was admitted: each kind sent again as number 1 is passed and
+	third := do(BrowserCompanionAction{Kind: "new"}).PageID
+	pane := attachPane(t, app, thread.ID)
+	do(pane.next(BrowserCompanionAction{Kind: "close", PageID: third}))
+	before := do(pane.next(BrowserCompanionAction{Kind: "activate", PageID: first}))
+	// Number 2 was admitted: each kind sent again as number 2 is passed and
 	// does nothing.
 	for _, late := range []BrowserCompanionAction{
 		{Kind: "activate", PageID: second},
@@ -336,11 +367,12 @@ func TestBrowserCompanionSelectionsCarryTheirOrder(t *testing.T) {
 		{Kind: "duplicate", PageID: second},
 		{Kind: "reopen"},
 		{Kind: "download-open", DownloadID: "none"},
-		{Kind: "close-active"},
-		{Kind: "reload-active"},
+		{Kind: "close", PageID: second},
+		{Kind: "close-others", PageID: second},
+		{Kind: "close-right", PageID: first},
 		{Kind: "show-browser"},
 	} {
-		late.Mount, late.Epoch, late.Select = mount.ID, 1, 1
+		late.Mount, late.Epoch, late.Select = pane.mount, 1, 2
 		state := do(late)
 		if state.ActivePageID != first || len(state.Pages) != len(before.Pages) || state.ClosedTabs != before.ClosedTabs {
 			t.Fatalf("a passed %s changed the tabs: %+v", late.Kind, state)
@@ -410,9 +442,13 @@ func TestBrowserCompanionJarUsesTheThreadsProject(t *testing.T) {
 	if _, err := app.BrowserCompanionDo(ctx, thread.ID, BrowserCompanionAction{Kind: "new"}); err != nil {
 		t.Fatal(err)
 	}
+	mount, err := app.BrowserCompanionPaneAttach(ctx, thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	// The tab is live: an unconfirmed switch is refused with the code the
 	// pane asks on, and the confirmed one goes ahead.
-	_, err := app.BrowserCompanionDo(ctx, thread.ID, BrowserCompanionAction{Kind: "jar", Jar: appbrowser.JarProject})
+	_, err = app.BrowserCompanionDo(ctx, thread.ID, BrowserCompanionAction{Kind: "jar", Jar: appbrowser.JarProject, Mount: mount.ID})
 	if code, _, _ := errorsx.PublicDetails(err); code != browserJarUnconfirmedCode {
 		t.Fatalf("an unconfirmed switch with a live tab answered %v, want code %s", err, browserJarUnconfirmedCode)
 	}
@@ -423,15 +459,66 @@ func TestBrowserCompanionJarUsesTheThreadsProject(t *testing.T) {
 	if got := manager.CompanionState(access.Caller()).Jar; got == appbrowser.JarProject {
 		t.Fatal("the refused switch changed the jar")
 	}
-	state, err := app.BrowserCompanionDo(ctx, thread.ID, BrowserCompanionAction{Kind: "jar", Jar: appbrowser.JarProject, Confirmed: true})
+	state, err := app.BrowserCompanionDo(ctx, thread.ID, BrowserCompanionAction{Kind: "jar", Jar: appbrowser.JarProject, Mount: mount.ID, Confirmed: true})
 	if err != nil {
 		t.Fatalf("choose the project jar: %v", err)
 	}
 	if state.Jar != appbrowser.JarProject || len(state.Pages) != 1 {
 		t.Fatalf("after choosing the project jar: %+v", state)
 	}
-	if _, err := app.BrowserCompanionDo(ctx, thread.ID, BrowserCompanionAction{Kind: "jar", Jar: "shared"}); err == nil {
+	if _, err := app.BrowserCompanionDo(ctx, thread.ID, BrowserCompanionAction{Kind: "jar", Jar: "shared", Mount: mount.ID}); err == nil {
 		t.Fatal("an unknown jar was accepted")
+	}
+}
+
+// A confirmed jar switch held on its way while the thread's browser was
+// retired and opened again on a fresh tab switches nothing: its consent was
+// given in a pane of the retired browser, and the fresh tab stays live in
+// the jar it opened in. One from a pane that detached is refused too.
+func TestBrowserCompanionJarSwitchFromARetiredPaneChangesNothing(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	manager := appbrowser.NewManager(t.TempDir(), appbrowser.Config{Enabled: true}, appbrowser.ManagerOptions{FakeEngine: true})
+	app.browser.manager = manager
+	t.Cleanup(func() { _ = manager.Close() })
+	thread := makeWorkspaceThread(t, app, "thread-companion-jar-retired")
+	ctx := t.Context()
+	if _, err := app.BrowserCompanionDo(ctx, thread.ID, BrowserCompanionAction{Kind: "new"}); err != nil {
+		t.Fatal(err)
+	}
+	mount, err := app.BrowserCompanionPaneAttach(ctx, thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.CloseThread(ctx, appbrowser.ThreadID(thread.ID)); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := app.BrowserCompanionDo(ctx, thread.ID, BrowserCompanionAction{Kind: "new"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = app.BrowserCompanionDo(ctx, thread.ID, BrowserCompanionAction{Kind: "jar", Jar: appbrowser.JarThread, Mount: mount.ID, Confirmed: true})
+	if code, _, _ := errorsx.PublicDetails(err); code != browserJarPaneGoneCode {
+		t.Fatalf("the retired pane's switch answered %v, want code %s", err, browserJarPaneGoneCode)
+	}
+	state, err := app.BrowserCompanionThreadState(thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Jar == appbrowser.JarThread || len(state.Pages) != 1 || state.Pages[0].ID != fresh.PageID || state.Pages[0].Suspended {
+		t.Fatalf("after the retired pane's switch: jar %s, tabs %+v; want the fresh tab live in its jar", state.Jar, state.Pages)
+	}
+
+	next, err := app.BrowserCompanionPaneAttach(ctx, thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.BrowserCompanionPaneDetach(ctx, next.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, err = app.BrowserCompanionDo(ctx, thread.ID, BrowserCompanionAction{Kind: "jar", Jar: appbrowser.JarThread, Mount: next.ID, Confirmed: true})
+	if code, _, _ := errorsx.PublicDetails(err); code != browserJarPaneGoneCode {
+		t.Fatalf("the detached pane's switch answered %v, want code %s", err, browserJarPaneGoneCode)
 	}
 }
 

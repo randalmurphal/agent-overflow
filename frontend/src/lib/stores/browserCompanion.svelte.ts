@@ -9,6 +9,7 @@ import {
   BrowserCompanionPaneDetach,
   BrowserCompanionThreadState,
   type BrowserCompanionEvent,
+  type BrowserPageInfo,
 } from './bindings';
 import { applyBrowserFindEvent } from './browserFind.svelte';
 import { createEntityStore, type EntityAttachment } from './entityStore.svelte';
@@ -88,8 +89,6 @@ export interface BrowserCompanionObserver {
   focusSettled?(event: BrowserCompanionEvent): void;
   /** The thread's pane mount ended with its attachment. */
   mountEnded?(mount: BrowserMountId): void;
-  /** No surface shows the thread any more: drop what is kept for it. */
-  threadReleased?(threadId: string): void;
   /** resetBrowserCompanionForTest: drop all state, telling no one. */
   resetForTest?(): void;
 }
@@ -107,6 +106,25 @@ export function observeBrowserCompanion(observer: BrowserCompanionObserver): voi
 // generation it was admitted in, and an answer to a call started in an older
 // one is not admitted.
 let connectionGeneration = 0;
+
+// The brand only this module can write: a stamp is taken here, when a call
+// that admits state starts.
+const stampOf: unique symbol = Symbol('BrowserStateStamp');
+
+/**
+ * When a call whose answer is admitted as the thread's state started: the
+ * connection generation, and the window's observation of the thread then
+ * (keptThreads). An answer is admitted only while both are still current,
+ * so one answered after the thread left the watched set, even if it was
+ * shown again since, is not taken for the newest state.
+ */
+export interface BrowserStateStamp {
+  readonly [stampOf]: true;
+  readonly threadId: string;
+  readonly generation: number;
+  /** Null when this window did not keep the thread's state at the start. */
+  readonly observation: symbol | null;
+}
 
 interface AcceptedState {
   readonly state: Readonly<BrowserCompanionEvent>;
@@ -133,8 +151,20 @@ const stateOrder = createSequenceGate();
 // composition, keeping every thread.
 let keptThreads: ReadonlySet<string> | null = null;
 
-function keepsThreadState(threadId: string): boolean {
-  return keptThreads === null || keptThreads.has(threadId);
+// The window's observation of each kept thread: one identity from the
+// thread's entering the kept set to its leaving it. Taken on first use
+// while the thread is kept, and ended by its release, so a thread shown
+// again is observed afresh.
+const observations = new Map<string, symbol>();
+
+function observationOf(threadId: string): symbol | null {
+  if (keptThreads !== null && !keptThreads.has(threadId)) return null;
+  let observation = observations.get(threadId);
+  if (!observation) {
+    observation = Symbol(threadId);
+    observations.set(threadId, observation);
+  }
+  return observation;
 }
 
 onWatchedThreadsComposed((threadIds) => {
@@ -142,20 +172,25 @@ onWatchedThreadsComposed((threadIds) => {
   const released = new Set<string>();
   for (const threadId of snapshots.keys()) if (!threadIds.has(threadId)) released.add(threadId);
   for (const threadId of stateReads.keys()) if (!threadIds.has(threadId)) released.add(threadId);
+  for (const threadId of observations.keys()) if (!threadIds.has(threadId)) released.add(threadId);
   for (const threadId of released) releaseThreadState(threadId);
 });
 
 function releaseThreadState(threadId: string): void {
+  observations.delete(threadId);
   snapshots.drop(threadId);
   stateOrder.forget(threadId);
   stateReads.delete(threadId);
   findCleanupErrors.drop(threadId);
-  for (const observer of observers) observer.threadReleased?.(threadId);
 }
 
-/** The home connection's generation; an answer is admitted only in the one its call started in. */
-export function browserStateGeneration(): number {
-  return connectionGeneration;
+/** Stamps a call that admits the thread's state, as it starts (BrowserStateStamp). */
+export function browserStateStamp(threadId: string): BrowserStateStamp {
+  return { [stampOf]: true, threadId, generation: connectionGeneration, observation: observationOf(threadId) };
+}
+
+function stampCurrent(stamp: BrowserStateStamp): boolean {
+  return stamp.generation === connectionGeneration && stamp.observation !== null && observations.get(stamp.threadId) === stamp.observation;
 }
 
 /**
@@ -183,6 +218,15 @@ export function browserThreadSnapshot(threadId: string): BrowserThreadSnapshot {
  */
 export function browserThreadState(threadId: string): Readonly<BrowserCompanionEvent> | null {
   return snapshots.get(threadId)?.state ?? null;
+}
+
+/**
+ * The tab the pane shows of `state`: its active tab, or with none the first
+ * in the strip; null with no tab. What the user sees as the active tab.
+ */
+export function browserShownPage(state: Readonly<BrowserCompanionEvent> | null): Readonly<BrowserPageInfo> | null {
+  const pages = state?.pages ?? [];
+  return pages.find((page) => page.id === state?.activePageId) ?? pages[0] ?? null;
 }
 
 /** The thread's last admitted state while it has pages, else null (reactive). */
@@ -271,7 +315,7 @@ const store = createEntityStore<BrowserPaneMount, void>({
   source: async ({ key, apply, signal }) => {
     const refusal = nativeBrowserRefusal(key);
     if (refusal) throw refusal;
-    const generation = connectionGeneration;
+    const stamp = browserStateStamp(key);
     const result = await BrowserCompanionPaneAttach(key);
     // An attach superseded while it was in flight (the pane closed, or
     // closed and opened again) owns nothing here: the mount the thread has
@@ -282,7 +326,7 @@ const store = createEntityStore<BrowserPaneMount, void>({
     const pane: BrowserPaneAttachment = { [attachedPane]: true, threadId: key, mount };
     // The answer's state is admitted like any other; a newer one that
     // already landed (a push during the attach) wins.
-    admitBrowserState(result.state, generation);
+    admitBrowserState(result.state, stamp);
     apply({ pane });
     return async () => {
       // The entity store keeps the value through a re-acquire; a detached
@@ -299,14 +343,24 @@ export function attachBrowserCompanion(threadId: string): EntityAttachment<Brows
   return store.attach(threadId, undefined);
 }
 
-/** The thread's attached pane mount, null while it has none. Reactive. */
+/**
+ * The thread's attached pane mount, null while it has none or while this
+ * page may not host the thread's browser (nativeBrowserRefusal): an owner
+ * that moved or became contested since the attach leaves the mount nothing
+ * this window may send from or show. Reactive.
+ */
 export function browserPaneAttachment(threadId: string): BrowserPaneAttachment | null {
-  return store.peek(threadId)?.pane ?? null;
+  const pane = store.peek(threadId)?.pane ?? null;
+  return pane && canUseNativeBrowser(threadId) ? pane : null;
 }
 
-/** Whether `pane` is still the thread's attached mount. Not reactive: asked as something is sent or shown. */
+/**
+ * Whether `pane` is still the thread's attached mount and this page may
+ * still host the thread's browser. Not reactive: asked as something is
+ * sent or an answer is shown.
+ */
 export function isCurrentBrowserPane(pane: BrowserPaneAttachment): boolean {
-  return store.snapshot(pane.threadId)?.pane === pane;
+  return store.snapshot(pane.threadId)?.pane === pane && canUseNativeBrowser(pane.threadId);
 }
 
 /** The backend's id of the thread's mounted pane, null while it has none. Reactive. */
@@ -363,18 +417,20 @@ export function applyBrowserCompanionState(event: BrowserCompanionEvent): void {
     for (const observer of observers) observer.focusSettled?.(event);
     return;
   }
-  admitBrowserState(event, connectionGeneration);
+  admitBrowserState(event, browserStateStamp(event.threadId));
 }
 
 /**
  * The one admission of a thread's state, for a push and for the answer of
- * every call (attach, read, action, page focus), with the connection
- * generation the call started in. An answer from an older generation, or a
- * state older than one already admitted, changes nothing.
+ * every call (attach, read, action, page focus), with the stamp taken as the
+ * call started (BrowserStateStamp). An answer from an older generation or an
+ * ended observation, a state for another thread than the stamp's, or a state
+ * older than one already admitted, changes nothing.
  */
-export function admitBrowserState(event: BrowserCompanionEvent, generation: number): void {
-  if (event?.kind !== 'state' || !event.threadId) return;
-  if (generation !== connectionGeneration || !keepsThreadState(event.threadId)) return;
+export function admitBrowserState(event: BrowserCompanionEvent, stamp: BrowserStateStamp): void {
+  if (event?.kind !== 'state' || !event.threadId || event.threadId !== stamp.threadId) return;
+  if (!stampCurrent(stamp)) return;
+  const generation = stamp.generation;
   if (!stateOrder.admit(event.threadId, event.seq, getTransportHelloFor(HOME_BACKEND)?.launchId ?? '')) {
     // The held state is at least as new as this answer of the current
     // generation, so it is known in this generation too.
@@ -502,15 +558,15 @@ export function readBrowserCompanionState(threadId: string): Promise<void> {
   // same failure path as a rejection.
   const read = (async () => {
     while (browserThreadSnapshot(threadId).status === 'unknown') {
-      const generation = connectionGeneration;
+      const stamp = browserStateStamp(threadId);
       const state = await BrowserCompanionThreadState(threadId);
       // Released while reading: no surface shows the thread, and one that
       // shows it again reads it again.
       if (stateReads.get(threadId)?.token !== token) return;
       // Not admitted when older than a state already admitted, which then
       // is the known one; or when an edge passed, and then read again.
-      admitBrowserState(state, generation);
-      if (generation === connectionGeneration && browserThreadSnapshot(threadId).status === 'unknown') {
+      admitBrowserState(state, stamp);
+      if (stamp.generation === connectionGeneration && browserThreadSnapshot(threadId).status === 'unknown') {
         throw new Error('The browser answered with no state for this conversation.');
       }
     }
@@ -577,6 +633,7 @@ export function resetBrowserCompanionForTest(): void {
   // An answer to a call a test started before the reset is not admitted after it.
   connectionGeneration += 1;
   keptThreads = null;
+  observations.clear();
   for (const observer of observers) observer.resetForTest?.();
   stateOrder.reset();
   snapshots.reset();

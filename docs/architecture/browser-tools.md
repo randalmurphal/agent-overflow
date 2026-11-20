@@ -140,12 +140,16 @@ per-platform no-op.
   it. Hidden pages keep rendering, so screenshots and
   scrolls work with the pane closed, and a screenshot that produces no frame
   fails with a bounded error instead of hanging.
-- `pane.close` (Mod+W) on the keyboard's browser companion closes the active tab;
-  the companion closes when its last tab does. The close names no tab: it
-  takes its place in the pane's order of selections at the keypress
-  (`close-active`), and the Manager closes the tab active at its turn and
-  picks the next active tab in the same lock hold, so it closes the tab the
-  user just picked and one tab per press, and a tab still opening or
+- `pane.close` (Mod+W) on the keyboard's browser companion closes the tab
+  it shows; the companion closes when its last tab does. The close names
+  the tab the window showed as active at the keypress, or, for a chord
+  pressed in a page, the page it was pressed in (the `accelerator` event's
+  `pageId`), and takes its place in the pane's order. The tab's x and the
+  tab menu's closes name their tab the same way. At its turn the Manager
+  closes the named tab if it is still there and picks the next active tab
+  in the same lock hold, so a close that arrives after the user picked
+  another tab never closes that tab, and Mod+W and the x of one tab close
+  it once. A tab still opening or
   restoring closes at once. Closing the companion any other
   way hides the session and keeps its pages, so reopening shows the same tabs.
 - A tab the user closes is kept on the thread's in-memory closed-tab stack
@@ -185,14 +189,14 @@ per-platform no-op.
   (`selection.go`, `internal/browser/turnorder`), though the transport runs
   each call on its own goroutine. Every pane action that selects a tab
   (`activate`, `step`, `show-browser`, and the `new`, `reopen`, `duplicate`
-  and `download-open` that select the tab they open) and every keyboard command
-  on the active tab (`close-active`, `reload-active`) carries the pane's
+  and `download-open` that select the tab they open) and every close
+  (`close`, `close-others`, `close-right`) carries the pane's
   mount and a number the client takes when the user acts: an epoch and a
   sequence in it, consecutive from 1. The client starts a mount's next
   epoch with the first command it sends while none of the mount's is
   unanswered, so nothing of an older epoch is still meant to act; a
-  re-attach is a new mount and starts again. A keyboard command on the
-  active tab must carry them; a selection made with no pane mounted (the
+  re-attach is a new mount and starts again. A close must carry them; a
+  selection made with no pane mounted (the
   chat header's show, a download opened from its toast) carries none,
   and the backend refuses an action that does not match its kind
   (`parseCompanionAction`). The Manager admits a mount's numbers in order:
@@ -201,14 +205,11 @@ per-platform no-op.
   restores the tab it selected. When a second passes with no progress the
   count moves past the numbers not yet arrived: each is outstanding, and
   arriving later it is refused with an error and acts on nothing, so it
-  never undoes a choice the user made after it. While a number of its epoch
-  is outstanding a keyboard command on the active tab is refused with an
-  error in the pane's banner and acts on nothing, since the tab it means is
-  not known; a selection names its tab and acts. A newer epoch ends the
-  older one: what arrives of it is refused, and its outstanding numbers no
-  longer hold the keyboard's commands. A mount remembers 256 outstanding
-  numbers; past that the epoch's keyboard commands are refused until the
-  next. A repeat of a number already admitted, one from a mount the
+  never undoes a choice the user made after it. Every command names its
+  tab or steps from what has arrived, so the numbers after an outstanding
+  one act. A newer epoch ends the older one: what arrives of it is
+  refused. A mount remembers 256 outstanding numbers; one dropped past that
+  is refused like any other that lost its place. A repeat of a number already admitted, one from a mount the
   Manager does not have (detached, or another thread's), a waiter whose
   mount detaches, and a command admitted before its mount detached or a
   newer epoch began answer success and act on nothing; a reopen keeps its
@@ -290,8 +291,9 @@ per-platform no-op.
   and with no tab it opens one blank tab, selected and shown, which the
   answer names. So an agent's open or the user's selection before its turn
   wins, two shows open one tab between them, and the client decides nothing
-  from a state it may not have read yet. A press repeated before the show's
-  state lands joins it; a hide press ends that run. A new tab the user
+  from a state it may not have read yet. Every press sends; a repeated
+  press's address focus request replaces the one before it, and its refusal
+  is not toasted again while the same text is on screen. A new tab the user
   opened takes the address bar's focus, text selected, once it is ready,
   unless the user pressed a key or the pointer first or another tab is shown.
 - A thread's pages outlive a stop of its provider session, so a restarted
@@ -537,17 +539,22 @@ behave as a desktop browser's:
   reopen closed tab `mod+shift+t`, beside close tab `mod+w`. A bare `f5` is never claimed from the page.
   Next and previous tab send a relative `step` that the Manager applies to
   its own order and selection (`StepCompanionPage`), so presses faster than
-  the state push each move one tab. Reload sends `reload-active`, which
-  names no tab: the Manager reloads the tab active at its turn, after a tab
-  switch still on its way, and nothing when that tab closes first. The tab
-  menu's and the address bar's reload name their tab.
+  the state push each move one tab. Reload names the tab the window shows
+  (or the page the chord was pressed in) as close does, and reloads
+  nothing when that tab closes first. The tab menu's and the address
+  bar's reload name their tab too. Before the pane's attach answers, the
+  commands that send are not available (`browserPaneUnattached`): the
+  palette does not offer them, and their chords stay the pane's and do
+  nothing.
 - The desktop and Windows launcher windows bind `mod+r` to reloading the app
   before the SPA sees the key. While the browser pane is focused and the
   effective keybindings run a command for `mod+r` there, the SPA asks over
   the webview's raw message channel for the chord. The window then hands it
   over, and the SPA replays it as a keydown through the keybinding
-  dispatcher, as it does a chord claimed in the page; a chord nothing runs
-  goes back and reloads the app
+  dispatcher, as it does a chord claimed in the page. The chord is asked
+  for whether or not the pane has attached, and one the pane still
+  reserves does nothing when nothing runs it; a chord handed over after the
+  pane stopped reserving it goes back and reloads the app
   (`internal/uikeys/pagechords.go`, `frontend/src/lib/native/shellChords.svelte.ts`).
   `mod+shift+r` always reloads the app. The `--connect` window hosts no
   native page and keeps the plain binding.

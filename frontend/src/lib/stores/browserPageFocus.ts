@@ -36,7 +36,7 @@ interface PageFocusIntent {
   pageId: PageId;
   /** Its place as the latest focus intent, scoped to the page area. */
   focus: FocusIntent;
-  /** browserActionsStarted for the thread when it was armed. */
+  /** browserActionsStarted for its pane when it was armed. */
   actionsAtArm: number;
 }
 
@@ -76,7 +76,7 @@ export async function focusBrowserPage(
     focus: intendFocus(elementFocusScope(area), () => {
       if (pageFocusIntents.get(threadId) === record) withdrawPageFocus(threadId);
     }),
-    actionsAtArm: browserActionsStarted(threadId),
+    actionsAtArm: browserActionsStarted(pane),
   };
   pageFocusIntents.set(threadId, record);
   try {
@@ -110,7 +110,7 @@ function unhandledAnswer(answer: never): never {
  * started since it was armed, or the one that did left no banner.
  */
 function bannerable(record: PageFocusIntent): boolean {
-  if (browserActionsStarted(record.threadId) === record.actionsAtArm) return true;
+  if (browserActionsStarted(record.pane) === record.actionsAtArm) return true;
   return !browserActionError(record.threadId);
 }
 

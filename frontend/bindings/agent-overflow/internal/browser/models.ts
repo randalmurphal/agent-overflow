@@ -55,7 +55,8 @@ export class CompanionEvent {
     /**
      * Accelerator rides a Kind "accelerator" event: a bound chord pressed
      * while the thread's page view held keyboard focus, for the frontend to
-     * dispatch as if the SPA had received it.
+     * dispatch as if the SPA had received it. Its PageID is the page the
+     * chord was pressed in, which a command it runs on a tab acts on.
      */
     "accelerator"?: keybindings$0.Accelerator | null;
 

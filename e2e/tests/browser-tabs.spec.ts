@@ -17,7 +17,10 @@
 // receives two in reverse order: of two tabs clicked with no gap the
 // second, and a click then next tab one past the clicked tab. A close chord
 // the page claimed that arrives after a pane was promoted over the browser
-// closes nothing; once the browser is uncovered it closes the active tab.
+// closes nothing; once the browser is uncovered it closes the page it was
+// pressed in, also after the user selected another tab meanwhile. Mod+W and
+// then the x of the same tab close one tab, whichever reaches the backend
+// first.
 import type { HarnessApp } from '../src/harness.js';
 import { test, expect, type SeedResult } from './fixtures.js';
 
@@ -399,4 +402,97 @@ test('a chord from the page that arrives after a pane was promoted over it close
   await pressInPage();
   await expect.poll(() => tabURLs(harness, threadId)).toEqual(['https://example.test/two']);
   await expect(thread).toHaveCount(1);
+});
+
+// Mod+W pressed in page one reaches the window after the user clicked tab
+// two: the close names the page it was pressed in, so one closes and two,
+// the tab the click selected, stays.
+test('a close chord from a page that arrives after another tab was selected closes that page', async ({ harness, page }) => {
+  let mount = '';
+  await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
+    const server = socket.connectToServer();
+    socket.onMessage((message) => {
+      const frame = JSON.parse(String(message));
+      if (frame.type === 'rpc' && frame.methodId === BROWSER_COMPANION_DO && frame.params?.[1]?.mount) mount = frame.params[1].mount;
+      server.send(message);
+    });
+    server.onMessage((message) => socket.send(message));
+  });
+  const threadId = await seedBrowserThread(harness, 'Browser late chord');
+  const ids: string[] = [];
+  for (const address of ['https://example.test/one', 'https://example.test/two']) {
+    const opened = await harness.rpc<BrowserState>('BrowserCompanionDo', threadId, { kind: 'new' });
+    ids.push(opened.activePageId ?? '');
+    await harness.rpc('BrowserCompanionDo', threadId, { kind: 'navigate', pageId: opened.activePageId ?? '', address });
+  }
+  await harness.open(page);
+  await page.getByText('Browser late chord').click();
+  const pane = page.getByTestId('browser-pane');
+  const tabs = pane.getByTestId('browser-tab');
+  await expect(tabs).toHaveCount(2);
+  await tabs.nth(0).click();
+  await expect.poll(() => activeURL(harness, threadId)).toBe('https://example.test/one');
+  // The chord pressed in page one is on its way while the user clicks two.
+  await tabs.nth(1).click();
+  await expect.poll(() => activeURL(harness, threadId)).toBe('https://example.test/two');
+  await expect(tabs.nth(1)).toHaveAttribute('aria-selected', 'true');
+  const close = process.platform === 'darwin' ? { key: 'w', meta: true } : { key: 'w', ctrl: true };
+  await harness.rpc('HarnessEmit', 'browser:companion-state', { kind: 'accelerator', threadId, mount, pageId: ids[0], accelerator: close });
+  await expect.poll(() => tabURLs(harness, threadId)).toEqual(['https://example.test/two']);
+  await expect(tabs).toHaveCount(1);
+});
+
+// Mod+W on tab one, then one's x before the first close reaches the
+// backend: both name tab one and take their places in the pane's order, so
+// the second finds it gone and one tab closes, not two.
+test('the keyboard close and the x of the same tab close one tab', async ({ harness, page }) => {
+  // The first close's frame, held, and the way to the backend it goes by.
+  const wire: { held?: string; send?: (message: string) => void } = {};
+  const closes: string[] = [];
+  const answered = new Set<string>();
+  await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
+    const server = socket.connectToServer();
+    wire.send = (message) => server.send(message);
+    socket.onMessage((message) => {
+      const frame = JSON.parse(String(message));
+      const kind = frame.type === 'rpc' && frame.methodId === BROWSER_COMPANION_DO ? frame.params?.[1]?.kind : '';
+      if (kind === 'close') {
+        closes.push(frame.id);
+        if (wire.held === undefined) {
+          wire.held = String(message);
+          return;
+        }
+      }
+      server.send(message);
+    });
+    server.onMessage((message) => {
+      socket.send(message);
+      const frame = JSON.parse(String(message));
+      if (frame.type === 'rpc' && closes.includes(frame.id)) answered.add(frame.id);
+    });
+  });
+  const threadId = await seedBrowserThread(harness, 'Browser double close');
+  const urls = ['https://example.test/one', 'https://example.test/two', 'https://example.test/three', 'https://example.test/four'];
+  for (const address of urls) {
+    const opened = await harness.rpc<BrowserState>('BrowserCompanionDo', threadId, { kind: 'new' });
+    await harness.rpc('BrowserCompanionDo', threadId, { kind: 'navigate', pageId: opened.activePageId ?? '', address });
+  }
+  await harness.open(page);
+  await page.getByText('Browser double close').click();
+  const pane = page.getByTestId('browser-pane');
+  const tabs = pane.getByTestId('browser-tab');
+  await expect(tabs).toHaveCount(4);
+  await tabs.nth(0).click();
+  await expect.poll(() => activeURL(harness, threadId)).toBe(urls[0]);
+  await expect(tabs.nth(0)).toHaveAttribute('aria-selected', 'true');
+  await page.keyboard.press('ControlOrMeta+w');
+  await expect.poll(() => wire.held !== undefined).toBe(true);
+  // The x's close reaches the backend first and waits for the held one's
+  // turn, which is then let go.
+  await pane.getByTestId('browser-tab-close').nth(0).click();
+  await expect.poll(() => closes.length).toBe(2);
+  wire.send?.(wire.held ?? '');
+  await expect.poll(() => answered.size).toBe(2);
+  expect(await tabURLs(harness, threadId)).toEqual(urls.slice(1));
+  await expect(tabs).toHaveCount(3);
 });

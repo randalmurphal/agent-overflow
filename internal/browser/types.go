@@ -46,7 +46,8 @@ type CompanionEvent struct {
 	RecentGen string `json:"recentGen,omitempty"`
 	// Accelerator rides a Kind "accelerator" event: a bound chord pressed
 	// while the thread's page view held keyboard focus, for the frontend to
-	// dispatch as if the SPA had received it.
+	// dispatch as if the SPA had received it. Its PageID is the page the
+	// chord was pressed in, which a command it runs on a tab acts on.
 	Accelerator *keybindings.Accelerator `json:"accelerator,omitempty"`
 	// Mount rides a Kind "accelerator" or "escape" event: the pane mount
 	// (AttachPane) the thread's pages are presented in. The event reaches

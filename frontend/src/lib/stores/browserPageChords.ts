@@ -1,15 +1,21 @@
 import type { BrowserCompanionEvent } from './bindings';
+import { pageIdOf, type PageId } from './browserActionWire';
 import { browserPaneMountId, observeBrowserCompanion, sourcePaneIdForThread } from './browserCompanion.svelte';
 import { companionForSource } from './companionPanes.svelte';
 import { focusPane, paneTakesCommandsWhenFocused } from './panes.svelte';
 
 // Chords pressed in a browser page: the engine claims a bound chord, the
 // backend routes it to the pane mount that showed the page as a Kind
-// "accelerator" event, and this replays it through the window's one
-// keybinding dispatcher.
+// "accelerator" event naming the page, and this replays it through the
+// window's one keybinding dispatcher.
 
-// True while a chord the page claimed is dispatched (replayBrowserAccelerator).
-let replayingPageChord = false;
+/** A chord a page claimed, while it is dispatched (replayBrowserAccelerator). */
+interface PageChord {
+  /** The page it was pressed in, null when the event names none. */
+  readonly pageId: PageId | null;
+}
+
+let replaying: PageChord | null = null;
 
 /**
  * Whether the keydown being dispatched is a chord pressed in a browser page.
@@ -19,7 +25,17 @@ let replayingPageChord = false;
  * caret left there may already have it again.
  */
 export function isReplayingBrowserPageChord(): boolean {
-  return replayingPageChord;
+  return replaying !== null;
+}
+
+/**
+ * The page the chord being dispatched was pressed in, null outside a page
+ * chord's dispatch. A command the chord runs on a tab acts on this page:
+ * the user was looking at it when they pressed the keys, whichever tab is
+ * active by the time the event arrives.
+ */
+export function browserPageChordPage(): PageId | null {
+  return replaying?.pageId ?? null;
 }
 
 /**
@@ -49,7 +65,7 @@ function replayBrowserAccelerator(event: BrowserCompanionEvent): void {
   const companion = sourcePaneId ? companionForSource(sourcePaneId, 'browser') : null;
   if (!companion || !paneTakesCommandsWhenFocused(companion.paneId)) return;
   focusPane(companion.paneId);
-  replayingPageChord = true;
+  replaying = { pageId: pageIdOf(event.pageId) };
   try {
     window.dispatchEvent(
       new KeyboardEvent('keydown', {
@@ -62,7 +78,7 @@ function replayBrowserAccelerator(event: BrowserCompanionEvent): void {
       }),
     );
   } finally {
-    replayingPageChord = false;
+    replaying = null;
   }
 }
 

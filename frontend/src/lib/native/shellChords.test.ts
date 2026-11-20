@@ -134,7 +134,7 @@ describe('shell chords', () => {
     focusPane('browser-main');
     flushSync();
     routedChord();
-    expect(act).toHaveBeenCalledWith(THREAD, expect.objectContaining({ kind: 'reload-active' }));
+    expect(act).toHaveBeenCalledWith(THREAD, expect.objectContaining({ kind: 'reload' }));
     expect(posted).not.toContain(reloadAppMessage(1));
   });
 
@@ -161,7 +161,20 @@ describe('shell chords', () => {
     expect(routes().at(-1)).toBe('1:true');
     routedChord();
     expect(act).toHaveBeenCalledWith(THREAD, expect.objectContaining({ kind: 'new' }));
-    expect(act).not.toHaveBeenCalledWith(THREAD, expect.objectContaining({ kind: 'reload-active' }));
+    expect(act).not.toHaveBeenCalledWith(THREAD, expect.objectContaining({ kind: 'reload' }));
+  });
+
+  // Before the pane's attach answers its reload sends nothing, and the chord
+  // is still the pane's: it is asked for, and the app is not reloaded.
+  it('keeps the app when the chord is pressed in a browser pane not attached yet', () => {
+    install();
+    advertise();
+    focusPane('browser-main');
+    flushSync();
+    expect(routes().at(-1)).toBe('1:true');
+    routedChord();
+    expect(act).not.toHaveBeenCalled();
+    expect(posted).not.toContain(reloadAppMessage(1));
   });
 
   it('hands a routed chord back when nothing runs it', () => {

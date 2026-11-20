@@ -21,11 +21,9 @@
 //     with ErrLost, which settles it. The record of outstanding numbers is
 //     bounded (MaxSkipped per epoch); a number dropped from it can never be
 //     settled in its epoch.
-//   - A turn commits InOrder when every lower number of its epoch has
-//     committed or been refused, and OutOfOrder while any is outstanding,
-//     whoever saw the gap: a command that names its target acts anyway, and
-//     one whose target depends on its predecessors (the active tab)
-//     refuses.
+//   - A turn admitted and not passed commits InOrder, outstanding lower
+//     numbers or not: every command names its target or steps from what
+//     has arrived, so none waits on a number that lost its place.
 //   - A repeat of a number admitted or waiting is Passed: it acts on
 //     nothing. End (the mount detached) releases the waiters as Passed, and
 //     a turn admitted before it commits Passed.
@@ -86,11 +84,9 @@ const (
 	// Passed acts on nothing: a repeat, its mount is gone, or its epoch
 	// ended after it was admitted.
 	Passed Standing = iota
-	// InOrder follows every lower number's commit or refusal.
+	// InOrder acts: every lower number of its epoch committed, was refused
+	// or lost its place.
 	InOrder
-	// OutOfOrder commits while a lower number of its epoch is outstanding:
-	// the count moved past it and it has not arrived.
-	OutOfOrder
 )
 
 // GapTimer starts one gap wait and answers its expiry and its stop.
@@ -322,14 +318,10 @@ func (t *Turn) unorderedStanding() Standing {
 
 // standingLocked is how t, admitted and not ended, stands now.
 func (o *Order) standingLocked(t *Turn) Standing {
-	switch {
-	case o.ended || t.place.epoch != o.epoch:
+	if o.ended || t.place.epoch != o.epoch {
 		return Passed
-	case len(o.outstanding) > 0 || o.lostThrough > 0:
-		return OutOfOrder
-	default:
-		return InOrder
 	}
+	return InOrder
 }
 
 // Release ends t if no Commit did, so a command that failed before acting

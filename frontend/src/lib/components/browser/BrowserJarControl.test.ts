@@ -11,6 +11,7 @@ import {
   resetBrowserCompanionForTest,
 } from '../../stores/browserCompanion.svelte';
 import { TransportError } from '../../transport/wsClient';
+import { getToasts, resetToastsForTest } from '../../stores/toast.svelte';
 import { setHostWindowFromBootstrap } from '../../transport/pageHost';
 
 const THREAD = 'thread-1';
@@ -98,7 +99,29 @@ describe('<BrowserJarControl>', () => {
     await fireEvent.click(within(await view.findByRole('dialog')).getByRole('button', { name: 'Switch cookie jar' }));
     await waitFor(() => expect(act).toHaveBeenCalledTimes(3));
     expect(act.mock.calls[2][0]).toBe(THREAD);
-    expect(act.mock.calls[2][1]).toMatchObject({ kind: 'jar', jar: 'thread', confirmed: true });
+    // Both name the pane the user chose in, which the backend switches the
+    // browser of and no later one.
+    expect(act.mock.calls[0][1]).toMatchObject({ mount: 'mount-1' });
+    expect(act.mock.calls[2][1]).toMatchObject({ kind: 'jar', jar: 'thread', confirmed: true, mount: 'mount-1' });
+    release();
+  });
+
+  // The confirmed switch reached the backend after the browser it was
+  // chosen for closed: it changes nothing, and a toast says so, since that
+  // pane has no banner left.
+  it('says in a toast that a switch whose pane is gone changed nothing', async () => {
+    resetToastsForTest();
+    act.mockImplementation(async () => {
+      throw new TransportError('browser_jar_pane_gone', 'The cookie jar was not changed: the browser pane it was chosen in has closed');
+    });
+    const release = await attachPane();
+    seed('worktree', [page('a')]);
+    const view = mount();
+    await fireEvent.click(view.getByTestId('browser-jar'));
+    await fireEvent.click(await view.findByTestId('browser-jar-thread'));
+    await waitFor(() => expect(getToasts().map((toast) => toast.message)).toEqual(['The cookie jar was not changed: the browser pane it was chosen in has closed']));
+    expect(browserActionError(THREAD)).toBe('');
+    expect(view.queryByRole('dialog')).toBeNull();
     release();
   });
 

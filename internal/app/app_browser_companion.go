@@ -30,17 +30,19 @@ type BrowserCompanionAction struct {
 	Confirmed bool `json:"confirmed,omitempty"`
 	// Mount and Intent name a page focus intent for "focus-page" and
 	// "focus-page-withdraw": the pane mount and its number for the request.
+	// Mount alone is the pane a "jar" switch was chosen in, which it acts
+	// on the browser of (Manager.BindMount).
 	Mount  string `json:"mount,omitempty"`
 	Intent uint64 `json:"intent,omitempty"`
 	// Select numbers a user's tab selection made in Mount ("activate",
-	// "step", and the "new", "reopen", "duplicate" and "download-open" that
-	// select the tab they open) and a keyboard command on the active tab
-	// ("close-active", "reload-active"), consecutive from 1 in each Epoch of
-	// a mount in the order the user acted. The Manager admits a mount's
-	// commands in that order (internal/browser/selection.go). A keyboard
-	// command on the active tab requires Mount, Epoch and Select; a
-	// selection carries all three or none, and with none applies in arrival
-	// order. Validated by parseCompanionAction.
+	// "step", "show-browser", and the "new", "reopen", "duplicate" and
+	// "download-open" that select the tab they open) and a close ("close",
+	// "close-others", "close-right"), consecutive from 1 in each Epoch of a
+	// mount in the order the user acted. The Manager admits a mount's
+	// commands in that order (internal/browser/selection.go). A close
+	// requires Mount, Epoch and Select; a selection carries all three or
+	// none, and with none applies in arrival order. Validated by
+	// parseCompanionAction.
 	Select uint64 `json:"select,omitempty"`
 	// Epoch is the client's run of numbered commands Select counts in, from
 	// 1: the client starts the next one only when every command it sent in
@@ -70,6 +72,22 @@ func (a *App) browserCaller(threadID string) (appbrowser.Caller, error) {
 // End answers appbrowser.ErrThreadClosed.
 func (a *App) bindBrowser(threadID string) (appbrowser.Access, error) {
 	binding := a.browser.manager.BindThread(appbrowser.ThreadID(strings.TrimSpace(threadID)))
+	caller, err := a.browserCaller(threadID)
+	if err != nil {
+		return appbrowser.Access{}, err
+	}
+	return binding.Access(caller)
+}
+
+// bindBrowserOfPane binds an action to the browser lifetime the pane mount
+// attached to (Manager.BindMount), before it reads the thread's row: a
+// mount that is gone is refused with appbrowser.ErrMountGone, and one whose
+// browser was closed changes nothing (appbrowser.ErrThreadClosed).
+func (a *App) bindBrowserOfPane(threadID string, mount appbrowser.MountID) (appbrowser.Access, error) {
+	binding, err := a.browser.manager.BindMount(appbrowser.ThreadID(strings.TrimSpace(threadID)), mount)
+	if err != nil {
+		return appbrowser.Access{}, err
+	}
 	caller, err := a.browserCaller(threadID)
 	if err != nil {
 		return appbrowser.Access{}, err
@@ -207,8 +225,16 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 		return appbrowser.CompanionEvent{}, err
 	}
 	// Bound before the row is read: a close of the thread's pages after the
-	// read leaves this action nothing to change (bindBrowser).
-	access, err := a.bindBrowser(threadID)
+	// read leaves this action nothing to change (bindBrowser). A jar switch
+	// binds to the browser of the pane it was chosen in, so a consent given
+	// there never switches a browser opened after it.
+	var access appbrowser.Access
+	if cmd.kind == kindJar {
+		access, err = a.bindBrowserOfPane(threadID, cmd.mount)
+		err = jarSwitchError(err)
+	} else {
+		access, err = a.bindBrowser(threadID)
+	}
 	if err != nil {
 		return appbrowser.CompanionEvent{}, err
 	}
@@ -216,7 +242,7 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 	// opened, named in the answer so the client that asked can tell its own
 	// tab from one an agent opened meanwhile.
 	newPage := ""
-	if cmd.numbered && cmd.kind != kindCloseActive && cmd.kind != kindReloadActive {
+	if cmd.numbered {
 		ctx = appbrowser.WithSelection(ctx, cmd.place)
 	}
 	m := a.browser.manager
@@ -230,12 +256,6 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 	case kindReload:
 		// A suspended or crashed tab is restored at its address.
 		err = m.ReloadCompanionPage(ctx, access, cmd.page)
-	case kindReloadActive:
-		// The keyboard's reload: the tab active at its turn in the user's
-		// order, which the Manager resolves.
-		var outcome appbrowser.ActiveOutcome
-		outcome, err = m.ReloadActiveCompanionPage(ctx, access, cmd.place)
-		err = errors.Join(err, activeOutcomeError(outcome))
 	case kindStop:
 		err = m.StopCompanionLoad(ctx, access, cmd.page)
 	case kindActivate:
@@ -270,15 +290,9 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 		page, err = m.NewCompanionPage(ctx, access, cmd.address)
 		newPage = page.ID
 	case kindClose:
-		// Answers once the tab is gone; a teardown failure after it is a
-		// "teardown" event.
+		// At its turn, the tab it names if it is still there. Answers once
+		// the tab is gone; a teardown failure after it is a "teardown" event.
 		err = m.CloseCompanionPage(ctx, access, cmd.page)
-	case kindCloseActive:
-		// The keyboard's close: the tab active at its turn in the user's
-		// order, which the Manager resolves.
-		var outcome appbrowser.ActiveOutcome
-		outcome, err = m.CloseActiveCompanionPage(ctx, access, cmd.place)
-		err = errors.Join(err, activeOutcomeError(outcome))
 	case kindCloseOthers:
 		err = m.CloseCompanionTabs(ctx, access, cmd.page, appbrowser.CloseOtherTabs)
 	case kindCloseRight:

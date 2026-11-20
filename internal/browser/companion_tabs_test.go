@@ -205,8 +205,12 @@ func TestCloseOthersAndToTheRightReopenInOrder(t *testing.T) {
 	if err := m.CloseCompanionTabs(t.Context(), access, PageID(ids[1]), "everything"); err == nil {
 		t.Fatal("an unknown set of tabs was accepted")
 	}
-	if err := m.CloseCompanionTabs(t.Context(), access, "nope", CloseOtherTabs); err == nil {
-		t.Fatal("closing around an unknown tab succeeded")
+	// Around a tab gone by its turn it closes nothing.
+	if err := m.CloseCompanionTabs(t.Context(), access, "nope", CloseOtherTabs); err != nil {
+		t.Fatalf("closing around an unknown tab answered %v", err)
+	}
+	if got := tabURLs(m, access); len(got) != 4 {
+		t.Fatalf("closing around an unknown tab closed tabs: %v", got)
 	}
 }
 
@@ -239,9 +243,9 @@ func TestClosedTabsKeepOnlyWhatCanBeReopened(t *testing.T) {
 	if err := m.CloseCompanionPage(t.Context(), access, PageID(ids[1])); err != nil {
 		t.Fatal(err)
 	}
-	// A close that fails keeps nothing.
-	if err := m.CloseCompanionPage(t.Context(), access, "nope"); err == nil {
-		t.Fatal("closing an unknown tab succeeded")
+	// A close of no tab closes and keeps nothing.
+	if err := m.CloseCompanionPage(t.Context(), access, "nope"); err != nil {
+		t.Fatalf("closing an unknown tab answered %v", err)
 	}
 	if got := closedCount(t, m, access); got != 0 {
 		t.Fatalf("ClosedTabs = %d, want 0", got)

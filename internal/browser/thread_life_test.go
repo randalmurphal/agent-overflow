@@ -65,10 +65,10 @@ func lifetimeOf(m *Manager, threadID string) *threadBrowser {
 	return m.currentLocked(ThreadID(threadID))
 }
 
-// A keyboard close bound before the thread's close, delivered through the
-// pane mount of the closed lifetime after a fresh lifetime opened a tab,
-// acts on the closed lifetime, which has no tab: it passes, and the fresh
-// tab stays. The action's end answers the close.
+// A close bound before the thread's close, delivered through the pane mount
+// of the closed lifetime after a fresh lifetime opened a tab, acts on the
+// closed lifetime, which has no tab: it passes, and the fresh tab stays,
+// even named. The action's end answers the close.
 func TestARetiredKeyboardCloseLeavesTheFreshTab(t *testing.T) {
 	m, access, _, mount := newSelectionManager(t)
 	if err := m.CloseThread(t.Context(), access.ThreadID); err != nil {
@@ -79,9 +79,8 @@ func TestARetiredKeyboardCloseLeavesTheFreshTab(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	outcome, err := m.CloseActiveCompanionPage(t.Context(), access, place(mount, 1))
-	if err != nil || outcome != ActivePassed {
-		t.Fatalf("the retired close answered %v, %v; want it passed", outcome, err)
+	if err := m.CloseCompanionPage(numbered(t.Context(), mount, 1), access, PageID(tab.ID)); err != nil {
+		t.Fatalf("the retired close answered %v; want it passed", err)
 	}
 	if err := access.End(); !errors.Is(err, ErrThreadClosed) {
 		t.Fatalf("the retired action ended with %v, want ErrThreadClosed", err)
@@ -89,12 +88,9 @@ func TestARetiredKeyboardCloseLeavesTheFreshTab(t *testing.T) {
 	if ids := tabIDs(m, fresh); !slices.Equal(ids, []string{tab.ID}) {
 		t.Fatalf("after the retired close the thread has tabs %q, want the fresh one", ids)
 	}
-	// The same command closed directly in the hold that commits it.
-	m.mu.Lock()
-	got, _ := m.closeActiveLocked(access, turnorder.Unordered())
-	m.mu.Unlock()
-	if got != ActivePassed {
-		t.Fatalf("the retired close's commit answered %v, want it passed", got)
+	// With no number its commit refuses the retired lifetime.
+	if err := m.CloseCompanionPage(t.Context(), access, PageID(tab.ID)); err != nil {
+		t.Fatalf("the retired unnumbered close answered %v; want it passed", err)
 	}
 	if ids := tabIDs(m, fresh); !slices.Equal(ids, []string{tab.ID}) {
 		t.Fatalf("after the retired commit the thread has tabs %q, want the fresh one", ids)
@@ -137,9 +133,8 @@ func TestAMountOfAClosedLifetimeOrdersNothingOfTheFreshOne(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	outcome, err := m.CloseActiveCompanionPage(t.Context(), fresh, place(mount.ID, 1))
-	if err != nil || outcome != ActivePassed {
-		t.Fatalf("a command of the closed lifetime's mount answered %v, %v; want it passed", outcome, err)
+	if err := m.CloseCompanionPage(numbered(t.Context(), mount.ID, 1), fresh, PageID(tab.ID)); err != nil {
+		t.Fatalf("a command of the closed lifetime's mount answered %v; want it passed", err)
 	}
 	if ids := tabIDs(m, fresh); !slices.Equal(ids, []string{tab.ID}) {
 		t.Fatalf("the thread has tabs %q, want the fresh one", ids)

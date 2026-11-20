@@ -73,8 +73,10 @@ func (m *Manager) emitEscape(handle ids.PageHandle) {
 }
 
 // emitAccelerator routes a claimed chord to the pane mount showing the page,
-// so that only the client holding the mount replays it. A page no pane shows
-// has nobody to act for, and its chord is dropped.
+// so that only the client holding the mount replays it, and names the page,
+// so a command the chord runs acts on the page it was pressed in, whichever
+// tab is active when the event arrives. A page no pane shows has nobody to
+// act for, and its chord is dropped.
 func (m *Manager) emitAccelerator(handle ids.PageHandle, bound keybindings.Accelerator) {
 	m.mu.Lock()
 	p := m.pageByHandleLocked(handle)
@@ -90,7 +92,7 @@ func (m *Manager) emitAccelerator(handle ids.PageHandle, bound keybindings.Accel
 		log.Printf("browser: drop the chord %+v pressed in page %s: no pane shows the page", bound, p.id)
 		return
 	}
-	m.emit(CompanionEvent{Kind: "accelerator", ThreadID: string(p.owner.id), Mount: string(mount), Accelerator: &bound})
+	m.emit(CompanionEvent{Kind: "accelerator", ThreadID: string(p.owner.id), PageID: string(p.id), Mount: string(mount), Accelerator: &bound})
 }
 
 // AcceleratorsChanged tells an engine that matches chords out of process

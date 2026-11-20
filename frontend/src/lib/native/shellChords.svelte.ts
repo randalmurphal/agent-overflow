@@ -4,16 +4,18 @@
 // command for that chord there, the SPA asks the shell to hand the chord
 // over instead, and replays it as the keydown the window withheld: it goes
 // through the one keybinding dispatcher, as a chord pressed in the native
-// page does (browserCompanion.svelte.ts replayBrowserAccelerator). A chord
-// nothing runs goes back to the shell, which reloads the app. The shell
+// page does (browserCompanion.svelte.ts replayBrowserAccelerator). The
+// chord is asked for while the browser pane reserves it
+// (browserPaneReservesChord), attached or not, and one nothing runs there
+// does nothing; one handed over after the pane stopped reserving it goes
+// back to the shell, which reloads the app. The shell
 // advertises itself with its number for this document, and every message
 // names it; reports are numbered too, since the shell may apply them out of
 // order and keeps only the newest. The Go half is
 // internal/uikeys/pagechords.go; the names mirror it.
 
 import type { CommandContext } from '../stores/commandRegistry.svelte';
-import { isBrowserPaneFocused } from '../stores/browserCommands.svelte';
-import { keyWouldDispatch } from '../stores/keybindings.svelte';
+import { browserPaneReservesChord } from '../stores/browserCommands.svelte';
 import { isMacPlatform } from '../utils/platform';
 
 const MESSAGE_PREFIX = 'ao:shell:';
@@ -85,9 +87,11 @@ export function installShellChords(context: () => CommandContext): () => void {
     if (name !== 'reload') return;
     const event = reloadChord();
     (document.activeElement ?? document.body).dispatchEvent(event);
-    // Nothing ran it (focus or bindings changed since the last report): the
-    // shell reloads the app, as the chord means there.
-    if (!event.defaultPrevented) post(reloadAppMessage);
+    // Nothing ran it and the pane does not reserve it (focus or bindings
+    // changed since the last report): the shell reloads the app, as the
+    // chord means there. A pane that reserves it but has not attached runs
+    // nothing, and the app stays.
+    if (!event.defaultPrevented && !wanted()) post(reloadAppMessage);
   };
 
   let posted: boolean | null = null;
@@ -95,7 +99,7 @@ export function installShellChords(context: () => CommandContext): () => void {
     if (!force && posted === route) return;
     if (post((document) => routeMessage(document, ++reportSeq, route))) posted = route;
   };
-  const wanted = () => isBrowserPaneFocused() && keyWouldDispatch(reloadChord(), context());
+  const wanted = () => browserPaneReservesChord(reloadChord(), context());
   const stopEffect = $effect.root(() => {
     $effect(() => {
       report(wanted(), false);

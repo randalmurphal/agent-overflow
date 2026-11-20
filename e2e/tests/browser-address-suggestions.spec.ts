@@ -74,10 +74,9 @@ test('typing offers open tabs and recent addresses, by keyboard and by mouse', a
 
   // With the second tab closed, its address is a recent one; a click
   // navigates this tab to it.
-  const tabs = await harness.rpc<BrowserState>('BrowserCompanionThreadState', threadId);
-  const second = tabs.pages?.find((tab) => tab.url === 'https://example.test/second');
-  await harness.rpc('BrowserCompanionDo', threadId, { kind: 'close', pageId: second?.id ?? '' });
+  await pane.getByTestId('browser-tab-close').nth(1).click();
   await expect(pane.getByTestId('browser-tab')).toHaveCount(1);
+  expect((await harness.rpc<BrowserState>('BrowserCompanionThreadState', threadId)).pages?.map((tab) => tab.url)).toEqual(['https://example.test/first']);
   await address.click();
   await address.pressSequentially('second');
   await expect(rows).toHaveCount(1);
@@ -87,7 +86,10 @@ test('typing offers open tabs and recent addresses, by keyboard and by mouse', a
   await expect(address).toHaveValue('https://example.test/second');
 
   // A cookie jar switch forgets them.
-  await harness.rpc('BrowserCompanionDo', threadId, { kind: 'jar', jar: 'thread', confirmed: true });
+  await pane.getByTestId('browser-jar').click();
+  await page.getByTestId('browser-jar-thread').click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Switch cookie jar' }).click();
+  await expect(pane.getByTestId('browser-jar')).toHaveAttribute('aria-label', 'Cookie jar: This browser only');
   await address.click();
   await address.pressSequentially('first');
   await expect(address).toHaveValue('first');
