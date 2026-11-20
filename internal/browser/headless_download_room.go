@@ -80,19 +80,6 @@ func openDownloadRoom(parent *os.Root, dir string, logf func(string, ...any)) (*
 	return &downloadRoom{logf: logf, dir: dir, parent: parent, name: name, room: room, held: held, handed: map[downloadID]os.FileInfo{}}, nil
 }
 
-// removeMadeIn removes name from parent, held open, while it is still the
-// directory made there, held, and empty; anything else at the name stays.
-func removeMadeIn(parent *os.Root, name string, held os.FileInfo) error {
-	current, err := parent.Lstat(name)
-	if err != nil || !os.SameFile(current, held) {
-		return nil
-	}
-	if err := parent.Remove(name); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("browser: remove the browser's download directory %s: %w", name, err)
-	}
-	return nil
-}
-
 // path is the room's directory, where Chromium is told to write.
 func (r *downloadRoom) path() string { return filepath.Join(r.dir, r.name) }
 

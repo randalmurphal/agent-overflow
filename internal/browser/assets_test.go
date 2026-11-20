@@ -15,6 +15,8 @@ type assetDriver struct {
 	pageDriver
 	assets []AssetInfo
 	body   string
+	// copying, when set, runs as an asset's bytes are about to be written.
+	copying func()
 }
 
 func (d *assetDriver) AssetInventory(context.Context) (pageAssets, error) {
@@ -26,6 +28,9 @@ func (d *assetDriver) AssetFetcher(context.Context) (assetFetcher, error) {
 		return assetStream{
 			ContentType: "text/css",
 			Copy: func(out io.Writer, _, _ int64) (int64, error) {
+				if d.copying != nil {
+					d.copying()
+				}
 				n, err := io.WriteString(out, d.body)
 				return int64(n), err
 			},

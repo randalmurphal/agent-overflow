@@ -335,6 +335,19 @@ func heldLinkingHere(t *testing.T) bool {
 	return true
 }
 
+// hardLinksHere reports whether the filesystem of t's temporary
+// directories makes a hard link, as a placement by name does first
+// (linkDownload) before it falls back to a rename.
+func hardLinksHere(t *testing.T) bool {
+	t.Helper()
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	if err := os.WriteFile(source, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return linkFile(source, filepath.Join(dir, "linked")) == nil
+}
+
 // openRootForTest opens dir held, closed with t.
 func openRootForTest(t *testing.T, dir string) *os.Root {
 	t.Helper()
@@ -525,6 +538,9 @@ func TestAPublishMakesItsPrivateNameBesideItsSource(t *testing.T) {
 		t.Run(fmt.Sprint(tc.saving, ", ", placement), func(t *testing.T) {
 			saving := tc.saving
 			placeBy(t, tc.held)
+			if !tc.held && !hardLinksHere(t) {
+				t.Skip("this filesystem makes no hard links, and the swap this test makes is at a placement's link")
+			}
 			manager, _, access, page := newDownloadManagerFor(t, saving)
 			var private, source, swappedAt string
 			linkDownload = func(from, to string) error {

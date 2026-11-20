@@ -79,6 +79,60 @@ func TestAnArtifactRootRedirectedAfterItsScanChangesNothing(t *testing.T) {
 	}
 }
 
+// A bundle's own folder moved aside as it is written, with another folder
+// put at its name: the bundle is refused, what it wrote is removed where
+// it now is, through the folder held, its bytes are released, and the
+// folder that took its name keeps what is in it.
+func TestABundleFolderMovedAsItIsWrittenIsRemovedWhereItIs(t *testing.T) {
+	m, engine := newLifecycleManager(t)
+	access := m.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
+	assets := filepath.Join(m.artifactRoot, "assets")
+	moved, theirs := filepath.Join(assets, "moved"), ""
+	driver := &assetDriver{assets: []AssetInfo{{URL: "https://example.test/a.css", Kind: "stylesheet", Name: "a.css"}}, body: "the asset"}
+	driver.copying = func() {
+		entries, err := os.ReadDir(assets)
+		if err != nil || len(entries) != 1 {
+			t.Errorf("the bundle's folder: %v, %v", entries, err)
+			return
+		}
+		bundle := filepath.Join(assets, entries[0].Name())
+		theirs = filepath.Join(bundle, "theirs")
+		if err := os.Rename(bundle, moved); err != nil {
+			t.Error(err)
+		}
+		if err := os.Mkdir(bundle, 0o700); err != nil {
+			t.Error(err)
+		}
+		if err := os.WriteFile(theirs, []byte("not AO's"), 0o600); err != nil {
+			t.Error(err)
+		}
+	}
+	engine.mu.Lock()
+	engine.wrapDriver = func(inner pageDriver) pageDriver {
+		driver.pageDriver = inner
+		return driver
+	}
+	engine.mu.Unlock()
+	page := mustOpen(t, m, access, "https://example.test/")
+	listed, err := m.Assets(t.Context(), access, AssetOptions{PageID: PageID(page.ID), Action: "list"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	answered, err := m.Assets(t.Context(), access, AssetOptions{PageID: PageID(page.ID), Action: "bundle", InventoryID: listed.(AssetInventory).ID, Kinds: []string{"stylesheet"}})
+	if err == nil {
+		t.Fatalf("a bundle whose folder was moved answered %+v; want it refused", answered)
+	}
+	if entries, err := os.ReadDir(moved); err != nil || len(entries) != 0 {
+		t.Fatalf("the refused bundle left %v where its folder was moved: %v", entries, err)
+	}
+	if got, err := os.ReadFile(theirs); err != nil || string(got) != "not AO's" {
+		t.Fatalf("the folder that took the bundle's name lost its file: %q, %v", got, err)
+	}
+	if used := m.artifactBytes.Used(); used != 0 {
+		t.Fatalf("the quota holds %d bytes after the refused bundle was removed", used)
+	}
+}
+
 // A jar's download directory a headless profile opens (createScope's
 // OpenDownloadDir) is opened through the held artifact root, so after the
 // root's name is redirected the room is made in the folder held, where the

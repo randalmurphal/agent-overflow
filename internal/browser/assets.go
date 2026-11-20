@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -216,8 +215,7 @@ func (m *Manager) bundleAssets(ctx context.Context, p *managedPage, opts AssetOp
 	if err != nil {
 		return AssetBundle{}, err
 	}
-	closeHeld := sync.OnceFunc(func() { closeArtifactDir(held, dir) })
-	defer closeHeld()
+	defer closeArtifactDir(held, dir)
 	// The manifest's name is taken before any asset's, so an asset named
 	// like it gets the next variant name (uniqueArtifactName).
 	const manifestName = "manifest.json"
@@ -300,13 +298,12 @@ func (m *Manager) bundleAssets(ctx context.Context, p *managedPage, opts AssetOp
 	settledBytes += int64(len(manifest) + 1)
 	bundle.ManifestPath = manifestPath
 	// Every path the bundle hands out must name the file written, in the
-	// folder held; when the artifact folder's name was moved since it was
-	// held, the bundle is not kept, and what it wrote goes through the held
-	// root, its bytes settled as kept only if they stay.
+	// folder held; when a name on the way to it was moved since it was
+	// held, the bundle is not kept, and what it wrote goes through the
+	// held folder itself, its bytes settled as kept unless they are gone.
 	if err := bundleNamesReach(held, bundle, manifestName); err != nil {
-		closeHeld()
-		removeErr := m.removeArtifactDir(dir)
-		if removeErr == nil {
+		emptied, removeErr := m.removeHeldArtifactDir(held, dir)
+		if emptied {
 			settledBytes = 0
 		}
 		return AssetBundle{}, errors.Join(err, removeErr)

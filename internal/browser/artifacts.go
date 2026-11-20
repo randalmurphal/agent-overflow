@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"agent-overflow/internal/browser/quota"
@@ -199,17 +200,59 @@ func (m *Manager) makeArtifactDir(dir string) error {
 	return nil
 }
 
-// removeArtifactDir removes dir, a directory inside the artifact root, and
-// everything in it, through the held root.
-func (m *Manager) removeArtifactDir(dir string) error {
+// removeHeldArtifactDir removes what AO wrote in held, a directory inside
+// the artifact root that dir named as it was opened: everything in it,
+// through its handle, wherever its name was moved since, and then dir's
+// own entry, only while that name still holds this directory, now empty
+// (removeMadeIn). It answers emptied, whether nothing is left in the held
+// directory, and what failed; whatever took dir's name meanwhile stays.
+func (m *Manager) removeHeldArtifactDir(held *os.Root, dir string) (emptied bool, err error) {
+	self, err := held.Stat(".")
+	if err != nil {
+		return false, fmt.Errorf("browser: read %s: %w", dir, err)
+	}
+	list, err := held.Open(".")
+	if err != nil {
+		return false, fmt.Errorf("browser: read %s: %w", dir, err)
+	}
+	entries, readErr := list.ReadDir(-1)
+	errs := []error{readErr, list.Close()}
+	for _, entry := range entries {
+		errs = append(errs, held.RemoveAll(entry.Name()))
+	}
+	if err := errors.Join(errs...); err != nil {
+		return false, fmt.Errorf("browser: remove what is in %s: %w", dir, err)
+	}
 	root, rel, err := m.artifactsIn(dir)
 	if err != nil {
-		return err
+		return true, err
 	}
-	if err := root.RemoveAll(rel); err != nil {
-		return fmt.Errorf("browser: remove %s: %w", dir, err)
+	parent, err := root.OpenRoot(filepath.Dir(rel))
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return true, nil
+		}
+		return true, fmt.Errorf("browser: remove %s: %w", dir, err)
 	}
-	return nil
+	return true, errors.Join(removeMadeIn(parent, filepath.Base(rel), self), parent.Close())
+}
+
+// removeMadeIn removes name from parent, held open, while it is still the
+// directory AO made there, made, and empty; anything else at the name
+// stays. The removal takes only an empty directory (rmdirIn), so a file or
+// a directory holding anything put at the name after the comparison stays.
+func removeMadeIn(parent *os.Root, name string, made os.FileInfo) error {
+	current, err := parent.Lstat(name)
+	if err != nil || !os.SameFile(current, made) {
+		return nil
+	}
+	err = rmdirIn(parent, name)
+	switch {
+	case err == nil, errors.Is(err, fs.ErrNotExist), errors.Is(err, syscall.ENOTEMPTY), errors.Is(err, syscall.EEXIST), errors.Is(err, syscall.ENOTDIR):
+		// Gone, or what is at the name now is not the empty directory made.
+		return nil
+	}
+	return fmt.Errorf("browser: remove %s from %s: %w", name, parent.Name(), err)
 }
 
 // nameReaches answers nil when path, a name AO hands to a caller or to
