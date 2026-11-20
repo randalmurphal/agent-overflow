@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/url"
 	"slices"
-	"strings"
 	"time"
 	"unicode/utf8"
 )
@@ -161,7 +160,7 @@ func (e *Engine) logEntry(x *exchange) Request {
 
 func entryOf(in Request, secrets []string) Request {
 	r := in.clone()
-	b := &entryBuilder{secrets: secrets}
+	b := &entryBuilder{secrets: secrets, graphql: in.Origin.Tracker == TrackerLinear}
 	r.Path = b.text("path", r.Path)
 	r.Operation = b.text("operation", r.Operation)
 	r.Detail = b.text("detail", r.Detail)
@@ -187,6 +186,9 @@ func entryOf(in Request, secrets []string) Request {
 type entryBuilder struct {
 	secrets []string
 	omitted []string
+	// graphql marks a Linear entry, whose body's query member is a
+	// GraphQL document.
+	graphql bool
 }
 
 // text is s scrubbed and cut to the bound.
@@ -219,7 +221,12 @@ func (b *entryBuilder) json(what string, raw json.RawMessage) json.RawMessage {
 	var out bytes.Buffer
 	enc := json.NewEncoder(&out)
 	enc.SetEscapeHTML(false)
-	if err := enc.Encode(b.scrubValue(v)); err != nil {
+	doc, isDoc := b.query(what, v)
+	v = b.scrubValue(v)
+	if isDoc {
+		b.document(v.(map[string]any), doc)
+	}
+	if err := enc.Encode(v); err != nil {
 		b.omitted = append(b.omitted, fmt.Sprintf("%s: encode: %v", what, err))
 		return nil
 	}
@@ -256,12 +263,25 @@ func (b *entryBuilder) scrubValue(v any) any {
 	return v
 }
 
-// scrubText is s with every secret replaced by the redacted marker.
-func scrubText(s string, secrets []string) string {
-	for _, sec := range secrets {
-		if sec != "" {
-			s = strings.ReplaceAll(s, sec, redacted)
-		}
+// query is the GraphQL document a Linear body's query member holds.
+func (b *entryBuilder) query(what string, v any) (string, bool) {
+	if !b.graphql || what != "body" {
+		return "", false
 	}
-	return s
+	m, _ := v.(map[string]any)
+	q, ok := m["query"].(string)
+	return q, ok
+}
+
+// document puts doc, scrubbed as a GraphQL document (scrubDocument), in
+// the scrubbed body m in place of the text scrub scrubValue gave it, or
+// leaves it out when it does not lex.
+func (b *entryBuilder) document(m map[string]any, doc string) {
+	clean, ok := scrubDocument(doc, b.secrets)
+	if !ok {
+		b.omitted = append(b.omitted, "body query: not a document the GraphQL lexer reads, left out")
+		delete(m, "query")
+		return
+	}
+	m["query"] = clean
 }

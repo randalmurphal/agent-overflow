@@ -15,11 +15,11 @@ client contract it answers is
 | Concern | Files |
 |---|---|
 | Engine, seed, reset, clock, IDs | `engine.go`, `fixture.go` |
-| Request pipeline: offline, credential, route, fault, handler, log | `serve.go`, `txn.go`, `faults.go`, `log.go`, `auth.go` |
+| Request pipeline: offline, credential, route, fault, handler, log | `serve.go`, `txn.go`, `faults.go`, `log.go`, `scrub.go`, `auth.go` |
 | Shared REST route matching | `routes.go` |
 | Jira routes and handlers | `jira_routes.go` (the whole table), `jira*.go`; JQL in `jql.go` |
 | Tempo | `tempo.go`, `tempo_worklogs.go`, `tempo_fixture.go` |
-| Linear GraphQL executor and its pre-pass | `linear.go`, `linear_exec.go`, `linear_check.go`, `linear_conn.go` |
+| Linear GraphQL executor, its pre-pass and filters | `linear.go`, `linear_exec.go`, `linear_check.go`, `linear_filter.go`, `linear_conn.go` |
 | Linear tables: fields, comparators, sorts, roots, mutations, inputs | `linear_types.go`, `linear_objects.go`, `linear_issue*.go`, `linear_roots.go`, `linear_writes.go`, `linear_records.go` |
 
 ## Answer rules
@@ -39,8 +39,16 @@ client contract it answers is
   fragment, filter key, comparator, sort or input member the executor's
   tables lack. The pre-pass (`checkOperation`) checks the last against
   the same tables the resolvers read, before anything runs, so the
-  answer does not depend on what the fixture holds. Tests fail on any
-  entry of `Engine.Unhandled`.
+  answer does not depend on what the fixture holds. It parses each
+  filter once (`parseFilter`) into the conditions the connection
+  evaluates; every comparator is defined per operand type in
+  `operandKinds`, and an operand form it does not read (a relative
+  date duration, for one) is unhandled. Tests fail on any entry of
+  `Engine.Unhandled`.
+- The Linear executor answers each response key once, its fields
+  collected from the fragments spread (`collectFields`) with their
+  sub-selections merged, and an error on a non-null field nulls the
+  nearest parent that may be null, or the whole data.
 - A panic in tracker code is the fake's defect: the pipeline recovers
   it, rolls back, answers unhandled naming it and keeps serving.
 - A well-formed request for something the fixture lacks answers the
@@ -71,9 +79,13 @@ client contract it answers is
 - No log entry or unhandled answer repeats a credential. `logEntry` is
   the only way an entry is made: it drops `Authorization`, replaces every
   known or presented credential with `<redacted>` in every text and in
-  every decoded JSON string, number and key, and bounds each member at
-  64 KiB (text cut, JSON left out, each named in `Omitted`). Credentials
-  are at least 8 characters so the replacement never hits ordinary text.
+  every decoded JSON string, number and key, written plainly or with
+  JSON or GraphQL string escapes at any depth (`scrubText`), and bounds
+  each member at 64 KiB (text cut, JSON left out, each named in
+  `Omitted`). A Linear body's document is scrubbed by the values its
+  string literals lex to (`scrubDocument`), and left out when it does
+  not lex. Credentials are at least 8 characters so the replacement
+  never hits ordinary text.
 
 ## Tenants and faults
 
@@ -83,10 +95,12 @@ client contract it answers is
 - A fault matches by origin and route name (`Request.Route`: `"GET
   rest/api/3/issue/{issue}"`, `"GET 4/worklogs/{id}"`, or a Linear
   operation name). Faults apply after the credential and route checks.
-- `Reset`, `Close` and a `Seed` that replaces a tenant end held requests
-  with their connections closed and nothing applied, including one a
-  release already let go: a request carries the engine generation it
-  arrived in and is dropped when that is gone.
+- `Reset`, `Close` and a `Seed` that replaces a tenant end the world
+  through `endWorld`: every held request ends with its connection
+  closed and nothing applied, including one a release already let go,
+  since a request carries the engine generation it arrived in and is
+  dropped when that is gone. A hold still armed after a replacing
+  `Seed` holds later requests.
 - `Servers` owns one serve goroutine per origin and counts the requests
   being answered; `Servers.Close` waits for both. A held request waits on
   its hold, its client's context or `Reset`/`Close`.

@@ -84,15 +84,30 @@ func newFaultState() faultState {
 	return faultState{offline: map[Origin]bool{}}
 }
 
-// reset clears every control and lets every held request go; the reset
-// or close that called it is what drops them (resume).
-func (f *faultState) reset() {
+// disarm clears every control. The holds' gates are endWorld's to close.
+func (f *faultState) disarm() {
 	clear(f.offline)
 	f.armed = nil
-	for _, h := range f.holds {
+}
+
+// endWorld ends the world the requests in flight arrived in: it advances
+// the generation and closes every hold's gate, so each held request
+// wakes and is dropped with nothing applied (resume), even one a release
+// already let go. A hold fault still armed keeps holding later requests,
+// on a new gate. Reset, Close and a Seed that replaces a tenant call it.
+// Callers hold mu.
+func (e *Engine) endWorld() {
+	e.gen++
+	for _, h := range e.faults.holds {
 		close(h.done)
 	}
-	f.holds = nil
+	e.faults.holds = nil
+	for _, a := range e.faults.armed {
+		if a.hold != nil {
+			a.hold = &hold{origin: a.Origin, route: a.Route, done: make(chan struct{})}
+			e.faults.holds = append(e.faults.holds, a.hold)
+		}
+	}
 }
 
 // SetOffline takes an origin down (or brings it back): while down, every

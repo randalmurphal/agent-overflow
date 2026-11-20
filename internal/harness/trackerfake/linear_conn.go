@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"time"
 )
 
 // archivable is an object a connection leaves out unless includeArchived
@@ -24,8 +23,9 @@ type sortable interface {
 }
 
 // connection pages list, a connection of schema type typ, by the
-// arguments in connectionArgs, each consumed from args.
-func (r *gqlRun) connection(typ string, owner gqlObject, name string, list []gqlObject, args map[string]any) (connObj, *gqlErr) {
+// arguments in connectionArgs, each consumed from args; filter is the
+// field's filter as the pre-pass parsed it.
+func (r *gqlRun) connection(typ string, owner gqlObject, name string, list []gqlObject, args map[string]any, filter *filterExpr) (connObj, *gqlErr) {
 	includeArchived, _ := take(args, "includeArchived")
 	includeDisabled, _ := take(args, "includeDisabled")
 	var kept []gqlObject
@@ -38,9 +38,8 @@ func (r *gqlRun) connection(typ string, owner gqlObject, name string, list []gql
 		}
 		kept = append(kept, o)
 	}
-	if filter, ok := take(args, "filter"); ok {
-		f, _ := filter.(map[string]any)
-		kept = slices.DeleteFunc(kept, func(o gqlObject) bool { return !r.matches(o, f) })
+	if _, ok := take(args, "filter"); ok {
+		kept = slices.DeleteFunc(kept, func(o gqlObject) bool { return !r.holds(filter, o) })
 	}
 	keyOf := r.order(owner, name, kept, args)
 	first := 50
@@ -176,96 +175,4 @@ func toFloat(v any) float64 {
 		return f
 	}
 	return 0
-}
-
-// matches evaluates a filter input object on o: and, or, and per field a
-// comparator or a nested filter, read through o's field table. The
-// pre-pass has refused a filter key or comparator the tables lack; a
-// failure here is the two disagreeing.
-func (r *gqlRun) matches(o gqlObject, filter map[string]any) bool {
-	for key, cond := range filter {
-		if cond == nil {
-			continue
-		}
-		switch key {
-		case "and", "or":
-			list, _ := cond.([]any)
-			some, all := false, true
-			for _, sub := range list {
-				m, _ := sub.(map[string]any)
-				hit := r.matches(o, m)
-				some, all = some || hit, all && hit
-			}
-			if (key == "and" && !all) || (key == "or" && !some) {
-				return false
-			}
-			continue
-		}
-		v, ok := o.value(key)
-		if !ok {
-			r.fail("filter field %s.%s is not implemented", o.typeName(), key)
-			return false
-		}
-		c, _ := cond.(map[string]any)
-		if !r.compare(o.typeName()+"."+key, v, c) {
-			return false
-		}
-	}
-	return true
-}
-
-// compare applies a comparator, or a nested filter on an object value.
-func (r *gqlRun) compare(what string, v any, c map[string]any) bool {
-	if null, ok := c["null"]; ok && len(c) == 1 {
-		return (v == nil) == (null == true)
-	}
-	switch v := v.(type) {
-	case nil:
-		// A nested filter on a relation that is not set matches nothing
-		// (measured: team {id {eq}} returns no workspace label, while
-		// team {null: true}, read above, returns them); a comparator on
-		// an unset scalar is read below.
-		for op := range c {
-			if _, ok := comparators[op]; !ok {
-				return false
-			}
-		}
-	case gqlObject:
-		return r.matches(v, c)
-	case []gqlObject:
-		some, ok := c["some"].(map[string]any)
-		if !ok || len(c) != 1 {
-			r.fail("filter of %s other than some is not implemented", what)
-			return false
-		}
-		return slices.ContainsFunc(v, func(o gqlObject) bool { return r.matches(o, some) })
-	case []string:
-		r.fail("filter of the list %s is not implemented", what)
-		return false
-	}
-	for op, want := range c {
-		if !r.compareScalar(what, op, v, want) {
-			return false
-		}
-	}
-	return true
-}
-
-func (r *gqlRun) compareScalar(what, op string, v, want any) bool {
-	if _, ok := v.(time.Time); ok {
-		if s, ok := want.(string); ok {
-			w, err := time.Parse(time.RFC3339Nano, s)
-			if err != nil {
-				r.fail("filter of %s: %q is not a time", what, s)
-				return false
-			}
-			want = w
-		}
-	}
-	f, ok := comparators[op]
-	if !ok {
-		r.fail("comparator %s of %s is not implemented", op, what)
-		return false
-	}
-	return f(normalize(v), normalize(want))
 }

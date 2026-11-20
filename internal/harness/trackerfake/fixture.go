@@ -60,7 +60,7 @@ func (e *Engine) seed(f Fixture) error {
 		e.linear[w.key()] = w
 	}
 	if replaced {
-		e.gen++
+		e.endWorld()
 	}
 	return nil
 }

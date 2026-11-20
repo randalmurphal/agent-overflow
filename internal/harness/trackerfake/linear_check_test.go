@@ -1,7 +1,6 @@
 package trackerfake
 
 import (
-	"encoding/json"
 	"slices"
 	"strings"
 	"testing"
@@ -77,13 +76,16 @@ func TestLinearTablesMatchTheSchema(t *testing.T) {
 			t.Errorf("issue member %s sets Issue.%s, which the schema lacks", m.name, m.field)
 		}
 	}
-	for op := range comparators {
-		found := false
-		for name, def := range s.Types {
-			found = found || strings.HasSuffix(name, "Comparator") && def.Fields.ForName(op) != nil
-		}
-		if !found {
-			t.Errorf("comparator %s is in no comparator of the schema", op)
+	for scalar, kind := range operandKinds {
+		for op := range kind.ops {
+			found := false
+			for name, def := range s.Types {
+				eq, f := def.Fields.ForName("eq"), def.Fields.ForName(op)
+				found = found || strings.HasSuffix(name, "Comparator") && eq != nil && eq.Type.Name() == scalar && f != nil && f.Type.Name() == scalar
+			}
+			if !found {
+				t.Errorf("comparator %s on %s is in no comparator of the schema", op, scalar)
+			}
 		}
 	}
 	for typ, keys := range sortTables {
@@ -96,11 +98,16 @@ func TestLinearTablesMatchTheSchema(t *testing.T) {
 }
 
 // filterProbe is one filter condition and whether the executor
-// implements it.
+// implements it. A comparator's probe also names its operand's scalar
+// and comparator, and at builds the filter for another condition at
+// the same place.
 type filterProbe struct {
 	doc, rootFilter string
 	filter          map[string]any
 	handled         bool
+	scalar, op      string
+	list            bool
+	at              func(cond any) map[string]any
 }
 
 // filterProbes walks every connection the tables answer that takes a
@@ -157,12 +164,19 @@ func filterProbes(s *ast.Schema) []filterProbe {
 	for ; len(queue) > 0; queue = queue[1:] {
 		p := queue[0]
 		fields := linearType(p.node)
-		probe := func(key string, cond any, handled bool) {
-			v := map[string]any{key: cond}
-			for i := len(p.path) - 1; i >= 0; i-- {
-				v = map[string]any{p.path[i]: v}
+		at := func(key string) func(cond any) map[string]any {
+			path := slices.Clone(p.path)
+			return func(cond any) map[string]any {
+				v := map[string]any{key: cond}
+				for i := len(path) - 1; i >= 0; i-- {
+					v = map[string]any{path[i]: v}
+				}
+				return v
 			}
-			out = append(out, filterProbe{doc: p.doc("__typename"), rootFilter: p.rootFilter, filter: v, handled: handled})
+		}
+		probe := func(key string, cond any, handled bool) *filterProbe {
+			out = append(out, filterProbe{doc: p.doc("__typename"), rootFilter: p.rootFilter, filter: at(key)(cond), handled: handled, at: at(key)})
+			return &out[len(out)-1]
 		}
 		for _, m := range s.Types[p.ft].Fields {
 			key, mt := m.Name, m.Type.Name()
@@ -179,14 +193,22 @@ func filterProbes(s *ast.Schema) []filterProbe {
 							ft: op.Type.Name(), node: filterNode(mt), nested: true})
 						continue
 					}
-					probe(key, map[string]any{op.Name: sample(s, op.Type)}, op.Name == "null")
+					// Only some is implemented; a collection's null is not
+					// (what Linear means by it is unverified).
+					probe(key, map[string]any{op.Name: sample(s, op.Type)}, false)
 				}
 			case strings.HasSuffix(mt, "Filter"):
 				enqueue(place{doc: p.doc, rootFilter: p.rootFilter, path: append(slices.Clone(p.path), key), ft: mt, node: filterNode(mt), nested: true})
 			default:
+				scalar := ""
+				if eq := s.Types[mt].Fields.ForName("eq"); eq != nil {
+					scalar = eq.Type.Name()
+				}
+				kind := operandKinds[scalar]
 				for _, op := range s.Types[mt].Fields {
-					_, ok := comparators[op.Name]
-					probe(key, map[string]any{op.Name: sample(s, op.Type)}, ok || op.Name == "null")
+					handled := kind != nil && (op.Name == "null" || kind.ops[op.Name] != nil)
+					pr := probe(key, map[string]any{op.Name: sample(s, op.Type)}, handled)
+					pr.scalar, pr.op, pr.list = scalar, op.Name, op.Type.Elem != nil
 				}
 			}
 		}
@@ -225,30 +247,4 @@ func sample(s *ast.Schema, t *ast.Type) any {
 		return map[string]any{}
 	}
 	return "x"
-}
-
-// TestEveryFilterComparator sends every comparator and member the schema
-// defines for every filter the executor reads to a workspace with nothing
-// to filter: one the tables implement is answered, any other is
-// unhandled, whatever the data.
-func TestEveryFilterComparator(t *testing.T) {
-	s := linearSchema(t)
-	g := newRig(t, emptyLinear())
-	probes := filterProbes(s)
-	if len(probes) < 100 {
-		t.Fatalf("only %d probes", len(probes))
-	}
-	handled := 0
-	for _, p := range probes {
-		if p.handled {
-			handled++
-		}
-		body := linearBody("P", "query P($f: "+p.rootFilter+") { "+p.doc+" }", map[string]any{"f": p.filter})
-		rec := g.do(call{origin: linearOrigin, method: "POST", path: "/graphql", body: body})
-		if got := rec.Code == 200; got != p.handled {
-			f, _ := json.Marshal(p.filter)
-			t.Errorf("%s with filter %s: answered %d, want handled %t: %.300s", p.doc, f, rec.Code, p.handled, rec.Body)
-		}
-	}
-	t.Logf("%d probes, %d of them implemented", len(probes), handled)
 }

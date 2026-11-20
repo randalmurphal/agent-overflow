@@ -1,12 +1,10 @@
 package trackerfake
 
 import (
-	"encoding/json"
 	"maps"
 	"slices"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // The tables the Linear executor answers from. The resolvers read them
@@ -133,51 +131,6 @@ func (p payloadObj) value(name string) (any, bool) {
 		return 1.0, true
 	}
 	return p.entity, true
-}
-
-// comparators are the scalar comparators a filter may use, over values
-// normalized by compareScalar: a time as its Unix milliseconds, a number
-// as float64.
-var comparators = map[string]func(v, want any) bool{
-	"eq":  func(v, want any) bool { return v == want },
-	"neq": func(v, want any) bool { return v != want },
-	"in":  func(v, want any) bool { return inList(v, want) },
-	"nin": func(v, want any) bool { return !inList(v, want) },
-	"eqIgnoreCase": func(v, want any) bool {
-		s, _ := v.(string)
-		w, _ := want.(string)
-		return strings.EqualFold(s, w)
-	},
-	"gte": func(v, want any) bool { return ordered(v, want, func(a, b float64) bool { return a >= b }) },
-	"gt":  func(v, want any) bool { return ordered(v, want, func(a, b float64) bool { return a > b }) },
-	"lte": func(v, want any) bool { return ordered(v, want, func(a, b float64) bool { return a <= b }) },
-	"lt":  func(v, want any) bool { return ordered(v, want, func(a, b float64) bool { return a < b }) },
-}
-
-func inList(v, want any) bool {
-	list, _ := want.([]any)
-	return slices.ContainsFunc(list, func(x any) bool { return normalize(x) == v })
-}
-
-func ordered(v, want any, f func(a, b float64) bool) bool {
-	a, aok := v.(float64)
-	b, bok := want.(float64)
-	return aok && bok && f(a, b)
-}
-
-// normalize is a filter operand as comparators compare it: a number as
-// float64, a time as Unix milliseconds, an unset time as nil.
-func normalize(v any) any {
-	switch n := v.(type) {
-	case json.Number, int, int64:
-		return toFloat(n)
-	case time.Time:
-		if n.IsZero() {
-			return nil
-		}
-		return float64(n.UnixMilli())
-	}
-	return v
 }
 
 // sortTables are each sortable type's sort keys: a sort field's value.

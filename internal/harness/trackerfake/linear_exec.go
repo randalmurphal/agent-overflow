@@ -34,6 +34,7 @@ type gqlRun struct {
 	w         *linearWorkspace
 	s         *ast.Schema
 	vars      map[string]any
+	filters   map[*ast.Field]*filterExpr
 	errors    []gqlErr
 	unhandled string
 	cost      int
@@ -69,48 +70,36 @@ func (e *Engine) execute(w *linearWorkspace, in linearRequest) answer {
 	if verr != nil {
 		return unhandledf("variables: %v", verr)
 	}
-	if problem := checkOperation(s, op, vars); problem != "" {
+	filters, problem := checkOperation(s, op, vars)
+	if problem != "" {
 		return unhandledf("%s", problem)
 	}
-	r := &gqlRun{e: e, w: w, s: s, vars: vars, now: e.now()}
+	r := &gqlRun{e: e, w: w, s: s, vars: vars, filters: filters, now: e.now()}
 	w.clock = r.now
 	var root gqlObject = queryRoot{w}
 	if op.Operation == ast.Mutation {
 		root = mutationRoot{w}
 	}
-	data := r.selectFields(root, op.SelectionSet, nil)
+	data, nulled := r.selectFields(root, op.SelectionSet, nil)
 	if r.unhandled != "" {
 		return unhandledf("%s", r.unhandled)
 	}
 	body := map[string]any{"data": data}
+	if nulled {
+		body["data"] = nil
+	}
 	if len(r.errors) > 0 {
 		list := make([]any, len(r.errors))
 		for i, g := range r.errors {
 			list[i] = g.wire()
 		}
 		body["errors"] = list
-		if r.nullsData(op.SelectionSet) {
-			body["data"] = nil
-		}
 	}
 	a := jsonAnswer(http.StatusOK, body)
 	for k, v := range w.spend(r.now, r.cost+1) {
 		a.header[k] = v
 	}
 	return a
-}
-
-// nullsData reports an error on a non-null root field, which makes the
-// whole data null.
-func (r *gqlRun) nullsData(set ast.SelectionSet) bool {
-	for _, g := range r.errors {
-		for _, sel := range set {
-			if f, ok := sel.(*ast.Field); ok && len(g.path) == 1 && g.path[0] == responseKey(f) && f.Definition.Type.NonNull {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func responseKey(f *ast.Field) string {
@@ -127,34 +116,75 @@ func (r *gqlRun) fail(format string, args ...any) {
 	}
 }
 
-// selectFields answers set on obj.
-func (r *gqlRun) selectFields(obj gqlObject, set ast.SelectionSet, path []any) map[string]any {
-	out := map[string]any{}
-	r.cost++
-	for _, sel := range set {
-		switch s := sel.(type) {
-		case *ast.Field:
-			key := responseKey(s)
-			out[key] = r.field(obj, s, append(slices.Clone(path), key))
-		case *ast.FragmentSpread:
-			r.spread(obj, s.Definition.TypeCondition, s.Definition.SelectionSet, path, out)
-		case *ast.InlineFragment:
-			r.spread(obj, s.TypeCondition, s.SelectionSet, path, out)
+// collected is one response key's fields in a selection set, those of
+// the fragments it spreads included: the key is answered once, from its
+// first field, under the sub-selections of all of them merged. Two
+// fields of one key with another name or other arguments never get
+// here: the schema check (gqlparser's OverlappingFieldsCanBeMerged)
+// refuses them.
+type collected struct {
+	key    string
+	fields []*ast.Field
+}
+
+// collectFields is set's fields on a typ object by response key, in
+// document order (GraphQL's CollectFields). The pre-pass refuses a
+// fragment on a type other than its parent's.
+func (r *gqlRun) collectFields(typ string, set ast.SelectionSet) []collected {
+	var out []collected
+	index := map[string]int{}
+	var walk func(set ast.SelectionSet)
+	walk = func(set ast.SelectionSet) {
+		for _, sel := range set {
+			var cond string
+			var inner ast.SelectionSet
+			switch s := sel.(type) {
+			case *ast.Field:
+				key := responseKey(s)
+				if i, ok := index[key]; ok {
+					out[i].fields = append(out[i].fields, s)
+					continue
+				}
+				index[key] = len(out)
+				out = append(out, collected{key: key, fields: []*ast.Field{s}})
+				continue
+			case *ast.FragmentSpread:
+				cond, inner = s.Definition.TypeCondition, s.Definition.SelectionSet
+			case *ast.InlineFragment:
+				cond, inner = s.TypeCondition, s.SelectionSet
+			}
+			if cond != "" && cond != typ {
+				r.fail("a fragment on %s inside %s is not implemented", cond, typ)
+				continue
+			}
+			walk(inner)
 		}
 	}
+	walk(set)
 	return out
 }
 
-// spread answers a fragment's selection on obj into out. The pre-pass
-// refuses a fragment on a type other than its parent's.
-func (r *gqlRun) spread(obj gqlObject, cond string, set ast.SelectionSet, path []any, out map[string]any) {
-	if cond != "" && cond != obj.typeName() {
-		r.fail("a fragment on %s inside %s is not implemented", cond, obj.typeName())
-		return
+// selectFields answers set on obj, each response key once. nulled
+// reports a non-null field that an error left null, which makes obj
+// null in its turn (GraphQL's null propagation); every field is still
+// answered, so each mutation of a document runs.
+func (r *gqlRun) selectFields(obj gqlObject, set ast.SelectionSet, path []any) (out map[string]any, nulled bool) {
+	out = map[string]any{}
+	r.cost++
+	for _, c := range r.collectFields(obj.typeName(), set) {
+		f := c.fields[0]
+		var sub ast.SelectionSet
+		for _, g := range c.fields {
+			sub = append(sub, g.SelectionSet...)
+		}
+		v, failed := r.field(obj, f, sub, append(slices.Clone(path), c.key))
+		out[c.key] = v
+		nulled = nulled || failed && f.Definition.Type.NonNull
 	}
-	for k, v := range r.selectFields(obj, set, path) {
-		out[k] = v
+	if nulled {
+		return nil, true
 	}
+	return out, false
 }
 
 // fieldArgs are f's arguments with vars applied, those null left out:
@@ -170,71 +200,77 @@ func fieldArgs(f *ast.Field, vars map[string]any) map[string]any {
 	return args
 }
 
-// field answers one field of obj.
-func (r *gqlRun) field(obj gqlObject, f *ast.Field, path []any) any {
+// field answers one field of obj under the selection sub. failed
+// reports that an error left it null, at the field or at a non-null
+// field under it.
+func (r *gqlRun) field(obj gqlObject, f *ast.Field, sub ast.SelectionSet, path []any) (v any, failed bool) {
 	if f.Name == "__typename" {
-		return obj.typeName()
+		return obj.typeName(), false
 	}
 	args := fieldArgs(f, r.vars)
-	var v any
 	handled := false
 	if af, ok := obj.(argFielder); ok {
 		var gerr *gqlErr
 		if v, gerr, handled = af.argField(r, f, args); gerr != nil {
 			gerr.path = path
 			r.errors = append(r.errors, *gerr)
-			return nil
+			return nil, true
 		}
 	}
 	if !handled {
 		var ok bool
 		if v, ok = obj.value(f.Name); !ok {
 			r.fail("field %s.%s is not implemented", obj.typeName(), f.Name)
-			return nil
+			return nil, false
 		}
 	}
 	if typ := f.Definition.Type.Name(); isConnection(typ) {
 		list, ok := v.([]gqlObject)
 		if !ok {
 			r.fail("field %s.%s is not a list the fake pages", obj.typeName(), f.Name)
-			return nil
+			return nil, false
 		}
-		conn, gerr := r.connection(typ, obj, f.Name, list, args)
+		conn, gerr := r.connection(typ, obj, f.Name, list, args, r.filters[f])
 		if gerr != nil {
 			gerr.path = path
 			r.errors = append(r.errors, *gerr)
-			return nil
+			return nil, true
 		}
 		v = conn
 	}
 	for k := range args {
 		r.fail("argument %s of %s.%s is not implemented", k, obj.typeName(), f.Name)
 	}
-	return r.render(v, f, path)
+	return r.render(v, f.Definition.Type, sub, path)
 }
 
-// render writes a value under f's selection.
-func (r *gqlRun) render(v any, f *ast.Field, path []any) any {
+// render writes a value of schema type t under the selection sub. failed
+// reports a non-null object or list item an error left null.
+func (r *gqlRun) render(v any, t *ast.Type, sub ast.SelectionSet, path []any) (any, bool) {
 	switch v := v.(type) {
 	case nil:
-		return nil
+		return nil, false
 	case gqlObject:
-		return r.selectFields(v, f.SelectionSet, path)
+		return r.selectFields(v, sub, path)
 	case []gqlObject:
 		out := make([]any, len(v))
 		for i, o := range v {
-			out[i] = r.selectFields(o, f.SelectionSet, append(slices.Clone(path), i))
+			item, failed := r.selectFields(o, sub, append(slices.Clone(path), i))
+			if failed && t.Elem != nil && t.Elem.NonNull {
+				return nil, true
+			}
+			out[i] = item
 		}
-		return out
+		return out, false
 	case time.Time:
 		if v.IsZero() {
-			return nil
+			return nil, false
 		}
-		return linearTime(v)
+		return linearTime(v), false
 	case []string:
-		return orEmpty(v)
+		return orEmpty(v), false
 	}
-	return v
+	return v, false
 }
 
 // linearTime is how Linear writes a DateTime.

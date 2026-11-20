@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"maps"
 	"slices"
-	"strings"
 
 	"github.com/vektah/gqlparser/v2/ast"
 )
@@ -15,11 +14,13 @@ import (
 // key or comparator, a sort, or an input member. It reads the tables the
 // resolvers answer from (linear_types.go, rootSpecOf, linearInputs), so
 // a request is refused before anything runs, whatever the fixture holds.
+// A filter is parsed here, once, into the condition the connection
+// evaluates, so the two read it with one parser.
 //
 // No client sends a directive, so every directive is unhandled rather
 // than implemented.
-func checkOperation(s *ast.Schema, op *ast.OperationDefinition, vars map[string]any) string {
-	c := &checker{s: s, vars: vars}
+func checkOperation(s *ast.Schema, op *ast.OperationDefinition, vars map[string]any) (map[*ast.Field]*filterExpr, string) {
+	c := &checker{s: s, vars: vars, filters: map[*ast.Field]*filterExpr{}}
 	c.directives("operation "+op.Name, op.Directives)
 	for _, v := range op.VariableDefinitions {
 		c.directives("variable $"+v.Variable, v.Directives)
@@ -32,12 +33,15 @@ func checkOperation(s *ast.Schema, op *ast.OperationDefinition, vars map[string]
 		c.fail("subscriptions are not implemented")
 	}
 	c.selections(root, linearType(root), op.SelectionSet)
-	return c.problem
+	return c.filters, c.problem
 }
 
 type checker struct {
-	s       *ast.Schema
-	vars    map[string]any
+	s    *ast.Schema
+	vars map[string]any
+	// filters are the filters parsed, by the field that takes them; the
+	// connection evaluates them (linear_filter.go).
+	filters map[*ast.Field]*filterExpr
 	problem string
 }
 
@@ -106,7 +110,11 @@ func (c *checker) field(typ string, fields fieldSet, f *ast.Field) {
 	if isConnection(child) {
 		node := c.s.Types[child].Fields.ForName("nodes").Type.Name()
 		if v, ok := args["filter"]; ok {
-			c.filter(node, f.Definition.Arguments.ForName("filter").Type.Name(), v)
+			x, problem := parseFilter(c.s, node, f.Definition.Arguments.ForName("filter").Type.Name(), v)
+			if problem != "" {
+				c.fail("%s", problem)
+			}
+			c.filters[f] = x
 		}
 		if v, ok := args["sort"]; ok {
 			c.sort(typ+"."+f.Name, node, v)
@@ -122,66 +130,6 @@ func (c *checker) field(typ string, fields fieldSet, f *ast.Field) {
 	if len(f.SelectionSet) > 0 {
 		c.selections(child, next, f.SelectionSet)
 	}
-}
-
-// filter checks a filter of input type ft on typ: each key a field of
-// typ's table, each condition one the executor evaluates (compare).
-func (c *checker) filter(typ, ft string, v any) {
-	f, _ := v.(map[string]any)
-	fields := linearType(typ)
-	def := c.s.Types[ft]
-	for _, key := range slices.Sorted(maps.Keys(f)) {
-		cond := f[key]
-		switch {
-		case cond == nil:
-		case key == "and" || key == "or":
-			list, _ := cond.([]any)
-			for _, sub := range list {
-				c.filter(typ, ft, sub)
-			}
-		case fields == nil || !fields.has(key):
-			c.fail("filter field %s.%s is not implemented", typ, key)
-		default:
-			c.condition(typ+"."+key, def.Fields.ForName(key).Type.Name(), cond)
-		}
-	}
-}
-
-// condition checks a condition of input type ct: null alone, some of a
-// collection filter, a nested filter, or scalar comparators.
-func (c *checker) condition(what, ct string, v any) {
-	cond, _ := v.(map[string]any)
-	if _, ok := cond["null"]; ok && len(cond) == 1 {
-		return
-	}
-	switch {
-	case strings.HasSuffix(ct, "CollectionFilter"):
-		some, ok := cond["some"]
-		if !ok || len(cond) != 1 {
-			c.fail("filter of %s other than some is not implemented", what)
-			return
-		}
-		c.filter(filterNode(ct), c.s.Types[ct].Fields.ForName("some").Type.Name(), some)
-	case strings.HasSuffix(ct, "Filter"):
-		c.filter(filterNode(ct), ct, cond)
-	default:
-		for _, op := range slices.Sorted(maps.Keys(cond)) {
-			if _, ok := comparators[op]; !ok {
-				c.fail("comparator %s of %s is not implemented", op, what)
-			}
-		}
-	}
-}
-
-// filterNode is the object type a filter input type filters, by the
-// schema's naming: TeamFilter, NullableTeamFilter and
-// TeamCollectionFilter filter Team.
-func filterNode(ft string) string {
-	ft = strings.TrimPrefix(ft, "Nullable")
-	if node, ok := strings.CutSuffix(ft, "CollectionFilter"); ok {
-		return node
-	}
-	return strings.TrimSuffix(ft, "Filter")
 }
 
 func (c *checker) sort(what, node string, v any) {

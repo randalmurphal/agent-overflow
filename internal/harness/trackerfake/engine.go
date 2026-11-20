@@ -93,9 +93,8 @@ type Engine struct {
 
 	mu     sync.Mutex
 	closed bool
-	// gen counts the worlds the engine has held. Reset, and a Seed that
-	// replaces a tenant, start a new one; a request held across that is
-	// dropped with nothing applied.
+	// gen counts the worlds the engine has held; endWorld starts a new
+	// one.
 	gen uint64
 	// last is the latest clock reading handed out.
 	last time.Time
@@ -167,10 +166,10 @@ func (e *Engine) Seed(f Fixture) error {
 func (e *Engine) Reset() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.gen++
 	clear(e.jira)
 	clear(e.linear)
-	e.faults.reset()
+	e.faults.disarm()
+	e.endWorld()
 	e.log.reset()
 }
 
@@ -180,7 +179,8 @@ func (e *Engine) Close() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.closed = true
-	e.faults.reset()
+	e.faults.disarm()
+	e.endWorld()
 }
 
 var errClosed = errors.New("trackerfake: the engine is closed")

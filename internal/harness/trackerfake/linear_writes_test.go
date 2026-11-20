@@ -15,6 +15,7 @@ func TestPrePassRefusesWhatNeverRuns(t *testing.T) {
 	for _, c := range []struct{ name, query, want string }{
 		{"field under an empty list", `query Q { issues { nodes { snoozedUntilAt } } }`, "field Issue.snoozedUntilAt"},
 		{"argument under an empty list", `query Q { issues { nodes { children(last: 1) { nodes { id } } } } }`, "argument last"},
+		{"null and some of an empty list", `query Q { issues(filter: {labels: {null: false, some: {name: {eq: "x"}}}}) { nodes { id } } }`, "other than some"},
 		{"some and every of an empty list", `query Q { issues(filter: {labels: {some: {name: {eq: "x"}}, every: {name: {eq: "y"}}}}) { nodes { id } } }`, "other than some"},
 		{"sort of an empty list", `query Q { issues(sort: [{title: {order: Ascending}}]) { nodes { id } } }`, "sort of Issue by title"},
 		{"input member of a missing issue", `mutation Q { issueUpdate(id: "missing", input: {snoozedUntilAt: "2026-12-01T00:00:00Z"}) { success } }`, "input member IssueUpdateInput.snoozedUntilAt"},
@@ -22,6 +23,7 @@ func TestPrePassRefusesWhatNeverRuns(t *testing.T) {
 		{"skip on a mutation", `mutation Q { issueCreate(input: {teamId: "t1", title: "New"}) @skip(if: true) { success } }`, "directive @skip"},
 		{"include on a field", `query Q { viewer { id @include(if: false) } }`, "directive @include"},
 		{"directive on a fragment", `query Q { viewer { ...F @include(if: true) } } fragment F on User { id }`, "directive @include"},
+		{"one response key with two arguments", `query Q { issue(id: "i1") { id } ...F } fragment F on Query { issue(id: "i2") { title } }`, "differing arguments"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			g := newRig(t, testFixture())
@@ -131,13 +133,28 @@ func TestNullMembers(t *testing.T) {
 // pre-pass's tables cannot promise more than the resolvers do.
 func TestRuntimeCatchesTableDrift(t *testing.T) {
 	savedArgs, savedInputs := connectionArgs, linearInputs["IssueUpdateInput"]
-	t.Cleanup(func() { connectionArgs, linearInputs["IssueUpdateInput"] = savedArgs, savedInputs })
+	savedFields := maps.Clone(issueFields)
+	t.Cleanup(func() {
+		connectionArgs, linearInputs["IssueUpdateInput"] = savedArgs, savedInputs
+		clear(issueFields)
+		maps.Copy(issueFields, savedFields)
+	})
 	connectionArgs = append(slices.Clone(savedArgs), "last")
 	linearInputs["IssueUpdateInput"] = append(slices.Clone(savedInputs), "snoozedUntilAt")
+	// Fields whose table value is not what their filter compares.
+	issueFields["title"] = func(issueObj) any { return 1.0 }
+	issueFields["assignee"] = func(issueObj) any { return "u1" }
+	issueFields["labels"] = func(issueObj) any { return []string{"l1"} }
+	// A field whose comparators compare an operand kind not implemented.
+	issueFields["slaStatus"] = func(issueObj) any { return nil }
 	g := newRig(t, txnFixture())
 	for _, q := range []string{
 		`query Q { issues(last: 1) { nodes { id } } }`,
 		`mutation Q { issueUpdate(id: "i1", input: {title: "Changed", snoozedUntilAt: "2026-12-01T00:00:00Z"}) { success } }`,
+		`query Q { issues(filter: {title: {eq: "First"}}) { nodes { id } } }`,
+		`query Q { issues(filter: {assignee: {id: {eq: "u1"}}}) { nodes { id } } }`,
+		`query Q { issues(filter: {labels: {some: {id: {eq: "l1"}}}}) { nodes { id } } }`,
+		`query Q { issues(filter: {slaStatus: {null: true}}) { nodes { id } } }`,
 	} {
 		if rec := g.do(linearReq("Q", q)); rec.Code != 501 {
 			t.Errorf("%s answered %d %s", q, rec.Code, rec.Body)
