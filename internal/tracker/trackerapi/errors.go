@@ -136,6 +136,10 @@ type StatusError struct {
 	// decodes Body (as JSON, say) scrubs what it decodes with Scrub.
 	Body     string
 	Location string
+	// Header holds the answer's headers that Options.ErrorHeaders names
+	// and no other, with the credential the request carried replaced by
+	// secret.Redacted in every value; nil when the client names none.
+	Header http.Header
 
 	scrub *scrubRef // nil when the request carried no credential
 }

@@ -75,6 +75,7 @@ type Options struct {
     Proxy        func(*http.Request) (*url.URL, error) // nil connects directly
     OnAnswer     func(status int, header http.Header)  // every answer's status and its ReportHeaders, scrubbed, before its body
     ReportHeaders []string                             // the answer headers OnAnswer receives
+    ErrorHeaders  []string                             // the answer headers a StatusError keeps in Header, scrubbed
 }
 
 func New(opts Options) (*Client, error) // misconfiguration is a construction error
@@ -133,11 +134,13 @@ type Request struct {
   decoded only when it holds a form as bytes, an escape that decodes to a
   byte some form holds, invalid UTF-8 while a form holds a byte of the
   replacement character, or a malformed escape. The scrub covers the text
-  one JSON decode of the body produces: no client decodes a string value
-  of an answer as JSON a second time, and a test refuses a string field
-  with the `string` tag option anywhere under `internal/tracker`, which
-  would. Text a decoder builds about a body, such as an error naming a
-  path of keys, is not the body and goes through `Scrub`. A streamed download is the file's bytes and is not
+  one JSON decode of the body produces, read as a stream, so every member
+  of a repeated name is covered, not only the one a map would keep. No
+  client decodes a string value of an answer as JSON a second time, and a
+  test refuses the `string` tag option under `internal/tracker` on any
+  field but a built-in number or bool, since it would. Text a decoder
+  builds about a body, such as an error naming a path of keys, is not the
+  body and goes through `Scrub`. A streamed download is the file's bytes and is not
   scrubbed. `Response.Scrub`, `StatusError.Scrub` and `AuthError.Scrub`
   remove the credential from other text a client builds about an answer,
   such as a decode error. They return text unchanged when the request
@@ -419,12 +422,23 @@ made in an issue's first minutes and can list a change seconds after it is
 made ([measured](../references/tracker-api-measurements.md)); the client
 returns what Linear lists and the provider states where it is complete.
 
-Reads page with Relay cursors. Issues are polled oldest update first from
-a stored `PollCursor` that carries Linear's cursor with the time, so a run
-of issues sharing one timestamp larger than a page drains across
-restarts; a refused cursor restarts the walk at the last fully delivered
-time, inclusive. Polling cannot see a hard delete. Manual order is one
-`issueUpdate` per issue with a `sortOrder` between its neighbors. Every
+A Linear page cursor follows its issue: it means "after where that issue
+is now" ([measured](../references/tracker-api-measurements.md)). So a walk
+pages by cursor only in an order nothing changes (creation, or a fixed
+list). A walk ordered by update time or by manual order never does. Issues
+are polled oldest update first from a stored `PollCursor` that is a
+position no update can move: the update time of the newest issue
+delivered and the IDs delivered at exactly that time, which the next page
+leaves out unless they were updated since. A run of issues sharing one
+timestamp larger than a page drains across restarts, up to 1,000 issues;
+past that the poll fails with `*CohortTooLargeError`. A page hands up
+Linear's own clock (its `Date` header) so the provider can decide where
+the next walk starts. Polling cannot see a hard delete. The same cycle is
+set on up to 50 issues by one `issueBatchUpdate`, and manual order by one
+document of aliased `issueUpdate` fields for up to 50 issues, each with a
+`sortOrder` between its neighbors. A document that fails proves nothing
+about its parts, so the issues are read back in one request and each
+part is reported applied or not from what was read. Every
 page reports its request's cost and the remaining budgets, and
 `Client.Usage` holds the latest answer's, failed answers included.
 

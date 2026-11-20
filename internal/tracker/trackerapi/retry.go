@@ -37,14 +37,31 @@ func (c *Client) statusError(k *call, a *answer) *StatusError {
 	problem, body := c.answerText(a)
 	return &StatusError{
 		Tracker: c.name, Method: k.method, URL: redact(a.url), Status: a.status,
-		Message: problem.Message, Fields: problem.Fields, Body: body, scrub: c.scrubRef(a.sent),
+		Message: problem.Message, Fields: problem.Fields, Body: body,
+		Header: c.keptHeaders(a), scrub: c.scrubRef(a.sent),
 	}
+}
+
+// keptHeaders is the headers of a that Options.ErrorHeaders names, each
+// value scrubbed of the credential the request carried; nil when the
+// client keeps none.
+func (c *Client) keptHeaders(a *answer) http.Header {
+	if len(c.kept) == 0 {
+		return nil
+	}
+	var s scrubber
+	c.loadScrubber(&s, a.sent)
+	defer s.clear()
+	return s.headers(a.header, c.kept)
 }
 
 // redirectError is a 3xx answering a call that does not follow one. Its
 // target is named redacted, or not at all when it is not a URL.
 func (c *Client) redirectError(k *call, a *answer) *StatusError {
-	failure := &StatusError{Tracker: c.name, Method: k.method, URL: redact(a.url), Status: a.status, scrub: c.scrubRef(a.sent)}
+	failure := &StatusError{
+		Tracker: c.name, Method: k.method, URL: redact(a.url), Status: a.status,
+		Header: c.keptHeaders(a), scrub: c.scrubRef(a.sent),
+	}
 	if location := a.header.Get("Location"); location != "" {
 		if target, err := a.url.Parse(location); err == nil {
 			failure.Location = redact(target)

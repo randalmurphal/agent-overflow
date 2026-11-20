@@ -81,6 +81,10 @@ type Options struct {
 	// tracker's rate budget headers. A header that can hold a URL does not
 	// belong here.
 	ReportHeaders []string
+	// ErrorHeaders names the answer headers a StatusError keeps in its
+	// Header, such as one that names who the answer was made for. The
+	// rule for ReportHeaders holds: none that can hold a URL.
+	ErrorHeaders []string
 }
 
 // Client calls one tracker endpoint. It is safe for concurrent use. Close
@@ -101,6 +105,7 @@ type Client struct {
 
 	onAnswer func(status int, header http.Header)
 	reported []string // canonical names of the headers OnAnswer receives
+	kept     []string // canonical names of the headers a StatusError keeps
 	// reportMu is held for reading through each OnAnswer call; Close
 	// takes it to set reportsOff, so no report starts or runs after it.
 	reportMu   sync.RWMutex
@@ -270,6 +275,7 @@ func newClientOn(opts Options, conns *connections) (*Client, error) {
 		conns:       conns,
 		onAnswer:    opts.OnAnswer,
 		reported:    canonicalNames(opts.ReportHeaders),
+		kept:        canonicalNames(opts.ErrorHeaders),
 		tag:         &clientTag{},
 		now:         time.Now,
 		sleep:       sleep,

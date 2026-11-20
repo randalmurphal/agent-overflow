@@ -223,8 +223,8 @@ var answerBuffers sync.Pool // of *[]byte
 // decodes as it is read. A declared length is read into one buffer of
 // that length and a byte past it, which sees the end. Otherwise the read
 // grows a pooled buffer and the caller gets a copy of what it read; the
-// pooled buffer is cleared before it is pooled again, since it held
-// answer text the scrub has not seen.
+// buffer is cleared before it is pooled again, since it stays reachable
+// and held answer text the scrub has not seen.
 func readUpTo(r io.Reader, size, limit int64) ([]byte, error) {
 	if size < 0 {
 		return readGrowing(r, nil, limit)
@@ -257,28 +257,42 @@ func readGrowing(r io.Reader, prefix []byte, limit int64) ([]byte, error) {
 	}
 	buf := append((*held)[:0], prefix...)
 	var err error
+	var next [1]byte
 	for int64(len(buf)) < limit {
-		if len(buf) == cap(buf) {
+		// A full buffer may hold the whole answer: its next byte is read
+		// apart, so an answer of exactly the buffer's size is not doubled
+		// to learn that it ended.
+		full := len(buf) == cap(buf)
+		dst := next[:]
+		if !full {
+			dst = buf[len(buf):min(cap(buf), len(buf)+int(min(limit-int64(len(buf)), math.MaxInt32)))]
+		}
+		n, readErr := r.Read(dst)
+		switch {
+		case n == 0:
+		case !full:
+			buf = buf[:len(buf)+n]
+		default:
 			// Exactly double, so a buffer that began at answerBufferStart
 			// reaches answerBufferKeep and not past it, and a growing
 			// read discards less than twice its answer.
-			grown := make([]byte, len(buf), 2*cap(buf))
+			grown := make([]byte, len(buf)+1, 2*cap(buf))
 			copy(grown, buf)
+			grown[len(buf)] = next[0]
 			buf = grown
 		}
-		end := min(cap(buf), len(buf)+int(min(limit-int64(len(buf)), math.MaxInt32)))
-		var n int
-		n, err = r.Read(buf[len(buf):end])
-		buf = buf[:len(buf)+n]
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				err = nil
+		if readErr != nil {
+			if !errors.Is(readErr, io.EOF) {
+				err = readErr
 			}
 			break
 		}
 	}
 	out := make([]byte, len(buf))
 	copy(out, buf)
+	// A buffer that goes back to the pool stays reachable, so it is
+	// cleared of the answer. One the read outgrew or drops here is garbage,
+	// as net/http's own read buffers are.
 	if cap(buf) <= answerBufferKeep {
 		clear(buf)
 		*held = buf[:0]

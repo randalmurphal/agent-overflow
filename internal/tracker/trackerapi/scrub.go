@@ -133,13 +133,14 @@ type scrubber struct {
 // forms for a hop that carried none. Whatever s held before is cleared.
 // The caller clears s after use.
 func (c *Client) loadScrubber(s *scrubber, sent sentWith) {
-	s.reset()
 	if !sent.carried {
+		s.reset()
 		return
 	}
 	c.credMu.RLock()
 	defer c.credMu.RUnlock()
 	if sent.cred.secret.Len() == 0 {
+		s.reset()
 		s.lost = true
 		return
 	}

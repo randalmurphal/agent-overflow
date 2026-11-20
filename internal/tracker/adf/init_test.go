@@ -13,12 +13,14 @@ import (
 	"testing"
 )
 
-// initAllowance is what the package's init may allocate: registering one
-// goldmark node kind, which appends to goldmark's table. Everything else
-// waits for its first use.
+// What the package's init may allocate: nothing. Its one piece of work,
+// registering a goldmark node kind, appends to goldmark's table within
+// the room that table has (measured: 0 bytes). A goldmark release whose
+// table grows at this registration fails the test; raise the bytes to
+// that growth then, and nothing else.
 const (
-	initBytes  = 256
-	initAllocs = 2
+	initBytes  = 0
+	initAllocs = 0
 )
 
 var initTrace = regexp.MustCompile(`(\d+) bytes, (\d+) allocs`)

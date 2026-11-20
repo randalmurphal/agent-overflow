@@ -170,9 +170,15 @@ func (c *Client) report(resp *http.Response, sent sentWith) {
 	var s scrubber
 	c.loadScrubber(&s, sent)
 	defer s.clear()
-	header := make(http.Header, len(c.reported))
-	for _, name := range c.reported {
-		values := resp.Header[name]
+	c.onAnswer(resp.StatusCode, s.headers(resp.Header, c.reported))
+}
+
+// headers is a new map of the headers of h that names holds (canonical
+// names), every value scrubbed.
+func (s *scrubber) headers(h http.Header, names []string) http.Header {
+	out := make(http.Header, len(names))
+	for _, name := range names {
+		values := h[name]
 		if len(values) == 0 {
 			continue
 		}
@@ -180,9 +186,9 @@ func (c *Client) report(resp *http.Response, sent sentWith) {
 		for i, v := range values {
 			scrubbed[i] = s.text(v)
 		}
-		header[name] = scrubbed
+		out[name] = scrubbed
 	}
-	c.onAnswer(resp.StatusCode, header)
+	return out
 }
 
 // redirectTarget is the URL a followed redirect names, or nil when resp is

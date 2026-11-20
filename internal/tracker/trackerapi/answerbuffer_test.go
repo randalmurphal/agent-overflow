@@ -83,9 +83,10 @@ func TestPooledAnswerBuffers(t *testing.T) {
 	if seen == 0 {
 		t.Fatal("no buffer was pooled")
 	}
-	// The largest page a client asks for as a matter of course is pooled:
-	// its buffer doubles to the cap, not past it.
-	page := strings.Repeat("p", answerBufferKeep-(answerBufferKeep>>2))
+	// An answer of exactly the cap is pooled: its buffer doubles to the
+	// cap and not past it, and is not doubled again to learn the answer
+	// ended.
+	page := strings.Repeat("p", answerBufferKeep)
 	pooledPage := 0
 	for range 20 {
 		if _, err := readUpTo(unsized{strings.NewReader(page)}, -1, defaultMaxBodyBytes); err != nil {
