@@ -651,7 +651,7 @@ func (a *App) ensurePRUpdateMapsLocked() {
 // releasing exactly the handles that referenced IT.
 func (a *App) livePRUpdatePumpLocked(prKey string) *prUpdatePump {
 	pump, ok := a.prUpdates.pumps[prKey]
-	if !ok || pump.dead {
+	if !ok || pump.DeadLocked() {
 		return nil
 	}
 	return pump
@@ -664,7 +664,7 @@ func (a *App) livePRUpdatePumpLocked(prKey string) *prUpdatePump {
 // for waits out a whole tick that the pause already made it miss.
 func (a *App) takePRUpdateReferenceLocked(pump *prUpdatePump) prUpdateReference {
 	id := uuid.NewString()
-	pump.takeLocked()
+	pump.TakeLocked()
 	a.prUpdates.handles[id] = &prUpdateHandle{pump: pump, active: true}
 	ref := prUpdateReference{
 		id:       id,
@@ -713,16 +713,8 @@ func (a *App) SetPRUpdatesActive(subscriptionID string, active bool) error {
 		return nil
 	}
 	handle.active = active
-	pump := handle.pump
-	if pump.dead {
-		a.prUpdates.mu.Unlock()
-		return nil
-	}
-	resumed := pump.voteLocked(active)
+	handle.pump.VoteLocked(active)
 	a.prUpdates.mu.Unlock()
-	if resumed {
-		pump.wakeUp()
-	}
 	return nil
 }
 
@@ -749,10 +741,10 @@ func (a *App) pumpPRUpdates(pump *prUpdatePump) {
 	// for the failure's release (the pool's resume time plus the stagger)
 	// and polls nothing before it: a tick or resume that lands earlier is
 	// skipped.
-	var retry retrySchedule
+	retry := a.newPumpRetry(interval)
 	scheduleRetry := func() {
 		retrying, release := a.prUpdatePumpRetry(pump)
-		retry.arm(retrying, release, a.prUpdateRetryBase(), interval)
+		retry.Arm(retrying, release)
 	}
 	scheduleRetry()
 	// The CI phase rides its own timer, re-armed from the pump's CI state
@@ -789,54 +781,54 @@ func (a *App) pumpPRUpdates(pump *prUpdatePump) {
 	// The first pipeline read happens here rather than in Subscribe so a
 	// subscribe stays one forge call; the result carries CI nil until the
 	// frame lands.
-	runCI(pump.ctx, nil, true)
+	runCI(pump.Context(), nil, true)
 	for {
 		select {
-		case <-pump.done:
+		case <-pump.Done():
 			return
-		case <-pump.ctx.Done():
+		case <-pump.Context().Done():
 			return
-		case req := <-pump.requests:
-			a.servePumpRequest(&pump.ciPhase, req, runSnapshot, runCI)
+		case req := <-pump.Requests():
+			req.Finish(a.servePumpRequest(&pump.ciPhase, req.Body(), runSnapshot, runCI))
 			continue
 		case <-ciTick:
-			if pump.paused.Load() {
+			if pump.Paused() {
 				missedTick = true
 				missedCI = true
 				ciTick = nil
 				continue
 			}
-			runCI(pump.ctx, nil, true)
+			runCI(pump.Context(), nil, true)
 			continue
-		case <-pump.wake:
-			if pump.paused.Load() || !missedTick {
+		case <-pump.Wake():
+			if pump.Paused() || !missedTick {
 				continue
 			}
 			missedTick = false
-		case <-retry.timer:
-			if pump.paused.Load() {
+		case <-retry.C():
+			if pump.Paused() {
 				// Resume polls once; the retry curve restarts from there.
-				retry.pausedRetry()
+				retry.FiredWhilePaused()
 				missedTick = true
 				continue
 			}
 			missedTick = false
 		case <-ticker.C:
-			if pump.paused.Load() {
+			if pump.Paused() {
 				missedTick = true
 				continue
 			}
 			missedTick = false
 		}
-		if retry.held() {
+		if retry.Held() {
 			// A rate limit holds the snapshot poll until its release, which
 			// the retry timer is armed for; a resume after a pause re-arms
 			// it.
 			continue
 		}
-		runSnapshot(pump.ctx)
+		runSnapshot(pump.Context())
 		if missedCI || a.ciWantsPoll(&pump.ciPhase) {
-			runCI(pump.ctx, nil, true)
+			runCI(pump.Context(), nil, true)
 		}
 	}
 }
@@ -863,7 +855,7 @@ func (a *App) pollPRUpdate(ctx context.Context, pump *prUpdatePump) (PRUpdatedEv
 			// The fetch ran outside the lock; only the compare-and-store is
 			// inside it, because a joining subscriber reads this state.
 			a.prUpdates.mu.Lock()
-			if pump.dead {
+			if pump.DeadLocked() {
 				a.prUpdates.mu.Unlock()
 				return PRUpdatedEvent{}, false
 			}
@@ -910,7 +902,7 @@ func (a *App) pollPRUpdate(ctx context.Context, pump *prUpdatePump) (PRUpdatedEv
 	// tick, and logging first turned one outage into a log line every 45s
 	// for as long as a pane stayed open.
 	a.prUpdates.mu.Lock()
-	if pump.dead {
+	if pump.DeadLocked() {
 		a.prUpdates.mu.Unlock()
 		return PRUpdatedEvent{}, false
 	}
@@ -987,7 +979,7 @@ func (a *App) unsubscribePRUpdates(id string) {
 	// state (or a sequence) after a replacement pump exists — per key,
 	// sequence order must match content order, and this pump's fetch began
 	// before any successor's. dropPRUpdatePump re-stamps harmlessly.
-	if pump.releaseLocked(handle.active) {
+	if pump.ReleaseLocked(handle.active) {
 		teardown = pump
 		// Only if it is still the pump serving this key — a superseded
 		// (dead) pump was replaced in the map and must not evict its
@@ -998,7 +990,7 @@ func (a *App) unsubscribePRUpdates(id string) {
 	}
 	a.prUpdates.mu.Unlock()
 	if teardown != nil {
-		teardown.stop()
+		teardown.Stop()
 	}
 }
 
@@ -1014,10 +1006,10 @@ func (a *App) unsubscribePRUpdates(id string) {
 // own teardown), and it is shutdown-only — the loop exits on the app
 // lifetime context, after which nothing new subscribes.
 func (a *App) dropPRUpdatePump(pump *prUpdatePump) {
-	pump.cancel()
+	pump.Cancel()
 	a.prUpdates.mu.Lock()
 	defer a.prUpdates.mu.Unlock()
-	pump.dead = true
+	pump.MarkDeadLocked()
 	if a.prUpdates.pumps[pump.prKey] == pump {
 		delete(a.prUpdates.pumps, pump.prKey)
 	}
@@ -1050,7 +1042,7 @@ func (a *App) closePRUpdatePumps() {
 	}
 	a.prUpdates.mu.Unlock()
 	for _, pump := range orphans {
-		pump.stop()
+		pump.Stop()
 	}
 	a.closePipelinePumps()
 	a.closePRListPump()

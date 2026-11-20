@@ -190,7 +190,7 @@ Sources, endpoints and what was measured are in
   a sibling that reuses its patterns (typed failure kinds, rate gates,
   backoff, an isolated HTTP fake for tests), not a third forge.
 - Sync pumps exist while a client is subscribed and pause while every
-  handle is hidden (`internal/app/app_pump_core.go`). Unattended reads wait
+  handle is hidden (`internal/pump`). Unattended reads wait
   for the first client's reads to settle. Turning the integration off
   clears its mirror and stops its pumps.
 - Mirror tables are classified as cache at the

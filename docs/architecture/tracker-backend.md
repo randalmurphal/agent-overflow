@@ -343,10 +343,9 @@ and writes share:
 
 A board pump has handles, visibility votes, a pause while every handle is
 hidden, and a request path for a person's refresh. That mechanism is
-`pumpCore` in `internal/app` today, bound to the pull request types and
-mutex. It moves to its own package with the request type as a parameter and
-its lock supplied by the owner, and the pull request pumps use it from
-there, so there is one implementation.
+`internal/pump`, with the request type as a parameter and its lock supplied
+by the owner. The pull request pumps use the same package, so there is one
+implementation.
 
 ## Writes
 

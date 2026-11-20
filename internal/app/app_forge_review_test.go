@@ -189,7 +189,8 @@ func prPumpState(app *App, prKey string) (refs, active int, paused, present bool
 	if !ok {
 		return 0, 0, false, false
 	}
-	return pump.refs, pump.active, pump.paused.Load(), true
+	refs, active = pump.HandlesLocked()
+	return refs, active, pump.Paused(), true
 }
 
 func TestPRUpdatePollingEmitsOnlyOnSnapshotChange(t *testing.T) {
@@ -307,7 +308,7 @@ func TestPRUpdatePumpIsSharedPerPRKey(t *testing.T) {
 	// The last release stamps the pump dead under the store lock, so a poll
 	// it still has in flight cannot stamp state after a replacement exists.
 	app.prUpdates.mu.Lock()
-	dead := pump.dead
+	dead := pump.DeadLocked()
 	app.prUpdates.mu.Unlock()
 	if !dead {
 		t.Fatalf("released pump was not stamped dead")
@@ -728,7 +729,7 @@ func TestSubscribePRUpdatesRefusesADyingPump(t *testing.T) {
 		app.prUpdates.mu.Unlock()
 		t.Fatalf("no pump tracked for %q after Subscribe", first.PRKey)
 	}
-	dying.dead = true
+	dying.MarkDeadLocked()
 	app.prUpdates.mu.Unlock()
 
 	second, err := app.SubscribePRUpdates(context.Background(), testPR)
@@ -774,7 +775,7 @@ func TestSubscribePRUpdatesRefusesADyingPump(t *testing.T) {
 	// The dying pump's goroutine is still parked (the test faked its death
 	// rather than letting the lifetime context end it); stop it so Wait
 	// cannot block on a fixture artifact.
-	close(dying.done)
+	dying.Stop()
 	app.prUpdates.wg.Wait()
 }
 
@@ -814,7 +815,7 @@ func TestPollPRUpdateStoresNothingOnADeadPump(t *testing.T) {
 	// Stand in for the goroutine's teardown having begun while this poll's
 	// fetch was already out on the wire.
 	app.prUpdates.mu.Lock()
-	pump.dead = true
+	pump.MarkDeadLocked()
 	globalSeq := app.prUpdates.seq
 	pumpSeq := pump.seq
 	last := string(pump.last)
@@ -840,14 +841,14 @@ func TestPollPRUpdateStoresNothingOnADeadPump(t *testing.T) {
 
 	// A snapshot that WOULD have been a change on a live pump.
 	head = "head-b"
-	if evt, changed := app.pollPRUpdate(pump.ctx, pump); changed {
+	if evt, changed := app.pollPRUpdate(pump.Context(), pump); changed {
 		t.Fatalf("dead pump published a snapshot change: %+v", evt)
 	}
 	assertUnstamped("snapshot path")
 
 	// And a failure, which stamps through a second critical section.
 	fetchErr = errors.New("gh: boom")
-	if evt, changed := app.pollPRUpdate(pump.ctx, pump); changed {
+	if evt, changed := app.pollPRUpdate(pump.Context(), pump); changed {
 		t.Fatalf("dead pump published a failure: %+v", evt)
 	}
 	assertUnstamped("error path")

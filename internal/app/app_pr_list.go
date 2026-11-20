@@ -180,14 +180,14 @@ func (a *App) takePRListHandle() (id string, pump *prListPump, start bool, publi
 		return "", nil, false, nil, 0, ErrTooManyPRListSubscriptions
 	}
 	pump = a.prUpdates.list
-	if pump == nil || pump.dead {
+	if pump == nil || pump.DeadLocked() {
 		a.prUpdates.listGen++
 		pump = &prListPump{pumpCore: a.newPumpCore(), gen: a.prUpdates.listGen, projects: map[string]*prListProjectState{}}
 		a.prUpdates.list = pump
 		start = true
 	}
 	id = uuid.NewString()
-	pump.takeLocked()
+	pump.TakeLocked()
 	a.prUpdates.listHandles[id] = &prListHandle{active: true}
 	if pump.snapshot.Seq != 0 {
 		snapshot := pump.snapshot
@@ -206,16 +206,13 @@ func (a *App) SetPRListActive(ctx context.Context, subscriptionID string, active
 	a.prUpdates.mu.Lock()
 	handle, ok := a.prUpdates.listHandles[subscriptionID]
 	pump := a.prUpdates.list
-	if !ok || handle.active == active || pump == nil || pump.dead {
+	if !ok || handle.active == active || pump == nil || pump.DeadLocked() {
 		a.prUpdates.mu.Unlock()
 		return nil
 	}
 	handle.active = active
-	resumed := pump.voteLocked(active)
+	pump.VoteLocked(active)
 	a.prUpdates.mu.Unlock()
-	if resumed {
-		pump.wakeUp()
-	}
 	return nil
 }
 
@@ -231,11 +228,12 @@ func (a *App) RefreshPRList(ctx context.Context, subscriptionID string) error {
 	a.prUpdates.mu.Lock()
 	_, ok := a.prUpdates.listHandles[subscriptionID]
 	pump := a.prUpdates.list
+	live := ok && pump != nil && !pump.DeadLocked()
 	a.prUpdates.mu.Unlock()
-	if !ok || pump == nil || pump.dead {
+	if !live {
 		return errPRUpdatesUnknownSubscription
 	}
-	return a.requestPump(ctx, &pump.pumpCore, &prPumpRequest{snapshot: true})
+	return pump.Request(ctx, prPumpRequest{snapshot: true})
 }
 
 //ao:scope git:operate
@@ -256,13 +254,13 @@ func (a *App) unsubscribePRList(id string) {
 	}
 	delete(a.prUpdates.listHandles, id)
 	var teardown *prListPump
-	if pump.releaseLocked(handle.active) {
+	if pump.ReleaseLocked(handle.active) {
 		teardown = pump
 		a.prUpdates.list = nil
 	}
 	a.prUpdates.mu.Unlock()
 	if teardown != nil {
-		teardown.stop()
+		teardown.Stop()
 	}
 }
 
@@ -270,10 +268,10 @@ func (a *App) unsubscribePRList(id string) {
 // on it when it exited on its own, and drops what it held: the next
 // subscribe reads the store.
 func (a *App) dropPRListPump(pump *prListPump) {
-	pump.cancel()
+	pump.Cancel()
 	a.prUpdates.mu.Lock()
 	defer a.prUpdates.mu.Unlock()
-	pump.dead = true
+	pump.MarkDeadLocked()
 	if a.prUpdates.list == pump {
 		a.prUpdates.list = nil
 		clear(a.prUpdates.listHandles)
@@ -299,7 +297,7 @@ func (a *App) closePRListPump() {
 	a.prUpdates.list = nil
 	a.prUpdates.mu.Unlock()
 	if pump != nil {
-		pump.stop()
+		pump.Stop()
 	}
 }
 
@@ -313,7 +311,7 @@ func (a *App) pumpPRList(pump *prListPump) {
 	interval := a.prUpdatePollInterval()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	var retry retrySchedule
+	retry := a.newPumpRetry(interval)
 	missed := false
 	tick := func(ctx context.Context) {
 		missed = false
@@ -321,39 +319,37 @@ func (a *App) pumpPRList(pump *prListPump) {
 		// A failing project retries on the doubling schedule; one held by a
 		// rate limit waits for its release, while the others ride the
 		// ticker.
-		retry.arm(failing, time.Time{}, a.prUpdateRetryBase(), interval)
-		if !release.IsZero() && (retry.timer == nil || heldUntil(release) < retry.delay) {
-			retry.timer = time.After(heldUntil(release))
-		}
+		retry.Arm(failing, time.Time{})
+		retry.FireBy(release)
 	}
-	tick(forgeapi.WithInteractive(pump.ctx))
+	tick(forgeapi.WithInteractive(pump.Context()))
 	for {
 		select {
-		case <-pump.done:
+		case <-pump.Done():
 			return
-		case <-pump.ctx.Done():
+		case <-pump.Context().Done():
 			return
-		case req := <-pump.requests:
-			tick(forgeapi.WithInteractive(pump.ctx))
-			close(req.done)
-		case <-pump.wake:
-			if pump.paused.Load() || !missed {
+		case req := <-pump.Requests():
+			tick(forgeapi.WithInteractive(pump.Context()))
+			req.Finish(nil)
+		case <-pump.Wake():
+			if pump.Paused() || !missed {
 				continue
 			}
-			tick(pump.ctx)
-		case <-retry.timer:
-			if pump.paused.Load() {
-				retry.pausedRetry()
+			tick(pump.Context())
+		case <-retry.C():
+			if pump.Paused() {
+				retry.FiredWhilePaused()
 				missed = true
 				continue
 			}
-			tick(pump.ctx)
+			tick(pump.Context())
 		case <-ticker.C:
-			if pump.paused.Load() {
+			if pump.Paused() {
 				missed = true
 				continue
 			}
-			tick(pump.ctx)
+			tick(pump.Context())
 		}
 	}
 }
