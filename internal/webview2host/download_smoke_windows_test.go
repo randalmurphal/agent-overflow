@@ -545,22 +545,7 @@ func startDownloadSmoke(t *testing.T) *downloadSmoke {
 			}
 		}
 	})
-	dataDir, err := os.MkdirTemp("", "ao-download-smoke-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		for start := time.Now(); ; time.Sleep(200 * time.Millisecond) {
-			err := os.RemoveAll(dataDir)
-			if err == nil {
-				return
-			}
-			if time.Since(start) > 15*time.Second {
-				t.Errorf("remove %s: %v", dataDir, err)
-				return
-			}
-		}
-	})
+	dataDir := smokeTempDir(t, "ao-download-smoke-")
 
 	release := make(chan struct{})
 	s.server = httptest.NewServer(http.HandlerFunc(s.serve(release)))

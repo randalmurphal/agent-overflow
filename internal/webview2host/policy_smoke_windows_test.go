@@ -303,27 +303,6 @@ func readPolicyReports(t *testing.T, reports <-chan smokeReport, reported func(s
 	return done
 }
 
-func smokeTempDir(t *testing.T, prefix string) string {
-	t.Helper()
-	dir, err := os.MkdirTemp("", prefix)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		for start := time.Now(); ; time.Sleep(200 * time.Millisecond) {
-			err := os.RemoveAll(dir)
-			if err == nil {
-				return
-			}
-			if time.Since(start) > 15*time.Second {
-				t.Errorf("remove %s: %v", dir, err)
-				return
-			}
-		}
-	})
-	return dir
-}
-
 // policySmokeOwnerWait is internal/browser's requestOwnerWait: how long the
 // backend holds a paused request for its owner before refusing it.
 const policySmokeOwnerWait = 2 * time.Second

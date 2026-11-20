@@ -189,9 +189,6 @@ type hostedEngine struct {
 	// replaces them.
 	windowsPath func(ctx context.Context, path string) (string, error)
 	backendPath func(ctx context.Context, path string) (string, error)
-	// viewScaleAsked is a test seam called whenever a page is asked for a
-	// view scale it was not already asked for. Production leaves it nil.
-	viewScaleAsked func(handle ids.PageHandle, want viewScale)
 }
 
 func newHostedEngine(relay hostRelay, send func(webview2host.Directive), accelerators func() keybindings.AcceleratorSet, events engineEvents) *hostedEngine {

@@ -11,6 +11,13 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+// comRootCount is how many Go-backed COM objects are alive for WebView2.
+func comRootCount() int {
+	comRoots.mu.Lock()
+	defer comRoots.mu.Unlock()
+	return len(comRoots.set)
+}
+
 // The Go-backed COM objects WebView2 holds, built the way the host builds
 // them.
 var comObjectKinds = []struct {

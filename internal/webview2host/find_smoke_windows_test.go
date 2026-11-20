@@ -15,6 +15,38 @@ import (
 	"agent-overflow/internal/keybindings"
 )
 
+// smokeTempDir is a smoke's user-data folder, removed at its end. The
+// runtime's browser process holds the folder for a moment after its last
+// page closes, which t.TempDir's cleanup does not retry.
+func smokeTempDir(t *testing.T, prefix string) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", prefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		for start := time.Now(); ; time.Sleep(200 * time.Millisecond) {
+			err := os.RemoveAll(dir)
+			if err == nil {
+				return
+			}
+			if time.Since(start) > 15*time.Second {
+				t.Errorf("remove %s: %v", dir, err)
+				return
+			}
+		}
+	})
+	return dir
+}
+
+// matchCount is get_MatchCount([out, retval] INT32* value), which the
+// smoke reads to see the find session it started.
+func (f *iCoreWebView2Find) matchCount() (int32, error) {
+	var value int32
+	hr, _, _ := f.vtbl.GetMatchCount.Call(uintptr(unsafe.Pointer(f)), uintptr(unsafe.Pointer(&value)))
+	return value, hresult(hr)
+}
+
 // An unmodified key is the page's, Escape included, even when a bound set
 // names it; a modified one goes through the bound set only.
 func TestClaimChordNeverTakesAnUnmodifiedKey(t *testing.T) {
@@ -38,24 +70,7 @@ func TestFindSmokeOpensTheEnginesFindBar(t *testing.T) {
 	if os.Getenv("AO_NATIVE_BROWSER_SMOKE") != "1" {
 		t.Skip("set AO_NATIVE_BROWSER_SMOKE=1 to run against the installed WebView2 runtime")
 	}
-	// The runtime's browser process holds the user-data folder for a moment
-	// after its last page closes, which t.TempDir's cleanup does not retry.
-	dataDir, err := os.MkdirTemp("", "ao-find-smoke-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		for start := time.Now(); ; time.Sleep(200 * time.Millisecond) {
-			err := os.RemoveAll(dataDir)
-			if err == nil {
-				return
-			}
-			if time.Since(start) > 15*time.Second {
-				t.Errorf("remove %s: %v", dataDir, err)
-				return
-			}
-		}
-	})
+	dataDir := smokeTempDir(t, "ao-find-smoke-")
 	ui := startSmokeUIThread(t)
 	reports := make(chan smokeReport, 16)
 	host, err := New(Config{

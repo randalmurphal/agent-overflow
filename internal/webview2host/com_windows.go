@@ -373,13 +373,6 @@ func (f *iCoreWebView2Find) stop() error {
 	return hresult(hr)
 }
 
-// matchCount is get_MatchCount([out, retval] INT32* value).
-func (f *iCoreWebView2Find) matchCount() (int32, error) {
-	var value int32
-	hr, _, _ := f.vtbl.GetMatchCount.Call(uintptr(unsafe.Pointer(f)), uintptr(unsafe.Pointer(&value)))
-	return value, hresult(hr)
-}
-
 // ---------------------------------------------------------------------
 // ICoreWebView2_28 (Find)
 // ---------------------------------------------------------------------

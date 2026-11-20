@@ -83,7 +83,7 @@ func TestASlowCompletionHoldsNoOtherPagesReport(t *testing.T) {
 	sendSnapshot(numbered(snapshot("dl-2", webview2host.DownloadRunning, 1), 1))
 	awaitSeen("dl-2 inProgress 1")
 	sendSnapshot(numbered(snapshot("dl-1", webview2host.DownloadCompleted, 100), 2))
-	waitClosed(t, entered, "the completion's path conversion")
+	awaitClosed(t, entered, "the completion's path conversion")
 	// Each acknowledged at once, so the launcher's queue replaces none of
 	// them.
 	for i := range 49 {
@@ -195,7 +195,7 @@ func testAPendingPopupsEndPrecedesAClose(t *testing.T, closes string, kind webvi
 		return testBackendPath(ctx, path)
 	}
 	sendDownload(t, engine, "popup", snapshot("dl-1", webview2host.DownloadCompleted, 100))
-	waitClosed(t, entered, "the completion's path conversion")
+	awaitClosed(t, entered, "the completion's path conversion")
 	if closes == "popup" {
 		// Its attach binds it.
 		bindTestPage(t, engine, "popup", "T-popup")
@@ -229,14 +229,14 @@ func TestStopJoinsTheAcceptedReports(t *testing.T) {
 	}
 	recorder.take()
 	sendDownload(t, engine, "page1", snapshot("dl-1", webview2host.DownloadCompleted, 100))
-	waitClosed(t, entered, "the completion's path conversion")
+	awaitClosed(t, entered, "the completion's path conversion")
 	sendDownload(t, engine, "page1", snapshot("dl-2", webview2host.DownloadRunning, 20))
 	stopped := make(chan struct{})
 	go func() {
 		defer close(stopped)
 		engine.Stop()
 	}()
-	waitClosed(t, stopped, "Stop")
+	awaitClosed(t, stopped, "Stop")
 	select {
 	case <-left:
 	default:
@@ -298,7 +298,7 @@ func TestAPagesOwnEndFollowsItsAcceptedReports(t *testing.T) {
 				return testBackendPath(ctx, path)
 			}
 			sendDownload(t, engine, "page1", snapshot("dl-1", webview2host.DownloadCompleted, 100))
-			waitClosed(t, entered, "the completion's path conversion")
+			awaitClosed(t, entered, "the completion's path conversion")
 			sendDownload(t, engine, "page1", snapshot("dl-2", webview2host.DownloadCompleted, 100))
 			end(engine)
 			time.Sleep(20 * time.Millisecond)

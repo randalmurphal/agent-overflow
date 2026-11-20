@@ -128,12 +128,6 @@ func paneZoom(paneRatio, pageRatio float64) float64 {
 	return paneRatio / pageRatio
 }
 
-func (e *hostedEngine) driverFor(handle ids.PageHandle) *cdpPage {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.drivers[handle]
-}
-
 // pageDevicePixelRatio answers the page's own devicePixelRatio, read once per
 // pane ratio it is asked under (see ratios), so only a monitor or zoom change
 // costs a CDP round trip. 0 means unknown, which paneZoom treats as no zoom.
@@ -191,13 +185,9 @@ func (e *hostedEngine) applyViewScale(handle ids.PageHandle, want viewScale) {
 		return
 	}
 	st.want, st.asked = want, true
-	asked := e.viewScaleAsked
 	start := !st.busy
 	st.busy = true
 	e.mu.Unlock()
-	if asked != nil {
-		asked(handle, want)
-	}
 	if start {
 		go e.drainViewScale(handle, st)
 	}

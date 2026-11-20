@@ -42,6 +42,8 @@ type popupLauncher struct {
 	// gatedMethods every call of a method.
 	gatedHistory map[string]chan struct{}
 	gatedMethods map[string]chan struct{}
+	// calls counts the CDP calls the endpoint answered, by method.
+	calls map[string]int
 	reached      chan string
 	seq          int
 	// detach, when set, holds every Target.detachFromTarget until closed,
@@ -52,7 +54,7 @@ type popupLauncher struct {
 
 func newPopupLauncher(t *testing.T) *popupLauncher {
 	t.Helper()
-	l := &popupLauncher{t: t, gated: map[string]chan struct{}{}, gatedHistory: map[string]chan struct{}{}, gatedMethods: map[string]chan struct{}{}, reached: make(chan string, 16), adopted: make(chan struct{}, 16)}
+	l := &popupLauncher{t: t, gated: map[string]chan struct{}{}, gatedHistory: map[string]chan struct{}{}, gatedMethods: map[string]chan struct{}{}, calls: map[string]int{}, reached: make(chan string, 16), adopted: make(chan struct{}, 16)}
 	l.endpoint = startFakeCDPEndpoint(t, l.respond, nil)
 	l.manager = NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{PaneHost: &PaneHostOptions{
 		Directive: l.send,
@@ -84,6 +86,7 @@ func newPopupLauncher(t *testing.T) *popupLauncher {
 func (l *popupLauncher) respond(call fakeCDPCall) any {
 	l.mu.Lock()
 	methodGate := l.gatedMethods[call.Method]
+	l.calls[call.Method]++
 	l.mu.Unlock()
 	if methodGate != nil {
 		l.reached <- call.Method
@@ -206,6 +209,13 @@ func (l *popupLauncher) gateHistory(target string) (release func()) {
 	l.mu.Unlock()
 	var once sync.Once
 	return func() { once.Do(func() { close(ch) }) }
+}
+
+// called answers how many calls of a CDP method the endpoint answered.
+func (l *popupLauncher) called(method string) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.calls[method]
 }
 
 // gateMethod holds every call of a CDP method until the answered
