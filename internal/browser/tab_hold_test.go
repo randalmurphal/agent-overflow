@@ -127,3 +127,38 @@ func TestALabelDuringASwitchLandsOnTheTab(t *testing.T) {
 		t.Fatalf("the label answered %+v and the tab shows %+v", got.info, pages)
 	}
 }
+
+// A show of a tab and the tab's close, both waiting out a jar switch's
+// write, never leave the companion showing a tab the thread no longer has:
+// the show checks the tab in the hold that shows it. Either may pass the
+// gate first, so the pair runs several times.
+func TestAShowNeverSelectsATabClosedDuringASwitch(t *testing.T) {
+	for i := range 12 {
+		m, access, ids := newTabsManager(t, addr("a"), addr("b"))
+		shown, closed := make(chan error, 1), make(chan error, 1)
+		m.switchWritten = func() {
+			m.switchWritten = nil
+			visible := true
+			go func() {
+				_, err := m.Visibility(context.Background(), access, &visible, PageID(ids[1]))
+				shown <- err
+			}()
+			go func() { closed <- m.ClosePage(context.Background(), access, PageID(ids[1])) }()
+			// Time for both to reach the gate.
+			time.Sleep(30 * time.Millisecond)
+		}
+		if err := m.SetJar(t.Context(), access, JarThread, JarSwitchConfirmed); err != nil {
+			t.Fatal(err)
+		}
+		if err := await(t, closed, "the close"); err != nil {
+			t.Fatal(err)
+		}
+		if err := await(t, shown, "the show"); err != nil && !errors.Is(err, errPageNotFound) {
+			t.Fatal(err)
+		}
+		state := m.CompanionState(access.Caller())
+		if state.ActivePageID != "" && !slices.ContainsFunc(state.Pages, func(p PageInfo) bool { return p.ID == state.ActivePageID }) {
+			t.Fatalf("run %d: the companion shows tab %s, which the thread no longer has", i, state.ActivePageID)
+		}
+	}
+}
