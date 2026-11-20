@@ -7,7 +7,9 @@ import { applyBrowserCompanionState, resetBrowserCompanionForTest } from '../../
 import { resetDevServersForTest } from '../../stores/devServers.svelte';
 import { airspaceSurfaces, resetAirspaceForTest } from '../../utils/paneAirspace.svelte';
 import { makeCommandContext } from '../../stores/builtinCommands.svelte';
-import { attachBrowserPaneForTest } from '../../../test/helpers/browserPane';
+import { attachBrowserPaneForTest, paneForTest } from '../../../test/helpers/browserPane';
+import { actInPane, openBrowserTab } from '../../stores/browserActions';
+import { browserAction } from '../../stores/browserActionWire';
 import { resetFocusIntentForTest } from '../../utils/focusIntent';
 import { forgetBackendEntities, forgetThread, noteThread } from '../../transport/entityIndex';
 import { HOME_BACKEND } from '../../transport/backendKey';
@@ -189,6 +191,82 @@ describe('<BrowserAddressSuggestions>', () => {
     // The text was typed for the tab the suggestion chose, and goes there.
     key(input, { key: 'Enter' });
     expect(onAct).toHaveBeenLastCalledWith({ kind: 'navigate', pageId: 'b', address: 'https://next.test/' });
+  });
+
+  // The pane's actions sent through the wire, as BrowserPane sends them, with
+  // every reply held: what the backend answers, and when, is the test's.
+  function sendThroughThePane(onAct: ReturnType<typeof vi.fn>): Array<{ kind: string; pageId?: string; address?: string }> {
+    const sent: Array<{ kind: string; pageId?: string; address?: string }> = [];
+    setBindingMock('BrowserCompanionDo', vi.fn((_thread: string, action: { kind: string; pageId?: string; address?: string }) => {
+      sent.push({ kind: action.kind, pageId: action.pageId, address: action.address });
+      return new Promise(() => {});
+    }));
+    onAct.mockImplementation((action: never) => actInPane(paneForTest(THREAD), action));
+    return sent;
+  }
+
+  async function chooseTabSuggestion(input: HTMLInputElement): Promise<void> {
+    input.focus();
+    await type(input, 'settings');
+    await waitFor(() => expect(rows().length).toBe(1));
+    key(input, { key: 'ArrowDown' });
+    key(input, { key: 'Enter' });
+  }
+
+  // b chosen from a's suggestions, its reply held: the state shows b, the
+  // user goes back to a with Ctrl+Tab, and types. What they type is a's.
+  it("gives the tab shown what is typed once the chosen switch was shown and the user moved on", async () => {
+    const { input, onAct } = mount('state');
+    const sent = sendThroughThePane(onAct);
+    await chooseTabSuggestion(input);
+    seed('b');
+    await tick();
+    void actInPane(paneForTest(THREAD), browserAction.step(1));
+    seed('a');
+    await tick();
+    await type(input, 'https://typed-on-a.test/');
+    key(input, { key: 'Enter' });
+    expect(sent.at(-1)).toEqual({ kind: 'navigate', pageId: 'a', address: 'https://typed-on-a.test/' });
+  });
+
+  // The chosen switch was shown, and then the state shows another tab with
+  // no selection by the user (an agent's): the tab shown owns the field.
+  it('gives the tab shown what is typed once the chosen switch was shown, whatever came after', async () => {
+    const { input, onAct } = mount('state');
+    const sent = sendThroughThePane(onAct);
+    await chooseTabSuggestion(input);
+    seed('b');
+    await tick();
+    seed('a');
+    await tick();
+    await type(input, 'https://typed-on-a.test/');
+    key(input, { key: 'Enter' });
+    expect(sent.at(-1)).toEqual({ kind: 'navigate', pageId: 'a', address: 'https://typed-on-a.test/' });
+  });
+
+  // b chosen, then another selection before the state showed b: the switch
+  // is superseded, and the tab shown owns what the user types.
+  it('gives the tab shown what is typed once a later selection superseded the chosen switch', async () => {
+    const { input, onAct } = mount('state');
+    const sent = sendThroughThePane(onAct);
+    await chooseTabSuggestion(input);
+    void actInPane(paneForTest(THREAD), browserAction.step(1));
+    await tick();
+    await type(input, 'https://typed-on-a.test/');
+    key(input, { key: 'Enter' });
+    expect(sent.at(-1)).toEqual({ kind: 'navigate', pageId: 'a', address: 'https://typed-on-a.test/' });
+  });
+
+  // A selection sent with no pane in hand (a link's new tab) supersedes it too.
+  it('gives the tab shown what is typed once a new tab from a link superseded the chosen switch', async () => {
+    const { input, onAct } = mount('state');
+    const sent = sendThroughThePane(onAct);
+    await chooseTabSuggestion(input);
+    void openBrowserTab(THREAD, { address: 'https://linked.test/' });
+    await tick();
+    await type(input, 'https://typed-on-a.test/');
+    key(input, { key: 'Enter' });
+    expect(sent.at(-1)).toEqual({ kind: 'navigate', pageId: 'a', address: 'https://typed-on-a.test/' });
   });
 
   // The switch the suggestion asked for did not happen: what was typed for

@@ -146,11 +146,12 @@
 
   const TAB_DRAG_MIME = 'application/x-ao-browser-tab';
   let dragPageId = $state('');
-  let dropSlot = $state(-1);
-  // Whether the drop is after the tab before the slot (its right half, or
-  // the strip's empty space) rather than before the tab at it: the tab the
-  // pointer is over is the neighbor the move names.
-  let dropAfter = false;
+  // Where the drop lands, taken at drag-over from the tab the pointer is
+  // over: that tab, and whether the drop is after it (its right half, or
+  // the strip's empty space after the last tab). The drop names this tab
+  // and side whatever the strip's order is by then, and the backend decides
+  // at the move's turn where that puts the dragged tab, a no-op included.
+  let dropAt = $state<{ pageId: string; after: boolean } | null>(null);
 
   function tabDragStart(event: DragEvent, pageId: string): void {
     if (!event.dataTransfer) return;
@@ -159,14 +160,14 @@
     dragPageId = pageId;
   }
 
-  function tabDragOver(event: DragEvent, index: number): void {
+  function tabDragOver(event: DragEvent, pageId: string): void {
     if (!dragPageId || !event.dataTransfer?.types.includes(TAB_DRAG_MIME)) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = 'move';
     const tab = event.currentTarget as HTMLElement;
     const rect = tab.getBoundingClientRect();
-    dropAfter = !(event.clientX < rect.left + rect.width / 2);
-    dropSlot = dropAfter ? index + 1 : index;
+    const after = !(event.clientX < rect.left + rect.width / 2);
+    if (dropAt?.pageId !== pageId || dropAt.after !== after) dropAt = { pageId, after };
   }
 
   function stripDragOver(event: DragEvent): void {
@@ -176,25 +177,21 @@
     if ((event.target as Element).closest('[data-tab-id]')) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = 'move';
-    dropSlot = pages.length;
-    dropAfter = true;
+    const last = pages.at(-1)?.id;
+    if (last && (dropAt?.pageId !== last || !dropAt.after)) dropAt = { pageId: last, after: true };
   }
 
   function tabDrop(event: DragEvent): void {
     const pageId = event.dataTransfer?.getData(TAB_DRAG_MIME) ?? '';
-    const slot = dropSlot;
-    const after = dropAfter;
+    const at = dropAt;
     dragPageId = '';
-    dropSlot = -1;
-    if (!pageId || slot < 0) return;
+    dropAt = null;
+    if (!pageId || !at) return;
     event.preventDefault();
-    const from = pages.findIndex((page) => page.id === pageId);
-    // A slot either side of the tab itself leaves it where it is.
-    if (from < 0 || slot === from || slot === from + 1) return;
-    // The move names the tab it was dropped beside, which the backend finds
-    // at the move's turn.
-    const beside = pageIdOf(after ? pages[slot - 1]?.id : pages[slot]?.id);
-    if (beside) actOnPage(pageId, (id) => browserAction.move(id, beside, after));
+    // A tab dropped on itself is not moved.
+    if (at.pageId === pageId) return;
+    const beside = pageIdOf(at.pageId);
+    if (beside) actOnPage(pageId, (id) => browserAction.move(id, beside, at.after));
   }
 
   // An action on the tab `raw` names; a blank id names none, and nothing is sent.
@@ -205,7 +202,7 @@
 
   function tabDragEnd(): void {
     dragPageId = '';
-    dropSlot = -1;
+    dropAt = null;
   }
 
   function stripDoubleClick(event: MouseEvent): void {
@@ -259,7 +256,7 @@
         title={tabTooltip(page, status)}
         draggable="true"
         ondragstart={(event) => tabDragStart(event, page.id)}
-        ondragover={(event) => tabDragOver(event, tabIndex)}
+        ondragover={(event) => tabDragOver(event, page.id)}
         ondrop={tabDrop}
         ondragend={tabDragEnd}
         onauxclick={(event) => {
@@ -276,11 +273,8 @@
         {#if divided}
           <div class="pointer-events-none absolute right-0 top-1/2 h-4 w-px -translate-y-1/2 bg-border-subtle group-hover:opacity-0"></div>
         {/if}
-        {#if dragPageId && dropSlot === tabIndex}
-          <div class="pointer-events-none absolute -left-px bottom-1 top-0.5 w-0.5 rounded bg-accent" data-testid="browser-tab-drop-indicator"></div>
-        {/if}
-        {#if dragPageId && dropSlot === pages.length && tabIndex === pages.length - 1}
-          <div class="pointer-events-none absolute -right-px bottom-1 top-0.5 w-0.5 rounded bg-accent" data-testid="browser-tab-drop-indicator"></div>
+        {#if dragPageId && dropAt?.pageId === page.id}
+          <div class={['pointer-events-none absolute bottom-1 top-0.5 w-0.5 rounded bg-accent', dropAt.after ? '-right-px' : '-left-px']} data-testid="browser-tab-drop-indicator" data-side={dropAt.after ? 'after' : 'before'}></div>
         {/if}
         <button
           type="button"

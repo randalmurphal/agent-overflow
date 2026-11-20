@@ -6,8 +6,10 @@ import {
   type BrowserCompanionEvent,
   type BrowserRecentAddress,
 } from './bindings';
+import { untrack } from 'svelte';
 import {
   admitBrowserState,
+  browserPaneMountId,
   browserStateStamp,
   isCurrentBrowserPane,
   nativeBrowserRefusal,
@@ -16,6 +18,7 @@ import {
   type BrowserPaneAttachment,
 } from './browserCompanion.svelte';
 import { errString } from '../utils/errors';
+import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 
 // The user's actions on a thread's browser as values, and the one function
 // that sends them (sendFromPane, sendForThread). Every BrowserCompanionDo
@@ -227,6 +230,26 @@ interface MountNumbering {
 
 const mountNumberings = new Map<BrowserMountId, MountNumbering>();
 
+/** The kinds that select a tab: the user's selection gestures. */
+const SELECTING_KINDS = new Set<WireKind>(['activate', 'step', 'new', 'reopen', 'duplicate', 'download-open', 'show-browser']);
+
+// The tab selections sent from each mount, counted as each is sent, so a
+// gesture that waits on its own selection knows when the user made a later
+// one (BrowserAddressBar's pending switch). A selection sent with no pane in
+// hand (a link's new tab, the chat header's chip) counts on the mount
+// attached to its thread. A mount's count ends with it.
+const selectionsSent = createKeyedSignalRegistry<number>(0);
+
+/** How many tab selections have been sent from `mount`. Reactive. */
+export function browserSelectionsSent(mount: BrowserMountId): number {
+  return selectionsSent.get(mount);
+}
+
+// Untracked, so a send from inside an effect never subscribes it.
+function countSelection(mount: BrowserMountId | null): void {
+  if (mount) selectionsSent.set(mount, untrack(() => selectionsSent.get(mount)) + 1);
+}
+
 /** A numbered action's place, and the end of its wait for an answer (safe to call more than once). */
 function takePlace(mount: BrowserMountId): { readonly place: Place; readonly answered: () => void } {
   let numbering = mountNumberings.get(mount);
@@ -281,6 +304,7 @@ export function sendForThread(threadId: string, action: ThreadAction): Promise<B
 
 async function send(origin: ActionOrigin, action: BrowserAction | PageFocusRequest): Promise<BrowserActionAnswer> {
   const threadId = origin.kind === 'pane' ? origin.pane.threadId : origin.threadId;
+  if (SELECTING_KINDS.has(action.kind)) countSelection(origin.kind === 'pane' ? origin.pane.mount : untrack(() => browserPaneMountId(threadId)));
   const refusal = nativeBrowserRefusal(threadId);
   if (refusal) return { kind: 'refused', error: refusal.message, cause: refusal };
   if (origin.kind === 'pane' && !isCurrentBrowserPane(origin.pane)) return { kind: 'pane-gone' };
@@ -342,8 +366,10 @@ observeBrowserCompanion({
   // A new mount (a re-attach) numbers its actions afresh.
   mountEnded: (mount) => {
     mountNumberings.delete(mount);
+    selectionsSent.drop(mount);
   },
   resetForTest: () => {
     mountNumberings.clear();
+    selectionsSent.reset();
   },
 });
