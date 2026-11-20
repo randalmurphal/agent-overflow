@@ -380,7 +380,7 @@ describe('ThreadTerminalDrawer', () => {
     vi.mocked(addErrorToast).mockClear();
     const bindings = await import('../../stores/bindings');
     const failure = new Error('terminal: kill failed');
-    vi.mocked(bindings.CloseTerminal).mockImplementationOnce(async (terminalID: string) => {
+    (bindings.CloseTerminal as unknown as { mockImplementationOnce: (fn: unknown) => void }).mockImplementationOnce(async (terminalID: string) => {
       callLog.push({ fn: 'CloseTerminal', args: [terminalID] });
       throw failure;
     });
@@ -401,7 +401,7 @@ describe('ThreadTerminalDrawer', () => {
     vi.mocked(addErrorToast).mockClear();
     const bindings = await import('../../stores/bindings');
     const failure = new Error('terminal: no such terminal');
-    vi.mocked(bindings.RefreshTerminal).mockImplementationOnce(async () => {
+    (bindings.RefreshTerminal as unknown as { mockImplementationOnce: (fn: unknown) => void }).mockImplementationOnce(async () => {
       throw failure;
     });
     const { getByTestId } = render(ThreadTerminalDrawer, { surface: makeSurface() as never });
