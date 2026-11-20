@@ -125,61 +125,85 @@ type issueJSON struct {
 // is, with the options of the answer it is part of.
 type fieldDecoder func(is *Issue, raw jsontext.Value, opts jsonv2.Options) error
 
-// systemFields decode the typed fields; one entry per field ID.
-var systemFields = map[string]fieldDecoder{
-	"summary": func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
-		return jsonv2.Unmarshal(raw, &is.Summary, o)
-	},
-	"labels": func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
-		return jsonv2.Unmarshal(raw, &is.Labels, o)
-	},
-	"status": func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
-		return decodeInto(raw, o, &is.Status, statusJSON.status)
-	},
-	"issuetype": func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
-		return decodeInto(raw, o, &is.Type, issueTypeJSON.issueType)
-	},
-	"priority": func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
-		return decodeInto(raw, o, &is.Priority, priorityOf)
-	},
-	"assignee": func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
-		return decodeInto(raw, o, &is.Assignee, userJSON.user)
-	},
-	"reporter": func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
-		return decodeInto(raw, o, &is.Reporter, userJSON.user)
-	},
-	"parent": func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
-		return decodeInto(raw, o, &is.Parent, issueRefJSON.ref)
-	},
-	"resolution": func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
-		return decodeInto(raw, o, &is.Resolution, resolutionOf)
-	},
-	"project": func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
-		return decodeInto(raw, o, &is.Project, projectJSON.project)
-	},
-	"description": func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
-		return decodeDocWith(raw, o, &is.Description)
-	},
-	"created": func(is *Issue, raw jsontext.Value, o jsonv2.Options) error { return decodeTime(raw, o, &is.Created) },
-	"updated": func(is *Issue, raw jsontext.Value, o jsonv2.Options) error { return decodeTime(raw, o, &is.Updated) },
-	"duedate": func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
-		return jsonv2.Unmarshal(raw, &is.DueDate, o)
-	},
-	"components": func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
-		return decodeList(raw, o, &is.Components, componentOf)
-	},
-	"fixVersions": func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
-		return decodeList(raw, o, &is.FixVersions, versionJSON.version)
-	},
-	"attachment": func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
-		return decodeList(raw, o, &is.Attachments, attachmentJSON.attachment)
-	},
-	"subtasks": func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
-		return decodeList(raw, o, &is.Subtasks, issueRefJSON.ref)
-	},
-	"issuelinks": func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
-		return decodeList(raw, o, &is.Links, issueLinkJSON.link)
-	},
+// systemField is the decoder of the typed field id, nil for any other
+// field: a switch rather than a package-level map, so linking the
+// package builds nothing at start, and no slower to look up.
+func systemField(id string) fieldDecoder {
+	switch id {
+	case "summary":
+		return func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
+			return jsonv2.Unmarshal(raw, &is.Summary, o)
+		}
+	case "labels":
+		return func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
+			return jsonv2.Unmarshal(raw, &is.Labels, o)
+		}
+	case "status":
+		return func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
+			return decodeInto(raw, o, &is.Status, statusJSON.status)
+		}
+	case "issuetype":
+		return func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
+			return decodeInto(raw, o, &is.Type, issueTypeJSON.issueType)
+		}
+	case "priority":
+		return func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
+			return decodeInto(raw, o, &is.Priority, priorityOf)
+		}
+	case "assignee":
+		return func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
+			return decodeInto(raw, o, &is.Assignee, userJSON.user)
+		}
+	case "reporter":
+		return func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
+			return decodeInto(raw, o, &is.Reporter, userJSON.user)
+		}
+	case "parent":
+		return func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
+			return decodeInto(raw, o, &is.Parent, issueRefJSON.ref)
+		}
+	case "resolution":
+		return func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
+			return decodeInto(raw, o, &is.Resolution, resolutionOf)
+		}
+	case "project":
+		return func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
+			return decodeInto(raw, o, &is.Project, projectJSON.project)
+		}
+	case "description":
+		return func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
+			return decodeDocWith(raw, o, &is.Description)
+		}
+	case "created":
+		return func(is *Issue, raw jsontext.Value, o jsonv2.Options) error { return decodeTime(raw, o, &is.Created) }
+	case "updated":
+		return func(is *Issue, raw jsontext.Value, o jsonv2.Options) error { return decodeTime(raw, o, &is.Updated) }
+	case "duedate":
+		return func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
+			return jsonv2.Unmarshal(raw, &is.DueDate, o)
+		}
+	case "components":
+		return func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
+			return decodeList(raw, o, &is.Components, componentOf)
+		}
+	case "fixVersions":
+		return func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
+			return decodeList(raw, o, &is.FixVersions, versionJSON.version)
+		}
+	case "attachment":
+		return func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
+			return decodeList(raw, o, &is.Attachments, attachmentJSON.attachment)
+		}
+	case "subtasks":
+		return func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
+			return decodeList(raw, o, &is.Subtasks, issueRefJSON.ref)
+		}
+	case "issuelinks":
+		return func(is *Issue, raw jsontext.Value, o jsonv2.Options) error {
+			return decodeList(raw, o, &is.Links, issueLinkJSON.link)
+		}
+	}
+	return nil
 }
 
 // issueFields is an issue's fields object, read in one pass over the
@@ -216,9 +240,9 @@ func (f *issueFields) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 		if err != nil {
 			return err
 		}
-		decode, typed := systemFields[id]
+		decode := systemField(id)
 		switch {
-		case !typed:
+		case decode == nil:
 			is.keep(id, raw)
 		case nullValue(raw):
 		default:

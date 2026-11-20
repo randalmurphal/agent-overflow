@@ -3,7 +3,6 @@ package linear
 import (
 	"flag"
 	"fmt"
-	"maps"
 	"os"
 	"slices"
 	"strings"
@@ -16,12 +15,27 @@ import (
 	"agent-overflow/internal/tracker/linear/lineartest"
 )
 
-// allOperations is every document the package registered, by name.
-func allOperations() []operation {
-	var out []operation
-	for _, name := range slices.Sorted(maps.Keys(registered)) {
-		out = append(out, registered[name])
+// registeredOps is every operation the package registered by name, a
+// family by its largest document.
+func registeredOps() map[string]operation {
+	out := map[string]operation{}
+	for _, op := range registry.ops[:registry.nOps] {
+		out[op.name] = op
 	}
+	for _, f := range registry.families[:registry.nFam] {
+		out[f.name] = f.op(len(f.docs))
+	}
+	return out
+}
+
+// allOperations is every operation the package registered, in name
+// order, a name declared twice listed twice.
+func allOperations() []operation {
+	out := slices.Clone(registry.ops[:registry.nOps])
+	for _, f := range registry.families[:registry.nFam] {
+		out = append(out, f.op(len(f.docs)))
+	}
+	slices.SortFunc(out, func(a, b operation) int { return strings.Compare(a.name, b.name) })
 	return out
 }
 
@@ -56,14 +70,14 @@ func TestDocumentsMatchSchema(t *testing.T) {
 // declares exactly the variables its aliases use.
 func TestFamilyDocumentsMatchSchema(t *testing.T) {
 	t.Parallel()
+	families := registry.families[:registry.nFam]
 	if len(families) == 0 {
 		t.Fatal("no families registered")
 	}
-	for name, f := range families {
-		if registered[name].text != f.docs[len(f.docs)-1].text {
-			t.Errorf("%s: the registered document is not the family's largest", name)
-		}
-		for i, op := range f.docs {
+	for _, f := range families {
+		name := f.name
+		for i := range f.docs {
+			op := f.op(i + 1)
 			if p := linearschema.DocumentProblems(op.text, op.name); len(p) > 0 {
 				t.Errorf("%s for %d: %s", name, i+1, strings.Join(p, "; "))
 				continue

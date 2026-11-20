@@ -534,7 +534,7 @@ func TestFakeConformance(t *testing.T) {
 	}
 	// Every operation the package registers must have run against the
 	// fake, so that a new operation needs a case.
-	for _, name := range slices.Sorted(maps.Keys(registered)) {
+	for _, name := range slices.Sorted(maps.Keys(registeredOps())) {
 		if !sent[name] {
 			t.Errorf("operation %s never ran against the fake", name)
 		}

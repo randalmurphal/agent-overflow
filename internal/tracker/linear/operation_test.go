@@ -10,8 +10,8 @@ import (
 	"testing"
 )
 
-// An operation can only come from newQuery, newMutation or
-// newMutationFamily, which register
+// An operation can only come from newQuery, newMutation or a family's
+// member, whose constructors register
 // it for the schema test and the exercise check: the package's source
 // holds no other operation literal.
 func TestOperationsOnlyFromConstructors(t *testing.T) {
@@ -48,7 +48,7 @@ func strayOperations(dir string) ([]string, error) {
 		}
 		for _, decl := range f.Decls {
 			if fn, ok := decl.(*ast.FuncDecl); ok && filepath.Base(file) == "operation.go" &&
-				(fn.Name.Name == "newQuery" || fn.Name.Name == "newMutation" || fn.Name.Name == "newMutationFamily") {
+				(fn.Name.Name == "newQuery" || fn.Name.Name == "newMutation" || fn.Name.Name == "member") {
 				continue
 			}
 			ast.Inspect(decl, func(n ast.Node) bool {

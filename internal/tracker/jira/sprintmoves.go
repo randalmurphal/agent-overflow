@@ -252,7 +252,7 @@ func (c *Client) unfinishedIssues(ctx context.Context, sprint int64, done []stri
 		if is.Status == nil {
 			return nil, &AnswerError{Message: fmt.Sprintf("%s came without a status, so whether it is done is not known", is.Key)}
 		}
-		if !numericRE.MatchString(is.ID) {
+		if !isNumeric(is.ID) {
 			return nil, &AnswerError{Message: fmt.Sprintf("the sprint listed %s without its numeric ID", is.Key)}
 		}
 		if !slices.Contains(done, is.Status.ID) {

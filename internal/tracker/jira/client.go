@@ -35,7 +35,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"regexp"
 	"sync"
 	"sync/atomic"
 
@@ -291,16 +290,10 @@ func hasType[T error](err error) bool {
 	return ok
 }
 
-var (
-	issueKeyRE   = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*-[0-9]+$`)
-	projectKeyRE = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*$`)
-	numericRE    = regexp.MustCompile(`^[0-9]+$`)
-)
-
 // checkIssue refuses ref unless it is an issue key or a numeric issue
 // ID, so no caller text reaches a path as another resource.
 func checkIssue(ref string) error {
-	if issueKeyRE.MatchString(ref) || numericRE.MatchString(ref) {
+	if isIssueKey(ref) || isNumeric(ref) {
 		return nil
 	}
 	return notSent("%q is not an issue key or ID", ref)
@@ -308,7 +301,7 @@ func checkIssue(ref string) error {
 
 // checkProject refuses ref unless it is a project key or numeric ID.
 func checkProject(ref string) error {
-	if projectKeyRE.MatchString(ref) || numericRE.MatchString(ref) {
+	if isKeyName(ref) || isNumeric(ref) {
 		return nil
 	}
 	return notSent("%q is not a project key or ID", ref)
@@ -316,7 +309,7 @@ func checkProject(ref string) error {
 
 // checkID refuses id unless it is a numeric ID; what names it.
 func checkID(what, id string) error {
-	if numericRE.MatchString(id) {
+	if isNumeric(id) {
 		return nil
 	}
 	return notSent("%q is not a %s ID", id, what)
@@ -336,7 +329,7 @@ func issueParam(q url.Values, ref string) error {
 	if err := checkIssue(ref); err != nil {
 		return err
 	}
-	if numericRE.MatchString(ref) {
+	if isNumeric(ref) {
 		q.Set("issueId", ref)
 	} else {
 		q.Set("issueKey", ref)

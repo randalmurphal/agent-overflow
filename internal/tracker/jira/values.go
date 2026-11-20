@@ -356,8 +356,9 @@ func clearValue(f FieldMeta, r rule) (fields, update json.RawMessage, display st
 	return json.RawMessage(`null`), nil, "(none)"
 }
 
-// rules holds one rule per kind; values_build.go defines the builders.
-var rules = map[kind]rule{
+// rules holds one rule per kind, indexed by it; values_build.go defines
+// the builders. An array, so linking the package builds nothing at start.
+var rules = [...]rule{
 	kindUnknown:   {what: "RawJSON only"},
 	kindText:      {what: "one text", max: 1, build: buildText},
 	kindRich:      {what: "one Markdown text", max: 1, build: buildRich},

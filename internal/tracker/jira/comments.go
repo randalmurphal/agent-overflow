@@ -168,12 +168,23 @@ const (
 // (docs/references/tracker-api-measurements.md). A public comment
 // carries sd.allow.public.comment, which Jira Service Management sets
 // itself, so nothing is sent for one.
-var internalProperty = []map[string]any{{"key": "sd.public.comment", "value": map[string]bool{"internal": true}}}
+var internalProperty = []commentProperty{{Key: "sd.public.comment", Value: commentVisibility{Internal: true}}}
+
+// commentProperty is an entity property a new comment carries, typed so
+// that declaring internalProperty allocates nothing.
+type commentProperty struct {
+	Key   string            `json:"key"`
+	Value commentVisibility `json:"value"`
+}
+
+type commentVisibility struct {
+	Internal bool `json:"internal"`
+}
 
 // commentAudience checks aud against the issue's project and returns the
 // properties a new comment carries, and whether the project is a
 // service desk.
-func (c *Client) commentAudience(ctx context.Context, issue string, aud Audience) ([]map[string]any, bool, error) {
+func (c *Client) commentAudience(ctx context.Context, issue string, aud Audience) ([]commentProperty, bool, error) {
 	switch aud {
 	case AudienceUnset, AudiencePublic, AudienceInternal:
 	default:
@@ -239,7 +250,7 @@ func (c *Client) AddComment(ctx context.Context, in CommentInput) (CommentResult
 	}
 	// A public comment is taken by every project and carries no property,
 	// so only the other audiences read the project.
-	var props []map[string]any
+	var props []commentProperty
 	if in.Audience != AudiencePublic {
 		if props, _, err = c.commentAudience(ctx, in.Issue, in.Audience); err != nil {
 			return res, notSentErr(fmt.Errorf("jira: comment on %s: %w", in.Issue, err))

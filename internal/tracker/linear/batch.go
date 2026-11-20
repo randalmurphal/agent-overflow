@@ -79,7 +79,7 @@ func (c *Client) SetCycle(ctx context.Context, ids []string, cycleID string) ([]
 
 // renumberFamily sets one order field on each of up to maxBatch issues,
 // each with its own value, as aliased issueUpdate fields.
-var renumberFamily = newMutationFamily("RenumberIssues", maxBatch, func(n int) string {
+var renumberFamily = newMutationFamily("RenumberIssues", renumberDocs[:], func(n int) string {
 	var b strings.Builder
 	b.WriteString("mutation RenumberIssues(")
 	for i := range n {
@@ -95,6 +95,8 @@ var renumberFamily = newMutationFamily("RenumberIssues", maxBatch, func(n int) s
 	b.WriteString("}\n" + issueFields)
 	return b.String()
 })
+
+var renumberDocs [maxBatch]familyDoc
 
 // aliasData is the data of a family's answer, by alias; the document's
 // results name every alias, so its outcome is read from each.

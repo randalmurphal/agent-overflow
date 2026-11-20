@@ -90,7 +90,7 @@ func (c *Client) ApplyCreate(ctx context.Context, p *CreatePlan) (CreateResult, 
 
 // projectRef names a project by ID or key.
 func projectRef(ref string) json.RawMessage {
-	if numericRE.MatchString(ref) {
+	if isNumeric(ref) {
 		return mustJSON(idRef{ref})
 	}
 	return mustJSON(map[string]string{"key": ref})

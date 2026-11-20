@@ -29,7 +29,7 @@ func TestDrainCursorMustAdvance(t *testing.T) {
 // walk can be written that skips the rule above.
 func TestPagedDocumentsCarryTheirCursor(t *testing.T) {
 	marked := 0
-	for name, op := range registered {
+	for name, op := range registeredOps() {
 		declared := strings.Contains(op.text, "$after")
 		if declared != op.paged {
 			t.Errorf("%s: declares $after %v, marked paged %v", name, declared, op.paged)

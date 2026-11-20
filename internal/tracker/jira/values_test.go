@@ -284,7 +284,7 @@ func TestKindOfEverySchema(t *testing.T) {
 		if got := kindOf(tc.s); got != tc.want {
 			t.Errorf("%+v: kind %d, want %d", tc.s, got, tc.want)
 		}
-		if _, ok := rules[tc.want]; !ok {
+		if int(tc.want) >= len(rules) || rules[tc.want].what == "" {
 			t.Errorf("kind %d has no rule", tc.want)
 		}
 		if tc.s.RichText() != (tc.want == kindRich) {

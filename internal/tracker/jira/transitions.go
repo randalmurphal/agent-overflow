@@ -110,7 +110,7 @@ type transitionPlan struct {
 	t           Transition
 	values      []Value
 	comment     *adf.Node
-	props       []map[string]any
+	props       []commentProperty
 	serviceDesk bool
 	imgs        []*Image
 	held        map[*Image][]byte

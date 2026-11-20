@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"regexp"
 	"strings"
 	"time"
 
@@ -369,9 +368,8 @@ func QuoteJQL(s string) string {
 // words and characters (support.atlassian.com, read 2026-11-19).
 const textSyntax = `+-&|!(){}[]^"~*?:\/`
 
-// textOperators are the words Jira's text search reads as operators; it
-// does so only in capitals, and its terms ignore case.
-var textOperators = regexp.MustCompile(`\b(AND|OR|NOT)\b`)
+// Jira's text search reads the words AND, OR and NOT as operators only
+// in capitals, and its terms ignore case (lowerTextOperators).
 
 // QuoteJQLText writes s as the JQL string literal of a text search, the
 // value after the ~ operator, so typed text is searched for as words and
@@ -380,7 +378,7 @@ var textOperators = regexp.MustCompile(`\b(AND|OR|NOT)\b`)
 // lower case, which finds the same words, and the result is quoted with
 // QuoteJQL, which escapes those backslashes again for JQL.
 func QuoteJQLText(s string) string {
-	s = textOperators.ReplaceAllStringFunc(s, strings.ToLower)
+	s = lowerTextOperators(s)
 	var b strings.Builder
 	b.Grow(len(s) + 8)
 	for _, r := range s {

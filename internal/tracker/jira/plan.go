@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"regexp"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -174,7 +173,7 @@ func (c *Client) PlanCreate(ctx context.Context, in CreateInput) (*CreatePlan, e
 // and its Name is left to screenIssueType. Any other ref is matched by
 // name against the types the user can create there.
 func (c *Client) createIssueType(ctx context.Context, project, ref string) (IssueType, error) {
-	if numericRE.MatchString(ref) {
+	if isNumeric(ref) {
 		return IssueType{ID: ref}, nil
 	}
 	types, err := c.CreateIssueTypes(ctx, project)
@@ -348,7 +347,9 @@ func (c *Client) editRead(ctx context.Context, issue string, fields []FieldInput
 	}
 	asked = []string{"summary"}
 	for _, f := range fields {
-		if fieldIDRE.MatchString(f.Field) && !slices.Contains(asked, f.Field) {
+		// A field ID is a system field's name or customfield_<n>; a field
+		// named any other way is named by its name.
+		if isKeyName(f.Field) && !slices.Contains(asked, f.Field) {
 			asked = append(asked, f.Field)
 		}
 	}
@@ -366,10 +367,6 @@ func (c *Client) editRead(ctx context.Context, issue string, fields []FieldInput
 	}
 	return issueJSON{ID: v.ID, Key: v.Key, Fields: v.Fields}.decode(), screenOf(v.EditMeta.Fields), asked, nil
 }
-
-// fieldIDRE is the shape of a field ID: a system field's name or
-// customfield_<n>. A field named any other way is named by its name.
-var fieldIDRE = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*$`)
 
 // richNotAsked reports a rich text field among metas that asked does not
 // name.

@@ -42,10 +42,10 @@ func (c *Client) LinkIssues(ctx context.Context, in LinkInput) error {
 		"outwardIssue": map[string]string{"key": in.Outward},
 		"inwardIssue":  map[string]string{"key": in.Inward},
 	}
-	if numericRE.MatchString(in.Outward) {
+	if isNumeric(in.Outward) {
 		body["outwardIssue"] = idRef{in.Outward}
 	}
-	if numericRE.MatchString(in.Inward) {
+	if isNumeric(in.Inward) {
 		body["inwardIssue"] = idRef{in.Inward}
 	}
 	// Documented: 201 with no body.
@@ -60,7 +60,7 @@ func (c *Client) LinkIssues(ctx context.Context, in LinkInput) error {
 // the write is known not applied. A name is matched against the site's
 // link types.
 func (c *Client) linkType(ctx context.Context, ref string) (Candidate, error) {
-	if numericRE.MatchString(ref) {
+	if isNumeric(ref) {
 		return Candidate{ID: ref, Name: "link type " + ref}, nil
 	}
 	types, err := c.IssueLinkTypes(ctx)

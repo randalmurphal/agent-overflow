@@ -3,6 +3,7 @@ package linear
 import (
 	"fmt"
 	"strings"
+	"sync"
 )
 
 // operation is one GraphQL document. newQuery and newMutation are the
@@ -34,9 +35,26 @@ type operation struct {
 	paged bool
 }
 
-// registered holds every operation by name. It is written only while
-// the package initializes its operation variables, and read by tests.
-var registered = map[string]operation{}
+// Every operation and family the package declares is registered for its
+// tests (the schema check, the exercise check), in fixed arrays written
+// only while the package initializes its operation variables, so that
+// declaring one allocates nothing when the package is linked into a
+// process that never uses it. A name declared twice is a test failure.
+const (
+	maxOperations = 64
+	maxFamilies   = 4
+)
+
+var registry struct {
+	ops      [maxOperations]operation
+	nOps     int
+	families [maxFamilies]family
+	nFam     int
+}
+
+// resultKeys are a single mutation's response keys, shared by every
+// mutation so that declaring one allocates nothing. Never written.
+var resultKeys = []string{"result"}
 
 // newQuery makes and registers a query whose resource is at root.
 func newQuery(name, root, text string) operation {
@@ -46,54 +64,69 @@ func newQuery(name, root, text string) operation {
 // newMutation makes and registers a mutation; its document aliases the
 // root field "result".
 func newMutation(name, text string) operation {
-	return register(operation{name: name, root: "result", text: text, mutation: true, results: []string{"result"}})
+	return register(operation{name: name, root: "result", text: text, mutation: true, results: resultKeys})
 }
 
 func register(op operation) operation {
-	if _, dup := registered[op.name]; dup {
-		panic(fmt.Sprintf("linear: operation %s is declared twice", op.name))
+	if registry.nOps == len(registry.ops) {
+		panic(fmt.Sprintf("linear: operation %s is past maxOperations; raise it", op.name))
 	}
-	registered[op.name] = op
+	registry.ops[registry.nOps] = op
+	registry.nOps++
 	return op
 }
 
 // family is a mutation document made for n issues at once: the same
 // operation name, with one root field per issue aliased i0 to i(n-1),
 // each with variables of its own. Its text depends on n alone, never on
-// a caller's values, and every document for n from 1 to max is made once
-// when the package initializes, so the schema test checks each one
-// (families).
+// a caller's values. The document for n is made the first time n is
+// used, once, and kept; the schema test makes and checks every n.
 type family struct {
 	name string
-	// docs holds the document for n issues at n-1.
-	docs []operation
+	text func(n int) string
+	// docs holds the document for n issues at n-1, its length the
+	// family's max.
+	docs []familyDoc
 }
 
-// families holds every family by name; its largest document is also in
-// registered, so the checks by operation name cover it.
-var families = map[string]family{}
+type familyDoc struct {
+	once sync.Once
+	op   operation
+}
 
-// newMutationFamily makes and registers a family of mutations.
-func newMutationFamily(name string, max int, text func(n int) string) family {
-	f := family{name: name, docs: make([]operation, max)}
-	for n := 1; n <= max; n++ {
-		results := make([]string, n)
-		for i := range results {
-			results[i] = alias(i)
-		}
-		f.docs[n-1] = operation{name: name, text: text(n), mutation: true, results: results}
+// newMutationFamily makes and registers a family of mutations whose
+// documents are kept in docs, one per n from 1 to len(docs): storage the
+// caller declares as a package array, so declaring the family allocates
+// nothing.
+func newMutationFamily(name string, docs []familyDoc, text func(n int) string) family {
+	f := family{name: name, text: text, docs: docs}
+	if registry.nFam == len(registry.families) {
+		panic(fmt.Sprintf("linear: family %s is past maxFamilies; raise it", name))
 	}
-	register(f.docs[max-1])
-	families[name] = f
+	registry.families[registry.nFam] = f
+	registry.nFam++
 	return f
 }
 
-// op is the family's document for n issues, 1 to its max.
+// op is the family's document for n issues, 1 to its max, made on its
+// first use. Safe for concurrent use; after the first use of n it costs
+// one atomic load (sync.Once's).
 func (f family) op(n int) operation {
 	if n < 1 || n > len(f.docs) {
 		panic(fmt.Sprintf("linear: %s for %d issues, outside 1 to %d", f.name, n, len(f.docs)))
 	}
-	return f.docs[n-1]
+	d := &f.docs[n-1]
+	d.once.Do(func() { d.op = f.member(n) })
+	return d.op
+}
+
+// member makes the family's document for n issues.
+func (f family) member(n int) operation {
+	results := make([]string, n)
+	for i := range results {
+		results[i] = alias(i)
+	}
+	return operation{name: f.name, text: f.text(n), mutation: true, results: results}
 }
 
 // withMaxBody is op with a larger answer bound.

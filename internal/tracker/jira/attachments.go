@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strings"
 	"time"
 
@@ -191,10 +190,9 @@ func (c *Client) mediaID(ctx context.Context, id string) (string, error) {
 	return mediaID, nil
 }
 
-// mediaIDRE is a media file ID in the one form measured: a canonical
-// UUID. Anything else is refused, so no other text of a response header
-// reaches a document or a caller.
-var mediaIDRE = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+// A media file ID has the one form measured: a canonical UUID
+// (isMediaID). Anything else is refused, so no other text of a response
+// header reaches a document or a caller.
 
 // mediaIDOf reads the media ID from a media service URL's path: the
 // segment after "file". Its errors quote nothing of the URL.
@@ -205,7 +203,7 @@ func mediaIDOf(loc string) (string, error) {
 	}
 	segs := strings.Split(strings.Trim(u.Path, "/"), "/")
 	for i, s := range segs {
-		if s == "file" && i+1 < len(segs) && mediaIDRE.MatchString(segs[i+1]) {
+		if s == "file" && i+1 < len(segs) && isMediaID(segs[i+1]) {
 			return segs[i+1], nil
 		}
 	}

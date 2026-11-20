@@ -236,7 +236,7 @@ func buildIssue(ctx context.Context, b *builder, f FieldMeta, in Input, v *Value
 	if err != nil {
 		return nil, fmt.Errorf("jira: %s: %w", f.Name, err)
 	}
-	if !numericRE.MatchString(is.ID) {
+	if !isNumeric(is.ID) {
 		return nil, &AnswerError{Message: fmt.Sprintf("issue %s came without its numeric ID", ref)}
 	}
 	v.Display = is.Key + " " + is.Summary

@@ -75,10 +75,10 @@ func bodyAnswer(names func(written) bool, status ...int) writeAnswer {
 }
 
 // namesID accepts a body whose id is a numeric ID.
-func namesID(w written) bool { return numericRE.MatchString(w.id()) }
+func namesID(w written) bool { return isNumeric(w.id()) }
 
 // namesIssue accepts a body naming an issue by numeric id and key.
-func namesIssue(w written) bool { return namesID(w) && issueKeyRE.MatchString(w.key()) }
+func namesIssue(w written) bool { return namesID(w) && isIssueKey(w.key()) }
 
 // namesThisID accepts a body whose id is id.
 func namesThisID(id string) func(written) bool {
@@ -89,7 +89,7 @@ func namesThisID(id string) func(written) bool {
 // a numeric ID.
 func namesEveryID(w written) bool {
 	ids := w.ids()
-	return len(ids) > 0 && !slices.ContainsFunc(ids, func(id string) bool { return !numericRE.MatchString(id) })
+	return len(ids) > 0 && !slices.ContainsFunc(ids, func(id string) bool { return !isNumeric(id) })
 }
 
 // write sends r, a write, and reads its answer by the rule above: out (nil

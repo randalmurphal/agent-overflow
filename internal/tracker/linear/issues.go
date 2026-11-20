@@ -3,7 +3,6 @@ package linear
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 )
 
@@ -17,7 +16,8 @@ import (
 // cost per entry falls with the page and it pages at the largest. The
 // single-issue read costs about 286 points with its comments,
 // attachments and relations (measured), plus its history page and its
-// team's states. It nests detailHistoryPage entries (403 points), which
+// team's states. It nests detailHistoryPage entries (403 points; the
+// document writes the number, so it is constant), which
 // holds the whole history of most issues; a longer one continues at
 // historyPage. A comment page and a relation page are charged by first
 // by the documented rule. The single-issue read nests 50 of its team's
@@ -257,7 +257,7 @@ var opIssue = newQuery("Issue", "issue", `query Issue($id: String!) {
     attachments(first: 25) { nodes { ...AttachmentFields } pageInfo { hasNextPage } }
     relations(first: 25) { nodes { ...RelationFields } pageInfo { hasNextPage endCursor } }
     inverseRelations(first: 25) { nodes { ...RelationFields } pageInfo { hasNextPage endCursor } }
-    history(first: `+strconv.Itoa(detailHistoryPage)+`) { nodes { ...HistoryFields } pageInfo { hasNextPage endCursor } }
+    history(first: 100) { nodes { ...HistoryFields } pageInfo { hasNextPage endCursor } }
     stateTeam: team { states(first: 50) { nodes { ...StateFields } pageInfo { hasNextPage } } }
   }
 }
