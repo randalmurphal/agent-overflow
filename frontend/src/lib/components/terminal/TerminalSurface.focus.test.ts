@@ -39,13 +39,25 @@ function terminalSummary(terminalID: string, threadID: string) {
   };
 }
 
+// A test holds an open or a close unanswered by setting its gate, and names
+// the terminal an open answers with.
+const calls = vi.hoisted(() => {
+  const held: { open: Promise<void> | null; close: Promise<void> | null; openId: string } = { open: null, close: null, openId: 't1' };
+  return held;
+});
+
 vi.mock('../../stores/bindings', () => ({
-  OpenTerminal: vi.fn(async (threadID: string) => ({
-    terminalID: 't1',
-    threadID,
-    summary: terminalSummary('t1', threadID),
-  })),
-  CloseTerminal: vi.fn(async () => {}),
+  OpenTerminal: vi.fn(async (threadID: string) => {
+    await calls.open;
+    return {
+      terminalID: calls.openId,
+      threadID,
+      summary: terminalSummary(calls.openId, threadID),
+    };
+  }),
+  CloseTerminal: vi.fn(async () => {
+    await calls.close;
+  }),
   ListTerminals: vi.fn(async () => []),
   RefreshTerminal: vi.fn(async () => {}),
   TerminalOpenOptions: class TerminalOpenOptions {
@@ -102,6 +114,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  calls.open = null;
+  calls.close = null;
+  calls.openId = 't1';
   vi.unstubAllGlobals();
   cleanup();
   resetFocusIntentForTest();
@@ -306,6 +321,40 @@ describe('TerminalSurface focus follows the active tab', () => {
       expect(frames.length).toBeGreaterThan(0);
       dialogInput.focus();
       for (const frame of frames.splice(0)) frame(0);
+      expect(terminalFocusCalls).toEqual([]);
+      expect(document.activeElement).toBe(dialogInput);
+    });
+
+    // The ＋ click and a close that leaves a sibling take their intent at
+    // the click: a dialog focused while the call is answered keeps focus.
+    it('is the ＋ click\'s, canceled by a dialog focused while the open is answered', async () => {
+      vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => { cb(0); return 0; });
+      let answer: () => void = () => {};
+      calls.open = new Promise<void>((resolve) => { answer = resolve; });
+      calls.openId = 't9';
+      const { getByTestId } = render(TerminalSurface, { target: own, props: { surface: makeSurface() as never, manual: true } });
+      await tick();
+      await fireEvent.click(getByTestId('terminal-open'));
+      dialogInput.focus();
+      answer();
+      await settle();
+      expect(seededHandle().tabs.map((tab) => tab.terminalID)).toContain('t9');
+      expect(terminalFocusCalls).toEqual([]);
+      expect(document.activeElement).toBe(dialogInput);
+    });
+
+    it('is the close click\'s, canceled by a dialog focused while the close is answered', async () => {
+      vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => { cb(0); return 0; });
+      seededHandle().addTab(terminalSummary('t2', 'thread-A'));
+      let answer: () => void = () => {};
+      calls.close = new Promise<void>((resolve) => { answer = resolve; });
+      const { getByTestId } = render(TerminalSurface, { target: own, props: { surface: makeSurface() as never, manual: true } });
+      await tick();
+      await fireEvent.click(getByTestId('terminal-tab-close-t2'));
+      dialogInput.focus();
+      answer();
+      await settle();
+      expect(seededHandle().tabs.map((tab) => tab.terminalID)).toEqual(['t1']);
       expect(terminalFocusCalls).toEqual([]);
       expect(document.activeElement).toBe(dialogInput);
     });
