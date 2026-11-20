@@ -79,19 +79,15 @@ func (p *Provider) screen(ctx context.Context, scope tracker.FieldScope) (jira.S
 }
 
 // AssignableUsers are the users Jira says can be assigned in scope whose
-// name or email starts with text, at most pickLimit. Jira takes no empty
-// query, so empty text returns none, with More set.
+// name or email starts with text, at most pickLimit, from one call that
+// asks for the whole window Jira allows. Jira takes no empty query, so
+// empty text returns none.
 //
-// Jira's assignable search takes a window of the users matching text and
-// returns only the assignable ones in it, never looking past the
-// thousandth user, so a short answer proves nothing about a larger
-// window. One call asks for the whole window Jira allows, and More is set
-// when more than pickLimit users came back (a full window always does).
-// More false proves that no other assignable user is among the users Jira
-// examines for text, read as the documentation reads: the first
-// assignableWindow users matching text. With more matching users than
-// that, an assignable one past them can be missing, which this endpoint
-// cannot show.
+// More is always set. Jira's assignable search takes a window of users
+// and returns only the assignable ones in it, and its answer does not say
+// whether that window was full: an empty answer can hide an assignable
+// user just past it. Nothing in the answer shows the list is whole, so a
+// user missing from it is never proof that none matches.
 func (p *Provider) AssignableUsers(ctx context.Context, scope tracker.FieldScope, text string) (tracker.UserList, error) {
 	q := jira.AssignableQuery{Query: strings.TrimSpace(text), MaxResults: assignableWindow}
 	if issue, ok := scope.Issue(); ok {
@@ -114,7 +110,7 @@ func (p *Provider) AssignableUsers(ctx context.Context, scope tracker.FieldScope
 	if err != nil {
 		return tracker.UserList{}, fmt.Errorf("jiraprovider: assignable users: %w", err)
 	}
-	out := tracker.UserList{More: len(found) > pickLimit}
+	out := tracker.UserList{More: true}
 	for _, u := range found[:min(len(found), pickLimit)] {
 		out.Users = append(out.Users, userOf(u))
 	}
@@ -149,8 +145,9 @@ func (p *Provider) Choices(ctx context.Context, scope tracker.FieldScope, field 
 }
 
 // allowedChoices are f's allowed values starting with text: the screen's
-// list, or the site's priorities, each read whole, so More is set only
-// when more than pickLimit match.
+// list, which the screen's metadata carries whole in one answer, or the
+// site's priorities, read until Jira marks the last page. Either is the
+// whole set, so More is set only when more than pickLimit match.
 func (p *Provider) allowedChoices(ctx context.Context, f jira.FieldMeta, text string) (tracker.ChoiceList, error) {
 	allowed := f.Allowed
 	if allowed == nil && f.Schema.Type == "priority" {
@@ -183,8 +180,9 @@ func (p *Provider) allowedChoices(ctx context.Context, f jira.FieldMeta, text st
 // values for the parent, so which issues may be one (by hierarchy level
 // and project) is not filtered here: a parent Jira does not take is
 // refused by its answer to the edit. Empty text offers none, with More
-// set. More is set when Jira names a further page, the page is full, or
-// Jira warned that the search may be incomplete.
+// set. More false rests on an answer with no next page token, fewer
+// issues than pickLimit and no warning that the search may be incomplete;
+// any of the three sets More.
 func (p *Provider) parentChoices(ctx context.Context, scope tracker.FieldScope, text string) (tracker.ChoiceList, error) {
 	if text == "" {
 		return tracker.ChoiceList{More: true}, nil
@@ -212,11 +210,12 @@ func (p *Provider) parentChoices(ctx context.Context, scope tracker.FieldScope, 
 // with More set.
 //
 // Jira's user search matches text first and then pages the matches, so
-// asking for one more than pickLimit shows whether any is left out. More
-// false proves that no other active user whose name or email starts with
-// text is visible to the credential, up to Jira's thousandth match: a
+// asking for one more than pickLimit shows whether any is left out. A
 // credential without the Browse users and groups permission is answered
-// with no users, which no answer tells apart from no match.
+// with no users, which is indistinguishable from no match, so an empty
+// answer sets More too. More false rests on an answer that named at least
+// one user (the credential may browse users) and at most pickLimit: no
+// other active user whose name or email starts with text exists.
 func (p *Provider) userChoices(ctx context.Context, scope tracker.FieldScope, f jira.FieldMeta, text string) (tracker.ChoiceList, error) {
 	var users tracker.UserList
 	switch {
@@ -232,7 +231,7 @@ func (p *Provider) userChoices(ctx context.Context, scope tracker.FieldScope, f 
 		if err != nil {
 			return tracker.ChoiceList{}, fmt.Errorf("jiraprovider: users for %s: %w", f.Name, err)
 		}
-		users.More = len(found) > pickLimit
+		users.More = len(found) == 0 || len(found) > pickLimit
 		for _, u := range found[:min(len(found), pickLimit)] {
 			users.Users = append(users.Users, userOf(u))
 		}

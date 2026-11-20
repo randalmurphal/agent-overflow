@@ -44,14 +44,17 @@ func TestSprintWrites(t *testing.T) {
 			t.Errorf("%s: %s %+v %v", name, states(res), res.Parts[0].Changed, res.Parts[0].Outcome.Err())
 		}
 	}
-	for name, res := range map[string]tracker.Result{
-		"starting an active sprint": p.StartSprint(t.Context(), tracker.SprintStart{Board: "3", Sprint: "7", Start: start, End: end}),
-		"an end before the start":   p.CreateSprint(t.Context(), tracker.SprintInput{Board: "3", Name: "Bad", Start: end, End: start}),
-		"a sprint name for an ID":   p.EditSprint(t.Context(), tracker.SprintEdit{Board: "3", Sprint: "Sprint 1", Name: ptr("x")}),
+	for name, tc := range map[string]struct {
+		res    tracker.Result
+		reason tracker.Reason
+	}{
+		"starting an active sprint": {p.StartSprint(t.Context(), tracker.SprintStart{Board: "3", Sprint: "7", Start: start, End: end}), tracker.ReasonStale},
+		"an end before the start":   {p.CreateSprint(t.Context(), tracker.SprintInput{Board: "3", Name: "Bad", Start: end, End: start}), tracker.ReasonInvalid},
+		"a sprint name for an ID":   {p.EditSprint(t.Context(), tracker.SprintEdit{Board: "3", Sprint: "Sprint 1", Name: ptr("x")}), tracker.ReasonInvalid},
 	} {
-		checked(t, res)
-		if states(res) != "sprint:refused" || reason(res, 0) != tracker.ReasonInvalid {
-			t.Errorf("%s: %s %d", name, states(res), reason(res, 0))
+		checked(t, tc.res)
+		if states(tc.res) != "sprint:refused" || reason(tc.res, 0) != tc.reason {
+			t.Errorf("%s: %s %d", name, states(tc.res), reason(tc.res, 0))
 		}
 	}
 	f.On("POST", "/rest/agile/1.0/sprint", jiratest.Reply(500, `{}`))
@@ -195,7 +198,7 @@ func TestCompleteSprintRefused(t *testing.T) {
 	}{
 		"a future sprint": {tracker.SprintCompletion{Board: "3", Sprint: "7"}, func(f *jiratest.Server) {
 			f.On("GET", board3Sprint, jiratest.Reply(200, `{"isLast":true,"values":[{"id":7,"name":"Sprint 1","state":"future"}]}`))
-		}, tracker.ReasonInvalid},
+		}, tracker.ReasonStale},
 		"a sprint name for an ID":     {tracker.SprintCompletion{Board: "3", Sprint: "Sprint 1"}, nil, tracker.ReasonInvalid},
 		"a board name for an ID":      {tracker.SprintCompletion{Board: "Board 3", Sprint: "7"}, nil, tracker.ReasonInvalid},
 		"a sprint to move to by name": {tracker.SprintCompletion{Board: "3", Sprint: "7", MoveTo: "Sprint 2"}, nil, tracker.ReasonInvalid},

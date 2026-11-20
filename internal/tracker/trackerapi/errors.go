@@ -39,7 +39,7 @@ func (e *NotSentError) Unwrap() error { return e.Err }
 // cannot apply as given. Such an error is also a *NotSentError; this
 // tells it from a call that was not sent for another reason (a closed
 // client, an ended call, a credential that could not be read).
-var ErrInvalidInput = errors.New("trackerapi: invalid input")
+var ErrInvalidInput = errors.New("invalid input")
 
 // InvalidInput is a client's refusal of its input before sending: a
 // *NotSentError, with err's message, that matches ErrInvalidInput and

@@ -75,22 +75,49 @@ func one(issue tracker.IssueID, step tracker.Step, err error, changed ...tracker
 
 // unsupported refuses a write Linear cannot make, before any request.
 func unsupported(step tracker.Step, what string, issues ...tracker.IssueID) tracker.Result {
-	return tracker.Refuse(step, tracker.Refusal{Reason: tracker.ReasonUnsupported, Message: "Linear does not support " + what}, issues...)
+	return refuse(step, tracker.Refusal{Reason: tracker.ReasonUnsupported, Message: "Linear does not support " + what}, issues...)
 }
 
 // refuse is a result refused before any request, for the reason r.
 func refuse(step tracker.Step, r tracker.Refusal, issues ...tracker.IssueID) tracker.Result {
 	if r.Err == nil {
-		r.Err = errors.New(r.Message)
+		r.Err = refusalErr(r.Reason, r.Message, nil)
 	}
 	return tracker.Refuse(step, r, issues...)
 }
 
+// refusalErr is the error of a refusal the provider made, saying msg: it
+// matches tracker.ErrInvalidInput or tracker.ErrUnsupported for those
+// reasons, and wraps cause, the tracker's answer it rests on, when there
+// is one.
+func refusalErr(reason tracker.Reason, msg string, cause error) error {
+	var err error
+	switch reason {
+	case tracker.ReasonInvalid:
+		err = fmt.Errorf("linearprovider: %w: %s", tracker.ErrInvalidInput, msg)
+	case tracker.ReasonUnsupported:
+		err = fmt.Errorf("linearprovider: %w: %s", tracker.ErrUnsupported, msg)
+	default:
+		err = errors.New("linearprovider: " + msg)
+	}
+	if cause != nil {
+		err = fmt.Errorf("%w: %w", err, cause)
+	}
+	return err
+}
+
+// notIssueID refuses, before any request, an ID that is not a Linear
+// issue ID.
+func notIssueID(step tracker.Step, bad tracker.IssueID, issues ...tracker.IssueID) tracker.Result {
+	return refuse(step, tracker.Refusal{Reason: tracker.ReasonInvalid, Message: fmt.Sprintf("%q is not a Linear issue ID", bad)}, issues...)
+}
+
 // beforeWrite is a result for a read the write needed that failed: the
-// write was not sent. A missing issue is a refusal the tracker made.
+// write was not sent. What Linear finds missing is a refusal the tracker
+// made; a client's refusal of the read's input is a refusal as invalid.
 func beforeWrite(step tracker.Step, err error, issues ...tracker.IssueID) tracker.Result {
 	if errors.Is(err, trackerapi.ErrNotFound) {
-		return refuse(step, tracker.Refusal{Reason: tracker.ReasonTracker, Message: "the issue does not exist or is not visible", Err: err}, issues...)
+		return refuse(step, tracker.Refusal{Reason: tracker.ReasonTracker, Message: "Linear finds no such entity, or the key cannot see it: " + refusalMessage(err), Err: err}, issues...)
 	}
 	if errors.Is(err, tracker.ErrInvalidInput) {
 		return tracker.Invalid(step, err, issues...)

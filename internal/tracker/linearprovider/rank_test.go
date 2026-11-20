@@ -2,6 +2,7 @@ package linearprovider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"reflect"
@@ -12,14 +13,8 @@ import (
 	"agent-overflow/internal/tracker/linear/lineartest"
 )
 
-func neighbor(t *testing.T, n int, v float64) *tracker.Neighbor {
-	t.Helper()
-	k, err := tracker.FloatOrderKey(v)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return &tracker.Neighbor{Issue: tracker.IssueID(issueID(n)), Order: k}
-}
+// neighbor is issue n as a rank's neighbor.
+func neighbor(n int) tracker.IssueID { return tracker.IssueID(issueID(n)) }
 
 // orderX expects the update of issue n to sortOrder v.
 func orderX(n int, v float64, answer lineartest.Exchange) lineartest.Exchange {
@@ -63,32 +58,68 @@ func ids(ns ...int) []string {
 	return out
 }
 
-// Rank reads the issues and neighbors on the board, then sends the
-// values the client spreads between the neighbors' keys, one update per
-// issue in order, each naming the issue's row and card; a key the
-// provider did not make and an ID that is not an issue ID are refused
-// before any request.
+// Rank reads the issues and neighbors on the board with their current
+// values, then sends the values the client spreads between the
+// neighbors' current values, one update per issue in order, each naming
+// the issue's row and card. Neighbors a caller saw at 1 and 3 that now
+// stand at 10 and 20 rank between 10 and 20. An ID that is not an issue
+// ID, a neighbor's included, is refused before any request.
 func TestRank(t *testing.T) {
 	t.Parallel()
-	vs := spread(t, f64(1), f64(3), 2)
+	vs := spread(t, f64(10), f64(20), 2)
 	p, _ := newProvider(t,
-		onBoardX(ids(1, 2, 8, 9), issue(1, 0), issue(2, 0), issue(8, 1), issue(9, 3)),
+		onBoardX(ids(1, 2, 8, 9), issue(1, 0), issue(2, 0), issue(8, 10), issue(9, 20)),
 		orderX(1, vs[0], lineartest.Exchange{}), orderX(2, vs[1], lineartest.Exchange{}),
 		onBoardX(ids(1, 9), issue(1, 0), issue(9, -math.MaxFloat64)),
 	)
 	ctx := context.Background()
 	in := []tracker.IssueID{tracker.IssueID(issueID(1)), tracker.IssueID(issueID(2))}
-	r := p.Rank(ctx, tracker.RankInput{Board: web, Issues: in, Prev: neighbor(t, 8, 1), Next: neighbor(t, 9, 3)})
+	r := p.Rank(ctx, tracker.RankInput{Board: web, Issues: in, Prev: neighbor(8), Next: neighbor(9)})
 	expectResult(t, r, "1:rank:applied 2:rank:applied")
 	if !reflect.DeepEqual(r.Parts[1].Changed, []tracker.Resource{tracker.RowOf(web, in[1]), tracker.CardOf(in[1])}) {
 		t.Errorf("changed %+v", r.Parts[1].Changed)
 	}
-	jira := &tracker.Neighbor{Issue: tracker.IssueID(issueID(8)), Order: "0|hzzzzz:"}
-	expectResult(t, p.Rank(ctx, tracker.RankInput{Board: web, Issues: in[:1], Prev: jira}), "1:rank:refused(invalid)")
-	expectResult(t, p.Rank(ctx, tracker.RankInput{Board: web, Issues: []tracker.IssueID{"WEB-1"}, Prev: neighbor(t, 8, 1)}), "WEB-1:rank:refused(invalid)")
+	for _, bad := range []tracker.RankInput{
+		{Board: web, Issues: in[:1], Prev: "WEB-8"},
+		{Board: web, Issues: in[:1], Prev: neighbor(8), Next: "WEB-9"},
+	} {
+		r := p.Rank(ctx, bad)
+		expectResult(t, r, "1:rank:refused(invalid)")
+		named := bad.Prev
+		if bad.Next != "" {
+			named = bad.Next
+		}
+		ref, _ := r.Parts[0].Outcome.Refusal()
+		if ref.Message != fmt.Sprintf("%q is not a Linear issue ID", named) || !errors.Is(r.Parts[0].Outcome.Err(), tracker.ErrInvalidInput) {
+			t.Errorf("a neighbor that is no issue ID: %q %v", ref.Message, r.Parts[0].Outcome.Err())
+		}
+	}
+	expectResult(t, p.Rank(ctx, tracker.RankInput{Board: web, Issues: []tracker.IssueID{"WEB-1"}, Prev: neighbor(8)}), "WEB-1:rank:refused(invalid)")
 	// Before a first issue at the lowest value there is no room, and no
 	// run to renumber.
-	expectResult(t, p.Rank(ctx, tracker.RankInput{Board: web, Issues: in[:1], Next: neighbor(t, 9, -math.MaxFloat64)}), "1:rank:refused(invalid)")
+	expectResult(t, p.Rank(ctx, tracker.RankInput{Board: web, Issues: in[:1], Next: neighbor(9)}), "1:rank:refused(invalid)")
+}
+
+// Neighbors that no longer stand in the order the input names refuse
+// the whole rank as stale with nothing sent: swapped values, or equal
+// values that Linear lists Next first.
+func TestRankRefusesSwappedNeighbors(t *testing.T) {
+	t.Parallel()
+	prev, next, moving := issue(8, 20), issue(9, 10), issue(1, 0)
+	tiedPrev, tiedNext := issue(8, 5), issue(9, 5)
+	p, _ := newProvider(t,
+		onBoardX(ids(1, 2, 8, 9), moving, issue(2, 0), prev, next),
+		onBoardX(ids(1, 8, 9), moving, tiedPrev, tiedNext),
+		manualX("", false, "", tiedNext, tiedPrev, moving),
+	)
+	ctx := context.Background()
+	in := []tracker.IssueID{tracker.IssueID(issueID(1)), tracker.IssueID(issueID(2))}
+	r := p.Rank(ctx, tracker.RankInput{Board: web, Issues: in, Prev: neighbor(8), Next: neighbor(9)})
+	expectResult(t, r, "1:rank:refused(stale) 2:rank:refused(stale)")
+	if ref, _ := r.Parts[0].Outcome.Refusal(); ref.Message != "issue "+issueID(8)+" no longer stands before issue "+issueID(9) {
+		t.Errorf("refusal %q", ref.Message)
+	}
+	expectResult(t, p.Rank(ctx, tracker.RankInput{Board: web, Issues: in[:1], Prev: neighbor(8), Next: neighbor(9)}), "1:rank:refused(stale)")
 }
 
 // An issue that left the board is refused as stale and the others are
@@ -117,15 +148,15 @@ func TestRankChecksTheBoard(t *testing.T) {
 	)
 	ctx := context.Background()
 	one, two := tracker.IssueID(issueID(1)), tracker.IssueID(issueID(2))
-	r := p.Rank(ctx, tracker.RankInput{Board: web, Issues: []tracker.IssueID{one, two}, Prev: neighbor(t, 8, 1)})
+	r := p.Rank(ctx, tracker.RankInput{Board: web, Issues: []tracker.IssueID{one, two}, Prev: neighbor(8)})
 	expectResult(t, r, "2:rank:refused(stale) 1:rank:applied")
 	if ref, _ := r.Parts[0].Outcome.Refusal(); ref.Message != "issue "+issueID(2)+" is not on board "+web+" now" {
 		t.Errorf("refusal %q", ref.Message)
 	}
-	expectResult(t, p.Rank(ctx, tracker.RankInput{Board: web, Issues: []tracker.IssueID{one}, Next: neighbor(t, 9, 3)}), "1:rank:refused(stale)")
-	expectResult(t, p.Rank(ctx, tracker.RankInput{Board: web, Issues: []tracker.IssueID{one}, Next: neighbor(t, 9, 3)}), "1:rank:applied")
-	expectResult(t, p.Rank(ctx, tracker.RankInput{Board: web, Issues: []tracker.IssueID{one}, Prev: neighbor(t, 8, 1)}), "1:rank:refused(stale)")
-	expectResult(t, p.Rank(ctx, tracker.RankInput{Board: web, Issues: []tracker.IssueID{one}, Prev: neighbor(t, 8, 1)}), "1:rank:not sent")
+	expectResult(t, p.Rank(ctx, tracker.RankInput{Board: web, Issues: []tracker.IssueID{one}, Next: neighbor(9)}), "1:rank:refused(stale)")
+	expectResult(t, p.Rank(ctx, tracker.RankInput{Board: web, Issues: []tracker.IssueID{one}, Next: neighbor(9)}), "1:rank:applied")
+	expectResult(t, p.Rank(ctx, tracker.RankInput{Board: web, Issues: []tracker.IssueID{one}, Prev: neighbor(8)}), "1:rank:refused(stale)")
+	expectResult(t, p.Rank(ctx, tracker.RankInput{Board: web, Issues: []tracker.IssueID{one}, Prev: neighbor(8)}), "1:rank:not sent")
 }
 
 // With no room between the neighbors, Rank reads the manual order to its
@@ -136,7 +167,7 @@ func TestRankNoRoom(t *testing.T) {
 	t.Parallel()
 	tight := math.Nextafter(1, 2)
 	prev, crowded, roomy, moving := issue(8, 1), issue(9, tight), issue(7, 3), issue(1, 10)
-	in := tracker.RankInput{Board: web, Issues: []tracker.IssueID{tracker.IssueID(issueID(1))}, Prev: neighbor(t, 8, 1), Next: neighbor(t, 9, tight)}
+	in := tracker.RankInput{Board: web, Issues: []tracker.IssueID{tracker.IssueID(issueID(1))}, Prev: neighbor(8), Next: neighbor(9)}
 	board := onBoardX(ids(1, 8, 9), moving, prev, crowded)
 	vs := spread(t, f64(1), f64(3), 2)
 	atEnd := spread(t, f64(1), nil, 2)
@@ -189,6 +220,6 @@ func TestRankNoRoomPastBound(t *testing.T) {
 	}
 	p, _ := newProvider(t, script...)
 	in := tracker.RankInput{Board: web, Issues: []tracker.IssueID{tracker.IssueID(issueID(1))},
-		Prev: neighbor(t, 8, 1), Next: neighbor(t, 9, math.Nextafter(1, 2))}
+		Prev: neighbor(8), Next: neighbor(9)}
 	expectResult(t, p.Rank(context.Background(), in), "1:rank:refused(invalid)")
 }

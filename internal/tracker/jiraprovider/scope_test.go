@@ -21,7 +21,9 @@ const (
 )
 
 // listsIssues answers path, a board's issue list, as a board check asks
-// it: the issues of the JQL's ID list that listed holds.
+// it: the issues of the JQL's ID list that listed holds, each ranked by
+// its ID when the request asks for the rank field, as Jira sends only the
+// fields asked for.
 func listsIssues(t *testing.T, f *jiratest.Server, path string, listed ...string) {
 	f.On("GET", path, func(w http.ResponseWriter, r *http.Request, b []byte) {
 		m := idsJQL.FindStringSubmatch(r.URL.Query().Get("jql"))
@@ -30,10 +32,15 @@ func listsIssues(t *testing.T, f *jiratest.Server, path string, listed ...string
 			jiratest.Reply(400, `{}`)(w, r, b)
 			return
 		}
+		ranked := slices.Contains(r.URL.Query()["fields"], "customfield_10019")
 		var out []map[string]any
 		for id := range strings.SplitSeq(m[1], ", ") {
 			if slices.Contains(listed, id) {
-				out = append(out, issue(id, "WEB-"+id[len(id)-1:], updatedAt, nil))
+				var rank any
+				if ranked {
+					rank = "0|" + id
+				}
+				out = append(out, issue(id, "WEB-"+id[len(id)-1:], updatedAt, map[string]any{"customfield_10019": rank}))
 			}
 		}
 		jiratest.Reply(200, page("", out...))(w, r, b)
@@ -70,15 +77,14 @@ func noWrites(t *testing.T, f *jiratest.Server, name string) {
 // against Prev when there is one and Next otherwise, and checks that
 // neighbor against the board.
 func TestRankNeighbors(t *testing.T) {
-	prev := &tracker.Neighbor{Issue: "10009", Order: "0|a"}
-	next := &tracker.Neighbor{Issue: "10010", Order: "0|b"}
+	const prev, next tracker.IssueID = "10009", "10010"
 	for _, tc := range []struct {
 		name       string
-		prev, next *tracker.Neighbor
+		prev, next tracker.IssueID
 		body       string
 	}{
-		{"prev only", prev, nil, `{"issues":["10001"],"rankAfterIssue":"10009","rankCustomFieldId":10019}`},
-		{"next only", nil, next, `{"issues":["10001"],"rankBeforeIssue":"10010","rankCustomFieldId":10019}`},
+		{"prev only", prev, "", `{"issues":["10001"],"rankAfterIssue":"10009","rankCustomFieldId":10019}`},
+		{"next only", "", next, `{"issues":["10001"],"rankBeforeIssue":"10010","rankCustomFieldId":10019}`},
 		{"both", prev, next, `{"issues":["10001"],"rankAfterIssue":"10009","rankCustomFieldId":10019}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -96,6 +102,45 @@ func TestRankNeighbors(t *testing.T) {
 	}
 }
 
+// TestRankNeighborOrder proves a rank naming both neighbors reads both
+// through the board listing with the board's rank field, ranks after Prev
+// when Prev still sorts before Next, and is refused before sending when
+// they are swapped or Next is off the board.
+func TestRankNeighborOrder(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		prev, next tracker.IssueID
+		listed     []string
+		sent       bool
+		says       string
+	}{
+		{"in order", "10009", "10010", []string{"10001", "10009", "10010"}, true, ""},
+		{"swapped", "10010", "10009", []string{"10001", "10009", "10010"}, false, "no longer stand in that order on board 3; read the board again"},
+		{"next off the board", "10009", "10010", []string{"10001", "10009"}, false, "issue 10010, which the issues go next to, is not on board 3 now"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, p := newSite(t)
+			listsIssues(t, f, board3Issues, tc.listed...)
+			f.On("PUT", rankPath, func(w http.ResponseWriter, r *http.Request, b []byte) {
+				jiratest.WantJSON(t, b, `{"issues":["10001"],"rankAfterIssue":"`+string(tc.prev)+`","rankCustomFieldId":10019}`)
+				w.WriteHeader(http.StatusNoContent)
+			})
+			res := checked(t, p.Rank(t.Context(), tracker.RankInput{Board: "3", Issues: []tracker.IssueID{"10001"}, Prev: tc.prev, Next: tc.next}))
+			if tc.sent {
+				if states(res) != "rank:applied" || f.Count("PUT", rankPath) != 1 {
+					t.Errorf("got %s %v", states(res), res.Parts[0].Outcome.Err())
+				}
+				return
+			}
+			r, _ := res.Parts[0].Outcome.Refusal()
+			if states(res) != "rank:refused" || r.Reason != tracker.ReasonStale || !strings.Contains(r.Message, tc.says) {
+				t.Errorf("got %s %+v", states(res), r)
+			}
+			noWrites(t, f, tc.name)
+		})
+	}
+}
+
 // TestRankOffBoard proves an issue the board does not list is refused
 // while the others are ranked, and that a neighbor off the board refuses
 // the whole rank before anything is sent.
@@ -106,12 +151,12 @@ func TestRankOffBoard(t *testing.T) {
 		jiratest.WantJSON(t, b, `{"issues":["10001"],"rankAfterIssue":"10009","rankCustomFieldId":10019}`)
 		w.WriteHeader(http.StatusNoContent)
 	})
-	res := checked(t, p.Rank(t.Context(), tracker.RankInput{Board: "3", Issues: []tracker.IssueID{"10002", "10001"}, Prev: &tracker.Neighbor{Issue: "10009", Order: "0|a"}}))
-	if states(res) != "rank:refused, rank:applied" || reason(res, 0) != tracker.ReasonInvalid || res.Parts[0].Issue != "10002" {
+	res := checked(t, p.Rank(t.Context(), tracker.RankInput{Board: "3", Issues: []tracker.IssueID{"10002", "10001"}, Prev: "10009"}))
+	if states(res) != "rank:refused, rank:applied" || reason(res, 0) != tracker.ReasonStale || res.Parts[0].Issue != "10002" {
 		t.Errorf("an issue off the board: %s", states(res))
 	}
-	res = checked(t, p.Rank(t.Context(), tracker.RankInput{Board: "3", Issues: []tracker.IssueID{"10001"}, Next: &tracker.Neighbor{Issue: "10010", Order: "0|b"}}))
-	if states(res) != "rank:refused" || reason(res, 0) != tracker.ReasonInvalid {
+	res = checked(t, p.Rank(t.Context(), tracker.RankInput{Board: "3", Issues: []tracker.IssueID{"10001"}, Next: "10010"}))
+	if states(res) != "rank:refused" || reason(res, 0) != tracker.ReasonStale {
 		t.Errorf("a neighbor off the board: %s", states(res))
 	}
 	if n := f.Count("PUT", rankPath); n != 1 {
@@ -129,7 +174,7 @@ func TestMoveToSprintScope(t *testing.T) {
 	issues := []tracker.IssueID{"10001", "10002"}
 	for name, sprint := range map[string]tracker.SprintID{"another board's sprint": "99", "a closed sprint": "6"} {
 		res := checked(t, p.MoveToSprint(t.Context(), tracker.SprintMoveInput{Board: "3", Sprint: sprint, Issues: issues}))
-		if states(res) != "sprint move:refused, sprint move:refused" || reason(res, 0) != tracker.ReasonInvalid {
+		if states(res) != "sprint move:refused, sprint move:refused" || reason(res, 0) != tracker.ReasonStale {
 			t.Errorf("%s: %s", name, states(res))
 		}
 	}
@@ -145,7 +190,7 @@ func TestMoveToSprintScope(t *testing.T) {
 	})
 	for name, sprint := range map[string]tracker.SprintID{"into a sprint": "8", "to the backlog": ""} {
 		res := checked(t, p.MoveToSprint(t.Context(), tracker.SprintMoveInput{Board: "3", Sprint: sprint, Issues: issues}))
-		if states(res) != "sprint move:applied, sprint move:refused" || reason(res, 1) != tracker.ReasonInvalid {
+		if states(res) != "sprint move:applied, sprint move:refused" || reason(res, 1) != tracker.ReasonStale {
 			t.Errorf("%s with an issue off the board: %s", name, states(res))
 		}
 	}
@@ -157,7 +202,7 @@ func TestSetEstimateOffBoard(t *testing.T) {
 	f, p := newSite(t)
 	listsIssues(t, f, board3Issues)
 	res := checked(t, p.SetEstimate(t.Context(), tracker.EstimateInput{Board: "3", Issue: "10001", Value: ptr(1.0)}))
-	if states(res) != "estimate:refused" || reason(res, 0) != tracker.ReasonInvalid {
+	if states(res) != "estimate:refused" || reason(res, 0) != tracker.ReasonStale {
 		t.Errorf("got %s", states(res))
 	}
 	noWrites(t, f, "an estimate off the board")
@@ -181,7 +226,7 @@ func TestSprintWritesScope(t *testing.T) {
 		"completing into a closed sprint": p.CompleteSprint(t.Context(), tracker.SprintCompletion{Board: "3", Sprint: "7", MoveTo: "6"}),
 	} {
 		checked(t, res)
-		if states(res) != "sprint:refused" || reason(res, 0) != tracker.ReasonInvalid {
+		if states(res) != "sprint:refused" || reason(res, 0) != tracker.ReasonStale {
 			t.Errorf("%s: %s", name, states(res))
 		}
 		if r, _ := res.Parts[0].Outcome.Refusal(); !strings.Contains(r.Message, "board 3") {
@@ -208,10 +253,10 @@ func TestCommentScope(t *testing.T) {
 	} {
 		checked(t, res)
 		r, _ := res.Parts[0].Outcome.Refusal()
-		if states(res) != "comment:refused" || r.Reason != tracker.ReasonInvalid || !strings.Contains(r.Message, "not on issue 10001") {
+		if states(res) != "comment:refused" || r.Reason != tracker.ReasonStale || !strings.Contains(r.Message, "not on issue 10001") {
 			t.Errorf("%s of another issue's comment: %s %+v", name, states(res), r)
 		}
-		if !errors.Is(r.Err, trackerapi.ErrNotFound) || !errors.Is(r.Err, tracker.ErrInvalidInput) {
+		if !errors.Is(r.Err, trackerapi.ErrNotFound) {
 			t.Errorf("%s: the not found is not reachable: %v", name, r.Err)
 		}
 	}
@@ -246,7 +291,7 @@ func TestUnlinkScope(t *testing.T) {
 		"a link to another issue": {Issue: "10001", Link: "300", Other: "10002"},
 		"a link of no issue's":    {Issue: "10001", Link: "301", Other: "10003"},
 	} {
-		if res := checked(t, p.Unlink(t.Context(), in)); states(res) != "link:refused" || reason(res, 0) != tracker.ReasonInvalid {
+		if res := checked(t, p.Unlink(t.Context(), in)); states(res) != "link:refused" || reason(res, 0) != tracker.ReasonStale {
 			t.Errorf("%s: %s", name, states(res))
 		}
 	}
@@ -294,7 +339,7 @@ func TestWorklogScope(t *testing.T) {
 			"edit":   p.Time().EditWorklog(t.Context(), tracker.WorklogEdit{From: from, Spent: ptr(2 * time.Hour)}),
 			"delete": p.Time().DeleteWorklog(t.Context(), tracker.WorklogDelete{From: from}),
 		} {
-			if checked(t, res); states(res) != "worklog:refused" || reason(res, 0) != tracker.ReasonInvalid {
+			if checked(t, res); states(res) != "worklog:refused" || reason(res, 0) != tracker.ReasonStale {
 				t.Errorf("%s: %s %v", name, states(res), res.Parts[0].Outcome.Err())
 			}
 		}
@@ -308,7 +353,7 @@ func TestWorklogScope(t *testing.T) {
 			"edit":   p.Time().EditWorklog(t.Context(), tracker.WorklogEdit{From: from, Description: ptr("x")}),
 			"delete": p.Time().DeleteWorklog(t.Context(), tracker.WorklogDelete{From: from}),
 		} {
-			if checked(t, res); states(res) != "worklog:refused" || reason(res, 0) != tracker.ReasonInvalid {
+			if checked(t, res); states(res) != "worklog:refused" || reason(res, 0) != tracker.ReasonStale {
 				t.Errorf("%s: %s %v", name, states(res), res.Parts[0].Outcome.Err())
 			}
 		}

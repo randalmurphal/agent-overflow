@@ -283,7 +283,7 @@ func TestChoices(t *testing.T) {
 		t.Errorf("severity %+v %v", sev, err)
 	}
 	users, err := p.AssignableUsers(t.Context(), tracker.OnIssue("10001"), "user")
-	if err != nil || users.More || len(users.Users) != 2 || users.Users[1].ID != "acc-user2" {
+	if err != nil || !users.More || len(users.Users) != 2 || users.Users[1].ID != "acc-user2" {
 		t.Errorf("assignable %+v %v", users, err)
 	}
 	if users, err := p.AssignableUsers(t.Context(), tracker.OnIssue("10001"), " "); err != nil || users.Users != nil || !users.More {

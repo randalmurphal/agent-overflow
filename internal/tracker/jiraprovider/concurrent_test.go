@@ -49,7 +49,7 @@ func TestConcurrentUse(t *testing.T) {
 				}
 				errs <- err
 			case 3:
-				res := p.Rank(t.Context(), tracker.RankInput{Board: "3", Issues: []tracker.IssueID{"10001"}, Next: &tracker.Neighbor{Issue: "10002", Order: "0|b"}})
+				res := p.Rank(t.Context(), tracker.RankInput{Board: "3", Issues: []tracker.IssueID{"10001"}, Next: "10002"})
 				switch err := res.Check(); {
 				case err != nil:
 					errs <- err
@@ -88,7 +88,7 @@ func TestCancelledCalls(t *testing.T) {
 		t.Errorf("cards: %v", err)
 	}
 	for name, res := range map[string]tracker.Result{
-		"rank":     p.Rank(ctx, tracker.RankInput{Board: "3", Issues: []tracker.IssueID{"10001"}, Next: &tracker.Neighbor{Issue: "10002", Order: "0|b"}}),
+		"rank":     p.Rank(ctx, tracker.RankInput{Board: "3", Issues: []tracker.IssueID{"10001"}, Next: "10002"}),
 		"estimate": p.SetEstimate(ctx, tracker.EstimateInput{Board: "3", Issue: "10001", Value: ptr(1.0)}),
 		"edit":     p.Edit(ctx, tracker.EditInput{Issue: "10001", Fields: []tracker.FieldEdit{{Field: "priority", Value: tracker.PickValues("1")}}}),
 		"comment":  p.AddComment(ctx, tracker.CommentInput{Issue: "10001", Markdown: "x"}),

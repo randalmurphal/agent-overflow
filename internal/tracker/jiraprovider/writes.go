@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"time"
 
 	"agent-overflow/internal/tracker"
@@ -215,8 +216,9 @@ func (p *Provider) SetEstimate(ctx context.Context, in tracker.EstimateInput) tr
 
 // Rank places issues on a board next to the input's anchor, through the
 // board's rank field: just after Prev, or just before Next when there is
-// no Prev. An anchor the board does not list refuses the rank; an issue
-// it does not list is refused and the others are ranked. Each issue's
+// no Prev. A neighbor the board does not list, or two neighbors no longer
+// in the order named, refuses the rank; an issue the board does not list
+// is refused and the others are ranked. Each issue's
 // outcome is the one the client's batch reports for it.
 func (p *Provider) Rank(ctx context.Context, in tracker.RankInput) tracker.Result {
 	if err := in.Check(); err != nil {
@@ -230,16 +232,17 @@ func (p *Provider) Rank(ctx context.Context, in tracker.RankInput) tracker.Resul
 		return batchParts(in.Board, tracker.StepRank, in.Issues, jira.BatchResult{}, err)
 	}
 	anchor, after := in.Anchor()
-	listed, err := p.onBoard(ctx, b, append([]tracker.IssueID{anchor.Issue}, in.Issues...))
+	neighbors := slices.DeleteFunc([]tracker.IssueID{in.Prev, in.Next}, func(id tracker.IssueID) bool { return id == "" })
+	listed, err := p.onBoard(ctx, b, append(neighbors, in.Issues...), b.rank)
+	if err == nil {
+		err = neighborsStand(in, b, listed)
+	}
 	if err != nil {
 		return batchParts(in.Board, tracker.StepRank, in.Issues, jira.BatchResult{}, err)
 	}
-	if !listed[anchor.Issue] {
-		return tracker.Invalid(tracker.StepRank, invalidf("issue %s, which the issues go next to, is not on board %s now; read the board again", anchor.Issue, in.Board), in.Issues...)
-	}
-	pos := jira.RankBefore(string(anchor.Issue))
+	pos := jira.RankBefore(string(anchor))
 	if after {
-		pos = jira.RankAfter(string(anchor.Issue))
+		pos = jira.RankAfter(string(anchor))
 	}
 	return boardParts(in.Board, tracker.StepRank, in.Issues, listed, func(send []tracker.IssueID) tracker.Result {
 		res, err := p.jira.Rank(ctx, jira.RankInput{Issues: refs(send), Position: pos, RankFieldID: b.cfg.RankFieldID})
@@ -247,13 +250,41 @@ func (p *Provider) Rank(ctx context.Context, in tracker.RankInput) tracker.Resul
 	})
 }
 
+// neighborsStand refuses a rank whose neighbors board b does not list
+// now, or, when both are named, whose Prev no longer sorts before its
+// Next by the board's rank value, bytewise as the order key sorts: the
+// board moved since it was read, and the issues would not land between
+// them.
+func neighborsStand(in tracker.RankInput, b board, listed map[tracker.IssueID]*jira.Issue) error {
+	for _, n := range []tracker.IssueID{in.Prev, in.Next} {
+		if n != "" && listed[n] == nil {
+			return movedf("issue %s, which the issues go next to, is not on board %s now; read the board again", n, in.Board)
+		}
+	}
+	if in.Prev == "" || in.Next == "" {
+		return nil
+	}
+	prev, err := listed[in.Prev].Field(b.rank).Text()
+	if err != nil {
+		return fmt.Errorf("jiraprovider: the rank of %s on board %s: %w", in.Prev, in.Board, err)
+	}
+	next, err := listed[in.Next].Field(b.rank).Text()
+	if err != nil {
+		return fmt.Errorf("jiraprovider: the rank of %s on board %s: %w", in.Next, in.Board, err)
+	}
+	if prev >= next {
+		return movedf("issues %s and %s, which the issues go between, no longer stand in that order on board %s; read the board again", in.Prev, in.Next, in.Board)
+	}
+	return nil
+}
+
 func rankChecks(in tracker.RankInput) error {
 	if err := checkIssues(in.Issues); err != nil {
 		return err
 	}
-	for _, n := range []*tracker.Neighbor{in.Prev, in.Next} {
-		if n != nil {
-			if err := checkIssue(n.Issue); err != nil {
+	for _, n := range []tracker.IssueID{in.Prev, in.Next} {
+		if n != "" {
+			if err := checkIssue(n); err != nil {
 				return err
 			}
 		}

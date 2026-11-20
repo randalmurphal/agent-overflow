@@ -16,7 +16,7 @@ import (
 // neighbor by Jira's ID, which is the site's. Where Jira's request does not
 // itself tie the thing written to the issue or board the input names, the
 // provider reads that tie first and refuses, before sending, what is not
-// tied (ReasonInvalid, naming it). The reads narrow the window in which a
+// tied (ReasonStale, naming it: reading again shows what changed). The reads narrow the window in which a
 // write reaches something that moved meanwhile and do not close it: Jira
 // takes no precondition on a write.
 //
@@ -32,17 +32,18 @@ import (
 // issue's comment (measured on reads; writes are not measured). A
 // download is checked in Download.
 
-// onBoard reports which of ids board b lists now, read through the board's
-// issue list, a hundred IDs to a request.
-func (p *Provider) onBoard(ctx context.Context, b board, ids []tracker.IssueID) (map[tracker.IssueID]bool, error) {
-	listed := map[tracker.IssueID]bool{}
+// onBoard is the issues of ids board b lists now, by ID, with fields
+// besides their status, read through the board's issue list, a hundred
+// IDs to a request.
+func (p *Provider) onBoard(ctx context.Context, b board, ids []tracker.IssueID, fields ...string) (map[tracker.IssueID]*jira.Issue, error) {
+	listed := map[tracker.IssueID]*jira.Issue{}
 	for chunk := range slices.Chunk(distinct(ids), idChunk) {
-		list, err := p.listByID(ctx, b, chunk, []string{"status"})
+		list, err := p.listByID(ctx, b, chunk, append([]string{"status"}, fields...))
 		if err != nil {
 			return nil, fmt.Errorf("jiraprovider: which issues board %s lists: %w", b.id, err)
 		}
 		for _, is := range list {
-			listed[tracker.IssueID(is.ID)] = true
+			listed[tracker.IssueID(is.ID)] = is
 		}
 	}
 	return listed, nil
@@ -52,10 +53,10 @@ func (p *Provider) onBoard(ctx context.Context, b board, ids []tracker.IssueID) 
 // refuses the others, which board does not list now, before anything is
 // sent. The result has one part per issue of ids, in their order; write
 // returns one part per issue it is given.
-func boardParts(board tracker.BoardID, step tracker.Step, ids []tracker.IssueID, listed map[tracker.IssueID]bool, write func(send []tracker.IssueID) tracker.Result) tracker.Result {
+func boardParts(board tracker.BoardID, step tracker.Step, ids []tracker.IssueID, listed map[tracker.IssueID]*jira.Issue, write func(send []tracker.IssueID) tracker.Result) tracker.Result {
 	var send []tracker.IssueID
 	for _, id := range ids {
-		if listed[id] {
+		if listed[id] != nil {
 			send = append(send, id)
 		}
 	}
@@ -67,12 +68,12 @@ func boardParts(board tracker.BoardID, step tracker.Step, ids []tracker.IssueID,
 	}
 	out := make([]tracker.Part, len(ids))
 	for i, id := range ids {
-		if listed[id] {
+		if listed[id] != nil {
 			out[i] = sent[id]
 			continue
 		}
-		err := invalidf("issue %s is not on board %s now; read the board again", id, board)
-		out[i] = tracker.Part{Issue: id, Step: step, Outcome: tracker.Refused(tracker.Refusal{Reason: tracker.ReasonInvalid, Message: err.Error(), Err: err})}
+		err := movedf("issue %s is not on board %s now; read the board again", id, board)
+		out[i] = tracker.Part{Issue: id, Step: step, Outcome: tracker.Refused(refusal(err))}
 	}
 	return tracker.Result{Parts: out}
 }
@@ -116,44 +117,48 @@ func (p *Provider) boardSprint(ctx context.Context, board tracker.BoardID, sprin
 // states.
 func notBoardSprint(board tracker.BoardID, sprint tracker.SprintID, states []jira.SprintState) error {
 	if len(states) == 0 {
-		return invalidf("sprint %s is not a sprint of board %s", sprint, board)
+		return movedf("sprint %s is not a sprint of board %s", sprint, board)
 	}
 	names := make([]string, len(states))
 	for i, s := range states {
 		names[i] = string(s)
 	}
-	return invalidf("sprint %s is not a sprint of board %s that is %s", sprint, board, strings.Join(names, " or "))
+	return movedf("sprint %s is not a sprint of board %s that is %s", sprint, board, strings.Join(names, " or "))
 }
 
 // readComment reads comment through issue's path. Jira answers that read
 // not found for a comment of another issue (measured), so a confirmed not
-// found is a *notOnIssueError.
+// found is a *movedError carrying it.
 func (p *Provider) readComment(ctx context.Context, issue tracker.IssueID, comment tracker.CommentID) (jira.Comment, error) {
 	c, err := p.jira.Comment(ctx, string(issue), string(comment))
 	switch {
 	case errors.Is(err, trackerapi.ErrNotFound):
-		return jira.Comment{}, &notOnIssueError{what: "comment " + string(comment), issue: issue, err: err}
+		return jira.Comment{}, &movedError{
+			msg: fmt.Sprintf("jiraprovider: comment %s is not on issue %s: it is gone or belongs to another issue", comment, issue), err: err,
+		}
 	case err != nil:
 		return jira.Comment{}, fmt.Errorf("jiraprovider: read comment %s: %w", comment, err)
 	}
 	return c, nil
 }
 
-// notOnIssueError refuses a write of something Jira does not find
-// through the issue its input names: it is gone, or another issue's. It
-// matches tracker.ErrInvalidInput, and err, the client's not found, stays
+// movedError is a check before a write that found what the input names
+// not where the caller read it: moved since, or never there, which Jira
+// cannot tell apart and reading again shows. It is refused as stale with
+// its message (refusal); err, the read that showed it when one did, stays
 // reachable.
-type notOnIssueError struct {
-	what  string
-	issue tracker.IssueID
-	err   error
+type movedError struct {
+	msg string
+	err error
 }
 
-func (e *notOnIssueError) Error() string {
-	return fmt.Sprintf("jiraprovider: %s is not on issue %s: it is gone or belongs to another issue", e.what, e.issue)
-}
+func (e *movedError) Error() string { return e.msg }
+func (e *movedError) Unwrap() error { return e.err }
 
-func (e *notOnIssueError) Unwrap() []error { return []error{tracker.ErrInvalidInput, e.err} }
+// movedf is a *movedError with no read to carry.
+func movedf(format string, args ...any) error {
+	return &movedError{msg: fmt.Sprintf("jiraprovider: "+format, args...)}
+}
 
 // checkLink refuses link unless it is one of issue's links and its other
 // side is other: a link's ID is the site's, and its delete names nothing
@@ -169,7 +174,7 @@ func (p *Provider) checkLink(ctx context.Context, issue, other tracker.IssueID, 
 		}
 	}
 	if !slices.ContainsFunc(is.Links, func(l jira.IssueLink) bool { return l.ID == string(link) && l.Issue.ID == string(other) }) {
-		return invalidf("link %s is not between issues %s and %s", link, issue, other)
+		return movedf("link %s is not between issues %s and %s", link, issue, other)
 	}
 	return nil
 }
@@ -179,7 +184,7 @@ func (p *Provider) checkLink(ctx context.Context, issue, other tracker.IssueID, 
 // issue Jira does not document that it checks (Jira's).
 func checkWorklogIssue(cur, from tracker.Worklog) error {
 	if cur.Issue != from.Issue {
-		return invalidf("worklog %s is not issue %s's", from.ID, from.Issue)
+		return movedf("worklog %s is not issue %s's", from.ID, from.Issue)
 	}
 	return nil
 }

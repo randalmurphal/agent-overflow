@@ -135,13 +135,13 @@ func (p *Provider) SetEstimate(ctx context.Context, in tracker.EstimateInput) tr
 		return tracker.Invalid(step, err, in.Issue)
 	}
 	if !linear.IsIssueID(string(in.Issue)) {
-		return refuse(step, tracker.Refusal{Reason: tracker.ReasonInvalid, Message: fmt.Sprintf("%q is not a Linear issue ID", in.Issue)}, in.Issue)
+		return notIssueID(step, in.Issue, in.Issue)
 	}
 	on, err := p.onBoard(ctx, in.Board, []string{string(in.Issue)})
 	if err != nil {
 		return beforeWrite(step, err, in.Issue)
 	}
-	if !on[string(in.Issue)] {
+	if _, ok := on[string(in.Issue)]; !ok {
 		return tracker.Refuse(step, notOnBoard(in.Issue, in.Board), in.Issue)
 	}
 	t, err := p.team(ctx, string(in.Board))
@@ -186,7 +186,7 @@ func (p *Provider) MoveToSprint(ctx context.Context, in tracker.SprintMoveInput)
 	}
 	ids, bad := issueIDs(in.Issues)
 	if len(bad) > 0 {
-		return refuse(step, tracker.Refusal{Reason: tracker.ReasonInvalid, Message: fmt.Sprintf("%q is not a Linear issue ID", bad[0])}, in.Issues...)
+		return notIssueID(step, bad[0], in.Issues...)
 	}
 	cycle := linear.Null[string]()
 	if in.Sprint != "" {
@@ -202,8 +202,9 @@ func (p *Provider) MoveToSprint(ctx context.Context, in tracker.SprintMoveInput)
 	var out tracker.Result
 	var failed tracker.IssueID
 	for _, id := range in.Issues {
+		_, isOn := on[string(id)]
 		switch {
-		case !on[string(id)]:
+		case !isOn:
 			out.Parts = append(out.Parts, tracker.Part{Issue: id, Step: step, Outcome: tracker.Refused(notOnBoard(id, in.Board))})
 		case failed != "":
 			out.Parts = append(out.Parts, notSentAfter(step, failed, []tracker.IssueID{id})...)

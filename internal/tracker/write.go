@@ -102,38 +102,34 @@ func (in EstimateInput) Check() error {
 	return nil
 }
 
-// Neighbor is an issue next to where ranked issues go, with its order key
-// on the board as the caller last read it.
-type Neighbor struct {
-	Issue IssueID
-	Order OrderKey
-}
-
 // RankInput places Issues, in the order given, on Board between Prev, the
 // issue they go just after, and Next, the issue they go just before. One
-// of the two may be nil for an end of the list; not both.
+// of the two may be empty for an end of the list; not both.
+//
+// A neighbor is named by its issue alone. Where it stands is the
+// provider's to read when it ranks: a position the caller read earlier
+// may have moved, and a rank computed from it lands somewhere else. A
+// provider refuses a rank whose neighbors no longer stand in the order
+// the input names.
 type RankInput struct {
 	Board  BoardID
 	Issues []IssueID
-	Prev   *Neighbor
-	Next   *Neighbor
+	Prev   IssueID
+	Next   IssueID
 }
 
 // Anchor is the neighbor a tracker that ranks relative to one issue
 // ranks against, for an input Check passed: Prev, with after set, or Next
 // when there is no Prev.
-func (in RankInput) Anchor() (n Neighbor, after bool) {
-	switch {
-	case in.Prev != nil:
-		return *in.Prev, true
-	case in.Next != nil:
-		return *in.Next, false
+func (in RankInput) Anchor() (issue IssueID, after bool) {
+	if in.Prev != "" {
+		return in.Prev, true
 	}
-	return Neighbor{}, false
+	return in.Next, false
 }
 
 // Check refuses a rank that names no board or issue, an issue twice, no
-// neighbor, a neighbor with no issue or key, or a neighbor among the
+// neighbor, the same neighbor on both sides, or a neighbor among the
 // issues ranked.
 func (in RankInput) Check() error {
 	if in.Board == "" {
@@ -142,20 +138,15 @@ func (in RankInput) Check() error {
 	if err := checkIssues(in.Issues); err != nil {
 		return err
 	}
-	if in.Prev == nil && in.Next == nil {
+	if in.Prev == "" && in.Next == "" {
 		return invalidf("a rank needs a neighbor")
 	}
-	for _, n := range []*Neighbor{in.Prev, in.Next} {
-		if n == nil {
-			continue
-		}
-		if n.Issue == "" || n.Order == "" {
-			return invalidf("a rank's neighbor needs an issue and its order key")
-		}
-		for _, id := range in.Issues {
-			if id == n.Issue {
-				return invalidf("issue %s is ranked next to itself", id)
-			}
+	if in.Prev == in.Next {
+		return invalidf("issue %s is named as both neighbors of a rank", in.Prev)
+	}
+	for _, id := range in.Issues {
+		if id == in.Prev || id == in.Next {
+			return invalidf("issue %s is ranked next to itself", id)
 		}
 	}
 	return nil

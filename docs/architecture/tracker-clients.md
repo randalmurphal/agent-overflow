@@ -398,7 +398,9 @@ Each package is tested against an `httptest` server on loopback, inside the
 [isolated network](../specs/testing-harness.md#network-isolation). No test
 reaches a tracker. A test server asserts the method, path, query and body
 it expects and fails the test on a request it does not know, so a client
-cannot pass by sending something else.
+cannot pass by sending something else. A test that fails every read on
+purpose names one handler for unrouted requests
+(`jiratest.Server.Otherwise`).
 
 Each client's test server is its own package (`jiratest`, `tempotest`,
 `lineartest`), used by the client's tests and by the tests of everything

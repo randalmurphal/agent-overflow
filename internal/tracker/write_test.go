@@ -19,7 +19,7 @@ func TestInputChecks(t *testing.T) {
 	end := start.Add(14 * 24 * time.Hour)
 	day := mustDate(t, "2026-11-16")
 	title := []FieldEdit{{Field: FieldPriority, Value: TypedValues("High")}}
-	prev := &Neighbor{Issue: "p", Order: "0|a"}
+	prev := IssueID("p")
 	wl := Worklog{ID: "w1", Issue: "i1", Author: "acc-user1", Day: day, Spent: time.Hour}
 	cases := []struct {
 		good checker
@@ -55,10 +55,9 @@ func TestInputChecks(t *testing.T) {
 			"empty issue":      RankInput{Board: "b", Issues: []IssueID{""}, Prev: prev},
 			"issue twice":      RankInput{Board: "b", Issues: []IssueID{"1", "1"}, Prev: prev},
 			"no neighbor":      RankInput{Board: "b", Issues: []IssueID{"1"}},
-			"neighbor no key":  RankInput{Board: "b", Issues: []IssueID{"1"}, Next: &Neighbor{Issue: "n"}},
-			"neighbor no id":   RankInput{Board: "b", Issues: []IssueID{"1"}, Next: &Neighbor{Order: "k"}},
+			"same neighbor":    RankInput{Board: "b", Issues: []IssueID{"1"}, Prev: prev, Next: prev},
 			"next to itself":   RankInput{Board: "b", Issues: []IssueID{"1", "p"}, Prev: prev},
-			"next is a ranked": RankInput{Board: "b", Issues: []IssueID{"1"}, Prev: prev, Next: &Neighbor{Issue: "1", Order: "k"}},
+			"next is a ranked": RankInput{Board: "b", Issues: []IssueID{"1"}, Prev: prev, Next: "1"},
 		}},
 		{SprintMoveInput{Board: "b", Issues: []IssueID{"1"}}, map[string]checker{
 			"no board":    SprintMoveInput{Issues: []IssueID{"1"}},
@@ -156,20 +155,28 @@ func TestInputChecks(t *testing.T) {
 }
 
 func TestRankAnchor(t *testing.T) {
-	prev, next := &Neighbor{Issue: "p", Order: "a"}, &Neighbor{Issue: "n", Order: "c"}
 	for _, tc := range []struct {
 		name  string
 		in    RankInput
-		want  Neighbor
+		want  IssueID
 		after bool
 	}{
-		{"both", RankInput{Prev: prev, Next: next}, *prev, true},
-		{"previous only", RankInput{Prev: prev}, *prev, true},
-		{"next only", RankInput{Next: next}, *next, false},
-		{"neither", RankInput{}, Neighbor{}, false},
+		{"both", RankInput{Prev: "p", Next: "n"}, "p", true},
+		{"previous only", RankInput{Prev: "p"}, "p", true},
+		{"next only", RankInput{Next: "n"}, "n", false},
+		{"neither", RankInput{}, "", false},
 	} {
 		if got, after := tc.in.Anchor(); got != tc.want || after != tc.after {
-			t.Errorf("%s: Anchor = %+v, %v; want %+v, %v", tc.name, got, after, tc.want, tc.after)
+			t.Errorf("%s: Anchor = %q, %v; want %q, %v", tc.name, got, after, tc.want, tc.after)
+		}
+	}
+	for name, in := range map[string]RankInput{
+		"previous only": {Board: "b", Issues: []IssueID{"1"}, Prev: "p"},
+		"next only":     {Board: "b", Issues: []IssueID{"1"}, Next: "n"},
+		"both":          {Board: "b", Issues: []IssueID{"1"}, Prev: "p", Next: "n"},
+	} {
+		if err := in.Check(); err != nil {
+			t.Errorf("%s: Check = %v", name, err)
 		}
 	}
 }

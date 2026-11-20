@@ -3,11 +3,16 @@ package tracker
 import (
 	"errors"
 	"fmt"
+
+	"agent-overflow/internal/tracker/trackerapi"
 )
 
 // ErrInvalidInput is matched, through errors.Is, by the error of an input
-// the checks in this package refuse.
-var ErrInvalidInput = errors.New("tracker: invalid input")
+// refused before any request: by the checks in this package, by a
+// provider's own, or by a client. It is the transport's sentinel, so
+// there is one, and a provider that classifies a failure cannot match one
+// spelling and miss the other.
+var ErrInvalidInput = trackerapi.ErrInvalidInput
 
 func invalidf(format string, args ...any) error {
 	return fmt.Errorf("%w: "+format, append([]any{ErrInvalidInput}, args...)...)
@@ -94,9 +99,14 @@ const (
 	// ReasonUnsupported is a write the connection's tracker cannot make
 	// (see Capabilities).
 	ReasonUnsupported
-	// ReasonStale is an edit whose starting point (the Markdown it was
-	// written from, a worklog as read) changed on the tracker. The caller
-	// reads it again.
+	// ReasonStale is a write whose starting point is no longer what the
+	// tracker holds: the Markdown an edit was written from, a worklog as
+	// read, the board an issue was on, where a rank's neighbors stood, a
+	// sprint's state, a comment or link that is gone. The caller reads it
+	// again. A provider's check before a write refuses with it whenever
+	// reading again would show the caller what changed, which includes
+	// every case where the tracker cannot tell "moved since" from "never
+	// was"; ReasonInvalid is for input no reading could make right.
 	ReasonStale
 	// ReasonLoss is a rich text edit that would lose content Markdown
 	// cannot show. Lost names it; the same write with AcceptLoss set

@@ -42,8 +42,14 @@ type refusedEdit struct{ tracker.Refusal }
 func (r *refusedEdit) Error() string { return r.Message }
 
 func refusedf(reason tracker.Reason, format string, args ...any) *refusedEdit {
+	return refusedBy(reason, nil, format, args...)
+}
+
+// refusedBy is refusedf for a refusal that rests on cause, the tracker's
+// answer, which its error wraps.
+func refusedBy(reason tracker.Reason, cause error, format string, args ...any) *refusedEdit {
 	msg := fmt.Sprintf(format, args...)
-	return &refusedEdit{tracker.Refusal{Reason: reason, Message: msg, Err: fmt.Errorf("linearprovider: %s", msg)}}
+	return &refusedEdit{tracker.Refusal{Reason: reason, Message: msg, Err: refusalErr(reason, msg, cause)}}
 }
 
 // needsTeam reports whether resolving edits reads the team's catalogs.

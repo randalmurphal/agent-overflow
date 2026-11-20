@@ -21,13 +21,15 @@ import (
 type Handler func(w http.ResponseWriter, r *http.Request, body []byte)
 
 // Server is a loopback test server that answers only the routes a test
-// names ("METHOD /path") and fails the test on any other request. It is
-// closed when the test ends.
+// names ("METHOD /path") and fails the test on any other request, unless
+// the test names a handler for those (Otherwise). It is closed when the
+// test ends.
 type Server struct {
 	t      testing.TB
 	srv    *httptest.Server
 	mu     sync.Mutex
 	routes map[string]Handler
+	other  Handler
 	hits   map[string]int
 	order  []string
 }
@@ -51,6 +53,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	s.hits[key]++
 	s.order = append(s.order, key)
 	h, ok := s.routes[key]
+	if !ok && s.other != nil {
+		h, ok = s.other, true
+	}
 	s.mu.Unlock()
 	if !ok {
 		s.t.Errorf("unexpected request %s?%s", key, r.URL.RawQuery)
@@ -68,6 +73,14 @@ func (s *Server) On(method, path string, h Handler) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.routes[method+" "+path] = h
+}
+
+// Otherwise answers every request no route names with h, instead of
+// failing the test; h decides what such a request means.
+func (s *Server) Otherwise(h Handler) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.other = h
 }
 
 // Count is how many requests method and path have had.

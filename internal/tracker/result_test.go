@@ -5,7 +5,25 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/tracker/trackerapi"
 )
+
+// TestInvalidInputIsOneSentinel pins that an input this package refuses
+// and an input a client refuses match the same sentinel, whichever name a
+// classifier checks.
+func TestInvalidInputIsOneSentinel(t *testing.T) {
+	mine := invalidf("a rank needs a board")
+	client := trackerapi.InvalidInput(errors.New("jira: no issue named"))
+	for name, err := range map[string]error{"this package's": mine, "a client's": client} {
+		if !errors.Is(err, ErrInvalidInput) || !errors.Is(err, trackerapi.ErrInvalidInput) {
+			t.Errorf("%s refusal does not match both names of the sentinel: %v", name, err)
+		}
+	}
+	if errors.Is(errors.New("timeout"), ErrInvalidInput) {
+		t.Error("an unrelated error matches the sentinel")
+	}
+}
 
 func TestOutcomeIsOneState(t *testing.T) {
 	cause := errors.New("cause")

@@ -79,11 +79,17 @@ func boardConfig(id int, field string) string {
 func newSite(t *testing.T) (*jiratest.Server, *Provider) {
 	t.Helper()
 	f := jiratest.NewServer(t)
+	siteRoutes(f)
+	return f, newProvider(t, f, nil)
+}
+
+// siteRoutes serves on f the catalog, the user and the two boards'
+// configurations.
+func siteRoutes(f *jiratest.Server) {
 	f.On("GET", fieldPath, jiratest.Reply(200, fieldsJSON))
 	f.On("GET", myselfPath, jiratest.Reply(200, user1JSON))
 	f.On("GET", board3Config, jiratest.Reply(200, boardConfig(3, "customfield_10016")))
 	f.On("GET", board4Config, jiratest.Reply(200, boardConfig(4, "timeoriginalestimate")))
-	return f, newProvider(t, f, nil)
 }
 
 func newJira(t *testing.T, f *jiratest.Server) *jira.Client {

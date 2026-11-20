@@ -18,18 +18,19 @@ import (
 // first. Linear takes no precondition on a write, so each check narrows
 // the window in which the tie can break and does not close it.
 
-// onBoard is the set of ids that are issues on board now: those a read by
-// ID within the board's team finds, archived ones left out, in one
-// request for up to idChunk IDs.
-func (p *Provider) onBoard(ctx context.Context, board tracker.BoardID, ids []string) (map[string]bool, error) {
+// onBoard maps each of ids that is an issue on board now to its current
+// sortOrder: those a read by ID within the board's team finds, archived
+// ones left out, in one request for up to idChunk IDs. An ID it lacks is
+// not on the board.
+func (p *Provider) onBoard(ctx context.Context, board tracker.BoardID, ids []string) (map[string]float64, error) {
 	issues, err := p.issuesByID(ctx, ids, linear.IssueFilter{Teams: []string{string(board)}}, false)
 	if err != nil {
 		return nil, fmt.Errorf("linearprovider: read the issues on board %s: %w", board, err)
 	}
-	on := make(map[string]bool, len(issues))
+	on := make(map[string]float64, len(issues))
 	for _, is := range issues {
 		if is.TeamID == string(board) {
-			on[is.ID] = true
+			on[is.ID] = is.SortOrder
 		}
 	}
 	return on, nil
@@ -47,7 +48,7 @@ func (p *Provider) openCycle(ctx context.Context, board tracker.BoardID, sprint 
 	c, err := p.c.Cycle(ctx, string(sprint))
 	switch {
 	case errors.Is(err, trackerapi.ErrNotFound):
-		return refusedf(tracker.ReasonStale, "cycle %s does not exist or is not visible", sprint)
+		return refusedBy(tracker.ReasonStale, err, "cycle %s does not exist or is not visible", sprint)
 	case err != nil:
 		return fmt.Errorf("linearprovider: read cycle %s: %w", sprint, err)
 	case c.TeamID != string(board):
@@ -64,7 +65,7 @@ func (p *Provider) issueComment(ctx context.Context, issue tracker.IssueID, comm
 	c, err := p.c.Comment(ctx, string(comment))
 	switch {
 	case errors.Is(err, trackerapi.ErrNotFound):
-		return nil, refusedf(tracker.ReasonStale, "comment %s is no longer on the issue", comment)
+		return nil, refusedBy(tracker.ReasonStale, err, "comment %s is no longer on the issue", comment)
 	case err != nil:
 		return nil, fmt.Errorf("linearprovider: read comment %s: %w", comment, err)
 	case c.IssueID != string(issue):
@@ -79,7 +80,7 @@ func (p *Provider) linkBetween(ctx context.Context, in tracker.UnlinkInput) erro
 	r, err := p.c.Relation(ctx, string(in.Link))
 	switch {
 	case errors.Is(err, trackerapi.ErrNotFound):
-		return refusedf(tracker.ReasonStale, "link %s no longer exists", in.Link)
+		return refusedBy(tracker.ReasonStale, err, "link %s no longer exists", in.Link)
 	case err != nil:
 		return fmt.Errorf("linearprovider: read link %s: %w", in.Link, err)
 	}

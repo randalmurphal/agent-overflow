@@ -41,7 +41,9 @@ func choicesSite(t *testing.T, options int) *jiratest.Server {
 // sets More exactly when it may leave a match out: allowed values and the
 // site's priorities past pickLimit, a parent search with a further page,
 // a full page or a warning, a user search with a match past pickLimit,
-// and an assignable search returning more than pickLimit.
+// a user search with no match (which a credential that may not browse
+// users also gets) or a match past pickLimit, and every assignable answer,
+// which never shows that the window it examined was not full.
 func TestChoicesMore(t *testing.T) {
 	issue := tracker.OnIssue("10001")
 	for _, tc := range []struct {
@@ -61,7 +63,9 @@ func TestChoicesMore(t *testing.T) {
 		{name: "parents, a warning", field: tracker.FieldParent, rows: 3, more: true, route: parents(3, "", "partial")},
 		{name: "users, whole", field: "customfield_10060", rows: pickLimit, route: userSearch(pickLimit)},
 		{name: "users past the limit", field: "customfield_10060", rows: pickLimit, more: true, route: userSearch(pickLimit + 1)},
-		{name: "assignable, whole", field: "assignee", rows: pickLimit, route: assignable(pickLimit)},
+		{name: "users, an empty answer", field: "customfield_10060", more: true, route: userSearch(0)},
+		{name: "assignable, a short answer", field: "assignee", rows: 3, more: true, route: assignable(3)},
+		{name: "assignable, a filtered window", field: "assignee", more: true, route: assignable(0)},
 		{name: "assignable past the limit", field: "assignee", rows: pickLimit, more: true, route: assignable(pickLimit + 1)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -92,14 +96,15 @@ func TestUserChoicesNoText(t *testing.T) {
 }
 
 // TestAssignableUsersMore proves AssignableUsers asks for the whole window
-// Jira allows, returns at most pickLimit users, and sets More only when
-// more came back.
+// Jira allows, returns at most pickLimit users, and sets More on every
+// answer: an empty one is the window whose users were not assignable, and
+// one past it may be.
 func TestAssignableUsersMore(t *testing.T) {
-	for _, n := range []int{pickLimit, pickLimit + 1} {
+	for _, n := range []int{0, 3, pickLimit, pickLimit + 1} {
 		f, p := newSite(t)
 		assignable(n)(t, f)
 		got, err := p.AssignableUsers(t.Context(), tracker.OnCreate("10000", "10002"), "user")
-		if err != nil || len(got.Users) != pickLimit || got.More != (n > pickLimit) {
+		if err != nil || len(got.Users) != min(n, pickLimit) || !got.More {
 			t.Errorf("%d found: %d users, more %v, %v", n, len(got.Users), got.More, err)
 		}
 	}

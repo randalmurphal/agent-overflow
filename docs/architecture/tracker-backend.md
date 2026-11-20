@@ -106,9 +106,8 @@ this is its shape.
   and the allowed values of a field, each narrowed by typed text. A pick
   list is bounded and says when the tracker may hold matches it leaves
   out, so a missing value is never read as one that does not exist, within
-  what the tracker can show: Jira's assignable search examines at most its
-  first 1000 matching users, and its user search answers a credential that
-  may not browse users with no users.
+  what the tracker can show. Jira's assignable search never shows that its
+  list is whole, so that list always says there may be more.
 - Time: a time tracker with worklogs by author and day and worklog add,
   edit and delete, or none for a tracker with no time tracking. A Jira
   connection's is Tempo when it has a Tempo connection and Jira's own
@@ -136,7 +135,9 @@ a neighbor to the issue or board the input names. Before its first request
 a provider reads that tie where the request does not carry it (a comment's
 issue, a link's two issues, a sprint's board and state, the issues a board
 lists now) and refuses what does not hold; in a rank or a sprint move the
-other issues proceed. Neither tracker takes a precondition, so this
+other issues proceed. A rank names its neighbors by issue alone: the
+provider reads where they stand now, and refuses a rank whose neighbors no
+longer stand in the order named. Neither tracker takes a precondition, so this
 narrows the window and does not close it.
 
 The result also names what the operation may have changed, by resource: an

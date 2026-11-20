@@ -154,12 +154,13 @@ func editDays(in tracker.WorklogEdit) []tracker.Date {
 }
 
 // worklogResult is a worklog write's one part, which may change the
-// issue's detail and author's worklogs of days; author is empty when it
-// is not known, and the write was then not sent.
+// issue's detail and author's worklogs of days. It names worklogs only of
+// an author and a day that are known: a write that failed before it
+// learned them, from its input or a read, names none for them.
 func worklogResult(issue tracker.IssueID, author tracker.UserID, o tracker.Outcome, days ...tracker.Date) tracker.Result {
 	changed := []tracker.Resource{tracker.DetailOf(issue)}
-	if author != "" {
-		for _, d := range days {
+	for _, d := range days {
+		if author != "" && !d.IsZero() {
 			changed = append(changed, tracker.WorklogsOf(author, d))
 		}
 	}

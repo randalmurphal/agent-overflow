@@ -505,7 +505,7 @@ func TestRankKeepsEachIssuesOutcome(t *testing.T) {
 		jiratest.Reply(207, `{"entries":[`+rankEntry("10001", 204)+`,`+rankEntry("10002", 400)+`]}`)(w, r, b)
 	})
 	res := checked(t, p.Rank(t.Context(), tracker.RankInput{Board: "3", Issues: []tracker.IssueID{"10001", "10002"},
-		Prev: &tracker.Neighbor{Issue: "10009", Order: "0|a"}, Next: &tracker.Neighbor{Issue: "10010", Order: "0|b"}}))
+		Prev: "10009", Next: "10010"}))
 	if states(res) != "rank:applied, rank:refused" || reason(res, 1) != tracker.ReasonTracker {
 		t.Fatalf("got %s", states(res))
 	}
@@ -519,11 +519,11 @@ func TestRankKeepsEachIssuesOutcome(t *testing.T) {
 		jiratest.WantJSON(t, b, `{"issues":["10001"],"rankBeforeIssue":"10010","rankCustomFieldId":10019}`)
 		jiratest.Reply(502, `{}`)(w, r, b)
 	})
-	res = checked(t, p.Rank(t.Context(), tracker.RankInput{Board: "3", Issues: []tracker.IssueID{"10001"}, Next: &tracker.Neighbor{Issue: "10010", Order: "0|b"}}))
+	res = checked(t, p.Rank(t.Context(), tracker.RankInput{Board: "3", Issues: []tracker.IssueID{"10001"}, Next: "10010"}))
 	if states(res) != "rank:unknown" {
 		t.Errorf("an unanswered rank: %s", states(res))
 	}
-	res = checked(t, p.Rank(t.Context(), tracker.RankInput{Board: "3", Issues: []tracker.IssueID{"10001", "10001"}, Next: &tracker.Neighbor{Issue: "10010", Order: "0|b"}}))
+	res = checked(t, p.Rank(t.Context(), tracker.RankInput{Board: "3", Issues: []tracker.IssueID{"10001", "10001"}, Next: "10010"}))
 	if states(res) != "rank:refused, rank:refused" || f.Count("PUT", "/rest/agile/1.0/issue/rank") != 2 {
 		t.Errorf("an issue named twice: %s", states(res))
 	}

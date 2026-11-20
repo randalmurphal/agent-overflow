@@ -23,10 +23,10 @@ import (
 //   - an error trackerapi.WriteNotApplied does not prove unsent or
 //     refused (a timeout, a 5xx, a 2xx that did not read): unknown. The
 //     provider never sends it again.
-//   - not applied, and its input refused before sending, by a client
-//     (trackerapi.ErrInvalidInput) or by this package's own checks
-//     (tracker.ErrInvalidInput): refused, with the reason the error's
-//     type carries (refusal).
+//   - not applied, and its input refused before sending, by a client or
+//     by this package's own checks (tracker.ErrInvalidInput), or a check
+//     that found what the input names moved (*movedError): refused, with
+//     the reason the error's type carries (refusal).
 //   - not applied, and Jira or Tempo answered a 4xx other than a rate
 //     limit, to the write or to a read it depended on: refused by the
 //     tracker.
@@ -40,7 +40,7 @@ func outcome(err error) tracker.Outcome {
 		return tracker.Applied()
 	case !trackerapi.WriteNotApplied(err):
 		return tracker.Unknown(err)
-	case errors.Is(err, trackerapi.ErrInvalidInput) || errors.Is(err, tracker.ErrInvalidInput) || answered4xx(err):
+	case errors.Is(err, tracker.ErrInvalidInput) || isMoved(err) || answered4xx(err):
 		return tracker.Refused(refusal(err))
 	}
 	return tracker.NotSent(err)
@@ -57,6 +57,12 @@ func stale(issue, what string) error {
 // not read as the write's own answer.
 func beforeSend(err error) tracker.Outcome {
 	return outcome(&trackerapi.NotSentError{Err: err})
+}
+
+// isMoved reports a check that found what a write names moved.
+func isMoved(err error) bool {
+	_, ok := errors.AsType[*movedError](err)
+	return ok
 }
 
 // applied reports a write the client says Jira applied although its
@@ -125,10 +131,10 @@ func refusal(err error) tracker.Refusal {
 		r.Message = e.Error()
 		return r
 	}
-	if e, ok := errors.AsType[*notOnIssueError](err); ok {
-		// Before the status: the not found it carries is the reason, not
+	if e, ok := errors.AsType[*movedError](err); ok {
+		// Before the status: a not found it carries is the reason, not
 		// the tracker's refusal of a write.
-		r.Message = e.Error()
+		r.Reason, r.Message = tracker.ReasonStale, e.Error()
 		return r
 	}
 	if e, ok := errors.AsType[*trackerapi.AuthError](err); ok {

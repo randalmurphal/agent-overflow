@@ -111,7 +111,7 @@ func TestClosedClientIsNotSent(t *testing.T) {
 	c.Close()
 	for name, res := range map[string]tracker.Result{
 		"edit":     p.Edit(t.Context(), tracker.EditInput{Issue: "10001", Fields: []tracker.FieldEdit{{Field: "priority", Value: tracker.PickValues("1")}}}),
-		"rank":     p.Rank(t.Context(), tracker.RankInput{Board: "3", Issues: []tracker.IssueID{"10001"}, Next: &tracker.Neighbor{Issue: "10002", Order: "0|b"}}),
+		"rank":     p.Rank(t.Context(), tracker.RankInput{Board: "3", Issues: []tracker.IssueID{"10001"}, Next: "10002"}),
 		"estimate": p.SetEstimate(t.Context(), tracker.EstimateInput{Board: "3", Issue: "10001", Value: ptr(1.0)}),
 		"link":     p.Link(t.Context(), tracker.LinkInput{Type: "10000", Outward: "10001", Inward: "10002"}),
 		"worklog":  p.Time().DeleteWorklog(t.Context(), tracker.WorklogDelete{From: tracker.Worklog{ID: "300", Issue: "10001"}}),
