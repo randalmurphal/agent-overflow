@@ -214,7 +214,7 @@ func TestPageChordIsRoutedToThePaneShowingThePage(t *testing.T) {
 				t.Fatalf("routed %d chords, want 1", len(routed))
 			}
 			got := routed[0]
-			if MountID(got.Mount) != f.mount || ThreadID(got.ThreadID) != f.access.ThreadID || got.Accelerator == nil || *got.Accelerator != bound {
+			if MountID(got.Mount) != f.mount || ThreadID(got.ThreadID) != f.access.ThreadID() || got.Accelerator == nil || *got.Accelerator != bound {
 				t.Fatalf("routed %+v, want Ctrl+F to mount %s", got, f.mount)
 			}
 		})

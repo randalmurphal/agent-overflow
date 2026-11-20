@@ -56,6 +56,9 @@ func paneViewportSize(rect PaneRect) (int, int, bool) {
 // pages lay out at, whether it is pinned, and the pane size it would follow;
 // set pins a bounded size; reset returns to following the pane.
 func (m *Manager) Viewport(_ context.Context, access Access, opts ViewportOptions) (SessionInfo, error) {
+	if err := access.bound(); err != nil {
+		return SessionInfo{}, err
+	}
 	m.mu.Lock()
 	if err := access.admitLocked(); err != nil {
 		m.mu.Unlock()
@@ -83,11 +86,11 @@ func (m *Manager) Viewport(_ context.Context, access Access, opts ViewportOption
 	info.UpdatedAt = time.Now()
 	access.tb.session = info
 	m.mu.Unlock()
-	if err := m.applyThreadViewport(access.ThreadID); err != nil {
+	if err := m.applyThreadViewport(access.ThreadID()); err != nil {
 		return SessionInfo{}, err
 	}
-	m.emitThreadState(access.ThreadID)
-	m.syncPanePresentation(access.ThreadID)
+	m.emitThreadState(access.ThreadID())
+	m.syncPanePresentation(access.ThreadID())
 	return info, nil
 }
 

@@ -66,7 +66,7 @@ func TestAHistoryCommitDuringASuspendReadKeepsTheAddressItRead(t *testing.T) {
 			manager.refreshHistoryState(p, refresh)
 		}
 	}
-	if err := manager.SuspendThread(t.Context(), access.ThreadID); err != nil {
+	if err := manager.SuspendThread(t.Context(), access.ThreadID()); err != nil {
 		t.Fatal(err)
 	}
 	manager.mu.Lock()
@@ -89,7 +89,7 @@ func TestASuspendSavesTheAddressItReadOverALateReport(t *testing.T) {
 			p.commitInfo(pageUpdate{Location: &pageLocation{URL: "https://example.test/first", Title: "late"}, Report: 1})
 		}
 	}
-	if err := manager.SuspendThread(t.Context(), access.ThreadID); err != nil {
+	if err := manager.SuspendThread(t.Context(), access.ThreadID()); err != nil {
 		t.Fatal(err)
 	}
 	manager.mu.Lock()
@@ -208,7 +208,7 @@ func TestAReportDuringRestoreMovesTheOrderFence(t *testing.T) {
 	manager, engine := newRestoreManager(t, t.TempDir(), ManagerOptions{})
 	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	page := mustOpen(t, manager, access, "https://example.test/one")
-	if err := manager.SuspendThread(t.Context(), access.ThreadID); err != nil {
+	if err := manager.SuspendThread(t.Context(), access.ThreadID()); err != nil {
 		t.Fatal(err)
 	}
 	release := engine.hold()

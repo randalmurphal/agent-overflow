@@ -40,7 +40,7 @@ func TestNativeEngineRealClaimedChordFocusesTheApp(t *testing.T) {
 	workspace := resolvedTempDir(t)
 	access := manager.Bind(Caller{ThreadID: "native-smoke-focus", Workspace: workspace})
 	t.Cleanup(func() {
-		if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
+		if err := manager.CloseThread(context.Background(), access.ThreadID()); err != nil {
 			t.Errorf("close the thread's pages: %v", err)
 		}
 	})
@@ -253,7 +253,7 @@ func TestNativeEngineRealHiddenPageGivesUpFocus(t *testing.T) {
 		workspace := resolvedTempDir(t)
 		access := manager.Bind(Caller{ThreadID: ThreadID("native-smoke-hidden-focus-" + thread), Workspace: workspace})
 		t.Cleanup(func() {
-			if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
+			if err := manager.CloseThread(context.Background(), access.ThreadID()); err != nil {
 				t.Errorf("close the thread's pages: %v", err)
 			}
 		})
@@ -411,7 +411,7 @@ func TestNativeEngineRealHiddenPageGivesUpFocus(t *testing.T) {
 
 	t.Run("hide during a navigation", func(t *testing.T) {
 		page := open(t, "navigating", left)
-		next := writeSmokeFile(t, page.access.Workspace, "next.html",
+		next := writeSmokeFile(t, page.access.Workspace(), "next.html",
 			`<!doctype html><title>next</title><input autofocus>`)
 		click(t, page.view)
 		if _, _, err := manager.Evaluate(ctx, page.access, PageID(page.id),
@@ -432,7 +432,7 @@ func TestNativeEngineRealHiddenPageGivesUpFocus(t *testing.T) {
 
 	t.Run("hide a popup page", func(t *testing.T) {
 		opener := open(t, "popup", left)
-		popupFile := writeSmokeFile(t, opener.access.Workspace, "popup.html",
+		popupFile := writeSmokeFile(t, opener.access.Workspace(), "popup.html",
 			`<!doctype html><title>popup</title><input autofocus>`)
 		if _, _, err := manager.Evaluate(ctx, opener.access, PageID(opener.id),
 			fmt.Sprintf(`window.open(%s); null`, jsonString(smokeFileURL(popupFile))), nil); err != nil {

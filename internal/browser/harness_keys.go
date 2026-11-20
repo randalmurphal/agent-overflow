@@ -21,6 +21,9 @@ type engineKeyPress interface {
 // machine where the driver holds no Accessibility trust: the app posts the
 // key event into its own window, and the chord gate sees a real NSEvent.
 func (m *Manager) HarnessPressKey(ctx context.Context, access Access, pageID PageID, chord keybindings.Accelerator) error {
+	if err := access.bound(); err != nil {
+		return err
+	}
 	engine, ok := m.engine.(engineKeyPress)
 	if !ok {
 		return fmt.Errorf("browser: key injection is not available on this browser engine")

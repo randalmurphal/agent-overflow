@@ -346,6 +346,9 @@ func (m *Manager) presentedPageLocked(tb *threadBrowser) PageID {
 // WKWebView (Safari's Develop menu is the inspector) and the fake engine
 // answer with an explained refusal rather than a silent no-op.
 func (m *Manager) OpenPaneDevTools(ctx context.Context, access Access, pageID PageID) error {
+	if err := access.bound(); err != nil {
+		return err
+	}
 	host, ok := m.engine.(paneDevTools)
 	if !ok {
 		return fmt.Errorf("browser: devtools are not available on this browser engine")

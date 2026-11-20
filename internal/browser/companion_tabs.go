@@ -71,6 +71,9 @@ func reopenable(rawURL string) bool {
 // gone from the state, and a failure of the teardown after it arrives as a
 // "teardown" event. The tab can be reopened (ReopenClosedTab).
 func (m *Manager) CloseCompanionPage(ctx context.Context, access Access, pageID PageID) error {
+	if err := access.bound(); err != nil {
+		return err
+	}
 	return m.closePage(ctx, access, pageID, false, true)
 }
 
@@ -109,6 +112,9 @@ func (s *closedTabs) push(tab closedTab) {
 // with ctx's numbered selection passed or its pane detached (selection.go),
 // or a tab refused, it does nothing and the closed tab stays.
 func (m *Manager) ReopenClosedTab(ctx context.Context, access Access) error {
+	if err := access.bound(); err != nil {
+		return err
+	}
 	turn, err := m.selectionTurn(ctx, access)
 	if err != nil || turn.Standing() == turnorder.Passed {
 		return err
@@ -141,6 +147,9 @@ func (m *Manager) ReopenClosedTab(ctx context.Context, access Access) error {
 // no address to load. With ctx's numbered selection passed or its pane
 // detached (selection.go) it does nothing.
 func (m *Manager) DuplicateCompanionPage(ctx context.Context, access Access, pageID PageID) error {
+	if err := access.bound(); err != nil {
+		return err
+	}
 	pageID = pageID.trim()
 	turn, err := m.selectionTurn(ctx, access)
 	if err != nil || turn.Standing() == turnorder.Passed {
@@ -179,6 +188,9 @@ const (
 // pageID (CloseOtherTabs) or every tab after it (CloseTabsRight), left to
 // right, so reopening them one by one puts each back where it was.
 func (m *Manager) CloseCompanionTabs(ctx context.Context, access Access, pageID PageID, which string) error {
+	if err := access.bound(); err != nil {
+		return err
+	}
 	pageID = pageID.trim()
 	if which != CloseOtherTabs && which != CloseTabsRight {
 		return fmt.Errorf("browser: unknown set of tabs to close %q", truncateUTF8(which, 32))
@@ -212,6 +224,9 @@ func (m *Manager) CloseCompanionTabs(ctx context.Context, access Access, pageID 
 // included, is restored at its address, which is its reload; a live page
 // reloads.
 func (m *Manager) ReloadCompanionPage(ctx context.Context, access Access, pageID PageID) error {
+	if err := access.bound(); err != nil {
+		return err
+	}
 	pageID = pageID.trim()
 	m.mu.Lock()
 	rec := m.suspended[pageID]

@@ -397,7 +397,7 @@ func TestATeardownFailureIsReported(t *testing.T) {
 			t.Fatalf("close (waiting %v) = %v", wait, err)
 		}
 		event := events.waitFor(t, "the teardown failure", func(e CompanionEvent) bool { return e.Kind == "teardown" })
-		if ThreadID(event.ThreadID) != access.ThreadID || event.PageID != last.ID || !strings.Contains(event.Error, "would not stop") {
+		if ThreadID(event.ThreadID) != access.ThreadID() || event.PageID != last.ID || !strings.Contains(event.Error, "would not stop") {
 			t.Fatalf("teardown event = %+v", event)
 		}
 	}
@@ -423,7 +423,7 @@ func TestRepeatedClosesShareOneTeardown(t *testing.T) {
 		closeWaiter(t, manager, access, page.ID),
 		closeWaiter(t, manager, access, page.ID),
 	}
-	if err := manager.ClosePage(t.Context(), manager.Bind(Caller{ThreadID: "other", Workspace: access.Workspace}), PageID(page.ID)); !errors.Is(err, errPageNotFound) {
+	if err := manager.ClosePage(t.Context(), manager.Bind(Caller{ThreadID: "other", Workspace: access.Workspace()}), PageID(page.ID)); !errors.Is(err, errPageNotFound) {
 		t.Fatalf("another thread's close of the closing page = %v", err)
 	}
 	release()

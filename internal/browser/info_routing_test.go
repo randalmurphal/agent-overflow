@@ -39,7 +39,7 @@ func TestASuspendSavesTheNewerAddressReportedDuringItsRead(t *testing.T) {
 			p.commitInfo(pageUpdate{Location: &pageLocation{URL: b, Title: fakeTitle(b)}, Report: 1})
 		}
 	}
-	if err := manager.SuspendThread(t.Context(), access.ThreadID); err != nil {
+	if err := manager.SuspendThread(t.Context(), access.ThreadID()); err != nil {
 		t.Fatal(err)
 	}
 	if got := suspendedURL(t, manager, string(p.id)); got != b {
@@ -60,7 +60,7 @@ func TestASuspendOfAPageThatKeepsNavigatingIsBounded(t *testing.T) {
 		fake.SameDocumentNavigation(address(n))
 		p.commitInfo(pageUpdate{Location: &pageLocation{URL: address(n), Title: "loop"}, Report: uint64(n)})
 	}
-	if err := manager.SuspendThread(t.Context(), access.ThreadID); err != nil {
+	if err := manager.SuspendThread(t.Context(), access.ThreadID()); err != nil {
 		t.Fatal(err)
 	}
 	if n := calls.Load(); n != maxSettleReads {

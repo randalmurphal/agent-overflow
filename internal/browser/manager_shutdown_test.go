@@ -72,7 +72,7 @@ func TestClearSiteDataForgetsATabSuspendedWhileItWaits(t *testing.T) {
 	// The switch keeps its tabs live for the clear to close, or is refused.
 	_ = manager.SetJar(context.Background(), access, JarThread, JarSwitchConfirmed)
 	// The reaper's suspension and a crash record nothing either.
-	if err := manager.SuspendThread(context.Background(), access.ThreadID); err != nil {
+	if err := manager.SuspendThread(context.Background(), access.ThreadID()); err != nil {
 		t.Fatal(err)
 	}
 	manager.pageCrashed(handle, "crashed")
@@ -83,7 +83,7 @@ func TestClearSiteDataForgetsATabSuspendedWhileItWaits(t *testing.T) {
 	if tabs := manager.CompanionState(access.Caller()).Pages; len(tabs) != 0 {
 		t.Fatalf("after the clear the thread lists tabs %+v", tabs)
 	}
-	saved, err := os.ReadFile(manager.recordPath(access.ThreadID))
+	saved, err := os.ReadFile(manager.recordPath(access.ThreadID()))
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		t.Fatal(err)
 	}

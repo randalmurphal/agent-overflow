@@ -41,6 +41,9 @@ func (m *Manager) threadDownload(access Access, id DownloadKey) (threadDownload,
 // deletes the finished file. The engine's refusal is the answer and the
 // download keeps running and listed as such.
 func (m *Manager) CancelThreadDownload(access Access, id DownloadKey) error {
+	if err := access.bound(); err != nil {
+		return err
+	}
 	item, err := m.threadDownload(access, id)
 	if err != nil {
 		return err
@@ -89,6 +92,9 @@ func (m *Manager) CancelThreadDownload(access Access, id DownloadKey) error {
 // artifact goes with the rest after artifactMaxAge. A lifetime the
 // thread's close detached is refused with ErrThreadClosed.
 func (m *Manager) ClearThreadDownloads(access Access) error {
+	if err := access.bound(); err != nil {
+		return err
+	}
 	if err := access.End(); err != nil {
 		return err
 	}
@@ -97,7 +103,7 @@ func (m *Manager) ClearThreadDownloads(access Access) error {
 		list.clear()
 	}
 	m.downloadsMu.Unlock()
-	m.emitThreadState(access.ThreadID)
+	m.emitThreadState(access.ThreadID())
 	return nil
 }
 
@@ -144,6 +150,9 @@ func sameDownloadedFile(recorded, current os.FileInfo) bool {
 // RevealThreadDownload opens the OS file manager with a finished download
 // selected, through the same hand-off as RevealPageFile.
 func (m *Manager) RevealThreadDownload(ctx context.Context, access Access, id DownloadKey) error {
+	if err := access.bound(); err != nil {
+		return err
+	}
 	item, err := m.finishedDownloadPath(access, id)
 	if err != nil {
 		return err
@@ -159,6 +168,9 @@ func (m *Manager) RevealThreadDownload(ctx context.Context, access Access, id Do
 // its workspace's downloads (authorizeFile). With ctx's numbered selection
 // passed (selection.go) it opens nothing.
 func (m *Manager) OpenThreadDownload(ctx context.Context, access Access, id DownloadKey) (PageInfo, error) {
+	if err := access.bound(); err != nil {
+		return PageInfo{}, err
+	}
 	turn, err := m.selectionTurn(ctx, access)
 	if err != nil || turn.Standing() == turnorder.Passed {
 		return PageInfo{}, err

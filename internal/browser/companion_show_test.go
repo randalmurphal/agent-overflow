@@ -249,7 +249,7 @@ func TestAShowDuringTheThreadsCloseShowsNothing(t *testing.T) {
 	hide(t, m, access)
 	reached, releaseClose := holdCloseAfterDetach(m, access)
 	defer releaseClose()
-	closed := async(func() error { return m.CloseThread(context.Background(), access.ThreadID) })
+	closed := async(func() error { return m.CloseThread(context.Background(), access.ThreadID()) })
 	<-reached
 	got := await(t, show(m, context.Background(), access), "the show")
 	releaseClose()

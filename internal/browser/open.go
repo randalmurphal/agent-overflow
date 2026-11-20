@@ -12,6 +12,9 @@ import (
 )
 
 func (m *Manager) Open(ctx context.Context, access Access, rawURL string, opts OpenOptions) (PageInfo, error) {
+	if err := access.bound(); err != nil {
+		return PageInfo{}, err
+	}
 	parsed, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil {
 		return PageInfo{}, fmt.Errorf("browser: invalid URL: %w", err)
@@ -26,6 +29,9 @@ func (m *Manager) Open(ctx context.Context, access Access, rawURL string, opts O
 }
 
 func (m *Manager) NewPage(ctx context.Context, access Access) (PageInfo, error) {
+	if err := access.bound(); err != nil {
+		return PageInfo{}, err
+	}
 	p, err := m.pageForOpen(ctx, access, "", false)
 	if err != nil {
 		return PageInfo{}, err
@@ -44,6 +50,9 @@ func (m *Manager) NewPage(ctx context.Context, access Access) (PageInfo, error) 
 }
 
 func (m *Manager) OpenFile(ctx context.Context, access Access, path string, opts OpenOptions) (PageInfo, error) {
+	if err := access.bound(); err != nil {
+		return PageInfo{}, err
+	}
 	return m.openFile(ctx, access, path, nil, opts)
 }
 
@@ -130,7 +139,7 @@ func (m *Manager) navigate(ctx context.Context, access Access, targetURL string,
 // page. A suspended page asked for by a caller about to navigate it is
 // restored blank (skipLoad), since loading its old address first is wasted.
 func (m *Manager) pageForOpen(ctx context.Context, access Access, requested PageID, skipLoad bool) (*managedPage, error) {
-	if access.ThreadID.trim() == "" || strings.TrimSpace(access.Workspace) == "" {
+	if strings.TrimSpace(access.Workspace()) == "" {
 		return nil, fmt.Errorf("browser: invalid caller scope")
 	}
 	if requested = requested.trim(); requested != "" {

@@ -41,7 +41,7 @@ func (f *fakeController) Open(_ context.Context, a Access, u string, opts OpenOp
 
 // Bind binds caller to a lifetime of its own, which no close detaches.
 func (f *fakeController) Bind(caller Caller) Access {
-	return Access{boundCaller: &caller, tb: newThreadBrowser(caller.ThreadID)}
+	return Access{caller: caller, tb: newThreadBrowser(caller.ThreadID)}
 }
 func (f *fakeController) NewPage(context.Context, Access) (PageInfo, error) { return PageInfo{}, nil }
 func (f *fakeController) OpenFile(context.Context, Access, string, OpenOptions) (PageInfo, error) {
@@ -177,7 +177,7 @@ func TestMCPServerRoutesCapabilityScopedCalls(t *testing.T) {
 	if response["error"] != nil {
 		t.Fatalf("response = %#v", response)
 	}
-	if fake.openedURL != "https://example.com" || fake.access.ThreadID != "thread" || fake.access.Workspace != "/repo" {
+	if fake.openedURL != "https://example.com" || fake.access.ThreadID() != "thread" || fake.access.Workspace() != "/repo" {
 		t.Fatalf("route = %q %#v", fake.openedURL, fake.access)
 	}
 	if fake.openOptions.PageID != "" {

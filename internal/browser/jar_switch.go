@@ -63,6 +63,9 @@ import (
 // (jarCurrentLocked), and a popup needs a live opener, which the switch has
 // closed.
 func (m *Manager) SetJar(ctx context.Context, access Access, kind string, consent JarConsent) error {
+	if err := access.bound(); err != nil {
+		return err
+	}
 	if err := consent.valid(); err != nil {
 		return err
 	}
@@ -70,10 +73,10 @@ func (m *Manager) SetJar(ctx context.Context, access Access, kind string, consen
 	if !validJarKind(kind) {
 		return fmt.Errorf("browser: unknown cookie jar %q", truncateUTF8(kind, 32))
 	}
-	if access.ThreadID.trim() == "" || strings.TrimSpace(access.Workspace) == "" {
+	if strings.TrimSpace(access.Workspace()) == "" {
 		return fmt.Errorf("browser: invalid caller scope")
 	}
-	if kind == JarProject && strings.TrimSpace(access.ProjectID) == "" {
+	if kind == JarProject && strings.TrimSpace(access.ProjectID()) == "" {
 		return fmt.Errorf("browser: this thread has no project to share a cookie jar with")
 	}
 	tb := access.tb
@@ -133,7 +136,7 @@ func (m *Manager) SetJar(ctx context.Context, access Access, kind string, consen
 	if err != nil {
 		// The copy on disk is the switch's: write the thread back as it is,
 		// before a write waiting on persistMu writes its own.
-		if werr := m.writeRecordFilesLocked([]ThreadID{access.ThreadID}); werr != nil {
+		if werr := m.writeRecordFilesLocked([]ThreadID{access.ThreadID()}); werr != nil {
 			return errors.Join(err, fmt.Errorf("browser: the saved tabs still name the %s cookie jar the switch did not make: %w", kind, werr))
 		}
 		return err
@@ -144,7 +147,7 @@ func (m *Manager) SetJar(ctx context.Context, access Access, kind string, consen
 		m.startClose(c.scope, c.close)
 	}
 	if len(closes) == 0 {
-		m.emitThreadState(access.ThreadID)
+		m.emitThreadState(access.ThreadID())
 	}
 	return nil
 }

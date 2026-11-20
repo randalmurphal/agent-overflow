@@ -188,7 +188,7 @@ func (f *findFixture) wantEndedFor(t *testing.T, after uint64, mount string) Fin
 	t.Helper()
 	select {
 	case event := <-f.events:
-		if event.Find == nil || event.Find.Active || event.Find.PageID != f.pageID || event.Find.Mount != mount || ThreadID(event.ThreadID) != f.access.ThreadID {
+		if event.Find == nil || event.Find.Active || event.Find.PageID != f.pageID || event.Find.Mount != mount || ThreadID(event.ThreadID) != f.access.ThreadID() {
 			t.Fatalf("find end event = %+v (%+v)", event, event.Find)
 		}
 		if event.Find.Session <= after {
@@ -277,7 +277,7 @@ func TestFindRefusesBadRequests(t *testing.T) {
 			t.Fatalf("%s: error = %v, want %q", tc.name, err, tc.want)
 		}
 	}
-	intruder := f.manager.Bind(Caller{ThreadID: "intruder", Workspace: f.access.Workspace})
+	intruder := f.manager.Bind(Caller{ThreadID: "intruder", Workspace: f.access.Workspace()})
 	if _, err := f.manager.Find(ctx, intruder, PageID(f.pageID), "start", "alpha", f.mount, f.nextSeq()); !errors.Is(err, errPageNotFound) {
 		t.Fatalf("another thread's find error = %v, want page not found", err)
 	}
@@ -424,7 +424,7 @@ func TestFindEndsWhenThePageClosesOrSuspends(t *testing.T) {
 	f := newFindFixture(t, "https://example.test/alpha")
 	started := f.find(t, "start", "alpha")
 	f.wantCall(t, "start alpha")
-	if err := f.manager.SuspendThread(t.Context(), f.access.ThreadID); err != nil {
+	if err := f.manager.SuspendThread(t.Context(), f.access.ThreadID()); err != nil {
 		t.Fatal(err)
 	}
 	f.wantEnded(t, started.Session)
@@ -556,7 +556,7 @@ func TestFindEndsOnEachTransitionTwice(t *testing.T) {
 		{
 			name: "suspend",
 			away: func(t *testing.T, f *findFixture) {
-				if err := f.manager.SuspendThread(t.Context(), f.access.ThreadID); err != nil {
+				if err := f.manager.SuspendThread(t.Context(), f.access.ThreadID()); err != nil {
 					t.Fatal(err)
 				}
 			},
@@ -633,7 +633,7 @@ func TestFindNeverClaimsAPagesBareEscape(t *testing.T) {
 			if !announced {
 				t.Fatalf("%s: an Escape was announced: %+v", state, event)
 			}
-			if ThreadID(event.ThreadID) != f.access.ThreadID || event.PageID != f.pageID || event.Find != nil || event.Accelerator != nil {
+			if ThreadID(event.ThreadID) != f.access.ThreadID() || event.PageID != f.pageID || event.Find != nil || event.Accelerator != nil {
 				t.Fatalf("%s: escape event = %+v", state, event)
 			}
 		case <-time.After(5 * time.Second):
@@ -954,7 +954,7 @@ func TestFindStopNeverRestoresAndIsIdempotent(t *testing.T) {
 	f.noCall(t)
 	f.find(t, "start", "alpha")
 	f.wantCall(t, "start alpha")
-	if err := f.manager.SuspendThread(t.Context(), f.access.ThreadID); err != nil {
+	if err := f.manager.SuspendThread(t.Context(), f.access.ThreadID()); err != nil {
 		t.Fatal(err)
 	}
 	f.wantEnded(t, 0)
@@ -1038,7 +1038,7 @@ func TestFindGenerationsOutliveARestore(t *testing.T) {
 	}
 	before := f.find(t, "next", "")
 	f.wantCall(t, "step")
-	if err := f.manager.SuspendThread(t.Context(), f.access.ThreadID); err != nil {
+	if err := f.manager.SuspendThread(t.Context(), f.access.ThreadID()); err != nil {
 		t.Fatal(err)
 	}
 	ended := f.wantEnded(t, before.Session)

@@ -38,6 +38,9 @@ const (
 // opening or restoring closes at once; its page work and the teardown never
 // delay the next turn.
 func (m *Manager) CloseActiveCompanionPage(ctx context.Context, access Access, at Numbered) (ActiveOutcome, error) {
+	if err := access.bound(); err != nil {
+		return ActivePassed, err
+	}
 	turn, err := m.awaitTurn(ctx, access, at)
 	if err != nil {
 		return ActivePassed, err
@@ -72,6 +75,9 @@ func (m *Manager) closeActiveLocked(access Access, turn *turnorder.Turn) (Active
 // ReloadActiveCompanionPage reloads the tab active at at's turn, as
 // ReloadCompanionPage reloads it, after the turn.
 func (m *Manager) ReloadActiveCompanionPage(ctx context.Context, access Access, at Numbered) (ActiveOutcome, error) {
+	if err := access.bound(); err != nil {
+		return ActivePassed, err
+	}
 	turn, err := m.awaitTurn(ctx, access, at)
 	if err != nil {
 		return ActivePassed, err

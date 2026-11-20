@@ -63,7 +63,7 @@ func (m *Manager) resolvePage(ctx context.Context, access Access, pageID PageID,
 		m.mu.Unlock()
 		if started {
 			// The tab shows it is restoring (PageInfo.Restoring).
-			m.emitThreadState(access.ThreadID)
+			m.emitThreadState(access.ThreadID())
 		}
 		select {
 		case <-call.done:

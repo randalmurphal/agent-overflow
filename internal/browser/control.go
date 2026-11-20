@@ -16,6 +16,9 @@ import (
 // presents it first; a suspended page then restores, a page that lags the
 // pane takes its size and is shown, and its info is read.
 func (m *Manager) SelectPage(ctx context.Context, access Access, pageID PageID) (PageInfo, error) {
+	if err := access.bound(); err != nil {
+		return PageInfo{}, err
+	}
 	pageID = pageID.trim()
 	// An agent's selection keeps arrival order (selection.go).
 	if _, err := m.selectTab(access, turnorder.Unordered(), pageID); err != nil {
@@ -39,7 +42,7 @@ func (m *Manager) SelectPage(ctx context.Context, access Access, pageID PageID) 
 	if infoErr != nil {
 		return PageInfo{}, infoErr
 	}
-	m.publishPages(access.ThreadID)
+	m.publishPages(access.ThreadID())
 	return info, nil
 }
 
@@ -95,8 +98,8 @@ func (m *Manager) selectTabWhere(access Access, turn *turnorder.Turn, pick func(
 	if found.live != nil {
 		found.live.touch()
 	}
-	m.emitThreadState(access.ThreadID)
-	m.syncPanePresentation(access.ThreadID)
+	m.emitThreadState(access.ThreadID())
+	m.syncPanePresentation(access.ThreadID())
 	return pageID, nil
 }
 
@@ -117,6 +120,9 @@ func (m *Manager) labelHolderLocked(tb *threadBrowser, pageID PageID, label stri
 }
 
 func (m *Manager) LabelPage(ctx context.Context, access Access, pageID PageID, label string) (PageInfo, error) {
+	if err := access.bound(); err != nil {
+		return PageInfo{}, err
+	}
 	label = strings.TrimSpace(label)
 	if utf8.RuneCountInString(label) > maxPageLabelRunes {
 		return PageInfo{}, fmt.Errorf("browser: page label exceeds 80 characters")
@@ -138,11 +144,14 @@ func (m *Manager) LabelPage(ctx context.Context, access Access, pageID PageID, l
 	}
 	info, _ := p.commitInfo(pageUpdate{Label: &label})
 	m.mu.Unlock()
-	m.emitThreadState(access.ThreadID)
+	m.emitThreadState(access.ThreadID())
 	return info, nil
 }
 
 func (m *Manager) NameSession(_ context.Context, access Access, name string) (SessionInfo, error) {
+	if err := access.bound(); err != nil {
+		return SessionInfo{}, err
+	}
 	name = strings.TrimSpace(name)
 	if utf8.RuneCountInString(name) > 120 {
 		return SessionInfo{}, fmt.Errorf("browser: session name exceeds 120 characters")
@@ -156,7 +165,7 @@ func (m *Manager) NameSession(_ context.Context, access Access, name string) (Se
 	access.tb.session.UpdatedAt = time.Now()
 	info := access.tb.session
 	m.mu.Unlock()
-	m.emitThreadState(access.ThreadID)
+	m.emitThreadState(access.ThreadID())
 	return info, nil
 }
 
@@ -165,6 +174,9 @@ func (m *Manager) NameSession(_ context.Context, access Access, name string) (Se
 // cannot be restored still opens the companion, where its refusal shows and
 // the user can navigate or close it. Hiding touches no page.
 func (m *Manager) Visibility(ctx context.Context, access Access, visible *bool, pageID PageID) (SessionInfo, error) {
+	if err := access.bound(); err != nil {
+		return SessionInfo{}, err
+	}
 	pageID = pageID.trim()
 	if visible != nil && *visible {
 		if pageID == "" {
@@ -202,8 +214,8 @@ func (m *Manager) Visibility(ctx context.Context, access Access, visible *bool, 
 	info := tb.session
 	m.mu.Unlock()
 	if visible != nil {
-		m.emitThreadState(access.ThreadID)
-		m.syncPanePresentation(access.ThreadID)
+		m.emitThreadState(access.ThreadID())
+		m.syncPanePresentation(access.ThreadID())
 	}
 	return info, nil
 }
@@ -211,6 +223,9 @@ func (m *Manager) Visibility(ctx context.Context, access Access, visible *bool, 
 // Pages lists the thread's pages, suspended ones included as they were saved:
 // listing is not a touch, so it restores nothing.
 func (m *Manager) Pages(ctx context.Context, access Access) ([]PageInfo, error) {
+	if err := access.bound(); err != nil {
+		return nil, err
+	}
 	m.mu.Lock()
 	tabs := m.threadTabsLocked(access.tb)
 	var activePageID PageID
@@ -240,7 +255,7 @@ func (m *Manager) Pages(ctx context.Context, access Access) ([]PageInfo, error) 
 		}
 	}
 	// What the reads found, the tabs show.
-	m.publishPages(access.ThreadID)
+	m.publishPages(access.ThreadID())
 	sort.Slice(out, func(i, j int) bool { return out[i].LastOpened > out[j].LastOpened })
 	return out, nil
 }

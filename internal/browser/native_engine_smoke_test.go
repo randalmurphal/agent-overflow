@@ -180,7 +180,7 @@ func TestNativeEngineRealPopupsPassTheWorkspacePolicy(t *testing.T) {
 					ProjectRoot: resolvedTempDir(t), ProjectID: "native-smoke",
 				})
 				t.Cleanup(func() {
-					if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
+					if err := manager.CloseThread(context.Background(), access.ThreadID()); err != nil {
 						t.Errorf("close the thread's pages: %v", err)
 					}
 				})
@@ -239,7 +239,7 @@ func TestNativeEngineRealEvaluateSemantics(t *testing.T) {
 	workspace := resolvedTempDir(t)
 	access := manager.Bind(Caller{ThreadID: "native-smoke-evaluate", Workspace: workspace})
 	t.Cleanup(func() {
-		if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
+		if err := manager.CloseThread(context.Background(), access.ThreadID()); err != nil {
 			t.Errorf("close the thread's pages: %v", err)
 		}
 	})
@@ -280,7 +280,7 @@ func TestNativeEngineRealFind(t *testing.T) {
 	workspace := resolvedTempDir(t)
 	access := manager.Bind(Caller{ThreadID: "native-smoke-find", Workspace: workspace})
 	t.Cleanup(func() {
-		if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
+		if err := manager.CloseThread(context.Background(), access.ThreadID()); err != nil {
 			t.Errorf("close the thread's pages: %v", err)
 		}
 	})
@@ -456,7 +456,7 @@ func TestNativeEngineRealFindClearsFrameSelections(t *testing.T) {
 	workspace := resolvedTempDir(t)
 	access := manager.Bind(Caller{ThreadID: "native-smoke-find-frames", Workspace: workspace})
 	t.Cleanup(func() {
-		if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
+		if err := manager.CloseThread(context.Background(), access.ThreadID()); err != nil {
 			t.Errorf("close the thread's pages: %v", err)
 		}
 	})

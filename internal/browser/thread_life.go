@@ -140,34 +140,55 @@ func (m *Manager) lockStructure(ctx context.Context, tb *threadBrowser) error {
 	}
 }
 
-// boundCaller is the Caller an Access embeds. The alias keeps the field
-// unexported and the pointer keeps its fields out of a composite literal
-// (Access{ThreadID: ...} does not compile), so only a bind fills it.
-type boundCaller = Caller
-
 // Access is one action's Caller bound to its thread's browser lifetime.
-// Only Bind and BindThread make one. Its zero value admits nothing and
-// names no caller: it is only an error path's placeholder.
+// Only a bind (Bind, BindThread) makes one, and its fields are unexported:
+// which thread it acts for is its lifetime's (ThreadID), so no assignment
+// and no copy can point it at another thread. Its zero value is bound to no
+// lifetime: every entry point refuses it with errUnbound.
 type Access struct {
-	*boundCaller
-	tb *threadBrowser
+	// caller is the action's workspace and project; its ThreadID is never
+	// read (Caller).
+	caller Caller
+	tb     *threadBrowser
 }
 
-// Caller is the caller a, without its lifetime.
-func (a Access) Caller() Caller {
-	if a.boundCaller == nil {
-		return Caller{}
+// ThreadID is the thread a's lifetime belongs to, "" for the zero Access.
+func (a Access) ThreadID() ThreadID {
+	if a.tb == nil {
+		return ""
 	}
-	return *a.boundCaller
+	return a.tb.id
+}
+
+// Workspace is a's caller's workspace.
+func (a Access) Workspace() string { return a.caller.Workspace }
+
+// ProjectID is a's caller's project.
+func (a Access) ProjectID() string { return a.caller.ProjectID }
+
+// Caller is the caller a, without its lifetime, naming its lifetime's
+// thread.
+func (a Access) Caller() Caller {
+	c := a.caller
+	c.ThreadID = a.ThreadID()
+	return c
+}
+
+// bound refuses the zero Access, which no bind made.
+func (a Access) bound() error {
+	if a.tb == nil {
+		return errUnbound
+	}
+	return nil
 }
 
 // End answers ErrThreadClosed when the thread's pages were closed while the
 // action held a: what it changed before the close, the close closed.
 func (a Access) End() error {
-	switch {
-	case a.tb == nil:
-		return errUnbound
-	case a.tb.detached.Load():
+	if err := a.bound(); err != nil {
+		return err
+	}
+	if a.tb.detached.Load() {
 		return ErrThreadClosed
 	}
 	return nil
@@ -205,7 +226,7 @@ func (b ThreadBinding) Access(caller Caller) (Access, error) {
 	if b.tb.id != caller.ThreadID {
 		return Access{}, fmt.Errorf("browser: an action bound to thread %s cannot act for thread %s", b.tb.id, caller.ThreadID)
 	}
-	return Access{boundCaller: &caller, tb: b.tb}, nil
+	return Access{caller: caller, tb: b.tb}, nil
 }
 
 // End answers as Access.End does.
@@ -216,11 +237,12 @@ func (b ThreadBinding) End() error {
 // Bind binds an action for caller to its thread's current lifetime: an MCP
 // tool call at its entry.
 func (m *Manager) Bind(caller Caller) Access {
-	if caller.ThreadID.trim() == "" {
-		// No thread to bind: every change through it is refused.
-		return Access{boundCaller: &caller}
+	caller.ThreadID = caller.ThreadID.trim()
+	if caller.ThreadID == "" {
+		// No thread to bind: the zero Access, which every entry refuses.
+		return Access{}
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return Access{boundCaller: &caller, tb: m.threadLocked(caller.ThreadID)}
+	return Access{caller: caller, tb: m.threadLocked(caller.ThreadID)}
 }

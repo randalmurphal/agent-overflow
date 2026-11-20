@@ -209,7 +209,7 @@ func TestTheUsersOrderSurvivesDelayedDelivery(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { assertSelectionsSettled(t, m) })
-		if err := m.SuspendThread(t.Context(), access.ThreadID); err != nil {
+		if err := m.SuspendThread(t.Context(), access.ThreadID()); err != nil {
 			t.Fatal(err)
 		}
 		setActiveTab(m, access, ids[3])
@@ -908,7 +908,7 @@ func newSuspendedPair(t *testing.T) (*Manager, *lifecycleEngine, Access, PageInf
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { assertSelectionsSettled(t, m) })
-	if err := m.SuspendThread(t.Context(), access.ThreadID); err != nil {
+	if err := m.SuspendThread(t.Context(), access.ThreadID()); err != nil {
 		t.Fatal(err)
 	}
 	for _, id := range []string{a.ID, b.ID} {

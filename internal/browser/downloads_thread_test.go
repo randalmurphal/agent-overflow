@@ -138,7 +138,7 @@ func threadDownloads(manager *Manager, access Access) []ThreadDownload {
 
 func authorityOf(t *testing.T, manager *Manager, access Access) *workspaceAuthority {
 	t.Helper()
-	workspace, err := canonicalRoot(access.Workspace)
+	workspace, err := canonicalRoot(access.Workspace())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,8 +189,8 @@ func testAFinishedDownloadIsListedAndAnnouncedOnce(t *testing.T, saving download
 	}
 	at := slices.IndexFunc(events, func(event CompanionEvent) bool { return event.Kind == "download" })
 	announced := events[at]
-	if announced.Download == nil || *announced.Download != want || ThreadID(announced.ThreadID) != access.ThreadID {
-		t.Fatalf("the announcement is %+v, want %+v in thread %q", announced, want, access.ThreadID)
+	if announced.Download == nil || *announced.Download != want || ThreadID(announced.ThreadID) != access.ThreadID() {
+		t.Fatalf("the announcement is %+v, want %+v in thread %q", announced, want, access.ThreadID())
 	}
 	if at == 0 || events[at-1].Kind != "state" || len(events[at-1].Downloads) != 1 || events[at-1].Downloads[0] != want {
 		t.Fatalf("the announcement is not preceded by the state that lists it: %+v", events[:at])
@@ -735,7 +735,7 @@ func testRevealingADownloadShowsItsFile(t *testing.T, saving downloadSaving, gon
 		t.Fatalf("revealing a download whose file is gone answers %v, want %q", err, gone)
 	}
 	// Another thread cannot reach this thread's download.
-	other := manager.Bind(Caller{ThreadID: "other", Workspace: access.Workspace})
+	other := manager.Bind(Caller{ThreadID: "other", Workspace: access.Workspace()})
 	if err := manager.RevealThreadDownload(t.Context(), other, DownloadKey(download.ID)); !errors.Is(err, errDownloadNotFound) {
 		t.Fatalf("another thread's reveal answers %v", err)
 	}
@@ -998,7 +998,7 @@ func TestOpeningADownloadShowsItInANewTab(t *testing.T) {
 func TestClosingTheThreadForgetsItsDownloads(t *testing.T) {
 	manager, _, access, page := newDownloadManager(t)
 	startDownload(t, manager, access, page, "a.txt", 1)
-	if err := manager.CloseThread(t.Context(), access.ThreadID); err != nil {
+	if err := manager.CloseThread(t.Context(), access.ThreadID()); err != nil {
 		t.Fatal(err)
 	}
 	manager.downloadsMu.Lock()
@@ -1060,7 +1060,7 @@ func testEveryPageTeardownSettlesItsRunningDownloads(t *testing.T, saving downlo
 			}
 		}, false},
 		{"thread close", func(t *testing.T, manager *Manager, access Access, _ PageInfo) {
-			if err := manager.CloseThread(t.Context(), access.ThreadID); err != nil {
+			if err := manager.CloseThread(t.Context(), access.ThreadID()); err != nil {
 				t.Fatal(err)
 			}
 		}, true},

@@ -152,7 +152,7 @@ func TestReopenedTabLeavesATakenLabel(t *testing.T) {
 // longer opens.
 func TestReopenedTabsLabelIsPushedWhenItsAddressFails(t *testing.T) {
 	m, access, _ := newTabsManager(t)
-	file := filepath.Join(access.Workspace, "notes.html")
+	file := filepath.Join(access.Workspace(), "notes.html")
 	if err := os.WriteFile(file, []byte("<title>notes</title>"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -335,7 +335,7 @@ func TestClosedTabRecordFollowsWhatTheCloseDid(t *testing.T) {
 
 	// A suspended tab whose saved copy cannot be updated: its close fails
 	// after it left the tab set.
-	if err := m.SuspendThread(t.Context(), access.ThreadID); err != nil {
+	if err := m.SuspendThread(t.Context(), access.ThreadID()); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.RemoveAll(m.recordDir); err != nil {
@@ -374,7 +374,7 @@ func TestAReopenedTabForgottenAfterItsPopOpensNothing(t *testing.T) {
 			}
 		}},
 		{"its close", func(t *testing.T, m *Manager, access Access) {
-			if err := m.CloseThread(context.Background(), access.ThreadID); err != nil {
+			if err := m.CloseThread(context.Background(), access.ThreadID()); err != nil {
 				t.Error(err)
 			}
 		}},
@@ -461,7 +461,7 @@ func TestClosedTabsAreForgottenWithTheBrowsingData(t *testing.T) {
 	t.Run("thread delete", func(t *testing.T) {
 		m, access, _ := newTabsManager(t)
 		closeOne(t, m, access)
-		if err := m.CloseThread(t.Context(), access.ThreadID); err != nil {
+		if err := m.CloseThread(t.Context(), access.ThreadID()); err != nil {
 			t.Fatal(err)
 		}
 		if got := closedCount(t, m, access); got != 0 {

@@ -44,7 +44,7 @@ func TestNativeEngineRealEscapeStaysThePages(t *testing.T) {
 	workspace := resolvedTempDir(t)
 	access := manager.Bind(Caller{ThreadID: "native-smoke-escape", Workspace: workspace})
 	t.Cleanup(func() {
-		if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
+		if err := manager.CloseThread(context.Background(), access.ThreadID()); err != nil {
 			t.Errorf("close the thread's pages: %v", err)
 		}
 	})
@@ -118,7 +118,7 @@ func TestNativeEngineRealEscapeStaysThePages(t *testing.T) {
 		t.Helper()
 		select {
 		case event := <-escapes:
-			if ThreadID(event.ThreadID) != access.ThreadID || event.PageID != page.ID {
+			if ThreadID(event.ThreadID) != access.ThreadID() || event.PageID != page.ID {
 				t.Fatalf("%s: escape event = %+v", state, event)
 			}
 		case <-time.After(30 * time.Second):

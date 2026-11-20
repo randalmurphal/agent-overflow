@@ -10,6 +10,9 @@ import (
 )
 
 func (m *Manager) Snapshot(ctx context.Context, access Access, pageID PageID) (Snapshot, error) {
+	if err := access.bound(); err != nil {
+		return Snapshot{}, err
+	}
 	p, _, err := m.lookupOrSelectPage(ctx, access, pageID)
 	if err != nil {
 		return Snapshot{}, err
@@ -38,6 +41,9 @@ func (m *Manager) Snapshot(ctx context.Context, access Access, pageID PageID) (S
 }
 
 func (m *Manager) Screenshot(ctx context.Context, access Access, opts ScreenshotOptions) ([]byte, error) {
+	if err := access.bound(); err != nil {
+		return nil, err
+	}
 	p, _, err := m.lookupOrSelectPage(ctx, access, opts.PageID)
 	if err != nil {
 		return nil, err
@@ -77,6 +83,9 @@ func (m *Manager) Screenshot(ctx context.Context, access Access, opts Screenshot
 }
 
 func (m *Manager) Click(ctx context.Context, access Access, pageID PageID, selector string) (PageInfo, error) {
+	if err := access.bound(); err != nil {
+		return PageInfo{}, err
+	}
 	selector = strings.TrimSpace(selector)
 	if selector == "" {
 		return PageInfo{}, fmt.Errorf("browser: selector is required")
@@ -98,6 +107,9 @@ func (m *Manager) Click(ctx context.Context, access Access, pageID PageID, selec
 }
 
 func (m *Manager) Type(ctx context.Context, access Access, opts TypeOptions) (PageInfo, error) {
+	if err := access.bound(); err != nil {
+		return PageInfo{}, err
+	}
 	if len(opts.Text) > maxBrowserInputBytes {
 		return PageInfo{}, fmt.Errorf("browser: input text exceeds %d bytes", maxBrowserInputBytes)
 	}
@@ -122,6 +134,9 @@ func (m *Manager) Type(ctx context.Context, access Access, opts TypeOptions) (Pa
 }
 
 func (m *Manager) Press(ctx context.Context, access Access, pageID PageID, key string) (PageInfo, error) {
+	if err := access.bound(); err != nil {
+		return PageInfo{}, err
+	}
 	if len(key) > maxBrowserInputBytes {
 		return PageInfo{}, fmt.Errorf("browser: key input exceeds %d bytes", maxBrowserInputBytes)
 	}
@@ -211,6 +226,9 @@ func (p *managedPage) setClipboardText(text string) {
 }
 
 func (m *Manager) Scroll(ctx context.Context, access Access, pageID PageID, selector string, x, y float64) (PageInfo, error) {
+	if err := access.bound(); err != nil {
+		return PageInfo{}, err
+	}
 	if err := validateScrollDelta(x, y); err != nil {
 		return PageInfo{}, err
 	}
@@ -231,6 +249,9 @@ func (m *Manager) Scroll(ctx context.Context, access Access, pageID PageID, sele
 }
 
 func (m *Manager) Wait(ctx context.Context, access Access, pageID PageID, selector string, milliseconds int) (PageInfo, error) {
+	if err := access.bound(); err != nil {
+		return PageInfo{}, err
+	}
 	p, _, err := m.lookupOrSelectPage(ctx, access, pageID)
 	if err != nil {
 		return PageInfo{}, err
@@ -267,6 +288,9 @@ func (m *Manager) Wait(ctx context.Context, access Access, pageID PageID, select
 }
 
 func (m *Manager) History(ctx context.Context, access Access, pageID PageID, action string) (PageInfo, error) {
+	if err := access.bound(); err != nil {
+		return PageInfo{}, err
+	}
 	p, _, err := m.lookupOrSelectPage(ctx, access, pageID)
 	if err != nil {
 		return PageInfo{}, err
@@ -298,6 +322,9 @@ func (m *Manager) History(ctx context.Context, access Access, pageID PageID, act
 // optional JSON argument for code that is one function. It returns the result
 // and a note the tool result carries, or "".
 func (m *Manager) Evaluate(ctx context.Context, access Access, pageID PageID, code string, argument json.RawMessage) (any, string, error) {
+	if err := access.bound(); err != nil {
+		return nil, "", err
+	}
 	return m.evaluate(ctx, access, pageID, code, argument, false)
 }
 
@@ -308,6 +335,9 @@ func (m *Manager) Evaluate(ctx context.Context, access Access, pageID PageID, co
 // returns none, and one that can only be best-effort says so in the tool
 // result rather than looking identical.
 func (m *Manager) EvaluateReadOnly(ctx context.Context, access Access, pageID PageID, code string, argument json.RawMessage) (any, string, error) {
+	if err := access.bound(); err != nil {
+		return nil, "", err
+	}
 	return m.evaluate(ctx, access, pageID, code, argument, true)
 }
 

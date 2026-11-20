@@ -95,6 +95,9 @@ const (
 // gone as for one with no search, still ending the mount's search on the
 // thread's other pages.
 func (m *Manager) Find(ctx context.Context, access Access, pageID PageID, kind, query string, mount MountID, seq uint64) (FindState, error) {
+	if err := access.bound(); err != nil {
+		return FindState{}, err
+	}
 	kind = strings.ToLower(strings.TrimSpace(kind))
 	switch kind {
 	case FindStart, FindNext, FindPrev, FindStop:
@@ -192,7 +195,7 @@ func (m *Manager) stopFind(actionCtx context.Context, access Access, pageID Page
 		}
 	}
 	var errs []error
-	for _, p := range m.findStopPages(access.ThreadID, named, owner) {
+	for _, p := range m.findStopPages(access.ThreadID(), named, owner) {
 		finder, mode := pageFinder(p)
 		if mode == "" {
 			continue
@@ -351,7 +354,7 @@ func (m *Manager) startFind(ctx context.Context, access Access, p *managedPage, 
 	if mode == FindModeBar && query == "" {
 		return m.stopFindLocked(ctx, p, finder, owner)
 	}
-	if err := m.admitFindStart(access.ThreadID, p.id, owner); err != nil {
+	if err := m.admitFindStart(access.ThreadID(), p.id, owner); err != nil {
 		return FindState{}, err
 	}
 	m.findPoint("checked")

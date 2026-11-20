@@ -191,7 +191,7 @@ func (m *Manager) createReserved(r *tabReservation) (*managedPage, error) {
 	access, pending, user := r.access, r.pending, r.user
 	defer pending.cancel()
 	defer close(pending.done)
-	tb, threadID := access.tb, access.ThreadID
+	tb, threadID := access.tb, access.ThreadID()
 	p := pending.p
 	m.emitThreadState(threadID)
 	if r.savedMoved {

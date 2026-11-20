@@ -33,6 +33,9 @@ func (p *managedPage) appendLog(entry ConsoleLog) {
 }
 
 func (m *Manager) ConsoleLogs(_ context.Context, access Access, opts ConsoleOptions) ([]ConsoleLog, error) {
+	if err := access.bound(); err != nil {
+		return nil, err
+	}
 	p, _, err := m.lookupOrSelectPage(context.Background(), access, opts.PageID)
 	if err != nil {
 		return nil, err

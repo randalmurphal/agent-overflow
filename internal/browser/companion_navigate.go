@@ -18,6 +18,9 @@ import (
 // host, or a search. A navigation the user stopped (StopCompanionLoad) while
 // it ran answers its own abort without an error; any other failure stands.
 func (m *Manager) NavigateCompanion(ctx context.Context, access Access, pageID PageID, address string) (PageInfo, error) {
+	if err := access.bound(); err != nil {
+		return PageInfo{}, err
+	}
 	address = strings.TrimSpace(address)
 	if address == "" {
 		return PageInfo{}, fmt.Errorf("browser: address is required")
@@ -84,7 +87,7 @@ func (m *Manager) navigateCompanion(ctx context.Context, access Access, pageID P
 	if filepath.IsAbs(address) {
 		return m.OpenFile(ctx, access, address, OpenOptions{PageID: pageID})
 	}
-	workspaceFile := filepath.Join(access.Workspace, filepath.FromSlash(address))
+	workspaceFile := filepath.Join(access.Workspace(), filepath.FromSlash(address))
 	if info, err := os.Stat(workspaceFile); err == nil && info.Mode().IsRegular() {
 		return m.OpenFile(ctx, access, workspaceFile, OpenOptions{PageID: pageID})
 	}
@@ -188,6 +191,9 @@ func (m *Manager) backendPathForWindows(ctx context.Context, windowsPath string)
 // abort without an error (NavigateCompanion). A tab with no live page (being
 // created, suspended) has nothing loading.
 func (m *Manager) StopCompanionLoad(ctx context.Context, access Access, pageID PageID) error {
+	if err := access.bound(); err != nil {
+		return err
+	}
 	pageID = pageID.trim()
 	p, _, err := m.lookupOwnedPage(access, pageID)
 	if errors.Is(err, errPageNotFound) && m.hasTab(access.tb, pageID) {

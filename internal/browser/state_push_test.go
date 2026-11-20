@@ -163,10 +163,10 @@ func TestTwoPublishersOfOneWritePushItOnce(t *testing.T) {
 	manager.publishDecided = func() {
 		if first {
 			first = false
-			manager.publishPages(access.ThreadID)
+			manager.publishPages(access.ThreadID())
 		}
 	}
-	manager.publishPages(access.ThreadID)
+	manager.publishPages(access.ThreadID())
 	if n := pushes.take(); n != 1 {
 		t.Fatalf("one write published twice pushed %d states, want 1", n)
 	}
@@ -214,7 +214,7 @@ func TestAReadInfoWriteReachesThePushBeforeItsEngineReport(t *testing.T) {
 			access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 			page := mustOpen(t, manager, access, "https://example.test/")
 			pushes := countStatePushes(manager)
-			manager.emitThreadState(access.ThreadID)
+			manager.emitThreadState(access.ThreadID())
 			old := pushes.shownTitle(page.ID)
 
 			p := retitle(t, manager, access, page.ID, "Retitled")
@@ -299,7 +299,7 @@ func TestAWriteDuringAPushBuildIsPushed(t *testing.T) {
 			p.commitInfo(pageUpdate{Location: &pageLocation{URL: page.URL, Title: "Written mid-push"}})
 		}
 	}
-	manager.emitThreadState(access.ThreadID)
+	manager.emitThreadState(access.ThreadID())
 	if !written {
 		t.Fatal("no push copied the page")
 	}
@@ -307,7 +307,7 @@ func TestAWriteDuringAPushBuildIsPushed(t *testing.T) {
 		t.Fatalf("the push the write raced shows %q, want the title it copied, %q", got, page.Title)
 	}
 	// The writer publishes after its write, as every writer does.
-	manager.publishPages(access.ThreadID)
+	manager.publishPages(access.ThreadID())
 	if got := pushes.shownTitle(page.ID); got != "Written mid-push" {
 		t.Fatalf("after the writer's publish the newest push shows %q, want the write", got)
 	}
@@ -319,7 +319,7 @@ func TestARestoredPageIsPushedWithWhatItsLoadRead(t *testing.T) {
 	manager, _ := newRestoreManager(t, t.TempDir(), ManagerOptions{})
 	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	page := mustOpen(t, manager, access, "https://example.test/one")
-	if err := manager.SuspendThread(t.Context(), access.ThreadID); err != nil {
+	if err := manager.SuspendThread(t.Context(), access.ThreadID()); err != nil {
 		t.Fatal(err)
 	}
 	pushes := countStatePushes(manager)
@@ -353,7 +353,7 @@ func TestAClientReadLeavesAWriteForThePush(t *testing.T) {
 	if tab, _ := findTab(manager, access, page.ID); tab.Title != "Read by one client" {
 		t.Fatalf("the read answers %q", tab.Title)
 	}
-	manager.publishPages(access.ThreadID)
+	manager.publishPages(access.ThreadID())
 	if got := pushes.shownTitle(page.ID); got != "Read by one client" {
 		t.Fatalf("the newest push shows %q, want the write one client's read carried", got)
 	}
@@ -385,7 +385,7 @@ func TestAWriteRacingAPushIsPushed(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for range writes {
-			manager.emitThreadState(access.ThreadID)
+			manager.emitThreadState(access.ThreadID())
 		}
 	}()
 	wg.Wait()

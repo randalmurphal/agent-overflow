@@ -71,7 +71,7 @@ func lifetimeOf(m *Manager, threadID string) *threadBrowser {
 // tab stays. The action's end answers the close.
 func TestARetiredKeyboardCloseLeavesTheFreshTab(t *testing.T) {
 	m, access, _, mount := newSelectionManager(t)
-	if err := m.CloseThread(t.Context(), access.ThreadID); err != nil {
+	if err := m.CloseThread(t.Context(), access.ThreadID()); err != nil {
 		t.Fatal(err)
 	}
 	fresh := m.Bind(access.Caller())
@@ -109,7 +109,7 @@ func TestAThreadsCloseEndsItsMountsOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := m.CloseThread(t.Context(), access.ThreadID); err != nil {
+	if err := m.CloseThread(t.Context(), access.ThreadID()); err != nil {
 		t.Fatal(err)
 	}
 	m.mu.Lock()
@@ -129,7 +129,7 @@ func TestAMountOfAClosedLifetimeOrdersNothingOfTheFreshOne(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := m.CloseThread(t.Context(), access.ThreadID); err != nil {
+	if err := m.CloseThread(t.Context(), access.ThreadID()); err != nil {
 		t.Fatal(err)
 	}
 	fresh := m.Bind(access.Caller())
@@ -156,14 +156,14 @@ func TestAnOldThreadsCloseLeavesTheFreshLifetime(t *testing.T) {
 	old := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	page := openPage(t, manager, old, addr("old"))
 	release := engine.holdCloseOf(t, string(livePage(t, manager, old, page.ID).driver.Handle()))
-	closed := async(func() error { return manager.CloseThread(context.Background(), old.ThreadID) })
-	eventually(t, "the close detaches the old lifetime", func() bool { return lifetimeOf(manager, string(old.ThreadID)) != old.tb })
+	closed := async(func() error { return manager.CloseThread(context.Background(), old.ThreadID()) })
+	eventually(t, "the close detaches the old lifetime", func() bool { return lifetimeOf(manager, string(old.ThreadID())) != old.tb })
 
 	fresh := manager.Bind(old.Caller())
 	saved := openPage(t, manager, fresh, addr("saved"))
 	live := openPage(t, manager, fresh, addr("live"))
 	suspendTab(t, manager, fresh, saved.ID)
-	if err := manager.persistThreads([]ThreadID{fresh.ThreadID}); err != nil {
+	if err := manager.persistThreads([]ThreadID{fresh.ThreadID()}); err != nil {
 		t.Fatal(err)
 	}
 	release()
@@ -190,7 +190,7 @@ func TestAReleasedBindingOpensNothingAfterTheClose(t *testing.T) {
 	if err := access.End(); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.CloseThread(t.Context(), access.ThreadID); err != nil {
+	if err := m.CloseThread(t.Context(), access.ThreadID()); err != nil {
 		t.Fatal(err)
 	}
 	runtime.GC()
@@ -209,7 +209,7 @@ func TestADuplicateWhoseBrowsingWasForgottenOpensNothing(t *testing.T) {
 	m, access, ids := newTabsManager(t, addr("keep"), addr("x"))
 	var cleared bool
 	m.SetEventSink(func(event CompanionEvent) {
-		if cleared || ThreadID(event.ThreadID) != access.ThreadID {
+		if cleared || ThreadID(event.ThreadID) != access.ThreadID() {
 			return
 		}
 		for _, page := range event.Pages {
@@ -250,7 +250,7 @@ func holdCloseAfterDetach(m *Manager, access Access) (reached <-chan struct{}, r
 	var held atomic.Bool
 	m.SetEventSink(func(event CompanionEvent) {
 		// Only the first push after the detach waits; any other passes.
-		if ThreadID(event.ThreadID) == access.ThreadID && access.tb.detached.Load() && held.CompareAndSwap(false, true) {
+		if ThreadID(event.ThreadID) == access.ThreadID() && access.tb.detached.Load() && held.CompareAndSwap(false, true) {
 			close(at)
 			<-gate
 		}
@@ -287,7 +287,7 @@ func TestASuspensionDuringTheThreadsCloseRecordsNothing(t *testing.T) {
 	})
 	receive(t, engine.reading, "the suspension's read")
 	reached, releaseClose := holdCloseAfterDetach(m, access)
-	closed := async(func() error { return m.CloseThread(context.Background(), access.ThreadID) })
+	closed := async(func() error { return m.CloseThread(context.Background(), access.ThreadID()) })
 	<-reached
 	releaseRead()
 	if await(t, suspended, "the suspension") {
@@ -310,7 +310,7 @@ func TestACrashDuringTheThreadsCloseRecordsNothing(t *testing.T) {
 	page := mustOpen(t, m, access, addr("a"))
 	handle := livePage(t, m, access, page.ID).driver.Handle()
 	reached, releaseClose := holdCloseAfterDetach(m, access)
-	closed := async(func() error { return m.CloseThread(context.Background(), access.ThreadID) })
+	closed := async(func() error { return m.CloseThread(context.Background(), access.ThreadID()) })
 	<-reached
 	m.pageCrashed(handle, "crashed")
 	releaseClose()
@@ -327,7 +327,7 @@ func TestACrashDuringTheThreadsCloseRecordsNothing(t *testing.T) {
 func TestARetiredClearOfTheDownloadsLeavesTheFreshList(t *testing.T) {
 	manager, _, access, page := newDownloadManager(t)
 	startDownload(t, manager, access, page, "old.txt", 1)
-	if err := manager.CloseThread(t.Context(), access.ThreadID); err != nil {
+	if err := manager.CloseThread(t.Context(), access.ThreadID()); err != nil {
 		t.Fatal(err)
 	}
 	fresh := manager.Bind(access.Caller())

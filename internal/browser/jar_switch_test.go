@@ -237,7 +237,7 @@ func TestAThreadClosedDuringASwitchClosesWhatTheSwitchLeft(t *testing.T) {
 	openPage(t, manager, access, "https://example.test/")
 	closed := make(chan error, 1)
 	manager.switchWritten = func() {
-		go func() { closed <- manager.CloseThread(context.Background(), access.ThreadID) }()
+		go func() { closed <- manager.CloseThread(context.Background(), access.ThreadID()) }()
 		// Time for the close to reach the switch's hold.
 		select {
 		case err := <-closed:
