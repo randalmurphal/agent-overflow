@@ -108,13 +108,15 @@ func TestTrackerConnectionWritesReportChanges(t *testing.T) {
 	s := newTestStore(t)
 	c := mustCreateTrackerConnection(t, s, jiraConnection("https://example.atlassian.net", "user1@example.com", 1))
 
+	// Changed or not, a setter returns the whole row as stored.
 	expectChange := func(name string, row TrackerConnection, changed bool, err error, want bool) TrackerConnection {
 		t.Helper()
 		if err != nil || changed != want {
 			t.Fatalf("%s: changed %v, %v; want %v", name, changed, err, want)
 		}
-		if want && row.ID != c.ID {
-			t.Fatalf("%s: read back %+v", name, row)
+		stored, err := s.GetTrackerConnection(c.ID)
+		if err != nil || row != stored {
+			t.Fatalf("%s: returned %+v; stored %+v, %v", name, row, stored, err)
 		}
 		return row
 	}
@@ -136,7 +138,15 @@ func TestTrackerConnectionWritesReportChanges(t *testing.T) {
 	row, changed, err = s.SetTrackerConnectionEnabled(c.ID, true)
 	expectChange("enable", row, changed, err, true)
 
-	verification := TrackerVerification{AccountID: "acc-user1", Name: "User 1", VerifiedAt: 50, TokenExpiresAt: 900}
+	row, changed, err = s.SetTrackerConnectionTokenExpiry(c.ID, 900)
+	if row = expectChange("set expiry", row, changed, err, true); row.TokenExpiresAt != 900 {
+		t.Fatalf("expiry read back %+v", row)
+	}
+	row, changed, err = s.SetTrackerConnectionTokenExpiry(c.ID, 900)
+	expectChange("same expiry", row, changed, err, false)
+
+	// A verification leaves the expiry the user set.
+	verification := TrackerVerification{AccountID: "acc-user1", Name: "User 1", VerifiedAt: 50}
 	row, changed, err = s.RecordTrackerConnectionVerification(c.ID, verification)
 	row = expectChange("verify", row, changed, err, true)
 	if row.VerifiedAccountID != "acc-user1" || row.VerifiedName != "User 1" || row.VerifiedAt != 50 || row.TokenExpiresAt != 900 || row.Label != "Work" || !row.Enabled {
@@ -146,15 +156,24 @@ func TestTrackerConnectionWritesReportChanges(t *testing.T) {
 	expectChange("same verification", row, changed, err, false)
 	verification.VerifiedAt = 60
 	row, changed, err = s.RecordTrackerConnectionVerification(c.ID, verification)
-	expectChange("verified again later", row, changed, err, true)
+	if row = expectChange("verified again later", row, changed, err, true); row.TokenExpiresAt != 900 {
+		t.Fatalf("a verification moved the expiry: %+v", row)
+	}
+	if _, _, err := s.RecordTrackerConnectionVerification(c.ID, TrackerVerification{AccountID: "acc-user1"}); !errors.Is(err, ErrInvalidTrackerConnection) {
+		t.Errorf("verification without its time: %v; want ErrInvalidTrackerConnection", err)
+	}
 
-	for name, bad := range map[string]TrackerVerification{
-		"no time":         {AccountID: "acc-user1", TokenExpiresAt: 1},
-		"negative expiry": {AccountID: "acc-user1", VerifiedAt: 1, TokenExpiresAt: -1},
-	} {
-		if _, _, err := s.RecordTrackerConnectionVerification(c.ID, bad); !errors.Is(err, ErrInvalidTrackerConnection) {
-			t.Errorf("%s: %v; want ErrInvalidTrackerConnection", name, err)
-		}
+	row, changed, err = s.SetTrackerConnectionTokenExpiry(c.ID, 0)
+	if row = expectChange("clear expiry", row, changed, err, true); row.TokenExpiresAt != 0 || row.VerifiedAt != 60 {
+		t.Fatalf("clear read back %+v", row)
+	}
+	row, changed, err = s.SetTrackerConnectionTokenExpiry(c.ID, 0)
+	expectChange("clear again", row, changed, err, false)
+	if _, _, err := s.SetTrackerConnectionTokenExpiry(c.ID, -1); !errors.Is(err, ErrInvalidTrackerConnection) {
+		t.Errorf("negative expiry: %v; want ErrInvalidTrackerConnection", err)
+	}
+	if got, err := s.GetTrackerConnection(c.ID); err != nil || got.TokenExpiresAt != 0 {
+		t.Fatalf("after the refused expiry = %+v, %v", got, err)
 	}
 
 	missing := entityid.New()
@@ -166,6 +185,9 @@ func TestTrackerConnectionWritesReportChanges(t *testing.T) {
 	}
 	if _, _, err := s.RecordTrackerConnectionVerification(missing, verification); !errors.Is(err, sql.ErrNoRows) {
 		t.Errorf("verification of a missing connection: %v", err)
+	}
+	if _, _, err := s.SetTrackerConnectionTokenExpiry(missing, 5); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("expiry of a missing connection: %v", err)
 	}
 }
 

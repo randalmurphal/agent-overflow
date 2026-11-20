@@ -37,8 +37,9 @@ var ErrInvalidTrackerConnection = errors.New("store: invalid tracker connection"
 // Account is the Jira account email and empty otherwise. ParentID names the
 // Jira connection a Tempo connection belongs to and is empty otherwise.
 // VerifiedAccountID and VerifiedName are who the token belongs to as of
-// VerifiedAt (unix milliseconds, 0 until verified); TokenExpiresAt is 0
-// when the tracker did not say.
+// VerifiedAt (unix milliseconds, 0 until verified). TokenExpiresAt is when
+// the user said the token expires, 0 when they have not; no tracker reports
+// it.
 type TrackerConnection struct {
 	ID                string
 	Kind              string
@@ -69,10 +70,9 @@ type NewTrackerConnection struct {
 // AccountID and Name may be empty for a tracker whose token check names
 // nobody.
 type TrackerVerification struct {
-	AccountID      string
-	Name           string
-	VerifiedAt     int64
-	TokenExpiresAt int64
+	AccountID  string
+	Name       string
+	VerifiedAt int64
 }
 
 const trackerConnectionColumns = `id, kind, site, account, COALESCE(parent_id, ''), label, enabled,
@@ -215,20 +215,39 @@ func (s *Store) SetTrackerConnectionEnabled(id string, enabled bool) (TrackerCon
 }
 
 // RecordTrackerConnectionVerification records who the connection's token
-// belongs to and when that was checked. It returns the row and whether it
+// belongs to and when that was checked; the token's expiry is the user's
+// (SetTrackerConnectionTokenExpiry). It returns the row and whether it
 // changed; a missing connection fails with sql.ErrNoRows.
 func (s *Store) RecordTrackerConnectionVerification(id string, v TrackerVerification) (TrackerConnection, bool, error) {
-	if v.VerifiedAt <= 0 || v.TokenExpiresAt < 0 {
-		return TrackerConnection{}, false, fmt.Errorf("%w: a verification needs its time and a non-negative expiry", ErrInvalidTrackerConnection)
+	if v.VerifiedAt <= 0 {
+		return TrackerConnection{}, false, fmt.Errorf("%w: a verification needs its time", ErrInvalidTrackerConnection)
 	}
-	values := []any{v.AccountID, v.Name, v.VerifiedAt, v.TokenExpiresAt}
+	values := []any{v.AccountID, v.Name, v.VerifiedAt}
 	return commitRowWrite(s, rowWrite{
 		Action:     fmt.Sprintf("store: record tracker connection %s verification", id),
 		ID:         id,
-		Set:        "verified_account_id = ?, verified_name = ?, verified_at = ?, token_expires_at = ?",
+		Set:        "verified_account_id = ?, verified_name = ?, verified_at = ?",
 		SetArgs:    values,
-		Change:     "(verified_account_id IS NOT ? OR verified_name IS NOT ? OR verified_at IS NOT ? OR token_expires_at IS NOT ?)",
+		Change:     "(verified_account_id IS NOT ? OR verified_name IS NOT ? OR verified_at IS NOT ?)",
 		ChangeArgs: values,
+	}, applyTrackerConnectionRowWriteTx)
+}
+
+// SetTrackerConnectionTokenExpiry records when the user said the
+// connection's token expires (unix milliseconds); 0 clears it. It returns
+// the row and whether it changed; a negative time fails with
+// ErrInvalidTrackerConnection and a missing connection with sql.ErrNoRows.
+func (s *Store) SetTrackerConnectionTokenExpiry(id string, expiresAt int64) (TrackerConnection, bool, error) {
+	if expiresAt < 0 {
+		return TrackerConnection{}, false, fmt.Errorf("%w: a token expiry cannot be negative", ErrInvalidTrackerConnection)
+	}
+	return commitRowWrite(s, rowWrite{
+		Action:     fmt.Sprintf("store: set tracker connection %s token expiry", id),
+		ID:         id,
+		Set:        "token_expires_at = ?",
+		SetArgs:    []any{expiresAt},
+		Change:     "token_expires_at IS NOT ?",
+		ChangeArgs: []any{expiresAt},
 	}, applyTrackerConnectionRowWriteTx)
 }
 
@@ -261,10 +280,20 @@ func (s *Store) DeleteTrackerConnection(id string) (deleted []string, err error)
 }
 
 // applyTrackerConnectionRowWriteTx is the tracker_connections entry point of
-// applyRowWriteTx: it names the table and its read-back projection.
+// applyRowWriteTx: it names the table and its read-back projection. A write
+// that changed nothing returns the row as stored, read in the write's
+// transaction, so every setter returns the current row with its flag.
 func applyTrackerConnectionRowWriteTx(tx *sql.Tx, write rowWrite) (TrackerConnection, bool, error) {
 	write.table = "tracker_connections"
-	return applyRowWriteTx(tx, write, func(tx *sql.Tx, id string) (TrackerConnection, error) {
+	readBack := func(tx *sql.Tx, id string) (TrackerConnection, error) {
 		return scanTrackerConnection(tx.QueryRow(`SELECT `+trackerConnectionColumns+` FROM tracker_connections WHERE id = ?`, id).Scan)
-	})
+	}
+	row, changed, err := applyRowWriteTx(tx, write, readBack)
+	if err != nil || changed {
+		return row, changed, err
+	}
+	if row, err = readBack(tx, write.ID); err != nil {
+		return TrackerConnection{}, false, fmt.Errorf("%s: read unchanged row: %w", write.Action, err)
+	}
+	return row, false, nil
 }
