@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -155,4 +156,44 @@ func fakeProfileOf(t *testing.T, manager *Manager) *fakeProfile {
 	}
 	t.Fatal("no fake profile")
 	return nil
+}
+
+// placing reports whether a placement's link or rename gives a file its
+// private name (placeNoReplace), which a seam standing for another program
+// at a public name lets through.
+func placing(candidate string) bool {
+	return strings.HasPrefix(filepath.Base(candidate), placingNamePrefix)
+}
+
+func folderNames(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	return names
+}
+
+// closeAllPages closes every page of the thread.
+func (m *Manager) closeAllPages(t *testing.T, access Access) {
+	t.Helper()
+	m.mu.Lock()
+	var ids []string
+	for _, scope := range m.scopes {
+		for id, p := range scope.pages {
+			if p.owner == access.tb {
+				ids = append(ids, string(id))
+			}
+		}
+	}
+	m.mu.Unlock()
+	for _, id := range ids {
+		if err := m.ClosePage(t.Context(), access, PageID(id)); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
