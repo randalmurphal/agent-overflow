@@ -83,9 +83,10 @@ func (b profileBucket) label() string {
 		return "svelte flush execution"
 	case bucketMarking:
 		return "write-side marking"
-	default:
+	case bucketOther:
 		return "other"
 	}
+	panic(fmt.Sprintf("ao-harness: profile bucket %d", b))
 }
 
 // profileSlice is one bucket's share of the sampled time.

@@ -63,14 +63,15 @@ func (s *Service) UsageAttentionForRest(root, parked store.WorkItem) UsageAttent
 // coalesced: hiding a genuine non-usage failure behind a familiar provider
 // outage would make the run's only notification misleading.
 func (s *Service) workflowRestingUsageScope(item store.WorkItem) (store.WorkflowProviderUsageScopeID, error) {
-	switch engine.Reason(item.Reason) {
-	case engine.ReasonProviderUsageLimited:
+	reason := engine.Reason(item.Reason)
+	if reason == engine.ReasonProviderUsageLimited {
 		phase, _, err := s.workflowRestingPhase(item.ID)
 		if err != nil {
 			return 0, err
 		}
 		return phase.ProviderUsageScopeID, nil
-	case engine.ReasonUnitFailed:
+	}
+	if reason == engine.ReasonUnitFailed {
 		failed, err := s.FailedUnits(item.ID)
 		if err != nil {
 			return 0, err
@@ -89,9 +90,8 @@ func (s *Service) workflowRestingUsageScope(item store.WorkItem) (store.Workflow
 			}
 		}
 		return scopeID, nil
-	default:
-		return 0, nil
 	}
+	return 0, nil
 }
 
 func (s *Service) promoteWorkflowUsageAttention(claim store.WorkflowProviderUsageAttentionClaim) {

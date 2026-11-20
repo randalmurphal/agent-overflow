@@ -1,4 +1,4 @@
-.PHONY: help ao-harness-docs methodgen forge-schemas go-lint go-vet fmt-check go-vuln bindings-check frontend-lint install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-wsl-noremote release-macos go-build netns-tool go-test test-race provider-smoke-compile provider-smoke provider-smoke-revert import-corpus-smoke mockprovider mockforge harness-build harness harness-window soak-window e2e e2e-mobile-browser release-upgrade-check apk apk-release e2e-android
+.PHONY: help ao-harness-docs methodgen forge-schemas go-lint go-lint-exhaustive go-vet fmt-check go-vuln bindings-check frontend-lint install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-wsl-noremote release-macos go-build netns-tool go-test test-race provider-smoke-compile provider-smoke provider-smoke-revert import-corpus-smoke mockprovider mockforge harness-build harness harness-window soak-window e2e e2e-mobile-browser release-upgrade-check apk apk-release e2e-android
 
 # Print the supported build, test, harness, and smoke targets. Keep this
 # short enough to use from an unfamiliar checkout. `make e2e` is the
@@ -9,7 +9,7 @@ help:
 	@printf '%s\n' \
 		'Build:   make build | make check | make verify' \
 		'Tests:   make test | make test-race | make go-test GO_TEST_PKGS=./internal/x GO_TEST_FLAGS=...' \
-		'Static:  make fmt-check | make go-vet | make go-lint | make frontend-lint | make bindings-check | make go-vuln' \
+		'Static:  make fmt-check | make go-vet | make go-lint | make go-lint-exhaustive | make frontend-lint | make bindings-check | make go-vuln' \
 		'Android: make apk | make apk-release | make e2e-android' \
 		'Mobile browser: make e2e-mobile-browser (Chromium + WebKit)' \
 		'Harness: make harness | make harness-window | make harness-wsl' \
@@ -202,6 +202,25 @@ GOLANGCI_LINT ?= go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$
 GO_LINT_FLAGS ?=
 go-lint:
 	$(GOLANGCI_LINT) run --timeout 20m $(GO_LINT_FLAGS) ./...
+
+# go-lint-exhaustive runs the exhaustive linter alone over every file set
+# this host compiles (the default, nogui, noremote and providersmoke ones)
+# and over the Windows launcher's packages as Windows compiles them. The
+# linter reports at the switch, not at the constant a change added, and has
+# no backlog, so it is not limited to a change's lines. Files only macOS
+# compiles are checked by running it on macOS.
+GO_LINT_EXHAUSTIVE = $(GOLANGCI_LINT) run --timeout 20m --enable-only exhaustive
+go-lint-exhaustive:
+	$(GO_LINT_EXHAUSTIVE) ./...
+	$(GO_LINT_EXHAUSTIVE) --build-tags nogui ./...
+	$(GO_LINT_EXHAUSTIVE) --build-tags noremote ./...
+	$(GO_LINT_EXHAUSTIVE) --build-tags providersmoke ./...
+	@set -e; for tags in "" noremote; do \
+		packages=$$(GOOS=windows CGO_ENABLED=0 go list -deps -tags "$$tags" ./cmd/agent-overflow-windows | sed -n 's|^agent-overflow/|./|p'); \
+		if [ -z "$$packages" ]; then echo "ERROR: no packages found for the Windows launcher"; exit 1; fi; \
+		echo "exhaustive: the Windows launcher's packages, tags '$$tags'"; \
+		GOOS=windows CGO_ENABLED=0 $(GO_LINT_EXHAUSTIVE) --build-tags "$$tags" $$packages; \
+	done
 
 go-vet:
 	go vet $(GO_PACKAGE_ROOTS)

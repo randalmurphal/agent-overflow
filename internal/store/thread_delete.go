@@ -169,6 +169,7 @@ func deleteRefusal(threadID string, state ThreadDeleteState) error {
 		return fmt.Errorf("store: thread %s: %w", threadID, ErrThreadDeleteClaimed)
 	case ThreadDeleteCommitted:
 		return fmt.Errorf("store: thread %s: %w", threadID, ErrThreadDeleting)
+	case ThreadNotDeleting:
 	}
 	return nil
 }

@@ -134,6 +134,8 @@ func runUpdateCommand(name string, args []string) int {
 	switch result.Outcome {
 	case supervise.UpdateOutcomeOK, supervise.UpdateOutcomePrepared:
 		return 0
+	case supervise.UpdateOutcomeRolledBack, supervise.UpdateOutcomeRefused, supervise.UpdateOutcomeChanged,
+		supervise.UpdateOutcomeNoSnapshot, supervise.UpdateOutcomeFailed:
 	}
 	return 1
 }

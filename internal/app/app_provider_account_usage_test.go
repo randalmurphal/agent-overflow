@@ -425,6 +425,7 @@ func chatGPTAuthForTest(t *testing.T, identity chatGPTIdentity, refreshToken str
 	case identifiedByUserID:
 		auth["chatgpt_user_id"] = "user-1"
 		idClaims["email"] = "selected@example.com"
+	case identifiedByNothing:
 	}
 	claims, err := json.Marshal(idClaims)
 	if err != nil {

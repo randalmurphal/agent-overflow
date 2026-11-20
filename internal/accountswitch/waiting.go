@@ -183,6 +183,7 @@ func (c *Coordinator) deliver(ctx context.Context, prov string) {
 				defer c.deliveries.Done()
 				c.continueThread(ctx, prov, w.threadID, w.gen, w.guessed)
 			}()
+		case continueLater:
 		}
 	}
 	if k.needReading {

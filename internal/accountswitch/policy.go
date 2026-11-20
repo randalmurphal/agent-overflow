@@ -351,6 +351,7 @@ func scoreFor(in decideInput, c candidate) score {
 			s.exhausted++
 		case statePastThreshold:
 			s.past++
+		case stateClear:
 		}
 	}
 	return s

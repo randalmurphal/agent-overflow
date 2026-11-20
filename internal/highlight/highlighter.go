@@ -153,6 +153,7 @@ func HighlightPatchTextPrimed(lang Lang, patch, fileContent string) Result {
 				if ref.newDocLine < len(newLines) {
 					line = newLines[ref.newDocLine]
 				}
+			case sideNone:
 			}
 			out[ref.patchIndex] = padRuns(line, ref.outPad)
 		}

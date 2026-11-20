@@ -170,6 +170,7 @@ func (a *App) GetDeleteDependents(threadIDs []string) (DeleteDependents, error) 
 			dependents.Helpers++
 		case store.DeleteWorker:
 			dependents.Workers++
+		case store.DeleteNamed:
 		}
 	}
 	remote, err := a.store.ListRemoteSpawnTokens(ids)

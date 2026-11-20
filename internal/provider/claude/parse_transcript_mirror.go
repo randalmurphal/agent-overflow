@@ -651,50 +651,53 @@ func (p *Parser) awaitsTaskCall(toolUseID string) bool {
 func (p *Parser) observeProjectedToolCalls(threadID string, events []provider.ProviderEvent) []provider.ProviderEvent {
 	out := make([]provider.ProviderEvent, 0, len(events))
 	for _, event := range events {
-		switch event.Kind {
-		case provider.EventToolStart:
-			if event.ItemID == "" {
-				break
-			}
-			p.stampProjectedAgentLaunchEffort(&event)
-			p.rememberToolUseName(event.ItemID, event.ItemType)
-			if event.ParentToolUseID != "" {
-				p.rememberToolUseParent(event.ItemID, event.ParentToolUseID)
-			}
-			start, unclassified := p.unclassifiedTaskCalls.get(event.ItemID)
-			if !unclassified || event.ItemType == "" {
-				break
-			}
-			p.unclassifiedTaskCalls.delete(event.ItemID)
-			if start.resumes == "" && startsAgent(event.ItemType) {
-				p.rememberTaskTranscriptRoot(start.taskID, event.ItemID)
-				break
-			}
-			fields, prompt, closed := p.beginTaskResume(threadID, event.ItemID, start.resumes, start, event.Timestamp)
-			fields["task_id"] = start.taskID
-			fields["task_type"] = "local_agent"
-			meta, _ := json.Marshal(fields)
-			out = append(out, event)
-			out = append(out, closed...)
-			out = append(out, provider.ProviderEvent{
-				Kind:            provider.EventToolStart,
-				ThreadID:        threadID,
-				ItemID:          event.ItemID,
-				Meta:            meta,
-				ParentToolUseID: event.ParentToolUseID,
-				Timestamp:       event.Timestamp,
-			})
-			if prompt != nil {
-				out = append(out, *prompt)
-			}
+		if event.Kind == provider.EventToolStart && event.ItemID != "" {
+			out = p.appendProjectedToolStart(out, threadID, event)
 			continue
-		case provider.EventToolComplete:
-			if p.backgroundOrigin(event.ItemID) == backgroundFromTaskStarted {
-				event.Meta = mergeJSONMetaFlag(event.Meta, "is_background", true)
-				p.clearBackground(event.ItemID)
-			}
+		}
+		if event.Kind == provider.EventToolComplete && p.backgroundOrigin(event.ItemID) == backgroundFromTaskStarted {
+			event.Meta = mergeJSONMetaFlag(event.Meta, "is_background", true)
+			p.clearBackground(event.ItemID)
 		}
 		out = append(out, event)
+	}
+	return out
+}
+
+// appendProjectedToolStart records one projected call and appends the
+// events that stand for it: the call itself, followed by its resume events
+// when a task_started had already bound it as a resume.
+func (p *Parser) appendProjectedToolStart(out []provider.ProviderEvent, threadID string, event provider.ProviderEvent) []provider.ProviderEvent {
+	p.stampProjectedAgentLaunchEffort(&event)
+	p.rememberToolUseName(event.ItemID, event.ItemType)
+	if event.ParentToolUseID != "" {
+		p.rememberToolUseParent(event.ItemID, event.ParentToolUseID)
+	}
+	start, unclassified := p.unclassifiedTaskCalls.get(event.ItemID)
+	if !unclassified || event.ItemType == "" {
+		return append(out, event)
+	}
+	p.unclassifiedTaskCalls.delete(event.ItemID)
+	if start.resumes == "" && startsAgent(event.ItemType) {
+		p.rememberTaskTranscriptRoot(start.taskID, event.ItemID)
+		return append(out, event)
+	}
+	fields, prompt, closed := p.beginTaskResume(threadID, event.ItemID, start.resumes, start, event.Timestamp)
+	fields["task_id"] = start.taskID
+	fields["task_type"] = "local_agent"
+	meta, _ := json.Marshal(fields)
+	out = append(out, event)
+	out = append(out, closed...)
+	out = append(out, provider.ProviderEvent{
+		Kind:            provider.EventToolStart,
+		ThreadID:        threadID,
+		ItemID:          event.ItemID,
+		Meta:            meta,
+		ParentToolUseID: event.ParentToolUseID,
+		Timestamp:       event.Timestamp,
+	})
+	if prompt != nil {
+		out = append(out, *prompt)
 	}
 	return out
 }

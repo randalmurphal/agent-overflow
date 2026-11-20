@@ -96,6 +96,8 @@ jobs:
           frontend-dist: "true"
           cache-name: build-macos
       - run: make go-build
+      - name: exhaustive on the files macOS compiles
+        run: make go-lint-exhaustive
       # The orphan reaper is a script macOS's own /bin/sh runs; no other job
       # executes it there.
       - name: Run the orphan reaper under macOS sh
@@ -126,18 +128,22 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: scripts/ci-change.sh "$RUNNER_TEMP/change"
-      - name: golangci-lint on the change
-        if: github.event_name == 'pull_request' || github.event_name == 'push'
+      - name: Choose the golangci-lint binary
         run: |
           set -euo pipefail
           # The image carries golangci-lint at the Makefile's pin; a pin
           # the image has not caught up with falls back to `go run`.
-          lint=""
           if golangci-lint version 2>/dev/null | grep -q "version v$(sed -n 's/^GOLANGCI_LINT_VERSION *:= *v//p' Makefile) "; then
-            lint="GOLANGCI_LINT=golangci-lint"
+            echo "GOLANGCI_LINT=golangci-lint" >> "$GITHUB_ENV"
           fi
-          # shellcheck disable=SC2086
-          make go-lint $lint GO_LINT_FLAGS="--new-from-patch=$RUNNER_TEMP/change/change.diff"
+      - name: golangci-lint on the change
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
+        run: make go-lint GO_LINT_FLAGS="--new-from-patch=$RUNNER_TEMP/change/change.diff"
+      # exhaustive has no backlog, and a constant added to an enum is
+      # reported at the switches over it, which the change need not touch.
+      # The macOS job runs the same target for the files only macOS compiles.
+      - name: exhaustive on the whole tree
+        run: make go-lint-exhaustive
       - run: make go-vuln
 
   frontend:

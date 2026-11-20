@@ -773,6 +773,8 @@ func (o mergedPROutcome) store() string {
 		return store.PROutcomeKept
 	case mergedPRGone:
 		return store.PROutcomeGone
+	case mergedPRWait, mergedPRSkipped:
+		fallthrough
 	default:
 		return store.PROutcomeSkipped
 	}

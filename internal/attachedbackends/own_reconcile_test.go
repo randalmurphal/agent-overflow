@@ -160,6 +160,7 @@ func TestATombstoneForThisDeviceRetiresThePeerProfile(t *testing.T) {
 			changed++
 		case SetRemoved:
 			removed = append(removed, change)
+		case SetRenamed, SetDeviceNameSync:
 		}
 	})
 	hooks := OwnDeviceHooks{

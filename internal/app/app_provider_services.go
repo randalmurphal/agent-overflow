@@ -124,13 +124,8 @@ func (a *App) providerLifecycleService() *providerlifecycleapp.Service {
 				TurnInFlight: a.providerHasTurnInFlight,
 				RecordActivity: func(threadID, token string, kind provider.EventKind, content string, now time.Time) {
 					a.sessionManager().runtime.RecordActivity(threadID, token, kind, content, now)
-					switch kind {
-					case provider.EventTurnStart, provider.EventTurnComplete:
+					if kind == provider.EventTurnStart || kind == provider.EventTurnComplete || (kind == provider.EventSessionStatus && content == "disconnected") {
 						a.turnActivityUnixNano.Store(now.UnixNano())
-					case provider.EventSessionStatus:
-						if content == "disconnected" {
-							a.turnActivityUnixNano.Store(now.UnixNano())
-						}
 					}
 				},
 			},

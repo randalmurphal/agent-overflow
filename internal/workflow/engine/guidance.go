@@ -77,6 +77,8 @@ func (e *Engine) guide(itemID string, draft GuidanceDraft) (GuidanceState, error
 				"guide run %q: this run is done and awaiting disposition, so no phase of it will be entered again; settle it with WorkflowMergeItem, WorkflowCreateItemPR, or WorkflowDiscardItem",
 				itemID)
 		}
+	case StateDone, StateFailed, StateCancelled:
+		fallthrough
 	default:
 		return GuidanceState{}, fmt.Errorf(
 			"guide run %q: the run is %s, so there is no phase entry left to deliver guidance at", itemID, row.State)
@@ -288,6 +290,7 @@ func (e *Engine) entryGuidance(item *runtimeItem, phase def.Phase, entry phaseEn
 		}
 		round := append([]GuidanceEntry(nil), item.guidance...)
 		return round, matchingGuidance(pending, round), nil
+	case entryFresh:
 	}
 	delivered, err := e.deliverGuidance(item, phase, entry)
 	if err != nil {

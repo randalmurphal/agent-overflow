@@ -1514,10 +1514,9 @@ func TestClassifyNotification_TurnCompletedNormalizesStatus(t *testing.T) {
 			var complete provider.ProviderEvent
 			var sawError bool
 			for _, e := range events {
-				switch e.Kind {
-				case provider.EventTurnComplete:
+				if e.Kind == provider.EventTurnComplete {
 					complete = e
-				case provider.EventError:
+				} else if e.Kind == provider.EventError {
 					sawError = true
 					if e.Content != tt.wantError {
 						t.Errorf("EventError content = %q, want %q", e.Content, tt.wantError)

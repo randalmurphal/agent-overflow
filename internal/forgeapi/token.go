@@ -47,6 +47,8 @@ func (t *Token) authorize(req *http.Request) {
 	switch t.header {
 	case AuthPrivateToken:
 		req.Header.Set("Private-Token", value)
+	case AuthBearer:
+		fallthrough
 	default:
 		req.Header.Set("Authorization", "Bearer "+value)
 	}

@@ -397,6 +397,8 @@ func (e *Engine) settleCallChild(child store.WorkItem) error {
 				child.ID, child.WorkflowID),
 			phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonAgentError,
 		})
+	case StateRunning, StateNeedsHuman:
+		fallthrough
 	default:
 		return nil // Still running or parked: the parent keeps waiting.
 	}

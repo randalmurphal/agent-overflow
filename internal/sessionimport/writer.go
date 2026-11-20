@@ -267,6 +267,16 @@ func (b *builder) apply(evt importir.Event) error {
 		// already carries whole. (A block STOP is not framing — see
 		// contentBlockStop.)
 		return nil
+	case provider.EventApprovalRequest, provider.EventApprovalResolved, provider.EventUserInputRequest,
+		provider.EventUserInputResolved, provider.EventTodoUpdate, provider.EventTaskCreate, provider.EventTaskUpdate,
+		provider.EventAPIRetry, provider.EventModelRerouted, provider.EventModelFallback, provider.EventThreadRenamed,
+		provider.EventBlocksAbandoned, provider.EventBackgroundTaskNotification, provider.EventSessionWakeup,
+		provider.EventScheduledJobs, provider.EventCompactionStatus, provider.EventSubagentNotification,
+		provider.EventSubagentProgress, provider.EventSubagentBackgrounded, provider.EventBackgroundTasksChanged,
+		provider.EventAgentWakeDropped, provider.EventBackgroundTaskStopAcked, provider.EventCodexExecResult,
+		provider.EventTerminalInteraction, provider.EventCommandLifecycle, provider.EventCommandsChanged,
+		provider.EventWorkspaceChanged, provider.EventPermissionModeChanged:
+		fallthrough
 	default:
 		b.warn("import.unmapped-event", fmt.Sprintf(
 			"skipped a %s event with no imported row shape", evt.Kind))

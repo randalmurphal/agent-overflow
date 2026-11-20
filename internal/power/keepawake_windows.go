@@ -96,6 +96,7 @@ func setExecutionState(mode Mode) error {
 		flags |= esSystemRequired
 	case ModeDisplay:
 		flags |= esSystemRequired | esDisplayRequired
+	case ModeOff:
 	}
 	// ES_CONTINUOUS on its own is the documented release: it clears the
 	// system/display requirements previously set by this thread.

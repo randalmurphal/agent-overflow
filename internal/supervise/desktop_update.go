@@ -252,6 +252,7 @@ func (d DesktopUpdate) Reconcile(ctx context.Context) (DesktopDecision, error) {
 	case UpdateRolledBack, UpdateFailed:
 		run.Discard(ctx, record.State)
 		return d.markReported(run, record)
+	case UpdatePending:
 	}
 
 	stopped := "the update was interrupted and its new version is missing"

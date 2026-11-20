@@ -117,6 +117,8 @@ func (r Ref) revision() string {
 		return BranchRefPrefix + r.Name
 	case RefTag:
 		return TagRefPrefix + r.Name
+	case RefHead, RefCommit:
+		fallthrough
 	default:
 		return r.Name
 	}
