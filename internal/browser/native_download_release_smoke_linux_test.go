@@ -85,7 +85,9 @@ func TestNativeEngineRealDownloadCancelMeetsItsRelease(t *testing.T) {
 	}
 
 	// The GTK thread is held while the cancel is asked and the release
-	// begins, so both wait there, the cancel first.
+	// takes the download's record: the cancel, which looks the download up
+	// on the GTK thread, runs only once the record is gone, whenever its
+	// post reached the queue, so it never touches a released download.
 	entered, gate := make(chan struct{}), make(chan struct{})
 	go uiThread.Run(func() {
 		close(entered)
@@ -94,8 +96,6 @@ func TestNativeEngineRealDownloadCancelMeetsItsRelease(t *testing.T) {
 	<-entered
 	canceled := make(chan error, 1)
 	go func() { canceled <- profile.CancelDownload(id) }()
-	// Long enough for the cancel to reach the GTK thread's queue.
-	time.Sleep(200 * time.Millisecond)
 	released := make(chan struct{})
 	go func() {
 		profile.releaseDownload(id)

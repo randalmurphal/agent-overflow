@@ -41,9 +41,12 @@ func (p *cdpPage) TypeText(ctx context.Context, text string) error {
 	return chromedp.Do(ctx, chromedp.KeyEvent(text))
 }
 
-func (p *cdpPage) SelectionText(ctx context.Context) string {
-	selected, _ := chromedp.Run(ctx, chromedp.Evaluate[string](`(()=>{const a=document.activeElement;if(a&&(a instanceof HTMLInputElement||a instanceof HTMLTextAreaElement)&&a.selectionStart!==null)return a.value.slice(a.selectionStart,a.selectionEnd);return String(getSelection()||"")})()`))
-	return selected
+func (p *cdpPage) SelectionText(ctx context.Context) (string, error) {
+	selected, err := chromedp.Run(ctx, chromedp.Evaluate[string](`(()=>{const a=document.activeElement;if(a&&(a instanceof HTMLInputElement||a instanceof HTMLTextAreaElement)&&a.selectionStart!==null)return a.value.slice(a.selectionStart,a.selectionEnd);return String(getSelection()||"")})()`))
+	if err != nil {
+		return "", fmt.Errorf("browser: read the page's selection: %w", err)
+	}
+	return selected, nil
 }
 
 func (p *cdpPage) Scroll(ctx context.Context, selector string, x, y float64) error {

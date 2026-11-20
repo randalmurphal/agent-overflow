@@ -78,8 +78,8 @@ func TestNativeEngineRealEscapeStaysThePages(t *testing.T) {
 	}
 	// What the gate gathered for each press, in order; it reports
 	// synchronously, inside the press.
-	var presses []KeyPress
-	restore, err := view.onKeyPress(func(pressed keybindings.Accelerator, press KeyPress) {
+	var presses []keyPress
+	restore, err := view.onKeyPress(func(pressed keybindings.Accelerator, press keyPress) {
 		if pressed.Key == "escape" {
 			presses = append(presses, press)
 		}
@@ -94,7 +94,7 @@ func TestNativeEngineRealEscapeStaysThePages(t *testing.T) {
 	})
 	// offer hands the gate the presses inside one GTK callback, so no focus
 	// change lands between them, and answers what the gate gathered.
-	offer := func(state string, offers ...escapeOffer) []KeyPress {
+	offer := func(state string, offers ...escapeOffer) []keyPress {
 		t.Helper()
 		presses = nil
 		stopped, err := view.offerEscapes(offers)
@@ -132,7 +132,7 @@ func TestNativeEngineRealEscapeStaysThePages(t *testing.T) {
 	if err != nil || !hasIM {
 		t.Fatalf("the view's input method context: %v, %v", hasIM, err)
 	}
-	fresh := KeyPress{}
+	fresh := keyPress{}
 	if got := offer("no search", escapeOffer{Release: true}); got[0] != fresh {
 		t.Fatalf("no search: gathered %+v", got[0])
 	}
@@ -154,7 +154,7 @@ func TestNativeEngineRealEscapeStaysThePages(t *testing.T) {
 	// Held down: the presses after the first are held until a release, and
 	// the press after the release is fresh again.
 	got := offer("held", escapeOffer{}, escapeOffer{}, escapeOffer{Release: true}, escapeOffer{Release: true})
-	want := []KeyPress{fresh, {Held: true}, {Held: true}, fresh}
+	want := []keyPress{fresh, {Held: true}, {Held: true}, fresh}
 	if !slices.Equal(got, want) {
 		t.Fatalf("held: gathered %+v, want %+v", got, want)
 	}

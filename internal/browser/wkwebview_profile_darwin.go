@@ -66,12 +66,6 @@ func (e *wkEngine) NewProfile(_ context.Context, opts profileOptions) (enginePro
 		pages:        make(map[*wkPage]struct{}), downloads: make(map[downloadID]*wkDownload),
 	}
 	wkProfileByID.Store(id, profile)
-	e.mu.Lock()
-	if e.profiles == nil {
-		e.profiles = make(map[uint64]*wkProfile)
-	}
-	e.profiles[id] = profile
-	e.mu.Unlock()
 	return profile, nil
 }
 
@@ -82,7 +76,7 @@ type wkProfile struct {
 	engine *wkEngine
 	id     uint64
 	handle profileHandle
-	// store is this workspace's WKWebsiteDataStore. It survives a restart only
+	// store is this jar's WKWebsiteDataStore. It survives a restart only
 	// on macOS 14+ with the site-data setting on: WebKit offers no
 	// per-identifier persistent store below that, and an in-memory one is the
 	// only honest answer there.
@@ -198,6 +192,9 @@ func (p *wkProfile) newPageShell(hooks pageHooks, id uint64) (*wkPage, error) {
 		engine: p.engine, profile: p, id: id,
 		hooks: hooks, ctx: ctx, cancel: cancel, slot: -1,
 	}
+	// The page's own view field is the WKWebView, so its nativeView is named
+	// through the embedded struct.
+	page.nativePageOps.view, page.life = page, ctx
 	page.handle = pageHandle(page.id)
 	wkPageByID.Store(page.id, page)
 	return page, nil
@@ -359,9 +356,6 @@ func (p *wkProfile) Dispose(context.Context) error {
 	// have taken it.
 	wkCancelDestinations(p)
 	wkProfileByID.Delete(p.id)
-	p.engine.mu.Lock()
-	delete(p.engine.profiles, p.id)
-	p.engine.mu.Unlock()
 	wkFreeStore(p.store)
 	return nil
 }

@@ -414,7 +414,14 @@ func (m *Manager) startFind(ctx context.Context, access Access, p *managedPage, 
 		m.emit(CompanionEvent{Kind: "find", ThreadID: string(p.owner.id), PageID: string(p.id), Find: taken})
 	}
 	if mode == FindModeEngine && query == "" {
-		query = findSeed(p.driver.SelectionText(ctx))
+		selected, err := p.driver.SelectionText(ctx)
+		if err != nil {
+			p.findMu.Lock()
+			p.find.disown()
+			p.findMu.Unlock()
+			return FindState{}, fmt.Errorf("browser: read the selection to search for: %w", err)
+		}
+		query = findSeed(selected)
 	}
 	m.findPoint("engine")
 	result, err := finder.FindStart(ctx, query)

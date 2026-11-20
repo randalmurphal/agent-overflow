@@ -35,7 +35,7 @@ func TestASuspendSavesTheNewerAddressReportedDuringItsRead(t *testing.T) {
 		if calls.Add(1) == 1 {
 			// The read answered the second entry; the page moves on and the
 			// engine reports it before the read commits.
-			fake.SameDocumentNavigation(b)
+			fake.sameDocumentNavigation(b)
 			p.commitInfo(pageUpdate{Location: &pageLocation{URL: b, Title: fakeTitle(b)}, Report: 1})
 		}
 	}
@@ -57,7 +57,7 @@ func TestASuspendOfAPageThatKeepsNavigatingIsBounded(t *testing.T) {
 	address := func(n int32) string { return fmt.Sprintf("https://example.test/loop/%d", n) }
 	manager.infoRead = func(*managedPage) {
 		n := calls.Add(1)
-		fake.SameDocumentNavigation(address(n))
+		fake.sameDocumentNavigation(address(n))
 		p.commitInfo(pageUpdate{Location: &pageLocation{URL: address(n), Title: "loop"}, Report: uint64(n)})
 	}
 	if err := manager.SuspendThread(t.Context(), access.ThreadID()); err != nil {

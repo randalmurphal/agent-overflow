@@ -7,7 +7,7 @@
 #include <string.h>
 #include <stdlib.h>
 
-// Callbacks implemented in Go (webkitexport_linux.go).
+// Callbacks implemented in Go (webkit_cgo_linux.go).
 extern void aoWebKitEvalDone(uint64_t call_id, char *json, char *err);
 extern void aoWebKitSnapshotDone(uint64_t call_id, void *pixels, int width,
                                  int height, int stride, char *err);
@@ -761,8 +761,7 @@ static gboolean ao_file_chooser(WebKitWebView *view, WebKitFileChooserRequest *r
 }
 
 // ao_context_menu suppresses the menu on a hidden agent page and shows the real
-// site menu on a presented one. Appending AO's own items to that menu is the
-// pane wave's work (spec §7), and lands on this same callback.
+// site menu on a presented one.
 static gboolean ao_context_menu(WebKitWebView *view, WebKitContextMenu *menu,
                                 WebKitHitTestResult *hit, gpointer data) {
   (void)menu;

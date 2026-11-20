@@ -193,7 +193,7 @@ func aoWKVAllow(pageID, _ C.uint64_t, decision unsafe.Pointer, uri *C.char, down
 		// The decision's block is given up with its answer. A loop that is
 		// gone takes the page with it, so an unanswered decision dies with the
 		// process rather than blocking anything.
-		uiThread.Release(func() { C.ao_wkv_policy_finish(decision, verdict) })
+		releasePolicyAnswer.release(uiThread, func() { C.ao_wkv_policy_finish(decision, verdict) })
 	}()
 }
 
@@ -224,7 +224,7 @@ func aoWKVPageInfo(pageID C.uint64_t, uri *C.char, title *C.char) {
 	if page == nil {
 		return
 	}
-	page.noteLoad(location)
+	page.noteLoad()
 	if page.hooks.Info == nil {
 		return
 	}
@@ -271,7 +271,7 @@ func aoWKVKeyChord(pageID C.uint64_t, key *C.char, ctrl, meta, alt, shift, repea
 		return 0
 	}
 	pressed := keybindings.Accelerator{Key: C.GoString(key), Ctrl: ctrl != 0, Meta: meta != 0, Alt: alt != 0, Shift: shift != 0}
-	if page.engine.events.KeyChord(page.handle, pressed, KeyPress{Repeat: repeat != 0, Composing: composing != 0}) {
+	if page.engine.events.KeyChord(page.handle, pressed, keyPress{Repeat: repeat != 0, Composing: composing != 0}) {
 		return 1
 	}
 	return 0
@@ -390,14 +390,12 @@ func aoWKVDownloadDestination(profileID, pageID, popupID, downloadID C.uint64_t,
 // wkCancelDestinations cancels and releases, on the main thread, the
 // destination decisions p still holds, and refuses later ones (Dispose).
 func wkCancelDestinations(p *wkProfile) {
-	if !uiThread.Release(func() {
+	releaseDestinations.release(uiThread, func() {
 		for _, pending := range p.destinations.Close() {
 			C.ao_wkv_download_decide(pending.ptr, nil)
 			C.ao_wkv_download_release(pending.ptr)
 		}
-	}) {
-		log.Printf("browser: profile %s: cancel the downloads still being decided: %v", p.handle, errWKUnavailable)
-	}
+	})
 }
 
 // wkPendingDownload is a download whose destination is being decided, with
@@ -629,7 +627,7 @@ func wkNewStore(identifier string, ephemeral bool) (unsafe.Pointer, error) {
 }
 
 func wkFreeStore(store unsafe.Pointer) {
-	uiThread.Release(func() { C.ao_wkv_store_free(store) })
+	releaseSiteData.release(uiThread, func() { C.ao_wkv_store_free(store) })
 }
 
 // wkClearSiteData removes every WKWebsiteDataStore this app has created, which
@@ -785,32 +783,26 @@ func wkLoadFile(view wkView, path, readAccessDir string) error {
 	})
 }
 
-// The history action codes the Objective-C side takes.
-const (
-	wkHistoryBack    = 0
-	wkHistoryForward = 1
-	wkHistoryReload  = 2
-	wkHistoryStop    = 3
-)
-
-func wkHistory(view wkView, action int) error {
-	return view.do(func(view unsafe.Pointer) { C.ao_wkv_view_history(view, C.int(action)) })
+// wkHistory takes one history step; the Objective-C side numbers the steps
+// as nativeHistoryStep does.
+func wkHistory(view wkView, step nativeHistoryStep) error {
+	return view.do(func(view unsafe.Pointer) { C.ao_wkv_view_history(view, C.int(step)) })
 }
 
-func wkCanGo(view wkView, forward bool) bool {
+func wkCanGo(view wkView, forward bool) (bool, error) {
 	flag := C.int(0)
 	if forward {
 		flag = 1
 	}
 	answer := false
-	_ = view.do(func(view unsafe.Pointer) { answer = C.ao_wkv_view_can_go(view, flag) == 1 })
-	return answer
+	err := view.do(func(view unsafe.Pointer) { answer = C.ao_wkv_view_can_go(view, flag) == 1 })
+	return answer, err
 }
 
-func wkIsLoading(view wkView) bool {
+func wkIsLoading(view wkView) (bool, error) {
 	loading := false
-	_ = view.do(func(view unsafe.Pointer) { loading = C.ao_wkv_view_is_loading(view) == 1 })
-	return loading
+	err := view.do(func(view unsafe.Pointer) { loading = C.ao_wkv_view_is_loading(view) == 1 })
+	return loading, err
 }
 
 // wkFind runs one -findString:withConfiguration:completionHandler: and
@@ -933,7 +925,7 @@ func withDownloadOnUI(p *wkProfile, id downloadID, fn func(download unsafe.Point
 }
 
 func wkReleaseDownload(download unsafe.Pointer) {
-	uiThread.Release(func() { C.ao_wkv_download_release(download) })
+	releaseDownloadRef.release(uiThread, func() { C.ao_wkv_download_release(download) })
 }
 
 // wkSample is one sample of a running download's progress

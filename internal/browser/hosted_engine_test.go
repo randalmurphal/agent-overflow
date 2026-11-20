@@ -417,7 +417,12 @@ func TestHostedEngineBoundsAndDevToolsEmitValidDirectives(t *testing.T) {
 		t.Fatal("an 800x600 pane must place a 1280x720 page")
 	}
 	engine.SetPageBounds("page1", placement)
-	engine.OpenPageDevTools("page1")
+	if err := engine.OpenPageDevTools("page1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.OpenPageDevTools(""); err == nil {
+		t.Fatal("a devtools directive the launcher would refuse was reported sent")
+	}
 	sink.expectOps(t, webview2host.OpBounds, webview2host.OpDevTools)
 
 	bounds := sink.next(t)
@@ -1345,7 +1350,7 @@ func TestHostedEngineShipsAcceleratorsAndRoutesAMatch(t *testing.T) {
 	set := keybindings.AcceleratorSet{{Key: "w", Ctrl: true}: {}}
 	var chords []keybindings.Accelerator
 	engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{
-		KeyChord: func(handle ids.PageHandle, pressed keybindings.Accelerator, _ KeyPress) bool {
+		KeyChord: func(handle ids.PageHandle, pressed keybindings.Accelerator, _ keyPress) bool {
 			if handle != "page1" {
 				t.Errorf("KeyChord for %q, want page1", handle)
 			}

@@ -77,12 +77,6 @@ func (e *webkitEngine) NewProfile(_ context.Context, opts profileOptions) (engin
 		pages:        make(map[*webkitPage]struct{}), downloads: make(map[downloadID]unsafe.Pointer),
 	}
 	webkitProfileByID.Store(id, profile)
-	e.mu.Lock()
-	if e.profiles == nil {
-		e.profiles = make(map[uint64]*webkitProfile)
-	}
-	e.profiles[id] = profile
-	e.mu.Unlock()
 	return profile, nil
 }
 
@@ -203,6 +197,9 @@ func (p *webkitProfile) newPageShell(hooks pageHooks, id uint64) (*webkitPage, e
 		engine: p.engine, profile: p, id: id,
 		hooks: hooks, ctx: ctx, cancel: cancel,
 	}
+	// The page's own view field is the WebKitWebView, so its nativeView is
+	// named through the embedded struct.
+	page.nativePageOps.view, page.life = page, ctx
 	page.handle = pageHandle(page.id)
 	webkitPageByID.Store(page.id, page)
 	return page, nil
@@ -314,9 +311,6 @@ func (p *webkitProfile) Dispose(context.Context) error {
 	// completion would have taken it.
 	webkitCancelDestinations(p)
 	webkitProfileByID.Delete(p.id)
-	p.engine.mu.Lock()
-	delete(p.engine.profiles, p.id)
-	p.engine.mu.Unlock()
 	webkitFreeSession(p.session)
 	return nil
 }

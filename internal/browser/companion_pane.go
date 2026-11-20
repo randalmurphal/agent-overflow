@@ -367,6 +367,5 @@ func (m *Manager) OpenPaneDevTools(ctx context.Context, access Access, pageID Pa
 	if err != nil {
 		return err
 	}
-	host.OpenPageDevTools(p.driver.Handle())
-	return nil
+	return host.OpenPageDevTools(p.driver.Handle())
 }

@@ -24,8 +24,10 @@ import (
 	"time"
 )
 
-// Thread is a UI thread that actions are posted to, each call waiting for
-// its action at most the thread's timeout.
+// Thread is a UI thread that actions are posted to. The thread's timeout
+// bounds how long a call waits for its action to start (Run) or to run
+// (Release); Run still waits for an action that started in time, and
+// Settle waits for its action however long it takes.
 type Thread struct {
 	post    func(func())
 	alive   func() bool

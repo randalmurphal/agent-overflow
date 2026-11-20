@@ -38,7 +38,6 @@ extern void aoWKVFindDone(uint64_t call_id, int found);
 // The download states aoWKVDownloadFinished maps onto the Go seam's
 // (driver_events.go): canceled is the completion of AO's cancel, and failed
 // didFailWithError, which WebKit never sends for a cancel it was asked for.
-#define AO_DL_IN_PROGRESS 0
 #define AO_DL_COMPLETED 1
 #define AO_DL_CANCELED 2
 #define AO_DL_FAILED 3
@@ -275,10 +274,9 @@ void ao_wkv_view_press_key(void *view, const char *key, int ctrl, int meta, int 
 // shared between them (one container, one "the presented view" pointer) would
 // let the second pane move or hide the first.
 //
-// This is the WKWebView analogue of the Linux 1x1 clipping GtkScrolledWindow.
-// An off-window WKWebView is the trap it avoids: WebKit only guarantees layout
-// and snapshots for a view that is IN a window, so hidden pages stay in the
-// window and are clipped away instead of being unparented.
+// Parking keeps every hidden page in the window: WebKit only guarantees layout
+// and snapshots for a view that is IN a window, so a hidden page is clipped
+// away inside the 1x1 park view instead of being unparented.
 // ---------------------------------------------------------------------------
 
 static NSView *ao_host = nil;
@@ -856,10 +854,11 @@ static void ao_attach_download(WKWebView *view, WKDownload *download) {
   WKWebView *popup = [[AOWebView alloc] initWithFrame:NSMakeRect(0, 0, 1280, 800)
                                         configuration:configuration];
   // The popup starts loading as soon as this returns, before the Manager can
-  // adopt it, so every navigation in it is checked from the first one. It
-  // carries its opener's page, profile and download directory: the opener's
-  // policy answers until adoption, and a download it starts before then
-  // reaches the Go side, which refuses one outside every page. The UI
+  // adopt it, so every navigation in it is checked from the first one. It is
+  // stamped with its opener's page id and profile id: the opener's policy
+  // answers its requests until adoption, and a download it starts before then
+  // reaches the Go side naming the popup by its popup number, which the
+  // Manager parks until the popup's fate lists it. The UI
   // delegate is set now too: a popup can open its own as its first document
   // parses, before adoption, and names this view by its popup number until
   // then. Its dialogs and pickers are refused while it has no page id
@@ -1223,13 +1222,17 @@ static void ao_connect_view(WKWebView *view, uint64_t page_id, uint64_t profile_
   if (controller != nil && console_handler != NULL) {
     NSString *name = [NSString stringWithUTF8String:console_handler];
     // A popup's configuration may already carry the opener's controller, and
-    // adding a handler name twice RAISES. Removing first would leave a window
-    // in which the opener's live page posts into nothing, so the duplicate is
-    // caught instead — the handler being added is the same shared object.
+    // adding a handler name twice raises NSInvalidArgumentException. Removing
+    // first would leave a window in which the opener's live page posts into
+    // nothing, so the duplicate is caught instead: the handler being added is
+    // the same shared object. Any other exception is logged.
     @try {
       [controller addScriptMessageHandler:ao_delegate() name:name];
-    } @catch (NSException *ignored) {
-      (void)ignored;
+    } @catch (NSException *refused) {
+      if (![[refused name] isEqualToString:NSInvalidArgumentException]) {
+        NSLog(@"browser: the console handler was not registered: %@: %@", [refused name],
+              [refused reason]);
+      }
     }
     // The same controller may already carry the opener's script; adding it
     // again would double every console entry the opener reports.
@@ -1316,13 +1319,18 @@ int ao_wkv_view_close(void *view) {
     [v setNavigationDelegate:nil];
     [v setUIDelegate:nil];
     // An observer left registered on a deallocating object is a hard crash, and
-    // a view that never reached ao_connect_view has none.
+    // a view that never reached ao_connect_view has none: removing one that is
+    // not registered raises NSRangeException, which is expected here. Any
+    // other exception is logged.
     @try {
       [v removeObserver:ao_delegate() forKeyPath:@"title" context:&kAOObserverContext];
       [v removeObserver:ao_delegate() forKeyPath:@"URL" context:&kAOObserverContext];
       [v removeObserver:ao_delegate() forKeyPath:@"loading" context:&kAOObserverContext];
-    } @catch (NSException *ignored) {
-      (void)ignored;
+    } @catch (NSException *refused) {
+      if (![[refused name] isEqualToString:NSRangeException]) {
+        NSLog(@"browser: the page's observers were not removed: %@: %@", [refused name],
+              [refused reason]);
+      }
     }
     objc_setAssociatedObject(v, &kAOPageIDKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     [v release];
@@ -1565,7 +1573,7 @@ static void ao_snapshot_deliver(uint64_t call_id, NSImage *image, int width, int
   }
   // No CTM flip: CGContextDrawImage into a bitmap context already writes the
   // image top-down (row 0 is the top row), which is what webkitimage.go and the
-  // clip math expect. Flipping here inverted every screenshot (2026-08-31).
+  // clip math expect; a flip here would invert every screenshot.
   CGContextDrawImage(ctx, CGRectMake(0, 0, (CGFloat)width, (CGFloat)height), cg);
   CGContextRelease(ctx);
   aoWKVSnapshotDone(call_id, pixels, width, height, (int)stride, NULL);

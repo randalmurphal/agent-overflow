@@ -146,9 +146,8 @@ func runWire(t *testing.T, wire []*cdproto.Message, frames []string, delay func(
 // A page's loading and frames are what its events and frame tree say in
 // the order the browser sent them, however long its handler takes over
 // each: the answers are the same with no delay, with the first message
-// handled after loadReorderWindow's old second, and with uneven delays.
-// Each wire is one the per-method subscriptions and their time window got
-// wrong.
+// handled a second late, and with uneven delays. Each wire interleaves
+// methods whose order a handler cannot recover from timing.
 func TestCDPPageReadsItsWireInOrder(t *testing.T) {
 	cases := []struct {
 		name   string

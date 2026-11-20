@@ -74,23 +74,43 @@ func (h *heldPopups) opener(handle ids.PageHandle) ids.PageHandle {
 	return h.held[handle].opener
 }
 
-// drain takes every held view, for an engine's stop to close.
-func (h *heldPopups) drain() []unsafe.Pointer {
+// releaseLocked moves the held popup handle to a new receipt and answers
+// it; the caller runs the close of its view and settles the receipt
+// (settle). The caller holds h.mu.
+func (h *heldPopups) releaseLocked(handle ids.PageHandle) *popupRelease {
+	delete(h.held, handle)
+	receipt := &popupRelease{done: make(chan struct{})}
+	h.releasing[handle] = receipt
+	return receipt
+}
+
+// settle records how the close of handle's view ended, err, on its
+// receipt, which every discard waiting on it then answers.
+func (h *heldPopups) settle(handle ids.PageHandle, receipt *popupRelease, err error) {
+	receipt.err = err
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	views := make([]unsafe.Pointer, 0, len(h.held))
-	for handle, held := range h.held {
-		views = append(views, held.view)
-		delete(h.held, handle)
+	delete(h.releasing, handle)
+	h.mu.Unlock()
+	close(receipt.done)
+}
+
+// await answers receipt's outcome, or within ctx that handle's close is
+// still pending.
+func (h *heldPopups) await(ctx context.Context, handle ids.PageHandle, receipt *popupRelease) error {
+	select {
+	case <-receipt.done:
+		return receipt.err
+	case <-ctx.Done():
+		return fmt.Errorf("browser: discard popup %s: %w: %w", handle, errNativeReleasePending, ctx.Err())
 	}
-	return views
 }
 
 // discard closes the held popup handle with release, which answers once
 // the native close has run, and waits for it within ctx: past ctx it
 // answers errNativeReleasePending, and the close still runs, owned by its
 // receipt. A discard of a popup whose close is under way waits for that
-// one; one of a popup neither held nor being closed has nothing to close.
+// one, an engine's stop's included (closeAll); one of a popup neither held
+// nor being closed has nothing to close.
 func (h *heldPopups) discard(ctx context.Context, handle ids.PageHandle, release func(unsafe.Pointer) error) error {
 	h.mu.Lock()
 	receipt := h.releasing[handle]
@@ -100,22 +120,51 @@ func (h *heldPopups) discard(ctx context.Context, handle ids.PageHandle, release
 			h.mu.Unlock()
 			return nil
 		}
-		delete(h.held, handle)
-		receipt = &popupRelease{done: make(chan struct{})}
-		h.releasing[handle] = receipt
-		go func() {
-			receipt.err = release(held.view)
-			h.mu.Lock()
-			delete(h.releasing, handle)
-			h.mu.Unlock()
-			close(receipt.done)
-		}()
+		receipt = h.releaseLocked(handle)
+		go func() { h.settle(handle, receipt, release(held.view)) }()
 	}
 	h.mu.Unlock()
-	select {
-	case <-receipt.done:
-		return receipt.err
-	case <-ctx.Done():
-		return fmt.Errorf("browser: discard popup %s: %w: %w", handle, errNativeReleasePending, ctx.Err())
+	return h.await(ctx, handle, receipt)
+}
+
+// closeAll closes every popup still held, for an engine's stop, each
+// through the receipt a discard of it joins, all moved there in one hold,
+// so a discard made meanwhile waits for the same close and never answers
+// before it. On the UI thread (here) the closes run in the caller, one
+// after another, inline; elsewhere each runs as a discard's does and is
+// waited for within ctx. It also waits within ctx for the closes discards
+// began, and answers every close's error joined.
+func (h *heldPopups) closeAll(ctx context.Context, release func(unsafe.Pointer) error, here bool) error {
+	type closing struct {
+		handle  ids.PageHandle
+		view    unsafe.Pointer
+		receipt *popupRelease
 	}
+	h.mu.Lock()
+	began := make(map[ids.PageHandle]*popupRelease, len(h.releasing))
+	for handle, receipt := range h.releasing {
+		began[handle] = receipt
+	}
+	closes := make([]closing, 0, len(h.held))
+	for handle, held := range h.held {
+		closes = append(closes, closing{handle, held.view, h.releaseLocked(handle)})
+	}
+	h.mu.Unlock()
+	var errs []error
+	for _, c := range closes {
+		if here {
+			h.settle(c.handle, c.receipt, release(c.view))
+		} else {
+			go func() { h.settle(c.handle, c.receipt, release(c.view)) }()
+		}
+	}
+	for _, c := range closes {
+		errs = append(errs, h.await(ctx, c.handle, c.receipt))
+	}
+	if !here {
+		for handle, receipt := range began {
+			errs = append(errs, h.await(ctx, handle, receipt))
+		}
+	}
+	return errors.Join(errs...)
 }

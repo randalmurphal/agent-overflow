@@ -172,7 +172,7 @@ func aoWebKitAllow(pageID C.uint64_t, decision unsafe.Pointer, uri *C.char) {
 		// The decision's reference is given up with its answer. A loop that
 		// is gone takes the page with it, so an unanswered decision dies
 		// with the process rather than blocking anything.
-		uiThread.Release(func() { C.ao_wk_policy_finish(decision, allow) })
+		releasePolicyAnswer.release(uiThread, func() { C.ao_wk_policy_finish(decision, allow) })
 	}()
 }
 
@@ -203,7 +203,7 @@ func aoWebKitPageInfo(pageID C.uint64_t, uri *C.char, title *C.char) {
 	if page == nil {
 		return
 	}
-	page.noteLoad(location)
+	page.noteLoad()
 	if page.hooks.Info == nil {
 		return
 	}
@@ -251,7 +251,7 @@ func aoWebKitKeyChord(pageID C.uint64_t, key *C.char, ctrl, meta, alt, shift, he
 		return 0
 	}
 	pressed := keybindings.Accelerator{Key: C.GoString(key), Ctrl: ctrl != 0, Meta: meta != 0, Alt: alt != 0, Shift: shift != 0}
-	if page.engine.events.KeyChord(page.handle, pressed, KeyPress{Held: held != 0, Composing: composing != 0}) {
+	if page.engine.events.KeyChord(page.handle, pressed, keyPress{Held: held != 0, Composing: composing != 0}) {
 		return 1
 	}
 	return 0
@@ -372,14 +372,12 @@ func aoWebKitDownloadDestination(profileID, pageID, popupID, downloadID C.uint64
 // webkitCancelDestinations cancels and releases, on the GTK thread, the
 // destination decisions p still holds, and refuses later ones (Dispose).
 func webkitCancelDestinations(p *webkitProfile) {
-	if !uiThread.Release(func() {
+	releaseDestinations.release(uiThread, func() {
 		for _, pending := range p.destinations.Close() {
 			C.ao_wk_download_decide(pending.ptr, nil)
 			C.ao_wk_download_unref(pending.ptr)
 		}
-	}) {
-		log.Printf("browser: profile %s: cancel the downloads still being decided: %v", p.handle, errGTKUnavailable)
-	}
+	})
 }
 
 // webkitPendingDownload is a download whose destination is being decided,
@@ -547,10 +545,14 @@ func webkitPresentView(view webkitView, placement PanePlacement) error {
 }
 
 // webkitSetViewBackground paints the page's base (pageBase) underneath the
-// page: white under a document, the pane's color under a blank tab.
-func webkitSetViewBackground(view webkitView, color webkitRGB) error {
+// page: white under a document, the pane's color under a blank tab. color
+// is packed 0xRRGGBB (nativePaneColor); GdkRGBA takes each channel in 0..1.
+func webkitSetViewBackground(view webkitView, color uint32) error {
+	red := float64((color>>16)&0xff) / 255
+	green := float64((color>>8)&0xff) / 255
+	blue := float64(color&0xff) / 255
 	return view.do(func(view unsafe.Pointer) {
-		C.ao_wk_view_set_background(view, C.double(color.R), C.double(color.G), C.double(color.B))
+		C.ao_wk_view_set_background(view, C.double(red), C.double(green), C.double(blue))
 	})
 }
 
@@ -590,7 +592,7 @@ func webkitNewSession(dataDir, cacheDir, cookieFile string, ephemeral bool, prof
 }
 
 func webkitFreeSession(session unsafe.Pointer) {
-	uiThread.Release(func() { C.ao_wk_session_free(session) })
+	releaseSiteData.release(uiThread, func() { C.ao_wk_session_free(session) })
 }
 
 // webkitNewView builds a page's view in profile profileID's session on the
@@ -697,32 +699,26 @@ func webkitLoadURI(view webkitView, uri string) error {
 	})
 }
 
-// The history action codes the C side takes.
-const (
-	webkitHistoryBack    = 0
-	webkitHistoryForward = 1
-	webkitHistoryReload  = 2
-	webkitHistoryStop    = 3
-)
-
-func webkitHistory(view webkitView, action int) error {
-	return view.do(func(view unsafe.Pointer) { C.ao_wk_view_history(view, C.int(action)) })
+// webkitHistory takes one history step; the C side numbers the steps as
+// nativeHistoryStep does.
+func webkitHistory(view webkitView, step nativeHistoryStep) error {
+	return view.do(func(view unsafe.Pointer) { C.ao_wk_view_history(view, C.int(step)) })
 }
 
-func webkitCanGo(view webkitView, forward bool) bool {
+func webkitCanGo(view webkitView, forward bool) (bool, error) {
 	flag := C.int(0)
 	if forward {
 		flag = 1
 	}
 	answer := false
-	_ = view.do(func(view unsafe.Pointer) { answer = C.ao_wk_view_can_go(view, flag) == 1 })
-	return answer
+	err := view.do(func(view unsafe.Pointer) { answer = C.ao_wk_view_can_go(view, flag) == 1 })
+	return answer, err
 }
 
-func webkitIsLoading(view webkitView) bool {
+func webkitIsLoading(view webkitView) (bool, error) {
 	loading := false
-	_ = view.do(func(view unsafe.Pointer) { loading = C.ao_wk_view_is_loading(view) == 1 })
-	return loading
+	err := view.do(func(view unsafe.Pointer) { loading = C.ao_wk_view_is_loading(view) == 1 })
+	return loading, err
 }
 
 // gtkEvaluate runs one async-function body in the page and returns its JSON
@@ -833,11 +829,11 @@ func (p *webkitPage) terminateWebProcess() error {
 // onKeyPress has every KeyChord question of the page's engine reported to
 // seen before it is answered, until the returned restore runs. It swaps the
 // hook on the GTK thread, which is the only reader. For the native smoke.
-func (p *webkitPage) onKeyPress(seen func(keybindings.Accelerator, KeyPress)) (restore func() error, err error) {
-	var orig func(ids.PageHandle, keybindings.Accelerator, KeyPress) bool
+func (p *webkitPage) onKeyPress(seen func(keybindings.Accelerator, keyPress)) (restore func() error, err error) {
+	var orig func(ids.PageHandle, keybindings.Accelerator, keyPress) bool
 	err = p.liveView().do(func(unsafe.Pointer) {
 		orig = p.engine.events.KeyChord
-		p.engine.events.KeyChord = func(handle ids.PageHandle, pressed keybindings.Accelerator, press KeyPress) bool {
+		p.engine.events.KeyChord = func(handle ids.PageHandle, pressed keybindings.Accelerator, press keyPress) bool {
 			seen(pressed, press)
 			return orig(handle, pressed, press)
 		}
@@ -1018,7 +1014,7 @@ func withDownloadOnUI(p *webkitProfile, id downloadID, fn func(download unsafe.P
 }
 
 func webkitReleaseDownload(download unsafe.Pointer) {
-	uiThread.Release(func() { C.ao_wk_download_unref(download) })
+	releaseDownloadRef.release(uiThread, func() { C.ao_wk_download_unref(download) })
 }
 
 // webkitDownloadCounts is how many downloads WebKit started and how many it

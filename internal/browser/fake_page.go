@@ -56,8 +56,11 @@ type fakePage struct {
 	// when set, runs first; an error fails the stop.
 	stops    int
 	stopHook func() error
-	// selection answers SelectionText.
-	selection string
+	// selection and selectionErr answer SelectionText. presses makes Press
+	// accept a key, which it otherwise refuses for want of a page.
+	selection    string
+	selectionErr error
+	presses      bool
 	// findMode answers FindMode; FindModeBar unless a test changes it.
 	findMode string
 	// findQuery is the running search, "" when there is none.
@@ -180,14 +183,6 @@ func (p *fakePage) commitDocumentLate() (deliver func()) {
 	return func() {}
 }
 
-// SameDocumentNavigation changes the address the way history.pushState
-// does: no new document. A test seam.
-func (p *fakePage) SameDocumentNavigation(rawURL string) {
-	p.mu.Lock()
-	p.url, p.title = rawURL, fakeTitle(rawURL)
-	p.mu.Unlock()
-}
-
 func (p *fakePage) HistoryState(context.Context) (bool, bool, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -301,13 +296,21 @@ func (p *fakePage) ScrollNode(context.Context, nodeReference, float64, float64) 
 
 func (p *fakePage) Click(context.Context, string) error              { return errFakeEngineHasNoPage }
 func (p *fakePage) Type(context.Context, string, string, bool) error { return errFakeEngineHasNoPage }
-func (p *fakePage) Press(context.Context, string) error              { return errFakeEngineHasNoPage }
-func (p *fakePage) TypeText(context.Context, string) error           { return errFakeEngineHasNoPage }
-
-func (p *fakePage) SelectionText(context.Context) string {
+func (p *fakePage) Press(context.Context, string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.selection
+	if p.presses {
+		return nil
+	}
+	return errFakeEngineHasNoPage
+}
+
+func (p *fakePage) TypeText(context.Context, string) error { return errFakeEngineHasNoPage }
+
+func (p *fakePage) SelectionText(context.Context) (string, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.selection, p.selectionErr
 }
 
 func (p *fakePage) Pointer(context.Context, PointerOptions) error { return errFakeEngineHasNoPage }
@@ -403,16 +406,6 @@ func (p *fakePage) SetViewport(_ context.Context, width, height int) error {
 		hook(width, height)
 	}
 	return err
-}
-
-func (p *fakePage) lastViewport() (int, int) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if len(p.viewports) == 0 {
-		return 0, 0
-	}
-	last := p.viewports[len(p.viewports)-1]
-	return last[0], last[1]
 }
 
 func (p *fakePage) AssetInventory(context.Context) (pageAssets, error) {

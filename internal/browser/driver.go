@@ -16,7 +16,7 @@ import (
 // An engine owns only how an operation is carried out against a live page.
 //
 // Three interfaces, one per lifetime: `browserEngine` is the process/profile
-// factory, `engineProfile` is one workspace's isolated site data, and
+// factory, `engineProfile` is one cookie jar's isolated site data, and
 // `pageDriver` is one page's tool-operation surface. Adding an engine
 // (spec: docs/specs/embedded-browser.md §6) means implementing these and
 // nothing else; no policy may migrate across the seam in either direction.
@@ -116,7 +116,7 @@ type engineAccelerators interface {
 // URL pasted into the companion address bar — is in the RENDERER's form,
 // and authorizing it against backend workspace paths without translating
 // first fails closed: the interceptor blocks the very navigation OpenFile
-// just authorized (live incident 2026-08-31, ERR_BLOCKED_BY_CLIENT).
+// just authorized (ERR_BLOCKED_BY_CLIENT).
 // BackendFilePath is that inverse; a URL naming a filesystem the backend
 // cannot reach (a foreign UNC host) is an error, which callers treat as
 // "not authorized".
@@ -162,11 +162,12 @@ type paneHost interface {
 // paneDevTools is the OPTIONAL inspector half, split from paneHost because
 // implementing it is a capability claim: WKWebView has no public call that
 // opens its inspector (macOS devtools are Safari's Develop menu against an
-// inspectable view), so the darwin engine deliberately does not implement
-// this and the Manager's assertion failure — "devtools are not available on
-// this browser engine" — is the true answer there.
+// inspectable view), so the darwin engine does not implement this and the
+// Manager's refusal, "devtools are not available on this browser engine",
+// is the answer there. OpenPageDevTools answers why the inspector did not
+// open.
 type paneDevTools interface {
-	OpenPageDevTools(handle ids.PageHandle)
+	OpenPageDevTools(handle ids.PageHandle) error
 }
 
 // engineProfile is one cookie jar's isolated site data (jar.go): the unit that
@@ -308,7 +309,8 @@ type pageDriver interface {
 	// PageStatus samples the load state a wait condition is evaluated against.
 	PageStatus(ctx context.Context) (pageStatus, error)
 	// NavigationMark captures the page's current navigation identity, so a
-	// caller can tell that a navigation happened at all.
+	// caller can tell that a navigation happened at all. Any part of it
+	// that cannot be read fails the read with an error and no mark.
 	NavigationMark(ctx context.Context) (navigationMark, error)
 
 	// Snapshot returns the accessibility-ish page snapshot. Element node ids
@@ -348,8 +350,9 @@ type pageDriver interface {
 	Press(ctx context.Context, key string) error
 	// TypeText types text at the current focus, with no selector.
 	TypeText(ctx context.Context, text string) error
-	// SelectionText reads the page's current selection, for the copy chord.
-	SelectionText(ctx context.Context) string
+	// SelectionText reads the page's current selection, for the copy chord
+	// and an engine find's seed; an error means it could not be read.
+	SelectionText(ctx context.Context) (string, error)
 	// Pointer dispatches a raw pointer gesture at viewport coordinates.
 	Pointer(ctx context.Context, opts PointerOptions) error
 	// Scroll scrolls a selector, or the window when it is empty.

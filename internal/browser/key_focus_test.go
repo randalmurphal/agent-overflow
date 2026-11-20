@@ -52,17 +52,17 @@ func TestKeyChordHandsFocusToTheAppExactlyWhenItClaims(t *testing.T) {
 	rows := []struct {
 		name    string
 		pressed keybindings.Accelerator
-		press   KeyPress
+		press   keyPress
 		claimed bool
 	}{
-		{"a bound chord", bound, KeyPress{}, true},
-		{"a bound chord's shifted spelling", keybindings.Accelerator{Key: "F", Ctrl: true, Shift: true}, KeyPress{}, false},
-		{"a bound Ctrl+Escape", boundEscape, KeyPress{}, true},
-		{"an unbound chord", keybindings.Accelerator{Key: "g", Ctrl: true}, KeyPress{}, false},
-		{"a bare Escape", keybindings.Accelerator{Key: "escape"}, KeyPress{}, false},
-		{"a held bare Escape", keybindings.Accelerator{Key: "escape"}, KeyPress{Held: true}, false},
-		{"a composing bare Escape", keybindings.Accelerator{Key: "escape"}, KeyPress{Composing: true}, false},
-		{"a shift-only key", keybindings.Accelerator{Key: "a", Shift: true}, KeyPress{}, false},
+		{"a bound chord", bound, keyPress{}, true},
+		{"a bound chord's shifted spelling", keybindings.Accelerator{Key: "F", Ctrl: true, Shift: true}, keyPress{}, false},
+		{"a bound Ctrl+Escape", boundEscape, keyPress{}, true},
+		{"an unbound chord", keybindings.Accelerator{Key: "g", Ctrl: true}, keyPress{}, false},
+		{"a bare Escape", keybindings.Accelerator{Key: "escape"}, keyPress{}, false},
+		{"a held bare Escape", keybindings.Accelerator{Key: "escape"}, keyPress{Held: true}, false},
+		{"a composing bare Escape", keybindings.Accelerator{Key: "escape"}, keyPress{Composing: true}, false},
+		{"a shift-only key", keybindings.Accelerator{Key: "a", Shift: true}, keyPress{}, false},
 	}
 	var engine *focusEngine
 	f := newFindFixtureWith(t, "https://example.test/alpha", func(m *Manager) {
@@ -123,7 +123,7 @@ func TestKeyChordRoutesAChordWhoseFocusHandoffFailed(t *testing.T) {
 		m.accelerators = func() keybindings.AcceleratorSet { return keybindings.AcceleratorSet{bound: {}} }
 	})
 	f.place(t)
-	if !f.manager.keyChord(f.fake.Handle(), bound, KeyPress{}) {
+	if !f.manager.keyChord(f.fake.Handle(), bound, keyPress{}) {
 		t.Fatal("a bound chord was not claimed")
 	}
 	if got := engine.take(); !slices.Equal(got, []string{"focus"}) {

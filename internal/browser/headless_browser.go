@@ -24,15 +24,16 @@ type launchedBrowser struct {
 	allocCancel context.CancelFunc
 	process     *chromiumProcess
 	// downloads is the connection's download tracker: CancelDownload marks
-	// AO's cancels on it, and close settles the claims it still holds on
-	// downloads' files once the process has stopped.
+	// AO's cancels on it, and close has it remove what the process left in
+	// its download directory once the process has stopped.
 	downloads *downloadTracker
 }
 
 // close ends the connection, then kills the browser and returns once nothing
-// it started can still write, then removes the files of the downloads the
-// tracker still holds. An error means some of it may still be running; the files go
-// anyway, since a writer still running writes to an unlinked file.
+// it started can still write, then removes what it left in its download
+// directory (downloadTracker.stop). An error means some of it may still be
+// running; the files go anyway, since a writer still running writes to an
+// unlinked file.
 func (b *launchedBrowser) close() error {
 	b.cancel()
 	b.allocCancel()
@@ -42,9 +43,7 @@ func (b *launchedBrowser) close() error {
 		// build, has nothing to stop.
 		err = b.process.stop()
 	}
-	if b.downloads != nil {
-		b.downloads.stop()
-	}
+	b.downloads.stop()
 	return err
 }
 
@@ -99,8 +98,13 @@ func (p *headlessProfile) ensureBrowser() (context.Context, error) {
 // connects to it, both bounded by launchCtx. A failed launch returns only
 // after its process is reaped.
 func (p *headlessProfile) launch(launchCtx context.Context) (*launchedBrowser, error) {
+	room, err := openDownloadRoom(p.downloadDir, p.engine.logf)
+	if err != nil {
+		return nil, err
+	}
 	process, wsURL, err := startChromium(launchCtx, p.engine.reaper, p.engine.binary, chromiumArgs(p.userDataDir), chromiumEnv(p.userDataDir))
 	if err != nil {
+		room.close()
 		return nil, p.launchFailed(err)
 	}
 	// NoModifyURL: the DevTools line is already the browser websocket URL.
@@ -113,14 +117,14 @@ func (p *headlessProfile) launch(launchCtx context.Context) (*launchedBrowser, e
 	targets := newHeadlessTargets(p)
 	launched := &launchedBrowser{
 		ctx: browserCtx, cancel: browserCancel, allocCancel: allocCancel, process: process,
-		downloads: p.downloadTracker(browserCtx, targets),
+		downloads: p.downloadTracker(browserCtx, targets, room),
 	}
 
 	// chromedp bounds the handshake with nothing but the dial's own
 	// timeout, so the wait is ours: a Chromium that starts and never
 	// answers is an error, never a hang.
 	connected := make(chan error, 1)
-	go func() { connected <- p.connect(browserCtx, targets, launched.downloads) }()
+	go func() { connected <- p.connect(browserCtx, targets, launched.downloads, room.path()) }()
 	select {
 	case err = <-connected:
 	case <-launchCtx.Done():
@@ -133,21 +137,23 @@ func (p *headlessProfile) launch(launchCtx context.Context) (*launchedBrowser, e
 }
 
 // connect dials the launched browser with this profile's event handlers,
-// pins its downloads and installs the workspace's navigation policy.
-func (p *headlessProfile) connect(browserCtx context.Context, targets *headlessTargets, downloads *downloadTracker) error {
+// pins its downloads to downloadDir, the process's own (downloadRoom), and
+// installs the jar's navigation policy.
+func (p *headlessProfile) connect(browserCtx context.Context, targets *headlessTargets, downloads *downloadTracker, downloadDir string) error {
 	if err := dialCDPBrowser(browserCtx, func() error { return p.subscribe(browserCtx, targets, downloads) }); err != nil {
 		return p.launchFailed(err)
 	}
-	// Downloads land ONLY in the AO artifact directory, never the operator's
-	// Downloads folder, and allowAndName is what the Manager's own artifact
-	// bookkeeping reads: it names each file by its download GUID, which is
-	// the handle downloadProgress carries and the name downloads.go renames
-	// from. Events are what make Browser.downloadWillBegin/downloadProgress
-	// arrive at all.
+	// Downloads land ONLY in the process's directory under the AO artifact
+	// directory, never the operator's Downloads folder, and allowAndName is
+	// what the Manager's own artifact bookkeeping reads: it names each file
+	// by its download GUID, which is the handle downloadProgress carries and
+	// the name a finished one is handed over under (downloadRoom). Events
+	// are what make Browser.downloadWillBegin/downloadProgress arrive at
+	// all.
 	if _, err := chromedp.CallBrowser(browserCtx, cdpbrowser.SetDownloadBehavior, cdpbrowser.SetDownloadBehaviorParams{
-		Behavior: cdpbrowser.SetDownloadBehaviorBehaviorAllowAndName, DownloadPath: p.downloadDir, EventsEnabled: new(true),
+		Behavior: cdpbrowser.SetDownloadBehaviorBehaviorAllowAndName, DownloadPath: downloadDir, EventsEnabled: new(true),
 	}); err != nil {
-		return fmt.Errorf("browser: pin downloads to %s: %w", p.downloadDir, err)
+		return fmt.Errorf("browser: pin downloads to %s: %w", downloadDir, err)
 	}
 	// The policy's one interception: browser-wide, so it sees a popup's
 	// requests before the Manager adopts it (a noopener popup's renderer

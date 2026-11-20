@@ -25,9 +25,10 @@ import (
 // id, as headless Chromium does; or the user's Downloads folder under a
 // free name, as WebView2 does, removing its own partial file there on a
 // cancel or a failure. It reports the start, writes half the bytes and
-// reports them, then the finish. hold leaves it running at half until it is canceled; fail ends it
-// as a failure the engine reports on its own. Reports are synchronous,
-// inside the navigation.
+// reports them, then the finish. hold leaves it running at half until it
+// is canceled; fail ends it as a failure the engine reports on its own. A
+// cancel is reported with the bytes written by then. Reports are
+// synchronous, inside the navigation.
 
 const fakeDownloadHost = "download.invalid"
 
@@ -40,12 +41,14 @@ type fakeDownloadRequest struct {
 }
 
 // fakeDownload is a running download, kept from before its start is
-// reported until whoever takes it reports its end: its total, for the
-// report its cancel makes, its file, and who reports that end.
+// reported until whoever takes it reports its end: its total and the bytes
+// written of it, for the report its cancel makes, its file, and who reports
+// that end.
 type fakeDownload struct {
-	total int64
-	file  string
-	phase fakeDownloadPhase
+	total   int64
+	written int64
+	file    string
+	phase   fakeDownloadPhase
 }
 
 // fakeDownloadPhase is who reports a running fake download's end.
@@ -114,17 +117,19 @@ func (p *fakeProfile) download(frame frameID, request fakeDownloadRequest) error
 	}
 	// Cancellable from before its start is reported: a cancel made while
 	// the start or a progress report is handled is taken, and this run
-	// reports it as the download's one end after that report.
-	d := fakeDownload{total: request.bytes, file: file, phase: fakeRunning}
-	p.track(id, d)
+	// reports it as the download's one end after that report, with the
+	// bytes written by then.
+	p.track(id, fakeDownload{total: request.bytes, file: file, phase: fakeRunning})
 	if events.DownloadStarted(downloadStart{Frame: frame, ID: id, URL: request.url, SuggestedName: name}) != downloadAdmitted {
-		p.takeHeld(id)
+		p.dropDownload(id)
 		return discard()
 	}
-	canceled := func() error { return p.reportCancel(id, d) }
+	if d, ok := p.wasCanceled(id); ok {
+		return p.reportCancel(id, d)
+	}
 	fail := func(err error) error {
-		if !p.takeRunning(id) {
-			return canceled()
+		if d, running := p.takeRunning(id); !running {
+			return p.reportCancel(id, d)
 		}
 		events.DownloadProgress(downloadProgress{ID: id, State: downloadFailed, Error: err.Error()})
 		return discard()
@@ -136,18 +141,19 @@ func (p *fakeProfile) download(frame frameID, request fakeDownloadRequest) error
 	if err := os.WriteFile(file, make([]byte, half), 0o600); err != nil {
 		return fail(err)
 	}
-	if p.wasCanceled(id) {
-		return canceled()
+	p.wrote(id, half)
+	if d, ok := p.wasCanceled(id); ok {
+		return p.reportCancel(id, d)
 	}
 	events.DownloadProgress(downloadProgress{ID: id, Received: float64(half), Total: float64(request.bytes), State: downloadInProgress})
 	if request.hold {
-		if p.park(id) {
-			return nil
+		if d, held := p.park(id); !held {
+			return p.reportCancel(id, d)
 		}
-		return canceled()
+		return nil
 	}
-	if !p.takeRunning(id) {
-		return canceled()
+	if d, running := p.takeRunning(id); !running {
+		return p.reportCancel(id, d)
 	}
 	if request.fail {
 		if err := os.Remove(file); err != nil {
@@ -239,7 +245,7 @@ func (p *fakeProfile) reportCancel(id downloadID, d fakeDownload) error {
 		released(id)
 	}
 	if p.engine.events.DownloadProgress != nil {
-		p.engine.events.DownloadProgress(downloadProgress{ID: id, Received: float64(d.total / 2), Total: float64(d.total), State: downloadCanceled})
+		p.engine.events.DownloadProgress(downloadProgress{ID: id, Received: float64(d.written), Total: float64(d.total), State: downloadCanceled})
 	}
 	return nil
 }
@@ -278,49 +284,58 @@ func (p *fakeProfile) track(id downloadID, d fakeDownload) {
 	p.held[id] = d
 }
 
-// wasCanceled reports whether download id was canceled during its run,
-// taking its record then: the run reports the cancel.
-func (p *fakeProfile) wasCanceled(id downloadID) bool {
+// wrote records that n bytes of download id are on disk.
+func (p *fakeProfile) wrote(id downloadID, n int64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if d, ok := p.held[id]; ok {
+		d.written = n
+		p.held[id] = d
+	}
+}
+
+// wasCanceled answers download id's record, taking it, when it was
+// canceled during its run: the run reports the cancel.
+func (p *fakeProfile) wasCanceled(id downloadID) (fakeDownload, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if d, ok := p.held[id]; ok && d.phase == fakeCanceled {
 		delete(p.held, id)
-		return true
+		return d, true
 	}
-	return false
+	return fakeDownload{}, false
 }
 
-// takeRunning takes download id from its run, for an end the run reports
-// as its own, and answers false when a cancel was taken first, which the
-// run reports instead.
-func (p *fakeProfile) takeRunning(id downloadID) bool {
+// takeRunning takes download id's record from its run, for an end the run
+// reports as its own, and answers false when a cancel was taken first,
+// which the run reports instead.
+func (p *fakeProfile) takeRunning(id downloadID) (fakeDownload, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	d := p.held[id]
 	delete(p.held, id)
-	return d.phase == fakeRunning
+	return d, d.phase == fakeRunning
 }
 
 // park leaves download id held at half, for its cancel or finishHeld, and
-// answers false when a cancel was taken first, which the run reports.
-func (p *fakeProfile) park(id downloadID) bool {
+// answers its record and false, taking it, when a cancel was taken first,
+// which the run reports.
+func (p *fakeProfile) park(id downloadID) (fakeDownload, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	d := p.held[id]
 	if d.phase != fakeRunning {
 		delete(p.held, id)
-		return false
+		return d, false
 	}
 	d.phase = fakeHeld
 	p.held[id] = d
-	return true
+	return d, true
 }
 
-// takeHeld takes download id, in any phase, once.
-func (p *fakeProfile) takeHeld(id downloadID) (fakeDownload, bool) {
+// dropDownload drops download id's record, in any phase.
+func (p *fakeProfile) dropDownload(id downloadID) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	held, ok := p.held[id]
 	delete(p.held, id)
-	return held, ok
 }

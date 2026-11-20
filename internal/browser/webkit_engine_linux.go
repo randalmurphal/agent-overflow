@@ -5,6 +5,7 @@ package browser
 import (
 	"context"
 	"fmt"
+	"log"
 	"sync"
 	"unsafe"
 
@@ -30,8 +31,9 @@ import (
 
 // newNativeEngine answers a WebKitGTK engine only when the caller supplied a
 // desktop window to host views inside. The same Linux binary also runs with no
-// window at all — `--connect`, the harness, `go test` — and those keep managed
-// Chrome, which is why this is a capability answer and never a GOOS check.
+// window at all (`--connect`, the harness, `go test`), and selectEngine gives
+// those the headless engine when serve boot asks for it and no engine
+// otherwise, which is why this is a capability answer and never a GOOS check.
 func newNativeEngine(configDir string, opts ManagerOptions, events engineEvents) browserEngine {
 	if opts.NativeWindow == nil {
 		return nil
@@ -39,7 +41,6 @@ func newNativeEngine(configDir string, opts ManagerOptions, events engineEvents)
 	return &webkitEngine{
 		configDir: configDir, window: opts.NativeWindow, events: events,
 		popups: newHeldPopups(),
-		pane:   make(map[uint64]webkitPaneState),
 	}
 }
 
@@ -48,16 +49,13 @@ type webkitEngine struct {
 	window    func() unsafe.Pointer
 	events    engineEvents
 
-	// startMu serializes host attachment. Separate from mu on purpose: it is
-	// held across a GTK call, so no callback may ever take it.
+	// startMu serializes host attachment. It is held across a GTK call, so
+	// no callback may ever take it.
 	startMu sync.Mutex
 	started bool
 
-	mu       sync.Mutex
-	popups   *heldPopups
-	profiles map[uint64]*webkitProfile
-	pane     map[uint64]webkitPaneState
-	stopped  bool
+	popups *heldPopups
+	pane   nativePanes
 
 	// downloadEvents carries every download report to the Manager off the
 	// GTK thread, one at a time in the order they were made, so a fast
@@ -79,9 +77,6 @@ func (e *webkitEngine) Start(context.Context) error {
 		return err
 	}
 	e.started = true
-	e.mu.Lock()
-	e.stopped = false
-	e.mu.Unlock()
 	return nil
 }
 
@@ -100,15 +95,15 @@ func (e *webkitEngine) Stop() {
 	e.startMu.Lock()
 	e.started = false
 	e.startMu.Unlock()
-	orphans := e.popups.drain()
-	e.mu.Lock()
-	e.stopped = true
-	e.mu.Unlock()
 	// The window and its overlay stay: the SPA lives in it, and re-attaching
 	// is idempotent. Only pages AO created are torn down, and profiles have
-	// already been disposed by their owner.
-	for _, view := range orphans {
-		webkitCloseView(view)
+	// already been disposed by their owner. A held popup closes through the
+	// receipt its discard settles, so a discard made meanwhile answers
+	// once the close has run (heldPopups.closeAll).
+	ctx, cancel := context.WithTimeout(context.Background(), nativeCallTimeout)
+	defer cancel()
+	if err := e.popups.closeAll(ctx, webkitCloseViewSettled, gtkOnMainThread()); err != nil {
+		log.Printf("browser: close the held popups at stop: %v", err)
 	}
 }
 

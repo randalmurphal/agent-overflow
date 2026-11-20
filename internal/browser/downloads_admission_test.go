@@ -170,12 +170,15 @@ func headlessUnownedRig(t *testing.T, wait time.Duration, lifetime context.Conte
 		DownloadProgress: func(downloadProgress) {},
 	})
 	p.engine.ownerWait = wait
-	p.downloadDir = t.TempDir()
-	file := filepath.Join(p.downloadDir, "G1")
+	room, err := openDownloadRoom(t.TempDir(), t.Logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(room.path(), "G1")
 	if err := os.WriteFile(file, []byte("bytes"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return p.downloadTracker(lifetime, newHeadlessTargets(p)), file, func() int {
+	return p.downloadTracker(lifetime, newHeadlessTargets(p), room), file, func() int {
 		mu.Lock()
 		defer mu.Unlock()
 		return offers

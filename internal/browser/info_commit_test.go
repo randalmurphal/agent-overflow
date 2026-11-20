@@ -132,7 +132,7 @@ func TestAReadNeverCommitsOverAnEngineReport(t *testing.T) {
 			var calls atomic.Int32
 			manager.infoRead = func(*managedPage) {
 				if calls.Add(1) == 1 {
-					p.driver.(*lifecycleDriver).pageDriver.(*fakePage).SameDocumentNavigation(b)
+					p.driver.(*lifecycleDriver).pageDriver.(*fakePage).sameDocumentNavigation(b)
 					manager.updatePageInfo(p.driver.Handle(), b, fakeTitle(b), 1)
 				}
 			}

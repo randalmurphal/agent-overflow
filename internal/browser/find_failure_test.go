@@ -11,6 +11,46 @@ import (
 	"time"
 )
 
+// An empty open of the engine's bar whose page selection cannot be read
+// fails with the reason and leaves no search open.
+func TestFindInTheEnginesOwnBarFailsWhenTheSelectionIsUnreadable(t *testing.T) {
+	f := newFindFixture(t, "https://example.test/alpha")
+	f.fake.mu.Lock()
+	f.fake.findMode = FindModeEngine
+	f.fake.selectionErr = errors.New("the page went away")
+	f.fake.mu.Unlock()
+	if _, err := f.manager.Find(t.Context(), f.access, PageID(f.pageID), "start", "", f.mount, f.nextSeq()); err == nil || !strings.Contains(err.Error(), "the page went away") {
+		t.Fatalf("an open with an unreadable selection answered %v", err)
+	}
+	if state := f.manager.CompanionState(f.access.Caller()); state.Find != nil && state.Find.Active {
+		t.Fatalf("the failed open left a search: %+v", state.Find)
+	}
+}
+
+// The copy chord puts the page's selection on the tab's clipboard, and a
+// selection the engine cannot read fails the press rather than copying
+// nothing.
+func TestCopyChordFailsWhenTheSelectionIsUnreadable(t *testing.T) {
+	f := newFindFixture(t, "https://example.test/alpha")
+	f.fake.mu.Lock()
+	f.fake.presses = true
+	f.fake.selection = "copied words"
+	f.fake.mu.Unlock()
+	if _, err := f.manager.Press(t.Context(), f.access, PageID(f.pageID), "Control+c"); err != nil {
+		t.Fatalf("copy: %v", err)
+	}
+	text, err := f.manager.Clipboard(t.Context(), f.access, ClipboardOptions{PageID: PageID(f.pageID), Action: "read_text"})
+	if err != nil || text != "copied words" {
+		t.Fatalf("the clipboard after a copy = %v, %v", text, err)
+	}
+	f.fake.mu.Lock()
+	f.fake.selectionErr = errors.New("the page went away")
+	f.fake.mu.Unlock()
+	if _, err := f.manager.Press(t.Context(), f.access, PageID(f.pageID), "Control+c"); err == nil || !strings.Contains(err.Error(), "the page went away") {
+		t.Fatalf("a copy of an unreadable selection answered %v", err)
+	}
+}
+
 func TestFindEngineFailureEndsTheSession(t *testing.T) {
 	f := newFindFixture(t, "https://example.test/alpha")
 	started := f.find(t, "start", "alpha")

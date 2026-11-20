@@ -145,7 +145,7 @@ func TestFindEndsWhenThePageNavigates(t *testing.T) {
 	// title change the engine reports for it, keep the find.
 	again := f.find(t, "start", "beta")
 	f.wantCall(t, "start beta")
-	f.fake.SameDocumentNavigation("https://example.test/beta/next")
+	f.fake.sameDocumentNavigation("https://example.test/beta/next")
 	f.manager.updatePageInfo(f.fake.Handle(), "https://example.test/beta/next", "renamed", 1)
 	f.noEvent(t)
 	if state := f.find(t, "next", ""); !state.Active || state.Session != again.Session {
@@ -391,10 +391,10 @@ func TestFindNeverClaimsAPagesBareEscape(t *testing.T) {
 	escape := keybindings.Accelerator{Key: "escape"}
 	press := func(t *testing.T, state string, announced bool) {
 		t.Helper()
-		if f.manager.keyChord(handle, escape, KeyPress{}) {
+		if f.manager.keyChord(handle, escape, keyPress{}) {
 			t.Fatalf("%s: AO took the page's Escape", state)
 		}
-		if f.manager.keyChord(handle, escape, KeyPress{Held: true}) {
+		if f.manager.keyChord(handle, escape, keyPress{Held: true}) {
 			t.Fatalf("%s: AO took the page's held Escape", state)
 		}
 		select {
@@ -446,7 +446,7 @@ func TestFindNeverClaimsAPagesBareEscape(t *testing.T) {
 
 	// A modified Escape is a chord: AO takes it only when it is bound.
 	ctrl := keybindings.Accelerator{Key: "escape", Ctrl: true}
-	if f.manager.keyChord(handle, ctrl, KeyPress{}) {
+	if f.manager.keyChord(handle, ctrl, keyPress{}) {
 		t.Fatal("an unbound Ctrl+Escape was taken")
 	}
 	f.manager.accelerators = func() keybindings.AcceleratorSet { return keybindings.AcceleratorSet{ctrl: {}} }
@@ -456,7 +456,7 @@ func TestFindNeverClaimsAPagesBareEscape(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.place(t)
-	if !f.manager.keyChord(handle, ctrl, KeyPress{}) {
+	if !f.manager.keyChord(handle, ctrl, keyPress{}) {
 		t.Fatal("a bound Ctrl+Escape did not go through the accelerator gate")
 	}
 	select {
@@ -604,7 +604,7 @@ func TestPageEscapeAnnouncedOnlyForAFreshBareEscape(t *testing.T) {
 						for _, repeat := range bools {
 							for _, held := range bools {
 								for _, composing := range bools {
-									press := KeyPress{Repeat: repeat, Held: held, Composing: composing}
+									press := keyPress{Repeat: repeat, Held: held, Composing: composing}
 									want := bare && !repeat && !held && !composing
 									if got := pageEscapeAnnounced(pressed, press); got != want {
 										t.Errorf("pageEscapeAnnounced(%+v, %+v) = %v, want %v", pressed, press, got, want)

@@ -63,15 +63,23 @@ func runUnderHeadlessWeston(weston string) (code int) {
 	sidecar.Watch(compositor.Process.Pid)
 	exited := make(chan error, 1)
 	go func() { exited <- compositor.Wait() }()
-	stop := func() {
-		_ = compositor.Process.Signal(syscall.SIGTERM)
-		select {
-		case <-exited:
-		case <-time.After(10 * time.Second):
-			_ = compositor.Process.Kill()
-			<-exited
+	// stop ends the compositor and answers what went wrong doing so: an
+	// exit on its SIGTERM is the expected end; a signal that could not be
+	// sent, a compositor that needed killing or one that ended otherwise is
+	// trouble the run reports.
+	stop := func() error {
+		defer sidecar.Release(compositor.Process.Pid)
+		if err := compositor.Process.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			return fmt.Errorf("signal weston: %w", err)
 		}
-		sidecar.Release(compositor.Process.Pid)
+		select {
+		case err := <-exited:
+			return westonEnded(err)
+		case <-time.After(10 * time.Second):
+		}
+		killErr := compositor.Process.Kill()
+		waitErr := <-exited
+		return errors.Join(errors.New("weston did not exit on SIGTERM and was killed"), killErr, westonEnded(waitErr))
 	}
 	ready := false
 	for deadline := time.Now().Add(30 * time.Second); !ready && time.Now().Before(deadline); {
@@ -86,7 +94,9 @@ func runUnderHeadlessWeston(weston string) (code int) {
 		ready = err == nil
 	}
 	if !ready {
-		stop()
+		if err := stop(); err != nil {
+			fmt.Fprintf(os.Stderr, "native browser smoke: stop weston: %v\n", err)
+		}
 		fmt.Fprintln(os.Stderr, "native browser smoke: weston's socket never appeared")
 		return 1
 	}
@@ -100,7 +110,15 @@ func runUnderHeadlessWeston(weston string) (code int) {
 		err = inner.Wait()
 		sidecar.Release(inner.Process.Pid)
 	}
-	stop()
+	if stopErr := stop(); stopErr != nil {
+		// The inner run's result stands, and a clean one fails for it.
+		fmt.Fprintf(os.Stderr, "native browser smoke: stop weston: %v\n", stopErr)
+		defer func() {
+			if code == 0 {
+				code = 1
+			}
+		}()
+	}
 	var exit *exec.ExitError
 	switch {
 	case err == nil:
@@ -111,4 +129,19 @@ func runUnderHeadlessWeston(weston string) (code int) {
 		fmt.Fprintf(os.Stderr, "native browser smoke: run inside weston: %v\n", err)
 		return 1
 	}
+}
+
+// westonEnded answers nil for a compositor that ended on the SIGTERM it was
+// sent, or cleanly, and the way it ended otherwise.
+func westonEnded(err error) error {
+	var exit *exec.ExitError
+	if err == nil {
+		return nil
+	}
+	if errors.As(err, &exit) {
+		if status, ok := exit.Sys().(syscall.WaitStatus); ok && status.Signaled() && status.Signal() == syscall.SIGTERM {
+			return nil
+		}
+	}
+	return fmt.Errorf("weston ended: %w", err)
 }

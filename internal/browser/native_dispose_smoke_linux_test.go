@@ -59,15 +59,32 @@ func TestNativeEngineRealDisposeDuringPageCreation(t *testing.T) {
 		err    error
 	}
 	built := make(chan answer, 1)
+	reached := make(chan struct{})
+	profile.beforeView = func() { close(reached) }
 	go func() {
 		driver, err := profile.NewPage(ctx, pageHooks{})
 		built <- answer{driver, err}
 	}()
-	// Long enough for the creation to reach the GTK thread's queue.
-	time.Sleep(200 * time.Millisecond)
+	// The creation is at its view's construction, which it posts to the
+	// held GTK thread next.
+	<-reached
 	disposed := make(chan error, 1)
 	go func() { disposed <- profile.Dispose(ctx) }()
-	time.Sleep(200 * time.Millisecond)
+	// The disposal has begun once the profile reads disposed; its GTK work
+	// follows.
+	for {
+		profile.mu.Lock()
+		begun := profile.disposed
+		profile.mu.Unlock()
+		if begun {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("the disposal never began")
+		case <-time.After(time.Millisecond):
+		}
+	}
 	close(gate)
 	got := <-built
 	if err := <-disposed; err != nil {
