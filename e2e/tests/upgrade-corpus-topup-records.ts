@@ -1,16 +1,18 @@
 // Top-up steps (upgrade-corpus-topup.ts) for the records a turn's rows do
-// not carry: review drafts, agent thread-tool requests and the open pull
-// request a worktree thread tracks. Each writes every side, scope, state and
+// not carry: review drafts, agent thread-tool requests, the receipts of a
+// paired computer's spawns and the open pull request a worktree thread
+// tracks. Each writes every side, scope, state and
 // optional column the schema gives these tables, so a migration that
 // rebuilds one of them meets rows with each column set.
 import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 import { expect } from '@playwright/test';
-import type { HarnessApp } from '../src/harness.js';
+import { launchHarness, type HarnessApp } from '../src/harness.js';
 import type { SeedResult } from './fixtures.js';
 import { publishBranch, type ForgeRepo } from './forge-helpers.js';
+import { pairOwnDevice } from './headless-pairing-helpers.js';
 import { trackedRow } from './merge-cleanup-helpers.js';
-import { FOOTER_TOKEN_PATTERN, THREAD_TOOLS_SERVER, setScenario, threadToolsScenario } from './thread-tools-helpers.js';
+import { FOOTER_TOKEN_PATTERN, THREAD_TOOLS_SERVER, awaitToolAnswer, setScenario, threadToolsScenario } from './thread-tools-helpers.js';
 
 const TURN_TIMEOUT_MS = 120_000;
 
@@ -197,6 +199,88 @@ export async function writeThreadRequests(harness: HarnessApp, version: string, 
     return trackedRow(harness, onPR)?.number ?? 0;
   }, { message: 'top-up: the worktree thread never tracked its open pull request', timeout: TURN_TIMEOUT_MS }).toBe(12);
   return threadIds;
+}
+
+/**
+ * Two workers a paired computer spawns into a project of `harness`'s own,
+ * whose receipts here carry the run each spawn tracks: one ends at rest and
+ * records its figures (run_open 0, run_tool_calls and the rest), the other
+ * keeps an hourly loop armed, so its run stays open (run_open 1). The
+ * spawning computer is a backend of the top-up's own, closed once both
+ * receipts are written; its pairing stays in the store. Returns the
+ * project and the workers' threads.
+ */
+export async function writePeerSpawns(harness: HarnessApp, version: string, nonce: string): Promise<{ projectId: string; threadIds: string[] }> {
+  const name = `topup-peer-spawns-v${version}-${nonce}`;
+  const seeded = await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [{ name, repo: { commits: [{ message: 'init', files: { 'README.md': `# Top-up peer spawns v${version}\n` } }] }, threads: [] }],
+  });
+  const [{ projectId, path: cwd }] = seeded.projects;
+  const peer = await launchHarness();
+  try {
+    const computerId = await pairOwnDevice(peer, harness, `Top-up v${version} computer`);
+    const callerSeed = await peer.rpc<SeedResult>('HarnessSeed', {
+      projects: [{ name: `topup-spawner-${nonce}`, repo: {}, threads: [{ title: `Top-up v${version}: spawns on a paired computer`, provider: 'claude' }] }],
+    });
+    const [{ path: callerCwd, threadIds: [caller] }] = callerSeed.projects;
+    // Scenario rules are per provider and workspace, so the Claude worker
+    // and the Codex worker in one project each run their own script.
+    await setScenario(harness, cwd, threadToolsScenario({
+      name: `topup-peer-ended-${nonce}`, provider: 'claude', turns: [{ text: 'Finished over here.' }], afterTurns: 'repeatLast',
+    }));
+    await setScenario(harness, cwd, threadToolsScenario({
+      name: `topup-peer-open-${nonce}`,
+      provider: 'codex',
+      turns: [{ steps: [{ call: { tool: 'thread_loop', args: { label: 'peer-board', note: 'look at the board', every_seconds: 3600 } } }], text: 'Watching the board.' }],
+      afterTurns: 'silent',
+    }));
+    const spawn = (title: string, provider: string) => ({
+      call: {
+        tool: 'thread_spawn',
+        args: { prompt: `Top-up v${version}: ${title}.`, title: `Top-up v${version}: ${title}`, provider, computer_id: computerId, project_id: projectId, wait_seconds: 0 },
+        timeoutMs: TURN_TIMEOUT_MS,
+      },
+    });
+    await setScenario(peer, callerCwd, threadToolsScenario({
+      name: `topup-peer-caller-${nonce}`,
+      provider: 'claude',
+      turns: [
+        { steps: [spawn('a spawn whose run ends', 'claude'), spawn('a spawn whose run stays open', 'codex')], text: 'Started both over there.' },
+        { text: 'Noted.' },
+      ],
+      afterTurns: 'repeatLast',
+    }));
+    await peer.rpc('StartSession', caller);
+    await peer.rpc('SendMessage', caller, 'Start both on the other computer.', null);
+    const workers: string[] = [];
+    for (const run of ['ends', 'stays open']) {
+      const answer = await awaitToolAnswer<{ thread_id: string }>(peer, { tool: 'thread_spawn', cwd: callerCwd, timeoutMs: TURN_TIMEOUT_MS });
+      if (answer.isError || !answer.value) throw new Error(`top-up: the paired spawn whose run ${run} was refused: ${answer.text}`);
+      workers.push(answer.value.thread_id);
+    }
+    await expect.poll(() => receiptRuns(harness, workers), {
+      message: "top-up: the paired spawns' receipts never recorded one ended and one open run",
+      timeout: TURN_TIMEOUT_MS,
+    }).toEqual([{ run_open: 0, figures: 1 }, { run_open: 1, figures: 0 }]);
+    return { projectId, threadIds: workers };
+  } finally {
+    await peer.close();
+  }
+}
+
+/** The run each of `workers`' spawn receipts records, in their order: open or not, and whether its figures are written. */
+function receiptRuns(harness: HarnessApp, workers: string[]): Array<{ run_open: number | null; figures: number }> {
+  const database = new DatabaseSync(path.join(harness.bootstrap.dataDir, 'agent-overflow.db'), { readOnly: true });
+  try {
+    return workers.map((worker) => {
+      const row = database.prepare(`SELECT run_open,
+          (run_tool_calls IS NOT NULL AND run_tokens IS NOT NULL AND run_turn_ms IS NOT NULL) AS figures
+        FROM thread_request_receipts WHERE target_thread_id = ? AND kind = 'spawn'`).get(worker) as { run_open: number | null; figures: number } | undefined;
+      return row ? { run_open: row.run_open, figures: row.figures } : { run_open: null, figures: 0 };
+    });
+  } finally {
+    database.close();
+  }
 }
 
 /** The interrupted rows of `caller`'s requests in `table`, whose `side` column names the caller. */
