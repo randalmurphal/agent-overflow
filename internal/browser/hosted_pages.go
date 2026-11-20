@@ -186,9 +186,11 @@ func (r *hostedPageRecord) to(event hostedPageEvent) bool {
 type hostedPages struct {
 	mu      sync.Mutex
 	records map[ids.PageHandle]*hostedPageRecord
-	// interrupted is, by page, each retirement under way at Stop, which
-	// forgot its record, until its last callback returns: a close or
-	// discard received meanwhile joins it (receive).
+	// interrupted is, by page, each retirement Stop forgot the record of
+	// and owes a callback for, until that callback returns: one under way,
+	// until its last callback returns, and one still queued, until Stop
+	// delivered the ends it took (stopAll). A close or discard received
+	// meanwhile joins it (receive).
 	interrupted map[ids.PageHandle]receipt
 	// owners is the page of each download id a record holds, running or
 	// ended, so a report naming another page's id is refused.
@@ -621,8 +623,11 @@ func (r *hostedPageRecord) endedHas(id downloadID) bool {
 // for (downloadStart.EndReported): one a lane already took is that lane's
 // to deliver (takeEnd). A download's admission may still be in flight on
 // its lane, so an end is taken whether or not it was admitted; the
-// Manager drops the end of a download it has no row for.
-func (p *hostedPages) stopAll() (join func(), ends []downloadProgress) {
+// Manager drops the end of a download it has no row for. A retirement
+// still queued never runs: the caller delivers those ends in its stead,
+// and a close or discard of its page joins it (interrupted) until the
+// caller calls delivered, once it has.
+func (p *hostedPages) stopAll() (join func(), ends []downloadProgress, delivered func()) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.stop != nil {
@@ -663,12 +668,27 @@ func (p *hostedPages) stopAll() (join func(), ends []downloadProgress) {
 		}
 	}
 	stopped := p.lanes.ctx.Done()
+	owed := make(chan struct{})
+	var queued []ids.PageHandle
 	for page, r := range p.records {
-		if r.retiring {
+		switch {
+		case r.retiring:
 			p.interrupted[page] = receipt{outcome: receiptEnding, retired: r.retired, stopped: stopped}
+		case r.state == hostedPopupClosing || r.state == hostedPageClosing:
+			p.interrupted[page] = receipt{outcome: receiptEnding, retired: owed, stopped: stopped}
+			queued = append(queued, page)
 		}
 	}
 	p.records = make(map[ids.PageHandle]*hostedPageRecord)
 	p.owners = make(map[downloadID]ids.PageHandle)
-	return p.stopLanesLocked(), ends
+	return p.stopLanesLocked(), ends, func() {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		close(owed)
+		for _, page := range queued {
+			if joined, ok := p.interrupted[page]; ok && joined.retired == owed {
+				delete(p.interrupted, page)
+			}
+		}
+	}
 }

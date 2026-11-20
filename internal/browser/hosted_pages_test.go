@@ -71,8 +71,9 @@ func blockedPages(t *testing.T) (pages *hostedPages, taken <-chan *acceptedWork,
 		}
 	}, func(<-chan struct{}) {}, func(ids.PageHandle, bool, string) {})
 	t.Cleanup(func() {
-		join, _ := pages.stopAll()
+		join, _, delivered := pages.stopAll()
 		join()
+		delivered()
 	})
 	return pages, works, next
 }
@@ -175,8 +176,9 @@ func heldPages(t *testing.T) (pages *hostedPages, taken <-chan *acceptedWork, re
 		}
 	}, func(<-chan struct{}) {}, func(ids.PageHandle, bool, string) {})
 	t.Cleanup(func() {
-		join, _ := pages.stopAll()
+		join, _, delivered := pages.stopAll()
 		join()
+		delivered()
 	})
 	return pages, works, func(id string) { close(gate(id)) }
 }

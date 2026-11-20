@@ -312,7 +312,7 @@ func (e *hostedEngine) Stop() {
 		e.endCloseFallbackLocked(pageID)
 	}
 	e.targets = e.newTargets()
-	joinLanes, ends := e.pages.stopAll()
+	joinLanes, ends, delivered := e.pages.stopAll()
 	e.mu.Unlock()
 	if browserCancel != nil {
 		browserCancel()
@@ -326,6 +326,7 @@ func (e *hostedEngine) Stop() {
 	for _, end := range ends {
 		e.events.DownloadProgress(end)
 	}
+	delivered()
 }
 
 // FileURL answers the file URL the Windows-side renderer can actually
