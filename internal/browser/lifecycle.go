@@ -184,23 +184,6 @@ func (m *Manager) closeTabLocked(tb *threadBrowser, pageID PageID, byUser bool) 
 	}
 }
 
-// closeLivePage closes a live page of tb and waits for its teardown. It
-// answers errPageNotFound when the page is not live or closing.
-func (m *Manager) closeLivePage(ctx context.Context, tb *threadBrowser, pageID PageID) error {
-	if err := m.lockStructure(ctx, tb); err != nil {
-		return err
-	}
-	c, started, err := m.beginCloseLiveLocked(tb, pageID, false)
-	m.mu.Unlock()
-	if started != nil {
-		m.startClose(started, c)
-	}
-	if err != nil {
-		return err
-	}
-	return c.wait(ctx)
-}
-
 // beginCloseLiveLocked moves tb's live page to closing, answering its close
 // and its scope, for the caller to startClose after releasing m.mu, or
 // answers the close already running for it with a nil scope. Finding the
@@ -311,24 +294,6 @@ func (m *Manager) pendingClosed(tb *threadBrowser) {
 	m.repairActivePage(tb)
 	m.emitThreadState(tb.id)
 	m.syncPanePresentation(tb.id)
-}
-
-// closeThreadPending closes every tab of the detached lifetime tb that is
-// still being created and forgets its failed creations, for CloseThread: a
-// creation it closes registers no page.
-func (m *Manager) closeThreadPending(tb *threadBrowser) {
-	m.mu.Lock()
-	for id, pending := range m.pending {
-		switch {
-		case pending.p.owner != tb:
-		case pending.err != "":
-			delete(m.pending, id)
-		case !pending.closed:
-			pending.closed = true
-			pending.cancel()
-		}
-	}
-	m.mu.Unlock()
 }
 
 // abandonPage closes a page openPageLocked created that will not be

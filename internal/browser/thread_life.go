@@ -20,9 +20,9 @@ import (
 // the lifetime current then, and everything it does goes through that
 // Access, never through a second lookup of the thread id. So an action
 // bound to a lifetime reaches that lifetime's tabs and state only.
-// CloseThread detaches the lifetime from the registry in its first hold and
-// cleans up what it detached; a bind after that holds a new, empty
-// lifetime. A change an action commits through a detached lifetime is
+// CloseThread detaches the lifetime from the registry and retires every tab
+// of it in one hold, then tears down what it detached (thread_close.go); a
+// bind after that holds a new, empty lifetime. A change an action commits through a detached lifetime is
 // refused, in the Manager.mu hold that would commit it, with
 // ErrThreadClosed (Access.admitLocked); a read through one finds no tabs.
 //
