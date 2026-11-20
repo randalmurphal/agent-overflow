@@ -19,7 +19,7 @@ interface Call {
   reject: (error: unknown) => void;
 }
 
-function harness(options: { maxRetries?: number } = {}) {
+function harness() {
   const calls: Call[] = [];
   const failures: Array<{ mount: string; error: unknown }> = [];
   const sender = createBrowserPaneRectSender({
@@ -29,8 +29,6 @@ function harness(options: { maxRetries?: number } = {}) {
       }),
     isMountGone: (error) => String(error).includes('pane mount not found'),
     onFailure: (mount, error) => failures.push({ mount, error }),
-    retryDelayMs: 10,
-    ...options,
   });
   return { calls, failures, sender };
 }
@@ -92,11 +90,11 @@ describe('browser pane rect sender', () => {
     await flush();
     await flush();
     // Not marked delivered: the retry carries the newest report.
-    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTimeAsync(100);
     expect(calls.map((c) => c.x)).toEqual([1, 2]);
     calls[1].reject(new Error('transport busy'));
     await flush();
-    await vi.advanceTimersByTimeAsync(20);
+    await vi.advanceTimersByTimeAsync(200);
     expect(calls.map((c) => c.x)).toEqual([1, 2, 2]);
     calls[2].resolve();
     await flush();
@@ -107,26 +105,48 @@ describe('browser pane rect sender', () => {
     expect(calls).toHaveLength(3);
   });
 
-  it('gives up after the bound, says so, and sends the same rect again later', async () => {
-    const { calls, failures, sender } = harness({ maxRetries: 2 });
+  it('retries three times, each after twice the wait before it', async () => {
+    const { calls, failures, sender } = harness();
     sender.report('m', rect(1));
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (const delay of [100, 200, 400]) {
+      calls.at(-1)!.reject(new Error('backend restarting'));
+      await flush();
+      await flush();
+      const before = calls.length;
+      await vi.advanceTimersByTimeAsync(delay - 1);
+      expect(calls).toHaveLength(before);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(calls).toHaveLength(before + 1);
+    }
+    expect(failures).toEqual([]);
+    calls[3].reject(new Error('backend restarting'));
+    await flush();
+    await flush();
+    expect(failures).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(calls).toHaveLength(4);
+  });
+
+  it('gives up after the bound, says so, and sends the same rect again later', async () => {
+    const { calls, failures, sender } = harness();
+    sender.report('m', rect(1));
+    for (let attempt = 0; attempt < 4; attempt++) {
       calls[attempt].reject(new Error('backend restarting'));
       await flush();
       await flush();
-      await vi.advanceTimersByTimeAsync(100);
+      await vi.advanceTimersByTimeAsync(400);
     }
-    expect(calls).toHaveLength(3);
+    expect(calls).toHaveLength(4);
     expect(failures).toHaveLength(1);
     expect(String(failures[0].error)).toContain('backend restarting');
     sender.report('m', rect(1));
-    expect(calls).toHaveLength(4);
+    expect(calls).toHaveLength(5);
   });
 
   it('treats a failed send as unknown backend state, so the newest report still goes out', async () => {
     // The transport can reject after the backend applied the call (a lost
     // reply): each failed send here applies first, then rejects.
-    const { calls, failures, sender } = harness({ maxRetries: 1 });
+    const { calls, failures, sender } = harness();
     let backend = 0;
     const accept = async (i: number) => {
       backend = calls[i].x;
@@ -144,25 +164,30 @@ describe('browser pane rect sender', () => {
     await accept(0);
     sender.report('m', rect(2));
     await applyThenReject(1);
-    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTimeAsync(100);
     expect(calls.map((c) => c.x)).toEqual([1, 2, 2]);
-    // Back to the first rect while the retry is out.
+    // Back to the first rect while the retry is out: the retry carries it.
     sender.report('m', rect(1));
     await applyThenReject(2);
-    expect(failures).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(200);
     expect(calls.map((c) => c.x)).toEqual([1, 2, 2, 1]);
     await accept(3);
     expect(backend).toBe(1);
 
     // A failure after the backend accepted rect 1 makes rect 1 unknown too:
-    // the same report is sent again rather than skipped.
+    // once the sender gives up on rect 2, rect 1 is sent again rather than
+    // skipped.
     sender.report('m', rect(2));
-    await applyThenReject(4);
-    await vi.advanceTimersByTimeAsync(10);
-    await applyThenReject(5);
+    for (const [i, delay] of [[4, 100], [5, 200], [6, 400]]) {
+      await applyThenReject(i);
+      await vi.advanceTimersByTimeAsync(delay);
+    }
+    await applyThenReject(7);
+    expect(failures).toHaveLength(1);
+    expect(backend).toBe(2);
     sender.report('m', rect(1));
-    expect(calls.map((c) => c.x)).toEqual([1, 2, 2, 1, 2, 2, 1]);
-    await accept(6);
+    expect(calls.map((c) => c.x)).toEqual([1, 2, 2, 1, 2, 2, 2, 2, 1]);
+    await accept(8);
     expect(backend).toBe(1);
   });
 
