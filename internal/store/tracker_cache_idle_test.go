@@ -11,9 +11,9 @@ import (
 // TestRedeliveredRowsTellNothing and TestIdleRoundCosts pin them, cost the
 // statements and row writes pinned here. Each tick runs twice; the second
 // is the steady state. Each writes only read times: a board's read and
-// cursor, a redelivered row's read, an open detail's read (Linear). A
-// round's statements do not grow with its tickets; on Linear its row
-// writes are each ticket's read time. A board tick while an issue's
+// cursor, a redelivered row's and its card's read, each card's read (a
+// Jira round), an open detail's read (Linear). A round's statements do not
+// grow with its tickets; its row writes are each ticket's read time. A board tick while an issue's
 // history waits until a read can be final for it is an idle tick: the sync
 // state reports no history due, so the tick runs no history unit.
 func TestIdleTickStatements(t *testing.T) {
@@ -78,7 +78,7 @@ func TestIdleTickStatements(t *testing.T) {
 				_, err := s.UpsertMirrorCards(root, sweep, cards, MirrorCatalog{}, at)
 				return err
 			})
-		}, 8, map[string]int{}, nil}, idleTick{fmt.Sprintf("a Linear round of %d tickets", n), func() {
+		}, 9, map[string]int{"tracker_cache_issues": n}, nil}, idleTick{fmt.Sprintf("a Linear round of %d tickets", n), func() {
 			call("GetMirrorSync", syncState(""))
 			call("StoreMirrorDetails", func() error {
 				_, err := s.StoreMirrorDetails(root, sweep, docs(n), 0, at)
@@ -124,7 +124,7 @@ func TestIdleTickStatements(t *testing.T) {
 				return err
 			})
 			call("RecordMirrorSyncAttempt", record)
-		}, 10, map[string]int{"tracker_cache_board_issues": 1, "tracker_cache_sync": 2}, nil},
+		}, 11, map[string]int{"tracker_cache_board_issues": 1, "tracker_cache_issues": 1, "tracker_cache_sync": 2}, nil},
 	}, rounds...) {
 		if tick.before != nil {
 			tick.before()

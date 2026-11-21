@@ -401,8 +401,8 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 	out["Linear round of 100, 10 changed"] = measureScale(t, rec, nil, linear(10))
 	out["cleanup pass, nothing pending"] = measureScale(t, rec, nil, func(int) error { return s.FinishMirrorCleanup(nil) })
 	// A complete listing that leaves out a quarter of the board, whose rows
-	// are read back before each run (untimed): last, as its issues stay
-	// unkept.
+	// a delta page reads back before each run (untimed), so a listing has
+	// named them: last, as its issues stay unkept.
 	quarter := size.issues / 4
 	unlisted := make([]MirrorRow, quarter)
 	for i := range unlisted {
@@ -410,7 +410,7 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 	}
 	out["reconcile, a quarter unlisted"] = measureScale(t, rec, func(int) {
 		for page := range slices.Chunk(unlisted, mirrorMaxPageRows) {
-			if _, err := s.WriteMirrorRows(root, MirrorRowPage{BoardID: board, Lifetime: lifetime, Rows: page, ReadAt: next()}); err != nil {
+			if _, err := s.WriteMirrorRowPage(root, MirrorRowPage{BoardID: board, Lifetime: lifetime, Rows: page, ReadAt: next()}, nil); err != nil {
 				t.Fatal(err)
 			}
 		}

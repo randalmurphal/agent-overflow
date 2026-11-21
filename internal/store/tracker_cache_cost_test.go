@@ -69,6 +69,13 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 	}
 	assertRows(t, s.db, fmt.Sprintf(`SELECT count(*) FROM tracker_cache_board_unexplained
 		WHERE root_id = %d AND board_id = '10' AND kind = 3 AND ref_id = '98' AND named_at = 0`, root), "1")
+	// A row only a read by ID placed, which a listing marks, read again
+	// identical: its card's read time moves alone.
+	mustWriteRows(t, s, rowsPage(s, root, 60, nil, webRow("10004", 5, "d")), root)
+	mustReconcile(t, s, root, []string{"10004"}, false, 61, 61)
+	assertRows(t, s.db, fmt.Sprintf(`SELECT listed FROM tracker_cache_board_issues WHERE root_id = %d AND issue_id = '10004' AND board_id = '10'`, root), "1")
+	mustWriteRowPage(t, s, root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{webRow("10004", 5, "d")}, ReadAt: 62}, nil)
+	assertRows(t, s.db, fmt.Sprintf(`SELECT read_at FROM tracker_cache_issues WHERE root_id = %d AND issue_id = '10004'`, root), "62")
 	mustExec(t, s.db, `UPDATE tracker_cache_issues SET history_dirty = 1 WHERE issue_id = '10002'`)
 	reads := []func() error{
 		func() error { _, _, err := s.GetMirrorRoot(jira.ID); return err },
@@ -189,7 +196,8 @@ var mirrorPlanAllowed = []struct{ fragment, line, why string }{
 	{"i.board_rows = 0 AND NOT", "SCAN i USING COVERING INDEX idx_tracker_cache_issues_boardless",
 		"the partial index holds only the issues no board row keeps: those the sweep owes and those only a link keeps"},
 	{"ORDER BY 1, 3, 2", "USE TEMP B-TREE FOR ORDER BY",
-		"the listed issues with no row, kept in listing order, then the unlisted rows read within the settle window: a listing's misses, not the board"},
+		"the listed issues with no row, kept in listing order, the unlisted rows read within the settle window or never listed, " +
+			"and the listed rows no listing marked: a listing's misses, not the board"},
 	{"ORDER BY position, sprint_id LIMIT", "USE TEMP B-TREE FOR ORDER BY", "one board's sprints, at most mirrorMaxSprints"},
 	{`DELETE FROM main."tracker_cache_`, "", "a restore empties each mirror table whole"},
 	{" LIMIT 500) AND EXISTS (SELECT 1 FROM tracker_cache_roots WHERE id = ?1 AND connection_id IS NULL)", "",
@@ -272,8 +280,10 @@ func TestMirrorReadsUseTheirIndexes(t *testing.T) {
 		"cleanup probe":    {mirrorCleanupPendingSQL, "idx_tracker_cache_boards_retired"},
 		"listing check":    {mirrorBoardWriteSQL, "idx_project_tracker_boards_board (connection_id=? AND board_id=?)"},
 		"linked issues":    {mirrorOffBoardLinkedSQL, "idx_thread_tickets_issue (kind=? AND site=? AND issue_id>?)"},
-		"linked issues' probe of the polled boards": {mirrorOffBoardLinkedSQL,
-			"SEARCH on_board USING PRIMARY KEY (root_id=? AND issue_id=? AND board_id=?)"},
+		"linked issues' walk of their rows": {mirrorOffBoardLinkedSQL,
+			"SEARCH on_board USING PRIMARY KEY (root_id=? AND issue_id=?)\nLIST SUBQUERY"},
+		"listing marks":   {mirrorReconcileMarkSQL, "SEARCH tracker_cache_board_issues USING PRIMARY KEY (root_id=? AND issue_id=? AND board_id=?)"},
+		"card read":       {mirrorCardReadSQL, "(root_id=? AND issue_id=?)\nLIST SUBQUERY"},
 		"detail eviction": {mirrorDetailEvictSQL, "idx_tracker_cache_issue_details_opened (root_id=?)"},
 		"detail states":   {mirrorDetailStatesSQL, "SEARCH d USING INDEX sqlite_autoindex_tracker_cache_issue_details_1 (root_id=? AND issue_id=?)"},
 		"issue rows":      {mirrorIssueRowsSQL, "PRIMARY KEY (root_id=? AND issue_id=? AND board_id>?)"},
@@ -297,6 +307,12 @@ func TestMirrorReadsUseTheirIndexes(t *testing.T) {
 		if !strings.Contains(plan, read.index) || strings.Contains(plan, "TEMP B-TREE") {
 			t.Errorf("%s plan:\n%s\nwant %s and no sort", name, plan, read.index)
 		}
+	}
+	// A listing probes each listed issue's row by key, which finds the rows
+	// to mark; only the arm of the unlisted rows walks the board.
+	if plan := explainMirror(t, s, mirrorReconcileFoundSQL); !strings.Contains(plan,
+		"SCAN l VIRTUAL TABLE INDEX 1:\nSEARCH b USING PRIMARY KEY (root_id=? AND issue_id=? AND board_id=?) LEFT-JOIN") {
+		t.Errorf("listing plan:\n%s\nwant a probe of each listed issue's row by key", plan)
 	}
 	// A rowid table's drain deletes its batch by rowid; with root_id beside
 	// the rowid list the planner walks the root's rows to match the batch.

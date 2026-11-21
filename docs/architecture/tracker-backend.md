@@ -402,12 +402,16 @@ way, as the board's `rows_removed_at`, rows removed or not. A write from a
 read that began earlier is superseded, an identical read that began later
 moves `read_at` alone, and a duplicate from the same read writes nothing. A
 new row from a read that began before the board's latest removal is
-refused, since that removal may have been of it, and is read again: a
-delta page with one stores no cursor, and a read by ID reads it once
-more (`MirrorChanges.Refused`). A card is ordered by its update time and,
-for one update time, by the read that last changed it or its sprints
-(`changed_at`): a project key rename changes every key and moves no
-update time. A
+refused, since that removal may have been of it, and so is an absence a
+read by ID found when the read began before the board's newest complete
+listing, which may have named the row; each is read again: a delta page
+with one stores no cursor, and a read by ID reads it once more
+(`MirrorChanges.Refused`). A card is ordered by its update time and, for
+one update time, by its `read_at`, the latest read admitted for the card
+or its sprints, identical or not: a project key rename changes every key
+and moves no update time. An issue's row on a board records whether a
+listing has named it (`listed`): a delta page, which is a search of the
+same index, or a listing a reconcile was given. A
 section page carries the board's revision; continuing it at another
 revision fails with `ErrTrackerCacheStale`. A board view's first paint
 reads structure, totals, first pages and what their cards name (statuses,
@@ -453,12 +457,14 @@ and writes share:
   edited, an issue is deleted, a board is newly listed while its issues are
   already cards from another board. A reconcile lists the IDs on the board,
   reads the board rows of every listed ID that has no row on this board,
-  and removes the rows no longer listed that were read at least
-  `tracker.DeltaOverlap` before the listing began. A list may miss an
-  issue its index has not caught up with (Jira, after a create), so an
-  unlisted row read more recently is not judged by the listing: the store
-  reports it (`MirrorReconcile.Unsettled`) and the pass reads it
-  through the board's rows, which keeps or removes it. A pass attempts
+  and removes the rows no longer listed that a listing has named and that
+  were read at least `tracker.DeltaOverlap` before the listing began. A
+  list may miss an issue its index has not caught up with (Jira, after a
+  create), so an unlisted row read more recently, or one no listing has
+  named (a row only a read by ID placed, such as a create's), is not
+  judged by the listing: the store reports it
+  (`MirrorReconcile.Unsettled`) and the pass reads it through the board's
+  rows, which keeps or removes it. A pass attempts
   each of its candidates (the listed issues with no row and the unsettled
   rows) once, 1,000 a tick; a board's pump keeps the candidates left
   between its ticks and goes on with them without listing again, so a
@@ -471,8 +477,11 @@ and writes share:
   provider reports as incomplete adds and never removes, and so does one
   that began before the newest complete listing the board reconciled,
   which saw the rows it leaves out (checked in every removal
-  transaction). One statement finds the rows to remove; they go in
-  transactions of at most 500, each judging them again. It runs when a board is subscribed, on
+  transaction). A read by ID that began before that listing removes no
+  row the listing may have named: its absence is read once more, from
+  after the listing (`MirrorChanges.Refused`). One statement finds the
+  rows to remove; they go in transactions of at most 500, each judging
+  them again. It runs when a board is subscribed, on
   a slower cadence, and on request, and waits while the tick's delta walk
   has more pages to read, so a first sync reads each row once and lists
   the board once.
@@ -647,12 +656,13 @@ connection's shown tickets:
 | Tick that finds nothing changed | Requests | Store calls | Statements | Rows written |
 |---|---|---|---|---|
 | Shown board | 1 | 2 | 3 | 1 |
-| Shown board, the delta's overlap redelivering one identical row | 1 | 3 | 10 | 3 |
-| Jira round of N tickets (N up to 100) | 1 | 3 | 8 | 0 |
+| Shown board, the delta's overlap redelivering one identical row | 1 | 3 | 11 | 4 |
+| Jira round of N tickets (N up to 100) | 1 | 3 | 9 | N |
 | Linear round of N tickets | one per 10 tickets | 2 | 4 | N |
 
 A Jira round checks every ticket with one cards read, decodes no stored
-document and reads none in full; a Linear round reads every ticket in
+document, reads none in full and moves the read time of the unchanged
+cards in one statement; a Linear round reads every ticket in
 full, stores them in one transaction, which reads every document's state
 in one statement and moves the read times of the unchanged ones in one
 more. A ticket that changed adds its own full read.
@@ -690,7 +700,7 @@ path's the fastest of three runs of five each.
 | Write statements, in transactions | 740 in 178 | 2,915 in 703 |
 | Allocated, peak heap | 90 MB, 9.7 to 10.0 MB | 359 MB, 29.2 to 29.7 MB |
 | Time (scripted) | 1.21 s | 4.85 s |
-| Store file per issue, after a checkpoint | 922 B | 865 B |
+| Store file per issue, after a checkpoint | 925 B | 867 B |
 
 Steady paths cost the same at both sizes, except the four that walk the
 board: the reconcile compares the whole listing, and the board view, the
@@ -712,8 +722,8 @@ named rows.
 | Section counts | 4 | 9.4 ms | 41.1 ms |
 | Patch read, 1 or 100 changed, totals moved | 8 | 8.4 to 9.9 ms | 40.3 to 41.6 ms |
 | Patch read, 1 or 100 changed, totals held | 5 | 0.07 to 0.72 ms | 0.07 to 0.68 ms |
-| Ticket open, stored | 13 | 0.28 ms | 0.26 ms |
-| Jira round, 100 tickets, 10 changed | 20 | 4.7 ms | 4.9 ms |
+| Ticket open, stored | 14 | 0.28 ms | 0.26 ms |
+| Jira round, 100 tickets, 10 changed | 21 | 4.7 ms | 4.9 ms |
 | Linear round, 100 tickets, 10 changed | 14 | 2.8 ms | 2.8 ms |
 | `New` | 0 | 12.9 ms | 13.2 ms |
 

@@ -78,7 +78,8 @@ package store
 //     rows_removed_at
 //     is the latest read that found issues gone from the board: a read
 //     that began before it adds no row. listing_read_at is the read of the
-//     newest complete listing reconciled: an older one removes no row.
+//     newest complete listing reconciled: an older listing, and a read by
+//     ID that began before it, removes no row.
 //   - tracker_cache_board_unexplained: a status (kind 1), user (2) or
 //     sprint (3) a page of the board's rows named that the mirror lacked.
 //     named_at is the read of the page that named it while pending; the
@@ -95,9 +96,11 @@ package store
 //   - tracker_cache_sprints: a sprint as one board shows it; a Jira sprint
 //     can show on several boards and names the board it was made on
 //     (origin_board_id). position is the order the structure read gave.
-//   - tracker_cache_issues: changed_at is the read that last changed the
-//     card or its sprints: a card with the same update time from a read
-//     that began earlier is superseded. status_since is when the card's status began,
+//   - tracker_cache_issues: read_at is when the latest read admitted for
+//     the card began, identical or not, and orders the card and its
+//     sprints: a card with the same update time from a read that began
+//     earlier is superseded. No index or trigger reads it, so an identical
+//     read moves it alone. status_since is when the card's status began,
 //     derived from the card and the stored history whenever either is
 //     written (mirrorStatusSinceSQL), zero when the history does not cover
 //     the card. history_from is the time the stored changes are complete
@@ -144,7 +147,11 @@ package store
 //     lookup through an index that does not cover a WITHOUT ROWID table's
 //     row as dearer than a walk of the primary key's root_id prefix, which
 //     reads every row of the root, and a cascade reads the whole row. So
-//     moving read_at writes the index too.
+//     moving read_at or listed writes the index too. listed is 1 once a
+//     listing of the board named the issue: a delta page (a search of the
+//     same index) or a listing a reconcile was given. A complete listing
+//     removes only listed rows; an unlisted row it leaves out has only a
+//     read by ID's word that the board holds it, so a read by ID judges it.
 //   - tracker_cache_issue_sprints: the sprints an issue's card names. A
 //     sprint the mirror does not keep can be named, so it has no key to
 //     tracker_cache_sprints. idx_tracker_cache_issue_sprints_sprint holds
@@ -285,7 +292,7 @@ CREATE TABLE tracker_cache_issues (
  created_at INTEGER NOT NULL DEFAULT 0 CHECK(created_at >= 0),
  updated_at INTEGER NOT NULL CHECK(updated_at > 0),
  resolved_at INTEGER NOT NULL DEFAULT 0 CHECK(resolved_at >= 0),
- changed_at INTEGER NOT NULL DEFAULT 0 CHECK(changed_at >= 0),
+ read_at INTEGER NOT NULL DEFAULT 0 CHECK(read_at >= 0),
  status_since INTEGER NOT NULL DEFAULT 0 CHECK(status_since >= 0),
  history_from INTEGER NOT NULL DEFAULT 0 CHECK(history_from >= 0),
  history_for INTEGER NOT NULL DEFAULT 0 CHECK(history_for >= 0),
@@ -318,11 +325,12 @@ CREATE TABLE tracker_cache_board_issues (
  order_key TEXT NOT NULL DEFAULT '',
  estimate REAL,
  read_at INTEGER NOT NULL CHECK(read_at > 0),
+ listed INTEGER NOT NULL DEFAULT 0 CHECK(listed IN (0, 1)),
  PRIMARY KEY (root_id, issue_id, board_id),
  FOREIGN KEY (root_id, board_id) REFERENCES tracker_cache_boards(root_id, board_id) ON DELETE CASCADE,
  FOREIGN KEY (root_id, issue_id) REFERENCES tracker_cache_issues(root_id, issue_id) ON DELETE CASCADE
 ) WITHOUT ROWID;
-CREATE INDEX idx_tracker_cache_board_issues_order ON tracker_cache_board_issues(root_id, board_id, order_key, issue_id, estimate, read_at);
+CREATE INDEX idx_tracker_cache_board_issues_order ON tracker_cache_board_issues(root_id, board_id, order_key, issue_id, estimate, read_at, listed);
 
 CREATE TABLE tracker_cache_issue_sprints (
  root_id INTEGER NOT NULL,

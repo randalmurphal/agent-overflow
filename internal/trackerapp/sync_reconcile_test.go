@@ -79,11 +79,13 @@ func TestReconcileAddsAndRemoves(t *testing.T) {
 	}
 }
 
-// A listing that may show an issue late judges only the rows read more
-// than tracker.DeltaOverlap before it began: an unlisted row read since
-// is read by ID in the same tick, kept while the board holds it (the
-// listing's index has not caught up) and removed once it does not; an
-// unlisted row read before is removed with no read.
+// A listing that may show an issue late judges only the rows a listing
+// has named that were read more than tracker.DeltaOverlap before it
+// began: an unlisted row read since is read by ID in the same tick, kept
+// while the board holds it (the listing's index has not caught up) and
+// removed once it does not; an unlisted row read before is removed with
+// no read. The rows the first reconcile reads by ID are named by the
+// second's listing.
 func TestReconcileReadsRecentRowsByID(t *testing.T) {
 	t.Parallel()
 	m := newMirrorFixture(t)
@@ -92,6 +94,7 @@ func TestReconcileReadsRecentRowsByID(t *testing.T) {
 		p.boardIssues = listing(true, "10001", "10002")
 		p.boardRows = boardOf(board...)
 	})
+	must[Outcome](t)(m.svc.tickReconcile(t.Context(), m.scope(), Background))
 	must[Outcome](t)(m.svc.tickReconcile(t.Context(), m.scope(), Background))
 	// 10002 is on the board and its list misses it: read by ID, kept, told
 	// nothing.
@@ -110,6 +113,36 @@ func TestReconcileReadsRecentRowsByID(t *testing.T) {
 	out := must[Outcome](t)(m.svc.tickReconcile(t.Context(), m.scope(), Background))
 	if !slices.Equal(out.Changes().Removed, ids("10002")) || m.p.count("BoardRows") != reads {
 		t.Fatalf("a listing that missed a settled row: %+v, %d rows reads", out, m.p.count("BoardRows")-reads)
+	}
+}
+
+// A row only a read by ID placed, which no listing has named since, is
+// never judged by a listing that leaves it out, however long after: each
+// reconcile reads it by ID, which keeps it while the board holds it and
+// removes it once the board does not.
+func TestARowNoListingNamedIsReadByID(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	m.p.set(func(p *scripted) {
+		p.boardIssues = listing(true, "10001", "10002")
+		p.boardRows = boardOf(row("10001", 1_799_000_000_000, "a"), row("10002", 1_799_000_000_000, "b"))
+	})
+	must[Outcome](t)(m.svc.tickReconcile(t.Context(), m.scope(), Background))
+	m.p.set(func(p *scripted) { p.boardIssues = listing(true, "10001") })
+	for range 2 {
+		m.pass(10 * tracker.DeltaOverlap)
+		reads := m.p.count("BoardRows")
+		if out := must[Outcome](t)(m.svc.tickReconcile(t.Context(), m.scope(), Background)); !out.Changes().Empty() || m.p.count("BoardRows") != reads+1 {
+			t.Fatalf("a listing leaving out a row only read by ID: %+v, %d rows reads", out, m.p.count("BoardRows")-reads)
+		}
+		if got := m.rowIDs(testBoard); !slices.Equal(got, []string{"10001", "10002"}) {
+			t.Fatalf("rows %v", got)
+		}
+	}
+	m.p.set(func(p *scripted) { p.boardRows = boardOf(row("10001", 1_799_000_000_000, "a")) })
+	m.pass(10 * tracker.DeltaOverlap)
+	if out := must[Outcome](t)(m.svc.tickReconcile(t.Context(), m.scope(), Background)); !slices.Equal(out.Changes().Removed, ids("10002")) {
+		t.Fatalf("once the board does not hold it: %+v", out)
 	}
 }
 

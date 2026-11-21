@@ -103,3 +103,52 @@ func TestReplaceMirrorStructureReportsWhatCommittedBeforeAFailure(t *testing.T) 
 	}
 	assertRows(t, s.db, `SELECT named_at FROM tracker_cache_board_unexplained`, "0")
 }
+
+// A mark a failed settlement left pending was named before the stored
+// structure's read, which looked for it, so it is owed no structure read:
+// the board is not due. A later page that names it again re-times it and
+// makes the board due once; the complete structure read that follows
+// explains it, and a page naming it after that does not.
+func TestAMarkAFailedSettlementLeftIsOwedNoRead(t *testing.T) {
+	t.Parallel()
+	s, _, root := newMirror(t)
+	mustReplaceStructure(t, s, root, webStructure(), true)
+	odd := webRow("10001", 5, "a")
+	odd.Card.StatusID = "77"
+	page := func(readAt int64) MirrorChanges {
+		t.Helper()
+		got, err := s.WriteMirrorRowPage(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Rows: []MirrorRow{odd}, ReadAt: readAt}), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	complete := func(readAt int64) error {
+		st := webStructure()
+		st.ReadAt, st.Complete = readAt, true
+		_, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, st))
+		return err
+	}
+	if !page(2).StructureDue || structureDue(t, s, root) != 2 {
+		t.Fatal("a page naming an unknown status leaves the board not due")
+	}
+	failMirrorWrite(t, s, "UPDATE", "tracker_cache_board_unexplained", "true")
+	if err := complete(30); err == nil {
+		t.Fatal("the settlement's failure is not returned")
+	}
+	mustExec(t, s.db, `DROP TRIGGER test_fail_write`)
+	assertRows(t, s.db, `SELECT named_at FROM tracker_cache_board_unexplained`, "2")
+	if due := structureDue(t, s, root); due != 0 {
+		t.Fatalf("after the failed settlement: due %d; want none, the structure read at 30 having looked", due)
+	}
+	if !page(40).StructureDue || structureDue(t, s, root) != 40 {
+		t.Fatalf("a page naming the reference again: due %d; want 40", structureDue(t, s, root))
+	}
+	if err := complete(50); err != nil {
+		t.Fatal(err)
+	}
+	assertRows(t, s.db, `SELECT named_at FROM tracker_cache_board_unexplained`, "0")
+	if page(60).StructureDue || structureDue(t, s, root) != 0 {
+		t.Fatalf("a page naming the explained reference: due %d; want none", structureDue(t, s, root))
+	}
+}

@@ -15,8 +15,8 @@ import (
 // mirrorWriteRecorder counts, through SQLite's pre-update hook on the
 // writer connection, every row the writer inserts, updates or deletes,
 // triggers and foreign key actions included, and per committed
-// transaction the deletes of mirror rows and the writes of history changes
-// and of board marks.
+// transaction the deletes of mirror rows and the writes of history changes,
+// of board marks and of board rows.
 type mirrorWriteRecorder struct {
 	s       *Store
 	mu      sync.Mutex
@@ -24,6 +24,7 @@ type mirrorWriteRecorder struct {
 	deletes map[uint64]int
 	changes map[uint64]int
 	marks   map[uint64]int
+	rows    map[uint64]int
 }
 
 func recordMirrorWrites(t *testing.T, s *Store) *mirrorWriteRecorder {
@@ -63,6 +64,8 @@ func recordMirrorWrites(t *testing.T, s *Store) *mirrorWriteRecorder {
 			r.changes[s.CommitCount()]++
 		case "tracker_cache_board_unexplained":
 			r.marks[s.CommitCount()]++
+		case "tracker_cache_board_issues":
+			r.rows[s.CommitCount()]++
 		}
 	})
 	t.Cleanup(func() { hook(nil) })
@@ -72,7 +75,7 @@ func recordMirrorWrites(t *testing.T, s *Store) *mirrorWriteRecorder {
 func (r *mirrorWriteRecorder) reset() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.writes, r.deletes, r.changes, r.marks = map[string]int{}, map[uint64]int{}, map[uint64]int{}, map[uint64]int{}
+	r.writes, r.deletes, r.changes, r.marks, r.rows = map[string]int{}, map[uint64]int{}, map[uint64]int{}, map[uint64]int{}, map[uint64]int{}
 }
 
 // rowWrites are the rows written since the last reset, by table.
@@ -114,4 +117,15 @@ func (r *mirrorWriteRecorder) mostMarksInATransaction() (most, transactions int)
 		most = max(most, n)
 	}
 	return most, len(r.marks)
+}
+
+// mostRowsInATransaction is the most board rows one transaction wrote
+// since the last reset, and the transactions that wrote any.
+func (r *mirrorWriteRecorder) mostRowsInATransaction() (most, transactions int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, n := range r.rows {
+		most = max(most, n)
+	}
+	return most, len(r.rows)
 }

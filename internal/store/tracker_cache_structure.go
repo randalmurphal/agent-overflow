@@ -189,7 +189,9 @@ type MirrorStructureWrite struct {
 // call whose marks fail after the structure committed returns, with the
 // error, what the structure changed: the caller tells it whatever it does
 // about the error, and the next structure read admitted, identical or
-// not, settles the marks again.
+// not, settles the marks again. Meanwhile a mark left pending makes the
+// board due only once a later row page names it again: it was named
+// before the stored structure's read, which looked for it.
 func (s *Store) ReplaceMirrorStructure(rootID int64, st MirrorStructure) (result MirrorStructureWrite, err error) {
 	if err := st.check(); err != nil {
 		return MirrorStructureWrite{}, err

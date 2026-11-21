@@ -138,8 +138,10 @@ func TestMirrorUnexplainedReferencesStopMakingTheStructureDue(t *testing.T) {
 	}
 	replaceDueStructure(t, s, root, 5, true)
 	assertRows(t, s.db, mirrorMarksSQL, "1:77,2:acc-gone,3:99")
-	if changes, statements := writeDuePage(t, s, root, 6, odd); changes.StructureDue || statements != 7 {
-		t.Fatalf("a page naming marked references = %+v in %d statements; want not due in 7", changes, statements)
+	// The page is the one read at 4 again: it moves its row's and its
+	// card's read time, one statement each.
+	if changes, statements := writeDuePage(t, s, root, 6, odd); changes.StructureDue || statements != 8 {
+		t.Fatalf("a page naming marked references = %+v in %d statements; want not due in 8", changes, statements)
 	}
 	var many []MirrorRow
 	for r := range 6 {

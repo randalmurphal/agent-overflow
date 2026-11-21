@@ -47,13 +47,16 @@ type MirrorChanges struct {
 	Removed []string
 	// Superseded are the issues of which the write stored less than it
 	// carried: a card older than the stored one, a row or a removal of a
-	// row stored by a read that began later, or a new row from a read that
-	// began before the board last lost rows.
+	// row stored by a read that began later, a new row from a read that
+	// began before the board last lost rows, or a removal from a read that
+	// began before the board's newest complete listing.
 	Superseded []string
-	// Refused are the issues of Superseded whose new row was not added
-	// because the board lost rows after the read began: the removal may
-	// have been of another issue, so the row is owed a read that began
-	// after it. WriteMirrorRowPage stores no cursor for a page that has one
+	// Refused are the issues of Superseded owed a read that began after
+	// the board's latest removal or listing: a new row not added because
+	// the board lost rows after the read began (the removal may have been
+	// of another issue), and a row not removed because a complete listing
+	// began after the read did (the listing may have named it).
+	// WriteMirrorRowPage stores no cursor for a page that has one
 	// (CursorRefused); a WriteMirrorRows caller reads them again.
 	Refused []string
 	// Unkept are the cards UpsertMirrorCards did not store because the
@@ -120,11 +123,20 @@ func (c MirrorCard) check() error {
 // mirrorCardSupersededSQL is the rule that orders a card's versions, in
 // one place: the card with update time updated, read from readAt, is
 // superseded by the stored issue i when i is of a later update, or of the
-// same update and stored by a read that began later (changed_at). A
-// project key rename changes every key and moves no update time. i,
-// updated and readAt are SQL expressions.
+// same update and admitted from a read that began later (read_at, which
+// an identical card from a later read moves too). A project key rename
+// changes every key and moves no update time. i, updated and readAt are
+// SQL expressions.
 func mirrorCardSupersededSQL(i, updated, readAt string) string {
-	return `(` + i + `.updated_at > ` + updated + ` OR ` + i + `.updated_at = ` + updated + ` AND ` + i + `.changed_at > ` + readAt + `)`
+	return `(` + i + `.updated_at > ` + updated + ` OR ` + i + `.updated_at = ` + updated + ` AND ` + i + `.read_at > ` + readAt + `)`
+}
+
+// mirrorCardAdvancesSQL holds for a card c of a JSON list, read from
+// readAt, that the stored issue i admits from an earlier read: a card the
+// upsert does not replace, its content being the same, has its read time
+// moved by mirrorCardReadSQL.
+func mirrorCardAdvancesSQL(readAt string) string {
+	return `(i.read_at < ` + readAt + ` AND NOT ` + mirrorCardSupersededSQL("i", "c.value ->> 'u'", readAt) + `)`
 }
 
 // mirrorCardContent are the columns of a card's content, each with the
@@ -173,7 +185,7 @@ func mirrorCardRefusedSQL(readAt string) string {
 // replaced by the same rule. status_since is derived again from the new
 // card and the stored history.
 const mirrorCardUpsertSQL = `INSERT INTO tracker_cache_issues(root_id, issue_id, issue_key, project_id, type_id, type_level,
-	        status_id, assignee_id, priority_id, parent_id, created_at, updated_at, resolved_at, changed_at, data)
+	        status_id, assignee_id, priority_id, parent_id, created_at, updated_at, resolved_at, read_at, data)
 	SELECT ?1, c.value ->> 'i', c.value ->> 'k', c.value ->> 'p', c.value ->> 't', c.value ->> 'l', c.value ->> 's',
 	       c.value ->> 'a', c.value ->> 'r', c.value ->> 'n', c.value ->> 'c', c.value ->> 'u', c.value ->> 'z', ?3,
 	       unhex(c.value ->> 'd')
@@ -184,10 +196,10 @@ var mirrorCardConflictSQL = `
 	    type_id = excluded.type_id, type_level = excluded.type_level, status_id = excluded.status_id,
 	    assignee_id = excluded.assignee_id, priority_id = excluded.priority_id, parent_id = excluded.parent_id,
 	    created_at = excluded.created_at, updated_at = excluded.updated_at, resolved_at = excluded.resolved_at,
-	    changed_at = excluded.changed_at, data = excluded.data, status_since = ` + mirrorStatusSinceSQL(mirrorStatusSinceOf{
+	    read_at = excluded.read_at, data = excluded.data, status_since = ` + mirrorStatusSinceSQL(mirrorStatusSinceOf{
 	issue: "tracker_cache_issues.issue_id", status: "excluded.status_id", updatedAt: "excluded.updated_at",
 	createdAt: "excluded.created_at", from: "history_from", readFor: "history_for", wait: "history_wait", gen: "history_gen"}) + `
-	WHERE NOT ` + mirrorCardSupersededSQL("tracker_cache_issues", "excluded.updated_at", "excluded.changed_at") + `
+	WHERE NOT ` + mirrorCardSupersededSQL("tracker_cache_issues", "excluded.updated_at", "excluded.read_at") + `
 	  AND ` + mirrorCardDiffersSQL("", func(column, _ string) string { return "excluded." + column }) + `
 	RETURNING issue_id`
 
@@ -209,11 +221,12 @@ var mirrorCardSprintsJoinSQL = `INSERT INTO tracker_cache_issue_sprints(root_id,
 	SELECT ?1, i.issue_id, sp.value FROM json_each(?2) c` + mirrorCardAdmittedSQL + `
 	  JOIN json_each(c.value -> 'm') sp WHERE `
 
-// mirrorCardSprintsReadSQL records read ?3 as the change of the cards ?2
-// (IDs) whose sprints alone it changed, so the card and its sprints are
-// ordered as one.
-const mirrorCardSprintsReadSQL = `UPDATE tracker_cache_issues SET changed_at = ?3
-	WHERE root_id = ?1 AND issue_id IN (SELECT value FROM json_each(?2)) AND changed_at < ?3`
+// mirrorCardReadSQL records read ?3 as the latest of the admitted cards
+// ?2 (IDs) the upsert did not replace, their sprints changed or not, so
+// the card and its sprints are ordered as one by their latest read. It
+// writes read_at alone, which no index or trigger reads.
+const mirrorCardReadSQL = `UPDATE tracker_cache_issues SET read_at = ?3
+	WHERE root_id = ?1 AND issue_id IN (SELECT value FROM json_each(?2)) AND read_at < ?3`
 
 // mirrorCardStatements are the three statements that store cards, for one
 // filter of the cards they take.
@@ -234,13 +247,25 @@ var (
 		WHERE b.root_id = ?1 AND b.issue_id = c.value ->> 'i' AND b.board_id = ?4))`)
 	// mirrorLinkedCards store cards of the issues the mirror keeps.
 	mirrorLinkedCards = newMirrorCardStatements(mirrorIssueKept("?1", "c.value ->> 'i'"))
+	// mirrorLinkedCardsStateSQL reads, for each card of ?2 read from ?3
+	// whose issue the mirror holds, whether the stored card refuses it
+	// (mirrorCardRefusedSQL) and whether it admits it from an earlier read
+	// (mirrorCardAdvancesSQL), listing only the cards stored from an
+	// earlier read or superseded by the stored one.
+	mirrorLinkedCardsStateSQL = `SELECT c.value ->> 'i', ` + mirrorCardRefusedSQL("?3") + `, ` + mirrorCardAdvancesSQL("?3") + `
+		FROM json_each(?2) c CROSS JOIN tracker_cache_issues i ON i.root_id = ?1 AND i.issue_id = c.value ->> 'i'
+		WHERE i.read_at < ?3 OR ` + mirrorCardSupersededSQL("i", "c.value ->> 'u'", "?3")
 )
 
 // storeMirrorCardsTx runs statements over encoded cards read from readAt,
 // with the filter's arguments, and returns the issues whose card or
-// sprints changed, sorted. A card whose sprints alone changed costs one
-// statement more, which records the read as its change.
-func storeMirrorCardsTx(tx *sql.Tx, statements mirrorCardStatements, rootID int64, encoded string, readAt int64, filter ...any) ([]string, error) {
+// sprints changed, sorted. advancing are the stored cards the write
+// admits from an earlier read (mirrorCardAdvancesSQL), sorted: those the
+// upsert did not replace cost one statement more, which records the read
+// as their latest, so an identical card from a later read orders the
+// card's ties as a changed one does, and reports no change.
+func storeMirrorCardsTx(tx *sql.Tx, statements mirrorCardStatements, rootID int64, encoded string, readAt int64, advancing []string,
+	filter ...any) ([]string, error) {
 	args := append([]any{rootID, encoded, readAt}, filter...)
 	var cards, changed []string
 	for i, step := range []struct{ what, query string }{
@@ -258,19 +283,19 @@ func storeMirrorCardsTx(tx *sql.Tx, statements mirrorCardStatements, rootID int6
 	slices.Sort(cards)
 	slices.Sort(changed)
 	changed = slices.Compact(changed)
-	var sprintsOnly []string
-	for _, id := range changed {
+	var unreplaced []string
+	for _, id := range advancing {
 		if _, found := slices.BinarySearch(cards, id); !found {
-			sprintsOnly = append(sprintsOnly, id)
+			unreplaced = append(unreplaced, id)
 		}
 	}
-	if len(sprintsOnly) > 0 {
-		list, err := encodeMirrorIDs(sprintsOnly)
+	if len(unreplaced) > 0 {
+		list, err := encodeMirrorIDs(unreplaced)
 		if err != nil {
 			return nil, err
 		}
-		if _, err := tx.Exec(mirrorCardSprintsReadSQL, rootID, list, readAt); err != nil {
-			return nil, fmt.Errorf("record the read of changed sprints: %w", err)
+		if _, err := tx.Exec(mirrorCardReadSQL, rootID, list, readAt); err != nil {
+			return nil, fmt.Errorf("record the cards' read: %w", err)
 		}
 	}
 	return changed, nil
@@ -319,16 +344,34 @@ func (s *Store) UpsertMirrorCards(rootID, sweep int64, cards []MirrorCard, catal
 			WHERE NOT `+mirrorIssueKept("?1", "c.value ->> 'i'"), rootID, encoded); err != nil {
 			return fmt.Errorf("find unkept cards: %w", err)
 		}
-		if changes.Superseded, err = queryIDs(tx, `SELECT c.value ->> 'i' FROM json_each(?2) c
-			CROSS JOIN tracker_cache_issues i ON i.root_id = ?1 AND i.issue_id = c.value ->> 'i'
-			 WHERE `+mirrorCardRefusedSQL("?3"), rootID, encoded, readAt); err != nil {
+		var advancing []string
+		err = scanMirrorRows(tx, mirrorLinkedCardsStateSQL, []any{rootID, encoded, readAt}, func(r rowScanner) error {
+			var id string
+			var refused, advances bool
+			if err := r.Scan(&id, &refused, &advances); err != nil {
+				return err
+			}
+			if refused {
+				changes.Superseded = append(changes.Superseded, id)
+			}
+			if advances {
+				advancing = append(advancing, id)
+			}
+			return nil
+		})
+		if err != nil {
 			return fmt.Errorf("find superseded cards: %w", err)
 		}
 		// Sorted here rather than by the statements, which would sort in a
 		// temporary b-tree.
 		slices.Sort(changes.Unkept)
 		slices.Sort(changes.Superseded)
-		changes.Cards, err = storeMirrorCardsTx(tx, mirrorLinkedCards, rootID, encoded, readAt)
+		slices.Sort(advancing)
+		advancing = slices.DeleteFunc(advancing, func(id string) bool {
+			_, unkept := slices.BinarySearch(changes.Unkept, id)
+			return unkept
+		})
+		changes.Cards, err = storeMirrorCardsTx(tx, mirrorLinkedCards, rootID, encoded, readAt, advancing)
 		return err
 	})
 	if err != nil {

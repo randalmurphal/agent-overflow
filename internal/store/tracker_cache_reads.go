@@ -354,13 +354,14 @@ func (s *Store) ListMirrorIssueRows(rootID int64, issueID, afterBoard string) (r
 // mirrorOffBoardLinkedSQL reads a page of the issues the links of a root
 // name (mirrorLinksSQL, the keep rule's own) that have no row on a board
 // of the JSON list ?3 the mirror shows, by issue ID after ?2: the
-// tickets' issue index in order, and per ticket a probe of the issue's
-// row on each listed board by key.
+// tickets' issue index in order, and per ticket a walk of the issue's own
+// rows, each tested against the list (built once; the unary plus keeps
+// the planner from probing the issue's key once per listed board).
 var mirrorOffBoardLinkedSQL = `SELECT DISTINCT link_ticket.issue_id FROM ` + mirrorLinksSQL("?1") + `
 	AND link_ticket.issue_id > ?2
 	AND NOT EXISTS (SELECT 1 FROM tracker_cache_board_issues on_board
 	                 WHERE on_board.root_id = ?1 AND on_board.issue_id = link_ticket.issue_id
-	                   AND on_board.board_id IN (SELECT value FROM json_each(?3))
+	                   AND +on_board.board_id IN (SELECT value FROM json_each(?3))
 	                   AND ` + mirrorBoardShown("on_board.root_id", "on_board.board_id") + `)
 	ORDER BY link_ticket.issue_id LIMIT ` + strconv.Itoa(mirrorLinkedPage+1)
 
@@ -372,8 +373,8 @@ var mirrorOffBoardLinkedSQL = `SELECT DISTINCT link_ticket.issue_id FROM ` + mir
 // (empty for the first); more reports that issues follow the last. A
 // detached root has none. A page reads the links in issue order until it
 // has a page, so it reads at most every link of the connection, each with
-// one key probe per polled board, and it waits for a history read slot
-// (mirrorReadSnapshot).
+// its issue's rows on the boards, whatever the number of polled boards,
+// and it waits for a history read slot (mirrorReadSnapshot).
 func (s *Store) ListMirrorOffBoardLinkedIssues(rootID int64, after string, polled []string) (issueIDs []string, more bool, err error) {
 	boards, err := encodeMirrorIDs(polled)
 	if err != nil {

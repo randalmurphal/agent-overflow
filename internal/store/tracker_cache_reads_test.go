@@ -355,6 +355,46 @@ func TestListMirrorOffBoardLinkedIssuesPages(t *testing.T) {
 	}
 }
 
+// A page of linked issues walks each linked issue's own rows and tests
+// each against the polled boards, so its cost is the issues' memberships,
+// not the polled boards: as the polled set grows from 1 to 50 boards, the
+// page's steps grow by the polled list's build alone, for linked issues
+// with no row and for ones with a row on a shown board not polled.
+func TestLinkedIssuesCostTheirMembershipsNotThePolledBoards(t *testing.T) {
+	t.Parallel()
+	const links = 100
+	s, _, root := newMirror(t)
+	other := webStructure()
+	other.Board.ID = "11"
+	mustReplaceStructure(t, s, root, other, true)
+	for i := range links {
+		linkIssue(t, s, fmt.Sprint("t", i), strconv.Itoa(30000+i))
+	}
+	polled := func(n int) string {
+		boards := make([]string, n)
+		for i := range boards {
+			boards[i] = strconv.Itoa(100 + i)
+		}
+		list, err := encodeMirrorIDs(boards)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return list
+	}
+	for _, membership := range []string{"none", "one row each, not polled"} {
+		if membership != "none" {
+			mustWriteRowPage(t, s, root, webPage("11", mirrorRows(30000, links, "a")...), nil)
+		}
+		few := statementVMSteps(t, s, mirrorOffBoardLinkedSQL, root, "", polled(1))
+		many := statementVMSteps(t, s, mirrorOffBoardLinkedSQL, root, "", polled(50))
+		t.Logf("%s: %d steps polling 1 board, %d polling 50", membership, few, many)
+		if growth := many - few; growth > 50*links {
+			t.Errorf("%s: polling 49 more boards costs %d more steps over %d linked issues; want the list's build alone, under %d",
+				membership, growth, links, 50*links)
+		}
+	}
+}
+
 func TestListMirrorCardsIsBounded(t *testing.T) {
 	t.Parallel()
 	s, _, root := newMirror(t)
