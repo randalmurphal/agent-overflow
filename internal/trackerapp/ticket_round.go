@@ -5,6 +5,8 @@ import (
 	"context"
 	"slices"
 	"time"
+
+	"agent-overflow/internal/pump"
 )
 
 // A connection's round makes every background read of its open tickets:
@@ -203,9 +205,9 @@ func (s *Service) regularLocked(tp *ticketPump, now time.Time) time.Time {
 // retryLocked is when a ticket of tp's connection whose read failed now is
 // due again: when the rate limit lifts (release), which holds the round
 // until then; else with the retry already scheduled, or at the schedule's
-// next step, doubling from Cadence.RetryBase up to the interval, as
-// pump.Retry's curve does. With no round running it is the first step.
-// The caller holds subMu.
+// next step, from Cadence.RetryBase up to the interval
+// (pump.NextDelay). With no round running it is the first step. The
+// caller holds subMu.
 func (s *Service) retryLocked(tp *ticketPump, now, release time.Time) time.Time {
 	rd := s.subs.rounds[tp.key.connection]
 	switch {
@@ -215,11 +217,11 @@ func (s *Service) retryLocked(tp *ticketPump, now, release time.Time) time.Time 
 		}
 		return release
 	case rd == nil:
-		return now.Add(min(s.cadence.RetryBase, tp.every))
+		return now.Add(pump.NextDelay(0, s.cadence.RetryBase, tp.every))
 	case rd.retryAt.After(now):
 		return rd.retryAt
 	}
-	rd.delay = min(max(rd.delay*2, s.cadence.RetryBase), rd.every)
+	rd.delay = pump.NextDelay(rd.delay, s.cadence.RetryBase, rd.every)
 	rd.retryAt = now.Add(rd.delay)
 	return rd.retryAt
 }

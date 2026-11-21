@@ -72,12 +72,19 @@ func (r *Retry) mustHaveCurve() {
 
 // step advances the doubling curve and returns its delay.
 func (r *Retry) step() time.Duration {
-	if r.delay == 0 {
-		r.delay = min(r.Base, r.Interval)
-	} else {
-		r.delay = min(r.delay*2, r.Interval)
-	}
+	r.delay = NextDelay(r.delay, r.Base, r.Interval)
 	return r.delay
+}
+
+// NextDelay is the delay that follows delay on the retry curve: base
+// after none (zero), then twice the last, never over ceiling. It is the
+// curve of Retry, for a poller that keeps its retries by deadline instead
+// of a timer.
+func NextDelay(delay, base, ceiling time.Duration) time.Duration {
+	if delay == 0 {
+		return min(base, ceiling)
+	}
+	return min(delay*2, ceiling)
 }
 
 // FiredWhilePaused records that C fired while the pump was paused: the

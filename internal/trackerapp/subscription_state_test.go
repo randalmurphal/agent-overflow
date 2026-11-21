@@ -162,6 +162,10 @@ func TestAnOpenTicketKeepsItsViewWhenTheMirrorDropsTheIssue(t *testing.T) {
 	// pump lets its own copy go.
 	m.tracks([]tracker.Row{row(string(issues[0]), 1_799_000_000_000, "a000")})
 	must[Outcome](t)(m.svc.tickReconcile(t.Context(), m.scope(), Background))
+	// The stored card makes the ticket due a read at once, which is no
+	// opening and so starts no detail: the refresh begins after it settled,
+	// or a read that began later than the refresh keeps the pump's copy.
+	quiet(t, m.svc)
 	if err := m.svc.RefreshSubscription(t.Context(), subs[0].ID); err != nil {
 		t.Fatal(err)
 	}
