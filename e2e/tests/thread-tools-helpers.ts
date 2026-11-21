@@ -378,6 +378,28 @@ export async function awaitGate(
   );
 }
 
+/**
+ * Release a responder parked on `responder.gate` once the call that asked
+ * it has answered `backgrounded`.
+ *
+ * A spawn, send or new assistant without a wait reads its request once, as
+ * it returns. A responder that settles before that read is answered in the
+ * call's reply, and an answer delivered inline queues no message
+ * (docs/specs/agent-thread-tools.md, "notify"). A test that waits for the
+ * answer as a message parks its responder on a gate before it replies or
+ * ends, and opens the gate here, so the call returns first by order rather
+ * than by speed.
+ */
+export async function releaseAfterBackgrounded(
+  answer: ToolAnswer<{ outcome?: string }>,
+  responder: { harness: HarnessApp; gate: string; cwd: string },
+): Promise<void> {
+  expect(answer.isError, answer.text).toBe(false);
+  expect(answer.value?.outcome, answer.text).toBe('backgrounded');
+  const parked = await awaitGate(responder.harness, responder.gate, responder.cwd);
+  await advanceGate(responder.harness, parked.mockId, responder.gate);
+}
+
 /** Thread row shape the specs read back through HarnessListThreadRows. */
 export interface ThreadRow {
   id: string;

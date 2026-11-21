@@ -13,7 +13,7 @@ import { escapeTimelineFollow } from './timeline-follow-helpers.js';
 import {
   RESULT_TOKEN_PATTERN,
   awaitToolAnswer,
-  plainScenario,
+  releaseAfterBackgrounded,
   setScenario,
   threadToolsScenario,
   type ProviderName,
@@ -72,10 +72,13 @@ export async function driveAoToolRows(harness: HarnessApp, provider: ProviderNam
   const targetThreadId = target.threadIds[0];
 
   await answerPhasesDone(harness, otherProvider(provider));
+  // The spawned thread and the target both run here, and each answers
+  // only once both calls have returned, so neither answer rides back in
+  // its call's reply.
   await setScenario(
     harness,
     target.path,
-    plainScenario({ name: `ao-rows-target-${tag}`, provider, texts: ['Rebased and green.'] }),
+    threadToolsScenario({ name: `ao-rows-target-${tag}`, provider, turns: [{ steps: [{ gate: 'ao-rows-answer' }], text: 'Rebased and green.' }] }),
   );
   await setScenario(
     harness,
@@ -124,8 +127,9 @@ export async function driveAoToolRows(harness: HarnessApp, provider: ProviderNam
 
   await harness.rpc('StartSession', leadThreadId);
   await harness.rpc('SendMessage', leadThreadId, 'get the release moving', null);
-  const spawn = await awaitToolAnswer<{ thread_id: string }>(harness, { tool: 'thread_spawn', cwd: lead.path });
-  expect(spawn.isError, spawn.text).toBe(false);
+  const spawn = await awaitToolAnswer<{ thread_id: string; outcome: string }>(harness, { tool: 'thread_spawn', cwd: lead.path });
+  const send = await awaitToolAnswer<{ outcome: string }>(harness, { tool: 'thread_send', cwd: lead.path });
+  for (const answer of [spawn, send]) await releaseAfterBackgrounded(answer, { harness, gate: 'ao-rows-answer', cwd: target.path });
   // run_status is the turn's last call; the refusal before it is asserted
   // where it shows, on its row.
   const status = await harness.awaitMcpResult({ server: WORKFLOW_TOOLS_SERVER, tool: 'run_status', cwd: lead.path, timeoutMs: 60_000 });

@@ -68,6 +68,7 @@ import {
   bigThreadFixture,
   expectEffortsPerModel,
   plainScenario,
+  releaseAfterBackgrounded,
   setScenario,
   threadRows,
   threadToolsScenario,
@@ -292,10 +293,10 @@ test('a spawn on the other computer runs there and its answer wakes the caller',
   await setScenario(
     remote,
     there.path,
-    plainScenario({
+    threadToolsScenario({
       name: 'remote-spawn-worker',
       provider: 'claude',
-      texts: ['The kernel build finished clean.'],
+      turns: [{ steps: [{ gate: 'remote-spawn-answer' }], text: 'The kernel build finished clean.' }],
     }),
   );
   await setScenario(
@@ -349,9 +350,9 @@ test('a spawn on the other computer runs there and its answer wakes the caller',
   });
   expect(spawn.isError, spawn.text).toBe(false);
   const spawned = spawn.value!;
-  expect(spawned.outcome).toBe('backgrounded');
   expect(spawned.computer_id).toBe(remoteID);
   expect(spawned.computer).toBe('GPU computer');
+  await releaseAfterBackgrounded(spawn, { harness: remote, gate: 'remote-spawn-answer', cwd: there.path });
 
   // The prompt became the first user message of a thread on the OTHER
   // computer, with the footer naming the calling thread and its computer.
@@ -413,8 +414,10 @@ test('a standing agent on the other computer is named on its wake as a local one
     // Two heading markers: the remote role is bounded on both computers.
     writeFileSync(join(promoted.home, 'instructions.md'), `# #\t${role}\n\nGrants: none.\n`);
   }
-  await setScenario(home, homes[0], plainScenario({ name: 'wake-role-local', provider: 'claude', texts: ['Local review: the parser is fine.'] }));
-  await setScenario(remote, homes[1], plainScenario({ name: 'wake-role-remote', provider: 'claude', texts: ['Remote review: the parser is fine.'] }));
+  // Each reviewer answers once its send has returned.
+  const reviewer = (name: string, text: string) => threadToolsScenario({ name, provider: 'claude', turns: [{ steps: [{ gate: 'review-answer' }], text }] });
+  await setScenario(home, homes[0], reviewer('wake-role-local', 'Local review: the parser is fine.'));
+  await setScenario(remote, homes[1], reviewer('wake-role-remote', 'Remote review: the parser is fine.'));
   const send = (threadID: string, computerID?: string) => ({
     call: {
       tool: 'thread_send',
@@ -437,6 +440,10 @@ test('a standing agent on the other computer is named on its wake as a local one
   );
   await home.rpc('StartSession', caller.threadIds[0]);
   await home.rpc('SendMessage', caller.threadIds[0], 'ask both reviewers about the parser', null);
+  for (const [app, cwd] of [[home, homes[0]], [remote, homes[1]]] as const) {
+    const sent = await awaitToolAnswer<{ outcome: string }>(home, { tool: 'thread_send', cwd: caller.path, timeoutMs: 120_000 });
+    await releaseAfterBackgrounded(sent, { harness: app, gate: 'review-answer', cwd });
+  }
 
   // Each wake names its agent on the line after its status line. A wake
   // that arrived with the other in one input is read from the same text.
@@ -1395,7 +1402,11 @@ async function rowMenuItem(view: Page, layout: 'desktop' | 'compact', id: string
   else await item.tap();
 }
 
-/** One caller here spawning one owned worker over there, which holds its turn on a gate when `gate` is given. */
+/**
+ * One caller here spawning one owned worker over there. With `gate` the
+ * worker holds its turn on it; without, it answers once the spawn has
+ * returned and its wake ends the caller's second turn.
+ */
 async function spawnOwnedThere(tag: string, callerTitle: string, workerTitle: string, gate?: string) {
   const caller = await seed(home, `${tag}-caller`, [callerTitle]);
   // A sibling with history, so the worker project's rows are listed and an
@@ -1403,7 +1414,7 @@ async function spawnOwnedThere(tag: string, callerTitle: string, workerTitle: st
   const there = await seed(remote, `${tag}-work`, [`${tag} sibling`], true);
   await setScenario(remote, there.path, threadToolsScenario({
     name: `${tag}-worker`, provider: 'claude',
-    turns: [{ steps: gate ? [{ gate }] : [], text: `${workerTitle} is done.` }],
+    turns: [{ steps: [{ gate: gate ?? `${tag}-answer` }], text: `${workerTitle} is done.` }],
     afterTurns: 'repeatLast',
   }));
   await setScenario(home, caller.path, threadToolsScenario({
@@ -1420,11 +1431,11 @@ async function spawnOwnedThere(tag: string, callerTitle: string, workerTitle: st
   }));
   await home.rpc('StartSession', caller.threadIds[0]);
   await home.rpc('SendMessage', caller.threadIds[0], `have the GPU computer do ${workerTitle}`, null);
-  const spawn = await awaitToolAnswer<{ token: string; thread_id: string }>(home, { tool: 'thread_spawn', cwd: caller.path, timeoutMs: 120_000 });
+  const spawn = await awaitToolAnswer<{ token: string; thread_id: string; outcome: string }>(home, { tool: 'thread_spawn', cwd: caller.path, timeoutMs: 120_000 });
   expect(spawn.isError, spawn.text).toBe(false);
   const held = gate ? await awaitGate(remote, gate, there.path) : null;
   if (!gate) {
-    // The worker answers at once; its wake ends the caller's second turn.
+    await releaseAfterBackgrounded(spawn, { harness: remote, gate: `${tag}-answer`, cwd: there.path });
     await awaitTurnCompleted(remote, spawn.value!.thread_id);
     await awaitTurnCompleted(home, caller.threadIds[0]);
     await awaitTurnCompleted(home, caller.threadIds[0]);
@@ -2046,8 +2057,9 @@ test('a nested row on the other computer names the wake row its answer reached t
       { text: 'Packaged, noted.' },
     ],
   }));
-  await setScenario(remote, grand.path, plainScenario({
-    name: 'agents-wake-grand-script', provider: 'claude', texts: ['Packaged.'],
+  await setScenario(remote, grand.path, threadToolsScenario({
+    name: 'agents-wake-grand-script', provider: 'claude',
+    turns: [{ steps: [{ gate: 'agents-wake-grand-answer' }], text: 'Packaged.' }],
   }));
 
   // The grandchild's answer wakes the child there.
@@ -2060,8 +2072,8 @@ test('a nested row on the other computer names the wake row its answer reached t
   await home.rpc('SendMessage', caller.threadIds[0], 'have the GPU computer build it', null);
   const spawn = await awaitToolAnswer<{ token: string; thread_id: string }>(home, { tool: 'thread_spawn', timeoutMs: 120_000 });
   expect(spawn.isError, spawn.text).toBe(false);
-  const nested = await awaitToolAnswer<{ token: string }>(remote, { tool: 'thread_spawn', cwd: child.path, timeoutMs: 120_000 });
-  expect(nested.isError, nested.text).toBe(false);
+  const nested = await awaitToolAnswer<{ token: string; outcome: string }>(remote, { tool: 'thread_spawn', cwd: child.path, timeoutMs: 120_000 });
+  await releaseAfterBackgrounded(nested, { harness: remote, gate: 'agents-wake-grand-answer', cwd: grand.path });
   expect((await woken).report.input).toContain(nested.value!.token);
 
   // The child's computer records the row that carried the wake once the
@@ -2227,10 +2239,10 @@ test('the origin chip names the other computer on both ends of a spawn', async (
   await setScenario(
     remote,
     there.path,
-    plainScenario({
+    threadToolsScenario({
       name: 'remote-chip-worker',
       provider: 'claude',
-      texts: ['The chip run finished.'],
+      turns: [{ steps: [{ gate: 'remote-chip-answer' }], text: 'The chip run finished.' }],
     }),
   );
   await setScenario(
@@ -2277,7 +2289,7 @@ test('the origin chip names the other computer on both ends of a spawn', async (
     tool: 'thread_spawn',
     timeoutMs: 120_000,
   });
-  expect(spawn.isError, spawn.text).toBe(false);
+  await releaseAfterBackgrounded(spawn, { harness: remote, gate: 'remote-chip-answer', cwd: there.path });
   expect(await remote.rpc('GetThreadDefaults', { projectId: there.projectId })).toEqual(defaults);
   // Wait for the wake, which is the caller-side row that carries a chip.
   await home.waitForEvent<HarnessMockEventData>(

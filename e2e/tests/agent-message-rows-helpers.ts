@@ -12,6 +12,7 @@ import {
   awaitGate,
   awaitToolAnswer,
   awaitTurnCompleted,
+  releaseAfterBackgrounded,
   setScenario,
   threadToolsScenario,
   type ProviderName,
@@ -166,10 +167,8 @@ export async function runAgentFlow(harness: HarnessApp, provider: ProviderName, 
 
   await harness.rpc('StartSession', lead);
   await harness.rpc('SendMessage', lead, LEAD_ASK, null);
-  const spawn = await awaitToolAnswer<{ thread_id: string }>(harness, { tool: 'thread_spawn', timeoutMs: 60_000 });
-  expect(spawn.isError, spawn.text).toBe(false);
-  const auditMock = await awaitGate(harness, 'hold-audit', auditProject.path);
-  await advanceGate(harness, auditMock.mockId, 'hold-audit');
+  const spawn = await awaitToolAnswer<{ thread_id: string; outcome: string }>(harness, { tool: 'thread_spawn', timeoutMs: 60_000 });
+  await releaseAfterBackgrounded(spawn, { harness, gate: 'hold-audit', cwd: auditProject.path });
   const send = await awaitToolAnswer<{ token: string }>(harness, { tool: 'thread_send', timeoutMs: 60_000 });
   expect(send.isError, send.text).toBe(false);
   const replyMock = hold ? null : await awaitGate(harness, 'hold-reply', busyProject.path);
