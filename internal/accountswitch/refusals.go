@@ -113,7 +113,7 @@ func (c *Coordinator) TurnRefused(prov, threadID, model, accountID string) {
 		c.gen++
 		c.waiting[threadID] = &waiter{provider: prov, gen: c.gen, admitted: cfg.Revision, guessed: m.guessed}
 	}
-	c.pendingRefusals = append(c.pendingRefusals, r)
+	c.pending.addRefusal(r)
 	c.mu.Unlock()
 	c.signal()
 }

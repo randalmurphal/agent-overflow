@@ -146,17 +146,23 @@ async function selectOnCard(email: string): Promise<void> {
 
 /**
  * Serves `limits` for `email` and waits for the backend to cache them. The
- * selected account is read by the harness call itself; another account is
- * read the way a person would, with its card's refresh button.
+ * harness call reads the selected account and returns once that reading is
+ * cached and auto-switch has decided on it, so an assertion right after it
+ * sees what the reading changed. Another account is read the way a person
+ * would, with its card's refresh button; a reading of an account that is not
+ * selected never moves the selection.
  */
 async function setReading(email: string, limits: Limit[], probe: { limitId: string; percent: number }): Promise<void> {
+  const selected = (await selectedEmail()) === email;
   await harness.rpc('HarnessSetClaudeUsage', { email, limits });
   const id = await idOf(email);
-  if ((await selectedEmail()) !== email) {
-    const refresh = section().getByRole('button', { name: `Refresh usage for ${email}` });
-    await expect(refresh).toBeEnabled();
-    await refresh.click();
+  if (selected) {
+    expect(await percentOf(id, probe.limitId)).toBe(probe.percent);
+    return;
   }
+  const refresh = section().getByRole('button', { name: `Refresh usage for ${email}` });
+  await expect(refresh).toBeEnabled();
+  await refresh.click();
   await expect.poll(() => percentOf(id, probe.limitId), { timeout: 15_000 }).toBe(probe.percent);
 }
 
@@ -295,8 +301,9 @@ test.describe.serial('Claude account auto-switch', () => {
 
   test('a send from an account past the threshold switches to a clear one first', async () => {
     await selectOnCard(B);
-    await setReading(A, [session(10), weeklyAll(10)], { limitId: 'session', percent: 10 });
+    // The selected account first: every harness call reads it.
     await setReading(B, [session(97), weeklyAll(40)], { limitId: 'session', percent: 97 });
+    await setReading(A, [session(10), weeklyAll(10)], { limitId: 'session', percent: 10 });
     // A reading with no turn in flight demands nothing, so nothing moved.
     expect(await selectedEmail()).toBe(B);
 
@@ -491,17 +498,22 @@ test.describe.serial('Claude account auto-switch', () => {
     expect(switchEvents()).toBe(before);
     expect(await selectedEmail()).toBe(B);
 
-    // A reading with the turn in flight: nothing moves either.
+    // A reading with the turn in flight, decided on before the call
+    // returned: nothing moves either.
     await setReading(B, [session(99), weeklyAll(30)], { limitId: 'session', percent: 99 });
-    // Positive control, and the barrier for the reading above: once B is
-    // back in the pool the next reading switches, and the only switch is
-    // that one.
-    await section().getByTestId(`provider-account-auto-switch-${bId}`).check();
-    await expect.poll(() => autoSwitchOf(B)).toBe(true);
     expect(switchEvents()).toBe(before);
     expect(await selectedEmail()).toBe(B);
     await expect(switchToasts()).toHaveCount(0);
     expect(await noticeItems('outside')).toEqual([]);
+
+    // Positive control. B goes back into the pool at a clear reading, so a
+    // usage poll while it is ticked cannot switch, then the next reading
+    // switches and is the only switch.
+    await setReading(B, [session(20), weeklyAll(30)], { limitId: 'session', percent: 20 });
+    await section().getByTestId(`provider-account-auto-switch-${bId}`).check();
+    await expect.poll(() => autoSwitchOf(B)).toBe(true);
+    expect(switchEvents()).toBe(before);
+    expect(await selectedEmail()).toBe(B);
 
     const switched = harness.waitForEvent<SwitchEvent>('provider:account_auto_switch', undefined, 30_000);
     await setReading(B, [session(100), weeklyAll(30)], { limitId: 'session', percent: 100 });

@@ -348,7 +348,7 @@ func TestReadingUpdatedCallsNoDependency(t *testing.T) {
 	c.ReadingUpdated("claude", "a")
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if !c.pendingReadings[accountKey{"claude", "a"}] || !c.pendingDeliver["claude"] {
+	if !c.pending.readings[accountKey{"claude", "a"}] || !c.pending.deliver["claude"] {
 		t.Fatal("reading was not queued")
 	}
 }

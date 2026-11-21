@@ -45,6 +45,9 @@ type testHost struct {
 	updateWorkReason    string
 	claudeUsage         *claudefake.Usage
 	usageReadings       int
+	usageReadErr        error
+	usageReadDeadline   time.Time
+	usageReadBounded    bool
 	updateFeed          *updatefake.Feed
 	updateRechecks      int
 	onUpdateRecheck     func()
@@ -128,8 +131,12 @@ func (h *testHost) StallProviderEvents(string) error     { return nil }
 func (h *testHost) ReleaseProviderEvents(string) error   { return nil }
 func (h *testHost) PendingProviderEvents(string) int     { return 0 }
 func (h *testHost) ClaudeUsageFake() *claudefake.Usage   { return h.claudeUsage }
-func (h *testHost) RequestClaudeUsageReading()           { h.usageReadings++ }
 func (h *testHost) ProviderUpdateFeed() *updatefake.Feed { return h.updateFeed }
+func (h *testHost) ReadClaudeUsage(ctx context.Context) error {
+	h.usageReadings++
+	h.usageReadDeadline, h.usageReadBounded = ctx.Deadline()
+	return h.usageReadErr
+}
 func (h *testHost) RecheckProviderUpdates() {
 	h.updateRechecks++
 	if h.onUpdateRecheck != nil {

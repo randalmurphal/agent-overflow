@@ -2,7 +2,11 @@ package accountswitch
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 )
@@ -22,7 +26,7 @@ type accountKey struct {
 // Coordinator applies the auto-switch contract. Its methods are safe for
 // concurrent use. Background work runs on one worker goroutine between
 // Start and Stop, plus one goroutine per continue being delivered; triggers
-// that arrive before Start wait for it.
+// that arrive before Start wait for it. Settle waits for that work.
 type Coordinator struct {
 	deps     Deps
 	interval time.Duration
@@ -49,16 +53,67 @@ type Coordinator struct {
 	gen               uint64
 	decideMu          map[string]*sync.Mutex
 
-	pendingRefusals []refusal
-	pendingReadings map[accountKey]bool
-	pendingDeliver  map[string]bool
-	pendingCheck    bool
+	// pending is the work queued for the worker.
+	pending triggers
+	// pass is the seq of the batch the worker is deciding on, and settled
+	// that of the last batch it finished deciding on.
+	pass, settled uint64
+	// deliveries are the continues being delivered.
+	deliveries map[*deliveryRun]struct{}
+	// progress is closed and replaced when settled or deliveries change.
+	progress chan struct{}
 
-	deliveries sync.WaitGroup
-	wake       chan struct{}
-	started    bool
-	cancel     context.CancelFunc
-	done       chan struct{}
+	wake    chan struct{}
+	started bool
+	cancel  context.CancelFunc
+	done    chan struct{}
+}
+
+// triggers is the work queued for the worker. Every add bumps seq, so a pass
+// knows which triggers it took.
+type triggers struct {
+	refusals []refusal
+	readings map[accountKey]bool
+	deliver  map[string]bool
+	check    bool
+	// seq counts the adds; a batch carries the seq of its last add.
+	seq uint64
+}
+
+func newTriggers(seq uint64) triggers {
+	return triggers{readings: map[accountKey]bool{}, deliver: map[string]bool{}, seq: seq}
+}
+
+func (t *triggers) addRefusal(r refusal) {
+	t.refusals = append(t.refusals, r)
+	t.seq++
+}
+
+func (t *triggers) addReading(k accountKey) {
+	t.readings[k] = true
+	t.deliver[k.provider] = true
+	t.seq++
+}
+
+func (t *triggers) addDeliver(prov string) {
+	t.deliver[prov] = true
+	t.seq++
+}
+
+func (t *triggers) addCheck() {
+	t.check = true
+	t.seq++
+}
+
+// take returns the queued work and leaves the queue empty.
+func (t *triggers) take() triggers {
+	batch := *t
+	*t = newTriggers(t.seq)
+	return batch
+}
+
+func (t *triggers) empty() bool {
+	return len(t.refusals) == 0 && len(t.readings) == 0 && len(t.deliver) == 0 && !t.check
 }
 
 // New returns a coordinator. Call Start to run background work.
@@ -75,8 +130,9 @@ func New(deps Deps, opts ...Option) *Coordinator {
 		movedTurns:        map[string]movedTurn{},
 		unservableNoticed: map[string]noticeMemo{},
 		decideMu:          map[string]*sync.Mutex{},
-		pendingReadings:   map[accountKey]bool{},
-		pendingDeliver:    map[string]bool{},
+		pending:           newTriggers(0),
+		deliveries:        map[*deliveryRun]struct{}{},
+		progress:          make(chan struct{}),
 		wake:              make(chan struct{}, 1),
 	}
 	for _, o := range opts {
@@ -97,6 +153,8 @@ func (c *Coordinator) Start(ctx context.Context) {
 	ctx, c.cancel = context.WithCancel(ctx)
 	c.done = make(chan struct{})
 	done := c.done
+	// A Settle that began before Start now watches the worker's done.
+	c.progressLocked()
 	c.mu.Unlock()
 	go c.run(ctx, done)
 }
@@ -113,7 +171,96 @@ func (c *Coordinator) Stop() {
 	cancel()
 	<-done
 	// Only the worker starts deliveries, so none starts after done closes.
-	c.deliveries.Wait()
+	c.awaitDeliveries()
+}
+
+// awaitDeliveries returns once no continue is being delivered.
+func (c *Coordinator) awaitDeliveries() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for len(c.deliveries) > 0 {
+		progress := c.progress
+		c.mu.Unlock()
+		<-progress
+		c.mu.Lock()
+	}
+}
+
+// Settle returns once the coordinator has decided on every trigger queued
+// before the call: each reading, refusal, delivery request and waiting
+// check has been through a worker pass that finished deciding, including
+// any switch the pass made, and every continue those passes started has
+// returned. Work queued during the call is not waited for. Before Start it
+// waits for Start. It returns an error when ctx ends first, naming what is
+// still unsettled, or when Stop ends the worker before those passes
+// finished.
+//
+// Settle is the harness's and the tests' barrier before asserting what a
+// trigger did or did not change. The product never waits on it.
+func (c *Coordinator) Settle(ctx context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	target := c.pending.seq
+	for c.unsettledLocked(target) != "" {
+		progress, done := c.progress, c.done
+		c.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			c.mu.Lock()
+			if reason := c.unsettledLocked(target); reason != "" {
+				return fmt.Errorf("auto-switch did not settle: %s: %w", reason, ctx.Err())
+			}
+			return nil
+		case <-done:
+			c.mu.Lock()
+			// The continues still running end with the worker's context.
+			if c.settled < target {
+				return errors.New("auto-switch stopped before deciding on its queued work")
+			}
+			for c.unsettledLocked(target) != "" {
+				progress := c.progress
+				c.mu.Unlock()
+				<-progress
+				c.mu.Lock()
+			}
+			return nil
+		case <-progress:
+		}
+		c.mu.Lock()
+	}
+	return nil
+}
+
+// unsettledLocked says what keeps the work up to seq target unsettled: the
+// worker not started, a pass still deciding, or a continue those passes
+// started still running. It is empty when that work is settled.
+func (c *Coordinator) unsettledLocked(target uint64) string {
+	if c.settled < target {
+		if !c.started {
+			return "the worker has not started"
+		}
+		return fmt.Sprintf("the worker is still deciding on the work queued before the wait (decided through trigger %d of %d)", c.settled, target)
+	}
+	var threads []string
+	for run := range c.deliveries {
+		if run.pass <= target {
+			threads = append(threads, run.threadID)
+		}
+	}
+	if len(threads) == 0 {
+		return ""
+	}
+	slices.Sort(threads)
+	if len(threads) == 1 {
+		return "the continue of thread " + threads[0] + " is still running"
+	}
+	return "the continues of threads " + strings.Join(threads, ", ") + " are still running"
+}
+
+// progressLocked wakes every Settle and Stop waiting for a change.
+func (c *Coordinator) progressLocked() {
+	close(c.progress)
+	c.progress = make(chan struct{})
 }
 
 func (c *Coordinator) run(ctx context.Context, done chan struct{}) {
@@ -144,7 +291,7 @@ func (c *Coordinator) run(ctx context.Context, done chan struct{}) {
 		case <-c.wake:
 		case <-tick:
 			c.mu.Lock()
-			c.pendingCheck = true
+			c.pending.addCheck()
 			c.mu.Unlock()
 		}
 	}
@@ -157,39 +304,45 @@ func (c *Coordinator) signal() {
 	}
 }
 
-// runPending processes queued triggers until none remain.
+// runPending processes queued triggers until none remain. Each batch is one
+// pass; a pass that ctx ended is not settled.
 func (c *Coordinator) runPending(ctx context.Context) {
 	for ctx.Err() == nil {
 		c.mu.Lock()
-		refusals := c.pendingRefusals
-		readings := c.pendingReadings
-		deliver := c.pendingDeliver
-		check := c.pendingCheck
-		c.pendingRefusals = nil
-		c.pendingReadings = map[accountKey]bool{}
-		c.pendingDeliver = map[string]bool{}
-		c.pendingCheck = false
+		batch := c.pending.take()
+		c.pass = batch.seq
 		c.mu.Unlock()
-		if len(refusals) == 0 && len(readings) == 0 && len(deliver) == 0 && !check {
+		if batch.empty() {
 			return
 		}
-		for _, r := range refusals {
-			c.handleRefusal(ctx, r)
+		c.decidePass(ctx, batch)
+		if ctx.Err() != nil {
+			return
 		}
-		decided := map[string]bool{}
-		for k := range readings {
-			if decided[k.provider] || k.accountID != c.deps.Pool(k.provider).SelectedID || !c.deps.ReachesRunningTurns(k.provider) {
-				continue
-			}
-			decided[k.provider] = true
-			c.decideOffPath(ctx, k.provider, nil, nil)
+		c.mu.Lock()
+		c.settled = batch.seq
+		c.progressLocked()
+		c.mu.Unlock()
+	}
+}
+
+func (c *Coordinator) decidePass(ctx context.Context, batch triggers) {
+	for _, r := range batch.refusals {
+		c.handleRefusal(ctx, r)
+	}
+	decided := map[string]bool{}
+	for k := range batch.readings {
+		if decided[k.provider] || k.accountID != c.deps.Pool(k.provider).SelectedID || !c.deps.ReachesRunningTurns(k.provider) {
+			continue
 		}
-		if check {
-			c.checkWaiting(ctx)
-		}
-		for prov := range deliver {
-			c.deliver(ctx, prov)
-		}
+		decided[k.provider] = true
+		c.decideOffPath(ctx, k.provider, nil, nil)
+	}
+	if batch.check {
+		c.checkWaiting(ctx)
+	}
+	for prov := range batch.deliver {
+		c.deliver(ctx, prov)
 	}
 }
 
@@ -274,8 +427,7 @@ func (c *Coordinator) poolActive(prov string, pool Pool) bool {
 // waiting threads.
 func (c *Coordinator) ReadingUpdated(prov, accountID string) {
 	c.mu.Lock()
-	c.pendingReadings[accountKey{prov, accountID}] = true
-	c.pendingDeliver[prov] = true
+	c.pending.addReading(accountKey{prov, accountID})
 	c.mu.Unlock()
 	c.signal()
 }
@@ -404,7 +556,7 @@ func (c *Coordinator) switchLocked(prov string, d decision, noticeThreads []stri
 	}
 	c.mu.Lock()
 	delete(c.lastFailure, prov)
-	c.pendingDeliver[prov] = true
+	c.pending.addDeliver(prov)
 	c.mu.Unlock()
 	c.deps.Report(report)
 	text := switchNotice(prov, d)

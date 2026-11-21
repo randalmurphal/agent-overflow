@@ -134,10 +134,12 @@ type Host interface {
 	ReleaseProviderEvents(threadID string) error
 	PendingProviderEvents(threadID string) int
 	// ClaudeUsageFake is the isolated boot's Claude usage endpoint, nil on a
-	// boot without one. RequestClaudeUsageReading asks for a reading of the
-	// selected Claude account without waiting for it.
+	// boot without one. ReadClaudeUsage reads the selected Claude account's
+	// usage and returns once the reading is cached and auto-switch has
+	// decided on it (accountswitch.Coordinator.Settle), or with the read's
+	// error.
 	ClaudeUsageFake() *claudefake.Usage
-	RequestClaudeUsageReading()
+	ReadClaudeUsage(ctx context.Context) error
 	// ProviderUpdateFeed is the isolated boot's provider release hosts, nil
 	// on a boot without them. RecheckProviderUpdates checks every provider
 	// again and returns once the result is applied.
