@@ -24,97 +24,88 @@ import (
 // leaves, and by that thread the messages of the person's sends that found
 // the session gone while it ran, in the order they arrived. An assistant
 // runs one handoff at a time, whether the person or a session loss started
-// it. One lock covers both maps, so a send adds its message only while a
-// handoff runs that will take it, and the handoff ends only once nothing is
-// left for it to take (finish).
+// it. A handoff keeps sends until it takes them, once: the composer move
+// takes them into the successor, or a handoff that made none takes them
+// back to the old composer as it ends. Every send it keeps runs under the
+// old thread's action lock, which the move holds, and the end takes them
+// under the old thread's mutation lock, which the next handoff's move
+// holds, so each message is placed once, in the order sent, before any
+// later move reads that composer.
 type assistantHandOffState struct {
 	mu      sync.Mutex
-	leaving map[string]string
-	items   map[string][]store.Item
+	running map[string]string
+	// keeping holds a thread's kept sends; its key is present while the
+	// handoff leaving that thread still keeps them.
+	keeping map[string][]store.Item
 }
 
-// begin marks a handoff from threadID running for the assistant, and
-// reports false when one already is.
+// begin marks a handoff from threadID running for the assistant, keeping
+// the sends that find the session gone, and reports false when one already
+// runs.
 func (c *assistantHandOffState) begin(agentID, threadID string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if _, running := c.leaving[agentID]; running {
+	if _, running := c.running[agentID]; running {
 		return false
 	}
-	if c.leaving == nil {
-		c.leaving = map[string]string{}
+	if c.running == nil {
+		c.running, c.keeping = map[string]string{}, map[string][]store.Item{}
 	}
-	c.leaving[agentID] = threadID
+	c.running[agentID] = threadID
+	c.keeping[threadID] = nil
 	return true
 }
 
-// add keeps a send's message for the handoff running from its thread, and
-// reports false when none runs to take it.
+// add keeps a send's message for the handoff leaving its thread, and
+// reports false when none keeps them.
 func (c *assistantHandOffState) add(threadID string, item store.Item) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	running := false
-	for _, leaving := range c.leaving {
-		running = running || leaving == threadID
-	}
-	if !running {
+	items, keeping := c.keeping[threadID]
+	if !keeping {
 		return false
 	}
-	if c.items == nil {
-		c.items = map[string][]store.Item{}
-	}
-	c.items[threadID] = append(c.items[threadID], item)
+	c.keeping[threadID] = append(items, item)
 	return true
 }
 
-// take returns the messages kept so far, oldest first.
+// take returns the messages kept for the handoff leaving threadID, oldest
+// first, and keeps no more: a send that finds the session gone afterwards
+// is not this handoff's to place.
 func (c *assistantHandOffState) take(threadID string) []store.Item {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	items := c.items[threadID]
-	delete(c.items, threadID)
+	items := c.keeping[threadID]
+	delete(c.keeping, threadID)
 	return items
 }
 
-// finish ends the assistant's handoff when no message waits for it, and
-// reports true. Otherwise it takes the messages, oldest first, and the
-// handoff keeps running, so a send meanwhile still adds to it rather than
-// starting another handoff before they are placed.
-func (c *assistantHandOffState) finish(agentID string) ([]store.Item, bool) {
+// finish ends the assistant's handoff and returns the messages it kept and
+// did not take, oldest first.
+func (c *assistantHandOffState) finish(agentID string) []store.Item {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	threadID := c.leaving[agentID]
-	if items := c.items[threadID]; len(items) > 0 {
-		delete(c.items, threadID)
-		return items, false
-	}
-	delete(c.leaving, agentID)
-	return nil, true
+	threadID := c.running[agentID]
+	items := c.keeping[threadID]
+	delete(c.keeping, threadID)
+	delete(c.running, agentID)
+	return items
 }
 
-// endAssistantHandOff ends the assistant's running handoff from threadID;
-// successorID is empty when the handoff made none. A send that found the
-// session gone after the handoff took the carried messages added its own,
-// which follows them to the successor. With no successor every message goes
-// back to the old composer. Either way each message is placed before the
-// handoff ends, so a send that finds the session gone meanwhile joins them
-// rather than starting a handoff that could move the composer before they
-// land in it.
-func (a *App) endAssistantHandOff(agentID, threadID, successorID string) {
-	for {
-		items, ended := a.assistantHandOffs.finish(agentID)
-		if ended {
-			break
-		}
-		if successorID == "" {
-			a.returnSessionLossCarries(threadID, items)
-		} else {
-			a.carrySessionLossItems(threadID, successorID, items)
-		}
-	}
+// endAssistantHandOff ends the assistant's running handoff from threadID.
+// A handoff that moved the composer took its messages there; one that made
+// no successor puts them back in the old composer, ahead of what was typed
+// there since. It ends and places them holding the old thread's mutation
+// lock, so a send that finds the session gone meanwhile starts the next
+// handoff, whose composer move waits on that lock and finds them in place.
+func (a *App) endAssistantHandOff(agentID, threadID string) {
+	unlock := a.threadApplication().LockMutations(threadID)
+	defer unlock()
+	items := a.assistantHandOffs.finish(agentID)
 	if a.assistantHandOffEndedForTest != nil {
 		a.assistantHandOffEndedForTest(agentID)
 	}
+	a.returnSessionLossCarriesLocked(threadID, items)
 }
 
 // moveComposerAcrossHandOffLocked moves what waits in the old thread's
@@ -295,45 +286,10 @@ func joinTerminalChips(a, b string) (string, error) {
 	return string(out), err
 }
 
-// carrySessionLossItems merges the messages into the successor's composer,
-// one blank line between them, each with its attachments copied over. A
-// write that fails puts them back in the old thread's composer.
-func (a *App) carrySessionLossItems(oldThreadID, successorID string, items []store.Item) bool {
-	now := time.Now().UnixMilli()
-	parts := make([]composerdraft.Part, 0, len(items))
-	var err error
-	for _, item := range items {
-		var part composerdraft.Part
-		if part, err = a.draftPartWithClonedAttachments(successorID, item, now); err != nil {
-			break
-		}
-		parts = append(parts, part)
-	}
-	if err == nil {
-		err = a.restoreQueuedDraft(successorID, parts, store.QueueDraftRestore{})
-	}
-	if err != nil {
-		log.Printf("assistants: carry the messages to %s into %s: %v", oldThreadID, successorID, err)
-		a.returnSessionLossCarries(oldThreadID, items)
-		return false
-	}
-	return true
-}
-
-// returnSessionLossCarries puts the messages back in the old thread's
-// composer, oldest first, ahead of anything typed there since.
-func (a *App) returnSessionLossCarries(threadID string, items []store.Item) {
-	if len(items) == 0 {
-		return
-	}
-	// The draft saves and a handoff's composer move hold this lock.
-	unlock := a.threadApplication().LockMutations(threadID)
-	defer unlock()
-	a.returnSessionLossCarriesLocked(threadID, items)
-}
-
-// returnSessionLossCarriesLocked is returnSessionLossCarries for a caller
-// that holds the thread's mutation lock.
+// returnSessionLossCarriesLocked puts the messages back in the old thread's
+// composer, oldest first, ahead of anything typed there since. The caller
+// holds the thread's mutation lock, which the draft saves and a handoff's
+// composer move hold.
 func (a *App) returnSessionLossCarriesLocked(threadID string, items []store.Item) {
 	if len(items) == 0 {
 		return
