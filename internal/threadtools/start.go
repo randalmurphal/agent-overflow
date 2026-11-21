@@ -144,8 +144,6 @@ func (c *session) spawn(ctx context.Context, raw json.RawMessage) (any, error) {
 			spawner = *own
 		}
 	}
-	choice := spawnChoice(call, profile, spawner)
-	call.Provider, call.Model, call.Effort = choice.Provider, choice.Model.String(), choice.Effort
 	files, err := homeFiles(args.HomeFiles)
 	if err != nil {
 		return nil, err
@@ -203,6 +201,9 @@ func (c *session) spawn(ctx context.Context, raw json.RawMessage) (any, error) {
 	}
 	call.WaitSeconds = wait
 
+	// The provider a fork runs on is its source's, so the call's model is
+	// read only once the source is known.
+	forkProvider := ""
 	if ref := trim(args.FromThread); ref != "" {
 		source, err := c.resolve(ctx, ref, "")
 		if err != nil {
@@ -215,11 +216,18 @@ func (c *session) spawn(ctx context.Context, raw json.RawMessage) (any, error) {
 		// A fork runs where its source lives, and a source on this
 		// computer runs here however the row names this computer.
 		call.ComputerID = source.Destination()
+		if call.Model != "" {
+			if forkProvider, err = c.threadProvider(ctx, source); err != nil {
+				return nil, err
+			}
+		}
 	}
+	choice := spawnChoice(call, profile, spawner, forkProvider)
+	call.Provider, call.Model, call.Effort = choice.Provider, choice.Model.String(), choice.Effort
 	if err := c.checkSpawnDestination(ctx, &call); err != nil {
 		return nil, err
 	}
-	if err := c.checkSpawnChoice(ctx, &call, choice, spawner); err != nil {
+	if err := c.checkSpawnChoice(ctx, &call, choice, spawner, forkProvider); err != nil {
 		return nil, err
 	}
 	ack, err := c.app.Spawn(ctx, c.caller, call)
@@ -227,6 +235,40 @@ func (c *session) spawn(ctx context.Context, raw json.RawMessage) (any, error) {
 		return nil, err
 	}
 	return c.ack(ack, "spawn"), nil
+}
+
+// threadProvider is the provider target runs on, read where it lives: a
+// thread on another computer through that computer's thread_show, which
+// every release answers with the thread's provider, at its smallest
+// window.
+func (c *session) threadProvider(ctx context.Context, target Target) (string, error) {
+	if target.Destination() == "" {
+		thread, err := c.app.Thread(ctx, target.ThreadID)
+		if err != nil {
+			return "", err
+		}
+		return thread.Provider, nil
+	}
+	peer, err := c.app.Peer(ctx, target.ComputerID)
+	if err != nil {
+		return "", err
+	}
+	raw, err := forwardArgs(showArgs{ThreadID: target.ThreadID, Turns: 1, MaxBytes: MinShowBytes})
+	if err != nil {
+		return "", err
+	}
+	answer, err := peer.Query(ctx, "thread_show", raw)
+	if err != nil {
+		return "", err
+	}
+	var shown showResult
+	if err := peerResult(answer, &shown); err != nil {
+		return "", err
+	}
+	if shown.Provider == "" {
+		return "", fmt.Errorf("thread_show of %s on %s named no provider", target.ThreadID, NameOfComputer(Computer{ID: target.ComputerID, Name: target.Computer}))
+	}
+	return shown.Provider, nil
 }
 
 // checkSpawnDestination enforces the one rule the destination cannot

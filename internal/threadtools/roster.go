@@ -128,10 +128,7 @@ func (r *SpawnRefusal) Error() string { return r.Reason }
 // the choice names must be offered by the model, and a model with no
 // effort setting takes none.
 func ResolveSpawn(spawner SpawnDefaults, choice SpawnChoice, catalog []ProviderOption, where string) (ResolvedSpawn, error) {
-	resolved := ResolvedSpawn{Provider: choice.Provider, Effort: choice.Effort}
-	if resolved.Provider == "" {
-		resolved.Provider = spawner.Provider
-	}
+	resolved := ResolvedSpawn{Provider: runsOn(choice, spawner, ""), Effort: choice.Effort}
 	inherits := resolved.Provider == spawner.Provider
 	index := slices.IndexFunc(catalog, func(candidate ProviderOption) bool { return candidate.ID == resolved.Provider })
 	if index < 0 || len(catalog[index].Models) == 0 {
@@ -353,18 +350,25 @@ func (c *session) applyProfile(ctx context.Context, call *SpawnCall, name string
 
 // spawnChoice is the provider, model and effort a spawn asks for: the
 // call's own over the profile's (SpawnChoice.WithProfile), with the call's
-// model read by the grammar of the provider the spawn ends up on, which is
-// the spawner's when neither names one. This is where a thread_spawn model
-// becomes a provider.ModelRef.
-func spawnChoice(call SpawnCall, profile *AgentProfile, spawner SpawnDefaults) SpawnChoice {
+// model read by the grammar of the provider the thread runs on (runsOn).
+// This is where a thread_spawn model becomes a provider.ModelRef.
+func spawnChoice(call SpawnCall, profile *AgentProfile, spawner SpawnDefaults, forkProvider string) SpawnChoice {
 	choice := SpawnChoice{Provider: call.Provider, Effort: call.Effort}
 	if profile != nil {
 		choice = choice.WithProfile(*profile)
 	}
 	if call.Model != "" {
-		choice.Model = provider.ParseModelRef(cmp.Or(choice.Provider, spawner.Provider), call.Model)
+		choice.Model = provider.ParseModelRef(runsOn(choice, spawner, forkProvider), call.Model)
 	}
 	return choice
+}
+
+// runsOn is the provider a spawn's thread runs on, by the rule its
+// creation applies: a fork resumes its source's session, so it runs its
+// source's provider (forkProvider) and refuses any other; a fresh thread
+// runs the one the call or its profile names, else the spawner's.
+func runsOn(choice SpawnChoice, spawner SpawnDefaults, forkProvider string) string {
+	return cmp.Or(forkProvider, choice.Provider, spawner.Provider)
 }
 
 // JoinInstructions appends the later instructions after the earlier,
@@ -391,7 +395,7 @@ func joinInstructions(parts ...string) string {
 // release, names one model. It reads the target's catalog, here or through
 // its peer, and requires a target that adds instructions when the spawn
 // carries any.
-func (c *session) checkSpawnChoice(ctx context.Context, call *SpawnCall, choice SpawnChoice, spawner SpawnDefaults) error {
+func (c *session) checkSpawnChoice(ctx context.Context, call *SpawnCall, choice SpawnChoice, spawner SpawnDefaults, forkProvider string) error {
 	if call.Profile == "" && call.Instructions == "" && !choice.Model.IsFamily() {
 		return nil
 	}
@@ -440,7 +444,7 @@ func (c *session) checkSpawnChoice(ctx context.Context, call *SpawnCall, choice 
 		if !choice.Model.IsFamily() {
 			return nil
 		}
-		name := cmp.Or(choice.Provider, spawner.Provider)
+		name := runsOn(choice, spawner, forkProvider)
 		index := slices.IndexFunc(providers, func(candidate ProviderOption) bool { return candidate.ID == name })
 		if index < 0 {
 			return refuse(&SpawnRefusal{Missing: true, Reason: fmt.Sprintf("%s does not run on %s.", providerLabel(name), where)})

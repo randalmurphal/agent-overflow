@@ -570,7 +570,7 @@ func TestAForkWithAFamilyModelCarriesAnExactModel(t *testing.T) {
 	p.local.catalog = Catalog{Reachable: true, Providers: []ProviderOption{liveClaude}}
 	p.remote.catalog = Catalog{Reachable: true, Providers: []ProviderOption{liveClaude}}
 	p.local.addThread(Thread{ID: "caller-thread", Provider: "claude", Model: "claude-opus-5-5"})
-	p.remote.addThread(Thread{ID: remoteThreadID, Title: "Origin"})
+	p.remote.addThread(Thread{ID: remoteThreadID, Title: "Origin", Provider: "claude"})
 
 	call(t, p.server, localCaller(), "thread_spawn", `{"prompt":"x","from_thread":"`+remoteThreadID+`","model":"claude-sonnet"}`)
 	if got := p.local.spawns[0]; got.Model != "claude-sonnet-5-5" || got.ComputerID != "studio" {
@@ -579,5 +579,37 @@ func TestAForkWithAFamilyModelCarriesAnExactModel(t *testing.T) {
 	message := callErr(t, p.server, localCaller(), "thread_spawn", `{"prompt":"x","from_thread":"`+remoteThreadID+`","model":"claude-poem"}`, CodeInvalidRequest)
 	if !strings.Contains(message, "Claude Code offers no claude-poem model on Studio.") {
 		t.Errorf("refusal = %q", message)
+	}
+}
+
+// A fork runs on its source's provider, so the call's model is read by
+// that provider's version rule, not the caller's: a Codex thread forking
+// a Claude thread with claude-opus runs Claude's newest Opus, and the
+// reverse runs Codex's newest Sol, here and on a paired computer.
+func TestAForkAcrossProvidersReadsTheModelByTheSourcesProvider(t *testing.T) {
+	cases := []struct {
+		caller, source Thread
+		model, want    string
+	}{
+		{Thread{ID: "caller-thread", Provider: "codex", Model: "gpt-6.2-sol"}, Thread{Provider: "claude", Model: "claude-opus-5"}, "claude-opus", "claude-opus-5-5"},
+		{Thread{ID: "caller-thread", Provider: "claude", Model: "claude-opus-5-5"}, Thread{Provider: "codex", Model: "gpt-6-luna"}, "gpt-sol", "gpt-6.2-sol"},
+	}
+	for _, tc := range cases {
+		p := newPair(t)
+		both := Catalog{Reachable: true, Providers: []ProviderOption{liveClaude, liveCodex}}
+		p.local.catalog, p.remote.catalog = both, both
+		p.local.addThread(tc.caller)
+		here, there := tc.source, tc.source
+		here.ID, here.Title = localThreadID, "Here"
+		there.ID, there.Title = remoteThreadID, "There"
+		p.local.addThread(here)
+		p.remote.addThread(there)
+
+		for _, source := range []string{localThreadID, remoteThreadID} {
+			call(t, p.server, localCaller(), "thread_spawn", `{"prompt":"x","from_thread":"`+source+`","model":"`+tc.model+`"}`)
+			if got := p.local.spawns[len(p.local.spawns)-1]; got.Model != tc.want {
+				t.Errorf("%s caller forking a %s thread (%s) with %s: carried %q, want %q", tc.caller.Provider, tc.source.Provider, source, tc.model, got.Model, tc.want)
+			}
+		}
 	}
 }
