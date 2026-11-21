@@ -131,9 +131,9 @@ type StatusError struct {
 	Status  int
 	Message string
 	Fields  map[string]string
-	// Body is scrubbed as text only: the credential is replaced where it
-	// appears as sent. An escape can hide it from that, so a caller that
-	// decodes Body (as JSON, say) scrubs what it decodes with Scrub.
+	// Body is scrubbed as Response.Body is, in every JSON string and key
+	// as it decodes and as bytes otherwise, then as text, and cut to 4
+	// KiB, so decoding it finds no credential (answerText).
 	Body     string
 	Location string
 	// Header holds the answer's headers that Options.ErrorHeaders names

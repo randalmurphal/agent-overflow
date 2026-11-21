@@ -413,8 +413,9 @@ var mirrorSyncAttemptSQL = strings.NewReplacer(
 ).Replace(mirrorSyncAttemptTemplate)))
 
 // RecordMirrorSyncAttempt records the outcome of one tick of a scope in
-// one statement and reports whether the scope's state changed; an attempt
-// that changes nothing writes nothing. A success moves the read or
+// one upsert, after the root check (and a board's lifetime check) every
+// mirror write makes, and reports whether the scope's state changed; an
+// attempt that changes nothing writes nothing. A success moves the read or
 // reconcile time forward, never back, and clears a failure recorded no
 // later than it. A failure replaces the stored one unless the scope was
 // read, reconciled, failed or cleared later, by this attempt's successes

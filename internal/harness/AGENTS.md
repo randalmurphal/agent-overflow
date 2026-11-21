@@ -45,5 +45,5 @@ scenario wire shapes must be checked against `cmd/ao-mockprovider` and `e2e`.
   interrupts, gates, and fixture failures. Provider terminal frames remain on
   provider stdout.
 
-Run `go test ./internal/harness/...` for changes in this tree. Harness boot and
+Run `make go-test GO_TEST_PKGS=./internal/harness/...` for changes in this tree. Harness boot and
 browser integration are covered by `make e2e`.

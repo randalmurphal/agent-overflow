@@ -4,10 +4,13 @@
 // A File pairs the file's path with the Label that names it in every
 // message a user reads. Read returns the secret as a secret.Bytes the caller
 // zeroes, Inspect reports the file's state without the secret, Create makes
-// the file empty for the user to fill, and Remove deletes it. An editor that
-// saves by replacing the file can loosen its mode, so every open puts the
-// file back to 0600 and its folder to 0700; a file AO cannot vouch for (a
-// symlink, another user's, not a regular file) is refused, never followed.
+// the file empty for the user to fill, and Remove deletes it. On Unix an
+// editor that saves by replacing the file can loosen its mode, so every
+// open puts the file back to 0600 and its folder to 0700, and a file AO
+// cannot vouch for (a symlink, another user's, not a regular file) is
+// refused, never followed. On Windows the profile's ACL guards the file:
+// no mode is set and no owner checked, and a file or folder that is a
+// reparse point, or a file that is a folder, is refused.
 //
 // Where a file lives and what it is called belong to its owner
 // (internal/openaikey, the tracker connections); this package owns how it

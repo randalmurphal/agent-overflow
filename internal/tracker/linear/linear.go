@@ -3,8 +3,10 @@
 // relations, link attachments, history and manual ordering. The shared
 // contract is docs/architecture/tracker-clients.md.
 //
-// Every GraphQL operation is a package-level document, sent with its
-// values as GraphQL variables and never formatted into the text. The
+// Every GraphQL operation is a registered document (newQuery,
+// newMutation, or a family of one document per size made on first use,
+// newMutationFamily), sent with its values as GraphQL variables and never
+// formatted into the text. The
 // tests check each document against Linear's public schema
 // (linearschema/schema.graphql, refreshed by `make linear-schema`).
 //

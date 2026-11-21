@@ -10,8 +10,9 @@
 // A Client is built by its caller, one per site, and is safe for
 // concurrent use. It sends every request through its own
 // trackerapi.Client and imports nothing of the app but trackerapi and
-// adf. It caches users by account ID, the field catalog and board
-// configurations, all in memory, bounded and droppable (cache.go);
+// adf. It caches users by account ID, the signed-in user, the field
+// catalog, board configurations and sprint lists, all in memory, bounded
+// and droppable (cache.go);
 // nothing is written to disk and nothing prints. Every exported call passes one admission guard
 // first (admit), so a closed client or an ended context fails it even
 // when a cache holds the answer.
@@ -21,9 +22,10 @@
 // whose outcome is unknown. A request the client refuses before sending
 // is a *trackerapi.NotSentError. Jira answers some requests with a 404
 // when the credential is bad; the client tells that apart from a missing
-// resource by asking who it is signed in as (identity.go). Every
-// successful answer is decoded in one place (decodeAnswer), which removes
-// the credential from all of its text.
+// resource by asking who it is signed in as (identity.go). Every answer
+// body arrives scrubbed of the credential by the transport
+// (trackerapi.Response.Body); a read's is decoded by decodeAnswer, a
+// write's by write (writes.go).
 //
 // Rich text is Atlassian Document Format; package adf converts it to and
 // from Markdown (adf.ToMarkdown renders an Issue's Description).

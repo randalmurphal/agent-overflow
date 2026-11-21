@@ -14,13 +14,14 @@ client contract it answers is
 
 | Concern | Files |
 |---|---|
-| Engine, seed, reset, clock, IDs | `engine.go`, `fixture.go` |
+| Engine, seed, reset, clock, IDs | `engine.go`, `fixture.go`, `jira_seed.go`, `jira_fixture.go`, `linear_seed.go`, `linear_fixture.go` |
 | Request pipeline: offline, credential, route, fault, handler, log | `serve.go`, `txn.go`, `faults.go`, `log.go`, `scrub.go`, `auth.go` |
 | Shared REST route matching | `routes.go` |
 | Jira routes and handlers | `jira_routes.go` (the whole table), `jira*.go`; JQL in `jql.go` |
 | Tempo | `tempo.go`, `tempo_worklogs.go`, `tempo_fixture.go` |
 | Linear GraphQL executor, its pre-pass and filters | `linear.go`, `linear_exec.go`, `linear_check.go`, `linear_filter.go`, `linear_conn.go` |
 | Linear tables: fields, comparators, sorts, roots, mutations, inputs | `linear_types.go`, `linear_objects.go`, `linear_issue*.go`, `linear_roots.go`, `linear_writes.go`, `linear_records.go` |
+| Linear points per request, fitted to the measurements | `linear_cost.go` |
 
 ## Answer rules
 
@@ -54,14 +55,11 @@ client contract it answers is
 - A well-formed request for something the fixture lacks answers the
   tracker's own not-found or refusal and changes nothing. Every handler
   runs in a transaction the pipeline owns (`txn.go`): an unhandled
-  answer, a refusal (400 or more) or a panic puts back the tenant, the
-  ID counter and the clock. The tenant is saved only for a write: a
-  route that does not set `reads` is one, and so is a Linear document
-  with a mutation, so a read costs the same on any size of tenant. A
-  Linear document with a mutation refused with an error rolls back whole
-  and answers null data, as measured for aliased `issueUpdate` and for
-  `issueBatchUpdate` with a missing issue. A refused `Seed` puts back
-  the ID counter and the clock as well as the tenants.
+  answer, a refusal (400 or more), a panic and a Linear document whose
+  mutation fails with an error change nothing. A route that does not set
+  `reads` is a write and saves its whole tenant first, so a read costs
+  more on a larger tenant unless it sets `reads`. A refused `Seed` puts
+  back the ID counter and the clock as well as the tenants.
 - A null Linear input member clears a field the schema lets be null and
   is refused for one the schema declares non-null (an issue's state,
   team, title, priority, sort orders, labels); an empty ID counts as
@@ -83,18 +81,11 @@ client contract it answers is
 - Each paging style has one windowing helper over every record a read
   matched: Jira's `offsetWindow` (`offsetPage`, `listPage`) and
   `tokenWindow`, Tempo's `page`, Linear's `connection`.
-- No log entry or unhandled answer repeats a credential. `logEntry` is
-  the only way an entry is made: it drops `Authorization`, replaces every
-  credential the engine holds or the request presented (every form of
-  each Authorization value, taken on arrival by `presentedSecrets`,
-  whatever the tenant lookup finds) with `<redacted>` in every text and in
-  every decoded JSON string, number and key, written plainly or with
-  JSON or GraphQL string escapes at any depth (`scrubText`), and bounds
-  each member at 64 KiB (text cut, JSON left out, each named in
-  `Omitted`). A Linear body's document is scrubbed by the values its
-  string literals lex to (`scrubDocument`), and left out when it does
-  not lex. Credentials are at least 8 characters so the replacement
-  never hits ordinary text.
+- No log entry or unhandled answer repeats a credential the engine holds
+  or the request presented: `logEntry` (`log.go`, `scrub.go`) is the only
+  way an entry is made. Seeded credentials are at least 8 characters so
+  the replacement does not hit ordinary text; a shorter value a request
+  presents is replaced wherever it appears.
 
 ## Tenants and faults
 

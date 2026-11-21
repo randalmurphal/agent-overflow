@@ -7,16 +7,17 @@ import "fmt"
 // write naming the root lands, and the next tick makes a new root.
 // Draining the detached root's rows is the cleanup, run after opMu is
 // released, so no connection change or tick waits for it. A cleanup that
-// fails leaves the root detached and invisible, and the next cleanup
-// finishes it. The same cleanup removes the boards no project lists any
+// fails leaves the root detached, refused to every run, and the next
+// cleanup finishes it. The same cleanup removes the boards no project lists any
 // more and the issues nothing keeps (no board row and no linked thread),
 // which a thread's unlink, delete, retire or transfer leaves.
 
 // FinishMirrorCleanup drains everything the mirror owes (store
 // FinishMirrorCleanup): detached mirrors, retired boards and unkept
-// issues. It fails with the store's error when one cannot be drained. The
-// app calls it at start and the pump periodically; with nothing pending
-// it is one statement. The store serializes calls.
+// issues. It fails with the store's error when one cannot be drained. It
+// runs after a turn off or a removal (cleanupAfter) and from the linked
+// loop once StartLinkedSync armed it; the app calls neither at start yet.
+// With nothing pending it is one statement. The store serializes calls.
 func (s *Service) FinishMirrorCleanup() error {
 	if err := s.enter(); err != nil {
 		return err

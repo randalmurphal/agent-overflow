@@ -11,9 +11,9 @@
 // check a client makes stay in the clients.
 //
 // A Provider holds no state of its own beyond its configuration: no
-// cache, goroutine, timer or file. The caches it relies on (the field
-// catalog, board configurations and users by account ID) are the jira
-// client's, bounded and dropped there. The caller owns the clients and
+// cache, goroutine, timer or file. The caches it relies on (users by
+// account ID, the signed-in user, the field catalog, board configurations
+// and sprint lists) are the jira client's, bounded and dropped there. The caller owns the clients and
 // closes them; a Provider needs no release.
 package jiraprovider
 

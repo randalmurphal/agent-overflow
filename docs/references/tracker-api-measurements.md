@@ -542,6 +542,32 @@ Source for schema facts: the
   already in the trash. `issueDelete` with `permanentlyDelete: true` was
   refused (`forbidden`) for a key without the workspace permission, so its
   payload is unmeasured.
+- Measured on 2026-11-21 against a blank workspace with a personal API
+  key, on one throwaway issue. `issueUpdate` of an existing issue whose
+  input names a fresh UUID for `stateId`, `assigneeId`, `cycleId`,
+  `projectId`, `parentId` or `labelIds` answered `data` null and one error
+  whose `extensions` carried `code` `INPUT_ERROR`, `type` `invalid input`
+  and `userError` true (keys: `code`, `meta`, `statusCode`, `type`,
+  `userError`, `userPresentableMessage`). `issueDelete` with
+  `permanentlyDelete: true` answered "Invalid scope: `admin` required" for
+  this key; without it the issue was trashed.
+- <a id="linear-history-names"></a>Measured the same day, reads only.
+  `issues(first: N, includeArchived: true)` with `history(first: 100)`
+  selecting the scalar history fields cost 653 points at N=1 and N=10;
+  with the twelve nested objects (`fromAssignee`, `toAssignee`,
+  `fromCycle`, `toCycle`, `fromProject`, `toProject`, `fromTeam`,
+  `toTeam`, `fromParent`, `toParent`, `addedLabels`, `removedLabels`, two
+  or three scalar fields each) it cost 2,153 at N=1 and N=10. The
+  client's own documents: `IssueDetails` cost 2,598 points for 1 issue and
+  for 10, an `IssueHistory` page at `first: 100` 2,151, and an
+  `IssueChanges` page at `first: 100` 652.
+- <a id="linear-trashed-history"></a>Measured the same day with two
+  throwaway issues. After the creation fold, one was made the other's parent, then the parent was trashed with
+  `issueDelete`. The child's history entry answered
+  `toParent { id identifier }` with the parent before the trash and 5 s
+  after it. So a nested history entity is still answered for a trashed
+  issue; other kinds (an archived label, cycle, project or team, a
+  deactivated user) were not measured.
 
 ## Tempo
 

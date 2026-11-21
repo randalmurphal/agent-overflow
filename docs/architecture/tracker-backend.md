@@ -1,8 +1,10 @@
 # Tracker backend
 
-Status: design. The [tracker clients](tracker-clients.md) exist; nothing in
-this document is built until its package exists. The product rulings are in
-the [Issues spec](../specs/issues.md).
+Status: built below the app layer: the [tracker clients](tracker-clients.md),
+the providers, the store mirror and the `internal/trackerapp` service, with
+the connection bound methods. What the app layer still owes is listed under
+[Build order](#build-order). The product rulings are in the
+[Issues spec](../specs/issues.md).
 
 This document fixes what sits between the tracker clients and the Issues
 pane: the tracker-neutral model, connections and key files, the local
@@ -22,9 +24,9 @@ mirror, sync, the application service and what agent tools need from it.
 | `internal/trackertools` | The agent tool contract, served through `internal/threadmcp`. |
 | `internal/harness/trackerfake` | Stateful Jira, Tempo and Linear fakes for app tests, the harness and browser tests. |
 
-Imports point one way: `trackerapp` imports `tracker` and the two provider
-packages; a provider package imports `tracker` and its clients; `tracker`
-imports no client. `internal/app` reaches a tracker only through
+Imports point one way: `trackerapp` imports `tracker`, the two provider
+packages and the clients it builds; a provider package imports `tracker`
+and its clients; `tracker` imports no client. `internal/app` reaches a tracker only through
 `trackerapp`. `trackerapp` receives its dependencies by capability (a store
 interface, an emit function, the credentials folder, a lifetime context),
 never `*App`, as
@@ -50,8 +52,7 @@ a field that is empty for the other.
   key (`WEB-1`) is display and lookup text, never identity: Jira changes it
   when an issue moves project.
 - **A status belongs to one group**: backlog, to do, in progress, done or
-  canceled. The provider maps the tracker's category or state type; project
-  setup may override a status's group or leave it out of counts.
+  canceled. The provider maps the tracker's category or state type.
 - **Order and estimate belong to an issue on a board, not to the issue.**
   A Jira board names its own rank field and its own estimate field, so one
   issue on two boards can have two of each. The order is one text key that
@@ -94,9 +95,11 @@ a field that is empty for the other.
 A `Provider` is one connection's tracker. Its calls take neutral inputs and
 return neutral values. A read fails with the transport's typed errors
 unchanged. Each read is one credential's view: `trackerapp` wraps every
-provider in `tracker.OneCredential`, so a read whose credential changes
-part way starts again once, then fails as `ErrCredentialChanged`
-([walks](tracker-clients.md#transport)). The interface in `internal/tracker/provider.go` is the contract;
+provider it syncs, reads and writes through in `tracker.OneCredential`
+(the verification's one identity call is not wrapped), so a read whose
+credential changes part way starts again once, then fails as
+`ErrCredentialChanged` ([walks](tracker-clients.md#transport)); a
+`Download` fails at the first change. The interface in `internal/tracker/provider.go` is the contract;
 this is its shape.
 
 - Identity: who the credential belongs to.
@@ -136,8 +139,8 @@ this is its shape.
   list is whole, so that list always says there may be more.
 - Time: a time tracker with worklogs by author and day and worklog add,
   edit and delete, or none for a tracker with no time tracking. A Jira
-  connection's is Tempo when it has a Tempo connection and Jira's own
-  worklogs otherwise.
+  connection's is Tempo while its Tempo connection is on, and Jira's own
+  worklogs otherwise, a Tempo connection turned off included.
 
 **A sync cursor is the provider's own bytes.** `trackerapp` stores what a
 page returns and hands it back; it never builds or adjusts one. A page's
@@ -176,7 +179,7 @@ narrows the window and does not close it.
 
 The result also names what the operation may have changed, by resource: an
 issue's card, an issue's row on a named board, an issue's detail, a board's
-structure. A write does not return any of them: an answer that carries an
+structure, an author's worklogs of a day. A write does not return any of them: an answer that carries an
 issue carries only the fields the tracker chose to send. Which kinds of
 resource each step leaves stale is one table in `internal/tracker`, and a
 result that names fewer is refused, so a provider cannot leave a board or
@@ -226,31 +229,32 @@ to the computer and are rows in `tracker_connections`.
   applies an outcome unless a call begun later on the same client already
   applied its own. A failure that arrives late cannot replace a newer
   success, and nothing is applied once the service stopped.
-- Adding a connection creates the row and the empty key file, opens the
-  tracker's token page and the key file on that computer, then verifies:
-  one identity call to the tracker. The row records who the token belongs
-  to and when it was verified. A Linear client is bound to the
+- Adding a connection creates the row and the empty key file. Opening the
+  tracker's token page, opening the key file on that computer and
+  verifying (one identity call to the tracker) are separate calls. The row
+  records who the token belongs to and when it was verified. A Linear client is bound to the
   connection's workspace: every key it reads is checked before any request
   carries it, and a key for another workspace fails every read and write.
   Tempo's API has no read that names the Jira site a token belongs to, so
   a Tempo token from another site is not detected. No tracker reports when
   a token expires, so the
-  expiry is the date the user enters from the token page, and it is the
-  only source of the warning before a token lapses. A status call returns
+  expiry is the date the user enters from the token page. A status call returns
   the file's state, the last verification and the last failure, never the
   token.
 - Where a client connects is one function from a connection's kind and
   site to an API origin. Its production value is the site, or Linear's
-  fixed origin. Tests and the harness supply one that answers a loopback
-  fake, through the app's isolation configuration, so a test App has no
-  path to a real tracker.
+  fixed origin. A test supplies one that answers a loopback fake, through
+  the app's isolation configuration (`IsolationConfig.TrackerOrigin`); an
+  isolated boot or a test App that sets none refuses every connection, so
+  neither has a path to a real tracker.
 - Editing the key file and opening the token page need the `host` scope and
   have no remote form. Every other call works from a connected browser or
   another computer and acts on the computer the call is routed to.
 - Removing a connection deletes its key file, then its row, which
   detaches its mirror's root in the same transaction; the mirror's rows are
-  then deleted in bounded batches, and a drain that a failure or a crash
-  cuts short is finished at the next start. The Tempo connection that
+  then deleted in bounded batches by the cleanup, which runs after each
+  turn off and removal and in the linked-issues loop, and a drain that a
+  failure or a crash cuts short is finished by the next one. The Tempo connection that
   belongs to it goes with it. A failure part way leaves a row with no key
   file, never a key file with no row. Turning a connection off keeps the row and the key
   file, stops its pumps, closes its clients and clears its mirror. A Jira
@@ -261,8 +265,10 @@ to the computer and are rows in `tracker_connections`.
   references that ID. Each read or write captures the root ID when it
   starts and every row it stores names it. Clearing detaches the root
   (`DetachMirror`): every write naming it fails with
-  `ErrTrackerCacheGone`, every read is empty, and `FinishMirrorCleanup`
-  deletes its rows in transactions of at most 500. Turning the connection
+  `ErrTrackerCacheGone`, and so do the reads a run makes before it stores
+  (`GetMirrorSync`, `ReadMirrorRefreshTargets`), which send it back for
+  the connection's root; every other read is empty. `FinishMirrorCleanup`
+  deletes its rows, then the root, in transactions of at most 500. Turning the connection
   on again makes a new root with a new ID, so a result that arrives late
   names the detached root and is refused. No caller checks a flag. A
   run belongs to the mirror generation it began in: one that finds its
@@ -282,25 +288,16 @@ Durable records, restored and kept like other application records:
 | Table | Holds |
 |---|---|
 | `tracker_connections` | Kind, site, account, the Jira connection a Tempo connection belongs to, label, on or off, verified identity and time, and the token expiry the user entered. |
-| `project_tracker_boards` | Which boards an app project lists, in order, and which opens first. Keyed by project and connection; both cascade. |
-| `thread_tickets` | One ticket per thread: tracker kind, site and issue ID with its key and title as last seen. Keyed by thread, cascading with it, cleared when a thread retires to a holder. It names the site, not the connection, so a link survives a connection that is removed and added again. A fork starts with its source's link. A conversation moved or copied to another computer carries its link in the transfer header, and the receiving side replaces whatever link it held for that thread, so a move away and back never brings an old link back; a receiver too old to read the field drops the link. |
-
-The rest of a project's tracker setup (status groups, pinned fields and
-sections, card marks, Start work defaults, draft settings, what agents may
-do) is one file in the app's directory for that project
-(`project.ConfigDir`), beside its workflow profile. `trackerapp` reads and
-replaces it whole. Anything a query needs from it is copied into the
-mirror, never the other way.
+| `project_tracker_boards` | Which boards an app project lists, in order, and which opens first. Keyed by project, connection and board; the project and the connection cascade. |
+| `thread_tickets` | One ticket per thread: tracker kind, site and issue ID with its key and title as last seen. Keyed by thread, cascading with it, cleared when a thread retires to a holder. It names the site, not the connection, so a link survives a connection that is removed and added again. |
 
 The mirror is every table named `tracker_cache_*`. The name is the
 classification:
 
 - Each row belongs, directly or through its parents, to a
   `tracker_cache_roots` row, with `ON DELETE CASCADE` all the way down. A
-  connection has at most one root. A root whose connection is cleared or
-  removed is detached first: every write naming it is refused, the
-  connection can take a new root, and the detached root's rows are deleted
-  in bounded batches and then the root. A test walks the schema and fails
+  connection has at most one root, detached as described under
+  [Connections and key files](#connections-and-key-files). A test walks the schema and fails
   for a `tracker_cache_*` table that does not reach a root by
   `ON DELETE CASCADE` keys, for a `SET NULL` key other than the root's link
   to its connection, and for any other table that references one.
@@ -315,7 +312,7 @@ classification:
 |---|---|
 | `tracker_cache_roots` | One row per mirror, with its own ID and its connection. |
 | `tracker_cache_users`, `_statuses` | The users and statuses a mirror's reads name. |
-| `tracker_cache_boards`, `_board_columns`, `_board_column_statuses` | A board's name, kind and estimate, its columns and the statuses in each. |
+| `tracker_cache_boards`, `_board_columns`, `_board_column_statuses`, `_board_unexplained` | A board's name, kind and estimate, its columns and the statuses in each, and the statuses, users and sprints its row pages named that the mirror lacked. |
 | `tracker_cache_sprints` | Sprints as each board shows them, with the board each was made on (a Jira sprint can show on several boards): state and dates. |
 | `tracker_cache_issues` | Cards, one per issue per mirror. |
 | `tracker_cache_board_issues` | Which issues are on which board, each with that board's order key and estimate. |
@@ -323,7 +320,7 @@ classification:
 | `tracker_cache_changes` | Status, sprint, estimate and assignee changes with their times and authors. The issue row holds the time from which they are complete. |
 | `tracker_cache_issue_details` | The detail of recently opened issues, one JSON document each. |
 | `tracker_cache_worklogs` | Logged time by issue, author and day. A Tempo connection has no mirror of its own; its worklogs are in its Jira connection's. |
-| `tracker_cache_worklog_days` | The read that last changed an author's day; a replace from an earlier read leaves the day. |
+| `tracker_cache_worklog_days` | The latest read of an author's day, an unchanged or empty day included; a replace from an earlier read leaves the day. |
 | `tracker_cache_sync` | Per scope: the provider's cursor, last read, last reconcile, last failure. The linked-issues scope has no cursor: it reads its cards by ID. |
 
 Metric queries will read versioned views over these tables, never the
@@ -362,8 +359,9 @@ screens, which move no update time), on a person's refresh
 detail. No document is written outside such a full read. A view shows its
 parent's key and title and each linked issue's key, title and status from
 the mirror's cards, read with the issue's own card in one
-`ListMirrorCards`, and else as the document holds them, so a linked issue
-the mirror keeps no card of is at most 30 minutes old. The opening is
+`ListMirrorCards`. A linked issue the mirror keeps no card of shows as the
+document holds it, at most 30 minutes old; a parent it keeps no card of
+shows its ID alone, since the document names the parent by ID. The opening is
 recorded only while the mirror still holds the document checked, the same
 row from the same read with no sweep since (`ConfirmMirrorDetail`);
 otherwise the detail is read again. A failed check leaves the stored
@@ -438,7 +436,7 @@ and writes share:
 | Resource | Read | Stores |
 |---|---|---|
 | Board row | an issue through a board | the card, and that board's order key and estimate |
-| Card | an issue with no board (a linked issue outside every listed board) | the card |
+| Card | an issue by ID, through no board: a linked issue no polled board has a row of, the check of a stored detail, a write's kept card no rows read returned | the card |
 | Detail | one issue, or a connection's open tickets together | the detail document |
 | Structure | one board | columns, statuses, estimate, sprints, users |
 | Worklogs | an author's span of days, from the time tracker | that author's worklogs of those days, replaced whole |
@@ -446,8 +444,8 @@ and writes share:
 - **Delta.** Each tick reads pages of a board's changed rows from its
   cursor. One transaction stores a page's rows and the cursor that page
   returned, so a restart resumes exactly after the last stored page. A
-  card is never replaced by a version with an earlier update time; a board
-  row is stored whenever it is read through its board. A page with no rows
+  card is never replaced by a version with an earlier update time, and a
+  board row by one from a read that began earlier. A page with no rows
   that returned the stored cursor is not written: the tick's recorded read
   admits the cursor. A page with a new row the board's latest removal
   refused stores no cursor, and the delta stops there with More, so the
@@ -485,12 +483,12 @@ and writes share:
   row the listing may have named: its absence is read once more, from
   after the listing (`MirrorChanges.Refused`). One statement finds the
   rows to remove; they go in transactions of at most 500, each judging
-  them again. It runs when a board is subscribed, on
-  a slower cadence, and on request, and waits while the tick's delta walk
+  them again. It runs at a board's first read, on its interval, while a
+  pass is open and on request, and waits while the tick's delta walk
   has more pages to read, so a first sync reads each row once and lists
   the board once.
-- **Structure** is read when a board is subscribed, on a slower cadence,
-  and while the board is structure-due. A row page that names a status,
+- **Structure** is read at a board's first read, on its interval, while
+  the board is structure-due and on request. A row page that names a status,
   sprint or user the mirror lacks, and that no complete structure read
   marked unexplained, makes the board due in the page's own transaction
   (`MirrorChanges.StructureDue`, durable as `MirrorSync.StructureDueAt`). A
@@ -513,7 +511,9 @@ and writes share:
   an issue whose update time is later than the one its stored history was
   read for, that gained a board row, or whose row was read again after
   its board's estimate definition changed, limited to the four change kinds.
-  Each of these is due at once. A read is stored with the update time it
+  Each of these is due at once. Due is per connection: whichever scope's
+  tick runs the unit reads the connection's due issues, under one history
+  lock per connection that every other scope's history unit waits on. A read is stored with the update time it
   was read for (`MirrorHistory.For`, the listing's
   `MirrorHistoryDue.UpdatedAt`), so a later update is a later version
   whatever second it falls in. The read is final for that version when
@@ -562,46 +562,33 @@ and writes share:
   stops, pauses or starts failing is read by the round it happens in, from
   the next page on, or the next round, `Cadence.Linked` later.
 - **A tick's record.** A tick's successes and the failure that followed
-  them are recorded by one `RecordMirrorSyncAttempt` statement, which
+  them are recorded by one `RecordMirrorSyncAttempt` upsert, after the
+  root and board lifetime check every board write makes, and the upsert
   writes nothing when nothing changes. An idle tick reads its state in one
   statement (`GetMirrorSync`; `ErrTrackerCacheGone` sends it back to
   `GetOrCreateMirrorRoot`) and writes one row, the read time the board's
   "last synced" shows.
-- **Cadence** (`trackerapp.Cadence`). A board reads its delta, and a
-  connection's open tickets their details together, every 10 seconds on
-  Jira and every 45 seconds on Linear while a client shows them: Jira's
-  token traffic has no hourly quota, and Linear allows 2,500 requests per
-  user an hour. Nothing hidden by every handle is read. The tick that
-  falls due also runs
-  the reconcile every 10 minutes or while a pass is open, the structure
-  every 30 minutes or while
-  the board is structure-due, and the history while an issue's is due
-  (`MirrorSync.HistoryDue`). A board never read runs all four. An open
-  ticket also reads at once when another read stored a changed card of
-  it. A failed read retries on the doubling delay the pull
-  request pumps use, from 5 seconds up to the interval; a rate limit
-  waits for its release. One loop for the
-  service, running while a Jira or Linear connection is on, waits for the
-  first client's reads to settle, then every five minutes while a client
-  is connected syncs each connection's linked issues (cards and history),
-  running a connection's ticks again while one reports more to read, and
-  finishes the mirror cleanup. The cleanup also runs once right after
-  the settle. Every read of the connections decides whether it runs (at
-  `StartLinkedSync`, on each change to the connections and at each
-  round): it runs while a Jira or Linear connection is on, and when the
-  read failed, so a failed read never leaves it off; the next successful
-  read that finds none on stops it.
+- **Cadence.** The intervals and their reasons are `trackerapp/cadence.go`.
+  A board reads its delta, and a connection's open tickets their details
+  together, every 10 seconds on Jira and 45 on Linear while a client
+  shows them; nothing hidden by every handle is read. The delta tick also
+  runs the reconcile, the structure and the history when each is due, and
+  a board never read runs all four. A failed read retries on a doubling
+  delay up to the interval; a rate limit waits for its release. One loop
+  (`trackerapp/linked_loop.go`), once `StartLinkedSync` arms it, syncs
+  each connection's linked issues and finishes the mirror cleanup while a
+  Jira or Linear connection is on and a client is connected.
 - **Requests are background** unless a person is waiting on them, so a
   rate limit fails a tick at once and holds the interactive budget for the
   person.
-- **Failures reach the subscriber** with a kind (transient, rate limited,
-  setup, forbidden, tracker) and a caller-safe sentence. The last rows stay
-  on screen.
+- **Failures reach the subscriber** with a kind (`trackerapp.FailureKind`)
+  and a caller-safe sentence. The last rows stay on screen.
 
 Each subscribed board has one pump: one goroutine and one timer for all
 its handles, plus a retry timer while its reads fail. A hidden pump's
-timer is not re-armed, so it makes no request and no store call until it
-is shown again, and then it runs the tick it missed. A tick that reports
+timer is not re-armed, so it makes no request and no store call of its
+own until it is shown again, and then it runs the tick it missed; a
+person's refresh is served hidden or not. A tick that reports
 More runs again at once. Handles, visibility votes, the pause and the
 request path for a person's refresh are `internal/pump`, with the request
 type as a parameter and its lock supplied by the owner. The pull request
@@ -653,11 +640,7 @@ ticket whose check confirmed its document, whose document was stored or
 held, or that the tracker left out is settled so whatever happened to the
 others, and the read's failure is told only to the tickets it did not
 answer, the ones a rate limit holds due when it lifts. A failure is told
-to each ticket once and cleared by its next success. A person's refresh
-of a ticket fails with its own ticket's failure outside the tracker (a
-view that could not be built, a store error) or the read's stop; the
-tracker's failure and its answer that the issue is gone reach the
-subscribers alone, as a board refresh's tracker failure does.
+to each ticket once and cleared by its next success.
 
 Idle ticks write only read times, and send no event. N is the number of a
 connection's shown tickets:
@@ -667,7 +650,7 @@ connection's shown tickets:
 | Shown board | 1 | 2 | 3 | 1 |
 | Shown board, the delta's overlap redelivering one identical row | 1 | 3 | 11 | 4 |
 | Jira round of N tickets (N up to 100) | 1 | 3 | 9 | N |
-| Linear round of N tickets | one per 10 tickets | 2 | 4 | N |
+| Linear round of N tickets | one per 10 tickets, plus each read a ticket's states, history or labels need past their first page | 2 | 4 | N |
 
 A Jira round checks every ticket with one cards read, decodes no stored
 document, reads none in full and moves the read time of the unchanged
@@ -678,9 +661,9 @@ more. A ticket that changed adds its own full read.
 
 A changed row is redelivered by the delta's overlap of one minute
 (`tracker.DeltaOverlap`), so about six Jira ticks after a change take the
-redelivery row's cost. The trackerapp cost tests pin the requests and
-store calls. The store's `TestIdleTickStatements` pins the statements and
-row writes.
+redelivery row's cost. The trackerapp cost tests pin the provider and
+store calls, the providers' cost tests the requests, and the store's
+`TestIdleTickStatements` the statements and row writes.
 
 ### Costs at scale
 
@@ -689,12 +672,9 @@ boards sharing a root, when `AO_TRACKER_SCALE` names the sizes:
 `TestMirrorAtScale` in `internal/store` (the store's statements),
 `TestServiceAtScale` in `internal/trackerapp` (the service over the
 scripted provider) and `TestFakeTrackersAtScale` (the real providers and
-clients against `trackerfake`).
-
-```
-AO_TRACKER_SCALE=5000,20000 make go-test GO_TEST_PKGS=./internal/store \
-  GO_TEST_FLAGS="-count=1 -timeout 60m -v -run TestMirrorAtScale"
-```
+clients against `trackerfake`). The command that runs one is in the
+comment above `TestMirrorAtScale`
+([`tracker_cache_scale_test.go`](../../internal/store/tracker_cache_scale_test.go)).
 
 Counts are exact. Times are one development machine's (Intel Core Ultra 9
 285HX, WSL2, Go 1.27.4): the first sync's is the fastest of five runs, a
@@ -754,84 +734,36 @@ round with one timer) at both sizes; once released, 57 to 90 KB stay
 ## Writes
 
 Every edit goes to the tracker first, through one path
-(`trackerapp/write.go`, `Service.write`). Each write method converts its
-JSON request in one place (`write_inputs.go`) and names its provider
-call; the path does the rest.
+(`trackerapp/write.go`, `Service.write`), whose comments and those of
+`write_refresh.go`, `write_place.go` and `write_account.go` hold the
+mechanism. A caller sees this:
 
-1. It holds the connection as a tick does, interactive. A connection that
-   is off, removed or Tempo is refused with `ErrDisabled`, `ErrNotFound`
-   or `ErrNoProvider`, and a request the conversion refuses with
-   `ErrInvalidRequest`, before anything is sent.
-2. It calls the provider and checks the result (`tracker.Result.Check`).
-   A result that fails the check is `ErrBadResult`, never a partial
-   success, and nothing is read again.
-3. Each resource a part that is applied or unknown names is read again
-   through that resource's read and stored (`write_refresh.go`), batched:
-   one store read of where the mirror holds them
-   (`ReadMirrorRefreshTargets`, which reads board rows for the cards
-   named alone, so a comment reads none), one rows read per board for
-   the rows named on it and the cards the mirror has on it, one cards
-   read for the kept cards no rows read returned a row of (on no shown
-   board, answered missing by every board, or on boards retired
-   meanwhile), one details
-   read for the open tickets and the stored details named, a structure
-   read per shown board named, and a worklogs read per author and span
-   of consecutive days. A card or detail the mirror neither keeps nor
-   holds is not read. A write adds no history read.
-
-   An issue a create made is placed first (`write_place.go`): one
-   `NewRows` call asks whether the create's board and the connection's
-   other shown boards hold it, the create's board first, and stores its
-   row on each that does, told as that board's own change. A create's
-   board the mirror does not show is not asked and the others are asked
-   all the same; with no board to ask, nothing is read. On the
-   create's board the row is refreshed, unless the store did not take it
-   (a removal recorded by a read that began later, or a failure of that
-   board's write, which leaves the other boards' rows stored), when it is
-   owed the board's rows read. A create's board that does not hold it stores
-   nothing and answers `NotOnBoard`. A failed placement, or one that
-   could not judge the create's board, leaves the row owed the board's
-   rows read, as any write's row is. Another board that does not hold it,
-   or was not judged, is left to its own sync.
-
-   The refresh keeps an account of every resource named
-   (`write_account.go`): each ends refreshed, not shown (nothing to read),
-   or stale with why, exactly once. A resource owes every read that
-   covers it: a card a rows read through each board the mirror shows it
-   on (they share its rank and estimate), and the cards read when none
-   returns it. It is refreshed only when every read it owes answered,
-   and stale, with the first failure, when any of them failed or was
-   never made. A failed read leaves its resources stale and the other
-   reads run; a rows or cards read made in batches of 100 leaves stale
-   only the issues no stored write settled: of the batch that failed (of
-   a rows batch whose first read was stored, the ones the store refused
-   and its retry did not store) and of the batches after it. The rest are
-   refreshed. The last failed read is the
-   connection's problem, whether or not its resources were already
-   reported. A board no longer listed or retired
-   during the refresh ends that board's reads alone. The write's context
-   ending stops the refresh, and every resource not yet read is stale.
-   The open tickets are settled only from a details read that was made,
-   each with its own outcome: a detail the read answered is refreshed
-   whatever happened to the others.
-4. The last tracker call settles the connection's problem: a failed
+1. A connection that is off, removed or Tempo is refused with
+   `ErrDisabled`, `ErrNotFound` or `ErrNoProvider`, and a request the
+   conversion refuses with `ErrInvalidRequest`, before anything is sent.
+   A provider result that fails `tracker.Result.Check` is `ErrBadResult`,
+   never a partial success, and nothing is read again.
+2. Each resource a part that is applied or unknown names is read again
+   through that resource's read and stored, batched by read; a create's
+   issue is placed first on its board and the connection's other
+   subscribed boards the mirror shows. A write adds no history read. Each resource ends
+   refreshed, not shown (nothing to read) or stale with why, exactly once.
+3. The last tracker call settles the connection's problem: a failed
    refresh read, else a part that could not reach the tracker. A write
-   whose every part was refused before sending (invalid input, a write
-   the tracker cannot make) settles nothing.
-5. The stored changes pass through the change funnel once, with each
-   board the refresh read through as that board's own changes, and the
-   open tickets the refresh read are settled by it. What a refresh stored
-   is published however it stopped, as a tick's is.
-6. The caller gets a `WriteView`: each part's issue, step, state and
-   refusal (reason, message, field messages, candidates, lost content),
-   the issue a create made, the board it is not on (`NotOnBoard`),
-   `CreateUnknown`, and the resources a refresh
-   read could not refresh with its failure (`Stale`). A failed refresh is
-   never a write failure.
-7. A create of unknown outcome is reported as that and never retried. The
+   whose every part was refused before sending settles nothing.
+4. What the refresh stored passes through the change funnel once, however
+   the refresh stopped, and the open tickets it read are settled by it.
+5. The caller gets a `WriteView`: each part's issue, step, state, refusal
+   (reason, message, field messages, candidates, lost content) and, for an
+   unknown or unsent part, its failure; the issue a create made, the board
+   it is not on (`NotOnBoard`), `CreateUnknown`, and the resources a
+   refresh read could not refresh with its failure (`Stale`). A failed
+   refresh is never a write failure.
+6. A create of unknown outcome is reported as that and never retried. The
    board's delta runs at once, through the board's pump when one is live;
    an issue it brings in is the only evidence, and nothing matches it to
-   the attempt.
+   the attempt. When that delta fails, `Stale` names it as a resource of
+   kind `delta`.
 
 A connection turned off, removed or stopped during the provider call
 answers a write that may have happened with its parts and `Ended`, and
@@ -844,9 +776,10 @@ write began.
 
 The mirror is never written ahead of the tracker. A client that shows a
 drop before the answer owns that preview and replaces it with the event.
-A Jira list read shows an edit up to about 2 seconds after it was made,
-so a row read right after a write may return the old version; it stores
-nothing new, and the next delta brings the change.
+A Jira read by ID right after a write carries the new values; only a
+search matching `updated >=` lags, by up to about 2 seconds
+([measured](../references/tracker-api-measurements.md#jira-cloud)), which
+the delta's overlap covers.
 
 A write an agent made is recorded in `tracker_agent_writes` (thread, issue,
 what changed, when), which the ticket's history view joins. That table is
@@ -854,25 +787,18 @@ added with the agent tools.
 
 ## Methods and events
 
-Bound methods take a leading context and carry a scope and a route.
-
-- Two scopes are added: `tracker:read` at the observe tier and
-  `tracker:operate` at the execute tier.
-- A method whose first parameter is `projectID` routes by project. Every
-  other method routes `selected`, and the client pins calls on a
-  subscription to the computer that answered the subscribe.
-- A subscription is a handle released through the connection's cleanup.
-- Events: `tracker:connections_updated`, `tracker:board_updated`
-  (`trackerapp.BoardEvent`) and `tracker:issue_updated` for an open ticket
-  (`trackerapp.IssueEvent`). Each has a channel policy with the read scope.
+The connection methods are bound (`internal/app/app_tracker.go`): each
+takes a leading context and carries a scope, `tracker:read` at the
+observe tier or `tracker:operate` at the execute tier, and a route, and
+their event is `tracker:connections_updated`. Every other method below is
+a `trackerapp.Service` method that no bound method wraps
+(see [Build order](#build-order)).
 
 A board answer is bounded: the subscribe returns the board's structure,
 its sprints and the cards of the sections on screen, and a section's
 remaining cards are read by page.
 
 ### Subscriptions
-
-The bound methods wrap these `trackerapp.Service` methods:
 
 - `SubscribeBoard(projectID, scope, sections)` answers from the mirror
   alone, before any tracker call: a handle, a sequence number, the view of
@@ -886,15 +812,18 @@ The bound methods wrap these `trackerapp.Service` methods:
   tracker's or one outside it, so a subscriber that joins while reads fail
   shows the failure.
 - `SetSubscriptionVisible`, `RefreshSubscription` and `ReleaseSubscription`
-  take any handle. A refresh is a person's read: a board's four units or a
-  ticket's detail, interactive. It fails with `ErrSubscriptionEnded` when
-  the subscription ends first.
+  take any handle; one the service does not hold fails a visibility change
+  or a refresh with `ErrUnknownSubscription`. A refresh is a person's read: a board's four
+  units or a ticket's detail, interactive. The tracker's failure, and its
+  answer that a ticket's issue is gone, reach the subscribers alone, and
+  the refresh returns nil; it fails with a failure outside the tracker (a
+  ticket view that could not be built, a store error), the read's stop, or
+  `ErrSubscriptionEnded` when the subscription ends first.
 - `TicketDetail(handle)` is the ticket as its subscribers were last told:
   its failure, and its view or not loaded.
 - `BoardPatch(scope, sections, issues, held)` is the patch read below;
   `held` names the totals the client holds.
-- `StartLinkedSync` arms the linked-issues loop; the app calls it from its
-  unattended-work boot step. `New` starts nothing.
+- `StartLinkedSync` arms the linked-issues loop. `New` starts nothing.
 
 Events go to `Deps.EmitBoard` and `Deps.EmitIssue`, and the loop's
 failures go to `Deps.LoopFailed`. `Deps.Settled` and `Deps.ClientConnected`
@@ -913,14 +842,13 @@ they return, and each subscriber is told once (`Ended`).
   `not_found` failure; a failure outside the tracker (the store, a
   decode) is told as `internal` with a fixed sentence, as a board's is.
 - **Sequence.** One sequence numbers every answer and event of the
-  service. A subscribe takes its number before it reads the mirror. An
-  event takes its number after its write committed, and is sent under the
-  same lock. An event numbered at or below an answer is in that answer.
-  One numbered above may be too, and applying it is harmless.
+  service (`trackerapp/subscriptions.go`). An event numbered at or below
+  an answer is in that answer. One numbered above may be too, and applying
+  it is harmless.
 - **Event rate.** A tick that changed nothing sends nothing, so an idle
-  shown board sends no event. The last read time is not sent: while no
-  failure is reported, the board was read within the poll interval the
-  answer carries. A failure is sent when it starts, changes and clears.
+  shown board sends no event. No event is sent for the read time alone:
+  while no failure is reported, the board was read within the poll
+  interval the answer carries. A failure is sent when it starts, changes and clears.
 
 Every tick's changes and every open ticket's read pass through one change
 funnel (`trackerapp/funnel.go`):
@@ -957,8 +885,9 @@ funnel (`trackerapp/funnel.go`):
 
 ### Writes and form reads
 
-Each write is one `trackerapp.Service` method on a connection ID with a
-JSON request, answering a `WriteView` (`write_methods.go`): `Create`,
+Each write is one `trackerapp.Service` method on a connection ID, with a
+JSON request converted in `write_inputs.go` (`Attach` takes the files
+themselves), answering a `WriteView` (`write_methods.go`): `Create`,
 `Edit`, `Move`, `SetEstimate`, `Rank`, `MoveToSprint`, `CreateSprint`,
 `StartSprint`, `CompleteSprint`, `EditSprint`, `AddComment`,
 `EditComment`, `DeleteComment`, `Link`, `Unlink`, `Attach`, `AddWorklog`,
@@ -994,34 +923,29 @@ the same rule fragments that `ListMirrorSection` pages by. The totals are
 named by the board's lifetime and totals revision (the board view's
 `totals_revision`, a patch's `totals.revision`), which moves with every
 change that can change a total and not with a title or rank. The client's
-rule:
-
-1. Remove each ID of the event from every section held.
-2. Insert each returned row at its (order, issue) place when that place is
-   not after the section's cursor, or when the section is loaded whole.
-3. Take the totals when the patch carries them, and hold their lifetime
-   and revision for the next patch read.
-4. Carry the lifetime and revision into every cursor.
-
-The reference implementation is `applyPatch` in
-`trackerapp/patch_model_test.go`. A randomized test checks it against a
+rule for applying a patch is the `BoardPatch` comment
+(`trackerapp/patch.go`), and its reference implementation is `applyPatch`
+in `trackerapp/patch_model_test.go`. A randomized test checks it against a
 full read of the board. A one-row change of a realistic board, with three
 sections held, costs a 166-byte event and a 1,174-byte patch as JSON, or
-1,487 bytes when the totals moved. The patch read is two store calls and
-five statements, eight with the totals; with the totals held it reads
-only the named rows. Tests pin all of these numbers. The full read is only for the first paint, a reconnect and
+1,487 bytes when the totals moved. The patch read is two store calls:
+`GetMirrorRoot`, one statement, and `ReadMirrorBoardPatch`, five
+statements for three sections with the totals held and eight with the
+totals; with the totals held it reads only the named rows. Tests pin
+the bytes, the calls and `ReadMirrorBoardPatch`'s statements. The full read is only for the first paint, a reconnect and
 `ReadAgain`.
 
 ## Agent tools
 
 The tools read, search, create, edit, move, comment, move between sprints
 and list and add worklogs, through `trackerapp`. A worklog an agent adds is
-an entry in a time draft. Only the posting path in `trackerapp` sends time
+an entry in a time draft. Only a draft's posting path sends a draft's time
 to a tracker, and it sends exactly the entries it is given: the entries
 the user approved (one entry, a day or the whole draft), an entry the user
 logged by hand, or the entries of a day with no open question when the
 project's setting posts such days. An entry an agent made is never posted
-on the agent's call. No tool reaches the provider's worklog write.
+on the agent's call. No tool reaches the provider's worklog write or
+`trackerapp`'s worklog writes, which send time for any caller.
 
 Three mechanisms the tools need do not exist for any built-in tool server
 yet and are part of that work:
@@ -1057,12 +981,37 @@ guide and each read tool say so.
 
 ## Build order
 
-1. `internal/tracker` and the two providers.
-2. `internal/keyfile`, `tracker_connections`, connection methods.
-3. The mirror tables and accessors.
-4. `trackerfake`.
-5. Sync, the pump package, board and ticket reads.
-6. Writes.
-7. Thread links, project setup, Start work.
-8. Agent tools.
-9. Harness and browser test wiring.
+Built: `internal/tracker` and the two providers, `internal/keyfile`, the
+tracker tables and their accessors, `trackerfake`, and `trackerapp` with
+its sync, pumps, reads and writes, and the connection bound methods. Not
+built, owed by the app layer:
+
+- The app's calls at start: nothing calls `StartLinkedSync` or
+  `FinishMirrorCleanup`, so the linked-issues loop does not run, and the
+  rows of a drain a crash cut short, a retired board or an issue an unlink
+  left unkept stay until the next turn off or removal.
+- The board, ticket and write bound methods, routed by project when the
+  first parameter is `projectID` and `selected` otherwise, a client
+  pinning a subscription's calls to the computer that answered the
+  subscribe and releasing its handles when it goes; and the
+  `tracker:board_updated` (`trackerapp.BoardEvent`) and
+  `tracker:issue_updated` (`trackerapp.IssueEvent`) channels, with the
+  read scope's policy. `Deps.EmitBoard` and `Deps.EmitIssue` only log.
+- The sequence that follows adding a connection: open the token page,
+  open the key file, verify. The three bound methods exist; the sequence
+  is the frontend's.
+- The warning before a token lapses, from the expiry the user entered,
+  its only source.
+- A thread's ticket link carried by a fork, which starts with its
+  source's link, and by a transfer, whose header carries it and whose
+  receiver replaces the link it held (a receiver too old to read it drops
+  it). The table and its accessors exist; nothing writes it.
+- The project's tracker setup: one file in the project's app directory
+  (`project.ConfigDir`), beside its workflow profile, that `trackerapp`
+  reads and replaces whole, holding status-group overrides (a status's
+  group, or left out of counts), pinned fields and sections, card marks,
+  Start work defaults, draft settings and what agents may do. Anything a
+  query needs from it is copied into the mirror, never the other way.
+- The time-draft posting path (Agent tools).
+- Start work, the agent tools (`internal/trackertools`), and the harness
+  and browser test wiring.

@@ -23,8 +23,9 @@ import (
 // milliseconds, zero for none.
 
 // ErrTrackerCacheGone is returned by every mirror write whose root was
-// detached or never existed, and by GetOrCreateMirrorRoot for a connection
-// that is turned off.
+// detached or never existed, by the reads a caller makes before it stores
+// (GetMirrorSync, ReadMirrorRefreshTargets) for such a root, and by
+// GetOrCreateMirrorRoot for a connection that is turned off.
 var ErrTrackerCacheGone = errors.New("store: tracker mirror was cleared")
 
 // ErrInvalidTrackerCache is returned for a mirror write the schema would
@@ -123,7 +124,8 @@ func (s *Store) GetMirrorRoot(connectionID string) (rootID int64, ok bool, err e
 
 // DetachMirror detaches connectionID's mirror root in one statement and
 // reports whether it had one: from then on every write naming the root
-// fails with ErrTrackerCacheGone, every read of it is empty, and
+// fails with ErrTrackerCacheGone, and so do GetMirrorSync and
+// ReadMirrorRefreshTargets; every other read of it is empty, and
 // GetOrCreateMirrorRoot makes a new root. FinishMirrorCleanup deletes the
 // detached root's rows. A connection's removal detaches its root the same
 // way, through the schema.

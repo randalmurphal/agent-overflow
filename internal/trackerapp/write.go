@@ -26,8 +26,9 @@ import (
 //   - the view of the outcomes, with what could not be refreshed beside
 //     them.
 //
-// A write method (write_methods.go) converts its request (write_inputs.go)
-// and names its provider call; nothing else.
+// A write method (write_methods.go) converts its JSON request
+// (write_inputs.go), or takes Attach's files as they are, and names its
+// provider call; nothing else.
 
 // ErrBadResult is a write whose provider returned a result no provider
 // may return (tracker.Result.Check): it is an error, never a partial

@@ -32,12 +32,14 @@ following the same contract, not code.
 ## Rules for every package
 
 - A client is a value built by its caller and safe for concurrent use. No
-  package state beyond the transport's pool of cleared read buffers, no
-  environment reads, no files outside what a call names.
+  package state but what is built once (the transport's pool of cleared
+  read buffers, Linear's operation registry), no environment reads, no
+  files outside what a call names.
 - No package does work when the program starts: the app links these
-  packages whether or not a tracker is connected. Tables and regular
-  expressions are built on first use; `TestInitCost` in `trackerapp`
-  holds each package and `trackerapp` to its stated init cost.
+  packages whether or not a tracker is connected. Tables, regular
+  expressions and Linear's sized documents are built on first use;
+  `TestInitCost` in `trackerapp` holds each package and `trackerapp` to
+  its stated init cost.
 - Cost is pinned. Each provider method's request count and the hot paths'
   allocations are asserted in the packages' cost tests, so a change that
   adds a request or an allocation fails a test.
@@ -54,56 +56,17 @@ following the same contract, not code.
   formatted into a request path or query without escaping.
 - A call refused for what its caller passed, before any request, fails
   with an error that matches `trackerapi.ErrInvalidInput`, in every
-  client, so a caller tells its own mistake from the tracker's answer.
+  client, so a caller tells its own mistake from the tracker's answer. The
+  transport's refusal of a malformed `Request` is a bare `*NotSentError`.
 - No site's names: no field or status aliases, no custom field IDs, no
   project keys, no host names. Test data uses `example.atlassian.net`,
   `example.com`, keys such as `WEB-1` and people named `User 1`.
 
 ## Transport
 
-```go
-// internal/tracker/trackerapi
-type Options struct {
-    Name        string           // "jira", "tempo", "linear": names the client in errors
-    BaseURL     string           // https, or http on a loopback address
-    Version     string           // User-Agent "agent-overflow/<version>"; required
-    Credentials CredentialSource // read at first use and again after one 401
-    Dialect     Dialect          // the tracker's own error, login and limit conventions
-    MaxPerSecond float64         // paces every request of this client; zero does not pace
-    ReadTimeout  time.Duration   // a call whose Request.Timeout is zero; zero means 45s
-    MaxBodyBytes int64           // a body Do and JSON read; zero means 8 MiB
-    Proxy        func(*http.Request) (*url.URL, error) // nil connects directly
-    OnAnswer     func(status int, header http.Header)  // every answer's status and its ReportHeaders, scrubbed, before its body
-    ReportHeaders []string                             // the answer headers OnAnswer receives
-    ErrorHeaders  []string                             // the answer headers a StatusError keeps in Header, scrubbed
-}
-
-func New(opts Options) (*Client, error) // misconfiguration is a construction error
-func NewSharing(peer *Client, opts Options) (*Client, error) // a second client on peer's connections
-func (c *Client) Do(ctx context.Context, r Request) (*Response, error)
-func (c *Client) JSON(ctx context.Context, r Request, out any) (*Response, error)
-func (c *Client) Stream(ctx context.Context, r Request, dst io.Writer, limit int64) (*Response, error)
-func (c *Client) Location(ctx context.Context, r Request) (string, error) // a redirect's target, not followed; refused if it repeats the credential
-func (c *Client) ForgetCredential()
-func (c *Client) Close()
-func (r *Response) Scrub(text string) string       // also on *StatusError and *AuthError
-func (r *Response) CredentialMark() CredentialMark // also on *StatusError and *AuthError
-func (c *Client) CredentialMark() CredentialMark   // the mark a request sent now would carry; zero when none is held
-
-type Request struct {
-    Method       string
-    Path         string        // relative to BaseURL; absolute only with Absolute set
-    Query        url.Values
-    Header       http.Header
-    Body         any           // JSON-encoded; a []byte passes through with ContentType
-    ContentType  string
-    ReadOnly     bool          // a POST that only reads (a search, a GraphQL query): retried like a GET
-    Absolute     bool          // Path is a full URL the tracker handed out (an attachment's content)
-    Transfer     bool          // an upload or download: no total timeout, a stall timeout instead
-    Timeout      time.Duration
-    MaxBodyBytes int64
-}
-```
+`trackerapi.New` builds a client from `trackerapi.Options`, and every call
+takes a `trackerapi.Request`; the comments on those types, and on the
+`Client` methods, are the contract.
 
 - **Credentials.** A `Credential` holds its secret in a `secret.Bytes` and
   sets one request's `Authorization`: `Basic(user, token)`,
@@ -132,7 +95,8 @@ type Request struct {
   the walk records the change itself, so a read that keeps a request's
   failure in a partial result cannot hide it. A second change fails the
   read with an error
-  matching `trackerapi.ErrCredentialChanged`, which is transient. A read
+  matching `trackerapi.ErrCredentialChanged`, a sentinel the transport
+  never retries and that is no `*TransientError`. A read
   that cannot start again (Tempo's page-at-a-time worklogs, a download)
   uses `WalkOnce` and fails at the first change. A write inside a walk is
   refused. `tracker.OneCredential`, which `trackerapp` puts on every
@@ -179,8 +143,10 @@ type Request struct {
   failure and a 503, at most four times, waiting `Retry-After` when the
   tracker names it and a doubling backoff otherwise, each wait capped at
   60 seconds. A rate limit is the gate's to handle, below.
-- **Writes are never replayed.** The one exception is a 429 on an
-  interactive call, which the tracker answers before it applies anything.
+- **Writes are never replayed**, but for two answers the tracker gives
+  before it applies anything: a 429 on an interactive call, and a 4xx
+  refusing the credential when reading the credential again replaced it,
+  which sends the write once more.
   No request can be resent by `net/http` underneath: a request carries no
   replayable body, and the `Idempotency-Key` headers are refused.
   `WriteNotApplied(err)` reports the failures that prove a write did not
@@ -234,27 +200,15 @@ type Request struct {
 
 ### Dialect
 
-A tracker's conventions the transport cannot guess:
-
-```go
-type Dialect interface {
-    // RejectedLogin reports an answer that marks refused credentials
-    // whatever its status. Jira sets a header on a 200.
-    RejectedLogin(h http.Header) bool
-    // Problem reads an error body: the tracker's message and its per-field
-    // messages, by field ID.
-    Problem(status int, body []byte) Problem
-    // RateLimited reports an answer that is a rate limit without being a
-    // 429, and when it lifts.
-    RateLimited(status int, h http.Header, body []byte) (until time.Time, limited bool)
-}
-```
+A tracker's conventions the transport cannot guess (a refused login, the
+error body's message and per-field messages, a rate limit that is not a
+429) are a `trackerapi.Dialect`, whose comment is the contract.
 
 ### Errors
 
 | Observation | Error |
 |---|---|
-| The request never left: unusable client, bad request, gate closed, the call ended while waiting to send, or any failure before the transport held a connection (dial, name lookup, proxy, TLS) | `*NotSentError` wrapping the cause |
+| The request never left: unusable client, bad request, a credential source that failed (a key file missing or unreadable, Linear's `*WrongWorkspaceError`), gate closed, the call ended while waiting to send, or any failure before the transport held a connection (dial, name lookup, proxy, TLS) | `*NotSentError` wrapping the cause |
 | 401 after the credential was read again, or an answer the dialect marks as a refused login | `*AuthError` |
 | 429, or the dialect's limit, once retries are spent or for a background call | `*RateLimitedError{Until}` |
 | Any other status of 400 or above, or a 3xx answering a write | `*StatusError{Method, URL, Status, Message, Fields, Body, Location, Header}`: the URL redacted, the body bounded to 4 KiB, `Fields` the per-field messages, `Header` the answer headers `Options.ErrorHeaders` names. A 404 matches `errors.Is(err, ErrNotFound)`. |
@@ -268,10 +222,12 @@ Identity under Jira.
 
 ## Converter
 
-`adf` is copied from the `atl` project with its hand-written fixtures. Its
-golden files pin the Markdown each document renders to and the document
-each Markdown parses to; the corpus checks that every document survives a
-round trip and stays valid against Atlassian's schema.
+`adf`'s golden files pin the Markdown each document renders to and the
+document each Markdown parses to; the corpus checks that every document
+survives a round trip and stays valid against Atlassian's schema, except
+the shapes the product writes and the schema refuses (`knownDeviation`:
+a one-column layout, a breakout mark on a rule or panel), which only
+`Validate` checks.
 
 An edit made in Markdown is applied to the stored document, so content
 Markdown cannot show (a macro, a panel, a mention, a merged cell) survives
@@ -339,14 +295,11 @@ problem on that record, which stays usable.
   which the provider calls before each structure read. Users and the
   field catalog, which no read drops and Jira changes with no signal, are
   read again once 30 minutes old.
-- **Write answers.** A write is applied when its answer is a success form
-  the spec documents and names what was written, or is a documented empty
-  success such as a 204. One that names it but fails to decode elsewhere
-  is applied and returns what decoded. An update's answer must name the
-  record it changed. Any other 2xx is an unknown outcome and reports
-  nothing as created, stored or closed. An edit that asks for
-  nothing is refused, and one that asks only for stored values sends
-  nothing and says so.
+- **Write answers.** A write is applied only on a success its spec
+  documents that names what was written, by the rule in `jira/writes.go`;
+  any other 2xx is an unknown outcome. An edit that asks for nothing is
+  refused, and one that asks only for stored values sends nothing and
+  says so.
 - **Identity.** Jira answers some paths with a 404 when the credential is
   bad, and answers a search sent with no credential 200 with no issues.
   Every answer made for an account names it in `X-AAccountId`
@@ -372,7 +325,8 @@ problem on that record, which stays usable.
 - **Ranking and sprints.** Rank before or after an issue, move into a
   future or active sprint, and move to the backlog, with a position only
   on a board's backlog. Each is sent in groups of 50 chained after the
-  last issue ranked, stops at the first group not answered in full, and
+  last issue ranked, stops at the first group refused as a whole or not
+  answered in full, and
   reports every issue as done, refused, unknown or not sent. A group's
   answer is read only as a 204 or, for a rank and a board's backlog, a 207
   whose every entry names exactly one issue of the group, by its ID and
@@ -392,8 +346,9 @@ problem on that record, which stays usable.
 - **Search.** `search/jql` with token paging, the approximate count, and
   the bulk fetch of issues by key or ID. Reading a search to its end
   returns its warnings and whether it is complete; a bulk fetch and a
-  project listing say the same. `QuoteJQLText` is the one way text a
-  person or a tracker wrote enters a JQL string. `MatchJQL` asks
+  project listing say the same. Text a person or a tracker wrote enters
+  a JQL string only through `QuoteJQL`, `QuoteJQLText` (after `~`) or
+  `QuoteJQLList` (an `in` list). `MatchJQL` asks
   `jql/match` which of up to 50 issue IDs each of up to 10 queries
   matches, judged from the issues as they are rather than the search
   index; an answer that matches fewer than asked with no error is proven
@@ -402,7 +357,7 @@ problem on that record, which stays usable.
   whose columns name statuses no listed issue is in.
 - **Worklogs.** Jira's own worklogs: list, read by ID, add, change (based
   on the worklog as read, or explicitly unchecked, with the loss check;
-  an estimate adjustment alone is a change), delete, with the
+  a remaining estimate set alone is a change), delete, with the
   remaining-estimate adjustments each write allows, and the updated and
   deleted feeds for sync.
 - **People.** Who the token belongs to, a user by account ID, a user found
@@ -437,11 +392,8 @@ the ops it would judge; the others are checked in full and sent.
 
 A batch reports each item as applied, refused, unknown, not attempted, or
 updated but not moved to the issue asked for. A write is applied only on
-an answer that confirms it: a delete's 204, and a create's or update's
-200 with a record that has an ID, an update's the one it wrote to. Any
-other 2xx is unknown, whatever record it carries. Tempo's spec lists 204
-for the delete and 200 for the create and the update, and no other 2xx.
-The user's required hours
+an answer that confirms it, by the rule in `tempo/batch.go`; any other
+2xx is unknown, whatever record it carries. The user's required hours
 per day, the approval state of a period, accounts and the site's
 timesheet settings are reads.
 
@@ -452,9 +404,10 @@ key, binds it: each key the client reads (first use, after
 `ForgetCredential`, after a 401) is first asked which workspace it belongs
 to, and a key for another one is refused with `*WrongWorkspaceError` before
 any request carries it, until `ForgetCredential`. A call that met the
-refusal was not sent. Every GraphQL document is a package
-variable made by `newQuery` or `newMutation`, which register it; a test
-fails on an operation built any other way. A test checks each registered
+refusal was not sent. Every GraphQL document is registered: a package
+variable made by `newQuery` or `newMutation`, or a family of one document
+per size made on first use (`newMutationFamily`); a test fails on an
+operation built any other way. A test checks each registered
 document against Linear's public schema, embedded in `linearschema` and refreshed
 by `make linear-schema` as the forge schemas are, and fails on a field the
 schema marks deprecated and on a document no test sends. The test server
@@ -483,14 +436,18 @@ relation each way read to its end: one at a time with `Issue`, or up to
 leaves out an ID that names no issue the user can see (Linear charged the
 same points for 1 and for 10,
 [measured](../references/tracker-api-measurements.md)). `ListIssuePositions` lists
-only each issue's ID and manual order. A comment, relation, cycle or team
+only each issue's ID, manual order and team. A comment, relation, cycle or team
 is read by its ID, and labels by a set of IDs. Label names come nested
 with each issue; the read by ID covers only the labels that list leaves
 out. A ticket's history (`Issue`, `IssueDetails`, `IssueHistory`) carries
 with each entry the users, cycles, projects, teams, parent issues and
-labels it names, in the same request; one Linear answers as null (deleted,
-or hidden from the key) leaves its ID alone. Each nested entity costs
-points on every page ([measured](../references/tracker-api-measurements.md)),
+labels it names, in the same request; one Linear answers as null leaves
+its ID alone. A trashed issue is still answered
+([measured](../references/tracker-api-measurements.md#linear-trashed-history));
+the other kinds (an
+archived label, cycle, project or team, a deactivated user) are
+unverified. Each nested entity costs points on every page
+([measured](../references/tracker-api-measurements.md#linear-history-names)),
 so the reads the mirror makes (`IssueHistories`) select IDs alone. `TeamBoard` reads a team, its states, the
 cycles a window keeps and the workspace's users in one request, at the
 points of those four reads apart less three requests; only a list longer
@@ -526,14 +483,6 @@ The `live_*_test.go` files, behind the `linearlive` build tag, are manual
 checks and measurements against a blank workspace with a key read from the
 file a variable names. No test run includes them. What they measured is in
 [tracker API measurements](../references/tracker-api-measurements.md).
-
-## Left in atl
-
-Not copied, because they serve a terminal tool or one site: the command
-tree and its flags, dry-run printing, prompts, the disk cache, config and
-repository context (project and issue keys read from a branch name),
-field and status aliases, reports, the Confluence and Outlook packages,
-text extraction from attachments, and every recorded response.
 
 ## Tests
 

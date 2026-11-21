@@ -92,9 +92,10 @@ func historyNum(f func(h *LinearHistory) *float64) func(historyObj) any {
 
 // historyRef is a history field naming an entity by the ID f gives: the
 // entity, null when unset or when the workspace lacks it. The schema
-// makes each such field nullable (documented); that Linear answers null
-// for an entity deleted or hidden from the key, and still answers an
-// archived one, is unverified.
+// makes each such field nullable (documented). Linear still answers a
+// trashed issue (measured); that it answers null for an entity deleted or
+// hidden from the key, and still answers an archived label, cycle,
+// project or team or a deactivated user, is unverified.
 func historyRef(f func(h *LinearHistory) string, ref func(w *linearWorkspace, id string) any) func(historyObj) any {
 	return func(o historyObj) any {
 		if id := f(o.h); id != "" {
@@ -106,8 +107,9 @@ func historyRef(f func(h *LinearHistory) string, ref func(w *linearWorkspace, id
 
 // historyLabels is a history field listing the labels f names that the
 // workspace holds, archived ones included, in order; null when it names
-// none. That Linear leaves a deleted label out of the list rather than
-// failing it is unverified.
+// none. That Linear answers an archived label, and leaves a deleted label
+// out of the list rather than failing it, is unverified; only a trashed
+// issue is measured still answered in a history entry.
 func historyLabels(f func(h *LinearHistory) []string) func(historyObj) any {
 	return func(o historyObj) any {
 		ids := f(o.h)

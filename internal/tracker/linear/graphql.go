@@ -292,9 +292,9 @@ func invalid(call, format string, args ...any) error {
 
 // transportError types a failed call. An error answer carrying GraphQL
 // errors becomes an *Error wrapping the transport's error. Its body was
-// scrubbed as text, which decoding can undo (a JSON escape inside the
-// key), so what is decoded from it is scrubbed again by failure, with
-// the error's own Scrub.
+// scrubbed as Response.Body is, so decoding it finds no credential;
+// failure, the one path for every failed answer, still passes the text it
+// builds through the error's own Scrub.
 func (c *Client) transportError(op operation, err error) error {
 	statusErr, ok := errors.AsType[*trackerapi.StatusError](err)
 	if !ok {
