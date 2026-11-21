@@ -356,14 +356,28 @@ function arrangements(frames: SidebarFrame[]): string[] {
 // before drew it: a slide, or a shift from above. A row entering scales
 // from .98, which moves its top by a fraction of a pixel.
 function movedFrames(frames: SidebarFrame[]): number {
-  let moved = 0;
+  const { slid, shifted } = movement(frames);
+  return slid + shifted;
+}
+
+// The moved frames by kind. `shifted`: every row moved by the same distance,
+// which is the whole list pushed by something entering or leaving above it,
+// such as the catalog status row. `slid`: rows moved by different distances,
+// which is rows changing places.
+function movement(frames: SidebarFrame[]): { slid: number; shifted: number } {
+  let slid = 0;
+  let shifted = 0;
   let previous = new Map<string, number>();
   for (const { order, tops } of frames) {
     const current = new Map(order === '' ? [] : order.split(' ').map((id, i) => [id, tops[i]] as const));
-    if ([...current].some(([id, top]) => previous.has(id) && Math.abs(top - previous.get(id)!) > 1)) moved++;
+    const deltas = [...current].filter(([id]) => previous.has(id)).map(([id, top]) => top - previous.get(id)!);
+    if (deltas.some((delta) => Math.abs(delta) > 1)) {
+      if (deltas.every((delta) => Math.abs(delta - deltas[0]) <= 1)) shifted++;
+      else slid++;
+    }
     previous = current;
   }
-  return moved;
+  return { slid, shifted };
 }
 
 // Whichever of the two catalogs answers last, a project's thread rows and
@@ -599,7 +613,9 @@ test('a refresh whose thread read fails keeps the rows still beside the failure,
   await nextFrames(page, 2);
   const held = (await sidebarRecord(page)).frames.slice(listedAt);
   expect(arrangements(held)).toEqual(initial);
-  expect(movedFrames(held)).toBe(0);
+  // The failure row enters above the list and pushes every row down by its
+  // height, in one frame; no row changes place.
+  expect(movement(held)).toEqual({ slid: 0, shifted: 1 });
   await expect(page.locator(`[data-sidebar-group-id="${group.id}"]`)).toHaveCount(0);
 
   losing = false;
