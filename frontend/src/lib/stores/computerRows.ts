@@ -4,28 +4,32 @@ import { beginCatalogRead, type CatalogRead } from './computerCatalogReads';
 // independently and retain only that computer's cached rows on failure.
 import { attachedBackends, withBackendTarget, type BackendEntry } from '../transport/backends';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
-import { getReplicaCatalog, putReplicaCatalog, replicaCatalogStamp } from '../replica/session';
-import type { CatalogKind, CatalogRows } from '../replica/catalog';
+import { adoptReplicaCatalogStamp, getReplicaCatalog, replicaCatalogStamp } from '../replica/session';
+import type { CatalogKind, CatalogRows, KeptCatalog, KeptProvenance } from '../replica/catalog';
 import { getBackendIdentity, type BackendIdentity } from '../transport/backendIdentity';
 import { readBeforeDeadline, ReadDeadlineError } from '../utils/readBeforeDeadline';
-import { untrack } from 'svelte';
-import { beginCatalogAttempt, catalogAnswerHeld, settleCatalogRead } from './catalogLoad.svelte';
+import { beginCatalogAttempt, catalogProvenance, settleCatalogRead, type CatalogProvenance } from './catalogLoad.svelte';
 
 export interface ComputerCatalog<T> {
-  read(backend: BackendKey): Promise<T[] | null>;
-  write(backend: BackendKey, rows: T[]): Promise<void>;
-  /**
-   * Whether the store holds this computer's rows for the catalog: rows of it
-   * are there, or it answered in this session, an empty list included.
-   */
-  holdsRows(backend: BackendKey): boolean;
+  /** Where the rows the store holds of `backend` came from (./catalogLoad.svelte.ts). */
+  provenance(backend: BackendKey): CatalogProvenance;
+  /** The rows the replica keeps of `backend`, with the provenance their record holds. */
+  read(backend: BackendKey): Promise<KeptCatalog<T> | null>;
+  /** Write the rows the store holds of `backend` through the store's catalog writer, the replica record's one writer. */
+  persist(backend: BackendKey): void;
   begin(backend: BackendKey): CatalogRead<T>;
   /**
-   * One computer's current read failed with `error`; `cached` when its
-   * kept or replica rows stand in for the answer. An answer, on time or
-   * late, is settled by the read's commit (settleCatalogAnswers).
+   * One computer's answer committed: it is written under the stamp its read
+   * began with, unless an invalidation replaced that stamp since.
    */
-  settle(backend: BackendKey, error: unknown, cached: boolean): void;
+  answered(backend: BackendKey): void;
+  /**
+   * One computer's current read failed with `error`; `kept` is the
+   * provenance of the replica rows that stand in for the answer, or null.
+   * An answer, on time or late, is settled by the read's commit
+   * (settleCatalogAnswers).
+   */
+  settle(backend: BackendKey, error: unknown, kept: KeptProvenance | null): void;
 }
 
 // The startup read budget: past it, a computer's answer commits late and
@@ -53,13 +57,11 @@ export interface ComputerRowsOptions<T> {
 }
 
 export function computerCatalog<K extends CatalogKind>(
-  kind: K, previous: () => readonly CatalogRows[K][], owner: (row: CatalogRows[K]) => BackendKey | undefined,
+  kind: K, persist: (backend: BackendKey) => void,
 ): ComputerCatalog<CatalogRows[K]> {
-  // Reading the fallback must never subscribe a mount loader to its own
-  // result. Accept a getter so callers cannot accidentally read it first.
-  const populated = untrack(() => new Set(previous().map((row) => owner(row) ?? HOME_BACKEND)));
   const stamps = new Map<BackendKey, string | null>();
   return {
+    provenance: (backend) => catalogProvenance(backend, kind),
     begin(backend) {
       // The stamp fences only the replica write: a structural invalidation
       // since the read began keeps this answer out of IndexedDB. The answer
@@ -71,9 +73,12 @@ export function computerCatalog<K extends CatalogKind>(
       return beginCatalogRead<CatalogRows[K]>(backend, kind, beginCatalogAttempt(kind, backend));
     },
     read: (backend) => getReplicaCatalog(backend, kind),
-    write: (backend, rows) => putReplicaCatalog(backend, kind, rows, stamps.get(backend) ?? null),
-    holdsRows: (backend) => populated.has(backend) || catalogAnswerHeld(backend, kind),
-    settle: (backend, error, cached) => settleCatalogRead(kind, backend, { answered: false, error, cached }),
+    persist,
+    answered(backend) {
+      adoptReplicaCatalogStamp(backend, kind, stamps.get(backend) ?? null);
+      persist(backend);
+    },
+    settle: (backend, error, kept) => settleCatalogRead(kind, backend, { answered: false, error, kept }),
   };
 }
 
@@ -106,7 +111,10 @@ export interface ShareResult<T> {
   identity: BackendIdentity;
   /** Past the deadline: its late answer or late failure ends the journal. */
   late: boolean;
+  /** Whether rows stand in for a failed read: the store's, or the replica's in `rows`. */
   cached: boolean;
+  /** The provenance of the replica rows in `rows`, or null when none were read. */
+  kept: KeptProvenance | null;
 }
 
 /** Where a share past its deadline delivers its late answer or late failure. */
@@ -154,7 +162,7 @@ export async function readShare<T>(
   const { target } = share;
   const startIdentity = getBackendIdentity(target.id);
   const lateResult = (fields: Pick<ShareResult<T>, 'rows' | 'answered' | 'error'>): ShareResult<T> => (
-    { share, ...fields, identity: getBackendIdentity(target.id), late: false, cached: false });
+    { share, ...fields, identity: getBackendIdentity(target.id), late: false, cached: false, kept: null });
   let error: unknown;
   try {
     // Every saved computer gets its first dial, independently and under
@@ -175,7 +183,7 @@ export async function readShare<T>(
     )) ?? [];
     const identity = getBackendIdentity(target.id);
     if (startIdentity.backendId && !sameIdentity(startIdentity, identity)) throw new Error('Computer history changed during the read.');
-    return { share, rows, answered: true, error: undefined, identity, late: false, cached: false };
+    return { share, rows, answered: true, error: undefined, identity, late: false, cached: false, kept: null };
   } catch (reason) {
     error = reason;
   }
@@ -183,9 +191,14 @@ export async function readShare<T>(
   // failure ends it, not this call.
   const isLate = error instanceof ReadDeadlineError;
   const identity = getBackendIdentity(target.id);
-  const previous = part.catalog?.holdsRows(target.id) ?? false;
-  const rows = part.catalog && !previous ? await part.catalog.read(target.id) : null;
-  return { share, rows: rows ?? [], answered: false, error, identity, late: isLate, cached: previous || rows !== null };
+  // Rows of a known source in the store stand in as they are; with none,
+  // the replica's kept rows do, with the provenance their record holds.
+  const held = part.catalog !== undefined && part.catalog.provenance(target.id).kind !== 'none';
+  const kept = part.catalog && !held ? await part.catalog.read(target.id) : null;
+  return {
+    share, rows: kept?.rows ?? [], answered: false, error, identity, late: isLate,
+    cached: held || kept !== null, kept: kept?.provenance ?? null,
+  };
 }
 
 /**
@@ -229,12 +242,12 @@ function commitCurrent<T>(part: CatalogPart<T>, current: readonly ShareResult<T>
     // A failure settles here. An answer settles in `commit` with its rows
     // (settleCatalogAnswers), so no render sees a catalog marked loaded
     // before its rows land.
-    if (!result.answered) catalog?.settle(backend, result.error, result.cached);
+    if (!result.answered) catalog?.settle(backend, result.error, result.kept);
     error ??= result.error;
     hasCache ||= result.cached;
     if (result.answered) {
       answered.add(backend);
-      if (catalog) void catalog.write(backend, result.rows);
+      catalog?.answered(backend);
     }
     for (const row of result.rows) note(row, backend);
   }

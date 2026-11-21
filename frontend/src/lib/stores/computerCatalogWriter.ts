@@ -9,12 +9,21 @@ import { recordCatalogMutation, type CatalogMutation } from './computerCatalogRe
 // after a quiet spell is written at once, and changes during the spacing are
 // written together when it ends. A page going hidden writes what is waiting,
 // so a window that closes does not leave the offline snapshot behind.
+//
+// Every write records the catalog's provenance as it is when the write
+// starts (./catalogLoad.svelte.ts). A catalog of no known source, or one
+// that still holds exactly the unrecorded record it was read from, has
+// nothing to record, so it is not written. The first write of a new tree
+// does not wait out the spacing: the three catalogs of a tree are written
+// as soon as each computer's running write ends, so records of two trees sit
+// side by side only for as long as a write takes.
 import { untrack } from 'svelte';
 import { backendById } from '../transport/backends';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { putReplicaCatalog, replicaToken } from '../replica/session';
 import { observedCatalogStamp } from '../replica/catalogStamp';
 import type { CatalogKind, CatalogRowCache, CatalogRows } from '../replica/catalog';
+import { catalogProvenance, noteCatalogChange } from './catalogLoad.svelte';
 
 export const CATALOG_WRITE_SPACING_MS = 2000;
 
@@ -43,6 +52,8 @@ export function computerCatalogWriter<K extends CatalogKind>(
   const running = new Set<BackendKey>();
   // Computers whose last write started less than the spacing ago.
   const spacing = new Map<BackendKey, ReturnType<typeof setTimeout>>();
+  // The tree each computer's last write recorded.
+  const writtenTree = new Map<BackendKey, string>();
   let queued = false;
   let epoch = 0;
 
@@ -55,16 +66,22 @@ export function computerCatalogWriter<K extends CatalogKind>(
       queued = false;
       const snapshot = untrack(rows);
       for (const [backend, token] of pending) {
-        if (running.has(backend) || spacing.has(backend)) continue;
+        const provenance = catalogProvenance(backend, kind);
+        const newTree = provenance.kind === 'tree' && writtenTree.get(backend) !== provenance.tree;
+        if (running.has(backend) || (spacing.has(backend) && !newTree)) continue;
         pending.delete(backend);
         if (!backendById(backend) || replicaToken(backend) !== token) continue;
+        if (provenance.kind === 'none' || provenance.kind === 'unrecorded') continue;
+        if (provenance.kind === 'tree') writtenTree.set(backend, provenance.tree);
+        else writtenTree.delete(backend);
         running.add(backend);
+        clearTimeout(spacing.get(backend));
         spacing.set(backend, setTimeout(() => {
           spacing.delete(backend);
           if (pending.has(backend)) schedule();
         }, CATALOG_WRITE_SPACING_MS));
         const selected = snapshot.filter((row) => (owner(row) ?? HOME_BACKEND) === backend);
-        void putReplicaCatalog(backend, kind, selected, observedCatalogStamp(backend, kind), token, ...encoded).finally(() => {
+        void putReplicaCatalog(backend, kind, selected, provenance, observedCatalogStamp(backend, kind), token, ...encoded).finally(() => {
           if (version !== epoch) return;
           running.delete(backend);
           if (pending.has(backend)) schedule();
@@ -88,6 +105,11 @@ export function computerCatalogWriter<K extends CatalogKind>(
     schedule();
   }
 
+  function changed(backend: BackendKey): void {
+    noteCatalogChange(kind, backend);
+    persist(backend);
+  }
+
   return {
     /**
      * Apply a local mutation to the rows of `backends`: commit it, record it
@@ -102,13 +124,18 @@ export function computerCatalogWriter<K extends CatalogKind>(
       const targets = typeof backends === 'string' || backends === undefined ? [backends] : backends;
       for (const backend of new Set(Array.from(targets, (entry) => entry ?? HOME_BACKEND))) {
         recordCatalogMutation(backend, kind, mutation);
-        persist(backend);
+        changed(backend);
       }
     },
+    /**
+     * Persist `backend`'s rows after a change the store's rows already show,
+     * such as a row whose owner moved away: the provenance notes the change.
+     */
+    changed,
     /** Persist rows a read committed. Nothing is recorded: they are an answer, not a change. */
     persist,
     reset(): void {
-      ++epoch; queued = false; pending.clear(); running.clear();
+      ++epoch; queued = false; pending.clear(); running.clear(); writtenTree.clear();
       endSpacing();
     },
   };

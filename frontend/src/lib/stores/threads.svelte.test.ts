@@ -126,9 +126,9 @@ describe('threads store', () => {
       observeCatalogStamp(HOME_BACKEND, 'threads', 'stamp');
       setBindingMock('ListThreads', async () => [makeThread('t1')]);
       await loadSidebarCatalogs();
-      // The read writes its answer as it came; the store's writer follows
-      // with the rows it holds, and that is the write with the cache.
-      const cached = () => write.mock.calls.filter((call) => call[1] === 'threads' && call[5] instanceof WeakMap);
+      // The read's answer is written by the store's writer, with the rows it
+      // holds and the cache.
+      const cached = () => write.mock.calls.filter((call) => call[1] === 'threads' && call[6] instanceof WeakMap);
       // An earlier test's write may still hold the spacing.
       await vi.waitFor(() => expect(cached().length).toBeGreaterThan(0), { timeout: 4000 });
       expect(cached()[0][2]).toEqual([makeThread('t1')]);

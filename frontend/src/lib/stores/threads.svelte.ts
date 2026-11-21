@@ -106,7 +106,7 @@ function oneCurrentThreadPerAssistant(before: readonly Thread[], rows: readonly 
 // (currentThreadRow) drops the moved row from its answer.
 onThreadOwnershipChanged((_id, previousBackend) => {
   invalidateReplicaCatalog(previousBackend, 'threads');
-  catalogWriter.persist(previousBackend);
+  catalogWriter.changed(previousBackend);
 });
 
 // Live-activity bumps arrive on every streaming flush (tens per second
@@ -164,7 +164,7 @@ export function threadCatalogPart(): CatalogPart<Thread> {
     read: listThreadRows,
     note: noteThreadRow,
     commit: commitThreadRows,
-    catalog: computerCatalog('threads', () => threads, threadRowOwner),
+    catalog: computerCatalog('threads', catalogWriter.persist),
     admit: currentThreadRow,
   };
 }

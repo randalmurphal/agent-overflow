@@ -381,7 +381,7 @@ function noteProjectRow(row: ProjectWithCounts, backend: BackendKey): void {
 }
 
 function projectCatalog() {
-  return computerCatalog('projects', () => projects, (row) => projectBackend(row.project.id));
+  return computerCatalog('projects', catalogWriter.persist);
 }
 
 function commitProjectRows(result: ComputerRows<ProjectWithCounts>): void {

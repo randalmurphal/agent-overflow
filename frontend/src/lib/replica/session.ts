@@ -46,7 +46,10 @@ import { noteThread, threadBackend } from '../transport/entityIndex';
 import { attachedBackends } from '../transport/backends';
 import { rememberedIdentity, forgetRememberedIdentity } from '../transport/rememberedIdentity';
 import { currentCatalogStamp, invalidateCatalogStamp, observeCatalogStamp, resetCatalogStampsForTest } from './catalogStamp';
-import { catalogKey, makeCatalogRecord, readCatalogRecord, type CatalogKind, type CatalogRowCache, type CatalogRows } from './catalog';
+import {
+  catalogKey, makeCatalogRecord, readCatalogRecord,
+  type CatalogKind, type CatalogRowCache, type CatalogRows, type KeptCatalog, type RecordedProvenance,
+} from './catalog';
 import {
   UNKNOWN_BACKEND_IDENTITY,
   onBackendIdentity,
@@ -695,6 +698,17 @@ export function replicaCatalogStamp(backend: BackendKey, kind: CatalogKind): str
   catch (error) { noteFailure('read catalog stamp', error); return null; }
 }
 
+/**
+ * A read of `backend`'s `kind` that began under `stamp` committed its rows:
+ * this window writes that catalog under `stamp` from now on, unless an
+ * invalidation replaced it since, which leaves the stamp this window holds.
+ */
+export function adoptReplicaCatalogStamp(backend: BackendKey, kind: CatalogKind, stamp: string | null): void {
+  if (!stamp) return;
+  try { if (currentCatalogStamp(backend, kind) === stamp) observeCatalogStamp(backend, kind, stamp); }
+  catch (error) { noteFailure('read catalog stamp', error); }
+}
+
 /** Synchronous fence before an asynchronous metadata rewrite. */
 export function invalidateReplicaCatalog(backend: BackendKey, kind: CatalogKind): void {
   try { invalidateCatalogStamp(backend, kind); }
@@ -702,7 +716,7 @@ export function invalidateReplicaCatalog(backend: BackendKey, kind: CatalogKind)
 }
 
 /** Sidebar caches use exactly the same connection and cancellation token as history. */
-export async function getReplicaCatalog<K extends CatalogKind>(backend: BackendKey, kind: K): Promise<CatalogRows[K][] | null> {
+export async function getReplicaCatalog<K extends CatalogKind>(backend: BackendKey, kind: K): Promise<KeptCatalog<CatalogRows[K]> | null> {
   const token = replicaToken(backend);
   const stamp = replicaCatalogStamp(backend, kind);
   if (!stamp) return null;
@@ -713,21 +727,24 @@ export async function getReplicaCatalog<K extends CatalogKind>(backend: BackendK
     const session = sessionOf(token);
     if (!session) return null;
     if (currentCatalogStamp(backend, kind) !== stamp) return null;
-    const rows = readCatalogRecord(raw, session.identity.generation, kind, stamp);
-    if (rows) observeCatalogStamp(backend, kind, stamp);
+    const kept = readCatalogRecord(raw, session.identity.generation, kind, stamp);
+    if (kept) observeCatalogStamp(backend, kind, stamp);
     noteSuccess();
-    return rows;
+    return kept;
   } catch (error) { noteFailure('read catalog', error); return null; }
 }
 
-export async function putReplicaCatalog<K extends CatalogKind>(backend: BackendKey, kind: K, rows: readonly CatalogRows[K][], stamp: string | null, token = replicaToken(backend), cache?: CatalogRowCache): Promise<void> {
+export async function putReplicaCatalog<K extends CatalogKind>(
+  backend: BackendKey, kind: K, rows: readonly CatalogRows[K][], provenance: RecordedProvenance, stamp: string | null,
+  token = replicaToken(backend), cache?: CatalogRowCache,
+): Promise<void> {
   if (!stamp) return;
   try {
     const db = await activeDb(token);
     const session = sessionOf(token);
     if (!db || !session || session.offline || currentCatalogStamp(backend, kind) !== stamp) return;
     observeCatalogStamp(backend, kind, stamp);
-    const record = makeCatalogRecord(session.identity.generation, kind, rows, stamp, cache);
+    const record = makeCatalogRecord(session.identity.generation, kind, rows, stamp, provenance, cache);
     await writeRecord(db, META_STORE, catalogKey(kind), record);
     noteSuccess();
   } catch (error) { noteFailure('write catalog', error); }

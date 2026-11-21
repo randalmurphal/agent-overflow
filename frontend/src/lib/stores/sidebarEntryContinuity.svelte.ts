@@ -24,8 +24,17 @@
 //     which would otherwise come back when that member splits off again;
 //   - a row that splits off takes a copy of the record it split from, so
 //     whichever half is on screen keeps the fold;
-//   - a row whose members are all gone (deleted, detached) keeps its record.
+//   - a row whose members are all gone (deleted, detached, or on a computer
+//     not listed yet) keeps its record, and is remembered until they list;
+//   - a key whose row moved away or lost a merge is cleared, and a new row
+//     that now wears that key reads no record: a checkout promoted to its
+//     computer's chosen one does not inherit the fold of the one it replaced.
 //
+// What is remembered survives a restart for the keys that have a record:
+// the member ids of each such key are persisted beside the records, written
+// when they change and removed with the record, and the first decision of the
+// next boot starts from them. So a key that moved while the client was closed
+// takes its record the first time its members list, however late that is.
 // The derivation reads a record where it lives now (`recordKey`): under the
 // entry's key once committed, under the key of the row it continues until
 // then. So nothing computes a wrong fold while a change waits. The change is
@@ -49,11 +58,15 @@ import { projectBackend } from '../transport/entityIndex';
 import { entryIdFor, getProjects, projectEntryKey } from './projects.svelte';
 import { catalogTreeListed } from './sidebarCatalogs';
 import { keySetRecord, listLimitRecord, type RecordKeyChanges } from './sidebar.svelte';
+import { appStorageDelete, appStorageGet, appStorageSet } from './appStorage';
+import { THREAD_PREVIEW_LIMIT } from '../utils/sidebarThreadLimits';
 
 // An entry's fold, inverted: the keys of the entries the user collapsed.
 const collapsed = keySetRecord('sidebar:collapsedProjectEntries');
 // How many rows an entry's own list shows, by entry key.
 const listLimits = listLimitRecord('sidebar:projectEntryListLimits');
+// The member ids of each key that has a record, as last remembered.
+const MEMBERS_RECORD = 'sidebar:projectEntryMembers';
 
 /** One entry of the sidebar's listed rows, the device filter ignored. */
 export interface SidebarEntryGroup {
@@ -65,9 +78,11 @@ export interface SidebarEntryGroup {
   readonly members: readonly ProjectWithCounts[];
   /**
    * Where the entry's disclosure record lives now: `key`, or until a change
-   * is committed, the key of the row whose record it takes.
+   * is committed, the key of the row whose record it takes, or null when the
+   * record under its key belongs to a row that moved away and is being
+   * cleared.
    */
-  readonly recordKey: string;
+  readonly recordKey: string | null;
 }
 
 /** A row as remembered for the next decision. */
@@ -91,8 +106,64 @@ interface ListedGroup {
   readonly members: readonly ProjectWithCounts[];
 }
 
+function hasRecord(key: string): boolean {
+  return collapsed.has(key) || listLimits.has(key);
+}
+
+function readMembers(): Map<string, readonly string[]> {
+  const members = new Map<string, readonly string[]>();
+  const raw = appStorageGet(MEMBERS_RECORD);
+  if (raw === null) return members;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return members;
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return members;
+  for (const [key, ids] of Object.entries(parsed)) {
+    if (!Array.isArray(ids)) continue;
+    const valid = ids.filter((id): id is string => typeof id === 'string');
+    if (valid.length > 0) members.set(key, valid);
+  }
+  return members;
+}
+
+// One spelling per value, so a write happens only when the members changed.
+function encodeMembers(members: ReadonlyMap<string, Iterable<string>>): string {
+  const entries = [...members].map(([key, ids]) => [key, [...new Set(ids)].sort()] as const);
+  entries.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return entries.length === 0 ? '' : JSON.stringify(Object.fromEntries(entries));
+}
+
+// The rows the last boot remembered for the keys that still have a record.
+function seededRows(): RememberedRow[] {
+  return [...readMembers()].filter(([key]) => hasRecord(key))
+    .map(([key, ids]) => ({ rowKey: key, key, memberIds: new Set(ids) }));
+}
+
 // Written only by `commit`.
-let remembered: readonly RememberedRow[] = $state.raw([]);
+let remembered: readonly RememberedRow[] = $state.raw(seededRows());
+// The members record as stored, encoded; '' when there is none.
+let storedMembers = encodeMembers(readMembers());
+
+// Write the member ids of every remembered key that has a record, when they
+// differ from what is stored. Called after every change to the rows or the
+// records.
+function persistMembers(): void {
+  const members = new Map<string, Set<string>>();
+  for (const row of remembered) {
+    if (!hasRecord(row.key)) continue;
+    const ids = members.get(row.key);
+    if (ids === undefined) members.set(row.key, new Set(row.memberIds));
+    else for (const id of row.memberIds) ids.add(id);
+  }
+  const encoded = encodeMembers(members);
+  if (encoded === storedMembers) return;
+  storedMembers = encoded;
+  if (encoded === '') appStorageDelete(MEMBERS_RECORD);
+  else appStorageSet(MEMBERS_RECORD, encoded);
+}
 
 function listedGroups(): ListedGroup[] {
   const listed = new Map<BackendKey, boolean>();
@@ -130,13 +201,31 @@ function decide(previous: readonly RememberedRow[], listed: readonly ListedGroup
   listed.forEach((_, index) => claim(index, true));
   listed.forEach((_, index) => { if (continued[index] === undefined) claim(index, false); });
 
+  const present = new Set(listed.flatMap((group) => group.members.map((member) => member.project.id)));
+  const continuedRows = new Set<RememberedRow>();
+  // Keys whose record stays: an entry under that key continues the row that held it.
+  const kept = new Set<string>();
+  listed.forEach((group, index) => {
+    const row = continued[index];
+    if (row === undefined) return;
+    continuedRows.add(row);
+    if (row.key === group.key) kept.add(group.key);
+  });
+  // A row whose listed members are now under another key moved there, merged
+  // or split: it gives its record away or loses it. One whose members are
+  // all unlisted keeps it.
+  const vacated = new Set<string>();
+  for (const row of previous) {
+    if (!kept.has(row.key) && [...row.memberIds].some((id) => present.has(id))) vacated.add(row.key);
+  }
+
   const taken = new Set<string>();
   for (const row of continued) if (row !== undefined) taken.add(row.rowKey);
   const rowOf = new Map<string, string>();
   const groups = listed.map((group, index): SidebarEntryGroup => {
     const row = continued[index];
     let rowKey: string;
-    let recordKey: string;
+    let recordKey: string | null;
     if (row !== undefined) {
       rowKey = row.rowKey;
       recordKey = row.key;
@@ -145,13 +234,17 @@ function decide(previous: readonly RememberedRow[], listed: readonly ListedGroup
       // Every row a member of this group was in went to another group, so
       // this one split off: it starts with the record it split from.
       const source = group.members.map((member) => rowOfMember.get(member.project.id)).find((found) => found !== undefined);
-      recordKey = source?.key ?? group.key;
+      recordKey = source?.key ?? (vacated.has(group.key) ? null : group.key);
     }
     for (const member of group.members) rowOf.set(member.project.id, rowKey);
     return { key: group.key, rowKey, members: group.members, recordKey };
   });
 
-  return { groups, rowOf, rows: rememberedRows(previous, groups, continued), changes: changesOf(previous, groups) };
+  return {
+    groups, rowOf,
+    rows: rememberedRows(previous, groups, continued, present, continuedRows),
+    changes: changesOf(groups, vacated),
+  };
 }
 
 function freshRowKey(group: ListedGroup, taken: Set<string>): string {
@@ -163,37 +256,39 @@ function freshRowKey(group: ListedGroup, taken: Set<string>): string {
   return rowKey;
 }
 
-function changesOf(previous: readonly RememberedRow[], groups: readonly SidebarEntryGroup[]): RecordKeyChanges | null {
+function changesOf(groups: readonly SidebarEntryGroup[], clears: ReadonlySet<string>): RecordKeyChanges | null {
   const copies = new Map<string, string>();
-  for (const group of groups) if (group.recordKey !== group.key) copies.set(group.key, group.recordKey);
-  const keys = new Set(groups.map((group) => group.key));
-  const present = new Set(groups.flatMap((group) => group.members.map((member) => member.project.id)));
-  const clears = new Set<string>();
-  for (const row of previous) {
-    if (keys.has(row.key)) continue;
-    // A row whose members went into other entries: its record moved, was
-    // copied or lost a merge. One whose members are all gone keeps it.
-    if ([...row.memberIds].some((id) => present.has(id))) clears.add(row.key);
-  }
+  for (const group of groups) if (group.recordKey !== null && group.recordKey !== group.key) copies.set(group.key, group.recordKey);
   return copies.size === 0 && clears.size === 0 ? null : { copies, clears };
 }
 
+// Every listed entry, with the unlisted members of the row it continues, and
+// every earlier row none of whose members is listed: a member on a computer
+// that lists later finds its row again.
 function rememberedRows(
   previous: readonly RememberedRow[],
   groups: readonly SidebarEntryGroup[],
   continued: readonly (RememberedRow | undefined)[],
+  present: ReadonlySet<string>,
+  continuedRows: ReadonlySet<RememberedRow>,
 ): readonly RememberedRow[] {
-  const unchanged = groups.length === previous.length && groups.every((group, index) => {
-    const row = continued[index];
-    return row !== undefined && row.key === group.key && row.memberIds.size === group.members.length
-      && group.members.every((member) => row.memberIds.has(member.project.id));
+  const next: RememberedRow[] = groups.map((group, index) => {
+    const memberIds = new Set(group.members.map((member) => member.project.id));
+    for (const id of continued[index]?.memberIds ?? []) if (!present.has(id)) memberIds.add(id);
+    return { rowKey: group.rowKey, key: group.key, memberIds };
   });
-  if (unchanged) return previous;
-  return groups.map((group) => ({
-    rowKey: group.rowKey,
-    key: group.key,
-    memberIds: new Set(group.members.map((member) => member.project.id)),
-  }));
+  for (const row of previous) {
+    if (!continuedRows.has(row) && ![...row.memberIds].some((id) => present.has(id))) next.push(row);
+  }
+  return sameRows(previous, next) ? previous : next;
+}
+
+function sameRows(a: readonly RememberedRow[], b: readonly RememberedRow[]): boolean {
+  return a.length === b.length && a.every((row, index) => {
+    const other = b[index]!;
+    return row.rowKey === other.rowKey && row.key === other.key && row.memberIds.size === other.memberIds.size
+      && [...row.memberIds].every((id) => other.memberIds.has(id));
+  });
 }
 
 // Reads the project rows and the listing, never disclosure and never live
@@ -212,12 +307,12 @@ export function sidebarEntryRowOf(projectId: string): string {
 
 /** Whether an entry is unfolded, read where its record lives now. */
 export function entryExpanded(group: SidebarEntryGroup): boolean {
-  return !collapsed.has(group.recordKey);
+  return group.recordKey === null || !collapsed.has(group.recordKey);
 }
 
 /** How many rows an entry's own list shows, read where its record lives now. */
 export function entryListLimit(group: SidebarEntryGroup): number {
-  return listLimits.limitOf(group.recordKey);
+  return group.recordKey === null ? THREAD_PREVIEW_LIMIT : listLimits.limitOf(group.recordKey);
 }
 
 // Commit the decision: the record changes it implies, and the rows it
@@ -231,6 +326,7 @@ function commit(): void {
       listLimits.apply(next.changes);
     }
     if (next.rows !== remembered) remembered = next.rows;
+    persistMembers();
   });
 }
 
@@ -238,18 +334,21 @@ function commit(): void {
 export function setEntryExpanded(key: string, expanded: boolean): void {
   commit();
   collapsed.set(key, !expanded);
+  persistMembers();
 }
 
 /** Show `limit` rows of the entry's own list. */
 export function setEntryListLimit(key: string, limit: number): void {
   commit();
   listLimits.setLimit(key, limit);
+  persistMembers();
 }
 
 /** Put the entry's own list back to its preview size. */
 export function resetEntryListLimit(key: string): void {
   commit();
   listLimits.clear(key);
+  persistMembers();
 }
 
 /**
@@ -259,6 +358,7 @@ export function resetEntryListLimit(key: string): void {
 export function revealProject(projectId: string): void {
   commit();
   collapsed.set(untrack(() => projectEntryKey(projectId)), false);
+  persistMembers();
 }
 
 let stopEffect: (() => void) | null = null;
@@ -285,6 +385,8 @@ export function stopSidebarEntryContinuity(): void {
 /**
  * Re-read the records after hydration lands the durable per-client bucket,
  * beside the rest of the sidebar's view state (syncSidebarFromAppStorage).
+ * The members record needs no reload: no client writes the server bucket
+ * hydration reads (GetUIState has no setter), so it never holds one.
  */
 export function syncSidebarEntryDisclosureFromAppStorage(): void {
   collapsed.reload();
@@ -300,6 +402,7 @@ export function entryRecordForTest(key: string): { expanded: boolean; listLimit:
 export function resetSidebarEntryContinuityForTest(): void {
   stopSidebarEntryContinuity();
   remembered = [];
+  storedMembers = '';
   collapsed.resetForTest();
   listLimits.resetForTest();
 }

@@ -32,12 +32,19 @@
 //     complete tree, an unlisted one its loading or error row, and only a
 //     complete set replaces them. An unlisted computer's thread answer
 //     still reaches the thread store, for its open panes.
+//   - A round whose read of a computer answered all three catalogs marks
+//     them one tree (markCatalogTree, ./catalogLoad.svelte.ts) and writes
+//     the three again with that tree's id, so a set answered together is
+//     what is kept, in memory and in the replica.
 //   - A computer lists the first time one read of it is a complete tree
-//     (treeCompleteness): all three catalogs answered in that round, or all
-//     three failed with rows of that computer standing in, which is a
-//     computer offline with what it had. The rows standing in are three
-//     separately kept catalogs, so such a tree may mix ages; the first
-//     complete answer replaces it.
+//     (treeCompleteness): all three catalogs answered in that round, or
+//     every read done with rows standing in that are one kept tree
+//     (catalogTreeKept): the last set answered together plus the changes
+//     pushed since, or three records an older build wrote, which record no
+//     provenance (`unrecorded`) and list together as that build listed
+//     them. Rows answered apart, rows of a partial round and pushed changes
+//     never make one; the computer then shows its error row until a round
+//     answers all three.
 //   - Answers that commit at a window's end commit in one batch per
 //     catalog, projects first so every row's owner is known before the
 //     thread rows that fall back to it commit, so a refresh reconciles each
@@ -67,7 +74,7 @@ import { attachedBackends, onBackendDetached, type BackendEntry } from '../trans
 import type { BackendKey } from '../transport/backendKey';
 import { ReadDeadlineError } from '../utils/readBeforeDeadline';
 import type { ProjectWithCounts, Thread, ThreadGroup } from '../types/models';
-import { catalogFailureShown, registerCatalogReader } from './catalogLoad.svelte';
+import { catalogFailureShown, catalogTreeKept, markCatalogTree, registerCatalogReader } from './catalogLoad.svelte';
 import {
   beginShare, commitShares, COMPUTER_READ_DEADLINE_MS, readShare,
   type CatalogPart, type ComputerShare, type ShareResult,
@@ -357,7 +364,7 @@ function commitReads(list: readonly ComputerRead[]): void {
   ]);
   for (const read of concluded) {
     if (read.threads.state === 'answered' && read.threads.ready) noteHeldOwners(read, read.threads.result!);
-    updateListing(read);
+    settleTree(read);
     concludeIfDone(read);
   }
 }
@@ -424,36 +431,34 @@ function finishRound(round: Round): void {
   }
 }
 
-// What one catalog of a computer's read brings to its tree: an answer of
-// this round, the rows it already had standing in for a failure, or neither.
-type PartCompleteness = 'answered' | 'standingIn' | 'missing';
-
-function partCompleteness(part: PartStatus): PartCompleteness {
-  if (part.outcome.answered) return 'answered';
-  return part.outcome.cached ? 'standingIn' : 'missing';
-}
-
-// The two complete trees a computer can list first: all three catalogs
-// answered in this round, or all three failed with rows standing in (a
-// computer that is offline with what it had). Anything else, one live
-// answer beside a failure included, is a failing attempt.
-type TreeCompleteness = 'allAnswered' | 'allStandingIn';
+// The two complete trees a computer's read can bring: all three catalogs
+// answered in this round, or rows standing in that are one kept tree (a
+// computer offline with what it had). Anything else, one live answer beside
+// kept rows included, is a failing attempt. Every answer this round
+// committed made its catalog partial, so a kept tree is one this round
+// answered none of.
+type TreeCompleteness = 'answered' | 'kept';
 
 function treeCompleteness(read: ComputerRead): TreeCompleteness | null {
   const parts = partsOf(read);
   if (!parts.every((part) => part.state === 'done')) return null;
-  const kinds = parts.map(partCompleteness);
-  if (kinds.every((kind) => kind === 'answered')) return 'allAnswered';
-  if (kinds.every((kind) => kind === 'standingIn')) return 'allStandingIn';
-  return null;
+  if (parts.every((part) => part.outcome.answered)) return 'answered';
+  return catalogTreeKept(read.backend) ? 'kept' : null;
 }
 
-// The listing's one writer: a computer lists the first time its read is a
-// complete tree, and stays listed until it detaches.
-function updateListing(read: ComputerRead): void {
-  if (untrack(() => listed.get(read.backend))) return;
-  if (treeCompleteness(read) === null) return;
-  listed.set(read.backend, true);
+// Once every part of a read is done: a set answered together becomes the
+// kept tree, and the listing's one writer lists the computer the first time
+// its read is a complete tree; it stays listed until it detaches.
+function settleTree(read: ComputerRead): void {
+  const complete = treeCompleteness(read);
+  if (complete === null) return;
+  if (complete === 'answered') {
+    markCatalogTree(read.backend);
+    read.projects.part.catalog?.persist(read.backend);
+    read.threads.part.catalog?.persist(read.backend);
+    read.groups.part.catalog?.persist(read.backend);
+  }
+  if (!untrack(() => listed.get(read.backend))) listed.set(read.backend, true);
 }
 
 /** The thread rows a caller validating saved panes, `round`'s, should see now. */

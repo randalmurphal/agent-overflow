@@ -18,11 +18,11 @@ import {
   settleCatalogRead,
 } from './catalogLoad.svelte';
 import { catalogTreeListed, loadSidebarCatalogs, resetSidebarCatalogsForTest } from './sidebarCatalogs';
-import { getThreadGroups, resetThreadGroupsForTest } from './threadGroups.svelte';
+import { getThreadGroups, resetThreadGroupsForTest, upsertThreadGroup } from './threadGroups.svelte';
 import type { ThreadGroup } from '../types/models';
 import { refreshSidebarProjections } from './eventsThreadRows';
-import { getProjects, resetProjectsForTest } from './projects.svelte';
-import { getThreads, resetThreadsForTest } from './threads.svelte';
+import { addProjectLocal, getProjects, resetProjectsForTest } from './projects.svelte';
+import { getThreads, prependThread, resetThreadsForTest } from './threads.svelte';
 
 function project(id: string): ProjectWithCounts {
   return { project: { id, name: id, path: `/repo/${id}`, sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false },
@@ -79,7 +79,7 @@ describe('catalog load state', () => {
   });
 
   it('ignores a read settled for a computer that is not attached', () => {
-    settleCatalogRead('projects', 'ghost', { answered: false, error: new TransportError('method_error', 'list projects: disk I/O error'), cached: false });
+    settleCatalogRead('projects', 'ghost', { answered: false, error: new TransportError('method_error', 'list projects: disk I/O error'), kept: null });
     expect(__catalogRetryCountForTest()).toBe(0);
     expect(catalogLoadState('ghost', 'projects')).toEqual(LOADING);
     settleCatalogRead('projects', 'ghost', { answered: true });
@@ -656,6 +656,82 @@ describe('the sidebar listing', () => {
     await vi.advanceTimersByTimeAsync(1000);
     expect(catalogTreeListed(HOME_BACKEND)).toBe(true);
     expect(getThreadGroups().map((row) => row.id)).toEqual(['g1']);
+  });
+
+  it('does not list kept rows once a round committed one catalog of them apart from the others', async () => {
+    setBindingMock('ListProjects', async () => [project('p1')]);
+    setBindingMock('ListThreads', async () => [makeThread({ id: 't1' })]);
+    setBindingMock('ListThreadGroups', async () => [group('g1')]);
+    await loadSidebarCatalogs();
+    resetSidebarCatalogsForTest();
+    setBindingMock('ListProjects', async () => [project('p1'), project('p2')]);
+    setBindingMock('ListThreads', offline);
+    setBindingMock('ListThreadGroups', offline);
+    await loadSidebarCatalogs();
+    expect(getProjects().map((row) => row.project.id)).toEqual(['p1', 'p2']);
+    expect(catalogTreeListed(HOME_BACKEND)).toBe(false);
+    setBindingMock('ListProjects', offline);
+    await expect(loadSidebarCatalogs()).resolves.toBeDefined();
+    expect(catalogTreeListed(HOME_BACKEND)).toBe(false);
+  });
+
+  it('does not list changes pushed onto a computer whose tree never answered', async () => {
+    setBindingMock('ListProjects', offline);
+    setBindingMock('ListThreads', offline);
+    setBindingMock('ListThreadGroups', offline);
+    await expect(loadSidebarCatalogs()).rejects.toBeInstanceOf(DisconnectedError);
+    addProjectLocal(project('p1').project);
+    prependThread(makeThread({ id: 't1' }));
+    upsertThreadGroup(group('g1'));
+    await loadSidebarCatalogs();
+    expect(getThreads().map((row) => row.id)).toEqual(['t1']);
+    expect(catalogTreeListed(HOME_BACKEND)).toBe(false);
+  });
+
+  it('lists a tree with the changes pushed onto it since it answered', async () => {
+    setBindingMock('ListProjects', async () => [project('p1')]);
+    setBindingMock('ListThreads', async () => [makeThread({ id: 't1' })]);
+    await loadSidebarCatalogs();
+    resetSidebarCatalogsForTest();
+    prependThread(makeThread({ id: 't2' }));
+    setBindingMock('ListProjects', offline);
+    setBindingMock('ListThreads', offline);
+    setBindingMock('ListThreadGroups', offline);
+    await loadSidebarCatalogs();
+    expect(catalogTreeListed(HOME_BACKEND)).toBe(true);
+    expect(getThreads().map((row) => row.id)).toEqual(['t2', 't1']);
+  });
+
+  it("does not list the old history's rows after a history generation change", async () => {
+    setBindingMock('ListProjects', async () => [project('p1')]);
+    setBindingMock('ListThreads', async () => [makeThread({ id: 't1' })]);
+    setBindingMock('ListThreadGroups', async () => [group('g1')]);
+    setBackendIdentityFromBootstrap('home-id', 'gen-1', 'Mac', HOME_BACKEND);
+    await vi.advanceTimersByTimeAsync(0);
+    await loadSidebarCatalogs();
+    setBindingMock('ListProjects', offline);
+    setBindingMock('ListThreads', offline);
+    setBindingMock('ListThreadGroups', offline);
+    observeBackendGeneration('gen-2', HOME_BACKEND);
+    await vi.advanceTimersByTimeAsync(0);
+    resetSidebarCatalogsForTest();
+    await expect(loadSidebarCatalogs()).rejects.toBeInstanceOf(DisconnectedError);
+    expect(getThreads().map((row) => row.id)).toEqual(['t1']);
+    expect(catalogTreeListed(HOME_BACKEND)).toBe(false);
+  });
+
+  it('does not list a reattached computer from the tree it had before it was detached', async () => {
+    stageBackend({ id: 'gpu' });
+    setBindingMock('ListProjects', async () => (takePinnedBackend() === 'gpu' ? [project('gpu-p')] : []));
+    await loadSidebarCatalogs();
+    expect(catalogTreeListed('gpu')).toBe(true);
+    detachBackend('gpu');
+    stageBackend({ id: 'gpu' });
+    setBindingMock('ListProjects', async () => { if (takePinnedBackend() === 'gpu') offline(); return []; });
+    setBindingMock('ListThreads', async () => { if (takePinnedBackend() === 'gpu') offline(); return []; });
+    setBindingMock('ListThreadGroups', async () => { if (takePinnedBackend() === 'gpu') offline(); return []; });
+    await loadSidebarCatalogs();
+    expect(catalogTreeListed('gpu')).toBe(false);
   });
 
   it("forgets a detached computer's listing", async () => {

@@ -9,7 +9,33 @@ export type CatalogKind = keyof CatalogRows;
 export const MAX_CATALOG_ROWS = 5000;
 export const MAX_CATALOG_CHARS = 4 * 1024 * 1024;
 const MAX_ROW_CHARS = 64 * 1024;
-interface Catalog { version: 2; generation: string; stamp: string; rows: unknown[] }
+/**
+ * Where a kept catalog's rows came from, as its record says: one of three
+ * catalogs a single round answered together (`tree`, the three records of a
+ * computer sharing its id), plus changes pushed since; or anything else
+ * (`partial`).
+ */
+export type RecordedProvenance = { readonly kind: 'tree'; readonly tree: string } | { readonly kind: 'partial' };
+/**
+ * What a kept catalog says about its rows: what its record recorded, or
+ * nothing at all (`unrecorded`), for a record a build wrote before records
+ * said where their rows came from.
+ */
+export type KeptProvenance = RecordedProvenance | { readonly kind: 'unrecorded' };
+/** A computer's kept rows of one catalog and where they came from. */
+export interface KeptCatalog<T> { readonly rows: T[]; readonly provenance: KeptProvenance }
+interface Catalog { version: 2; generation: string; stamp: string; provenance: RecordedProvenance; rows: unknown[] }
+
+const UNRECORDED: KeptProvenance = Object.freeze({ kind: 'unrecorded' });
+const PARTIAL: KeptProvenance = Object.freeze({ kind: 'partial' });
+
+function readProvenance(value: unknown): KeptProvenance | null {
+  if (value === undefined) return UNRECORDED;
+  if (!object(value)) return null;
+  if (value.kind === 'partial') return PARTIAL;
+  if (value.kind === 'tree' && typeof value.tree === 'string' && value.tree.length > 0) return { kind: 'tree', tree: value.tree };
+  return null;
+}
 export function catalogKey(kind: CatalogKind): string { return `catalog:${kind}`; }
 
 type RecordValue = Record<string, unknown>;
@@ -46,16 +72,18 @@ function validRow(row: unknown, kind: CatalogKind): boolean {
     ['forkPreparing', 'fastMode', 'hasActionableProposedPlan', 'hasIncompleteTurn', 'hasFailedTurn', 'isDraft']);
 }
 
-export function readCatalogRecord<K extends CatalogKind>(raw: unknown, generation: string, kind: K, stamp: string): CatalogRows[K][] | null {
+export function readCatalogRecord<K extends CatalogKind>(raw: unknown, generation: string, kind: K, stamp: string): KeptCatalog<CatalogRows[K]> | null {
   if (!object(raw) || raw.version !== 2 || raw.generation !== generation || raw.stamp !== stamp || !stamp || !Array.isArray(raw.rows)
     || raw.rows.length > MAX_CATALOG_ROWS) return null;
+  const provenance = readProvenance(raw.provenance);
+  if (provenance === null) return null;
   let chars = 0;
   for (const row of raw.rows) {
     if (!validRow(row, kind)) return null;
     const size = JSON.stringify(row).length;
     if (size > MAX_ROW_CHARS || (chars += size) > MAX_CATALOG_CHARS) return null;
   }
-  return safeRepositoryMetadata(raw.rows) as CatalogRows[K][];
+  return { rows: safeRepositoryMetadata(raw.rows) as CatalogRows[K][], provenance };
 }
 
 /**
@@ -76,7 +104,7 @@ function frozen<T>(value: T): T {
 }
 
 export function makeCatalogRecord<K extends CatalogKind>(
-  generation: string, kind: K, rows: readonly CatalogRows[K][], stamp: string, cache?: CatalogRowCache,
+  generation: string, kind: K, rows: readonly CatalogRows[K][], stamp: string, provenance: RecordedProvenance, cache?: CatalogRowCache,
 ): Catalog {
   const kept: unknown[] = [];
   let chars = 0;
@@ -96,5 +124,5 @@ export function makeCatalogRecord<K extends CatalogKind>(
     kept.push(entry.plain);
     chars += entry.chars;
   }
-  return { version: 2, generation, stamp, rows: kept };
+  return { version: 2, generation, stamp, provenance, rows: kept };
 }

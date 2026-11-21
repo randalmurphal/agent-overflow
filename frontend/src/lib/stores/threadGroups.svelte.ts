@@ -109,7 +109,7 @@ export function groupCatalogPart(): CatalogPart<ThreadGroup> {
     read: async () => await ListThreadGroups() as ThreadGroup[],
     note: (row, backend) => noteThreadGroup(row.id, backend),
     commit: commitGroupRows,
-    catalog: computerCatalog('groups', () => threadGroups, (row) => threadGroupBackend(row.id)),
+    catalog: computerCatalog('groups', catalogWriter.persist),
   };
 }
 
