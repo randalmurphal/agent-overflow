@@ -10,31 +10,40 @@ export const MAX_CATALOG_ROWS = 5000;
 export const MAX_CATALOG_CHARS = 4 * 1024 * 1024;
 const MAX_ROW_CHARS = 64 * 1024;
 /**
- * Where a kept catalog's rows came from, as its record says: one of three
- * catalogs a single round answered together (`tree`, the three records of a
- * computer sharing its id), plus changes pushed since; or anything else
- * (`partial`).
+ * What every record this build writes says about its rows: one of the three
+ * catalogs a single round answered together, the three records of a
+ * computer sharing the tree's id, plus the changes pushed since. The replica
+ * keeps nothing else.
  */
-export type RecordedProvenance = { readonly kind: 'tree'; readonly tree: string } | { readonly kind: 'partial' };
+export type TreeProvenance = { readonly kind: 'tree'; readonly tree: string };
 /**
- * What a kept catalog says about its rows: what its record recorded, or
- * nothing at all (`unrecorded`), for a record a build wrote before records
- * said where their rows came from.
+ * What a kept catalog says about its rows: its tree, or nothing at all
+ * (`unrecorded`), for a record a build wrote before records said where their
+ * rows came from.
  */
-export type KeptProvenance = RecordedProvenance | { readonly kind: 'unrecorded' };
+export type KeptProvenance = TreeProvenance | { readonly kind: 'unrecorded' };
 /** A computer's kept rows of one catalog and where they came from. */
 export interface KeptCatalog<T> { readonly rows: T[]; readonly provenance: KeptProvenance }
-interface Catalog { version: 2; generation: string; stamp: string; provenance: RecordedProvenance; rows: unknown[] }
+interface Catalog { version: 2; generation: string; stamp: string; provenance: TreeProvenance; rows: unknown[] }
 
 const UNRECORDED: KeptProvenance = Object.freeze({ kind: 'unrecorded' });
-const PARTIAL: KeptProvenance = Object.freeze({ kind: 'partial' });
 
+// Anything but an absent field or a tree is a record no build wrote, and
+// reads as no record.
 function readProvenance(value: unknown): KeptProvenance | null {
   if (value === undefined) return UNRECORDED;
-  if (!object(value)) return null;
-  if (value.kind === 'partial') return PARTIAL;
-  if (value.kind === 'tree' && typeof value.tree === 'string' && value.tree.length > 0) return { kind: 'tree', tree: value.tree };
-  return null;
+  return recordedTree(value);
+}
+
+/** The tree a stored record's provenance names, or null. */
+export function recordedTree(value: unknown): TreeProvenance | null {
+  if (!object(value) || value.kind !== 'tree' || typeof value.tree !== 'string' || value.tree.length === 0) return null;
+  return { kind: 'tree', tree: value.tree };
+}
+
+/** The tree a stored catalog record holds, or null when it holds none. */
+export function storedTree(raw: unknown): string | null {
+  return object(raw) ? (recordedTree(raw.provenance)?.tree ?? null) : null;
 }
 export function catalogKey(kind: CatalogKind): string { return `catalog:${kind}`; }
 
@@ -104,7 +113,7 @@ function frozen<T>(value: T): T {
 }
 
 export function makeCatalogRecord<K extends CatalogKind>(
-  generation: string, kind: K, rows: readonly CatalogRows[K][], stamp: string, provenance: RecordedProvenance, cache?: CatalogRowCache,
+  generation: string, kind: K, rows: readonly CatalogRows[K][], stamp: string, provenance: TreeProvenance, cache?: CatalogRowCache,
 ): Catalog {
   const kept: unknown[] = [];
   let chars = 0;

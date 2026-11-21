@@ -248,9 +248,11 @@ none, and never a half-arranged list, so a computer whose read keeps failing
 before it ever listed shows no project header. A computer lists the first
 time one read of it is a complete tree: all three answered in that round, or
 rows standing in that are one kept tree by their provenance, which
-`catalogLoad.svelte.ts` owns and the catalog writer records with every
-replica write. The module comments have the rules. Write a catalog's replica
-record only through its store's catalog writer.
+`catalogLoad.svelte.ts` owns. The replica keeps only complete trees and the
+changes pushed onto them, and each computer's write queue
+(`computerCatalogWriter.ts`) is the one writer of its three records; the
+architecture test refuses any other caller. The module comments have the
+rules.
 
 Only a newer read of the same computer supersedes a sidebar catalog read.
 Change thread, project and group rows through the catalog writer's `mutate`,

@@ -33,6 +33,7 @@ import { resetCatalogLoadForTest } from '../lib/stores/catalogLoad.svelte';
 import { resetSidebarCatalogsForTest } from '../lib/stores/sidebarCatalogs';
 import { resetSidebarEntryContinuityForTest, startSidebarEntryContinuity } from '../lib/stores/sidebarEntryContinuity.svelte';
 import { resetCatalogReadsForTest } from '../lib/stores/computerCatalogReads';
+import { resetCatalogWritesForTest } from '../lib/stores/computerCatalogWriter';
 import { __resetGitStatusStoreForTest } from '../lib/stores/gitStatusStore.svelte';
 import { __resetPRReviewStoreForTest } from '../lib/stores/prReviewStore.svelte';
 import { __resetMcpServersStoreForTest } from '../lib/stores/mcpServers.svelte';
@@ -297,6 +298,7 @@ afterEach(() => {
   // each test gets its own effect and none of the last test's rows.
   resetSidebarEntryContinuityForTest();
   resetCatalogReadsForTest();
+  resetCatalogWritesForTest();
   // Computers a test staged stay attached in the module-level registry, and
   // a second attached computer makes every unowned entity ambiguous.
   resetStagedBackends();

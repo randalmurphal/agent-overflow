@@ -9,22 +9,26 @@ import { catalogKey, makeCatalogRecord, readCatalogRecord } from './catalog';
 import { META_STORE, openReplicaDb, writeRecord } from './idb';
 import { replicaDatabaseName } from './purge';
 import {
-  initReplica, getReplicaCatalog, putReplicaCatalog as putCatalog, getReplicaWindow, putReplicaWindow,
+  initReplica, getReplicaCatalog, putReplicaCatalog as putCatalog, putReplicaTree, getReplicaWindow, putReplicaWindow,
   replicaCatalogStamp, invalidateReplicaCatalog,
   replicaToken, __resetReplicaForTest, __replicaSweepForTest,
 } from './session';
 import type { ProjectWithCounts } from '../types/models';
 import type { ReplicaBody } from './envelope';
-import type { CatalogKind, CatalogRows } from './catalog';
+import type { CatalogKind, CatalogRows, TreeProvenance } from './catalog';
 import { currentCatalogStamp, observedCatalogStamp, resetCatalogStampsForTest } from './catalogStamp';
 import * as idb from './idb';
 
 installFakeIndexedDB();
 
-const PARTIAL = { kind: 'partial' } as const;
+const TREE = { kind: 'tree', tree: 'tree-a' } as const;
 
-function putReplicaCatalog<K extends CatalogKind>(backend: string, kind: K, rows: CatalogRows[K][]) {
-  return putCatalog(backend, kind, rows, PARTIAL, replicaCatalogStamp(backend, kind));
+/** Write a tree of `backend` whose `kind` catalog holds `rows` and whose other two are empty. */
+function putReplicaCatalog<K extends CatalogKind>(backend: string, kind: K, rows: CatalogRows[K][], tree: TreeProvenance = TREE) {
+  const catalog = <C extends CatalogKind>(of: C) => ({
+    rows: ((of as CatalogKind) === kind ? rows : []) as CatalogRows[C][], stamp: replicaCatalogStamp(backend, of),
+  });
+  return putReplicaTree(backend, tree, { projects: catalog('projects'), threads: catalog('threads'), groups: catalog('groups') }, replicaToken(backend));
 }
 
 async function keptRows<K extends CatalogKind>(backend: string, kind: K): Promise<CatalogRows[K][] | null> {
@@ -93,7 +97,7 @@ describe('offline computer catalogs', () => {
 
   it('keeps the repository identity of a saved project row and its read failure', () => {
     const identified = { ...project, project: { ...project.project, repositoryID: 'github:github.com:1', identityError: 'detected dubious ownership' } };
-    const record = makeCatalogRecord('g1', 'projects', [identified], 'stamp', PARTIAL);
+    const record = makeCatalogRecord('g1', 'projects', [identified], 'stamp', TREE);
     expect(readCatalogRecord(record, 'g1', 'projects', 'stamp')?.rows).toEqual([identified]);
     const malformed = { ...identified, project: { ...identified.project, identityError: 7 } };
     expect(readCatalogRecord({ ...record, rows: [malformed] }, 'g1', 'projects', 'stamp')).toBeNull();
@@ -103,10 +107,10 @@ describe('offline computer catalogs', () => {
     const thread = { id: 't', title: 'Ops', provider: 'claude', workspacePath: '/w', projectPath: '/w', model: 'm',
       createdAt: 0, updatedAt: 0, archived: false } as unknown as CatalogRows['threads'];
     const flagged = { ...thread, attention: { kind: 'review', reason: 'Ready', at: 5 } } as CatalogRows['threads'];
-    expect(readCatalogRecord(makeCatalogRecord('g1', 'threads', [flagged], 's', PARTIAL), 'g1', 'threads', 's')?.rows).toEqual([flagged]);
-    expect(readCatalogRecord(makeCatalogRecord('g1', 'threads', [{ ...thread, attention: null }], 's', PARTIAL), 'g1', 'threads', 's')?.rows).toHaveLength(1);
+    expect(readCatalogRecord(makeCatalogRecord('g1', 'threads', [flagged], 's', TREE), 'g1', 'threads', 's')?.rows).toEqual([flagged]);
+    expect(readCatalogRecord(makeCatalogRecord('g1', 'threads', [{ ...thread, attention: null }], 's', TREE), 'g1', 'threads', 's')?.rows).toHaveLength(1);
     for (const attention of ['review', { kind: 'review', reason: 'Ready' }, { kind: 1, reason: 'Ready', at: 5 }]) {
-      const record = makeCatalogRecord('g1', 'threads', [thread], 's', PARTIAL);
+      const record = makeCatalogRecord('g1', 'threads', [thread], 's', TREE);
       expect(readCatalogRecord({ ...record, rows: [{ ...thread, attention }] }, 'g1', 'threads', 's'), JSON.stringify(attention)).toBeNull();
     }
   });
@@ -117,23 +121,24 @@ describe('offline computer catalogs', () => {
     const row = { ...project };
     Object.defineProperty(row, 'threadCount', { enumerable: true, get: () => { reads++; return 3; } });
     const cache = new WeakMap();
+    await putReplicaCatalog('', 'projects', []);
     const stamp = replicaCatalogStamp('', 'projects');
-    await putCatalog('', 'projects', [row], PARTIAL, stamp, replicaToken(''), cache);
+    await putCatalog('', 'projects', [row], TREE, stamp, replicaToken(''), cache);
     const afterFirst = reads;
     expect(afterFirst).toBeGreaterThan(0);
-    await putCatalog('', 'projects', [row], PARTIAL, stamp, replicaToken(''), cache);
+    await putCatalog('', 'projects', [row], TREE, stamp, replicaToken(''), cache);
     expect(reads).toBe(afterFirst);
-    await putCatalog('', 'projects', [row], PARTIAL, stamp);
+    await putCatalog('', 'projects', [row], TREE, stamp, replicaToken(''));
     expect(reads).toBeGreaterThan(afterFirst);
     expect(await keptRows('', 'projects')).toEqual([{ ...project, threadCount: 3 }]);
   });
 
   it('rejects malformed, oversized and obsolete metadata', async () => {
-    const record = makeCatalogRecord('g1', 'projects', [project], 'stamp', PARTIAL);
+    const record = makeCatalogRecord('g1', 'projects', [project], 'stamp', TREE);
     expect(readCatalogRecord(record, 'g2', 'projects', 'stamp')).toBeNull();
     expect(readCatalogRecord({ ...record, rows: [{ project: { id: 'broken' } }] }, 'g1', 'projects', 'stamp')).toBeNull();
     expect(readCatalogRecord({ ...record, rows: Array(5001).fill(project) }, 'g1', 'projects', 'stamp')).toBeNull();
-    expect(makeCatalogRecord('g1', 'projects', [{ ...project, project: { ...project.project, name: 'x'.repeat(65537) } }], 'stamp', PARTIAL).rows).toEqual([]);
+    expect(makeCatalogRecord('g1', 'projects', [{ ...project, project: { ...project.project, name: 'x'.repeat(65537) } }], 'stamp', TREE).rows).toEqual([]);
     await initReplica(identity);
     const db = await openReplicaDb(replicaDatabaseName(identity.backendId));
     await writeRecord(db, META_STORE, catalogKey('projects'), { ...record, rows: [null] });
@@ -153,13 +158,13 @@ it('invalidates a saved catalog synchronously before its asynchronous rewrite', 
 
 it('refuses a write already in flight when a structural invalidation happens', async () => {
   await initReplica(identity);
-  const write = idb.writeRecord;
+  const write = idb.writeRecords;
   let release!: () => void;
   const blocked = new Promise<void>((resolve) => { release = resolve; });
   let started!: () => void;
   const writing = new Promise<void>((resolve) => { started = resolve; });
-  const spy = vi.spyOn(idb, 'writeRecord').mockImplementation(async (...args) => {
-    if (args[2] === catalogKey('projects')) { started(); await blocked; }
+  const spy = vi.spyOn(idb, 'writeRecords').mockImplementation(async (...args) => {
+    if (args[2].some(([key]) => key === catalogKey('projects'))) { started(); await blocked; }
     return write(...args);
   });
   try {
@@ -180,9 +185,9 @@ it('a different window cannot bless its older rows with a new stamp', async () =
   localStorage.removeItem('agent-overflow:catalog-stamp:' + JSON.stringify(['', 'projects']));
   const fresh = currentCatalogStamp('', 'projects');
   expect(fresh).not.toBe(old);
-  await putCatalog('', 'projects', [project], PARTIAL, old);
+  expect(await putCatalog('', 'projects', [project], TREE, old, replicaToken(''))).toBe('refused');
   expect(await getReplicaCatalog('', 'projects')).toBeNull();
-  await putCatalog('', 'projects', [], PARTIAL, fresh);
+  await putCatalog('', 'projects', [], TREE, fresh, replicaToken(''));
   expect(await keptRows('', 'projects')).toEqual([]);
 });
 
@@ -195,21 +200,66 @@ it('bounded stamp eviction does not revive an older IndexedDB envelope', async (
   expect(Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i)).filter((key) => key?.startsWith('agent-overflow:catalog-stamp:'))).toHaveLength(192);
 });
 
-describe('the provenance a kept catalog records', () => {
-  const tree = { kind: 'tree', tree: 'round-1' } as const;
-
-  it('reads back the tree or partial provenance it was written with', async () => {
-    await initReplica(identity);
-    await putCatalog('', 'projects', [project], tree, replicaCatalogStamp('', 'projects'));
-    await putCatalog('', 'threads', [], PARTIAL, replicaCatalogStamp('', 'threads'));
-    expect(await getReplicaCatalog('', 'projects')).toEqual({ rows: [project], provenance: tree });
-    expect(await getReplicaCatalog('', 'threads')).toEqual({ rows: [], provenance: PARTIAL });
+describe('the trees the replica keeps', () => {
+  const next = { kind: 'tree', tree: 'tree-b' } as const;
+  const stampsOf = (backend: string) => ({
+    projects: replicaCatalogStamp(backend, 'projects'), threads: replicaCatalogStamp(backend, 'threads'), groups: replicaCatalogStamp(backend, 'groups'),
   });
 
-  it('reads a record with no provenance as unrecorded and refuses a malformed provenance', () => {
-    const { provenance: _, ...unrecorded } = makeCatalogRecord('g1', 'projects', [project], 's', PARTIAL);
+  it('writes a tree as three records under its id and reads each back with it', async () => {
+    await initReplica(identity);
+    expect(await putReplicaCatalog('', 'projects', [project])).toBe('written');
+    expect(await getReplicaCatalog('', 'projects')).toEqual({ rows: [project], provenance: TREE });
+    expect(await getReplicaCatalog('', 'threads')).toEqual({ rows: [], provenance: TREE });
+    expect(await getReplicaCatalog('', 'groups')).toEqual({ rows: [], provenance: TREE });
+  });
+
+  it('writes none of a tree when one stamp is not current', async () => {
+    await initReplica(identity);
+    await putReplicaCatalog('', 'projects', [project]);
+    const stamps = stampsOf('');
+    invalidateReplicaCatalog('', 'threads');
+    const outcome = await putReplicaTree('', next, {
+      projects: { rows: [], stamp: stamps.projects }, threads: { rows: [], stamp: stamps.threads }, groups: { rows: [], stamp: stamps.groups },
+    }, replicaToken(''));
+    expect(outcome).toBe('refused');
+    expect(await getReplicaCatalog('', 'projects')).toEqual({ rows: [project], provenance: TREE });
+    expect(await getReplicaCatalog('', 'groups')).toEqual({ rows: [], provenance: TREE });
+  });
+
+  it('lands none of a tree when IndexedDB fails one record of it, and says it failed', async () => {
+    await initReplica(identity);
+    await putReplicaCatalog('', 'projects', [project]);
+    const put = IDBObjectStore.prototype.put;
+    const spy = vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(function (this: IDBObjectStore, value, key) {
+      if (key === catalogKey('groups')) throw new DOMException('disk full', 'QuotaExceededError');
+      return put.call(this, value, key);
+    });
+    try {
+      expect(await putReplicaCatalog('', 'projects', [], next)).toBe('failed');
+    } finally { spy.mockRestore(); }
+    expect(await getReplicaCatalog('', 'projects')).toEqual({ rows: [project], provenance: TREE });
+    expect(await getReplicaCatalog('', 'threads')).toEqual({ rows: [], provenance: TREE });
+  });
+
+  it('writes one record of a tree only while the record stored holds that tree', async () => {
+    await initReplica(identity);
+    const stamp = () => replicaCatalogStamp('', 'projects');
+    // No record: a change never makes one.
+    expect(await putCatalog('', 'projects', [project], TREE, stamp(), replicaToken(''))).toBe('refused');
+    expect(await getReplicaCatalog('', 'projects')).toBeNull();
+    await putReplicaCatalog('', 'projects', [], next);
+    // A record of another tree.
+    expect(await putCatalog('', 'projects', [project], TREE, stamp(), replicaToken(''))).toBe('refused');
+    expect(await getReplicaCatalog('', 'projects')).toEqual({ rows: [], provenance: next });
+    expect(await putCatalog('', 'projects', [project], next, stamp(), replicaToken(''))).toBe('written');
+    expect(await getReplicaCatalog('', 'projects')).toEqual({ rows: [project], provenance: next });
+  });
+
+  it('reads a record with no provenance as unrecorded and refuses any provenance but a tree', () => {
+    const { provenance: _, ...unrecorded } = makeCatalogRecord('g1', 'projects', [project], 's', TREE);
     expect(readCatalogRecord(unrecorded, 'g1', 'projects', 's')).toEqual({ rows: [project], provenance: { kind: 'unrecorded' } });
-    for (const provenance of [null, 'tree', { kind: 'tree' }, { kind: 'tree', tree: '' }, { kind: 'unrecorded' }, { kind: 'whole' }]) {
+    for (const provenance of [null, 'tree', { kind: 'tree' }, { kind: 'tree', tree: '' }, { kind: 'partial' }, { kind: 'unrecorded' }, { kind: 'whole' }]) {
       expect(readCatalogRecord({ ...unrecorded, provenance }, 'g1', 'projects', 's'), JSON.stringify(provenance)).toBeNull();
     }
   });

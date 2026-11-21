@@ -46,6 +46,7 @@ function answer(rows: readonly [BackendKey, Project, number][]): void {
   projectCatalogPart().commit({
     rows: rows.map(([, project, threadCount]) => ({ project, threadCount })),
     answered: new Set(rows.map(([backend]) => backend)),
+    replaced: new Set(rows.map(([backend]) => backend)),
     attached: new Set([HOME_BACKEND, 'laptop']),
   });
 }

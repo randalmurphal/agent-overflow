@@ -15,14 +15,16 @@ import { DisconnectedError } from '../transport/wsClient';
 import { catalogKey, type CatalogKind, type CatalogRows } from '../replica/catalog';
 import * as idb from '../replica/idb';
 import { replicaDatabaseName } from '../replica/purge';
+import * as replicaSession from '../replica/session';
 import { __replicaSweepForTest, __resetReplicaForTest, initReplica, replicaCatalogStamp } from '../replica/session';
 import type { ProjectWithCounts, ThreadGroup } from '../types/models';
-import { resetCatalogLoadForTest } from './catalogLoad.svelte';
+import { catalogProvenance, resetCatalogLoadForTest } from './catalogLoad.svelte';
 import { CATALOG_WRITE_SPACING_MS } from './computerCatalogWriter';
-import { addProjectLocal, getProjects, resetProjectsForTest } from './projects.svelte';
+import { openCatalogReadsForTest } from './computerCatalogReads';
+import { getProjects, listProjectLocal, resetProjectsForTest } from './projects.svelte';
 import { catalogTreeListed, loadSidebarCatalogs, resetSidebarCatalogsForTest } from './sidebarCatalogs';
 import { getThreadGroups, resetThreadGroupsForTest } from './threadGroups.svelte';
-import { getThreads, resetThreadsForTest } from './threads.svelte';
+import { getThreads, resetThreadsForTest, updateThreadTitle } from './threads.svelte';
 
 installFakeIndexedDB();
 
@@ -150,7 +152,7 @@ describe('an asleep computer at startup', () => {
   it.each([
     ['an unrecorded record beside two of a tree', [undefined, tree('a'), tree('a')]],
     ['an unrecorded record beside a partial one', [undefined, undefined, PARTIAL]],
-    ['two ids, as a crash between the three writes leaves them', [tree('a'), tree('a'), tree('b')]],
+    ['two ids, as separate writes of a tree left them', [tree('a'), tree('a'), tree('b')]],
     ['a partial record beside two of a tree', [PARTIAL, tree('a'), tree('a')]],
   ])('shows the error row, not the rows, for %s', async (_name, provenances) => {
     await connect();
@@ -159,53 +161,178 @@ describe('an asleep computer at startup', () => {
     expect(await listAsleep()).toBe(false);
   });
 
-  it('does not list a kept tree whose project catalog a partial round replaced, in that session or after a restart', async () => {
+  it('keeps the tree a partial round did not replace, and lists it after a restart', async () => {
     await connect();
     await seedTree([tree('old'), tree('old'), tree('old')]);
     setBindingMock('ListProjects', async () => [project('p1'), project('p2')]);
     await loadSidebarCatalogs();
+    // The answer alone is no tree: the session does not list it beside the kept rows.
     expect(catalogTreeListed(HOME_BACKEND)).toBe(false);
-    await vi.waitFor(async () => expect((await record('projects'))?.rows).toHaveLength(2));
+    expect(getProjects().map((row) => row.project.id).sort()).toEqual(['p1', 'p2']);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(await keptTrees()).toEqual(['old', 'old', 'old']);
 
-    setBindingMock('ListProjects', offline);
-    expect(await listAsleep()).toBe(false);
     await reopenAsleep();
-    expect(await listAsleep()).toBe(false);
+    expect(await listAsleep()).toBe(true);
+    expect(getProjects().map((row) => row.project.id)).toEqual(['p1']);
+  });
+
+  it('reads a stored partial record as no record: the computer shows its error row and nothing throws', async () => {
+    await connect();
+    await seedTree([PARTIAL, tree('a'), tree('a')]);
+    await reopenAsleep();
+    await expect(loadSidebarCatalogs()).resolves.toEqual([expect.objectContaining({ id: 't1' })]);
+    expect(catalogTreeListed(HOME_BACKEND)).toBe(false);
+    expect(getProjects()).toEqual([]);
+    expect(console.error).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['a tree', tree('a'), tree('a')],
+    ['no provenance, as an older build wrote it', undefined, { kind: 'partial' }],
+  ] as const)('commits a change pushed while it reads a record of %s once, over the kept rows', async (_name, provenance, after) => {
+    await connect();
+    await seedTree([provenance, provenance, provenance]);
+    await reopenAsleep();
+    const read = idb.readRecord;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let reading!: () => void;
+    const gated = new Promise<void>((resolve) => { reading = resolve; });
+    vi.spyOn(idb, 'readRecord').mockImplementation(async (...args) => {
+      if (args[2] === catalogKey('projects')) {
+        reading();
+        await held;
+      }
+      return read(...args);
+    });
+    const round = loadSidebarCatalogs().catch(() => null);
+    await gated;
+    listProjectLocal({ ...project('p1').project, name: 'New' });
+    release();
+    await round;
+    // The round resolves with its threads; the project read commits once its record is read.
+    await vi.waitFor(() => expect(openCatalogReadsForTest(HOME_BACKEND, 'projects')).toBe(0));
+    expect(getProjects().map((row) => [row.project.id, row.project.name])).toEqual([['p1', 'New']]);
+    expect(catalogProvenance(HOME_BACKEND, 'projects')).toEqual(after);
   });
 });
 
-describe('the one writer of a kept catalog', () => {
-  it("keeps a round's answer when a pushed change's write was still running as it committed", async () => {
+/** The tree id each kept record of this computer holds, or its provenance kind. */
+async function keptTrees(): Promise<(string | undefined)[]> {
+  const kept = await Promise.all((['projects', 'threads', 'groups'] as const).map(record));
+  return kept.map((entry) => {
+    const provenance = entry?.provenance as { kind?: string; tree?: string } | undefined;
+    return provenance?.tree ?? provenance?.kind;
+  });
+}
+
+/** Answer a round with all three catalogs and wait until the replica holds its tree; resolve its id. */
+async function answerTree(threads = [makeThread({ id: 't1', projectId: 'p1' })]): Promise<string> {
+  const before = (await keptTrees())[0];
+  setBindingMock('ListProjects', async () => [project('p1')]);
+  setBindingMock('ListThreads', async () => threads);
+  setBindingMock('ListThreadGroups', async () => [group('g1')]);
+  await loadSidebarCatalogs();
+  let id = '';
+  await vi.waitFor(async () => {
+    const ids = await keptTrees();
+    expect(new Set(ids).size).toBe(1);
+    expect(ids[0]).not.toBe(before);
+    id = ids[0]!;
+  });
+  return id;
+}
+
+describe('the one writer of a computer\'s kept catalogs', () => {
+  it('writes a new tree only after the pushed change that was running, which cannot put the older tree back', async () => {
     await connect();
-    setBindingMock('ListProjects', async () => [project('p1')]);
-    setBindingMock('ListThreads', async () => [makeThread({ id: 't1', projectId: 'p1' })]);
-    setBindingMock('ListThreadGroups', async () => [group('g1')]);
-    await loadSidebarCatalogs();
-    await vi.waitFor(async () => expect((await record('projects'))?.rows).toHaveLength(1));
+    const older = await answerTree();
     await new Promise((resolve) => setTimeout(resolve, CATALOG_WRITE_SPACING_MS + 50));
 
-    const write = idb.writeRecord;
+    const write = replicaSession.putReplicaCatalog;
     let release!: () => void;
     const held = new Promise<void>((resolve) => { release = resolve; });
+    let started!: () => void;
+    const running = new Promise<void>((resolve) => { started = resolve; });
     let holding = true;
-    vi.spyOn(idb, 'writeRecord').mockImplementation(async (...args) => {
-      if (holding && args[2] === catalogKey('projects')) {
+    vi.spyOn(replicaSession, 'putReplicaCatalog').mockImplementation(async (...args) => {
+      if (holding && args[1] === 'threads') {
         holding = false;
+        started();
         await held;
       }
       return write(...args);
     });
-    addProjectLocal(project('pushed').project);
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    setBindingMock('ListProjects', async () => [project('p1'), project('pushed'), project('p3')]);
+    updateThreadTitle('t1', 'pushed');
+    await running;
+    setBindingMock('ListThreads', async () => [makeThread({ id: 't1', projectId: 'p1', title: 'pushed' }), makeThread({ id: 't2', projectId: 'p1' })]);
     await loadSidebarCatalogs();
-    release();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(await keptTrees()).toEqual([older, older, older]);
 
+    release();
+    let newer = '';
     await vi.waitFor(async () => {
-      const kept = await record('projects');
-      expect(kept).toBeDefined();
-      expect((kept!.rows as ProjectWithCounts[]).map((row) => row.project.id).sort()).toEqual(['p1', 'p3', 'pushed']);
-      expect((kept!.provenance as { kind?: string } | undefined)?.kind).toBe('tree');
+      const ids = await keptTrees();
+      expect(new Set(ids).size).toBe(1);
+      expect(ids[0]).not.toBe(older);
+      newer = ids[0]!;
+    });
+    await new Promise((resolve) => setTimeout(resolve, CATALOG_WRITE_SPACING_MS + 50));
+    expect(await keptTrees()).toEqual([newer, newer, newer]);
+    expect(((await record('threads'))!.rows as { id: string }[]).map((row) => row.id).sort()).toEqual(['t1', 't2']);
+  });
+
+  it('lands none of a tree IndexedDB fails and tries it again, with a change pushed since', async () => {
+    await connect();
+    const older = await answerTree();
+    const put = IDBObjectStore.prototype.put;
+    let failing = true;
+    vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(function (this: IDBObjectStore, value, key) {
+      const provenance = (value as { provenance?: { kind?: string; tree?: string } } | null)?.provenance;
+      if (failing && provenance?.kind === 'tree' && provenance.tree !== older) {
+        failing = false;
+        throw new DOMException('The disk is full.', 'QuotaExceededError');
+      }
+      return put.call(this, value, key);
+    });
+    setBindingMock('ListProjects', async () => [project('p1'), project('p2')]);
+    await loadSidebarCatalogs();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(failing).toBe(false);
+    expect(await keptTrees()).toEqual([older, older, older]);
+    expect(((await record('projects'))!.rows as ProjectWithCounts[]).map((row) => row.project.id)).toEqual(['p1']);
+
+    listProjectLocal(project('p3').project);
+    await vi.waitFor(async () => {
+      const ids = await keptTrees();
+      expect(new Set(ids).size).toBe(1);
+      expect(ids[0]).not.toBe(older);
+      expect(((await record('projects'))!.rows as ProjectWithCounts[]).map((row) => row.project.id).sort()).toEqual(['p1', 'p2', 'p3']);
     }, { timeout: CATALOG_WRITE_SPACING_MS * 3 });
+  });
+
+  it('writes no tree when another window replaced a stamp during the round, and keeps the older tree readable', async () => {
+    await connect();
+    const older = await answerTree();
+    let answer!: (rows: unknown[]) => void;
+    setBindingMock('ListThreads', () => new Promise((resolve) => { answer = resolve; }));
+    const round = loadSidebarCatalogs();
+    await vi.waitFor(() => expect(answer).toBeDefined());
+
+    // Another window holding the same tree invalidates the thread catalog
+    // and writes it again under the stamp it drew.
+    localStorage.setItem(`agent-overflow:catalog-stamp:${JSON.stringify([HOME_BACKEND, 'threads'])}`, crypto.randomUUID());
+    await seed('threads', [makeThread({ id: 't1', projectId: 'p1' }), makeThread({ id: 't9', projectId: 'p1' })], tree(older));
+
+    answer([makeThread({ id: 't1', projectId: 'p1' }), makeThread({ id: 't2', projectId: 'p1' })]);
+    await round;
+    await new Promise((resolve) => setTimeout(resolve, CATALOG_WRITE_SPACING_MS + 50));
+    expect(await keptTrees()).toEqual([older, older, older]);
+
+    await reopenAsleep();
+    expect(await listAsleep()).toBe(true);
+    expect(getThreads().map((row) => row.id).sort()).toEqual(['t1', 't9']);
   });
 });

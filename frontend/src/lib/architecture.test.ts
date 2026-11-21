@@ -683,6 +683,22 @@ const RECORD_CONSTRUCTOR_IMPORTER = 'lib/stores/sidebarEntryContinuity.svelte.ts
 // Shrink-only, and empty.
 const RECORD_CONSTRUCTOR_ALLOWLIST: Record<string, string> = {};
 
+// Rule: a computer's kept catalog records are written only by its write queue.
+//
+// The replica holds a computer's last complete tree and the changes pushed
+// onto it, and that holds only while one queue per computer orders every
+// write of the three records (stores/computerCatalogWriter.ts). A second
+// caller of either write could land a record of an older tree after a newer
+// tree's transaction. Default-deny over every source outside tests: only the
+// queue may import the writes, resolved through re-exports like the rules
+// above, and a whole-module import that reaches the replica session is
+// refused anywhere else.
+const REPLICA_CATALOG_WRITES = new Set(['putReplicaCatalog', 'putReplicaTree']);
+const REPLICA_SESSION = join(SRC_ROOT, 'lib', 'replica', 'session');
+const REPLICA_CATALOG_WRITER = 'lib/stores/computerCatalogWriter.ts';
+// Shrink-only, and empty.
+const REPLICA_CATALOG_WRITE_ALLOWLIST: Record<string, string> = {};
+
 // A call, not the words: the comments in lib/transport/ discuss `Events.On`
 // by name and must not read as subscriptions.
 const EVENTS_ON_CALL = /\bEvents\s*\.\s*On\s*\(/;
@@ -909,6 +925,45 @@ describe('architecture', () => {
       RECORD_CONSTRUCTOR_ALLOWLIST,
       'New violations.',
       'Read or write the disclosure through the store that keeps the record (sidebar.svelte.ts or sidebarEntryContinuity.svelte.ts).',
+    );
+  });
+
+  it("writes a computer's kept catalogs only through its write queue", () => {
+    const session = new Set([REPLICA_SESSION]);
+    const offenders = new Map<string, string[]>();
+    const imported = new Set<string>();
+    for (const source of sources) {
+      if (source.path === repoPath(`${REPLICA_SESSION}.ts`)) continue;
+      const reasons: string[] = [];
+      for (const parsed of source.imports) {
+        const module = resolveLocalModule(source.file, parsed.specifier);
+        if (module === null) continue;
+        if (parsed.wholeModule) {
+          if (source.path !== REPLICA_CATALOG_WRITER && reachedBehind(module, session).length > 0) {
+            reasons.push(`imports the whole of ${parsed.specifier}, which reaches the catalog writes`);
+          }
+          continue;
+        }
+        for (const name of parsed.names) {
+          const origin = originOf(module, name);
+          if (origin.module !== REPLICA_SESSION || !REPLICA_CATALOG_WRITES.has(origin.name)) continue;
+          if (source.path === REPLICA_CATALOG_WRITER) {
+            imported.add(origin.name);
+            continue;
+          }
+          reasons.push(`${name} (${repoPath(origin.module)}#${origin.name}) writes a kept catalog outside its computer's queue`);
+        }
+      }
+      if (reasons.length > 0) offenders.set(source.path, reasons);
+    }
+    // The queue still writes through them: with its imports gone the rule
+    // would hold over records written some other way.
+    expect([...imported].sort()).toEqual([...REPLICA_CATALOG_WRITES].sort());
+    expectAllowlistExact(
+      offenders,
+      REPLICA_CATALOG_WRITE_ALLOWLIST,
+      'New violations.',
+      "Change a catalog through its store's writer, or ask for a tree with persistCatalogTree (computerCatalogWriter.ts).",
     );
   });
 

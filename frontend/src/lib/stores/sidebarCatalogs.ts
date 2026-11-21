@@ -33,9 +33,10 @@
 //     complete set replaces them. An unlisted computer's thread answer
 //     still reaches the thread store, for its open panes.
 //   - A round whose read of a computer answered all three catalogs marks
-//     them one tree (markCatalogTree, ./catalogLoad.svelte.ts) and writes
-//     the three again with that tree's id, so a set answered together is
-//     what is kept, in memory and in the replica.
+//     them one tree (markCatalogTree, ./catalogLoad.svelte.ts) and asks the
+//     computer's write queue to keep it (persistCatalogTree,
+//     ./computerCatalogWriter.ts). No answer is written alone, so the
+//     replica keeps the last set answered together.
 //   - A computer lists the first time one read of it is a complete tree
 //     (treeCompleteness): all three catalogs answered in that round, or
 //     every read done with rows standing in that are one kept tree
@@ -75,6 +76,7 @@ import type { BackendKey } from '../transport/backendKey';
 import { ReadDeadlineError } from '../utils/readBeforeDeadline';
 import type { ProjectWithCounts, Thread, ThreadGroup } from '../types/models';
 import { catalogFailureShown, catalogTreeKept, markCatalogTree, registerCatalogReader } from './catalogLoad.svelte';
+import { persistCatalogTree } from './computerCatalogWriter';
 import {
   beginShare, commitShares, COMPUTER_READ_DEADLINE_MS, readShare,
   type CatalogPart, type ComputerShare, type ShareResult,
@@ -454,9 +456,7 @@ function settleTree(read: ComputerRead): void {
   if (complete === null) return;
   if (complete === 'answered') {
     markCatalogTree(read.backend);
-    read.projects.part.catalog?.persist(read.backend);
-    read.threads.part.catalog?.persist(read.backend);
-    read.groups.part.catalog?.persist(read.backend);
+    persistCatalogTree(read.backend);
   }
   if (!untrack(() => listed.get(read.backend))) listed.set(read.backend, true);
 }
@@ -475,11 +475,8 @@ function threadRowsNow(round: Round): readonly Thread[] {
   if (held.length === 0) return getThreads();
   const rows = held.flatMap(({ backend, part, result }) => (
     result.share.pending.replay(result.rows.slice()).filter((row) => !part.admit || part.admit(row, backend))));
-  return threadRowsWith({
-    rows,
-    answered: new Set(held.map(({ backend }) => backend)),
-    attached: new Set(attachedBackends().map((entry) => entry.id)),
-  });
+  const answered = new Set(held.map(({ backend }) => backend));
+  return threadRowsWith({ rows, answered, replaced: answered, attached: new Set(attachedBackends().map((entry) => entry.id)) });
 }
 
 // Read one catalog of every computer in the round. Resolves when that

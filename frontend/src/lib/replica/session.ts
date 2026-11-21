@@ -48,7 +48,7 @@ import { rememberedIdentity, forgetRememberedIdentity } from '../transport/remem
 import { currentCatalogStamp, invalidateCatalogStamp, observeCatalogStamp, resetCatalogStampsForTest } from './catalogStamp';
 import {
   catalogKey, makeCatalogRecord, readCatalogRecord,
-  type CatalogKind, type CatalogRowCache, type CatalogRows, type KeptCatalog, type RecordedProvenance,
+  storedTree, type CatalogKind, type CatalogRowCache, type CatalogRows, type KeptCatalog, type TreeProvenance,
 } from './catalog';
 import {
   UNKNOWN_BACKEND_IDENTITY,
@@ -82,7 +82,9 @@ import {
   openReplicaDb,
   readRecord,
   readThreadKeys,
+  replaceRecordIf,
   writeRecord,
+  writeRecords,
   type ReplicaIndexEntry,
 } from './idb';
 import { replicaDatabaseName, unclaimedReplicaDatabases } from './purge';
@@ -734,20 +736,72 @@ export async function getReplicaCatalog<K extends CatalogKind>(backend: BackendK
   } catch (error) { noteFailure('read catalog', error); return null; }
 }
 
-export async function putReplicaCatalog<K extends CatalogKind>(
-  backend: BackendKey, kind: K, rows: readonly CatalogRows[K][], provenance: RecordedProvenance, stamp: string | null,
-  token = replicaToken(backend), cache?: CatalogRowCache,
-): Promise<void> {
-  if (!stamp) return;
+/**
+ * How a catalog write ended: `written`; `refused`, when it must not land
+ * (no live session for the token, a stamp another window or a structural
+ * change replaced, or a record that no longer holds the tree it extends); or
+ * `failed`, when IndexedDB failed it and it may be tried again.
+ */
+export type CatalogWriteOutcome = 'written' | 'refused' | 'failed';
+
+/** One catalog of a tree as it is written, under the stamp its rows were read with. */
+export interface TreeCatalog<K extends CatalogKind> {
+  readonly rows: readonly CatalogRows[K][];
+  readonly stamp: string | null;
+  readonly cache?: CatalogRowCache;
+}
+
+/**
+ * Write a complete tree of `backend`: its three catalog records, in one
+ * transaction, under `tree`. Refused unless every stamp is the one this
+ * window holds and still current.
+ */
+export async function putReplicaTree(
+  backend: BackendKey, tree: TreeProvenance,
+  catalogs: { readonly [K in CatalogKind]: TreeCatalog<K> }, token: number,
+): Promise<CatalogWriteOutcome> {
+  const kinds = Object.keys(catalogs) as CatalogKind[];
   try {
     const db = await activeDb(token);
     const session = sessionOf(token);
-    if (!db || !session || session.offline || currentCatalogStamp(backend, kind) !== stamp) return;
-    observeCatalogStamp(backend, kind, stamp);
-    const record = makeCatalogRecord(session.identity.generation, kind, rows, stamp, provenance, cache);
-    await writeRecord(db, META_STORE, catalogKey(kind), record);
+    if (!db || !session || session.offline) return 'refused';
+    const entries: [string, unknown][] = [];
+    for (const kind of kinds) {
+      const { rows, stamp, cache } = catalogs[kind] as TreeCatalog<typeof kind>;
+      if (!stamp || currentCatalogStamp(backend, kind) !== stamp) return 'refused';
+      entries.push([catalogKey(kind), makeCatalogRecord(session.identity.generation, kind, rows, stamp, tree, cache)]);
+    }
+    await writeRecords(db, META_STORE, entries);
     noteSuccess();
-  } catch (error) { noteFailure('write catalog', error); }
+    return 'written';
+  } catch (error) {
+    noteFailure('write catalog tree', error);
+    return 'failed';
+  }
+}
+
+/**
+ * Write one catalog record of `backend` after a change to a catalog that is
+ * `tree`. Refused unless the record stored now holds that same tree, so a
+ * change never makes a record of a tree the replica does not hold.
+ */
+export async function putReplicaCatalog<K extends CatalogKind>(
+  backend: BackendKey, kind: K, rows: readonly CatalogRows[K][], tree: TreeProvenance, stamp: string | null,
+  token: number, cache?: CatalogRowCache,
+): Promise<CatalogWriteOutcome> {
+  if (!stamp) return 'refused';
+  try {
+    const db = await activeDb(token);
+    const session = sessionOf(token);
+    if (!db || !session || session.offline || currentCatalogStamp(backend, kind) !== stamp) return 'refused';
+    const record = makeCatalogRecord(session.identity.generation, kind, rows, stamp, tree, cache);
+    const put = await replaceRecordIf(db, META_STORE, catalogKey(kind), record, (stored) => storedTree(stored) === tree.tree);
+    noteSuccess();
+    return put ? 'written' : 'refused';
+  } catch (error) {
+    noteFailure('write catalog', error);
+    return 'failed';
+  }
 }
 
 /**

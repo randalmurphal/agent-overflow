@@ -79,7 +79,7 @@ describe('catalog load state', () => {
   });
 
   it('ignores a read settled for a computer that is not attached', () => {
-    settleCatalogRead('projects', 'ghost', { answered: false, error: new TransportError('method_error', 'list projects: disk I/O error'), kept: null });
+    settleCatalogRead('projects', 'ghost', { answered: false, error: new TransportError('method_error', 'list projects: disk I/O error'), kept: null, changed: false });
     expect(__catalogRetryCountForTest()).toBe(0);
     expect(catalogLoadState('ghost', 'projects')).toEqual(LOADING);
     settleCatalogRead('projects', 'ghost', { answered: true });

@@ -22,8 +22,6 @@ import {
   resetThreadWakesForTest,
 } from './threadWakes.svelte';
 import * as replicaSession from '../replica/session';
-import { observeCatalogStamp, resetCatalogStampsForTest } from '../replica/catalogStamp';
-import { HOME_BACKEND } from '../transport/backendKey';
 import { applyThreadUpdated } from './eventsThreadRows';
 import { threadRowFrameMark } from './threadRowFrames';
 
@@ -122,18 +120,18 @@ describe('threads store', () => {
     });
 
     it('writes its catalog with a row cache, since its rows are values', async () => {
-      const write = vi.spyOn(replicaSession, 'putReplicaCatalog').mockResolvedValue(undefined);
-      observeCatalogStamp(HOME_BACKEND, 'threads', 'stamp');
+      const write = vi.spyOn(replicaSession, 'putReplicaTree').mockResolvedValue('written');
+      setBindingMock('ListProjects', async () => []);
+      setBindingMock('ListThreadGroups', async () => []);
       setBindingMock('ListThreads', async () => [makeThread('t1')]);
       await loadSidebarCatalogs();
-      // The read's answer is written by the store's writer, with the rows it
-      // holds and the cache.
-      const cached = () => write.mock.calls.filter((call) => call[1] === 'threads' && call[6] instanceof WeakMap);
-      // An earlier test's write may still hold the spacing.
-      await vi.waitFor(() => expect(cached().length).toBeGreaterThan(0), { timeout: 4000 });
-      expect(cached()[0][2]).toEqual([makeThread('t1')]);
+      // The round answered all three catalogs, so the tree is written, with
+      // the rows the thread store holds and its cache.
+      await vi.waitFor(() => expect(write).toHaveBeenCalled());
+      const threads = write.mock.calls[0][2].threads;
+      expect(threads.rows).toEqual([makeThread('t1')]);
+      expect(threads.cache).toBeInstanceOf(WeakMap);
       write.mockRestore();
-      resetCatalogStampsForTest();
     });
 
     it('keeps its own list when a caller hands over an array', async () => {

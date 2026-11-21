@@ -1,5 +1,5 @@
 import { invalidateReplicaCatalog } from '../replica/session';
-import { computerCatalogWriter } from './computerCatalogWriter';
+import { computerCatalogWriter, resetCatalogWritesForTest } from './computerCatalogWriter';
 import { computerCatalog, retainUnavailableComputerRows, type CatalogPart, type ComputerRows } from './computerRows';
 import { settleCatalogAnswers } from './catalogLoad.svelte';
 // Sidebar-facing projects store. Mirrors the pattern of threads.svelte.ts:
@@ -381,7 +381,7 @@ function noteProjectRow(row: ProjectWithCounts, backend: BackendKey): void {
 }
 
 function projectCatalog() {
-  return computerCatalog('projects', catalogWriter.persist);
+  return computerCatalog('projects');
 }
 
 function commitProjectRows(result: ComputerRows<ProjectWithCounts>): void {
@@ -499,7 +499,7 @@ export function dropProjectsForDetachedBackend(ids: readonly string[]): void {
 onBackendDetached(({ projectIds }) => dropProjectsForDetachedBackend(projectIds));
 
 export function resetProjectsForTest(): void {
-  catalogWriter.reset();
+  resetCatalogWritesForTest();
   projects = [];
   loaded = false;
   liveActivityAt.reset();

@@ -51,13 +51,14 @@
 // catalog makes it `partial`; a change applied to a `tree` keeps it, because
 // a tree is a set answered together plus the changes pushed since. Kept rows
 // that stand in for a failed read bring their record's provenance
-// (../replica/catalog.ts). A history generation change and a detach put it
-// back to `none`. The catalog writer records it with every write
+// (../replica/catalog.ts), and the changes the read's journal replays over
+// them apply as above. A history generation change and a detach put it back
+// to `none`. Only a `tree` catalog reaches the replica
 // (./computerCatalogWriter.ts), and the sidebar lists a computer from kept
 // rows only when they are one tree (catalogTreeKept).
 
 import { untrack } from 'svelte';
-import type { KeptProvenance } from '../replica/catalog';
+import type { KeptProvenance, TreeProvenance } from '../replica/catalog';
 import { attachedBackends, onBackendDetached } from '../transport/backends';
 import type { BackendKey } from '../transport/backendKey';
 import { onBackendIdentity } from '../transport/backendIdentity';
@@ -81,12 +82,17 @@ export interface CatalogLoad {
 /**
  * How one computer's read of a catalog ended: answered with its rows, or
  * failed, with the provenance of the replica rows that stand in for the
- * answer, or null when none were read.
+ * answer (null when none were read) and whether the read's journal replayed
+ * a change over them.
  */
-export type CatalogReadOutcome = { answered: true } | { answered: false; error: unknown; kept: KeptProvenance | null };
+export type CatalogReadOutcome =
+  | { answered: true }
+  | { answered: false; error: unknown; kept: KeptProvenance | null; changed: boolean };
 
-/** Where the rows the stores hold of one computer's catalog came from (see the module comment). */
-export type CatalogProvenance = { readonly kind: 'none' } | KeptProvenance;
+/** Where rows the stores hold came from, once anything is known (see the module comment). */
+type HeldProvenance = KeptProvenance | { readonly kind: 'partial' };
+/** Where the rows the stores hold of one computer's catalog came from. */
+export type CatalogProvenance = { readonly kind: 'none' } | HeldProvenance;
 
 /** The retry delays before the cap, in order. */
 export const CATALOG_RETRY_DELAYS_MS: readonly number[] = [1_000, 2_000, 4_000, 8_000];
@@ -97,7 +103,7 @@ export const CATALOG_KINDS: readonly CatalogKind[] = ['projects', 'threads', 'gr
 const LOADING: CatalogLoad = { phase: 'loading', error: '' };
 const LOADED: CatalogLoad = { phase: 'loaded', error: '' };
 const NONE: CatalogProvenance = Object.freeze({ kind: 'none' });
-const PARTIAL: KeptProvenance = Object.freeze({ kind: 'partial' });
+const PARTIAL: HeldProvenance = Object.freeze({ kind: 'partial' });
 
 // Boxless keys read LOADING: an attached computer that has not answered is
 // loading, not empty.
@@ -105,7 +111,7 @@ const states = createKeyedSignalRegistry<CatalogLoad>(LOADING);
 // Catalogs, by catalogKey, whose last read asked for a retry.
 const wantsRetry = new Set<string>();
 // Each catalog's provenance, by catalogKey; absent is `none`.
-const provenances = new Map<string, KeptProvenance>();
+const provenances = new Map<string, HeldProvenance>();
 
 type CatalogReader = (backend: BackendKey) => Promise<void>;
 interface RegisteredReader {
@@ -171,7 +177,10 @@ export function catalogProvenance(backend: BackendKey, kind: CatalogKind): Catal
  */
 export function noteCatalogChange(kind: CatalogKind, backend: BackendKey): void {
   if (!attached(backend)) return;
-  const key = catalogKey(kind, backend);
+  applyChange(catalogKey(kind, backend));
+}
+
+function applyChange(key: string): void {
   const held = provenances.get(key);
   if (held === undefined || held.kind === 'unrecorded') provenances.set(key, PARTIAL);
 }
@@ -182,7 +191,7 @@ export function noteCatalogChange(kind: CatalogKind, backend: BackendKey): void 
  */
 export function markCatalogTree(backend: BackendKey): void {
   if (!attached(backend)) return;
-  const tree: KeptProvenance = Object.freeze({ kind: 'tree', tree: randomId() });
+  const tree: TreeProvenance = Object.freeze({ kind: 'tree', tree: randomId() });
   for (const kind of CATALOG_KINDS) provenances.set(catalogKey(kind, backend), tree);
 }
 
@@ -192,9 +201,15 @@ export function markCatalogTree(backend: BackendKey): void {
  * build that recorded no provenance kept them.
  */
 export function catalogTreeKept(backend: BackendKey): boolean {
+  if (catalogTreeOf(backend) !== null) return true;
+  return CATALOG_KINDS.every((kind) => catalogProvenance(backend, kind).kind === 'unrecorded');
+}
+
+/** The tree every catalog of `backend` is, or null when they are not one tree. */
+export function catalogTreeOf(backend: BackendKey): TreeProvenance | null {
   const [first, ...rest] = CATALOG_KINDS.map((kind) => catalogProvenance(backend, kind));
-  if (first.kind === 'unrecorded') return rest.every((other) => other.kind === 'unrecorded');
-  return first.kind === 'tree' && rest.every((other) => other.kind === 'tree' && other.tree === first.tree);
+  if (first.kind !== 'tree') return null;
+  return rest.every((other) => other.kind === 'tree' && other.tree === first.tree) ? first : null;
 }
 
 /**
@@ -209,7 +224,10 @@ export function settleCatalogRead(kind: CatalogKind, backend: BackendKey, outcom
     provenances.set(key, PARTIAL);
     states.set(key, LOADED);
   } else {
-    if (outcome.kept !== null) provenances.set(key, outcome.kept);
+    if (outcome.kept !== null) {
+      provenances.set(key, outcome.kept);
+      if (outcome.changed) applyChange(key);
+    }
     settleFailure(kind, backend, key, outcome.error);
   }
   updateRetry(kind, backend);

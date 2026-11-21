@@ -277,6 +277,53 @@ export function writeRecord(
   });
 }
 
+/** Put every one of `entries` in one transaction: all of them land, or none. */
+export function writeRecords(db: IDBDatabase, store: string, entries: readonly (readonly [key: string, value: unknown])[]): Promise<void> {
+  return withTimeout(`write ${store}`, async () => {
+    const tx = db.transaction(store, 'readwrite');
+    const done = transactionDone(tx);
+    try {
+      for (const [key, value] of entries) tx.objectStore(store).put(value, key);
+    } catch (error) {
+      tx.abort();
+      await done.catch(() => {});
+      throw error;
+    }
+    await done;
+  });
+}
+
+/**
+ * Put `value` under `key` in one transaction only if `accept` takes the record
+ * stored there now. Resolves whether it was put.
+ */
+export function replaceRecordIf(
+  db: IDBDatabase, store: string, key: string, value: unknown, accept: (stored: unknown) => boolean,
+): Promise<boolean> {
+  return withTimeout(`write ${store}`, () => new Promise<boolean>((resolve, reject) => {
+    const tx = db.transaction(store, 'readwrite');
+    const objects = tx.objectStore(store);
+    let put = false;
+    let failure: unknown = null;
+    const read = objects.get(key);
+    // Issued from the read's success handler, so the transaction cannot
+    // commit between the read and the put.
+    read.onsuccess = () => {
+      try {
+        if (!accept(read.result)) return;
+        objects.put(value, key);
+        put = true;
+      } catch (error) {
+        failure = error;
+        tx.abort();
+      }
+    };
+    tx.oncomplete = () => resolve(put);
+    tx.onabort = () => reject(asError(failure ?? tx.error, `replica: write ${store} aborted`));
+    tx.onerror = () => reject(asError(tx.error, `replica: write ${store} failed`));
+  }));
+}
+
 /**
  * Read-modify-write the accounting record and mutate the envelope store
  * in one transaction, so the index can never describe a set of envelopes

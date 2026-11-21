@@ -164,7 +164,7 @@ export function threadCatalogPart(): CatalogPart<Thread> {
     read: listThreadRows,
     note: noteThreadRow,
     commit: commitThreadRows,
-    catalog: computerCatalog('threads', catalogWriter.persist),
+    catalog: computerCatalog('threads'),
     admit: currentThreadRow,
   };
 }
@@ -182,10 +182,11 @@ function currentRows(rows: Thread[]): Thread[] {
  * Wholesale registry replacement for catalog answers. The caller owns the
  * merge policy — rows must already be reconciled against local state
  * (see eventsThreadRows.reconcileThreadRows); this setter stays dumb so
- * that policy lives in one place.
+ * that policy lives in one place. It writes no replica record: an answer
+ * alone is no tree, and the round that answers all three catalogs writes the
+ * tree (./sidebarCatalogs.ts).
  */
 export function replaceAllThreads(rows: Thread[]): void {
-  for (const backend of new Set([...threads, ...rows].map((row) => threadBackend(row.id)))) catalogWriter.persist(backend);
   setThreads(rows);
   // Callers hand rows already reconciled against local state (including
   // the live-activity box, via mergeThreadRowWithLocal), so the boxes'
@@ -193,8 +194,7 @@ export function replaceAllThreads(rows: Thread[]): void {
   liveActivityAt.reset();
 }
 
-/** Test-only: an empty catalog with no live-activity bumps, without the
- *  catalog write a replacement records. */
+/** Test-only: an empty catalog with no live-activity bumps. */
 export function resetThreadsForTest(): void {
   setThreads([]);
   liveActivityAt.reset();

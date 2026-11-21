@@ -1,5 +1,5 @@
 import { invalidateReplicaCatalog } from '../replica/session';
-import { computerCatalogWriter } from './computerCatalogWriter';
+import { computerCatalogWriter, resetCatalogWritesForTest } from './computerCatalogWriter';
 import { computerCatalog, retainUnavailableComputerRows, type CatalogPart, type ComputerRows } from './computerRows';
 import { settleCatalogAnswers } from './catalogLoad.svelte';
 import { noteThreadGroup, threadGroupBackend } from '../transport/entityIndex';
@@ -109,7 +109,7 @@ export function groupCatalogPart(): CatalogPart<ThreadGroup> {
     read: async () => await ListThreadGroups() as ThreadGroup[],
     note: (row, backend) => noteThreadGroup(row.id, backend),
     commit: commitGroupRows,
-    catalog: computerCatalog('groups', catalogWriter.persist),
+    catalog: computerCatalog('groups'),
   };
 }
 
@@ -180,7 +180,7 @@ export function consumePendingGroupRename(groupId: string): boolean {
 
 /** Test helper: drops every row and the bucket cache. */
 export function resetThreadGroupsForTest(): void {
-  catalogWriter.reset();
+  resetCatalogWritesForTest();
   threadGroups = [];
   bucketSource = null;
   buckets = new Map();

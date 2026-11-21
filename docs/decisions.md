@@ -84,12 +84,13 @@ Mechanism in
   that tree, with the error row beside it while a read fails. Nothing from a
   failing attempt reaches the sidebar. A complete tree is all three catalogs
   answered in one round, or, for a computer whose reads all fail, the last
-  tree it answered together plus the changes pushed since, which the
-  replica keeps across a restart. Rows answered apart, rows of a partial
-  round and pushed changes alone never make one. Kept rows a build wrote
-  before records said where they came from are unrecorded: they list when
-  all three catalogs of the computer are unrecorded, as that build listed
-  them, and any write by a newer build replaces them. The price is
+  tree it answered together plus the changes pushed since. The replica
+  keeps only that tree across a restart: rows answered apart, rows of a
+  partial round and pushed changes alone never make one and are never
+  written over it. Kept rows a build wrote before records said where they
+  came from are unrecorded: they list when all three catalogs of the
+  computer are unrecorded, as that build listed them, until a complete
+  round's tree replaces them. The price is
   accepted: a computer whose thread list keeps failing
   shows none of its projects, which a half-arranged list would show and then
   rearrange (ruling 2026-11-21).
