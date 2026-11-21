@@ -48,7 +48,8 @@ validate_elf() {
 	[ -f "$path" ] || { echo "ERROR: missing Linux payload: $path" >&2; exit 1; }
 	size=$(wc -c < "$path" | tr -d ' ')
 	[ "$size" -gt 1048576 ] || { echo "ERROR: Linux payload is too small; refusing placeholder: $path" >&2; exit 1; }
-	if ! LC_ALL=C dd if="$path" bs=4 count=1 2>/dev/null | od -An -tx1 | grep -q '7f 45 4c 46'; then
+	# od's spacing differs between GNU and BSD.
+	if [ "$(LC_ALL=C dd if="$path" bs=4 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n')" != 7f454c46 ]; then
 		echo "ERROR: Linux payload is not an ELF executable: $path" >&2
 		exit 1
 	fi
