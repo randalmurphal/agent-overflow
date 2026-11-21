@@ -118,11 +118,46 @@ func (t threadToolsApp) releaseAfterResponse(ctx context.Context, release func()
 	release()
 }
 
+// requestHold is a starting call's hold on the request it is about to make:
+// its token, registered in the wait registry under the caller's thread, and
+// the context and channel the call parks on.
+type requestHold struct {
+	token string
+	ctx   context.Context
+	woke  <-chan string
+}
+
+// holdNewRequest mints the token of the request a spawn, send, ask or new
+// assistant is about to make and holds it in the wait registry, before the
+// request's message exists. The returned release runs once the call's
+// response is written (releaseAfterResponse); every starting call defers it
+// at once, so an error exit releases too.
+//
+// The hold is what makes the call the delivery of an answer that lands
+// before its ack reads the request, at any wait: a settlement finds the call
+// holding the token (collectionWakeOwed, claimThreadWake) and queues no
+// wake. Held only from the ack, a reply landing between the dispatch and the
+// ack found nobody waiting, was queued as a wake, and was in the ack too.
+func (t threadToolsApp) holdNewRequest(ctx context.Context, caller threadtools.Caller) (requestHold, func()) {
+	token := newThreadRequestToken()
+	waitCtx, woke, end := t.app.beginRequestWait(ctx, caller.ThreadID, []string{token})
+	return requestHold{token: token, ctx: waitCtx, woke: woke}, func() { t.releaseAfterResponse(ctx, end) }
+}
+
 // ackRequest waits for a freshly dispatched request as long as the call asked
-// to, then renders what it knows.
-func (t threadToolsApp) ackRequest(ctx context.Context, caller threadtools.Caller, token string, waitSeconds int) (threadtools.RequestAck, error) {
-	row, release, err := t.waitForRequest(ctx, caller, token, waitSeconds, 0)
-	defer t.releaseAfterResponse(ctx, release)
+// to, under the hold the call took before dispatching it, then renders what
+// it knows.
+func (t threadToolsApp) ackRequest(ctx context.Context, caller threadtools.Caller, hold requestHold, waitSeconds int) (threadtools.RequestAck, error) {
+	if hook := t.app.requestAckForTest; hook != nil {
+		hook(hold.token)
+	}
+	token := hold.token
+	_, err := parkRequest(hold.ctx, hold.woke, waitSeconds,
+		func() (string, bool, error) { return t.settledOrBlocked(token, 0) })
+	if err != nil {
+		return threadtools.RequestAck{}, err
+	}
+	row, err := t.readParkedRequest(token, waitSeconds > 0)
 	if err != nil {
 		return threadtools.RequestAck{}, err
 	}
@@ -144,27 +179,18 @@ func (t threadToolsApp) ackRequest(ctx context.Context, caller threadtools.Calle
 	return ack, nil
 }
 
-// waitForRequest parks on one token and returns the row as it stands
-// afterwards, arming the wake when a positive wait ended with nothing. The
-// caller renders the row and then hands the release to
-// releaseAfterResponse.
-func (t threadToolsApp) waitForRequest(
-	ctx context.Context, caller threadtools.Caller, token string, waitSeconds int, afterRevision int64,
-) (store.ThreadRequest, func(), error) {
-	_, release, err := t.app.waitRequest(ctx, caller.ThreadID, []string{token}, waitSeconds,
-		func() (string, bool, error) { return t.settledOrBlocked(token, afterRevision) })
+// readParkedRequest returns one request as it stands after the call parked
+// on it, arming the wake when a positive wait ended with nothing.
+func (t threadToolsApp) readParkedRequest(token string, waited bool) (store.ThreadRequest, error) {
+	row, found, err := t.readRequestAndArmNotify(token, waited)
 	if err != nil {
-		return store.ThreadRequest{}, release, err
-	}
-	row, found, err := t.readRequestAndArmNotify(token, waitSeconds > 0)
-	if err != nil {
-		return store.ThreadRequest{}, release, err
+		return store.ThreadRequest{}, err
 	}
 	if !found {
-		return store.ThreadRequest{}, release, errorsx.Public(threadtools.CodeRequestUnknown,
+		return store.ThreadRequest{}, errorsx.Public(threadtools.CodeRequestUnknown,
 			"That request is no longer on this computer.", nil)
 	}
-	return row, release, nil
+	return row, nil
 }
 
 // readRequestAndArmNotify re-reads one request after a wait and arms the wake

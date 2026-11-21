@@ -434,18 +434,20 @@ export async function releaseAfterBackgrounded(
 }
 
 /**
- * Whether a call in `thread` is parked on `probe` now.
+ * Whether a tool call holds `probe` in the wait registry now
+ * (HarnessRequestWaits).
  *
- * A send without notify is one of its caller's Agents rows only while a call
- * waits on it (store.ListThreadAgentTree). A probe sent that way, in an
- * earlier turn, to a thread that holds and never answers, and named among a
- * thread_status call's tokens, is listed exactly while that status call is
- * parked: the one event a test can order a settlement after, so the parked
- * call, not a wake, collects the answer.
+ * The call that makes a request holds its token until its response is
+ * written, so the token of the request under test reads held twice: by its
+ * send, then by the status call. A probe is a request sent in an earlier
+ * turn to a thread that holds and never answers. Once that turn has ended
+ * nothing holds it, and named among a thread_status call's tokens it is held
+ * exactly while that status call is parked: the one event a test can order a
+ * settlement after, so the parked call, not a wake, collects the answer.
  */
-export async function parkedOn(harness: HarnessApp, thread: string, probe: string): Promise<boolean> {
-  const listing = await harness.rpc<{ rows: Array<{ token: string }> }>('ListThreadAgentRows', thread);
-  return listing.rows.some((row) => row.token === probe);
+export async function parkedOn(harness: HarnessApp, probe: string): Promise<boolean> {
+  const held = await harness.rpc<Record<string, boolean>>('HarnessRequestWaits', [probe]);
+  return held[probe] === true;
 }
 
 /** Thread row shape the specs read back through HarnessListThreadRows. */

@@ -41,7 +41,9 @@ func (t threadToolsApp) startRemoteRequest(
 		return threadtools.RequestAck{}, err
 	}
 
-	row.Token = newThreadRequestToken()
+	hold, release := t.holdNewRequest(ctx, caller)
+	defer release()
+	row.Token = hold.token
 	row.CallerThreadID = caller.ThreadID
 	row.TargetComputerID = computerID
 	row.State = store.ThreadRequestUnconfirmed
@@ -83,7 +85,7 @@ func (t threadToolsApp) startRemoteRequest(
 		t.refuseRequest(row.Token, refusal, nil)
 		return threadtools.RequestAck{}, err
 	}
-	return t.dispatchedAck(ctx, caller, row, peer.Computer(), call, reply, read, err, waitSeconds, done)
+	return t.dispatchedAck(ctx, caller, hold, row, peer.Computer(), call, reply, read, err, waitSeconds, done)
 }
 
 // dispatchedAck is every outcome of a remote request the destination may
@@ -95,7 +97,7 @@ func (t threadToolsApp) startRemoteRequest(
 // back is said in the acknowledgement's notice, beside the state known so
 // far; the request's row stays in the poll, which reconciles it.
 func (t threadToolsApp) dispatchedAck(
-	ctx context.Context, caller threadtools.Caller, row store.ThreadRequest, computer threadtools.Computer,
+	ctx context.Context, caller threadtools.Caller, hold requestHold, row store.ThreadRequest, computer threadtools.Computer,
 	call any, reply peerDispatchReply, read ownerRead, sendErr error, waitSeconds int, done func(),
 ) (threadtools.RequestAck, error) {
 	var failed error
@@ -113,7 +115,7 @@ func (t threadToolsApp) dispatchedAck(
 		}
 	}
 	done()
-	ack, err := t.ackRequest(ctx, caller, row.Token, waitSeconds)
+	ack, err := t.ackRequest(ctx, caller, hold, waitSeconds)
 	if err != nil {
 		failed = errors.Join(failed, fmt.Errorf("read the request back: %w", err))
 	}

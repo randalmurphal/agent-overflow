@@ -133,6 +133,9 @@ type Host interface {
 	StallProviderEvents(threadID string) error
 	ReleaseProviderEvents(threadID string) error
 	PendingProviderEvents(threadID string) int
+	// RequestWaits reads the thread tools' wait registry: for each request
+	// token, whether a tool call holds it now.
+	RequestWaits(tokens []string) map[string]bool
 	// ClaudeUsageFake is the isolated boot's Claude usage endpoint, nil on a
 	// boot without one. ReadClaudeUsage reads the selected Claude account's
 	// usage and returns once the reading is cached and auto-switch has

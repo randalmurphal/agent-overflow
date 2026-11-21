@@ -201,10 +201,10 @@ for (const provider of ['claude', 'codex'] as const) {
     expect(probeSend.isError, probeSend.text).toBe(false);
     const probeToken = probeSend.value!.token;
     await awaitTurnCompleted(harness, leadId);
-    await expect.poll(() => parkedOn(harness, leadId, probeToken), { message: 'nothing waits on the probe yet' }).toBe(false);
+    await expect.poll(() => parkedOn(harness, probeToken), { message: 'nothing waits on the probe yet' }).toBe(false);
     await harness.rpc('SendMessage', leadId, 'rebase the target', null);
     const sent = await awaitToolAnswer<{ outcome: string }>(harness, { tool: 'thread_send', cwd: lead.path });
-    await expect.poll(() => parkedOn(harness, leadId, probeToken), { timeout: 30_000, message: 'the status call parks' }).toBe(true);
+    await expect.poll(() => parkedOn(harness, probeToken), { timeout: 30_000, message: 'the status call parks' }).toBe(true);
     await releaseAfterBackgrounded(sent, { harness, gate: 'inline-answer', cwd: target.path });
     const status = await awaitToolAnswer<{ requests: { state: string; delivered?: string }[] }>(
       harness, { tool: 'thread_status', cwd: lead.path, timeoutMs: 90_000 });

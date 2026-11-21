@@ -863,6 +863,10 @@ type App struct {
 	// made and before the spawn names it (acceptRequest), so a test can hold
 	// an admitted spawn there.
 	spawnNamingForTest func(callerThreadID string)
+	// requestAckForTest, when set, runs in a spawn, send, ask or new
+	// assistant once its message is dispatched and before its ack reads the
+	// request (ackRequest), so a test can answer the request there.
+	requestAckForTest func(token string)
 	// peerAdmissionForTest, when set, runs in a paired computer's spawn,
 	// send or ask once its handler holds the token and before anything can
 	// admit it (runThreadPeerRequest), so a test can hold it there.

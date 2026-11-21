@@ -963,9 +963,9 @@ test('thread_status watches a request running on the other computer, and a prefi
   // for the caller's previous turn.
   const gate = await awaitGate(remote, 'hold-remote-status', there.path);
   await awaitTurnCompleted(home, caller.threadIds[0]);
-  await expect.poll(() => parkedOn(home, caller.threadIds[0], probeToken), { message: 'nothing waits on the probe yet' }).toBe(false);
+  await expect.poll(() => parkedOn(home, probeToken), { message: 'nothing waits on the probe yet' }).toBe(false);
   await home.rpc('SendMessage', caller.threadIds[0], 'watch it until it finishes', null);
-  await expect.poll(() => parkedOn(home, caller.threadIds[0], probeToken), { timeout: 60_000, message: 'the status wait parks' }).toBe(true);
+  await expect.poll(() => parkedOn(home, probeToken), { timeout: 60_000, message: 'the status wait parks' }).toBe(true);
   await advanceGate(remote, gate.mockId, 'hold-remote-status');
 
   const settled = await awaitToolAnswer<StatusAnswer>(home, {

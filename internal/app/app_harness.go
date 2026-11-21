@@ -90,6 +90,10 @@ func (h *harnessHost) PendingProviderEvents(threadID string) int {
 	return h.app.providerEvents.pending(threadID)
 }
 
+func (h *harnessHost) RequestWaits(tokens []string) map[string]bool {
+	return h.app.requestsHeld(tokens)
+}
+
 func (h *harnessHost) ClaudeUsageFake() *claudefake.Usage { return h.app.claudeUsageFake }
 
 func (h *harnessHost) ReadClaudeUsage(ctx context.Context) error {

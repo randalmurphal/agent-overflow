@@ -350,13 +350,17 @@ func TestAWorkersParkedQuietSendListsUnderItsOwner(t *testing.T) {
 		})
 		done <- sent{ack, err}
 	}()
+	// The send holds its token from before its request is written
+	// (holdNewRequest), so the row is read once it exists.
 	var token string
 	waitUntil(t, 10*time.Second, func() bool {
 		parked := f.app.parkedRequestTokens()
-		if len(parked) == 1 {
-			token = parked[0]
+		if len(parked) != 1 {
+			return false
 		}
-		return token != ""
+		token = parked[0]
+		_, found, err := f.app.store.GetThreadRequest(token)
+		return err == nil && found
 	})
 	if row := f.request(t, token); row.Notify || row.CallerThreadID != worker.ID {
 		t.Fatalf("the parked send %+v; want the worker's, with no wake armed", row)
