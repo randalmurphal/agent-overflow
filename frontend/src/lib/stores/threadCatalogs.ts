@@ -18,13 +18,13 @@
 //   - A listed computer's two answers commit together, once neither read is
 //     out and both windows have ended: in the round's batch, or in one block
 //     of their own when the last late one lands.
-//   - A failed read settles its failure, which shows and retries as the
-//     pair. The other half, answered, is published alone (committed when
-//     listed, listed when not) only when nothing will re-read the pair by
-//     itself: the failure is final (a scope refusal), or the round is itself
-//     a retry attempt whose half failed again. Otherwise the answer is
-//     dropped, the sidebar keeps what it shows (the previous pair, or the
-//     loading or error row) and the next pair replaces both.
+//   - The pair is atomic in the sidebar without exception. A failed read
+//     settles its failure, which shows with Retry and retries as the pair;
+//     the other half, answered, is never published to the sidebar's list,
+//     on any attempt and for any failure. A listed computer keeps its last
+//     complete pair, an unlisted one its loading or error row, and only a
+//     complete pair replaces them. An unlisted computer's thread answer
+//     still reaches the thread store, for its open panes.
 //   - Answers that commit at a window's end commit in one batch per catalog,
 //     threads first, so a refresh reconciles the thread list once however
 //     many computers answered.
@@ -32,22 +32,25 @@
 // A round resolves when its thread window ends, with the thread rows as the
 // boot's layout restore should see them: the store's rows with every listed
 // computer's held thread answer applied, its journal replayed as of that
-// moment. A thread answer dropped for its partner's failure still counts
-// while any round runs. The owners of those rows are recorded then, so a
-// restored pane routes to its computer before the rows commit. A round that
-// newer rounds superseded follows every one of them, those that supersede it
-// while it waits included, bounded by its own on-time budget, so a retry
-// that waits for its RPC cannot hold the boot. Only then does it decide
-// whether any of its computers' thread rows are known.
+// moment. A thread answer withheld for its partner's failure counts for the
+// round that withheld it and the rounds following that round, and lives as
+// long as one of them is unresolved. The owners of those rows are recorded
+// then, so a restored pane routes to its computer before the rows commit. A
+// round that newer rounds superseded follows every one of them, those that
+// supersede it while it waits included, bounded by its own on-time budget,
+// so a retry that waits for its RPC cannot hold the boot. Only then does it
+// decide whether any of its computers' thread rows are known.
 //
-// A computer's read is in flight until both of its parts are done or
-// dropped; then nothing here holds it, its journals or its answers.
+// A computer's read is one attempt of the pair's catalogs
+// (beginCatalogAttempt), whatever started the round: it holds the retry
+// timer off until both of its parts are done or dropped. Then nothing here
+// holds it, its journals or its answers.
 import { untrack } from 'svelte';
 import { attachedBackends, onBackendDetached, type BackendEntry } from '../transport/backends';
 import type { BackendKey } from '../transport/backendKey';
 import { ReadDeadlineError } from '../utils/readBeforeDeadline';
 import type { Thread, ThreadGroup } from '../types/models';
-import { catalogFailureRereads, catalogFailureShown, registerCatalogReader } from './catalogLoad.svelte';
+import { beginCatalogAttempt, catalogFailureShown, registerCatalogReader } from './catalogLoad.svelte';
 import {
   beginShare, commitShares, COMPUTER_READ_DEADLINE_MS, readShare,
   type CatalogPart, type ComputerShare, type ShareResult,
@@ -86,10 +89,13 @@ type PartStatus = Pick<PartRead<unknown>, 'state' | 'ready' | 'dropped' | 'outco
 type RoundOutcome = { ok: true; known: ReadonlySet<BackendKey> } | { ok: false; error: unknown };
 
 interface Round {
-  /** A retry attempt: the retry timer's or the Retry button's. */
-  retry: boolean;
   /** Newer rounds that superseded a read of this round that could still count. */
   supersededBy: Set<Round>;
+  /** Older rounds, unresolved, that follow this one: a read of theirs this one superseded. */
+  followers: Set<Round>;
+  resolved: boolean;
+  /** Withheld thread answers this round resolves with: its own and those of rounds it followed. */
+  withheld: Set<Withheld>;
   /**
    * Settles when the round resolves, with the computers whose thread rows
    * it knew, or rejects; never rejects.
@@ -105,23 +111,23 @@ interface ComputerRead {
   ownersNoted: boolean;
   threads: PartRead<Thread>;
   groups: PartRead<ThreadGroup>;
-  /** Resolves once both parts are done or dropped. */
-  concluded: Promise<void>;
-  conclude: () => void;
+  /** Ends this read's attempt of the pair's catalogs; idempotent. */
+  endAttempt: () => void;
 }
 
-// A thread answer withheld for its partner's failure, kept for the rows a
-// running round resolves with.
-interface WithheldThreads {
-  read: ComputerRead;
-  result: ShareResult<Thread>;
+// A thread answer withheld for its partner's failure, kept for the rows the
+// unresolved rounds holding it resolve with. `result` is null once released.
+interface Withheld {
+  backend: BackendKey;
+  part: CatalogPart<Thread>;
+  result: ShareResult<Thread> | null;
+  holders: Set<Round>;
 }
 
 // The newest round's read of each computer, while it is in flight.
 const reads = new Map<BackendKey, ComputerRead>();
-// Rounds not yet settled; withheld thread answers live while any does.
-const running = new Set<Round>();
-const withheld = new Map<BackendKey, WithheldThreads>();
+// Each computer's withheld thread answer while a round holds it.
+const withheld = new Map<BackendKey, Withheld>();
 // Whether each computer's thread list is listed. Boxless keys read false: a
 // computer is held until its first round says otherwise.
 const listed = createKeyedSignalRegistry<boolean>(false);
@@ -152,9 +158,18 @@ function partRead<T>(part: CatalogPart<T>, target: BackendEntry): PartRead<T> {
   };
 }
 
+// `older` follows `newer`: it waits for it, and holds what it withholds.
+// Every follower joins as `newer` begins its reads, before it can withhold.
+function supersede(older: Round, newer: Round): void {
+  older.supersededBy.add(newer);
+  if (!older.resolved) newer.followers.add(older);
+}
+
 function beginComputer(round: Round, target: BackendEntry, threads: CatalogPart<Thread>, groups: CatalogPart<ThreadGroup>): ComputerRead {
+  // The new attempt begins before the previous one ends, so the timer is
+  // never re-evaluated between them.
+  const endAttempt = beginCatalogAttempt('threads', target.id);
   const previous = reads.get(target.id);
-  let conclude!: () => void;
   const read: ComputerRead = {
     backend: target.id,
     round,
@@ -162,18 +177,17 @@ function beginComputer(round: Round, target: BackendEntry, threads: CatalogPart<
     ownersNoted: false,
     threads: partRead(threads, target),
     groups: partRead(groups, target),
-    concluded: new Promise((resolve) => { conclude = resolve; }),
-    conclude: () => conclude(),
+    endAttempt,
   };
   reads.set(target.id, read);
   if (previous !== undefined) {
-    previous.round.supersededBy.add(round);
+    supersede(previous.round, round);
     drop(previous);
   }
   const kept = withheld.get(target.id);
   if (kept !== undefined) {
-    kept.read.round.supersededBy.add(round);
-    releaseWithheld(target.id);
+    for (const holder of kept.holders) supersede(holder, round);
+    release(kept);
   }
   return read;
 }
@@ -200,7 +214,7 @@ function concludeIfDone(read: ComputerRead): void {
   const concluded = (part: PartStatus) => part.state === 'done' || part.dropped;
   if (!concluded(read.threads) || !concluded(read.groups)) return;
   if (reads.get(read.backend) === read) reads.delete(read.backend);
-  read.conclude();
+  read.endAttempt();
 }
 
 // The read's on-time outcome: an answer, a failure, or a deadline.
@@ -224,17 +238,10 @@ function arriveLate<T>(read: ComputerRead, part: PartRead<T>, result: ShareResul
   commitReads([read]);
 }
 
-// Whether an answered half is withheld for its partner's failure: something
-// will re-read the pair by itself (the failure's retry, or the reconnect's
-// hello), and this round is not a retry attempt whose half failed again.
-function withholdsAlone(read: ComputerRead, partner: PartOutcome): boolean {
-  return !partner.answered && !read.round.retry && catalogFailureRereads(partner.error);
-}
-
 // The result `part` hands to this block's commit, if any. A read past its
 // deadline settles as one here, once, and stays out. A listed computer's
-// answer waits for its partner, then commits with it, alone, or is
-// withheld: handed to `withhold` instead.
+// answer waits for its partner and commits with it; when the partner
+// failed it is withheld instead, handed to `withhold`.
 function take<T>(
   read: ComputerRead, part: PartRead<T>, partner: PartStatus, withhold: (result: ShareResult<T>) => void,
 ): ShareResult<T> | null {
@@ -246,7 +253,7 @@ function take<T>(
   }
   if (part.state === 'answered' && read.paired) {
     if (outstanding(partner) || !partner.ready) return null;
-    if (withholdsAlone(read, partner.outcome)) {
+    if (!partner.outcome.answered) {
       part.state = 'done';
       part.result = null;
       withhold(result);
@@ -303,45 +310,81 @@ function noteHeldOwners(read: ComputerRead, result: ShareResult<Thread>): void {
   for (const row of result.rows) read.threads.part.note(row, read.backend);
 }
 
-// A withheld thread answer is never committed; while a round runs, the
-// rows it resolves with include it.
+// The unresolved rounds that can still read what `round` withholds: itself
+// and every round following it, directly or through another follower.
+function liveHolders(round: Round): Set<Round> {
+  const live = new Set<Round>();
+  const seen = new Set<Round>();
+  const visit = (next: Round) => {
+    if (seen.has(next)) return;
+    seen.add(next);
+    if (!next.resolved) live.add(next);
+    for (const follower of next.followers) visit(follower);
+  };
+  visit(round);
+  return live;
+}
+
+function hold(entry: Withheld, round: Round): void {
+  entry.holders.add(round);
+  round.withheld.add(entry);
+}
+
+// A withheld thread answer is never committed; the rounds that can still
+// read it resolve with it.
 function withholdThreads(read: ComputerRead, result: ShareResult<Thread>): void {
-  if (running.size === 0) {
+  const holders = liveHolders(read.round);
+  if (holders.size === 0) {
     result.share.pending.end();
     return;
   }
   noteHeldOwners(read, result);
-  releaseWithheld(read.backend);
-  withheld.set(read.backend, { read, result });
+  // A computer's earlier withheld answer was released when this read began.
+  const entry: Withheld = { backend: read.backend, part: read.threads.part, result, holders: new Set() };
+  for (const holder of holders) hold(entry, holder);
+  withheld.set(read.backend, entry);
 }
 
-function releaseWithheld(backend: BackendKey): void {
-  withheld.get(backend)?.result.share.pending.end();
-  withheld.delete(backend);
+function release(entry: Withheld): void {
+  entry.result?.share.pending.end();
+  entry.result = null;
+  for (const holder of entry.holders) holder.withheld.delete(entry);
+  entry.holders.clear();
+  if (withheld.get(entry.backend) === entry) withheld.delete(entry.backend);
+}
+
+// A round resolved: what no unresolved round holds any more is released.
+function finishRound(round: Round): void {
+  round.resolved = true;
+  for (const newer of round.supersededBy) newer.followers.delete(round);
+  for (const entry of [...round.withheld]) {
+    entry.holders.delete(round);
+    round.withheld.delete(entry);
+    if (entry.holders.size === 0) release(entry);
+  }
 }
 
 // The listing's one writer. A computer lists once both reads are done and
-// its threads are known, unless an answered half was withheld for its
-// partner's failure: its loading or error row stays until the next pair.
+// its threads are known, unless one half answered and the other failed:
+// then its loading or error row stays until a complete pair.
 function updateListing(read: ComputerRead): void {
   if (untrack(() => listed.get(read.backend)) || !threadsKnown.has(read.backend)) return;
   const { threads, groups } = read;
   if (threads.state !== 'done' || groups.state !== 'done') return;
-  if ((threads.outcome.answered && withholdsAlone(read, groups.outcome))
-    || (groups.outcome.answered && withholdsAlone(read, threads.outcome))) return;
+  if (threads.outcome.answered !== groups.outcome.answered) return;
   listed.set(read.backend, true);
 }
 
-/** The thread rows a caller validating saved panes should see now. */
-function threadRowsNow(): readonly Thread[] {
+/** The thread rows a caller validating saved panes, `round`'s, should see now. */
+function threadRowsNow(round: Round): readonly Thread[] {
   const held: { backend: BackendKey; part: CatalogPart<Thread>; result: ShareResult<Thread> }[] = [];
   for (const read of reads.values()) {
     if (read.threads.state === 'answered' && read.threads.ready && currentRead(read)) {
       held.push({ backend: read.backend, part: read.threads.part, result: read.threads.result! });
     }
   }
-  for (const [backend, { read, result }] of withheld) {
-    if (result.share.current()) held.push({ backend, part: read.threads.part, result });
+  for (const { backend, part, result } of round.withheld) {
+    if (result !== null && result.share.current()) held.push({ backend, part, result });
   }
   if (held.length === 0) return getThreads();
   const rows = held.flatMap(({ backend, part, result }) => (
@@ -423,33 +466,10 @@ async function runRound(
         throw errors.find((error) => error !== undefined) ?? new Error('No computer could be reached.');
       }
     }
-    return { rows: threadRowsNow(), known };
+    return { rows: threadRowsNow(round), known };
   } finally {
     clearTimeout(budgetTimer);
   }
-}
-
-// Begin a round's reads in one synchronous step and run it. `rows` is what
-// loadThreadCatalogs resolves with; `concluded` resolves once no read of
-// the round is in flight.
-function startRound(only: BackendKey | undefined, retry: boolean): { rows: Promise<readonly Thread[]>; concluded: Promise<void> } {
-  let settle!: (outcome: RoundOutcome) => void;
-  const round: Round = { retry, supersededBy: new Set(), settled: new Promise((resolve) => { settle = resolve; }) };
-  running.add(round);
-  void round.settled.then(() => {
-    running.delete(round);
-    if (running.size === 0) for (const backend of [...withheld.keys()]) releaseWithheld(backend);
-  });
-  const threadPart = threadCatalogPart();
-  const groupPart = groupCatalogPart();
-  const targets = untrack(() => attachedBackends()).filter((entry) => only === undefined || entry.id === only);
-  const begun = targets.map((target) => beginComputer(round, target, threadPart, groupPart));
-  const result = runRound(round, begun, threadPart, groupPart, only === undefined ? COMPUTER_READ_DEADLINE_MS : null);
-  result.then(({ known }) => settle({ ok: true, known }), (error: unknown) => settle({ ok: false, error }));
-  return {
-    rows: result.then(({ rows }) => rows),
-    concluded: Promise.all(begun.map((read) => read.concluded)).then(() => {}),
-  };
 }
 
 /**
@@ -461,24 +481,41 @@ function startRound(only: BackendKey | undefined, retry: boolean): { rows: Promi
  * it.
  */
 export function loadThreadCatalogs(only?: BackendKey): Promise<readonly Thread[]> {
-  return startRound(only, false).rows;
+  let settle!: (outcome: RoundOutcome) => void;
+  const round: Round = {
+    supersededBy: new Set(), followers: new Set(), resolved: false, withheld: new Set(),
+    settled: new Promise((resolve) => { settle = resolve; }),
+  };
+  const threadPart = threadCatalogPart();
+  const groupPart = groupCatalogPart();
+  const targets = untrack(() => attachedBackends()).filter((entry) => only === undefined || entry.id === only);
+  const begun = targets.map((target) => beginComputer(round, target, threadPart, groupPart));
+  const result = runRound(round, begun, threadPart, groupPart, only === undefined ? COMPUTER_READ_DEADLINE_MS : null);
+  result.then(({ known }) => {
+    finishRound(round);
+    settle({ ok: true, known });
+  }, (error: unknown) => {
+    finishRound(round);
+    settle({ ok: false, error });
+  });
+  return result.then(({ rows }) => rows);
 }
 
-// An attempt is in flight until the computer's pair has concluded, not
-// only until its thread window ends.
-registerCatalogReader(['threads', 'groups'], async (backend, { retry }) => {
-  const { rows, concluded } = startRound(backend, retry);
-  // The round settled this computer's failure into the catalog state,
-  // which is where it is shown and retried.
-  rows.catch(() => {});
-  await concluded;
+registerCatalogReader(['threads', 'groups'], async (backend) => {
+  try {
+    await loadThreadCatalogs(backend);
+  } catch {
+    // The round settled this computer's failure into the catalog state,
+    // which is where it is shown and retried.
+  }
 });
 
 onBackendDetached(({ backendId }) => {
   const read = reads.get(backendId);
   if (read !== undefined) drop(read);
   reads.delete(backendId);
-  releaseWithheld(backendId);
+  const kept = withheld.get(backendId);
+  if (kept !== undefined) release(kept);
   threadsKnown.delete(backendId);
   listed.drop(backendId);
 });
@@ -495,8 +532,7 @@ export function listCatalogTreesForTest(): void {
 export function resetThreadCatalogsForTest(): void {
   for (const read of [...reads.values()]) drop(read);
   reads.clear();
-  for (const backend of [...withheld.keys()]) releaseWithheld(backend);
-  running.clear();
+  for (const entry of [...withheld.values()]) release(entry);
   threadsKnown.clear();
   listed.reset();
 }

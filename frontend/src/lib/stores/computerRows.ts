@@ -9,13 +9,15 @@ import type { CatalogKind, CatalogRows } from '../replica/catalog';
 import { getBackendIdentity, type BackendIdentity } from '../transport/backendIdentity';
 import { readBeforeDeadline, ReadDeadlineError } from '../utils/readBeforeDeadline';
 import { untrack } from 'svelte';
-import { settleCatalogRead } from './catalogLoad.svelte';
+import { beginCatalogAttempt, settleCatalogRead } from './catalogLoad.svelte';
 
 export interface ComputerCatalog<T> {
   read(backend: BackendKey): Promise<T[] | null>;
   write(backend: BackendKey, rows: T[]): Promise<void>;
   hasRows(backend: BackendKey): boolean;
   begin(backend: BackendKey): CatalogRead<T>;
+  /** Begin one computer's read as an attempt of its catalog (beginCatalogAttempt); returns its end. */
+  attempt(backend: BackendKey): () => void;
   /**
    * One computer's current read failed with `error`; `cached` when its
    * kept or replica rows stand in for the answer. An answer, on time or
@@ -63,6 +65,7 @@ export function computerCatalog<K extends CatalogKind>(
       stamps.set(backend, replicaCatalogStamp(backend, kind));
       return beginCatalogRead<CatalogRows[K]>(backend, kind);
     },
+    attempt: (backend) => beginCatalogAttempt(kind, backend),
     read: (backend) => getReplicaCatalog(backend, kind),
     write: (backend, rows) => putReplicaCatalog(backend, kind, rows, stamps.get(backend) ?? null),
     hasRows: (backend) => populated.has(backend),
@@ -251,10 +254,25 @@ export async function readComputerRows<T>(
   const part: CatalogPart<T> = { read, note, commit, catalog: options.catalog, admit: options.admit };
   const deadlineMs = options.deadlineMs === undefined ? COMPUTER_READ_DEADLINE_MS : options.deadlineMs;
   const targets = attachedBackends().filter((entry) => options.only === undefined || entry.id === options.only);
+  // Each computer's attempt ends once nothing of its read is still out.
+  const attempts = new Map(targets.map((target) => [target, options.catalog?.attempt(target.id) ?? (() => {})]));
   const shares = targets.map((target) => beginShare(part, target));
-  const late: LateShare<T> = { onLate: (result) => { commitShares(part, [result]); } };
+  const late: LateShare<T> = {
+    onLate: (result) => {
+      try {
+        commitShares(part, [result]);
+      } finally {
+        attempts.get(result.share.target)!();
+      }
+    },
+  };
   const results = await Promise.all(shares.map((share) => readShare(part, share, deadlineMs, late)));
-  const outcome = commitShares(part, results);
+  let outcome: CommitOutcome;
+  try {
+    outcome = commitShares(part, results);
+  } finally {
+    for (const result of results) if (!result.late) attempts.get(result.share.target)!();
+  }
   // Superseded reads have no authority and no failure to report. In
   // particular, boot and a connection's first hello can overlap. Keep
   // cancellation distinct from both an authoritative empty list and an

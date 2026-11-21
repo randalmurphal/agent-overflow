@@ -18,9 +18,10 @@
 // then appear in their final arrangement and do not move, at open and
 // after reload. A listed project's refresh whose group answer comes past
 // the read deadline keeps its rows still until that answer lands, then
-// changes arrangement once. A refresh whose thread read fails keeps its rows
-// as they were beside the failure, the new group's answer not shown alone,
-// until the retry's pair changes the arrangement once.
+// changes arrangement once. A refresh whose thread read fails, and whose
+// retry's fails again, keeps its rows as they were beside the failure, the
+// new group's answer never shown alone, until a complete pair changes the
+// arrangement once.
 import type { Page } from '@playwright/test';
 import { test, expect, type SeedResult } from './fixtures.js';
 import { attachWorktree, seedWorktreeProject } from './worktree-removal-helpers.js';
@@ -546,16 +547,18 @@ test('a refresh whose group answer is late moves the rows once, when it lands', 
 });
 
 // A listed project's refresh whose thread read fails: the group answer does
-// not show alone while the failure retries. The first thread reply after
-// the frames are lost is replaced with a method error; every thread reply
-// after it is held, so no later round can commit, until released.
-test('a refresh whose thread read fails keeps the rows still beside the failure, then the retry moves them once', async ({ harness, page }) => {
+// not show alone while the failure retries, on any attempt. The first two
+// thread replies after the frames are lost are replaced with a method error;
+// every thread reply after them is held, so no later round can commit, until
+// released.
+test('a refresh whose thread read fails, and then its retry\'s, keeps the rows still beside the failure, then the next retry moves them once', async ({ harness, page }) => {
   const seed = await harness.rpc<SeedResult>('HarnessSeed', seedProject('group-refresh-failed', ['Member A', 'Member B', 'Outside']));
   const { projectId, threadIds } = seed.projects[0];
 
   const requests = new Map<string, number>();
   let losing = false;
-  let failNext = false;
+  let failing = 0;
+  const failed: string[] = [];
   let holding = false;
   let heldReplies: Array<() => void> = [];
   await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
@@ -568,9 +571,10 @@ test('a refresh whose thread read fails keeps the rows still beside the failure,
     server.onMessage((message) => {
       const frame = JSON.parse(String(message)) as { type?: string; id?: string; events?: Array<{ channel?: string; seq?: number }>; channel?: string; seq?: number };
       if (frame.type === 'rpc' && frame.id && requests.get(frame.id) === LIST_THREADS) {
-        if (failNext) {
-          failNext = false;
-          holding = true;
+        if (failing > 0) {
+          failing--;
+          if (failing === 0) holding = true;
+          failed.push(frame.id);
           socket.send(JSON.stringify({ type: 'rpc', id: frame.id, error: { code: 'method_error', message: 'list threads: disk I/O error' } }));
           return;
         }
@@ -603,18 +607,26 @@ test('a refresh whose thread read fails keeps the rows still beside the failure,
   const initial = arrangements((await sidebarRecord(page)).frames.slice(listedAt - 1));
   expect(initial).toHaveLength(1);
 
+  // The refresh's thread reply and the next one, the retry's, fail; every
+  // thread reply after them is held.
   losing = true;
-  failNext = true;
+  failing = 2;
   const group = await harness.rpc<ThreadGroup>('CreateThreadGroup', projectId, 'Made while failing');
   await harness.rpc('SetThreadGroup', threadIds.slice(0, 2), group.id);
   await expect(page.getByTestId('sidebar-catalog-failed')).toContainText(/disk I\/O error/i);
-  // The retry's thread reply is held; its group answer is in.
+  await expect.poll(async () => {
+    const { replies } = await sidebarRecord(page);
+    return failed.length === 2 && failed.every((id) => replies.includes(id));
+  }).toBe(true);
+  // The next retry's thread reply is held; its group answer is in.
   await expect.poll(() => heldReplies.length).toBeGreaterThan(0);
+  await expect(page.getByTestId('sidebar-catalog-failed')).toContainText(/disk I\/O error/i);
   await nextFrames(page, 2);
   const held = (await sidebarRecord(page)).frames.slice(listedAt);
   expect(arrangements(held)).toEqual(initial);
-  // The failure row enters above the list and pushes every row down by its
-  // height, in one frame; no row changes place.
+  // The failure row enters above the list at the first failure and pushes
+  // every row down by its height, in one frame; at the second it is already
+  // there, and no row changes place.
   expect(movement(held)).toEqual({ slid: 0, shifted: 1 });
   await expect(page.locator(`[data-sidebar-group-id="${group.id}"]`)).toHaveCount(0);
 
