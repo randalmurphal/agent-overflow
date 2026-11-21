@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
@@ -124,6 +125,10 @@ func TestEntriesNeverHoldACredential(t *testing.T) {
 		{"escaped in a GraphQL comment", linearDoc("Q", issue(`"i1"`)+" # "+gqlEscaped), testLinearKey},
 		{"escaped in a document that does not lex", linearDoc("Q", issue(`"`+gqlEscaped)), testLinearKey},
 		{"escaped in the operation name", linearDoc(gqlEscaped, issue(`"i1"`)), testLinearKey},
+		// A key is a GraphQL name, so the request is answered and the
+		// operation is its route.
+		{"the operation name of an answered request", linearDoc(testLinearKey, `query `+testLinearKey+` { viewer { id } }`), testLinearKey},
+		{"the method", jiraReq(testJiraToken, "/rest/api/3/myself", ""), testJiraToken},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			var notified []Request
@@ -150,6 +155,47 @@ func TestEntriesNeverHoldACredential(t *testing.T) {
 				t.Errorf("the unhandled answer holds the credential: %s", rec.Body)
 			}
 		})
+	}
+}
+
+// engineOwned are the Request members the engine sets from its own
+// state, which no text of the request reaches. Omitted is the builder's
+// own account of what it cut.
+var engineOwned = []string{"Seq", "At", "Origin", "Tenant", "Omitted", "Status", "Unhandled", "Fault", "Held"}
+
+// TestEntryScrubsEveryMemberARequestSets fills every other member of a
+// Request with a credential; the entry made of it holds none. A new
+// member fails here until it is scrubbed or named engine-owned.
+func TestEntryScrubsEveryMemberARequestSets(t *testing.T) {
+	var in Request
+	fields := reflect.ValueOf(&in).Elem()
+	for i := range fields.NumField() {
+		name := fields.Type().Field(i).Name
+		if slices.Contains(engineOwned, name) {
+			continue
+		}
+		switch f := fields.Field(i).Addr().Interface().(type) {
+		case *string:
+			*f = testLinearKey
+		case *[]string:
+			*f = []string{testLinearKey}
+		case *url.Values:
+			*f = url.Values{testLinearKey: {testLinearKey}}
+		case *json.RawMessage:
+			*f = json.RawMessage(`{"` + testLinearKey + `":"` + testLinearKey + `"}`)
+		default:
+			t.Fatalf("Request.%s is a %T: fill it here, or name it in engineOwned", name, f)
+		}
+	}
+	out := reflect.ValueOf(entryOf(in, []string{testLinearKey}))
+	for i := range out.NumField() {
+		raw, err := json.Marshal(out.Field(i).Interface())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if name := out.Type().Field(i).Name; holds(t, string(raw), testLinearKey) {
+			t.Errorf("Request.%s holds the credential: %s", name, raw)
+		}
 	}
 }
 
@@ -375,7 +421,9 @@ func TestEntryBound(t *testing.T) {
 		get  func(r Request) string
 		json bool
 	}{
+		{"method", func(r *Request, s string, _ json.RawMessage) { r.Method = s }, func(r Request) string { return r.Method }, false},
 		{"path", func(r *Request, s string, _ json.RawMessage) { r.Path = s }, func(r Request) string { return r.Path }, false},
+		{"route", func(r *Request, s string, _ json.RawMessage) { r.Route = s }, func(r Request) string { return r.Route }, false},
 		{"operation", func(r *Request, s string, _ json.RawMessage) { r.Operation = s }, func(r Request) string { return r.Operation }, false},
 		{"detail", func(r *Request, s string, _ json.RawMessage) { r.Detail = s }, func(r Request) string { return r.Detail }, false},
 		{"query key", func(r *Request, s string, _ json.RawMessage) { r.Query = map[string][]string{s: {"v"}} }, func(r Request) string {

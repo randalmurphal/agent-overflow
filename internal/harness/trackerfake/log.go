@@ -15,9 +15,9 @@ import (
 const maxLogged = 4096
 
 // maxLoggedMember bounds each member an entry keeps, in bytes: a text
-// (the path, operation and detail, each query key and value, each file
-// name) is cut to it, and a JSON value (the body, the variables) over it
-// is left out. Request.Omitted names each.
+// (the method, path, route, operation and detail, each query key and
+// value, each file name) is cut to it, and a JSON value (the body, the
+// variables) over it is left out. Request.Omitted names each.
 const maxLoggedMember = 64 << 10
 
 // redacted replaces a credential wherever an entry would repeat it.
@@ -153,7 +153,10 @@ func cloneValues(v url.Values) url.Values {
 // logEntry is what the log keeps of x's entry, and the only way an entry
 // is made: every credential the engine knows or x presented is replaced
 // in every text, in every decoded JSON string, number and key, and every
-// member is bounded by maxLoggedMember. Callers hold mu.
+// member is bounded by maxLoggedMember. Every member a request's own text
+// can reach goes through the builder, the route included: a Linear route
+// is the operation name the client chose
+// (TestEntryScrubsEveryMemberARequestSets). Callers hold mu.
 func (e *Engine) logEntry(x *exchange) Request {
 	return entryOf(x.entry, e.secrets(x))
 }
@@ -161,7 +164,9 @@ func (e *Engine) logEntry(x *exchange) Request {
 func entryOf(in Request, secrets []string) Request {
 	r := in.clone()
 	b := &entryBuilder{secrets: secrets, graphql: in.Origin.Tracker == TrackerLinear}
+	r.Method = b.text("method", r.Method)
 	r.Path = b.text("path", r.Path)
+	r.Route = b.text("route", r.Route)
 	r.Operation = b.text("operation", r.Operation)
 	r.Detail = b.text("detail", r.Detail)
 	if r.Query != nil {
