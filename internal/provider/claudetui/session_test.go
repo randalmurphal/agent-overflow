@@ -74,7 +74,7 @@ func newWiredSession(t *testing.T) (*Session, *eventRecorder) {
 		onEvent:  rec.record,
 	}
 	s.rec = newReconstructor(s.feedEnvelope)
-	go s.feedLoop()
+	s.startFeedLoop()
 	t.Cleanup(func() { _ = s.Close() })
 	return s, rec
 }
