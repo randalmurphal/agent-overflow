@@ -285,8 +285,17 @@ func (r *run) refreshDetails(f *refreshed, open []*ticketPump, cached []string, 
 	ch, err := r.verifiedDetails(f.reads, 0)
 	f.ch.add(ch)
 	f.details = detailsRead{ch: ch, root: r.root, gen: r.gen, kind: r.row.Kind}
+	// A detail whose own read ended is refreshed however the others' did;
+	// the rest owe the read that failed.
+	var owed []tracker.Resource
+	for _, rd := range f.reads {
+		if rd.answered {
+			f.covered(tracker.DetailOf(rd.issue))
+		} else {
+			owed = append(owed, tracker.DetailOf(rd.issue))
+		}
+	}
 	if err == nil {
-		f.covered(detailResources(f.reads)...)
 		return nil
 	}
 	f.detailsErr = err
@@ -294,7 +303,7 @@ func (r *run) refreshDetails(f *refreshed, open []*ticketPump, cached []string, 
 	if _, _, ferr := r.failed(&o, err); ferr == nil && o.Failure != nil {
 		f.details.failure, f.details.retryAt = o.Failure, o.RetryAt
 	}
-	return r.failedRead(f, err, detailResources(f.reads)...)
+	return r.failedRead(f, err, owed...)
 }
 
 // refreshWorklogs reads p's worklogs, one read per author and span of
@@ -417,14 +426,6 @@ func cardResources(ids []tracker.IssueID) []tracker.Resource {
 	out := make([]tracker.Resource, len(ids))
 	for i, id := range ids {
 		out[i] = tracker.CardOf(id)
-	}
-	return out
-}
-
-func detailResources(reads []*ticketRead) []tracker.Resource {
-	out := make([]tracker.Resource, len(reads))
-	for i, rd := range reads {
-		out[i] = tracker.DetailOf(rd.issue)
 	}
 	return out
 }

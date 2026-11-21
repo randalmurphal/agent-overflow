@@ -228,14 +228,19 @@ func TestARoundReadsTheShownTickets(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// One hidden: shown again, both are due and read together.
+	// One hidden: shown again, it is read with every shown ticket then due.
+	// The shown one may be read on its own first: the round takes the wake
+	// hiding sent at any time, and once the clock passed, it is due.
 	show(subs[0], false)
-	m.pass(time.Hour)
 	reads = m.p.count("Details")
+	m.pass(time.Hour)
 	show(subs[0], true)
 	waitCalls(t, m.p, "Details", reads+1)
 	quiet(t, m.svc)
-	if got := m.p.detailsRead()[reads:]; len(got) != 1 || !slices.Equal(got[0], issues) {
+	switch got := m.p.detailsRead()[reads:]; {
+	case len(got) == 1 && slices.Equal(got[0], issues):
+	case len(got) == 2 && slices.Equal(got[0], issues[1:]) && slices.Equal(got[1], issues[:1]):
+	default:
 		t.Fatalf("shown again after its time passed, the reads %v", got)
 	}
 	// Both hidden, so no round runs: each is due when shown.

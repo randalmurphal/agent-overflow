@@ -188,14 +188,17 @@ func (s *Service) dueLocked(tp *ticketPump, began uint64, t time.Time) {
 // regularLocked is when a ticket of tp's connection whose read settled now
 // is next due: with the round's next regular read, which a read settling
 // past it moves an interval on, or an interval from now while no round
-// runs. A successful read ends the retry schedule. The caller holds
-// subMu.
-func (s *Service) regularLocked(tp *ticketPump, now time.Time) time.Time {
+// runs. A read that failed for no ticket (ok) ends the retry schedule; one
+// that answered this ticket and failed others leaves it running. The
+// caller holds subMu.
+func (s *Service) regularLocked(tp *ticketPump, now time.Time, ok bool) time.Time {
 	rd := s.subs.rounds[tp.key.connection]
 	if rd == nil {
 		return now.Add(tp.every)
 	}
-	rd.delay, rd.retryAt = 0, time.Time{}
+	if ok {
+		rd.delay, rd.retryAt = 0, time.Time{}
+	}
 	if !rd.next.After(now) {
 		rd.next = now.Add(rd.every)
 	}

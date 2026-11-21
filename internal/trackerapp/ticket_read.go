@@ -44,8 +44,14 @@ type ticketRead struct {
 	detail   *tracker.Detail
 	changed  bool
 	mirrored *store.MirrorDetail
-	// err is this ticket's own failure: the tracker did not return it
-	// (ErrIssueNotFound).
+	// answered reports that the ticket's own read ended, whatever the
+	// others' did: the tracker confirmed the document its check names, or
+	// returned its document, stored or held, or left it out. A ticket not
+	// answered takes how the read as a whole ended (detailsRead). A read
+	// that returns no error answered every ticket.
+	answered bool
+	// err is this answered ticket's own failure: the tracker did not return
+	// it (ErrIssueNotFound), or its view could not be built.
 	err error
 	// view is the ticket's view built from detail when changed, with its
 	// digest and the issues it shows of other issues.
@@ -58,7 +64,8 @@ type ticketRead struct {
 // stored, the mirror root it stored it under, captured when its run
 // started (zero when none started), and the tracker's failure of the read,
 // classified by the connection's kind as the run held it, with the time a
-// rate limit lifts.
+// rate limit lifts. The failure is the outcome of the tickets the read did
+// not answer (ticketRead.answered); each answered one has its own.
 type detailsRead struct {
 	ch      Changes
 	root    int64
@@ -70,12 +77,14 @@ type detailsRead struct {
 
 // readDetails reads reads, tickets of connection id, as the tracker says
 // they are now (verifiedDetails), settles the run's tracker calls as the
-// connection's problem, and builds the view of each ticket whose document
-// changed, or that its pump is to hold and held none of (prior.held nil).
+// connection's problem, and builds the view of each answered ticket whose
+// document changed, or that its pump is to hold and held none of
+// (prior.held nil), however the read ended unless the connection did.
 // openedAt is when a person opened or refreshed them, zero for a read no
 // person asked for. A tracker failure of the read
 // is its failure and is returned too, as IssueDetail returns it; any other
-// error is returned alone. What it stored is in the result either way.
+// error is returned alone. Either is the outcome of the tickets the read
+// did not answer. What it stored is in the result either way.
 func (s *Service) readDetails(ctx context.Context, id string, reads []*ticketRead, u Urgency, openedAt int64) (detailsRead, error) {
 	r, err := s.start(ctx, id, u)
 	if err != nil {
@@ -96,46 +105,45 @@ func (s *Service) readDetails(ctx context.Context, id string, reads []*ticketRea
 	out.root, out.gen, out.kind = r.root, r.gen, r.row.Kind
 	var o Outcome
 	callErr, stop, err := r.failed(&o, readErr)
-	switch {
-	case err != nil:
-		return out, err
-	case stop:
+	if stop && err == nil {
 		return out, fmt.Errorf("%w: connection %s stopped being used while its tickets were read", ErrDisabled, id)
+	}
+	s.ticketViews(r.root, reads)
+	if err != nil {
+		return out, err
 	}
 	if err := r.settleCalls(callErr); err != nil {
 		return out, err
 	}
-	if o.Failure != nil {
-		out.failure, out.retryAt = o.Failure, o.RetryAt
-		return out, readErr
-	}
-	return out, s.ticketViews(r.root, reads)
+	out.failure, out.retryAt = o.Failure, o.RetryAt
+	return out, readErr
 }
 
-// ticketViews builds the view of each of reads whose document changed, or
-// that its pump is to hold and held none of (prior.held nil), named from
-// root, the views together (detailViews).
-func (s *Service) ticketViews(root int64, reads []*ticketRead) error {
+// ticketViews builds the view of each answered read of reads whose
+// document changed, or that its pump is to hold and held none of
+// (prior.held nil), named from root, the views together (detailViews). A
+// build that fails is the failure of each read it was to build.
+func (s *Service) ticketViews(root int64, reads []*ticketRead) {
 	var built []*ticketRead
 	var ds []tracker.Detail
 	for _, rd := range reads {
 		heldNew := rd.check.held != nil && (rd.prior == nil || rd.prior.held == nil)
-		if rd.err != nil || rd.detail == nil || !rd.changed && !heldNew {
+		if !rd.answered || rd.err != nil || rd.detail == nil || !rd.changed && !heldNew {
 			continue
 		}
 		built, ds = append(built, rd), append(ds, *rd.detail)
 	}
 	if len(ds) == 0 {
-		return nil
+		return
 	}
 	views, err := s.detailViews(root, ds)
-	if err != nil {
-		return err
-	}
 	for i, rd := range built {
+		if err != nil {
+			rd.err = fmt.Errorf("trackerapp: build the view of %s: %w", rd.issue, err)
+			continue
+		}
 		rd.view, rd.digest, rd.shows = &views[i], s.digestOf(views[i]), showsOf(ds[i])
 	}
-	return nil
 }
 
 // detailReadAtNext is when a detail read begins as the store orders the
@@ -286,6 +294,7 @@ func (r *run) confirmHolders(reads []*ticketRead, openedAt int64) ([]*ticketRead
 			}
 		}
 		rd.changed = rd.prior == nil || rd.prior.doc != rd.check.doc
+		rd.answered = true
 	}
 	return gone, nil
 }
@@ -374,6 +383,11 @@ func (r *run) details(reads []*ticketRead, openedAt int64) (Changes, error) {
 				call(fmt.Errorf("the tracker neither returned nor left out issue %s", rd.issue)))
 		}
 	}
+	// A ticket the tracker left out is answered whether or not the others
+	// are stored.
+	for _, rd := range reads {
+		rd.answered = rd.err != nil
+	}
 	var out Changes
 	if len(docs) == 0 {
 		return out, nil
@@ -385,6 +399,7 @@ func (r *run) details(reads []*ticketRead, openedAt int64) (Changes, error) {
 	out.Dropped = issueIDs(written.Dropped)
 	for i, w := range written.Docs {
 		rd := read[i]
+		rd.answered = true
 		if w.Changed {
 			out.Details = append(out.Details, rd.issue)
 		}

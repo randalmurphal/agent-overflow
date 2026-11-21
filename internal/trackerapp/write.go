@@ -117,13 +117,11 @@ func (s *Service) write(ctx context.Context, id string, op writeOp) (WriteView, 
 		// A settlement Stop overtook changes nothing: the outcome stands.
 		_ = r.settleCalls(callErr)
 	}
-	if len(f.pumps) > 0 && f.detailsErr == nil {
+	if len(f.pumps) > 0 {
 		// Only an open ticket shows a view. One that cannot be built leaves
 		// the stored detail as read: its ticket is told a failure outside
 		// the tracker, and its next read builds it.
-		if err := s.ticketViews(r.root, f.reads[:len(f.pumps)]); err != nil {
-			f.details.failure, f.detailsErr = nil, err
-		}
+		s.ticketViews(r.root, f.reads[:len(f.pumps)])
 	}
 	s.publish(r.root, r.gen, id, f.ch, f.own, &tickOrigin{tickets: f.pumps})
 	if len(f.pumps) > 0 {

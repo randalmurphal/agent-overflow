@@ -43,6 +43,10 @@ type ticketPump struct {
 	// an input of the view other than its document (ticketInputs).
 	due            time.Time
 	nudged, inputs uint64
+	// reading counts the reads of the ticket begun and not settled
+	// (ticketReads, settleTickets): while one is in flight, the document a
+	// read stored in the mirror is that read's to settle (rebuildTicket).
+	reading int
 	// view is the view the subscribers were last told of, and shows are
 	// the other issues it shows (showsOf).
 	view  toldView

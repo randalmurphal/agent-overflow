@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/tracker"
 	"agent-overflow/internal/tracker/trackerapi"
 )
@@ -153,6 +154,77 @@ func TestAFailedRefreshOfAnOpenTicketIsRetried(t *testing.T) {
 	}
 	got := f.events.issueEvents(t, 3)[1:]
 	if got[0].Failure == nil || got[0].Failure.Kind != string(FailureTransient) || got[1].Failure != nil || !got[1].Changed {
+		t.Fatalf("events %+v", got)
+	}
+}
+
+// crossingStore holds a ticket's view rebuild and the round's read that
+// crosses it: once armed, the rebuild's read of the mirror's copy waits for
+// the round's read to store its document, and that read, once stored,
+// waits for release before it settles.
+type crossingStore struct {
+	*store.Store
+	armed   atomic.Bool
+	stored  chan struct{}
+	release chan struct{}
+}
+
+func (s *crossingStore) GetMirrorDetail(root int64, issue string) (store.MirrorDetail, bool, error) {
+	if s.armed.Load() {
+		<-s.stored
+	}
+	return s.Store.GetMirrorDetail(root, issue)
+}
+
+func (s *crossingStore) StoreMirrorDetails(root, sweep int64, docs []store.MirrorDetailDoc, openedAt, readAt int64) (store.MirrorDetailWrites, error) {
+	out, err := s.Store.StoreMirrorDetails(root, sweep, docs, openedAt, readAt)
+	if s.armed.Load() {
+		close(s.stored)
+		<-s.release
+	}
+	return out, err
+}
+
+// A write's refresh that failed to read an open ticket leaves its view
+// behind the card the refresh stored, and the round's retry reads the
+// ticket while that view is rebuilt. The rebuild leaves the retry's
+// document to the retry, so the ticket is never told the new document with
+// the failure the retry ended: it is told the failure, then the new
+// document with none.
+func TestARebuildLeavesTheDocumentToTheReadInFlight(t *testing.T) {
+	t.Parallel()
+	f := newWriteFixture(t)
+	f.svc.cadence.RetryBase = time.Millisecond
+	cs := &crossingStore{Store: f.st, stored: make(chan struct{}), release: make(chan struct{})}
+	f.svc.store = cs
+	must[TicketSubscription](t)(f.svc.SubscribeTicket(f.conn.ID, "10001"))
+	f.events.issueEvents(t, 1)
+	f.settledTickets(t)
+	var failing atomic.Bool
+	failing.Store(true)
+	f.p.set(func(p *scripted) {
+		detail := p.detail
+		p.detail = func(id tracker.IssueID) (tracker.Detail, error) {
+			if failing.CompareAndSwap(true, false) {
+				return tracker.Detail{}, &trackerapi.TransientError{Err: errors.New("reset")}
+			}
+			return detail(id)
+		}
+	})
+	f.answer(appliedEdit)
+	f.state.set(testBoard, writeRow("10001", 1, "a"))
+	cs.armed.Store(true)
+	// The write settles its ticket and rebuilds its view before it returns.
+	if _, err := f.svc.Edit(t.Context(), f.conn.ID, EditRequest{Issue: "10001", Fields: []FieldEditInput{{Field: "title", Typed: []string{"New"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	close(cs.release)
+	f.events.waitFor(t, "the retry's event", func(_ []BoardEvent, i []IssueEvent, _ []error) bool {
+		return len(i) > 2 && i[len(i)-1].Failure == nil
+	})
+	quiet(t, f.svc)
+	_, got, _ := f.events.snapshot()
+	if got = got[1:]; len(got) != 2 || got[0].Failure == nil || got[0].Changed || got[1].Failure != nil || !got[1].Changed {
 		t.Fatalf("events %+v", got)
 	}
 }

@@ -292,3 +292,77 @@ func TestViewBuildsCrossing(t *testing.T) {
 		f.shows(t, "v1", "Renamed", 1)
 	})
 }
+
+// changedSince are the issue events after the first n that told a view.
+func (m *mirrorFixture) changedSince(n int) int {
+	changed := 0
+	for _, e := range m.issueEventsSince(n) {
+		if e.Changed && e.Failure == nil {
+			changed++
+		}
+	}
+	return changed
+}
+
+// A rebuild that left the mirror's newer copy to a read of the ticket in
+// flight builds it once that read ends, however it ends: stopped before
+// the tracker answered, or settled behind a read that began later. The
+// pump is hidden, so only the read's settlement rebuilds.
+func TestARebuildLeftToAReadBuildsWhenTheReadEnds(t *testing.T) {
+	t.Parallel()
+	setup := func(t *testing.T) (*mirrorFixture, *trackerState, *ticketPump) {
+		m, st, issues, subs := newRoundFixture(t, 1, false)
+		if err := m.svc.SetSubscriptionVisible(subs[0].ID, false); err != nil {
+			t.Fatal(err)
+		}
+		return m, st, m.pumpOf(issues[0])
+	}
+	// another stores body as the ticket's document by a read outside the
+	// pump, and rebuilds the view while the pump's read is in flight.
+	another := func(t *testing.T, m *mirrorFixture, st *trackerState, tp *ticketPump, body string) {
+		st.comment(tp.key.issue, body)
+		if _, _, err := m.svc.RefreshIssueDetail(t.Context(), m.conn.ID, tp.key.issue, Interactive); err != nil {
+			t.Fatal(err)
+		}
+		events := m.issueEventCount()
+		m.svc.rebuildTicket(tp)
+		if n := m.changedSince(events); n != 0 {
+			t.Fatalf("a rebuild told %d views of another read's document while a read was in flight", n)
+		}
+	}
+	t.Run("stopped", func(t *testing.T) {
+		t.Parallel()
+		m, st, tp := setup(t)
+		call := holdNext(m.p, "Details")
+		ctx, cancel := context.WithCancel(t.Context())
+		done := make(chan ticketsResult, 1)
+		go func() { done <- m.svc.readTickets(ctx, m.conn.ID, []*ticketPump{tp}, Background, false, false) }()
+		<-call.arrived
+		events := m.issueEventCount()
+		another(t, m, st, tp, "Second")
+		cancel()
+		<-done
+		if n := m.changedSince(events); n != 1 {
+			t.Fatalf("%d views told once the read stopped; want the mirror's copy", n)
+		}
+	})
+	t.Run("settled behind a later read", func(t *testing.T) {
+		t.Parallel()
+		m, st, tp := setup(t)
+		call := holdNext(m.p, "Details")
+		done := make(chan ticketsResult, 1)
+		go func() { done <- m.svc.readTickets(t.Context(), m.conn.ID, []*ticketPump{tp}, Background, false, false) }()
+		<-call.arrived
+		events := m.issueEventCount()
+		st.comment(tp.key.issue, "Second")
+		if res := m.svc.readTickets(t.Context(), m.conn.ID, []*ticketPump{tp}, Background, true, false); res.failed {
+			t.Fatalf("the later read %+v", res)
+		}
+		another(t, m, st, tp, "Third")
+		close(call.release)
+		<-done
+		if n := m.changedSince(events); n != 2 {
+			t.Fatalf("%d views told; want the later read's and the mirror's copy", n)
+		}
+	})
+}

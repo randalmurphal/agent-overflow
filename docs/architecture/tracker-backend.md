@@ -605,7 +605,8 @@ carries when its next read is due. A successful read makes it due with
 the round's next regular read, so the shown tickets are read together; a
 failed read (the pump's, the round's or a write's refresh) makes it due
 on the connection's retry schedule, doubling from the retry base to the
-interval, or when a rate limit lifts; a stored change of its card makes
+interval, or when a rate limit lifts; only a read that failed for none
+of its tickets ends that schedule. A stored change of its card makes
 it due at once, for a full read. The round's timer is the earliest due
 time of the shown tickets, and it reads every shown ticket then due in
 one read, so one delta that changes N shown tickets costs one read. A
@@ -626,12 +627,19 @@ the read holds it again, the same content included. A subscriber answered
 not loaded is told the same way; finding it not loaded again leaves the
 read in flight standing. When another read stores the issue's document in
 the mirror while the pump holds one, the view is rebuilt from whichever
-read began later, and the pump lets go of an older one. A read succeeds only once the tracker
+read began later, and the pump lets go of an older one; while a read of
+the ticket is in flight, that read settles the document with its outcome
+and the view is rebuilt when it ends, so no view shows a document with
+the failure of the read that stored it. A read succeeds only once the tracker
 answered and the document it checked is confirmed where its check says
 (the mirror's copy of the same read, or the pump's while the mirror holds
 none); one the cap dropped or the cleanup swept meanwhile is read in
-full. A failure is told to each ticket once and cleared by its next
-success.
+full. A read of several tickets settles each with its own outcome: a
+ticket whose check confirmed its document, whose document was stored or
+held, or that the tracker left out is settled so whatever happened to the
+others, and the read's failure is told only to the tickets it did not
+answer, the ones a rate limit holds due when it lifts. A failure is told
+to each ticket once and cleared by its next success.
 
 Idle ticks write only read times, and send no event. N is the number of a
 connection's shown tickets:
@@ -782,7 +790,9 @@ call; the path does the rest.
    reported. A board no longer listed or retired
    during the refresh ends that board's reads alone. The write's context
    ending stops the refresh, and every resource not yet read is stale.
-   The open tickets are settled only from a details read that was made.
+   The open tickets are settled only from a details read that was made,
+   each with its own outcome: a detail the read answered is refreshed
+   whatever happened to the others.
 4. The last tracker call settles the connection's problem: a failed
    refresh read, else a part that could not reach the tracker. A write
    whose every part was refused before sending (invalid input, a write

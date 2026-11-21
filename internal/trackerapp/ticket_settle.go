@@ -75,13 +75,15 @@ func (s *Service) readTickets(ctx context.Context, conn string, pumps []*ticketP
 
 // ticketReads are the reads of pumps' tickets, each checked against what
 // its pump settled last and read in full when full is set or it was due a
-// read at once (readNowLocked), and the stamp the read began at.
+// read at once (readNowLocked), and the stamp the read began at. Each is
+// in flight (ticketPump.reading) until settleTickets settles it.
 func (s *Service) ticketReads(pumps []*ticketPump, full bool) (began uint64, reads []*ticketRead) {
 	s.subMu.Lock()
 	defer s.subMu.Unlock()
 	began = s.nextStampLocked()
 	reads = make([]*ticketRead, len(pumps))
 	for i, tp := range pumps {
+		tp.reading++
 		reads[i] = &ticketRead{issue: tp.key.issue, full: full || tp.nudged > tp.settled}
 		if tp.check != nil {
 			prior := *tp.check
@@ -96,20 +98,23 @@ func (s *Service) ticketReads(pumps []*ticketPump, full bool) (began uint64, rea
 // each whose view the settlement left behind: res and err are how the read
 // ended (readDetails), res.ch everything the run stored that the funnel
 // was handed with these pumps as its origin, ctx the context the read ran
-// under, and at when it ended. A failure is told to each pump and makes it
-// due on the retry schedule; a connection that ended ends every pump.
+// under, and at when it ended. Each ticket the read answered settles with
+// its own outcome; the read's failure is told to each ticket it did not
+// answer and makes it due on the retry schedule. A read stopped by its
+// context settles only the tickets it answered; a connection that ended
+// ends every pump.
 func (s *Service) settleTickets(ctx context.Context, conn string, pumps []*ticketPump, began uint64, reads []*ticketRead, res detailsRead, err error, at int64) ticketsResult {
 	var out ticketsResult
-	var failure *FailureView
+	end := readEnd{kind: res.kind, at: at, ok: !slices.ContainsFunc(reads, (*ticketRead).failed)}
 	stopped := err != nil && ctx.Err() != nil
 	ended := errors.Is(err, errEnded) || errors.Is(err, ErrDisabled) || errors.Is(err, ErrNotFound) || errors.Is(err, ErrStopped)
 	switch {
 	case stopped, ended:
 	case res.failure != nil:
-		failure = &FailureView{Kind: string(res.failure.Kind), Message: res.failure.Message, At: at}
+		end.failure, end.release = &FailureView{Kind: string(res.failure.Kind), Message: res.failure.Message, At: at}, res.retryAt
 		out.failed, out.retryAt = true, res.retryAt
 	case err != nil:
-		failure = internalFailure(at)
+		end.failure = internalFailure(at)
 		out.failed, out.err = true, err
 		s.logf("trackerapp: the read of %d open tickets of %s failed: %v", len(pumps), conn, err)
 	}
@@ -117,14 +122,19 @@ func (s *Service) settleTickets(ctx context.Context, conn string, pumps []*ticke
 	out.over = true
 	var behind []*ticketPump
 	for i, tp := range pumps {
+		tp.reading--
 		switch {
 		case tp.over || tp.core.DeadLocked():
 		case ended:
 			s.endTicketLocked(tp)
-		case stopped:
+		case stopped && !reads[i].answered:
+			// A rebuild that left its document to this read builds now.
+			if tp.behindLocked() {
+				behind = append(behind, tp)
+			}
 			out.over = false
 		default:
-			if s.settleTicketLocked(tp, began, reads[i], res.ch, failure, out.retryAt, res.kind, at) {
+			if s.settleTicketLocked(tp, began, reads[i], res.ch, end) {
 				behind = append(behind, tp)
 			}
 			out.over = false
@@ -137,29 +147,63 @@ func (s *Service) settleTickets(ctx context.Context, conn string, pumps []*ticke
 	return out
 }
 
+// readEnd is how a read of tickets ended, as each of its tickets settles
+// it: failure is told to each ticket the read did not answer, due again
+// at release when a rate limit holds it; ok reports a read that failed for
+// no ticket (ticketRead.failed), which alone ends the connection's retry
+// schedule; kind is the connection's kind as the read held it, and at
+// when the read ended.
+type readEnd struct {
+	failure *FailureView
+	release time.Time
+	ok      bool
+	kind    string
+	at      int64
+}
+
+// errUnanswered is a ticket a read that failed for none left unanswered: a
+// defect of the read, told as a failure outside the tracker.
+var errUnanswered = errors.New("trackerapp: the read of open tickets made no answer of it")
+
+// failed reports that rd settles as a failure: the read did not answer it,
+// or its view could not be built.
+func (rd *ticketRead) failed() bool {
+	return !rd.answered || rd.err != nil && !errors.Is(rd.err, ErrIssueNotFound)
+}
+
 // settleTicketLocked settles rd, what a read that began at began found of
-// tp's ticket, into tp, unless a read that began later settled already: a
-// failure of the read as a whole (due again at release when a rate limit
-// holds it), the tracker leaving the ticket out, or the document now and
-// which of the mirror and the pump holds it, with the view the read built
-// of it. ch is what the read stored; kind the connection's kind as the
-// read held it. A changed view or failure is told. It reports whether the
-// view is left behind its inputs. The caller holds subMu.
-func (s *Service) settleTicketLocked(tp *ticketPump, began uint64, rd *ticketRead, ch Changes, failure *FailureView, release time.Time, kind string, at int64) bool {
+// tp's ticket, into tp, unless a read that began later settled already:
+// for a ticket the read did not answer, the read's failure (due again at
+// release when a rate limit holds it); for one it answered, the tracker
+// leaving the ticket out, a view that could not be built, or the document
+// now and which of the mirror and the pump holds it, with the view the
+// read built of it. ch is what the read stored. A changed view or failure
+// is told. It reports whether the view is left behind its inputs. The
+// caller holds subMu.
+func (s *Service) settleTicketLocked(tp *ticketPump, began uint64, rd *ticketRead, ch Changes, end readEnd) bool {
 	_, moved := ticketInputs(tp, ch, true)
 	if began < tp.settled {
 		// What an earlier read stored may postdate the view the later one
-		// settled.
+		// settled, and a rebuild may have left its document to this read.
 		if moved {
 			tp.inputs = s.nextStampLocked()
 		}
-		return moved
+		return tp.behindLocked()
 	}
 	tp.settled = began
 	now := s.now()
 	switch {
-	case failure != nil:
-		s.dueLocked(tp, began, s.retryLocked(tp, now, release))
+	case rd.failed():
+		failure := end.failure
+		switch {
+		case rd.answered:
+			s.logf("trackerapp: open ticket %s of %s: %v", tp.key.issue, tp.key.connection, rd.err)
+			failure = internalFailure(end.at)
+		case failure == nil:
+			s.logf("trackerapp: open ticket %s of %s: %v", tp.key.issue, tp.key.connection, errUnanswered)
+			failure = internalFailure(end.at)
+		}
+		s.dueLocked(tp, began, s.retryLocked(tp, now, end.release))
 		if failure.Kind == string(FailureInternal) {
 			// What the read stored may not be in the view: the next read
 			// decodes and rebuilds it.
@@ -167,10 +211,10 @@ func (s *Service) settleTicketLocked(tp *ticketPump, began uint64, rd *ticketRea
 		}
 		tp.tellFailureLocked(failure)
 	case rd.err != nil:
-		s.dueLocked(tp, began, s.regularLocked(tp, now))
-		tp.tellFailureLocked(notFoundFailure(kind, at))
+		s.dueLocked(tp, began, s.regularLocked(tp, now, end.ok))
+		tp.tellFailureLocked(notFoundFailure(end.kind, end.at))
 	default:
-		s.dueLocked(tp, began, s.regularLocked(tp, now))
+		s.dueLocked(tp, began, s.regularLocked(tp, now, end.ok))
 		tp.check = nil
 		if rd.check != (detailCheck{}) {
 			check := rd.check
@@ -251,7 +295,10 @@ func (s *Service) notLoadedLocked(tp *ticketPump, at uint64) {
 // and installs it unless a read settled another document meanwhile (that
 // read builds its own) or an input moved since the build began (its nudge
 // builds again). A mirror's copy that is not the pump's document becomes
-// it, and the pump lets go of the one it held.
+// it, and the pump lets go of the one it held, unless a read of the ticket
+// is in flight: the copy may be that read's, and a view of it told before
+// the read settles would show its document with the failure the read
+// ends.
 // With no document anywhere the view is told as not loaded and the ticket
 // is due a read at once. A build that fails is told as a failure outside
 // the tracker when no failure is told, and is tried again at the next
@@ -285,6 +332,12 @@ func (s *Service) rebuildTicket(tp *ticketPump) {
 		}
 	case !ok:
 		s.notLoadedLocked(tp, b)
+		return
+	case mirrored != (detailCheck{}) && (tp.check == nil || *tp.check != mirrored) && tp.reading > 0:
+		// The mirror's copy is another read's document, and a read of the
+		// ticket is in flight: it may be that read's, which settles it with
+		// its outcome. That read builds the view, or rebuilds when it
+		// settles behind.
 		return
 	default:
 		if mirrored != (detailCheck{}) && (tp.check == nil || *tp.check != mirrored) {
