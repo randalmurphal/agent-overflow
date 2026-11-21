@@ -40,9 +40,9 @@ function refusesEverything(run: ReturnType<ReturnType<typeof createProjectAction
 }
 
 describe('createProjectActions', () => {
-  // The hole this closes: ending a run only took it off screen. A
-  // confirmation callback captured before the user cancelled could still
-  // submit it, on a row that had moved on to something else.
+  // Ending a run must take it out of the row's life, not only off screen:
+  // a confirmation callback captured before the user cancelled holds the
+  // run, and the row it would submit on has moved to something else.
   for (const kind of ['archive', 'delete', 'rename'] as ProjectActionKind[]) {
     it(`refuses a ${kind} run that was ended before the next one started`, () => {
       const actions = createProjectActions();
@@ -90,8 +90,8 @@ describe('createProjectActions', () => {
     refusesEverything(run);
   });
 
-  // The hole this closes: a failed call re-raised its dialog with a plain
-  // `start`, so a project the user had moved on from came back on the row.
+  // Raising a failed call's dialog again belongs to the owner: a plain
+  // `start` would put a project the user has moved on from back on the row.
   describe('reraiseDelete', () => {
     /** A preview delete taken for its call: the run outlives it. */
     function submitted(actions: ReturnType<typeof createProjectActions>, id: string) {

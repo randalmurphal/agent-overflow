@@ -549,10 +549,11 @@ function resolveLocalModule(fromFile: string, specifier: string): string | null 
 //
 // A repository checked out on several computers is one sidebar row, so what
 // that row shows is a fact about the entry and not about any one checkout.
-// Each of these answers such a question, and each is a carrier a component
-// can reach for instead of the entry value it was handed; four reviews
-// running found one more reader that had. `sidebarEntries.ts` is the one
-// module that may ask, and the entry it builds carries every answer.
+// Each of these answers such a question about an entry, and each is
+// reachable from a component as a store call rather than from the entry
+// value it was handed. `sidebarEntries.ts` is the one module that may ask,
+// and the entry it builds carries every answer, so a new fact about a row
+// is added to that value instead of derived beside it.
 const SIDEBAR_DIR = join(SRC_ROOT, 'lib', 'components', 'sidebar');
 const PROJECTS_STORE = join(STORES_DIR, 'projects');
 const SIDEBAR_ENTRY_OWNER = 'lib/components/sidebar/sidebarEntries.ts';

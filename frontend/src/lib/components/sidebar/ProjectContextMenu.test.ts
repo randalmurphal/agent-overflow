@@ -273,9 +273,9 @@ describe('<ProjectContextMenu> delete flow', () => {
     consoleError.mockRestore();
   });
 
-  // The hole these close: the catch re-raised the dialog with a plain
-  // `start`, so a delete that failed after the user had moved on put a
-  // project they had left behind back on the row.
+  // A delete that fails after the user has moved on must leave the row as
+  // they left it: its catch answers for a project they are no longer
+  // looking at, and a dialog raised from it would be that project's.
   it('brings nothing back when the delete fails after the dialog was cancelled', async () => {
     setBindingMock('ProjectDeletionPreview', async () => workPreview());
     const call = deferred<ProjectDeletionResult>();

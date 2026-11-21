@@ -351,10 +351,10 @@ describe('ProjectItem action target', () => {
     await vi.waitFor(() => expect(archive).toHaveBeenCalledWith('ck-home'));
   });
 
-  // The sequence the reviewer's probe caught: a delete waiting on its
-  // preview, the entry changing hands, a second delete started on the new
-  // representative, and then the FIRST preview arriving. One run owns its
-  // target and its preview together, so the late one has nowhere to land.
+  // A delete waiting on its preview, the entry changing hands, a second
+  // delete started on the new representative, and then the FIRST preview
+  // arriving. One run owns its target and its preview together, so the late
+  // one has nowhere to land.
   it('deletes the checkout of the run that is current, with that run\'s own preview', async () => {
     const { home, laptop } = await twoCheckouts();
     const previews = new Map<string, { resolve: (preview: ProjectDeletionPreview) => void }>();

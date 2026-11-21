@@ -3,14 +3,14 @@
 // A repository checked out on several computers is ONE row in the sidebar,
 // and almost nothing that row shows is a fact about one checkout: which DOM
 // row it is, what it is called, what it counts, what it sorts by, what its
-// header says about its members. Before this value existed each of those was
-// derived on its own and every component was handed a representative
-// `ProjectWithCounts` as its `project`, so the nearest carrier for a new fact
-// was that row or a global keyed by its id. Four reviews running found a
-// reader that had taken one.
+// header says about its members. A component handed a representative
+// `ProjectWithCounts` as its `project` has that row and whatever is keyed by
+// its id as the nearest carrier for any of those, and a row is the wrong
+// carrier for all of them: which member it is changes.
 //
-// An entry is a value now: the components take it and can reach none of this
-// another way. The three ids it separates:
+// An entry is one value instead: the components take it and can reach none
+// of this another way (`lib/architecture.test.ts` fences the alternatives).
+// The three ids it separates:
 //   - `key` is the entry's own identity, stable across every change of which
 //     member represents it, and the key its disclosure is persisted by;
 //   - `id` is the project an action started on this row targets, the listed

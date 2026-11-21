@@ -177,33 +177,79 @@ function parseListLimits(raw: string): Record<string, number> | null {
   }
 }
 
-function readListLimits(key: string): Record<string, number> {
-  const raw = appStorageGet(key);
-  if (raw === null) return {};
-  return parseListLimits(raw) ?? {};
+interface ListLimitRecord {
+  limitOf(key: string): number;
+  setLimit(key: string, limit: number): void;
+  clear(key: string): void;
+  /** Re-read the record after hydration lands the durable bucket. */
+  reload(): void;
+  /** Test helper: forget the in-memory copy. */
+  resetForTest(): void;
 }
 
-function writeListLimits(key: string, limits: Record<string, number>): void {
-  if (Object.keys(limits).length === 0) {
-    appStorageDelete(key);
-    return;
+/**
+ * One record of how many rows each list under `storageKey` shows, by
+ * whatever key its caller gives it.
+ *
+ * Every list starts at THREAD_PREVIEW_LIMIT and the default is stored as
+ * nothing at all, so a record holds only the lists the user has revealed
+ * more of, and a limit at or below the preview removes its entry. There are
+ * two records, one for project entries and one for everything else, and this
+ * is the paging rule both keep: the records differ in what may be written to
+ * them, never in how.
+ */
+function listLimitRecord(storageKey: string, legacyKey?: string): ListLimitRecord {
+  function fromStorage(): Record<string, number> {
+    const raw = appStorageGet(storageKey);
+    return raw === null ? {} : (parseListLimits(raw) ?? {});
   }
-  appStorageSet(key, JSON.stringify(limits));
-}
 
-function readThreadListVisibleLimits(): Record<string, number> {
-  removeLocalStorageKey(LEGACY_EXPANDED_THREAD_LISTS_KEY);
-  const raw =
-    appStorageGet(THREAD_LIST_VISIBLE_LIMITS_KEY) ??
-    appStorageAdoptLegacyKey(THREAD_LIST_VISIBLE_LIMITS_KEY, LEGACY_THREAD_LIST_LIMITS_KEY, (legacy) =>
-      parseListLimits(legacy) === null ? null : legacy,
-    );
-  if (raw === null) return {};
-  return parseListLimits(raw) ?? {};
-}
+  // Adoption is init-only: a legacy key is read once and removed with it.
+  const adopted =
+    appStorageGet(storageKey) ??
+    (legacyKey === undefined
+      ? null
+      : appStorageAdoptLegacyKey(storageKey, legacyKey, (legacy) =>
+          parseListLimits(legacy) === null ? null : legacy,
+        ));
+  let limits: Record<string, number> = $state(
+    adopted === null ? {} : (parseListLimits(adopted) ?? {}),
+  );
 
-function writeThreadListVisibleLimits(limits: Record<string, number>): void {
-  writeListLimits(THREAD_LIST_VISIBLE_LIMITS_KEY, limits);
+  function commit(next: Record<string, number>): void {
+    limits = next;
+    if (Object.keys(next).length === 0) appStorageDelete(storageKey);
+    else appStorageSet(storageKey, JSON.stringify(next));
+  }
+
+  function clear(key: string): void {
+    if (!(key in limits)) return;
+    const next = { ...limits };
+    delete next[key];
+    commit(next);
+  }
+
+  return {
+    clear,
+    limitOf(key: string): number {
+      return Math.max(THREAD_PREVIEW_LIMIT, limits[key] ?? THREAD_PREVIEW_LIMIT);
+    },
+    setLimit(key: string, limit: number): void {
+      const roundedLimit = Math.floor(limit);
+      if (!Number.isFinite(roundedLimit) || roundedLimit <= THREAD_PREVIEW_LIMIT) {
+        clear(key);
+        return;
+      }
+      if (limits[key] === roundedLimit) return;
+      commit({ ...limits, [key]: roundedLimit });
+    },
+    reload(): void {
+      limits = fromStorage();
+    },
+    resetForTest(): void {
+      limits = {};
+    },
+  };
 }
 
 function writeProjectSortMode(mode: ProjectSortMode): void {
@@ -225,13 +271,19 @@ function removeLocalStorageKey(key: string): void {
 }
 
 let collapsedProjects: Set<string> = $state(readCollapsedProjects());
-// How many rows a project's own list shows, by entry key.
-let projectListLimits: Record<string, number> = $state(readListLimits(PROJECT_LIST_LIMITS_KEY));
 let collapsedGroups: Set<string> = $state(stringSetFromStorage(COLLAPSED_GROUPS_KEY));
 let collapsedSections: Set<string> = $state(stringSetFromStorage(COLLAPSED_SECTIONS_KEY));
+// How many rows a project's own list shows, by entry key.
+const projectListLimits = listLimitRecord(PROJECT_LIST_LIMITS_KEY);
+// Dropped rather than adopted: the pre-inversion key listed the thread lists
+// the user had EXPANDED, and the inverse of that needs every list there is.
+removeLocalStorageKey(LEGACY_EXPANDED_THREAD_LISTS_KEY);
 // How many rows a group's members and the Assistants section's rows show,
 // by group id and by ASSISTANTS_LIST_KEY.
-let threadListVisibleLimits: Record<string, number> = $state(readThreadListVisibleLimits());
+const threadListLimits = listLimitRecord(
+  THREAD_LIST_VISIBLE_LIMITS_KEY,
+  LEGACY_THREAD_LIST_LIMITS_KEY,
+);
 let projectSortMode: ProjectSortMode = $state(readProjectSortMode());
 
 // Each record is persisted by the key its caller gives, and this module does
@@ -312,7 +364,7 @@ export function syncSidebarFromAppStorage(): void {
   if (!setsEqual(collapsed, collapsedProjects)) {
     collapsedProjects = collapsed;
   }
-  projectListLimits = readListLimits(PROJECT_LIST_LIMITS_KEY);
+  projectListLimits.reload();
   const groups = new Set(
     parseStringArray(appStorageGet(COLLAPSED_GROUPS_KEY) ?? '[]') ?? [],
   );
@@ -325,8 +377,7 @@ export function syncSidebarFromAppStorage(): void {
   if (!setsEqual(sections, collapsedSections)) {
     collapsedSections = sections;
   }
-  const rawLimits = appStorageGet(THREAD_LIST_VISIBLE_LIMITS_KEY);
-  threadListVisibleLimits = rawLimits === null ? {} : (parseListLimits(rawLimits) ?? {});
+  threadListLimits.reload();
 }
 
 function setsEqual(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
@@ -419,51 +470,27 @@ export type SidebarTopLevelList =
  * key can be read here, whatever its key is today.
  */
 export function getProjectListLimit(entryKey: string): number {
-  return Math.max(THREAD_PREVIEW_LIMIT, projectListLimits[entryKey] ?? THREAD_PREVIEW_LIMIT);
+  return projectListLimits.limitOf(entryKey);
 }
 
 export function setProjectListLimit(entryKey: string, limit: number): void {
-  const roundedLimit = Math.floor(limit);
-  if (!Number.isFinite(roundedLimit) || roundedLimit <= THREAD_PREVIEW_LIMIT) {
-    collapseProjectList(entryKey);
-    return;
-  }
-  if (projectListLimits[entryKey] === roundedLimit) return;
-  const next = { ...projectListLimits, [entryKey]: roundedLimit };
-  projectListLimits = next;
-  writeListLimits(PROJECT_LIST_LIMITS_KEY, next);
+  projectListLimits.setLimit(entryKey, limit);
 }
 
 export function collapseProjectList(entryKey: string): void {
-  if (!(entryKey in projectListLimits)) return;
-  const next = { ...projectListLimits };
-  delete next[entryKey];
-  projectListLimits = next;
-  writeListLimits(PROJECT_LIST_LIMITS_KEY, next);
+  projectListLimits.clear(entryKey);
 }
 
 export function getThreadListVisibleLimit(key: string): number {
-  return Math.max(THREAD_PREVIEW_LIMIT, threadListVisibleLimits[key] ?? THREAD_PREVIEW_LIMIT);
+  return threadListLimits.limitOf(key);
 }
 
 export function setThreadListVisibleLimit(key: string, limit: number): void {
-  const roundedLimit = Math.floor(limit);
-  if (!Number.isFinite(roundedLimit) || roundedLimit <= THREAD_PREVIEW_LIMIT) {
-    collapseThreadList(key);
-    return;
-  }
-  if (threadListVisibleLimits[key] === roundedLimit) return;
-  const next = { ...threadListVisibleLimits, [key]: roundedLimit };
-  threadListVisibleLimits = next;
-  writeThreadListVisibleLimits(next);
+  threadListLimits.setLimit(key, limit);
 }
 
 export function collapseThreadList(key: string): void {
-  if (!(key in threadListVisibleLimits)) return;
-  const next = { ...threadListVisibleLimits };
-  delete next[key];
-  threadListVisibleLimits = next;
-  writeThreadListVisibleLimits(next);
+  threadListLimits.clear(key);
 }
 
 /** Test helper: clears in-memory state and the sort-mode cache. View
@@ -471,10 +498,10 @@ export function collapseThreadList(key: string): void {
 export function resetSidebarForTest(): void {
   showProviderIcons = false;
   collapsedProjects = new Set();
-  projectListLimits = {};
   collapsedGroups = new Set();
   collapsedSections = new Set();
-  threadListVisibleLimits = {};
+  projectListLimits.resetForTest();
+  threadListLimits.resetForTest();
   projectSortMode = DEFAULT_PROJECT_SORT_MODE;
   removeLocalStorageKey(SORT_MODE_KEY);
   removeLocalStorageKey(LEGACY_COLLAPSED_STORAGE_KEY);
