@@ -149,6 +149,92 @@ describe('buildSidebarEntries', () => {
     expect(rankOf(entryFor(beaten, 'home'))).toBe(5000);
   });
 
+  // The class: a row's KEY moves while the row does not. A keyed each takes
+  // that for a different row, mounts the new one and plays the old one's
+  // exit out of flow, so the project and every thread under it are on screen
+  // twice for the length of that exit.
+  describe('row identity', () => {
+    /** Every rendered row's DOM key, which must be one per row. */
+    function rowKeys(entries: readonly SidebarEntry[]): string[] {
+      const keys = entries.map((entry) => entry.rowKey);
+      expect(new Set(keys).size, 'two rows cannot share a DOM key').toBe(keys.length);
+      return keys;
+    }
+
+    it('keeps a row whose repository identity its computer verifies later', () => {
+      addOn(HOME_BACKEND, mkProject('p'));
+      const listed = build().entries;
+      expect(rowKeys(listed)).toEqual(['p']);
+
+      // The computer answers again with the identity it verified: a new
+      // persisted key for the same row.
+      updateProjectLocal(mkProject('p', { repositoryID: 'github:github.com:1' }));
+      const verified = build({ previous: listed }).entries;
+
+      expect(entryFor(verified, 'p').key).toBe('forge:github:github.com:1');
+      expect(rowKeys(verified)).toEqual(['p']);
+    });
+
+    it('keeps a row whose repository identity goes away', () => {
+      addOn(HOME_BACKEND, mkProject('p', { repositoryID: 'github:github.com:1' }));
+      const verified = build().entries;
+      expect(rowKeys(verified)).toEqual(['forge:github:github.com:1']);
+
+      // The remote is removed or retargeted: the key falls back to the id.
+      updateProjectLocal(mkProject('p'));
+      const lost = build({ previous: verified }).entries;
+
+      expect(entryFor(lost, 'p').key).toBe('p');
+      expect(rowKeys(lost)).toEqual(['forge:github:github.com:1']);
+    });
+
+    it('keeps one row of the two a merge joins, and gives up none of its own', () => {
+      addOn(HOME_BACKEND, mkProject('home', { repositoryID: 'github:github.com:1' }));
+      addOn(HOME_BACKEND, mkProject('other'));
+      const before = build().entries;
+      const homeRow = entryFor(before, 'home').rowKey;
+
+      // The laptop's checkout of the same repository arrives, so its member
+      // joins the row that is already there.
+      addOn('laptop', mkProject('laptop', { repositoryID: 'github:github.com:1' }));
+      const merged = build({ previous: before }).entries;
+
+      expect(entryFor(merged, 'home').members).toHaveLength(2);
+      expect(entryFor(merged, 'home').rowKey).toBe(homeRow);
+      expect(rowKeys(merged)).toHaveLength(2);
+    });
+
+    it('splits one row into two with a key apiece when a member loses its identity', () => {
+      addOn(HOME_BACKEND, mkProject('home', { repositoryID: 'github:github.com:1' }));
+      addOn('laptop', mkProject('laptop', { repositoryID: 'github:github.com:1' }));
+      const merged = build().entries;
+      expect(merged).toHaveLength(1);
+
+      // The laptop's checkout can no longer prove it is the same repository.
+      updateProjectLocal(mkProject('laptop'));
+      const split = build({ previous: merged }).entries;
+
+      expect(split).toHaveLength(2);
+      expect(rowKeys(split)).toHaveLength(2);
+    });
+
+    it('gives a new row its own key when an older row carried that key here', () => {
+      // 'p' is listed without an identity, so its row is keyed 'p'.
+      addOn(HOME_BACKEND, mkProject('p'));
+      const first = build().entries;
+      expect(rowKeys(first)).toEqual(['p']);
+
+      // Its identity lands, and a second project arrives whose own key is
+      // the one the first row is still rendered under.
+      updateProjectLocal(mkProject('p', { repositoryID: 'github:github.com:1' }));
+      addOn(HOME_BACKEND, mkProject('p-2'));
+      const keys = rowKeys(build({ previous: first }).entries);
+
+      expect(keys).toHaveLength(2);
+      expect(keys).toContain('p');
+    });
+  });
+
   it('dates an entry by its rows until a thread touches one', () => {
     addOn(HOME_BACKEND, mkProject('home', { repositoryID: 'github:github.com:1', updatedAt: 70 }));
     addOn('laptop', mkProject('laptop', { repositoryID: 'github:github.com:1', updatedAt: 90 }));

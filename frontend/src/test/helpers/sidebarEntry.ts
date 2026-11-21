@@ -24,6 +24,7 @@ export function entryFromRow(row: ProjectWithCounts, overrides: Partial<SidebarE
   const { project } = row;
   return {
     key: project.id,
+    rowKey: project.id,
     id: project.id,
     backend: HOME_BACKEND,
     name: project.name,

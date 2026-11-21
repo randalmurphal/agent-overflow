@@ -69,7 +69,7 @@
     class="px-2 py-1"
     data-testid="sidebar-project-list"
   >
-    {#each entries as entry, index (entry.key)}
+    {#each entries as entry, index (entry.rowKey)}
       <!-- animate:/transition: need an element as the each's immediate
            child; ProjectItem is a component, so a layout-neutral block
            wrapper carries them. -->

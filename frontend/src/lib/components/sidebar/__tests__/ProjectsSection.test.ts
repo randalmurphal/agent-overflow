@@ -13,6 +13,7 @@ import {
 import {
   resetProjectsForTest,
   touchProjectActivity,
+  updateProjectLocal,
 } from '../../../stores/projects.svelte';
 import { catalogTreeListed, loadSidebarCatalogs, resetSidebarCatalogsForTest } from '../../../stores/sidebarCatalogs';
 import {
@@ -814,6 +815,33 @@ describe('<ProjectsSection> threads and their groups', () => {
       setBackendIdentityFromBootstrap('', '', '', HOME_BACKEND);
       resetStagedBackends();
     }
+  });
+
+  // A computer verifies a checkout's repository identity on its own
+  // schedule, so a project can be listed before its identity is known and
+  // answered again with it. That changes what the row persists under, and a
+  // keyed each remounting on it leaves the row it replaced on screen for the
+  // length of its exit: the project, and every thread under it, twice.
+  it('keeps the row and its one thread when the identity lands after the listing', async () => {
+    setBindingMock('ListProjects', async () => [
+      { project: mkProject('p', { name: 'Repo' }), threadCount: 1, lastActive: 1 },
+    ]);
+    setBindingMock('ListThreads', async () => [makeThread({ id: 't0', projectId: 'p' })]);
+    setBindingMock('ListThreadGroups', async () => []);
+    const { container } = render(ProjectsSection, { props: { pane: null } });
+    await loadSidebarCatalogs();
+    await settle();
+    const row = container.querySelector('[data-testid="project-item"]');
+    expect(row).not.toBeNull();
+
+    updateProjectLocal(mkProject('p', { name: 'Repo', repositoryID: 'github:github.com:1' }));
+    await settle();
+
+    expect(container.querySelectorAll('[data-testid="project-item"]')).toHaveLength(1);
+    expect(container.querySelectorAll('[data-sidebar-thread-id="t0"]')).toHaveLength(1);
+    // The same row, not a replacement: a remounted row is what puts the one
+    // it replaced on screen beside it.
+    expect(container.querySelector('[data-testid="project-item"]')).toBe(row);
   });
 
   it("keeps the row it rendered, and its disclosure, through a held member's commit and its listing", async () => {

@@ -10,9 +10,11 @@
 //
 // An entry is one value instead: the components take it and can reach none
 // of this another way (`lib/architecture.test.ts` fences the alternatives).
-// The three ids it separates:
-//   - `key` is the entry's own identity, stable across every change of which
-//     member represents it, and the key its disclosure is persisted by;
+// The ids it separates:
+//   - `key` is the entry's persisted identity, stable across every change of
+//     which member represents it: what its disclosure is written under;
+//   - `rowKey` is its DOM identity, which also survives its KEY moving under
+//     a row that is still the same row;
 //   - `id` is the project an action started on this row targets, the listed
 //     members' representative;
 //   - the members are what the entry counts, dates and speaks for, which the
@@ -42,8 +44,22 @@ export interface SidebarEntryWarning {
 }
 
 export interface SidebarEntry {
-  /** DOM identity, and the key the entry's disclosure is persisted by. */
+  /** The key the entry's disclosure is persisted by. */
   readonly key: string;
+  /**
+   * DOM identity: the key of the `{#each}` that renders the rows.
+   *
+   * Not `key`, which moves while the row does not. A computer verifies a
+   * checkout's repository identity on its own schedule, so a project listed
+   * without one is keyed by its project id until the identity lands and by
+   * the repository afterwards. A keyed each takes an item whose key changed
+   * for a different item: it mounts the new row and plays the old row's exit
+   * with it out of flow, so for the length of that exit the same project,
+   * and every thread under it, is on screen twice. Carried from the previous
+   * build through a member the row kept, so neither an identity arriving nor
+   * one going away remounts a row.
+   */
+  readonly rowKey: string;
   /** The project an action started on this row acts on. */
   readonly id: string;
   readonly backend: BackendKey;
@@ -132,9 +148,18 @@ export function buildSidebarEntries(input: SidebarEntriesInput): SidebarEntries 
   }
 
   const previous = new Map(input.previous.map((entry) => [entry.key, entry]));
+  // Which row each member was rendered under last time, so a row whose key
+  // moved keeps its DOM identity. One row may claim a previous row's
+  // identity: two rows with one `rowKey` would be a duplicate each key.
+  const rowKeyOf = new Map<string, string>();
+  for (const before of input.previous) {
+    for (const member of before.members) rowKeyOf.set(member.project.id, before.rowKey);
+  }
+  const claimed = new Set<string>();
   const entries = rendered.map(({ rep, shown }) => {
     const id = rep.project.id;
     const key = projectEntryKey(id);
+    const rowKey = claimRowKey(shown, key, id, rowKeyOf, claimed);
     let threadCount = 0;
     const warnings: SidebarEntryWarning[] = [];
     for (const member of shown) {
@@ -144,6 +169,7 @@ export function buildSidebarEntries(input: SidebarEntriesInput): SidebarEntries 
     }
     const next: SidebarEntry = {
       key,
+      rowKey,
       id,
       backend: projectBackend(id) ?? HOME_BACKEND,
       name: rep.project.name,
@@ -198,8 +224,35 @@ export function projectTarget(entry: SidebarEntry, label: string): ProjectTarget
   });
 }
 
+/**
+ * The row identity this entry continues, claimed so no two rows take the
+ * same one: the identity of a previous row that still holds one of these
+ * members, else this entry's own key, else a value of its own (its key is
+ * another row's identity only when that row carried it here).
+ */
+function claimRowKey(
+  shown: readonly ProjectWithCounts[],
+  key: string,
+  id: string,
+  rowKeyOf: ReadonlyMap<string, string>,
+  claimed: Set<string>,
+): string {
+  let rowKey: string | undefined;
+  for (const member of shown) {
+    const carried = rowKeyOf.get(member.project.id);
+    if (carried !== undefined && !claimed.has(carried)) {
+      rowKey = carried;
+      break;
+    }
+  }
+  rowKey ??= claimed.has(key) ? `${key}\u0000${id}` : key;
+  claimed.add(rowKey);
+  return rowKey;
+}
+
 function sameEntry(a: SidebarEntry, b: SidebarEntry): boolean {
   return a.id === b.id
+    && a.rowKey === b.rowKey
     && a.backend === b.backend
     && a.name === b.name
     && a.path === b.path

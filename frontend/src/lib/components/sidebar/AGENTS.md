@@ -44,12 +44,16 @@ which adds the project's empty state and drop targets.
   projects store to answer a question about a row; `lib/architecture.test.ts`
   fences those names to that one module, so a new fact about an entry is
   added to the value rather than derived beside it.
-- The three ids the entry separates. Its `key` is the repository key of the
+- The ids the entry separates. Its `key` is the repository key of the
   computer's chosen checkout, which no listing, filter, attach or detach
-  changes, so the each block never remounts a row that is still the same
-  entry. Its `id` is the representative, elected over the members whose tree
-  is listed with the filter ignored, and is what an action on the row
-  targets. Its `members` are what the filter also shows, and everything the
+  changes: what the row's disclosure is written under. Its `rowKey` is what
+  the each block keys on, carried from the previous build through a member
+  the row kept, because the KEY still moves when a computer verifies a
+  checkout's repository identity after listing it or loses it; a keyed each
+  that remounts there leaves the row it replaced on screen for the length of
+  its exit, so the project and every thread under it render twice. Its `id`
+  is the representative, elected over the members whose tree is listed with
+  the filter ignored, and is what an action on the row targets. Its `members` are what the filter also shows, and everything the
   entry counts, dates (`rankOf`) and says about its members, its identity
   warning and its recheck included, comes from them.
 - An action is one run (`projectActions.svelte.ts`): it owns the target it
