@@ -54,13 +54,21 @@ func scanOwnerOp(row rowScanner) (OwnerOp, error) {
 	return op, err
 }
 
+// OwnerOpHold is told, inside the transaction of a write that owes owner
+// operations and before any of their rows is written, the operations it
+// owes, so the door that will attempt them holds them before the request
+// sweep can read them. It must not take a store connection or wait. Nil
+// holds nothing.
+type OwnerOpHold func(owed []OwnerOp)
+
 // oweRemoteOpsTx owes op, in tx and as of now, for every remote spawn whose
 // caller is one of callers: whether or not its target was named, since a
 // spawn whose acceptance reply was lost still made a thread there. Each
-// takes the spawn row's next sequence and is owed unsent and due at now. A
-// delete replaces any operation owed for the spawn; nothing replaces an
-// owed delete, and a spawn with one owes nothing more.
-func oweRemoteOpsTx(tx *sql.Tx, callers []string, op string, now int64) (owed []OwnerOp, err error) {
+// takes the spawn row's next sequence and is owed unsent and due at now;
+// hold is told them before their rows are written. A delete replaces any
+// operation owed for the spawn; nothing replaces an owed delete, and a
+// spawn with one owes nothing more.
+func oweRemoteOpsTx(tx *sql.Tx, callers []string, op string, now int64, hold OwnerOpHold) (owed []OwnerOp, err error) {
 	if len(callers) == 0 {
 		return nil, nil
 	}
@@ -93,6 +101,9 @@ func oweRemoteOpsTx(tx *sql.Tx, callers []string, op string, now int64) (owed []
 	if err := rows.Close(); err != nil {
 		return nil, fmt.Errorf("owe %s: %w", op, err)
 	}
+	if hold != nil && len(owed) > 0 {
+		hold(owed)
+	}
 	for _, row := range owed {
 		if _, err := tx.Exec(`INSERT INTO thread_owner_ops (`+ownerOpColumns+`)
 			VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?6, 0)
@@ -110,8 +121,8 @@ func oweRemoteOpsTx(tx *sql.Tx, callers []string, op string, now int64) (owed []
 // the archived threads it owns at any depth through owned threads already
 // archived (ListOwnedWorkersToArchive's walk), at the end of ownerID's
 // archive walk. It owes nothing once ownerID is no longer archived. One
-// transaction.
-func (s *Store) OweRemoteArchives(ownerID string) (owed []OwnerOp, err error) {
+// transaction, in which hold is told what it owes (OwnerOpHold).
+func (s *Store) OweRemoteArchives(ownerID string, hold OwnerOpHold) (owed []OwnerOp, err error) {
 	action := fmt.Sprintf("store: owe the remote archives of %s", ownerID)
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -132,7 +143,7 @@ func (s *Store) OweRemoteArchives(ownerID string) (owed []OwnerOp, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", action, err)
 	}
-	if owed, err = oweRemoteOpsTx(tx, callers, OwnerOpArchive, nowMillis()); err != nil {
+	if owed, err = oweRemoteOpsTx(tx, callers, OwnerOpArchive, nowMillis(), hold); err != nil {
 		return nil, fmt.Errorf("%s: %w", action, err)
 	}
 	if err := tx.Commit(); err != nil {

@@ -103,6 +103,10 @@ func newReachPairServedBy(t *testing.T, serve func(*testing.T, *App) *pairedBack
 	// A life a test can end, as shutdown does, set before anything reads it.
 	source.appCtx, source.appCancel = context.WithCancel(context.Background())
 	t.Cleanup(source.appCancel)
+	// What its archive or delete reports is what the destination did, which
+	// a busy machine must not turn into "did not answer in time"; a test
+	// whose subject is the bound sets its own.
+	source.ownerOpReachOverride = time.Minute
 	source.configDir = t.TempDir()
 	source.installThreadRequestObserver()
 	sourceID := uuid.NewString()

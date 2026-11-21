@@ -26,8 +26,11 @@ import (
 // supersede), one row per spawn, under the spawn's next sequence
 // (store/thread_owner_ops.go). The door that decided it makes one bounded
 // attempt for a person waiting on it, and the request sweep delivers the
-// rest until the other computer answers (deliverOwedOwnerOps). A refusal or
-// an unreachable computer never undoes what was decided here.
+// rest until the other computer answers (deliverOwedOwnerOps). Such a door
+// holds what it owes from inside the write that owes it until it returns
+// (ownerOpHolds), so the sweep never attempts an operation a door is
+// attempting, and the door reports the attempt it made. A refusal or an
+// unreachable computer never undoes what was decided here.
 //
 // The other computer admits each through its own archive and delete, fenced
 // by the spawn's link: the archive by store.ArchiveLinkedWorker, which takes
@@ -89,18 +92,104 @@ const (
 	// on, or one serving a paired computer's own operation.
 	reachLater ownerOpReach = iota
 	// reachNow makes one attempt at each before the door returns, bounded
-	// by threadAgentPeerListTimeout, and reports the ones that did not land.
+	// by ownerOpReach, and reports the ones that did not land.
 	reachNow
 )
 
 // ownerOpDelivery is the source half's in-process state. Zero value ready.
+// mu guards only these maps and the flag: nothing holds it while it reaches
+// the store, waits or calls out, because a write that owes operations takes
+// it inside its transaction (ownerOpHolds.hold).
 type ownerOpDelivery struct {
 	mu sync.Mutex
-	// sending holds the spawns an attempt is under way for: one attempt per
+	// sending holds the attempt under way for each spawn: one attempt per
 	// spawn at a time, the door's or the sweep's.
-	sending map[string]bool
+	sending map[string]*ownerOpSend
+	// held counts, per spawn, the doors that owe it the attempt they are
+	// about to make (ownerOpHolds); the sweep leaves a held spawn alone.
+	held map[string]int
 	// draining is set while a sweep pass delivers.
 	draining bool
+}
+
+// ownerOpSend is an attempt under way. done closes when it ends; refusal,
+// set before then, is its call's error when that said the computer takes
+// no owner operation, because it predates them or its pairing ended, which
+// a door that waited for the attempt takes as its own answer.
+type ownerOpSend struct {
+	done    chan struct{}
+	refusal error
+}
+
+// ownerOpAttempter is who makes an attempt at an owed operation.
+type ownerOpAttempter int
+
+const (
+	// sweepAttempt leaves a spawn a door holds, or one with an attempt
+	// under way, to them.
+	sweepAttempt ownerOpAttempter = iota
+	// doorAttempt is a door's attempt at what it holds: it waits for an
+	// attempt under way at the spawn, an earlier operation's, then makes
+	// its own.
+	doorAttempt
+)
+
+// ownerOpHolds are the spawns a door holds, from inside the write that owes
+// them (hold, the write's store.OwnerOpHold) until the door returns
+// (release, deferred where the holds are made). A nil value holds nothing.
+type ownerOpHolds struct {
+	app    *App
+	tokens []string
+}
+
+// ownerOpHolds makes the holds of a door that delivers as reach says: one
+// that attempts now holds what it owes; one that leaves it to the sweep
+// holds nothing.
+func (a *App) ownerOpHolds(reach ownerOpReach) *ownerOpHolds {
+	if reach != reachNow {
+		return nil
+	}
+	return &ownerOpHolds{app: a}
+}
+
+// owing is the hold to pass the write that owes the door's operations.
+func (h *ownerOpHolds) owing() store.OwnerOpHold {
+	if h == nil {
+		return nil
+	}
+	return h.hold
+}
+
+// hold holds the spawns owed owes, inside the write's transaction.
+func (h *ownerOpHolds) hold(owed []store.OwnerOp) {
+	d := &h.app.ownerOps
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.held == nil {
+		d.held = make(map[string]int)
+	}
+	for _, op := range owed {
+		d.held[op.Token]++
+		h.tokens = append(h.tokens, op.Token)
+	}
+}
+
+// release lets the sweep have what the door held, whether it attempted it
+// or not, and wakes the sweep for what is still owed.
+func (h *ownerOpHolds) release() {
+	if h == nil || len(h.tokens) == 0 {
+		return
+	}
+	d := &h.app.ownerOps
+	d.mu.Lock()
+	for _, token := range h.tokens {
+		if d.held[token]--; d.held[token] <= 0 {
+			delete(d.held, token)
+		}
+	}
+	d.mu.Unlock()
+	h.tokens = nil
+	h.app.nudgeThreadRequestSweep()
 }
 
 // --- The worker's computer: admitting an operation ---
@@ -332,7 +421,10 @@ func (a *App) deliverOwnerOps(ops []store.OwnerOp, targets map[string]store.Thre
 	if targets == nil {
 		targets = a.ownerOpTargets(ops)
 	}
-	ctx, cancel := context.WithTimeout(a.lifeCtx(), threadAgentPeerListTimeout)
+	if hook := a.ownerOpsDeliveringForTest; hook != nil {
+		hook()
+	}
+	ctx, cancel := context.WithTimeout(a.lifeCtx(), a.ownerOpReach())
 	defer cancel()
 	attempts := make([]ownerOpAttempt, len(ops))
 	var wg sync.WaitGroup
@@ -344,7 +436,7 @@ func (a *App) deliverOwnerOps(ops []store.OwnerOp, targets map[string]store.Thre
 			select {
 			case limit <- struct{}{}:
 				defer func() { <-limit }()
-				attempts[i] = a.deliverOwnerOp(ctx, op)
+				attempts[i] = a.deliverOwnerOp(ctx, op, doorAttempt)
 			case <-ctx.Done():
 				attempts[i] = ownerOpAttempt{}
 			}
@@ -390,6 +482,17 @@ func (a *App) deliverOwnerOps(ops []store.OwnerOp, targets map[string]store.Thre
 // ownerOpInlineFanOut bounds a door's attempts in flight at once.
 const ownerOpInlineFanOut = 8
 
+// ownerOpReach bounds a door's attempts at what it owes, together: the
+// wait a person sees before the door reports. A pane's listing of a paired
+// computer has the same bound (threadAgentPeerListTimeout); a test may set
+// another (ownerOpReachOverride).
+func (a *App) ownerOpReach() time.Duration {
+	if a.ownerOpReachOverride > 0 {
+		return a.ownerOpReachOverride
+	}
+	return threadAgentPeerListTimeout
+}
+
 // ownerOpTargets reads the spawns ops are owed for, for a report to name
 // their workers: a delete reads them before its destroy drops them with
 // their caller.
@@ -410,14 +513,17 @@ func (a *App) ownerOpTargets(ops []store.OwnerOp) map[string]store.ThreadRequest
 // deliverOwnerOp makes one attempt at op: marked sent before its call, and
 // settled when its computer answered it for good, predates owner operations
 // or is no longer paired (threadPairingEnded), rescheduled on the retry
-// ladder otherwise. An attempt that
-// finds another under way for the spawn, or op replaced by a newer
-// operation, does nothing.
-func (a *App) deliverOwnerOp(ctx context.Context, op store.OwnerOp) ownerOpAttempt {
-	if !a.beginOwnerOpSend(op.Token) {
+// ladder otherwise. An attempt that may not begin (beginOwnerOpSend), or
+// finds op replaced by a newer operation, does nothing. A door's attempt
+// that waited for one that found the computer takes no owner operation
+// takes that answer without calling it again.
+func (a *App) deliverOwnerOp(ctx context.Context, op store.OwnerOp, by ownerOpAttempter) ownerOpAttempt {
+	send, prior, ok := a.beginOwnerOpSend(ctx, op.Token, by)
+	if !ok {
 		return ownerOpAttempt{}
 	}
-	defer a.endOwnerOpSend(op.Token)
+	var refusal error
+	defer func() { a.endOwnerOpSend(op.Token, send, refusal) }()
 	marked, err := a.store.MarkOwnerOpSent(op.Token, op.Seq)
 	if err != nil {
 		log.Printf("thread tools: owner operation %s for spawn %s: %v", op.Op, op.Token, err)
@@ -430,17 +536,23 @@ func (a *App) deliverOwnerOp(ctx context.Context, op store.OwnerOp) ownerOpAttem
 		a.rescheduleOwnerOp(op)
 		return ownerOpAttempt{reason: err.Error()}
 	}
-	answer, err := a.callOwnerOp(ctx, op)
+	var answer threadOwnerOpAnswer
+	err = prior
+	if err == nil {
+		answer, err = a.callOwnerOp(ctx, op)
+	}
 	var code string
 	if err != nil {
 		code, _, _ = threadErrorDetails("owner operation", err)
 	}
 	switch {
 	case errors.Is(err, errThreadAgentPeerOlder):
+		refusal = err
 		a.settleOwnerOp(op)
 		return ownerOpAttempt{older: true}
 	case err != nil && threadPairingEnded(code):
 		// Nothing can deliver it until the person pairs the computer again.
+		refusal = err
 		a.settleOwnerOp(op)
 		return ownerOpAttempt{unpaired: true}
 	case err != nil:
@@ -519,25 +631,53 @@ func (a *App) rescheduleOwnerOp(op store.OwnerOp) {
 	}
 }
 
-func (a *App) beginOwnerOpSend(token string) bool {
+// beginOwnerOpSend begins the attempt at the operation owed for token, or
+// reports that it may not begin: the sweep's while a door holds the spawn
+// or another attempt is under way, a door's once ctx ends while it waits,
+// with mu released, for the attempt under way to end. prior is the refusal
+// of the last attempt a door waited for (ownerOpSend.refusal).
+func (a *App) beginOwnerOpSend(ctx context.Context, token string, by ownerOpAttempter) (send *ownerOpSend, prior error, ok bool) {
 	d := &a.ownerOps
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.sending[token] {
-		return false
+	for {
+		d.mu.Lock()
+		under := d.sending[token]
+		if under == nil {
+			if by == sweepAttempt && d.held[token] > 0 {
+				d.mu.Unlock()
+				return nil, nil, false
+			}
+			if d.sending == nil {
+				d.sending = make(map[string]*ownerOpSend)
+			}
+			send = &ownerOpSend{done: make(chan struct{})}
+			d.sending[token] = send
+			d.mu.Unlock()
+			return send, prior, true
+		}
+		d.mu.Unlock()
+		if by == sweepAttempt {
+			return nil, nil, false
+		}
+		if hook := a.ownerOpWaitingForTest; hook != nil {
+			hook(token)
+		}
+		select {
+		case <-under.done:
+			prior = under.refusal
+		case <-ctx.Done():
+			return nil, nil, false
+		}
 	}
-	if d.sending == nil {
-		d.sending = make(map[string]bool)
-	}
-	d.sending[token] = true
-	return true
 }
 
-func (a *App) endOwnerOpSend(token string) {
+// endOwnerOpSend ends send, the attempt under way for token, with refusal.
+func (a *App) endOwnerOpSend(token string, send *ownerOpSend, refusal error) {
 	d := &a.ownerOps
 	d.mu.Lock()
+	send.refusal = refusal
 	delete(d.sending, token)
 	d.mu.Unlock()
+	close(send.done)
 }
 
 // deliverOwedOwnerOps is the request sweep's delivery of what is owed by
@@ -590,7 +730,7 @@ func (a *App) drainOwnerOps(ops []store.OwnerOp) {
 					return
 				}
 				ctx, cancel := context.WithTimeout(a.lifeCtx(), threadPollCallTimeout)
-				a.deliverOwnerOp(ctx, op)
+				a.deliverOwnerOp(ctx, op, sweepAttempt)
 				cancel()
 			}
 		})

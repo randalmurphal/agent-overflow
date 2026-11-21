@@ -922,6 +922,14 @@ type App struct {
 	// threadID's archive decided to end it and before the store ends it
 	// (endArchiveWalk), so a test can archive the thread again then.
 	archiveWalkEndingForTest func(threadID string)
+	// ownerOpsDeliveringForTest, when set, runs once a door that owed owner
+	// operations is about to make its attempt at them (deliverOwnerOps), so
+	// a test can run the request sweep then.
+	ownerOpsDeliveringForTest func()
+	// ownerOpWaitingForTest, when set, runs once a door's attempt at the
+	// operation owed for token found another under way and before it waits
+	// for it (beginOwnerOpSend).
+	ownerOpWaitingForTest func(token string)
 	// workerPromptAnsweringForTest, when set, runs once an answer claimed
 	// a routed prompt and before it is written to the worker
 	// (answerRoutedPrompt); an error it returns is that write's failure.
@@ -961,6 +969,10 @@ type App struct {
 	// paired computer (workerPromptLease) for a test. Zero keeps the
 	// product lease.
 	workerPromptLeaseOverride time.Duration
+	// ownerOpReachOverride replaces the bound on a door's attempt at what
+	// it owes paired computers (ownerOpReach) for a test. Zero keeps the
+	// product bound.
+	ownerOpReachOverride time.Duration
 	// ownerOpsOmitted answers agent_owner_op as a build before owner
 	// operations does (IsolationConfig.OmitOwnerOps). False serves them.
 	ownerOpsOmitted bool

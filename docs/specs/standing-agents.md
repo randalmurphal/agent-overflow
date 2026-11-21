@@ -887,7 +887,13 @@ Ruling 36, as built:
   computer. Workers with
   different reasons keep each one: the reasons follow, each after the
   workers it applies to (`"<title>", "<title>": <reason>. "<title>":
-  <reason>.`). The request sweep sends the rest, 5 s after an attempt
+  <reason>.`). Such a door holds what its write owes from inside that
+  write until it returns (`ownerOpHolds`), so its report is the attempt
+  it made: the request sweep leaves a held operation alone, and a door
+  that finds an earlier operation's attempt on its way to the spawn waits
+  for it within those 5 s, then makes its own, taking that attempt's
+  answer when it found the computer on an older version or no longer
+  connected. The request sweep sends the rest, 5 s after an attempt
   doubling to 10 min, until that computer answers
   (`deliverOwedOwnerOps`); a refusal or a computer that does not answer
   never undoes the archive or delete here. That computer reads the

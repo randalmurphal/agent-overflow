@@ -356,8 +356,9 @@ type DeleteCommit struct {
 // here (owned_threads). In the same transaction it owes each paired
 // computer a committed thread spawned on a delete of that spawn's thread,
 // or a release when the committed thread was given to another computer: the
-// cleanup of a thread moved away deletes none of the workers it left.
-func (s *Store) CommitDeleteClaim(op string) (commit DeleteCommit, err error) {
+// cleanup of a thread moved away deletes none of the workers it left. hold
+// is told what it owes inside the transaction (OwnerOpHold).
+func (s *Store) CommitDeleteClaim(op string, hold OwnerOpHold) (commit DeleteCommit, err error) {
 	action := fmt.Sprintf("store: commit delete %s", op)
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -368,7 +369,7 @@ func (s *Store) CommitDeleteClaim(op string) (commit DeleteCommit, err error) {
 		 WHERE delete_claim = ?1 AND delete_claim <> '' AND deleting = 0 RETURNING id`, op); err != nil {
 		return DeleteCommit{}, fmt.Errorf("%s: %w", action, err)
 	}
-	if commit.OwedOps, err = oweCommittedRemoteOpsTx(tx, commit.Threads); err != nil {
+	if commit.OwedOps, err = oweCommittedRemoteOpsTx(tx, commit.Threads, hold); err != nil {
 		return DeleteCommit{}, fmt.Errorf("%s: %w", action, err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -380,7 +381,7 @@ func (s *Store) CommitDeleteClaim(op string) (commit DeleteCommit, err error) {
 // oweCommittedRemoteOpsTx owes, for the remote spawns of the committed
 // threads, a delete, or a release for a thread given to another computer
 // (lineageThreadSQL), in the commit's transaction.
-func oweCommittedRemoteOpsTx(tx *sql.Tx, committed []string) (owed []OwnerOp, err error) {
+func oweCommittedRemoteOpsTx(tx *sql.Tx, committed []string, hold OwnerOpHold) (owed []OwnerOp, err error) {
 	if len(committed) == 0 {
 		return nil, nil
 	}
@@ -418,7 +419,7 @@ func oweCommittedRemoteOpsTx(tx *sql.Tx, committed []string) (owed []OwnerOp, er
 		op      string
 		callers []string
 	}{{OwnerOpDelete, deleted}, {OwnerOpRelease, released}} {
-		ops, err := oweRemoteOpsTx(tx, owe.callers, owe.op, now)
+		ops, err := oweRemoteOpsTx(tx, owe.callers, owe.op, now, hold)
 		if err != nil {
 			return nil, err
 		}

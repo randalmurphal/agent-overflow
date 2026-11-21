@@ -40,6 +40,9 @@ type familyDelete struct {
 	// spawns they are for, read before the destroy drops them.
 	owed        []store.OwnerOp
 	owedTargets map[string]store.ThreadRequest
+	// holds hold what the commit owes for the door's attempt
+	// (deleteThreads makes and releases them).
+	holds *ownerOpHolds
 	// unstopped is what the destroy could not stop of the work its threads
 	// started elsewhere.
 	unstopped deleteUnstopped
@@ -285,7 +288,7 @@ func (op *familyDelete) refuse(cause error) error {
 // commit commits the claimed family (phase 3) and tells clients its rows
 // are gone.
 func (op *familyDelete) commit() error {
-	committed, err := op.app.store.CommitDeleteClaim(op.id)
+	committed, err := op.app.store.CommitDeleteClaim(op.id, op.holds.owing())
 	if err != nil {
 		return err
 	}

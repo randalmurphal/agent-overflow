@@ -300,6 +300,9 @@ func (u *deleteUnstopped) cleanup() threadCleanupError {
 func (a *App) deleteThreads(req deleteRequest) (deleteOutcome, error) {
 	op := a.newFamilyDelete(req)
 	defer op.reopen()
+	// What the commit owes is this door's to attempt until it returns.
+	op.holds = a.ownerOpHolds(req.reach)
+	defer op.holds.release()
 	a.deleteDecisions.open(op.id)
 	// A delete that ends without committing lets its waiters go: they find
 	// its claims released, or standing with no delete when the claim or the

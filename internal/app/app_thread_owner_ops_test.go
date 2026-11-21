@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -42,6 +43,8 @@ type ownerOpPeer struct {
 	// answering, when set, is this computer's answer to every owner
 	// operation, which then does not reach the app.
 	answering atomic.Pointer[threadOwnerOpAnswer]
+	// ownerOpCalls counts the owner operations sent to this computer.
+	ownerOpCalls atomic.Int32
 }
 
 var errPeerUnreachable = errors.New("the computer cannot be reached")
@@ -81,6 +84,7 @@ func (p *ownerOpPeer) ThreadToolCall(ctx context.Context, call ThreadPeerCall) (
 	if call.Tool != threadOwnerOpTool {
 		return p.App.ThreadToolCall(ctx, call)
 	}
+	p.ownerOpCalls.Add(1)
 	if p.asleep.Load() {
 		return ThreadPeerReply{}, errors.New("the computer is asleep")
 	}
@@ -241,7 +245,7 @@ func TestAnUnansweredArchiveIsPendingUntilTheComputerAnswers(t *testing.T) {
 			t.Fatalf("attempt %d is tried again at %v, want %v after it", attempts, next, wait)
 		}
 	}
-	retriedWithin(1, 5*time.Second, time.Now().Add(-threadAgentPeerListTimeout))
+	retriedWithin(1, 5*time.Second, time.Now().Add(-p.source.ownerOpReach()))
 	before := time.Now()
 	p.drain(t)
 	retriedWithin(2, 10*time.Second, before)
@@ -336,7 +340,7 @@ func TestTheSweepWakesForAnOwedOperation(t *testing.T) {
 	if delay := f.app.threadRequestSweepDelay(time.Now()); delay < time.Minute {
 		t.Fatalf("the sweep sleeps %v with nothing owed; the test needs nothing else due", delay)
 	}
-	owed, err := f.app.store.OweRemoteArchives(owner.ID)
+	owed, err := f.app.store.OweRemoteArchives(owner.ID, nil)
 	if err != nil || len(owed) != 1 {
 		t.Fatalf("owed %+v, %v", owed, err)
 	}
@@ -399,7 +403,7 @@ func TestASupersedeOvertakesAnArchiveHeldOnTheWay(t *testing.T) {
 	sent := make(chan struct{})
 	go func() {
 		defer close(sent)
-		p.source.deliverOwnerOp(ctx, owed[0])
+		p.source.deliverOwnerOp(ctx, owed[0], sweepAttempt)
 	}()
 	within(t, "the archive reaching the other computer", held)
 	// The source gives up on the call; the archive is still on its way.
@@ -668,6 +672,306 @@ func TestAnOlderComputerIsReportedAndNotAskedAgain(t *testing.T) {
 	if owed := p.owed(t); len(owed) != 0 {
 		t.Fatalf("an older computer is still owed %+v", owed)
 	}
+}
+
+// sweepAtTheDoor has the request sweep make a pass of what the source owes
+// when a door that owed operations is about to attempt them, as the sweep
+// may at any moment once they are owed. answered says whether the pass's
+// call to the other computer has its answer before the door goes on, or is
+// still on its way then; done lets a call still on its way return and joins
+// the pass.
+func (p *ownerOpPair) sweepAtTheDoor(t *testing.T, answered bool) (done func()) {
+	t.Helper()
+	var sweeping atomic.Bool
+	reached, release, passed := make(chan struct{}, 1), make(chan struct{}), make(chan struct{})
+	hold := func(string) func() {
+		if sweeping.Load() {
+			reached <- struct{}{}
+			if !answered {
+				<-release
+			}
+		}
+		return func() {}
+	}
+	p.peer.hold.Store(&hold)
+	var once sync.Once
+	p.source.ownerOpsDeliveringForTest = func() {
+		once.Do(func() {
+			sweeping.Store(true)
+			defer sweeping.Store(false)
+			p.source.deliverOwedOwnerOps(time.Now().Add(time.Hour))
+			go func() {
+				p.source.threadRequestsWG.Wait()
+				close(passed)
+			}()
+			if answered {
+				within(t, "the sweep's pass", passed)
+				return
+			}
+			select {
+			case <-reached:
+			case <-passed:
+			}
+		})
+	}
+	return func() {
+		close(release)
+		within(t, "the sweep's pass", passed)
+	}
+}
+
+// What an archive or a delete tells the person about a worker on another
+// computer does not depend on whether the request sweep reached the
+// operation first, its answer in or still on its way: the operation is sent
+// once, and the door reports how that attempt ended.
+func TestADoorReportsItsOperationWhenTheSweepReachesItFirst(t *testing.T) {
+	t.Parallel()
+	doors := map[string]func(p *ownerOpPair) ([]WorkerFailure, error){
+		"archive": func(p *ownerOpPair) ([]WorkerFailure, error) {
+			result, err := p.source.ArchiveThread(p.caller.ID)
+			return result.WorkersNotArchived, err
+		},
+		"delete": func(p *ownerOpPair) ([]WorkerFailure, error) {
+			result, err := p.source.DeleteThread(p.caller.ID)
+			return result.WorkersNotDeleted, err
+		},
+	}
+	for _, tc := range []struct {
+		name string
+		// older stands up a computer from before owner operations; asleep
+		// one that does not answer.
+		older, asleep bool
+		// answered: the sweep's attempt had its answer before the door went
+		// on; otherwise it was still on its way.
+		answered bool
+		pending  bool
+		want     string
+	}{
+		{name: "an older computer, the sweep's attempt answered", older: true, answered: true, want: "runs an older version"},
+		{name: "an older computer, the sweep's attempt on its way", older: true, want: "runs an older version"},
+		{name: "a computer that does not answer", asleep: true, answered: true, pending: true, want: "did not answer in time"},
+	} {
+		for door, run := range doors {
+			t.Run(door+", "+tc.name, func(t *testing.T) {
+				t.Parallel()
+				p := newOwnerOpPair(t, tc.older)
+				p.peer.asleep.Store(tc.asleep)
+				done := p.sweepAtTheDoor(t, tc.answered)
+				failures, err := run(p)
+				done()
+				if err != nil || len(failures) != 1 {
+					t.Fatalf("the %s reported %+v, %v; want the worker there", door, failures, err)
+				}
+				if failure := failures[0]; failure.ThreadID != p.worker || failure.Pending != tc.pending || !strings.Contains(failure.Error, tc.want) {
+					t.Fatalf("the worker there is reported %+v, want %q, pending %v", failure, tc.want, tc.pending)
+				}
+				if calls := p.peer.ownerOpCalls.Load(); calls != 1 {
+					t.Fatalf("the operation was sent %d times, want once", calls)
+				}
+			})
+		}
+	}
+}
+
+// heldNothing fails the test while a door still holds a spawn of the
+// source's, which the sweep would then leave alone.
+func (p *ownerOpPair) heldNothing(t *testing.T) {
+	t.Helper()
+	d := &p.source.ownerOps
+	d.mu.Lock()
+	held := maps.Clone(d.held)
+	d.mu.Unlock()
+	if len(held) != 0 {
+		t.Fatalf("a door that returned still holds %v", held)
+	}
+}
+
+// sweepAnArchiveOnItsWay owes the caller's archive with no door to attempt
+// it, as a worker's own walk owes one, and has the sweep's attempt at it
+// reach the other computer and stay there until release, which the test's
+// end also runs; passed closes once that pass ends.
+func (p *ownerOpPair) sweepAnArchiveOnItsWay(t *testing.T) (release func(), passed chan struct{}) {
+	t.Helper()
+	if _, _, err := p.source.store.ArchiveThread(p.caller.ID); err != nil {
+		t.Fatal(err)
+	}
+	if owed, err := p.source.store.OweRemoteArchives(p.caller.ID, nil); err != nil || len(owed) != 1 {
+		t.Fatalf("owed %+v, %v; want the archive", owed, err)
+	}
+	reached, released, passed := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var reach, end sync.Once
+	release = func() { end.Do(func() { close(released) }) }
+	t.Cleanup(release)
+	hold := func(op string) func() {
+		if op == store.OwnerOpArchive {
+			reach.Do(func() { close(reached) })
+			<-released
+		}
+		return func() {}
+	}
+	p.peer.hold.Store(&hold)
+	p.source.deliverOwedOwnerOps(time.Now().Add(time.Hour))
+	go func() {
+		p.source.threadRequestsWG.Wait()
+		close(passed)
+	}()
+	within(t, "the archive reaching the other computer", reached)
+	return release, passed
+}
+
+// A delete that owes the spawn an operation while the sweep's attempt at an
+// earlier one is on its way waits for that attempt, then makes its own: its
+// report is how the computer answered, not a timeout, and a computer that
+// answered the earlier one as an older version is not asked again.
+func TestADoorWaitsForAnEarlierOperationOnItsWay(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		older bool
+		calls int32
+		want  string
+	}{
+		{name: "a computer that takes both", calls: 2},
+		{name: "a computer on an older version", older: true, calls: 1, want: "runs an older version"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			p := newOwnerOpPair(t, tc.older)
+			release, passed := p.sweepAnArchiveOnItsWay(t)
+			var waited atomic.Bool
+			p.source.ownerOpWaitingForTest = func(string) {
+				if waited.CompareAndSwap(false, true) {
+					release()
+				}
+			}
+			result, err := p.source.DeleteThread(p.caller.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch {
+			case tc.want == "" && len(result.WorkersNotDeleted) != 0:
+				t.Fatalf("the delete reported %+v, want nothing left undone", result.WorkersNotDeleted)
+			case tc.want != "" && (len(result.WorkersNotDeleted) != 1 || result.WorkersNotDeleted[0].Pending ||
+				!strings.Contains(result.WorkersNotDeleted[0].Error, tc.want)):
+				t.Fatalf("the delete reported %+v, want %q", result.WorkersNotDeleted, tc.want)
+			}
+			if !waited.Load() {
+				t.Fatal("the delete did not wait for the archive on its way")
+			}
+			within(t, "the sweep's pass", passed)
+			if calls := p.peer.ownerOpCalls.Load(); calls != tc.calls {
+				t.Fatalf("the computer was sent %d operations, want %d", calls, tc.calls)
+			}
+			if _, err := p.dest.store.GetThread(p.worker); tc.want == "" && !threadGone(err) {
+				t.Fatalf("the worker there outlived the delete: %v", err)
+			}
+			if owed := p.owed(t); len(owed) != 0 {
+				t.Fatalf("still owed %+v", owed)
+			}
+			p.heldNothing(t)
+		})
+	}
+}
+
+// A door whose wait for an earlier attempt runs out reports the computer
+// did not answer in time, which it did not, and lets the sweep have the
+// operation, which it delivers once the computer answers.
+func TestADoorWhoseWaitRunsOutLeavesItsOperationToTheSweep(t *testing.T) {
+	t.Parallel()
+	p := newOwnerOpPair(t, false)
+	// Its subject is the bound running out.
+	p.source.ownerOpReachOverride = time.Second
+	release, passed := p.sweepAnArchiveOnItsWay(t)
+	result, err := p.source.DeleteThread(p.caller.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.WorkersNotDeleted) != 1 || !result.WorkersNotDeleted[0].Pending ||
+		!strings.Contains(result.WorkersNotDeleted[0].Error, "did not answer in time") {
+		t.Fatalf("the delete reported %+v, want the worker pending", result.WorkersNotDeleted)
+	}
+	p.heldNothing(t)
+	release()
+	within(t, "the sweep's pass", passed)
+	p.drain(t)
+	if _, err := p.dest.store.GetThread(p.worker); !threadGone(err) {
+		t.Fatalf("the sweep did not deliver the delete: %v", err)
+	}
+	if owed := p.owed(t); len(owed) != 0 {
+		t.Fatalf("still owed %+v", owed)
+	}
+}
+
+// However a door ends, it holds nothing after: a write that fails to owe
+// what it held, a door that panics, the app stopping during its attempt.
+func TestADoorHoldsNothingOnceItEnds(t *testing.T) {
+	t.Parallel()
+	refuseOwing := func(t *testing.T, p *ownerOpPair) func() {
+		execOnStore(t, p.dbPath, `CREATE TRIGGER refuse_owner_op BEFORE INSERT ON thread_owner_ops BEGIN SELECT RAISE(ABORT, 'injected owe failure'); END`)
+		return func() { execOnStore(t, p.dbPath, `DROP TRIGGER refuse_owner_op`) }
+	}
+	t.Run("a delete whose commit fails", func(t *testing.T) {
+		t.Parallel()
+		p := newOwnerOpPair(t, false)
+		allow := refuseOwing(t, p)
+		if _, err := p.source.DeleteThread(p.caller.ID); err == nil || !strings.Contains(err.Error(), "injected owe failure") {
+			t.Fatalf("DeleteThread = %v, want the injected failure", err)
+		}
+		p.heldNothing(t)
+		allow()
+		if result, err := p.source.DeleteThread(p.caller.ID); err != nil || len(result.WorkersNotDeleted) != 0 {
+			t.Fatalf("the delete again = %+v, %v", result, err)
+		}
+		if _, err := p.dest.store.GetThread(p.worker); !threadGone(err) {
+			t.Fatalf("the worker there outlived the delete: %v", err)
+		}
+	})
+	t.Run("an archive whose end fails to owe", func(t *testing.T) {
+		t.Parallel()
+		p := newOwnerOpPair(t, false)
+		allow := refuseOwing(t, p)
+		if result, err := p.source.ArchiveThread(p.caller.ID); err != nil || !strings.Contains(result.CleanupError, "were not sent the archive") {
+			t.Fatalf("ArchiveThread = %+v, %v; want the failed end said", result, err)
+		}
+		p.heldNothing(t)
+		allow()
+		if result, err := p.source.ArchiveThread(p.caller.ID); err != nil || len(result.WorkersNotArchived) != 0 {
+			t.Fatalf("the archive again = %+v, %v", result, err)
+		}
+		if !archivedThere(t, p, p.worker) {
+			t.Fatal("the worker there was not archived")
+		}
+	})
+	t.Run("a delete that panics before its attempt", func(t *testing.T) {
+		t.Parallel()
+		p := newOwnerOpPair(t, false)
+		p.source.ownerOpsDeliveringForTest = func() { panic("the door fails") }
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Fatal("the delete did not panic")
+				}
+			}()
+			_, _ = p.source.DeleteThread(p.caller.ID)
+		}()
+		p.heldNothing(t)
+		p.drain(t)
+		if _, err := p.dest.store.GetThread(p.worker); !threadGone(err) {
+			t.Fatalf("the sweep did not deliver the delete: %v", err)
+		}
+	})
+	t.Run("the app stopping during a delete's attempt", func(t *testing.T) {
+		t.Parallel()
+		p := newOwnerOpPair(t, false)
+		p.source.ownerOpsDeliveringForTest = p.source.appCancel
+		if _, err := p.source.DeleteThread(p.caller.ID); err != nil {
+			t.Fatal(err)
+		}
+		p.heldNothing(t)
+		if owed := p.owed(t); len(owed) != 1 || owed[0].Op != store.OwnerOpDelete {
+			t.Fatalf("owed %+v, want the delete still owed", owed)
+		}
+	})
 }
 
 // The cleanup of a spawner moved to another computer releases its worker
