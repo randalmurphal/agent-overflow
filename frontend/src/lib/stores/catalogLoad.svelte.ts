@@ -311,7 +311,7 @@ export function __catalogRetryCountForTest(): number {
 
 /** Test seam: forget every state and timer. Readers are module wiring and stay. */
 export function resetCatalogLoadForTest(): void {
-  for (const [reader, byBackend] of retries) for (const backend of [...byBackend.keys()]) clearRetry(reader, backend);
+  for (const [reader, byBackend] of retries) for (const backend of byBackend.keys()) clearRetry(reader, backend);
   for (const byBackend of inFlight.values()) for (const attempts of byBackend.values()) attempts.clear();
   inFlight.clear();
   wantsRetry.clear();

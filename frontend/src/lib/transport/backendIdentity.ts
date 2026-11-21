@@ -169,7 +169,7 @@ export function forgetBackendIdentity(backend: BackendKey): void {
  * unsubscribe them for every later test in the run.
  */
 export function __resetBackendIdentityForTest(): void {
-  for (const backend of [...identities.keys()]) forgetBackendIdentity(backend);
+  for (const backend of identities.keys()) forgetBackendIdentity(backend);
   if (getBackendIdentity() === UNKNOWN_BACKEND_IDENTITY) return;
   publish(HOME_BACKEND, UNKNOWN_BACKEND_IDENTITY);
 }

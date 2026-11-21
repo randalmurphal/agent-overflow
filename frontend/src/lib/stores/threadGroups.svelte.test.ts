@@ -33,7 +33,7 @@ describe('threadGroups store', () => {
     resetBindingMocks();
     resetThreadGroupsForTest();
     resetCatalogLoadForTest();
-    for (const toast of [...getToasts()]) removeToast(toast.id);
+    for (const toast of getToasts()) removeToast(toast.id);
   });
 
   it('loads the backend snapshot wholesale', async () => {

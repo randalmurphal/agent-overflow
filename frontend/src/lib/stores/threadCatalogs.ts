@@ -351,7 +351,7 @@ function release(entry: Withheld): void {
 function finishRound(round: Round): void {
   round.resolved = true;
   for (const newer of round.supersededBy) newer.followers.delete(round);
-  for (const entry of [...round.withheld]) {
+  for (const entry of round.withheld) {
     entry.holders.delete(round);
     round.withheld.delete(entry);
     if (entry.holders.size === 0) release(entry);
@@ -524,9 +524,9 @@ export function listCatalogTreesForTest(): void {
 
 /** Test seam: forget every read and listing. */
 export function resetThreadCatalogsForTest(): void {
-  for (const read of [...reads.values()]) drop(read);
+  for (const read of reads.values()) drop(read);
   reads.clear();
-  for (const entry of [...withheld.values()]) release(entry);
+  for (const entry of withheld.values()) release(entry);
   threadsKnown.clear();
   listed.reset();
 }

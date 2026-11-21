@@ -145,7 +145,7 @@ beforeEach(() => {
   __resetSelectedBackendForTest();
   resetPanesForTest();
   resetThreadGroupsForTest();
-  for (const t of [...getThreads()]) removeThread(t.id);
+  for (const t of getThreads()) removeThread(t.id);
   resetProjectsForTest();
 });
 

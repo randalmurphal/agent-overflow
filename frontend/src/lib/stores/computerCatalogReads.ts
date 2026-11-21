@@ -51,7 +51,7 @@ export function beginCatalogRead<T>(backend: BackendKey, kind: CatalogKind, onRe
   const reads = readsOf(backend);
   const open = reads.journals[kind] ??= new Map();
   const revision = reads.revision[kind] = ++next;
-  for (const releaseOlder of [...open.values()]) releaseOlder();
+  for (const releaseOlder of open.values()) releaseOlder();
   let journal: Journal | null = [];
   const release = () => {
     if (journal === null) return;
