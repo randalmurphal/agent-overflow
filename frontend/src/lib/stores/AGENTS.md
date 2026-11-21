@@ -231,16 +231,22 @@ failure inside `commitShares` (`computerRows.ts`), an answer in the `commit`
 callback that commits its rows. Answers commit in the same synchronous block
 that replays local mutations; never commit an answer after an `await`.
 
-A computer's threads and groups are one list in the sidebar, read only as a
-pair by `loadThreadCatalogs` (`threadCatalogs.ts`), which owns their
-supersession, commit timing, the sidebar listing (`catalogTreeListed`) and
-the rows the boot's layout restore validates against. A listed computer's
-two answers commit together once neither read is out, so its rows change
-arrangement at most once per round. The pair is atomic in the sidebar
-without exception: when one read fails, on any attempt, the other's answer is
-never listed. While a catalog keeps failing, the sidebar shows its error row
-with Retry beside the last complete pair, or alone if there was none, and
-never a half-arranged list. The module comment has the rules.
+A computer's projects, the threads under them and the groups that gather
+those threads are one tree in the sidebar, read only as a set by
+`loadSidebarCatalogs` (`sidebarCatalogs.ts`), which owns their supersession,
+commit timing, the sidebar listing (`catalogTreeListed`) and the rows the
+boot's layout restore validates against. Nothing else reads any of the three:
+a second reader would supersede the round's and leave its tree held. A listed
+computer's three answers commit together once no read is out, so its rows
+change arrangement at most once per round; an unlisted computer's commit at
+their own windows, for the panes and pickers that read those stores, while
+`catalogTreeListed` holds every row of its tree. The set is atomic in the
+sidebar without exception: when one read fails, on any attempt, the others'
+answers are never listed. While a catalog keeps failing, the sidebar shows
+its error row with Retry beside the last complete tree, or alone if there was
+none, and never a half-arranged list, so a computer whose read keeps failing
+before it ever listed shows no project header. The module comment has the
+rules.
 
 Only a newer read of the same computer supersedes a sidebar catalog read.
 Change thread, project and group rows through the catalog writer's `mutate`,

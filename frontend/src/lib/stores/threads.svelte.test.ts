@@ -13,7 +13,7 @@ import {
   clearThreadGroupMembership,
   dropThreadsForDetachedBackend,
 } from './threads.svelte';
-import { loadThreadCatalogs } from './threadCatalogs';
+import { loadSidebarCatalogs } from './sidebarCatalogs';
 import type { Thread } from '../types/models';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import {
@@ -52,7 +52,7 @@ describe('threads store', () => {
       makeThread('member', { groupId: 'g1', placement: 'grouped', pinnedAt: 5 }),
       makeThread('other', { groupId: 'g2', placement: 'grouped' }),
     ]);
-    await loadThreadCatalogs();
+    await loadSidebarCatalogs();
     clearThreadGroupMembership('g1');
     expect(getThreads().map((t) => [t.id, t.groupId, t.placement, t.pinnedAt])).toEqual([
       ['member', undefined, 'standalone', undefined],
@@ -60,24 +60,24 @@ describe('threads store', () => {
     ]);
   });
 
-  describe('loadThreadCatalogs()', () => {
+  describe('loadSidebarCatalogs()', () => {
     it('replaces the store with the RPC result', async () => {
       const loaded = [makeThread('t1'), makeThread('t2')];
       setBindingMock('ListThreads', async () => loaded);
-      await loadThreadCatalogs();
+      await loadSidebarCatalogs();
       expect(getThreads().map((t) => t.id)).toEqual(['t1', 't2']);
     });
 
     it('leaves the store alone on failure', async () => {
       // Seed known state.
       setBindingMock('ListThreads', async () => [makeThread('keep')]);
-      await loadThreadCatalogs();
+      await loadSidebarCatalogs();
       expect(getThreads().map((t) => t.id)).toEqual(['keep']);
 
       // Failing RPC.
       setBindingMock('ListThreads', async () => { throw new Error('rpc down'); });
       const consoleErr = vi.spyOn(console, 'error').mockImplementation(() => {});
-      await loadThreadCatalogs();
+      await loadSidebarCatalogs();
       // Prior value preserved.
       expect(getThreads().map((t) => t.id)).toEqual(['keep']);
       consoleErr.mockRestore();
@@ -87,7 +87,7 @@ describe('threads store', () => {
   describe('rows as values', () => {
     it('rejects a write into a stored row or into the list', async () => {
       setBindingMock('ListThreads', async () => [makeThread('t1'), makeThread('t2')]);
-      await loadThreadCatalogs();
+      await loadSidebarCatalogs();
       updateThreadTitle('t2', 'Renamed');
       const rows = getThreads() as Thread[];
       // Both a row a read committed and a row a mutation replaced.
@@ -99,7 +99,7 @@ describe('threads store', () => {
 
     it('stores its own copy of a reactive row a pane hands over', async () => {
       setBindingMock('ListThreads', async () => [makeThread('t1')]);
-      await loadThreadCatalogs();
+      await loadSidebarCatalogs();
       const paneRow = $state(makeThread('draft'));
 
       prependThread(paneRow);
@@ -125,7 +125,7 @@ describe('threads store', () => {
       const write = vi.spyOn(replicaSession, 'putReplicaCatalog').mockResolvedValue(undefined);
       observeCatalogStamp(HOME_BACKEND, 'threads', 'stamp');
       setBindingMock('ListThreads', async () => [makeThread('t1')]);
-      await loadThreadCatalogs();
+      await loadSidebarCatalogs();
       // The read writes its answer as it came; the store's writer follows
       // with the rows it holds, and that is the write with the cache.
       const cached = () => write.mock.calls.filter((call) => call[1] === 'threads' && call[5] instanceof WeakMap);
@@ -138,7 +138,7 @@ describe('threads store', () => {
 
     it('keeps its own list when a caller hands over an array', async () => {
       setBindingMock('ListThreads', async () => [makeThread('t1'), makeThread('t2')]);
-      await loadThreadCatalogs();
+      await loadSidebarCatalogs();
       // Rows the store already holds, in the caller's array.
       const rows = [...getThreads()];
       replaceAllThreads(rows);
@@ -159,7 +159,7 @@ describe('threads store', () => {
   describe('mutations', () => {
     it('prependThread puts new thread at the head', async () => {
       setBindingMock('ListThreads', async () => [makeThread('b'), makeThread('c')]);
-      await loadThreadCatalogs();
+      await loadSidebarCatalogs();
       prependThread(makeThread('a'));
       expect(getThreads().map((t) => t.id)).toEqual(['a', 'b', 'c']);
     });
@@ -168,7 +168,7 @@ describe('threads store', () => {
     // later write's frame can land before the reply too.
     it('prependThreadReply keeps a frame that arrived during the call', async () => {
       setBindingMock('ListThreads', async () => [makeThread('b')]);
-      await loadThreadCatalogs();
+      await loadSidebarCatalogs();
       const mark = threadRowFrameMark();
       applyThreadUpdated({ action: 'listed', thread: makeThread('fresh', { title: 'Named meanwhile' }) });
       const held = prependThreadReply(makeThread('fresh'), mark);
@@ -180,7 +180,7 @@ describe('threads store', () => {
 
     it('prependThreadReply applies a ready fork answer over the preparing row a frame set', async () => {
       setBindingMock('ListThreads', async () => [makeThread('b')]);
-      await loadThreadCatalogs();
+      await loadSidebarCatalogs();
       const mark = threadRowFrameMark();
       applyThreadUpdated({ action: 'listed', thread: makeThread('fork', { forkPreparing: true }) });
       const applied = prependThreadReply(makeThread('fork', { sessionRef: 'ready-session' }), mark);
@@ -195,14 +195,14 @@ describe('threads store', () => {
         makeThread('b'),
         makeThread('c'),
       ]);
-      await loadThreadCatalogs();
+      await loadSidebarCatalogs();
       removeThread('b');
       expect(getThreads().map((t) => t.id)).toEqual(['a', 'c']);
     });
 
     it('removeThread on missing id is a no-op', async () => {
       setBindingMock('ListThreads', async () => [makeThread('a')]);
-      await loadThreadCatalogs();
+      await loadSidebarCatalogs();
       removeThread('missing');
       expect(getThreads().map((t) => t.id)).toEqual(['a']);
     });
@@ -212,7 +212,7 @@ describe('threads store', () => {
         makeThread('a', { title: 'A' }),
         makeThread('b', { title: 'B' }),
       ]);
-      await loadThreadCatalogs();
+      await loadSidebarCatalogs();
       updateThreadTitle('a', 'renamed');
 
       const found = getThreads().find((t) => t.id === 'a');
@@ -226,7 +226,7 @@ describe('threads store', () => {
         makeThread('a', { model: 'sonnet' }),
         makeThread('b', { model: 'sonnet' }),
       ]);
-      await loadThreadCatalogs();
+      await loadSidebarCatalogs();
       updateThreadModel('b', 'opus');
 
       expect(getThreads().find((t) => t.id === 'a')?.model).toBe('sonnet');
@@ -235,7 +235,7 @@ describe('threads store', () => {
 
     it('replaceThread swaps the thread object wholesale', async () => {
       setBindingMock('ListThreads', async () => [makeThread('a', { title: 'old' })]);
-      await loadThreadCatalogs();
+      await loadSidebarCatalogs();
       replaceThread(makeThread('a', { title: 'new', model: 'gpt-5' }));
 
       const found = getThreads().find((t) => t.id === 'a');
@@ -245,7 +245,7 @@ describe('threads store', () => {
 
     it('replaceThread is a no-op when id does not exist', async () => {
       setBindingMock('ListThreads', async () => [makeThread('a')]);
-      await loadThreadCatalogs();
+      await loadSidebarCatalogs();
       replaceThread(makeThread('missing', { title: 'x' }));
       expect(getThreads()).toHaveLength(1);
       expect(getThreads()[0].id).toBe('a');
@@ -253,7 +253,7 @@ describe('threads store', () => {
 
     it('touchThreadActivity bumps the live box and leaves the array signal silent', async () => {
       setBindingMock('ListThreads', async () => [makeThread('a', { updatedAt: 100 })]);
-      await loadThreadCatalogs();
+      await loadSidebarCatalogs();
       const before = getThreads();
       const rowBefore = before[0];
 
@@ -273,7 +273,7 @@ describe('threads store', () => {
 
     it('touchThreadActivity ignores stale timestamps and missing threads', async () => {
       setBindingMock('ListThreads', async () => [makeThread('a', { updatedAt: 500 })]);
-      await loadThreadCatalogs();
+      await loadSidebarCatalogs();
 
       const stale = touchThreadActivity('a', 100);
       const missing = touchThreadActivity('missing', 900);
@@ -287,7 +287,7 @@ describe('threads store', () => {
 
     it('removeThread drops the live-activity box so a recycled id starts clean', async () => {
       setBindingMock('ListThreads', async () => [makeThread('a', { updatedAt: 100 })]);
-      await loadThreadCatalogs();
+      await loadSidebarCatalogs();
       touchThreadActivity('a', 900);
       removeThread('a');
 
@@ -330,7 +330,7 @@ describe('standing agent state on removal', () => {
   it('is cleared when the agent is deleted (a list without it)', async () => {
     await primeAgentState();
     setBindingMock('ListThreads', async () => [makeThread('other')]);
-    await loadThreadCatalogs();
+    await loadSidebarCatalogs();
     expectCleared();
   });
 
@@ -354,7 +354,7 @@ describe('standing agent state on removal', () => {
       makeThread('a', { agentId: 'other', createdAt: 1 }),
       makeThread('b', { agentId: 'other', createdAt: 2 }),
     ]);
-    await loadThreadCatalogs();
+    await loadSidebarCatalogs();
     expect(getThreads().filter((t) => t.agentId === 'other').map((t) => t.id)).toEqual(['b']);
   });
 

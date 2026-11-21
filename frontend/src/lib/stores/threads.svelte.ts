@@ -156,8 +156,8 @@ function commitThreadRows(result: ComputerRows<Thread>): void {
 
 /**
  * How the thread catalog is read from each computer and committed. The
- * sidebar reads it only beside the groups, as one round
- * (./threadCatalogs.ts).
+ * sidebar reads it only beside the groups that gather these rows and the
+ * projects they hang from, as one round (./sidebarCatalogs.ts).
  */
 export function threadCatalogPart(): CatalogPart<Thread> {
   return {

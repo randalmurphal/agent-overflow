@@ -30,7 +30,7 @@ import { clearAllThreadSizePriorsForTest } from '../lib/utils/virtual/priors';
 import { __resetSizePriorsStorageForTest } from '../lib/utils/virtual/priorsStorage';
 import { __setTransportStatusForTest } from '../lib/stores/transportStatus.svelte';
 import { resetCatalogLoadForTest } from '../lib/stores/catalogLoad.svelte';
-import { resetThreadCatalogsForTest } from '../lib/stores/threadCatalogs';
+import { resetSidebarCatalogsForTest } from '../lib/stores/sidebarCatalogs';
 import { resetCatalogReadsForTest } from '../lib/stores/computerCatalogReads';
 import { __resetGitStatusStoreForTest } from '../lib/stores/gitStatusStore.svelte';
 import { __resetPRReviewStoreForTest } from '../lib/stores/prReviewStore.svelte';
@@ -289,7 +289,7 @@ afterEach(() => {
   // holds a retry timer that would call the next test's binding mocks.
   resetCatalogLoadForTest();
   // The thread list's reads in flight and listings are module-level too.
-  resetThreadCatalogsForTest();
+  resetSidebarCatalogsForTest();
   resetCatalogReadsForTest();
   // Computers a test staged stay attached in the module-level registry, and
   // a second attached computer makes every unowned entity ambiguous.

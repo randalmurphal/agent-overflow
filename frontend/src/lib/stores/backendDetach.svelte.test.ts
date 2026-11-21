@@ -21,7 +21,7 @@ import {
   threadBackend,
 } from '../transport/entityIndex';
 import { getThreads, prependThread, removeThread } from './threads.svelte';
-import { loadThreadCatalogs } from './threadCatalogs';
+import { loadSidebarCatalogs } from './sidebarCatalogs';
 import { setupEventListeners } from './events';
 import { emitWailsEvent } from '../../test/mocks/wailsio-runtime';
 import { addProjectLocal, getProjects, resetProjectsForTest } from './projects.svelte';
@@ -156,7 +156,7 @@ describe('a backend detaching', () => {
     prependThread(makeThread('deleted'));
     const laptop = deferred<Thread[]>();
     setBindingMock('ListThreads', () => takePinnedBackend() === LAPTOP ? laptop.promise : Promise.resolve([]));
-    const read = loadThreadCatalogs();
+    const read = loadSidebarCatalogs();
     const stop = setupEventListeners();
     try {
       emitWailsEvent('thread:updated', { action: 'deleted', id: 'deleted' }, descriptor().backendId);

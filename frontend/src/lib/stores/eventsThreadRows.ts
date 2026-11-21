@@ -9,8 +9,8 @@ import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 import type { TurnCompletedEvent } from '../types/events';
 import type { Thread } from '../types/models';
 import { closePanesShowingThread, findPaneShowingThread, followDeletedThread, iterPanes, moveAssistantPanes, syncThread } from './panes.svelte';
-import { refreshProjects, touchProjectActivity } from './projects.svelte';
-import { loadThreadCatalogs } from './threadCatalogs';
+import { touchProjectActivity } from './projects.svelte';
+import { loadSidebarCatalogs } from './sidebarCatalogs';
 import { refreshAgentWakes } from './threadWakes.svelte';
 import { forgetThreadWorkerSummary, refreshThreadWorkerSummaries } from './threadWorkerSummaries.svelte';
 import { followAssistantHandOffInStash, followAssistantHandOffsInStash } from './companionStash';
@@ -163,17 +163,18 @@ export function syncThreadActivity(threadId: string, updatedAt: number): void {
 }
 
 /**
- * Mid-session sidebar resync (transport-gap recovery). The threads and
- * their groups are read as one round (./threadCatalogs.ts); a resync then
- * closes the panes of threads deleted while their frame was lost.
+ * Mid-session sidebar resync (transport-gap recovery). The projects, the
+ * threads under them and their groups are read as one round
+ * (./sidebarCatalogs.ts); a resync then closes the panes of threads deleted
+ * while their frame was lost.
  */
-async function resyncThreadRows(): Promise<void> {
+async function resyncSidebarRows(): Promise<void> {
   let rows: readonly Thread[];
   try {
-    rows = await loadThreadCatalogs();
+    rows = await loadSidebarCatalogs();
   } catch (err) {
     if (isPassiveConnectionFailure(err)) return;
-    console.error('Failed to resync threads after transport gap:', err);
+    console.error('Failed to resync the sidebar after transport gap:', err);
     addErrorToast('Failed to load threads', err);
     return;
   }
@@ -260,9 +261,10 @@ export function refreshSidebarProjections(): void {
   // still start a fresh read even if this one's RPCs remain outstanding.
   queueMicrotask(() => {
     sidebarRefreshQueued = false;
-    // Threads and their groups, as one round.
-    void resyncThreadRows();
-    void refreshProjects();
+    // The projects, their threads and the groups that gather them, as one
+    // round: a computer's three answers commit together, so the tree it
+    // shows changes arrangement once.
+    void resyncSidebarRows();
     void refreshAgentWakes();
     void refreshThreadWorkerSummaries();
   });

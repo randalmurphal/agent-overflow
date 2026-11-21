@@ -17,7 +17,7 @@
     getProjectLiveActivityAt,
     getProjects,
     projectEntries,
-    refreshProjects,
+    projectMembers,
     updateProjectLocal,
   } from '../../stores/projects.svelte';
   import {
@@ -56,7 +56,7 @@
     threadMachine,
   } from '../../stores/attachedBackends.svelte';
   import { CATALOG_KINDS, catalogLoadState } from '../../stores/catalogLoad.svelte';
-  import { catalogTreeListed } from '../../stores/threadCatalogs';
+  import { catalogTreeListed, loadSidebarCatalogs } from '../../stores/sidebarCatalogs';
   import CatalogStatusRow from './CatalogStatusRow.svelte';
   import ProjectList from './ProjectList.svelte';
   import { bucketSidebarThreads } from './sidebarBuckets';
@@ -99,20 +99,30 @@
   // rows keep their array the same way, so a project thread's change does
   // not rebuild the Assistants section's tree.
   //
-  // A computer's project threads and groups are held until the thread list
-  // lists them (catalogTreeListed). An assistant's row joins no
-  // group and is not held.
+  // Every row of a computer's tree is held until the tree lists
+  // (catalogTreeListed): its project headers in visibleProjects, its project
+  // threads and its groups here. An assistant's row belongs to no project
+  // and is not held.
+  //
+  // `treeListed` is the only reader of that gate in this file, so what a
+  // computer shows before its first complete round is one decision. Its memo
+  // is per derivation: each derivation reads the gate once per computer and
+  // nothing may cache a reactive read across derivations.
+  function treeListed(): (backend: BackendKey) => boolean {
+    const seen = new Map<BackendKey, boolean>();
+    return (backend) => {
+      let value = seen.get(backend);
+      if (value === undefined) seen.set(backend, value = catalogTreeListed(backend));
+      return value;
+    };
+  }
+
   let previousThreadBuckets: ReadonlyMap<string, Thread[]> = new Map();
   let previousGroupBuckets: ReadonlyMap<string, ThreadGroup[]> = new Map();
   let previousAssistantLists: ReadonlyMap<'assistants', Thread[]> = new Map();
   let searchBuckets = $derived.by(() => {
     const filterDevices = sidebarDeviceFilterActive();
-    const listed = new Map<BackendKey, boolean>();
-    const listedOn = (backend: BackendKey): boolean => {
-      let value = listed.get(backend);
-      if (value === undefined) listed.set(backend, value = catalogTreeListed(backend));
-      return value;
-    };
+    const listedOn = treeListed();
     const buckets = bucketSidebarThreads({
       threads: getThreads(),
       groups: getThreadGroups(),
@@ -179,8 +189,16 @@
   let prevVisibleProjects: ProjectWithCounts[] = [];
   let visibleProjects = $derived.by(() => {
     const mode = getProjectSortMode();
+    const listedOn = treeListed();
+    // An entry is one repository with at most one member per computer, so it
+    // has a row while any computer holding a member lists its tree. A
+    // computer whose tree is held contributes neither its header nor the
+    // threads under it, so the two appear in one step.
+    const entryListed = (entry: ProjectWithCounts): boolean => projectMembers(entry.project.id)
+      .some((member) => listedOn(projectBackend(member.project.id) ?? HOME_BACKEND));
     const entries = projectEntries()
       .filter((p) => !p.project.archived)
+      .filter(entryListed)
       .filter((p) => deviceProjectIds === null || deviceProjectIds.has(p.project.id))
       .filter((p) => {
         if (!query) return true;
@@ -314,7 +332,14 @@
     } catch (err) {
       console.error('Failed to persist project order:', err);
       addErrorToast(userFacingError(err), err);
-      await refreshProjects();
+      // The whole tree, because the projects are read only beside the
+      // threads under them (stores/sidebarCatalogs.ts). The round reports
+      // each computer's failure through the catalog state.
+      try {
+        await loadSidebarCatalogs();
+      } catch {
+        // Already shown by the catalog status row and retried there.
+      }
     }
   }
 

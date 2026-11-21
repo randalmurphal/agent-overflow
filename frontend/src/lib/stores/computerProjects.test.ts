@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { readSidebarCatalogs } from '../../test/helpers/sidebarCatalogs';
 
 import { addComputerCheckout, checkoutRefusal } from './computerProjects';
-import { getProject, refreshProjects, resetProjectsForTest } from './projects.svelte';
+import { getProject, resetProjectsForTest } from './projects.svelte';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import { takePinnedBackend } from '../transport/backends';
 import { __resetEntityIndexForTest } from '../transport/entityIndex';
@@ -13,7 +14,7 @@ function makeProject(overrides: Partial<Project>): Project {
 
 async function seed(project: Project): Promise<void> {
   setBindingMock('ListProjects', async () => [{ project, threadCount: 0 }]);
-  await refreshProjects();
+  await readSidebarCatalogs();
 }
 
 function inspectAs(answer: () => Promise<unknown>) {

@@ -12,7 +12,7 @@
   import { setupEventListeners } from './lib/stores/events';
   import { OPEN_GIT_DIALOG_EVENT, type OpenGitDialogDetail } from './lib/stores/eventNames';
   import { getThreads } from './lib/stores/threads.svelte';
-  import { loadThreadCatalogs } from './lib/stores/threadCatalogs';
+  import { loadSidebarCatalogs } from './lib/stores/sidebarCatalogs';
   import { refreshAgentWakes } from './lib/stores/threadWakes.svelte';
   import { markNotificationHydrated } from './lib/stores/eventsNotification';
   import {
@@ -479,10 +479,10 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
       restoringLayout = true;
       heldForStartingBackend = false;
       try {
-        // The threads and the groups that gather them, read as one round.
-        // A failed group load is not a failed boot: the catalog state shows
-        // and retries it.
-        const threads = await loadThreadCatalogs();
+        // The projects, the threads under them and the groups that gather
+        // those threads, read as one round. A failed project or group load
+        // is not a failed boot: the catalog state shows and retries it.
+        const threads = await loadSidebarCatalogs();
         if (disposed) return;
         void refreshAgentWakes();
         await appStorageReady;

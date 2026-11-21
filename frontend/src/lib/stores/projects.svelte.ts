@@ -1,21 +1,19 @@
-import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 import { invalidateReplicaCatalog } from '../replica/session';
 import { computerCatalogWriter } from './computerCatalogWriter';
-import { computerCatalog, readComputerRows, retainUnavailableComputerRows, type ComputerRows } from './computerRows';
-import { registerCatalogReader, settleCatalogAnswers } from './catalogLoad.svelte';
+import { computerCatalog, retainUnavailableComputerRows, type CatalogPart, type ComputerRows } from './computerRows';
+import { settleCatalogAnswers } from './catalogLoad.svelte';
 // Sidebar-facing projects store. Mirrors the pattern of threads.svelte.ts:
-// a single reactive $state array driven by an explicit refresh, with
+// a single reactive $state array driven by an explicit read, with
 // optimistic local mutations so the sidebar can reflect a create/rename/
 // delete without round-tripping the server.
 //
-// Callers (Sidebar components, AddProjectModal) refresh once on mount
-// and call the addProjectLocal / updateProjectLocal / removeProjectLocal
-// helpers after a successful RPC so the list stays in sync with the
-// backend. `refreshProjects` is still safe to call any time to resync.
+// The rows are read only as part of the sidebar's tree
+// (./sidebarCatalogs.ts, projectCatalogPart below); callers call the
+// addProjectLocal / updateProjectLocal / removeProjectLocal helpers after a
+// successful RPC so the list stays in sync with the backend.
 
 import type { Project, ProjectWithCounts } from '../types/models';
 import { ListProjects } from './bindings';
-import { addErrorToast } from './toast.svelte';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import {
   disambiguatedPathLabels,
@@ -226,21 +224,9 @@ export function getProjectLabelText(id: string): string {
   return label ? formatPathLabel(label) : '';
 }
 
-/** True once refreshProjects has completed at least one successful fetch. */
+/** True once a round has committed at least one computer's project rows. */
 export function isLoaded(): boolean {
   return loaded;
-}
-
-/** Refresh each computer independently, preserving its cached rows on failure.
- * Superseded reads neither publish an empty catalog nor mark initial load done. */
-export async function refreshProjects(): Promise<void> {
-  try {
-    await readComputerRows<ProjectWithCounts>(listProjectRows, noteProjectRow, commitProjectRows, { catalog: projectCatalog() });
-  } catch (err) {
-    if (isPassiveConnectionFailure(err)) return;
-    console.error('Failed to load projects:', err);
-    addErrorToast('Failed to load projects', err);
-  }
 }
 
 function listProjectRows(): Promise<ProjectWithCounts[]> {
@@ -262,21 +248,20 @@ function commitProjectRows(result: ComputerRows<ProjectWithCounts>): void {
 }
 
 /**
- * Read one computer's projects alone, waiting for the answer rather than
- * the startup deadline: the catalog store's retry, and the re-read after
- * the computer's history changed (./catalogLoad.svelte.ts).
+ * How the project catalog is read from each computer and committed. The
+ * sidebar's project headers are one unit with the threads under them and
+ * the groups that gather those threads, so this catalog is read only beside
+ * the other two, as one round (./sidebarCatalogs.ts). Nothing else reads it:
+ * a second reader would supersede the round's and leave its tree held.
  */
-async function readProjectCatalog(backend: BackendKey): Promise<void> {
-  try {
-    await readComputerRows<ProjectWithCounts>(
-      listProjectRows, noteProjectRow, commitProjectRows, { catalog: projectCatalog(), only: backend, deadlineMs: null });
-  } catch {
-    // readComputerRows settled this computer's failure into the catalog
-    // state, which is where it is shown and retried.
-  }
+export function projectCatalogPart(): CatalogPart<ProjectWithCounts> {
+  return {
+    read: listProjectRows,
+    note: noteProjectRow,
+    commit: commitProjectRows,
+    catalog: projectCatalog(),
+  };
 }
-
-registerCatalogReader(['projects'], readProjectCatalog);
 
 /**
  * Insert a freshly-created project at the head of the list. Accepts a

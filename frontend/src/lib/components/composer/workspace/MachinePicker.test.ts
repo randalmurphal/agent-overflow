@@ -1,3 +1,4 @@
+import { readSidebarCatalogs } from '../../../../test/helpers/sidebarCatalogs';
 import { takePinnedBackend } from '../../../transport/backends';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
@@ -9,7 +10,7 @@ import { resetBindingMocks, setBindingMock } from '../../../../test/mocks/bindin
 import { buildPane as buildRegisteredPane, makeThread as makeBaseThread } from '../../../../test/helpers/chat';
 import { idleWorkspaceActivity } from '../../../../test/helpers/workspaceLock';
 import { resetPanesForTest } from '../../../stores/panes.svelte';
-import { refreshProjects, resetProjectsForTest } from '../../../stores/projects.svelte';
+import { resetProjectsForTest } from '../../../stores/projects.svelte';
 import { __resetSelectedBackendForTest, selectedBackend } from '../../../stores/selectedBackend.svelte';
 import { __resetEntityIndexForTest, noteProject, noteThread } from '../../../transport/entityIndex';
 import { __resetBackendIdentityForTest, setBackendIdentityFromBootstrap } from '../../../transport/backendIdentity';
@@ -66,7 +67,7 @@ async function seedProjects(projects: Project[]): Promise<void> {
     return projects.filter((_project, index) => backend === 'laptop' ? index > 0 : index === 0)
       .map((project) => ({ project, threadCount: 0 }));
   });
-  await refreshProjects();
+  await readSidebarCatalogs();
 }
 
 describe('<MachinePicker>', () => {

@@ -1,3 +1,4 @@
+import { readSidebarCatalogs } from '../../../test/helpers/sidebarCatalogs';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { page } from 'vitest/browser';
 import { render, waitFor } from '@testing-library/svelte';
@@ -10,7 +11,7 @@ import { registerPaneForTest } from '../../stores/panes.svelte';
 import { getCollapsedGroups, resetSidebarForTest } from '../../stores/sidebar.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { replaceAllThreads, touchThreadActivity } from '../../stores/threads.svelte';
-import { refreshProjects, resetProjectsForTest } from '../../stores/projects.svelte';
+import { resetProjectsForTest } from '../../stores/projects.svelte';
 import { resetThreadWakesForTest } from '../../stores/threadWakes.svelte';
 import { refreshThreadWorkerSummaries, resetThreadWorkerSummariesForTest } from '../../stores/threadWorkerSummaries.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
@@ -189,7 +190,7 @@ describe('assistant rows', () => {
       { project: { id: 'p-a', path: '/repo/a', name: 'Alpha', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false }, threadCount: 0 },
       { project: { id: 'p-b', path: '/repo/b', name: 'Beta', sortPosition: 1, createdAt: 0, updatedAt: 0, archived: false }, threadCount: 0 },
     ]);
-    await refreshProjects();
+    await readSidebarCatalogs();
     const agent = thread('agent', { agentId: 'agent', projectId: '', agentProjectIds: ['p-a', 'p-b'], updatedAt: 5 });
     const loose = thread('loose', { pinnedAt: 1 });
     replaceAllThreads([agent, loose]);

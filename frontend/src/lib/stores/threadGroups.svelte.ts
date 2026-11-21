@@ -9,7 +9,8 @@ import { noteThreadGroup, threadGroupBackend } from '../transport/entityIndex';
 // targets all derive from this one list.
 //
 // Lifecycle mirrors `threads.svelte.ts`: a wholesale load beside the
-// threads it gathers, as one round (./threadCatalogs.ts), at boot, on a
+// threads it gathers and the projects those hang from, as one round
+// (./sidebarCatalogs.ts), at boot, on a
 // hello, on the transport-gap resync path and on each retry, and per-row
 // patches from the `thread-group:updated` channel in between. The list is small
 // (tens of rows at most) and changes rarely, so there is no per-entity
@@ -100,7 +101,8 @@ function commitGroupRows(result: ComputerRows<ThreadGroup>): void {
 
 /**
  * How the group catalog is read from each computer and committed: only
- * beside the threads it gathers, as one round (./threadCatalogs.ts).
+ * beside the threads it gathers and the projects those hang from, as one
+ * round (./sidebarCatalogs.ts).
  */
 export function groupCatalogPart(): CatalogPart<ThreadGroup> {
   return {

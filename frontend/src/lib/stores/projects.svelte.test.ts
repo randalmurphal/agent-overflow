@@ -1,5 +1,6 @@
 import { takePinnedBackend, attachedBackendCount } from '../transport/backends';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readSidebarCatalogs } from '../../test/helpers/sidebarCatalogs';
 import {
   addProjectLocal,
   entryIdFor,
@@ -14,7 +15,6 @@ import {
   projectRepoKey,
   projectSiblingOn,
   projectSpansBackends,
-  refreshProjects,
   removeProjectLocal,
   resetProjectsForTest,
   touchProjectActivity,
@@ -61,32 +61,32 @@ describe('projects store', () => {
     expect(getProjectLabelText(active.id)).toBe('app');
   });
 
-  describe('refreshProjects', () => {
+  describe('reading the catalog', () => {
     it('replaces the store with the RPC result', async () => {
       const loaded = [wrap(makeProject('p1'), 3), wrap(makeProject('p2'), 0)];
       setBindingMock('ListProjects', async () => loaded);
-      await refreshProjects();
+      await readSidebarCatalogs();
       expect(getProjects().map((p) => p.project.id)).toEqual(['p1', 'p2']);
       expect(isLoaded()).toBe(true);
     });
 
     it('leaves the store alone on failure', async () => {
       setBindingMock('ListProjects', async () => [wrap(makeProject('keep'))]);
-      await refreshProjects();
+      await readSidebarCatalogs();
       expect(getProjects().map((p) => p.project.id)).toEqual(['keep']);
 
       setBindingMock('ListProjects', async () => {
         throw new Error('rpc down');
       });
       const err = vi.spyOn(console, 'error').mockImplementation(() => {});
-      await refreshProjects();
+      await readSidebarCatalogs();
       expect(getProjects().map((p) => p.project.id)).toEqual(['keep']);
       err.mockRestore();
     });
 
     it('treats a null response as an empty list', async () => {
       setBindingMock('ListProjects', async () => null);
-      await refreshProjects();
+      await readSidebarCatalogs();
       expect(getProjects()).toEqual([]);
       expect(isLoaded()).toBe(true);
     });
@@ -101,7 +101,7 @@ describe('projects store', () => {
 
     it('addProjectLocal is a no-op when id already present', async () => {
       setBindingMock('ListProjects', async () => [wrap(makeProject('p1'), 2)]);
-      await refreshProjects();
+      await readSidebarCatalogs();
       addProjectLocal(makeProject('p1'));
       expect(getProjects()).toHaveLength(1);
       // Original count preserved — the add didn't overwrite.
@@ -110,7 +110,7 @@ describe('projects store', () => {
 
     it('updateProjectLocal replaces the project row in place', async () => {
       setBindingMock('ListProjects', async () => [wrap(makeProject('p1'), 4)]);
-      await refreshProjects();
+      await readSidebarCatalogs();
       updateProjectLocal(makeProject('p1', { name: 'renamed' }));
       expect(getProject('p1')?.project.name).toBe('renamed');
       // Thread count preserved across a rename.
@@ -122,14 +122,14 @@ describe('projects store', () => {
         wrap(makeProject('a')),
         wrap(makeProject('b')),
       ]);
-      await refreshProjects();
+      await readSidebarCatalogs();
       removeProjectLocal('a');
       expect(getProjects().map((p) => p.project.id)).toEqual(['b']);
     });
 
     it('removeProjectLocal on missing id is a no-op', async () => {
       setBindingMock('ListProjects', async () => [wrap(makeProject('a'))]);
-      await refreshProjects();
+      await readSidebarCatalogs();
       removeProjectLocal('missing');
       expect(getProjects()).toHaveLength(1);
     });
@@ -138,7 +138,7 @@ describe('projects store', () => {
       setBindingMock('ListProjects', async () => [
         { ...wrap(makeProject('a')), lastActive: 100 },
       ]);
-      await refreshProjects();
+      await readSidebarCatalogs();
 
       const before = getProjects();
       touchProjectActivity('a', 500);
@@ -154,7 +154,7 @@ describe('projects store', () => {
       setBindingMock('ListProjects', async () => [
         { ...wrap(makeProject('a')), lastActive: 500 },
       ]);
-      await refreshProjects();
+      await readSidebarCatalogs();
 
       touchProjectActivity('a', 100);
       touchProjectActivity('missing', 900);
@@ -190,7 +190,7 @@ describe('projects store — merged entries (wave 7d)', () => {
         return backend === 'laptop' ? remote : !remote;
       });
     });
-    await refreshProjects();
+    await readSidebarCatalogs();
   }
 
   it('is the list itself, same identity, on a single-backend page', async () => {

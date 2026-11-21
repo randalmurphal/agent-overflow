@@ -9,8 +9,9 @@
 //
 // A failed read retries itself. Each catalog store registers the reader
 // that re-reads one computer, with the catalogs that reader covers: the
-// thread list reads threads and groups as one (./threadCatalogs.ts), and
-// one timer per reader and computer retries them together.
+// sidebar's tree reads projects, threads and groups as one
+// (./sidebarCatalogs.ts), and one timer per reader and computer retries
+// them together.
 //
 //   - A read that met a backend answering temporarily_unavailable, or that
 //     missed its startup deadline before its catalog loaded, retries after
