@@ -565,7 +565,10 @@ build never replaces a newer view. Whether the view is loaded is part of
 what is told: a ticket whose content neither the mirror nor the pump
 holds any more is told not loaded and read at once, and told loaded when
 the read holds it again, the same content included. A subscriber answered
-not loaded is told the same way. A read succeeds only once the tracker
+not loaded is told the same way; finding it not loaded again leaves the
+read in flight standing. When another read stores the issue's document in
+the mirror while the pump holds one, the view is rebuilt from whichever
+read began later, and the pump lets go of an older one. A read succeeds only once the tracker
 answered and the document it checked is confirmed where its check says
 (the mirror's copy of the same read, or the pump's while the mirror holds
 none); one the cap dropped or the cleanup swept meanwhile is read in

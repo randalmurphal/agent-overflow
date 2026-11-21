@@ -1,7 +1,9 @@
 package trackerapp
 
 import (
+	"context"
 	"errors"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -131,6 +133,99 @@ func (f *crossFixture) shows(t *testing.T, desc, title string, changes int) {
 	if len(told) != changes {
 		t.Fatalf("%d views told %+v; want %d", len(told), told, changes)
 	}
+}
+
+// A document another read stores in the mirror while the pump holds the
+// ticket's: the view is the document whose read began later. A newer
+// mirror's copy is shown at once, with no tracker call, and the pump lets
+// its own go; an older one, stored by a read that began before the pump's,
+// changes nothing.
+func TestAHeldTicketShowsTheNewerOfItsCopyAndTheMirrors(t *testing.T) {
+	t.Parallel()
+	// held is the fixture once a board keeps 10001, whose document the pump
+	// still holds: no read of it since was an opening.
+	held := func(t *testing.T) *crossFixture {
+		f := newCrossFixture(t)
+		f.tracks([]tracker.Row{{Card: card("10001", 1_799_000_000_000), Order: "a"}, {Card: f.linked, Order: "b"}})
+		must[Outcome](t)(f.svc.tickDelta(t.Context(), f.scope(), Background))
+		quiet(t, f.svc)
+		if !f.pumpHolds() {
+			t.Fatal("the pump does not hold the ticket's document")
+		}
+		f.before = f.issueEventCount()
+		return f
+	}
+	changed := func(f *crossFixture) int {
+		n := 0
+		for _, e := range f.issueEventsSince(f.before) {
+			if e.Changed {
+				n++
+			}
+		}
+		return n
+	}
+	t.Run("the mirror's is newer", func(t *testing.T) {
+		t.Parallel()
+		f := held(t)
+		f.desc.Store("v2")
+		calls := len(f.p.callsInOrder())
+		v, ch, err := f.svc.RefreshIssueDetail(t.Context(), f.conn.ID, "10001", Interactive)
+		if err != nil || v.Description != "v2" || !slices.Contains(ch.Details, tracker.IssueID("10001")) {
+			t.Fatalf("the refresh %+v, %+v, %v", v.Description, ch, err)
+		}
+		quiet(t, f.svc)
+		if got := f.ticketView(t, f.sub.ID); !got.Loaded || got.Detail.Description != "v2" {
+			t.Fatalf("the open ticket shows %+v", got.Detail)
+		}
+		if f.pumpHolds() {
+			t.Fatal("the pump still holds a copy of the document the mirror holds")
+		}
+		if n := changed(f); n != 1 {
+			t.Fatalf("%d views told; want 1", n)
+		}
+		if got := describeCounts(countsOf(f.p.callsInOrder()[calls:])); got != "Details:1" {
+			t.Fatalf("the refresh and the rebuild called %s", got)
+		}
+	})
+	t.Run("the mirror's is older", func(t *testing.T) {
+		t.Parallel()
+		f := held(t)
+		// The refresh begins and is answered v1, the round reads v2 and the
+		// pump holds it, then the refresh stores its answer.
+		call := holdNext(f.p, "Details")
+		done := make(chan error, 1)
+		go func() {
+			_, _, err := f.svc.RefreshIssueDetail(context.Background(), f.conn.ID, "10001", Interactive)
+			done <- err
+		}()
+		<-call.arrived
+		f.desc.Store("v2")
+		if res := f.round(t); res.failed {
+			t.Fatalf("the read %+v", res)
+		}
+		close(call.release)
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		if _, d, ok := f.storedDetail(t, "10001"); !ok || d.Description != "v1" {
+			t.Fatalf("the mirror's copy %+v, %v", d.Description, ok)
+		}
+		quiet(t, f.svc)
+		if got := f.ticketView(t, f.sub.ID); !got.Loaded || got.Detail.Description != "v2" {
+			t.Fatalf("the open ticket shows %+v", got.Detail)
+		}
+		if n := changed(f); n != 1 {
+			t.Fatalf("%d views told; want 1, the round's", n)
+		}
+	})
+}
+
+// pumpHolds reports whether 10001's pump holds its document.
+func (f *crossFixture) pumpHolds() bool {
+	tp := f.svc.ticketPumpOf(f.conn.ID, "10001")
+	f.svc.subMu.Lock()
+	defer f.svc.subMu.Unlock()
+	return tp.check != nil && tp.check.held != nil && tp.held != nil
 }
 
 // A rebuild that crosses a read: the read built its view with the old

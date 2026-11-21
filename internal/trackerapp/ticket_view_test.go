@@ -41,6 +41,38 @@ func TestAJoinerAnsweredNotLoadedIsToldTheLoad(t *testing.T) {
 	}
 }
 
+// Finding a ticket not loaded again, while the read that loads it is in
+// flight, leaves that read standing: it settles, and the ticket is read
+// once.
+func TestFindingATicketNotLoadedAgainKeepsTheReadInFlight(t *testing.T) {
+	t.Parallel()
+	m, _ := capFixture(t)
+	m.p.updatedMovesWithDetail(cardsOf)
+	must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "40000"))
+	quiet(t, m.svc)
+	m.evictUntold(t)
+	reads := m.p.count("Details")
+	call := holdNext(m.p, "Details")
+	joined := must[TicketSubscription](t)(m.svc.SubscribeTicket(m.conn.ID, "40000"))
+	if joined.Loaded {
+		t.Fatal("the joiner was answered with a dropped detail")
+	}
+	<-call.arrived
+	for range 2 {
+		if v := m.ticketView(t, joined.ID); v.Loaded {
+			t.Fatal("the ticket is loaded before its read answered")
+		}
+	}
+	close(call.release)
+	quiet(t, m.svc)
+	if v := m.ticketView(t, joined.ID); !v.Loaded {
+		t.Fatal("the ticket did not load")
+	}
+	if got := m.p.count("Details") - reads; got != 1 {
+		t.Fatalf("%d detail reads; want 1", got)
+	}
+}
+
 // A history read that moves an open ticket's status time, with its
 // document and its card unchanged, rebuilds its view with no tracker call
 // and tells it once; the rounds after it tell nothing.

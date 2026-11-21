@@ -226,14 +226,19 @@ func (s *Service) installViewLocked(tp *ticketPump, v *DetailView, digest uint64
 // not loaded when it was told as loaded, and the ticket is then due a read
 // at once. The pump forgets its document as of at, so a read that began
 // earlier settles nothing and the next read builds the view of whatever
-// it finds and tells it. A ticket whose first read has not settled is
-// that read's to tell. The caller holds subMu.
+// it finds and tells it. A pump that already told so and holds no document
+// has nothing to forget: a read that began since is the one that loads it,
+// and finding the ticket not loaded again leaves that read standing; the
+// not loaded view is still the one built at at. A ticket whose first read
+// has not settled is that read's to tell. The caller holds subMu.
 func (s *Service) notLoadedLocked(tp *ticketPump, at uint64) {
 	if tp.over || tp.core.DeadLocked() || tp.settled == 0 {
 		return
 	}
 	was := tp.view.loaded
-	tp.check, tp.shows, tp.settled = nil, nil, max(tp.settled, at)
+	if was || tp.check != nil {
+		tp.check, tp.shows, tp.settled = nil, nil, max(tp.settled, at)
+	}
 	s.installViewLocked(tp, nil, 0, 0, at)
 	if was {
 		s.readNowLocked(tp)
@@ -242,9 +247,11 @@ func (s *Service) notLoadedLocked(tp *ticketPump, at uint64) {
 }
 
 // rebuildTicket builds tp's view again, with no tracker call, from the
-// document its pump holds or else the mirror's copy, and installs it
-// unless a read settled another document meanwhile (that read builds its
-// own) or an input moved since the build began (its nudge builds again).
+// newer of the document its pump holds and the mirror's copy (rebuiltView),
+// and installs it unless a read settled another document meanwhile (that
+// read builds its own) or an input moved since the build began (its nudge
+// builds again). A mirror's copy that is not the pump's document becomes
+// it, and the pump lets go of the one it held.
 // With no document anywhere the view is told as not loaded and the ticket
 // is due a read at once. A build that fails is told as a failure outside
 // the tracker when no failure is told, and is tried again at the next
@@ -264,7 +271,7 @@ func (s *Service) rebuildTicket(tp *ticketPump) {
 		return
 	}
 	at := millis(s.now())
-	v, d, check, ok, err := s.rebuiltView(tp.key, held)
+	v, d, mirrored, ok, err := s.rebuiltView(tp.key, held, readAt)
 	s.subMu.Lock()
 	defer s.subMu.Unlock()
 	switch {
@@ -280,11 +287,11 @@ func (s *Service) rebuildTicket(tp *ticketPump) {
 		s.notLoadedLocked(tp, b)
 		return
 	default:
-		if held == nil && (tp.check == nil || *tp.check != check) {
+		if mirrored != (detailCheck{}) && (tp.check == nil || *tp.check != mirrored) {
 			// The mirror's copy is another read's document.
-			tp.check = &check
+			tp.check = &mirrored
 			tp.docs++
-			readAt = check.readAt
+			readAt = mirrored.readAt
 		}
 		tp.shows = showsOf(d)
 		s.installViewLocked(tp, &v, s.digestOf(v), readAt, b)
@@ -292,10 +299,12 @@ func (s *Service) rebuildTicket(tp *ticketPump) {
 	s.flushTicketLocked(tp, false)
 }
 
-// rebuiltView is key's view built from held when the pump holds its
-// document, else from the mirror's copy decoded, with that copy's check;
-// ok is false when neither holds one.
-func (s *Service) rebuiltView(key ticketKey, held *tracker.Detail) (DetailView, tracker.Detail, detailCheck, bool, error) {
+// rebuiltView is key's view built from the newer, by when their reads
+// began, of the document its pump holds (held, its read begun at heldAt;
+// nil for none) and the mirror's copy, which another read may have stored
+// beside the pump's. mirrored is the mirror's copy's check when the view is
+// built from it. ok is false when neither holds a document.
+func (s *Service) rebuiltView(key ticketKey, held *tracker.Detail, heldAt int64) (v DetailView, d tracker.Detail, mirrored detailCheck, ok bool, err error) {
 	root, err := s.readRoot(key.connection)
 	if errors.Is(err, ErrNotMirrored) {
 		return DetailView{}, tracker.Detail{}, detailCheck{}, false, nil
@@ -304,16 +313,18 @@ func (s *Service) rebuiltView(key ticketKey, held *tracker.Detail) (DetailView, 
 		return DetailView{}, tracker.Detail{}, detailCheck{}, false, err
 	}
 	defer s.leave()
-	var check detailCheck
-	d := held
-	if d == nil {
-		m, stored, ok, err := s.storedDetail(root, key.issue)
-		if err != nil || !ok {
-			return DetailView{}, tracker.Detail{}, detailCheck{}, false, err
-		}
-		d = &stored
-		check = detailCheck{readAt: m.ReadAt, updated: millis(stored.Card.Updated), doc: maphash.Bytes(s.digestSeed, m.Data)}
+	m, stored, isStored, err := s.storedDetail(root, key.issue)
+	switch {
+	case err != nil:
+		return DetailView{}, tracker.Detail{}, detailCheck{}, false, err
+	case isStored && (held == nil || m.ReadAt > heldAt):
+		d = stored
+		mirrored = detailCheck{readAt: m.ReadAt, updated: millis(stored.Card.Updated), doc: maphash.Bytes(s.digestSeed, m.Data)}
+	case held != nil:
+		d = *held
+	default:
+		return DetailView{}, tracker.Detail{}, detailCheck{}, false, nil
 	}
-	v, err := s.detailView(root, *d)
-	return v, *d, check, err == nil, err
+	v, err = s.detailView(root, d)
+	return v, d, mirrored, err == nil, err
 }
