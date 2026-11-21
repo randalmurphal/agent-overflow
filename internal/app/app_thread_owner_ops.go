@@ -421,11 +421,11 @@ func (a *App) deliverOwnerOps(ops []store.OwnerOp, targets map[string]store.Thre
 	if targets == nil {
 		targets = a.ownerOpTargets(ops)
 	}
-	if hook := a.ownerOpsDeliveringForTest; hook != nil {
-		hook()
-	}
 	ctx, cancel := context.WithTimeout(a.lifeCtx(), a.ownerOpReach())
 	defer cancel()
+	if hook := a.ownerOpsDeliveringForTest; hook != nil {
+		hook(ctx)
+	}
 	attempts := make([]ownerOpAttempt, len(ops))
 	var wg sync.WaitGroup
 	limit := make(chan struct{}, ownerOpInlineFanOut)

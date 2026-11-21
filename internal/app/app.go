@@ -924,9 +924,10 @@ type App struct {
 	// (endArchiveWalk), so a test can archive the thread again then.
 	archiveWalkEndingForTest func(threadID string)
 	// ownerOpsDeliveringForTest, when set, runs once a door that owed owner
-	// operations is about to make its attempt at them (deliverOwnerOps), so
-	// a test can run the request sweep then.
-	ownerOpsDeliveringForTest func()
+	// operations is about to make its attempt at them (deliverOwnerOps), with
+	// the context its attempts run under, so a test can run the request sweep
+	// then or read the door's bound.
+	ownerOpsDeliveringForTest func(ctx context.Context)
 	// ownerOpWaitingForTest, when set, runs once a door's attempt at the
 	// operation owed for token found another under way and before it waits
 	// for it (beginOwnerOpSend).

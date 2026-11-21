@@ -695,7 +695,7 @@ func (p *ownerOpPair) sweepAtTheDoor(t *testing.T, answered bool) (done func()) 
 	}
 	p.peer.hold.Store(&hold)
 	var once sync.Once
-	p.source.ownerOpsDeliveringForTest = func() {
+	p.source.ownerOpsDeliveringForTest = func(context.Context) {
 		once.Do(func() {
 			sweeping.Store(true)
 			defer sweeping.Store(false)
@@ -902,6 +902,18 @@ func TestADoorWhoseWaitRunsOutLeavesItsOperationToTheSweep(t *testing.T) {
 	}
 }
 
+// A door waits five seconds for what it owes before it reports, unless a
+// test sets another bound.
+func TestOwnerOpReachIsFiveSecondsUnlessATestSetsIt(t *testing.T) {
+	t.Parallel()
+	if got := (&App{}).ownerOpReach(); got != 5*time.Second {
+		t.Fatalf("ownerOpReach = %v, want 5s", got)
+	}
+	if got := (&App{ownerOpReachOverride: 250 * time.Millisecond}).ownerOpReach(); got != 250*time.Millisecond {
+		t.Fatalf("ownerOpReach with an override = %v, want 250ms", got)
+	}
+}
+
 // A door whose own call to the other computer is not answered within the
 // bound returns at the bound and reports the worker pending, the operation
 // still owed. Whether its call reached that computer before the bound is
@@ -993,19 +1005,37 @@ func TestADoorWhoseCallIsNotAnsweredInTimeReportsItPending(t *testing.T) {
 				return func() { close(admitted) }
 			}
 			p.peer.hold.Store(&hold)
+			// The door's attempts run under a context it made between its start
+			// and this hook: its deadline is the bound from that moment.
+			type bounded struct {
+				at       time.Time
+				deadline time.Time
+				ok       bool
+			}
+			attempting := make(chan bounded, 1)
+			p.source.ownerOpsDeliveringForTest = func(ctx context.Context) {
+				deadline, ok := ctx.Deadline()
+				attempting <- bounded{at: time.Now(), deadline: deadline, ok: ok}
+			}
 
 			type report struct {
 				failures []WorkerFailure
 				err      error
+				began    time.Time
 				took     time.Duration
 			}
 			returned := make(chan report, 1)
 			go func() {
 				began := time.Now()
 				failures, err := tc.run(p)
-				returned <- report{failures, err, time.Since(began)}
+				returned <- report{failures, err, began, time.Since(began)}
 			}()
 			got := within(t, "the door returning while the other computer does not answer", returned)
+			door := within(t, "the door's attempt", attempting)
+			if !door.ok || door.deadline.Before(got.began.Add(bound)) || door.deadline.After(door.at.Add(bound)) {
+				t.Fatalf("the door's attempts run until %v (deadline set %v), want the bound %v from its start at %v, at most %v",
+					door.deadline, door.ok, bound, got.began, door.at.Add(bound))
+			}
 			// Read before anything else could reach the other computer: the
 			// sweep makes no pass until the test drains.
 			var held bool
@@ -1131,7 +1161,7 @@ func TestADoorHoldsNothingOnceItEnds(t *testing.T) {
 	t.Run("a delete that panics before its attempt", func(t *testing.T) {
 		t.Parallel()
 		p := newOwnerOpPair(t, false)
-		p.source.ownerOpsDeliveringForTest = func() { panic("the door fails") }
+		p.source.ownerOpsDeliveringForTest = func(context.Context) { panic("the door fails") }
 		func() {
 			defer func() {
 				if recover() == nil {
@@ -1149,7 +1179,7 @@ func TestADoorHoldsNothingOnceItEnds(t *testing.T) {
 	t.Run("the app stopping during a delete's attempt", func(t *testing.T) {
 		t.Parallel()
 		p := newOwnerOpPair(t, false)
-		p.source.ownerOpsDeliveringForTest = p.source.appCancel
+		p.source.ownerOpsDeliveringForTest = func(context.Context) { p.source.appCancel() }
 		if _, err := p.source.DeleteThread(p.caller.ID); err != nil {
 			t.Fatal(err)
 		}
