@@ -32,6 +32,9 @@ which adds the project's empty state and drop targets.
   decides a thread has a row: never archived, never `placement` owned.
   The buckets put an assistant in the Assistants section and every other
   listed thread in its project.
+- A computer's project threads and groups list only while
+  `catalogTreeListed` says so; until then it shows the loading row. The
+  rule is in [stores/AGENTS.md](../../stores/AGENTS.md#computer-owned-and-frontend-owned-state).
 - A row's worker count and needs-you badge read
   `stores/threadWorkerSummaries.svelte.ts`.
 - `threadRowActions.ts` and `threadGroupActions.ts` own mutations from this

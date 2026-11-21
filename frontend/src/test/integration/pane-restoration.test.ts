@@ -23,8 +23,20 @@ import type { Thread } from '../../lib/types/models';
 import type { PaneLayoutPersistedSettings } from '../../lib/types/settings';
 import { __setTransportStatusForTest } from '../../lib/stores/transportStatus.svelte';
 import { DisconnectedError, type TransportStatusSnapshot } from '../../lib/transport/wsClient';
+import { getThreadById } from '../../lib/stores/threads.svelte';
+import { catalogTreeListed, loadThreadCatalogs } from '../../lib/stores/threadCatalogs';
+import { HOME_BACKEND } from '../../lib/transport/backendKey';
+import { takePinnedBackend } from '../../lib/transport/backends';
+import { stageBackend } from '../helpers/backends';
+import type { ThreadGroup } from '../../lib/types/models';
 
 beforeAll(installAnimateShim);
+
+function deferredGroups(): { promise: Promise<ThreadGroup[]>; resolve: (rows: ThreadGroup[]) => void } {
+  let resolve!: (rows: ThreadGroup[]) => void;
+  const promise = new Promise<ThreadGroup[]>((res) => { resolve = res; });
+  return { promise, resolve };
+}
 
 function savePaneLayout(
   panes: Array<{ paneId: string; threadId: string; widthPx: number }>,
@@ -101,6 +113,50 @@ describe('App integration - pane restoration', () => {
     expect(paneSections.map((section) => section.dataset.paneId)).toEqual(['left', 'right']);
     expect(paneSections.map((section) => section.dataset.paneWidth)).toEqual(['660', '1100']);
     expect(getFocusedPaneId()).toBe('right');
+  });
+
+  // The sidebar holds a computer's threads until its groups answer; the
+  // restore must not wait for them, or for the deadline, to keep the pane.
+  it('restores a saved pane while the group read is still out', async () => {
+    const left = makeThread({ id: 'left-thread', title: 'Left Thread' });
+    installThreadMocks([left]);
+    setBindingMock('ListThreadGroups', () => new Promise(() => {}));
+    installUIStateWithPaneLayout(savePaneLayout([{ paneId: 'left', threadId: left.id, widthPx: 660 }], 'left'));
+
+    const rendered = render(App);
+    await waitFor(() => expect(rendered.getByTestId('pane-host')).toBeInTheDocument());
+    const paneSections = Array.from(rendered.container.querySelectorAll<HTMLElement>('[data-pane-kind="thread"]'));
+    expect(paneSections.map((section) => section.dataset.paneId)).toEqual(['left']);
+  });
+
+  // A listed computer's thread answer is held while its group read is out.
+  // The restore validates against the held rows and routes the pane by the
+  // owners recorded for them (with a second computer attached, an unknown
+  // owner refuses the pane's reads); the sidebar lists the thread only once
+  // the group answer commits with it.
+  it('restores a saved pane on a thread a listed computer\'s held answer brought', async () => {
+    const kept = makeThread({ id: 'kept-thread', title: 'Kept Thread' });
+    const fresh = makeThread({ id: 'fresh-thread', title: 'Fresh Thread' });
+    installThreadMocks([kept, fresh]);
+    stageBackend({ id: 'gpu' });
+    setBindingMock('ListThreads', async () => (takePinnedBackend() === 'gpu' ? [] : [kept]));
+    setBindingMock('ListThreadGroups', async () => []);
+    await loadThreadCatalogs();
+    await waitFor(() => expect(catalogTreeListed(HOME_BACKEND)).toBe(true));
+
+    setBindingMock('ListThreads', async () => (takePinnedBackend() === 'gpu' ? [] : [kept, fresh]));
+    const groups = deferredGroups();
+    setBindingMock('ListThreadGroups', () => (takePinnedBackend() === 'gpu' ? Promise.resolve([]) : groups.promise));
+    installUIStateWithPaneLayout(savePaneLayout([{ paneId: 'fresh-pane', threadId: fresh.id, widthPx: 660 }], 'fresh-pane'));
+    const rendered = render(App);
+    await waitFor(() => expect(rendered.getByTestId('pane-host')).toBeInTheDocument());
+    expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual(['fresh-pane']);
+    expect(getThreadById(fresh.id)).toBeUndefined();
+    expect(rendered.container.querySelector(`[data-sidebar-thread-id="${fresh.id}"]`)).toBeNull();
+
+    groups.resolve([]);
+    await waitFor(() => expect(getThreadById(fresh.id)).toBeDefined());
+    expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual(['fresh-pane']);
   });
 
   it('preserves the saved pane layout if the app closes before startup restore finishes', async () => {

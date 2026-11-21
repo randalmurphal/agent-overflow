@@ -5,15 +5,16 @@ import {
   getThreadGroupById,
   getThreadGroups,
   getThreadGroupsForProject,
-  loadThreadGroups,
   NO_GROUPS,
-  refreshThreadGroups,
   removeThreadGroup,
   resetThreadGroupsForTest,
   upsertThreadGroup,
 } from './threadGroups.svelte';
 import { getThreadById, replaceAllThreads } from './threads.svelte';
+import { loadThreadCatalogs } from './threadCatalogs';
 import { getToasts, removeToast } from './toast.svelte';
+import { catalogLoadState, resetCatalogLoadForTest } from './catalogLoad.svelte';
+import { HOME_BACKEND } from '../transport/backendKey';
 import type { Thread, ThreadGroup } from '../types/models';
 
 function mkGroup(id: string, overrides: Partial<ThreadGroup> = {}): ThreadGroup {
@@ -31,22 +32,26 @@ describe('threadGroups store', () => {
   beforeEach(() => {
     resetBindingMocks();
     resetThreadGroupsForTest();
-    for (const toast of [...getToasts()]) removeToast(toast.id);
+    resetCatalogLoadForTest();
+    for (const toast of getToasts()) removeToast(toast.id);
   });
 
   it('loads the backend snapshot wholesale', async () => {
+    setBindingMock('ListThreads', async () => []);
     setBindingMock('ListThreadGroups', async () => [mkGroup('g1'), mkGroup('g2')]);
-    await loadThreadGroups();
+    await loadThreadCatalogs();
     expect(getThreadGroups().map((g) => g.id)).toEqual(['g1', 'g2']);
   });
 
-  it('surfaces a load failure as a toast instead of throwing', async () => {
+  it('shows a load failure in the catalog state, not as a toast', async () => {
     setBindingMock('ListThreadGroups', async () => {
       throw new Error('backend down');
     });
-    await refreshThreadGroups();
+    setBindingMock('ListThreads', async () => []);
+    await loadThreadCatalogs();
     expect(getThreadGroups()).toEqual([]);
-    expect(getToasts().some((t) => t.type === 'error')).toBe(true);
+    expect(catalogLoadState(HOME_BACKEND, 'groups')).toEqual({ phase: 'failed', error: 'Backend down.' });
+    expect(getToasts()).toEqual([]);
   });
 
   it('upserts by id and removes', () => {

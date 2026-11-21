@@ -38,6 +38,7 @@ function gateState(overrides: Partial<AutoLoadGateState> = {}): AutoLoadGateStat
   return {
     hasMore: true,
     loading: false,
+    stalled: false,
     floorCursor: { turnIndex: 10, itemIndex: 0 },
     restoredThreadId: 'thread-1',
     threadId: 'thread-1',
@@ -244,68 +245,14 @@ describe('timelineScroll', () => {
   });
 
   // ============================================================
-  // Auto-load gate — progress guard
-  // ============================================================
-
-  it('fires once per floor cursor, blocks until it advances, and resets explicitly', () => {
-    const gate = createAutoLoadGate();
-
-    expect(gate.shouldLoad(gateState({ floorCursor: { turnIndex: 10, itemIndex: 0 } }))).toBe(true);
-    expect(gate.attemptedAtFloor).toEqual({ turnIndex: 10, itemIndex: 0 });
-
-    // Same floor, no progress since the last attempt → blocked.
-    expect(gate.shouldLoad(gateState({ floorCursor: { turnIndex: 10, itemIndex: 0 } }))).toBe(false);
-
-    // Floor advanced to an older turn → fires again.
-    expect(gate.shouldLoad(gateState({ floorCursor: { turnIndex: 8, itemIndex: 0 } }))).toBe(true);
-    expect(gate.attemptedAtFloor).toEqual({ turnIndex: 8, itemIndex: 0 });
-
-    gate.reset();
-    expect(gate.attemptedAtFloor).toBeNull();
-    expect(gate.shouldLoad(gateState({ floorCursor: { turnIndex: 8, itemIndex: 0 } }))).toBe(true);
-  });
-
-  // Regression: bug-report-20260616T143320Z. A thread whose loaded window is
-  // a single 400-item turn (turnIndex 57). Paging older advanced the item
-  // cursor (itemIndex 200 → 400) but never the turn index, so the previous
-  // turn-index-keyed progress guard latched auto-load off and the user had
-  // to use the manual button. The full-cursor compare treats item-level
-  // progress within one turn as progress. Fails on the turn-index guard.
-  it('treats item-level progress within a single long turn as progress', () => {
-    const gate = createAutoLoadGate();
-
-    expect(gate.shouldLoad(gateState({ floorCursor: { turnIndex: 57, itemIndex: 200 } }))).toBe(true);
-
-    // No movement → still blocked.
-    expect(gate.shouldLoad(gateState({ floorCursor: { turnIndex: 57, itemIndex: 200 } }))).toBe(false);
-
-    // Same turn, deeper item floor (200 more items of turn 57 paged in) →
-    // this must fire. A turnIndex-only guard would read 57 === 57 and block.
-    expect(gate.shouldLoad(gateState({ floorCursor: { turnIndex: 57, itemIndex: 400 } }))).toBe(true);
-    expect(gate.attemptedAtFloor).toEqual({ turnIndex: 57, itemIndex: 400 });
-  });
-
-  it('stores a clone of the floor cursor, not the live reference', () => {
-    // The progress guard must snapshot the cursor at attempt time. If it
-    // aliased the pane's live `$state` cursor, a later mutation of that
-    // object would silently change `attemptedAtFloor` and break the
-    // same-floor block. Pin the clone so a regression to a reference assign
-    // is caught (the `toEqual` checks above would not catch it).
-    const gate = createAutoLoadGate();
-    const liveCursor = { turnIndex: 12, itemIndex: 3 };
-
-    expect(gate.shouldLoad(gateState({ floorCursor: liveCursor }))).toBe(true);
-    expect(gate.attemptedAtFloor).not.toBe(liveCursor);
-    expect(gate.attemptedAtFloor).toEqual({ turnIndex: 12, itemIndex: 3 });
-  });
-
-  // ============================================================
   // Auto-load gate — cheap gates / geometry deferral
   // ============================================================
 
   it.each([
     ['missing more', { hasMore: false }],
     ['active load', { loading: true }],
+    // The window's progress guard: the edge's last page went nowhere.
+    ['stalled edge', { stalled: true }],
     ['null floor', { floorCursor: null }],
     ['unrestored thread', { restoredThreadId: null }],
     ['wrong restored thread', { restoredThreadId: 'thread-2' }],
@@ -315,14 +262,12 @@ describe('timelineScroll', () => {
 
     expect(gate.shouldLoad(gateState({ ...overrides, inTriggerZone }))).toBe(false);
     expect(inTriggerZone).not.toHaveBeenCalled();
-    expect(gate.attemptedAtFloor).toBeNull();
   });
 
-  it('does not load when outside the trigger zone, and records no attempt', () => {
+  it('does not load when outside the trigger zone', () => {
     const gate = createAutoLoadGate();
 
     expect(gate.shouldLoad(gateState({ inTriggerZone: () => false }))).toBe(false);
-    expect(gate.attemptedAtFloor).toBeNull();
   });
 
   it('probes the trigger zone only after the cheap gates pass', () => {

@@ -3,7 +3,7 @@ import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import MessageSearch from './MessageSearch.svelte';
 import { createThreadPane, type ThreadPane } from '../../stores/thread.svelte';
 import { resetPanesForTest } from '../../stores/panes.svelte';
-import { refreshThreads } from '../../stores/threads.svelte';
+import { loadThreadCatalogs } from '../../stores/threadCatalogs';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { installAnimateShim } from '../../../test/integration/_helpers';
 import { makeItem } from '../../../test/helpers/chat';
@@ -18,7 +18,7 @@ beforeAll(installAnimateShim);
 beforeEach(async () => {
   resetPanesForTest();
   setBindingMock('ListThreads', async () => []);
-  await refreshThreads();
+  await loadThreadCatalogs();
   setBindingMock('SwitchThread', async () => {});
   setBindingMock('ListItems', async () => []);
   setBindingMock('ListRecentTurns', async () => []);

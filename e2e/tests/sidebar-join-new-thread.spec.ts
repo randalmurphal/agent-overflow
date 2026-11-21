@@ -21,7 +21,8 @@ async function seedProject(harness: HarnessApp): Promise<void> {
   });
 }
 
-interface Frame { type?: string; id?: string | number; methodId?: number }
+interface Event { channel?: string; data?: { action?: string; thread?: { id?: string } } }
+interface Frame extends Event { type?: string; id?: string | number; methodId?: number; events?: Event[] }
 
 /** Holds the page's SaveDraft calls until released. */
 async function holdDraftSaves(page: Page) {
@@ -48,13 +49,15 @@ async function holdDraftSaves(page: Page) {
 
 /**
  * Counts the page's ListThreads calls and their answers, and holds the
- * answers while `holding` is set.
+ * answers while `holding` is set. Records the threads announced to the page
+ * as listed.
  */
 async function watchThreadLists(page: Page, holding: boolean) {
   const listMethod = methodIdByName('ListThreads');
   const calls = new Set<string>();
   const answered = new Set<string>();
   const held: Array<() => void> = [];
+  const announced = new Set<string>();
   await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
     const server = socket.connectToServer();
     socket.onMessage((message) => {
@@ -71,12 +74,17 @@ async function watchThreadLists(page: Page, holding: boolean) {
           return;
         }
       }
+      const events = frame.type === 'batch' ? frame.events ?? [] : frame.type === 'event' ? [frame] : [];
+      for (const event of events) {
+        if (event.channel === 'thread:updated' && event.data?.action === 'listed' && event.data.thread?.id) announced.add(event.data.thread.id);
+      }
       socket.send(message);
     });
   });
   return {
     /** Every call sent so far has been answered by the backend. */
     settled: () => calls.size > 0 && answered.size === calls.size,
+    announced: (id: string) => announced.has(id),
     release: () => { holding = false; held.splice(0).forEach((send) => send()); },
   };
 }
@@ -123,7 +131,11 @@ test('a catalog answer read before the new thread existed does not remove it aft
     await expect.poll(async () => (await listed()).length).toBe(1);
     const [row] = await listed();
     // The announcement reaches the screen ahead of its held catalog answer.
-    await expect(other.getByTestId('thread-row')).toHaveCount(1);
+    // Until that answer, the screen's sidebar has not listed this computer
+    // and shows the loading row instead of its rows.
+    await expect.poll(() => lists.announced(row.id), { message: 'the thread was never announced' }).toBe(true);
+    await expect(other.getByTestId('sidebar-catalog-status')).toBeVisible();
+    await expect(other.getByTestId('thread-row')).toHaveCount(0);
     lists.release();
     await expect(other.getByTestId('project-item-new-thread').first()).toBeVisible();
     await expect(other.getByTestId('thread-row')).toHaveCount(1);

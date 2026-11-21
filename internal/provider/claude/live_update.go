@@ -253,6 +253,8 @@ func planThinkingUpdate(prev, next ThinkingConfig) (ThinkingUpdate, bool) {
 			Budget:     next.BudgetTokens,
 			Display:    normalizeThinkingDisplay(next.Display),
 		}, true
+	case ThinkingDefault:
+		fallthrough
 	default:
 		if prev.Mode != ThinkingDefault {
 			return ThinkingUpdate{}, false

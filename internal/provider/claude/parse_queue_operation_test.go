@@ -33,17 +33,16 @@ func TestReplayDroppedAgentWake(t *testing.T) {
 	var dropped []provider.ProviderEvent
 	shellNotified := -1
 	for i, evt := range events {
-		switch evt.Kind {
-		case provider.EventAgentWakeDropped:
+		if evt.Kind == provider.EventAgentWakeDropped {
 			dropped = append(dropped, evt)
 			if shellNotified < 0 {
 				t.Fatalf("dropped wake at event %d precedes the shell's notification", i)
 			}
-		case provider.EventBackgroundTaskNotification:
+		} else if evt.Kind == provider.EventBackgroundTaskNotification {
 			if decodeEventMeta(t, evt)["task_id"] == "bn191xeyo" {
 				shellNotified = i
 			}
-		case provider.EventUserText:
+		} else if evt.Kind == provider.EventUserText {
 			if decodeEventMeta(t, evt)[provider.MetaSubagentWakePromptKey] == true {
 				t.Fatalf("a wake prompt was parsed from a dropped wake: %+v", evt)
 			}

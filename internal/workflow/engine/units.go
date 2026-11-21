@@ -147,6 +147,7 @@ func (e *Engine) startPhaseWork(item *runtimeItem, phase def.Phase, vars map[str
 		return e.startCall(item, phase, vars)
 	case def.ShapeSingle:
 		return e.startRunner(item, phase, vars)
+	case def.ShapeFanOut:
 	}
 	if item.fan == nil {
 		if err := e.expandFanOut(item, phase, vars); err != nil {

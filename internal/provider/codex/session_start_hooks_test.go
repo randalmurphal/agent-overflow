@@ -714,13 +714,12 @@ func TestCodexPromptHookRuns(t *testing.T) {
 	events := rec.take()
 	rows, warnings := 0, []string{}
 	for _, event := range events {
-		switch event.Kind {
-		case provider.EventNotification:
+		if event.Kind == provider.EventNotification {
 			if !strings.Contains(event.Content, "userPromptSubmit hook") {
 				t.Fatalf("row %+v", event)
 			}
 			rows++
-		case provider.EventError:
+		} else if event.Kind == provider.EventError {
 			warnings = append(warnings, event.Content)
 		}
 	}

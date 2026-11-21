@@ -350,6 +350,7 @@ func (w *workspaceWatcher) run() {
 			startPolling()
 		case rebuildReinstalled:
 			stopPolling()
+		case rebuildNone:
 		}
 		return outcome
 	}

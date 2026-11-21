@@ -282,6 +282,7 @@ func TestStatementCacheCompilesOncePerConnection(t *testing.T) {
 			}
 		case sqlStmtRun:
 			runs[key.query] += n
+		case sqlStmtClose:
 		}
 	}
 	for conn, n := range compiled {

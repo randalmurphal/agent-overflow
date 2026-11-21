@@ -212,8 +212,7 @@ func projectReviewChildEvents(child projectedReviewChild, launch reviewLaunch) [
 	out := make([]importir.Event, 0, len(child.events))
 	for i := range child.events {
 		event := child.events[i]
-		switch event.Kind {
-		case provider.EventTurnStart, provider.EventTurnComplete, provider.EventUserText:
+		if event.Kind == provider.EventTurnStart || event.Kind == provider.EventTurnComplete || event.Kind == provider.EventUserText {
 			continue
 		}
 		if i == lastAssistant {

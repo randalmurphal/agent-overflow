@@ -751,6 +751,8 @@ func (r *loginRun) stateLocked(phase LoginPhase, notice string) LoginState {
 	// failing makes it wrong.
 	switch phase {
 	case LoginPhaseSucceeded, LoginPhaseFailed:
+	case LoginPhaseIdle, LoginPhaseStarting, LoginPhaseAwaitingBrowser, LoginPhaseAwaitingCode, LoginPhaseVerifying:
+		fallthrough
 	default:
 		state.AuthorizeURL = r.flow.authorizeURL
 		state.UserCode = r.flow.userCode

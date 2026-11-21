@@ -16,7 +16,7 @@ func commitDelete(t *testing.T, database *store.Store, ids ...string) {
 	if _, err := database.ClaimDeleteFamily("op", ids); err != nil {
 		t.Fatalf("ClaimDeleteFamily: %v", err)
 	}
-	if _, err := database.CommitDeleteClaim("op"); err != nil {
+	if _, err := database.CommitDeleteClaim("op", nil); err != nil {
 		t.Fatalf("CommitDeleteClaim: %v", err)
 	}
 }

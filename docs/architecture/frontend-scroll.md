@@ -310,10 +310,26 @@ fallback.
 
 Both auto-load triggers share one direction-agnostic gate
 (`createAutoLoadGate` in `timelineScroll.ts`). It is gesture-armed:
-`disarm()` after every load, re-armed only by a real wheel/touchmove/
-keydown (the post-load `shift` compensation is a programmatic scroll and
-must not re-arm) plus a 350ms cooldown fallback. Its progress guard
-compares the **full** floor cursor
+`disarm()` after every load that was not refused, re-armed only by a real
+wheel/touchmove/keydown (the post-load `shift` compensation is a
+programmatic scroll and must not re-arm) plus a 350ms cooldown fallback.
+`shouldLoad` only admits. The window owns the progress guard: each edge
+has a stalled flag (`olderStalled` / `newerStalled` on
+`threadTimelineWindow`). A page load at that edge (auto-load, the viewport
+fill, the Load older and Load newer buttons, an agent digest's boundary)
+sets it when the page lands or fails with the edge still at the cursor it
+asked from; a live upsert that moved the edge while the page was out
+leaves it open. The cursor writer clears it whenever that edge's
+cursor changes (a later page, a cut, a reset), and a replacement (a
+refresh, a jump, a thread switch) or a conversation revert clears both,
+also where a cursor keeps its value. A load starting
+does not clear it, so a click that fails again leaves the edge stalled.
+Automatic paging skips a stalled edge: auto-load passes the flag to
+`shouldLoad` as `stalled`, the viewport fill reads it, and so does an
+agent digest's boundary when it comes into view. A click on a boundary or
+a Load button still asks. A refused page (its edge moved while it was
+out, **Load Paging** below) sets nothing and leaves the gate armed, so the
+next scroll or gesture probes. The flag compares the **full** cursor
 (`oldestLoadedCursor` / `newestLoadedCursor`), turnIndex **and** itemIndex.
 Keying the guard on turnIndex alone latched auto-load off on long
 single-turn threads, where paging advances the item floor but never the
@@ -362,7 +378,12 @@ the review pane's collapse/expand, not just same-length reorders.
 (`hasMoreNewer` offers it back). `loadNewer` mirrors this: it grows the
 tail and cuts the head. Both cuts keep the page just fetched and every
 visible row (**Live Window Bounds** below), and the paired mutations
-commit before one final Svelte flush. The virtualizer
+commit before one final Svelte flush. Each edge has its own generation
+in `threadTimelineWindow.svelte.ts`: a page is refused only when a cut
+or a replacement dropped the edge it extends, so an older page and a
+newer page can be in flight together and both land. A navigation and
+Jump to latest replace the window and hold both edges while they load.
+The virtualizer
 compares the previous and next key sequences before exposing render data and
 classifies the combined change as head, tail, unchanged, or a general keyed
 mutation. Callers cannot label a mutation or leave a mode bit armed.

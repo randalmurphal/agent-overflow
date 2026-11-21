@@ -257,6 +257,7 @@ func (r *Runner) awaitToolPhase(runKey string, attempt *workflowToolAttempt, gro
 		r.writeToolNarrative(attempt, report)
 		attempt.complete(engine.Outcome{Kind: engine.OutcomeStalled})
 		return
+	case workflowToolActive:
 	}
 	if !exited {
 		report.Outcome = "the process did not complete: " + waitErr.Error()

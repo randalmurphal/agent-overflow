@@ -43,6 +43,11 @@ func sendFindingTheSessionGone(t *testing.T, a *App, threadID, text string) {
 	}
 }
 
+func isSessionGone(err error) bool {
+	code, _, _ := errorsx.PublicDetails(err)
+	return code == transport.ErrCodeAssistantSessionGone
+}
+
 // assistantIDOf is the id of the assistant whose current thread threadID is.
 func assistantIDOf(t *testing.T, a *App, threadID string) string {
 	t.Helper()
@@ -57,7 +62,7 @@ func handOffRunning(a *App, agentID string) bool {
 	c := &a.assistantHandOffs
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	_, running := c.leaving[agentID]
+	_, running := c.running[agentID]
 	return running
 }
 
@@ -65,7 +70,7 @@ func carriesOf(a *App, threadID string) []store.Item {
 	c := &a.assistantHandOffs
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.items[threadID]
+	return c.keeping[threadID]
 }
 
 func draftContent(t *testing.T, a *App, threadID string) string {

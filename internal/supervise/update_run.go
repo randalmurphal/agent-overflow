@@ -118,6 +118,7 @@ func (r UpdateRun) Apply(ctx context.Context, state State) (UpdateEnd, error) {
 		return r.Commit(ctx, state)
 	case UpdateRolledBack, UpdateFailed:
 		return UpdateEnd{State: state.Update.State, Reason: state.Update.Reason}, nil
+	case UpdatePending:
 	}
 	trace := trialTrace{schema: state.Update.FromSchema}
 	end, err := r.runTrials(ctx, state, &trace)
@@ -196,6 +197,8 @@ func (r UpdateRun) runTrials(ctx context.Context, state State, trace *trialTrace
 			return r.SettleFailed(ctx, state, result.Reason)
 		}
 		return r.RollBack(ctx, state, result.Reason)
+	case UpdateOutcomeOK, UpdateOutcomeFailed:
+		fallthrough
 	default:
 		return r.RollBack(ctx, state, result.Reason)
 	}
@@ -401,6 +404,8 @@ func (r UpdateRun) FinishMigration(id string, end UpdateEnd, err error) Migratio
 			Title:  MigrationFailedTitle,
 			Detail: "The backup was restored, so the data is as it was. " + r.reasonSentence(end.Reason),
 		}
+	case UpdatePending, UpdateFailed:
+		fallthrough
 	default:
 		return MigrationEnd{
 			Title:  MigrationFailedTitle,

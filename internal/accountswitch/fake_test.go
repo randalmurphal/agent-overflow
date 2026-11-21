@@ -231,13 +231,13 @@ func (f *fakeApp) snapshot() (switches []string, reports []Report, notices []not
 // settle runs the queued triggers and waits for the continues they started.
 func settle(c *Coordinator) {
 	c.runPending(context.Background())
-	c.deliveries.Wait()
+	c.awaitDeliveries()
 }
 
 // check runs the periodic check and waits for the continues it started.
 func check(c *Coordinator) {
 	c.checkWaiting(context.Background())
-	c.deliveries.Wait()
+	c.awaitDeliveries()
 }
 
 // write records a settings write: it changes the settings and returns the

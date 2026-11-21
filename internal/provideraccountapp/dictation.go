@@ -114,13 +114,16 @@ func (m *Manager) transcribeOnce(ctx context.Context, request CodexTranscription
 // account's slot the way any CLI rotation of the canonical credential does.
 //
 // A transcription abandoned before the refresh starts, while it waits for
-// the lock or the slot promotion, starts none. One that started runs to the
-// end whatever happens to the caller, which does not wait for it: a refresh
+// the lock or the slot promotion, starts none, and one abandoned while it
+// waits for the lock stops waiting. One that started runs to the end
+// whatever happens to the caller, which does not wait for it: a refresh
 // stopped after the server rotated the token, before the CLI saved it,
 // would lose the sign-in.
 func (m *Manager) refreshCanonicalCodexToken(ctx context.Context) error {
 	mu := m.reconcileMutex(string(provider.Codex))
-	mu.Lock()
+	if err := mu.LockContext(ctx); err != nil {
+		return fmt.Errorf("wait for the codex account lock to refresh the Codex sign-in for dictation: %w", err)
+	}
 	defer mu.Unlock()
 	// Another store's boot sweep can leave the canonical credential on a
 	// seed whose rotation it recovered into the selected slot; refreshing

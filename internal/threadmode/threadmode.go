@@ -182,6 +182,7 @@ func RuntimeNeedsAutonomy(mode provider.RuntimeMode) bool {
 	switch mode {
 	case provider.RuntimeReadOnly, provider.RuntimeApprovalRequired:
 		return false
+	case provider.RuntimeAutoAcceptEdits, provider.RuntimeAuto, provider.RuntimeFullAccess:
 	}
 	return true
 }

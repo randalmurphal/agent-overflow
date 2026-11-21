@@ -558,8 +558,7 @@ func (s *Session) enrichSubAgentActivitySpawnMetadata(evt *provider.ProviderEven
 }
 
 func (s *Session) updateNotificationState(evt *provider.ProviderEvent) {
-	switch evt.Kind {
-	case provider.EventTurnStart:
+	if evt.Kind == provider.EventTurnStart {
 		s.usageAcct.onTurnStart()
 		s.usageAcct.model = ""
 		if evt.TurnID == "" {
@@ -580,7 +579,7 @@ func (s *Session) updateNotificationState(evt *provider.ProviderEvent) {
 		s.mu.Lock()
 		s.turn.activeTurnID = evt.TurnID
 		s.mu.Unlock()
-	case provider.EventUserText:
+	} else if evt.Kind == provider.EventUserText {
 		// The user-message echo of an injected turn. Without the marker it
 		// persists identically to a message typed in this app's composer.
 		//
@@ -590,7 +589,7 @@ func (s *Session) updateNotificationState(evt *provider.ProviderEvent) {
 		if s.turnIsExternal(evt.TurnID) {
 			stampExternalOrigin(evt)
 		}
-	case provider.EventTurnComplete:
+	} else if evt.Kind == provider.EventTurnComplete {
 		evt.StructuredOutput = s.takeStructuredOutput(evt.TurnID)
 		if meta, ok := evt.TurnComplete.(*provider.WireTurnCompleteMeta); ok && meta != nil {
 			s.attachTurnUsage(meta)

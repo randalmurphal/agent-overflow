@@ -7,8 +7,15 @@
 #
 # exhaustive is on in its strict form: a switch over an enum names every
 # constant, and a default case does not stand in for one. It reports at the
-# switch, so under the new-issues gate a constant added to an enum is caught
-# only in switches the change touches until the backlog is cleared.
+# switch, not at the constant, so CI also runs it alone over the whole tree
+# (it has no backlog): a constant added to an enum is reported at every
+# switch over it, touched by the change or not. Code that picks a few
+# constants out of an enum and treats the rest alike is therefore written
+# with `if`, not `switch`, which is why staticcheck's QF1003 ("could use
+# tagged switch") is off; its other checks keep golangci-lint's defaults.
+# Two types are exempt because no switch over them is a dispatch:
+# reflect.Kind (no code handles all of Go's type kinds) and
+# eventchan.Channel (a tap subscribes to a few channel names).
 #
 # forbidigo keeps the browser's native engines on uicall: in
 # internal/browser only the adapter that builds uiThread calls Wails'
@@ -24,6 +31,18 @@ linters:
     - exhaustive
     - forbidigo
   settings:
+    exhaustive:
+      ignore-enum-types: ^(reflect\.Kind|agent-overflow/internal/eventchan\.Channel)$
+    staticcheck:
+      checks:
+        - all
+        - -ST1000
+        - -ST1003
+        - -ST1016
+        - -ST1020
+        - -ST1021
+        - -ST1022
+        - -QF1003
     forbidigo:
       analyze-types: true
       forbid:

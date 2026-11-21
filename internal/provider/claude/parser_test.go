@@ -76,8 +76,7 @@ func TestParseRealCLIFixture(t *testing.T) {
 		}
 
 		for _, evt := range events {
-			switch evt.Kind {
-			case provider.EventInit:
+			if evt.Kind == provider.EventInit {
 				foundInit = true
 				var info provider.SessionInfo
 				if err := json.Unmarshal(evt.Meta, &info); err != nil {
@@ -89,7 +88,7 @@ func TestParseRealCLIFixture(t *testing.T) {
 				if info.Model == "" {
 					t.Errorf("line %d: init event has empty model", lineNum)
 				}
-			case provider.EventTurnComplete:
+			} else if evt.Kind == provider.EventTurnComplete {
 				foundResult = true
 			}
 		}

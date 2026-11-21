@@ -339,7 +339,7 @@ func (m *Manager) switchProviderAccount(
 			reconcileMu.Unlock()
 		}
 	}()
-	if err := m.reconcileExternalProviderAccountWithMutexHeld(providerName); err != nil {
+	if err := m.reconcileExternalProviderAccountWithMutexHeld(m.context(), providerName); err != nil {
 		return ManagedAccount{}, fmt.Errorf("check current %s account before switch: %w", providerName, err)
 	}
 
@@ -751,6 +751,7 @@ func (m *Manager) adoptCanonicalProviderAccountLocked(providerName, binary strin
 	// mu is held here, and nothing is selected to attribute the credential
 	// to, so it is asked about directly.
 	info, credential, err := m.runStableAccountProbe(
+		m.context(),
 		providerName,
 		m.canonicalProviderAccountProbe(providerName, binary),
 		m.identifyClaudeCredential,

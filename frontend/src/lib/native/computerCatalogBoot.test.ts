@@ -13,7 +13,8 @@ import { Call } from '../transport/runtime';
 import { setBackendIdentityFromBootstrap } from '../transport/backendIdentity';
 import { wsClient } from '../transport/wsClient';
 import { resolveThreadBackend } from '../transport/entityIndex';
-import { loadThreads, getThreads } from '../stores/threads.svelte';
+import { getThreads } from '../stores/threads.svelte';
+import { loadThreadCatalogs } from '../stores/threadCatalogs';
 import { refreshProjects, getProjects } from '../stores/projects.svelte';
 import type { ProjectWithCounts } from '../types/models';
 import { __resetSelectedBackendForTest, selectedBackend, setSelectedBackend } from '../stores/selectedBackend.svelte';
@@ -143,7 +144,7 @@ async function verifyCatalogsAndDrafts(computers: string[]): Promise<void> {
     return projects.filter((row) => row.project.id === `${computer}-project`);
   });
   await refreshProjects();
-  await loadThreads();
+  await loadThreadCatalogs();
   expect(getProjects().map((row) => row.project.id)).toEqual(projects.map((row) => row.project.id));
   expect(catalogs).toEqual(computers);
   expect(getThreads().map((thread) => thread.id)).toEqual(computers.map((id) => `${id}-thread`));

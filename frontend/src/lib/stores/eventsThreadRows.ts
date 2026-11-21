@@ -10,12 +10,12 @@ import type { TurnCompletedEvent } from '../types/events';
 import type { Thread } from '../types/models';
 import { closePanesShowingThread, findPaneShowingThread, followDeletedThread, iterPanes, moveAssistantPanes, syncThread } from './panes.svelte';
 import { refreshProjects, touchProjectActivity } from './projects.svelte';
-import { refreshThreadGroups } from './threadGroups.svelte';
+import { loadThreadCatalogs } from './threadCatalogs';
 import { refreshAgentWakes } from './threadWakes.svelte';
 import { forgetThreadWorkerSummary, refreshThreadWorkerSummaries } from './threadWorkerSummaries.svelte';
 import { followAssistantHandOffInStash, followAssistantHandOffsInStash } from './companionStash';
 import { addErrorToast, addToast } from './toast.svelte';
-import { getThreadById, getThreadLiveActivityAt, getThreads, listThread, loadThreads, removeThread, replaceAllThreads, replaceThread, touchThreadActivity, unlistThread } from './threads.svelte';
+import { getThreadById, getThreadLiveActivityAt, getThreads, listThread, removeThread, replaceAllThreads, replaceThread, touchThreadActivity, unlistThread } from './threads.svelte';
 import { projectReaderMessageSent, projectThreadError } from './threadStatuses.svelte';
 import type { ThreadPaneIngest } from './threadPaneRoles';
 import { pendingLocalReadMarker } from './threadReadWrites';
@@ -163,14 +163,14 @@ export function syncThreadActivity(threadId: string, updatedAt: number): void {
 }
 
 /**
- * Mid-session sidebar resync (transport-gap recovery). The read commits
- * through reconcileThreadRows like every thread answer; a resync then
+ * Mid-session sidebar resync (transport-gap recovery). The threads and
+ * their groups are read as one round (./threadCatalogs.ts); a resync then
  * closes the panes of threads deleted while their frame was lost.
  */
 async function resyncThreadRows(): Promise<void> {
   let rows: readonly Thread[];
   try {
-    rows = await loadThreads();
+    rows = await loadThreadCatalogs();
   } catch (err) {
     if (isPassiveConnectionFailure(err)) return;
     console.error('Failed to resync threads after transport gap:', err);
@@ -260,10 +260,9 @@ export function refreshSidebarProjections(): void {
   // still start a fresh read even if this one's RPCs remain outstanding.
   queueMicrotask(() => {
     sidebarRefreshQueued = false;
+    // Threads and their groups, as one round.
     void resyncThreadRows();
     void refreshProjects();
-    // Groups have no local row merge, so the ordinary list load recovers them.
-    void refreshThreadGroups();
     void refreshAgentWakes();
     void refreshThreadWorkerSummaries();
   });

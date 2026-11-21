@@ -261,9 +261,12 @@ function commitProjectRows(result: ComputerRows<ProjectWithCounts>): void {
   settleCatalogAnswers('projects', result.answered);
 }
 
-// The catalog store's retry for a computer whose projects have not loaded:
-// its rows alone, waiting for the answer rather than the startup deadline.
-async function retryProjectCatalog(backend: BackendKey): Promise<void> {
+/**
+ * Read one computer's projects alone, waiting for the answer rather than
+ * the startup deadline: the catalog store's retry, and the re-read after
+ * the computer's history changed (./catalogLoad.svelte.ts).
+ */
+async function readProjectCatalog(backend: BackendKey): Promise<void> {
   try {
     await readComputerRows<ProjectWithCounts>(
       listProjectRows, noteProjectRow, commitProjectRows, { catalog: projectCatalog(), only: backend, deadlineMs: null });
@@ -273,7 +276,7 @@ async function retryProjectCatalog(backend: BackendKey): Promise<void> {
   }
 }
 
-registerCatalogReader('projects', retryProjectCatalog);
+registerCatalogReader(['projects'], readProjectCatalog);
 
 /**
  * Insert a freshly-created project at the head of the list. Accepts a

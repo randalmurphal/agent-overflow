@@ -96,6 +96,8 @@ func (a *App) announceListing(threadID string, listing store.ListingChange) bool
 		a.announceThread(triage.ThreadActionListed, threadID)
 	case store.ListingUnlisted:
 		a.announceThread(triage.ThreadActionEmptied, threadID)
+	case store.ListingUnchanged:
+		fallthrough
 	default:
 		return false
 	}

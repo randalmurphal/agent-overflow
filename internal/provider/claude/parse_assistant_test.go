@@ -94,10 +94,9 @@ func TestParseAssistant_ErrorWithToolUseBlock(t *testing.T) {
 	}
 	var sawTool, sawError bool
 	for _, e := range events {
-		switch e.Kind {
-		case provider.EventToolStart:
+		if e.Kind == provider.EventToolStart {
 			sawTool = true
-		case provider.EventError:
+		} else if e.Kind == provider.EventError {
 			sawError = true
 		}
 	}
@@ -721,12 +720,11 @@ func TestParseAssistant_AdvisorFixtureRoundTrip(t *testing.T) {
 			t.Fatalf("parse line: %v", err)
 		}
 		for _, e := range events {
-			switch e.Kind {
-			case provider.EventToolStart:
+			if e.Kind == provider.EventToolStart {
 				if e.ItemID == "srvtoolu_01R7eTAp4mJuZ7VLg5GAAfYU" && e.ItemType == "advisor" {
 					sawStart = true
 				}
-			case provider.EventToolComplete:
+			} else if e.Kind == provider.EventToolComplete {
 				if e.ItemID == "srvtoolu_01R7eTAp4mJuZ7VLg5GAAfYU" && strings.Contains(e.Content, "UI/integration test call") {
 					sawComplete = true
 				}

@@ -160,6 +160,8 @@ func canTransition(from, to State) bool {
 		return to == StateSucceeded || to == StateFailed || to == StateQuarantined
 	case StateFailed:
 		return to == StateQuarantined
+	case StateSucceeded, StateQuarantined:
+		fallthrough
 	default:
 		return false
 	}
@@ -266,6 +268,8 @@ func failureClassForPhase(phase Phase) FailureClass {
 		return FailureProbe
 	case PhaseTeardown:
 		return FailureTeardown
+	case PhaseReady, PhaseFinalize:
+		fallthrough
 	default:
 		return FailureAction
 	}

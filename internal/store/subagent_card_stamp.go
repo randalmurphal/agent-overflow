@@ -60,6 +60,7 @@ func (st *cardStamp) takes() bool {
 		return false
 	case cardRecompute:
 		return false
+	case cardLive:
 	}
 	st.reached = true
 	return true

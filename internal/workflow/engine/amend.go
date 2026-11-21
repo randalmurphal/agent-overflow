@@ -94,6 +94,8 @@ func (e *Engine) amendSeeds(itemID string, values map[string]any) (SeedAmendment
 		return SeedAmendment{}, fmt.Errorf(
 			"amend seeds %q: the run is running, and an attempt reads its seeds when it starts; changing them under one would leave a single attempt rendering two sets of inputs. Pause it, or wait for it to rest",
 			itemID)
+	case StateDone, StateFailed, StateCancelled:
+		fallthrough
 	default:
 		return SeedAmendment{}, fmt.Errorf(
 			"amend seeds %q: the run is %s, so there is no attempt left to read a seed", itemID, row.State)

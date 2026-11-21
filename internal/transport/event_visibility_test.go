@@ -93,6 +93,8 @@ func TestRefetchSignalChannelsAreLatestOnly(t *testing.T) {
 			// What this test is about.
 		case RetentionEphemeral:
 			t.Fatalf("%s is ephemeral: a client that missed the change would never refetch", channel)
+		case RetentionDefault:
+			fallthrough
 		default:
 			t.Fatalf("%s is not latest-only: a reconnect would replay a ring's worth of identical refetch signals", channel)
 		}

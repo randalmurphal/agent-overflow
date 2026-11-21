@@ -299,6 +299,8 @@ func (s *Sessions) checkProofAgainstDevice(device store.Device, proof DeviceProo
 			return ReasonProofDowngraded
 		}
 		return s.verifyDeviceProof(device.KeyThumbprint, proof)
+	case ProofBearer:
+		fallthrough
 	default:
 		if signed {
 			return ReasonMalformedProof

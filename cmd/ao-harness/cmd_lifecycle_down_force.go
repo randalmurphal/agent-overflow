@@ -169,7 +169,8 @@ func stopForcedVictim(ctx context.Context, row instanceinfo.Row, probe forceProb
 		return false, nil
 	case forceStop:
 		return true, terminateForced(ctx, row.PID, identity, stopGrace)
-	default:
+	case forceRefuse:
 		return false, err
 	}
+	panic(fmt.Sprintf("ao-harness: force verdict %d", verdict))
 }

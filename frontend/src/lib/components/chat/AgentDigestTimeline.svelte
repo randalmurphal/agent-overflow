@@ -37,8 +37,8 @@
   let nodes = $derived.by<DigestNode[]>(() => {
     if (!view) return [];
     const scoped = view.pane;
-    scoped.activityRuns.revision;
-    scoped.loading;
+    void scoped.activityRuns.revision;
+    void scoped.loading;
     const items = scoped.items;
     const groups = untrack(() => groupActivityRuns(groupItemsBySubagent(items), {
       identity: scoped.activityRuns, getItem: scoped.getItemById, withheld: [],
@@ -71,11 +71,20 @@
       if (view === current) fetching = new Set([...fetching].filter(id => id !== boundary.id));
     }
   }
+  // A window edge whose last page failed or went nowhere: automatic paging
+  // leaves it until the edge moves (`olderStalled` / `newerStalled`), and a
+  // click still asks.
+  function edgeStalled(boundary: Boundary): boolean {
+    if (boundary.runId || !view) return false;
+    return boundary.direction === 'before' ? view.pane.olderStalled : view.pane.newerStalled;
+  }
   // A boundary loads when it reaches the clip viewport, independently of the
   // virtualizer's overscan. Each run retains its own membership cursor.
   function observeBoundary(element: HTMLElement, getBoundary: () => Boundary) {
     const observer = new IntersectionObserver(entries => {
-      if (entries.some(entry => entry.isIntersecting)) void loadBoundary(getBoundary());
+      if (!entries.some(entry => entry.isIntersecting)) return;
+      const boundary = getBoundary();
+      if (!edgeStalled(boundary)) void loadBoundary(boundary);
     }, { root: element.closest('[data-testid="subagent-group-scroll"]') });
     observer.observe(element);
     return { destroy() { observer.disconnect(); } };
