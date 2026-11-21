@@ -8,9 +8,11 @@ export const CONTROL_BASE =
   'text-fg placeholder:text-fg-hint focus:outline-none focus:border-accent ' +
   'focus-visible:ring-2 focus-visible:ring-accent/40 transition-colors';
 
+// A select is as wide as its longest option; max-w-full keeps one with a
+// long option (a system voice name) inside its field.
 export const SELECT_CLASS =
   CONTROL_BASE +
-  ' min-w-[8rem] text-[0.75rem] px-2.5 py-1 cursor-pointer compact:text-base compact:py-2';
+  ' min-w-[8rem] max-w-full text-[0.75rem] px-2.5 py-1 cursor-pointer compact:text-base compact:py-2';
 
 export const INPUT_CLASS =
   CONTROL_BASE + ' w-full text-[0.75rem] px-2.5 py-1.5 compact:text-base compact:py-2';

@@ -99,7 +99,7 @@ func TestAStoppedCommitEndsItsHookAndLeavesNoIndexLock(t *testing.T) {
 			pidFile := filepath.Join(t.TempDir(), "hook.pid")
 			installPreCommitHook(t, repo, "echo $$ > '"+pidFile+"'\nsleep 30\n")
 			core := NewCore()
-			core.hookTimeout = time.Second
+			core.hookTimeout = stoppedHookBound
 			writeRepoFile(t, repo, "README.txt", "hello\nedited\n")
 			if _, err := core.CommitSelected(repo, "stopped", "", selection(repo)); err == nil {
 				t.Fatal("the commit finished")

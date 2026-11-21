@@ -189,12 +189,23 @@ async function settle(page: Page): Promise<void> {
 /**
  * Opens Settings and measures every section, populated: a project, saved
  * variables on each provider page, a saved Codex account that needs signing
- * in again, and a rebound chord. On compact each section is a page reached
- * from the rail. Saving the account is process-wide state, so the caller
- * passes a backend it owns.
+ * in again, a rebound chord, and a device voice with a name as long as an
+ * operating system's own (a headless Linux browser has no voices). On
+ * compact each section is a page reached from the rail. Saving the account
+ * is process-wide state, so the caller passes a backend it owns.
  */
 export async function settingsLayoutFaults(harness: HarnessApp, page: Page, compact: boolean): Promise<LayoutFault[]> {
   await harness.rpc<SeedResult>('HarnessSeed', { projects: [{ name: 'settings-layout', repo: {} }] });
+  await page.addInitScript(() => {
+    const voice = {
+      voiceURI: 'layout-voice',
+      name: 'Eddy (English (United Kingdom)) Enhanced',
+      lang: 'en-GB',
+      default: true,
+      localService: true,
+    };
+    window.speechSynthesis.getVoices = () => [voice as SpeechSynthesisVoice];
+  });
   await harness.open(page);
   await page.getByTestId('sidebar-settings-button').click();
   await saveCodexAccountNeedingSignIn(harness, page, compact);
