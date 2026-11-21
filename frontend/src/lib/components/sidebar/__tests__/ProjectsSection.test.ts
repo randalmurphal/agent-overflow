@@ -821,17 +821,17 @@ describe('<ProjectsSection> threads and their groups', () => {
     const {
       collapseProject,
       getThreadListVisibleLimit,
-      isProjectExpanded,
       setThreadListVisibleLimit,
     } = await import('../../../stores/sidebar.svelte');
     const { projectDisclosureKey } = await import('../../../stores/projectDisclosure');
     stageBackend({ id: 'gpu', backendId: 'gpu-id' });
     try {
       // The user collapsed the entry and revealed more of it while GPU was
-      // the only computer showing it, back when disclosure was keyed by
-      // project id: the answer is under that id and nothing else.
-      collapseProject('a-gpu');
-      setThreadListVisibleLimit('a-gpu', 10);
+      // the only computer showing it, under the entry's own key: repository
+      // A's, which is the key whatever checkout represents it.
+      const keyOfA = 'forge:github:github.com:A';
+      collapseProject(keyOfA);
+      setThreadListVisibleLimit(keyOfA, 10);
       const homeProjects = deferred<ProjectWithCounts[]>();
       const homeThreads = deferred<Thread[]>();
       setBindingMock('ListProjects', () => (takePinnedBackend() === 'gpu'
@@ -851,10 +851,8 @@ describe('<ProjectsSection> threads and their groups', () => {
       expect(catalogTreeListed('gpu')).toBe(true);
       expect(headers(container)).toEqual(['a-gpu']);
       expect(expandedOf(container, 'a-gpu')).toBe('false');
-      // Carried to the entry's key, once, and the id it was under is spent.
-      expect(getThreadListVisibleLimit(projectDisclosureKey('a-gpu'))).toBe(10);
-      expect(isProjectExpanded('a-gpu')).toBe(true);
-      expect(getThreadListVisibleLimit('a-gpu')).toBe(8);
+      expect(projectDisclosureKey('a-gpu')).toBe(keyOfA);
+      expect(getThreadListVisibleLimit(keyOfA)).toBe(10);
       const row = container.querySelector('[data-testid="project-item"]');
 
       // Home's project row commits at its own window while Home's threads
@@ -869,8 +867,7 @@ describe('<ProjectsSection> threads and their groups', () => {
       expect(container.querySelector('[data-testid="project-item"]')).toBe(row);
 
       // At Home's listing the entry changes hands, by design. Its key does
-      // not, so the row is the same row, and the disclosure the user set
-      // under the GPU member still answers for it.
+      // not, so the row is the same row and keeps its disclosure.
       homeThreads.resolve([makeThread({ id: 'h0', projectId: 'a-home' })]);
       await vi.advanceTimersByTimeAsync(0);
       await settle();
@@ -879,72 +876,6 @@ describe('<ProjectsSection> threads and their groups', () => {
       expect(container.querySelector('[data-testid="project-item"]')).toBe(row);
       expect(expandedOf(container, 'a-home')).toBe('false');
       expect(getThreadListVisibleLimit(projectDisclosureKey('a-home'))).toBe(10);
-    } finally {
-      resetStagedBackends();
-    }
-  });
-
-  // The other direction of the same carry: an entry the user has answered
-  // is not re-answered by a member whose own flag predates the answer.
-  it("keeps the user's answer when a held member arrives carrying an older one", async () => {
-    const { stageBackend, resetStagedBackends } = await import('../../../../test/helpers/backends');
-    const {
-      collapseProject,
-      getThreadListVisibleLimit,
-      isProjectExpanded,
-      setThreadListVisibleLimit,
-    } = await import('../../../stores/sidebar.svelte');
-    const { projectDisclosureKey } = await import('../../../stores/projectDisclosure');
-    stageBackend({ id: 'gpu', backendId: 'gpu-id' });
-    try {
-      // Home's answer from before the upgrade, under its project id.
-      collapseProject('a-home');
-      setThreadListVisibleLimit('a-home', 50);
-      const homeProjects = deferred<ProjectWithCounts[]>();
-      const homeThreads = deferred<Thread[]>();
-      setBindingMock('ListProjects', () => (takePinnedBackend() === 'gpu'
-        ? Promise.resolve([{ project: repoProject('a-gpu', 'A', '/gpu/a'), threadCount: 12, lastActive: 2 }])
-        : homeProjects.promise));
-      setBindingMock('ListThreads', () => (takePinnedBackend() === 'gpu'
-        ? Promise.resolve(Array.from({ length: 12 }, (_, i) => makeThread({ id: `g${i}`, projectId: 'a-gpu' })))
-        : homeThreads.promise));
-      setBindingMock('ListThreadGroups', async () => []);
-      vi.useFakeTimers();
-      const { container } = render(ProjectsSection, { props: { pane: null } });
-      void loadSidebarCatalogs();
-      await vi.advanceTimersByTimeAsync(2500);
-      await settle();
-      expect(headers(container)).toEqual(['a-gpu']);
-      const key = projectDisclosureKey('a-gpu');
-
-      // What the user chose, on the entry: unfolded, showing ten.
-      setThreadListVisibleLimit(key, 10);
-      await settle();
-      expect(expandedOf(container, 'a-gpu')).toBe('true');
-      expect(arrangement(container)).toHaveLength(10);
-
-      // Home's row commits with its tree still held.
-      homeProjects.resolve([{ project: repoProject('a-home', 'A', '/home/a'), threadCount: 1, lastActive: 1 }]);
-      await vi.advanceTimersByTimeAsync(0);
-      await settle();
-      expect(catalogTreeListed(HOME_BACKEND)).toBe(false);
-      expect(expandedOf(container, 'a-gpu')).toBe('true');
-      expect(getThreadListVisibleLimit(key)).toBe(10);
-      // Untouched while its tree is held: it answers nothing and loses
-      // nothing yet.
-      expect(isProjectExpanded('a-home')).toBe(false);
-
-      // And at Home's listing, where the entry changes hands.
-      homeThreads.resolve([makeThread({ id: 'h0', projectId: 'a-home' })]);
-      await vi.advanceTimersByTimeAsync(0);
-      await settle();
-      expect(catalogTreeListed(HOME_BACKEND)).toBe(true);
-      expect(headers(container)).toEqual(['a-home']);
-      expect(expandedOf(container, 'a-home')).toBe('true');
-      expect(getThreadListVisibleLimit(key)).toBe(10);
-      // Dropped without effect, which is what makes the carry finite.
-      expect(isProjectExpanded('a-home')).toBe(true);
-      expect(getThreadListVisibleLimit('a-home')).toBe(8);
     } finally {
       resetStagedBackends();
     }

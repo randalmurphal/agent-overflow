@@ -14,7 +14,7 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { reorderProjects } from '../../stores/projects.svelte';
   import { buildSidebarEntries, rankOf, type SidebarEntry } from './sidebarEntries';
-  import { adoptProjectDisclosure, revealProject } from '../../stores/projectDisclosure';
+  import { revealProject } from '../../stores/projectDisclosure';
   import {
     expandProject,
     collapseProject,
@@ -124,15 +124,6 @@
     });
     previousEntries = built.entries;
     return built;
-  });
-
-  // The one answer carried over from when disclosure was keyed by project
-  // id (stores/projectDisclosure.ts). An entry whose key differs from the
-  // id it was collapsed under renders unfolded until this runs, which is
-  // within the same task as the render that revealed it, so nothing paints
-  // in between; it writes nothing once no project-id key is left.
-  $effect(() => {
-    for (const entry of sidebarEntries.entries) adoptProjectDisclosure(entry.id);
   });
 
   let previousThreadBuckets: ReadonlyMap<string, Thread[]> = new Map();

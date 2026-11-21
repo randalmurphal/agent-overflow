@@ -31,9 +31,9 @@
 import type { ProjectSortMode } from '../types/settings';
 import { THREAD_PREVIEW_LIMIT } from '../utils/sidebarThreadLimits';
 import {
-  appStorageAdoptLegacyKey,
   appStorageDelete,
   appStorageGet,
+  appStorageRetireKey,
   appStorageSet,
 } from './appStorage';
 import { getSettings, updateSettingsPatch } from './settings.svelte';
@@ -41,16 +41,22 @@ import { readFrontendValue, writeFrontendValue, onFrontendValueChanged } from '.
 
 export type { ProjectSortMode };
 
-// appStorage (per-client) keys.
-const COLLAPSED_KEY = 'sidebar:collapsedProjects';
-const THREAD_LIST_VISIBLE_LIMITS_KEY = 'sidebar:threadListVisibleLimits';
-// The keys whose disclosure has been ANSWERED, which is not the same fact as
-// what the answer is: an absent collapse and an absent limit cannot tell
-// "chose expanded, chose the default preview" from "never chose", and
-// something that carries an older answer over has to know the difference
-// (`stores/projectDisclosure.ts`). A list that is not an entry marks itself
-// answered too, by its own key; nothing ever carries one of those.
-const DISCLOSED_KEY = 'sidebar:disclosedLists';
+// appStorage (per-client) keys. Collapse and the preview size are keyed by
+// the list that owns them: a sidebar entry's key for a project's top level
+// (`stores/projectDisclosure.ts` chooses it), a group id, ASSISTANTS_LIST_KEY.
+const COLLAPSED_KEY = 'sidebar:collapsedEntries';
+const THREAD_LIST_VISIBLE_LIMITS_KEY = 'sidebar:entryThreadListVisibleLimits';
+// The same two records from when a project's own id was the key, before a
+// repository checked out on several computers became one entry. No id can be
+// turned into an entry key here: that needs every computer's project rows,
+// which the sidebar has not read when this module initializes. So they are
+// dropped rather than migrated, and the price is paid once: a project the
+// user collapsed before the upgrade opens, and a list that was showing more
+// than its preview shows the preview again.
+const RETIRED_ID_KEYED_KEYS = [
+  'sidebar:collapsedProjects',
+  'sidebar:threadListVisibleLimits',
+] as const;
 // Groups default to EXPANDED, so the persisted set holds the COLLAPSED
 // ids — the same inversion collapsedProjects uses, for the same reason:
 // a group the user has never touched must show its members. No legacy
@@ -59,7 +65,8 @@ const COLLAPSED_GROUPS_KEY = 'sidebar:collapsedGroups';
 // The Assistants and Projects sections, each folded whole from its header.
 const COLLAPSED_SECTIONS_KEY = 'sidebar:collapsedSections';
 
-// Pre-appStorage localStorage keys, adopted once at module init.
+// Pre-appStorage localStorage keys. Each was keyed by a project id, or by
+// the inverse of one, so each is removed at module init rather than adopted.
 const LEGACY_COLLAPSED_STORAGE_KEY = 'agent-overflow:sidebar:collapsedProjects';
 const LEGACY_EXPANDED_STORAGE_KEY = 'agent-overflow:sidebar:expandedProjects';
 const LEGACY_EXPANDED_THREAD_LISTS_KEY = 'agent-overflow:sidebar:expandedThreadLists';
@@ -105,14 +112,8 @@ function parseStringArray(raw: string): string[] | null {
   }
 }
 
-function stringSetFromStorage(key: string, legacyKey?: string): Set<string> {
-  const raw =
-    appStorageGet(key) ??
-    (legacyKey === undefined
-      ? null
-      : appStorageAdoptLegacyKey(key, legacyKey, (legacy) =>
-          parseStringArray(legacy) === null ? null : legacy,
-        ));
+function stringSetFromStorage(key: string): Set<string> {
+  const raw = appStorageGet(key);
   if (raw === null) return new Set();
   return new Set(parseStringArray(raw) ?? []);
 }
@@ -122,12 +123,7 @@ function writeStringSet(key: string, set: ReadonlySet<string>): void {
 }
 
 function readCollapsed(): Set<string> {
-  // Drop the pre-inversion legacy "expanded" key so old data doesn't
-  // linger forever. Its contents can't be migrated meaningfully: the
-  // old set listed user-expanded ids, and computing the inverse needs
-  // the full project list, which isn't loaded here.
-  removeLocalStorageKey(LEGACY_EXPANDED_STORAGE_KEY);
-  return stringSetFromStorage(COLLAPSED_KEY, LEGACY_COLLAPSED_STORAGE_KEY);
+  return stringSetFromStorage(COLLAPSED_KEY);
 }
 
 function readProjectSortMode(): ProjectSortMode {
@@ -160,12 +156,7 @@ function parseThreadListVisibleLimits(raw: string): Record<string, number> | nul
 }
 
 function readThreadListVisibleLimits(): Record<string, number> {
-  removeLocalStorageKey(LEGACY_EXPANDED_THREAD_LISTS_KEY);
-  const raw =
-    appStorageGet(THREAD_LIST_VISIBLE_LIMITS_KEY) ??
-    appStorageAdoptLegacyKey(THREAD_LIST_VISIBLE_LIMITS_KEY, LEGACY_THREAD_LIST_LIMITS_KEY, (legacy) =>
-      parseThreadListVisibleLimits(legacy) === null ? null : legacy,
-    );
+  const raw = appStorageGet(THREAD_LIST_VISIBLE_LIMITS_KEY);
   if (raw === null) return {};
   return parseThreadListVisibleLimits(raw) ?? {};
 }
@@ -196,11 +187,30 @@ function removeLocalStorageKey(key: string): void {
   }
 }
 
+/**
+ * Forget every record a project id was the key of: the two appStorage keys
+ * of the id-keyed era and the pre-appStorage localStorage keys behind them.
+ *
+ * Before anything reads a key, and for every key whether this client holds
+ * one or not: a first migration hydrates the durable bucket AFTER the sidebar
+ * has mounted (`App.svelte`), and `appStorageRetireKey` is what refuses the
+ * server's copy of a key removed in between. Nothing reads any of these
+ * afterwards.
+ */
+function dropIdKeyedDisclosure(): void {
+  for (const key of RETIRED_ID_KEYED_KEYS) appStorageRetireKey(key);
+  removeLocalStorageKey(LEGACY_COLLAPSED_STORAGE_KEY);
+  removeLocalStorageKey(LEGACY_EXPANDED_STORAGE_KEY);
+  removeLocalStorageKey(LEGACY_EXPANDED_THREAD_LISTS_KEY);
+  removeLocalStorageKey(LEGACY_THREAD_LIST_LIMITS_KEY);
+}
+
+dropIdKeyedDisclosure();
+
 let collapsedProjects: Set<string> = $state(readCollapsed());
-let disclosedLists: Set<string> = $state(stringSetFromStorage(DISCLOSED_KEY));
 let collapsedGroups: Set<string> = $state(stringSetFromStorage(COLLAPSED_GROUPS_KEY));
 let collapsedSections: Set<string> = $state(stringSetFromStorage(COLLAPSED_SECTIONS_KEY));
-// How many rows each list shows: a project's top level by its entry id, a
+// How many rows each list shows: a project's top level by its entry key, a
 // group's members by the group id, and the Assistants section's rows by
 // ASSISTANTS_LIST_KEY.
 let threadListVisibleLimits: Record<string, number> = $state(readThreadListVisibleLimits());
@@ -208,50 +218,12 @@ let projectSortMode: ProjectSortMode = $state(readProjectSortMode());
 
 // Disclosure is persisted by the key its caller gives, and this module does
 // not know what that key is about. A sidebar entry's key is the entry's own
-// (`stores/projectDisclosure.ts` chooses it and owns the one answer carried
-// over from when these were keyed by project id); a group's is the group id,
-// the Assistants section's is ASSISTANTS_LIST_KEY.
+// (`stores/projectDisclosure.ts` chooses it); a group's is the group id, the
+// Assistants section's is ASSISTANTS_LIST_KEY.
 
 function writeCollapsed(next: Set<string>): void {
   collapsedProjects = next;
   writeStringSet(COLLAPSED_KEY, next);
-}
-
-/** Whether anything has answered this key's disclosure. */
-export function isDisclosureAnswered(key: string): boolean {
-  return disclosedLists.has(key);
-}
-
-function noteDisclosed(key: string): void {
-  if (disclosedLists.has(key)) return;
-  const next = new Set(disclosedLists).add(key);
-  disclosedLists = next;
-  writeStringSet(DISCLOSED_KEY, next);
-}
-
-/**
- * Forget everything held under `key`, the answered mark included. For a key
- * that is no longer one: its answer has been carried somewhere else, or
- * there is nowhere for it to go.
- */
-export function dropDisclosure(key: string): void {
-  if (collapsedProjects.has(key)) {
-    const next = new Set(collapsedProjects);
-    next.delete(key);
-    writeCollapsed(next);
-  }
-  if (key in threadListVisibleLimits) {
-    const next = { ...threadListVisibleLimits };
-    delete next[key];
-    threadListVisibleLimits = next;
-    writeThreadListVisibleLimits(next);
-  }
-  if (disclosedLists.has(key)) {
-    const next = new Set(disclosedLists);
-    next.delete(key);
-    disclosedLists = next;
-    writeStringSet(DISCLOSED_KEY, next);
-  }
 }
 
 export function isProjectExpanded(key: string): boolean {
@@ -259,9 +231,6 @@ export function isProjectExpanded(key: string): boolean {
 }
 
 export function expandProject(key: string): void {
-  // Answered either way: unfolding something already unfolded is still a
-  // choice, and the only record that it was made is this mark.
-  noteDisclosed(key);
   if (!collapsedProjects.has(key)) return;
   const next = new Set(collapsedProjects);
   next.delete(key);
@@ -269,7 +238,6 @@ export function expandProject(key: string): void {
 }
 
 export function collapseProject(key: string): void {
-  noteDisclosed(key);
   if (collapsedProjects.has(key)) return;
   writeCollapsed(new Set(collapsedProjects).add(key));
 }
@@ -334,10 +302,6 @@ export function syncSidebarFromAppStorage(): void {
   }
   const rawLimits = appStorageGet(THREAD_LIST_VISIBLE_LIMITS_KEY);
   threadListVisibleLimits = rawLimits === null ? {} : (parseThreadListVisibleLimits(rawLimits) ?? {});
-  const disclosed = new Set(parseStringArray(appStorageGet(DISCLOSED_KEY) ?? '[]') ?? []);
-  if (!setsEqual(disclosed, disclosedLists)) {
-    disclosedLists = disclosed;
-  }
 }
 
 function setsEqual(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
@@ -425,7 +389,6 @@ export function setThreadListVisibleLimit(key: string, limit: number): void {
     collapseThreadList(key);
     return;
   }
-  noteDisclosed(key);
   if (threadListVisibleLimits[key] === roundedLimit) return;
   const next = { ...threadListVisibleLimits, [key]: roundedLimit };
   threadListVisibleLimits = next;
@@ -433,8 +396,6 @@ export function setThreadListVisibleLimit(key: string, limit: number): void {
 }
 
 export function collapseThreadList(key: string): void {
-  // Show less is reachable only from a limit above the preview, which was
-  // answered when it was set, so there is nothing to mark here.
   if (!(key in threadListVisibleLimits)) return;
   const next = { ...threadListVisibleLimits };
   delete next[key];
@@ -447,7 +408,6 @@ export function collapseThreadList(key: string): void {
 export function resetSidebarForTest(): void {
   showProviderIcons = false;
   collapsedProjects = new Set();
-  disclosedLists = new Set();
   collapsedGroups = new Set();
   collapsedSections = new Set();
   threadListVisibleLimits = {};

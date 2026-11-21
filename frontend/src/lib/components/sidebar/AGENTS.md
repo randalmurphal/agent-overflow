@@ -66,9 +66,7 @@ which adds the project's empty state and drop targets.
   other's prefix; the entry carries the name and path, not the label.
 - Disclosure is keyed by the entry's key: collapse, and the show-more limit
   of the entry's own list, which `ProjectItem` passes down as `listKey`
-  beside the `projectId` an action targets. The record says whether a key
-  has been ANSWERED as well as what the answer is, so a carry can tell
-  "chose expanded at the default preview" from "never chose". `ProjectsSection.svelte` and
+  beside the `projectId` an action targets. `ProjectsSection.svelte` and
   `SidebarTreeList.svelte` are the only readers of those writers here, which
   `lib/architecture.test.ts` enforces; a row reports a toggle through
   `onSetExpanded` instead of writing one. Anything that wants a project's

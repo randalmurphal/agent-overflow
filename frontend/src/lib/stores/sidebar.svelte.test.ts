@@ -19,14 +19,14 @@ import {
   syncSidebarFromAppStorage,
   syncSidebarFromSettings,
 } from './sidebar.svelte';
-import { appStorageGet, hydrateAppStorage, resetAppStorageForTest } from './appStorage';
+import { appStorageGet, appStorageSet, hydrateAppStorage, resetAppStorageForTest } from './appStorage';
 import { loadSettings, resetSettingsForTest } from './settings.svelte';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import { makeSettings } from '../../test/helpers/settings';
 import { THREAD_PREVIEW_LIMIT, THREAD_REVEAL_INCREMENT } from '../utils/sidebarThreadLimits';
 import { removeThreadGroup } from './threadGroups.svelte';
 
-const COLLAPSED_KEY = 'sidebar:collapsedProjects';
+const COLLAPSED_KEY = 'sidebar:collapsedEntries';
 const COLLAPSED_GROUPS_KEY = 'sidebar:collapsedGroups';
 
 // The store writes a fold under the key it is given; a toggle is the
@@ -101,8 +101,8 @@ describe('sidebar store', () => {
       expect(isProjectExpanded('p1')).toBe(false);
     });
 
-    it('corrupt legacy stored JSON does not crash subsequent operations', () => {
-      localStorage.setItem('agent-overflow:sidebar:collapsedProjects', '{not json');
+    it('corrupt stored JSON does not crash subsequent operations', () => {
+      appStorageSet(COLLAPSED_KEY, '{not json');
       // Module init already read storage once; this just verifies that
       // a write/read round-trip serializes over the garbage cleanly.
       toggleProjectForTest('p1');
@@ -261,8 +261,8 @@ describe('sidebar store', () => {
   describe('syncSidebarFromAppStorage', () => {
     it('adopts hydrated view state from the per-client bucket', async () => {
       setBindingMock('GetUIState', async () => ({
-        'sidebar:collapsedProjects': JSON.stringify(['proj-1', 'proj-2']),
-        'sidebar:threadListVisibleLimits': JSON.stringify({ 'proj-1': 40 }),
+        'sidebar:collapsedEntries': JSON.stringify(['proj-1', 'proj-2']),
+        'sidebar:entryThreadListVisibleLimits': JSON.stringify({ 'proj-1': 40 }),
         'sidebar:collapsedGroups': JSON.stringify(['group-1']),
       }));
       await hydrateAppStorage();

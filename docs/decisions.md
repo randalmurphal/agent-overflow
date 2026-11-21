@@ -77,6 +77,14 @@ Mechanism in
   projects have answered, the sidebar shows a loading row for it, naming its
   boot phase while it is starting, or its error with Retry. The empty-list
   message appears only once both have loaded; rows already held stay visible.
+- A computer's projects, the threads under them and their groups list in the
+  sidebar as one set, with no exception: while any of the three keeps
+  failing, that computer contributes no project header, no project row and
+  no New Thread button, only its error row with Retry beside the last
+  complete tree it listed, or alone when it never listed one. The price is
+  accepted: a computer whose thread list keeps failing shows none of its
+  projects, which a half-arranged list would show and then rearrange
+  (ruling 2026-11-21).
 - Readiness reports progress. A starting backend names its phase, step and
   elapsed time, and a boot right after an in-app update reads as finishing
   that update. The launcher's loading page, the startup screen and the

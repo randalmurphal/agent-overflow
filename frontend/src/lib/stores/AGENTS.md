@@ -278,14 +278,15 @@ transport delivers an event queued before a reply ahead of that reply
 (`internal/transport/conn.go#writeReply`), so the rows carry the order by the
 time the overlay is dropped. One write at a time, and only the newest order
 waiting behind it is sent. Collapse and the show-more limit live in
-`sidebar.svelte.ts` under whatever key the caller gives, with a separate
-record of which keys have been answered, because an absent collapse and an
-absent limit cannot tell a chosen default from no choice.
+`sidebar.svelte.ts` under whatever key the caller gives, and
 `projectDisclosure.ts` is the one module that turns a project into a key (the
-entry's) and answers an entry that nothing has answered yet from the ids it
-used to be keyed by, reading only members whose tree is listed and dropping
-every id it reads, which makes it dead once no project-id key is left in
-storage. Do not add permanent
+entry's). The records a project id was the key of are not migrated: no id can
+become an entry key without every computer's project rows, which the sidebar
+has not read when the store initializes, so both are retired at startup
+(`appStorageRetireKey`, which refuses the copy a later hydration would bring
+for a key removed before it). The price is paid once: a project collapsed
+before the upgrade opens, and a list showing more than its preview shows the
+preview again. Do not add permanent
 frontend tombstones for moved or retired entities; pending reads hold only
 enough ownership evidence to reject stale replies.
 

@@ -587,11 +587,6 @@ export function listCatalogTreesForTest(): void {
   for (const entry of attachedBackends()) listed.set(entry.id, true);
 }
 
-/** Test seam: one computer's listing, for a test about a held tree. */
-export function setCatalogTreeListedForTest(backend: BackendKey, value: boolean): void {
-  listed.set(backend, value);
-}
-
 /** Test seam: forget every read and listing. */
 export function resetSidebarCatalogsForTest(): void {
   for (const read of reads.values()) drop(read);
