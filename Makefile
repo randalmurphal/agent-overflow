@@ -215,8 +215,9 @@ go-lint: $(GOLANGCI_LINT_BUILD)
 # this host compiles (the default, nogui, noremote and providersmoke ones)
 # and over the Windows launcher's packages as Windows compiles them. The
 # linter reports at the switch, not at the constant a change added, and has
-# no backlog, so it is not limited to a change's lines. Files only macOS
-# compiles are checked by running it on macOS.
+# no backlog, so it is not limited to a change's lines. Every file only
+# macOS compiles is in the default set, which CI's macOS job lints with
+# `make go-lint GO_LINT_FLAGS="--enable-only exhaustive"`.
 GO_LINT_EXHAUSTIVE = $(GOLANGCI_LINT) run --timeout 20m --enable-only exhaustive
 go-lint-exhaustive: $(GOLANGCI_LINT_BUILD)
 	$(GO_LINT_EXHAUSTIVE) ./...

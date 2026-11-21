@@ -96,8 +96,11 @@ jobs:
           frontend-dist: "true"
           cache-name: build-macos
       - run: make go-build
+      # Every file only macOS compiles is in the default file set, so one
+      # pass covers them; the lint job runs the other sets and the Windows
+      # launcher's.
       - name: exhaustive on the files macOS compiles
-        run: make go-lint-exhaustive
+        run: make go-lint GO_LINT_FLAGS="--enable-only exhaustive"
       # The orphan reaper is a script macOS's own /bin/sh runs; no other job
       # executes it there.
       - name: Run the orphan reaper under macOS sh
@@ -132,7 +135,8 @@ jobs:
         run: |
           set -euo pipefail
           # The image carries golangci-lint at the Makefile's pin; a pin
-          # the image has not caught up with falls back to `go run`.
+          # the image has not caught up with falls back to the Makefile's
+          # own build of it.
           if golangci-lint version 2>/dev/null | grep -q "version v$(sed -n 's/^GOLANGCI_LINT_VERSION *:= *v//p' Makefile) "; then
             echo "GOLANGCI_LINT=golangci-lint" >> "$GITHUB_ENV"
           fi
@@ -141,7 +145,7 @@ jobs:
         run: make go-lint GO_LINT_FLAGS="--new-from-patch=$RUNNER_TEMP/change/change.diff"
       # exhaustive has no backlog, and a constant added to an enum is
       # reported at the switches over it, which the change need not touch.
-      # The macOS job runs the same target for the files only macOS compiles.
+      # The macOS job runs the linter for the files only macOS compiles.
       - name: exhaustive on the whole tree
         run: make go-lint-exhaustive
       - run: make go-vuln
