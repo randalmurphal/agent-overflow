@@ -426,11 +426,16 @@ export class AgentComputer {
  * (threadtools.ProfileProblem): Problem, a choice that does not fit its
  * model here, which the editor and UpdateSettings refuse; Missing, a
  * provider or model this computer lacks, so threads here are not offered
- * the profile.
+ * the profile; Runs, the model a profile naming its provider and model
+ * runs here, the newest of its family for a family; Unreadable, the models
+ * a family profile's provider lists here that its version rule cannot read
+ * and so never runs.
  */
 export class AgentProfileCheck {
     "problem"?: string;
     "missing"?: string;
+    "runs"?: string;
+    "unreadable"?: string[];
 
     /** Creates a new AgentProfileCheck instance. */
     constructor($$source: Partial<AgentProfileCheck> = {}) {
@@ -442,7 +447,11 @@ export class AgentProfileCheck {
      * Creates a new AgentProfileCheck instance from a string or object.
      */
     static createFrom($$source: any = {}): AgentProfileCheck {
+        const $$createField3_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("unreadable" in $$parsedSource) {
+            $$parsedSource["unreadable"] = $$createField3_0($$parsedSource["unreadable"]);
+        }
         return new AgentProfileCheck($$parsedSource as Partial<AgentProfileCheck>);
     }
 }

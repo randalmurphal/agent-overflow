@@ -664,6 +664,7 @@ func TestMaybeGenerateThreadTitleIgnoresEmptyResponse(t *testing.T) {
 func TestGeneratedThreadTitle_CodexPathHappy(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
+	listCodexModels(app, provider.CodexModels)
 	thread := testThread("thread-title-codex-cli")
 	thread.WorkspacePath = t.TempDir()
 	if err := app.store.CreateThread(thread); err != nil {
@@ -719,8 +720,8 @@ func TestGeneratedThreadTitle_CodexPathHappy(t *testing.T) {
 	if !argsContain(gotSpec.Args, "exec") || !argsContain(gotSpec.Args, "--ephemeral") {
 		t.Fatalf("codex args missing exec --ephemeral: %v", gotSpec.Args)
 	}
-	if modelArg := nextArgAfter(gotSpec.Args, "--model"); modelArg != textgen.DefaultCodexModel {
-		t.Fatalf("codex model = %q, want %q", modelArg, textgen.DefaultCodexModel)
+	if modelArg := nextArgAfter(gotSpec.Args, "--model"); modelArg != shippedNewestLuna {
+		t.Fatalf("codex model = %q, want %q", modelArg, shippedNewestLuna)
 	}
 	generatedImagePath := nextArgAfter(gotSpec.Args, "--image")
 	if generatedImagePath == "" {
@@ -785,6 +786,7 @@ func TestGeneratedThreadTitle_Layer2PrimaryFailsAlternateSucceeds(t *testing.T) 
 	app := newTestAppWithStore(t)
 	resetProviderBinarySettings(t, app)
 	app.lookPathFn = fakeLookPath("claude", "codex") // both installed.
+	listCodexModels(app, provider.CodexModels)
 
 	thread := testThread("thread-title-l2-fallback")
 	thread.WorkspacePath = t.TempDir()

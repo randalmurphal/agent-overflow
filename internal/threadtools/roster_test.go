@@ -4,10 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/provider"
 )
+
+// model reads text as providerName's grammar does, as the roster does.
+func model(providerName, text string) provider.ModelRef {
+	return provider.ParseModelRef(providerName, text)
+}
 
 // olderPeer answers thread_options as a computer that predates spawn
 // instructions does: without the field that says it adds them.
@@ -40,11 +49,11 @@ var (
 func testRoster() Roster {
 	return Roster{
 		Profiles: []AgentProfile{
-			{Name: "Opus", UseFor: "Implementation.", Provider: "claude", Model: "opus-5", Effort: "high"},
-			{Name: "Haiku", UseFor: "Mechanical work.", Provider: "claude", Model: "haiku-4"},
-			{Name: "Hasty", UseFor: "Never listed: its model has no effort.", Provider: "claude", Model: "haiku-4", Effort: "high"},
-			{Name: "Sol", UseFor: "Review.", Provider: "codex", Model: "sol", Effort: "high", Instructions: "Look for bugs."},
-			{Name: "Astra", UseFor: "Architecture.", Provider: "codex", Model: "astra"},
+			{Name: "Opus", UseFor: "Implementation.", Provider: "claude", Model: model("claude", "opus-5"), Effort: "high"},
+			{Name: "Haiku", UseFor: "Mechanical work.", Provider: "claude", Model: model("claude", "haiku-4")},
+			{Name: "Hasty", UseFor: "Never listed: its model has no effort.", Provider: "claude", Model: model("claude", "haiku-4"), Effort: "high"},
+			{Name: "Sol", UseFor: "Review.", Provider: "codex", Model: model("codex", "sol"), Effort: "high", Instructions: "Look for bugs."},
+			{Name: "Astra", UseFor: "Architecture.", Provider: "codex", Model: model("codex", "astra")},
 			{Name: "Mine", UseFor: "Like me, read-only.", RuntimeMode: "read-only"},
 		},
 		Notes: []AgentNote{
@@ -95,7 +104,7 @@ func TestListProfilesKeepsWhatTheComputerCanRun(t *testing.T) {
 	}
 	// A profile naming the spawner's model and no effort takes the
 	// spawner's effort, and the model's default where the model lacks it.
-	roster := Roster{Profiles: []AgentProfile{{Name: "Opus", UseFor: "x", Provider: "claude", Model: "opus-5"}}}
+	roster := Roster{Profiles: []AgentProfile{{Name: "Opus", UseFor: "x", Provider: "claude", Model: model("claude", "opus-5")}}}
 	for spawnerEffort, want := range map[string]string{"medium": "medium", "max": "xhigh", "": "xhigh"} {
 		listed := ListProfiles(roster, []ProviderOption{claudeOption}, SpawnDefaults{Provider: "claude", Model: "opus-5", Effort: spawnerEffort})
 		if len(listed) != 1 || listed[0].Effort != want {
@@ -117,21 +126,21 @@ func TestResolveSpawn(t *testing.T) {
 		name    string
 		spawner SpawnDefaults
 		choice  SpawnChoice
-		want    SpawnChoice
+		want    ResolvedSpawn
 		refusal string
 		missing bool
 	}{
-		{"all inherited", spawner, SpawnChoice{}, SpawnChoice{"claude", "opus-5", "medium"}, "", false},
-		{"explicit effort", spawner, SpawnChoice{Effort: "low"}, SpawnChoice{"claude", "opus-5", "low"}, "", false},
-		{"explicit model, inherited effort", spawner, SpawnChoice{Model: "opus-5"}, SpawnChoice{"claude", "opus-5", "medium"}, "", false},
-		{"inherited effort the model lacks", SpawnDefaults{Provider: "claude", Model: "opus-5", Effort: "max"}, SpawnChoice{}, SpawnChoice{"claude", "opus-5", "xhigh"}, "", false},
-		{"a model with no effort drops an inherited one", spawner, SpawnChoice{Model: "haiku-4"}, SpawnChoice{"claude", "haiku-4", ""}, "", false},
-		{"another provider inherits nothing", spawner, SpawnChoice{Provider: "codex"}, SpawnChoice{"codex", "sol", "low"}, "", false},
-		{"an unlisted model resolves", spawner, SpawnChoice{Model: "opus-4"}, SpawnChoice{"claude", "opus-4", "low"}, "", false},
-		{"an effort on a model with none", spawner, SpawnChoice{Model: "haiku-4", Effort: "high"}, SpawnChoice{}, "Model haiku-4 has no reasoning effort setting on here.", false},
-		{"an effort the model lacks", spawner, SpawnChoice{Effort: "max"}, SpawnChoice{}, `Model opus-5 does not offer effort "max" on here. It offers: low, medium, high, xhigh.`, false},
-		{"a model the provider lacks", spawner, SpawnChoice{Model: "opus-9"}, SpawnChoice{}, `Claude Code does not offer model "opus-9" on here. It offers: opus-5, haiku-4.`, true},
-		{"a provider not offered", spawner, SpawnChoice{Provider: "gemini"}, SpawnChoice{}, "gemini does not run on here.", true},
+		{"all inherited", spawner, SpawnChoice{}, ResolvedSpawn{"claude", "opus-5", "medium"}, "", false},
+		{"explicit effort", spawner, SpawnChoice{Effort: "low"}, ResolvedSpawn{"claude", "opus-5", "low"}, "", false},
+		{"explicit model, inherited effort", spawner, SpawnChoice{Model: model("claude", "opus-5")}, ResolvedSpawn{"claude", "opus-5", "medium"}, "", false},
+		{"inherited effort the model lacks", SpawnDefaults{Provider: "claude", Model: "opus-5", Effort: "max"}, SpawnChoice{}, ResolvedSpawn{"claude", "opus-5", "xhigh"}, "", false},
+		{"a model with no effort drops an inherited one", spawner, SpawnChoice{Model: model("claude", "haiku-4")}, ResolvedSpawn{"claude", "haiku-4", ""}, "", false},
+		{"another provider inherits nothing", spawner, SpawnChoice{Provider: "codex"}, ResolvedSpawn{"codex", "sol", "low"}, "", false},
+		{"an unlisted model resolves", spawner, SpawnChoice{Model: model("claude", "opus-4")}, ResolvedSpawn{"claude", "opus-4", "low"}, "", false},
+		{"an effort on a model with none", spawner, SpawnChoice{Model: model("claude", "haiku-4"), Effort: "high"}, ResolvedSpawn{}, "Model haiku-4 has no reasoning effort setting on here.", false},
+		{"an effort the model lacks", spawner, SpawnChoice{Effort: "max"}, ResolvedSpawn{}, `Model opus-5 does not offer effort "max" on here. It offers: low, medium, high, xhigh.`, false},
+		{"a model the provider lacks", spawner, SpawnChoice{Model: model("claude", "opus-9")}, ResolvedSpawn{}, `Claude Code does not offer model "opus-9" on here. It offers: opus-5, haiku-4.`, true},
+		{"a provider not offered", spawner, SpawnChoice{Provider: "gemini"}, ResolvedSpawn{}, "gemini does not run on here.", true},
 	}
 	for _, tc := range cases {
 		got, err := ResolveSpawn(tc.spawner, tc.choice, catalog, "here")
@@ -157,20 +166,171 @@ func TestProfileProblem(t *testing.T) {
 		profile          AgentProfile
 		problem, missing string
 	}{
-		{AgentProfile{Provider: "claude", Model: "opus-5", Effort: "high"}, "", ""},
-		{AgentProfile{Provider: "claude", Model: "haiku-4", Effort: "high"}, "Model haiku-4 has no reasoning effort setting on this computer.", ""},
-		{AgentProfile{Provider: "claude", Model: "opus-5", Effort: "max"}, `Model opus-5 does not offer effort "max" on this computer. It offers: low, medium, high, xhigh.`, ""},
-		{AgentProfile{Provider: "claude", Model: "opus-9"}, "", `Claude Code does not offer model "opus-9" on this computer. It offers: opus-5, haiku-4.`},
-		{AgentProfile{Provider: "codex", Model: "sol", Effort: "high"}, "", "Codex does not run on this computer."},
+		{AgentProfile{Provider: "claude", Model: model("claude", "opus-5"), Effort: "high"}, "", ""},
+		{AgentProfile{Provider: "claude", Model: model("claude", "haiku-4"), Effort: "high"}, "Model haiku-4 has no reasoning effort setting on this computer.", ""},
+		{AgentProfile{Provider: "claude", Model: model("claude", "opus-5"), Effort: "max"}, `Model opus-5 does not offer effort "max" on this computer. It offers: low, medium, high, xhigh.`, ""},
+		{AgentProfile{Provider: "claude", Model: model("claude", "opus-9")}, "", `Claude Code does not offer model "opus-9" on this computer. It offers: opus-5, haiku-4.`},
+		{AgentProfile{Provider: "codex", Model: model("codex", "sol"), Effort: "high"}, "", "Codex does not run on this computer."},
 		{AgentProfile{Provider: "codex"}, "", "Codex does not run on this computer."},
 		{AgentProfile{Provider: "claude", Effort: "max"}, "", ""},
 		{AgentProfile{Effort: "max"}, "", ""},
 	}
 	for _, tc := range cases {
-		problem, missing := ProfileProblem(tc.profile, catalog)
-		if problem != tc.problem || missing != tc.missing {
-			t.Errorf("%+v: problem %q, missing %q; want %q, %q", tc.profile, problem, missing, tc.problem, tc.missing)
+		check := ProfileProblem(tc.profile, catalog)
+		if check.Problem != tc.problem || check.Missing != tc.missing {
+			t.Errorf("%+v: problem %q, missing %q; want %q, %q", tc.profile, check.Problem, check.Missing, tc.problem, tc.missing)
 		}
+	}
+}
+
+// liveClaude and liveCodex are the model lists this computer's thread tools
+// reported on 2026-11-21, in their order: Claude's probe answer with Opus
+// 5 still listed because a thread ran it that week, and Codex's live list.
+var (
+	liveClaude = ProviderOption{ID: "claude", Name: "Claude Code", DefaultModel: "claude-opus-5-5", Models: []ModelOption{
+		{Slug: "claude-opus-5-5", Efforts: []string{"low", "medium", "high", "xhigh", "max"}, DefaultEffort: "xhigh"},
+		{Slug: "claude-fable-5-2", Efforts: []string{"low", "medium", "high", "xhigh", "max"}, DefaultEffort: "xhigh"},
+		{Slug: "claude-sonnet-5-5", Efforts: []string{"low", "medium", "high", "xhigh", "max"}, DefaultEffort: "high"},
+		{Slug: "claude-haiku-5-5", Efforts: []string{"low", "medium", "high", "xhigh", "max"}, DefaultEffort: "medium"},
+		{Slug: "claude-opus-5", Efforts: []string{"low", "medium", "high", "xhigh", "max"}, DefaultEffort: "xhigh"},
+	}, Unlisted: []ModelOption{
+		{Slug: "claude-fable-5", Efforts: []string{"low", "medium", "high", "xhigh", "max"}, DefaultEffort: "xhigh"},
+		{Slug: "claude-sonnet-5", Efforts: []string{"low", "medium", "high", "xhigh", "max"}, DefaultEffort: "high"},
+		{Slug: "claude-opus-4-8", Efforts: []string{"low", "medium", "high", "xhigh", "max"}, DefaultEffort: "xhigh"},
+	}}
+	liveCodex = ProviderOption{ID: "codex", Name: "Codex", DefaultModel: "gpt-6.2-sol", Models: []ModelOption{
+		{Slug: "gpt-6.2-sol", Efforts: []string{"low", "medium", "high", "xhigh", "max", "ultra"}, DefaultEffort: "low"},
+		{Slug: "gpt-6.2-astra", Efforts: []string{"low", "medium", "high", "xhigh", "max", "ultra"}, DefaultEffort: "low"},
+		{Slug: "gpt-6.1-terra", Efforts: []string{"low", "medium", "high", "xhigh", "max", "ultra"}, DefaultEffort: "low"},
+		{Slug: "gpt-6.1-sol", Efforts: []string{"low", "medium", "high", "xhigh", "max", "ultra"}, DefaultEffort: "low"},
+		{Slug: "gpt-6-astra", Efforts: []string{"low", "medium", "high", "xhigh", "max", "ultra"}, DefaultEffort: "medium"},
+		{Slug: "gpt-6-sol", Efforts: []string{"low", "medium", "high", "xhigh", "max", "ultra"}, DefaultEffort: "medium"},
+		{Slug: "gpt-6-luna", Efforts: []string{"low", "medium", "high", "xhigh", "max"}, DefaultEffort: "medium"},
+		{Slug: "gpt-5.6-sol", Efforts: []string{"low", "medium", "high", "xhigh", "max", "ultra"}, DefaultEffort: "low"},
+		{Slug: "gpt-5.6-terra", Efforts: []string{"low", "medium", "high", "xhigh", "max", "ultra"}, DefaultEffort: "medium"},
+		{Slug: "gpt-5.6-luna", Efforts: []string{"low", "medium", "high", "xhigh", "max"}, DefaultEffort: "medium"},
+	}}
+)
+
+// familyRoster is the seeded roster's shape: each profile names a family.
+func familyRoster() Roster {
+	profile := func(name, providerName, family string) AgentProfile {
+		return AgentProfile{Name: name, UseFor: name + ".", Provider: providerName, Model: model(providerName, family), Effort: "high"}
+	}
+	return Roster{Profiles: []AgentProfile{
+		profile("Luna", "codex", "gpt-luna"),
+		profile("Terra", "codex", "gpt-terra"),
+		profile("Sol", "codex", "gpt-sol"),
+		profile("Astra", "codex", "gpt-astra"),
+		profile("Haiku", "claude", "claude-haiku"),
+		profile("Sonnet", "claude", "claude-sonnet"),
+		profile("Opus", "claude", "claude-opus"),
+		profile("Fable", "claude", "claude-fable"),
+	}}
+}
+
+func listedModels(listed []ProfileOption) map[string]string {
+	out := map[string]string{}
+	for _, option := range listed {
+		out[option.Name] = option.Model
+	}
+	return out
+}
+
+// A profile on a family runs the newest model of it this computer lists:
+// on the lists this computer reported, every seeded family resolves to
+// the newest it offers, not to a model it keeps only for threads already
+// on it.
+func TestFamilyProfilesRunTheNewestListedModel(t *testing.T) {
+	got := listedModels(ListProfiles(familyRoster(), []ProviderOption{liveClaude, liveCodex}, SpawnDefaults{Provider: "claude", Model: "claude-fable-5-2"}))
+	want := map[string]string{
+		"Opus": "claude-opus-5-5", "Fable": "claude-fable-5-2", "Sonnet": "claude-sonnet-5-5", "Haiku": "claude-haiku-5-5",
+		"Sol": "gpt-6.2-sol", "Astra": "gpt-6.2-astra", "Terra": "gpt-6.1-terra", "Luna": "gpt-6-luna",
+	}
+	if !maps.Equal(got, want) {
+		t.Fatalf("family profiles run %v, want %v", got, want)
+	}
+}
+
+// A newer model appearing in a computer's list moves a family profile with
+// no change to the roster, and an exact profile stays on its model.
+func TestANewerListedModelMovesAFamilyProfileOnly(t *testing.T) {
+	roster := Roster{Profiles: []AgentProfile{
+		{Name: "Opus", UseFor: "x", Provider: "claude", Model: model("claude", "claude-opus"), Effort: "high"},
+		{Name: "Pinned", UseFor: "x", Provider: "claude", Model: model("claude", "claude-opus-5-5"), Effort: "high"},
+		{Name: "Older", UseFor: "x", Provider: "claude", Model: model("claude", "claude-opus-5"), Effort: "high"},
+	}}
+	defaults := SpawnDefaults{Provider: "claude"}
+	before := listedModels(ListProfiles(roster, []ProviderOption{liveClaude}, defaults))
+	newer := liveClaude
+	newer.Models = append([]ModelOption{{Slug: "claude-opus-5-10", Efforts: []string{"high"}, DefaultEffort: "high"}}, liveClaude.Models...)
+	after := listedModels(ListProfiles(roster, []ProviderOption{newer}, defaults))
+	if before["Opus"] != "claude-opus-5-5" || after["Opus"] != "claude-opus-5-10" {
+		t.Errorf("Opus ran %q, then %q once 5.10 was listed; want claude-opus-5-5 then claude-opus-5-10", before["Opus"], after["Opus"])
+	}
+	for _, name := range []string{"Pinned", "Older"} {
+		if before[name] != after[name] || after[name] == "claude-opus-5-10" {
+			t.Errorf("exact profile %s moved from %q to %q", name, before[name], after[name])
+		}
+	}
+}
+
+// A family with no listed member on a computer leaves the profile out of
+// what that computer lists, even when it keeps an older member for
+// threads already on it, and the settings check says why.
+func TestAFamilyWithNoListedMemberIsNotListed(t *testing.T) {
+	roster := Roster{Profiles: []AgentProfile{
+		{Name: "Opus", UseFor: "x", Provider: "claude", Model: model("claude", "claude-opus")},
+		{Name: "Haiku", UseFor: "x", Provider: "claude", Model: model("claude", "claude-haiku")},
+	}}
+	older := ProviderOption{ID: "claude", DefaultModel: "claude-haiku-5-5", Models: []ModelOption{{Slug: "claude-haiku-5-5"}},
+		Unlisted: []ModelOption{{Slug: "claude-opus-5"}}}
+	if got := profileNames(ListProfiles(roster, []ProviderOption{older}, SpawnDefaults{Provider: "claude"})); !slices.Equal(got, []string{"Haiku"}) {
+		t.Fatalf("listed %v, want Haiku only", got)
+	}
+	check := ProfileProblem(roster.Profiles[0], []ProviderOption{older})
+	if check.Missing != "Claude Code offers no claude-opus model on this computer. It offers: claude-haiku-5-5." || check.Runs != "" {
+		t.Errorf("check = %+v", check)
+	}
+}
+
+// The settings check reports the model a profile runs here: the newest of
+// a family, or the exact model; and for a family, the listed models its
+// provider's rule cannot read.
+func TestProfileProblemReportsWhatAProfileRuns(t *testing.T) {
+	withPreview := liveClaude
+	withPreview.Models = append(slices.Clone(liveClaude.Models), ModelOption{Slug: "claude-opus-6-preview", Efforts: []string{"high"}})
+	family := ProfileProblem(AgentProfile{Provider: "claude", Model: model("claude", "claude-opus"), Effort: "high"}, []ProviderOption{withPreview})
+	if family.Runs != "claude-opus-5-5" || !slices.Equal(family.Unreadable, []string{"claude-opus-6-preview"}) || family.Problem != "" || family.Missing != "" {
+		t.Errorf("family check = %+v", family)
+	}
+	exact := ProfileProblem(AgentProfile{Provider: "claude", Model: model("claude", "claude-opus-5"), Effort: "high"}, []ProviderOption{withPreview})
+	if exact.Runs != "claude-opus-5" || exact.Unreadable != nil {
+		t.Errorf("exact check = %+v", exact)
+	}
+}
+
+// A family's model is whatever this computer lists newest, so an effort
+// that model does not take is a note that threads here are not offered the
+// profile, as a missing model is, never a problem that holds the save. The
+// same effort on the exact model is the person's choice and holds it.
+func TestAFamilyEffortTheNewestModelLacksIsThisComputersLack(t *testing.T) {
+	older := ProviderOption{ID: "claude", DefaultModel: "claude-opus-5", Models: []ModelOption{
+		{Slug: "claude-opus-5", Efforts: []string{"low", "high"}, DefaultEffort: "high"},
+		{Slug: "claude-haiku-4-5"},
+	}}
+	const lack = "Model claude-haiku-4-5 has no reasoning effort setting on this computer."
+	family := ProfileProblem(AgentProfile{Provider: "claude", Model: model("claude", "claude-haiku"), Effort: "high"}, []ProviderOption{older})
+	if !reflect.DeepEqual(family, ProfileCheck{Missing: lack}) {
+		t.Errorf("family check = %+v, want Missing %q", family, lack)
+	}
+	exact := ProfileProblem(AgentProfile{Provider: "claude", Model: model("claude", "claude-haiku-4-5"), Effort: "high"}, []ProviderOption{older})
+	if !reflect.DeepEqual(exact, ProfileCheck{Problem: lack}) {
+		t.Errorf("exact check = %+v, want Problem %q", exact, lack)
+	}
+	roster := Roster{Profiles: []AgentProfile{{Name: "Haiku", UseFor: "x", Provider: "claude", Model: model("claude", "claude-haiku"), Effort: "high"}}}
+	if listed := ListProfiles(roster, []ProviderOption{older}, SpawnDefaults{Provider: "claude"}); len(listed) != 0 {
+		t.Errorf("listed %+v, want the family profile left out", listed)
 	}
 }
 
@@ -234,7 +394,7 @@ func TestOptionsResolvesTheCallersRosterOnAPairedComputer(t *testing.T) {
 	p.local.catalog = Catalog{Reachable: true, Providers: []ProviderOption{claudeOption}}
 	p.remote.catalog = Catalog{Reachable: true, Providers: []ProviderOption{codexOption}}
 	p.local.roster = testRoster()
-	p.remote.roster = Roster{Profiles: []AgentProfile{{Name: "Theirs", UseFor: "x", Provider: "codex", Model: "sol"}}}
+	p.remote.roster = Roster{Profiles: []AgentProfile{{Name: "Theirs", UseFor: "x", Provider: "codex", Model: model("codex", "sol")}}}
 	p.local.addThread(Thread{ID: "caller-thread", Provider: "claude", Model: "opus-5"})
 
 	result := call(t, p.server, localCaller(), "thread_options", `{}`)
@@ -346,5 +506,78 @@ func TestSpawnInstructionsAreRefusedForAComputerThatPredatesThem(t *testing.T) {
 	call(t, p.server, localCaller(), "thread_spawn", `{"prompt":"x","computer_id":"studio","project_id":"p1"}`)
 	if len(p.local.spawns) != 1 {
 		t.Fatalf("a spawn without instructions did not go through: %v", p.local.spawns)
+	}
+}
+
+// A spawn to a paired computer by a family profile, or with a family as
+// its model, carries the exact model that computer lists, whatever this
+// computer lists: a computer of any release receives a model ID.
+func TestAFamilySpawnToAPairedComputerCarriesAnExactModel(t *testing.T) {
+	p := newPair(t)
+	older := liveClaude
+	older.DefaultModel, older.Models, older.Unlisted = "claude-opus-5", []ModelOption{liveClaude.Models[4], liveClaude.Models[3]}, nil
+	p.local.catalog = Catalog{Reachable: true, Providers: []ProviderOption{liveClaude}}
+	p.remote.catalog = Catalog{Reachable: true, Providers: []ProviderOption{older}}
+	p.local.roster = familyRoster()
+	p.local.addThread(Thread{ID: "caller-thread", Provider: "claude", Model: "claude-opus-5-5"})
+
+	call(t, p.server, localCaller(), "thread_spawn", `{"prompt":"x","profile":"Opus","computer_id":"studio","project_id":"p1"}`)
+	call(t, p.server, localCaller(), "thread_spawn", `{"prompt":"x","model":"claude-haiku","computer_id":"studio","project_id":"p1"}`)
+	call(t, p.server, localCaller(), "thread_spawn", `{"prompt":"x","profile":"Opus"}`)
+	call(t, p.server, localCaller(), "thread_spawn", `{"prompt":"x","model":"claude-opus-5"}`)
+	got := []string{}
+	for _, spawn := range p.local.spawns {
+		got = append(got, spawn.Model)
+	}
+	if want := []string{"claude-opus-5", "claude-haiku-5-5", "claude-opus-5-5", "claude-opus-5"}; !slices.Equal(got, want) {
+		t.Fatalf("spawns carried %v, want %v", got, want)
+	}
+}
+
+// A family the target lists no member of refuses the spawn, naming the
+// profile and the computer; with a family as the model and no profile it
+// names the family and the computer. Nothing is spawned.
+func TestAFamilySpawnTheTargetCannotRunIsRefused(t *testing.T) {
+	p := newPair(t)
+	p.local.catalog = Catalog{Reachable: true, Providers: []ProviderOption{liveClaude}}
+	p.remote.catalog = Catalog{Reachable: true, Providers: []ProviderOption{{ID: "claude", DefaultModel: "claude-haiku-5-5", Models: []ModelOption{{Slug: "claude-haiku-5-5"}}}}}
+	p.local.roster = familyRoster()
+	p.local.addThread(Thread{ID: "caller-thread", Provider: "claude", Model: "claude-opus-5-5"})
+
+	message := callErr(t, p.server, localCaller(), "thread_spawn", `{"prompt":"x","profile":"Fable","computer_id":"studio","project_id":"p1"}`, CodeInvalidRequest)
+	if want := `Agent profile "Fable" cannot run: Claude Code offers no claude-fable model on Studio. It offers: claude-haiku-5-5.`; !strings.Contains(message, want) {
+		t.Errorf("profile refusal = %q, want %q", message, want)
+	}
+	message = callErr(t, p.server, localCaller(), "thread_spawn", `{"prompt":"x","model":"claude-fable","computer_id":"studio","project_id":"p1"}`, CodeInvalidRequest)
+	if want := "Claude Code offers no claude-fable model on Studio."; !strings.Contains(message, want) {
+		t.Errorf("model refusal = %q, want %q", message, want)
+	}
+	rows := rows(t, field(t, rows(t, call(t, p.server, localCaller(), "thread_options", `{"what":"models"}`)["computers"])[1], "profiles"))
+	for _, row := range rows {
+		if name := field(t, row, "name"); name != "Haiku" {
+			t.Errorf("Studio lists profile %v, which it has no model for", name)
+		}
+	}
+	if len(p.local.spawns) != 0 {
+		t.Fatalf("refused spawns reached the app: %v", p.local.spawns)
+	}
+}
+
+// A fork with a family as its model takes the exact model its computer
+// lists, and is refused when that computer lists none.
+func TestAForkWithAFamilyModelCarriesAnExactModel(t *testing.T) {
+	p := newPair(t)
+	p.local.catalog = Catalog{Reachable: true, Providers: []ProviderOption{liveClaude}}
+	p.remote.catalog = Catalog{Reachable: true, Providers: []ProviderOption{liveClaude}}
+	p.local.addThread(Thread{ID: "caller-thread", Provider: "claude", Model: "claude-opus-5-5"})
+	p.remote.addThread(Thread{ID: remoteThreadID, Title: "Origin"})
+
+	call(t, p.server, localCaller(), "thread_spawn", `{"prompt":"x","from_thread":"`+remoteThreadID+`","model":"claude-sonnet"}`)
+	if got := p.local.spawns[0]; got.Model != "claude-sonnet-5-5" || got.ComputerID != "studio" {
+		t.Fatalf("fork = %+v, want claude-sonnet-5-5 on Studio", got)
+	}
+	message := callErr(t, p.server, localCaller(), "thread_spawn", `{"prompt":"x","from_thread":"`+remoteThreadID+`","model":"claude-poem"}`, CodeInvalidRequest)
+	if !strings.Contains(message, "Claude Code offers no claude-poem model on Studio.") {
+		t.Errorf("refusal = %q", message)
 	}
 }

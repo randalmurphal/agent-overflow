@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"os/exec"
 	"strings"
@@ -25,7 +26,11 @@ import (
 // alternate doesn't support). Returns the user's preference unchanged when
 // neither binary resolves so the caller surfaces a coherent
 // "binary not found" error.
-func (a *App) resolveTextGenerationConfig() textgen.Config {
+//
+// The error says the provider lists no model of its text-generation family
+// (textGenerationDefaultModel); the config still names the provider, so the
+// Layer 2 retry can turn to the other one.
+func (a *App) resolveTextGenerationConfig() (textgen.Config, error) {
 	s := a.currentSettings()
 	preferred := strings.TrimSpace(s.TextGenerationProvider)
 	if preferred == "" {
@@ -34,7 +39,8 @@ func (a *App) resolveTextGenerationConfig() textgen.Config {
 
 	claudeBin := a.providerBinaryPath(string(provider.Claude))
 	codexBin := a.providerBinaryPath(string(provider.Codex))
-	chosen := textgen.PickAvailableProvider(preferred, claudeBin, codexBin, a.resolveLookPath())
+	lookPath := a.resolveLookPath()
+	chosen := textgen.PickAvailableProvider(preferred, claudeBin, codexBin, lookPath)
 
 	// Effort is set from settings regardless of provider — both Codex's
 	// `--config model_reasoning_effort=...` and Claude commit-message's
@@ -59,35 +65,36 @@ func (a *App) resolveTextGenerationConfig() textgen.Config {
 	switch chosen {
 	case string(provider.Codex):
 		cfg.Binary = codexBin
-		// User's TextGenerationModel only applies when we kept the
-		// configured provider. After a substitution, fall through to
-		// DefaultCodexModel — a Claude model slug would fail here.
-		if chosen == preferred {
-			cfg.Model = strings.TrimSpace(s.TextGenerationModel)
-		}
-		if cfg.Model == "" {
-			cfg.Model = textgen.DefaultCodexModel
-		}
 	case string(provider.Claude):
 		cfg.Binary = claudeBin
 		cfg.ClaudeRetention = a.claudeRetention
-		if chosen == preferred {
-			cfg.Model = strings.TrimSpace(s.TextGenerationModel)
+	}
+	// User's TextGenerationModel only applies when we kept the configured
+	// provider. After a substitution the provider's own default runs: the
+	// other provider's model slug would fail here.
+	if chosen == preferred {
+		cfg.Model = strings.TrimSpace(s.TextGenerationModel)
+	}
+	// Neither binary resolves: the run fails on the binary, which is the
+	// error to surface, so no model list is read for it.
+	if cfg.Model == "" && cfg.Binary != "" && lookPath(cfg.Binary) == nil {
+		model, err := a.textGenerationDefaultModel(chosen)
+		if err != nil {
+			return cfg, err
 		}
-		if cfg.Model == "" {
-			cfg.Model = a.defaultClaudeTextGenerationModel()
-		}
+		cfg.Model = model
 	}
 
 	coerceTextGenerationEffort(&cfg)
-	return cfg
+	return cfg, nil
 }
 
 // resolveTextGenerationConfigFor builds a textgen.Config for an explicit
 // provider name, used by the Layer 2 retry path to construct the alternate
 // provider's config without re-running PickAvailableProvider. Returns ok=false
-// when the alternate's binary doesn't resolve on PATH — the caller must NOT
-// attempt the run in that case.
+// when the alternate's binary doesn't resolve on PATH, or when it lists no
+// model of its text-generation family, which is logged — the caller must
+// NOT attempt the run in that case.
 //
 // Always uses the provider's default model. The user's TextGenerationModel
 // is deliberately ignored because cross-provider model carry-over is
@@ -110,29 +117,61 @@ func (a *App) resolveTextGenerationConfigFor(providerName string) (textgen.Confi
 		if cfg.Binary == "" || lookPath(cfg.Binary) != nil {
 			return textgen.Config{}, false
 		}
-		cfg.Model = textgen.DefaultCodexModel
 	case string(provider.Claude):
 		cfg.Binary = a.providerBinaryPath(string(provider.Claude))
 		if cfg.Binary == "" || lookPath(cfg.Binary) != nil {
 			return textgen.Config{}, false
 		}
-		cfg.Model = a.defaultClaudeTextGenerationModel()
 		cfg.ClaudeRetention = a.claudeRetention
 	default:
 		return textgen.Config{}, false
 	}
+	model, err := a.textGenerationDefaultModel(providerName)
+	if err != nil {
+		log.Printf("textgen: fallback %s skipped: %v", providerName, err)
+		return textgen.Config{}, false
+	}
+	cfg.Model = model
 	coerceTextGenerationEffort(&cfg)
 	return cfg, true
 }
 
-// defaultClaudeTextGenerationModel is textgen.DefaultClaudeModel when the
-// installed Claude CLI lists it, else textgen.FallbackClaudeModel. Before the
-// first probe reports, the fallback runs: it works on every CLI.
-func (a *App) defaultClaudeTextGenerationModel() string {
-	if a.providerDiscoveryService().ClaudeReportsModel(textgen.DefaultClaudeModel) {
-		return textgen.DefaultClaudeModel
+// textGenerationDefaultModel is the model a run on providerName takes when
+// settings leave the model blank: the newest model of the provider's
+// text-generation family this computer lists (provider.ResolveModel), the
+// rule agent profiles follow. Before the Claude CLI has reported its
+// models it is textgen.FallbackClaudeModel. A provider that lists no model
+// of the family is an error naming what it lists.
+func (a *App) textGenerationDefaultModel(providerName string) (string, error) {
+	var family string
+	switch providerName {
+	case string(provider.Codex):
+		family = textgen.DefaultCodexFamily
+	case string(provider.Claude):
+		family = textgen.DefaultClaudeFamily
+	default:
+		return "", fmt.Errorf("text generation does not run on %s", providerName)
 	}
-	return textgen.FallbackClaudeModel
+	catalog, err := a.GetModelsForProvider(providerName)
+	if err != nil {
+		return "", fmt.Errorf("text generation: %s model list: %w", providerName, err)
+	}
+	if providerName == string(provider.Claude) && catalog.Provenance != provider.CatalogProbed {
+		return textgen.FallbackClaudeModel, nil
+	}
+	var listed, kept []string
+	for _, model := range catalog.Models {
+		if model.Unlisted {
+			kept = append(kept, model.Slug)
+		} else {
+			listed = append(listed, model.Slug)
+		}
+	}
+	slug, ok := provider.ResolveModel(provider.ParseModelRef(providerName, family), listed, kept)
+	if !ok {
+		return "", fmt.Errorf("text generation: %s lists no %s model; it lists %s", providerName, family, strings.Join(listed, ", "))
+	}
+	return slug, nil
 }
 
 // coerceTextGenerationEffort resolves the effort a one-shot generation run
@@ -174,9 +213,10 @@ func (a *App) availableTextGenerationProviders() []string {
 	return available
 }
 
-// runTextGenWithFallback executes runOnce against primary; on any non-
-// context-canceled error retries once with the alternate provider when
-// its binary resolves.
+// runTextGenWithFallback executes runOnce against the configured provider
+// (resolveTextGenerationConfig); on any non-context-canceled error, a
+// config that could not name a model among them, retries once with the
+// alternate provider when its binary resolves.
 //
 // Each attempt gets its OWN full budget, handed to runOnce as a fresh
 // deadline. A shared deadline used to bound both attempts together,
@@ -194,11 +234,14 @@ func (a *App) availableTextGenerationProviders() []string {
 // rather than discarded: it is the only record that the fallback ran.
 func runTextGenWithFallback[T any](
 	a *App,
-	primary textgen.Config,
 	budget time.Duration,
 	runOnce func(cfg textgen.Config, deadline time.Time) (T, error),
 ) (T, error) {
-	result, err := runOnce(primary, time.Now().Add(budget))
+	var result T
+	primary, err := a.resolveTextGenerationConfig()
+	if err == nil {
+		result, err = runOnce(primary, time.Now().Add(budget))
+	}
 	if err == nil {
 		return result, nil
 	}

@@ -47,8 +47,8 @@ describe('provider catalog', () => {
     // settings order — it has no binary/account settings of its own, and its
     // enable toggle rides inside claude's section instead.
     expect(PROVIDER_MODEL_MENU_ORDER).toEqual(['codex', 'claude', 'claude-tui']);
-    expect(PROVIDER_DEFINITIONS.claude.textGenerationDefaultModel).toBe('claude-haiku-5-5');
-    expect(PROVIDER_DEFINITIONS.codex.textGenerationDefaultModel).toBe('gpt-6-luna');
+    expect(PROVIDER_DEFINITIONS.claude.textGenerationDefaultFamily).toBe('claude-haiku');
+    expect(PROVIDER_DEFINITIONS.codex.textGenerationDefaultFamily).toBe('gpt-luna');
     expect(PROVIDER_DEFINITIONS.claude.contextLabels.standard).toBe('200k');
     expect(PROVIDER_DEFINITIONS.codex.contextLabels.standard).toBe('272k');
     expect(PROVIDER_DEFINITIONS.claude.backgroundStop).toBe('claude-task');

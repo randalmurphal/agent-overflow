@@ -87,8 +87,7 @@ func (a *App) legacyThreadTitleTestGenerator(thread store.Thread, prompt string,
 // provider for non-cancellation failures when its binary resolves. Each attempt
 // receives its own threadtitle.Timeout budget.
 func (a *App) generateThreadTitlePrompt(thread store.Thread, prompt string, imagePaths []string) (string, error) {
-	primary := a.resolveTextGenerationConfig()
-	return runTextGenWithFallback(a, primary, threadtitle.Timeout, func(cfg textgen.Config, deadline time.Time) (string, error) {
+	return runTextGenWithFallback(a, threadtitle.Timeout, func(cfg textgen.Config, deadline time.Time) (string, error) {
 		return a.runThreadTitleOnce(cfg, thread, prompt, imagePaths, deadline)
 	})
 }

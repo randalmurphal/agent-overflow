@@ -9,6 +9,7 @@ import (
 
 	"agent-overflow/internal/errorsx"
 	gitops "agent-overflow/internal/git"
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadapp"
 	"agent-overflow/internal/threadmode"
@@ -432,7 +433,9 @@ func (t threadToolsApp) forkSpawnOptions(ctx context.Context, origin threadReque
 // applySpawnModel resolves provider, model and effort with the one
 // resolution thread_options lists profiles by (threadtools.ResolveSpawn):
 // opts' own as the spawner's, the call's as the choice, against what this
-// computer offers.
+// computer offers. The call's model is exact: the computer that made the
+// call resolved any family against this computer's list before sending it
+// (threadtools' checkSpawnChoice).
 func (t threadToolsApp) applySpawnModel(ctx context.Context, opts *CreateThreadOptions, call threadtools.SpawnCall) error {
 	catalog, err := t.Catalog(ctx, threadtools.CatalogQuery{What: threadtools.OptionsModels})
 	if err != nil {
@@ -440,7 +443,7 @@ func (t threadToolsApp) applySpawnModel(ctx context.Context, opts *CreateThreadO
 	}
 	resolved, err := threadtools.ResolveSpawn(
 		threadtools.SpawnDefaults{Provider: opts.Provider, Model: opts.Model, Effort: opts.ReasoningEffort},
-		threadtools.SpawnChoice{Provider: call.Provider, Model: call.Model, Effort: call.Effort},
+		threadtools.SpawnChoice{Provider: call.Provider, Model: provider.ExactModel(call.Model), Effort: call.Effort},
 		catalog.Providers, "this computer")
 	if err != nil {
 		return errorsx.Public(threadtools.CodeInvalidRequest, err.Error()+" thread_options lists what it offers.", err)

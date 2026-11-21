@@ -402,7 +402,9 @@ Because a fork runs in its source's workspace, `from_thread` with
 than silently ignored: a checkout of the caller's own choosing needs a
 fresh spawn.
 `mode` is `chat` or `plan`; `runtime_mode` is the permission level, a
-separate parameter. A provider or model the
+separate parameter. `model` is an exact ID or a family named without a
+version, which runs the newest model of it the target computer lists
+([Agent profiles](#agent-profiles)). A provider or model the
 target computer does not offer is refused with the list it does, locally
 as well as remotely; a provider override without a model uses that
 provider's default. No launch card: the call renders as the tool call
@@ -417,8 +419,10 @@ registered projects and worktrees in the error, so no separate
 discovery tool is needed. Provider, model, mode and runtime mode still
 default to the caller's and are validated on the destination: a
 provider or model that computer does not offer is refused with the list
-it does. The destination's own account runs and bills the thread. The
-thread is created on the destination with no special marking there
+it does. A model family is resolved to an exact ID against that
+computer's catalog before the call crosses
+([Agent profiles](#agent-profiles)). The destination's own account runs
+and bills the thread. The thread is created on the destination with no special marking there
 either. Owned, the default, it is in no sidebar there: a window attached
 to that computer reaches it through the caller's Agents row, which opens
 it and gives it a sidebar row there (Show in Sidebar), and a window
@@ -504,6 +508,26 @@ computer (`CheckAgentProfiles`): such an effort holds the save back with
 the reason, and `UpdateSettings` refuses it; a provider or model the
 computer lacks is a note that threads there are not offered the
 profile.
+
+A profile's model and `thread_spawn` `model` are an exact model ID or a
+family: a model named without a version, such as `claude-opus` or
+`gpt-sol`, read by its provider's version rule
+(`provider.ParseModelRef`, `internal/provider/modelfamily.go`). A family
+runs the newest model of it the target computer lists, so a newer model
+the provider lists moves a family profile with no settings change; an
+exact model never moves. A slug the computer offers as written is that
+model before any family reading. A model the computer runs but no
+longer lists is never chosen for a family, and neither is a listed slug
+the version rule cannot read: the settings page names those under the
+profile, and the app logs them once each time the list changes. A
+family with no listed member leaves the profile out of that computer's
+`profiles` and refuses a spawn there with the models it lists; so does
+an effort the family's model there does not take, which the settings
+page shows as a note rather than a reason to hold the save. The
+caller resolves a family against the destination's catalog, so a spawn
+to a paired computer carries an exact ID. The settings page says what a
+family profile runs on its computer. Every other model input is exact
+([decisions](../decisions.md)).
 
 `thread_spawn` `profile` names one, compared without case. Explicit
 `provider`, `model`, `effort` and `runtime_mode` override the matching

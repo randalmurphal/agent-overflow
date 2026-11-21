@@ -44,10 +44,15 @@ func (t threadToolsApp) Roster(context.Context) (threadtools.Roster, error) {
 // (threadtools.ProfileProblem): Problem, a choice that does not fit its
 // model here, which the editor and UpdateSettings refuse; Missing, a
 // provider or model this computer lacks, so threads here are not offered
-// the profile.
+// the profile; Runs, the model a profile naming its provider and model
+// runs here, the newest of its family for a family; Unreadable, the models
+// a family profile's provider lists here that its version rule cannot read
+// and so never runs.
 type AgentProfileCheck struct {
-	Problem string `json:"problem,omitempty"`
-	Missing string `json:"missing,omitempty"`
+	Problem    string   `json:"problem,omitempty"`
+	Missing    string   `json:"missing,omitempty"`
+	Runs       string   `json:"runs,omitempty"`
+	Unreadable []string `json:"unreadable,omitempty"`
 }
 
 // CheckAgentProfiles checks each profile against what this computer offers
@@ -63,7 +68,8 @@ func (a *App) CheckAgentProfiles(ctx context.Context, profiles []settings.AgentP
 	}
 	checks := make([]AgentProfileCheck, len(profiles))
 	for i, profile := range profiles {
-		checks[i].Problem, checks[i].Missing = threadtools.ProfileProblem(rosterProfile(profile), catalog.Providers)
+		check := threadtools.ProfileProblem(rosterProfile(profile), catalog.Providers)
+		checks[i] = AgentProfileCheck{Problem: check.Problem, Missing: check.Missing, Runs: check.Runs, Unreadable: check.Unreadable}
 	}
 	return checks, nil
 }
@@ -96,10 +102,12 @@ func (a *App) refuseUnrunnableProfiles(ctx context.Context, patch map[string]any
 	return nil
 }
 
-// rosterProfile is a settings profile as threadtools reads it.
+// rosterProfile is a settings profile as threadtools reads it: its model,
+// an exact model or a family, read by its provider's grammar.
 func rosterProfile(profile settings.AgentProfile) threadtools.AgentProfile {
 	return threadtools.AgentProfile{
-		Name: profile.Name, UseFor: profile.UseFor, Provider: profile.Provider, Model: profile.Model,
+		Name: profile.Name, UseFor: profile.UseFor, Provider: profile.Provider,
+		Model:  provider.ParseModelRef(profile.Provider, profile.Model),
 		Effort: profile.Effort, RuntimeMode: profile.RuntimeMode, Instructions: profile.Instructions,
 	}
 }

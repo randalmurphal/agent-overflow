@@ -33,8 +33,8 @@
   let textGenerationEffortOptions = $derived(
     getProviderDefinition(settings.textGenerationProvider).textGenerationEffortOptions,
   );
-  let textGenerationDefaultModel = $derived(
-    getProviderDefinition(settings.textGenerationProvider).textGenerationDefaultModel,
+  let textGenerationDefaultFamily = $derived(
+    getProviderDefinition(settings.textGenerationProvider).textGenerationDefaultFamily,
   );
 
   function isTextGenerationEffortAllowed(
@@ -96,7 +96,7 @@
       value={settings.textGenerationModel}
       onchange={(e) =>
         updateSetting('textGenerationModel', (e.target as HTMLInputElement).value)}
-      placeholder={`Default: ${textGenerationDefaultModel}`}
+      placeholder={`Default: newest ${textGenerationDefaultFamily}`}
       class="{INPUT_CLASS} max-w-[16rem]"
     />
   </SettingsField>

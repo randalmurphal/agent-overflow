@@ -76,7 +76,9 @@ export interface ProviderDefinition {
   shortLabel: string;
   badgeClass: string;
   installActionLabel: string;
-  textGenerationDefaultModel: string;
+  // The family text generation runs the newest listed model of when its
+  // model setting is blank: internal/textgen's Default*Family.
+  textGenerationDefaultFamily: string;
   textGenerationEffortOptions: ProviderEffortOption[];
   contextLabels: {
     standard: string;
@@ -119,7 +121,7 @@ export const PROVIDER_DEFINITIONS: Record<ProviderID, ProviderDefinition> = {
     shortLabel: 'C',
     badgeClass: 'bg-accent/10 text-accent',
     installActionLabel: 'Install Claude CLI',
-    textGenerationDefaultModel: 'claude-haiku-5-5',
+    textGenerationDefaultFamily: 'claude-haiku',
     textGenerationEffortOptions: [
       { value: 'low', label: 'Low' },
       { value: 'medium', label: 'Medium' },
@@ -148,7 +150,7 @@ export const PROVIDER_DEFINITIONS: Record<ProviderID, ProviderDefinition> = {
     shortLabel: 'X',
     badgeClass: 'bg-provider-codex/10 text-provider-codex',
     installActionLabel: 'Install Codex CLI',
-    textGenerationDefaultModel: 'gpt-6-luna',
+    textGenerationDefaultFamily: 'gpt-luna',
     textGenerationEffortOptions: [
       { value: 'none', label: 'None' },
       { value: 'minimal', label: 'Minimal' },
@@ -195,7 +197,7 @@ export const PROVIDER_DEFINITIONS: Record<ProviderID, ProviderDefinition> = {
     dependsOnProvider: 'claude',
     enableHint:
       'Interactive terminal sessions driven through the real Claude TUI. Hidden from pickers when off.',
-    textGenerationDefaultModel: 'claude-haiku-5-5',
+    textGenerationDefaultFamily: 'claude-haiku',
     textGenerationEffortOptions: [
       { value: 'low', label: 'Low' },
       { value: 'medium', label: 'Medium' },

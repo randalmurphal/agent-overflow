@@ -364,7 +364,7 @@ func TestEveryClaudeLaunchCarriesTheRetentionWindow(t *testing.T) {
 	if !ok {
 		t.Fatal("resolveTextGenerationConfigFor did not resolve the mock Claude binary")
 	}
-	textgenPreferred := app.resolveTextGenerationConfig()
+	textgenPreferred := textGenConfig(t, app)
 	if textgenPreferred.Provider != string(provider.Claude) {
 		t.Fatalf("text generation chose %q, want claude", textgenPreferred.Provider)
 	}

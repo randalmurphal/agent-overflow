@@ -124,9 +124,11 @@
 
   // What this computer makes of each profile's provider, model and effort
   // (CheckAgentProfiles): a problem blocks the save, a missing provider or
-  // model is a note. Keyed by those three, so an entry shows the check of
-  // what it holds and nothing while that is unchecked.
-  type ProfileCheck = { problem?: string; missing?: string };
+  // model is a note, and a family names the model it runs here and any
+  // listed model its provider's version rule cannot read. Keyed by those
+  // three, so an entry shows the check of what it holds and nothing while
+  // that is unchecked.
+  type ProfileCheck = { problem?: string; missing?: string; runs?: string; unreadable?: string[] };
   let checks = $state<Record<string, ProfileCheck>>({});
   const checkKey = (profile: AgentProfile) => JSON.stringify([profile.provider, profile.model.trim(), profile.effort]);
 
@@ -339,6 +341,7 @@
               id="agent-profile-model-{index}"
               type="text"
               placeholder="Inherit model"
+              title="A model ID, or a family without a version, such as claude-opus or gpt-sol, which runs the newest model of it a computer lists"
               maxlength={MAX_PROFILE_MODEL_CHARS}
               bind:value={entry.value.model}
               onchange={() => void saveProfiles()}
@@ -386,6 +389,16 @@
           {#if check?.missing && !error}
             <p class="text-[0.71875rem] text-fg-muted" data-testid="agent-profile-unavailable">
               {`${check.missing} Threads here are not offered this profile; a paired computer that runs it still offers it.`}
+            </p>
+          {/if}
+          {#if check?.runs && check.runs !== profile.model.trim() && !error}
+            <p class="text-[0.71875rem] text-fg-muted" data-testid="agent-profile-runs">
+              {`Runs ${check.runs} here, the newest ${profile.model.trim()} model this computer lists.`}
+            </p>
+          {/if}
+          {#if check?.unreadable?.length && !error}
+            <p class="text-[0.71875rem] text-fg-muted" data-testid="agent-profile-unreadable">
+              {`Also listed here, but never run for a family: ${check.unreadable.join(', ')}. Agent Overflow cannot read their version.`}
             </p>
           {/if}
           <label class="flex flex-col gap-1 text-[0.71875rem] text-fg-muted">

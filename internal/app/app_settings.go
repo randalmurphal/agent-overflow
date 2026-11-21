@@ -6,6 +6,7 @@ import (
 	"log"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"agent-overflow/internal/editor"
@@ -285,7 +286,41 @@ func (a *App) GetModelsForProvider(providerName string) (provider.ModelCatalog, 
 		return catalog, err
 	}
 	a.listRecentlyUsedModels(&catalog)
+	a.unreadableModels.report(providerName, catalog.Models)
 	return catalog, nil
+}
+
+// unreadableModelLog remembers, per provider, the listed models its version
+// rule could not read (provider.UnreadableModels) when it last logged, so a
+// change in that set is logged once and not on every catalog read. Such a
+// model never runs for a family; the settings page names it beside each
+// family profile.
+type unreadableModelLog struct {
+	mu   sync.Mutex
+	last map[string]string
+}
+
+func (l *unreadableModelLog) report(providerName string, models []provider.ModelInfo) {
+	listed := make([]string, 0, len(models))
+	for _, model := range models {
+		if !model.Unlisted {
+			listed = append(listed, model.Slug)
+		}
+	}
+	unreadable := provider.UnreadableModels(providerName, listed)
+	key := strings.Join(unreadable, ", ")
+	l.mu.Lock()
+	changed := l.last[providerName] != key
+	if changed {
+		if l.last == nil {
+			l.last = map[string]string{}
+		}
+		l.last[providerName] = key
+	}
+	l.mu.Unlock()
+	if changed && key != "" {
+		log.Printf("model catalog: %s lists %s, which its version rule cannot read, so no model family runs them", providerName, key)
+	}
 }
 
 // recentModelUseWindow is how long a model that ran keeps its picker row after

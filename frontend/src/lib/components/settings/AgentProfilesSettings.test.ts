@@ -21,7 +21,7 @@ const PROFILE: AgentProfile = {
   instructions: '',
 };
 
-type Check = { problem?: string; missing?: string };
+type Check = { problem?: string; missing?: string; runs?: string; unreadable?: string[] };
 
 /**
  * Loads `overrides` as the saved settings, with UpdateSettings keeping what
@@ -254,6 +254,36 @@ describe('<AgentProfilesSettings>', () => {
     expect(within(codex).queryByTestId('agent-profile-error')).toBeNull();
   });
 
+  // A profile on a family says which model it runs here, and which listed
+  // models the version rule cannot read; one on an exact model says
+  // neither, since it runs what it names.
+  it('says which model a family profile runs here', async () => {
+    await seed(
+      {
+        agentProfiles: [
+          { ...PROFILE, name: 'Opus', provider: 'claude', model: 'claude-opus' },
+          { ...PROFILE, name: 'Pinned', provider: 'claude', model: 'claude-opus-5' },
+        ],
+      },
+      (profile) =>
+        profile.model === 'claude-opus'
+          ? { runs: 'claude-opus-5-5', unreadable: ['claude-opus-6-preview'] }
+          : { runs: profile.model },
+    );
+    const view = render(AgentProfilesSettings);
+    await settle();
+
+    const [family, pinned] = view.getAllByTestId('agent-profile');
+    expect(within(family).getByTestId('agent-profile-runs').textContent).toBe(
+      'Runs claude-opus-5-5 here, the newest claude-opus model this computer lists.',
+    );
+    expect(within(family).getByTestId('agent-profile-unreadable').textContent).toBe(
+      'Also listed here, but never run for a family: claude-opus-6-preview. Agent Overflow cannot read their version.',
+    );
+    expect(within(pinned).queryByTestId('agent-profile-runs')).toBeNull();
+    expect(within(pinned).queryByTestId('agent-profile-unreadable')).toBeNull();
+  });
+
   it('holds back an effort the model does not offer and says why', async () => {
     const problem = 'claude-haiku-4 takes no effort setting; leave effort unset.';
     await seed({ agentProfiles: [PROFILE] }, (profile) => (profile.effort === 'max' ? { problem } : {}));
@@ -427,7 +457,7 @@ describe('<AgentProfilesSettings>', () => {
       expect(order).toEqual([
         'Name',
         'Provider',
-        'Inherit model',
+        'A model ID, or a family without a version, such as claude-opus or gpt-sol, which runs the newest model of it a computer lists',
         'Effort',
         'Runtime mode',
         'Delete',

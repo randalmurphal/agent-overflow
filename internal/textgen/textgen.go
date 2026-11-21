@@ -33,15 +33,17 @@ const (
 	// JSON object but small enough that a misbehaving CLI can't OOM us.
 	JSONOutputLimit = 256 * 1024
 
-	// DefaultCodexModel / DefaultClaudeModel are the per-provider model
-	// defaults used when settings leaves them blank. Both deliberately
-	// pick the cheapest/fastest tier — textgen runs are short structured
-	// outputs (titles, commit messages), not reasoning work.
-	DefaultCodexModel  = "gpt-6-luna"
-	DefaultClaudeModel = "claude-haiku-5-5"
-	// FallbackClaudeModel replaces DefaultClaudeModel when the installed
-	// Claude CLI has not listed it: a CLI older than the model cannot
-	// shape its thinking request.
+	// DefaultCodexFamily / DefaultClaudeFamily are the model families a run
+	// takes the newest listed model of when settings leave the model blank
+	// (provider.ResolveModel). Both are the cheapest, fastest tier: textgen
+	// runs are short structured outputs (titles, commit messages), not
+	// reasoning work.
+	DefaultCodexFamily  = "gpt-luna"
+	DefaultClaudeFamily = "claude-haiku"
+	// FallbackClaudeModel runs in place of DefaultClaudeFamily before the
+	// installed Claude CLI has reported its models. Until then the only
+	// list is the shipped one, whose newest Haiku a CLI older than it
+	// cannot shape a thinking request for; Haiku 4.5 runs on every CLI.
 	FallbackClaudeModel = "claude-haiku-4-5"
 )
 
@@ -55,7 +57,7 @@ const (
 // unchanged — the caller decides whether to error out.
 //
 // The two-provider universe is hardcoded here, matching the rest of the
-// codebase (DefaultCodexModel / DefaultClaudeModel above, the explicit
+// codebase (DefaultCodexFamily / DefaultClaudeFamily above, the explicit
 // switches in app_text_generation.go). Adding a third provider would mean
 // rewriting these explicit branches rather than threading a registry.
 func PickAvailableProvider(

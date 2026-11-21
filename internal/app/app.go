@@ -628,6 +628,9 @@ type App struct {
 	// providerDiscoveryCaches is a test-only cache injection. Production leaves
 	// it nil and providerDiscoveryService uses the bounded process-wide set.
 	providerDiscoveryCaches *providerdiscoveryapp.Caches
+	// unreadableModels logs the listed models a provider's version rule
+	// cannot read, once per change (app_settings.go).
+	unreadableModels unreadableModelLog
 	// providerBinaries is the provider-binary upgrade watcher's concern
 	// (`app_provider_binary_watch.go`): the last version each binary
 	// reported and the live threads flagged stale against it. Zero value

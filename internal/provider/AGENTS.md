@@ -41,6 +41,14 @@ Claude alias the CLI reports is read only through its reported model list
 `ModelDeclaresNoReasoningEffort`; persisted effort columns cannot represent
 the absence of an effort flag.
 
+A model family (`claude-opus`, `gpt-sol`) is a model named without a version;
+`modelfamily.go` owns it. An input that accepts a family is parsed once into a
+`ModelRef` and resolved only by `ResolveModel`, which states the precedence.
+Each provider states its version rule in `modelGrammarFor`, an exhaustive
+switch: a provider with no versioned families says so and its inputs are
+exact-only. Which inputs accept a family is in
+[decisions](../../docs/decisions.md).
+
 `SessionOptions` carries provider-independent thread settings. Provider
 packages translate them into native `Config` values. Settings-owned disabled
 tools remain provider-specific and spawn-only; see

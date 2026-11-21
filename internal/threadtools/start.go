@@ -121,14 +121,31 @@ func (c *session) spawn(ctx context.Context, raw json.RawMessage) (any, error) {
 	if len(call.Instructions) > MaxSpawnInstructionsBytes {
 		return nil, invalidf("instructions must be at most %d bytes.", MaxSpawnInstructionsBytes)
 	}
+	var profile *AgentProfile
 	if name := trim(args.Profile); name != "" {
-		if err := c.applyProfile(ctx, &call, name); err != nil {
+		named, err := c.applyProfile(ctx, &call, name)
+		if err != nil {
 			return nil, err
 		}
+		profile = &named
 		if len(call.Instructions) > MaxSpawnInstructionsBytes {
 			return nil, invalidf("Profile %s's instructions and yours come to %d bytes together; at most %d fit. Shorten instructions.", call.Profile, len(call.Instructions), MaxSpawnInstructionsBytes)
 		}
 	}
+	// The spawner's settings read the call's model and resolve a profile;
+	// a spawn that names neither inherits them where it runs.
+	var spawner SpawnDefaults
+	if profile != nil || call.Model != "" {
+		own, err := c.callerDefaults(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if own != nil {
+			spawner = *own
+		}
+	}
+	choice := spawnChoice(call, profile, spawner)
+	call.Provider, call.Model, call.Effort = choice.Provider, choice.Model.String(), choice.Effort
 	files, err := homeFiles(args.HomeFiles)
 	if err != nil {
 		return nil, err
@@ -202,7 +219,7 @@ func (c *session) spawn(ctx context.Context, raw json.RawMessage) (any, error) {
 	if err := c.checkSpawnDestination(ctx, &call); err != nil {
 		return nil, err
 	}
-	if err := c.checkProfileOffered(ctx, call); err != nil {
+	if err := c.checkSpawnChoice(ctx, &call, choice, spawner); err != nil {
 		return nil, err
 	}
 	ack, err := c.app.Spawn(ctx, c.caller, call)

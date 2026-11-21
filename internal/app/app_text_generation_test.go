@@ -11,10 +11,101 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/claudecatalog"
+	"agent-overflow/internal/codexmodels"
+	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/textgen"
 )
+
+// shippedNewestLuna is the newest gpt-luna model the shipped Codex catalog
+// lists, what text generation runs on Codex when listCodexModels answers
+// with that catalog.
+const shippedNewestLuna = "gpt-5.6-luna"
+
+// listCodexModels answers app's live Codex catalog with models, in place of
+// the one App tests turn off. Call it before the app first reads a catalog.
+func listCodexModels(app *App, models []provider.ModelInfo) {
+	app.providerDiscoveryCaches.CodexModels = codexmodels.NewWith(time.Minute, func(context.Context, string, procutil.Reaper) ([]provider.ModelInfo, error) {
+		return provider.CloneModels(models), nil
+	}, time.Now)
+}
+
+// textGenConfig is the configured provider's text-generation config.
+func textGenConfig(t *testing.T, app *App) textgen.Config {
+	t.Helper()
+	cfg, err := app.resolveTextGenerationConfig()
+	if err != nil {
+		t.Fatalf("resolveTextGenerationConfig: %v", err)
+	}
+	return cfg
+}
+
+func codexModelsNamed(slugs ...string) []provider.ModelInfo {
+	models := make([]provider.ModelInfo, 0, len(slugs))
+	for _, slug := range slugs {
+		models = append(models, provider.ModelInfo{Slug: slug, Name: slug, Provider: string(provider.Codex)})
+	}
+	return models
+}
+
+// With settings leaving the model blank, text generation runs the newest
+// model of its family the computer lists: Codex's newest Luna, and once the
+// Claude CLI has reported its models, the newest Haiku it lists; before
+// that report, the Haiku every Claude CLI runs.
+func TestTextGenerationRunsTheNewestModelOfItsFamily(t *testing.T) {
+	app := newTestAppWithStore(t)
+	resetProviderBinarySettings(t, app)
+	app.lookPathFn = fakeLookPath("claude", "codex")
+	listCodexModels(app, codexModelsNamed("gpt-6.2-sol", "gpt-5.6-luna", "gpt-6-luna", "gpt-6.1-terra"))
+	claudecatalog.Reset()
+	t.Cleanup(claudecatalog.Reset)
+
+	if cfg := textGenConfig(t, app); cfg.Provider != string(provider.Codex) || cfg.Model != "gpt-6-luna" {
+		t.Fatalf("codex text generation runs %s/%s, want codex/gpt-6-luna", cfg.Provider, cfg.Model)
+	}
+	cfg, ok := app.resolveTextGenerationConfigFor(string(provider.Claude))
+	if !ok || cfg.Model != textgen.FallbackClaudeModel {
+		t.Fatalf("claude before a report runs %q (ok %v), want %s", cfg.Model, ok, textgen.FallbackClaudeModel)
+	}
+	for _, tc := range []struct {
+		wire []claude.WireModel
+		want string
+	}{
+		{[]claude.WireModel{{Value: "haiku", ResolvedModel: "claude-haiku-5-5"}, {Value: "claude-haiku-4-5-20251001", ResolvedModel: "claude-haiku-4-5-20251001"}}, "claude-haiku-5-5"},
+		{[]claude.WireModel{{Value: "claude-haiku-5-10", ResolvedModel: "claude-haiku-5-10"}, {Value: "haiku", ResolvedModel: "claude-haiku-5-5"}}, "claude-haiku-5-10"},
+	} {
+		capture := claudecatalog.ModelCapture{}
+		capture.Capture(tc.wire, nil)
+		capture.Store(app.claudeProbeModelKey())
+		if cfg, ok := app.resolveTextGenerationConfigFor(string(provider.Claude)); !ok || cfg.Model != tc.want {
+			t.Errorf("claude listing %v runs %q (ok %v), want %s", tc.wire, cfg.Model, ok, tc.want)
+		}
+	}
+}
+
+// A provider that lists no model of the family fails the attempt with a
+// message naming what it lists, and the other provider runs instead.
+func TestTextGenerationWithNoModelOfItsFamilyTurnsToTheOtherProvider(t *testing.T) {
+	app := newTestAppWithStore(t)
+	resetProviderBinarySettings(t, app)
+	app.lookPathFn = fakeLookPath("claude", "codex")
+	listCodexModels(app, codexModelsNamed("gpt-6.2-sol"))
+
+	if _, err := app.resolveTextGenerationConfig(); err == nil || !strings.Contains(err.Error(), "codex lists no gpt-luna model; it lists gpt-6.2-sol") {
+		t.Fatalf("config error = %v, want codex lists no gpt-luna model", err)
+	}
+	var ran []string
+	got, err := runTextGenWithFallback(app, time.Minute, func(cfg textgen.Config, _ time.Time) (string, error) {
+		ran = append(ran, cfg.Provider+"/"+cfg.Model)
+		return "title", nil
+	})
+	if err != nil || got != "title" || len(ran) != 1 || ran[0] != "claude/"+textgen.FallbackClaudeModel {
+		t.Fatalf("ran %v, got %q, %v; want only claude", ran, got, err)
+	}
+}
 
 // fakeLookPath returns a function that resolves only the names in `available`.
 // Everything else returns exec.ErrNotFound — matching the real exec.LookPath
@@ -43,7 +134,7 @@ func TestResolveTextGenerationConfig_Layer1FallbackCodexMissing(t *testing.T) {
 	resetProviderBinarySettings(t, app)
 	app.lookPathFn = fakeLookPath("claude") // Codex not installed.
 
-	cfg := app.resolveTextGenerationConfig()
+	cfg := textGenConfig(t, app)
 	if cfg.Provider != string(provider.Claude) {
 		t.Fatalf("provider = %q, want %q (fallback when codex missing)", cfg.Provider, provider.Claude)
 	}
@@ -66,13 +157,14 @@ func TestResolveTextGenerationConfig_Layer1FallbackClaudeMissing(t *testing.T) {
 		t.Fatalf("update settings: %v", err)
 	}
 	app.lookPathFn = fakeLookPath("codex") // Claude not installed.
+	listCodexModels(app, provider.CodexModels)
 
-	cfg := app.resolveTextGenerationConfig()
+	cfg := textGenConfig(t, app)
 	if cfg.Provider != string(provider.Codex) {
 		t.Fatalf("provider = %q, want %q (fallback when claude missing)", cfg.Provider, provider.Codex)
 	}
-	if cfg.Model != textgen.DefaultCodexModel {
-		t.Fatalf("model = %q, want %q", cfg.Model, textgen.DefaultCodexModel)
+	if cfg.Model != shippedNewestLuna {
+		t.Fatalf("model = %q, want %q", cfg.Model, shippedNewestLuna)
 	}
 }
 
@@ -80,8 +172,9 @@ func TestResolveTextGenerationConfig_BothAvailablePrefersConfigured(t *testing.T
 	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.lookPathFn = fakeLookPath("claude", "codex")
+	listCodexModels(app, provider.CodexModels)
 
-	cfg := app.resolveTextGenerationConfig()
+	cfg := textGenConfig(t, app)
 	if cfg.Provider != string(provider.Codex) {
 		t.Fatalf("default codex should win when both available: got %q", cfg.Provider)
 	}
@@ -92,7 +185,7 @@ func TestResolveTextGenerationConfig_NeitherAvailableReturnsConfigured(t *testin
 	app := newTestAppWithStore(t)
 	app.lookPathFn = fakeLookPath() // nothing installed.
 
-	cfg := app.resolveTextGenerationConfig()
+	cfg := textGenConfig(t, app)
 	// Caller must surface the "codex CLI not found" error; we don't
 	// invent a fake provider just to make the resolve step succeed.
 	if cfg.Provider != string(provider.Codex) {
@@ -117,7 +210,7 @@ func TestResolveTextGenerationConfig_DoesNotCarryModelAcrossProviders(t *testing
 	}
 	app.lookPathFn = fakeLookPath("claude") // only Claude installed.
 
-	cfg := app.resolveTextGenerationConfig()
+	cfg := textGenConfig(t, app)
 	if cfg.Provider != string(provider.Claude) {
 		t.Fatalf("provider = %q, want claude", cfg.Provider)
 	}
@@ -146,7 +239,7 @@ func TestResolveTextGenerationConfig_KeepsUserModelWhenProviderUnchanged(t *test
 	}
 	app.lookPathFn = fakeLookPath("codex") // configured provider available.
 
-	cfg := app.resolveTextGenerationConfig()
+	cfg := textGenConfig(t, app)
 	if cfg.Provider != string(provider.Codex) {
 		t.Fatalf("provider = %q, want codex", cfg.Provider)
 	}
@@ -169,7 +262,7 @@ func TestResolveTextGenerationConfig_CoercesEffortForKnownCodexModel(t *testing.
 	}
 	app.lookPathFn = fakeLookPath("codex")
 
-	cfg := app.resolveTextGenerationConfig()
+	cfg := textGenConfig(t, app)
 	if cfg.Model != "gpt-5.5" {
 		t.Fatalf("model = %q, want gpt-5.5", cfg.Model)
 	}
@@ -192,7 +285,7 @@ func TestResolveTextGenerationConfig_PreservesUltraForSol(t *testing.T) {
 	}
 	app.lookPathFn = fakeLookPath("codex")
 
-	cfg := app.resolveTextGenerationConfig()
+	cfg := textGenConfig(t, app)
 	if cfg.Model != "gpt-5.6-sol" {
 		t.Fatalf("model = %q, want gpt-5.6-sol", cfg.Model)
 	}
@@ -227,6 +320,7 @@ func TestResolveTextGenerationConfigFor_SymmetricClaudeMissing(t *testing.T) {
 	app := newTestAppWithStore(t)
 	resetProviderBinarySettings(t, app)
 	app.lookPathFn = fakeLookPath("codex")
+	listCodexModels(app, provider.CodexModels)
 
 	if _, ok := app.resolveTextGenerationConfigFor(string(provider.Claude)); ok {
 		t.Fatalf("resolveTextGenerationConfigFor(claude) ok = true, want false (binary missing)")
@@ -235,8 +329,8 @@ func TestResolveTextGenerationConfigFor_SymmetricClaudeMissing(t *testing.T) {
 	if !ok {
 		t.Fatalf("resolveTextGenerationConfigFor(codex) ok = false; expected true (binary present)")
 	}
-	if cfg.Model != textgen.DefaultCodexModel {
-		t.Fatalf("model = %q, want %q (always default for alternate)", cfg.Model, textgen.DefaultCodexModel)
+	if cfg.Model != shippedNewestLuna {
+		t.Fatalf("model = %q, want %q (always default for alternate)", cfg.Model, shippedNewestLuna)
 	}
 }
 
@@ -258,13 +352,14 @@ func TestRunTextGenWithFallback_PerAttemptBudgets(t *testing.T) {
 	app := newTestAppWithStore(t)
 	resetProviderBinarySettings(t, app)
 	app.lookPathFn = fakeLookPath("claude", "codex")
+	listCodexModels(app, provider.CodexModels)
 
 	const budget = 90 * time.Second
 	var deadlines []time.Time
 	var providers []string
 
 	start := time.Now()
-	got, err := runTextGenWithFallback(app, app.resolveTextGenerationConfig(), budget,
+	got, err := runTextGenWithFallback(app, budget,
 		func(cfg textgen.Config, deadline time.Time) (string, error) {
 			providers = append(providers, cfg.Provider)
 			deadlines = append(deadlines, deadline)
@@ -307,6 +402,7 @@ func TestRunTextGenWithFallback_AlternateFailureIsLoggedAndPrimarySurfaces(t *te
 	app := newTestAppWithStore(t)
 	resetProviderBinarySettings(t, app)
 	app.lookPathFn = fakeLookPath("claude", "codex")
+	listCodexModels(app, provider.CodexModels)
 
 	var logged bytes.Buffer
 	prev := log.Writer()
@@ -314,7 +410,7 @@ func TestRunTextGenWithFallback_AlternateFailureIsLoggedAndPrimarySurfaces(t *te
 	t.Cleanup(func() { log.SetOutput(prev) })
 
 	attempts := 0
-	_, err := runTextGenWithFallback(app, app.resolveTextGenerationConfig(), 30*time.Second,
+	_, err := runTextGenWithFallback(app, 30*time.Second,
 		func(cfg textgen.Config, _ time.Time) (string, error) {
 			attempts++
 			if attempts == 1 {
@@ -346,9 +442,10 @@ func TestRunTextGenWithFallback_NoAlternateSpawnDuringShutdown(t *testing.T) {
 	app := newTestAppWithStore(t)
 	resetProviderBinarySettings(t, app)
 	app.lookPathFn = fakeLookPath("claude", "codex")
+	listCodexModels(app, provider.CodexModels)
 
 	attempts := 0
-	_, err := runTextGenWithFallback(app, app.resolveTextGenerationConfig(), time.Minute,
+	_, err := runTextGenWithFallback(app, time.Minute,
 		func(textgen.Config, time.Time) (string, error) {
 			attempts++
 			app.appCancel()

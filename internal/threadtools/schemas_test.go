@@ -202,6 +202,17 @@ func TestSpawnTextSaysASpawnIsAWorkerWithoutASidebarRow(t *testing.T) {
 	}
 }
 
+// The spawn's model says a family runs the newest model of it the target
+// lists, in both shapes.
+func TestSpawnModelTextSaysAFamilyRunsItsNewestModel(t *testing.T) {
+	for _, shape := range []Shape{soloShape(), pairedShape()} {
+		text := schemaProperties(t, toolsByName(t, shape)["thread_spawn"])["model"].(map[string]any)["description"].(string)
+		if !strings.Contains(text, "A family named without a version, such as claude-opus or gpt-sol, runs the newest model of that family the target computer lists") {
+			t.Errorf("paired=%v: model does not say what a family runs: %s", shape.Paired(), text)
+		}
+	}
+}
+
 // TestRuntimeModeEnumTracksTheCanonicalList keeps the spawn schema from
 // drifting from provider.AllRuntimeModes.
 func TestRuntimeModeEnumTracksTheCanonicalList(t *testing.T) {
