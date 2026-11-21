@@ -67,7 +67,7 @@ func genCrossing(t *testing.T, tick, rename bool) {
 		})
 		go func() {
 			defer close(done)
-			_, _ = f.svc.SyncBoard(context.WithoutCancel(ctx), Scope{Connection: f.conn.ID, Board: "2"}, BoardDue{Delta: true, Reconcile: true}, Background)
+			_, _ = f.svc.syncTick(context.WithoutCancel(ctx), Scope{Connection: f.conn.ID, Board: "2"}, BoardDue{Delta: true, Reconcile: true}, Background)
 		}()
 	} else {
 		// The refresh removes 10001's row from board 1, which the tracker no

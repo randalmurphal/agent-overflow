@@ -24,13 +24,47 @@ import (
 // same.
 
 // ticketsResult is how a read of tickets ended: failed for the read as a
-// whole, with when a rate limit lifts, err for a failure that was not the
-// tracker's, over when every pump read ended.
+// whole, errs by pump (errOf), over when every pump read ended.
 type ticketsResult struct {
-	failed  bool
-	retryAt time.Time
-	err     error
-	over    bool
+	failed bool
+	// errs holds, at a pump's index, what the read answers the person who
+	// asked for that ticket (askerErr); nil when no ticket has one.
+	errs []error
+	over bool
+}
+
+// errOf is what the read answers the person who asked for the ticket of
+// the read's pump i.
+func (res ticketsResult) errOf(i int) error {
+	if res.errs == nil {
+		return nil
+	}
+	return res.errs[i]
+}
+
+// askerErr is what a read that ended with readErr (detailsRead's error;
+// failure for the tracker's) answers the person who asked for rd's
+// ticket: why the read did not settle it with an answer of the tracker's.
+// A ticket the tracker answered settles with its own outcome: nil, or the
+// failure to build its view; a ticket the tracker answered gone is nil,
+// told to its subscribers as not found. For a ticket the read did not
+// answer, the tracker's failure is nil too, told to the subscribers alone
+// as a board refresh's is; a failure outside the tracker, or a stop by the
+// read's context, is that error; and a read that failed for none made no
+// answer of it (errUnanswered).
+func askerErr(rd *ticketRead, failure *Failure, readErr error) error {
+	switch {
+	case rd.answered:
+		if rd.failed() {
+			return rd.err
+		}
+		return nil
+	case failure != nil:
+		return nil
+	case readErr != nil:
+		return readErr
+	}
+	return errUnanswered
 }
 
 // ticketInputs reports what ch, changes stored by one read, moves of tp's
@@ -102,7 +136,8 @@ func (s *Service) ticketReads(pumps []*ticketPump, full bool) (began uint64, rea
 // its own outcome; the read's failure is told to each ticket it did not
 // answer and makes it due on the retry schedule. A read stopped by its
 // context settles only the tickets it answered; a connection that ended
-// ends every pump.
+// ends every pump. Each pump's asker is answered its own ticket's outcome
+// (ticketsResult.errOf).
 func (s *Service) settleTickets(ctx context.Context, conn string, pumps []*ticketPump, began uint64, reads []*ticketRead, res detailsRead, err error, at int64) ticketsResult {
 	var out ticketsResult
 	end := readEnd{kind: res.kind, at: at, ok: !slices.ContainsFunc(reads, (*ticketRead).failed)}
@@ -112,11 +147,19 @@ func (s *Service) settleTickets(ctx context.Context, conn string, pumps []*ticke
 	case stopped, ended:
 	case res.failure != nil:
 		end.failure, end.release = &FailureView{Kind: string(res.failure.Kind), Message: res.failure.Message, At: at}, res.retryAt
-		out.failed, out.retryAt = true, res.retryAt
+		out.failed = true
 	case err != nil:
 		end.failure = internalFailure(at)
-		out.failed, out.err = true, err
+		out.failed = true
 		s.logf("trackerapp: the read of %d open tickets of %s failed: %v", len(pumps), conn, err)
+	}
+	for i := range pumps {
+		if e := askerErr(reads[i], res.failure, err); e != nil {
+			if out.errs == nil {
+				out.errs = make([]error, len(pumps))
+			}
+			out.errs[i] = e
+		}
 	}
 	s.subMu.Lock()
 	out.over = true

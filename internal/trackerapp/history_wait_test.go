@@ -21,7 +21,7 @@ import (
 // arrived: two reads per change whatever the poll interval, whether the
 // tracker names its time on the answer and whatever this computer's clock
 // says against the tracker's or does while it waits. The ticks are the
-// board pump's (syncBoardPlanned with boardDue): the tick that reads the
+// board pump's (syncBoard with boardDue): the tick that reads the
 // sync state learns the wait is over, with no timer of its own.
 
 // A change at 5 s that the tracker's history lists only a whole margin

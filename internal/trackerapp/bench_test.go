@@ -76,7 +76,7 @@ func benchService(b testing.TB) (*Service, *scripted, Scope) {
 
 func benchTick(b *testing.B, svc *Service, scope Scope, due BoardDue) Outcome {
 	b.Helper()
-	out, err := svc.SyncBoard(b.Context(), scope, due, Background)
+	out, err := svc.syncTick(b.Context(), scope, due, Background)
 	if err != nil || out.Failure != nil || out.Ended {
 		b.Fatalf("tick: %+v, %v", out, err)
 	}

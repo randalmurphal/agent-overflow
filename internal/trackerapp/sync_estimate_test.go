@@ -43,7 +43,7 @@ func TestAStructureThatSwitchesPointFieldsReadsTheRowsAgain(t *testing.T) {
 	m.p.history = func(q tracker.HistoryQuery) (tracker.History, error) {
 		return tracker.History{Issues: []tracker.IssueHistory{{Issue: "10001", CompleteTo: time.UnixMilli(1_799_900_000_000)}}}, nil
 	}
-	must[Outcome](t)(m.svc.SyncBoard(t.Context(), m.scope(), BoardDue{Structure: true, Delta: true, History: true}, Background))
+	must[Outcome](t)(m.svc.syncTick(t.Context(), m.scope(), BoardDue{Structure: true, Delta: true, History: true}, Background))
 	sprint := []Section{{Kind: SectionSprint, Sprint: "1"}}
 	if v := must[BoardView](t)(m.svc.Board(m.scope(), sprint)); v.Sprints[0].Total.Estimate != 5 || len(m.due()) != 0 {
 		t.Fatalf("seeded: sprint total %+v, due %v", v.Sprints[0].Total, m.due())
@@ -114,7 +114,7 @@ func TestAStructureThatResetsTheEstimateWalksFromTheStart(t *testing.T) {
 			return tracker.RowPage{Rows: []tracker.Row{again}, Next: cursorAfter("10001-time")}, nil
 		}
 	})
-	must[Outcome](t)(m.svc.SyncBoard(t.Context(), m.scope(), BoardDue{Structure: true, Delta: true}, Background))
+	must[Outcome](t)(m.svc.syncTick(t.Context(), m.scope(), BoardDue{Structure: true, Delta: true}, Background))
 	mu.Lock()
 	defer mu.Unlock()
 	if len(froms) != 1 || froms[0] != "" {

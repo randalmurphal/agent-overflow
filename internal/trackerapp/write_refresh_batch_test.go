@@ -102,3 +102,45 @@ func TestACardsReadFailingInItsSecondBatchLeavesThatBatchStale(t *testing.T) {
 		t.Fatalf("%d batches; stale %d resources: %v", batches, len(got), got)
 	}
 }
+
+// A rows batch whose first read was stored and whose retry of the new
+// rows the store refused failed leaves stale only those rows and the
+// batches after it, in order: the peers the first read stored are
+// refreshed, whether the retry was refused again or failed its read.
+func TestARefusedRowRetryThatFailsLeavesItsPeersRefreshed(t *testing.T) {
+	t.Parallel()
+	for _, refusedAgain := range []bool{true, false} {
+		t.Run(map[bool]string{true: "refused again", false: "read failed"}[refusedAgain], func(t *testing.T) {
+			t.Parallel()
+			f := newWriteFixture(t)
+			f.tickingClock()
+			issues := append([]string{"20000"}, manyOnBoard(t, f, readBatch)...)
+			// 20000 is new to the mirror's board: the first batch's write
+			// refuses it after another read's removal.
+			f.state.set(testBoard, writeRow("20000", 0, "a000"))
+			f.svc.store = &removalBeforeWrite{Store: f.svc.store, m: f.mirrorFixture, issue: "10009", every: refusedAgain}
+			reads := 0
+			f.p.set(func(p *scripted) {
+				p.boardRows = func(b tracker.BoardID, asked []tracker.IssueID) (tracker.Rows, error) {
+					if reads++; reads == 2 && !refusedAgain {
+						return tracker.Rows{}, errBatchFailed
+					}
+					return f.state.boardRows(b, asked)
+				}
+			})
+			var res tracker.Result
+			for _, id := range issues {
+				res.Parts = append(res.Parts, rankPart(testBoard, id, tracker.Applied()))
+			}
+			f.answer(res)
+			v, err := f.svc.Rank(t.Context(), f.conn.ID, RankRequest{Board: "1", Issues: issues, Prev: "10003"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			last := issues[len(issues)-1]
+			if got := staleIDs(v); !slices.Equal(got, []string{"row:20000", "row:" + last, "card:" + last}) || reads != 2 {
+				t.Fatalf("%d reads; stale %d resources: %v; want the refused row and the batch after", reads, len(got), got)
+			}
+		})
+	}
+}

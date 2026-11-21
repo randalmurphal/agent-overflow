@@ -46,7 +46,7 @@ type run struct {
 	// to read, which the tick's reconcile waits for (run.reconcile).
 	walking bool
 	// pass is the reconcile pass the tick goes on with, its pump's; nil
-	// for a tick no pump runs, whose pass lasts the tick.
+	// for a run no pump makes, which does not reconcile (syncBoard).
 	pass *reconcilePass
 	// lifetimes are the lifetimes of the boards a write's refresh reads
 	// through, captured before its reads (refreshTargets); a tick names its

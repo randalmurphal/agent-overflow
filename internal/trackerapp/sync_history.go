@@ -18,7 +18,7 @@ const (
 	historyBatches = 4
 )
 
-// history is the history unit (SyncBoard, SyncLinked). Due issues are the
+// history is the history unit (syncBoard, SyncLinked). Due issues are the
 // connection's, not the scope's: the scope is where the outcome is
 // recorded. Each read names the boards the issues are on now, as the due
 // listing gives them, so their estimate changes are read, and the history

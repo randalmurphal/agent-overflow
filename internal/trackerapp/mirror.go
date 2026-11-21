@@ -10,10 +10,11 @@ import (
 	"agent-overflow/internal/tracker"
 )
 
-// The mirror's sync and reads. A scope's tick (SyncBoard, SyncLinked) runs
-// the units it is asked for in a fixed order, one at a time, each a
-// bounded amount of work, and returns: it starts no goroutine and keeps
-// nothing after it returns but the connection it held (Service.holds). A
+// The mirror's sync and reads. A scope's tick (syncBoard, syncDelta,
+// SyncLinked) runs the units it is asked for in a fixed order, one at a
+// time, each a bounded amount of work, and returns: it starts no
+// goroutine and keeps nothing after it returns but the connection it held
+// (Service.holds) and its board pump's reconcile pass (boardPump.pass). A
 // tick captures the connection's mirror
 // root when it starts and names it in every write, so a tick that
 // outlives its mirror (the connection turned off, removed, or off and on

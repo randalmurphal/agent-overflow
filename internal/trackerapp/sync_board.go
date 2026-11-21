@@ -19,7 +19,7 @@ const (
 	reconcileBatches = 10
 )
 
-// delta is the delta unit of board (SyncBoard), from the cursor of the
+// delta is the delta unit of board (syncBoard), from the cursor of the
 // sync state the tick read at its start, or from the start of the window
 // when a structure the run stored changed the board's estimate
 // definition. A page with no rows still stores the cursor it returned,
@@ -100,30 +100,37 @@ func (r *run) deltaPages(board tracker.BoardID, log *changeLog) (more bool, _ er
 	}
 }
 
-// reconcile is the reconcile unit of board (SyncBoard). A pass lists the
+// reconcile is the reconcile unit of board (syncBoard). A pass lists the
 // board, removes the unlisted rows read more than tracker.DeltaOverlap
 // before the listing began, and reads by ID the listed issues with no
 // row and the unlisted rows read since: its candidates, each attempted
-// once, up to reconcileBatches batches a tick. A pass with candidates
-// left reports More, and the next tick's reconcile goes on with them,
-// listing nothing, while the run's pass (run.pass) is of the same board
-// lifetime, an ID the store never reuses; a pass ends when every candidate was attempted, so one the
-// rows read keeps answering missing is attempted again by the next pass,
-// a reconcile interval later. In a tick whose delta stopped with more of
-// its walk to read it reads nothing and reports More: the walk delivers
-// the rows a listing would find missing, so a first sync longer than one
-// tick's pages reads each row once and lists the board once, after the
-// walk.
+// once, up to reconcileBatches batches a tick. The pass is the board
+// pump's (run.pass), open from the reconcile that begins it in a board
+// lifetime, an ID the store never reuses, until every candidate was
+// attempted: one with candidates left reports More, and the pump's next
+// tick goes on with them, listing nothing. One the rows read keeps
+// answering missing is attempted again by the next pass, a reconcile
+// interval later. In a tick whose delta stopped with more of its walk to
+// read it reads nothing and reports More, the pass open and not listed:
+// the walk delivers the rows a listing would find missing, so a first
+// sync longer than one tick's pages reads each row once and lists the
+// board once, after the walk. A listing that fails leaves the pass open
+// and not listed. An open pass is due at the pump's next tick whatever
+// the interval (boardDue), so one a refresh began goes on at once.
 func (r *run) reconcile(board tracker.BoardID) (UnitResult, error) {
+	lifetime, err := r.lifetime(board)
+	if err != nil {
+		return UnitResult{}, err
+	}
+	pass := r.pass
+	if !pass.openIn(lifetime) {
+		*pass = reconcilePass{lifetime: lifetime}
+	}
 	if r.walking {
 		return UnitResult{More: true}, nil
 	}
 	var log changeLog
-	pass := r.pass
-	if pass == nil {
-		pass = &reconcilePass{}
-	}
-	err := r.reconcileReads(board, pass, &log)
+	err = r.reconcileReads(board, pass, &log)
 	out := UnitResult{More: len(pass.left) > 0}
 	if err == nil {
 		err = r.cascade(board, &out)
@@ -133,30 +140,29 @@ func (r *run) reconcile(board tracker.BoardID) (UnitResult, error) {
 	return out, err
 }
 
-// reconcilePass is a reconcile's candidates not yet attempted, from the
-// listing of one board lifetime. A board's pump keeps one between its
-// ticks (boardPump.pass); any other tick's lives for that tick.
+// reconcilePass is a board pump's reconcile pass (boardPump.pass), open in
+// one board lifetime: the candidates of its listing not yet attempted,
+// none before it listed. The zero pass is none open.
 type reconcilePass struct {
 	lifetime int64
 	left     []tracker.IssueID
 }
 
-// reconcileReads lists board when pass has no candidate left of this
-// lifetime, then attempts up to reconcileBatches batches of the
-// pass's candidates, taking each batch attempted off the pass, and adds
-// what it stored to log.
+// openIn reports whether p is open in board lifetime lifetime.
+func (p *reconcilePass) openIn(lifetime int64) bool { return p.lifetime == lifetime && lifetime != 0 }
+
+// reconcileReads lists board when pass, open in the run's lifetime of
+// board, has no candidate left, then attempts up to reconcileBatches
+// batches of its candidates, taking each batch attempted off the pass,
+// and adds what it stored to log. A pass with no candidate left after
+// its listing ends.
 func (r *run) reconcileReads(board tracker.BoardID, pass *reconcilePass, log *changeLog) error {
 	ch, err := r.boardHeld(board)
 	log.add(ch)
 	if err != nil {
 		return err
 	}
-	lifetime, err := r.lifetime(board)
-	if err != nil {
-		return err
-	}
-	if pass.lifetime != lifetime || len(pass.left) == 0 {
-		*pass = reconcilePass{}
+	if len(pass.left) == 0 {
 		read := r.readAt()
 		r.calls++
 		listing, err := r.p.BoardIssues(r.ctx, board, r.window())
@@ -168,26 +174,30 @@ func (r *run) reconcileReads(board tracker.BoardID, pass *reconcilePass, log *ch
 		// unlisted row read since is read by ID, which removes it only when
 		// the board no longer holds it.
 		settled := read - tracker.DeltaOverlap.Milliseconds()
-		result, err := r.s.store.ReconcileMirrorBoard(r.root, string(board), lifetime, idStrings(listing.IDs), listing.Complete, read, settled)
+		result, err := r.s.store.ReconcileMirrorBoard(r.root, string(board), pass.lifetime, idStrings(listing.IDs), listing.Complete, read, settled)
 		// A reconcile that failed part way removed what it reports.
 		log.add(Changes{Removed: issueIDs(result.Removed)})
 		if err != nil {
 			return fmt.Errorf("trackerapp: reconcile board %s: %w", board, err)
 		}
-		left := append(issueIDsInOrder(result.Missing), issueIDsInOrder(result.Unsettled)...)
-		*pass = reconcilePass{lifetime: lifetime, left: left}
+		pass.left = append(issueIDsInOrder(result.Missing), issueIDsInOrder(result.Unsettled)...)
 	}
 	for i := 0; i < reconcileBatches && len(pass.left) > 0; i++ {
 		batch := pass.left[:min(readBatch, len(pass.left))]
-		ch, _, _, err := r.boardRows(board, batch)
+		ch, _, unread, err := r.boardRows(board, batch)
 		log.add(ch)
 		if err != nil {
+			// The batch's issues a stored write settled were attempted; the
+			// pass keeps the rest of it, moved up against the batches after.
+			k := len(batch) - len(unread)
+			copy(pass.left[k:], unread)
+			pass.left = pass.left[k:]
 			return err
 		}
 		pass.left = pass.left[len(batch):]
 	}
 	if len(pass.left) == 0 {
-		pass.left = nil
+		*pass = reconcilePass{}
 	}
 	return nil
 }

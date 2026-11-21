@@ -78,7 +78,7 @@ func (s *fakeScenario) measure(t *testing.T, ops []unitCost) {
 // tickOK runs one tick and fails on anything but a clean outcome.
 func tickOK(t *testing.T, s *Service, scope Scope, due BoardDue) Outcome {
 	t.Helper()
-	out, err := s.SyncBoard(t.Context(), scope, due, Background)
+	out, err := s.syncTick(t.Context(), scope, due, Background)
 	if err != nil || out.Failure != nil || out.Ended {
 		t.Fatalf("tick %+v: %+v, %v", due, out, err)
 	}

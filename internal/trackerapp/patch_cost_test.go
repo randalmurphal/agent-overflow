@@ -37,7 +37,7 @@ func TestOneRowChangeCost(t *testing.T) {
 	changed[3] = realisticRow(3, at.Add(time.Hour))
 	changed[3].Card.Title = "Make the checkout page load faster, part 3, now with a cache"
 	m.tracks(changed)
-	if out := must[Outcome](t)(m.svc.SyncBoard(t.Context(), scope, BoardDue{Delta: true}, Background)); out.Changes().Empty() {
+	if out := must[Outcome](t)(m.svc.syncTick(t.Context(), scope, BoardDue{Delta: true}, Background)); out.Changes().Empty() {
 		t.Fatalf("the change changed nothing: %+v", out)
 	}
 	events := m.events.boardEvents(t, first+1)

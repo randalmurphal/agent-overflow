@@ -121,7 +121,7 @@ func subscriptionModel(t *testing.T, r *rand.Rand) {
 	// syncBoard runs units of a board's tick. The store failing is the
 	// model's to make; any other error fails the test.
 	syncBoard := func(scope Scope, due BoardDue) {
-		if _, err := m.svc.SyncBoard(ctx, scope, due, Background); err != nil && !errors.Is(err, errStoreDown) {
+		if _, err := m.svc.syncTick(ctx, scope, due, Background); err != nil && !errors.Is(err, errStoreDown) {
 			t.Fatal(err)
 		}
 	}

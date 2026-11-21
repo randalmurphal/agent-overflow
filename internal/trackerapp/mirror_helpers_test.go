@@ -288,17 +288,26 @@ func (p *scripted) Structure(ctx context.Context, b tracker.BoardID, window time
 	return h(b, window)
 }
 
+// syncTick runs one tick of scope's board as its pump does (syncBoard),
+// the units due names, over a pump of its own: a reconcile pass it leaves
+// open lasts this tick. A test that goes on with a pass keeps its pump
+// (passTick).
+func (s *Service) syncTick(ctx context.Context, scope Scope, due BoardDue, u Urgency) (Outcome, error) {
+	out, _, err := s.syncBoard(ctx, &boardPump{scope: scope}, u, func(*run) BoardDue { return due })
+	return out, err
+}
+
 // Ticks of one unit, as most tests drive them.
 func (s *Service) tickStructure(ctx context.Context, sc Scope, u Urgency) (Outcome, error) {
-	return s.SyncBoard(ctx, sc, BoardDue{Structure: true}, u)
+	return s.syncTick(ctx, sc, BoardDue{Structure: true}, u)
 }
 
 func (s *Service) tickReconcile(ctx context.Context, sc Scope, u Urgency) (Outcome, error) {
-	return s.SyncBoard(ctx, sc, BoardDue{Reconcile: true}, u)
+	return s.syncTick(ctx, sc, BoardDue{Reconcile: true}, u)
 }
 
 func (s *Service) tickDelta(ctx context.Context, sc Scope, u Urgency) (Outcome, error) {
-	return s.SyncBoard(ctx, sc, BoardDue{Delta: true}, u)
+	return s.syncTick(ctx, sc, BoardDue{Delta: true}, u)
 }
 
 // tickHistory runs the history unit of a board scope, or of the linked
@@ -307,7 +316,7 @@ func (s *Service) tickHistory(ctx context.Context, sc Scope, u Urgency) (Outcome
 	if sc.Board == "" {
 		return s.SyncLinked(ctx, sc.Connection, LinkedDue{History: true}, u)
 	}
-	return s.SyncBoard(ctx, sc, BoardDue{History: true}, u)
+	return s.syncTick(ctx, sc, BoardDue{History: true}, u)
 }
 
 func (s *Service) tickCards(ctx context.Context, id string, u Urgency) (Outcome, error) {

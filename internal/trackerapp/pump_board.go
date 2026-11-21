@@ -27,7 +27,8 @@ type boardPump struct {
 	exited chan struct{}
 	// pass is the reconcile pass the pump's ticks go on with (run.pass),
 	// read and written only by those ticks, under their scope's lock. It
-	// holds at most the candidates of one listing, and goes with the pump.
+	// holds at most the candidates of one listing, and goes with the pump:
+	// only a pump's tick reconciles (syncBoard).
 	pass reconcilePass
 
 	// pending is what the next event carries; sync is the board's sync
@@ -226,8 +227,10 @@ func (s *Service) subscribableLocked(id string) (kind string, err error) {
 // RefreshSubscription has handle id's pump read now, as a person's
 // action: a board runs structure, delta, reconcile and history, a ticket
 // reads its detail, each interactive. It returns when the read ran;
-// what it found reaches the subscribers as events. A subscription that
-// ends first fails with ErrSubscriptionEnded.
+// what it found reaches the subscribers as events, the tracker's failure
+// too, and it fails with a failure outside the tracker (a ticket's own,
+// such as a view that could not be built) or the read's stop. A
+// subscription that ends first fails with ErrSubscriptionEnded.
 func (s *Service) RefreshSubscription(ctx context.Context, id string) error {
 	s.subMu.Lock()
 	h := s.subs.handles[id]
@@ -356,12 +359,11 @@ func (e *failureError) Error() string { return e.f.Message }
 // tracker's as recorded, or one outside the tracker that the tick
 // returned), the event, and the pump's end when the board's mirror ended.
 func (s *Service) boardTick(p *boardPump, refresh bool, u Urgency) tickResult {
-	origin := &tickOrigin{board: p}
 	due := s.boardDue
 	if refresh {
 		due = func(*run) BoardDue { return BoardDue{Structure: true, Delta: true, Reconcile: true, History: true} }
 	}
-	out, err := s.syncBoardPlanned(p.core.Context(), p.scope, u, due, origin)
+	out, recorded, err := s.syncBoard(p.core.Context(), p, u, due)
 	res := tickResult{more: out.More(), retryAt: out.RetryAt, failure: out.Failure, err: err}
 	stopped := err != nil && p.core.Context().Err() != nil
 	res.failed = out.Failure != nil || (err != nil && !stopped)
@@ -376,8 +378,8 @@ func (s *Service) boardTick(p *boardPump, refresh bool, u Urgency) tickResult {
 		res.over = true
 		return res
 	}
-	if origin.recorded {
-		p.sync = origin.sync
+	if recorded != nil {
+		p.sync = *recorded
 	}
 	switch {
 	case internal:
@@ -403,8 +405,11 @@ func (s *Service) boardTick(p *boardPump, refresh bool, u Urgency) tickResult {
 // boardDue is what a pump's tick runs, from the sync state the tick read:
 // every unit for a board never read; otherwise the delta, the reconcile
 // and the structure when their interval passed since they last ran (the
-// structure also when the store says it is due), and history when an
-// issue is due one.
+// reconcile also while the pump's pass is open in the board's lifetime,
+// the structure also when the store says it is due), and history when an
+// issue is due one. Each unit that reported More is so run again: the
+// delta always, the reconcile by its pass, the history by the issues the
+// store holds due.
 func (s *Service) boardDue(r *run) BoardDue {
 	st := r.state
 	if !r.stored || st.ReadAt == 0 {
@@ -415,7 +420,7 @@ func (s *Service) boardDue(r *run) BoardDue {
 	return BoardDue{
 		Structure: r.structureDue || st.StructureReadAt == 0 || passed(st.StructureReadAt, s.cadence.Structure),
 		Delta:     true,
-		Reconcile: passed(st.ReconciledAt, s.cadence.Reconcile),
+		Reconcile: passed(st.ReconciledAt, s.cadence.Reconcile) || r.pass.openIn(st.Lifetime),
 		History:   st.HistoryDue,
 	}
 }

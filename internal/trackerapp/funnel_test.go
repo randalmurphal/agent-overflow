@@ -24,7 +24,7 @@ func TestAChangedCardReachesEveryBoardShowingIt(t *testing.T) {
 
 	held.Updated, held.Title = held.Updated.Add(time.Minute), "Renamed"
 	m.tracks([]tracker.Row{{Card: held, Order: "a"}})
-	if _, err := m.svc.SyncBoard(t.Context(), m.scope(), BoardDue{Delta: true}, Background); err != nil {
+	if _, err := m.svc.syncTick(t.Context(), m.scope(), BoardDue{Delta: true}, Background); err != nil {
 		t.Fatal(err)
 	}
 	other := Scope{Connection: m.conn.ID, Board: "2"}
@@ -61,7 +61,7 @@ func TestAParentsRankTellsNoBoardOfItsChildren(t *testing.T) {
 		t.Helper()
 		before, _, _ := m.events.snapshot()
 		m.tracks(rows)
-		if _, err := m.svc.SyncBoard(t.Context(), scope, BoardDue{Delta: true}, Background); err != nil {
+		if _, err := m.svc.syncTick(t.Context(), scope, BoardDue{Delta: true}, Background); err != nil {
 			t.Fatal(err)
 		}
 		after, _, _ := m.events.snapshot()
@@ -92,7 +92,7 @@ func TestAParentsRankTellsNoBoardOfItsChildren(t *testing.T) {
 			return out, err
 		}
 	})
-	if out := must[Outcome](t)(m.svc.SyncBoard(t.Context(), other, BoardDue{Reconcile: true}, Background)); !slices.Equal(out.Changes().Removed, ids("10001")) {
+	if out := must[Outcome](t)(m.svc.syncTick(t.Context(), other, BoardDue{Reconcile: true}, Background)); !slices.Equal(out.Changes().Removed, ids("10001")) {
 		t.Fatalf("the reconcile removed %v", out.Changes().Removed)
 	}
 	told("the parent's row added again", other, ranked, map[tracker.BoardID][]tracker.IssueID{

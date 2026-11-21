@@ -14,9 +14,9 @@ import (
 // store and returns what the store changed. A read of many issues is made
 // in batches of readBatch, each read and stored before the next, so a
 // failure keeps the batches already stored; it returns the issues it did
-// not read (unread): those of the batch that failed and of every batch
-// after it, the tail of the issues asked. Every other issue asked was
-// read and stored.
+// not read and store (unread): those of the batch that failed that no
+// stored write of it settled, and every issue of the batches after it.
+// Every other issue asked was read and stored.
 
 // readBatch is the most issues one provider read and one store
 // transaction take.
@@ -38,36 +38,42 @@ func mirrorRows(board tracker.BoardID, rows []tracker.Row, missing []tracker.Iss
 }
 
 // boardRows reads board's rows of issues and stores them; the issues the
-// board no longer lists lose their row. A new row the store refused
-// because the board lost rows after its read began is read once more,
-// from after the removal; refused again, the read fails. A write the
-// store finds due a structure read marks the run's structure due
-// (run.cascade). The board's structure must be in the mirror
-// (store.ErrTrackerCacheNoBoard otherwise). found are the issues whose
-// row the tracker returned and the store took, of the batches stored;
-// unread are the issues it did not read, none when it returns no error.
+// board no longer lists lose their row. What the store refused because
+// the board lost rows after its read began (store MirrorChanges.Refused:
+// a new row, or an issue's absence) is read once more, from after the
+// removal; refused again, the read fails. A write the store finds due a
+// structure read marks the run's structure due (run.cascade). The
+// board's structure must be in the mirror (store.ErrTrackerCacheNoBoard
+// otherwise). found are the issues whose row the tracker returned and the
+// store took. unread are exactly the issues no stored write settled: of
+// the batch that failed, all of it when its first read failed and else
+// those its last stored write refused, then every batch after it, in the
+// order of issues when issues are sorted; none when it returns no error.
 func (r *run) boardRows(board tracker.BoardID, issues []tracker.IssueID) (out Changes, found, unread []tracker.IssueID, _ error) {
 	lifetime, err := r.lifetime(board)
 	if err != nil {
 		return out, nil, issues, err
 	}
 	for i := 0; i < len(issues); i += readBatch {
-		batch := issues[i:min(i+readBatch, len(issues))]
-		for again := false; len(batch) > 0; again = true {
+		next := min(i+readBatch, len(issues))
+		// left are the batch's issues no stored write settled yet.
+		left := issues[i:next]
+		unsettled := func() []tracker.IssueID { return slices.Concat(left, issues[next:]) }
+		for again := false; len(left) > 0; again = true {
 			read := r.readAt()
 			r.calls++
-			rows, err := r.p.BoardRows(r.ctx, board, batch)
+			rows, err := r.p.BoardRows(r.ctx, board, left)
 			if err != nil {
-				return out, found, issues[i:], fmt.Errorf("trackerapp: read %d rows of board %s: %w", len(batch), board, call(err))
+				return out, found, unsettled(), fmt.Errorf("trackerapp: read %d rows of board %s: %w", len(left), board, call(err))
 			}
 			page, err := mirrorRows(board, rows.Rows, rows.Missing, rows.Catalog, read)
 			if err != nil {
-				return out, found, issues[i:], err
+				return out, found, unsettled(), err
 			}
 			page.Lifetime = lifetime
 			stored, err := r.s.store.WriteMirrorRows(r.root, page)
 			if err != nil {
-				return out, found, issues[i:], fmt.Errorf("trackerapp: store rows of board %s: %w", board, err)
+				return out, found, unsettled(), fmt.Errorf("trackerapp: store rows of board %s: %w", board, err)
 			}
 			r.markStructureDue(stored)
 			out.add(changesOf(stored))
@@ -76,10 +82,10 @@ func (r *run) boardRows(board tracker.BoardID, issues []tracker.IssueID) (out Ch
 					found = append(found, row.Card.ID)
 				}
 			}
-			if again && len(stored.Refused) > 0 {
-				return out, found, issues[i:], fmt.Errorf("trackerapp: store rows of board %s: the board lost rows during both reads of %v", board, stored.Refused)
+			left = issueIDsInOrder(stored.Refused)
+			if again && len(left) > 0 {
+				return out, found, unsettled(), fmt.Errorf("trackerapp: store rows of board %s: the board lost rows during both reads of %v", board, stored.Refused)
 			}
-			batch = issueIDsInOrder(stored.Refused)
 		}
 	}
 	return out, found, nil, nil

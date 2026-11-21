@@ -74,7 +74,7 @@ func TestUnitCosts(t *testing.T) {
 	}
 	tick := func(due BoardDue) func(t *testing.T) {
 		return func(t *testing.T) {
-			if out := must[Outcome](t)(m.svc.SyncBoard(t.Context(), scope, due, Background)); out.Failure != nil || out.Ended {
+			if out := must[Outcome](t)(m.svc.syncTick(t.Context(), scope, due, Background)); out.Failure != nil || out.Ended {
 				t.Fatalf("%+v", out)
 			}
 		}
@@ -259,7 +259,7 @@ func TestHistoryDetailAndViewCosts(t *testing.T) {
 	}
 	tick := func(due BoardDue) func(t *testing.T) {
 		return func(t *testing.T) {
-			if out := must[Outcome](t)(m.svc.SyncBoard(t.Context(), scope, due, Background)); out.Failure != nil || out.Ended {
+			if out := must[Outcome](t)(m.svc.syncTick(t.Context(), scope, due, Background)); out.Failure != nil || out.Ended {
 				t.Fatalf("%+v", out)
 			}
 		}

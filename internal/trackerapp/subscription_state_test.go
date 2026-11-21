@@ -58,7 +58,7 @@ func TestAStoreFailureIsTold(t *testing.T) {
 		if res := m.svc.boardTick(p, false, Background); !res.failed {
 			t.Fatalf("board tick %+v", res)
 		}
-		if res := m.svc.ticketTick(tp, Background, false); !res.failed || res.err == nil {
+		if res := m.svc.ticketTick(tp, Background, false); !res.failed || res.errOf(0) == nil {
 			t.Fatalf("ticket read %+v", res)
 		}
 	}

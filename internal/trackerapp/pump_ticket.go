@@ -288,7 +288,7 @@ func (s *Service) runTicketPump(tp *ticketPump) {
 		case req := <-tp.core.Requests():
 			res := s.readTickets(ctx, conn, self, Interactive, true, true)
 			over = res.over
-			err := res.err
+			err := res.errOf(0)
 			if over {
 				err = ErrSubscriptionEnded
 			}

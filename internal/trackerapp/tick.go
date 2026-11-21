@@ -21,12 +21,21 @@ type step struct {
 	history bool
 }
 
-// SyncBoard runs the units due names on scope's board, in the order
-// structure, delta, reconcile, history, one at a time, on one hold of the
-// connection, and returns which units ran and what each stored. Delta
-// runs before reconcile so a first sync reads the rows the walk returns
-// once: reconcile then reads only the rows the walk's window leaves out,
-// and waits (More) in a tick whose delta has more of its walk to read.
+// syncBoard runs one tick of p's board: the units due chooses from the
+// tick's sync state once the tick has read it, so choosing them reads
+// nothing more, in the order structure, delta, reconcile, history, one
+// at a time, on one hold of the connection. It returns which units ran
+// and what each stored, and the board's sync view after the tick's
+// record (nil when it recorded nothing). Delta runs before reconcile so a
+// first sync reads the rows the walk returns once: reconcile then reads
+// only the rows the walk's window leaves out, and waits (More) in a tick
+// whose delta has more of its walk to read.
+//
+// p is the pump the tick runs for: the reconcile goes on with p's pass
+// (boardPump.pass), and what the tick changes of p's board is left for p
+// to tell with its failure (tickOrigin). Only a pump reconciles, so no
+// reconcile pass is left with nobody to go on with it; a caller with no
+// pump reads the delta alone (syncDelta).
 //
 // A tick first reads the scope's sync state, which carries the cursor
 // and the board's lifetime every board write names; a board no project
@@ -36,9 +45,7 @@ type step struct {
 // reconcile), which clear an older failure, and the failure that
 // followed them. Structure and history record nothing: a failure they
 // left stands until a read or reconcile succeeds. An idle delta tick is
-// that one read, its tracker request and that one write. A tick with
-// nothing due does nothing: no client is built, nothing is read or
-// written.
+// that one read, its tracker request and that one write.
 //
 // A second tick of the same scope waits for the one running to end, then
 // runs: a person's refresh made during a pump's tick reads after the
@@ -59,9 +66,9 @@ type step struct {
 //     no longer listed when the listing is complete (an incomplete one
 //     only adds), and reads the rows of listed issues that have none on
 //     the board, up to reconcileBatches batches a tick (More), each once
-//     a pass; a pump's next tick goes on with the pass, and a tick no
-//     pump runs lists again (run.reconcile). After a delta that stopped
-//     with More it lists nothing and reports More.
+//     a pass; the pump's next tick goes on with the pass whatever the
+//     interval (run.reconcile). After a delta that stopped with More it
+//     lists nothing and reports More.
 //   - history reads the status, sprint, estimate and assignee changes of
 //     the connection's issues that are due (store ListMirrorHistoryDue),
 //     historyBatch issues a read and historyBatches reads a tick (More).
@@ -71,25 +78,28 @@ type step struct {
 // state the tick read says so, or a row write since the tick's last
 // structure read found a status, user or sprint the mirror lacks that no
 // complete structure read marked unexplained. The store keeps both.
-func (s *Service) SyncBoard(ctx context.Context, scope Scope, due BoardDue, u Urgency) (Outcome, error) {
-	if err := scope.boardOnly(); err != nil {
-		return Outcome{}, err
+func (s *Service) syncBoard(ctx context.Context, p *boardPump, u Urgency, due func(*run) BoardDue) (Outcome, *SyncView, error) {
+	if err := p.scope.boardOnly(); err != nil {
+		return Outcome{}, nil, err
 	}
-	steps := boardSteps(scope.Board, due)
-	if len(steps) == 0 {
-		return Outcome{Ran: []UnitResult{}}, nil
+	origin := &tickOrigin{board: p}
+	out, err := s.tick(ctx, p.scope, u, func(r *run) []step { return boardSteps(p.scope.Board, due(r)) }, origin)
+	if !origin.recorded {
+		return out, nil, err
 	}
-	return s.tick(ctx, scope, u, func(*run) []step { return steps }, nil)
+	return out, &origin.sync, err
 }
 
-// syncBoardPlanned is SyncBoard with the units chosen by due from the
-// tick's sync state once the tick has read it, so choosing them reads
-// nothing more; origin is the pump that runs it.
-func (s *Service) syncBoardPlanned(ctx context.Context, scope Scope, u Urgency, due func(*run) BoardDue, origin *tickOrigin) (Outcome, error) {
+// syncDelta runs the delta of scope's board, as syncBoard runs it, for a
+// caller with no pump. Its walk goes on from the cursor the mirror holds,
+// so a delta that stops with More leaves its continuation to the board's
+// next tick, whoever runs it.
+func (s *Service) syncDelta(ctx context.Context, scope Scope, u Urgency) (Outcome, error) {
 	if err := scope.boardOnly(); err != nil {
 		return Outcome{}, err
 	}
-	return s.tick(ctx, scope, u, func(r *run) []step { return boardSteps(scope.Board, due(r)) }, origin)
+	steps := []step{deltaStep(scope.Board)}
+	return s.tick(ctx, scope, u, func(*run) []step { return steps }, nil)
 }
 
 // boardSteps are the steps of the units due names on board b.
@@ -99,7 +109,7 @@ func boardSteps(b tracker.BoardID, due BoardDue) []step {
 		steps = append(steps, step{unit: UnitStructure, body: func(r *run) (UnitResult, error) { return r.structureUnit(b) }})
 	}
 	if due.Delta {
-		steps = append(steps, step{unit: UnitDelta, body: func(r *run) (UnitResult, error) { return r.delta(b) }, records: true})
+		steps = append(steps, deltaStep(b))
 	}
 	if due.Reconcile {
 		steps = append(steps, step{unit: UnitReconcile, body: func(r *run) (UnitResult, error) { return r.reconcile(b) },
@@ -111,9 +121,16 @@ func boardSteps(b tracker.BoardID, due BoardDue) []step {
 	return steps
 }
 
+// deltaStep is the delta unit's step on board b.
+func deltaStep(b tracker.BoardID) step {
+	return step{unit: UnitDelta, body: func(r *run) (UnitResult, error) { return r.delta(b) }, records: true}
+}
+
 // SyncLinked runs the units due names on connection id's linked-issues
 // scope (the issues threads this computer owns are linked to), as
-// SyncBoard runs a board's: in order, one at a time, recorded once.
+// syncBoard runs a board's: in order, one at a time, recorded once. A
+// tick with nothing due does nothing: no client is built, nothing is read
+// or written.
 //
 //   - cards reads the cards of the linked issues no shown board has a
 //     row of (store ListMirrorOffBoardLinkedIssues), every page of the

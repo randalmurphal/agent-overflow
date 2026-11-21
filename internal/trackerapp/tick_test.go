@@ -36,7 +36,7 @@ func TestBoardTickRunsItsUnitsInOrder(t *testing.T) {
 	}
 	m.p.changedRows = pagedDelta(t, []tracker.Row{row("10002", 1_799_000_000_000, "b")})
 	m.p.history = func(tracker.HistoryQuery) (tracker.History, error) { return tracker.History{}, nil }
-	out := must[Outcome](t)(m.svc.SyncBoard(t.Context(), m.scope(), BoardDue{History: true, Delta: true, Reconcile: true, Structure: true}, Background))
+	out := must[Outcome](t)(m.svc.syncTick(t.Context(), m.scope(), BoardDue{History: true, Delta: true, Reconcile: true, Structure: true}, Background))
 	if got := units(out); !slices.Equal(got, []Unit{UnitStructure, UnitDelta, UnitReconcile, UnitHistory}) {
 		t.Fatalf("ran %v", got)
 	}
@@ -63,7 +63,7 @@ func TestBoardTickStopsAtTheFirstFailure(t *testing.T) {
 	m.p.changedRows = func(tracker.DeltaQuery) (tracker.RowPage, error) {
 		return tracker.RowPage{}, &trackerapi.TransientError{Err: errors.New("reset")}
 	}
-	out := must[Outcome](t)(m.svc.SyncBoard(t.Context(), m.scope(), BoardDue{Structure: true, Reconcile: true, Delta: true}, Background))
+	out := must[Outcome](t)(m.svc.syncTick(t.Context(), m.scope(), BoardDue{Structure: true, Reconcile: true, Delta: true}, Background))
 	if got := units(out); !slices.Equal(got, []Unit{UnitStructure, UnitDelta}) || out.Failure == nil || !out.Changes().Structure {
 		t.Fatalf("outcome %+v", out)
 	}
@@ -103,7 +103,7 @@ func TestBoardTickStopsAtTheFirstFailure(t *testing.T) {
 			return tracker.History{}, &trackerapi.StatusError{Tracker: "jira", Status: 403}
 		}
 	})
-	out = must[Outcome](t)(m.svc.SyncBoard(t.Context(), m.scope(), BoardDue{Reconcile: true, Delta: true, History: true}, Background))
+	out = must[Outcome](t)(m.svc.syncTick(t.Context(), m.scope(), BoardDue{Reconcile: true, Delta: true, History: true}, Background))
 	calls = cs.take()
 	if out.Failure == nil || out.Failure.Kind != FailureForbidden || calls["RecordMirrorSyncAttempt"] != 1 {
 		t.Fatalf("tick %+v, sync writes %v", out, calls)
@@ -127,7 +127,7 @@ func TestUnlistedBoardEndsItsTick(t *testing.T) {
 		}
 	})
 	for _, due := range []BoardDue{{Delta: true}, {Structure: true}, {Reconcile: true}} {
-		out, err := m.svc.SyncBoard(t.Context(), m.scope(), due, Background)
+		out, err := m.svc.syncTick(t.Context(), m.scope(), due, Background)
 		if err != nil || !out.Ended || out.Failure != nil {
 			t.Fatalf("tick %+v of an unlisted board: %+v, %v", due, out, err)
 		}
@@ -141,19 +141,16 @@ func TestUnlistedBoardEndsItsTick(t *testing.T) {
 	}
 }
 
-// A tick with nothing due builds no client and touches nothing.
+// A linked tick with nothing due builds no client and touches nothing. (A
+// board's tick chooses its units from the sync state it reads, and always
+// runs the delta.)
 func TestTickWithNothingDueDoesNothing(t *testing.T) {
 	t.Parallel()
 	m := newMirrorFixture(t)
 	cs := newCountingStore(m.st)
 	m.svc.store = cs
-	for _, tick := range []func() (Outcome, error){
-		func() (Outcome, error) { return m.svc.SyncBoard(t.Context(), m.scope(), BoardDue{}, Background) },
-		func() (Outcome, error) { return m.svc.SyncLinked(t.Context(), m.conn.ID, LinkedDue{}, Background) },
-	} {
-		if out := must[Outcome](t)(tick()); len(out.Ran) != 0 || out.Ended || out.Failure != nil {
-			t.Fatalf("outcome %+v", out)
-		}
+	if out := must[Outcome](t)(m.svc.SyncLinked(t.Context(), m.conn.ID, LinkedDue{}, Background)); len(out.Ran) != 0 || out.Ended || out.Failure != nil {
+		t.Fatalf("outcome %+v", out)
 	}
 	m.svc.mu.Lock()
 	n := len(m.svc.clients)

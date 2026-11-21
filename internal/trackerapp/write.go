@@ -267,7 +267,7 @@ func (s *Service) tickNow(ctx context.Context, scope Scope) error {
 			return err
 		}
 	}
-	out, err := s.SyncBoard(ctx, scope, BoardDue{Delta: true}, Interactive)
+	out, err := s.syncDelta(ctx, scope, Interactive)
 	switch {
 	case err != nil:
 		return err

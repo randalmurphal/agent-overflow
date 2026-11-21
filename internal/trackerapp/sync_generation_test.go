@@ -64,7 +64,7 @@ func TestARunCrossingATurnOffAtItsFirstReadEnds(t *testing.T) {
 				var res result
 				switch caller {
 				case "board tick":
-					res.out, res.err = m.svc.SyncBoard(t.Context(), m.scope(), BoardDue{Delta: true, Reconcile: true}, Background)
+					res.out, res.err = m.svc.syncTick(t.Context(), m.scope(), BoardDue{Delta: true, Reconcile: true}, Background)
 				case "linked tick":
 					res.out, res.err = m.svc.SyncLinked(t.Context(), m.conn.ID, LinkedDue{Cards: true, History: true}, Background)
 				default:

@@ -174,7 +174,7 @@ func TestAReconcilePassOfALargeImportReadsEachRowOnce(t *testing.T) {
 // going on with holder's pass.
 func passTick(t *testing.T, m *mirrorFixture, holder *boardPump, due BoardDue) Outcome {
 	t.Helper()
-	out, err := m.svc.syncBoardPlanned(t.Context(), m.scope(), Background, func(*run) BoardDue { return due }, &tickOrigin{board: holder})
+	out, _, err := m.svc.syncBoard(t.Context(), holder, Background, func(*run) BoardDue { return due })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +191,7 @@ func TestAReconcilePassResumesAtAFailedBatchAndEndsWithItsRoot(t *testing.T) {
 	n := reconcileBatches*readBatch + readBatch*5
 	b := newPassBoard(m, n, func(int) bool { return true })
 	b.fail = func(read int) bool { return read == 3 }
-	holder := &boardPump{}
+	holder := &boardPump{scope: m.scope()}
 	due := BoardDue{Structure: true, Reconcile: true}
 	if out := passTick(t, m, holder, due); out.Failure == nil || out.Failure.Kind != FailureTransient {
 		t.Fatalf("the failing tick %+v", out)

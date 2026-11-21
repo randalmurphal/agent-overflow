@@ -86,7 +86,7 @@ func TestARowAfterTheTicksStructureReadReadsItAgain(t *testing.T) {
 	d := &rowsDelta{}
 	m.p.changedRows = d.read
 	d.set(r)
-	must[Outcome](t)(m.svc.SyncBoard(t.Context(), m.scope(), BoardDue{Structure: true, Delta: true}, Background))
+	must[Outcome](t)(m.svc.syncTick(t.Context(), m.scope(), BoardDue{Structure: true, Delta: true}, Background))
 	if got := m.structureReads(); got != 2 {
 		t.Fatalf("%d structure reads", got)
 	}
@@ -139,7 +139,7 @@ func TestADueStructureIsReadOnceATick(t *testing.T) {
 		p.structure = func(b tracker.BoardID, _ time.Time) (tracker.Structure, error) { return webStructure(b), nil }
 	})
 	reads := m.structureReads()
-	out := must[Outcome](t)(m.svc.SyncBoard(t.Context(), m.scope(), BoardDue{Structure: true, Delta: true}, Background))
+	out := must[Outcome](t)(m.svc.syncTick(t.Context(), m.scope(), BoardDue{Structure: true, Delta: true}, Background))
 	if out.Failure != nil || m.structureReads() != reads+1 {
 		t.Fatalf("tick %+v, %d structure reads", out, m.structureReads()-reads)
 	}

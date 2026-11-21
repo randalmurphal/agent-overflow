@@ -118,8 +118,9 @@ func (m *scaleMeter) measure(prepare, op func(rep int), once bool) scaleCost {
 // state says is due, until one reports no More, and returns how many ran.
 func pumpTicks(t *testing.T, svc *Service, scope Scope) int {
 	t.Helper()
+	p := &boardPump{scope: scope}
 	for ticks := 1; ; ticks++ {
-		out, err := svc.syncBoardPlanned(t.Context(), scope, Background, svc.boardDue, nil)
+		out, _, err := svc.syncBoard(t.Context(), p, Background, svc.boardDue)
 		if err != nil || out.Failure != nil || out.Ended {
 			t.Fatalf("tick %d: %+v, %v", ticks, out, err)
 		}
@@ -163,23 +164,23 @@ func serviceAtScale(t *testing.T, n int) {
 	logCost("idle tick", m.measure(nil, tick, false))
 	for _, k := range []int{1, 100} {
 		logCost(fmt.Sprintf("delta tick, %d changed", k), m.measure(func(rep int) { settle(rep); edit(k)(rep) }, func(int) {
-			if out := must[Outcome](t)(svc.SyncBoard(t.Context(), scope, BoardDue{Delta: true}, Background)); len(out.Changes().Cards) != k {
+			if out := must[Outcome](t)(svc.syncTick(t.Context(), scope, BoardDue{Delta: true}, Background)); len(out.Changes().Cards) != k {
 				t.Fatalf("the delta stored %d cards, want %d", len(out.Changes().Cards), k)
 			}
 		}, false))
 		logCost(fmt.Sprintf("history tick, %d due", k), m.measure(func(rep int) {
 			settle(rep)
 			edit(k)(rep)
-			must[Outcome](t)(svc.SyncBoard(t.Context(), scope, BoardDue{Delta: true}, Background))
+			must[Outcome](t)(svc.syncTick(t.Context(), scope, BoardDue{Delta: true}, Background))
 		}, func(int) {
-			if out := must[Outcome](t)(svc.SyncBoard(t.Context(), scope, BoardDue{History: true}, Background)); len(out.Changes().History) != k {
+			if out := must[Outcome](t)(svc.syncTick(t.Context(), scope, BoardDue{History: true}, Background)); len(out.Changes().History) != k {
 				t.Fatalf("the history stored %d, want %d", len(out.Changes().History), k)
 			}
 		}, false))
 	}
 	settle(0)
 	logCost("reconcile", m.measure(nil, func(int) {
-		must[Outcome](t)(svc.SyncBoard(t.Context(), scope, BoardDue{Reconcile: true}, Background))
+		must[Outcome](t)(svc.syncTick(t.Context(), scope, BoardDue{Reconcile: true}, Background))
 	}, false))
 	sections := []Section{{Kind: SectionColumn}, {Kind: SectionBacklog}, {Kind: SectionSprint, Sprint: "1"}}
 	logCost("board view, 3 sections", m.measure(nil, func(int) { must[BoardView](t)(svc.Board(scope, sections)) }, false))

@@ -469,8 +469,12 @@ and writes share:
   rows) once, 1,000 a tick; a board's pump keeps the candidates left
   between its ticks and goes on with them without listing again, so a
   tick reports More only while the pass has candidates it has not
-  attempted. One the rows read keeps answering missing is attempted
-  again by the next pass, a reconcile interval later. Jira's rows read
+  attempted. A pass is open from the reconcile that begins it until
+  every candidate was attempted, and an open pass is due at the pump's
+  next tick whatever the interval, so a pass a refresh began, one waiting
+  for the delta's walk and one whose read failed go on at once. Only a
+  board's pump reconciles. One the rows read keeps answering missing is
+  attempted again by the next pass, a reconcile interval later. Jira's rows read
   asks `jql/match` about an issue the list left out and fails when the
   match cannot judge the board (after reading the board's configuration
   again once), so a miss never removes a row on the list's word alone. A listing the
@@ -569,7 +573,8 @@ and writes share:
   token traffic has no hourly quota, and Linear allows 2,500 requests per
   user an hour. Nothing hidden by every handle is read. The tick that
   falls due also runs
-  the reconcile every 10 minutes, the structure every 30 minutes or while
+  the reconcile every 10 minutes or while a pass is open, the structure
+  every 30 minutes or while
   the board is structure-due, and the history while an issue's is due
   (`MirrorSync.HistoryDue`). A board never read runs all four. An open
   ticket also reads at once when another read stored a changed card of
@@ -648,7 +653,11 @@ ticket whose check confirmed its document, whose document was stored or
 held, or that the tracker left out is settled so whatever happened to the
 others, and the read's failure is told only to the tickets it did not
 answer, the ones a rate limit holds due when it lifts. A failure is told
-to each ticket once and cleared by its next success.
+to each ticket once and cleared by its next success. A person's refresh
+of a ticket fails with its own ticket's failure outside the tracker (a
+view that could not be built, a store error) or the read's stop; the
+tracker's failure and its answer that the issue is gone reach the
+subscribers alone, as a board refresh's tracker failure does.
 
 Idle ticks write only read times, and send no event. N is the number of a
 connection's shown tickets:
@@ -794,8 +803,10 @@ call; the path does the rest.
    and stale, with the first failure, when any of them failed or was
    never made. A failed read leaves its resources stale and the other
    reads run; a rows or cards read made in batches of 100 leaves stale
-   only the issues of the batch that failed and of the batches after it,
-   and the batches it stored are refreshed. The last failed read is the
+   only the issues no stored write settled: of the batch that failed (of
+   a rows batch whose first read was stored, the ones the store refused
+   and its retry did not store) and of the batches after it. The rest are
+   refreshed. The last failed read is the
    connection's problem, whether or not its resources were already
    reported. A board no longer listed or retired
    during the refresh ends that board's reads alone. The write's context

@@ -86,7 +86,7 @@ func historyTicks(t *testing.T, clock *fakeClock, start time.Time, tick func(t *
 // anything but a clean outcome.
 func pumpTick(t *testing.T, svc *Service, scope Scope) {
 	t.Helper()
-	out, err := svc.syncBoardPlanned(t.Context(), scope, Background, svc.boardDue, nil)
+	out, _, err := svc.syncBoard(t.Context(), &boardPump{scope: scope}, Background, svc.boardDue)
 	if err != nil || out.Failure != nil || out.Ended {
 		t.Fatalf("pump tick: %+v, %v", out, err)
 	}

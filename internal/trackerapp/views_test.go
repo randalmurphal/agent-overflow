@@ -93,7 +93,7 @@ func TestBoardOfNoProject(t *testing.T) {
 		return st, nil
 	}
 	m.p.changedRows = pagedDelta(t, []tracker.Row{row("10001", 1_799_000_000_000, "a")})
-	if out := must[Outcome](t)(m.svc.SyncBoard(t.Context(), m.scope(), BoardDue{Structure: true, Delta: true}, Background)); out.Failure != nil || out.Ended {
+	if out := must[Outcome](t)(m.svc.syncTick(t.Context(), m.scope(), BoardDue{Structure: true, Delta: true}, Background)); out.Failure != nil || out.Ended {
 		t.Fatalf("tick %+v", out)
 	}
 	v := must[BoardView](t)(m.svc.Board(m.scope(), []Section{{Kind: SectionColumn}}))
