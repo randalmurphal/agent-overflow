@@ -191,6 +191,8 @@ type Changes struct {
 	Cards []tracker.IssueID `json:"cards,omitempty"`
 	// Rows are the issues whose row on the board was stored new or changed.
 	Rows []tracker.IssueID `json:"rows,omitempty"`
+	// Added are the issues of Rows whose row is new on the board.
+	Added []tracker.IssueID `json:"added,omitempty"`
 	// Removed are the issues whose row on the board was removed.
 	Removed []tracker.IssueID `json:"removed,omitempty"`
 	// Catalog reports a stored user or status that changed, whichever read
@@ -218,6 +220,7 @@ func (c Changes) Empty() bool {
 func (c *Changes) add(o Changes) {
 	c.Cards = unite(c.Cards, o.Cards)
 	c.Rows = unite(c.Rows, o.Rows)
+	c.Added = unite(c.Added, o.Added)
 	c.Removed = unite(c.Removed, o.Removed)
 	c.History = unite(c.History, o.History)
 	c.Details = unite(c.Details, o.Details)
@@ -239,7 +242,7 @@ func unite(a, b []tracker.IssueID) []tracker.IssueID {
 // changesOf is a store change set in neutral IDs.
 func changesOf(ch store.MirrorChanges) Changes {
 	return Changes{
-		Cards: issueIDs(ch.Cards), Rows: issueIDs(ch.Rows), Removed: issueIDs(ch.Removed), Catalog: ch.Catalog,
+		Cards: issueIDs(ch.Cards), Rows: issueIDs(ch.Rows), Added: issueIDs(ch.Added), Removed: issueIDs(ch.Removed), Catalog: ch.Catalog,
 	}
 }
 

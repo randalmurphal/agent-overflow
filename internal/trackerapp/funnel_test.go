@@ -2,6 +2,7 @@ package trackerapp
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"sync/atomic"
 	"testing"
@@ -36,6 +37,56 @@ func TestAChangedCardReachesEveryBoardShowingIt(t *testing.T) {
 	if rows := patch.Sections[0].Rows; len(rows) != 1 || rows[0].Card.Title != "Renamed" {
 		t.Fatalf("board 2's patch: %+v", patch.Sections[0])
 	}
+}
+
+// A parent whose row only moves in its board's order (a rank) tells the
+// boards showing its children nothing of them, which a row shows only the
+// parent's key and title of; a parent that gains a row, and may be kept
+// again, tells them.
+func TestAParentsRankTellsNoBoardOfItsChildren(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixtureWith(t, Cadence{Delta: time.Hour})
+	rows := []tracker.Row{row("10001", 1_799_000_000_000, "a")}
+	for i := range 3 {
+		child := row(fmt.Sprint(10002+i), 1_799_000_000_000, fmt.Sprint("b", i))
+		child.Card.Parent = "10001"
+		rows = append(rows, child)
+	}
+	m.tracks(rows)
+	m.subscribe(t, testBoard)
+	m.subscribe(t, "2")
+	idleBoards(t, m.svc, m.p)
+	other := Scope{Connection: m.conn.ID, Board: "2"}
+	told := func(what string, scope Scope, rows []tracker.Row, want map[tracker.BoardID][]tracker.IssueID) {
+		t.Helper()
+		before, _, _ := m.events.snapshot()
+		m.tracks(rows)
+		if _, err := m.svc.SyncBoard(t.Context(), scope, BoardDue{Delta: true}, Background); err != nil {
+			t.Fatal(err)
+		}
+		after, _, _ := m.events.snapshot()
+		got := map[tracker.BoardID][]tracker.IssueID{}
+		for _, e := range after[len(before):] {
+			got[e.Scope.Board] = unite(got[e.Scope.Board], e.Changed)
+		}
+		if !maps.EqualFunc(got, want, slices.Equal) {
+			t.Errorf("%s told %v; want %v", what, got, want)
+		}
+	}
+	ranked := slices.Clone(rows)
+	ranked[0].Order = "z"
+	told("a rank of the parent", m.scope(), ranked, map[tracker.BoardID][]tracker.IssueID{testBoard: ids("10001")})
+	// The parent leaves board 2 and comes back, its card unchanged.
+	m.p.set(func(p *scripted) {
+		p.boardIssues = func(tracker.BoardID, time.Time) (tracker.Listing, error) {
+			return tracker.Listing{IDs: ids("10002", "10003", "10004"), Complete: true}, nil
+		}
+	})
+	if out := must[Outcome](t)(m.svc.SyncBoard(t.Context(), other, BoardDue{Reconcile: true}, Background)); !slices.Equal(out.Changes().Removed, ids("10001")) {
+		t.Fatalf("the reconcile removed %v", out.Changes().Removed)
+	}
+	told("the parent's row added again", other, ranked, map[tracker.BoardID][]tracker.IssueID{
+		testBoard: ids("10002", "10003", "10004"), other.Board: ids("10001", "10002", "10003", "10004")})
 }
 
 // A delta read that redelivers rows identical to the stored ones, as the

@@ -20,14 +20,28 @@ const (
 	benchLinkedOnly   = 50
 )
 
-var benchMirrorFixture struct {
+// benchMirrorSize is a bench mirror's shape: how many boards, each with
+// how many issues of its own.
+type benchMirrorSize struct{ boards, issues int }
+
+// benchDefaultSize is the mirror the benchmarks run against.
+var benchDefaultSize = benchMirrorSize{boards: benchBoards, issues: benchBoardIssues}
+
+func (z benchMirrorSize) String() string { return fmt.Sprintf("%dx%d", z.boards, z.issues) }
+
+// benchMirrorFixtures holds the built fixture file of each size.
+var benchMirrorFixtures sync.Map
+
+type benchMirrorFixture struct {
 	once sync.Once
 	path string
 	err  error
 }
 
-// benchIssueID is issue i of board (0 to benchBoards-1).
-func benchIssueID(board, i int) string { return strconv.Itoa(100000 + board*benchBoardIssues + i) }
+// benchIssueID is issue i of board (0 to the size's boards less one). A
+// board's IDs are 10,000,000 apart, so no size, and no new issue a
+// benchmark adds past a board's own, meets another board's.
+func benchIssueID(board, i int) string { return strconv.Itoa(100000 + board*10_000_000 + i) }
 
 func benchBoardID(board int) string { return strconv.Itoa(10 + board) }
 
@@ -79,8 +93,9 @@ func benchHistory(id string, at int64, n int) MirrorHistory {
 	return answeredHistory(h)
 }
 
-// buildBenchMirror writes the fixture through the store's own writers.
-func buildBenchMirror(path string) error {
+// buildBenchMirror writes a fixture of size through the store's own
+// writers.
+func buildBenchMirror(path string, size benchMirrorSize) error {
 	if err := copyTestStoreTemplate(path); err != nil {
 		return err
 	}
@@ -88,14 +103,14 @@ func buildBenchMirror(path string) error {
 	if err != nil {
 		return err
 	}
-	err = fillBenchMirror(s)
+	err = fillBenchMirror(s, size)
 	if closeErr := s.Close(); err == nil {
 		err = closeErr
 	}
 	return err
 }
 
-func fillBenchMirror(s *Store) error {
+func fillBenchMirror(s *Store, size benchMirrorSize) error {
 	jira, err := s.CreateTrackerConnection(jiraConnection(mirrorSite, "user1@example.com", 10))
 	if err != nil {
 		return err
@@ -105,18 +120,18 @@ func fillBenchMirror(s *Store) error {
 		return err
 	}
 	listing := []ProjectTrackerBoard{}
-	for board := range benchBoards {
+	for board := range size.boards {
 		listing = append(listing, ProjectTrackerBoard{ConnectionID: jira.ID, BoardID: benchBoardID(board)})
 	}
 	if _, err := s.ReplaceProjectTrackerBoards(defaultTestProjectID, listing); err != nil {
 		return err
 	}
-	for board := range benchBoards {
+	for board := range size.boards {
 		if _, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, benchStructure(board))); err != nil {
 			return err
 		}
-		rows := make([]MirrorRow, 0, benchBoardIssues)
-		for i := range benchBoardIssues {
+		rows := make([]MirrorRow, 0, size.issues)
+		for i := range size.issues {
 			rows = append(rows, benchRow(board, i, 1000))
 		}
 		for page := range slices.Chunk(rows, 100) {
@@ -124,9 +139,9 @@ func fillBenchMirror(s *Store) error {
 				return err
 			}
 		}
-		for first := 0; first < benchBoardIssues; first += mirrorHistoryBatch {
+		for first := 0; first < size.issues; first += mirrorHistoryBatch {
 			batch := make([]MirrorHistory, 0, mirrorHistoryBatch)
-			for i := first; i < min(first+mirrorHistoryBatch, benchBoardIssues); i++ {
+			for i := first; i < min(first+mirrorHistoryBatch, size.issues); i++ {
 				batch = append(batch, benchHistory(benchIssueID(board, i), 100, benchChanges))
 			}
 			if _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, batch)); err != nil {
@@ -161,25 +176,40 @@ func fillBenchMirror(s *Store) error {
 	return nil
 }
 
-// openBenchMirror opens a copy of the fixture, with its root.
+// openBenchMirror opens a copy of the benchmarks' fixture, with its root.
 func openBenchMirror(b *testing.B) (*Store, int64) {
 	s, root, _ := openBenchMirrorFile(b)
 	return s, root
 }
 
-// openBenchMirrorFile opens a copy of the fixture at path, with its root.
+// openBenchMirrorFile opens a copy of the benchmarks' fixture at path,
+// with its root.
 func openBenchMirrorFile(b *testing.B) (s *Store, root int64, path string) {
-	b.Helper()
-	f := &benchMirrorFixture
+	return openSizedMirror(b, benchDefaultSize)
+}
+
+// benchMirrorFile is the closed fixture file of size, built once a
+// process.
+func benchMirrorFile(tb testing.TB, size benchMirrorSize) string {
+	tb.Helper()
+	entry, _ := benchMirrorFixtures.LoadOrStore(size, &benchMirrorFixture{})
+	f := entry.(*benchMirrorFixture)
 	f.once.Do(func() {
-		f.path = filepath.Join(filepath.Dir(testStoreTemplatePath), "bench-mirror.sqlite")
-		f.err = buildBenchMirror(f.path)
+		f.path = filepath.Join(filepath.Dir(testStoreTemplatePath), "bench-mirror-"+size.String()+".sqlite")
+		f.err = buildBenchMirror(f.path, size)
 	})
 	if f.err != nil {
-		b.Fatal(f.err)
+		tb.Fatal(f.err)
 	}
+	return f.path
+}
+
+// openSizedMirror opens a copy of the fixture of size at path, with its
+// root.
+func openSizedMirror(b testing.TB, size benchMirrorSize) (s *Store, root int64, path string) {
+	b.Helper()
 	path = filepath.Join(b.TempDir(), "store.sqlite")
-	if err := copyStoreFile(f.path, path); err != nil {
+	if err := copyStoreFile(benchMirrorFile(b, size), path); err != nil {
 		b.Fatal(err)
 	}
 	s, err := New(path)
@@ -198,7 +228,7 @@ func openBenchMirrorFile(b *testing.B) (s *Store, root int64, path string) {
 	return s, root, path
 }
 
-func benchConnectionID(b *testing.B, s *Store) string {
+func benchConnectionID(b testing.TB, s *Store) string {
 	b.Helper()
 	var id string
 	if err := s.db.QueryRow(`SELECT id FROM tracker_connections WHERE kind = 'jira'`).Scan(&id); err != nil {

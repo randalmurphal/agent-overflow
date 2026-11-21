@@ -84,7 +84,7 @@ func TestIdleTickStatements(t *testing.T) {
 				_, err := s.StoreMirrorDetails(root, sweep, docs(n), 0, at)
 				return err
 			})
-		}, 2 + 2*n, map[string]int{"tracker_cache_issue_details": n}, nil})
+		}, 4, map[string]int{"tracker_cache_issue_details": n}, nil})
 	}
 	// The tick whose history waits runs last: it moves issue 10001's update
 	// time.

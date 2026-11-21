@@ -86,12 +86,21 @@ func (r *run) delta(board tracker.BoardID) (UnitResult, error) {
 			break
 		}
 	}
+	r.walking = out.More
 	return out, r.cascade(board, &out)
 }
 
-// reconcile is the reconcile unit of board (SyncBoard).
+// reconcile is the reconcile unit of board (SyncBoard). In a tick whose
+// delta stopped with more of its walk to read it lists nothing and
+// reports More: the walk delivers the rows a listing would find missing,
+// so a first sync longer than one tick's pages reads each row once and
+// lists the board once, after the walk.
 func (r *run) reconcile(board tracker.BoardID) (UnitResult, error) {
 	var out UnitResult
+	if r.walking {
+		out.More = true
+		return out, nil
+	}
 	ch, err := r.boardHeld(board)
 	out.Changes.add(ch)
 	if err != nil {

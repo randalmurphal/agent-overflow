@@ -25,7 +25,8 @@ type step struct {
 // structure, delta, reconcile, history, one at a time, on one hold of the
 // connection, and returns which units ran and what each stored. Delta
 // runs before reconcile so a first sync reads the rows the walk returns
-// once: reconcile then reads only the rows the walk's window leaves out.
+// once: reconcile then reads only the rows the walk's window leaves out,
+// and waits (More) in a tick whose delta has more of its walk to read.
 //
 // A tick first reads the scope's sync state, which carries the cursor
 // and the board's lifetime every board write names; a board no project
@@ -57,7 +58,8 @@ type step struct {
 //   - reconcile lists the issues on the board, removes the rows of those
 //     no longer listed when the listing is complete (an incomplete one
 //     only adds), and reads the rows of listed issues that have none on
-//     the board, up to reconcileBatches batches a tick (More).
+//     the board, up to reconcileBatches batches a tick (More); after a
+//     delta that stopped with More it lists nothing and reports More.
 //   - history reads the status, sprint, estimate and assignee changes of
 //     the connection's issues that are due (store ListMirrorHistoryDue),
 //     historyBatch issues a read and historyBatches reads a tick (More).

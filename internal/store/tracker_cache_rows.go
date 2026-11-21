@@ -95,15 +95,17 @@ const (
 	// is older than the stored one, it is new and the page may not add it,
 	// or a later read stored other content), to write (new and addable, or
 	// other content from a read no earlier), or to advance (identical
-	// content stored by an earlier read, whose read time alone moves), and
-	// whether it names a reference the mirror lacks (mirrorRowLacksSQL),
-	// with its place in the page.
+	// content stored by an earlier read, whose read time alone moves),
+	// whether it is a row the board gains, and whether it names a
+	// reference the mirror lacks (mirrorRowLacksSQL), with its place in the
+	// page.
 	mirrorRowsStateSQL = `SELECT c.value ->> 'i',
 		    (b.root_id IS NULL AND NOT ?5) OR i.updated_at > c.value ->> 'u'
 		      OR (b.read_at > ?4 AND (b.order_key IS NOT c.value ->> 'o' OR b.estimate IS NOT c.value ->> 'e')),
 		    (b.root_id IS NULL AND ?5)
 		      OR (b.read_at <= ?4 AND (b.order_key IS NOT c.value ->> 'o' OR b.estimate IS NOT c.value ->> 'e')),
 		    b.read_at < ?4 AND b.order_key IS c.value ->> 'o' AND b.estimate IS c.value ->> 'e',
+		    b.root_id IS NULL AND ?5,
 		    ` + mirrorRowLacksSQL + `, c.key
 		  FROM json_each(?2) c
 		  LEFT JOIN tracker_cache_issues i ON i.root_id = ?1 AND i.issue_id = c.value ->> 'i'
@@ -172,6 +174,7 @@ func (s *Store) writeMirrorRows(rootID int64, page MirrorRowPage, withCursor boo
 		return MirrorChanges{}, err
 	}
 	slices.Sort(changes.Superseded)
+	slices.Sort(changes.Added)
 	return changes, nil
 }
 
@@ -245,13 +248,16 @@ func writeMirrorRowsTx(tx *sql.Tx, rootID int64, page MirrorRowPage, rows []mirr
 	var lacking []mirrorCardRow
 	err := scanMirrorRows(tx, mirrorRowsStateSQL, []any{rootID, encoded, page.BoardID, page.ReadAt, addsRows}, func(r rowScanner) error {
 		var id string
-		var superseded, writes, advances, rowLacks sql.NullBool
+		var superseded, writes, advances, adds, rowLacks sql.NullBool
 		var at int
-		if err := r.Scan(&id, &superseded, &writes, &advances, &rowLacks, &at); err != nil {
+		if err := r.Scan(&id, &superseded, &writes, &advances, &adds, &rowLacks, &at); err != nil {
 			return err
 		}
 		if superseded.Bool {
 			changes.Superseded = append(changes.Superseded, id)
+		}
+		if adds.Bool {
+			changes.Added = append(changes.Added, id)
 		}
 		if rowLacks.Bool && !superseded.Bool {
 			lacking = append(lacking, rows[at])

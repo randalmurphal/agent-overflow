@@ -119,7 +119,9 @@ func TestMirrorDetailBatchReportsTheCommittedState(t *testing.T) {
 		if err != nil || !reflect.DeepEqual(got, want) {
 			t.Fatalf("%s = %+v, %v; want %+v", what, got, err, want)
 		}
-		if want := 1 + 2*len(issues) + 1; statements != want {
+		// The sweep check, the documents' states, a write each and the
+		// eviction.
+		if want := 2 + len(issues) + 1; statements != want {
 			t.Fatalf("%s ran %d statements; want %d", what, statements, want)
 		}
 		for i, issue := range issues {

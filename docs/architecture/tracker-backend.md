@@ -428,7 +428,9 @@ and writes share:
   reads the board rows of every listed ID that has no row on this board,
   and removes the rows no longer listed. A listing the provider reports as
   incomplete adds and never removes. It runs when a board is subscribed, on
-  a slower cadence, and on request.
+  a slower cadence, and on request, and waits while the tick's delta walk
+  has more pages to read, so a first sync reads each row once and lists
+  the board once.
 - **Structure** is read when a board is subscribed, on a slower cadence,
   and while the board is structure-due. A row page that names a status,
   sprint or user the mirror lacks, and that no complete structure read
@@ -583,18 +585,77 @@ connection's shown tickets:
 | Shown board | 1 | 2 | 3 | 1 |
 | Shown board, the delta's overlap redelivering one identical row | 1 | 3 | 10 | 3 |
 | Jira round of N tickets (N up to 100) | 1 | 3 | 8 | 0 |
-| Linear round of N tickets | one per 10 tickets | 2 | 2 + 2N | N |
+| Linear round of N tickets | one per 10 tickets | 2 | 4 | N |
 
 A Jira round checks every ticket with one cards read, decodes no stored
 document and reads none in full; a Linear round reads every ticket in
-full, stores them in one transaction, and moves the read time of each
-unchanged document. A ticket that changed adds its own full read.
+full, stores them in one transaction, which reads every document's state
+in one statement and moves the read times of the unchanged ones in one
+more. A ticket that changed adds its own full read.
 
 A changed row is redelivered by the delta's overlap of one minute
 (`tracker.DeltaOverlap`), so about six Jira ticks after a change take the
 redelivery row's cost. The trackerapp cost tests pin the requests and
 store calls. The store's `TestIdleTickStatements` pins the statements and
 row writes.
+
+### Costs at scale
+
+Three tests measure one board of 5,000 and of 20,000 issues, and five
+boards sharing a root, when `AO_TRACKER_SCALE` names the sizes:
+`TestMirrorAtScale` in `internal/store` (the store's statements),
+`TestServiceAtScale` in `internal/trackerapp` (the service over the
+scripted provider) and `TestFakeTrackersAtScale` (the real providers and
+clients against `trackerfake`).
+
+```
+AO_TRACKER_SCALE=5000,20000 make go-test GO_TEST_PKGS=./internal/store \
+  GO_TEST_FLAGS="-count=1 -timeout 60m -v -run TestMirrorAtScale"
+```
+
+Counts are exact. Times are one development machine's (Intel Core Ultra 9
+285HX, WSL2, Go 1.27.4): the range of three runs' medians of five.
+
+| First sync, one board | 5,000 | 20,000 |
+|---|---|---|
+| Ticks | 25 | 100 |
+| Provider calls (scripted) | 172 | 682 |
+| Requests, Jira through `trackerfake` | 239 | 944 |
+| Requests, Linear through `trackerfake` | 169 | 618 |
+| Write statements, in transactions | 740 in 278 | 2,915 in 1,103 |
+| Allocated, peak heap | 91 MB, 9.6 to 9.8 MB | 363 MB, 29.1 to 29.5 MB |
+| Time (scripted) | 1.17 to 1.19 s | 4.69 to 4.73 s |
+| Store file per issue, after a checkpoint | 885 B | 829 B |
+
+Steady paths cost the same at both sizes, except the four that walk the
+board: the reconcile compares the whole listing, and the board view, the
+counts and the patch read total every section.
+
+| Path (store) | Statements | 5,000 | 20,000 |
+|---|---|---|---|
+| Idle tick | 3 | 66 to 91 µs | 73 to 118 µs |
+| Delta, 100 changed | 11 | 6.5 to 7.0 ms | 7.5 to 9.5 ms |
+| History, 50 due | 6 | 12.1 to 12.8 ms | 11.6 to 12.2 ms |
+| Reconcile, complete listing | 4 | 5.1 to 6.0 ms | 23.7 to 25.3 ms |
+| Board view, 3 sections | 10 | 20.1 to 20.9 ms | 72 to 76 ms |
+| Section page, middle of a column | 3 | 0.66 to 0.73 ms | 0.72 to 0.74 ms |
+| Section counts | 4 | 15.4 to 17.0 ms | 64 to 67 ms |
+| Patch read, 1 or 100 changed | 8 | 15.6 to 16.7 ms | 65 to 69 ms |
+| Ticket open, stored | 13 | 0.29 to 0.61 ms | 0.28 to 0.37 ms |
+| Jira round, 100 tickets, 10 changed | 20 | 4.6 to 5.2 ms | 5.1 to 5.6 ms |
+| Linear round, 100 tickets, 10 changed | 14 | 3.1 to 3.8 ms | 2.9 to 3.2 ms |
+| `New` | 0 | 13.6 to 15.4 ms | 13.5 to 17.9 ms |
+
+Five boards of 4,000 issues on one root view in 17.5 to 18.0 ms. Every
+statement of the mirror plans the same at 20,000 issues as on a small
+mirror, with no `sqlite_stat1`. Through `trackerfake` at 20,000 an idle
+tick, a delta of 100 and a Jira history read of 100 are 1, 1 and 4
+requests; a reconcile is 4 Jira requests or 41 Linear ones.
+
+Retention does not grow with a board. Five shown boards and 50 shown
+tickets hold 123 to 142 KB of heap and 56 goroutines (each pump and the
+round with one timer) at both sizes; once released, 57 to 90 KB stay
+(the event log) and no goroutine.
 
 ## Writes
 
@@ -749,8 +810,9 @@ funnel (`trackerapp/funnel.go`):
   rows.
 - Every subscribed board of the connection gets its rows of the changed
   cards and histories, and its rows whose parent's card changed or whose
-  parent had a row stored or removed on any board (a row shows its
-  parent's key and title while the mirror keeps the parent). These come
+  parent gained or lost a row on any board (a row shows its parent's key
+  and title while the mirror keeps the parent; a parent's rank or
+  estimate moves neither). These come
   from one indexed read (`ListMirrorIssueBoards`), which also finds the
   children of a parent that has no row left, made only when a board is
   subscribed; when it fails, or no mirror root is known, every board reads

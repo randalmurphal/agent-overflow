@@ -3,6 +3,7 @@ package trackerapp
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"testing"
 	"time"
@@ -142,6 +143,29 @@ func TestReconcileStopsAtItsBound(t *testing.T) {
 	out = must[Outcome](t)(m.svc.tickReconcile(t.Context(), m.scope(), Background))
 	if out.More() || len(out.Changes().Rows) != 1 || m.sync(testBoard).ReconciledAt == 0 {
 		t.Fatalf("finishing reconcile %+v", out)
+	}
+}
+
+// A first sync whose delta walk is longer than one tick's pages, run as
+// the pump runs it, reads each row once through the walk and lists the
+// board once, after the walk: the reconcile of a tick whose delta has
+// more to read waits for it.
+func TestAFirstSyncLongerThanATickListsTheBoardOnce(t *testing.T) {
+	t.Parallel()
+	svc, p, scope := benchService(t)
+	n := deltaPages*readBatch + readBatch/2
+	newScaleBoard(n).serve(p, false)
+	ticks := pumpTicks(t, svc, scope)
+	calls := countsOf(p.callsInOrder())
+	// The walk's pages, then one idle page a tick; the history of every
+	// issue, historyBatches reads a tick.
+	pages := (n+readBatch-1)/readBatch + ticks - 2
+	want := map[string]int{"Structure": 1, "ChangedRows": pages, "BoardIssues": 1, "History": (n + historyBatch - 1) / historyBatch}
+	if !maps.Equal(calls, want) {
+		t.Errorf("a first sync of %d rows in %d ticks called %s; want %s", n, ticks, describeCounts(calls), describeCounts(want))
+	}
+	if v := must[BoardView](t)(svc.Board(scope, nil)); v.All.Rows != n || v.Sync.ReconciledAt == 0 {
+		t.Errorf("the board holds %d rows of %d, reconciled at %d", v.All.Rows, n, v.Sync.ReconciledAt)
 	}
 }
 

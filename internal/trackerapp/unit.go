@@ -42,6 +42,9 @@ type run struct {
 	state        store.MirrorSync
 	stored       bool
 	structureDue bool
+	// walking reports that the tick's delta stopped with more of its walk
+	// to read, which the tick's reconcile waits for (run.reconcile).
+	walking bool
 	// lifetimes are the lifetimes of the boards a write's refresh reads
 	// through, captured before its reads (refreshTargets); a tick names its
 	// own board's from state.

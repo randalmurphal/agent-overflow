@@ -52,7 +52,7 @@ func realisticRows(from, n int, updated time.Time) []tracker.Row {
 
 // benchService is a Service over a cloned store with one Jira connection
 // whose provider is scripted.
-func benchService(b *testing.B) (*Service, *scripted, Scope) {
+func benchService(b testing.TB) (*Service, *scripted, Scope) {
 	b.Helper()
 	p := &scripted{t: b}
 	st := storetest.Clone(b)

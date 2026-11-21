@@ -377,20 +377,42 @@ func (s *fakeScenario) editTitles(t *testing.T, conn string, issues []tracker.Is
 	}
 }
 
-func TestFakeJiraLargeBoardCosts(t *testing.T) {
-	t.Parallel()
-	s := newFakeScenario(t, func(at time.Time) trackerfake.Fixture {
+// largeJiraFixture is the Jira seed with board 1 holding n tasks, each
+// updated a second after the one before.
+func largeJiraFixture(n int) func(at time.Time) trackerfake.Fixture {
+	return func(at time.Time) trackerfake.Fixture {
 		site := jiraSeed(at)
 		day := at.Add(-48 * time.Hour)
 		site.Issues = nil
-		for i := range largeIssues {
+		for i := range n {
 			site.Issues = append(site.Issues, trackerfake.JiraIssue{
 				ID: fmt.Sprint(20000 + i), Key: fmt.Sprintf("WEB-%d", i+1), Project: "WEB", Type: "10002",
 				Summary: fmt.Sprintf("Task %d", i+1), Status: "10000", Assignee: "acc-user1", Created: day, Updated: day.Add(time.Duration(i) * time.Second),
 			})
 		}
 		return trackerfake.Fixture{Jira: []trackerfake.JiraSite{site}}
-	}, "example.atlassian.net")
+	}
+}
+
+// largeLinearFixture is the Linear seed with team 10 holding n issues,
+// each updated a second after the one before.
+func largeLinearFixture(n int) func(at time.Time) trackerfake.Fixture {
+	return func(at time.Time) trackerfake.Fixture {
+		w := linearSeed(at)
+		w.Issues = nil
+		for i := range n {
+			w.Issues = append(w.Issues, trackerfake.LinearIssue{
+				ID: lid(1000 + i), Team: lid(10), Number: float64(i + 1), Title: fmt.Sprintf("Task %d", i+1), State: lid(21), Assignee: lid(1),
+				Creator: lid(1), SortOrder: float64(i), CreatedAt: at.Add(-72 * time.Hour), UpdatedAt: at.Add(-48*time.Hour + time.Duration(i)*time.Second),
+			})
+		}
+		return trackerfake.Fixture{Linear: []trackerfake.LinearWorkspace{w}}
+	}
+}
+
+func TestFakeJiraLargeBoardCosts(t *testing.T) {
+	t.Parallel()
+	s := newFakeScenario(t, largeJiraFixture(largeIssues), "example.atlassian.net")
 	conn := s.addJira()
 	s.writeToken(conn, "fake-jira-token-1")
 	var edited []tracker.IssueID
@@ -404,17 +426,7 @@ func TestFakeJiraLargeBoardCosts(t *testing.T) {
 
 func TestFakeLinearLargeBoardCosts(t *testing.T) {
 	t.Parallel()
-	s := newFakeScenario(t, func(at time.Time) trackerfake.Fixture {
-		w := linearSeed(at)
-		w.Issues = nil
-		for i := range largeIssues {
-			w.Issues = append(w.Issues, trackerfake.LinearIssue{
-				ID: lid(1000 + i), Team: lid(10), Number: float64(i + 1), Title: fmt.Sprintf("Task %d", i+1), State: lid(21), Assignee: lid(1),
-				Creator: lid(1), SortOrder: float64(i), CreatedAt: at.Add(-72 * time.Hour), UpdatedAt: at.Add(-48*time.Hour + time.Duration(i)*time.Second),
-			})
-		}
-		return trackerfake.Fixture{Linear: []trackerfake.LinearWorkspace{w}}
-	})
+	s := newFakeScenario(t, largeLinearFixture(largeIssues))
 	conn := s.addLinear()
 	s.writeToken(conn, "lin_api_fake00001")
 	var edited []tracker.IssueID
