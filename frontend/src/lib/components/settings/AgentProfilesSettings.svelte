@@ -11,7 +11,7 @@
   // computer on a release before the roster gets none of it.
   import { onMount, untrack } from 'svelte';
   import { settingsComputer } from './settingsComputer';
-  import { computerHasSetting } from '../../stores/settings.svelte';
+  import { computerHasSetting, olderComputerNote } from '../../stores/settings.svelte';
   import SettingsOlderComputer from './SettingsOlderComputer.svelte';
   import SettingsField from './SettingsField.svelte';
   import SettingsHeader from './SettingsHeader.svelte';
@@ -44,8 +44,8 @@
     unsaved,
     type Draft,
   } from './rosterDraft';
-  import { SETTINGS_DEFAULTS } from '../../generated/settingsDefaults';
-  import { CheckAgentProfiles } from '../../stores/bindings';
+  import { AgentRosterSeeds, CheckAgentProfiles } from '../../stores/bindings';
+  import { addErrorToast } from '../../stores/toast.svelte';
   import type { AgentNote, AgentNoteWhen, AgentProfile } from '../../types/settings';
 
   const { backend, getSettings, updateSetting, updateSettingsPatch, call } = settingsComputer();
@@ -128,7 +128,7 @@
   // listed model its provider's version rule cannot read. Keyed by those
   // three, so an entry shows the check of what it holds and nothing while
   // that is unchecked.
-  type ProfileCheck = { problem?: string; missing?: string; runs?: string; unreadable?: string[] };
+  type ProfileCheck = { problem?: string; missing?: string; runs?: string; unreadable?: string[]; family?: boolean };
   let checks = $state<Record<string, ProfileCheck>>({});
   const checkKey = (profile: AgentProfile) => JSON.stringify([profile.provider, profile.model.trim(), profile.effort]);
 
@@ -143,7 +143,7 @@
       const answer = await call(() => CheckAgentProfiles(list));
       // An older computer has no check (bindings.ts, CheckAgentProfiles).
       if (answer === null) return null;
-      results = answer as ProfileCheck[];
+      results = await holdFamiliesBack(list, answer as ProfileCheck[]);
     } catch (err) {
       console.warn('Could not check the agent profiles against this computer:', err);
       return null;
@@ -154,6 +154,24 @@
     });
     checks = next;
     return results.every((result) => !result?.problem);
+  }
+
+  /**
+   * `results` with a problem on each family the computer lacks when it
+   * predates model families (no AgentRosterSeeds): it reads the family as
+   * an exact model ID it does not offer, so the profile would never run
+   * there. Which models are families is read from this window's own
+   * computer, which owns the version rules; a profile the computer runs
+   * as written is left alone.
+   */
+  async function holdFamiliesBack(list: AgentProfile[], results: ProfileCheck[]): Promise<ProfileCheck[]> {
+    if (!results.some((result) => result?.missing)) return results;
+    if ((await call(() => AgentRosterSeeds())) !== null) return results;
+    const read = (await CheckAgentProfiles(list)) as ProfileCheck[] | null;
+    const lacks = olderComputerNote(backend, 'model families');
+    return results.map((result, index) =>
+      result?.missing && read?.[index]?.family ? { ...result, problem: `${lacks} ${result.missing}` } : result,
+    );
   }
 
   // A list with an entry marked as changed elsewhere too is not saved: a
@@ -219,9 +237,24 @@
     if (entry?.origin) notes.removed.push(entry.origin);
     saveNotes();
   }
-  function restore(): void {
-    const shippedProfiles = SETTINGS_DEFAULTS.agentProfiles as AgentProfile[];
-    const shippedNotes = SETTINGS_DEFAULTS.agentNotes as AgentNote[];
+  // Restore writes back the roster the computer itself starts with, which
+  // only it knows; one that cannot say keeps its roster and says why.
+  let restoreRefusal = $state('');
+  async function restore(): Promise<void> {
+    restoreRefusal = '';
+    let seeds: Awaited<ReturnType<typeof AgentRosterSeeds>>;
+    try {
+      seeds = await call(() => AgentRosterSeeds());
+    } catch (err) {
+      addErrorToast('Could not read the starting roster', err);
+      return;
+    }
+    if (seeds === null) {
+      restoreRefusal = olderComputerNote(backend, 'starting roster of its own to restore');
+      return;
+    }
+    const shippedProfiles = seeds.profiles as AgentProfile[];
+    const shippedNotes = seeds.notes as AgentNote[];
     profilesRevision.replace();
     notesRevision.replace();
     profiles = draftOf(shippedProfiles);
@@ -524,10 +557,13 @@
         label="Restore the starting roster"
         hint="Replace the profiles and notes with the ones the app ships with. Your edits to them are lost."
       >
-        <button type="button" class={SECONDARY_BUTTON_CLASS} onclick={restore} data-testid="agent-profiles-restore">
+        <button type="button" class={SECONDARY_BUTTON_CLASS} onclick={() => void restore()} data-testid="agent-profiles-restore">
           Restore
         </button>
       </SettingsField>
+      {#if restoreRefusal}
+        <p class="text-[0.71875rem] text-error" role="alert" data-testid="agent-profiles-restore-refusal">{restoreRefusal}</p>
+      {/if}
     </div>
   </section>
   {/if}

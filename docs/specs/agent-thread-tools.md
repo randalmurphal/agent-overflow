@@ -467,7 +467,12 @@ seeded use-for line names another provider's profile, so a computer
 with one provider is never pointed at the other; the comparison across
 the families is a note shown only when both run. An edited roster or
 note list is the person's and no later seed replaces it. Restore puts
-the seeds back.
+back the seeds of the computer the page edits, which it asks that
+computer for (`AgentRosterSeeds`); the frontend holds no copy of them. A
+computer with a roster but without that method predates model families:
+Restore there writes nothing and says so, and a family typed there that
+it does not offer is held back with the reason, read as a family by the
+window's own computer (`CheckAgentProfiles` `family`).
 
 The settings page edits the profiles and the notes as two drafts, each
 saved whole when a control commits. A change saved elsewhere replaces

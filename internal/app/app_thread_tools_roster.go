@@ -47,12 +47,35 @@ func (t threadToolsApp) Roster(context.Context) (threadtools.Roster, error) {
 // the profile; Runs, the model a profile naming its provider and model
 // runs here, the newest of its family for a family; Unreadable, the models
 // a family profile's provider lists here that its version rule cannot read
-// and so never runs.
+// and so never runs; Family, that the profile's model reads as a family by
+// its provider's version rule, which the editor reads from its window's
+// own computer to hold back a family on a computer that predates them.
 type AgentProfileCheck struct {
 	Problem    string   `json:"problem,omitempty"`
 	Missing    string   `json:"missing,omitempty"`
 	Runs       string   `json:"runs,omitempty"`
 	Unreadable []string `json:"unreadable,omitempty"`
+	Family     bool     `json:"family,omitempty"`
+}
+
+// AgentRosterSeeds are the profiles and notes this computer's release
+// starts with (settings.DefaultSettings), which Restore writes back. A
+// computer without the method predates model families: the editor says so
+// in place of restoring there, and holds back a family typed there.
+type AgentRosterSeeds struct {
+	Profiles []settings.AgentProfile `json:"profiles"`
+	Notes    []settings.AgentNote    `json:"notes"`
+}
+
+// AgentRosterSeeds answers this computer's starting roster.
+//
+//ao:scope settings:read
+//ao:route home
+func (a *App) AgentRosterSeeds() AgentRosterSeeds {
+	return AgentRosterSeeds{
+		Profiles: slices.Clone(settings.DefaultSettings.AgentProfiles),
+		Notes:    slices.Clone(settings.DefaultSettings.AgentNotes),
+	}
 }
 
 // CheckAgentProfiles checks each profile against what this computer offers
@@ -68,8 +91,9 @@ func (a *App) CheckAgentProfiles(ctx context.Context, profiles []settings.AgentP
 	}
 	checks := make([]AgentProfileCheck, len(profiles))
 	for i, profile := range profiles {
-		check := threadtools.ProfileProblem(rosterProfile(profile), catalog.Providers)
-		checks[i] = AgentProfileCheck{Problem: check.Problem, Missing: check.Missing, Runs: check.Runs, Unreadable: check.Unreadable}
+		read := rosterProfile(profile)
+		check := threadtools.ProfileProblem(read, catalog.Providers)
+		checks[i] = AgentProfileCheck{Problem: check.Problem, Missing: check.Missing, Runs: check.Runs, Unreadable: check.Unreadable, Family: read.Model.IsFamily()}
 	}
 	return checks, nil
 }

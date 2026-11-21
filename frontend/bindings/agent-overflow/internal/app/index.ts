@@ -10,6 +10,7 @@ export {
     AgentComputer,
     AgentProfileCheck,
     AgentRemoteRequest,
+    AgentRosterSeeds,
     ArchiveThreadResult,
     AttachedBackend,
     AttachmentThumbnail,

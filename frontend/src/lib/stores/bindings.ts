@@ -1312,6 +1312,7 @@ export { AsyncQuestion, AsyncQuestionAnswer } from '../../../bindings/agent-over
 // its surface shows nothing and reports nothing.
 import { Call } from '@wailsio/runtime';
 import {
+  AgentRosterSeeds as AgentRosterSeedsRaw,
   CheckAgentProfiles as CheckAgentProfilesRaw,
   GetStandingAgent as GetStandingAgentRaw,
   ListThreadRecurringJobs as ListThreadRecurringJobsRaw,
@@ -1340,6 +1341,7 @@ import {
   ThreadWorkerSummary as ThreadWorkerSummaryClass,
   ThreadWorkerSummaryPage as ThreadWorkerSummaryPageClass,
   type AgentProfileCheck,
+  type AgentRosterSeeds as AgentRosterSeedsAnswer,
   type NativeMemoryStatus,
   type StandingAgentWakes as StandingAgentWakesRow,
   type ThreadAgentRowRead as ThreadAgentRowReadRow,
@@ -1460,6 +1462,14 @@ export function GetStandingAgent(threadID: string): Promise<StandingAgentRow | n
 /** Empty on a computer without recurring jobs. */
 export function ListThreadRecurringJobs(threadID: string): Promise<ThreadRecurringJobRow[]> {
   return orOlder(() => ListThreadRecurringJobsRaw(threadID), () => []);
+}
+
+/**
+ * Null on a computer that predates model families: it cannot say which
+ * roster it starts with, and reads a family as an exact model ID.
+ */
+export function AgentRosterSeeds(): Promise<AgentRosterSeedsAnswer | null> {
+  return orOlder(() => AgentRosterSeedsRaw(), () => null);
 }
 
 /** Null when the computer cannot check profiles; the save goes ahead and UpdateSettings decides. */

@@ -4,11 +4,11 @@ import AgentProfilesSettings from './AgentProfilesSettings.svelte';
 import { applySettingsSnapshot, loadSettings, resetSettingsForTest } from '../../stores/settings.svelte';
 import ComputerSettingsPage from './ComputerSettingsPage.svelte';
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
-import { settingsAsV0019 } from '../../../test/helpers/olderComputer';
+import { methodNotFound, settingsAsV0019 } from '../../../test/helpers/olderComputer';
 import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
 import { makeSettings } from '../../../test/helpers/settings';
 import { TransportError } from '../../transport/wsClient';
-import { SETTINGS_DEFAULTS } from '../../generated/settingsDefaults';
+import { takePinnedBackend } from '../../transport/backends';
 import type { AgentNote, AgentProfile, Settings } from '../../types/settings';
 
 const PROFILE: AgentProfile = {
@@ -21,7 +21,16 @@ const PROFILE: AgentProfile = {
   instructions: '',
 };
 
-type Check = { problem?: string; missing?: string; runs?: string; unreadable?: string[] };
+type Check = { problem?: string; missing?: string; runs?: string; unreadable?: string[]; family?: boolean };
+
+/** The roster the computer's own release starts with (AgentRosterSeeds). */
+const SEEDS: { profiles: AgentProfile[]; notes: AgentNote[] } = {
+  profiles: [
+    { ...PROFILE, name: 'Seeded', useFor: 'What that computer ships.', provider: 'claude', model: 'claude-opus' },
+    { ...PROFILE, name: 'Seeded Codex', useFor: 'Its Codex seed.', model: 'gpt-sol' },
+  ],
+  notes: [{ text: 'A note that computer ships.', when: '' }],
+};
 
 /**
  * Loads `overrides` as the saved settings, with UpdateSettings keeping what
@@ -38,6 +47,7 @@ async function seed(
     return saved;
   });
   setBindingMock('CheckAgentProfiles', vi.fn(async (profiles: AgentProfile[]) => profiles.map(check)));
+  setBindingMock('AgentRosterSeeds', async () => SEEDS);
   await loadSettings();
 }
 
@@ -57,14 +67,14 @@ async function settle(): Promise<void> {
 }
 
 describe('<AgentProfilesSettings>', () => {
-  it('shows the seeded roster and the default level', async () => {
-    await seed();
+  it('shows the computer\'s roster and the default level', async () => {
+    await seed({ agentProfiles: SEEDS.profiles, agentNotes: SEEDS.notes });
     const view = render(AgentProfilesSettings);
     await settle();
 
     const names = view.getAllByTestId('agent-profile').map((row) => row.dataset.profileName);
-    expect(names).toEqual(SETTINGS_DEFAULTS.agentProfiles.map((profile) => profile.name));
-    expect(view.getAllByTestId('agent-note')).toHaveLength(SETTINGS_DEFAULTS.agentNotes.length);
+    expect(names).toEqual(SEEDS.profiles.map((profile) => profile.name));
+    expect(view.getAllByTestId('agent-note')).toHaveLength(SEEDS.notes.length);
     expect((view.getByTestId('agent-profiles-levels') as HTMLSelectElement).value).toBe('2');
   });
 
@@ -187,7 +197,7 @@ describe('<AgentProfilesSettings>', () => {
   // draft that check is for, even when the saved roster is already the
   // shipped one and nothing else marks the change.
   it('keeps the restored roster when a save that was checking returns', async () => {
-    await seed({ agentProfiles: SETTINGS_DEFAULTS.agentProfiles, agentNotes: SETTINGS_DEFAULTS.agentNotes });
+    await seed({ agentProfiles: SEEDS.profiles, agentNotes: SEEDS.notes });
     const view = render(AgentProfilesSettings);
     await settle();
     let release: () => void = () => {};
@@ -201,28 +211,132 @@ describe('<AgentProfilesSettings>', () => {
     await fireEvent.input(name, { target: { value: 'Discarded' } });
     await fireEvent.change(name);
     await fireEvent.click(view.getByTestId('agent-profiles-restore'));
+    await settle();
     release();
     await settle();
 
-    expect(lastPatch()).toEqual({
-      agentProfiles: SETTINGS_DEFAULTS.agentProfiles,
-      agentNotes: SETTINGS_DEFAULTS.agentNotes,
-    });
+    expect(lastPatch()).toEqual({ agentProfiles: SEEDS.profiles, agentNotes: SEEDS.notes });
     expect(getBindingMock('UpdateSettings')!.mock.calls).toHaveLength(1);
-    expect((view.getAllByLabelText('Name')[0] as HTMLInputElement).value).toBe(SETTINGS_DEFAULTS.agentProfiles[0].name);
+    expect((view.getAllByLabelText('Name')[0] as HTMLInputElement).value).toBe(SEEDS.profiles[0].name);
   });
 
-  it('restores the shipped roster in one write', async () => {
+  // The roster Restore writes is the one the computer itself starts with,
+  // asked of that computer, not this window's.
+  it('restores the computer\'s own starting roster in one write', async () => {
     await seed({ agentProfiles: [PROFILE], agentNotes: [] });
+    stageBackend();
+    try {
+      applySettingsSnapshot(makeSettings({ agentProfiles: [PROFILE], agentNotes: [] }), 'laptop');
+      const asked: (string | null)[] = [];
+      setBindingMock('AgentRosterSeeds', async () => {
+        asked.push(takePinnedBackend());
+        return SEEDS;
+      });
+      const view = render(ComputerSettingsPage, { props: { backend: 'laptop', Page: AgentProfilesSettings, needsComputer: false } });
+      await settle();
+
+      await fireEvent.click(view.getByTestId('agent-profiles-restore'));
+      await settle();
+      expect(asked).toEqual(['laptop']);
+      expect(lastPatch()).toEqual({ agentProfiles: SEEDS.profiles, agentNotes: SEEDS.notes });
+      expect(view.getAllByTestId('agent-profile')).toHaveLength(SEEDS.profiles.length);
+      expect(view.queryByTestId('agent-profiles-restore-refusal')).toBeNull();
+    } finally {
+      resetStagedBackends();
+      resetSettingsForTest();
+    }
+  });
+
+  // A computer with a roster but without AgentRosterSeeds predates model
+  // families: Restore there writes nothing and says why, and a family typed
+  // there that it does not offer is held back with the reason. An exact
+  // model it lacks is still only a note, and the same family saves on a
+  // computer that reads families.
+  describe('on a computer that predates model families', () => {
+    const LACKS = 'Claude Code does not offer model "claude-opus" on this computer. It offers: claude-opus-4-8.';
+    async function olderThere() {
+      await seed({ agentProfiles: [PROFILE], agentNotes: [] });
+      stageBackend();
+      applySettingsSnapshot(makeSettings({ agentProfiles: [PROFILE], agentNotes: [] }), 'laptop');
+      setBindingMock('AgentRosterSeeds', async () => {
+        if (takePinnedBackend() === 'laptop') throw methodNotFound();
+        return SEEDS;
+      });
+      // There, a model it does not list is missing; here, the version
+      // rules say which models are families.
+      setBindingMock('CheckAgentProfiles', async (profiles: AgentProfile[]) => {
+        const there = takePinnedBackend() === 'laptop';
+        return profiles.map((profile) =>
+          there
+            ? profile.model.startsWith('claude-opus') && profile.model !== 'claude-opus-4-8' ? { missing: LACKS } : {}
+            : { family: profile.model === 'claude-opus' },
+        );
+      });
+      const view = render(ComputerSettingsPage, { props: { backend: 'laptop', Page: AgentProfilesSettings, needsComputer: false } });
+      await settle();
+      return view;
+    }
+
+    it('refuses Restore and says why', async () => {
+      try {
+        const view = await olderThere();
+        await fireEvent.click(view.getByTestId('agent-profiles-restore'));
+        await settle();
+        expect(view.getByTestId('agent-profiles-restore-refusal').textContent).toBe(
+          'Laptop runs an older version: it has no starting roster of its own to restore.',
+        );
+        expect(getBindingMock('UpdateSettings')!.mock.calls).toHaveLength(0);
+        expect(view.getAllByTestId('agent-profile').map((row) => row.dataset.profileName)).toEqual([PROFILE.name]);
+      } finally {
+        resetStagedBackends();
+        resetSettingsForTest();
+      }
+    });
+
+    it('holds back a family it does not offer and says why, and saves an exact model', async () => {
+      try {
+        const view = await olderThere();
+        await fireEvent.change(view.getByLabelText('Provider'), { target: { value: 'claude' } });
+        const model = view.getByLabelText('Model') as HTMLInputElement;
+        await fireEvent.input(model, { target: { value: 'claude-opus' } });
+        await fireEvent.change(model);
+        await settle();
+        expect(view.getByTestId('agent-profile-error').textContent).toBe(
+          `Laptop runs an older version: it has no model families. ${LACKS}`,
+        );
+        const writes = getBindingMock('UpdateSettings')!.mock.calls.filter((call) => {
+          const profiles = (call[0] as Partial<Settings>).agentProfiles;
+          return profiles?.some((profile) => profile.model === 'claude-opus');
+        });
+        expect(writes).toHaveLength(0);
+
+        await fireEvent.input(model, { target: { value: 'claude-opus-5' } });
+        await fireEvent.change(model);
+        await settle();
+        expect(view.queryByTestId('agent-profile-error')).toBeNull();
+        expect(view.getByTestId('agent-profile-unavailable').textContent).toContain(LACKS);
+        expect(lastPatch()).toEqual({ agentProfiles: [{ ...PROFILE, provider: 'claude', model: 'claude-opus-5' }] });
+      } finally {
+        resetStagedBackends();
+        resetSettingsForTest();
+      }
+    });
+  });
+
+  it('saves a family a computer that reads families does not list, with the note', async () => {
+    await seed({ agentProfiles: [PROFILE], agentNotes: [] }, (profile) =>
+      profile.model === 'claude-opus' ? { missing: 'Claude Code offers no claude-opus model on this computer.', family: true } : {},
+    );
     const view = render(AgentProfilesSettings);
     await settle();
 
-    await fireEvent.click(view.getByTestId('agent-profiles-restore'));
-    expect(lastPatch()).toEqual({
-      agentProfiles: SETTINGS_DEFAULTS.agentProfiles,
-      agentNotes: SETTINGS_DEFAULTS.agentNotes,
-    });
-    expect(view.getAllByTestId('agent-profile')).toHaveLength(SETTINGS_DEFAULTS.agentProfiles.length);
+    await fireEvent.change(view.getByLabelText('Provider'), { target: { value: 'claude' } });
+    const model = view.getByLabelText('Model') as HTMLInputElement;
+    await fireEvent.input(model, { target: { value: 'claude-opus' } });
+    await fireEvent.change(model);
+    await settle();
+    expect(view.queryByTestId('agent-profile-error')).toBeNull();
+    expect(lastPatch()).toEqual({ agentProfiles: [{ ...PROFILE, provider: 'claude', model: 'claude-opus' }] });
   });
 
   it('sends the level as a number', async () => {

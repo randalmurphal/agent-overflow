@@ -784,6 +784,25 @@ func TestTheSeededProfilesNameFamilies(t *testing.T) {
 	}
 }
 
+// The starting roster a computer answers is its own release's seeds, the
+// ones a fresh settings file starts with, and a change to the answer does
+// not reach the seeds.
+func TestAComputerAnswersItsOwnStartingRoster(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	seeds := app.AgentRosterSeeds()
+	if !reflect.DeepEqual(seeds.Profiles, settings.DefaultSettings.AgentProfiles) || !reflect.DeepEqual(seeds.Notes, settings.DefaultSettings.AgentNotes) {
+		t.Fatalf("the starting roster is %+v, want the release's seeds", seeds)
+	}
+	if len(seeds.Profiles) == 0 || len(seeds.Notes) == 0 {
+		t.Fatalf("the release seeds no roster: %+v", seeds)
+	}
+	seeds.Profiles[0].Name, seeds.Notes[0].Text = "Changed", "Changed"
+	if again := app.AgentRosterSeeds(); again.Profiles[0].Name == "Changed" || again.Notes[0].Text == "Changed" {
+		t.Fatal("a change to one answer reached the seeds")
+	}
+}
+
 // effortRow is a CLI model row that offers the efforts current models do.
 func effortRow(value, resolved string) claude.WireModel {
 	return claude.WireModel{Value: value, ResolvedModel: resolved, SupportsEffort: true,
@@ -965,8 +984,10 @@ func TestAFamilySpawnRunsWhatTheCreatingComputerListsAtCreation(t *testing.T) {
 // The settings check reports the model each profile runs here: the newest
 // of a family, the exact model for one that names it, and beside a family
 // the listed models its version rule cannot read. Those are logged once
-// per change of the catalog, not on each read. Not parallel: the probe
-// catalog and the log are process-wide.
+// per change of the catalog, not on each read. It says which models are
+// families whether or not their provider runs here, which an editor reads
+// for a computer that predates families. Not parallel: the probe catalog
+// and the log are process-wide.
 func TestTheEditorShowsWhatEachProfileRuns(t *testing.T) {
 	app := newTestAppWithStore(t)
 	if _, err := app.settings.Update(map[string]any{
@@ -986,10 +1007,12 @@ func TestTheEditorShowsWhatEachProfileRuns(t *testing.T) {
 	profiles := []settings.AgentProfile{
 		{Name: "Opus", UseFor: "x", Provider: "claude", Model: "claude-opus", Effort: "high"},
 		{Name: "Pinned", UseFor: "x", Provider: "claude", Model: "claude-opus-5", Effort: "high"},
+		{Name: "Sol", UseFor: "x", Provider: "codex", Model: "gpt-sol"},
 	}
 	want := []AgentProfileCheck{
-		{Runs: "claude-opus-5-5", Unreadable: []string{"claude-opus-6-preview"}},
+		{Runs: "claude-opus-5-5", Unreadable: []string{"claude-opus-6-preview"}, Family: true},
 		{Runs: "claude-opus-5"},
+		{Missing: "Codex does not run on this computer.", Family: true},
 	}
 	for range 2 {
 		checks, err := app.CheckAgentProfiles(context.Background(), profiles)
