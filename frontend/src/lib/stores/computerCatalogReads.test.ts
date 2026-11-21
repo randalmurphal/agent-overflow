@@ -15,6 +15,6 @@ describe('an ended catalog read', () => {
     expect(openCatalogReadsForTest(HOME_BACKEND, 'threads')).toBe(0);
     await collectGarbage();
     expect(ref.deref()).toBeUndefined();
-    expect(() => read.replay([])).toThrow(/after it ended/);
+    expect(() => read.replay([])).toThrow(/after it was released/);
   });
 });

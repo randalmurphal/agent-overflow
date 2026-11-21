@@ -121,35 +121,51 @@ describe('catalog load state', () => {
     expect(list).toHaveBeenCalledTimes(3);
   });
 
-  // H1: a read past the startup deadline is still in flight; nothing
-  // retries over it, so it is never superseded by its own retries.
-  it('waits for a thread read past the startup deadline instead of retrying over it, and loads its late answer', async () => {
-    const late = deferred<Thread[]>();
-    const list = setBindingMock('ListThreads', () => late.promise);
+  // J2: a read of a catalog that has not loaded, past the startup deadline,
+  // gets one replacement on the retry schedule; the replacement waits for
+  // its answer, so nothing replaces it in turn.
+  it('replaces a thread read that missed the startup deadline once, and waits for the replacement', async () => {
+    const slow = deferred<Thread[]>();
+    let calls = 0;
+    setBindingMock('ListThreads', () => {
+      calls++;
+      return calls === 1 ? new Promise<Thread[]>(() => {}) : slow.promise;
+    });
     const boot = loadThreadCatalogs().catch((error: unknown) => error);
     await vi.advanceTimersByTimeAsync(2500);
     expect(await boot).toBeInstanceOf(ReadDeadlineError);
     expect(catalogLoadState(HOME_BACKEND, 'threads')).toEqual(LOADING);
-    expect(__catalogRetryCountForTest()).toBe(0);
+    expect(__catalogRetryCountForTest()).toBe(1);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(calls).toBe(2);
+
+    // Well past the startup deadline and every scheduled delay.
     await vi.advanceTimersByTimeAsync(30_000);
-    expect(list).toHaveBeenCalledTimes(1);
-    late.resolve([makeThread({ id: 't1' })]);
+    expect(calls).toBe(2);
+    expect(__catalogRetryCountForTest()).toBe(0);
+    slow.resolve([makeThread({ id: 't1' })]);
     await vi.advanceTimersByTimeAsync(0);
     expect(catalogLoadState(HOME_BACKEND, 'threads')).toEqual(LOADED);
     expect(getThreads().map((thread) => thread.id)).toEqual(['t1']);
   });
 
-  it('waits for a project read past the startup deadline instead of retrying over it', async () => {
+  it('lets a slow retry answer instead of superseding it with the next attempt', async () => {
     const slow = deferred<ProjectWithCounts[]>();
-    const list = setBindingMock('ListProjects', () => slow.promise);
+    let calls = 0;
+    setBindingMock('ListProjects', () => {
+      calls++;
+      return calls === 1 ? new Promise<ProjectWithCounts[]>(() => {}) : slow.promise;
+    });
     const boot = refreshProjects();
     await vi.advanceTimersByTimeAsync(2500);
     await boot;
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(calls).toBe(2);
+
     // Well past the startup deadline and every scheduled delay.
     await vi.advanceTimersByTimeAsync(30_000);
-    expect(list).toHaveBeenCalledTimes(1);
+    expect(calls).toBe(2);
     expect(catalogLoadState(HOME_BACKEND, 'projects')).toEqual(LOADING);
-    expect(__catalogRetryCountForTest()).toBe(0);
 
     slow.resolve([project('p1')]);
     await vi.advanceTimersByTimeAsync(0);
@@ -167,11 +183,42 @@ describe('catalog load state', () => {
     list.mockImplementation(() => hello.promise);
     void refreshProjects();
     expect(__catalogRetryCountForTest()).toBe(0);
-    await vi.advanceTimersByTimeAsync(30_000);
+    await vi.advanceTimersByTimeAsync(2000);
     expect(list).toHaveBeenCalledTimes(2);
     hello.resolve([project('p1')]);
     await vi.advanceTimersByTimeAsync(0);
     expect(catalogLoadState(HOME_BACKEND, 'projects')).toEqual(LOADED);
+  });
+
+  it('drops a superseded project answer without replaying the journal its supersession released', async () => {
+    const older = deferred<ProjectWithCounts[]>();
+    const list = setBindingMock('ListProjects', () => older.promise);
+    const first = refreshProjects();
+    list.mockImplementation(async () => [project('p2')]);
+    await refreshProjects();
+    older.resolve([project('p1')]);
+    await first;
+    expect(console.error).not.toHaveBeenCalled();
+    expect(getProjects().map((row) => row.project.id)).toEqual(['p2']);
+  });
+
+  // J1: a superseded read's attempt ends with its supersession.
+  it("ends a superseded project read's attempt, so the newer read's failure retries and Retry reads", async () => {
+    const list = setBindingMock('ListProjects', async () => [project('p1')]);
+    await refreshProjects();
+    expect(catalogLoadState(HOME_BACKEND, 'projects')).toEqual(LOADED);
+    // A: slow, loaded, so it waits past its deadline for the late answer.
+    list.mockImplementation(() => new Promise<ProjectWithCounts[]>(() => {}));
+    void refreshProjects();
+    await vi.advanceTimersByTimeAsync(0);
+    // B: a gap's read supersedes A and fails.
+    list.mockImplementation(async () => { throw new TransportError('method_error', 'list projects: disk I/O error'); });
+    await refreshProjects();
+    expect(catalogLoadState(HOME_BACKEND, 'projects').phase).toBe('failed');
+    expect(__catalogRetryCountForTest()).toBe(1);
+    expect(list).toHaveBeenCalledTimes(3);
+    retryCatalogLoad(HOME_BACKEND);
+    expect(list).toHaveBeenCalledTimes(4);
   });
 
   it('keeps loading through temporarily_unavailable, backing off 1, 2, 4, 8 s, then every 10 s', async () => {
@@ -603,39 +650,44 @@ describe('the group catalog', () => {
   const groupRow = (id: string): ThreadGroup => ({ id, projectId: 'p1', name: id, createdAt: 0, updatedAt: 0 });
 
   it.each(['threads', 'groups'] as const)(
-    'lists a computer when its %s answer lands slower than the longest retry interval, without retrying over it',
+    'lists a computer after one replacement when its %s answer is slower than the longest retry interval',
     async (slow) => {
       const threads = setBindingMock('ListThreads', () => answerAfter(slow === 'threads' ? slowerThanEveryRetry : 0, [makeThread({ id: 't1' })]));
       const groups = setBindingMock('ListThreadGroups', () => answerAfter(slow === 'groups' ? slowerThanEveryRetry : 0, [groupRow('g1')]));
       void loadThreadCatalogs().catch(() => {});
+      // The startup deadline, then the one replacement.
       await vi.advanceTimersByTimeAsync(2500 + 1000);
       const slowMock = slow === 'threads' ? threads : groups;
-      expect(slowMock).toHaveBeenCalledTimes(1);
+      expect(slowMock).toHaveBeenCalledTimes(2);
       expect(__catalogRetryCountForTest()).toBe(0);
       await vi.advanceTimersByTimeAsync(slowerThanEveryRetry);
       expect(catalogTreeListed(HOME_BACKEND)).toBe(true);
-      expect(slowMock).toHaveBeenCalledTimes(1);
+      expect(slowMock).toHaveBeenCalledTimes(2);
       expect(catalogLoadState(HOME_BACKEND, slow)).toEqual(LOADED);
       expect(__catalogRetryCountForTest()).toBe(0);
     },
   );
 
-  it("arms no retry while a boot round's slow half is out, though its other half failed, and retries once it lands", async () => {
+  it("replaces a boot round once when its slow half misses the deadline, and arms nothing while the replacement's slow half is out", async () => {
     const threads = setBindingMock('ListThreads', async () => { throw new TransportError('method_error', 'list threads: disk I/O error'); });
     const groups = setBindingMock('ListThreadGroups', () => answerAfter(slowerThanEveryRetry, [groupRow('g1')]));
     void loadThreadCatalogs().catch(() => {});
     await vi.advanceTimersByTimeAsync(2500 + 1000);
+    expect([threads, groups].map((mock) => mock.mock.calls.length)).toEqual([2, 2]);
     expect(catalogLoadState(HOME_BACKEND, 'threads').phase).toBe('failed');
+    // The replacement's thread half failed again; its slow group half holds
+    // the timer off.
     expect(__catalogRetryCountForTest()).toBe(0);
-    // Just past the moment the slow group answer lands.
-    await vi.advanceTimersByTimeAsync(slowerThanEveryRetry - 2500 - 1000 + 1);
-    expect([threads, groups].map((mock) => mock.mock.calls.length)).toEqual([1, 1]);
+    await vi.advanceTimersByTimeAsync(slowerThanEveryRetry - 1);
+    expect([threads, groups].map((mock) => mock.mock.calls.length)).toEqual([2, 2]);
+    expect(__catalogRetryCountForTest()).toBe(0);
+    await vi.advanceTimersByTimeAsync(1);
     // The pair is incomplete, so nothing lists; the thread failure retries now.
     expect(catalogTreeListed(HOME_BACKEND)).toBe(false);
     expect(__catalogRetryCountForTest()).toBe(1);
     threads.mockImplementation(async () => [makeThread({ id: 't1' })]);
     groups.mockImplementation(async () => [groupRow('g1')]);
-    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(2000);
     expect(catalogTreeListed(HOME_BACKEND)).toBe(true);
   });
 

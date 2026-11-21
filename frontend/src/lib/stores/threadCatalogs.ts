@@ -41,16 +41,16 @@
 // so a retry that waits for its RPC cannot hold the boot. Only then does it
 // decide whether any of its computers' thread rows are known.
 //
-// A computer's read is one attempt of the pair's catalogs
-// (beginCatalogAttempt), whatever started the round: it holds the retry
-// timer off until both of its parts are done or dropped. Then nothing here
-// holds it, its journals or its answers.
+// Each catalog read is an attempt of the pair's retry (./catalogLoad.svelte.ts)
+// until it is released, ended or superseded, so a computer's read holds the
+// retry timer off while either part is still out. Once both parts are done
+// or dropped, nothing here holds it, its journals or its answers.
 import { untrack } from 'svelte';
 import { attachedBackends, onBackendDetached, type BackendEntry } from '../transport/backends';
 import type { BackendKey } from '../transport/backendKey';
 import { ReadDeadlineError } from '../utils/readBeforeDeadline';
 import type { Thread, ThreadGroup } from '../types/models';
-import { beginCatalogAttempt, catalogFailureShown, registerCatalogReader } from './catalogLoad.svelte';
+import { catalogFailureShown, registerCatalogReader } from './catalogLoad.svelte';
 import {
   beginShare, commitShares, COMPUTER_READ_DEADLINE_MS, readShare,
   type CatalogPart, type ComputerShare, type ShareResult,
@@ -111,8 +111,6 @@ interface ComputerRead {
   ownersNoted: boolean;
   threads: PartRead<Thread>;
   groups: PartRead<ThreadGroup>;
-  /** Ends this read's attempt of the pair's catalogs; idempotent. */
-  endAttempt: () => void;
 }
 
 // A thread answer withheld for its partner's failure, kept for the rows the
@@ -166,9 +164,6 @@ function supersede(older: Round, newer: Round): void {
 }
 
 function beginComputer(round: Round, target: BackendEntry, threads: CatalogPart<Thread>, groups: CatalogPart<ThreadGroup>): ComputerRead {
-  // The new attempt begins before the previous one ends, so the timer is
-  // never re-evaluated between them.
-  const endAttempt = beginCatalogAttempt('threads', target.id);
   const previous = reads.get(target.id);
   const read: ComputerRead = {
     backend: target.id,
@@ -177,7 +172,6 @@ function beginComputer(round: Round, target: BackendEntry, threads: CatalogPart<
     ownersNoted: false,
     threads: partRead(threads, target),
     groups: partRead(groups, target),
-    endAttempt,
   };
   reads.set(target.id, read);
   if (previous !== undefined) {
@@ -192,8 +186,9 @@ function beginComputer(round: Round, target: BackendEntry, threads: CatalogPart<
   return read;
 }
 
-// A read that can no longer commit ends every journal it holds; an RPC
-// still out ends its own when it lands.
+// A read that can no longer commit publishes nothing. Its journals end: a
+// newer read released them already; a detach or identity change ends them
+// here, or, for an RPC still out, when it lands.
 function drop(read: ComputerRead): void {
   dropPart(read.threads);
   dropPart(read.groups);
@@ -214,7 +209,6 @@ function concludeIfDone(read: ComputerRead): void {
   const concluded = (part: PartStatus) => part.state === 'done' || part.dropped;
   if (!concluded(read.threads) || !concluded(read.groups)) return;
   if (reads.get(read.backend) === read) reads.delete(read.backend);
-  read.endAttempt();
 }
 
 // The read's on-time outcome: an answer, a failure, or a deadline.

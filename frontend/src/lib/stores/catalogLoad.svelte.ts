@@ -12,10 +12,12 @@
 // thread list reads threads and groups as one (./threadCatalogs.ts), and
 // one timer per reader and computer retries them together.
 //
-//   - A read that met a backend answering temporarily_unavailable retries
-//     after 1, 2, 4 and 8 s, then every 10 s. A retry waits for the answer
-//     rather than for the startup deadline. A read past its startup deadline
-//     is still in flight: its late answer or late failure settles it.
+//   - A read that met a backend answering temporarily_unavailable, or that
+//     missed its startup deadline before its catalog loaded, retries after
+//     1, 2, 4 and 8 s, then every 10 s. A retry waits for the answer rather
+//     than for the startup deadline, so a read past its deadline gets one
+//     replacement, not a chain. Past the deadline, a loaded catalog waits for
+//     the late answer or late failure instead.
 //   - A failed read shows its error with a Retry and keeps retrying on the
 //     same schedule, loaded or not: the rows it had stay listed. A scope
 //     refusal shows its error and waits for Retry: asking again cannot
@@ -27,15 +29,17 @@
 // The timer runs while any catalog its reader covers wants a retry, so an
 // answer of one catalog cannot cancel the retry another one's failure asked
 // for, and repeated hellos cannot stack retries. Every read of a computer's
-// catalogs, whatever started it (boot, hello, gap, retry), is an attempt
-// (beginCatalogAttempt): beginning one consumes the retry its reader's
-// catalogs asked for and cancels the armed timer, no timer runs for that
-// reader and computer until every attempt has ended, and the timer is
-// re-evaluated then. So a retry never supersedes a read that is still out,
-// and Retry starts nothing while one is: it only restarts the schedule. A
-// history generation
-// observed mid-session puts every catalog of that computer back to
-// 'loading' and re-reads it: its rows describe a history it no longer has.
+// catalog, whatever started it (boot, hello, gap, retry), is an attempt
+// (beginCatalogAttempt) from its begin until the read is released, ended or
+// superseded (./computerCatalogReads.ts). Beginning one consumes the retry
+// its reader's catalogs asked for and cancels the armed timer; no timer runs
+// for that reader and computer until every attempt has ended, and the timer
+// is re-evaluated then. So a retry never supersedes a read that is still
+// out, and Retry starts nothing while one is: it only restarts the schedule.
+// The one exception is the missed deadline above, which ends the attempt
+// early so its replacement can run. A history generation observed
+// mid-session puts every catalog of that computer back to 'loading' and
+// re-reads it: its rows describe a history it no longer has.
 // Detaching a computer drops its state and its timers.
 
 import { untrack } from 'svelte';
@@ -140,14 +144,21 @@ export function settleCatalogRead(kind: CatalogKind, backend: BackendKey, outcom
     wantsRetry.delete(key);
     states.set(key, LOADED);
   } else {
-    settleFailure(kind, key, outcome.error);
+    settleFailure(kind, backend, key, outcome.error);
   }
   updateRetry(kind, backend);
 }
 
-function settleFailure(kind: CatalogKind, key: string, error: unknown): void {
-  // Still out: its late answer or late failure settles it.
-  if (error instanceof ReadDeadlineError) return;
+function settleFailure(kind: CatalogKind, backend: BackendKey, key: string, error: unknown): void {
+  if (error instanceof ReadDeadlineError) {
+    // A loaded catalog waits for the late answer or late failure. One that
+    // has not loaded gets its replacement: the read past its deadline no
+    // longer holds the timer off, and the retry supersedes it.
+    if (untrack(() => states.get(key)).phase === 'loaded') return;
+    endAttempts(kind, backend);
+    wantsRetry.add(key);
+    return;
+  }
   if (isTemporarilyUnavailableError(error)) {
     wantsRetry.add(key);
     return;
@@ -221,8 +232,9 @@ function runReader(reader: RegisteredReader, backend: BackendKey): void {
 
 /**
  * Begin one computer's read of the catalogs `kind`'s reader covers; returns
- * its end, which the read calls once, when nothing of it is still out. Every
- * read enters here, whatever started it.
+ * its end, which the read's release calls (./computerRows.ts). Every read
+ * enters here, whatever started it. An end after the attempt already ended
+ * does nothing.
  */
 export function beginCatalogAttempt(kind: CatalogKind, backend: BackendKey): () => void {
   const reader = readerOf(kind);
@@ -248,6 +260,15 @@ export function beginCatalogAttempt(kind: CatalogKind, backend: BackendKey): () 
     if (owner.get(backend) === held) owner.delete(backend);
     updateReaderRetry(reader, backend);
   };
+}
+
+// End every attempt of `kind`'s reader for `backend`. Each older read was
+// released when the newest began, so these are the newest read's.
+function endAttempts(kind: CatalogKind, backend: BackendKey): void {
+  const reader = readerOf(kind);
+  if (reader === undefined) return;
+  inFlight.get(reader)?.get(backend)?.clear();
+  inFlight.get(reader)?.delete(backend);
 }
 
 function clearRetry(reader: RegisteredReader, backend: BackendKey): void {

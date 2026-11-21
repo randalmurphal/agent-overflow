@@ -16,8 +16,6 @@ export interface ComputerCatalog<T> {
   write(backend: BackendKey, rows: T[]): Promise<void>;
   hasRows(backend: BackendKey): boolean;
   begin(backend: BackendKey): CatalogRead<T>;
-  /** Begin one computer's read as an attempt of its catalog (beginCatalogAttempt); returns its end. */
-  attempt(backend: BackendKey): () => void;
   /**
    * One computer's current read failed with `error`; `cached` when its
    * kept or replica rows stand in for the answer. An answer, on time or
@@ -63,9 +61,11 @@ export function computerCatalog<K extends CatalogKind>(
       // since the read began keeps this answer out of IndexedDB. The answer
       // itself still commits, with the invalidating mutation replayed.
       stamps.set(backend, replicaCatalogStamp(backend, kind));
-      return beginCatalogRead<CatalogRows[K]>(backend, kind);
+      // The read is one attempt of its catalog, whatever started it: the
+      // attempt begins first and ends when the read is released, ended or
+      // superseded (./computerCatalogReads.ts).
+      return beginCatalogRead<CatalogRows[K]>(backend, kind, beginCatalogAttempt(kind, backend));
     },
-    attempt: (backend) => beginCatalogAttempt(kind, backend),
     read: (backend) => getReplicaCatalog(backend, kind),
     write: (backend, rows) => putReplicaCatalog(backend, kind, rows, stamps.get(backend) ?? null),
     hasRows: (backend) => populated.has(backend),
@@ -186,13 +186,12 @@ export async function readShare<T>(
 
 /**
  * Commit one catalog's results in one synchronous block: replay each
- * answer's journal and end it, settle each failure, write the replicas,
- * note every row's owner before admission, and call `commit` once with the
- * rows of every computer that answered or kept rows. A result past its
- * deadline settles as one but keeps recording.
+ * answer's journal, settle each failure, write the replicas, note every
+ * row's owner before admission, call `commit` once with the rows of every
+ * computer that answered or kept rows, then end the journals. A result past
+ * its deadline settles as one but keeps recording.
  */
 export function commitShares<T>(part: CatalogPart<T>, results: readonly ShareResult<T>[]): CommitOutcome {
-  const { note, commit, catalog, admit } = part;
   // One final membership check covers both RPC and IndexedDB awaits.
   // Superseded, detached and re-identified computers' results have no
   // authority: a newer read, the detach or the identity change's own
@@ -200,14 +199,23 @@ export function commitShares<T>(part: CatalogPart<T>, results: readonly ShareRes
   const live = new Set<BackendEntry>(attachedBackends());
   const current = results.filter((result) => result.share.current()
     && sameIdentity(result.identity, getBackendIdentity(result.share.target.id)));
-  // Every computer replays now, once every computer in the block has
-  // settled, so a mutation made while a slower computer was still out is
-  // not lost. An unanswered computer keeps its local rows, which already
-  // hold its mutations.
-  for (const result of results) {
-    if (result.answered) result.rows = result.share.pending.replay(result.rows);
-    if (!result.late) result.share.pending.end();
+  // Every current computer replays now, once every computer in the block
+  // has settled, so a mutation made while a slower computer was still out is
+  // not lost; a superseded read was released and commits nothing. An
+  // unanswered computer keeps its local rows, which already hold its
+  // mutations.
+  for (const result of current) if (result.answered) result.rows = result.share.pending.replay(result.rows);
+  try {
+    return commitCurrent(part, current, live);
+  } finally {
+    // Released after the block settled its outcome: each release ends the
+    // read's attempt, whose retry then sees what the block asked for.
+    for (const result of results) if (!result.late) result.share.pending.end();
   }
+}
+
+function commitCurrent<T>(part: CatalogPart<T>, current: readonly ShareResult<T>[], live: ReadonlySet<BackendEntry>): CommitOutcome {
+  const { note, commit, catalog, admit } = part;
   const answered = new Set<BackendKey>();
   const rows: T[] = [];
   let error: unknown;
@@ -254,25 +262,10 @@ export async function readComputerRows<T>(
   const part: CatalogPart<T> = { read, note, commit, catalog: options.catalog, admit: options.admit };
   const deadlineMs = options.deadlineMs === undefined ? COMPUTER_READ_DEADLINE_MS : options.deadlineMs;
   const targets = attachedBackends().filter((entry) => options.only === undefined || entry.id === options.only);
-  // Each computer's attempt ends once nothing of its read is still out.
-  const attempts = new Map(targets.map((target) => [target, options.catalog?.attempt(target.id) ?? (() => {})]));
   const shares = targets.map((target) => beginShare(part, target));
-  const late: LateShare<T> = {
-    onLate: (result) => {
-      try {
-        commitShares(part, [result]);
-      } finally {
-        attempts.get(result.share.target)!();
-      }
-    },
-  };
+  const late: LateShare<T> = { onLate: (result) => { commitShares(part, [result]); } };
   const results = await Promise.all(shares.map((share) => readShare(part, share, deadlineMs, late)));
-  let outcome: CommitOutcome;
-  try {
-    outcome = commitShares(part, results);
-  } finally {
-    for (const result of results) if (!result.late) attempts.get(result.share.target)!();
-  }
+  const outcome = commitShares(part, results);
   // Superseded reads have no authority and no failure to report. In
   // particular, boot and a connection's first hello can overlap. Keep
   // cancellation distinct from both an authoritative empty list and an

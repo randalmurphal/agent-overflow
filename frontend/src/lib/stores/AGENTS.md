@@ -217,12 +217,16 @@ pending reads, and watched-thread routing for the old owner.
 `catalogLoad.svelte.ts` holds whether each computer's thread, project and
 group catalogs have loaded, and owns their retries: one timer per registered
 reader and computer, armed while any catalog that reader covers wants one and
-no attempt is in flight. Every read of a computer's catalogs, whatever
-started it, enters `beginCatalogAttempt` and ends it once nothing of the read
-is still out: beginning one consumes the retry and cancels the armed timer,
-so a retry never supersedes a live read, and Retry then only restarts the
-schedule. A catalog that has not loaded is never presented as empty; a loaded
-one that fails shows its error beside the rows it keeps. Every read settles there: a
+no attempt is in flight. Every catalog read, whatever started it, is an
+attempt (`beginCatalogAttempt`) from its begin until `computerCatalogReads.ts`
+releases it, when it ends or a newer read supersedes it: beginning one
+consumes the retry and cancels the armed timer, so a retry never supersedes
+a live read, and Retry then only restarts the schedule. A read past its
+startup deadline whose catalog has not loaded is the one exception: its
+attempt ends there and one replacement, which waits for its answer, follows
+on the retry schedule; a loaded catalog waits for the late outcome. A catalog
+that has not loaded is never presented as empty; a loaded one that fails
+shows its error beside the rows it keeps. Every read settles there: a
 failure inside `commitShares` (`computerRows.ts`), an answer in the `commit`
 callback that commits its rows. Answers commit in the same synchronous block
 that replays local mutations; never commit an answer after an `await`.

@@ -430,9 +430,10 @@ describe('a held answer', () => {
     expect(openCatalogReadsForTest(HOME_BACKEND, 'threads')).toBe(1);
     setBindingMock('ListThreads', never);
     void loadThreadCatalogs().catch(() => {});
-    // The newer round's own reads are the only ones recording.
+    // The newer round's own reads are the only ones recording, the older
+    // group read still out included: nothing can commit it.
     expect(openCatalogReadsForTest(HOME_BACKEND, 'threads')).toBe(1);
-    expect(openCatalogReadsForTest(HOME_BACKEND, 'groups')).toBe(2);
+    expect(openCatalogReadsForTest(HOME_BACKEND, 'groups')).toBe(1);
   });
 });
 
@@ -614,4 +615,3 @@ describe("a computer's read once both parts are done", () => {
     expect(threadIds()).toEqual(['t1']);
   });
 });
-
