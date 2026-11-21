@@ -772,6 +772,10 @@ type App struct {
 	// created the successor and before it takes the old thread's locks
 	// (nextAssistantThread), so a test can rename or archive meanwhile.
 	handOffSuccessorMadeForTest func(oldThreadID, successorID string)
+	// assistantHandOffEndedForTest, when set, runs as soon as an assistant's
+	// handoff has ended (endAssistantHandOff), so a test can start the next
+	// handoff at that moment.
+	assistantHandOffEndedForTest func(agentID string)
 	// remoteReplySettledForTest, when set, runs in a parked remote call's
 	// after-response work between the dismissal and the end of its wait.
 	remoteReplySettledForTest func()

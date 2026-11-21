@@ -130,7 +130,7 @@ func (a *App) recoverAssistantSessionLoss(threadID string) {
 		a.endAssistantHandOff(agent.ID, threadID, successor.ID)
 	})
 	if !started {
-		a.returnSessionLossCarries(threadID, a.assistantHandOffs.finish(agent.ID))
+		a.endAssistantHandOff(agent.ID, threadID, "")
 	}
 }
 

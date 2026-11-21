@@ -7,6 +7,7 @@ import (
 	"io"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -439,42 +440,71 @@ func TestASendRacingTheDraftMoveLandsOnce(t *testing.T) {
 }
 
 // Sends racing a failed handoff's return of the carried messages: every
-// carried message ends in a composer once, wherever the assistant is.
+// carried message ends in a composer once, wherever the assistant is. The
+// second send finds the session gone while the failed handoff returns the
+// first, and the third starts the next handoff the moment the failed one
+// ends; that handoff moves the composer to its successor.
 func TestSendsDuringAFailedReturnAreEachKeptOnce(t *testing.T) {
 	t.Parallel()
-	for run := range 20 {
-		f, threadID, _ := lostSessionAssistant(t)
-		agentID := assistantIDOf(t, f.app, threadID)
-		if !f.app.assistantHandOffs.begin(agentID, threadID) {
-			t.Fatal("begin")
+	f, threadID, _ := lostSessionAssistant(t)
+	agentID := assistantIDOf(t, f.app, threadID)
+	if !f.app.assistantHandOffs.begin(agentID, threadID) {
+		t.Fatal("begin")
+	}
+	sendFindingTheSessionGone(t, f.app, threadID, "first message")
+	committed := make(chan struct{})
+	f.app.handOffCommittedForTest = func(old, _ string) {
+		if old == threadID {
+			close(committed)
 		}
-		sendFindingTheSessionGone(t, f.app, threadID, "first message")
-		sendFindingTheSessionGone(t, f.app, threadID, "second message")
-		items := f.app.assistantHandOffs.finish(agentID)
-		done := make(chan struct{})
-		go func() {
-			f.app.returnSessionLossCarries(threadID, items)
-			close(done)
-		}()
-		_, err := f.app.SendMessageWithOptions(t.Context(), threadID, "third message", SendMessageOptions{SendID: uuid.NewString(), ConsumeDraft: &DraftSnapshot{Content: "third message"}})
-		<-done
-		awaitCurrentThread(t, f.app, threadID)
-		f.app.waitAgentNoticeWork()
-		threads, err2 := f.app.store.ListThreads()
-		if err2 != nil {
-			t.Fatal(err2)
-		}
-		total := map[string]int{}
-		for _, th := range threads {
-			d := draftContent(t, f.app, th.ID)
-			for _, text := range []string{"first message", "second message"} {
-				total[text] += strings.Count(d, text)
+	}
+	var third error
+	var once sync.Once
+	f.app.assistantHandOffEndedForTest = func(string) {
+		once.Do(func() {
+			_, third = f.app.SendMessageWithOptions(t.Context(), threadID, "third message", SendMessageOptions{SendID: uuid.NewString(), ConsumeDraft: &DraftSnapshot{Content: "third message"}})
+			if code, _, _ := errorsx.PublicDetails(third); code != transport.ErrCodeAssistantSessionGone {
+				return
 			}
+			select {
+			case <-committed:
+			case <-time.After(20 * time.Second):
+				t.Error("the handoff the third send started never committed")
+			}
+		})
+	}
+	// The failed handoff's end waits on the composer with the first message
+	// taken, and the second send finds the session gone meanwhile.
+	unlock := f.app.threadApplication().LockMutations(threadID)
+	ended := make(chan struct{})
+	go func() {
+		defer close(ended)
+		f.app.endAssistantHandOff(agentID, threadID, "")
+	}()
+	waitUntil(t, 20*time.Second, func() bool {
+		return len(carriesOf(f.app, threadID)) == 0 && f.app.threadApplication().MutationRefs(threadID) == 2
+	})
+	sendFindingTheSessionGone(t, f.app, threadID, "second message")
+	unlock()
+	<-ended
+	if code, _, _ := errorsx.PublicDetails(third); code != transport.ErrCodeAssistantSessionGone {
+		t.Fatalf("third send = %v, want %s", third, transport.ErrCodeAssistantSessionGone)
+	}
+	successor := awaitCurrentThread(t, f.app, threadID)
+	f.app.waitAgentNoticeWork()
+	threads, err := f.app.store.ListThreads()
+	if err != nil {
+		t.Fatal(err)
+	}
+	total := map[string]int{}
+	for _, th := range threads {
+		d := draftContent(t, f.app, th.ID)
+		for _, text := range []string{"first message", "second message", "third message"} {
+			total[text] += strings.Count(d, text)
 		}
-		if total["first message"] != 1 || total["second message"] != 1 {
-			code, _, _ := errorsx.PublicDetails(err)
-			t.Errorf("run %d: third %q; totals %v", run, code, total)
-		}
+	}
+	if total["first message"] != 1 || total["second message"] != 1 || total["third message"] != 1 {
+		t.Errorf("totals in open composers %v; successor's %q, past thread's %q", total, draftContent(t, f.app, successor), draftContent(t, f.app, threadID))
 	}
 }
 

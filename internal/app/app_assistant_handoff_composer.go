@@ -25,8 +25,8 @@ import (
 // the session gone while it ran, in the order they arrived. An assistant
 // runs one handoff at a time, whether the person or a session loss started
 // it. One lock covers both maps, so a send adds its message only while a
-// handoff runs that will take it, and the handoff takes what is left as it
-// ends.
+// handoff runs that will take it, and the handoff ends only once nothing is
+// left for it to take (finish).
 type assistantHandOffState struct {
 	mu      sync.Mutex
 	leaving map[string]string
@@ -76,33 +76,44 @@ func (c *assistantHandOffState) take(threadID string) []store.Item {
 	return items
 }
 
-// finish ends the assistant's handoff and returns the messages it did not
-// take.
-func (c *assistantHandOffState) finish(agentID string) []store.Item {
+// finish ends the assistant's handoff when no message waits for it, and
+// reports true. Otherwise it takes the messages, oldest first, and the
+// handoff keeps running, so a send meanwhile still adds to it rather than
+// starting another handoff before they are placed.
+func (c *assistantHandOffState) finish(agentID string) ([]store.Item, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	threadID := c.leaving[agentID]
+	if items := c.items[threadID]; len(items) > 0 {
+		delete(c.items, threadID)
+		return items, false
+	}
 	delete(c.leaving, agentID)
-	items := c.items[threadID]
-	delete(c.items, threadID)
-	return items
+	return nil, true
 }
 
 // endAssistantHandOff ends the assistant's running handoff from threadID;
 // successorID is empty when the handoff made none. A send that found the
 // session gone after the handoff took the carried messages added its own,
 // which follows them to the successor. With no successor every message goes
-// back to the old composer, and goes back before the handoff ends, so a send
-// that finds the session gone meanwhile joins them rather than starting a
-// handoff that could move the composer before they land in it.
+// back to the old composer. Either way each message is placed before the
+// handoff ends, so a send that finds the session gone meanwhile joins them
+// rather than starting a handoff that could move the composer before they
+// land in it.
 func (a *App) endAssistantHandOff(agentID, threadID, successorID string) {
-	if successorID == "" {
-		a.returnSessionLossCarries(threadID, a.assistantHandOffs.take(threadID))
-		a.returnSessionLossCarries(threadID, a.assistantHandOffs.finish(agentID))
-		return
+	for {
+		items, ended := a.assistantHandOffs.finish(agentID)
+		if ended {
+			break
+		}
+		if successorID == "" {
+			a.returnSessionLossCarries(threadID, items)
+		} else {
+			a.carrySessionLossItems(threadID, successorID, items)
+		}
 	}
-	if left := a.assistantHandOffs.finish(agentID); len(left) > 0 {
-		a.carrySessionLossItems(threadID, successorID, left)
+	if a.assistantHandOffEndedForTest != nil {
+		a.assistantHandOffEndedForTest(agentID)
 	}
 }
 

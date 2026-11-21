@@ -257,9 +257,7 @@ func TestASendBetweenTheCarryAndTheEndOfTheHandOffLandsOnce(t *testing.T) {
 		t.Fatalf("handoff: %v", err)
 	}
 	_, sendErr := f.app.SendMessageWithOptions(t.Context(), threadID, "late message", SendMessageOptions{SendID: uuid.NewString()})
-	if left := f.app.assistantHandOffs.finish(agentID); len(left) > 0 {
-		f.app.carrySessionLossItems(threadID, successor.ID, left)
-	}
+	f.app.endAssistantHandOff(agentID, threadID, successor.ID)
 	f.app.waitAgentNoticeWork()
 	composers := draftContent(t, f.app, successor.ID) + "\n\n" + draftContent(t, f.app, threadID)
 	if code, _, _ := errorsx.PublicDetails(sendErr); code == transport.ErrCodeAssistantSessionGone && strings.Count(composers, "late message") != 1 {
@@ -272,51 +270,54 @@ func TestASendBetweenTheCarryAndTheEndOfTheHandOffLandsOnce(t *testing.T) {
 // that succeeds moves them all to the successor's composer.
 func TestSendsDuringAFailedReturnEndInTheNextSuccessor(t *testing.T) {
 	t.Parallel()
-	for run := range 5 {
-		f, threadID, _ := lostSessionAssistant(t)
-		agentID := assistantIDOf(t, f.app, threadID)
-		if !f.app.assistantHandOffs.begin(agentID, threadID) {
-			t.Fatal("begin")
+	f, threadID, _ := lostSessionAssistant(t)
+	agentID := assistantIDOf(t, f.app, threadID)
+	if !f.app.assistantHandOffs.begin(agentID, threadID) {
+		t.Fatal("begin")
+	}
+	sendFindingTheSessionGone(t, f.app, threadID, "first message")
+	sendFindingTheSessionGone(t, f.app, threadID, "second message")
+	// The failed handoff's end waits on the composer with the carried
+	// messages taken, and the third send finds the session gone meanwhile.
+	unlock := f.app.threadApplication().LockMutations(threadID)
+	ended := make(chan struct{})
+	go func() {
+		defer close(ended)
+		f.app.endAssistantHandOff(agentID, threadID, "")
+	}()
+	waitUntil(t, 20*time.Second, func() bool {
+		return len(carriesOf(f.app, threadID)) == 0 && f.app.threadApplication().MutationRefs(threadID) == 2
+	})
+	// The client sends what its composer held, and consumes only that.
+	_, third := f.app.SendMessageWithOptions(t.Context(), threadID, "third message", SendMessageOptions{SendID: uuid.NewString(), ConsumeDraft: &DraftSnapshot{Content: "third message"}})
+	unlock()
+	<-ended
+	if code, _, _ := errorsx.PublicDetails(third); code != transport.ErrCodeAssistantSessionGone {
+		t.Fatalf("third send = %v, want %s", third, transport.ErrCodeAssistantSessionGone)
+	}
+	texts := []string{"first message", "second message", "third message"}
+	old := draftContent(t, f.app, threadID)
+	for _, text := range texts {
+		if strings.Count(old, text) != 1 {
+			t.Errorf("%q in the old composer %d times: %q", text, strings.Count(old, text), old)
 		}
-		sendFindingTheSessionGone(t, f.app, threadID, "first message")
-		sendFindingTheSessionGone(t, f.app, threadID, "second message")
-		// The failed path, as recoverAssistantSessionLoss runs it, racing a
-		// third send.
-		var wg sync.WaitGroup
-		wg.Go(func() {
-			f.app.returnSessionLossCarries(threadID, f.app.assistantHandOffs.take(threadID))
-		})
-		// The client sends what its composer held, and consumes only that.
-		_, third := f.app.SendMessageWithOptions(t.Context(), threadID, "third message", SendMessageOptions{SendID: uuid.NewString(), ConsumeDraft: &DraftSnapshot{Content: "third message"}})
-		wg.Wait()
-		f.app.returnSessionLossCarries(threadID, f.app.assistantHandOffs.finish(agentID))
-		texts := []string{"first message", "second message"}
-		if code, _, _ := errorsx.PublicDetails(third); code == transport.ErrCodeAssistantSessionGone {
-			texts = append(texts, "third message")
-		}
-		old := draftContent(t, f.app, threadID)
-		for _, text := range texts {
-			if strings.Count(old, text) != 1 {
-				t.Errorf("run %d: %q in the old composer %d times: %q", run, text, strings.Count(old, text), old)
-			}
-		}
+	}
 
-		// New Thread, Same Assistant, which the failure told the person to
-		// use, takes the composer with the assistant.
-		next, err := f.app.StartNextAssistantThread(t.Context(), threadID)
-		if err != nil {
-			t.Fatalf("run %d: hand off: %v", run, err)
+	// New Thread, Same Assistant, which the failure told the person to
+	// use, takes the composer with the assistant.
+	next, err := f.app.StartNextAssistantThread(t.Context(), threadID)
+	if err != nil {
+		t.Fatalf("hand off: %v", err)
+	}
+	f.app.waitAgentNoticeWork()
+	moved := draftContent(t, f.app, next.ID)
+	for _, text := range texts {
+		if strings.Count(moved, text) != 1 {
+			t.Errorf("%q in the successor's composer %d times: %q", text, strings.Count(moved, text), moved)
 		}
-		f.app.waitAgentNoticeWork()
-		moved := draftContent(t, f.app, next.ID)
-		for _, text := range texts {
-			if strings.Count(moved, text) != 1 {
-				t.Errorf("run %d: %q in the successor's composer %d times: %q", run, text, strings.Count(moved, text), moved)
-			}
-		}
-		if old := draftContent(t, f.app, threadID); old != "" {
-			t.Errorf("run %d: past thread's composer = %q, want it empty", run, old)
-		}
+	}
+	if old := draftContent(t, f.app, threadID); old != "" {
+		t.Errorf("past thread's composer = %q, want it empty", old)
 	}
 }
 
