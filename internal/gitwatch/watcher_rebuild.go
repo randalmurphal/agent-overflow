@@ -125,17 +125,18 @@ const maxRebuildReinstalls = 3
 
 // maybeRebuildWatches recomputes the watch roots while needsRebuild is
 // set, and reinstalls them when they differ from the installed set or a
-// reinstall is forced. Every install leaves needsRebuild set, and forces
-// another when a root was replaced during it (installWatches), so the
-// roots are recomputed after it and reinstalled until a recompute matches
-// what is installed: a directory created while the watches were out
-// raised no event, and only that recompute finds it.
+// reinstall is forced. Every install leaves needsRebuild set
+// (installWatches), so the roots are recomputed after it and reinstalled
+// until a recompute matches what is installed: a directory created while
+// the watches were out raised no event, and only that recompute finds it.
+// A root replaced during an install is not found here: its own watch
+// reports a Remove, which inspectEvent turns into a forced reinstall at
+// the next refresh edge.
 //
 // unfinished reports that the rebuild ended with needsRebuild still set:
-// a recompute failed, or the cap was hit. The watches it left (the ones
-// already installed, or the ones a failed recompute found) stay. The
-// caller has to run the rebuild again itself: the tree that needs
-// (re)watching may never produce another event.
+// a recompute failed, or the cap was hit. The watches installed at that
+// point stay. The caller has to run the rebuild again itself: the tree
+// that needs (re)watching may never produce another event.
 func (w *workspaceWatcher) maybeRebuildWatches() (outcome rebuildOutcome, unfinished bool) {
 	if w.rootsFn == nil {
 		return rebuildNone, false
