@@ -211,19 +211,20 @@ GO_LINT_FLAGS ?=
 go-lint: $(GOLANGCI_LINT_BUILD)
 	$(GOLANGCI_LINT) run --timeout 20m $(GO_LINT_FLAGS) ./...
 
-# go-lint-exhaustive runs the exhaustive linter alone over every file set
-# this host compiles (the default, nogui, noremote and providersmoke ones)
-# and over the Windows launcher's packages as Windows compiles them. The
-# linter reports at the switch, not at the constant a change added, and has
-# no backlog, so it is not limited to a change's lines. Every file only
-# macOS compiles is in the default set, which CI's macOS job lints with
-# `make go-lint GO_LINT_FLAGS="--enable-only exhaustive"`.
+# go-lint-exhaustive runs the exhaustive linter alone over every Go file
+# this host compiles and over the Windows launcher's packages as Windows
+# compiles them. The linter reports at the switch, not at the constant a
+# change added, and has no backlog, so it is not limited to a change's
+# lines. Two passes reach every file here: one with no build tag and one
+# with every tag that selects files, because no file needs one of those
+# tags on and another off. TestExhaustiveLintPassesReachEveryFile reads
+# the passes from this recipe and fails for a file none of them compiles.
+# Every file only macOS compiles is in the untagged set, which CI's macOS
+# job lints with `make go-lint GO_LINT_FLAGS="--enable-only exhaustive"`.
 GO_LINT_EXHAUSTIVE = $(GOLANGCI_LINT) run --timeout 20m --enable-only exhaustive
 go-lint-exhaustive: $(GOLANGCI_LINT_BUILD)
 	$(GO_LINT_EXHAUSTIVE) ./...
-	$(GO_LINT_EXHAUSTIVE) --build-tags nogui ./...
-	$(GO_LINT_EXHAUSTIVE) --build-tags noremote ./...
-	$(GO_LINT_EXHAUSTIVE) --build-tags providersmoke ./...
+	$(GO_LINT_EXHAUSTIVE) --build-tags nogui,noremote,providersmoke ./...
 	@set -e; for tags in "" noremote; do \
 		packages=$$(GOOS=windows CGO_ENABLED=0 go list -deps -tags "$$tags" ./cmd/agent-overflow-windows | sed -n 's|^agent-overflow/|./|p'); \
 		if [ -z "$$packages" ]; then echo "ERROR: no packages found for the Windows launcher"; exit 1; fi; \
