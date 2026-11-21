@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -789,16 +790,47 @@ func effortRow(value, resolved string) claude.WireModel {
 		SupportedEffortLevels: []string{"low", "medium", "high", "xhigh", "max"}}
 }
 
+// carriedModels serves the destination of a reach pair through a peer that
+// records the model each forwarded thread_spawn carries, and runs changing,
+// when set, before the spawn reaches the destination's app.
+func carriedModels(t *testing.T, changing func()) (*reachPair, func() []string) {
+	t.Helper()
+	var mu sync.Mutex
+	var carried []string
+	record := func(call ThreadPeerCall) {
+		var spawn threadtools.SpawnCall
+		if err := json.Unmarshal(call.Args, &spawn); err != nil {
+			t.Errorf("decode the forwarded spawn: %v", err)
+		}
+		mu.Lock()
+		carried = append(carried, spawn.Model)
+		mu.Unlock()
+		if changing != nil {
+			changing()
+		}
+	}
+	pair := newReachPairServedBy(t, func(t *testing.T, app *App) *pairedBackend {
+		peer := &ownerOpPeer{App: app}
+		peer.spawning.Store(&record)
+		return serveAppAs(t, app, peer)
+	})
+	return pair, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(carried)
+	}
+}
+
 // A family profile runs the newest model of its family each computer
 // lists, so one roster runs Opus 5.5 here and the Opus 4.8 an older CLI
-// lists on the paired computer; the spawn there carries that exact model,
-// which the destination resolves without reading a family. A family the
-// paired computer lists nothing of is left out of its row and refused
-// naming the profile and the computer. Not parallel: the probe catalog is
+// lists on the paired computer. The spawn there carries the family, which
+// the destination resolves against its own list. A family the paired
+// computer lists nothing of is left out of its row and refused naming the
+// profile and the computer. Not parallel: the probe catalog is
 // process-wide.
 func TestAFamilyProfileRunsTheNewestModelEachComputerLists(t *testing.T) {
 	remotetest.Require(t)
-	pair := newReachPair(t)
+	pair, carried := carriedModels(t, nil)
 	installMockClaudeTurns(t, pair.dest, [][]string{{mockClaudeInitLine}})
 	seedClaudeWire(t, pair.dest, []claude.WireModel{
 		effortRow("default", "claude-opus-4-8"),
@@ -865,11 +897,68 @@ func TestAFamilyProfileRunsTheNewestModelEachComputerLists(t *testing.T) {
 	if thread.Model != "claude-opus-4-8" {
 		t.Errorf("Opus runs %s there, want claude-opus-4-8", thread.Model)
 	}
+	if got := carried(); !slices.Equal(got, []string{"claude-opus"}) {
+		t.Errorf("the spawn there carried %v, want the family claude-opus", got)
+	}
 
 	_, err = pair.callRaw(t, "thread_spawn", `{"prompt":"work","profile":"Fable","computer_id":`+quoteJSON(pair.computer)+`,"project_id":`+quoteJSON(pair.project)+`}`)
 	want := `Agent profile "Fable" cannot run: Claude Code offers no claude-fable model on ` + there + `.`
 	if _, message, public := errorsx.PublicDetails(err); !public || !strings.Contains(message, want) {
 		t.Errorf("Fable's spawn there = %v, want a refusal containing %q", err, want)
+	}
+}
+
+// A family runs what the computer that creates the thread lists when it
+// creates it: a paired computer whose CLI starts listing a newer Opus after
+// the caller checked the spawn runs the newer one, for a fresh spawn by
+// profile and for a fork. The fork is a Codex caller's of a Claude thread
+// there, so its family is read by the source's provider on the computer
+// that holds the source. Not parallel: the probe catalog is process-wide.
+func TestAFamilySpawnRunsWhatTheCreatingComputerListsAtCreation(t *testing.T) {
+	remotetest.Require(t)
+	var pair *reachPair
+	newer := []claude.WireModel{effortRow("default", "claude-opus-4-9"), effortRow("claude-opus-4-8", "claude-opus-4-8")}
+	pair, carried := carriedModels(t, func() {
+		capture := claudecatalog.ModelCapture{}
+		capture.Capture(newer, nil)
+		capture.Store(pair.dest.claudeProbeModelKey())
+	})
+	installMockClaudeTurns(t, pair.dest, [][]string{{mockClaudeInitLine}})
+	seedClaudeWire(t, pair.dest, []claude.WireModel{effortRow("default", "claude-opus-4-8")})
+	if _, err := pair.source.settings.Update(map[string]any{"agentProfiles": []any{
+		map[string]any{"name": "Opus", "useFor": "Anything.", "provider": "claude", "model": "claude-opus", "effort": "high"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	spawned := pair.call(t, "thread_spawn", `{"prompt":"work","profile":"Opus","computer_id":`+quoteJSON(pair.computer)+`,"project_id":`+quoteJSON(pair.project)+`}`)
+	token, _ := spawned["token"].(string)
+	thread, err := pair.dest.store.GetThread(pair.receipt(t, token).TargetThreadID)
+	if err != nil {
+		t.Fatalf("Opus spawned no thread there: %v (%v)", err, spawned)
+	}
+	if thread.Model != "claude-opus-4-9" {
+		t.Errorf("Opus runs %s there, want claude-opus-4-9, the newest Opus there when the thread was created", thread.Model)
+	}
+
+	caller := pair.caller
+	caller.Provider, caller.Model = string(provider.Codex), "gpt-5.5"
+	if err := pair.source.store.UpdateThread(caller); err != nil {
+		t.Fatal(err)
+	}
+	seedClaudeWire(t, pair.dest, []claude.WireModel{effortRow("default", "claude-opus-4-8")})
+	source := forkableThreadOn(t, pair.dest, "forked-there")
+	forked := pair.call(t, "thread_spawn", `{"prompt":"again","from_thread":`+quoteJSON(source.ID)+`,"model":"claude-opus"}`)
+	token, _ = forked["token"].(string)
+	fork, err := pair.dest.store.GetThread(pair.receipt(t, token).TargetThreadID)
+	if err != nil {
+		t.Fatalf("the fork made no thread there: %v (%v)", err, forked)
+	}
+	if fork.Provider != string(provider.Claude) || fork.Model != "claude-opus-4-9" {
+		t.Errorf("the fork runs %s/%s there, want claude/claude-opus-4-9", fork.Provider, fork.Model)
+	}
+	if got := carried(); !slices.Equal(got, []string{"claude-opus", "claude-opus"}) {
+		t.Errorf("the spawns there carried %v, want the family both times", got)
 	}
 }
 

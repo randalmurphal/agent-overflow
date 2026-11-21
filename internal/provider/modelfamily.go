@@ -42,8 +42,7 @@ func ParseModelRef(providerName, text string) ModelRef {
 }
 
 // ExactModel is a ref to the model slug names, never read as a family: a
-// model a thread already runs, or one that crossed the wire after the
-// computer that sent it resolved it.
+// model a thread already runs, or a provider's default.
 func ExactModel(slug string) ModelRef {
 	slug = strings.TrimSpace(slug)
 	if slug == "" {

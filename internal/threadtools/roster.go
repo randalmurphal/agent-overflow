@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/provider"
 )
 
@@ -128,7 +129,7 @@ func (r *SpawnRefusal) Error() string { return r.Reason }
 // the choice names must be offered by the model, and a model with no
 // effort setting takes none.
 func ResolveSpawn(spawner SpawnDefaults, choice SpawnChoice, catalog []ProviderOption, where string) (ResolvedSpawn, error) {
-	resolved := ResolvedSpawn{Provider: runsOn(choice, spawner, ""), Effort: choice.Effort}
+	resolved := ResolvedSpawn{Provider: choice.runsOn(spawner), Effort: choice.Effort}
 	inherits := resolved.Provider == spawner.Provider
 	index := slices.IndexFunc(catalog, func(candidate ProviderOption) bool { return candidate.ID == resolved.Provider })
 	if index < 0 || len(catalog[index].Models) == 0 {
@@ -348,27 +349,37 @@ func (c *session) applyProfile(ctx context.Context, call *SpawnCall, name string
 	return profile, nil
 }
 
-// spawnChoice is the provider, model and effort a spawn asks for: the
+// CallChoice is the provider, model and effort a spawn asks for: the
 // call's own over the profile's (SpawnChoice.WithProfile), with the call's
 // model read by the grammar of the provider the thread runs on (runsOn).
-// This is where a thread_spawn model becomes a provider.ModelRef.
-func spawnChoice(call SpawnCall, profile *AgentProfile, spawner SpawnDefaults, forkProvider string) SpawnChoice {
+// This is where a thread_spawn model becomes a provider.ModelRef: on the
+// caller's computer with the profile, and again where the thread is
+// created, with the profile already applied to the call. A fork's
+// spawner there is its source, whose provider it runs.
+func CallChoice(call SpawnCall, profile *AgentProfile, spawner SpawnDefaults) SpawnChoice {
 	choice := SpawnChoice{Provider: call.Provider, Effort: call.Effort}
 	if profile != nil {
 		choice = choice.WithProfile(*profile)
 	}
 	if call.Model != "" {
-		choice.Model = provider.ParseModelRef(runsOn(choice, spawner, forkProvider), call.Model)
+		choice.Model = provider.ParseModelRef(choice.runsOn(spawner), call.Model)
 	}
 	return choice
 }
 
-// runsOn is the provider a spawn's thread runs on, by the rule its
-// creation applies: a fork resumes its source's session, so it runs its
-// source's provider (forkProvider) and refuses any other; a fresh thread
-// runs the one the call or its profile names, else the spawner's.
-func runsOn(choice SpawnChoice, spawner SpawnDefaults, forkProvider string) string {
-	return cmp.Or(forkProvider, choice.Provider, spawner.Provider)
+// runsOn is the provider a spawn's thread runs on: the one the call or its
+// profile names, else the spawner's.
+func (c SpawnChoice) runsOn(spawner SpawnDefaults) string {
+	return cmp.Or(c.Provider, spawner.Provider)
+}
+
+// RefuseSpawnChoice is the refusal of a choice the computer the thread
+// would run on cannot run, naming the profile the call named.
+func RefuseSpawnChoice(profile string, err error) error {
+	if profile != "" {
+		return errorsx.Public(CodeInvalidRequest, fmt.Sprintf("Agent profile %q cannot run: %s thread_options lists the profiles each computer can run.", profile, err.Error()), err)
+	}
+	return errorsx.Public(CodeInvalidRequest, err.Error()+" thread_options lists what each computer offers.", err)
 }
 
 // JoinInstructions appends the later instructions after the earlier,
@@ -388,83 +399,108 @@ func joinInstructions(parts ...string) string {
 }
 
 // checkSpawnChoice settles on the caller's computer what only the target's
-// catalog can. A profile spawn the target cannot run is refused naming the
-// profile: the destination's own refusal would name only the model. A
-// family is resolved to the exact model the target lists and written into
-// the call, so what reaches a spawn, here or on a paired computer of any
-// release, names one model. It reads the target's catalog, here or through
-// its peer, and requires a target that adds instructions when the spawn
-// carries any.
-func (c *session) checkSpawnChoice(ctx context.Context, call *SpawnCall, choice SpawnChoice, spawner SpawnDefaults, forkProvider string) error {
-	if call.Profile == "" && call.Instructions == "" && !choice.Model.IsFamily() {
+// catalog can, reading it here or through the target's peer. A fresh spawn
+// the target cannot run is refused naming the profile. A target that reads
+// model families (ModelFamilies) receives the call's model as written and
+// resolves it where the thread is created (CallChoice, ResolveSpawn), from
+// the catalog read that creates it; a paired computer that predates them
+// receives the exact model the family resolves to on its list. A fork runs
+// its source's provider, which only the source's computer knows without a
+// lookup, so a fork is resolved there and refused there; only for a
+// computer that predates families does the caller look the provider up and
+// resolve the fork's model itself. It also requires a target that adds
+// instructions when the spawn carries any.
+func (c *session) checkSpawnChoice(ctx context.Context, call *SpawnCall, choice SpawnChoice, spawner SpawnDefaults) error {
+	fork := call.FromThread != ""
+	if call.Profile == "" && call.Instructions == "" && !choice.Model.IsFamily() && (!fork || call.Model == "") {
 		return nil
 	}
 	computer, local, ok := c.computerByID(call.ComputerID)
 	if !ok {
 		return publicf(CodeInvalidRequest, "There is no computer %q. thread_options lists the ones you can reach.", call.ComputerID)
 	}
-	var providers []ProviderOption
 	if local {
+		if fork || (call.Profile == "" && !choice.Model.IsFamily()) {
+			return nil
+		}
 		catalog, err := c.app.Catalog(ctx, CatalogQuery{What: OptionsModels})
 		if err != nil {
 			return err
 		}
-		providers = catalog.Providers
-	} else {
-		peer, err := c.app.Peer(ctx, computer.ID)
-		if err != nil {
-			return err
+		if _, err := ResolveSpawn(spawner, choice, catalog.Providers, "this computer"); err != nil {
+			return RefuseSpawnChoice(call.Profile, err)
 		}
-		raw, err := peer.Query(ctx, "thread_options", json.RawMessage(`{"what":"models"}`))
-		if err != nil {
-			return err
-		}
-		row, err := peerOptions(raw)
-		if err != nil {
-			return err
-		}
-		if call.Instructions != "" && !row.SpawnInstructions {
-			return publicf(CodeInvalidRequest, "%s runs an older version that cannot add instructions to a thread's system prompt. Spawn there without instructions or a profile that has them, or spawn on this computer.", NameOfComputer(computer))
-		}
-		providers = row.Providers
+		return nil
 	}
-	where := "this computer"
-	if !local {
-		where = NameOfComputer(computer)
+	peer, err := c.app.Peer(ctx, computer.ID)
+	if err != nil {
+		return err
 	}
-	refuse := func(err error) error {
-		if call.Profile != "" {
-			return publicf(CodeInvalidRequest, "Agent profile %q cannot run: %s thread_options lists the profiles each computer can run.", call.Profile, err.Error())
-		}
-		return publicf(CodeInvalidRequest, "%s thread_options lists what each computer offers.", err.Error())
+	raw, err := peer.Query(ctx, "thread_options", json.RawMessage(`{"what":"models"}`))
+	if err != nil {
+		return err
 	}
-	if call.FromThread != "" {
-		// A fork resolves its provider and effort against its source
-		// where it runs; only a family needs this computer's answer.
-		if !choice.Model.IsFamily() {
+	row, err := peerOptions(raw)
+	if err != nil {
+		return err
+	}
+	where := NameOfComputer(computer)
+	if call.Instructions != "" && !row.SpawnInstructions {
+		return publicf(CodeInvalidRequest, "%s runs an older version that cannot add instructions to a thread's system prompt. Spawn there without instructions or a profile that has them, or spawn on this computer.", where)
+	}
+	if fork {
+		if row.ModelFamilies || call.Model == "" {
 			return nil
 		}
-		name := runsOn(choice, spawner, forkProvider)
-		index := slices.IndexFunc(providers, func(candidate ProviderOption) bool { return candidate.ID == name })
-		if index < 0 {
-			return refuse(&SpawnRefusal{Missing: true, Reason: fmt.Sprintf("%s does not run on %s.", providerLabel(name), where)})
-		}
-		model, err := providers[index].resolveModel(choice.Model, where)
-		if err != nil {
-			return refuse(err)
-		}
-		call.Model = model.Slug
-		return nil
+		return c.resolveExactOnlyFork(ctx, peer, computer, call, row.Providers)
 	}
 	if call.Profile == "" && !choice.Model.IsFamily() {
 		return nil
 	}
-	resolved, err := ResolveSpawn(spawner, choice, providers, where)
+	resolved, err := ResolveSpawn(spawner, choice, row.Providers, where)
 	if err != nil {
-		return refuse(err)
+		return RefuseSpawnChoice(call.Profile, err)
 	}
-	if choice.Model.IsFamily() {
+	if choice.Model.IsFamily() && !row.ModelFamilies {
 		call.Model = resolved.Model
 	}
+	return nil
+}
+
+// resolveExactOnlyFork writes into a fork for a paired computer that
+// predates model families the exact model its model names there: read by
+// the grammar of the source's provider, which that computer's thread_show
+// names, and resolved against its providers. A model that is no family is
+// left for that computer to check.
+func (c *session) resolveExactOnlyFork(ctx context.Context, peer Peer, computer Computer, call *SpawnCall, providers []ProviderOption) error {
+	where := NameOfComputer(computer)
+	raw, err := forwardArgs(showArgs{ThreadID: call.FromThread, Turns: 1, MaxBytes: MinShowBytes})
+	if err != nil {
+		return err
+	}
+	answer, err := peer.Query(ctx, "thread_show", raw)
+	if err != nil {
+		return err
+	}
+	var shown showResult
+	if err := peerResult(answer, &shown); err != nil {
+		return err
+	}
+	if shown.Provider == "" {
+		return fmt.Errorf("thread_show of %s on %s named no provider", call.FromThread, where)
+	}
+	ref := provider.ParseModelRef(shown.Provider, call.Model)
+	if !ref.IsFamily() {
+		return nil
+	}
+	index := slices.IndexFunc(providers, func(candidate ProviderOption) bool { return candidate.ID == shown.Provider })
+	if index < 0 {
+		return RefuseSpawnChoice(call.Profile, &SpawnRefusal{Missing: true, Reason: fmt.Sprintf("%s does not run on %s.", providerLabel(shown.Provider), where)})
+	}
+	model, err := providers[index].resolveModel(ref, where)
+	if err != nil {
+		return RefuseSpawnChoice(call.Profile, err)
+	}
+	call.Model = model.Slug
 	return nil
 }

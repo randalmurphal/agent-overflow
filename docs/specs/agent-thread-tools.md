@@ -419,9 +419,8 @@ registered projects and worktrees in the error, so no separate
 discovery tool is needed. Provider, model, mode and runtime mode still
 default to the caller's and are validated on the destination: a
 provider or model that computer does not offer is refused with the list
-it does. A model family is resolved to an exact ID against that
-computer's catalog before the call crosses
-([Agent profiles](#agent-profiles)). The destination's own account runs
+it does, and a model family runs what that computer lists when it
+creates the thread ([Agent profiles](#agent-profiles)). The destination's own account runs
 and bills the thread. The thread is created on the destination with no special marking there
 either. Owned, the default, it is in no sidebar there: a window attached
 to that computer reaches it through the caller's Agents row, which opens
@@ -523,11 +522,21 @@ profile, and the app logs them once each time the list changes. A
 family with no listed member leaves the profile out of that computer's
 `profiles` and refuses a spawn there with the models it lists; so does
 an effort the family's model there does not take, which the settings
-page shows as a note rather than a reason to hold the save. The
-caller resolves a family against the destination's catalog, so a spawn
-to a paired computer carries an exact ID. The settings page says what a
-family profile runs on its computer. Every other model input is exact
-([decisions](../decisions.md)).
+page shows as a note rather than a reason to hold the save. The settings
+page says what a family profile runs on its computer. Every other model
+input is exact ([decisions](../decisions.md)).
+
+The computer that creates the thread resolves its family from the
+catalog read that creates it, so a list that changes after the caller
+checked the spawn runs what it lists then. The caller still checks a
+fresh spawn against the destination's catalog, so a refusal names the
+profile; a fork runs its source's provider, which only the source's
+computer knows, so it is checked and refused there. A paired computer
+whose `thread_options` answer lacks `model_families` predates families
+and reads every model as exact: the caller resolves the family against
+that computer's list and carries the exact ID, and for a fork first asks
+that computer's `thread_show` for the source's provider. That path is
+deleted once no supported release lacks `model_families`.
 
 `thread_spawn` `profile` names one, compared without case. Explicit
 `provider`, `model`, `effort` and `runtime_mode` override the matching

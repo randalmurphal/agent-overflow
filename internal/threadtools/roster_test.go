@@ -32,7 +32,25 @@ func (p olderPeer) Query(ctx context.Context, name string, args json.RawMessage)
 		return nil, err
 	}
 	delete(answer, "spawn_instructions")
+	delete(answer, "model_families")
 	delete(answer, "profiles")
+	return json.Marshal(answer)
+}
+
+// exactOnlyPeer answers thread_options as a computer that reads a spawn's
+// model only as an exact ID does: without model_families.
+type exactOnlyPeer struct{ *serverPeer }
+
+func (p exactOnlyPeer) Query(ctx context.Context, name string, args json.RawMessage) (json.RawMessage, error) {
+	raw, err := p.serverPeer.Query(ctx, name, args)
+	if err != nil || name != "thread_options" {
+		return raw, err
+	}
+	var answer map[string]any
+	if err := json.Unmarshal(raw, &answer); err != nil {
+		return nil, err
+	}
+	delete(answer, "model_families")
 	return json.Marshal(answer)
 }
 
@@ -509,28 +527,37 @@ func TestSpawnInstructionsAreRefusedForAComputerThatPredatesThem(t *testing.T) {
 	}
 }
 
-// A spawn to a paired computer by a family profile, or with a family as
-// its model, carries the exact model that computer lists, whatever this
-// computer lists: a computer of any release receives a model ID.
-func TestAFamilySpawnToAPairedComputerCarriesAnExactModel(t *testing.T) {
-	p := newPair(t)
+// A computer that reads model families (model_families) receives the family
+// and resolves it from the catalog read that creates the thread, here or
+// paired; a paired computer that reads only exact IDs receives the exact
+// model the caller resolved against its list.
+func TestAFamilySpawnCarriesTheFamilyOnlyToAComputerThatReadsOne(t *testing.T) {
 	older := liveClaude
 	older.DefaultModel, older.Models, older.Unlisted = "claude-opus-5", []ModelOption{liveClaude.Models[4], liveClaude.Models[3]}, nil
-	p.local.catalog = Catalog{Reachable: true, Providers: []ProviderOption{liveClaude}}
-	p.remote.catalog = Catalog{Reachable: true, Providers: []ProviderOption{older}}
-	p.local.roster = familyRoster()
-	p.local.addThread(Thread{ID: "caller-thread", Provider: "claude", Model: "claude-opus-5-5"})
-
-	call(t, p.server, localCaller(), "thread_spawn", `{"prompt":"x","profile":"Opus","computer_id":"studio","project_id":"p1"}`)
-	call(t, p.server, localCaller(), "thread_spawn", `{"prompt":"x","model":"claude-haiku","computer_id":"studio","project_id":"p1"}`)
-	call(t, p.server, localCaller(), "thread_spawn", `{"prompt":"x","profile":"Opus"}`)
-	call(t, p.server, localCaller(), "thread_spawn", `{"prompt":"x","model":"claude-opus-5"}`)
-	got := []string{}
-	for _, spawn := range p.local.spawns {
-		got = append(got, spawn.Model)
+	spawns := func(exactOnly bool) []string {
+		p := newPair(t)
+		if exactOnly {
+			p.local.peers["studio"] = exactOnlyPeer{p.peer}
+		}
+		p.local.catalog = Catalog{Reachable: true, Providers: []ProviderOption{liveClaude}}
+		p.remote.catalog = Catalog{Reachable: true, Providers: []ProviderOption{older}}
+		p.local.roster = familyRoster()
+		p.local.addThread(Thread{ID: "caller-thread", Provider: "claude", Model: "claude-opus-5-5"})
+		call(t, p.server, localCaller(), "thread_spawn", `{"prompt":"x","profile":"Opus","computer_id":"studio","project_id":"p1"}`)
+		call(t, p.server, localCaller(), "thread_spawn", `{"prompt":"x","model":"claude-haiku","computer_id":"studio","project_id":"p1"}`)
+		call(t, p.server, localCaller(), "thread_spawn", `{"prompt":"x","profile":"Opus"}`)
+		call(t, p.server, localCaller(), "thread_spawn", `{"prompt":"x","model":"claude-opus-5"}`)
+		got := []string{}
+		for _, spawn := range p.local.spawns {
+			got = append(got, spawn.Model)
+		}
+		return got
 	}
-	if want := []string{"claude-opus-5", "claude-haiku-5-5", "claude-opus-5-5", "claude-opus-5"}; !slices.Equal(got, want) {
-		t.Fatalf("spawns carried %v, want %v", got, want)
+	if got, want := spawns(false), []string{"claude-opus", "claude-haiku", "claude-opus", "claude-opus-5"}; !slices.Equal(got, want) {
+		t.Errorf("spawns to computers that read families carried %v, want %v", got, want)
+	}
+	if got, want := spawns(true), []string{"claude-opus-5", "claude-haiku-5-5", "claude-opus", "claude-opus-5"}; !slices.Equal(got, want) {
+		t.Errorf("spawns with an exact-only paired computer carried %v, want %v", got, want)
 	}
 }
 
@@ -563,10 +590,12 @@ func TestAFamilySpawnTheTargetCannotRunIsRefused(t *testing.T) {
 	}
 }
 
-// A fork with a family as its model takes the exact model its computer
-// lists, and is refused when that computer lists none.
-func TestAForkWithAFamilyModelCarriesAnExactModel(t *testing.T) {
+// A fork with a family as its model, on a paired computer that reads only
+// exact IDs, takes the exact model that computer lists, and is refused when
+// it lists none.
+func TestAForkWithAFamilyModelCarriesAnExactModelToAnExactOnlyComputer(t *testing.T) {
 	p := newPair(t)
+	p.local.peers["studio"] = exactOnlyPeer{p.peer}
 	p.local.catalog = Catalog{Reachable: true, Providers: []ProviderOption{liveClaude}}
 	p.remote.catalog = Catalog{Reachable: true, Providers: []ProviderOption{liveClaude}}
 	p.local.addThread(Thread{ID: "caller-thread", Provider: "claude", Model: "claude-opus-5-5"})
@@ -585,7 +614,11 @@ func TestAForkWithAFamilyModelCarriesAnExactModel(t *testing.T) {
 // A fork runs on its source's provider, so the call's model is read by
 // that provider's version rule, not the caller's: a Codex thread forking
 // a Claude thread with claude-opus runs Claude's newest Opus, and the
-// reverse runs Codex's newest Sol, here and on a paired computer.
+// reverse runs Codex's newest Sol. A computer that reads families, here
+// or paired, receives the family and reads it with the source it holds, so
+// the caller asks no thread_show; a paired computer that reads only exact
+// IDs receives the exact model, read with the provider its thread_show
+// names.
 func TestAForkAcrossProvidersReadsTheModelByTheSourcesProvider(t *testing.T) {
 	cases := []struct {
 		caller, source Thread
@@ -595,20 +628,32 @@ func TestAForkAcrossProvidersReadsTheModelByTheSourcesProvider(t *testing.T) {
 		{Thread{ID: "caller-thread", Provider: "claude", Model: "claude-opus-5-5"}, Thread{Provider: "codex", Model: "gpt-6-luna"}, "gpt-sol", "gpt-6.2-sol"},
 	}
 	for _, tc := range cases {
-		p := newPair(t)
-		both := Catalog{Reachable: true, Providers: []ProviderOption{liveClaude, liveCodex}}
-		p.local.catalog, p.remote.catalog = both, both
-		p.local.addThread(tc.caller)
-		here, there := tc.source, tc.source
-		here.ID, here.Title = localThreadID, "Here"
-		there.ID, there.Title = remoteThreadID, "There"
-		p.local.addThread(here)
-		p.remote.addThread(there)
+		for _, exactOnly := range []bool{false, true} {
+			p := newPair(t)
+			if exactOnly {
+				p.local.peers["studio"] = exactOnlyPeer{p.peer}
+			}
+			both := Catalog{Reachable: true, Providers: []ProviderOption{liveClaude, liveCodex}}
+			p.local.catalog, p.remote.catalog = both, both
+			p.local.addThread(tc.caller)
+			here, there := tc.source, tc.source
+			here.ID, here.Title = localThreadID, "Here"
+			there.ID, there.Title = remoteThreadID, "There"
+			p.local.addThread(here)
+			p.remote.addThread(there)
 
-		for _, source := range []string{localThreadID, remoteThreadID} {
-			call(t, p.server, localCaller(), "thread_spawn", `{"prompt":"x","from_thread":"`+source+`","model":"`+tc.model+`"}`)
-			if got := p.local.spawns[len(p.local.spawns)-1]; got.Model != tc.want {
-				t.Errorf("%s caller forking a %s thread (%s) with %s: carried %q, want %q", tc.caller.Provider, tc.source.Provider, source, tc.model, got.Model, tc.want)
+			for _, source := range []string{localThreadID, remoteThreadID} {
+				want := tc.model
+				if exactOnly && source == remoteThreadID {
+					want = tc.want
+				}
+				call(t, p.server, localCaller(), "thread_spawn", `{"prompt":"x","from_thread":"`+source+`","model":"`+tc.model+`"}`)
+				if got := p.local.spawns[len(p.local.spawns)-1]; got.Model != want {
+					t.Errorf("%s caller forking a %s thread (%s, exact-only %v) with %s: carried %q, want %q", tc.caller.Provider, tc.source.Provider, source, exactOnly, tc.model, got.Model, want)
+				}
+			}
+			if shown := slices.Contains(p.peer.queries, "thread_show"); shown != exactOnly {
+				t.Errorf("exact-only %v: the caller asked thread_show %v, want %v", exactOnly, shown, exactOnly)
 			}
 		}
 	}
