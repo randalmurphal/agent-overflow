@@ -58,9 +58,19 @@ their validation at this process boundary.
   `SetThreadExecutionState`. Reject unknown modes.
 - Browser-host directives go through `internal/webview2host`. Create the host
   lazily, answer result-bearing `create` and `clear-data` operations even when
-  construction fails, serialize reports off the UI thread, and close the host
-  before its parent window and backend. Browser storage is per runtime mode and
-  rejects symlink or reparse-point components.
+  construction fails, serialize reports off the UI thread
+  (`webview2host.ReportQueue`, where a download's waiting progress is
+  replaced by its newer progress), hand a report
+  that did not reach the backend back to the host (`Host.ReportUndelivered`),
+  and close the host before its parent window and backend. The host's
+  `OnMain` runs a turn inline on the UI thread and `Post` queues one for
+  later, even from the UI thread. Browser storage is per runtime mode and
+  rejects symlink or reparse-point components. Pane geometry and page focus
+  intents the SPA posts arrive on Wails' raw message handler
+  (`handleRawMessage`), beside the reload chord reports for
+  `uikeys.PageChords`: accept them only from this window on the backend
+  page's origin, never wait on the UI thread there, and advertise each
+  capability to each loaded document.
 - Scrub inherited WebView2 profile overrides before either WebView environment
   is created. A set-but-empty override is still an override.
 

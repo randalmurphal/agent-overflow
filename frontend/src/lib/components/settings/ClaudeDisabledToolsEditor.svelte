@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isLocalEnter } from '../../utils/localEnter';
   // Claude's disabled-tool list: free-form names, because Claude takes them
   // on `--disallowedTools` verbatim and its tool set changes release to
   // release. The suggestion row is a convenience over the common built-ins,
@@ -115,7 +116,7 @@
   }
 
   function handleKeydown(e: KeyboardEvent): void {
-    if (e.key !== 'Enter' || isImeComposingEvent(e)) return;
+    if (!isLocalEnter(e) || isImeComposingEvent(e)) return;
     e.preventDefault();
     addDraft();
   }

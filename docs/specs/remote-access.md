@@ -1404,8 +1404,8 @@ The composer's machine picker describes execution reachability/access only;
 a backend without browser tools is still a valid thread destination.
 
 **Headless Chromium engine (serve mode).** `docs/specs/embedded-browser.md`
-§9 said a windowless deployment gets no engine; that sentence is
-reversed here. A serve-mode backend selects a **headless Chromium
+§9 gives the product rule for windowless deployments; this is the serve
+mode engine behind it. A serve-mode backend selects a **headless Chromium
 engine** as an explicit positive option set by `runServe` before
 `App.Start` (never inferred from the absence of a window:
 `TestSelectEngineWithoutAWindowHasNoEngine` keeps passing). It finds a
@@ -1423,9 +1423,9 @@ marker last; a persisted profile's browser is first asked to exit over
 CDP (`Browser.close`, bounded), because Chromium writes recent cookies
 only on the way out; downloads pinned
 to the profile's `DownloadDir` via `Browser.setDownloadBehavior`; the
-workspace's navigation policy enabled on the browser session as well as
-on each page (`Fetch.enable`), because a popup runs before the Manager
-can adopt it; Chromium's crash handler pointed into the user-data
+navigation policy installed once, browser-wide (`Fetch.enable` on the
+browser session), so it sees a popup's requests before the Manager can
+adopt it as well as every page's; Chromium's crash handler pointed into the user-data
 directory (`BREAKPAD_DUMP_LOCATION`); the existing idle close after two
 minutes, page and profile caps unchanged. An ephemeral directory
 carries a marker naming the process that made it, and engine start
@@ -1439,7 +1439,7 @@ creation that finds the browser dead before the watcher runs retires it
 instead, reaping it and reporting its pages closed, then relaunches, and
 each page is reported once whichever runs first. Strictly no `--no-sandbox`: a launch that fails for lack of
 a sandbox surfaces the engine's error and serve-mode.md says to run
-the service as a non-root user. `cdp_page.go` is reused whole. The
+the service as a non-root user. The CDP page driver (`cdp_page.go`, `cdp_handlers.go`, `cdp_operations.go`) is reused whole. The
 pane host, DevTools, and site-data listing are not implemented
 (omission = refusal, as the seam already reads). Tests spawn a fake
 `chromium` script that advertises a fake CDP server, never a real
@@ -3505,17 +3505,15 @@ was a count. That was wrong. Two byte budgets already bound the
 derived-cache fields, both justified in code by exactly the reasoning
 above:
 
-- `persistedCodeSpansMaxBytes = 256 << 10` (`app_highlight_persist.go`)
-  bounds the `codeSpans` blob on `items.meta` — *"Meta rides every
-  item-list load, so a pathological all-code message must not attach
-  megabytes of runs; fences past the budget fall back to the RPC path
-  lazily."* It spends a running budget across fences and **skips
-  rather than breaks**, so one giant fence cannot starve later small
-  ones.
+- `persistedCodeSpansMaxBytes = 256 << 10`
+  (`internal/highlightapp/codespans.go`) bounds the `codeSpans` blob on
+  `items.meta`, which rides every item-list load. It spends a running
+  budget across fences and **skips rather than breaks**, so one giant
+  fence cannot starve later small ones; a fence past the budget is
+  highlighted through the RPC path when it renders.
 - The same constant caps `preview_spans`
-  (`app_highlight_diff_seed.go`) — *"preview_spans rides every item
-  list read, so it gets the same retained-bytes guardrail"* — behind
-  per-file (256 KB) and aggregate (1 MB) input caps.
+  (`internal/highlightapp/diff.go`), which rides every item list read,
+  behind per-file (256 KB) and aggregate (1 MB) input caps.
 
 Both already satisfy the "elision ships with its recovery route" rule
 below: what they skip is fetchable through the highlight RPC. The gap

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	appbrowser "agent-overflow/internal/browser"
 	"agent-overflow/internal/store"
@@ -18,19 +17,79 @@ type BrowserCompanionAction struct {
 	Kind    string `json:"kind"`
 	PageID  string `json:"pageId,omitempty"`
 	Address string `json:"address,omitempty"`
-	// Index is the target tab position for "move". Not omitempty: index 0
-	// (move to the front) is a real value.
+	// Index is the relative step for "step" (1 next, -1 previous,
+	// wrapping).
 	Index int `json:"index"`
+	// Beside and After are where a "move" drops PageID: beside the tab
+	// Beside, after it when After and before it otherwise. The Manager
+	// resolves the position from that neighbor at the move's turn
+	// (Manager.MoveCompanionPage).
+	Beside string `json:"beside,omitempty"`
+	After  bool   `json:"after,omitempty"`
+	// Jar is the cookie jar for "jar": worktree, project, thread or private.
+	Jar string `json:"jar,omitempty"`
+	// Confirmed says the user agreed, for "jar", to lose the live tabs' page
+	// state. Unconfirmed, a switch with a live tab is refused with code
+	// browser_jar_unconfirmed and changes nothing; the pane asks and sends
+	// it again confirmed.
+	Confirmed bool `json:"confirmed,omitempty"`
+	// Mount and Intent name a page focus intent for "focus-page" and
+	// "focus-page-withdraw": the pane mount and its number for the request.
+	// Mount alone is the pane a "jar" switch was chosen in, which it acts
+	// on the browser of (Manager.BindMount).
+	Mount  string `json:"mount,omitempty"`
+	Intent uint64 `json:"intent,omitempty"`
+	// Select numbers a user's tab selection made in Mount ("activate",
+	// "step", "show-browser", and the "new", "reopen", "duplicate" and
+	// "download-open" that select the tab they open) and a close ("close",
+	// "close-others", "close-right"), consecutive from 1 in each Epoch of a
+	// mount in the order the user acted. The Manager admits a mount's
+	// commands in that order (internal/browser/selection.go). A close
+	// requires Mount, Epoch and Select; a selection carries all three or
+	// none, and with none applies in arrival order. Validated by
+	// parseCompanionAction.
+	Select uint64 `json:"select,omitempty"`
+	// Epoch is the client's run of numbered commands Select counts in, from
+	// 1: the client starts the next one only when every command it sent in
+	// this one has answered or failed, and the Manager then refuses what
+	// arrives of an older one.
+	Epoch uint64 `json:"epoch,omitempty"`
+	// DownloadID names one of the thread's downloads (ThreadDownload.ID)
+	// for "download-cancel", "download-reveal" and "download-open".
+	DownloadID string `json:"downloadId,omitempty"`
 }
 
-func (a *App) browserAccess(threadID string) (appbrowser.Access, error) {
+// browserCaller reads the thread's row as the browser's Caller, for a read
+// of the thread's browser as it is now.
+func (a *App) browserCaller(threadID string) (appbrowser.Caller, error) {
 	thread, err := a.browserThread(strings.TrimSpace(threadID))
 	if err != nil {
-		return appbrowser.Access{}, err
+		return appbrowser.Caller{}, err
 	}
-	return appbrowser.Access{
-		ThreadID: thread.ID, Workspace: thread.WorkspacePath, ProjectRoot: thread.ProjectPath,
+	return appbrowser.Caller{
+		ThreadID: appbrowser.ThreadID(thread.ID), Workspace: thread.WorkspacePath, ProjectRoot: thread.ProjectPath, ProjectID: thread.ProjectID,
 	}, nil
+}
+
+// bindBrowser binds an action to the thread's browser lifetime, before it
+// reads the thread's row: a close of the thread after the read is one the
+// action's Access sees, so the action changes nothing after it and its
+// End answers appbrowser.ErrThreadClosed. A thread whose row cannot be read
+// leaves no lifetime behind (Manager.BindThread).
+func (a *App) bindBrowser(threadID string) (appbrowser.Access, error) {
+	return a.browser.manager.BindThread(appbrowser.ThreadID(strings.TrimSpace(threadID)), func() (appbrowser.Caller, error) {
+		return a.browserCaller(threadID)
+	})
+}
+
+// bindBrowserOfPane binds an action to the browser lifetime the pane mount
+// attached to (Manager.BindMount), before it reads the thread's row: a
+// mount that is gone is refused with appbrowser.ErrMountGone, and one whose
+// browser was closed changes nothing (appbrowser.ErrThreadClosed).
+func (a *App) bindBrowserOfPane(threadID string, mount appbrowser.MountID) (appbrowser.Access, error) {
+	return a.browser.manager.BindMount(appbrowser.ThreadID(strings.TrimSpace(threadID)), mount, func() (appbrowser.Caller, error) {
+		return a.browserCaller(threadID)
+	})
 }
 
 // BrowserCompanionThreadState answers the thread's current page/session
@@ -45,11 +104,11 @@ func (a *App) BrowserCompanionThreadState(threadID string) (appbrowser.Companion
 	if a.browser.manager == nil {
 		return appbrowser.CompanionEvent{}, fmt.Errorf("browser manager unavailable")
 	}
-	access, err := a.browserAccess(threadID)
+	caller, err := a.browserCaller(threadID)
 	if err != nil {
 		return appbrowser.CompanionEvent{}, err
 	}
-	return a.browser.manager.CompanionState(access), nil
+	return a.browser.manager.CompanionState(caller), nil
 }
 
 // BrowserCompanionPaneAttach registers the calling connection's mounted pane
@@ -73,17 +132,17 @@ func (a *App) BrowserCompanionPaneAttach(ctx context.Context, threadID string) (
 	if !transport.ConnStateFromContext(ctx).HostWindow() {
 		return appbrowser.CompanionSubscription{}, errBrowserPaneNotHostWindow
 	}
-	access, err := a.browserAccess(threadID)
+	caller, err := a.browserCaller(threadID)
 	if err != nil {
 		return appbrowser.CompanionSubscription{}, err
 	}
-	result, err := a.browser.manager.AttachPane(access)
+	result, err := a.browser.manager.AttachPane(caller)
 	if err != nil {
 		return appbrowser.CompanionSubscription{}, err
 	}
 	if state := transport.ConnStateFromContext(ctx); state != nil {
-		if !state.BindCleanup(companionPaneCleanupKey(result.ID), func() { a.browser.manager.DetachPane(result.ID) }) {
-			a.browser.manager.DetachPane(result.ID)
+		if !state.BindCleanup(companionPaneCleanupKey(result.ID), func() { a.browser.manager.DetachPane(appbrowser.MountID(result.ID)) }) {
+			a.browser.manager.DetachPane(appbrowser.MountID(result.ID))
 			return appbrowser.CompanionSubscription{}, fmt.Errorf("browser: connection closing")
 		}
 	}
@@ -95,7 +154,7 @@ func (a *App) BrowserCompanionPaneAttach(ctx context.Context, threadID string) (
 func (a *App) BrowserCompanionPaneDetach(ctx context.Context, paneID string) error {
 	transport.ConnStateFromContext(ctx).UnbindCleanup(companionPaneCleanupKey(paneID))
 	if a.browser.manager != nil {
-		a.browser.manager.DetachPane(paneID)
+		a.browser.manager.DetachPane(appbrowser.MountID(paneID))
 	}
 	return nil
 }
@@ -113,7 +172,7 @@ func (a *App) BrowserCompanionPaneRect(paneID string, rect appbrowser.PaneRect) 
 	if a.browser.manager == nil {
 		return fmt.Errorf("browser manager unavailable")
 	}
-	return a.browser.manager.SetPaneRect(paneID, rect)
+	return a.browser.manager.SetPaneRect(appbrowser.MountID(paneID), rect)
 }
 
 // BrowserCompanionRevealPageFile opens the OS file manager with the local
@@ -127,15 +186,29 @@ func (a *App) BrowserCompanionRevealPageFile(ctx context.Context, threadID, page
 	if a.browser.manager == nil {
 		return fmt.Errorf("browser manager unavailable")
 	}
-	access, err := a.browserAccess(threadID)
+	access, err := a.bindBrowser(threadID)
 	if err != nil {
 		return err
 	}
-	err = a.browser.manager.RevealPageFile(ctx, access, pageID)
-	if deletedErr := a.closeBrowserPagesIfThreadDeleted(access.ThreadID); deletedErr != nil {
-		return deletedErr
+	err = a.browser.manager.RevealPageFile(ctx, access, appbrowser.PageID(pageID))
+	return errors.Join(err, access.End())
+}
+
+// BrowserCompanionRecentAddresses answers the addresses the thread's pages
+// recently opened, newest first, for the address bar's suggestions. Read when
+// the address field takes focus rather than carried by every state push.
+//
+//ao:scope host
+//ao:route home
+func (a *App) BrowserCompanionRecentAddresses(threadID string) ([]appbrowser.RecentAddress, error) {
+	if a.browser.manager == nil {
+		return nil, fmt.Errorf("browser manager unavailable")
 	}
-	return err
+	caller, err := a.browserCaller(threadID)
+	if err != nil {
+		return nil, err
+	}
+	return a.browser.manager.RecentAddresses(caller), nil
 }
 
 //ao:scope host
@@ -144,43 +217,129 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 	if a.browser.manager == nil {
 		return appbrowser.CompanionEvent{}, fmt.Errorf("browser manager unavailable")
 	}
-	access, err := a.browserAccess(threadID)
+	cmd, err := parseCompanionAction(action)
 	if err != nil {
 		return appbrowser.CompanionEvent{}, err
 	}
-	switch strings.ToLower(strings.TrimSpace(action.Kind)) {
-	case "navigate":
-		_, err = a.browser.manager.NavigateCompanion(ctx, access, action.PageID, action.Address)
-	case "back", "forward", "reload", "stop":
-		_, err = a.browser.manager.History(ctx, access, action.PageID, action.Kind)
-	case "activate":
-		err = a.browser.manager.ActivateCompanionPage(ctx, access, action.PageID)
-	case "move":
-		err = a.browser.manager.MoveCompanionPage(access, action.PageID, action.Index)
-	case "show":
+	// Bound before the row is read: a close of the thread's pages after the
+	// read leaves this action nothing to change (bindBrowser). A jar switch
+	// binds to the browser of the pane it was chosen in, so a consent given
+	// there never switches a browser opened after it.
+	var access appbrowser.Access
+	if cmd.kind == kindJar {
+		access, err = a.bindBrowserOfPane(threadID, cmd.mount)
+		err = jarSwitchError(err)
+	} else {
+		access, err = a.bindBrowser(threadID)
+	}
+	if err != nil {
+		return appbrowser.CompanionEvent{}, err
+	}
+	// newPage is the page a "new", or a "show-browser" that found no tab,
+	// opened, named in the answer so the client that asked can tell its own
+	// tab from one an agent opened meanwhile.
+	newPage := ""
+	if cmd.numbered {
+		ctx = appbrowser.WithSelection(ctx, cmd.place)
+	}
+	m := a.browser.manager
+	switch cmd.kind {
+	case kindNavigate:
+		_, err = m.NavigateCompanion(ctx, access, cmd.page, cmd.address)
+	case kindBack:
+		_, err = m.History(ctx, access, cmd.page, "back")
+	case kindForward:
+		_, err = m.History(ctx, access, cmd.page, "forward")
+	case kindReload:
+		// A suspended or crashed tab is restored at its address.
+		err = m.ReloadCompanionPage(ctx, access, cmd.page)
+	case kindStop:
+		err = m.StopCompanionLoad(ctx, access, cmd.page)
+	case kindActivate:
+		err = m.ActivateCompanionPage(ctx, access, cmd.page)
+	case kindRestore:
+		// The pane's own request for the suspended tab it shows.
+		err = m.RestoreActiveCompanionPage(ctx, access, cmd.page)
+	case kindStep:
+		err = m.StepCompanionPage(ctx, access, cmd.index)
+	case kindMove:
+		err = m.MoveCompanionPage(ctx, access, cmd.page, appbrowser.TabPlace{Beside: cmd.beside, After: cmd.after})
+	case kindShow:
 		visible := true
-		_, err = a.browser.manager.Visibility(ctx, access, &visible, action.PageID)
-	case "hide":
+		_, err = m.Visibility(ctx, access, &visible, cmd.page)
+	case kindHide:
 		visible := false
-		_, err = a.browser.manager.Visibility(ctx, access, &visible, "")
-	case "new":
-		_, err = a.browser.manager.NewCompanionPage(ctx, access)
-	case "close":
-		err = a.browser.manager.ClosePage(ctx, access, action.PageID)
-	case "devtools":
-		err = a.browser.manager.OpenPaneDevTools(ctx, access, action.PageID)
+		_, err = m.Visibility(ctx, access, &visible, "")
+	case kindShowBrowser:
+		// The tab selected at its turn, or one blank tab it opens, which the
+		// answer names.
+		var outcome appbrowser.ShowOutcome
+		var shown appbrowser.PageID
+		outcome, shown, err = m.ShowCompanion(ctx, access)
+		switch outcome {
+		case appbrowser.ShowOpened:
+			newPage = string(shown)
+		case appbrowser.ShowShown, appbrowser.ShowPassed:
+		}
+	case kindNew:
+		// Address, when set, is navigated in the new tab (a mod-clicked link).
+		var page appbrowser.PageInfo
+		page, err = m.NewCompanionPage(ctx, access, cmd.address)
+		newPage = page.ID
+	case kindClose:
+		// At its turn, the tab it names if it is still there. Answers once
+		// the tab is gone; a teardown failure after it is a "teardown" event.
+		err = m.CloseCompanionPage(ctx, access, cmd.page)
+	case kindCloseOthers:
+		err = m.CloseCompanionTabs(ctx, access, cmd.page, appbrowser.CloseOtherTabs)
+	case kindCloseRight:
+		err = m.CloseCompanionTabs(ctx, access, cmd.page, appbrowser.CloseTabsRight)
+	case kindReopen:
+		// The most recently closed tab, at its place; nothing with none.
+		err = m.ReopenClosedTab(ctx, access)
+	case kindDuplicate:
+		err = m.DuplicateCompanionPage(ctx, access, cmd.page)
+	case kindDevtools:
+		err = m.OpenPaneDevTools(ctx, access, cmd.page)
+	case kindJar:
+		// Closes the live tabs and reopens their addresses in the new jar;
+		// unconfirmed, it is refused while a tab is live.
+		err = jarSwitchError(m.SetJar(ctx, access, cmd.jar, cmd.consent))
+	case kindDownloadCancel:
+		err = downloadActionError(m.CancelThreadDownload(access, cmd.download))
+	case kindDownloadReveal:
+		err = downloadActionError(m.RevealThreadDownload(ctx, access, cmd.download))
+	case kindDownloadOpen:
+		// A new tab showing the finished file.
+		var page appbrowser.PageInfo
+		page, err = m.OpenThreadDownload(ctx, access, cmd.download)
+		err = downloadActionError(err)
+		newPage = page.ID
+	case kindDownloadsClear:
+		err = m.ClearThreadDownloads(access)
+	case kindFocusPage, kindFocusPageWithdraw:
+		// Keyboard focus moves within the window the native view lives in,
+		// so only that window may ask for it or take the request back.
+		switch {
+		case !transport.ConnStateFromContext(ctx).HostWindow():
+			err = errBrowserPaneNotHostWindow
+		case cmd.kind == kindFocusPage:
+			err = m.FocusCompanionPage(access, cmd.mount, cmd.page, cmd.intent)
+		default:
+			err = m.WithdrawCompanionPageFocus(access, cmd.mount, cmd.intent)
+		}
 	default:
-		err = fmt.Errorf("browser: unsupported companion action %q", action.Kind)
+		err = fmt.Errorf("%w: kind %d", errNoCompanionHandler, cmd.kind)
 	}
-	// An action on a thread with no page opens one, and a failed action can
-	// still have opened it.
-	if deletedErr := a.closeBrowserPagesIfThreadDeleted(access.ThreadID); deletedErr != nil {
-		return appbrowser.CompanionEvent{}, deletedErr
+	if endErr := access.End(); endErr != nil {
+		return appbrowser.CompanionEvent{}, errors.Join(err, endErr)
 	}
 	if err != nil {
 		return appbrowser.CompanionEvent{}, err
 	}
-	return a.browser.manager.CompanionState(access), nil
+	state := a.browser.manager.CompanionState(access.Caller())
+	state.PageID = newPage
+	return state, nil
 }
 
 // BrowserFindAction is one request of the browser pane's find: start (the
@@ -209,30 +368,15 @@ func (a *App) BrowserCompanionFind(ctx context.Context, threadID string, action 
 	if a.browser.manager == nil {
 		return appbrowser.FindState{}, fmt.Errorf("browser manager unavailable")
 	}
-	access, err := a.browserAccess(threadID)
+	access, err := a.bindBrowser(threadID)
 	if err != nil {
 		return appbrowser.FindState{}, err
 	}
-	state, err := a.browser.manager.Find(ctx, access, action.PageID, action.Kind, action.Query, action.Mount, action.Seq)
-	// An open or start on a suspended page restores it.
-	if deletedErr := a.closeBrowserPagesIfThreadDeleted(access.ThreadID); deletedErr != nil {
-		return appbrowser.FindState{}, deletedErr
+	state, err := a.browser.manager.Find(ctx, access, appbrowser.PageID(action.PageID), action.Kind, action.Query, appbrowser.MountID(action.Mount), action.Seq)
+	if endErr := access.End(); endErr != nil {
+		return appbrowser.FindState{}, errors.Join(err, endErr)
 	}
 	return state, err
-}
-
-// closeBrowserPagesIfThreadDeleted closes the pages of a thread deleted while
-// a companion action ran. A delete closes the thread's pages again
-// after its row drops or becomes a holder, so a row read after the open that
-// still finds the thread leaves the page to that close.
-func (a *App) closeBrowserPagesIfThreadDeleted(threadID string) error {
-	_, err := a.browserThread(threadID)
-	if !errors.Is(err, sql.ErrNoRows) {
-		return err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	return errors.Join(err, a.browser.manager.CloseThread(ctx, threadID))
 }
 
 // browserThread reads a thread that can hold browser pages. A deleted thread

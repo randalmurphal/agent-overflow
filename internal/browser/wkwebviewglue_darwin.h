@@ -40,6 +40,12 @@ void ao_wkv_set_find_frame_script(const char *script, const char *world);
 // accepted it, 0 otherwise.
 int ao_wkv_focus_app(void);
 
+// ao_wkv_view_focus_presented makes a presented view its window's first
+// responder, as a click into it does: 1 when AppKit accepted it, 0 when it
+// refused, -1 when the view is not presented and focus was left alone. A
+// window that is not key keeps the responder for when it becomes key.
+int ao_wkv_view_focus_presented(void *view);
+
 // ao_wkv_host_park puts a view into the park view at its own slot, at its
 // viewport (ao_wkv_view_set_size) and scale 1. The park view is 1x1 with a
 // masked layer, so a parked view is IN THE WINDOW (real viewport,
@@ -62,14 +68,19 @@ void ao_wkv_host_unpark(void *view);
 // page's OWN clipping container, created here on first present, crops what is
 // presented. Per page, because two threads with a visible pane each present a
 // page at the same moment. An absent clip pair means unclipped, which presents
-// exactly as it did before clipping existed.
-//
-// bg is the pane's resolved background as packed 0xRRGGBB, or negative for
-// none. It is painted where the page has not presented yet, so a strip
-// exposed by a resize matches the pane instead of the engine default.
-void ao_wkv_host_present(void *view, double x, double y, double width, double height,
-                         double clip_x, double clip_y, double clip_width, double clip_height,
-                         double vw, double vh, int bg);
+// exactly as it did before clipping existed. A placement with no backing
+// pixel left to show (a clip that snaps empty) hides the view instead, parked
+// in slot (ao_wkv_host_hide), and the answer is then that hide's; a presented
+// view answers 0.
+int ao_wkv_host_present(void *view, int slot, double x, double y, double width, double height,
+                        double clip_x, double clip_y, double clip_width, double clip_height,
+                        double vw, double vh);
+
+// ao_wkv_view_set_background sets the page's base colour (the Manager's
+// pageBase), packed 0xRRGGBB, or negative for the engine default. The view
+// keeps it parked or presented, and its clip container takes it, now or when
+// present creates it, so a strip a resize exposes is the base too.
+void ao_wkv_view_set_background(void *view, int bg);
 
 // ao_wkv_host_hide stops presenting THIS view without tearing anything down:
 // its clip container is hidden and no other page's presentation is touched.
@@ -115,8 +126,7 @@ void ao_wkv_clear_data(uint64_t call_id);
 // ao_wkv_view_new creates a hidden page view bound to a store, with the console
 // capture script installed and every delegate connected.
 void *ao_wkv_view_new(void *store, uint64_t page_id, uint64_t profile_id,
-                      const char *user_script, const char *console_handler,
-                      const char *download_dir);
+                      const char *user_script, const char *console_handler);
 
 // ao_wkv_view_adopt connects the delegates to a view the engine created itself
 // (a popup) once the Manager has decided to keep it. The popup's navigation
@@ -125,8 +135,7 @@ void *ao_wkv_view_new(void *store, uint64_t page_id, uint64_t profile_id,
 // the opener's user content controller, so the user script is added only when
 // that controller carries none.
 void ao_wkv_view_adopt(void *view, uint64_t page_id, uint64_t profile_id,
-                       const char *user_script, const char *console_handler,
-                       const char *download_dir);
+                       const char *user_script, const char *console_handler);
 
 // ao_wkv_view_close closes the view, handing keyboard focus it held to the
 // SPA's webview, and answers as ao_wkv_host_hide does.
@@ -188,11 +197,18 @@ void ao_wkv_free(void *pointer);
 
 // ---- downloads -----------------------------------------------------------
 
+// ao_wkv_download_decide completes the destination decision the download
+// delegate left open: the download is written to path, or with none
+// canceled. It answers 0, deciding nothing, for a download that failed
+// meanwhile.
+int ao_wkv_download_decide(void *download, const char *path);
 void ao_wkv_download_cancel(void *download);
 void ao_wkv_download_release(void *download);
 // ao_wkv_download_received reads the download's NSProgress. WKDownload reports
 // no per-chunk callback, so the Go side samples this while a download is live —
 // which is what lets the Manager enforce its per-download byte cap mid-flight.
 double ao_wkv_download_received(void *download);
+// ao_wkv_download_total is the size NSProgress expects, 0 when unknown.
+double ao_wkv_download_total(void *download);
 
 #endif

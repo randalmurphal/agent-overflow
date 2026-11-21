@@ -86,7 +86,7 @@ test('built-in browser MCP reaches both provider launch boundaries and composer 
   }).toBe(false);
 });
 
-test('agent browser page stays headless until explicitly presented as an interactive companion', async ({ harness, page }) => {
+test('a hidden browser page stays headless until explicitly presented as an interactive companion', async ({ harness, page }) => {
   const seed = await harness.rpc<SeedResult>('HarnessSeed', {
     projects: [{
       name: 'browser-companion',
@@ -110,7 +110,9 @@ test('agent browser page stays headless until explicitly presented as an interac
   const opened = await harness.rpc<BrowserState>('BrowserCompanionDo', threadId, { kind: 'new' });
   const pageId = opened.activePageId!;
 
+  // A user's new tab shows the companion; hidden, its page stays headless.
   const pane = page.getByTestId('browser-pane');
+  await harness.rpc('BrowserCompanionDo', threadId, { kind: 'hide' });
   await expect(pane).toHaveCount(0);
   await harness.rpc('BrowserCompanionDo', threadId, { kind: 'show', pageId });
   await expect(pane).toBeVisible();

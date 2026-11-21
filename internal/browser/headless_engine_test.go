@@ -4,233 +4,20 @@ package browser
 
 import (
 	"context"
-	"encoding/json"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
-
-	"github.com/chromedp/cdproto/cdp"
-	"github.com/chromedp/cdproto/network"
-	cdpruntime "github.com/chromedp/cdproto/runtime"
-	"github.com/chromedp/cdproto/storage"
-	"github.com/chromedp/chromedp"
 
 	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/testutil/mockexec"
 )
-
-// The headless engine is exercised against a FAKE Chromium: a shell script
-// that records its argv, prints the "DevTools listening on" line every
-// Chromium prints, and then sleeps until it is asked to exit or is killed.
-// The endpoint that line advertises is the same loopback CDP fake the hosted
-// engine's tests use. No test here starts a real browser, and none
-// downloads one. The real launch is the manual AO_HEADLESS_CHROMIUM_SMOKE
-// gate at the bottom of this file. The scripts are POSIX shell, and the
-// headless engine ships on the serve hosts, which are Linux and macOS, so
-// this file does not build on Windows.
-
-const headlessTestDeadline = 10 * time.Second
-
-// fakeChromium is one scripted browser: where it wrote its argv, the pid it
-// runs under, and the CDP endpoint it advertised.
-type fakeChromium struct {
-	path     string
-	argvFile string
-	pidFile  string
-	// crashDirFile records the crash handler's directory it was given.
-	crashDirFile string
-	calls        func() []fakeCDPCall
-	// send writes one event to the browser's CDP connection.
-	send func(event map[string]any)
-	// hangUp drops the CDP connection, the way a browser that died does.
-	hangUp func()
-	// ignoreClose makes Browser.close a no-op, the way a wedged browser
-	// answers it. Otherwise the browser exits on SIGTERM.
-	ignoreClose atomic.Bool
-	// onClose, when set, runs as Browser.close arrives.
-	onClose atomic.Pointer[func()]
-}
-
-// writeFakeChromium installs the script and the endpoint behind it.
-//
-// `exec sleep` rather than a shell loop on purpose: the process the profile
-// kills is then the one whose pid the script recorded, so "Dispose killed
-// the browser" is provable rather than inferred.
-func writeFakeChromium(t *testing.T, name string) *fakeChromium {
-	t.Helper()
-	return writeAnnouncingFakeChromium(t, name, nil)
-}
-
-// writeAnnouncingFakeChromium is writeFakeChromium whose endpoint also
-// sends the events announce returns before answering a command.
-func writeAnnouncingFakeChromium(t *testing.T, name string, announce func(call fakeCDPCall) []map[string]any) *fakeChromium {
-	t.Helper()
-	dir := t.TempDir()
-	browser := &fakeChromium{
-		path:         filepath.Join(dir, name),
-		argvFile:     filepath.Join(dir, "argv"),
-		pidFile:      filepath.Join(dir, "pid"),
-		crashDirFile: filepath.Join(dir, "crash-dir"),
-	}
-	var targets, sessions atomic.Int64
-	endpoint := startFakeCDPEndpoint(t, func(call fakeCDPCall) any {
-		switch call.Method {
-		case "Target.createTarget":
-			return map[string]any{"targetId": fmt.Sprintf("T-%d", targets.Add(1))}
-		case "Target.attachToTarget":
-			return map[string]any{"sessionId": fmt.Sprintf("S-%d", sessions.Add(1))}
-		case "Runtime.evaluate":
-			// chromedp asks the fresh target what `self` is, to find out
-			// whether it attached to a worker. A page answers Window.
-			return map[string]any{"result": map[string]any{"type": "object", "className": "Window"}}
-		case "Page.getFrameTree":
-			return map[string]any{"frameTree": map[string]any{"frame": map[string]any{
-				"id": "F-1", "loaderId": "L-1", "url": "about:blank",
-				"securityOrigin": "://", "mimeType": "text/html",
-			}}}
-		case "DOM.getDocument":
-			// Attaching to a target that already exists, as adopting a
-			// popup does, reads its document at once.
-			return map[string]any{"root": map[string]any{
-				"nodeId": 1, "backendNodeId": 1, "nodeType": 9,
-				"nodeName": "#document", "localName": "", "nodeValue": "",
-			}}
-		case "Browser.close":
-			// The endpoint path ends in the pid of the script that
-			// advertised it, which is still this test's unreaped child.
-			pid, err := strconv.Atoi(filepath.Base(call.Path))
-			if err != nil {
-				t.Errorf("Browser.close arrived on %q, which names no browser", call.Path)
-			} else if !browser.ignoreClose.Load() {
-				_ = syscall.Kill(pid, syscall.SIGTERM)
-			}
-			if onClose := browser.onClose.Load(); onClose != nil {
-				(*onClose)()
-			}
-		}
-		return nil
-	}, announce)
-	browser.calls, browser.send, browser.hangUp = endpoint.calls, endpoint.send, endpoint.hangUp
-	wsURL := endpoint.wsURL
-	script := "#!/bin/sh\n" +
-		"printf '%s\\n' \"$@\" > " + shellQuote(browser.argvFile) + "\n" +
-		"printf '%s' \"$BREAKPAD_DUMP_LOCATION\" > " + shellQuote(browser.crashDirFile) + "\n" +
-		"echo $$ > " + shellQuote(browser.pidFile) + "\n" +
-		"echo \"DevTools listening on " + wsURL + "/devtools/browser/$$\" >&2\n" +
-		"exec sleep 300\n"
-	mockexec.Write(t, browser.path, script)
-	return browser
-}
-
-func shellQuote(value string) string { return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'" }
-
-// argv is what the last launch of this script was given.
-func (c *fakeChromium) argv(t *testing.T) []string {
-	t.Helper()
-	body, err := os.ReadFile(c.argvFile)
-	if err != nil {
-		t.Fatalf("the fake Chromium recorded no argv (it was never launched): %v", err)
-	}
-	return strings.Split(strings.TrimRight(string(body), "\n"), "\n")
-}
-
-// crashDir is the crash handler's directory the last launch was given.
-func (c *fakeChromium) crashDir(t *testing.T) string {
-	t.Helper()
-	body, err := os.ReadFile(c.crashDirFile)
-	if err != nil {
-		t.Fatalf("the fake Chromium recorded no environment (it was never launched): %v", err)
-	}
-	return string(body)
-}
-
-func (c *fakeChromium) pid(t *testing.T) int {
-	t.Helper()
-	body, err := os.ReadFile(c.pidFile)
-	if err != nil {
-		t.Fatalf("the fake Chromium recorded no pid (it was never launched): %v", err)
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(body)))
-	if err != nil {
-		t.Fatalf("the fake Chromium recorded pid %q: %v", body, err)
-	}
-	return pid
-}
-
-func (c *fakeChromium) methods() []string {
-	seen := c.calls()
-	names := make([]string, 0, len(seen))
-	for _, call := range seen {
-		names = append(names, call.Method)
-	}
-	return names
-}
-
-// alive answers whether a recorded pid is still a process. A child that
-// exited but was not reaped still is one, so false also proves the reap. A
-// killed browser is reaped before Dispose returns, so this needs no polling.
-func alive(pid int) bool { return syscall.Kill(pid, 0) == nil }
-
-// waitForPID reads a pid the script records before anything else, for a
-// launch that is still in flight.
-func waitForPID(t *testing.T, pidFile string) int {
-	t.Helper()
-	var pid int
-	eventually(t, "the fake Chromium to record its pid", func() bool {
-		body, err := os.ReadFile(pidFile)
-		if err != nil || !strings.HasSuffix(string(body), "\n") {
-			return false
-		}
-		pid, err = strconv.Atoi(strings.TrimSpace(string(body)))
-		return err == nil
-	})
-	return pid
-}
-
-func newTestHeadlessEngine(t *testing.T, binary string) *headlessEngine {
-	t.Helper()
-	engine := &headlessEngine{
-		configDir: t.TempDir(),
-		// The engine's own temp root, so an ephemeral profile lands here
-		// and Start's sweep never reads the machine's real one.
-		tempRoot: t.TempDir(),
-		binary:   binary,
-		reaper:   procutiltest.Reaper(),
-		events:   engineEvents{},
-		logf:     func(format string, args ...any) { t.Logf(format, args...) },
-		// Long enough that a fake that exits when asked is never killed
-		// instead.
-		closeTimeout: headlessTestDeadline,
-		profiles:     make(map[*headlessProfile]struct{}),
-		pageProfile:  make(map[string]*headlessProfile),
-	}
-	t.Cleanup(engine.Stop)
-	if err := engine.Start(context.Background()); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	return engine
-}
-
-func testHeadlessProfile(t *testing.T, engine *headlessEngine, workspace string, persist bool) *headlessProfile {
-	t.Helper()
-	profile, err := engine.NewProfile(context.Background(), profileOptions{
-		Workspace: workspace, DownloadDir: filepath.Join(t.TempDir(), "downloads"), Persist: persist,
-		Allow: func(string) bool { return true },
-	})
-	if err != nil {
-		t.Fatalf("new profile for %s: %v", workspace, err)
-	}
-	return profile.(*headlessProfile)
-}
 
 // A serve host can lose its browser to a package upgrade while it is up, so
 // the engine re-checks at start rather than trusting what selection found —
@@ -276,8 +63,8 @@ func TestHeadlessEngineLaunchesOneChromiumPerProfile(t *testing.T) {
 		t.Fatal("two workspace profiles shared one Chromium process")
 	}
 
-	oneDir := filepath.Join(engine.configDir, browserProfileDir, one.handle, "chromium")
-	twoDir := filepath.Join(engine.configDir, browserProfileDir, two.handle, "chromium")
+	oneDir := filepath.Join(engine.configDir, browserProfileDir, jarDirName("/home/dev/one"), "chromium")
+	twoDir := filepath.Join(engine.configDir, browserProfileDir, jarDirName("/home/dev/two"), "chromium")
 	if oneDir == twoDir {
 		t.Fatal("two workspaces resolved to one user-data directory")
 	}
@@ -310,6 +97,7 @@ func wantChromiumArgv(userDataDir string) []string {
 		"--disable-gpu",
 		"--no-first-run",
 		"--no-default-browser-check",
+		"--disable-popup-blocking",
 		"--remote-debugging-port=0",
 		"about:blank",
 	}
@@ -338,43 +126,21 @@ func TestChromiumArgsAreTheWholeLaunchLine(t *testing.T) {
 	}
 }
 
-// Downloads land ONLY in the AO artifact directory, and allowAndName is
-// what the Manager's own bookkeeping reads back. Events are what make the
-// download reports arrive at all.
-func TestHeadlessProfilePinsDownloadsToTheArtifactDirectory(t *testing.T) {
-	browser := writeFakeChromium(t, "chromium")
-	engine := newTestHeadlessEngine(t, browser.path)
-	profile := testHeadlessProfile(t, engine, "/home/dev/repo", true)
-	if _, err := profile.ensureBrowser(); err != nil {
-		t.Fatalf("launch: %v", err)
+// A jar's next profile, after the one before was disposed, keeps the jar's
+// site data directory and has a handle of its own: a report the disposed
+// profile's browser left names no open profile.
+func TestAHeadlessProfileOpenedAgainHasItsOwnHandle(t *testing.T) {
+	engine := newTestHeadlessEngine(t, writeFakeChromium(t, "chromium").path)
+	first := testHeadlessProfile(t, engine, "/home/dev/repo", true)
+	if err := first.Dispose(context.Background()); err != nil {
+		t.Fatal(err)
 	}
-
-	var params struct {
-		Behavior      string `json:"behavior"`
-		DownloadPath  string `json:"downloadPath"`
-		EventsEnabled bool   `json:"eventsEnabled"`
+	second := testHeadlessProfile(t, engine, "/home/dev/repo", true)
+	if first.Handle() == second.Handle() {
+		t.Fatalf("both profiles report handle %q", first.Handle())
 	}
-	var found bool
-	for _, call := range browser.calls() {
-		if call.Method != "Browser.setDownloadBehavior" {
-			continue
-		}
-		if err := json.Unmarshal(call.Params, &params); err != nil {
-			t.Fatalf("decode setDownloadBehavior params: %v", err)
-		}
-		found = true
-	}
-	if !found {
-		t.Fatalf("the launch never pinned downloads: %v", browser.methods())
-	}
-	if params.DownloadPath != profile.downloadDir {
-		t.Fatalf("downloads land in %q, want the artifact directory %q", params.DownloadPath, profile.downloadDir)
-	}
-	if params.Behavior != "allowAndName" {
-		t.Fatalf("download behavior is %q; the Manager renames from the GUID-named file allowAndName writes", params.Behavior)
-	}
-	if !params.EventsEnabled {
-		t.Fatal("download events are off, so no download would ever be reported or capped")
+	if first.userDataDir != second.userDataDir {
+		t.Fatalf("the jar's site data moved from %q to %q", first.userDataDir, second.userDataDir)
 	}
 }
 
@@ -407,14 +173,6 @@ func TestHeadlessProfileReusesItsBrowserForEveryPage(t *testing.T) {
 		if !ok || owner != profile {
 			t.Fatalf("page %q is bound to %v", driver.Handle(), owner)
 		}
-	}
-}
-
-func testPageHooks() pageHooks {
-	return pageHooks{
-		Console: func(ConsoleLog) {},
-		PageURL: func() string { return "" },
-		Allow:   func(string) bool { return true },
 	}
 }
 
@@ -480,13 +238,6 @@ func TestHeadlessProfileDisposeStopsTheBrowserAndHonoursPersistence(t *testing.T
 			}
 		})
 	}
-}
-
-// currentProcess is the Chromium the profile runs now.
-func (p *headlessProfile) currentProcess() *chromiumProcess {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.current.process
 }
 
 // A persisted profile's browser that does not exit when asked is killed once
@@ -625,569 +376,6 @@ func TestHeadlessProfileSurfacesWhyTheBrowserRefusedToStart(t *testing.T) {
 	}
 }
 
-// popupCreated is the targetCreated event Chromium sends for a page one of
-// its pages opened.
-func popupCreated(handle, opener string) map[string]any {
-	return map[string]any{"method": "Target.targetCreated", "params": map[string]any{"targetInfo": map[string]any{
-		"targetId": handle, "type": "page", "title": "", "url": "about:blank",
-		"attached": false, "canAccessOpener": false, "openerId": opener,
-	}}}
-}
-
-// Popups reach the Manager only through the browser-level event handlers,
-// and the Manager adopts one with CDP commands on the same connection. The
-// subscriptions are made before discovery is enabled, so a popup announced
-// during the handshake is reported, and adopting a popup does not wait on
-// the handler that reported it.
-//
-// The handshake popup is announced once, before the reply, as Chromium
-// reports the targets that exist when discovery is enabled. A subscription
-// made after that reply never hears of it.
-func TestHeadlessProfileReportsPopupsAndCanAdoptThem(t *testing.T) {
-	var handshake sync.Once
-	browser := writeAnnouncingFakeChromium(t, "chromium", func(call fakeCDPCall) []map[string]any {
-		switch call.Method {
-		case "Target.setDiscoverTargets":
-			var events []map[string]any
-			handshake.Do(func() { events = []map[string]any{popupCreated("P-handshake", "T-elsewhere")} })
-			return events
-		case "Target.createTarget":
-			return []map[string]any{popupCreated("P-page", "T-1")}
-		}
-		return nil
-	})
-	engine := newTestHeadlessEngine(t, browser.path)
-	profile := testHeadlessProfile(t, engine, "/home/dev/repo", true)
-
-	var mu sync.Mutex
-	reported := make(map[string]enginePopup)
-	adopted := make(chan error, 1)
-	engine.events.PopupOpened = func(popup enginePopup) {
-		mu.Lock()
-		reported[popup.Handle] = popup
-		mu.Unlock()
-		if popup.Handle != "P-page" {
-			return
-		}
-		// What Manager.adoptPopup does with a popup it keeps.
-		driver, err := profile.AttachPage(context.Background(), popup.Handle, testPageHooks())
-		if err == nil {
-			driver.Close()
-		}
-		adopted <- err
-	}
-	created := make(chan error, 1)
-	go func() {
-		_, err := profile.NewPage(context.Background(), testPageHooks())
-		created <- err
-	}()
-
-	select {
-	case err := <-adopted:
-		if err != nil {
-			t.Fatalf("adopt the popup: %v", err)
-		}
-	case <-time.After(headlessTestDeadline):
-		t.Fatal("adopting the popup never finished")
-	}
-	select {
-	case err := <-created:
-		if err != nil {
-			t.Fatalf("the page that opened the popup: %v", err)
-		}
-	case <-time.After(headlessTestDeadline):
-		t.Fatal("creating the page that opened the popup never finished")
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	for handle, opener := range map[string]string{"P-handshake": "T-elsewhere", "P-page": "T-1"} {
-		got, ok := reported[handle]
-		if !ok || got.Opener != opener || got.Profile != profile.handle {
-			t.Fatalf("popup %s was reported as %+v (reported: %v)", handle, got, ok)
-		}
-		if owner, bound := engine.profileForPage(handle); !bound || owner != profile {
-			t.Fatalf("popup %s is not bound to the profile that saw it", handle)
-		}
-	}
-}
-
-// pausedRequest is the Fetch.requestPaused event Chromium sends on the
-// session whose interception matched a document request of frame.
-func pausedRequest(id, frame, url string) map[string]any {
-	return map[string]any{"method": "Fetch.requestPaused", "params": map[string]any{
-		"requestId": id, "frameId": frame, "resourceType": "Document",
-		"request": map[string]any{"url": url, "method": "GET", "headers": map[string]any{}},
-	}}
-}
-
-// browserCallParams decodes the parameters of every command of method the
-// fake answered on the browser session.
-func browserCallParams[T any](t *testing.T, calls []fakeCDPCall, method string) []T {
-	t.Helper()
-	var out []T
-	for _, call := range calls {
-		if call.Method != method || call.SessionID != "" {
-			continue
-		}
-		var params T
-		if err := json.Unmarshal(call.Params, &params); err != nil {
-			t.Fatalf("decode %s %s: %v", method, call.Params, err)
-		}
-		out = append(out, params)
-	}
-	return out
-}
-
-// requestAnswer is the part of Fetch.continueRequest and Fetch.failRequest
-// a test reads.
-type requestAnswer struct {
-	RequestID   string `json:"requestId"`
-	ErrorReason string `json:"errorReason"`
-}
-
-// Chromium runs a page it opened by itself before the Manager can adopt it
-// and AttachPage can install the page's own policy, so the profile enables
-// the workspace's policy on the browser session at launch, for every
-// request the page policy intercepts, and answers what it pauses there.
-func TestHeadlessProfileAppliesTheWorkspacePolicyToEveryPage(t *testing.T) {
-	browser := writeFakeChromium(t, "chromium")
-	engine := newTestHeadlessEngine(t, browser.path)
-	const allowed = "file:///home/dev/repo/index.html"
-	profile, err := engine.NewProfile(context.Background(), profileOptions{
-		Workspace: "/home/dev/repo", DownloadDir: filepath.Join(t.TempDir(), "downloads"),
-		Allow: func(url string) bool { return url == allowed },
-	})
-	if err != nil {
-		t.Fatalf("new profile: %v", err)
-	}
-	if _, err := profile.(*headlessProfile).ensureBrowser(); err != nil {
-		t.Fatalf("launch: %v", err)
-	}
-
-	type pattern struct {
-		URLPattern   string `json:"urlPattern"`
-		ResourceType string `json:"resourceType"`
-		RequestStage string `json:"requestStage"`
-	}
-	var want []pattern
-	for _, p := range navigationPolicyPatterns {
-		want = append(want, pattern{p.URLPattern, string(p.ResourceType), string(p.RequestStage)})
-	}
-	enabled := browserCallParams[struct{ Patterns []pattern }](t, browser.calls(), "Fetch.enable")
-	if len(enabled) != 1 || !slices.Equal(enabled[0].Patterns, want) {
-		t.Fatalf("Fetch.enable on the browser session: %+v, want once with %+v", enabled, want)
-	}
-
-	browser.send(pausedRequest("R-allowed", "P-popup", allowed))
-	browser.send(pausedRequest("R-refused", "P-popup", "file:///home/dev/secret.txt"))
-	var continued, failed []requestAnswer
-	eventually(t, "both paused requests to be answered on the browser session", func() bool {
-		calls := browser.calls()
-		continued = browserCallParams[requestAnswer](t, calls, "Fetch.continueRequest")
-		failed = browserCallParams[requestAnswer](t, calls, "Fetch.failRequest")
-		return len(continued)+len(failed) >= 2
-	})
-	if len(continued) != 1 || continued[0].RequestID != "R-allowed" {
-		t.Fatalf("continued %+v, want only R-allowed", continued)
-	}
-	if len(failed) != 1 || failed[0] != (requestAnswer{RequestID: "R-refused", ErrorReason: "BlockedByClient"}) {
-		t.Fatalf("failed %+v, want only R-refused, blocked by client", failed)
-	}
-}
-
-// A profile answers every request it pauses, so one without a policy to ask
-// is refused rather than created.
-func TestHeadlessProfileRequiresANavigationPolicy(t *testing.T) {
-	engine := newTestHeadlessEngine(t, writeFakeChromium(t, "chromium").path)
-	if _, err := engine.NewProfile(context.Background(), profileOptions{
-		Workspace: "/home/dev/repo", DownloadDir: filepath.Join(t.TempDir(), "downloads"),
-	}); err == nil {
-		t.Fatal("a profile with no navigation policy was created")
-	}
-}
-
-// downloadWillBegin is the event Chromium sends as a download starts in
-// frame.
-func downloadWillBegin(guid, frame string) map[string]any {
-	return map[string]any{"method": "Browser.downloadWillBegin", "params": map[string]any{
-		"frameId": frame, "guid": guid, "url": "https://example.test/file.bin", "suggestedFilename": "file.bin",
-	}}
-}
-
-// A download the Manager refuses, over quota or in a frame no managed page
-// owns, is cancelled by the engine; one it keeps is left running.
-func TestHeadlessProfileCancelsADownloadTheManagerRefuses(t *testing.T) {
-	browser := writeFakeChromium(t, "chromium")
-	engine := newTestHeadlessEngine(t, browser.path)
-	var mu sync.Mutex
-	var started []string
-	engine.events.DownloadStarted = func(start downloadStart) bool {
-		mu.Lock()
-		defer mu.Unlock()
-		started = append(started, start.ID)
-		return start.ID == "G-kept"
-	}
-	profile := testHeadlessProfile(t, engine, "/home/dev/repo", false)
-	if _, err := profile.ensureBrowser(); err != nil {
-		t.Fatalf("launch: %v", err)
-	}
-
-	browser.send(downloadWillBegin("G-refused", "F-1"))
-	browser.send(downloadWillBegin("G-kept", "F-1"))
-	type cancel struct {
-		GUID string `json:"guid"`
-	}
-	eventually(t, "the refused download to be cancelled", func() bool {
-		return len(browserCallParams[cancel](t, browser.calls(), "Browser.cancelDownload")) > 0
-	})
-	eventually(t, "both downloads to be reported", func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return len(started) == 2
-	})
-	if got := browserCallParams[cancel](t, browser.calls(), "Browser.cancelDownload"); len(got) != 1 || got[0].GUID != "G-refused" {
-		t.Fatalf("cancelled %+v, want only G-refused", got)
-	}
-}
-
-// A page owns its main frame, whose id is its target id, before it has
-// reported a frame at all: a download can begin in a navigation that never
-// commits, and the Manager finds the download's page by its frame.
-func TestCDPPageOwnsItsMainFrameBeforeReportingOne(t *testing.T) {
-	browser := writeFakeChromium(t, "chromium")
-	engine := newTestHeadlessEngine(t, browser.path)
-	profile := testHeadlessProfile(t, engine, "/home/dev/repo", false)
-	page, err := profile.NewPage(context.Background(), testPageHooks())
-	if err != nil {
-		t.Fatalf("new page: %v", err)
-	}
-	defer page.Close()
-	if !page.OwnsFrame(page.Handle()) {
-		t.Fatalf("page %s does not own its main frame", page.Handle())
-	}
-	if page.OwnsFrame("F-elsewhere") {
-		t.Fatal("a page owns a frame it never reported")
-	}
-}
-
-// A CDP page reports a new document when its main frame navigates
-// (Page.frameNavigated with no parent); a child frame's navigation and a
-// same-document one (Page.navigatedWithinDocument) are not one. The hosted
-// WebView2 engine drives the same page.
-func TestCDPPageReportsOnlyMainFrameDocumentCommits(t *testing.T) {
-	browser := writeFakeChromium(t, "chromium")
-	engine := newTestHeadlessEngine(t, browser.path)
-	profile := testHeadlessProfile(t, engine, "/home/dev/repo", false)
-	var commits atomic.Int64
-	hooks := testPageHooks()
-	hooks.DocumentCommitted = func() func() {
-		commits.Add(1)
-		return nil
-	}
-	page, err := profile.NewPage(context.Background(), hooks)
-	if err != nil {
-		t.Fatalf("new page: %v", err)
-	}
-	defer page.Close()
-	frame := func(id, parent string) map[string]any {
-		f := map[string]any{"id": id, "loaderId": "L-2", "url": "https://example.test/", "securityOrigin": "https://example.test", "mimeType": "text/html"}
-		if parent != "" {
-			f["parentId"] = parent
-		}
-		return f
-	}
-	send := func(method string, params map[string]any) {
-		browser.send(map[string]any{"method": method, "sessionId": "S-1", "params": params})
-	}
-	send("Page.navigatedWithinDocument", map[string]any{"frameId": "F-1", "url": "https://example.test/#part", "navigationType": "fragment"})
-	send("Page.frameNavigated", map[string]any{"frame": frame("F-child", "F-1"), "type": "Navigation"})
-	send("Page.frameNavigated", map[string]any{"frame": frame("F-1", ""), "type": "Navigation"})
-	eventually(t, "the main frame's commit", func() bool { return commits.Load() >= 1 })
-	time.Sleep(50 * time.Millisecond)
-	if got := commits.Load(); got != 1 {
-		t.Fatalf("document commits = %d, want 1 (the main frame's only)", got)
-	}
-}
-
-// A browser whose connection is lost is gone: the browser context is
-// cancelled, and the profile's watcher disposes the profile, which kills and
-// reaps the process and removes its ephemeral site data.
-func TestHeadlessProfileEndsWhenItsConnectionIsLost(t *testing.T) {
-	browser := writeFakeChromium(t, "chromium")
-	engine := newTestHeadlessEngine(t, browser.path)
-	profile := testHeadlessProfile(t, engine, "/home/dev/repo", false)
-	if _, err := profile.ensureBrowser(); err != nil {
-		t.Fatalf("launch: %v", err)
-	}
-	pid := browser.pid(t)
-
-	browser.hangUp()
-	eventually(t, "the profile to report its browser gone", func() bool {
-		_, ok := profile.browser()
-		return !ok
-	})
-	eventually(t, "the process to be killed and reaped", func() bool { return !alive(pid) })
-	eventually(t, "the ephemeral site data to be removed", func() bool {
-		_, err := os.Stat(profile.ephemeralRoot)
-		return os.IsNotExist(err)
-	})
-	if len(engine.liveProfiles()) != 0 {
-		t.Fatal("the engine still holds a profile whose browser is gone")
-	}
-}
-
-// closedPages records what a headless engine reports closed.
-type closedPages struct {
-	mu      sync.Mutex
-	handles []string
-}
-
-func recordClosedPages(engine *headlessEngine) *closedPages {
-	closed := &closedPages{}
-	engine.events.PageClosed = closed.add
-	return closed
-}
-
-func (c *closedPages) add(handle string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.handles = append(c.handles, handle)
-}
-
-func (c *closedPages) count(handle string) int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	n := 0
-	for _, closed := range c.handles {
-		if closed == handle {
-			n++
-		}
-	}
-	return n
-}
-
-// A lost connection cancels the browser context, and the watcher and a
-// relaunch both wake on it, in either order. When the relaunch runs first,
-// it reports the lost browser's pages closed and reaps its process, and the
-// watcher, finding the browser already replaced, reports nothing again. The
-// watcher is run by hand after the relaunch here, the order a scheduler can
-// pick.
-func TestHeadlessProfileRelaunchReportsThePagesOfTheBrowserItLost(t *testing.T) {
-	browser := writeFakeChromium(t, "chromium")
-	engine := newTestHeadlessEngine(t, browser.path)
-	closed := recordClosedPages(engine)
-	profile := testHeadlessProfile(t, engine, "/home/dev/repo", false)
-
-	// Published as adopt publishes a browser, without starting its watcher.
-	lost, err := profile.launch(testLaunchContext(t, headlessTestDeadline))
-	if err != nil {
-		t.Fatalf("launch: %v", err)
-	}
-	profile.mu.Lock()
-	profile.current = lost
-	profile.mu.Unlock()
-	lostPID := browser.pid(t)
-	page, err := profile.NewPage(context.Background(), testPageHooks())
-	if err != nil {
-		t.Fatalf("new page: %v", err)
-	}
-	handle := page.Handle()
-
-	browser.hangUp()
-	select {
-	case <-lost.ctx.Done():
-	case <-time.After(headlessTestDeadline):
-		t.Fatal("losing the connection never cancelled the browser context")
-	}
-	if _, err := profile.ensureBrowser(); err != nil {
-		t.Fatalf("relaunch: %v", err)
-	}
-	if alive(lostPID) {
-		t.Fatalf("the lost Chromium %d is still running or unreaped after the relaunch", lostPID)
-	}
-	eventually(t, "the lost browser's page to be reported closed", func() bool { return closed.count(handle) > 0 })
-
-	profile.watchBrowser(lost.ctx)
-	if n := closed.count(handle); n != 1 {
-		t.Fatalf("page %s was reported closed %d times, want once", handle, n)
-	}
-	if _, ok := profile.browser(); !ok {
-		t.Fatal("the lost browser's watcher ended the relaunched browser")
-	}
-	if pid := browser.pid(t); pid == lostPID || !alive(pid) {
-		t.Fatalf("the relaunched Chromium %d is not running", pid)
-	}
-}
-
-// When the watcher runs first, it takes the lost browser's pages and ends
-// the profile in one step, and reports them once the profile is torn down.
-// A page the Manager creates while the report is delivered, which is when a
-// relaunch would host it, is refused rather than created on a profile the
-// watcher is ending, where nothing would ever report it closed.
-func TestHeadlessProfileRefusesAPageOnceItsBrowserIsLost(t *testing.T) {
-	browser := writeFakeChromium(t, "chromium")
-	engine := newTestHeadlessEngine(t, browser.path)
-	profile := testHeadlessProfile(t, engine, "/home/dev/repo", false)
-
-	// Installed before the first page starts the watcher that calls it.
-	type created struct {
-		handle string
-		err    error
-	}
-	closed := &closedPages{}
-	during := make(chan created, 1)
-	var lostMu sync.Mutex
-	var handle string
-	var lostPID int
-	var reportedBeforeTheReap, reportedBeforeTheRemoval atomic.Bool
-	engine.events.PageClosed = func(closedHandle string) {
-		closed.add(closedHandle)
-		lostMu.Lock()
-		lost, pid := handle, lostPID
-		lostMu.Unlock()
-		if closedHandle != lost {
-			return
-		}
-		reportedBeforeTheReap.Store(alive(pid))
-		_, err := os.Stat(profile.ephemeralRoot)
-		reportedBeforeTheRemoval.Store(err == nil)
-		next, err := profile.NewPage(context.Background(), testPageHooks())
-		if err != nil {
-			during <- created{err: err}
-			return
-		}
-		during <- created{handle: next.Handle()}
-	}
-
-	page, err := profile.NewPage(context.Background(), testPageHooks())
-	if err != nil {
-		t.Fatalf("new page: %v", err)
-	}
-	launchedPID := browser.pid(t)
-	lostMu.Lock()
-	handle, lostPID = page.Handle(), launchedPID
-	lostMu.Unlock()
-
-	browser.hangUp()
-	var next created
-	select {
-	case next = <-during:
-	case <-time.After(headlessTestDeadline):
-		t.Fatal("the lost browser's page was never reported closed")
-	}
-	if next.err == nil {
-		// A page that exists must be reported closed when its profile ends.
-		eventually(t, "the page created during the report to be reported closed", func() bool {
-			return closed.count(next.handle) > 0
-		})
-		t.Fatalf("a page was created on a profile whose browser was lost: %s", next.handle)
-	}
-	eventually(t, "the profile to end", func() bool {
-		profile.mu.Lock()
-		defer profile.mu.Unlock()
-		return profile.disposed
-	})
-	if n := closed.count(handle); n != 1 {
-		t.Fatalf("page %s was reported closed %d times, want once", handle, n)
-	}
-	if reportedBeforeTheReap.Load() || reportedBeforeTheRemoval.Load() {
-		t.Fatal("the page was reported closed before the profile was torn down; a Dispose the report triggers would return early")
-	}
-	if pid := browser.pid(t); pid != lostPID {
-		t.Fatalf("a Chromium %d was launched for a profile whose browser was lost", pid)
-	}
-}
-
-// The same race under real scheduling: the relaunch starts the moment the
-// loss is visible, which is when the watcher wakes too. Whichever runs
-// first, each page of the lost browser is reported closed exactly once.
-func TestHeadlessProfileReportsEveryPageOfALostBrowserOnce(t *testing.T) {
-	browser := writeFakeChromium(t, "chromium")
-	engine := newTestHeadlessEngine(t, browser.path)
-	closed := recordClosedPages(engine)
-
-	var lostPages []string
-	outcomes := make(map[string]int)
-	for i := range 20 {
-		profile := testHeadlessProfile(t, engine, fmt.Sprintf("/home/dev/repo-%d", i), false)
-		page, err := profile.NewPage(context.Background(), testPageHooks())
-		if err != nil {
-			t.Fatalf("new page: %v", err)
-		}
-		lostPages = append(lostPages, page.Handle())
-
-		browser.hangUp()
-		deadline := time.Now().Add(headlessTestDeadline)
-		for {
-			if _, ok := profile.browser(); !ok {
-				break
-			}
-			if time.Now().After(deadline) {
-				t.Fatal("losing the connection never reached the profile")
-			}
-			runtime.Gosched()
-		}
-		if _, err := profile.NewPage(context.Background(), testPageHooks()); err == nil {
-			outcomes["relaunch first"]++
-		} else {
-			outcomes["watcher first"]++
-		}
-		eventually(t, "page "+page.Handle()+" to be reported closed", func() bool {
-			return closed.count(page.Handle()) > 0
-		})
-		if err := profile.Dispose(context.Background()); err != nil {
-			t.Fatalf("dispose: %v", err)
-		}
-	}
-	// A second report of any page would come from a watcher running late.
-	time.Sleep(50 * time.Millisecond)
-	for _, handle := range lostPages {
-		if n := closed.count(handle); n != 1 {
-			t.Errorf("page %s was reported closed %d times, want once", handle, n)
-		}
-	}
-	t.Logf("outcomes: %v", outcomes)
-}
-
-// Dispose during a launch cannot reach the process through the profile's
-// browser, which does not exist yet. It still returns only once that
-// process is reaped, because the ephemeral directory is removed next.
-func TestHeadlessProfileDisposeReapsALaunchInFlight(t *testing.T) {
-	dir := t.TempDir()
-	binary := filepath.Join(dir, "chromium")
-	pidFile := filepath.Join(dir, "pid")
-	script := "#!/bin/sh\n" +
-		"echo $$ > " + shellQuote(pidFile) + "\n" +
-		"exec sleep 300\n"
-	mockexec.Write(t, binary, script)
-	engine := newTestHeadlessEngine(t, binary)
-	profile := testHeadlessProfile(t, engine, "/home/dev/repo", false)
-	launched := make(chan error, 1)
-	go func() {
-		_, err := profile.ensureBrowser()
-		launched <- err
-	}()
-	pid := waitForPID(t, pidFile)
-
-	if err := profile.Dispose(context.Background()); err != nil {
-		t.Fatalf("dispose: %v", err)
-	}
-	if alive(pid) {
-		t.Fatalf("Dispose returned while the Chromium it was launching, %d, was still running", pid)
-	}
-	if _, err := os.Stat(profile.ephemeralRoot); !os.IsNotExist(err) {
-		t.Fatalf("the ephemeral site data survived Dispose: %v", err)
-	}
-	select {
-	case err := <-launched:
-		if err == nil {
-			t.Fatal("a launch cancelled by Dispose reported a browser")
-		}
-	case <-time.After(headlessTestDeadline):
-		t.Fatal("the cancelled launch never returned")
-	}
-}
-
 // Selection is a POSITIVE option. The windowless rule
 // (TestSelectEngineWithoutAWindowHasNoEngine) and this one are the same
 // rule from both sides: no window never means a browser, and a serve boot
@@ -1223,264 +411,79 @@ func TestSelectEngineTakesTheHeadlessEngineOnlyWhenAsked(t *testing.T) {
 // The manual real-browser gate
 // ---------------------------------------------------------------------
 
-// TestHeadlessChromiumReal is the ONLY test that starts a real browser, and
-// it runs only when asked: `AO_HEADLESS_CHROMIUM_SMOKE=1 go test
-// ./internal/browser -run TestHeadlessChromiumReal -count=1`. It is
-// documented beside `make provider-smoke` in
-// docs/architecture/development.md and is on no automatic target.
-//
-// What it proves that nothing above can: that this machine's Chromium
-// accepts the command line chromiumArgs builds, sandbox and all, with only
-// the mock keychain added on macOS, and hands out a target the shared CDP
-// driver can attach to and navigate; that Dispose leaves no process of it running and an ephemeral
-// profile nowhere on disk; that a persisted profile keeps a cookie set
-// just before Dispose; that a popup's first request passes the
-// workspace's navigation policy; and that the crash handler writes
-// nothing into HOME. Run it after a Chromium major upgrade and before
-// shipping a change to the launch flags or to how a browser is stopped.
-func TestHeadlessChromiumReal(t *testing.T) {
-	if os.Getenv("AO_HEADLESS_CHROMIUM_SMOKE") != "1" {
-		t.Skip("set AO_HEADLESS_CHROMIUM_SMOKE=1 to launch this machine's real Chromium")
+// Headless Chromium keeps one user-data directory per persistent jar under
+// the profile tree Clear site data deletes, the worktree jar's where it
+// always was, and a private jar's nowhere under it.
+func TestHeadlessEngineKeepsOneDirectoryPerJar(t *testing.T) {
+	engine := newTestHeadlessEngine(t, writeFakeChromium(t, "chromium").path)
+	const workspace = "/home/dev/repo"
+	digest := sha256.Sum256([]byte(workspace))
+	worktree := testHeadlessProfile(t, engine, workspace, true)
+	if want := filepath.Join(engine.configDir, browserProfileDir, fmt.Sprintf("%x", digest[:12]), "chromium"); worktree.userDataDir != want {
+		t.Fatalf("worktree jar directory = %q, want today's %q", worktree.userDataDir, want)
 	}
-	// Chromium inherits this HOME, so nothing the smoke starts writes into
-	// the developer's own.
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	engine, err := newHeadlessChromiumEngine(t.TempDir(), HeadlessChromiumOptions{Reaper: procutiltest.Reaper()}, engineEvents{
-		PopupOpened:      func(enginePopup) {},
-		PageClosed:       func(string) {},
-		PageInfoChanged:  func(string, string, string) {},
-		DownloadStarted:  func(downloadStart) bool { return true },
-		DownloadProgress: func(downloadProgress) {},
-	})
-	if err != nil {
-		t.Fatalf("find a Chromium: %v", err)
+	project := testHeadlessProfile(t, engine, "project:P", true)
+	if project.userDataDir == worktree.userDataDir || !strings.HasPrefix(project.userDataDir, filepath.Join(engine.configDir, browserProfileDir)) {
+		t.Fatalf("project jar directory = %q", project.userDataDir)
 	}
-	t.Logf("launching %s", engine.binary)
-	if runtime.GOOS == "darwin" {
-		// macOS finds the keychain through HOME, and this one has none:
-		// Chrome would ask for one in a dialog at every launch and keep no
-		// cookie it cannot encrypt. The mock keychain keeps the smoke off
-		// the keychain; a serve backend runs with the user's own HOME.
-		wrapper := filepath.Join(t.TempDir(), "chromium")
-		script := "#!/bin/sh\nexec '" + strings.ReplaceAll(engine.binary, "'", `'\''`) + "' --use-mock-keychain \"$@\"\n"
-		if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		engine.binary = wrapper
-	}
-	engine.logf = func(format string, args ...any) { t.Logf(format, args...) }
-	if err := engine.Start(t.Context()); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	defer engine.Stop()
-
-	profile := testHeadlessProfile(t, engine, t.TempDir(), false)
-	page, err := profile.NewPage(t.Context(), testPageHooks())
-	if err != nil {
-		t.Fatalf("new page: %v", err)
-	}
-	// Operations run on a context derived from the page's own lifetime,
-	// which is the Manager's contract (operationContext): a bare caller
-	// context carries no chromedp target and chromedp refuses it.
-	opCtx, cancel := operationContext(t.Context(), page.Lifetime(), operationTimeout)
-	defer cancel()
-	if err := page.Navigate(opCtx, "about:blank"); err != nil {
-		t.Fatalf("navigate: %v", err)
-	}
-	url, _, err := page.Info(opCtx)
-	if err != nil {
-		t.Fatalf("read page state: %v", err)
-	}
-	if url != "about:blank" {
-		t.Fatalf("page URL = %q, want about:blank", url)
-	}
-	group := profile.currentProcess().cmd.Process.Pid
-	page.Close()
-	if err := profile.Dispose(t.Context()); err != nil {
-		t.Fatalf("dispose: %v", err)
-	}
-	// With no process of Chromium's left, nothing can recreate the
-	// directory, so its absence now is final.
-	if left := chromiumLeftovers(t, group, profile.ephemeralRoot); len(left) > 0 {
-		t.Fatalf("Chromium processes outlived Dispose: %v", left)
-	}
-	if _, err := os.Stat(profile.ephemeralRoot); !os.IsNotExist(err) {
-		t.Fatalf("the ephemeral profile %s survives Dispose: %v", profile.ephemeralRoot, err)
-	}
-
-	workspace := t.TempDir()
-	cookie := setRealCookie(t, testHeadlessProfile(t, engine, workspace, true))
-	if got := readRealCookie(t, testHeadlessProfile(t, engine, workspace, true), cookie.Name); got != cookie.Value {
-		t.Fatalf("the cookie set before Dispose reads %q after it, want %q", got, cookie.Value)
-	}
-
-	assertRealPopupsPassThePolicy(t, engine)
-	assertRealEvaluateSemantics(t, engine)
-	assertRealPageOperations(t, engine)
-	if err := filepath.WalkDir(home, func(path string, _ os.DirEntry, err error) error {
-		if err == nil && filepath.Base(path) == "Crash Reports" {
-			t.Errorf("the crash handler wrote %s outside the profile", path)
-		}
-		return err
-	}); err != nil {
-		t.Fatalf("read HOME: %v", err)
+	private := testHeadlessProfile(t, engine, "private:a:token", false)
+	if strings.HasPrefix(private.userDataDir, filepath.Join(engine.configDir, browserProfileDir)) {
+		t.Fatalf("private jar directory %q is under the persistent profile tree", private.userDataDir)
 	}
 }
 
-// assertRealEvaluateSemantics holds the CDP driver to the evaluate contract
-// on a page whose script policy forbids eval, as AO's own UI does.
-func assertRealEvaluateSemantics(t *testing.T, engine *headlessEngine) {
-	t.Helper()
-	workspace := t.TempDir()
-	index := filepath.Join(workspace, "evaluate.html")
-	if err := os.WriteFile(index, []byte(evaluateSemanticsPage), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	profile := testHeadlessProfile(t, engine, workspace, false)
-	defer func() {
-		if err := profile.Dispose(context.Background()); err != nil {
-			t.Errorf("dispose: %v", err)
-		}
-	}()
-	page, err := profile.NewPage(t.Context(), testPageHooks())
-	if err != nil {
-		t.Fatalf("new page: %v", err)
-	}
-	opCtx, cancel := operationContext(t.Context(), page.Lifetime(), operationTimeout)
-	defer cancel()
-	if err := page.Navigate(opCtx, "file://"+index); err != nil {
-		t.Fatalf("navigate to the evaluate page: %v", err)
-	}
-	assertEvaluateSemantics(t, evaluateEngineCDP, driverEvaluator(opCtx, page, false), driverEvaluator(opCtx, page, true))
-}
-
-// assertRealPopupsPassThePolicy opens an outside-workspace file in a popup
-// from a workspace page, as a page script can, with and without an opener.
-// Each popup runs before AttachPage installs its own policy, so what keeps
-// the file out of the adopted page is the workspace's policy.
-func assertRealPopupsPassThePolicy(t *testing.T, engine *headlessEngine) {
-	t.Helper()
-	workspace, outside := t.TempDir(), t.TempDir()
-	index := filepath.Join(workspace, "index.html")
-	secret := filepath.Join(outside, "secret.txt")
-	if err := os.WriteFile(index, []byte("<html><body>workspace</body></html>"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(secret, []byte("outside-secret"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	inWorkspace := func(url string) bool {
-		return !strings.HasPrefix(url, "file:") || strings.HasPrefix(url, "file://"+workspace+"/")
-	}
-	popups := make(chan enginePopup, 2)
-	engine.events.PopupOpened = func(popup enginePopup) { popups <- popup }
-	created, err := engine.NewProfile(t.Context(), profileOptions{
-		Workspace: workspace, DownloadDir: filepath.Join(t.TempDir(), "downloads"), Allow: inWorkspace,
-	})
-	if err != nil {
-		t.Fatalf("new profile: %v", err)
-	}
-	profile := created.(*headlessProfile)
-	defer func() {
-		if err := profile.Dispose(context.Background()); err != nil {
-			t.Errorf("dispose: %v", err)
-		}
-	}()
-	hooks := testPageHooks()
-	hooks.Allow = inWorkspace
-	page, err := profile.NewPage(t.Context(), hooks)
-	if err != nil {
-		t.Fatalf("new page: %v", err)
-	}
-	opCtx, cancel := operationContext(t.Context(), page.Lifetime(), operationTimeout)
-	defer cancel()
-	if err := page.Navigate(opCtx, "file://"+index); err != nil {
-		t.Fatalf("navigate to the workspace page: %v", err)
-	}
-	for _, features := range []string{"", "noopener"} {
-		open := fmt.Sprintf(`window.open(%q, "_blank", %q); 1`, "file://"+secret, features)
-		if _, err := chromedp.Call(opCtx, cdpruntime.Evaluate, cdpruntime.EvaluateParams{Expression: open, UserGesture: new(true)}); err != nil {
-			t.Fatalf("open a popup with features %q: %v", features, err)
-		}
-		var popup enginePopup
-		select {
-		case popup = <-popups:
-		case <-time.After(headlessTestDeadline):
-			t.Fatalf("the popup with features %q was never reported", features)
-		}
-		driver, err := profile.AttachPage(t.Context(), popup.Handle, hooks)
-		if err != nil {
-			t.Fatalf("adopt the popup with features %q: %v", features, err)
-		}
-		popupCtx, popupCancel := operationContext(t.Context(), driver.Lifetime(), operationTimeout)
-		status, _ := driver.PageStatus(popupCtx)
-		for status.Ready != "complete" || status.URL == "about:blank" {
-			if popupCtx.Err() != nil {
-				t.Fatalf("the popup with features %q never finished loading: %+v", features, status)
+// A page or popup whose attach Chromium leaves unanswered, its connection
+// still open, fails at the attach bound, ends when its creation is
+// canceled, and ends at Interrupt, which shutdown calls before it waits.
+func TestHeadlessPageAttachThatStallsEnds(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		end  func(engine *headlessEngine, cancel context.CancelFunc)
+	}{
+		{"bound", func(*headlessEngine, context.CancelFunc) {}},
+		{"canceled", func(_ *headlessEngine, cancel context.CancelFunc) { cancel() }},
+		{"interrupted", func(engine *headlessEngine, _ context.CancelFunc) { engine.Interrupt() }},
+	} {
+		for _, popup := range []bool{false, true} {
+			name := tc.name + "/page"
+			if popup {
+				name = tc.name + "/popup"
 			}
-			time.Sleep(20 * time.Millisecond)
-			status, _ = driver.PageStatus(popupCtx)
-		}
-		body, _, err := driverEvaluator(popupCtx, driver, false)(`document.body ? document.body.innerText : ""`, nil)
-		popupCancel()
-		driver.Close()
-		if err != nil {
-			t.Fatalf("read the popup with features %q: %v", features, err)
-		}
-		if strings.Contains(fmt.Sprint(body), "outside-secret") {
-			t.Fatalf("the popup with features %q loaded the outside file at %s", features, status.URL)
-		}
-	}
-	page.Close()
-}
-
-// setRealCookie sets a persistent cookie from a page of profile and
-// disposes the profile, checking that its browser exited when asked.
-func setRealCookie(t *testing.T, profile *headlessProfile) *network.Cookie {
-	t.Helper()
-	page, err := profile.NewPage(t.Context(), testPageHooks())
-	if err != nil {
-		t.Fatalf("new page: %v", err)
-	}
-	cookie := &network.Cookie{Name: "ao-smoke", Value: strconv.FormatInt(time.Now().UnixNano(), 36)}
-	expires := cdp.TimeSinceEpoch(time.Now().Add(time.Hour).Unix())
-	if _, err := chromedp.Call(page.(*cdpPage).ctx, network.SetCookie, network.SetCookieParams{
-		Name: cookie.Name, Value: cookie.Value, Domain: "ao-smoke.test", Path: "/", Expires: expires,
-	}); err != nil {
-		t.Fatalf("set a cookie: %v", err)
-	}
-	process := profile.currentProcess()
-	page.Close()
-	if err := profile.Dispose(t.Context()); err != nil {
-		t.Fatalf("dispose: %v", err)
-	}
-	if got := process.exitStatus(); got != "exit status 0" {
-		t.Fatalf("the persisted profile's Chromium ended with %q, want it to exit when asked", got)
-	}
-	return cookie
-}
-
-// readRealCookie reads a cookie back from a fresh browser on profile, then
-// disposes it.
-func readRealCookie(t *testing.T, profile *headlessProfile, name string) string {
-	t.Helper()
-	browserCtx, err := profile.ensureBrowser()
-	if err != nil {
-		t.Fatalf("relaunch: %v", err)
-	}
-	result, err := chromedp.CallBrowser(browserCtx, storage.GetCookies, storage.GetCookiesParams{})
-	cookies := result.Cookies
-	if err != nil {
-		t.Fatalf("read cookies: %v", err)
-	}
-	if err := profile.Dispose(t.Context()); err != nil {
-		t.Fatalf("dispose: %v", err)
-	}
-	for _, cookie := range cookies {
-		if cookie.Name == name {
-			return cookie.Value
+			t.Run(name, func(t *testing.T) {
+				browser := writeFakeChromium(t, "chromium")
+				engine := newTestHeadlessEngine(t, browser.path)
+				engine.attachTimeout = time.Hour
+				if tc.name == "bound" {
+					engine.attachTimeout = 200 * time.Millisecond
+				}
+				profile := testHeadlessProfile(t, engine, "/home/dev/repo", false)
+				if _, err := profile.ensureBrowser(); err != nil {
+					t.Fatalf("launch: %v", err)
+				}
+				browser.stallFrameTree.Store(true)
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				attached := make(chan error, 1)
+				go func() {
+					var err error
+					if popup {
+						_, err = profile.AttachPage(ctx, "T-popup", pageHooks{})
+					} else {
+						_, err = profile.NewPage(ctx, pageHooks{})
+					}
+					attached <- err
+				}()
+				awaitCall(t, browser.calls, "Page.getFrameTree")
+				tc.end(engine, cancel)
+				select {
+				case err := <-attached:
+					if err == nil {
+						t.Fatal("a page whose attach never finished was attached")
+					}
+				case <-time.After(headlessTestDeadline):
+					t.Fatal("the stalled attach never returned")
+				}
+			})
 		}
 	}
-	return ""
 }

@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -17,6 +16,7 @@ import (
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/notify"
 	"agent-overflow/internal/relaysession"
+	"agent-overflow/internal/secret"
 	"agent-overflow/internal/selfupdate"
 	"agent-overflow/internal/webview2host"
 
@@ -103,7 +103,10 @@ type NotificationClient struct {
 	handleInstall     func(selfupdate.InstallDirective)
 	handleWebviewTrim func(reason string)
 	handleKeepAwake   func(mode string)
-	handleBrowserHost func(directive webview2host.Directive)
+	// browserHostLanes hands each browser:host directive to the
+	// launcher's pane host in order per page; nil when the channel is not
+	// subscribed.
+	browserHostLanes *directiveLanes
 	// channels is the exact subscribe-frame payload, fixed at construction so
 	// every reconnect asks for the same set.
 	channels []string
@@ -194,7 +197,12 @@ func NewNotificationClient(config NotificationClientConfig) (*NotificationClient
 		channels = append(channels, string(eventchan.PowerKeepAwake))
 		levelChannels = append(levelChannels, string(eventchan.PowerKeepAwake))
 	}
+	var lanes *directiveLanes
+	if config.HandleBrowserHost != nil {
+		lanes = newDirectiveLanes(config.HandleBrowserHost)
+	}
 	return &NotificationClient{
+		browserHostLanes:  lanes,
 		wsURL:             parsed.String(),
 		token:             config.Token,
 		session:           newSessionCredentialSource(parsed.String(), config.Token),
@@ -202,7 +210,6 @@ func NewNotificationClient(config NotificationClientConfig) (*NotificationClient
 		handleInstall:     config.HandleUpdateInstall,
 		handleWebviewTrim: config.HandleWebviewTrim,
 		handleKeepAwake:   config.HandleKeepAwake,
-		handleBrowserHost: config.HandleBrowserHost,
 		channels:          channels,
 		levelChannels:     levelChannels,
 		logf:              logf,
@@ -291,7 +298,7 @@ func (c *NotificationClient) runConnection(ctx context.Context) (bool, error) {
 		// Mark it so the next attempt in the ladder fetches a live one
 		// rather than replaying the dead one until the launcher restarts.
 		c.session.Stale()
-		return false, fmt.Errorf("connect to notification bridge: %s", redactNotificationBridgeError(err, c.token))
+		return false, fmt.Errorf("connect to notification bridge: %s", secret.RedactError(err, c.token))
 	}
 	conn.SetReadLimit(notificationBridgeReadLimit)
 	defer func() {
@@ -389,19 +396,6 @@ func (c *NotificationClient) handleReplayEvents(events []notificationEvent) erro
 		}
 	}
 	return nil
-}
-
-func redactNotificationBridgeError(err error, token string) string {
-	if err == nil {
-		return "unknown error"
-	}
-	message := err.Error()
-	if token == "" {
-		return message
-	}
-	message = strings.ReplaceAll(message, token, "[redacted]")
-	message = strings.ReplaceAll(message, url.QueryEscape(token), "[redacted]")
-	return message
 }
 
 func (c *NotificationClient) handleEvent(event notificationEvent) error {
@@ -529,9 +523,10 @@ func (c *NotificationClient) handleWebviewTrimDirective(data json.RawMessage) {
 // thread and, on the first directive, on a cold WebView2 environment
 // create that takes seconds. Running it inline would stall notification
 // delivery and the report RPC the handler itself posts back over this
-// same connection.
+// same connection. Unlike its siblings it keeps arrival order per page
+// (directiveLanes): a page's bounds, show and hide must apply in order.
 func (c *NotificationClient) handleBrowserHostDirective(data json.RawMessage) {
-	if c.handleBrowserHost == nil {
+	if c.browserHostLanes == nil {
 		c.logf("browser host: ignore directive on an unsubscribed connection")
 		return
 	}
@@ -544,7 +539,7 @@ func (c *NotificationClient) handleBrowserHostDirective(data json.RawMessage) {
 		c.logf("browser host: ignore invalid directive: %v", err)
 		return
 	}
-	go c.handleBrowserHost(directive)
+	c.browserHostLanes.submit(directive)
 }
 
 // handleKeepAwakeDirective decodes one power:keepawake frame and hands its

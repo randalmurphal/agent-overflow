@@ -223,6 +223,7 @@ import {
 } from './eventsWorkflow';
 import { addToast } from './toast.svelte';
 import { applyBrowserCompanionState } from './browserCompanion.svelte';
+import { announceBrowserDownload, isBrowserDownloadAnnouncement } from './browserDownloads.svelte';
 import type { BrowserCompanionEvent } from './bindings';
 
 /**
@@ -235,7 +236,7 @@ export function setupEventListeners(): () => void {
 
   const cancelBrowserCompanionState = wailsEventOn<BrowserCompanionEvent>(
     'browser:companion-state',
-    applyBrowserCompanionState,
+    (event) => (isBrowserDownloadAnnouncement(event) ? announceBrowserDownload(event) : applyBrowserCompanionState(event)),
   );
 
   const cancelApproval = wailsEventOn<ApprovalEvent>('provider:approval', applyApprovalEvent);

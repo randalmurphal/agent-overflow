@@ -38,28 +38,33 @@ func (f *fakeController) Open(_ context.Context, a Access, u string, opts OpenOp
 	f.openOptions = opts
 	return PageInfo{ID: "p", URL: u}, nil
 }
+
+// Bind binds caller to a lifetime of its own, which no close detaches.
+func (f *fakeController) Bind(caller Caller) Access {
+	return Access{caller: caller, tb: newThreadBrowser(caller.ThreadID)}
+}
 func (f *fakeController) NewPage(context.Context, Access) (PageInfo, error) { return PageInfo{}, nil }
 func (f *fakeController) OpenFile(context.Context, Access, string, OpenOptions) (PageInfo, error) {
 	return PageInfo{}, nil
 }
 func (f *fakeController) Pages(context.Context, Access) ([]PageInfo, error) { return []PageInfo{}, nil }
-func (f *fakeController) SelectPage(context.Context, Access, string) (PageInfo, error) {
+func (f *fakeController) SelectPage(context.Context, Access, PageID) (PageInfo, error) {
 	return PageInfo{}, nil
 }
-func (f *fakeController) LabelPage(context.Context, Access, string, string) (PageInfo, error) {
+func (f *fakeController) LabelPage(context.Context, Access, PageID, string) (PageInfo, error) {
 	return PageInfo{}, nil
 }
 func (f *fakeController) NameSession(context.Context, Access, string) (SessionInfo, error) {
 	return SessionInfo{}, nil
 }
-func (f *fakeController) Visibility(context.Context, Access, *bool, string) (SessionInfo, error) {
+func (f *fakeController) Visibility(context.Context, Access, *bool, PageID) (SessionInfo, error) {
 	return SessionInfo{}, nil
 }
 func (f *fakeController) Viewport(context.Context, Access, ViewportOptions) (SessionInfo, error) {
 	return SessionInfo{}, nil
 }
-func (f *fakeController) ClosePage(context.Context, Access, string) error { return nil }
-func (f *fakeController) Snapshot(context.Context, Access, string) (Snapshot, error) {
+func (f *fakeController) ClosePage(context.Context, Access, PageID) error { return nil }
+func (f *fakeController) Snapshot(context.Context, Access, PageID) (Snapshot, error) {
 	return Snapshot{}, nil
 }
 func (f *fakeController) Screenshot(context.Context, Access, ScreenshotOptions) ([]byte, error) {
@@ -87,29 +92,26 @@ func (f *fakeController) Assets(context.Context, Access, AssetOptions) (any, err
 func (f *fakeController) WaitAdvanced(context.Context, Access, WaitOptions) (PageInfo, error) {
 	return PageInfo{}, nil
 }
-func (f *fakeController) Click(context.Context, Access, string, string) (PageInfo, error) {
+func (f *fakeController) Click(context.Context, Access, PageID, string) (PageInfo, error) {
 	return PageInfo{}, nil
 }
 func (f *fakeController) Type(context.Context, Access, TypeOptions) (PageInfo, error) {
 	return PageInfo{}, nil
 }
-func (f *fakeController) Press(context.Context, Access, string, string) (PageInfo, error) {
+func (f *fakeController) Press(context.Context, Access, PageID, string) (PageInfo, error) {
 	return PageInfo{}, nil
 }
-func (f *fakeController) Scroll(context.Context, Access, string, string, float64, float64) (PageInfo, error) {
+func (f *fakeController) Scroll(context.Context, Access, PageID, string, float64, float64) (PageInfo, error) {
 	return PageInfo{}, nil
 }
-func (f *fakeController) Wait(context.Context, Access, string, string, int) (PageInfo, error) {
+func (f *fakeController) History(context.Context, Access, PageID, string) (PageInfo, error) {
 	return PageInfo{}, nil
 }
-func (f *fakeController) History(context.Context, Access, string, string) (PageInfo, error) {
-	return PageInfo{}, nil
-}
-func (f *fakeController) Evaluate(_ context.Context, _ Access, _ string, code string, argument json.RawMessage) (any, string, error) {
+func (f *fakeController) Evaluate(_ context.Context, _ Access, _ PageID, code string, argument json.RawMessage) (any, string, error) {
 	f.evaluations = append(f.evaluations, fakeEvaluation{code: code, argument: string(argument)})
 	return f.evaluated, f.evaluateNote, f.evaluateErr
 }
-func (f *fakeController) EvaluateReadOnly(_ context.Context, _ Access, _ string, code string, argument json.RawMessage) (any, string, error) {
+func (f *fakeController) EvaluateReadOnly(_ context.Context, _ Access, _ PageID, code string, argument json.RawMessage) (any, string, error) {
 	f.evaluations = append(f.evaluations, fakeEvaluation{readOnly: true, code: code, argument: string(argument)})
 	return f.evaluated, f.evaluateNote, f.evaluateErr
 }
@@ -147,7 +149,7 @@ func TestMCPInitializeExplainsSafeParallelPageUsage(t *testing.T) {
 func TestMCPServerThreadToggleIsScopedAndDefaultsOn(t *testing.T) {
 	server := NewMCPServer(&fakeController{}, true)
 	first := registerTestThread(t, server)
-	secondConfig, err := server.RegisterThread(Access{ThreadID: "second", Workspace: "/repo"}, "session-2")
+	secondConfig, err := server.RegisterThread(Caller{ThreadID: "second", Workspace: "/repo"}, "session-2")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +174,7 @@ func TestMCPServerRoutesCapabilityScopedCalls(t *testing.T) {
 	if response["error"] != nil {
 		t.Fatalf("response = %#v", response)
 	}
-	if fake.openedURL != "https://example.com" || fake.access.ThreadID != "thread" || fake.access.Workspace != "/repo" {
+	if fake.openedURL != "https://example.com" || fake.access.ThreadID() != "thread" || fake.access.Workspace() != "/repo" {
 		t.Fatalf("route = %q %#v", fake.openedURL, fake.access)
 	}
 	if fake.openOptions.PageID != "" {
@@ -194,7 +196,7 @@ func TestMCPRevokeThreadRetiresOnlyThatSessionsURL(t *testing.T) {
 	t.Cleanup(func() { _ = server.Close() })
 	register := func(session string) string {
 		t.Helper()
-		config, err := server.RegisterThread(Access{ThreadID: "thread", Workspace: "/repo"}, session)
+		config, err := server.RegisterThread(Caller{ThreadID: "thread", Workspace: "/repo"}, session)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -319,7 +321,7 @@ func TestMCPEvaluateCarriesTheNoteBesideThePayload(t *testing.T) {
 
 func registerTestThread(t *testing.T, server *MCPServer) string {
 	t.Helper()
-	config, err := server.RegisterThread(Access{ThreadID: "thread", Workspace: "/repo", ProjectRoot: "/project"}, "session-1")
+	config, err := server.RegisterThread(Caller{ThreadID: "thread", Workspace: "/repo", ProjectRoot: "/project"}, "session-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -415,7 +417,7 @@ func TestMCPRequestChecksRefuseNonLoopbackPeer(t *testing.T) {
 		request.Header.Set("Content-Type", "application/json")
 		request.RemoteAddr = peer.remoteAddr
 		recorder := httptest.NewRecorder()
-		server.handle(recorder, request)
+		server.ServeHTTP(recorder, request)
 		if recorder.Code != peer.want {
 			t.Errorf("peer %q: status = %d, want %d", peer.remoteAddr, recorder.Code, peer.want)
 		}

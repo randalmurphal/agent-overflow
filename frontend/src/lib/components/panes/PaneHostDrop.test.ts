@@ -23,6 +23,8 @@ import { resetLayoutMetricsForTest } from '../../stores/layoutMetrics.svelte';
 import { focusPane, getAllPanes, getFocusedPaneId, registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
 import {
   getPaneLayoutItems,
+  getPromotedPaneId,
+  promotePane,
   removePaneLayoutItem,
   resetPaneLayoutForTest,
   setPaneLayoutItemsForTest,
@@ -611,6 +613,36 @@ describe('PaneHost drag and drop', () => {
     await tick();
     expect(shield()).toBeNull();
     sidebar.remove();
+  });
+
+  it('a drag that places a pane demotes a promoted pane; one that places nothing leaves it', async () => {
+    renderTwoPanes();
+    promotePane('right');
+    await tick();
+    const dragStart = (dataTransfer: DataTransfer): void => {
+      const event = new Event('dragstart', { bubbles: true, cancelable: true }) as DragEvent;
+      Object.defineProperty(event, 'dataTransfer', { configurable: true, value: dataTransfer });
+      document.body.dispatchEvent(event);
+    };
+    dragStart({ types: ['text/plain'], getData: () => '' } as unknown as DataTransfer);
+    expect(getPromotedPaneId()).toBe('right');
+    dragStart(threadDataTransfer('any-thread'));
+    expect(getPromotedPaneId()).toBeNull();
+  });
+
+  it('resolves a drop slot from a promoted pane\'s placeholder, not its section', async () => {
+    const { rendered, pane } = renderTwoPanes();
+    promotePane('right');
+    await tick();
+    const slot = rendered.container.querySelector<HTMLElement>('[data-pane-slot="right"]');
+    if (!slot) throw new Error('expected the promoted pane\'s slot');
+    // The section lies over the whole strip; its slot is the right half.
+    stubRect(pane('right'), 0, 1000);
+    stubRect(slot, 500, 500);
+
+    await dispatchDrag(pane('right'), 'dragover', threadDataTransfer('any-thread'), 600);
+    await tick();
+    expect(rendered.getByTestId('pane-drop-seam').dataset.insertIndex).toBe('1');
   });
 
   it('raises no shield for a drag that places no pane', async () => {

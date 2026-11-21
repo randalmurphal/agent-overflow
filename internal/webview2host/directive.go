@@ -32,9 +32,18 @@ const (
 	// The controller inside stays visible to Chromium, so a hidden page
 	// keeps compositing and capturing; only the window is gone.
 	OpHide Op = "hide"
+	// OpBackground sets the page's base color, Bg: what its controller
+	// paints wherever the document leaves its background transparent or has
+	// not painted yet. It holds, shown or hidden and with or without bounds,
+	// until the next OpBackground; the backend decides it from the page's
+	// address and the pane's color.
+	OpBackground Op = "background"
 	// OpClose destroys the controller.
 	OpClose Op = "close"
-	// OpDevTools opens the Chromium DevTools window for the page.
+	// OpDevTools opens the Chromium DevTools window for the page. A
+	// directive that names its Request is answered with
+	// ReportDevToolsOpened or ReportDevToolsFailed; Request is zero on a
+	// backend that predates those answers, and nothing answers it then.
 	OpDevTools Op = "devtools"
 	// OpCloseProfile closes every controller on ProfileID.
 	OpCloseProfile Op = "close-profile"
@@ -59,6 +68,26 @@ const (
 	OpFind Op = "find"
 	// OpFindStop ends the page's find and hides its find bar.
 	OpFindStop Op = "find-stop"
+	// OpFocus gives the page's controller keyboard focus, as a click into
+	// the page does, for the focus intent Mount and Intent name: only while
+	// the page is presented and visible, the launcher window is the
+	// foreground window, and the SPA has not withdrawn the intent
+	// (focusDecision, FocusIntents). It rides the page's lane, after the
+	// show it follows. A move made is answered with ReportFocused, a move
+	// refused with ReportFocusFailed.
+	OpFocus Op = "focus"
+	// OpCancelDownload cancels the page's download Download, a launcher id
+	// from its ReportDownload, under the cancel's number Cancel, and is
+	// answered with the download's snapshot as OpDownloadStatus is: a
+	// running one's end follows its cancel.
+	OpCancelDownload Op = "cancel-download"
+	// OpDownloadStatus asks for the snapshot of the page's download
+	// Download, and changes nothing but to make a cancel numbered past the
+	// last the launcher took (Cancel): the launcher answers a running
+	// download's snapshot, an ended one's terminal snapshot again, and an
+	// id it has no record of with a terminal snapshot saying so
+	// (download.go).
+	OpDownloadStatus Op = "download-status"
 )
 
 // Directive is one pane-host command. It is the JSON payload of an
@@ -69,9 +98,9 @@ const (
 // consumed unchecked.
 const maxAccelerators = 2048
 
-// MaxFindQueryBytes bounds OpFind's query. It travels as a UTF-16 string into
+// maxFindQueryBytes bounds OpFind's query. It travels as a UTF-16 string into
 // COM, which cannot carry a NUL.
-const MaxFindQueryBytes = 1024
+const maxFindQueryBytes = 1024
 
 type Directive struct {
 	Op        Op      `json:"op"`
@@ -96,18 +125,43 @@ type Directive struct {
 	// unscaled (treat X/Y/W/H as client pixels).
 	VW float64 `json:"vw,omitempty"`
 	VH float64 `json:"vh,omitempty"`
-	// Bg is the pane surface's resolved CSS color ("#rrggbb"), painted by
-	// the controller where the page has not presented yet so freshly
-	// exposed strips match the pane. Empty leaves the engine default.
+	// DPR is the SPA's devicePixelRatio when the rect was measured: CSS
+	// pixels times DPR are the host window's client pixels. Zero means
+	// unknown, and the host falls back to its client size over VW/VH.
+	DPR float64 `json:"dpr,omitempty"`
+	// Bg is an OpBackground's color, "#rrggbb".
 	Bg string `json:"bg,omitempty"`
+	// Mount names the pane mount the backend placed the page in, and
+	// PageW/PageH the page's viewport in CSS pixels. Seq is the number the
+	// SPA gave the report the backend placed from, the same number its local
+	// post of that report carries. A launcher that holds its own geometry
+	// for that mount (PaneGeometry) at Seq or later places the page from it
+	// with paneplace.Fit and ignores X..CH; otherwise X..CH stand. Mount is
+	// empty on a backend that predates local geometry; Seq is zero on one
+	// that predates numbered reports, and then any local geometry wins.
+	Mount string `json:"mount,omitempty"`
+	PageW int    `json:"pageW,omitempty"`
+	PageH int    `json:"pageH,omitempty"`
+	Seq   uint64 `json:"seq,omitempty"`
+	// Intent is OpFocus's focus intent number on Mount (FocusIntents).
+	Intent uint64 `json:"intent,omitempty"`
+	// Request is OpDevTools's number among the backend's DevTools
+	// requests, from 1, which its answer names (DevToolsReport).
+	Request uint64 `json:"request,omitempty"`
 	// Accelerators is OpAccelerators' payload: the whole bound set, `mod`
 	// already resolved by the backend.
 	Accelerators []keybindings.Accelerator `json:"accelerators,omitempty"`
 	// Query is OpFind's search term.
 	Query string `json:"query,omitempty"`
-	// Ephemeral asks for an InPrivate profile on create, and on
-	// close-profile says the profile directory is expected to be
-	// discarded. It is meaningless on every other op.
+	// Download is OpCancelDownload's and OpDownloadStatus's download id.
+	Download string `json:"download,omitempty"`
+	// Cancel is OpCancelDownload's number among the backend's cancels of
+	// Download, from 1, and on OpDownloadStatus the number of the last one
+	// sent (0 for none): the launcher makes a cancel numbered past the last
+	// it took, so a status also makes a cancel that was lost on the way.
+	Cancel CancelAttempt `json:"cancel,omitempty"`
+	// Ephemeral asks for an InPrivate profile on create. It is
+	// meaningless on every other op.
 	Ephemeral bool `json:"ephemeral,omitempty"`
 }
 
@@ -118,9 +172,9 @@ type Directive struct {
 // COM layer, not a visibly wrong rectangle.
 const maxPaneDIP = 100000.0
 
-// ErrUnknownOp is what an unrecognised op validates to. The launcher
+// errUnknownOp is what an unrecognised op validates to. The launcher
 // logs and drops on this rather than tearing down the bridge.
-var ErrUnknownOp = errors.New("unknown browser host op")
+var errUnknownOp = errors.New("unknown browser host op")
 
 // Validate enforces the whole contract. It is the trust boundary: the
 // directive names a profile that becomes a directory on disk and a page
@@ -137,14 +191,41 @@ func (d Directive) Validate() error {
 			return err
 		}
 		return d.validateBounds()
+	case OpBackground:
+		if err := ValidatePageID(d.PageID); err != nil {
+			return err
+		}
+		if d.Bg == "" {
+			return errors.New("background must name a color")
+		}
+		return validateBg(d.Bg)
 	case OpShow, OpHide, OpClose, OpDevTools, OpFindStop:
 		return ValidatePageID(d.PageID)
+	case OpFocus:
+		if err := ValidatePageID(d.PageID); err != nil {
+			return err
+		}
+		if err := validateToken("mount id", d.Mount, maxPageIDLen); err != nil {
+			return err
+		}
+		if d.Intent == 0 {
+			return errors.New("focus must name its intent")
+		}
+		return nil
+	case OpCancelDownload, OpDownloadStatus:
+		if err := ValidatePageID(d.PageID); err != nil {
+			return err
+		}
+		if d.Op == OpCancelDownload && d.Cancel == 0 {
+			return errors.New("a download cancel must carry its number")
+		}
+		return ValidateDownloadID(d.Download)
 	case OpFind:
 		if err := ValidatePageID(d.PageID); err != nil {
 			return err
 		}
-		if len(d.Query) > MaxFindQueryBytes {
-			return fmt.Errorf("find query of %d bytes exceeds the %d cap", len(d.Query), MaxFindQueryBytes)
+		if len(d.Query) > maxFindQueryBytes {
+			return fmt.Errorf("find query of %d bytes exceeds the %d cap", len(d.Query), maxFindQueryBytes)
 		}
 		if !utf8.ValidString(d.Query) || strings.ContainsRune(d.Query, 0) {
 			return errors.New("find query must be UTF-8 text without NUL")
@@ -166,15 +247,77 @@ func (d Directive) Validate() error {
 		}
 		return nil
 	default:
-		return fmt.Errorf("%w: %q", ErrUnknownOp, d.Op)
+		return fmt.Errorf("%w: %q", errUnknownOp, d.Op)
 	}
 }
 
 func (d Directive) validateBounds() error {
+	if d.W <= 0 || d.H <= 0 {
+		return fmt.Errorf("bounds must have positive width and height, got %gx%g", d.W, d.H)
+	}
+	if err := d.paneBounds().validate(); err != nil {
+		return err
+	}
+	if d.Mount != "" {
+		if err := validateToken("mount id", d.Mount, maxPageIDLen); err != nil {
+			return err
+		}
+	}
+	// The page size is all-or-nothing and bounded like the rect: it is what
+	// a local placement divides by.
+	if (d.PageW > 0) != (d.PageH > 0) || d.PageW < 0 || d.PageH < 0 ||
+		float64(d.PageW) > maxPaneDIP || float64(d.PageH) > maxPaneDIP {
+		return fmt.Errorf("bounds page size must be a positive pair or absent, got %dx%d", d.PageW, d.PageH)
+	}
+	return nil
+}
+
+// paneBounds is one rect the host positions a page at: the fitted rect, its
+// clip, and the SPA viewport and pixel ratio it was measured under. A bounds
+// directive carries one; a local placement computes one.
+// Comparable, so the host can skip a move to where the page already is.
+type paneBounds struct {
+	X, Y, W, H     float64
+	CX, CY, CW, CH float64
+	VW, VH, DPR    float64
+}
+
+func (d Directive) paneBounds() paneBounds {
+	return paneBounds{
+		X: d.X, Y: d.Y, W: d.W, H: d.H,
+		CX: d.CX, CY: d.CY, CW: d.CW, CH: d.CH,
+		VW: d.VW, VH: d.VH, DPR: d.DPR,
+	}
+}
+
+// maxPaneDPR bounds a device pixel ratio: far above any real display times
+// any webview zoom, and small enough that a scaled maxPaneDIP stays inside
+// the host's int32 clamp.
+const maxPaneDPR = 64.0
+
+// validate is a bounds directive's contract: validateNumbers, and a clip
+// that is all-or-nothing like the viewport. The backend hides a fully
+// clipped pane rather than sizing it to nothing, so a half-empty clip in a
+// directive is malformed.
+func (b paneBounds) validate() error {
+	if err := b.validateNumbers(); err != nil {
+		return err
+	}
+	if (b.CW > 0) != (b.CH > 0) {
+		return fmt.Errorf("bounds clip must be a positive pair or absent, got %gx%g", b.CW, b.CH)
+	}
+	return nil
+}
+
+// validateNumbers checks every number is finite and bounded, sizes and clip
+// sizes are not negative, the viewport pair is all-or-nothing, and the DPR
+// is in range. It does not require a positive size or clip:
+// a pane with nothing to show is valid and simply hides the page.
+func (b paneBounds) validateNumbers() error {
 	for name, value := range map[string]float64{
-		"x": d.X, "y": d.Y, "w": d.W, "h": d.H,
-		"cx": d.CX, "cy": d.CY, "cw": d.CW, "ch": d.CH,
-		"vw": d.VW, "vh": d.VH,
+		"x": b.X, "y": b.Y, "w": b.W, "h": b.H,
+		"cx": b.CX, "cy": b.CY, "cw": b.CW, "ch": b.CH,
+		"vw": b.VW, "vh": b.VH, "dpr": b.DPR,
 	} {
 		if math.IsNaN(value) || math.IsInf(value, 0) {
 			return fmt.Errorf("bounds %s is not a finite number", name)
@@ -183,21 +326,19 @@ func (d Directive) validateBounds() error {
 			return fmt.Errorf("bounds %s %g is outside +/-%g DIPs", name, value, maxPaneDIP)
 		}
 	}
-	if d.W <= 0 || d.H <= 0 {
-		return fmt.Errorf("bounds must have positive width and height, got %gx%g", d.W, d.H)
+	if b.W < 0 || b.H < 0 {
+		return fmt.Errorf("bounds size must not be negative, got %gx%g", b.W, b.H)
 	}
-	// The clip is all-or-nothing like the viewport: a fully clipped pane is
-	// hidden upstream, never sized to nothing here.
-	if (d.CW > 0) != (d.CH > 0) || d.CW < 0 || d.CH < 0 {
-		return fmt.Errorf("bounds clip must be a positive pair or absent, got %gx%g", d.CW, d.CH)
+	if b.CW < 0 || b.CH < 0 {
+		return fmt.Errorf("bounds clip size must not be negative, got %gx%g", b.CW, b.CH)
 	}
 	// The viewport pair is all-or-nothing: scaling one axis and not the
 	// other could only misplace the view.
-	if (d.VW > 0) != (d.VH > 0) || d.VW < 0 || d.VH < 0 {
-		return fmt.Errorf("bounds viewport must be a positive pair or absent, got %gx%g", d.VW, d.VH)
+	if (b.VW > 0) != (b.VH > 0) || b.VW < 0 || b.VH < 0 {
+		return fmt.Errorf("bounds viewport must be a positive pair or absent, got %gx%g", b.VW, b.VH)
 	}
-	if err := validateBg(d.Bg); err != nil {
-		return err
+	if b.DPR < 0 || b.DPR > maxPaneDPR {
+		return fmt.Errorf("bounds dpr %g is outside 0..%g", b.DPR, maxPaneDPR)
 	}
 	return nil
 }
@@ -209,14 +350,8 @@ func validateBg(bg string) error {
 	if bg == "" {
 		return nil
 	}
-	if len(bg) != 7 || bg[0] != '#' {
-		return fmt.Errorf("bounds bg %q is not #rrggbb", bg)
-	}
-	for i := 1; i < 7; i++ {
-		c := bg[i]
-		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
-			return fmt.Errorf("bounds bg %q is not #rrggbb", bg)
-		}
+	if _, ok := parsePaneColor(bg); !ok {
+		return fmt.Errorf("background %q is not #rrggbb", bg)
 	}
 	return nil
 }
@@ -252,6 +387,29 @@ const (
 	// before the page's ReportCreated, so the backend knows it before the
 	// page is used.
 	ReportFindUnavailable ReportKind = "find-unavailable"
+	// ReportFocused says an OpFocus moved keyboard focus into the page. Its
+	// detail is a FocusReport naming the intent.
+	ReportFocused ReportKind = "focused"
+	// ReportFocusFailed says the controller refused an OpFocus's MoveFocus.
+	// Its detail is a FocusReport naming the intent and the error. A focus
+	// the launcher declined (the page not presented, the window not in the
+	// foreground, the intent withdrawn) is no failure and is not reported.
+	ReportFocusFailed ReportKind = "focus-failed"
+	// ReportDevToolsOpened says an OpDevTools opened the page's DevTools
+	// window. Its detail is a DevToolsReport naming the request.
+	ReportDevToolsOpened ReportKind = "devtools-opened"
+	// ReportDevToolsFailed says an OpDevTools did not open it: the page is
+	// gone, or the view refused. Its detail is a DevToolsReport naming the
+	// request and the error.
+	ReportDevToolsFailed ReportKind = "devtools-failed"
+	// ReportDownload is the whole snapshot of a download the page started,
+	// sent at each change and in answer to a directive naming it. Its
+	// detail is a DownloadReport (download.go).
+	ReportDownload ReportKind = "download"
+	// ReportPopup is a window a page opened, now a page of the launcher's
+	// under the report's page id, which the launcher minted. Its detail is
+	// a PopupReport (popup.go). It precedes every other report of the page.
+	ReportPopup ReportKind = "popup"
 )
 
 // RPCReport is the method name the launcher posts its answers under, over
@@ -272,7 +430,9 @@ const MaxReportDetailBytes = 4096
 func ValidKind(kind ReportKind) bool {
 	switch kind {
 	case ReportCreated, ReportCreateFailed, ReportClosed, ReportProcessFailed,
-		ReportCleared, ReportClearFailed, ReportAccelerator, ReportFindUnavailable:
+		ReportCleared, ReportClearFailed, ReportAccelerator, ReportFindUnavailable,
+		ReportFocused, ReportFocusFailed, ReportDevToolsOpened, ReportDevToolsFailed,
+		ReportDownload, ReportPopup:
 		return true
 	default:
 		return false

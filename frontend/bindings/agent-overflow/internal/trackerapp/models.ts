@@ -46,4 +46,16 @@ export enum FailureKind {
      * tracker reported, a body that could not be used.
      */
     FailureTracker = "tracker",
+
+    /**
+     * FailureNotFound is an open ticket the tracker did not return: deleted,
+     * moved out of reach, or not visible to the token's user.
+     */
+    FailureNotFound = "not_found",
+
+    /**
+     * FailureInternal is a read or write of this computer's copy of the
+     * tracker that failed: nothing the tracker or the person did.
+     */
+    FailureInternal = "internal",
 };

@@ -294,6 +294,7 @@ export const UpdateSettings = dispatch('UpdateSettings');
 export const GetClaudeTranscriptRetention = dispatch('GetClaudeTranscriptRetention');
 export const ClearBrowserSiteData = dispatch('ClearBrowserSiteData');
 export const BrowserCompanionRevealPageFile = dispatch('BrowserCompanionRevealPageFile');
+export const BrowserCompanionRecentAddresses = dispatch('BrowserCompanionRecentAddresses');
 export const BrowserCompanionDo = dispatch('BrowserCompanionDo');
 export const BrowserCompanionFind = dispatch('BrowserCompanionFind');
 export const BrowserCompanionPaneAttach = dispatch('BrowserCompanionPaneAttach');

@@ -37,7 +37,6 @@ describe('LazyThreadTerminalDrawer', () => {
 
     const { getByTestId } = render(LazyThreadTerminalDrawer, {
       surface: surface as never,
-      manual: true,
     });
 
     await waitFor(() => {

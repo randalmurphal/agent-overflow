@@ -447,6 +447,13 @@ func (a *launcherApp) reconcileUpdate(distro string, transient bool) bool {
 		return false
 	}
 	switch decision.Action {
+	case wsllauncher.ReconcileLaunch:
+	case wsllauncher.ReconcileJoin:
+		// The loop above joins until the applier settles the record.
+		log.Printf("updater: update %s still answers join after its applier settled", decision.Record.Update.ID)
+		a.showUpdateFailure("Agent Overflow could not read its update record.",
+			"Nothing was started, so the data is left as it is. Details are in the launcher log.")
+		return false
 	case wsllauncher.ReconcileHandOff:
 		log.Printf("updater: resuming update %s with %s", decision.Record.Update.ID, decision.Record.StagedLauncher)
 		if err := startApplier(sequence.RecordPath, decision.Record.StagedLauncher, decision.Record.Update.ID, distro, transient); err != nil {
@@ -692,7 +699,7 @@ type fileStandardInfo struct {
 // fileAllocatedBytes is the space path occupies on its drive, which for a
 // sparse file is less than its length. WSL holds the disk open while the
 // distro runs, so it is opened for its attributes only.
-func fileAllocatedBytes(path string) (uint64, error) {
+func fileAllocatedBytes(path string) (_ uint64, err error) {
 	pathPtr, err := windows.UTF16PtrFromString(path)
 	if err != nil {
 		return 0, err
@@ -702,7 +709,11 @@ func fileAllocatedBytes(path string) (uint64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("open %s: %w", path, err)
 	}
-	defer windows.CloseHandle(handle)
+	defer func() {
+		if closeErr := windows.CloseHandle(handle); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close %s: %w", path, closeErr))
+		}
+	}()
 	var info fileStandardInfo
 	if err := windows.GetFileInformationByHandleEx(handle, windows.FileStandardInfo, (*byte)(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info))); err != nil {
 		return 0, fmt.Errorf("read the size of %s: %w", path, err)

@@ -385,14 +385,14 @@ func (l *Launcher) childExited(within time.Duration) bool {
 // `--exec` rather than `--` is load-bearing: the `--` form joins the argv
 // with spaces and re-parses it through the user's LOGIN shell, which
 // destroys quoting and pre-expands `$` references in the memory-limit
-// wrapper's script (a zsh login shell turned `exec "$@"` into `exec ""` —
-// incident 2026-08-30, first Windows launch after the wrapper landed).
+// wrapper's script (a zsh login shell turns `exec "$@"` into `exec ""`).
 // The backend never needed the login shell: it probes the login shell's
 // PATH and TLS/proxy settings itself via internal/shellenv. After the command,
 // `--print-url-fd 0` selects headless mode without overriding the backend's
 // saved network bind. It hands {port, token} back over the stdout bootstrap
-// sentinel (fd 0 here selects that stdout channel — see writeBootstrap and
-// readBootstrapLine — rather than the unreliable fd-3 path through wsl.exe).
+// sentinel: fd 0 here selects that stdout channel (writeBootstrap,
+// readBootstrapLine) rather than an fd-3 pipe, which wsl.exe does not
+// carry reliably.
 func buildLaunchArgs(distro, binaryPath string, extraArgs []string) []string {
 	return buildLaunchArgsWithMemoryLimit(distro, binaryPath, extraArgs, 0)
 }

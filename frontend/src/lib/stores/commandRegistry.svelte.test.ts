@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import {
   clearCommandRegistry,
-  enabledCommands,
+  offeredCommands,
   getCommand,
   isCommandEnabled,
   listCommands,
@@ -70,12 +70,12 @@ describe('commandRegistry', () => {
     expect(isCommandEnabled('missing', baseContext())).toBe(false);
   });
 
-  it('enabledCommands filters disabled entries', () => {
+  it('offeredCommands filters disabled entries', () => {
     registerCommand({ id: 'always', label: 'Always', run: () => {} });
     registerCommand({ id: 'terminal', label: 'Terminal', when: 'terminalOpen', run: () => {} });
     registerCommand({ id: 'palette', label: 'Palette', when: 'paletteOpen', run: () => {} });
 
-    const visible = enabledCommands(baseContext({ paletteOpen: true }));
+    const visible = offeredCommands(baseContext({ paletteOpen: true }));
     expect(visible.map((c) => c.id).sort()).toEqual(['always', 'palette']);
   });
 

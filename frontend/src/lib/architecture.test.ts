@@ -23,6 +23,7 @@ import {
 } from '../test/sourceScan';
 import { findCompositorSourceFindings } from '../test/compositorSourceScan';
 import { findContextMenuPropagationFindings } from '../test/contextMenuSourceScan';
+import { NUMBERED_KINDS } from './stores/browserActionWire';
 
 const STORES_DIR = join(SRC_ROOT, 'lib', 'stores');
 const BINDINGS_MODULE = join(STORES_DIR, 'bindings');
@@ -90,8 +91,10 @@ const THREADS_STORE = 'lib/stores/threads.svelte.ts';
 const ENTITY_OWNED_BINDINGS: Record<string, EntityOwnedBinding> = {
   BrowserCompanionPaneAttach: owned(BROWSER_COMPANION_STORE, 'attachBrowserCompanion()'),
   BrowserCompanionPaneDetach: owned(BROWSER_COMPANION_STORE, 'the attachment release()'),
-  BrowserCompanionPaneRect: owned(BROWSER_COMPANION_STORE, 'reportBrowserPaneRect()'),
-  BrowserCompanionDo: owned(BROWSER_COMPANION_STORE, 'browserCompanionAct()'),
+  BrowserCompanionPaneRect: owned('lib/stores/browserPaneRectReports.ts', 'reportBrowserPaneRect()'),
+  BrowserCompanionDo: owned('lib/stores/browserActionWire.ts', 'sendFromPane() / sendForThread()'),
+  BrowserCompanionRecentAddresses: owned('lib/stores/browserActionWire.ts', 'readRecentAddresses()'),
+  BrowserCompanionRevealPageFile: owned('lib/stores/browserActionWire.ts', 'revealPageFile()'),
   BrowserCompanionThreadState: owned(BROWSER_COMPANION_STORE, 'hydrateBrowserCompanionState()'),
   BrowserCompanionFind: owned(BROWSER_FIND_STORE, 'createBrowserFind()'),
   // The read marker is the one thread-row field where the newest value is
@@ -217,6 +220,61 @@ const ENTITY_OWNED_BINDINGS: Record<string, EntityOwnedBinding> = {
   GetEditorSettings: owned(EDITORS_STORE, 'startLoad()'),
   SetEditorSettings: owned(EDITORS_STORE, 'setEditorPreference()'),
 };
+
+// Every home-routed browser binding the window can call, and how a call of
+// it is checked against this page hosting the thread's browser
+// (nativeBrowserRefusal) and the pane's attachment. A new one is added here
+// with its check, and is routed through its owner above when it acts from a
+// pane; the test below fails until it is.
+const BROWSER_BINDING_CHECKS: Record<string, string> = {
+  BrowserCompanionDo: 'sendFromPane / sendForThread: the host check and the pane attachment at the send',
+  BrowserCompanionRecentAddresses: 'readRecentAddresses: the host check and the pane attachment at the send and at the answer',
+  BrowserCompanionRevealPageFile: 'revealPageFile: the host check and the pane attachment at the send and at the answer',
+  BrowserCompanionPaneAttach: 'the entity source refuses with nativeBrowserRefusal before it attaches',
+  BrowserCompanionThreadState: 'a read, made only where canUseNativeBrowser, whose answer is admitted per observation',
+  BrowserCompanionPaneDetach: 'the release of the mount its attach made: never refused, so no mount is left behind',
+  BrowserCompanionPaneRect: 'sent for browserPaneMountId alone, which is null without a valid attachment',
+  BrowserCompanionFind: 'a start names browserPaneMountId, null without a valid attachment; a stop is cleanup that must reach the backend',
+  ClearBrowserSiteData: "a settings action on the home computer's browser, for no thread or pane: its scope is the check",
+  VerifyBrowserUnlock: "the connected browser's own unlock, not the thread's browser",
+};
+
+// Every kind of action the window sends on the thread's browser, whether it
+// takes a number in its pane mount's order, and why. A kind that reads or
+// changes the tab strip's selection, order or membership is numbered, so no
+// later one from the same pane overtakes it. A new kind is added here with
+// its choice; the test below fails until the wire (NUMBERED_KINDS) and the
+// backend's companionSpecs agree with it.
+const NUMBERED_WIRE_KINDS: Record<string, readonly [numbered: boolean, why: string]> = {
+  activate: [true, 'selects a tab'],
+  step: [true, 'selects the tab beside the active one in strip order'],
+  new: [true, 'adds a tab and selects it'],
+  reopen: [true, 'adds the last closed tab at its place and selects it'],
+  duplicate: [true, 'adds a tab beside the one it names and selects it'],
+  'download-open': [true, 'adds a tab showing the file and selects it'],
+  'show-browser': [true, 'opens a tab when the thread has none'],
+  close: [true, 'takes a tab out and picks the next active one'],
+  'close-others': [true, 'takes every other tab out'],
+  'close-right': [true, 'takes out the tabs after the one it names, in strip order'],
+  move: [true, 'reorders the strip'],
+  back: [false, 'acts on the page it names'],
+  forward: [false, 'acts on the page it names'],
+  reload: [false, 'acts on the page it names'],
+  stop: [false, 'acts on the page it names'],
+  navigate: [false, 'acts on the page it names'],
+  devtools: [false, 'acts on the page it names'],
+  restore: [false, 'restores the tab it names only while it is still the active one, and selects nothing'],
+  hide: [false, 'hides the pane and changes no tab'],
+  jar: [false, "bound to its pane's mount; suspends and restores the tabs where they are"],
+  'download-cancel': [false, 'acts on a download row'],
+  'download-reveal': [false, 'acts on a download row'],
+  'downloads-clear': [false, 'clears the download rows'],
+  'focus-page': [false, 'a focus intent of the page it names'],
+  'focus-page-withdraw': [false, 'withdraws a focus intent'],
+};
+
+// Kinds the backend accepts that the window never sends.
+const BACKEND_ONLY_WIRE_KINDS = new Set(['show']);
 
 // `stores/bindings.ts` is the typed wrapper the whole rule is phrased in terms
 // of: it imports every generated RPC by definition, so it cannot be an
@@ -540,6 +598,34 @@ describe('architecture', () => {
     );
   });
 
+  it('names the check of every browser binding the window can call', () => {
+    const routes = readFileSync(join(SRC_ROOT, 'lib', 'transport', 'methodRoutes.ts'), 'utf8');
+    const methods = new Set([...routes.matchAll(/\/\/ (\w+)$/gm)].map((match) => match[1]));
+    const wrapper = readFileSync(join(SRC_ROOT, BINDINGS_WRAPPER), 'utf8');
+    const exported = [...wrapper.matchAll(/^\s+(\w*Browser\w*),?$/gm)].map((match) => match[1]);
+    const browserBindings = exported.filter((name) => methods.has(name)).sort();
+    expect(browserBindings).toEqual(Object.keys(BROWSER_BINDING_CHECKS).sort());
+    // The pane's calls on the thread's browser go through the one send path.
+    for (const name of ['BrowserCompanionDo', 'BrowserCompanionRecentAddresses', 'BrowserCompanionRevealPageFile']) {
+      expect(ENTITY_OWNED_BINDINGS[name]?.owner, name).toBe('lib/stores/browserActionWire.ts');
+    }
+  });
+
+  it('numbers every wire kind that reads or changes the tab strip, on both sides', () => {
+    const decided = Object.fromEntries(Object.entries(NUMBERED_WIRE_KINDS).map(([kind, [numbered]]) => [kind, numbered]));
+    expect({ ...NUMBERED_KINDS }).toEqual(decided);
+    const specs = readFileSync(join(SRC_ROOT, '..', '..', 'internal', 'app', 'app_browser_companion_action.go'), 'utf8');
+    const backend = new Map(
+      [...specs.matchAll(/^\t+"([a-z-]+)":\s+\{kind: kind\w+[^}]*\}/gm)].map((match) => [
+        match[1],
+        /place: place(Numbered|IfFromPane)\b/.test(match[0]),
+      ]),
+    );
+    expect(backend.size).toBeGreaterThan(20);
+    for (const kind of BACKEND_ONLY_WIRE_KINDS) backend.delete(kind);
+    expect(Object.fromEntries(backend)).toEqual(decided);
+  });
+
   it('keeps OpenInEditor behind its view-only gate', () => {
     const offenders = new Map<string, string[]>();
     for (const source of sources) {
@@ -774,6 +860,44 @@ describe('architecture', () => {
       'Call event.preventDefault() (the handler opened its own menu) or suppressNativeContextMenu(event)'
       + ' from utils/browserHistoryGuard.ts before stopping propagation, and declare the handler in the'
       + ' same file so its body can be checked.',
+    );
+  });
+
+  // A local Enter handler owns plain Enter and Shift+Enter only
+  // (utils/localEnter.ts): the global dispatcher declines a prevented event,
+  // so a menu item, row or field that takes every Enter swallows the app's
+  // Enter chords (alt+shift+enter, pane.togglePromoted). An Enter key is
+  // read through `isLocalEnter`, or `isEnterKey` where the handler checks
+  // the modifiers itself; a `case 'Enter':` applies `isLocalEnter` on its
+  // first line.
+  it('reads the Enter key only through the local Enter rule', () => {
+    const offenders = new Map<string, string[]>();
+    let enterReads = 0;
+    for (const file of scannedSources(SOURCE_EXTENSIONS)) {
+      if (repoPath(file) === 'lib/utils/localEnter.ts') continue;
+      const lines = readFileSync(file, 'utf8').split('\n');
+      if (lines.some((line) => /\bis(?:Local)?Enter(?:Key)?\(/.test(line))) enterReads += 1;
+      const findings: string[] = [];
+      lines.forEach((line, index) => {
+        if (/\bkey\s*[!=]==?\s*['"]Enter['"]/.test(line)) {
+          findings.push(`line ${index + 1}: compares the key with 'Enter'`);
+        } else if (/\bcase\s+['"]Enter['"]\s*:/.test(line)) {
+          const next = lines.slice(index + 1).find((candidate) => candidate.trim() !== '' && !/^\s*case\b/.test(candidate)) ?? '';
+          if (!next.includes('isLocalEnter(')) findings.push(`line ${index + 1}: a case 'Enter' that does not apply isLocalEnter first`);
+        }
+      });
+      if (findings.length > 0) offenders.set(repoPath(file), findings);
+    }
+    expect(enterReads, 'the scan found no Enter handlers; it would pass vacuously').toBeGreaterThan(20);
+    expectAllowlistExact(
+      offenders,
+      {
+        'lib/components/composer/composerKeyboard.ts':
+          'popoverNav reduces key names; popoverYieldsKey applies the rule before any caller consults it.',
+      },
+      'New violations.',
+      'Read the key with isLocalEnter(event) from utils/localEnter.ts, or isEnterKey(event) where the handler'
+      + ' checks the modifiers itself (a ctrl/meta+Enter chord).',
     );
   });
 

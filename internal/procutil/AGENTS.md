@@ -1,6 +1,6 @@
 # Process helpers
 
-This package owns six utilities:
+This package owns seven utilities:
 
 - `ConfigureGroup` and `KillConfiguredGroup` arrange and terminate an owned
   child process group using the platform implementation.
@@ -74,6 +74,10 @@ This package owns six utilities:
   it busy, and running it fails with "text file busy". Every process start
   waits, so hold it only across the write, and not for an executable another
   process runs.
+- `SetJobInformation` and `QueryJobInformation` (Windows) pass a Job
+  Object information buffer pinned across the call. Use them for every Job
+  Object limit or accounting call, never a bare `uintptr(unsafe.Pointer(...))`
+  to the x/sys wrapper.
 
 Tests whose subject refuses to start without a reaper pass
 `procutiltest.Reaper()`, which watches nothing, or a `procutiltest.Recorder`

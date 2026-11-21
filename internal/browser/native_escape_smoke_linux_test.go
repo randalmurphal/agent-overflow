@@ -20,10 +20,7 @@ import (
 // real input event or composition, so the press reaches AO's gate and not
 // the page's DOM, and the composing input is only ever read as false here.
 func TestNativeEngineRealEscapeStaysThePages(t *testing.T) {
-	window := nativeSmokeWindow.Load()
-	if window == nil {
-		t.Skipf("set %s=1 to drive this platform's browser engine in a real window", nativeBrowserSmokeEnv)
-	}
+	window := smokeWindow(t)
 	ctrl := keybindings.Accelerator{Key: "escape", Ctrl: true}
 	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{
 		NativeWindow: window.NativeWindow,
@@ -45,9 +42,9 @@ func TestNativeEngineRealEscapeStaysThePages(t *testing.T) {
 		}
 	})
 	workspace := resolvedTempDir(t)
-	access := Access{ThreadID: "native-smoke-escape", Workspace: workspace}
+	access := manager.Bind(Caller{ThreadID: "native-smoke-escape", Workspace: workspace})
 	t.Cleanup(func() {
-		if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
+		if err := manager.CloseThread(context.Background(), access.ThreadID()); err != nil {
 			t.Errorf("close the thread's pages: %v", err)
 		}
 	})
@@ -59,19 +56,19 @@ func TestNativeEngineRealEscapeStaysThePages(t *testing.T) {
 		t.Fatalf("open the page: %v", err)
 	}
 	show := true
-	if _, err := manager.Visibility(ctx, access, &show, page.ID); err != nil {
+	if _, err := manager.Visibility(ctx, access, &show, PageID(page.ID)); err != nil {
 		t.Fatalf("show the page: %v", err)
 	}
-	mount, err := manager.AttachPane(access)
+	mount, err := manager.AttachPane(access.Caller())
 	if err != nil {
 		t.Fatalf("mount a pane: %v", err)
 	}
-	t.Cleanup(func() { manager.DetachPane(mount.ID) })
+	t.Cleanup(func() { manager.DetachPane(MountID(mount.ID)) })
 	// A chord is routed to the pane showing its page.
-	if err := manager.SetPaneRect(mount.ID, PaneRect{Width: 640, Height: 400, ViewportWidth: 1280, ViewportHeight: 800, Visible: true}); err != nil {
+	if err := manager.SetPaneRect(MountID(mount.ID), PaneRect{Width: 640, Height: 400, ViewportWidth: 1280, ViewportHeight: 800, Visible: true}); err != nil {
 		t.Fatalf("place the pane: %v", err)
 	}
-	p, _, err := manager.lookupOwnedPage(access, page.ID)
+	p, _, err := manager.lookupOwnedPage(access, PageID(page.ID))
 	if err != nil {
 		t.Fatalf("look the page up: %v", err)
 	}
@@ -81,8 +78,8 @@ func TestNativeEngineRealEscapeStaysThePages(t *testing.T) {
 	}
 	// What the gate gathered for each press, in order; it reports
 	// synchronously, inside the press.
-	var presses []KeyPress
-	restore, err := view.onKeyPress(func(pressed keybindings.Accelerator, press KeyPress) {
+	var presses []keyPress
+	restore, err := view.onKeyPress(func(pressed keybindings.Accelerator, press keyPress) {
 		if pressed.Key == "escape" {
 			presses = append(presses, press)
 		}
@@ -97,7 +94,7 @@ func TestNativeEngineRealEscapeStaysThePages(t *testing.T) {
 	})
 	// offer hands the gate the presses inside one GTK callback, so no focus
 	// change lands between them, and answers what the gate gathered.
-	offer := func(state string, offers ...escapeOffer) []KeyPress {
+	offer := func(state string, offers ...escapeOffer) []keyPress {
 		t.Helper()
 		presses = nil
 		stopped, err := view.offerEscapes(offers)
@@ -121,7 +118,7 @@ func TestNativeEngineRealEscapeStaysThePages(t *testing.T) {
 		t.Helper()
 		select {
 		case event := <-escapes:
-			if event.ThreadID != access.ThreadID || event.PageID != page.ID {
+			if ThreadID(event.ThreadID) != access.ThreadID() || event.PageID != page.ID {
 				t.Fatalf("%s: escape event = %+v", state, event)
 			}
 		case <-time.After(30 * time.Second):
@@ -135,13 +132,13 @@ func TestNativeEngineRealEscapeStaysThePages(t *testing.T) {
 	if err != nil || !hasIM {
 		t.Fatalf("the view's input method context: %v, %v", hasIM, err)
 	}
-	fresh := KeyPress{}
+	fresh := keyPress{}
 	if got := offer("no search", escapeOffer{Release: true}); got[0] != fresh {
 		t.Fatalf("no search: gathered %+v", got[0])
 	}
 	announced("no search")
 
-	started, err := manager.Find(ctx, access, page.ID, FindStart, "alpha", mount.ID, 1)
+	started, err := manager.Find(ctx, access, PageID(page.ID), FindStart, "alpha", MountID(mount.ID), 1)
 	if err != nil || !started.Active {
 		t.Fatalf("start a search = %+v, %v", started, err)
 	}
@@ -150,14 +147,14 @@ func TestNativeEngineRealEscapeStaysThePages(t *testing.T) {
 	}
 	announced("a search running")
 	// The Escape changed nothing of the search: the pane decides.
-	if state, err := manager.Find(ctx, access, page.ID, FindNext, "", mount.ID, 1); err != nil || !state.Active || state.Session != started.Session {
+	if state, err := manager.Find(ctx, access, PageID(page.ID), FindNext, "", MountID(mount.ID), 1); err != nil || !state.Active || state.Session != started.Session {
 		t.Fatalf("step after the Escape = %+v, %v", state, err)
 	}
 
 	// Held down: the presses after the first are held until a release, and
 	// the press after the release is fresh again.
 	got := offer("held", escapeOffer{}, escapeOffer{}, escapeOffer{Release: true}, escapeOffer{Release: true})
-	want := []KeyPress{fresh, {Held: true}, {Held: true}, fresh}
+	want := []keyPress{fresh, {Held: true}, {Held: true}, fresh}
 	if !slices.Equal(got, want) {
 		t.Fatalf("held: gathered %+v, want %+v", got, want)
 	}

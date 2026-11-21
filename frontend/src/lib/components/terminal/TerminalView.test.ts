@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { intendFocus, paneFocusScope } from '../../utils/focusIntent';
+import { TERMINAL_FOCUS_REGION } from './terminalStore.svelte';
 import { render, cleanup, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import TerminalView from './TerminalView.svelte';
@@ -119,7 +121,7 @@ function makePane(opts: MakePaneOpts = {}) {
     get thread() {
       return thread;
     },
-    consumeTerminalFocusRequest: vi.fn(() => opts.focus ?? false),
+    consumeTerminalFocusRequest: vi.fn(() => (opts.focus ? intendFocus(paneFocusScope(opts.paneId ?? 'pane-term', TERMINAL_FOCUS_REGION)) : null)),
   };
 }
 
@@ -211,11 +213,8 @@ describe('TerminalView', () => {
     expect(vi.mocked(closePaneById)).toHaveBeenCalledWith('pane-xyz');
   });
 
-  it('auto-opens a fresh terminal on mount (no manual flag — the plan correction)', async () => {
-    // TerminalView must NOT pass `manual` to TerminalSurface: a freshly opened
-    // terminal pane has to reconcile + spawn its first shell, unlike the
-    // test-only `manual` drawer path. This is the guard against re-introducing
-    // the plan's mistaken `<TerminalSurface manual/>`.
+  it('auto-opens a fresh terminal on mount', async () => {
+    // A freshly opened terminal pane reconciles and spawns its first shell.
     const pane = makePane();
     const { findByTestId } = render(TerminalView, { pane: pane as never });
     // onMount: ListTerminals([]) then auto OpenTerminal → tab t1.

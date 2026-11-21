@@ -15,6 +15,38 @@ import (
 	"agent-overflow/internal/keybindings"
 )
 
+// smokeTempDir is a smoke's user-data folder, removed at its end. The
+// runtime's browser process holds the folder for a moment after its last
+// page closes, which t.TempDir's cleanup does not retry.
+func smokeTempDir(t *testing.T, prefix string) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", prefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		for start := time.Now(); ; time.Sleep(200 * time.Millisecond) {
+			err := os.RemoveAll(dir)
+			if err == nil {
+				return
+			}
+			if time.Since(start) > 15*time.Second {
+				t.Errorf("remove %s: %v", dir, err)
+				return
+			}
+		}
+	})
+	return dir
+}
+
+// matchCount is get_MatchCount([out, retval] INT32* value), which the
+// smoke reads to see the find session it started.
+func (f *iCoreWebView2Find) matchCount() (int32, error) {
+	var value int32
+	hr, _, _ := f.vtbl.GetMatchCount.Call(uintptr(unsafe.Pointer(f)), uintptr(unsafe.Pointer(&value)))
+	return value, hresult(hr)
+}
+
 // An unmodified key is the page's, Escape included, even when a bound set
 // names it; a modified one goes through the bound set only.
 func TestClaimChordNeverTakesAnUnmodifiedKey(t *testing.T) {
@@ -38,24 +70,7 @@ func TestFindSmokeOpensTheEnginesFindBar(t *testing.T) {
 	if os.Getenv("AO_NATIVE_BROWSER_SMOKE") != "1" {
 		t.Skip("set AO_NATIVE_BROWSER_SMOKE=1 to run against the installed WebView2 runtime")
 	}
-	// The runtime's browser process holds the user-data folder for a moment
-	// after its last page closes, which t.TempDir's cleanup does not retry.
-	dataDir, err := os.MkdirTemp("", "ao-find-smoke-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		for start := time.Now(); ; time.Sleep(200 * time.Millisecond) {
-			err := os.RemoveAll(dataDir)
-			if err == nil {
-				return
-			}
-			if time.Since(start) > 15*time.Second {
-				t.Errorf("remove %s: %v", dataDir, err)
-				return
-			}
-		}
-	})
+	dataDir := smokeTempDir(t, "ao-find-smoke-")
 	ui := startSmokeUIThread(t)
 	reports := make(chan smokeReport, 16)
 	host, err := New(Config{
@@ -66,27 +81,27 @@ func TestFindSmokeOpensTheEnginesFindBar(t *testing.T) {
 			reports <- smokeReport{pageID, kind, detail}
 		},
 		OnMain: ui.do,
+		Post:   ui.post,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
 		host.Close()
-		ui.do(host.releaseEnvironment)
+		ui.do(host.env.release)
 	})
 
 	host.Apply(Directive{Op: OpCreate, PageID: "page-1", ProfileID: "smoke"})
 	for created := false; !created; {
 		select {
 		case report := <-reports:
-			switch report.kind {
-			case ReportCreated:
-				created = true
-			case ReportFindUnavailable:
+			if report.kind == ReportFindUnavailable {
 				t.Fatalf("the installed runtime reported no find API")
-			default:
+			}
+			if report.kind != ReportCreated {
 				t.Fatalf("create answered %+v", report)
 			}
+			created = true
 		case <-time.After(60 * time.Second):
 			t.Fatal("no created report")
 		}
@@ -94,9 +109,8 @@ func TestFindSmokeOpensTheEnginesFindBar(t *testing.T) {
 	host.Apply(Directive{Op: OpBounds, PageID: "page-1", X: 0, Y: 0, W: 640, H: 480})
 	host.Apply(Directive{Op: OpShow, PageID: "page-1"})
 
-	host.mu.Lock()
-	page := host.pages["page-1"]
-	host.mu.Unlock()
+	var page *hostPage
+	ui.do(func() { page = host.pages["page-1"] })
 	ui.do(func() {
 		html := "<p>alpha beta</p><p>gamma ALPHA delta</p>"
 		if err := smokeNavigateToString(page.view, html); err != nil {
@@ -191,7 +205,6 @@ var (
 const (
 	smokeClassName       = "AOFindSmokeWindow"
 	wsOverlappedWindow   = 0x00CF0000
-	wsVisible            = 0x10000000
 	pmRemove             = 0x0001
 	smokeMessageWords    = 8
 	smokeWindowDimension = 800
@@ -201,17 +214,30 @@ const (
 // message pump that also runs queued functions.
 type smokeUIThread struct {
 	hwnd  uintptr
+	tid   uint32
 	queue chan func()
 }
 
+// do runs fn on the UI thread and returns once it has run, inline when
+// called there, as the launcher's OnMain does.
 func (u *smokeUIThread) do(fn func()) {
+	if windows.GetCurrentThreadId() == u.tid {
+		fn()
+		return
+	}
 	done := make(chan struct{})
 	u.queue <- func() { defer close(done); fn() }
 	<-done
 }
 
+// post queues fn without waiting, from any thread, the UI thread too.
+func (u *smokeUIThread) post(fn func()) {
+	go func() { u.queue <- fn }()
+}
+
 func startSmokeUIThread(t *testing.T) *smokeUIThread {
 	t.Helper()
+	requireSmokeDesktop(t)
 	ui := &smokeUIThread{queue: make(chan func(), 64)}
 	ready := make(chan error, 1)
 	stop := make(chan struct{})
@@ -231,8 +257,12 @@ func startSmokeUIThread(t *testing.T) *smokeUIThread {
 			ready <- err
 			return
 		}
-		defer destroyWindow(hwnd)
-		ui.hwnd = hwnd
+		defer func() {
+			if err := destroyWindow(hwnd); err != nil {
+				t.Errorf("smoke window: %v", err)
+			}
+		}()
+		ui.hwnd, ui.tid = hwnd, windows.GetCurrentThreadId()
 		ready <- nil
 		var msg [smokeMessageWords]uint64 // MSG is 48 bytes on 64-bit
 		for {
@@ -261,7 +291,12 @@ func startSmokeUIThread(t *testing.T) *smokeUIThread {
 	return ui
 }
 
+// createSmokeWindow creates the one kind of top-level window a smoke uses,
+// never on the interactive desktop (refuseInteractiveDesktop).
 func createSmokeWindow() (uintptr, error) {
+	if err := refuseInteractiveDesktop(); err != nil {
+		return 0, err
+	}
 	var module windows.Handle
 	if err := windows.GetModuleHandleEx(0, nil, &module); err != nil {
 		return 0, err

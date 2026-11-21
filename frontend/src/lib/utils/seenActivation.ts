@@ -1,8 +1,9 @@
 import type { Attachment } from 'svelte/attachments';
+import { isEnterKey } from './localEnter';
 
 // The keys that activate a button.
 function activates(event: KeyboardEvent): boolean {
-  return event.key === ' ' || event.key === 'Enter';
+  return event.key === ' ' || isEnterKey(event);
 }
 
 /**

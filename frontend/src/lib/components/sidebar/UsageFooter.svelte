@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isLocalEnter } from '../../utils/localEnter';
   // Sidebar per-provider usage footer. Same visual idiom as
   // SystemStatsFooter, mounted directly above it. Fetches
   // GetUsageStats grouped by provider for the selected period on mount,
@@ -86,7 +87,7 @@
   }
 
   function handleRowKeydown(e: KeyboardEvent): void {
-    if (e.key === 'Enter' || e.key === ' ') {
+    if (isLocalEnter(e) || e.key === ' ') {
       e.preventDefault();
       openModal();
     }

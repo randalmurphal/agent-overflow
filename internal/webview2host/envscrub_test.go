@@ -7,8 +7,7 @@ import (
 	"testing"
 )
 
-// The regression this guards is the one that cost most of the 2026-08-31
-// spike: a variable that is SET BUT EMPTY still overrides the API
+// A variable that is set but empty still overrides the API
 // argument, collapsing every environment onto one shared profile with no
 // error anywhere. A presence check written as `value != ""` would let it
 // through, so the test asserts the empty case specifically.
@@ -16,7 +15,10 @@ func TestScrubEnvOverridesRemovesSetButEmptyVariables(t *testing.T) {
 	t.Setenv("WEBVIEW2_USER_DATA_FOLDER", "")
 	t.Setenv("WEBVIEW2_RELEASE_CHANNEL_PREFERENCE", "0")
 
-	removed := ScrubEnvOverrides()
+	removed, err := ScrubEnvOverrides()
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if !slices.Contains(removed, "WEBVIEW2_USER_DATA_FOLDER=") {
 		t.Fatalf("removed = %v, want the empty WEBVIEW2_USER_DATA_FOLDER reported", removed)
@@ -35,11 +37,13 @@ func TestScrubEnvOverridesIsQuietWhenNothingIsSet(t *testing.T) {
 	for _, name := range EnvOverrideNames {
 		if _, present := os.LookupEnv(name); present {
 			t.Setenv(name, "")
-			os.Unsetenv(name)
+			if err := os.Unsetenv(name); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
-	if removed := ScrubEnvOverrides(); len(removed) != 0 {
-		t.Fatalf("removed = %v, want none", removed)
+	if removed, err := ScrubEnvOverrides(); err != nil || len(removed) != 0 {
+		t.Fatalf("removed = %v (%v), want none", removed, err)
 	}
 	if got := FormatScrub(nil); got != "none" {
 		t.Fatalf("FormatScrub(nil) = %q, want %q", got, "none")
@@ -48,11 +52,11 @@ func TestScrubEnvOverridesIsQuietWhenNothingIsSet(t *testing.T) {
 
 func TestScrubEnvOverridesIsIdempotent(t *testing.T) {
 	t.Setenv("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--mute-audio")
-	if removed := ScrubEnvOverrides(); len(removed) == 0 {
-		t.Fatal("first scrub removed nothing")
+	if removed, err := ScrubEnvOverrides(); err != nil || len(removed) == 0 {
+		t.Fatalf("first scrub removed %v (%v), want the variable", removed, err)
 	}
-	if removed := ScrubEnvOverrides(); len(removed) != 0 {
-		t.Fatalf("second scrub removed %v, want none", removed)
+	if removed, err := ScrubEnvOverrides(); err != nil || len(removed) != 0 {
+		t.Fatalf("second scrub removed %v (%v), want none", removed, err)
 	}
 }
 
@@ -60,7 +64,11 @@ func TestScrubEnvOverridesIsIdempotent(t *testing.T) {
 // span lines and forge a log entry.
 func TestScrubEnvOverridesStripsControlCharactersFromTheValue(t *testing.T) {
 	t.Setenv("WEBVIEW2_BROWSER_EXECUTABLE_FOLDER", "C:\\x\nfake log line")
-	got := FormatScrub(ScrubEnvOverrides())
+	removed, err := ScrubEnvOverrides()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := FormatScrub(removed)
 	if strings.ContainsAny(got, "\n\r") {
 		t.Fatalf("scrub report is multi-line and could forge a log entry: %q", got)
 	}

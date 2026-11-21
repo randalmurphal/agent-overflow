@@ -8,6 +8,7 @@
   import MessageTimeline from '../chat/MessageTimeline.svelte';
   import Icon from '../primitives/Icon.svelte';
   import PaneHeaderIconButton from '../panes/PaneHeaderIconButton.svelte';
+  import PanePromoteButton from '../panes/PanePromoteButton.svelte';
   import PaneHeaderLine from '../panes/PaneHeaderLine.svelte';
   import { companionForSource } from '../../stores/companionPanes.svelte';
   import { addToast } from '../../stores/toast.svelte';
@@ -193,6 +194,9 @@
           </span>
         {/if}
       </nav>
+      {#if companionPaneId}
+        <PanePromoteButton paneId={companionPaneId} testId="agent-pane-promote" />
+      {/if}
       <PaneHeaderIconButton label="Close Agent Pane" testId="agent-pane-close" onclick={() => ctx.close()}>
         <Icon icon={X} size={12} strokeWidth={2} />
       </PaneHeaderIconButton>

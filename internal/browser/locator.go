@@ -13,11 +13,16 @@ const maxLocatorBytes = 64 << 10
 const maxBrowserInputBytes = 1 << 20
 
 func (m *Manager) Locator(ctx context.Context, access Access, opts LocatorOptions) (LocatorResult, error) {
+	if err := m.bound(access); err != nil {
+		return LocatorResult{}, err
+	}
 	p, _, err := m.lookupOrSelectPage(ctx, access, opts.PageID)
 	if err != nil {
 		return LocatorResult{}, err
 	}
-	p.mu.Lock()
+	if err := m.lockPageForOperation(ctx, p); err != nil {
+		return LocatorResult{}, err
+	}
 	defer p.mu.Unlock()
 	timeout, err := boundedTimeout(opts.TimeoutMS)
 	if err != nil {
@@ -52,12 +57,14 @@ func (m *Manager) Locator(ctx context.Context, access Access, opts LocatorOption
 		matches[i].NodeID = p.rememberNode(nodeReference{Selector: matches[i].Selector, Frames: append([]string(nil), opts.Locator.Frames...), Tag: matches[i].Tag, Text: matches[i].Text})
 	}
 	result := LocatorResult{Count: len(matches)}
-	p.downloadMu.Lock()
-	downloadAfter := p.downloadSeq
-	p.downloadMu.Unlock()
-	var before navigationMark
+	downloadAfter := p.downloads.lastSequence()
+	var before pageNavigation
 	if opts.ExpectNavigation {
-		before, _ = p.driver.NavigationMark(opCtx)
+		// Without the page's navigation before the action, nothing after
+		// it could tell a navigation apart: the action is not taken.
+		if before, err = readNavigation(opCtx, p); err != nil {
+			return LocatorResult{}, fmt.Errorf("browser: read the page's navigation before the action: %w", err)
+		}
 	}
 
 	switch action {
@@ -101,21 +108,32 @@ func (m *Manager) Locator(ctx context.Context, access Access, opts LocatorOption
 		return LocatorResult{}, err
 	}
 	if opts.ExpectNavigation {
-		if err := m.waitForNavigation(opCtx, p, before, opts.URL, opts.WaitUntil); err != nil {
-			return LocatorResult{}, fmt.Errorf("browser: expected navigation: %w", err)
+		navigated, err := m.waitForNavigation(opCtx, p, before, opts.URL, opts.WaitUntil)
+		if err != nil {
+			// A navigation that happened is reported as one, and the
+			// error says what the wait did not reach.
+			return LocatorResult{Navigated: navigated}, fmt.Errorf("browser: expected navigation: %w", err)
 		}
 		result.Navigated = true
 	}
 	if opts.ExpectDownload {
-		download, waitErr := waitDownloadPage(opCtx, p, downloadAfter)
+		download, waitErr := p.downloads.settledAfter(opCtx, downloadAfter)
 		if waitErr != nil {
-			return LocatorResult{}, waitErr
+			if result.Navigated {
+				// The navigation is a fact whatever the download wait answers.
+				waitErr = fmt.Errorf("browser: the page navigated, and the expected download did not settle: %w", waitErr)
+			}
+			return LocatorResult{Navigated: result.Navigated}, waitErr
 		}
 		result.Download = &download
 	}
 	info, infoErr := m.finishPageOperation(opCtx, p)
 	if infoErr != nil {
-		return LocatorResult{}, infoErr
+		if result.Navigated {
+			// The navigation is a fact whatever the page's last read answers.
+			infoErr = fmt.Errorf("browser: the page navigated, and it could not be read after: %w", infoErr)
+		}
+		return LocatorResult{Navigated: result.Navigated, Download: result.Download}, infoErr
 	}
 	result.Page = info
 	return result, nil

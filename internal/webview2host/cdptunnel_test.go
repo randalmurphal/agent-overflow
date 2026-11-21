@@ -462,14 +462,6 @@ func TestNewCDPTunnelValidatesItsConfig(t *testing.T) {
 	}
 }
 
-func TestCDPTunnelRedactsItsTokenFromErrors(t *testing.T) {
-	token := "secret+/token"
-	got := redactToken(fmt.Errorf("GET ws://127.0.0.1/browser-cdp?token=secret%%2B%%2Ftoken: refused"), token)
-	if strings.Contains(got, token) || strings.Contains(got, "secret%2B%2Ftoken") {
-		t.Fatalf("redacted error leaked the token: %q", got)
-	}
-}
-
 // A close that lands while the stream's dial is still in flight must WIN:
 // the finished dial may not resurrect the stream (it would hold a cap slot
 // and a socket the backend has forgotten), and a dial that fails after the

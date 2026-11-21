@@ -168,7 +168,7 @@ func TestManagerEvaluateRefusesBeforeThePageAndNamesTheTool(t *testing.T) {
 			t.Errorf("close manager: %v", err)
 		}
 	})
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	for _, tc := range []struct {
 		code, argument string
 		readOnly       bool
@@ -188,7 +188,7 @@ func TestManagerEvaluateRefusesBeforeThePageAndNamesTheTool(t *testing.T) {
 			t.Fatalf("evaluate %q error = %v, want %q", tc.code, err, tc.want)
 		}
 	}
-	if pages := manager.CompanionState(access).Pages; len(pages) != 0 {
+	if pages := manager.CompanionState(access.Caller()).Pages; len(pages) != 0 {
 		t.Fatalf("refused code opened pages %+v", pages)
 	}
 
@@ -196,7 +196,7 @@ func TestManagerEvaluateRefusesBeforeThePageAndNamesTheTool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open on the fake engine: %v", err)
 	}
-	page, _, err := manager.lookupOwnedPage(access, info.ID)
+	page, _, err := manager.lookupOwnedPage(access, PageID(info.ID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +264,7 @@ func TestManagerEvaluateRefusesBeforeThePageAndNamesTheTool(t *testing.T) {
 			if err == nil || !strings.HasPrefix(err.Error(), tc.want) {
 				t.Fatalf("evaluate error = %v, want %q", err, tc.want)
 			}
-			if title := manager.CompanionState(access).Pages[0].Title; title != "after "+strconv.Itoa(len(calls)) {
+			if title := manager.CompanionState(access.Caller()).Pages[0].Title; title != "after "+strconv.Itoa(len(calls)) {
 				t.Fatalf("page title = %q: the Manager did not refresh the page after the code ran", title)
 			}
 		})
@@ -286,7 +286,7 @@ func TestCDPEvaluateExceptionNamesACompileFailure(t *testing.T) {
 		t.Fatalf("compile failure = %#v", err)
 	}
 	err = cdpEvaluateException(exception("EvalError", "EvalError: Possible side-effect in debug-evaluate"), true)
-	if errors.As(err, &syntax) || !strings.HasPrefix(err.Error(), "Chrome rejected a possible side effect") {
+	if errors.As(err, &syntax) || !errors.As(err, new(sideEffectRejectedError)) || !strings.HasPrefix(err.Error(), "browser: Chrome rejected a possible side effect") {
 		t.Fatalf("side-effect refusal = %#v", err)
 	}
 	err = cdpEvaluateException(exception("TypeError", "TypeError: x"), false)

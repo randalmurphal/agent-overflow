@@ -5,9 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
 	"regexp"
 
-	"agent-overflow/internal/keybindings"
+	"agent-overflow/internal/browser/ids"
 )
 
 // The engine seam. `Manager` owns policy — Access checks, the page registry and
@@ -16,7 +17,7 @@ import (
 // An engine owns only how an operation is carried out against a live page.
 //
 // Three interfaces, one per lifetime: `browserEngine` is the process/profile
-// factory, `engineProfile` is one workspace's isolated site data, and
+// factory, `engineProfile` is one cookie jar's isolated site data, and
 // `pageDriver` is one page's tool-operation surface. Adding an engine
 // (spec: docs/specs/embedded-browser.md §6) means implementing these and
 // nothing else; no policy may migrate across the seam in either direction.
@@ -35,8 +36,14 @@ type browserEngine interface {
 	Stop()
 	// NewProfile creates one isolated site-data profile.
 	NewProfile(ctx context.Context, opts profileOptions) (engineProfile, error)
-	// DiscardPage closes an engine page the Manager declined to adopt.
-	DiscardPage(handle string)
+	// DiscardPage closes an engine page the Manager declined to adopt,
+	// within ctx. It is idempotent, and a page it fails to close stays the
+	// engine's to close at its profile's disposal; the Manager's
+	// reservation for the page ends either way.
+	DiscardPage(ctx context.Context, handle ids.PageHandle) error
+	// DownloadSaving is where the engine's downloads go; constant for an
+	// engine.
+	DownloadSaving() downloadSaving
 }
 
 // engineSiteData is the engine half of ClearSiteData (spec §4), implemented by
@@ -59,6 +66,13 @@ type engineSiteData interface {
 // dispatch runs synchronously there and the teardown takes milliseconds.
 type engineUIThread interface {
 	OnUIThread() bool
+}
+
+// engineDownloadEvents is implemented by an engine that delivers download
+// reports on a queue of its own: WaitDownloadEvents returns once every
+// report submitted so far has been delivered (Manager.Close).
+type engineDownloadEvents interface {
+	WaitDownloadEvents()
 }
 
 // engineAppFocus is implemented by an engine whose page views share the
@@ -103,7 +117,7 @@ type engineAccelerators interface {
 // URL pasted into the companion address bar — is in the RENDERER's form,
 // and authorizing it against backend workspace paths without translating
 // first fails closed: the interceptor blocks the very navigation OpenFile
-// just authorized (live incident 2026-08-31, ERR_BLOCKED_BY_CLIENT).
+// just authorized (ERR_BLOCKED_BY_CLIENT).
 // BackendFilePath is that inverse; a URL naming a filesystem the backend
 // cannot reach (a foreign UNC host) is an error, which callers treat as
 // "not authorized".
@@ -112,39 +126,123 @@ type engineFileURL interface {
 	BackendFilePath(ctx context.Context, rawURL string) (string, error)
 }
 
-// engineProfile is one canonical workspace's isolated site data: the unit that
+// paneHost is the engine capability the Manager's visibility path drives.
+// Every windowed engine implements it; an engine with no window to show does
+// not. The Manager decides WHICH page is presented (policy); the engine
+// decides how a controller is made to appear (mechanism).
+//
+// A page that is not visible never holds keyboard focus. HidePage, and the
+// close of a page, give keyboard focus the page held to the app's webview,
+// done by the same code that hands it over for a claimed chord
+// (engineAppFocus, or the launcher's chord gate). ShowPage never takes focus.
+type paneHost interface {
+	ShowPage(handle ids.PageHandle)
+	HidePage(handle ids.PageHandle)
+	// SetPageBounds carries the placement the Manager computed: the page's
+	// own viewport, the scale the pane shows it at, and the fitted rect in
+	// the SPA's CSS pixels. The host converts that rect with the rect's
+	// pixel ratio or its own size over the rect's viewport, so no engine
+	// ever equates CSS pixels with its native units. Always sent before a
+	// show.
+	SetPageBounds(handle ids.PageHandle, placement PanePlacement)
+	// SetPageBase sets the color the page's view paints wherever its
+	// document leaves the background transparent or has not painted yet,
+	// as "#rrggbb". It holds, shown or hidden, until the next call; the
+	// Manager decides it (applyPageBase) and sends it only when it changes.
+	SetPageBase(handle ids.PageHandle, color string)
+	// FocusPage gives the page's view keyboard focus for one focus intent,
+	// as a click into the page does, if and only if the host presents and
+	// shows that view and req.Live holds at the moment focus would move;
+	// otherwise it leaves focus alone. It never takes the OS focus from
+	// another application. The Manager asks for the presented page only
+	// (applyFocusIntent); the host's own checks are what hold when a hide or
+	// a withdrawal races the request.
+	FocusPage(handle ids.PageHandle, req focusRequest) (focusResult, error)
+}
+
+// paneDevTools is the OPTIONAL inspector half, split from paneHost because
+// implementing it is a capability claim: WKWebView has no public call that
+// opens its inspector (macOS devtools are Safari's Develop menu against an
+// inspectable view), so the darwin engine does not implement this and the
+// Manager's refusal, "devtools are not available on this browser engine",
+// is the answer there. OpenPageDevTools answers, within ctx, nil once the
+// inspector opened and why it did not otherwise, an engine that asks
+// another process (the hosted engine) included.
+type paneDevTools interface {
+	OpenPageDevTools(ctx context.Context, handle ids.PageHandle) error
+}
+
+// engineProfile is one cookie jar's isolated site data (jar.go): the unit that
 // owns its pages and their download behavior. Site data itself is the ENGINE's
 // (spec §4) — a real browser profile on disk, or an ephemeral session — so
 // nothing here reads or writes it.
 type engineProfile interface {
 	// Handle identifies this profile in engine events.
-	Handle() string
+	Handle() profileHandle
 	// NewPage creates a hidden page in this profile.
 	NewPage(ctx context.Context, hooks pageHooks) (pageDriver, error)
 	// AttachPage adopts a page the engine created on its own (a popup). On an
 	// error the Manager discards the page, which is a no-op for an engine
 	// that already closed it.
-	AttachPage(ctx context.Context, handle string, hooks pageHooks) (pageDriver, error)
-	// CancelDownload aborts one in-flight download by its engine id.
-	CancelDownload(id string)
+	AttachPage(ctx context.Context, handle ids.PageHandle, hooks pageHooks) (pageDriver, error)
+	// CancelDownload aborts one in-flight download by its engine id. A nil
+	// answer means the engine took the cancel; the download then ends with
+	// the engine's own terminal report, a cancel or, when the download
+	// finished first, its finish. errDownloadEnded means the engine had
+	// already let the download go and its terminal report is on the way.
+	// Any other error means the engine refused or could not be asked, and
+	// the download may still be running.
+	CancelDownload(id downloadID) error
 	// Dispose destroys the profile and every page still in it.
 	Dispose(ctx context.Context) error
 }
 
 // profileOptions is the AO-owned configuration a profile is created against.
 type profileOptions struct {
-	// Workspace is the canonical workspace root the profile isolates.
-	Workspace string
-	// DownloadDir is the AO artifact directory downloads must land in.
+	// Jar is the identity of the jar the profile isolates (jarIdentity.key).
+	// An engine derives its profile directory or id from it and nothing
+	// else, so one jar is one profile across restarts.
+	Jar jarKey
+	// DownloadDir is the AO artifact directory downloads must land in, for
+	// an engine that keeps them there (downloadsAsArtifacts); empty
+	// otherwise.
 	DownloadDir string
-	// Persist is the user's site-data setting. An engine keeps its profile
-	// on disk only when this is true; false is an in-memory/ephemeral
-	// session (spec §4). The hosted engine forwards it as the directive's
-	// Ephemeral flag.
-	Persist bool
-	// Allow is the workspace's navigation policy, for an engine that can
-	// load a page before AttachPage installs the page's own policy.
-	Allow func(url string) bool
+	// OpenDownloadDir opens DownloadDir, made if it is missing, through the
+	// Manager's held artifact root (openArtifactDir), for the caller to
+	// close: an engine makes what it writes there through the directory it
+	// answers, never by DownloadDir's name. Nil when DownloadDir is empty.
+	OpenDownloadDir func() (*os.Root, error)
+	// StageDownload answers the staged file an engine that stages
+	// (downloadsStaged) writes download id into, resolved as the download
+	// starts (download_staging.go); with an error the engine cancels the
+	// download before writing and reports the error as its end. Nil for
+	// other engines. It does file system work, so a native engine calls it
+	// off its UI thread and completes the download's destination there
+	// afterwards (webkit_downloads.go).
+	StageDownload func(id downloadID) (string, error)
+	// ReleaseStaged gives up the staged file StageDownload named for
+	// download id when no download start took it: the engine's decision
+	// for the download ended without one (destination.Settle). Nil when
+	// StageDownload is.
+	ReleaseStaged func(id downloadID)
+	// Ephemeral keeps the profile in memory only (spec §4): the site-data
+	// setting is off, or the jar is private. The hosted engine forwards it
+	// as the directive's Ephemeral flag.
+	Ephemeral bool
+	// Allow is the CDP engines' whole navigation policy: one browser-wide
+	// interception per connection, which also sees a popup before the
+	// Manager adopts it, so no page installs one of its own. owners is the
+	// frame the request belongs to followed by the pages that opened its
+	// page, nearest first, as far as the engine knows them. The Manager
+	// answers with the authority of the first owner it resolves to one of
+	// its pages, and when none resolves answers resolved false with what a
+	// page with no workspace's authority may open (jarAllows). The engine
+	// allows that at once; for anything else it asks again as it learns
+	// more owners and refuses the request past requestOwnerWait
+	// (awaitRequestOwner). The WebKit engines
+	// need none: their glue names a popup's opener for every navigation
+	// decision.
+	Allow func(owners []frameID, rawURL string) (allowed, resolved bool)
 }
 
 // pageHooks are the AO-owned callbacks a page driver reports into. They carry
@@ -155,7 +253,9 @@ type pageHooks struct {
 	// PageURL reports the page's last known URL, attributed to entries the
 	// engine reports without one of their own.
 	PageURL func() string
-	// Allow answers the navigation-authority question for one request URL.
+	// Allow answers the navigation-authority question for one request URL
+	// of an in-process engine's page (WebKitGTK, WKWebView, the fake). The
+	// CDP engines ask the profile's policy instead (profileOptions.Allow).
 	Allow func(url string) bool
 	// DocumentCommitted reports that the page's main frame committed a new
 	// document: a load, a reload, or a history move to another document. A
@@ -165,6 +265,27 @@ type pageHooks struct {
 	// engine then runs the work it returns, when not nil, in the same
 	// callback: that work never waits, and the Manager joins what it starts.
 	DocumentCommitted func() (finish func())
+	// Loading reports whether the page's main frame is loading. order is the
+	// engine's count of the loading changes it has seen, which only grows:
+	// the Manager keeps the answer with the highest order, so reports that
+	// reach it out of order settle on the engine's latest. Never called on a
+	// UI thread (it takes Manager locks).
+	Loading func(loading bool, order uint64)
+	// Info reports the page's address and title. order is the engine's
+	// count of the reports it has made for the page, stamped where the
+	// engine orders them (its UI thread), which only grows: the Manager
+	// keeps the report with the highest order, so reports that reach it out
+	// of order settle on the engine's latest. Bound from the moment the
+	// engine page exists, so no report misses that fence; a popup's view
+	// reports none before its adoption and reports its address and title as
+	// it is adopted. Never called on a UI thread (it takes Manager locks).
+	Info func(url, title string, order uint64)
+	// DocumentTitle reports the title the page's document holds, read in
+	// the document at address url (cdp_page.go: a CDP engine's reports
+	// carry a navigation's placeholder title and miss later changes). It
+	// names no address the tab should show; the Manager applies it only to
+	// that address (commitInfo). Never called on a UI thread.
+	DocumentTitle func(url, title string)
 }
 
 // pageDriver is one engine's implementation of every per-page operation the
@@ -175,10 +296,10 @@ type pageDriver interface {
 	// against it.
 	Lifetime() context.Context
 	// Handle identifies this page in engine events.
-	Handle() string
+	Handle() ids.PageHandle
 	// OwnsFrame reports whether an engine frame handle belongs to this page,
 	// its main frame included.
-	OwnsFrame(frame string) bool
+	OwnsFrame(frame frameID) bool
 	// Close destroys the page.
 	Close()
 
@@ -195,7 +316,8 @@ type pageDriver interface {
 	// PageStatus samples the load state a wait condition is evaluated against.
 	PageStatus(ctx context.Context) (pageStatus, error)
 	// NavigationMark captures the page's current navigation identity, so a
-	// caller can tell that a navigation happened at all.
+	// caller can tell that a navigation happened at all. Any part of it
+	// that cannot be read fails the read with an error and no mark.
 	NavigationMark(ctx context.Context) (navigationMark, error)
 
 	// Snapshot returns the accessibility-ish page snapshot. Element node ids
@@ -235,14 +357,13 @@ type pageDriver interface {
 	Press(ctx context.Context, key string) error
 	// TypeText types text at the current focus, with no selector.
 	TypeText(ctx context.Context, text string) error
-	// SelectionText reads the page's current selection, for the copy chord.
-	SelectionText(ctx context.Context) string
+	// SelectionText reads the page's current selection, for the copy chord
+	// and an engine find's seed; an error means it could not be read.
+	SelectionText(ctx context.Context) (string, error)
 	// Pointer dispatches a raw pointer gesture at viewport coordinates.
 	Pointer(ctx context.Context, opts PointerOptions) error
 	// Scroll scrolls a selector, or the window when it is empty.
 	Scroll(ctx context.Context, selector string, x, y float64) error
-	// WaitVisible blocks until a selector is visible or the context ends.
-	WaitVisible(ctx context.Context, selector string) error
 
 	// SetViewport lays the page out at width x height CSS pixels: what it
 	// lays out and captures at, presented or not. The Manager sets it from
@@ -345,72 +466,6 @@ type pageAssets struct {
 	PageURL    string      `json:"pageUrl"`
 	Assets     []AssetInfo `json:"assets"`
 	InlineSVGs []InlineSVG `json:"inlineSvgs"`
-}
-
-// enginePopup is a page the engine opened on its own behalf. Nothing about
-// ownership is decided here: the Manager matches the opener and applies its
-// own per-thread and per-workspace limits before adopting it.
-type enginePopup struct {
-	Profile string
-	Opener  string
-	Handle  string
-	URL     string
-	Title   string
-}
-
-// downloadStart is an engine download beginning in one page's frame.
-type downloadStart struct {
-	Frame         string
-	ID            string
-	URL           string
-	SuggestedName string
-}
-
-// downloadProgress is an engine download advancing.
-type downloadProgress struct {
-	ID       string
-	Received float64
-	State    string
-	FilePath string
-}
-
-// The states downloadProgress.State may carry.
-const (
-	downloadInProgress = "inProgress"
-	downloadCompleted  = "completed"
-	downloadCanceled   = "canceled"
-)
-
-// engineEvents are the engine-originated notifications the Manager subscribes
-// to. The engine reports; the Manager alone routes and decides.
-type engineEvents struct {
-	PopupOpened     func(enginePopup)
-	PageClosed      func(handle string)
-	PageInfoChanged func(handle, url, title string)
-	// DownloadStarted reports whether the download may continue. The engine
-	// cancels one it answers false for.
-	DownloadStarted  func(downloadStart) bool
-	DownloadProgress func(downloadProgress)
-	// KeyChord is the one SYNCHRONOUS question on this seam: a modifier chord,
-	// or a bare Escape, was pressed while the page's native view held
-	// keyboard focus — does AO own it? True means the engine swallows the
-	// event and AO dispatches the chord, keyboard focus already handed to
-	// the app (engineAppFocus); false means the page keeps it, and its
-	// focus. A bare Escape is always the page's; press is what the engine
-	// knows of it besides the chord. It runs on the engine's UI thread, so
-	// the answer must be a set lookup and nothing that waits.
-	KeyChord func(handle string, pressed keybindings.Accelerator, press KeyPress) bool
-}
-
-// KeyPress is what an in-process engine gathers about a key press besides
-// its chord, for the Manager's decision on a bare Escape
-// (pageEscapeAnnounced): Repeat is the OS's auto-repeat flag (WKWebView),
-// Held is the engine's own record that the key went down before without its
-// release (WebKitGTK, whose GTK 4 reports no repeat), and Composing is
-// whether the page's input method has a composition in progress, which the
-// Escape cancels.
-type KeyPress struct {
-	Repeat, Held, Composing bool
 }
 
 // matchStatus reports whether a sampled page state satisfies a wait condition.

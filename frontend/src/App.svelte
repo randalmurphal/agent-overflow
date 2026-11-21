@@ -71,6 +71,7 @@
   import { applyFonts } from './lib/utils/fonts';
   import { startAmbientTicker } from './lib/utils/ambientTicker';
   import { installWorkingSpriteReadiness } from './lib/stores/spinners.svelte';
+  import { installShellChords } from './lib/native/shellChords.svelte';
   import { startIdleMemoryTrim } from './lib/utils/idleMemoryTrim';
   import { applyFontScale, installZoomKeybindings } from './lib/utils/zoom';
   import Sidebar from './lib/components/sidebar/Sidebar.svelte';
@@ -595,6 +596,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
     });
 
     void loadKeybindings();
+    const cleanupShellChords = installShellChords(() => makeAppCommandContext(currentContextPane()));
     const flushPaneLayout = () => {
       // Writes the pending debounced resize. Every other layout change
       // is saved synchronously when it happens.
@@ -647,6 +649,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
       cleanupReadAloudSources();
       cleanupWorkingSprites();
       cleanupDeviceNames();
+      cleanupShellChords();
       cleanupOwnDevices();
       cleanupComputerRoutes();
       cleanupLoafTrace();

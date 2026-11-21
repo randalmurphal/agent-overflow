@@ -89,21 +89,24 @@ func TestArtifactQuotaPrunesOnlyExpiredFilesAndReservesAtomically(t *testing.T) 
 	if err := os.Chtimes(old, expired, expired); err != nil {
 		t.Fatal(err)
 	}
-	manager.prepareArtifacts()
+	if err := manager.prepareArtifacts(); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := os.Stat(old); !os.IsNotExist(err) {
 		t.Fatalf("expired artifact remains: %v", err)
 	}
-	if got := manager.artifactBytes.Load(); got != 5 {
+	if got := manager.artifactBytes.Used(); got != 5 {
 		t.Fatalf("artifact bytes=%d", got)
 	}
-	if !manager.reserveArtifacts(10) {
-		t.Fatal("small reservation refused")
+	reservation, err := manager.reserveArtifacts(10)
+	if err != nil {
+		t.Fatalf("small reservation refused: %v", err)
 	}
-	manager.settleArtifactReservation(10, 3)
-	if got := manager.artifactBytes.Load(); got != 8 {
+	reservation.Settle(3)
+	if got := manager.artifactBytes.Used(); got != 8 {
 		t.Fatalf("settled bytes=%d", got)
 	}
-	if manager.reserveArtifacts(maxArtifactRootBytes) {
+	if _, err := manager.reserveArtifacts(maxArtifactRootBytes); err == nil {
 		t.Fatal("over-quota reservation accepted")
 	}
 }
@@ -159,20 +162,25 @@ func TestParityBoundsAndPureHelpers(t *testing.T) {
 	if got := safeArtifactName("CON.txt", "download"); got != "_CON.txt" {
 		t.Fatalf("Windows device name=%q", got)
 	}
-	dir := t.TempDir()
-	first, err := uniqueArtifactPath(dir, "file.txt")
+	dir, err := os.OpenRoot(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(first, []byte("x"), 0o600); err != nil {
+	t.Cleanup(func() {
+		if err := dir.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	first, err := uniqueArtifactName(dir, "file.txt")
+	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := uniqueArtifactPath(dir, "file.txt")
-	if err != nil || filepath.Base(second) != "file-1.txt" {
-		t.Fatalf("collision path=%q err=%v", second, err)
+	if err := dir.WriteFile(first, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	if !pathInside(dir, filepath.Join(dir, "nested", "file")) || pathInside(dir, filepath.Join(dir, "..", "escape")) {
-		t.Fatal("artifact path containment failed")
+	second, err := uniqueArtifactName(dir, "file.txt")
+	if err != nil || second != "file-1.txt" {
+		t.Fatalf("collision name=%q err=%v", second, err)
 	}
 	for _, button := range []string{"left", "middle", "right", "back", "forward"} {
 		if _, err := inputButton(button); err != nil {
@@ -183,7 +191,7 @@ func TestParityBoundsAndPureHelpers(t *testing.T) {
 
 func TestSessionNameLimitCountsUnicodeCharacters(t *testing.T) {
 	manager := NewManager(t.TempDir(), Config{}, ManagerOptions{})
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	if _, err := manager.NameSession(t.Context(), access, strings.Repeat("🔎", 120)); err != nil {
 		t.Fatalf("120-character session name rejected: %v", err)
 	}

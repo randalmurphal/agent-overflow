@@ -35,12 +35,17 @@ export const TERMINAL_MANAGEMENT_COMMAND_IDS: ReadonlySet<string> = new Set([
   'terminal.newPane',
 ]);
 
+// Maximize or restore the focused pane (alt+shift+enter). Un-gated like the
+// pane-nav chords, so a terminal pane can be maximized from inside its xterm.
+const PANE_PROMOTE_COMMAND_ID = 'pane.togglePromoted';
+
 // Every command id the terminal key handler lets bubble out of a focused xterm:
-// pane navigation, terminal.refresh, and tab/pane management. TerminalBody
+// pane navigation and promotion, terminal.refresh, and tab/pane management. TerminalBody
 // passes this to eventEscapesTerminalToCommand so all of these chords reach
 // App.svelte's window keydown handler instead of the PTY.
 export const TERMINAL_ESCAPE_COMMAND_IDS: ReadonlySet<string> = new Set([
   ...PANE_NAV_COMMAND_IDS,
+  PANE_PROMOTE_COMMAND_ID,
   TERMINAL_REFRESH_COMMAND_ID,
   ...TERMINAL_MANAGEMENT_COMMAND_IDS,
 ]);

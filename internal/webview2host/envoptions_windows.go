@@ -3,7 +3,6 @@
 package webview2host
 
 import (
-	"sync/atomic"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -11,7 +10,7 @@ import (
 
 // A hand-rolled ICoreWebView2EnvironmentOptions.
 //
-// This is the object go-webview2 could not pass (spike bug 2), and it is
+// This is the object go-webview2 cannot pass (com_windows.go), and it is
 // the only way --remote-debugging-port reaches the pane environment. The
 // loader calls the GETTERS only, so a minimal implementation is enough,
 // but two details are not optional:
@@ -21,14 +20,14 @@ import (
 //   - TargetCompatibleBrowserVersion must be a REAL version string. The
 //     loader validates it with CompareBrowserVersions, and an empty one
 //     makes CreateCoreWebView2EnvironmentWithOptions fail E_INVALIDARG.
-//     (Both measured in the 2026-08-31 spike.)
 //
-// The object outlives every call by construction: it is retained by the
-// host for the process lifetime, so its refcount is bookkeeping only.
+// Its reference count is real (comref_windows.go): the loader holds the
+// object for as long as it reads it.
 
 var (
 	ole32              = windows.NewLazySystemDLL("ole32.dll")
 	procCoTaskMemAlloc = ole32.NewProc("CoTaskMemAlloc")
+	procRtlMoveMemory  = windows.NewLazySystemDLL("kernel32.dll").NewProc("RtlMoveMemory")
 )
 
 // minTargetBrowserVersion is the WebView2 SDK's own floor. The host
@@ -51,7 +50,7 @@ type envOptionsVtbl struct {
 
 type envOptions struct {
 	vtbl *envOptionsVtbl
-	refs int32
+	ref  comRef
 	// args and targetVersion are kept as Go strings so the values stay
 	// alive; every handout is a fresh CoTaskMemAlloc copy.
 	args          string
@@ -79,14 +78,9 @@ func coTaskMemString(s string) uintptr {
 	if ptr == 0 {
 		return 0
 	}
-	// `go vet -unsafeptr` flags the conversion below, and the warning is
-	// expected rather than a defect: the address came from the COM task
-	// allocator, so it names memory outside the Go heap that the
-	// collector neither tracks nor moves. It is exactly the case the
-	// unsafe.Pointer rules permit and the checker cannot see. Note the
-	// checker is not part of `go test`'s default vet set, so this does
-	// not affect the gates.
-	copy(unsafe.Slice((*uint16)(unsafe.Pointer(ptr)), len(encoded)), encoded)
+	// Windows copies into the allocation: its address names COM task
+	// memory, which is never a Go pointer. RtlMoveMemory returns nothing.
+	_, _, _ = procRtlMoveMemory.Call(ptr, uintptr(unsafe.Pointer(&encoded[0])), size)
 	return ptr
 }
 
@@ -94,19 +88,15 @@ var envOptionsVtblInstance = envOptionsVtbl{
 	iUnknownVtbl: iUnknownVtbl{
 		QueryInterface: newComProc(func(this *envOptions, riid *windows.GUID, ppv *uintptr) uintptr {
 			if *riid == iidEnvironmentOptions || *riid == iidIUnknown {
-				atomic.AddInt32(&this.refs, 1)
+				this.ref.addRef()
 				*ppv = uintptr(unsafe.Pointer(this))
 				return 0
 			}
 			*ppv = 0
 			return 0x80004002 // E_NOINTERFACE
 		}),
-		AddRef: newComProc(func(this *envOptions) uintptr {
-			return uintptr(atomic.AddInt32(&this.refs, 1))
-		}),
-		Release: newComProc(func(this *envOptions) uintptr {
-			return uintptr(atomic.AddInt32(&this.refs, -1))
-		}),
+		AddRef:  comAddRef,
+		Release: comRelease,
 	},
 	GetAdditionalBrowserArguments: newComProc(func(this *envOptions, out *uintptr) uintptr {
 		*out = coTaskMemString(this.args)
@@ -130,19 +120,17 @@ var envOptionsVtblInstance = envOptionsVtbl{
 	PutAllowSingleSignOnUsingOSPrimary: newComProc(func(_ *envOptions, _ int32) uintptr { return 0 }),
 }
 
-// newEnvOptions returns a COM pointer usable as the environmentOptions
-// argument. The Go object is retained by the caller for the environment's
-// lifetime; the returned uintptr is not a Go pointer the collector
-// tracks.
-func newEnvOptions(args, targetVersion string) (*envOptions, uintptr) {
+// newEnvOptions returns the options object with the creator's reference;
+// the creator releases it after passing the object to the loader.
+func newEnvOptions(args, targetVersion string) *envOptions {
 	if targetVersion == "" {
 		targetVersion = minTargetBrowserVersion
 	}
 	options := &envOptions{
 		vtbl:          &envOptionsVtblInstance,
-		refs:          1,
 		args:          args,
 		targetVersion: targetVersion,
 	}
-	return options, uintptr(unsafe.Pointer(options))
+	options.ref.own()
+	return options
 }
