@@ -964,6 +964,12 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     get loadingNewer() {
       return timelineWindow.loadingNewer;
     },
+    get olderStalled() {
+      return timelineWindow.olderStalled;
+    },
+    get newerStalled() {
+      return timelineWindow.newerStalled;
+    },
     debugMemoryStats() {
       const streamingStats = streamingReveal.debugStats();
       return {

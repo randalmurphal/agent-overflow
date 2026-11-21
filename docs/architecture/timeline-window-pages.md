@@ -377,9 +377,10 @@ short (collapsed runs, chips). After a window change settles, the pane
 loads the side that has more history whenever the loaded content is
 shorter than the viewport plus both auto-load zones
 (`timelinePaging.ts`), independent of scroll position, until it fills or
-the retention target is reached. A side whose last page failed or added
-nothing waits until its edge moves, the same progress guard auto-load
-uses ([frontend scroll](frontend-scroll.md)). This replaces the row-count asks:
+the retention target is reached. A side whose last page failed or left
+its edge where it was waits until its edge moves: the fill reads the
+window's stalled flag for that edge, the same one auto-load reads
+([frontend scroll](frontend-scroll.md)). This replaces the row-count asks:
 `ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS` is a retention target only and is no
 longer a fetch size.
 

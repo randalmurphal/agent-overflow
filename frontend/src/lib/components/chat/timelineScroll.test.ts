@@ -38,6 +38,7 @@ function gateState(overrides: Partial<AutoLoadGateState> = {}): AutoLoadGateStat
   return {
     hasMore: true,
     loading: false,
+    stalled: false,
     floorCursor: { turnIndex: 10, itemIndex: 0 },
     restoredThreadId: 'thread-1',
     threadId: 'thread-1',
@@ -244,89 +245,14 @@ describe('timelineScroll', () => {
   });
 
   // ============================================================
-  // Auto-load gate — progress guard
-  // ============================================================
-
-  const at = (turnIndex: number, itemIndex = 0) => ({ turnIndex, itemIndex });
-
-  it('admits without recording: only a settled load teaches the guard', () => {
-    const gate = createAutoLoadGate();
-    expect(gate.shouldLoad(gateState({ floorCursor: at(10) }))).toBe(true);
-    expect(gate.shouldLoad(gateState({ floorCursor: at(10) }))).toBe(true);
-    expect(gate.noProgressFloor).toBeNull();
-  });
-
-  it.each([
-    ['an error', 'error', at(10)],
-    ['a page that left the floor where it was', 'loaded', at(10)],
-  ] as const)('%s blocks its floor until the floor moves, and reset clears it', (_, status, to) => {
-    const gate = createAutoLoadGate();
-    gate.settle(at(10), status, to);
-    expect(gate.noProgressFloor).toEqual(at(10));
-    expect(gate.stalledAt(at(10))).toBe(true);
-    expect(gate.stalledAt(at(8))).toBe(false);
-    expect(gate.stalledAt(null)).toBe(false);
-    expect(gate.shouldLoad(gateState({ floorCursor: at(10) }))).toBe(false);
-    expect(gate.shouldLoad(gateState({ floorCursor: at(8) }))).toBe(true);
-
-    gate.reset();
-    expect(gate.noProgressFloor).toBeNull();
-    expect(gate.shouldLoad(gateState({ floorCursor: at(10) }))).toBe(true);
-  });
-
-  it('a page that moved the floor clears the record', () => {
-    const gate = createAutoLoadGate();
-    gate.settle(at(10), 'error', null);
-    gate.settle(at(10), 'loaded', at(8));
-    expect(gate.noProgressFloor).toBeNull();
-    expect(gate.shouldLoad(gateState({ floorCursor: at(10) }))).toBe(true);
-  });
-
-  // A refused page and a load that never ran say nothing about the floor,
-  // whatever order loads at the same edge end in.
-  it.each(['stale', 'noop'] as const)('a %s load leaves the record as it was', (status) => {
-    const gate = createAutoLoadGate();
-    gate.settle(at(8), 'error', null);
-    gate.settle(at(10), status, null);
-    expect(gate.noProgressFloor).toEqual(at(8));
-    gate.settle(at(8), 'loaded', at(6));
-    gate.settle(at(6), status, null);
-    expect(gate.noProgressFloor).toBeNull();
-  });
-
-  // Regression: bug-report-20260616T143320Z. A thread whose loaded window is
-  // a single 400-item turn (turnIndex 57). Paging older advanced the item
-  // cursor (itemIndex 400 → 200) but never the turn index, so a
-  // turn-index-keyed progress guard latched auto-load off and the user had
-  // to use the manual button. The full-cursor compare treats item-level
-  // progress within one turn as progress. Fails on a turn-index guard.
-  it('treats item-level progress within a single long turn as progress', () => {
-    const gate = createAutoLoadGate();
-    gate.settle(at(57, 400), 'loaded', at(57, 200));
-    expect(gate.shouldLoad(gateState({ floorCursor: at(57, 200) }))).toBe(true);
-
-    gate.settle(at(57, 200), 'error', null);
-    expect(gate.shouldLoad(gateState({ floorCursor: at(57, 200) }))).toBe(false);
-    expect(gate.shouldLoad(gateState({ floorCursor: at(57, 400) }))).toBe(true);
-  });
-
-  it('records a copy of the floor, not the live reference', () => {
-    // The pane's cursor is live state. Aliasing it would let a later write
-    // to that object change the record and break the same-floor block.
-    const gate = createAutoLoadGate();
-    const liveCursor = { turnIndex: 12, itemIndex: 3 };
-    gate.settle(liveCursor, 'error', null);
-    expect(gate.noProgressFloor).not.toBe(liveCursor);
-    expect(gate.noProgressFloor).toEqual({ turnIndex: 12, itemIndex: 3 });
-  });
-
-  // ============================================================
   // Auto-load gate — cheap gates / geometry deferral
   // ============================================================
 
   it.each([
     ['missing more', { hasMore: false }],
     ['active load', { loading: true }],
+    // The window's progress guard: the edge's last page went nowhere.
+    ['stalled edge', { stalled: true }],
     ['null floor', { floorCursor: null }],
     ['unrestored thread', { restoredThreadId: null }],
     ['wrong restored thread', { restoredThreadId: 'thread-2' }],

@@ -149,6 +149,23 @@ describe('independent agent timeline', () => {
     expect(pane.items.map(item => item.id)).toEqual([root.id]);
   });
 
+  // The agent pane's timeline pages its own window, so automatic paging
+  // there reads that window's stalled edges, not the thread's.
+  it('reports the edges its own window stalled', async () => {
+    const pane = await setup([root]);
+    setBindingMock('SyncThreadWindow', async () => ({ status: 'stale', epoch: 1, rev: 1, generation: 'test', page: page([row('middle', 20)], true, true) }));
+    const view = await open(pane);
+    setBindingMock('ListItemsBeforeCursor', async () => { throw new Error('older page failed'); });
+    setBindingMock('ListItemsAfterCursor', async () => { throw new Error('newer page failed'); });
+    await view.pane.loadOlder(); await view.pane.loadNewer();
+    expect([view.pane.olderStalled, view.pane.newerStalled]).toEqual([true, true]);
+    expect([pane.olderStalled, pane.newerStalled]).toEqual([false, false]);
+
+    setBindingMock('ListItemsBeforeCursor', async () => page([row('early', 10)], true, true));
+    await view.pane.loadOlder();
+    expect([view.pane.olderStalled, view.pane.newerStalled]).toEqual([false, true]);
+  });
+
   it('receives ordered upserts, delta, metadata, patch, moves and removals', async () => {
     const pane = await setup([root]); const view = await open(pane);
     push(row('stream', 1, { kind: 'tool_call', status: 'streaming', summary: 'a' }));

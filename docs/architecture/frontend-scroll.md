@@ -313,16 +313,20 @@ Both auto-load triggers share one direction-agnostic gate
 `disarm()` after every load that was not refused, re-armed only by a real
 wheel/touchmove/keydown (the post-load `shift` compensation is a
 programmatic scroll and must not re-arm) plus a 350ms cooldown fallback.
-`shouldLoad` only admits. Every page load at an edge (auto-load, the
-viewport fill, the Load older and Load newer buttons) reports how it ended
-to that edge's gate through `settle`, with the floor it loaded from: a
-page that moved the floor clears the progress guard's record; an error,
-or a page that left the floor where it was, records that floor, and
-auto-load and the viewport fill both skip it (`stalledAt`) until the
-floor moves; a refused page (its edge
-moved while it was out, **Load Paging** below) records nothing and leaves
-the gate armed, so the next scroll or gesture probes. The guard compares
-the **full** floor cursor
+`shouldLoad` only admits. The window owns the progress guard: each edge
+has a stalled flag (`olderStalled` / `newerStalled` on
+`threadTimelineWindow`). A page load at that edge (auto-load, the viewport
+fill, the Load older and Load newer buttons) sets it when the load commits
+without moving the edge's cursor, or fails while the edge is still at the
+cursor it loaded from. The cursor writer clears it whenever that edge's
+cursor changes (a later page, a cut, a reset), and a replacement (a
+refresh, a jump, a thread switch) or a conversation revert clears both,
+also where a cursor keeps its value. A load starting
+does not clear it, so a click that fails again leaves the edge stalled.
+Auto-load passes the flag to `shouldLoad` as `stalled`, and the viewport
+fill skips a stalled edge. A refused page (its edge moved while it was
+out, **Load Paging** below) sets nothing and leaves the gate armed, so the
+next scroll or gesture probes. The flag compares the **full** cursor
 (`oldestLoadedCursor` / `newestLoadedCursor`), turnIndex **and** itemIndex.
 Keying the guard on turnIndex alone latched auto-load off on long
 single-turn threads, where paging advances the item floor but never the

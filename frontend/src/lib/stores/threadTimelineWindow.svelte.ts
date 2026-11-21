@@ -110,6 +110,9 @@ export interface ThreadTimelineWindow {
   readonly hasDeferredRecentWindowPrune: boolean;
   readonly loadingOlder: boolean;
   readonly loadingNewer: boolean;
+  /** The last page at the edge failed or left it where it was, and the edge has not moved since. */
+  readonly olderStalled: boolean;
+  readonly newerStalled: boolean;
   /** Apply `switchThread`'s single initial paged load (cache-miss path). */
   applyInitialSlice(paged: PagedItems, threadID: string): void;
   /** Refresh cursors + hasMore flags from a paged response against the current window. Also used directly by `refreshFromBackend`. */
@@ -211,6 +214,12 @@ function cloneCursor(
         itemId: cursor.itemId ?? '',
       }
     : null;
+}
+
+// Same position on the full cursor: item-level movement within one turn
+// counts as movement.
+function sameCursor(a: TimelineCursorLike | null, b: TimelineCursorLike | null): boolean {
+  return a === null || b === null ? a === b : compareCursors(a, b) === 0;
 }
 
 function cursorForBinding(cursor: TimelineCursorLike): {
@@ -351,6 +360,18 @@ export function createThreadTimelineWindow(
   /** The claim (`EdgeClaim.older` / `.newer`) of the load holding each edge. */
   let loadingOlder = $state<number | null>(null);
   let loadingNewer = $state<number | null>(null);
+  /**
+   * Per edge: the last page asked at it failed or left it where it was,
+   * and the edge has not moved since. The load sets it from what it
+   * committed, only while the edge has a cursor. Every cursor write that
+   * changes the edge (`setLoadedCursors`, a reset's null cursors among
+   * them), a replacement of the window and a conversation revert clear
+   * it; a load starting does not, so a retry that fails again leaves it
+   * set. Automatic paging (auto-load, the viewport fill) skips a stalled
+   * edge; the explicit buttons still load it.
+   */
+  let olderStalled = $state(false);
+  let newerStalled = $state(false);
 
   /**
    * One generation per edge of the loaded window. A page load claims the
@@ -416,14 +437,27 @@ export function createThreadTimelineWindow(
     return () => windowVersion === version && loadingOlder === null && loadingNewer === null;
   }
 
+  // The only writer of the edge cursors. An edge whose cursor changes is
+  // no longer the one its last page went nowhere from.
   function setLoadedCursors(
     oldest: TimelineCursorLike | null,
     newest: TimelineCursorLike | null,
   ): void {
-    oldestLoadedCursor = cloneCursor(oldest);
-    newestLoadedCursor = cloneCursor(newest);
+    const nextOldest = cloneCursor(oldest);
+    const nextNewest = cloneCursor(newest);
+    if (!sameCursor(oldestLoadedCursor, nextOldest)) olderStalled = false;
+    if (!sameCursor(newestLoadedCursor, nextNewest)) newerStalled = false;
+    oldestLoadedCursor = nextOldest;
+    newestLoadedCursor = nextNewest;
     oldestLoadedTurnIndex = oldestLoadedCursor?.turnIndex ?? null;
     newestLoadedTurnIndex = newestLoadedCursor?.turnIndex ?? null;
+  }
+
+  // The window was replaced or the conversation rewritten: no edge is the
+  // one a page went nowhere from, even where a cursor kept its value.
+  function clearStalledEdges(): void {
+    olderStalled = false;
+    newerStalled = false;
   }
 
   /**
@@ -435,6 +469,7 @@ export function createThreadTimelineWindow(
    */
   function applyWindowMetadataFromPaged(paged: PagedItems): void {
     windowVersion++;
+    clearStalledEdges();
     const nextItems = options.getItems();
     setLoadedCursors(
       pagedOldestCursor(paged, nextItems),
@@ -734,6 +769,7 @@ export function createThreadTimelineWindow(
     loadingOlder = null;
     loadingNewer = null;
     navigationClaim = null;
+    clearStalledEdges();
   }
 
   /**
@@ -746,10 +782,7 @@ export function createThreadTimelineWindow(
    */
   function resetForFreshThread(): void {
     windowVersion++;
-    oldestLoadedCursor = null;
-    newestLoadedCursor = null;
-    oldestLoadedTurnIndex = null;
-    newestLoadedTurnIndex = null;
+    setLoadedCursors(null, null);
     hasMoreHistory = false;
     hasMoreNewer = false;
     recentWindowPrunePending = false;
@@ -765,17 +798,16 @@ export function createThreadTimelineWindow(
    */
   function resetAfterLoadError(): void {
     windowVersion++;
-    oldestLoadedCursor = null;
-    newestLoadedCursor = null;
-    oldestLoadedTurnIndex = null;
-    newestLoadedTurnIndex = null;
+    setLoadedCursors(null, null);
     hasMoreHistory = false;
     hasMoreNewer = false;
   }
 
   function applyConversationCut(boundaryWasLoaded: boolean): void {
-    // A rewrite of the conversation: no page in flight attaches to it.
+    // A rewrite of the conversation: no page in flight attaches to it,
+    // and no edge is the one a page went nowhere from.
     moveEdges(true, true);
+    clearStalledEdges();
     releaseEndedNavigation();
     windowVersion++;
     if (boundaryWasLoaded || !hasMoreNewer) {
@@ -818,12 +850,9 @@ export function createThreadTimelineWindow(
   function refreshCursorsAfterUpserts(changedItems: readonly Item[], previousItems: readonly Item[]): void {
     const thread = options.getThread();
     if (!thread) return;
-    const { oldest, newest } = cursorsAfterItemUpserts(
+    let { oldest, newest } = cursorsAfterItemUpserts(
       oldestLoadedCursor, newestLoadedCursor, previousItems, changedItems, thread.id, includes,
     );
-    if (oldest !== oldestLoadedCursor || newest !== newestLoadedCursor) {
-      setLoadedCursors(oldest, newest);
-    }
     // An edge the window holds the end of (no more history, no more newer)
     // follows every row that lands past it: an append, or a held row the
     // backend moved there. A queued message confirmed after later output is
@@ -836,14 +865,11 @@ export function createThreadTimelineWindow(
     for (const item of changedItems) {
       if (!includes(item)) continue;
       const cursor = cursorFromItem(item);
-      if (!hasMoreHistory && (!oldestLoadedCursor || compareCursors(cursor, oldestLoadedCursor) < 0)) {
-        oldestLoadedCursor = cursor;
-        oldestLoadedTurnIndex = cursor.turnIndex;
-      }
-      if (!hasMoreNewer && (!newestLoadedCursor || compareCursors(cursor, newestLoadedCursor) > 0)) {
-        newestLoadedCursor = cursor;
-        newestLoadedTurnIndex = cursor.turnIndex;
-      }
+      if (!hasMoreHistory && (!oldest || compareCursors(cursor, oldest) < 0)) oldest = cursor;
+      if (!hasMoreNewer && (!newest || compareCursors(cursor, newest) > 0)) newest = cursor;
+    }
+    if (oldest !== oldestLoadedCursor || newest !== newestLoadedCursor) {
+      setLoadedCursors(oldest, newest);
     }
     options.activityRuns().syncRunSpans(options.getItems());
   }
@@ -952,8 +978,8 @@ export function createThreadTimelineWindow(
         ? cut.newestCursor
         : cloneCursor(newestLoadedCursor) ?? newestCursorFromItems(next);
       // The backend's answer is the only source for "more older". An empty
-      // page reports false itself (finalizePagedItems), and the auto-load
-      // gate's progress guard keeps an unmoved floor from re-probing.
+      // page reports false itself (finalizePagedItems), and a page that
+      // leaves the floor where it was stalls the edge (`olderStalled`).
       const nextHasMoreHistory = pagedHasMoreOlder(paged);
       // Fold the page's stubs against the merged window, then account for
       // the cut over the same array — both while the rows the cut drops
@@ -967,7 +993,11 @@ export function createThreadTimelineWindow(
           windowVersion++;
           // The cut dropped the newer edge a newer page in flight extends.
           if (cut?.droppedTail) moveEdges(false, true);
+          const floorBefore = oldestLoadedCursor;
           setLoadedCursors(nextFloor, nextNewest);
+          // Decided from this commit, not a later read: a page that left
+          // its edge where it was went nowhere.
+          if (sameCursor(floorBefore, oldestLoadedCursor)) olderStalled = true;
           hasMoreHistory = nextHasMoreHistory;
           if (cut?.droppedTail) hasMoreNewer = true;
           options.activityRuns().syncRunSpans(options.getItems());
@@ -981,6 +1011,9 @@ export function createThreadTimelineWindow(
         !claimHolds(claim)
       )
         return loadOlderResult('stale');
+      // The failed query is the one from `floor`: it stalls the edge only
+      // while the edge is still there.
+      if (sameCursor(floor, oldestLoadedCursor)) olderStalled = true;
       console.error('loadOlder failed:', err);
       addErrorToast('Failed to load older messages', err);
       return loadOlderResult('error');
@@ -1198,7 +1231,10 @@ export function createThreadTimelineWindow(
           windowVersion++;
           // The cut dropped the older edge an older page in flight extends.
           if (cut?.droppedHead) moveEdges(true, false);
+          const ceilingBefore = newestLoadedCursor;
           setLoadedCursors(nextOldest, nextCeiling);
+          // Mirror of loadOlder: decided from this commit.
+          if (sameCursor(ceilingBefore, newestLoadedCursor)) newerStalled = true;
           hasMoreNewer = nextHasMoreNewer;
           if (cut?.droppedHead) hasMoreHistory = true;
           options.activityRuns().syncRunSpans(options.getItems());
@@ -1212,6 +1248,7 @@ export function createThreadTimelineWindow(
         !claimHolds(claim)
       )
         return loadOlderResult('stale');
+      if (sameCursor(ceiling, newestLoadedCursor)) newerStalled = true;
       console.error('loadNewer failed:', err);
       addErrorToast('Failed to load newer messages', err);
       return loadOlderResult('error');
@@ -1295,6 +1332,12 @@ export function createThreadTimelineWindow(
     },
     get loadingNewer() {
       return loadingNewer !== null;
+    },
+    get olderStalled() {
+      return olderStalled;
+    },
+    get newerStalled() {
+      return newerStalled;
     },
     applyInitialSlice,
     applyWindowMetadataFromPaged,

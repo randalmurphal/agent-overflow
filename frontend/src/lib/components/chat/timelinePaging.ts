@@ -16,7 +16,6 @@ import type { UseStickToBottomController } from '../../utils/scroll/index.svelte
 import type { TimelineVirtualizerHandle } from '../../utils/virtual/types';
 import type { TimelineNode } from '../../utils/subagentGrouping';
 import { ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS, type LoadOlderResult } from '../../stores/threadPaneShared';
-import type { TimelineCursorLike } from '../../stores/threadItems';
 import {
   autoLoadZonesDisjoint,
   bottomEdgeGeometry,
@@ -103,24 +102,9 @@ export interface TimelinePaging {
   resetGates(): void;
 }
 
-// One edge of the loaded window: the gate its loads report to and the
-// cursor they load from.
-interface PagingEdge {
-  gate: AutoLoadGate;
-  floor(): TimelineCursorLike | null;
-}
-
 export function createTimelinePaging(options: TimelinePagingOptions): TimelinePaging {
   const autoLoadOlderGate = createAutoLoadGate();
   const autoLoadNewerGate = createAutoLoadGate();
-  const olderEdge: PagingEdge = {
-    gate: autoLoadOlderGate,
-    floor: () => options.getPane().oldestLoadedCursor,
-  };
-  const newerEdge: PagingEdge = {
-    gate: autoLoadNewerGate,
-    floor: () => options.getPane().newestLoadedCursor,
-  };
   // Last scroll offset the older probe saw; a decreasing offset is the
   // reader moving toward the top, the intent that lets the probe fire in
   // a window too short for disjoint zones.
@@ -158,6 +142,7 @@ export function createTimelinePaging(options: TimelinePagingOptions): TimelinePa
       !autoLoadOlderGate.shouldLoad({
         hasMore: pane.hasMoreHistory,
         loading: pane.loadingOlder,
+        stalled: pane.olderStalled,
         floorCursor: pane.oldestLoadedCursor,
         restoredThreadId: options.getRestoredThreadId(),
         // Identity, not a thread id: restore bookkeeping is keyed by the
@@ -193,6 +178,7 @@ export function createTimelinePaging(options: TimelinePagingOptions): TimelinePa
       !autoLoadNewerGate.shouldLoad({
         hasMore: pane.hasMoreNewer,
         loading: pane.loadingNewer,
+        stalled: pane.newerStalled,
         floorCursor: pane.newestLoadedCursor,
         restoredThreadId: options.getRestoredThreadId(),
         // Identity, not a thread id: restore bookkeeping is keyed by the
@@ -230,14 +216,14 @@ export function createTimelinePaging(options: TimelinePagingOptions): TimelinePa
     if (viewport.scrollHeight >= viewport.clientHeight + 2 * AUTO_LOAD_OFFSET_PX) return false;
     // Older first: the reader entered at the tail, so history is what a
     // short window is missing. Newer only exists after a jump away from it.
-    // An edge whose last page failed or added nothing waits for the edge to
-    // move, as auto-load does: this pass reruns on every scheduler lap, and
-    // would otherwise send that page again on each one.
-    if (pane.hasMoreHistory && !pane.loadingOlder && !olderEdge.gate.stalledAt(olderEdge.floor())) {
+    // A stalled edge (its last page failed or went nowhere) waits for the
+    // edge to move, as auto-load does: this pass reruns on every scheduler
+    // lap, and would otherwise send that page again on each one.
+    if (pane.hasMoreHistory && !pane.loadingOlder && !pane.olderStalled) {
       void handleLoadOlder();
       return true;
     }
-    if (pane.hasMoreNewer && !pane.loadingNewer && !newerEdge.gate.stalledAt(newerEdge.floor())) {
+    if (pane.hasMoreNewer && !pane.loadingNewer && !pane.newerStalled) {
       void handleLoadNewerAuto();
       return true;
     }
@@ -253,35 +239,31 @@ export function createTimelinePaging(options: TimelinePagingOptions): TimelinePa
   // Shared shape behind all three load handlers below, and so behind every
   // page load at an edge (auto-load, the viewport fill, both buttons):
   // pause auto-scroll for the duration of the load, run the caller's load
-  // body, report how it ended to the edge's gate (`settle`: the floor it
-  // loaded from and the floor after it), then disarm the gate. A thread
-  // switch mid-load skips both (that switch already reset the new pane's
-  // gate, so writing here would stomp on the wrong pane's state), and a
-  // refused page skips the disarm (it applied nothing, so no write follows
-  // it; the gate stays armed and the next scroll or gesture probes).
-  // Disarming matters because each load's own follow-up write — the older
-  // prepend's head-splice compensation, the newer-manual scrollToIndex, or
-  // the newer-auto head-prune's compensation — is a PROGRAMMATIC scrollTop
+  // body, then disarm the gate. A thread switch mid-load skips the disarm
+  // (that switch already reset the new pane's gate, so disarming here
+  // would stomp on the wrong pane's state), and so does a refused page (it
+  // applied nothing, so no write follows it; the gate stays armed and the
+  // next scroll or gesture probes). Whether the page went anywhere is the
+  // window's to record (`olderStalled` / `newerStalled`). Disarming
+  // matters because each load's own follow-up write — the older prepend's
+  // head-splice compensation, the newer-manual scrollToIndex, or the
+  // newer-auto head-prune's compensation — is a PROGRAMMATIC scrollTop
   // write, not a user gesture, and must not re-fire the gate into a load
   // cascade; a real wheel/touch/keydown re-arms it, and the gate's own
   // 350ms cooldown is the fallback for devices where gesture detection
   // misses an event.
   async function withGuardedDisarm(
-    edge: PagingEdge,
+    gate: AutoLoadGate,
     body: () => Promise<LoadOlderResult['status']>,
   ): Promise<void> {
     const release = options.stick.pauseAutoScroll();
     const switchGenAtStart = options.getPane().switchGeneration;
-    const from = edge.floor();
     let status: LoadOlderResult['status'] | null = null;
     try {
       status = await body();
     } finally {
       release();
-      if (options.getPane().switchGeneration === switchGenAtStart) {
-        if (from !== null && status !== null) edge.gate.settle(from, status, edge.floor());
-        if (status !== 'stale') edge.gate.disarm();
-      }
+      if (options.getPane().switchGeneration === switchGenAtStart && status !== 'stale') gate.disarm();
     }
   }
 
@@ -302,7 +284,7 @@ export function createTimelinePaging(options: TimelinePagingOptions): TimelinePa
   async function handleLoadOlder(): Promise<void> {
     if (!options.getListRef()) return;
     const pane = options.getPane();
-    await withGuardedDisarm(olderEdge, async () => {
+    await withGuardedDisarm(autoLoadOlderGate, async () => {
       const result = await pane.loadOlder();
       await tick();
       options.saveScrollSnapshot();
@@ -314,7 +296,7 @@ export function createTimelinePaging(options: TimelinePagingOptions): TimelinePa
   // loaded page (align:'end') so the click visibly reveals newer content.
   async function handleLoadNewer(): Promise<void> {
     if (!options.getListRef()) return;
-    await withGuardedDisarm(newerEdge, async () => {
+    await withGuardedDisarm(autoLoadNewerGate, async () => {
       const myToken = options.beginNavigation();
       const pane = options.getPane();
       const result = await pane.loadNewer();
@@ -343,7 +325,7 @@ export function createTimelinePaging(options: TimelinePagingOptions): TimelinePa
   async function handleLoadNewerAuto(): Promise<void> {
     if (!options.getListRef()) return;
     const pane = options.getPane();
-    await withGuardedDisarm(newerEdge, async () => {
+    await withGuardedDisarm(autoLoadNewerGate, async () => {
       const result = await pane.loadNewer();
       await tick();
       options.saveScrollSnapshot();
