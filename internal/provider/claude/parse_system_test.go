@@ -440,10 +440,9 @@ func TestParseResultUsageNeverEmitsContextWindow(t *testing.T) {
 
 			var complete provider.ProviderEvent
 			for _, evt := range events {
-				switch evt.Kind {
-				case provider.EventTokenUsage:
+				if evt.Kind == provider.EventTokenUsage {
 					t.Fatalf("result.usage emitted context update: %+v", evt)
-				case provider.EventTurnComplete:
+				} else if evt.Kind == provider.EventTurnComplete {
 					complete = evt
 				}
 			}

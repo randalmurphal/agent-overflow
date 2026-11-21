@@ -722,6 +722,8 @@ func defaultDeviceLabel(class DeviceClass) string {
 		return "Command line"
 	case DeviceBackendPeer:
 		return "Peer backend"
+	case DeviceDesktop:
+		fallthrough
 	default:
 		return "Device"
 	}

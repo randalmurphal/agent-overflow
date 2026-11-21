@@ -65,6 +65,7 @@ func (p githubReadPart) appliesTo(want PRReadParts) bool {
 		return want.Detail
 	case githubPartTeams:
 		return want.Detail || want.Events
+	case githubPartCheckRuns, githubPartWorkflowRuns:
 	}
 	return want.Detail || want.CI
 }

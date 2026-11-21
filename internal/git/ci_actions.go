@@ -274,19 +274,20 @@ func (c *Core) RunCIAction(ctx context.Context, repo RepoReference, kind CIActio
 		if err := ValidateCIJobID(jobID); err != nil {
 			return err
 		}
-		switch kind {
-		case CIActionRetryJob:
-			return forge.RetryCIJob(ctx, repo, jobID)
-		case CIActionCancelJob:
-			return forge.CancelCIJob(ctx, repo, jobID)
-		default:
-			return forge.PlayCIJob(ctx, repo, jobID)
-		}
 	}
-	if kind == CIActionRetryFailed {
+	switch kind {
+	case CIActionRetryJob:
+		return forge.RetryCIJob(ctx, repo, jobID)
+	case CIActionCancelJob:
+		return forge.CancelCIJob(ctx, repo, jobID)
+	case CIActionPlayJob:
+		return forge.PlayCIJob(ctx, repo, jobID)
+	case CIActionRetryFailed:
 		return forge.RetryCIPipeline(ctx, repo, pipeline)
+	case CIActionCancelPipeline:
+		return forge.CancelCIPipeline(ctx, repo, pipeline)
 	}
-	return forge.CancelCIPipeline(ctx, repo, pipeline)
+	panic(fmt.Sprintf("git: CI action %q passed Validate", kind))
 }
 
 // ListCIArtifacts lists what a download of req saves (see

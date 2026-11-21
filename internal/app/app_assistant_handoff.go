@@ -50,7 +50,7 @@ func (a *App) StartNextAssistantThread(ctx context.Context, threadID string) (st
 		return store.Thread{}, errorsx.Public(transport.ErrCodeAssistantHandOffRunning, "This assistant is already moving to a new thread.", nil)
 	}
 	successor, err := a.nextAssistantThread(ctx, threadID, false)
-	a.endAssistantHandOff(agent.ID, threadID, successor.ID)
+	a.endAssistantHandOff(agent.ID, threadID)
 	return successor, err
 }
 
@@ -127,10 +127,10 @@ func (a *App) recoverAssistantSessionLoss(threadID string) {
 		default:
 			log.Printf("assistants: %s lost its provider session; it continues in %s", threadID, successor.ID)
 		}
-		a.endAssistantHandOff(agent.ID, threadID, successor.ID)
+		a.endAssistantHandOff(agent.ID, threadID)
 	})
 	if !started {
-		a.returnSessionLossCarries(threadID, a.assistantHandOffs.finish(agent.ID))
+		a.endAssistantHandOff(agent.ID, threadID)
 	}
 }
 

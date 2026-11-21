@@ -11,8 +11,8 @@
   import { getFocusedPaneOrNull, getPane, iterPanes, openThreadFromNavigation, resetPaneRegistry } from './lib/stores/panes.svelte';
   import { setupEventListeners } from './lib/stores/events';
   import { OPEN_GIT_DIALOG_EVENT, type OpenGitDialogDetail } from './lib/stores/eventNames';
-  import { getThreads, loadThreads } from './lib/stores/threads.svelte';
-  import { refreshThreadGroups } from './lib/stores/threadGroups.svelte';
+  import { getThreads } from './lib/stores/threads.svelte';
+  import { loadThreadCatalogs } from './lib/stores/threadCatalogs';
   import { refreshAgentWakes } from './lib/stores/threadWakes.svelte';
   import { markNotificationHydrated } from './lib/stores/eventsNotification';
   import {
@@ -479,12 +479,11 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
       restoringLayout = true;
       heldForStartingBackend = false;
       try {
-        const threads = await loadThreads();
+        // The threads and the groups that gather them, read as one round.
+        // A failed group load is not a failed boot: the catalog state shows
+        // and retries it.
+        const threads = await loadThreadCatalogs();
         if (disposed) return;
-        // Groups load beside the threads they contain, but never gate the
-        // layout restore below: a failed group load must not be read as a
-        // failed boot (refreshThreadGroups owns its own error surface).
-        void refreshThreadGroups();
         void refreshAgentWakes();
         await appStorageReady;
         if (disposed) return;

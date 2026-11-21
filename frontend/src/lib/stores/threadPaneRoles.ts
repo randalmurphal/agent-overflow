@@ -190,6 +190,9 @@ export interface TimelineWindow {
   readonly hasMoreNewer: boolean;
   readonly loadingOlder: boolean;
   readonly loadingNewer: boolean;
+  /** The last page at the edge failed or left it where it was, and the edge has not moved since; automatic paging skips it. */
+  readonly olderStalled: boolean;
+  readonly newerStalled: boolean;
   readonly oldestLoadedCursor: TimelineCursorLike | null;
   readonly newestLoadedCursor: TimelineCursorLike | null;
   readonly oldestLoadedTurnIndex: number | null;

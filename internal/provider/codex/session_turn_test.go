@@ -203,10 +203,9 @@ func countTurnStartsUntilComplete(t *testing.T, eventCh <-chan provider.Provider
 			if evt.TurnID != turnID {
 				continue
 			}
-			switch evt.Kind {
-			case provider.EventTurnStart:
+			if evt.Kind == provider.EventTurnStart {
 				count++
-			case provider.EventTurnComplete:
+			} else if evt.Kind == provider.EventTurnComplete {
 				return count
 			}
 		case <-deadline:

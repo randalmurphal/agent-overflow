@@ -238,10 +238,9 @@ func (a *App) observeFrameBeforeTriage(threadID, sessionToken, providerType stri
 	// lifecycle reverts an apply whose output will never arrive. See
 	// app_claude_live_config.go.
 	if providerType == string(provider.Claude) {
-		switch evt.Kind {
-		case provider.EventCommandResult:
+		if evt.Kind == provider.EventCommandResult {
 			a.observeClaudeCommandResult(threadID, sessionToken, evt)
-		case provider.EventCommandLifecycle:
+		} else if evt.Kind == provider.EventCommandLifecycle {
 			a.observeClaudeCommandLifecycle(evt)
 		}
 	}

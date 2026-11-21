@@ -362,6 +362,7 @@ func (a *App) backendSetChanged(change attachedbackends.SetChange) {
 		}
 	case attachedbackends.SetMembership:
 		a.forgetUnpairedPeerAgentRows()
+	case attachedbackends.SetRenamed, attachedbackends.SetDeviceNameSync:
 	}
 	a.emit(eventchan.BackendSetChanged, change)
 	a.signalRemotePeers()

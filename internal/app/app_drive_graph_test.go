@@ -480,16 +480,14 @@ func (w *graphWalker) callee(fun ast.Expr) (string, *types.Func) {
 		return w.object(w.info.Uses[fun])
 	case *ast.SelectorExpr:
 		if sel, ok := w.info.Selections[fun]; ok {
-			switch sel.Kind() {
-			case types.FieldVal:
+			if sel.Kind() == types.FieldVal {
 				return fieldKey(sel.Recv(), fun.Sel.Name), nil
-			default:
-				fn, _ := sel.Obj().(*types.Func)
-				if fn == nil {
-					return "", nil
-				}
-				return funcNodeKey(fn), fn
 			}
+			fn, _ := sel.Obj().(*types.Func)
+			if fn == nil {
+				return "", nil
+			}
+			return funcNodeKey(fn), fn
 		}
 		return w.object(w.info.Uses[fun.Sel])
 	case *ast.CallExpr:

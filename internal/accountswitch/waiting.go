@@ -178,11 +178,12 @@ func (c *Coordinator) deliver(ctx context.Context, prov string) {
 			if !c.beginDelivery(w.threadID, w.gen) {
 				continue
 			}
-			c.deliveries.Add(1)
+			run := c.beginDeliveryRun(w.threadID)
 			go func() {
-				defer c.deliveries.Done()
+				defer c.endDeliveryRun(run)
 				c.continueThread(ctx, prov, w.threadID, w.gen, w.guessed)
 			}()
+		case continueLater:
 		}
 	}
 	if k.needReading {
@@ -222,6 +223,31 @@ func (c *Coordinator) continueThread(ctx context.Context, prov, threadID string,
 		log.Printf("accountswitch: continue thread %s: %v", threadID, err)
 		c.deps.ThreadNotice(threadID, continueFailedNotice(err))
 	}
+}
+
+// deliveryRun is one continue goroutine, for Settle and Stop.
+type deliveryRun struct {
+	// passFirst is the seq of the first trigger in the batch whose pass
+	// started it.
+	passFirst uint64
+	threadID  string
+}
+
+// beginDeliveryRun records a continue goroutine of threadID against the
+// pass starting it.
+func (c *Coordinator) beginDeliveryRun(threadID string) *deliveryRun {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	run := &deliveryRun{passFirst: c.passFirst, threadID: threadID}
+	c.deliveries[run] = struct{}{}
+	return run
+}
+
+func (c *Coordinator) endDeliveryRun(run *deliveryRun) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.deliveries, run)
+	c.progressLocked()
 }
 
 func (c *Coordinator) beginDelivery(threadID string, gen uint64) bool {

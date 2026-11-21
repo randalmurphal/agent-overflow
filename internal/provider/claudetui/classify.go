@@ -52,6 +52,8 @@ func (c requestClass) String() string {
 		return "suggestion"
 	case classAgent:
 		return "agent"
+	case classUnparseable:
+		fallthrough
 	default:
 		return "unparseable"
 	}

@@ -150,21 +150,17 @@ func (r *Router) hasOpenAPIRetryRow(threadID string) bool {
 // Lives next to maybeMarkAPIRetryCompleted so a future change to
 // "what counts as forward progress" lands in one file.
 func isAPIRetryForwardProgress(kind provider.EventKind) bool {
-	switch kind {
-	case provider.EventTextDelta,
-		provider.EventThinking,
-		provider.EventContentBlockStart,
-		provider.EventToolStart,
-		provider.EventToolComplete,
-		provider.EventTurnComplete,
-		provider.EventBackgroundTaskTerminal,
-		provider.EventBackgroundTaskNotification,
-		provider.EventTodoUpdate,
-		provider.EventProposedPlan,
-		provider.EventTokenUsage:
-		return true
-	}
-	return false
+	return kind == provider.EventTextDelta ||
+		kind == provider.EventThinking ||
+		kind == provider.EventContentBlockStart ||
+		kind == provider.EventToolStart ||
+		kind == provider.EventToolComplete ||
+		kind == provider.EventTurnComplete ||
+		kind == provider.EventBackgroundTaskTerminal ||
+		kind == provider.EventBackgroundTaskNotification ||
+		kind == provider.EventTodoUpdate ||
+		kind == provider.EventProposedPlan ||
+		kind == provider.EventTokenUsage
 }
 
 // maybeMarkAPIRetryCompleted flips an open `api_retry` row to

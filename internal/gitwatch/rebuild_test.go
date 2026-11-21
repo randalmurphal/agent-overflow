@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -664,67 +665,123 @@ func TestUnignoreRestoresWatch(t *testing.T) {
 	}
 }
 
+// gatedStartupRoots holds a Manager watcher's startup root recompute,
+// the second WatchRootsFn call (Subscribe's install makes the first),
+// until release closes, and closes done when that recompute returns. A
+// test pins a filesystem change before or after the recompute with it.
+type gatedStartupRoots struct {
+	calls   atomic.Int32
+	release chan struct{}
+	once    sync.Once
+	done    chan struct{}
+}
+
+func newGatedStartupRoots() *gatedStartupRoots {
+	return &gatedStartupRoots{release: make(chan struct{}), done: make(chan struct{})}
+}
+
+func (g *gatedStartupRoots) fn(inner WatchRootsFn) WatchRootsFn {
+	return func(cwd string) ([]gitops.WatchRoot, error) {
+		if g.calls.Add(1) != 2 {
+			return inner(cwd)
+		}
+		<-g.release
+		defer close(g.done)
+		return inner(cwd)
+	}
+}
+
+// open lets the held recompute run. Idempotent, so a test can also
+// defer it to keep teardown from waiting on a recompute it never let go.
+func (g *gatedStartupRoots) open() { g.once.Do(func() { close(g.release) }) }
+
 // TestRecreatedSubtreeRegainsWatch: deleting and recreating a watched
-// subtree root (rm -rf src && restore — routine for build tools and
-// agents) kills its notify watchpoint permanently. The recreate event
-// arrives via the parent ancestor root and must force a reinstall so
-// writes inside the recreated tree refresh status again.
+// subtree root (rm -rf src && restore, routine for build tools and
+// agents) kills its notify watchpoint permanently, and writes inside the
+// recreated tree must refresh status again. A deletion raises no rebuild,
+// so the root set the recreate meets depends on whether the watcher's
+// startup recompute ran before the deletion. Both orders are pinned:
+//   - deleted before it: the recompute drops src, and the recreate is a
+//     new directory under the repo's ancestor root;
+//   - deleted after it: src is still a root, and its recreate forces a
+//     reinstall of identical roots.
 func TestRecreatedSubtreeRegainsWatch(t *testing.T) {
 	isolateGlobalGitConfig(t)
-	repo := testutil.InitGitRepo(t)
-	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte("node_modules/\n"), 0o644); err != nil {
-		t.Fatalf("write .gitignore: %v", err)
-	}
-	// node_modules forces the pruned layout: repo root becomes a
-	// non-recursive ancestor root and src its own recursive root.
-	for _, dir := range []string{"node_modules/pkg", "src"} {
-		if err := os.MkdirAll(filepath.Join(repo, dir), 0o755); err != nil {
-			t.Fatalf("mkdir %s: %v", dir, err)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(repo, "src", "f.txt"), []byte("x"), 0o644); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+	for _, tc := range []struct {
+		name                  string
+		deleteBeforeRecompute bool
+		// installs counts every install once the recreate's has landed.
+		installs int
+	}{
+		{name: "deleted before the startup recompute", deleteBeforeRecompute: true, installs: 3},
+		{name: "deleted after the startup recompute", deleteBeforeRecompute: false, installs: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := testutil.InitGitRepo(t)
+			if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte("node_modules/\n"), 0o644); err != nil {
+				t.Fatalf("write .gitignore: %v", err)
+			}
+			// node_modules forces the pruned layout: repo root becomes a
+			// non-recursive ancestor root and src its own recursive root.
+			for _, dir := range []string{"node_modules/pkg", "src"} {
+				if err := os.MkdirAll(filepath.Join(repo, dir), 0o755); err != nil {
+					t.Fatalf("mkdir %s: %v", dir, err)
+				}
+			}
+			if err := os.WriteFile(filepath.Join(repo, "src", "f.txt"), []byte("x"), 0o644); err != nil {
+				t.Fatalf("write: %v", err)
+			}
 
-	stub := newStubStatus(gitops.GitStatus{Branch: "main"})
-	installs := &countingInstall{}
-	m := NewManager(ManagerConfig{
-		StatusFn:     stub.fn(),
-		WatchRootsFn: gitops.NewCore().WatchRoots,
-	})
-	m.installFn = installs.fn()
-	t.Cleanup(m.Close)
-	sub, err := m.Subscribe(t.Context(), repo)
-	if err != nil {
-		t.Fatalf("subscribe: %v", err)
-	}
-	t.Cleanup(sub.Close)
+			stub := newStubStatus(gitops.GitStatus{Branch: "main"})
+			installs := &countingInstall{}
+			roots := newGatedStartupRoots()
+			m := NewManager(ManagerConfig{
+				StatusFn:     stub.fn(),
+				WatchRootsFn: roots.fn(gitops.NewCore().WatchRoots),
+			})
+			m.installFn = installs.fn()
+			t.Cleanup(m.Close)
+			sub, err := m.Subscribe(t.Context(), repo)
+			if err != nil {
+				t.Fatalf("subscribe: %v", err)
+			}
+			t.Cleanup(sub.Close)
+			t.Cleanup(roots.open) // runs before sub.Close stops the run loop
 
-	srcDir := filepath.Join(repo, "src")
-	if err := os.RemoveAll(srcDir); err != nil {
-		t.Fatalf("rm -rf src: %v", err)
-	}
-	// The deletion edge recomputes (watchers start rebuild-flagged) and
-	// reinstalls without the vanished src root. Waiting for it keeps the
-	// recreate below unambiguous: its Create event then triggers the
-	// new-dir-under-ancestor rebuild that must restore the src watch.
-	// (The recreate-while-still-a-root force path is unit-covered by
-	// TestRootRecreateForcesReinstall.)
-	waitFor(t, 5*time.Second, func() bool { return installs.count() >= 2 },
-		"reinstall after src deletion")
-	if err := os.Mkdir(srcDir, 0o755); err != nil {
-		t.Fatalf("recreate src: %v", err)
-	}
-	waitFor(t, 5*time.Second, func() bool { return installs.count() >= 3 },
-		"reinstall after src recreate")
+			srcDir := filepath.Join(repo, "src")
+			if !tc.deleteBeforeRecompute {
+				roots.open()
+				select {
+				case <-roots.done:
+				case <-time.After(5 * time.Second):
+					t.Fatal("timed out after 5s: startup recompute")
+				}
+			}
+			if err := os.RemoveAll(srcDir); err != nil {
+				t.Fatalf("rm -rf src: %v", err)
+			}
+			if tc.deleteBeforeRecompute {
+				roots.open()
+				// The recompute finds src gone and reinstalls without it, so
+				// the recreate below meets the ancestor root alone.
+				waitFor(t, 5*time.Second, func() bool { return installs.count() >= 2 },
+					"reinstall without the deleted src root")
+			}
+			if err := os.Mkdir(srcDir, 0o755); err != nil {
+				t.Fatalf("recreate src: %v", err)
+			}
+			waitFor(t, 5*time.Second, func() bool { return installs.count() >= tc.installs },
+				"reinstall after src recreate")
 
-	stub.setStatus(gitops.GitStatus{Branch: "main", FileCount: 1})
-	if err := os.WriteFile(filepath.Join(srcDir, "g.txt"), []byte("y"), 0o644); err != nil {
-		t.Fatalf("write recreated: %v", err)
-	}
-	status := recvWithin(t, sub, 5*time.Second)
-	if status.FileCount != 1 {
-		t.Fatalf("write in recreated subtree delivered %+v, want FileCount=1", status)
+			stub.setStatus(gitops.GitStatus{Branch: "main", FileCount: 1})
+			if err := os.WriteFile(filepath.Join(srcDir, "g.txt"), []byte("y"), 0o644); err != nil {
+				t.Fatalf("write recreated: %v", err)
+			}
+			status := recvWithin(t, sub, 5*time.Second)
+			if status.FileCount != 1 {
+				t.Fatalf("write in recreated subtree delivered %+v, want FileCount=1", status)
+			}
+		})
 	}
 }
 

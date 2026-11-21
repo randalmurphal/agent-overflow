@@ -83,6 +83,7 @@ func TestUserMessagePlacement(t *testing.T) {
 								want.persistence = messagePersistQuiet
 							}
 						}
+					case messageDirect, messageLegacyComposer:
 					}
 					if got != want {
 						t.Errorf("intent %d: got %+v, want %+v", intent, got, want)

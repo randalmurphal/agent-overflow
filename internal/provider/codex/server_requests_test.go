@@ -30,8 +30,7 @@ func TestCodexApprovalWaitsForUserResponseWithoutTimeout(t *testing.T) {
 	for {
 		select {
 		case evt := <-eventCh:
-			switch evt.Kind {
-			case provider.EventError, provider.EventApprovalResolved:
+			if evt.Kind == provider.EventError || evt.Kind == provider.EventApprovalResolved {
 				t.Fatalf("pending approval resolved without user action: %+v", evt)
 			}
 		case <-deadline:
@@ -62,8 +61,7 @@ func TestCodexUserInputWaitsForUserResponseWithoutTimeout(t *testing.T) {
 	for {
 		select {
 		case evt := <-eventCh:
-			switch evt.Kind {
-			case provider.EventError, provider.EventUserInputResolved, provider.EventApprovalResolved:
+			if evt.Kind == provider.EventError || evt.Kind == provider.EventUserInputResolved || evt.Kind == provider.EventApprovalResolved {
 				t.Fatalf("pending user input resolved without user action: %+v", evt)
 			}
 		case <-deadline:
@@ -313,8 +311,7 @@ func TestCodexPermissionApprovalWaitsForUserResponseWithoutTimeout(t *testing.T)
 	for {
 		select {
 		case evt := <-eventCh:
-			switch evt.Kind {
-			case provider.EventError, provider.EventApprovalResolved:
+			if evt.Kind == provider.EventError || evt.Kind == provider.EventApprovalResolved {
 				t.Fatalf("pending permission approval resolved without user action: %+v", evt)
 			}
 		case <-deadline:

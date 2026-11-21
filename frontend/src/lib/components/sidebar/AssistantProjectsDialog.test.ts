@@ -4,7 +4,8 @@ import { tick } from 'svelte';
 import AssistantProjectsDialog from './AssistantProjectsDialog.svelte';
 import { closeAssistantProjectsDialog, getAssistantProjectsAgentId, openAssistantProjectsDialog } from '../../stores/newAssistant.svelte';
 import { refreshProjects, resetProjectsForTest } from '../../stores/projects.svelte';
-import { refreshThreads, replaceAllThreads } from '../../stores/threads.svelte';
+import { replaceAllThreads } from '../../stores/threads.svelte';
+import { loadThreadCatalogs } from '../../stores/threadCatalogs';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { makeThread } from '../../../test/helpers/chat';
 import { __resetEntityIndexForTest, noteThread, threadBackend } from '../../transport/entityIndex';
@@ -37,7 +38,7 @@ describe('<AssistantProjectsDialog>', () => {
     ]);
     await refreshProjects();
     setBindingMock('ListThreads', async () => [agent]);
-    await refreshThreads();
+    await loadThreadCatalogs();
   });
   afterEach(() => closeAssistantProjectsDialog());
 

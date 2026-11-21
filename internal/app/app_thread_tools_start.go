@@ -129,13 +129,14 @@ func (t threadToolsApp) Spawn(ctx context.Context, caller threadtools.Caller, ca
 	if err != nil {
 		return threadtools.RequestAck{}, err
 	}
-	token := newThreadRequestToken()
-	_, err = t.acceptSpawn(ctx, origin, token, call)
+	hold, release := t.holdNewRequest(ctx, caller)
+	defer release()
+	_, err = t.acceptSpawn(ctx, origin, hold.token, call)
 	done()
 	if err != nil {
 		return threadtools.RequestAck{}, err
 	}
-	return t.ackRequest(ctx, caller, token, call.WaitSeconds)
+	return t.ackRequest(ctx, caller, hold, call.WaitSeconds)
 }
 
 // acceptSpawn is the destination half of a spawn: create the thread,
@@ -239,7 +240,9 @@ func (t threadToolsApp) Send(ctx context.Context, caller threadtools.Caller, cal
 	// The target is a thread here that already exists, so the request and
 	// its acceptance are one write: the source row, already accepted, and
 	// the receipt. A paired computer's send is accepted by acceptSend.
-	token := newThreadRequestToken()
+	hold, release := t.holdNewRequest(ctx, caller)
+	defer release()
+	token := hold.token
 	if _, err := t.app.store.AcceptLocalThreadRequest(store.ThreadRequest{
 		Token:          token,
 		CallerThreadID: caller.ThreadID,
@@ -254,7 +257,7 @@ func (t threadToolsApp) Send(ctx context.Context, caller threadtools.Caller, cal
 		return threadtools.RequestAck{}, t.failRequest(token, err)
 	}
 	done()
-	return t.ackRequest(ctx, caller, token, call.WaitSeconds)
+	return t.ackRequest(ctx, caller, hold, call.WaitSeconds)
 }
 
 // acceptSend is the destination half of a send a paired computer forwarded:
@@ -343,13 +346,14 @@ func (t threadToolsApp) Ask(ctx context.Context, caller threadtools.Caller, call
 	if err != nil {
 		return threadtools.RequestAck{}, err
 	}
-	token := newThreadRequestToken()
-	_, err = t.acceptAsk(ctx, origin, token, call)
+	hold, release := t.holdNewRequest(ctx, caller)
+	defer release()
+	_, err = t.acceptAsk(ctx, origin, hold.token, call)
 	done()
 	if err != nil {
 		return threadtools.RequestAck{}, err
 	}
-	return t.ackRequest(ctx, caller, token, call.WaitSeconds)
+	return t.ackRequest(ctx, caller, hold, call.WaitSeconds)
 }
 
 // acceptAsk is the destination half of an ask: fork the named thread into

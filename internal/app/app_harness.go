@@ -90,10 +90,17 @@ func (h *harnessHost) PendingProviderEvents(threadID string) int {
 	return h.app.providerEvents.pending(threadID)
 }
 
+func (h *harnessHost) RequestWaits(tokens []string) map[string]bool {
+	return h.app.requestsHeld(tokens)
+}
+
 func (h *harnessHost) ClaudeUsageFake() *claudefake.Usage { return h.app.claudeUsageFake }
 
-func (h *harnessHost) RequestClaudeUsageReading() {
-	h.app.providerLifecycleService().RequestReading(string(provider.Claude))
+func (h *harnessHost) ReadClaudeUsage(ctx context.Context) error {
+	if err := h.app.probeClaudeRateLimits(ctx); err != nil {
+		return fmt.Errorf("read the selected Claude account's usage: %w", err)
+	}
+	return h.app.accountSwitch().Settle(ctx)
 }
 
 func (h *harnessHost) ProviderUpdateFeed() *updatefake.Feed { return h.app.providerUpdateFeed }

@@ -20,6 +20,7 @@ func (c *Core) CheckoutRef(cwd string, ref Ref) error {
 		return fmt.Errorf("git checkout target is required")
 	case RefTag, RefCommit:
 		return c.executeCheckout(cwd, "--detach", ref.revision())
+	case RefBranch:
 	}
 	branch := ref.Name
 	local, remote, err := c.checkoutSource(cwd, branch)

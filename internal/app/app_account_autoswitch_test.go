@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"agent-overflow/internal/accountswitch"
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude/claudefake"
 	"agent-overflow/internal/provideraccountapp"
 	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/store"
@@ -41,7 +43,9 @@ func newAutoSwitchRig(t *testing.T, app *App, providerName string, ids ...string
 	credentials := newTestProviderCredentials(t, t.TempDir())
 	var activeCredential []byte
 	for _, id := range ids {
-		credential := []byte(`{"claudeAiOauth":{"accessToken":"` + id + `"}}`)
+		// The isolated usage endpoint answers a token that spells the
+		// account's email.
+		credential := []byte(`{"claudeAiOauth":{"accessToken":"` + claudefake.AccessToken(id+"@example.com", "org", "1") + `"}}`)
 		if providerName == string(provider.Codex) {
 			credential = []byte(`{"tokens":{"access_token":"` + id + `"}}`)
 		}
@@ -127,16 +131,23 @@ func usageLimit(id string, percent float64, resetsIn time.Duration) provider.Rat
 	}
 }
 
-// holdsFor fails when cond turns true within a short settle window: the
-// worker has no idle signal, so an absence is checked over time.
-func holdsFor(t *testing.T, what string, cond func() bool) {
+// settle returns once auto-switch has decided on every trigger queued so far.
+func (r *autoSwitchRig) settle(t *testing.T) {
 	t.Helper()
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		if !cond() {
-			t.Fatalf("%s", what)
-		}
-		time.Sleep(10 * time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := r.app.accountSwitch().Settle(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// holdsOnceSettled fails, with what, unless cond holds once auto-switch has
+// decided on every trigger queued so far.
+func (r *autoSwitchRig) holdsOnceSettled(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	r.settle(t)
+	if !cond() {
+		t.Fatalf("%s", what)
 	}
 }
 
@@ -240,7 +251,7 @@ func TestAutoSwitchReadingIgnoredOutsideAnActivePool(t *testing.T) {
 			rig.reading("first", usageLimit("session", 10, time.Hour))
 			rig.reading("second", usageLimit("session", 96, time.Hour))
 
-			holdsFor(t, "auto-switch acted outside an active pool", func() bool {
+			rig.holdsOnceSettled(t, "auto-switch acted outside an active pool", func() bool {
 				return len(rig.reported()) == 0 && rig.selected() == "second"
 			})
 			if rows := timelineRows(t, app.store, thread.ID, "notification", noticeKindAccountAutoSwitch); len(rows) != 0 {
@@ -338,7 +349,7 @@ func TestAutoSwitchCodexWaitsForTheNextSend(t *testing.T) {
 
 	rig.reading("first", usageLimit("codex", 5, time.Hour))
 	rig.reading("second", usageLimit("codex", 100, time.Hour))
-	holdsFor(t, "a reading switched Codex under a running turn", func() bool {
+	rig.holdsOnceSettled(t, "a reading switched Codex under a running turn", func() bool {
 		return len(rig.reported()) == 0 && rig.selected() == "second"
 	})
 
@@ -510,7 +521,7 @@ func TestAutoSwitchRefusalJustAfterASwitchKeepsTheNewAccount(t *testing.T) {
 	}
 
 	app.dispatchTurnObservers(thread.ID, usageLimitRefusal(thread.ID))
-	holdsFor(t, "the refusal moved the selection off b", func() bool {
+	rig.holdsOnceSettled(t, "the refusal moved the selection off b", func() bool {
 		return len(rig.reported()) == 1 && rig.selected() == "b"
 	})
 	idle := autoSwitchThread("idle", string(provider.Claude), "claude-opus-5")
@@ -576,7 +587,7 @@ func TestAutoSwitchRefusalMarksTheSessionAccount(t *testing.T) {
 	rig.start(t)
 
 	app.dispatchTurnObservers(thread.ID, usageLimitRefusal(thread.ID))
-	holdsFor(t, "a refusal on first moved the selection off second", func() bool {
+	rig.holdsOnceSettled(t, "a refusal on first moved the selection off second", func() bool {
 		return len(rig.reported()) == 0 && rig.selected() == "second"
 	})
 	// first now holds the mark. With the selection the app's own, a send
@@ -663,7 +674,7 @@ func TestAutoSwitchRefusalAfterRemovingTheSelectedAccountKeepsTheReplacement(t *
 	rig.start(t)
 
 	app.dispatchTurnObservers(thread.ID, usageLimitRefusal(thread.ID))
-	holdsFor(t, "the refusal moved the selection off the replacement", func() bool {
+	rig.holdsOnceSettled(t, "the refusal moved the selection off the replacement", func() bool {
 		return len(rig.reported()) == 0 && rig.selected() == replacement
 	})
 	idle := autoSwitchThread("idle", string(provider.Claude), "claude-opus-5")

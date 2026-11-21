@@ -117,6 +117,8 @@ func discardStops(member store.WorkItem) bool {
 		return true
 	case engine.StateNeedsHuman:
 		return engine.Reason(member.Reason) != engine.ReasonDisposition
+	case engine.StateDone, engine.StateFailed, engine.StateCancelled:
+		fallthrough
 	default:
 		return false
 	}

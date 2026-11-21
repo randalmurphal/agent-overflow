@@ -457,6 +457,8 @@ func buildArgs(opts SpawnOptions) []string {
 			}
 		}
 		return []string{target}
+	case LaunchStyleDirectPath:
+		fallthrough
 	default:
 		return []string{opts.Path}
 	}

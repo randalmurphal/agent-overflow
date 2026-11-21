@@ -7,7 +7,7 @@ import { createThreadPane } from '../../stores/thread.svelte';
 import { listPanes, registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
 import { resetPaneLayoutForTest } from '../../stores/paneLayout.svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
-import { refreshThreads } from '../../stores/threads.svelte';
+import { loadThreadCatalogs } from '../../stores/threadCatalogs';
 import { setupEventListeners } from '../../stores/events';
 import {
   beginThreadLiveStateHydration,
@@ -163,7 +163,7 @@ describe('<ThreadRow> archive action', () => {
     resetPaneLayoutForTest();
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
-    await refreshThreads();
+    await loadThreadCatalogs();
     resetKeybindingsStore();
     resetKeyboardModifiersForTest();
   });
@@ -183,7 +183,7 @@ describe('<ThreadRow> open / focused marker', () => {
     resetPaneLayoutForTest();
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
-    await refreshThreads();
+    await loadThreadCatalogs();
     resetKeybindingsStore();
     resetKeyboardModifiersForTest();
   });
@@ -231,7 +231,7 @@ describe('<ThreadRow> inline actions without threads:operate', () => {
     resetPaneLayoutForTest();
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
-    await refreshThreads();
+    await loadThreadCatalogs();
     resetKeybindingsStore();
     resetKeyboardModifiersForTest();
     await pairViewOnly();
@@ -296,7 +296,7 @@ describe('<ThreadRow> terminal delete action', () => {
     resetPanesForTest();
     resetPaneLayoutForTest();
     setBindingMock('ListThreads', async () => []);
-    await refreshThreads();
+    await loadThreadCatalogs();
     resetKeybindingsStore();
     resetKeyboardModifiersForTest();
     // Best-effort stop the (sentinel-provider) session before delete.
@@ -460,7 +460,7 @@ describe('<ThreadRow> drag source', () => {
     ['a thread an archived standing agent spawned', { spawnedByThreadId: 'archived-agent' }, false],
   ])('marks the payload of %s agent-bound only when it is the agent', async (_, overrides, bound) => {
     setBindingMock('ListThreads', async () => [makeThread({ id: 'agent-1', agentId: 'agent-1' })]);
-    await refreshThreads();
+    await loadThreadCatalogs();
     const thread = makeThread({ id: 'drag-bound', projectId: 'project-1', ...overrides });
     const rendered = render(ThreadRow, { props: { thread, pane: createThreadPane() } });
     const dataTransfer = makeDataTransfer();
@@ -574,7 +574,7 @@ describe('<ThreadRow> fork lineage affordance', () => {
     resetPanesForTest();
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
-    await refreshThreads();
+    await loadThreadCatalogs();
   });
   afterEach(resetSidebarForTest);
 
@@ -589,7 +589,7 @@ describe('<ThreadRow> fork lineage affordance', () => {
     const parent = makeThread({ id: 'parent', title: 'Original' });
     const forked = makeThread({ id: 'fork', title: 'Derived', forkedFromThreadId: 'parent' });
     setBindingMock('ListThreads', async () => [parent, forked]);
-    await refreshThreads();
+    await loadThreadCatalogs();
 
     const pane = createThreadPane();
     const { getByTestId } = render(ThreadRow, { props: { thread: forked, pane } });
@@ -603,7 +603,7 @@ describe('<ThreadRow> fork lineage affordance', () => {
     const parent = makeThread({ id: 'parent', title: 'Original' });
     const forked = makeThread({ id: 'fork', title: 'Derived', forkedFromThreadId: 'parent' });
     setBindingMock('ListThreads', async () => [parent, forked]);
-    await refreshThreads();
+    await loadThreadCatalogs();
 
     setShowProviderIcons(true);
     const pane = createThreadPane();
@@ -624,7 +624,7 @@ describe('<ThreadRow> fork lineage affordance', () => {
     const parent = makeThread({ id: 'parent', title: 'Original' });
     const forked = makeThread({ id: 'fork', forkedFromThreadId: 'parent' });
     setBindingMock('ListThreads', async () => [parent, forked]);
-    await refreshThreads();
+    await loadThreadCatalogs();
 
     const pane = createThreadPane();
     const { getByTestId } = render(ThreadRow, { props: { thread: forked, pane } });
@@ -637,7 +637,7 @@ describe('<ThreadRow> fork lineage affordance', () => {
     const forked = makeThread({ id: 'fork', forkedFromThreadId: 'parent-not-loaded' });
     // Only the forked thread is in the list; the parent is absent.
     setBindingMock('ListThreads', async () => [forked]);
-    await refreshThreads();
+    await loadThreadCatalogs();
 
     const pane = createThreadPane();
     const { getByTestId } = render(ThreadRow, { props: { thread: forked, pane } });
@@ -650,7 +650,7 @@ describe('<ThreadRow> fork lineage affordance', () => {
     const parent = makeThread({ id: 'parent', title: 'Original' });
     const forked = makeThread({ id: 'fork', forkedFromThreadId: 'parent' });
     setBindingMock('ListThreads', async () => [parent, forked]);
-    await refreshThreads();
+    await loadThreadCatalogs();
     setBindingMock('SwitchThread', async () => {});
     setBindingMock('ListItems', async () => []);
 
@@ -665,7 +665,7 @@ describe('<ThreadRow> fork lineage affordance', () => {
     const parent = makeThread({ id: 'parent', title: 'Original' });
     const forked = makeThread({ id: 'fork', forkedFromThreadId: 'parent' });
     setBindingMock('ListThreads', async () => [parent, forked]);
-    await refreshThreads();
+    await loadThreadCatalogs();
     setBindingMock('SwitchThread', async () => {});
     setBindingMock('ListItems', async () => []);
 
@@ -705,7 +705,7 @@ describe('<ThreadRow> keyboard activation', () => {
     const thread = makeThread({ id: 'space-row' });
     installThreadSwitchMocks(thread);
     setBindingMock('ListThreads', async () => [thread]);
-    await refreshThreads();
+    await loadThreadCatalogs();
     const pane = createThreadPane();
     const view = render(ThreadRow, { props: { thread, pane } });
     const row = view.getByTestId('thread-row');
@@ -723,7 +723,7 @@ describe('<ThreadRow> keyboard activation', () => {
     const thread = makeThread({ id: 'nested-row', pinnedAt: 1 });
     installThreadSwitchMocks(thread);
     setBindingMock('ListThreads', async () => [thread]);
-    await refreshThreads();
+    await loadThreadCatalogs();
     setCompactLayoutForTest(true);
     try {
       const pane = createThreadPane();
@@ -754,7 +754,7 @@ describe('<ThreadRow> keyboard activation', () => {
       const thread = makeThread({ id: 'modified-row' });
       installThreadSwitchMocks(thread);
       setBindingMock('ListThreads', async () => [thread]);
-      await refreshThreads();
+      await loadThreadCatalogs();
       const pane = createThreadPane({ paneId: 'main' });
       registerPaneForTest('main', pane);
       const view = render(ThreadRow, { props: { thread, pane } });
@@ -771,7 +771,7 @@ describe('<ThreadRow> keyboard activation', () => {
     const thread = makeThread({ id: 'held-row' });
     installThreadSwitchMocks(thread);
     setBindingMock('ListThreads', async () => [thread]);
-    await refreshThreads();
+    await loadThreadCatalogs();
     const pane = createThreadPane();
     const view = render(ThreadRow, { props: { thread, pane } });
     const row = view.getByTestId('thread-row');
@@ -800,7 +800,7 @@ describe('<ThreadRow> worktree metadata', () => {
     resetPanesForTest();
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
-    await refreshThreads();
+    await loadThreadCatalogs();
   });
 
   it('renders the worktree basename under the row instead of the WT badge', () => {
@@ -951,7 +951,7 @@ describe('<ThreadRow> pin affordance placement', () => {
     resetPanesForTest();
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
-    await refreshThreads();
+    await loadThreadCatalogs();
   });
 
   it('renders the pin in the leading gutter before the title', () => {
@@ -1066,7 +1066,7 @@ describe('<ThreadRow> hover-action reveal trigger', () => {
     resetPanesForTest();
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
-    await refreshThreads();
+    await loadThreadCatalogs();
   });
 
   it('reveals the unpinned pin on hover and keyboard focus-visible, never on focus-within', () => {
@@ -1116,7 +1116,7 @@ describe('<ThreadRow> live status dot', () => {
     resetPanesForTest();
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
-    await refreshThreads();
+    await loadThreadCatalogs();
     resetThreadStatuses();
   });
 
@@ -1461,7 +1461,7 @@ describe('<ThreadRow> row chrome', () => {
     resetPanesForTest();
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
-    await refreshThreads();
+    await loadThreadCatalogs();
   });
 
   it.each([
@@ -1520,7 +1520,7 @@ describe('<ThreadRow> context menu dismissal', () => {
     resetPanesForTest();
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
-    await refreshThreads();
+    await loadThreadCatalogs();
   });
 
   it('a left click on the row itself closes its open context menu', async () => {
@@ -1546,7 +1546,7 @@ describe('<ThreadRow> status is visual only', () => {
     resetPanesForTest();
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
-    await refreshThreads();
+    await loadThreadCatalogs();
   });
 
   it('renders no status text: the label is the dot’s accessible name only', () => {
@@ -1589,7 +1589,7 @@ describe('<ThreadRow> on an unreachable machine', () => {
     resetPaneLayoutForTest();
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
-    await refreshThreads();
+    await loadThreadCatalogs();
     resetKeybindingsStore();
     resetKeyboardModifiersForTest();
     resetStagedBackends();
@@ -1652,7 +1652,7 @@ describe('<ThreadRow> machine chip', () => {
     resetPaneLayoutForTest();
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
-    await refreshThreads();
+    await loadThreadCatalogs();
     resetKeybindingsStore();
     resetKeyboardModifiersForTest();
     resetStagedBackends();
@@ -1778,7 +1778,7 @@ describe('<ThreadRow> compact layout', () => {
     resetPaneLayoutForTest();
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
-    await refreshThreads();
+    await loadThreadCatalogs();
     resetKeybindingsStore();
     resetKeyboardModifiersForTest();
     setCompactLayoutForTest(true);

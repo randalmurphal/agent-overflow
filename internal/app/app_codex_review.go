@@ -110,6 +110,8 @@ func codexReviewCommandText(target codex.ReviewTarget) string {
 		return command
 	case codex.ReviewTargetCustom:
 		return "/review custom " + target.Instructions()
+	case codex.ReviewTargetUncommittedChanges:
+		fallthrough
 	default:
 		return "/review"
 	}

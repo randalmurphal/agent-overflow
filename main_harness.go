@@ -310,6 +310,9 @@ type harnessTiming struct {
 	// UsageProbeGap is the shortest gap between two usage probes of one
 	// provider (app.IsolationConfig.UsageProbeGap).
 	UsageProbeGap time.Duration
+	// UsagePoll is the usage poll's tick while a provider has a turn in
+	// flight or completed one (app.IsolationConfig.UsagePollInterval).
+	UsagePoll time.Duration
 	// PromptLease is how long a worker's prompt stays routed to its spawner
 	// on a paired computer without that computer saying it holds it
 	// (app.IsolationConfig.WorkerPromptLease).
@@ -341,6 +344,7 @@ func parseHarnessTiming(value string) (harnessTiming, error) {
 		"remote-watch-poll":    &timing.RemoteWatchPoll,
 		"drain-stall":          &timing.DrainStall,
 		"usage-probe-gap":      &timing.UsageProbeGap,
+		"usage-poll":           &timing.UsagePoll,
 		"prompt-lease":         &timing.PromptLease,
 	}
 	for _, entry := range strings.Split(value, ",") {
@@ -514,6 +518,7 @@ func isolationConfig(paths harnessPaths, opts isolationOptions) appservice.Isola
 		RemoteWatchPoll:         opts.Timing.RemoteWatchPoll,
 		ProviderEventDrainStall: opts.Timing.DrainStall,
 		UsageProbeGap:           opts.Timing.UsageProbeGap,
+		UsagePollInterval:       opts.Timing.UsagePoll,
 		WorkerPromptLease:       opts.Timing.PromptLease,
 		OmitOwnerOps:            opts.OlderComputer,
 	}

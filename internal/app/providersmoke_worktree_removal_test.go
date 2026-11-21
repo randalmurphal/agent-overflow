@@ -382,12 +382,11 @@ func (w *providerSmokeCommandWatch) observe(evt provider.ProviderEvent) {
 	now := time.Now()
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	switch evt.Kind {
-	case provider.EventToolStart:
+	if evt.Kind == provider.EventToolStart {
 		if w.itemID == "" && strings.Contains(evt.Content+" "+string(evt.Meta), w.needle) {
 			w.itemID, w.started = evt.ItemID, now
 		}
-	case provider.EventToolComplete:
+	} else if evt.Kind == provider.EventToolComplete {
 		if w.itemID != "" && evt.ItemID == w.itemID && w.completed.IsZero() {
 			w.completed = now
 		}

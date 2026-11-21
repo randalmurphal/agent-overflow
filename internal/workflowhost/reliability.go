@@ -444,6 +444,7 @@ func workflowTransientError(event provider.ProviderEvent, providerRetryHint bool
 		return true, event.Failure.WaitsForTurnComplete()
 	case provider.FailureTransientAfterRetry:
 		return providerRetryHint, providerRetryHint && event.Failure.WaitsForTurnComplete()
+	case provider.FailureFatal:
 	}
 	return false, false
 }

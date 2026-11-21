@@ -12,6 +12,7 @@ import { type Item } from '../types/models';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { makeItem, makeThread, stubScrollController } from '../../test/helpers/chat';
 import { flushMicrotasks, installThreadPaneTestEnv } from '../../test/helpers/threadPane';
+import { createAutoLoadGate } from '../components/chat/timelineScroll';
 import {
   ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS,
   ACTIVE_TIMELINE_WINDOW_MAX_ITEMS,
@@ -118,6 +119,21 @@ describe('threadTimelineWindow', () => {
       return pane;
     }
 
+    // Whether auto-load would page this edge now, read through the gate
+    // from the pane's own state, with the reader in the trigger zone.
+    function autoLoadAdmits(pane: ThreadPane, direction: 'older' | 'newer'): boolean {
+      const older = direction === 'older';
+      return createAutoLoadGate().shouldLoad({
+        hasMore: older ? pane.hasMoreHistory : pane.hasMoreNewer,
+        loading: older ? pane.loadingOlder : pane.loadingNewer,
+        stalled: older ? pane.olderStalled : pane.newerStalled,
+        floorCursor: older ? pane.oldestLoadedCursor : pane.newestLoadedCursor,
+        restoredThreadId: pane.threadId,
+        threadId: pane.threadId,
+        inTriggerZone: () => true,
+      });
+    }
+
     it.each([10, 12])('moving boundary %s to an unloaded tail cannot skip intervening history', async (boundary) => {
       const pane = await pagedPane();
       pane.applyProviderItemUpserts([makeItem({ id: `row-${boundary}`, turnIndex: 2, itemIndex: 20 })]);
@@ -162,6 +178,10 @@ describe('threadTimelineWindow', () => {
       await loading;
       expect(pane.oldestLoadedCursor).toEqual({ turnIndex: 2, itemIndex: 12, itemId: 'row-10' });
       expect(pane.newestLoadedCursor).toEqual({ turnIndex: 2, itemIndex: 14, itemId: 'row-12' });
+      // The edge is no longer where the page asked from, so its empty
+      // answer says nothing about the edge: automatic paging still asks.
+      expect(direction === 'older' ? pane.olderStalled : pane.newerStalled).toBe(false);
+      expect(autoLoadAdmits(pane, direction)).toBe(true);
     });
 
     it.each([false, true])('a stale page anchor preserves newer live coverage, full page=%s', async (fullPage) => {
@@ -174,6 +194,31 @@ describe('threadTimelineWindow', () => {
       release({ items: (fullPage ? [10, 11, 12] : [12]).map((itemIndex) => makeItem({ id: `row-${itemIndex}`, turnIndex: 2, itemIndex })), hasMoreNewer: true });
       await loading;
       expect(pane.newestLoadedCursor).toEqual({ turnIndex: 2, itemIndex: 14, itemId: 'row-12' });
+      expect(pane.newerStalled).toBe(false);
+      expect(autoLoadAdmits(pane, 'newer')).toBe(true);
+    });
+
+    // The page asked from item 12; live rows carried the ceiling to the
+    // page's own end before it landed, and the page's ceiling is clamped
+    // to it. The ceiling did not move in this commit, but it is not where
+    // the page asked from either.
+    it('a newer page that lands where live rows already carried the ceiling leaves the edge open', async () => {
+      const pane = await pagedPane();
+      let release!: (value: { items: Item[]; hasMoreNewer: boolean }) => void;
+      const newer = setBindingMock('ListItemsAfterCursor', () => new Promise((resolve) => { release = resolve; }));
+      const loading = pane.loadNewer();
+      pane.applyProviderItemUpserts([10, 11, 12].map((original) =>
+        makeItem({ id: `row-${original}`, turnIndex: 2, itemIndex: original + 200 })));
+      expect(pane.newestLoadedCursor).toEqual({ turnIndex: 2, itemIndex: 212, itemId: 'row-12' });
+      release({
+        items: Array.from({ length: 200 }, (_, index) => makeItem({ id: `page-${index + 13}`, turnIndex: 2, itemIndex: index + 13 })),
+        hasMoreNewer: true,
+      });
+      await loading;
+      expect(newer.mock.calls[0]?.[1]).toMatchObject({ itemIndex: 12 });
+      expect(pane.newestLoadedCursor?.itemIndex).toBe(212);
+      expect(pane.newerStalled).toBe(false);
+      expect(autoLoadAdmits(pane, 'newer')).toBe(true);
     });
   });
 
@@ -2235,6 +2280,357 @@ describe('threadTimelineWindow', () => {
       }
       expect(pane.hasMoreHistory).toBe(true);
     });
+  });
+});
+
+// Each page claims only the edge it extends. A page at one edge never
+// refuses a page at the other; a page is refused only when a cut or a
+// replacement dropped the edge it was asked from.
+describe('pages at both edges', () => {
+  beforeEach(installThreadPaneTestEnv);
+
+  type Page = { items: Item[]; hasMoreOlder: boolean; hasMoreNewer: boolean; hasMore?: boolean };
+  function held() {
+    const answers: ((page: Page) => void)[] = [];
+    const call = () => new Promise<Page>((resolve) => answers.push(resolve));
+    return { call, answer: (page: Page) => answers.shift()!(page), get pending() { return answers.length; } };
+  }
+  const row = (turnIndex: number) => makeItem({ id: `t${turnIndex}`, threadId: 't', turnIndex, itemIndex: 0 });
+  const rows = (from: number, count: number) => Array.from({ length: count }, (_, index) => row(from + index));
+
+  async function windowPane(initial: Item[], edges: { older: boolean; newer: boolean }) {
+    const pane = createThreadPane();
+    setBindingMock('ListThreadSliceAround', async () => ({
+      items: initial, hasMore: edges.older, hasMoreOlder: edges.older, hasMoreNewer: edges.newer,
+    }));
+    await pane.switchThread(makeThread({ id: 't' }));
+    return pane;
+  }
+
+  it.each([
+    ['newer', 'newer'], ['newer', 'older'], ['older', 'older'], ['older', 'newer'],
+  ] as const)('both pages land when the %s page starts first and the %s answer lands first', async (startsFirst, landsFirst) => {
+    const pane = await windowPane(rows(10, 3), { older: true, newer: true });
+    const older = held();
+    const newer = held();
+    setBindingMock('ListItemsBeforeCursor', older.call);
+    setBindingMock('ListItemsAfterCursor', newer.call);
+
+    const loads = startsFirst === 'newer'
+      ? { newer: pane.loadNewer(), older: pane.loadOlder() }
+      : { older: pane.loadOlder(), newer: pane.loadNewer() };
+    expect(pane.loadingOlder).toBe(true);
+    expect(pane.loadingNewer).toBe(true);
+    const answer = {
+      older: () => older.answer({ items: [row(9)], hasMore: true, hasMoreOlder: true, hasMoreNewer: false }),
+      newer: () => newer.answer({ items: [row(13)], hasMoreOlder: true, hasMoreNewer: true }),
+    };
+    const other = landsFirst === 'older' ? 'newer' : 'older';
+    answer[landsFirst]();
+    expect((await loads[landsFirst]).status).toBe('loaded');
+    answer[other]();
+    expect((await loads[other]).status).toBe('loaded');
+
+    expect(pane.items.map((it) => it.id)).toEqual(['t9', 't10', 't11', 't12', 't13']);
+    expect(pane.oldestLoadedCursor).toEqual({ turnIndex: 9, itemIndex: 0, itemId: 't9' });
+    expect(pane.newestLoadedCursor).toEqual({ turnIndex: 13, itemIndex: 0, itemId: 't13' });
+    expect(pane.loadingOlder).toBe(false);
+    expect(pane.loadingNewer).toBe(false);
+  });
+
+  it('an older page whose cut drops the tail refuses the newer page in flight', async () => {
+    const max = ACTIVE_TIMELINE_WINDOW_MAX_ITEMS;
+    const target = ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS;
+    const pane = await windowPane(rows(1000, max), { older: true, newer: true });
+    // The reader is at the head, where the older page lands.
+    pane.attachScrollController(stubScrollController({ visibleTimelineItemIds: () => new Set(['t1000', 't1001']) }));
+    const newer = held();
+    setBindingMock('ListItemsAfterCursor', newer.call);
+    setBindingMock('ListItemsBeforeCursor', async () => ({ items: [row(999)], hasMore: true, hasMoreOlder: true, hasMoreNewer: false }));
+
+    const newerLoad = pane.loadNewer();
+    expect((await pane.loadOlder()).status).toBe('loaded');
+    const ceiling = { turnIndex: 999 + target - 1, itemIndex: 0, itemId: `t${999 + target - 1}` };
+    expect(pane.newestLoadedCursor).toEqual(ceiling);
+
+    // Its rows follow the ceiling the cut dropped; attached, they would
+    // leave a gap inside the window.
+    newer.answer({ items: [row(1000 + max)], hasMoreOlder: true, hasMoreNewer: true });
+    expect((await newerLoad).status).toBe('stale');
+    expect(pane.items).toHaveLength(target);
+    expect(pane.items.some((it) => it.id === `t${1000 + max}`)).toBe(false);
+    expect(pane.newestLoadedCursor).toEqual(ceiling);
+    expect(pane.hasMoreNewer).toBe(true);
+  });
+
+  it('a newer page whose cut drops the head refuses the older page in flight', async () => {
+    const max = ACTIVE_TIMELINE_WINDOW_MAX_ITEMS;
+    const target = ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS;
+    const pane = await windowPane(rows(1000, max), { older: true, newer: true });
+    const older = held();
+    setBindingMock('ListItemsBeforeCursor', older.call);
+    setBindingMock('ListItemsAfterCursor', async () => ({ items: [row(1000 + max)], hasMoreOlder: true, hasMoreNewer: true }));
+
+    const olderLoad = pane.loadOlder();
+    expect((await pane.loadNewer()).status).toBe('loaded');
+    const floor = { turnIndex: 1000 + max + 1 - target, itemIndex: 0, itemId: `t${1000 + max + 1 - target}` };
+    expect(pane.oldestLoadedCursor).toEqual(floor);
+
+    older.answer({ items: [row(999)], hasMore: true, hasMoreOlder: true, hasMoreNewer: false });
+    expect((await olderLoad).status).toBe('stale');
+    expect(pane.items).toHaveLength(target);
+    expect(pane.items.some((it) => it.id === 't999')).toBe(false);
+    expect(pane.oldestLoadedCursor).toEqual(floor);
+  });
+
+  it.each([
+    ['the tail only, and the older page lands', true, 'loaded'],
+    ['the head, and the older page is refused', false, 'stale'],
+  ] as const)('a streaming cut that drops %s', async (_name, readerAtHead, status) => {
+    const max = ACTIVE_TIMELINE_WINDOW_MAX_ITEMS;
+    const pane = await windowPane(rows(1000, max), { older: true, newer: false });
+    // A reader at the head keeps it (the cut is centered on them); with
+    // nobody reading, the cut keeps the tail.
+    if (readerAtHead) {
+      pane.attachScrollController(stubScrollController({
+        visibleTimelineItemIds: () => new Set(['t1000', 't1001']),
+        canPreserveTimelineWindow: (keepsItem) => keepsItem('t1000'),
+      }));
+    }
+    const older = held();
+    setBindingMock('ListItemsBeforeCursor', older.call);
+    const olderLoad = pane.loadOlder();
+
+    pane.upsertItem(row(1000 + max));
+    expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
+    expect(pane.items[0].id).toBe(readerAtHead ? 't1000' : `t${1000 + max + 1 - ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS}`);
+
+    older.answer({ items: [row(999)], hasMore: true, hasMoreOlder: true, hasMoreNewer: false });
+    expect((await olderLoad).status).toBe(status);
+    expect(pane.items.some((it) => it.id === 't999')).toBe(status === 'loaded');
+  });
+
+  // Jump to latest replaces the window. An older page started while it
+  // loads would land on the window it replaces, and its start used to
+  // refuse the jump.
+  it('jump to latest holds both edges while it loads', async () => {
+    const pane = await windowPane(rows(10, 3), { older: true, newer: true });
+    const older = held();
+    const tail = held();
+    setBindingMock('ListItemsBeforeCursor', older.call);
+    setBindingMock('ListThreadSliceAround', tail.call);
+
+    const jump = pane.loadRecentTail();
+    expect(pane.loadingOlder).toBe(true);
+    expect(pane.loadingNewer).toBe(true);
+    expect((await pane.loadOlder()).status).toBe('noop');
+    expect(older.pending).toBe(0);
+
+    tail.answer({ items: rows(40, 3), hasMore: true, hasMoreOlder: true, hasMoreNewer: false });
+    expect(await jump).toBe(true);
+    expect(pane.items.map((it) => it.id)).toEqual(['t40', 't41', 't42']);
+    expect(pane.loadingOlder).toBe(false);
+    expect(pane.loadingNewer).toBe(false);
+  });
+
+  it('jump to latest refuses an older page already out', async () => {
+    const pane = await windowPane(rows(10, 3), { older: true, newer: true });
+    const older = held();
+    setBindingMock('ListItemsBeforeCursor', older.call);
+    const olderLoad = pane.loadOlder();
+    setBindingMock('ListThreadSliceAround', async () => ({
+      items: rows(40, 3), hasMore: true, hasMoreOlder: true, hasMoreNewer: false,
+    }));
+
+    expect(await pane.loadRecentTail()).toBe(true);
+    older.answer({ items: [row(9)], hasMore: true, hasMoreOlder: true, hasMoreNewer: false });
+    expect((await olderLoad).status).toBe('stale');
+    expect(pane.items.map((it) => it.id)).toEqual(['t40', 't41', 't42']);
+    expect(pane.loadingOlder).toBe(false);
+  });
+});
+
+// The window owns its edges, so it owns whether the last page at an edge
+// went anywhere (`olderStalled` / `newerStalled`), decided from what that
+// page committed and cleared wherever the edge moves. Automatic paging
+// skips a stalled edge (timelinePaging.test.ts).
+describe('a stalled edge', () => {
+  beforeEach(installThreadPaneTestEnv);
+
+  type Page = { items: Item[]; hasMoreOlder: boolean; hasMoreNewer: boolean; hasMore?: boolean };
+  const row = (turnIndex: number, itemIndex = 0) =>
+    makeItem({ id: `t${turnIndex}.${itemIndex}`, threadId: 't', turnIndex, itemIndex });
+  const rows = (from: number, count: number) => Array.from({ length: count }, (_, index) => row(from + index));
+  const more = (older: boolean, newer: boolean, items: Item[]): Page =>
+    ({ items, hasMore: older, hasMoreOlder: older, hasMoreNewer: newer });
+  const failing = async () => { throw new Error('page failed'); };
+  function held() {
+    const calls: { resolve: (page: Page) => void; reject: (error: Error) => void }[] = [];
+    const call = () => new Promise<Page>((resolve, reject) => calls.push({ resolve, reject }));
+    return { call, calls };
+  }
+
+  async function windowPane(initial: Item[], newer = true) {
+    const pane = createThreadPane();
+    setBindingMock('ListThreadSliceAround', async () => more(true, newer, initial));
+    await pane.switchThread(makeThread({ id: 't' }));
+    return pane;
+  }
+
+  const edges = {
+    older: {
+      binding: 'ListItemsBeforeCursor',
+      load: (pane: ThreadPane) => pane.loadOlder(),
+      stalled: (pane: ThreadPane) => pane.olderStalled,
+      other: (pane: ThreadPane) => pane.newerStalled,
+      moved: () => more(true, true, [row(9)]),
+      unmoved: () => more(true, true, [row(10)]),
+    },
+    newer: {
+      binding: 'ListItemsAfterCursor',
+      load: (pane: ThreadPane) => pane.loadNewer(),
+      stalled: (pane: ThreadPane) => pane.newerStalled,
+      other: (pane: ThreadPane) => pane.olderStalled,
+      moved: () => more(true, true, [row(13)]),
+      unmoved: () => more(true, true, [row(12)]),
+    },
+  } as const;
+
+  it.each(['older', 'newer'] as const)('an error stalls the %s edge, a retry that fails keeps it stalled, and a page that moves it clears it', async (name) => {
+    const edge = edges[name];
+    const pane = await windowPane(rows(10, 3));
+    setBindingMock(edge.binding, failing);
+    expect((await edge.load(pane)).status).toBe('error');
+    expect(edge.stalled(pane)).toBe(true);
+    expect(edge.other(pane)).toBe(false);
+
+    // A load starting does not clear it.
+    const retry = held();
+    setBindingMock(edge.binding, retry.call);
+    const out = edge.load(pane);
+    expect(edge.stalled(pane)).toBe(true);
+    retry.calls[0].reject(new Error('page failed again'));
+    expect((await out).status).toBe('error');
+    expect(edge.stalled(pane)).toBe(true);
+
+    setBindingMock(edge.binding, async () => edge.moved());
+    expect((await edge.load(pane)).status).toBe('loaded');
+    expect(edge.stalled(pane)).toBe(false);
+  });
+
+  it.each(['older', 'newer'] as const)('a page that leaves the %s edge where it was stalls it', async (name) => {
+    const edge = edges[name];
+    const pane = await windowPane(rows(10, 3));
+    setBindingMock(edge.binding, async () => edge.unmoved());
+    expect((await edge.load(pane)).status).toBe('loaded');
+    expect(edge.stalled(pane)).toBe(true);
+  });
+
+  // Regression: bug-report-20260616T143320Z. In a window that is one long
+  // turn, paging older moves the item floor and never the turn floor; a
+  // guard keyed on the turn index read that as no progress and latched
+  // auto-load off.
+  it('counts item-level movement within one turn as movement', async () => {
+    const pane = await windowPane([row(57, 400), row(57, 401)]);
+    setBindingMock('ListItemsBeforeCursor', async () => more(true, true, [row(57, 200), row(57, 399)]));
+    expect((await pane.loadOlder()).status).toBe('loaded');
+    expect(pane.oldestLoadedCursor).toMatchObject({ turnIndex: 57, itemIndex: 200 });
+    expect(pane.olderStalled).toBe(false);
+  });
+
+  // A navigation to a row the window already shows refuses the pages out
+  // and leaves the edges where they are: the stall stays as it was.
+  it.each([true, false])('a refused page leaves the stall as it was (stalled before: %s)', async (stalledBefore) => {
+    const pane = await windowPane(rows(10, 3));
+    if (stalledBefore) {
+      setBindingMock('ListItemsBeforeCursor', failing);
+      await pane.loadOlder();
+    }
+    const retry = held();
+    setBindingMock('ListItemsBeforeCursor', retry.call);
+    const out = pane.loadOlder();
+    expect(await pane.loadUntilItem('t11.0')).toBe('loaded');
+    retry.calls[0].reject(new Error('page failed'));
+    expect((await out).status).toBe('stale');
+    expect(pane.olderStalled).toBe(stalledBefore);
+  });
+
+  it('a cut that drops a stalled edge clears it', async () => {
+    const max = ACTIVE_TIMELINE_WINDOW_MAX_ITEMS;
+    const pane = await windowPane(rows(1000, max));
+    // The reader is at the head, where the older page lands.
+    pane.attachScrollController(stubScrollController({ visibleTimelineItemIds: () => new Set(['t1000.0']) }));
+    setBindingMock('ListItemsAfterCursor', failing);
+    await pane.loadNewer();
+    expect(pane.newerStalled).toBe(true);
+
+    setBindingMock('ListItemsBeforeCursor', async () => more(true, false, [row(999)]));
+    expect((await pane.loadOlder()).status).toBe('loaded');
+    expect(pane.newestLoadedCursor?.turnIndex).toBeLessThan(1000 + max - 1);
+    expect(pane.newerStalled).toBe(false);
+  });
+
+  it('a streaming cut that drops a stalled head clears it', async () => {
+    const max = ACTIVE_TIMELINE_WINDOW_MAX_ITEMS;
+    // At the live tail, where new rows land.
+    const pane = await windowPane(rows(1000, max), false);
+    setBindingMock('ListItemsBeforeCursor', failing);
+    await pane.loadOlder();
+    expect(pane.olderStalled).toBe(true);
+
+    pane.upsertItem(row(1000 + max));
+    expect(pane.oldestLoadedCursor?.turnIndex).toBeGreaterThan(1000);
+    expect(pane.olderStalled).toBe(false);
+  });
+
+  // A replacement is a new window: no edge in it is the one a page went
+  // nowhere from, even where its cursor is the same as before.
+  it('a replacement clears both edges, also one that lands on the same cursor', async () => {
+    const pane = await windowPane(rows(10, 3));
+    setBindingMock('ListItemsBeforeCursor', failing);
+    setBindingMock('ListItemsAfterCursor', failing);
+    await pane.loadOlder();
+    await pane.loadNewer();
+    expect([pane.olderStalled, pane.newerStalled]).toEqual([true, true]);
+
+    setBindingMock('ListThreadSliceAround', async () => more(true, false, rows(10, 3)));
+    expect(await pane.loadRecentTail()).toBe(true);
+    expect(pane.oldestLoadedCursor).toMatchObject({ turnIndex: 10, itemIndex: 0 });
+    expect([pane.olderStalled, pane.newerStalled]).toEqual([false, false]);
+  });
+
+  // A revert rewrote the history past the window: the page that went
+  // nowhere from the newer edge asked about history that no longer exists.
+  it('a conversation revert clears both edges', async () => {
+    const pane = await windowPane(rows(10, 3));
+    setBindingMock('ListItemsBeforeCursor', failing);
+    setBindingMock('ListItemsAfterCursor', failing);
+    await pane.loadOlder();
+    await pane.loadNewer();
+    pane.removeRevertedItems(20, []);
+    expect(pane.newestLoadedCursor).toMatchObject({ turnIndex: 12, itemIndex: 0 });
+    expect([pane.olderStalled, pane.newerStalled]).toEqual([false, false]);
+  });
+
+  // To a thread opened fresh, and back to one the pane holds a snapshot of.
+  it('a thread switch clears both edges', async () => {
+    const pane = await windowPane(rows(10, 3));
+    const stallBoth = async () => {
+      setBindingMock('ListItemsBeforeCursor', failing);
+      setBindingMock('ListItemsAfterCursor', failing);
+      await pane.loadOlder();
+      await pane.loadNewer();
+      expect([pane.olderStalled, pane.newerStalled]).toEqual([true, true]);
+    };
+    await stallBoth();
+
+    setBindingMock('ListThreadSliceAround', async () => more(true, true, rows(10, 3).map((item) => ({ ...item, threadId: 'u' }))));
+    await pane.switchThread(makeThread({ id: 'u' }));
+    expect([pane.olderStalled, pane.newerStalled]).toEqual([false, false]);
+
+    await stallBoth();
+    await pane.switchThread(makeThread({ id: 't' }));
+    expect([pane.olderStalled, pane.newerStalled]).toEqual([false, false]);
   });
 });
 

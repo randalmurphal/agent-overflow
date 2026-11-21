@@ -377,6 +377,7 @@ func convertToIncrementalVacuumStep(ctx context.Context, s *Store, run *deferred
 			return nil
 		case ConvertAlreadyIncremental, ConvertUnsupported:
 			return nil
+		case ConvertNotQuiet:
 		}
 	}
 	return nil

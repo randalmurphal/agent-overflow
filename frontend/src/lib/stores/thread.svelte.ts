@@ -725,7 +725,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     // leak into the next thread.
     switchLoad.resetPipeline();
     timelineWindow.resetForFreshThread();
-    // `timelineWindow`'s internal `pagingGeneration` stays monotonic for
+    // `timelineWindow`'s internal edge generations stay monotonic for
     // the pane's lifetime so no consumer observes a regressed counter. An
     // untaken scroll-to-item request goes stale with the generation bump
     // below.
@@ -963,6 +963,12 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     },
     get loadingNewer() {
       return timelineWindow.loadingNewer;
+    },
+    get olderStalled() {
+      return timelineWindow.olderStalled;
+    },
+    get newerStalled() {
+      return timelineWindow.newerStalled;
     },
     debugMemoryStats() {
       const streamingStats = streamingReveal.debugStats();

@@ -1074,8 +1074,14 @@ describe('scroll integration — scroll-to-item requests', () => {
   });
 
   it.each([
-    ['a tail load', (pane: ThreadPane) => { void pane.loadRecentTail(); }],
-    ['a conversation cut', (pane: ThreadPane) => { pane.removeRevertedItems(60, []); }],
+    ['a tail load', async (pane: ThreadPane) => {
+      setBindingMock('ListThreadSliceAround', async () => ({ items: [], hasMore: false, hasMoreOlder: false, hasMoreNewer: false }));
+      // The tail replaces the window, so it holds both edges until it lands.
+      const tail = pane.loadRecentTail();
+      expect(pane.loadingOlder && pane.loadingNewer).toBe(true);
+      await tail;
+    }],
+    ['a conversation cut', async (pane: ThreadPane) => { pane.removeRevertedItems(60, []); }],
   ])('%s releases the claims of the lookup it supersedes', async (_name, supersede) => {
     const held = makeItem({ id: 'held', turnIndex: 50, kind: 'assistant_text', role: 'assistant', summary: 'held' });
     const pane = await paneWithHistory(held);
@@ -1083,8 +1089,9 @@ describe('scroll integration — scroll-to-item requests', () => {
     setBindingMock('ListThreadSliceAround', () => new Promise(() => {}));
     void pane.loadUntilItem('far');
     expect(pane.loadingOlder && pane.loadingNewer).toBe(true);
-    supersede(pane);
+    await supersede(pane);
     expect(pane.loadingOlder).toBe(false);
+    expect(pane.loadingNewer).toBe(false);
   });
 
   it('a jump to a held row releases the claims of the lookup it supersedes', async () => {

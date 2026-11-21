@@ -77,6 +77,7 @@ func hashWorktreeFile(h hash.Hash, path string, scanStart time.Time, follow bool
 		stat.writeTo(h)
 	case worktreeFileMissing:
 		_, _ = h.Write([]byte{0})
+	case worktreeFileUnsettled:
 	}
 	return state
 }

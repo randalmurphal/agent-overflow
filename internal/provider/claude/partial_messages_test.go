@@ -636,10 +636,9 @@ func TestAssistantEnvelopeStillEmitsToolUseAndUsage(t *testing.T) {
 	}
 	var sawToolStart, sawUsage bool
 	for _, e := range events {
-		switch e.Kind {
-		case provider.EventToolStart:
+		if e.Kind == provider.EventToolStart {
 			sawToolStart = true
-		case provider.EventTokenUsage:
+		} else if e.Kind == provider.EventTokenUsage {
 			sawUsage = true
 		}
 	}

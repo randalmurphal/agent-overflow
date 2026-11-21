@@ -870,8 +870,9 @@
     navRail?.scheduleViewportSync();
     // Older and newer zones are geometrically exclusive in a normal window
     // (you can't be near both edges at once), but a degenerate window that
-    // fits in the viewport could satisfy both; firing one direction per
-    // frame avoids two concurrent loads racing the shared pagingGeneration.
+    // fits in the viewport could satisfy both; one direction per frame
+    // keeps a single scroll event to one load. Pages at the two edges may
+    // still be in flight together: each claims only its own edge.
     if (paging.maybeAutoLoadOlder(offset)) return;
     paging.maybeAutoLoadNewer(offset);
     // No prune here: this fires every scroll frame (60Hz under the

@@ -1,16 +1,17 @@
-import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 import { invalidateReplicaCatalog } from '../replica/session';
 import { computerCatalogWriter } from './computerCatalogWriter';
-import { computerCatalog, readComputerRows, retainUnavailableComputerRows } from './computerRows';
+import { computerCatalog, retainUnavailableComputerRows, type CatalogPart, type ComputerRows } from './computerRows';
+import { settleCatalogAnswers } from './catalogLoad.svelte';
 import { noteThreadGroup, threadGroupBackend } from '../transport/entityIndex';
 // Thread groups: the named, collapsible sidebar rows that gather threads
 // of one project. Entity-keyed on the GROUP, not on the sidebar surface
 // that renders it — the tree builder, the context menus and the drop
 // targets all derive from this one list.
 //
-// Lifecycle mirrors `threads.svelte.ts`: a wholesale load at boot, the
-// same load again on the transport-gap resync path, and per-row patches
-// from the `thread-group:updated` channel in between. The list is small
+// Lifecycle mirrors `threads.svelte.ts`: a wholesale load beside the
+// threads it gathers, as one round (./threadCatalogs.ts), at boot, on a
+// hello, on the transport-gap resync path and on each retry, and per-row
+// patches from the `thread-group:updated` channel in between. The list is small
 // (tens of rows at most) and changes rarely, so there is no per-entity
 // signal box here — a group write is a real membership/order change and
 // re-deriving the sidebar for it is correct.
@@ -18,7 +19,6 @@ import { noteThreadGroup, threadGroupBackend } from '../transport/entityIndex';
 import { ListThreadGroups } from './bindings';
 import { onBackendDetached } from '../transport/backends';
 import { clearThreadGroupMembership } from './threads.svelte';
-import { addErrorToast } from './toast.svelte';
 import { collapseThreadList } from './sidebar.svelte';
 import type { ThreadGroup } from '../types/models';
 import type { ThreadGroupUpdateEvent } from '../types/events';
@@ -93,26 +93,22 @@ export function dropThreadGroupsForDetachedBackend(ids: readonly string[]): void
 
 onBackendDetached(({ threadGroupIds }) => dropThreadGroupsForDetachedBackend(threadGroupIds));
 
-/**
- * Boot-time / resync wholesale load. Throws on failure so the caller
- * decides; `refreshThreadGroups` is the surfaced-error wrapper.
- */
-export async function loadThreadGroups(): Promise<readonly ThreadGroup[]> {
-  await readComputerRows<ThreadGroup>(
-    async () => await ListThreadGroups() as ThreadGroup[], (row, backend) => noteThreadGroup(row.id, backend), (result) => {
-      threadGroups = retainUnavailableComputerRows(threadGroups, result, (row) => threadGroupBackend(row.id));
-    }, { catalog: computerCatalog('groups', () => threadGroups, (row) => threadGroupBackend(row.id)) });
-  return threadGroups;
+function commitGroupRows(result: ComputerRows<ThreadGroup>): void {
+  threadGroups = retainUnavailableComputerRows(threadGroups, result, (row) => threadGroupBackend(row.id));
+  settleCatalogAnswers('groups', result.answered);
 }
 
-export async function refreshThreadGroups(): Promise<void> {
-  try {
-    await loadThreadGroups();
-  } catch (err) {
-    if (isPassiveConnectionFailure(err)) return;
-    console.error('Failed to load thread groups:', err);
-    addErrorToast('Failed to load thread groups', err);
-  }
+/**
+ * How the group catalog is read from each computer and committed: only
+ * beside the threads it gathers, as one round (./threadCatalogs.ts).
+ */
+export function groupCatalogPart(): CatalogPart<ThreadGroup> {
+  return {
+    read: async () => await ListThreadGroups() as ThreadGroup[],
+    note: (row, backend) => noteThreadGroup(row.id, backend),
+    commit: commitGroupRows,
+    catalog: computerCatalog('groups', () => threadGroups, (row) => threadGroupBackend(row.id)),
+  };
 }
 
 /** Insert or replace one row. Used by every group RPC's response reconcile. */

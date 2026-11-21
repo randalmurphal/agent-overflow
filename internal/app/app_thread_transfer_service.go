@@ -128,6 +128,8 @@ func (a *App) checkTransferIdle(thread store.Thread) error {
 				}
 			}
 			return errors.New("Let remote commands finish and their completion messages reach this conversation before copying it. Moving the conversation cancels them.") //nolint:staticcheck // ST1005: the user sees this sentence as written.
+		case workWorktreeSetup, workRemoteJob, workWorkflow, workProviderUpdate, workAgentWatch:
+			fallthrough
 		default:
 			return fmt.Errorf("This conversation cannot be transferred while %s.", work.kind) //nolint:staticcheck // ST1005: the user sees this sentence as written.
 		}

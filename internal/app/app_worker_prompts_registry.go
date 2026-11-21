@@ -241,6 +241,8 @@ func (w *workerPrompts) beginAnswer(token, answer string) error {
 			return errWorkerPromptRepeated
 		}
 		return errWorkerPromptAnswered
+	case workerPromptSettled:
+		fallthrough
 	default:
 		return errWorkerPromptClosed
 	}

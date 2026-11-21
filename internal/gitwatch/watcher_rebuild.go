@@ -84,6 +84,7 @@ func (w *workspaceWatcher) inspectEvent(ev notify.EventInfo, roots []gitops.Watc
 			if info, err := os.Lstat(path); err == nil && info.IsDir() {
 				w.needsRebuild = true
 			}
+		case gitops.KindSubtree:
 		}
 		return
 	}
