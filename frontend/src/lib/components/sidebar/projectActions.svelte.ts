@@ -10,8 +10,11 @@
 //
 // A run owns its target and everything derived from it, and only the row's
 // current run is shown or sent. Starting a run retires the one before it,
-// and a retired run cannot show, collect or send anything: `beginSubmit`
-// answers false, which is how the call it ends in is gated.
+// and a run that is not live cannot show, collect or send anything:
+// `beginSubmit` answers false, which is how the call it ends in is gated.
+// A run leaves `live` when it is replaced, when it is ended and when it
+// takes itself for its call, so nothing that is not the row's current run
+// can still act, and nothing current can act twice.
 import type { ProjectDeletionPreview } from '../../types/workflow';
 import type { ProjectTarget } from './sidebarEntries';
 
@@ -21,13 +24,13 @@ export interface ProjectActionRun {
   readonly kind: ProjectActionKind;
   /** The project this run acts on, frozen at the gesture that started it. */
   readonly target: ProjectTarget;
-  /** True once a newer run replaced it. */
+  /** True once the run is no longer live: replaced, ended or submitted. */
   readonly retired: boolean;
   /** Whether this run is showing its confirmation. */
   readonly confirming: boolean;
   /** What deleting involves, once the computer that holds it has answered. */
   readonly preview: ProjectDeletionPreview | null;
-  /** True from the moment the run took itself for its call. */
+  /** True while the run's call is out. */
   readonly submitting: boolean;
   /** The name a rename is editing: the target's, as the user changes it. */
   readonly name: string;
@@ -39,7 +42,7 @@ export interface ProjectActionRun {
   /** Take the run for the call it ends in, or answer false because it was
    *  retired and nothing it collected may be sent. */
   beginSubmit(): boolean;
-  /** Finish the run, shown or not. */
+  /** Finish the run, shown or not. It is not live afterwards. */
   end(): void;
 }
 
@@ -49,13 +52,18 @@ export interface ProjectActions {
   start(kind: ProjectActionKind, target: ProjectTarget): ProjectActionRun;
 }
 
+// A run's whole life. It leaves `live` once, and never comes back: the user
+// replaced it, finished with it, or it took itself for its call. Everything
+// a run collects is refused outside `live`, `beginSubmit` included, so a
+// callback captured before any of those cannot act afterwards.
+type RunState = 'live' | 'submitted' | 'done';
+
 class Run implements ProjectActionRun {
   readonly kind: ProjectActionKind;
   readonly target: ProjectTarget;
-  #retired = $state(false);
+  #state: RunState = $state('live');
   #confirming = $state(false);
   #preview: ProjectDeletionPreview | null = $state.raw(null);
-  #submitting = $state(false);
   #name = $state('');
   readonly #finish: (run: Run) => void;
 
@@ -67,7 +75,7 @@ class Run implements ProjectActionRun {
   }
 
   get retired(): boolean {
-    return this.#retired;
+    return this.#state !== 'live';
   }
 
   get confirming(): boolean {
@@ -79,7 +87,7 @@ class Run implements ProjectActionRun {
   }
 
   get submitting(): boolean {
-    return this.#submitting;
+    return this.#state === 'submitted';
   }
 
   get name(): string {
@@ -87,36 +95,43 @@ class Run implements ProjectActionRun {
   }
 
   confirm(): void {
-    if (this.#retired) return;
+    if (this.retired) return;
     this.#confirming = true;
   }
 
   offer(preview: ProjectDeletionPreview): void {
-    if (this.#retired) return;
+    if (this.retired) return;
     this.#preview = preview;
   }
 
   setName(name: string): void {
-    if (this.#retired) return;
+    if (this.retired) return;
     this.#name = name;
   }
 
   beginSubmit(): boolean {
-    if (this.#retired || this.#submitting) return false;
-    this.#submitting = true;
+    if (this.retired) return false;
+    this.#state = 'submitted';
     return true;
   }
 
   end(): void {
+    // Done first: a run stops being live when it is ended, not only when
+    // something newer replaces it.
+    this.#state = 'done';
     this.#finish(this);
   }
 
   retire(): void {
-    this.#retired = true;
+    this.#state = 'done';
   }
 }
 
-/** The runs of one project row. One at a time, newest only. */
+/**
+ * The runs of one project row. One at a time, newest only: the run that is
+ * current is the only live one, and a run that stops being current stops
+ * being live in the same step.
+ */
 export function createProjectActions(): ProjectActions {
   let current: Run | null = $state.raw(null);
   return {

@@ -56,8 +56,10 @@ which adds the project's empty state and drop targets.
   took at its gesture and everything derived from it, its confirmation text
   and its deletion preview included, and the call it ends in is gated on
   `beginSubmit`. A row has one run at a time, archive, delete and rename
-  alike; starting one retires the run before it, and a retired run can
-  neither show nor send anything. Every menu action, rename included, takes
+  alike. A run is live once: it stops being live when it is replaced, when
+  it is ended and when it takes itself for its call, so nothing but the
+  row's current run can act and nothing can act twice. A failed delete
+  leaves its dialog up as a new run on the same project and answer. Every menu action, rename included, takes
   the target the menu was opened on, never the row's current one.
 - A row's label is disambiguated by `ProjectList.svelte` over the entries it
   renders, so a query that hides one of two same-named projects drops the

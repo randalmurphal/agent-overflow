@@ -219,6 +219,44 @@ describe('<ProjectContextMenu> delete flow', () => {
     expect(warning?.message).toContain('2 uncommitted or untracked files');
   });
 
+  // A delete that fails leaves the dialog the user is looking at in place,
+  // so the retry is one click. The run that failed is spent, so that retry
+  // is a run of its own carrying the same project and the same answer.
+  it('keeps the preview dialog up when the delete fails, and retries from it', async () => {
+    setBindingMock('ProjectDeletionPreview', async () => workPreview());
+    const del = setBindingMock('DeleteProject', vi.fn(async () => {
+      throw new Error('project is busy');
+    }));
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { baseElement } = renderMenu();
+
+    await selectDelete(baseElement);
+    await waitFor(() => {
+      expect(baseElement.querySelector('[data-testid="project-delete-dialog"]')).not.toBeNull();
+    });
+    const confirmButton = (): Element => {
+      const button = baseElement.querySelector('[data-testid="project-delete-confirm"]');
+      if (button === null) throw new Error('the dialog has no confirm button');
+      return button;
+    };
+
+    await fireEvent.click(confirmButton());
+    await waitFor(() => {
+      expect(toastMessages().join(' ')).toContain('Project is busy');
+    });
+    // Still there, with what the computer answered about the project, and
+    // no longer saying a deletion is under way.
+    const dialog = baseElement.querySelector('[data-testid="project-delete-dialog"]');
+    expect(dialog).not.toBeNull();
+    expect(baseElement.querySelector('[data-testid="project-delete-work"]')?.textContent)
+      .toContain('3 workflow runs');
+
+    await fireEvent.click(confirmButton());
+    await waitFor(() => expect(del).toHaveBeenCalledTimes(2));
+    expect(del).toHaveBeenNthCalledWith(2, 'project-1');
+    consoleError.mockRestore();
+  });
+
   it('stops at the preview failure instead of deleting anything', async () => {
     setBindingMock('ProjectDeletionPreview', async () => {
       throw new Error('git is unavailable');
