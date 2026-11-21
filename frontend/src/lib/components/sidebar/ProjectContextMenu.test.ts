@@ -88,16 +88,32 @@ function emptyResult(): ProjectDeletionResult {
 function renderMenu(target: ProjectTarget = makeTarget()) {
   const anchor = document.createElement('div');
   document.body.appendChild(anchor);
-  return render(ProjectContextMenu, {
+  // The row's runs, which its inline rename shares: a test that acts on the
+  // row while a call is out holds them the way ProjectItem does.
+  const actions = createProjectActions();
+  const view = render(ProjectContextMenu, {
     props: {
       target,
-      actions: createProjectActions(),
+      actions,
       anchor,
       open: true,
       onClose: () => {},
       onRename: () => {},
     },
   });
+  return Object.assign(view, { actions });
+}
+
+/** A promise a test resolves or rejects when it chooses. */
+function deferred<T>(): { promise: Promise<T>; reject: (err: unknown) => void } {
+  let reject!: (err: unknown) => void;
+  const promise = new Promise<T>((_resolve, rejectFn) => {
+    reject = rejectFn;
+  });
+  // Nothing awaits this copy; it only keeps an unhandled rejection quiet
+  // until the component's own catch runs.
+  void promise.catch(() => {});
+  return { promise, reject };
 }
 
 async function selectDelete(baseElement: HTMLElement): Promise<void> {
@@ -254,6 +270,68 @@ describe('<ProjectContextMenu> delete flow', () => {
     await fireEvent.click(confirmButton());
     await waitFor(() => expect(del).toHaveBeenCalledTimes(2));
     expect(del).toHaveBeenNthCalledWith(2, 'project-1');
+    consoleError.mockRestore();
+  });
+
+  // The hole these close: the catch re-raised the dialog with a plain
+  // `start`, so a delete that failed after the user had moved on put a
+  // project they had left behind back on the row.
+  it('brings nothing back when the delete fails after the dialog was cancelled', async () => {
+    setBindingMock('ProjectDeletionPreview', async () => workPreview());
+    const call = deferred<ProjectDeletionResult>();
+    setBindingMock('DeleteProject', () => call.promise);
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { baseElement, actions } = renderMenu();
+
+    await selectDelete(baseElement);
+    await waitFor(() => {
+      expect(baseElement.querySelector('[data-testid="project-delete-dialog"]')).not.toBeNull();
+    });
+    await fireEvent.click(baseElement.querySelector('[data-testid="project-delete-confirm"]')!);
+
+    // The user gives up on it while the call is out.
+    const cancel = Array.from(baseElement.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Cancel',
+    );
+    await fireEvent.click(cancel!);
+    await tick();
+    expect(baseElement.querySelector('[data-testid="project-delete-dialog"]')).toBeNull();
+
+    call.reject(new Error('project is busy'));
+    await waitFor(() => {
+      expect(toastMessages().join(' ')).toContain('Project is busy');
+    });
+    expect(baseElement.querySelector('[data-testid="project-delete-dialog"]')).toBeNull();
+    expect(actions.current).toBeNull();
+    consoleError.mockRestore();
+  });
+
+  it('leaves the newer action alone when the delete fails behind it', async () => {
+    setBindingMock('ProjectDeletionPreview', async () => workPreview());
+    const call = deferred<ProjectDeletionResult>();
+    setBindingMock('DeleteProject', () => call.promise);
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { baseElement, actions } = renderMenu();
+
+    await selectDelete(baseElement);
+    await waitFor(() => {
+      expect(baseElement.querySelector('[data-testid="project-delete-dialog"]')).not.toBeNull();
+    });
+    await fireEvent.click(baseElement.querySelector('[data-testid="project-delete-confirm"]')!);
+
+    // A newer gesture on the row, which owns it from here on.
+    const archive = actions.start('archive', { ...makeTarget(), id: 'project-2', label: 'Other' });
+    archive.confirm();
+    await tick();
+    expect(baseElement.textContent).toContain('Hide "Other"');
+
+    call.reject(new Error('project is busy'));
+    await waitFor(() => {
+      expect(toastMessages().join(' ')).toContain('Project is busy');
+    });
+    expect(baseElement.querySelector('[data-testid="project-delete-dialog"]')).toBeNull();
+    expect(baseElement.textContent).toContain('Hide "Other"');
+    expect(actions.current).toBe(archive);
     consoleError.mockRestore();
   });
 

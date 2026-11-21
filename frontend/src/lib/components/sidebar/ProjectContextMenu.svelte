@@ -140,13 +140,12 @@
   }
 
   async function doDelete(run: ProjectActionRun): Promise<void> {
-    const preview = run.preview;
     if (!run.beginSubmit()) return;
     const project = run.target;
     // The one-line confirmation is answered and gone at the press. The
     // preview dialog stays up instead, showing that its deletion is under
     // way, so the run it is rendered from has to outlive the call.
-    if (preview === null) run.end();
+    if (run.preview === null) run.end();
     try {
       const result = await DeleteProject(project.id);
       for (const id of result.threadIds) removeThread(id);
@@ -165,8 +164,9 @@
       addErrorToast(userFacingError(err), err);
       // The dialog the user is looking at stays, to try again. That try is
       // its own run on the same project and the same answer, because this
-      // one has spent itself on the call that failed.
-      if (preview !== null) actions.start('delete', project).offer(preview);
+      // one has spent itself on the call that failed. Nothing comes back if
+      // the user closed that dialog or started something else meanwhile.
+      actions.reraise(run);
     }
   }
 </script>

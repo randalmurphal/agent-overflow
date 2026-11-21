@@ -280,13 +280,12 @@ time the overlay is dropped. One write at a time, and only the newest order
 waiting behind it is sent. Collapse and the show-more limit live in
 `sidebar.svelte.ts` under whatever key the caller gives, and
 `projectDisclosure.ts` is the one module that turns a project into a key (the
-entry's). The records a project id was the key of are not migrated: no id can
+entry's). Nothing migrates what a project id was the key of: an id cannot
 become an entry key without every computer's project rows, which the sidebar
-has not read when the store initializes, so both are retired at startup
-(`appStorageRetireKey`, which refuses the copy a later hydration would bring
-for a key removed before it). The price is paid once: a project collapsed
-before the upgrade opens, and a list showing more than its preview shows the
-preview again. Do not add permanent
+has not read when the store initializes. A repository entry's key is its
+repository key, so a member's saved state is never read again and that
+project opens once; an entry keyed by its own project id, a group and the
+Assistants section keep theirs, because none of them changed key. Do not add permanent
 frontend tombstones for moved or retired entities; pending reads hold only
 enough ownership evidence to reject stale replies.
 

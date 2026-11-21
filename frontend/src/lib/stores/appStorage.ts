@@ -67,23 +67,6 @@ export function appStorageDelete(key: string, backend: BackendKey = HOME_BACKEND
   if (!store.hydrated) store.touched.add(key);
   persist(store);
 }
-/**
- * Forget a key this version no longer reads, and refuse the copy hydration
- * would bring for it: the removal is recorded in `touched`, which the
- * migration below honors, so a key retired before the server bucket lands
- * does not come back with it.
- *
- * Writes nothing when the key is not stored. A boot that only retires keys
- * must not record a migration that has not happened: `persist` marks this
- * client migrated, and a later boot that sees that mark never reads the
- * server bucket again.
- */
-export function appStorageRetireKey(key: string, backend: BackendKey = HOME_BACKEND): void {
-  const store = storeFor(backend);
-  if (!store.hydrated) store.touched.add(key);
-  if (!store.bucket.delete(key)) return;
-  persist(store);
-}
 export function appStorageAdoptLegacyKey(key: string, legacyKey: string, parse: (raw: string) => string | null): string | null {
   const existing = appStorageGet(key);
   if (existing !== null) return existing;

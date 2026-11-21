@@ -31,9 +31,9 @@
 import type { ProjectSortMode } from '../types/settings';
 import { THREAD_PREVIEW_LIMIT } from '../utils/sidebarThreadLimits';
 import {
+  appStorageAdoptLegacyKey,
   appStorageDelete,
   appStorageGet,
-  appStorageRetireKey,
   appStorageSet,
 } from './appStorage';
 import { getSettings, updateSettingsPatch } from './settings.svelte';
@@ -41,22 +41,27 @@ import { readFrontendValue, writeFrontendValue, onFrontendValueChanged } from '.
 
 export type { ProjectSortMode };
 
-// appStorage (per-client) keys. Collapse and the preview size are keyed by
-// the list that owns them: a sidebar entry's key for a project's top level
-// (`stores/projectDisclosure.ts` chooses it), a group id, ASSISTANTS_LIST_KEY.
-const COLLAPSED_KEY = 'sidebar:collapsedEntries';
-const THREAD_LIST_VISIBLE_LIMITS_KEY = 'sidebar:entryThreadListVisibleLimits';
-// The same two records from when a project's own id was the key, before a
-// repository checked out on several computers became one entry. No id can be
-// turned into an entry key here: that needs every computer's project rows,
-// which the sidebar has not read when this module initializes. So they are
-// dropped rather than migrated, and the price is paid once: a project the
-// user collapsed before the upgrade opens, and a list that was showing more
-// than its preview shows the preview again.
-const RETIRED_ID_KEYED_KEYS = [
-  'sidebar:collapsedProjects',
-  'sidebar:threadListVisibleLimits',
-] as const;
+// appStorage (per-client) keys. Both records are keyed by opaque strings and
+// hold every kind of list together: a project's top level by its sidebar
+// entry's key (`stores/projectDisclosure.ts` chooses it), a group's members
+// by the group id, the Assistants section's rows by ASSISTANTS_LIST_KEY.
+//
+// A project's key used to be its own id, before a repository checked out on
+// several computers became one entry. Nothing migrates those: an id cannot
+// be turned into an entry key without every computer's project rows, which
+// the sidebar has not read when this module initializes. A repository
+// entry's key is its repository key, so what was saved under a member's
+// project id is simply never read again, which is the whole price: that
+// project opens once. An entry whose key IS its project id keeps what it
+// saved, and so do groups and the Assistants section, because none of them
+// changed key.
+//
+// A project's key does move with its repository identity, which Recheck can
+// restore and a lost remote can take away: an entry folded while its
+// identity was unknown opens when the identity lands, and the fold under its
+// id answers again if the identity goes away. One row, one fold, either way.
+const COLLAPSED_KEY = 'sidebar:collapsedProjects';
+const THREAD_LIST_VISIBLE_LIMITS_KEY = 'sidebar:threadListVisibleLimits';
 // Groups default to EXPANDED, so the persisted set holds the COLLAPSED
 // ids — the same inversion collapsedProjects uses, for the same reason:
 // a group the user has never touched must show its members. No legacy
@@ -65,8 +70,7 @@ const COLLAPSED_GROUPS_KEY = 'sidebar:collapsedGroups';
 // The Assistants and Projects sections, each folded whole from its header.
 const COLLAPSED_SECTIONS_KEY = 'sidebar:collapsedSections';
 
-// Pre-appStorage localStorage keys. Each was keyed by a project id, or by
-// the inverse of one, so each is removed at module init rather than adopted.
+// Pre-appStorage localStorage keys, adopted once at module init.
 const LEGACY_COLLAPSED_STORAGE_KEY = 'agent-overflow:sidebar:collapsedProjects';
 const LEGACY_EXPANDED_STORAGE_KEY = 'agent-overflow:sidebar:expandedProjects';
 const LEGACY_EXPANDED_THREAD_LISTS_KEY = 'agent-overflow:sidebar:expandedThreadLists';
@@ -112,8 +116,14 @@ function parseStringArray(raw: string): string[] | null {
   }
 }
 
-function stringSetFromStorage(key: string): Set<string> {
-  const raw = appStorageGet(key);
+function stringSetFromStorage(key: string, legacyKey?: string): Set<string> {
+  const raw =
+    appStorageGet(key) ??
+    (legacyKey === undefined
+      ? null
+      : appStorageAdoptLegacyKey(key, legacyKey, (legacy) =>
+          parseStringArray(legacy) === null ? null : legacy,
+        ));
   if (raw === null) return new Set();
   return new Set(parseStringArray(raw) ?? []);
 }
@@ -123,7 +133,12 @@ function writeStringSet(key: string, set: ReadonlySet<string>): void {
 }
 
 function readCollapsed(): Set<string> {
-  return stringSetFromStorage(COLLAPSED_KEY);
+  // Drop the pre-inversion legacy "expanded" key so old data doesn't
+  // linger forever. Its contents can't be migrated meaningfully: the
+  // old set listed user-expanded ids, and computing the inverse needs
+  // the full project list, which isn't loaded here.
+  removeLocalStorageKey(LEGACY_EXPANDED_STORAGE_KEY);
+  return stringSetFromStorage(COLLAPSED_KEY, LEGACY_COLLAPSED_STORAGE_KEY);
 }
 
 function readProjectSortMode(): ProjectSortMode {
@@ -156,7 +171,12 @@ function parseThreadListVisibleLimits(raw: string): Record<string, number> | nul
 }
 
 function readThreadListVisibleLimits(): Record<string, number> {
-  const raw = appStorageGet(THREAD_LIST_VISIBLE_LIMITS_KEY);
+  removeLocalStorageKey(LEGACY_EXPANDED_THREAD_LISTS_KEY);
+  const raw =
+    appStorageGet(THREAD_LIST_VISIBLE_LIMITS_KEY) ??
+    appStorageAdoptLegacyKey(THREAD_LIST_VISIBLE_LIMITS_KEY, LEGACY_THREAD_LIST_LIMITS_KEY, (legacy) =>
+      parseThreadListVisibleLimits(legacy) === null ? null : legacy,
+    );
   if (raw === null) return {};
   return parseThreadListVisibleLimits(raw) ?? {};
 }
@@ -186,26 +206,6 @@ function removeLocalStorageKey(key: string): void {
     // ignore
   }
 }
-
-/**
- * Forget every record a project id was the key of: the two appStorage keys
- * of the id-keyed era and the pre-appStorage localStorage keys behind them.
- *
- * Before anything reads a key, and for every key whether this client holds
- * one or not: a first migration hydrates the durable bucket AFTER the sidebar
- * has mounted (`App.svelte`), and `appStorageRetireKey` is what refuses the
- * server's copy of a key removed in between. Nothing reads any of these
- * afterwards.
- */
-function dropIdKeyedDisclosure(): void {
-  for (const key of RETIRED_ID_KEYED_KEYS) appStorageRetireKey(key);
-  removeLocalStorageKey(LEGACY_COLLAPSED_STORAGE_KEY);
-  removeLocalStorageKey(LEGACY_EXPANDED_STORAGE_KEY);
-  removeLocalStorageKey(LEGACY_EXPANDED_THREAD_LISTS_KEY);
-  removeLocalStorageKey(LEGACY_THREAD_LIST_LIMITS_KEY);
-}
-
-dropIdKeyedDisclosure();
 
 let collapsedProjects: Set<string> = $state(readCollapsed());
 let collapsedGroups: Set<string> = $state(stringSetFromStorage(COLLAPSED_GROUPS_KEY));

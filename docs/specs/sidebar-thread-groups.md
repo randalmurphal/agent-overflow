@@ -65,7 +65,7 @@ the row. Collapsed, it carries its members' bubbled dot.
   show-more footer and a collapsed project's dot rank the same way
   (ruling 2026-10-16, replacing the rule that only a working or
   needs-you status lit them). The limit persists per group in the
-  project limits map (`sidebar:entryThreadListVisibleLimits`), keyed by group
+  project limits map (`sidebar:threadListVisibleLimits`), keyed by group
   id, and is dropped when the group is deleted. The footer sits inside
   the group's rail and takes a thread drop like a member row.
 - **No nesting.** No groups inside groups, and threads do not nest under

@@ -9,7 +9,8 @@
 // target from a later gesture and the call took one from each.
 //
 // A run owns its target and everything derived from it, and only the row's
-// current run is shown or sent. Starting a run retires the one before it,
+// current run is shown or sent, `reraise` after a failed call included.
+// Starting a run retires the one before it,
 // and a run that is not live cannot show, collect or send anything:
 // `beginSubmit` answers false, which is how the call it ends in is gated.
 // A run leaves `live` when it is replaced, when it is ended and when it
@@ -50,6 +51,17 @@ export interface ProjectActions {
   /** The run the row is showing. The only run anything renders. */
   readonly current: ProjectActionRun | null;
   start(kind: ProjectActionKind, target: ProjectTarget): ProjectActionRun;
+  /**
+   * Raise a failed run's dialog again, as a new run on the same target
+   * carrying what the old one had collected, and answer it.
+   *
+   * Nothing happens, and the answer is null, unless the failed run is still
+   * the row's current one: a call answers after the user has moved on, and a
+   * run they cancelled or one a newer gesture replaced has lost the row. It
+   * must not take the row back, which is the only reason this is the owner's
+   * operation and not a second `start` at the call site.
+   */
+  reraise(run: ProjectActionRun): ProjectActionRun | null;
 }
 
 // A run's whole life. It leaves `live` once, and never comes back: the user
@@ -134,16 +146,26 @@ class Run implements ProjectActionRun {
  */
 export function createProjectActions(): ProjectActions {
   let current: Run | null = $state.raw(null);
+  function start(kind: ProjectActionKind, target: ProjectTarget): Run {
+    current?.retire();
+    current = new Run(kind, target, (run) => {
+      if (current === run) current = null;
+    });
+    return current;
+  }
   return {
     get current(): ProjectActionRun | null {
       return current;
     },
-    start(kind: ProjectActionKind, target: ProjectTarget): ProjectActionRun {
-      current?.retire();
-      current = new Run(kind, target, (run) => {
-        if (current === run) current = null;
-      });
-      return current;
+    start,
+    reraise(run: ProjectActionRun): ProjectActionRun | null {
+      if (current !== run) return null;
+      const next = start(run.kind, run.target);
+      // What the dialog it is raising again was rendered from. A one-line
+      // confirmation is answered and gone at the press, so a run that is
+      // still the row's own here is one that was showing a preview.
+      if (run.preview !== null) next.offer(run.preview);
+      return next;
     },
   };
 }

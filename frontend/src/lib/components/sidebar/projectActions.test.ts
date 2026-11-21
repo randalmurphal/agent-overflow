@@ -85,4 +85,50 @@ describe('createProjectActions', () => {
     expect(actions.current).toBeNull();
     refusesEverything(run);
   });
+
+  // The hole this closes: a failed call re-raised its dialog with a plain
+  // `start`, so a project the user had moved on from came back on the row.
+  describe('reraise', () => {
+    /** A preview delete taken for its call: the run outlives it. */
+    function submitted(actions: ReturnType<typeof createProjectActions>, id: string) {
+      const run = actions.start('delete', target(id));
+      run.offer(preview(id));
+      expect(run.beginSubmit()).toBe(true);
+      return run;
+    }
+
+    it('raises the dialog again while the failed run still owns the row', () => {
+      const actions = createProjectActions();
+      const run = submitted(actions, 'a');
+
+      const again = actions.reraise(run);
+
+      expect(again).not.toBeNull();
+      expect(actions.current).toBe(again);
+      // The same project and the same answer, as a run that can be sent.
+      expect(again?.target).toBe(run.target);
+      expect(again?.preview).toEqual(preview('a'));
+      expect(again?.retired).toBe(false);
+      expect(again?.beginSubmit()).toBe(true);
+    });
+
+    it('brings nothing back after the user closed the dialog', () => {
+      const actions = createProjectActions();
+      const run = submitted(actions, 'a');
+      run.end();
+
+      expect(actions.reraise(run)).toBeNull();
+      expect(actions.current).toBeNull();
+    });
+
+    it('leaves a newer action alone', () => {
+      const actions = createProjectActions();
+      const run = submitted(actions, 'a');
+      const rename = actions.start('rename', target('b'));
+
+      expect(actions.reraise(run)).toBeNull();
+      expect(actions.current).toBe(rename);
+      expect(rename.retired).toBe(false);
+    });
+  });
 });
