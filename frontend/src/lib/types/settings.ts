@@ -801,8 +801,12 @@ export interface ModelInfo {
   provider: string;
   isCustom?: boolean;
   // Mirrors provider.ModelInfo.Unlisted: the provider's latest list does not
-  // offer this model. The row stays for threads already on it; pickers drop it.
+  // offer this model. The row stays for threads already on it; pickers drop
+  // it unless recentlyUsed (hiddenModels.pickerOffers).
   unlisted?: boolean;
+  // Mirrors provider.ModelInfo.RecentlyUsed: an unlisted model a thread ran
+  // this week, which pickers still offer.
+  recentlyUsed?: boolean;
   // Mirrors provider.ModelInfo.IsDefault: the provider's own default model.
   isDefault?: boolean;
   capabilities?: string[];

@@ -62,5 +62,17 @@ describe('hiddenModels', () => {
       expect(catalogWithdrawals({ provider: 'claude', model: 'claude-opus-4-5[1m]' }, models)).toEqual(['claude-opus-4-5[1m]']);
       expect(catalogWithdrawals({ provider: 'claude', model: 'claude-opus-4-5' }, [{ ...models[0], unlisted: false }])).toEqual([]);
     });
+
+    it('pickers keep an unlisted model a thread ran this week, and it is not withdrawn', () => {
+      const recent = [
+        { slug: 'claude-opus-5-5' },
+        { slug: 'claude-opus-4-7', name: 'Opus 4.7', provider: 'claude', unlisted: true, recentlyUsed: true },
+        { slug: 'claude-opus-4-5', unlisted: true },
+      ];
+      expect(pickerVisibleModels(makeSettings(), 'claude', recent).map((m) => m.slug))
+        .toEqual(['claude-opus-5-5', 'claude-opus-4-7']);
+      expect(offeredModels(recent).map((m) => m.slug)).toEqual(['claude-opus-5-5', 'claude-opus-4-7']);
+      expect(catalogWithdrawals({ provider: 'claude', model: 'claude-opus-4-7' }, [{ ...recent[1], name: 'Opus 4.7', provider: 'claude' }])).toEqual([]);
+    });
   });
 });

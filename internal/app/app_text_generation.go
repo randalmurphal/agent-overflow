@@ -152,7 +152,7 @@ func (a *App) textGenerationDefaultModel(providerName string) (string, error) {
 	default:
 		return "", fmt.Errorf("text generation does not run on %s", providerName)
 	}
-	catalog, err := a.GetModelsForProvider(providerName)
+	catalog, err := a.modelCatalog(providerName)
 	if err != nil {
 		return "", fmt.Errorf("text generation: %s model list: %w", providerName, err)
 	}

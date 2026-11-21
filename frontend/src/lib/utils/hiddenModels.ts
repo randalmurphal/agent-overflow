@@ -37,15 +37,25 @@ export function hiddenModelSlugs(
   return new Set(key ? (settings[key] ?? []) : []);
 }
 
-/** The catalog rows the provider currently offers (no `unlisted` rows). */
-export function offeredModels<T extends { unlisted?: boolean }>(models: readonly T[]): T[] {
-  return models.filter((model) => !model.unlisted);
+/**
+ * Whether pickers offer a catalog row: the provider lists it, or it is an
+ * `unlisted` row a thread ran this week (`recentlyUsed`, the picker's own
+ * retention policy).
+ */
+export function pickerOffers(model: { unlisted?: boolean; recentlyUsed?: boolean }): boolean {
+  return !model.unlisted || model.recentlyUsed === true;
+}
+
+/** The catalog rows pickers offer (pickerOffers). */
+export function offeredModels<T extends { unlisted?: boolean; recentlyUsed?: boolean }>(models: readonly T[]): T[] {
+  return models.filter(pickerOffers);
 }
 
 /**
  * The models a picker for `provider` offers: the catalog minus rows the
- * provider no longer lists (`unlisted`, kept in the catalog only so threads
- * already on them resolve capabilities) and minus the hidden slugs, except
+ * provider no longer lists and no thread ran this week (pickerOffers; such
+ * rows stay in the catalog only so threads already on them resolve
+ * capabilities) and minus the hidden slugs, except
  * `keepSlug` (a thread already riding such a model keeps its checkmark row,
  * so the picker never shows "nothing selected").
  *
@@ -57,13 +67,13 @@ export function offeredModels<T extends { unlisted?: boolean }>(models: readonly
  * Shared by the model submenu and the composer's `/model <arg>` resolver so
  * the two cannot disagree about which models exist.
  */
-export function pickerVisibleModels<T extends { slug: string; unlisted?: boolean }>(
+export function pickerVisibleModels<T extends { slug: string; unlisted?: boolean; recentlyUsed?: boolean }>(
   settings: Settings,
   provider: string,
   models: readonly T[],
   keepSlug?: string,
 ): T[] {
-  const offered = models.filter((model) => !model.unlisted || model.slug === keepSlug);
+  const offered = models.filter((model) => pickerOffers(model) || model.slug === keepSlug);
   const hidden = hiddenModelSlugs(settings, provider);
   if (hidden.size === 0) return offered;
   const visible = offered.filter(

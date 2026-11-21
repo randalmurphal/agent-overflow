@@ -1,4 +1,5 @@
 import type { ModelInfo } from '../types/settings';
+import { pickerOffers } from './hiddenModels';
 
 interface Selection {
   provider?: string;
@@ -17,9 +18,8 @@ interface Selection {
  */
 export function catalogWithdrawals(selection: Selection, models: ModelInfo[]): string[] {
   const slug = selection.provider === 'claude' ? selection.model.replace(/\[1m\]$/, '') : selection.model;
-  // An unlisted row is kept only for capability lookup; the provider no
-  // longer offers the model.
-  const model = models.find((candidate) => candidate.slug === slug && !candidate.unlisted);
+  // A row pickers do not offer is kept only for capability lookup.
+  const model = models.find((candidate) => candidate.slug === slug && pickerOffers(candidate));
   if (!model) return [selection.model];
   const withdrawn: string[] = [];
   if (selection.reasoningEffort && (selection.provider === 'codex' || model.reasoningEfforts?.length) && !model.reasoningEfforts?.some((effort) => effort.slug === selection.reasoningEffort)) {

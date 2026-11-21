@@ -7,9 +7,11 @@ The served list has two jobs. As a lookup it keeps every shipped and learned
 model, so a thread on a model the CLI stopped listing still resolves its
 capabilities; `DropBinary` is the only subtraction path. As a picker it offers
 what the latest non-empty answer lists, in the CLI's order, with the CLI's
-`default` row marked `IsDefault`; every other row is marked `Unlisted`. The
-application layer clears `Unlisted` for models that ran in the last week, so a
-row one degraded answer omits stays selectable while it is in use. An answer
+`default` row marked `IsDefault`; every other row is marked `Unlisted`, which
+stays the provider's evidence. The model picker's answer
+(`GetModelsForProvider`) also marks `RecentlyUsed` the `Unlisted` models that
+ran in the last week, so a row one degraded answer omits stays selectable while
+it is in use; a model family never resolves to such a row. An answer
 with no models is no answer: the previous one stands, and with none the
 shipped list is served unmarked. An identity without an entry is served the
 newest entry learned from the same binary.

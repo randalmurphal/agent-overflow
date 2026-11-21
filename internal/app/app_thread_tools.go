@@ -562,7 +562,7 @@ func (t threadToolsApp) Catalog(ctx context.Context, q threadtools.CatalogQuery)
 // offers a new thread, and apart from them (Unlisted) the ones it still runs
 // for a thread already on them, which a spawn resolves against too.
 func (t threadToolsApp) providerOption(name string) (threadtools.ProviderOption, error) {
-	models, err := t.app.GetModelsForProvider(name)
+	models, err := t.app.modelCatalog(name)
 	if err != nil {
 		return threadtools.ProviderOption{}, err
 	}

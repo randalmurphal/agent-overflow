@@ -544,11 +544,20 @@ export class ModelInfo {
 
     /**
      * Unlisted marks a catalog row the provider did not offer in its latest
-     * model list. The row still resolves capabilities for threads already on
-     * the model; pickers leave it out. A catalog no provider answer backs
-     * marks nothing.
+     * model list: the provider's evidence, and the only fact a model family
+     * resolves by. The row still resolves capabilities for threads already
+     * on the model; pickers leave it out unless RecentlyUsed. A catalog no
+     * provider answer backs marks nothing.
      */
     "unlisted"?: boolean;
+
+    /**
+     * RecentlyUsed marks an Unlisted row the model picker still shows
+     * because a thread ran the model within the last week. It is the
+     * picker's retention policy, set only on the picker's answer
+     * (GetModelsForProvider), never evidence the provider offers the model.
+     */
+    "recentlyUsed"?: boolean;
 
     /**
      * IsDefault marks the model the provider names as its own default.
@@ -589,22 +598,22 @@ export class ModelInfo {
      * Creates a new ModelInfo instance from a string or object.
      */
     static createFrom($$source: any = {}): ModelInfo {
-        const $$createField6_0 = $$createType10;
-        const $$createField7_0 = $$createType14;
-        const $$createField9_0 = $$createType16;
-        const $$createField10_0 = $$createType18;
+        const $$createField7_0 = $$createType10;
+        const $$createField8_0 = $$createType14;
+        const $$createField10_0 = $$createType16;
+        const $$createField11_0 = $$createType18;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("capabilities" in $$parsedSource) {
-            $$parsedSource["capabilities"] = $$createField6_0($$parsedSource["capabilities"]);
+            $$parsedSource["capabilities"] = $$createField7_0($$parsedSource["capabilities"]);
         }
         if ("fastModeTier" in $$parsedSource) {
-            $$parsedSource["fastModeTier"] = $$createField7_0($$parsedSource["fastModeTier"]);
+            $$parsedSource["fastModeTier"] = $$createField8_0($$parsedSource["fastModeTier"]);
         }
         if ("contextWindows" in $$parsedSource) {
-            $$parsedSource["contextWindows"] = $$createField9_0($$parsedSource["contextWindows"]);
+            $$parsedSource["contextWindows"] = $$createField10_0($$parsedSource["contextWindows"]);
         }
         if ("reasoningEfforts" in $$parsedSource) {
-            $$parsedSource["reasoningEfforts"] = $$createField10_0($$parsedSource["reasoningEfforts"]);
+            $$parsedSource["reasoningEfforts"] = $$createField11_0($$parsedSource["reasoningEfforts"]);
         }
         return new ModelInfo($$parsedSource as Partial<ModelInfo>);
     }

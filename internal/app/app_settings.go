@@ -265,7 +265,9 @@ func patchTouchesLiveClaudeAxis(patch map[string]any) bool {
 }
 
 // GetModelsForProvider returns the known model registry for the given
-// provider, with the provenance of the answer.
+// provider, with the provenance of the answer, as the model picker shows
+// it: modelCatalog with the rows a thread ran this week marked
+// RecentlyUsed, which reads the usage ledger.
 //
 // Each provider's catalog source is declared by its Capabilities, not by a
 // name check here: Codex's list comes live off `model/list` (one CLI spawn,
@@ -281,11 +283,23 @@ func patchTouchesLiveClaudeAxis(patch map[string]any) bool {
 //ao:scope threads:operate
 //ao:route selected
 func (a *App) GetModelsForProvider(providerName string) (provider.ModelCatalog, error) {
+	catalog, err := a.modelCatalog(providerName)
+	if err != nil {
+		return catalog, err
+	}
+	a.markRecentlyUsedModels(&catalog)
+	return catalog, nil
+}
+
+// modelCatalog is the provider's own answer: what it lists, and apart from
+// it (Unlisted) what this computer still runs for threads already on it.
+// Agent profiles, spawns and text generation resolve a model family from
+// it; it reads no usage ledger.
+func (a *App) modelCatalog(providerName string) (provider.ModelCatalog, error) {
 	catalog, err := a.providerDiscoveryService().ModelsForProvider(context.Background(), providerName)
 	if err != nil {
 		return catalog, err
 	}
-	a.listRecentlyUsedModels(&catalog)
 	a.unreadableModels.report(providerName, catalog.Models)
 	return catalog, nil
 }
@@ -330,10 +344,11 @@ func (l *unreadableModelLog) report(providerName string, models []provider.Model
 // provider refuses reports the error in the timeline.
 const recentModelUseWindow = 7 * 24 * time.Hour
 
-// listRecentlyUsedModels clears Unlisted on catalog rows whose model recorded
-// usage within recentModelUseWindow. When the ledger cannot be read every row
-// is listed, so a store failure never hides a model the user can run.
-func (a *App) listRecentlyUsedModels(catalog *provider.ModelCatalog) {
+// markRecentlyUsedModels marks RecentlyUsed the Unlisted catalog rows whose
+// model recorded usage within recentModelUseWindow. When the ledger cannot
+// be read every Unlisted row is marked, so a store failure never hides a
+// model the user can run.
+func (a *App) markRecentlyUsedModels(catalog *provider.ModelCatalog) {
 	if !slices.ContainsFunc(catalog.Models, func(m provider.ModelInfo) bool { return m.Unlisted }) {
 		return
 	}
@@ -355,8 +370,8 @@ func (a *App) listRecentlyUsedModels(catalog *provider.ModelCatalog) {
 		used[provider.NormalizeModelSlug(family[0], model)] = true
 	}
 	for i := range catalog.Models {
-		if err != nil || used[catalog.Models[i].Slug] {
-			catalog.Models[i].Unlisted = false
+		if catalog.Models[i].Unlisted && (err != nil || used[catalog.Models[i].Slug]) {
+			catalog.Models[i].RecentlyUsed = true
 		}
 	}
 }

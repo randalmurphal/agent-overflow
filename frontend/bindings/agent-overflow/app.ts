@@ -1849,7 +1849,9 @@ export function GetMergeConflictFile(ws: app$0.WorkspaceRef, treeOID: string, pa
 
 /**
  * GetModelsForProvider returns the known model registry for the given
- * provider, with the provenance of the answer.
+ * provider, with the provenance of the answer, as the model picker shows
+ * it: modelCatalog with the rows a thread ran this week marked
+ * RecentlyUsed, which reads the usage ledger.
  * 
  * Each provider's catalog source is declared by its Capabilities, not by a
  * name check here: Codex's list comes live off `model/list` (one CLI spawn,
