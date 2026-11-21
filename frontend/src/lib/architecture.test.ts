@@ -544,6 +544,39 @@ function resolveLocalModule(fromFile: string, specifier: string): string | null 
   return path.replace(/\.(ts|js|svelte)$/, '');
 }
 
+// Rule: nothing under components/sidebar/ derives a per-entry fact from the
+// projects store.
+//
+// A repository checked out on several computers is one sidebar row, so what
+// that row shows is a fact about the entry and not about any one checkout.
+// Each of these answers such a question, and each is a carrier a component
+// can reach for instead of the entry value it was handed; four reviews
+// running found one more reader that had. `sidebarEntries.ts` is the one
+// module that may ask, and the entry it builds carries every answer.
+const SIDEBAR_DIR = join(SRC_ROOT, 'lib', 'components', 'sidebar');
+const PROJECTS_STORE = join(STORES_DIR, 'projects');
+const SIDEBAR_ENTRY_OWNER = 'lib/components/sidebar/sidebarEntries.ts';
+const ENTRY_LEVEL_PROJECT_READS: Record<string, string> = {
+  getProjects: 'the rows an entry is grouped from',
+  getProject: "one member's row",
+  projectEntries: 'one row per entry',
+  projectMembers: "an entry's members",
+  entryIdFor: 'which entry a project belongs to',
+  projectEntryKey: "an entry's own identity",
+  projectRepoKey: 'the repository an entry is',
+  representativeOf: 'which member wears an entry',
+  projectOrderPosition: "an entry's manual position",
+  getProjectLiveActivityAt: "a member's live activity",
+  projectSpansBackends: 'whether an entry has members on several computers',
+  projectSiblingOn: "an entry's member on one computer",
+};
+// Shrink-only. A project-level surface that happens to live in this
+// directory, not a reader of the sidebar tree.
+const SIDEBAR_PROJECT_READ_ALLOWLIST: Record<string, string> = {
+  'lib/components/sidebar/AssistantProjectsPicker.svelte':
+    'ticks the projects one assistant serves, which is a list of projects and not the sidebar tree',
+};
+
 // A call, not the words: the comments in lib/transport/ discuss `Events.On`
 // by name and must not read as subscriptions.
 const EVENTS_ON_CALL = /\bEvents\s*\.\s*On\s*\(/;
@@ -595,6 +628,41 @@ describe('architecture', () => {
       ENTITY_BINDING_ALLOWLIST,
       'New violations.',
       'Read the entity through its store instead of re-fetching it; see frontend/CLAUDE.md → State Boundaries.',
+    );
+  });
+
+  it('keeps every per-entry project read in the sidebar entry projection', () => {
+    const offenders = new Map<string, string[]>();
+    let owned = 0;
+    for (const source of sources) {
+      if (!source.file.startsWith(SIDEBAR_DIR + sep)) continue;
+      const reasons: string[] = [];
+      for (const parsed of source.imports) {
+        if (resolveLocalModule(source.file, parsed.specifier) !== PROJECTS_STORE) continue;
+        if (parsed.wholeModule) {
+          reasons.push('imports the whole projects store, which carries every entry-level read');
+          continue;
+        }
+        for (const name of parsed.names) {
+          const answers = ENTRY_LEVEL_PROJECT_READS[name];
+          if (answers === undefined) continue;
+          if (source.path === SIDEBAR_ENTRY_OWNER) {
+            owned += 1;
+            continue;
+          }
+          reasons.push(`${name} answers ${answers}, which the entry value carries`);
+        }
+      }
+      if (reasons.length > 0) offenders.set(source.path, reasons);
+    }
+    // The projection itself must still be doing the asking: with its reads
+    // gone the rule would hold over a directory that had found another way.
+    expect(owned, `${SIDEBAR_ENTRY_OWNER} reads none of them`).toBeGreaterThan(4);
+    expectAllowlistExact(
+      offenders,
+      SIDEBAR_PROJECT_READ_ALLOWLIST,
+      'New violations.',
+      'Take the fact off the SidebarEntry the component is given (components/sidebar/sidebarEntries.ts); add it there if it is missing.',
     );
   });
 

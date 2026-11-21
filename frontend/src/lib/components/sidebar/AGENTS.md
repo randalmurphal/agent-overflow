@@ -38,20 +38,26 @@ which adds the project's empty state and drop targets.
   `ProjectsSection.svelte` is the only reader of that gate here, so what a
   held computer shows is one decision. The rule is in
   [stores/AGENTS.md](../../stores/AGENTS.md#computer-owned-and-frontend-owned-state).
-- An entry is three separate things, and `listedProjects` in
-  `ProjectsSection.svelte` is the one derivation that decides all of them
-  with everything else a header shows or the list sorts by. Its key is the
-  repository key of the computer's chosen checkout (`projectEntryKey`),
-  which no listing, filter, attach or detach changes, so the each block
-  never remounts a row that is still the same entry. Its representative,
-  which gives the label, the action target and the manual position, is
-  elected over the members whose tree is listed, filter ignored, so it can
-  change only at a listing. What it counts, how it is dated and what a
-  header says about its members, its identity warning and its recheck
-  included, come from the members the filter also shows. Nothing reads a
-  per-entry fact out of a global keyed by one member's id: the entry's live
-  activity is `activityOf`, over the members it shows, because a streaming
-  beat bumps a box keyed by its own project id.
+- A sidebar row is one `SidebarEntry` value, built by `buildSidebarEntries`
+  in `sidebarEntries.ts` and taken whole by the components. Nothing under
+  this directory reads a project row or an entry-level function of the
+  projects store to answer a question about a row; `lib/architecture.test.ts`
+  fences those names to that one module, so a new fact about an entry is
+  added to the value rather than derived beside it.
+- The three ids the entry separates. Its `key` is the repository key of the
+  computer's chosen checkout, which no listing, filter, attach or detach
+  changes, so the each block never remounts a row that is still the same
+  entry. Its `id` is the representative, elected over the members whose tree
+  is listed with the filter ignored, and is what an action on the row
+  targets. Its `members` are what the filter also shows, and everything the
+  entry counts, dates (`rankOf`) and says about its members, its identity
+  warning and its recheck included, comes from them.
+- An action takes `projectTarget(entry, label)` at the gesture that starts
+  it and never reads the row again, so a confirmation, a preview or a late
+  reply cannot move it onto the other checkout.
+- A row's label is disambiguated by `ProjectList.svelte` over the entries it
+  renders, so a query that hides one of two same-named projects drops the
+  other's prefix; the entry carries the name and path, not the label.
 - Disclosure needs none of the three. Collapse and the show-more limit stay
   persisted by project id and are read and written over an entry's members
   (`stores/sidebar.svelte.ts`), so what a user set survives every

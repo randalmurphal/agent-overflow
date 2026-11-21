@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ProjectItem from '../ProjectItem.svelte';
+import { entryFromRow } from '../../../../test/helpers/sidebarEntry';
 import { createThreadPane } from '../../../stores/thread.svelte';
 import {
   collapseProject,
@@ -46,6 +47,13 @@ function wrap(id: string, overrides: Partial<Project> = {}): ProjectWithCounts {
   };
 }
 
+// The row reports a toggle; the list writes it. `entryFromRow` keys an entry
+// by its project id, so this stands in for `ProjectsSection`'s writer.
+function onSetExpanded(key: string, expanded: boolean): void {
+  if (expanded) expandProject(key);
+  else collapseProject(key);
+}
+
 function markThreadRunning(threadId: string): void {
   projectTurnStarted(threadId, `turn:${threadId}`, 0, 0);
 }
@@ -81,8 +89,9 @@ describe('<ProjectItem>', () => {
   it('anchors the context menu to the header line, not the whole project container', async () => {
     const { getByTestId, getByRole } = render(ProjectItem, {
       props: {
-        project: wrap('p1'),
-        members: [],
+        get entry() { return entryFromRow(wrap('p1')); },
+        displayLabel: { prefix: '', name: 'p1' },
+        onSetExpanded,
         threads: [thread('t1'), thread('t2')],
         pane: createThreadPane(),
       },
@@ -99,7 +108,9 @@ describe('<ProjectItem>', () => {
 
   it('a left click on the header (chevron, header buttons) closes the open context menu', async () => {
     const { getByTestId, queryByRole } = render(ProjectItem, {
-      props: { project: wrap('p1'), members: [], threads: [], pane: createThreadPane() },
+      props: { get entry() { return entryFromRow(wrap('p1')); },
+ displayLabel: { prefix: '', name: 'p1' },
+        onSetExpanded, threads: [], pane: createThreadPane() },
     });
     const header = getByTestId('project-item').querySelector('[role="button"][aria-expanded]') as HTMLElement;
 
@@ -127,7 +138,9 @@ describe('<ProjectItem>', () => {
     collapseProject('p1');
     setThreadFilterQuery('spike');
     const { getByTestId } = render(ProjectItem, {
-      props: { project: wrap('p1'), members: [], threads: [], pane: createThreadPane() },
+      props: { get entry() { return entryFromRow(wrap('p1')); },
+ displayLabel: { prefix: '', name: 'p1' },
+        onSetExpanded, threads: [], pane: createThreadPane() },
     });
 
     const button = getByTestId('project-item-new-group') as HTMLButtonElement;
@@ -155,7 +168,9 @@ describe('<ProjectItem>', () => {
       updatedAt: 0,
     })));
     const { getByTestId } = render(ProjectItem, {
-      props: { project: wrap('p1'), members: [], threads: [], pane: createThreadPane() },
+      props: { get entry() { return entryFromRow(wrap('p1')); },
+ displayLabel: { prefix: '', name: 'p1' },
+        onSetExpanded, threads: [], pane: createThreadPane() },
     });
 
     await fireEvent.click(getByTestId('project-item-new-group'));
@@ -168,8 +183,9 @@ describe('<ProjectItem>', () => {
     const pane = createThreadPane();
     const { getByTestId } = render(ProjectItem, {
       props: {
-        project: wrap('p1', { name: 'Alpha' }),
-        members: [],
+        get entry() { return entryFromRow(wrap('p1', { name: 'Alpha' })); },
+        displayLabel: { prefix: '', name: 'Alpha' },
+        onSetExpanded,
         threads: [],
         pane,
       },
@@ -182,15 +198,18 @@ describe('<ProjectItem>', () => {
   it('draws a divider only when separated from a previous project', () => {
     const pane = createThreadPane();
     const first = render(ProjectItem, {
-      props: { project: wrap('p1'), members: [], threads: [], pane },
+      props: { get entry() { return entryFromRow(wrap('p1')); },
+ displayLabel: { prefix: '', name: 'p1' },
+        onSetExpanded, threads: [], pane },
     });
     expect(first.queryByTestId('project-item-divider')).toBeNull();
     first.unmount();
 
     const { getByTestId } = render(ProjectItem, {
       props: {
-        project: wrap('p1'),
-        members: [],
+        get entry() { return entryFromRow(wrap('p1')); },
+        displayLabel: { prefix: '', name: 'p1' },
+        onSetExpanded,
         threads: [],
         pane,
         separatedFromPrevious: true,
@@ -206,8 +225,9 @@ describe('<ProjectItem>', () => {
     const pane = createThreadPane();
     const { getByTestId } = render(ProjectItem, {
       props: {
-        project: wrap('p1'),
-        members: [],
+        get entry() { return entryFromRow(wrap('p1')); },
+        displayLabel: { prefix: '', name: 'p1' },
+        onSetExpanded,
         threads: [],
         pane,
       },
@@ -226,8 +246,9 @@ describe('<ProjectItem>', () => {
     const pane = createThreadPane();
     const { getByTestId } = render(ProjectItem, {
       props: {
-        project: wrap('p1'),
-        members: [],
+        get entry() { return entryFromRow(wrap('p1')); },
+        displayLabel: { prefix: '', name: 'p1' },
+        onSetExpanded,
         threads: [],
         pane,
         onNewThread,
@@ -246,8 +267,9 @@ describe('<ProjectItem>', () => {
     const pane = createThreadPane();
     const { getByTestId } = render(ProjectItem, {
       props: {
-        project: wrap('p1'),
-        members: [],
+        get entry() { return entryFromRow(wrap('p1')); },
+        displayLabel: { prefix: '', name: 'p1' },
+        onSetExpanded,
         threads: [],
         pane,
         onNewThread,
@@ -264,8 +286,9 @@ describe('<ProjectItem>', () => {
     const pane = createThreadPane();
     const { getByTestId } = render(ProjectItem, {
       props: {
-        project: wrap('p1'),
-        members: [],
+        get entry() { return entryFromRow(wrap('p1')); },
+        displayLabel: { prefix: '', name: 'p1' },
+        onSetExpanded,
         threads: [],
         pane,
         onNewThread,
@@ -282,8 +305,9 @@ describe('<ProjectItem>', () => {
     const pane = createThreadPane();
     const { getByTestId, queryByRole } = render(ProjectItem, {
       props: {
-        project: wrap('p1'),
-        members: [],
+        get entry() { return entryFromRow(wrap('p1')); },
+        displayLabel: { prefix: '', name: 'p1' },
+        onSetExpanded,
         threads: [],
         pane,
         onNewThread,
@@ -301,8 +325,9 @@ describe('<ProjectItem>', () => {
     expandProject('p1');
     const { getByTestId } = render(ProjectItem, {
       props: {
-        project: wrap('p1'),
-        members: [],
+        get entry() { return entryFromRow(wrap('p1')); },
+        displayLabel: { prefix: '', name: 'p1' },
+        onSetExpanded,
         threads: [],
         pane,
       },
@@ -316,8 +341,9 @@ describe('<ProjectItem>', () => {
     const pane = createThreadPane();
     const { getByTestId } = render(ProjectItem, {
       props: {
-        project: wrap('p1'),
-        members: [],
+        get entry() { return entryFromRow(wrap('p1')); },
+        displayLabel: { prefix: '', name: 'p1' },
+        onSetExpanded,
         threads: [],
         pane,
         onNewThread,
@@ -342,8 +368,9 @@ describe('<ProjectItem>', () => {
 
     const { getByTestId, queryByTestId, getByText } = render(ProjectItem, {
       props: {
-        project: wrap('p1'),
-        members: [],
+        get entry() { return entryFromRow(wrap('p1')); },
+        displayLabel: { prefix: '', name: 'p1' },
+        onSetExpanded,
         threads: [runningThread],
         pane,
       },

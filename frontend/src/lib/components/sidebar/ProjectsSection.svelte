@@ -10,17 +10,10 @@
   // current query.
 
   import { onDestroy } from 'svelte';
-  import type { ProjectWithCounts, Thread, ThreadGroup } from '../../types/models';
+  import type { Thread, ThreadGroup } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import {
-    entryIdFor,
-    getProjectLiveActivityAt,
-    getProjects,
-    projectEntryKey,
-    projectOrderPosition,
-    reorderProjects,
-    representativeOf,
-  } from '../../stores/projects.svelte';
+  import { reorderProjects } from '../../stores/projects.svelte';
+  import { buildSidebarEntries, rankOf, type SidebarEntry } from './sidebarEntries';
   import {
     expandProject,
     collapseProject,
@@ -47,7 +40,7 @@
   import Icon from '../primitives/Icon.svelte';
   import SidebarDeviceFilter from './SidebarDeviceFilter.svelte';
   import { sidebarBackendVisible, sidebarDeviceFilterActive, sidebarThreadVisible } from '../../stores/sidebarDevices.svelte';
-  import { projectBackend, threadGroupBackend } from '../../transport/entityIndex';
+  import { threadGroupBackend } from '../../transport/entityIndex';
   import { HOME_BACKEND, type BackendKey } from '../../transport/backendKey';
   import {
     backendDisplayName,
@@ -117,78 +110,19 @@
     };
   }
 
-  // One derivation of every entry the sidebar renders, and of everything a
-  // header shows or the list sorts by.
-  //
-  // Members whose computer holds its tree are out of it entirely, and of
-  // those that remain the device filter decides which ones an entry counts,
-  // dates and speaks for. So a computer that answers its projects before
-  // its threads changes nothing on screen, and a filter changes only what
-  // the filter is for.
-  //
-  // The entry each member renders under, its key, and which member
-  // represents it are three separate things:
-  //   - `entryOf` is the id of the row rendered, so threads bucket under
-  //     the header that exists;
-  //   - `keys` is the entry's repository key (stores/projects.svelte.ts),
-  //     stable across every representative change, so the each block never
-  //     remounts a row that is still the same entry;
-  //   - the representative is elected over the LISTED members, filter
-  //     ignored, so the label, the action target and the manual position
-  //     can change only when a computer's tree lists, and never because
-  //     the filter changed.
-  // Disclosure needs none of the three: it is persisted by project id and
-  // read over an entry's members (stores/sidebar.svelte.ts).
-  let listedProjects = $derived.by(() => {
-    const listedOn = treeListed();
-    const groups = new Map<string, { listed: ProjectWithCounts[]; shown: ProjectWithCounts[] }>();
-    for (const row of getProjects()) {
-      const backend = projectBackend(row.project.id) ?? HOME_BACKEND;
-      if (!listedOn(backend)) continue;
-      // The store's entry id groups the members; which one of them wears
-      // the entry here is decided below.
-      const token = entryIdFor(row.project.id);
-      let group = groups.get(token);
-      if (group === undefined) groups.set(token, group = { listed: [], shown: [] });
-      group.listed.push(row);
-      if (sidebarBackendVisible(backend)) group.shown.push(row);
-    }
-    const entries: ProjectWithCounts[] = [];
-    const entryOf = new Map<string, string>();
-    const members = new Map<string, ProjectWithCounts[]>();
-    const keys = new Map<string, string>();
-    for (const group of groups.values()) {
-      if (group.shown.length === 0) continue;
-      const rep = representativeOf(group.listed);
-      const id = rep.project.id;
-      let threadCount = 0;
-      let lastActive = 0;
-      for (const member of group.shown) {
-        threadCount += member.threadCount;
-        lastActive = Math.max(lastActive, member.lastActive ?? 0);
-      }
-      for (const member of group.listed) entryOf.set(member.project.id, id);
-      members.set(id, group.shown);
-      keys.set(id, projectEntryKey(id));
-      // The representative's own row while it speaks for every member it
-      // has, so the identity the cutoffs downstream compare stays stable.
-      entries.push(threadCount === rep.threadCount && lastActive === (rep.lastActive ?? 0)
-        ? rep
-        : { ...rep, threadCount, lastActive });
-    }
-    // The newest activity of an entry, over the members it shows: a
-    // streaming beat bumps a box keyed by its own project id, so reading
-    // the representative's alone missed a member's beat and counted a
-    // filtered-out member's. A function, not a field: a field would
-    // allocate a new entry on every beat and defeat the cutoff below.
-    const activityOf = (entryId: string): number => {
-      let newest = 0;
-      for (const member of members.get(entryId) ?? []) {
-        newest = Math.max(newest, getProjectLiveActivityAt(member));
-      }
-      return newest;
-    };
-    return { entries, entryOf, members, keys, activityOf };
+  // One derivation of every entry the sidebar renders and of everything a
+  // header shows or the list sorts by (./sidebarEntries.ts, which carries
+  // the rules). Nothing below reads a project row.
+  let previousEntries: readonly SidebarEntry[] = [];
+  let sidebarEntries = $derived.by(() => {
+    const built = buildSidebarEntries({
+      listed: treeListed(),
+      visible: sidebarBackendVisible,
+      expanded: ({ id }) => isProjectExpanded(id),
+      previous: previousEntries,
+    });
+    previousEntries = built.entries;
+    return built;
   });
 
   let previousThreadBuckets: ReadonlyMap<string, Thread[]> = new Map();
@@ -197,7 +131,7 @@
   let searchBuckets = $derived.by(() => {
     const filterDevices = sidebarDeviceFilterActive();
     const listedOn = treeListed();
-    const entryOf = listedProjects.entryOf;
+    const entryOf = sidebarEntries.entryOf;
     const buckets = bucketSidebarThreads({
       threads: getThreads(),
       groups: getThreadGroups(),
@@ -253,49 +187,42 @@
   // when the re-sort lands in the same order the PREVIOUS array is
   // returned and the animated project each-block (FLIP measure = forced
   // layout) never reconciles for a beat that changed no ordering.
-  // The listing and device tests are already applied, by member, in
-  // listedProjects: every entry here has a member on a computer that passes
-  // both, so this derivation reads no computer and makes one pass.
-  let prevVisibleProjects: ProjectWithCounts[] = [];
+  // The listing and device tests are applied by member in sidebarEntries,
+  // and an entry keeps its identity while nothing about it changed, so a
+  // beat that moves no row returns the previous array.
+  let prevVisibleProjects: readonly SidebarEntry[] = [];
   let visibleProjects = $derived.by(() => {
     const mode = getProjectSortMode();
-    const entries: readonly ProjectWithCounts[] = listedProjects.entries
-      .filter((p) => !p.project.archived)
-      .filter((p) => {
-        if (!query) return true;
-        if (p.project.name.toLowerCase().includes(query)) return true;
-        if ((threadsByProject.get(p.project.id)?.length ?? 0) > 0) return true;
-        // A group whose name matched but whose members are all archived
-        // still makes its project visible — the row the user searched for
-        // is in it.
-        return (groupsByProject.get(p.project.id)?.length ?? 0) > 0;
-      });
+    const entries = sidebarEntries.entries.filter((entry) => {
+      if (!query) return true;
+      if (entry.name.toLowerCase().includes(query)) return true;
+      if ((threadsByProject.get(entry.id)?.length ?? 0) > 0) return true;
+      // A group whose name matched but whose members are all archived
+      // still makes its project visible — the row the user searched for
+      // is in it.
+      return (groupsByProject.get(entry.id)?.length ?? 0) > 0;
+    });
     const next = [...entries].sort((a, b) => {
       switch (mode) {
         case 'manual': {
-          const cmp = projectOrderPosition(a) - projectOrderPosition(b);
+          const cmp = a.position - b.position;
           if (cmp !== 0) return cmp;
-          return a.project.createdAt - b.project.createdAt;
+          return a.createdAt - b.createdAt;
         }
         case 'createdAt':
-          return b.project.createdAt - a.project.createdAt;
+          return b.createdAt - a.createdAt;
         case 'lastActivity':
         default: {
-          const aActive = listedProjects.activityOf(a.project.id);
-          const bActive = listedProjects.activityOf(b.project.id);
-          // Fall back to project.updatedAt when no thread has touched
-          // this project yet — the sidebar still surfaces a freshly
-          // renamed / added project even with zero threads.
-          const aRank = aActive > 0 ? aActive : a.project.updatedAt;
-          const bRank = bActive > 0 ? bActive : b.project.updatedAt;
+          const aRank = rankOf(a);
+          const bRank = rankOf(b);
           if (aRank !== bRank) return bRank - aRank;
-          return a.project.name.localeCompare(b.project.name);
+          return a.name.localeCompare(b.name);
         }
       }
     });
     if (
       next.length === prevVisibleProjects.length
-      && next.every((p, i) => p === prevVisibleProjects[i])
+      && next.every((entry, i) => entry === prevVisibleProjects[i])
     ) {
       return prevVisibleProjects;
     }
@@ -376,6 +303,15 @@
   const handleNewTerminal: ProjectNewTerminalHandler = (projectId) => {
     void openTerminalThread({ projectId });
   };
+
+  // The entry's own disclosure, written where the entry is known. In this
+  // commit it is still keyed by the project id the entry renders as.
+  function setEntryExpanded(_key: string, expanded: boolean): void {
+    const id = visibleProjects.find((entry) => entry.key === _key)?.id;
+    if (id === undefined) return;
+    if (expanded) expandProject(id);
+    else collapseProject(id);
+  }
 
   // Commit a manual reorder. The operation is the store's
   // (stores/projects.svelte.ts#reorderProjects): it writes the positions
@@ -487,9 +423,8 @@
         {/if}
         {#if visibleProjects.length > 0 || pendingCatalogs.length === 0}
           <ProjectList
-            projects={visibleProjects}
-            membersByProject={listedProjects.members}
-            entryKeys={listedProjects.keys}
+            entries={visibleProjects}
+            onSetExpanded={setEntryExpanded}
             emptyMessage={sidebarDeviceFilterActive() ? 'No projects on the selected computers.' : undefined}
             {threadsByProject}
             {groupsByProject}

@@ -7,7 +7,7 @@ import { stageNoRemoteBuild } from '../../../test/helpers/buildVariant';
 import { stageBackend, resetStagedBackends } from '../../../test/helpers/backends';
 import { setBackendIdentityFromBootstrap } from '../../transport/backendIdentity';
 import { noteProject, noteThread } from '../../transport/entityIndex';
-import { addProjectLocal, updateProjectLocal, resetProjectsForTest } from '../../stores/projects.svelte';
+import { addProjectLocal, updateProjectLocal, resetProjectsForTest, touchProjectActivity } from '../../stores/projects.svelte';
 import { replaceAllThreads } from '../../stores/threads.svelte';
 import { listCatalogTreesForTest } from '../../stores/sidebarCatalogs';
 import { upsertThreadGroup, resetThreadGroupsForTest } from '../../stores/threadGroups.svelte';
@@ -115,4 +115,40 @@ for (const compact of [false, true]) it(`labels only visible projects across fil
   await tick(); await waitFor(() => expect(labels()).toEqual(['app']));
   updateProjectLocal(cached);
   await tick(); expect(labels()).toHaveLength(2);
+});
+
+// A date-ordered sidebar ranks an entry by the members it SHOWS. News about a
+// checkout the filter hides is not news about the row: a rename on it, or a
+// streaming beat under it, must not move a row the user can see.
+it('ranks an entry by the members it shows', async () => {
+  stageBackend({ id: 'remote', backendId: 'remote-id', name: 'GPU' });
+  listCatalogTreesForTest();
+  const shown = { id: 'shown', name: 'app', path: '/repo/app', repositoryID: 'github:github.com:1', createdAt: 0, updatedAt: 100, sortPosition: 0, archived: false };
+  const hidden = { ...shown, id: 'hidden', path: '/gpu/app' };
+  const other = { id: 'other', name: 'tools', path: '/repo/tools', repositoryID: 'github:github.com:2', createdAt: 0, updatedAt: 9000, sortPosition: 0, archived: false };
+  noteProject(shown.id, ''); noteProject(hidden.id, 'remote'); noteProject(other.id, '');
+  addProjectLocal(shown); addProjectLocal(hidden); addProjectLocal(other);
+  setSidebarDeviceVisible('remote-id', false);
+  const view = render(ProjectsSection, { pane: null });
+  const ids = () => [...view.container.querySelectorAll('[data-testid="project-item"]')]
+    .map(el => el.getAttribute('data-project-id'));
+  await waitFor(() => expect(ids()).toEqual(['other', 'shown']));
+
+  // Renamed on the computer the filter hides: the row keeps its place.
+  updateProjectLocal({ ...hidden, updatedAt: 20_000 });
+  await tick();
+  expect(ids()).toEqual(['other', 'shown']);
+  // Streaming under it, likewise.
+  touchProjectActivity(hidden.id, 30_000);
+  await tick();
+  expect(ids()).toEqual(['other', 'shown']);
+
+  // The shown checkout's own rename does move it.
+  updateProjectLocal({ ...shown, updatedAt: 20_000 });
+  await tick();
+  expect(ids()).toEqual(['shown', 'other']);
+  // And a beat on a shown member outranks a date.
+  touchProjectActivity(other.id, 50_000);
+  await tick();
+  expect(ids()).toEqual(['other', 'shown']);
 });

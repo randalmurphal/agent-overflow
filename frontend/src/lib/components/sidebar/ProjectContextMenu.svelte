@@ -1,12 +1,17 @@
 <script lang="ts">
   import { projectHasScope } from '../../transport/entityScopes';
-  import { projectBackend, HOME_BACKEND } from '../../transport/entityIndex';
   // Popover-anchored Rename / Archive / Delete menu for a project row.
   // Extracted from ProjectItem.svelte so that file stays close to the
   // <= 250-line target. The confirm dialogs for Archive / Delete live
   // here too — Rename is the only action the parent still drives.
+  //
+  // Everything here acts on `target`, the project frozen at the gesture
+  // that opened the menu (./sidebarEntries.ts). A row is keyed by its
+  // repository and outlives a change of which checkout represents it, so a
+  // menu reading a live row would archive or delete whichever checkout
+  // represents the entry when its confirmation, preview or reply arrives.
 
-  import type { ProjectWithCounts } from '../../types/models';
+  import type { ProjectTarget } from './sidebarEntries';
   import type { ProjectDeletionPreview } from '../../types/workflow';
   import {
     ArchiveProject,
@@ -33,8 +38,7 @@
   import { assistantsOn } from '../../stores/assistants.svelte';
 
   interface Props {
-    project: ProjectWithCounts;
-    labelText: string;
+    target: ProjectTarget;
     anchor: HTMLElement | undefined;
     open: boolean;
     onClose: (reason?: PopoverCloseReason) => void;
@@ -49,18 +53,22 @@
     onNewTerminal?: () => void;
   }
 
-  let { project, labelText, anchor, open, onClose, onRename, onNewThread, onNewAssistant, onNewTerminal }: Props = $props();
-  let newAssistantUngranted = $derived(!projectHasScope('threads:autonomy', project.project.id));
+  let { target, anchor, open, onClose, onRename, onNewThread, onNewAssistant, onNewTerminal }: Props = $props();
+  // The menu outlives a gesture: a second right-click on the row replaces
+  // the target. What the menu DISPLAYS follows the current one; an action
+  // takes the one in hand when it starts and never reads the prop again.
+  let labelText = $derived(target.label);
+  let newAssistantUngranted = $derived(!projectHasScope('threads:autonomy', target.id));
   let compact = $derived(isCompactLayout());
   // The same gates the header's own controls use: visible, inert, and saying why.
   // Rename, New Group, Archive and Delete all ride `threads:operate`; Delete
   // first asks ProjectDeletionPreview, which rides `git:operate`.
-  let operateUngranted = $derived(!projectHasScope('threads:operate', project.project.id));
-  let deleteUngranted = $derived(operateUngranted || !projectHasScope('git:operate', project.project.id));
+  let operateUngranted = $derived(!projectHasScope('threads:operate', target.id));
+  let deleteUngranted = $derived(operateUngranted || !projectHasScope('git:operate', target.id));
   let ungrantedTitle = $derived(operateUngranted ? 'Not granted to this device' : undefined);
-  let newTerminalUngranted = $derived(!projectHasScope('terminal:operate', project.project.id));
+  let newTerminalUngranted = $derived(!projectHasScope('terminal:operate', target.id));
   // The one gated entry here opens an editor on the host desktop.
-  let noHost = $derived(!hasScope('host', projectBackend(project.project.id) ?? HOME_BACKEND));
+  let noHost = $derived(!hasScope('host', target.backend));
 
   let showArchiveConfirm = $state(false);
   let showDeleteConfirm = $state(false);
@@ -69,17 +77,24 @@
   let deletionPreview = $state<ProjectDeletionPreview | null>(null);
   let deleting = $state(false);
 
+  // An action's project is taken when the gesture that starts it happens,
+  // and the action never reads the prop again: a confirmation, a preview or
+  // a reply arrives after the row may have changed hands.
+  let archiveTarget: ProjectTarget | null = $state(null);
+  let deleteTarget: ProjectTarget | null = $state(null);
+
   async function doNewGroup(): Promise<void> {
-    await newThreadGroupInProject(project.project.id);
+    const project = target;
+    await newThreadGroupInProject(project.id);
   }
 
   async function doArchive(): Promise<void> {
-    // Capture before removeProjectLocal drops the row from the label map.
-    const label = labelText;
+    const project = archiveTarget;
+    if (project === null) return;
     try {
-      await ArchiveProject(project.project.id);
-      removeProjectLocal(project.project.id);
-      addToast('info', `Archived project "${label}".`);
+      await ArchiveProject(project.id);
+      removeProjectLocal(project.id);
+      addToast('info', `Archived project "${project.label}".`);
     } catch (err) {
       console.error('Failed to archive project:', err);
       addErrorToast(userFacingError(err), err);
@@ -91,7 +106,8 @@
     try {
       // Project path is already absolute; workspacePath is unused.
       // Empty editorID → the user's default editor.
-      await openInEditor(projectBackend(project.project.id) ?? HOME_BACKEND, project.project.path, 0, 0, '', '');
+      const project = target;
+      await openInEditor(project.backend, project.path, 0, 0, '', '');
     } catch (err) {
       addErrorToast(userFacingError(err), err);
     }
@@ -101,8 +117,10 @@
   // A preview that fails stops here rather than falling through to the plain
   // confirm: that dialog would describe a project with runs as if it had none.
   async function startDelete(): Promise<void> {
+    const project = target;
+    deleteTarget = project;
     try {
-      const preview = await fetchDeletionPreview(project.project.id);
+      const preview = await fetchDeletionPreview(project.id);
       if (preview.hasWork) {
         deletionPreview = preview;
       } else {
@@ -118,16 +136,16 @@
   }
 
   async function doDelete(): Promise<void> {
+    const project = deleteTarget;
+    if (project === null) return;
     deleting = true;
-    // Capture before removeProjectLocal drops the row from the label map.
-    const label = labelText;
     try {
-      const result = await DeleteProject(project.project.id);
+      const result = await DeleteProject(project.id);
       for (const id of result.threadIds) removeThread(id);
-      removeProjectLocal(project.project.id);
+      removeProjectLocal(project.id);
       closePanesShowingThreads(result.threadIds);
       deletionPreview = null;
-      addToast('info', `Deleted project "${label}".`);
+      addToast('info', `Deleted project "${project.label}".`);
       // A checkout git declined to remove is reported separately and stays on
       // screen as a warning: the deletion succeeded, but there is something on
       // disk the user has to finish themselves, and folding that into the
@@ -176,7 +194,7 @@
             }}
           />
         {/if}
-        {#if assistantsOn(projectBackend(project.project.id) ?? HOME_BACKEND)}
+        {#if assistantsOn(target.backend)}
           <MenuItem
             label="New Assistant…"
             disabled={newAssistantUngranted}
@@ -221,6 +239,7 @@
           title={ungrantedTitle}
           onSelect={() => {
             onClose();
+            archiveTarget = target;
             showArchiveConfirm = true;
           }}
         />
@@ -257,7 +276,7 @@
 <ConfirmDialog
   open={showDeleteConfirm}
   title="Delete Project"
-  description={`Permanently delete "${labelText}" and all ${project.threadCount} thread${project.threadCount === 1 ? '' : 's'} it contains. This cannot be undone.`}
+  description={`Permanently delete "${labelText}" and all ${target.threadCount} thread${target.threadCount === 1 ? '' : 's'} it contains. This cannot be undone.`}
   confirmLabel="Delete"
   destructive={true}
   onConfirm={() => {
@@ -273,7 +292,7 @@
   <ProjectDeleteDialog
     open={true}
     projectName={labelText}
-    threadCount={project.threadCount}
+    threadCount={target.threadCount}
     preview={deletionPreview}
     submitting={deleting}
     onConfirm={() => {

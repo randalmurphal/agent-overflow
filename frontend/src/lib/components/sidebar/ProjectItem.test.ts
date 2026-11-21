@@ -1,21 +1,23 @@
-// Duplicate project names are legal (paths are the unique key). The row's
-// label reads the store's disambiguation map: a unique name renders bare
-// (with the classic truncate span), a duplicate gains a dim parent-dir
-// prefix that must never ellipsize.
+// Duplicate project names are legal (paths are the unique key). The list
+// disambiguates its rows: a unique name renders bare (with the classic
+// truncate span), a duplicate gains a dim parent-dir prefix that must never
+// ellipsize.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { tick } from 'svelte';
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import ProjectItem from './ProjectItem.svelte';
-import { addProjectLocal, projectMembers, resetProjectsForTest, updateProjectLocal } from '../../stores/projects.svelte';
+import ProjectList from './ProjectList.svelte';
+import { addProjectLocal, resetProjectsForTest, updateProjectLocal } from '../../stores/projects.svelte';
+import { storeEntries, storeEntryFor } from '../../../test/helpers/sidebarEntry';
 import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
-import type { Project, ProjectWithCounts } from '../../types/models';
+import type { Project } from '../../types/models';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { getToasts, resetToastsForTest } from '../../stores/toast.svelte';
 import { collapseProject, resetSidebarForTest } from '../../stores/sidebar.svelte';
 import { projectTurnStarted, resetForTest as resetThreadStatuses } from '../../stores/threadStatuses.svelte';
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
-import { __resetEntityIndexForTest, noteThread } from '../../transport/entityIndex';
+import { __resetEntityIndexForTest, noteProject, noteThread } from '../../transport/entityIndex';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import type { Thread } from '../../types/models';
 
@@ -33,20 +35,16 @@ function makeProject(id: string, name: string, path: string): Project {
   } as Project;
 }
 
-function withCounts(p: Project): ProjectWithCounts {
-  return { project: p, threadCount: 0, lastActive: 0 };
-}
-
-// The sidebar hands the row the members of its entry that it shows
-// (ProjectsSection's projection). Here that is the store's whole entry,
-// read through a getter so a row the test changes reaches the row.
+// The row takes the entry the sidebar would render for it, through a getter
+// so a row the test changes reaches the component the way the projection's
+// own derivation does.
 function renderItem(p: Project) {
   return render(ProjectItem, {
     props: {
-      project: withCounts(p),
+      get entry() { return storeEntryFor(p.id); },
+      displayLabel: { prefix: '', name: p.name },
       threads: [],
       pane: null,
-      get members() { return projectMembers(p.id); },
     } as never,
   });
 }
@@ -86,48 +84,61 @@ describe('ProjectItem create controls', () => {
   });
 });
 
-describe('ProjectItem label', () => {
+// The label is disambiguated by the list over the rows it renders, so these
+// render the list: a row shows what it was handed.
+describe('ProjectList label', () => {
+  function renderList() {
+    return render(ProjectList, {
+      props: {
+        get entries() { return storeEntries(); },
+        threadsByProject: new Map(),
+        pane: null,
+      } as never,
+    });
+  }
+
+  function labelOf(view: ReturnType<typeof renderList>, path: string): HTMLElement {
+    const row = [...view.container.querySelectorAll('[data-testid="project-item"]')]
+      .find((el) => el.querySelector(`[title="${path}"]`));
+    expect(row).toBeTruthy();
+    return (row as HTMLElement).querySelector('[data-testid="project-item-label"]') as HTMLElement;
+  }
+
   it('renders a unique name bare', () => {
-    const p = makeProject('a', 'web', '/work/web');
-    addProjectLocal(p);
-    const { getByTestId } = renderItem(p);
-    const label = getByTestId('project-item-label');
+    addProjectLocal(makeProject('a', 'web', '/work/web'));
+    const view = renderList();
+    const label = labelOf(view, '/work/web');
     expect(label).toHaveTextContent('web');
     expect(label.textContent).not.toContain('/');
   });
 
   it('renders a parent-dir prefix when another project shares the name', () => {
-    const a = makeProject('a', 'web', '/work/clients/web');
-    const b = makeProject('b', 'web', '/work/personal/web');
-    addProjectLocal(a);
-    addProjectLocal(b);
-    const { getByTestId } = renderItem(a);
-    const label = getByTestId('project-item-label');
+    addProjectLocal(makeProject('a', 'web', '/work/clients/web'));
+    addProjectLocal(makeProject('b', 'web', '/work/personal/web'));
+    const view = renderList();
+    const label = labelOf(view, '/work/clients/web');
     expect(label.textContent?.replace(/\s+/g, '')).toBe('clients/web');
-    // No ellipsis on the conflict layout — the prefix exists to be read.
+    // No ellipsis on the conflict layout: the prefix exists to be read.
     expect(label.className).not.toContain('truncate');
     expect(label.querySelector('.truncate')).toBeNull();
   });
 
   it('drops the prefix again once the conflicting project is gone', async () => {
     const a = makeProject('a', 'web', '/work/clients/web');
-    const b = makeProject('b', 'web', '/work/personal/web');
     addProjectLocal(a);
-    addProjectLocal(b);
-    const view = renderItem(a);
+    addProjectLocal(makeProject('b', 'web', '/work/personal/web'));
+    const view = renderList();
     resetProjectsForTest();
     addProjectLocal(a);
-    await Promise.resolve();
-    const label = view.getByTestId('project-item-label');
-    expect(label.textContent?.replace(/\s+/g, '')).toBe('web');
+    await tick();
+    expect(labelOf(view, '/work/clients/web').textContent?.replace(/\s+/g, '')).toBe('web');
   });
 
   it('renders a checkout at the filesystem root with a single leading slash', () => {
-    const root = makeProject('root', 'web', '/web');
-    addProjectLocal(root);
+    addProjectLocal(makeProject('root', 'web', '/web'));
     addProjectLocal(makeProject('nested', 'web', '/work/web'));
-    const { getByTestId } = renderItem(root);
-    expect(getByTestId('project-item-label').textContent?.replace(/\s+/g, '')).toBe('/web');
+    const view = renderList();
+    expect(labelOf(view, '/web').textContent?.replace(/\s+/g, '')).toBe('/web');
   });
 });
 
@@ -145,7 +156,13 @@ describe('ProjectItem compact layout', () => {
     addProjectLocal(p);
     const onNewTerminal = vi.fn();
     const { getByTestId, getByRole } = render(ProjectItem, {
-      props: { project: withCounts(p), threads: [], pane: null, onNewTerminal, get members() { return projectMembers(p.id); } } as never,
+      props: {
+        get entry() { return storeEntryFor(p.id); },
+        displayLabel: { prefix: '', name: p.name },
+        threads: [],
+        pane: null,
+        onNewTerminal,
+      } as never,
     });
     expect(getByTestId('project-item').querySelector('[draggable]')?.getAttribute('draggable')).toBe('false');
     await fireEvent.click(getByTestId('project-item-menu'));
@@ -217,6 +234,67 @@ describe('ProjectItem identity read failure', () => {
   });
 });
 
+// An action takes its project when the gesture happens. A repository checked
+// out on two computers is one row, and which checkout wears it changes when a
+// computer lists or a checkout is archived; an action already under way must
+// not move onto the other one.
+describe('ProjectItem action target', () => {
+  afterEach(() => {
+    resetStagedBackends();
+    __resetEntityIndexForTest();
+    resetBindingMocks();
+    resetToastsForTest();
+  });
+
+  it('archives the checkout the menu opened on after the entry changes hands', async () => {
+    stageBackend({ id: 'laptop', backendId: 'laptop-id', name: 'Laptop' });
+    const home = { ...makeProject('ck-home', 'app', '/home/app'), repositoryID: 'github:github.com:1' };
+    const laptop = { ...makeProject('ck-laptop', 'app-laptop', '/laptop/app'), repositoryID: 'github:github.com:1' };
+    noteProject(home.id, '');
+    noteProject(laptop.id, 'laptop');
+    addProjectLocal(home);
+    addProjectLocal(laptop);
+    const archive = setBindingMock('ArchiveProject', vi.fn(async () => {}));
+    // The entry as the list would hand it over, asked for by the member that
+    // stays, and kept once the archive takes its last row out of the store:
+    // the list unmounts the row there, which a single render cannot.
+    let latest = storeEntryFor('ck-laptop');
+    const entryNow = () => {
+      latest = storeEntries().find(
+        (candidate) => candidate.members.some((member) => member.project.id === 'ck-laptop'),
+      ) ?? latest;
+      return latest;
+    };
+    const { getByTestId, getByRole } = render(ProjectItem, {
+      props: {
+        get entry() { return entryNow(); },
+        get displayLabel() { return { prefix: '', name: entryNow().name }; },
+        threads: [],
+        pane: null,
+      } as never,
+    });
+    const row = getByTestId('project-item');
+    expect(row.getAttribute('data-project-id')).toBe('ck-home');
+
+    await fireEvent.contextMenu(row.querySelector('[role="button"][aria-expanded]') as HTMLElement);
+    await tick();
+    await fireEvent.click(getByRole('menuitem', { name: 'Archive Project' }));
+    await tick();
+
+    // Home's checkout goes archived while the confirmation is open, so the
+    // live one wears the entry from here on and the row renames itself.
+    updateProjectLocal({ ...home, archived: true });
+    await tick();
+    expect(getByTestId('project-item').getAttribute('data-project-id')).toBe('ck-laptop');
+    expect(getByTestId('project-item-label')).toHaveTextContent('app-laptop');
+    // The confirmation still names what the user opened it on.
+    expect(getByRole('dialog')).toHaveTextContent('Hide "app" from the sidebar.');
+
+    await fireEvent.click(getByRole('button', { name: 'Archive' }));
+    await vi.waitFor(() => expect(archive).toHaveBeenCalledWith('ck-home'));
+  });
+});
+
 // A collapsed project's rollup dot carries its threads' status; one from an
 // unreachable computer is its last report, shown still.
 describe('ProjectItem status rollup', () => {
@@ -236,7 +314,12 @@ describe('ProjectItem status rollup', () => {
     noteThread('remote', 'laptop');
     projectTurnStarted('remote', 'turn-1', 0, 0);
     const { getByTestId } = render(ProjectItem, {
-      props: { project: withCounts(p), threads: [thread], pane: null, get members() { return projectMembers(p.id); } } as never,
+      props: {
+        get entry() { return storeEntryFor(p.id); },
+        displayLabel: { prefix: '', name: p.name },
+        threads: [thread],
+        pane: null,
+      } as never,
     });
     const dot = () => getByTestId('project-item-status-dot').firstElementChild;
     expect(getByTestId('project-item-status-dot')).toHaveAttribute('data-status', 'running');

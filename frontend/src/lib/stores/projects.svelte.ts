@@ -18,7 +18,6 @@ import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import {
   disambiguatedPathLabels,
   formatPathLabel,
-  type PathLabel,
 } from '../utils/pathDisplay';
 import { groupRepositories } from '../utils/repoKey';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
@@ -267,12 +266,6 @@ const projectLabels = $derived.by(() => {
   // Active pickers and the archive list are separate surfaces.
   return new Map([...disambiguatedPathLabels(active), ...disambiguatedPathLabels(archived)]);
 });
-
-/** Structured display label for a project (prefix + name). Undefined when
- *  the id isn't in the store. */
-export function getProjectLabel(id: string): PathLabel | undefined {
-  return projectLabels.get(entryIdFor(id));
-}
 
 /** Flat display-label string (`prefix/name` when disambiguated). Falls
  *  back to the empty string for unknown ids — callers with a "(deleted)"

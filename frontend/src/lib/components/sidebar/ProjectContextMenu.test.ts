@@ -18,7 +18,8 @@ import {
   getBindingMock,
 } from '../../../test/mocks/bindings-app';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
-import type { ProjectWithCounts } from '../../types/models';
+import type { ProjectTarget } from './sidebarEntries';
+import { HOME_BACKEND } from '../../transport/backendKey';
 import type { ProjectDeletionPreview, ProjectDeletionResult } from '../../types/workflow';
 import { setPageGrantsFromBootstrap } from '../../transport/scopes';
 import { isProjectExpanded, resetSidebarForTest } from '../../stores/sidebar.svelte';
@@ -32,17 +33,15 @@ import {
   setThreadFilterQuery,
 } from '../../stores/threadFilter.svelte';
 
-function makeProject(): ProjectWithCounts {
+// The menu takes the project frozen at the gesture that opened it, never a
+// row it could read again.
+function makeTarget(): ProjectTarget {
   return {
-    project: {
-      id: 'project-1',
-      path: '/tmp/repo',
-      name: 'Repo',
-      sortPosition: 0,
-      createdAt: 0,
-      updatedAt: 0,
-      archived: false,
-    },
+    id: 'project-1',
+    name: 'Repo',
+    path: '/tmp/repo',
+    backend: HOME_BACKEND,
+    label: 'Repo',
     threadCount: 2,
   };
 }
@@ -85,13 +84,12 @@ function emptyResult(): ProjectDeletionResult {
   return { threadIds: [], retainedWorktrees: [] };
 }
 
-function renderMenu() {
+function renderMenu(target: ProjectTarget = makeTarget()) {
   const anchor = document.createElement('div');
   document.body.appendChild(anchor);
   return render(ProjectContextMenu, {
     props: {
-      project: makeProject(),
-      labelText: 'Repo',
+      target,
       anchor,
       open: true,
       onClose: () => {},
@@ -312,8 +310,7 @@ describe('<ProjectContextMenu> compact create items', () => {
   function renderMenu(extra: Record<string, unknown> = {}) {
     return render(ProjectContextMenu, {
       props: {
-        project: makeProject(),
-        labelText: 'Repo',
+        target: makeTarget(),
         anchor: document.body,
         open: true,
         onClose: vi.fn(),
@@ -375,7 +372,8 @@ describe('<ProjectContextMenu> New Assistant…', () => {
     noteProject('project-1', 'laptop');
     try {
       applySettingsSnapshot(makeSettings({ assistantsEnabled: false }));
-      const view = renderMenu();
+      // The target carries the computer, captured when the row opened the menu.
+      const view = renderMenu({ ...makeTarget(), backend: 'laptop' });
       expect(view.queryByRole('menuitem', { name: 'New Assistant…' })).not.toBeNull();
       applySettingsSnapshot(makeSettings({ assistantsEnabled: true }));
       applySettingsSnapshot(makeSettings({ assistantsEnabled: false }), 'laptop');

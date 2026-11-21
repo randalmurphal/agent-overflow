@@ -265,7 +265,10 @@ computer. Appearance file locality is decided only after grants resolve.
 Thread and project catalogs from several computers merge by repository identity,
 never by filesystem path. The merge is over every row the client holds, so an
 entry's identity and representative do not depend on what a surface shows; a
-surface showing some members aggregates those itself. The manual reorder is the
+surface showing some members aggregates those itself. What the sidebar's rows
+are is one value from `components/sidebar/sidebarEntries.ts`, the only module
+in that directory allowed to read the store's entry-level functions
+(`lib/architecture.test.ts`). The manual reorder is the
 store's (`reorderProjects`): the order the user dragged is an overlay the
 sidebar sorts by (`projectOrderPosition`), never a write to the rows, so the
 rows carry the last order a computer accepted and a refusal drops the overlay
