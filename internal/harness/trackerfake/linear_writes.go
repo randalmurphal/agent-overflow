@@ -442,7 +442,9 @@ func (m mutationRoot) setArchived(r *gqlRun, args map[string]any, archived bool)
 }
 
 // deleteIssue trashes an issue, or removes it and what hangs off it
-// when permanentlyDelete is set.
+// when permanentlyDelete is set. The payload's entity is the trashed
+// issue (measured, also for an issue already in the trash); a permanent
+// delete answers no entity (unverified).
 func (m mutationRoot) deleteIssue(r *gqlRun, args map[string]any) (any, *gqlErr) {
 	w := m.w
 	is, err := w.foundIssue(args)
@@ -460,5 +462,5 @@ func (m mutationRoot) deleteIssue(r *gqlRun, args map[string]any) (any, *gqlErr)
 	before := *is
 	is.Trashed, is.ArchivedAt = true, r.now
 	w.record(r.e, &before, is, w.Viewer, r.now)
-	return nil, nil
+	return issueObj{w: w, is: is}, nil
 }

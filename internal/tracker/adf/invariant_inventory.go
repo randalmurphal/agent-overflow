@@ -112,9 +112,11 @@ func payloadOf(n, parent *Node, outer string, inCell, covered bool) []rich {
 		}
 	}
 	add := func(phrase, data string) {
+		// A node's phrase carries its article ("an image caption").
+		named := strings.TrimPrefix(strings.TrimPrefix(phrase, "an "), "a ")
 		out = append(out, rich{n: n, kind: n.Type + "|" + phrase,
 			sig: n.Type + "|" + phrase + "|" + data, rep: rep, outer: borrowed, plain: plain,
-			label: "the " + phrase + " of " + strconv.Quote(rep), block: block,
+			label: "the " + named + " of " + strconv.Quote(rep), block: block,
 			pinned: phrase == markPhrases.get()["annotation"], cosmetic: cosmetic(phrase)})
 	}
 	if len(nodePh) > 0 {

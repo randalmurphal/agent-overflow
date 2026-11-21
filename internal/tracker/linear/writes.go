@@ -278,8 +278,9 @@ func (c *Client) issueByID(ctx context.Context, op operation, id string) (*Issue
 }
 
 var opDeleteIssue = newMutation("DeleteIssue", `mutation DeleteIssue($id: String!, $permanently: Boolean) {
-  result: issueDelete(id: $id, permanentlyDelete: $permanently) { success }
-}`)
+  result: issueDelete(id: $id, permanentlyDelete: $permanently) { success value: entity { ...IssueFields previousIdentifiers } }
+}
+`+issueFields)
 
 type deleteIssueVars struct {
 	ID          string `json:"id"`
@@ -289,11 +290,23 @@ type deleteIssueVars struct {
 // DeleteIssue moves an issue and its sub-issues to the trash, from which
 // UnarchiveIssue restores it for 30 days. With permanently it is deleted
 // at once, which needs the workspace permission to manage entities, and
-// polling can no longer see it.
+// polling can no longer see it. The payload's entity is the trashed issue
+// (measured, also for an issue already in the trash): a success that
+// names another issue, or none, leaves the outcome unknown. What a
+// permanent delete's payload holds is unverified, so one with no entity is
+// taken on its success.
 func (c *Client) DeleteIssue(ctx context.Context, id string, permanently bool) error {
 	if id == "" {
 		return invalid(opDeleteIssue.name, "an issue ID is required")
 	}
-	_, err := mutate[struct{}](ctx, c, opDeleteIssue, deleteIssueVars{id, permanently})
-	return err
+	deleted, err := mutate[wireAddressedIssue](ctx, c, opDeleteIssue, deleteIssueVars{id, permanently})
+	switch {
+	case err != nil:
+		return err
+	case deleted == nil && permanently:
+		return nil
+	case deleted == nil || !deleted.names(id):
+		return fmt.Errorf("linear %s: the payload reported success without naming %s as deleted, so whether it was applied is unknown", opDeleteIssue.name, id)
+	}
+	return nil
 }

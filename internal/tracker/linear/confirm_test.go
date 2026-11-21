@@ -73,6 +73,14 @@ func TestWriteAnswerNamesTheWrite(t *testing.T) {
 			func(c *Client) error { return c.DeleteComment(ctx, "comment-2") }, unknown},
 		{"relation delete naming it", lineartest.Exchange{Op: "DeleteRelation", Vars: `{"id":"rel-1"}`, Body: lineartest.Result(`"rel-1"`)},
 			func(c *Client) error { return c.DeleteRelation(ctx, "rel-1") }, applied},
+		{"issue delete naming none", lineartest.Exchange{Op: "DeleteIssue", Vars: `{"id":"WEB-1"}`, Body: `{"data":{"result":{"success":true}}}`},
+			func(c *Client) error { return c.DeleteIssue(ctx, "WEB-1", false) }, unknown},
+		{"issue delete answered by another issue", lineartest.Exchange{Op: "DeleteIssue", Vars: `{"id":"WEB-1"}`, Body: lineartest.Result(issue("issue-2", "WEB-2"))},
+			func(c *Client) error { return c.DeleteIssue(ctx, "WEB-1", false) }, unknown},
+		{"issue delete naming it", lineartest.Exchange{Op: "DeleteIssue", Vars: `{"id":"issue-1"}`, Body: lineartest.Result(issue("issue-1", "WEB-1"))},
+			func(c *Client) error { return c.DeleteIssue(ctx, "issue-1", false) }, applied},
+		{"permanent issue delete answered by another issue", lineartest.Exchange{Op: "DeleteIssue", Vars: `{"id":"WEB-1","permanently":true}`, Body: lineartest.Result(issue("issue-2", "WEB-2"))},
+			func(c *Client) error { return c.DeleteIssue(ctx, "WEB-1", true) }, unknown},
 	} {
 		err := tc.call(newFake(t, tc.ex).client(t))
 		if got := outcomeOf(err); got != tc.want {

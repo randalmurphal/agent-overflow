@@ -415,8 +415,8 @@ A batch reports each item as applied, refused, unknown, not attempted, or
 updated but not moved to the issue asked for. A write is applied only on
 an answer that confirms it: a delete's 204, and a create's or update's
 record with an ID, an update's the one it wrote to. Any other 2xx is
-unknown. No reference states Tempo's write statuses, so this reading is
-unverified. The user's required hours
+unknown. Tempo's spec lists 204 for the delete and 200 for the create and
+the update. The user's required hours
 per day, the approval state of a period, accounts and the site's
 timesheet settings are reads.
 

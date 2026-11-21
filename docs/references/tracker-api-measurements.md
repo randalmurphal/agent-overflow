@@ -486,6 +486,15 @@ Source for schema facts: the
   `issues(orderBy: updatedAt, filter: {team: ..., updatedAt: {gte: <the
   write's updatedAt>}})` returned the issue with its new title. A list
   read shows a create and an edit at once.
+- Measured 2026-11-20 on throwaway issues, on what a delete's payload
+  holds. `commentDelete` and `issueRelationDelete` answered
+  `success: true` with `entityId` equal to the deleted ID; a second
+  `commentDelete` of the same comment answered an error.
+  `issueDelete` answered `success: true` with `entity` the issue (its
+  `id`, `trashed: true`, `archivedAt` set), and the same for an issue
+  already in the trash. `issueDelete` with `permanentlyDelete: true` was
+  refused (`forbidden`) for a key without the workspace permission, so its
+  payload is unmeasured.
 
 ## Tempo
 
@@ -499,6 +508,8 @@ API v4.
   ([OAuth](https://help.tempo.io/timesheets/latest/using-oauth-2-0-authentication)).
 - The base URL is regional (`api.tempo.io`, `api.eu.tempo.io`,
   `api.us.tempo.io`); the wrong one returns an authorization error.
+- The spec lists `200` for `POST /4/worklogs` and `PUT /4/worklogs/{id}`
+  and `204` for `DELETE /4/worklogs/{id}`.
 - Worklogs take the numeric issue ID, not the key, and identify the author
   by Atlassian account ID
   ([v4 comparison](https://help.tempo.io/planner/latest/tempo-api-version-4-0-vs-version-3-0-a-comparison)).

@@ -191,7 +191,7 @@ func TestArchiveUnarchiveDelete(t *testing.T) {
 	f := newFake(t,
 		lineartest.Exchange{Op: "ArchiveIssue", Vars: `{"id":"WEB-1"}`, Body: issueResult(archived)},
 		lineartest.Exchange{Op: "UnarchiveIssue", Vars: `{"id":"WEB-1"}`, Body: issueResult(lineartest.IssueJSON("issue-1", "WEB-1", "2026-11-02T10:01:00.000Z", 1))},
-		lineartest.Exchange{Op: "DeleteIssue", Vars: `{"id":"WEB-1"}`, Body: `{"data":{"result":{"success":true}}}`},
+		lineartest.Exchange{Op: "DeleteIssue", Vars: `{"id":"WEB-1"}`, Body: issueResult(archived)},
 		lineartest.Exchange{Op: "DeleteIssue", Vars: `{"id":"WEB-2","permanently":true}`, Body: `{"data":{"result":{"success":true}}}`},
 	)
 	c := f.client(t)

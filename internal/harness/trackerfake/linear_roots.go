@@ -204,7 +204,7 @@ var mutations = map[string]rootField[mutationRoot]{
 	"issueBatchUpdate":             mutationOf("IssueUpdateInput", "issues", mutationRoot.batchUpdate, "ids"),
 	"issueArchive":                 mutationOf("", "entity", mutationRoot.archiveIssue, "id"),
 	"issueUnarchive":               mutationOf("", "entity", mutationRoot.unarchiveIssue, "id"),
-	"issueDelete":                  mutationOf("", "", mutationRoot.deleteIssue, "id", "permanentlyDelete"),
+	"issueDelete":                  mutationOf("", "entity", mutationRoot.deleteIssue, "id", "permanentlyDelete"),
 	"commentCreate":                mutationOf("CommentCreateInput", "comment", mutationRoot.createComment),
 	"commentUpdate":                mutationOf("CommentUpdateInput", "comment", mutationRoot.updateComment, "id"),
 	"commentDelete":                mutationOf("", "entityId", mutationRoot.deleteComment, "id"),
