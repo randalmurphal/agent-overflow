@@ -10,11 +10,16 @@ import type { ProjectWithCounts, Thread } from '../types/models';
 import {
   __catalogRetryCountForTest,
   catalogLoadState,
+  catalogReadFinished,
   CATALOG_RETRY_DELAYS_MS,
   CATALOG_RETRY_MAX_MS,
+  resetCatalogLoadForTest,
   retryCatalogLoad,
   settleCatalogRead,
 } from './catalogLoad.svelte';
+import { setBackendIdentityFromBootstrap } from '../transport/backendIdentity';
+import { getThreadGroups, loadThreadGroups, resetThreadGroupsForTest } from './threadGroups.svelte';
+import type { ThreadGroup } from '../types/models';
 import { refreshSidebarProjections } from './eventsThreadRows';
 import { getProjects, refreshProjects, resetProjectsForTest } from './projects.svelte';
 import { getThreads, loadThreads } from './threads.svelte';
@@ -296,5 +301,127 @@ describe('catalog load state', () => {
     expect(catalogLoadState(HOME_BACKEND, 'projects')).toEqual(LOADED);
     expect(__catalogRetryCountForTest()).toBe(0);
     expect(getProjects().map((row) => row.project.id)).toEqual(['p1']);
+  });
+});
+
+describe('finished catalog reads', () => {
+  const group = (id: string): ThreadGroup => ({ id, projectId: 'p1', name: id, createdAt: 0, updatedAt: 0 });
+
+  beforeEach(() => {
+    resetCatalogLoadForTest();
+    resetThreadGroupsForTest();
+  });
+
+  it('records a read finished when it answers, and only for its own catalog', async () => {
+    setBindingMock('ListThreads', async () => [makeThread({ id: 't1' })]);
+    expect(catalogReadFinished(HOME_BACKEND, 'threads')).toBe(false);
+    await loadThreads();
+    expect(catalogReadFinished(HOME_BACKEND, 'threads')).toBe(true);
+    expect(catalogReadFinished(HOME_BACKEND, 'groups')).toBe(false);
+
+    setBindingMock('ListThreadGroups', async () => [group('g1')]);
+    await loadThreadGroups();
+    expect(catalogReadFinished(HOME_BACKEND, 'groups')).toBe(true);
+    expect(getThreadGroups().map((row) => row.id)).toEqual(['g1']);
+  });
+
+  it('finishes a group read that fails, is refused or finds the computer offline, and never retries it', async () => {
+    for (const error of [
+      new TransportError('method_error', 'list thread groups: disk I/O error'),
+      new TransportError('scope_required', 'not authorized'),
+      new TransportError('temporarily_unavailable', 'backend is starting'),
+      new DisconnectedError('Computer is offline.'),
+    ]) {
+      resetCatalogLoadForTest();
+      const list = setBindingMock('ListThreadGroups', async () => { throw error; });
+      await expect(loadThreadGroups()).rejects.toBe(error);
+      expect(catalogReadFinished(HOME_BACKEND, 'groups')).toBe(true);
+      expect(__catalogRetryCountForTest()).toBe(0);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(list).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('finishes a read past the startup deadline, and its late answer still commits', async () => {
+    const late = deferred<ThreadGroup[]>();
+    setBindingMock('ListThreadGroups', () => late.promise);
+    const read = loadThreadGroups().catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(2499);
+    expect(catalogReadFinished(HOME_BACKEND, 'groups')).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await read).toBeInstanceOf(ReadDeadlineError);
+    expect(catalogReadFinished(HOME_BACKEND, 'groups')).toBe(true);
+    late.resolve([group('g1')]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(getThreadGroups().map((row) => row.id)).toEqual(['g1']);
+  });
+
+  it('finishes the reads of a computer that is not connected without asking it', async () => {
+    stageBackend({ id: 'gpu', status: 'reconnecting' });
+    const threads = setBindingMock('ListThreads', async () => {
+      if (takePinnedBackend() === 'gpu') throw new Error('asked an offline computer');
+      return [];
+    });
+    setBindingMock('ListThreadGroups', async () => {
+      if (takePinnedBackend() === 'gpu') throw new Error('asked an offline computer');
+      return [];
+    });
+    await loadThreads();
+    await loadThreadGroups();
+    expect(threads).toHaveBeenCalledTimes(1);
+    expect(catalogReadFinished('gpu', 'threads')).toBe(true);
+    expect(catalogReadFinished('gpu', 'groups')).toBe(true);
+    expect(catalogLoadState('gpu', 'threads')).toEqual(LOADING);
+  });
+
+  it('finishes only through the newest read when a newer one supersedes it', async () => {
+    const first = deferred<Thread[]>();
+    const second = deferred<Thread[]>();
+    const answers = [first, second];
+    setBindingMock('ListThreads', () => answers.shift()!.promise);
+    const boot = loadThreads();
+    const hello = loadThreads();
+    first.resolve([makeThread({ id: 'old' })]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(catalogReadFinished(HOME_BACKEND, 'threads')).toBe(false);
+    second.resolve([makeThread({ id: 'new' })]);
+    await Promise.all([boot, hello]);
+    expect(catalogReadFinished(HOME_BACKEND, 'threads')).toBe(true);
+    expect(getThreads().map((thread) => thread.id)).toEqual(['new']);
+  });
+
+  it('settles a read whose computer changed history before it committed as failed, and retries it', async () => {
+    stageBackend({ id: 'gpu' });
+    setBackendIdentityFromBootstrap('home-id', 'gen-1', 'Mac', HOME_BACKEND);
+    const gpu = deferred<Thread[]>();
+    const list = setBindingMock('ListThreads', () => (takePinnedBackend() === 'gpu' ? gpu.promise : Promise.resolve([makeThread({ id: 'home-old' })])));
+    const read = loadThreads();
+    await vi.advanceTimersByTimeAsync(0);
+    // This computer answered; a timeline read reports a new generation
+    // while the other computer is still out.
+    setBackendIdentityFromBootstrap('home-id', 'gen-2', 'Mac', HOME_BACKEND);
+    gpu.resolve([]);
+    await read;
+    expect(catalogReadFinished(HOME_BACKEND, 'threads')).toBe(true);
+    expect(catalogLoadState(HOME_BACKEND, 'threads')).toEqual({ phase: 'failed', error: 'Computer history changed during the read.' });
+    expect(getThreads().map((thread) => thread.id)).toEqual([]);
+    expect(__catalogRetryCountForTest()).toBe(1);
+    const calls = list.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(list.mock.calls.length).toBe(calls + 1);
+    expect(catalogLoadState(HOME_BACKEND, 'threads')).toEqual(LOADED);
+    expect(getThreads().map((thread) => thread.id)).toEqual(['home-old']);
+  });
+
+  it('ignores a computer that is not attached and forgets a detached one', async () => {
+    settleCatalogRead('threads', 'ghost', true);
+    expect(catalogReadFinished('ghost', 'threads')).toBe(false);
+
+    stageBackend({ id: 'gpu' });
+    setBindingMock('ListThreadGroups', async () => []);
+    await loadThreadGroups();
+    expect(catalogReadFinished('gpu', 'groups')).toBe(true);
+    detachBackend('gpu');
+    expect(catalogReadFinished('gpu', 'groups')).toBe(false);
   });
 });

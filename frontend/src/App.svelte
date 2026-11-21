@@ -479,12 +479,14 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
       restoringLayout = true;
       heldForStartingBackend = false;
       try {
+        // Groups load beside the threads they contain, from the same moment,
+        // since the sidebar lists a computer's threads only once both reads
+        // finish. They never gate the layout restore below: a failed group
+        // load must not be read as a failed boot (refreshThreadGroups owns
+        // its own error surface).
+        void refreshThreadGroups();
         const threads = await loadThreads();
         if (disposed) return;
-        // Groups load beside the threads they contain, but never gate the
-        // layout restore below: a failed group load must not be read as a
-        // failed boot (refreshThreadGroups owns its own error surface).
-        void refreshThreadGroups();
         void refreshAgentWakes();
         await appStorageReady;
         if (disposed) return;

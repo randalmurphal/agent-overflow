@@ -25,10 +25,12 @@ import {
 import { resetPaneLayoutForTest } from '../../../stores/paneLayout.svelte';
 import { setBindingMock } from '../../../../test/mocks/bindings-app';
 import { normalizedTextContent } from '../../../../test/helpers/textContent';
+import { makeThread } from '../../../../test/helpers/chat';
 import type { Project, ProjectWithCounts } from '../../../types/models';
 import { setThreadFilterQuery } from '../../../stores/threadFilter.svelte';
 import {
   consumePendingGroupRename,
+  refreshThreadGroups,
   resetThreadGroupsForTest,
 } from '../../../stores/threadGroups.svelte';
 import { createThreadGroupAction } from '../threadGroupActions';
@@ -64,6 +66,7 @@ describe('<ProjectsSection>', () => {
     setThreadFilterQuery('');
     setBindingMock('ListProjects', async () => []);
     setBindingMock('ListThreads', async () => []);
+    setBindingMock('ListThreadGroups', async () => []);
     setBindingMock('GetThreadDefaults', async () => ({
       provider: 'claude',
       model: 'claude-sonnet-4-6',
@@ -75,9 +78,11 @@ describe('<ProjectsSection>', () => {
       workspacePath: '/tmp/ws',
     }));
     // Reset the threads store so threads seeded by one test don't leak
-    // into the next. Both reads also settle HOME's catalogs as loaded, so
-    // the list renders instead of its loading row.
+    // into the next. The reads also settle HOME's catalogs as loaded and
+    // its thread and group reads as finished, so the list renders instead
+    // of its loading row.
     await refreshThreads();
+    await refreshThreadGroups();
     await refreshProjects();
   });
 
@@ -156,9 +161,48 @@ describe('<ProjectsSection>', () => {
 
       await refreshThreads();
       await tick();
+      // The threads are held until the group read finishes as well.
+      expect(getByTestId('sidebar-catalog-loading-label')).toHaveTextContent('Loading threads…');
+      expect(queryByTestId('sidebar-projects-empty')).toBeNull();
+
+      await refreshThreadGroups();
+      await tick();
       expect(queryByTestId('sidebar-catalog-status')).toBeNull();
       expect(getByTestId('sidebar-projects-empty')).toBeInTheDocument();
     });
+
+    // Listed one catalog ahead of the other, the rows would show ungrouped
+    // (or the group empty) and then move under the group: whichever read
+    // answers first, nothing of the computer's threads is listed until both
+    // have, and then they appear in their final arrangement.
+    for (const first of ['threads', 'groups'] as const) {
+      it(`lists threads and their groups together when the ${first} answer first`, async () => {
+        await seedProjects([
+          { project: mkProject('p1', { name: 'Project One' }), threadCount: 3, lastActive: 0 },
+        ]);
+        setBindingMock('ListThreads', async () => [
+          makeThread({ id: 'member-old', projectId: 'p1', groupId: 'g1', updatedAt: 10 }),
+          makeThread({ id: 'member-new', projectId: 'p1', groupId: 'g1', updatedAt: 20 }),
+          makeThread({ id: 'outside', projectId: 'p1', updatedAt: 30 }),
+        ]);
+        setBindingMock('ListThreadGroups', async () => [
+          { id: 'g1', projectId: 'p1', name: 'Big group', createdAt: 0, updatedAt: 0 },
+        ]);
+        const { container, getByTestId } = render(ProjectsSection, { props: { pane: null } });
+        const arrangement = () => Array.from(
+          container.querySelectorAll('[data-sidebar-group-id], [data-sidebar-thread-id]'),
+        ).map((el) => el.getAttribute('data-sidebar-group-id') ?? el.getAttribute('data-sidebar-thread-id'));
+
+        await (first === 'threads' ? refreshThreads() : refreshThreadGroups());
+        await tick();
+        expect(arrangement()).toEqual([]);
+        expect(getByTestId('sidebar-catalog-loading-label')).toHaveTextContent('Loading threads…');
+
+        await (first === 'threads' ? refreshThreadGroups() : refreshThreads());
+        await tick();
+        expect(arrangement()).toEqual(['g1', 'member-new', 'member-old', 'outside']);
+      });
+    }
 
     it('keeps the rows it has visible beside the loading row', async () => {
       await seedProjects([
@@ -195,6 +239,7 @@ describe('<ProjectsSection>', () => {
       });
       await refreshProjects();
       await refreshThreads();
+      await refreshThreadGroups();
       const { getByTestId, queryByTestId, findByTestId } = render(ProjectsSection, { props: { pane: null } });
       await tick();
       expect(normalizedTextContent(getByTestId('sidebar-catalog-failed'))).toMatch(/database disk image is malformed/i);

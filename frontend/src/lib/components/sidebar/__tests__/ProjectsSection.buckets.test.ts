@@ -8,6 +8,7 @@ import { createThreadPane } from '../../../stores/thread.svelte';
 import { resetSidebarForTest } from '../../../stores/sidebar.svelte';
 import { refreshProjects, resetProjectsForTest } from '../../../stores/projects.svelte';
 import { refreshThreads, updateThreadTitle } from '../../../stores/threads.svelte';
+import { finishCatalogReadsForTest } from '../../../stores/catalogLoad.svelte';
 import { resetPanesForTest } from '../../../stores/panes.svelte';
 import { resetPaneLayoutForTest } from '../../../stores/paneLayout.svelte';
 import { resetThreadGroupsForTest } from '../../../stores/threadGroups.svelte';
@@ -46,6 +47,7 @@ beforeEach(async () => {
   setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: false }));
   await refreshThreads();
   await refreshProjects();
+  finishCatalogReadsForTest();
 });
 
 it('rebuilds the tree of the project whose thread changed and of no other', async () => {

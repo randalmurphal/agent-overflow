@@ -9,7 +9,7 @@ import type { CatalogKind, CatalogRows } from '../replica/catalog';
 import { getBackendIdentity } from '../transport/backendIdentity';
 import { readBeforeDeadline, ReadDeadlineError } from '../utils/readBeforeDeadline';
 import { untrack } from 'svelte';
-import { settleCatalogRead } from './catalogLoad.svelte';
+import { finishCatalogReads, settleCatalogRead } from './catalogLoad.svelte';
 
 interface ComputerCatalog<T> {
   read(backend: BackendKey): Promise<T[] | null>;
@@ -18,9 +18,10 @@ interface ComputerCatalog<T> {
   begin(backend: BackendKey): CatalogRead<T>;
   /**
    * One computer's current read failed with `error`. An answer, on time or
-   * late, is settled by the read's commit (settleCatalogAnswers).
+   * late, is settled by the read's commit (settleCatalogAnswers,
+   * finishCatalogReads).
    */
-  settle?(backend: BackendKey, error: unknown): void;
+  settle(backend: BackendKey, error: unknown): void;
 }
 
 // The startup read budget: past it, a computer's answer commits late and
@@ -56,10 +57,13 @@ export function computerCatalog<K extends CatalogKind>(
     read: (backend) => getReplicaCatalog(backend, kind),
     write: (backend, rows) => putReplicaCatalog(backend, kind, rows, stamps.get(backend) ?? null),
     hasRows: (backend) => populated.has(backend),
-    settle: kind === 'threads' || kind === 'projects'
-      ? (backend, error) => settleCatalogRead(kind, backend, false, error)
-      : undefined,
+    settle: settlerFor(kind),
   };
+}
+
+function settlerFor(kind: CatalogKind): (backend: BackendKey, error: unknown) => void {
+  if (kind === 'groups') return (backend) => finishCatalogReads(kind, [backend]);
+  return (backend, error) => settleCatalogRead(kind, backend, false, error);
 }
 
 // A read with no catalog behind it records nothing and is never superseded.
@@ -154,12 +158,18 @@ export async function readComputerRows<T>(
     // One final membership check covers both RPC and IndexedDB awaits.
     if (!live.has(target) || !result.pending.current()) continue;
     const current = getBackendIdentity(target.id);
-    if (result.identity.backendId !== current.backendId || result.identity.generation !== current.generation) continue;
+    if (result.identity.backendId !== current.backendId || result.identity.generation !== current.generation) {
+      // Its rows describe a history the computer no longer has. No other
+      // read follows a generation observed mid-session, so this read
+      // settles as failed, as when the history changes during the RPC.
+      cache?.settle(target.id, new Error('Computer history changed during the read.'));
+      continue;
+    }
     currentResults++;
     // A failure settles here. An answer settles in `commit` with its rows
     // (settleCatalogAnswers), so no render sees a catalog marked loaded
     // before its rows land.
-    if (!result.answered) cache?.settle?.(target.id, result.error);
+    if (!result.answered) cache?.settle(target.id, result.error);
     error ??= result.error;
     hasCache ||= result.cached;
     if (result.answered) {

@@ -13,7 +13,11 @@
 // A group longer than the preview shows its first members and reveals the
 // rest like a project list, and the reveal persists through reload.
 // Collapse keeps only the focused member visible across pane switches,
-// backend updates and reload.
+// backend updates and reload. With either catalog's answer held, a
+// project's threads and groups are not listed until both have answered,
+// then appear in their final arrangement and do not move, at open and
+// after reload.
+import type { Page } from '@playwright/test';
 import { test, expect, type SeedResult } from './fixtures.js';
 import { attachWorktree, seedWorktreeProject } from './worktree-removal-helpers.js';
 
@@ -290,6 +294,158 @@ test('a large group shows its first members, reveals the rest, and keeps the rev
   await expect(showMore).toHaveText('Show 3 More');
 });
 
+const LIST_THREADS = 1090132042;
+const LIST_THREAD_GROUPS = 2176447381;
+
+interface SidebarFrame { order: string; tops: number[] }
+
+// Every animation frame, the sidebar's rows in order with where each one is
+// drawn, and the RPC replies the page's socket has received.
+function recordSidebar(): void {
+  const state = { frames: [] as SidebarFrame[], replies: [] as string[] };
+  (window as unknown as { __sidebar: typeof state }).__sidebar = state;
+  const Native = window.WebSocket;
+  window.WebSocket = class extends Native {
+    constructor(...args: ConstructorParameters<typeof WebSocket>) {
+      super(...args);
+      this.addEventListener('message', (event) => {
+        if (typeof event.data !== 'string') return;
+        const frame = JSON.parse(event.data) as { type?: string; id?: string };
+        if (frame.type === 'rpc' && frame.id) state.replies.push(frame.id);
+      });
+    }
+  };
+  const rows = '[data-sidebar-group-id], [data-sidebar-thread-id], [data-testid="thread-group-show-more"], [data-testid="thread-group-show-less"]';
+  const sample = () => {
+    const els = Array.from(document.querySelectorAll(rows));
+    state.frames.push({
+      order: els.map((el) => el.getAttribute('data-sidebar-group-id') ?? el.getAttribute('data-sidebar-thread-id') ?? el.getAttribute('data-testid')).join(' '),
+      tops: els.map((el) => el.getBoundingClientRect().top),
+    });
+    requestAnimationFrame(sample);
+  };
+  requestAnimationFrame(sample);
+}
+
+async function sidebarRecord(page: Page): Promise<{ frames: SidebarFrame[]; replies: string[] }> {
+  return await page.evaluate(() => {
+    const { frames, replies } = (window as unknown as { __sidebar: { frames: SidebarFrame[]; replies: string[] } }).__sidebar;
+    return { frames: [...frames], replies: [...replies] };
+  });
+}
+
+async function nextFrames(page: Page, count: number): Promise<void> {
+  await page.evaluate(async (frames) => {
+    for (let i = 0; i < frames; i++) await new Promise((resolve) => requestAnimationFrame(resolve));
+  }, count);
+}
+
+// The arrangements the sidebar showed, each once, in order, without the
+// frames it listed nothing.
+function arrangements(frames: SidebarFrame[]): string[] {
+  const shown: string[] = [];
+  for (const { order } of frames) if (order !== '' && order !== shown.at(-1)) shown.push(order);
+  return shown;
+}
+
+// Frames in which a row is drawn more than a pixel from where the frame
+// before drew it: a slide, or a shift from above. A row entering scales
+// from .98, which moves its top by a fraction of a pixel.
+function movedFrames(frames: SidebarFrame[]): number {
+  let moved = 0;
+  let previous = new Map<string, number>();
+  for (const { order, tops } of frames) {
+    const current = new Map(order === '' ? [] : order.split(' ').map((id, i) => [id, tops[i]] as const));
+    if ([...current].some(([id, top]) => previous.has(id) && Math.abs(top - previous.get(id)!) > 1)) moved++;
+    previous = current;
+  }
+  return moved;
+}
+
+// Whichever of the two catalogs answers last, a project's thread rows and
+// group rows first appear together and in their final arrangement, at open
+// and after reload. Shown one catalog ahead of the other, the threads list
+// ungrouped (or the group alone) and then slide into place, under the
+// pointer of whoever is clicking.
+for (const held of ['groups', 'threads'] as const) {
+  test(`threads and their groups first appear together when the ${held} answer last`, async ({ harness, page }) => {
+    const titles = Array.from({ length: 11 }, (_, i) => `Member ${i}`);
+    const seed = await harness.rpc<SeedResult>('HarnessSeed', seedProject(`group-together-${held}`, [...titles, 'Outside']));
+    const { projectId, threadIds } = seed.projects[0];
+    const group = await harness.rpc<ThreadGroup>('CreateThreadGroup', projectId, 'Big group');
+    await harness.rpc('SetThreadGroup', threadIds.slice(0, 11), group.id);
+
+    const heldMethod = held === 'groups' ? LIST_THREAD_GROUPS : LIST_THREADS;
+    const otherMethod = held === 'groups' ? LIST_THREADS : LIST_THREAD_GROUPS;
+    const requests = new Map<string, number>();
+    const otherAnswers: string[] = [];
+    let holding = true;
+    let heldReplies: Array<() => void> = [];
+    await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
+      const server = socket.connectToServer();
+      socket.onMessage((message) => {
+        const frame = JSON.parse(String(message)) as { type?: string; id?: string; methodId?: number };
+        if (frame.type === 'rpc' && frame.id && frame.methodId !== undefined) requests.set(frame.id, frame.methodId);
+        server.send(message);
+      });
+      server.onMessage((message) => {
+        const frame = JSON.parse(String(message)) as { type?: string; id?: string };
+        const method = frame.type === 'rpc' && frame.id ? requests.get(frame.id) : undefined;
+        if (method === heldMethod && holding) {
+          heldReplies.push(() => socket.send(message));
+          return;
+        }
+        if (method === otherMethod) otherAnswers.push(frame.id!);
+        socket.send(message);
+      });
+    });
+    await page.addInitScript(recordSidebar);
+    const release = () => {
+      holding = false;
+      for (const send of heldReplies) send();
+      heldReplies = [];
+    };
+    const members = page.locator('[data-group-member] [data-sidebar-thread-id]');
+
+    // Held: the other catalog has answered and the page has received it,
+    // two frames have painted since, and nothing of the project's threads
+    // or groups is listed, only the loading row.
+    async function expectHeldThenTogether(final: { members: number; footer: string }): Promise<void> {
+      await expect.poll(() => heldReplies.length).toBeGreaterThan(0);
+      await expect.poll(async () => (await sidebarRecord(page)).replies.some((id) => otherAnswers.includes(id))).toBe(true);
+      await nextFrames(page, 2);
+      expect(arrangements((await sidebarRecord(page)).frames)).toEqual([]);
+      await expect(page.getByTestId('sidebar-catalog-loading')).toBeVisible();
+
+      release();
+      await expect(members).toHaveCount(final.members);
+      await expect(page.getByTestId(final.footer)).toBeVisible();
+      await expect(page.locator(`[data-sidebar-thread-id="${threadIds[11]}"]`)).toBeVisible();
+      await expect(page.getByTestId('sidebar-catalog-status')).toHaveCount(0);
+      // Anything else that rearranged the list after it first appeared
+      // would show as a second arrangement here.
+      await nextFrames(page, 30);
+      const { frames } = await sidebarRecord(page);
+      const shown = arrangements(frames);
+      expect(shown).toHaveLength(1);
+      expect(movedFrames(frames)).toBe(0);
+      const order = shown[0].split(' ');
+      expect(order[0]).toBe(group.id);
+      expect(order.at(-1)).toBe(threadIds[11]);
+      expect(order.at(-2)).toBe(final.footer);
+    }
+
+    await harness.open(page);
+    await expectHeldThenTogether({ members: 8, footer: 'thread-group-show-more' });
+
+    await page.getByTestId('thread-group-show-more').click();
+    await expect(members).toHaveCount(11);
+
+    holding = true;
+    await page.reload();
+    await expectHeldThenTogether({ members: 11, footer: 'thread-group-show-less' });
+  });
+}
 
 for (const entry of ['button', 'menu'] as const) {
   test(`new thread from group ${entry} keeps membership through draft cleanup and first send`, async ({ harness, page }) => {

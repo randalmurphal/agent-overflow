@@ -47,13 +47,15 @@
   import Icon from '../primitives/Icon.svelte';
   import SidebarDeviceFilter from './SidebarDeviceFilter.svelte';
   import { sidebarBackendVisible, sidebarDeviceFilterActive, sidebarThreadVisible } from '../../stores/sidebarDevices.svelte';
-  import { projectBackend } from '../../transport/entityIndex';
+  import { projectBackend, threadGroupBackend } from '../../transport/entityIndex';
+  import { HOME_BACKEND, type BackendKey } from '../../transport/backendKey';
   import {
     backendDisplayName,
     getAttachedBackends,
     hasMultipleBackends,
+    threadMachine,
   } from '../../stores/attachedBackends.svelte';
-  import { catalogLoadState } from '../../stores/catalogLoad.svelte';
+  import { catalogLoadState, catalogReadFinished } from '../../stores/catalogLoad.svelte';
   import CatalogStatusRow from './CatalogStatusRow.svelte';
   import ProjectList from './ProjectList.svelte';
   import { bucketSidebarThreads } from './sidebarBuckets';
@@ -95,17 +97,34 @@
   // SidebarTreeList) keep a streaming beat off the DOM. The assistants'
   // rows keep their array the same way, so a project thread's change does
   // not rebuild the Assistants section's tree.
+  //
+  // A computer's project threads and groups are listed only once a read of
+  // its threads and a read of its groups have both finished, answered or
+  // not: listed one catalog ahead of the other, its rows would show in one
+  // arrangement and then move to another. An assistant's row joins no
+  // group and is not held.
+  function treeListed(backend: BackendKey): boolean {
+    return catalogReadFinished(backend, 'threads') && catalogReadFinished(backend, 'groups');
+  }
   let previousThreadBuckets: ReadonlyMap<string, Thread[]> = new Map();
   let previousGroupBuckets: ReadonlyMap<string, ThreadGroup[]> = new Map();
   let previousAssistantLists: ReadonlyMap<'assistants', Thread[]> = new Map();
   let searchBuckets = $derived.by(() => {
     const filterDevices = sidebarDeviceFilterActive();
+    const listed = new Map<BackendKey, boolean>();
+    const listedOn = (backend: BackendKey): boolean => {
+      let value = listed.get(backend);
+      if (value === undefined) listed.set(backend, value = treeListed(backend));
+      return value;
+    };
     const buckets = bucketSidebarThreads({
       threads: getThreads(),
       groups: getThreadGroups(),
       query,
       entryOf: entryIdFor,
-      threadVisible: (thread) => sidebarThreadVisible(thread) && !hiddenAssistantThread(thread),
+      threadVisible: (thread) => sidebarThreadVisible(thread) && !hiddenAssistantThread(thread)
+        && (!!thread.agentId || listedOn(threadMachine(thread.id, thread.projectId))),
+      groupVisible: (group) => listedOn(threadGroupBackend(group.id) ?? HOME_BACKEND),
       filterDevices,
     });
     previousThreadBuckets = reuseUnchangedBuckets(previousThreadBuckets, buckets.threadsByProject);
@@ -122,14 +141,15 @@
   let assistants = $derived(searchBuckets.assistants);
   let projectsShown = $derived(isSidebarSectionShown('projects', query !== ''));
 
-  // Visible computers whose threads or projects have not loaded, each with
-  // a status row. While any remains, what the list shows is incomplete, so
-  // it is never presented as empty.
+  // Visible computers whose threads or projects have not loaded, or whose
+  // threads are held for their groups, each with a status row. While any
+  // remains, what the list shows is incomplete, so it is never presented
+  // as empty.
   let pendingCatalogs = $derived.by(() => getAttachedBackends().flatMap((entry) => {
     if (!sidebarBackendVisible(entry.id)) return [];
     const projects = catalogLoadState(entry.id, 'projects');
     const threads = catalogLoadState(entry.id, 'threads');
-    if (projects.phase === 'loaded' && threads.phase === 'loaded') return [];
+    if (projects.phase === 'loaded' && threads.phase === 'loaded' && treeListed(entry.id)) return [];
     const failed = projects.phase === 'failed' ? projects : threads.phase === 'failed' ? threads : null;
     return [{
       backend: entry.id,

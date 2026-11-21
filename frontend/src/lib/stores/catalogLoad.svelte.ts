@@ -5,8 +5,16 @@
 //
 // Every read settles here, the boot's, a hello's and a retry's alike: a
 // failure through computerCatalog (./computerRows.ts), an answer in the
-// commit that readComputerRows calls with its rows. Until a catalog loads, a failed read
-// retries itself:
+// commit that readComputerRows calls with its rows.
+//
+// Apart from the phase, each computer's catalog records whether a read of
+// it has finished in any way: answered, failed, refused, offline or past
+// its deadline. The sidebar lists a computer's threads only once its
+// thread and group reads have both finished, so the two catalogs first
+// appear together and no row moves when the second arrives. The group
+// catalog has that fact alone: no phase, no status row and no retry.
+//
+// Until a catalog loads, a failed read retries itself:
 //
 //   - A read that missed its startup deadline or met a backend answering
 //     temporarily_unavailable retries after 1, 2, 4 and 8 s, then every
@@ -23,7 +31,7 @@
 // One retry timer per catalog, whatever triggered the failure, so repeated
 // hellos cannot stack retries. An answer cancels it. A loaded catalog
 // stays loaded: later refreshes keep the last answer (./computerRows.ts).
-// Detaching a computer drops its state and timers.
+// Detaching a computer drops its state, its finished reads and its timers.
 
 import { untrack } from 'svelte';
 import { attachedBackends, onBackendDetached } from '../transport/backends';
@@ -35,7 +43,12 @@ import { userFacingError } from '../utils/userFacingError';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import { isTemporarilyUnavailableError } from './transportStatus.svelte';
 
+/** A catalog with a load phase, a status row and retries. */
 export type CatalogKind = 'threads' | 'projects';
+/** A catalog whose reads only record that they finished. */
+export type UnphasedCatalogKind = 'groups';
+/** Every catalog whose read can finish. */
+export type CatalogReadKind = CatalogKind | UnphasedCatalogKind;
 export type CatalogPhase = 'loading' | 'loaded' | 'failed';
 
 export interface CatalogLoad {
@@ -49,12 +62,15 @@ export const CATALOG_RETRY_DELAYS_MS: readonly number[] = [1_000, 2_000, 4_000, 
 export const CATALOG_RETRY_MAX_MS = 10_000;
 
 const CATALOG_KINDS: readonly CatalogKind[] = ['threads', 'projects'];
+const CATALOG_READ_KINDS: readonly CatalogReadKind[] = [...CATALOG_KINDS, 'groups'];
 const LOADING: CatalogLoad = { phase: 'loading', error: '' };
 const LOADED: CatalogLoad = { phase: 'loaded', error: '' };
 
 // Boxless keys read LOADING: an attached computer that has not answered is
 // loading, not empty.
 const states = createKeyedSignalRegistry<CatalogLoad>(LOADING);
+// Whether a read of the catalog has finished; boxless keys read false.
+const finished = createKeyedSignalRegistry<boolean>(false);
 
 interface CatalogRetry {
   /** Consecutive failures; picks the next delay. */
@@ -66,13 +82,28 @@ const retries = new Map<string, CatalogRetry>();
 type CatalogReader = (backend: BackendKey) => Promise<void>;
 const readers = new Map<CatalogKind, CatalogReader>();
 
-function catalogKey(kind: CatalogKind, backend: BackendKey): string {
+function catalogKey(kind: CatalogReadKind, backend: BackendKey): string {
   return `${kind}\u0000${backend}`;
 }
 
 /** One computer's load state for one catalog. Reactive on that key alone. */
 export function catalogLoadState(backend: BackendKey, kind: CatalogKind): CatalogLoad {
   return states.get(catalogKey(kind, backend));
+}
+
+/**
+ * Whether a read of one computer's catalog has finished, whatever its
+ * outcome. Reactive on that key alone.
+ */
+export function catalogReadFinished(backend: BackendKey, kind: CatalogReadKind): boolean {
+  return finished.get(catalogKey(kind, backend));
+}
+
+// The one writer of `finished`. Only an attached computer's read counts.
+function finishRead(kind: CatalogReadKind, backend: BackendKey): boolean {
+  if (!attachedBackends().some((entry) => entry.id === backend)) return false;
+  finished.set(catalogKey(kind, backend), true);
+  return true;
 }
 
 /**
@@ -89,7 +120,7 @@ export function registerCatalogReader(kind: CatalogKind, read: CatalogReader): v
  * returned its rows, else the error it failed with.
  */
 export function settleCatalogRead(kind: CatalogKind, backend: BackendKey, answered: boolean, error?: unknown): void {
-  if (!attachedBackends().some((entry) => entry.id === backend)) return;
+  if (!finishRead(kind, backend)) return;
   const key = catalogKey(kind, backend);
   if (answered) {
     clearRetry(key);
@@ -120,6 +151,15 @@ export function settleCatalogRead(kind: CatalogKind, backend: BackendKey, answer
  */
 export function settleCatalogAnswers(kind: CatalogKind, answered: Iterable<BackendKey>): void {
   for (const backend of answered) settleCatalogRead(kind, backend, true);
+}
+
+/**
+ * Record that a read of an unphased catalog finished for each of
+ * `backends`, answered or not. An answer calls it in the same synchronous
+ * block as its commit, as settleCatalogAnswers.
+ */
+export function finishCatalogReads(kind: UnphasedCatalogKind, backends: Iterable<BackendKey>): void {
+  for (const backend of backends) finishRead(kind, backend);
 }
 
 /**
@@ -170,10 +210,11 @@ function clearRetry(key: string): void {
 }
 
 function dropBackend(backend: BackendKey): void {
-  for (const kind of CATALOG_KINDS) {
+  for (const kind of CATALOG_READ_KINDS) {
     const key = catalogKey(kind, backend);
     clearRetry(key);
     states.drop(key);
+    finished.drop(key);
   }
 }
 
@@ -186,8 +227,19 @@ export function __catalogRetryCountForTest(): number {
   return count;
 }
 
+/**
+ * Test seam: mark every catalog read of each attached computer finished,
+ * phases untouched, for a test that seeds the row stores directly.
+ */
+export function finishCatalogReadsForTest(): void {
+  for (const entry of attachedBackends()) {
+    for (const kind of CATALOG_READ_KINDS) finishRead(kind, entry.id);
+  }
+}
+
 /** Test seam: forget every state and timer. Readers are module wiring and stay. */
 export function resetCatalogLoadForTest(): void {
   for (const key of [...retries.keys()]) clearRetry(key);
   states.reset();
+  finished.reset();
 }

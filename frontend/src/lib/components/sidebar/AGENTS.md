@@ -32,6 +32,11 @@ which adds the project's empty state and drop targets.
   decides a thread has a row: never archived, never `placement` owned.
   The buckets put an assistant in the Assistants section and every other
   listed thread in its project.
+- A computer's project threads and groups are listed only once a read of
+  its threads and a read of its groups have both finished
+  (`catalogReadFinished`); until then it shows the loading row. Listed one
+  catalog ahead of the other, the rows would move into place when the
+  second arrives.
 - A row's worker count and needs-you badge read
   `stores/threadWorkerSummaries.svelte.ts`.
 - `threadRowActions.ts` and `threadGroupActions.ts` own mutations from this

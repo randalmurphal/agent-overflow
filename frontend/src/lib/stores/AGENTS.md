@@ -216,9 +216,11 @@ pending reads, and watched-thread routing for the old owner.
 
 `catalogLoad.svelte.ts` holds whether each computer's thread and project
 catalogs have loaded, and owns their retries until they do. A catalog that
-has not loaded is never presented as empty. Every read settles there: a
-failure inside `readComputerRows`, an answer in the `commit` callback that
-commits its rows. `readComputerRows` calls `commit` in the same synchronous
+has not loaded is never presented as empty. It also records whether a read
+of each computer's thread, project and group catalogs has finished, answered
+or not; the group catalog has only that fact, with no phase or retry. Every
+read settles there: a failure inside `readComputerRows`, an answer in the
+`commit` callback that commits its rows. `readComputerRows` calls `commit` in the same synchronous
 block that replays local mutations; never commit an answer after an `await`.
 
 Only a newer read of the same computer supersedes a sidebar catalog read.

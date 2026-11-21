@@ -47,7 +47,7 @@ function statuses(map: Record<string, ThreadLiveStatus>) {
 const group: ThreadGroup = { id: 'g', projectId: 'project-1', name: 'g', createdAt: 0, updatedAt: 0 };
 
 describe('sidebar rows', () => {
-  const base = { groups: [], query: '', entryOf: (projectId: string) => projectId, threadVisible: () => true, filterDevices: false };
+  const base = { groups: [], query: '', entryOf: (projectId: string) => projectId, threadVisible: () => true, groupVisible: () => true, filterDevices: false };
   // An assistant lives outside every project.
   const agent = mkThread('agent', { agentId: 'ops', projectId: '' });
   const owned = mkThread('owned', { spawnedByThreadId: 'agent', projectId: 'other', placement: 'owned' });

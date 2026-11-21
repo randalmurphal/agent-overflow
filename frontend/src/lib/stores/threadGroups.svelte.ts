@@ -2,6 +2,7 @@ import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 import { invalidateReplicaCatalog } from '../replica/session';
 import { computerCatalogWriter } from './computerCatalogWriter';
 import { computerCatalog, readComputerRows, retainUnavailableComputerRows } from './computerRows';
+import { finishCatalogReads } from './catalogLoad.svelte';
 import { noteThreadGroup, threadGroupBackend } from '../transport/entityIndex';
 // Thread groups: the named, collapsible sidebar rows that gather threads
 // of one project. Entity-keyed on the GROUP, not on the sidebar surface
@@ -101,6 +102,7 @@ export async function loadThreadGroups(): Promise<readonly ThreadGroup[]> {
   await readComputerRows<ThreadGroup>(
     async () => await ListThreadGroups() as ThreadGroup[], (row, backend) => noteThreadGroup(row.id, backend), (result) => {
       threadGroups = retainUnavailableComputerRows(threadGroups, result, (row) => threadGroupBackend(row.id));
+      finishCatalogReads('groups', result.answered);
     }, { catalog: computerCatalog('groups', () => threadGroups, (row) => threadGroupBackend(row.id)) });
   return threadGroups;
 }
