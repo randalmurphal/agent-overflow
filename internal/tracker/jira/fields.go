@@ -183,10 +183,6 @@ func (c *Client) readFields(ctx context.Context, prior *Catalog, lacking []strin
 	return cat, nil
 }
 
-// ForgetFields drops the cached field catalog; a read in flight stores
-// nothing.
-func (c *Client) ForgetFields() { c.catalog.clear() }
-
 // FieldMeta is a field as a screen offers it: on create, on edit, or on
 // a transition.
 type FieldMeta struct {

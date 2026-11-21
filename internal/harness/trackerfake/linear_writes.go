@@ -104,18 +104,18 @@ var issueMembers = []issueMember{
 	{name: "title", field: "title", set: func(_ *gqlRun, is *LinearIssue, v any) *gqlErr { is.Title = str(v); return nil }},
 	{name: "description", field: "description", set: func(_ *gqlRun, is *LinearIssue, v any) *gqlErr { is.Description = str(v); return nil }},
 	{name: "dueDate", field: "dueDate", set: func(_ *gqlRun, is *LinearIssue, v any) *gqlErr { is.DueDate = str(v); return nil }},
-	issueRef("stateId", "state", "WorkflowState", func(w *linearWorkspace, is *LinearIssue, id string) (*string, bool) {
+	issueRef("stateId", "state", func(w *linearWorkspace, is *LinearIssue, id string) (*string, bool) {
 		s := w.state(id)
 		return &is.State, s != nil && s.Team == is.Team
 	}),
-	issueRef("assigneeId", "assignee", "User", func(w *linearWorkspace, is *LinearIssue, id string) (*string, bool) {
+	issueRef("assigneeId", "assignee", func(w *linearWorkspace, is *LinearIssue, id string) (*string, bool) {
 		return &is.Assignee, w.user(id) != nil
 	}),
-	issueRef("cycleId", "cycle", "Cycle", func(w *linearWorkspace, is *LinearIssue, id string) (*string, bool) {
+	issueRef("cycleId", "cycle", func(w *linearWorkspace, is *LinearIssue, id string) (*string, bool) {
 		c := w.cycle(id)
 		return &is.Cycle, c != nil && c.Team == is.Team
 	}),
-	issueRef("projectId", "project", "Project", func(w *linearWorkspace, is *LinearIssue, id string) (*string, bool) {
+	issueRef("projectId", "project", func(w *linearWorkspace, is *LinearIssue, id string) (*string, bool) {
 		return &is.Project, w.project(id) != nil
 	}),
 	{name: "parentId", field: "parent", id: true, set: func(r *gqlRun, is *LinearIssue, v any) *gqlErr {
@@ -125,8 +125,8 @@ var issueMembers = []issueMember{
 			return nil
 		}
 		p := r.w.issue(id)
-		if p == nil || p.ID == is.ID {
-			return notFound("Issue")
+		if p == nil || p.ID == is.ID { // an issue as its own parent: unverified
+			return missingRef("parentId")
 		}
 		is.Parent = p.ID
 		return nil
@@ -150,14 +150,14 @@ var issueMembers = []issueMember{
 		return nil
 	}},
 	{name: "labelIds", field: "labelIds", set: func(r *gqlRun, is *LinearIssue, v any) *gqlErr {
-		list, err := r.labelIDs(v)
+		list, err := r.labelIDs("labelIds", v)
 		if err == nil {
 			is.Labels = list
 		}
 		return err
 	}},
 	{name: "addedLabelIds", field: "labelIds", updateOnly: true, set: func(r *gqlRun, is *LinearIssue, v any) *gqlErr {
-		list, err := r.labelIDs(v)
+		list, err := r.labelIDs("addedLabelIds", v)
 		for _, id := range list {
 			if !slices.Contains(is.Labels, id) {
 				is.Labels = append(is.Labels, id)
@@ -166,19 +166,21 @@ var issueMembers = []issueMember{
 		return err
 	}},
 	{name: "removedLabelIds", field: "labelIds", updateOnly: true, set: func(r *gqlRun, is *LinearIssue, v any) *gqlErr {
-		list, err := r.labelIDs(v)
+		list, err := r.labelIDs("removedLabelIds", v)
 		is.Labels = slices.DeleteFunc(is.Labels, func(id string) bool { return slices.Contains(list, id) })
 		return err
 	}},
 }
 
 // issueRef is a member naming a record by ID; target is the issue field
-// it sets and whether id names a record the issue may reference.
-func issueRef(name, field, typ string, target func(w *linearWorkspace, is *LinearIssue, id string) (*string, bool)) issueMember {
+// it sets and whether id names a record the issue may reference. One it
+// may not is refused as one that does not exist (missingRef; a state or
+// cycle of another team is unverified).
+func issueRef(name, field string, target func(w *linearWorkspace, is *LinearIssue, id string) (*string, bool)) issueMember {
 	return issueMember{name: name, field: field, id: true, set: func(r *gqlRun, is *LinearIssue, v any) *gqlErr {
 		dst, ok := target(r.w, is, str(v))
 		if str(v) != "" && !ok {
-			return notFound(typ)
+			return missingRef(name)
 		}
 		*dst = str(v)
 		return nil
@@ -193,13 +195,14 @@ func numOrUnset(v any) *float64 {
 	return &n
 }
 
-// labelIDs reads a list of label IDs, refusing one the workspace lacks.
-func (r *gqlRun) labelIDs(v any) ([]string, *gqlErr) {
+// labelIDs reads member's list of label IDs, refusing one the workspace
+// lacks.
+func (r *gqlRun) labelIDs(member string, v any) ([]string, *gqlErr) {
 	list, _ := v.([]any)
 	out := []string{}
 	for _, x := range list {
 		if r.w.label(str(x)) == nil {
-			return nil, notFound("IssueLabel")
+			return nil, missingRef(member)
 		}
 		out = append(out, str(x))
 	}

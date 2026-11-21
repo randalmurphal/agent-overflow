@@ -137,16 +137,22 @@ var queryArgs = map[string]rootField[queryRoot]{
 	"searchIssues": {rootSpec: rootSpec{args: []string{"term", "teamId"}}, run: queryRoot.search},
 }
 
-// notFound is Linear's error for an ID that names nothing, at the field:
-// an issue's is "Entity not found: Issue", answered HTTP 200 with data
-// null; a comment's, relation's, cycle's or team's says "Could not find
-// referenced" and the type (measured).
+// notFound is Linear's error for an ID that names nothing, at the field,
+// answered HTTP 200 with data null: the message is "Entity not found: "
+// and the type, the presentable message "Could not find referenced " and
+// the type (measured for a read of an issue, comment, relation, cycle,
+// team, user, project, state and label, and for issueUpdate's teamId).
 func notFound(typ string) *gqlErr {
-	msg := "Could not find referenced " + typ + "."
-	if typ == "Issue" {
-		msg = "Entity not found: Issue"
-	}
-	return &gqlErr{code: "INPUT_ERROR", message: msg, userError: true}
+	return &gqlErr{code: "INPUT_ERROR", message: "Entity not found: " + typ, presentable: "Could not find referenced " + typ + ".", userError: true}
+}
+
+// missingRef is Linear's refusal of a write whose input member names, by
+// ID, a record that does not exist (measured for issueUpdate's stateId,
+// assigneeId, labelIds, cycleId, projectId and parentId; a create's and
+// the label deltas' are unverified).
+func missingRef(member string) *gqlErr {
+	return &gqlErr{code: "INPUT_ERROR", message: "Entity not found in validateAccess: " + member,
+		presentable: "An item needed to save your changes is unavailable.", userError: true}
 }
 
 func (q queryRoot) argField(r *gqlRun, f *ast.Field, args map[string]any) (any, *gqlErr, bool) {

@@ -84,8 +84,6 @@ var issueCases = map[string]func(t *testing.T, f *fakeEnv){
 			t.Fatalf("found %+v", u)
 		}
 	},
-	"ForgetUsers":      func(t *testing.T, f *fakeEnv) { f.c.ForgetUsers() },
-	"ForgetFields":     func(t *testing.T, f *fakeEnv) { f.c.ForgetFields() },
 	"ForgetBoard":      func(t *testing.T, f *fakeEnv) { f.c.ForgetBoard(1) },
 	"ForgetCredential": func(t *testing.T, f *fakeEnv) { f.c.ForgetCredential(); got(f.c.Myself(f.ctx)).must(t) },
 	"Close": func(t *testing.T, f *fakeEnv) {

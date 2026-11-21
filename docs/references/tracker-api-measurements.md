@@ -370,8 +370,9 @@ Source for schema facts: the
   read that returned nothing 441 at `first: 50` and 176 at `first: 20`.
   The largest page is 250, outer or nested: `first: 251` answers
   `INVALID_INPUT` with "first must not be greater than 250". `comment`, `issueRelation`, `cycle` and
-  `team` for an ID that names nothing answer `INPUT_ERROR` with "Could not
-  find referenced" and the type's name, at that field. A sub-issue created
+  `team` for an ID that names nothing answer `INPUT_ERROR` at that field
+  (the message is in the 2026-11-20 entry on missing entities below; the
+  client's `GraphQLError.Message` shows the presentable one). A sub-issue created
   naming only its parent took none of the parent's priority, assignee, due
   date or labels. Not measured there: project and cycle inheritance, what
   a cycle filter selects, and whether `issueUpdate` refuses another team's
@@ -425,6 +426,19 @@ Source for schema facts: the
   "id not found" and changed none; with 51 IDs, `INVALID_INPUT`. One
   failing case each, so a failed document's effect is read back, not
   assumed.
+- Measured the same day, missing entities, one run each with a fresh UUID
+  that names nothing. A read by ID (`issue`, `comment`, `issueRelation`,
+  `cycle`, `team`, `user`, `project`, `workflowState`, `issueLabel`)
+  answers HTTP 200 with `data` null and one `INPUT_ERROR` at that field:
+  message `Entity not found: <Type>`, `userPresentableMessage`
+  `Could not find referenced <Type>.`. `issueUpdate` of an existing issue
+  whose input names such an ID answers `data` null and one `INPUT_ERROR`
+  at `["issueUpdate"]`: for `stateId`, `assigneeId`, `labelIds`,
+  `cycleId`, `projectId` and `parentId` the message is
+  `Entity not found in validateAccess: <member>` with the presentable
+  message "An item needed to save your changes is unavailable."; for
+  `teamId` it is `Entity not found: Team`. Not measured: `issueCreate`,
+  the label delta members, and an ID that exists in another team.
 - Measured the same day with throwaway issues. A page cursor follows its
   issue: it means "after where that issue is now", not the place the issue
   had when the page was read. An oldest-update-first walk of three issues

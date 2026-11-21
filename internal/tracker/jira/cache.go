@@ -4,6 +4,7 @@ import (
 	"container/list"
 	"context"
 	"sync"
+	"time"
 
 	"agent-overflow/internal/tracker/trackerapi"
 )
@@ -23,24 +24,37 @@ import (
 // CredentialMark). A credential read again, forgotten or replaced after
 // a refusal retires every value, whichever call drew the answer that
 // caused it; no entry point has to report it.
+//
+// A value is also dropped once it is maxAge old, for what Jira changes
+// with no signal and nothing else drops (siteAge); zero keeps a value
+// until its owner drops it.
 type cache[K comparable, V any] struct {
-	mu    sync.Mutex
-	size  int
-	clone func(V) V // nil when V shares no memory a caller can change
-	now   func() trackerapi.CredentialMark
-	order *list.List
-	byKey map[K]*list.Element
-	gen   uint64
+	mu     sync.Mutex
+	size   int
+	maxAge time.Duration
+	clone  func(V) V // nil when V shares no memory a caller can change
+	now    func() trackerapi.CredentialMark
+	clock  func() time.Time
+	order  *list.List
+	byKey  map[K]*list.Element
+	gen    uint64
 }
 
 type cacheEntry[K comparable, V any] struct {
-	key  K
-	val  V
-	mark trackerapi.CredentialMark
+	key    K
+	val    V
+	mark   trackerapi.CredentialMark
+	stored time.Time
 }
 
-func newCache[K comparable, V any](size int, clone func(V) V, now func() trackerapi.CredentialMark) *cache[K, V] {
-	return &cache[K, V]{size: size, clone: clone, now: now, order: list.New(), byKey: map[K]*list.Element{}}
+// siteAge is how long the field catalog and a user are handed out before
+// they are read again. Jira sends no signal when an administrator renames
+// a field, or a user's name, time zone or active state changes, and no
+// read drops them as a board's structure read drops its configuration.
+const siteAge = 30 * time.Minute
+
+func newCache[K comparable, V any](size int, maxAge time.Duration, clone func(V) V, now func() trackerapi.CredentialMark) *cache[K, V] {
+	return &cache[K, V]{size: size, maxAge: maxAge, clone: clone, now: now, clock: time.Now, order: list.New(), byKey: map[K]*list.Element{}}
 }
 
 func (c *cache[K, V]) copy(v V) V {
@@ -51,8 +65,9 @@ func (c *cache[K, V]) copy(v V) V {
 }
 
 // get returns a copy of the value under k, while the credential read it
-// was drawn under is the one the transport holds; a value of another
-// read is dropped. Inside a walk (trackerapi.Walk) whose answers were
+// was drawn under is the one the transport holds and the value is
+// younger than maxAge; a value of another read, or one that old, is
+// dropped. Inside a walk (trackerapi.Walk) whose answers were
 // drawn under another read, the value is a miss: the request the caller
 // then sends moves the walk.
 func (c *cache[K, V]) get(ctx context.Context, k K) (V, bool) {
@@ -65,7 +80,7 @@ func (c *cache[K, V]) get(ctx context.Context, k K) (V, bool) {
 		return zero, false
 	}
 	entry := e.Value.(cacheEntry[K, V])
-	if !sameRead(entry.mark, now) {
+	if !sameRead(entry.mark, now) || c.maxAge > 0 && c.clock().Sub(entry.stored) >= c.maxAge {
 		c.order.Remove(e)
 		delete(c.byKey, k)
 		return zero, false
@@ -98,11 +113,11 @@ func (c *cache[K, V]) put(epoch uint64, mark trackerapi.CredentialMark, k K, v V
 	}
 	v = c.copy(v)
 	if e, ok := c.byKey[k]; ok {
-		e.Value = cacheEntry[K, V]{k, v, mark}
+		e.Value = cacheEntry[K, V]{k, v, mark, c.clock()}
 		c.order.MoveToFront(e)
 		return
 	}
-	c.byKey[k] = c.order.PushFront(cacheEntry[K, V]{k, v, mark})
+	c.byKey[k] = c.order.PushFront(cacheEntry[K, V]{k, v, mark, c.clock()})
 	if c.order.Len() > c.size {
 		last := c.order.Back()
 		c.order.Remove(last)

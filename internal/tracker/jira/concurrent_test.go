@@ -42,12 +42,7 @@ func TestConcurrentCalls(t *testing.T) {
 			if _, err := c.User(t.Context(), fmt.Sprintf("acc-user%d", i%5)); err != nil {
 				errs <- err
 			}
-			switch i % 10 {
-			case 0:
-				c.ForgetFields()
-			case 1:
-				c.ForgetUsers()
-			case 2:
+			if i%10 == 2 {
 				c.ForgetCredential()
 			}
 		})

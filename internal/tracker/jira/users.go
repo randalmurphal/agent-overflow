@@ -130,9 +130,6 @@ func (c *Client) keepUsers(epoch uint64, mark trackerapi.CredentialMark, us ...U
 	}
 }
 
-// ForgetUsers drops the cached users; a read in flight stores nothing.
-func (c *Client) ForgetUsers() { c.users.clear() }
-
 // SearchUsers returns the users whose display name or email starts with
 // query, at most max (zero means 50, and Jira stops at 1000). Without the
 // Browse users and groups permission Jira returns none.

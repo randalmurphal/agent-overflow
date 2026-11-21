@@ -119,7 +119,7 @@ func TestDetailsMissingIsTheIssuesOwnNotFound(t *testing.T) {
 			f.On("GET", "/rest/api/3/issue/"+id, notFound)
 		}
 		catalogs := func(issues ...tracker.IssueID) int {
-			p.jira.ForgetFields()
+			p.jira.ForgetCredential() // drops the cached catalog
 			before := len(f.Requests())
 			if _, err := p.Details(t.Context(), issues); err != nil {
 				t.Fatal(err)

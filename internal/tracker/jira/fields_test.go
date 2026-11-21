@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/tracker/jira/jiratest"
 )
@@ -15,9 +16,14 @@ const catalogJSON = `[
  {"id":"customfield_10001","key":"customfield_10001","name":"Story Points","custom":true,"schema":{"type":"number","custom":"com.atlassian.jira.plugin.system.customfieldtypes:float","customId":10001},"clauseNames":["cf[10001]","Story Points"]}
 ]`
 
-func TestFieldCatalogIsCachedAndDroppable(t *testing.T) {
+// The catalog is read once and handed out, uncopied, until it is siteAge
+// old, so a field renamed in Jira shows its new name by then.
+func TestFieldCatalogIsCachedUntilItAges(t *testing.T) {
 	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
+	read := time.Now()
+	at := read
+	c.catalog.clock = func() time.Time { return at }
 	f.On("GET", "/rest/api/3/field", jiratest.Reply(200, catalogJSON))
 	var first *Catalog
 	for range 2 {
@@ -34,34 +40,14 @@ func TestFieldCatalogIsCachedAndDroppable(t *testing.T) {
 	if n := f.Count("GET", "/rest/api/3/field"); n != 1 {
 		t.Errorf("%d reads, want 1", n)
 	}
-	c.ForgetFields()
-	if _, err := c.Fields(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if n := f.Count("GET", "/rest/api/3/field"); n != 2 {
-		t.Errorf("ForgetFields kept the catalog: %d reads", n)
-	}
-}
-
-// TestForgetFieldsDuringALoad proves a catalog read that started before
-// ForgetFields stores nothing.
-func TestForgetFieldsDuringALoad(t *testing.T) {
-	f := jiratest.NewServer(t)
-	c := newTestClient(t, f)
-	f.On("GET", "/rest/api/3/field", func(w http.ResponseWriter, r *http.Request, b []byte) {
-		if f.Count("GET", "/rest/api/3/field") == 1 {
-			c.ForgetFields()
+	for i, age := range []time.Duration{siteAge - time.Nanosecond, siteAge} {
+		at = read.Add(age)
+		if _, err := c.Fields(t.Context()); err != nil {
+			t.Fatal(err)
 		}
-		jiratest.Reply(200, catalogJSON)(w, r, b)
-	})
-	if _, err := c.Fields(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := c.Fields(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if n := f.Count("GET", "/rest/api/3/field"); n != 2 {
-		t.Errorf("a load that raced ForgetFields was stored: %d reads", n)
+		if n := f.Count("GET", "/rest/api/3/field"); n != 1+i {
+			t.Errorf("%d reads with the catalog %s old, want %d", n, age, 1+i)
+		}
 	}
 }
 

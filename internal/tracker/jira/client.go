@@ -136,11 +136,11 @@ func New(opts Options) (*Client, error) {
 	}
 	c := &Client{
 		api: api, maxUpload: opts.MaxUploadBytes,
-		users:       newCache[string, User](userCacheSize, nil, api.CredentialMark),
-		catalog:     newCache[struct{}, *Catalog](1, nil, api.CredentialMark),
-		configs:     newCache[int64, BoardConfig](boardConfigCacheSize, cloneBoardConfig, api.CredentialMark),
-		sprintLists: newCache[int64, SprintList](boardConfigCacheSize, cloneSprintList, api.CredentialMark),
-		me:          newCache[struct{}, User](1, nil, api.CredentialMark),
+		users:       newCache[string, User](userCacheSize, siteAge, nil, api.CredentialMark),
+		catalog:     newCache[struct{}, *Catalog](1, siteAge, nil, api.CredentialMark),
+		configs:     newCache[int64, BoardConfig](boardConfigCacheSize, 0, cloneBoardConfig, api.CredentialMark),
+		sprintLists: newCache[int64, SprintList](boardConfigCacheSize, 0, cloneSprintList, api.CredentialMark),
+		me:          newCache[struct{}, User](1, 0, nil, api.CredentialMark),
 	}
 	if c.maxUpload == 0 {
 		c.maxUpload = defaultMaxUpload

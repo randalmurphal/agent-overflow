@@ -278,7 +278,7 @@ func TestEdit(t *testing.T) {
 }
 
 // Move reads the issue with its team's states in one request and
-// refuses a state of another team before the update.
+// refuses a state the team lacks before the update, as stale.
 func TestMove(t *testing.T) {
 	t.Parallel()
 	states := issueStatesX(issueID(1), "state-todo", lineartest.State{ID: "s-done", Name: "Done", Type: "completed", Team: web})
@@ -292,7 +292,7 @@ func TestMove(t *testing.T) {
 		return p.Move(ctx, tracker.MoveInput{Issue: tracker.IssueID(issueID(1)), Move: to})
 	}
 	expectResult(t, move("s-done"), "1:move:applied")
-	expectResult(t, move("s-app-done"), "1:move:refused(invalid)")
+	expectResult(t, move("s-app-done"), "1:move:refused(stale)")
 	expectResult(t, move("s-done"), "1:move:refused(tracker)")
 }
 

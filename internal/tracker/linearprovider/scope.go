@@ -118,16 +118,18 @@ func (p *Provider) linkBetween(ctx context.Context, in tracker.UnlinkInput) erro
 }
 
 // teamState refuses, as a *refusedEdit, a state that is not one of
-// issue's team's; any other error is a read that failed, a missing issue
-// matching trackerapi.ErrNotFound. The issue and its team's states are
-// one read.
+// issue's team's: as stale, since the state may have been removed or the
+// issue moved to another team after the moves were read, and reading
+// them again shows which. Any other error is a read that failed, a
+// missing issue matching trackerapi.ErrNotFound. The issue and its team's
+// states are one read.
 func (p *Provider) teamState(ctx context.Context, issue tracker.IssueID, state tracker.MoveID) error {
 	_, states, err := p.issueStates(ctx, issue)
 	if err != nil {
 		return err
 	}
 	if !slices.ContainsFunc(states, func(s linear.WorkflowState) bool { return s.ID == string(state) }) {
-		return refusedf(tracker.ReasonInvalid, "status %s is not one of the statuses of issue %s's team", state, issue)
+		return refusedf(tracker.ReasonStale, "status %s is not one of the statuses of issue %s's team now", state, issue)
 	}
 	return nil
 }

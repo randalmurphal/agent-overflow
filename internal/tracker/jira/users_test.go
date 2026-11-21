@@ -8,14 +8,20 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/tracker/jira/jiratest"
 	"agent-overflow/internal/tracker/trackerapi"
 )
 
-func TestUserIsCachedAndForgotten(t *testing.T) {
+// A user is read once and handed out until it is siteAge old, so a
+// changed name, time zone or active state shows by then.
+func TestUserIsCachedUntilItAges(t *testing.T) {
 	f := jiratest.NewServer(t)
 	c := newTestClient(t, f)
+	read := time.Now()
+	at := read
+	c.users.clock = func() time.Time { return at }
 	f.On("GET", "/rest/api/3/user", func(w http.ResponseWriter, r *http.Request, b []byte) {
 		jiratest.WantQuery(t, r, "accountId", "acc-user1")
 		jiratest.Reply(200, userOneJSON)(w, r, b)
@@ -29,48 +35,21 @@ func TestUserIsCachedAndForgotten(t *testing.T) {
 	if n := f.Count("GET", "/rest/api/3/user"); n != 1 {
 		t.Errorf("%d reads, want 1 then the cache", n)
 	}
-	c.ForgetUsers()
-	if _, err := c.User(t.Context(), "acc-user1"); err != nil {
-		t.Fatal(err)
-	}
-	if n := f.Count("GET", "/rest/api/3/user"); n != 2 {
-		t.Errorf("ForgetUsers kept the user: %d reads", n)
-	}
-}
-
-// TestForgetUsersBeatsAReadInFlight proves a read that started before
-// ForgetUsers stores nothing when it ends after it.
-func TestForgetUsersBeatsAReadInFlight(t *testing.T) {
-	f := jiratest.NewServer(t)
-	c := newTestClient(t, f)
-	entered, release := make(chan struct{}), make(chan struct{})
-	f.On("GET", "/rest/api/3/user", func(w http.ResponseWriter, r *http.Request, b []byte) {
-		if c.users.epoch() == 0 {
-			close(entered)
-			<-release
+	for i, age := range []time.Duration{siteAge - time.Nanosecond, siteAge} {
+		at = read.Add(age)
+		if _, err := c.User(t.Context(), "acc-user1"); err != nil {
+			t.Fatal(err)
 		}
-		jiratest.Reply(200, userOneJSON)(w, r, b)
-	})
-	done := make(chan error)
-	go func() {
-		_, err := c.User(t.Context(), "acc-user1")
-		done <- err
-	}()
-	<-entered
-	c.ForgetUsers()
-	close(release)
-	if err := <-done; err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := c.users.get(t.Context(), "acc-user1"); ok {
-		t.Error("a read older than ForgetUsers stored its user")
+		if n := f.Count("GET", "/rest/api/3/user"); n != 1+i {
+			t.Errorf("%d reads with the user %s old, want %d", n, age, 1+i)
+		}
 	}
 }
 
 func TestCacheIsBoundedAndFenced(t *testing.T) {
 	now := signedIn(t, nil).api.CredentialMark
 	mark := now()
-	uc := newCache[string, User](2, nil, now)
+	uc := newCache[string, User](2, 0, nil, now)
 	for _, id := range []string{"a", "b", "c"} {
 		uc.put(uc.epoch(), mark, id, User{AccountID: id})
 	}
@@ -97,7 +76,7 @@ func TestCacheIsBoundedAndFenced(t *testing.T) {
 	if _, ok := uc.get(t.Context(), "f"); ok {
 		t.Error("a value of no credential read was kept")
 	}
-	other := newCache[string, User](2, nil, signedIn(t, nil).api.CredentialMark)
+	other := newCache[string, User](2, 0, nil, signedIn(t, nil).api.CredentialMark)
 	other.put(other.epoch(), other.now(), "h", User{AccountID: "h"})
 	other.put(other.epoch(), other.now(), "i", User{AccountID: "i"})
 	other.put(other.epoch(), mark, "g", User{AccountID: "g"})

@@ -296,11 +296,11 @@ problem on that record, which stays usable.
   `Picked` set, never another choice by name. A field is named by its
   exact name or ID; an exact ID wins over any name, and there are no
   aliases. A required rich text field is not emptied, by Markdown or by a
-  raw document that shows nothing. The catalog is read once;
-  `FieldsNaming` reads it again when it lacks a field its caller names,
-  once per such field (one still missing is remembered), so an idle
-  client sends nothing and a field added since costs one read. A field renamed since keeps the name
-  the catalog was read with until the credential changes.
+  raw document that shows nothing. The catalog is read once and kept for
+  30 minutes, so a field renamed since shows its new name by then;
+  `FieldsNaming` reads it again sooner when it lacks a field its caller
+  names, once per such field (one still missing is remembered), so an
+  idle client sends nothing and a field added since costs one read.
 - **Writes.** Create, edit, transition (with the fields its screen takes),
   assign, comment (add, edit, delete, with a service desk comment's
   audience), link and unlink issues, remote links, attach and download.
@@ -330,7 +330,11 @@ problem on that record, which stays usable.
   catalog, board configurations, sprint lists) is kept with the
   `CredentialMark` it was drawn under and is handed out only while the
   transport's own mark equals it, so a credential that is read again,
-  forgotten or replaced retires them all, whichever call caused it.
+  forgotten or replaced retires them all, whichever call caused it. A
+  board's configuration and sprint list are dropped by `ForgetBoard`,
+  which the provider calls before each structure read. Users and the
+  field catalog, which no read drops and Jira changes with no signal, are
+  read again once 30 minutes old.
 - **Write answers.** A write is applied when its answer is a success form
   the spec documents and names what was written, or is a documented empty
   success such as a 204. One that names it but fails to decode elsewhere
@@ -455,9 +459,13 @@ outcome. A `success: true` is applied only when the payload names the
 write: a created entity has an ID, a write by ID or identifier answers
 with that entity (an issue by any identifier it had), and a comment or
 relation delete names the deleted ID; otherwise the outcome is unknown.
-An issue delete's payload has no identity it always carries, so its
-`success` alone decides. Not found is matched only at the root field the
-call asked for.
+An issue delete answers with the trashed issue, which must be the one
+named; a permanent delete that answers with no entity is decided by its
+`success` (unmeasured). Not found is matched only at the root field the
+call asked for, by the message `Entity not found: <Type>`. A write whose
+input names, by ID, an entity that no longer exists is refused naming the
+input member (`Error.MissingReference`), which the provider reports as a
+stale write: the value was picked from a list that has changed.
 
 Issues are listed by a filter (team, state, cycle, update time, IDs or
 identifiers), found by text with `SearchIssues`, and read in full, every

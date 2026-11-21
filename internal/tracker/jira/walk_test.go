@@ -447,7 +447,7 @@ var (
 		"RemoveRemoteLink", "RemoveWatcher", "SetEstimate", "StartSprint", "Transition", "Unassign", "UnlinkIssues",
 		"UpdateSprint", "UpdateWorklog", "Value",
 	}
-	noRequest = []string{"Close", "ForgetBoard", "ForgetCredential", "ForgetFields", "ForgetUsers"}
+	noRequest = []string{"Close", "ForgetBoard", "ForgetCredential"}
 )
 
 // TestEveryWalkIsListed fails for an exported Client method that is

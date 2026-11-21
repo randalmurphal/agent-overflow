@@ -24,7 +24,10 @@ import (
 //     nobody judged it;
 //   - linear.WriteNotApplied: a present success: false, an HTTP 4xx, user
 //     errors with no payload, or a part a read after its failed request
-//     found unchanged: refused by the tracker;
+//     found unchanged: refused by the tracker, or as stale when Linear
+//     says an ID the input named no longer names anything
+//     (linear.Error.MissingReference), since reading the choices again
+//     shows what changed;
 //   - anything else, a success: true without the stored entity included:
 //     unknown.
 func outcome(err error) tracker.Outcome {
@@ -44,7 +47,14 @@ func outcome(err error) tracker.Outcome {
 		return tracker.NotSent(err)
 	}
 	if linear.WriteNotApplied(err) {
-		return tracker.Refused(tracker.Refusal{Reason: tracker.ReasonTracker, Message: refusalMessage(err), Err: err})
+		r := tracker.Refusal{Reason: tracker.ReasonTracker, Message: refusalMessage(err), Err: err}
+		if e, ok := errors.AsType[*linear.Error](err); ok {
+			if member, ok := e.MissingReference(); ok {
+				r.Reason = tracker.ReasonStale
+				r.Message = "what " + member + " named no longer exists or is not visible; pick it again (" + r.Message + ")"
+			}
+		}
+		return tracker.Refused(r)
 	}
 	return tracker.Unknown(err)
 }

@@ -49,14 +49,24 @@ func (e GraphQLError) String() string {
 // notFound reports an error saying that the entity at root, the response
 // key of the resource a call asked for, does not exist or is not visible
 // to the key. Linear has no code of its own for it: it answers
-// INPUT_ERROR with a message starting "Entity not found" at that path
-// (measured for an issue; docs/references/tracker-api-measurements.md),
-// or "Could not find referenced", the fake's message for a missing
-// comment, relation, cycle or team (unverified against Linear). The same
-// message deeper in the answer is a related entity, not the resource.
+// INPUT_ERROR with the message "Entity not found: " and the entity's
+// type at that path (measured for nine types;
+// docs/references/tracker-api-measurements.md). The same message deeper
+// in the answer is a related entity, not the resource, and a write whose
+// input names a missing entity is missingReference.
 func (e GraphQLError) notFound(root string) bool {
 	return root != "" && e.Code == CodeInput && len(e.Path) == 1 && e.Path[0] == root &&
-		(strings.HasPrefix(e.rawMessage, "Entity not found") || strings.HasPrefix(e.rawMessage, "Could not find referenced"))
+		strings.HasPrefix(e.rawMessage, "Entity not found: ")
+}
+
+// missingReference is the input member of a write that names, by ID, an
+// entity that does not exist or is not visible to the key: Linear
+// answers INPUT_ERROR with the message "Entity not found in
+// validateAccess: " and the member (measured for issueUpdate's stateId,
+// assigneeId, labelIds, cycleId, projectId and parentId).
+func (e GraphQLError) missingReference() (string, bool) {
+	member, ok := strings.CutPrefix(e.rawMessage, "Entity not found in validateAccess: ")
+	return member, ok && e.Code == CodeInput && member != ""
 }
 
 // wireError is a GraphQL error as sent.
@@ -156,6 +166,19 @@ func (e *Error) Unwrap() error { return e.Err }
 // resource's own path.
 func (e *Error) Is(target error) bool {
 	return target == trackerapi.ErrNotFound && e.notFound
+}
+
+// MissingReference is the input member of the write that names, by ID,
+// an entity that does not exist or is not visible to the key, such as
+// "stateId": a value picked from a list that has changed since. Linear
+// applied nothing of the write.
+func (e *Error) MissingReference() (member string, ok bool) {
+	for _, g := range e.Errors {
+		if member, ok := g.missingReference(); ok {
+			return member, true
+		}
+	}
+	return "", false
 }
 
 // UnchangedError is an issue's part of a write of several that failed,
