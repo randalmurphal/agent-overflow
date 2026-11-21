@@ -172,6 +172,11 @@ func TestHookedOperationsOutlastTheGitCommandTimeout(t *testing.T) {
 	}
 }
 
+// stoppedHookBound is the hook bound of the tests that stop a hook. The hook
+// must record its pid before the bound ends, and macOS can take seconds to
+// start a new shell script while the package's other tests start theirs.
+const stoppedHookBound = 10 * time.Second
+
 // An operation stopped at the hook bound says which command timed out and
 // stops its hook too.
 func TestAStoppedHookedOperationEndsItsHook(t *testing.T) {
@@ -186,9 +191,9 @@ func TestAStoppedHookedOperationEndsItsHook(t *testing.T) {
 			pidFile := filepath.Join(t.TempDir(), "hook.pid")
 			op.install("echo $$ > '" + pidFile + "'\nsleep 30\n")
 			core := NewCore(op.options...)
-			core.hookTimeout = time.Second
+			core.hookTimeout = stoppedHookBound
 			err := op.run(core)
-			if err == nil || !strings.Contains(err.Error(), "timed out after 1s") {
+			if err == nil || !strings.Contains(err.Error(), "timed out after 10s") {
 				t.Fatalf("%s past the hook bound = %v, want its command named as timed out", name, err)
 			}
 			if pid := recordedHookPID(t, pidFile); processExists(pid) {
@@ -206,7 +211,7 @@ func TestAStoppedHookedOperationKillsAHookThatIgnoresTerminate(t *testing.T) {
 		t.Skip("the hook is a POSIX shell script")
 	}
 	t.Parallel()
-	const bound, grace = time.Second, time.Second
+	const bound, grace = stoppedHookBound, time.Second
 	for name, setup := range hookedOperations() {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -222,7 +227,7 @@ func TestAStoppedHookedOperationKillsAHookThatIgnoresTerminate(t *testing.T) {
 			elapsed := time.Since(started)
 			child, hook := recordedHookPID(t, childPIDFile), recordedHookPID(t, hookPIDFile)
 			hookAlive, childAlive := processExists(hook), processExists(child)
-			if err == nil || !strings.Contains(err.Error(), "timed out after 1s") {
+			if err == nil || !strings.Contains(err.Error(), "timed out after 10s") {
 				t.Fatalf("%s past the hook bound = %v, want its command named as timed out", name, err)
 			}
 			if hookAlive || childAlive {
@@ -243,7 +248,7 @@ func TestAStoppedHookedOperationLetsItsHookCleanUp(t *testing.T) {
 		t.Skip("the hook is a POSIX shell script")
 	}
 	t.Parallel()
-	const bound, grace = time.Second, 5 * time.Second
+	const bound, grace = stoppedHookBound, 5 * time.Second
 	for name, setup := range hookedOperations() {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -257,7 +262,7 @@ func TestAStoppedHookedOperationLetsItsHookCleanUp(t *testing.T) {
 			err := op.run(core)
 			elapsed := time.Since(started)
 			pid := recordedHookPID(t, pidFile)
-			if err == nil || !strings.Contains(err.Error(), "timed out after 1s") {
+			if err == nil || !strings.Contains(err.Error(), "timed out after 10s") {
 				t.Fatalf("%s past the hook bound = %v, want its command named as timed out", name, err)
 			}
 			if _, statErr := os.Stat(cleaned); statErr != nil {

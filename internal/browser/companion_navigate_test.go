@@ -106,7 +106,12 @@ func newNavigateFixture(t *testing.T, wsl bool) (*Manager, Access, string, strin
 			t.Errorf("close the manager: %v", err)
 		}
 	})
-	root := t.TempDir()
+	// Canonical, as a workspace is: the system temporary directory is a
+	// symbolic link on macOS.
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	workspace := filepath.Join(root, "repo")
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
 		t.Fatal(err)

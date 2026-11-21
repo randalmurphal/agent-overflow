@@ -23,15 +23,21 @@ func TestWatcherDebouncesWritesAndDiscoversProjectRename(t *testing.T) {
 	}
 	observed := startObservedWatcher(t, root, 25*time.Millisecond, &debounceClock{})
 
-	// The first write alone is a CREATE then a WRITE, which the kernel never
-	// merges, so the burst queues the debounce more than once.
+	// The first write alone is a CREATE then a WRITE, which inotify never
+	// merges, so the burst queues the debounce more than once. kqueue finds
+	// a new file by listing its directory and watches it only then, so a
+	// burst that ends first can arrive as one event.
+	burstWaits := 2
+	if runtime.GOOS == "darwin" {
+		burstWaits = 1
+	}
 	definition := filepath.Join(shared, "build.yaml")
 	for index := range 3 {
 		if err := os.WriteFile(definition, []byte{byte('a' + index)}, 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	observed.expectQueued(t, 0, 2, "a write burst")
+	observed.expectQueued(t, 0, burstWaits, "a write burst")
 	observed.releaseOneEmit(t, "a write burst")
 
 	outside := t.TempDir()

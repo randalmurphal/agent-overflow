@@ -360,7 +360,7 @@ func TestDeletingAnOwnerStopsItsWorkerOnADirtyWorktreeAndKeepsTheWorktree(t *tes
 	testutil.RunGit(t, repo, "config", "user.name", "Agent Overflow")
 	testutil.RunGit(t, repo, "config", "user.email", "agent-overflow@example.com")
 	testutil.RunGit(t, repo, "commit", "--allow-empty", "-m", "initial commit")
-	tree := filepath.Join(t.TempDir(), "feature")
+	tree := filepath.Join(realPath(t, t.TempDir()), "feature")
 	testutil.RunGit(t, repo, "worktree", "add", "-b", "feature", tree)
 	project, err := f.app.CreateProject(repo)
 	if err != nil {

@@ -183,7 +183,7 @@ func TestListWorktreesReportsAnOddPathExactly(t *testing.T) {
 	}
 	repo := initGitRepo(t)
 	testutil.RunGit(t, repo, "branch", "feature/odd")
-	path := filepath.Join(t.TempDir(), "odd \nname ")
+	path := filepath.Join(testutil.CanonicalPath(t, t.TempDir()), "odd \nname ")
 	testutil.RunGit(t, repo, "worktree", "add", "--", path, "feature/odd")
 	worktrees, err := NewCore().ListWorktrees(repo)
 	if err != nil {
