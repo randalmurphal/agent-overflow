@@ -12,16 +12,20 @@ import (
 // A create's refresh places the new issue before it reads anything else
 // (tracker.Provider.NewRows): one read asks the tracker which of the
 // create's board and the connection's other subscribed boards hold it,
-// and returns its row on each that does, read so that it is the row the
-// board's own list will deliver. A tracker's list may show a new issue
-// late (Jira's search index); the placement does not wait for it, so the
-// row is on the board when the write returns.
+// those the mirror shows, and returns its row on each that does, read so
+// that it is the row the board's own list will deliver. A tracker's list
+// may show a new issue late (Jira's search index); the placement does not
+// wait for it, so the row is on the board when the write returns. A
+// create's board the mirror does not show is not asked and its row is not
+// shown; the other boards are asked all the same. With no board to ask,
+// nothing is read.
 //
 //   - A board that holds it: the row is stored and told as that board's
 //     own change. On the create's board it is accounted refreshed, unless
 //     the store did not take it (a removal on the board by a read that
-//     began later); then it is owed the board's rows read, as any other
-//     row.
+//     began later, or a failure of that board's write); then it is owed
+//     the board's rows read, as any other row. A failure of one board's
+//     write leaves the other boards' rows stored.
 //   - The create's board does not hold it: nothing is stored, the row is
 //     not shown, and the write answers WriteView.NotOnBoard.
 //   - The create's board is not judged (the read failed, or the tracker
@@ -55,10 +59,16 @@ func (r *run) placeBoards(n newIssue) []tracker.BoardID {
 }
 
 // place places n on boards, the shown ones of placeBoards with the
-// create's first, and stores its rows. It reports whether the create's
-// board still owes its row the rows read, and returns why the refresh
-// stops, nil to go on.
-func (r *run) place(f *refreshed, n newIssue, boards []tracker.BoardID) (owed bool, stop error) {
+// create's first when it is one, and stores its rows; with no board it
+// asks nothing. It reports whether that settled the row of the create's
+// board (stored, not on the board, or the board retired), which otherwise
+// is owed the rows read when the board is shown, and returns why the
+// refresh stops, nil to go on. A store failure is its board's alone: the
+// next board's row is still stored.
+func (r *run) place(f *refreshed, n newIssue, boards []tracker.BoardID) (settled bool, stop error) {
+	if len(boards) == 0 {
+		return false, nil
+	}
 	read := r.readAt()
 	r.calls++
 	pl, err := r.p.NewRows(r.ctx, n.issue, boards)
@@ -68,14 +78,13 @@ func (r *run) place(f *refreshed, n newIssue, boards []tracker.BoardID) (owed bo
 		if r.ctx.Err() != nil {
 			return false, r.failedRead(f, call(err), tracker.RowOf(n.board, n.issue))
 		}
-		r.s.logf("trackerapp: place the new issue %s on %d boards: %v; its row is read through board %s", n.issue, len(boards), err, n.board)
-		return true, nil
+		r.s.logf("trackerapp: place the new issue %s on boards %v: %v", n.issue, boards, err)
+		return false, nil
 	}
-	owed = true
 	if slices.Contains(pl.Off, n.board) {
 		f.covered(tracker.RowOf(n.board, n.issue))
 		f.notOnBoard = n.board
-		owed = false
+		settled = true
 	}
 	for _, br := range pl.Rows {
 		taken, err := r.storePlaced(f, br, pl.Catalog, read)
@@ -83,17 +92,16 @@ func (r *run) place(f *refreshed, n newIssue, boards []tracker.BoardID) (owed bo
 		case errors.Is(err, store.ErrTrackerCacheGone):
 			f.ended = true
 			return false, err
-		case err != nil && br.Board == n.board && !retired(err):
-			return false, r.failedRead(f, err, tracker.RowOf(n.board, n.issue))
+		case err != nil && !retired(err):
+			// The row stays owed: the create's board's to its rows read,
+			// another board's to its own sync.
+			r.s.logf("trackerapp: store the new issue %s's row on board %s: %v", n.issue, br.Board, err)
 		case br.Board == n.board && (taken || retired(err)):
 			f.covered(tracker.RowOf(n.board, n.issue))
-			owed = false
-		case err != nil:
-			// Another board's row is its own sync's to bring.
-			r.s.logf("trackerapp: store the new issue %s's row on board %s: %v", n.issue, br.Board, err)
+			settled = true
 		}
 	}
-	return owed, nil
+	return settled, nil
 }
 
 // storePlaced stores br, read at read, and reports whether the store took

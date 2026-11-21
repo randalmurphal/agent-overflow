@@ -13,7 +13,10 @@ import (
 // sync and writes share: it reads from the tracker, stores through the
 // store and returns what the store changed. A read of many issues is made
 // in batches of readBatch, each read and stored before the next, so a
-// failure keeps the batches already stored.
+// failure keeps the batches already stored; it returns the issues it did
+// not read (unread): those of the batch that failed and of every batch
+// after it, the tail of the issues asked. Every other issue asked was
+// read and stored.
 
 // readBatch is the most issues one provider read and one store
 // transaction take.
@@ -41,28 +44,30 @@ func mirrorRows(board tracker.BoardID, rows []tracker.Row, missing []tracker.Iss
 // store finds due a structure read marks the run's structure due
 // (run.cascade). The board's structure must be in the mirror
 // (store.ErrTrackerCacheNoBoard otherwise). found are the issues whose
-// row the tracker returned and the store took, of the batches stored.
-func (r *run) boardRows(board tracker.BoardID, issues []tracker.IssueID) (out Changes, found []tracker.IssueID, _ error) {
+// row the tracker returned and the store took, of the batches stored;
+// unread are the issues it did not read, none when it returns no error.
+func (r *run) boardRows(board tracker.BoardID, issues []tracker.IssueID) (out Changes, found, unread []tracker.IssueID, _ error) {
 	lifetime, err := r.lifetime(board)
 	if err != nil {
-		return out, nil, err
+		return out, nil, issues, err
 	}
-	for batch := range slices.Chunk(issues, readBatch) {
+	for i := 0; i < len(issues); i += readBatch {
+		batch := issues[i:min(i+readBatch, len(issues))]
 		for again := false; len(batch) > 0; again = true {
 			read := r.readAt()
 			r.calls++
 			rows, err := r.p.BoardRows(r.ctx, board, batch)
 			if err != nil {
-				return out, found, fmt.Errorf("trackerapp: read %d rows of board %s: %w", len(batch), board, call(err))
+				return out, found, issues[i:], fmt.Errorf("trackerapp: read %d rows of board %s: %w", len(batch), board, call(err))
 			}
 			page, err := mirrorRows(board, rows.Rows, rows.Missing, rows.Catalog, read)
 			if err != nil {
-				return out, found, err
+				return out, found, issues[i:], err
 			}
 			page.Lifetime = lifetime
 			stored, err := r.s.store.WriteMirrorRows(r.root, page)
 			if err != nil {
-				return out, found, fmt.Errorf("trackerapp: store rows of board %s: %w", board, err)
+				return out, found, issues[i:], fmt.Errorf("trackerapp: store rows of board %s: %w", board, err)
 			}
 			r.markStructureDue(stored)
 			out.add(changesOf(stored))
@@ -72,30 +77,31 @@ func (r *run) boardRows(board tracker.BoardID, issues []tracker.IssueID) (out Ch
 				}
 			}
 			if again && len(stored.Refused) > 0 {
-				return out, found, fmt.Errorf("trackerapp: store rows of board %s: the board lost rows during both reads of %v", board, stored.Refused)
+				return out, found, issues[i:], fmt.Errorf("trackerapp: store rows of board %s: the board lost rows during both reads of %v", board, stored.Refused)
 			}
 			batch = issueIDsInOrder(stored.Refused)
 		}
 	}
-	return out, found, nil
+	return out, found, nil, nil
 }
 
 // cards reads the cards of issues with no board and stores those of the
 // issues the mirror keeps. An issue the tracker does not return keeps
-// what the mirror holds of it.
-func (r *run) cards(issues []tracker.IssueID) (Changes, error) {
-	var out Changes
-	for batch := range slices.Chunk(issues, readBatch) {
+// what the mirror holds of it. unread are the issues it did not read,
+// none when it returns no error.
+func (r *run) cards(issues []tracker.IssueID) (out Changes, unread []tracker.IssueID, _ error) {
+	for i := 0; i < len(issues); i += readBatch {
+		batch := issues[i:min(i+readBatch, len(issues))]
 		err := r.againIfSwept(func() error {
 			_, ch, err := r.cardsOf(batch)
 			out.add(ch)
 			return err
 		})
 		if err != nil {
-			return out, err
+			return out, issues[i:], err
 		}
 	}
-	return out, nil
+	return out, nil, nil
 }
 
 // cardsNow is the cards read of one batch of issues (at most readBatch):

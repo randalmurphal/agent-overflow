@@ -15,12 +15,12 @@ type MirrorRefreshTargets struct {
 	// Sweep is the root's sweep, which a card or detail write of the
 	// refresh names (MirrorSync.Sweep).
 	Sweep int64
-	// Rows are the rows of the issues asked on boards the mirror shows,
+	// Rows are the rows of the cards asked on boards the mirror shows,
 	// each with its board's lifetime, sorted by issue and board.
 	Rows []MirrorRowTarget
-	// Kept are the issues asked that the mirror keeps, sorted.
+	// Kept are the cards asked that the mirror keeps, sorted.
 	Kept []string
-	// Details are the issues asked whose detail the mirror holds, sorted.
+	// Details are the details asked that the mirror holds, sorted.
 	Details []string
 	// Boards are the boards asked that the mirror shows, with their
 	// lifetimes, sorted.
@@ -55,11 +55,11 @@ const mirrorShownBoardRow = `bl.retired = 0 AND bl.read_at > 0 AND EXISTS (SELEC
 	  JOIN project_tracker_boards sp ON sp.connection_id = sr.connection_id AND sp.board_id = bl.board_id
 	 WHERE sr.id = bl.root_id)`
 
-// mirrorRefreshTargetsSQL reads, for root ?1, the issues of the JSON list
-// ?2 and the boards of the JSON list ?3: the live root's sweep, the rows of
-// the issues on shown boards with each board's lifetime (each issue probed
-// by its key prefix), the issues kept, those with a stored detail, and the
-// boards shown with their lifetimes.
+// mirrorRefreshTargetsSQL reads, for root ?1, the cards of the JSON list
+// ?2, the details of the JSON list ?3 and the boards of the JSON list ?4:
+// the live root's sweep, the rows of the cards on shown boards with each
+// board's lifetime (each issue probed by its key prefix), the cards kept,
+// the details stored, and the boards shown with their lifetimes.
 var mirrorRefreshTargetsSQL = `SELECT 0, '', '', r.sweep FROM tracker_cache_roots r
 	WHERE r.id = ?1 AND r.connection_id IS NOT NULL
 	UNION ALL
@@ -72,28 +72,33 @@ var mirrorRefreshTargetsSQL = `SELECT 0, '', '', r.sweep FROM tracker_cache_root
 	CROSS JOIN tracker_cache_issues i ON i.root_id = ?1 AND i.issue_id = l.value
 	WHERE ` + mirrorIssueKept("i.root_id", "i.issue_id") + `
 	UNION ALL
-	SELECT 3, d.issue_id, '', 0 FROM json_each(?2) l
+	SELECT 3, d.issue_id, '', 0 FROM json_each(?3) l
 	CROSS JOIN tracker_cache_issue_details d ON d.root_id = ?1 AND d.issue_id = l.value
 	WHERE d.data IS NOT NULL AND ` + mirrorIssueKept("d.root_id", "d.issue_id") + `
 	UNION ALL
-	SELECT 4, '', bl.board_id, bl.lifetime FROM json_each(?3) l
+	SELECT 4, '', bl.board_id, bl.lifetime FROM json_each(?4) l
 	CROSS JOIN tracker_cache_boards bl ON bl.root_id = ?1 AND bl.board_id = l.value
 	WHERE ` + mirrorShownBoardRow
 
 // ReadMirrorRefreshTargets reads, in one statement, where the mirror holds
-// issueIDs and boardIDs (each at most mirrorMaxLookup, a repeated one read
-// once): the rows of the issues on the boards it shows with each board's
-// lifetime, which of the issues it keeps and holds a detail of, which of
-// the boards it shows with their lifetimes, and the root's sweep. A
-// caller reads it before the tracker reads it stores, and names the
-// lifetimes and the sweep in those writes. A root that is detached or gone
-// fails with ErrTrackerCacheGone.
-func (s *Store) ReadMirrorRefreshTargets(rootID int64, issueIDs, boardIDs []string) (MirrorRefreshTargets, error) {
-	if len(issueIDs) > mirrorMaxLookup || len(boardIDs) > mirrorMaxLookup {
-		return MirrorRefreshTargets{}, fmt.Errorf("%w: %d issues and %d boards, over %d", ErrInvalidTrackerCache,
-			len(issueIDs), len(boardIDs), mirrorMaxLookup)
+// what a write names (each list at most mirrorMaxLookup, a repeated ID
+// read once): of cardIDs, the rows on the boards it shows with each
+// board's lifetime and which it keeps; of detailIDs, which it holds a
+// detail of; of boardIDs, which it shows with their lifetimes; and the
+// root's sweep. An issue only in detailIDs reads no row. A caller reads it
+// before the tracker reads it stores, and names the lifetimes and the
+// sweep in those writes. A root that is detached or gone fails with
+// ErrTrackerCacheGone.
+func (s *Store) ReadMirrorRefreshTargets(rootID int64, cardIDs, detailIDs, boardIDs []string) (MirrorRefreshTargets, error) {
+	if len(cardIDs) > mirrorMaxLookup || len(detailIDs) > mirrorMaxLookup || len(boardIDs) > mirrorMaxLookup {
+		return MirrorRefreshTargets{}, fmt.Errorf("%w: %d cards, %d details and %d boards, over %d", ErrInvalidTrackerCache,
+			len(cardIDs), len(detailIDs), len(boardIDs), mirrorMaxLookup)
 	}
-	issues, err := encodeMirrorIDs(issueIDs)
+	cards, err := encodeMirrorIDs(cardIDs)
+	if err != nil {
+		return MirrorRefreshTargets{}, err
+	}
+	details, err := encodeMirrorIDs(detailIDs)
 	if err != nil {
 		return MirrorRefreshTargets{}, err
 	}
@@ -103,7 +108,7 @@ func (s *Store) ReadMirrorRefreshTargets(rootID int64, issueIDs, boardIDs []stri
 	}
 	var out MirrorRefreshTargets
 	live := false
-	err = scanMirrorRows(s.reader(), mirrorRefreshTargetsSQL, []any{rootID, issues, boards}, func(r rowScanner) error {
+	err = scanMirrorRows(s.reader(), mirrorRefreshTargetsSQL, []any{rootID, cards, details, boards}, func(r rowScanner) error {
 		var part int
 		var issue, board string
 		var n int64

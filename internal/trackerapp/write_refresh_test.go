@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/tracker"
 )
 
@@ -117,6 +118,58 @@ func TestARankOfFiftyIsOneRowsRead(t *testing.T) {
 	}
 	if got := describeCounts(cs.take()); got != "ReadMirrorRefreshTargets:1 WriteMirrorRows:1" {
 		t.Fatalf("store calls %s", got)
+	}
+}
+
+// targetsStore records the size of each refresh targets read: the rows,
+// kept issues, details and boards it returned.
+type targetsStore struct {
+	*countingStore
+	mu   sync.Mutex
+	read []string
+}
+
+func (s *targetsStore) ReadMirrorRefreshTargets(root int64, cards, details, boards []string) (store.MirrorRefreshTargets, error) {
+	t, err := s.countingStore.ReadMirrorRefreshTargets(root, cards, details, boards)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.read = append(s.read, fmt.Sprintf("rows %d kept %d details %d boards %d", len(t.Rows), len(t.Kept), len(t.Details), len(t.Boards)))
+	return t, err
+}
+
+func (s *targetsStore) takeRead() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := s.read
+	s.read = nil
+	return out
+}
+
+// The targets a refresh reads, pinned: a comment, which needs a detail
+// alone, reads no row or kept issue of the issue on its two boards; an
+// edit, which needs the card too, reads its row on each board.
+func TestRefreshTargetsReadWhatEachResourceNeeds(t *testing.T) {
+	t.Parallel()
+	f := newWriteFixture(t)
+	f.openDetail(t, "10001")
+	ts := &targetsStore{countingStore: newCountingStore(f.st)}
+	f.svc.store = ts
+	f.answer(tracker.Result{Parts: []tracker.Part{appliedPart("10001", tracker.StepComment, tracker.DetailOf("10001"))}})
+	if v, err := f.svc.AddComment(t.Context(), f.conn.ID, CommentRequest{Issue: "10001", Markdown: "New comment"}); err != nil || len(v.Stale) > 0 {
+		t.Fatalf("%+v, %v", v, err)
+	}
+	if got := ts.takeRead(); !slices.Equal(got, []string{"rows 0 kept 0 details 1 boards 0"}) {
+		t.Errorf("a comment's targets: %v", got)
+	}
+	f.answer(tracker.Result{Parts: []tracker.Part{appliedPart("10001", tracker.StepEdit, tracker.CardOf("10001"), tracker.DetailOf("10001"))}})
+	if v, err := f.svc.Edit(t.Context(), f.conn.ID, EditRequest{Issue: "10001", Fields: []FieldEditInput{{Field: "title", Typed: []string{"x"}}}}); err != nil || len(v.Stale) > 0 {
+		t.Fatalf("%+v, %v", v, err)
+	}
+	if got := ts.takeRead(); !slices.Equal(got, []string{"rows 2 kept 1 details 1 boards 0"}) {
+		t.Errorf("an edit's targets: %v", got)
+	}
+	if got := describeCounts(ts.take()); got != "ReadMirrorRefreshTargets:2 StoreMirrorDetails:2 WriteMirrorRows:2" {
+		t.Errorf("store calls %s", got)
 	}
 }
 

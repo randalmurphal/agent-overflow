@@ -724,10 +724,12 @@ call; the path does the rest.
 3. Each resource a part that is applied or unknown names is read again
    through that resource's read and stored (`write_refresh.go`), batched:
    one store read of where the mirror holds them
-   (`ReadMirrorRefreshTargets`), one rows read per board for the rows
-   named on it and the cards the mirror has on it, one cards read for the
-   kept cards no rows read returned a row of (on no shown board, answered
-   missing by every board, or on boards retired meanwhile), one details
+   (`ReadMirrorRefreshTargets`, which reads board rows for the cards
+   named alone, so a comment reads none), one rows read per board for
+   the rows named on it and the cards the mirror has on it, one cards
+   read for the kept cards no rows read returned a row of (on no shown
+   board, answered missing by every board, or on boards retired
+   meanwhile), one details
    read for the open tickets and the stored details named, a structure
    read per shown board named, and a worklogs read per author and span
    of consecutive days. A card or detail the mirror neither keeps nor
@@ -736,10 +738,13 @@ call; the path does the rest.
    An issue a create made is placed first (`write_place.go`): one
    `NewRows` call asks whether the create's board and the connection's
    other shown boards hold it, the create's board first, and stores its
-   row on each that does, told as that board's own change. On the
+   row on each that does, told as that board's own change. A create's
+   board the mirror does not show is not asked and the others are asked
+   all the same; with no board to ask, nothing is read. On the
    create's board the row is refreshed, unless the store did not take it
-   (a removal recorded by a read that began later), when it is owed the
-   board's rows read. A create's board that does not hold it stores
+   (a removal recorded by a read that began later, or a failure of that
+   board's write, which leaves the other boards' rows stored), when it is
+   owed the board's rows read. A create's board that does not hold it stores
    nothing and answers `NotOnBoard`. A failed placement, or one that
    could not judge the create's board, leaves the row owed the board's
    rows read, as any write's row is. Another board that does not hold it,
@@ -753,8 +758,11 @@ call; the path does the rest.
    returns it. It is refreshed only when every read it owes answered,
    and stale, with the first failure, when any of them failed or was
    never made. A failed read leaves its resources stale and the other
-   reads run; the last failed read is the connection's problem, whether
-   or not its resources were already reported. A board no longer listed or retired
+   reads run; a rows or cards read made in batches of 100 leaves stale
+   only the issues of the batch that failed and of the batches after it,
+   and the batches it stored are refreshed. The last failed read is the
+   connection's problem, whether or not its resources were already
+   reported. A board no longer listed or retired
    during the refresh ends that board's reads alone. The write's context
    ending stops the refresh, and every resource not yet read is stale.
    The open tickets are settled only from a details read that was made.

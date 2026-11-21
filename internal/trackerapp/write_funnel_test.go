@@ -76,12 +76,13 @@ func TestAWriteReachesTheFunnelOnce(t *testing.T) {
 	hasScope := func(b []BoardEvent, board tracker.BoardID) bool {
 		return slices.ContainsFunc(b, func(e BoardEvent) bool { return e.Scope.Board == board })
 	}
-	f.events.waitFor(t, "both boards' first events", func(b []BoardEvent, _ []IssueEvent, _ []error) bool {
-		return hasScope(b, testBoard) && hasScope(b, "2")
-	})
 	must[TicketSubscription](t)(f.svc.SubscribeTicket(f.conn.ID, "10001"))
 	f.events.issueEvents(t, 1)
 	f.settledTickets(t)
+	// The pumps' first ticks end before the tracker changes, so only the
+	// write reads the change. A first tick that finds nothing new tells
+	// nothing, so no event marks its end.
+	idleBoards(t, f.svc, f.p)
 	f.svc.subMu.Lock()
 	tp := f.svc.subs.tickets[ticketKey{connection: f.conn.ID, issue: "10001"}]
 	f.svc.subMu.Unlock()

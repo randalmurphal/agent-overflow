@@ -28,17 +28,20 @@ import (
 //     them in one full read (verifiedDetails), the open tickets settled
 //     with what it found;
 //   - worklogs: one read per author and span of named days;
-//   - the issue a create made: placed on its board and the connection's
-//     other subscribed boards by one read before the rows are read
-//     (write_place.go); its row is read with the rows only when that
-//     read did not settle it.
+//   - the issue a create made: placed on those of its board and the
+//     connection's other subscribed boards the mirror shows by one read
+//     before the rows are read (write_place.go); its row is read with the
+//     rows only when that read did not settle it.
 //
 // Where each lives in the mirror, and the board lifetimes and root sweep
 // its writes name, come from one store read made before any of them
-// (store ReadMirrorRefreshTargets). A read that fails leaves its resources
-// stale and the others still run; a board retired meanwhile ends that
-// board's reads alone; the write's context ending stops the refresh, and
-// so does the mirror ending (the connection turned off).
+// (store ReadMirrorRefreshTargets), which reads rows for the cards alone.
+// A read that fails leaves its resources stale and the others still run;
+// a read made in batches leaves stale only the resources of the batch
+// that failed and of those after it (resources.go); a board retired
+// meanwhile ends that board's reads alone; the write's context ending
+// stops the refresh, and so does the mirror ending (the connection turned
+// off).
 
 // worklogSpan is the most days one worklogs read stores (the store's
 // bound on one ReplaceMirrorWorklogs).
@@ -120,7 +123,7 @@ func (r *run) refreshMirrored(f *refreshed, p refreshPlan) error {
 		place = r.placeBoards(p.created)
 		boards = append(boards, place...)
 	}
-	t, err := r.refreshTargets(slices.Concat(p.cards, p.details), boards)
+	t, err := r.refreshTargets(p.cards, p.details, boards)
 	if errors.Is(err, store.ErrTrackerCacheGone) {
 		f.ended = true
 		return err
@@ -153,13 +156,16 @@ func (r *run) refreshMirrored(f *refreshed, p refreshPlan) error {
 			}
 		}
 	}
-	if c := p.created; c.issue != "" && shown[c.board] && !gone[c.board] {
+	if c := p.created; c.issue != "" {
+		// Every board still shown is asked, whether or not the create's own
+		// is; a create's board not shown is not asked, and refreshRows finds
+		// its row not shown.
 		place = slices.DeleteFunc(place, func(b tracker.BoardID) bool { return !shown[b] || gone[b] })
-		owed, stop := r.place(f, c, place)
+		settled, stop := r.place(f, c, place)
 		if stop != nil {
 			return stop
 		}
-		if !owed {
+		if settled {
 			p.rows[c.board] = slices.DeleteFunc(slices.Clone(p.rows[c.board]), func(id tracker.IssueID) bool { return id == c.issue })
 			if len(p.rows[c.board]) == 0 {
 				delete(p.rows, c.board)
@@ -203,23 +209,31 @@ func (r *run) refreshRows(f *refreshed, p refreshPlan, t store.MirrorRefreshTarg
 	}
 	// A card owes a read through every board it was asked on: it is
 	// refreshed only when each of them answered, and stale when any failed
-	// or was never made. A board retired meanwhile owes nothing.
+	// or was never made. A board retired meanwhile owes nothing. A read
+	// that failed part way answered for the issues of the batches it stored
+	// (boardRows); the rest owe it.
 	returned := map[tracker.IssueID]bool{}
 	for _, b := range slices.Sorted(maps.Keys(asked)) {
 		ids := sortedUnique(asked[b])
-		ch, read, err := r.boardRows(b, ids)
+		ch, read, unread, err := r.boardRows(b, ids)
 		f.add(b, ch)
 		for _, id := range read {
 			returned[id] = true
 		}
-		switch {
-		case err == nil, retired(err):
+		if err == nil || retired(err) {
 			f.covered(rowResources(b, p.rows[b])...)
-		default:
-			owed := slices.Concat(rowResources(b, p.rows[b]), cardResources(ids))
-			if stop := r.failedRead(f, err, owed...); stop != nil {
-				return stop
+			continue
+		}
+		var owed []tracker.Resource
+		for _, id := range p.rows[b] {
+			if _, left := slices.BinarySearch(unread, id); left {
+				owed = append(owed, tracker.RowOf(b, id))
+			} else {
+				f.covered(tracker.RowOf(b, id))
 			}
+		}
+		if stop := r.failedRead(f, err, slices.Concat(owed, cardResources(unread))...); stop != nil {
+			return stop
 		}
 	}
 	// Every board a card still open was asked on answered. A card one of
@@ -239,12 +253,12 @@ func (r *run) refreshRows(f *refreshed, p refreshPlan, t store.MirrorRefreshTarg
 	if len(unread) == 0 {
 		return nil
 	}
-	ch, err := r.cards(unread)
+	ch, left, err := r.cards(unread)
 	f.ch.add(ch)
+	f.covered(cardResources(unread[:len(unread)-len(left)])...)
 	if err != nil {
-		return r.failedRead(f, err, cardResources(unread)...)
+		return r.failedRead(f, err, cardResources(left)...)
 	}
-	f.covered(cardResources(unread)...)
 	return nil
 }
 
@@ -323,19 +337,22 @@ func (f *refreshed) add(b tracker.BoardID, ch Changes) {
 	f.own[i].ch.add(ch)
 }
 
-// refreshTargets reads where the mirror holds issues and boards (store
-// ReadMirrorRefreshTargets), lookupBatch issues a read, and captures the
-// lifetimes and the sweep the refresh's writes name.
-func (r *run) refreshTargets(issues []tracker.IssueID, boards []tracker.BoardID) (store.MirrorRefreshTargets, error) {
-	issues, boards = sortedUnique(issues), sortedUnique(boards)
+// refreshTargets reads where the mirror holds the cards, details and
+// boards a refresh names (store ReadMirrorRefreshTargets), lookupBatch of
+// each a read, and captures the lifetimes and the sweep the refresh's
+// writes name. cards and details are sorted without repeats.
+func (r *run) refreshTargets(cards, details []tracker.IssueID, boards []tracker.BoardID) (store.MirrorRefreshTargets, error) {
+	boards = sortedUnique(boards)
+	batch := func(ids []tracker.IssueID, i int) []string {
+		return idStrings(ids[min(i, len(ids)):min(i+lookupBatch, len(ids))])
+	}
 	var out store.MirrorRefreshTargets
-	for i := 0; i == 0 || i < len(issues); i += lookupBatch {
-		batch := issues[i:min(i+lookupBatch, len(issues))]
+	for i := 0; i == 0 || i < max(len(cards), len(details)); i += lookupBatch {
 		var asked []string
 		if i == 0 {
 			asked = idStrings(boards)
 		}
-		t, err := r.s.store.ReadMirrorRefreshTargets(r.root, idStrings(batch), asked)
+		t, err := r.s.store.ReadMirrorRefreshTargets(r.root, batch(cards, i), batch(details, i), asked)
 		if err != nil {
 			return out, fmt.Errorf("trackerapp: read where the mirror of %s holds what a write changed: %w", r.row.ID, err)
 		}

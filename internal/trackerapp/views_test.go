@@ -303,7 +303,7 @@ func TestAStaleCardShowsItsColumns(t *testing.T) {
 	// The next read of the row replaces it.
 	m.p.set(func(p *scripted) { p.boardRows = boardOf(row("10002", 1_799_000_000_002, "b")) })
 	r := m.begun(t, m.scope())
-	if _, _, err := r.boardRows(testBoard, ids("10002")); err != nil {
+	if _, _, _, err := r.boardRows(testBoard, ids("10002")); err != nil {
 		t.Fatal(err)
 	}
 	r.finish()

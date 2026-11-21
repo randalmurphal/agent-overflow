@@ -13,7 +13,7 @@ func (r *run) linkedCards() (UnitResult, error) {
 		if err != nil {
 			return out, fmt.Errorf("trackerapp: list the linked issues of %s: %w", r.row.ID, err)
 		}
-		ch, err := r.cards(issueIDsInOrder(ids))
+		ch, _, err := r.cards(issueIDsInOrder(ids))
 		out.Changes.add(ch)
 		if err != nil {
 			return out, err

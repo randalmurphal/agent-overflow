@@ -175,9 +175,9 @@ func (c *countingStore) ListMirrorIssueBoards(root int64, issues, parents []stri
 	return c.Store.ListMirrorIssueBoards(root, issues, parents)
 }
 
-func (c *countingStore) ReadMirrorRefreshTargets(root int64, issues, boards []string) (store.MirrorRefreshTargets, error) {
+func (c *countingStore) ReadMirrorRefreshTargets(root int64, cards, details, boards []string) (store.MirrorRefreshTargets, error) {
 	c.count("ReadMirrorRefreshTargets")
-	return c.Store.ReadMirrorRefreshTargets(root, issues, boards)
+	return c.Store.ReadMirrorRefreshTargets(root, cards, details, boards)
 }
 
 func (c *countingStore) ReplaceMirrorWorklogs(root int64, author, from, to string, readAt int64, logs []store.MirrorWorklog) (store.MirrorWorklogChanges, error) {

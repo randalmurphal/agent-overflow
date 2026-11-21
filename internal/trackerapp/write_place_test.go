@@ -2,12 +2,14 @@ package trackerapp
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/tracker"
 )
 
@@ -174,5 +176,131 @@ func TestCreateReadsItsRowWhenTheStoreRefusedThePlacement(t *testing.T) {
 	}
 	if got := reads(); !slices.Equal(got, []string{"1:[10004]"}) || f.orderOf(t, testBoard, "10004") != "d" {
 		t.Fatalf("reads %v; order %q", got, f.orderOf(t, testBoard, "10004"))
+	}
+}
+
+// hookedStore runs a test's hooks in a write's refresh: before its
+// targets read, and before each rows write, which fails when the hook
+// does.
+type hookedStore struct {
+	*store.Store
+	targets func()
+	rows    func(page store.MirrorRowPage) error
+}
+
+func (s *hookedStore) ReadMirrorRefreshTargets(root int64, cards, details, boards []string) (store.MirrorRefreshTargets, error) {
+	if s.targets != nil {
+		s.targets()
+	}
+	return s.Store.ReadMirrorRefreshTargets(root, cards, details, boards)
+}
+
+func (s *hookedStore) WriteMirrorRows(root int64, page store.MirrorRowPage) (store.MirrorChanges, error) {
+	if s.rows != nil {
+		if err := s.rows(page); err != nil {
+			return store.MirrorChanges{}, err
+		}
+	}
+	return s.Store.WriteMirrorRows(root, page)
+}
+
+// A create from a board the mirror does not show, never read or retired
+// before the refresh read its targets, still places the new issue on
+// every shown board that holds it, in one read that does not ask about
+// the create's board; its row there is not shown. With no shown board to
+// ask, nothing is asked.
+func TestCreatePlacesOnShownBoardsWhenItsOwnIsNot(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		board     tracker.BoardID
+		subscribe bool
+		unlist    bool
+		asked     [][]tracker.BoardID
+	}{
+		"its board never read":                    {board: "7", subscribe: true, asked: [][]tracker.BoardID{{"2"}}},
+		"its board retired before the targets":    {board: testBoard, subscribe: true, unlist: true, asked: [][]tracker.BoardID{{"2"}}},
+		"no shown board":                          {board: "7"},
+		"its board retired and no other to place": {board: testBoard, unlist: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			f := newWriteFixture(t)
+			if tc.subscribe {
+				f.subscribe(t, "2")
+				idleBoards(t, f.svc, f.p)
+			}
+			f.state.set("2", writeRow("10004", 1, "n"))
+			f.state.set(tc.board, writeRow("10004", 1, "d"))
+			hs := &hookedStore{Store: f.st}
+			if tc.unlist {
+				hs.targets = func() { listBoards(t, f.st, f.conn.ID, "2", "7", "9") }
+			}
+			f.svc.store = hs
+			asked := placements(f, f.state.placement)
+			reads := f.state.recordRows(f.p)
+			f.answer(createdResult("10004"))
+			v, err := f.svc.Create(t.Context(), f.conn.ID, CreateRequest{Board: string(tc.board), Project: "10000", Title: "New task"})
+			if err != nil || v.Created != "10004" || len(v.Stale) > 0 || v.NotOnBoard != "" {
+				t.Fatalf("view %+v, %v", v, err)
+			}
+			if got := asked(); fmt.Sprint(got) != fmt.Sprint(tc.asked) || f.p.count("NewRows") != len(tc.asked) {
+				t.Fatalf("placed on %v in %d reads, want %v", got, f.p.count("NewRows"), tc.asked)
+			}
+			if got := reads(); len(got) != 0 {
+				t.Fatalf("rows read %v", got)
+			}
+			want := ""
+			if tc.subscribe {
+				want = "n"
+			}
+			if got := f.orderOf(t, "2", "10004"); got != want {
+				t.Fatalf("the row on board 2 is %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+// A store failure on one board's placed row is that board's alone: the
+// next board's row is still stored, and the create's board, whose row the
+// store did not take, owes it the board's rows read, which stores it, or
+// leaves that row alone stale when the store fails again.
+func TestCreatePlacementStoreFailureIsOneBoards(t *testing.T) {
+	t.Parallel()
+	for name, failures := range map[string]int32{"once": 1, "again": 2} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			f := newWriteFixture(t)
+			f.subscribe(t, "2")
+			idleBoards(t, f.svc, f.p)
+			f.state.set(testBoard, writeRow("10004", 1, "d"))
+			f.state.set("2", writeRow("10004", 1, "n"))
+			var failed atomic.Int32
+			f.svc.store = &hookedStore{Store: f.st, rows: func(page store.MirrorRowPage) error {
+				if page.BoardID == string(testBoard) && failed.Add(1) <= failures {
+					return errStoreDown
+				}
+				return nil
+			}}
+			asked := placements(f, f.state.placement)
+			reads := f.state.recordRows(f.p)
+			f.answer(createdResult("10004"))
+			v, err := f.svc.Create(t.Context(), f.conn.ID, CreateRequest{Board: "1", Project: "10000", Title: "New task"})
+			if got := asked(); len(got) != 1 || !slices.Equal(got[0], []tracker.BoardID{testBoard, "2"}) || failed.Load() != 2 {
+				t.Fatalf("placed on %v; board 1's rows stored %d times, want the placement's and the rows read's", got, failed.Load())
+			}
+			if got := f.orderOf(t, "2", "10004"); got != "n" {
+				t.Fatalf("board 2's row %q: the failure on board 1 dropped it", got)
+			}
+			wantStale, wantOrder := []string(nil), "d"
+			if failures > 1 {
+				wantStale, wantOrder = []string{"row:10004"}, ""
+			}
+			if err != nil || !slices.Equal(staleIDs(v), wantStale) || v.NotOnBoard != "" {
+				t.Fatalf("view %+v, %v", v, err)
+			}
+			if got := reads(); !slices.Equal(got, []string{"1:[10004]"}) || f.orderOf(t, testBoard, "10004") != wantOrder {
+				t.Fatalf("reads %v; board 1's row %q", got, f.orderOf(t, testBoard, "10004"))
+			}
+		})
 	}
 }

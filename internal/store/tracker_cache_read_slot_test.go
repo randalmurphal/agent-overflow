@@ -27,9 +27,9 @@ var mirrorPoolReads = map[string]int{
 	"GetMirrorSync":           1, // one board's state
 	"GetMirrorDetail":         1, // one issue's detail
 	"ListMirrorDetailStates":  1, // at most mirrorMaxLookup details without their documents, each by key
-	// At most mirrorMaxLookup issues and boards, each by key: the issues'
-	// rows (one per board holding the issue), kept issues and details,
-	// and the boards.
+	// At most mirrorMaxLookup cards, details and boards, each by key: the
+	// cards' rows (one per board holding the issue) and kept issues, the
+	// details, and the boards.
 	"ReadMirrorRefreshTargets": 1,
 	// The detached roots and the retired boards, from partial indexes
 	// sized by the work pending.
