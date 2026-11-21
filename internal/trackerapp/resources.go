@@ -38,10 +38,11 @@ func mirrorRows(board tracker.BoardID, rows []tracker.Row, missing []tracker.Iss
 }
 
 // boardRows reads board's rows of issues and stores them; the issues the
-// board no longer lists lose their row. What the store refused because
-// the board lost rows after its read began (store MirrorChanges.Refused:
-// a new row, or an issue's absence) is read once more, from after the
-// removal; refused again, the read fails. A write the store finds due a
+// board no longer lists lose their row. What the store refused (store
+// MirrorChanges.Refused: a new row, because the board lost rows after the
+// read began, or an issue's absence, because a complete listing began
+// after it) is read once more, from after that removal or listing;
+// refused again, the read fails. A write the store finds due a
 // structure read marks the run's structure due (run.cascade). The
 // board's structure must be in the mirror (store.ErrTrackerCacheNoBoard
 // otherwise). found are the issues whose row the tracker returned and the
@@ -84,7 +85,7 @@ func (r *run) boardRows(board tracker.BoardID, issues []tracker.IssueID) (out Ch
 			}
 			left = issueIDsInOrder(stored.Refused)
 			if again && len(left) > 0 {
-				return out, found, unsettled(), fmt.Errorf("trackerapp: store rows of board %s: the board lost rows during both reads of %v", board, stored.Refused)
+				return out, found, unsettled(), fmt.Errorf("trackerapp: store rows of board %s: the board's rows moved during both reads of %v", board, stored.Refused)
 			}
 		}
 	}

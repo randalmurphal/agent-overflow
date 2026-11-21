@@ -88,7 +88,7 @@ func TestARowRefusedTwiceFailsTheRead(t *testing.T) {
 	})
 	m.svc.store = &removalBeforeWrite{Store: m.svc.store, m: m, issue: "10009", every: true}
 	reads := m.p.count("BoardRows")
-	if _, err := m.svc.tickReconcile(t.Context(), m.scope(), Background); err == nil || !strings.Contains(err.Error(), "lost rows during both reads") {
+	if _, err := m.svc.tickReconcile(t.Context(), m.scope(), Background); err == nil || !strings.Contains(err.Error(), "rows moved during both reads") {
 		t.Fatalf("a row refused twice: %v; want the read failed", err)
 	}
 	if n := m.p.count("BoardRows") - reads; n != 2 || slices.Contains(m.rowIDs(testBoard), "10002") {
