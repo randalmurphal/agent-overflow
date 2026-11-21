@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 )
 
 // indexed is issues without those the index does not show yet (see
@@ -138,12 +139,56 @@ func (c *jiraCall) softwareList(backlog, unclamped bool) answer {
 		size = searchSize(asked, selectNone, c.s)
 	}
 	page, next, last := c.tokenPage(issues, scope, offset, size, sel)
+	for _, is := range page {
+		listURLs(is)
+	}
 	out := map[string]any{"issues": page, "isLast": last, "warningMessages": []string{}}
 	if next != "" {
 		out["nextPageToken"] = next
 	}
 	return jsonAnswer(http.StatusOK, out)
 }
+
+// listURLs rewrites, in place, the URL strings of an issue a Jira
+// Software list returns where its platform reads differ: measured, the
+// same issues' fields read from a board list and from the bulk fetch
+// differed only in every self (issue type, priority, status, status
+// category, assignee, parent, project) and the project's avatarUrls.
+// How they differ is unverified; the fake points them at the agile root.
+func listURLs(v any) {
+	switch v := v.(type) {
+	case map[string]any:
+		for k, x := range v {
+			switch s, ok := x.(string); {
+			case ok && k == "self":
+				v[k] = agileURL(s)
+			case k == "project":
+				if p, ok := x.(map[string]any); ok {
+					if urls, ok := p["avatarUrls"].(map[string]string); ok {
+						moved := make(map[string]string, len(urls))
+						for size, u := range urls {
+							moved[size] = agileURL(u)
+						}
+						p["avatarUrls"] = moved
+					}
+				}
+				listURLs(x)
+			default:
+				listURLs(x)
+			}
+		}
+	case []any:
+		for _, x := range v {
+			listURLs(x)
+		}
+	case []map[string]any:
+		for _, x := range v {
+			listURLs(x)
+		}
+	}
+}
+
+func agileURL(u string) string { return strings.Replace(u, "/rest/api/3/", "/rest/agile/1.0/", 1) }
 
 // softwareCount answers a list's approximate count.
 func softwareCount(backlog bool) func(c *jiraCall) answer {

@@ -108,6 +108,12 @@ type Provider interface {
 	BoardIssues(ctx context.Context, board BoardID, window time.Time) (Listing, error)
 	// BoardRows are board's rows of issues.
 	BoardRows(ctx context.Context, board BoardID, issues []IssueID) (Rows, error)
+	// NewRows places issue, which a create just made, on boards, after
+	// CheckNewRows: its row on each board that holds it, as that board's
+	// own list will deliver it, read without waiting for a list that
+	// shows a new issue late. A board the tracker cannot judge now is
+	// Unknown, with why; a failure of the whole read fails the call.
+	NewRows(ctx context.Context, issue IssueID, boards []BoardID) (Placement, error)
 	// Cards are the cards of issues, read with no board.
 	Cards(ctx context.Context, issues []IssueID) (Cards, error)
 	// History is the status, sprint, estimate and assignee changes of the

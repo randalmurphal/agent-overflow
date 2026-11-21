@@ -115,7 +115,7 @@ func boardConfig(c *jiraCall) answer {
 		// string. The fake's boards are all on a project.
 		"location":     map[string]any{"type": "project", "id": p.ID, "key": p.Key, "name": p.Name, "self": c.s.self("project/" + p.ID)},
 		"filter":       map[string]any{"id": b.FilterID, "self": c.s.self("filter/" + b.FilterID)},
-		"subQuery":     map[string]any{"query": ""},
+		"subQuery":     map[string]any{"query": b.SubQuery},
 		"columnConfig": map[string]any{"columns": cols, "constraintType": "none"},
 		"estimation":   est,
 		"ranking":      map[string]any{"rankCustomFieldId": rank.Schema.CustomID},

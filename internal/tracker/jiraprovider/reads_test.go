@@ -261,6 +261,14 @@ func TestBoardRowsReadThroughTheBoard(t *testing.T) {
 			jiratest.Reply(200, page("", one))(w, r, b)
 		})
 	}
+	// The list's miss is confirmed with the board's membership query,
+	// which does not match it.
+	f.On("POST", matchPath, func(w http.ResponseWriter, r *http.Request, b []byte) {
+		if !strings.Contains(string(b), `"issueIds":[10002]`) || !strings.Contains(string(b), `AND status in (10000, 10001, 10002) AND hierarchyLevel != 1"]`) {
+			t.Errorf("match %s", b)
+		}
+		jiratest.Reply(200, `{"matches":[{"matchedIssues":[],"errors":[]}]}`)(w, r, b)
+	})
 	rows3, err := p.BoardRows(t.Context(), "3", []tracker.IssueID{"10001", "10002"})
 	if err != nil {
 		t.Fatal(err)
@@ -309,6 +317,9 @@ func TestBoardRowsWithDeletedIssues(t *testing.T) {
 				jiratest.WantJSON(t, b, `{"issueIdsOrKeys":["10001","10002","10009"],"fields":["status"]}`)
 				jiratest.Reply(200, page("", one, two))(w, r, b)
 			})
+			// The deleted issue is matched by no query, with no error
+			// (measured).
+			f.On("POST", matchPath, jiratest.Reply(200, `{"matches":[{"matchedIssues":[],"errors":[]}]}`))
 			rows, err := p.BoardRows(t.Context(), "3", []tracker.IssueID{"10001", "10002", "10009"})
 			if err != nil || len(rows.Rows) != 2 || !slices.Equal(rows.Missing, []tracker.IssueID{"10009"}) {
 				t.Fatalf("got %+v %v", rows, err)

@@ -227,6 +227,17 @@ var issueCases = map[string]func(t *testing.T, f *fakeEnv){
 			t.Fatalf("fetched %+v", r)
 		}
 	},
+	"MatchJQL": func(t *testing.T, f *fakeEnv) {
+		// The board's filter is its project's; the epic and the other
+		// project's request are not on the scrum board's terms, an ID that
+		// names nothing matches nothing with no error, and a filter that
+		// does not exist is the query's error.
+		m := got(f.c.MatchJQL(f.ctx, []string{"10101", "10103", "10201", "99999"},
+			[]string{"filter = 10001 AND status in (10000, 10001, 10002) AND hierarchyLevel != 1", "filter = 99"})).must(t)
+		if !slices.Equal(m[0].Matched, []string{"10101"}) || len(m[0].Errors) != 0 || len(m[1].Matched) != 0 || len(m[1].Errors) != 1 {
+			t.Fatalf("matches %+v", m)
+		}
+	},
 	"Changelog": func(t *testing.T, f *fakeEnv) {
 		if l := got(f.c.Changelog(f.ctx, "WEB-1")).must(t); len(l.Entries) != 1 || !l.Complete {
 			t.Fatalf("changelog %+v", l)
@@ -441,7 +452,8 @@ var boardCases = map[string]func(t *testing.T, f *fakeEnv){
 		}
 	},
 	"ListIssues": func(t *testing.T, f *fakeEnv) {
-		if p := got(f.c.ListIssues(f.ctx, ListQuery{List: BacklogIssues(1)})).must(t); len(p.Issues) != 2 {
+		// WEB-4; the epic WEB-3 is on no scrum board's list.
+		if p := got(f.c.ListIssues(f.ctx, ListQuery{List: BacklogIssues(1)})).must(t); len(p.Issues) != 1 {
 			t.Fatalf("backlog %d", len(p.Issues))
 		}
 	},
@@ -452,7 +464,7 @@ var boardCases = map[string]func(t *testing.T, f *fakeEnv){
 		}
 	},
 	"CountListIssues": func(t *testing.T, f *fakeEnv) {
-		if n := got(f.c.CountListIssues(f.ctx, BoardIssues(1), `id in (10101, 10103)`)).must(t); n != 2 {
+		if n := got(f.c.CountListIssues(f.ctx, BoardIssues(1), `id in (10101, 10103, 10104)`)).must(t); n != 2 {
 			t.Fatalf("counted %d", n)
 		}
 	},

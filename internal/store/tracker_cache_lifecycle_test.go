@@ -180,7 +180,7 @@ func TestUnlistedBoardIsRetiredThenDrained(t *testing.T) {
 			return err
 		},
 		"reconcile": func() error {
-			_, err := s.ReconcileMirrorBoard(root, "10", currentLifetime(s, root, "10"), nil, true, 9)
+			_, err := s.ReconcileMirrorBoard(root, "10", currentLifetime(s, root, "10"), nil, true, 9, 9)
 			return err
 		},
 		"sync": func() error {
@@ -399,7 +399,7 @@ func TestEveryMirrorDeleteIsBounded(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := s.ReconcileMirrorBoard(root, "10", currentLifetime(s, root, "10"), []string{large[0].Card.IssueID}, true, 2); err != nil {
+	if _, err := s.ReconcileMirrorBoard(root, "10", currentLifetime(s, root, "10"), []string{large[0].Card.IssueID}, true, 2, 2); err != nil {
 		t.Fatal(err)
 	}
 	check("reconcile")

@@ -177,7 +177,7 @@ func mirrorWriters(s *Store) map[string]func(root int64) error {
 			return err
 		},
 		"ReconcileMirrorBoard": func(root int64) error {
-			_, err := s.ReconcileMirrorBoard(root, "10", currentLifetime(s, root, "10"), []string{"10001"}, true, 1)
+			_, err := s.ReconcileMirrorBoard(root, "10", currentLifetime(s, root, "10"), []string{"10001"}, true, 1, 1)
 			return err
 		},
 		"ReplaceMirrorHistories": func(root int64) error {

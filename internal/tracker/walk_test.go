@@ -143,6 +143,10 @@ func (f *probedProvider) BoardRows(ctx context.Context, _ BoardID, _ []IssueID) 
 	f.see(ctx)
 	return Rows{}, nil
 }
+func (f *probedProvider) NewRows(ctx context.Context, _ IssueID, _ []BoardID) (Placement, error) {
+	f.see(ctx)
+	return Placement{}, nil
+}
 func (f *probedProvider) Cards(ctx context.Context, _ []IssueID) (Cards, error) {
 	f.see(ctx)
 	return Cards{}, nil

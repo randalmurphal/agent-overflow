@@ -389,7 +389,11 @@ problem on that record, which stays usable.
   the bulk fetch of issues by key or ID. Reading a search to its end
   returns its warnings and whether it is complete; a bulk fetch and a
   project listing say the same. `QuoteJQLText` is the one way text a
-  person or a tracker wrote enters a JQL string.
+  person or a tracker wrote enters a JQL string. `MatchJQL` asks
+  `jql/match` which of up to 50 issue IDs each of up to 10 queries
+  matches, judged from the issues as they are rather than the search
+  index; an answer that matches fewer than asked with no error is proven
+  to be for the credential's account before it is read as "not matched".
 - **Statuses.** Every status of the site with its category, for a board
   whose columns name statuses no listed issue is in.
 - **Worklogs.** Jira's own worklogs: list, read by ID, add, change (based

@@ -90,9 +90,9 @@ func (c *countingStore) UpsertMirrorCards(root, sweep int64, cards []store.Mirro
 	return c.Store.UpsertMirrorCards(root, sweep, cards, catalog, readAt)
 }
 
-func (c *countingStore) ReconcileMirrorBoard(root int64, board string, lifetime int64, listed []string, complete bool, readAt int64) (store.MirrorReconcile, error) {
+func (c *countingStore) ReconcileMirrorBoard(root int64, board string, lifetime int64, listed []string, complete bool, readAt, settledAt int64) (store.MirrorReconcile, error) {
 	c.count("ReconcileMirrorBoard")
-	return c.Store.ReconcileMirrorBoard(root, board, lifetime, listed, complete, readAt)
+	return c.Store.ReconcileMirrorBoard(root, board, lifetime, listed, complete, readAt, settledAt)
 }
 
 func (c *countingStore) ReplaceMirrorStructure(root int64, st store.MirrorStructure) (store.MirrorStructureWrite, error) {

@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -359,19 +360,31 @@ type MirrorReconcile struct {
 	Missing []string
 	// Removed are the issues whose row was removed, not being listed.
 	Removed []string
+	// Unsettled are the rows the listing does not hold that a read began
+	// after settledAt stored, sorted: the listing may not show them yet,
+	// so it does not judge them, and the caller reads them by ID
+	// (WriteMirrorRows removes those the board no longer holds).
+	Unsettled []string
 }
 
 // The reconcile statements: ?1 root, ?2 board, ?3 when the listing's read
-// began, ?4 the JSON listing.
+// began, ?4 the JSON listing, ?5 the settled bound, ?6 whether the
+// listing is complete.
 var (
-	mirrorReconcileMissingSQL = `SELECT l.value FROM json_each(?4) l
+	// mirrorReconcileFoundSQL is the listed issues with no row (0, in the
+	// listing's order) and, for a complete listing, the unsettled rows (1).
+	mirrorReconcileFoundSQL = `SELECT 0, l.value, l.key FROM json_each(?4) l
 		WHERE NOT EXISTS (SELECT 1 FROM tracker_cache_board_issues b
 		                   WHERE b.root_id = ?1 AND b.issue_id = l.value AND b.board_id = ?2)
-		ORDER BY l.key`
+		UNION ALL
+		SELECT 1, b.issue_id, 0 FROM tracker_cache_board_issues b
+		 WHERE ?6 AND b.root_id = ?1 AND b.board_id = ?2 AND b.read_at > ?5 AND b.read_at <= ?3
+		   AND b.issue_id NOT IN (SELECT value FROM json_each(?4))
+		ORDER BY 1, 3, 2`
 	// mirrorReconcileRemoveSQL walks the board's rows in its order index.
 	mirrorReconcileRemoveSQL = `DELETE FROM tracker_cache_board_issues WHERE root_id = ?1 AND board_id = ?2 AND issue_id IN (
 		SELECT b.issue_id FROM tracker_cache_board_issues b
-		 WHERE b.root_id = ?1 AND b.board_id = ?2 AND b.issue_id NOT IN (SELECT value FROM json_each(?4)) AND b.read_at <= ?3
+		 WHERE b.root_id = ?1 AND b.board_id = ?2 AND b.issue_id NOT IN (SELECT value FROM json_each(?4)) AND b.read_at <= ?5
 		 LIMIT ` + strconv.Itoa(clearMirrorChunk) + `)
 		RETURNING issue_id`
 )
@@ -379,18 +392,25 @@ var (
 // ReconcileMirrorBoard compares a listing of the issues on a board, read
 // from readAt, with the board's rows. It returns the listed issues that
 // have no row and, only when the listing is complete, removes the rows it
-// does not list that reads begun no later than it stored, at most
-// clearMirrorChunk per transaction, and records the listing as the board's
-// latest removal, so no read that began earlier adds a row the listing
-// leaves out. An incomplete listing removes nothing. An issue left with no
-// row and no link becomes unkept. The board must be listed in lifetime
-// (ErrTrackerCacheUnlisted). A call that fails after a transaction of it
-// committed returns, with the error, the rows those transactions removed
-// and no Missing: the caller tells the removals whatever it does about
-// the error.
-func (s *Store) ReconcileMirrorBoard(rootID int64, boardID string, lifetime int64, listed []string, complete bool, readAt int64) (result MirrorReconcile, err error) {
-	if readAt <= 0 {
+// does not list that reads begun no later than settledAt stored, at most
+// clearMirrorChunk per transaction, returns those it does not list that
+// reads begun after settledAt and no later than readAt stored
+// (Unsettled), and records the listing as the board's latest removal, so
+// no read that began earlier adds a row the listing leaves out. A
+// listing that may show a row late (a search index) leaves the rows read
+// within that lag to a read by ID; settledAt equal to readAt judges every
+// row. An incomplete listing removes nothing and returns no Unsettled.
+// An issue left with no row and no link becomes unkept. The board must
+// be listed in lifetime (ErrTrackerCacheUnlisted). A call that fails
+// after a transaction of it committed returns, with the error, the rows
+// those transactions removed and no Missing or Unsettled: the caller
+// tells the removals whatever it does about the error.
+func (s *Store) ReconcileMirrorBoard(rootID int64, boardID string, lifetime int64, listed []string, complete bool, readAt, settledAt int64) (result MirrorReconcile, err error) {
+	switch {
+	case readAt <= 0:
 		return MirrorReconcile{}, fmt.Errorf("%w: a listing needs the time its read began", ErrInvalidTrackerCache)
+	case settledAt > readAt:
+		return MirrorReconcile{}, fmt.Errorf("%w: a listing's settled bound %d is after its read %d", ErrInvalidTrackerCache, settledAt, readAt)
 	}
 	seen := make(map[string]bool, len(listed))
 	for _, id := range listed {
@@ -406,19 +426,19 @@ func (s *Store) ReconcileMirrorBoard(rootID int64, boardID string, lifetime int6
 	action := fmt.Sprintf("store: reconcile tracker mirror %d board %s", rootID, boardID)
 	for batch := 0; ; batch++ {
 		// What this transaction found and removed, taken only once it commits.
-		var missing, removed []string
+		var missing, unsettled, removed []string
 		err = s.mirrorBoardWrite(rootID, boardID, lifetime, action, true, func(tx *sql.Tx, board mirrorBoard) error {
 			if batch == 0 {
 				var err error
-				if missing, err = queryIDs(tx, mirrorReconcileMissingSQL, rootID, boardID, readAt, encoded); err != nil {
-					return fmt.Errorf("find missing rows: %w", err)
+				if missing, unsettled, err = reconcileFoundTx(tx, rootID, boardID, readAt, encoded, settledAt, complete); err != nil {
+					return fmt.Errorf("find missing and unsettled rows: %w", err)
 				}
 			}
 			if !complete {
 				return nil
 			}
 			var err error
-			if removed, err = queryIDs(tx, mirrorReconcileRemoveSQL, rootID, boardID, readAt, encoded); err != nil {
+			if removed, err = queryIDs(tx, mirrorReconcileRemoveSQL, rootID, boardID, readAt, encoded, settledAt); err != nil {
 				return fmt.Errorf("remove unlisted rows: %w", err)
 			}
 			if readAt > board.rowsRemovedAt {
@@ -433,7 +453,7 @@ func (s *Store) ReconcileMirrorBoard(rootID int64, boardID string, lifetime int6
 			return MirrorReconcile{Removed: result.Removed}, err
 		}
 		if batch == 0 {
-			result.Missing = missing
+			result.Missing, result.Unsettled = missing, unsettled
 		}
 		result.Removed = append(result.Removed, removed...)
 		if len(removed) < clearMirrorChunk {
@@ -442,4 +462,26 @@ func (s *Store) ReconcileMirrorBoard(rootID int64, boardID string, lifetime int6
 	}
 	slices.Sort(result.Removed)
 	return result, nil
+}
+
+// reconcileFoundTx runs mirrorReconcileFoundSQL: the listed issues with no
+// row, in the listing's order, and the unsettled rows, sorted.
+func reconcileFoundTx(tx *sql.Tx, rootID int64, boardID string, readAt int64, listed string, settledAt int64, complete bool) (missing, unsettled []string, err error) {
+	rows, err := tx.Query(mirrorReconcileFoundSQL, rootID, boardID, readAt, listed, settledAt, complete)
+	if err != nil {
+		return nil, nil, err
+	}
+	for rows.Next() {
+		var kind, key int64
+		var id string
+		if err := rows.Scan(&kind, &id, &key); err != nil {
+			return nil, nil, errors.Join(err, rows.Close())
+		}
+		if kind == 0 {
+			missing = append(missing, id)
+		} else {
+			unsettled = append(unsettled, id)
+		}
+	}
+	return missing, unsettled, errors.Join(rows.Err(), rows.Close())
 }

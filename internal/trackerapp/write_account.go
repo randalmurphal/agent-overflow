@@ -62,6 +62,9 @@ type refreshed struct {
 	callErr error
 	// ended reports a mirror that ended during the refresh.
 	ended bool
+	// notOnBoard is the board a create was made from when the tracker
+	// said it does not hold the new issue (write_place.go).
+	notOnBoard tracker.BoardID
 }
 
 // staleRead is resources a refresh did not read again, and why: the

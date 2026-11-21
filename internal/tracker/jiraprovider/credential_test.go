@@ -71,6 +71,10 @@ func twoChunkRows(t *testing.T, budget map[string]int) (*accountSite, tracker.Pr
 		}
 		return page("")
 	})
+	// No account's board holds an issue its list left out.
+	s.on("POST", "/rest/api/3/jql/match", func(string, *http.Request) string {
+		return `{"matches":[{"matchedIssues":[],"errors":[]}]}`
+	})
 	c, err := jira.New(jira.Options{BaseURL: s.URL(), Version: "test", Credentials: &userTurns{}})
 	if err != nil {
 		t.Fatal(err)

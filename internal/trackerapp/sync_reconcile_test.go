@@ -59,8 +59,12 @@ func TestReconcileAddsAndRemoves(t *testing.T) {
 	if st := m.sync(testBoard); st.ReconciledAt != m.now().UnixMilli() {
 		t.Fatalf("sync state %+v", st)
 	}
-	// 10001 leaves the board, 10003 joins it.
-	m.p.set(func(p *scripted) { p.boardIssues = listing(true, "10002", "10003") })
+	// 10001 leaves the board, 10003 joins it. The listing does not judge
+	// 10001, read under a minute ago; the read by ID finds it gone.
+	m.p.set(func(p *scripted) {
+		p.boardIssues = listing(true, "10002", "10003")
+		p.boardRows = boardOf(board[1:]...)
+	})
 	out = must[Outcome](t)(m.svc.tickReconcile(t.Context(), m.scope(), Background))
 	if !slices.Equal(out.Changes().Rows, ids("10003")) || !slices.Equal(out.Changes().Removed, ids("10001")) {
 		t.Fatalf("second reconcile %+v", out)
@@ -72,6 +76,40 @@ func TestReconcileAddsAndRemoves(t *testing.T) {
 	reads := m.p.count("BoardRows")
 	if out := must[Outcome](t)(m.svc.tickReconcile(t.Context(), m.scope(), Background)); !out.Changes().Empty() || m.p.count("BoardRows") != reads {
 		t.Fatalf("third reconcile %+v", out)
+	}
+}
+
+// A listing that may show an issue late judges only the rows read more
+// than tracker.DeltaOverlap before it began: an unlisted row read since
+// is read by ID in the same tick, kept while the board holds it (the
+// listing's index has not caught up) and removed once it does not; an
+// unlisted row read before is removed with no read.
+func TestReconcileReadsRecentRowsByID(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	board := []tracker.Row{row("10001", 1_799_000_000_000, "a"), row("10002", 1_799_000_000_000, "b")}
+	m.p.set(func(p *scripted) {
+		p.boardIssues = listing(true, "10001", "10002")
+		p.boardRows = boardOf(board...)
+	})
+	must[Outcome](t)(m.svc.tickReconcile(t.Context(), m.scope(), Background))
+	// 10002 is on the board and its list misses it: read by ID, kept, told
+	// nothing.
+	m.pass(tracker.DeltaOverlap - time.Millisecond)
+	m.p.set(func(p *scripted) { p.boardIssues = listing(true, "10001") })
+	reads := m.p.count("BoardRows")
+	if out := must[Outcome](t)(m.svc.tickReconcile(t.Context(), m.scope(), Background)); !out.Changes().Empty() || m.p.count("BoardRows") != reads+1 {
+		t.Fatalf("a listing that missed a row read %v ago: %+v, %d rows reads", tracker.DeltaOverlap, out, m.p.count("BoardRows")-reads)
+	}
+	if got := m.rowIDs(testBoard); !slices.Equal(got, []string{"10001", "10002"}) {
+		t.Fatalf("rows %v", got)
+	}
+	// Past the overlap since that read, the listing judges the row.
+	m.pass(tracker.DeltaOverlap + time.Millisecond)
+	reads = m.p.count("BoardRows")
+	out := must[Outcome](t)(m.svc.tickReconcile(t.Context(), m.scope(), Background))
+	if !slices.Equal(out.Changes().Removed, ids("10002")) || m.p.count("BoardRows") != reads {
+		t.Fatalf("a listing that missed a settled row: %+v, %d rows reads", out, m.p.count("BoardRows")-reads)
 	}
 }
 

@@ -279,6 +279,39 @@ Other:
   until 23 s after the create answered: a new issue is found by ID through
   a list only once Jira has indexed it, which took 0.6 s in the earlier
   run and 23 s in this one.
+- Measured the same day on one throwaway issue, deleted after, on
+  `POST /rest/api/3/jql/match` (body `{"issueIds":[...],"jqls":[...]}`, up
+  to 50 issue IDs and 10 queries, answered as
+  `{"matches":[{"matchedIssues":[...],"errors":[...]}]}` in the queries'
+  order; no permission beyond Browse projects, OAuth scope
+  `read:jira-work`). Its first answer, 0.3 s after the create answered,
+  was right: both of the project's board filters and `id = <new>` matched
+  the new issue, and a query naming a label it lacked did not. The search
+  by ID and one board's list by ID still missed it at 0.7 to 0.8 s and
+  showed it by 1.3 and 1.6 s. After an edit that added the label the
+  label query matched in the match's first answer (0.3 s), and after the
+  label was removed it did not (0.4 s). So the match does not wait for
+  the search index in either direction. A nonexistent issue ID answered
+  200, matched by no query, with no error.
+- Measured the same day, read-only, on two boards of one project, one
+  kanban with a sub-filter and one scrum, sharing a saved filter, on what
+  a board's issue list holds. Neither list held any of the filter's issues
+  in a status no column maps (68 on the kanban board, 34 on the scrum
+  board). The kanban list's total equaled the count of the filter's issues
+  in its mapped statuses (931). The scrum list held none of the 47 epics
+  in its mapped statuses; the kanban list held all 47. Every issue on the
+  scrum list was at hierarchy level 0, and neither board had sub-tasks.
+  The kanban sub-filter left out no issue, so whether a list applies it
+  is not known. `jql/match` accepted the membership query built from each
+  board's configuration (saved filter, mapped statuses,
+  `hierarchyLevel != 1` on the scrum board, the sub-filter as a further
+  query on the kanban board) with no error, and agreed with the board's
+  list by ID on six samples.
+- Measured the same day, read-only: the same 25 issues read from a board's
+  issue list and from `POST /issue/bulkfetch` differed only in `self` URLs
+  (of the issue type, priority, status, status category, assignee, parent
+  and project) and the project's `avatarUrls`. The rank and every other
+  value were equal.
 - Measured the same day, on who an answer was made for. Every answer to
   a request with a valid token carried `X-AAccountId`, equal to
   `myself.accountId`: a search, a board configuration, a board issue list

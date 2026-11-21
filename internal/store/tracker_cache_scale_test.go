@@ -274,9 +274,11 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 	out["delta tick, 1 changed"] = measureScale(t, rec, nil, delta(1))
 	out["delta tick, 100 changed"] = measureScale(t, rec, nil, delta(100))
 	out["reconcile, complete listing"] = measureScale(t, rec, nil, func(int) error {
-		got, err := s.ReconcileMirrorBoard(root, board, lifetime, listing, true, next())
-		if err == nil && len(got.Missing)+len(got.Removed) > 0 {
-			err = fmt.Errorf("missing %d, removed %d", len(got.Missing), len(got.Removed))
+		// The settled bound is the service's: a minute before the read.
+		at := next()
+		got, err := s.ReconcileMirrorBoard(root, board, lifetime, listing, true, at, at-60_000)
+		if err == nil && len(got.Missing)+len(got.Removed)+len(got.Unsettled) > 0 {
+			err = fmt.Errorf("missing %d, removed %d, unsettled %d", len(got.Missing), len(got.Removed), len(got.Unsettled))
 		}
 		return err
 	})

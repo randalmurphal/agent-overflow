@@ -176,7 +176,7 @@ func TestCreateThenAFailedStep(t *testing.T) {
 	if v.Created != "10004" || v.CreateUnknown || !slices.Equal(states(v), []string{"10004 create applied", "10004 upload refused"}) {
 		t.Fatalf("view %+v", v)
 	}
-	if got := f.callsSince(before); !slices.Equal(got, []string{"Create", "BoardRows"}) || !slices.Equal(reads(), []string{"1:[10004]"}) {
+	if got := f.callsSince(before); !slices.Equal(got, []string{"Create", "NewRows"}) || len(reads()) != 0 {
 		t.Fatalf("calls %v", got)
 	}
 	if f.orderOf(t, testBoard, "10004") != "d" {

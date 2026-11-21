@@ -40,6 +40,11 @@ func (m *mirrorFixture) tracks(rows []tracker.Row) {
 					out.Rows = append(out.Rows, r)
 				}
 			}
+			for _, id := range asked {
+				if !slices.ContainsFunc(rows, func(r tracker.Row) bool { return r.Card.ID == id }) {
+					out.Missing = append(out.Missing, id)
+				}
+			}
 			return out, nil
 		}
 		p.history = func(tracker.HistoryQuery) (tracker.History, error) { return tracker.History{}, nil }

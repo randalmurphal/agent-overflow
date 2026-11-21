@@ -45,6 +45,7 @@ var jiraRoutes = []jiraRoute{
 	{method: "POST", pattern: api + "search/jql", reads: true, handle: searchJQL},
 	{method: "POST", pattern: api + "search/approximate-count", reads: true, handle: countJQL},
 	{method: "POST", pattern: api + "issue/bulkfetch", reads: true, handle: bulkFetch},
+	{method: "POST", pattern: api + "jql/match", reads: true, handle: matchJQL},
 	{method: "GET", pattern: api + "issue/{issue}/changelog", query: window, anonymous404: true, reads: true, handle: issueChangelog},
 	{method: "POST", pattern: api + "changelog/bulkfetch", reads: true, handle: bulkChangelog},
 

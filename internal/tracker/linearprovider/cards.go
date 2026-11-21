@@ -248,6 +248,39 @@ func (p *Provider) BoardRows(ctx context.Context, b tracker.BoardID, ids []track
 	return tracker.Rows{Rows: rows, Missing: missing(ids, found)}, nil
 }
 
+// NewRows reads the issue's row from the lists, as BoardRows does: Linear's
+// lists show an issue as soon as it exists. A board is one team's issues,
+// so one request filtered to the boards' teams finds the issue on its own
+// team's board, and every other board is Off; Linear has no board it
+// cannot judge.
+func (p *Provider) NewRows(ctx context.Context, issue tracker.IssueID, boards []tracker.BoardID) (tracker.Placement, error) {
+	if err := tracker.CheckNewRows(issue, boards); err != nil {
+		return tracker.Placement{}, err
+	}
+	valid, _ := issueIDs([]tracker.IssueID{issue})
+	teams := make([]string, len(boards))
+	for i, b := range boards {
+		teams[i] = string(b)
+	}
+	issues, err := p.issuesByID(ctx, valid, linear.IssueFilter{Teams: teams}, false)
+	if err != nil {
+		return tracker.Placement{}, err
+	}
+	var out tracker.Placement
+	for _, b := range boards {
+		rows, err := p.rows(ctx, b, issues)
+		if err != nil {
+			return tracker.Placement{}, err
+		}
+		if len(rows) == 1 {
+			out.Rows = append(out.Rows, tracker.BoardRow{Board: b, Row: rows[0]})
+		} else {
+			out.Off = append(out.Off, b)
+		}
+	}
+	return out, nil
+}
+
 // Cards are the cards of the issues that exist, archived ones included,
 // read in requests of 250 IDs. Trashed issues and IDs that are not
 // issue IDs are Missing.

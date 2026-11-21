@@ -131,6 +131,22 @@ func TestRequestCost(t *testing.T) {
 		_, err := p.ChangedRows(ctx, tracker.DeltaQuery{Board: costOther, Start: now.Add(-time.Hour)})
 		return err
 	})
+	// A new issue placed on two boards: one match, one bulk fetch. A rows
+	// read whose list leaves an issue out confirms it with one match.
+	r.measure("NewRows (2 boards)", func() error {
+		pl, err := p.NewRows(ctx, first, []tracker.BoardID{costBoard, costOther})
+		if err == nil && len(pl.Rows)+len(pl.Off) != 2 {
+			err = fmt.Errorf("placement %+v", pl)
+		}
+		return err
+	})
+	r.measure("BoardRows (100, 1 not on the board)", func() error {
+		rows, err := p.BoardRows(ctx, costBoard, append(costIDs(0, 100), "99999999"))
+		if err == nil && (len(rows.Rows) != 100 || len(rows.Missing) != 1) {
+			err = fmt.Errorf("%d rows, missing %v", len(rows.Rows), rows.Missing)
+		}
+		return err
+	})
 
 	// Writes.
 	dir := t.TempDir()
@@ -244,6 +260,7 @@ func TestRequestCost(t *testing.T) {
 		"Detail (60 comments)": 2, "Comments (next page)": 1, "Moves": 1, "CreateFields": 1,
 		"AssignableUsers": 1, "Choices (priority)": 1, "Lookup (10 keys, 3 missing)": 4, "Search": 1,
 		"ChangedRows board 2 (cold)": 2, "Structure board 1 (warm 2)": 3, "ChangedRows board 2 (after)": 1,
+		"NewRows (2 boards)": 2, "BoardRows (100, 1 not on the board)": 2,
 		"Create (two images)": 7, "Edit (title, assignee)": 3, "Move": 2, "SetEstimate": 2, "Rank (5)": 2,
 		"MoveToSprint (30)": 3, "MoveToSprint backlog (30)": 2, "AddComment": 2, "EditComment": 2, "DeleteComment": 2,
 		"Link": 1, "Unlink": 2, "Attach": 1, "Download": 2,
@@ -260,18 +277,19 @@ func TestRequestCost(t *testing.T) {
 	// which answers the same bytes every run, with 5% headroom, rounded up
 	// to ten bytes.
 	r.pinBytes(map[string]int{
-		"Identity": 470, "Projects": 230, "IssueTypes": 840, "Boards": 630, "LinkTypes": 330, // 446, 216, 793, 598, 312
+		"Identity": 470, "Projects": 320, "IssueTypes": 840, "Boards": 630, "LinkTypes": 330, // 446, 303, 793, 598, 312
 		"Structure (cold)": 17480, "Structure (again)": 17480, "Structure board 1 (warm 2)": 17480, // 16641
-		"ChangedRows walk of 500": 902500,                                                           // 859515
+		"ChangedRows walk of 500": 964970,                                                           // 919015
 		"ChangedRows idle tick 1": 60, "ChangedRows idle tick 2": 60, "ChangedRows idle tick 3": 60, // 48
 		"ChangedRows board 2 (cold)": 830, "ChangedRows board 2 (after)": 60, // 790, 48
-		"BoardIssues (500)": 61370, "BoardRows (100)": 175600, "BoardRows (500)": 896260, // 58439, 167235, 853574
-		"Cards (100)": 170750, "Cards (250)": 427010, // 162614, 406670
-		"Cards (500)": 853820, "Cards (501)": 854050, // 813153, 813372
+		"NewRows (2 boards)": 2450, "BoardRows (100, 1 not on the board)": 188260, // 2333, 179290
+		"BoardIssues (500)": 61370, "BoardRows (100)": 188100, "BoardRows (500)": 958730, // 58439, 179135, 913074
+		"Cards (100)": 179880, "Cards (250)": 449850, // 171314, 428420
+		"Cards (500)": 899490, "Cards (501)": 899720, // 856653, 856872
 		"History (20 x 100 changes)": 1332940, "History (100, 80 unchanged)": 1367170, // 1269458, 1302059
-		"Detail (60 comments)": 159140, "Comments (next page)": 15510, // 151556, 14763
+		"Detail (60 comments)": 159140, "Comments (next page)": 15510, // 151643, 14763
 		"Moves": 1350, "CreateFields": 3340, "AssignableUsers": 1410, "Choices (priority)": 3190, // 1283, 3180, 1342, 3036
-		"Lookup (10 keys, 3 missing)": 12530, "Search": 85160, // 11924, 81104
+		"Lookup (10 keys, 3 missing)": 13160, "Search": 89730, // 12533, 85454
 		"Tempo Worklogs (month)": 12430, // 11837
 	})
 }

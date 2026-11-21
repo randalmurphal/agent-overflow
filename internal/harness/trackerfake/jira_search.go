@@ -153,6 +153,47 @@ func bulkFetch(c *jiraCall) answer {
 	return jsonAnswer(http.StatusOK, map[string]any{"expand": "", "issues": issues, "issueErrors": []any{}})
 }
 
+// matchJQL answers which of the issues each query matches, judged on the
+// issues as they are, never through the index (measured: a new issue
+// matched 0.3 s after its create while searches still missed it). An ID
+// that names no issue matches nothing with no error (measured). A filter
+// clause naming a filter no board has is the query's error; its message
+// is unverified.
+func matchJQL(c *jiraCall) answer {
+	var in struct {
+		IssueIDs []int64  `json:"issueIds"`
+		JQLs     []string `json:"jqls"`
+	}
+	if err := c.decode(&in, false); err != nil {
+		return unhandledf("%v", err)
+	}
+	if len(in.IssueIDs) == 0 || len(in.IssueIDs) > 50 || len(in.JQLs) == 0 || len(in.JQLs) > 10 {
+		return jiraErrors(http.StatusBadRequest, "A match takes 1 to 50 issues and 1 to 10 queries.")
+	}
+	matches := []any{}
+	for _, src := range in.JQLs {
+		q, err := parseJQL(src)
+		if err != nil {
+			return jqlAnswer(err)
+		}
+		matched, errs := []int64{}, []string{}
+		for _, f := range q.filters {
+			if c.s.boardOfFilter(f) == nil {
+				errs = append(errs, fmt.Sprintf("The value '%s' does not exist for the field 'filter'.", f))
+			}
+		}
+		if len(errs) == 0 {
+			for _, id := range in.IssueIDs {
+				if is := c.s.issue(strconv.FormatInt(id, 10)); is != nil && q.where(c.s, is) {
+					matched = append(matched, id)
+				}
+			}
+		}
+		matches = append(matches, map[string]any{"matchedIssues": matched, "errors": errs})
+	}
+	return jsonAnswer(http.StatusOK, map[string]any{"matches": matches})
+}
+
 func issueChangelog(c *jiraCall) answer {
 	is, nf := c.found()
 	if nf != nil {

@@ -222,7 +222,12 @@ func (s *jiraSite) issueTypeJSON(p *JiraProject, id string) any {
 }
 
 func (s *jiraSite) projectJSON(p *JiraProject) map[string]any {
-	return map[string]any{"self": s.self("project/" + p.ID), "id": p.ID, "key": p.Key, "name": p.Name, "projectTypeKey": p.TypeKey, "simplified": p.Simplified}
+	// Jira sends four avatar sizes; the fake sends one, which the lists
+	// rewrite (listURLs).
+	return map[string]any{
+		"self": s.self("project/" + p.ID), "id": p.ID, "key": p.Key, "name": p.Name, "projectTypeKey": p.TypeKey, "simplified": p.Simplified,
+		"avatarUrls": map[string]string{"48x48": s.self("project/" + p.ID + "/avatar")},
+	}
 }
 
 func (s *jiraSite) optionJSON(o JiraOption) map[string]any {

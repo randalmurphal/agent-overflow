@@ -82,7 +82,7 @@ func BenchmarkMirrorReconcile(b *testing.B) {
 	b.Run("nothing", func(b *testing.B) {
 		s, root := openBenchMirror(b)
 		measureMirror(b, func(int) error {
-			_, err := s.ReconcileMirrorBoard(root, benchBoardID(0), currentLifetime(s, root, benchBoardID(0)), listing, true, 1)
+			_, err := s.ReconcileMirrorBoard(root, benchBoardID(0), currentLifetime(s, root, benchBoardID(0)), listing, true, 1, 1)
 			return err
 		})
 	})
@@ -93,7 +93,7 @@ func BenchmarkMirrorReconcile(b *testing.B) {
 			back[r] = benchRow(0, r, 1000)
 		}
 		measureMirror(b, func(i int) error {
-			got, err := s.ReconcileMirrorBoard(root, benchBoardID(0), currentLifetime(s, root, benchBoardID(0)), listing[50:], true, int64(10+2*i))
+			got, err := s.ReconcileMirrorBoard(root, benchBoardID(0), currentLifetime(s, root, benchBoardID(0)), listing[50:], true, int64(10+2*i), int64(10+2*i))
 			if err != nil || len(got.Removed) != 50 {
 				return fmt.Errorf("removed %d, %v", len(got.Removed), err)
 			}

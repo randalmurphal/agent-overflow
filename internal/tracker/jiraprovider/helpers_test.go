@@ -30,6 +30,7 @@ const (
 	board3Issues   = "/rest/software/1.0/board/3/issue"
 	board4Issues   = "/rest/software/1.0/board/4/issue"
 	bulkFetchPath  = "/rest/api/3/issue/bulkfetch"
+	matchPath      = "/rest/api/3/jql/match"
 	changelogsPath = "/rest/api/3/changelog/bulkfetch"
 	searchPath     = "/rest/api/3/search/jql"
 

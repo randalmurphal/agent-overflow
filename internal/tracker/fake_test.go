@@ -35,6 +35,9 @@ func (fakeProvider) BoardIssues(context.Context, BoardID, time.Time) (Listing, e
 func (fakeProvider) BoardRows(context.Context, BoardID, []IssueID) (Rows, error) {
 	return Rows{}, nil
 }
+func (fakeProvider) NewRows(context.Context, IssueID, []BoardID) (Placement, error) {
+	return Placement{}, nil
+}
 func (fakeProvider) Cards(context.Context, []IssueID) (Cards, error)        { return Cards{}, nil }
 func (fakeProvider) History(context.Context, HistoryQuery) (History, error) { return History{}, nil }
 func (fakeProvider) Detail(context.Context, IssueID) (Detail, error)        { return Detail{}, nil }

@@ -251,6 +251,19 @@ func (s *jiraSite) seedBoards(e *Engine) error {
 		if b.FilterID == "" {
 			b.FilterID = strconv.FormatInt(10000+b.ID, 10)
 		}
+		// A saved filter selects its project's issues (filter = <n> in
+		// JQL), so the boards sharing one share the project.
+		if other := s.boardOfFilter(b.FilterID); other != b && s.project(other.Project) != s.project(b.Project) {
+			return fmt.Errorf("board %d shares filter %s with board %d of another project", b.ID, b.FilterID, other.ID)
+		}
+		if b.SubQuery != "" {
+			if b.Type != "kanban" {
+				return fmt.Errorf("board %d has a sub-query and is not a kanban board", b.ID)
+			}
+			if _, err := parseJQL(b.SubQuery); err != nil {
+				return fmt.Errorf("board %d sub-query: %w", b.ID, err)
+			}
+		}
 		for _, col := range b.Columns {
 			for _, id := range col.Statuses {
 				if s.status(id) == nil {

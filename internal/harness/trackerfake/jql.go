@@ -25,6 +25,9 @@ import (
 //	        | sprint in (<n>, ...)
 //	        | text ~ "<text search>"
 //	        | project = "<key or ID>"
+//	        | filter = <n>
+//	        | status in (<n>, ...)
+//	        | hierarchyLevel (= | !=) <n>
 //	        | worklogAuthor = "<account ID>"
 //	        | worklogDate (>= | <=) "<YYYY-MM-DD>"
 //	key     = (updated | id | created | key) [ASC | DESC]
@@ -38,8 +41,10 @@ import (
 type jqlQuery struct {
 	where func(s *jiraSite, is *JiraIssue) bool
 	order []jqlOrder
-	// sprints are the sprint IDs a sprint in clause names.
+	// sprints are the sprint IDs a sprint in clause names, and filters
+	// the saved filter IDs a filter clause names.
 	sprints []int64
+	filters []string
 }
 
 type jqlOrder struct {
@@ -126,6 +131,7 @@ type jqlParser struct {
 	toks    []jqlToken
 	pos     int
 	sprints []int64
+	filters []string
 }
 
 func (p *jqlParser) peek() jqlToken { return p.toks[p.pos] }
@@ -186,7 +192,7 @@ func parseJQL(src string) (jqlQuery, error) {
 	if t := p.peek(); t.kind != 0 {
 		return jqlQuery{}, &jqlError{fmt.Sprintf("text from %q on is not implemented", t.text)}
 	}
-	q.sprints = p.sprints
+	q.sprints, q.filters = p.sprints, p.filters
 	return q, nil
 }
 
@@ -261,7 +267,7 @@ func (p *jqlParser) clause() (jqlFilter, error) {
 		return nil, &jqlError{fmt.Sprintf("clause at %q is not implemented", field.text)}
 	}
 	form := name + " " + strings.ToLower(op.text)
-	if form == "id in" || form == "key in" || form == "sprint in" {
+	if form == "id in" || form == "key in" || form == "sprint in" || form == "status in" {
 		kind := byte('n')
 		if name == "key" {
 			kind = 's'
@@ -315,6 +321,20 @@ func (p *jqlParser) clause() (jqlFilter, error) {
 			p := s.project(ref)
 			return p != nil && p.Key == is.Project
 		}, nil
+	case form == "filter =" && v.kind == 'n':
+		// A board's saved filter selects its project's issues, the fake's
+		// only kind of filter; one no board names matches nothing here,
+		// and jql/match reports it as the query's error (undefinedFilter).
+		ref := v.text
+		p.filters = append(p.filters, ref)
+		return func(s *jiraSite, is *JiraIssue) bool {
+			b := s.boardOfFilter(ref)
+			return b != nil && s.project(b.Project).Key == is.Project
+		}, nil
+	case (form == "hierarchylevel =" || form == "hierarchylevel !=") && v.kind == 'n':
+		level, _ := strconv.Atoi(v.text)
+		eq := op.text == "="
+		return func(s *jiraSite, is *JiraIssue) bool { return (s.level(is) == level) == eq }, nil
 	case form == "worklogauthor =" && v.kind == 's':
 		who := v.text
 		return func(_ *jiraSite, is *JiraIssue) bool {
@@ -343,6 +363,8 @@ func inFilter(name string, vals []string) jqlFilter {
 			return slices.Contains(vals, is.ID)
 		case "key":
 			return slices.ContainsFunc(vals, func(k string) bool { return strings.EqualFold(k, is.Key) })
+		case "status":
+			return slices.Contains(vals, is.Status)
 		}
 		return slices.ContainsFunc(is.Sprints, func(id int64) bool { return slices.Contains(vals, strconv.FormatInt(id, 10)) })
 	}

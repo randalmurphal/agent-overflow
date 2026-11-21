@@ -23,8 +23,8 @@ func (s *partialStore) ReplaceMirrorHistories(root, sweep int64, hs []store.Mirr
 	return res, errStoreDown
 }
 
-func (s *partialStore) ReconcileMirrorBoard(root int64, board string, lifetime int64, listed []string, complete bool, readAt int64) (store.MirrorReconcile, error) {
-	res, err := s.Store.ReconcileMirrorBoard(root, board, lifetime, listed, complete, readAt)
+func (s *partialStore) ReconcileMirrorBoard(root int64, board string, lifetime int64, listed []string, complete bool, readAt, settledAt int64) (store.MirrorReconcile, error) {
+	res, err := s.Store.ReconcileMirrorBoard(root, board, lifetime, listed, complete, readAt, settledAt)
 	if err != nil {
 		return res, err
 	}
@@ -59,6 +59,8 @@ func TestATickTellsWhatAFailedStoreCallStored(t *testing.T) {
 	}
 
 	m.tracks([]tracker.Row{row("10001", 1_799_000_000_000, "a")})
+	// Past the overlap, the listing judges the rows itself.
+	m.pass(tracker.DeltaOverlap + time.Millisecond)
 	out, err = m.svc.tickReconcile(t.Context(), m.scope(), Background)
 	if !errors.Is(err, errStoreDown) || !slices.Equal(out.Changes().Removed, ids("10002")) {
 		t.Fatalf("reconcile %+v, %v; want the failure and the one row removed", out, err)

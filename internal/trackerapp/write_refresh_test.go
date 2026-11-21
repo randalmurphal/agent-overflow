@@ -202,7 +202,7 @@ func TestWriteCosts(t *testing.T) {
 			func() (WriteView, error) {
 				return f.svc.Create(ctx, id, CreateRequest{Board: "1", Project: "10000", Title: "New"})
 			}),
-			costOf{map[string]int{"Create": 1, "BoardRows": 1}, map[string]int{"ReadMirrorRefreshTargets": 1, "WriteMirrorRows": 1}}},
+			costOf{map[string]int{"Create": 1, "NewRows": 1}, map[string]int{"ReadMirrorRefreshTargets": 1, "WriteMirrorRows": 1}}},
 		{"create of unknown outcome", write(tracker.Result{Parts: []tracker.Part{{Step: tracker.StepCreate, Outcome: tracker.Unknown(fmt.Errorf("lost"))}}},
 			func() { f.state.set(testBoard, writeRow("10006", 1, "f")) },
 			func() (WriteView, error) {

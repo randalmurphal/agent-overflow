@@ -129,6 +129,9 @@ func createIssue(c *jiraCall) answer {
 		ID: strconv.FormatInt(c.e.nextID(), 10), Project: p.Key, Type: t.ID, Status: p.Statuses[0],
 		Reporter: c.viewer, Created: now, Updated: now, Rank: c.s.lastRank(),
 	}
+	if c.s.IndexLag > 0 {
+		is.Indexed = now.Add(c.s.IndexLag)
+	}
 	if w := c.s.writeFields(&is, t.Screen, fields, in.Update); w.unhandled != "" || w.refused != nil {
 		return fieldOutcome(w)
 	}

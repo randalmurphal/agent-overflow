@@ -160,22 +160,50 @@ func (s *jiraSite) attachment(id string) (*JiraIssue, int) {
 }
 
 // boardIssues are the issues board b lists, in rank order: those of its
-// project whose status a column maps.
+// project (its saved filter) whose status a column maps, without epics on
+// a scrum board (measured: neither list held an issue in an unmapped
+// status, and the scrum list held no epic), within a kanban board's
+// sub-query (unverified: the measured sub-query left nothing out).
 func (s *jiraSite) boardIssues(b *JiraBoard) []*JiraIssue {
 	var mapped []string
 	for _, col := range b.Columns {
 		mapped = append(mapped, col.Statuses...)
 	}
+	sub := func(*jiraSite, *JiraIssue) bool { return true }
+	if b.SubQuery != "" {
+		q, _ := parseJQL(b.SubQuery) // read when seeded
+		sub = q.where
+	}
 	var out []*JiraIssue
 	p := s.project(b.Project)
 	for i := range s.Issues {
 		is := &s.Issues[i]
-		if is.Project == p.Key && slices.Contains(mapped, is.Status) {
+		if is.Project == p.Key && slices.Contains(mapped, is.Status) && (b.Type != "scrum" || s.level(is) != 1) && sub(s, is) {
 			out = append(out, is)
 		}
 	}
 	sortByRank(out)
 	return out
+}
+
+// boardOfFilter is the first board whose saved filter is id; nil for
+// none.
+func (s *jiraSite) boardOfFilter(id string) *JiraBoard {
+	for i := range s.Boards {
+		if s.Boards[i].FilterID == id {
+			return &s.Boards[i]
+		}
+	}
+	return nil
+}
+
+// level is the hierarchy level of is's type: 1 for an epic, -1 for a
+// sub-task, 0 otherwise.
+func (s *jiraSite) level(is *JiraIssue) int {
+	if t := s.project(is.Project).issueType(is.Type); t != nil {
+		return t.HierarchyLevel
+	}
+	return 0
 }
 
 // doneStatuses are the statuses of a board's last column that maps any.

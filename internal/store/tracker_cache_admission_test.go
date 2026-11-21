@@ -163,7 +163,7 @@ func TestMirrorAbsenceIsAdmitted(t *testing.T) {
 				_, err := s.WriteMirrorRows(root, MirrorRowPage{BoardID: "10", Lifetime: lifetime, Missing: []string{"10002"}, ReadAt: 30})
 				return err
 			}
-			_, err := s.ReconcileMirrorBoard(root, "10", lifetime, []string{"10001"}, true, 30)
+			_, err := s.ReconcileMirrorBoard(root, "10", lifetime, []string{"10001"}, true, 30, 30)
 			return err
 		}
 		recorder := recordMirrorWrites(t, s)

@@ -103,8 +103,11 @@ this is its shape.
   columns, statuses, estimate and sprints, and the site's link types.
 - Sync: a page of a board's changed rows from a cursor; the complete set
   of IDs on a board, or a statement that the set is incomplete; a board's
-  rows for a set of IDs; cards for a set of IDs with no board; status,
-  sprint, estimate and assignee changes for a set of issues.
+  rows for a set of IDs; a new issue's placement on a set of boards
+  (`NewRows`: the row on each board that holds it, the boards that do
+  not, and the boards it could not judge); cards for a set of IDs with no
+  board; status, sprint, estimate and assignee changes for a set of
+  issues.
 - Detail: one issue's detail, or several issues' details in one call
   (`Details`: Linear reads 10 a request, Jira one issue at a time, four
   at once), where an issue the tracker does not return is missing rather
@@ -435,8 +438,13 @@ and writes share:
   edited, an issue is deleted, a board is newly listed while its issues are
   already cards from another board. A reconcile lists the IDs on the board,
   reads the board rows of every listed ID that has no row on this board,
-  and removes the rows no longer listed. A listing the provider reports as
-  incomplete adds and never removes. It runs when a board is subscribed, on
+  and removes the rows no longer listed that were read at least
+  `tracker.DeltaOverlap` before the listing began. A list may miss an
+  issue its index has not caught up with (Jira, after a create), so an
+  unlisted row read more recently is not judged by the listing: the store
+  reports it (`MirrorReconcile.Unsettled`) and the same tick reads it
+  through the board's rows, which keeps or removes it. A listing the
+  provider reports as incomplete adds and never removes. It runs when a board is subscribed, on
   a slower cadence, and on request, and waits while the tick's delta walk
   has more pages to read, so a first sync reads each row once and lists
   the board once.
@@ -690,8 +698,19 @@ call; the path does the rest.
    read for the open tickets and the stored details named, a structure
    read per shown board named, and a worklogs read per author and span
    of consecutive days. A card or detail the mirror neither keeps nor
-   holds is not read. An issue a create made is read through the board
-   the create was made from. A write adds no history read.
+   holds is not read. A write adds no history read.
+
+   An issue a create made is placed first (`write_place.go`): one
+   `NewRows` call asks whether the create's board and the connection's
+   other shown boards hold it, the create's board first, and stores its
+   row on each that does, told as that board's own change. On the
+   create's board the row is refreshed, unless the store did not take it
+   (a removal recorded by a read that began later), when it is owed the
+   board's rows read. A create's board that does not hold it stores
+   nothing and answers `NotOnBoard`. A failed placement, or one that
+   could not judge the create's board, leaves the row owed the board's
+   rows read, as any write's row is. Another board that does not hold it,
+   or was not judged, is left to its own sync.
 
    The refresh keeps an account of every resource named
    (`write_account.go`): each ends refreshed, not shown (nothing to read),
@@ -716,7 +735,8 @@ call; the path does the rest.
    is published however it stopped, as a tick's is.
 6. The caller gets a `WriteView`: each part's issue, step, state and
    refusal (reason, message, field messages, candidates, lost content),
-   the issue a create made, `CreateUnknown`, and the resources a refresh
+   the issue a create made, the board it is not on (`NotOnBoard`),
+   `CreateUnknown`, and the resources a refresh
    read could not refresh with its failure (`Stale`). A failed refresh is
    never a write failure.
 7. A create of unknown outcome is reported as that and never retried. The

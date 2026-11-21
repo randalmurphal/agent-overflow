@@ -19,6 +19,12 @@ type WriteView struct {
 	// may hold a new issue nobody can name, and a second attempt may make
 	// a second one. Nothing retried it; the board's tick ran at once.
 	CreateUnknown bool `json:"create_unknown,omitempty"`
+	// NotOnBoard is the board the create was made from when the tracker
+	// says that board does not hold the new issue (its filter leaves it
+	// out, its status is in no column, or it is an epic on a Jira scrum
+	// board): the issue was created, no row was stored, and the board
+	// will not show it.
+	NotOnBoard string `json:"not_on_board,omitempty"`
 	// Stale names what the write may have changed that the mirror could
 	// not be refreshed with, and why. The write stands: the views of it
 	// are stale until the next sync reads it.

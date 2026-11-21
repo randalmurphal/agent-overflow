@@ -136,9 +136,10 @@ func TestWorklogFieldEmbedsTwenty(t *testing.T) {
 func TestBoardListIsUnclamped(t *testing.T) {
 	w := readWorld(t, 0, 0, 0, 150)
 	var page struct{ Issues []struct{ ID string } }
+	// 153 issues, one of them an epic, which a scrum board's list leaves out.
 	decodeReply(t, w.write(t, "GET", "/rest/software/1.0/board/1/issue?fields=summary&maxResults=5000", "", 200), &page)
-	if len(page.Issues) != 153 {
-		t.Fatalf("the board list held %d of 153", len(page.Issues))
+	if len(page.Issues) != 152 {
+		t.Fatalf("the board list held %d of 152", len(page.Issues))
 	}
 	decodeReply(t, w.write(t, "GET", "/rest/software/1.0/board/1/backlog?fields=summary&maxResults=5000", "", 200), &page)
 	if len(page.Issues) != 100 {
@@ -167,13 +168,14 @@ func TestIndexedLate(t *testing.T) {
 		decodeReply(t, w.write(t, "GET", "/rest/software/1.0/board/1/issue?fields=id", "", 200), &page)
 		return search, len(page.Issues)
 	}
-	if s, l := keys(); s != 2 || l != 2 {
-		t.Fatalf("before it is indexed: search %d, list %d of 3", s, l)
+	// The scrum board's list leaves out the epic, WEB-3, all along.
+	if s, l := keys(); s != 2 || l != 1 {
+		t.Fatalf("before it is indexed: search %d of 3, list %d of 2", s, l)
 	}
 	w.write(t, "GET", "/rest/api/3/issue/WEB-2", "", 200)
 	w.clock.set(testStart.Add(time.Minute))
-	if s, l := keys(); s != 3 || l != 3 {
-		t.Fatalf("once indexed: search %d, list %d of 3", s, l)
+	if s, l := keys(); s != 3 || l != 2 {
+		t.Fatalf("once indexed: search %d of 3, list %d of 2", s, l)
 	}
 }
 

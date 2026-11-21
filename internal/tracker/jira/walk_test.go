@@ -435,7 +435,7 @@ var (
 	// oneRequest reads answer from one request (or a cache).
 	oneRequest = []string{
 		"AttachmentMediaID", "Attachments", "Board", "BoardConfig", "Comment", "CountIssues", "CountListIssues",
-		"DownloadAttachment", "EditMeta", "Fields", "FieldsNaming", "GetIssue", "IssueLinkTypes", "Me", "Myself", "Project",
+		"DownloadAttachment", "EditMeta", "Fields", "FieldsNaming", "GetIssue", "IssueLinkTypes", "MatchJQL", "Me", "Myself", "Project",
 		"ProjectStatuses", "RemoteLinks", "Sprint", "Statuses", "Transitions", "User", "Watchers", "Worklog",
 	}
 	// writes and the plans and values they are built from compose a write,

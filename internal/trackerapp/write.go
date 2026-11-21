@@ -100,7 +100,11 @@ func (s *Service) write(ctx context.Context, id string, op writeOp) (WriteView, 
 		return view, nil
 	}
 	writeCalls := r.calls
-	f := r.refresh(resources)
+	var created newIssue
+	if id, ok := res.Created(); ok && op.board != "" {
+		created = newIssue{issue: id, board: op.board}
+	}
+	f := r.refresh(resources, created)
 	// The mirror ended with the connection: what the refresh stored before
 	// is still published below, as a tick's is, and the outcome answers
 	// for every resource (Ended).
@@ -137,6 +141,7 @@ func (s *Service) write(ctx context.Context, id string, op writeOp) (WriteView, 
 		return view, nil
 	}
 	view.Stale = s.staleViews(r.row.Kind, f.stale)
+	view.NotOnBoard = string(f.notOnBoard)
 	finish()
 	if view.CreateUnknown && op.board != "" {
 		if err := s.tickNow(ctx, Scope{Connection: id, Board: op.board}); err != nil {

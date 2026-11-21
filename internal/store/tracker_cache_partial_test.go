@@ -57,7 +57,7 @@ func TestReconcileMirrorBoardReportsWhatCommittedBeforeAFailure(t *testing.T) {
 	// transaction's.
 	last := fmt.Sprint(10001 + clearMirrorChunk)
 	failMirrorWrite(t, s, "DELETE", "tracker_cache_board_issues", "OLD.issue_id = '"+last+"'")
-	got, err := s.ReconcileMirrorBoard(root, "10", currentLifetime(s, root, "10"), nil, true, 5)
+	got, err := s.ReconcileMirrorBoard(root, "10", currentLifetime(s, root, "10"), nil, true, 5, 5)
 	if err == nil || len(got.Removed) != clearMirrorChunk || len(got.Missing) != 0 {
 		t.Fatalf("removed %d, missing %d, %v; want the failure with the first transaction's %d removals", len(got.Removed), len(got.Missing), err, clearMirrorChunk)
 	}

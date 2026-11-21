@@ -77,6 +77,14 @@ func TestRequestCost(t *testing.T) {
 	})
 	r.measure("BoardRows (100)", func() error { _, err := p.BoardRows(ctx, board, costIDs(0, 100)); return err })
 	r.measure("BoardRows (500)", func() error { _, err := p.BoardRows(ctx, board, costIDs(0, 500)); return err })
+	// A new issue on its team's board and off another team's: one request.
+	r.measure("NewRows (2 boards)", func() error {
+		pl, err := p.NewRows(ctx, tracker.IssueID(costIssueID(0)), []tracker.BoardID{board, tracker.BoardID(sid(9999))})
+		if err == nil && (len(pl.Rows) != 1 || pl.Rows[0].Board != board || !slices.Equal(pl.Off, []tracker.BoardID{tracker.BoardID(sid(9999))})) {
+			err = fmt.Errorf("placement %+v", pl)
+		}
+		return err
+	})
 	r.measure("Cards (100)", func() error { _, err := p.Cards(ctx, costIDs(0, 100)); return err })
 	r.measure("History (20 x 100 entries)", func() error {
 		_, err := p.History(ctx, tracker.HistoryQuery{Issues: costIDs(0, costHistories), Boards: []tracker.BoardID{board}})
@@ -193,7 +201,7 @@ func TestRequestCost(t *testing.T) {
 	r.pin(map[string]pinned{
 		"Identity (first call)": {2, 6}, "Identity (again)": {1, 3}, "Projects": {1, 401}, "Boards": {1, 5}, "Structure": {1, 345},
 		"ChangedRows walk of 500": {2, 16}, "ChangedRows idle tick 1": {1, 8}, "ChangedRows idle tick 2": {1, 8}, "ChangedRows idle tick 3": {1, 8},
-		"BoardIssues (500)": {3, 49}, "BoardRows (100)": {1, 8}, "BoardRows (500)": {2, 16}, "Cards (100)": {1, 8},
+		"BoardIssues (500)": {3, 49}, "BoardRows (100)": {1, 8}, "BoardRows (500)": {2, 16}, "NewRows (2 boards)": {1, 8}, "Cards (100)": {1, 8},
 		"History (20 x 100 entries)": {1, 1005}, "History (50 issues)": {1, 1005}, "History (200 issues)": {4, 4020},
 		"Detail (60 comments, 100 entries)": {1, 1141}, "Detail (again)": {1, 1141}, "Comments (next page)": {1, 402},
 		"Moves": {1, 104}, "AssignableUsers": {1, 104}, "Choices (labels)": {1, 604},

@@ -25,6 +25,7 @@ type scripted struct {
 	changedRows func(tracker.DeltaQuery) (tracker.RowPage, error)
 	boardIssues func(tracker.BoardID, time.Time) (tracker.Listing, error)
 	boardRows   func(tracker.BoardID, []tracker.IssueID) (tracker.Rows, error)
+	newRows     func(tracker.IssueID, []tracker.BoardID) (tracker.Placement, error)
 	cards       func([]tracker.IssueID) (tracker.Cards, error)
 	history     func(tracker.HistoryQuery) (tracker.History, error)
 	detail      func(tracker.IssueID) (tracker.Detail, error)
@@ -181,6 +182,22 @@ func (p *scripted) BoardRows(ctx context.Context, b tracker.BoardID, ids []track
 		return zero, err
 	}
 	return h(b, ids)
+}
+
+func (p *scripted) NewRows(ctx context.Context, issue tracker.IssueID, boards []tracker.BoardID) (tracker.Placement, error) {
+	p.mu.Lock()
+	h := p.newRows
+	p.mu.Unlock()
+	if !p.called(ctx, "NewRows", func() bool { return h != nil }) {
+		return tracker.Placement{}, errUnscripted
+	}
+	if err := p.wait(ctx, "NewRows"); err != nil {
+		return tracker.Placement{}, err
+	}
+	if err := tracker.CheckNewRows(issue, boards); err != nil {
+		return tracker.Placement{}, err
+	}
+	return h(issue, boards)
 }
 
 func (p *scripted) Cards(ctx context.Context, ids []tracker.IssueID) (tracker.Cards, error) {

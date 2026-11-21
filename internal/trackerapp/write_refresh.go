@@ -27,7 +27,11 @@ import (
 //   - a detail: when a ticket is open on it or the mirror holds it, all of
 //     them in one full read (verifiedDetails), the open tickets settled
 //     with what it found;
-//   - worklogs: one read per author and span of named days.
+//   - worklogs: one read per author and span of named days;
+//   - the issue a create made: placed on its board and the connection's
+//     other subscribed boards by one read before the rows are read
+//     (write_place.go); its row is read with the rows only when that
+//     read did not settle it.
 //
 // Where each lives in the mirror, and the board lifetimes and root sweep
 // its writes name, come from one store read made before any of them
@@ -47,6 +51,9 @@ type refreshPlan struct {
 	rows           map[tracker.BoardID][]tracker.IssueID
 	structures     []tracker.BoardID
 	worklogs       map[tracker.UserID][]tracker.Date
+	// created is the issue a create made, placed before the rows are read
+	// (write_place.go); zero for any other write.
+	created newIssue
 }
 
 func planRefresh(resources []tracker.Resource) refreshPlan {
@@ -82,10 +89,13 @@ func sortedUnique[T cmp.Ordered](s []T) []T {
 	return slices.Compact(s)
 }
 
-// refresh reads resources again, stores them and accounts for each.
-func (r *run) refresh(resources []tracker.Resource) *refreshed {
+// refresh reads resources again, stores them and accounts for each;
+// created is the issue a create made, whose row on its board resources
+// name, or zero.
+func (r *run) refresh(resources []tracker.Resource, created newIssue) *refreshed {
 	f := newRefreshed(resources)
 	p := planRefresh(resources)
+	p.created = created
 	err := r.refreshMirrored(f, p)
 	if err == nil {
 		err = r.refreshWorklogs(f, p)
@@ -105,6 +115,11 @@ func (r *run) refreshMirrored(f *refreshed, p refreshPlan) error {
 	// later mirror, which the targets read then refuses.
 	open := r.s.openTickets(r.row.ID, p.details)
 	boards := slices.Concat(slices.Collect(maps.Keys(p.rows)), p.structures)
+	var place []tracker.BoardID
+	if p.created.issue != "" {
+		place = r.placeBoards(p.created)
+		boards = append(boards, place...)
+	}
 	t, err := r.refreshTargets(slices.Concat(p.cards, p.details), boards)
 	if errors.Is(err, store.ErrTrackerCacheGone) {
 		f.ended = true
@@ -135,6 +150,19 @@ func (r *run) refreshMirrored(f *refreshed, p refreshPlan) error {
 		default:
 			if stop := r.failedRead(f, err, tracker.StructureOf(b)); stop != nil {
 				return stop
+			}
+		}
+	}
+	if c := p.created; c.issue != "" && shown[c.board] && !gone[c.board] {
+		place = slices.DeleteFunc(place, func(b tracker.BoardID) bool { return !shown[b] || gone[b] })
+		owed, stop := r.place(f, c, place)
+		if stop != nil {
+			return stop
+		}
+		if !owed {
+			p.rows[c.board] = slices.DeleteFunc(slices.Clone(p.rows[c.board]), func(id tracker.IssueID) bool { return id == c.issue })
+			if len(p.rows[c.board]) == 0 {
+				delete(p.rows, c.board)
 			}
 		}
 	}

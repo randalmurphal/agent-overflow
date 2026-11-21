@@ -35,6 +35,11 @@ type JiraSite struct {
 	Boards   []JiraBoard   `json:"boards,omitempty"`
 	Sprints  []JiraSprint  `json:"sprints,omitempty"`
 	Issues   []JiraIssue   `json:"issues,omitempty"`
+	// IndexLag is how long after a create searches and issue lists first
+	// show the new issue (JiraIssue.Indexed); zero shows it at once.
+	// Measured: 0.6 s, 0.7 to 1.6 s and 23 s in three runs. In JSON, a
+	// number of nanoseconds.
+	IndexLag time.Duration `json:"indexLag,omitempty"`
 	Links    []JiraLink    `json:"links,omitempty"`
 	// DeletedWorklogs feed worklog/deleted.
 	DeletedWorklogs []JiraDeletion `json:"deletedWorklogs,omitempty"`
@@ -162,6 +167,9 @@ type JiraBoard struct {
 	Columns    []JiraColumn `json:"columns"`
 	Estimation string       `json:"estimation,omitempty"`
 	FilterID   string       `json:"filterId,omitempty"`
+	// SubQuery is a kanban board's sub-filter, JQL in the forms the fake
+	// reads; its list holds only the issues it matches (unverified).
+	SubQuery string `json:"subQuery,omitempty"`
 }
 
 // JiraColumn is a board column and the statuses it maps.

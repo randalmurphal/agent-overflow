@@ -76,10 +76,20 @@ func TestAParentsRankTellsNoBoardOfItsChildren(t *testing.T) {
 	ranked := slices.Clone(rows)
 	ranked[0].Order = "z"
 	told("a rank of the parent", m.scope(), ranked, map[tracker.BoardID][]tracker.IssueID{testBoard: ids("10001")})
-	// The parent leaves board 2 and comes back, its card unchanged.
+	// The parent leaves board 2 and comes back, its card unchanged. Its row
+	// was read under a minute ago, so the reconcile reads it by ID too.
 	m.p.set(func(p *scripted) {
 		p.boardIssues = func(tracker.BoardID, time.Time) (tracker.Listing, error) {
 			return tracker.Listing{IDs: ids("10002", "10003", "10004"), Complete: true}, nil
+		}
+		held := p.boardRows
+		p.boardRows = func(b tracker.BoardID, asked []tracker.IssueID) (tracker.Rows, error) {
+			out, err := held(b, asked)
+			if i := slices.IndexFunc(out.Rows, func(r tracker.Row) bool { return r.Card.ID == "10001" }); b == other.Board && i >= 0 {
+				out.Rows = slices.Delete(out.Rows, i, i+1)
+				out.Missing = append(out.Missing, "10001")
+			}
+			return out, err
 		}
 	})
 	if out := must[Outcome](t)(m.svc.SyncBoard(t.Context(), other, BoardDue{Reconcile: true}, Background)); !slices.Equal(out.Changes().Removed, ids("10001")) {

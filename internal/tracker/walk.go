@@ -70,6 +70,10 @@ func (o oneCredential) BoardRows(ctx context.Context, board BoardID, issues []Is
 	return trackerapi.Walk(ctx, func(ctx context.Context) (Rows, error) { return o.p.BoardRows(ctx, board, issues) })
 }
 
+func (o oneCredential) NewRows(ctx context.Context, issue IssueID, boards []BoardID) (Placement, error) {
+	return trackerapi.Walk(ctx, func(ctx context.Context) (Placement, error) { return o.p.NewRows(ctx, issue, boards) })
+}
+
 func (o oneCredential) Cards(ctx context.Context, issues []IssueID) (Cards, error) {
 	return trackerapi.Walk(ctx, func(ctx context.Context) (Cards, error) { return o.p.Cards(ctx, issues) })
 }

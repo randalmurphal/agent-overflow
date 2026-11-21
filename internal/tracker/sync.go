@@ -81,6 +81,45 @@ type Rows struct {
 	Catalog
 }
 
+// Placement is where a just-created issue stands on a set of boards, by
+// the tracker's own word: its row on each board that holds it, the
+// boards that do not, and the boards the tracker could not judge now,
+// each with why. Every board asked is in exactly one of the three.
+type Placement struct {
+	Rows    []BoardRow
+	Off     []BoardID
+	Unknown []UnjudgedBoard
+	Catalog
+}
+
+// BoardRow is an issue's row on Board.
+type BoardRow struct {
+	Board BoardID
+	Row   Row
+}
+
+// UnjudgedBoard is a board a Placement could not judge, and why.
+type UnjudgedBoard struct {
+	Board BoardID
+	Err   error
+}
+
+// CheckNewRows refuses a NewRows call that names no issue, no board, or
+// a board twice.
+func CheckNewRows(issue IssueID, boards []BoardID) error {
+	if issue == "" || len(boards) == 0 {
+		return invalidf("new rows need an issue and at least one board")
+	}
+	seen := make(map[BoardID]bool, len(boards))
+	for _, b := range boards {
+		if b == "" || seen[b] {
+			return invalidf("board %q is empty or named twice", b)
+		}
+		seen[b] = true
+	}
+	return nil
+}
+
 // Cards are the cards of a set of issues, read with no board. Missing are
 // the issues asked for that the tracker says do not exist or are not
 // visible.

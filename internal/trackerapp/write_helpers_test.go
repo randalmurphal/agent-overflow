@@ -216,6 +216,22 @@ func (s *boardsState) boardRows(b tracker.BoardID, asked []tracker.IssueID) (tra
 	return out, nil
 }
 
+// placement places issue on each board as the state holds it: its row
+// where a board holds it, Off elsewhere.
+func (s *boardsState) placement(issue tracker.IssueID, boards []tracker.BoardID) (tracker.Placement, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := tracker.Placement{Catalog: tracker.Catalog{Users: []tracker.User{user1}}}
+	for _, b := range boards {
+		if r, ok := s.rows[b][issue]; ok {
+			out.Rows = append(out.Rows, tracker.BoardRow{Board: b, Row: r})
+		} else {
+			out.Off = append(out.Off, b)
+		}
+	}
+	return out, nil
+}
+
 func (s *boardsState) listing(b tracker.BoardID, _ time.Time) (tracker.Listing, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -317,6 +333,7 @@ func newWriteFixture(t *testing.T) *writeFixture {
 	st.set("2", writeRow("10001", 0, "m"))
 	m.p.set(func(p *scripted) {
 		p.changedRows, p.boardRows, p.cards, p.detail, p.boardIssues = st.changedRows, st.boardRows, st.cardsRead, st.detail, st.listing
+		p.newRows = st.placement
 		p.history = func(tracker.HistoryQuery) (tracker.History, error) { return tracker.History{}, nil }
 	})
 	f := &writeFixture{mirrorFixture: m, w: w, state: st}

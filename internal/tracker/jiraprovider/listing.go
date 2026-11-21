@@ -82,11 +82,15 @@ func (p *Provider) listBoard(ctx context.Context, b board, window time.Time) (ji
 }
 
 // BoardRows reads issues through board, idChunk to a request, each with
-// the board's rank and estimate fields. An issue the board does not list
-// is Missing. Jira may answer an id clause naming an issue that no longer
-// exists with a warning or by refusing the query; either way the issues
-// that exist are found with a bulk read and listed again, and the others
-// are Missing.
+// the board's rank and estimate fields. Jira may answer an id clause
+// naming an issue that no longer exists with a warning or by refusing the
+// query; either way the issues that exist are found with a bulk read and
+// listed again. The list comes from Jira's search index, which shows a
+// new issue late, so an issue it leaves out is Missing only once
+// jql/match does not place it on the board (membership.go); one it does
+// is read by the bulk fetch. The confirmation costs one match request
+// per 50 issues left out and one bulk fetch when any is placed; none
+// when the list returns every issue.
 func (p *Provider) BoardRows(ctx context.Context, id tracker.BoardID, issues []tracker.IssueID) (tracker.Rows, error) {
 	if err := checkIssues(issues); err != nil {
 		return tracker.Rows{}, err
@@ -116,6 +120,16 @@ func (p *Provider) BoardRows(ctx context.Context, id tracker.BoardID, issues []t
 				found[row.Card.ID] = true
 				out.Rows = append(out.Rows, row)
 			}
+		}
+	}
+	if gone := missing(issues, found); len(gone) > 0 {
+		held, err := p.confirmMissing(ctx, b, s, gone, cat)
+		if err != nil {
+			return tracker.Rows{}, fmt.Errorf("jiraprovider: rows of board %s: %w", id, err)
+		}
+		for _, row := range held {
+			found[row.Card.ID] = true
+			out.Rows = append(out.Rows, row)
 		}
 	}
 	out.Missing = missing(issues, found)

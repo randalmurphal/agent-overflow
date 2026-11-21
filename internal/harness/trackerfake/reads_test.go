@@ -36,6 +36,7 @@ var readRows = map[string]call{
 	"POST rest/api/3/search/jql":                                    jiraReq("POST", "/rest/api/3/search/jql", `{"jql":"project = WEB","fields":["summary"]}`),
 	"POST rest/api/3/search/approximate-count":                      jiraReq("POST", "/rest/api/3/search/approximate-count", `{"jql":"project = WEB"}`),
 	"POST rest/api/3/issue/bulkfetch":                               jiraReq("POST", "/rest/api/3/issue/bulkfetch", `{"issueIdsOrKeys":["WEB-1"]}`),
+	"POST rest/api/3/jql/match":                                     jiraReq("POST", "/rest/api/3/jql/match", `{"issueIds":[10001],"jqls":["project = WEB"]}`),
 	"GET rest/api/3/issue/{issue}/changelog":                        jiraReq("GET", "/rest/api/3/issue/WEB-1/changelog", ""),
 	"POST rest/api/3/changelog/bulkfetch":                           jiraReq("POST", "/rest/api/3/changelog/bulkfetch", `{"issueIdsOrKeys":["WEB-1"]}`),
 	"GET rest/api/3/issue/{issue}/comment":                          jiraReq("GET", "/rest/api/3/issue/WEB-1/comment", ""),
@@ -67,21 +68,21 @@ var readRows = map[string]call{
 	"POST 4/accounts/search":                                        tempoReq("POST", "/4/accounts/search", `{}`),
 	"GET 4/user-schedule/{account}":                                 tempoReq("GET", "/4/user-schedule/acc-user1?from=2026-11-16&to=2026-11-22", ""),
 	"GET 4/timesheet-approvals/user/{account}":                      tempoReq("GET", "/4/timesheet-approvals/user/acc-user1?from=2026-11-16&to=2026-11-22", ""),
-	"Query.viewer":         linearReq("R", `query R { viewer { id } }`),
-	"Query.organization":   linearReq("R", `query R { organization { __typename } }`),
-	"Query.users":          linearReq("R", `query R { users { nodes { id } } }`),
-	"Query.teams":          linearReq("R", `query R { teams { nodes { id } } }`),
-	"Query.workflowStates": linearReq("R", `query R { workflowStates { nodes { id } } }`),
-	"Query.cycles":         linearReq("R", `query R { cycles { nodes { id } } }`),
-	"Query.issueLabels":    linearReq("R", `query R { issueLabels { nodes { id } } }`),
-	"Query.projects":       linearReq("R", `query R { projects { nodes { id } } }`),
-	"Query.issues":         linearReq("R", `query R { issues { nodes { id } } }`),
-	"Query.issue":          linearReq("R", `query R { issue(id: "i1") { id } }`),
-	"Query.comment":        linearReq("R", `query R { comment(id: "c2-comment") { id } }`),
-	"Query.issueRelation":  linearReq("R", `query R { issueRelation(id: "r2") { id } }`),
-	"Query.cycle":          linearReq("R", `query R { cycle(id: "cy1") { id } }`),
-	"Query.team":           linearReq("R", `query R { team(id: "t1") { id } }`),
-	"Query.searchIssues":   linearReq("R", `query R { searchIssues(term: "issue") { nodes { id } } }`),
+	"Query.viewer":                                                  linearReq("R", `query R { viewer { id } }`),
+	"Query.organization":                                            linearReq("R", `query R { organization { __typename } }`),
+	"Query.users":                                                   linearReq("R", `query R { users { nodes { id } } }`),
+	"Query.teams":                                                   linearReq("R", `query R { teams { nodes { id } } }`),
+	"Query.workflowStates":                                          linearReq("R", `query R { workflowStates { nodes { id } } }`),
+	"Query.cycles":                                                  linearReq("R", `query R { cycles { nodes { id } } }`),
+	"Query.issueLabels":                                             linearReq("R", `query R { issueLabels { nodes { id } } }`),
+	"Query.projects":                                                linearReq("R", `query R { projects { nodes { id } } }`),
+	"Query.issues":                                                  linearReq("R", `query R { issues { nodes { id } } }`),
+	"Query.issue":                                                   linearReq("R", `query R { issue(id: "i1") { id } }`),
+	"Query.comment":                                                 linearReq("R", `query R { comment(id: "c2-comment") { id } }`),
+	"Query.issueRelation":                                           linearReq("R", `query R { issueRelation(id: "r2") { id } }`),
+	"Query.cycle":                                                   linearReq("R", `query R { cycle(id: "cy1") { id } }`),
+	"Query.team":                                                    linearReq("R", `query R { team(id: "t1") { id } }`),
+	"Query.searchIssues":                                            linearReq("R", `query R { searchIssues(term: "issue") { nodes { id } } }`),
 }
 
 // worldState is what a request can change: the tenants, the ID counter
@@ -134,7 +135,8 @@ func TestReadRoutesChangeNothing(t *testing.T) {
 			g := newRig(t, f)
 			before := g.state(t)
 			rec := g.do(c)
-			if rec.Code >= 300 || strings.Contains(rec.Body.String(), `"errors":[`) {
+			// A Linear answer of 200 that carries errors did not answer.
+			if rec.Code >= 300 || c.origin == linearOrigin && strings.Contains(rec.Body.String(), `"errors":[`) {
 				t.Fatalf("answered %d %s", rec.Code, rec.Body)
 			}
 			if route := g.e.Requests(0).Requests[0].Route; c.origin != linearOrigin && route != name {

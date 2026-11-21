@@ -121,6 +121,7 @@ var refusals = map[string]call{
 	"POST rest/api/3/search/jql":                      jiraReq("POST", "/rest/api/3/search/jql", `{"jql":"id < 10"}`),
 	"POST rest/api/3/search/approximate-count":        jiraReq("POST", "/rest/api/3/search/approximate-count", `{"jql":"id < 10"}`),
 	"POST rest/api/3/issue/bulkfetch":                 jiraReq("POST", "/rest/api/3/issue/bulkfetch", `{"issueIdsOrKeys":[]}`),
+	"POST rest/api/3/jql/match":                       jiraReq("POST", "/rest/api/3/jql/match", `{"issueIds":[],"jqls":["id = 1"]}`),
 	"POST rest/api/3/changelog/bulkfetch":             jiraReq("POST", "/rest/api/3/changelog/bulkfetch", `{"issueIdsOrKeys":[]}`),
 	commentRoute:                                      jiraReq("POST", "/rest/api/3/issue/WEB-404/comment", `{"body":`+testDoc+`}`),
 	"PUT rest/api/3/issue/{issue}/comment/{id}":       jiraReq("PUT", "/rest/api/3/issue/WEB-1/comment/29999", `{"body":`+testDoc+`}`),
