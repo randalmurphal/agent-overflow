@@ -62,11 +62,13 @@ import {
   advanceGate,
   aoMessageOpening,
   awaitGate,
+  awaitInputsCarrying,
   awaitToolAnswer,
   awaitTurnCompleted,
   bigItemFixture,
   bigThreadFixture,
   expectEffortsPerModel,
+  parkedOn,
   plainScenario,
   releaseAfterBackgrounded,
   setScenario,
@@ -445,23 +447,21 @@ test('a standing agent on the other computer is named on its wake as a local one
     await releaseAfterBackgrounded(sent, { harness: app, gate: 'review-answer', cwd });
   }
 
-  // Each wake names its agent on the line after its status line. A wake
-  // that arrived with the other in one input is read from the same text.
-  const agentLine = async (answer: string): Promise<string> => {
-    const wake = await home.waitForEvent<HarnessMockEventData>(
-      'harness:mock',
-      (ev) => ev.report.kind === 'user_input' && ev.cwd === caller.path && (ev.report.input ?? '').includes(answer),
-      120_000,
-    );
+  // Each wake names its agent on the line after its status line. The two
+  // wakes reach the caller in one input or in two, so each is read from the
+  // input that carried it.
+  const answers = ['Local review: the parser is fine.', 'Remote review: the parser is fine.'];
+  const carried = await awaitInputsCarrying(home, { cwd: caller.path, parts: answers, timeoutMs: 120_000 });
+  const agentLine = (answer: string): string => {
+    const input = carried.get(answer)!;
     // What stands between the status line and the answer is the agent line.
-    const lines = (wake.report.input ?? '').split('\n');
+    const lines = input.split('\n');
     const at = lines.indexOf(answer);
     const status = lines.slice(0, at).findLastIndex((line) => line.endsWith('Its final message:'));
-    expect(status, wake.report.input).toBeGreaterThanOrEqual(0);
+    expect(status, input).toBeGreaterThanOrEqual(0);
     return lines.slice(status + 1, at).join('\n');
   };
-  const localLine = await agentLine('Local review: the parser is fine.');
-  const remoteLine = await agentLine('Remote review: the parser is fine.');
+  const [localLine, remoteLine] = answers.map(agentLine);
   const want = `That thread is a standing agent. Its role, in its own words: ${JSON.stringify(role)}`;
   expect(localLine).toBe(want);
   expect(remoteLine).toBe(localLine);
@@ -838,6 +838,11 @@ test('thread_status watches a request running on the other computer, and a prefi
   const caller = await seed(home, 'remote-status-caller', ['Remote status caller']);
   const there = await seed(remote, 'remote-status-target', ['Long remote job'], true);
   const target = there.threadIds[0];
+  // The probe holds for good: it shows when the status wait below has parked.
+  const probe = await seed(home, 'remote-status-probe', ['Status probe']);
+  await setScenario(home, probe.path, threadToolsScenario({
+    name: 'remote-status-probe-script', provider: 'claude', turns: [{ steps: [{ gate: 'remote-status-probe' }], text: 'Never answered.' }], afterTurns: 'silent',
+  }));
 
   await setScenario(
     remote,
@@ -871,6 +876,8 @@ test('thread_status watches a request running on the other computer, and a prefi
       turns: [
         {
           steps: [
+            { call: { tool: 'thread_send', args: { thread_id: probe.threadIds[0], message: 'Hold on.', wait_seconds: 0 } } },
+            { capture: { var: 'PROBE', from: '${MCP_RESULT}', pattern: RESULT_TOKEN_PATTERN } },
             {
               call: {
                 tool: 'thread_send',
@@ -894,7 +901,7 @@ test('thread_status watches a request running on the other computer, and a prefi
             {
               call: {
                 tool: 'thread_status',
-                args: { tokens: ['${TOKEN}'], wait_seconds: 60 },
+                args: { tokens: ['${TOKEN}', '${PROBE}'], wait_seconds: 60 },
                 timeoutMs: 120_000,
               },
             },
@@ -921,6 +928,9 @@ test('thread_status watches a request running on the other computer, and a prefi
 
   await home.rpc('StartSession', caller.threadIds[0]);
   await home.rpc('SendMessage', caller.threadIds[0], 'give the GPU computer the long job', null);
+  const probeSend = await awaitToolAnswer<{ token: string }>(home, { tool: 'thread_send', cwd: caller.path, timeoutMs: 60_000 });
+  expect(probeSend.isError, probeSend.text).toBe(false);
+  const probeToken = probeSend.value!.token;
 
   interface StatusAnswer {
     requests?: Array<{
@@ -947,12 +957,15 @@ test('thread_status watches a request running on the other computer, and a prefi
   expect(row.computer).toBe('GPU computer');
   expect(['accepted', 'running']).toContain(row.state);
 
-  // Let the remote turn finish: the status wait on this computer ends on
-  // the settlement the poller brings back. A thread that is still working
-  // refuses a send, so each send waits for the caller's previous turn.
+  // Let the remote turn finish once the status wait on this computer has
+  // parked: it ends on the settlement the poller brings back, and no wake is
+  // owed. A thread that is still working refuses a send, so each send waits
+  // for the caller's previous turn.
   const gate = await awaitGate(remote, 'hold-remote-status', there.path);
   await awaitTurnCompleted(home, caller.threadIds[0]);
+  await expect.poll(() => parkedOn(home, caller.threadIds[0], probeToken), { message: 'nothing waits on the probe yet' }).toBe(false);
   await home.rpc('SendMessage', caller.threadIds[0], 'watch it until it finishes', null);
+  await expect.poll(() => parkedOn(home, caller.threadIds[0], probeToken), { timeout: 60_000, message: 'the status wait parks' }).toBe(true);
   await advanceGate(remote, gate.mockId, 'hold-remote-status');
 
   const settled = await awaitToolAnswer<StatusAnswer>(home, {
