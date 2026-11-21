@@ -37,6 +37,11 @@ type accountSite struct {
 }
 
 func (s *accountSite) on(method, path string, answer func(user string, r *http.Request) string) {
+	s.reply(method, path, func(user string, r *http.Request) (int, string) { return 200, answer(user, r) })
+}
+
+// reply is on with the answer's status.
+func (s *accountSite) reply(method, path string, answer func(user string, r *http.Request) (int, string)) {
 	s.On(method, path, func(w http.ResponseWriter, r *http.Request, b []byte) {
 		name, _, _ := r.BasicAuth()
 		user, _, _ := strings.Cut(name, "@")
@@ -50,8 +55,27 @@ func (s *accountSite) on(method, path string, answer func(user string, r *http.R
 			jiratest.Reply(401, `{"errorMessages":["Client must be authenticated"]}`)(w, r, b)
 			return
 		}
-		jiratest.Reply(200, answer(user, r))(w, r, b)
+		status, body := answer(user, r)
+		jiratest.Reply(status, body)(w, r, b)
 	})
+}
+
+// accountProvider is a provider on an accountSite, every read of it one
+// walk, whose account a answers budget["a"] requests.
+func accountProvider(t *testing.T, budget map[string]int) (*accountSite, tracker.Provider) {
+	t.Helper()
+	s := &accountSite{Server: jiratest.NewServer(t), budget: budget}
+	s.on("GET", fieldPath, func(string, *http.Request) string { return fieldsJSON })
+	c, err := jira.New(jira.Options{BaseURL: s.URL(), Version: "test", Credentials: &userTurns{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(c.Close)
+	p, err := New(Options{Jira: c, Site: "https://example.atlassian.net"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s, tracker.OneCredential(p)
 }
 
 // twoChunkRows serves board 3 to accounts a and b: a sees issue 10001,
@@ -59,8 +83,7 @@ func (s *accountSite) on(method, path string, answer func(user string, r *http.R
 // requests a read of 10001 to 10501 makes. a answers budget requests.
 func twoChunkRows(t *testing.T, budget map[string]int) (*accountSite, tracker.Provider, []tracker.IssueID) {
 	t.Helper()
-	s := &accountSite{Server: jiratest.NewServer(t), budget: budget}
-	s.on("GET", fieldPath, func(string, *http.Request) string { return fieldsJSON })
+	s, p := accountProvider(t, budget)
 	s.on("GET", board3Config, func(string, *http.Request) string { return boardConfig(3, "customfield_10016") })
 	s.on("GET", board3Issues, func(user string, r *http.Request) string {
 		if strings.Contains(r.URL.Query().Get("jql"), "10501") {
@@ -75,20 +98,64 @@ func twoChunkRows(t *testing.T, budget map[string]int) (*accountSite, tracker.Pr
 	s.on("POST", "/rest/api/3/jql/match", func(string, *http.Request) string {
 		return `{"matches":[{"matchedIssues":[],"errors":[]}]}`
 	})
-	c, err := jira.New(jira.Options{BaseURL: s.URL(), Version: "test", Credentials: &userTurns{}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(c.Close)
-	p, err := New(Options{Jira: c, Site: "https://example.atlassian.net"})
-	if err != nil {
-		t.Fatal(err)
-	}
 	var ids []tracker.IssueID
 	for n := 10001; n <= 10501; n++ {
 		ids = append(ids, tracker.IssueID(strconv.Itoa(n)))
 	}
-	return s, tracker.OneCredential(p), ids
+	return s, p, ids
+}
+
+// TestLookupUnderOneCredential: the bulk fetch answers under account a,
+// which sees WEB-1, and the read alone of the key it left out is refused
+// for a and answered not found under b, which sees neither issue. A
+// not-found is an answer the lookup reports, so the lookup starts again
+// under b and matches no key, never a's card beside b's not-found.
+func TestLookupUnderOneCredential(t *testing.T) {
+	// a answers the catalog and the bulk fetch.
+	s, p := accountProvider(t, map[string]int{"a": 2})
+	s.on("POST", bulkFetchPath, func(user string, _ *http.Request) string {
+		if user == "a" {
+			return mustJSON(map[string]any{"issues": []any{issue("10001", "WEB-1", updatedAt, nil)}, "issueErrors": []any{}})
+		}
+		return `{"issues":[],"issueErrors":[]}`
+	})
+	for _, key := range []string{"WEB-1", "WEB-9"} {
+		s.reply("GET", "/rest/api/3/issue/"+key, func(string, *http.Request) (int, string) { return 404, notFoundJSON })
+	}
+	got, err := p.Lookup(t.Context(), []string{"WEB-1", "WEB-9"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Found) != 0 || len(got.Unmatched) != 2 {
+		t.Fatalf("found %d and %d unmatched, want b's answer: neither key matched", len(got.Found), len(got.Unmatched))
+	}
+}
+
+// TestNewRowsUnderOneCredential: board 3's configuration answers under
+// account a, for which it maps no status, and board 4's is refused for a
+// and answered under b, for which both boards hold the issue. NewRows
+// keeps a board it could not read as Unknown and returns no error, which
+// does not hide the change: the placement starts again under b.
+func TestNewRowsUnderOneCredential(t *testing.T) {
+	s, p := accountProvider(t, map[string]int{"a": 1})
+	s.on("GET", board3Config, func(user string, _ *http.Request) string {
+		if user == "a" {
+			return `{"id":3,"name":"Board 3","type":"scrum","filter":{"id":"13"},"columnConfig":{"columns":[]},"ranking":{"rankCustomFieldId":10019}}`
+		}
+		return boardConfig(3, "customfield_10016")
+	})
+	s.on("GET", board4Config, func(string, *http.Request) string { return boardConfig(4, "customfield_10016") })
+	s.on("POST", matchPath, func(string, *http.Request) string {
+		return `{"matches":[{"matchedIssues":[10005],"errors":[]},{"matchedIssues":[10005],"errors":[]}]}`
+	})
+	s.on("POST", bulkFetchPath, func(string, *http.Request) string { return page("", listedIssue("api/3")) })
+	got, err := p.NewRows(t.Context(), "10005", []tracker.BoardID{"3", "4"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Rows) != 2 || len(got.Off) != 0 || len(got.Unknown) != 0 {
+		t.Fatalf("placement %+v, want b's: a row on both boards", got)
+	}
 }
 
 // TestBoardRowsUnderOneCredential: the first request of a read of two

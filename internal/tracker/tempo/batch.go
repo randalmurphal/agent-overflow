@@ -220,9 +220,12 @@ func (c *Client) send(ctx context.Context, op Op, p *prepared) Outcome {
 		}
 		return Outcome{Status: Applied}
 	}
+	if resp.Status != http.StatusOK {
+		return unconfirmed(what, fmt.Sprintf("Tempo answered status %d, not 200", resp.Status))
+	}
 	stored, err := raw.worklog(resp)
 	if err != nil {
-		// Tempo answered 2xx: the write may have happened, but its record
+		// Tempo answered 200: the write may have happened, but its record
 		// does not read.
 		return Outcome{Status: Unknown, Err: fmt.Errorf("tempo: %s: read the stored worklog: %w", what, err)}
 	}
@@ -236,10 +239,12 @@ func (c *Client) send(ctx context.Context, op Op, p *prepared) Outcome {
 }
 
 // unconfirmed is a 2xx answer that does not show the write was applied
-// as sent. A write is applied only on its success form: a delete answered
-// 204 (documented: Tempo's API reference lists 204 for the delete and 200
-// for the create and the update), and a create or an update answered with
-// a record that has an ID, an update's the ID it wrote to.
+// as sent. A write is applied only on its success form (documented:
+// Tempo's API reference lists 204 for the delete and 200 for the create
+// and the update, and no other 2xx): a delete answered 204, and a create
+// or an update answered 200 with a record that has an ID, an update's the
+// ID it wrote to. Another 2xx, such as a 202 that accepts work not yet
+// done, may carry a record of a write that has not happened.
 func unconfirmed(what, why string) Outcome {
 	return Outcome{Status: Unknown, Err: fmt.Errorf("tempo: %s: %s, so whether it was applied is unknown", what, why)}
 }

@@ -2,6 +2,7 @@ package jiraprovider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -178,20 +179,37 @@ func (p *Provider) NewRows(ctx context.Context, issue tracker.IssueID, boards []
 	return out, nil
 }
 
-// confirmMissing reads, with b's row fields, the issues of ids that b's
-// list left out and that jql/match says b holds: a list misses a new
-// issue until the index takes it. A board whose membership query cannot
-// be built, or that Jira answers with an error, keeps the list's answer.
-// A failed match or read fails the call.
-func (p *Provider) confirmMissing(ctx context.Context, b board, s site, ids []tracker.IssueID, cat *catalog) ([]tracker.Row, error) {
-	if jql, err := membershipJQL(b.cfg); err == nil && jql != "" {
-		return p.confirmHeld(ctx, b, s, jql, ids, cat)
-	}
-	return nil, nil
+// unjudgedError is a board whose membership jql/match did not judge
+// under the configuration held: the query cannot be built from it, or
+// Jira answered the query with an error (a filter that no longer exists,
+// as when the board was given another one since the configuration was
+// read). The issues its list left out are then neither on the board nor
+// off it.
+type unjudgedError struct {
+	board int64
+	why   string
 }
 
-// confirmHeld is confirmMissing with b's membership query jql.
-func (p *Provider) confirmHeld(ctx context.Context, b board, s site, jql string, ids []tracker.IssueID, cat *catalog) ([]tracker.Row, error) {
+func (e *unjudgedError) Error() string {
+	return fmt.Sprintf("jiraprovider: whether board %d holds the issues its list left out is not known: %s", e.board, e.why)
+}
+
+// confirmMissing reads, with b's row fields, the issues of ids that b's
+// list left out and that jql/match says b holds: a list misses a new
+// issue until the index takes it. A board that maps no status holds
+// nothing, so its list's answer stands. A membership query that cannot
+// be built, or that Jira answers with an error, fails the call with an
+// *unjudgedError, never reading as no issue held: the caller would take
+// the list's miss for an issue gone from the board. A failed match or
+// read fails the call.
+func (p *Provider) confirmMissing(ctx context.Context, b board, s site, ids []tracker.IssueID, cat *catalog) ([]tracker.Row, error) {
+	jql, err := membershipJQL(b.cfg)
+	switch {
+	case err != nil:
+		return nil, &unjudgedError{board: b.cfg.BoardID, why: err.Error()}
+	case jql == "":
+		return nil, nil
+	}
 	var held []tracker.IssueID
 	for chunk := range slices.Chunk(ids, jira.MaxMatchIssues) {
 		refs := make([]string, len(chunk))
@@ -202,8 +220,9 @@ func (p *Provider) confirmHeld(ctx context.Context, b board, s site, jql string,
 		if err != nil {
 			return nil, fmt.Errorf("confirm %d issues the list left out: %w", len(chunk), err)
 		}
-		// A query Jira answers with an error matches nothing, so the
-		// list's answer stands.
+		if len(m[0].Errors) > 0 {
+			return nil, &unjudgedError{board: b.cfg.BoardID, why: "Jira refused its membership query: " + m[0].Errors[0]}
+		}
 		for _, id := range m[0].Matched {
 			held = append(held, tracker.IssueID(id))
 		}
@@ -224,6 +243,16 @@ func (p *Provider) confirmHeld(ctx context.Context, b board, s site, jql string,
 		out = append(out, row)
 	}
 	return out, nil
+}
+
+// isUnjudged reports an error that is or wraps an *unjudgedError, and the
+// board it names.
+func isUnjudged(err error) (board int64, ok bool) {
+	e, ok := errors.AsType[*unjudgedError](err)
+	if !ok {
+		return 0, false
+	}
+	return e.board, true
 }
 
 // issuesByID bulk-fetches ids with fields: the issues Jira returned of

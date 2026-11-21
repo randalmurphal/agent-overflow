@@ -90,11 +90,25 @@ func (p *Provider) listBoard(ctx context.Context, b board, window time.Time) (ji
 // jql/match does not place it on the board (membership.go); one it does
 // is read by the bulk fetch. The confirmation costs one match request
 // per 50 issues left out and one bulk fetch when any is placed; none
-// when the list returns every issue.
+// when the list returns every issue. When the match cannot judge the
+// board under the configuration held (a board given another filter
+// since), the configuration is read again and the rows once more; a board
+// still unjudged fails the read, so that no issue reads as Missing on
+// the list's word alone.
 func (p *Provider) BoardRows(ctx context.Context, id tracker.BoardID, issues []tracker.IssueID) (tracker.Rows, error) {
 	if err := checkIssues(issues); err != nil {
 		return tracker.Rows{}, err
 	}
+	out, err := p.boardRows(ctx, id, issues)
+	if n, unjudged := isUnjudged(err); unjudged {
+		p.jira.ForgetBoard(n)
+		out, err = p.boardRows(ctx, id, issues)
+	}
+	return out, err
+}
+
+// boardRows is BoardRows under the board configuration the client holds.
+func (p *Provider) boardRows(ctx context.Context, id tracker.BoardID, issues []tracker.IssueID) (tracker.Rows, error) {
 	b, err := p.board(ctx, id)
 	if err != nil {
 		return tracker.Rows{}, err

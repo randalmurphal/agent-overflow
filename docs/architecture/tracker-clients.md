@@ -125,9 +125,13 @@ type Request struct {
   from several requests (a listing's pages, the batches of a bulk read, a
   document's continuations) runs as one `trackerapi.Walk`: the transport
   checks each answer's mark against the first one each client gave in the
-  walk, and a cached answer joins with the mark it was drawn under. When
-  one differs, the read starts again from its first request under the
-  current credential, once; a second change fails it with an error
+  walk, and a cached answer joins with the mark it was drawn under. An
+  error answer is checked like any other, since a read reports a 404 as a
+  fact (a missing issue). When one differs, the read starts again from its
+  first request under the current credential, once, whatever it returned:
+  the walk records the change itself, so a read that keeps a request's
+  failure in a partial result cannot hide it. A second change fails the
+  read with an error
   matching `trackerapi.ErrCredentialChanged`, which is transient. A read
   that cannot start again (Tempo's page-at-a-time worklogs, a download)
   uses `WalkOnce` and fails at the first change. A write inside a walk is
@@ -434,9 +438,10 @@ the ops it would judge; the others are checked in full and sent.
 A batch reports each item as applied, refused, unknown, not attempted, or
 updated but not moved to the issue asked for. A write is applied only on
 an answer that confirms it: a delete's 204, and a create's or update's
-record with an ID, an update's the one it wrote to. Any other 2xx is
-unknown. Tempo's spec lists 204 for the delete and 200 for the create and
-the update. The user's required hours
+200 with a record that has an ID, an update's the one it wrote to. Any
+other 2xx is unknown, whatever record it carries. Tempo's spec lists 204
+for the delete and 200 for the create and the update, and no other 2xx.
+The user's required hours
 per day, the approval state of a period, accounts and the site's
 timesheet settings are reads.
 

@@ -125,8 +125,9 @@ type retries struct {
 // connection failure, a 429 and a 503, any call after a 429 when it is
 // interactive, and any call once after a refused credential is replaced.
 // Close ends it through the client's lifetime, which ended then reports.
-// Inside a walk, a write is refused unsent and the settled answer is
-// checked against the walk (walk.go).
+// Inside a walk, a write is refused unsent and the answer that settled
+// the call, an error answer included, is checked against the walk
+// (walk.go).
 func (c *Client) execute(ctx context.Context, k *call, recv receiver) (*answer, error) {
 	if err := c.refuseInWalk(ctx, k); err != nil {
 		return nil, err
@@ -152,8 +153,10 @@ func (c *Client) execute(ctx context.Context, k *call, recv receiver) (*answer, 
 			again, err = c.settle(ctx, k, state, a)
 		}
 		if !again {
-			if err == nil {
-				err = c.walked(ctx, a)
+			if a != nil {
+				if moved := c.walked(ctx, a); moved != nil {
+					return nil, moved
+				}
 			}
 			if err != nil {
 				return nil, err

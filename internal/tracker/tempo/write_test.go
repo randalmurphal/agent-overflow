@@ -265,8 +265,9 @@ func TestUpdateNotMoved(t *testing.T) {
 }
 
 // TestWriteAnswerMustConfirm: a 2xx that does not show the write was the
-// one sent (a delete not answered 204, a record with no ID, an update's
-// record of another worklog) is Unknown and reports nothing stored.
+// one sent (a delete not answered 204, a create or an update not answered
+// 200 whatever record it carries, a record with no ID, an update's record
+// of another worklog) is Unknown and reports nothing stored.
 func TestWriteAnswerMustConfirm(t *testing.T) {
 	f := tempotest.NewServer(t, testToken)
 	c := testClient(t, f, newIssues())
@@ -280,10 +281,21 @@ func TestWriteAnswerMustConfirm(t *testing.T) {
 	f.On("PUT", "/4/worklogs/70", nil,
 		`{"authorAccountId":"acc-user1","issueId":10002,"startDate":"2026-11-10","timeSpentSeconds":5400,"description":"","attributes":[{"key":"_Category_","value":"dev"}]}`,
 		200, wl{id: 71, issue: 10002, author: "acc-user1", date: "2026-11-10", spent: 5400, attrs: [][2]string{{"_Category_", "dev"}}}.json())
+	// A whole record of the write asked, on a status that does not say it
+	// was made.
+	f.On("POST", "/4/worklogs", nil, createBody(10001, "accepted"), 202,
+		wl{id: 76, issue: 10001, author: "acc-user1", date: "2026-11-10", spent: 3600, desc: "accepted", attrs: [][2]string{{"_Category_", "dev"}}}.json())
+	later := from
+	later.ID = 77
+	f.On("GET", "/4/worklogs/77", nil, "", 200, wl{id: 77, issue: 10002, author: "acc-user1", date: "2026-11-10", spent: 3600, attrs: [][2]string{{"_Category_", "dev"}}}.json())
+	f.On("PUT", "/4/worklogs/77", nil,
+		`{"authorAccountId":"acc-user1","issueId":10002,"startDate":"2026-11-10","timeSpentSeconds":5400,"description":"","attributes":[{"key":"_Category_","value":"dev"}]}`,
+		201, wl{id: 77, issue: 10002, author: "acc-user1", date: "2026-11-10", spent: 5400, attrs: [][2]string{{"_Category_", "dev"}}}.json())
 	out := c.Apply(context.Background(), []Op{
 		DeleteOp(74), DeleteOp(75), CreateOp(weekDraft(t, "WEB-1", "no id")), UpdateOp(Change{From: from, Spent: ptr(90 * time.Minute)}),
+		CreateOp(weekDraft(t, "WEB-1", "accepted")), UpdateOp(Change{From: later, Spent: ptr(90 * time.Minute)}),
 	})
-	for i, missing := range []string{"status 202", "status 200", "no worklog ID", "worklog 71, not worklog 70"} {
+	for i, missing := range []string{"status 202", "status 200", "no worklog ID", "worklog 71, not worklog 70", "status 202, not 200", "status 201, not 200"} {
 		o := out[i]
 		if o.Status != Unknown || o.Err == nil || !strings.Contains(o.Err.Error(), missing) || trackerapi.WriteNotApplied(o.Err) ||
 			!reflect.DeepEqual(o.Stored, Worklog{}) {

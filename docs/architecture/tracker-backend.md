@@ -443,7 +443,10 @@ and writes share:
   issue its index has not caught up with (Jira, after a create), so an
   unlisted row read more recently is not judged by the listing: the store
   reports it (`MirrorReconcile.Unsettled`) and the same tick reads it
-  through the board's rows, which keeps or removes it. A listing the
+  through the board's rows, which keeps or removes it. Jira's rows read
+  asks `jql/match` about an issue the list left out and fails when the
+  match cannot judge the board (after reading the board's configuration
+  again once), so a miss never removes a row on the list's word alone. A listing the
   provider reports as incomplete adds and never removes. It runs when a board is subscribed, on
   a slower cadence, and on request, and waits while the tick's delta walk
   has more pages to read, so a first sync reads each row once and lists

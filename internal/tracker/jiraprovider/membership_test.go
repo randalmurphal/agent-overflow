@@ -156,9 +156,10 @@ func TestNewRowsFailsWithTheMatch(t *testing.T) {
 
 // TestBoardRowsConfirmsAMiss: an issue the board's list leaves out (the
 // index not caught up) that the match places on the board is read with
-// the bulk fetch, not Missing; one the match does not place, or whose
-// query Jira answers with an error, is Missing as the list says; a
-// failed match fails the read.
+// the bulk fetch, not Missing; one the match does not place is Missing
+// as the list says; a failed match fails the read, and so does a query
+// Jira answers with an error once the board's configuration, read again,
+// builds the same query.
 func TestBoardRowsConfirmsAMiss(t *testing.T) {
 	f, p := newSite(t)
 	f.On("GET", board3Issues, jiratest.Reply(200, page("")))
@@ -171,9 +172,8 @@ func TestBoardRowsConfirmsAMiss(t *testing.T) {
 	answers := map[string]string{
 		"placed":     `{"matches":[{"matchedIssues":[10005],"errors":[]}]}`,
 		"not placed": `{"matches":[{"matchedIssues":[],"errors":[]}]}`,
-		"refused":    `{"matches":[{"matchedIssues":[],"errors":["The value '13' does not exist for the field 'filter'."]}]}`,
 	}
-	for _, name := range []string{"placed", "not placed", "refused"} {
+	for _, name := range []string{"placed", "not placed"} {
 		f.On("POST", matchPath, jiratest.Reply(200, answers[name]))
 		got, err := p.BoardRows(t.Context(), "3", []tracker.IssueID{"10005", "10006"})
 		if err != nil || !slices.Contains(got.Missing, "10006") || (len(got.Rows) == 1) != (name == "placed") ||
@@ -184,5 +184,46 @@ func TestBoardRowsConfirmsAMiss(t *testing.T) {
 	f.On("POST", matchPath, jiratest.Reply(400, `{"errorMessages":["bad"]}`))
 	if _, err := p.BoardRows(t.Context(), "3", []tracker.IssueID{"10005"}); err == nil {
 		t.Error("a failed confirmation read as Missing")
+	}
+	f.On("POST", matchPath, jiratest.Reply(200, `{"matches":[{"matchedIssues":[],"errors":["The value '13' does not exist for the field 'filter'."]}]}`))
+	configs, matches := f.Count("GET", board3Config), f.Count("POST", matchPath)
+	got, err := p.BoardRows(t.Context(), "3", []tracker.IssueID{"10005"})
+	if err == nil || !strings.Contains(err.Error(), "The value '13' does not exist") || len(got.Missing) != 0 {
+		t.Errorf("a query Jira refused: %+v, %v; want the read to fail with Jira's reason", got, err)
+	}
+	if c, m := f.Count("GET", board3Config)-configs, f.Count("POST", matchPath)-matches; c != 1 || m != 2 {
+		t.Errorf("%d configuration reads and %d matches, want the configuration read again once and the match asked twice", c, m)
+	}
+}
+
+// TestBoardRowsReadsAChangedBoardAgain: the board was given another
+// filter since its configuration was read, the old filter is gone, and
+// the list does not show the new issue yet. The match under the held
+// configuration judges nothing, so the configuration is read again and
+// the issue the board holds is read, not Missing.
+func TestBoardRowsReadsAChangedBoardAgain(t *testing.T) {
+	f, p := newSite(t)
+	if _, err := p.board(t.Context(), "3"); err != nil {
+		t.Fatal(err)
+	}
+	f.On("GET", board3Config, jiratest.Reply(200, strings.Replace(boardConfig(3, "customfield_10016"), `"filter":{"id":"13"}`, `"filter":{"id":"19"}`, 1)))
+	f.On("GET", board3Issues, jiratest.Reply(200, page("")))
+	f.On("POST", matchPath, func(w http.ResponseWriter, r *http.Request, b []byte) {
+		answer := `{"matches":[{"matchedIssues":[10005],"errors":[]}]}`
+		if !strings.Contains(string(b), "filter = 19 ") {
+			answer = `{"matches":[{"matchedIssues":[],"errors":["The value '13' does not exist for the field 'filter'."]}]}`
+		}
+		jiratest.Reply(200, answer)(w, r, b)
+	})
+	f.On("POST", bulkFetchPath, jiratest.Reply(200, page("", listedIssue("api/3"))))
+	got, err := p.BoardRows(t.Context(), "3", []tracker.IssueID{"10005"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Rows) != 1 || got.Rows[0].Card.ID != "10005" || len(got.Missing) != 0 {
+		t.Fatalf("rows %+v, want issue 10005 on the board", got)
+	}
+	if n := f.Count("GET", board3Config); n != 2 {
+		t.Errorf("%d configuration reads, want 2", n)
 	}
 }
