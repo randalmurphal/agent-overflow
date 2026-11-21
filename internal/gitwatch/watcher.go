@@ -347,34 +347,22 @@ func (w *workspaceWatcher) run() {
 		startPolling()
 	}
 
-	// applyRebuild runs a pending watch-root rebuild and folds its
-	// outcome into the polling state. A rebuild whose reinstall fails
-	// leaves the watcher blind, so it escalates to polling; a later
-	// reinstall that succeeds proves the watches are live again, so the
-	// now-redundant ticker stops.
-	applyRebuild := func() rebuildOutcome {
-		outcome := w.maybeRebuildWatches()
-		switch outcome {
-		case rebuildLostWatches:
-			startPolling()
-		case rebuildReinstalled:
-			stopPolling()
-		case rebuildNone:
-		}
-		return outcome
-	}
-	// retry re-runs a refresh whose status fetch failed. Without it a
-	// transient failure leaves subscribers on a stale status until the
-	// next fs event or the liveness probe. Failures retry on the polling
-	// cadence until a refresh succeeds.
+	// retry re-runs a refresh edge whose status fetch failed or whose
+	// rebuild ended unfinished. Without it a transient failure leaves
+	// subscribers on a stale status, and an unfinished rebuild leaves a
+	// directory unwatched, until the next fs event or the liveness probe,
+	// and the change that matters may raise no event. Both retry on the
+	// polling cadence until a refresh succeeds and a rebuild finishes.
 	retry := time.NewTimer(w.pollInterval)
 	if !retry.Stop() {
 		<-retry.C
 	}
 	retryArmed := false
-	settle := func(err error) {
+	refreshFailed, rebuildUnfinished := false, false
+	syncRetry := func() {
+		want := refreshFailed || rebuildUnfinished
 		switch {
-		case err == nil && retryArmed:
+		case !want && retryArmed:
 			if !retry.Stop() {
 				select {
 				case <-retry.C:
@@ -382,10 +370,32 @@ func (w *workspaceWatcher) run() {
 				}
 			}
 			retryArmed = false
-		case err != nil && !retryArmed:
+		case want && !retryArmed:
 			retry.Reset(w.pollInterval)
 			retryArmed = true
 		}
+	}
+	settle := func(err error) {
+		refreshFailed = err != nil
+		syncRetry()
+	}
+	// applyRebuild runs a pending watch-root rebuild and folds its
+	// outcome into the polling state. A rebuild whose reinstall fails
+	// leaves the watcher blind, so it escalates to polling; a later
+	// reinstall that succeeds proves the watches are live again, so the
+	// now-redundant ticker stops. An unfinished rebuild is retried.
+	applyRebuild := func() rebuildOutcome {
+		outcome, unfinished := w.maybeRebuildWatches()
+		switch outcome {
+		case rebuildLostWatches:
+			startPolling()
+		case rebuildReinstalled:
+			stopPolling()
+		case rebuildNone:
+		}
+		rebuildUnfinished = unfinished
+		syncRetry()
+		return outcome
 	}
 	// prRecheck re-runs a refresh when a failed open-PR lookup is due to
 	// be asked again (GitStatus.OpenPRRecheckAt). A forge that recovers

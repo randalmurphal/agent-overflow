@@ -26,8 +26,12 @@ change made after a read then raises an event or is covered by that
 refresh. Roots are computed before their watches exist, and a directory
 created in between raises no event, so every install is followed by a
 recompute of its roots (for a new watcher, before its first wait) that
-reinstalls when they differ. A rebuild stops after `maxRebuildReinstalls`
-reinstalls and leaves the rest to the next refresh edge.
+reinstalls when they differ. A root whose path was deleted and holds a
+directory again forces a reinstall of unchanged roots, whether its
+parent's watch reports the Create or its own watch the Remove. A rebuild
+that stops at `maxRebuildReinstalls` reinstalls, or whose recompute
+fails, is unfinished: the watcher retries it on the polling cadence
+itself, since the change it would catch may raise no event.
 
 Every status handed to a client carries `Seq`, a position from the
 Manager's counter taken before the status's reads begin, so a higher Seq

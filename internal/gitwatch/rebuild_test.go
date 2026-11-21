@@ -30,9 +30,11 @@ func (f fakeEvent) Path() string        { return f.path }
 func (f fakeEvent) Sys() interface{}    { return nil }
 
 // createEvent mimics a Create (mkdir, new file, rename target);
-// writeEvent mimics content churn that can never mint a directory.
+// writeEvent mimics content churn that can never mint a directory;
+// removeEvent mimics a deletion.
 func createEvent(path string) fakeEvent { return fakeEvent{path: path, ev: notify.Create} }
 func writeEvent(path string) fakeEvent  { return fakeEvent{path: path, ev: notify.Write} }
+func removeEvent(path string) fakeEvent { return fakeEvent{path: path, ev: notify.Remove} }
 
 func ancestorRoot(path string) gitops.WatchRoot {
 	return gitops.WatchRoot{Path: path, Recursive: false, Kind: gitops.KindAncestor}
@@ -173,6 +175,13 @@ func (h *rebuildHarness) installStartedCount() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.installStarted
+}
+
+// installsSince returns the root sets installed after the first n.
+func (h *rebuildHarness) installsSince(n int) [][]gitops.WatchRoot {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return slices.Clone(h.installs[n:])
 }
 
 func (h *rebuildHarness) lastInstall() []gitops.WatchRoot {
@@ -323,39 +332,94 @@ func TestWriteEventOnRootPathDoesNotRebuild(t *testing.T) {
 // and recreated, killing its notify watchpoint for good. The watcher
 // must reinstall even though the recomputed roots are identical —
 // the roots-unchanged short-circuit would otherwise leave the subtree
-// permanently unwatched. The recompute after that install finds the same
-// roots, so the rebuild ends there: one install and one extra scan.
+// permanently unwatched. The parent's watch reports the recreate as a
+// Create; the root's own watch reports its deletion as a Remove, the only
+// report when the recreate lands during an install before the parent's
+// watch exists. The recompute after that install finds the same roots,
+// so the rebuild ends there: one install and one extra scan.
 func TestRootRecreateForcesReinstall(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		event func(path string) fakeEvent
+	}{
+		{name: "create", event: createEvent},
+		{name: "remove", event: removeEvent},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newRebuildHarness(t, nil)
+			subA := filepath.Join(h.ws, "a")
+			if err := os.Mkdir(subA, 0o755); err != nil {
+				t.Fatalf("mkdir: %v", err)
+			}
+			initial := []gitops.WatchRoot{ancestorRoot(h.ws), subtreeRoot(subA)}
+			h.set(func(h *rebuildHarness) { h.rootsResult = initial })
+			h.w.setWatchRoots(initial)
+
+			base := h.rootsCalls()
+			before := h.stub.completedCallCount()
+			h.w.eventsCh <- tc.event(subA)
+			// The refresh runs after the whole rebuild.
+			waitForCompletedCallCount(t, h.stub, before+1, 3*time.Second)
+			if installs := h.installCount(); installs != 2 {
+				t.Fatalf("installs = %d, want 2 (one forced reinstall despite identical roots)", installs)
+			}
+			if calls := h.rootsCalls() - base; calls != 2 {
+				t.Fatalf("rootsFn calls = %d, want 2 (the forced recompute and the one after its install)", calls)
+			}
+		})
+	}
+}
+
+// TestRootRemovedForGoodDoesNotRebuild: a Remove for a root that leaves
+// nothing at its path needs no rebuild; the stale root is harmless, and
+// a later recreate raises a Create through the parent's watch.
+func TestRootRemovedForGoodDoesNotRebuild(t *testing.T) {
 	t.Parallel()
 	h := newRebuildHarness(t, nil)
 	subA := filepath.Join(h.ws, "a")
-	if err := os.Mkdir(subA, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
 	initial := []gitops.WatchRoot{ancestorRoot(h.ws), subtreeRoot(subA)}
 	h.set(func(h *rebuildHarness) { h.rootsResult = initial })
 	h.w.setWatchRoots(initial)
 
 	base := h.rootsCalls()
 	before := h.stub.completedCallCount()
-	h.w.eventsCh <- createEvent(subA)
-	// The refresh runs after the whole rebuild.
+	h.w.eventsCh <- removeEvent(subA)
 	waitForCompletedCallCount(t, h.stub, before+1, 3*time.Second)
-	if installs := h.installCount(); installs != 2 {
-		t.Fatalf("installs = %d, want 2 (one forced reinstall despite identical roots)", installs)
+	if calls := h.rootsCalls(); calls != base {
+		t.Fatalf("rootsFn calls went %d -> %d for a root removed for good, want none", base, calls)
 	}
-	if calls := h.rootsCalls() - base; calls != 2 {
-		t.Fatalf("rootsFn calls = %d, want 2 (the forced recompute and the one after its install)", calls)
+	if installs := h.installCount(); installs != 1 {
+		t.Fatalf("installs = %d, want only the initial install", installs)
+	}
+}
+
+// retryInterval is the pollInterval the unfinished-rebuild tests run at:
+// the cadence of the watcher's own rebuild retry.
+const retryInterval = 50 * time.Millisecond
+
+// expectNoMoreRootsCalls checks that a finished rebuild schedules no
+// further retry: neither rootsFn nor the status read runs again over
+// several retry intervals.
+func expectNoMoreRootsCalls(t *testing.T, h *rebuildHarness, calls int) {
+	t.Helper()
+	reads := h.stub.completedCallCount()
+	time.Sleep(10 * retryInterval)
+	if got := h.rootsCalls(); got != calls {
+		t.Fatalf("rootsFn calls went %d -> %d after the rebuild finished, want no further retry", calls, got)
+	}
+	if got := h.stub.completedCallCount(); got != reads {
+		t.Fatalf("status reads went %d -> %d after the rebuild finished, want no further retry", reads, got)
 	}
 }
 
 // TestRebuildStopsAtReinstallCap: roots that change on every recompute
-// stop a rebuild after maxRebuildReinstalls reinstalls, keeping the last
-// installed set and needsRebuild, so the next refresh edge (plain file
-// churn, no rebuild trigger) rebuilds again.
+// stop a rebuild after maxRebuildReinstalls reinstalls, and the watcher
+// retries the unfinished rebuild itself: no event follows the trigger.
 func TestRebuildStopsAtReinstallCap(t *testing.T) {
 	t.Parallel()
-	h := newRebuildHarness(t, nil)
+	h := newRebuildHarness(t, nil, func(w *workspaceWatcher) { w.pollInterval = retryInterval })
 	initial := []gitops.WatchRoot{ancestorRoot(h.ws)}
 	h.set(func(h *rebuildHarness) { h.rootsResult = initial })
 	h.w.setWatchRoots(initial)
@@ -372,68 +436,80 @@ func TestRebuildStopsAtReinstallCap(t *testing.T) {
 	before := h.stub.completedCallCount()
 	h.set(func(h *rebuildHarness) { h.rootsQueue = queue })
 	h.w.eventsCh <- writeEvent(filepath.Join(h.ws, ".gitignore"))
-	waitForCompletedCallCount(t, h.stub, before+1, 3*time.Second)
-	if calls := h.rootsCalls() - base; calls != maxRebuildReinstalls+1 {
-		t.Fatalf("rootsFn calls = %d, want %d (a recompute before each reinstall and one after the last)",
-			calls, maxRebuildReinstalls+1)
-	}
-	if installs := h.installCount() - installsBefore; installs != maxRebuildReinstalls {
-		t.Fatalf("reinstalls = %d, want the cap %d", installs, maxRebuildReinstalls)
-	}
-	if got, want := h.lastInstall(), changing(maxRebuildReinstalls-1); !slices.Equal(got, want) {
-		t.Fatalf("installed roots = %+v, want the last reinstalled set %+v", got, want)
-	}
 
-	// The queue is spent: rootsFn answers initial, which differs from the
-	// installed set. Only the retained needsRebuild can drive this rebuild.
-	h.w.eventsCh <- writeEvent(filepath.Join(h.ws, "unrelated.txt"))
-	waitFor(t, 3*time.Second, func() bool { return h.installCount() == installsBefore+maxRebuildReinstalls+1 },
-		"rebuild retried at the next refresh edge")
-	if got := h.lastInstall(); !slices.Equal(got, initial) {
-		t.Fatalf("installed roots = %+v, want %+v", got, initial)
+	// The rebuild reinstalls up to the cap and its last recompute still
+	// differs; its refresh is the first read. The retry finds the queue
+	// spent, reinstalls initial, its recompute matches, and its refresh is
+	// the second.
+	waitForCompletedCallCount(t, h.stub, before+2, 3*time.Second)
+	var want [][]gitops.WatchRoot
+	for pass := range maxRebuildReinstalls {
+		want = append(want, changing(pass))
 	}
+	want = append(want, initial)
+	if got := h.installsSince(installsBefore); !slices.EqualFunc(got, want, slices.Equal) {
+		t.Fatalf("installs = %+v, want the cap's %d then the retry's %+v", got, maxRebuildReinstalls, want)
+	}
+	calls := h.rootsCalls()
+	if got := calls - base; got != maxRebuildReinstalls+3 {
+		t.Fatalf("rootsFn calls = %d, want %d (%d for the capped rebuild, 2 for the retry)",
+			got, maxRebuildReinstalls+3, maxRebuildReinstalls+1)
+	}
+	expectNoMoreRootsCalls(t, h, calls)
 }
 
-// TestRecomputeFailureAfterReinstallKeepsWatches: when the recompute
-// after a reinstall fails, the watches just installed stay (no unregister
-// follows the install) and needsRebuild stays set, so the next refresh
-// edge recomputes again.
-func TestRecomputeFailureAfterReinstallKeepsWatches(t *testing.T) {
+// TestUnfinishedRebuildRetriesWithoutAnEvent: a recompute that fails
+// leaves the rebuild unfinished, and the watcher retries it itself with
+// no further event. A failure after a reinstall keeps the watches it
+// installed: no unregister follows that install.
+func TestUnfinishedRebuildRetriesWithoutAnEvent(t *testing.T) {
 	t.Parallel()
-	h := newRebuildHarness(t, nil)
-	initial := []gitops.WatchRoot{ancestorRoot(h.ws)}
-	grown := append(slices.Clone(initial), subtreeRoot(filepath.Join(h.ws, "b")))
-	h.set(func(h *rebuildHarness) { h.rootsResult = initial })
-	h.w.setWatchRoots(initial)
+	for _, tc := range []struct {
+		name  string
+		queue func(grown []gitops.WatchRoot) []rootsAnswer
+	}{
+		{
+			name:  "recompute fails before any reinstall",
+			queue: func([]gitops.WatchRoot) []rootsAnswer { return []rootsAnswer{{err: errors.New("boom")}} },
+		},
+		{
+			name: "recompute fails after a reinstall",
+			queue: func(grown []gitops.WatchRoot) []rootsAnswer {
+				return []rootsAnswer{{roots: grown}, {err: errors.New("boom")}}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newRebuildHarness(t, nil, func(w *workspaceWatcher) { w.pollInterval = retryInterval })
+			initial := []gitops.WatchRoot{ancestorRoot(h.ws)}
+			grown := append(slices.Clone(initial), subtreeRoot(filepath.Join(h.ws, "b")))
+			h.set(func(h *rebuildHarness) { h.rootsResult = initial })
+			h.w.setWatchRoots(initial)
 
-	base := h.rootsCalls()
-	before := h.stub.completedCallCount()
-	h.set(func(h *rebuildHarness) {
-		h.rootsQueue = []rootsAnswer{{roots: grown}, {err: errors.New("boom")}}
-		h.rootsResult = grown
-	})
-	h.w.eventsCh <- writeEvent(filepath.Join(h.ws, ".gitignore"))
-	waitForCompletedCallCount(t, h.stub, before+1, 3*time.Second)
-	if calls := h.rootsCalls() - base; calls != 2 {
-		t.Fatalf("rootsFn calls = %d, want 2 (the reinstall's and the failed one after it)", calls)
-	}
-	if installs := h.installCount(); installs != 2 {
-		t.Fatalf("installs = %d, want 2", installs)
-	}
-	if got := h.lastInstall(); !slices.Equal(got, grown) {
-		t.Fatalf("installed roots = %+v, want %+v", got, grown)
-	}
-	if h.finalStopAfterLastInstall() {
-		t.Fatal("the watches were unregistered after the reinstall; a failed recompute must keep them")
-	}
+			base := h.rootsCalls()
+			installsBefore := h.installCount()
+			before := h.stub.completedCallCount()
+			h.set(func(h *rebuildHarness) {
+				h.rootsQueue = tc.queue(grown)
+				h.rootsResult = grown
+			})
+			h.w.eventsCh <- writeEvent(filepath.Join(h.ws, ".gitignore"))
 
-	h.w.eventsCh <- writeEvent(filepath.Join(h.ws, "unrelated.txt"))
-	waitForCompletedCallCount(t, h.stub, before+2, 3*time.Second)
-	if calls := h.rootsCalls() - base; calls != 3 {
-		t.Fatalf("rootsFn calls = %d, want 3 (the next refresh edge retries the recompute)", calls)
-	}
-	if installs := h.installCount(); installs != 2 {
-		t.Fatalf("installs = %d, want 2 (the retried recompute matches the installed roots)", installs)
+			// The failed rebuild's refresh, then the retry's.
+			waitForCompletedCallCount(t, h.stub, before+2, 3*time.Second)
+			if got := h.installsSince(installsBefore); !slices.EqualFunc(got, [][]gitops.WatchRoot{grown}, slices.Equal) {
+				t.Fatalf("installs = %+v, want one of %+v", got, grown)
+			}
+			calls := h.rootsCalls()
+			if got := calls - base; got != 3 {
+				t.Fatalf("rootsFn calls = %d, want 3", got)
+			}
+			if h.finalStopAfterLastInstall() {
+				t.Fatal("the watches were unregistered after their install; a failed recompute must keep them")
+			}
+			expectNoMoreRootsCalls(t, h, calls)
+		})
 	}
 }
 
@@ -754,8 +830,14 @@ type countingInstall struct {
 }
 
 func (c *countingInstall) fn() func([]gitops.WatchRoot, chan<- notify.EventInfo) error {
+	return c.wrap(installNotifyWatcher)
+}
+
+// wrap counts the installs of install, a test's own sequence of real
+// installNotifyWatcher calls.
+func (c *countingInstall) wrap(install func([]gitops.WatchRoot, chan<- notify.EventInfo) error) func([]gitops.WatchRoot, chan<- notify.EventInfo) error {
 	return func(roots []gitops.WatchRoot, ch chan<- notify.EventInfo) error {
-		if err := installNotifyWatcher(roots, ch); err != nil {
+		if err := install(roots, ch); err != nil {
 			return err
 		}
 		c.mu.Lock()
@@ -1044,6 +1126,81 @@ func TestDirCreatedDuringReinstallIsWatched(t *testing.T) {
 	status := recvWithin(t, sub, 5*time.Second)
 	if status.FileCount != 1 {
 		t.Fatalf("write in lib delivered %+v, want FileCount=1", status)
+	}
+}
+
+// TestRootReplacedDuringInstallIsRewatched: roots install deepest first,
+// so a recursive root is registered before its non-recursive ancestor.
+// Deleting and recreating the root between the two kills the root's
+// watch, and its parent is not watched yet to report the recreate; the
+// recompute after the install finds the same paths. The install must
+// notice that the root is no longer the directory it watched and
+// reinstall, so a write in the new directory refreshes status. The test
+// splits the watcher's first install around the replacement.
+func TestRootReplacedDuringInstallIsRewatched(t *testing.T) {
+	isolateGlobalGitConfig(t)
+	repo := testutil.InitGitRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte("node_modules/\n"), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+	for _, dir := range []string{"node_modules/pkg", "src"} {
+		if err := os.MkdirAll(filepath.Join(repo, dir), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	srcDir := filepath.Join(repo, "src")
+	if err := os.WriteFile(filepath.Join(srcDir, "f.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	stub := newStubStatus(gitops.GitStatus{Branch: "main"})
+	installs := &countingInstall{stub: stub}
+	var calls atomic.Int32
+	m := NewManager(ManagerConfig{StatusFn: stub.fn(), WatchRootsFn: gitops.NewCore().WatchRoots})
+	m.installFn = installs.wrap(func(roots []gitops.WatchRoot, ch chan<- notify.EventInfo) error {
+		if calls.Add(1) != 1 {
+			return installNotifyWatcher(roots, ch)
+		}
+		var src, rest []gitops.WatchRoot
+		for _, root := range roots {
+			if root.Path == srcDir {
+				src = append(src, root)
+			} else {
+				rest = append(rest, root)
+			}
+		}
+		if len(src) != 1 || !src[0].Recursive {
+			return fmt.Errorf("first install roots %+v carry no recursive %s root", roots, srcDir)
+		}
+		if err := installNotifyWatcher(src, ch); err != nil {
+			return err
+		}
+		if err := os.RemoveAll(srcDir); err != nil {
+			return fmt.Errorf("rm -rf src: %w", err)
+		}
+		if err := os.Mkdir(srcDir, 0o755); err != nil {
+			return fmt.Errorf("recreate src: %w", err)
+		}
+		return installNotifyWatcher(rest, ch)
+	})
+	t.Cleanup(m.Close)
+	sub, err := m.Subscribe(t.Context(), repo)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	t.Cleanup(sub.Close)
+
+	waitFor(t, 5*time.Second, func() bool { return installs.count() >= 2 },
+		"reinstall of the root replaced during the install")
+	installs.awaitRefreshAfterInstall(t)
+
+	stub.setStatus(gitops.GitStatus{Branch: "main", FileCount: 1})
+	if err := os.WriteFile(filepath.Join(srcDir, "g.txt"), []byte("y"), 0o644); err != nil {
+		t.Fatalf("write in recreated src: %v", err)
+	}
+	status := recvWithin(t, sub, 5*time.Second)
+	if status.FileCount != 1 {
+		t.Fatalf("write in recreated src delivered %+v, want FileCount=1", status)
 	}
 }
 
