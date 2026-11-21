@@ -34,14 +34,14 @@ func (c *Client) sessionTransaction(ctx context.Context, change func(string, *Se
 	defer func() { err = errors.Join(err, release()) }()
 	latest, err := readSession(path)
 	if errors.Is(err, ErrNoSession) {
-		c.retired = true
+		c.retireLocked()
 		return ErrSessionEnded
 	}
 	if err != nil {
 		return err
 	}
 	if latest.SessionID != c.session.SessionID || latest.Endpoint != c.session.Endpoint || latest.CertFingerprint != c.session.CertFingerprint {
-		c.retired = true
+		c.retireLocked()
 		return ErrSessionEnded
 	}
 	if err := change(path, &latest); err != nil {

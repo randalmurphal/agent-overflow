@@ -31,7 +31,7 @@ func TestReplacingPairingAllowsManagerReadsDuringCarrierRetirement(t *testing.T)
 					_, err := m.carrier(t.Context(), id)
 					finished <- err
 				} else {
-					_, err := m.addLinkLocked(t.Context(), deviceclient.Link{BackendID: id})
+					_, _, err := m.addLinkLocked(t.Context(), deviceclient.Link{BackendID: id})
 					finished <- err
 				}
 			}()

@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"agent-overflow/internal/computerroute"
-	"agent-overflow/internal/ctxutil"
 	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/logging"
 	"agent-overflow/internal/owndevices"
@@ -144,6 +143,9 @@ func (c *carrier) openRPC(ctx context.Context, capability string) (*rpcclient.Cl
 // The caller must first resolve the destination and its routes from active
 // membership. The invitation cannot introduce a different address or pin.
 // The destination independently binds redemption to our key.
+//
+// It reports added once the pairing is saved and published, even when the
+// rotation that follows fails; the error then says why.
 func (m *Manager) AcceptOwnDeviceIntroduction(ctx context.Context, raw string, routes []computerroute.Route) (bool, error) {
 	link, err := deviceclient.DecodeLink(raw)
 	if err != nil {
@@ -159,17 +161,9 @@ func (m *Manager) AcceptOwnDeviceIntroduction(ctx context.Context, raw string, r
 	if m.selfID != nil && link.BackendID == m.selfID() {
 		return false, errors.New("cannot connect a computer to itself")
 	}
-	unlock, err := m.profiles.LockCtx(ctx, link.BackendID)
-	if err != nil {
-		return false, err
-	}
-	defer unlock()
-	if excluded, err := m.ownDeviceExcluded(link.BackendID); err != nil || excluded {
-		return false, err
-	}
-	if session, err := deviceclient.LoadSession(m.dir, link.BackendID); err == nil && session.OwnDevice {
-		return false, nil
-	} else if err != nil && !errors.Is(err, deviceclient.ErrNoSession) {
+	// Checked here so a refused introduction probes nothing, and again under
+	// the profile lock, which route selection must not hold.
+	if wanted, err := m.introductionWanted(link.BackendID); err != nil || !wanted {
 		return false, err
 	}
 	route, err := deviceclient.SelectPairingRoute(ctx, link.BackendID, routes, deviceclient.WithDialContext(m.dial))
@@ -177,33 +171,58 @@ func (m *Manager) AcceptOwnDeviceIntroduction(ctx context.Context, raw string, r
 		return false, err
 	}
 	link.Endpoint, link.CertFingerprint = route.Endpoint, route.CertFingerprint
-	// From the redemption on, the enrollment finishes and is published
-	// whether or not the caller still waits; Close still ends it.
-	ctx, release := ctxutil.Detach(ctx, m.life)
-	defer release()
-	if _, err := m.addLinkLocked(ctx, link); err != nil {
-		return false, err
-	}
-	// Introductions are already approved and must not create a human
-	// confirmation wait. Their activation still verifies the issued session.
-	m.mu.Lock()
-	held, closed := m.carriers[link.BackendID], m.closed
-	m.mu.Unlock()
-	if closed {
-		return false, ErrClosed
-	}
-	if held == nil {
-		// The far side ended the new session before this read.
-		return false, fmt.Errorf("attachedbackends: the pairing with %s ended before it activated", link.BackendID)
-	}
-	if err := held.client.AwaitActivation(ctx); err != nil {
+	held, err := m.enrollIntroduction(ctx, link)
+	if err != nil || held == nil {
 		return false, err
 	}
 	// Desktop clients watch the profile set, not the public membership
 	// catalog. Publish this edge before reconciliation sees it as present.
 	m.notifyMembershipChanged()
-	m.WakeOwnDevices()
+	defer m.WakeOwnDevices()
+	// The introduction is confirmed before its redemption is answered, so no
+	// person is waited for. This one rotation is what tells the other
+	// computer the introduction completed: until its redemption's refresh
+	// secret is spent, that computer's next introduction of this device
+	// revokes the session (store.RetireOwnIntroductions).
+	if err := held.client.Renew(ctx); err != nil {
+		return true, fmt.Errorf("attachedbackends: acknowledge the introduction to %s: %w", link.BackendID, err)
+	}
 	return true, nil
+}
+
+// introductionWanted reports whether an introduction to id may enroll: the
+// person has not forgotten it here, and no own-device pairing with it exists.
+func (m *Manager) introductionWanted(id string) (bool, error) {
+	if excluded, err := m.ownDeviceExcluded(id); err != nil || excluded {
+		return false, err
+	}
+	if session, err := deviceclient.LoadSession(m.dir, id); err == nil && session.OwnDevice {
+		return false, nil
+	} else if err != nil && !errors.Is(err, deviceclient.ErrNoSession) {
+		return false, err
+	}
+	return true, nil
+}
+
+// enrollIntroduction spends the introduction under the destination's profile
+// lock. A nil carrier with no error is an introduction no longer wanted.
+func (m *Manager) enrollIntroduction(ctx context.Context, link deviceclient.Link) (*carrier, error) {
+	unlock, err := m.profiles.LockCtx(ctx, link.BackendID)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	if wanted, err := m.introductionWanted(link.BackendID); err != nil || !wanted {
+		return nil, err
+	}
+	_, held, err := m.addLinkLocked(ctx, link)
+	if err != nil {
+		return nil, err
+	}
+	if held == nil {
+		return nil, ErrClosed
+	}
+	return held, nil
 }
 
 func (m *Manager) ConnectedOwnDeviceIDs() ([]string, error) {

@@ -43,6 +43,12 @@ type Client struct {
 	// now is the clock, so a test can age a credential without sleeping.
 	// Never nil: New fills it.
 	now func() time.Time
+	// lifetime is the owner's (WithLifetime), nil without one; live ends
+	// when this client retires. Both bound a renewal exchange
+	// (exchangeContext).
+	lifetime context.Context
+	live     context.Context
+	endLive  context.CancelFunc
 
 	mu sync.Mutex
 	// session is the stored pair, held in memory because it is read on
@@ -173,15 +179,7 @@ func Pair(ctx context.Context, dir string, link Link, label, platform string, op
 	if err != nil {
 		return nil, Pairing{}, err
 	}
-	client := &Client{
-		dir:   dir,
-		key:   key,
-		base:  base,
-		http:  credentialHTTPClient(link.CertFingerprint, opts...),
-		dial:  resolveOptions(opts).dial,
-		probe: resolveOptions(opts).probe,
-		now:   time.Now,
-	}
+	client := newClient(dir, key, base, link.CertFingerprint, Session{}, opts)
 
 	body, err := json.Marshal(struct {
 		Token string `json:"token"`
@@ -251,18 +249,27 @@ func Open(dir string, session Session, opts ...Option) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	client := &Client{
-		dir:     dir,
-		key:     key,
-		base:    base,
-		http:    credentialHTTPClient(session.CertFingerprint, opts...),
-		dial:    resolveOptions(opts).dial,
-		probe:   resolveOptions(opts).probe,
-		now:     time.Now,
-		session: session,
-	}
+	client := newClient(dir, key, base, session.CertFingerprint, session, opts)
 	client.installRoutes()
 	return client, nil
+}
+
+func newClient(dir string, key *ecdsa.PrivateKey, base, fingerprint string, session Session, opts []Option) *Client {
+	resolved := resolveOptions(opts)
+	live, endLive := context.WithCancel(context.Background())
+	return &Client{
+		dir:      dir,
+		key:      key,
+		base:     base,
+		http:     credentialHTTPClient(fingerprint, opts...),
+		dial:     resolved.dial,
+		probe:    resolved.probe,
+		now:      time.Now,
+		lifetime: resolved.lifetime,
+		live:     live,
+		endLive:  endLive,
+		session:  session,
+	}
 }
 
 // Session returns a snapshot of the stored session. A copy: the caller
@@ -469,7 +476,7 @@ func (c *Client) Forget() error {
 		if err := removeSessionFile(path); err != nil {
 			return err
 		}
-		c.retired = true
+		c.retireLocked()
 		*latest = Session{BackendID: latest.BackendID, Endpoint: latest.Endpoint}
 		return nil
 	})
@@ -493,10 +500,20 @@ func (c *Client) Retired() bool {
 func (c *Client) Retire() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.retired = true
+	c.retireLocked()
 	c.session = Session{BackendID: c.session.BackendID, Endpoint: c.session.Endpoint}
 	if c.routes != nil {
 		c.routes.CloseIdleConnections()
+	}
+}
+
+// retireLocked marks this owner retired and ends a renewal exchange it has
+// in flight, whose answer it would never write. Caller holds c.mu. A zero
+// Client has no exchange to end.
+func (c *Client) retireLocked() {
+	c.retired = true
+	if c.endLive != nil {
+		c.endLive()
 	}
 }
 
@@ -577,7 +594,8 @@ func (c *Client) Renew(ctx context.Context) error { return c.renew(ctx) }
 // WaitRenewal blocks until the rotation in flight, if any, has finished and
 // saved its outcome. Shutdown calls it so that a rotation the backend may
 // already have committed is not cut off before its successor is saved. The
-// HTTP client's timeout bounds the wait.
+// HTTP client's timeout bounds the wait; once the owner's lifetime has ended,
+// a recoverable rotation returns at once (exchangeContext).
 func (c *Client) WaitRenewal() {
 	c.mu.Lock()
 	flight := c.renewing
@@ -596,6 +614,8 @@ func (c *Client) WaitRenewal() {
 // next rotation would present a secret the backend has already spent. The
 // HTTP client's timeout and the profile lock waits keep it finite, and a
 // cancelled caller returns at once while the rotation finishes for the rest.
+// Only retirement and the owner's lifetime end the exchange itself
+// (exchangeContext).
 func (c *Client) renew(ctx context.Context) error {
 	c.mu.Lock()
 	if c.retired {

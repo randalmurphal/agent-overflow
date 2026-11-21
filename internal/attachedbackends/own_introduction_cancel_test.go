@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -124,20 +125,28 @@ func (h *heldIntroduction) finish(t *testing.T) heldAnswer {
 
 // An accepted introduction spends the far side's single-use invitation. A
 // caller that stops waiting once the redemption was sent still gets the
-// pairing saved, activated and published.
+// pairing saved, its acknowledging rotation sent and the pairing published;
+// the caller itself hears its own cancellation.
 func TestOwnIntroductionFinishesWhenTheCallerCancelsDuringRedemption(t *testing.T) {
 	t.Parallel()
 	held := startHeldIntroduction(t, "backend-far")
 	held.cancel()
 	got := held.finish(t)
-	if got.err != nil || !got.added {
-		t.Fatalf("introduction after the caller cancelled = added %t, %v; want it enrolled", got.added, got.err)
+	if !got.added || !errors.Is(got.err, context.Canceled) {
+		t.Fatalf("introduction after the caller cancelled = added %t, %v; want it enrolled and the caller's cancellation", got.added, got.err)
 	}
 	if saved, err := deviceclient.LoadSession(held.m.dir, held.backendID); err != nil || !saved.OwnDevice {
 		t.Fatalf("saved session = %+v, %v; want the own-device pairing", saved, err)
 	}
+	held.m.mu.Lock()
+	enrolled := held.m.carriers[held.backendID]
+	held.m.mu.Unlock()
+	if enrolled == nil {
+		t.Fatal("the enrolled pairing has no carrier")
+	}
+	enrolled.client.WaitRenewal()
 	if held.rotations.Load() == 0 {
-		t.Fatal("the pairing was never activated")
+		t.Fatal("the introduction was never acknowledged with a rotation")
 	}
 	if held.published.Load() == 0 {
 		t.Fatal("the new pairing was not published")

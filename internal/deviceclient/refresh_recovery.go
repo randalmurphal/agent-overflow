@@ -113,7 +113,9 @@ func (c *Client) rotate(ctx context.Context, observed Session) (err error) {
 	if support {
 		path = authTokenRecoverPath
 	}
-	issued, exchangeErr := c.exchange(ctx, path, body, &held)
+	exchangeCtx, endExchange := c.exchangeContext(ctx, support)
+	issued, exchangeErr := c.exchange(exchangeCtx, path, body, &held)
+	endExchange()
 	// Compare AFTER the network too. A suspended process's late grant/refusal
 	// cannot roll back a newer generation, delete a re-pairing, or lose a rename.
 	return c.sessionTransaction(ctx, func(path string, latest *Session) error {
@@ -134,7 +136,7 @@ func (c *Client) rotate(ctx context.Context, observed Session) (err error) {
 			if err := removeSessionFile(path); err != nil {
 				return err
 			}
-			c.retired = true
+			c.retireLocked()
 			c.session = Session{BackendID: latest.BackendID, Endpoint: latest.Endpoint}
 			return fmt.Errorf("%w (%s)", ErrSessionEnded, refusal.Reason)
 		}
@@ -155,6 +157,26 @@ func (c *Client) rotate(ctx context.Context, observed Session) (err error) {
 		}
 		return writeSession(path, *latest)
 	})
+}
+
+// exchangeContext is what one renewal exchange is sent on. A retired owner
+// never writes the answer, so retirement ends any exchange at once. The
+// owner's lifetime (WithLifetime) ends only a recoverable one: its successor
+// was saved before sending, and the next rotation, in this process or the
+// next, completes the same operation. A legacy exchange the backend may
+// already have committed runs to completion so its answer is saved.
+func (c *Client) exchangeContext(ctx context.Context, recoverable bool) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(ctx)
+	stops := []func() bool{context.AfterFunc(c.live, cancel)}
+	if recoverable && c.lifetime != nil {
+		stops = append(stops, context.AfterFunc(c.lifetime, cancel))
+	}
+	return ctx, func() {
+		for _, stop := range stops {
+			stop()
+		}
+		cancel()
+	}
 }
 
 // Unknown future reasons are not evidence that this pairing ended. Keep the

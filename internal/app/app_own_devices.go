@@ -416,9 +416,11 @@ func (a *App) AcceptOwnDeviceIntroduction(ctx context.Context, link string) erro
 	// The session and key remain owned by the local manager. The target enforces
 	// the exact recipient key before spending the invitation.
 	// The manager publishes the new profile on backend:set-changed itself,
-	// before reconciliation sees it as present.
+	// before reconciliation sees it as present. A profile saved whose
+	// acknowledging rotation failed is still a new connection here, and the
+	// caller still hears the failure.
 	added, e := a.backends.AcceptOwnDeviceIntroduction(ctx, link, routes)
-	if e == nil && added {
+	if added {
 		NotifyOwnDevices(a)
 	}
 	return e

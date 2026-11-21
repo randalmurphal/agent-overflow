@@ -77,6 +77,13 @@ type Manager struct {
 
 	// The profile lock serializes replacement. Release mu before waiting on a
 	// carrier fence. A fenced observation consumes already-resolved manager data.
+	//
+	// Every holder of a profile lock is bounded: it reads and writes local
+	// files and makes at most one redemption, which its HTTP timeout bounds.
+	// Nothing under it waits on a context; route probes, rotations and
+	// activation waits run with it released. That is why Remove,
+	// retireOwnProfile and SetAgentAccess may wait for it without a context.
+	// TestNothingUnderAProfileLockWaitsOnAContext enforces it.
 	mu       sync.Mutex
 	carriers map[string]*carrier
 	// verdicts holds, per computer whose last pairing it ended with its
@@ -221,11 +228,12 @@ func (m *Manager) wire(built *carrier, id string) {
 	built.keepRenewed(id, &m.renewals)
 }
 
-// Close stops every carrier's session renewal and waits for it to end,
-// including a rotation already sent, which runs to completion so its
-// successor is saved. Later carrier requests fail with ErrClosed. Carriers
-// already handed out keep their sessions; only the renewal stops. Close is
-// idempotent.
+// Close stops every carrier's session renewal and waits for it to end.
+// Ending the manager's life ends a recoverable rotation in flight, whose
+// saved successor the next launch completes; a legacy rotation already sent
+// runs to completion so its successor is saved. Later carrier requests fail
+// with ErrClosed. Carriers already handed out keep their sessions; only the
+// renewal stops. Close is idempotent.
 func (m *Manager) Close() {
 	m.endLife()
 	m.mu.Lock()
@@ -432,7 +440,7 @@ func (m *Manager) Add(ctx context.Context, pairingLink string) (Attachment, erro
 	if err := m.writeAgentAccess(link.BackendID, false); err != nil {
 		return Attachment{}, err
 	}
-	attachment, err := m.addLinkLocked(ctx, link)
+	attachment, _, err := m.addLinkLocked(ctx, link)
 	if err != nil {
 		return Attachment{}, err
 	}
@@ -448,7 +456,8 @@ func (m *Manager) Add(ctx context.Context, pairingLink string) (Attachment, erro
 // Caller holds the destination profile lock across one enrollment. It installs
 // the pairing session and nothing more — the agent-command opt-in is a separate
 // grant this primitive never touches, so own-device re-enrollment preserves it.
-func (m *Manager) addLinkLocked(ctx context.Context, link deviceclient.Link) (Attachment, error) {
+// The carrier is the one it installed, nil after Close.
+func (m *Manager) addLinkLocked(ctx context.Context, link deviceclient.Link) (Attachment, *carrier, error) {
 	m.mu.Lock()
 	old := m.carriers[link.BackendID]
 	delete(m.carriers, link.BackendID)
@@ -459,32 +468,36 @@ func (m *Manager) addLinkLocked(ctx context.Context, link deviceclient.Link) (At
 	}
 	label, err := m.localLabel()
 	if err != nil {
-		return Attachment{}, err
+		return Attachment{}, nil, err
 	}
 	client, pairing, err := deviceclient.Pair(ctx, m.dir, link, label, m.platform, m.clientOptions()...)
 	if err != nil {
-		return Attachment{}, err
+		return Attachment{}, nil, err
 	}
 	built, err := newCarrier(client, link.BackendID)
 	if err != nil {
-		return Attachment{}, err
+		return Attachment{}, nil, err
 	}
 	m.mu.Lock()
 	// A re-pairing with a machine already attached replaces the carrier,
 	// because the session behind the old one was just superseded. After
 	// Close the pairing stays on disk and nothing is cached or renewed.
-	if !m.closed {
+	installed := !m.closed
+	if installed {
 		m.wire(built, link.BackendID)
 		m.carriers[link.BackendID] = built
 	}
 	delete(m.verdicts, link.BackendID)
 	m.mu.Unlock()
+	if !installed {
+		built = nil
+	}
 	return Attachment{
 		ID:                 link.BackendID,
 		Name:               displayName(client.Session()),
 		Endpoint:           link.Endpoint,
 		VerificationNumber: pairing.VerificationNumber,
-	}, nil
+	}, built, nil
 }
 
 // Await blocks until the owner of the far machine confirms the number,
@@ -799,7 +812,7 @@ func (m *Manager) SetLabelGetter(get func() (string, error)) { m.labelGetter = g
 func (m *Manager) SetActivationProbe(interval time.Duration) { m.activationProbe = interval }
 
 func (m *Manager) clientOptions() []deviceclient.Option {
-	return []deviceclient.Option{deviceclient.WithDialContext(m.dial), deviceclient.WithProbeInterval(m.activationProbe)}
+	return []deviceclient.Option{deviceclient.WithDialContext(m.dial), deviceclient.WithProbeInterval(m.activationProbe), deviceclient.WithLifetime(m.life)}
 }
 func (m *Manager) localLabel() (string, error) {
 	if m.labelGetter != nil {

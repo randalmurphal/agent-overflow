@@ -23,6 +23,7 @@ import (
 	"agent-overflow/internal/computerroute"
 	"agent-overflow/internal/logging"
 	"agent-overflow/internal/loopback"
+	"agent-overflow/internal/observability/goroutinedump"
 	"agent-overflow/internal/pagehost"
 	"agent-overflow/internal/platform"
 	"agent-overflow/internal/startupprogress"
@@ -1470,9 +1471,36 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		if s.cfg.EventBus != nil {
 			s.cfg.EventBus.Close()
 		}
-		s.wg.Wait()
+		s.joinHandlers(ctx)
 	})
 	return shutdownErr
+}
+
+// joinHandlers waits for every handler. The wait is not bounded by ctx: a
+// handler still running when the caller tears down what it uses is worse
+// than a visible hang. A join that outlasts ctx says so once, with the
+// goroutine profile that names what it waits on, and keeps waiting.
+func (s *Server) joinHandlers(ctx context.Context) {
+	joined := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(joined)
+	}()
+	select {
+	case <-joined:
+		return
+	case <-ctx.Done():
+	}
+	select {
+	case <-joined:
+		return
+	default:
+	}
+	log.Printf("transport: shutdown: connection handlers are still running past the drain deadline (%v); waiting for them. Goroutine profile follows.", context.Cause(ctx))
+	if err := goroutinedump.WriteAggregated(log.Writer()); err != nil {
+		log.Printf("transport: shutdown: %v", err)
+	}
+	<-joined
 }
 
 // SetOriginPatterns rotates the WS origin allow-list without binding a
