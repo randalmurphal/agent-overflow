@@ -241,7 +241,7 @@ func TestAttachWorktreeUndoTakesItsOwnRegistrationAtANearIdenticalPath(t *testin
 	repo := initGitRepo(t)
 	testutil.RunGit(t, repo, "branch", "feature/keep")
 	testutil.RunGit(t, repo, "branch", "feature/attempt")
-	keep := filepath.Join(t.TempDir(), "keep")
+	keep := filepath.Join(testutil.CanonicalPath(t, t.TempDir()), "keep")
 	testutil.RunGit(t, repo, "worktree", "add", "--", keep, "feature/keep")
 	if err := os.WriteFile(filepath.Join(keep, "work.txt"), []byte("keep\n"), 0o644); err != nil {
 		t.Fatal(err)

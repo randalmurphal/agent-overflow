@@ -556,7 +556,7 @@ export function reviewManageFlow({ compact }: ManageSurface): void {
     await expect(picker.locator('[data-key="u:jdoe"]')).toHaveAttribute('data-checked', 'true');
     const before = await lastSeq(harness);
     await search.focus();
-    await page.keyboard.press('Control+w');
+    await page.keyboard.press('ControlOrMeta+w');
     await expect(review).toHaveCount(0);
     await expect(async () => {
       const made = await writes(harness, ['gh api request reviewers', 'gh api remove reviewers'], before);

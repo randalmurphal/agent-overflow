@@ -77,18 +77,27 @@ async function center(locator: Locator): Promise<{ x: number; y: number }> {
   return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
 }
 
-/** Press on `source` (an element's center, or a point), move to `fraction`
- * across `target`, run `whileOver` with the drag in flight, and drop. */
+/** How long a press on selected text is held before it drags. macOS starts
+ * a text drag only from a press held past its delay (150 ms in Chromium);
+ * a move before that starts a new selection. The hold changes nothing
+ * elsewhere. */
+const TEXT_DRAG_HOLD_MS = 300;
+
+/** Press on `source` (an element's center, or a point), hold for `holdMs`,
+ * move to `fraction` across `target`, run `whileOver` with the drag in
+ * flight, and drop. */
 async function dragInto(
   page: Page,
   source: Locator | { x: number; y: number },
   target: Locator,
   fraction: number,
   whileOver: () => Promise<void>,
+  holdMs = 0,
 ): Promise<void> {
   const from = 'x' in source ? source : await center(source);
   await page.mouse.move(from.x, from.y);
   await page.mouse.down();
+  if (holdMs > 0) await page.waitForTimeout(holdMs);
   const box = await target.boundingBox();
   if (!box) throw new Error('expected a laid-out drop target');
   await page.mouse.move(box.x + box.width * fraction, box.y + box.height / 2, { steps: 12 });
@@ -423,7 +432,7 @@ test('text dragged out of one composer lands in another pane\'s composer', async
     // Dragged text places no pane: no shield, no preview.
     await expect(page.getByTestId('pane-drag-shield')).toHaveCount(0);
     await expect(preview(page)).toHaveCount(0);
-  });
+  }, TEXT_DRAG_HOLD_MS);
   await expect(to).toHaveValue('carry this over');
   await expect(from).toHaveValue('');
   // The composer holds the dropped text as its draft: it sends.

@@ -57,6 +57,9 @@ type Session struct {
 	// unblock any producer parked on feed.
 	feed chan json.RawMessage
 	done chan struct{}
+	// feedDone closes when the parser goroutine has returned; nil until
+	// startFeedLoop. Close waits on it before it releases parser state.
+	feedDone chan struct{}
 
 	// recMu guards the reconstructor's cross-request state (turn-usage
 	// accumulation, session identity, the subagent launch registry).
@@ -229,7 +232,7 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	s.gateway = gw
 	gw.start()
 
-	go s.feedLoop()
+	s.startFeedLoop()
 
 	// Materialize the system-prompt override before the launch and record the
 	// path on the session in the same breath, so the deferred Close above
@@ -292,6 +295,12 @@ func (s *Session) feedEnvelope(line json.RawMessage) {
 	}
 }
 
+// startFeedLoop starts the parser goroutine.
+func (s *Session) startFeedLoop() {
+	s.feedDone = make(chan struct{})
+	go s.feedLoop()
+}
+
 // feedLoop is the single parser goroutine. It mirrors the headless read loop:
 // one ParseLine call at a time, each resulting event emitted in order. A parse
 // error is logged and skipped — one bad envelope must not wedge the stream.
@@ -303,6 +312,7 @@ func (s *Session) feedEnvelope(line json.RawMessage) {
 // frequency envelope and never part of tool ordering — skip it via a byte-prefix
 // check so they pay neither the classification nor a full parse.
 func (s *Session) feedLoop() {
+	defer close(s.feedDone)
 	reorder := newFeedReorder()
 	for {
 		select {
@@ -536,6 +546,11 @@ func (s *Session) Close() error {
 		if err := s.relay.close(); err != nil {
 			errs = append(errs, err)
 		}
+	}
+	// The feed loop is the parser's only driver and may be inside ParseLine:
+	// join it before releasing parser state.
+	if s.feedDone != nil {
+		<-s.feedDone
 	}
 	if s.parser != nil {
 		s.parser.Close()
