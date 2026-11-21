@@ -55,7 +55,8 @@
     hasMultipleBackends,
     threadMachine,
   } from '../../stores/attachedBackends.svelte';
-  import { CATALOG_KINDS, catalogLoadState, catalogTreeListed } from '../../stores/catalogLoad.svelte';
+  import { CATALOG_KINDS, catalogLoadState } from '../../stores/catalogLoad.svelte';
+  import { catalogTreeListed } from '../../stores/threadCatalogs';
   import CatalogStatusRow from './CatalogStatusRow.svelte';
   import ProjectList from './ProjectList.svelte';
   import { bucketSidebarThreads } from './sidebarBuckets';
@@ -98,8 +99,8 @@
   // rows keep their array the same way, so a project thread's change does
   // not rebuild the Assistants section's tree.
   //
-  // A computer's project threads and groups are held until the catalog
-  // store lists them (catalogTreeListed). An assistant's row joins no
+  // A computer's project threads and groups are held until the thread list
+  // lists them (catalogTreeListed). An assistant's row joins no
   // group and is not held.
   let previousThreadBuckets: ReadonlyMap<string, Thread[]> = new Map();
   let previousGroupBuckets: ReadonlyMap<string, ThreadGroup[]> = new Map();

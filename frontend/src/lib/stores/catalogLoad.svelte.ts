@@ -1,48 +1,45 @@
 // Per-computer load state of the sidebar's catalogs: 'loading' until the
-// computer first answers the list read, 'loaded' from then on, 'failed'
+// computer first answers the list read, 'loaded' once it has, 'failed'
 // while the read fails with an error of its own. The sidebar never
 // presents a catalog that is not loaded as an empty one.
 //
 // Every read settles here, the boot's, a hello's and a retry's alike: a
 // failure through computerCatalog (./computerRows.ts), an answer in the
-// commit that readComputerRows calls with its rows.
+// commit that commits its rows.
 //
-// It also holds whether each computer's thread list is listed in the
-// sidebar (catalogTreeListed). A computer becomes listed once its thread
-// catalog is known (answered, cached rows committed, or failed with an
-// error of its own) and no read of its threads or groups is in flight. A
-// read past its startup deadline is still in flight. Until then the
-// sidebar holds that computer's project threads and groups, so the two
-// catalogs first appear together. A listed computer stays listed until it
-// detaches; its later reads commit in pairs (./threadCatalogs.ts).
+// A failed read retries itself. Each catalog store registers the reader
+// that re-reads one computer, with the catalogs that reader covers: the
+// thread list reads threads and groups as one (./threadCatalogs.ts), and
+// one timer per reader and computer retries them together.
 //
-// Until a catalog loads, a failed read retries itself:
-//
-//   - A read that missed its startup deadline or met a backend answering
-//     temporarily_unavailable retries after 1, 2, 4 and 8 s, then every
-//     10 s. A retry waits for the answer rather than for the startup
-//     deadline, so a slow computer's answer is not superseded by the next
-//     attempt.
+//   - A read that met a backend answering temporarily_unavailable, or that
+//     missed its startup deadline before its catalog loaded, retries after
+//     1, 2, 4 and 8 s, then every 10 s. A retry waits for the answer rather
+//     than for the startup deadline. Past the deadline, a loaded catalog
+//     waits for the late answer or late failure instead.
 //   - A failed read shows its error with a Retry and keeps retrying on the
-//     same schedule. A scope refusal shows its error and waits for Retry:
-//     asking again cannot change a grant.
+//     same schedule, loaded or not: the rows it had stay listed. A scope
+//     refusal shows its error and waits for Retry: asking again cannot
+//     change a grant.
 //   - A read refused because the computer is offline or still starting
 //     waits for the connection: its first hello refreshes every list
 //     (./computerHydration.ts).
 //
-// One retry timer per catalog, whatever triggered the failure, so repeated
-// hellos cannot stack retries. An answer cancels it. A loaded catalog
-// stays loaded: later refreshes keep the last answer (./computerRows.ts).
-// Detaching a computer drops its state, its listing and its timers.
+// The timer runs while any catalog its reader covers wants a retry, so an
+// answer of one catalog cannot cancel the retry another one's failure asked
+// for, and repeated hellos cannot stack retries. A history generation
+// observed mid-session puts every catalog of that computer back to
+// 'loading' and re-reads it: its rows describe a history it no longer has.
+// Detaching a computer drops its state and its timers.
 
 import { untrack } from 'svelte';
 import { attachedBackends, onBackendDetached } from '../transport/backends';
 import type { BackendKey } from '../transport/backendKey';
+import { onBackendIdentity } from '../transport/backendIdentity';
 import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 import { isScopeRefusal } from '../transport/scopeRefusal';
 import { ReadDeadlineError } from '../utils/readBeforeDeadline';
 import { userFacingError } from '../utils/userFacingError';
-import { catalogReadInFlight } from './computerCatalogReads';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import { isTemporarilyUnavailableError } from './transportStatus.svelte';
 
@@ -74,22 +71,23 @@ const LOADED: CatalogLoad = { phase: 'loaded', error: '' };
 // Boxless keys read LOADING: an attached computer that has not answered is
 // loading, not empty.
 const states = createKeyedSignalRegistry<CatalogLoad>(LOADING);
-// Whether each computer's thread list is listed, by backend. Boxless keys
-// read false: a computer is held until its catalogs say otherwise.
-const listed = createKeyedSignalRegistry<boolean>(false);
-// Computers whose thread catalog is known: answered, cached rows committed,
-// or failed with an error of its own. Read only by the listing's writer.
-const threadsKnown = new Set<BackendKey>();
+// Catalogs, by catalogKey, whose last read asked for a retry.
+const wantsRetry = new Set<string>();
+
+type CatalogReader = (backend: BackendKey) => Promise<void>;
+interface RegisteredReader {
+  kinds: readonly CatalogKind[];
+  read: CatalogReader;
+}
+const readers: RegisteredReader[] = [];
 
 interface CatalogRetry {
-  /** Consecutive failures; picks the next delay. */
+  /** Consecutive retries; picks the next delay. */
   attempt: number;
   timer: ReturnType<typeof setTimeout> | null;
 }
-const retries = new Map<string, CatalogRetry>();
-
-type CatalogReader = (backend: BackendKey) => Promise<void>;
-const readers = new Map<CatalogKind, CatalogReader>();
+// One per reader and computer.
+const retries = new Map<RegisteredReader, Map<BackendKey, CatalogRetry>>();
 
 function catalogKey(kind: CatalogKind, backend: BackendKey): string {
   return `${kind}\u0000${backend}`;
@@ -101,28 +99,25 @@ export function catalogLoadState(backend: BackendKey, kind: CatalogKind): Catalo
 }
 
 /**
- * Whether the sidebar lists `backend`'s project threads and groups.
- * Reactive on that computer alone.
+ * Whether a read failure is an error of the computer's own, shown and
+ * retried as a failed load, rather than a deadline, a temporarily
+ * unavailable backend or a passive connection failure.
  */
-export function catalogTreeListed(backend: BackendKey): boolean {
-  return listed.get(backend);
-}
-
-// The listing's one writer, run after every settled read: a read ending is
-// the only event that can make the condition true.
-function updateListing(backend: BackendKey): void {
-  if (untrack(() => listed.get(backend)) || !threadsKnown.has(backend)) return;
-  if (catalogReadInFlight(backend, 'threads') || catalogReadInFlight(backend, 'groups')) return;
-  listed.set(backend, true);
+export function catalogFailureShown(error: unknown): boolean {
+  return !(error instanceof ReadDeadlineError) && !isTemporarilyUnavailableError(error) && !isPassiveConnectionFailure(error);
 }
 
 /**
- * Install how a catalog re-reads one computer. The store owning the rows
- * registers it; this module never imports those stores. The reader must
- * settle through readComputerRows and handle its own rejection.
+ * Install how the catalogs `kinds` re-read one computer, together. The store
+ * owning the rows registers it; this module never imports those stores. The
+ * reader must settle through the catalog reads and handle its own rejection.
  */
-export function registerCatalogReader(kind: CatalogKind, read: CatalogReader): void {
-  readers.set(kind, read);
+export function registerCatalogReader(kinds: readonly CatalogKind[], read: CatalogReader): void {
+  readers.push({ kinds, read });
+}
+
+function readerOf(kind: CatalogKind): RegisteredReader | undefined {
+  return readers.find((reader) => reader.kinds.includes(kind));
 }
 
 /**
@@ -131,36 +126,34 @@ export function registerCatalogReader(kind: CatalogKind, read: CatalogReader): v
  */
 export function settleCatalogRead(kind: CatalogKind, backend: BackendKey, outcome: CatalogReadOutcome): void {
   if (!attachedBackends().some((entry) => entry.id === backend)) return;
-  settlePhase(kind, backend, outcome);
-  updateListing(backend);
-}
-
-function settlePhase(kind: CatalogKind, backend: BackendKey, outcome: CatalogReadOutcome): void {
   const key = catalogKey(kind, backend);
   if (outcome.answered) {
-    if (kind === 'threads') threadsKnown.add(backend);
-    clearRetry(key);
+    wantsRetry.delete(key);
     states.set(key, LOADED);
+  } else {
+    settleFailure(kind, key, outcome.error);
+  }
+  updateRetry(kind, backend);
+}
+
+function settleFailure(kind: CatalogKind, key: string, error: unknown): void {
+  const loaded = untrack(() => states.get(key)).phase === 'loaded';
+  if (error instanceof ReadDeadlineError) {
+    // A loaded catalog waits for the late answer or late failure.
+    if (!loaded) wantsRetry.add(key);
     return;
   }
-  const { error } = outcome;
-  if (outcome.cached && kind === 'threads') threadsKnown.add(backend);
-  if (untrack(() => states.get(key)).phase === 'loaded') return;
-  if (error instanceof ReadDeadlineError || isTemporarilyUnavailableError(error)) {
-    scheduleRetry(kind, backend);
+  if (isTemporarilyUnavailableError(error)) {
+    wantsRetry.add(key);
     return;
   }
   if (isPassiveConnectionFailure(error)) {
-    clearRetry(key);
+    wantsRetry.delete(key);
     return;
   }
-  if (kind === 'threads') threadsKnown.add(backend);
   states.set(key, { phase: 'failed', error: userFacingError(error, `Could not load ${kind}.`) });
-  if (isScopeRefusal(error)) {
-    clearRetry(key);
-    return;
-  }
-  scheduleRetry(kind, backend);
+  if (isScopeRefusal(error)) wantsRetry.delete(key);
+  else wantsRetry.add(key);
 }
 
 /**
@@ -173,83 +166,86 @@ export function settleCatalogAnswers(kind: CatalogKind, answered: Iterable<Backe
 }
 
 /**
- * Re-read every catalog of `backend` that is not loaded, now. The failed
- * state's Retry; a person acting, so the retry schedule starts over.
+ * Re-read, now, every reader of `backend` that covers a catalog not loaded.
+ * The failed state's Retry; a person acting, so the retry schedule starts
+ * over.
  */
 export function retryCatalogLoad(backend: BackendKey): void {
-  for (const kind of CATALOG_KINDS) {
-    const key = catalogKey(kind, backend);
-    if (untrack(() => states.get(key)).phase === 'loaded') continue;
-    clearRetry(key);
-    runReader(kind, backend);
+  for (const reader of readers) {
+    if (reader.kinds.every((kind) => untrack(() => states.get(catalogKey(kind, backend))).phase === 'loaded')) continue;
+    clearRetry(reader, backend);
+    runReader(reader, backend);
   }
 }
 
-function scheduleRetry(kind: CatalogKind, backend: BackendKey): void {
-  const key = catalogKey(kind, backend);
-  let retry = retries.get(key);
-  if (retry === undefined) {
-    retry = { attempt: 0, timer: null };
-    retries.set(key, retry);
+// Arm the reader's timer while any catalog it covers wants a retry; clear
+// it, schedule and all, once none does.
+function updateRetry(kind: CatalogKind, backend: BackendKey): void {
+  const reader = readerOf(kind);
+  if (reader === undefined) return;
+  if (!reader.kinds.some((covered) => wantsRetry.has(catalogKey(covered, backend)))) {
+    clearRetry(reader, backend);
+    return;
   }
+  let byBackend = retries.get(reader);
+  if (byBackend === undefined) retries.set(reader, byBackend = new Map());
+  let retry = byBackend.get(backend);
+  if (retry === undefined) byBackend.set(backend, retry = { attempt: 0, timer: null });
   if (retry.timer !== null) return;
   const delay = CATALOG_RETRY_DELAYS_MS[retry.attempt] ?? CATALOG_RETRY_MAX_MS;
   retry.attempt++;
   const scheduled = retry;
   scheduled.timer = setTimeout(() => {
     scheduled.timer = null;
-    runReader(kind, backend);
+    runReader(reader, backend);
   }, delay);
 }
 
-function runReader(kind: CatalogKind, backend: BackendKey): void {
-  const read = readers.get(kind);
-  if (read === undefined) return;
-  void read(backend).catch((error: unknown) => {
+function runReader(reader: RegisteredReader, backend: BackendKey): void {
+  void reader.read(backend).catch((error: unknown) => {
     // Readers settle their outcome before rejecting; this is only a reader
     // that broke its contract.
-    console.error(`Failed to retry the ${kind} catalog:`, error);
+    console.error(`Failed to re-read the ${reader.kinds.join(' and ')} catalogs:`, error);
   });
 }
 
-function clearRetry(key: string): void {
-  const retry = retries.get(key);
+function clearRetry(reader: RegisteredReader, backend: BackendKey): void {
+  const byBackend = retries.get(reader);
+  const retry = byBackend?.get(backend);
   if (retry === undefined) return;
   if (retry.timer !== null) clearTimeout(retry.timer);
-  retries.delete(key);
+  byBackend!.delete(backend);
 }
 
+// A history generation observed mid-session (a restored database) has no
+// hello behind it.
+onBackendIdentity((_identity, backend, change) => {
+  if (change !== 'generation' || !attachedBackends().some((entry) => entry.id === backend)) return;
+  for (const kind of CATALOG_KINDS) states.set(catalogKey(kind, backend), LOADING);
+  for (const reader of readers) runReader(reader, backend);
+});
+
 function dropBackend(backend: BackendKey): void {
+  for (const reader of readers) clearRetry(reader, backend);
   for (const kind of CATALOG_KINDS) {
     const key = catalogKey(kind, backend);
-    clearRetry(key);
+    wantsRetry.delete(key);
     states.drop(key);
   }
-  threadsKnown.delete(backend);
-  listed.drop(backend);
 }
 
 onBackendDetached(({ backendId }) => dropBackend(backendId));
 
-/** Test seam: pending retry timers, by catalog. */
+/** Test seam: pending retry timers, by reader and computer. */
 export function __catalogRetryCountForTest(): number {
   let count = 0;
-  for (const retry of retries.values()) if (retry.timer !== null) count++;
+  for (const byBackend of retries.values()) for (const retry of byBackend.values()) if (retry.timer !== null) count++;
   return count;
-}
-
-/**
- * Test seam: list every attached computer's threads, phases untouched, for
- * a test that seeds the row stores directly.
- */
-export function listCatalogTreesForTest(): void {
-  for (const entry of attachedBackends()) listed.set(entry.id, true);
 }
 
 /** Test seam: forget every state and timer. Readers are module wiring and stay. */
 export function resetCatalogLoadForTest(): void {
-  for (const key of [...retries.keys()]) clearRetry(key);
+  for (const [reader, byBackend] of retries) for (const backend of [...byBackend.keys()]) clearRetry(reader, backend);
+  wantsRetry.clear();
   states.reset();
-  threadsKnown.clear();
-  listed.reset();
 }

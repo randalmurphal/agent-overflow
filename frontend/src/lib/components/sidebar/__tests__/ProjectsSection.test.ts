@@ -14,8 +14,7 @@ import {
   resetProjectsForTest,
   touchProjectActivity,
 } from '../../../stores/projects.svelte';
-import { loadThreads } from '../../../stores/threads.svelte';
-import { loadThreadCatalogs } from '../../../stores/threadCatalogs';
+import { catalogTreeListed, loadThreadCatalogs, resetThreadCatalogsForTest } from '../../../stores/threadCatalogs';
 import {
   ensureMainPane,
   getAllPanes,
@@ -32,13 +31,13 @@ import type { Project, ProjectWithCounts, Thread, ThreadGroup } from '../../../t
 import { setThreadFilterQuery } from '../../../stores/threadFilter.svelte';
 import {
   consumePendingGroupRename,
-  loadThreadGroups,
   resetThreadGroupsForTest,
 } from '../../../stores/threadGroups.svelte';
 import { createThreadGroupAction } from '../threadGroupActions';
-import { catalogTreeListed, resetCatalogLoadForTest } from '../../../stores/catalogLoad.svelte';
+import { resetCatalogLoadForTest } from '../../../stores/catalogLoad.svelte';
 import { __setTransportStatusForTest } from '../../../stores/transportStatus.svelte';
 import { DisconnectedError, TransportError } from '../../../transport/wsClient';
+import { observeBackendGeneration, setBackendIdentityFromBootstrap } from '../../../transport/backendIdentity';
 
 function mkProject(id: string, overrides: Partial<Project> = {}): Project {
   return {
@@ -51,6 +50,13 @@ function mkProject(id: string, overrides: Partial<Project> = {}): Project {
     archived: false,
     ...overrides,
   };
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (error: unknown) => void } {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
 }
 
 async function seedProjects(items: ProjectWithCounts[]): Promise<void> {
@@ -144,6 +150,7 @@ describe('<ProjectsSection>', () => {
     beforeEach(() => {
       // Back to a computer that has not answered yet.
       resetCatalogLoadForTest();
+      resetThreadCatalogsForTest();
     });
 
     it('shows a loading row and never the empty hint until both catalogs load', async () => {
@@ -160,14 +167,16 @@ describe('<ProjectsSection>', () => {
       expect(getByTestId('sidebar-catalog-loading-label')).toHaveTextContent('Loading threads…');
       expect(queryByTestId('sidebar-projects-empty')).toBeNull();
 
-      await loadThreads();
+      const groups = deferred<ThreadGroup[]>();
+      setBindingMock('ListThreadGroups', () => groups.promise);
+      // The round answers the boot once the threads are in.
+      await loadThreadCatalogs();
       await tick();
       expect(getByTestId('sidebar-catalog-loading-label')).toHaveTextContent('Loading groups…');
       expect(queryByTestId('sidebar-projects-empty')).toBeNull();
 
-      await loadThreadGroups();
-      await tick();
-      expect(queryByTestId('sidebar-catalog-status')).toBeNull();
+      groups.resolve([]);
+      await vi.waitFor(() => expect(queryByTestId('sidebar-catalog-status')).toBeNull());
       expect(getByTestId('sidebar-projects-empty')).toBeInTheDocument();
     });
 
@@ -371,12 +380,6 @@ describe('<ProjectsSection>', () => {
 // ahead of the other, its rows would appear in one arrangement and move to
 // another when the second commits, under whoever is clicking.
 describe('<ProjectsSection> threads and their groups', () => {
-  function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (error: unknown) => void } {
-    let resolve!: (value: T) => void;
-    let reject!: (error: unknown) => void;
-    const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
-    return { promise, resolve, reject };
-  }
   const group = (id: string): ThreadGroup => ({ id, projectId: 'p1', name: id, createdAt: 0, updatedAt: 0 });
   const row = (id: string, updatedAt: number, groupId?: string): Thread =>
     makeThread({ id, projectId: 'p1', groupId, updatedAt });
@@ -386,7 +389,6 @@ describe('<ProjectsSection> threads and their groups', () => {
   const after = [row('a', 10, 'g2'), row('b', 20), row('outside', 30), row('c', 40, 'g2')];
   const BEFORE = ['outside', 'b', 'a'];
   const AFTER = ['g2', 'c', 'a', 'outside', 'b'];
-  const UNGROUPED_AFTER = ['c', 'outside', 'b', 'a'];
 
   function arrangement(container: HTMLElement): string[] {
     return Array.from(container.querySelectorAll('[data-sidebar-group-id], [data-sidebar-thread-id]'))
@@ -408,6 +410,7 @@ describe('<ProjectsSection> threads and their groups', () => {
     setBindingMock('ListThreadGroups', async () => []);
     await loadThreadCatalogs();
     resetCatalogLoadForTest();
+    resetThreadCatalogsForTest();
     await seedProjects([{ project: mkProject('p1', { name: 'Project One' }), threadCount: 3, lastActive: 0 }]);
   });
   afterEach(() => { vi.useRealTimers(); });
@@ -497,12 +500,10 @@ describe('<ProjectsSection> threads and their groups', () => {
     });
   }
 
-  // The known limit (stores/AGENTS.md): a thread answer never waits past
-  // its round's on-time window, because the boot's restore drops a saved
-  // pane whose thread is missing. A listed computer whose groups answer
-  // past the deadline therefore shows its new threads first and regroups
-  // when the late answer lands.
-  it("commits a listed computer's on-time threads when its group read passes the deadline, then regroups", async () => {
+  // The thread answer is held with its partner, not shown alone: the rows
+  // stay as they were until the late group answer lands, then move once.
+  // The round still resolves with the held thread rows for the restore.
+  it("keeps a listed computer's rows in place while its group read is past the deadline, then moves them once", async () => {
     setBindingMock('ListThreads', async () => before);
     setBindingMock('ListThreadGroups', async () => []);
     const { container } = render(ProjectsSection, { props: { pane: null } });
@@ -512,16 +513,104 @@ describe('<ProjectsSection> threads and their groups', () => {
     setBindingMock('ListThreads', async () => after);
     setBindingMock('ListThreadGroups', () => groups.promise);
     const round = loadThreadCatalogs();
-    await vi.advanceTimersByTimeAsync(2499);
+    await vi.advanceTimersByTimeAsync(2500);
+    expect((await round).map((thread) => thread.id).sort()).toEqual(['a', 'b', 'c', 'outside']);
     await settle();
     expect(arrangement(container)).toEqual(BEFORE);
-    await vi.advanceTimersByTimeAsync(1);
-    await round;
-    await settle();
-    expect(arrangement(container)).toEqual(UNGROUPED_AFTER);
 
     groups.resolve([group('g2')]);
     await vi.advanceTimersByTimeAsync(0);
+    await settle();
+    expect(arrangement(container)).toEqual(AFTER);
+  });
+
+  it("keeps a listed computer's rows in place while its thread read is past the deadline, then moves them once", async () => {
+    setBindingMock('ListThreads', async () => before);
+    setBindingMock('ListThreadGroups', async () => []);
+    const { container } = render(ProjectsSection, { props: { pane: null } });
+    await loadThreadCatalogs();
+    vi.useFakeTimers();
+    const threads = deferred<Thread[]>();
+    setBindingMock('ListThreads', () => threads.promise);
+    setBindingMock('ListThreadGroups', async () => [group('g2')]);
+    const round = loadThreadCatalogs();
+    await vi.advanceTimersByTimeAsync(2500);
+    await round;
+    await settle();
+    expect(arrangement(container)).toEqual(BEFORE);
+
+    threads.resolve(after);
+    await vi.advanceTimersByTimeAsync(0);
+    await settle();
+    expect(arrangement(container)).toEqual(AFTER);
+  });
+
+  // A loaded catalog can fail on a refresh or go back to loading on a history
+  // generation change. Either way its rows stay listed, beside the status
+  // row, and are never presented as empty.
+  it("keeps a listed computer's rows beside the failed row when a refresh fails", async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    setBindingMock('ListThreads', async () => before);
+    setBindingMock('ListThreadGroups', async () => []);
+    const { container, getByTestId, queryByTestId } = render(ProjectsSection, { props: { pane: null } });
+    await loadThreadCatalogs();
+    await settle();
+    setBindingMock('ListThreads', async () => { throw new TransportError('method_error', 'list threads: disk I/O error'); });
+    await loadThreadCatalogs();
+    await settle();
+    expect(normalizedTextContent(getByTestId('sidebar-catalog-failed'))).toMatch(/disk I\/O error/i);
+    expect(arrangement(container)).toEqual(BEFORE);
+    expect(queryByTestId('project-thread-list-empty')).toBeNull();
+  });
+
+  it("keeps the old history's rows beside a loading row after a generation change, then replaces them in one step", async () => {
+    setBackendIdentityFromBootstrap('home-id', 'gen-1', 'Mac', HOME_BACKEND);
+    setBindingMock('ListThreads', async () => before);
+    setBindingMock('ListThreadGroups', async () => []);
+    const { container, getByTestId, queryByTestId } = render(ProjectsSection, { props: { pane: null } });
+    await loadThreadCatalogs();
+    await settle();
+    const threads = deferred<Thread[]>();
+    setBindingMock('ListThreads', () => threads.promise);
+    setBindingMock('ListThreadGroups', async () => [group('g2')]);
+    observeBackendGeneration('gen-2', HOME_BACKEND);
+    await settle();
+    expect(getByTestId('sidebar-catalog-loading')).toBeInTheDocument();
+    expect(arrangement(container)).toEqual(BEFORE);
+    expect(queryByTestId('project-thread-list-empty')).toBeNull();
+    threads.resolve(after);
+    await vi.waitFor(() => expect(arrangement(container)).toEqual(AFTER));
+    await vi.waitFor(() => expect(queryByTestId('sidebar-catalog-status')).toBeNull());
+  });
+
+  // A newer round supersedes both reads of the computer at once: the older
+  // round's group answer, in and waiting for its threads, never shows.
+  it('shows only the newer of two overlapping rounds, in one step', async () => {
+    setBindingMock('ListThreads', async () => before);
+    setBindingMock('ListThreadGroups', async () => []);
+    const { container } = render(ProjectsSection, { props: { pane: null } });
+    await loadThreadCatalogs();
+    await settle();
+
+    const olderThreads = deferred<Thread[]>();
+    setBindingMock('ListThreads', () => olderThreads.promise);
+    setBindingMock('ListThreadGroups', async () => [group('g2')]);
+    const older = loadThreadCatalogs();
+    await settle();
+    const newerThreads = deferred<Thread[]>();
+    const newerGroups = deferred<ThreadGroup[]>();
+    setBindingMock('ListThreads', () => newerThreads.promise);
+    setBindingMock('ListThreadGroups', () => newerGroups.promise);
+    const newer = loadThreadCatalogs();
+    await settle();
+    expect(arrangement(container)).toEqual(BEFORE);
+    olderThreads.resolve(after);
+    await settle();
+    expect(arrangement(container)).toEqual(BEFORE);
+
+    newerThreads.resolve(after);
+    newerGroups.resolve([group('g2')]);
+    await Promise.all([older, newer]);
     await settle();
     expect(arrangement(container)).toEqual(AFTER);
   });

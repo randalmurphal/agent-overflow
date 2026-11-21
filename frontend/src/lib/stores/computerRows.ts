@@ -11,12 +11,11 @@ import { readBeforeDeadline, ReadDeadlineError } from '../utils/readBeforeDeadli
 import { untrack } from 'svelte';
 import { settleCatalogRead } from './catalogLoad.svelte';
 
-interface ComputerCatalog<T> {
+export interface ComputerCatalog<T> {
   read(backend: BackendKey): Promise<T[] | null>;
   write(backend: BackendKey, rows: T[]): Promise<void>;
   hasRows(backend: BackendKey): boolean;
-  /** Begin this computer's read; `onRelease` as beginCatalogRead's. */
-  begin(backend: BackendKey, onRelease?: () => void): CatalogRead<T>;
+  begin(backend: BackendKey): CatalogRead<T>;
   /**
    * One computer's current read failed with `error`; `cached` when its
    * kept or replica rows stand in for the answer. An answer, on time or
@@ -29,34 +28,24 @@ interface ComputerCatalog<T> {
 // the boot proceeds without it.
 export const COMPUTER_READ_DEADLINE_MS = 2500;
 
-/**
- * One read's share of a round that commits two catalogs of a computer
- * together (./threadCatalogs.ts). For a computer the round pairs, the read
- * hands its answer's commit to the round instead of running it; the
- * journal keeps recording until the round runs it.
- */
-export interface CatalogRoundRead {
-  /** Whether this round pairs `backend`'s commits. */
-  pairs(backend: BackendKey): boolean;
-  /** `backend`'s answer is in; `onTime` false for one past the deadline. */
-  deliver(backend: BackendKey, commit: () => void, onTime: boolean): void;
-  /** `backend`'s read can no longer deliver: ended, superseded or detached. */
-  release(backend: BackendKey): void;
-  /** Every computer of this read has answered, failed or passed the deadline. */
-  windowEnded(): void;
-}
-
-export interface ComputerRowsOptions<T> {
+/** How one catalog is read from each computer and committed. */
+export interface CatalogPart<T> {
+  read: () => PromiseLike<T[] | null>;
+  note: (row: T, backend: BackendKey) => void;
+  commit: (result: ComputerRows<T>) => void;
   /** The catalog whose replica, load state and journal this read keeps. */
   catalog?: ComputerCatalog<T>;
   /** Whether a row of `backend`'s answer belongs in the committed rows. */
+  admit?: (row: T, backend: BackendKey) => boolean;
+}
+
+export interface ComputerRowsOptions<T> {
+  catalog?: ComputerCatalog<T>;
   admit?: (row: T, backend: BackendKey) => boolean;
   /** Read this computer alone; every other computer's rows are retained. */
   only?: BackendKey;
   /** Bound on each computer's answer, or null to wait for the RPC itself. */
   deadlineMs?: number | null;
-  /** The round this read belongs to, when its commits pair with another catalog's. */
-  round?: CatalogRoundRead;
 }
 
 export function computerCatalog<K extends CatalogKind>(
@@ -67,12 +56,12 @@ export function computerCatalog<K extends CatalogKind>(
   const populated = untrack(() => new Set(previous().map((row) => owner(row) ?? HOME_BACKEND)));
   const stamps = new Map<BackendKey, string | null>();
   return {
-    begin(backend, onRelease) {
+    begin(backend) {
       // The stamp fences only the replica write: a structural invalidation
       // since the read began keeps this answer out of IndexedDB. The answer
       // itself still commits, with the invalidating mutation replayed.
       stamps.set(backend, replicaCatalogStamp(backend, kind));
-      return beginCatalogRead<CatalogRows[K]>(backend, kind, onRelease);
+      return beginCatalogRead<CatalogRows[K]>(backend, kind);
     },
     read: (backend) => getReplicaCatalog(backend, kind),
     write: (backend, rows) => putReplicaCatalog(backend, kind, rows, stamps.get(backend) ?? null),
@@ -90,88 +79,75 @@ export interface ComputerRows<T> {
   attached: ReadonlySet<BackendKey>;
 }
 
-interface RowsRead<T> {
-  read: () => PromiseLike<T[] | null>;
-  note: (row: T, backend: BackendKey) => void;
-  commit: (result: ComputerRows<T>) => void;
-  options: ComputerRowsOptions<T>;
-  deadlineMs: number | null;
+/** One computer's read of one catalog, begun. */
+export interface ComputerShare<T> {
+  readonly target: BackendEntry;
+  readonly pending: CatalogRead<T>;
+  /**
+   * Whether this read may still commit: the newest read of that computer's
+   * catalog, the computer still attached, its history unchanged.
+   */
+  current(): boolean;
 }
 
-/** One computer's share of a read, once it answered, failed or passed the deadline. */
-interface TargetResult<T> {
-  target: BackendEntry;
+/** One computer's share once it answered, failed or passed the deadline. */
+export interface ShareResult<T> {
+  share: ComputerShare<T>;
   rows: T[];
   answered: boolean;
   error: unknown;
   identity: BackendIdentity;
-  pending: CatalogRead<T>;
   /** Past the deadline: its late answer or late failure ends the journal. */
   late: boolean;
   cached: boolean;
-  /** Commit an answer of this computer alone: replay, end, note, commit. */
-  commitAnswer(answer: T[] | null): void;
 }
 
-/**
- * Read every attached computer's rows and hand them to `commit`, in the same
- * synchronous block that replays the local mutations made while the read was
- * out, so no later change can land between the replay and the commit. A
- * computer that misses the deadline commits alone when it answers. A
- * computer the round pairs commits when the round runs its commit. Resolves
- * true once this read committed, false when a newer read superseded it, and
- * rejects when no computer answered and none has rows to keep.
- */
-export async function readComputerRows<T>(
-  read: () => PromiseLike<T[] | null>,
-  note: (row: T, backend: BackendKey) => void,
-  commit: (result: ComputerRows<T>) => void,
-  options: ComputerRowsOptions<T> = {},
-): Promise<boolean> {
-  const deadlineMs = options.deadlineMs === undefined ? COMPUTER_READ_DEADLINE_MS : options.deadlineMs;
-  const rowsRead: RowsRead<T> = { read, note, commit, options, deadlineMs };
-  const targets = attachedBackends().filter((entry) => options.only === undefined || entry.id === options.only);
-  try {
-    const results = await Promise.all(targets.map((target) => readTarget(rowsRead, target)));
-    return commitResults(rowsRead, results);
-  } finally {
-    options.round?.windowEnded();
-  }
+/** Where a share past its deadline delivers its late answer or late failure. */
+export interface LateShare<T> {
+  onLate(result: ShareResult<T>): void;
+}
+
+/** What committing one catalog's results did. */
+export interface CommitOutcome {
+  /** Results that were still current. */
+  current: number;
+  /** Whether rows (answered or cached) were committed. */
+  committed: boolean;
+  error: unknown;
 }
 
 function sameIdentity(a: BackendIdentity, b: BackendIdentity): boolean {
   return a.backendId === b.backendId && a.generation === b.generation;
 }
 
-async function readTarget<T>(rowsRead: RowsRead<T>, target: BackendEntry): Promise<TargetResult<T>> {
-  const { read, note, commit, options: { catalog: cache, admit, round }, deadlineMs } = rowsRead;
+/**
+ * Begin `target`'s read of `part`'s catalog: supersede the read before it
+ * and start recording local mutations. Synchronous, so a caller can begin
+ * several catalogs of one computer as one step.
+ */
+export function beginShare<T>(part: CatalogPart<T>, target: BackendEntry): ComputerShare<T> {
   const identity = getBackendIdentity(target.id);
-  const paired = round?.pairs(target.id) ?? false;
-  const pending: CatalogRead<T> = cache?.begin(target.id, paired ? () => round!.release(target.id) : undefined) ?? UNTRACKED_READ;
-  function stillCurrent(): boolean {
-    return pending.current() && attachedBackends().includes(target)
-      && (!identity.backendId || sameIdentity(identity, getBackendIdentity(target.id)));
-  }
-  function commitAnswer(answer: T[] | null): void {
-    const current = stillCurrent();
-    const arrived = current ? pending.replay(answer ?? []) : [];
-    pending.end();
-    if (!current) return;
-    for (const row of arrived) note(row, target.id);
-    void cache?.write(target.id, arrived);
-    commit({ rows: admit ? arrived.filter((row) => admit(row, target.id)) : arrived, answered: new Set([target.id]),
-      attached: new Set(attachedBackends().map((entry) => entry.id)) });
-  }
-  function onLate(answer: T[] | null): void {
-    if (paired) round!.deliver(target.id, () => commitAnswer(answer), false);
-    else commitAnswer(answer);
-  }
-  function onLateFailure(error: unknown): void {
-    const current = stillCurrent();
-    pending.end();
-    if (current) cache?.settle(target.id, error, false);
-  }
-  const result = { target, pending, commitAnswer, late: false, cached: false };
+  const pending: CatalogRead<T> = part.catalog?.begin(target.id) ?? UNTRACKED_READ;
+  return {
+    target,
+    pending,
+    current: () => pending.current() && attachedBackends().includes(target)
+      && (!identity.backendId || sameIdentity(identity, getBackendIdentity(target.id))),
+  };
+}
+
+/**
+ * Read one computer's rows. Resolves on time with the answer, the failure,
+ * or a late result once `deadlineMs` passed; the late answer or late
+ * failure then goes to `late`.
+ */
+export async function readShare<T>(
+  part: CatalogPart<T>, share: ComputerShare<T>, deadlineMs: number | null, late: LateShare<T>,
+): Promise<ShareResult<T>> {
+  const { target } = share;
+  const startIdentity = getBackendIdentity(target.id);
+  const lateResult = (fields: Pick<ShareResult<T>, 'rows' | 'answered' | 'error'>): ShareResult<T> => (
+    { share, ...fields, identity: getBackendIdentity(target.id), late: false, cached: false });
   let error: unknown;
   try {
     // Every saved computer gets its first dial, independently and under
@@ -184,85 +160,111 @@ async function readTarget<T>(rowsRead: RowsRead<T>, target: BackendEntry): Promi
     // that is off.
     const status = target.status.status;
     if (status !== 'connected' && status !== 'disconnected') throw new DisconnectedError('Computer is offline.');
-    const request = withBackendTarget(target.id, read);
-    const rows = (deadlineMs === null ? await request : await readBeforeDeadline(request, deadlineMs, onLate, onLateFailure)) ?? [];
-    const current = getBackendIdentity(target.id);
-    if (identity.backendId && !sameIdentity(identity, current)) throw new Error('Computer history changed during the read.');
-    return { ...result, rows, answered: true, error: undefined, identity: current };
+    const request = withBackendTarget(target.id, part.read);
+    const rows = (deadlineMs === null ? await request : await readBeforeDeadline(
+      request, deadlineMs,
+      (answer) => late.onLate(lateResult({ rows: answer ?? [], answered: true, error: undefined })),
+      (failure) => late.onLate(lateResult({ rows: [], answered: false, error: failure })),
+    )) ?? [];
+    const identity = getBackendIdentity(target.id);
+    if (startIdentity.backendId && !sameIdentity(startIdentity, identity)) throw new Error('Computer history changed during the read.');
+    return { share, rows, answered: true, error: undefined, identity, late: false, cached: false };
   } catch (reason) {
     error = reason;
   }
   // A read past its deadline keeps recording: its late answer or late
   // failure ends it, not this call.
-  const late = error instanceof ReadDeadlineError;
-  const cachedIdentity = getBackendIdentity(target.id);
-  const previous = cache?.hasRows(target.id) ?? false;
-  const rows = cache && !previous ? await cache.read(target.id) : null;
-  return { ...result, rows: rows ?? [], answered: false, error, identity: cachedIdentity, late, cached: previous || rows !== null };
+  const isLate = error instanceof ReadDeadlineError;
+  const identity = getBackendIdentity(target.id);
+  const previous = part.catalog?.hasRows(target.id) ?? false;
+  const rows = part.catalog && !previous ? await part.catalog.read(target.id) : null;
+  return { share, rows: rows ?? [], answered: false, error, identity, late: isLate, cached: previous || rows !== null };
 }
 
-function commitResults<T>(rowsRead: RowsRead<T>, results: TargetResult<T>[]): boolean {
-  const { note, commit, options: { catalog: cache, admit, round } } = rowsRead;
+/**
+ * Commit one catalog's results in one synchronous block: replay each
+ * answer's journal and end it, settle each failure, write the replicas,
+ * note every row's owner before admission, and call `commit` once with the
+ * rows of every computer that answered or kept rows. A result past its
+ * deadline settles as one but keeps recording.
+ */
+export function commitShares<T>(part: CatalogPart<T>, results: readonly ShareResult<T>[]): CommitOutcome {
+  const { note, commit, catalog, admit } = part;
   // One final membership check covers both RPC and IndexedDB awaits.
   // Superseded, detached and re-identified computers' results have no
   // authority: a newer read, the detach or the identity change's own
-  // reads (a hello, or ./threadCatalogs.ts for a generation) follow them.
+  // reads (a hello, or a generation change's re-read) follow them.
   const live = new Set<BackendEntry>(attachedBackends());
-  const current = results.filter((result) => live.has(result.target) && result.pending.current()
-    && sameIdentity(result.identity, getBackendIdentity(result.target.id)));
-  // A paired computer's answer goes to the round with its journal still
-  // recording. Every other computer replays now, once every computer has
+  const current = results.filter((result) => result.share.current()
+    && sameIdentity(result.identity, getBackendIdentity(result.share.target.id)));
+  // Every computer replays now, once every computer in the block has
   // settled, so a mutation made while a slower computer was still out is
   // not lost. An unanswered computer keeps its local rows, which already
   // hold its mutations.
-  const delivered = new Set<TargetResult<T>>();
   for (const result of results) {
-    if (result.answered && round?.pairs(result.target.id) && current.includes(result)) {
-      delivered.add(result);
-      continue;
-    }
-    if (result.answered) result.rows = result.pending.replay(result.rows);
-    if (!result.late) result.pending.end();
+    if (result.answered) result.rows = result.share.pending.replay(result.rows);
+    if (!result.late) result.share.pending.end();
   }
-  const committed = current.filter((result) => !delivered.has(result));
   const answered = new Set<BackendKey>();
   const rows: T[] = [];
   let error: unknown;
   let hasCache = false;
-  for (const result of committed) {
+  for (const result of current) {
+    const backend = result.share.target.id;
     // A failure settles here. An answer settles in `commit` with its rows
     // (settleCatalogAnswers), so no render sees a catalog marked loaded
     // before its rows land.
-    if (!result.answered) cache?.settle(result.target.id, result.error, result.cached);
+    if (!result.answered) catalog?.settle(backend, result.error, result.cached);
     error ??= result.error;
     hasCache ||= result.cached;
     if (result.answered) {
-      answered.add(result.target.id);
-      if (cache) void cache.write(result.target.id, result.rows);
+      answered.add(backend);
+      if (catalog) void catalog.write(backend, result.rows);
     }
-    for (const row of result.rows) note(row, result.target.id);
+    for (const row of result.rows) note(row, backend);
   }
   // All origins must be indexed before admission: arrival/attachment order
   // cannot decide ownership when an offline catalog predates a move.
-  for (const result of committed) {
-    for (const row of result.rows) if (!admit || admit(row, result.target.id)) rows.push(row);
+  for (const result of current) {
+    const backend = result.share.target.id;
+    for (const row of result.rows) if (!admit || admit(row, backend)) rows.push(row);
   }
-  for (const result of delivered) round!.deliver(result.target.id, () => result.commitAnswer(result.rows), true);
+  const committed = current.length > 0 && (answered.size > 0 || hasCache);
+  if (committed) commit({ rows, answered, attached: new Set([...live].map((entry) => entry.id)) });
+  return { current: current.length, committed, error };
+}
+
+/**
+ * Read every attached computer's rows and hand them to `commit`, in the same
+ * synchronous block that replays the local mutations made while the read was
+ * out, so no later change can land between the replay and the commit. A
+ * computer that misses the deadline commits alone when it answers. Resolves
+ * true once this read committed, false when a newer read superseded it, and
+ * rejects when no computer answered and none has rows to keep.
+ */
+export async function readComputerRows<T>(
+  read: () => PromiseLike<T[] | null>,
+  note: (row: T, backend: BackendKey) => void,
+  commit: (result: ComputerRows<T>) => void,
+  options: ComputerRowsOptions<T> = {},
+): Promise<boolean> {
+  const part: CatalogPart<T> = { read, note, commit, catalog: options.catalog, admit: options.admit };
+  const deadlineMs = options.deadlineMs === undefined ? COMPUTER_READ_DEADLINE_MS : options.deadlineMs;
+  const targets = attachedBackends().filter((entry) => options.only === undefined || entry.id === options.only);
+  const shares = targets.map((target) => beginShare(part, target));
+  const late: LateShare<T> = { onLate: (result) => { commitShares(part, [result]); } };
+  const results = await Promise.all(shares.map((share) => readShare(part, share, deadlineMs, late)));
+  const outcome = commitShares(part, results);
   // Superseded reads have no authority and no failure to report. In
   // particular, boot and a connection's first hello can overlap. Keep
   // cancellation distinct from both an authoritative empty list and an
   // actual failed dial, so callers cannot mark an unknown catalog loaded.
-  if (current.length === 0) return false;
-  if (answered.size === 0 && !hasCache) {
-    // The round commits what was delivered.
-    if (delivered.size > 0) return true;
-    // An asleep saved computer is ordinary state. Its connection banner
-    // owns the explanation; cached catalogs remain usable.
-    // No answer and no cache is unknown, never an authoritative empty list:
-    // treating it as empty would erase saved panes on a cold offline startup.
-    throw error ?? new Error('No computer could be reached.');
-  }
-  commit({ rows, answered, attached: new Set([...live].map((entry) => entry.id)) });
+  if (outcome.current === 0) return false;
+  // An asleep saved computer is ordinary state. Its connection banner
+  // owns the explanation; cached catalogs remain usable.
+  // No answer and no cache is unknown, never an authoritative empty list:
+  // treating it as empty would erase saved panes on a cold offline startup.
+  if (!outcome.committed) throw outcome.error ?? new Error('No computer could be reached.');
   return true;
 }
 

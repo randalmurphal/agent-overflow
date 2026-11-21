@@ -5,13 +5,13 @@ import {
   getThreadGroupById,
   getThreadGroups,
   getThreadGroupsForProject,
-  loadThreadGroups,
   NO_GROUPS,
   removeThreadGroup,
   resetThreadGroupsForTest,
   upsertThreadGroup,
 } from './threadGroups.svelte';
 import { getThreadById, replaceAllThreads } from './threads.svelte';
+import { loadThreadCatalogs } from './threadCatalogs';
 import { getToasts, removeToast } from './toast.svelte';
 import { catalogLoadState, resetCatalogLoadForTest } from './catalogLoad.svelte';
 import { HOME_BACKEND } from '../transport/backendKey';
@@ -37,8 +37,9 @@ describe('threadGroups store', () => {
   });
 
   it('loads the backend snapshot wholesale', async () => {
+    setBindingMock('ListThreads', async () => []);
     setBindingMock('ListThreadGroups', async () => [mkGroup('g1'), mkGroup('g2')]);
-    await loadThreadGroups();
+    await loadThreadCatalogs();
     expect(getThreadGroups().map((g) => g.id)).toEqual(['g1', 'g2']);
   });
 
@@ -46,7 +47,8 @@ describe('threadGroups store', () => {
     setBindingMock('ListThreadGroups', async () => {
       throw new Error('backend down');
     });
-    await expect(loadThreadGroups()).rejects.toThrow('backend down');
+    setBindingMock('ListThreads', async () => []);
+    await loadThreadCatalogs();
     expect(getThreadGroups()).toEqual([]);
     expect(catalogLoadState(HOME_BACKEND, 'groups')).toEqual({ phase: 'failed', error: 'Backend down.' });
     expect(getToasts()).toEqual([]);

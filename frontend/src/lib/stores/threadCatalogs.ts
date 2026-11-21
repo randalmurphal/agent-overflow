@@ -1,150 +1,354 @@
-// The sidebar's thread list is two catalogs: threads, and the groups that
-// gather them. Read apart, a computer's rows would show in one arrangement
-// when the first answer commits and move when the second does. Every read
-// of both (boot, hello, gap resync, a history generation change) is one
-// round from here.
+// The sidebar's thread list is two catalogs, threads and the groups that
+// gather them, and this module is the only reader of either. Read apart, a
+// computer's rows would show in one arrangement when the first answer
+// commits and move when the second does. Every read of both (boot, hello,
+// gap resync, retry, a history generation change) is one round here, and
+// a round reads a computer's two catalogs as one unit:
 //
-// A computer the sidebar does not list yet (catalogTreeListed) commits each
-// answer as it arrives; the sidebar holds it until neither read is in
-// flight (./catalogLoad.svelte.ts). A listed computer's two answers commit
-// together, in one synchronous block, through the round:
+//   - It begins both reads of a computer in one synchronous step, so a
+//     newer round supersedes both at once. A superseded read publishes
+//     nothing: an answer it holds is dropped and its journals end.
+//   - Each catalog has its own on-time window: it ends once every
+//     computer's read of that catalog answered, failed or passed the
+//     deadline.
+//   - A computer the sidebar does not list yet (catalogTreeListed) commits
+//     each catalog's answer when that catalog's window ends, or as it lands
+//     when late, and the sidebar holds its rows until neither read is out;
+//     a read past its deadline is still out.
+//   - A listed computer's two answers commit together, once neither read is
+//     out and both windows have ended: in the round's batch, or in one block
+//     of their own when the last late one lands. A failed read lets the other
+//     commit alone; the failure shows and retries as the pair.
+//   - Answers that commit at a window's end commit in one batch per catalog,
+//     threads first, so a refresh reconciles the thread list once however
+//     many computers answered.
 //
-//   - When both answer on time, they commit together when the round's
-//     on-time window ends.
-//   - A thread answer never waits past that window: the boot's layout
-//     restore validates saved panes against the thread rows, and a pane
-//     whose thread is missing is dropped. So when the group read passes the
-//     deadline, the threads commit at the window's end and the late group
-//     answer commits alone, which can move rows. That is the known limit.
-//   - A group answer waits for a thread answer still out, on time or late,
-//     and commits with it; two late answers commit together.
-//
-// A computer's slot is released when its read can no longer deliver: the
-// read ended, or a newer read of that catalog began (beginCatalogRead's
-// release, ./computerCatalogReads.ts). A released slot never holds its
-// partner.
+// A round resolves when its thread window ends, with the thread rows as the
+// boot's layout restore should see them: the store's rows with every listed
+// computer's held thread answer applied, its journal replayed as of that
+// moment. The owners of those rows are recorded then, so a restored pane
+// routes to its computer before the rows commit. A round that newer rounds
+// superseded follows them, bounded by its own on-time budget, so a retry
+// that waits for its RPC cannot hold the boot.
 import { untrack } from 'svelte';
-import { attachedBackends } from '../transport/backends';
+import { attachedBackends, onBackendDetached, type BackendEntry } from '../transport/backends';
 import type { BackendKey } from '../transport/backendKey';
-import { onBackendIdentity } from '../transport/backendIdentity';
-import { catalogTreeListed } from './catalogLoad.svelte';
-import type { CatalogRoundRead } from './computerRows';
-import { readProjectCatalog } from './projects.svelte';
-import { loadThreadGroups } from './threadGroups.svelte';
-import { getThreads, loadThreads } from './threads.svelte';
-import type { Thread } from '../types/models';
+import { ReadDeadlineError } from '../utils/readBeforeDeadline';
+import type { Thread, ThreadGroup } from '../types/models';
+import { catalogFailureShown, registerCatalogReader } from './catalogLoad.svelte';
+import {
+  beginShare, commitShares, COMPUTER_READ_DEADLINE_MS, readShare,
+  type CatalogPart, type ComputerShare, type ShareResult,
+} from './computerRows';
+import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
+import { groupCatalogPart } from './threadGroups.svelte';
+import { getThreads, threadCatalogPart, threadRowsWith } from './threads.svelte';
 
-type PairedKind = 'threads' | 'groups';
+// reading: the RPC is out, on time so far. out: past the deadline, still
+// out. answered / failed: in, not yet committed or settled. done:
+// committed, settled or dropped.
+type PartState = 'reading' | 'out' | 'answered' | 'failed' | 'done';
 
-interface Slot {
-  state: 'out' | 'delivered' | 'done';
-  commit: (() => void) | null;
-  onTime: boolean;
+interface PartRead<T> {
+  part: CatalogPart<T>;
+  share: ComputerShare<T>;
+  state: PartState;
+  result: ShareResult<T> | null;
+  /** This catalog's on-time window ended, or this read's answer landed late. */
+  ready: boolean;
+  /** How the read ended so far: answered, or the failure and whether rows stand in. */
+  outcome: { answered: boolean; cached: boolean; error: unknown };
 }
 
-class ThreadCatalogRound {
-  private readonly slots = new Map<BackendKey, Record<PairedKind, Slot>>();
-  private openWindows = 2;
+interface Round {
+  /** Newer rounds that superseded a read of this round that could still commit. */
+  supersededBy: Set<Round>;
+  /** Settles when the round resolves or rejects; never rejects. */
+  settled: Promise<{ ok: true } | { ok: false; error: unknown }>;
+}
 
-  constructor(paired: readonly BackendKey[]) {
-    for (const backend of paired) {
-      this.slots.set(backend, {
-        threads: { state: 'out', commit: null, onTime: false },
-        groups: { state: 'out', commit: null, onTime: false },
-      });
+interface ComputerRead {
+  backend: BackendKey;
+  round: Round;
+  /** Listed when the round began: its two answers commit together. */
+  paired: boolean;
+  ownersNoted: boolean;
+  threads: PartRead<Thread>;
+  groups: PartRead<ThreadGroup>;
+}
+
+// The newest round's read of each computer.
+const reads = new Map<BackendKey, ComputerRead>();
+// Whether each computer's thread list is listed. Boxless keys read false: a
+// computer is held until its first round says otherwise.
+const listed = createKeyedSignalRegistry<boolean>(false);
+// Computers whose thread catalog is known: answered, cached rows committed,
+// or failed with an error of its own.
+const threadsKnown = new Set<BackendKey>();
+
+/**
+ * Whether the sidebar lists `backend`'s project threads and groups.
+ * Reactive on that computer alone.
+ */
+export function catalogTreeListed(backend: BackendKey): boolean {
+  return listed.get(backend);
+}
+
+function outstanding<T>(part: PartRead<T>): boolean {
+  return part.state === 'reading' || part.state === 'out';
+}
+
+function currentRead(read: ComputerRead): boolean {
+  return reads.get(read.backend) === read && read.threads.share.current() && read.groups.share.current();
+}
+
+function partRead<T>(part: CatalogPart<T>, target: BackendEntry): PartRead<T> {
+  return {
+    part, share: beginShare(part, target), state: 'reading', result: null, ready: false,
+    outcome: { answered: false, cached: false, error: undefined },
+  };
+}
+
+function beginComputer(round: Round, target: BackendEntry, threads: CatalogPart<Thread>, groups: CatalogPart<ThreadGroup>): ComputerRead {
+  const previous = reads.get(target.id);
+  const read: ComputerRead = {
+    backend: target.id,
+    round,
+    paired: untrack(() => listed.get(target.id)),
+    ownersNoted: false,
+    threads: partRead(threads, target),
+    groups: partRead(groups, target),
+  };
+  reads.set(target.id, read);
+  if (previous !== undefined && (previous.threads.state !== 'done' || previous.groups.state !== 'done')) {
+    previous.round.supersededBy.add(round);
+    drop(previous);
+  }
+  return read;
+}
+
+// A read that can no longer commit ends every journal it holds; an RPC
+// still out ends its own when it lands.
+function drop(read: ComputerRead): void {
+  dropPart(read.threads);
+  dropPart(read.groups);
+}
+
+function dropPart<T>(part: PartRead<T>): void {
+  if (part.result && !part.result.late) part.result.share.pending.end();
+  part.result = null;
+  if (!outstanding(part)) part.state = 'done';
+}
+
+// The read's on-time outcome: an answer, a failure, or a deadline.
+function arrive<T>(part: PartRead<T>, result: ShareResult<T>): void {
+  // A late answer that landed before the window closed already arrived.
+  if (part.state !== 'reading') return;
+  part.result = result;
+  part.state = result.answered ? 'answered' : result.late ? 'out' : 'failed';
+  part.outcome = { answered: result.answered, cached: result.cached, error: result.error };
+}
+
+function arriveLate<T>(read: ComputerRead, part: PartRead<T>, result: ShareResult<T>): void {
+  if (part.state === 'done') {
+    result.share.pending.end();
+    return;
+  }
+  part.result = result;
+  part.state = result.answered ? 'answered' : 'failed';
+  part.outcome = { answered: result.answered, cached: part.outcome.cached, error: result.error };
+  part.ready = true;
+  commitReads([read]);
+}
+
+// The result `part` hands to this block's commit, if any. A read past its
+// deadline settles as one here, once, and stays out.
+function take<T>(part: PartRead<T>, commitAnswer: boolean): ShareResult<T> | null {
+  const { result } = part;
+  if (result === null || !part.ready) return null;
+  if (part.state === 'out') {
+    part.result = null;
+    return result;
+  }
+  if (part.state === 'failed' || (part.state === 'answered' && commitAnswer)) {
+    part.state = 'done';
+    part.result = null;
+    return result;
+  }
+  return null;
+}
+
+function addTo<T>(batches: Map<CatalogPart<T>, ShareResult<T>[]>, part: CatalogPart<T>, result: ShareResult<T> | null): void {
+  if (result === null) return;
+  const batch = batches.get(part);
+  if (batch) batch.push(result);
+  else batches.set(part, [result]);
+}
+
+// Commit, in one synchronous block, everything the reads may commit now:
+// one commit per catalog, threads first.
+function commitReads(list: readonly ComputerRead[]): void {
+  const threadBatches = new Map<CatalogPart<Thread>, ShareResult<Thread>[]>();
+  const groupBatches = new Map<CatalogPart<ThreadGroup>, ShareResult<ThreadGroup>[]>();
+  const concluded: ComputerRead[] = [];
+  for (const read of list) {
+    if (!currentRead(read)) {
+      drop(read);
+      continue;
     }
+    const { threads, groups } = read;
+    const commitAnswer = !read.paired
+      || (!outstanding(threads) && !outstanding(groups) && threads.ready && groups.ready);
+    const thread = take(threads, commitAnswer);
+    if (thread && (thread.answered || thread.cached || catalogFailureShown(thread.error))) threadsKnown.add(read.backend);
+    addTo(threadBatches, threads.part, thread);
+    addTo(groupBatches, groups.part, take(groups, commitAnswer));
+    concluded.push(read);
   }
-
-  get pairsAny(): boolean {
-    return this.slots.size > 0;
+  try {
+    for (const [part, results] of threadBatches) commitShares(part, results);
+  } finally {
+    for (const [part, results] of groupBatches) commitShares(part, results);
   }
-
-  read(kind: PairedKind): CatalogRoundRead {
-    return {
-      pairs: (backend) => this.slots.has(backend),
-      deliver: (backend, commit, onTime) => {
-        const slot = this.slots.get(backend)?.[kind];
-        if (!slot || slot.state !== 'out') return;
-        Object.assign(slot, { state: 'delivered', commit, onTime });
-        this.flush(backend);
-      },
-      release: (backend) => {
-        const slot = this.slots.get(backend)?.[kind];
-        if (!slot || slot.state === 'done') return;
-        // A delivered commit runs anyway: its read is stale now, so it only
-        // ends its journal (commitAnswer checks the read is still current).
-        const commit = slot.state === 'delivered' ? slot.commit : null;
-        Object.assign(slot, { state: 'done', commit: null });
-        try { commit?.(); } finally { this.flush(backend); }
-      },
-      windowEnded: () => {
-        if (--this.openWindows > 0) return;
-        for (const backend of this.slots.keys()) this.flush(backend);
-      },
-    };
-  }
-
-  // Run every commit of `backend` that may run now, threads first, in one
-  // synchronous block.
-  private flush(backend: BackendKey): void {
-    const slots = this.slots.get(backend);
-    if (!slots) return;
-    const { threads, groups } = slots;
-    const windowEnded = this.openWindows === 0;
-    const run: Array<() => void> = [];
-    if (threads.state === 'delivered' && (groups.state !== 'out' || (threads.onTime && windowEnded))) run.push(take(threads));
-    if (groups.state === 'delivered' && threads.state !== 'out') run.push(take(groups));
-    if (threads.state === 'done' && groups.state === 'done') this.slots.delete(backend);
-    runAll(run);
+  for (const read of concluded) {
+    if (read.threads.state === 'answered' && read.threads.ready) noteHeldOwners(read);
+    updateListing(read);
   }
 }
 
-function take(slot: Slot): () => void {
-  const commit = slot.commit!;
-  Object.assign(slot, { state: 'done', commit: null });
-  return commit;
+// A held thread answer's owners are recorded when its window ends, so a
+// pane the restore opens on one of its threads routes to that computer.
+function noteHeldOwners(read: ComputerRead): void {
+  if (read.ownersNoted || read.threads.result === null) return;
+  read.ownersNoted = true;
+  for (const row of read.threads.result.rows) read.threads.part.note(row, read.backend);
 }
 
-function runAll(commits: Array<() => void>): void {
-  const [first, ...rest] = commits;
-  if (!first) return;
-  try { first(); } finally { runAll(rest); }
+// The listing's one writer.
+function updateListing(read: ComputerRead): void {
+  if (untrack(() => listed.get(read.backend)) || !threadsKnown.has(read.backend)) return;
+  if (read.threads.state !== 'done' || read.groups.state !== 'done') return;
+  listed.set(read.backend, true);
+}
+
+/** The thread rows a caller validating saved panes should see now. */
+function threadRowsNow(): readonly Thread[] {
+  const held = [...reads.values()].filter((read) => read.threads.state === 'answered' && read.threads.ready && currentRead(read));
+  if (held.length === 0) return getThreads();
+  const rows = held.flatMap((read) => {
+    const { part, result } = read.threads;
+    return result!.share.pending.replay(result!.rows.slice()).filter((row) => !part.admit || part.admit(row, read.backend));
+  });
+  return threadRowsWith({
+    rows,
+    answered: new Set(held.map((read) => read.backend)),
+    attached: new Set(attachedBackends().map((entry) => entry.id)),
+  });
+}
+
+// Read one catalog of every computer in the round. Resolves when that
+// catalog's window ends, after the commit it allows.
+async function readCatalog<T>(
+  begun: readonly ComputerRead[], part: CatalogPart<T>, of: (read: ComputerRead) => PartRead<T>, deadlineMs: number | null,
+): Promise<void> {
+  await Promise.all(begun.map(async (read) => {
+    const share = of(read);
+    arrive(share, await readShare(part, share.share, deadlineMs, { onLate: (result) => arriveLate(read, share, result) }));
+  }));
+  for (const read of begun) of(read).ready = true;
+  commitReads(begun);
+}
+
+async function runRound(round: Round, only: BackendKey | undefined): Promise<readonly Thread[]> {
+  const deadlineMs = only === undefined ? COMPUTER_READ_DEADLINE_MS : null;
+  let budgetTimer: ReturnType<typeof setTimeout> | undefined;
+  const budget = deadlineMs === null ? null : new Promise<'budget'>((resolve) => {
+    budgetTimer = setTimeout(() => resolve('budget'), deadlineMs);
+  });
+  try {
+    const threadPart = threadCatalogPart();
+    const groupPart = groupCatalogPart();
+    const targets = untrack(() => attachedBackends()).filter((entry) => only === undefined || entry.id === only);
+    const begun = targets.map((target) => beginComputer(round, target, threadPart, groupPart));
+    void readCatalog(begun, groupPart, (read) => read.groups, deadlineMs).catch((error: unknown) => {
+      console.error('Failed to read the thread groups:', error);
+    });
+    await readCatalog(begun, threadPart, (read) => read.threads, deadlineMs);
+    const current = begun.filter(currentRead);
+    // A computer's threads are known to this caller when they answered, held
+    // or committed, or its kept rows stand in. None known is unknown, never
+    // an authoritative empty list: treating it as empty would erase saved
+    // panes on a cold offline startup.
+    const outcomes = current.map((read) => read.threads.outcome);
+    if (current.length > 0 && !outcomes.some((outcome) => outcome.answered || outcome.cached)) {
+      throw outcomes.map((outcome) => outcome.error).find((error) => error !== undefined) ?? new Error('No computer could be reached.');
+    }
+    const superseders = [...round.supersededBy];
+    if (superseders.length > 0) {
+      const followed = await Promise.race([
+        Promise.all(superseders.map((newer) => newer.settled)),
+        ...(budget ? [budget] : []),
+      ]);
+      if (current.length === 0) {
+        // Past the budget, the rows this caller has are its answer when its
+        // computers' threads are known; unknown is never an empty list.
+        if (followed === 'budget') {
+          if (!begun.some((read) => threadsKnown.has(read.backend))) throw new ReadDeadlineError();
+        } else {
+          const failed = followed.find((outcome) => !outcome.ok);
+          if (!followed.some((outcome) => outcome.ok) && failed && !failed.ok) throw failed.error;
+        }
+      }
+    }
+    return threadRowsNow();
+  } finally {
+    clearTimeout(budgetTimer);
+  }
 }
 
 /**
  * Read the computers' threads and groups as one round, every computer's or
- * `only`'s, and resolve with the thread rows once the thread read has
- * committed. With a listed computer in the round, it resolves after the
- * round's on-time window, when that computer's paired commit has run, so a
- * caller validating saved panes sees every thread answer that arrived on
- * time. Group failures are settled into the catalog state, which shows
- * them and retries.
+ * `only`'s, waiting for `only`'s answers rather than the startup deadline.
+ * Resolves with the thread rows once the round's thread window has ended
+ * (see the module comment); rejects when no computer's threads are known.
+ * Each computer's failure is in the catalog state, which shows and retries
+ * it.
  */
-export async function loadThreadCatalogs(only?: BackendKey): Promise<readonly Thread[]> {
-  const paired = untrack(() => attachedBackends()
-    .filter((entry) => (only === undefined || entry.id === only) && catalogTreeListed(entry.id))
-    .map((entry) => entry.id));
-  const round = new ThreadCatalogRound(paired);
-  const threads = loadThreads({ only, round: round.read('threads') });
-  const groups = loadThreadGroups({ only, round: round.read('groups') });
-  void groups.catch(() => {
-    // Each computer's failure is in the catalog state already.
-  });
-  if (!round.pairsAny) return await threads;
-  await Promise.allSettled([threads, groups]);
-  await threads;
-  // The paired commits ran when the window ended, after the thread read
-  // resolved: answer with the rows as they are now.
-  return getThreads();
+export function loadThreadCatalogs(only?: BackendKey): Promise<readonly Thread[]> {
+  let settle!: (outcome: { ok: true } | { ok: false; error: unknown }) => void;
+  const round: Round = { supersededBy: new Set(), settled: new Promise((resolve) => { settle = resolve; }) };
+  const result = runRound(round, only);
+  result.then(() => settle({ ok: true }), (error: unknown) => settle({ ok: false, error }));
+  return result;
 }
 
-// A history generation observed mid-session (a restored database) has no
-// hello behind it: re-read every catalog of that computer, whatever its
-// phase, so its rows describe the history it has now.
-onBackendIdentity((_identity, backend, change) => {
-  if (change !== 'generation') return;
-  void loadThreadCatalogs(backend).catch(() => {
-    // Each catalog's failure is in the catalog state already.
-  });
-  void readProjectCatalog(backend);
+registerCatalogReader(['threads', 'groups'], async (backend) => {
+  try {
+    await loadThreadCatalogs(backend);
+  } catch {
+    // The round settled this computer's failure into the catalog state,
+    // which is where it is shown and retried.
+  }
 });
+
+onBackendDetached(({ backendId }) => {
+  reads.delete(backendId);
+  threadsKnown.delete(backendId);
+  listed.drop(backendId);
+});
+
+/**
+ * Test seam: list every attached computer's threads, for a test that seeds
+ * the row stores directly.
+ */
+export function listCatalogTreesForTest(): void {
+  for (const entry of attachedBackends()) listed.set(entry.id, true);
+}
+
+/** Test seam: forget every read and listing. */
+export function resetThreadCatalogsForTest(): void {
+  for (const read of reads.values()) drop(read);
+  reads.clear();
+  threadsKnown.clear();
+  listed.reset();
+}

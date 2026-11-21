@@ -7,8 +7,9 @@ import ProjectsSection from '../ProjectsSection.svelte';
 import { createThreadPane } from '../../../stores/thread.svelte';
 import { resetSidebarForTest } from '../../../stores/sidebar.svelte';
 import { refreshProjects, resetProjectsForTest } from '../../../stores/projects.svelte';
-import { refreshThreads, updateThreadTitle } from '../../../stores/threads.svelte';
-import { listCatalogTreesForTest } from '../../../stores/catalogLoad.svelte';
+import { updateThreadTitle } from '../../../stores/threads.svelte';
+import { listCatalogTreesForTest, loadThreadCatalogs } from '../../../stores/threadCatalogs';
+
 import { resetPanesForTest } from '../../../stores/panes.svelte';
 import { resetPaneLayoutForTest } from '../../../stores/paneLayout.svelte';
 import { resetThreadGroupsForTest } from '../../../stores/threadGroups.svelte';
@@ -45,7 +46,7 @@ beforeEach(async () => {
     thread('a1', 'alpha'), thread('a2', 'alpha'), thread('b1', 'beta'), thread('b2', 'beta'),
   ]);
   setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: false }));
-  await refreshThreads();
+  await loadThreadCatalogs();
   await refreshProjects();
   listCatalogTreesForTest();
 });
@@ -72,7 +73,7 @@ it('rebuilds neither the Assistants section nor a project with a placed worker f
     thread('b1', 'beta'),
     thread('b2', 'beta'),
   ] as Thread[]);
-  await refreshThreads();
+  await loadThreadCatalogs();
   const view = render(ProjectsSection, { props: { pane: createThreadPane() } });
   await tick();
   const built = () => vi.mocked(buildSidebarThreadTree).mock.calls.map(([input]) => input.threads.map((row) => row.id).join(','));

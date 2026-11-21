@@ -16,7 +16,9 @@
 // backend updates and reload. With either catalog's answer held, a
 // project's threads and groups are not listed until both have answered,
 // then appear in their final arrangement and do not move, at open and
-// after reload.
+// after reload. A listed project's refresh whose group answer comes past
+// the read deadline keeps its rows still until that answer lands, then
+// changes arrangement once.
 import type { Page } from '@playwright/test';
 import { test, expect, type SeedResult } from './fixtures.js';
 import { attachWorktree, seedWorktreeProject } from './worktree-removal-helpers.js';
@@ -446,6 +448,86 @@ for (const held of ['groups', 'threads'] as const) {
     await expectHeldThenTogether({ members: 11, footer: 'thread-group-show-less' });
   });
 }
+
+// The page's startup read budget (computerRows.ts COMPUTER_READ_DEADLINE_MS).
+const READ_DEADLINE_MS = 2500;
+
+// A listed project whose frames were lost re-reads its threads and groups.
+// With the group reply held past the read deadline, the rows stay as they
+// were, without moving, until it lands, and then change arrangement once:
+// the thread answer never shows ahead of the groups it belongs to.
+test('a refresh whose group answer is late moves the rows once, when it lands', async ({ harness, page }) => {
+  const seed = await harness.rpc<SeedResult>('HarnessSeed', seedProject('group-refresh-late', ['Member A', 'Member B', 'Outside']));
+  const { projectId, threadIds } = seed.projects[0];
+
+  const requests = new Map<string, number>();
+  let losing = false;
+  let holding = false;
+  let heldReplies: Array<() => void> = [];
+  await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
+    const server = socket.connectToServer();
+    socket.onMessage((message) => {
+      const frame = JSON.parse(String(message)) as { type?: string; id?: string; methodId?: number };
+      if (frame.type === 'rpc' && frame.id && frame.methodId !== undefined) requests.set(frame.id, frame.methodId);
+      server.send(message);
+    });
+    server.onMessage((message) => {
+      const frame = JSON.parse(String(message)) as { type?: string; id?: string; events?: Array<{ channel?: string; seq?: number }>; channel?: string; seq?: number };
+      if (frame.type === 'rpc' && frame.id && requests.get(frame.id) === LIST_THREAD_GROUPS && holding) {
+        heldReplies.push(() => socket.send(message));
+        return;
+      }
+      // While losing, the thread frames arrive as a gap and the group frames
+      // not at all: the page learns of the change only by re-reading.
+      const lose = (event: { channel?: string; seq?: number }) => {
+        if (!losing) return event;
+        if (event.channel === 'thread-group:updated') return null;
+        if (event.channel === 'thread:updated') return { type: 'event', channel: event.channel, seq: event.seq, gap: true };
+        return event;
+      };
+      if (frame.type === 'event') {
+        const kept = lose(frame);
+        if (kept) socket.send(kept === frame ? message : JSON.stringify(kept));
+      } else if (frame.type === 'batch' && frame.events) {
+        socket.send(JSON.stringify({ ...frame, events: frame.events.map(lose).filter((event) => event !== null) }));
+      } else {
+        socket.send(message);
+      }
+    });
+  });
+  await page.addInitScript(recordSidebar);
+  await harness.open(page);
+  await expect(page.locator('[data-sidebar-thread-id]')).toHaveCount(3);
+  await nextFrames(page, 2);
+  const listedAt = (await sidebarRecord(page)).frames.length;
+  const initial = arrangements((await sidebarRecord(page)).frames.slice(listedAt - 1));
+  expect(initial).toHaveLength(1);
+
+  losing = true;
+  holding = true;
+  const group = await harness.rpc<ThreadGroup>('CreateThreadGroup', projectId, 'Made while lost');
+  await harness.rpc('SetThreadGroup', threadIds.slice(0, 2), group.id);
+  await expect.poll(() => heldReplies.length).toBeGreaterThan(0);
+  // The deadline passing is what this case is about: the thread answer is
+  // in, the group answer is not, and the page has given up waiting on time.
+  await page.evaluate((ms) => new Promise((resolve) => setTimeout(resolve, ms)), READ_DEADLINE_MS + 500);
+  await nextFrames(page, 2);
+  const held = (await sidebarRecord(page)).frames.slice(listedAt);
+  expect(arrangements(held)).toEqual(initial);
+  expect(movedFrames(held)).toBe(0);
+  await expect(page.locator(`[data-sidebar-group-id="${group.id}"]`)).toHaveCount(0);
+
+  losing = false;
+  holding = false;
+  for (const send of heldReplies.splice(0)) send();
+  await expect(page.locator(`[data-sidebar-group-id="${group.id}"]`)).toHaveCount(1);
+  await expect(page.locator('[data-group-member] [data-sidebar-thread-id]')).toHaveCount(2);
+  await nextFrames(page, 30);
+  const shown = arrangements((await sidebarRecord(page)).frames.slice(listedAt - 1));
+  expect(shown).toHaveLength(2);
+  expect(shown[0]).toBe(initial[0]);
+  expect(shown[1].split(' ')[0]).toBe(group.id);
+});
 
 for (const entry of ['button', 'menu'] as const) {
   test(`new thread from group ${entry} keeps membership through draft cleanup and first send`, async ({ harness, page }) => {

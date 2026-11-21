@@ -264,9 +264,9 @@ function commitProjectRows(result: ComputerRows<ProjectWithCounts>): void {
 /**
  * Read one computer's projects alone, waiting for the answer rather than
  * the startup deadline: the catalog store's retry, and the re-read after
- * the computer's history changed (./threadCatalogs.ts).
+ * the computer's history changed (./catalogLoad.svelte.ts).
  */
-export async function readProjectCatalog(backend: BackendKey): Promise<void> {
+async function readProjectCatalog(backend: BackendKey): Promise<void> {
   try {
     await readComputerRows<ProjectWithCounts>(
       listProjectRows, noteProjectRow, commitProjectRows, { catalog: projectCatalog(), only: backend, deadlineMs: null });
@@ -276,7 +276,7 @@ export async function readProjectCatalog(backend: BackendKey): Promise<void> {
   }
 }
 
-registerCatalogReader('projects', readProjectCatalog);
+registerCatalogReader(['projects'], readProjectCatalog);
 
 /**
  * Insert a freshly-created project at the head of the list. Accepts a

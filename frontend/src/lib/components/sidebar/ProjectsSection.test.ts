@@ -17,7 +17,7 @@ import { makeThread } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { refreshProjects, resetProjectsForTest } from '../../stores/projects.svelte';
 import { replaceAllThreads } from '../../stores/threads.svelte';
-import { listCatalogTreesForTest } from '../../stores/catalogLoad.svelte';
+import { listCatalogTreesForTest } from '../../stores/threadCatalogs';
 import { setThreadFilterQuery } from '../../stores/threadFilter.svelte';
 import { isSidebarSectionExpanded, resetSidebarForTest } from '../../stores/sidebar.svelte';
 import { closeNewAssistantDialog, getNewAssistantRequest } from '../../stores/newAssistant.svelte';

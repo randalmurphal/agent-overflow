@@ -9,7 +9,7 @@ import { setBackendIdentityFromBootstrap } from '../../transport/backendIdentity
 import { noteProject, noteThread } from '../../transport/entityIndex';
 import { addProjectLocal, updateProjectLocal, resetProjectsForTest } from '../../stores/projects.svelte';
 import { replaceAllThreads } from '../../stores/threads.svelte';
-import { listCatalogTreesForTest } from '../../stores/catalogLoad.svelte';
+import { listCatalogTreesForTest } from '../../stores/threadCatalogs';
 import { upsertThreadGroup, resetThreadGroupsForTest } from '../../stores/threadGroups.svelte';
 import { showAllSidebarDevices, setSidebarDeviceVisible } from '../../stores/sidebarDevices.svelte';
 import { setThreadFilterQuery } from '../../stores/threadFilter.svelte';
