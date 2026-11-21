@@ -531,8 +531,9 @@ describe('the sidebar listing', () => {
     setBindingMock('ListThreads', async () => [makeThread({ id: 't1' })]);
     await loadSidebarCatalogs();
     resetSidebarCatalogsForTest();
-    // Offline is every catalog failing, so the outcomes are not mixed and
-    // the kept rows list.
+    // Offline is every catalog failing with what it had standing in, so the
+    // kept rows list. The groups answered no rows, and that empty answer is
+    // held too.
     setBindingMock('ListProjects', offline);
     setBindingMock('ListThreads', offline);
     setBindingMock('ListThreadGroups', offline);
@@ -560,6 +561,38 @@ describe('the sidebar listing', () => {
     expect(getThreads().map((row) => row.id)).toEqual(['t1']);
   });
 
+  // The projects and groups an unlisted computer answered reach their stores
+  // while its thread read fails, so on a retry where all three fail those two
+  // have rows standing in and the threads have none: not a complete tree.
+  it('holds a computer whose every read fails when its threads have no rows standing in', async () => {
+    const ordinary = (what: string) => async () => { throw new TransportError('method_error', `${what}: disk I/O error`); };
+    setBindingMock('ListProjects', async () => [project('p1')]);
+    setBindingMock('ListThreads', ordinary('list threads'));
+    setBindingMock('ListThreadGroups', async () => [group('g1')]);
+    await loadSidebarCatalogs().catch(() => null);
+    expect(catalogTreeListed(HOME_BACKEND)).toBe(false);
+    expect(getProjects().map((row) => row.project.id)).toEqual(['p1']);
+
+    setBindingMock('ListProjects', ordinary('list projects'));
+    setBindingMock('ListThreadGroups', ordinary('list thread groups'));
+    await loadSidebarCatalogs().catch(() => null);
+    expect(catalogLoadState(HOME_BACKEND, 'threads').phase).toBe('failed');
+    expect(catalogTreeListed(HOME_BACKEND)).toBe(false);
+  });
+
+  // One live answer beside kept rows is a failing attempt, not a complete tree.
+  it('holds a computer whose projects answer while its other reads fail with rows standing in', async () => {
+    setBindingMock('ListProjects', async () => [project('p1')]);
+    setBindingMock('ListThreads', async () => [makeThread({ id: 't1' })]);
+    setBindingMock('ListThreadGroups', async () => [group('g1')]);
+    await loadSidebarCatalogs();
+    resetSidebarCatalogsForTest();
+    setBindingMock('ListThreads', offline);
+    setBindingMock('ListThreadGroups', offline);
+    await loadSidebarCatalogs().catch(() => null);
+    expect(catalogTreeListed(HOME_BACKEND)).toBe(false);
+  });
+
   it('holds a computer offline with nothing kept until both reads of its connection answer', async () => {
     setBindingMock('ListThreads', offline);
     setBindingMock('ListThreadGroups', offline);
@@ -581,7 +614,10 @@ describe('the sidebar listing', () => {
   it('does not list a computer that has only groups kept', async () => {
     setBindingMock('ListThreadGroups', async () => [group('g1')]);
     await loadSidebarCatalogs();
+    // A session that holds this computer's groups and has never held its
+    // threads: no thread rows, and no thread answer, even an empty one.
     resetSidebarCatalogsForTest();
+    resetCatalogLoadForTest();
     resetThreadsForTest();
     setBindingMock('ListThreads', offline);
     setBindingMock('ListThreadGroups', offline);

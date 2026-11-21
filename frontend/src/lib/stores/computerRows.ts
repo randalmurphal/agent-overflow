@@ -9,12 +9,16 @@ import type { CatalogKind, CatalogRows } from '../replica/catalog';
 import { getBackendIdentity, type BackendIdentity } from '../transport/backendIdentity';
 import { readBeforeDeadline, ReadDeadlineError } from '../utils/readBeforeDeadline';
 import { untrack } from 'svelte';
-import { beginCatalogAttempt, settleCatalogRead } from './catalogLoad.svelte';
+import { beginCatalogAttempt, catalogAnswerHeld, settleCatalogRead } from './catalogLoad.svelte';
 
 export interface ComputerCatalog<T> {
   read(backend: BackendKey): Promise<T[] | null>;
   write(backend: BackendKey, rows: T[]): Promise<void>;
-  hasRows(backend: BackendKey): boolean;
+  /**
+   * Whether the store holds this computer's rows for the catalog: rows of it
+   * are there, or it answered in this session, an empty list included.
+   */
+  holdsRows(backend: BackendKey): boolean;
   begin(backend: BackendKey): CatalogRead<T>;
   /**
    * One computer's current read failed with `error`; `cached` when its
@@ -68,7 +72,7 @@ export function computerCatalog<K extends CatalogKind>(
     },
     read: (backend) => getReplicaCatalog(backend, kind),
     write: (backend, rows) => putReplicaCatalog(backend, kind, rows, stamps.get(backend) ?? null),
-    hasRows: (backend) => populated.has(backend),
+    holdsRows: (backend) => populated.has(backend) || catalogAnswerHeld(backend, kind),
     settle: (backend, error, cached) => settleCatalogRead(kind, backend, { answered: false, error, cached }),
   };
 }
@@ -179,7 +183,7 @@ export async function readShare<T>(
   // failure ends it, not this call.
   const isLate = error instanceof ReadDeadlineError;
   const identity = getBackendIdentity(target.id);
-  const previous = part.catalog?.hasRows(target.id) ?? false;
+  const previous = part.catalog?.holdsRows(target.id) ?? false;
   const rows = part.catalog && !previous ? await part.catalog.read(target.id) : null;
   return { share, rows: rows ?? [], answered: false, error, identity, late: isLate, cached: previous || rows !== null };
 }

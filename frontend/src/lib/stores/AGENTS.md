@@ -245,8 +245,11 @@ sidebar without exception: when one read fails, on any attempt, the others'
 answers are never listed. While a catalog keeps failing, the sidebar shows
 its error row with Retry beside the last complete tree, or alone if there was
 none, and never a half-arranged list, so a computer whose read keeps failing
-before it ever listed shows no project header. The module comment has the
-rules.
+before it ever listed shows no project header. A computer lists the first
+time one read of it is a complete tree: all three answered in that round, or
+all three failed with rows of that computer standing in (rows the store
+holds, an answer it gave earlier in the session even when empty, or the
+replica). The module comment has the rules.
 
 Only a newer read of the same computer supersedes a sidebar catalog read.
 Change thread, project and group rows through the catalog writer's `mutate`,

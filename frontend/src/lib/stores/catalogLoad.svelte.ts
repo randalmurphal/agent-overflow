@@ -84,6 +84,10 @@ const LOADED: CatalogLoad = { phase: 'loaded', error: '' };
 const states = createKeyedSignalRegistry<CatalogLoad>(LOADING);
 // Catalogs, by catalogKey, whose last read asked for a retry.
 const wantsRetry = new Set<string>();
+// Catalogs, by catalogKey, that a computer has answered in this session and
+// whose history has not changed since: its rows, even none, stand in for a
+// later failure.
+const answeredOnce = new Set<string>();
 
 type CatalogReader = (backend: BackendKey) => Promise<void>;
 interface RegisteredReader {
@@ -135,6 +139,15 @@ function readerOf(kind: CatalogKind): RegisteredReader | undefined {
 }
 
 /**
+ * Whether `backend` has answered `kind` in this session, under its current
+ * history: what it answered, an empty list included, is held and stands in
+ * for a read that fails.
+ */
+export function catalogAnswerHeld(backend: BackendKey, kind: CatalogKind): boolean {
+  return answeredOnce.has(catalogKey(kind, backend));
+}
+
+/**
  * Record how one computer's read of a catalog ended. An answer settles in
  * the same synchronous block as the commit of its rows.
  */
@@ -143,6 +156,7 @@ export function settleCatalogRead(kind: CatalogKind, backend: BackendKey, outcom
   const key = catalogKey(kind, backend);
   if (outcome.answered) {
     wantsRetry.delete(key);
+    answeredOnce.add(key);
     states.set(key, LOADED);
   } else {
     settleFailure(kind, backend, key, outcome.error);
@@ -284,7 +298,10 @@ function clearRetry(reader: RegisteredReader, backend: BackendKey): void {
 // hello behind it.
 onBackendIdentity((_identity, backend, change) => {
   if (change !== 'generation' || !attachedBackends().some((entry) => entry.id === backend)) return;
-  for (const kind of CATALOG_KINDS) states.set(catalogKey(kind, backend), LOADING);
+  for (const kind of CATALOG_KINDS) {
+    states.set(catalogKey(kind, backend), LOADING);
+    answeredOnce.delete(catalogKey(kind, backend));
+  }
   for (const reader of readers) runReader(reader, backend);
 });
 
@@ -297,6 +314,7 @@ function dropBackend(backend: BackendKey): void {
   for (const kind of CATALOG_KINDS) {
     const key = catalogKey(kind, backend);
     wantsRetry.delete(key);
+    answeredOnce.delete(key);
     states.drop(key);
   }
 }
@@ -316,5 +334,6 @@ export function resetCatalogLoadForTest(): void {
   for (const byBackend of inFlight.values()) for (const attempts of byBackend.values()) attempts.clear();
   inFlight.clear();
   wantsRetry.clear();
+  answeredOnce.clear();
   states.reset();
 }

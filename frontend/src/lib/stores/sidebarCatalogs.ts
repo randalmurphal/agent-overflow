@@ -32,6 +32,12 @@
 //     complete tree, an unlisted one its loading or error row, and only a
 //     complete set replaces them. An unlisted computer's thread answer
 //     still reaches the thread store, for its open panes.
+//   - A computer lists the first time one read of it is a complete tree
+//     (treeCompleteness): all three catalogs answered in that round, or all
+//     three failed with rows of that computer standing in, which is a
+//     computer offline with what it had. The rows standing in are three
+//     separately kept catalogs, so such a tree may mix ages; the first
+//     complete answer replaces it.
 //   - Answers that commit at a window's end commit in one batch per
 //     catalog, projects first so every row's owner is known before the
 //     thread rows that fall back to it commit, so a refresh reconciles each
@@ -151,7 +157,8 @@ const withheld = new Map<BackendKey, Withheld>();
 // computer is held until its first round says otherwise.
 const listed = createKeyedSignalRegistry<boolean>(false);
 // Computers whose thread catalog is known: answered, cached rows committed,
-// or failed with an error of its own.
+// or failed with an error of its own. What a round past its budget resolves
+// with; the listing reads the read's own parts instead.
 const threadsKnown = new Set<BackendKey>();
 
 /**
@@ -417,15 +424,35 @@ function finishRound(round: Round): void {
   }
 }
 
-// The listing's one writer. A computer lists once every read is done and its
-// threads are known, unless the outcomes were mixed, one catalog answering
-// where another failed: then its loading or error row stays until a
-// complete set.
-function updateListing(read: ComputerRead): void {
-  if (untrack(() => listed.get(read.backend)) || !threadsKnown.has(read.backend)) return;
+// What one catalog of a computer's read brings to its tree: an answer of
+// this round, the rows it already had standing in for a failure, or neither.
+type PartCompleteness = 'answered' | 'standingIn' | 'missing';
+
+function partCompleteness(part: PartStatus): PartCompleteness {
+  if (part.outcome.answered) return 'answered';
+  return part.outcome.cached ? 'standingIn' : 'missing';
+}
+
+// The two complete trees a computer can list first: all three catalogs
+// answered in this round, or all three failed with rows standing in (a
+// computer that is offline with what it had). Anything else, one live
+// answer beside a failure included, is a failing attempt.
+type TreeCompleteness = 'allAnswered' | 'allStandingIn';
+
+function treeCompleteness(read: ComputerRead): TreeCompleteness | null {
   const parts = partsOf(read);
-  if (!parts.every((part) => part.state === 'done')) return;
-  if (new Set(parts.map((part) => part.outcome.answered)).size > 1) return;
+  if (!parts.every((part) => part.state === 'done')) return null;
+  const kinds = parts.map(partCompleteness);
+  if (kinds.every((kind) => kind === 'answered')) return 'allAnswered';
+  if (kinds.every((kind) => kind === 'standingIn')) return 'allStandingIn';
+  return null;
+}
+
+// The listing's one writer: a computer lists the first time its read is a
+// complete tree, and stays listed until it detaches.
+function updateListing(read: ComputerRead): void {
+  if (untrack(() => listed.get(read.backend))) return;
+  if (treeCompleteness(read) === null) return;
   listed.set(read.backend, true);
 }
 
