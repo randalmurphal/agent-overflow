@@ -45,6 +45,9 @@ type run struct {
 	// walking reports that the tick's delta stopped with more of its walk
 	// to read, which the tick's reconcile waits for (run.reconcile).
 	walking bool
+	// pass is the reconcile pass the tick goes on with, its pump's; nil
+	// for a tick no pump runs, whose pass lasts the tick.
+	pass *reconcilePass
 	// lifetimes are the lifetimes of the boards a write's refresh reads
 	// through, captured before its reads (refreshTargets); a tick names its
 	// own board's from state.
@@ -169,24 +172,32 @@ func (s *Service) hold(id string) (*run, error) {
 }
 
 // rehold looks connection id's mirror root up again after the store
-// reported the root held, stale, gone, and keeps the new one with its
-// generation; a connection turned off meanwhile ends the run (errEnded).
-func (s *Service) rehold(id string, stale int64) (int64, uint64, error) {
+// reported gone, the error, the root stale a run of generation gen held,
+// and keeps the new one. A run belongs to the mirror generation it began
+// in: when the connection's generation moved since (turned off, removed,
+// or off and on again), the root is the old connection's mirror and so
+// are the run's provider and settlement stamp, and the run ends
+// (errEnded). Only a root gone within the generation (a restore emptied
+// the mirror) is replaced. A connection turned off meanwhile ends the run
+// the same way.
+func (s *Service) rehold(id string, stale int64, gen uint64, gone error) (int64, error) {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
+	if s.gen(id) != gen {
+		return 0, fmt.Errorf("%w: the connection's mirror ended since the run began: %w", errEnded, gone)
+	}
 	root, _, err := s.store.GetOrCreateMirrorRoot(id)
 	switch {
 	case errors.Is(err, store.ErrTrackerCacheGone), errors.Is(err, sql.ErrNoRows):
 		delete(s.holds, id)
-		return 0, 0, fmt.Errorf("%w: %w", errEnded, err)
+		return 0, fmt.Errorf("%w: %w", errEnded, err)
 	case err != nil:
-		return 0, 0, fmt.Errorf("trackerapp: the mirror of connection %s: %w", id, err)
+		return 0, fmt.Errorf("trackerapp: the mirror of connection %s: %w", id, err)
 	}
-	gen := s.gen(id)
 	if h := s.holds[id]; h != nil && h.root == stale {
-		h.root, h.gen = root, gen
+		h.root = root
 	}
-	return root, gen, nil
+	return root, nil
 }
 
 // gen is connection id's mirror generation (genLocked). Read under opMu
@@ -204,13 +215,14 @@ func (s *Service) gen(id string) uint64 {
 // issue's history is due one now. That last is how a pump learns that an
 // issue's wait for a final read is over, on its next tick, with no timer
 // and no statement of its own. A root the store reports gone is looked
-// up again once (rehold). A board scope whose board no project lists has
-// no lifetime: the tick ends.
+// up again once within the run's generation (rehold); the run keeps its
+// generation, and one that outlived it ends. A board scope whose board no
+// project lists has no lifetime: the tick ends.
 func (r *run) readState() error {
 	board := string(r.scope.Board)
 	st, shown, err := r.s.store.GetMirrorSync(r.root, board, r.steadyAt())
 	if errors.Is(err, store.ErrTrackerCacheGone) {
-		if r.root, r.gen, err = r.s.rehold(r.row.ID, r.root); err != nil {
+		if r.root, err = r.s.rehold(r.row.ID, r.root, r.gen, err); err != nil {
 			return err
 		}
 		st, shown, err = r.s.store.GetMirrorSync(r.root, board, r.steadyAt())

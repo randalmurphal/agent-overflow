@@ -86,14 +86,14 @@ func TestMirrorKeepsIssuesLinkedToOwnedThreads(t *testing.T) {
 	mustCreateThread(t, s, "elsewhere")
 	mustSetThreadTicket(t, s, ThreadTicket{ThreadID: "elsewhere", Ticket: TicketRef{Kind: TrackerKindJira, Site: "https://other.example.com", IssueID: "10003"},
 		IssueKey: "WEB-3", Origin: TicketOriginManual, LinkedAt: 10}, true)
-	if linked, more, err := s.ListMirrorOffBoardLinkedIssues(root, ""); err != nil || more || len(linked) != 0 {
+	if linked, more, err := s.ListMirrorOffBoardLinkedIssues(root, "", []string{"10"}); err != nil || more || len(linked) != 0 {
 		t.Fatalf("linked issues on a board = %v, %v, %v", linked, more, err)
 	}
 
 	if _, err := s.ReconcileMirrorBoard(root, "10", currentLifetime(s, root, "10"), nil, true, 5, 5); err != nil {
 		t.Fatal(err)
 	}
-	if linked, more, err := s.ListMirrorOffBoardLinkedIssues(root, ""); err != nil || more || !reflect.DeepEqual(linked, []string{"10001"}) {
+	if linked, more, err := s.ListMirrorOffBoardLinkedIssues(root, "", []string{"10"}); err != nil || more || !reflect.DeepEqual(linked, []string{"10001"}) {
 		t.Fatalf("linked issues off the boards = %v, %v, %v", linked, more, err)
 	}
 	if cards := mustMirrorCards(t, s, root, "10001", "10002", "10003", "10004"); len(cards) != 1 || cards[0].IssueID != "10001" {

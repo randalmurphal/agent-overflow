@@ -36,9 +36,9 @@ func (m *mirrorFixture) linkThread(threadID string, issue tracker.IssueID) {
 	}
 }
 
-// The cards unit reads the cards of the linked issues no shown board has
-// a row of and records the read in the linked scope's sync state; a
-// failure is recorded and settled like a board's.
+// The cards unit reads the cards of the linked issues, those with a row
+// on a board no pump polls included, and records the read in the linked
+// scope's sync state; a failure is recorded and settled like a board's.
 func TestLinkedCardsReadsTheLinkedIssues(t *testing.T) {
 	t.Parallel()
 	m := newMirrorFixture(t)
@@ -52,7 +52,7 @@ func TestLinkedCardsReadsTheLinkedIssues(t *testing.T) {
 		return tracker.Cards{Cards: []tracker.Card{card("10005", 1_799_000_000_000)}}, nil
 	}
 	out := must[Outcome](t)(m.svc.tickCards(t.Context(), m.conn.ID, Background))
-	if out.Failure != nil || out.More() || !slices.Equal(out.Changes().Cards, ids("10005")) || len(asked) != 1 || !slices.Equal(asked[0], ids("10005")) {
+	if out.Failure != nil || out.More() || !slices.Equal(out.Changes().Cards, ids("10005")) || len(asked) != 1 || !slices.Equal(asked[0], ids("10001", "10005")) {
 		t.Fatalf("cards tick %+v, asked %v", out, asked)
 	}
 	if cards := must[[]store.MirrorCard](t)(m.st.ListMirrorCards(m.root(), []string{"10001", "10005"})); len(cards) != 2 {

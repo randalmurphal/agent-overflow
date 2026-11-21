@@ -43,9 +43,9 @@ func (l *loopStore) ListTrackerConnections() ([]store.TrackerConnection, error) 
 	return l.Store.ListTrackerConnections()
 }
 
-func (l *loopStore) ListMirrorOffBoardLinkedIssues(root int64, after string) ([]string, bool, error) {
+func (l *loopStore) ListMirrorOffBoardLinkedIssues(root int64, after string, polled []string) ([]string, bool, error) {
 	l.count(func() { l.linked++ })
-	return l.Store.ListMirrorOffBoardLinkedIssues(root, after)
+	return l.Store.ListMirrorOffBoardLinkedIssues(root, after, polled)
 }
 
 func (l *loopStore) FinishMirrorCleanup(pause store.ChunkPause) error {

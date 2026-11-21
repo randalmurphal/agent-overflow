@@ -30,15 +30,29 @@ const (
 // changed since or a removal refused a new row of it, ends the unit with
 // More, and the next tick walks from the store's state.
 func (r *run) delta(board tracker.BoardID) (UnitResult, error) {
-	var out UnitResult
+	var log changeLog
+	more, err := r.deltaPages(board, &log)
+	r.walking = more
+	out := UnitResult{More: more}
+	if err == nil {
+		err = r.cascade(board, &out)
+	}
+	log.add(out.Changes)
+	out.Changes = log.changes()
+	return out, err
+}
+
+// deltaPages reads and stores the pages of the delta unit, adding what
+// each stored to log, and reports whether the walk has more to read.
+func (r *run) deltaPages(board tracker.BoardID, log *changeLog) (more bool, _ error) {
 	ch, err := r.boardHeld(board)
-	out.Changes.add(ch)
+	log.add(ch)
 	if err != nil {
-		return out, err
+		return false, err
 	}
 	lifetime, err := r.lifetime(board)
 	if err != nil {
-		return out, err
+		return false, err
 	}
 	var cursor tracker.Cursor
 	if len(r.state.Cursor) > 0 {
@@ -46,8 +60,7 @@ func (r *run) delta(board tracker.BoardID) (UnitResult, error) {
 	}
 	for pages := 0; ; pages++ {
 		if pages == deltaPages {
-			out.More = true
-			break
+			return true, nil
 		}
 		q := tracker.DeltaQuery{Board: board, From: cursor, Start: r.window()}
 		read := r.readAt()
@@ -62,84 +75,121 @@ func (r *run) delta(board tracker.BoardID) (UnitResult, error) {
 			page, err = r.p.ChangedRows(r.ctx, q)
 		}
 		if err != nil {
-			return out, fmt.Errorf("trackerapp: read the changed rows of board %s: %w", board, call(err))
+			return false, fmt.Errorf("trackerapp: read the changed rows of board %s: %w", board, call(err))
 		}
 		m, err := mirrorRows(board, page.Rows, nil, page.Catalog, read)
 		if err != nil {
-			return out, err
+			return false, err
 		}
 		m.Lifetime, m.EstimateResetAt = lifetime, r.state.EstimateResetAt
 		if len(m.Rows) > 0 || cursor == nil || !bytes.Equal(page.Next, cursor) {
 			stored, err := r.s.store.WriteMirrorRowPage(r.root, m, page.Next)
 			if err != nil {
-				return out, fmt.Errorf("trackerapp: store a page of board %s: %w", board, err)
+				return false, fmt.Errorf("trackerapp: store a page of board %s: %w", board, err)
 			}
 			r.markStructureDue(stored)
-			out.Changes.add(changesOf(stored))
+			log.add(changesOf(stored))
 			if stored.CursorRefused {
-				out.More = true
-				break
+				return true, nil
 			}
 		}
 		cursor = page.Next
 		if !page.More {
-			break
+			return false, nil
 		}
 	}
-	r.walking = out.More
-	return out, r.cascade(board, &out)
 }
 
-// reconcile is the reconcile unit of board (SyncBoard): it lists the
+// reconcile is the reconcile unit of board (SyncBoard). A pass lists the
 // board, removes the unlisted rows read more than tracker.DeltaOverlap
-// before the listing began, and reads by ID, in the same tick, the listed
-// issues with no row and the unlisted rows read since. In a tick whose
-// delta stopped with more of its walk to read it lists nothing and
-// reports More: the walk delivers the rows a listing would find missing,
-// so a first sync longer than one tick's pages reads each row once and
-// lists the board once, after the walk.
+// before the listing began, and reads by ID the listed issues with no
+// row and the unlisted rows read since: its candidates, each attempted
+// once, up to reconcileBatches batches a tick. A pass with candidates
+// left reports More, and the next tick's reconcile goes on with them,
+// listing nothing, while the run's pass (run.pass) is of the same board
+// lifetime, an ID the store never reuses; a pass ends when every candidate was attempted, so one the
+// rows read keeps answering missing is attempted again by the next pass,
+// a reconcile interval later. In a tick whose delta stopped with more of
+// its walk to read it reads nothing and reports More: the walk delivers
+// the rows a listing would find missing, so a first sync longer than one
+// tick's pages reads each row once and lists the board once, after the
+// walk.
 func (r *run) reconcile(board tracker.BoardID) (UnitResult, error) {
-	var out UnitResult
 	if r.walking {
-		out.More = true
-		return out, nil
+		return UnitResult{More: true}, nil
 	}
+	var log changeLog
+	pass := r.pass
+	if pass == nil {
+		pass = &reconcilePass{}
+	}
+	err := r.reconcileReads(board, pass, &log)
+	out := UnitResult{More: len(pass.left) > 0}
+	if err == nil {
+		err = r.cascade(board, &out)
+	}
+	log.add(out.Changes)
+	out.Changes = log.changes()
+	return out, err
+}
+
+// reconcilePass is a reconcile's candidates not yet attempted, from the
+// listing of one board lifetime. A board's pump keeps one between its
+// ticks (boardPump.pass); any other tick's lives for that tick.
+type reconcilePass struct {
+	lifetime int64
+	left     []tracker.IssueID
+}
+
+// reconcileReads lists board when pass has no candidate left of this
+// lifetime, then attempts up to reconcileBatches batches of the
+// pass's candidates, taking each batch attempted off the pass, and adds
+// what it stored to log.
+func (r *run) reconcileReads(board tracker.BoardID, pass *reconcilePass, log *changeLog) error {
 	ch, err := r.boardHeld(board)
-	out.Changes.add(ch)
+	log.add(ch)
 	if err != nil {
-		return out, err
+		return err
 	}
 	lifetime, err := r.lifetime(board)
 	if err != nil {
-		return out, err
+		return err
 	}
-	read := r.readAt()
-	r.calls++
-	listing, err := r.p.BoardIssues(r.ctx, board, r.window())
-	if err != nil {
-		return out, fmt.Errorf("trackerapp: list the issues of board %s: %w", board, call(err))
+	if pass.lifetime != lifetime || len(pass.left) == 0 {
+		*pass = reconcilePass{}
+		read := r.readAt()
+		r.calls++
+		listing, err := r.p.BoardIssues(r.ctx, board, r.window())
+		if err != nil {
+			return fmt.Errorf("trackerapp: list the issues of board %s: %w", board, call(err))
+		}
+		// A tracker may list an issue up to DeltaOverlap late (a search
+		// index), so the listing judges only the rows read before that; an
+		// unlisted row read since is read by ID, which removes it only when
+		// the board no longer holds it.
+		settled := read - tracker.DeltaOverlap.Milliseconds()
+		result, err := r.s.store.ReconcileMirrorBoard(r.root, string(board), lifetime, idStrings(listing.IDs), listing.Complete, read, settled)
+		// A reconcile that failed part way removed what it reports.
+		log.add(Changes{Removed: issueIDs(result.Removed)})
+		if err != nil {
+			return fmt.Errorf("trackerapp: reconcile board %s: %w", board, err)
+		}
+		left := append(issueIDsInOrder(result.Missing), issueIDsInOrder(result.Unsettled)...)
+		*pass = reconcilePass{lifetime: lifetime, left: left}
 	}
-	// A tracker may list an issue up to DeltaOverlap late (a search index),
-	// so the listing judges only the rows read before that; an unlisted
-	// row read since is read by ID, which removes it only when the board
-	// no longer holds it.
-	settled := read - tracker.DeltaOverlap.Milliseconds()
-	result, err := r.s.store.ReconcileMirrorBoard(r.root, string(board), lifetime, idStrings(listing.IDs), listing.Complete, read, settled)
-	// A reconcile that failed part way removed what it reports.
-	out.Changes.add(Changes{Removed: issueIDs(result.Removed)})
-	if err != nil {
-		return out, fmt.Errorf("trackerapp: reconcile board %s: %w", board, err)
+	for i := 0; i < reconcileBatches && len(pass.left) > 0; i++ {
+		batch := pass.left[:min(readBatch, len(pass.left))]
+		ch, _, _, err := r.boardRows(board, batch)
+		log.add(ch)
+		if err != nil {
+			return err
+		}
+		pass.left = pass.left[len(batch):]
 	}
-	missing := append(issueIDsInOrder(result.Missing), issueIDsInOrder(result.Unsettled)...)
-	if limit := reconcileBatches * readBatch; len(missing) > limit {
-		missing, out.More = missing[:limit], true
+	if len(pass.left) == 0 {
+		pass.left = nil
 	}
-	ch, _, _, err = r.boardRows(board, missing)
-	out.Changes.add(ch)
-	if err != nil {
-		return out, err
-	}
-	return out, r.cascade(board, &out)
+	return nil
 }
 
 // boardHeld makes sure the mirror holds board's structure, which the store

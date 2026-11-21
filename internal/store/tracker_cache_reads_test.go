@@ -320,10 +320,10 @@ func TestListMirrorIssueRowsPages(t *testing.T) {
 	}
 }
 
-// The linked issues no shown board has a row of read a page at a time,
-// each once however many threads link it; one with a row on a shown board
-// is left out, and one whose only row is on a board no project lists any
-// more is not.
+// The linked issues no polled shown board has a row of read a page at a
+// time, each once however many threads link it; one with a row on a
+// polled shown board is left out, and one whose only row is on a board
+// no project lists any more, or on a shown board not polled, is not.
 func TestListMirrorOffBoardLinkedIssuesPages(t *testing.T) {
 	t.Parallel()
 	s, jira, root := newMirror(t)
@@ -338,13 +338,20 @@ func TestListMirrorOffBoardLinkedIssuesPages(t *testing.T) {
 	mustReplaceStructure(t, s, root, other, true)
 	mustWriteRowPage(t, s, root, webPage("11", webRow("10002", 5, "a")), nil)
 	listMirrorBoards(t, s, defaultTestProjectID, jira.ID, "10", "12")
-	first, more, err := s.ListMirrorOffBoardLinkedIssues(root, "")
+	first, more, err := s.ListMirrorOffBoardLinkedIssues(root, "", []string{"10", "11"})
 	if err != nil || !more || len(first) != mirrorLinkedPage || first[0] != "10000" || first[1] != "10002" || slices.Contains(first, "10001") {
 		t.Fatalf("first page = %d from %v, more %v, %v", len(first), first[:2], more, err)
 	}
-	rest, more, err := s.ListMirrorOffBoardLinkedIssues(root, first[len(first)-1])
+	rest, more, err := s.ListMirrorOffBoardLinkedIssues(root, first[len(first)-1], []string{"10", "11"})
 	if err != nil || more || !reflect.DeepEqual(rest, []string{strconv.Itoa(10001 + mirrorLinkedPage)}) {
 		t.Fatalf("second page = %v, %v, %v", rest, more, err)
+	}
+	// With board 10 not polled, its row keeps nothing from the read.
+	for _, polled := range [][]string{nil, {"11", "12"}} {
+		first, _, err := s.ListMirrorOffBoardLinkedIssues(root, "", polled)
+		if err != nil || first[0] != "10000" || first[1] != "10001" || first[2] != "10002" {
+			t.Fatalf("polling %v: first page from %v, %v", polled, first[:3], err)
+		}
 	}
 }
 

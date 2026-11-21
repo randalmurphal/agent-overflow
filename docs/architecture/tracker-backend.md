@@ -264,7 +264,12 @@ to the computer and are rows in `tracker_connections`.
   `ErrTrackerCacheGone`, every read is empty, and `FinishMirrorCleanup`
   deletes its rows in transactions of at most 500. Turning the connection
   on again makes a new root with a new ID, so a result that arrives late
-  names the detached root and is refused. No caller checks a flag.
+  names the detached root and is refused. No caller checks a flag. A
+  run belongs to the mirror generation it began in: one that finds its
+  root gone takes the connection's current root only while the
+  generation is still the connection's (a restore emptied the mirror);
+  after a turn off, or off and on, it ends, since its provider and its
+  outcome are the earlier connection's.
 
 ## Tables
 
@@ -452,8 +457,14 @@ and writes share:
   `tracker.DeltaOverlap` before the listing began. A list may miss an
   issue its index has not caught up with (Jira, after a create), so an
   unlisted row read more recently is not judged by the listing: the store
-  reports it (`MirrorReconcile.Unsettled`) and the same tick reads it
-  through the board's rows, which keeps or removes it. Jira's rows read
+  reports it (`MirrorReconcile.Unsettled`) and the pass reads it
+  through the board's rows, which keeps or removes it. A pass attempts
+  each of its candidates (the listed issues with no row and the unsettled
+  rows) once, 1,000 a tick; a board's pump keeps the candidates left
+  between its ticks and goes on with them without listing again, so a
+  tick reports More only while the pass has candidates it has not
+  attempted. One the rows read keeps answering missing is attempted
+  again by the next pass, a reconcile interval later. Jira's rows read
   asks `jql/match` about an issue the list left out and fails when the
   match cannot judge the board (after reading the board's configuration
   again once), so a miss never removes a row on the list's word alone. A listing the
@@ -531,8 +542,12 @@ and writes share:
   staged in transactions of at most 500 and made the issue's history in
   one more, so a reader sees the old history until the switch, never part
   of either.
-- **Linked issues.** The cards unit reads the linked issues no shown board
-  has a row of (`ListMirrorOffBoardLinkedIssues`).
+- **Linked issues.** The cards unit reads the linked issues no polled
+  board has a row of (`ListMirrorOffBoardLinkedIssues`): a board whose
+  pump is not over, not paused while hidden and tells no failure. It takes
+  the polled boards again for each page, so an issue of a board whose pump
+  stops, pauses or starts failing is read by the round it happens in, from
+  the next page on, or the next round, `Cadence.Linked` later.
 - **A tick's record.** A tick's successes and the failure that followed
   them are recorded by one `RecordMirrorSyncAttempt` statement, which
   writes nothing when nothing changes. An idle tick reads its state in one
@@ -702,7 +717,9 @@ mirror, with no `sqlite_stat1`. Through `trackerfake` at 20,000 an idle
 tick, a delta of 100 and a Jira history read of 100 are 1, 1 and 4
 requests; a reconcile is 4 Jira requests or 41 Linear ones.
 
-Retention does not grow with a board. Five shown boards and 50 shown
+Retention does not grow with a board, except a reconcile pass that
+spans ticks: its pump holds the candidates left, at most one listing's,
+until the pass ends. Five shown boards and 50 shown
 tickets hold 123 to 142 KB of heap and 56 goroutines (each pump and the
 round with one timer) at both sizes; once released, 57 to 90 KB stay
 (the event log) and no goroutine.

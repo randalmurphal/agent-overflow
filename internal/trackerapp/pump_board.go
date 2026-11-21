@@ -25,6 +25,10 @@ type boardPump struct {
 	// exited closes when the goroutine has exited, or at once when it
 	// never starts (launchLocked).
 	exited chan struct{}
+	// pass is the reconcile pass the pump's ticks go on with (run.pass),
+	// read and written only by those ticks, under their scope's lock. It
+	// holds at most the candidates of one listing, and goes with the pump.
+	pass reconcilePass
 
 	// pending is what the next event carries; sync is the board's sync
 	// view as the last tick recorded it; internal is the failure of the

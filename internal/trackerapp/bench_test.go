@@ -235,13 +235,16 @@ func BenchmarkDetailBlobDecode(b *testing.B) {
 // benchmarks are the package's benchmarks, which the test suite runs once
 // each (TestBenchmarksRun).
 var benchmarks = map[string]func(*testing.B){
-	"BenchmarkMirrorRows100":         BenchmarkMirrorRows100,
-	"BenchmarkDeltaTick100Changed":   BenchmarkDeltaTick100Changed,
-	"BenchmarkDeltaTick100Unchanged": BenchmarkDeltaTick100Unchanged,
-	"BenchmarkBoardView500":          BenchmarkBoardView500,
-	"BenchmarkSectionPage100":        BenchmarkSectionPage100,
-	"BenchmarkCardBlobDecode":        BenchmarkCardBlobDecode,
-	"BenchmarkDetailBlobDecode":      BenchmarkDetailBlobDecode,
+	"BenchmarkMirrorRows100":              BenchmarkMirrorRows100,
+	"BenchmarkDeltaTick100Changed":        BenchmarkDeltaTick100Changed,
+	"BenchmarkDeltaTick100Unchanged":      BenchmarkDeltaTick100Unchanged,
+	"BenchmarkBoardView500":               BenchmarkBoardView500,
+	"BenchmarkSectionPage100":             BenchmarkSectionPage100,
+	"BenchmarkCardBlobDecode":             BenchmarkCardBlobDecode,
+	"BenchmarkDetailBlobDecode":           BenchmarkDetailBlobDecode,
+	"BenchmarkLinkedCardsAllChanged10000": BenchmarkLinkedCardsAllChanged10000,
+	"BenchmarkFoldByMerge10000":           BenchmarkFoldByMerge10000,
+	"BenchmarkFoldByLog10000":             BenchmarkFoldByLog10000,
 }
 
 // Every benchmark of the package runs one iteration without failing, so a

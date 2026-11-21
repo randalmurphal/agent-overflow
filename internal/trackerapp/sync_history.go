@@ -35,29 +35,34 @@ const (
 // by a write that did, so the next tick's listing reaches the issues
 // behind them.
 func (r *run) history() (UnitResult, error) {
-	var out UnitResult
+	var log changeLog
+	more, err := r.historyReads(&log)
+	return UnitResult{Changes: log.changes(), More: more}, err
+}
+
+// historyReads makes the reads of the history unit, adding what each
+// stored to log, and reports whether due issues are left.
+func (r *run) historyReads(log *changeLog) (more bool, _ error) {
 	due, more, err := r.s.store.ListMirrorHistoryDue(r.root, r.steadyAt())
 	if err != nil {
-		return out, fmt.Errorf("trackerapp: list the issues whose history is due: %w", err)
+		return false, fmt.Errorf("trackerapp: list the issues whose history is due: %w", err)
 	}
 	reads := 0
 	for batch := range slices.Chunk(due, historyBatch) {
 		if reads == historyBatches {
-			out.More = true
-			return out, nil
+			return true, nil
 		}
 		reads++
 		err := r.againIfSwept(func() error {
 			ch, err := r.historyOf(batch)
-			out.Changes.add(ch)
+			log.add(ch)
 			return err
 		})
 		if err != nil {
-			return out, err
+			return false, err
 		}
 	}
-	out.More = more
-	return out, nil
+	return more, nil
 }
 
 // historyOf reads and stores the history of the issues of due.

@@ -52,7 +52,7 @@ type MirrorStore interface {
 	GetMirrorCatalog(rootID int64, users, statuses []string) (store.MirrorCatalog, error)
 	ListMirrorCards(rootID int64, issueIDs []string) ([]store.MirrorCard, error)
 	ListMirrorIssueRows(rootID int64, issueID, afterBoard string) ([]store.MirrorIssueRow, bool, error)
-	ListMirrorOffBoardLinkedIssues(rootID int64, after string) ([]string, bool, error)
+	ListMirrorOffBoardLinkedIssues(rootID int64, after string, polled []string) ([]string, bool, error)
 	ListMirrorSection(rootID int64, boardID string, section store.MirrorSection, after store.MirrorRowKey) (store.MirrorSectionPage, error)
 	ReadMirrorBoardView(rootID int64, boardID string, sections []store.MirrorSection) (store.MirrorBoardView, bool, error)
 	ReadMirrorBoardPatch(rootID int64, boardID string, sections []store.MirrorSection, issueIDs []string, held store.MirrorTotalsAt) (store.MirrorBoardPatch, bool, error)
@@ -166,11 +166,11 @@ type Outcome struct {
 
 // Changes is the union of what every unit of the tick stored.
 func (o Outcome) Changes() Changes {
-	var out Changes
+	var log changeLog
 	for _, r := range o.Ran {
-		out.add(r.Changes)
+		log.add(r.Changes)
 	}
-	return out
+	return log.changes()
 }
 
 // More reports whether a unit the tick ran stopped at its bound.
@@ -216,7 +216,8 @@ func (c Changes) Empty() bool {
 		!c.Catalog && !c.Structure
 }
 
-// add merges o into c.
+// add merges o into c: one merge. A loop over reads folds them with a
+// changeLog instead.
 func (c *Changes) add(o Changes) {
 	c.Cards = unite(c.Cards, o.Cards)
 	c.Rows = unite(c.Rows, o.Rows)
@@ -229,14 +230,45 @@ func (c *Changes) add(o Changes) {
 	c.Structure = c.Structure || o.Structure
 }
 
+// changeLog folds the Changes of a run of reads into one: add appends
+// each read's IDs and changes orders them once, so a run of n IDs costs
+// one sort of n. Folding with Changes.add copies and sorts everything
+// gathered so far at every read, which grows with the reads times the
+// IDs.
+type changeLog struct{ c Changes }
+
+func (l *changeLog) add(o Changes) {
+	l.c.Cards = append(l.c.Cards, o.Cards...)
+	l.c.Rows = append(l.c.Rows, o.Rows...)
+	l.c.Added = append(l.c.Added, o.Added...)
+	l.c.Removed = append(l.c.Removed, o.Removed...)
+	l.c.History = append(l.c.History, o.History...)
+	l.c.Details = append(l.c.Details, o.Details...)
+	l.c.Dropped = append(l.c.Dropped, o.Dropped...)
+	l.c.Catalog = l.c.Catalog || o.Catalog
+	l.c.Structure = l.c.Structure || o.Structure
+}
+
+// changes is everything added, each list sorted without repeats.
+func (l *changeLog) changes() Changes {
+	c := &l.c
+	c.Cards, c.Rows, c.Added, c.Removed = ordered(c.Cards), ordered(c.Rows), ordered(c.Added), ordered(c.Removed)
+	c.History, c.Details, c.Dropped = ordered(c.History), ordered(c.Details), ordered(c.Dropped)
+	return *c
+}
+
 // unite is the sorted union of a and b without repeats.
 func unite(a, b []tracker.IssueID) []tracker.IssueID {
 	if len(b) == 0 {
 		return a
 	}
-	out := slices.Concat(a, b)
-	slices.Sort(out)
-	return slices.Compact(out)
+	return ordered(slices.Concat(a, b))
+}
+
+// ordered is ids sorted without repeats, in place.
+func ordered(ids []tracker.IssueID) []tracker.IssueID {
+	slices.Sort(ids)
+	return slices.Compact(ids)
 }
 
 // changesOf is a store change set in neutral IDs.
@@ -255,8 +287,7 @@ func issueIDs(ids []string) []tracker.IssueID {
 	for i, id := range ids {
 		out[i] = tracker.IssueID(id)
 	}
-	slices.Sort(out)
-	return slices.Compact(out)
+	return ordered(out)
 }
 
 // idStrings is ids as text, in order.

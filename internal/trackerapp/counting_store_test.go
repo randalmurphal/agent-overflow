@@ -150,9 +150,9 @@ func (c *countingStore) ListMirrorIssueRows(root int64, issue, afterBoard string
 	return c.Store.ListMirrorIssueRows(root, issue, afterBoard)
 }
 
-func (c *countingStore) ListMirrorOffBoardLinkedIssues(root int64, after string) ([]string, bool, error) {
+func (c *countingStore) ListMirrorOffBoardLinkedIssues(root int64, after string, polled []string) ([]string, bool, error) {
 	c.count("ListMirrorOffBoardLinkedIssues")
-	return c.Store.ListMirrorOffBoardLinkedIssues(root, after)
+	return c.Store.ListMirrorOffBoardLinkedIssues(root, after, polled)
 }
 
 func (c *countingStore) ListMirrorSection(root int64, board string, section store.MirrorSection, after store.MirrorRowKey) (store.MirrorSectionPage, error) {

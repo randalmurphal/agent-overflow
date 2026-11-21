@@ -58,8 +58,10 @@ type step struct {
 //   - reconcile lists the issues on the board, removes the rows of those
 //     no longer listed when the listing is complete (an incomplete one
 //     only adds), and reads the rows of listed issues that have none on
-//     the board, up to reconcileBatches batches a tick (More); after a
-//     delta that stopped with More it lists nothing and reports More.
+//     the board, up to reconcileBatches batches a tick (More), each once
+//     a pass; a pump's next tick goes on with the pass, and a tick no
+//     pump runs lists again (run.reconcile). After a delta that stopped
+//     with More it lists nothing and reports More.
 //   - history reads the status, sprint, estimate and assignee changes of
 //     the connection's issues that are due (store ListMirrorHistoryDue),
 //     historyBatch issues a read and historyBatches reads a tick (More).
@@ -163,6 +165,9 @@ func (s *Service) tick(ctx context.Context, scope Scope, u Urgency, plan func(*r
 		s.publish(r.root, r.gen, scope.Connection, ch, ownOf(scope, ch), origin)
 	}()
 	r.scope = scope
+	if origin != nil && origin.board != nil {
+		r.pass = &origin.board.pass
+	}
 	if err := r.readState(); errors.Is(err, errEnded) || endsMirror(err) {
 		return ended(out), nil
 	} else if err != nil {

@@ -273,7 +273,7 @@ func TestCleanupSweepsIssuesWhoseLinksGo(t *testing.T) {
 	if changes, err := s.UpsertMirrorCards(root, currentSweep(s, root), cards, MirrorCatalog{}, 1); err != nil || len(changes.Cards) != len(cards) {
 		t.Fatalf("linked cards = %+v, %v", changes, err)
 	}
-	if linked, more, err := s.ListMirrorOffBoardLinkedIssues(root, ""); err != nil || more || strings.Join(linked, ",") != "10001,10002,10003,10004,10005" {
+	if linked, more, err := s.ListMirrorOffBoardLinkedIssues(root, "", []string{"10"}); err != nil || more || strings.Join(linked, ",") != "10001,10002,10003,10004,10005" {
 		t.Fatalf("linked issues = %v, %v, %v", linked, more, err)
 	}
 
