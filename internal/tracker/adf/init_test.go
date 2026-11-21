@@ -4,61 +4,12 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"testing"
 )
-
-// What the package's init may allocate: nothing. Its one piece of work,
-// registering a goldmark node kind, appends to goldmark's table within
-// the room that table has (measured: 0 bytes). A goldmark release whose
-// table grows at this registration fails the test; raise the bytes to
-// that growth then, and nothing else.
-const (
-	initBytes  = 0
-	initAllocs = 0
-)
-
-var initTrace = regexp.MustCompile(`(\d+) bytes, (\d+) allocs`)
-
-// The package's init registers its goldmark node kind and does nothing
-// else: every table and expression waits for its first use. The probe in
-// testdata links the package and nothing else of this module, so its init
-// trace is the package's own, free of the test variables a test binary
-// adds.
-func TestInitCost(t *testing.T) {
-	t.Parallel()
-	bin := filepath.Join(t.TempDir(), "initcost")
-	build := exec.CommandContext(t.Context(), "go", "build", "-trimpath", "-o", bin, "./testdata/initcost")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("go build the probe: %v\n%s", err, out)
-	}
-	run := exec.CommandContext(t.Context(), bin)
-	run.Env = append(os.Environ(), "GODEBUG=inittrace=1")
-	out, err := run.CombinedOutput()
-	if err != nil {
-		t.Fatalf("run the probe: %v\n%s", err, out)
-	}
-	for line := range strings.Lines(string(out)) {
-		if !strings.HasPrefix(line, "init agent-overflow/internal/tracker/adf ") {
-			continue
-		}
-		m := initTrace.FindStringSubmatch(line)
-		if m == nil {
-			t.Fatalf("an init trace line of another shape: %s", strings.TrimSpace(line))
-		}
-		bytes, _ := strconv.Atoi(m[1])
-		allocs, _ := strconv.Atoi(m[2])
-		if bytes > initBytes || allocs > initAllocs {
-			t.Errorf("the package's init allocates %d bytes in %d allocations, over %d and %d: %s",
-				bytes, allocs, initBytes, initAllocs, strings.TrimSpace(line))
-		}
-	}
-}
 
 // A goldmark node kind is registered by a package variable's initializer,
 // never from a function: goldmark's kind table is not locked, so a kind

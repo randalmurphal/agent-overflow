@@ -36,8 +36,8 @@ following the same contract, not code.
   environment reads, no files outside what a call names.
 - No package does work when the program starts: the app links these
   packages whether or not a tracker is connected. Tables and regular
-  expressions are built on first use; `TestInitCost` in `trackerapi` and
-  `adf` fails when either package's init allocates.
+  expressions are built on first use; `TestInitCost` in `trackerapp`
+  holds each package and `trackerapp` to its stated init cost.
 - Cost is pinned. Each provider method's request count and the hot paths'
   allocations are asserted in the packages' cost tests, so a change that
   adds a request or an allocation fails a test.
