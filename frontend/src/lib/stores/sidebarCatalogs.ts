@@ -607,11 +607,11 @@ onBackendDetached(({ backendId }) => {
 });
 
 /**
- * Test seam: list every attached computer's tree, for a test that seeds
- * the row stores directly.
+ * Test seam: list every attached computer's tree, or only `backends`', for a
+ * test that seeds the row stores directly.
  */
-export function listCatalogTreesForTest(): void {
-  for (const entry of attachedBackends()) listed.set(entry.id, true);
+export function listCatalogTreesForTest(backends?: readonly BackendKey[]): void {
+  for (const entry of attachedBackends()) if (backends === undefined || backends.includes(entry.id)) listed.set(entry.id, true);
 }
 
 /** Test seam: forget every read and listing. */

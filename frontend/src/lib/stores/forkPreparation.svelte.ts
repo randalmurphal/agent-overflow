@@ -1,5 +1,5 @@
 import type { Thread } from '../types/models';
-import { revealProject } from './projectDisclosure';
+import { revealProject } from './sidebarEntryContinuity.svelte';
 
 // Presentation placeholders never enter the thread catalog. Requests for the
 // same source share progress until the backend publishes their actual rows.

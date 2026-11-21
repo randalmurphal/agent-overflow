@@ -8,32 +8,39 @@
 // its id as the nearest carrier for any of those, and a row is the wrong
 // carrier for all of them: which member it is changes.
 //
-// An entry is one value instead: the components take it and can reach none
-// of this another way (`lib/architecture.test.ts` fences the alternatives).
-// The ids it separates:
-//   - `key` is the entry's persisted identity, stable across every change of
-//     which member represents it: what its disclosure is written under;
-//   - `rowKey` is its DOM identity, which also survives its KEY moving under
-//     a row that is still the same row;
-//   - `id` is the project an action started on this row targets, the listed
-//     members' representative;
-//   - the members are what the entry counts, dates and speaks for, which the
-//     device filter decides.
+// An entry is one value instead, built over the listed entries that
+// `stores/sidebarEntryContinuity.svelte.ts` groups. That store decides, with
+// the device filter ignored, which rows form an entry and which earlier row
+// it continues; this module adds only what the filter decides. The ids an
+// entry separates:
+//   - `key` is the entry's persisted identity: what its disclosure is written
+//     under, the repository key of a computer's chosen checkout, else the
+//     project id;
+//   - `rowKey` is its DOM identity, which survives its key moving under a
+//     row that is still the same row, whatever the filter shows;
+//   - `id` is the project an action started on this row targets: the
+//     representative of the members the filter shows;
+//   - `orderId` is the project the manual order is saved under, whose
+//     position the row sorts by: the representative of every listed member,
+//     the filter ignored, so the order shown is the order this computer
+//     saves whichever checkout the filter shows;
+//   - the members are what the filter shows, and what the entry counts,
+//     dates and speaks for.
 //
-// Only this module and ProjectsSection.svelte may read the projects store's
-// entry-level functions; `lib/architecture.test.ts` enforces that.
+// Under components/sidebar only this module may import from the projects
+// store and the continuity store beyond the writers
+// `lib/architecture.test.ts` lists; the test resolves re-exports.
 import type { ProjectWithCounts } from '../../types/models';
 import { HOME_BACKEND, type BackendKey } from '../../transport/backendKey';
 import { projectBackend } from '../../transport/entityIndex';
+import { attachedBackendEntry, backendDisplayName } from '../../stores/attachedBackends.svelte';
+import { getProjectLiveActivityAt, projectOrderPosition, representativeOf } from '../../stores/projects.svelte';
 import {
-  entryIdFor,
-  getProjectLiveActivityAt,
-  getProjects,
-  projectEntryKey,
-  projectOrderPosition,
-  representativeOf,
-} from '../../stores/projects.svelte';
-
+  entryExpanded,
+  entryListLimit,
+  sidebarEntryGroups,
+  sidebarEntryRowOf,
+} from '../../stores/sidebarEntryContinuity.svelte';
 
 /** A member whose identity its own computer could not verify. */
 export interface SidebarEntryWarning {
@@ -47,33 +54,44 @@ export interface SidebarEntry {
   /** The key the entry's disclosure is persisted by. */
   readonly key: string;
   /**
-   * DOM identity: the key of the `{#each}` that renders the rows.
+   * DOM identity: the key of the `{#each}` that renders the rows, and of the
+   * thread buckets under them.
    *
-   * Not `key`, which moves while the row does not. A computer verifies a
-   * checkout's repository identity on its own schedule, so a project listed
-   * without one is keyed by its project id until the identity lands and by
-   * the repository afterwards. A keyed each takes an item whose key changed
-   * for a different item: it mounts the new row and plays the old row's exit
-   * with it out of flow, so for the length of that exit the same project,
-   * and every thread under it, is on screen twice. Carried from the previous
-   * build through a member the row kept, so neither an identity arriving nor
-   * one going away remounts a row.
+   * Not `key`, which moves while the row does not. A keyed each takes an item
+   * whose key changed for a different item: it mounts the new row and plays
+   * the old row's exit with it out of flow, so for the length of that exit
+   * the same project, and every thread under it, is on screen twice.
    */
   readonly rowKey: string;
   /** The project an action started on this row acts on. */
   readonly id: string;
+  /** The project the manual order is saved under. */
+  readonly orderId: string;
   readonly backend: BackendKey;
   readonly name: string;
   readonly path: string;
   readonly createdAt: number;
   readonly threadCount: number;
-  /** Manual order: the order still out while a reorder has not settled. */
+  /** Manual order of `orderId`: the order still out while a reorder has not settled. */
   readonly position: number;
   readonly expanded: boolean;
+  /** How many rows the entry's own list shows. */
+  readonly listLimit: number;
   /** The members the sidebar shows of this entry, in list order. */
   readonly members: readonly ProjectWithCounts[];
   readonly warnings: readonly SidebarEntryWarning[];
+  /**
+   * Whether the entry has a listed checkout on a computer other than the
+   * target's, the filter ignored: an action then affects one checkout of
+   * several.
+   */
+  readonly checkoutsElsewhere: boolean;
 }
+
+/** What an action on a row affects: the whole entry, or one of its checkouts. */
+export type ProjectTargetScope =
+  | { readonly kind: 'whole' }
+  | { readonly kind: 'oneOfSeveral'; readonly computerName: string };
 
 /**
  * What an action carries: a project, frozen at the gesture that started it.
@@ -87,79 +105,39 @@ export interface ProjectTarget {
   readonly backend: BackendKey;
   /** The row's label as the user read it, for the lines an action writes. */
   readonly label: string;
-  /** What the row counted when the gesture started, for what a
-   *  confirmation says it is about to affect. */
+  /** The target project's own threads when the gesture started. */
   readonly threadCount: number;
-}
-
-export interface SidebarEntries {
-  readonly entries: readonly SidebarEntry[];
-  /** Any member's project id → the id of the row rendered for it. */
-  readonly entryOf: ReadonlyMap<string, string>;
+  readonly scope: ProjectTargetScope;
 }
 
 export interface SidebarEntriesInput {
-  /** Whether a computer's whole tree lists; a held member is not an entry's. */
-  readonly listed: (backend: BackendKey) => boolean;
   /** Whether the device filter shows a computer. */
   readonly visible: (backend: BackendKey) => boolean;
-  /** Whether an entry is unfolded. Takes the entry so the caller chooses
-   *  what the state is keyed by. */
-  readonly expanded: (entry: { readonly key: string; readonly id: string }) => boolean;
   /** The last result, so an entry nothing changed keeps its identity. */
   readonly previous: readonly SidebarEntry[];
 }
 
 const NO_WARNINGS: readonly SidebarEntryWarning[] = [];
 
+function backendOf(row: ProjectWithCounts): BackendKey {
+  return projectBackend(row.project.id) ?? HOME_BACKEND;
+}
+
 /**
- * The entries the sidebar renders, and the row each member renders under.
- *
- * A member whose computer holds its tree is out of this entirely, so a
- * computer that answers its projects before its threads changes nothing on
- * screen. Of the members that remain, the device filter decides which ones an
- * entry counts, dates and speaks for; the representative is elected over the
- * listed members with the filter ignored, so the label, the action target and
- * the manual position change only when a computer's tree lists.
+ * The entries the sidebar renders. An entry with no member the filter shows,
+ * or whose shown members are all archived, renders nothing; its members'
+ * threads still bucket under its rowKey (`sidebarBucketOf`).
  */
-export function buildSidebarEntries(input: SidebarEntriesInput): SidebarEntries {
-  const groups = new Map<string, { listed: ProjectWithCounts[]; shown: ProjectWithCounts[] }>();
-  for (const row of getProjects()) {
-    const backend = projectBackend(row.project.id) ?? HOME_BACKEND;
-    if (!input.listed(backend)) continue;
-    // The store's entry id groups the members; which of them wears the entry
-    // is decided below, over the listed ones.
-    const token = entryIdFor(row.project.id);
-    let group = groups.get(token);
-    if (group === undefined) groups.set(token, group = { listed: [], shown: [] });
-    group.listed.push(row);
-    if (input.visible(backend)) group.shown.push(row);
-  }
-
-  const entryOf = new Map<string, string>();
-  const rendered: { rep: ProjectWithCounts; shown: readonly ProjectWithCounts[] }[] = [];
-  for (const group of groups.values()) {
-    const rep = representativeOf(group.listed);
-    // Every member buckets under the row rendered for it, whether or not the
-    // entry has one: a thread of an archived project has no row either.
-    for (const member of group.listed) entryOf.set(member.project.id, rep.project.id);
-    if (group.shown.length === 0 || rep.project.archived) continue;
-    rendered.push({ rep, shown: group.shown });
-  }
-
-  const previous = new Map(input.previous.map((entry) => [entry.key, entry]));
-  // Which row each member was rendered under last time, so a row whose key
-  // moved keeps its DOM identity. One row may claim a previous row's
-  // identity: two rows with one `rowKey` would be a duplicate each key.
-  const rowKeyOf = new Map<string, string>();
-  for (const before of input.previous) {
-    for (const member of before.members) rowKeyOf.set(member.project.id, before.rowKey);
-  }
-  const claimed = new Set<string>();
-  const entries = rendered.map(({ rep, shown }) => {
-    const id = rep.project.id;
-    const key = projectEntryKey(id);
-    const rowKey = claimRowKey(shown, key, id, rowKeyOf, claimed);
+export function buildSidebarEntries(input: SidebarEntriesInput): readonly SidebarEntry[] {
+  const previous = new Map(input.previous.map((entry) => [entry.rowKey, entry]));
+  const entries: SidebarEntry[] = [];
+  for (const group of sidebarEntryGroups()) {
+    const shown = group.members.filter((member) => input.visible(backendOf(member)));
+    if (shown.length === 0) continue;
+    const rep = representativeOf(shown);
+    if (rep.project.archived) continue;
+    const ordered = representativeOf(group.members);
+    const backend = backendOf(rep);
     let threadCount = 0;
     const warnings: SidebarEntryWarning[] = [];
     for (const member of shown) {
@@ -168,23 +146,35 @@ export function buildSidebarEntries(input: SidebarEntriesInput): SidebarEntries 
       if (reason) warnings.push({ id: member.project.id, path: member.project.path, reason });
     }
     const next: SidebarEntry = {
-      key,
-      rowKey,
-      id,
-      backend: projectBackend(id) ?? HOME_BACKEND,
+      key: group.key,
+      rowKey: group.rowKey,
+      id: rep.project.id,
+      orderId: ordered.project.id,
+      backend,
       name: rep.project.name,
       path: rep.project.path,
       createdAt: rep.project.createdAt,
       threadCount,
-      position: projectOrderPosition(rep),
-      expanded: input.expanded({ key, id }),
+      position: projectOrderPosition(ordered),
+      expanded: entryExpanded(group),
+      listLimit: entryListLimit(group),
       members: shown,
       warnings: warnings.length === 0 ? NO_WARNINGS : warnings,
+      checkoutsElsewhere: group.members.some((member) => backendOf(member) !== backend),
     };
-    const before = previous.get(key);
-    return before !== undefined && sameEntry(before, next) ? before : next;
-  });
-  return { entries, entryOf };
+    const before = previous.get(group.rowKey);
+    entries.push(before !== undefined && sameEntry(before, next) ? before : next);
+  }
+  return entries;
+}
+
+/**
+ * The bucket a project's threads and groups sit in: its entry's rowKey, the
+ * filter ignored, so an entry the filter hides still has one; '' for a
+ * project in no listed entry, whose threads have no row.
+ */
+export function sidebarBucketOf(projectId: string): string {
+  return sidebarEntryRowOf(projectId);
 }
 
 /**
@@ -214,45 +204,33 @@ export function rankOf(entry: SidebarEntry): number {
  * await, confirmation or preview can retarget it.
  */
 export function projectTarget(entry: SidebarEntry, label: string): ProjectTarget {
+  const own = entry.members.find((member) => member.project.id === entry.id);
+  if (own === undefined) throw new Error(`Sidebar entry ${entry.rowKey} does not show its own project ${entry.id}`);
   return Object.freeze({
     id: entry.id,
     name: entry.name,
     path: entry.path,
     backend: entry.backend,
     label,
-    threadCount: entry.threadCount,
+    threadCount: own.threadCount,
+    scope: entry.checkoutsElsewhere
+      ? Object.freeze({ kind: 'oneOfSeveral', computerName: computerName(entry.backend) })
+      : WHOLE,
   });
 }
 
-/**
- * The row identity this entry continues, claimed so no two rows take the
- * same one: the identity of a previous row that still holds one of these
- * members, else this entry's own key, else a value of its own (its key is
- * another row's identity only when that row carried it here).
- */
-function claimRowKey(
-  shown: readonly ProjectWithCounts[],
-  key: string,
-  id: string,
-  rowKeyOf: ReadonlyMap<string, string>,
-  claimed: Set<string>,
-): string {
-  let rowKey: string | undefined;
-  for (const member of shown) {
-    const carried = rowKeyOf.get(member.project.id);
-    if (carried !== undefined && !claimed.has(carried)) {
-      rowKey = carried;
-      break;
-    }
-  }
-  rowKey ??= claimed.has(key) ? `${key}\u0000${id}` : key;
-  claimed.add(rowKey);
-  return rowKey;
+const WHOLE: ProjectTargetScope = Object.freeze({ kind: 'whole' });
+
+function computerName(backend: BackendKey): string {
+  const attached = attachedBackendEntry(backend);
+  if (attached === undefined) throw new Error(`Computer ${backend} of a listed project is not attached`);
+  return backendDisplayName(attached);
 }
 
 function sameEntry(a: SidebarEntry, b: SidebarEntry): boolean {
-  return a.id === b.id
-    && a.rowKey === b.rowKey
+  return a.key === b.key
+    && a.id === b.id
+    && a.orderId === b.orderId
     && a.backend === b.backend
     && a.name === b.name
     && a.path === b.path
@@ -260,6 +238,8 @@ function sameEntry(a: SidebarEntry, b: SidebarEntry): boolean {
     && a.threadCount === b.threadCount
     && a.position === b.position
     && a.expanded === b.expanded
+    && a.listLimit === b.listLimit
+    && a.checkoutsElsewhere === b.checkoutsElsewhere
     // The warnings are a projection of the members, so identical members are
     // identical warnings.
     && a.members.length === b.members.length

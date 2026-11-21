@@ -268,10 +268,12 @@ computer. Appearance file locality is decided only after grants resolve.
 Thread and project catalogs from several computers merge by repository identity,
 never by filesystem path. The merge is over every row the client holds, so an
 entry's identity and representative do not depend on what a surface shows; a
-surface showing some members aggregates those itself. What the sidebar's rows
-are is one value from `components/sidebar/sidebarEntries.ts`, the only module
-in that directory allowed to read the store's entry-level functions
-(`lib/architecture.test.ts`). The manual reorder is the
+surface showing some members aggregates those itself. Which listed rows form a
+sidebar entry, and which earlier row it continues, is decided in
+`sidebarEntryContinuity.svelte.ts`; what the sidebar's rows are is one value
+from `components/sidebar/sidebarEntries.ts`, the only module in that directory
+that may import from this store or that one beyond the writers
+`lib/architecture.test.ts` lists. The manual reorder is the
 store's (`reorderProjects`): the order the user dragged is an overlay the
 sidebar sorts by (`projectOrderPosition`), never a write to the rows, so the
 rows carry the last order a computer accepted and a refusal drops the overlay
@@ -281,11 +283,14 @@ transport delivers an event queued before a reply ahead of that reply
 (`internal/transport/conn.go#writeReply`), so the rows carry the order by the
 time the overlay is dropped. One write at a time, and only the newest order
 waiting behind it is sent. Collapse and the show-more limit live in
-`sidebar.svelte.ts` under whatever key the caller gives, and
-`projectDisclosure.ts` is the one module that turns a project into a key (the
-entry's). A project row's fold and list size live in records of their own,
-keyed by the entry and written by nothing else; a group's and the Assistants
-section's stay in the record they always used. Nothing migrates what a
+`sidebar.svelte.ts` under whatever key the caller gives. A project row's fold
+and list size live in records of their own, keyed by the entry, and
+`sidebarEntryContinuity.svelte.ts` is the only module that reads or writes
+them: when an entry's key moves under a row that stays, it copies the row's
+fold and limit to the new key and clears the old one, and its writers commit a
+waiting move before they write. `App.svelte` starts it and the test setup
+starts and resets it. A group's and the Assistants section's sizes stay in the
+record they always used. Nothing migrates what a
 project id was the key of: an id cannot become an entry key without every
 computer's project rows, which the store has not read when it initializes.
 Separate records are what makes that state unreachable rather than unread,

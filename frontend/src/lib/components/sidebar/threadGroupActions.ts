@@ -33,7 +33,7 @@ import {
 } from '../../stores/threads.svelte';
 import { openDraftThreadForProject } from '../../stores/threadCreation.svelte';
 import type { ThreadPane } from '../../stores/thread.svelte';
-import { revealProject } from '../../stores/projectDisclosure';
+import { revealProject } from '../../stores/sidebarEntryContinuity.svelte';
 import { setThreadFilterQuery } from '../../stores/threadFilter.svelte';
 import { threadRowFrameMark } from '../../stores/threadRowFrames';
 import { addErrorToast, addToast } from '../../stores/toast.svelte';

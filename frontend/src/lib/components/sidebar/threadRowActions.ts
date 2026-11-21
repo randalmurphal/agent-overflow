@@ -35,7 +35,7 @@ import {
 import { closePanesShowingThread, panesShowingThread } from '../../stores/panes.svelte';
 import { getComposerDraftForPane } from '../../stores/composerDraftRegistry.svelte';
 import { threadRowFrameMark } from '../../stores/threadRowFrames';
-import { revealProject } from '../../stores/projectDisclosure';
+import { revealProject } from '../../stores/sidebarEntryContinuity.svelte';
 import { addErrorToast, addToast } from '../../stores/toast.svelte';
 import { copyToClipboard } from '../../utils/clipboard';
 import { asSentence, userFacingError } from '../../utils/userFacingError';

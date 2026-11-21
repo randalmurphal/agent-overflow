@@ -55,7 +55,7 @@
   } from '../../stores/threadFilter.svelte';
   import { getThreadById } from '../../stores/threads.svelte';
   import { getThreadGroupsForProject } from '../../stores/threadGroups.svelte';
-  import { revealProject } from '../../stores/projectDisclosure';
+  import { revealProject } from '../../stores/sidebarEntryContinuity.svelte';
   import {
     createThreadGroupAndMoveAction,
     moveThreadsToGroupAction,

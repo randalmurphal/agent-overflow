@@ -34,28 +34,37 @@ which adds the project's empty state and drop targets.
   listed thread in its project.
 - A computer's project headers, its project threads and its groups list
   only while `catalogTreeListed` says so; until then it shows the loading
-  row alone, with no header and no New Thread button. `treeListed` in
-  `ProjectsSection.svelte` is the only reader of that gate here, so what a
-  held computer shows is one decision. The rule is in
+  row alone, with no header and no New Thread button. The headers are held
+  by `stores/sidebarEntryContinuity.svelte.ts`, which groups only listed
+  computers' rows, and the threads and groups by `treeListed` in
+  `ProjectsSection.svelte`; the loading row reads the gate itself. The rule is in
   [stores/AGENTS.md](../../stores/AGENTS.md#computer-owned-and-frontend-owned-state).
 - A sidebar row is one `SidebarEntry` value, built by `buildSidebarEntries`
-  in `sidebarEntries.ts` and taken whole by the components. Nothing under
-  this directory reads a project row or an entry-level function of the
-  projects store to answer a question about a row; `lib/architecture.test.ts`
-  fences those names to that one module, so a new fact about an entry is
-  added to the value rather than derived beside it.
+  in `sidebarEntries.ts` and taken whole by the components. From
+  `stores/projects.svelte.ts` and `stores/sidebarEntryContinuity.svelte.ts`
+  a file here may import only the writers `lib/architecture.test.ts` lists
+  for it, resolved through re-exports; `sidebarEntries.ts` is the exception,
+  so a new fact about an entry is added to the value rather than derived
+  beside it.
+- Which listed rows form an entry, and which earlier row an entry
+  continues, is decided once, in `stores/sidebarEntryContinuity.svelte.ts`,
+  with the device filter ignored; `buildSidebarEntries` adds only what the
+  filter decides.
 - The ids the entry separates. Its `key` is the repository key of the
-  computer's chosen checkout, which no listing, filter, attach or detach
-  changes: what the row's disclosure is written under. Its `rowKey` is what
-  the each block keys on, carried from the previous build through a member
-  the row kept, because the KEY still moves when a computer verifies a
-  checkout's repository identity after listing it or loses it; a keyed each
-  that remounts there leaves the row it replaced on screen for the length of
+  computer's chosen checkout, else the project id: what the row's disclosure
+  is persisted under. The key moves when a computer verifies a checkout's
+  repository identity after listing it, or loses it. Its `rowKey` is what
+  the each block and the thread buckets key on, carried from the previous
+  entry through a member the row kept, whatever the filter shows; a keyed
+  each that remounts a row leaves the old one on screen for the length of
   its exit, so the project and every thread under it render twice. Its `id`
-  is the representative, elected over the members whose tree is listed with
-  the filter ignored, and is what an action on the row targets. Its `members` are what the filter also shows, and everything the
-  entry counts, dates (`rankOf`) and says about its members, its identity
-  warning and its recheck included, comes from them.
+  is the representative of the members the filter shows, and is what an
+  action on the row targets. Its `orderId` is the representative of every
+  listed member with the filter ignored: the project the manual order is
+  saved under and the row sorts and drags by. Its `members` are what the
+  filter shows, and everything the entry counts, dates (`rankOf`) and says
+  about its members, its identity warning and its recheck included, comes
+  from them.
 - An action is one run (`projectActions.svelte.ts`): it owns the target it
   took at its gesture and everything derived from it, its confirmation text
   and its deletion preview included, and the call it ends in is gated on
@@ -70,17 +79,16 @@ which adds the project's empty state and drop targets.
 - A row's label is disambiguated by `ProjectList.svelte` over the entries it
   renders, so a query that hides one of two same-named projects drops the
   other's prefix; the entry carries the name and path, not the label.
-- Disclosure is keyed by the entry's key: collapse, and the show-more limit
-  of the entry's own list, which `ProjectItem` passes down as `listKey`
-  beside the `projectId` an action targets. Both live in records only
-  projects write, so nothing a project saved when its own id was the key can
-  answer for an entry; a list's top level names which record it pages in
-  (`SidebarTopLevelList`), since a group's and the Assistants section's
-  sizes share the older one. `ProjectsSection.svelte` and
-  `SidebarTreeList.svelte` are the only readers of those writers here, which
-  `lib/architecture.test.ts` enforces; a row reports a toggle through
+- An entry's collapse and the show-more limit of its own list belong to
+  `stores/sidebarEntryContinuity.svelte.ts`, which moves them with the row
+  when its key moves and is the only module that reads or writes their
+  records. The entry carries both (`expanded`, `listLimit`); a list's top
+  level names which record it pages in (`SidebarTopLevelList`), since a
+  group's and the Assistants section's sizes share the older one.
+  `ProjectsSection.svelte` writes collapse with `setEntryExpanded` and
+  `SidebarTreeList.svelte` writes the limit; a row reports a toggle through
   `onSetExpanded` instead of writing one. Anything that wants a project's
-  rows revealed calls `revealProject` in `stores/projectDisclosure.ts`.
+  rows revealed calls `revealProject` in that store.
 - A row's worker count and needs-you badge read
   `stores/threadWorkerSummaries.svelte.ts`.
 - `threadRowActions.ts` and `threadGroupActions.ts` own mutations from this

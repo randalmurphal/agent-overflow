@@ -11,7 +11,7 @@ import {
 import { mountThreadInPane, syncThreadReply } from '../stores/panes.svelte';
 import { threadRowFrameMark } from '../stores/threadRowFrames';
 import { prependThreadReply } from '../stores/threads.svelte';
-import { revealProject } from '../stores/projectDisclosure';
+import { revealProject } from '../stores/sidebarEntryContinuity.svelte';
 import { projectSendResolved, projectSendStarted } from '../stores/threadStatuses.svelte';
 import { addErrorToast, addToast } from '../stores/toast.svelte';
 import type { SourceProposedPlan, Thread } from '../types/models';

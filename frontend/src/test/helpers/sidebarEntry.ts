@@ -7,7 +7,7 @@
 // row reaches the component the way it does in the app.
 import type { Project, ProjectWithCounts } from '../../lib/types/models';
 import { HOME_BACKEND } from '../../lib/transport/backendKey';
-import { isProjectExpanded } from '../../lib/stores/sidebar.svelte';
+import { getProjectListLimit, isProjectExpanded } from '../../lib/stores/sidebar.svelte';
 import {
   buildSidebarEntries,
   type SidebarEntry,
@@ -26,6 +26,7 @@ export function entryFromRow(row: ProjectWithCounts, overrides: Partial<SidebarE
     key: project.id,
     rowKey: project.id,
     id: project.id,
+    orderId: project.id,
     backend: HOME_BACKEND,
     name: project.name,
     path: project.path,
@@ -33,23 +34,20 @@ export function entryFromRow(row: ProjectWithCounts, overrides: Partial<SidebarE
     threadCount: row.threadCount,
     position: project.sortPosition,
     expanded: isProjectExpanded(project.id),
+    listLimit: getProjectListLimit(project.id),
     members: [row],
     warnings: warningsOf(project),
+    checkoutsElsewhere: false,
     ...overrides,
   };
 }
 
 /**
  * The entries the sidebar would render for the projects in the store, built
- * by the real projection: every computer listed, every computer visible.
+ * by the real projection over the listed computers, every computer visible.
  */
 export function storeEntries(): readonly SidebarEntry[] {
-  return buildSidebarEntries({
-    listed: () => true,
-    visible: () => true,
-    expanded: ({ id }) => isProjectExpanded(id),
-    previous: [],
-  }).entries;
+  return buildSidebarEntries({ visible: () => true, previous: [] });
 }
 
 /** The entry of one project among `storeEntries`. */

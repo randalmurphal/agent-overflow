@@ -25,7 +25,7 @@ import type { GitStatus } from '../../lib/types/git';
 import { resetProjectsForTest } from '../../lib/stores/projects.svelte';
 import { resetAppStorageForTest } from '../../lib/stores/appStorage';
 import { resetSidebarForTest } from '../../lib/stores/sidebar.svelte';
-import { revealProject } from '../../lib/stores/projectDisclosure';
+import { revealProject } from '../../lib/stores/sidebarEntryContinuity.svelte';
 import { resetProviderModelsForTest } from '../../lib/stores/providerModels.svelte';
 import { resetSettingsForTest } from '../../lib/stores/settings.svelte';
 import { resetThreadActionConfirmationsForTest } from '../../lib/stores/threadActionConfirmations.svelte';

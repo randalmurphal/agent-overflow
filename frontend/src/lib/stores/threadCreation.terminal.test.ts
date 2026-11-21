@@ -70,8 +70,8 @@ vi.mock('./panes.svelte', async (importOriginal) => ({
   openEmptyPane: h.openEmptyPane,
   mountThreadInPane: h.mountThreadInPane,
 }));
-vi.mock('./projectDisclosure', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('./projectDisclosure')>()),
+vi.mock('./sidebarEntryContinuity.svelte', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./sidebarEntryContinuity.svelte')>()),
   revealProject: h.revealProject,
 }));
 vi.mock('./toast.svelte', async (importOriginal) => ({

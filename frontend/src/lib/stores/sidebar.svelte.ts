@@ -45,7 +45,7 @@ export type { ProjectSortMode };
 // appStorage (per-client) keys.
 //
 // A project row's disclosure, its fold and the size of its own list, is
-// keyed by the sidebar ENTRY (`stores/projectDisclosure.ts` chooses the
+// keyed by the sidebar ENTRY (`stores/sidebarEntryContinuity.svelte.ts` chooses the
 // key) and lives in records of its own, which nothing else writes.
 //
 // They are new records because a project's disclosure used to be keyed by
@@ -177,10 +177,26 @@ function parseListLimits(raw: string): Record<string, number> | null {
   }
 }
 
+/**
+ * How a project's disclosure records follow its sidebar entry when the key
+ * the entry is persisted under moves (`stores/sidebarEntryContinuity.svelte.ts`
+ * decides them). Applied as one step against the records as they were, so a
+ * key that gives its record away and takes another's in the same change
+ * takes the one it was given.
+ */
+export interface ProjectDisclosureChanges {
+  /** Each key, and the key whose record it takes. */
+  readonly copies: ReadonlyMap<string, string>;
+  /** Keys whose record goes, unless a copy writes them. */
+  readonly clears: ReadonlySet<string>;
+}
+
 interface ListLimitRecord {
   limitOf(key: string): number;
   setLimit(key: string, limit: number): void;
   clear(key: string): void;
+  /** Apply a project entry's key change to the record. */
+  apply(changes: ProjectDisclosureChanges): void;
   /** Re-read the record after hydration lands the durable bucket. */
   reload(): void;
   /** Test helper: forget the in-memory copy. */
@@ -231,6 +247,18 @@ function listLimitRecord(storageKey: string, legacyKey?: string): ListLimitRecor
 
   return {
     clear,
+    apply(changes: ProjectDisclosureChanges): void {
+      const next = { ...limits };
+      for (const key of changes.clears) delete next[key];
+      for (const key of changes.copies.keys()) delete next[key];
+      for (const [to, from] of changes.copies) {
+        const limit = limits[from];
+        if (limit !== undefined) next[to] = limit;
+      }
+      const keys = Object.keys(next);
+      if (keys.length === Object.keys(limits).length && keys.every((key) => limits[key] === next[key])) return;
+      commit(next);
+    },
     limitOf(key: string): number {
       return Math.max(THREAD_PREVIEW_LIMIT, limits[key] ?? THREAD_PREVIEW_LIMIT);
     },
@@ -288,7 +316,8 @@ let projectSortMode: ProjectSortMode = $state(readProjectSortMode());
 
 // Each record is persisted by the key its caller gives, and this module does
 // not know what that key is about. A project's is its sidebar entry's key
-// (`stores/projectDisclosure.ts` chooses it); a group's is the group id, the
+// (`stores/sidebarEntryContinuity.svelte.ts` chooses it, and moves it with the
+// entry); a group's is the group id, the
 // Assistants section's is ASSISTANTS_LIST_KEY.
 
 function writeCollapsed(next: Set<string>): void {
@@ -310,6 +339,16 @@ export function expandProject(key: string): void {
 export function collapseProject(key: string): void {
   if (collapsedProjects.has(key)) return;
   writeCollapsed(new Set(collapsedProjects).add(key));
+}
+
+/** Move, copy and clear project records as one step, fold and limit alike. */
+export function applyProjectDisclosureChanges(changes: ProjectDisclosureChanges): void {
+  const collapsed = new Set(collapsedProjects);
+  for (const key of changes.clears) collapsed.delete(key);
+  for (const key of changes.copies.keys()) collapsed.delete(key);
+  for (const [to, from] of changes.copies) if (collapsedProjects.has(from)) collapsed.add(to);
+  if (!setsEqual(collapsed, collapsedProjects)) writeCollapsed(collapsed);
+  projectListLimits.apply(changes);
 }
 
 export function getProjectSortMode(): ProjectSortMode {
@@ -441,27 +480,25 @@ export function toggleSidebarSection(section: SidebarSectionId): void {
 }
 
 /**
- * The key the Assistants section's rows page under in the per-list
- * preview sizes below. A project's list pages under its entry id, a UUID,
- * so the two never meet.
+ * The key the Assistants section's rows page under in the thread-list
+ * preview sizes below, beside the group ids. A project's list pages in a
+ * record of its own.
  */
 export const ASSISTANTS_LIST_KEY = 'assistants';
 
 /**
- * Thread-list preview size, keyed by the list's owner: a project entry's key
- * for its top level, a group id for the group's members (both random entity
- * ids, so they share one map), and ASSISTANTS_LIST_KEY for the Assistants
- * section's rows. A list starts at THREAD_PREVIEW_LIMIT; each "Show more"
- * click reveals up to THREAD_REVEAL_INCREMENT hidden rows, and "Show less"
- * drops it back to the default preview.
- */
-/**
  * What a sidebar list's top level pages under. Its two kinds page in two
  * records, so the caller names which it is instead of a key alone saying it:
- * a project's record is keyed by its entry and holds nothing else.
+ * a project's record is keyed by its entry and holds nothing else. A
+ * project's list carries the limit its entry read, since the entry knows
+ * where its record lives while its key moves.
+ *
+ * A list starts at THREAD_PREVIEW_LIMIT; each "Show more" click reveals up
+ * to THREAD_REVEAL_INCREMENT hidden rows, and "Show less" drops it back to
+ * the default preview.
  */
 export type SidebarTopLevelList =
-  | { readonly kind: 'project'; readonly entryKey: string }
+  | { readonly kind: 'project'; readonly entryKey: string; readonly limit: number }
   | { readonly kind: 'assistants' };
 
 /**

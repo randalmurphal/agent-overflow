@@ -513,6 +513,69 @@ function parseImports(source: string): ParsedImport[] {
   return imports;
 }
 
+interface ParsedExports {
+  /** Exported name → the specifier and name it is re-exported from ('*' for a namespace). */
+  readonly reexports: ReadonlyMap<string, { readonly specifier: string; readonly name: string }>;
+  /** `export * from` specifiers. */
+  readonly stars: readonly string[];
+  /** Names this module declares and exports itself. */
+  readonly declares: ReadonlySet<string>;
+}
+
+const REEXPORT_NAMED = /(?:^|[;{}\n])\s*export\s*(type\s+)?\{([^}]*)\}\s*from\s*(['"])([^'"]+)\3/g;
+const REEXPORT_STAR = /(?:^|[;{}\n])\s*export\s*\*\s*(?:as\s+([A-Za-z_$][\w$]*)\s*)?from\s*(['"])([^'"]+)\2/g;
+const EXPORT_LOCAL = /(?:^|[;{}\n])\s*export\s*(type\s+)?\{([^}]*)\}(?!\s*from)/g;
+const EXPORT_DECLARED = /(?:^|[;{}\n])\s*export\s+(?:declare\s+)?(?:async\s+)?(?:function\*?|const|let|var|class|enum)\s+([A-Za-z_$][\w$]*)/g;
+const IMPORT_BINDINGS = /(?:^|[;{}\n])\s*import\s+(?!type\s)([^;]*?)\s+from\s*(['"])([^'"]+)\2/g;
+
+/** `a as b` pieces of a brace list, type-only pieces dropped: [local, exported]. */
+function bracePieces(list: string): [string, string][] {
+  const out: [string, string][] = [];
+  for (const raw of list.split(',')) {
+    const piece = raw.trim();
+    if (!piece || /^type\s/.test(piece)) continue;
+    const [local, exported] = piece.split(/\s+as\s+/).map((part) => part.trim());
+    if (local) out.push([local, exported ?? local]);
+  }
+  return out;
+}
+
+function parseExports(source: string): ParsedExports {
+  const reexports = new Map<string, { specifier: string; name: string }>();
+  const stars: string[] = [];
+  const declares = new Set<string>();
+  for (const match of source.matchAll(REEXPORT_NAMED)) {
+    if (match[1]) continue;
+    for (const [local, exported] of bracePieces(match[2]!)) reexports.set(exported, { specifier: match[4]!, name: local });
+  }
+  for (const match of source.matchAll(REEXPORT_STAR)) {
+    if (match[1]) reexports.set(match[1], { specifier: match[3]!, name: '*' });
+    else stars.push(match[3]!);
+  }
+  // A binding this module imported and exports again is a re-export too.
+  const imported = new Map<string, { specifier: string; name: string }>();
+  for (const match of source.matchAll(IMPORT_BINDINGS)) {
+    const clause = match[1]!.trim();
+    const specifier = match[3]!;
+    const namespace = clause.match(/\*\s+as\s+([A-Za-z_$][\w$]*)/);
+    if (namespace) imported.set(namespace[1]!, { specifier, name: '*' });
+    const braces = clause.match(/\{([\s\S]*)\}/);
+    if (braces) for (const [name, local] of bracePieces(braces[1]!)) imported.set(local, { specifier, name });
+    const fallback = clause.match(/^([A-Za-z_$][\w$]*)\s*(?:,|$)/);
+    if (fallback) imported.set(fallback[1]!, { specifier, name: 'default' });
+  }
+  for (const match of source.matchAll(EXPORT_LOCAL)) {
+    if (match[1]) continue;
+    for (const [local, exported] of bracePieces(match[2]!)) {
+      const from = imported.get(local);
+      if (from) reexports.set(exported, from);
+      else declares.add(exported);
+    }
+  }
+  for (const match of source.matchAll(EXPORT_DECLARED)) declares.add(match[1]!);
+  return { reexports, stars, declares };
+}
+
 function parseClause(clause: string): { names: string[]; wholeModule: boolean } {
   const trimmed = clause.trim();
   if (/(^|,)\s*\*\s+as\s+/.test(trimmed)) return { names: [], wholeModule: true };
@@ -544,62 +607,77 @@ function resolveLocalModule(fromFile: string, specifier: string): string | null 
   return path.replace(/\.(ts|js|svelte)$/, '');
 }
 
-// Rule: nothing under components/sidebar/ derives a per-entry fact from the
-// projects store.
+// Rule: under components/sidebar/, only the entry projection reads the
+// projects store and the sidebar's entry continuity.
 //
 // A repository checked out on several computers is one sidebar row, so what
 // that row shows is a fact about the entry and not about any one checkout.
-// Each of these answers such a question about an entry, and each is
-// reachable from a component as a store call rather than from the entry
-// value it was handed. `sidebarEntries.ts` is the one module that may ask,
-// and the entry it builds carries every answer, so a new fact about a row
-// is added to that value instead of derived beside it.
+// `sidebarEntries.ts` builds the entry value from those two stores, and a
+// new fact about a row is added to that value instead of derived beside it.
+// The rule is by module and default-deny: from either store a file here may
+// import only the names listed below for it, and everything else, a name
+// added later included, fails. Each import is resolved through re-exports
+// (`export { x } from`, `export *`, and an imported binding exported again)
+// to the module that declares it, so another module re-exporting a read
+// does not open a way around. What the rule does not see is a function in
+// another module that calls a read and returns its answer.
 const SIDEBAR_DIR = join(SRC_ROOT, 'lib', 'components', 'sidebar');
 const PROJECTS_STORE = join(STORES_DIR, 'projects');
+const ENTRY_CONTINUITY_STORE = join(STORES_DIR, 'sidebarEntryContinuity');
 const SIDEBAR_ENTRY_OWNER = 'lib/components/sidebar/sidebarEntries.ts';
-const ENTRY_LEVEL_PROJECT_READS: Record<string, string> = {
-  getProjects: 'the rows an entry is grouped from',
-  getProject: "one member's row",
-  projectEntries: 'one row per entry',
-  projectMembers: "an entry's members",
-  entryIdFor: 'which entry a project belongs to',
-  projectEntryKey: "an entry's own identity",
-  projectRepoKey: 'the repository an entry is',
-  representativeOf: 'which member wears an entry',
-  projectOrderPosition: "an entry's manual position",
-  getProjectLiveActivityAt: "a member's live activity",
-  projectSpansBackends: 'whether an entry has members on several computers',
-  projectSiblingOn: "an entry's member on one computer",
-};
-// Shrink-only. A project-level surface that happens to live in this
-// directory, not a reader of the sidebar tree.
+const ANY_SIDEBAR_FILE = '*';
+// Fenced module → name → the files under components/sidebar that may import
+// it, or ANY_SIDEBAR_FILE. Writers only: none of them answers a question
+// about a row.
+const SIDEBAR_FENCED_IMPORTS: ReadonlyMap<string, Readonly<Record<string, string>>> = new Map<string, Readonly<Record<string, string>>>([
+  [PROJECTS_STORE, {
+    updateProjectLocal: ANY_SIDEBAR_FILE,
+    removeProjectLocal: ANY_SIDEBAR_FILE,
+    reorderProjects: ANY_SIDEBAR_FILE,
+  }],
+  [ENTRY_CONTINUITY_STORE, {
+    revealProject: ANY_SIDEBAR_FILE,
+    // A row reports a toggle to the list that has the entry rather than
+    // writing its disclosure itself.
+    setEntryExpanded: 'lib/components/sidebar/ProjectsSection.svelte',
+    setEntryListLimit: 'lib/components/sidebar/SidebarTreeList.svelte',
+    resetEntryListLimit: 'lib/components/sidebar/SidebarTreeList.svelte',
+  }],
+]);
+// Shrink-only. Project-level surfaces that happen to live in this directory,
+// not readers of the sidebar tree.
 const SIDEBAR_PROJECT_READ_ALLOWLIST: Record<string, string> = {
   'lib/components/sidebar/AssistantProjectsPicker.svelte':
     'ticks the projects one assistant serves, which is a list of projects and not the sidebar tree',
+  'lib/components/sidebar/AssistantsSection.svelte':
+    "labels the projects an assistant serves on its card, which is not a project row's label",
 };
 
-// Rule: a sidebar component does not choose what disclosure is keyed by.
+// Rule: a project's disclosure records are written and read by the entry
+// continuity store alone, and a thread list's sizes by the list.
 //
 // Collapse and the show-more limit are persisted by a sidebar ENTRY's key,
-// which is not any one project's id: the id a row renders as changes when a
-// computer lists or a checkout is added, and a user's fold must not move
-// with it. `stores/sidebar.svelte.ts` holds the record by whatever key it is
-// given, `stores/projectDisclosure.ts` is the one module that turns a
-// project into one, and a row reports a toggle to the list that has the
-// entry rather than writing disclosure itself.
-const ENTRY_KEYED_DISCLOSURE: Record<string, string> = {
-  isProjectExpanded: 'lib/components/sidebar/ProjectsSection.svelte',
-  expandProject: 'lib/components/sidebar/ProjectsSection.svelte',
-  collapseProject: 'lib/components/sidebar/ProjectsSection.svelte',
-  getProjectListLimit: 'lib/components/sidebar/SidebarTreeList.svelte',
-  setProjectListLimit: 'lib/components/sidebar/SidebarTreeList.svelte',
-  collapseProjectList: 'lib/components/sidebar/SidebarTreeList.svelte',
+// which moves while the row stays; `stores/sidebarEntryContinuity.svelte.ts`
+// moves the record with it and knows where it lives while a move waits, so
+// a read or write by key anywhere else could land on the wrong record. A
+// group's and the Assistants section's sizes never change key, and a row
+// reports a change to the list that renders it.
+const PROJECT_DISCLOSURE_RECORDS: Record<string, string> = {
+  isProjectExpanded: 'lib/stores/sidebarEntryContinuity.svelte.ts',
+  expandProject: 'lib/stores/sidebarEntryContinuity.svelte.ts',
+  collapseProject: 'lib/stores/sidebarEntryContinuity.svelte.ts',
+  getProjectListLimit: 'lib/stores/sidebarEntryContinuity.svelte.ts',
+  setProjectListLimit: 'lib/stores/sidebarEntryContinuity.svelte.ts',
+  collapseProjectList: 'lib/stores/sidebarEntryContinuity.svelte.ts',
+  applyProjectDisclosureChanges: 'lib/stores/sidebarEntryContinuity.svelte.ts',
+};
+const THREAD_LIST_SIZES: Record<string, string> = {
   getThreadListVisibleLimit: 'lib/components/sidebar/SidebarTreeList.svelte',
   setThreadListVisibleLimit: 'lib/components/sidebar/SidebarTreeList.svelte',
   collapseThreadList: 'lib/components/sidebar/SidebarTreeList.svelte',
 };
 const SIDEBAR_STORE = join(STORES_DIR, 'sidebar');
-// Shrink-only, and empty: every other row reports its toggle to the list.
+// Shrink-only, and empty.
 const SIDEBAR_DISCLOSURE_ALLOWLIST: Record<string, string> = {};
 
 // A call, not the words: the comments in lib/transport/ discuss `Events.On`
@@ -616,6 +694,7 @@ describe('architecture', () => {
       file,
       path: repoPath(file),
       imports: parseImports(text),
+      exports: parseExports(text),
       callsEventsOn: EVENTS_ON_CALL.test(text),
       callsRandomUUID: RANDOM_UUID_CALL.test(text),
       namesSendOptionsType: SEND_OPTIONS_TYPE.test(text),
@@ -656,33 +735,92 @@ describe('architecture', () => {
     );
   });
 
-  it('keeps every per-entry project read in the sidebar entry projection', () => {
+  // Every module's exports, by its extensionless path, for resolving an
+  // import to the module that declares it.
+  const exportsByModule = new Map(sources.map((source) => [
+    source.file.replace(/(\.svelte)?\.(ts|js|svelte)$/, ''),
+    { file: source.file, ...source.exports },
+  ]));
+
+  /** The module that declares `name` as `module` exports it, through re-exports. */
+  function originOf(module: string, name: string, seen = new Set<string>()): { module: string; name: string } {
+    const key = `${module}#${name}`;
+    if (seen.has(key)) return { module, name };
+    seen.add(key);
+    const info = exportsByModule.get(module);
+    if (info === undefined) return { module, name };
+    const named = info.reexports.get(name);
+    if (named !== undefined) {
+      const target = resolveLocalModule(info.file, named.specifier);
+      if (target === null) return { module, name };
+      return named.name === '*' ? { module: target, name: '*' } : originOf(target, named.name, seen);
+    }
+    if (info.declares.has(name)) return { module, name };
+    for (const specifier of info.stars) {
+      const target = resolveLocalModule(info.file, specifier);
+      if (target === null) continue;
+      const found = originOf(target, name, seen);
+      if (found.module !== target || exportsByModule.get(target)?.declares.has(name)) return found;
+    }
+    return { module, name };
+  }
+
+  /** The fenced modules a whole-module import of `module` reaches. */
+  function fencedBehind(module: string, seen = new Set<string>()): string[] {
+    if (SIDEBAR_FENCED_IMPORTS.has(module)) return [module];
+    if (seen.has(module)) return [];
+    seen.add(module);
+    const info = exportsByModule.get(module);
+    if (info === undefined) return [];
+    const reached = new Set<string>();
+    for (const name of info.reexports.keys()) {
+      const origin = originOf(module, name);
+      if (SIDEBAR_FENCED_IMPORTS.has(origin.module)) reached.add(origin.module);
+    }
+    for (const specifier of info.stars) {
+      const target = resolveLocalModule(info.file, specifier);
+      if (target !== null) for (const fenced of fencedBehind(target, seen)) reached.add(fenced);
+    }
+    return [...reached];
+  }
+
+  it('keeps every read of the projects and their entries in the sidebar entry projection', () => {
     const offenders = new Map<string, string[]>();
-    let owned = 0;
+    const ownerReads = new Set<string>();
     for (const source of sources) {
       if (!source.file.startsWith(SIDEBAR_DIR + sep)) continue;
       const reasons: string[] = [];
       for (const parsed of source.imports) {
-        if (resolveLocalModule(source.file, parsed.specifier) !== PROJECTS_STORE) continue;
+        const module = resolveLocalModule(source.file, parsed.specifier);
+        if (module === null) continue;
         if (parsed.wholeModule) {
-          reasons.push('imports the whole projects store, which carries every entry-level read');
+          for (const fenced of fencedBehind(module)) {
+            if (source.path === SIDEBAR_ENTRY_OWNER) ownerReads.add(fenced);
+            else reasons.push(`imports the whole of ${parsed.specifier}, which reaches ${repoPath(fenced)}`);
+          }
           continue;
         }
         for (const name of parsed.names) {
-          const answers = ENTRY_LEVEL_PROJECT_READS[name];
-          if (answers === undefined) continue;
+          const origin = originOf(module, name);
+          const allowed = SIDEBAR_FENCED_IMPORTS.get(origin.module);
+          if (allowed === undefined) continue;
           if (source.path === SIDEBAR_ENTRY_OWNER) {
-            owned += 1;
+            ownerReads.add(origin.module);
             continue;
           }
-          reasons.push(`${name} answers ${answers}, which the entry value carries`);
+          const who = allowed[origin.name];
+          if (who === ANY_SIDEBAR_FILE || who === source.path) continue;
+          reasons.push(who === undefined
+            ? `${name} (${repoPath(origin.module)}#${origin.name}) is not one of the names this directory may import from there`
+            : `${name} (${repoPath(origin.module)}#${origin.name}) is ${who}'s to import`);
         }
       }
       if (reasons.length > 0) offenders.set(source.path, reasons);
     }
-    // The projection itself must still be doing the asking: with its reads
+    // The projection must still be what reads both stores: with its reads
     // gone the rule would hold over a directory that had found another way.
-    expect(owned, `${SIDEBAR_ENTRY_OWNER} reads none of them`).toBeGreaterThan(4);
+    expect([...ownerReads].map(repoPath).sort(), `${SIDEBAR_ENTRY_OWNER} reads the stores it projects`)
+      .toEqual([...SIDEBAR_FENCED_IMPORTS.keys()].map(repoPath).sort());
     expectAllowlistExact(
       offenders,
       SIDEBAR_PROJECT_READ_ALLOWLIST,
@@ -691,38 +829,38 @@ describe('architecture', () => {
     );
   });
 
-  it('keeps the key a sidebar disclosure is written by out of the components', () => {
+  it("keeps a project's disclosure records with the entry continuity, and a list's sizes with the list", () => {
     const offenders = new Map<string, string[]>();
     const owners = new Set<string>();
     for (const source of sources) {
-      if (!source.file.startsWith(SIDEBAR_DIR + sep)) continue;
+      const inSidebar = source.file.startsWith(SIDEBAR_DIR + sep);
       const reasons: string[] = [];
       for (const parsed of source.imports) {
         if (resolveLocalModule(source.file, parsed.specifier) !== SIDEBAR_STORE) continue;
         if (parsed.wholeModule) {
-          reasons.push('imports the whole sidebar store, which carries the disclosure writers');
+          if (inSidebar) reasons.push('imports the whole sidebar store, which carries the disclosure records');
           continue;
         }
         for (const name of parsed.names) {
-          const owner = ENTRY_KEYED_DISCLOSURE[name];
+          const owner = PROJECT_DISCLOSURE_RECORDS[name] ?? (inSidebar ? THREAD_LIST_SIZES[name] : undefined);
           if (owner === undefined) continue;
           if (owner === source.path) {
             owners.add(name);
             continue;
           }
-          reasons.push(`${name} is keyed by an entry, and ${owner} is what has the key`);
+          reasons.push(`${name} is ${owner}'s to read and write`);
         }
       }
       if (reasons.length > 0) offenders.set(source.path, reasons);
     }
-    // Both owners still hold their keys: with neither reading, this rule
-    // would hold over a directory that had moved the writes somewhere else.
-    expect([...owners].sort()).toEqual(Object.keys(ENTRY_KEYED_DISCLOSURE).sort());
+    // Both owners still hold their names: with neither importing, this rule
+    // would hold over a tree that had moved the records somewhere else.
+    expect([...owners].sort()).toEqual([...Object.keys(PROJECT_DISCLOSURE_RECORDS), ...Object.keys(THREAD_LIST_SIZES)].sort());
     expectAllowlistExact(
       offenders,
       SIDEBAR_DISCLOSURE_ALLOWLIST,
       'New violations.',
-      'Report the change to the list that has the entry, or go through stores/projectDisclosure.ts, which turns a project id into the key.',
+      'Go through stores/sidebarEntryContinuity.svelte.ts, which knows where an entry\'s record lives, or report the change to the list that has the entry.',
     );
   });
 

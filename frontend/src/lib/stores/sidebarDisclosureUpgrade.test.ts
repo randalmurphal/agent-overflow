@@ -45,13 +45,12 @@ async function freshStores() {
   const catalogs = await import('./sidebarCatalogs');
   const appStorage = await import('./appStorage');
   const sidebar = await import('./sidebar.svelte');
-  const disclosure = await import('./projectDisclosure');
   backends.stageBackend({ id: 'laptop', backendId: 'laptop-id', name: 'Laptop' });
   catalogs.listCatalogTreesForTest();
   return {
     appStorage,
     sidebar,
-    disclosure,
+    projects,
     addOn(backend: string, project: Project) {
       entityIndex.noteProject(project.id, backend as never);
       projects.addProjectLocal(project);
@@ -103,13 +102,13 @@ describe('saved disclosure after the entry key', () => {
       'sidebar:threadListVisibleLimits': JSON.stringify({ alone: 20 }),
     });
 
-    const { sidebar, disclosure, addOn, reset } = await freshStores();
+    const { sidebar, projects, addOn, reset } = await freshStores();
     cleanup = reset;
     addOn('', mkProject('alone'));
 
     // Its entry key is its own id, but the records it saved in are not the
     // ones a project is read from any more.
-    const key = disclosure.projectDisclosureKey('alone');
+    const key = projects.projectEntryKey('alone');
     expect(key).toBe('alone');
     expect(sidebar.isProjectExpanded(key)).toBe(true);
     expect(sidebar.getProjectListLimit(key)).toBe(THREAD_PREVIEW_LIMIT);
@@ -121,12 +120,12 @@ describe('saved disclosure after the entry key', () => {
       'sidebar:threadListVisibleLimits': JSON.stringify({ p: 50 }),
     });
 
-    const { sidebar, disclosure, addOn, update, reset } = await freshStores();
+    const { sidebar, projects, addOn, update, reset } = await freshStores();
     cleanup = reset;
     addOn('', mkProject('p', { repositoryID: 'github:github.com:1' }));
 
     // With the identity: the row is keyed by the repository.
-    expect(disclosure.projectDisclosureKey('p')).toBe('forge:github:github.com:1');
+    expect(projects.projectEntryKey('p')).toBe('forge:github:github.com:1');
     expect(sidebar.isProjectExpanded('forge:github:github.com:1')).toBe(true);
     expect(sidebar.getProjectListLimit('forge:github:github.com:1')).toBe(THREAD_PREVIEW_LIMIT);
 
@@ -134,34 +133,9 @@ describe('saved disclosure after the entry key', () => {
     // fold back: the remote is removed or retargeted and the key falls back
     // to the project's own id.
     update(mkProject('p'));
-    expect(disclosure.projectDisclosureKey('p')).toBe('p');
+    expect(projects.projectEntryKey('p')).toBe('p');
     expect(sidebar.isProjectExpanded('p')).toBe(true);
     expect(sidebar.getProjectListLimit('p')).toBe(THREAD_PREVIEW_LIMIT);
-  });
-
-  it('keeps what the user sets under the key it was set under, across an identity change', async () => {
-    const { sidebar, disclosure, addOn, update, reset } = await freshStores();
-    cleanup = reset;
-    addOn('', mkProject('p', { repositoryID: 'github:github.com:1' }));
-    const repoKey = disclosure.projectDisclosureKey('p');
-
-    // Set while the identity holds, so stored under the repository.
-    sidebar.collapseProject(repoKey);
-    sidebar.setProjectListLimit(repoKey, 50);
-
-    // The identity goes: a different key, so the row shows the default. The
-    // fold is not lost, it is the other key's.
-    update(mkProject('p'));
-    expect(disclosure.projectDisclosureKey('p')).toBe('p');
-    expect(sidebar.isProjectExpanded('p')).toBe(true);
-    expect(sidebar.getProjectListLimit('p')).toBe(THREAD_PREVIEW_LIMIT);
-
-    // And it answers again when the identity returns, which is the same rule
-    // read the other way: one row, one key, one fold.
-    update(mkProject('p', { repositoryID: 'github:github.com:1' }));
-    expect(disclosure.projectDisclosureKey('p')).toBe(repoKey);
-    expect(sidebar.isProjectExpanded(repoKey)).toBe(false);
-    expect(sidebar.getProjectListLimit(repoKey)).toBe(50);
   });
 
   it('drops the id-keyed fold from the bucket once the bucket has hydrated', async () => {
@@ -214,13 +188,13 @@ describe('saved disclosure after the entry key', () => {
       'sidebar:threadListVisibleLimits': JSON.stringify({ home: 20, laptop: 50 }),
     });
 
-    const { sidebar, disclosure, addOn, reset } = await freshStores();
+    const { sidebar, projects, addOn, reset } = await freshStores();
     cleanup = reset;
     addOn('', mkProject('home', { repositoryID: 'github:github.com:1' }));
     addOn('laptop', mkProject('laptop', { repositoryID: 'github:github.com:1' }));
 
     // The row is keyed by the repository, which neither id is: the price.
-    const key = disclosure.projectDisclosureKey('home');
+    const key = projects.projectEntryKey('home');
     expect(key).toBe('forge:github:github.com:1');
     expect(sidebar.isProjectExpanded(key)).toBe(true);
     expect(sidebar.getProjectListLimit(key)).toBe(THREAD_PREVIEW_LIMIT);

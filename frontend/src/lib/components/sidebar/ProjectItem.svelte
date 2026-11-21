@@ -82,7 +82,7 @@
      *  project. Desktop has no per-project terminal control; terminals open
      *  from the palette, the chat header or the global control. */
     onNewTerminal?: ProjectNewTerminalHandler;
-    /** Current rendered ordering of project ids (visible entries in
+    /** Current rendered ordering of the entries' order ids (visible entries in
      *  ProjectsSection). Required for DnD to compute the new order on
      *  drop without an extra round-trip. */
     orderedIds?: readonly string[];
@@ -311,9 +311,10 @@
     .join('\n'));
 
   let manualMode = $derived(getProjectSortMode() === 'manual');
-  let isDragging = $derived(getDraggingProjectId() === entry.id);
+  // A drag moves the row's place in the manual order, saved under orderId.
+  let isDragging = $derived(getDraggingProjectId() === entry.orderId);
   let dropMarker = $derived.by<'before' | 'after' | null>(() => {
-    if (getDropTargetProjectId() !== entry.id) return null;
+    if (getDropTargetProjectId() !== entry.orderId) return null;
     return getDropPosition();
   });
 
@@ -322,13 +323,13 @@
       e.preventDefault();
       return;
     }
-    beginProjectDrag(entry.id, e);
+    beginProjectDrag(entry.orderId, e);
   }
 
   function handleDragOver(e: DragEvent): void {
     if (!manualMode || !rowEl) return;
     if (getDraggingProjectId() === null) return;
-    updateDropTarget(entry.id, e, rowEl);
+    updateDropTarget(entry.orderId, e, rowEl);
   }
 
   function handleDrop(e: DragEvent): void {
@@ -524,7 +525,7 @@
   </div>
 
   {#if expanded}
-    <ProjectThreadList projectId={entry.id} listKey={entry.key} {threads} {groups} {pane} {onNewThread} />
+    <ProjectThreadList projectId={entry.id} listKey={entry.key} listLimit={entry.listLimit} {threads} {groups} {pane} {onNewThread} />
   {:else if activeWhenCollapsed}
     <!--
       Active-thread pin: the user is reading this thread but the project

@@ -11,7 +11,7 @@ import type { PRThread } from './bindings';
 import { mountThreadForToolPane, syncThreadReply } from './panes.svelte';
 import { listedPR, onPullsPageDetached, pullsPageAttachment, pullsPageBackend, selectedPR, type PullsSelection } from './pullsPage.svelte';
 import { currentPinnedReviewState, reviewSubjectForPR } from './reviewPanePinned.svelte';
-import { revealProject } from './projectDisclosure';
+import { revealProject } from './sidebarEntryContinuity.svelte';
 import { threadRowFrameMark } from './threadRowFrames';
 import { getThreads, prependThreadReply } from './threads.svelte';
 import { getThreadStatus } from './threadStatuses.svelte';

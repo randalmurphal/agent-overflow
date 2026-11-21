@@ -13,15 +13,13 @@
   import type { Thread, ThreadGroup } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { reorderProjects } from '../../stores/projects.svelte';
-  import { buildSidebarEntries, rankOf, type SidebarEntry } from './sidebarEntries';
-  import { revealProject } from '../../stores/projectDisclosure';
+  import { buildSidebarEntries, rankOf, sidebarBucketOf, type SidebarEntry } from './sidebarEntries';
+  import { revealProject, setEntryExpanded } from '../../stores/sidebarEntryContinuity.svelte';
   import {
-    expandProject,
-    collapseProject,
-    isProjectExpanded,
     isSidebarSectionShown,
     getProjectSortMode,
     setSidebarSectionExpanded,
+    type ProjectSortMode,
   } from '../../stores/sidebar.svelte';
   import { getThreadFilterQuery } from '../../stores/threadFilter.svelte';
   import { getThreads } from '../../stores/threads.svelte';
@@ -94,12 +92,13 @@
   // not rebuild the Assistants section's tree.
   //
   // Every row of a computer's tree is held until the tree lists
-  // (catalogTreeListed): its project headers through listedProjects below,
-  // its project threads and its groups here. An assistant's row belongs to
-  // no project and is not held.
+  // (catalogTreeListed): its project headers by the entry continuity store,
+  // which groups only listed computers' rows, and its project threads and
+  // its groups here. An assistant's row belongs to no project and is not
+  // held.
   //
-  // `treeListed` is the only reader of that gate in this file, so what a
-  // computer shows before its first complete round is one decision. Its memo
+  // `treeListed` is what holds the threads and groups, so what a computer
+  // shows of them before its first complete round is one decision. Its memo
   // is per derivation: each derivation reads the gate once per computer and
   // nothing may cache a reactive read across derivations.
   function treeListed(): (backend: BackendKey) => boolean {
@@ -116,13 +115,8 @@
   // the rules). Nothing below reads a project row.
   let previousEntries: readonly SidebarEntry[] = [];
   let sidebarEntries = $derived.by(() => {
-    const built = buildSidebarEntries({
-      listed: treeListed(),
-      visible: sidebarBackendVisible,
-      expanded: ({ key }) => isProjectExpanded(key),
-      previous: previousEntries,
-    });
-    previousEntries = built.entries;
+    const built = buildSidebarEntries({ visible: sidebarBackendVisible, previous: previousEntries });
+    previousEntries = built;
     return built;
   });
 
@@ -132,14 +126,13 @@
   let searchBuckets = $derived.by(() => {
     const filterDevices = sidebarDeviceFilterActive();
     const listedOn = treeListed();
-    const entryOf = sidebarEntries.entryOf;
     const buckets = bucketSidebarThreads({
       threads: getThreads(),
       groups: getThreadGroups(),
       query,
-      // The id of the header that exists, which is the listed members'
-      // representative and not always the store's.
-      entryOf: (projectId) => entryOf.get(projectId) ?? projectId,
+      // The rowKey of the project's entry, which neither the filter nor its
+      // key moving changes.
+      entryOf: sidebarBucketOf,
       threadVisible: (thread) => sidebarThreadVisible(thread) && !hiddenAssistantThread(thread)
         && (!!thread.agentId || listedOn(threadMachine(thread.id, thread.projectId))),
       groupVisible: (group) => listedOn(threadGroupBackend(group.id) ?? HOME_BACKEND),
@@ -194,33 +187,16 @@
   let prevVisibleProjects: readonly SidebarEntry[] = [];
   let visibleProjects = $derived.by(() => {
     const mode = getProjectSortMode();
-    const entries = sidebarEntries.entries.filter((entry) => {
+    const entries = sidebarEntries.filter((entry) => {
       if (!query) return true;
       if (entry.name.toLowerCase().includes(query)) return true;
-      if ((threadsByProject.get(entry.id)?.length ?? 0) > 0) return true;
+      if ((threadsByProject.get(entry.rowKey)?.length ?? 0) > 0) return true;
       // A group whose name matched but whose members are all archived
       // still makes its project visible — the row the user searched for
       // is in it.
-      return (groupsByProject.get(entry.id)?.length ?? 0) > 0;
+      return (groupsByProject.get(entry.rowKey)?.length ?? 0) > 0;
     });
-    const next = [...entries].sort((a, b) => {
-      switch (mode) {
-        case 'manual': {
-          const cmp = a.position - b.position;
-          if (cmp !== 0) return cmp;
-          return a.createdAt - b.createdAt;
-        }
-        case 'createdAt':
-          return b.createdAt - a.createdAt;
-        case 'lastActivity':
-        default: {
-          const aRank = rankOf(a);
-          const bRank = rankOf(b);
-          if (aRank !== bRank) return bRank - aRank;
-          return a.name.localeCompare(b.name);
-        }
-      }
-    });
+    const next = sortEntries(entries, mode);
     if (
       next.length === prevVisibleProjects.length
       && next.every((entry, i) => entry === prevVisibleProjects[i])
@@ -231,6 +207,22 @@
     return next;
   });
 
+  // The three orders. Last activity ranks each entry once per sort: a rank
+  // scans the members and reads their live activity, which the comparator
+  // would otherwise repeat for every pair it compares.
+  function sortEntries(entries: readonly SidebarEntry[], mode: ProjectSortMode): SidebarEntry[] {
+    switch (mode) {
+      case 'manual':
+        return [...entries].sort((a, b) => (a.position - b.position) || (a.createdAt - b.createdAt));
+      case 'createdAt':
+        return [...entries].sort((a, b) => b.createdAt - a.createdAt);
+      case 'lastActivity': {
+        const rank = new Map(entries.map((entry) => [entry, rankOf(entry)]));
+        return [...entries].sort((a, b) => (rank.get(b)! - rank.get(a)!) || a.name.localeCompare(b.name));
+      }
+    }
+  }
+
   // When a search is active, auto-expand any project whose threads
   // matched so results are visible without a manual chevron click.
   // The projects we auto-expanded on the previous render get tracked
@@ -238,50 +230,53 @@
   // clearing the query left every matched project expanded, which
   // isn't what the user asked for.
   //
-  // Only track ids we actually flipped from collapsed → expanded.
+  // Only track rows we actually flipped from collapsed → expanded.
   // Projects that were already expanded (the default, or the user
   // expanded them manually) stay untouched — we don't own their state,
   // so we mustn't re-collapse them on search clear.
   //
+  // Tracked by rowKey, the row's identity for the session, with the key
+  // each was last seen under: an entry's key can move during a search, and
+  // the rollback writes the key the row has then.
+  //
   // Plain `let`, NOT $state — the $effect below reads AND writes this
-  // set. If it were reactive, every assignment would re-trigger the
-  // effect on the same `query` value and loop infinitely. The set
+  // map. If it were reactive, every assignment would re-trigger the
+  // effect on the same `query` value and loop infinitely. The map
   // exists only to remember which auto-expansions to roll back when the
   // query clears; nothing else reads it.
-  let searchAutoExpanded = new Set<string>();
+  let searchAutoExpanded = new Map<string, string>();
   $effect(() => {
+    const entries = sidebarEntries;
+    for (const entry of entries) {
+      if (searchAutoExpanded.has(entry.rowKey)) searchAutoExpanded.set(entry.rowKey, entry.key);
+    }
     if (!query) {
       // Search cleared — undo anything we expanded for this session.
-      for (const key of searchAutoExpanded) collapseProject(key);
-      searchAutoExpanded = new Set<string>();
+      for (const key of searchAutoExpanded.values()) setEntryExpanded(key, false);
+      searchAutoExpanded = new Map();
       return;
     }
-    const next = new Set<string>();
-    // By entry key, which is what disclosure is persisted by: the buckets
-    // are keyed by the entry's id, so the entries translate.
-    const matchedKeys = new Set<string>();
-    for (const entry of sidebarEntries.entries) {
-      const hasThreads = (threadsByProject.get(entry.id)?.length ?? 0) > 0;
-      const hasGroups = (groupsByProject.get(entry.id)?.length ?? 0) > 0;
-      if (hasThreads || hasGroups) matchedKeys.add(entry.key);
-    }
-    for (const key of matchedKeys) {
-      if (searchAutoExpanded.has(key)) {
+    const next = new Map<string, string>();
+    for (const entry of entries) {
+      const hasThreads = (threadsByProject.get(entry.rowKey)?.length ?? 0) > 0;
+      const hasGroups = (groupsByProject.get(entry.rowKey)?.length ?? 0) > 0;
+      if (!hasThreads && !hasGroups) continue;
+      if (searchAutoExpanded.has(entry.rowKey)) {
         // Already auto-expanded earlier in this search session — keep
         // tracking so we still own the rollback.
-        next.add(key);
-      } else if (!isProjectExpanded(key)) {
+        next.set(entry.rowKey, entry.key);
+      } else if (!entry.expanded) {
         // Was collapsed before search — flip and remember.
-        expandProject(key);
-        next.add(key);
+        setEntryExpanded(entry.key, true);
+        next.set(entry.rowKey, entry.key);
       }
       // else: user/default-expanded — leave alone, don't track.
     }
     // Collapse projects we previously auto-expanded that no longer
     // match the refined query (user typed more characters, matches
     // shrank).
-    for (const key of searchAutoExpanded) {
-      if (!next.has(key)) collapseProject(key);
+    for (const [rowKey, key] of searchAutoExpanded) {
+      if (!next.has(rowKey)) setEntryExpanded(key, false);
     }
     searchAutoExpanded = next;
   });
@@ -305,12 +300,6 @@
   const handleNewTerminal: ProjectNewTerminalHandler = (projectId) => {
     void openTerminalThread({ projectId });
   };
-
-  // The entry's own disclosure, by the entry's key.
-  function setEntryExpanded(key: string, expanded: boolean): void {
-    if (expanded) expandProject(key);
-    else collapseProject(key);
-  }
 
   // Commit a manual reorder. The operation is the store's
   // (stores/projects.svelte.ts#reorderProjects): it writes the positions

@@ -19,6 +19,30 @@
 import type { ProjectDeletionPreview } from '../../types/workflow';
 import type { ProjectTarget } from './sidebarEntries';
 
+function threads(count: number): string {
+  return `${count} thread${count === 1 ? '' : 's'}`;
+}
+
+/**
+ * What deleting `target` affects, as its confirmations say it: the one
+ * project the call deletes, and for a checkout of several, that the others
+ * stay.
+ */
+export function deleteSummary(target: ProjectTarget): string {
+  const { scope } = target;
+  return scope.kind === 'whole'
+    ? `Permanently delete "${target.label}" and all ${threads(target.threadCount)} it contains.`
+    : `Permanently delete "${target.label}" on ${scope.computerName} and all ${threads(target.threadCount)} it contains there. Checkouts on other computers are not affected.`;
+}
+
+/** What archiving `target` does, as its confirmation says it. */
+export function archiveSummary(target: ProjectTarget): string {
+  const { scope } = target;
+  return scope.kind === 'whole'
+    ? `Hide "${target.label}" from the sidebar. Threads remain and the project can be unarchived from Settings.`
+    : `Archive "${target.label}" on ${scope.computerName}. Its threads there remain and it can be unarchived from Settings. Checkouts on other computers are not affected.`;
+}
+
 export type ProjectActionKind = 'archive' | 'delete' | 'rename';
 
 export interface ProjectActionRun {

@@ -7,7 +7,7 @@ import {
   openEmptyPane,
   threadHostPane,
 } from './panes.svelte';
-import { revealProject } from './projectDisclosure';
+import { revealProject } from './sidebarEntryContinuity.svelte';
 import { prependThreadReply } from './threads.svelte';
 import { threadRowFrameMark } from './threadRowFrames';
 import { addErrorToast } from './toast.svelte';

@@ -18,9 +18,9 @@
   interface Props {
     entries: readonly SidebarEntry[];
     emptyMessage?: string;
-    /** Map of entry id -> visible threads for that entry. */
+    /** Map of entry rowKey -> visible threads for that entry. */
     threadsByProject: Map<string, Thread[]>;
-    /** Map of entry id -> visible thread groups for that entry. */
+    /** Map of entry rowKey -> visible thread groups for that entry. */
     groupsByProject?: Map<string, ThreadGroup[]>;
     pane: ThreadPane | null;
     onNewThread?: ProjectNewThreadHandler;
@@ -48,7 +48,7 @@
   // handed a new empty one on each render.
   const NO_THREADS: Thread[] = [];
 
-  let orderedIds = $derived(entries.map((entry) => entry.id));
+  let orderedIds = $derived(entries.map((entry) => entry.orderId));
   // Duplicate names are legal (paths are the unique key), so a row's label is
   // disambiguated against the rows BESIDE it: a name alone while it is the
   // only one on screen, a dim parent-dir prefix while its twin is too. Over
@@ -77,8 +77,8 @@
       <ProjectItem
         {entry}
         displayLabel={labels.get(entry.id) ?? { prefix: '', name: entry.name }}
-        threads={threadsByProject.get(entry.id) ?? NO_THREADS}
-        groups={groupsByProject?.get(entry.id) ?? NO_GROUPS}
+        threads={threadsByProject.get(entry.rowKey) ?? NO_THREADS}
+        groups={groupsByProject?.get(entry.rowKey) ?? NO_GROUPS}
         {pane}
         {onNewThread}
         {onNewTerminal}

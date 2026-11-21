@@ -4,7 +4,7 @@ import { page } from 'vitest/browser';
 import { render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import '../../../app.css';
-import ProjectThreadList from './ProjectThreadList.svelte';
+import ProjectThreadList from '../../../test/helpers/ProjectThreadListOfEntry.svelte';
 import AssistantsSection from './AssistantsSection.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { registerPaneForTest } from '../../stores/panes.svelte';

@@ -44,6 +44,7 @@ function makeTarget(): ProjectTarget {
     backend: HOME_BACKEND,
     label: 'Repo',
     threadCount: 2,
+    scope: { kind: 'whole' },
   };
 }
 
@@ -167,6 +168,69 @@ describe('<ProjectContextMenu> delete flow', () => {
 
     await waitFor(() => {
       expect(getBindingMock('DeleteProject')).toHaveBeenCalledWith('project-1');
+    });
+  });
+
+  // What a confirmation promises is what the one call affects.
+  describe('what the confirmations say the call affects', () => {
+    const oneOfSeveral = (): ProjectTarget => ({
+      ...makeTarget(),
+      label: 'app',
+      threadCount: 3,
+      scope: { kind: 'oneOfSeveral', computerName: 'Laptop' },
+    });
+    const normalized = (el: Element | null) => (el?.textContent ?? '').replace(/\s+/g, ' ').trim();
+
+    async function openDelete(target: ProjectTarget, preview: ProjectDeletionPreview): Promise<HTMLElement> {
+      setBindingMock('ProjectDeletionPreview', async () => preview);
+      const { baseElement } = renderMenu(target);
+      await selectDelete(baseElement);
+      await waitFor(() => expect(baseElement.querySelector('[role="dialog"]')).not.toBeNull());
+      return baseElement;
+    }
+
+    async function openArchive(target: ProjectTarget): Promise<HTMLElement> {
+      const { baseElement } = renderMenu(target);
+      const item = Array.from(baseElement.querySelectorAll('[role="menuitem"]'))
+        .find((el) => el.textContent?.trim() === 'Archive Project');
+      await fireEvent.click(item as Element);
+      await waitFor(() => expect(baseElement.querySelector('[role="dialog"]')).not.toBeNull());
+      return baseElement;
+    }
+
+    it('names the one checkout a delete removes, and its own threads, when the entry has others', async () => {
+      const page = await openDelete(oneOfSeveral(), emptyPreview());
+      expect(normalized(page.querySelector('[role="dialog"]'))).toContain(
+        'Permanently delete "app" on Laptop and all 3 threads it contains there. Checkouts on other computers are not affected. This cannot be undone.',
+      );
+    });
+
+    it('says the same in the dialog for a project with workflow work', async () => {
+      const page = await openDelete(oneOfSeveral(), workPreview());
+      expect(normalized(page.querySelector('[data-testid="project-delete-dialog"]'))).toContain(
+        'Permanently delete "app" on Laptop and all 3 threads it contains there. Checkouts on other computers are not affected.',
+      );
+    });
+
+    it("keeps today's delete text for an entry with one checkout", async () => {
+      const page = await openDelete(makeTarget(), emptyPreview());
+      expect(normalized(page.querySelector('[role="dialog"]'))).toContain(
+        'Permanently delete "Repo" and all 2 threads it contains. This cannot be undone.',
+      );
+    });
+
+    it('names the one checkout an archive hides when the entry has others', async () => {
+      const page = await openArchive(oneOfSeveral());
+      expect(normalized(page.querySelector('[role="dialog"]'))).toContain(
+        'Archive "app" on Laptop. Its threads there remain and it can be unarchived from Settings. Checkouts on other computers are not affected.',
+      );
+    });
+
+    it("keeps today's archive text for an entry with one checkout", async () => {
+      const page = await openArchive(makeTarget());
+      expect(normalized(page.querySelector('[role="dialog"]'))).toContain(
+        'Hide "Repo" from the sidebar. Threads remain and the project can be unarchived from Settings.',
+      );
     });
   });
 

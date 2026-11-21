@@ -748,19 +748,18 @@ describe('<ProjectsSection> threads and their groups', () => {
       gpuThreads.resolve([]);
       await vi.waitFor(() => expect(catalogTreeListed('gpu')).toBe(true));
       await settle();
-      // The entry it comes back as is the one it left: identity is the
-      // complete merge's representative, not the member being shown.
-      expect(headers(container)).toEqual(['a-mac']);
+      // The entry comes back speaking for the GPU checkout, the member the
+      // filter shows.
+      expect(headers(container)).toEqual(['a-gpu']);
     } finally {
       showAllSidebarDevices();
       resetStagedBackends();
     }
   });
 
-  // An entry's identity is the complete merge's representative, so what the
-  // sidebar shows of it cannot move the state persisted under it. The each
-  // key, the collapse set and the show-more limit all key on it, and a
-  // reorder sends it to the computer that holds it.
+  // An entry speaks for the members the filter shows, and is persisted and
+  // rendered by what the filter cannot move: the collapse set and the
+  // show-more limit key on its key, the each on its rowKey.
   const mergedRepoMocks = (homeRows: ProjectWithCounts[], gpuRows: ProjectWithCounts[]) => {
     setBindingMock('ListProjects', async () => (takePinnedBackend() === 'gpu' ? gpuRows : homeRows));
   };
@@ -772,11 +771,11 @@ describe('<ProjectsSection> threads and their groups', () => {
   const expandedOf = (container: HTMLElement, id: string): string | null =>
     container.querySelector(`[data-project-id="${id}"] [aria-expanded]`)?.getAttribute('aria-expanded') ?? null;
 
-  it("keeps a collapsed entry's identity, and its show-more limit, when the filter hides its home member", async () => {
+  it("keeps a collapsed entry's row, and its show-more limit, when the filter hides its home member", async () => {
     const { stageBackend, resetStagedBackends } = await import('../../../../test/helpers/backends');
     const { setSidebarDeviceVisible, showAllSidebarDevices } = await import('../../../stores/sidebarDevices.svelte');
     const { getProjectListLimit, setProjectListLimit } = await import('../../../stores/sidebar.svelte');
-    const { projectDisclosureKey } = await import('../../../stores/projectDisclosure');
+    const { projectEntryKey } = await import('../../../stores/projects.svelte');
     stageBackend({ id: 'gpu', backendId: 'gpu-id' });
     setBackendIdentityFromBootstrap('home-id', 'gen-1', 'Mac', HOME_BACKEND);
     try {
@@ -794,20 +793,22 @@ describe('<ProjectsSection> threads and their groups', () => {
       expect(headers(container)).toEqual(['a-home']);
 
       await fireEvent.click(chevron(container, 'a-home'));
-      setProjectListLimit(projectDisclosureKey('a-home'), 10);
+      setProjectListLimit(projectEntryKey('a-home'), 10);
       await settle();
       expect(expandedOf(container, 'a-home')).toBe('false');
 
+      const row = container.querySelector('[data-testid="project-item"]');
       setSidebarDeviceVisible('home-id', false);
       await settle();
-      // Same entry, still collapsed, and the limit still the one the user
-      // revealed to: a rekey to the GPU member would show it expanded at
-      // the default preview.
-      expect(headers(container)).toEqual(['a-home']);
-      expect(expandedOf(container, 'a-home')).toBe('false');
-      expect(getProjectListLimit(projectDisclosureKey('a-home'))).toBe(10);
+      // The row now speaks for the GPU checkout it shows, and is the same
+      // row, still collapsed, with the limit the user revealed to: its key
+      // is the repository's whichever checkout the filter shows.
+      expect(headers(container)).toEqual(['a-gpu']);
+      expect(container.querySelector('[data-testid="project-item"]')).toBe(row);
+      expect(expandedOf(container, 'a-gpu')).toBe('false');
+      expect(getProjectListLimit(projectEntryKey('a-gpu'))).toBe(10);
 
-      await fireEvent.click(chevron(container, 'a-home'));
+      await fireEvent.click(chevron(container, 'a-gpu'));
       await settle();
       expect(arrangement(container)).toHaveLength(10);
     } finally {
@@ -844,6 +845,131 @@ describe('<ProjectsSection> threads and their groups', () => {
     expect(container.querySelector('[data-testid="project-item"]')).toBe(row);
   });
 
+  // The fold follows the row through its key moving, and nothing on screen
+  // ever shows it unfolded on the way: the projection reads the record where
+  // it lives until the move is committed.
+  describe('a collapsed row whose identity lands after the listing', () => {
+    const REPO_KEY = 'forge:github:github.com:1';
+
+    async function listCollapsed(): Promise<{ container: HTMLElement; unmount(): void }> {
+      setBindingMock('ListProjects', async () => [
+        { project: mkProject('p', { name: 'Repo' }), threadCount: 1, lastActive: 1 },
+      ]);
+      setBindingMock('ListThreads', async () => [makeThread({ id: 't0', projectId: 'p' })]);
+      setBindingMock('ListThreadGroups', async () => []);
+      const view = render(ProjectsSection, { props: { pane: null } });
+      await loadSidebarCatalogs();
+      await settle();
+      await fireEvent.click(view.container.querySelector('[data-testid="project-item-chevron"]')!);
+      await settle();
+      expect(expandedOf(view.container, 'p')).toBe('false');
+      return { container: view.container, unmount: () => view.unmount() };
+    }
+
+    /** Every value the row's header is given for aria-expanded from now on. */
+    function recordExpanded(container: HTMLElement): { values: string[]; stop(): void } {
+      const values: string[] = [];
+      const observer = new MutationObserver((records) => {
+        for (const record of records) {
+          const target = record.target as Element;
+          if (record.type === 'attributes' && target.getAttribute('role') === 'button') {
+            values.push(target.getAttribute('aria-expanded') ?? '');
+          }
+          for (const node of Array.from(record.addedNodes)) {
+            if (!(node instanceof Element)) continue;
+            for (const header of Array.from(node.querySelectorAll('[role="button"][aria-expanded]'))) {
+              values.push(header.getAttribute('aria-expanded') ?? '');
+            }
+          }
+        }
+      });
+      observer.observe(container, { subtree: true, childList: true, attributes: true, attributeFilter: ['aria-expanded'] });
+      return { values, stop: () => observer.disconnect() };
+    }
+
+    it('never shows the row unfolded, while the move waits or after it commits', async () => {
+      const continuity = await import('../../../stores/sidebarEntryContinuity.svelte');
+      const { appStorageGet } = await import('../../../stores/appStorage');
+      const { container } = await listCollapsed();
+      const row = container.querySelector('[data-testid="project-item"]');
+      const seen = recordExpanded(container);
+      try {
+        // Hold the commit off, so the row renders while the move waits.
+        continuity.stopSidebarEntryContinuity();
+        updateProjectLocal(mkProject('p', { name: 'Repo', repositoryID: 'github:github.com:1' }));
+        await settle();
+        expect(expandedOf(container, 'p')).toBe('false');
+        expect(appStorageGet('sidebar:collapsedProjectEntries')).toBe(JSON.stringify(['p']));
+
+        continuity.startSidebarEntryContinuity();
+        await settle();
+        expect(appStorageGet('sidebar:collapsedProjectEntries')).toBe(JSON.stringify([REPO_KEY]));
+        expect(container.querySelector('[data-testid="project-item"]')).toBe(row);
+        await Promise.resolve();
+        expect(seen.values.filter((value) => value !== 'false')).toEqual([]);
+      } finally {
+        seen.stop();
+      }
+    });
+
+    // A search unfolds a collapsed row whose thread matched and folds it back
+    // when the search clears, under the key the row has by then.
+    it('folds a row a search unfolded back under the key it moved to during the search', async () => {
+      const { appStorageGet } = await import('../../../stores/appStorage');
+      const { container } = await listCollapsed();
+      setBindingMock('ListThreads', async () => [makeThread({ id: 't0', projectId: 'p', title: 'needle' })]);
+      await loadSidebarCatalogs();
+      setThreadFilterQuery('needle');
+      await settle();
+      expect(expandedOf(container, 'p')).toBe('true');
+
+      updateProjectLocal(mkProject('p', { name: 'Repo', repositoryID: 'github:github.com:1' }));
+      await settle();
+      setThreadFilterQuery('');
+      await settle();
+
+      expect(expandedOf(container, 'p')).toBe('false');
+      expect(appStorageGet('sidebar:collapsedProjectEntries')).toBe(JSON.stringify([REPO_KEY]));
+    });
+
+    it('folds it back under the new key when the key moves in the same step the search clears', async () => {
+      const { appStorageGet } = await import('../../../stores/appStorage');
+      const { container } = await listCollapsed();
+      setBindingMock('ListThreads', async () => [makeThread({ id: 't0', projectId: 'p', title: 'needle' })]);
+      await loadSidebarCatalogs();
+      setThreadFilterQuery('needle');
+      await settle();
+      expect(expandedOf(container, 'p')).toBe('true');
+
+      updateProjectLocal(mkProject('p', { name: 'Repo', repositoryID: 'github:github.com:1' }));
+      setThreadFilterQuery('');
+      await settle();
+
+      expect(expandedOf(container, 'p')).toBe('false');
+      expect(appStorageGet('sidebar:collapsedProjectEntries')).toBe(JSON.stringify([REPO_KEY]));
+    });
+
+    it('commits the move while the sidebar is folded to its rail, so the next boot finds it', async () => {
+      const continuity = await import('../../../stores/sidebarEntryContinuity.svelte');
+      const { syncSidebarFromAppStorage } = await import('../../../stores/sidebar.svelte');
+      const view = await listCollapsed();
+      // The rail: ProjectsSection is not mounted.
+      view.unmount();
+
+      updateProjectLocal(mkProject('p', { name: 'Repo', repositoryID: 'github:github.com:1' }));
+      await settle();
+
+      // A restart: nothing remembered about the rows, the records read back.
+      continuity.resetSidebarEntryContinuityForTest();
+      resetSidebarForTest();
+      syncSidebarFromAppStorage();
+      continuity.startSidebarEntryContinuity();
+      const { container } = render(ProjectsSection, { props: { pane: null } });
+      await settle();
+      expect(expandedOf(container, 'p')).toBe('false');
+    });
+  });
+
   it("keeps the row it rendered, and its disclosure, through a held member's commit and its listing", async () => {
     const { stageBackend, resetStagedBackends } = await import('../../../../test/helpers/backends');
     const {
@@ -851,7 +977,7 @@ describe('<ProjectsSection> threads and their groups', () => {
       getProjectListLimit,
       setProjectListLimit,
     } = await import('../../../stores/sidebar.svelte');
-    const { projectDisclosureKey } = await import('../../../stores/projectDisclosure');
+    const { projectEntryKey } = await import('../../../stores/projects.svelte');
     stageBackend({ id: 'gpu', backendId: 'gpu-id' });
     try {
       // The user collapsed the entry and revealed more of it while GPU was
@@ -879,7 +1005,7 @@ describe('<ProjectsSection> threads and their groups', () => {
       expect(catalogTreeListed('gpu')).toBe(true);
       expect(headers(container)).toEqual(['a-gpu']);
       expect(expandedOf(container, 'a-gpu')).toBe('false');
-      expect(projectDisclosureKey('a-gpu')).toBe(keyOfA);
+      expect(projectEntryKey('a-gpu')).toBe(keyOfA);
       expect(getProjectListLimit(keyOfA)).toBe(10);
       const row = container.querySelector('[data-testid="project-item"]');
 
@@ -891,7 +1017,7 @@ describe('<ProjectsSection> threads and their groups', () => {
       expect(catalogTreeListed(HOME_BACKEND)).toBe(false);
       expect(headers(container)).toEqual(['a-gpu']);
       expect(expandedOf(container, 'a-gpu')).toBe('false');
-      expect(getProjectListLimit(projectDisclosureKey('a-gpu'))).toBe(10);
+      expect(getProjectListLimit(projectEntryKey('a-gpu'))).toBe(10);
       expect(container.querySelector('[data-testid="project-item"]')).toBe(row);
 
       // At Home's listing the entry changes hands, by design. Its key does
@@ -903,7 +1029,7 @@ describe('<ProjectsSection> threads and their groups', () => {
       expect(headers(container)).toEqual(['a-home']);
       expect(container.querySelector('[data-testid="project-item"]')).toBe(row);
       expect(expandedOf(container, 'a-home')).toBe('false');
-      expect(getProjectListLimit(projectDisclosureKey('a-home'))).toBe(10);
+      expect(getProjectListLimit(projectEntryKey('a-home'))).toBe(10);
     } finally {
       resetStagedBackends();
     }
@@ -912,7 +1038,7 @@ describe('<ProjectsSection> threads and their groups', () => {
   it('gives a second checkout on one computer its own row, and keeps the first one when a computer attaches', async () => {
     const { stageBackend, resetStagedBackends } = await import('../../../../test/helpers/backends');
     const { collapseProject } = await import('../../../stores/sidebar.svelte');
-    const { projectDisclosureKey } = await import('../../../stores/projectDisclosure');
+    const { projectEntryKey } = await import('../../../stores/projects.svelte');
     const homeRows = [
       { project: { ...repoProject('a1', 'A', '/home/a1'), createdAt: 1 }, threadCount: 0, lastActive: 200 },
       { project: { ...repoProject('a2', 'A', '/home/a2'), createdAt: 2 }, threadCount: 0, lastActive: 100 },
@@ -928,7 +1054,7 @@ describe('<ProjectsSection> threads and their groups', () => {
     // One repository, two checkouts on one computer: two entries, so two
     // keys. The repository key belongs to the computer's chosen checkout.
     expect(headers(container)).toEqual(['a1', 'a2']);
-    collapseProject(projectDisclosureKey('a1'));
+    collapseProject(projectEntryKey('a1'));
     await settle();
     expect(expandedOf(container, 'a1')).toBe('false');
     expect(expandedOf(container, 'a2')).toBe('true');
@@ -959,7 +1085,7 @@ describe('<ProjectsSection> threads and their groups', () => {
     }
   });
 
-  it('dates a merged entry by the members it shows, not by the one that represents it', async () => {
+  it('dates a merged entry by the members it shows, not by one the filter hides', async () => {
     const { stageBackend, resetStagedBackends } = await import('../../../../test/helpers/backends');
     const { setSidebarDeviceVisible, showAllSidebarDevices } = await import('../../../stores/sidebarDevices.svelte');
     stageBackend({ id: 'gpu', backendId: 'gpu-id' });
@@ -978,18 +1104,17 @@ describe('<ProjectsSection> threads and their groups', () => {
       await settle();
       setSidebarDeviceVisible('home-id', false);
       await settle();
-      expect(headers(container)).toEqual(['b-gpu', 'a-home']);
+      expect(headers(container)).toEqual(['b-gpu', 'a-gpu']);
 
-      // The representative's own box, on a computer the filter hides: not
-      // this entry's activity.
+      // A member on a computer the filter hides: not this entry's activity.
       touchProjectActivity('a-home', 400);
       await settle();
-      expect(headers(container)).toEqual(['b-gpu', 'a-home']);
+      expect(headers(container)).toEqual(['b-gpu', 'a-gpu']);
 
       // The member it shows: its beat is the entry's.
       touchProjectActivity('a-gpu', 300);
       await settle();
-      expect(headers(container)).toEqual(['a-home', 'b-gpu']);
+      expect(headers(container)).toEqual(['a-gpu', 'b-gpu']);
     } finally {
       showAllSidebarDevices();
       setBackendIdentityFromBootstrap('', '', '', HOME_BACKEND);
@@ -1023,7 +1148,9 @@ describe('<ProjectsSection> threads and their groups', () => {
       await settle();
       setSidebarDeviceVisible('home-id', false);
       await settle();
-      expect(headers(container)).toEqual(['a-home', 'b-home']);
+      // The rows speak for the GPU checkouts they show, in the order this
+      // computer saves.
+      expect(headers(container)).toEqual(['a-gpu', 'b-gpu']);
 
       const items = container.querySelectorAll('[data-testid="project-item"]');
       const dataTransfer = { effectAllowed: '', dropEffect: '', setData: vi.fn(), getData: () => '' };

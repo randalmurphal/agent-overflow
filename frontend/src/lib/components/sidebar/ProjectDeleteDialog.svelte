@@ -19,8 +19,8 @@
 
   interface Props {
     open: boolean;
-    projectName: string;
-    threadCount: number;
+    /** What the deletion affects, as the confirmation says it (projectActions.svelte.ts). */
+    summary: string;
     preview: ProjectDeletionPreview;
     submitting: boolean;
     onConfirm: () => void;
@@ -28,8 +28,7 @@
   }
   let {
     open,
-    projectName,
-    threadCount,
+    summary,
     preview,
     submitting,
     onConfirm,
@@ -38,11 +37,6 @@
 
   // Deleting a project is thread/project bookkeeping.
   let ungranted = $derived(!projectHasScope('threads:operate', preview.projectId));
-  let threadSummary = $derived(
-    `Permanently delete "${projectName}" and all ${threadCount} thread${
-      threadCount === 1 ? '' : 's'
-    } it contains.`,
-  );
   let workSummary = $derived(
     cleanupSummary(preview.runCount, preview.liveRunIds.length),
   );
@@ -52,7 +46,7 @@
 <Modal {open} title="Delete Project" onClose={onCancel} width="lg" padding="comfortable">
   {#snippet children()}
     <div class="space-y-3 text-sm" data-testid="project-delete-dialog">
-      <p class="text-[0.8125rem] text-fg-muted leading-relaxed">{threadSummary}</p>
+      <p class="text-[0.8125rem] text-fg-muted leading-relaxed">{summary}</p>
       {#if workSummary}
         <p class="text-xs text-fg-muted" data-testid="project-delete-work">{workSummary}</p>
       {/if}

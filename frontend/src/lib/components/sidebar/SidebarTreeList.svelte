@@ -33,16 +33,14 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import {
     ASSISTANTS_LIST_KEY,
-    collapseProjectList,
     collapseThreadList,
     getCollapsedGroups,
-    getProjectListLimit,
     getThreadListVisibleLimit,
     isGroupExpanded,
-    setProjectListLimit,
     setThreadListVisibleLimit,
     type SidebarTopLevelList,
   } from '../../stores/sidebar.svelte';
+  import { resetEntryListLimit, setEntryListLimit } from '../../stores/sidebarEntryContinuity.svelte';
   import { isThreadSelected, toggleThreadSelection } from '../../stores/threadFilter.svelte';
   import { getEffectiveThreadStatus, getThreadWaitingOn } from '../../stores/threadStatuses.svelte';
   import { unreachableThreadMachineName } from '../../stores/attachedBackends.svelte';
@@ -104,7 +102,7 @@
   // when a pane opens, closes, or swaps thread.
   let openIds = $derived(openThreadIds());
   let visibleLimit = $derived(list.kind === 'project'
-    ? getProjectListLimit(list.entryKey)
+    ? list.limit
     : getThreadListVisibleLimit(ASSISTANTS_LIST_KEY));
 
   // Truncation operates on top-level nodes only: group members sit under
@@ -169,12 +167,12 @@
   /** Reveal the next step of the list's own top level, in its own record. */
   function showMoreTopLevel(): void {
     const limit = nextLimit(tree, visibleLimit);
-    if (list.kind === 'project') setProjectListLimit(list.entryKey, limit);
+    if (list.kind === 'project') setEntryListLimit(list.entryKey, limit);
     else setThreadListVisibleLimit(ASSISTANTS_LIST_KEY, limit);
   }
 
   function collapseTopLevel(): void {
-    if (list.kind === 'project') collapseProjectList(list.entryKey);
+    if (list.kind === 'project') resetEntryListLimit(list.entryKey);
     else collapseThreadList(ASSISTANTS_LIST_KEY);
   }
 

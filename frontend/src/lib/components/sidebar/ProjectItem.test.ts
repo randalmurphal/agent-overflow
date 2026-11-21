@@ -3,13 +3,14 @@
 // truncate span), a duplicate gains a dim parent-dir prefix that must never
 // ellipsize.
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { tick } from 'svelte';
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import ProjectItem from './ProjectItem.svelte';
 import ProjectList from './ProjectList.svelte';
 import { addProjectLocal, resetProjectsForTest, updateProjectLocal } from '../../stores/projects.svelte';
 import { storeEntries, storeEntryFor } from '../../../test/helpers/sidebarEntry';
+import { listCatalogTreesForTest } from '../../stores/sidebarCatalogs';
 import type { ProjectDeletionPreview } from '../../types/workflow';
 import { grantBackendScopes, pairViewOnly, resetToLocalPage, revokeBackendScopes } from '../../../test/helpers/scopes';
 import type { Project } from '../../types/models';
@@ -49,6 +50,12 @@ function renderItem(p: Project) {
     } as never,
   });
 }
+
+// The rows the tests seed are listed, as a computer's first complete round
+// lists them.
+beforeEach(() => {
+  listCatalogTreesForTest();
+});
 
 afterEach(() => {
   cleanup();
@@ -253,6 +260,7 @@ describe('ProjectItem action target', () => {
   // locally, which is how a listing moves an entry to the live member.
   async function twoCheckouts(): Promise<{ home: Project; laptop: Project }> {
     stageBackend({ id: 'laptop', backendId: 'laptop-id', name: 'Laptop' });
+    listCatalogTreesForTest();
     // The laptop's own grants: its menu items are inert without them, and
     // the overlap under test is two actions the user can actually start.
     await grantBackendScopes('laptop', [
@@ -305,6 +313,7 @@ describe('ProjectItem action target', () => {
 
   it('archives the checkout the menu opened on after the entry changes hands', async () => {
     stageBackend({ id: 'laptop', backendId: 'laptop-id', name: 'Laptop' });
+    listCatalogTreesForTest();
     const home = { ...makeProject('ck-home', 'app', '/home/app'), repositoryID: 'github:github.com:1' };
     const laptop = { ...makeProject('ck-laptop', 'app-laptop', '/laptop/app'), repositoryID: 'github:github.com:1' };
     noteProject(home.id, '');
@@ -345,7 +354,7 @@ describe('ProjectItem action target', () => {
     expect(getByTestId('project-item').getAttribute('data-project-id')).toBe('ck-laptop');
     expect(getByTestId('project-item-label')).toHaveTextContent('app-laptop');
     // The confirmation still names what the user opened it on.
-    expect(getByRole('dialog')).toHaveTextContent('Hide "app" from the sidebar.');
+    expect(getByRole('dialog')).toHaveTextContent('Archive "app" on This computer. Its threads there remain');
 
     await fireEvent.click(getByRole('button', { name: 'Archive' }));
     await vi.waitFor(() => expect(archive).toHaveBeenCalledWith('ck-home'));
@@ -405,7 +414,7 @@ describe('ProjectItem action target', () => {
     await openMenu(view);
     await fireEvent.click(view.getByRole('menuitem', { name: 'Archive Project' }));
     await tick();
-    expect(view.getByRole('dialog')).toHaveTextContent('Hide "app" from the sidebar.');
+    expect(view.getByRole('dialog')).toHaveTextContent('Archive "app" on This computer. Its threads there remain');
 
     // The entry changes hands and the user starts Archive again.
     updateProjectLocal({ ...home, archived: true });
@@ -415,7 +424,7 @@ describe('ProjectItem action target', () => {
     await tick();
     // One confirmation, the newest run's, naming what it will archive.
     expect(view.getAllByRole('dialog')).toHaveLength(1);
-    expect(view.getByRole('dialog')).toHaveTextContent('Hide "app-laptop" from the sidebar.');
+    expect(view.getByRole('dialog')).toHaveTextContent('Archive "app-laptop" on Laptop. Its threads there remain');
 
     await fireEvent.click(view.getByRole('button', { name: 'Archive' }));
     await vi.waitFor(() => expect(archive).toHaveBeenCalledTimes(1));

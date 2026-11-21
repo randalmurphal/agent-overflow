@@ -17,6 +17,7 @@ function target(id: string): ProjectTarget {
     backend: HOME_BACKEND,
     label: id,
     threadCount: 1,
+    scope: { kind: 'whole' } as const,
   });
 }
 

@@ -22,7 +22,7 @@
   import { markThreadRead, prependThreadReply, updateThreadReadState } from '../../stores/threads.svelte';
   import { threadRowFrameMark } from '../../stores/threadRowFrames';
   import { getFocusedThreadPaneId, openThreadInPane } from '../../stores/panes.svelte';
-  import { revealProject } from '../../stores/projectDisclosure';
+  import { revealProject } from '../../stores/sidebarEntryContinuity.svelte';
   import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import { autoPinNewThread } from '../../stores/threadAutoPin';
   import { getActiveTurn, getThreadStatus, projectThreadViewed } from '../../stores/threadStatuses.svelte';

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render } from '@testing-library/svelte';
-import ProjectThreadList from '../ProjectThreadList.svelte';
+import ProjectThreadList from '../../../../test/helpers/ProjectThreadListOfEntry.svelte';
 import { createThreadPane } from '../../../stores/thread.svelte';
 import { registerPaneForTest, resetPanesForTest } from '../../../stores/panes.svelte';
 import type { Thread, ThreadGroup } from '../../../types/models';

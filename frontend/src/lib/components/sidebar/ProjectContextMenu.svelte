@@ -18,7 +18,9 @@
 
   import type { ProjectTarget } from './sidebarEntries';
   import {
+    archiveSummary,
     currentRunOf,
+    deleteSummary,
     type ProjectActionRun,
     type ProjectActions,
     type ProjectRunOf,
@@ -276,7 +278,7 @@
   <ConfirmDialog
     open={true}
     title="Archive Project"
-    description={`Hide "${run.target.label}" from the sidebar. Threads remain and the project can be unarchived from Settings.`}
+    description={archiveSummary(run.target)}
     confirmLabel="Archive"
     onConfirm={() => {
       void doArchive(run);
@@ -292,7 +294,7 @@
   <ConfirmDialog
     open={true}
     title="Delete Project"
-    description={`Permanently delete "${run.target.label}" and all ${run.target.threadCount} thread${run.target.threadCount === 1 ? '' : 's'} it contains. This cannot be undone.`}
+    description={`${deleteSummary(run.target)} This cannot be undone.`}
     confirmLabel="Delete"
     destructive={true}
     onConfirm={() => {
@@ -308,8 +310,7 @@
   {@const run = deleteRun}
   <ProjectDeleteDialog
     open={true}
-    projectName={run.target.label}
-    threadCount={run.target.threadCount}
+    summary={deleteSummary(run.target)}
     preview={deletePreview}
     submitting={run.submitting}
     onConfirm={() => {
