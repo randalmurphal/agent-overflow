@@ -111,35 +111,56 @@ const (
 	rebuildLostWatches
 )
 
-// maybeRebuildWatches recomputes and reinstalls the watch roots when a
-// drained event flagged them stale.
+// maxRebuildReinstalls bounds the reinstalls one rebuild makes. When the
+// roots recomputed after the last of them still differ from the installed
+// set, the watches stay as installed, needsRebuild stays set, the cap is
+// logged, and the next refresh edge rebuilds again.
+const maxRebuildReinstalls = 3
+
+// maybeRebuildWatches recomputes the watch roots while needsRebuild is
+// set, and reinstalls them when they differ from the installed set or a
+// reinstall is forced. Every reinstall leaves needsRebuild set
+// (installWatches), so the roots are recomputed after it and reinstalled
+// again until a recompute matches what is installed: a directory created
+// while the watches were out raised no event, and only that recompute
+// finds it.
 //
 // Failure to *recompute* keeps the existing (still installed) watches
 // AND keeps needsRebuild set: the tree that needs (re)watching may
 // never produce another event, so the retry has to ride whatever
 // causes the next refresh edge rather than wait for a second trigger.
 func (w *workspaceWatcher) maybeRebuildWatches() rebuildOutcome {
-	if !w.needsRebuild || w.rootsFn == nil || w.ctx.Err() != nil {
+	if w.rootsFn == nil {
 		return rebuildNone
 	}
-	newRoots, err := w.rootsFn()
-	if err != nil {
-		log.Printf("gitwatch: recomputing watch roots for %s: %v (keeping existing watches; retrying at next refresh)", w.cwd, err)
-		return rebuildNone
+	outcome := rebuildNone
+	for reinstalls := 0; w.needsRebuild && w.ctx.Err() == nil; reinstalls++ {
+		newRoots, err := w.rootsFn()
+		if err != nil {
+			log.Printf("gitwatch: recomputing watch roots for %s: %v (keeping existing watches; retrying at next refresh)", w.cwd, err)
+			return outcome
+		}
+		force := w.forceReinstall
+		w.needsRebuild, w.forceReinstall = false, false
+		if !force && slices.Equal(w.currentWatchRoots(), newRoots) {
+			return outcome
+		}
+		if reinstalls == maxRebuildReinstalls {
+			w.needsRebuild = true
+			log.Printf("gitwatch: watch roots for %s still changing after %d reinstalls; keeping the installed watches and rebuilding at the next refresh",
+				w.cwd, maxRebuildReinstalls)
+			return outcome
+		}
+		w.stopFn(w.eventsCh)
+		if err := w.installWatches(newRoots); err != nil {
+			log.Printf("gitwatch: reinstalling watches for %s (%v); falling back to %s polling",
+				w.cwd, err, w.pollInterval)
+			return rebuildLostWatches
+		}
+		w.setWatchRoots(newRoots)
+		outcome = rebuildReinstalled
 	}
-	force := w.forceReinstall
-	w.needsRebuild, w.forceReinstall = false, false
-	if !force && slices.Equal(w.currentWatchRoots(), newRoots) {
-		return rebuildNone
-	}
-	w.stopFn(w.eventsCh)
-	if err := w.installFn(newRoots, w.eventsCh); err != nil {
-		log.Printf("gitwatch: reinstalling watches for %s (%v); falling back to %s polling",
-			w.cwd, err, w.pollInterval)
-		return rebuildLostWatches
-	}
-	w.setWatchRoots(newRoots)
-	return rebuildReinstalled
+	return outcome
 }
 
 // drainNotify empties the queued burst, inspecting each event for

@@ -21,9 +21,13 @@ follow repository symlink trees. Root changes and ignore/config/index changes
 must rebuild the installed watch set.
 
 A status is read only while watches are installed: a new watcher installs
-them before its initial read and recomputes its roots before its first
-wait, and a reinstall is followed by a refresh. A change made after a read
-then raises an event or is covered by that refresh.
+them before its initial read, and a reinstall is followed by a refresh. A
+change made after a read then raises an event or is covered by that
+refresh. Roots are computed before their watches exist, and a directory
+created in between raises no event, so every install is followed by a
+recompute of its roots (for a new watcher, before its first wait) that
+reinstalls when they differ. A rebuild stops after `maxRebuildReinstalls`
+reinstalls and leaves the rest to the next refresh edge.
 
 Every status handed to a client carries `Seq`, a position from the
 Manager's counter taken before the status's reads begin, so a higher Seq
