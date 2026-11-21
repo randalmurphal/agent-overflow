@@ -220,7 +220,7 @@ func TestComments(t *testing.T) {
 		lineartest.Exchange{Op: "CreateComment", Vars: `{"input":{"issueId":"WEB-1","body":"Top level"}}`, Body: `{"data":{"result":{"success":true,"value":` + commentJSON + `}}}`},
 		lineartest.Exchange{Op: "UpdateComment", Vars: `{"id":"comment-2","input":{"body":"Edited"}}`, Body: `{"data":{"result":{"success":true,"value":` + commentJSON + `}}}`},
 		lineartest.Exchange{Op: "UpdateComment", Vars: `{"id":"comment-2","input":{"body":""}}`, Body: `{"data":{"result":{"success":true,"value":` + commentJSON + `}}}`},
-		lineartest.Exchange{Op: "DeleteComment", Vars: `{"id":"comment-2"}`, Body: `{"data":{"result":{"success":true}}}`},
+		lineartest.Exchange{Op: "DeleteComment", Vars: `{"id":"comment-2"}`, Body: `{"data":{"result":{"success":true,"value":"comment-2"}}}`},
 		lineartest.Exchange{Op: "DeleteComment", Vars: `{"id":"comment-3"}`, Body: `{"data":{"result":{"success":false}}}`},
 	)
 	c := f.client(t)
@@ -255,7 +255,7 @@ func TestRelationsLinksAndCycles(t *testing.T) {
 	cycle := lineartest.Cycle{ID: "cycle-2", Number: 2, Team: "team-web", StartsAt: "2026-11-16T00:00:00.000Z", EndsAt: "2026-11-30T00:00:00.000Z", Active: true}.JSON()
 	f := newFake(t,
 		lineartest.Exchange{Op: "CreateRelation", Vars: `{"input":{"issueId":"WEB-1","relatedIssueId":"WEB-2","type":"blocks"}}`, Body: `{"data":{"result":{"success":true,"value":` + relation + `}}}`},
-		lineartest.Exchange{Op: "DeleteRelation", Vars: `{"id":"rel-1"}`, Body: `{"data":{"result":{"success":true}}}`},
+		lineartest.Exchange{Op: "DeleteRelation", Vars: `{"id":"rel-1"}`, Body: `{"data":{"result":{"success":true,"value":"rel-1"}}}`},
 		lineartest.Exchange{Op: "LinkURL", Vars: `{"input":{"issueId":"WEB-1","url":"https://git.example.com/web/pull/12","title":"Pull request 12","subtitle":"Open"}}`, Body: `{"data":{"result":{"success":true,"value":` + attachment + `}}}`},
 		lineartest.Exchange{Op: "StartUpcomingCycle", Vars: `{"id":"cycle-2"}`, Body: `{"data":{"result":{"success":true,"value":` + cycle + `}}}`},
 	)

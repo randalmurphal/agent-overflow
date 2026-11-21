@@ -412,7 +412,11 @@ sent for Tempo to judge. A read that fails otherwise refuses, unsent, only
 the ops it would judge; the others are checked in full and sent.
 
 A batch reports each item as applied, refused, unknown, not attempted, or
-updated but not moved to the issue asked for. The user's required hours
+updated but not moved to the issue asked for. A write is applied only on
+an answer that confirms it: a delete's 204, and a create's or update's
+record with an ID, an update's the one it wrote to. Any other 2xx is
+unknown. No reference states Tempo's write statuses, so this reading is
+unverified. The user's required hours
 per day, the approval state of a period, accounts and the site's
 timesheet settings are reads.
 
@@ -435,7 +439,13 @@ A 200 that carries GraphQL errors is an error. A read fails on any of
 them, since a typed result cannot show which fields were left out. A
 mutation is refused only by a 4xx, by user errors with no payload, or by a
 payload whose `success` is false; a missing `success` is an unknown
-outcome. Not found is matched only at the root field the call asked for.
+outcome. A `success: true` is applied only when the payload names the
+write: a created entity has an ID, a write by ID or identifier answers
+with that entity (an issue by any identifier it had), and a comment or
+relation delete names the deleted ID; otherwise the outcome is unknown.
+An issue delete's payload has no identity it always carries, so its
+`success` alone decides. Not found is matched only at the root field the
+call asked for.
 
 Issues are listed by a filter (team, state, cycle, update time, IDs or
 identifiers), found by text with `SearchIssues`, and read in full, every

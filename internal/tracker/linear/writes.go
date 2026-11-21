@@ -70,7 +70,7 @@ func (c *Client) CreateIssue(ctx context.Context, in CreateIssueInput) (*Issue, 
 	if err != nil {
 		return nil, invalid(opCreateIssue.name, "%w", err)
 	}
-	return mutateStored(ctx, c, opCreateIssue, inputVars{wire}, wireIssue.typed)
+	return mutateStored(ctx, c, opCreateIssue, inputVars{wire}, "", wireIssue.typed)
 }
 
 func (in CreateIssueInput) wire() (issueInput, error) {
@@ -159,7 +159,7 @@ type UpdateIssueInput struct {
 }
 
 var opUpdateIssue = newMutation("UpdateIssue", `mutation UpdateIssue($id: String!, $input: IssueUpdateInput!) {
-  result: issueUpdate(id: $id, input: $input) { success value: issue { ...IssueFields } }
+  result: issueUpdate(id: $id, input: $input) { success value: issue { ...IssueFields previousIdentifiers } }
 }
 `+issueFields)
 
@@ -181,7 +181,7 @@ func (c *Client) UpdateIssue(ctx context.Context, id string, in UpdateIssueInput
 }
 
 func (c *Client) updateIssue(ctx context.Context, id string, wire issueInput) (*Issue, error) {
-	return mutateStored(ctx, c, opUpdateIssue, updateVars{id, wire}, wireIssue.typed)
+	return mutateStored(ctx, c, opUpdateIssue, updateVars{id, wire}, id, wireAddressedIssue.typed)
 }
 
 func (in UpdateIssueInput) wire() (issueInput, error) {
@@ -250,7 +250,7 @@ func checkDate(d Optional[Date]) error {
 }
 
 var opArchiveIssue = newMutation("ArchiveIssue", `mutation ArchiveIssue($id: String!) {
-  result: issueArchive(id: $id) { success value: entity { ...IssueFields } }
+  result: issueArchive(id: $id) { success value: entity { ...IssueFields previousIdentifiers } }
 }
 `+issueFields)
 
@@ -261,7 +261,7 @@ func (c *Client) ArchiveIssue(ctx context.Context, id string) (*Issue, error) {
 }
 
 var opUnarchiveIssue = newMutation("UnarchiveIssue", `mutation UnarchiveIssue($id: String!) {
-  result: issueUnarchive(id: $id) { success value: entity { ...IssueFields } }
+  result: issueUnarchive(id: $id) { success value: entity { ...IssueFields previousIdentifiers } }
 }
 `+issueFields)
 
@@ -274,7 +274,7 @@ func (c *Client) issueByID(ctx context.Context, op operation, id string) (*Issue
 	if id == "" {
 		return nil, invalid(op.name, "an issue ID is required")
 	}
-	return mutateStored(ctx, c, op, idVars{id}, wireIssue.typed)
+	return mutateStored(ctx, c, op, idVars{id}, id, wireAddressedIssue.typed)
 }
 
 var opDeleteIssue = newMutation("DeleteIssue", `mutation DeleteIssue($id: String!, $permanently: Boolean) {

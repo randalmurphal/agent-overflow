@@ -2,6 +2,7 @@ package linear
 
 import (
 	"context"
+	"fmt"
 )
 
 // CreateCommentInput is a new comment on an issue.
@@ -29,7 +30,7 @@ func (c *Client) CreateComment(ctx context.Context, in CreateCommentInput) (*Com
 	if in.IssueID == "" || in.Body == "" {
 		return nil, invalid(opCreateComment.name, "an issue ID and a body are required")
 	}
-	return mutateStored(ctx, c, opCreateComment, inputVars{commentCreateInput(in)}, wireComment.typed)
+	return mutateStored(ctx, c, opCreateComment, inputVars{commentCreateInput(in)}, "", wireComment.typed)
 }
 
 var opUpdateComment = newMutation("UpdateComment", `mutation UpdateComment($id: String!, $input: CommentUpdateInput!) {
@@ -47,11 +48,11 @@ func (c *Client) UpdateComment(ctx context.Context, id, body string) (*Comment, 
 	if id == "" {
 		return nil, invalid(opUpdateComment.name, "a comment ID is required")
 	}
-	return mutateStored(ctx, c, opUpdateComment, updateVars{id, commentUpdateInput{body}}, wireComment.typed)
+	return mutateStored(ctx, c, opUpdateComment, updateVars{id, commentUpdateInput{body}}, id, wireComment.typed)
 }
 
 var opDeleteComment = newMutation("DeleteComment", `mutation DeleteComment($id: String!) {
-  result: commentDelete(id: $id) { success }
+  result: commentDelete(id: $id) { success value: entityId }
 }`)
 
 // DeleteComment deletes a comment.
@@ -59,12 +60,21 @@ func (c *Client) DeleteComment(ctx context.Context, id string) error {
 	return c.deleteByID(ctx, opDeleteComment, id)
 }
 
+// deleteByID deletes the entity id names with op, whose payload aliases
+// the deleted entity's ID (DeletePayload.entityId) as its value; a
+// success that names another, or none, leaves the outcome unknown.
 func (c *Client) deleteByID(ctx context.Context, op operation, id string) error {
 	if id == "" {
 		return invalid(op.name, "an ID is required")
 	}
-	_, err := mutate[struct{}](ctx, c, op, idVars{id})
-	return err
+	deleted, err := mutate[string](ctx, c, op, idVars{id})
+	switch {
+	case err != nil:
+		return err
+	case deleted == nil || *deleted != id:
+		return fmt.Errorf("linear %s: the payload reported success without naming %s as deleted, so whether it was applied is unknown", op.name, id)
+	}
+	return nil
 }
 
 // CreateRelationInput relates two issues: IssueID blocks, duplicates,
@@ -88,11 +98,11 @@ func (c *Client) CreateRelation(ctx context.Context, in CreateRelationInput) (*R
 	if in.Type == RelationSimilar {
 		return nil, invalid(opCreateRelation.name, "Linear documents the similar relation as deprecated; it can be read, not created")
 	}
-	return mutateStored(ctx, c, opCreateRelation, inputVars{in}, wireRelation.typed)
+	return mutateStored(ctx, c, opCreateRelation, inputVars{in}, "", wireRelation.typed)
 }
 
 var opDeleteRelation = newMutation("DeleteRelation", `mutation DeleteRelation($id: String!) {
-  result: issueRelationDelete(id: $id) { success }
+  result: issueRelationDelete(id: $id) { success value: entityId }
 }`)
 
 // DeleteRelation deletes a relation.
@@ -121,7 +131,7 @@ func (c *Client) LinkURL(ctx context.Context, in LinkInput) (*Attachment, error)
 	if in.IssueID == "" || in.URL == "" || in.Title == "" {
 		return nil, invalid(opLinkURL.name, "an issue ID, a URL and a title are required")
 	}
-	return mutateStored(ctx, c, opLinkURL, inputVars{in}, wireAttachment.typed)
+	return mutateStored(ctx, c, opLinkURL, inputVars{in}, "", wireAttachment.typed)
 }
 
 var opStartUpcomingCycle = newMutation("StartUpcomingCycle", `mutation StartUpcomingCycle($id: String!) {
@@ -138,5 +148,5 @@ func (c *Client) StartUpcomingCycle(ctx context.Context, id string) (*Cycle, err
 	if id == "" {
 		return nil, invalid("StartUpcomingCycle", "a cycle ID is required")
 	}
-	return mutateStored(ctx, c, opStartUpcomingCycle, idVars{id}, wireCycle.typed)
+	return mutateStored(ctx, c, opStartUpcomingCycle, idVars{id}, id, wireCycle.typed)
 }

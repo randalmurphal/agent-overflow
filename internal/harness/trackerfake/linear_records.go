@@ -49,13 +49,15 @@ func (m mutationRoot) updateComment(r *gqlRun, args map[string]any) (any, *gqlEr
 	return commentObj{w, c}, nil
 }
 
+// deleteComment answers the deleted comment's ID as the payload's
+// entityId (documented: DeletePayload.entityId).
 func (m mutationRoot) deleteComment(r *gqlRun, args map[string]any) (any, *gqlErr) {
 	id := idArg(args)
 	if m.w.comment(id) == nil {
 		return nil, notFound("Comment")
 	}
 	m.w.Comments = slices.DeleteFunc(m.w.Comments, func(c LinearComment) bool { return c.ID == id })
-	return nil, nil
+	return id, nil
 }
 
 func (m mutationRoot) createRelation(r *gqlRun, args map[string]any) (any, *gqlErr) {
@@ -82,7 +84,7 @@ func (m mutationRoot) deleteRelation(r *gqlRun, args map[string]any) (any, *gqlE
 		return nil, notFound("IssueRelation")
 	}
 	m.w.Relations = slices.DeleteFunc(m.w.Relations, func(x LinearRelation) bool { return x.ID == id })
-	return nil, nil
+	return id, nil // the payload's entityId, as for a comment
 }
 
 // createAttachment links a URL to an issue; a URL the issue already has

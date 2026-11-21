@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
+	"strings"
 	"time"
 
 	"agent-overflow/internal/tracker/trackerapi"
@@ -225,15 +227,56 @@ func mutate[T any](ctx context.Context, c *Client, op operation, vars any) (*T, 
 	return data.Result.Value, nil
 }
 
-// mutateStored is mutate for a payload that must carry the stored
-// entity; a success without it leaves the outcome unknown.
-func mutateStored[W, T any](ctx context.Context, c *Client, op operation, vars any, typed func(W) T) (*T, error) {
+// identified is a payload's entity that can say whether it is the one a
+// write was for.
+type identified interface {
+	// names reports whether the entity has an ID and, when id is not
+	// empty, is the entity id names.
+	names(id string) bool
+}
+
+// namedBy reports an entity whose own ID is set and, when id is not
+// empty, equal to it.
+func namedBy(own, id string) bool { return own != "" && (id == "" || own == id) }
+
+func (w wireIssue) names(id string) bool {
+	return w.ID != "" && (id == "" || id == w.ID || strings.EqualFold(id, w.Identifier))
+}
+
+// wireAddressedIssue is the issue a write by ID or identifier answers
+// with, and the identifiers it had before it moved team, which still
+// address it.
+type wireAddressedIssue struct {
+	wireIssue
+	PreviousIdentifiers []string `json:"previousIdentifiers"`
+}
+
+func (w wireAddressedIssue) typed() Issue { return w.wireIssue.typed() }
+
+func (w wireAddressedIssue) names(id string) bool {
+	return w.wireIssue.names(id) ||
+		w.ID != "" && slices.ContainsFunc(w.PreviousIdentifiers, func(p string) bool { return strings.EqualFold(p, id) })
+}
+
+func (w wireComment) names(id string) bool    { return namedBy(w.ID, id) }
+func (w wireRelation) names(id string) bool   { return namedBy(w.ID, id) }
+func (w wireAttachment) names(id string) bool { return namedBy(w.ID, id) }
+func (w wireCycle) names(id string) bool      { return namedBy(w.ID, id) }
+
+// mutateStored is mutate for a payload that must carry the stored entity:
+// for a write by ID (id not empty) the entity id names, and otherwise one
+// with an ID. A success without it leaves the outcome unknown.
+func mutateStored[W identified, T any](ctx context.Context, c *Client, op operation, vars any, id string, typed func(W) T) (*T, error) {
 	w, err := mutate[W](ctx, c, op, vars)
-	if err != nil {
+	switch {
+	case err != nil:
 		return nil, err
-	}
-	if w == nil {
+	case w == nil:
 		return nil, fmt.Errorf("linear %s: the payload reported success without the stored entity", op.name)
+	case !(*w).names(id) && id == "":
+		return nil, fmt.Errorf("linear %s: the payload reported success with an entity that has no ID, so whether it was applied is unknown", op.name)
+	case !(*w).names(id):
+		return nil, fmt.Errorf("linear %s: the payload reported success for another entity than %s, so whether it was applied is unknown", op.name, id)
 	}
 	v := typed(*w)
 	return &v, nil

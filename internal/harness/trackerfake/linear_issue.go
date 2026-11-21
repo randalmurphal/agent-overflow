@@ -80,6 +80,8 @@ var issueFields = fieldTable[issueObj]{
 		}
 		return true
 	},
+	// documented: the identifiers an issue had before it moved team.
+	"previousIdentifiers": func(o issueObj) any { return append([]string{}, o.is.FormerKeys...) },
 	"children": func(o issueObj) any {
 		var out []gqlObject
 		for i := range o.w.Issues {

@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -260,6 +261,34 @@ func TestUpdateNotMoved(t *testing.T) {
 	}
 	if out[1].Status != Applied || out[1].Stored.Issue != (Issue{ID: 10001, Key: "WEB-1"}) {
 		t.Errorf("moved: %+v", out[1])
+	}
+}
+
+// TestWriteAnswerMustConfirm: a 2xx that does not show the write was the
+// one sent (a delete not answered 204, a record with no ID, an update's
+// record of another worklog) is Unknown and reports nothing stored.
+func TestWriteAnswerMustConfirm(t *testing.T) {
+	f := tempotest.NewServer(t, testToken)
+	c := testClient(t, f, newIssues())
+	openWeek(f)
+	from := Worklog{ID: 70, Issue: Issue{ID: 10002, Key: "WEB-2"}, Author: "acc-user1", Start: Start{Date: mustDate(t, "2026-11-10")},
+		Spent: time.Hour, Attributes: []AttributeValue{{"_Category_", "dev"}}}
+	f.On("DELETE", "/4/worklogs/74", nil, "", 202, `{"pending":true}`)
+	f.On("DELETE", "/4/worklogs/75", nil, "", 200, "")
+	f.On("POST", "/4/worklogs", nil, createBody(10001, "no id"), 200, `{"startDate":"2026-11-10"}`)
+	f.On("GET", "/4/worklogs/70", nil, "", 200, wl{id: 70, issue: 10002, author: "acc-user1", date: "2026-11-10", spent: 3600, attrs: [][2]string{{"_Category_", "dev"}}}.json())
+	f.On("PUT", "/4/worklogs/70", nil,
+		`{"authorAccountId":"acc-user1","issueId":10002,"startDate":"2026-11-10","timeSpentSeconds":5400,"description":"","attributes":[{"key":"_Category_","value":"dev"}]}`,
+		200, wl{id: 71, issue: 10002, author: "acc-user1", date: "2026-11-10", spent: 5400, attrs: [][2]string{{"_Category_", "dev"}}}.json())
+	out := c.Apply(context.Background(), []Op{
+		DeleteOp(74), DeleteOp(75), CreateOp(weekDraft(t, "WEB-1", "no id")), UpdateOp(Change{From: from, Spent: ptr(90 * time.Minute)}),
+	})
+	for i, missing := range []string{"status 202", "status 200", "no worklog ID", "worklog 71, not worklog 70"} {
+		o := out[i]
+		if o.Status != Unknown || o.Err == nil || !strings.Contains(o.Err.Error(), missing) || trackerapi.WriteNotApplied(o.Err) ||
+			!reflect.DeepEqual(o.Stored, Worklog{}) {
+			t.Errorf("op %d: want Unknown naming %q, got %+v", i, missing, o)
+		}
 	}
 }
 

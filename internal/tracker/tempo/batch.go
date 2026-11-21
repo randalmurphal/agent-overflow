@@ -54,14 +54,16 @@ func DeleteOp(id int64) Op { return Op{kind: opDelete, id: id} }
 type Status uint8
 
 const (
-	// Applied: Tempo stored the write.
+	// Applied: Tempo stored the write, and its answer says so (see
+	// unconfirmed).
 	Applied Status = iota + 1
 	// Refused: the write was not applied. Problems say what was wrong
 	// with it when that is known; Err says why.
 	Refused
 	// Unknown: the write was sent and its outcome is unknown (a timeout,
-	// a 3xx, a 5xx, an answer cut short). It is not sent again; read the
-	// worklogs before offering it again.
+	// a 3xx, a 5xx, an answer cut short, a 2xx that does not confirm
+	// it). It is not sent again; read the worklogs before offering it
+	// again.
 	Unknown
 	// NotAttempted: the context ended, or the Client was closed, before
 	// the write was sent.
@@ -213,15 +215,34 @@ func (c *Client) send(ctx context.Context, op Op, p *prepared) Outcome {
 		return c.failed(ctx, what, err)
 	}
 	if op.kind == opDelete {
+		if resp.Status != http.StatusNoContent {
+			return unconfirmed(what, fmt.Sprintf("Tempo answered status %d, not 204", resp.Status))
+		}
 		return Outcome{Status: Applied}
 	}
 	stored, err := raw.worklog(resp)
 	if err != nil {
-		// Tempo answered 2xx: the write happened, but its record does
-		// not read.
+		// Tempo answered 2xx: the write may have happened, but its record
+		// does not read.
 		return Outcome{Status: Unknown, Err: fmt.Errorf("tempo: %s: read the stored worklog: %w", what, err)}
 	}
+	switch {
+	case stored.ID <= 0:
+		return unconfirmed(what, "the answer names no worklog ID")
+	case op.kind == opUpdate && stored.ID != op.change.From.ID:
+		return unconfirmed(what, fmt.Sprintf("the answer names worklog %d, not worklog %d", stored.ID, op.change.From.ID))
+	}
 	return stored.outcome(op, p)
+}
+
+// unconfirmed is a 2xx answer that does not show the write was applied
+// as sent. A write is applied only on these success forms; none of the
+// package's references states Tempo's statuses for these writes, so this
+// is the strict reading (unverified): a delete answered 204 with no body,
+// and a create or an update answered with a record that has an ID, an
+// update's the ID it wrote to.
+func unconfirmed(what, why string) Outcome {
+	return Outcome{Status: Unknown, Err: fmt.Errorf("tempo: %s: %s, so whether it was applied is unknown", what, why)}
 }
 
 // unchanged reads the worklog from names again, as the last request

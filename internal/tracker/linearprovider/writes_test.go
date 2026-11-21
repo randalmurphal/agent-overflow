@@ -322,7 +322,7 @@ func TestCommentWrites(t *testing.T) {
 		commentX(c),
 		lineartest.Exchange{Op: "DeleteComment", Vars: `{"id":"comment-2"}`, Body: `{"data":{"result":{"success":false}}}`},
 		commentX(c),
-		lineartest.Exchange{Op: "DeleteComment", Vars: `{"id":"comment-2"}`, Body: `{"data":{"result":{"success":true}}}`},
+		lineartest.Exchange{Op: "DeleteComment", Vars: `{"id":"comment-2"}`, Body: `{"data":{"result":{"success":true,"value":"comment-2"}}}`},
 		commentX(elsewhere),
 		lineartest.Exchange{Op: "Comment", Vars: `{"id":"comment-9"}`, Body: gone},
 	)
@@ -380,7 +380,7 @@ func TestLinkWrites(t *testing.T) {
 		relationX("rel-1", 1, 2),
 		lineartest.Exchange{Op: "DeleteRelation", Vars: `{"id":"rel-1"}`, Status: 500, Body: `{"errors":[{"message":"boom"}]}`},
 		relationX("rel-2", 2, 1),
-		lineartest.Exchange{Op: "DeleteRelation", Vars: `{"id":"rel-2"}`, Body: `{"data":{"result":{"success":true}}}`},
+		lineartest.Exchange{Op: "DeleteRelation", Vars: `{"id":"rel-2"}`, Body: `{"data":{"result":{"success":true,"value":"rel-2"}}}`},
 		relationX("rel-3", 3, 4),
 		relationX("rel-4", 1, 3),
 		lineartest.Exchange{Op: "Relation", Vars: `{"id":"rel-9"}`, Body: gone},
