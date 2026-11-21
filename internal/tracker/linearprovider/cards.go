@@ -44,35 +44,27 @@ func (p *Provider) labelNames(ctx context.Context, issues []linear.Issue) (map[s
 	return labelsByID(ctx, p, names, ids)
 }
 
-// labelsByID adds to names the names of the labels among ids it lacks,
-// read by exactly those IDs, and returns it.
+// labelsByID adds to names the names of the distinct labels among ids it
+// lacks, read by exactly those IDs, and returns it; no request when it
+// lacks none.
 func labelsByID(ctx context.Context, p *Provider, names map[string]string, ids []string) (map[string]string, error) {
-	return namesOf(ctx, "labels", names, ids, p.c.LabelsByID, func(l linear.Label) (string, string) { return l.ID, l.Name })
-}
-
-// namesOf adds to known the names read gives the distinct non-empty IDs
-// among ids that known lacks, and returns it; no request when it lacks
-// none.
-func namesOf[T any](ctx context.Context, what string, known map[string]string, ids []string, read func(context.Context, []string) ([]T, error), name func(T) (id, name string)) (map[string]string, error) {
 	var asked []string
 	for _, id := range ids {
-		if _, ok := known[id]; !ok && id != "" && !slices.Contains(asked, id) {
+		if _, ok := names[id]; !ok && id != "" && !slices.Contains(asked, id) {
 			asked = append(asked, id)
 		}
 	}
-	out := known
 	if len(asked) == 0 {
-		return out, nil
+		return names, nil
 	}
-	found, err := read(ctx, asked)
+	found, err := p.c.LabelsByID(ctx, asked)
 	if err != nil {
-		return nil, fmt.Errorf("linearprovider: %s by ID: %w", what, err)
+		return nil, fmt.Errorf("linearprovider: labels by ID: %w", err)
 	}
-	for _, v := range found {
-		id, n := name(v)
-		out[id] = n
+	for _, l := range found {
+		names[l.ID] = l.Name
 	}
-	return out, nil
+	return names, nil
 }
 
 // card is an issue as a board row draws it. A label labelNames could not

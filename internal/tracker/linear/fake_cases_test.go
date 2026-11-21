@@ -38,10 +38,6 @@ var linearCases = map[string]func(t *testing.T, f *conformanceEnv){
 		tm := answered(f.c.Team(f.ctx, cfTeam)).must(t)
 		want(t, tm.Key == "WEB" && tm.CyclesEnabled && tm.CycleWeeks == 2, "team %+v", tm)
 	},
-	"TeamsByID": func(t *testing.T, f *conformanceEnv) {
-		ts := answered(f.c.TeamsByID(f.ctx, []string{cfTeam})).must(t)
-		want(t, len(ts) == 1 && ts[0].ID == cfTeam, "teams %+v", ts)
-	},
 	"TeamsByKey": func(t *testing.T, f *conformanceEnv) {
 		ts := answered(f.c.TeamsByKey(f.ctx, []string{"WEB"})).must(t)
 		want(t, len(ts) == 1 && ts[0].ID == cfTeam, "teams %+v", ts)
@@ -54,10 +50,6 @@ var linearCases = map[string]func(t *testing.T, f *conformanceEnv){
 		active := answered(f.c.Users(f.ctx, false)).must(t)
 		all := answered(f.c.Users(f.ctx, true)).must(t)
 		want(t, len(active) == 2 && len(all) == 3, "users %d active, %d in all", len(active), len(all))
-	},
-	"UsersByID": func(t *testing.T, f *conformanceEnv) {
-		us := answered(f.c.UsersByID(f.ctx, []string{cfUser3})).must(t)
-		want(t, len(us) == 1 && !us[0].Active && us[0].Name == "User 3", "users %+v", us)
 	},
 	"WorkflowStates": func(t *testing.T, f *conformanceEnv) {
 		ss := answered(f.c.WorkflowStates(f.ctx, cfTeam)).must(t)
@@ -85,10 +77,6 @@ var linearCases = map[string]func(t *testing.T, f *conformanceEnv){
 		c := answered(f.c.Cycle(f.ctx, cfUpcoming)).must(t)
 		want(t, c.Number == 3 && c.IsFuture && c.TeamID == cfTeam, "cycle %+v", c)
 	},
-	"CyclesByID": func(t *testing.T, f *conformanceEnv) {
-		cs := answered(f.c.CyclesByID(f.ctx, []string{cfPast, cfActive})).must(t)
-		want(t, len(cs) == 2, "cycles %+v", cs)
-	},
 	"Labels": func(t *testing.T, f *conformanceEnv) {
 		ls := answered(f.c.Labels(f.ctx, cfTeam)).must(t)
 		want(t, slices.ContainsFunc(ls, func(l Label) bool { return l.ID == cfBug && l.TeamID == cfTeam }), "labels %+v", ls)
@@ -100,10 +88,6 @@ var linearCases = map[string]func(t *testing.T, f *conformanceEnv){
 	"Projects": func(t *testing.T, f *conformanceEnv) {
 		ps := answered(f.c.Projects(f.ctx, cfTeam, false)).must(t)
 		want(t, len(ps) == 1 && ps[0].Name == "Website", "projects %+v", ps)
-	},
-	"ProjectsByID": func(t *testing.T, f *conformanceEnv) {
-		ps := answered(f.c.ProjectsByID(f.ctx, []string{cfProject})).must(t)
-		want(t, len(ps) == 1 && ps[0].ID == cfProject, "projects %+v", ps)
 	},
 	"Issue": func(t *testing.T, f *conformanceEnv) {
 		d := answered(f.c.Issue(f.ctx, "WEB-1")).must(t)
@@ -205,6 +189,27 @@ var linearCases = map[string]func(t *testing.T, f *conformanceEnv){
 	"IssueHistory": func(t *testing.T, f *conformanceEnv) {
 		p := answered(f.c.IssueHistory(f.ctx, cfIssue1, "")).must(t)
 		want(t, len(p.Items) == 1 && p.Items[0].State != nil && *p.Items[0].State == (Change{From: cfBacklog, To: cfTodo}), "history %+v", p)
+		// Each entity an entry names comes with it; one the workspace
+		// lacks is null and its ID stays.
+		ws := conformanceWorkspace()
+		gone := fid(900)
+		ws.Issues[1].History = []trackerfake.LinearHistory{{CreatedAt: cfStart.Add(-cfDay), Actor: cfUser1,
+			FromAssignee: gone, ToAssignee: cfUser2, FromCycle: cfActive, ToCycle: cfUpcoming, FromProject: gone, ToProject: cfProject,
+			FromTeam: gone, ToTeam: cfTeam, FromParent: gone, ToParent: cfIssue1, AddedLabels: []string{cfBug, gone}, RemovedLabels: []string{cfFeature}}}
+		if err := f.e.Seed(trackerfake.Fixture{Linear: []trackerfake.LinearWorkspace{ws}}); err != nil {
+			t.Fatal(err)
+		}
+		p = answered(f.c.IssueHistory(f.ctx, cfIssue2, "")).must(t)
+		want(t, len(p.Items) == 1, "history %+v", p)
+		e := p.Items[0]
+		want(t, e.FromAssignee == nil && e.Assignee.From == gone && *e.ToAssignee == (UserRef{ID: cfUser2, Name: "User 2", DisplayName: "User 2"}) &&
+			*e.FromCycle == (CycleRef{ID: cfActive, Number: 2}) && e.ToCycle.Number == 3 &&
+			e.FromProject == nil && *e.ToProject == (ProjectRef{ID: cfProject, Name: "Website"}) &&
+			e.FromTeam == nil && *e.ToTeam == (TeamRef{ID: cfTeam, Key: "WEB", Name: "Web"}) &&
+			e.FromParent == nil && *e.ToParent == (IssueKey{ID: cfIssue1, Identifier: "WEB-1"}) &&
+			slices.Equal(e.AddedLabels, []LabelRef{{ID: cfBug, Name: "Bug"}}) && slices.Equal(e.AddedLabelIDs, []string{cfBug, gone}) &&
+			slices.Equal(e.RemovedLabels, []LabelRef{{ID: cfFeature, Name: "Feature"}}),
+			"named entry %+v", e)
 	},
 	"IssueHistories": func(t *testing.T, f *conformanceEnv) {
 		hs := answered(f.c.IssueHistories(f.ctx, []string{cfIssue1, cfIssue2})).must(t)
@@ -213,6 +218,18 @@ var linearCases = map[string]func(t *testing.T, f *conformanceEnv){
 			byID[h.IssueID] = h
 		}
 		want(t, len(byID) == 2 && len(byID[cfIssue1].Entries) == 1 && byID[cfIssue1].TeamID == cfTeam && byID[cfIssue1].Served.Equal(cfStart), "histories %+v", hs)
+		// A history longer than the batch nests continues on its own.
+		ws := conformanceWorkspace()
+		for i := range historyPage + 1 {
+			ws.Issues[1].History = append(ws.Issues[1].History, trackerfake.LinearHistory{
+				CreatedAt: cfStart.Add(-cfDay + time.Duration(i)*time.Minute), Actor: cfUser1, FromAssignee: cfUser1, ToAssignee: cfUser2})
+		}
+		if err := f.e.Seed(trackerfake.Fixture{Linear: []trackerfake.LinearWorkspace{ws}}); err != nil {
+			t.Fatal(err)
+		}
+		hs = answered(f.c.IssueHistories(f.ctx, []string{cfIssue2})).must(t)
+		want(t, len(hs) == 1 && len(hs[0].Entries) == historyPage+1 && *hs[0].Entries[historyPage].Assignee == (Change{From: cfUser1, To: cfUser2}),
+			"histories %+v", hs)
 	},
 	"IssueStateSpans": func(t *testing.T, f *conformanceEnv) {
 		p := answered(f.c.IssueStateSpans(f.ctx, cfIssue1, "")).must(t)

@@ -15,10 +15,12 @@ import (
 // date and project as fields, and its whole history with every ID named.
 // Linear's attachments are links, not files, so there are none. The
 // project's name, its labels' names, its team's states and its newest
-// 250 history entries come with the issue in one request; the labels it
-// does not name and the users, cycles, projects, teams and parent issues
-// its history names are read by exactly their IDs, each kind only when
-// something names one.
+// 100 history entries, each with the users, cycles, projects, teams,
+// parent issues and labels it names, come with the issue in one request,
+// and each further page of history with its names in one more; only the
+// labels the issue carries beyond its nested list are read by exactly
+// their IDs. An entity Linear answers null for, deleted or hidden from the
+// key, is shown by its ID.
 func (p *Provider) Detail(ctx context.Context, issue tracker.IssueID) (tracker.Detail, error) {
 	if issue == "" {
 		return tracker.Detail{}, fmt.Errorf("linearprovider: detail: %w: no issue named", tracker.ErrInvalidInput)
@@ -37,8 +39,9 @@ func (p *Provider) Detail(ctx context.Context, issue tracker.IssueID) (tracker.D
 // Details reads issues as Detail does, linear.MaxIssueDetails to a
 // request (Linear charges a request of several the points of one), then
 // what each issue needs beyond its first pages, as Detail does, and the
-// names the issues' histories need, each kind in one request for all of
-// them. An ID Linear does not return, or that is no issue ID, is Missing.
+// labels any of them carries beyond its nested list in one request for
+// all of them. An ID Linear does not return, or that is no issue ID, is
+// Missing.
 func (p *Provider) Details(ctx context.Context, issues []tracker.IssueID) (tracker.Details, error) {
 	for i, issue := range issues {
 		if issue == "" || slices.Contains(issues[:i], issue) {
@@ -71,10 +74,11 @@ func (p *Provider) Details(ctx context.Context, issues []tracker.IssueID) (track
 }
 
 // details are ds as their tickets show them: each issue's team's states
-// and history past the first page read, then the names all of them need.
+// and history past the first page read, then the label names all of them
+// need.
 func (p *Provider) details(ctx context.Context, ds []*linear.IssueDetail) ([]tracker.Detail, error) {
 	states := make([][]linear.WorkflowState, len(ds))
-	entries := make([][]linear.HistoryEntry, len(ds))
+	entries := make([][]linear.NamedEntry, len(ds))
 	for i, d := range ds {
 		st := d.States
 		var err error
@@ -103,7 +107,7 @@ func (p *Provider) details(ctx context.Context, ds []*linear.IssueDetail) ([]tra
 
 // detail is d as its ticket shows it, with its team's states and its
 // whole history, its IDs named by n.
-func (n names) detail(d *linear.IssueDetail, states []linear.WorkflowState, entries []linear.HistoryEntry) tracker.Detail {
+func (n names) detail(d *linear.IssueDetail, states []linear.WorkflowState, entries []linear.NamedEntry) tracker.Detail {
 	out := tracker.Detail{
 		Card: card(d.Issue, n.labels), URL: d.URL, Description: d.Description,
 		Fields:      detailFields(d.Issue, n),
@@ -126,7 +130,7 @@ func (n names) detail(d *linear.IssueDetail, states []linear.WorkflowState, entr
 // restOfHistory is every history entry of an issue, newest first: first,
 // the page its detail held, and every page after it. History pages in
 // Linear's order of creation, which no change moves an entry in.
-func (p *Provider) restOfHistory(ctx context.Context, id string, first linear.Page[linear.HistoryEntry]) ([]linear.HistoryEntry, error) {
+func (p *Provider) restOfHistory(ctx context.Context, id string, first linear.Page[linear.NamedEntry]) ([]linear.NamedEntry, error) {
 	out := first.Items
 	page := first
 	for page.HasNextPage {
@@ -240,13 +244,16 @@ func (n names) name(of map[string]string, id string) string {
 	return id
 }
 
-// readNames reads the names of what the issues of ds and their entries
-// name, by exactly those IDs: one request for each kind something names,
-// for all of them. states and entries are each issue's, in ds' order.
-func (p *Provider) readNames(ctx context.Context, ds []*linear.IssueDetail, states [][]linear.WorkflowState, entries [][]linear.HistoryEntry) (names, error) {
-	n := names{states: map[string]string{}, labels: map[string]string{}}
-	var labels, users, cycles, projects, teams, parents []string
-	both := func(c *linear.Change) []string { return []string{c.From, c.To} }
+// readNames names what the issues of ds and their entries name: the
+// states from each issue's team's states, the project from the issue,
+// and what an entry names from what came with it. Labels an issue
+// carries that neither its nested list nor an entry named are read by
+// exactly those IDs in one request. states and entries are each issue's,
+// in ds' order.
+func (p *Provider) readNames(ctx context.Context, ds []*linear.IssueDetail, states [][]linear.WorkflowState, entries [][]linear.NamedEntry) (names, error) {
+	n := names{states: map[string]string{}, labels: map[string]string{}, users: map[string]string{}, cycles: map[string]string{},
+		projects: map[string]string{}, teams: map[string]string{}, issues: map[string]string{}}
+	var labels []string
 	for i, d := range ds {
 		for _, l := range d.Labels {
 			n.labels[l.ID] = l.Name
@@ -254,78 +261,58 @@ func (p *Provider) readNames(ctx context.Context, ds []*linear.IssueDetail, stat
 		for _, s := range states[i] {
 			n.states[s.ID] = s.Name
 		}
+		if d.ProjectID != "" {
+			n.projects[d.ProjectID] = d.ProjectName
+		}
 		labels = append(labels, d.LabelIDs...)
 		for _, e := range entries[i] {
-			labels = append(append(labels, e.AddedLabelIDs...), e.RemovedLabelIDs...)
-			if e.Assignee != nil {
-				users = append(users, both(e.Assignee)...)
-			}
-			if e.Cycle != nil {
-				cycles = append(cycles, both(e.Cycle)...)
-			}
-			if e.Project != nil {
-				projects = append(projects, both(e.Project)...)
-			}
-			if e.Team != nil {
-				teams = append(teams, both(e.Team)...)
-			}
-			if e.Parent != nil {
-				parents = append(parents, both(e.Parent)...)
-			}
-		}
-	}
-	// A project an issue is in comes with its name.
-	known := map[string]string{}
-	for _, d := range ds {
-		if d.ProjectID != "" {
-			known[d.ProjectID] = d.ProjectName
+			n.add(e)
 		}
 	}
 	var err error
 	if n.labels, err = labelsByID(ctx, p, n.labels, labels); err != nil {
 		return names{}, err
 	}
-	if n.users, err = namesOf(ctx, "users", map[string]string{}, users, p.c.UsersByID, func(u linear.User) (string, string) { return u.ID, userName(u) }); err != nil {
-		return names{}, err
-	}
-	if n.cycles, err = namesOf(ctx, "cycles", map[string]string{}, cycles, p.c.CyclesByID, func(c linear.Cycle) (string, string) { return c.ID, sprint(c).Name }); err != nil {
-		return names{}, err
-	}
-	if n.projects, err = namesOf(ctx, "projects", known, projects, p.c.ProjectsByID, func(pr linear.Project) (string, string) { return pr.ID, pr.Name }); err != nil {
-		return names{}, err
-	}
-	if n.teams, err = namesOf(ctx, "teams", map[string]string{}, teams, p.c.TeamsByID, func(t linear.Team) (string, string) { return t.ID, t.Key + " " + t.Name }); err != nil {
-		return names{}, err
-	}
-	if n.issues, err = p.identifiers(ctx, parents); err != nil {
-		return names{}, err
-	}
 	return n, nil
 }
 
-// identifiers maps the issue IDs among ids to their identifiers.
-func (p *Provider) identifiers(ctx context.Context, ids []string) (map[string]string, error) {
-	var asked []tracker.IssueID
-	for _, id := range ids {
-		asked = append(asked, tracker.IssueID(id))
+// add names what e came with. A side Linear answered null for is left
+// out, so the event shows its ID.
+func (n names) add(e linear.NamedEntry) {
+	for _, u := range []*linear.UserRef{e.FromAssignee, e.ToAssignee} {
+		if u != nil {
+			n.users[u.ID] = userName(u.Name, u.DisplayName)
+		}
 	}
-	valid, _ := issueIDs(asked)
-	out := map[string]string{}
-	if len(valid) == 0 {
-		return out, nil
+	for _, c := range []*linear.CycleRef{e.FromCycle, e.ToCycle} {
+		if c != nil {
+			n.cycles[c.ID] = cycleName(c.Number, c.Name)
+		}
 	}
-	issues, err := p.issuesByID(ctx, valid, linear.IssueFilter{}, true)
-	if err != nil {
-		return nil, err
+	for _, pr := range []*linear.ProjectRef{e.FromProject, e.ToProject} {
+		if pr != nil {
+			n.projects[pr.ID] = pr.Name
+		}
 	}
-	for _, is := range issues {
-		out[is.ID] = is.Identifier
+	for _, t := range []*linear.TeamRef{e.FromTeam, e.ToTeam} {
+		if t != nil {
+			n.teams[t.ID] = t.Key + " " + t.Name
+		}
 	}
-	return out, nil
+	for _, is := range []*linear.IssueKey{e.FromParent, e.ToParent} {
+		if is != nil {
+			n.issues[is.ID] = is.Identifier
+		}
+	}
+	for _, ls := range [][]linear.LabelRef{e.AddedLabels, e.RemovedLabels} {
+		for _, l := range ls {
+			n.labels[l.ID] = l.Name
+		}
+	}
 }
 
 // events are one history entry as the ticket shows it, a field each.
-func (n names) events(e linear.HistoryEntry) []tracker.Event {
+func (n names) events(e linear.NamedEntry) []tracker.Event {
 	var out []tracker.Event
 	add := func(field, from, to string) {
 		out = append(out, tracker.Event{At: e.CreatedAt, Author: tracker.UserID(e.ActorID), Field: field, From: from, To: to})

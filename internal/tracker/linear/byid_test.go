@@ -81,56 +81,33 @@ func idsVarsJSON(ids []string, after string) string {
 // pages to the end, splits past 250 IDs, and sends nothing for no IDs.
 func TestByIDReads(t *testing.T) {
 	t.Parallel()
-	user := func(id string) string { return lineartest.User{ID: id, Name: "User " + id, Active: true}.JSON() }
+	label := func(id string) string { return lineartest.Label{ID: id, Name: "Label " + id}.JSON() }
 	many := make([]string, 251)
 	for i := range many {
-		many[i] = fmt.Sprintf("user-%d", i)
+		many[i] = fmt.Sprintf("label-%d", i)
 	}
-	label := lineartest.Label{ID: "label-bug", Name: "Bug"}.JSON()
-	project := lineartest.Project{ID: "project-1", Name: "Launch"}.JSON()
-	cycle := lineartest.Cycle{ID: "cycle-1", Number: 1, Team: "team-app", StartsAt: "2026-11-02T00:00:00.000Z", EndsAt: "2026-11-16T00:00:00.000Z", Past: true}.JSON()
 	f := newFake(t,
-		lineartest.Exchange{Op: "UsersByID", Vars: idsVarsJSON([]string{"user-1", "user-2"}, ""),
-			Body: lineartest.Data(lineartest.PageJSON([]string{user("user-1")}, true, "u1"))},
-		lineartest.Exchange{Op: "UsersByID", Vars: idsVarsJSON([]string{"user-1", "user-2"}, "u1"),
-			Body: lineartest.Data(lineartest.PageJSON([]string{user("user-2")}, false, ""))},
-		lineartest.Exchange{Op: "UsersByID", Vars: idsVarsJSON(many[:250], ""), Body: lineartest.Data(lineartest.PageJSON(nil, false, ""))},
-		lineartest.Exchange{Op: "UsersByID", Vars: idsVarsJSON(many[250:], ""), Body: lineartest.Data(lineartest.PageJSON([]string{user(many[250])}, false, ""))},
-		lineartest.Exchange{Op: "LabelsByID", Vars: idsVarsJSON([]string{"label-bug"}, ""), Body: lineartest.Data(lineartest.PageJSON([]string{label}, false, ""))},
-		lineartest.Exchange{Op: "ProjectsByID", Vars: idsVarsJSON([]string{"project-1"}, ""), Body: lineartest.Data(lineartest.PageJSON([]string{project}, false, ""))},
-		lineartest.Exchange{Op: "CyclesByID", Vars: idsVarsJSON([]string{"cycle-1"}, ""), Body: lineartest.Data(lineartest.PageJSON([]string{cycle}, false, ""))},
-		lineartest.Exchange{Op: "TeamsByID", Vars: idsVarsJSON([]string{"team-APP"}, ""), Body: lineartest.Data(lineartest.PageJSON([]string{team("APP")}, false, ""))},
+		lineartest.Exchange{Op: "LabelsByID", Vars: idsVarsJSON([]string{"label-1", "label-2"}, ""),
+			Body: lineartest.Data(lineartest.PageJSON([]string{label("label-1")}, true, "l1"))},
+		lineartest.Exchange{Op: "LabelsByID", Vars: idsVarsJSON([]string{"label-1", "label-2"}, "l1"),
+			Body: lineartest.Data(lineartest.PageJSON([]string{label("label-2")}, false, ""))},
+		lineartest.Exchange{Op: "LabelsByID", Vars: idsVarsJSON(many[:250], ""), Body: lineartest.Data(lineartest.PageJSON(nil, false, ""))},
+		lineartest.Exchange{Op: "LabelsByID", Vars: idsVarsJSON(many[250:], ""), Body: lineartest.Data(lineartest.PageJSON([]string{label(many[250])}, false, ""))},
 	)
 	c := f.client(t)
 	ctx := context.Background()
-	users, err := c.UsersByID(ctx, []string{"user-1", "user-2", "user-1"})
-	if err != nil || len(users) != 2 || users[1].ID != "user-2" {
-		t.Fatalf("users %+v %v", users, err)
+	labels, err := c.LabelsByID(ctx, []string{"label-1", "label-2", "label-1"})
+	if err != nil || len(labels) != 2 || labels[1].ID != "label-2" || labels[1].Name != "Label label-2" {
+		t.Fatalf("labels %+v %v", labels, err)
 	}
-	if users, err := c.UsersByID(ctx, many); err != nil || len(users) != 1 {
-		t.Fatalf("251 users %+v %v", users, err)
+	if labels, err := c.LabelsByID(ctx, many); err != nil || len(labels) != 1 {
+		t.Fatalf("251 labels %+v %v", labels, err)
 	}
-	if users, err := c.UsersByID(ctx, nil); err != nil || users != nil {
-		t.Errorf("no IDs: %+v %v", users, err)
+	if labels, err := c.LabelsByID(ctx, nil); err != nil || labels != nil {
+		t.Errorf("no IDs: %+v %v", labels, err)
 	}
-	if _, err := c.UsersByID(ctx, []string{""}); !errors.Is(err, trackerapi.ErrInvalidInput) {
+	if _, err := c.LabelsByID(ctx, []string{""}); !errors.Is(err, trackerapi.ErrInvalidInput) {
 		t.Errorf("an empty ID: %v", err)
-	}
-	labels, err := c.LabelsByID(ctx, []string{"label-bug"})
-	if err != nil || len(labels) != 1 || labels[0].Name != "Bug" {
-		t.Errorf("labels %+v %v", labels, err)
-	}
-	projects, err := c.ProjectsByID(ctx, []string{"project-1"})
-	if err != nil || len(projects) != 1 || projects[0].Name != "Launch" {
-		t.Errorf("projects %+v %v", projects, err)
-	}
-	cycles, err := c.CyclesByID(ctx, []string{"cycle-1"})
-	if err != nil || len(cycles) != 1 || cycles[0].TeamID != "team-app" {
-		t.Errorf("cycles %+v %v", cycles, err)
-	}
-	teams, err := c.TeamsByID(ctx, []string{"team-APP"})
-	if err != nil || len(teams) != 1 || teams[0].Key != "APP" {
-		t.Errorf("teams %+v %v", teams, err)
 	}
 }
 

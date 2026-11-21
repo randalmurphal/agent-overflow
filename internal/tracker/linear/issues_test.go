@@ -87,7 +87,15 @@ func TestIssueDetail(t *testing.T) {
 	three := 3.0
 	history := lineartest.HistoryEntry{
 		ID: "h1", CreatedAt: "2026-11-03T10:00:00.000Z", UpdatedAt: "2026-11-03T10:00:05.000Z", Actor: "user-1", FromState: "state-todo", ToState: "state-done",
-		ToAssignee: "user-2", FromCycle: "cycle-1", ToEstimate: &three, AddedLabelIDs: []string{"label-bug"},
+		ToAssignee: "user-2", FromCycle: "cycle-1", ToEstimate: &three, AddedLabelIDs: []string{"label-bug", "label-gone"},
+		FromTeam: "team-APP", ToTeam: "team-WEB", ToParent: "issue-0",
+		// The cycle and one label are gone: Linear answers null and leaves
+		// the label out.
+		Names: map[string]string{
+			"toAssignee": lineartest.User{ID: "user-2", Name: "User 2"}.JSON(), "fromCycle": "null",
+			"fromTeam": lineartest.NewTeam("APP").JSON(), "toTeam": lineartest.NewTeam("WEB").JSON(),
+			"toParent": `{"id":"issue-0","identifier":"WEB-0"}`, "addedLabels": `[` + lineartest.Label{ID: "label-bug", Name: "Bug"}.JSON() + `]`,
+		},
 	}.JSON()
 	span := `{"id":"span-1","stateId":"state-todo","startedAt":"2026-11-01T09:00:00.000Z","endedAt":null}`
 	f := newFake(t,
@@ -120,6 +128,11 @@ func TestIssueDetail(t *testing.T) {
 		e.Project != nil || e.Estimate.From != nil || *e.Estimate.To != 3 || e.Priority != nil || e.Title != nil || e.AddedLabelIDs[0] != "label-bug" ||
 		e.UpdatedAt.Sub(e.CreatedAt) != 5*time.Second {
 		t.Errorf("history entry %+v", e)
+	}
+	if e.FromAssignee != nil || *e.ToAssignee != (UserRef{ID: "user-2", Name: "User 2"}) || e.FromCycle != nil || e.ToCycle != nil ||
+		e.FromTeam.Key != "APP" || e.ToTeam.ID != "team-WEB" || *e.ToParent != (IssueKey{ID: "issue-0", Identifier: "WEB-0"}) || e.FromParent != nil ||
+		len(e.AddedLabels) != 1 || e.AddedLabels[0] != (LabelRef{ID: "label-bug", Name: "Bug"}) || len(e.AddedLabelIDs) != 2 || e.RemovedLabels != nil {
+		t.Errorf("history entry names %+v", e)
 	}
 	spans, err := c.IssueStateSpans(ctx, "issue-1", "")
 	if err != nil || len(spans.Items) != 1 || spans.Items[0].EndedAt != nil || spans.Items[0].StateID != "state-todo" {

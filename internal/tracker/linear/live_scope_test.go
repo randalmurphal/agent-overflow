@@ -63,7 +63,7 @@ func TestLiveScope(t *testing.T) {
 	l.inherits("a sub-issue sent assigneeId null, priority 0, dueDate null, projectId null", cleared)
 
 	l.checkMissing()
-	l.checkByID(team, viewer, parent)
+	l.checkByID(team, parent)
 	l.checkNestedLabelCost([]string{parent.ID, bare.ID})
 	l.checkPageLimit([]string{parent.ID, bare.ID})
 	l.checkForeignState(teams, bare)
@@ -102,7 +102,7 @@ func (l *live) checkMissing() {
 
 // checkByID runs the by-ID and by-key reads against what exists and logs
 // each one's reported cost.
-func (l *live) checkByID(team Team, viewer *Viewer, parent *Issue) {
+func (l *live) checkByID(team Team, parent *Issue) {
 	l.step("Team", func(ctx context.Context) error {
 		got, err := l.c.Team(ctx, team.ID)
 		if err == nil {
@@ -114,20 +114,6 @@ func (l *live) checkByID(team Team, viewer *Viewer, parent *Issue) {
 		got, err := l.c.TeamsByKey(ctx, []string{strings.ToLower(team.Key), "zzznoteam"})
 		if err == nil {
 			l.measure("teams by lowercased key and an unknown key: %d found, the team %t, cost %d", len(got), len(got) == 1 && got[0].ID == team.ID, l.c.Usage().Complexity)
-		}
-		return err
-	})
-	l.step("TeamsByID", func(ctx context.Context) error {
-		got, err := l.c.TeamsByID(ctx, []string{team.ID})
-		if err == nil {
-			l.measure("teams by ID: %d found, cost %d", len(got), l.c.Usage().Complexity)
-		}
-		return err
-	})
-	l.step("UsersByID", func(ctx context.Context) error {
-		got, err := l.c.UsersByID(ctx, []string{viewer.User.ID})
-		if err == nil {
-			l.measure("users by ID: %d found, cost %d", len(got), l.c.Usage().Complexity)
 		}
 		return err
 	})

@@ -286,7 +286,7 @@ type IssueDetail struct {
 	// from.
 	Relations []Relation
 	// History is the newest page of the issue's history, newest first.
-	History Page[HistoryEntry]
+	History Page[NamedEntry]
 	// States are the workflow states of the issue's team, archived ones
 	// left out, in Linear's order; MoreStates reports a team with more
 	// than the page holds.
@@ -372,6 +372,56 @@ type HistoryEntry struct {
 	RemovedLabelIDs []string
 	// Archived is true for an archive, false for an unarchive.
 	Archived *bool
+}
+
+// NamedEntry is a history entry with the entities it names, as Issue,
+// IssueDetails and IssueHistory read them in the same request;
+// IssueHistories reads IDs alone. A side is nil, and a label is left out
+// of its list, when the entry names none there or Linear answered null
+// for it: the entity is deleted or the key cannot see it. The entry's
+// IDs are complete either way.
+type NamedEntry struct {
+	HistoryEntry
+	FromAssignee, ToAssignee   *UserRef
+	FromCycle, ToCycle         *CycleRef
+	FromProject, ToProject     *ProjectRef
+	FromTeam, ToTeam           *TeamRef
+	FromParent, ToParent       *IssueKey
+	AddedLabels, RemovedLabels []LabelRef
+}
+
+// UserRef is a user as a history entry names it.
+type UserRef struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	DisplayName string `json:"displayName"`
+}
+
+// CycleRef is a cycle as a history entry names it; Name is empty for a
+// cycle that has none.
+type CycleRef struct {
+	ID     string
+	Number int
+	Name   string
+}
+
+// ProjectRef is a project as a history entry names it.
+type ProjectRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// TeamRef is a team as a history entry names it.
+type TeamRef struct {
+	ID   string `json:"id"`
+	Key  string `json:"key"`
+	Name string `json:"name"`
+}
+
+// IssueKey is an issue as a history entry names it.
+type IssueKey struct {
+	ID         string `json:"id"`
+	Identifier string `json:"identifier"`
 }
 
 // StateSpan is a period an issue spent in one status. EndedAt is nil

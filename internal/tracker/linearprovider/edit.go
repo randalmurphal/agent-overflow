@@ -273,7 +273,7 @@ func (r *resolver) memberCandidates(ctx context.Context) ([]candidate, error) {
 	}
 	var out []candidate
 	for _, u := range members {
-		out = append(out, candidate{tracker.Choice{ID: u.ID, Name: userName(u)}, []string{u.Name, u.DisplayName, u.Email}})
+		out = append(out, candidate{tracker.Choice{ID: u.ID, Name: userName(u.Name, u.DisplayName)}, []string{u.Name, u.DisplayName, u.Email}})
 	}
 	return out, nil
 }

@@ -27,11 +27,11 @@ const issueDetailSelection = `
     attachments(first: 25) { nodes { ...AttachmentFields } pageInfo { hasNextPage } }
     relations(first: 25) { nodes { ...RelationFields } pageInfo { hasNextPage endCursor } }
     inverseRelations(first: 25) { nodes { ...RelationFields } pageInfo { hasNextPage endCursor } }
-    history(first: 100) { nodes { ...HistoryFields } pageInfo { hasNextPage endCursor } }
+    history(first: 100) { nodes { ...NamedHistoryFields } pageInfo { hasNextPage endCursor } }
     stateTeam: team { states(first: 50) { nodes { ...StateFields } pageInfo { hasNextPage } } }
 `
 
-const issueDetailFragments = describedFields + issueFields + issueRefFields + commentFields + attachmentFields + relationFields + historyFields + stateFields
+const issueDetailFragments = describedFields + issueFields + issueRefFields + commentFields + attachmentFields + relationFields + namedHistoryFields + historyFields + stateFields
 
 // MaxIssueDetails is the most issues one IssueDetails request reads:
 // Linear charged the same points for 1, 2, 5 and 10 issues in full
@@ -110,15 +110,15 @@ type stateTeam struct {
 type wireIssueDetail struct {
 	wireDescribed
 	// Project shadows the fragment's project { id } with its name.
-	Project          *namedRef                  `json:"project"`
-	Parent           *wireIssueRef              `json:"parent"`
-	Children         connection[wireIssueRef]   `json:"children"`
-	Comments         connection[wireComment]    `json:"comments"`
-	Attachments      connection[wireAttachment] `json:"attachments"`
-	Relations        connection[wireRelation]   `json:"relations"`
-	InverseRelations connection[wireRelation]   `json:"inverseRelations"`
-	History          connection[wireHistory]    `json:"history"`
-	StateTeam        *stateTeam                 `json:"stateTeam"`
+	Project          *namedRef                    `json:"project"`
+	Parent           *wireIssueRef                `json:"parent"`
+	Children         connection[wireIssueRef]     `json:"children"`
+	Comments         connection[wireComment]      `json:"comments"`
+	Attachments      connection[wireAttachment]   `json:"attachments"`
+	Relations        connection[wireRelation]     `json:"relations"`
+	InverseRelations connection[wireRelation]     `json:"inverseRelations"`
+	History          connection[wireNamedHistory] `json:"history"`
+	StateTeam        *stateTeam                   `json:"stateTeam"`
 }
 
 type idVars struct {
@@ -194,7 +194,7 @@ func (w *wireIssueDetail) detail(op operation, r reply) (*IssueDetail, error) {
 	if d.Attachments, d.MoreAttachments, err = firstPage(op, w.Attachments, wireAttachment.typed); err != nil {
 		return nil, err
 	}
-	if d.History, err = page(op, w.History, r.Usage, wireHistory.typed); err != nil {
+	if d.History, err = page(op, w.History, r.Usage, wireNamedHistory.typed); err != nil {
 		return nil, err
 	}
 	d.Comments.Served, d.History.Served = r.Served, r.Served
@@ -265,24 +265,24 @@ func (c *Client) IssueComments(ctx context.Context, issueID, after string) (Page
 
 var opIssueHistory = newQuery("IssueHistory", "node", `query IssueHistory($id: String!, $first: Int!, $after: String) {
   node: issue(id: $id) {
-    page: history(first: $first, after: $after) { nodes { ...HistoryFields } pageInfo { hasNextPage endCursor } }
+    page: history(first: $first, after: $after) { nodes { ...NamedHistoryFields } pageInfo { hasNextPage endCursor } }
   }
 }
-`+historyFields).withMaxBody(issueBodyBytes)
+`+namedHistoryFields+historyFields).withMaxBody(issueBodyBytes)
 
 // IssueHistory returns the page of an issue's recorded changes after the
 // cursor after, newest first (Linear's default order, by creation: an
 // entry recorded during a walk comes before its cursor and is left to
-// the next read).
+// the next read), each with the entities it names.
 // Changes made in a window after creation that ends between 2m30s and 3m
 // (measured by TestLiveHistoryFoldBisect) are folded into the creation,
 // not entries, and an entry can be recorded a few seconds after its
 // change.
-func (c *Client) IssueHistory(ctx context.Context, issueID, after string) (Page[HistoryEntry], error) {
+func (c *Client) IssueHistory(ctx context.Context, issueID, after string) (Page[NamedEntry], error) {
 	if issueID == "" {
-		return Page[HistoryEntry]{}, invalid("IssueHistory", "an issue ID is required")
+		return Page[NamedEntry]{}, invalid("IssueHistory", "an issue ID is required")
 	}
-	return fetchPage(ctx, c, opIssueHistory, issuePageVars{pageVars{historyPage, after}, issueID}, wireHistory.typed)
+	return fetchPage(ctx, c, opIssueHistory, issuePageVars{pageVars{historyPage, after}, issueID}, wireNamedHistory.typed)
 }
 
 var opIssueStateSpans = newQuery("IssueStateSpans", "node", `query IssueStateSpans($id: String!, $first: Int!, $after: String) {

@@ -64,14 +64,14 @@ func (p *Provider) Identity(ctx context.Context) (tracker.User, error) {
 // user is a Linear user as the neutral model names one: the full name,
 // or the display name when there is none.
 func user(u linear.User) tracker.User {
-	return tracker.User{ID: tracker.UserID(u.ID), Name: userName(u), Email: u.Email, AvatarURL: u.AvatarURL, Active: u.Active}
+	return tracker.User{ID: tracker.UserID(u.ID), Name: userName(u.Name, u.DisplayName), Email: u.Email, AvatarURL: u.AvatarURL, Active: u.Active}
 }
 
-func userName(u linear.User) string {
-	if u.Name != "" {
-		return u.Name
+func userName(name, displayName string) string {
+	if name != "" {
+		return name
 	}
-	return u.DisplayName
+	return displayName
 }
 
 // Projects are the teams the key can see.

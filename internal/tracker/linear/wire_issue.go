@@ -8,9 +8,8 @@ import "time"
 // single-issue reads carry (describedFields). Linear charged a page of
 // 42 issues with these fields 8 points at first 100 and at 250
 // (measured).
-// Related entities are selected by ID, and their names are read by ID
-// for the IDs a result names, with two exceptions nested in the issue
-// because they cost less than a second request. The team's estimate
+// Related entities are selected by ID, with two exceptions nested in the
+// issue because they cost less than a second request. The team's estimate
 // scale is a scalar on an object already selected, so a list of rows
 // tells whether their estimates count without reading the team. The
 // labels' names cost a page a few points whatever the nested page size
@@ -280,6 +279,67 @@ func numberChange(from, to *float64) *NumberChange {
 		return nil
 	}
 	return &NumberChange{From: from, To: to}
+}
+
+// namedHistoryFields is historyFields with what a ticket shows of each
+// entity an entry names, for the reads of a ticket's history
+// (NamedEntry). Each nested object costs about 125 points per 100 entries
+// of the page (1,500 for these twelve at history(first: 100), measured),
+// so it selects only what an event shows: a user's name and display
+// name, a cycle's number and name, a project's name, a team's key and
+// name, a parent's identifier and the labels' names. A workflow state is
+// named by the team's states the ticket read holds. A document that
+// spreads it carries historyFields too.
+const namedHistoryFields = `fragment NamedHistoryFields on IssueHistory {
+  ...HistoryFields
+  fromAssignee { id name displayName } toAssignee { id name displayName }
+  fromCycle { id number name } toCycle { id number name }
+  fromProject { id name } toProject { id name }
+  fromTeam { id key name } toTeam { id key name }
+  fromParent { id identifier } toParent { id identifier }
+  addedLabels { id name } removedLabels { id name }
+}`
+
+type wireNamedHistory struct {
+	wireHistory
+	FromAssignee  *UserRef      `json:"fromAssignee"`
+	ToAssignee    *UserRef      `json:"toAssignee"`
+	FromCycle     *wireCycleRef `json:"fromCycle"`
+	ToCycle       *wireCycleRef `json:"toCycle"`
+	FromProject   *ProjectRef   `json:"fromProject"`
+	ToProject     *ProjectRef   `json:"toProject"`
+	FromTeam      *TeamRef      `json:"fromTeam"`
+	ToTeam        *TeamRef      `json:"toTeam"`
+	FromParent    *IssueKey     `json:"fromParent"`
+	ToParent      *IssueKey     `json:"toParent"`
+	AddedLabels   []LabelRef    `json:"addedLabels"`
+	RemovedLabels []LabelRef    `json:"removedLabels"`
+}
+
+// wireCycleRef is a cycle as namedHistoryFields selects it.
+type wireCycleRef struct {
+	ID     string  `json:"id"`
+	Number float64 `json:"number"`
+	Name   string  `json:"name"`
+}
+
+func (w *wireCycleRef) typed() *CycleRef {
+	if w == nil {
+		return nil
+	}
+	return &CycleRef{ID: w.ID, Number: int(w.Number), Name: w.Name}
+}
+
+func (w wireNamedHistory) typed() NamedEntry {
+	return NamedEntry{
+		HistoryEntry: w.wireHistory.typed(),
+		FromAssignee: w.FromAssignee, ToAssignee: w.ToAssignee,
+		FromCycle: w.FromCycle.typed(), ToCycle: w.ToCycle.typed(),
+		FromProject: w.FromProject, ToProject: w.ToProject,
+		FromTeam: w.FromTeam, ToTeam: w.ToTeam,
+		FromParent: w.FromParent, ToParent: w.ToParent,
+		AddedLabels: w.AddedLabels, RemovedLabels: w.RemovedLabels,
+	}
 }
 
 const stateSpanFields = `fragment StateSpanFields on IssueStateSpan { id stateId startedAt endedAt }`

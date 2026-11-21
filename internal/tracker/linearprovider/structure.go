@@ -111,16 +111,22 @@ func sprints(cycles []linear.Cycle) []tracker.Sprint {
 	return out
 }
 
+// cycleName is how a cycle is shown: its name, or "Cycle" and its
+// number when it has none.
+func cycleName(number int, name string) string {
+	if name != "" {
+		return name
+	}
+	return "Cycle " + strconv.Itoa(number)
+}
+
 // sprint is a cycle: active, future, or closed once past. Start and End
 // are the cycle's planned dates, which Linear sets for every cycle;
 // Completed is zero until Linear completes it.
 func sprint(c linear.Cycle) tracker.Sprint {
 	s := tracker.Sprint{
-		ID: tracker.SprintID(c.ID), Board: tracker.BoardID(c.TeamID), Name: c.Name, Goal: c.Description,
+		ID: tracker.SprintID(c.ID), Board: tracker.BoardID(c.TeamID), Name: cycleName(c.Number, c.Name), Goal: c.Description,
 		Start: c.StartsAt, End: c.EndsAt,
-	}
-	if s.Name == "" {
-		s.Name = "Cycle " + strconv.Itoa(c.Number)
 	}
 	switch {
 	case c.IsActive:

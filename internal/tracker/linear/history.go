@@ -19,7 +19,9 @@ import (
 // three-byte runes and ten labels each way, about 3.2 KB
 // (TestHistoryBatchFitsItsBound), so 50 issues of 250 such entries fit
 // in historyBodyBytes. An issue with more entries continues with
-// IssueHistory pages.
+// opIssueChanges pages. These reads select IDs alone: the mirror stores
+// them, so they leave out the names a ticket's history reads
+// (namedHistoryFields).
 const (
 	historyBatchIssues = 50
 	historyBodyBytes   = 40 << 20
@@ -118,7 +120,7 @@ func (c *Client) issueChanges(ctx context.Context, w wireIssueChanges, served ti
 	out := IssueChanges{IssueID: w.ID, TeamID: w.Team.id(), CreatedAt: w.CreatedAt, Entries: first.Items, Served: served}
 	after := first.EndCursor
 	for more := first.HasNextPage; more; {
-		p, err := c.IssueHistory(ctx, w.ID, after)
+		p, err := fetchPage(ctx, c, opIssueChanges, issuePageVars{pageVars{historyPage, after}, w.ID}, wireHistory.typed)
 		if err != nil {
 			return IssueChanges{}, err
 		}
@@ -127,3 +129,12 @@ func (c *Client) issueChanges(ctx context.Context, w wireIssueChanges, served ti
 	}
 	return out, nil
 }
+
+// opIssueChanges continues one issue's history past the page
+// IssueHistories nested, by ID as that read selects it.
+var opIssueChanges = newQuery("IssueChanges", "node", `query IssueChanges($id: String!, $first: Int!, $after: String) {
+  node: issue(id: $id) {
+    page: history(first: $first, after: $after) { nodes { ...HistoryFields } pageInfo { hasNextPage endCursor } }
+  }
+}
+`+historyFields).withMaxBody(issueBodyBytes)

@@ -211,10 +211,17 @@ func costWorkspace(now time.Time) trackerfake.LinearWorkspace {
 
 func newCostRun(t *testing.T) (*costRun, *scenarioClock) {
 	t.Helper()
+	return newCostRunOf(t, costWorkspace)
+}
+
+// newCostRunOf is a cost run against the fake holding the workspace
+// workspace builds at the run's start.
+func newCostRunOf(t *testing.T, workspace func(now time.Time) trackerfake.LinearWorkspace) (*costRun, *scenarioClock) {
+	t.Helper()
 	clock := &scenarioClock{now: time.Date(2026, 11, 19, 9, 0, 0, 0, time.UTC)}
 	e := trackerfake.New(trackerfake.Options{Now: clock.Now})
 	t.Cleanup(e.Close)
-	if err := e.Seed(trackerfake.Fixture{Linear: []trackerfake.LinearWorkspace{costWorkspace(clock.Now())}}); err != nil {
+	if err := e.Seed(trackerfake.Fixture{Linear: []trackerfake.LinearWorkspace{workspace(clock.Now())}}); err != nil {
 		t.Fatal(err)
 	}
 	h, err := e.Handler(trackerfake.Origin{Tracker: trackerfake.TrackerLinear})

@@ -89,9 +89,10 @@ func TestHistoryFailure(t *testing.T) {
 }
 
 // Detail maps the issue, its comments, every link past the first page,
-// fields, moves and a history whose IDs are named by reads of exactly
-// the IDs the issue and its entries name; the issue's own project name
-// comes with the issue.
+// fields, moves and a history whose IDs are named by what each entry
+// came with, in the issue's read and the history page after it, with no
+// read by ID; the issue's own project name comes with the issue, and an
+// entity an entry came without is shown by its ID.
 func TestDetail(t *testing.T) {
 	t.Parallel()
 	is := issue(1, 1)
@@ -110,18 +111,11 @@ func TestDetail(t *testing.T) {
 		States: []string{lineartest.State{ID: "s-todo", Name: "Todo", Type: "unstarted", Team: web}.JSON(),
 			lineartest.State{ID: "s-done", Name: "Done", Type: "completed", Team: web}.JSON()},
 	})
-	parent := issue(2, 2)
 	p, _ := newProvider(t,
 		lineartest.Exchange{Op: "Issue", Vars: `{"id":"` + issueID(1) + `"}`, Body: `{"data":{"issue":` + detail + `}}`},
 		lineartest.Exchange{Op: "IssueRelations", Vars: `{"id":"` + issueID(1) + `","first":100,"after":"r1"}`,
 			Body: nodePage(lineartest.RelationJSON("rel-3", "related", self, third))},
 		lineartest.Exchange{Op: "IssueHistory", Vars: `{"id":"` + issueID(1) + `","first":250,"after":"h-c1"}`, Body: nodePage(history[2])},
-		labelsByIDX([]string{"label-gone"}),
-		byIDX("UsersByID", []string{"user-1"}, lineartest.User{ID: "user-1", Name: "User 1"}.JSON()),
-		byIDX("CyclesByID", []string{"c1"}, lineartest.Cycle{ID: "c1", Number: 7, Team: web, StartsAt: at, EndsAt: at, Active: true}.JSON()),
-		byIDX("ProjectsByID", []string{"project-0"}, lineartest.Project{ID: "project-0", Name: "Old"}.JSON()),
-		byIDX("TeamsByID", []string{app, web}, lineartest.NewTeam("APP").JSON(), lineartest.NewTeam("WEB").JSON()),
-		issuesX(byIDVars([]string{issueID(2)}, nil, true), parent),
 	)
 	d, err := p.Detail(context.Background(), tracker.IssueID(issueID(1)))
 	if err != nil {
@@ -130,16 +124,27 @@ func TestDetail(t *testing.T) {
 	checkDetail(t, d)
 }
 
-// detailHistory is TestDetail's history, newest first.
+// detailHistory is TestDetail's history, newest first. The label
+// label-gone is deleted: Linear leaves it out of the entry's list.
 func detailHistory() []string {
 	archived := true
 	return []string{
 		lineartest.HistoryEntry{ID: "h3", CreatedAt: "2026-11-04T09:00:00.000Z", Archived: &archived, FromPriority: f64(0), ToPriority: f64(2),
-			FromTeam: app, ToTeam: web}.JSON(),
+			FromTeam: app, ToTeam: web, Names: map[string]string{
+				"fromTeam": lineartest.NewTeam("APP").JSON(), "toTeam": lineartest.NewTeam("WEB").JSON(),
+			}}.JSON(),
 		lineartest.HistoryEntry{ID: "h2", CreatedAt: "2026-11-03T09:00:00.000Z", Actor: "user-1", FromParent: issueID(2), AddedLabelIDs: []string{"label-bug"},
-			RemovedLabelIDs: []string{"label-gone"}, FromTitle: "Old", ToTitle: "New", FromProject: "project-0", ToProject: "project-1"}.JSON(),
+			RemovedLabelIDs: []string{"label-gone"}, FromTitle: "Old", ToTitle: "New", FromProject: "project-0", ToProject: "project-1", Names: map[string]string{
+				"fromParent":  `{"id":"` + issueID(2) + `","identifier":"WEB-2"}`,
+				"addedLabels": `[` + lineartest.Label{ID: "label-bug", Name: "Bug"}.JSON() + `]`, "removedLabels": `[]`,
+				"fromProject": lineartest.Project{ID: "project-0", Name: "Old"}.JSON(),
+				"toProject":   lineartest.Project{ID: "project-1", Name: "Launch"}.JSON(),
+			}}.JSON(),
 		lineartest.HistoryEntry{ID: "h1", CreatedAt: "2026-11-02T09:00:00.000Z", Actor: "user-1", FromState: "s-done", ToState: "s-todo",
-			ToAssignee: "user-1", ToCycle: "c1", FromProject: "", ToProject: "project-1", ToEstimate: f64(3)}.JSON(),
+			ToAssignee: "user-1", ToCycle: "c1", FromProject: "", ToProject: "project-1", ToEstimate: f64(3), Names: map[string]string{
+				"toAssignee": lineartest.User{ID: "user-1", Name: "User 1"}.JSON(),
+				"toCycle":    lineartest.Cycle{ID: "c1", Number: 7, Team: web, StartsAt: at, EndsAt: at, Active: true}.JSON(),
+			}}.JSON(),
 	}
 }
 

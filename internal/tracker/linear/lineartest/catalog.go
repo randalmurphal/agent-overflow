@@ -148,7 +148,9 @@ func (c Comment) JSON() string {
 // HistoryEntry is one recorded change. Each pair of From and To is null
 // when both are empty, as Linear sends a change the entry does not
 // record; a number pair is null when both are nil. An empty UpdatedAt is
-// CreatedAt.
+// CreatedAt. Names holds what a ticket read nests of the entities the
+// entry names, by field (fromAssignee, addedLabels, ...), each as JSON; a
+// field it lacks is null.
 type HistoryEntry struct {
 	ID, CreatedAt, UpdatedAt, Actor string
 	FromState, ToState              string
@@ -162,6 +164,7 @@ type HistoryEntry struct {
 	FromPriority, ToPriority        *float64
 	AddedLabelIDs, RemovedLabelIDs  []string
 	Archived                        *bool
+	Names                           map[string]string
 }
 
 func (h HistoryEntry) JSON() string {
@@ -184,6 +187,9 @@ func (h HistoryEntry) JSON() string {
 	pair(m, "fromParentId", "toParentId", h.FromParent, h.ToParent)
 	pair(m, "fromTeamId", "toTeamId", h.FromTeam, h.ToTeam)
 	pair(m, "fromTitle", "toTitle", h.FromTitle, h.ToTitle)
+	for field, v := range h.Names {
+		m[field] = json.RawMessage(v)
+	}
 	return encode(m)
 }
 

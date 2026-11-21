@@ -114,7 +114,7 @@ var issueFields = fieldTable[issueObj]{
 	"history": func(o issueObj) any {
 		var out []gqlObject
 		for i := range o.is.History {
-			out = append(out, historyObj{&o.is.History[i]})
+			out = append(out, historyObj{o.w, &o.is.History[i]})
 		}
 		return out
 	},

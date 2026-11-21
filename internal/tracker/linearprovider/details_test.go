@@ -13,10 +13,9 @@ import (
 	"agent-overflow/internal/tracker/linear"
 )
 
-// Details reads its issues linear.MaxIssueDetails to a request and the
-// names their histories need in one request a kind for all of them; each
-// detail is what Detail reads. An ID Linear does not return, or that is
-// no issue ID, is Missing.
+// Details reads its issues linear.MaxIssueDetails to a request, with the
+// names their histories need; each detail is what Detail reads. An ID
+// Linear does not return, or that is no issue ID, is Missing.
 func TestDetails(t *testing.T) {
 	s := newScenario(t)
 	ws := scenarioWorkspace()
@@ -26,7 +25,7 @@ func TestDetails(t *testing.T) {
 		ws.Issues = append(ws.Issues, trackerfake.LinearIssue{
 			ID: id, Team: scTeam, Number: float64(10 + i), Title: fmt.Sprint("Task ", i+1), State: scTodo, Creator: scUser1,
 			SortOrder: float64(1000 + i), CreatedAt: scStart.Add(-72 * time.Hour), UpdatedAt: scStart.Add(-time.Hour),
-			// Each names the same user, read once for all of them.
+			// Each names a user, which comes with the entry.
 			History: []trackerfake.LinearHistory{{ID: sid(300 + i), CreatedAt: scStart.Add(-2 * time.Hour), Actor: scUser1, ToAssignee: scUser2}},
 		})
 		ids = append(ids, tracker.IssueID(id))
@@ -44,7 +43,7 @@ func TestDetails(t *testing.T) {
 	for _, r := range s.e.Requests(0).Requests[since:] {
 		ops[r.Operation]++
 	}
-	if want := map[string]int{"IssueDetails": 2, "UsersByID": 1}; !reflect.DeepEqual(ops, want) {
+	if want := map[string]int{"IssueDetails": 2}; !reflect.DeepEqual(ops, want) {
 		t.Errorf("requests %v, want %v", ops, want)
 	}
 	if !slices.Equal(got.Missing, []tracker.IssueID{"WEB-1", tracker.IssueID(sid(999))}) || len(got.Details) != len(ids) {

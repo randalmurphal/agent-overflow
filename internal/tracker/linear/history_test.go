@@ -48,9 +48,9 @@ func TestIssueHistories(t *testing.T) {
 	f := newFake(t,
 		lineartest.Exchange{Op: "IssueHistories", Vars: `{"filter":{"and":[{"id":{"in":` + idList(ids[:historyBatchIssues]) + `}}]},"first":50,"entries":250}`,
 			Body: lineartest.Data(lineartest.PageJSON(first, false, ""))},
-		lineartest.Exchange{Op: "IssueHistory", Vars: `{"id":"` + uuidN(1) + `","first":250,"after":"hc1"}`,
+		lineartest.Exchange{Op: "IssueChanges", Vars: `{"id":"` + uuidN(1) + `","first":250,"after":"hc1"}`,
 			Body: `{"data":{` + lineartest.NodePageJSON([]string{older}, true, "hc2") + `}}`},
-		lineartest.Exchange{Op: "IssueHistory", Vars: `{"id":"` + uuidN(1) + `","first":250,"after":"hc2"}`,
+		lineartest.Exchange{Op: "IssueChanges", Vars: `{"id":"` + uuidN(1) + `","first":250,"after":"hc2"}`,
 			Body: `{"data":{` + lineartest.NodePageJSON([]string{oldest}, false, "") + `}}`},
 		lineartest.Exchange{Op: "IssueHistories", Vars: `{"filter":{"and":[{"id":{"in":` + idList(ids[historyBatchIssues:]) + `}}]},"first":1,"entries":250}`,
 			Body: lineartest.Data(lineartest.PageJSON([]string{historiesNode(uuidN(historyBatchIssues+1), "team-app", nil, false, "")}, false, ""))},
@@ -105,7 +105,7 @@ func TestIssueHistoriesRefusesBadPaging(t *testing.T) {
 	f := newFake(t,
 		lineartest.Exchange{Op: "IssueHistories", Vars: vars, Body: lineartest.Data(lineartest.PageJSON(nil, true, "p2"))},
 		lineartest.Exchange{Op: "IssueHistories", Vars: vars, Body: lineartest.Data(lineartest.PageJSON([]string{node}, false, ""))},
-		lineartest.Exchange{Op: "IssueHistory", Vars: `{"id":"` + uuid1 + `","first":250,"after":"hc1"}`,
+		lineartest.Exchange{Op: "IssueChanges", Vars: `{"id":"` + uuid1 + `","first":250,"after":"hc1"}`,
 			Body: `{"data":{` + lineartest.NodePageJSON(nil, true, "hc1") + `}}`},
 	)
 	c := f.client(t)
@@ -146,4 +146,21 @@ func TestHistoryBatchFitsItsBound(t *testing.T) {
 		t.Errorf("a worst-case batch is %d bytes, over the bound of %d (entry %d bytes)", size, historyBodyBytes, len(entry))
 	}
 	t.Logf("worst-case entry %d bytes, batch %d of %d", len(entry), size, historyBodyBytes)
+}
+
+// The mirror's history reads select IDs alone, and a ticket's history
+// reads the names its events show with every page: each nested name
+// costs points on every page (namedHistoryFields).
+func TestOnlyTicketHistoryReadsNames(t *testing.T) {
+	t.Parallel()
+	for _, op := range []operation{opIssueHistories, opIssueChanges} {
+		if strings.Contains(op.text, "NamedHistoryFields") {
+			t.Errorf("%s selects the names a ticket's history shows", op.name)
+		}
+	}
+	for _, op := range []operation{opIssue, opIssueDetails, opIssueHistory} {
+		if !strings.Contains(op.text, "...NamedHistoryFields") {
+			t.Errorf("%s leaves out the names a ticket's history shows", op.name)
+		}
+	}
 }

@@ -484,10 +484,14 @@ leaves out an ID that names no issue the user can see (Linear charged the
 same points for 1 and for 10,
 [measured](../references/tracker-api-measurements.md)). `ListIssuePositions` lists
 only each issue's ID and manual order. A comment, relation, cycle or team
-is read by its ID, and users, labels, projects, cycles and teams by a set
-of IDs, so a caller reads the names a result references, never a catalog.
-Label names come nested with each issue; the read by ID covers only the
-labels that list leaves out. `TeamBoard` reads a team, its states, the
+is read by its ID, and labels by a set of IDs. Label names come nested
+with each issue; the read by ID covers only the labels that list leaves
+out. A ticket's history (`Issue`, `IssueDetails`, `IssueHistory`) carries
+with each entry the users, cycles, projects, teams, parent issues and
+labels it names, in the same request; one Linear answers as null (deleted,
+or hidden from the key) leaves its ID alone. Each nested entity costs
+points on every page ([measured](../references/tracker-api-measurements.md)),
+so the reads the mirror makes (`IssueHistories`) select IDs alone. `TeamBoard` reads a team, its states, the
 cycles a window keeps and the workspace's users in one request, at the
 points of those four reads apart less three requests; only a list longer
 than its first page sends more, continued by that list's own read.

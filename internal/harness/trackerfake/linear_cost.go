@@ -34,9 +34,13 @@ import (
 //   - Labels nested in an issue cost 4 whatever their first (fitted:
 //     two issues cost 3 more with labels than without; the fit charges
 //     4 so the card page is 8).
-//   - A history page nested in an issue costs 1 and 4 an entry of its
-//     first (fitted: 203, 403 and 1,003 points at first 50, 100 and 250,
-//     exactly what this gives).
+//   - A history page costs 1 and 4 an entry of its first (fitted: 203,
+//     403 and 1,003 points at first 50, 100 and 250, exactly what this
+//     gives), and each object its entries select 1.25 more an entry,
+//     rounded down for the page (fitted to one point: twelve objects
+//     naming an entry's users, cycles, projects, teams, parents and labels
+//     cost 1,500 more at first 100; how the charge splits between single
+//     objects and label lists is unverified).
 //
 // A connection's default first is 50 (documented).
 const (
@@ -48,6 +52,7 @@ const (
 	linearLabelsPoints       = 4
 	linearHistoryPagePoints  = 1
 	linearHistoryEntry       = 4
+	linearHistoryObjectPer4  = 5 // an object in a history entry costs 5/4 an entry
 	linearDefaultFirst       = 50
 )
 
@@ -116,7 +121,8 @@ func (r *gqlRun) connectionCost(f *ast.Field, typ string, sub ast.SelectionSet, 
 	case inIssue && typ == "IssueLabelConnection":
 		return linearLabelsPoints
 	case typ == "IssueHistoryConnection":
-		return linearHistoryPagePoints + first*linearHistoryEntry
+		objects := r.objectCost(node, nodes) - 1
+		return linearHistoryPagePoints + first*linearHistoryEntry + first*objects*linearHistoryObjectPer4/4
 	}
 	return first * r.objectCost(node, nodes)
 }

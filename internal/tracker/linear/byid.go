@@ -9,10 +9,10 @@ import (
 	"agent-overflow/internal/tracker/trackerapi"
 )
 
-// Reads of named entities: one entity by its ID, and the entities a set
-// of IDs names. A caller that needs the names of what a result
-// references reads exactly those, at a cost that grows with them, never
-// a workspace catalog.
+// Reads of named entities: one entity by its ID, and the labels a set of
+// IDs names. A caller that needs the names of labels an issue read left
+// out reads exactly those, at a cost that grows with them, never a
+// workspace catalog.
 
 // maxIDs is the most IDs one by-ID request names, maxIssuePage, so a
 // request is one page.
@@ -110,18 +110,6 @@ func byIDs[W, T any](ctx context.Context, c *Client, op operation, ids []string,
 	})
 }
 
-var opUsersByID = newQuery("UsersByID", "page", `query UsersByID($ids: [ID!]!, $first: Int!, $after: String) {
-  page: users(filter: { id: { in: $ids } }, includeDisabled: true, first: $first, after: $after) {
-    nodes { ...UserFields } pageInfo { hasNextPage endCursor }
-  }
-}
-`+userFields)
-
-// UsersByID returns the users ids names, deactivated ones included.
-func (c *Client) UsersByID(ctx context.Context, ids []string) ([]User, error) {
-	return byIDs(ctx, c, opUsersByID, ids, same[User])
-}
-
 var opLabelsByID = newQuery("LabelsByID", "page", `query LabelsByID($ids: [ID!]!, $first: Int!, $after: String) {
   page: issueLabels(filter: { id: { in: $ids } }, includeArchived: true, first: $first, after: $after) {
     nodes { ...LabelFields } pageInfo { hasNextPage endCursor }
@@ -132,44 +120,6 @@ var opLabelsByID = newQuery("LabelsByID", "page", `query LabelsByID($ids: [ID!]!
 // LabelsByID returns the labels ids names, archived ones included.
 func (c *Client) LabelsByID(ctx context.Context, ids []string) ([]Label, error) {
 	return byIDs(ctx, c, opLabelsByID, ids, wireLabel.typed)
-}
-
-var opProjectsByID = newQuery("ProjectsByID", "page", `query ProjectsByID($ids: [ID!]!, $first: Int!, $after: String) {
-  page: projects(filter: { id: { in: $ids } }, includeArchived: true, first: $first, after: $after) {
-    nodes { ...ProjectFields } pageInfo { hasNextPage endCursor }
-  }
-}
-`+projectFields)
-
-// ProjectsByID returns the projects ids names, archived ones included.
-func (c *Client) ProjectsByID(ctx context.Context, ids []string) ([]Project, error) {
-	return byIDs(ctx, c, opProjectsByID, ids, wireProject.typed)
-}
-
-var opCyclesByID = newQuery("CyclesByID", "page", `query CyclesByID($ids: [ID!]!, $first: Int!, $after: String) {
-  page: cycles(filter: { id: { in: $ids } }, includeArchived: true, first: $first, after: $after) {
-    nodes { ...CycleFields } pageInfo { hasNextPage endCursor }
-  }
-}
-`+cycleFields)
-
-// CyclesByID returns the cycles ids names, of any team, archived ones
-// included.
-func (c *Client) CyclesByID(ctx context.Context, ids []string) ([]Cycle, error) {
-	return byIDs(ctx, c, opCyclesByID, ids, wireCycle.typed)
-}
-
-var opTeamsByID = newQuery("TeamsByID", "page", `query TeamsByID($ids: [ID!]!, $first: Int!, $after: String) {
-  page: teams(filter: { id: { in: $ids } }, includeArchived: true, first: $first, after: $after) {
-    nodes { ...TeamFields } pageInfo { hasNextPage endCursor }
-  }
-}
-`+teamFields)
-
-// TeamsByID returns the teams ids names that the key can see, archived
-// ones included.
-func (c *Client) TeamsByID(ctx context.Context, ids []string) ([]Team, error) {
-	return byIDs(ctx, c, opTeamsByID, ids, wireTeam.typed)
 }
 
 var opTeamsByKey = newQuery("TeamsByKey", "page", `query TeamsByKey($filter: TeamFilter!, $first: Int!, $after: String) {

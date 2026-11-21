@@ -72,7 +72,10 @@ var relationFields = fieldTable[relationObj]{
 	"relatedIssue": func(o relationObj) any { return o.w.issueRef(o.r.Related) },
 }
 
-type historyObj struct{ h *LinearHistory }
+type historyObj struct {
+	w *linearWorkspace
+	h *LinearHistory
+}
 
 func (historyObj) typeName() string                { return "IssueHistory" }
 func (o historyObj) value(name string) (any, bool) { return historyFields.get(o, name) }
@@ -85,6 +88,40 @@ func historyID(f func(h *LinearHistory) string) func(historyObj) any {
 // historyNum is a history field holding a number, null when unset.
 func historyNum(f func(h *LinearHistory) *float64) func(historyObj) any {
 	return func(o historyObj) any { return numOrNil(f(o.h)) }
+}
+
+// historyRef is a history field naming an entity by the ID f gives: the
+// entity, null when unset or when the workspace lacks it. The schema
+// makes each such field nullable (documented); that Linear answers null
+// for an entity deleted or hidden from the key, and still answers an
+// archived one, is unverified.
+func historyRef(f func(h *LinearHistory) string, ref func(w *linearWorkspace, id string) any) func(historyObj) any {
+	return func(o historyObj) any {
+		if id := f(o.h); id != "" {
+			return ref(o.w, id)
+		}
+		return nil
+	}
+}
+
+// historyLabels is a history field listing the labels f names that the
+// workspace holds, archived ones included, in order; null when it names
+// none. That Linear leaves a deleted label out of the list rather than
+// failing it is unverified.
+func historyLabels(f func(h *LinearHistory) []string) func(historyObj) any {
+	return func(o historyObj) any {
+		ids := f(o.h)
+		if len(ids) == 0 {
+			return nil
+		}
+		out := []gqlObject{}
+		for _, id := range ids {
+			if l := o.w.label(id); l != nil {
+				out = append(out, labelObj{o.w, l})
+			}
+		}
+		return out
+	}
 }
 
 var historyFields = fieldTable[historyObj]{
@@ -112,6 +149,18 @@ var historyFields = fieldTable[historyObj]{
 	"updatedAt":       func(o historyObj) any { return o.h.CreatedAt },
 	"addedLabelIds":   func(o historyObj) any { return listOrNil(o.h.AddedLabels) },
 	"removedLabelIds": func(o historyObj) any { return listOrNil(o.h.RemovedLabels) },
+	"fromAssignee":    historyRef(func(h *LinearHistory) string { return h.FromAssignee }, (*linearWorkspace).userRef),
+	"toAssignee":      historyRef(func(h *LinearHistory) string { return h.ToAssignee }, (*linearWorkspace).userRef),
+	"fromCycle":       historyRef(func(h *LinearHistory) string { return h.FromCycle }, (*linearWorkspace).cycleRef),
+	"toCycle":         historyRef(func(h *LinearHistory) string { return h.ToCycle }, (*linearWorkspace).cycleRef),
+	"fromProject":     historyRef(func(h *LinearHistory) string { return h.FromProject }, (*linearWorkspace).projectRef),
+	"toProject":       historyRef(func(h *LinearHistory) string { return h.ToProject }, (*linearWorkspace).projectRef),
+	"fromTeam":        historyRef(func(h *LinearHistory) string { return h.FromTeam }, (*linearWorkspace).teamRef),
+	"toTeam":          historyRef(func(h *LinearHistory) string { return h.ToTeam }, (*linearWorkspace).teamRef),
+	"fromParent":      historyRef(func(h *LinearHistory) string { return h.FromParent }, (*linearWorkspace).issueRef),
+	"toParent":        historyRef(func(h *LinearHistory) string { return h.ToParent }, (*linearWorkspace).issueRef),
+	"addedLabels":     historyLabels(func(h *LinearHistory) []string { return h.AddedLabels }),
+	"removedLabels":   historyLabels(func(h *LinearHistory) []string { return h.RemovedLabels }),
 	"archived": func(o historyObj) any {
 		if o.h.Archived == nil {
 			return nil

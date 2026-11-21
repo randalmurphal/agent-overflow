@@ -77,7 +77,9 @@ client contract it answers is
 - Linear history: changes within `linearFold` of an issue's creation fold
   into the creation and add no entry (measured: folded at 2m30s,
   recorded at 3m).
-  Later changes add one entry per update with every changed value.
+  Later changes add one entry per update with every changed value. An
+  entry's nested entities (`fromAssignee`, `addedLabels`, ...) answer
+  null, or leave a label out, for an ID the workspace lacks.
 - Each paging style has one windowing helper over every record a read
   matched: Jira's `offsetWindow` (`offsetPage`, `listPage`) and
   `tokenWindow`, Tempo's `page`, Linear's `connection`.
