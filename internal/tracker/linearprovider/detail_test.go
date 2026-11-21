@@ -90,9 +90,10 @@ func TestHistoryFailure(t *testing.T) {
 
 // Detail maps the issue, its comments, every link past the first page,
 // fields, moves and a history whose IDs are named by what each entry
-// came with, in the issue's read and the history page after it, with no
-// read by ID; the issue's own project name comes with the issue, and an
-// entity an entry came without is shown by its ID.
+// came with, in the issue's read and the two history pages after it, in
+// the order the pages hold them, with no read by ID; the issue's own
+// project name comes with the issue, and an entity an entry came without
+// is shown by its ID.
 func TestDetail(t *testing.T) {
 	t.Parallel()
 	is := issue(1, 1)
@@ -107,7 +108,7 @@ func TestDetail(t *testing.T) {
 		Relations:        []string{lineartest.RelationJSON("rel-1", "blocks", self, other)},
 		RelationCursor:   "r1",
 		InverseRelations: []string{lineartest.RelationJSON("rel-2", "similar", other, self)},
-		History:          history[:2], HistoryCursor: "h-c1",
+		History:          history[:1], HistoryCursor: "h-c1",
 		States: []string{lineartest.State{ID: "s-todo", Name: "Todo", Type: "unstarted", Team: web}.JSON(),
 			lineartest.State{ID: "s-done", Name: "Done", Type: "completed", Team: web}.JSON()},
 	})
@@ -115,7 +116,9 @@ func TestDetail(t *testing.T) {
 		lineartest.Exchange{Op: "Issue", Vars: `{"id":"` + issueID(1) + `"}`, Body: `{"data":{"issue":` + detail + `}}`},
 		lineartest.Exchange{Op: "IssueRelations", Vars: `{"id":"` + issueID(1) + `","first":100,"after":"r1"}`,
 			Body: nodePage(lineartest.RelationJSON("rel-3", "related", self, third))},
-		lineartest.Exchange{Op: "IssueHistory", Vars: `{"id":"` + issueID(1) + `","first":250,"after":"h-c1"}`, Body: nodePage(history[2])},
+		lineartest.Exchange{Op: "IssueHistory", Vars: `{"id":"` + issueID(1) + `","first":250,"after":"h-c1"}`,
+			Body: `{"data":{` + lineartest.NodePageJSON(history[1:2], true, "h-c2") + `}}`},
+		lineartest.Exchange{Op: "IssueHistory", Vars: `{"id":"` + issueID(1) + `","first":250,"after":"h-c2"}`, Body: nodePage(history[2])},
 	)
 	d, err := p.Detail(context.Background(), tracker.IssueID(issueID(1)))
 	if err != nil {

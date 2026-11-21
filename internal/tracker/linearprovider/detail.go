@@ -77,8 +77,11 @@ func (p *Provider) Details(ctx context.Context, issues []tracker.IssueID) (track
 // and history past the first page read, then the label names all of them
 // need.
 func (p *Provider) details(ctx context.Context, ds []*linear.IssueDetail) ([]tracker.Detail, error) {
+	n := names{states: map[string]string{}, labels: map[string]string{}, users: map[string]string{}, cycles: map[string]string{},
+		projects: map[string]string{}, teams: map[string]string{}, issues: map[string]string{}}
 	states := make([][]linear.WorkflowState, len(ds))
-	entries := make([][]linear.NamedEntry, len(ds))
+	older := make([][]linear.HistoryEntry, len(ds))
+	var labels []string
 	for i, d := range ds {
 		st := d.States
 		var err error
@@ -90,24 +93,27 @@ func (p *Provider) details(ctx context.Context, ds []*linear.IssueDetail) ([]tra
 		if states[i], err = boardStates(st); err != nil {
 			return nil, err
 		}
-		if entries[i], err = p.restOfHistory(ctx, d.ID, d.History); err != nil {
+		n.addIssue(d, states[i])
+		labels = append(labels, d.LabelIDs...)
+		if older[i], err = p.olderHistory(ctx, d, n); err != nil {
 			return nil, err
 		}
 	}
-	n, err := p.readNames(ctx, ds, states, entries)
-	if err != nil {
+	var err error
+	if n.labels, err = labelsByID(ctx, p, n.labels, labels); err != nil {
 		return nil, err
 	}
 	out := make([]tracker.Detail, len(ds))
 	for i, d := range ds {
-		out[i] = n.detail(d, states[i], entries[i])
+		out[i] = n.detail(d, states[i], older[i])
 	}
 	return out, nil
 }
 
 // detail is d as its ticket shows it, with its team's states and its
-// whole history, its IDs named by n.
-func (n names) detail(d *linear.IssueDetail, states []linear.WorkflowState, entries []linear.NamedEntry) tracker.Detail {
+// whole history, older being the entries after d's own page, its IDs
+// named by n.
+func (n names) detail(d *linear.IssueDetail, states []linear.WorkflowState, older []linear.HistoryEntry) tracker.Detail {
 	out := tracker.Detail{
 		Card: card(d.Issue, n.labels), URL: d.URL, Description: d.Description,
 		Fields:      detailFields(d.Issue, n),
@@ -118,8 +124,11 @@ func (n names) detail(d *linear.IssueDetail, states []linear.WorkflowState, entr
 	for _, r := range d.Relations {
 		out.Links = append(out.Links, link(d.ID, r))
 	}
-	for i := len(entries) - 1; i >= 0; i-- {
-		out.History = append(out.History, n.events(entries[i])...)
+	for i := len(older) - 1; i >= 0; i-- {
+		out.History = append(out.History, n.events(&older[i])...)
+	}
+	for i := len(d.History.Items) - 1; i >= 0; i-- {
+		out.History = append(out.History, n.events(&d.History.Items[i].HistoryEntry)...)
 	}
 	for _, s := range states {
 		out.Statuses = append(out.Statuses, status(s))
@@ -127,18 +136,22 @@ func (n names) detail(d *linear.IssueDetail, states []linear.WorkflowState, entr
 	return out
 }
 
-// restOfHistory is every history entry of an issue, newest first: first,
-// the page its detail held, and every page after it. History pages in
+// olderHistory is every history entry of d after the page d holds, newest
+// first, with what each page names added to n as the page arrives: the
+// entities a page came with are not kept past it. History pages in
 // Linear's order of creation, which no change moves an entry in.
-func (p *Provider) restOfHistory(ctx context.Context, id string, first linear.Page[linear.NamedEntry]) ([]linear.NamedEntry, error) {
-	out := first.Items
-	page := first
-	for page.HasNextPage {
+func (p *Provider) olderHistory(ctx context.Context, d *linear.IssueDetail, n names) ([]linear.HistoryEntry, error) {
+	var out []linear.HistoryEntry
+	for page := d.History; page.HasNextPage; {
 		var err error
-		if page, err = p.c.IssueHistory(ctx, id, page.EndCursor); err != nil {
-			return nil, fmt.Errorf("linearprovider: history of %s: %w", id, err)
+		if page, err = p.c.IssueHistory(ctx, d.ID, page.EndCursor); err != nil {
+			return nil, fmt.Errorf("linearprovider: history of %s: %w", d.ID, err)
 		}
-		out = append(out, page.Items...)
+		out = slices.Grow(out, len(page.Items))
+		for i := range page.Items {
+			n.add(&page.Items[i])
+			out = append(out, page.Items[i].HistoryEntry)
+		}
 	}
 	return out, nil
 }
@@ -244,41 +257,29 @@ func (n names) name(of map[string]string, id string) string {
 	return id
 }
 
-// readNames names what the issues of ds and their entries name: the
-// states from each issue's team's states, the project from the issue,
-// and what an entry names from what came with it. Labels an issue
-// carries that neither its nested list nor an entry named are read by
-// exactly those IDs in one request. states and entries are each issue's,
-// in ds' order.
-func (p *Provider) readNames(ctx context.Context, ds []*linear.IssueDetail, states [][]linear.WorkflowState, entries [][]linear.NamedEntry) (names, error) {
-	n := names{states: map[string]string{}, labels: map[string]string{}, users: map[string]string{}, cycles: map[string]string{},
-		projects: map[string]string{}, teams: map[string]string{}, issues: map[string]string{}}
-	var labels []string
-	for i, d := range ds {
-		for _, l := range d.Labels {
-			n.labels[l.ID] = l.Name
-		}
-		for _, s := range states[i] {
-			n.states[s.ID] = s.Name
-		}
-		if d.ProjectID != "" {
-			n.projects[d.ProjectID] = d.ProjectName
-		}
-		labels = append(labels, d.LabelIDs...)
-		for _, e := range entries[i] {
-			n.add(e)
-		}
+// addIssue names what d and its own page of history name: its labels and
+// project from the issue, the states from its team's, and what each entry
+// names from what came with it. A label d carries that neither its nested
+// list nor an entry names is read by its ID afterwards, in one request
+// for every issue.
+func (n names) addIssue(d *linear.IssueDetail, states []linear.WorkflowState) {
+	for _, l := range d.Labels {
+		n.labels[l.ID] = l.Name
 	}
-	var err error
-	if n.labels, err = labelsByID(ctx, p, n.labels, labels); err != nil {
-		return names{}, err
+	for _, s := range states {
+		n.states[s.ID] = s.Name
 	}
-	return n, nil
+	if d.ProjectID != "" {
+		n.projects[d.ProjectID] = d.ProjectName
+	}
+	for i := range d.History.Items {
+		n.add(&d.History.Items[i])
+	}
 }
 
 // add names what e came with. A side Linear answered null for is left
 // out, so the event shows its ID.
-func (n names) add(e linear.NamedEntry) {
+func (n names) add(e *linear.NamedEntry) {
 	for _, u := range []*linear.UserRef{e.FromAssignee, e.ToAssignee} {
 		if u != nil {
 			n.users[u.ID] = userName(u.Name, u.DisplayName)
@@ -312,7 +313,7 @@ func (n names) add(e linear.NamedEntry) {
 }
 
 // events are one history entry as the ticket shows it, a field each.
-func (n names) events(e linear.NamedEntry) []tracker.Event {
+func (n names) events(e *linear.HistoryEntry) []tracker.Event {
 	var out []tracker.Event
 	add := func(field, from, to string) {
 		out = append(out, tracker.Event{At: e.CreatedAt, Author: tracker.UserID(e.ActorID), Field: field, From: from, To: to})
