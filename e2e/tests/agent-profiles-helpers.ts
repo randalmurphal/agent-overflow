@@ -6,9 +6,9 @@
 // elsewhere; a spawn by that profile lands on its provider, model and
 // effort with its instructions and the call's appended to the worker's
 // system prompt; the spawn row shows them from the spawn's reply, also
-// after the worker is deleted and the page reloads; and the worker, and
+// after the worker is deleted and the page reloads; the worker, and
 // the copy behind the lead's thread_ask, at the limit, list no
-// thread_spawn.
+// thread_spawn; and Restore puts back the roster the computer starts with.
 import { expect, type Page } from '@playwright/test';
 
 import type { SeedResult } from './fixtures.js';
@@ -83,6 +83,34 @@ async function editRoster(page: Page, layout: Layout): Promise<void> {
   await card.getByLabel('Instructions, appended to the sub-thread\'s system prompt (optional)').fill(PROFILE.instructions);
   await card.getByLabel('Instructions, appended to the sub-thread\'s system prompt (optional)').blur();
   await page.getByTestId('agent-profiles-levels').selectOption('1');
+}
+
+/**
+ * Restore puts back the roster the computer itself starts with, which the
+ * page asks it for: the edited Scout is gone and the computer's seeds are
+ * saved and shown.
+ */
+async function restoreRoster(harness: HarnessApp, page: Page, layout: Layout): Promise<void> {
+  if ((await page.locator('html').getAttribute('data-compact-screen')) === 'thread') {
+    await page.getByTestId('compact-back').click();
+  }
+  await page.getByTestId('sidebar-settings-button').click();
+  await page.getByRole('tablist', { name: 'Settings Sections' }).getByRole('tab', { name: 'Agent profiles', exact: true }).click();
+  const seeds = await harness.rpc<{ profiles: Array<Record<string, string>>; notes: Array<Record<string, string>> }>('AgentRosterSeeds');
+  expect(seeds.profiles.length).toBeGreaterThan(0);
+  expect(seeds.profiles.some((profile) => profile.name === PROFILE.name)).toBe(false);
+  await expect(page.locator(`[data-testid="agent-profile"][data-profile-name="${PROFILE.name}"]`)).toHaveCount(1);
+  const restore = page.getByTestId('agent-profiles-restore');
+  if (layout === 'desktop') await restore.click();
+  else await restore.tap();
+  await expect(page.getByTestId('agent-profile')).toHaveCount(seeds.profiles.length);
+  expect(await page.getByTestId('agent-profile').evaluateAll((rows) => rows.map((row) => (row as HTMLElement).dataset.profileName)))
+    .toEqual(seeds.profiles.map((profile) => profile.name));
+  await expect.poll(async () => {
+    const saved = await harness.rpc<RosterSettings>('GetSettings');
+    return [saved.agentProfiles, saved.agentNotes];
+  }).toEqual([seeds.profiles, seeds.notes]);
+  await expect(page.getByTestId('agent-profiles-restore-refusal')).toHaveCount(0);
 }
 
 /**
@@ -313,6 +341,8 @@ export async function runAgentProfiles(harness: HarnessApp, page: Page, layout: 
     await harness.rpc('DeleteThread', workerId);
     await expect.poll(async () => (await threadRows(harness)).some((r) => r.id === workerId)).toBe(false);
     await expect(await spawnRowInstructions(harness, page)).toHaveText(whole, { useInnerText: true });
+
+    await restoreRoster(harness, page, layout);
   } finally {
     await harness.rpc('UpdateSettings', {
       agentProfiles: before.agentProfiles,
