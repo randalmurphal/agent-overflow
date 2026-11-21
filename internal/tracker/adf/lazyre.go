@@ -7,7 +7,8 @@ import (
 )
 
 // The package's tables and expressions are built at their first use, once,
-// so loading the package runs no code: TestInitCost holds it to that. A
+// so loading the package builds none of them: trackerapp's TestInitCost
+// holds its init to registering one goldmark node kind. A
 // package variable of either type below is declared with constant fields,
 // which the compiler lays out without init code. After the first use,
 // get is one atomic load.
