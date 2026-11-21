@@ -677,7 +677,7 @@ comment above `TestMirrorAtScale`
 ([`tracker_cache_scale_test.go`](../../internal/store/tracker_cache_scale_test.go)).
 
 Counts are exact. Times are one development machine's (Intel Core Ultra 9
-285HX, WSL2, Go 1.27.4): the first sync's is the fastest of five runs, a
+285HX, WSL2, Go 1.27.4): the first sync's is the fastest of three runs, a
 path's the fastest of three runs of five each.
 
 | First sync, one board | 5,000 | 20,000 |
@@ -686,9 +686,9 @@ path's the fastest of three runs of five each.
 | Provider calls (scripted) | 172 | 682 |
 | Requests, Jira through `trackerfake` | 239 | 944 |
 | Requests, Linear through `trackerfake` | 166 | 615 |
-| Write statements, in transactions | 740 in 178 | 2,915 in 703 |
-| Allocated, peak heap | 90 MB, 9.7 to 10.0 MB | 359 MB, 29.2 to 29.7 MB |
-| Time (scripted) | 1.21 s | 4.85 s |
+| Write statements, in transactions | 739 in 178 | 2,914 in 703 |
+| Allocated, peak heap | 90 MB, 9.8 to 10.3 MB | 358 MB, 29.0 to 29.4 MB |
+| Time (scripted) | 1.28 s | 5.25 s |
 | Store file per issue, after a checkpoint | 925 B | 867 B |
 
 Steady paths cost the same at both sizes, except the four that walk the
@@ -702,23 +702,23 @@ named rows.
 
 | Path (store) | Statements | 5,000 | 20,000 |
 |---|---|---|---|
-| Idle tick | 3 | 59 µs | 60 µs |
-| Delta, 100 changed | 11 | 6.5 ms | 8.4 ms |
-| History, 50 due | 6 | 12.0 ms | 12.2 ms |
-| Reconcile, complete listing | 3 | 5.1 ms | 23.4 ms |
-| Board view, 3 sections | 10 | 12.9 ms | 47.7 ms |
-| Section page, middle of a column | 3 | 0.67 ms | 0.77 ms |
-| Section counts | 4 | 9.4 ms | 41.1 ms |
-| Patch read, 1 or 100 changed, totals moved | 8 | 8.4 to 9.9 ms | 40.3 to 41.6 ms |
-| Patch read, 1 or 100 changed, totals held | 5 | 0.07 to 0.72 ms | 0.07 to 0.68 ms |
-| Ticket open, stored | 14 | 0.28 ms | 0.26 ms |
-| Jira round, 100 tickets, 10 changed | 21 | 4.7 ms | 4.9 ms |
-| Linear round, 100 tickets, 10 changed | 14 | 2.8 ms | 2.8 ms |
-| `New` | 0 | 12.9 ms | 13.2 ms |
+| Idle tick | 3 | 60 µs | 63 µs |
+| Delta, 100 changed | 11 | 6.7 ms | 9.2 ms |
+| History, 50 due | 6 | 11.2 ms | 11.3 ms |
+| Reconcile, complete listing | 3 | 4.3 ms | 22.4 ms |
+| Board view, 3 sections | 10 | 11.2 ms | 44.8 ms |
+| Section page, middle of a column | 3 | 0.70 ms | 0.72 ms |
+| Section counts | 4 | 8.4 ms | 39.2 ms |
+| Patch read, 1 or 100 changed, totals moved | 8 | 8.7 to 9.9 ms | 40.6 to 41.2 ms |
+| Patch read, 1 or 100 changed, totals held | 5 | 0.07 to 0.73 ms | 0.07 to 0.76 ms |
+| Ticket open, stored | 14 | 0.29 ms | 0.33 ms |
+| Jira round, 100 tickets, 10 changed | 21 | 5.4 ms | 5.5 ms |
+| Linear round, 100 tickets, 10 changed | 14 | 2.9 ms | 2.7 ms |
+| `New` | 0 | 13.8 ms | 15.2 ms |
 
 A reconcile whose listing leaves out a quarter of the board removes
 those rows in 8 statements at 5,000 issues and 22 at 20,000. Five boards
-of 4,000 issues on one root view in 11.7 ms. Every
+of 4,000 issues on one root view in 10.6 ms. Every
 statement of the mirror plans the same at 20,000 issues as on a small
 mirror, with no `sqlite_stat1`. Through `trackerfake` at 20,000 an idle
 tick, a delta of 100 and a Jira history read of 100 are 1, 1 and 4
@@ -727,8 +727,8 @@ requests; a reconcile is 4 Jira requests or 41 Linear ones.
 Retention does not grow with a board, except a reconcile pass that
 spans ticks: its pump holds the candidates left, at most one listing's,
 until the pass ends. Five shown boards and 50 shown
-tickets hold 123 to 142 KB of heap and 56 goroutines (each pump and the
-round with one timer) at both sizes; once released, 57 to 90 KB stay
+tickets hold 123 to 145 KB of heap and 56 goroutines (each pump and the
+round with one timer) at both sizes; once released, 65 to 88 KB stay
 (the event log) and no goroutine.
 
 ## Writes
