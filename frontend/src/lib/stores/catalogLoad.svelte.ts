@@ -27,7 +27,11 @@
 //
 // The timer runs while any catalog its reader covers wants a retry, so an
 // answer of one catalog cannot cancel the retry another one's failure asked
-// for, and repeated hellos cannot stack retries. A history generation
+// for, and repeated hellos cannot stack retries. A reader's attempt
+// consumes the retry it serves and is in flight until its reader's promise
+// settles; no timer runs for that reader and computer meanwhile, so a slow
+// answer is never superseded by its own retries, and the timer is
+// re-evaluated when the attempt ends. A history generation
 // observed mid-session puts every catalog of that computer back to
 // 'loading' and re-reads it: its rows describe a history it no longer has.
 // Detaching a computer drops its state and its timers.
@@ -74,7 +78,11 @@ const states = createKeyedSignalRegistry<CatalogLoad>(LOADING);
 // Catalogs, by catalogKey, whose last read asked for a retry.
 const wantsRetry = new Set<string>();
 
-type CatalogReader = (backend: BackendKey) => Promise<void>;
+/** Whether this read is a retry attempt: the retry timer's or the Retry button's. */
+export interface CatalogAttempt {
+  retry: boolean;
+}
+type CatalogReader = (backend: BackendKey, attempt: CatalogAttempt) => Promise<void>;
 interface RegisteredReader {
   kinds: readonly CatalogKind[];
   read: CatalogReader;
@@ -88,6 +96,8 @@ interface CatalogRetry {
 }
 // One per reader and computer.
 const retries = new Map<RegisteredReader, Map<BackendKey, CatalogRetry>>();
+// The reader attempts in flight, per reader and computer.
+const inFlight = new Map<RegisteredReader, Map<BackendKey, Set<object>>>();
 
 function catalogKey(kind: CatalogKind, backend: BackendKey): string {
   return `${kind}\u0000${backend}`;
@@ -108,9 +118,20 @@ export function catalogFailureShown(error: unknown): boolean {
 }
 
 /**
+ * Whether something re-reads a catalog after this failure by itself: its
+ * retry, or for a passive connection failure the reconnect's hello. A scope
+ * refusal waits for Retry: asking again cannot change a grant.
+ */
+export function catalogFailureRereads(error: unknown): boolean {
+  return !isScopeRefusal(error);
+}
+
+/**
  * Install how the catalogs `kinds` re-read one computer, together. The store
  * owning the rows registers it; this module never imports those stores. The
- * reader must settle through the catalog reads and handle its own rejection.
+ * reader must settle through the catalog reads and handle its own rejection,
+ * and resolve once the attempt has concluded: until then it is in flight and
+ * nothing retries that computer's catalogs through it.
  */
 export function registerCatalogReader(kinds: readonly CatalogKind[], read: CatalogReader): void {
   readers.push({ kinds, read });
@@ -152,8 +173,8 @@ function settleFailure(kind: CatalogKind, key: string, error: unknown): void {
     return;
   }
   states.set(key, { phase: 'failed', error: userFacingError(error, `Could not load ${kind}.`) });
-  if (isScopeRefusal(error)) wantsRetry.delete(key);
-  else wantsRetry.add(key);
+  if (catalogFailureRereads(error)) wantsRetry.add(key);
+  else wantsRetry.delete(key);
 }
 
 /**
@@ -168,21 +189,26 @@ export function settleCatalogAnswers(kind: CatalogKind, answered: Iterable<Backe
 /**
  * Re-read, now, every reader of `backend` that covers a catalog not loaded.
  * The failed state's Retry; a person acting, so the retry schedule starts
- * over.
+ * over. A reader with an attempt in flight reads nothing more: that attempt
+ * waits for its answer, so it is already the newest try.
  */
 export function retryCatalogLoad(backend: BackendKey): void {
   for (const reader of readers) {
     if (reader.kinds.every((kind) => untrack(() => states.get(catalogKey(kind, backend))).phase === 'loaded')) continue;
     clearRetry(reader, backend);
-    runReader(reader, backend);
+    if (!inFlight.get(reader)?.has(backend)) runReader(reader, backend, true);
   }
 }
 
-// Arm the reader's timer while any catalog it covers wants a retry; clear
-// it, schedule and all, once none does.
 function updateRetry(kind: CatalogKind, backend: BackendKey): void {
   const reader = readerOf(kind);
-  if (reader === undefined) return;
+  if (reader !== undefined) updateReaderRetry(reader, backend);
+}
+
+// Arm the reader's timer while any catalog it covers wants a retry and no
+// attempt of it is in flight; clear it, schedule and all, once none wants one.
+function updateReaderRetry(reader: RegisteredReader, backend: BackendKey): void {
+  if (inFlight.get(reader)?.has(backend)) return;
   if (!reader.kinds.some((covered) => wantsRetry.has(catalogKey(covered, backend)))) {
     clearRetry(reader, backend);
     return;
@@ -197,15 +223,33 @@ function updateRetry(kind: CatalogKind, backend: BackendKey): void {
   const scheduled = retry;
   scheduled.timer = setTimeout(() => {
     scheduled.timer = null;
-    runReader(reader, backend);
+    runReader(reader, backend, true);
   }, delay);
 }
 
-function runReader(reader: RegisteredReader, backend: BackendKey): void {
-  void reader.read(backend).catch((error: unknown) => {
+// Start an attempt: it consumes the retry its catalogs asked for and holds
+// the timer off until it concludes, then the timer is re-evaluated.
+function runReader(reader: RegisteredReader, backend: BackendKey, retry: boolean): void {
+  for (const kind of reader.kinds) wantsRetry.delete(catalogKey(kind, backend));
+  const scheduled = retries.get(reader)?.get(backend);
+  if (scheduled !== undefined && scheduled.timer !== null) {
+    clearTimeout(scheduled.timer);
+    scheduled.timer = null;
+  }
+  let byBackend = inFlight.get(reader);
+  if (byBackend === undefined) inFlight.set(reader, byBackend = new Map());
+  let attempts = byBackend.get(backend);
+  if (attempts === undefined) byBackend.set(backend, attempts = new Set());
+  const attempt = {};
+  attempts.add(attempt);
+  void reader.read(backend, { retry }).catch((error: unknown) => {
     // Readers settle their outcome before rejecting; this is only a reader
     // that broke its contract.
     console.error(`Failed to re-read the ${reader.kinds.join(' and ')} catalogs:`, error);
+  }).finally(() => {
+    if (!attempts.delete(attempt) || attempts.size > 0) return;
+    if (byBackend.get(backend) === attempts) byBackend.delete(backend);
+    updateReaderRetry(reader, backend);
   });
 }
 
@@ -222,11 +266,15 @@ function clearRetry(reader: RegisteredReader, backend: BackendKey): void {
 onBackendIdentity((_identity, backend, change) => {
   if (change !== 'generation' || !attachedBackends().some((entry) => entry.id === backend)) return;
   for (const kind of CATALOG_KINDS) states.set(catalogKey(kind, backend), LOADING);
-  for (const reader of readers) runReader(reader, backend);
+  for (const reader of readers) runReader(reader, backend, false);
 });
 
 function dropBackend(backend: BackendKey): void {
-  for (const reader of readers) clearRetry(reader, backend);
+  for (const reader of readers) {
+    clearRetry(reader, backend);
+    inFlight.get(reader)?.get(backend)?.clear();
+    inFlight.get(reader)?.delete(backend);
+  }
   for (const kind of CATALOG_KINDS) {
     const key = catalogKey(kind, backend);
     wantsRetry.delete(key);
@@ -246,6 +294,8 @@ export function __catalogRetryCountForTest(): number {
 /** Test seam: forget every state and timer. Readers are module wiring and stay. */
 export function resetCatalogLoadForTest(): void {
   for (const [reader, byBackend] of retries) for (const backend of [...byBackend.keys()]) clearRetry(reader, backend);
+  for (const byBackend of inFlight.values()) for (const attempts of byBackend.values()) attempts.clear();
+  inFlight.clear();
   wantsRetry.clear();
   states.reset();
 }

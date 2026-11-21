@@ -45,6 +45,7 @@ beforeEach(async () => {
   setBindingMock('ListThreads', async () => [
     thread('a1', 'alpha'), thread('a2', 'alpha'), thread('b1', 'beta'), thread('b2', 'beta'),
   ]);
+  setBindingMock('ListThreadGroups', async () => []);
   setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: false }));
   await loadThreadCatalogs();
   await refreshProjects();

@@ -395,6 +395,22 @@ describe('a history generation observed mid-session', () => {
     expect(catalogLoadState(HOME_BACKEND, 'threads')).toEqual(LOADED);
   });
 
+  it("withholds the re-read's answered half when its partner fails: the re-read is not a retry", async () => {
+    setBindingMock('ListThreads', async () => [makeThread({ id: 't1' })]);
+    const groups = setBindingMock('ListThreadGroups', async () => []);
+    await loadThreadCatalogs();
+    expect(catalogTreeListed(HOME_BACKEND)).toBe(true);
+    setBindingMock('ListThreads', async () => [makeThread({ id: 't2' })]);
+    groups.mockImplementation(async () => { throw new TransportError('method_error', 'list thread groups: disk I/O error'); });
+    observeBackendGeneration('gen-2', HOME_BACKEND);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(catalogLoadState(HOME_BACKEND, 'groups').phase).toBe('failed');
+    expect(getThreads().map((thread) => thread.id)).toEqual(['t1']);
+    // The retry is one: its half publishes alone when the partner fails again.
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(getThreads().map((thread) => thread.id)).toEqual(['t2']);
+  });
+
   it('shows and retries a re-read that fails, instead of keeping the old history loaded', async () => {
     let fail = false;
     const threads = setBindingMock('ListThreads', async () => {
@@ -491,12 +507,41 @@ describe('the sidebar listing', () => {
     expect(catalogTreeListed(HOME_BACKEND)).toBe(false);
   });
 
-  it('lists a computer whose thread read fails with an error of its own beside its groups', async () => {
+  it('keeps a computer whose thread read fails on its error row until a retry fails again, then lists its groups beside it', async () => {
     setBindingMock('ListThreads', async () => { throw new TransportError('method_error', 'list threads: disk I/O error'); });
     setBindingMock('ListThreadGroups', async () => [group('g1')]);
     await expect(loadThreadCatalogs()).rejects.toBeInstanceOf(TransportError);
     expect(catalogLoadState(HOME_BACKEND, 'threads').phase).toBe('failed');
+    expect(catalogTreeListed(HOME_BACKEND)).toBe(false);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(catalogLoadState(HOME_BACKEND, 'threads').phase).toBe('failed');
     expect(getThreadGroups().map((row) => row.id)).toEqual(['g1']);
+    expect(catalogTreeListed(HOME_BACKEND)).toBe(true);
+  });
+
+  it('keeps a computer whose group read fails on its error row until the retry brings both', async () => {
+    let fail = true;
+    setBindingMock('ListThreads', async () => [makeThread({ id: 't1' })]);
+    setBindingMock('ListThreadGroups', async () => {
+      if (fail) throw new TransportError('method_error', 'list thread groups: disk I/O error');
+      return [group('g1')];
+    });
+    await loadThreadCatalogs();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(catalogLoadState(HOME_BACKEND, 'groups').phase).toBe('failed');
+    expect(catalogTreeListed(HOME_BACKEND)).toBe(false);
+    fail = false;
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(catalogTreeListed(HOME_BACKEND)).toBe(true);
+    expect(getThreadGroups().map((row) => row.id)).toEqual(['g1']);
+  });
+
+  it('lists a computer whose group read is refused for want of a scope beside its threads', async () => {
+    setBindingMock('ListThreads', async () => [makeThread({ id: 't1' })]);
+    setBindingMock('ListThreadGroups', async () => { throw new TransportError('scope_required', 'not granted'); });
+    await loadThreadCatalogs();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(catalogLoadState(HOME_BACKEND, 'groups').phase).toBe('failed');
     expect(catalogTreeListed(HOME_BACKEND)).toBe(true);
   });
 
@@ -545,6 +590,118 @@ describe('the group catalog', () => {
     await vi.advanceTimersByTimeAsync(1000);
     expect(list).toHaveBeenCalledTimes(2);
     expect(__catalogRetryCountForTest()).toBe(1);
+  });
+
+  // G2: an attempt is in flight until its pair concludes.
+  const slowerThanEveryRetry = CATALOG_RETRY_MAX_MS + 2000;
+  const answerAfter = <T>(ms: number, value: T) => new Promise<T>((resolve) => { setTimeout(() => resolve(value), ms); });
+  const groupRow = (id: string): ThreadGroup => ({ id, projectId: 'p1', name: id, createdAt: 0, updatedAt: 0 });
+
+  it.each(['threads', 'groups'] as const)(
+    'lists a computer after one retry when its %s answer is slower than the longest retry interval',
+    async (slow) => {
+      const threads = setBindingMock('ListThreads', () => answerAfter(slow === 'threads' ? slowerThanEveryRetry : 0, [makeThread({ id: 't1' })]));
+      const groups = setBindingMock('ListThreadGroups', () => answerAfter(slow === 'groups' ? slowerThanEveryRetry : 0, [groupRow('g1')]));
+      void loadThreadCatalogs().catch(() => {});
+      // The startup deadline, then the first retry.
+      await vi.advanceTimersByTimeAsync(2500 + 1000);
+      const slowMock = slow === 'threads' ? threads : groups;
+      expect(slowMock).toHaveBeenCalledTimes(2);
+      expect(__catalogRetryCountForTest()).toBe(0);
+      await vi.advanceTimersByTimeAsync(slowerThanEveryRetry);
+      expect(catalogTreeListed(HOME_BACKEND)).toBe(true);
+      expect(slowMock).toHaveBeenCalledTimes(2);
+      expect(catalogLoadState(HOME_BACKEND, slow)).toEqual(LOADED);
+      expect(__catalogRetryCountForTest()).toBe(0);
+    },
+  );
+
+  it("arms no retry while the attempt's slow half is out, though its other half failed, and retries once it lands", async () => {
+    let calls = 0;
+    const threads = setBindingMock('ListThreads', async () => {
+      calls++;
+      if (calls > 1) throw new TransportError('method_error', 'list threads: disk I/O error');
+      return [makeThread({ id: 't1' })];
+    });
+    const groups = setBindingMock('ListThreadGroups', () => answerAfter(slowerThanEveryRetry, [groupRow('g1')]));
+    void loadThreadCatalogs().catch(() => {});
+    await vi.advanceTimersByTimeAsync(2500 + 1000);
+    expect([threads, groups].map((mock) => mock.mock.calls.length)).toEqual([2, 2]);
+    expect(catalogLoadState(HOME_BACKEND, 'threads').phase).toBe('failed');
+    expect(__catalogRetryCountForTest()).toBe(0);
+    await vi.advanceTimersByTimeAsync(slowerThanEveryRetry);
+    expect(groups).toHaveBeenCalledTimes(2);
+    // The retry's thread half failed again, so its groups list alone.
+    expect(catalogTreeListed(HOME_BACKEND)).toBe(true);
+    expect(__catalogRetryCountForTest()).toBe(1);
+  });
+
+  it('starts nothing on Retry while an attempt is in flight, and lists when its slow answer lands', async () => {
+    // The projects reader has its own catalog; Retry reads it, and it answers.
+    setBindingMock('ListProjects', async () => [project('p1')]);
+    let calls = 0;
+    setBindingMock('ListThreads', async () => [makeThread({ id: 't1' })]);
+    const groups = setBindingMock('ListThreadGroups', () => {
+      calls++;
+      if (calls === 1) return Promise.reject(new TransportError('method_error', 'list thread groups: disk I/O error'));
+      if (calls === 2) return answerAfter(slowerThanEveryRetry, [groupRow('g1')]);
+      return Promise.reject(new TransportError('method_error', 'list thread groups: disk I/O error'));
+    });
+    await loadThreadCatalogs();
+    expect(catalogLoadState(HOME_BACKEND, 'groups').phase).toBe('failed');
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(groups).toHaveBeenCalledTimes(2);
+
+    retryCatalogLoad(HOME_BACKEND);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(groups).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(slowerThanEveryRetry);
+    expect(groups).toHaveBeenCalledTimes(2);
+    expect(catalogTreeListed(HOME_BACKEND)).toBe(true);
+    expect(catalogLoadState(HOME_BACKEND, 'groups')).toEqual(LOADED);
+    expect(__catalogRetryCountForTest()).toBe(0);
+  });
+
+  it('restarts the schedule on a Retry pressed while an attempt is in flight', async () => {
+    setBindingMock('ListProjects', async () => [project('p1')]);
+    let calls = 0;
+    const groups = setBindingMock('ListThreadGroups', () => {
+      calls++;
+      return calls === 3
+        ? answerAfter(1, []).then(() => { throw new TransportError('method_error', 'list thread groups: disk I/O error'); })
+        : Promise.reject(new TransportError('method_error', 'list thread groups: disk I/O error'));
+    });
+    await loadThreadCatalogs();
+    // The schedule moves on: retries at 1 s, then 2 s later.
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(groups).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(groups).toHaveBeenCalledTimes(3);
+    // The third read is out; Retry starts nothing but resets the schedule,
+    // so the next retry comes 1 s after it fails, not 4 s.
+    retryCatalogLoad(HOME_BACKEND);
+    expect(groups).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(groups).toHaveBeenCalledTimes(4);
+  });
+
+  it('consumes the retry an attempt serves, so a round that takes the attempt over is not retried over', async () => {
+    const groups = setBindingMock('ListThreadGroups', async () => {
+      throw new TransportError('method_error', 'list thread groups: disk I/O error');
+    });
+    await loadThreadCatalogs();
+    expect(__catalogRetryCountForTest()).toBe(1);
+    groups.mockImplementation(() => new Promise<ThreadGroup[]>(() => {}));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(groups).toHaveBeenCalledTimes(2);
+    // A gap resync takes the attempt's reads over and waits for its answers.
+    groups.mockImplementation(() => answerAfter(slowerThanEveryRetry, [groupRow('g1')]));
+    void loadThreadCatalogs(HOME_BACKEND).catch(() => {});
+    await vi.advanceTimersByTimeAsync(slowerThanEveryRetry);
+    expect(groups).toHaveBeenCalledTimes(3);
+    expect(catalogLoadState(HOME_BACKEND, 'groups')).toEqual(LOADED);
+    expect(__catalogRetryCountForTest()).toBe(0);
   });
 
   it('settles a read that fails after its deadline as the failure it is', async () => {

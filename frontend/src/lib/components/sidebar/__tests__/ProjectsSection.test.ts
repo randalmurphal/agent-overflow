@@ -563,6 +563,40 @@ describe('<ProjectsSection> threads and their groups', () => {
     expect(queryByTestId('project-thread-list-empty')).toBeNull();
   });
 
+  // G1: the group answer does not show alone while the failed thread read
+  // retries; the retry's pair moves the rows in one step.
+  it("keeps a listed computer's arrangement when a refresh's thread read fails beside a new group, until the retry moves it once", async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    setBindingMock('ListThreads', async () => before);
+    setBindingMock('ListThreadGroups', async () => []);
+    const { container, getByTestId } = render(ProjectsSection, { props: { pane: null } });
+    await loadThreadCatalogs();
+    await settle();
+    expect(arrangement(container)).toEqual(BEFORE);
+
+    vi.useFakeTimers();
+    const shown: string[][] = [arrangement(container)];
+    const observer = new MutationObserver(() => {
+      const next = arrangement(container);
+      if (next.join() !== shown[shown.length - 1]!.join()) shown.push(next);
+    });
+    observer.observe(container, { childList: true, subtree: true, attributes: true });
+    setBindingMock('ListThreads', async () => { throw new TransportError('method_error', 'list threads: disk I/O error'); });
+    setBindingMock('ListThreadGroups', async () => [group('g2')]);
+    await loadThreadCatalogs().catch(() => {});
+    await vi.advanceTimersByTimeAsync(0);
+    await settle();
+    expect(normalizedTextContent(getByTestId('sidebar-catalog-failed'))).toMatch(/disk I\/O error/i);
+    expect(arrangement(container)).toEqual(BEFORE);
+
+    setBindingMock('ListThreads', async () => after);
+    await vi.advanceTimersByTimeAsync(1000);
+    await settle();
+    observer.disconnect();
+    expect(arrangement(container)).toEqual(AFTER);
+    expect(shown).toEqual([BEFORE, AFTER]);
+  });
+
   it("keeps the old history's rows beside a loading row after a generation change, then replaces them in one step", async () => {
     setBackendIdentityFromBootstrap('home-id', 'gen-1', 'Mac', HOME_BACKEND);
     setBindingMock('ListThreads', async () => before);

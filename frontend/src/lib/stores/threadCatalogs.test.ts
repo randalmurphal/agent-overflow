@@ -4,11 +4,12 @@ import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
 import { makeThread } from '../../test/helpers/chat';
 import { HOME_BACKEND, detachBackend, takePinnedBackend } from '../transport/backends';
 import { __resetEntityIndexForTest, threadBackend } from '../transport/entityIndex';
-import { TransportError } from '../transport/wsClient';
+import { DisconnectedError, TransportError } from '../transport/wsClient';
+import { collectGarbage } from '../../test/helpers/gc';
 import { ReadDeadlineError } from '../utils/readBeforeDeadline';
 import type { Thread, ThreadGroup } from '../types/models';
 import { __catalogRetryCountForTest, catalogLoadState, resetCatalogLoadForTest, retryCatalogLoad } from './catalogLoad.svelte';
-import { openCatalogReadsForTest, resetCatalogReadsForTest } from './computerCatalogReads';
+import { openCatalogReadsForTest, recordCatalogMutation, resetCatalogReadsForTest } from './computerCatalogReads';
 import { resetProjectsForTest } from './projects.svelte';
 import { getThreadGroups, resetThreadGroupsForTest } from './threadGroups.svelte';
 import { getThreadById, getThreads, resetThreadsForTest, updateThreadTitle } from './threads.svelte';
@@ -129,18 +130,83 @@ describe("a listed computer's round", () => {
     expect(groupOf('t1')).toBe('g2');
     expect(groupIds()).toEqual(['g2']);
   });
+});
 
-  // R1: a failed half lets the other commit alone.
-  it('commits the groups alone when the thread read fails', async () => {
+// G1: an answered half publishes alone only when nothing re-reads the pair.
+describe("a listed computer's answered half whose partner failed", () => {
+  const diskError = (what: string) => new TransportError('method_error', `list ${what}: disk I/O error`);
+
+  it('is withheld on a refresh, and the retry brings the next pair whole', async () => {
     await listHome();
-    setBindingMock('ListThreads', async () => { throw new TransportError('method_error', 'list threads: disk I/O error'); });
+    setBindingMock('ListThreads', async () => { throw diskError('threads'); });
     setBindingMock('ListThreadGroups', async () => [group('g2')]);
     await loadThreadCatalogs();
     await vi.advanceTimersByTimeAsync(0);
+    expect(groupIds()).toEqual([]);
+    expect(threadIds()).toEqual(['t1']);
+    expect(catalogLoadState(HOME_BACKEND, 'threads').phase).toBe('failed');
+    expect(__catalogRetryCountForTest()).toBe(1);
+    expectNothingRecording();
+
+    setBindingMock('ListThreads', async () => [makeThread({ id: 't1', groupId: 'g2' })]);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(groupIds()).toEqual(['g2']);
+    expect(groupOf('t1')).toBe('g2');
+    expect(__catalogRetryCountForTest()).toBe(0);
+  });
+
+  it('publishes alone when the retry\'s partner fails again', async () => {
+    await listHome();
+    setBindingMock('ListThreads', async () => { throw diskError('threads'); });
+    setBindingMock('ListThreadGroups', async () => [group('g2')]);
+    await loadThreadCatalogs();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(groupIds()).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1000);
     expect(groupIds()).toEqual(['g2']);
     expect(threadIds()).toEqual(['t1']);
     expect(catalogLoadState(HOME_BACKEND, 'threads').phase).toBe('failed');
     expect(__catalogRetryCountForTest()).toBe(1);
+  });
+
+  it('is withheld when the group read fails, yet the round resolves with it for the restore', async () => {
+    await listHome();
+    const threads = deferred<Thread[]>();
+    setBindingMock('ListThreads', () => threads.promise);
+    setBindingMock('ListThreadGroups', async () => { throw diskError('thread groups'); });
+    const round = loadThreadCatalogs();
+    // The group failure settles first, so the thread answer is withheld as it lands.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(catalogLoadState(HOME_BACKEND, 'groups').phase).toBe('failed');
+    threads.resolve([makeThread({ id: 't1' }), makeThread({ id: 'saved-pane' })]);
+    const rows = await round;
+    expect(rows.map((thread) => thread.id)).toEqual(['t1', 'saved-pane']);
+    expect(threadBackend('saved-pane')).toBe(HOME_BACKEND);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(threadIds()).toEqual(['t1']);
+    expect(catalogLoadState(HOME_BACKEND, 'groups').phase).toBe('failed');
+    expectNothingRecording();
+  });
+
+  it("is withheld when the partner fails passively, for the reconnect's hello to re-read", async () => {
+    await listHome();
+    setBindingMock('ListThreads', async () => [makeThread({ id: 't1' }), makeThread({ id: 'new' })]);
+    setBindingMock('ListThreadGroups', async () => { throw new DisconnectedError('Computer is offline.'); });
+    await loadThreadCatalogs();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(threadIds()).toEqual(['t1']);
+    expect(__catalogRetryCountForTest()).toBe(0);
+  });
+
+  it('publishes alone when the partner is refused for want of a scope, which no retry can change', async () => {
+    await listHome();
+    setBindingMock('ListThreads', async () => [makeThread({ id: 't1' }), makeThread({ id: 'new' })]);
+    setBindingMock('ListThreadGroups', async () => { throw new TransportError('scope_required', 'not granted'); });
+    await loadThreadCatalogs();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(threadIds()).toEqual(['t1', 'new']);
+    expect(catalogLoadState(HOME_BACKEND, 'groups').phase).toBe('failed');
+    expect(__catalogRetryCountForTest()).toBe(0);
   });
 });
 
@@ -219,6 +285,61 @@ describe('overlapping rounds', () => {
     await vi.advanceTimersByTimeAsync(2500);
     await hello;
     expect(threadIds()).toEqual(['t1']);
+  });
+});
+
+// G3: a superseded round follows every round that took a read over, then decides.
+describe('a round whose reads newer rounds took over', () => {
+  it("resolves with a superseding round's rows when its own still-current read failed with nothing kept", async () => {
+    stageBackend({ id: 'gpu' });
+    setBindingMock('ListThreadGroups', async () => []);
+    const gpuOld = deferred<Thread[]>();
+    setBindingMock('ListThreads', () => (takePinnedBackend() === 'gpu'
+      ? gpuOld.promise
+      : Promise.reject(new TransportError('method_error', 'list threads: disk I/O error'))));
+    const all = loadThreadCatalogs();
+    await vi.advanceTimersByTimeAsync(0);
+    setBindingMock('ListThreads', async () => (takePinnedBackend() === 'gpu' ? [makeThread({ id: 'gpu-thread' })] : []));
+    const retry = loadThreadCatalogs('gpu');
+    gpuOld.resolve([]);
+    expect((await all).map((thread) => thread.id)).toEqual(['gpu-thread']);
+    await retry;
+  });
+
+  it('follows a round that supersedes it while it waits for another', async () => {
+    stageBackend({ id: 'gpu' });
+    setBindingMock('ListThreadGroups', async () => []);
+    setBindingMock('ListThreads', async () => (takePinnedBackend() === 'gpu' ? [] : [makeThread({ id: 't1' })]));
+    await loadThreadCatalogs();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(catalogTreeListed(HOME_BACKEND)).toBe(true);
+
+    // The boot round: Home answers on time with the saved pane's thread and
+    // holds it for its slow groups; GPU's threads are slow.
+    const gpuOld = deferred<Thread[]>();
+    const gpuNew = deferred<Thread[]>();
+    const homeNew = deferred<Thread[]>();
+    setBindingMock('ListThreads', () => (takePinnedBackend() === 'gpu'
+      ? gpuOld.promise
+      : Promise.resolve([makeThread({ id: 't1' }), makeThread({ id: 'saved-pane' })])));
+    setBindingMock('ListThreadGroups', () => (takePinnedBackend() === 'gpu' ? Promise.resolve([]) : never<ThreadGroup[]>()));
+    let rows: readonly Thread[] | null = null;
+    void loadThreadCatalogs().then((resolved) => { rows = resolved; });
+    await vi.advanceTimersByTimeAsync(0);
+    // A GPU retry takes GPU's read over; the boot's thread window ends.
+    setBindingMock('ListThreads', () => (takePinnedBackend() === 'gpu' ? gpuNew.promise : homeNew.promise));
+    setBindingMock('ListThreadGroups', async () => []);
+    void loadThreadCatalogs('gpu');
+    gpuOld.resolve([]);
+    await vi.advanceTimersByTimeAsync(0);
+    // While the boot waits for it, a Home retry takes Home's held read over.
+    void loadThreadCatalogs(HOME_BACKEND);
+    gpuNew.resolve([]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(rows).toBeNull();
+    homeNew.resolve([makeThread({ id: 't1' }), makeThread({ id: 'saved-pane' })]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(rows!.map((thread) => thread.id)).toEqual(['t1', 'saved-pane']);
   });
 });
 
@@ -358,5 +479,48 @@ describe('a retry while a round is out', () => {
   it('from Retry commits the pair in one change and drops the live round', async () => {
     await failGroupsOnce();
     await expectOneChange(() => retryCatalogLoad(HOME_BACKEND));
+  });
+});
+
+// G4: a read that is done leaves nothing of itself behind.
+describe("a computer's read once both parts are done", () => {
+  it('holds neither the mutations recorded while it was out nor its failure', async () => {
+    await listHome();
+    const threads = deferred<Thread[]>();
+    setBindingMock('ListThreads', () => threads.promise);
+    let refused: TransportError | null = new TransportError('scope_required', 'not granted');
+    const refusedRef = new WeakRef(refused);
+    const groups = setBindingMock('ListThreadGroups', async () => { throw refused; });
+    const round = loadThreadCatalogs();
+    await vi.advanceTimersByTimeAsync(0);
+    let captured: Thread | null = makeThread({ id: 'captured' });
+    const capturedRef = new WeakRef(captured);
+    recordCatalogMutation<Thread>(HOME_BACKEND, 'threads', ((row) => (rows) => rows.filter((thread) => thread.id !== row.id))(captured));
+    captured = null;
+    refused = null;
+    threads.resolve([makeThread({ id: 't1' })]);
+    await round;
+    await vi.advanceTimersByTimeAsync(0);
+    expect(threadIds()).toEqual(['t1']);
+    groups.mockClear();
+    vi.restoreAllMocks();
+    await collectGarbage();
+    expect(capturedRef.deref()).toBeUndefined();
+    expect(refusedRef.deref()).toBeUndefined();
+  });
+
+  it('releases a withheld thread answer once no round runs', async () => {
+    await listHome();
+    let answer: Thread[] | null = [makeThread({ id: 't1' }), makeThread({ id: 'withheld' })];
+    const answerRef = new WeakRef(answer[1]!);
+    const list = setBindingMock('ListThreads', async () => answer);
+    setBindingMock('ListThreadGroups', async () => { throw new TransportError('method_error', 'list thread groups: disk I/O error'); });
+    expect((await loadThreadCatalogs()).map((thread) => thread.id)).toEqual(['t1', 'withheld']);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(threadIds()).toEqual(['t1']);
+    answer = null;
+    list.mockClear();
+    await collectGarbage();
+    expect(answerRef.deref()).toBeUndefined();
   });
 });

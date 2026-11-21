@@ -8,8 +8,9 @@
 //
 // Mutations are pure transforms of a computer's rows, recorded only for the
 // computers whose rows they touch. A journal lives as long as its RPC, which
-// the transport bounds, and is dropped when the read ends or its computer
-// detaches.
+// the transport bounds, and is released when the read ends or its computer
+// detaches: an ended read holds no mutation, so it holds none of the rows
+// they capture.
 import { onBackendDetached } from '../transport/backends';
 import type { BackendKey } from '../transport/backendKey';
 import type { CatalogKind } from '../replica/catalog';
@@ -19,9 +20,9 @@ export type CatalogMutation<T> = (rows: T[]) => T[];
 export interface CatalogRead<T> {
   /** False once a newer read of the same computer's catalog has begun. */
   current(): boolean;
-  /** `rows` with every mutation recorded since the read began applied in order. */
+  /** `rows` with every mutation recorded since the read began applied in order. Throws once ended. */
   replay(rows: T[]): T[];
-  /** Stop recording. Idempotent. */
+  /** Stop recording and release the journal. Idempotent. */
   end(): void;
 }
 
@@ -43,13 +44,20 @@ function readsOf(backend: BackendKey): ComputerReads {
 export function beginCatalogRead<T>(backend: BackendKey, kind: CatalogKind): CatalogRead<T> {
   const reads = readsOf(backend);
   const revision = reads.revision[kind] = ++next;
-  const journal: Journal = [];
+  let journal: Journal | null = [];
   const open = reads.journals[kind] ??= new Set();
   open.add(journal);
   return {
     current: () => revision === catalogRevision(backend, kind),
-    replay: (rows) => (journal as CatalogMutation<T>[]).reduce((acc, mutation) => mutation(acc), rows),
-    end: () => { open.delete(journal); },
+    replay: (rows) => {
+      if (journal === null) throw new Error(`A ${kind} read replayed its journal after it ended.`);
+      return (journal as CatalogMutation<T>[]).reduce((acc, mutation) => mutation(acc), rows);
+    },
+    end: () => {
+      if (journal === null) return;
+      open.delete(journal);
+      journal = null;
+    },
   };
 }
 

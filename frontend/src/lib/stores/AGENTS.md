@@ -216,8 +216,10 @@ pending reads, and watched-thread routing for the old owner.
 
 `catalogLoad.svelte.ts` holds whether each computer's thread, project and
 group catalogs have loaded, and owns their retries: one timer per registered
-reader and computer, armed while any catalog that reader covers wants one. A
-catalog that has not loaded is never presented as empty; a loaded one that
+reader and computer, armed while any catalog that reader covers wants one and
+no attempt of that reader is in flight for that computer; Retry then only
+restarts the schedule. A reader resolves once its attempt has concluded, and
+tells its round whether it is a retry. A catalog that has not loaded is never presented as empty; a loaded one that
 fails shows its error beside the rows it keeps. Every read settles there: a
 failure inside `commitShares` (`computerRows.ts`), an answer in the `commit`
 callback that commits its rows. Answers commit in the same synchronous block
@@ -228,7 +230,10 @@ pair by `loadThreadCatalogs` (`threadCatalogs.ts`), which owns their
 supersession, commit timing, the sidebar listing (`catalogTreeListed`) and
 the rows the boot's layout restore validates against. A listed computer's
 two answers commit together once neither read is out, so its rows change
-arrangement at most once per round; the module comment has the rules.
+arrangement at most once per round. When one read fails, the other's answer
+shows alone only when nothing will re-read the pair by itself: a scope
+refusal, or a retry whose half failed again. The module comment has the
+rules.
 
 Only a newer read of the same computer supersedes a sidebar catalog read.
 Change thread, project and group rows through the catalog writer's `mutate`,
