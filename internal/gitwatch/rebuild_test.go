@@ -1139,7 +1139,10 @@ func TestDirCreatedDuringReinstallIsWatched(t *testing.T) {
 // splits the watcher's first install around the replacement.
 func TestRootReplacedDuringInstallIsRewatched(t *testing.T) {
 	isolateGlobalGitConfig(t)
-	repo := testutil.InitGitRepo(t)
+	// Canonical, as the installed roots are: the install below picks the
+	// src root out by path, and a temporary directory can sit behind a
+	// symlink.
+	repo := testutil.CanonicalPath(t, testutil.InitGitRepo(t))
 	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte("node_modules/\n"), 0o644); err != nil {
 		t.Fatalf("write .gitignore: %v", err)
 	}
