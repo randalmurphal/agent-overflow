@@ -42,9 +42,11 @@
 // and by every disclosure writer here before it writes, so no write can land
 // on a key whose record is still on its way.
 //
-// The records are this module's alone: it creates them and exports nothing
-// that reads or writes one by key, so no other module can read a record that
-// is on its way or write one under a key that is about to move. They are new
+// The records are this module's alone: it creates them, it is the only module
+// besides the sidebar store that may import the record constructors
+// (lib/architecture.test.ts), and it exports nothing that reads or writes one
+// by key, so no other module can read a record that is on its way or write one
+// under a key that is about to move. They are new
 // records because a project's disclosure used to be keyed by its own id,
 // before a repository checked out on several computers became one entry, and
 // that cannot be migrated: an id cannot be turned into an entry key without

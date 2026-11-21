@@ -658,8 +658,7 @@ const SIDEBAR_PROJECT_READ_ALLOWLIST: Record<string, string> = {
 //
 // A row reports a "Show more" or "Show less" to the list, which owns the
 // limit it renders by. Resolved through re-exports like the rule above. A
-// project's own list sizes and folds need no rule: the entry continuity store
-// creates those records and exports nothing that names one.
+// project's own list sizes and folds are the next rule's.
 const THREAD_LIST_SIZES: Record<string, string> = {
   getThreadListVisibleLimit: 'lib/components/sidebar/SidebarTreeList.svelte',
   setThreadListVisibleLimit: 'lib/components/sidebar/SidebarTreeList.svelte',
@@ -668,6 +667,21 @@ const THREAD_LIST_SIZES: Record<string, string> = {
 const SIDEBAR_STORE = join(STORES_DIR, 'sidebar');
 // Shrink-only, and empty.
 const SIDEBAR_LIST_SIZE_ALLOWLIST: Record<string, string> = {};
+
+// Rule: a disclosure record is made only by the store that keeps it.
+//
+// A record constructor takes any storage key, so a module that made one
+// under a key another store keeps would write over that store's record. The
+// sidebar store makes the groups', the sections' and the Assistants' records;
+// the entry continuity store makes a project entry's. Default-deny over every
+// source outside tests: only the continuity store may import a constructor,
+// resolved through re-exports like the rules above, and a whole-module import
+// that reaches the sidebar store is refused anywhere else. What the rule does
+// not see is a write through appStorage under the same key.
+const RECORD_CONSTRUCTORS = new Set(['keySetRecord', 'listLimitRecord']);
+const RECORD_CONSTRUCTOR_IMPORTER = 'lib/stores/sidebarEntryContinuity.svelte.ts';
+// Shrink-only, and empty.
+const RECORD_CONSTRUCTOR_ALLOWLIST: Record<string, string> = {};
 
 // A call, not the words: the comments in lib/transport/ discuss `Events.On`
 // by name and must not read as subscriptions.
@@ -857,6 +871,44 @@ describe('architecture', () => {
       SIDEBAR_LIST_SIZE_ALLOWLIST,
       'New violations.',
       'Report the change to the list that renders the rows (SidebarTreeList.svelte).',
+    );
+  });
+
+  it('makes each disclosure record only in the store that keeps it', () => {
+    const sidebarStore = new Set([SIDEBAR_STORE]);
+    const offenders = new Map<string, string[]>();
+    const imported = new Set<string>();
+    for (const source of sources) {
+      const reasons: string[] = [];
+      for (const parsed of source.imports) {
+        const module = resolveLocalModule(source.file, parsed.specifier);
+        if (module === null) continue;
+        if (parsed.wholeModule) {
+          if (source.path !== RECORD_CONSTRUCTOR_IMPORTER && reachedBehind(module, sidebarStore).length > 0) {
+            reasons.push(`imports the whole of ${parsed.specifier}, which reaches the record constructors`);
+          }
+          continue;
+        }
+        for (const name of parsed.names) {
+          const origin = originOf(module, name);
+          if (origin.module !== SIDEBAR_STORE || !RECORD_CONSTRUCTORS.has(origin.name)) continue;
+          if (source.path === RECORD_CONSTRUCTOR_IMPORTER) {
+            imported.add(origin.name);
+            continue;
+          }
+          reasons.push(`${name} (${repoPath(origin.module)}#${origin.name}) makes a record only its keeper may make`);
+        }
+      }
+      if (reasons.length > 0) offenders.set(source.path, reasons);
+    }
+    // The continuity store still makes its records with them: with its
+    // imports gone the rule would hold over records made some other way.
+    expect([...imported].sort()).toEqual([...RECORD_CONSTRUCTORS].sort());
+    expectAllowlistExact(
+      offenders,
+      RECORD_CONSTRUCTOR_ALLOWLIST,
+      'New violations.',
+      'Read or write the disclosure through the store that keeps the record (sidebar.svelte.ts or sidebarEntryContinuity.svelte.ts).',
     );
   });
 

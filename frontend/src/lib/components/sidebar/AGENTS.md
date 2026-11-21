@@ -85,8 +85,8 @@ which adds the project's empty state and drop targets.
   other's prefix; the entry carries the name and path, not the label.
 - An entry's collapse and the show-more limit of its own list belong to
   `stores/sidebarEntryContinuity.svelte.ts`, which moves them with the row
-  when its key moves and creates their records, so nothing else can read or
-  write one. The entry carries both (`expanded`, `listLimit`); a list's top
+  when its key moves and creates their records; no other module may import
+  the record constructors (`lib/architecture.test.ts`). The entry carries both (`expanded`, `listLimit`); a list's top
   level names which record it pages in (`SidebarTopLevelList`), since a
   group's and the Assistants section's sizes share the older one.
   `ProjectsSection.svelte` writes collapse with `setEntryExpanded` and
