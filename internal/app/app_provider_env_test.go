@@ -314,6 +314,7 @@ func TestTextGenerationCarriesTheChosenProvidersCustomEnv(t *testing.T) {
 	}
 
 	app.lookPathFn = func(string) error { return nil }
+	claudeReportsModels(app)
 	cfg := textGenConfig(t, app)
 	if cfg.Provider != string(provider.Claude) {
 		t.Fatalf("provider = %q, want claude", cfg.Provider)
@@ -342,7 +343,7 @@ func TestTextGenerationCarriesTheChosenProvidersCustomEnv(t *testing.T) {
 	}
 
 	// The explicit-provider builder (the layer-2 retry) agrees.
-	explicit, ok := app.resolveTextGenerationConfigFor(string(provider.Codex))
+	explicit, ok := app.resolveTextGenerationConfigFor(context.Background(), string(provider.Codex))
 	if !ok {
 		t.Fatal("resolveTextGenerationConfigFor(codex) reported unavailable")
 	}

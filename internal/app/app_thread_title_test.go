@@ -757,6 +757,7 @@ func TestGeneratedThreadTitle_RoutesToClaudeWhenConfigured(t *testing.T) {
 		}, nil
 	}
 
+	claudeReportsModels(app)
 	got, err := app.generateThreadTitlePrompt(thread, threadtitle.BuildPrompt("Fix title generation.", nil), nil)
 	if err != nil {
 		t.Fatalf("generateThreadTitlePrompt() error = %v", err)
@@ -770,8 +771,8 @@ func TestGeneratedThreadTitle_RoutesToClaudeWhenConfigured(t *testing.T) {
 	if argsContain(gotSpec.Args, "--dangerously-skip-permissions") {
 		t.Fatalf("claude title args must not bypass permissions: %v", gotSpec.Args)
 	}
-	if modelArg := nextArgAfter(gotSpec.Args, "--model"); modelArg != textgen.FallbackClaudeModel {
-		t.Fatalf("claude model = %q, want %q", modelArg, textgen.FallbackClaudeModel)
+	if modelArg := nextArgAfter(gotSpec.Args, "--model"); modelArg != reportedHaiku {
+		t.Fatalf("claude model = %q, want %q", modelArg, reportedHaiku)
 	}
 }
 
@@ -811,6 +812,7 @@ func TestGeneratedThreadTitle_Layer2PrimaryFailsAlternateSucceeds(t *testing.T) 
 		}, nil
 	}
 
+	claudeReportsModels(app)
 	got, err := app.generateThreadTitlePrompt(thread, threadtitle.BuildPrompt("Fix title gen.", nil), nil)
 	if err != nil {
 		t.Fatalf("generateThreadTitlePrompt: %v", err)
@@ -828,8 +830,8 @@ func TestGeneratedThreadTitle_Layer2PrimaryFailsAlternateSucceeds(t *testing.T) 
 		t.Fatalf("retry invocation binary = %q, want claude", specs[1].Binary)
 	}
 	// The retry must use Claude's default model, not whatever was set for Codex.
-	if model := nextArgAfter(specs[1].Args, "--model"); model != textgen.FallbackClaudeModel {
-		t.Fatalf("retry model = %q, want %q (always default for alternate)", model, textgen.FallbackClaudeModel)
+	if model := nextArgAfter(specs[1].Args, "--model"); model != reportedHaiku {
+		t.Fatalf("retry model = %q, want %q (always default for alternate)", model, reportedHaiku)
 	}
 }
 
@@ -951,6 +953,7 @@ func TestGeneratedThreadTitle_Layer1SubstitutesThenLayer2NoAlternate(t *testing.
 		return textgen.CLIResult{Stderr: "claude boom", ExitCode: 1}, nil
 	}
 
+	claudeReportsModels(app)
 	_, err := app.generateThreadTitlePrompt(thread, threadtitle.BuildPrompt("anything", nil), nil)
 	if err == nil {
 		t.Fatal("expected error from claude failing")

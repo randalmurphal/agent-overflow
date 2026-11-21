@@ -122,7 +122,7 @@ func TestAFamilyNeverRunsAModelOnlyThePickerKeeps(t *testing.T) {
 	// here.
 	saved := app.store
 	app.store = nil
-	cfg, ok := app.resolveTextGenerationConfigFor(string(provider.Claude))
+	cfg, ok := app.resolveTextGenerationConfigFor(context.Background(), string(provider.Claude))
 	app.store = saved
 	if !ok || cfg.Model != "claude-haiku-4-5" {
 		t.Errorf("text generation runs %q (ok %v), want claude-haiku-4-5", cfg.Model, ok)

@@ -32,13 +32,6 @@ const (
 	// by `codex exec --output-last-message`. 256 KiB is generous for a
 	// JSON object but small enough that a misbehaving CLI can't OOM us.
 	JSONOutputLimit = 256 * 1024
-
-	// FallbackClaudeModel runs in place of Claude's default family
-	// (settings.TextGenerationDefaultFamily) before the installed Claude
-	// CLI has reported its models. Until then the only
-	// list is the shipped one, whose newest Haiku a CLI older than it
-	// cannot shape a thinking request for; Haiku 4.5 runs on every CLI.
-	FallbackClaudeModel = "claude-haiku-4-5"
 )
 
 // PickAvailableProvider returns the preferred provider's name when its

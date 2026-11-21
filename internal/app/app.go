@@ -712,6 +712,10 @@ type App struct {
 	// Tests install a fake so they can simulate "only claude installed"
 	// without touching $PATH.
 	lookPathFn func(string) error
+	// claudeModelsWaitForTest replaces claude.DefaultProbeTimeout as how
+	// long text generation waits for the Claude CLI's first model list
+	// (awaitClaudeModels). Production leaves it zero.
+	claudeModelsWaitForTest time.Duration
 	// codexLookPathFn replaces exec.LookPath when the default `codex`
 	// setting is resolved to the binary it runs (defaultCodexBinary).
 	// Production leaves it nil; test fixtures install one so the default

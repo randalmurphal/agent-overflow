@@ -1,6 +1,7 @@
 package app
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -11,7 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/claudecatalog"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/textgen"
 )
@@ -28,10 +31,11 @@ import (
 // neither binary resolves so the caller surfaces a coherent
 // "binary not found" error.
 //
-// The error says the provider lists no model of its text-generation family
-// (textGenerationDefaultModel); the config still names the provider, so the
-// Layer 2 retry can turn to the other one.
-func (a *App) resolveTextGenerationConfig() (textgen.Config, error) {
+// The error says the provider lists no model of its text-generation family,
+// or that Claude has not reported its models (textGenerationDefaultModel);
+// the config still names the provider, so the Layer 2 retry can turn to the
+// other one. ctx cancels that wait.
+func (a *App) resolveTextGenerationConfig(ctx context.Context) (textgen.Config, error) {
 	s := a.currentSettings()
 	preferred := strings.TrimSpace(s.TextGenerationProvider)
 	if preferred == "" {
@@ -81,7 +85,7 @@ func (a *App) resolveTextGenerationConfig() (textgen.Config, error) {
 	model, known := provider.ModelInfo{Slug: cfg.Model}, false
 	if cfg.Model == "" && cfg.Binary != "" && lookPath(cfg.Binary) == nil {
 		var err error
-		if model, err = a.textGenerationDefaultModel(chosen); err != nil {
+		if model, err = a.textGenerationDefaultModel(ctx, chosen); err != nil {
 			return cfg, err
 		}
 		cfg.Model, known = model.Slug, true
@@ -100,7 +104,7 @@ func (a *App) resolveTextGenerationConfig() (textgen.Config, error) {
 // Always uses the provider's default model. The user's TextGenerationModel
 // is deliberately ignored because cross-provider model carry-over is
 // guaranteed to fail at the CLI boundary.
-func (a *App) resolveTextGenerationConfigFor(providerName string) (textgen.Config, bool) {
+func (a *App) resolveTextGenerationConfigFor(ctx context.Context, providerName string) (textgen.Config, bool) {
 	lookPath := a.resolveLookPath()
 	effort := strings.TrimSpace(a.currentSettings().TextGenerationReasoningEffort)
 	if effort == "" {
@@ -127,7 +131,7 @@ func (a *App) resolveTextGenerationConfigFor(providerName string) (textgen.Confi
 	default:
 		return textgen.Config{}, false
 	}
-	model, err := a.textGenerationDefaultModel(providerName)
+	model, err := a.textGenerationDefaultModel(ctx, providerName)
 	if err != nil {
 		log.Printf("textgen: fallback %s skipped: %v", providerName, err)
 		return textgen.Config{}, false
@@ -140,17 +144,23 @@ func (a *App) resolveTextGenerationConfigFor(providerName string) (textgen.Confi
 // textGenerationDefaultModel is the catalog row of the model a run on
 // providerName takes when settings leave the model blank: the newest model
 // of the provider's text-generation family this computer lists
-// (provider.ResolveModel), the rule agent profiles follow. Before the
-// Claude CLI has reported its models it is textgen.FallbackClaudeModel's
-// row. A provider that lists no model of the family is an error naming
-// what it lists. The row comes from the same catalog read the choice did,
-// so the run's effort is decided by the model that runs.
-func (a *App) textGenerationDefaultModel(providerName string) (provider.ModelInfo, error) {
+// (provider.ResolveModel), the rule agent profiles follow. Claude's list is
+// its CLI's report, which it waits for (awaitClaudeModels). A provider that
+// lists no model of the family is an error naming what it lists. The row
+// comes from the same catalog read the choice did, so the run's effort is
+// decided by the model that runs.
+func (a *App) textGenerationDefaultModel(ctx context.Context, providerName string) (provider.ModelInfo, error) {
 	family, ok := settings.TextGenerationDefaultFamily(providerName)
 	if !ok {
 		return provider.ModelInfo{}, fmt.Errorf("text generation does not run on %s", providerName)
 	}
-	catalog, err := a.modelCatalog(providerName)
+	var catalog provider.ModelCatalog
+	var err error
+	if providerName == string(provider.Claude) {
+		catalog, err = a.awaitClaudeModels(ctx)
+	} else {
+		catalog, err = a.modelCatalog(providerName)
+	}
 	if err != nil {
 		return provider.ModelInfo{}, fmt.Errorf("text generation: %s model list: %w", providerName, err)
 	}
@@ -163,9 +173,6 @@ func (a *App) textGenerationDefaultModel(providerName string) (provider.ModelInf
 		}
 	}
 	slug, ok := provider.ResolveModel(provider.ParseModelRef(providerName, family), listed, kept)
-	if providerName == string(provider.Claude) && catalog.Provenance != provider.CatalogProbed {
-		slug, ok = textgen.FallbackClaudeModel, true
-	}
 	if !ok {
 		return provider.ModelInfo{}, fmt.Errorf("text generation: %s lists no %s model; it lists %s", providerName, family, strings.Join(listed, ", "))
 	}
@@ -174,6 +181,35 @@ func (a *App) textGenerationDefaultModel(providerName string) (provider.ModelInf
 		return provider.ModelInfo{}, fmt.Errorf("text generation: %s's model list has no row for %s", providerName, slug)
 	}
 	return catalog.Models[index], nil
+}
+
+// awaitClaudeModels is Claude's catalog once its CLI has reported its
+// models, live or restored from the account's saved record. Until then
+// the list is the shipped one, which names models the CLI may not run, so
+// it waits for the report (claudecatalog.ModelsReported) as long as the
+// probe that makes it may take (claude.DefaultProbeTimeout), and past that
+// fails saying Claude has not reported. ctx and the app's shutdown end
+// the wait.
+func (a *App) awaitClaudeModels(ctx context.Context) (provider.ModelCatalog, error) {
+	bound := cmp.Or(a.claudeModelsWaitForTest, claude.DefaultProbeTimeout)
+	timer := time.NewTimer(bound)
+	defer timer.Stop()
+	for {
+		reported := claudecatalog.ModelsReported()
+		catalog, err := a.modelCatalog(string(provider.Claude))
+		if err != nil || catalog.Provenance == provider.CatalogProbed {
+			return catalog, err
+		}
+		select {
+		case <-reported:
+		case <-ctx.Done():
+			return provider.ModelCatalog{}, fmt.Errorf("waiting for Claude to report its models: %w", ctx.Err())
+		case <-a.lifeCtx().Done():
+			return provider.ModelCatalog{}, fmt.Errorf("waiting for Claude to report its models: %w", a.lifeCtx().Err())
+		case <-timer.C:
+			return provider.ModelCatalog{}, fmt.Errorf("no answer in %s: Claude has not reported its models", bound)
+		}
+	}
 }
 
 // textGenerationEffort is the effort a one-shot generation run passes to the
@@ -233,13 +269,17 @@ func (a *App) availableTextGenerationProviders() []string {
 // the Settings UI's red status pill and the returned error message
 // pointing at the same root cause. The alternate's failure is logged
 // rather than discarded: it is the only record that the fallback ran.
+//
+// ctx is the caller's: it ends the wait for Claude's model list
+// (awaitClaudeModels), as the app's shutdown does.
 func runTextGenWithFallback[T any](
+	ctx context.Context,
 	a *App,
 	budget time.Duration,
 	runOnce func(cfg textgen.Config, deadline time.Time) (T, error),
 ) (T, error) {
 	var result T
-	primary, err := a.resolveTextGenerationConfig()
+	primary, err := a.resolveTextGenerationConfig(ctx)
 	if err == nil {
 		result, err = runOnce(primary, time.Now().Add(budget))
 	}
@@ -261,7 +301,7 @@ func runTextGenWithFallback[T any](
 	if altName == "" {
 		return result, err
 	}
-	altCfg, ok := a.resolveTextGenerationConfigFor(altName)
+	altCfg, ok := a.resolveTextGenerationConfigFor(ctx, altName)
 	if !ok {
 		return result, err
 	}

@@ -434,7 +434,7 @@ func (a *App) generateWorkflowDigest(item store.WorkItem, template WorkflowDiges
 	if err := a.waitForBootSteps(a.lifeCtx()); err != nil {
 		return WorkflowDigest{}, err
 	}
-	return runTextGenWithFallback(a, workflowDigestTimeout, func(cfg textgen.Config, deadline time.Time) (WorkflowDigest, error) {
+	return runTextGenWithFallback(a.lifeCtx(), a, workflowDigestTimeout, func(cfg textgen.Config, deadline time.Time) (WorkflowDigest, error) {
 		return a.runWorkflowDigestOnce(cfg, item, template, deadline)
 	})
 }

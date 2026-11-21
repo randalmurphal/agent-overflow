@@ -83,6 +83,29 @@ func (c ModelCapture) Store(key provider.ProbeCacheKey) {
 	if drift := modelCatalog().Store(key, c.models, c.err); len(drift) > 0 {
 		log.Printf("claude model catalog: %s", claudemodels.FormatDrift(drift))
 	}
+	announceModels()
+}
+
+var (
+	reportMu sync.Mutex
+	reported = make(chan struct{})
+)
+
+// ModelsReported is closed by the next model answer stored or seeded, for
+// any identity. A caller waiting for a probe to back its list takes it
+// before it reads Models, so an answer that lands between the two still
+// wakes it, and reads Models again when it closes.
+func ModelsReported() <-chan struct{} {
+	reportMu.Lock()
+	defer reportMu.Unlock()
+	return reported
+}
+
+func announceModels() {
+	reportMu.Lock()
+	close(reported)
+	reported = make(chan struct{})
+	reportMu.Unlock()
 }
 
 // DropModelsForBinary forgets every model answer learned from one configured
@@ -124,4 +147,5 @@ func Export(key provider.ProbeCacheKey) (claudemodels.Snapshot, bool) {
 // owns checking that the snapshot still describes the binary behind the key.
 func Seed(key provider.ProbeCacheKey, snapshot claudemodels.Snapshot) {
 	modelCatalog().Seed(key, snapshot)
+	announceModels()
 }

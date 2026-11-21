@@ -616,7 +616,11 @@ Mechanism in
   provider; a slug the computer offers as written is that model (ruling
   2026-11-21). The seeded profiles name families, and text generation
   with no model set runs the newest of its default family (`claude-haiku`,
-  `gpt-luna`) the computer lists.
+  `gpt-luna`) the computer lists. On Claude that list is the CLI's report,
+  live or restored for the account: text generation waits for it as long
+  as the account probe that makes it may take (`claude.DefaultProbeTimeout`),
+  then fails saying Claude has not reported its models, and the other
+  provider is tried.
 - A sign-in in Agent Overflow never switches accounts: it renews the saved
   account its login belongs to or adds a new one at the bottom. Only the
   first account on a machine becomes active by signing in. Saved accounts
