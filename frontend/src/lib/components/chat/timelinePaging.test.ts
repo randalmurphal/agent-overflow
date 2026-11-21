@@ -3,11 +3,17 @@
 // shorter than the viewport plus both auto-load zones, where no scroll
 // offset ever reaches a trigger. The quiet scheduler asks this once per
 // pass and it pages one section at a time until the window is tall enough.
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createTimelinePaging, type TimelinePagingOptions } from './timelinePaging';
-import { ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS } from '../../stores/threadPaneShared';
+import { ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS, type LoadOlderResult } from '../../stores/threadPaneShared';
+import type { TimelineCursorLike } from '../../stores/threadItems';
 import type { UseStickToBottomController } from '../../utils/scroll/index.svelte';
 import type { TimelineVirtualizerHandle } from '../../utils/virtual/types';
+import type { Item } from '../../types/models';
+import { createThreadPane } from '../../stores/thread.svelte';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { makeItem, makeThread } from '../../../test/helpers/chat';
+import { installThreadPaneTestEnv } from '../../../test/helpers/threadPane';
 
 type Pane = ReturnType<TimelinePagingOptions['getPane']>;
 
@@ -22,9 +28,13 @@ function fixture(over: {
   listRef?: boolean;
   revealed?: number;
   measured?: boolean;
+  offset?: number;
+  newerStatuses?: LoadOlderResult['status'][];
 }) {
   const loadOlder = vi.fn(async () => ({ status: 'loaded' as const, insertedBeforeWindow: true, insertedRows: true }));
-  const loadNewer = vi.fn(async () => ({ status: 'loaded' as const, insertedBeforeWindow: false, insertedRows: true }));
+  const statuses = [...(over.newerStatuses ?? [])];
+  const loadNewer = vi.fn(async (): Promise<LoadOlderResult> => (
+    { status: statuses.shift() ?? 'loaded', insertedBeforeWindow: false, insertedRows: true }));
   const markEscaped = vi.fn();
   const pane = {
     items: Array.from({ length: over.items ?? 10 }, () => ({})),
@@ -32,6 +42,9 @@ function fixture(over: {
     hasMoreNewer: over.hasMoreNewer ?? false,
     loadingOlder: over.loadingOlder ?? false,
     loadingNewer: over.loadingNewer ?? false,
+    oldestLoadedCursor: { turnIndex: 1, itemIndex: 0 } as TimelineCursorLike,
+    newestLoadedCursor: { turnIndex: 9, itemIndex: 0 } as TimelineCursorLike,
+    scrollStateKey: 'pane-key',
     loadOlder,
     loadNewer,
     switchGeneration: 1,
@@ -49,16 +62,20 @@ function fixture(over: {
     getPane: () => pane,
     stick,
     getListRef: () =>
-      over.listRef === false ? undefined : ({ scrollToIndex: () => {} } as unknown as TimelineVirtualizerHandle),
+      over.listRef === false ? undefined : ({
+        scrollToIndex: () => {},
+        getScrollOffset: () => over.offset ?? 0,
+        findItemIndex: () => (over.revealed ?? 0) - 1,
+      } as unknown as TimelineVirtualizerHandle),
     getScrollEl: () => viewport,
     getRevealedNodes: () => Array.from({ length: over.revealed ?? 0 }, () => ({})) as never[],
     isWindowMeasured: () => over.measured ?? true,
-    getRestoredThreadId: () => null,
+    getRestoredThreadId: () => 'pane-key',
     beginNavigation: () => 1,
     claimNavigation: () => true,
     saveScrollSnapshot: () => {},
   });
-  return { paging, loadOlder, loadNewer, markEscaped, over };
+  return { paging, pane, loadOlder, loadNewer, markEscaped, over };
 }
 
 describe('maybeFillViewport', () => {
@@ -175,5 +192,102 @@ describe('loads and intent', () => {
     await paging.handleLoadNewer();
     expect(loadNewer).toHaveBeenCalledOnce();
     expect(markEscaped).toHaveBeenCalledOnce();
+  });
+});
+
+// A refused page (its edge moved while it was out) applied nothing and is no
+// attempt. The reader is still at the edge they asked from, so the edge is
+// probed again without waiting for a scroll; a re-probe refused at a floor
+// that has not moved waits for the next scroll.
+describe('a refused auto-load', () => {
+  // Resting on the newest edge of a tall window.
+  const atNewestEdge = { scrollHeight: 4000, clientHeight: 600, offset: 3400, revealed: 40, hasMoreNewer: true };
+  const settle = async () => { for (let i = 0; i < 20; i += 1) await Promise.resolve(); };
+
+  it('probes the same edge again without a scroll', async () => {
+    const { paging, loadNewer } = fixture({ ...atNewestEdge, newerStatuses: ['stale', 'loaded'] });
+    expect(paging.maybeAutoLoadNewer(3400)).toBe(true);
+    await vi.waitFor(() => expect(loadNewer).toHaveBeenCalledTimes(2));
+    await settle();
+    expect(loadNewer).toHaveBeenCalledTimes(2);
+  });
+
+  it('re-probes once at an unmoved floor, then waits for a new scroll', async () => {
+    const { paging, loadNewer } = fixture({ ...atNewestEdge, newerStatuses: ['stale', 'stale', 'loaded'] });
+    expect(paging.maybeAutoLoadNewer(3400)).toBe(true);
+    await vi.waitFor(() => expect(loadNewer).toHaveBeenCalledTimes(2));
+    await settle();
+    expect(loadNewer).toHaveBeenCalledTimes(2);
+
+    // The refused attempts are forgotten: the next scroll at the same floor loads.
+    expect(paging.maybeAutoLoadNewer(3400)).toBe(true);
+    await vi.waitFor(() => expect(loadNewer).toHaveBeenCalledTimes(3));
+  });
+
+  it('re-probes again when the edge moved under the refused re-probe', async () => {
+    const { paging, pane, loadNewer } = fixture({ ...atNewestEdge, newerStatuses: ['loaded'] });
+    loadNewer.mockImplementationOnce(async () => ({ status: 'stale', insertedBeforeWindow: false, insertedRows: false }));
+    loadNewer.mockImplementationOnce(async () => {
+      (pane as { newestLoadedCursor: TimelineCursorLike }).newestLoadedCursor = { turnIndex: 7, itemIndex: 0 };
+      return { status: 'stale', insertedBeforeWindow: false, insertedRows: false };
+    });
+    expect(paging.maybeAutoLoadNewer(3400)).toBe(true);
+    await vi.waitFor(() => expect(loadNewer).toHaveBeenCalledTimes(3));
+    await settle();
+    expect(loadNewer).toHaveBeenCalledTimes(3);
+  });
+
+  it('a page that landed disarms the gate as before', async () => {
+    const { paging, pane, loadNewer } = fixture({ ...atNewestEdge, newerStatuses: ['loaded'] });
+    expect(paging.maybeAutoLoadNewer(3400)).toBe(true);
+    await vi.waitFor(() => expect(loadNewer).toHaveBeenCalledOnce());
+    await settle();
+    // The page moved the ceiling; only the disarm holds the next probe back.
+    (pane as { newestLoadedCursor: TimelineCursorLike }).newestLoadedCursor = { turnIndex: 11, itemIndex: 0 };
+    expect(paging.maybeAutoLoadNewer(3400)).toBe(false);
+    paging.armGatesOnUserGesture();
+    expect(paging.maybeAutoLoadNewer(3400)).toBe(true);
+  });
+});
+
+// The fill pages one edge per pass: older first, then newer while the older
+// page is still out. Both pages extend the window they were asked from.
+describe('the viewport fill at both edges', () => {
+  beforeEach(installThreadPaneTestEnv);
+
+  it('lands an older and a newer page that are out together', async () => {
+    const row = (turnIndex: number) => makeItem({ id: `t${turnIndex}`, threadId: 't', turnIndex, itemIndex: 0 });
+    const pane = createThreadPane();
+    setBindingMock('ListThreadSliceAround', async () => ({
+      items: [row(10), row(11)], hasMore: true, hasMoreOlder: true, hasMoreNewer: true,
+    }));
+    await pane.switchThread(makeThread({ id: 't' }));
+    type Page = { items: Item[]; hasMore: boolean; hasMoreOlder: boolean; hasMoreNewer: boolean };
+    let answerOlder!: (page: Page) => void;
+    let answerNewer!: (page: Page) => void;
+    setBindingMock('ListItemsBeforeCursor', () => new Promise<Page>((resolve) => { answerOlder = resolve; }));
+    setBindingMock('ListItemsAfterCursor', () => new Promise<Page>((resolve) => { answerNewer = resolve; }));
+    const paging = createTimelinePaging({
+      getPane: () => pane,
+      stick: { pauseAutoScroll: () => () => {}, markEscaped: () => {}, forceStick: () => {} } as unknown as UseStickToBottomController,
+      getListRef: () => ({ scrollToIndex: () => {}, getScrollOffset: () => 0, findItemIndex: () => 0 }) as unknown as TimelineVirtualizerHandle,
+      getScrollEl: () => ({ scrollHeight: 300, clientHeight: 600 }) as HTMLDivElement,
+      getRevealedNodes: () => [],
+      isWindowMeasured: () => true,
+      getRestoredThreadId: () => null,
+      beginNavigation: () => 1,
+      claimNavigation: () => true,
+      saveScrollSnapshot: () => {},
+    });
+
+    expect(paging.maybeFillViewport()).toBe(true);
+    expect(pane.loadingOlder).toBe(true);
+    expect(paging.maybeFillViewport()).toBe(true);
+    expect(pane.loadingNewer).toBe(true);
+
+    answerOlder({ items: [row(9)], hasMore: true, hasMoreOlder: true, hasMoreNewer: false });
+    answerNewer({ items: [row(12)], hasMore: true, hasMoreOlder: true, hasMoreNewer: true });
+    await vi.waitFor(() => expect(pane.loadingOlder || pane.loadingNewer).toBe(false));
+    expect(pane.items.map((item) => item.id)).toEqual(['t9', 't10', 't11', 't12']);
   });
 });

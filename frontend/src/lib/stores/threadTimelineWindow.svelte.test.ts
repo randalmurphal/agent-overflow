@@ -2238,6 +2238,173 @@ describe('threadTimelineWindow', () => {
   });
 });
 
+// Each page claims only the edge it extends. A page at one edge never
+// refuses a page at the other; a page is refused only when a cut or a
+// replacement dropped the edge it was asked from.
+describe('pages at both edges', () => {
+  beforeEach(installThreadPaneTestEnv);
+
+  type Page = { items: Item[]; hasMoreOlder: boolean; hasMoreNewer: boolean; hasMore?: boolean };
+  function held() {
+    const answers: ((page: Page) => void)[] = [];
+    const call = () => new Promise<Page>((resolve) => answers.push(resolve));
+    return { call, answer: (page: Page) => answers.shift()!(page), get pending() { return answers.length; } };
+  }
+  const row = (turnIndex: number) => makeItem({ id: `t${turnIndex}`, threadId: 't', turnIndex, itemIndex: 0 });
+  const rows = (from: number, count: number) => Array.from({ length: count }, (_, index) => row(from + index));
+
+  async function windowPane(initial: Item[], edges: { older: boolean; newer: boolean }) {
+    const pane = createThreadPane();
+    setBindingMock('ListThreadSliceAround', async () => ({
+      items: initial, hasMore: edges.older, hasMoreOlder: edges.older, hasMoreNewer: edges.newer,
+    }));
+    await pane.switchThread(makeThread({ id: 't' }));
+    return pane;
+  }
+
+  it.each([
+    ['newer', 'newer'], ['newer', 'older'], ['older', 'older'], ['older', 'newer'],
+  ] as const)('both pages land when the %s page starts first and the %s answer lands first', async (startsFirst, landsFirst) => {
+    const pane = await windowPane(rows(10, 3), { older: true, newer: true });
+    const older = held();
+    const newer = held();
+    setBindingMock('ListItemsBeforeCursor', older.call);
+    setBindingMock('ListItemsAfterCursor', newer.call);
+
+    const loads = startsFirst === 'newer'
+      ? { newer: pane.loadNewer(), older: pane.loadOlder() }
+      : { older: pane.loadOlder(), newer: pane.loadNewer() };
+    expect(pane.loadingOlder).toBe(true);
+    expect(pane.loadingNewer).toBe(true);
+    const answer = {
+      older: () => older.answer({ items: [row(9)], hasMore: true, hasMoreOlder: true, hasMoreNewer: false }),
+      newer: () => newer.answer({ items: [row(13)], hasMoreOlder: true, hasMoreNewer: true }),
+    };
+    const other = landsFirst === 'older' ? 'newer' : 'older';
+    answer[landsFirst]();
+    expect((await loads[landsFirst]).status).toBe('loaded');
+    answer[other]();
+    expect((await loads[other]).status).toBe('loaded');
+
+    expect(pane.items.map((it) => it.id)).toEqual(['t9', 't10', 't11', 't12', 't13']);
+    expect(pane.oldestLoadedCursor).toEqual({ turnIndex: 9, itemIndex: 0, itemId: 't9' });
+    expect(pane.newestLoadedCursor).toEqual({ turnIndex: 13, itemIndex: 0, itemId: 't13' });
+    expect(pane.loadingOlder).toBe(false);
+    expect(pane.loadingNewer).toBe(false);
+  });
+
+  it('an older page whose cut drops the tail refuses the newer page in flight', async () => {
+    const max = ACTIVE_TIMELINE_WINDOW_MAX_ITEMS;
+    const target = ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS;
+    const pane = await windowPane(rows(1000, max), { older: true, newer: true });
+    // The reader is at the head, where the older page lands.
+    pane.attachScrollController(stubScrollController({ visibleTimelineItemIds: () => new Set(['t1000', 't1001']) }));
+    const newer = held();
+    setBindingMock('ListItemsAfterCursor', newer.call);
+    setBindingMock('ListItemsBeforeCursor', async () => ({ items: [row(999)], hasMore: true, hasMoreOlder: true, hasMoreNewer: false }));
+
+    const newerLoad = pane.loadNewer();
+    expect((await pane.loadOlder()).status).toBe('loaded');
+    const ceiling = { turnIndex: 999 + target - 1, itemIndex: 0, itemId: `t${999 + target - 1}` };
+    expect(pane.newestLoadedCursor).toEqual(ceiling);
+
+    // Its rows follow the ceiling the cut dropped; attached, they would
+    // leave a gap inside the window.
+    newer.answer({ items: [row(1000 + max)], hasMoreOlder: true, hasMoreNewer: true });
+    expect((await newerLoad).status).toBe('stale');
+    expect(pane.items).toHaveLength(target);
+    expect(pane.items.some((it) => it.id === `t${1000 + max}`)).toBe(false);
+    expect(pane.newestLoadedCursor).toEqual(ceiling);
+    expect(pane.hasMoreNewer).toBe(true);
+  });
+
+  it('a newer page whose cut drops the head refuses the older page in flight', async () => {
+    const max = ACTIVE_TIMELINE_WINDOW_MAX_ITEMS;
+    const target = ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS;
+    const pane = await windowPane(rows(1000, max), { older: true, newer: true });
+    const older = held();
+    setBindingMock('ListItemsBeforeCursor', older.call);
+    setBindingMock('ListItemsAfterCursor', async () => ({ items: [row(1000 + max)], hasMoreOlder: true, hasMoreNewer: true }));
+
+    const olderLoad = pane.loadOlder();
+    expect((await pane.loadNewer()).status).toBe('loaded');
+    const floor = { turnIndex: 1000 + max + 1 - target, itemIndex: 0, itemId: `t${1000 + max + 1 - target}` };
+    expect(pane.oldestLoadedCursor).toEqual(floor);
+
+    older.answer({ items: [row(999)], hasMore: true, hasMoreOlder: true, hasMoreNewer: false });
+    expect((await olderLoad).status).toBe('stale');
+    expect(pane.items).toHaveLength(target);
+    expect(pane.items.some((it) => it.id === 't999')).toBe(false);
+    expect(pane.oldestLoadedCursor).toEqual(floor);
+  });
+
+  it.each([
+    ['the tail only, and the older page lands', true, 'loaded'],
+    ['the head, and the older page is refused', false, 'stale'],
+  ] as const)('a streaming cut that drops %s', async (_name, readerAtHead, status) => {
+    const max = ACTIVE_TIMELINE_WINDOW_MAX_ITEMS;
+    const pane = await windowPane(rows(1000, max), { older: true, newer: false });
+    // A reader at the head keeps it (the cut is centered on them); with
+    // nobody reading, the cut keeps the tail.
+    if (readerAtHead) {
+      pane.attachScrollController(stubScrollController({
+        visibleTimelineItemIds: () => new Set(['t1000', 't1001']),
+        canPreserveTimelineWindow: (keepsItem) => keepsItem('t1000'),
+      }));
+    }
+    const older = held();
+    setBindingMock('ListItemsBeforeCursor', older.call);
+    const olderLoad = pane.loadOlder();
+
+    pane.upsertItem(row(1000 + max));
+    expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
+    expect(pane.items[0].id).toBe(readerAtHead ? 't1000' : `t${1000 + max + 1 - ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS}`);
+
+    older.answer({ items: [row(999)], hasMore: true, hasMoreOlder: true, hasMoreNewer: false });
+    expect((await olderLoad).status).toBe(status);
+    expect(pane.items.some((it) => it.id === 't999')).toBe(status === 'loaded');
+  });
+
+  // Jump to latest replaces the window. An older page started while it
+  // loads would land on the window it replaces, and its start used to
+  // refuse the jump.
+  it('jump to latest holds both edges while it loads', async () => {
+    const pane = await windowPane(rows(10, 3), { older: true, newer: true });
+    const older = held();
+    const tail = held();
+    setBindingMock('ListItemsBeforeCursor', older.call);
+    setBindingMock('ListThreadSliceAround', tail.call);
+
+    const jump = pane.loadRecentTail();
+    expect(pane.loadingOlder).toBe(true);
+    expect(pane.loadingNewer).toBe(true);
+    expect((await pane.loadOlder()).status).toBe('noop');
+    expect(older.pending).toBe(0);
+
+    tail.answer({ items: rows(40, 3), hasMore: true, hasMoreOlder: true, hasMoreNewer: false });
+    expect(await jump).toBe(true);
+    expect(pane.items.map((it) => it.id)).toEqual(['t40', 't41', 't42']);
+    expect(pane.loadingOlder).toBe(false);
+    expect(pane.loadingNewer).toBe(false);
+  });
+
+  it('jump to latest refuses an older page already out', async () => {
+    const pane = await windowPane(rows(10, 3), { older: true, newer: true });
+    const older = held();
+    setBindingMock('ListItemsBeforeCursor', older.call);
+    const olderLoad = pane.loadOlder();
+    setBindingMock('ListThreadSliceAround', async () => ({
+      items: rows(40, 3), hasMore: true, hasMoreOlder: true, hasMoreNewer: false,
+    }));
+
+    expect(await pane.loadRecentTail()).toBe(true);
+    older.answer({ items: [row(9)], hasMore: true, hasMoreOlder: true, hasMoreNewer: false });
+    expect((await olderLoad).status).toBe('stale');
+    expect(pane.items.map((it) => it.id)).toEqual(['t40', 't41', 't42']);
+    expect(pane.loadingOlder).toBe(false);
+  });
+});
+
 describe('activity-run tail growth after a jump', () => {
   beforeEach(installThreadPaneTestEnv);
 

@@ -319,7 +319,11 @@ Keying the guard on turnIndex alone latched auto-load off on long
 single-turn threads, where paging advances the item floor but never the
 turn floor (incident bug-report-20260616T143320Z): a 400-item turn 57
 loaded once, then the guard read 57 === 57 and refused every later
-auto-load until a manual click. Neither direction re-anchors after the
+auto-load until a manual click. A load whose page is refused (its edge
+moved while it was out, **Load Paging** below) is no attempt: the gate
+forgets it, stays armed, and probes the same edge once more at the
+reader's offset; a re-probe refused again at an unmoved floor waits for
+the next scroll. Neither direction re-anchors after the
 load: the prepend (older) and the head-prune (newer) hold the reading
 position through the virtualizer's `shift` head-splice compensation (see
 **Load Paging** below), so auto-load-newer never scrolls and
@@ -362,7 +366,12 @@ the review pane's collapse/expand, not just same-length reorders.
 (`hasMoreNewer` offers it back). `loadNewer` mirrors this: it grows the
 tail and cuts the head. Both cuts keep the page just fetched and every
 visible row (**Live Window Bounds** below), and the paired mutations
-commit before one final Svelte flush. The virtualizer
+commit before one final Svelte flush. Each edge has its own generation
+in `threadTimelineWindow.svelte.ts`: a page is refused only when a cut
+or a replacement dropped the edge it extends, so an older page and a
+newer page can be in flight together and both land. A navigation and
+Jump to latest replace the window and hold both edges while they load.
+The virtualizer
 compares the previous and next key sequences before exposing render data and
 classifies the combined change as head, tail, unchanged, or a general keyed
 mutation. Callers cannot label a mutation or leave a mode bit armed.

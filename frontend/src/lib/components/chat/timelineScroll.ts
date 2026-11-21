@@ -76,7 +76,8 @@ export interface AutoLoadGate {
   shouldLoad(state: AutoLoadGateState): boolean;
   /**
    * Suspends auto-load until a real user gesture arrives (or the fallback
-   * cooldown elapses). Called after every load completes — without this,
+   * cooldown elapses). Called after every load that was not refused (a
+   * refused page applied nothing, so no write follows it) — without this,
    * the anchor-restore programmatic scroll that follows an older prepend,
    * or the anchor-preserving prune that follows a newer append, re-fires
    * the gate on the next tick and walks the history in a cascade.
@@ -89,6 +90,13 @@ export interface AutoLoadGate {
    * restore) don't fire these events so they cannot re-arm.
    */
   armOnGesture(): void;
+  /**
+   * The load the last `shouldLoad` admitted was refused: the window moved
+   * under it and nothing was applied. A refused load is no attempt, so
+   * the progress guard forgets it and the same floor may load again.
+   * Called once, by the caller that ran the admitted load.
+   */
+  forgetAttempt(): void;
 }
 
 export interface AutoLoadZoneThresholds {
@@ -278,6 +286,8 @@ export function bottomEdgeGeometry(
  */
 export function createAutoLoadGate(): AutoLoadGate {
   let attemptedAtFloor: TimelineCursorLike | null = null;
+  // The attempt the last admission replaced, restored if it is refused.
+  let previousAttempt: TimelineCursorLike | null = null;
   let armed = true;
   let cooldownTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -303,6 +313,7 @@ export function createAutoLoadGate(): AutoLoadGate {
       // Thread switch: clear all state. The new thread should be free to
       // auto-load from frame 0 if its initial slice triggers the geometry.
       attemptedAtFloor = null;
+      previousAttempt = null;
       armed = true;
       clearCooldown();
     },
@@ -321,6 +332,9 @@ export function createAutoLoadGate(): AutoLoadGate {
     armOnGesture(): void {
       armed = true;
       clearCooldown();
+    },
+    forgetAttempt(): void {
+      attemptedAtFloor = previousAttempt;
     },
     shouldLoad(state: AutoLoadGateState): boolean {
       // Gesture-armed: after each load, `disarm()` flips this false. Only a
@@ -343,6 +357,7 @@ export function createAutoLoadGate(): AutoLoadGate {
       if (!madeProgressSince(state.floorCursor)) return false;
       // Expensive engine geometry — deferred until the cheap gates pass.
       if (!state.inTriggerZone()) return false;
+      previousAttempt = attemptedAtFloor;
       attemptedAtFloor = {
         turnIndex: state.floorCursor.turnIndex,
         itemIndex: state.floorCursor.itemIndex,

@@ -285,6 +285,19 @@ describe('timelineScroll', () => {
     expect(gate.attemptedAtFloor).toEqual({ turnIndex: 57, itemIndex: 400 });
   });
 
+  // A refused page applied nothing: the floor it was asked at may load again,
+  // and the attempt before it still guards its own floor.
+  it('forgets a refused attempt and keeps the one before it', () => {
+    const gate = createAutoLoadGate();
+    expect(gate.shouldLoad(gateState({ floorCursor: { turnIndex: 10, itemIndex: 0 } }))).toBe(true);
+    expect(gate.shouldLoad(gateState({ floorCursor: { turnIndex: 8, itemIndex: 0 } }))).toBe(true);
+
+    gate.forgetAttempt();
+    expect(gate.attemptedAtFloor).toEqual({ turnIndex: 10, itemIndex: 0 });
+    expect(gate.shouldLoad(gateState({ floorCursor: { turnIndex: 8, itemIndex: 0 } }))).toBe(true);
+    expect(gate.shouldLoad(gateState({ floorCursor: { turnIndex: 8, itemIndex: 0 } }))).toBe(false);
+  });
+
   it('stores a clone of the floor cursor, not the live reference', () => {
     // The progress guard must snapshot the cursor at attempt time. If it
     // aliased the pane's live `$state` cursor, a later mutation of that
