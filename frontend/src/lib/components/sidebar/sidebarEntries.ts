@@ -18,14 +18,13 @@
 //     project id;
 //   - `rowKey` is its DOM identity, which survives its key moving under a
 //     row that is still the same row, whatever the filter shows;
-//   - `id` is the project an action started on this row targets: the
-//     representative of the members the filter shows;
-//   - `orderId` is the project the manual order is saved under, whose
-//     position the row sorts by: the representative of every listed member,
-//     the filter ignored, so the order shown is the order this computer
-//     saves whichever checkout the filter shows;
+//   - `id` is the representative of every listed member, the filter
+//     ignored: the project an action started on this row targets, and the
+//     one the row's name, path, creation date and manual position are read
+//     from, because filtering never changes where an action executes
+//     (docs/specs/connected-computers.md);
 //   - the members are what the filter shows, and what the entry counts,
-//     dates and speaks for.
+//     dates and warns about.
 //
 // Under components/sidebar only this module may import from the projects
 // store and the continuity store beyond the writers
@@ -34,7 +33,13 @@ import type { ProjectWithCounts } from '../../types/models';
 import { HOME_BACKEND, type BackendKey } from '../../transport/backendKey';
 import { projectBackend } from '../../transport/entityIndex';
 import { attachedBackendEntry, backendDisplayName } from '../../stores/attachedBackends.svelte';
-import { getProjectLiveActivityAt, projectOrderPosition, representativeOf } from '../../stores/projects.svelte';
+import {
+  getProject,
+  getProjectLiveActivityAt,
+  projectOrderPosition,
+  projectSpansBackends,
+  representativeOf,
+} from '../../stores/projects.svelte';
 import {
   entryExpanded,
   entryListLimit,
@@ -63,16 +68,14 @@ export interface SidebarEntry {
    * the same project, and every thread under it, is on screen twice.
    */
   readonly rowKey: string;
-  /** The project an action started on this row acts on. */
+  /** The project an action started on this row acts on, whatever the filter shows. */
   readonly id: string;
-  /** The project the manual order is saved under. */
-  readonly orderId: string;
   readonly backend: BackendKey;
   readonly name: string;
   readonly path: string;
   readonly createdAt: number;
   readonly threadCount: number;
-  /** Manual order of `orderId`: the order still out while a reorder has not settled. */
+  /** Manual order of `id`: the order still out while a reorder has not settled. */
   readonly position: number;
   readonly expanded: boolean;
   /** How many rows the entry's own list shows. */
@@ -80,12 +83,6 @@ export interface SidebarEntry {
   /** The members the sidebar shows of this entry, in list order. */
   readonly members: readonly ProjectWithCounts[];
   readonly warnings: readonly SidebarEntryWarning[];
-  /**
-   * Whether the entry has a listed checkout on a computer other than the
-   * target's, the filter ignored: an action then affects one checkout of
-   * several.
-   */
-  readonly checkoutsElsewhere: boolean;
 }
 
 /** What an action on a row affects: the whole entry, or one of its checkouts. */
@@ -125,7 +122,7 @@ function backendOf(row: ProjectWithCounts): BackendKey {
 
 /**
  * The entries the sidebar renders. An entry with no member the filter shows,
- * or whose shown members are all archived, renders nothing; its members'
+ * or whose listed members are all archived, renders nothing; its members'
  * threads still bucket under its rowKey (`sidebarBucketOf`).
  */
 export function buildSidebarEntries(input: SidebarEntriesInput): readonly SidebarEntry[] {
@@ -134,9 +131,8 @@ export function buildSidebarEntries(input: SidebarEntriesInput): readonly Sideba
   for (const group of sidebarEntryGroups()) {
     const shown = group.members.filter((member) => input.visible(backendOf(member)));
     if (shown.length === 0) continue;
-    const rep = representativeOf(shown);
+    const rep = representativeOf(group.members);
     if (rep.project.archived) continue;
-    const ordered = representativeOf(group.members);
     const backend = backendOf(rep);
     let threadCount = 0;
     const warnings: SidebarEntryWarning[] = [];
@@ -149,18 +145,16 @@ export function buildSidebarEntries(input: SidebarEntriesInput): readonly Sideba
       key: group.key,
       rowKey: group.rowKey,
       id: rep.project.id,
-      orderId: ordered.project.id,
       backend,
       name: rep.project.name,
       path: rep.project.path,
       createdAt: rep.project.createdAt,
       threadCount,
-      position: projectOrderPosition(ordered),
+      position: projectOrderPosition(rep),
       expanded: entryExpanded(group),
       listLimit: entryListLimit(group),
       members: shown,
       warnings: warnings.length === 0 ? NO_WARNINGS : warnings,
-      checkoutsElsewhere: group.members.some((member) => backendOf(member) !== backend),
     };
     const before = previous.get(group.rowKey);
     entries.push(before !== undefined && sameEntry(before, next) ? before : next);
@@ -202,10 +196,15 @@ export function rankOf(entry: SidebarEntry): number {
  * Freeze what an action needs about its project, at the gesture that started
  * it. An action holding this cannot observe a representative change, so no
  * await, confirmation or preview can retarget it.
+ *
+ * The count is the target project's own threads, and the scope is decided
+ * over every checkout the client holds, a computer whose tree is still held
+ * included: a checkout the sidebar does not list yet is one the action does
+ * not affect, and its row comes back when that computer lists.
  */
 export function projectTarget(entry: SidebarEntry, label: string): ProjectTarget {
-  const own = entry.members.find((member) => member.project.id === entry.id);
-  if (own === undefined) throw new Error(`Sidebar entry ${entry.rowKey} does not show its own project ${entry.id}`);
+  const own = getProject(entry.id);
+  if (own === undefined) throw new Error(`Sidebar entry ${entry.rowKey} targets project ${entry.id}, which the client does not hold`);
   return Object.freeze({
     id: entry.id,
     name: entry.name,
@@ -213,7 +212,7 @@ export function projectTarget(entry: SidebarEntry, label: string): ProjectTarget
     backend: entry.backend,
     label,
     threadCount: own.threadCount,
-    scope: entry.checkoutsElsewhere
+    scope: projectSpansBackends(entry.id)
       ? Object.freeze({ kind: 'oneOfSeveral', computerName: computerName(entry.backend) })
       : WHOLE,
   });
@@ -230,7 +229,6 @@ function computerName(backend: BackendKey): string {
 function sameEntry(a: SidebarEntry, b: SidebarEntry): boolean {
   return a.key === b.key
     && a.id === b.id
-    && a.orderId === b.orderId
     && a.backend === b.backend
     && a.name === b.name
     && a.path === b.path
@@ -239,7 +237,6 @@ function sameEntry(a: SidebarEntry, b: SidebarEntry): boolean {
     && a.position === b.position
     && a.expanded === b.expanded
     && a.listLimit === b.listLimit
-    && a.checkoutsElsewhere === b.checkoutsElsewhere
     // The warnings are a projection of the members, so identical members are
     // identical warnings.
     && a.members.length === b.members.length

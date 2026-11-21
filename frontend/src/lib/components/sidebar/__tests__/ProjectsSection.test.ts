@@ -41,6 +41,7 @@ import { applyProjectUpdated } from '../../../stores/eventsProjectRows';
 import { __setTransportStatusForTest } from '../../../stores/transportStatus.svelte';
 import { DisconnectedError, TransportError } from '../../../transport/wsClient';
 import { observeBackendGeneration, setBackendIdentityFromBootstrap } from '../../../transport/backendIdentity';
+import { entryRecordForTest, setEntryExpanded, setEntryListLimit } from '../../../stores/sidebarEntryContinuity.svelte';
 
 function mkProject(id: string, overrides: Partial<Project> = {}): Project {
   return {
@@ -748,18 +749,19 @@ describe('<ProjectsSection> threads and their groups', () => {
       gpuThreads.resolve([]);
       await vi.waitFor(() => expect(catalogTreeListed('gpu')).toBe(true));
       await settle();
-      // The entry comes back speaking for the GPU checkout, the member the
-      // filter shows.
-      expect(headers(container)).toEqual(['a-gpu']);
+      // The entry comes back showing the GPU checkout and still targeting
+      // the Mac's: filtering never changes where an action executes.
+      expect(headers(container)).toEqual(['a-mac']);
     } finally {
       showAllSidebarDevices();
       resetStagedBackends();
     }
   });
 
-  // An entry speaks for the members the filter shows, and is persisted and
-  // rendered by what the filter cannot move: the collapse set and the
-  // show-more limit key on its key, the each on its rowKey.
+  // An entry counts the members the filter shows, and is targeted,
+  // persisted and rendered by what the filter cannot move: actions by its
+  // listed representative, the collapse set and the show-more limit by its
+  // key, the each by its rowKey.
   const mergedRepoMocks = (homeRows: ProjectWithCounts[], gpuRows: ProjectWithCounts[]) => {
     setBindingMock('ListProjects', async () => (takePinnedBackend() === 'gpu' ? gpuRows : homeRows));
   };
@@ -774,7 +776,6 @@ describe('<ProjectsSection> threads and their groups', () => {
   it("keeps a collapsed entry's row, and its show-more limit, when the filter hides its home member", async () => {
     const { stageBackend, resetStagedBackends } = await import('../../../../test/helpers/backends');
     const { setSidebarDeviceVisible, showAllSidebarDevices } = await import('../../../stores/sidebarDevices.svelte');
-    const { getProjectListLimit, setProjectListLimit } = await import('../../../stores/sidebar.svelte');
     const { projectEntryKey } = await import('../../../stores/projects.svelte');
     stageBackend({ id: 'gpu', backendId: 'gpu-id' });
     setBackendIdentityFromBootstrap('home-id', 'gen-1', 'Mac', HOME_BACKEND);
@@ -793,22 +794,22 @@ describe('<ProjectsSection> threads and their groups', () => {
       expect(headers(container)).toEqual(['a-home']);
 
       await fireEvent.click(chevron(container, 'a-home'));
-      setProjectListLimit(projectEntryKey('a-home'), 10);
+      setEntryListLimit(projectEntryKey('a-home'), 10);
       await settle();
       expect(expandedOf(container, 'a-home')).toBe('false');
 
       const row = container.querySelector('[data-testid="project-item"]');
       setSidebarDeviceVisible('home-id', false);
       await settle();
-      // The row now speaks for the GPU checkout it shows, and is the same
-      // row, still collapsed, with the limit the user revealed to: its key
-      // is the repository's whichever checkout the filter shows.
-      expect(headers(container)).toEqual(['a-gpu']);
+      // The row now shows the GPU checkout's threads and is the same row,
+      // still collapsed, with the limit the user revealed to: its key is the
+      // repository's whichever checkout the filter shows.
+      expect(headers(container)).toEqual(['a-home']);
       expect(container.querySelector('[data-testid="project-item"]')).toBe(row);
-      expect(expandedOf(container, 'a-gpu')).toBe('false');
-      expect(getProjectListLimit(projectEntryKey('a-gpu'))).toBe(10);
+      expect(expandedOf(container, 'a-home')).toBe('false');
+      expect(entryRecordForTest(projectEntryKey('a-gpu')).listLimit).toBe(10);
 
-      await fireEvent.click(chevron(container, 'a-gpu'));
+      await fireEvent.click(chevron(container, 'a-home'));
       await settle();
       expect(arrangement(container)).toHaveLength(10);
     } finally {
@@ -951,7 +952,6 @@ describe('<ProjectsSection> threads and their groups', () => {
 
     it('commits the move while the sidebar is folded to its rail, so the next boot finds it', async () => {
       const continuity = await import('../../../stores/sidebarEntryContinuity.svelte');
-      const { syncSidebarFromAppStorage } = await import('../../../stores/sidebar.svelte');
       const view = await listCollapsed();
       // The rail: ProjectsSection is not mounted.
       view.unmount();
@@ -961,8 +961,7 @@ describe('<ProjectsSection> threads and their groups', () => {
 
       // A restart: nothing remembered about the rows, the records read back.
       continuity.resetSidebarEntryContinuityForTest();
-      resetSidebarForTest();
-      syncSidebarFromAppStorage();
+      continuity.syncSidebarEntryDisclosureFromAppStorage();
       continuity.startSidebarEntryContinuity();
       const { container } = render(ProjectsSection, { props: { pane: null } });
       await settle();
@@ -970,13 +969,149 @@ describe('<ProjectsSection> threads and their groups', () => {
     });
   });
 
+  // A search opens the rows its threads matched in, for as long as it is
+  // open, and writes nothing a later session or a later row reads: what the
+  // user folded stays folded underneath it.
+  describe('a search opening a collapsed row', () => {
+    const REPO = 'forge:github:github.com:A';
+
+    async function collapsedMergedRow(): Promise<{ container: HTMLElement }> {
+      const { stageBackend } = await import('../../../../test/helpers/backends');
+      stageBackend({ id: 'gpu', backendId: 'gpu-id' });
+      mergedRepoMocks(
+        [{ project: repoProject('a-home', 'A', '/home/a'), threadCount: 1, lastActive: 1 }],
+        [{ project: repoProject('a-gpu', 'A', '/gpu/a'), threadCount: 1, lastActive: 2 }],
+      );
+      setBindingMock('ListThreads', async () => (takePinnedBackend() === 'gpu'
+        ? [makeThread({ id: 'g0', projectId: 'a-gpu', title: 'needle on the gpu' })]
+        : [makeThread({ id: 'h0', projectId: 'a-home', title: 'needle at home' })]));
+      setBindingMock('ListThreadGroups', async () => []);
+      const { container } = render(ProjectsSection, { props: { pane: null } });
+      await loadSidebarCatalogs();
+      await settle();
+      expect(headers(container)).toEqual(['a-home']);
+      await fireEvent.click(chevron(container, 'a-home'));
+      await settle();
+      expect(expandedOf(container, 'a-home')).toBe('false');
+      return { container };
+    }
+
+    const collapsedKeys = async (): Promise<string[]> => {
+      const { appStorageGet } = await import('../../../stores/appStorage');
+      return (JSON.parse(appStorageGet('sidebar:collapsedProjectEntries') ?? '[]') as string[]).sort();
+    };
+
+    afterEach(async () => {
+      const { resetStagedBackends } = await import('../../../../test/helpers/backends');
+      resetStagedBackends();
+    });
+
+    it('keeps the fold persisted while the search shows the row open', async () => {
+      const { container } = await collapsedMergedRow();
+      setThreadFilterQuery('needle');
+      await settle();
+      expect(expandedOf(container, 'a-home')).toBe('true');
+      // What a client closed now would boot with.
+      expect(await collapsedKeys()).toEqual([REPO]);
+      setThreadFilterQuery('');
+      await settle();
+      expect(expandedOf(container, 'a-home')).toBe('false');
+    });
+
+    it('leaves both halves folded when a checkout splits off during the search', async () => {
+      const { container } = await collapsedMergedRow();
+      setThreadFilterQuery('needle');
+      await settle();
+      expect(expandedOf(container, 'a-home')).toBe('true');
+
+      // The GPU's checkout loses its identity: it splits off with a copy of
+      // the row's record.
+      updateProjectLocal({ ...repoProject('a-gpu', 'A', '/gpu/a'), repositoryID: '' });
+      await settle();
+      expect(headers(container).sort()).toEqual(['a-gpu', 'a-home']);
+      setThreadFilterQuery('');
+      await settle();
+
+      expect(expandedOf(container, 'a-home')).toBe('false');
+      expect(expandedOf(container, 'a-gpu')).toBe('false');
+      expect(await collapsedKeys()).toEqual(['a-gpu', REPO].sort());
+    });
+
+    it('keeps a search-opened row folded when the user folds it during the search, and after', async () => {
+      const { container } = await collapsedMergedRow();
+      setThreadFilterQuery('needle');
+      await settle();
+      await fireEvent.click(chevron(container, 'a-home'));
+      await settle();
+      expect(expandedOf(container, 'a-home')).toBe('false');
+      setThreadFilterQuery('needle at');
+      await settle();
+      expect(expandedOf(container, 'a-home')).toBe('false');
+      setThreadFilterQuery('');
+      await settle();
+      expect(expandedOf(container, 'a-home')).toBe('false');
+      expect(await collapsedKeys()).toEqual([REPO]);
+    });
+
+    it('keeps a row open that the user opened during the search', async () => {
+      const { container } = await collapsedMergedRow();
+      setThreadFilterQuery('needle');
+      await settle();
+      await fireEvent.click(chevron(container, 'a-home'));
+      await settle();
+      await fireEvent.click(chevron(container, 'a-home'));
+      await settle();
+      expect(expandedOf(container, 'a-home')).toBe('true');
+      setThreadFilterQuery('');
+      await settle();
+      expect(expandedOf(container, 'a-home')).toBe('true');
+      expect(await collapsedKeys()).toEqual([]);
+    });
+
+    it('lets the user fold a matched row that was open before the search', async () => {
+      const { container } = await collapsedMergedRow();
+      await fireEvent.click(chevron(container, 'a-home'));
+      await settle();
+      expect(expandedOf(container, 'a-home')).toBe('true');
+      setThreadFilterQuery('needle');
+      await settle();
+      await fireEvent.click(chevron(container, 'a-home'));
+      await settle();
+      expect(expandedOf(container, 'a-home')).toBe('false');
+      setThreadFilterQuery('');
+      await settle();
+      expect(expandedOf(container, 'a-home')).toBe('false');
+    });
+
+    it('opens the row again when a narrowed search matches it again', async () => {
+      const { container } = await collapsedMergedRow();
+      setThreadFilterQuery('needle');
+      await settle();
+      expect(expandedOf(container, 'a-home')).toBe('true');
+      setThreadFilterQuery('needle nowhere');
+      await settle();
+      setThreadFilterQuery('needle');
+      await settle();
+      expect(expandedOf(container, 'a-home')).toBe('true');
+    });
+
+    it('opens a row the user folded in an earlier search when the next search matches it', async () => {
+      const { container } = await collapsedMergedRow();
+      setThreadFilterQuery('needle');
+      await settle();
+      await fireEvent.click(chevron(container, 'a-home'));
+      await settle();
+      expect(expandedOf(container, 'a-home')).toBe('false');
+      setThreadFilterQuery('');
+      await settle();
+      setThreadFilterQuery('needle');
+      await settle();
+      expect(expandedOf(container, 'a-home')).toBe('true');
+    });
+  });
+
   it("keeps the row it rendered, and its disclosure, through a held member's commit and its listing", async () => {
     const { stageBackend, resetStagedBackends } = await import('../../../../test/helpers/backends');
-    const {
-      collapseProject,
-      getProjectListLimit,
-      setProjectListLimit,
-    } = await import('../../../stores/sidebar.svelte');
     const { projectEntryKey } = await import('../../../stores/projects.svelte');
     stageBackend({ id: 'gpu', backendId: 'gpu-id' });
     try {
@@ -984,8 +1119,8 @@ describe('<ProjectsSection> threads and their groups', () => {
       // the only computer showing it, under the entry's own key: repository
       // A's, which is the key whatever checkout represents it.
       const keyOfA = 'forge:github:github.com:A';
-      collapseProject(keyOfA);
-      setProjectListLimit(keyOfA, 10);
+      setEntryExpanded(keyOfA, false);
+      setEntryListLimit(keyOfA, 10);
       const homeProjects = deferred<ProjectWithCounts[]>();
       const homeThreads = deferred<Thread[]>();
       setBindingMock('ListProjects', () => (takePinnedBackend() === 'gpu'
@@ -1006,7 +1141,7 @@ describe('<ProjectsSection> threads and their groups', () => {
       expect(headers(container)).toEqual(['a-gpu']);
       expect(expandedOf(container, 'a-gpu')).toBe('false');
       expect(projectEntryKey('a-gpu')).toBe(keyOfA);
-      expect(getProjectListLimit(keyOfA)).toBe(10);
+      expect(entryRecordForTest(keyOfA).listLimit).toBe(10);
       const row = container.querySelector('[data-testid="project-item"]');
 
       // Home's project row commits at its own window while Home's threads
@@ -1017,7 +1152,7 @@ describe('<ProjectsSection> threads and their groups', () => {
       expect(catalogTreeListed(HOME_BACKEND)).toBe(false);
       expect(headers(container)).toEqual(['a-gpu']);
       expect(expandedOf(container, 'a-gpu')).toBe('false');
-      expect(getProjectListLimit(projectEntryKey('a-gpu'))).toBe(10);
+      expect(entryRecordForTest(projectEntryKey('a-gpu')).listLimit).toBe(10);
       expect(container.querySelector('[data-testid="project-item"]')).toBe(row);
 
       // At Home's listing the entry changes hands, by design. Its key does
@@ -1029,7 +1164,7 @@ describe('<ProjectsSection> threads and their groups', () => {
       expect(headers(container)).toEqual(['a-home']);
       expect(container.querySelector('[data-testid="project-item"]')).toBe(row);
       expect(expandedOf(container, 'a-home')).toBe('false');
-      expect(getProjectListLimit(projectEntryKey('a-home'))).toBe(10);
+      expect(entryRecordForTest(projectEntryKey('a-home')).listLimit).toBe(10);
     } finally {
       resetStagedBackends();
     }
@@ -1037,7 +1172,6 @@ describe('<ProjectsSection> threads and their groups', () => {
 
   it('gives a second checkout on one computer its own row, and keeps the first one when a computer attaches', async () => {
     const { stageBackend, resetStagedBackends } = await import('../../../../test/helpers/backends');
-    const { collapseProject } = await import('../../../stores/sidebar.svelte');
     const { projectEntryKey } = await import('../../../stores/projects.svelte');
     const homeRows = [
       { project: { ...repoProject('a1', 'A', '/home/a1'), createdAt: 1 }, threadCount: 0, lastActive: 200 },
@@ -1054,7 +1188,7 @@ describe('<ProjectsSection> threads and their groups', () => {
     // One repository, two checkouts on one computer: two entries, so two
     // keys. The repository key belongs to the computer's chosen checkout.
     expect(headers(container)).toEqual(['a1', 'a2']);
-    collapseProject(projectEntryKey('a1'));
+    setEntryExpanded(projectEntryKey('a1'), false);
     await settle();
     expect(expandedOf(container, 'a1')).toBe('false');
     expect(expandedOf(container, 'a2')).toBe('true');
@@ -1104,17 +1238,18 @@ describe('<ProjectsSection> threads and their groups', () => {
       await settle();
       setSidebarDeviceVisible('home-id', false);
       await settle();
-      expect(headers(container)).toEqual(['b-gpu', 'a-gpu']);
+      // Repository A's row targets Home's checkout and shows the GPU's.
+      expect(headers(container)).toEqual(['b-gpu', 'a-home']);
 
       // A member on a computer the filter hides: not this entry's activity.
       touchProjectActivity('a-home', 400);
       await settle();
-      expect(headers(container)).toEqual(['b-gpu', 'a-gpu']);
+      expect(headers(container)).toEqual(['b-gpu', 'a-home']);
 
       // The member it shows: its beat is the entry's.
       touchProjectActivity('a-gpu', 300);
       await settle();
-      expect(headers(container)).toEqual(['a-gpu', 'b-gpu']);
+      expect(headers(container)).toEqual(['a-home', 'b-gpu']);
     } finally {
       showAllSidebarDevices();
       setBackendIdentityFromBootstrap('', '', '', HOME_BACKEND);
@@ -1148,9 +1283,9 @@ describe('<ProjectsSection> threads and their groups', () => {
       await settle();
       setSidebarDeviceVisible('home-id', false);
       await settle();
-      // The rows speak for the GPU checkouts they show, in the order this
-      // computer saves.
-      expect(headers(container)).toEqual(['a-gpu', 'b-gpu']);
+      // The rows show the GPU checkouts and target Home's, in the order
+      // this computer saves.
+      expect(headers(container)).toEqual(['a-home', 'b-home']);
 
       const items = container.querySelectorAll('[data-testid="project-item"]');
       const dataTransfer = { effectAllowed: '', dropEffect: '', setData: vi.fn(), getData: () => '' };

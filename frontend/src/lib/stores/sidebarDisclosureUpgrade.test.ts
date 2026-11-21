@@ -45,11 +45,13 @@ async function freshStores() {
   const catalogs = await import('./sidebarCatalogs');
   const appStorage = await import('./appStorage');
   const sidebar = await import('./sidebar.svelte');
+  const continuity = await import('./sidebarEntryContinuity.svelte');
   backends.stageBackend({ id: 'laptop', backendId: 'laptop-id', name: 'Laptop' });
   catalogs.listCatalogTreesForTest();
   return {
     appStorage,
     sidebar,
+    continuity,
     projects,
     addOn(backend: string, project: Project) {
       entityIndex.noteProject(project.id, backend as never);
@@ -102,7 +104,7 @@ describe('saved disclosure after the entry key', () => {
       'sidebar:threadListVisibleLimits': JSON.stringify({ alone: 20 }),
     });
 
-    const { sidebar, projects, addOn, reset } = await freshStores();
+    const { continuity, projects, addOn, reset } = await freshStores();
     cleanup = reset;
     addOn('', mkProject('alone'));
 
@@ -110,8 +112,8 @@ describe('saved disclosure after the entry key', () => {
     // ones a project is read from any more.
     const key = projects.projectEntryKey('alone');
     expect(key).toBe('alone');
-    expect(sidebar.isProjectExpanded(key)).toBe(true);
-    expect(sidebar.getProjectListLimit(key)).toBe(THREAD_PREVIEW_LIMIT);
+    expect(continuity.entryRecordForTest(key).expanded).toBe(true);
+    expect(continuity.entryRecordForTest(key).listLimit).toBe(THREAD_PREVIEW_LIMIT);
   });
 
   it('never answers a project from what its id saved, before or after its identity goes', async () => {
@@ -120,22 +122,22 @@ describe('saved disclosure after the entry key', () => {
       'sidebar:threadListVisibleLimits': JSON.stringify({ p: 50 }),
     });
 
-    const { sidebar, projects, addOn, update, reset } = await freshStores();
+    const { continuity, projects, addOn, update, reset } = await freshStores();
     cleanup = reset;
     addOn('', mkProject('p', { repositoryID: 'github:github.com:1' }));
 
     // With the identity: the row is keyed by the repository.
     expect(projects.projectEntryKey('p')).toBe('forge:github:github.com:1');
-    expect(sidebar.isProjectExpanded('forge:github:github.com:1')).toBe(true);
-    expect(sidebar.getProjectListLimit('forge:github:github.com:1')).toBe(THREAD_PREVIEW_LIMIT);
+    expect(continuity.entryRecordForTest('forge:github:github.com:1').expanded).toBe(true);
+    expect(continuity.entryRecordForTest('forge:github:github.com:1').listLimit).toBe(THREAD_PREVIEW_LIMIT);
 
     // And without it, which is where a shared record would hand the old
     // fold back: the remote is removed or retargeted and the key falls back
     // to the project's own id.
     update(mkProject('p'));
     expect(projects.projectEntryKey('p')).toBe('p');
-    expect(sidebar.isProjectExpanded('p')).toBe(true);
-    expect(sidebar.getProjectListLimit('p')).toBe(THREAD_PREVIEW_LIMIT);
+    expect(continuity.entryRecordForTest('p').expanded).toBe(true);
+    expect(continuity.entryRecordForTest('p').listLimit).toBe(THREAD_PREVIEW_LIMIT);
   });
 
   it('drops the id-keyed fold from the bucket once the bucket has hydrated', async () => {
@@ -168,7 +170,7 @@ describe('saved disclosure after the entry key', () => {
     // key is still adopted, as on main, for the groups that may be in it.)
     localStorage.setItem('agent-overflow:sidebar:collapsedProjects', JSON.stringify(['p']));
     localStorage.setItem('agent-overflow:sidebar:expandedProjects', JSON.stringify(['q']));
-    const { sidebar, reset } = await freshStores();
+    const { continuity, reset } = await freshStores();
     cleanup = reset;
 
     // Reading is all this store does at init. A write here would mark this
@@ -176,7 +178,7 @@ describe('saved disclosure after the entry key', () => {
     // would then never read the server bucket again.
     expect(localStorage.getItem(MIGRATED_KEY)).toBeNull();
     expect(localStorage.getItem(BUCKET_KEY)).toBeNull();
-    expect(sidebar.isProjectExpanded('p')).toBe(true);
+    expect(continuity.entryRecordForTest('p').expanded).toBe(true);
     // Gone from localStorage too, so no later boot can read one either.
     expect(localStorage.getItem('agent-overflow:sidebar:collapsedProjects')).toBeNull();
     expect(localStorage.getItem('agent-overflow:sidebar:expandedProjects')).toBeNull();
@@ -188,7 +190,7 @@ describe('saved disclosure after the entry key', () => {
       'sidebar:threadListVisibleLimits': JSON.stringify({ home: 20, laptop: 50 }),
     });
 
-    const { sidebar, projects, addOn, reset } = await freshStores();
+    const { continuity, projects, addOn, reset } = await freshStores();
     cleanup = reset;
     addOn('', mkProject('home', { repositoryID: 'github:github.com:1' }));
     addOn('laptop', mkProject('laptop', { repositoryID: 'github:github.com:1' }));
@@ -196,10 +198,10 @@ describe('saved disclosure after the entry key', () => {
     // The row is keyed by the repository, which neither id is: the price.
     const key = projects.projectEntryKey('home');
     expect(key).toBe('forge:github:github.com:1');
-    expect(sidebar.isProjectExpanded(key)).toBe(true);
-    expect(sidebar.getProjectListLimit(key)).toBe(THREAD_PREVIEW_LIMIT);
+    expect(continuity.entryRecordForTest(key).expanded).toBe(true);
+    expect(continuity.entryRecordForTest(key).listLimit).toBe(THREAD_PREVIEW_LIMIT);
     // And once: the fold the user makes now is under the key that stays.
-    sidebar.collapseProject(key);
-    expect(sidebar.isProjectExpanded(key)).toBe(false);
+    continuity.setEntryExpanded(key, false);
+    expect(continuity.entryRecordForTest(key).expanded).toBe(false);
   });
 });

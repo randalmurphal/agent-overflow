@@ -18,8 +18,7 @@
 // ignored, in three passes: a row that keeps its key and shares a member,
 // then a row that shares a member (a key that moved, a merge, a split), then
 // a new row under its own key unless a continuing row carries that identity.
-// What follows for the records, committed atomically by
-// `applyProjectDisclosureChanges`:
+// What follows for the records, applied as one change:
 //   - an entry whose key moved takes the record of the row it continues;
 //   - a merge keeps the continuing row's record and clears the other row's,
 //     which would otherwise come back when that member splits off again;
@@ -33,22 +32,28 @@
 // committed by one effect, which runs whether or not the sidebar is mounted,
 // and by every disclosure writer here before it writes, so no write can land
 // on a key whose record is still on its way.
+//
+// The records are this module's alone: it creates them and exports nothing
+// that reads or writes one by key, so no other module can read a record that
+// is on its way or write one under a key that is about to move. They are new
+// records because a project's disclosure used to be keyed by its own id,
+// before a repository checked out on several computers became one entry, and
+// that cannot be migrated: an id cannot be turned into an entry key without
+// every computer's project rows, which the sidebar has not read when this
+// module initializes. Separate records are what makes the old state
+// unreachable rather than merely unread; every project opens once.
 import { untrack } from 'svelte';
 import type { ProjectWithCounts } from '../types/models';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { projectBackend } from '../transport/entityIndex';
 import { entryIdFor, getProjects, projectEntryKey } from './projects.svelte';
 import { catalogTreeListed } from './sidebarCatalogs';
-import {
-  applyProjectDisclosureChanges,
-  collapseProject,
-  collapseProjectList,
-  expandProject,
-  getProjectListLimit,
-  isProjectExpanded,
-  setProjectListLimit,
-  type ProjectDisclosureChanges,
-} from './sidebar.svelte';
+import { keySetRecord, listLimitRecord, type RecordKeyChanges } from './sidebar.svelte';
+
+// An entry's fold, inverted: the keys of the entries the user collapsed.
+const collapsed = keySetRecord('sidebar:collapsedProjectEntries');
+// How many rows an entry's own list shows, by entry key.
+const listLimits = listLimitRecord('sidebar:projectEntryListLimits');
 
 /** One entry of the sidebar's listed rows, the device filter ignored. */
 export interface SidebarEntryGroup {
@@ -78,7 +83,7 @@ interface Continuity {
   readonly rowOf: ReadonlyMap<string, string>;
   /** What to remember: the previous array itself when nothing changed. */
   readonly rows: readonly RememberedRow[];
-  readonly changes: ProjectDisclosureChanges | null;
+  readonly changes: RecordKeyChanges | null;
 }
 
 interface ListedGroup {
@@ -158,7 +163,7 @@ function freshRowKey(group: ListedGroup, taken: Set<string>): string {
   return rowKey;
 }
 
-function changesOf(previous: readonly RememberedRow[], groups: readonly SidebarEntryGroup[]): ProjectDisclosureChanges | null {
+function changesOf(previous: readonly RememberedRow[], groups: readonly SidebarEntryGroup[]): RecordKeyChanges | null {
   const copies = new Map<string, string>();
   for (const group of groups) if (group.recordKey !== group.key) copies.set(group.key, group.recordKey);
   const keys = new Set(groups.map((group) => group.key));
@@ -207,12 +212,12 @@ export function sidebarEntryRowOf(projectId: string): string {
 
 /** Whether an entry is unfolded, read where its record lives now. */
 export function entryExpanded(group: SidebarEntryGroup): boolean {
-  return isProjectExpanded(group.recordKey);
+  return !collapsed.has(group.recordKey);
 }
 
 /** How many rows an entry's own list shows, read where its record lives now. */
 export function entryListLimit(group: SidebarEntryGroup): number {
-  return getProjectListLimit(group.recordKey);
+  return listLimits.limitOf(group.recordKey);
 }
 
 // Commit the decision: the record changes it implies, and the rows it
@@ -221,7 +226,10 @@ export function entryListLimit(group: SidebarEntryGroup): number {
 function commit(): void {
   untrack(() => {
     const next = continuity;
-    if (next.changes !== null) applyProjectDisclosureChanges(next.changes);
+    if (next.changes !== null) {
+      collapsed.apply(next.changes);
+      listLimits.apply(next.changes);
+    }
     if (next.rows !== remembered) remembered = next.rows;
   });
 }
@@ -229,20 +237,19 @@ function commit(): void {
 /** Fold or unfold the entry persisted under `key`. */
 export function setEntryExpanded(key: string, expanded: boolean): void {
   commit();
-  if (expanded) expandProject(key);
-  else collapseProject(key);
+  collapsed.set(key, !expanded);
 }
 
 /** Show `limit` rows of the entry's own list. */
 export function setEntryListLimit(key: string, limit: number): void {
   commit();
-  setProjectListLimit(key, limit);
+  listLimits.setLimit(key, limit);
 }
 
 /** Put the entry's own list back to its preview size. */
 export function resetEntryListLimit(key: string): void {
   commit();
-  collapseProjectList(key);
+  listLimits.clear(key);
 }
 
 /**
@@ -251,7 +258,7 @@ export function resetEntryListLimit(key: string): void {
  */
 export function revealProject(projectId: string): void {
   commit();
-  expandProject(untrack(() => projectEntryKey(projectId)));
+  collapsed.set(untrack(() => projectEntryKey(projectId)), false);
 }
 
 let stopEffect: (() => void) | null = null;
@@ -275,8 +282,24 @@ export function stopSidebarEntryContinuity(): void {
   stopEffect = null;
 }
 
-/** Test seam: stop the effect and forget every remembered row. */
+/**
+ * Re-read the records after hydration lands the durable per-client bucket,
+ * beside the rest of the sidebar's view state (syncSidebarFromAppStorage).
+ */
+export function syncSidebarEntryDisclosureFromAppStorage(): void {
+  collapsed.reload();
+  listLimits.reload();
+}
+
+/** Test seam: what the records hold under `key`, read without a move. */
+export function entryRecordForTest(key: string): { expanded: boolean; listLimit: number } {
+  return { expanded: !collapsed.has(key), listLimit: listLimits.limitOf(key) };
+}
+
+/** Test seam: stop the effect, forget every remembered row and the records' in-memory copies. */
 export function resetSidebarEntryContinuityForTest(): void {
   stopSidebarEntryContinuity();
   remembered = [];
+  collapsed.resetForTest();
+  listLimits.resetForTest();
 }

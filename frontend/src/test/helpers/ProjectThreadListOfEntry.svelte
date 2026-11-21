@@ -4,9 +4,9 @@
   // whose key has not moved.
   import type { ComponentProps } from 'svelte';
   import ProjectThreadList from '../../lib/components/sidebar/ProjectThreadList.svelte';
-  import { getProjectListLimit } from '../../lib/stores/sidebar.svelte';
+  import { entryRecordForTest } from '../../lib/stores/sidebarEntryContinuity.svelte';
 
   let props: Omit<ComponentProps<typeof ProjectThreadList>, 'listLimit'> = $props();
 </script>
 
-<ProjectThreadList {...props} listLimit={getProjectListLimit(props.listKey)} />
+<ProjectThreadList {...props} listLimit={entryRecordForTest(props.listKey).listLimit} />

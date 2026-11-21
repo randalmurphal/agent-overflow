@@ -58,13 +58,17 @@ which adds the project's empty state and drop targets.
   entry through a member the row kept, whatever the filter shows; a keyed
   each that remounts a row leaves the old one on screen for the length of
   its exit, so the project and every thread under it render twice. Its `id`
-  is the representative of the members the filter shows, and is what an
-  action on the row targets. Its `orderId` is the representative of every
-  listed member with the filter ignored: the project the manual order is
-  saved under and the row sorts and drags by. Its `members` are what the
-  filter shows, and everything the entry counts, dates (`rankOf`) and says
-  about its members, its identity warning and its recheck included, comes
-  from them.
+  is the representative of every listed member with the filter ignored,
+  because filtering never changes where an action executes
+  ([connected computers](../../../../../docs/specs/connected-computers.md)):
+  what an action on the row targets, the order it is saved and dragged under,
+  and its name, path and creation date. Its `members` are what the filter
+  shows, and everything the entry counts, dates (`rankOf`) and says about its
+  members, its identity warning and its recheck included, comes from them.
+- An action's target counts its own threads, and its scope is decided over
+  every checkout the client holds (`projectSpansBackends`), a computer whose
+  tree is still held included, so a confirmation never promises to hide a
+  row that comes back when that computer lists.
 - An action is one run (`projectActions.svelte.ts`): it owns the target it
   took at its gesture and everything derived from it, its confirmation text
   and its deletion preview included, and the call it ends in is gated on
@@ -81,14 +85,19 @@ which adds the project's empty state and drop targets.
   other's prefix; the entry carries the name and path, not the label.
 - An entry's collapse and the show-more limit of its own list belong to
   `stores/sidebarEntryContinuity.svelte.ts`, which moves them with the row
-  when its key moves and is the only module that reads or writes their
-  records. The entry carries both (`expanded`, `listLimit`); a list's top
+  when its key moves and creates their records, so nothing else can read or
+  write one. The entry carries both (`expanded`, `listLimit`); a list's top
   level names which record it pages in (`SidebarTopLevelList`), since a
   group's and the Assistants section's sizes share the older one.
   `ProjectsSection.svelte` writes collapse with `setEntryExpanded` and
   `SidebarTreeList.svelte` writes the limit; a row reports a toggle through
   `onSetExpanded` instead of writing one. Anything that wants a project's
   rows revealed calls `revealProject` in that store.
+- A search shows open every row whose threads or groups matched, as
+  `ProjectsSection.svelte`'s view of the search (`searchOpened`), and never
+  writes a fold. A row the user folds or unfolds during the search is
+  written as always and stops being opened by the search until it stops
+  matching or the search clears.
 - A row's worker count and needs-you badge read
   `stores/threadWorkerSummaries.svelte.ts`.
 - `threadRowActions.ts` and `threadGroupActions.ts` own mutations from this

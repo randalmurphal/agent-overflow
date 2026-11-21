@@ -653,24 +653,13 @@ const SIDEBAR_PROJECT_READ_ALLOWLIST: Record<string, string> = {
     "labels the projects an assistant serves on its card, which is not a project row's label",
 };
 
-// Rule: a project's disclosure records are written and read by the entry
-// continuity store alone, and a thread list's sizes by the list.
+// Rule: under components/sidebar/, a group's and the Assistants section's list
+// sizes are read and written by the list that renders them.
 //
-// Collapse and the show-more limit are persisted by a sidebar ENTRY's key,
-// which moves while the row stays; `stores/sidebarEntryContinuity.svelte.ts`
-// moves the record with it and knows where it lives while a move waits, so
-// a read or write by key anywhere else could land on the wrong record. A
-// group's and the Assistants section's sizes never change key, and a row
-// reports a change to the list that renders it.
-const PROJECT_DISCLOSURE_RECORDS: Record<string, string> = {
-  isProjectExpanded: 'lib/stores/sidebarEntryContinuity.svelte.ts',
-  expandProject: 'lib/stores/sidebarEntryContinuity.svelte.ts',
-  collapseProject: 'lib/stores/sidebarEntryContinuity.svelte.ts',
-  getProjectListLimit: 'lib/stores/sidebarEntryContinuity.svelte.ts',
-  setProjectListLimit: 'lib/stores/sidebarEntryContinuity.svelte.ts',
-  collapseProjectList: 'lib/stores/sidebarEntryContinuity.svelte.ts',
-  applyProjectDisclosureChanges: 'lib/stores/sidebarEntryContinuity.svelte.ts',
-};
+// A row reports a "Show more" or "Show less" to the list, which owns the
+// limit it renders by. Resolved through re-exports like the rule above. A
+// project's own list sizes and folds need no rule: the entry continuity store
+// creates those records and exports nothing that names one.
 const THREAD_LIST_SIZES: Record<string, string> = {
   getThreadListVisibleLimit: 'lib/components/sidebar/SidebarTreeList.svelte',
   setThreadListVisibleLimit: 'lib/components/sidebar/SidebarTreeList.svelte',
@@ -678,7 +667,7 @@ const THREAD_LIST_SIZES: Record<string, string> = {
 };
 const SIDEBAR_STORE = join(STORES_DIR, 'sidebar');
 // Shrink-only, and empty.
-const SIDEBAR_DISCLOSURE_ALLOWLIST: Record<string, string> = {};
+const SIDEBAR_LIST_SIZE_ALLOWLIST: Record<string, string> = {};
 
 // A call, not the words: the comments in lib/transport/ discuss `Events.On`
 // by name and must not read as subscriptions.
@@ -765,9 +754,9 @@ describe('architecture', () => {
     return { module, name };
   }
 
-  /** The fenced modules a whole-module import of `module` reaches. */
-  function fencedBehind(module: string, seen = new Set<string>()): string[] {
-    if (SIDEBAR_FENCED_IMPORTS.has(module)) return [module];
+  /** Which of `fenced` a whole-module import of `module` reaches. */
+  function reachedBehind(module: string, fenced: ReadonlySet<string>, seen = new Set<string>()): string[] {
+    if (fenced.has(module)) return [module];
     if (seen.has(module)) return [];
     seen.add(module);
     const info = exportsByModule.get(module);
@@ -775,14 +764,15 @@ describe('architecture', () => {
     const reached = new Set<string>();
     for (const name of info.reexports.keys()) {
       const origin = originOf(module, name);
-      if (SIDEBAR_FENCED_IMPORTS.has(origin.module)) reached.add(origin.module);
+      if (fenced.has(origin.module)) reached.add(origin.module);
     }
     for (const specifier of info.stars) {
       const target = resolveLocalModule(info.file, specifier);
-      if (target !== null) for (const fenced of fencedBehind(target, seen)) reached.add(fenced);
+      if (target !== null) for (const found of reachedBehind(target, fenced, seen)) reached.add(found);
     }
     return [...reached];
   }
+  const FENCED_STORES = new Set(SIDEBAR_FENCED_IMPORTS.keys());
 
   it('keeps every read of the projects and their entries in the sidebar entry projection', () => {
     const offenders = new Map<string, string[]>();
@@ -794,7 +784,7 @@ describe('architecture', () => {
         const module = resolveLocalModule(source.file, parsed.specifier);
         if (module === null) continue;
         if (parsed.wholeModule) {
-          for (const fenced of fencedBehind(module)) {
+          for (const fenced of reachedBehind(module, FENCED_STORES)) {
             if (source.path === SIDEBAR_ENTRY_OWNER) ownerReads.add(fenced);
             else reasons.push(`imports the whole of ${parsed.specifier}, which reaches ${repoPath(fenced)}`);
           }
@@ -829,38 +819,44 @@ describe('architecture', () => {
     );
   });
 
-  it("keeps a project's disclosure records with the entry continuity, and a list's sizes with the list", () => {
+  it("keeps a group's and the Assistants section's list sizes with the list that renders them", () => {
+    const sidebarStore = new Set([SIDEBAR_STORE]);
     const offenders = new Map<string, string[]>();
     const owners = new Set<string>();
     for (const source of sources) {
-      const inSidebar = source.file.startsWith(SIDEBAR_DIR + sep);
+      if (!source.file.startsWith(SIDEBAR_DIR + sep)) continue;
       const reasons: string[] = [];
       for (const parsed of source.imports) {
-        if (resolveLocalModule(source.file, parsed.specifier) !== SIDEBAR_STORE) continue;
+        const module = resolveLocalModule(source.file, parsed.specifier);
+        if (module === null) continue;
         if (parsed.wholeModule) {
-          if (inSidebar) reasons.push('imports the whole sidebar store, which carries the disclosure records');
+          if (reachedBehind(module, sidebarStore).length > 0) {
+            reasons.push(`imports the whole of ${parsed.specifier}, which reaches the list sizes`);
+          }
           continue;
         }
         for (const name of parsed.names) {
-          const owner = PROJECT_DISCLOSURE_RECORDS[name] ?? (inSidebar ? THREAD_LIST_SIZES[name] : undefined);
+          const origin = originOf(module, name);
+          if (origin.module !== SIDEBAR_STORE) continue;
+          const owner = THREAD_LIST_SIZES[origin.name];
           if (owner === undefined) continue;
           if (owner === source.path) {
-            owners.add(name);
+            owners.add(origin.name);
             continue;
           }
-          reasons.push(`${name} is ${owner}'s to read and write`);
+          reasons.push(`${name} (${repoPath(origin.module)}#${origin.name}) is ${owner}'s to read and write`);
         }
       }
       if (reasons.length > 0) offenders.set(source.path, reasons);
     }
-    // Both owners still hold their names: with neither importing, this rule
-    // would hold over a tree that had moved the records somewhere else.
-    expect([...owners].sort()).toEqual([...Object.keys(PROJECT_DISCLOSURE_RECORDS), ...Object.keys(THREAD_LIST_SIZES)].sort());
+    // The list still holds its names: with nothing importing them, this rule
+    // would hold over a directory that had moved the sizes somewhere else.
+    expect([...owners].sort()).toEqual(Object.keys(THREAD_LIST_SIZES).sort());
     expectAllowlistExact(
       offenders,
-      SIDEBAR_DISCLOSURE_ALLOWLIST,
+      SIDEBAR_LIST_SIZE_ALLOWLIST,
       'New violations.',
-      'Go through stores/sidebarEntryContinuity.svelte.ts, which knows where an entry\'s record lives, or report the change to the list that has the entry.',
+      'Report the change to the list that renders the rows (SidebarTreeList.svelte).',
     );
   });
 

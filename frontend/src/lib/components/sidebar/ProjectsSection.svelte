@@ -9,7 +9,7 @@
   // filtering happens here so each section only sees what matches the
   // current query.
 
-  import { onDestroy } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
   import type { Thread, ThreadGroup } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { reorderProjects } from '../../stores/projects.svelte';
@@ -223,63 +223,48 @@
     }
   }
 
-  // When a search is active, auto-expand any project whose threads
-  // matched so results are visible without a manual chevron click.
-  // The projects we auto-expanded on the previous render get tracked
-  // so we can collapse them again when the search clears — otherwise
-  // clearing the query left every matched project expanded, which
-  // isn't what the user asked for.
+  // A search opens every row whose threads or groups matched, so its results
+  // show without a chevron click. The opening is this section's view of the
+  // search, never a write to the row's fold: a fold written here would be
+  // copied to a checkout that splits off mid-search, and kept by a client
+  // closed mid-search. A row shows open while its fold says so or the search
+  // opens it.
   //
-  // Only track rows we actually flipped from collapsed → expanded.
-  // Projects that were already expanded (the default, or the user
-  // expanded them manually) stay untouched — we don't own their state,
-  // so we mustn't re-collapse them on search clear.
-  //
-  // Tracked by rowKey, the row's identity for the session, with the key
-  // each was last seen under: an entry's key can move during a search, and
-  // the rollback writes the key the row has then.
-  //
-  // Plain `let`, NOT $state — the $effect below reads AND writes this
-  // map. If it were reactive, every assignment would re-trigger the
-  // effect on the same `query` value and loop infinitely. The map
-  // exists only to remember which auto-expansions to roll back when the
-  // query clears; nothing else reads it.
-  let searchAutoExpanded = new Map<string, string>();
-  $effect(() => {
-    const entries = sidebarEntries;
-    for (const entry of entries) {
-      if (searchAutoExpanded.has(entry.rowKey)) searchAutoExpanded.set(entry.rowKey, entry.key);
-    }
-    if (!query) {
-      // Search cleared — undo anything we expanded for this session.
-      for (const key of searchAutoExpanded.values()) setEntryExpanded(key, false);
-      searchAutoExpanded = new Map();
-      return;
-    }
-    const next = new Map<string, string>();
-    for (const entry of entries) {
-      const hasThreads = (threadsByProject.get(entry.rowKey)?.length ?? 0) > 0;
-      const hasGroups = (groupsByProject.get(entry.rowKey)?.length ?? 0) > 0;
-      if (!hasThreads && !hasGroups) continue;
-      if (searchAutoExpanded.has(entry.rowKey)) {
-        // Already auto-expanded earlier in this search session — keep
-        // tracking so we still own the rollback.
-        next.set(entry.rowKey, entry.key);
-      } else if (!entry.expanded) {
-        // Was collapsed before search — flip and remember.
-        setEntryExpanded(entry.key, true);
-        next.set(entry.rowKey, entry.key);
+  // A row the user folds or unfolds during the search is theirs again: its
+  // fold is written as always, and the search stops opening it until the row
+  // stops matching or the search clears.
+  const NO_ROWS: ReadonlySet<string> = new Set();
+  let searchMatched = $derived.by(() => {
+    if (!query) return NO_ROWS;
+    const matched = new Set<string>();
+    for (const entry of sidebarEntries) {
+      if ((threadsByProject.get(entry.rowKey)?.length ?? 0) > 0 || (groupsByProject.get(entry.rowKey)?.length ?? 0) > 0) {
+        matched.add(entry.rowKey);
       }
-      // else: user/default-expanded — leave alone, don't track.
     }
-    // Collapse projects we previously auto-expanded that no longer
-    // match the refined query (user typed more characters, matches
-    // shrank).
-    for (const [rowKey, key] of searchAutoExpanded) {
-      if (!next.has(rowKey)) setEntryExpanded(key, false);
-    }
-    searchAutoExpanded = next;
+    return matched;
   });
+  let searchToggled: ReadonlySet<string> = $state.raw(NO_ROWS);
+  $effect.pre(() => {
+    const matched = searchMatched;
+    untrack(() => {
+      if (searchToggled.size === 0) return;
+      const kept = new Set([...searchToggled].filter((rowKey) => matched.has(rowKey)));
+      if (kept.size !== searchToggled.size) searchToggled = kept.size === 0 ? NO_ROWS : kept;
+    });
+  });
+  let searchOpened = $derived.by(() => {
+    if (searchMatched.size === 0) return NO_ROWS;
+    if (searchToggled.size === 0) return searchMatched;
+    return new Set([...searchMatched].filter((rowKey) => !searchToggled.has(rowKey)));
+  });
+
+  function setRowExpanded(entry: SidebarEntry, expanded: boolean): void {
+    if (searchMatched.has(entry.rowKey) && !searchToggled.has(entry.rowKey)) {
+      searchToggled = new Set(searchToggled).add(entry.rowKey);
+    }
+    setEntryExpanded(entry.key, expanded);
+  }
 
   const handleNewThread: ProjectNewThreadHandler = async (projectId, options = {}) => {
     // Sidebar "+" opens a chat draft.
@@ -412,7 +397,8 @@
         {#if visibleProjects.length > 0 || pendingCatalogs.length === 0}
           <ProjectList
             entries={visibleProjects}
-            onSetExpanded={setEntryExpanded}
+            onSetExpanded={setRowExpanded}
+            {searchOpened}
             emptyMessage={sidebarDeviceFilterActive() ? 'No projects on the selected computers.' : undefined}
             {threadsByProject}
             {groupsByProject}

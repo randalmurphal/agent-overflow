@@ -14,6 +14,7 @@ import {
 } from './sidebarEntries';
 import {
   addProjectLocal,
+  projectCatalogPart,
   resetProjectsForTest,
   touchProjectActivity,
   updateProjectLocal,
@@ -37,6 +38,16 @@ function mkProject(id: string, overrides: Partial<Project> = {}): Project {
     archived: false,
     ...overrides,
   };
+}
+
+/** Projects as computers' answers deliver them, thread counts included. */
+function answer(rows: readonly [BackendKey, Project, number][]): void {
+  for (const [backend, project] of rows) noteProject(project.id, backend);
+  projectCatalogPart().commit({
+    rows: rows.map(([, project, threadCount]) => ({ project, threadCount })),
+    answered: new Set(rows.map(([backend]) => backend)),
+    attached: new Set([HOME_BACKEND, 'laptop']),
+  });
 }
 
 /** A project on a computer, as the catalog would deliver it. */
@@ -106,33 +117,27 @@ describe('buildSidebarEntries', () => {
     expect(sidebarBucketOf('held')).toBe('');
   });
 
-  it('counts, warns and elects over the members the filter shows', () => {
-    addOn(HOME_BACKEND, {
-      ...mkProject('home', { repositoryID: REPO, name: 'app', path: '/home/app' }),
-      identityError: 'detected dubious ownership',
-    });
-    addOn('laptop', {
-      ...mkProject('laptop', { repositoryID: REPO, name: 'app-laptop', path: '/laptop/app' }),
-      identityError: 'no remote',
-    });
+  it('counts and warns over the members the filter shows', () => {
+    answer([
+      [HOME_BACKEND, { ...mkProject('home', { repositoryID: REPO }), identityError: 'detected dubious ownership' }, 3],
+      ['laptop', { ...mkProject('laptop', { repositoryID: REPO }), identityError: 'no remote' }, 5],
+    ]);
+    expect(build()[0]!.threadCount).toBe(8);
     const shown = build({ visible: onlyHome })[0]!;
-    expect(shown.id).toBe('home');
     expect(shown.members.map((member) => member.project.id)).toEqual(['home']);
+    expect(shown.threadCount).toBe(3);
     expect(shown.warnings.map((warning) => warning.id)).toEqual(['home']);
-
-    // Hiding home hands the row to the laptop's checkout: the row says and
-    // acts on what it shows.
     const hiddenHome = build({ visible: onlyLaptop })[0]!;
-    expect(hiddenHome.id).toBe('laptop');
-    expect(hiddenHome.name).toBe('app-laptop');
-    expect(hiddenHome.path).toBe('/laptop/app');
     expect(hiddenHome.members.map((member) => member.project.id)).toEqual(['laptop']);
+    expect(hiddenHome.threadCount).toBe(5);
     expect(hiddenHome.warnings.map((warning) => warning.id)).toEqual(['laptop']);
   });
 
-  // Decision 1: the filter moves what the row says and what it acts on, and
-  // nothing the row is persisted or rendered by.
-  it('keeps the key, the rowKey and the buckets of a merged entry through the filter, both ways', () => {
+  // Filtering never changes the execution target
+  // (docs/specs/connected-computers.md): the row's target, and everything
+  // read from it, is the representative of the listed members whatever the
+  // filter shows, and so are the key and rowKey it is persisted and rendered by.
+  it('keeps the target, the key, the rowKey and the buckets of a merged entry through the filter, both ways', () => {
     addOn(HOME_BACKEND, mkProject('home', { repositoryID: REPO, name: 'app', path: '/home/app' }));
     addOn('laptop', mkProject('laptop', { repositoryID: REPO, name: 'app-laptop', path: '/laptop/app' }));
     const all = build()[0]!;
@@ -140,17 +145,9 @@ describe('buildSidebarEntries', () => {
     for (const entry of steps) {
       expect(entry.key).toBe(all.key);
       expect(entry.rowKey).toBe(all.rowKey);
-      // The manual order is saved by this computer, under its checkout.
-      expect(entry.orderId).toBe('home');
+      expect([entry.id, entry.backend, entry.name, entry.path, entry.position]).toEqual(['home', HOME_BACKEND, 'app', '/home/app', all.position]);
+      expect(projectTarget(entry, entry.name).id).toBe('home');
     }
-    expect(steps.map((entry) => [entry.id, entry.name, entry.path])).toEqual([
-      ['laptop', 'app-laptop', '/laptop/app'],
-      ['home', 'app', '/home/app'],
-      ['home', 'app', '/home/app'],
-      ['laptop', 'app-laptop', '/laptop/app'],
-      ['home', 'app', '/home/app'],
-    ]);
-    expect(steps.map((entry) => projectTarget(entry, entry.name).id)).toEqual(['laptop', 'home', 'home', 'laptop', 'home']);
     // Both members' threads bucket under the row whichever is shown.
     expect(sidebarBucketOf('home')).toBe(all.rowKey);
     expect(sidebarBucketOf('laptop')).toBe(all.rowKey);
@@ -224,22 +221,34 @@ describe('projectTarget', () => {
   });
 
   it("counts the target's own threads and names its computer when the entry has checkouts elsewhere", () => {
-    addOn(HOME_BACKEND, mkProject('home', { repositoryID: REPO, name: 'app' }));
-    addOn('laptop', mkProject('laptop', { repositoryID: REPO, name: 'app' }));
-    const entry = entryFor(build(), 'home');
-    expect(entry.members).toHaveLength(2);
-    const target = projectTarget({ ...entry, members: entry.members.map((member) => ({ ...member, threadCount: member.project.id === 'home' ? 3 : 5 })) }, 'app');
+    answer([[HOME_BACKEND, mkProject('home', { repositoryID: REPO }), 3], ['laptop', mkProject('laptop', { repositoryID: REPO }), 5]]);
+    const target = projectTarget(build()[0]!, 'app');
     expect(target.threadCount).toBe(3);
     expect(target.scope).toEqual({ kind: 'oneOfSeveral', computerName: 'This computer' });
   });
 
-  // The scope is over the listed checkouts with the filter ignored: hiding the
-  // other computer's checkout does not make the action the whole entry's.
-  it('says one of several when the filter hides the other checkout', () => {
-    addOn(HOME_BACKEND, mkProject('home', { repositoryID: REPO }));
-    addOn('laptop', mkProject('laptop', { repositoryID: REPO }));
+  // The target may be a checkout the row is not showing: the filter hides
+  // it, and the action still executes on it.
+  it('targets the checkout the filter hides, with its own count', () => {
+    answer([[HOME_BACKEND, mkProject('home', { repositoryID: REPO }), 3], ['laptop', mkProject('laptop', { repositoryID: REPO }), 5]]);
     const laptopOnly = build({ visible: onlyLaptop })[0]!;
     expect(laptopOnly.members.map((member) => member.project.id)).toEqual(['laptop']);
-    expect(projectTarget(laptopOnly, 'app').scope).toEqual({ kind: 'oneOfSeveral', computerName: 'Laptop' });
+    expect(projectTarget(laptopOnly, 'app')).toMatchObject({
+      id: 'home', backend: HOME_BACKEND, threadCount: 3, scope: { kind: 'oneOfSeveral', computerName: 'This computer' },
+    });
+  });
+
+  // The scope is over every checkout the client holds: a computer whose tree
+  // is still held has its checkout in no entry, and the action does not
+  // affect it, so its row comes back when that computer lists.
+  it('says one of several when the other checkout is on a computer the sidebar still holds', () => {
+    resetSidebarCatalogsForTest();
+    listCatalogTreesForTest([HOME_BACKEND]);
+    answer([[HOME_BACKEND, mkProject('home', { repositoryID: REPO }), 3], ['laptop', mkProject('laptop', { repositoryID: REPO }), 5]]);
+    const entry = build()[0]!;
+    expect(entry.members.map((member) => member.project.id)).toEqual(['home']);
+    expect(projectTarget(entry, 'app')).toMatchObject({
+      id: 'home', threadCount: 3, scope: { kind: 'oneOfSeveral', computerName: 'This computer' },
+    });
   });
 });

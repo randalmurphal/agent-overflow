@@ -1,4 +1,4 @@
-import { beforeEach, afterEach, expect, it } from 'vitest';
+import { beforeEach, afterEach, expect, it, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ProjectsSection from './ProjectsSection.svelte';
@@ -11,12 +11,14 @@ import { addProjectLocal, updateProjectLocal, resetProjectsForTest, touchProject
 import { replaceAllThreads } from '../../stores/threads.svelte';
 import { listCatalogTreesForTest } from '../../stores/sidebarCatalogs';
 import { upsertThreadGroup, resetThreadGroupsForTest } from '../../stores/threadGroups.svelte';
-import { showAllSidebarDevices, setSidebarDeviceVisible } from '../../stores/sidebarDevices.svelte';
+import { showAllSidebarDevices, setSidebarDeviceVisible, sidebarDevices } from '../../stores/sidebarDevices.svelte';
+import { setProjectSortMode } from '../../stores/sidebar.svelte';
 import { setThreadFilterQuery } from '../../stores/threadFilter.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { selectedBackend, setSelectedBackend } from '../../stores/selectedBackend.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import type { Thread } from '../../types/models';
+import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 
 function thread(id: string, projectId: string, groupId?: string): Thread {
   return { id, projectId, groupId, title: id, provider: 'claude', model: 'claude-sonnet-4-6', workspacePath: '/repo', projectPath: '/repo', createdAt: 1, updatedAt: 1, archived: false, pinnedAt: groupId ? undefined : 1 };
@@ -69,6 +71,23 @@ for (const compact of [false, true]) it(`filters merged projects and search with
   expect(pane.thread?.id).toBe(elsewhere.id);
   await fireEvent.click(view.getByRole('menuitem', { name: 'All computers' })); await tick();
   expect(view.getByText('GPU work')).toBeInTheDocument();
+
+  // Showing only the GPU's checkout does not move what the row acts on: an
+  // action on it still executes on this computer's project.
+  resetBindingMocks();
+  const archive = setBindingMock('ArchiveProject', vi.fn(async () => undefined));
+  if (view.queryByRole('menuitemcheckbox', { name: 'Mac' }) === null) {
+    await fireEvent.click(view.getByRole('button', { name: 'Filter projects by computer' }));
+  }
+  await fireEvent.click(view.getByRole('menuitemcheckbox', { name: 'Mac' })); await tick();
+  await fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
+  expect(view.queryByText('Local pinned thread')).not.toBeInTheDocument();
+  expect(view.getByTestId('project-item')).toHaveAttribute('data-project-id', 'local-project');
+  await fireEvent.contextMenu(view.getByTestId('project-item'));
+  await fireEvent.click(view.getByRole('menuitem', { name: 'Archive Project' }));
+  expect(view.getByRole('dialog')).toHaveTextContent('Archive "Shared project" on Mac.');
+  await fireEvent.click(view.getByRole('button', { name: 'Archive' }));
+  await waitFor(() => expect(archive).toHaveBeenCalledWith('local-project'));
 });
 
 for (const remote of [true, false]) it(`renders the Projects heading as ${remote ? 'a computer filter' : 'plain text in a build without remote access'}`, () => {
@@ -151,4 +170,29 @@ it('ranks an entry by the members it shows', async () => {
   touchProjectActivity(other.id, 50_000);
   await tick();
   expect(ids()).toEqual(['other', 'shown']);
+});
+
+// New projects all sit at position 0, so the manual order breaks ties by
+// creation date. Both come from the row's target, so toggling the filter
+// cannot reorder rows the user has not moved.
+it('keeps tied rows of the manual order where they are through the filter, both ways', async () => {
+  stageBackend({ id: 'remote', backendId: 'remote-id', name: 'GPU' });
+  listCatalogTreesForTest();
+  setProjectSortMode('manual');
+  const project = (id: string, repo: string, createdAt: number) => ({ id, name: id, path: `/repo/${id}`, repositoryID: `github:github.com:${repo}`, createdAt, updatedAt: 0, sortPosition: 0, archived: false });
+  for (const [row, backend] of [[project('a', '1', 30), ''], [project('a-gpu', '1', 10), 'remote'], [project('b', '2', 20), ''], [project('b-gpu', '2', 20), 'remote']] as const) {
+    noteProject(row.id, backend);
+    addProjectLocal(row);
+  }
+  const view = render(ProjectsSection, { pane: null });
+  const ids = () => [...view.container.querySelectorAll('[data-testid="project-item"]')].map(el => el.getAttribute('data-project-id'));
+  await waitFor(() => expect(ids()).toEqual(['b', 'a']));
+  const mac = sidebarDevices().find((device) => device.name === 'Mac')!.id;
+  for (let i = 0; i < 2; i++) {
+    setSidebarDeviceVisible(mac, false); await tick();
+    expect(ids()).toEqual(['b', 'a']);
+    showAllSidebarDevices(); await tick();
+    expect(ids()).toEqual(['b', 'a']);
+  }
+  setProjectSortMode('lastActivity');
 });

@@ -16,12 +16,13 @@ import { grantBackendScopes, pairViewOnly, resetToLocalPage, revokeBackendScopes
 import type { Project } from '../../types/models';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { getToasts, resetToastsForTest } from '../../stores/toast.svelte';
-import { collapseProject, resetSidebarForTest } from '../../stores/sidebar.svelte';
+import { resetSidebarForTest } from '../../stores/sidebar.svelte';
 import { projectTurnStarted, resetForTest as resetThreadStatuses } from '../../stores/threadStatuses.svelte';
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 import { __resetEntityIndexForTest, noteProject, noteThread } from '../../transport/entityIndex';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import type { Thread } from '../../types/models';
+import { setEntryExpanded } from '../../stores/sidebarEntryContinuity.svelte';
 
 function makeProject(id: string, name: string, path: string): Project {
   return {
@@ -469,7 +470,7 @@ describe('ProjectItem status rollup', () => {
   it("stops the motion while the thread's computer is unreachable", async () => {
     const p = makeProject('a', 'web', '/work/web');
     addProjectLocal(p);
-    collapseProject(p.id);
+    setEntryExpanded(p.id, false);
     const thread = { id: 'remote', projectId: p.id, title: 'remote', provider: 'claude', workspacePath: '/work/web', projectPath: '/work/web', createdAt: 0, updatedAt: 0, archived: false } as Thread;
     const staged = stageBackend({ status: 'reconnecting' });
     noteThread('remote', 'laptop');

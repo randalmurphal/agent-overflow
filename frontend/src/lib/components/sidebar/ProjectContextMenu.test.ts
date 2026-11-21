@@ -23,7 +23,7 @@ import { createProjectActions } from './projectActions.svelte';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import type { ProjectDeletionPreview, ProjectDeletionResult } from '../../types/workflow';
 import { setPageGrantsFromBootstrap } from '../../transport/scopes';
-import { isProjectExpanded, resetSidebarForTest } from '../../stores/sidebar.svelte';
+import { resetSidebarForTest } from '../../stores/sidebar.svelte';
 import {
   consumePendingGroupRename,
   getThreadGroupById,
@@ -33,6 +33,7 @@ import {
   getThreadFilterQuery,
   setThreadFilterQuery,
 } from '../../stores/threadFilter.svelte';
+import { entryRecordForTest } from '../../stores/sidebarEntryContinuity.svelte';
 
 // The menu takes the project frozen at the gesture that opened it, never a
 // row it could read again.
@@ -455,7 +456,7 @@ describe('<ProjectContextMenu> New Group…', () => {
 
     expect(create).toHaveBeenCalledWith('project-1', 'New Group');
     expect(getThreadGroupById('g-new')).toBeTruthy();
-    expect(isProjectExpanded('project-1')).toBe(true);
+    expect(entryRecordForTest('project-1').expanded).toBe(true);
     // The row that has not mounted yet owes the inline rename.
     expect(consumePendingGroupRename('g-new')).toBe(true);
   });

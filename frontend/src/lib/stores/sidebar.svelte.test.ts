@@ -1,21 +1,15 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
-  collapseProject,
   isSidebarSectionExpanded,
   toggleSidebarSection,
-  expandProject,
   collapseThreadList,
   getCollapsedGroups,
   getProjectSortMode,
   getShowProviderIcons,
   setShowProviderIcons,
-  collapseProjectList,
-  getProjectListLimit,
   getThreadListVisibleLimit,
   isGroupExpanded,
-  isProjectExpanded,
   resetSidebarForTest,
-  setProjectListLimit,
   setThreadListVisibleLimit,
   setProjectSortMode,
   toggleGroup,
@@ -29,15 +23,7 @@ import { makeSettings } from '../../test/helpers/settings';
 import { THREAD_PREVIEW_LIMIT, THREAD_REVEAL_INCREMENT } from '../utils/sidebarThreadLimits';
 import { removeThreadGroup } from './threadGroups.svelte';
 
-const COLLAPSED_KEY = 'sidebar:collapsedProjectEntries';
 const COLLAPSED_GROUPS_KEY = 'sidebar:collapsedGroups';
-
-// The store writes a fold under the key it is given; a toggle is the
-// caller's, which is the list that has the entry (ProjectsSection).
-function toggleProjectForTest(key: string): void {
-  if (isProjectExpanded(key)) collapseProject(key);
-  else expandProject(key);
-}
 
 describe('sidebar store', () => {
   beforeEach(() => {
@@ -73,43 +59,6 @@ describe('sidebar store', () => {
       expect(isSidebarSectionExpanded('assistants')).toBe(false);
       resetSidebarForTest();
       expect(isSidebarSectionExpanded('assistants')).toBe(true);
-    });
-  });
-
-  describe('expansion', () => {
-    it('projects default to expanded and toggleProject persists explicit collapses', () => {
-      // Inverted storage: the persisted set lists explicit *collapses*,
-      // so an unseen id reads as expanded. Toggling adds it to the
-      // collapsed set; toggling again removes it.
-      expect(isProjectExpanded('p1')).toBe(true);
-      toggleProjectForTest('p1');
-      expect(isProjectExpanded('p1')).toBe(false);
-
-      const raw = appStorageGet(COLLAPSED_KEY);
-      expect(raw).not.toBeNull();
-      expect(JSON.parse(raw as string)).toContain('p1');
-
-      toggleProjectForTest('p1');
-      expect(isProjectExpanded('p1')).toBe(true);
-      const raw2 = appStorageGet(COLLAPSED_KEY);
-      expect(JSON.parse(raw2 as string)).not.toContain('p1');
-    });
-
-    it('expandProject / collapseProject are idempotent', () => {
-      expandProject('p1');
-      expandProject('p1');
-      expect(isProjectExpanded('p1')).toBe(true);
-      collapseProject('p1');
-      collapseProject('p1');
-      expect(isProjectExpanded('p1')).toBe(false);
-    });
-
-    it('corrupt legacy stored JSON does not crash subsequent operations', () => {
-      localStorage.setItem('agent-overflow:sidebar:collapsedProjects', '{not json');
-      // Module init already read storage once; this just verifies that
-      // a write/read round-trip serializes over the garbage cleanly.
-      toggleProjectForTest('p1');
-      expect(isProjectExpanded('p1')).toBe(false);
     });
   });
 
@@ -264,8 +213,6 @@ describe('sidebar store', () => {
   describe('syncSidebarFromAppStorage', () => {
     it('adopts hydrated view state from the per-client bucket', async () => {
       setBindingMock('GetUIState', async () => ({
-        'sidebar:collapsedProjectEntries': JSON.stringify(['proj-1', 'proj-2']),
-        'sidebar:projectEntryListLimits': JSON.stringify({ 'proj-1': 40 }),
         'sidebar:threadListVisibleLimits': JSON.stringify({ 'group-1': 25 }),
         'sidebar:collapsedGroups': JSON.stringify(['group-1']),
       }));
@@ -275,37 +222,31 @@ describe('sidebar store', () => {
 
       expect(isGroupExpanded('group-1')).toBe(false);
       expect(isGroupExpanded('group-2')).toBe(true);
-      expect(isProjectExpanded('proj-1')).toBe(false);
-      expect(isProjectExpanded('proj-2')).toBe(false);
-      expect(isProjectExpanded('proj-3')).toBe(true);
-      expect(getProjectListLimit('proj-1')).toBe(40);
-      expect(getProjectListLimit('proj-2')).toBe(THREAD_PREVIEW_LIMIT);
-      // A group's size lives in the record it always did.
       expect(getThreadListVisibleLimit('group-1')).toBe(25);
     });
 
     it('local pre-hydration writes survive an empty server bucket (pending wins)', async () => {
-      toggleProjectForTest('proj-local');
-      expect(isProjectExpanded('proj-local')).toBe(false);
+      toggleGroup('group-local');
+      expect(isGroupExpanded('group-local')).toBe(false);
 
       setBindingMock('GetUIState', async () => ({}));
       await hydrateAppStorage();
 
       syncSidebarFromAppStorage();
-      expect(isProjectExpanded('proj-local')).toBe(false);
+      expect(isGroupExpanded('group-local')).toBe(false);
     });
 
     it('resets to defaults when the hydrated bucket has no view state', async () => {
       // Simulate a fresh client: memory holds stale state from a prior
       // identity, the new bucket is empty and holds no pending writes.
-      toggleProjectForTest('proj-stale');
+      toggleGroup('group-stale');
       resetAppStorageForTest();
       setBindingMock('GetUIState', async () => ({}));
       await hydrateAppStorage();
 
       syncSidebarFromAppStorage();
 
-      expect(isProjectExpanded('proj-stale')).toBe(true);
+      expect(isGroupExpanded('group-stale')).toBe(true);
       expect(getThreadListVisibleLimit('any')).toBe(THREAD_PREVIEW_LIMIT);
     });
   });
@@ -333,31 +274,7 @@ describe('sidebar store', () => {
       expect(getThreadListVisibleLimit('g1')).toBe(THREAD_PREVIEW_LIMIT);
     });
   });
-
-  // A project's list pages in a record of its own, which is what keeps an
-  // id-keyed size from ever answering for an entry.
-  describe('project list limit', () => {
-    it('persists an entry\'s reveal size where nothing else writes, and resets it', () => {
-      setProjectListLimit('forge:R', 27);
-      expect(getProjectListLimit('forge:R')).toBe(27);
-      expect(appStorageGet('sidebar:projectEntryListLimits')).toContain('forge:R');
-      // Not the record a group or the Assistants section pages in.
-      expect(getThreadListVisibleLimit('forge:R')).toBe(THREAD_PREVIEW_LIMIT);
-      expect(appStorageGet('sidebar:threadListVisibleLimits')).toBeNull();
-
-      collapseProjectList('forge:R');
-      expect(getProjectListLimit('forge:R')).toBe(THREAD_PREVIEW_LIMIT);
-    });
-
-    it('takes the default preview as no size at all', () => {
-      setProjectListLimit('forge:R', 27);
-      setProjectListLimit('forge:R', THREAD_PREVIEW_LIMIT);
-      expect(getProjectListLimit('forge:R')).toBe(THREAD_PREVIEW_LIMIT);
-      expect(appStorageGet('sidebar:projectEntryListLimits')).toBeNull();
-    });
-  });
 });
-
 
 describe('sidebar provider icon preference', () => {
   beforeEach(resetSidebarForTest);

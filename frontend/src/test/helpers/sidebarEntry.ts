@@ -7,11 +7,11 @@
 // row reaches the component the way it does in the app.
 import type { Project, ProjectWithCounts } from '../../lib/types/models';
 import { HOME_BACKEND } from '../../lib/transport/backendKey';
-import { getProjectListLimit, isProjectExpanded } from '../../lib/stores/sidebar.svelte';
 import {
   buildSidebarEntries,
   type SidebarEntry,
 } from '../../lib/components/sidebar/sidebarEntries';
+import { entryRecordForTest } from '../../lib/stores/sidebarEntryContinuity.svelte';
 
 function warningsOf(project: Project): SidebarEntry['warnings'] {
   return project.identityError
@@ -26,18 +26,16 @@ export function entryFromRow(row: ProjectWithCounts, overrides: Partial<SidebarE
     key: project.id,
     rowKey: project.id,
     id: project.id,
-    orderId: project.id,
     backend: HOME_BACKEND,
     name: project.name,
     path: project.path,
     createdAt: project.createdAt,
     threadCount: row.threadCount,
     position: project.sortPosition,
-    expanded: isProjectExpanded(project.id),
-    listLimit: getProjectListLimit(project.id),
+    expanded: entryRecordForTest(project.id).expanded,
+    listLimit: entryRecordForTest(project.id).listLimit,
     members: [row],
     warnings: warningsOf(project),
-    checkoutsElsewhere: false,
     ...overrides,
   };
 }

@@ -3,6 +3,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { flushSync } from 'svelte';
 import {
+  entryRecordForTest,
+  resetEntryListLimit,
   resetSidebarEntryContinuityForTest,
   revealProject,
   setEntryExpanded,
@@ -10,14 +12,10 @@ import {
   sidebarEntryGroups,
   startSidebarEntryContinuity,
   stopSidebarEntryContinuity,
+  syncSidebarEntryDisclosureFromAppStorage,
   type SidebarEntryGroup,
 } from './sidebarEntryContinuity.svelte';
-import {
-  getProjectListLimit,
-  isProjectExpanded,
-  resetSidebarForTest,
-  syncSidebarFromAppStorage,
-} from './sidebar.svelte';
+import { resetSidebarForTest } from './sidebar.svelte';
 import {
   addProjectLocal,
   projectEntryKey,
@@ -29,7 +27,10 @@ import { buildSidebarEntries } from '../components/sidebar/sidebarEntries';
 import { __resetEntityIndexForTest, noteProject } from '../transport/entityIndex';
 import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
 import { listCatalogTreesForTest, resetSidebarCatalogsForTest } from './sidebarCatalogs';
-import { appStorageGet, resetAppStorageForTest } from './appStorage';
+import { appStorageGet, hydrateAppStorage, resetAppStorageForTest } from './appStorage';
+import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { THREAD_PREVIEW_LIMIT } from '../utils/sidebarThreadLimits';
+import { getThreadListVisibleLimit } from './sidebar.svelte';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import type { Project } from '../types/models';
 
@@ -92,19 +93,18 @@ describe('a row whose key moves', () => {
     settle();
 
     expect(groupOf('p').key).toBe(FORGE);
-    expect(isProjectExpanded(FORGE)).toBe(false);
-    expect(getProjectListLimit(FORGE)).toBe(28);
+    expect(entryRecordForTest(FORGE).expanded).toBe(false);
+    expect(entryRecordForTest(FORGE).listLimit).toBe(28);
     expect(persistedCollapsed()).toEqual([FORGE]);
     expect(JSON.parse(appStorageGet(LIMITS_RECORD)!)).toEqual({ [FORGE]: 28 });
 
     // A restart: nothing remembered, the records read back from storage.
     resetSidebarEntryContinuityForTest();
-    resetSidebarForTest();
-    syncSidebarFromAppStorage();
+    syncSidebarEntryDisclosureFromAppStorage();
     startSidebarEntryContinuity();
     settle();
-    expect(isProjectExpanded(groupOf('p').key)).toBe(false);
-    expect(getProjectListLimit(groupOf('p').key)).toBe(28);
+    expect(entryRecordForTest(groupOf('p').key).expanded).toBe(false);
+    expect(entryRecordForTest(groupOf('p').key).listLimit).toBe(28);
   });
 
   it('keeps its fold when its identity goes away', () => {
@@ -116,7 +116,7 @@ describe('a row whose key moves', () => {
     settle();
 
     expect(groupOf('p').key).toBe('p');
-    expect(isProjectExpanded('p')).toBe(false);
+    expect(entryRecordForTest('p').expanded).toBe(false);
     expect(persistedCollapsed()).toEqual(['p']);
   });
 
@@ -159,7 +159,7 @@ describe('a row whose key moves', () => {
     revealProject('p');
     settle();
 
-    expect(isProjectExpanded(FORGE)).toBe(true);
+    expect(entryRecordForTest(FORGE).expanded).toBe(true);
     expect(persistedCollapsed()).toEqual([]);
   });
 
@@ -192,15 +192,15 @@ describe('two checkouts of one repository on one computer', () => {
     settle();
 
     expect(groupOf('b').key).toBe(FORGE);
-    expect(isProjectExpanded(FORGE)).toBe(true);
+    expect(entryRecordForTest(FORGE).expanded).toBe(true);
     expect(groupOf('a').key).toBe('a');
-    expect(isProjectExpanded('a')).toBe(false);
+    expect(entryRecordForTest('a').expanded).toBe(false);
 
     // Unarchived, each takes its own back.
     updateProjectLocal(mkProject('a', { repositoryID: REPO, createdAt: 1 }));
     settle();
-    expect(isProjectExpanded(groupOf('a').key)).toBe(false);
-    expect(isProjectExpanded(groupOf('b').key)).toBe(true);
+    expect(entryRecordForTest(groupOf('a').key).expanded).toBe(false);
+    expect(entryRecordForTest(groupOf('b').key).expanded).toBe(true);
   });
 
   it('keeps the other expanded when the collapsed one is deleted', () => {
@@ -208,7 +208,7 @@ describe('two checkouts of one repository on one computer', () => {
     removeProjectLocal('a');
     settle();
     expect(groupOf('b').key).toBe(FORGE);
-    expect(isProjectExpanded(FORGE)).toBe(true);
+    expect(entryRecordForTest(FORGE).expanded).toBe(true);
   });
 });
 
@@ -225,8 +225,8 @@ describe('a merge and a split', () => {
     settle();
     expect(groupOf('p')).toBe(groupOf('q'));
     expect(groupOf('p').rowKey).toBe(laptopRow);
-    expect(isProjectExpanded(FORGE)).toBe(true);
-    expect(isProjectExpanded('p')).toBe(true);
+    expect(entryRecordForTest(FORGE).expanded).toBe(true);
+    expect(entryRecordForTest('p').expanded).toBe(true);
 
     // The merged row is collapsed, then P can no longer prove its identity.
     setEntryExpanded(FORGE, false);
@@ -236,8 +236,8 @@ describe('a merge and a split', () => {
     // fold it split from, not the one it had before the merge.
     expect(groupOf('q').rowKey).toBe(laptopRow);
     expect(groupOf('p').key).toBe('p');
-    expect(isProjectExpanded('p')).toBe(false);
-    expect(isProjectExpanded(FORGE)).toBe(false);
+    expect(entryRecordForTest('p').expanded).toBe(false);
+    expect(entryRecordForTest(FORGE).expanded).toBe(false);
   });
 
   it('clears the merged-in record, so a member that splits off does not get back the fold it had before the merge', () => {
@@ -252,7 +252,7 @@ describe('a merge and a split', () => {
     expect(persistedCollapsed()).toEqual([]);
     updateProjectLocal(mkProject('p'));
     settle();
-    expect(isProjectExpanded('p')).toBe(true);
+    expect(entryRecordForTest('p').expanded).toBe(true);
   });
 
   it('keeps a row its fold when it merges with a checkout whose computer is not listed', () => {
@@ -265,13 +265,13 @@ describe('a merge and a split', () => {
 
     updateProjectLocal(mkProject('p', { repositoryID: REPO }));
     settle();
-    expect(isProjectExpanded(FORGE)).toBe(false);
+    expect(entryRecordForTest(FORGE).expanded).toBe(false);
 
     // The laptop lists later: its checkout joins the row, which keeps its fold.
     listCatalogTreesForTest();
     settle();
     expect(groupOf('q')).toBe(groupOf('p'));
-    expect(isProjectExpanded(FORGE)).toBe(false);
+    expect(entryRecordForTest(FORGE).expanded).toBe(false);
   });
 
   // After a split, the row whose key did not move keeps the identity,
@@ -347,6 +347,76 @@ describe('revealProject', () => {
     settle();
     setEntryExpanded(projectEntryKey('home'), false);
     revealProject('laptop');
-    expect(isProjectExpanded(projectEntryKey('home'))).toBe(true);
+    expect(entryRecordForTest(projectEntryKey('home')).expanded).toBe(true);
+  });
+});
+
+// The records the fold and the show-more limit are kept in, which nothing
+// else can name.
+describe('the records it keeps', () => {
+  beforeEach(() => {
+    resetBindingMocks();
+  });
+
+  it('opens an entry until the user folds it, and persists only the folds', () => {
+    expect(entryRecordForTest('p1').expanded).toBe(true);
+    setEntryExpanded('p1', false);
+    setEntryExpanded('p1', false);
+    expect(entryRecordForTest('p1').expanded).toBe(false);
+    expect(persistedCollapsed()).toEqual(['p1']);
+    setEntryExpanded('p1', true);
+    setEntryExpanded('p1', true);
+    expect(entryRecordForTest('p1').expanded).toBe(true);
+    expect(persistedCollapsed()).toEqual([]);
+  });
+
+  it("persists an entry's reveal size in its own record, and takes the preview as no size", () => {
+    setEntryListLimit('forge:R', 27);
+    expect(entryRecordForTest('forge:R').listLimit).toBe(27);
+    expect(appStorageGet(LIMITS_RECORD)).toContain('forge:R');
+    // Not the record a group or the Assistants section pages in.
+    expect(getThreadListVisibleLimit('forge:R')).toBe(THREAD_PREVIEW_LIMIT);
+    expect(appStorageGet('sidebar:threadListVisibleLimits')).toBeNull();
+    resetEntryListLimit('forge:R');
+    expect(entryRecordForTest('forge:R').listLimit).toBe(THREAD_PREVIEW_LIMIT);
+    setEntryListLimit('forge:R', 27);
+    setEntryListLimit('forge:R', THREAD_PREVIEW_LIMIT);
+    expect(appStorageGet(LIMITS_RECORD)).toBeNull();
+  });
+
+  it('adopts the records the hydrated bucket holds', async () => {
+    setBindingMock('GetUIState', async () => ({
+      [COLLAPSED_RECORD]: JSON.stringify(['proj-1', 'proj-2']),
+      [LIMITS_RECORD]: JSON.stringify({ 'proj-1': 40 }),
+    }));
+    await hydrateAppStorage();
+    syncSidebarEntryDisclosureFromAppStorage();
+    expect(entryRecordForTest('proj-1')).toEqual({ expanded: false, listLimit: 40 });
+    expect(entryRecordForTest('proj-2')).toEqual({ expanded: false, listLimit: THREAD_PREVIEW_LIMIT });
+    expect(entryRecordForTest('proj-3')).toEqual({ expanded: true, listLimit: THREAD_PREVIEW_LIMIT });
+  });
+
+  it('keeps a fold written before hydration when the bucket is empty', async () => {
+    setEntryExpanded('proj-local', false);
+    setBindingMock('GetUIState', async () => ({}));
+    await hydrateAppStorage();
+    syncSidebarEntryDisclosureFromAppStorage();
+    expect(entryRecordForTest('proj-local').expanded).toBe(false);
+  });
+
+  it('drops a fold memory holds when the hydrated bucket has none', async () => {
+    setEntryExpanded('proj-stale', false);
+    resetAppStorageForTest();
+    setBindingMock('GetUIState', async () => ({}));
+    await hydrateAppStorage();
+    syncSidebarEntryDisclosureFromAppStorage();
+    expect(entryRecordForTest('proj-stale').expanded).toBe(true);
+  });
+
+  it('forgets the in-memory records on reset', () => {
+    setEntryExpanded('p1', false);
+    setEntryListLimit('p1', 30);
+    resetSidebarEntryContinuityForTest();
+    expect(entryRecordForTest('p1')).toEqual({ expanded: true, listLimit: THREAD_PREVIEW_LIMIT });
   });
 });

@@ -20,10 +20,10 @@ import { setPaneLayoutItemsForTest } from '../../lib/stores/paneLayout.svelte';
 import { answerBackPress } from '../../lib/native/lifecycle';
 import { registerCommand } from '../../lib/stores/commandRegistry.svelte';
 import { getCompactScreen, setCompactLayoutForTest, showCompactThread } from '../../lib/stores/layoutMode.svelte';
-import { collapseProject, expandProject } from '../../lib/stores/sidebar.svelte';
 import { setThreadFilterQuery } from '../../lib/stores/threadFilter.svelte';
 import { setSidebarCollapsed } from '../../lib/stores/sidebarLayout.svelte';
 import { getSidebarJumpThreadIds } from '../../lib/stores/sidebarThreadOrder';
+import { setEntryExpanded } from '../../lib/stores/sidebarEntryContinuity.svelte';
 
 beforeAll(installAnimateShim);
 
@@ -50,7 +50,7 @@ async function mountBareApp(threads: Thread[] = [], projects?: Project[]) {
       threadCount: threads.filter((thread) => thread.projectId === project.id).length,
       lastActive: projects.length - index,
     })));
-    for (const project of projects) expandProject(project.id);
+    for (const project of projects) setEntryExpanded(project.id, true);
   } else if (threads.length > 0) seedSidebarProject(threads);
   // If any thread ends up active during the test, these are used.
   installThreadViewDefaults();
@@ -243,7 +243,7 @@ describe('App integration — keybindings + palette', () => {
     await jump('9');
     expect(pane.thread?.id).toBe('t-4');
 
-    collapseProject('proj-int');
+    setEntryExpanded('proj-int', false);
     await waitFor(() => expect(getSidebarJumpThreadIds()).toEqual(['t-4', 't-5']));
     await jump('1');
     expect(pane.thread?.id).toBe('t-4');
@@ -258,7 +258,7 @@ describe('App integration — keybindings + palette', () => {
     await jump('1');
     expect(pane.thread?.id).toBe('t-5');
 
-    expandProject('proj-int');
+    setEntryExpanded('proj-int', true);
     setThreadFilterQuery('Unpinned');
     await waitFor(() => expect(document.querySelector('[data-sidebar-thread-id="unpinned"]')).not.toBeNull());
     expect(getSidebarJumpThreadIds()).toEqual([]);

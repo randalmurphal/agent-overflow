@@ -28,9 +28,13 @@
     /** Commit a new ordering. Wired by ProjectsSection only when manual
      *  sort mode is active; ProjectItem ignores it otherwise. */
     onReorder?: (newOrderedIds: string[]) => void;
-    /** Fold or unfold one entry, by its key. */
-    onSetExpanded?: (key: string, expanded: boolean) => void;
+    /** Fold or unfold one entry. */
+    onSetExpanded?: (entry: SidebarEntry, expanded: boolean) => void;
+    /** The rows a search shows open whatever their fold, by rowKey. */
+    searchOpened?: ReadonlySet<string>;
   }
+
+  const NO_ROWS: ReadonlySet<string> = new Set();
 
   let {
     entries,
@@ -42,13 +46,14 @@
     onNewTerminal,
     onReorder,
     onSetExpanded,
+    searchOpened = NO_ROWS,
   }: Props = $props();
 
   // One array for every project with no threads, so its list is not
   // handed a new empty one on each render.
   const NO_THREADS: Thread[] = [];
 
-  let orderedIds = $derived(entries.map((entry) => entry.orderId));
+  let orderedIds = $derived(entries.map((entry) => entry.id));
   // Duplicate names are legal (paths are the unique key), so a row's label is
   // disambiguated against the rows BESIDE it: a name alone while it is the
   // only one on screen, a dim parent-dir prefix while its twin is too. Over
@@ -85,6 +90,7 @@
         {orderedIds}
         {onReorder}
         {onSetExpanded}
+        searchOpened={searchOpened.has(entry.rowKey)}
         separatedFromPrevious={index > 0}
       />
       </div>

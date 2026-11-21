@@ -16,8 +16,6 @@ import {
 } from '../../../stores/keybindings.svelte';
 import { createThreadPane } from '../../../stores/thread.svelte';
 import {
-  collapseProject,
-  isProjectExpanded,
   resetSidebarForTest,
 } from '../../../stores/sidebar.svelte';
 import {
@@ -34,6 +32,7 @@ import {
   resetBindingMocks,
   setBindingMock,
 } from '../../../../test/mocks/bindings-app';
+import { entryRecordForTest, setEntryExpanded } from '../../../stores/sidebarEntryContinuity.svelte';
 
 function project(id: string, overrides: Partial<Project> = {}): ProjectWithCounts {
   return {
@@ -87,7 +86,7 @@ describe('<Sidebar>', () => {
     // Projects default to expanded — we explicitly collapse so the test
     // exercises the collapsed-render path (status dot + active pin
     // surfacing the running work without requiring the user to expand).
-    collapseProject('p1');
+    setEntryExpanded('p1', false);
     const runningThread = thread('t-running', { title: 'Active work' });
     const projectRow = project('p1', { name: 'Project One' });
     setBindingMock('ListThreads', async () => [runningThread]);
@@ -109,7 +108,7 @@ describe('<Sidebar>', () => {
       expect(getByTestId('project-item-status-dot').getAttribute('data-status')).toBe('running');
     });
 
-    expect(isProjectExpanded('p1')).toBe(false);
+    expect(entryRecordForTest('p1').expanded).toBe(false);
     expect(getByTestId('project-item-chevron').getAttribute('aria-expanded')).toBe('false');
     expect(getByTestId('project-item-active-pin')).toBeInTheDocument();
     expect(getByText('Active work')).toBeInTheDocument();

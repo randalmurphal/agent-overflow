@@ -28,7 +28,7 @@
   import { HOME_BACKEND } from './lib/transport/backendKey';
   import { backendReachable } from './lib/stores/attachedBackends.svelte';
   import { syncSidebarFromAppStorage, syncSidebarFromSettings } from './lib/stores/sidebar.svelte';
-  import { startSidebarEntryContinuity } from './lib/stores/sidebarEntryContinuity.svelte';
+  import { startSidebarEntryContinuity, syncSidebarEntryDisclosureFromAppStorage } from './lib/stores/sidebarEntryContinuity.svelte';
   import { syncWorkflowsOverlayFromAppStorage } from './lib/stores/workflowsOverlay.svelte';
   import { installToolPanes, syncToolPanesFromAppStorage } from './lib/stores/toolPanes.svelte';
   import { syncPullsFiltersFromAppStorage } from './lib/stores/pullsPageFilters.svelte';
@@ -495,6 +495,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
         if (disposed) return;
         syncSidebarLayoutFromAppStorage();
         syncSidebarFromAppStorage();
+        syncSidebarEntryDisclosureFromAppStorage();
         // The workflows stack/filter/sweep cursor and the last-used tool are
         // durable per client (UI-SPEC §2.1), so they adopt the hydrated copy
         // the same way the sidebar's view state does.

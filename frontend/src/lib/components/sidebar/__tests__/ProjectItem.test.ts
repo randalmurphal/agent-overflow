@@ -3,11 +3,10 @@ import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ProjectItem from '../ProjectItem.svelte';
 import { entryFromRow } from '../../../../test/helpers/sidebarEntry';
+import type { SidebarEntry } from '../sidebarEntries';
 import { createThreadPane } from '../../../stores/thread.svelte';
+import { addProjectLocal, resetProjectsForTest } from '../../../stores/projects.svelte';
 import {
-  collapseProject,
-  expandProject,
-  isProjectExpanded,
   resetSidebarForTest,
 } from '../../../stores/sidebar.svelte';
 import {
@@ -29,6 +28,7 @@ import {
   resetBindingMocks,
   setBindingMock,
 } from '../../../../test/mocks/bindings-app';
+import { entryRecordForTest, setEntryExpanded } from '../../../stores/sidebarEntryContinuity.svelte';
 
 function wrap(id: string, overrides: Partial<Project> = {}): ProjectWithCounts {
   return {
@@ -49,9 +49,9 @@ function wrap(id: string, overrides: Partial<Project> = {}): ProjectWithCounts {
 
 // The row reports a toggle; the list writes it. `entryFromRow` keys an entry
 // by its project id, so this stands in for `ProjectsSection`'s writer.
-function onSetExpanded(key: string, expanded: boolean): void {
-  if (expanded) expandProject(key);
-  else collapseProject(key);
+function onSetExpanded(entry: SidebarEntry, expanded: boolean): void {
+  if (expanded) setEntryExpanded(entry.key, true);
+  else setEntryExpanded(entry.key, false);
 }
 
 function markThreadRunning(threadId: string): void {
@@ -78,6 +78,7 @@ function thread(id: string, overrides: Partial<Thread> = {}): Thread {
 describe('<ProjectItem>', () => {
   beforeEach(() => {
     resetSidebarForTest();
+    resetProjectsForTest();
     resetThreadStatuses();
     resetThreadGroupsForTest();
     setThreadFilterQuery('');
@@ -87,6 +88,8 @@ describe('<ProjectItem>', () => {
   });
 
   it('anchors the context menu to the header line, not the whole project container', async () => {
+    // The menu freezes its target from the projects store.
+    addProjectLocal(wrap('p1').project);
     const { getByTestId, getByRole } = render(ProjectItem, {
       props: {
         get entry() { return entryFromRow(wrap('p1')); },
@@ -107,6 +110,8 @@ describe('<ProjectItem>', () => {
   });
 
   it('a left click on the header (chevron, header buttons) closes the open context menu', async () => {
+    // The menu freezes its target from the projects store.
+    addProjectLocal(wrap('p1').project);
     const { getByTestId, queryByRole } = render(ProjectItem, {
       props: { get entry() { return entryFromRow(wrap('p1')); },
  displayLabel: { prefix: '', name: 'p1' },
@@ -135,7 +140,7 @@ describe('<ProjectItem>', () => {
         updatedAt: 0,
       }),
     ));
-    collapseProject('p1');
+    setEntryExpanded('p1', false);
     setThreadFilterQuery('spike');
     const { getByTestId } = render(ProjectItem, {
       props: { get entry() { return entryFromRow(wrap('p1')); },
@@ -155,7 +160,7 @@ describe('<ProjectItem>', () => {
     // Same path as the menu item: the row must be able to mount and open
     // its rename, so the search is cleared and the project expanded.
     expect(getThreadFilterQuery()).toBe('');
-    expect(isProjectExpanded('p1')).toBe(true);
+    expect(entryRecordForTest('p1').expanded).toBe(true);
     expect(consumePendingGroupRename('g-new')).toBe(true);
   });
 
@@ -176,7 +181,7 @@ describe('<ProjectItem>', () => {
     await fireEvent.click(getByTestId('project-item-new-group'));
     await tick();
 
-    expect(isProjectExpanded('p1')).toBe(true);
+    expect(entryRecordForTest('p1').expanded).toBe(true);
   });
 
   it('renders expanded by default and exposes an aria-expanded chevron', () => {
@@ -192,7 +197,7 @@ describe('<ProjectItem>', () => {
     });
     const chevron = getByTestId('project-item-chevron') as HTMLButtonElement;
     expect(chevron.getAttribute('aria-expanded')).toBe('true');
-    expect(isProjectExpanded('p1')).toBe(true);
+    expect(entryRecordForTest('p1').expanded).toBe(true);
   });
 
   it('draws a divider only when separated from a previous project', () => {
@@ -235,10 +240,10 @@ describe('<ProjectItem>', () => {
     // Default-expanded → click collapses → click again expands.
     await fireEvent.click(getByTestId('project-item-chevron'));
     await tick();
-    expect(isProjectExpanded('p1')).toBe(false);
+    expect(entryRecordForTest('p1').expanded).toBe(false);
     await fireEvent.click(getByTestId('project-item-chevron'));
     await tick();
-    expect(isProjectExpanded('p1')).toBe(true);
+    expect(entryRecordForTest('p1').expanded).toBe(true);
   });
 
   it('new-thread button is hidden by default but invokes onNewThread when clicked', async () => {
@@ -322,7 +327,7 @@ describe('<ProjectItem>', () => {
 
   it('renders nested threads when expanded', async () => {
     const pane = createThreadPane();
-    expandProject('p1');
+    setEntryExpanded('p1', true);
     const { getByTestId } = render(ProjectItem, {
       props: {
         get entry() { return entryFromRow(wrap('p1')); },
@@ -352,7 +357,7 @@ describe('<ProjectItem>', () => {
     await fireEvent.click(getByTestId('project-item-new-thread'));
     // The click should not have toggled expansion — only onNewThread fires.
     // Default is expanded, so it stays expanded after the new-thread click.
-    expect(isProjectExpanded('p1')).toBe(true);
+    expect(entryRecordForTest('p1').expanded).toBe(true);
     expect(onNewThread).toHaveBeenCalledTimes(1);
   });
 
@@ -360,7 +365,7 @@ describe('<ProjectItem>', () => {
     // The collapsed-state render path: status dot + active-thread pin
     // surface the running work without the user needing to expand. We
     // collapse explicitly because projects default to expanded.
-    collapseProject('p1');
+    setEntryExpanded('p1', false);
     const pane = createThreadPane();
     const runningThread = thread('t-running', { title: 'Active work' });
     await pane.switchThread(runningThread);
@@ -378,7 +383,7 @@ describe('<ProjectItem>', () => {
 
     await tick();
 
-    expect(isProjectExpanded('p1')).toBe(false);
+    expect(entryRecordForTest('p1').expanded).toBe(false);
     expect(getByTestId('project-item-chevron').getAttribute('aria-expanded')).toBe('false');
     expect(getByTestId('project-item-status-dot').getAttribute('data-status')).toBe('running');
     expect(getByTestId('project-item-active-pin')).toBeInTheDocument();

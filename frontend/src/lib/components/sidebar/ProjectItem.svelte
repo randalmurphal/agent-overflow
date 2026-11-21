@@ -82,15 +82,17 @@
      *  project. Desktop has no per-project terminal control; terminals open
      *  from the palette, the chat header or the global control. */
     onNewTerminal?: ProjectNewTerminalHandler;
-    /** Current rendered ordering of the entries' order ids (visible entries in
+    /** Current rendered ordering of project ids (visible entries in
      *  ProjectsSection). Required for DnD to compute the new order on
      *  drop without an extra round-trip. */
     orderedIds?: readonly string[];
     /** Commit a new ordering. Caller updates store + persists. */
     onReorder?: (newOrderedIds: string[]) => void;
     /** Fold or unfold this entry. The state belongs to the entry, so the
-     *  section writes it by key; this row only reports the gesture. */
-    onSetExpanded?: (key: string, expanded: boolean) => void;
+     *  section writes it; this row only reports the gesture. */
+    onSetExpanded?: (entry: SidebarEntry, expanded: boolean) => void;
+    /** A search shows this row open whatever its fold. */
+    searchOpened?: boolean;
     /** Draws the hairline divider that separates this project from the one above. */
     separatedFromPrevious?: boolean;
   }
@@ -106,6 +108,7 @@
     orderedIds,
     onReorder,
     onSetExpanded,
+    searchOpened = false,
     separatedFromPrevious = false,
   }: Props = $props();
 
@@ -135,7 +138,7 @@
   let renameRun = $derived(actions.current?.kind === 'rename' ? actions.current : null);
   let renameInputEl: HTMLInputElement | undefined = $state(undefined);
 
-  let expanded = $derived(entry.expanded);
+  let expanded = $derived(entry.expanded || searchOpened);
 
   // Tree + rollup are only meaningful when the project is collapsed —
   // when expanded, the nested ProjectThreadList computes its own. We
@@ -166,7 +169,7 @@
   });
 
   function toggle(): void {
-    onSetExpanded?.(entry.key, !entry.expanded);
+    onSetExpanded?.(entry, !expanded);
   }
 
   function handleToggle(e: MouseEvent): void {
@@ -311,10 +314,9 @@
     .join('\n'));
 
   let manualMode = $derived(getProjectSortMode() === 'manual');
-  // A drag moves the row's place in the manual order, saved under orderId.
-  let isDragging = $derived(getDraggingProjectId() === entry.orderId);
+  let isDragging = $derived(getDraggingProjectId() === entry.id);
   let dropMarker = $derived.by<'before' | 'after' | null>(() => {
-    if (getDropTargetProjectId() !== entry.orderId) return null;
+    if (getDropTargetProjectId() !== entry.id) return null;
     return getDropPosition();
   });
 
@@ -323,13 +325,13 @@
       e.preventDefault();
       return;
     }
-    beginProjectDrag(entry.orderId, e);
+    beginProjectDrag(entry.id, e);
   }
 
   function handleDragOver(e: DragEvent): void {
     if (!manualMode || !rowEl) return;
     if (getDraggingProjectId() === null) return;
-    updateDropTarget(entry.orderId, e, rowEl);
+    updateDropTarget(entry.id, e, rowEl);
   }
 
   function handleDrop(e: DragEvent): void {
