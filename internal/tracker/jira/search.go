@@ -164,7 +164,7 @@ type SearchResult struct {
 func (c *Client) SearchAll(ctx context.Context, q SearchQuery, limit int) (SearchResult, error) {
 	size := pageSize(q.MaxResults, 100, maxSearchPage)
 	first := q.PageToken
-	return walk(ctx, func(ctx context.Context) (SearchResult, error) {
+	return trackerapi.Walk(ctx, func(ctx context.Context) (SearchResult, error) {
 		return tokenPages("search", first, limit, func(token string, room int) (SearchPage, error) {
 			q.PageToken, q.MaxResults = token, size
 			if room > 0 {
@@ -267,7 +267,7 @@ func (c *Client) BulkFetch(ctx context.Context, refs []string, fields ...string)
 	if err := c.admit(ctx); err != nil {
 		return BulkResult{}, err
 	}
-	return walk(ctx, func(ctx context.Context) (BulkResult, error) { return c.bulkFetch(ctx, refs, fields) })
+	return trackerapi.Walk(ctx, func(ctx context.Context) (BulkResult, error) { return c.bulkFetch(ctx, refs, fields) })
 }
 
 // bulkFetch is one walk of BulkFetch.

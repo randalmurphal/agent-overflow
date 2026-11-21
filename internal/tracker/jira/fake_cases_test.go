@@ -100,6 +100,12 @@ var issueCases = map[string]func(t *testing.T, f *fakeEnv){
 			t.Fatal("no story points field")
 		}
 	},
+	"FieldsNaming": func(t *testing.T, f *fakeEnv) {
+		cat := got(f.c.FieldsNaming(f.ctx, "customfield_10016", "customfield_19999")).must(t)
+		if _, ok := cat.Field("customfield_10016"); !ok {
+			t.Fatal("no story points field")
+		}
+	},
 	"Projects": func(t *testing.T, f *fakeEnv) {
 		if l := got(f.c.Projects(f.ctx, ProjectQuery{})).must(t); len(l.Projects) != 2 || !l.Complete {
 			t.Fatalf("projects %+v", l)

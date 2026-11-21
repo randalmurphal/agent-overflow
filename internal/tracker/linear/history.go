@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"slices"
 	"time"
+
+	"agent-overflow/internal/tracker/trackerapi"
 )
 
 // Sizes of the batched history read. A history page nested in an issues
@@ -68,7 +70,8 @@ type wireIssueChanges struct {
 // issue it omits is missing or invisible. ids are issue IDs (IsIssueID);
 // any other form is refused before sending. It reads
 // historyBatchIssues issues per request, and pages one issue's longer
-// history on its own. A failure on any request fails the call.
+// history on its own, as one trackerapi.Walk. A failure on any request
+// fails the call.
 func (c *Client) IssueHistories(ctx context.Context, ids []string) ([]IssueChanges, error) {
 	for i, id := range ids {
 		if !IsIssueID(id) {
@@ -78,29 +81,31 @@ func (c *Client) IssueHistories(ctx context.Context, ids []string) ([]IssueChang
 			return nil, invalid(opIssueHistories.name, "%s is named twice", id)
 		}
 	}
-	var out []IssueChanges
-	for chunk := range slices.Chunk(ids, historyBatchIssues) {
-		filter, err := IssueFilter{IDs: chunk}.input()
-		if err != nil {
-			return nil, invalid(opIssueHistories.name, "%w", err)
-		}
-		vars := historiesVars{Filter: filter, First: len(chunk), Entries: historyPage}
-		p, err := fetchPage(ctx, c, opIssueHistories, vars, same[wireIssueChanges])
-		if err != nil {
-			return nil, err
-		}
-		if p.HasNextPage && len(p.Items) < len(chunk) {
-			return nil, fmt.Errorf("linear %s: %d IDs answered with more than one page", opIssueHistories.name, len(chunk))
-		}
-		for _, w := range p.Items {
-			changes, err := c.issueChanges(ctx, w, p.Served)
+	return trackerapi.Walk(ctx, func(ctx context.Context) ([]IssueChanges, error) {
+		var out []IssueChanges
+		for chunk := range slices.Chunk(ids, historyBatchIssues) {
+			filter, err := IssueFilter{IDs: chunk}.input()
+			if err != nil {
+				return nil, invalid(opIssueHistories.name, "%w", err)
+			}
+			vars := historiesVars{Filter: filter, First: len(chunk), Entries: historyPage}
+			p, err := fetchPage(ctx, c, opIssueHistories, vars, same[wireIssueChanges])
 			if err != nil {
 				return nil, err
 			}
-			out = append(out, changes)
+			if p.HasNextPage && len(p.Items) < len(chunk) {
+				return nil, fmt.Errorf("linear %s: %d IDs answered with more than one page", opIssueHistories.name, len(chunk))
+			}
+			for _, w := range p.Items {
+				changes, err := c.issueChanges(ctx, w, p.Served)
+				if err != nil {
+					return nil, err
+				}
+				out = append(out, changes)
+			}
 		}
-	}
-	return out, nil
+		return out, nil
+	})
 }
 
 // issueChanges types one issue of a batch served at served, reading the

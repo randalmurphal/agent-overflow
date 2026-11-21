@@ -128,7 +128,7 @@ func (c *Client) Worklogs(ctx context.Context, q WorklogQuery) (WorklogList, err
 	if err := c.admit(ctx); err != nil {
 		return WorklogList{}, err
 	}
-	return walk(ctx, func(ctx context.Context) (WorklogList, error) { return c.worklogs(ctx, q) })
+	return trackerapi.Walk(ctx, func(ctx context.Context) (WorklogList, error) { return c.worklogs(ctx, q) })
 }
 
 // worklogs is one walk of Worklogs.

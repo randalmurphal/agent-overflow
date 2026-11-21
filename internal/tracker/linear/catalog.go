@@ -69,9 +69,12 @@ func (c *Client) WorkflowStates(ctx context.Context, teamID string) ([]WorkflowS
 	if teamID == "" {
 		return nil, invalid("WorkflowStates", "a team ID is required")
 	}
-	return collect(ctx, c, opWorkflowStates, func(after string) any {
-		return teamPageVars{pageVars{First: catalogPage, After: after}, teamID}
-	}, wireState.typed)
+	return collect(ctx, c, opWorkflowStates, statesPage(teamID), wireState.typed)
+}
+
+// statesPage builds a page of a team's states from its cursor.
+func statesPage(teamID string) func(after string) any {
+	return func(after string) any { return teamPageVars{pageVars{First: catalogPage, After: after}, teamID} }
 }
 
 // CycleWhen picks cycles by time.
@@ -126,8 +129,24 @@ type cycleVars struct {
 // Cycles are generated from the team's settings: the API cannot create
 // one, and StartUpcomingCycle starts the next.
 func (c *Client) Cycles(ctx context.Context, q CycleQuery) ([]Cycle, error) {
+	first, err := q.vars("Cycles")
+	if err != nil {
+		return nil, err
+	}
+	return collect(ctx, c, opCycles, first.after, wireCycle.typed)
+}
+
+// after is v for the page after cursor.
+func (v cycleVars) after(cursor string) any {
+	v.After = cursor
+	return v
+}
+
+// vars are the variables of the first page of opCycles that q selects,
+// or fail as op when q names no team or an unknown When.
+func (q CycleQuery) vars(op string) (cycleVars, error) {
 	if q.TeamID == "" {
-		return nil, invalid("Cycles", "a team ID is required")
+		return cycleVars{}, invalid(op, "a team ID is required")
 	}
 	filter := cycleFilter{Team: idEq(q.TeamID)}
 	switch q.When {
@@ -139,7 +158,7 @@ func (c *Client) Cycles(ctx context.Context, q CycleQuery) ([]Cycle, error) {
 	case CyclesPast:
 		filter.IsPast = &boolEq{true}
 	default:
-		return nil, invalid("Cycles", "unknown CycleWhen")
+		return cycleVars{}, invalid(op, "unknown CycleWhen")
 	}
 	size := cyclePage
 	if !q.KeptSince.IsZero() {
@@ -147,9 +166,7 @@ func (c *Client) Cycles(ctx context.Context, q CycleQuery) ([]Cycle, error) {
 		filter.Or = []cycleFilter{{IsActive: &boolEq{true}}, {IsFuture: &boolEq{true}}, {EndsAt: since}, {CompletedAt: since}}
 		size = keptCyclePage
 	}
-	return collect(ctx, c, opCycles, func(after string) any {
-		return cycleVars{pageVars{First: size, After: after}, filter, q.IncludeArchived}
-	}, wireCycle.typed)
+	return cycleVars{pageVars{First: size}, filter, q.IncludeArchived}, nil
 }
 
 var opUsers = newQuery("Users", "page", `query Users($includeDisabled: Boolean, $first: Int!, $after: String) {
@@ -167,9 +184,12 @@ type usersVars struct {
 // Users returns the workspace's users, deactivated ones only with
 // includeDisabled, paged to the end.
 func (c *Client) Users(ctx context.Context, includeDisabled bool) ([]User, error) {
-	return collect(ctx, c, opUsers, func(after string) any {
-		return usersVars{pageVars{First: catalogPage, After: after}, includeDisabled}
-	}, same[User])
+	return collect(ctx, c, opUsers, usersPage(includeDisabled), same[User])
+}
+
+// usersPage builds a page of the workspace's users from its cursor.
+func usersPage(includeDisabled bool) func(after string) any {
+	return func(after string) any { return usersVars{pageVars{First: catalogPage, After: after}, includeDisabled} }
 }
 
 var opTeamMembers = newQuery("TeamMembers", "node", `query TeamMembers($teamId: String!, $first: Int!, $after: String) {

@@ -342,7 +342,7 @@ func (c *Client) boardConfig(ctx context.Context, board int64) (BoardConfig, err
 	if err := checkAgileID("board", board); err != nil {
 		return BoardConfig{}, err
 	}
-	if cfg, ok := c.configs.get(board); ok {
+	if cfg, ok := c.configs.get(ctx, board); ok {
 		return cfg, nil
 	}
 	epoch := c.configs.epoch()

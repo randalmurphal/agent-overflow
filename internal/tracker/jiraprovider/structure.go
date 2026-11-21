@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"agent-overflow/internal/tracker"
 	"agent-overflow/internal/tracker/jira"
 )
@@ -17,7 +19,8 @@ const timeEstimateField = "timeoriginalestimate"
 // which names the board and where it is located (the jira client's cached
 // configuration and sprint listing of this board are dropped first, so
 // later row reads use what this read returns; other boards keep theirs),
-// its sprints when it is a scrum board, and its statuses (boardStatuses).
+// then together its sprints when it is a scrum board and its statuses
+// (boardStatuses).
 // Users are not listed: Jira sends them with the records.
 func (p *Provider) Structure(ctx context.Context, id tracker.BoardID, window time.Time) (tracker.Structure, error) {
 	n, err := boardNumber(id)
@@ -40,14 +43,24 @@ func (p *Provider) Structure(ctx context.Context, id tracker.BoardID, window tim
 		}
 		out.Columns = append(out.Columns, c)
 	}
+	// The sprints and the statuses are read together; the first to fail
+	// ends the other and is the error.
+	g, gctx := errgroup.WithContext(ctx)
 	if cfg.Type == jira.BoardScrum {
-		// The board was just dropped, so the listing is read now.
-		if out.Sprints, err = p.sprints(ctx, id, n, window, true); err != nil {
-			return tracker.Structure{}, err
-		}
+		g.Go(func() (err error) {
+			// The board was just dropped, so the listing is read now.
+			out.Sprints, err = p.sprints(gctx, id, n, window, true)
+			return err
+		})
 	}
-	if out.Statuses, err = p.boardStatuses(ctx, cfg); err != nil {
-		return tracker.Structure{}, fmt.Errorf("jiraprovider: structure of board %s: %w", id, err)
+	g.Go(func() (err error) {
+		if out.Statuses, err = p.boardStatuses(gctx, cfg); err != nil {
+			return fmt.Errorf("jiraprovider: structure of board %s: %w", id, err)
+		}
+		return nil
+	})
+	if err := g.Wait(); err != nil {
+		return tracker.Structure{}, err
 	}
 	return out, nil
 }
@@ -119,8 +132,9 @@ func estimateOf(cfg jira.BoardConfig) tracker.Estimate {
 
 // sprints are board's sprints that are active or future, or closed at or
 // after window: completed then, or ending then when Jira gives no
-// completion. A sprint whose dates did not decode fails the read, since
-// whether it is kept cannot be told.
+// completion, each with the board it was made on (Jira's originBoardId),
+// which another board's sprint can name. A sprint whose dates did not
+// decode fails the read, since whether it is kept cannot be told.
 //
 // The listing is the board's the jira client holds, read by the last
 // Structure (which drops it first), or read now and held when none is.
@@ -148,8 +162,11 @@ func (p *Provider) sprints(ctx context.Context, id tracker.BoardID, n int64, win
 			return nil, fmt.Errorf("jiraprovider: sprint %d of board %s: %s: %w", s.ID, id, s.Problems[0].Field, s.Problems[0].Err)
 		}
 		sp := tracker.Sprint{
-			ID: tracker.SprintID(decimal(s.ID)), Board: id, Name: s.Name, Goal: s.Goal,
+			ID: tracker.SprintID(decimal(s.ID)), Name: s.Name, Goal: s.Goal,
 			Start: s.Start, End: s.End, Completed: s.Done,
+		}
+		if s.BoardID > 0 {
+			sp.Board = tracker.BoardID(decimal(s.BoardID))
 		}
 		switch s.State {
 		case jira.SprintActive:

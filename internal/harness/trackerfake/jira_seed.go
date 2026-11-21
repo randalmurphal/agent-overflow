@@ -270,6 +270,11 @@ func (s *jiraSite) seedBoards(e *Engine) error {
 		case sp.State != "future" && sp.State != "active" && sp.State != "closed":
 			return fmt.Errorf("sprint %d has state %q", sp.ID, sp.State)
 		}
+		for _, b := range sp.Shown {
+			if s.board(b) == nil || b == sp.Board {
+				return fmt.Errorf("sprint %d is shown on board %d, which the site lacks or it was made on", sp.ID, b)
+			}
+		}
 		seen[sp.ID] = true
 		e.reserveID(sp.ID)
 	}

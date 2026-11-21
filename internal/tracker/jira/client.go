@@ -191,18 +191,13 @@ func (c *Client) ForgetCredential() {
 
 // call sends r and decodes the answer into out (nil skips decoding)
 // through decodeAnswer. A 404 is checked against the sign-in
-// (identity.go), and an AuthError detaches the sign-in checks. An answer
-// of a walk drawn under another credential read than the walk's first is
-// errWalkMoved (walk.go).
+// (identity.go), and an AuthError detaches the sign-in checks. A read
+// composed of several requests runs them under trackerapi.Walk, which
+// the transport holds every answer to.
 func (c *Client) call(ctx context.Context, r trackerapi.Request, out any) (*trackerapi.Response, error) {
 	resp, err := c.api.Do(ctx, r)
 	if err != nil {
 		return resp, c.explain(ctx, err)
-	}
-	if w := walkOf(ctx); w != nil {
-		if err := w.see(resp.CredentialMark()); err != nil {
-			return resp, err
-		}
 	}
 	if out != nil {
 		if err := decodeAnswer(resp, out); err != nil {

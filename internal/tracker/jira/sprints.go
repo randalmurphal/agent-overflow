@@ -144,7 +144,7 @@ func (c *Client) BoardSprints(ctx context.Context, board int64) (SprintList, err
 	if err := checkAgileID("board", board); err != nil {
 		return SprintList{}, err
 	}
-	if l, ok := c.sprintLists.get(board); ok {
+	if l, ok := c.sprintLists.get(ctx, board); ok {
 		return l, nil
 	}
 	epoch := c.sprintLists.epoch()

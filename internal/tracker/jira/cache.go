@@ -2,6 +2,7 @@ package jira
 
 import (
 	"container/list"
+	"context"
 	"sync"
 
 	"agent-overflow/internal/tracker/trackerapi"
@@ -51,8 +52,10 @@ func (c *cache[K, V]) copy(v V) V {
 
 // get returns a copy of the value under k, while the credential read it
 // was drawn under is the one the transport holds; a value of another
-// read is dropped.
-func (c *cache[K, V]) get(k K) (V, bool) {
+// read is dropped. Inside a walk (trackerapi.Walk) whose answers were
+// drawn under another read, the value is a miss: the request the caller
+// then sends moves the walk.
+func (c *cache[K, V]) get(ctx context.Context, k K) (V, bool) {
 	now := c.now()
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -65,6 +68,9 @@ func (c *cache[K, V]) get(k K) (V, bool) {
 	if !sameRead(entry.mark, now) {
 		c.order.Remove(e)
 		delete(c.byKey, k)
+		return zero, false
+	}
+	if trackerapi.JoinWalk(ctx, entry.mark) != nil {
 		return zero, false
 	}
 	c.order.MoveToFront(e)

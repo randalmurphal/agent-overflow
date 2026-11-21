@@ -64,7 +64,7 @@ func (c *Client) accounts(ctx context.Context, q AccountQuery) ([]Account, error
 		Statuses []AccountStatus `json:"statuses,omitempty"`
 		Keys     []string        `json:"keys,omitempty"`
 	}{q.Statuses, q.Keys}
-	return walk(ctx, func(ctx context.Context) ([]Account, error) {
+	return trackerapi.Walk(ctx, func(ctx context.Context) ([]Account, error) {
 		var out []Account
 		err := pages(ctx, c.http, trackerapi.Request{Method: "POST", Path: "4/accounts/search", Body: body, ReadOnly: true},
 			func(_ *trackerapi.Response, list []accountJSON) error {

@@ -54,7 +54,29 @@ func (p *Provider) Detail(ctx context.Context, issue tracker.IssueID) (tracker.D
 	if err := g.Wait(); err != nil {
 		return tracker.Detail{}, err
 	}
+	s, err := p.siteNaming(ctx, s, read)
+	if err != nil {
+		return tracker.Detail{}, err
+	}
 	return p.detailOf(s, issue, read)
+}
+
+// siteNaming is s, or the catalog read again when s lacks a field reads
+// show (detailFieldIDs): a field added since the catalog was read shows
+// with its name and kind.
+func (p *Provider) siteNaming(ctx context.Context, s site, reads ...issueRead) (site, error) {
+	var named []string
+	for _, r := range reads {
+		if r.full.Issue != nil {
+			named = append(named, detailFieldIDs(r.full.Issue, r.full.Edit)...)
+		}
+	}
+	for _, id := range named {
+		if _, ok := s.field(id); !ok {
+			return p.site(ctx, named...)
+		}
+	}
+	return s, nil
 }
 
 // issueRead is what the requests on one issue's own paths returned.
@@ -150,6 +172,10 @@ func (p *Provider) Details(ctx context.Context, issues []tracker.IssueID) (track
 	if err := g.Wait(); err != nil {
 		return tracker.Details{}, err
 	}
+	s, err := p.siteNaming(ctx, s, reads...)
+	if err != nil {
+		return tracker.Details{}, err
+	}
 	var out tracker.Details
 	for i, issue := range issues {
 		if missing[i] {
@@ -171,18 +197,13 @@ func (p *Provider) Details(ctx context.Context, issues []tracker.IssueID) (track
 // shown read-only.
 func detailFields(s site, is *jira.Issue, screen jira.Screen, cat *catalog) []tracker.Field {
 	ids := map[string]bool{}
-	for id, raw := range is.Raw {
-		if !jira.FieldValue(raw).Null() {
-			ids[id] = true
-		}
+	for _, id := range detailFieldIDs(is, screen) {
+		ids[id] = true
 	}
 	for _, id := range []string{"reporter", "components", "fixVersions", "resolution", "duedate", "subtasks"} {
 		if v, ok := valueOf(is, id, tracker.KindReadOnly, false, cat); ok && !v.Empty() {
 			ids[id] = true
 		}
-	}
-	for _, f := range screen.Fields {
-		ids[f.ID] = true
 	}
 	var out []tracker.Field
 	for id := range ids {
@@ -213,6 +234,21 @@ func detailFields(s site, is *jira.Issue, screen jira.Screen, cat *catalog) []tr
 	}
 	slices.SortFunc(out, func(a, b tracker.Field) int { return cmp.Or(cmp.Compare(a.Name, b.Name), cmp.Compare(a.ID, b.ID)) })
 	return out
+}
+
+// detailFieldIDs are the fields of is that hold a value and those screen
+// offers, which a detail names through the catalog.
+func detailFieldIDs(is *jira.Issue, screen jira.Screen) []string {
+	var ids []string
+	for id, raw := range is.Raw {
+		if !jira.FieldValue(raw).Null() {
+			ids = append(ids, id)
+		}
+	}
+	for _, f := range screen.Fields {
+		ids = append(ids, f.ID)
+	}
+	return ids
 }
 
 // screenField is the field with exactly id on screen.

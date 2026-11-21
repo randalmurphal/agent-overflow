@@ -55,7 +55,7 @@ func (c *Client) worklogChanges(ctx context.Context, kind string, since time.Tim
 	if since.Before(time.UnixMilli(0)) {
 		return out, notSent("%s worklogs since %s, before 1970", kind, since.Format(time.RFC3339))
 	}
-	return walk(ctx, func(ctx context.Context) (WorklogChanges, error) { return c.worklogChangeWalk(ctx, kind, since) })
+	return trackerapi.Walk(ctx, func(ctx context.Context) (WorklogChanges, error) { return c.worklogChangeWalk(ctx, kind, since) })
 }
 
 // worklogChangeWalk is one walk of worklogChanges.
@@ -115,7 +115,7 @@ func (c *Client) WorklogsByID(ctx context.Context, ids []int64) (WorklogList, er
 		}
 		seen[id] = true
 	}
-	return walk(ctx, func(ctx context.Context) (WorklogList, error) { return c.worklogsByID(ctx, ids) })
+	return trackerapi.Walk(ctx, func(ctx context.Context) (WorklogList, error) { return c.worklogsByID(ctx, ids) })
 }
 
 // worklogsByID is one walk of WorklogsByID.

@@ -11,9 +11,9 @@ import (
 )
 
 // Input is what a person or an agent supplies for one field: Clear, one
-// Text, several Texts, or RawJSON. The field's schema decides what text
-// means (an option name, a user, a date, Markdown); there are no in-band
-// conventions.
+// Text, several Texts, the IDs of values picked from a list, or RawJSON.
+// The field's schema decides what text means (an option name, a user, a
+// date, Markdown); there are no in-band conventions.
 type Input struct {
 	kind  inputKind
 	texts []string
@@ -29,6 +29,7 @@ const (
 	inputClear
 	inputText
 	inputTexts
+	inputIDs
 	inputRaw
 )
 
@@ -47,6 +48,17 @@ func Text(s string) Input { return Input{kind: inputText, texts: []string{s}} }
 // users, components, versions), or a cascading select's parent and
 // child. The list replaces the field's value.
 func Texts(ss ...string) Input { return Input{kind: inputTexts, texts: slices.Clone(ss)} }
+
+// IDs names one or more values by ID, as picked from a list the field
+// offers: an option, priority, component or version by its ID, a user by
+// account ID, a parent issue by its numeric ID, a sprint by its numeric
+// ID, a team by its ID, a label by its text. An ID is matched exactly and
+// never as a name: one that names none of the field's values now is a
+// *MatchError with Picked set, so a value picked from a list that has
+// changed since is refused rather than read as another value's name. A
+// field whose values have no IDs (text, numbers, dates, rich text) takes
+// no IDs. For a list field the IDs replace the list.
+func IDs(ids ...string) Input { return Input{kind: inputIDs, texts: slices.Clone(ids)} }
 
 // RawJSON is the API value itself, sent unchanged: the escape hatch for a
 // field type this package does not build.
@@ -224,13 +236,15 @@ func (b *builder) build(ctx context.Context, f FieldMeta, in Input) (Value, erro
 		}
 		v.Fields, v.Display = in.raw, string(in.raw)
 		return v, nil
-	case inputText, inputTexts:
+	case inputText, inputTexts, inputIDs:
 		// Built from the texts by the field's kind, below.
 	}
 	texts := in.texts
 	switch {
 	case k == kindUnknown:
 		return v, fmt.Errorf("jira: %s has type %s, which takes RawJSON only", f.Name, schemaName(f.Schema))
+	case in.kind == inputIDs && !r.picked:
+		return v, fmt.Errorf("jira: %s takes %s, which has no IDs to pick", f.Name, r.what)
 	case len(texts) == 0:
 		return v, fmt.Errorf("jira: %s: no values given; Clear empties it", f.Name)
 	case r.max > 0 && len(texts) > r.max:
@@ -337,12 +351,14 @@ func kindOf(s Schema) kind {
 }
 
 // rule is how one kind's values are built. build returns the value to
-// encode, or sets v.Fields itself, and sets v.Display.
+// encode, or sets v.Fields itself, and sets v.Display; it reads in.texts
+// as IDs when in is IDs.
 type rule struct {
-	what  string // what the kind takes, for errors
-	max   int    // the most Texts it takes; zero means any number
-	list  bool   // its value is a list, so Clear sends []
-	build func(ctx context.Context, b *builder, f FieldMeta, in Input, v *Value) (any, error)
+	what   string // what the kind takes, for errors
+	max    int    // the most Texts it takes; zero means any number
+	list   bool   // its value is a list, so Clear sends []
+	picked bool   // its values have IDs, so it takes IDs
+	build  func(ctx context.Context, b *builder, f FieldMeta, in Input, v *Value) (any, error)
 }
 
 // clearValue is the JSON that empties f, a field of r's kind: a parent
@@ -367,16 +383,16 @@ var rules = [...]rule{
 	kindNumber:    {what: "one number", max: 1, build: buildNumber},
 	kindDate:      {what: "one date", max: 1, build: buildDate},
 	kindDateTime:  {what: "one date-time", max: 1, build: buildDateTime},
-	kindUser:      {what: "one user", max: 1, build: buildUser},
-	kindUsers:     {what: "users", list: true, build: buildUsers},
-	kindLabels:    {what: "labels", list: true, build: buildLabels},
+	kindUser:      {what: "one user", max: 1, picked: true, build: buildUser},
+	kindUsers:     {what: "users", list: true, picked: true, build: buildUsers},
+	kindLabels:    {what: "labels", list: true, picked: true, build: buildLabels},
 	kindStrings:   {what: "texts", list: true, build: buildStrings},
-	kindOption:    {what: "one option", max: 1, build: buildOption},
-	kindOptions:   {what: "options", list: true, build: buildOptions},
-	kindCascade:   {what: "an option and a child option", max: 2, build: buildCascade},
-	kindNamed:     {what: "one value", max: 1, build: buildNamed},
-	kindNamedList: {what: "values", list: true, build: buildNamedList},
-	kindIssue:     {what: "one issue", max: 1, build: buildIssue},
-	kindSprint:    {what: "one sprint ID", max: 1, build: buildSprint},
-	kindTeam:      {what: "one team ID", max: 1, build: buildTeam},
+	kindOption:    {what: "one option", max: 1, picked: true, build: buildOption},
+	kindOptions:   {what: "options", list: true, picked: true, build: buildOptions},
+	kindCascade:   {what: "an option and a child option", max: 2, picked: true, build: buildCascade},
+	kindNamed:     {what: "one value", max: 1, picked: true, build: buildNamed},
+	kindNamedList: {what: "values", list: true, picked: true, build: buildNamedList},
+	kindIssue:     {what: "one issue", max: 1, picked: true, build: buildIssue},
+	kindSprint:    {what: "one sprint ID", max: 1, picked: true, build: buildSprint},
+	kindTeam:      {what: "one team ID", max: 1, picked: true, build: buildTeam},
 }

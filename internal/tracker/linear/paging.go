@@ -3,6 +3,8 @@ package linear
 import (
 	"context"
 	"fmt"
+
+	"agent-overflow/internal/tracker/trackerapi"
 )
 
 // pageVars are the paging variables every paged document declares as
@@ -70,23 +72,32 @@ func fetchPage[W, T any](ctx context.Context, c *Client, op operation, vars any,
 }
 
 // collect pages op to the end, for a list whose whole size a caller
-// holds anyway (teams, states, labels). varsFor builds a page's
-// variables from its cursor. A failure on any page fails the call.
+// holds anyway (teams, states, labels), as one trackerapi.Walk: a cursor
+// continued under another key would be another user's list. varsFor
+// builds a page's variables from its cursor. A failure on any page fails
+// the call.
 func collect[W, T any](ctx context.Context, c *Client, op operation, varsFor func(after string) any, typed func(W) T) ([]T, error) {
-	var out []T
-	after := ""
-	for {
-		p, err := fetchPage(ctx, c, op, varsFor(after), typed)
-		if err != nil {
+	return trackerapi.Walk(ctx, func(ctx context.Context) ([]T, error) {
+		return rest(ctx, c, op, varsFor, typed, Page[T]{HasNextPage: true})
+	})
+}
+
+// rest is from's items and those of the pages of op that follow it, read
+// from from's end cursor to the end; a from that says more follow and
+// holds no cursor starts the list. A caller that holds a first page read
+// another way (a composed document) continues it here, inside its own
+// trackerapi.Walk.
+func rest[W, T any](ctx context.Context, c *Client, op operation, varsFor func(after string) any, typed func(W) T, from Page[T]) ([]T, error) {
+	out := from.Items
+	for p := from; p.HasNextPage; {
+		var err error
+		if p, err = fetchPage(ctx, c, op, varsFor(p.EndCursor), typed); err != nil {
 			if len(out) > 0 {
 				return nil, fmt.Errorf("%w (%d items were read before it)", err, len(out))
 			}
 			return nil, err
 		}
 		out = append(out, p.Items...)
-		if !p.HasNextPage {
-			return out, nil
-		}
-		after = p.EndCursor
 	}
+	return out, nil
 }

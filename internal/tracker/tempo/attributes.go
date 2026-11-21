@@ -81,7 +81,7 @@ func (c *Client) Attributes(ctx context.Context) ([]Attribute, error) {
 // attributes is the cached list, shared: callers do not change it.
 func (c *Client) attributes(ctx context.Context) ([]Attribute, error) {
 	v, err := c.site.attributes.get(ctx, c.http.CredentialMark, func(ctx context.Context) ([]Attribute, trackerapi.CredentialMark, error) {
-		r, err := walk(ctx, c.readAttributes)
+		r, err := trackerapi.Walk(ctx, c.readAttributes)
 		return r.list, r.mark, err
 	})
 	if err != nil {
@@ -215,9 +215,10 @@ func (s *siteCache) shut() {
 // read, and a caller takes what it read only while the transport holds
 // the credential read it was drawn under; otherwise the caller reads
 // again, so a caller that came after a change of credential never gets
-// what the previous credential read. The read runs on the first caller's
-// context without its cancellation, so a caller that gives up leaves
-// without ending a read others wait on; the transport's timeouts and
+// what the previous credential read. A caller inside a walk joins it
+// with the value's credential read (trackerapi.JoinWalk). The read runs
+// on the first caller's context without its cancellation or its walk,
+// so a caller that gives up leaves without ending a read others wait on; the transport's timeouts and
 // Close still end it. A failed read is not kept. The reads run on goroutines the cache owns;
 // Client.Close ends them through the transport and joins them.
 type cached[T any] struct {
@@ -256,8 +257,11 @@ func (c *cached[T]) get(ctx context.Context, now func() trackerapi.CredentialMar
 		held := now()
 		c.mu.Lock()
 		if c.ok && heldBy(c.mark, held) {
-			v := c.value
+			v, mark := c.value, c.mark
 			c.mu.Unlock()
+			if err := trackerapi.JoinWalk(ctx, mark); err != nil {
+				return zero, err
+			}
 			return v, nil
 		}
 		if c.ok {
@@ -274,7 +278,7 @@ func (c *cached[T]) get(ctx context.Context, now func() trackerapi.CredentialMar
 			l = &loading[T]{done: make(chan struct{})}
 			c.inflight = l
 			gen := c.gen
-			c.reads.Go(func() { c.run(context.WithoutCancel(ctx), gen, l, load) })
+			c.reads.Go(func() { c.run(trackerapi.OutsideWalk(context.WithoutCancel(ctx)), gen, l, load) })
 		}
 		c.mu.Unlock()
 		select {
@@ -286,6 +290,9 @@ func (c *cached[T]) get(ctx context.Context, now func() trackerapi.CredentialMar
 		case l.err != nil:
 			return zero, l.err
 		case l.kept && l.mark == now():
+			if err := trackerapi.JoinWalk(ctx, l.mark); err != nil {
+				return zero, err
+			}
 			return l.v, nil
 		}
 		// Dropped while it was read, or drawn under a credential read the

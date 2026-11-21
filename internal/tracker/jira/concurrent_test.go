@@ -80,7 +80,7 @@ func TestEveryCallPassesTheGuard(t *testing.T) {
 		cl.catalog.put(cl.catalog.epoch(), mark, struct{}{}, newCatalog([]Field{{ID: "summary"}}))
 		cl.configs.put(cl.configs.epoch(), mark, 3, BoardConfig{BoardID: 3})
 		cl.sprintLists.put(cl.sprintLists.epoch(), mark, 3, SprintList{Complete: true})
-		if _, ok := cl.configs.get(3); !ok {
+		if _, ok := cl.configs.get(t.Context(), 3); !ok {
 			t.Fatal("the cache refused a value of the credential read the client holds")
 		}
 	}
@@ -90,7 +90,11 @@ func TestEveryCallPassesTheGuard(t *testing.T) {
 		"User":     func(c *Client, ctx context.Context) error { _, err := c.User(ctx, "acc-user1"); return err },
 		"FindUser": func(c *Client, ctx context.Context) error { _, err := c.FindUser(ctx, "acc-user1"); return err },
 		"Fields":   func(c *Client, ctx context.Context) error { _, err := c.Fields(ctx); return err },
-		"Me":       func(c *Client, ctx context.Context) error { _, err := c.Me(ctx); return err },
+		"FieldsNaming": func(c *Client, ctx context.Context) error {
+			_, err := c.FieldsNaming(ctx, "customfield_10999")
+			return err
+		},
+		"Me": func(c *Client, ctx context.Context) error { _, err := c.Me(ctx); return err },
 		"BoardSprints": func(c *Client, ctx context.Context) error {
 			_, err := c.BoardSprints(ctx, 3)
 			return err

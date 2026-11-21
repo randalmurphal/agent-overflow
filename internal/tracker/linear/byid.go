@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+
+	"agent-overflow/internal/tracker/trackerapi"
 )
 
 // Reads of named entities: one entity by its ID, and the entities a set
@@ -81,8 +83,8 @@ type idsVars struct {
 }
 
 // byIDs reads the entities op selects for ids, each ID once, in requests
-// of at most maxIDs IDs, each paged to its end. An ID that names nothing
-// visible is left out. No IDs send nothing.
+// of at most maxIDs IDs, each paged to its end, as one trackerapi.Walk.
+// An ID that names nothing visible is left out. No IDs send nothing.
 func byIDs[W, T any](ctx context.Context, c *Client, op operation, ids []string, typed func(W) T) ([]T, error) {
 	if err := checkIDs("ids", ids); err != nil {
 		return nil, invalid(op.name, "%w", err)
@@ -93,17 +95,19 @@ func byIDs[W, T any](ctx context.Context, c *Client, op operation, ids []string,
 			unique = append(unique, id)
 		}
 	}
-	var out []T
-	for chunk := range slices.Chunk(unique, maxIDs) {
-		items, err := collect(ctx, c, op, func(after string) any {
-			return idsVars{pageVars{First: len(chunk), After: after}, chunk}
-		}, typed)
-		if err != nil {
-			return nil, err
+	return trackerapi.Walk(ctx, func(ctx context.Context) ([]T, error) {
+		var out []T
+		for chunk := range slices.Chunk(unique, maxIDs) {
+			items, err := collect(ctx, c, op, func(after string) any {
+				return idsVars{pageVars{First: len(chunk), After: after}, chunk}
+			}, typed)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, items...)
 		}
-		out = append(out, items...)
-	}
-	return out, nil
+		return out, nil
+	})
 }
 
 var opUsersByID = newQuery("UsersByID", "page", `query UsersByID($ids: [ID!]!, $first: Int!, $after: String) {

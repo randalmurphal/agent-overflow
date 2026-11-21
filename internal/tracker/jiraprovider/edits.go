@@ -8,11 +8,12 @@ import (
 )
 
 // fieldInputs are edits as the jira client's field inputs, by Jira field
-// ID. The form decides the input: a clear is Clear; picked IDs and typed
-// text are Text, or Texts for a list field, which the client resolves
-// against the field's values (an exact ID first, then a name), refusing
-// text that matches none or several; Markdown is Text for a rich text
-// field. A Markdown edit of an existing issue carries the Markdown it was
+// ID. The form decides the input: a clear is Clear; picked IDs are IDs,
+// which the client matches by ID alone, refusing one that names no value
+// now as stale; typed text is Text, or Texts for a list field, which the
+// client resolves against the field's values (an exact ID first, then a
+// name), refusing text that matches none or several; Markdown is Text for
+// a rich text field. A Markdown edit of an existing issue carries the Markdown it was
 // written from (EditedFrom): the client's plan reads the stored document
 // with the edit screen and refuses the edit as stale when the document no
 // longer renders to it, and again when it changes before the write is
@@ -24,7 +25,11 @@ import (
 // field, an edit of a read-only field and several values for a field
 // that takes one are refused before anything is sent.
 func (p *Provider) fieldInputs(ctx context.Context, issue tracker.IssueID, edits []tracker.FieldEdit) ([]jira.FieldInput, error) {
-	s, err := p.site(ctx)
+	named := make([]string, len(edits))
+	for i, e := range edits {
+		named[i] = jiraField(e.Field)
+	}
+	s, err := p.site(ctx, named...)
 	if err != nil {
 		return nil, err
 	}
@@ -56,12 +61,14 @@ func (p *Provider) fieldInputs(ctx context.Context, issue tracker.IssueID, edits
 		default:
 			vals := e.Value.Values()
 			switch {
+			case !list && len(vals) != 1:
+				return nil, invalidf("%s takes one value, not %d", f.Name, len(vals))
+			case form == tracker.EditPick:
+				out[i].Value = jira.IDs(vals...)
 			case list:
 				out[i].Value = jira.Texts(vals...)
-			case len(vals) == 1:
-				out[i].Value = jira.Text(vals[0])
 			default:
-				return nil, invalidf("%s takes one value, not %d", f.Name, len(vals))
+				out[i].Value = jira.Text(vals[0])
 			}
 		}
 	}

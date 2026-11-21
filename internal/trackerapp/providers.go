@@ -67,14 +67,15 @@ func (s *Service) providerLocked(row store.TrackerConnection) (tracker.Provider,
 }
 
 // buildProvider is the provider over c, the client of connection row, and
-// for a Jira connection tempo, its Tempo connection's client or nil.
+// for a Jira connection tempo, its Tempo connection's client or nil. Each
+// of its reads is one credential's view (tracker.OneCredential).
 func buildProvider(row store.TrackerConnection, c *clients, tempo *clients) (tracker.Provider, error) {
 	if row.Kind == store.TrackerKindLinear {
 		p, err := linearprovider.New(c.linear)
 		if err != nil {
 			return nil, err
 		}
-		return p, nil
+		return tracker.OneCredential(p), nil
 	}
 	opts := jiraprovider.Options{Jira: c.jira, Site: row.Site}
 	if tempo != nil {
@@ -84,7 +85,7 @@ func buildProvider(row store.TrackerConnection, c *clients, tempo *clients) (tra
 	if err != nil {
 		return nil, err
 	}
-	return p, nil
+	return tracker.OneCredential(p), nil
 }
 
 // tempoOf reads the Tempo connection that belongs to Jira connection id.

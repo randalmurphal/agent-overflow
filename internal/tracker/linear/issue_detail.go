@@ -3,6 +3,8 @@ package linear
 import (
 	"context"
 	"fmt"
+
+	"agent-overflow/internal/tracker/trackerapi"
 )
 
 // opIssue reads one issue with everything its view shows. Its team's
@@ -54,9 +56,9 @@ type issueDetailsVars struct {
 
 // IssueDetails returns the issues ids name (lowercase UUIDs, at most
 // MaxIssueDetails, each once) as Issue does, in one request and one more
-// for each further page of relations of any of them; an ID that names no
-// issue the user can see is left out, with no error. The order is
-// Linear's.
+// for each further page of relations of any of them, as one
+// trackerapi.Walk; an ID that names no issue the user can see is left
+// out, with no error. The order is Linear's.
 func (c *Client) IssueDetails(ctx context.Context, ids []string) ([]*IssueDetail, error) {
 	if len(ids) == 0 || len(ids) > MaxIssueDetails {
 		return nil, invalid(opIssueDetails.name, "1 to %d issue IDs are required, not %d", MaxIssueDetails, len(ids))
@@ -65,10 +67,15 @@ func (c *Client) IssueDetails(ctx context.Context, ids []string) ([]*IssueDetail
 	if err != nil {
 		return nil, invalid(opIssueDetails.name, "%w", err)
 	}
+	return trackerapi.Walk(ctx, func(ctx context.Context) ([]*IssueDetail, error) { return c.issueDetails(ctx, filter, len(ids)) })
+}
+
+// issueDetails is one walk of IssueDetails, of the n issues filter names.
+func (c *Client) issueDetails(ctx context.Context, filter *issueFilterInput, n int) ([]*IssueDetail, error) {
 	var data struct {
 		Page *connection[wireIssueDetail] `json:"page"`
 	}
-	r, err := c.call(ctx, opIssueDetails, issueDetailsVars{Filter: filter, First: len(ids)}, &data)
+	r, err := c.call(ctx, opIssueDetails, issueDetailsVars{Filter: filter, First: n}, &data)
 	if err != nil {
 		return nil, err
 	}
@@ -76,7 +83,7 @@ func (c *Client) IssueDetails(ctx context.Context, ids []string) ([]*IssueDetail
 		return nil, fmt.Errorf("linear %s: the answer holds no issues", opIssueDetails.name)
 	}
 	if more, err := data.Page.more(opIssueDetails); err != nil || more {
-		return nil, fmt.Errorf("linear %s: %d IDs answered with more than one page: %v", opIssueDetails.name, len(ids), err)
+		return nil, fmt.Errorf("linear %s: %d IDs answered with more than one page: %v", opIssueDetails.name, n, err)
 	}
 	out := make([]*IssueDetail, 0, len(data.Page.Nodes))
 	for i := range data.Page.Nodes {
@@ -122,11 +129,17 @@ type idVars struct {
 // archived or not, with its description, the first pages of what its
 // view shows, its team's states and its relations read to their end:
 // one request, and one more for each further page of relations either
-// way. A missing or invisible issue matches trackerapi.ErrNotFound.
+// way, as one trackerapi.Walk. A missing or invisible issue matches
+// trackerapi.ErrNotFound.
 func (c *Client) Issue(ctx context.Context, idOrIdentifier string) (*IssueDetail, error) {
 	if idOrIdentifier == "" {
 		return nil, invalid("Issue", "an issue ID or identifier is required")
 	}
+	return trackerapi.Walk(ctx, func(ctx context.Context) (*IssueDetail, error) { return c.issue(ctx, idOrIdentifier) })
+}
+
+// issue is one walk of Issue.
+func (c *Client) issue(ctx context.Context, idOrIdentifier string) (*IssueDetail, error) {
 	var data struct {
 		Issue *wireIssueDetail `json:"issue"`
 	}

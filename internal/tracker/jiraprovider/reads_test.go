@@ -82,10 +82,10 @@ func structureSite(t *testing.T) *jiratest.Server {
 	f, _ := newSite(t)
 	f.On("GET", board3Config, jiratest.Reply(200, boardConfigIn(3, "customfield_10016", `{"type":"project","id":"10000","key":"WEB","name":"Web","self":"x"}`)))
 	f.On("GET", "/rest/agile/1.0/board/3/sprint", jiratest.Reply(200, `{"isLast":true,"values":[
-		{"id":5,"name":"Old","state":"closed","startDate":"2026-09-01T09:00:00.000Z","endDate":"2026-09-15T09:00:00.000Z","completeDate":"2026-09-15T10:00:00.000Z"},
-		{"id":6,"name":"Recent","state":"closed","startDate":"2026-10-20T09:00:00.000Z","endDate":"2026-11-03T09:00:00.000Z","completeDate":"2026-11-03T10:00:00.000Z"},
-		{"id":7,"name":"Sprint 1","state":"active","goal":"Ship","startDate":"2026-11-03T09:00:00.000Z","endDate":"2026-11-17T09:00:00.000Z"},
-		{"id":8,"name":"Next","state":"future"}]}`))
+		{"id":5,"name":"Old","state":"closed","originBoardId":3,"startDate":"2026-09-01T09:00:00.000Z","endDate":"2026-09-15T09:00:00.000Z","completeDate":"2026-09-15T10:00:00.000Z"},
+		{"id":6,"name":"Recent","state":"closed","originBoardId":3,"startDate":"2026-10-20T09:00:00.000Z","endDate":"2026-11-03T09:00:00.000Z","completeDate":"2026-11-03T10:00:00.000Z"},
+		{"id":7,"name":"Sprint 1","state":"active","originBoardId":3,"goal":"Ship","startDate":"2026-11-03T09:00:00.000Z","endDate":"2026-11-17T09:00:00.000Z"},
+		{"id":8,"name":"Next","state":"future","originBoardId":9}]}`))
 	f.On("GET", "/rest/api/3/project/10000/statuses", jiratest.Reply(200, `[
 		{"id":"10002","name":"Story","statuses":[
 			{"id":"10000","name":"To Do","statusCategory":{"key":"new"}},
@@ -120,6 +120,10 @@ func TestStructure(t *testing.T) {
 	if s.Sprints[1].Goal != "Ship" || s.Sprints[1].Board != "3" || s.Sprints[0].Completed.IsZero() {
 		t.Errorf("sprint %+v", s.Sprints[1])
 	}
+	// Sprint 8 was made on board 9 and shows on board 3: it keeps its origin.
+	if s.Sprints[2].Board != "9" {
+		t.Errorf("sprint 8 of board %q, want its origin 9", s.Sprints[2].Board)
+	}
 	groups := map[tracker.StatusID]tracker.StatusGroup{}
 	for _, st := range s.Statuses {
 		groups[st.ID] = st.Group
@@ -145,6 +149,32 @@ func TestStructure(t *testing.T) {
 	}
 	if _, err := p.Structure(t.Context(), "board-3", window); !errors.Is(err, tracker.ErrInvalidInput) {
 		t.Errorf("a board that is not an ID: %v", err)
+	}
+}
+
+// TestStructureReadsSprintsAndStatusesTogether proves a scrum board's
+// sprint listing and its project's statuses are read at once, and that
+// either failing fails the read.
+func TestStructureReadsSprintsAndStatusesTogether(t *testing.T) {
+	f := structureSite(t)
+	p := newProvider(t, f, nil)
+	held := heldTogether(2)
+	f.Before(func(r *http.Request) {
+		if r.URL.Path == board3Sprints || r.URL.Path == "/rest/api/3/project/10000/statuses" {
+			held.held()
+		}
+	})
+	window := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	if s, err := p.Structure(t.Context(), "3", window); err != nil || len(s.Sprints) != 3 || len(s.Statuses) != 4 {
+		t.Fatalf("structure %+v, %v", s, err)
+	}
+	if n := held.most(); n != 2 {
+		t.Errorf("%d reads in flight at most, want the sprints and the statuses together", n)
+	}
+	f.Before(nil)
+	f.On("GET", "/rest/api/3/project/10000/statuses", jiratest.Reply(500, `{"errorMessages":["test"]}`))
+	if _, err := p.Structure(t.Context(), "3", window); err == nil {
+		t.Error("a failed status read gave a structure")
 	}
 }
 

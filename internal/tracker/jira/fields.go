@@ -58,6 +58,9 @@ type Catalog struct {
 	byID   map[string]int
 	// firstCustom is the first field of each custom type, by type key.
 	firstCustom map[string]int
+	// absent are IDs a read naming them found missing (FieldsNaming),
+	// carried from the catalog this one replaced.
+	absent map[string]bool
 }
 
 // NewCatalog is a catalog of a copy of fields, for a caller that builds
@@ -123,9 +126,39 @@ func (c *Client) Fields(ctx context.Context) (*Catalog, error) {
 	if err := c.admit(ctx); err != nil {
 		return nil, err
 	}
-	if cat, ok := c.catalog.get(struct{}{}); ok {
+	if cat, ok := c.catalog.get(ctx, struct{}{}); ok {
 		return cat, nil
 	}
+	return c.readFields(ctx, nil, nil)
+}
+
+// FieldsNaming is Fields, read again when the cached catalog lacks one of
+// ids that no read has found missing yet: a field added in Jira after the
+// catalog was read is found by the first read or write that names it, at
+// the cost of one request, and a read that names only fields the catalog
+// holds sends none. An ID still missing after the read again is recorded
+// on the new catalog, so naming it again sends nothing.
+func (c *Client) FieldsNaming(ctx context.Context, ids ...string) (*Catalog, error) {
+	cat, err := c.Fields(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var lacking []string
+	for _, id := range ids {
+		if _, ok := cat.byID[id]; !ok && !cat.absent[id] && !slices.Contains(lacking, id) {
+			lacking = append(lacking, id)
+		}
+	}
+	if len(lacking) == 0 {
+		return cat, nil
+	}
+	return c.readFields(ctx, cat, lacking)
+}
+
+// readFields reads the catalog and caches it. A catalog read again
+// because it lacked the IDs lacking carries prior's absent IDs and
+// records those of lacking it still lacks.
+func (c *Client) readFields(ctx context.Context, prior *Catalog, lacking []string) (*Catalog, error) {
 	epoch := c.catalog.epoch()
 	var fields []Field
 	resp, err := c.call(ctx, trackerapi.Request{Path: apiPath + "field"}, &fields)
@@ -133,6 +166,19 @@ func (c *Client) Fields(ctx context.Context) (*Catalog, error) {
 		return nil, fmt.Errorf("jira: field catalog: %w", err)
 	}
 	cat := newCatalog(fields)
+	if prior != nil {
+		cat.absent = map[string]bool{}
+		for id := range prior.absent {
+			if _, ok := cat.byID[id]; !ok {
+				cat.absent[id] = true
+			}
+		}
+		for _, id := range lacking {
+			if _, ok := cat.byID[id]; !ok {
+				cat.absent[id] = true
+			}
+		}
+	}
 	c.catalog.put(epoch, resp.CredentialMark(), struct{}{}, cat)
 	return cat, nil
 }
@@ -341,7 +387,7 @@ func (c *Client) CreateMeta(ctx context.Context, project, issueTypeID string) (S
 // handing each to take, which returns how many items it held; reset
 // drops what take kept before the walk starts again.
 func createMetaPages(ctx context.Context, c *Client, path string, reset func(), take func(createMetaPage) int) error {
-	_, err := walk(ctx, func(ctx context.Context) (struct{}, error) {
+	_, err := trackerapi.Walk(ctx, func(ctx context.Context) (struct{}, error) {
 		reset()
 		return struct{}{}, createMetaWalk(ctx, c, path, take)
 	})

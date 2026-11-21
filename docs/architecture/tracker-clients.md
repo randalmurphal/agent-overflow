@@ -121,6 +121,19 @@ type Request struct {
   keeps its mark, one that replaces it or follows `ForgetCredential` gives
   a new one, and a request off the base origin has the zero mark. A mark
   holds no secret.
+- **Walks.** One answer is one credential's view. A read that composes it
+  from several requests (a listing's pages, the batches of a bulk read, a
+  document's continuations) runs as one `trackerapi.Walk`: the transport
+  checks each answer's mark against the first one each client gave in the
+  walk, and a cached answer joins with the mark it was drawn under. When
+  one differs, the read starts again from its first request under the
+  current credential, once; a second change fails it with an error
+  matching `trackerapi.ErrCredentialChanged`, which is transient. A read
+  that cannot start again (Tempo's page-at-a-time worklogs, a download)
+  uses `WalkOnce` and fails at the first change. A write inside a walk is
+  refused. `tracker.OneCredential`, which `trackerapp` puts on every
+  provider, makes each provider read one walk; separate provider calls
+  are not, and identity verification governs those.
 - **Where a secret may go.** A credential is sent only to the origin of
   `BaseURL`. A redirect to another origin, and an absolute URL on another
   origin, are requested without it. Answer text in an error
@@ -277,10 +290,17 @@ problem on that record, which stays usable.
   which values are allowed. `Value` builds the API value for a field from
   text: an option by name, a user by name or email, a sprint by name, a
   date, a number, rich text from Markdown. A value that matches several
-  options or none is an error that lists them. A field is named by its
+  options or none is an error that lists them. `IDs` is a value picked
+  from choices a read offered: it matches an option, user, issue or sprint
+  by ID alone, and an ID that names none now is a `MatchError` with
+  `Picked` set, never another choice by name. A field is named by its
   exact name or ID; an exact ID wins over any name, and there are no
   aliases. A required rich text field is not emptied, by Markdown or by a
-  raw document that shows nothing.
+  raw document that shows nothing. The catalog is read once;
+  `FieldsNaming` reads it again when it lacks a field its caller names,
+  once per such field (one still missing is remembered), so an idle
+  client sends nothing and a field added since costs one read. A field renamed since keeps the name
+  the catalog was read with until the credential changes.
 - **Writes.** Create, edit, transition (with the fields its screen takes),
   assign, comment (add, edit, delete, with a service desk comment's
   audience), link and unlink issues, remote links, attach and download.
@@ -311,14 +331,6 @@ problem on that record, which stays usable.
   `CredentialMark` it was drawn under and is handed out only while the
   transport's own mark equals it, so a credential that is read again,
   forgotten or replaced retires them all, whichever call caused it.
-- **Walks.** A read that composes one answer from several requests (a
-  listing's pages, a search to its end, the batches of a bulk read) draws
-  every answer under one credential mark. When a later answer's mark
-  differs, the read starts again from its first request under the current
-  credential, once; a second change fails it with an error matching
-  `trackerapi.ErrCredentialChanged`. Tempo follows the same rule, and its
-  page-at-a-time worklog read, which cannot restart, fails instead. A
-  provider read made of several client reads is not one walk.
 - **Write answers.** A write is applied when its answer is a success form
   the spec documents and names what was written, or is a documented empty
   success such as a 204. One that names it but fails to decode elsewhere
@@ -458,7 +470,10 @@ only each issue's ID and manual order. A comment, relation, cycle or team
 is read by its ID, and users, labels, projects, cycles and teams by a set
 of IDs, so a caller reads the names a result references, never a catalog.
 Label names come nested with each issue; the read by ID covers only the
-labels that list leaves out.
+labels that list leaves out. `TeamBoard` reads a team, its states, the
+cycles a window keeps and the workspace's users in one request, at the
+points of those four reads apart less three requests; only a list longer
+than its first page sends more, continued by that list's own read.
 `IssueHistories` reads the status, cycle, estimate and assignee
 changes of many issues in one request. Linear records none of the changes
 made in an issue's first minutes and can list a change seconds after it is

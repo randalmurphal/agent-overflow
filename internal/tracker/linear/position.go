@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"slices"
 	"time"
+
+	"agent-overflow/internal/tracker/trackerapi"
 )
 
 // A walk in update order never pages by Linear's cursor. The cursor
@@ -118,18 +120,28 @@ func (p Position) filter(o walkOrder, f *issueFilterInput) *issueFilterInput {
 // goes on (the tie's first issue past a full cohort, or a drain whose
 // issues all moved) is followed by the next, at most three in all, so a
 // page that says more follow holds an issue unless every issue it would
-// have held was updated away twice over. A page that breaks the order,
-// delivers an issue p leaves out, or holds none while saying more follow
-// fails.
+// have held was updated away twice over. The reads are one
+// trackerapi.Walk. A page that breaks the order, delivers an issue p
+// leaves out, or holds none while saying more follow fails.
 func readPosition(ctx context.Context, c *Client, o walkOrder, p Position, q IssueQuery) (Page[Issue], Position, error) {
-	var pg Page[Issue]
-	var err error
-	for range 3 {
-		if pg, p, err = readOnce(ctx, c, o, p, q); err != nil || len(pg.Items) > 0 || !pg.HasNextPage {
-			break
+	r, err := trackerapi.Walk(ctx, func(ctx context.Context) (positioned, error) {
+		at := p
+		var pg Page[Issue]
+		var err error
+		for range 3 {
+			if pg, at, err = readOnce(ctx, c, o, at, q); err != nil || len(pg.Items) > 0 || !pg.HasNextPage {
+				break
+			}
 		}
-	}
-	return pg, p, err
+		return positioned{pg, at}, err
+	})
+	return r.page, r.at, err
+}
+
+// positioned is what readPosition returns, as one value for a walk.
+type positioned struct {
+	page Page[Issue]
+	at   Position
 }
 
 // readOnce is one request of readPosition.

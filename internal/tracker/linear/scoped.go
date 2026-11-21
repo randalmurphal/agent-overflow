@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"slices"
 	"time"
+
+	"agent-overflow/internal/tracker/trackerapi"
 )
 
 // Reads of one issue together with a catalog of its team, for a caller
@@ -87,12 +89,27 @@ type firstVars struct {
 }
 
 // IssueMembers returns an issue, by its ID or identifier, with its
-// team's members, read to the end. A missing or invisible issue matches
-// trackerapi.ErrNotFound.
+// team's members, read to the end as one trackerapi.Walk. A missing or
+// invisible issue matches trackerapi.ErrNotFound.
 func (c *Client) IssueMembers(ctx context.Context, idOrIdentifier string) (IssueScope, []User, error) {
 	if idOrIdentifier == "" {
 		return IssueScope{}, nil, invalid(opIssueMembers.name, "an issue ID or identifier is required")
 	}
+	r, err := trackerapi.Walk(ctx, func(ctx context.Context) (scopedMembers, error) {
+		scope, members, err := c.issueMembers(ctx, idOrIdentifier)
+		return scopedMembers{scope, members}, err
+	})
+	return r.scope, r.members, err
+}
+
+// scopedMembers is what IssueMembers returns, as one value for a walk.
+type scopedMembers struct {
+	scope   IssueScope
+	members []User
+}
+
+// issueMembers is one walk of IssueMembers.
+func (c *Client) issueMembers(ctx context.Context, idOrIdentifier string) (IssueScope, []User, error) {
 	var data struct {
 		Issue *scopedIssue[User] `json:"issue"`
 	}

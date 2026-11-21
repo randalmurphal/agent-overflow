@@ -61,42 +61,30 @@ func status(s linear.WorkflowState) tracker.Status {
 	return tracker.Status{ID: tracker.StatusID(s.ID), Name: s.Name, Group: stateTypes[typeRank(s.Type)].group}
 }
 
-// teamStates reads a team's states in board order.
-func (p *Provider) teamStates(ctx context.Context, team string) ([]linear.WorkflowState, error) {
-	states, err := p.c.WorkflowStates(ctx, team)
-	if err != nil {
-		return nil, fmt.Errorf("linearprovider: workflow states of team %s: %w", team, err)
-	}
-	return boardStates(states)
-}
-
 // Structure is the team's board: one column per workflow state in board
 // order, the team's estimate scale, its cycles that are open or that
 // ended or completed at or after window, every workspace user and the
-// team's statuses.
+// team's statuses, read in one request (linear's TeamBoard) unless a
+// list is longer than its first page.
 func (p *Provider) Structure(ctx context.Context, b tracker.BoardID, window time.Time) (tracker.Structure, error) {
-	t, err := p.team(ctx, string(b))
+	if b == "" {
+		return tracker.Structure{}, fmt.Errorf("linearprovider: structure: %w: no board named", tracker.ErrInvalidInput)
+	}
+	read, err := p.c.TeamBoard(ctx, string(b), window)
+	if err != nil {
+		return tracker.Structure{}, fmt.Errorf("linearprovider: structure of team %s: %w", b, err)
+	}
+	states, err := boardStates(read.States)
 	if err != nil {
 		return tracker.Structure{}, err
 	}
-	states, err := p.teamStates(ctx, t.ID)
-	if err != nil {
-		return tracker.Structure{}, err
-	}
-	sprints, err := p.keptCycles(ctx, t.ID, window)
-	if err != nil {
-		return tracker.Structure{}, err
-	}
-	users, err := p.c.Users(ctx, true)
-	if err != nil {
-		return tracker.Structure{}, fmt.Errorf("linearprovider: users: %w", err)
-	}
-	s := tracker.Structure{Board: board(t), Estimate: estimate(t.Estimation), Sprints: sprints}
+	t := read.Team
+	s := tracker.Structure{Board: board(t), Estimate: estimate(t.Estimation), Sprints: sprints(read.Cycles)}
 	for _, st := range states {
 		s.Columns = append(s.Columns, tracker.Column{Name: st.Name, Statuses: []tracker.StatusID{tracker.StatusID(st.ID)}})
 		s.Statuses = append(s.Statuses, status(st))
 	}
-	for _, u := range users {
+	for _, u := range read.Users {
 		s.Users = append(s.Users, user(u))
 	}
 	return s, nil
@@ -110,12 +98,17 @@ func (p *Provider) keptCycles(ctx context.Context, team string, window time.Time
 	if err != nil {
 		return nil, fmt.Errorf("linearprovider: cycles of team %s: %w", team, err)
 	}
+	return sprints(cycles), nil
+}
+
+// sprints are cycles as sprints, oldest first.
+func sprints(cycles []linear.Cycle) []tracker.Sprint {
 	out := make([]tracker.Sprint, 0, len(cycles))
 	for _, c := range cycles {
 		out = append(out, sprint(c))
 	}
 	slices.SortStableFunc(out, func(a, b tracker.Sprint) int { return a.Start.Compare(b.Start) })
-	return out, nil
+	return out
 }
 
 // sprint is a cycle: active, future, or closed once past. Start and End

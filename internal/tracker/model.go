@@ -162,7 +162,12 @@ const (
 // Sprint is a Jira sprint or a Linear cycle. A time is zero when the
 // sprint has not reached it.
 type Sprint struct {
-	ID        SprintID
+	ID SprintID
+	// Board is the board the sprint was made on: Jira's origin board, a
+	// cycle's team. It is the sprint's own, the same whichever board
+	// lists it; a Jira sprint shows on every board that holds its issues,
+	// and the board a structure lists it for is the structure's Board.
+	// Empty when Jira names no origin.
 	Board     BoardID
 	Name      string
 	Goal      string

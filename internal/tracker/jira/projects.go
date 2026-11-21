@@ -269,7 +269,7 @@ func (c *Client) IssueLinkTypes(ctx context.Context) ([]LinkType, error) {
 // and under which credential read Jira answered. A failure returns the
 // items read before it. The pages are one walk (walk.go).
 func offsetPages[T any](ctx context.Context, c *Client, path string, q url.Values, size, limit int) ([]T, bool, pagesSeen, error) {
-	r, err := walk(ctx, func(ctx context.Context) (offsetRead[T], error) {
+	r, err := trackerapi.Walk(ctx, func(ctx context.Context) (offsetRead[T], error) {
 		var r offsetRead[T]
 		var err error
 		r.out, r.complete, r.seen, err = offsetWalk[T](ctx, c, path, q, size, limit)

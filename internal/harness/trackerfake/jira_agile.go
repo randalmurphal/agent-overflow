@@ -138,7 +138,7 @@ func boardSprints(c *jiraCall) answer {
 	values := []any{}
 	for i := range c.s.Sprints {
 		sp := &c.s.Sprints[i]
-		if sp.Board == b.ID && (len(states) == 0 || slices.Contains(states, sp.State)) {
+		if (sp.Board == b.ID || slices.Contains(sp.Shown, b.ID)) && (len(states) == 0 || slices.Contains(states, sp.State)) {
 			values = append(values, c.s.agileSprintJSON(sp))
 		}
 	}

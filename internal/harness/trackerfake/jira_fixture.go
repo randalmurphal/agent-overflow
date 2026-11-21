@@ -174,8 +174,11 @@ type JiraColumn struct {
 
 // JiraSprint is a sprint of a board.
 type JiraSprint struct {
-	ID       int64     `json:"id"`
-	Board    int64     `json:"board"`
+	ID    int64 `json:"id"`
+	Board int64 `json:"board"`
+	// Shown are the other boards that list the sprint, as a board lists
+	// a sprint of issues its filter also holds.
+	Shown    []int64   `json:"shown,omitempty"`
 	Name     string    `json:"name"`
 	State    string    `json:"state"`
 	Goal     string    `json:"goal,omitempty"`

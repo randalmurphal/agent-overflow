@@ -72,6 +72,15 @@ var linearCases = map[string]func(t *testing.T, f *conformanceEnv){
 			len(upcoming) == 1 && upcoming[0].IsNext && len(past) == 1 && past[0].IsPrevious,
 			"cycles %d, active %+v, upcoming %+v, past %+v", len(all), active, upcoming, past)
 	},
+	"TeamBoard": func(t *testing.T, f *conformanceEnv) {
+		all := answered(f.c.TeamBoard(f.ctx, cfTeam, time.Time{})).must(t)
+		kept := answered(f.c.TeamBoard(f.ctx, cfTeam, cfStart.Add(-5*cfDay))).must(t)
+		want(t, all.Team.ID == cfTeam && len(all.States) == 5 && len(all.Cycles) == 3 && len(all.Users) == 3 &&
+			len(kept.Cycles) == 2 && !slices.ContainsFunc(kept.Cycles, func(c Cycle) bool { return c.ID == cfPast }),
+			"board %+v, kept cycles %+v", all, kept.Cycles)
+		_, err := f.c.TeamBoard(f.ctx, "team-gone", time.Time{})
+		want(t, errors.Is(err, trackerapi.ErrNotFound), "an invisible team: %v", err)
+	},
 	"Cycle": func(t *testing.T, f *conformanceEnv) {
 		c := answered(f.c.Cycle(f.ctx, cfUpcoming)).must(t)
 		want(t, c.Number == 3 && c.IsFuture && c.TeamID == cfTeam, "cycle %+v", c)

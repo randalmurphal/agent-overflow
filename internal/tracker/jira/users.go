@@ -93,7 +93,7 @@ func (c *Client) Me(ctx context.Context) (User, error) {
 	if err := c.admit(ctx); err != nil {
 		return User{}, err
 	}
-	if u, ok := c.me.get(struct{}{}); ok {
+	if u, ok := c.me.get(ctx, struct{}{}); ok {
 		return u, nil
 	}
 	return c.Myself(ctx)
@@ -108,7 +108,7 @@ func (c *Client) User(ctx context.Context, accountID string) (User, error) {
 	if accountID == "" {
 		return User{}, notSent("an account ID is required")
 	}
-	if u, ok := c.users.get(accountID); ok {
+	if u, ok := c.users.get(ctx, accountID); ok {
 		return u, nil
 	}
 	epoch := c.users.epoch()
@@ -235,17 +235,24 @@ func (c *Client) FindUser(ctx context.Context, who string) (User, error) {
 	if err := c.admit(ctx); err != nil {
 		return User{}, err
 	}
-	return c.findUser(ctx, who, nil)
+	return c.findUser(ctx, who, false, nil)
 }
 
-// findUser is FindUser, and with scope set also checks that the user can
-// be assigned there, asking about the user by account ID.
-func (c *Client) findUser(ctx context.Context, who string, scope *AssignableQuery) (User, error) {
+// findUser is FindUser, by account ID alone when picked, and with scope
+// set also checks that the user can be assigned there, asking about the
+// user by account ID.
+func (c *Client) findUser(ctx context.Context, who string, picked bool, scope *AssignableQuery) (User, error) {
 	who = strings.TrimSpace(who)
 	if who == "" {
 		return User{}, notSent("a user needs an account ID, name or email")
 	}
-	u, err := c.resolveUser(ctx, who)
+	var u User
+	var err error
+	if picked {
+		u, err = c.userByAccountID(ctx, who)
+	} else {
+		u, err = c.resolveUser(ctx, who)
+	}
 	if err != nil {
 		return User{}, err
 	}
@@ -272,20 +279,43 @@ func (c *Client) findUser(ctx context.Context, who string, scope *AssignableQuer
 // eligible reports a user a value may name: active and not an app.
 func eligible(u User) bool { return u.Active && u.AccountType != "app" }
 
+// userByAccountID finds the user whose account ID is exactly id, as
+// picked: a miss is a *MatchError with Picked set.
+func (c *Client) userByAccountID(ctx context.Context, id string) (User, error) {
+	u, ok, err := c.userWithID(ctx, id)
+	switch {
+	case err != nil:
+		return User{}, err
+	case !ok:
+		return User{}, &MatchError{What: "user", Input: id, Picked: true}
+	}
+	return u, nil
+}
+
+// userWithID finds the user whose account ID is exactly id, from the
+// cache or by Jira's search by account ID.
+func (c *Client) userWithID(ctx context.Context, id string) (User, bool, error) {
+	if u, ok := c.users.get(ctx, id); ok {
+		return u, true, nil
+	}
+	byID, err := c.userSearch(ctx, url.Values{"accountId": {id}}, 0, 1)
+	if err != nil {
+		return User{}, false, fmt.Errorf("jira: find user %q: %w", id, err)
+	}
+	for _, u := range byID {
+		if u.AccountID == id {
+			return u, true, nil
+		}
+	}
+	return User{}, false, nil
+}
+
 // resolveUser finds who by account ID, then by exact name or email.
 func (c *Client) resolveUser(ctx context.Context, who string) (User, error) {
 	if !strings.ContainsFunc(who, unicode.IsSpace) && !strings.Contains(who, "@") {
-		if u, ok := c.users.get(who); ok {
-			return u, nil
-		}
-		byID, err := c.userSearch(ctx, url.Values{"accountId": {who}}, 0, 1)
-		if err != nil {
-			return User{}, fmt.Errorf("jira: find user %q: %w", who, err)
-		}
-		for _, u := range byID {
-			if u.AccountID == who {
-				return u, nil
-			}
+		u, ok, err := c.userWithID(ctx, who)
+		if err != nil || ok {
+			return u, err
 		}
 	}
 	found, complete, err := c.usersMatching(ctx, who)
@@ -318,7 +348,7 @@ func (c *Client) resolveUser(ctx context.Context, who string) (User, error) {
 // because more users may match than it lists. A page that holds no user
 // not seen already fails the walk rather than repeat it.
 func (c *Client) usersMatching(ctx context.Context, query string) ([]User, bool, error) {
-	r, err := walk(ctx, func(ctx context.Context) (matched, error) {
+	r, err := trackerapi.Walk(ctx, func(ctx context.Context) (matched, error) {
 		found, complete, err := c.usersMatchingWalk(ctx, query)
 		return matched{found, complete}, err
 	})

@@ -135,11 +135,41 @@ func keptCyclesX(team string, window string, cycles ...lineartest.Cycle) lineart
 	for _, c := range cycles {
 		nodes = append(nodes, c.JSON())
 	}
+	return lineartest.Exchange{Op: "Cycles", Vars: js(map[string]any{"first": 20, "filter": keptFilter(team, window)}), Body: page(nodes...)}
+}
+
+// keptFilter is the filter of the cycles of team that window keeps.
+func keptFilter(team string, window string) map[string]any {
 	since := map[string]string{"gte": window}
-	vars := js(map[string]any{"first": 20, "filter": map[string]any{"team": map[string]any{"id": map[string]string{"eq": team}},
+	return map[string]any{"team": map[string]any{"id": map[string]string{"eq": team}},
 		"or": []any{map[string]any{"isActive": map[string]bool{"eq": true}}, map[string]any{"isFuture": map[string]bool{"eq": true}},
-			map[string]any{"endsAt": since}, map[string]any{"completedAt": since}}}})
-	return lineartest.Exchange{Op: "Cycles", Vars: vars, Body: page(nodes...)}
+			map[string]any{"endsAt": since}, map[string]any{"completedAt": since}}}
+}
+
+// boardLists are the first pages of TeamBoard's lists, as connection
+// JSON (lineartest.ConnectionJSON).
+type boardLists struct{ states, cycles, users string }
+
+// teamBoardX expects the structure read of team t with the cycles window
+// keeps, answered with lists.
+func teamBoardX(t lineartest.Team, window string, lists boardLists) lineartest.Exchange {
+	return lineartest.Exchange{Op: "TeamBoard", Vars: teamBoardVars(t.ID, window),
+		Body: lineartest.Data(`"team":` + t.JSON() + `,"states":` + lists.states + `,"cycles":` + lists.cycles + `,"users":` + lists.users)}
+}
+
+// teamBoardVars are the variables of the structure read of team with
+// the cycles window keeps.
+func teamBoardVars(team, window string) string {
+	return js(map[string]any{"id": team, "teamId": team, "first": 100, "cycleFirst": 20, "cycles": keptFilter(team, window)})
+}
+
+// nodesJSON is each node's JSON.
+func nodesJSON[N interface{ JSON() string }](nodes ...N) []string {
+	out := make([]string, 0, len(nodes))
+	for _, n := range nodes {
+		out = append(out, n.JSON())
+	}
+	return out
 }
 
 func summaryX(id string, issue lineartest.Issue) lineartest.Exchange {

@@ -21,14 +21,17 @@ func (c Candidate) String() string {
 	return c.Name + " (" + c.ID + ")"
 }
 
-// MatchError is text that names several candidates or none. What says
-// what was looked up ("Priority value", "field", "user"); Candidates are
-// the matches when Ambiguous, and otherwise every value that was allowed
-// or suggested (empty when the tracker offered none).
+// MatchError is text that names several candidates or none, or a picked
+// ID (Picked) that names none: a value picked from a list that changed
+// since. What says what was looked up ("Priority value", "field",
+// "user"); Candidates are the matches when Ambiguous, and otherwise every
+// value that was allowed or suggested (empty when the tracker offered
+// none).
 type MatchError struct {
 	What       string
 	Input      string
 	Ambiguous  bool
+	Picked     bool
 	Candidates []Candidate
 }
 
@@ -45,13 +48,29 @@ func (e *MatchError) Error() string {
 		}
 		names = append(names, c.String())
 	}
-	if e.Ambiguous {
+	switch {
+	case e.Ambiguous:
 		return fmt.Sprintf("jira: %q matches %d of %s: %s", e.Input, len(e.Candidates), e.What, strings.Join(names, ", "))
+	case e.Picked && len(names) == 0:
+		return fmt.Sprintf("jira: no %s has ID %q now; pick it again", e.What, e.Input)
+	case e.Picked:
+		return fmt.Sprintf("jira: no %s has ID %q now; pick again from %s", e.What, e.Input, strings.Join(names, ", "))
 	}
 	if len(names) == 0 {
 		return fmt.Sprintf("jira: no %s matches %q", e.What, e.Input)
 	}
 	return fmt.Sprintf("jira: no %s matches %q; candidates: %s", e.What, e.Input, strings.Join(names, ", "))
+}
+
+// matchID finds the candidate whose ID is exactly id, as picked; no name
+// is compared. A miss is a *MatchError with Picked set, listing cands.
+func matchID(what, id string, cands []Candidate) (Candidate, error) {
+	for _, c := range cands {
+		if c.ID != "" && c.ID == id {
+			return c, nil
+		}
+	}
+	return Candidate{}, &MatchError{What: what, Input: id, Picked: true, Candidates: cands}
 }
 
 // match finds want among cands. An exact ID wins first and is never

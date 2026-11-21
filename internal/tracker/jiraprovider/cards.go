@@ -34,9 +34,12 @@ type site struct {
 	sprint string
 }
 
-// site reads the field catalog, which the jira client caches.
-func (p *Provider) site(ctx context.Context) (site, error) {
-	fields, err := p.jira.Fields(ctx)
+// site reads the field catalog, which the jira client caches, read again
+// when it lacks one of the fields named (jira.Client.FieldsNaming): a
+// read or a write that names a field added since the catalog was read
+// finds it.
+func (p *Provider) site(ctx context.Context, named ...string) (site, error) {
+	fields, err := p.jira.FieldsNaming(ctx, named...)
 	if err != nil {
 		return site{}, fmt.Errorf("jiraprovider: field catalog: %w", err)
 	}

@@ -78,18 +78,16 @@ func TestStructure(t *testing.T) {
 		{ID: "c-now", Number: 3, Name: "Sprint 3", Team: web, StartsAt: "2026-11-16T00:00:00.000Z", EndsAt: "2026-11-30T00:00:00.000Z", Active: true},
 		{ID: "c-next", Number: 4, Team: web, StartsAt: "2026-11-30T00:00:00.000Z", EndsAt: "2026-12-14T00:00:00.000Z", Future: true},
 	}
-	var cycleNodes []string
-	for _, c := range cycles {
-		cycleNodes = append(cycleNodes, c.JSON())
-	}
 	tshirt := lineartest.NewTeam("WEB")
 	tshirt.Scale, tshirt.Extended, tshirt.AllowZero = "tShirt", true, false
+	users := []lineartest.User{{ID: "user-1", Name: "User 1", Active: true}, {ID: "user-2", Name: "User 2"}}
+	const since = "2026-10-01T00:00:00.000Z"
 	p, _ := newProvider(t,
-		teamX(tshirt),
-		statesX(web, states...),
-		lineartest.Exchange{Op: "Cycles", Vars: keptCyclesX(web, "2026-10-01T00:00:00.000Z").Vars, Body: page(cycleNodes...)},
-		lineartest.Exchange{Op: "Users", Vars: `{"first":100,"includeDisabled":true}`, Body: page(
-			lineartest.User{ID: "user-1", Name: "User 1", Active: true}.JSON(), lineartest.User{ID: "user-2", Name: "User 2"}.JSON())},
+		teamBoardX(tshirt, since, boardLists{
+			states: lineartest.ConnectionJSON(nodesJSON(states...), false, ""),
+			cycles: lineartest.ConnectionJSON(nodesJSON(cycles...), false, ""),
+			users:  lineartest.ConnectionJSON(nodesJSON(users...), false, ""),
+		}),
 	)
 	s, err := p.Structure(context.Background(), web, window)
 	if err != nil {
@@ -145,17 +143,25 @@ func TestStructure(t *testing.T) {
 // count in a guessed group; an invisible team is not found.
 func TestStructureRefusesUnknownState(t *testing.T) {
 	t.Parallel()
+	const since = "2026-10-01T00:00:00.000Z"
+	window := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	none := lineartest.ConnectionJSON(nil, false, "")
 	p, _ := newProvider(t,
-		teamX(lineartest.NewTeam("WEB")),
-		statesX(web, lineartest.State{ID: "s-x", Name: "X", Type: "paused", Team: web}),
-		lineartest.Exchange{Op: "Team", Vars: `{"id":"team-gone"}`,
+		teamBoardX(lineartest.NewTeam("WEB"), since, boardLists{
+			states: lineartest.ConnectionJSON(nodesJSON(lineartest.State{ID: "s-x", Name: "X", Type: "paused", Team: web}), false, ""),
+			cycles: none, users: none,
+		}),
+		lineartest.Exchange{Op: "TeamBoard", Vars: teamBoardVars("team-gone", since),
 			Body: `{"data":null,"errors":[{"message":"Entity not found: Team","path":["team"],"extensions":{"code":"INPUT_ERROR","userError":true}}]}`},
 	)
-	if _, err := p.Structure(context.Background(), web, time.Time{}); err == nil || !strings.Contains(err.Error(), "unknown type") {
+	if _, err := p.Structure(context.Background(), web, window); err == nil || !strings.Contains(err.Error(), "unknown type") {
 		t.Errorf("unknown state type: %v", err)
 	}
-	if _, err := p.Structure(context.Background(), "team-gone", time.Time{}); !errors.Is(err, trackerapi.ErrNotFound) {
+	if _, err := p.Structure(context.Background(), "team-gone", window); !errors.Is(err, trackerapi.ErrNotFound) {
 		t.Errorf("invisible team: %v", err)
+	}
+	if _, err := p.Structure(context.Background(), "", window); !errors.Is(err, tracker.ErrInvalidInput) {
+		t.Errorf("no team: %v", err)
 	}
 }
 

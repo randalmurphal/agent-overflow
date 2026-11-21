@@ -62,7 +62,7 @@ func TestForgetUsersBeatsAReadInFlight(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := c.users.get("acc-user1"); ok {
+	if _, ok := c.users.get(t.Context(), "acc-user1"); ok {
 		t.Error("a read older than ForgetUsers stored its user")
 	}
 }
@@ -74,38 +74,38 @@ func TestCacheIsBoundedAndFenced(t *testing.T) {
 	for _, id := range []string{"a", "b", "c"} {
 		uc.put(uc.epoch(), mark, id, User{AccountID: id})
 	}
-	if _, ok := uc.get("a"); ok {
+	if _, ok := uc.get(t.Context(), "a"); ok {
 		t.Error("the oldest user was kept past the bound")
 	}
-	uc.get("b")
+	uc.get(t.Context(), "b")
 	uc.put(uc.epoch(), mark, "d", User{AccountID: "d"})
-	if _, ok := uc.get("b"); !ok {
+	if _, ok := uc.get(t.Context(), "b"); !ok {
 		t.Error("a recently used user was evicted")
 	}
-	if _, ok := uc.get("c"); ok {
+	if _, ok := uc.get(t.Context(), "c"); ok {
 		t.Error("the least recently used user was kept")
 	}
 	old := uc.epoch()
 	uc.clear()
 	uc.put(old, mark, "e", User{AccountID: "e"})
-	if _, ok := uc.get("e"); ok {
+	if _, ok := uc.get(t.Context(), "e"); ok {
 		t.Error("a store from before the clear was kept")
 	}
 	// A value drawn under no credential, or under a read the transport no
 	// longer holds, is not handed out.
 	uc.put(uc.epoch(), trackerapi.CredentialMark{}, "f", User{AccountID: "f"})
-	if _, ok := uc.get("f"); ok {
+	if _, ok := uc.get(t.Context(), "f"); ok {
 		t.Error("a value of no credential read was kept")
 	}
 	other := newCache[string, User](2, nil, signedIn(t, nil).api.CredentialMark)
 	other.put(other.epoch(), other.now(), "h", User{AccountID: "h"})
 	other.put(other.epoch(), other.now(), "i", User{AccountID: "i"})
 	other.put(other.epoch(), mark, "g", User{AccountID: "g"})
-	if _, ok := other.get("g"); ok {
+	if _, ok := other.get(t.Context(), "g"); ok {
 		t.Error("a value of another client's credential read was kept")
 	}
 	// Nor is it stored, so it evicts nothing live.
-	if _, ok := other.get("h"); !ok {
+	if _, ok := other.get(t.Context(), "h"); !ok {
 		t.Error("a value of another credential read evicted a live one")
 	}
 }

@@ -137,3 +137,34 @@ func TestDownloadChecksTheIssue(t *testing.T) {
 		t.Error("another issue's attachment was downloaded")
 	}
 }
+
+// TestLookupReadsLeftKeysTogether proves the keys the bulk fetch leaves
+// out are read alone detailsAtOnce at a time, and found in key order.
+func TestLookupReadsLeftKeysTogether(t *testing.T) {
+	f, p := newSite(t)
+	f.On("POST", bulkFetchPath, jiratest.Reply(200, `{"issues":[],"issueErrors":[]}`))
+	held := heldTogether(detailsAtOnce)
+	var keys, want []string
+	for i := range 2 * detailsAtOnce {
+		old, now := fmt.Sprintf("OLD-%d", i+1), fmt.Sprintf("WEB-%d", i+1)
+		body := mustJSON(issue(fmt.Sprint(10001+i), now, updatedAt, nil))
+		f.On("GET", "/rest/api/3/issue/"+old, held.hold(func(w http.ResponseWriter, r *http.Request) {
+			jiratest.Reply(200, body)(w, r, nil)
+		}))
+		keys, want = append(keys, old), append(want, old+"="+now)
+	}
+	got, err := p.Lookup(t.Context(), keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found []string
+	for _, m := range got.Found {
+		found = append(found, m.Key+"="+m.Card.Key)
+	}
+	if !slices.Equal(found, want) || len(got.Unmatched) != 0 {
+		t.Errorf("found %v, unmatched %v", found, got.Unmatched)
+	}
+	if n := held.most(); n != detailsAtOnce {
+		t.Errorf("%d reads alone in flight at most, want %d", n, detailsAtOnce)
+	}
+}

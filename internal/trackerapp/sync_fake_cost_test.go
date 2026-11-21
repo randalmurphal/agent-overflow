@@ -256,7 +256,7 @@ func TestFakeLinearRequestCosts(t *testing.T) {
 		applied(t, "edit", s.provider(conn.ID).Edit(t.Context(), tracker.EditInput{Issue: tracker.IssueID(lid(61)), Fields: []tracker.FieldEdit{{Field: tracker.FieldTitle, Value: tracker.TypedValues("Add search, renamed")}}}))
 	}
 	s.costs(t, conn, scope, edit, tracker.IssueID(lid(61)), map[string]int{
-		"structure": 5, "structure again": 4, "reconcile missing": 3, "delta first": 1, "history batch": 1,
+		"structure": 2, "structure again": 1, "reconcile missing": 3, "delta first": 1, "history batch": 1,
 		"delta none": 1, "reconcile held": 2, "delta one": 1, "history one": 1,
 	})
 	// Linear's update time does not move with a comment: every open reads
@@ -434,6 +434,6 @@ func TestFakeLinearLargeBoardCosts(t *testing.T) {
 		edited = append(edited, tracker.IssueID(lid(1000+i*7)))
 	}
 	s.largeCosts(t, Scope{Connection: conn.ID, Board: tracker.BoardID(lid(10))}, func() { s.editTitles(t, conn.ID, edited) }, map[string][2]int{
-		"first sync": {10, 8}, "history backfill": {4, 6}, "idle tick": {1, 2}, "10 changed rows": {1, 3}, "board open": {0, 3},
+		"first sync": {7, 8}, "history backfill": {4, 6}, "idle tick": {1, 2}, "10 changed rows": {1, 3}, "board open": {0, 3},
 	})
 }

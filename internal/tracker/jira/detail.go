@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"slices"
 	"strconv"
+
+	"agent-overflow/internal/tracker/trackerapi"
 )
 
 // IssueDetail is one issue read whole: every field but its comments and
@@ -67,7 +69,7 @@ func (c *Client) IssueDetail(ctx context.Context, ref string) (IssueDetail, erro
 	if err != nil {
 		return IssueDetail{}, err
 	}
-	return walk(ctx, func(ctx context.Context) (IssueDetail, error) { return c.issueDetail(ctx, ref, path) })
+	return trackerapi.Walk(ctx, func(ctx context.Context) (IssueDetail, error) { return c.issueDetail(ctx, ref, path) })
 }
 
 // issueDetail is one walk of IssueDetail: the issue and the older

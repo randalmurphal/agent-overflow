@@ -60,6 +60,10 @@ a field that is empty for the other.
   pane and the mirror compare keys and never interpret them. The estimate
   is a number with the board's unit: points, time or none. A board with no
   estimate counts issues.
+- **A sprint's board is the one it was made on**: Jira's origin board, a
+  cycle's team, the same on every board that lists it. A Jira sprint
+  shows on each board whose filter holds its issues, and the board a
+  structure lists it for is that structure's own.
 - **An issue as a card** carries what a board or backlog row draws and
   does not depend on the board: type, key, title, status, assignee,
   priority, labels, parent, the sprints its read names and its created,
@@ -75,7 +79,9 @@ a field that is empty for the other.
   date-time, user, option, a list of one of these, or a value the app can
   show and not edit. An edit names an option or user by ID when it was
   picked from a list and by text when a person or an agent typed it; the
-  provider resolves text and reports a value it cannot match.
+  provider resolves text and reports a value it cannot match. A picked ID
+  matches by ID alone: one that names nothing now is refused as stale
+  (`ReasonStale`), never read as a name.
 - **Capabilities** say what a connection supports beyond what every
   tracker does: issue types, custom fields, moves that take fields, sprint
   writes and attachments, and whether an issue's update time moves with
@@ -86,7 +92,10 @@ a field that is empty for the other.
 
 A `Provider` is one connection's tracker. Its calls take neutral inputs and
 return neutral values. A read fails with the transport's typed errors
-unchanged. The interface in `internal/tracker/provider.go` is the contract;
+unchanged. Each read is one credential's view: `trackerapp` wraps every
+provider in `tracker.OneCredential`, so a read whose credential changes
+part way starts again once, then fails as `ErrCredentialChanged`
+([walks](tracker-clients.md#transport)). The interface in `internal/tracker/provider.go` is the contract;
 this is its shape.
 
 - Identity: who the credential belongs to.
@@ -621,7 +630,7 @@ Counts are exact. Times are one development machine's (Intel Core Ultra 9
 | Ticks | 25 | 100 |
 | Provider calls (scripted) | 172 | 682 |
 | Requests, Jira through `trackerfake` | 239 | 944 |
-| Requests, Linear through `trackerfake` | 169 | 618 |
+| Requests, Linear through `trackerfake` | 166 | 615 |
 | Write statements, in transactions | 740 in 278 | 2,915 in 1,103 |
 | Allocated, peak heap | 91 MB, 9.6 to 9.8 MB | 363 MB, 29.1 to 29.5 MB |
 | Time (scripted) | 1.17 to 1.19 s | 4.69 to 4.73 s |

@@ -161,7 +161,7 @@ func (c *Client) ListAllIssues(ctx context.Context, q ListQuery, limit int) (Sea
 func (c *Client) listAll(ctx context.Context, q ListQuery, limit int) (SearchResult, error) {
 	size := pageSize(q.MaxResults, 100, maxSearchPage)
 	first := q.PageToken
-	return walk(ctx, func(ctx context.Context) (SearchResult, error) {
+	return trackerapi.Walk(ctx, func(ctx context.Context) (SearchResult, error) {
 		return tokenPages("issue list", first, limit, func(token string, room int) (SearchPage, error) {
 			q.PageToken, q.MaxResults = token, size
 			if room > 0 {

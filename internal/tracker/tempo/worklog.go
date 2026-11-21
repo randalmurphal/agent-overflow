@@ -199,7 +199,7 @@ func (c *Client) WorklogPages(ctx context.Context, q WorklogQuery, fn func([]Wor
 // since a part of the range would read as all of it; WorklogPages hands
 // over each page as it is read.
 func (c *Client) Worklogs(ctx context.Context, q WorklogQuery) ([]Worklog, error) {
-	out, err := walk(ctx, func(ctx context.Context) ([]Worklog, error) {
+	out, err := trackerapi.Walk(ctx, func(ctx context.Context) ([]Worklog, error) {
 		var out []Worklog
 		err := c.WorklogPages(ctx, q, func(page []Worklog) error {
 			out = append(out, page...)

@@ -108,8 +108,11 @@ func refusal(err error) tracker.Refusal {
 	}
 	if e, ok := errors.AsType[*jira.MatchError](err); ok {
 		r.Reason, r.Message = tracker.ReasonNoMatch, e.Error()
-		if e.Ambiguous {
+		switch {
+		case e.Ambiguous:
 			r.Reason = tracker.ReasonAmbiguous
+		case e.Picked:
+			r.Reason = tracker.ReasonStale
 		}
 		for _, c := range e.Candidates {
 			r.Candidates = append(r.Candidates, tracker.Choice{ID: c.ID, Name: c.Name})

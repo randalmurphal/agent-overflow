@@ -168,7 +168,7 @@ func (c *Client) BulkChangelogs(ctx context.Context, q ChangelogQuery) (BulkChan
 	if err := c.admit(ctx); err != nil {
 		return BulkChangelog{ByIssue: map[string][]ChangeEntry{}}, err
 	}
-	return walk(ctx, func(ctx context.Context) (BulkChangelog, error) { return c.bulkChangelogs(ctx, q) })
+	return trackerapi.Walk(ctx, func(ctx context.Context) (BulkChangelog, error) { return c.bulkChangelogs(ctx, q) })
 }
 
 // bulkChangelogs is one walk of BulkChangelogs.

@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 
+	"golang.org/x/sync/errgroup"
+
 	"agent-overflow/internal/tracker"
 	"agent-overflow/internal/tracker/jira"
 	"agent-overflow/internal/tracker/trackerapi"
@@ -17,9 +19,10 @@ import (
 // request's capacity, see jira.Client.BulkFetch). The bulk fetch finds an
 // issue by an old key and by a key in another case (documented) and
 // returns it under its current key, so an issue returned under a key
-// asked, case ignored, is that key's. Every key left over is read alone:
-// it is an old key of an issue, which the read answers with the issue, or
-// names nothing, which the read's 404 says (measured, the bulk fetch
+// asked, case ignored, is that key's. Every key left over is read alone,
+// detailsAtOnce of those reads in flight together: it is an old key of an
+// issue, which the read answers with the issue, or names nothing, which
+// the read's 404 says (measured, the bulk fetch
 // leaves such a key out with no issueErrors entry, so only the read alone
 // tells the two apart). The jira client takes an answer that leaves
 // issues out, or a 404, as the user's only when it names the account it
@@ -77,18 +80,40 @@ func (p *Provider) lookupKeys(ctx context.Context, s site, keys []string, found 
 			return err
 		}
 	}
+	var left []string
 	for _, k := range keys {
-		if _, ok := found[k]; ok {
+		if _, ok := found[k]; !ok {
+			left = append(left, k)
+		}
+	}
+	// The keys left are read alone, detailsAtOnce at a time; their cards
+	// are made in key order once every read is in, the first to fail ends
+	// the others and is the error.
+	alone := make([]*jira.Issue, len(left))
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(detailsAtOnce)
+	for i, k := range left {
+		g.Go(func() error {
+			is, err := p.jira.GetIssue(gctx, k, s.cardFields()...)
+			if errors.Is(err, trackerapi.ErrNotFound) {
+				return nil
+			}
+			if err != nil {
+				return fmt.Errorf("jiraprovider: look up %s: %w", k, err)
+			}
+			alone[i] = is
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return err
+	}
+	for i, is := range alone {
+		if is == nil {
 			continue
 		}
-		is, err := p.jira.GetIssue(ctx, k, s.cardFields()...)
-		if errors.Is(err, trackerapi.ErrNotFound) {
-			continue
-		}
-		if err != nil {
-			return fmt.Errorf("jiraprovider: look up %s: %w", k, err)
-		}
-		if found[k], err = s.cardOf(is, cat); err != nil {
+		var err error
+		if found[left[i]], err = s.cardOf(is, cat); err != nil {
 			return err
 		}
 	}

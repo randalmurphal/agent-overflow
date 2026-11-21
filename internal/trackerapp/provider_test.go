@@ -25,8 +25,29 @@ func (f *fixture) provider(id string) tracker.Provider {
 	return p
 }
 
-// timeKind names the time tracker a Jira provider logs through.
-func timeKind(p tracker.Provider) string { return fmt.Sprintf("%T", p.Time()) }
+// timeKind names the time tracker a Jira provider logs through, inside
+// the tracker.OneCredential wrapping that holds it.
+func timeKind(p tracker.Provider) string {
+	held := fmt.Sprintf("%#v", p.Time())
+	for _, kind := range []string{"*jiraprovider.jiraTime", "*jiraprovider.tempoTime"} {
+		if strings.Contains(held, kind) {
+			return kind
+		}
+	}
+	return held
+}
+
+// TestProvidersReadUnderOneCredential: the provider of each kind of
+// connection is wrapped so each of its reads is one credential's view.
+func TestProvidersReadUnderOneCredential(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	for _, id := range []string{f.addJira().ID, f.addLinear().ID} {
+		if got := fmt.Sprintf("%T", f.provider(id)); got != "tracker.oneCredential" {
+			t.Errorf("the provider of %s is %s, not one that reads under one credential", id, got)
+		}
+	}
+}
 
 func TestProviderFollowsTheTempoConnection(t *testing.T) {
 	t.Parallel()

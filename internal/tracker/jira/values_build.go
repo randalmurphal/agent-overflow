@@ -2,12 +2,15 @@ package jira
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
 	"strings"
 	"time"
 	"unicode"
+
+	"agent-overflow/internal/tracker/trackerapi"
 )
 
 // The builders of rules, one per kind. Each takes texts already checked
@@ -50,7 +53,7 @@ type accountRef struct {
 }
 
 func buildUser(ctx context.Context, b *builder, f FieldMeta, in Input, v *Value) (any, error) {
-	u, err := b.user(ctx, f, in.texts[0])
+	u, err := b.user(ctx, f, in.texts[0], in.kind == inputIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -62,7 +65,7 @@ func buildUsers(ctx context.Context, b *builder, f FieldMeta, in Input, v *Value
 	out := make([]accountRef, 0, len(in.texts))
 	names := make([]string, 0, len(in.texts))
 	for _, who := range in.texts {
-		u, err := b.user(ctx, f, who)
+		u, err := b.user(ctx, f, who, in.kind == inputIDs)
 		if err != nil {
 			return nil, err
 		}
@@ -73,18 +76,19 @@ func buildUsers(ctx context.Context, b *builder, f FieldMeta, in Input, v *Value
 	return out, nil
 }
 
-// user resolves who for f, however it is named, to an active user who is
-// not an app; for the assignee, one Jira says can be assigned the issue
-// (or in the project, when creating).
-func (b *builder) user(ctx context.Context, f FieldMeta, who string) (User, error) {
+// user resolves who for f, however it is named, or by account ID alone
+// when picked, to an active user who is not an app; for the assignee,
+// one Jira says can be assigned the issue (or in the project, when
+// creating).
+func (b *builder) user(ctx context.Context, f FieldMeta, who string, picked bool) (User, error) {
 	if f.Schema.System != "assignee" || (b.opts.Issue == "" && b.opts.Project == "") {
-		return b.c.findUser(ctx, who, nil)
+		return b.c.findUser(ctx, who, picked, nil)
 	}
 	q := AssignableQuery{Issue: b.opts.Issue}
 	if q.Issue == "" {
 		q.Project = b.opts.Project
 	}
-	return b.c.findUser(ctx, who, &q)
+	return b.c.findUser(ctx, who, picked, &q)
 }
 
 func buildLabels(ctx context.Context, b *builder, f FieldMeta, in Input, v *Value) (any, error) {
@@ -116,13 +120,22 @@ func allowedCandidates(vals []AllowedValue) []Candidate {
 	return out
 }
 
-// pick finds text among f's allowed values.
-func pick(f FieldMeta, vals []AllowedValue, text string) (Candidate, error) {
-	return match(f.Name+" value", strings.TrimSpace(text), allowedCandidates(vals))
+// pick finds text among f's allowed values: by ID alone when in is IDs,
+// by ID or name otherwise.
+func pick(f FieldMeta, vals []AllowedValue, in Input, text string) (Candidate, error) {
+	return choose(in, f.Name+" value", strings.TrimSpace(text), allowedCandidates(vals))
+}
+
+// choose is matchID for IDs and match for text.
+func choose(in Input, what, want string, cands []Candidate) (Candidate, error) {
+	if in.kind == inputIDs {
+		return matchID(what, want, cands)
+	}
+	return match(what, want, cands)
 }
 
 func buildOption(_ context.Context, _ *builder, f FieldMeta, in Input, v *Value) (any, error) {
-	hit, err := pick(f, f.Allowed, in.texts[0])
+	hit, err := pick(f, f.Allowed, in, in.texts[0])
 	if err != nil {
 		return nil, err
 	}
@@ -134,7 +147,7 @@ func buildOptions(_ context.Context, _ *builder, f FieldMeta, in Input, v *Value
 	out := make([]idRef, 0, len(in.texts))
 	names := make([]string, 0, len(in.texts))
 	for _, t := range in.texts {
-		hit, err := pick(f, f.Allowed, t)
+		hit, err := pick(f, f.Allowed, in, t)
 		if err != nil {
 			return nil, err
 		}
@@ -148,7 +161,7 @@ func buildOptions(_ context.Context, _ *builder, f FieldMeta, in Input, v *Value
 // buildCascade takes a parent option, and optionally a child option of
 // it as the second text.
 func buildCascade(_ context.Context, _ *builder, f FieldMeta, in Input, v *Value) (any, error) {
-	parent, err := pick(f, f.Allowed, in.texts[0])
+	parent, err := pick(f, f.Allowed, in, in.texts[0])
 	if err != nil {
 		return nil, err
 	}
@@ -162,7 +175,7 @@ func buildCascade(_ context.Context, _ *builder, f FieldMeta, in Input, v *Value
 			children = a.Children
 		}
 	}
-	child, err := match(f.Name+" value under "+parent.Name, strings.TrimSpace(in.texts[1]), allowedCandidates(children))
+	child, err := choose(in, f.Name+" value under "+parent.Name, strings.TrimSpace(in.texts[1]), allowedCandidates(children))
 	if err != nil {
 		return nil, err
 	}
@@ -188,7 +201,7 @@ func buildNamed(ctx context.Context, b *builder, f FieldMeta, in Input, v *Value
 			allowed = append(allowed, AllowedValue{ID: p.ID, Name: p.Name})
 		}
 	}
-	hit, err := pick(f, allowed, in.texts[0])
+	hit, err := pick(f, allowed, in, in.texts[0])
 	if err != nil {
 		return nil, err
 	}
@@ -197,22 +210,26 @@ func buildNamed(ctx context.Context, b *builder, f FieldMeta, in Input, v *Value
 }
 
 // buildNamedList picks components or versions. When the metadata lists
-// no allowed values, the names go unchecked for Jira to resolve, and the
-// value says so.
+// no allowed values, the names, or the IDs when picked, go unchecked for
+// Jira to resolve, and the value says so.
 func buildNamedList(_ context.Context, _ *builder, f FieldMeta, in Input, v *Value) (any, error) {
 	v.Display = strings.Join(in.texts, ", ")
 	if f.Allowed == nil {
-		v.Warnings = append(v.Warnings, f.Name+": the metadata lists no values, so Jira checks the names")
+		key, what := "name", "names"
+		if in.kind == inputIDs {
+			key, what = "id", "IDs"
+		}
+		v.Warnings = append(v.Warnings, f.Name+": the metadata lists no values, so Jira checks the "+what)
 		out := make([]map[string]string, len(in.texts))
 		for i, t := range in.texts {
-			out[i] = map[string]string{"name": strings.TrimSpace(t)}
+			out[i] = map[string]string{key: strings.TrimSpace(t)}
 		}
 		return out, nil
 	}
 	out := make([]idRef, 0, len(in.texts))
 	names := make([]string, 0, len(in.texts))
 	for _, t := range in.texts {
-		hit, err := pick(f, f.Allowed, t)
+		hit, err := pick(f, f.Allowed, in, t)
 		if err != nil {
 			return nil, err
 		}
@@ -223,16 +240,24 @@ func buildNamedList(_ context.Context, _ *builder, f FieldMeta, in Input, v *Val
 	return out, nil
 }
 
-// buildIssue reads the issue named by key or ID, so a typo fails before
-// anything is sent and the display names it, and sends the ID Jira
-// returned, which stays the issue's when it moves project and its key
-// changes.
+// buildIssue reads the issue named by key or ID, or by its numeric ID
+// alone when picked, so a typo fails before anything is sent and the
+// display names it, and sends the ID Jira returned, which stays the
+// issue's when it moves project and its key changes. A picked issue Jira
+// does not find is a *MatchError with Picked set.
 func buildIssue(ctx context.Context, b *builder, f FieldMeta, in Input, v *Value) (any, error) {
 	ref := strings.TrimSpace(in.texts[0])
+	picked := in.kind == inputIDs
+	if picked && !isNumeric(ref) {
+		return nil, &MatchError{What: f.Name + " issue", Input: ref, Picked: true}
+	}
 	if err := checkIssue(ref); err != nil {
 		return nil, err
 	}
 	is, err := b.c.GetIssue(ctx, ref, "summary")
+	if picked && errors.Is(err, trackerapi.ErrNotFound) {
+		return nil, &MatchError{What: f.Name + " issue", Input: ref, Picked: true}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("jira: %s: %w", f.Name, err)
 	}
@@ -244,11 +269,14 @@ func buildIssue(ctx context.Context, b *builder, f FieldMeta, in Input, v *Value
 }
 
 // buildSprint takes a sprint's numeric ID, or the name of an open sprint
-// on the boards of the issue's project (sprintByName).
+// on the boards of the issue's project (sprintByName) unless picked.
 func buildSprint(ctx context.Context, b *builder, f FieldMeta, in Input, v *Value) (any, error) {
 	text := strings.TrimSpace(in.texts[0])
 	id, err := strconv.ParseInt(text, 10, 64)
-	if err != nil || id <= 0 {
+	switch {
+	case (err != nil || id <= 0) && in.kind == inputIDs:
+		return nil, &MatchError{What: f.Name + " sprint", Input: text, Picked: true}
+	case err != nil || id <= 0:
 		return b.sprintByName(ctx, f, text, v)
 	}
 	v.Display = "sprint " + text
