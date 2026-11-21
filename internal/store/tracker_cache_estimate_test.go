@@ -50,7 +50,8 @@ func mirrorCursor(t *testing.T, s *Store, root int64) string {
 // unit shows and makes its issue history-due, since estimate changes are
 // read per field. A page of a walk captured before the reset, or read no
 // later than it, stores its rows and not its cursor. The transitions:
-// points to time, time back to points, and a board that loses its
+// points to time, time back to points, points of another field (a Jira
+// board that switches story point fields), and a board that loses its
 // estimate and gains one.
 func TestMirrorEstimateChangeHidesRowsReadBefore(t *testing.T) {
 	t.Parallel()
@@ -64,20 +65,22 @@ func TestMirrorEstimateChangeHidesRowsReadBefore(t *testing.T) {
 	if got := mirrorEstimates(t, s, root); got != "row 5 issue row 5 total 5" {
 		t.Fatalf("before = %s", got)
 	}
-	structure := func(unit int, readAt int64) MirrorStructure {
+	structure := func(unit int, field string, readAt int64) MirrorStructure {
 		st := webStructure()
-		st.Board.EstimateUnit, st.ReadAt = unit, readAt
+		st.Board.EstimateUnit, st.Board.EstimateField, st.ReadAt = unit, field, readAt
 		return st
 	}
 	read := int64(10)
 	for _, step := range []struct {
-		name string
-		unit int
-	}{{"points to time", MirrorEstimateTime}, {"time back to points", MirrorEstimatePoints},
-		{"no estimate", MirrorEstimateNone}, {"an estimate again", MirrorEstimatePoints}} {
+		name  string
+		unit  int
+		field string
+	}{{"points to time", MirrorEstimateTime, "timeoriginalestimate"}, {"time back to points", MirrorEstimatePoints, ""},
+		{"points of another field", MirrorEstimatePoints, "customfield_10026"},
+		{"no estimate", MirrorEstimateNone, ""}, {"an estimate again", MirrorEstimatePoints, ""}} {
 		read += 10
 		captured := currentPage(s, root, MirrorRowPage{BoardID: "10"})
-		got, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, structure(step.unit, read)))
+		got, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, structure(step.unit, step.field, read)))
 		if err != nil || got != (MirrorStructureWrite{MirrorWrite: MirrorWrite{Changed: true}, EstimateResetAt: read}) {
 			t.Fatalf("%s: structure = %+v, %v; want changed and reset at %d", step.name, got, err, read)
 		}
@@ -139,7 +142,7 @@ func TestMirrorEstimateChangeHidesRowsReadBefore(t *testing.T) {
 	// The same definition read again resets nothing.
 	read += 10
 	reset := currentEstimateReset(s, root, "10")
-	if got, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, structure(MirrorEstimatePoints, read))); err != nil ||
+	if got, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, structure(MirrorEstimatePoints, "", read))); err != nil ||
 		got != (MirrorStructureWrite{EstimateResetAt: reset}) {
 		t.Errorf("an unchanged estimate = %+v, %v; want unchanged, reset still %d", got, err, reset)
 	}

@@ -27,8 +27,8 @@ const (
 // cursor it started from is not written: the read the tick records admits
 // that cursor. Each page names the estimate definition the walk began
 // under; a page whose cursor the store refuses, because the definition
-// changed since, ends the unit with More, and the next tick walks from the
-// store's state.
+// changed since or a removal refused a new row of it, ends the unit with
+// More, and the next tick walks from the store's state.
 func (r *run) delta(board tracker.BoardID) (UnitResult, error) {
 	var out UnitResult
 	ch, err := r.boardHeld(board)

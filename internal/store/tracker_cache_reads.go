@@ -62,9 +62,9 @@ func (s *Store) GetMirrorBoard(rootID int64, boardID string) (st MirrorStructure
 	st, err = mirrorReadSnapshot(s, label, func(tx sqlQueryer) (MirrorStructure, error) {
 		var out MirrorStructure
 		b := &out.Board
-		err := tx.QueryRow(`SELECT b.board_id, b.project_id, b.name, b.plans_sprints, b.estimate_unit, b.data, b.lifetime FROM tracker_cache_boards b
-			WHERE b.root_id = ?1 AND b.board_id = ?2 AND `+mirrorBoardShown("?1", "?2"), rootID, boardID).Scan(
-			&b.ID, &b.ProjectID, &b.Name, &b.PlansSprints, &b.EstimateUnit, &b.Data, &out.Lifetime)
+		err := tx.QueryRow(`SELECT b.board_id, b.project_id, b.name, b.plans_sprints, b.estimate_unit, b.estimate_field, b.data, b.lifetime
+			FROM tracker_cache_boards b WHERE b.root_id = ?1 AND b.board_id = ?2 AND `+mirrorBoardShown("?1", "?2"), rootID, boardID).Scan(
+			&b.ID, &b.ProjectID, &b.Name, &b.PlansSprints, &b.EstimateUnit, &b.EstimateField, &b.Data, &out.Lifetime)
 		if errors.Is(err, sql.ErrNoRows) {
 			return MirrorStructure{}, nil
 		}

@@ -117,17 +117,18 @@ func (p *Provider) boardStatuses(ctx context.Context, cfg jira.BoardConfig) ([]t
 	return cat.out.Statuses, nil
 }
 
-// estimateOf is a board's estimate: original time in seconds, points in
-// any other field, or none for a board that estimates by issue count or
-// by nothing (a kanban board, whose estimation Jira does not give).
+// estimateOf is a board's estimate, of its estimation field: original
+// time in seconds, points in any other field, or none for a board that
+// estimates by issue count or by nothing (a kanban board, whose
+// estimation Jira does not give).
 func estimateOf(cfg jira.BoardConfig) tracker.Estimate {
 	switch {
 	case cfg.Estimation.Type != jira.EstimateField || cfg.Estimation.FieldID == "":
 		return tracker.Estimate{Unit: tracker.UnitNone}
 	case cfg.Estimation.FieldID == timeEstimateField:
-		return tracker.Estimate{Unit: tracker.UnitTime}
+		return tracker.Estimate{Unit: tracker.UnitTime, Field: timeEstimateField}
 	}
-	return tracker.Estimate{Unit: tracker.UnitPoints}
+	return tracker.Estimate{Unit: tracker.UnitPoints, Field: cfg.Estimation.FieldID}
 }
 
 // sprints are board's sprints that are active or future, or closed at or

@@ -2,10 +2,8 @@ package store
 
 import (
 	"database/sql"
-	"errors"
 	"fmt"
 	"slices"
-	"strconv"
 )
 
 // MirrorRow is an issue on one board: its card with that board's order
@@ -68,7 +66,9 @@ func (p MirrorRowPage) check() error {
 // estimate definition passed rows whose numbers are in that definition,
 // and a page read no later than the reset holds rows reads show as
 // unknown, so its cursor is refused (MirrorChanges.CursorRefused) and the
-// rows are stored. An
+// rows are stored. A page whose new row the board's latest removal
+// refused (MirrorChanges.Refused) stores no cursor either, so the walk
+// reads the page again from a read that began after the removal. An
 // identical page from a later read moves the rows' and the cursor's read
 // times alone; one from the same read writes nothing. A read with no rows
 // that returned the stored cursor need not be written: recording it as
@@ -83,30 +83,31 @@ func (s *Store) WriteMirrorRowPage(rootID int64, page MirrorRowPage, cursor []by
 // issues the board no longer lists (page.Missing) unless a read that began
 // later was admitted for them. Missing issues are recorded as the board's
 // latest removal even when it holds no row of them, so no read that began
-// earlier adds a row. An issue left with no row and no link becomes
-// unkept.
+// earlier adds a row; the caller reads the rows it refused for that
+// (MirrorChanges.Refused) again. An issue left with no row and no link
+// becomes unkept.
 func (s *Store) WriteMirrorRows(rootID int64, page MirrorRowPage) (MirrorChanges, error) {
 	return s.writeMirrorRows(rootID, page, false, nil)
 }
 
 // The row statements: ?1 root, ?2 the JSON list, ?3 board, ?4 when the
 // read began, ?5 whether the page may add rows.
-const (
-	// mirrorRowsStateSQL sorts each row of the page: superseded (its card
-	// is older than the stored one, it is new and the page may not add it,
-	// or a later read stored other content), to write (new and addable, or
-	// other content from a read no earlier), or to advance (identical
-	// content stored by an earlier read, whose read time alone moves),
-	// whether it is a row the board gains, and whether it names a
-	// reference the mirror lacks (mirrorRowLacksSQL), with its place in the
-	// page.
+var (
+	// mirrorRowsStateSQL sorts each row of the page: superseded (the
+	// stored card supersedes its card, it is new and the page may not add
+	// it, or a later read stored other content), to write (new and
+	// addable, or other content from a read no earlier), or to advance
+	// (identical content stored by an earlier read, whose read time alone
+	// moves), whether it is new on the board (gained when the page may add
+	// rows, refused when not), and whether it names a reference the mirror
+	// lacks (mirrorRowLacksSQL), with its place in the page.
 	mirrorRowsStateSQL = `SELECT c.value ->> 'i',
-		    (b.root_id IS NULL AND NOT ?5) OR i.updated_at > c.value ->> 'u'
+		    (b.root_id IS NULL AND NOT ?5) OR ` + mirrorCardRefusedSQL("?4") + `
 		      OR (b.read_at > ?4 AND (b.order_key IS NOT c.value ->> 'o' OR b.estimate IS NOT c.value ->> 'e')),
 		    (b.root_id IS NULL AND ?5)
 		      OR (b.read_at <= ?4 AND (b.order_key IS NOT c.value ->> 'o' OR b.estimate IS NOT c.value ->> 'e')),
 		    b.read_at < ?4 AND b.order_key IS c.value ->> 'o' AND b.estimate IS c.value ->> 'e',
-		    b.root_id IS NULL AND ?5,
+		    b.root_id IS NULL,
 		    ` + mirrorRowLacksSQL + `, c.key
 		  FROM json_each(?2) c
 		  LEFT JOIN tracker_cache_issues i ON i.root_id = ?1 AND i.issue_id = c.value ->> 'i'
@@ -122,6 +123,9 @@ const (
 		    read_at = excluded.read_at
 		WHERE excluded.read_at >= read_at AND (order_key IS NOT excluded.order_key OR estimate IS NOT excluded.estimate)
 		RETURNING issue_id`
+	// mirrorRowsRemoveSQL removes the rows of the issues ?2 (IDs) that
+	// reads begun no later than ?4 stored, by key: a read by ID's absences
+	// and a reconcile's unlisted rows.
 	mirrorRowsRemoveSQL = `DELETE FROM tracker_cache_board_issues
 		WHERE root_id = ?1 AND board_id = ?3 AND read_at <= ?4 AND issue_id IN (SELECT value FROM json_each(?2))
 		RETURNING issue_id`
@@ -165,7 +169,7 @@ func (s *Store) writeMirrorRows(rootID int64, page MirrorRowPage, withCursor boo
 		switch {
 		case !withCursor:
 			return nil
-		case page.EstimateResetAt != board.estimateResetAt || page.ReadAt <= board.estimateResetAt:
+		case page.EstimateResetAt != board.estimateResetAt || page.ReadAt <= board.estimateResetAt || len(changes.Refused) > 0:
 			changes.CursorRefused = true
 			return nil
 		}
@@ -176,6 +180,7 @@ func (s *Store) writeMirrorRows(rootID int64, page MirrorRowPage, withCursor boo
 	}
 	slices.Sort(changes.Superseded)
 	slices.Sort(changes.Added)
+	slices.Sort(changes.Refused)
 	return changes, nil
 }
 
@@ -249,16 +254,19 @@ func writeMirrorRowsTx(tx *sql.Tx, rootID int64, page MirrorRowPage, rows []mirr
 	var lacking []mirrorCardRow
 	err := scanMirrorRows(tx, mirrorRowsStateSQL, []any{rootID, encoded, page.BoardID, page.ReadAt, addsRows}, func(r rowScanner) error {
 		var id string
-		var superseded, writes, advances, adds, rowLacks sql.NullBool
+		var superseded, writes, advances, fresh, rowLacks sql.NullBool
 		var at int
-		if err := r.Scan(&id, &superseded, &writes, &advances, &adds, &rowLacks, &at); err != nil {
+		if err := r.Scan(&id, &superseded, &writes, &advances, &fresh, &rowLacks, &at); err != nil {
 			return err
 		}
 		if superseded.Bool {
 			changes.Superseded = append(changes.Superseded, id)
 		}
-		if adds.Bool {
+		switch {
+		case fresh.Bool && addsRows:
 			changes.Added = append(changes.Added, id)
+		case fresh.Bool:
+			changes.Refused = append(changes.Refused, id)
 		}
 		if rowLacks.Bool && !superseded.Bool {
 			lacking = append(lacking, rows[at])
@@ -272,7 +280,7 @@ func writeMirrorRowsTx(tx *sql.Tx, rootID int64, page MirrorRowPage, rows []mirr
 	if err != nil {
 		return fmt.Errorf("sort rows: %w", err)
 	}
-	if changes.Cards, err = storeMirrorCardsTx(tx, mirrorRowCards, rootID, encoded, page.BoardID, addsRows); err != nil {
+	if changes.Cards, err = storeMirrorCardsTx(tx, mirrorRowCards, rootID, encoded, page.ReadAt, page.BoardID, addsRows); err != nil {
 		return err
 	}
 	if write {
@@ -350,138 +358,4 @@ func writeMirrorCursorTx(tx *sql.Tx, rootID int64, boardID string, cursor []byte
 		return fmt.Errorf("write cursor: %w", err)
 	}
 	return nil
-}
-
-// MirrorReconcile is what a reconcile of a board found and did: Missing
-// keeps the listing's order, Removed is sorted by issue ID.
-type MirrorReconcile struct {
-	// Missing are the listed issues with no row on the board: the caller
-	// reads their rows and stores them (WriteMirrorRows).
-	Missing []string
-	// Removed are the issues whose row was removed, not being listed.
-	Removed []string
-	// Unsettled are the rows the listing does not hold that a read began
-	// after settledAt stored, sorted: the listing may not show them yet,
-	// so it does not judge them, and the caller reads them by ID
-	// (WriteMirrorRows removes those the board no longer holds).
-	Unsettled []string
-}
-
-// The reconcile statements: ?1 root, ?2 board, ?3 when the listing's read
-// began, ?4 the JSON listing, ?5 the settled bound, ?6 whether the
-// listing is complete.
-var (
-	// mirrorReconcileFoundSQL is the listed issues with no row (0, in the
-	// listing's order) and, for a complete listing, the unsettled rows (1).
-	mirrorReconcileFoundSQL = `SELECT 0, l.value, l.key FROM json_each(?4) l
-		WHERE NOT EXISTS (SELECT 1 FROM tracker_cache_board_issues b
-		                   WHERE b.root_id = ?1 AND b.issue_id = l.value AND b.board_id = ?2)
-		UNION ALL
-		SELECT 1, b.issue_id, 0 FROM tracker_cache_board_issues b
-		 WHERE ?6 AND b.root_id = ?1 AND b.board_id = ?2 AND b.read_at > ?5 AND b.read_at <= ?3
-		   AND b.issue_id NOT IN (SELECT value FROM json_each(?4))
-		ORDER BY 1, 3, 2`
-	// mirrorReconcileRemoveSQL walks the board's rows in its order index.
-	mirrorReconcileRemoveSQL = `DELETE FROM tracker_cache_board_issues WHERE root_id = ?1 AND board_id = ?2 AND issue_id IN (
-		SELECT b.issue_id FROM tracker_cache_board_issues b
-		 WHERE b.root_id = ?1 AND b.board_id = ?2 AND b.issue_id NOT IN (SELECT value FROM json_each(?4)) AND b.read_at <= ?5
-		 LIMIT ` + strconv.Itoa(clearMirrorChunk) + `)
-		RETURNING issue_id`
-)
-
-// ReconcileMirrorBoard compares a listing of the issues on a board, read
-// from readAt, with the board's rows. It returns the listed issues that
-// have no row and, only when the listing is complete, removes the rows it
-// does not list that reads begun no later than settledAt stored, at most
-// clearMirrorChunk per transaction, returns those it does not list that
-// reads begun after settledAt and no later than readAt stored
-// (Unsettled), and records the listing as the board's latest removal, so
-// no read that began earlier adds a row the listing leaves out. A
-// listing that may show a row late (a search index) leaves the rows read
-// within that lag to a read by ID; settledAt equal to readAt judges every
-// row. An incomplete listing removes nothing and returns no Unsettled.
-// An issue left with no row and no link becomes unkept. The board must
-// be listed in lifetime (ErrTrackerCacheUnlisted). A call that fails
-// after a transaction of it committed returns, with the error, the rows
-// those transactions removed and no Missing or Unsettled: the caller
-// tells the removals whatever it does about the error.
-func (s *Store) ReconcileMirrorBoard(rootID int64, boardID string, lifetime int64, listed []string, complete bool, readAt, settledAt int64) (result MirrorReconcile, err error) {
-	switch {
-	case readAt <= 0:
-		return MirrorReconcile{}, fmt.Errorf("%w: a listing needs the time its read began", ErrInvalidTrackerCache)
-	case settledAt > readAt:
-		return MirrorReconcile{}, fmt.Errorf("%w: a listing's settled bound %d is after its read %d", ErrInvalidTrackerCache, settledAt, readAt)
-	}
-	seen := make(map[string]bool, len(listed))
-	for _, id := range listed {
-		if id == "" || seen[id] {
-			return MirrorReconcile{}, fmt.Errorf("%w: listed issue %q is empty or repeated", ErrInvalidTrackerCache, id)
-		}
-		seen[id] = true
-	}
-	encoded, err := encodeMirrorIDs(listed)
-	if err != nil {
-		return MirrorReconcile{}, err
-	}
-	action := fmt.Sprintf("store: reconcile tracker mirror %d board %s", rootID, boardID)
-	for batch := 0; ; batch++ {
-		// What this transaction found and removed, taken only once it commits.
-		var missing, unsettled, removed []string
-		err = s.mirrorBoardWrite(rootID, boardID, lifetime, action, true, func(tx *sql.Tx, board mirrorBoard) error {
-			if batch == 0 {
-				var err error
-				if missing, unsettled, err = reconcileFoundTx(tx, rootID, boardID, readAt, encoded, settledAt, complete); err != nil {
-					return fmt.Errorf("find missing and unsettled rows: %w", err)
-				}
-			}
-			if !complete {
-				return nil
-			}
-			var err error
-			if removed, err = queryIDs(tx, mirrorReconcileRemoveSQL, rootID, boardID, readAt, encoded, settledAt); err != nil {
-				return fmt.Errorf("remove unlisted rows: %w", err)
-			}
-			if readAt > board.rowsRemovedAt {
-				if _, err := tx.Exec(mirrorRowsRemovedAtSQL, rootID, readAt, boardID); err != nil {
-					return fmt.Errorf("record the removal: %w", err)
-				}
-			}
-			return nil
-		})
-		if err != nil {
-			slices.Sort(result.Removed)
-			return MirrorReconcile{Removed: result.Removed}, err
-		}
-		if batch == 0 {
-			result.Missing, result.Unsettled = missing, unsettled
-		}
-		result.Removed = append(result.Removed, removed...)
-		if len(removed) < clearMirrorChunk {
-			break
-		}
-	}
-	slices.Sort(result.Removed)
-	return result, nil
-}
-
-// reconcileFoundTx runs mirrorReconcileFoundSQL: the listed issues with no
-// row, in the listing's order, and the unsettled rows, sorted.
-func reconcileFoundTx(tx *sql.Tx, rootID int64, boardID string, readAt int64, listed string, settledAt int64, complete bool) (missing, unsettled []string, err error) {
-	rows, err := tx.Query(mirrorReconcileFoundSQL, rootID, boardID, readAt, listed, settledAt, complete)
-	if err != nil {
-		return nil, nil, err
-	}
-	for rows.Next() {
-		var kind, key int64
-		var id string
-		if err := rows.Scan(&kind, &id, &key); err != nil {
-			return nil, nil, errors.Join(err, rows.Close())
-		}
-		if kind == 0 {
-			missing = append(missing, id)
-		} else {
-			unsettled = append(unsettled, id)
-		}
-	}
-	return missing, unsettled, errors.Join(rows.Err(), rows.Close())
 }

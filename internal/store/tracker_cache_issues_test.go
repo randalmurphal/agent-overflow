@@ -115,3 +115,57 @@ func TestMirrorKeepsIssuesLinkedToOwnedThreads(t *testing.T) {
 		t.Fatalf("card twice: %v", err)
 	}
 }
+
+// Two reads of a card with the same update time land in either order: the
+// one that began later wins, for the card and its sprints together, on a
+// board and off it. A project key rename changes every key and moves no
+// update time.
+func TestATiedCardFollowsItsReadOrder(t *testing.T) {
+	t.Parallel()
+	s, _, root := newMirror(t)
+	mustReplaceStructure(t, s, root, webStructure(), true)
+	renamed := webRow("10001", 5, "a", "22")
+	renamed.Card.Key = "APP-10001"
+	page := webPage("10", renamed)
+	page.ReadAt = 30
+	mustWriteRowPage(t, s, root, page, nil)
+	former := webRow("10001", 5, "a", "21")
+	page = webPage("10", former)
+	page.ReadAt = 20
+	got := mustWriteRowPage(t, s, root, page, nil)
+	if cards := mustMirrorCards(t, s, root, "10001"); len(cards) != 1 || cards[0].Key != "APP-10001" || !reflect.DeepEqual(cards[0].Sprints, []string{"22"}) {
+		t.Fatalf("after a late row read the card is %+v; want the later read's key and sprints", cards)
+	}
+	assertMirrorChanges(t, "late row read", got, MirrorChanges{Superseded: []string{"10001"}})
+	changes, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{former.Card}, MirrorCatalog{}, 25)
+	if err != nil || !reflect.DeepEqual(changes, MirrorChanges{Superseded: []string{"10001"}}) {
+		t.Fatalf("late card read = %+v, %v", changes, err)
+	}
+	if cards := mustMirrorCards(t, s, root, "10001"); cards[0].Key != "APP-10001" || !reflect.DeepEqual(cards[0].Sprints, []string{"22"}) {
+		t.Fatalf("after a late card read the card is %+v; want the later read's key and sprints", cards)
+	}
+	changes, err = s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{former.Card}, MirrorCatalog{}, 40)
+	if err != nil || !reflect.DeepEqual(changes, MirrorChanges{Cards: []string{"10001"}}) {
+		t.Fatalf("a card read later = %+v, %v", changes, err)
+	}
+	if cards := mustMirrorCards(t, s, root, "10001"); cards[0].Key != "WEB-10001" || !reflect.DeepEqual(cards[0].Sprints, []string{"21"}) {
+		t.Fatalf("after a later card read the card is %+v", cards)
+	}
+	// A read that changes the sprints alone is the card's latest change.
+	moved := former
+	moved.Card.Sprints = []string{"22"}
+	page = webPage("10", moved)
+	page.ReadAt = 50
+	assertMirrorChanges(t, "sprints moved", mustWriteRowPage(t, s, root, page, nil), MirrorChanges{Cards: []string{"10001"}})
+	page = webPage("10", former)
+	page.ReadAt = 45
+	assertMirrorChanges(t, "late read of the sprints", mustWriteRowPage(t, s, root, page, nil), MirrorChanges{Superseded: []string{"10001"}})
+	if cards := mustMirrorCards(t, s, root, "10001"); !reflect.DeepEqual(cards[0].Sprints, []string{"22"}) {
+		t.Fatalf("after a late read of the sprints the card is %+v", cards)
+	}
+	// The same card from an earlier read loses nothing, so it reports
+	// nothing.
+	page = webPage("10", moved)
+	page.ReadAt = 45
+	assertMirrorChanges(t, "identical earlier read", mustWriteRowPage(t, s, root, page, nil), MirrorChanges{})
+}

@@ -35,36 +35,46 @@ func mirrorRows(board tracker.BoardID, rows []tracker.Row, missing []tracker.Iss
 }
 
 // boardRows reads board's rows of issues and stores them; the issues the
-// board no longer lists lose their row. A write the store finds due a
-// structure read marks the run's structure due (run.cascade). The board's
-// structure must be in the mirror (store.ErrTrackerCacheNoBoard
-// otherwise). found are the issues whose row the tracker returned, of
-// the batches stored.
+// board no longer lists lose their row. A new row the store refused
+// because the board lost rows after its read began is read once more,
+// from after the removal; refused again, the read fails. A write the
+// store finds due a structure read marks the run's structure due
+// (run.cascade). The board's structure must be in the mirror
+// (store.ErrTrackerCacheNoBoard otherwise). found are the issues whose
+// row the tracker returned and the store took, of the batches stored.
 func (r *run) boardRows(board tracker.BoardID, issues []tracker.IssueID) (out Changes, found []tracker.IssueID, _ error) {
 	lifetime, err := r.lifetime(board)
 	if err != nil {
 		return out, nil, err
 	}
 	for batch := range slices.Chunk(issues, readBatch) {
-		read := r.readAt()
-		r.calls++
-		rows, err := r.p.BoardRows(r.ctx, board, batch)
-		if err != nil {
-			return out, found, fmt.Errorf("trackerapp: read %d rows of board %s: %w", len(batch), board, call(err))
-		}
-		page, err := mirrorRows(board, rows.Rows, rows.Missing, rows.Catalog, read)
-		if err != nil {
-			return out, found, err
-		}
-		page.Lifetime = lifetime
-		stored, err := r.s.store.WriteMirrorRows(r.root, page)
-		if err != nil {
-			return out, found, fmt.Errorf("trackerapp: store rows of board %s: %w", board, err)
-		}
-		r.markStructureDue(stored)
-		out.add(changesOf(stored))
-		for _, row := range rows.Rows {
-			found = append(found, row.Card.ID)
+		for again := false; len(batch) > 0; again = true {
+			read := r.readAt()
+			r.calls++
+			rows, err := r.p.BoardRows(r.ctx, board, batch)
+			if err != nil {
+				return out, found, fmt.Errorf("trackerapp: read %d rows of board %s: %w", len(batch), board, call(err))
+			}
+			page, err := mirrorRows(board, rows.Rows, rows.Missing, rows.Catalog, read)
+			if err != nil {
+				return out, found, err
+			}
+			page.Lifetime = lifetime
+			stored, err := r.s.store.WriteMirrorRows(r.root, page)
+			if err != nil {
+				return out, found, fmt.Errorf("trackerapp: store rows of board %s: %w", board, err)
+			}
+			r.markStructureDue(stored)
+			out.add(changesOf(stored))
+			for _, row := range rows.Rows {
+				if _, refused := slices.BinarySearch(stored.Refused, string(row.Card.ID)); !refused {
+					found = append(found, row.Card.ID)
+				}
+			}
+			if again && len(stored.Refused) > 0 {
+				return out, found, fmt.Errorf("trackerapp: store rows of board %s: the board lost rows during both reads of %v", board, stored.Refused)
+			}
+			batch = issueIDsInOrder(stored.Refused)
 		}
 	}
 	return out, found, nil
@@ -173,17 +183,21 @@ func (r *run) structure(board tracker.BoardID) (Changes, error) {
 		return Changes{}, err
 	}
 	m.Lifetime = lifetime
+	// A write that failed after its structure committed returns what the
+	// structure changed with the error; a reset only moves forward, so a
+	// later one is the store's whether or not the call failed.
 	stored, err := r.s.store.ReplaceMirrorStructure(r.root, m)
+	ch := Changes{Structure: stored.Changed, Catalog: stored.Catalog}
+	if board == r.scope.Board && stored.EstimateResetAt > r.state.EstimateResetAt {
+		r.state.EstimateResetAt, r.state.Cursor = stored.EstimateResetAt, nil
+	}
 	if err != nil {
-		return Changes{}, fmt.Errorf("trackerapp: store the structure of board %s: %w", board, err)
+		return ch, fmt.Errorf("trackerapp: store the structure of board %s: %w", board, err)
 	}
 	if board == r.scope.Board {
 		r.stored, r.structureDue = true, false
-		if stored.EstimateResetAt != r.state.EstimateResetAt {
-			r.state.EstimateResetAt, r.state.Cursor = stored.EstimateResetAt, nil
-		}
 	}
-	return Changes{Structure: stored.Changed, Catalog: stored.Catalog}, nil
+	return ch, nil
 }
 
 // worklogs reads author's worklogs whose day is from to to (at most

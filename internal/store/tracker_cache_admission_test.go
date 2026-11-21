@@ -178,8 +178,8 @@ func TestMirrorAbsenceIsAdmitted(t *testing.T) {
 			t.Errorf("%s again wrote %v, %v", absence, recorder.rowWrites(), err)
 		}
 		got, err := s.WriteMirrorRows(root, MirrorRowPage{BoardID: "10", Lifetime: lifetime, Rows: []MirrorRow{webRow("10002", 5, "b")}, ReadAt: 20})
-		if err != nil || !reflect.DeepEqual(got, MirrorChanges{Superseded: []string{"10002"}}) {
-			t.Errorf("%s: a read from before it = %+v, %v; want it superseded", absence, got, err)
+		if err != nil || !reflect.DeepEqual(got, MirrorChanges{Superseded: []string{"10002"}, Refused: []string{"10002"}}) {
+			t.Errorf("%s: a read from before it = %+v, %v; want it refused", absence, got, err)
 		}
 		assertRows(t, s.db, fmt.Sprintf(`SELECT count(*) FROM tracker_cache_board_issues WHERE root_id = %d AND issue_id = '10002'`, root), "0")
 	}

@@ -188,7 +188,8 @@ func TestEstimateScales(t *testing.T) {
 		{linear.Estimation{Scale: "custom"}, tracker.UnitPoints, nil},
 	} {
 		got := estimate(tc.in)
-		if got.Unit != tc.unit || !reflect.DeepEqual(values(got), tc.want) {
+		// An issue has one estimate whatever the scale: no field names it.
+		if got.Unit != tc.unit || got.Field != "" || !reflect.DeepEqual(values(got), tc.want) {
 			t.Errorf("%+v: %+v", tc.in, got)
 		}
 	}

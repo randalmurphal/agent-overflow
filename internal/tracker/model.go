@@ -135,11 +135,20 @@ const (
 	UnitTime
 )
 
-// Estimate is a board's estimate: its unit, and the values a person picks
-// from when the tracker fixes them (a Linear team's scale). No Choices
-// means any number of the unit.
+// Estimate is a board's estimate: its unit, what the estimates are of
+// (Field), and the values a person picks from when the tracker fixes them
+// (a Linear team's scale). No Choices means any number of the unit.
+//
+// Field is the tracker's opaque identity of the value a board's estimates
+// are read from: one board at two times with the same Unit and Field
+// estimates the same value of each issue, and a board whose Field changes
+// estimates another, so the numbers read before are not the board's. Jira
+// gives the board's estimation field ID ("customfield_10016",
+// "timeoriginalestimate"); Linear gives none, since an issue has one
+// estimate whatever its team's scale. It is empty when Unit is UnitNone.
 type Estimate struct {
 	Unit    EstimateUnit
+	Field   string
 	Choices []EstimateChoice
 }
 

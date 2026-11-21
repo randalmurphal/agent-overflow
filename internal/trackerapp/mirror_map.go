@@ -248,7 +248,7 @@ func mirrorStructure(st tracker.Structure, readAt int64) (store.MirrorStructure,
 	out := store.MirrorStructure{
 		Board: store.MirrorBoard{
 			ID: string(st.Board.ID), ProjectID: string(st.Board.Project), Name: st.Board.Name,
-			PlansSprints: st.Board.Sprints, EstimateUnit: int(st.Estimate.Unit), Data: data,
+			PlansSprints: st.Board.Sprints, EstimateUnit: int(st.Estimate.Unit), EstimateField: st.Estimate.Field, Data: data,
 		},
 		Catalog: catalog,
 		ReadAt:  readAt,
@@ -274,14 +274,14 @@ func mirrorStructure(st tracker.Structure, readAt int64) (store.MirrorStructure,
 
 // structureOf is the structure m holds with catalog, which the store
 // reads apart from it. A board blob that is a miss leaves the estimate
-// its unit and no choices.
+// its unit and field and no choices.
 func structureOf(m store.MirrorStructure, catalog tracker.Catalog) tracker.Structure {
 	st := tracker.Structure{
 		Board: tracker.Board{
 			ID: tracker.BoardID(m.Board.ID), Project: tracker.ProjectID(m.Board.ProjectID),
 			Name: m.Board.Name, Sprints: m.Board.PlansSprints,
 		},
-		Estimate: tracker.Estimate{Unit: tracker.EstimateUnit(m.Board.EstimateUnit)},
+		Estimate: tracker.Estimate{Unit: tracker.EstimateUnit(m.Board.EstimateUnit), Field: m.Board.EstimateField},
 		Catalog:  catalog,
 	}
 	var blob boardBlob

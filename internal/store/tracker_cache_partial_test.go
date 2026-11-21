@@ -74,3 +74,32 @@ func TestReconcileMirrorBoardReportsWhatCommittedBeforeAFailure(t *testing.T) {
 		}
 	}
 }
+
+// A structure write whose mark settlement fails after the structure
+// committed returns what the structure changed with the error, and the
+// next structure read settles the marks, identical or not.
+func TestReplaceMirrorStructureReportsWhatCommittedBeforeAFailure(t *testing.T) {
+	t.Parallel()
+	s, _, root := newMirror(t)
+	mustReplaceStructure(t, s, root, webStructure(), true)
+	odd := webRow("10001", 5, "a")
+	odd.Card.StatusID = "77"
+	page := webPage("10", odd)
+	page.ReadAt = 2
+	mustWriteRowPage(t, s, root, page, nil)
+	failMirrorWrite(t, s, "UPDATE", "tracker_cache_board_unexplained", "true")
+	st := webStructure()
+	st.Board.EstimateUnit, st.ReadAt, st.Complete = MirrorEstimateTime, 30, true
+	got, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, st))
+	if err == nil || got != (MirrorStructureWrite{MirrorWrite: MirrorWrite{Changed: true}, EstimateResetAt: 30}) {
+		t.Fatalf("a structure whose marks failed = %+v, %v; want the failure with the change and the reset", got, err)
+	}
+	assertRows(t, s.db, `SELECT estimate_unit || ':' || estimate_reset_at FROM tracker_cache_boards WHERE board_id = '10'`, "2:30")
+	assertRows(t, s.db, `SELECT named_at FROM tracker_cache_board_unexplained`, "2")
+	mustExec(t, s.db, `DROP TRIGGER test_fail_write`)
+	st.ReadAt = 40
+	if got, err := s.ReplaceMirrorStructure(root, currentStructure(s, root, st)); err != nil || got != (MirrorStructureWrite{EstimateResetAt: 30}) {
+		t.Fatalf("the same structure again = %+v, %v", got, err)
+	}
+	assertRows(t, s.db, `SELECT named_at FROM tracker_cache_board_unexplained`, "0")
+}

@@ -41,6 +41,7 @@ func TestReplaceMirrorStructureReportsChanges(t *testing.T) {
 		"board project":  func(st *MirrorStructure) { st.Board.ProjectID = "" },
 		"board kind":     func(st *MirrorStructure) { st.Board.PlansSprints = false },
 		"estimate unit":  func(st *MirrorStructure) { st.Board.EstimateUnit = MirrorEstimateTime },
+		"estimate field": func(st *MirrorStructure) { st.Board.EstimateField = "customfield_10026" },
 		"estimate data":  func(st *MirrorStructure) { st.Board.Data = []byte(`{"choices":[]}`) },
 		"column name":    func(st *MirrorStructure) { st.Columns[1].Name = "Doing" },
 		"status moved":   func(st *MirrorStructure) { st.Columns[0].Statuses, st.Columns[1].Statuses = []string{"1", "3"}, nil },
@@ -185,10 +186,13 @@ func TestReplaceMirrorStructureRefusesInvalidReads(t *testing.T) {
 	s, _, root := newMirror(t)
 	mustReplaceStructure(t, s, root, webStructure(), true)
 	for name, edit := range map[string]func(*MirrorStructure){
-		"no board ID":      func(st *MirrorStructure) { st.Board.ID = "" },
-		"no read time":     func(st *MirrorStructure) { st.ReadAt = 0 },
-		"unknown unit":     func(st *MirrorStructure) { st.Board.EstimateUnit = 3 },
-		"negative unit":    func(st *MirrorStructure) { st.Board.EstimateUnit = -1 },
+		"no board ID":   func(st *MirrorStructure) { st.Board.ID = "" },
+		"no read time":  func(st *MirrorStructure) { st.ReadAt = 0 },
+		"unknown unit":  func(st *MirrorStructure) { st.Board.EstimateUnit = 3 },
+		"negative unit": func(st *MirrorStructure) { st.Board.EstimateUnit = -1 },
+		"field of none": func(st *MirrorStructure) {
+			st.Board.EstimateUnit, st.Board.EstimateField = MirrorEstimateNone, "customfield_10016"
+		},
 		"status in two":    func(st *MirrorStructure) { st.Columns[1].Statuses = []string{"1"} },
 		"empty status":     func(st *MirrorStructure) { st.Columns[1].Statuses = []string{""} },
 		"too many columns": func(st *MirrorStructure) { st.Columns = make([]MirrorColumn, mirrorMaxColumns+1) },

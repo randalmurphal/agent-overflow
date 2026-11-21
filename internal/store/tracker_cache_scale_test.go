@@ -400,6 +400,28 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 	out["Linear round of 100, idle"] = measureScale(t, rec, nil, linear(0))
 	out["Linear round of 100, 10 changed"] = measureScale(t, rec, nil, linear(10))
 	out["cleanup pass, nothing pending"] = measureScale(t, rec, nil, func(int) error { return s.FinishMirrorCleanup(nil) })
+	// A complete listing that leaves out a quarter of the board, whose rows
+	// are read back before each run (untimed): last, as its issues stay
+	// unkept.
+	quarter := size.issues / 4
+	unlisted := make([]MirrorRow, quarter)
+	for i := range unlisted {
+		unlisted[i] = benchRow(0, size.issues-quarter+i, 1000)
+	}
+	out["reconcile, a quarter unlisted"] = measureScale(t, rec, func(int) {
+		for page := range slices.Chunk(unlisted, mirrorMaxPageRows) {
+			if _, err := s.WriteMirrorRows(root, MirrorRowPage{BoardID: board, Lifetime: lifetime, Rows: page, ReadAt: next()}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}, func(int) error {
+		at := next()
+		got, err := s.ReconcileMirrorBoard(root, board, lifetime, listing[:size.issues-quarter], true, at, at)
+		if err == nil && len(got.Removed) != quarter {
+			err = fmt.Errorf("removed %d of %d unlisted", len(got.Removed), quarter)
+		}
+		return err
+	})
 	return out
 }
 

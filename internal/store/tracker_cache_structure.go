@@ -61,12 +61,16 @@ type MirrorCatalog struct {
 }
 
 // MirrorBoard is a board: its project (empty when the tracker does not say),
-// whether it plans in sprints, its estimate unit (MirrorEstimate*), and
-// Data for the rest (its estimate choices).
+// whether it plans in sprints, its estimate definition, and Data for the
+// rest (its estimate choices). The estimate definition is the unit
+// (MirrorEstimate*) and EstimateField, the tracker's opaque identity of
+// what the estimates are of (tracker.Estimate.Field): a change of either
+// resets the board's estimates (MirrorSync.EstimateResetAt).
 type MirrorBoard struct {
 	ID, ProjectID, Name string
 	PlansSprints        bool
 	EstimateUnit        int
+	EstimateField       string
 	Data                []byte
 }
 
@@ -131,6 +135,8 @@ func (st MirrorStructure) check() error {
 		return fmt.Errorf("%w: a board needs its ID and the time its read began", ErrInvalidTrackerCache)
 	case b.EstimateUnit < MirrorEstimateNone || b.EstimateUnit > MirrorEstimateTime:
 		return fmt.Errorf("%w: board %s has estimate unit %d", ErrInvalidTrackerCache, b.ID, b.EstimateUnit)
+	case b.EstimateUnit == MirrorEstimateNone && b.EstimateField != "":
+		return fmt.Errorf("%w: board %s has no estimate but names estimate field %q", ErrInvalidTrackerCache, b.ID, b.EstimateField)
 	case len(st.Columns) > mirrorMaxColumns || len(st.Sprints) > mirrorMaxSprints:
 		return fmt.Errorf("%w: board %s has %d columns and %d sprints, over %d and %d",
 			ErrInvalidTrackerCache, b.ID, len(st.Columns), len(st.Sprints), mirrorMaxColumns, mirrorMaxSprints)
@@ -179,7 +185,11 @@ type MirrorStructureWrite struct {
 // read time alone. The structure is one transaction. The board's marks of
 // lacking references follow it in transactions of at most
 // clearMirrorChunk marks: the marks of the sprints it supplies go, and a
-// complete read makes the pending marks no later than it unexplained.
+// complete read makes the pending marks no later than it unexplained. A
+// call whose marks fail after the structure committed returns, with the
+// error, what the structure changed: the caller tells it whatever it does
+// about the error, and the next structure read admitted, identical or
+// not, settles the marks again.
 func (s *Store) ReplaceMirrorStructure(rootID int64, st MirrorStructure) (result MirrorStructureWrite, err error) {
 	if err := st.check(); err != nil {
 		return MirrorStructureWrite{}, err
@@ -203,12 +213,10 @@ func (s *Store) ReplaceMirrorStructure(rootID int64, st MirrorStructure) (result
 	if err != nil {
 		return MirrorStructureWrite{}, err
 	}
-	if !result.Superseded {
-		if err := s.settleMirrorMarks(rootID, st, before, action); err != nil {
-			return MirrorStructureWrite{}, err
-		}
+	if result.Superseded {
+		return result, nil
 	}
-	return result, nil
+	return result, s.settleMirrorMarks(rootID, st, before, action)
 }
 
 type mirrorStatusPlace struct {
@@ -384,15 +392,20 @@ func (s *Store) settleMirrorMarks(rootID int64, st MirrorStructure, board mirror
 	}
 }
 
+// mirrorEstimateChangedSQL holds, in mirrorBoardWriteRowSQL, when the
+// written estimate definition (unit ?6, field ?9) is not the stored one.
+const mirrorEstimateChangedSQL = `(estimate_unit IS NOT ?6 OR estimate_field IS NOT ?9)`
+
 // mirrorBoardWriteRowSQL writes a board's own fields. A changed estimate
-// unit on a board whose structure is stored records the read as the
+// definition on a board whose structure is stored records the read as the
 // board's estimate reset (estimate_reset_at), which RETURNING reports; any
-// changed unit changes the estimate totals (totals_revision).
-const mirrorBoardWriteRowSQL = `UPDATE tracker_cache_boards SET project_id = ?3, name = ?4, plans_sprints = ?5, estimate_unit = ?6, data = ?7,
-	    estimate_reset_at = iif(read_at > 0 AND estimate_unit IS NOT ?6, ?8, estimate_reset_at),
-	    totals_revision = totals_revision + (estimate_unit IS NOT ?6)
+// changed definition changes the estimate totals (totals_revision).
+const mirrorBoardWriteRowSQL = `UPDATE tracker_cache_boards SET project_id = ?3, name = ?4, plans_sprints = ?5, estimate_unit = ?6,
+	    estimate_field = ?9, data = ?7,
+	    estimate_reset_at = iif(read_at > 0 AND ` + mirrorEstimateChangedSQL + `, ?8, estimate_reset_at),
+	    totals_revision = totals_revision + ` + mirrorEstimateChangedSQL + `
 	WHERE root_id = ?1 AND board_id = ?2 AND (read_at = 0 OR project_id IS NOT ?3 OR name IS NOT ?4
-	   OR plans_sprints IS NOT ?5 OR estimate_unit IS NOT ?6 OR data IS NOT ?7)
+	   OR plans_sprints IS NOT ?5 OR ` + mirrorEstimateChangedSQL + ` OR data IS NOT ?7)
 	RETURNING estimate_reset_at = ?8`
 
 // writeMirrorBoardTx writes the board's own fields and reports whether
@@ -404,7 +417,7 @@ const mirrorBoardWriteRowSQL = `UPDATE tracker_cache_boards SET project_id = ?3,
 func writeMirrorBoardTx(tx *sql.Tx, rootID int64, st MirrorStructure) (changed, reset bool, err error) {
 	b := st.Board
 	err = tx.QueryRow(mirrorBoardWriteRowSQL, rootID, b.ID, b.ProjectID, b.Name, boolToInt(b.PlansSprints), b.EstimateUnit,
-		mirrorData(b.Data), st.ReadAt).Scan(&reset)
+		mirrorData(b.Data), st.ReadAt, b.EstimateField).Scan(&reset)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return false, false, nil

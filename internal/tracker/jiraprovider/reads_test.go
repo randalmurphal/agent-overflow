@@ -104,7 +104,8 @@ func TestStructure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.Board != (tracker.Board{ID: "3", Name: "Board 3", Project: "10000", Sprints: true}) || s.Estimate.Unit != tracker.UnitPoints {
+	if s.Board != (tracker.Board{ID: "3", Name: "Board 3", Project: "10000", Sprints: true}) || s.Estimate.Unit != tracker.UnitPoints ||
+		s.Estimate.Field != "customfield_10016" {
 		t.Errorf("board %+v estimate %+v", s.Board, s.Estimate)
 	}
 	if len(s.Columns) != 3 || s.Columns[1].Name != "In Progress" || !slices.Equal(s.Columns[1].Statuses, []tracker.StatusID{"10001"}) {
@@ -203,6 +204,9 @@ func TestStructureOfBoardUnderUser(t *testing.T) {
 	}
 	if s.Board != (tracker.Board{ID: "4", Name: "Board 4"}) || !slices.Equal(s.Statuses, want) {
 		t.Errorf("board %+v statuses %+v", s.Board, s.Statuses)
+	}
+	if s.Estimate.Unit != tracker.UnitTime || s.Estimate.Field != "timeoriginalestimate" {
+		t.Errorf("estimate %+v", s.Estimate)
 	}
 	if n := f.Count("GET", "/rest/api/3/project/10000/statuses"); n != 0 {
 		t.Errorf("%d project status reads for a board in no project", n)

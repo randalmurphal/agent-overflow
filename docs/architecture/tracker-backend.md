@@ -58,8 +58,9 @@ a field that is empty for the other.
   sorts bytewise within the board: Jira's rank value as it is, and Linear's
   float sort order encoded so that text order equals numeric order. The
   pane and the mirror compare keys and never interpret them. The estimate
-  is a number with the board's unit: points, time or none. A board with no
-  estimate counts issues.
+  is a number with the board's unit: points, time or none, of the field
+  the board names (`tracker.Estimate.Field`, opaque; Linear names none). A
+  board with no estimate counts issues.
 - **A sprint's board is the one it was made on**: Jira's origin board, a
   cycle's team, the same on every board that lists it. A Jira sprint
   shows on each board whose filter holds its issues, and the board a
@@ -395,6 +396,13 @@ it changed the row or found it identical; an absence is admitted the same
 way, as the board's `rows_removed_at`, rows removed or not. A write from a
 read that began earlier is superseded, an identical read that began later
 moves `read_at` alone, and a duplicate from the same read writes nothing. A
+new row from a read that began before the board's latest removal is
+refused, since that removal may have been of it, and is read again: a
+delta page with one stores no cursor, and a read by ID reads it once
+more (`MirrorChanges.Refused`). A card is ordered by its update time and,
+for one update time, by the read that last changed it or its sprints
+(`changed_at`): a project key rename changes every key and moves no
+update time. A
 section page carries the board's revision; continuing it at another
 revision fails with `ErrTrackerCacheStale`. A board view's first paint
 reads structure, totals, first pages and what their cards name (statuses,
@@ -432,7 +440,9 @@ and writes share:
   card is never replaced by a version with an earlier update time; a board
   row is stored whenever it is read through its board. A page with no rows
   that returned the stored cursor is not written: the tick's recorded read
-  admits the cursor.
+  admits the cursor. A page with a new row the board's latest removal
+  refused stores no cursor, and the delta stops there with More, so the
+  next tick reads the page again after the removal.
 - **Reconcile.** A delta sees only issues whose update time moved. An
   issue enters or leaves a board without that: the board's filter is
   edited, an issue is deleted, a board is newly listed while its issues are
@@ -447,7 +457,11 @@ and writes share:
   asks `jql/match` about an issue the list left out and fails when the
   match cannot judge the board (after reading the board's configuration
   again once), so a miss never removes a row on the list's word alone. A listing the
-  provider reports as incomplete adds and never removes. It runs when a board is subscribed, on
+  provider reports as incomplete adds and never removes, and so does one
+  that began before the newest complete listing the board reconciled,
+  which saw the rows it leaves out (checked in every removal
+  transaction). One statement finds the rows to remove; they go in
+  transactions of at most 500, each judging them again. It runs when a board is subscribed, on
   a slower cadence, and on request, and waits while the tick's delta walk
   has more pages to read, so a first sync reads each row once and lists
   the board once.
@@ -457,7 +471,10 @@ and writes share:
   marked unexplained, makes the board due in the page's own transaction
   (`MirrorChanges.StructureDue`, durable as `MirrorSync.StructureDueAt`). A
   structure from a read that began later clears it; a failed read leaves
-  it due. A structure that changes the board's estimate unit clears the
+  it due. The estimate definition is the unit and the field the estimates
+  are of (`tracker.Estimate.Field`: Jira's field ID, none on Linear), so a
+  Jira board that switches points fields changes it. A structure that
+  changes the board's estimate definition clears the
   cursor, and reads show each row read before it with an unknown estimate
   until the walk reads it again. Each page of a walk names the estimate
   reset captured with its starting cursor (`MirrorSync.EstimateResetAt`);
@@ -465,10 +482,13 @@ and writes share:
   definition (`MirrorChanges.CursorRefused`), and the delta stops there
   with More. A tick whose structure write reports a reset
   (`MirrorStructureWrite.EstimateResetAt`) walks from the window's start.
+  A structure write whose marks fail after the structure committed returns
+  what it changed with the error, which the tick tells; the next structure
+  read settles the marks.
 - **History** is read whole for an issue new to the mirror and again for
   an issue whose update time is later than the one its stored history was
   read for, that gained a board row, or whose row was read again after
-  its board's estimate unit changed, limited to the four change kinds.
+  its board's estimate definition changed, limited to the four change kinds.
   Each of these is due at once. A read is stored with the update time it
   was read for (`MirrorHistory.For`, the listing's
   `MirrorHistoryDue.UpdatedAt`), so a later update is a later version
@@ -663,7 +683,7 @@ named rows.
 | Idle tick | 3 | 59 µs | 60 µs |
 | Delta, 100 changed | 11 | 6.5 ms | 8.4 ms |
 | History, 50 due | 6 | 12.0 ms | 12.2 ms |
-| Reconcile, complete listing | 4 | 5.1 ms | 23.4 ms |
+| Reconcile, complete listing | 3 | 5.1 ms | 23.4 ms |
 | Board view, 3 sections | 10 | 12.9 ms | 47.7 ms |
 | Section page, middle of a column | 3 | 0.67 ms | 0.77 ms |
 | Section counts | 4 | 9.4 ms | 41.1 ms |
@@ -674,7 +694,9 @@ named rows.
 | Linear round, 100 tickets, 10 changed | 14 | 2.8 ms | 2.8 ms |
 | `New` | 0 | 12.9 ms | 13.2 ms |
 
-Five boards of 4,000 issues on one root view in 11.7 ms. Every
+A reconcile whose listing leaves out a quarter of the board removes
+those rows in 8 statements at 5,000 issues and 22 at 20,000. Five boards
+of 4,000 issues on one root view in 11.7 ms. Every
 statement of the mirror plans the same at 20,000 issues as on a small
 mirror, with no `sqlite_stat1`. Through `trackerfake` at 20,000 an idle
 tick, a delta of 100 and a Jira history read of 100 are 1, 1 and 4

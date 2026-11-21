@@ -16,6 +16,71 @@ func timeStructure(b tracker.BoardID) tracker.Structure {
 	return st
 }
 
+// pointsStructure is the test board's structure estimating in the points
+// field field.
+func pointsStructure(b tracker.BoardID, field string) tracker.Structure {
+	st := webStructure(b)
+	st.Estimate.Field = field
+	return st
+}
+
+// A board that switches from one points field to another, its issues
+// unchanged, shows none of the old field's numbers as the new one's: its
+// rows and totals show no estimate until the walk, which starts over,
+// reads each row again in the new field, and each row read again makes
+// its issue's history due, since estimate changes are read per field.
+func TestAStructureThatSwitchesPointFieldsReadsTheRowsAgain(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	m.tickingClock()
+	m.p.structure = func(b tracker.BoardID, _ time.Time) (tracker.Structure, error) {
+		return pointsStructure(b, "customfield_10016"), nil
+	}
+	five, eight := 5.0, 8.0
+	r := row("10001", 1_799_000_000_000, "a")
+	r.Card.Sprints, r.Estimate = []tracker.SprintID{"1"}, &five
+	m.p.changedRows = pagedDelta(t, []tracker.Row{r})
+	m.p.history = func(q tracker.HistoryQuery) (tracker.History, error) {
+		return tracker.History{Issues: []tracker.IssueHistory{{Issue: "10001", CompleteTo: time.UnixMilli(1_799_900_000_000)}}}, nil
+	}
+	must[Outcome](t)(m.svc.SyncBoard(t.Context(), m.scope(), BoardDue{Structure: true, Delta: true, History: true}, Background))
+	sprint := []Section{{Kind: SectionSprint, Sprint: "1"}}
+	if v := must[BoardView](t)(m.svc.Board(m.scope(), sprint)); v.Sprints[0].Total.Estimate != 5 || len(m.due()) != 0 {
+		t.Fatalf("seeded: sprint total %+v, due %v", v.Sprints[0].Total, m.due())
+	}
+	m.p.set(func(p *scripted) {
+		p.structure = func(b tracker.BoardID, _ time.Time) (tracker.Structure, error) {
+			return pointsStructure(b, "customfield_10026"), nil
+		}
+	})
+	out := must[Outcome](t)(m.svc.tickStructure(t.Context(), m.scope(), Background))
+	v := must[BoardView](t)(m.svc.Board(m.scope(), sprint))
+	if row := v.Sections[0].Rows[0]; !out.Changes().Structure || row.Estimate != nil || v.Sprints[0].Total != (SectionTotal{Rows: 1}) {
+		t.Fatalf("after the switch: changed %v, row estimate %v, sprint total %+v; want the old field's number unknown", out.Changes().Structure, row.Estimate, v.Sprints[0].Total)
+	}
+	if c := m.sync(testBoard).Cursor; len(c) != 0 {
+		t.Fatalf("the cursor survived the switch: %q", c)
+	}
+	m.p.set(func(p *scripted) {
+		p.changedRows = func(q tracker.DeltaQuery) (tracker.RowPage, error) {
+			if q.From != nil {
+				t.Errorf("the walk after the switch started from %q", q.From)
+			}
+			again := r
+			again.Estimate = &eight
+			return tracker.RowPage{Rows: []tracker.Row{again}, Next: cursorAfter("10001")}, nil
+		}
+	})
+	must[Outcome](t)(m.svc.tickDelta(t.Context(), m.scope(), Background))
+	v = must[BoardView](t)(m.svc.Board(m.scope(), sprint))
+	if row := v.Sections[0].Rows[0]; row.Estimate == nil || *row.Estimate != eight || v.Sprints[0].Total.Estimate != eight {
+		t.Fatalf("the row read again: %v, sprint total %+v", row.Estimate, v.Sprints[0].Total)
+	}
+	if due := m.due(); len(due) != 1 || due[0] != "10001" {
+		t.Fatalf("due after the row was read again %v; want its history read again", due)
+	}
+}
+
 // A tick that reads the structure and then the delta, where the structure
 // changes the board's estimate unit, walks the delta from the start of the
 // window, not from the cursor it read at its start: a row the old walk had

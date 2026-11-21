@@ -109,7 +109,8 @@ func TestMirrorRowsFollowTheirReadOrder(t *testing.T) {
 		t.Fatalf("removal = %+v, %v", removal, err)
 	}
 	got = mustWriteRowPage(t, s, root, at(25, webRow("10002", 6, "b"), webRow("10003", 6, "c"), webRow("10001", 5, "later")), nil)
-	assertMirrorChanges(t, "read from before the removal", got, MirrorChanges{Rows: []string{"10001"}, Superseded: []string{"10002", "10003"}})
+	assertMirrorChanges(t, "read from before the removal", got, MirrorChanges{Rows: []string{"10001"}, Superseded: []string{"10002", "10003"},
+		Refused: []string{"10002", "10003"}, CursorRefused: true})
 	assertRows(t, s.db, `SELECT issue_id FROM tracker_cache_issues ORDER BY 1`, "10001,10002")
 	got = mustWriteRowPage(t, s, root, at(30, webRow("10002", 6, "b"), webRow("10003", 6, "c")), nil)
 	assertMirrorChanges(t, "read from the removal on", got, MirrorChanges{Cards: []string{"10002", "10003"}, Rows: []string{"10002", "10003"},
@@ -122,7 +123,7 @@ func TestMirrorRowsFollowTheirReadOrder(t *testing.T) {
 		t.Fatalf("earlier removal = %+v, %v", removal, err)
 	}
 	got = mustWriteRowPage(t, s, root, at(29, webRow("10005", 6, "e")), nil)
-	assertMirrorChanges(t, "read from between the removals", got, MirrorChanges{Superseded: []string{"10005"}})
+	assertMirrorChanges(t, "read from between the removals", got, MirrorChanges{Superseded: []string{"10005"}, Refused: []string{"10005"}, CursorRefused: true})
 }
 
 // A page's cursor is stored unless a page whose read began later stored
@@ -330,4 +331,39 @@ func TestReconcileMirrorBoardUnsettled(t *testing.T) {
 		t.Fatalf("read by ID = %+v, %v", ch, err)
 	}
 	assertRows(t, s.db, `SELECT issue_id FROM tracker_cache_board_issues ORDER BY 1`, "10002,10004")
+}
+
+// A new row refused because the board lost a row after its read began
+// may be of another issue than the one the board lost: the page's cursor
+// is not stored, so the walk reads the page again, from a read that began
+// after the removal, which adds the row.
+func TestAFencedNewRowHoldsItsPagesCursor(t *testing.T) {
+	t.Parallel()
+	s, _, root := newMirror(t)
+	mustReplaceStructure(t, s, root, webStructure(), true)
+	at := func(readAt int64, rows ...MirrorRow) MirrorRowPage {
+		p := webPage("10", rows...)
+		p.ReadAt = readAt
+		return p
+	}
+	mustWriteRowPage(t, s, root, at(10, webRow("10001", 5, "a"), webRow("10002", 5, "b")), []byte("c1"))
+	if _, err := s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Missing: []string{"10002"}, ReadAt: 30})); err != nil {
+		t.Fatal(err)
+	}
+	page := at(20, webRow("10001", 6, "a"), webRow("10003", 6, "c"))
+	got := mustWriteRowPage(t, s, root, page, []byte("c2"))
+	if !got.CursorRefused || !reflect.DeepEqual(got.Superseded, []string{"10003"}) || !reflect.DeepEqual(got.Refused, []string{"10003"}) {
+		t.Fatalf("a page read before the removal = %+v; want 10003 refused and the cursor with it", got)
+	}
+	if rows, err := s.WriteMirrorRows(root, currentPage(s, root, page)); err != nil || !reflect.DeepEqual(rows.Refused, []string{"10003"}) {
+		t.Fatalf("the same rows read by ID = %+v, %v; want 10003 refused", rows, err)
+	}
+	if cursor := mustMirrorCursor(t, s, root, "10"); string(cursor) != "c1" {
+		t.Fatalf("cursor = %q; want the page's start", cursor)
+	}
+	page.ReadAt = 31
+	got = mustWriteRowPage(t, s, root, page, []byte("c2"))
+	if got.CursorRefused || !reflect.DeepEqual(got.Added, []string{"10003"}) || string(mustMirrorCursor(t, s, root, "10")) != "c2" {
+		t.Fatalf("the page read again = %+v, cursor %q; want 10003 added and c2 stored", got, mustMirrorCursor(t, s, root, "10"))
+	}
 }

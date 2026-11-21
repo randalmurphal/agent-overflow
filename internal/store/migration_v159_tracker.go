@@ -62,11 +62,13 @@ package store
 //     board's sections, so a section page continued at another revision is
 //     refused. totals_revision advances, through the same triggers but the
 //     order one, trg_tracker_cache_totals_estimate, the estimate reread and
-//     an estimate unit change, with every change that can change a
+//     an estimate definition change, with every change that can change a
 //     section's total, so a patch read for a caller holding the totals
 //     at it reads none. retired is set when the board's last listing goes; a retired
 //     board is absent to reads and writes, FinishMirrorCleanup drains it,
 //     and a board listed again gets a new lifetime then.
+//     The estimate definition is estimate_unit and estimate_field, the
+//     tracker's identity of what the estimates are of (a Jira field ID).
 //     estimate_reset_at is the read of the latest structure that changed
 //     the board's estimate definition: a row read no later than it may hold
 //     a number in the old definition, which reads show as unknown, a row
@@ -75,7 +77,8 @@ package store
 //     stores its cursor only when it names the value its walk began under.
 //     rows_removed_at
 //     is the latest read that found issues gone from the board: a read
-//     that began before it adds no row.
+//     that began before it adds no row. listing_read_at is the read of the
+//     newest complete listing reconciled: an older one removes no row.
 //   - tracker_cache_board_unexplained: a status (kind 1), user (2) or
 //     sprint (3) a page of the board's rows named that the mirror lacked.
 //     named_at is the read of the page that named it while pending; the
@@ -92,7 +95,9 @@ package store
 //   - tracker_cache_sprints: a sprint as one board shows it; a Jira sprint
 //     can show on several boards and names the board it was made on
 //     (origin_board_id). position is the order the structure read gave.
-//   - tracker_cache_issues: status_since is when the card's status began,
+//   - tracker_cache_issues: changed_at is the read that last changed the
+//     card or its sprints: a card with the same update time from a read
+//     that began earlier is superseded. status_since is when the card's status began,
 //     derived from the card and the stored history whenever either is
 //     written (mirrorStatusSinceSQL), zero when the history does not cover
 //     the card. history_from is the time the stored changes are complete
@@ -206,9 +211,11 @@ CREATE TABLE tracker_cache_boards (
  name TEXT NOT NULL DEFAULT '',
  plans_sprints INTEGER NOT NULL DEFAULT 0 CHECK(plans_sprints IN (0, 1)),
  estimate_unit INTEGER NOT NULL DEFAULT 0 CHECK(estimate_unit IN (0, 1, 2)),
+ estimate_field TEXT NOT NULL DEFAULT '',
  data BLOB NOT NULL DEFAULT x'',
  read_at INTEGER NOT NULL DEFAULT 0 CHECK(read_at >= 0),
  rows_removed_at INTEGER NOT NULL DEFAULT 0 CHECK(rows_removed_at >= 0),
+ listing_read_at INTEGER NOT NULL DEFAULT 0 CHECK(listing_read_at >= 0),
  estimate_reset_at INTEGER NOT NULL DEFAULT 0 CHECK(estimate_reset_at >= 0),
  revision INTEGER NOT NULL DEFAULT 0 CHECK(revision >= 0),
  totals_revision INTEGER NOT NULL DEFAULT 0 CHECK(totals_revision >= 0),
@@ -278,6 +285,7 @@ CREATE TABLE tracker_cache_issues (
  created_at INTEGER NOT NULL DEFAULT 0 CHECK(created_at >= 0),
  updated_at INTEGER NOT NULL CHECK(updated_at > 0),
  resolved_at INTEGER NOT NULL DEFAULT 0 CHECK(resolved_at >= 0),
+ changed_at INTEGER NOT NULL DEFAULT 0 CHECK(changed_at >= 0),
  status_since INTEGER NOT NULL DEFAULT 0 CHECK(status_since >= 0),
  history_from INTEGER NOT NULL DEFAULT 0 CHECK(history_from >= 0),
  history_for INTEGER NOT NULL DEFAULT 0 CHECK(history_for >= 0),
