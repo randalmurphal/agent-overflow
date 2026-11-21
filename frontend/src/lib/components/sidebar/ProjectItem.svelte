@@ -523,7 +523,7 @@
   </div>
 
   {#if expanded}
-    <ProjectThreadList projectId={entry.id} {threads} {groups} {pane} {onNewThread} />
+    <ProjectThreadList projectId={entry.id} listKey={entry.key} {threads} {groups} {pane} {onNewThread} />
   {:else if activeWhenCollapsed}
     <!--
       Active-thread pin: the user is reading this thread but the project

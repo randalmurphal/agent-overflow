@@ -14,6 +14,7 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { reorderProjects } from '../../stores/projects.svelte';
   import { buildSidebarEntries, rankOf, type SidebarEntry } from './sidebarEntries';
+  import { adoptProjectDisclosure, revealProject } from '../../stores/projectDisclosure';
   import {
     expandProject,
     collapseProject,
@@ -118,11 +119,20 @@
     const built = buildSidebarEntries({
       listed: treeListed(),
       visible: sidebarBackendVisible,
-      expanded: ({ id }) => isProjectExpanded(id),
+      expanded: ({ key }) => isProjectExpanded(key),
       previous: previousEntries,
     });
     previousEntries = built.entries;
     return built;
+  });
+
+  // The one answer carried over from when disclosure was keyed by project
+  // id (stores/projectDisclosure.ts). An entry whose key differs from the
+  // id it was collapsed under renders unfolded until this runs, which is
+  // within the same task as the render that revealed it, so nothing paints
+  // in between; it writes nothing once no project-id key is left.
+  $effect(() => {
+    for (const entry of sidebarEntries.entries) adoptProjectDisclosure(entry.id);
   });
 
   let previousThreadBuckets: ReadonlyMap<string, Thread[]> = new Map();
@@ -251,35 +261,36 @@
   $effect(() => {
     if (!query) {
       // Search cleared — undo anything we expanded for this session.
-      for (const id of searchAutoExpanded) collapseProject(id);
+      for (const key of searchAutoExpanded) collapseProject(key);
       searchAutoExpanded = new Set<string>();
       return;
     }
     const next = new Set<string>();
-    const matchedProjectIds = new Set<string>();
-    for (const [projectId, threads] of threadsByProject.entries()) {
-      if (threads.length > 0) matchedProjectIds.add(projectId);
+    // By entry key, which is what disclosure is persisted by: the buckets
+    // are keyed by the entry's id, so the entries translate.
+    const matchedKeys = new Set<string>();
+    for (const entry of sidebarEntries.entries) {
+      const hasThreads = (threadsByProject.get(entry.id)?.length ?? 0) > 0;
+      const hasGroups = (groupsByProject.get(entry.id)?.length ?? 0) > 0;
+      if (hasThreads || hasGroups) matchedKeys.add(entry.key);
     }
-    for (const [projectId, groups] of groupsByProject.entries()) {
-      if (groups.length > 0) matchedProjectIds.add(projectId);
-    }
-    for (const projectId of matchedProjectIds) {
-      if (searchAutoExpanded.has(projectId)) {
+    for (const key of matchedKeys) {
+      if (searchAutoExpanded.has(key)) {
         // Already auto-expanded earlier in this search session — keep
         // tracking so we still own the rollback.
-        next.add(projectId);
-      } else if (!isProjectExpanded(projectId)) {
+        next.add(key);
+      } else if (!isProjectExpanded(key)) {
         // Was collapsed before search — flip and remember.
-        expandProject(projectId);
-        next.add(projectId);
+        expandProject(key);
+        next.add(key);
       }
       // else: user/default-expanded — leave alone, don't track.
     }
     // Collapse projects we previously auto-expanded that no longer
     // match the refined query (user typed more characters, matches
     // shrank).
-    for (const id of searchAutoExpanded) {
-      if (!next.has(id)) collapseProject(id);
+    for (const key of searchAutoExpanded) {
+      if (!next.has(key)) collapseProject(key);
     }
     searchAutoExpanded = next;
   });
@@ -304,13 +315,10 @@
     void openTerminalThread({ projectId });
   };
 
-  // The entry's own disclosure, written where the entry is known. In this
-  // commit it is still keyed by the project id the entry renders as.
-  function setEntryExpanded(_key: string, expanded: boolean): void {
-    const id = visibleProjects.find((entry) => entry.key === _key)?.id;
-    if (id === undefined) return;
-    if (expanded) expandProject(id);
-    else collapseProject(id);
+  // The entry's own disclosure, by the entry's key.
+  function setEntryExpanded(key: string, expanded: boolean): void {
+    if (expanded) expandProject(key);
+    else collapseProject(key);
   }
 
   // Commit a manual reorder. The operation is the store's
@@ -350,7 +358,7 @@
     // The added or duplicate project is brought into view: a folded
     // Projects section unfolds, and so does its row.
     setSidebarSectionExpanded('projects', true);
-    expandProject(id);
+    revealProject(id);
     flashProjectId = id;
     if (flashTimer) clearTimeout(flashTimer);
     // 1.2s feels substantial but not distracting.

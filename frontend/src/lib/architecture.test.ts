@@ -577,6 +577,27 @@ const SIDEBAR_PROJECT_READ_ALLOWLIST: Record<string, string> = {
     'ticks the projects one assistant serves, which is a list of projects and not the sidebar tree',
 };
 
+// Rule: a sidebar component does not choose what disclosure is keyed by.
+//
+// Collapse and the show-more limit are persisted by a sidebar ENTRY's key,
+// which is not any one project's id: the id a row renders as changes when a
+// computer lists or a checkout is added, and a user's fold must not move
+// with it. `stores/sidebar.svelte.ts` holds the record by whatever key it is
+// given, `stores/projectDisclosure.ts` is the one module that turns a
+// project into one, and a row reports a toggle to the list that has the
+// entry rather than writing disclosure itself.
+const ENTRY_KEYED_DISCLOSURE: Record<string, string> = {
+  isProjectExpanded: 'lib/components/sidebar/ProjectsSection.svelte',
+  expandProject: 'lib/components/sidebar/ProjectsSection.svelte',
+  collapseProject: 'lib/components/sidebar/ProjectsSection.svelte',
+  getThreadListVisibleLimit: 'lib/components/sidebar/SidebarTreeList.svelte',
+  setThreadListVisibleLimit: 'lib/components/sidebar/SidebarTreeList.svelte',
+  collapseThreadList: 'lib/components/sidebar/SidebarTreeList.svelte',
+};
+const SIDEBAR_STORE = join(STORES_DIR, 'sidebar');
+// Shrink-only, and empty: every other row reports its toggle to the list.
+const SIDEBAR_DISCLOSURE_ALLOWLIST: Record<string, string> = {};
+
 // A call, not the words: the comments in lib/transport/ discuss `Events.On`
 // by name and must not read as subscriptions.
 const EVENTS_ON_CALL = /\bEvents\s*\.\s*On\s*\(/;
@@ -663,6 +684,41 @@ describe('architecture', () => {
       SIDEBAR_PROJECT_READ_ALLOWLIST,
       'New violations.',
       'Take the fact off the SidebarEntry the component is given (components/sidebar/sidebarEntries.ts); add it there if it is missing.',
+    );
+  });
+
+  it('keeps the key a sidebar disclosure is written by out of the components', () => {
+    const offenders = new Map<string, string[]>();
+    const owners = new Set<string>();
+    for (const source of sources) {
+      if (!source.file.startsWith(SIDEBAR_DIR + sep)) continue;
+      const reasons: string[] = [];
+      for (const parsed of source.imports) {
+        if (resolveLocalModule(source.file, parsed.specifier) !== SIDEBAR_STORE) continue;
+        if (parsed.wholeModule) {
+          reasons.push('imports the whole sidebar store, which carries the disclosure writers');
+          continue;
+        }
+        for (const name of parsed.names) {
+          const owner = ENTRY_KEYED_DISCLOSURE[name];
+          if (owner === undefined) continue;
+          if (owner === source.path) {
+            owners.add(name);
+            continue;
+          }
+          reasons.push(`${name} is keyed by an entry, and ${owner} is what has the key`);
+        }
+      }
+      if (reasons.length > 0) offenders.set(source.path, reasons);
+    }
+    // Both owners still hold their keys: with neither reading, this rule
+    // would hold over a directory that had moved the writes somewhere else.
+    expect([...owners].sort()).toEqual(Object.keys(ENTRY_KEYED_DISCLOSURE).sort());
+    expectAllowlistExact(
+      offenders,
+      SIDEBAR_DISCLOSURE_ALLOWLIST,
+      'New violations.',
+      'Report the change to the list that has the entry, or go through stores/projectDisclosure.ts, which turns a project id into the key.',
     );
   });
 

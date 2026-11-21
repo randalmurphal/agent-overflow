@@ -18,7 +18,6 @@ import {
   toggleGroup,
   syncSidebarFromAppStorage,
   syncSidebarFromSettings,
-  toggleProject,
 } from './sidebar.svelte';
 import { appStorageGet, hydrateAppStorage, resetAppStorageForTest } from './appStorage';
 import { loadSettings, resetSettingsForTest } from './settings.svelte';
@@ -29,6 +28,13 @@ import { removeThreadGroup } from './threadGroups.svelte';
 
 const COLLAPSED_KEY = 'sidebar:collapsedProjects';
 const COLLAPSED_GROUPS_KEY = 'sidebar:collapsedGroups';
+
+// The store writes a fold under the key it is given; a toggle is the
+// caller's, which is the list that has the entry (ProjectsSection).
+function toggleProjectForTest(key: string): void {
+  if (isProjectExpanded(key)) collapseProject(key);
+  else expandProject(key);
+}
 
 describe('sidebar store', () => {
   beforeEach(() => {
@@ -73,14 +79,14 @@ describe('sidebar store', () => {
       // so an unseen id reads as expanded. Toggling adds it to the
       // collapsed set; toggling again removes it.
       expect(isProjectExpanded('p1')).toBe(true);
-      toggleProject('p1');
+      toggleProjectForTest('p1');
       expect(isProjectExpanded('p1')).toBe(false);
 
       const raw = appStorageGet(COLLAPSED_KEY);
       expect(raw).not.toBeNull();
       expect(JSON.parse(raw as string)).toContain('p1');
 
-      toggleProject('p1');
+      toggleProjectForTest('p1');
       expect(isProjectExpanded('p1')).toBe(true);
       const raw2 = appStorageGet(COLLAPSED_KEY);
       expect(JSON.parse(raw2 as string)).not.toContain('p1');
@@ -99,7 +105,7 @@ describe('sidebar store', () => {
       localStorage.setItem('agent-overflow:sidebar:collapsedProjects', '{not json');
       // Module init already read storage once; this just verifies that
       // a write/read round-trip serializes over the garbage cleanly.
-      toggleProject('p1');
+      toggleProjectForTest('p1');
       expect(isProjectExpanded('p1')).toBe(false);
     });
   });
@@ -273,7 +279,7 @@ describe('sidebar store', () => {
     });
 
     it('local pre-hydration writes survive an empty server bucket (pending wins)', async () => {
-      toggleProject('proj-local');
+      toggleProjectForTest('proj-local');
       expect(isProjectExpanded('proj-local')).toBe(false);
 
       setBindingMock('GetUIState', async () => ({}));
@@ -286,7 +292,7 @@ describe('sidebar store', () => {
     it('resets to defaults when the hydrated bucket has no view state', async () => {
       // Simulate a fresh client: memory holds stale state from a prior
       // identity, the new bucket is empty and holds no pending writes.
-      toggleProject('proj-stale');
+      toggleProjectForTest('proj-stale');
       resetAppStorageForTest();
       setBindingMock('GetUIState', async () => ({}));
       await hydrateAppStorage();

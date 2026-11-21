@@ -35,7 +35,7 @@ import {
 import { closePanesShowingThread, panesShowingThread } from '../../stores/panes.svelte';
 import { getComposerDraftForPane } from '../../stores/composerDraftRegistry.svelte';
 import { threadRowFrameMark } from '../../stores/threadRowFrames';
-import { expandProject } from '../../stores/sidebar.svelte';
+import { revealProject } from '../../stores/projectDisclosure';
 import { addErrorToast, addToast } from '../../stores/toast.svelte';
 import { copyToClipboard } from '../../utils/clipboard';
 import { asSentence, userFacingError } from '../../utils/userFacingError';
@@ -318,7 +318,7 @@ export async function forkThreadAction(ctx: ThreadActionCtx): Promise<void> {
     const mark = threadRowFrameMark();
     const created = await withForkProgress(ctx.thread, async () => (await ForkThread(ctx.thread.id, null)) as Thread);
     const forked = prependThreadReply(await autoPinNewThread(created), mark);
-    if (forked.projectId) expandProject(forked.projectId);
+    if (forked.projectId) revealProject(forked.projectId);
     await ctx.switchPane(forked);
     addToast('info', `Forked "${ctx.thread.title}" into a new thread.`);
   } catch (err) {

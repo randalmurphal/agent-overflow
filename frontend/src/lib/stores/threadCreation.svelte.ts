@@ -7,7 +7,7 @@ import {
   openEmptyPane,
   threadHostPane,
 } from './panes.svelte';
-import { expandProject } from './sidebar.svelte';
+import { revealProject } from './projectDisclosure';
 import { prependThreadReply } from './threads.svelte';
 import { threadRowFrameMark } from './threadRowFrames';
 import { addErrorToast } from './toast.svelte';
@@ -207,7 +207,7 @@ export async function openDraftThreadForProject(
   options: OpenDraftThreadOptions,
 ): Promise<ThreadPane | null> {
   const { projectId, groupId, targetPane, openInNewPane = false } = options;
-  expandProject(projectId);
+  revealProject(projectId);
   const source = getProject(projectId)?.project;
   if (!source) {
     throw new Error('Project not found');
@@ -285,7 +285,7 @@ export async function openTerminalThread(
   }
   // Reveal where the new row will land (the possibly-collapsed project) so
   // the create isn't invisible.
-  if (projectId) expandProject(projectId);
+  if (projectId) revealProject(projectId);
   // Surface the new terminal in the sidebar immediately (mirrors how draft
   // materialization prepends), instead of waiting for a thread-list refresh.
   thread = prependThreadReply(thread, mark);

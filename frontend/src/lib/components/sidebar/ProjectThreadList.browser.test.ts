@@ -87,7 +87,7 @@ it.each([false, true])('keeps the focused member painted while collapsing and ch
   registerPaneForTest('other', other);
   pane.replaceThread(threads[0]);
   other.replaceThread(threads[1]);
-  const view = render(ProjectThreadList, { projectId: 'project', threads, groups: [group], pane });
+  const view = render(ProjectThreadList, { projectId: 'project', listKey: 'project', threads, groups: [group], pane });
   view.container.style.width = '360px';
   await settled(view.container);
 
@@ -147,7 +147,7 @@ it('aligns the group chevron with top-level pins and member pins with the folder
     thread('plain-member', { groupId: group.id }),
     thread('loose', { pinnedAt: 1 }),
   ];
-  const view = render(ProjectThreadList, { projectId: 'project', threads, groups: [group], pane: createThreadPane() });
+  const view = render(ProjectThreadList, { projectId: 'project', listKey: 'project', threads, groups: [group], pane: createThreadPane() });
   view.container.style.width = '360px';
   await settled(view.container);
 
@@ -204,7 +204,7 @@ describe('assistant rows', () => {
     const props = (assistant: Thread) => ({ assistants: [assistant], pane: createThreadPane(), searching: false });
     const view = render(AssistantsSection, props(agent));
     view.container.style.width = '360px';
-    const plain = render(ProjectThreadList, { projectId: 'project', threads: [loose], groups: [], pane: createThreadPane() });
+    const plain = render(ProjectThreadList, { projectId: 'project', listKey: 'project', threads: [loose], groups: [], pane: createThreadPane() });
     plain.container.style.width = '360px';
     await waitFor(() => expect(view.queryByTestId('thread-row-agent-state')).not.toBeNull());
     await settled(view.container);
@@ -252,7 +252,7 @@ describe('worker counts', () => {
     replaceAllThreads([spawner]);
     setBindingMock('ListThreadWorkerSummaries', async () => ({ summaries: [{ threadId: 'spawner', open: 12, needYou: 3 }], next: '' }));
     await refreshThreadWorkerSummaries();
-    const view = render(ProjectThreadList, { projectId: 'project', threads: [spawner], groups: [], pane: createThreadPane() });
+    const view = render(ProjectThreadList, { projectId: 'project', listKey: 'project', threads: [spawner], groups: [], pane: createThreadPane() });
     view.container.style.width = '300px';
     await settled(view.container);
 

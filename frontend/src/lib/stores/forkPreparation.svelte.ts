@@ -1,5 +1,5 @@
 import type { Thread } from '../types/models';
-import { expandProject } from './sidebar.svelte';
+import { revealProject } from './projectDisclosure';
 
 // Presentation placeholders never enter the thread catalog. Requests for the
 // same source share progress until the backend publishes their actual rows.
@@ -17,7 +17,7 @@ export async function withForkProgress(
   pending = existing
     ? pending.map(entry => entry.source.id === source.id ? { ...entry, count: entry.count + 1 } : entry)
     : [...pending, { source, count: 1 }];
-  if (source.projectId) expandProject(source.projectId);
+  if (source.projectId) revealProject(source.projectId);
   try {
     return await create();
   } finally {

@@ -286,6 +286,18 @@ export function getProjectLabelText(id: string): string {
 // One write at a time and the newest order wins: a request made while a
 // write is out replaces whatever was waiting, which was never sent, and is
 // sent when the write settles.
+//
+// Nothing folds an accepted order into the rows here. The computer that
+// accepted it broadcasts one `project:updated` frame per row it moved
+// (internal/app/app_projects.go#UpdateProjectSortPositions emits them before
+// it returns), and the connection receives every event queued before a reply
+// ahead of that reply (internal/transport/conn.go#writeReply, pinned by
+// TestReplyFollowsEventsEmittedBeforeIt), on one socket whose frames this
+// client applies in order as they arrive (transport/wsClient.ts#handleFrame),
+// which is the same path for the embedded webview and a connected browser.
+// So by the time the write settles the rows carry the positions it sent, and
+// the overlay is dropped onto them. A client that missed the frames has a
+// transport gap, which re-reads the catalog.
 interface OrderRequest {
   ids: readonly string[];
   order: ReadonlyMap<string, number>;
@@ -338,7 +350,6 @@ async function driveOrderWrites(first: OrderRequest): Promise<void> {
       let error: unknown = null;
       try {
         await UpdateProjectSortPositions([...request.ids]);
-        applyAcceptedOrder(request.ids);
       } catch (err) {
         error = err;
       }
@@ -354,24 +365,6 @@ async function driveOrderWrites(first: OrderRequest): Promise<void> {
   } finally {
     orderInFlight = false;
   }
-}
-
-/** Fold an accepted order into the rows, one pass over the catalog. */
-function applyAcceptedOrder(ids: readonly string[]): void {
-  const positions = new Map<string, number>();
-  const backends = new Set<BackendKey | undefined>();
-  for (const [index, id] of ids.entries()) {
-    if (getProject(id) === undefined) continue;
-    positions.set(id, index);
-    backends.add(projectBackend(id));
-  }
-  if (positions.size === 0) return;
-  catalogWriter.mutate(backends, (rows) => rows.map((row) => {
-    const position = positions.get(row.project.id);
-    return position === undefined || row.project.sortPosition === position
-      ? row
-      : { ...row, project: { ...row.project, sortPosition: position } };
-  }));
 }
 
 /** True once a round has committed at least one computer's project rows. */

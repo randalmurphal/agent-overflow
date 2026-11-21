@@ -2,7 +2,7 @@
 // terminal entry point (the per-project +terminal button, the mod+shift+~
 // chord, the ChatHeader ctrl/cmd-click) routes through.
 //
-// We replace the four collaborators (StartTerminal, expandProject,
+// We replace the four collaborators (StartTerminal, revealProject,
 // openEmptyPane, mountThreadInPane) over the real modules so the test pins the
 // WIRING and the load-bearing ORDER
 // without standing up a backend or the real pane registry / switchThread
@@ -51,7 +51,7 @@ const h = vi.hoisted(() => {
       order.push('mountThreadInPane');
       return fakePane;
     }),
-    expandProject: vi.fn(),
+    revealProject: vi.fn(),
     addToast: vi.fn(),
     addErrorToast: vi.fn(),
   };
@@ -70,9 +70,9 @@ vi.mock('./panes.svelte', async (importOriginal) => ({
   openEmptyPane: h.openEmptyPane,
   mountThreadInPane: h.mountThreadInPane,
 }));
-vi.mock('./sidebar.svelte', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('./sidebar.svelte')>()),
-  expandProject: h.expandProject,
+vi.mock('./projectDisclosure', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./projectDisclosure')>()),
+  revealProject: h.revealProject,
 }));
 vi.mock('./toast.svelte', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./toast.svelte')>()),
@@ -98,7 +98,7 @@ beforeEach(() => {
   h.requestTerminalFocus.mockClear();
   h.openEmptyPane.mockClear();
   h.mountThreadInPane.mockClear();
-  h.expandProject.mockClear();
+  h.revealProject.mockClear();
   h.addToast.mockClear();
   h.addErrorToast.mockClear();
   // openTerminalThread console.error's the failure before toasting; keep the
@@ -116,7 +116,7 @@ describe('openTerminalThread', () => {
     const pane = await openTerminalThread({ projectId: 'proj-1', cwd: '/work' });
 
     expect(h.startTerminal).toHaveBeenCalledWith({ projectId: 'proj-1', cwd: '/work' });
-    expect(h.expandProject).toHaveBeenCalledWith('proj-1');
+    expect(h.revealProject).toHaveBeenCalledWith('proj-1');
     expect(h.openEmptyPane).toHaveBeenCalledTimes(1);
     expect(h.mountThreadInPane).toHaveBeenCalledTimes(1);
 
@@ -153,7 +153,7 @@ describe('openTerminalThread', () => {
     await openTerminalThread();
 
     expect(h.startTerminal).toHaveBeenCalledWith({ projectId: undefined, cwd: undefined });
-    expect(h.expandProject).not.toHaveBeenCalled();
+    expect(h.revealProject).not.toHaveBeenCalled();
     expect(h.openEmptyPane).toHaveBeenCalledTimes(1);
   });
 
@@ -209,7 +209,7 @@ describe('openTerminalThread', () => {
 
     // The pane machinery must NOT run on a failed create — no orphan empty pane,
     // no stale focus latch, no sidebar expansion.
-    expect(h.expandProject).not.toHaveBeenCalled();
+    expect(h.revealProject).not.toHaveBeenCalled();
     expect(h.openEmptyPane).not.toHaveBeenCalled();
     expect(h.requestTerminalFocus).not.toHaveBeenCalled();
     expect(h.mountThreadInPane).not.toHaveBeenCalled();

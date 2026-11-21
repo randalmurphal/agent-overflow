@@ -20,7 +20,7 @@
 // Project expansion uses an inverted set: we persist explicit *collapses*
 // rather than expansions, so an unseen project defaults to expanded
 // (t3-code parity). The public API (isProjectExpanded / expandProject /
-// collapseProject / toggleProject) keeps "expanded" semantics — only the
+// collapseProject) keeps "expanded" semantics — only the
 // underlying storage flips.
 //
 // We deliberately keep this separate from projects.svelte.ts — that store
@@ -37,7 +37,6 @@ import {
   appStorageSet,
 } from './appStorage';
 import { getSettings, updateSettingsPatch } from './settings.svelte';
-import { projectMembers } from './projects.svelte';
 import { readFrontendValue, writeFrontendValue, onFrontendValueChanged } from './frontendStorage';
 
 export type { ProjectSortMode };
@@ -199,52 +198,31 @@ let collapsedSections: Set<string> = $state(stringSetFromStorage(COLLAPSED_SECTI
 let threadListVisibleLimits: Record<string, number> = $state(readThreadListVisibleLimits());
 let projectSortMode: ProjectSortMode = $state(readProjectSortMode());
 
-// A project's disclosure, and the preview size of its list, are persisted
-// by project id. A repository checked out on several computers is ONE
-// sidebar entry, and which of its members represents it changes when a
-// computer lists or a checkout is added, so every project id below is read
-// and written over the members of the entry it belongs to: collapsed when
-// any member is collapsed, a collapse writes every member, an expand clears
-// every member, and the preview size is the largest any member carries.
-// Nothing depends on which member represents, and what a user set before a
-// second computer attached still applies, with no key to migrate.
-//
-// An id with no project row of its own is its only member: a group id and
-// the Assistants key share the preview-size map and must answer for
-// themselves.
-function entryMembers(id: string): readonly string[] {
-  const members = projectMembers(id);
-  return members.length === 0 ? [id] : members.map((row) => row.project.id);
-}
+// Disclosure is persisted by the key its caller gives, and this module does
+// not know what that key is about. A sidebar entry's key is the entry's own
+// (`stores/projectDisclosure.ts` chooses it and owns the one answer carried
+// over from when these were keyed by project id); a group's is the group id,
+// the Assistants section's is ASSISTANTS_LIST_KEY.
 
 function writeCollapsed(next: Set<string>): void {
   collapsedProjects = next;
   writeStringSet(COLLAPSED_KEY, next);
 }
 
-export function isProjectExpanded(id: string): boolean {
-  return entryMembers(id).every((member) => !collapsedProjects.has(member));
+export function isProjectExpanded(key: string): boolean {
+  return !collapsedProjects.has(key);
 }
 
-export function toggleProject(id: string): void {
-  if (isProjectExpanded(id)) collapseProject(id);
-  else expandProject(id);
-}
-
-export function expandProject(id: string): void {
-  const members = entryMembers(id).filter((member) => collapsedProjects.has(member));
-  if (members.length === 0) return;
+export function expandProject(key: string): void {
+  if (!collapsedProjects.has(key)) return;
   const next = new Set(collapsedProjects);
-  for (const member of members) next.delete(member);
+  next.delete(key);
   writeCollapsed(next);
 }
 
-export function collapseProject(id: string): void {
-  const members = entryMembers(id).filter((member) => !collapsedProjects.has(member));
-  if (members.length === 0) return;
-  const next = new Set(collapsedProjects);
-  for (const member of members) next.add(member);
-  writeCollapsed(next);
+export function collapseProject(key: string): void {
+  if (collapsedProjects.has(key)) return;
+  writeCollapsed(new Set(collapsedProjects).add(key));
 }
 
 export function getProjectSortMode(): ProjectSortMode {
@@ -377,40 +355,33 @@ export function toggleSidebarSection(section: SidebarSectionId): void {
 export const ASSISTANTS_LIST_KEY = 'assistants';
 
 /**
- * Thread-list preview size, keyed by the list's owner: a project's entry id
+ * Thread-list preview size, keyed by the list's owner: a project entry's key
  * for its top level, a group id for the group's members (both random entity
  * ids, so they share one map), and ASSISTANTS_LIST_KEY for the Assistants
  * section's rows. A list starts at THREAD_PREVIEW_LIMIT; each "Show more"
  * click reveals up to THREAD_REVEAL_INCREMENT hidden rows, and "Show less"
  * drops it back to the default preview.
  */
-export function getThreadListVisibleLimit(id: string): number {
-  let limit = THREAD_PREVIEW_LIMIT;
-  for (const member of entryMembers(id)) {
-    limit = Math.max(limit, threadListVisibleLimits[member] ?? THREAD_PREVIEW_LIMIT);
-  }
-  return limit;
+export function getThreadListVisibleLimit(key: string): number {
+  return Math.max(THREAD_PREVIEW_LIMIT, threadListVisibleLimits[key] ?? THREAD_PREVIEW_LIMIT);
 }
 
-export function setThreadListVisibleLimit(id: string, limit: number): void {
+export function setThreadListVisibleLimit(key: string, limit: number): void {
   const roundedLimit = Math.floor(limit);
   if (!Number.isFinite(roundedLimit) || roundedLimit <= THREAD_PREVIEW_LIMIT) {
-    collapseThreadList(id);
+    collapseThreadList(key);
     return;
   }
-  const members = entryMembers(id).filter((member) => threadListVisibleLimits[member] !== roundedLimit);
-  if (members.length === 0) return;
-  const next = { ...threadListVisibleLimits };
-  for (const member of members) next[member] = roundedLimit;
+  if (threadListVisibleLimits[key] === roundedLimit) return;
+  const next = { ...threadListVisibleLimits, [key]: roundedLimit };
   threadListVisibleLimits = next;
   writeThreadListVisibleLimits(next);
 }
 
-export function collapseThreadList(id: string): void {
-  const members = entryMembers(id).filter((member) => member in threadListVisibleLimits);
-  if (members.length === 0) return;
+export function collapseThreadList(key: string): void {
+  if (!(key in threadListVisibleLimits)) return;
   const next = { ...threadListVisibleLimits };
-  for (const member of members) delete next[member];
+  delete next[key];
   threadListVisibleLimits = next;
   writeThreadListVisibleLimits(next);
 }

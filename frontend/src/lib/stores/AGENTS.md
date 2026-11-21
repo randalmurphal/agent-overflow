@@ -272,10 +272,16 @@ in that directory allowed to read the store's entry-level functions
 store's (`reorderProjects`): the order the user dragged is an overlay the
 sidebar sorts by (`projectOrderPosition`), never a write to the rows, so the
 rows carry the last order a computer accepted and a refusal drops the overlay
-with nothing to undo. One write at a time, and only the newest order waiting
-behind it is sent. Collapse and the show-more limit, which `sidebar.svelte.ts`
-persists by project id, are read and written over an entry's members, so no
-persisted state depends on which member represents it. Do not add permanent
+with nothing to undo. Nothing folds an accepted order into the rows: the
+computer broadcasts one frame per row it moved before it returns, and the
+transport delivers an event queued before a reply ahead of that reply
+(`internal/transport/conn.go#writeReply`), so the rows carry the order by the
+time the overlay is dropped. One write at a time, and only the newest order
+waiting behind it is sent. Collapse and the show-more limit live in
+`sidebar.svelte.ts` under whatever key the caller gives;
+`projectDisclosure.ts` is the one module that turns a project into one (the
+entry's key) and carries the one answer still under a project id, which makes
+it dead once no project-id key is left in storage. Do not add permanent
 frontend tombstones for moved or retired entities; pending reads hold only
 enough ownership evidence to reject stale replies.
 

@@ -33,7 +33,7 @@ import {
 } from '../../stores/threads.svelte';
 import { openDraftThreadForProject } from '../../stores/threadCreation.svelte';
 import type { ThreadPane } from '../../stores/thread.svelte';
-import { expandProject } from '../../stores/sidebar.svelte';
+import { revealProject } from '../../stores/projectDisclosure';
 import { setThreadFilterQuery } from '../../stores/threadFilter.svelte';
 import { threadRowFrameMark } from '../../stores/threadRowFrames';
 import { addErrorToast, addToast } from '../../stores/toast.svelte';
@@ -113,7 +113,7 @@ export async function createThreadGroupAndMoveAction(
  */
 export async function newThreadGroupInProject(projectId: string): Promise<ThreadGroup | null> {
   setThreadFilterQuery('');
-  expandProject(projectId);
+  revealProject(projectId);
   return createThreadGroupAction(projectId);
 }
 

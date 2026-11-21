@@ -36,6 +36,7 @@ import {
 } from '../../../stores/threadGroups.svelte';
 import { createThreadGroupAction } from '../threadGroupActions';
 import { resetCatalogLoadForTest } from '../../../stores/catalogLoad.svelte';
+import { applyProjectUpdated } from '../../../stores/eventsProjectRows';
 import { __setTransportStatusForTest } from '../../../stores/transportStatus.svelte';
 import { DisconnectedError, TransportError } from '../../../transport/wsClient';
 import { observeBackendGeneration, setBackendIdentityFromBootstrap } from '../../../transport/backendIdentity';
@@ -426,6 +427,65 @@ describe('<ProjectsSection>', () => {
     }
   });
 
+  // The dropped order is an overlay the list sorts by, dropped when the
+  // write settles. What makes that safe is the order on the wire: the
+  // computer broadcasts one project:updated frame per row it moved before
+  // it returns (internal/app/app_projects.go#UpdateProjectSortPositions),
+  // the connection gets every event queued before a reply ahead of that
+  // reply (internal/transport/conn.go#writeReply, pinned by
+  // TestReplyFollowsEventsEmittedBeforeIt), and this client applies a
+  // frame as it arrives (transport/wsClient.ts#handleFrame). So the rows
+  // carry the order by the time the overlay goes, and the list never shows
+  // the order the user dragged away from.
+  it('never shows the order dropped away from, from the drop to the computer\'s frames', async () => {
+    await seedProjects([
+      { project: mkProject('p-a', { name: 'A', sortPosition: 0 }), threadCount: 0, lastActive: 0 },
+      { project: mkProject('p-b', { name: 'B', sortPosition: 1 }), threadCount: 0, lastActive: 0 },
+    ]);
+    setProjectSortMode('manual');
+    const { container } = render(ProjectsSection, { props: { pane: null } });
+    await tick();
+    expect(itemIds(container)).toEqual(['p-a', 'p-b']);
+
+    const settlement = deferred<Project[]>();
+    const write = vi.fn(() => settlement.promise);
+    setBindingMock('UpdateProjectSortPositions', write);
+    const items = container.querySelectorAll('[data-testid="project-item"]');
+    const dataTransfer = { effectAllowed: '', dropEffect: '', setData: vi.fn(), getData: () => '' };
+    const drag = async (type: string, target: Element, props: Record<string, unknown> = {}): Promise<void> => {
+      const event = new Event(type, { bubbles: true, cancelable: true });
+      Object.defineProperty(event, 'dataTransfer', { value: dataTransfer });
+      for (const [key, value] of Object.entries(props)) Object.defineProperty(event, key, { value });
+      await fireEvent(target, event);
+    };
+    const sampled: string[][] = [];
+    const sample = async (times: number): Promise<void> => {
+      for (let i = 0; i < times; i += 1) {
+        sampled.push(itemIds(container));
+        await tick();
+      }
+    };
+
+    // B dropped above A.
+    await drag('dragstart', items[1].querySelector('[aria-expanded]')!);
+    await drag('dragover', items[0], { clientY: -1 });
+    await drag('drop', items[0]);
+    await sample(4);
+    await vi.waitFor(() => expect(write).toHaveBeenCalledWith(['p-b', 'p-a']));
+    await sample(2);
+
+    // The frames, then the reply: the order the transport guarantees.
+    applyProjectUpdated({ action: 'full', project: mkProject('p-b', { name: 'B', sortPosition: 0 }) });
+    applyProjectUpdated({ action: 'full', project: mkProject('p-a', { name: 'A', sortPosition: 1 }) });
+    await sample(2);
+    settlement.resolve([]);
+    await settleTicks();
+    await sample(3);
+
+    expect(sampled).toEqual(sampled.map(() => ['p-b', 'p-a']));
+    expect(itemIds(container)).toEqual(['p-b', 'p-a']);
+  });
+
   it('opens the inline rename on the row a group create just mounted', async () => {
     // Why the request lives INSIDE createThreadGroupAction: the store write
     // schedules the flush that mounts the row, and that flush runs before the
@@ -715,6 +775,7 @@ describe('<ProjectsSection> threads and their groups', () => {
     const { stageBackend, resetStagedBackends } = await import('../../../../test/helpers/backends');
     const { setSidebarDeviceVisible, showAllSidebarDevices } = await import('../../../stores/sidebarDevices.svelte');
     const { getThreadListVisibleLimit, setThreadListVisibleLimit } = await import('../../../stores/sidebar.svelte');
+    const { projectDisclosureKey } = await import('../../../stores/projectDisclosure');
     stageBackend({ id: 'gpu', backendId: 'gpu-id' });
     setBackendIdentityFromBootstrap('home-id', 'gen-1', 'Mac', HOME_BACKEND);
     try {
@@ -732,7 +793,7 @@ describe('<ProjectsSection> threads and their groups', () => {
       expect(headers(container)).toEqual(['a-home']);
 
       await fireEvent.click(chevron(container, 'a-home'));
-      setThreadListVisibleLimit('a-home', 10);
+      setThreadListVisibleLimit(projectDisclosureKey('a-home'), 10);
       await settle();
       expect(expandedOf(container, 'a-home')).toBe('false');
 
@@ -743,7 +804,7 @@ describe('<ProjectsSection> threads and their groups', () => {
       // the default preview.
       expect(headers(container)).toEqual(['a-home']);
       expect(expandedOf(container, 'a-home')).toBe('false');
-      expect(getThreadListVisibleLimit('a-home')).toBe(10);
+      expect(getThreadListVisibleLimit(projectDisclosureKey('a-home'))).toBe(10);
 
       await fireEvent.click(chevron(container, 'a-home'));
       await settle();
@@ -757,11 +818,18 @@ describe('<ProjectsSection> threads and their groups', () => {
 
   it("keeps the row it rendered, and its disclosure, through a held member's commit and its listing", async () => {
     const { stageBackend, resetStagedBackends } = await import('../../../../test/helpers/backends');
-    const { collapseProject, getThreadListVisibleLimit, setThreadListVisibleLimit } = await import('../../../stores/sidebar.svelte');
+    const {
+      collapseProject,
+      getThreadListVisibleLimit,
+      isProjectExpanded,
+      setThreadListVisibleLimit,
+    } = await import('../../../stores/sidebar.svelte');
+    const { projectDisclosureKey } = await import('../../../stores/projectDisclosure');
     stageBackend({ id: 'gpu', backendId: 'gpu-id' });
     try {
       // The user collapsed the entry and revealed more of it while GPU was
-      // the only computer showing it.
+      // the only computer showing it, back when disclosure was keyed by
+      // project id: the answer is under that id and nothing else.
       collapseProject('a-gpu');
       setThreadListVisibleLimit('a-gpu', 10);
       const homeProjects = deferred<ProjectWithCounts[]>();
@@ -783,6 +851,10 @@ describe('<ProjectsSection> threads and their groups', () => {
       expect(catalogTreeListed('gpu')).toBe(true);
       expect(headers(container)).toEqual(['a-gpu']);
       expect(expandedOf(container, 'a-gpu')).toBe('false');
+      // Carried to the entry's key, once, and the id it was under is spent.
+      expect(getThreadListVisibleLimit(projectDisclosureKey('a-gpu'))).toBe(10);
+      expect(isProjectExpanded('a-gpu')).toBe(true);
+      expect(getThreadListVisibleLimit('a-gpu')).toBe(8);
       const row = container.querySelector('[data-testid="project-item"]');
 
       // Home's project row commits at its own window while Home's threads
@@ -793,7 +865,7 @@ describe('<ProjectsSection> threads and their groups', () => {
       expect(catalogTreeListed(HOME_BACKEND)).toBe(false);
       expect(headers(container)).toEqual(['a-gpu']);
       expect(expandedOf(container, 'a-gpu')).toBe('false');
-      expect(getThreadListVisibleLimit('a-gpu')).toBe(10);
+      expect(getThreadListVisibleLimit(projectDisclosureKey('a-gpu'))).toBe(10);
       expect(container.querySelector('[data-testid="project-item"]')).toBe(row);
 
       // At Home's listing the entry changes hands, by design. Its key does
@@ -806,7 +878,7 @@ describe('<ProjectsSection> threads and their groups', () => {
       expect(headers(container)).toEqual(['a-home']);
       expect(container.querySelector('[data-testid="project-item"]')).toBe(row);
       expect(expandedOf(container, 'a-home')).toBe('false');
-      expect(getThreadListVisibleLimit('a-home')).toBe(10);
+      expect(getThreadListVisibleLimit(projectDisclosureKey('a-home'))).toBe(10);
     } finally {
       resetStagedBackends();
     }

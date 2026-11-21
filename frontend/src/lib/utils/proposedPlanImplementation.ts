@@ -11,7 +11,7 @@ import {
 import { mountThreadInPane, syncThreadReply } from '../stores/panes.svelte';
 import { threadRowFrameMark } from '../stores/threadRowFrames';
 import { prependThreadReply } from '../stores/threads.svelte';
-import { expandProject } from '../stores/sidebar.svelte';
+import { revealProject } from '../stores/projectDisclosure';
 import { projectSendResolved, projectSendStarted } from '../stores/threadStatuses.svelte';
 import { addErrorToast, addToast } from '../stores/toast.svelte';
 import type { SourceProposedPlan, Thread } from '../types/models';
@@ -212,7 +212,7 @@ export async function implementProposedPlanInNewThread(
       clearWorktreeIntent(sourceThread.id);
     }
     created = prependThreadReply(created, mark);
-    if (created.projectId) expandProject(created.projectId);
+    if (created.projectId) revealProject(created.projectId);
     await mountThreadInPane(created, pane);
     return true;
   } catch (err) {

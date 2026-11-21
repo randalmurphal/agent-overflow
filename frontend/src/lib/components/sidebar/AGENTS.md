@@ -58,10 +58,13 @@ which adds the project's empty state and drop targets.
 - A row's label is disambiguated by `ProjectList.svelte` over the entries it
   renders, so a query that hides one of two same-named projects drops the
   other's prefix; the entry carries the name and path, not the label.
-- Disclosure needs none of the three. Collapse and the show-more limit stay
-  persisted by project id and are read and written over an entry's members
-  (`stores/sidebar.svelte.ts`), so what a user set survives every
-  representative change with no key to migrate.
+- Disclosure is keyed by the entry's key: collapse, and the show-more limit
+  of the entry's own list, which `ProjectItem` passes down as `listKey`
+  beside the `projectId` an action targets. `ProjectsSection.svelte` and
+  `SidebarTreeList.svelte` are the only readers of those writers here, which
+  `lib/architecture.test.ts` enforces; a row reports a toggle through
+  `onSetExpanded` instead of writing one. Anything that wants a project's
+  rows revealed calls `revealProject` in `stores/projectDisclosure.ts`.
 - A row's worker count and needs-you badge read
   `stores/threadWorkerSummaries.svelte.ts`.
 - `threadRowActions.ts` and `threadGroupActions.ts` own mutations from this

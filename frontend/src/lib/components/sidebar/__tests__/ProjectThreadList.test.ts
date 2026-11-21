@@ -47,7 +47,7 @@ describe('<ProjectThreadList>', () => {
   it('shows a "+ New Thread" empty-state button when threads is empty, and no other', () => {
     const pane = createThreadPane();
     const { getByTestId, container } = render(ProjectThreadList, {
-      props: { projectId: 'p1', threads: [], pane },
+      props: { projectId: 'p1', listKey: 'p1', threads: [], pane },
     });
     expect(normalizedTextContent(getByTestId('project-thread-list-empty'))).toMatch(
       /New thread/i,
@@ -63,6 +63,7 @@ describe('<ProjectThreadList>', () => {
     const { getByTestId } = render(ProjectThreadList, {
       props: {
         projectId: 'proj-42',
+        listKey: 'proj-42',
         threads: [],
         pane,
         onNewThread,
@@ -79,6 +80,7 @@ describe('<ProjectThreadList>', () => {
     const { getByTestId } = render(ProjectThreadList, {
       props: {
         projectId: 'proj-42',
+        listKey: 'proj-42',
         threads: [],
         pane,
         onNewThread,
@@ -96,6 +98,7 @@ describe('<ProjectThreadList>', () => {
     const { getByTestId } = render(ProjectThreadList, {
       props: {
         projectId: 'proj-42',
+        listKey: 'proj-42',
         threads: [],
         pane,
         onNewThread,
@@ -112,6 +115,7 @@ describe('<ProjectThreadList>', () => {
     const { getByText, queryByTestId } = render(ProjectThreadList, {
       props: {
         projectId: 'p1',
+        listKey: 'p1',
         threads: [mkThread('t1', { title: 'Alpha' }), mkThread('t2', { title: 'Beta' })],
         pane,
       },
@@ -127,6 +131,7 @@ describe('<ProjectThreadList>', () => {
     const { getByTestId, rerender } = render(ProjectThreadList, {
       props: {
         projectId: 'p1',
+        listKey: 'p1',
         threads: [
           mkThread('member', { groupId: 'g1', pinnedAt: 3, pinGroup: 1 }),
           mkThread('front', { pinnedAt: 1, pinGroup: 0 }),
@@ -167,6 +172,7 @@ describe('<ProjectThreadList>', () => {
     const { getByTestId, queryByTestId } = render(ProjectThreadList, {
       props: {
         projectId: 'p1',
+        listKey: 'p1',
         threads,
         pane,
       },
@@ -196,7 +202,7 @@ describe('<ProjectThreadList>', () => {
     const rest = [mkThread('recent', { updatedAt: 100 }), mkThread('older', { updatedAt: 50 })];
     const draft = mkThread('draft', { isDraft: true });
     const { getByTestId, queryByText, rerender } = render(ProjectThreadList, {
-      props: { projectId: 'p1', threads: [...pins.slice(0, 7), ...rest, draft], pane },
+      props: { projectId: 'p1', listKey: 'p1', threads: [...pins.slice(0, 7), ...rest, draft], pane },
     });
     const list = getByTestId('project-thread-list');
     expect(list.querySelectorAll('[role="listitem"]')).toHaveLength(9);
@@ -232,6 +238,7 @@ describe('<ProjectThreadList>', () => {
     const { getByTestId } = render(ProjectThreadList, {
       props: {
         projectId: 'p1',
+        listKey: 'p1',
         threads,
         pane,
       },
@@ -263,7 +270,7 @@ describe('<ProjectThreadList>', () => {
     other.replaceThread(threads[20]);
 
     const { getByTestId } = render(ProjectThreadList, {
-      props: { projectId: 'p1', threads, pane: focused },
+      props: { projectId: 'p1', listKey: 'p1', threads, pane: focused },
     });
 
     const list = getByTestId('project-thread-list');
@@ -298,7 +305,7 @@ describe('<ProjectThreadList>', () => {
     replaceAllThreads([t1, t2]);
     const pane = createThreadPane();
     render(ProjectThreadList, {
-      props: { projectId: 'p1', threads: [t1, t2], pane },
+      props: { projectId: 'p1', listKey: 'p1', threads: [t1, t2], pane },
     });
     await tick();
     const spy = vi.spyOn(Element.prototype, 'getBoundingClientRect');
@@ -375,7 +382,7 @@ describe('<ProjectThreadList> thread groups', () => {
 
   function renderList(threads: Thread[], groups: ThreadGroup[]) {
     return render(ProjectThreadList, {
-      props: { projectId: 'p1', threads, pane: createThreadPane(), groups },
+      props: { projectId: 'p1', listKey: 'p1', threads, pane: createThreadPane(), groups },
     });
   }
 
@@ -629,7 +636,7 @@ describe('<ProjectThreadList> thread groups', () => {
     registerPaneForTest('main', pane);
     pane.replaceThread(rest[9]);
     const { container, getByTestId } = render(ProjectThreadList, {
-      props: { projectId: 'p1', threads: [...pins, ...rest, hiddenFailed], pane, groups: [mkGroup()] },
+      props: { projectId: 'p1', listKey: 'p1', threads: [...pins, ...rest, hiddenFailed], pane, groups: [mkGroup()] },
     });
 
     // Failed sorts first among unpinned members, so it is visible; the

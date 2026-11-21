@@ -11,7 +11,7 @@ import type { PRThread } from './bindings';
 import { mountThreadForToolPane, syncThreadReply } from './panes.svelte';
 import { listedPR, onPullsPageDetached, pullsPageAttachment, pullsPageBackend, selectedPR, type PullsSelection } from './pullsPage.svelte';
 import { currentPinnedReviewState, reviewSubjectForPR } from './reviewPanePinned.svelte';
-import { expandProject } from './sidebar.svelte';
+import { revealProject } from './projectDisclosure';
 import { threadRowFrameMark } from './threadRowFrames';
 import { getThreads, prependThreadReply } from './threads.svelte';
 import { getThreadStatus } from './threadStatuses.svelte';
@@ -175,7 +175,7 @@ export async function openPRThread(paneId: string, key?: string): Promise<boolea
     }));
     let thread = (await withBackendTarget(backend, () => GetThread(opened.threadId))) as Thread;
     thread = prependThreadReply(thread, mark);
-    if (thread.projectId) expandProject(thread.projectId);
+    if (thread.projectId) revealProject(thread.projectId);
     await mountForPage(thread, paneId, attachment);
     return true;
   } catch (err) {

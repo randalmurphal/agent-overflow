@@ -22,7 +22,7 @@
   import { markThreadRead, prependThreadReply, updateThreadReadState } from '../../stores/threads.svelte';
   import { threadRowFrameMark } from '../../stores/threadRowFrames';
   import { getFocusedThreadPaneId, openThreadInPane } from '../../stores/panes.svelte';
-  import { expandProject } from '../../stores/sidebar.svelte';
+  import { revealProject } from '../../stores/projectDisclosure';
   import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import { autoPinNewThread } from '../../stores/threadAutoPin';
   import { getActiveTurn, getThreadStatus, projectThreadViewed } from '../../stores/threadStatuses.svelte';
@@ -435,7 +435,7 @@
       const pinned = await autoPinNewThread(created);
       if (pane.thread?.id !== thread.id) return;
       const forked = prependThreadReply(pinned, mark);
-      if (forked.projectId) expandProject(forked.projectId);
+      if (forked.projectId) revealProject(forked.projectId);
       await openThreadInPane(forked, pane);
       addToast('info', 'Forked from this message into a new thread.');
     } catch (err) {

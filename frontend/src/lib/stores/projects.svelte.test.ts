@@ -27,6 +27,7 @@ import { __resetEntityIndexForTest, noteProject } from '../transport/entityIndex
 import { HOME_BACKEND } from '../transport/backendKey';
 import type { Project, ProjectWithCounts } from '../types/models';
 import { setBindingMock } from '../../test/mocks/bindings-app';
+import { applyProjectUpdated } from './eventsProjectRows';
 
 function makeProject(id: string, overrides: Partial<Project> = {}): Project {
   return {
@@ -301,7 +302,19 @@ describe('reorderProjects', () => {
     return {
       sent,
       refuse: (index, error) => settlers[index].reject(error),
-      accept: (index) => settlers[index].resolve([]),
+      // What a computer that accepted an order does: one project:updated
+      // frame per row it moved, which the transport delivers ahead of the
+      // reply (internal/transport/conn.go#writeReply). Through the real
+      // applier, because the rows carrying the order is the whole reason
+      // the overlay can be dropped with nothing written here.
+      accept: (index) => {
+        for (const [position, id] of sent[index].entries()) {
+          const row = getProject(id);
+          if (row === undefined) continue;
+          applyProjectUpdated({ action: 'full', project: { ...row.project, sortPosition: position } });
+        }
+        settlers[index].resolve([]);
+      },
     };
   }
   // What the sidebar sorts by, and what the rows carry under it.
