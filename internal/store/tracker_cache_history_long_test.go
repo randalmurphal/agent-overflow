@@ -61,7 +61,7 @@ func TestMirrorLongHistoryIsStagedWhole(t *testing.T) {
 		var results []MirrorHistoryResult
 		var err error
 		sweep, histories := currentSweep(s, root), dueHistories(s, root, []MirrorHistory{step.history})
-		statements := countMirrorStatements(t, func() { results, err = s.ReplaceMirrorHistories(root, sweep, histories) })
+		statements := countMirrorStatements(t, func() { results, _, err = s.ReplaceMirrorHistories(root, sweep, histories, MirrorCatalog{}, 0) })
 		if err != nil || len(results) != 1 || results[0].Changed != step.changed {
 			t.Fatalf("%s: %+v, %v", step.name, results, err)
 		}
@@ -97,7 +97,7 @@ func TestMirrorStagingStoppedBetweenChunks(t *testing.T) {
 		{"after the switch", `BEFORE DELETE ON tracker_cache_changes WHEN OLD.gen = 1 AND OLD.seq = 2000`,
 			"10 answered 6010 since 10 other 3000 dirty 1",
 			func(s *Store, root int64) error {
-				_, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{longHistory("10001", 10, 9000)}))
+				_, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{longHistory("10001", 10, 9000)}), MirrorCatalog{}, 0)
 				return err
 			}},
 	} {
@@ -110,7 +110,7 @@ func TestMirrorStagingStoppedBetweenChunks(t *testing.T) {
 			next = longHistory("10001", 5000, 7000)
 		}
 		mustExec(t, s.db, fmt.Sprintf(`CREATE TRIGGER test_stop_staging %s BEGIN SELECT RAISE(ABORT, 'stopped'); END`, stop.trigger))
-		if _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{next})); err == nil {
+		if _, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{next}), MirrorCatalog{}, 0); err == nil {
 			t.Fatalf("%s: the staging was not stopped", stop.name)
 		}
 		if got := mirrorHistoryShown(t, s); got != stop.shown {

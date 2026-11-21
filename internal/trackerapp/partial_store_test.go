@@ -15,12 +15,13 @@ import (
 // fails: what committed comes back with the error.
 type partialStore struct{ *store.Store }
 
-func (s *partialStore) ReplaceMirrorHistories(root, sweep int64, hs []store.MirrorHistory) ([]store.MirrorHistoryResult, error) {
-	res, err := s.Store.ReplaceMirrorHistories(root, sweep, hs[:1])
+func (s *partialStore) ReplaceMirrorHistories(root, sweep int64, hs []store.MirrorHistory, catalog store.MirrorCatalog,
+	readAt int64) ([]store.MirrorHistoryResult, bool, error) {
+	res, changed, err := s.Store.ReplaceMirrorHistories(root, sweep, hs[:1], catalog, readAt)
 	if err != nil {
-		return res, err
+		return res, changed, err
 	}
-	return res, errStoreDown
+	return res, changed, errStoreDown
 }
 
 func (s *partialStore) ReconcileMirrorBoard(root int64, board string, lifetime int64, listed []string, complete bool, readAt, settledAt int64) (store.MirrorReconcile, error) {

@@ -81,17 +81,9 @@ func (r *run) historyOf(due []store.MirrorHistoryDue) (Changes, error) {
 	// When the answers arrived, by the steady clock: a wait for a final
 	// read counts from it (store MirrorHistory.AnsweredAt).
 	answered, settle := r.steadyAt(), r.p.Capabilities().HistorySettle.Milliseconds()
-	var out Changes
-	if len(h.Users)+len(h.Statuses) > 0 {
-		catalog, err := mirrorCatalog(h.Catalog)
-		if err != nil {
-			return out, err
-		}
-		stored, err := r.s.store.UpsertMirrorCards(r.root, r.state.Sweep, nil, catalog, read)
-		if err != nil {
-			return out, fmt.Errorf("trackerapp: store the users of a history read: %w", err)
-		}
-		out.Catalog = stored.Catalog
+	catalog, err := mirrorCatalog(h.Catalog)
+	if err != nil {
+		return Changes{}, err
 	}
 	byIssue := make(map[tracker.IssueID]int, len(h.Issues))
 	for i, ih := range h.Issues {
@@ -117,7 +109,8 @@ func (r *run) historyOf(due []store.MirrorHistoryDue) (Changes, error) {
 		// a later one was stored is superseded.
 		histories[i].BoardsRev, histories[i].Receipt = d.BoardsRev, d.Receipt
 	}
-	out.History, err = r.storeHistories(histories)
+	var out Changes
+	out.History, out.Catalog, err = r.storeHistories(histories, catalog, read)
 	return out, err
 }
 
@@ -148,13 +141,14 @@ func (r *run) historyFinal(d store.MirrorHistoryDue, completeTo time.Time, began
 }
 
 // storeHistories stores hs, the whole history of each issue of one read,
-// in one store call, and returns the issues whose stored history changed,
-// sorted. A history the store finds superseded (a later read stored one)
-// or of an issue it no longer keeps changes nothing and is no failure. A
-// store call that failed part way changed the histories it reports, which
-// are returned with its error.
-func (r *run) storeHistories(hs []store.MirrorHistory) ([]tracker.IssueID, error) {
-	results, err := r.s.store.ReplaceMirrorHistories(r.root, r.state.Sweep, hs)
+// with the users and statuses the read named (catalog, the read begun at
+// read), in one store call, and returns the issues whose stored history
+// changed, sorted, and whether the catalog changed. A history the store
+// finds superseded (a later read stored one) or of an issue it no longer
+// keeps changes nothing and is no failure. A store call that failed part
+// way changed what it reports, which is returned with its error.
+func (r *run) storeHistories(hs []store.MirrorHistory, catalog store.MirrorCatalog, read int64) ([]tracker.IssueID, bool, error) {
+	results, catalogChanged, err := r.s.store.ReplaceMirrorHistories(r.root, r.state.Sweep, hs, catalog, read)
 	var changed []tracker.IssueID
 	for _, res := range results {
 		if res.Changed {
@@ -163,7 +157,7 @@ func (r *run) storeHistories(hs []store.MirrorHistory) ([]tracker.IssueID, error
 	}
 	slices.Sort(changed)
 	if err != nil {
-		return changed, fmt.Errorf("trackerapp: store the history of %d issues: %w", len(hs), err)
+		return changed, catalogChanged, fmt.Errorf("trackerapp: store the history of %d issues: %w", len(hs), err)
 	}
-	return changed, nil
+	return changed, catalogChanged, nil
 }

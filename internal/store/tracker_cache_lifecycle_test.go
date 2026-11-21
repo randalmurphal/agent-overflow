@@ -347,7 +347,7 @@ func TestCleanupSweepIsLeafFirstAndBounded(t *testing.T) {
 		t.Fatalf("history due = %v, %v; want the issue kept again", due, err)
 	}
 	stale := listedAt(s, root, statusHistory("10001", 3), 1)
-	if results, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), []MirrorHistory{stale}); err != nil || !results[0].Superseded {
+	if results, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), []MirrorHistory{stale}, MirrorCatalog{}, 0); err != nil || !results[0].Superseded {
 		t.Fatalf("a history listed before the reset = %+v, %v; want superseded", results, err)
 	}
 	mustReplaceHistory(t, s, root, statusHistory("10001", 3), MirrorWrite{Changed: true})

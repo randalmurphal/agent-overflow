@@ -27,7 +27,7 @@ type MirrorBoardView struct {
 // mirrorBoardViewSQL reads a shown board's own fields and what its rows'
 // reads need.
 var mirrorBoardViewSQL = `SELECT b.board_id, b.project_id, b.name, b.plans_sprints, b.estimate_unit, b.data,
-	  b.lifetime, b.revision, b.estimate_reset_at FROM tracker_cache_boards b
+	  b.lifetime, b.revision, b.totals_revision, b.estimate_reset_at FROM tracker_cache_boards b
 	WHERE b.root_id = ?1 AND b.board_id = ?2 AND ` + mirrorBoardShown("?1", "?2")
 
 // ReadMirrorBoardView reads, in one snapshot (mirrorReadSnapshot), a
@@ -53,7 +53,7 @@ func (s *Store) ReadMirrorBoardView(rootID int64, boardID string, sections []Mir
 		b := &st.Board
 		var board mirrorShownBoard
 		err := tx.QueryRow(mirrorBoardViewSQL, rootID, boardID).Scan(&b.ID, &b.ProjectID, &b.Name, &b.PlansSprints, &b.EstimateUnit, &b.Data,
-			&board.lifetime, &board.revision, &board.estimateResetAt)
+			&board.lifetime, &board.revision, &board.totalsRevision, &board.estimateResetAt)
 		if errors.Is(err, sql.ErrNoRows) {
 			return MirrorBoardView{}, nil
 		}

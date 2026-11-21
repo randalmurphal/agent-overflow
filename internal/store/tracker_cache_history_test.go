@@ -23,7 +23,7 @@ func webHistory(issue string) MirrorHistory {
 
 // replaceHistory writes one history, as a batch of one.
 func replaceHistory(s *Store, root int64, h MirrorHistory) (MirrorWrite, error) {
-	results, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{h}))
+	results, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{h}), MirrorCatalog{}, 0)
 	if err != nil {
 		return MirrorWrite{}, err
 	}
@@ -139,7 +139,7 @@ func TestMirrorHistoryIsNeverReplacedByAnEarlierOne(t *testing.T) {
 	stored := countMirrorRows(t, s.db)["tracker_cache_changes"]
 
 	early := listedAt(s, root, statusHistory("10001", 3), listed)
-	if results, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), []MirrorHistory{early}); err != nil || !results[0].Superseded {
+	if results, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), []MirrorHistory{early}, MirrorCatalog{}, 0); err != nil || !results[0].Superseded {
 		t.Fatalf("a history listed before the stored one = %+v, %v; want superseded", results, err)
 	}
 	if n := countMirrorRows(t, s.db)["tracker_cache_changes"]; n != stored {
@@ -250,7 +250,7 @@ func TestReplaceMirrorHistoriesInBatches(t *testing.T) {
 	batch := dueHistories(s, root, []MirrorHistory{webHistory("10009"), webHistory("10003"), webHistory("10002"), webHistory("10004"), webHistory("10001")})
 	batch[1].Receipt = listed
 	commits := s.CommitCount()
-	results, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), batch)
+	results, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), batch, MirrorCatalog{}, 0)
 	want := []MirrorHistoryResult{{IssueID: "10009", Unkept: true}, {IssueID: "10003", Superseded: true}, {IssueID: "10002", Changed: true},
 		{IssueID: "10004", Unkept: true}, {IssueID: "10001"}}
 	if err != nil || !reflect.DeepEqual(results, want) {
@@ -264,7 +264,7 @@ func TestReplaceMirrorHistoriesInBatches(t *testing.T) {
 	mustReplaceHistory(t, s, root, statusHistory("10002", clearMirrorChunk), MirrorWrite{Changed: true})
 	recorder := recordMirrorWrites(t, s)
 	commits = s.CommitCount()
-	results, err = s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{{IssueID: "10001"}, {IssueID: "10002"}}))
+	results, _, err = s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{{IssueID: "10001"}, {IssueID: "10002"}}), MirrorCatalog{}, 0)
 	if err != nil || !reflect.DeepEqual(results, []MirrorHistoryResult{{IssueID: "10001", Changed: true}, {IssueID: "10002", Changed: true}}) {
 		t.Fatalf("emptying batch = %+v, %v", results, err)
 	}
@@ -282,11 +282,57 @@ func TestReplaceMirrorHistoriesInBatches(t *testing.T) {
 		"issue twice":        {webHistory("10001"), webHistory("10001")},
 		"one invalid":        {webHistory("10002"), {IssueID: "10001", For: -1}},
 	} {
-		if _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, batch)); !errors.Is(err, ErrInvalidTrackerCache) {
+		if _, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, batch), MirrorCatalog{}, 0); !errors.Is(err, ErrInvalidTrackerCache) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
 	if n := countMirrorRows(t, s.db)["tracker_cache_changes"]; n != stored {
 		t.Fatalf("refused batches left %d changes; want %d", n, stored)
+	}
+}
+
+// The users and statuses a history read names are stored with its
+// histories, in their one transaction, and reported changed only when
+// they changed; with no history they are stored alone. A refused batch
+// stores neither.
+func TestMirrorHistoryReadStoresItsCatalog(t *testing.T) {
+	t.Parallel()
+	s, _, root := newMirror(t)
+	mustReplaceStructure(t, s, root, webStructure(), true)
+	mustWriteRowPage(t, s, root, webPage("10", webRow("10001", 5, "a")), nil)
+	user := func(name string) MirrorCatalog {
+		return MirrorCatalog{Users: []MirrorUser{{ID: "acc-user2", Name: name}}, Statuses: []MirrorStatus{{ID: "4", Name: "Review", Group: MirrorGroupInProgress}}}
+	}
+	named := func() string {
+		t.Helper()
+		c, err := s.GetMirrorCatalog(root, []string{"acc-user2"}, []string{"4"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fmt.Sprint(c)
+	}
+	write := func(hs []MirrorHistory, c MirrorCatalog, readAt int64) (bool, uint64, error) {
+		t.Helper()
+		commits := s.CommitCount()
+		results, changed, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, hs), c, readAt)
+		if err == nil && len(hs) > 0 && !results[0].Changed {
+			t.Fatalf("the history did not change: %+v", results)
+		}
+		return changed, s.CommitCount() - commits, err
+	}
+	if _, _, err := write([]MirrorHistory{webHistory("10001")}, user("User 2"), 0); !errors.Is(err, ErrInvalidTrackerCache) || named() != fmt.Sprint(MirrorCatalog{}) {
+		t.Fatalf("a catalog with no read time: %v, stored %s", err, named())
+	}
+	if changed, commits, err := write([]MirrorHistory{webHistory("10001")}, user("User 2"), 10); err != nil || !changed || commits != 1 {
+		t.Fatalf("history and catalog: changed %v in %d transactions, %v; want changed in one", changed, commits, err)
+	}
+	if got, want := named(), fmt.Sprint(user("User 2")); got != want {
+		t.Fatalf("stored %s; want %s", got, want)
+	}
+	if changed, _, err := write(nil, user("User 2"), 11); err != nil || changed {
+		t.Fatalf("the same catalog again: changed %v, %v", changed, err)
+	}
+	if changed, commits, err := write(nil, user("User Two"), 12); err != nil || !changed || commits != 1 || named() != fmt.Sprint(user("User Two")) {
+		t.Fatalf("a renamed user alone: changed %v in %d transactions, %v; stored %s", changed, commits, err, named())
 	}
 }

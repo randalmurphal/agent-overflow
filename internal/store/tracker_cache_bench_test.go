@@ -126,7 +126,7 @@ func BenchmarkMirrorReplaceHistory(b *testing.B) {
 					batch[k] = benchHistory(benchIssueID(0, k), int64(2000+i), 20)
 					batch[k].BoardsRev = revs[k]
 				}
-				results, err := s.ReplaceMirrorHistories(root, sweep, batch)
+				results, _, err := s.ReplaceMirrorHistories(root, sweep, batch, MirrorCatalog{}, 0)
 				if err != nil {
 					return err
 				}

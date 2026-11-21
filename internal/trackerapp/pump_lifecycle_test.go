@@ -401,7 +401,7 @@ func TestSubscribeAnswerOrdersWithEvents(t *testing.T) {
 	// Applying it to the answer is harmless: the patch gives the state the
 	// answer shows.
 	held := heldFromView(*third.View, []Section{{Kind: SectionBacklog}})
-	patch := must[BoardPatch](t)(m.svc.BoardPatch(m.scope(), held.sectionList(), last.Changed))
+	patch := must[BoardPatch](t)(m.svc.BoardPatch(m.scope(), held.sectionList(), last.Changed, held.held()))
 	patched := applyPatch(held, last.Changed, patch)
 	if !patched.sameRows(held) {
 		t.Fatalf("an event the answer covers changed it:\n%v\n%v", patched.describe(), held.describe())

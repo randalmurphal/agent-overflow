@@ -100,9 +100,9 @@ func (c *countingStore) ReplaceMirrorStructure(root int64, st store.MirrorStruct
 	return c.Store.ReplaceMirrorStructure(root, st)
 }
 
-func (c *countingStore) ReplaceMirrorHistories(root, sweep int64, hs []store.MirrorHistory) ([]store.MirrorHistoryResult, error) {
+func (c *countingStore) ReplaceMirrorHistories(root, sweep int64, hs []store.MirrorHistory, catalog store.MirrorCatalog, readAt int64) ([]store.MirrorHistoryResult, bool, error) {
 	c.count("ReplaceMirrorHistories")
-	return c.Store.ReplaceMirrorHistories(root, sweep, hs)
+	return c.Store.ReplaceMirrorHistories(root, sweep, hs, catalog, readAt)
 }
 
 func (c *countingStore) ListMirrorHistoryDue(root int64, now int64) ([]store.MirrorHistoryDue, bool, error) {
@@ -165,9 +165,9 @@ func (c *countingStore) ReadMirrorBoardView(root int64, board string, sections [
 	return c.Store.ReadMirrorBoardView(root, board, sections)
 }
 
-func (c *countingStore) ReadMirrorBoardPatch(root int64, board string, sections []store.MirrorSection, issues []string) (store.MirrorBoardPatch, bool, error) {
+func (c *countingStore) ReadMirrorBoardPatch(root int64, board string, sections []store.MirrorSection, issues []string, held store.MirrorTotalsAt) (store.MirrorBoardPatch, bool, error) {
 	c.count("ReadMirrorBoardPatch")
-	return c.Store.ReadMirrorBoardPatch(root, board, sections, issues)
+	return c.Store.ReadMirrorBoardPatch(root, board, sections, issues, held)
 }
 
 func (c *countingStore) ListMirrorIssueBoards(root int64, issues, parents []string) ([]store.MirrorIssueBoard, error) {

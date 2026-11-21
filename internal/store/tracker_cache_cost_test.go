@@ -55,7 +55,7 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 	// shortened, identical, and a staging left for the cleanup.
 	for _, h := range []MirrorHistory{statusHistory("10002", clearMirrorChunk+100), statusHistory("10002", clearMirrorChunk+150),
 		statusHistory("10002", clearMirrorChunk+150), statusHistory("10002", 3)} {
-		if _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{h})); err != nil {
+		if _, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{h}), MirrorCatalog{}, 0); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -90,7 +90,7 @@ func runEveryMirrorAccessor(t *testing.T, s *Store, jira TrackerConnection, root
 		func() error { _, err := s.CountMirrorSections(root, "10"); return err },
 		func() error {
 			_, _, err := s.ReadMirrorBoardPatch(root, "10", []MirrorSection{{Kind: MirrorSectionSprint, SprintID: "21"},
-				{Kind: MirrorSectionBacklog}, {Kind: MirrorSectionColumn}}, []string{"10001", "10002"})
+				{Kind: MirrorSectionBacklog}, {Kind: MirrorSectionColumn}}, []string{"10001", "10002"}, MirrorTotalsAt{})
 			return err
 		},
 		func() error {
@@ -207,9 +207,9 @@ var mirrorPlanAllowed = []struct{ fragment, line, why string }{
 		"every entry of the partial index is due a history read, and the probe stops at the first one kept"},
 	{"FROM tracker_cache_issues i\n\t\t  WHERE i.root_id = ?1 AND (i.history_for < i.updated_at", "SEARCH i USING INDEX idx_tracker_cache_issues_history_due (root_id=?)",
 		"every entry of the partial index is due a history read, and the listing stops at a page"},
-	{"UPDATE tracker_cache_boards SET revision = revision + 1 WHERE root_id = ?1 AND board_id IN (", "SEARCH i USING INDEX sqlite_autoindex_tracker_cache_issues_1 (root_id=?)",
-		"a status entering or leaving the done groups is rare; finding the boards whose rows have it walks the root's issues once, " +
-			"where an index by status would cost every card write"},
+	{"i.status_id IN (SELECT value FROM json_each(?2))", "SEARCH i USING COVERING INDEX idx_tracker_cache_issues_status (root_id=?)",
+		"a status entering or leaving the done groups is rare; finding the boards whose rows have it walks the root's statuses once, " +
+			"in the index the counts read"},
 }
 
 func mirrorPlanLineAllowed(query, line string) bool {
@@ -268,16 +268,27 @@ func TestMirrorReadsUseTheirIndexes(t *testing.T) {
 		}
 	}
 	for name, read := range map[string]struct{ query, index string }{
-		"sweep candidates":  {mirrorSweepCandidatesSQL, "idx_tracker_cache_issues_boardless (root_id=? AND issue_id>?)"},
-		"cleanup probe":     {mirrorCleanupPendingSQL, "idx_tracker_cache_boards_retired"},
-		"listing check":     {mirrorBoardWriteSQL, "idx_project_tracker_boards_board (connection_id=? AND board_id=?)"},
-		"linked issues":     {mirrorOffBoardLinkedSQL, "idx_thread_tickets_issue (kind=? AND site=? AND issue_id>?)"},
-		"detail eviction":   {mirrorDetailEvictSQL, "idx_tracker_cache_issue_details_opened (root_id=?)"},
-		"detail states":     {mirrorDetailStatesSQL, "SEARCH d USING INDEX sqlite_autoindex_tracker_cache_issue_details_1 (root_id=? AND issue_id=?)"},
-		"issue rows":        {mirrorIssueRowsSQL, "PRIMARY KEY (root_id=? AND issue_id=? AND board_id>?)"},
-		"keep rule":         {`SELECT ` + mirrorIssueKept("?1", "?2"), "PRIMARY KEY (root_id=? AND issue_id=?)"},
-		"backlog section":   {mirrorSectionSQL[MirrorSectionBacklog], "SEARCH sp USING PRIMARY KEY (root_id=? AND board_id=? AND sprint_id=?)"},
-		"row count":         {mirrorCountRowsSQL, "SEARCH sp USING PRIMARY KEY (root_id=? AND board_id=? AND sprint_id=?)"},
+		"sweep candidates": {mirrorSweepCandidatesSQL, "idx_tracker_cache_issues_boardless (root_id=? AND issue_id>?)"},
+		"cleanup probe":    {mirrorCleanupPendingSQL, "idx_tracker_cache_boards_retired"},
+		"listing check":    {mirrorBoardWriteSQL, "idx_project_tracker_boards_board (connection_id=? AND board_id=?)"},
+		"linked issues":    {mirrorOffBoardLinkedSQL, "idx_thread_tickets_issue (kind=? AND site=? AND issue_id>?)"},
+		"detail eviction":  {mirrorDetailEvictSQL, "idx_tracker_cache_issue_details_opened (root_id=?)"},
+		"detail states":    {mirrorDetailStatesSQL, "SEARCH d USING INDEX sqlite_autoindex_tracker_cache_issue_details_1 (root_id=? AND issue_id=?)"},
+		"issue rows":       {mirrorIssueRowsSQL, "PRIMARY KEY (root_id=? AND issue_id=? AND board_id>?)"},
+		"keep rule":        {`SELECT ` + mirrorIssueKept("?1", "?2"), "PRIMARY KEY (root_id=? AND issue_id=?)"},
+		"backlog section": {mirrorSectionSQL[MirrorSectionBacklog],
+			"SEARCH m USING PRIMARY KEY (root_id=? AND issue_id=?)\nSEARCH sp USING PRIMARY KEY (root_id=? AND board_id=? AND sprint_id=?)"},
+		"sprint section": {mirrorSectionSQL[MirrorSectionSprint],
+			"SEARCH m USING COVERING INDEX idx_tracker_cache_issue_sprints_sprint (root_id=? AND sprint_id=?)\nCREATE BLOOM FILTER"},
+		"backlog rows by ID": {mirrorPatchSQL[MirrorSectionBacklog],
+			"SEARCH m USING PRIMARY KEY (root_id=? AND issue_id=?)\nSEARCH sp USING PRIMARY KEY (root_id=? AND board_id=? AND sprint_id=?)"},
+		"sprint rows by ID": {mirrorPatchSQL[MirrorSectionSprint], "SEARCH m EXISTS USING PRIMARY KEY (root_id=? AND issue_id=? AND sprint_id=?)"},
+		"row count": {mirrorCountRowsSQL, "SEARCH i USING COVERING INDEX idx_tracker_cache_issues_status (root_id=? AND issue_id=?)\n" +
+			"LIST SUBQUERY 1\nSEARCH sp USING PRIMARY KEY (root_id=? AND board_id=?)\n" +
+			"SEARCH m USING COVERING INDEX idx_tracker_cache_issue_sprints_sprint (root_id=? AND sprint_id=?)"},
+		"sprint totals": {mirrorCountSprintsSQL, "SEARCH sp USING PRIMARY KEY (root_id=? AND board_id=?)\n" +
+			"SEARCH m USING COVERING INDEX idx_tracker_cache_issue_sprints_sprint (root_id=? AND sprint_id=?)\n" +
+			"SEARCH b USING PRIMARY KEY (root_id=? AND issue_id=? AND board_id=?)"},
 		"worklogs of a day": {mirrorWorklogSupersededDaysSQL, "PRIMARY KEY (root_id=? AND author_id=? AND day>? AND day<?)"},
 	} {
 		plan := explainMirror(t, s, read.query)

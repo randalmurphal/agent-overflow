@@ -114,18 +114,26 @@ func (s *Service) readDetails(ctx context.Context, id string, reads []*ticketRea
 
 // ticketViews builds the view of each of reads whose document changed, or
 // that its pump is to hold and held none of (prior.held nil), named from
-// root.
+// root, the views together (detailViews).
 func (s *Service) ticketViews(root int64, reads []*ticketRead) error {
+	var built []*ticketRead
+	var ds []tracker.Detail
 	for _, rd := range reads {
 		heldNew := rd.check.held != nil && (rd.prior == nil || rd.prior.held == nil)
 		if rd.err != nil || rd.detail == nil || !rd.changed && !heldNew {
 			continue
 		}
-		v, err := s.detailView(root, *rd.detail)
-		if err != nil {
-			return err
-		}
-		rd.view, rd.digest, rd.shows = &v, s.digestOf(v), showsOf(*rd.detail)
+		built, ds = append(built, rd), append(ds, *rd.detail)
+	}
+	if len(ds) == 0 {
+		return nil
+	}
+	views, err := s.detailViews(root, ds)
+	if err != nil {
+		return err
+	}
+	for i, rd := range built {
+		rd.view, rd.digest, rd.shows = &views[i], s.digestOf(views[i]), showsOf(ds[i])
 	}
 	return nil
 }

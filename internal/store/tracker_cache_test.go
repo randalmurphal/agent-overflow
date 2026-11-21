@@ -181,11 +181,11 @@ func mirrorWriters(s *Store) map[string]func(root int64) error {
 			return err
 		},
 		"ReplaceMirrorHistories": func(root int64) error {
-			_, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{{IssueID: "10001"}, {IssueID: "10009"}}))
+			_, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{{IssueID: "10001"}, {IssueID: "10009"}}), MirrorCatalog{}, 0)
 			return err
 		},
 		"ReplaceMirrorHistories staged": func(root int64) error {
-			_, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{statusHistory("10001", clearMirrorChunk+100)}))
+			_, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{statusHistory("10001", clearMirrorChunk+100)}), MirrorCatalog{}, 0)
 			return err
 		},
 		"UpsertMirrorCards regroup": func(root int64) error {

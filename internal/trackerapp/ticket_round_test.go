@@ -90,6 +90,41 @@ func TestARoundReadsOnlyTheChangedTicketInFull(t *testing.T) {
 	}
 }
 
+// A round that changes every shown ticket builds their views from one
+// cards read and one catalog read, however many tickets changed.
+func TestARoundBuildsTheChangedViewsInOneRead(t *testing.T) {
+	t.Parallel()
+	for _, jira := range []bool{true, false} {
+		for _, n := range []int{1, 10} {
+			t.Run(fmt.Sprintf("%s, %d tickets", map[bool]string{true: "jira", false: "linear"}[jira], n), func(t *testing.T) {
+				t.Parallel()
+				m, st, issues, _ := newRoundFixture(t, n, jira)
+				m.round(t)
+				for _, id := range issues {
+					if jira {
+						st.edit(id, func(c *tracker.Card) { c.Title = "Renamed " + string(id) })
+					} else {
+						st.comment(id, "Second "+string(id))
+					}
+				}
+				cs := newCountingStore(m.st)
+				m.svc.store = cs
+				events := m.issueEventCount()
+				if res := m.round(t); res.failed {
+					t.Fatalf("round %+v", res)
+				}
+				calls := cs.take()
+				if got := m.issueEventsSince(events); len(got) != n {
+					t.Fatalf("%d events for %d changed tickets", len(got), n)
+				}
+				if calls["ListMirrorCards"] != 1 || calls["GetMirrorCatalog"] != 1 {
+					t.Fatalf("the round built %d views with %s; want one cards read and one catalog read", n, describeCounts(calls))
+				}
+			})
+		}
+	}
+}
+
 // One ticket of three is gone: only it fails, told once with its own
 // issue, while the others settle; it recovers when the tracker returns it.
 func TestARoundToldOnlyTheGoneTicket(t *testing.T) {

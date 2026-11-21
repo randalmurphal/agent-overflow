@@ -11,9 +11,10 @@ import (
 )
 
 // A one-row change of a realistic board costs a client holding three
-// sections one event naming the issue and one patch read of two store
-// calls (the root, then one read transaction); the bytes of both are
-// pinned so a change that grows them shows.
+// sections and the board's totals one event naming the issue and one
+// patch read of two store calls (the root, then one read transaction),
+// with no totals for a change that moved none; the bytes of both, and of
+// a patch with the totals, are pinned so a change that grows them shows.
 func TestOneRowChangeCost(t *testing.T) {
 	t.Parallel()
 	m := newMirrorFixture(t)
@@ -28,6 +29,9 @@ func TestOneRowChangeCost(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := len(m.events.boardEvents(t, 1))
+	// The client holds the totals of the board it read.
+	v := must[BoardView](t)(m.svc.Board(scope, sections))
+	held := TotalsAt{Lifetime: v.Lifetime, Revision: v.TotalsRevision}
 
 	changed := slices.Clone(rows)
 	changed[3] = realisticRow(3, at.Add(time.Hour))
@@ -43,16 +47,22 @@ func TestOneRowChangeCost(t *testing.T) {
 	}
 
 	cs.take()
-	patch := must[BoardPatch](t)(m.svc.BoardPatch(scope, sections, ev.Changed))
+	patch := must[BoardPatch](t)(m.svc.BoardPatch(scope, sections, ev.Changed, held))
 	if calls, want := cs.take(), map[string]int{"GetMirrorRoot": 1, "ReadMirrorBoardPatch": 1}; !maps.Equal(calls, want) {
 		t.Fatalf("a patch read made %s; pinned %s", describeCounts(calls), describeCounts(want))
 	}
 	if len(patch.Sections[0].Rows) != 1 || patch.Sections[0].Rows[0].Card.Title != changed[3].Card.Title {
 		t.Fatalf("the patch's sprint section: %+v", patch.Sections[0])
 	}
-	sizes := map[string]int{"event": len(must[[]byte](t)(json.Marshal(ev))), "patch": len(must[[]byte](t)(json.Marshal(patch)))}
+	// A title moves no total: the patch has none.
+	if patch.Totals != nil {
+		t.Fatalf("a title change's patch has totals %+v", patch.Totals)
+	}
+	totals := must[BoardPatch](t)(m.svc.BoardPatch(scope, sections, ev.Changed, TotalsAt{}))
+	sizes := map[string]int{"event": len(must[[]byte](t)(json.Marshal(ev))), "patch": len(must[[]byte](t)(json.Marshal(patch))),
+		"patch with totals": len(must[[]byte](t)(json.Marshal(totals)))}
 	t.Logf("one-row change bytes: %s", describeCounts(sizes))
-	if want := map[string]int{"event": 166, "patch": 1461}; !maps.Equal(sizes, want) {
+	if want := map[string]int{"event": 166, "patch": 1174, "patch with totals": 1487}; !maps.Equal(sizes, want) {
 		t.Errorf("one-row change bytes %s, pinned %s", describeCounts(sizes), describeCounts(want))
 	}
 }

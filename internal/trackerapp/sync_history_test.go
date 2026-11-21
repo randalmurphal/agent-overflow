@@ -42,9 +42,19 @@ func TestHistoryReadsDueIssuesWithTheirBoards(t *testing.T) {
 			Status: []tracker.StatusChange{{Change: tracker.Change{At: from.Add(time.Hour), Author: "acc-user2"}, From: "s1", To: "s2"}},
 		}}, Catalog: tracker.Catalog{Users: []tracker.User{user2}}}, nil
 	}
+	cs := newCountingStore(m.st)
+	m.svc.store = cs
+	commits := m.st.CommitCount()
 	out := must[Outcome](t)(m.svc.tickHistory(t.Context(), m.scope(), Background))
 	if out.Failure != nil || out.More() || !slices.Equal(out.Changes().History, ids("10001", "10002")) || !out.Changes().Catalog {
 		t.Fatalf("history %+v", out)
+	}
+	// The user the read names is stored in the histories' transaction.
+	if calls, n := cs.take(), m.st.CommitCount()-commits; calls["ReplaceMirrorHistories"] != 1 || calls["UpsertMirrorCards"] != 0 || n != 1 {
+		t.Fatalf("the history tick made %s in %d transactions; want one history write in one transaction", describeCounts(calls), n)
+	}
+	if c := must[store.MirrorCatalog](t)(m.st.GetMirrorCatalog(m.root(), []string{string(user2.ID)}, nil)); len(c.Users) != 1 {
+		t.Fatalf("the read's user is not stored: %+v", c)
 	}
 	if len(asked) != 1 || !slices.Equal(asked[0].Issues, ids("10001", "10002")) || !slices.Equal(asked[0].Boards, []tracker.BoardID{testBoard}) {
 		t.Fatalf("asked %+v", asked)

@@ -95,53 +95,68 @@ func (section MirrorSection) ruleArg() any {
 	return nil
 }
 
-// mirrorInOpenSprintSQL holds for a row of b in a future or active sprint
-// of its board. The issue's sprints drive it (CROSS JOIN): from the
-// board's sprints it would walk all of them for every row.
-const mirrorInOpenSprintSQL = `EXISTS (SELECT 1 FROM tracker_cache_issue_sprints m
+// The sprint rules hold for a row b of board ?2 of root ?1 in a future or
+// active sprint of the board (InOpenSprint) or in sprint ?5 (InSprint).
+// Each is stated in two forms, by how many rows a statement tests: a Probe
+// reads the row's own sprints, which costs a few rows a test, for a
+// statement that tests few rows (a read by ID, the backlog's page); Members
+// reads the sprints' members once a statement
+// (idx_tracker_cache_issue_sprints_sprint), which costs every member
+// once, for a statement that walks the board for few of them (the counts,
+// a sprint's page). The pages, the patch read and the counts are checked
+// against one another (TestMirrorCountsMatchThePages, requirePatchParity).
+const (
+	mirrorInOpenSprintProbeSQL = `EXISTS (SELECT 1 FROM tracker_cache_issue_sprints m
 	  CROSS JOIN tracker_cache_sprints sp ON sp.root_id = m.root_id AND sp.board_id = b.board_id AND sp.sprint_id = m.sprint_id
 	 WHERE m.root_id = b.root_id AND m.issue_id = b.issue_id AND sp.state IN (1, 2))`
+	mirrorInOpenSprintMembersSQL = `b.issue_id IN (SELECT m.issue_id FROM tracker_cache_sprints sp
+	  CROSS JOIN tracker_cache_issue_sprints m ON m.root_id = sp.root_id AND m.sprint_id = sp.sprint_id
+	 WHERE sp.root_id = ?1 AND sp.board_id = ?2 AND sp.state IN (1, 2))`
+	mirrorInSprintProbeSQL = `EXISTS (SELECT 1 FROM tracker_cache_issue_sprints m
+	  WHERE m.root_id = b.root_id AND m.issue_id = b.issue_id AND m.sprint_id = ?5)`
+	mirrorInSprintMembersSQL = `b.issue_id IN (SELECT m.issue_id FROM tracker_cache_issue_sprints m
+	  WHERE m.root_id = ?1 AND m.sprint_id = ?5)`
+)
 
 // mirrorNotDoneSQL holds for a row of b whose issue i has a status the
 // mirror does not place in the done or canceled group.
 const mirrorNotDoneSQL = `NOT EXISTS (SELECT 1 FROM tracker_cache_statuses st
 	 WHERE st.root_id = b.root_id AND st.status_id = i.status_id AND st.status_group IN (4, 5))`
 
-// mirrorBacklogSQL holds for a row of b in the board's backlog.
-const mirrorBacklogSQL = `NOT ` + mirrorInOpenSprintSQL + ` AND ` + mirrorNotDoneSQL
+// mirrorBacklog holds for a row of b in the board's backlog, with
+// inOpenSprint one form of the open-sprint rule.
+func mirrorBacklog(inOpenSprint string) string {
+	return `NOT ` + inOpenSprint + ` AND ` + mirrorNotDoneSQL
+}
 
-// The section rules: each holds for a row b (with its issue i) of board ?2
-// of root ?1 that is a member of the section, ?5 naming the sprint or the
-// column's position. Every read of a section's rows, by page or by ID,
-// states its rule with these.
-const (
-	mirrorSprintRuleSQL = `EXISTS (SELECT 1 FROM tracker_cache_issue_sprints m
-	  WHERE m.root_id = b.root_id AND m.issue_id = b.issue_id AND m.sprint_id = ?5)`
-	mirrorColumnRuleSQL = `i.status_id IN (SELECT c.status_id FROM tracker_cache_board_column_statuses c
+// mirrorColumnRuleSQL holds for a row b (with its issue i) of board ?2 of
+// root ?1 in the column at position ?5. Every read of a section's rows, by
+// page or by ID, states its rule with it, mirrorBacklog or a sprint rule.
+const mirrorColumnRuleSQL = `i.status_id IN (SELECT c.status_id FROM tracker_cache_board_column_statuses c
 	  WHERE c.root_id = ?1 AND c.board_id = ?2 AND c.position = ?5)`
-)
 
 var mirrorSectionSQL = map[MirrorSectionKind]string{
-	MirrorSectionSprint:  mirrorSectionRowsSQL + mirrorSprintRuleSQL + mirrorSectionOrderSQL + strconv.Itoa(mirrorSectionPageSize+1),
-	MirrorSectionBacklog: mirrorSectionRowsSQL + mirrorBacklogSQL + mirrorSectionOrderSQL + strconv.Itoa(mirrorSectionPageSize+1),
+	MirrorSectionSprint:  mirrorSectionRowsSQL + mirrorInSprintMembersSQL + mirrorSectionOrderSQL + strconv.Itoa(mirrorSectionPageSize+1),
+	MirrorSectionBacklog: mirrorSectionRowsSQL + mirrorBacklog(mirrorInOpenSprintProbeSQL) + mirrorSectionOrderSQL + strconv.Itoa(mirrorSectionPageSize+1),
 	MirrorSectionColumn:  mirrorSectionRowsSQL + mirrorColumnRuleSQL + mirrorSectionOrderSQL + strconv.Itoa(mirrorSectionPageSize+1),
 }
 
-// mirrorShownBoardSQL reads the lifetime, revision, estimate unit and
+// mirrorShownBoardSQL reads the lifetime, revisions, estimate unit and
 // estimate reset of a board the mirror shows.
-var mirrorShownBoardSQL = `SELECT b.lifetime, b.revision, b.estimate_unit, b.estimate_reset_at FROM tracker_cache_boards b
+var mirrorShownBoardSQL = `SELECT b.lifetime, b.revision, b.totals_revision, b.estimate_unit, b.estimate_reset_at FROM tracker_cache_boards b
 	WHERE b.root_id = ?1 AND b.board_id = ?2 AND ` + mirrorBoardShown("?1", "?2")
 
 // mirrorShownBoard is a shown board's state as a read of its rows needs it.
 type mirrorShownBoard struct {
-	lifetime, revision, estimateResetAt int64
-	unit                                int
+	lifetime, revision, totalsRevision, estimateResetAt int64
+	unit                                                int
 }
 
-// readMirrorShownBoardTx reads a shown board's lifetime, revision and
+// readMirrorShownBoardTx reads a shown board's lifetime, revisions and
 // estimate unit; ok is false for a board the mirror does not show.
 func readMirrorShownBoardTx(tx sqlQueryer, rootID int64, boardID string) (board mirrorShownBoard, ok bool, err error) {
-	err = tx.QueryRow(mirrorShownBoardSQL, rootID, boardID).Scan(&board.lifetime, &board.revision, &board.unit, &board.estimateResetAt)
+	err = tx.QueryRow(mirrorShownBoardSQL, rootID, boardID).Scan(&board.lifetime, &board.revision, &board.totalsRevision, &board.unit,
+		&board.estimateResetAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return mirrorShownBoard{}, false, nil
 	}
@@ -217,26 +232,31 @@ type MirrorSectionTotal struct {
 }
 
 // MirrorSectionCounts are the totals of each section of a board at its
-// Revision. A sprint or column with no rows is absent.
+// Revision and TotalsRevision. A sprint or column with no rows is absent.
 type MirrorSectionCounts struct {
-	Revision     int64
-	All, Backlog MirrorSectionTotal
-	Sprints      map[string]MirrorSectionTotal
-	Columns      map[int]MirrorSectionTotal
+	Revision, TotalsRevision int64
+	All, Backlog             MirrorSectionTotal
+	Sprints                  map[string]MirrorSectionTotal
+	Columns                  map[int]MirrorSectionTotal
 }
 
-// The count statements each walk the board's rows once, in
-// idx_tracker_cache_board_issues_order, and return a row per board row or
-// sprint membership, which CountMirrorSections sums: a GROUP BY would sort
-// them in a temporary b-tree and evaluate the backlog rule twice a row.
+// The count statements read no issue's table row and sort nothing.
+// mirrorCountRowsSQL walks the board's rows once, in
+// idx_tracker_cache_board_issues_order, reads each row's status from
+// idx_tracker_cache_issues_status, tests it against the open sprints'
+// members (read once), and returns a row per board row, which
+// countMirrorSectionsTx sums: a GROUP BY would sort every row, in memory
+// that grows with the board. mirrorCountSprintsSQL totals each sprint of
+// the board from its members, in the sprints' key order.
 var (
-	mirrorCountRowsSQL = `SELECT ` + mirrorBacklogSQL + `, i.status_id, ` + mirrorRowEstimate("?3") + `
-		FROM tracker_cache_board_issues b CROSS JOIN tracker_cache_issues i ON i.root_id = b.root_id AND i.issue_id = b.issue_id
+	mirrorCountRowsSQL = `SELECT ` + mirrorBacklog(mirrorInOpenSprintMembersSQL) + `, i.status_id, ` + mirrorRowEstimate("?3") + `
+		FROM tracker_cache_board_issues b
+		CROSS JOIN tracker_cache_issues i INDEXED BY idx_tracker_cache_issues_status ON i.root_id = b.root_id AND i.issue_id = b.issue_id
 		WHERE b.root_id = ?1 AND b.board_id = ?2`
-	mirrorCountSprintsSQL = `SELECT m.sprint_id, ` + mirrorRowEstimate("?3") + ` FROM tracker_cache_board_issues b
-		  CROSS JOIN tracker_cache_issue_sprints m ON m.root_id = b.root_id AND m.issue_id = b.issue_id
-		  CROSS JOIN tracker_cache_sprints sp ON sp.root_id = b.root_id AND sp.board_id = b.board_id AND sp.sprint_id = m.sprint_id
-		 WHERE b.root_id = ?1 AND b.board_id = ?2`
+	mirrorCountSprintsSQL = `SELECT sp.sprint_id, count(*), total(` + mirrorRowEstimate("?3") + `) FROM tracker_cache_sprints sp
+		  CROSS JOIN tracker_cache_issue_sprints m ON m.root_id = sp.root_id AND m.sprint_id = sp.sprint_id
+		  CROSS JOIN tracker_cache_board_issues b ON b.root_id = sp.root_id AND b.issue_id = m.issue_id AND b.board_id = sp.board_id
+		 WHERE sp.root_id = ?1 AND sp.board_id = ?2 GROUP BY sp.sprint_id`
 	mirrorCountColumnStatusesSQL = `SELECT status_id, position FROM tracker_cache_board_column_statuses
 		WHERE root_id = ?1 AND board_id = ?2 LIMIT ` + strconv.Itoa(mirrorMaxColumnStatuses)
 )
@@ -282,10 +302,12 @@ func readMirrorColumnPlacesTx(tx sqlQueryer, rootID int64, boardID string) (map[
 // countMirrorSectionsTx totals a shown board's sections in tx's snapshot;
 // columns places each status the board's columns hold.
 func countMirrorSectionsTx(tx sqlQueryer, rootID int64, boardID string, board mirrorShownBoard, columns map[string]int) (MirrorSectionCounts, error) {
-	counts := MirrorSectionCounts{Revision: board.revision, Sprints: map[string]MirrorSectionTotal{}, Columns: map[int]MirrorSectionTotal{}}
+	counts := MirrorSectionCounts{Revision: board.revision, TotalsRevision: board.totalsRevision,
+		Sprints: map[string]MirrorSectionTotal{}, Columns: map[int]MirrorSectionTotal{}}
+	estimated := board.unit != MirrorEstimateNone
 	add := func(t MirrorSectionTotal, estimate sql.NullFloat64) MirrorSectionTotal {
 		t.Rows++
-		if board.unit != MirrorEstimateNone {
+		if estimated {
 			t.Estimate += estimate.Float64
 		}
 		return t
@@ -310,11 +332,15 @@ func countMirrorSectionsTx(tx sqlQueryer, rootID int64, boardID string, board mi
 		return MirrorSectionCounts{}, fmt.Errorf("rows: %w", err)
 	}
 	err = scanMirrorRows(tx, mirrorCountSprintsSQL, []any{rootID, boardID, board.estimateResetAt}, func(r rowScanner) error {
-		var sprint sql.RawBytes
-		if err := r.Scan(&sprint, &estimate); err != nil {
+		var sprint string
+		var total MirrorSectionTotal
+		if err := r.Scan(&sprint, &total.Rows, &total.Estimate); err != nil {
 			return err
 		}
-		counts.Sprints[string(sprint)] = add(counts.Sprints[string(sprint)], estimate)
+		if !estimated {
+			total.Estimate = 0
+		}
+		counts.Sprints[sprint] = total
 		return nil
 	})
 	if err != nil {

@@ -41,7 +41,7 @@ type MirrorStore interface {
 	UpsertMirrorCards(rootID, sweep int64, cards []store.MirrorCard, catalog store.MirrorCatalog, readAt int64) (store.MirrorChanges, error)
 	ReconcileMirrorBoard(rootID int64, boardID string, lifetime int64, listed []string, complete bool, readAt, settledAt int64) (store.MirrorReconcile, error)
 	ReplaceMirrorStructure(rootID int64, st store.MirrorStructure) (store.MirrorStructureWrite, error)
-	ReplaceMirrorHistories(rootID, sweep int64, histories []store.MirrorHistory) ([]store.MirrorHistoryResult, error)
+	ReplaceMirrorHistories(rootID, sweep int64, histories []store.MirrorHistory, catalog store.MirrorCatalog, readAt int64) ([]store.MirrorHistoryResult, bool, error)
 	ListMirrorHistoryDue(rootID int64, now int64) ([]store.MirrorHistoryDue, bool, error)
 	StoreMirrorDetails(rootID, sweep int64, docs []store.MirrorDetailDoc, openedAt, readAt int64) (store.MirrorDetailWrites, error)
 	ConfirmMirrorDetail(rootID int64, d store.MirrorDetail, openedAt int64) (store.MirrorDetailWrite, error)
@@ -55,7 +55,7 @@ type MirrorStore interface {
 	ListMirrorOffBoardLinkedIssues(rootID int64, after string) ([]string, bool, error)
 	ListMirrorSection(rootID int64, boardID string, section store.MirrorSection, after store.MirrorRowKey) (store.MirrorSectionPage, error)
 	ReadMirrorBoardView(rootID int64, boardID string, sections []store.MirrorSection) (store.MirrorBoardView, bool, error)
-	ReadMirrorBoardPatch(rootID int64, boardID string, sections []store.MirrorSection, issueIDs []string) (store.MirrorBoardPatch, bool, error)
+	ReadMirrorBoardPatch(rootID int64, boardID string, sections []store.MirrorSection, issueIDs []string, held store.MirrorTotalsAt) (store.MirrorBoardPatch, bool, error)
 	ListMirrorIssueBoards(rootID int64, issueIDs, parentIDs []string) ([]store.MirrorIssueBoard, error)
 	ReadMirrorRefreshTargets(rootID int64, issueIDs, boardIDs []string) (store.MirrorRefreshTargets, error)
 

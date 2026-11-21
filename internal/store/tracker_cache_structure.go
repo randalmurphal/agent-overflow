@@ -386,9 +386,11 @@ func (s *Store) settleMirrorMarks(rootID int64, st MirrorStructure, board mirror
 
 // mirrorBoardWriteRowSQL writes a board's own fields. A changed estimate
 // unit on a board whose structure is stored records the read as the
-// board's estimate reset (estimate_reset_at), which RETURNING reports.
+// board's estimate reset (estimate_reset_at), which RETURNING reports; any
+// changed unit changes the estimate totals (totals_revision).
 const mirrorBoardWriteRowSQL = `UPDATE tracker_cache_boards SET project_id = ?3, name = ?4, plans_sprints = ?5, estimate_unit = ?6, data = ?7,
-	    estimate_reset_at = iif(read_at > 0 AND estimate_unit IS NOT ?6, ?8, estimate_reset_at)
+	    estimate_reset_at = iif(read_at > 0 AND estimate_unit IS NOT ?6, ?8, estimate_reset_at),
+	    totals_revision = totals_revision + (estimate_unit IS NOT ?6)
 	WHERE root_id = ?1 AND board_id = ?2 AND (read_at = 0 OR project_id IS NOT ?3 OR name IS NOT ?4
 	   OR plans_sprints IS NOT ?5 OR estimate_unit IS NOT ?6 OR data IS NOT ?7)
 	RETURNING estimate_reset_at = ?8`

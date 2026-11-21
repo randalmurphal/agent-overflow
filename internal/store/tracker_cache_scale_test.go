@@ -208,7 +208,7 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 					batch[i] = benchHistory(d.IssueID, 100, benchChanges)
 					batch[i].For, batch[i].BoardsRev, batch[i].Receipt = d.UpdatedAt, d.BoardsRev, d.Receipt
 				}
-				if _, err := s.ReplaceMirrorHistories(root, sweep, batch); err != nil {
+				if _, _, err := s.ReplaceMirrorHistories(root, sweep, batch, MirrorCatalog{}, 0); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -300,7 +300,7 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 			batch[i] = benchHistory(d.IssueID, int64(3000+rep), benchChanges)
 			batch[i].For, batch[i].BoardsRev, batch[i].Receipt = d.UpdatedAt, d.BoardsRev, d.Receipt
 		}
-		_, err = s.ReplaceMirrorHistories(root, sweep, batch)
+		_, _, err = s.ReplaceMirrorHistories(root, sweep, batch, MirrorCatalog{}, 0)
 		return err
 	})
 	out["board view, 3 sections"] = measureScale(t, rec, nil, func(int) error {
@@ -318,11 +318,23 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 		return err
 	})
 	out["section counts"] = measureScale(t, rec, nil, func(int) error { _, err := s.CountMirrorSections(root, board); return err })
-	for _, k := range []int{1, 100} {
-		out[fmt.Sprintf("patch read, %d changed", k)] = measureScale(t, rec, nil, func(rep int) error {
-			_, _, err := s.ReadMirrorBoardPatch(root, board, sections, listing[:k])
-			return err
-		})
+	counts, err := s.CountMirrorSections(root, board)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A change that moved a total, and one that did not: the caller holds
+	// the totals the patch would read.
+	for _, held := range []MirrorTotalsAt{{}, {Lifetime: lifetime, Revision: counts.TotalsRevision}} {
+		kind := map[bool]string{true: "totals moved", false: "totals held"}[held == MirrorTotalsAt{}]
+		for _, k := range []int{1, 100} {
+			out[fmt.Sprintf("patch read, %d changed, %s", k, kind)] = measureScale(t, rec, nil, func(rep int) error {
+				patch, _, err := s.ReadMirrorBoardPatch(root, board, sections, listing[:k], held)
+				if err == nil && (patch.Counts == nil) != (held != MirrorTotalsAt{}) {
+					err = fmt.Errorf("held %+v, read totals %v", held, patch.Counts != nil)
+				}
+				return err
+			})
+		}
 	}
 	if held, err = s.ListMirrorCards(root, tickets); err != nil || len(held) != len(tickets) {
 		t.Fatalf("%d cards of %d tickets: %v", len(held), len(tickets), err)

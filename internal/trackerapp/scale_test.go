@@ -193,11 +193,15 @@ func serviceAtScale(t *testing.T, n int) {
 		page = must[SectionPage](t)(svc.SectionRows(scope, sections[1], deep))
 	}
 	logCost("section page, deep", m.measure(nil, func(int) { must[SectionPage](t)(svc.SectionRows(scope, sections[1], deep)) }, false))
-	for _, k := range []int{1, 100} {
-		ids := board.ids(spread(n, k))
-		logCost(fmt.Sprintf("patch read, %d changed", k), m.measure(nil, func(int) {
-			must[BoardPatch](t)(svc.BoardPatch(scope, sections, ids))
-		}, false))
+	v := must[BoardView](t)(svc.Board(scope, sections))
+	for _, held := range []TotalsAt{{}, {Lifetime: v.Lifetime, Revision: v.TotalsRevision}} {
+		kind := map[bool]string{true: "totals moved", false: "totals held"}[held == TotalsAt{}]
+		for _, k := range []int{1, 100} {
+			ids := board.ids(spread(n, k))
+			logCost(fmt.Sprintf("patch read, %d changed, %s", k, kind), m.measure(nil, func(int) {
+				must[BoardPatch](t)(svc.BoardPatch(scope, sections, ids, held))
+			}, false))
+		}
 	}
 	opened := board.ids(spread(n, 1))[0]
 	must3(t)(svc.IssueDetail(t.Context(), scope.Connection, opened, Interactive))

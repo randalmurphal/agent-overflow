@@ -291,7 +291,7 @@ func TestPatchingFollowsEveryDependency(t *testing.T) {
 					case e.ReadAgain:
 						clients[scope.Board] = read(scope.Board)
 					case len(ids) > 0:
-						patch := must[BoardPatch](t)(m.svc.BoardPatch(scope, sections, ids))
+						patch := must[BoardPatch](t)(m.svc.BoardPatch(scope, sections, ids, clients[scope.Board].held()))
 						clients[scope.Board] = applyPatch(clients[scope.Board], ids, patch)
 					}
 				}

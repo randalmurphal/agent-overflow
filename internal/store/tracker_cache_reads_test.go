@@ -81,7 +81,8 @@ func TestListMirrorSectionSelectsItsRows(t *testing.T) {
 	}
 
 	counts, err := s.CountMirrorSections(root, "10")
-	want := MirrorSectionCounts{Revision: page.Revision, All: MirrorSectionTotal{8, 17}, Backlog: MirrorSectionTotal{3, 9},
+	want := MirrorSectionCounts{Revision: page.Revision, TotalsRevision: currentTotalsRevision(s, root, "10"),
+		All: MirrorSectionTotal{8, 17}, Backlog: MirrorSectionTotal{3, 9},
 		Sprints: map[string]MirrorSectionTotal{"20": {2, 5}, "21": {2, 6}, "22": {1, 2}},
 		Columns: map[int]MirrorSectionTotal{0: {2, 1}, 1: {3, 7}, 2: {2, 0}}}
 	if err != nil || page.Revision == 0 || !reflect.DeepEqual(counts, want) {
@@ -378,7 +379,7 @@ func TestMirrorListReadsTakeEachIDOnce(t *testing.T) {
 		read func(ids []string) (any, error)
 	}{
 		{"ReadMirrorBoardPatch", func(ids []string) (any, error) {
-			patch, _, err := s.ReadMirrorBoardPatch(root, "10", patchSections, ids)
+			patch, _, err := s.ReadMirrorBoardPatch(root, "10", patchSections, ids, MirrorTotalsAt{})
 			return patch, err
 		}},
 		{"ListMirrorIssueBoards", func(ids []string) (any, error) { return s.ListMirrorIssueBoards(root, ids, ids) }},

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"time"
 
@@ -224,25 +225,107 @@ func (s *Service) storedDetail(root int64, issue tracker.IssueID) (store.MirrorD
 	return m, d, ok, nil
 }
 
-// detailView is d as a view, its names from its own catalog and, for the
-// IDs that leaves out, the mirror's, with when its status began (only
-// when the mirror's card describes the version d shows, statusSinceOf), its
-// parent's key and title, and each linked issue's key, title and status
-// from the mirror's card of it when the mirror keeps one (else from d),
-// those cards read in one lookup.
+// detailView is d as a view (detailViews).
 func (s *Service) detailView(root int64, d tracker.Detail) (DetailView, error) {
-	shown, own, err := s.shownCards(root, d)
+	views, err := s.detailViews(root, []tracker.Detail{d})
 	if err != nil {
 		return DetailView{}, err
 	}
-	links := slices.Clone(d.Links)
-	for i := range links {
-		if c, ok := shown[links[i].Issue.ID]; ok {
-			ref := &links[i].Issue
+	return views[0], nil
+}
+
+// detailViews is each of ds as a view, its names from its own catalog and,
+// for the IDs that leaves out, the mirror's, with when its status began
+// (only when the mirror's card describes the version it shows,
+// statusSinceOf), its parent's key and title, and each linked issue's key,
+// title and status from the mirror's card of it when the mirror keeps one
+// (else from the detail). The cards of every detail are read in one
+// lookup, and then the names of every detail in one, a store lookup's
+// bound at a time; a detail linking more than that bound shows the rest
+// as it has them.
+func (s *Service) detailViews(root int64, ds []tracker.Detail) ([]DetailView, error) {
+	wants := make([][]string, len(ds))
+	var all idSet
+	for i, d := range ds {
+		wants[i] = append(wants[i], string(d.Card.ID))
+		for _, id := range showsOf(d) {
+			if len(wants[i]) == readBatch {
+				break
+			}
+			wants[i] = append(wants[i], string(id))
+		}
+		for _, id := range wants[i] {
+			all.add(id)
+		}
+	}
+	mirrored := make(map[string]store.MirrorCard, len(all.ids))
+	for batch := range slices.Chunk(all.ids, readBatch) {
+		cards, err := s.store.ListMirrorCards(root, batch)
+		if err != nil {
+			return nil, fmt.Errorf("trackerapp: read the cards %d details show from the mirror: %w", len(ds), err)
+		}
+		for _, m := range cards {
+			mirrored[m.IssueID] = m
+		}
+	}
+	shown := make([]shownDetail, len(ds))
+	var users, statuses idSet
+	for i, d := range ds {
+		shown[i] = shownDetailOf(d, wants[i], mirrored)
+		shown[i].names(&users, &statuses)
+	}
+	names, err := s.names(root, users.ids, statuses.ids)
+	if err != nil {
+		return nil, err
+	}
+	views := make([]DetailView, len(ds))
+	for i := range ds {
+		views[i] = shown[i].view(names)
+	}
+	return views, nil
+}
+
+// shownDetail is a detail with what the mirror's cards show of it: its
+// links named from them, its parent's card and its own.
+type shownDetail struct {
+	d      tracker.Detail
+	links  []tracker.Link
+	parent *tracker.Card
+	own    *store.MirrorCard
+}
+
+// shownDetailOf is d shown from the cards of mirrored that want names: its
+// own issue first, then the others it shows.
+func shownDetailOf(d tracker.Detail, want []string, mirrored map[string]store.MirrorCard) shownDetail {
+	out := shownDetail{d: d, links: slices.Clone(d.Links)}
+	cards := make(map[tracker.IssueID]tracker.Card, len(want))
+	for _, id := range want {
+		m, ok := mirrored[id]
+		switch {
+		case !ok:
+		case id == string(d.Card.ID):
+			out.own = &m
+		default:
+			if c, ok := cardOf(m); ok {
+				cards[c.ID] = c
+			}
+		}
+	}
+	for i := range out.links {
+		if c, ok := cards[out.links[i].Issue.ID]; ok {
+			ref := &out.links[i].Issue
 			ref.Key, ref.Title, ref.Status = c.Key, c.Title, c.Status
 		}
 	}
-	var users, statuses idSet
+	if p, ok := cards[d.Card.Parent]; ok && d.Card.Parent != "" {
+		out.parent = &p
+	}
+	return out
+}
+
+// names adds the users and statuses the view names.
+func (sd shownDetail) names(users, statuses *idSet) {
+	d := sd.d
 	users.add(string(d.Card.Assignee))
 	statuses.add(string(d.Card.Status))
 	for _, c := range d.Comments.Comments {
@@ -254,29 +337,35 @@ func (s *Service) detailView(root int64, d tracker.Detail) (DetailView, error) {
 	for _, e := range d.History {
 		users.add(string(e.Author))
 	}
-	for _, l := range links {
+	for _, l := range sd.links {
 		statuses.add(string(l.Issue.Status))
 	}
 	for _, m := range d.Moves {
 		statuses.add(string(m.To))
 	}
-	names, err := s.names(root, users.ids, statuses.ids)
-	if err != nil {
-		return DetailView{}, err
-	}
-	for _, u := range d.Users {
-		names.users[string(u.ID)] = u
-	}
-	for _, st := range d.Statuses {
-		names.statuses[string(st.ID)] = st
+}
+
+// view is the detail's view, named from its own catalog over mirrored, the
+// mirror's names.
+func (sd shownDetail) view(mirrored catalogNames) DetailView {
+	d := sd.d
+	names := mirrored
+	if len(d.Users)+len(d.Statuses) > 0 {
+		names = catalogNames{users: maps.Clone(mirrored.users), statuses: maps.Clone(mirrored.statuses)}
+		for _, u := range d.Users {
+			names.users[string(u.ID)] = u
+		}
+		for _, st := range d.Statuses {
+			names.statuses[string(st.ID)] = st
+		}
 	}
 	card := cardView(d.Card, names)
-	if own != nil {
-		card.StatusSince = statusSinceOf(*own, d.Card)
+	if sd.own != nil {
+		card.StatusSince = statusSinceOf(*sd.own, d.Card)
 	}
 	if d.Card.Parent != "" {
 		card.Parent = &ParentView{ID: string(d.Card.Parent)}
-		if p, ok := shown[d.Card.Parent]; ok {
+		if p := sd.parent; p != nil {
 			card.Parent.Key, card.Parent.Title = p.Key, p.Title
 		}
 	}
@@ -291,7 +380,7 @@ func (s *Service) detailView(root int64, d tracker.Detail) (DetailView, error) {
 			Created: millis(c.Created), Updated: millis(c.Updated), Internal: c.Internal,
 		})
 	}
-	for _, l := range links {
+	for _, l := range sd.links {
 		relation := l.Type.Inward
 		if l.Outward {
 			relation = l.Type.Outward
@@ -316,37 +405,7 @@ func (s *Service) detailView(root int64, d tracker.Detail) (DetailView, error) {
 	for _, m := range d.Moves {
 		v.Moves = append(v.Moves, MoveView{ID: string(m.ID), Name: m.Name, To: names.status(string(m.To)), Fields: fieldViews(m.Fields)})
 	}
-	return v, nil
-}
-
-// shownCards are the mirror's cards of the other issues d shows (its
-// parent and the issues it links), by issue, and the mirror's card of d's
-// own issue, read in one lookup (at most mirrorMaxLookup issues: a detail
-// linking more shows the rest as d has them).
-func (s *Service) shownCards(root int64, d tracker.Detail) (map[tracker.IssueID]tracker.Card, *store.MirrorCard, error) {
-	want := []string{string(d.Card.ID)}
-	for _, id := range showsOf(d) {
-		if len(want) == readBatch {
-			break
-		}
-		want = append(want, string(id))
-	}
-	cards, err := s.store.ListMirrorCards(root, want)
-	if err != nil {
-		return nil, nil, fmt.Errorf("trackerapp: read the cards %s shows from the mirror: %w", d.Card.ID, err)
-	}
-	shown := make(map[tracker.IssueID]tracker.Card, len(cards))
-	var own *store.MirrorCard
-	for i, m := range cards {
-		if m.IssueID == string(d.Card.ID) {
-			own = &cards[i]
-			continue
-		}
-		if c, ok := cardOf(m); ok {
-			shown[c.ID] = c
-		}
-	}
-	return shown, own, nil
+	return v
 }
 
 // statusSinceOf is when c's status began, from m, the mirror's card of

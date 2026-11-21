@@ -23,7 +23,8 @@ import (
 //  2. insert each row the patch returns for a section at its (order,
 //     issue) place, when that place is not after the section's cursor, or
 //     the section is loaded whole;
-//  3. take the patch's totals, absent sprints and columns as empty;
+//  3. take the patch's totals when it has them, absent sprints and columns
+//     as empty; a patch read for the totals held has none;
 //  4. carry the patch's lifetime and revision into every cursor.
 
 // heldSection is a section as a client holds it.
@@ -33,20 +34,21 @@ type heldSection struct {
 	next    *SectionCursor
 }
 
-// heldBoard is what a client holds of a board.
+// heldBoard is what a client holds of a board: totals is the totals
+// revision its totals are at.
 type heldBoard struct {
-	sections           []heldSection
-	all, backlog       SectionTotal
-	sprints            map[string]SectionTotal
-	columns            map[int]SectionTotal
-	lifetime, revision int64
+	sections                   []heldSection
+	all, backlog               SectionTotal
+	sprints                    map[string]SectionTotal
+	columns                    map[int]SectionTotal
+	lifetime, revision, totals int64
 }
 
 // heldFromView is what a client holds after reading v, the view of
 // sections.
 func heldFromView(v BoardView, sections []Section) heldBoard {
 	h := heldBoard{all: v.All, backlog: v.Backlog, sprints: map[string]SectionTotal{}, columns: map[int]SectionTotal{},
-		lifetime: v.Lifetime, revision: v.Revision}
+		lifetime: v.Lifetime, revision: v.Revision, totals: v.TotalsRevision}
 	for _, sp := range v.Sprints {
 		if sp.Total.Rows > 0 {
 			h.sprints[sp.ID] = sp.Total
@@ -62,6 +64,9 @@ func heldFromView(v BoardView, sections []Section) heldBoard {
 	}
 	return h
 }
+
+// held names the totals h holds, for a patch read.
+func (h heldBoard) held() TotalsAt { return TotalsAt{Lifetime: h.lifetime, Revision: h.totals} }
 
 func (h heldBoard) sectionList() []Section {
 	out := make([]Section, len(h.sections))
@@ -90,13 +95,17 @@ func rowCompare(a, b RowView) int {
 // applyPatch is the client's rule: h after the event naming ids and its
 // patch p. It leaves h as it was.
 func applyPatch(h heldBoard, ids []tracker.IssueID, p BoardPatch) heldBoard {
-	out := heldBoard{all: p.All, backlog: p.Backlog, sprints: map[string]SectionTotal{}, columns: map[int]SectionTotal{},
+	out := heldBoard{all: h.all, backlog: h.backlog, sprints: h.sprints, columns: h.columns, totals: h.totals,
 		lifetime: p.Lifetime, revision: p.Revision}
-	for _, s := range p.Sprints {
-		out.sprints[s.Sprint] = s.Total
-	}
-	for _, c := range p.Columns {
-		out.columns[c.Column] = c.Total
+	if t := p.Totals; t != nil {
+		out.all, out.backlog, out.totals = t.All, t.Backlog, t.Revision
+		out.sprints, out.columns = map[string]SectionTotal{}, map[int]SectionTotal{}
+		for _, s := range t.Sprints {
+			out.sprints[s.Sprint] = s.Total
+		}
+		for _, c := range t.Columns {
+			out.columns[c.Column] = c.Total
+		}
 	}
 	for i, sec := range h.sections {
 		rows := slices.DeleteFunc(slices.Clone(sec.rows), func(r RowView) bool { return slices.Contains(ids, tracker.IssueID(r.Card.ID)) })
@@ -184,10 +193,20 @@ func (mt *modelTracker) newRow() tracker.Row {
 
 func (mt *modelTracker) key() string { return fmt.Sprintf("k%06d", mt.rng.IntN(1_000_000)) }
 
-// place gives r a random status and sprint.
+// place gives r a random status, sprint and estimate.
 func (mt *modelTracker) place(r *tracker.Row) {
 	r.Card.Status = tracker.StatusID([]string{"s1", "s1", "s2", "s3"}[mt.rng.IntN(4)])
 	r.Card.Sprints = [][]tracker.SprintID{nil, nil, {"1"}, {"2"}}[mt.rng.IntN(4)]
+	mt.estimate(r)
+}
+
+// estimate gives r a random estimate or none.
+func (mt *modelTracker) estimate(r *tracker.Row) {
+	r.Estimate = nil
+	if n := mt.rng.IntN(5); n > 0 {
+		v := float64(n)
+		r.Estimate = &v
+	}
 }
 
 // write stores rows and removes missing in one read, and returns the IDs
@@ -220,7 +239,11 @@ func (mt *modelTracker) any() tracker.Row {
 
 // change makes one random change, near h's loaded edges for some.
 func (mt *modelTracker) change(h heldBoard) []tracker.IssueID {
-	switch kind := mt.rng.IntN(7); {
+	switch kind := mt.rng.IntN(8); {
+	case kind == 7:
+		r := mt.any()
+		mt.estimate(&r)
+		return mt.write([]tracker.Row{r}, nil)
 	case kind == 0 || len(mt.rows) < 50:
 		return mt.write([]tracker.Row{mt.newRow()}, nil)
 	case kind == 1:
@@ -263,9 +286,10 @@ func (mt *modelTracker) change(h heldBoard) []tracker.IssueID {
 
 // A client applying patches holds what one reading the board view again
 // holds, on randomized changes: rows entering, leaving, moving within,
-// across the loaded edge and between sections, card-only changes, and two
-// changes landing before the first patch is read; and its cursors page on
-// to the same rows.
+// across the loaded edge and between sections, estimates changing,
+// card-only changes, and two changes landing before the first patch is
+// read; and its cursors page on to the same rows. A patch for a change
+// that moved no total reads none.
 func TestPatchingMatchesReadingAgain(t *testing.T) {
 	t.Parallel()
 	for seed := range uint64(3) {
@@ -289,6 +313,9 @@ func TestPatchingMatchesReadingAgain(t *testing.T) {
 				return heldFromView(must[BoardView](t)(m.svc.Board(scope, sections)), sections)
 			}
 			client := read()
+			// How many patches carried totals, and how many found the
+			// client's current.
+			withTotals, without := 0, 0
 			for round := range 60 {
 				var events [][]tracker.IssueID
 				for range 1 + mt.rng.IntN(2) {
@@ -298,7 +325,12 @@ func TestPatchingMatchesReadingAgain(t *testing.T) {
 					if len(ids) == 0 {
 						continue
 					}
-					patch := must[BoardPatch](t)(m.svc.BoardPatch(scope, sections, ids))
+					patch := must[BoardPatch](t)(m.svc.BoardPatch(scope, sections, ids, client.held()))
+					if patch.Totals != nil {
+						withTotals++
+					} else {
+						without++
+					}
 					client = applyPatch(client, ids, patch)
 				}
 				if mt.rng.IntN(5) == 0 {
@@ -316,6 +348,9 @@ func TestPatchingMatchesReadingAgain(t *testing.T) {
 			}
 			if got, want := pageOn(t, m.svc, scope, client), pageOn(t, m.svc, scope, read()); !got.sameRows(want) {
 				t.Fatalf("paged on, the patched client holds\n%s\nreading again gives\n%s", got.describe(), want.describe())
+			}
+			if withTotals == 0 || without == 0 {
+				t.Fatalf("%d patches read the totals and %d found them held; want some of each", withTotals, without)
 			}
 		})
 	}

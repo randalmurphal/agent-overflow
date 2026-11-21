@@ -54,7 +54,7 @@ func TestMirrorIssueGainingABoardIsHistoryDue(t *testing.T) {
 	early := webHistory("10001")
 	early.BoardsRev = 1
 	early = listedAt(s, root, early, receiptOf(t, s, root, "10001"))
-	if results, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), []MirrorHistory{early}); err != nil || results[0].Changed {
+	if results, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), []MirrorHistory{early}, MirrorCatalog{}, 0); err != nil || results[0].Changed {
 		t.Fatalf("a history read for the earlier boards = %+v, %v", results, err)
 	}
 	if due := mirrorDue(t, s, root); due != "[{10001 [10 11] 2}]" {
@@ -66,7 +66,7 @@ func TestMirrorIssueGainingABoardIsHistoryDue(t *testing.T) {
 	if due := mirrorDue(t, s, root); due != "[]" {
 		t.Fatalf("due after the history for both boards = %s", due)
 	}
-	if results, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), []MirrorHistory{early}); err != nil || !results[0].Superseded {
+	if results, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), []MirrorHistory{early}, MirrorCatalog{}, 0); err != nil || !results[0].Superseded {
 		t.Fatalf("a history listed before the stored one = %+v, %v; want superseded", results, err)
 	}
 	// Losing a board does not make it due.
@@ -124,7 +124,7 @@ func TestMirrorHistoryAheadOfItsBoardsIsRefused(t *testing.T) {
 		ahead.BoardsRev = 2
 		valid := webHistory("10002")
 		valid.BoardsRev = 1
-		_, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{valid, ahead}))
+		_, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, []MirrorHistory{valid, ahead}), MirrorCatalog{}, 0)
 		if !errors.Is(err, ErrInvalidTrackerCache) {
 			t.Fatalf("%s: a history ahead of its issue's boards: %v; want invalid", name, err)
 		}
@@ -345,10 +345,10 @@ func TestMirrorHistoryDueListsThePageInArmOrder(t *testing.T) {
 	}
 	// Another read of the first issue lands first: this read's history of
 	// it is superseded, and the other's cleared it.
-	if _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), histories[:1]); err != nil {
+	if _, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), histories[:1], MirrorCatalog{}, 0); err != nil {
 		t.Fatal(err)
 	}
-	if results, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), histories); err != nil || !results[0].Superseded {
+	if results, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), histories, MirrorCatalog{}, 0); err != nil || !results[0].Superseded {
 		t.Fatalf("the listed issues' reads: %+v, %v; want the first superseded", results, err)
 	}
 	if list, more, err := s.ListMirrorHistoryDue(root, now); err != nil || more || len(list) != 0 {
@@ -381,7 +381,7 @@ func TestListMirrorHistoryDue(t *testing.T) {
 		for i, d := range batch {
 			histories[i] = MirrorHistory{IssueID: d.IssueID, For: d.UpdatedAt, AnsweredAt: testNow, BoardsRev: d.BoardsRev, Receipt: d.Receipt}
 		}
-		if _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), histories); err != nil {
+		if _, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), histories, MirrorCatalog{}, 0); err != nil {
 			t.Fatal(err)
 		}
 	}

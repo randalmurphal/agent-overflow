@@ -126,24 +126,25 @@ type FailureView struct {
 }
 
 // BoardView is a board as the pane opens it: its structure, the totals of
-// its sections (All its rows), its sync state and the first page of each
-// section asked for, at the board's Lifetime and Revision (which a patch
-// moves forward, BoardPatch). Project is empty for a board of no one
-// project.
+// its sections (All its rows) at its TotalsRevision, its sync state and
+// the first page of each section asked for, at the board's Lifetime and
+// Revision (which a patch moves forward, BoardPatch). Project is empty for
+// a board of no one project.
 type BoardView struct {
-	ID           string        `json:"id"`
-	Lifetime     int64         `json:"lifetime"`
-	Revision     int64         `json:"revision"`
-	Name         string        `json:"name"`
-	Project      string        `json:"project,omitempty"`
-	PlansSprints bool          `json:"plans_sprints"`
-	Estimate     EstimateView  `json:"estimate"`
-	Columns      []ColumnView  `json:"columns"`
-	Sprints      []SprintView  `json:"sprints"`
-	All          SectionTotal  `json:"all"`
-	Backlog      SectionTotal  `json:"backlog"`
-	Sync         SyncView      `json:"sync"`
-	Sections     []SectionPage `json:"sections"`
+	ID             string        `json:"id"`
+	Lifetime       int64         `json:"lifetime"`
+	Revision       int64         `json:"revision"`
+	TotalsRevision int64         `json:"totals_revision"`
+	Name           string        `json:"name"`
+	Project        string        `json:"project,omitempty"`
+	PlansSprints   bool          `json:"plans_sprints"`
+	Estimate       EstimateView  `json:"estimate"`
+	Columns        []ColumnView  `json:"columns"`
+	Sprints        []SprintView  `json:"sprints"`
+	All            SectionTotal  `json:"all"`
+	Backlog        SectionTotal  `json:"backlog"`
+	Sync           SyncView      `json:"sync"`
+	Sections       []SectionPage `json:"sections"`
 }
 
 // maxViewSections bounds the sections one board view reads pages of.
@@ -212,7 +213,7 @@ func (s *Service) Board(scope Scope, sections []Section) (BoardView, error) {
 		}
 	}
 	v := boardViewOf(snap.Structure, snap.Counts, names)
-	v.Lifetime, v.Revision = snap.Structure.Lifetime, snap.Counts.Revision
+	v.Lifetime, v.Revision, v.TotalsRevision = snap.Structure.Lifetime, snap.Counts.Revision, snap.Counts.TotalsRevision
 	sync, _, err := s.store.GetMirrorSync(root, string(scope.Board), s.steady().UnixMilli())
 	if err != nil {
 		return BoardView{}, fmt.Errorf("trackerapp: read the sync state of board %s: %w", scope.Board, err)

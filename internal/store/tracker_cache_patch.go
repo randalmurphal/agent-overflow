@@ -25,22 +25,30 @@ var mirrorPatchRowsSQL = `SELECT ` + mirrorRowColumnsSQL + `
 	 WHERE `
 
 // mirrorPatchSQL reads, for each section kind, the named rows that are
-// members of a section, by the rule its pages read (mirrorSectionSQL).
+// members of a section, by the rule its pages read (mirrorSectionSQL),
+// each row probed.
 var mirrorPatchSQL = map[MirrorSectionKind]string{
-	MirrorSectionSprint:  mirrorPatchRowsSQL + mirrorSprintRuleSQL,
-	MirrorSectionBacklog: mirrorPatchRowsSQL + mirrorBacklogSQL,
+	MirrorSectionSprint:  mirrorPatchRowsSQL + mirrorInSprintProbeSQL,
+	MirrorSectionBacklog: mirrorPatchRowsSQL + mirrorBacklog(mirrorInOpenSprintProbeSQL),
 	MirrorSectionColumn:  mirrorPatchRowsSQL + mirrorColumnRuleSQL,
+}
+
+// MirrorTotalsAt names the section totals a caller holds: those of a
+// board's Lifetime at its totals Revision (MirrorSectionCounts). The zero
+// value names none, since no lifetime is zero.
+type MirrorTotalsAt struct {
+	Lifetime, Revision int64
 }
 
 // MirrorBoardPatch is what a client holding some sections of a board needs
 // to patch them for a set of issues, read in one snapshot: the board's
-// lifetime and revision, its section totals, and for each section asked,
-// in order, the named issues' rows that are members of it now, in board
-// order, with what their cards name. A named issue with no row in a
-// section is absent from it.
+// lifetime and revision, its section totals unless the caller holds them
+// (Counts nil), and for each section asked, in order, the named issues'
+// rows that are members of it now, in board order, with what their cards
+// name. A named issue with no row in a section is absent from it.
 type MirrorBoardPatch struct {
 	Lifetime, Revision int64
-	Counts             MirrorSectionCounts
+	Counts             *MirrorSectionCounts
 	Sections           [][]MirrorRow
 	Names              MirrorNames
 }
@@ -48,10 +56,12 @@ type MirrorBoardPatch struct {
 // ReadMirrorBoardPatch reads a board's patch for issueIDs (at most
 // mirrorMaxLookup, sorted or not, a repeated one read once) in sections
 // (at most mirrorMaxViewSections) in one snapshot (mirrorReadSnapshot):
-// the board's row, the columns' statuses and the two count walks of
-// CountMirrorSections, one statement per section and the names. ok is
+// the board's row, one statement per section and the names, and, unless
+// held names the board's lifetime and totals revision, the columns'
+// statuses and the two count statements of CountMirrorSections. ok is
 // false for a board the mirror does not show.
-func (s *Store) ReadMirrorBoardPatch(rootID int64, boardID string, sections []MirrorSection, issueIDs []string) (patch MirrorBoardPatch, ok bool, err error) {
+func (s *Store) ReadMirrorBoardPatch(rootID int64, boardID string, sections []MirrorSection, issueIDs []string,
+	held MirrorTotalsAt) (patch MirrorBoardPatch, ok bool, err error) {
 	switch {
 	case len(sections) > mirrorMaxViewSections:
 		return MirrorBoardPatch{}, false, fmt.Errorf("%w: %d sections, over %d", ErrInvalidTrackerCache, len(sections), mirrorMaxViewSections)
@@ -76,12 +86,16 @@ func (s *Store) ReadMirrorBoardPatch(rootID int64, boardID string, sections []Mi
 		}
 		ok = true
 		p.Lifetime, p.Revision = board.lifetime, board.revision
-		columns, err := readMirrorColumnPlacesTx(tx, rootID, boardID)
-		if err != nil {
-			return MirrorBoardPatch{}, err
-		}
-		if p.Counts, err = countMirrorSectionsTx(tx, rootID, boardID, board, columns); err != nil {
-			return MirrorBoardPatch{}, err
+		if held != (MirrorTotalsAt{Lifetime: board.lifetime, Revision: board.totalsRevision}) {
+			columns, err := readMirrorColumnPlacesTx(tx, rootID, boardID)
+			if err != nil {
+				return MirrorBoardPatch{}, err
+			}
+			counts, err := countMirrorSectionsTx(tx, rootID, boardID, board, columns)
+			if err != nil {
+				return MirrorBoardPatch{}, err
+			}
+			p.Counts = &counts
 		}
 		p.Sections = make([][]MirrorRow, len(sections))
 		for i, section := range sections {

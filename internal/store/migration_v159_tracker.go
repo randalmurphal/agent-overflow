@@ -60,7 +60,11 @@ package store
 //     trg_tracker_cache_revision_* triggers and a status group change,
 //     with every change that can add, remove or move a row in one of the
 //     board's sections, so a section page continued at another revision is
-//     refused. retired is set when the board's last listing goes; a retired
+//     refused. totals_revision advances, through the same triggers but the
+//     order one, trg_tracker_cache_totals_estimate, the estimate reread and
+//     an estimate unit change, with every change that can change a
+//     section's total, so a patch read for a caller holding the totals
+//     at it reads none. retired is set when the board's last listing goes; a retired
 //     board is absent to reads and writes, FinishMirrorCleanup drains it,
 //     and a board listed again gets a new lifetime then.
 //     estimate_reset_at is the read of the latest structure that changed
@@ -124,6 +128,9 @@ package store
 //     thread's link can keep, which the cleanup sweep reads;
 //     idx_tracker_cache_issues_parent finds the children of a changed
 //     issue, whose rows show its key and title.
+//     idx_tracker_cache_issues_status holds each issue's status, so a walk
+//     of a board's rows that needs only the status (the counts) probes it
+//     and never the table, whose rows hold the card's data.
 //   - tracker_cache_board_issues: keyed by issue first, so the primary key
 //     serves the keep rule, an issue's rows and the cascade of an issue's
 //     delete; idx_..._order serves a section page, the counts, a
@@ -135,7 +142,9 @@ package store
 //     moving read_at writes the index too.
 //   - tracker_cache_issue_sprints: the sprints an issue's card names. A
 //     sprint the mirror does not keep can be named, so it has no key to
-//     tracker_cache_sprints.
+//     tracker_cache_sprints. idx_tracker_cache_issue_sprints_sprint holds
+//     a sprint's members, so a sprint's page and the counts read them
+//     from the board's sprints, not per board row.
 //   - tracker_cache_changes: gen is the generation the change belongs to
 //     (the issue's history_gen is its history); kind is 1 status, 2
 //     sprint, 3 estimate, 4 assignee; seq orders one kind's changes of one
@@ -202,6 +211,7 @@ CREATE TABLE tracker_cache_boards (
  rows_removed_at INTEGER NOT NULL DEFAULT 0 CHECK(rows_removed_at >= 0),
  estimate_reset_at INTEGER NOT NULL DEFAULT 0 CHECK(estimate_reset_at >= 0),
  revision INTEGER NOT NULL DEFAULT 0 CHECK(revision >= 0),
+ totals_revision INTEGER NOT NULL DEFAULT 0 CHECK(totals_revision >= 0),
  retired INTEGER NOT NULL DEFAULT 0 CHECK(retired IN (0, 1)),
  UNIQUE (root_id, board_id)
 );
@@ -291,6 +301,7 @@ CREATE INDEX idx_tracker_cache_issues_history_answered ON tracker_cache_issues(r
 CREATE INDEX idx_tracker_cache_issues_boardless ON tracker_cache_issues(root_id, issue_id) WHERE board_rows = 0;
 CREATE INDEX idx_tracker_cache_issues_history_dirty ON tracker_cache_issues(root_id, issue_id) WHERE history_dirty = 1;
 CREATE INDEX idx_tracker_cache_issues_parent ON tracker_cache_issues(root_id, parent_id) WHERE parent_id <> '';
+CREATE INDEX idx_tracker_cache_issues_status ON tracker_cache_issues(root_id, issue_id, status_id);
 
 CREATE TABLE tracker_cache_board_issues (
  root_id INTEGER NOT NULL,
@@ -312,6 +323,7 @@ CREATE TABLE tracker_cache_issue_sprints (
  PRIMARY KEY (root_id, issue_id, sprint_id),
  FOREIGN KEY (root_id, issue_id) REFERENCES tracker_cache_issues(root_id, issue_id) ON DELETE CASCADE
 ) WITHOUT ROWID;
+CREATE INDEX idx_tracker_cache_issue_sprints_sprint ON tracker_cache_issue_sprints(root_id, sprint_id, issue_id);
 
 CREATE TABLE tracker_cache_changes (
  root_id INTEGER NOT NULL,
@@ -385,16 +397,21 @@ CREATE TABLE tracker_cache_sync (
 CREATE TRIGGER trg_tracker_cache_board_rows_insert AFTER INSERT ON tracker_cache_board_issues BEGIN
  UPDATE tracker_cache_issues SET board_rows = board_rows + 1, boards_rev = boards_rev + 1
  WHERE root_id = NEW.root_id AND issue_id = NEW.issue_id;
- UPDATE tracker_cache_boards SET revision = revision + 1 WHERE root_id = NEW.root_id AND board_id = NEW.board_id;
+ UPDATE tracker_cache_boards SET revision = revision + 1, totals_revision = totals_revision + 1 WHERE root_id = NEW.root_id AND board_id = NEW.board_id;
 END;
 CREATE TRIGGER trg_tracker_cache_board_rows_delete AFTER DELETE ON tracker_cache_board_issues BEGIN
  UPDATE tracker_cache_issues SET board_rows = board_rows - 1 WHERE root_id = OLD.root_id AND issue_id = OLD.issue_id;
- UPDATE tracker_cache_boards SET revision = revision + 1 WHERE root_id = OLD.root_id AND board_id = OLD.board_id;
+ UPDATE tracker_cache_boards SET revision = revision + 1, totals_revision = totals_revision + 1 WHERE root_id = OLD.root_id AND board_id = OLD.board_id;
 END;
 CREATE TRIGGER trg_tracker_cache_board_rows_estimate_reread AFTER UPDATE OF read_at ON tracker_cache_board_issues
  WHEN OLD.read_at <= (SELECT bl.estimate_reset_at FROM tracker_cache_boards bl WHERE bl.root_id = NEW.root_id AND bl.board_id = NEW.board_id)
   AND NEW.read_at > (SELECT bl.estimate_reset_at FROM tracker_cache_boards bl WHERE bl.root_id = NEW.root_id AND bl.board_id = NEW.board_id) BEGIN
  UPDATE tracker_cache_issues SET boards_rev = boards_rev + 1 WHERE root_id = NEW.root_id AND issue_id = NEW.issue_id;
+ UPDATE tracker_cache_boards SET totals_revision = totals_revision + 1 WHERE root_id = NEW.root_id AND board_id = NEW.board_id;
+END;
+CREATE TRIGGER trg_tracker_cache_totals_estimate AFTER UPDATE OF estimate ON tracker_cache_board_issues
+ WHEN OLD.estimate IS NOT NEW.estimate BEGIN
+ UPDATE tracker_cache_boards SET totals_revision = totals_revision + 1 WHERE root_id = NEW.root_id AND board_id = NEW.board_id;
 END;
 CREATE TRIGGER trg_tracker_cache_revision_order AFTER UPDATE OF order_key ON tracker_cache_board_issues
  WHEN OLD.order_key IS NOT NEW.order_key BEGIN
@@ -402,36 +419,36 @@ CREATE TRIGGER trg_tracker_cache_revision_order AFTER UPDATE OF order_key ON tra
 END;
 CREATE TRIGGER trg_tracker_cache_revision_status AFTER UPDATE OF status_id ON tracker_cache_issues
  WHEN OLD.status_id IS NOT NEW.status_id BEGIN
- UPDATE tracker_cache_boards SET revision = revision + 1 WHERE root_id = NEW.root_id
+ UPDATE tracker_cache_boards SET revision = revision + 1, totals_revision = totals_revision + 1 WHERE root_id = NEW.root_id
   AND board_id IN (SELECT board_id FROM tracker_cache_board_issues WHERE root_id = NEW.root_id AND issue_id = NEW.issue_id);
 END;
 CREATE TRIGGER trg_tracker_cache_revision_sprint_join AFTER INSERT ON tracker_cache_issue_sprints BEGIN
- UPDATE tracker_cache_boards SET revision = revision + 1 WHERE root_id = NEW.root_id
+ UPDATE tracker_cache_boards SET revision = revision + 1, totals_revision = totals_revision + 1 WHERE root_id = NEW.root_id
   AND board_id IN (SELECT board_id FROM tracker_cache_board_issues WHERE root_id = NEW.root_id AND issue_id = NEW.issue_id);
 END;
 CREATE TRIGGER trg_tracker_cache_revision_sprint_leave AFTER DELETE ON tracker_cache_issue_sprints BEGIN
- UPDATE tracker_cache_boards SET revision = revision + 1 WHERE root_id = OLD.root_id
+ UPDATE tracker_cache_boards SET revision = revision + 1, totals_revision = totals_revision + 1 WHERE root_id = OLD.root_id
   AND board_id IN (SELECT board_id FROM tracker_cache_board_issues WHERE root_id = OLD.root_id AND issue_id = OLD.issue_id);
 END;
 CREATE TRIGGER trg_tracker_cache_revision_sprint_insert AFTER INSERT ON tracker_cache_sprints BEGIN
- UPDATE tracker_cache_boards SET revision = revision + 1 WHERE root_id = NEW.root_id AND board_id = NEW.board_id;
+ UPDATE tracker_cache_boards SET revision = revision + 1, totals_revision = totals_revision + 1 WHERE root_id = NEW.root_id AND board_id = NEW.board_id;
 END;
 CREATE TRIGGER trg_tracker_cache_revision_sprint_delete AFTER DELETE ON tracker_cache_sprints BEGIN
- UPDATE tracker_cache_boards SET revision = revision + 1 WHERE root_id = OLD.root_id AND board_id = OLD.board_id;
+ UPDATE tracker_cache_boards SET revision = revision + 1, totals_revision = totals_revision + 1 WHERE root_id = OLD.root_id AND board_id = OLD.board_id;
 END;
 CREATE TRIGGER trg_tracker_cache_revision_sprint_state AFTER UPDATE OF state ON tracker_cache_sprints
  WHEN OLD.state IS NOT NEW.state BEGIN
- UPDATE tracker_cache_boards SET revision = revision + 1 WHERE root_id = NEW.root_id AND board_id = NEW.board_id;
+ UPDATE tracker_cache_boards SET revision = revision + 1, totals_revision = totals_revision + 1 WHERE root_id = NEW.root_id AND board_id = NEW.board_id;
 END;
 CREATE TRIGGER trg_tracker_cache_revision_column_insert AFTER INSERT ON tracker_cache_board_column_statuses BEGIN
- UPDATE tracker_cache_boards SET revision = revision + 1 WHERE root_id = NEW.root_id AND board_id = NEW.board_id;
+ UPDATE tracker_cache_boards SET revision = revision + 1, totals_revision = totals_revision + 1 WHERE root_id = NEW.root_id AND board_id = NEW.board_id;
 END;
 CREATE TRIGGER trg_tracker_cache_revision_column_delete AFTER DELETE ON tracker_cache_board_column_statuses BEGIN
- UPDATE tracker_cache_boards SET revision = revision + 1 WHERE root_id = OLD.root_id AND board_id = OLD.board_id;
+ UPDATE tracker_cache_boards SET revision = revision + 1, totals_revision = totals_revision + 1 WHERE root_id = OLD.root_id AND board_id = OLD.board_id;
 END;
 CREATE TRIGGER trg_tracker_cache_revision_column_move AFTER UPDATE OF position ON tracker_cache_board_column_statuses
  WHEN OLD.position IS NOT NEW.position BEGIN
- UPDATE tracker_cache_boards SET revision = revision + 1 WHERE root_id = NEW.root_id AND board_id = NEW.board_id;
+ UPDATE tracker_cache_boards SET revision = revision + 1, totals_revision = totals_revision + 1 WHERE root_id = NEW.root_id AND board_id = NEW.board_id;
 END;
 CREATE TRIGGER trg_project_tracker_boards_list AFTER INSERT ON project_tracker_boards BEGIN
  INSERT INTO tracker_cache_boards(root_id, board_id) SELECT id, NEW.board_id FROM tracker_cache_roots

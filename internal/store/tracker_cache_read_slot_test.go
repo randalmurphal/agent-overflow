@@ -128,7 +128,7 @@ func TestMirrorReadsTakeAHistoryReadSlot(t *testing.T) {
 	var reads []read
 	for range 5 {
 		reads = append(reads, read{"ReadMirrorBoardPatch", func() error {
-			_, ok, err := s.ReadMirrorBoardPatch(root, "10", patchSections, ids[:3])
+			_, ok, err := s.ReadMirrorBoardPatch(root, "10", patchSections, ids[:3], MirrorTotalsAt{})
 			if err == nil && !ok {
 				t.Error("the patch read no board")
 			}

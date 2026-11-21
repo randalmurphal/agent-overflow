@@ -42,11 +42,13 @@ const (
 		WHERE excluded.read_at > read_at
 		   OR (excluded.read_at = read_at AND (name IS NOT excluded.name OR status_group IS NOT excluded.status_group))
 		RETURNING status_id, changed_at = ?3, done_changed_at = ?3`
-	// mirrorStatusGroupRevisionSQL advances, once each, the revision of the
-	// boards with a row whose issue has a status in ?2. A status moves
-	// between groups rarely, so this walks the root's issues rather than
-	// keep an index by status that every card write would maintain.
-	mirrorStatusGroupRevisionSQL = `UPDATE tracker_cache_boards SET revision = revision + 1 WHERE root_id = ?1 AND board_id IN (
+	// mirrorStatusGroupRevisionSQL advances, once each, the revision and
+	// the totals revision of the boards with a row whose issue has a
+	// status in ?2. A status moves between groups rarely, so this walks the
+	// root's issues rather than keep an index by status that every card
+	// write would maintain.
+	mirrorStatusGroupRevisionSQL = `UPDATE tracker_cache_boards SET revision = revision + 1, totals_revision = totals_revision + 1
+		WHERE root_id = ?1 AND board_id IN (
 		SELECT b.board_id FROM tracker_cache_issues i
 		  CROSS JOIN tracker_cache_board_issues b ON b.root_id = i.root_id AND b.issue_id = i.issue_id
 		 WHERE i.root_id = ?1 AND i.status_id IN (SELECT value FROM json_each(?2)))`

@@ -12,58 +12,80 @@ import (
 // (MirrorHistory.Receipt) is superseded and changes nothing; an issue the
 // mirror does not keep stores nothing (Unkept). Every write that changes
 // an issue's history advances its receipt. It takes at most
-// mirrorHistoryBatch histories of distinct issues, of any length. The
-// histories that fit are written in one transaction of four statements,
-// in more when their changes pass mirrorMaxBatchChanges or what they
-// remove passes clearMirrorChunk; a history that alone passes either is
-// staged in transactions of at most clearMirrorChunk changes and made the
-// issue's history in one more (replaceStagedHistory). No transaction
-// deletes more than clearMirrorChunk changes, and no read sees part of a
-// history. sweep is the root's sweep captured before the reads
-// (ErrTrackerCacheSwept). A call that fails after a transaction of it
-// committed returns, with the error, the outcomes so far: Changed for
+// mirrorHistoryBatch histories of distinct issues, of any length, and the
+// users and statuses the read names (catalog, stored as UpsertMirrorCards
+// stores one from a read that began at readAt), reporting whether the
+// catalog changed. The catalog and the histories that fit are written in
+// one transaction of four statements and one per kind the catalog names,
+// the histories in more when their changes pass mirrorMaxBatchChanges or
+// what they remove passes clearMirrorChunk; a history that alone passes
+// either is staged in transactions of at most clearMirrorChunk changes
+// and made the issue's history in one more (replaceStagedHistory). No
+// transaction deletes more than clearMirrorChunk changes, and no read
+// sees part of a history. sweep is the root's sweep captured before the
+// reads (ErrTrackerCacheSwept). A call that fails after a transaction of
+// it committed returns, with the error, the outcomes so far: Changed for
 // every history a committed transaction changed, and for a staged history
-// whose write had begun, which may not have completed. The caller tells
-// those changes whatever it does about the error; the other outcomes of a
-// failed call say nothing.
-func (s *Store) ReplaceMirrorHistories(rootID, sweep int64, histories []MirrorHistory) ([]MirrorHistoryResult, error) {
-	if len(histories) > mirrorHistoryBatch || sweep <= 0 {
-		return nil, fmt.Errorf("%w: %d histories, over %d, or no sweep", ErrInvalidTrackerCache, len(histories), mirrorHistoryBatch)
+// whose write had begun, which may not have completed, and whether the
+// first transaction changed the catalog. The caller tells those changes
+// whatever it does about the error; the other outcomes of a failed call
+// say nothing.
+func (s *Store) ReplaceMirrorHistories(rootID, sweep int64, histories []MirrorHistory, catalog MirrorCatalog,
+	readAt int64) (results []MirrorHistoryResult, catalogChanged bool, err error) {
+	named := len(catalog.Users)+len(catalog.Statuses) > 0
+	switch {
+	case len(histories) > mirrorHistoryBatch || sweep <= 0:
+		return nil, false, fmt.Errorf("%w: %d histories, over %d, or no sweep", ErrInvalidTrackerCache, len(histories), mirrorHistoryBatch)
+	case named && readAt <= 0:
+		return nil, false, fmt.Errorf("%w: a catalog with no read time", ErrInvalidTrackerCache)
+	}
+	if err := catalog.check(); err != nil {
+		return nil, false, err
 	}
 	// A refusal below is of the input: nothing was written.
 	inputs := make([]mirrorHistoryInput, len(histories))
-	results := make([]MirrorHistoryResult, len(histories))
+	results = make([]MirrorHistoryResult, len(histories))
 	index := make(map[string]int, len(histories))
 	for i, h := range histories {
 		in, err := newMirrorHistoryInput(h)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if _, ok := index[h.IssueID]; ok {
-			return nil, fmt.Errorf("%w: issue %s has two histories", ErrInvalidTrackerCache, h.IssueID)
+			return nil, false, fmt.Errorf("%w: issue %s has two histories", ErrInvalidTrackerCache, h.IssueID)
 		}
 		inputs[i], index[h.IssueID] = in, i
 		results[i] = MirrorHistoryResult{IssueID: h.IssueID, Unkept: true}
 	}
 	action := fmt.Sprintf("store: replace tracker mirror %d histories", rootID)
 	var staged []mirrorHistoryInput
-	for pending := inputs; len(pending) > 0; {
+	for pending, first := inputs, true; len(pending) > 0 || first && named; first = false {
 		// What the transactions before this one committed: a transaction
 		// that fails rolls back, and its outcomes with it.
 		committed := slices.Clone(results)
-		var err error
+		var changed bool
 		err = s.mirrorSweptWrite(rootID, sweep, action, func(tx *sql.Tx) error {
+			var err error
+			if first && named {
+				if changed, err = upsertMirrorCatalogTx(tx, rootID, catalog, readAt); err != nil {
+					return err
+				}
+			}
+			if len(pending) == 0 {
+				return nil
+			}
 			var stage []mirrorHistoryInput
 			pending, stage, err = replaceMirrorHistoriesTx(tx, rootID, pending, index, results)
 			staged = append(staged, stage...)
 			return err
 		})
 		if err != nil {
-			return committed, err
+			return committed, catalogChanged, err
 		}
+		catalogChanged = catalogChanged || changed
 	}
 	if len(staged) == 0 {
-		return results, nil
+		return results, catalogChanged, nil
 	}
 	// A staged history runs with the cleanup's lock, so no cleanup deletes
 	// its staging and no other staging of the issue runs meanwhile.
@@ -71,10 +93,10 @@ func (s *Store) ReplaceMirrorHistories(rootID, sweep int64, histories []MirrorHi
 	defer s.mirrorCleanup.Unlock()
 	for _, in := range staged {
 		if err := s.replaceStagedHistory(rootID, sweep, in, &results[index[in.h.IssueID]]); err != nil {
-			return results, err
+			return results, catalogChanged, err
 		}
 	}
-	return results, nil
+	return results, catalogChanged, nil
 }
 
 // replaceMirrorHistoriesTx writes the admitted histories of pending that

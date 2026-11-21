@@ -54,19 +54,25 @@ var patchSections = []MirrorSection{
 // for every section of patchSections, exactly the rows a full read of the
 // section's pages shows for those issues, whole and in order, names what
 // those rows name as the pages name it, and carries the totals and
-// revision CountMirrorSections reads. It returns the patch.
+// revision CountMirrorSections reads; for a caller holding those totals it
+// carries none and the same rows. It returns the patch.
 func requirePatchParity(t *testing.T, s *Store, root int64, step string, named []string) MirrorBoardPatch {
 	t.Helper()
-	patch, ok, err := s.ReadMirrorBoardPatch(root, "10", patchSections, named)
-	if err != nil || !ok {
-		t.Fatalf("%s: patch = %v, %v", step, ok, err)
+	patch, ok, err := s.ReadMirrorBoardPatch(root, "10", patchSections, named, MirrorTotalsAt{})
+	if err != nil || !ok || patch.Counts == nil {
+		t.Fatalf("%s: patch = %+v, %v, %v", step, patch, ok, err)
 	}
 	counts, err := s.CountMirrorSections(root, "10")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fmt.Sprint(counts) != fmt.Sprint(patch.Counts) || patch.Revision != counts.Revision || patch.Lifetime != currentLifetime(s, root, "10") {
-		t.Errorf("%s: patch totals %+v at %d/%d; counts %+v", step, patch.Counts, patch.Lifetime, patch.Revision, counts)
+	if fmt.Sprint(counts) != fmt.Sprint(*patch.Counts) || patch.Revision != counts.Revision || patch.Lifetime != currentLifetime(s, root, "10") {
+		t.Errorf("%s: patch totals %+v at %d/%d; counts %+v", step, *patch.Counts, patch.Lifetime, patch.Revision, counts)
+	}
+	held := MirrorTotalsAt{Lifetime: patch.Lifetime, Revision: counts.TotalsRevision}
+	if again, ok, err := s.ReadMirrorBoardPatch(root, "10", patchSections, named, held); err != nil || !ok || again.Counts != nil ||
+		!reflect.DeepEqual(again.Sections, patch.Sections) || again.Revision != patch.Revision {
+		t.Errorf("%s: a patch for the totals held at %+v = %+v, %v, %v", step, held, again, ok, err)
 	}
 	users, statuses, parents := map[string]MirrorUser{}, map[string]MirrorStatus{}, map[string]MirrorCard{}
 	var shown []MirrorRow
@@ -209,30 +215,44 @@ func TestMirrorBoardPatchMatchesTheSections(t *testing.T) {
 		t.Fatalf("the patch names parents %+v; want 30000", patch.Names.Parents)
 	}
 
-	if _, ok, err := s.ReadMirrorBoardPatch(root, "11", patchSections, named); ok || err != nil {
+	if _, ok, err := s.ReadMirrorBoardPatch(root, "11", patchSections, named, MirrorTotalsAt{}); ok || err != nil {
 		t.Fatalf("a board with no structure: %v, %v", ok, err)
 	}
-	if _, _, err := s.ReadMirrorBoardPatch(root, "10", patchSections, make([]string, mirrorMaxLookup+1)); err == nil {
+	if _, _, err := s.ReadMirrorBoardPatch(root, "10", patchSections, make([]string, mirrorMaxLookup+1), MirrorTotalsAt{}); err == nil {
 		t.Fatal("an over-long list was read")
 	}
 }
 
 // The patch reads in one snapshot, one statement per part: the board, the
-// column statuses, the two count walks, a statement per section, and the
-// names (users and statuses, parents). It runs alone: it counts the
-// package's statements.
+// column statuses, the two count statements, a statement per section, and
+// the names (users and statuses, parents); for a caller holding the
+// totals, neither the column statuses nor the counts. It runs alone: it
+// counts the package's statements.
 func TestMirrorBoardPatchStatements(t *testing.T) {
 	s, _, root := newMirror(t)
 	ids := patchBoard(t, s, root, 30)
 	sections := patchSections[:3]
+	var patch MirrorBoardPatch
 	statements := countMirrorStatements(t, func() {
-		if _, ok, err := s.ReadMirrorBoardPatch(root, "10", sections, ids[:1]); err != nil || !ok {
+		var ok bool
+		var err error
+		if patch, ok, err = s.ReadMirrorBoardPatch(root, "10", sections, ids[:1], MirrorTotalsAt{}); err != nil || !ok {
 			t.Fatalf("%v, %v", ok, err)
 		}
 	})
 	// board 1, column statuses 1, counts 2, sections 3, names 1 (no parent).
 	if want := 1 + 1 + 2 + len(sections) + 1; statements != want {
 		t.Fatalf("a patch of one issue in %d sections ran %d statements; want %d", len(sections), statements, want)
+	}
+	held := MirrorTotalsAt{Lifetime: patch.Lifetime, Revision: patch.Counts.TotalsRevision}
+	statements = countMirrorStatements(t, func() {
+		if again, ok, err := s.ReadMirrorBoardPatch(root, "10", sections, ids[:1], held); err != nil || !ok || again.Counts != nil {
+			t.Fatalf("%+v, %v, %v", again, ok, err)
+		}
+	})
+	// board 1, sections 3, names 1.
+	if want := 1 + len(sections) + 1; statements != want {
+		t.Fatalf("a patch of one issue in %d sections for the totals held ran %d statements; want %d", len(sections), statements, want)
 	}
 	statements = countMirrorStatements(t, func() {
 		if _, err := s.ListMirrorIssueBoards(root, ids, ids); err != nil {

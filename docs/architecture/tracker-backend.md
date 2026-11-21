@@ -505,7 +505,8 @@ and writes share:
   only against the state its read was listed from: of answers listed at
   one receipt the first to land is stored and the rest are superseded,
   whatever their times. It is written in
-  batches of up to 50 issues (`ReplaceMirrorHistories`). A caller sends an
+  batches of up to 50 issues (`ReplaceMirrorHistories`), with the users
+  and statuses the read named in the first transaction. A caller sends an
   issue's whole history in one call, however long; one over 500 changes is
   staged in transactions of at most 500 and made the issue's history in
   one more, so a reader sees the old history until the switch, never part
@@ -634,7 +635,8 @@ AO_TRACKER_SCALE=5000,20000 make go-test GO_TEST_PKGS=./internal/store \
 ```
 
 Counts are exact. Times are one development machine's (Intel Core Ultra 9
-285HX, WSL2, Go 1.27.4): the range of three runs' medians of five.
+285HX, WSL2, Go 1.27.4): the first sync's is the fastest of five runs, a
+path's the fastest of three runs of five each.
 
 | First sync, one board | 5,000 | 20,000 |
 |---|---|---|
@@ -642,31 +644,37 @@ Counts are exact. Times are one development machine's (Intel Core Ultra 9
 | Provider calls (scripted) | 172 | 682 |
 | Requests, Jira through `trackerfake` | 239 | 944 |
 | Requests, Linear through `trackerfake` | 166 | 615 |
-| Write statements, in transactions | 740 in 278 | 2,915 in 1,103 |
-| Allocated, peak heap | 91 MB, 9.6 to 9.8 MB | 363 MB, 29.1 to 29.5 MB |
-| Time (scripted) | 1.17 to 1.19 s | 4.69 to 4.73 s |
-| Store file per issue, after a checkpoint | 885 B | 829 B |
+| Write statements, in transactions | 740 in 178 | 2,915 in 703 |
+| Allocated, peak heap | 90 MB, 9.7 to 10.0 MB | 359 MB, 29.2 to 29.7 MB |
+| Time (scripted) | 1.21 s | 4.85 s |
+| Store file per issue, after a checkpoint | 922 B | 865 B |
 
 Steady paths cost the same at both sizes, except the four that walk the
 board: the reconcile compares the whole listing, and the board view, the
-counts and the patch read total every section.
+counts and a patch read whose totals moved total every section. The
+totals read one row a board row, its status from
+`idx_tracker_cache_issues_status` and nothing from its card, and one row
+a sprint; they sort nothing, so their memory does not grow with the
+board. A patch read whose client holds the current totals reads only the
+named rows.
 
 | Path (store) | Statements | 5,000 | 20,000 |
 |---|---|---|---|
-| Idle tick | 3 | 66 to 91 µs | 73 to 118 µs |
-| Delta, 100 changed | 11 | 6.5 to 7.0 ms | 7.5 to 9.5 ms |
-| History, 50 due | 6 | 12.1 to 12.8 ms | 11.6 to 12.2 ms |
-| Reconcile, complete listing | 4 | 5.1 to 6.0 ms | 23.7 to 25.3 ms |
-| Board view, 3 sections | 10 | 20.1 to 20.9 ms | 72 to 76 ms |
-| Section page, middle of a column | 3 | 0.66 to 0.73 ms | 0.72 to 0.74 ms |
-| Section counts | 4 | 15.4 to 17.0 ms | 64 to 67 ms |
-| Patch read, 1 or 100 changed | 8 | 15.6 to 16.7 ms | 65 to 69 ms |
-| Ticket open, stored | 13 | 0.29 to 0.61 ms | 0.28 to 0.37 ms |
-| Jira round, 100 tickets, 10 changed | 20 | 4.6 to 5.2 ms | 5.1 to 5.6 ms |
-| Linear round, 100 tickets, 10 changed | 14 | 3.1 to 3.8 ms | 2.9 to 3.2 ms |
-| `New` | 0 | 13.6 to 15.4 ms | 13.5 to 17.9 ms |
+| Idle tick | 3 | 59 µs | 60 µs |
+| Delta, 100 changed | 11 | 6.5 ms | 8.4 ms |
+| History, 50 due | 6 | 12.0 ms | 12.2 ms |
+| Reconcile, complete listing | 4 | 5.1 ms | 23.4 ms |
+| Board view, 3 sections | 10 | 12.9 ms | 47.7 ms |
+| Section page, middle of a column | 3 | 0.67 ms | 0.77 ms |
+| Section counts | 4 | 9.4 ms | 41.1 ms |
+| Patch read, 1 or 100 changed, totals moved | 8 | 8.4 to 9.9 ms | 40.3 to 41.6 ms |
+| Patch read, 1 or 100 changed, totals held | 5 | 0.07 to 0.72 ms | 0.07 to 0.68 ms |
+| Ticket open, stored | 13 | 0.28 ms | 0.26 ms |
+| Jira round, 100 tickets, 10 changed | 20 | 4.7 ms | 4.9 ms |
+| Linear round, 100 tickets, 10 changed | 14 | 2.8 ms | 2.8 ms |
+| `New` | 0 | 12.9 ms | 13.2 ms |
 
-Five boards of 4,000 issues on one root view in 17.5 to 18.0 ms. Every
+Five boards of 4,000 issues on one root view in 11.7 ms. Every
 statement of the mirror plans the same at 20,000 issues as on a small
 mirror, with no `sqlite_stat1`. Through `trackerfake` at 20,000 an idle
 tick, a delta of 100 and a Jira history read of 100 are 1, 1 and 4
@@ -805,7 +813,8 @@ The bound methods wrap these `trackerapp.Service` methods:
   the subscription ends first.
 - `TicketDetail(handle)` is the ticket as its subscribers were last told:
   its failure, and its view or not loaded.
-- `BoardPatch(scope, sections, issues)` is the patch read below.
+- `BoardPatch(scope, sections, issues, held)` is the patch read below;
+  `held` names the totals the client holds.
 - `StartLinkedSync` arms the linked-issues loop; the app calls it from its
   unattended-work boot step. `New` starts nothing.
 
@@ -900,23 +909,29 @@ card's parent is named by ID.
 
 A client patches the sections it holds instead of reading them again.
 `BoardPatch` (store `ReadMirrorBoardPatch`) reads, in one snapshot, the
-board's lifetime and revision, every section total, and for each section
-asked the named issues' rows that are members of it now, with their names.
-Membership comes from the same rule fragments that `ListMirrorSection`
-pages by. The client's rule:
+board's lifetime and revision, every section total unless the client holds
+the board's current ones, and for each section asked the named issues'
+rows that are members of it now, with their names. Membership comes from
+the same rule fragments that `ListMirrorSection` pages by. The totals are
+named by the board's lifetime and totals revision (the board view's
+`totals_revision`, a patch's `totals.revision`), which moves with every
+change that can change a total and not with a title or rank. The client's
+rule:
 
 1. Remove each ID of the event from every section held.
 2. Insert each returned row at its (order, issue) place when that place is
    not after the section's cursor, or when the section is loaded whole.
-3. Take the totals.
+3. Take the totals when the patch carries them, and hold their lifetime
+   and revision for the next patch read.
 4. Carry the lifetime and revision into every cursor.
 
 The reference implementation is `applyPatch` in
 `trackerapp/patch_model_test.go`. A randomized test checks it against a
 full read of the board. A one-row change of a realistic board, with three
-sections held, costs a 166-byte event and a 1,461-byte patch as JSON. The
-patch read is two store calls and eight statements. Tests pin all of these
-numbers. The full read is only for the first paint, a reconnect and
+sections held, costs a 166-byte event and a 1,174-byte patch as JSON, or
+1,487 bytes when the totals moved. The patch read is two store calls and
+five statements, eight with the totals; with the totals held it reads
+only the named rows. Tests pin all of these numbers. The full read is only for the first paint, a reconnect and
 `ReadAgain`.
 
 ## Agent tools

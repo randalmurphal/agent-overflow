@@ -144,7 +144,7 @@ func fillBenchMirror(s *Store, size benchMirrorSize) error {
 			for i := first; i < min(first+mirrorHistoryBatch, size.issues); i++ {
 				batch = append(batch, benchHistory(benchIssueID(board, i), 100, benchChanges))
 			}
-			if _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, batch)); err != nil {
+			if _, _, err := s.ReplaceMirrorHistories(root, currentSweep(s, root), dueHistories(s, root, batch), MirrorCatalog{}, 0); err != nil {
 				return err
 			}
 		}
