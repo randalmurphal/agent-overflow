@@ -310,20 +310,25 @@ fallback.
 
 Both auto-load triggers share one direction-agnostic gate
 (`createAutoLoadGate` in `timelineScroll.ts`). It is gesture-armed:
-`disarm()` after every load, re-armed only by a real wheel/touchmove/
-keydown (the post-load `shift` compensation is a programmatic scroll and
-must not re-arm) plus a 350ms cooldown fallback. Its progress guard
-compares the **full** floor cursor
+`disarm()` after every load that was not refused, re-armed only by a real
+wheel/touchmove/keydown (the post-load `shift` compensation is a
+programmatic scroll and must not re-arm) plus a 350ms cooldown fallback.
+`shouldLoad` only admits. Every page load at an edge (auto-load, the
+viewport fill, the Load older and Load newer buttons) reports how it ended
+to that edge's gate through `settle`, with the floor it loaded from: a
+page that moved the floor clears the progress guard's record; an error,
+or a page that left the floor where it was, records that floor, and
+auto-load and the viewport fill both skip it (`stalledAt`) until the
+floor moves; a refused page (its edge
+moved while it was out, **Load Paging** below) records nothing and leaves
+the gate armed, so the next scroll or gesture probes. The guard compares
+the **full** floor cursor
 (`oldestLoadedCursor` / `newestLoadedCursor`), turnIndex **and** itemIndex.
 Keying the guard on turnIndex alone latched auto-load off on long
 single-turn threads, where paging advances the item floor but never the
 turn floor (incident bug-report-20260616T143320Z): a 400-item turn 57
 loaded once, then the guard read 57 === 57 and refused every later
-auto-load until a manual click. A load whose page is refused (its edge
-moved while it was out, **Load Paging** below) is no attempt: the gate
-forgets it, stays armed, and probes the same edge once more at the
-reader's offset; a re-probe refused again at an unmoved floor waits for
-the next scroll. Neither direction re-anchors after the
+auto-load until a manual click. Neither direction re-anchors after the
 load: the prepend (older) and the head-prune (newer) hold the reading
 position through the virtualizer's `shift` head-splice compensation (see
 **Load Paging** below), so auto-load-newer never scrolls and

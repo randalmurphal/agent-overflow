@@ -1,4 +1,5 @@
 import { compareCursors, type TimelineCursorLike } from '../../stores/threadItems';
+import type { LoadOlderResult } from '../../stores/threadPaneShared';
 import type { Item } from '../../types/models';
 import { notificationCoverIds } from '../../utils/notificationFilter';
 import {
@@ -47,7 +48,7 @@ export interface TimelineTailGeometry extends TimelineGeometry {
  * the bottom for a newer-gate. The gate calls this LAST, only after the
  * cheap state gates pass, so the per-scroll-frame engine index lookup it
  * performs stays off the hot path while the gate is disarmed, mid-load, or
- * already-attempted at the current floor.
+ * holding the current floor as one a load left unmoved.
  */
 export type AutoLoadTriggerZone = () => boolean;
 
@@ -70,10 +71,27 @@ export interface AutoLoadGateState {
 }
 
 export interface AutoLoadGate {
-  readonly attemptedAtFloor: TimelineCursorLike | null;
+  /** The floor the last settled load left unmoved; `shouldLoad` refuses it. */
+  readonly noProgressFloor: TimelineCursorLike | null;
   readonly armed: boolean;
   reset(): void;
+  /** Admits an auto-load. Records nothing: the load reports to `settle`. */
   shouldLoad(state: AutoLoadGateState): boolean;
+  /**
+   * Whether the last settled load at this edge ended at `floor` without
+   * moving it. Auto-load and the viewport fill both skip such a floor, so
+   * a failed page does not go out again until the edge moves.
+   */
+  stalledAt(floor: TimelineCursorLike | null): boolean;
+  /**
+   * A load at this edge ended, whoever started it. `from` is the floor it
+   * loaded from and `to` the floor after it. A refused page (`stale`: a
+   * cut or a replacement moved the edge while it was out) and a load that
+   * never ran (`noop`) say nothing about the floor and record nothing. A
+   * page that moved the floor clears the record. An error, or a page that
+   * left the floor where it was, records `from` until the floor moves.
+   */
+  settle(from: TimelineCursorLike, status: LoadOlderResult['status'], to: TimelineCursorLike | null): void;
   /**
    * Suspends auto-load until a real user gesture arrives (or the fallback
    * cooldown elapses). Called after every load that was not refused (a
@@ -90,13 +108,6 @@ export interface AutoLoadGate {
    * restore) don't fire these events so they cannot re-arm.
    */
   armOnGesture(): void;
-  /**
-   * The load the last `shouldLoad` admitted was refused: the window moved
-   * under it and nothing was applied. A refused load is no attempt, so
-   * the progress guard forgets it and the same floor may load again.
-   * Called once, by the caller that ran the admitted load.
-   */
-  forgetAttempt(): void;
 }
 
 export interface AutoLoadZoneThresholds {
@@ -285,9 +296,7 @@ export function bottomEdgeGeometry(
  * supplied per `shouldLoad` call.
  */
 export function createAutoLoadGate(): AutoLoadGate {
-  let attemptedAtFloor: TimelineCursorLike | null = null;
-  // The attempt the last admission replaced, restored if it is refused.
-  let previousAttempt: TimelineCursorLike | null = null;
+  let noProgressFloor: TimelineCursorLike | null = null;
   let armed = true;
   let cooldownTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -298,24 +307,33 @@ export function createAutoLoadGate(): AutoLoadGate {
     }
   }
 
-  // First attempt (null) always counts as progress; afterwards the floor
-  // cursor must have moved since the last attempt — compared on the FULL
-  // cursor so item-level progress within one turn re-enables the load.
-  function madeProgressSince(floorCursor: TimelineCursorLike): boolean {
-    return attemptedAtFloor === null
-      || compareCursors(attemptedAtFloor, floorCursor) !== 0;
+  // Compared on the FULL cursor, so item-level progress within one turn
+  // counts as a moved floor.
+  function sameFloor(a: TimelineCursorLike, b: TimelineCursorLike): boolean {
+    return compareCursors(a, b) === 0;
+  }
+
+  function stalledAt(floor: TimelineCursorLike | null): boolean {
+    return floor !== null && noProgressFloor !== null && sameFloor(noProgressFloor, floor);
   }
 
   return {
-    get attemptedAtFloor() { return attemptedAtFloor; },
+    stalledAt,
+    get noProgressFloor() { return noProgressFloor; },
     get armed() { return armed; },
     reset(): void {
       // Thread switch: clear all state. The new thread should be free to
       // auto-load from frame 0 if its initial slice triggers the geometry.
-      attemptedAtFloor = null;
-      previousAttempt = null;
+      noProgressFloor = null;
       armed = true;
       clearCooldown();
+    },
+    settle(from, status, to): void {
+      if (status === 'stale' || status === 'noop') return;
+      // A copy, not the pane's live cursor: the record must not follow it.
+      noProgressFloor = status === 'loaded' && to !== null && !sameFloor(from, to)
+        ? null
+        : { turnIndex: from.turnIndex, itemIndex: from.itemIndex };
     },
     disarm(): void {
       armed = false;
@@ -333,36 +351,27 @@ export function createAutoLoadGate(): AutoLoadGate {
       armed = true;
       clearCooldown();
     },
-    forgetAttempt(): void {
-      attemptedAtFloor = previousAttempt;
-    },
     shouldLoad(state: AutoLoadGateState): boolean {
-      // Gesture-armed: after each load, `disarm()` flips this false. Only a
-      // real user gesture (wheel/touchmove/keydown wired by the timeline) or
-      // the cooldown fallback flips it back true. Programmatic scrolls don't
-      // fire those events, so a post-load re-anchor cannot cascade.
+      // Gesture-armed: after each load that was not refused, `disarm()`
+      // flips this false. Only a real user gesture (wheel/touchmove/keydown
+      // wired by the timeline) or the cooldown fallback flips it back true.
+      // Programmatic scrolls don't fire those events, so a post-load
+      // re-anchor cannot cascade.
       if (!armed) return false;
       if (!state.hasMore) return false;
       if (state.loading) return false;
-      // pane.loadOlder/loadNewer already noop on a null floor, but the
-      // progress guard needs a concrete cursor to compare. Without this,
-      // malformed backend state (`hasMore=true` with no loaded items)
-      // re-fires the load on every scroll tick.
+      // pane.loadOlder/loadNewer noop on a null floor, and a noop records
+      // nothing. Without this, malformed backend state (`hasMore=true` with
+      // no loaded items) re-fires the load on every scroll tick.
       if (state.floorCursor === null) return false;
       // Restoration must finish first. Loading mid-restore races the anchor
       // capture against an unstable scrollTop.
       if (state.restoredThreadId !== state.threadId) return false;
-      // Progress guard: don't hammer the same query while the user lingers
-      // at the edge if the previous attempt didn't move the floor cursor.
-      if (!madeProgressSince(state.floorCursor)) return false;
+      // Progress guard: don't repeat a query that already ended without
+      // moving the floor while the user lingers at the edge.
+      if (stalledAt(state.floorCursor)) return false;
       // Expensive engine geometry — deferred until the cheap gates pass.
-      if (!state.inTriggerZone()) return false;
-      previousAttempt = attemptedAtFloor;
-      attemptedAtFloor = {
-        turnIndex: state.floorCursor.turnIndex,
-        itemIndex: state.floorCursor.itemIndex,
-      };
-      return true;
+      return state.inTriggerZone();
     },
   };
 }
