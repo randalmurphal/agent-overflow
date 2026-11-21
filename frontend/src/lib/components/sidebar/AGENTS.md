@@ -52,15 +52,21 @@ which adds the project's empty state and drop targets.
   targets. Its `members` are what the filter also shows, and everything the
   entry counts, dates (`rankOf`) and says about its members, its identity
   warning and its recheck included, comes from them.
-- An action takes `projectTarget(entry, label)` at the gesture that starts
-  it and never reads the row again, so a confirmation, a preview or a late
-  reply cannot move it onto the other checkout.
+- An action is one run (`projectActions.svelte.ts`): it owns the target it
+  took at its gesture and everything derived from it, its confirmation text
+  and its deletion preview included, and the call it ends in is gated on
+  `beginSubmit`. A row has one run at a time, archive, delete and rename
+  alike; starting one retires the run before it, and a retired run can
+  neither show nor send anything. Every menu action, rename included, takes
+  the target the menu was opened on, never the row's current one.
 - A row's label is disambiguated by `ProjectList.svelte` over the entries it
   renders, so a query that hides one of two same-named projects drops the
   other's prefix; the entry carries the name and path, not the label.
 - Disclosure is keyed by the entry's key: collapse, and the show-more limit
   of the entry's own list, which `ProjectItem` passes down as `listKey`
-  beside the `projectId` an action targets. `ProjectsSection.svelte` and
+  beside the `projectId` an action targets. The record says whether a key
+  has been ANSWERED as well as what the answer is, so a carry can tell
+  "chose expanded at the default preview" from "never chose". `ProjectsSection.svelte` and
   `SidebarTreeList.svelte` are the only readers of those writers here, which
   `lib/architecture.test.ts` enforces; a row reports a toggle through
   `onSetExpanded` instead of writing one. Anything that wants a project's

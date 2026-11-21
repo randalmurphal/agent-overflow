@@ -10,7 +10,8 @@ import ProjectItem from './ProjectItem.svelte';
 import ProjectList from './ProjectList.svelte';
 import { addProjectLocal, resetProjectsForTest, updateProjectLocal } from '../../stores/projects.svelte';
 import { storeEntries, storeEntryFor } from '../../../test/helpers/sidebarEntry';
-import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
+import type { ProjectDeletionPreview } from '../../types/workflow';
+import { grantBackendScopes, pairViewOnly, resetToLocalPage, revokeBackendScopes } from '../../../test/helpers/scopes';
 import type { Project } from '../../types/models';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { getToasts, resetToastsForTest } from '../../stores/toast.svelte';
@@ -240,11 +241,67 @@ describe('ProjectItem identity read failure', () => {
 // not move onto the other one.
 describe('ProjectItem action target', () => {
   afterEach(() => {
+    revokeBackendScopes('laptop');
     resetStagedBackends();
     __resetEntityIndexForTest();
     resetBindingMocks();
     resetToastsForTest();
   });
+
+  // One repository, checked out here and on the laptop, with the home
+  // checkout representing it. `flipRepresentative` archives that checkout
+  // locally, which is how a listing moves an entry to the live member.
+  async function twoCheckouts(): Promise<{ home: Project; laptop: Project }> {
+    stageBackend({ id: 'laptop', backendId: 'laptop-id', name: 'Laptop' });
+    // The laptop's own grants: its menu items are inert without them, and
+    // the overlap under test is two actions the user can actually start.
+    await grantBackendScopes('laptop', [
+      'threads:read', 'threads:operate', 'threads:autonomy', 'git:operate', 'files:read', 'settings:read',
+    ]);
+    const home = { ...makeProject('ck-home', 'app', '/home/app'), repositoryID: 'github:github.com:1' };
+    const laptop = { ...makeProject('ck-laptop', 'app-laptop', '/laptop/app'), repositoryID: 'github:github.com:1' };
+    noteProject(home.id, '');
+    noteProject(laptop.id, 'laptop');
+    addProjectLocal(home);
+    addProjectLocal(laptop);
+    return { home, laptop };
+  }
+
+  // The row as the list hands it over, which keeps its last entry once the
+  // action under way removes the row's last project.
+  function renderRow() {
+    let latest = storeEntryFor('ck-laptop');
+    const entryNow = () => {
+      latest = storeEntries().find(
+        (candidate) => candidate.members.some((member) => member.project.id === 'ck-laptop'),
+      ) ?? latest;
+      return latest;
+    };
+    return render(ProjectItem, {
+      props: {
+        get entry() { return entryNow(); },
+        get displayLabel() { return { prefix: '', name: entryNow().name }; },
+        threads: [],
+        pane: null,
+      } as never,
+    });
+  }
+
+  // Enough flushes that a dialog this sequence must NOT show would have
+  // been shown: a preview arrives on a promise, and its dialog mounts a
+  // tick later.
+  async function settleDialogs(): Promise<void> {
+    for (let i = 0; i < 6; i += 1) {
+      await Promise.resolve();
+      await tick();
+    }
+  }
+
+  async function openMenu(view: ReturnType<typeof renderRow>): Promise<void> {
+    const header = view.getByTestId('project-item').querySelector('[role="button"][aria-expanded]');
+    await fireEvent.contextMenu(header as HTMLElement);
+    await tick();
+  }
 
   it('archives the checkout the menu opened on after the entry changes hands', async () => {
     stageBackend({ id: 'laptop', backendId: 'laptop-id', name: 'Laptop' });
@@ -292,6 +349,101 @@ describe('ProjectItem action target', () => {
 
     await fireEvent.click(getByRole('button', { name: 'Archive' }));
     await vi.waitFor(() => expect(archive).toHaveBeenCalledWith('ck-home'));
+  });
+
+  // The sequence the reviewer's probe caught: a delete waiting on its
+  // preview, the entry changing hands, a second delete started on the new
+  // representative, and then the FIRST preview arriving. One run owns its
+  // target and its preview together, so the late one has nowhere to land.
+  it('deletes the checkout of the run that is current, with that run\'s own preview', async () => {
+    const { home, laptop } = await twoCheckouts();
+    const previews = new Map<string, { resolve: (preview: ProjectDeletionPreview) => void }>();
+    setBindingMock('ProjectDeletionPreview', (id: string) => new Promise<ProjectDeletionPreview>((resolve) => {
+      previews.set(id, { resolve });
+    }));
+    const del = setBindingMock('DeleteProject', vi.fn(async () => ({ threadIds: [], retainedWorktrees: [] })));
+    const view = renderRow();
+    const preview = (id: string, runCount: number): ProjectDeletionPreview => ({
+      projectId: id, runCount, liveRunIds: [], worktrees: [], hasWork: true,
+    });
+
+    // Delete on the home checkout, its preview still out.
+    await openMenu(view);
+    await fireEvent.click(view.getByRole('menuitem', { name: 'Delete Project' }));
+    await tick();
+    expect(previews.has(home.id)).toBe(true);
+
+    // The entry changes hands, and the user starts Delete again on the row.
+    updateProjectLocal({ ...home, archived: true });
+    await tick();
+    expect(view.getByTestId('project-item').getAttribute('data-project-id')).toBe(laptop.id);
+    await openMenu(view);
+    await fireEvent.click(view.getByRole('menuitem', { name: 'Delete Project' }));
+    await tick();
+
+    // The retired run's answer arrives: nothing of it is shown.
+    previews.get(home.id)!.resolve(preview(home.id, 7));
+    await settleDialogs();
+    expect(view.queryByTestId('project-delete-dialog')).toBeNull();
+
+    // The current run's answer is the one the user is shown and confirms.
+    previews.get(laptop.id)!.resolve(preview(laptop.id, 2));
+    await vi.waitFor(() => expect(view.queryByTestId('project-delete-dialog')).not.toBeNull());
+    expect(view.getByTestId('project-delete-dialog')).toHaveTextContent('app-laptop');
+    expect(view.getByTestId('project-delete-work')).toHaveTextContent('2 workflow runs');
+    await fireEvent.click(view.getByRole('button', { name: 'Delete Project' }));
+    await vi.waitFor(() => expect(del).toHaveBeenCalledTimes(1));
+    expect(del).toHaveBeenCalledWith(laptop.id);
+  });
+
+  it('archives the checkout of the run that is current when two overlap', async () => {
+    const { home, laptop } = await twoCheckouts();
+    const archive = setBindingMock('ArchiveProject', vi.fn(async () => {}));
+    const view = renderRow();
+
+    // Archive on the home checkout, its confirmation open.
+    await openMenu(view);
+    await fireEvent.click(view.getByRole('menuitem', { name: 'Archive Project' }));
+    await tick();
+    expect(view.getByRole('dialog')).toHaveTextContent('Hide "app" from the sidebar.');
+
+    // The entry changes hands and the user starts Archive again.
+    updateProjectLocal({ ...home, archived: true });
+    await tick();
+    await openMenu(view);
+    await fireEvent.click(view.getByRole('menuitem', { name: 'Archive Project' }));
+    await tick();
+    // One confirmation, the newest run's, naming what it will archive.
+    expect(view.getAllByRole('dialog')).toHaveLength(1);
+    expect(view.getByRole('dialog')).toHaveTextContent('Hide "app-laptop" from the sidebar.');
+
+    await fireEvent.click(view.getByRole('button', { name: 'Archive' }));
+    await vi.waitFor(() => expect(archive).toHaveBeenCalledTimes(1));
+    expect(archive).toHaveBeenCalledWith(laptop.id);
+  });
+
+  it('renames the checkout the menu was opened on, not the row\'s current one', async () => {
+    const { home, laptop } = await twoCheckouts();
+    const rename = setBindingMock('RenameProject', vi.fn(async (id: string, name: string) => ({
+      ...(id === home.id ? home : laptop), name,
+    })));
+    const view = renderRow();
+
+    // The menu is opened on the home checkout, then the entry changes hands
+    // before the user chooses Rename from it.
+    await openMenu(view);
+    updateProjectLocal({ ...home, archived: true });
+    await tick();
+    expect(view.getByTestId('project-item').getAttribute('data-project-id')).toBe(laptop.id);
+    await fireEvent.click(view.getByRole('menuitem', { name: 'Rename Project' }));
+    await tick();
+
+    const input = view.getByLabelText('Rename Project') as HTMLInputElement;
+    expect(input.value).toBe('app');
+    await fireEvent.input(input, { target: { value: 'renamed' } });
+    await fireEvent.keyDown(input, { key: 'Enter' });
+    await vi.waitFor(() => expect(rename).toHaveBeenCalledTimes(1));
+    expect(rename).toHaveBeenCalledWith(home.id, 'renamed');
   });
 });
 

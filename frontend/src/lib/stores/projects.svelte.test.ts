@@ -23,7 +23,7 @@ import {
   updateProjectLocal,
 } from './projects.svelte';
 import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
-import { __resetEntityIndexForTest, noteProject } from '../transport/entityIndex';
+import { __resetEntityIndexForTest, noteProject, projectBackend } from '../transport/entityIndex';
 import { HOME_BACKEND } from '../transport/backendKey';
 import type { Project, ProjectWithCounts } from '../types/models';
 import { setBindingMock } from '../../test/mocks/bindings-app';
@@ -302,15 +302,20 @@ describe('reorderProjects', () => {
     return {
       sent,
       refuse: (index, error) => settlers[index].reject(error),
-      // What a computer that accepted an order does: one project:updated
-      // frame per row it moved, which the transport delivers ahead of the
-      // reply (internal/transport/conn.go#writeReply). Through the real
-      // applier, because the rows carrying the order is the whole reason
-      // the overlay can be dropped with nothing written here.
+      // What the computer that accepted an order does: one project:updated
+      // frame per row IT MOVED, which the transport delivers ahead of the
+      // reply (internal/transport/conn.go#writeReply). The write is routed
+      // home (transport/methodRoutes.ts), and the store skips an id it does
+      // not hold (internal/store/projects.go, sql.ErrNoRows -> continue), so
+      // a project that lives only on another computer is written nowhere and
+      // gets no frame. Through the real applier, because the rows carrying
+      // the order is the whole reason the overlay can be dropped with
+      // nothing written here.
       accept: (index) => {
         for (const [position, id] of sent[index].entries()) {
           const row = getProject(id);
           if (row === undefined) continue;
+          if ((projectBackend(id) ?? HOME_BACKEND) !== HOME_BACKEND) continue;
           applyProjectUpdated({ action: 'full', project: { ...row.project, sortPosition: position } });
         }
         settlers[index].resolve([]);
@@ -389,6 +394,33 @@ describe('reorderProjects', () => {
     writes.accept(1);
     await newest;
     expect(stored()).toEqual([2, 0, 1]);
+  });
+
+  // A drag that moves a project only another computer holds. The write goes
+  // home, because that is where UpdateProjectSortPositions is routed
+  // (transport/methodRoutes.ts), home has no row for it to write, and the
+  // call still succeeds. So the overlay shows the dropped order until the
+  // write settles and the rows then answer with the order they still carry:
+  // the drag comes back. That is the behavior as it stands, with the missing
+  // save left with the user.
+  it('returns a remote-only drag to its stored order at the settlement', async () => {
+    stageBackend({ id: 'laptop', backendId: 'laptop-id' });
+    try {
+      noteProject('b', 'laptop');
+      const writes = writeQueue();
+      const call = reorderProjects(['b', 'a', 'c']);
+      expect(shown()).toEqual([1, 0, 2]);
+
+      writes.accept(0);
+      await call;
+      // Home wrote and announced its own two rows; nothing moved the one it
+      // does not hold, so the order the user dropped is not the order shown.
+      expect(stored()).toEqual([1, 1, 2]);
+      expect(shown()).toEqual([1, 1, 2]);
+    } finally {
+      __resetEntityIndexForTest();
+      resetStagedBackends();
+    }
   });
 
   it('leaves a rename that landed while a refused write was out alone', async () => {

@@ -14,12 +14,17 @@ import {
 } from './projects.svelte';
 import {
   collapseProject,
-  collapseThreadList,
+  dropDisclosure,
   expandProject,
   getThreadListVisibleLimit,
+  isDisclosureAnswered,
   isProjectExpanded,
   setThreadListVisibleLimit,
 } from './sidebar.svelte';
+import { catalogTreeListed } from './sidebarCatalogs';
+import { projectBackend } from '../transport/entityIndex';
+import { HOME_BACKEND } from '../transport/backendKey';
+import { THREAD_PREVIEW_LIMIT } from '../utils/sidebarThreadLimits';
 
 /** The key the entry a project belongs to is disclosed by. */
 export function projectDisclosureKey(projectId: string): string {
@@ -27,33 +32,47 @@ export function projectDisclosureKey(projectId: string): string {
 }
 
 /**
- * Carry what a member id said about disclosure over to its entry's key,
- * once, and consume the ids it read.
+ * Answer an entry's disclosure from the ids it used to be persisted by,
+ * once.
  *
- * Disclosure used to be persisted per project id, so a user who collapsed a
- * repository before its second checkout existed has an answer under an id
- * that is no longer a key. Each member id is read, written under the entry's
- * key, and removed; an answer already under the entry's key wins, because it
- * is the newer one.
+ * Disclosure was per project id, so a user who folded a repository before
+ * its second checkout existed has an answer under an id that is no longer a
+ * key. This runs only for an entry nothing has answered yet: an entry the
+ * user has since folded, unfolded or revealed more of carries its own
+ * answer, and an older id must not be able to overrule it. What it reads is
+ * the members whose own computer has listed its tree, because a member that
+ * arrived before its threads did is not part of what the user is looking at.
  *
- * This reads nothing and writes nothing once no project-id key is left in
- * storage, which is the condition under which it is dead code.
+ * It answers the entry even when no old id had anything to say, so the
+ * entry is answered from the members listed then; an id that turns up later
+ * is dropped without effect. Every id it reads is dropped, which is the
+ * condition under which this is dead code: no project-id key left.
  */
 export function adoptProjectDisclosure(projectId: string): void {
   const key = projectEntryKey(projectId);
+  const answered = isDisclosureAnswered(key);
+  // Seeded from the key's own state, so an answer already there can only be
+  // strengthened: a single-checkout project folded before the upgrade has
+  // its answer under what is now the entry's key.
+  let collapsed = !isProjectExpanded(key);
+  let limit = getThreadListVisibleLimit(key);
   for (const member of projectMembers(projectId)) {
     const id = member.project.id;
     // The representative of an entry with no repository identity is its own
-    // key: there is nothing to carry and nothing to consume.
+    // key: there is nothing to carry and nothing to drop.
     if (id === key) continue;
-    if (!isProjectExpanded(id)) {
-      expandProject(id);
-      collapseProject(key);
+    if (!catalogTreeListed(projectBackend(id) ?? HOME_BACKEND)) continue;
+    if (!answered) {
+      collapsed = collapsed || !isProjectExpanded(id);
+      limit = Math.max(limit, getThreadListVisibleLimit(id));
     }
-    const limit = getThreadListVisibleLimit(id);
-    collapseThreadList(id);
-    if (limit > getThreadListVisibleLimit(key)) setThreadListVisibleLimit(key, limit);
+    dropDisclosure(id);
   }
+  if (answered) return;
+  // Writes the answer and the record that there is one.
+  if (collapsed) collapseProject(key);
+  else expandProject(key);
+  if (limit > THREAD_PREVIEW_LIMIT) setThreadListVisibleLimit(key, limit);
 }
 
 /**

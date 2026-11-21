@@ -10,9 +10,14 @@
   // repository and outlives a change of which checkout represents it, so a
   // menu reading a live row would archive or delete whichever checkout
   // represents the entry when its confirmation, preview or reply arrives.
+  //
+  // An action takes the target again when the user chooses it, as one run
+  // that owns everything it collects and ends in (./projectActions.svelte.ts).
+  // The row's runs are shared with its rename, so the newest gesture is the
+  // only one that can still show a dialog or send a call.
 
   import type { ProjectTarget } from './sidebarEntries';
-  import type { ProjectDeletionPreview } from '../../types/workflow';
+  import type { ProjectActionRun, ProjectActions } from './projectActions.svelte';
   import {
     ArchiveProject,
     DeleteProject,
@@ -39,13 +44,15 @@
 
   interface Props {
     target: ProjectTarget;
+    /** The row's action runs, shared with its inline rename. */
+    actions: ProjectActions;
     anchor: HTMLElement | undefined;
     open: boolean;
     onClose: (reason?: PopoverCloseReason) => void;
     /** Fires when the user selects Rename from the menu — the parent row
      * owns the inline rename UI so the input can render in place of the
-     * project name. */
-    onRename: () => void;
+     * project name, and starts its run on the target given here. */
+    onRename: (target: ProjectTarget) => void;
     /** Compact only: the header's hover-revealed create controls, which the
      *  phone cannot reveal, so the menu carries them there. */
     onNewThread?: () => void;
@@ -53,11 +60,10 @@
     onNewTerminal?: () => void;
   }
 
-  let { target, anchor, open, onClose, onRename, onNewThread, onNewAssistant, onNewTerminal }: Props = $props();
+  let { target, actions, anchor, open, onClose, onRename, onNewThread, onNewAssistant, onNewTerminal }: Props = $props();
   // The menu outlives a gesture: a second right-click on the row replaces
   // the target. What the menu DISPLAYS follows the current one; an action
   // takes the one in hand when it starts and never reads the prop again.
-  let labelText = $derived(target.label);
   let newAssistantUngranted = $derived(!projectHasScope('threads:autonomy', target.id));
   let compact = $derived(isCompactLayout());
   // The same gates the header's own controls use: visible, inert, and saying why.
@@ -70,27 +76,25 @@
   // The one gated entry here opens an editor on the host desktop.
   let noHost = $derived(!hasScope('host', target.backend));
 
-  let showArchiveConfirm = $state(false);
-  let showDeleteConfirm = $state(false);
-  // Set only when the project owns workflow work — that is the case with more
-  // to say than the one-line confirm can carry.
-  let deletionPreview = $state<ProjectDeletionPreview | null>(null);
-  let deleting = $state(false);
-
-  // An action's project is taken when the gesture that starts it happens,
-  // and the action never reads the prop again: a confirmation, a preview or
-  // a reply arrives after the row may have changed hands.
-  let archiveTarget: ProjectTarget | null = $state(null);
-  let deleteTarget: ProjectTarget | null = $state(null);
+  // What this menu's dialogs show: the row's current run, whose target and
+  // preview are its own. A run the user replaced is not here to be shown.
+  let archiveRun = $derived(runOf('archive'));
+  let deleteRun = $derived(runOf('delete'));
+  let deletePreview = $derived(deleteRun?.preview ?? null);
+  function runOf(kind: 'archive' | 'delete'): ProjectActionRun | null {
+    const run = actions.current;
+    return run !== null && run.kind === kind ? run : null;
+  }
 
   async function doNewGroup(): Promise<void> {
     const project = target;
     await newThreadGroupInProject(project.id);
   }
 
-  async function doArchive(): Promise<void> {
-    const project = archiveTarget;
-    if (project === null) return;
+  async function doArchive(run: ProjectActionRun): Promise<void> {
+    if (!run.beginSubmit()) return;
+    const project = run.target;
+    run.end();
     try {
       await ArchiveProject(project.id);
       removeProjectLocal(project.id);
@@ -117,17 +121,17 @@
   // A preview that fails stops here rather than falling through to the plain
   // confirm: that dialog would describe a project with runs as if it had none.
   async function startDelete(): Promise<void> {
-    const project = target;
-    deleteTarget = project;
+    const run = actions.start('delete', target);
     try {
-      const preview = await fetchDeletionPreview(project.id);
-      if (preview.hasWork) {
-        deletionPreview = preview;
-      } else {
-        showDeleteConfirm = true;
-      }
+      const preview = await fetchDeletionPreview(run.target.id);
+      // Only this run's own answer, and only while it is still the run:
+      // the preview of a project the user has moved on from must not be
+      // shown, let alone be what a later confirmation deletes.
+      if (preview.hasWork) run.offer(preview);
+      else run.confirm();
     } catch (err) {
       console.error('Failed to inspect project before delete:', err);
+      run.end();
       addErrorToast(
         userFacingError(err, 'Could not work out what deleting this project involves.'),
         err,
@@ -135,16 +139,14 @@
     }
   }
 
-  async function doDelete(): Promise<void> {
-    const project = deleteTarget;
-    if (project === null) return;
-    deleting = true;
+  async function doDelete(run: ProjectActionRun): Promise<void> {
+    if (!run.beginSubmit()) return;
+    const project = run.target;
     try {
       const result = await DeleteProject(project.id);
       for (const id of result.threadIds) removeThread(id);
       removeProjectLocal(project.id);
       closePanesShowingThreads(result.threadIds);
-      deletionPreview = null;
       addToast('info', `Deleted project "${project.label}".`);
       // A checkout git declined to remove is reported separately and stays on
       // screen as a warning: the deletion succeeded, but there is something on
@@ -156,7 +158,7 @@
       console.error('Failed to delete project:', err);
       addErrorToast(userFacingError(err), err);
     } finally {
-      deleting = false;
+      run.end();
     }
   }
 </script>
@@ -212,7 +214,7 @@
           title={ungrantedTitle}
           onSelect={() => {
             onClose();
-            onRename();
+            onRename(target);
           }}
         />
         {#if !noHost}
@@ -239,8 +241,7 @@
           title={ungrantedTitle}
           onSelect={() => {
             onClose();
-            archiveTarget = target;
-            showArchiveConfirm = true;
+            actions.start('archive', target).confirm();
           }}
         />
         <MenuDivider />
@@ -259,47 +260,54 @@
   {/snippet}
 </Popover>
 
-<ConfirmDialog
-  open={showArchiveConfirm}
-  title="Archive Project"
-  description={`Hide "${labelText}" from the sidebar. Threads remain and the project can be unarchived from Settings.`}
-  confirmLabel="Archive"
-  onConfirm={() => {
-    showArchiveConfirm = false;
-    void doArchive();
-  }}
-  onCancel={() => {
-    showArchiveConfirm = false;
-  }}
-/>
-
-<ConfirmDialog
-  open={showDeleteConfirm}
-  title="Delete Project"
-  description={`Permanently delete "${labelText}" and all ${target.threadCount} thread${target.threadCount === 1 ? '' : 's'} it contains. This cannot be undone.`}
-  confirmLabel="Delete"
-  destructive={true}
-  onConfirm={() => {
-    showDeleteConfirm = false;
-    void doDelete();
-  }}
-  onCancel={() => {
-    showDeleteConfirm = false;
-  }}
-/>
-
-{#if deletionPreview}
-  <ProjectDeleteDialog
+<!-- Every line a dialog shows is its run's own target, not the row's
+     current one: the user is answering about the project they chose. -->
+{#if archiveRun?.confirming}
+  {@const run = archiveRun}
+  <ConfirmDialog
     open={true}
-    projectName={labelText}
-    threadCount={target.threadCount}
-    preview={deletionPreview}
-    submitting={deleting}
+    title="Archive Project"
+    description={`Hide "${run.target.label}" from the sidebar. Threads remain and the project can be unarchived from Settings.`}
+    confirmLabel="Archive"
     onConfirm={() => {
-      void doDelete();
+      void doArchive(run);
     }}
     onCancel={() => {
-      deletionPreview = null;
+      run.end();
+    }}
+  />
+{/if}
+
+{#if deleteRun?.confirming}
+  {@const run = deleteRun}
+  <ConfirmDialog
+    open={true}
+    title="Delete Project"
+    description={`Permanently delete "${run.target.label}" and all ${run.target.threadCount} thread${run.target.threadCount === 1 ? '' : 's'} it contains. This cannot be undone.`}
+    confirmLabel="Delete"
+    destructive={true}
+    onConfirm={() => {
+      void doDelete(run);
+    }}
+    onCancel={() => {
+      run.end();
+    }}
+  />
+{/if}
+
+{#if deleteRun && deletePreview}
+  {@const run = deleteRun}
+  <ProjectDeleteDialog
+    open={true}
+    projectName={run.target.label}
+    threadCount={run.target.threadCount}
+    preview={deletePreview}
+    submitting={run.submitting}
+    onConfirm={() => {
+      void doDelete(run);
+    }}
+    onCancel={() => {
+      run.end();
     }}
   />
 {/if}

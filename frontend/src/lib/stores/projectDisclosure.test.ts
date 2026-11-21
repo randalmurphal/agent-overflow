@@ -8,7 +8,9 @@ import {
 } from './projectDisclosure';
 import {
   collapseProject,
+  expandProject,
   getThreadListVisibleLimit,
+  isDisclosureAnswered,
   isProjectExpanded,
   resetSidebarForTest,
   setThreadListVisibleLimit,
@@ -17,7 +19,8 @@ import { THREAD_PREVIEW_LIMIT } from '../utils/sidebarThreadLimits';
 import { addProjectLocal, resetProjectsForTest } from './projects.svelte';
 import { __resetEntityIndexForTest, noteProject } from '../transport/entityIndex';
 import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
-import { listCatalogTreesForTest } from './sidebarCatalogs';
+import { listCatalogTreesForTest, setCatalogTreeListedForTest } from './sidebarCatalogs';
+import { appStorageGet, resetAppStorageForTest } from './appStorage';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import type { Project } from '../types/models';
 
@@ -46,6 +49,7 @@ function twoCheckouts(): void {
 }
 
 beforeEach(() => {
+  resetAppStorageForTest();
   resetProjectsForTest();
   resetSidebarForTest();
   __resetEntityIndexForTest();
@@ -101,18 +105,69 @@ describe('adoptProjectDisclosure', () => {
     expect(getThreadListVisibleLimit(projectDisclosureKey('home'))).toBe(50);
   });
 
-  it('leaves the answer already under the entry key alone', () => {
+  it('does nothing to an entry that has been answered, and drops the old id', () => {
     twoCheckouts();
     const key = projectDisclosureKey('home');
+    // The user has since revealed more of the entry, which answers it.
     setThreadListVisibleLimit(key, 50);
     collapseProject('home');
     setThreadListVisibleLimit('home', 20);
 
     adoptProjectDisclosure('home');
 
-    // The newer answer wins, and the older one still folds the entry.
     expect(getThreadListVisibleLimit(key)).toBe(50);
-    expect(isProjectExpanded(key)).toBe(false);
+    // The older id cannot fold a row the user has answered for.
+    expect(isProjectExpanded(key)).toBe(true);
+    expect(isProjectExpanded('home')).toBe(true);
+    expect(getThreadListVisibleLimit('home')).toBe(THREAD_PREVIEW_LIMIT);
+  });
+
+  it('keeps an explicit expand at the default preview against a later id', () => {
+    twoCheckouts();
+    const key = projectDisclosureKey('home');
+    // Expanded, default preview: nothing to store but the record that the
+    // user chose it, which is the whole reason the record exists.
+    expandProject(key);
+    expect(isDisclosureAnswered(key)).toBe(true);
+
+    collapseProject('laptop');
+    setThreadListVisibleLimit('laptop', 50);
+    adoptProjectDisclosure('home');
+
+    expect(isProjectExpanded(key)).toBe(true);
+    expect(getThreadListVisibleLimit(key)).toBe(THREAD_PREVIEW_LIMIT);
+    expect(isProjectExpanded('laptop')).toBe(true);
+    expect(getThreadListVisibleLimit('laptop')).toBe(THREAD_PREVIEW_LIMIT);
+  });
+
+  it('reads only the members whose computer has listed its tree', () => {
+    twoCheckouts();
+    const key = projectDisclosureKey('home');
+    collapseProject('laptop');
+    setThreadListVisibleLimit('laptop', 50);
+    setCatalogTreeListedForTest('laptop', false);
+
+    // The laptop's row is here, its threads are not: not part of what the
+    // user is looking at, so not what answers the entry, and not dropped
+    // either - it answers when its tree lists.
+    adoptProjectDisclosure('home');
+    expect(isProjectExpanded(key)).toBe(true);
+    expect(getThreadListVisibleLimit(key)).toBe(THREAD_PREVIEW_LIMIT);
+    expect(isProjectExpanded('laptop')).toBe(false);
+  });
+
+  it('shrinks the stored project-id keys to the entry key', () => {
+    twoCheckouts();
+    const key = projectDisclosureKey('home');
+    collapseProject('home');
+    setThreadListVisibleLimit('laptop', 50);
+
+    adoptProjectDisclosure('home');
+
+    // What is left under the old ids is the condition for this being dead.
+    expect(JSON.parse(appStorageGet('sidebar:collapsedProjects') ?? '[]')).toEqual([key]);
+    expect(JSON.parse(appStorageGet('sidebar:threadListVisibleLimits') ?? '{}')).toEqual({ [key]: 50 });
+    expect(JSON.parse(appStorageGet('sidebar:disclosedLists') ?? '[]')).toEqual([key]);
   });
 
   it('writes nothing for a project whose key is its own id', () => {

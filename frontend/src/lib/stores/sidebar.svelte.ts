@@ -44,6 +44,13 @@ export type { ProjectSortMode };
 // appStorage (per-client) keys.
 const COLLAPSED_KEY = 'sidebar:collapsedProjects';
 const THREAD_LIST_VISIBLE_LIMITS_KEY = 'sidebar:threadListVisibleLimits';
+// The keys whose disclosure has been ANSWERED, which is not the same fact as
+// what the answer is: an absent collapse and an absent limit cannot tell
+// "chose expanded, chose the default preview" from "never chose", and
+// something that carries an older answer over has to know the difference
+// (`stores/projectDisclosure.ts`). A list that is not an entry marks itself
+// answered too, by its own key; nothing ever carries one of those.
+const DISCLOSED_KEY = 'sidebar:disclosedLists';
 // Groups default to EXPANDED, so the persisted set holds the COLLAPSED
 // ids — the same inversion collapsedProjects uses, for the same reason:
 // a group the user has never touched must show its members. No legacy
@@ -190,6 +197,7 @@ function removeLocalStorageKey(key: string): void {
 }
 
 let collapsedProjects: Set<string> = $state(readCollapsed());
+let disclosedLists: Set<string> = $state(stringSetFromStorage(DISCLOSED_KEY));
 let collapsedGroups: Set<string> = $state(stringSetFromStorage(COLLAPSED_GROUPS_KEY));
 let collapsedSections: Set<string> = $state(stringSetFromStorage(COLLAPSED_SECTIONS_KEY));
 // How many rows each list shows: a project's top level by its entry id, a
@@ -209,11 +217,51 @@ function writeCollapsed(next: Set<string>): void {
   writeStringSet(COLLAPSED_KEY, next);
 }
 
+/** Whether anything has answered this key's disclosure. */
+export function isDisclosureAnswered(key: string): boolean {
+  return disclosedLists.has(key);
+}
+
+function noteDisclosed(key: string): void {
+  if (disclosedLists.has(key)) return;
+  const next = new Set(disclosedLists).add(key);
+  disclosedLists = next;
+  writeStringSet(DISCLOSED_KEY, next);
+}
+
+/**
+ * Forget everything held under `key`, the answered mark included. For a key
+ * that is no longer one: its answer has been carried somewhere else, or
+ * there is nowhere for it to go.
+ */
+export function dropDisclosure(key: string): void {
+  if (collapsedProjects.has(key)) {
+    const next = new Set(collapsedProjects);
+    next.delete(key);
+    writeCollapsed(next);
+  }
+  if (key in threadListVisibleLimits) {
+    const next = { ...threadListVisibleLimits };
+    delete next[key];
+    threadListVisibleLimits = next;
+    writeThreadListVisibleLimits(next);
+  }
+  if (disclosedLists.has(key)) {
+    const next = new Set(disclosedLists);
+    next.delete(key);
+    disclosedLists = next;
+    writeStringSet(DISCLOSED_KEY, next);
+  }
+}
+
 export function isProjectExpanded(key: string): boolean {
   return !collapsedProjects.has(key);
 }
 
 export function expandProject(key: string): void {
+  // Answered either way: unfolding something already unfolded is still a
+  // choice, and the only record that it was made is this mark.
+  noteDisclosed(key);
   if (!collapsedProjects.has(key)) return;
   const next = new Set(collapsedProjects);
   next.delete(key);
@@ -221,6 +269,7 @@ export function expandProject(key: string): void {
 }
 
 export function collapseProject(key: string): void {
+  noteDisclosed(key);
   if (collapsedProjects.has(key)) return;
   writeCollapsed(new Set(collapsedProjects).add(key));
 }
@@ -285,6 +334,10 @@ export function syncSidebarFromAppStorage(): void {
   }
   const rawLimits = appStorageGet(THREAD_LIST_VISIBLE_LIMITS_KEY);
   threadListVisibleLimits = rawLimits === null ? {} : (parseThreadListVisibleLimits(rawLimits) ?? {});
+  const disclosed = new Set(parseStringArray(appStorageGet(DISCLOSED_KEY) ?? '[]') ?? []);
+  if (!setsEqual(disclosed, disclosedLists)) {
+    disclosedLists = disclosed;
+  }
 }
 
 function setsEqual(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
@@ -372,6 +425,7 @@ export function setThreadListVisibleLimit(key: string, limit: number): void {
     collapseThreadList(key);
     return;
   }
+  noteDisclosed(key);
   if (threadListVisibleLimits[key] === roundedLimit) return;
   const next = { ...threadListVisibleLimits, [key]: roundedLimit };
   threadListVisibleLimits = next;
@@ -379,6 +433,8 @@ export function setThreadListVisibleLimit(key: string, limit: number): void {
 }
 
 export function collapseThreadList(key: string): void {
+  // Show less is reachable only from a limit above the preview, which was
+  // answered when it was set, so there is nothing to mark here.
   if (!(key in threadListVisibleLimits)) return;
   const next = { ...threadListVisibleLimits };
   delete next[key];
@@ -391,6 +447,7 @@ export function collapseThreadList(key: string): void {
 export function resetSidebarForTest(): void {
   showProviderIcons = false;
   collapsedProjects = new Set();
+  disclosedLists = new Set();
   collapsedGroups = new Set();
   collapsedSections = new Set();
   threadListVisibleLimits = {};

@@ -19,6 +19,7 @@ import {
 } from '../../../test/mocks/bindings-app';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
 import type { ProjectTarget } from './sidebarEntries';
+import { createProjectActions } from './projectActions.svelte';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import type { ProjectDeletionPreview, ProjectDeletionResult } from '../../types/workflow';
 import { setPageGrantsFromBootstrap } from '../../transport/scopes';
@@ -90,6 +91,7 @@ function renderMenu(target: ProjectTarget = makeTarget()) {
   return render(ProjectContextMenu, {
     props: {
       target,
+      actions: createProjectActions(),
       anchor,
       open: true,
       onClose: () => {},
@@ -311,6 +313,7 @@ describe('<ProjectContextMenu> compact create items', () => {
     return render(ProjectContextMenu, {
       props: {
         target: makeTarget(),
+        actions: createProjectActions(),
         anchor: document.body,
         open: true,
         onClose: vi.fn(),

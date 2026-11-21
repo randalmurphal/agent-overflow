@@ -884,9 +884,76 @@ describe('<ProjectsSection> threads and their groups', () => {
     }
   });
 
+  // The other direction of the same carry: an entry the user has answered
+  // is not re-answered by a member whose own flag predates the answer.
+  it("keeps the user's answer when a held member arrives carrying an older one", async () => {
+    const { stageBackend, resetStagedBackends } = await import('../../../../test/helpers/backends');
+    const {
+      collapseProject,
+      getThreadListVisibleLimit,
+      isProjectExpanded,
+      setThreadListVisibleLimit,
+    } = await import('../../../stores/sidebar.svelte');
+    const { projectDisclosureKey } = await import('../../../stores/projectDisclosure');
+    stageBackend({ id: 'gpu', backendId: 'gpu-id' });
+    try {
+      // Home's answer from before the upgrade, under its project id.
+      collapseProject('a-home');
+      setThreadListVisibleLimit('a-home', 50);
+      const homeProjects = deferred<ProjectWithCounts[]>();
+      const homeThreads = deferred<Thread[]>();
+      setBindingMock('ListProjects', () => (takePinnedBackend() === 'gpu'
+        ? Promise.resolve([{ project: repoProject('a-gpu', 'A', '/gpu/a'), threadCount: 12, lastActive: 2 }])
+        : homeProjects.promise));
+      setBindingMock('ListThreads', () => (takePinnedBackend() === 'gpu'
+        ? Promise.resolve(Array.from({ length: 12 }, (_, i) => makeThread({ id: `g${i}`, projectId: 'a-gpu' })))
+        : homeThreads.promise));
+      setBindingMock('ListThreadGroups', async () => []);
+      vi.useFakeTimers();
+      const { container } = render(ProjectsSection, { props: { pane: null } });
+      void loadSidebarCatalogs();
+      await vi.advanceTimersByTimeAsync(2500);
+      await settle();
+      expect(headers(container)).toEqual(['a-gpu']);
+      const key = projectDisclosureKey('a-gpu');
+
+      // What the user chose, on the entry: unfolded, showing ten.
+      setThreadListVisibleLimit(key, 10);
+      await settle();
+      expect(expandedOf(container, 'a-gpu')).toBe('true');
+      expect(arrangement(container)).toHaveLength(10);
+
+      // Home's row commits with its tree still held.
+      homeProjects.resolve([{ project: repoProject('a-home', 'A', '/home/a'), threadCount: 1, lastActive: 1 }]);
+      await vi.advanceTimersByTimeAsync(0);
+      await settle();
+      expect(catalogTreeListed(HOME_BACKEND)).toBe(false);
+      expect(expandedOf(container, 'a-gpu')).toBe('true');
+      expect(getThreadListVisibleLimit(key)).toBe(10);
+      // Untouched while its tree is held: it answers nothing and loses
+      // nothing yet.
+      expect(isProjectExpanded('a-home')).toBe(false);
+
+      // And at Home's listing, where the entry changes hands.
+      homeThreads.resolve([makeThread({ id: 'h0', projectId: 'a-home' })]);
+      await vi.advanceTimersByTimeAsync(0);
+      await settle();
+      expect(catalogTreeListed(HOME_BACKEND)).toBe(true);
+      expect(headers(container)).toEqual(['a-home']);
+      expect(expandedOf(container, 'a-home')).toBe('true');
+      expect(getThreadListVisibleLimit(key)).toBe(10);
+      // Dropped without effect, which is what makes the carry finite.
+      expect(isProjectExpanded('a-home')).toBe(true);
+      expect(getThreadListVisibleLimit('a-home')).toBe(8);
+    } finally {
+      resetStagedBackends();
+    }
+  });
+
   it('gives a second checkout on one computer its own row, and keeps the first one when a computer attaches', async () => {
     const { stageBackend, resetStagedBackends } = await import('../../../../test/helpers/backends');
     const { collapseProject } = await import('../../../stores/sidebar.svelte');
+    const { projectDisclosureKey } = await import('../../../stores/projectDisclosure');
     const homeRows = [
       { project: { ...repoProject('a1', 'A', '/home/a1'), createdAt: 1 }, threadCount: 0, lastActive: 200 },
       { project: { ...repoProject('a2', 'A', '/home/a2'), createdAt: 2 }, threadCount: 0, lastActive: 100 },
@@ -902,7 +969,7 @@ describe('<ProjectsSection> threads and their groups', () => {
     // One repository, two checkouts on one computer: two entries, so two
     // keys. The repository key belongs to the computer's chosen checkout.
     expect(headers(container)).toEqual(['a1', 'a2']);
-    collapseProject('a1');
+    collapseProject(projectDisclosureKey('a1'));
     await settle();
     expect(expandedOf(container, 'a1')).toBe('false');
     expect(expandedOf(container, 'a2')).toBe('true');

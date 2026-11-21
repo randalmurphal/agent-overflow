@@ -62,6 +62,7 @@
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import { formatPathLabel, type PathLabel } from '../../utils/pathDisplay';
   import { projectTarget, type ProjectTarget, type SidebarEntry } from './sidebarEntries';
+  import { createProjectActions } from './projectActions.svelte';
 
   interface Props {
     /** Everything this row shows and acts on (./sidebarEntries.ts). */
@@ -126,14 +127,13 @@
   let contextMenuOpen = $state(false);
   let lastNewThreadContextMenuAt = 0;
 
-  // Inline rename state — mirrors the pattern in ThreadRow.
-  let renaming = $state(false);
-  let renameValue = $state('');
+  // Every action this row starts, as one run at a time
+  // (./projectActions.svelte.ts): the rename below and the menu's archive
+  // and delete share it, so the newest gesture is the only one that can
+  // still show a dialog or send a call.
+  const actions = createProjectActions();
+  let renameRun = $derived(actions.current?.kind === 'rename' ? actions.current : null);
   let renameInputEl: HTMLInputElement | undefined = $state(undefined);
-  // The project the rename started on, so a representative change under an
-  // open input cannot move where it lands.
-  let renameTarget: ProjectTarget | null = $state(null);
-  let renameSaving = $state(false);
 
   let expanded = $derived(entry.expanded);
 
@@ -251,10 +251,10 @@
     contextMenuOpen = false;
   }
 
-  function beginRename(): void {
-    renaming = true;
-    renameTarget = projectTarget(entry, formatPathLabel(displayLabel));
-    renameValue = entry.name;
+  // On the target the menu was opened on, which is not the row's current
+  // one once a listing has changed hands under the open menu.
+  function beginRename(target: ProjectTarget): void {
+    actions.start('rename', target);
     requestAnimationFrame(() => {
       renameInputEl?.focus();
       renameInputEl?.select();
@@ -262,28 +262,27 @@
   }
 
   async function commitRename(): Promise<void> {
-    if (renameSaving || renameTarget === null) return;
-    const target = renameTarget;
-    const next = renameValue.trim();
-    if (!next || next === target.name) {
-      renaming = false;
+    const run = renameRun;
+    if (run === null) return;
+    const next = run.name.trim();
+    if (!next || next === run.target.name) {
+      run.end();
       return;
     }
-    renameSaving = true;
+    if (!run.beginSubmit()) return;
     try {
-      const updated = await RenameProject(target.id, next);
+      const updated = await RenameProject(run.target.id, next);
       updateProjectLocal(updated);
     } catch (err) {
       console.error('Failed to rename project:', err);
       addErrorToast(userFacingError(err), err);
     } finally {
-      renameSaving = false;
-      renaming = false;
+      run.end();
     }
   }
 
   function cancelRename(): void {
-    renaming = false;
+    renameRun?.end();
   }
 
   function handleRenameKeydown(e: KeyboardEvent): void {
@@ -440,15 +439,17 @@
       {/if}
     </div>
     <Icon icon={FolderOpen} size={13} strokeWidth={2} class="shrink-0 text-accent/80 opacity-100" />
-    {#if renaming}
+    {#if renameRun}
+      {@const run = renameRun}
       <!-- svelte-ignore a11y_autofocus -->
       <input
         bind:this={renameInputEl}
-        bind:value={renameValue}
+        value={run.name}
+        oninput={(e) => run.setName(e.currentTarget.value)}
         onkeydown={handleRenameKeydown}
         onblur={commitRename}
         onclick={(e) => e.stopPropagation()}
-        disabled={renameSaving}
+        disabled={run.submitting}
         aria-label="Rename Project"
         class="text-[0.78125rem] compact:text-base flex-1 min-w-0 bg-surface-0 border border-accent/50 rounded-[var(--radius-field)] px-1 py-0.5 text-fg focus:outline-none"
       />
@@ -550,6 +551,7 @@
   {@const target = menuTarget}
   <ProjectContextMenu
     {target}
+    {actions}
     onNewThread={() => onNewThread?.(target.id, { openInNewPane: false })}
     onNewAssistant={() => openNewAssistantDialog({ projectId: target.id, targetPane: pane })}
     onNewTerminal={() => onNewTerminal?.(target.id)}
