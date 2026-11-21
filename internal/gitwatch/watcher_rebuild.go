@@ -19,11 +19,16 @@ import (
 
 // inspectEvent flags a watch-root rebuild when the event indicates the
 // root set may be stale:
-//   - a Create/Rename whose path IS a current root means that root's
-//     directory was deleted and recreated — its notify watchpoint died
-//     with the deletion and is never resurrected, so the roots must be
+//   - a Create, Rename or Remove whose path IS a current root, with a
+//     directory at that path now, means that root's directory was
+//     deleted and recreated — its notify watchpoint died with the
+//     deletion and is never resurrected, so the roots must be
 //     reinstalled even if recomputing yields an identical set
-//     (forceReinstall);
+//     (forceReinstall). The parent's watch reports the Create; the
+//     root's own watch reports the Remove, which is the only report
+//     when the recreate lands during an install, after the root's
+//     registration and before its parent's (roots install deepest
+//     first);
 //   - a .gitignore change anywhere moves the pruned-subtree boundaries;
 //   - under a KindGitMeta root, an index / exclude / config write moves
 //     boundaries too (`git add -f`, info/exclude edits, core.excludesFile
@@ -36,8 +41,9 @@ import (
 //     KindGitMeta root is covered by no existing root, so its future
 //     contents would otherwise go unwatched.
 //
-// Deletions need no rebuild: notify drops watches on its own and stale
-// extra roots are harmless — recreation is what must be caught, above.
+// A deletion that leaves nothing at the path needs no rebuild: notify
+// drops watches on its own and stale extra roots are harmless —
+// recreation is what must be caught, above.
 func (w *workspaceWatcher) inspectEvent(ev notify.EventInfo, roots []gitops.WatchRoot) {
 	if w.rootsFn == nil || w.forceReinstall {
 		return // forceReinstall implies needsRebuild; nothing stronger to learn
@@ -47,7 +53,7 @@ func (w *workspaceWatcher) inspectEvent(ev notify.EventInfo, roots []gitops.Watc
 	// don't cover: a write can't mint one, and removals need no rebuild.
 	dirBearing := ev.Event()&(notify.Create|notify.Rename) != 0
 
-	if dirBearing && rootIndexByPath(roots, path) >= 0 {
+	if ev.Event()&(notify.Create|notify.Rename|notify.Remove) != 0 && rootIndexByPath(roots, path) >= 0 {
 		if info, err := os.Lstat(path); err == nil && info.IsDir() {
 			w.needsRebuild = true
 			w.forceReinstall = true
@@ -111,35 +117,58 @@ const (
 	rebuildLostWatches
 )
 
-// maybeRebuildWatches recomputes and reinstalls the watch roots when a
-// drained event flagged them stale.
+// maxRebuildReinstalls bounds the reinstalls one rebuild makes. When the
+// roots recomputed after the last of them still differ from the installed
+// set, or a reinstall is still forced, the watches stay as installed, the
+// cap is logged, and the rebuild reports itself unfinished.
+const maxRebuildReinstalls = 3
+
+// maybeRebuildWatches recomputes the watch roots while needsRebuild is
+// set, and reinstalls them when they differ from the installed set or a
+// reinstall is forced. Every install leaves needsRebuild set
+// (installWatches), so the roots are recomputed after it and reinstalled
+// until a recompute matches what is installed: a directory created while
+// the watches were out raised no event, and only that recompute finds it.
+// A root replaced during an install is not found here: its own watch
+// reports a Remove, which inspectEvent turns into a forced reinstall at
+// the next refresh edge.
 //
-// Failure to *recompute* keeps the existing (still installed) watches
-// AND keeps needsRebuild set: the tree that needs (re)watching may
-// never produce another event, so the retry has to ride whatever
-// causes the next refresh edge rather than wait for a second trigger.
-func (w *workspaceWatcher) maybeRebuildWatches() rebuildOutcome {
-	if !w.needsRebuild || w.rootsFn == nil || w.ctx.Err() != nil {
-		return rebuildNone
+// unfinished reports that the rebuild ended with needsRebuild still set:
+// a recompute failed, or the cap was hit. The watches installed at that
+// point stay. The caller has to run the rebuild again itself: the tree
+// that needs (re)watching may never produce another event.
+func (w *workspaceWatcher) maybeRebuildWatches() (outcome rebuildOutcome, unfinished bool) {
+	if w.rootsFn == nil {
+		return rebuildNone, false
 	}
-	newRoots, err := w.rootsFn()
-	if err != nil {
-		log.Printf("gitwatch: recomputing watch roots for %s: %v (keeping existing watches; retrying at next refresh)", w.cwd, err)
-		return rebuildNone
+	outcome = rebuildNone
+	for reinstalls := 0; w.needsRebuild && w.ctx.Err() == nil; reinstalls++ {
+		newRoots, err := w.rootsFn()
+		if err != nil {
+			log.Printf("gitwatch: recomputing watch roots for %s: %v (keeping existing watches; retrying in %s)",
+				w.cwd, err, w.pollInterval)
+			return outcome, true
+		}
+		if !w.forceReinstall && slices.Equal(w.currentWatchRoots(), newRoots) {
+			w.needsRebuild = false
+			return outcome, false
+		}
+		if reinstalls == maxRebuildReinstalls {
+			log.Printf("gitwatch: watch roots for %s still changing after %d reinstalls; keeping the installed watches and retrying in %s",
+				w.cwd, maxRebuildReinstalls, w.pollInterval)
+			return outcome, true
+		}
+		w.needsRebuild, w.forceReinstall = false, false
+		w.stopFn(w.eventsCh)
+		if err := w.installWatches(newRoots); err != nil {
+			log.Printf("gitwatch: reinstalling watches for %s (%v); falling back to %s polling",
+				w.cwd, err, w.pollInterval)
+			return rebuildLostWatches, false
+		}
+		w.setWatchRoots(newRoots)
+		outcome = rebuildReinstalled
 	}
-	force := w.forceReinstall
-	w.needsRebuild, w.forceReinstall = false, false
-	if !force && slices.Equal(w.currentWatchRoots(), newRoots) {
-		return rebuildNone
-	}
-	w.stopFn(w.eventsCh)
-	if err := w.installFn(newRoots, w.eventsCh); err != nil {
-		log.Printf("gitwatch: reinstalling watches for %s (%v); falling back to %s polling",
-			w.cwd, err, w.pollInterval)
-		return rebuildLostWatches
-	}
-	w.setWatchRoots(newRoots)
-	return rebuildReinstalled
+	return outcome, false
 }
 
 // drainNotify empties the queued burst, inspecting each event for

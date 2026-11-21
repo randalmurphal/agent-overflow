@@ -145,8 +145,9 @@ type workspaceWatcher struct {
 	// needsRebuild and forceReinstall are run-goroutine-local state,
 	// set while draining events and consumed at the next refresh edge.
 	// needsRebuild means the root set may be stale (ignore-rule or git
-	// index/config edit, new directory under an ancestor root) and must
-	// be recomputed. forceReinstall additionally bypasses the
+	// index/config edit, new directory under an ancestor root, or an
+	// install whose roots were computed before its watches existed) and
+	// must be recomputed. forceReinstall additionally bypasses the
 	// roots-unchanged short-circuit: it is set when a current root's
 	// directory was recreated (its notify watchpoint died with the
 	// deletion and is never resurrected) or when the event queue was
@@ -191,12 +192,6 @@ func newWorkspaceWatcher(cwd string, statusFn, fastStatusFn StatusFn, watchRoots
 		watchRoots:       append([]gitops.WatchRoot(nil), watchRoots...),
 		rootsFn:          rootsFn,
 		stopFn:           func(ch chan<- notify.EventInfo) { notify.Stop(ch) },
-		// The initial roots were computed before notify was installed;
-		// a directory created inside that window is invisible to both.
-		// Starting flagged makes the run loop revalidate before its
-		// first wait: equality-gated, so the common case is one cheap
-		// recompute and no reinstall.
-		needsRebuild: true,
 	}
 }
 
@@ -214,11 +209,25 @@ func (w *workspaceWatcher) install(installFn func(roots []gitops.WatchRoot, ch c
 		installFn = installNotifyWatcher
 	}
 	w.installFn = installFn
-	if err := installFn(w.currentWatchRoots(), w.eventsCh); err != nil {
+	if err := w.installWatches(w.currentWatchRoots()); err != nil {
 		log.Printf("gitwatch: fs watch unavailable for %s roots=%v (%v); falling back to %s polling",
 			w.cwd, w.watchRoots, err, w.pollInterval)
 		w.fallbackPolling = true
 	}
+}
+
+// installWatches registers roots on eventsCh through installFn. The roots
+// were computed before their watches existed, and a directory created in
+// between raised no event, so a successful install leaves needsRebuild
+// set: the run loop recomputes the roots after it (maybeRebuildWatches),
+// before its first wait for the initial install. Callers run before start
+// or on the run goroutine.
+func (w *workspaceWatcher) installWatches(roots []gitops.WatchRoot) error {
+	if err := w.installFn(roots, w.eventsCh); err != nil {
+		return err
+	}
+	w.needsRebuild = true
+	return nil
 }
 
 // start spawns the run loop of an installed watcher whose subscribers
@@ -338,34 +347,22 @@ func (w *workspaceWatcher) run() {
 		startPolling()
 	}
 
-	// applyRebuild runs a pending watch-root rebuild and folds its
-	// outcome into the polling state. A rebuild whose reinstall fails
-	// leaves the watcher blind, so it escalates to polling; a later
-	// reinstall that succeeds proves the watches are live again, so the
-	// now-redundant ticker stops.
-	applyRebuild := func() rebuildOutcome {
-		outcome := w.maybeRebuildWatches()
-		switch outcome {
-		case rebuildLostWatches:
-			startPolling()
-		case rebuildReinstalled:
-			stopPolling()
-		case rebuildNone:
-		}
-		return outcome
-	}
-	// retry re-runs a refresh whose status fetch failed. Without it a
-	// transient failure leaves subscribers on a stale status until the
-	// next fs event or the liveness probe. Failures retry on the polling
-	// cadence until a refresh succeeds.
+	// retry re-runs a refresh edge whose status fetch failed or whose
+	// rebuild ended unfinished. Without it a transient failure leaves
+	// subscribers on a stale status, and an unfinished rebuild leaves a
+	// directory unwatched, until the next fs event or the liveness probe,
+	// and the change that matters may raise no event. Both retry on the
+	// polling cadence until a refresh succeeds and a rebuild finishes.
 	retry := time.NewTimer(w.pollInterval)
 	if !retry.Stop() {
 		<-retry.C
 	}
 	retryArmed := false
-	settle := func(err error) {
+	refreshFailed, rebuildUnfinished := false, false
+	syncRetry := func() {
+		want := refreshFailed || rebuildUnfinished
 		switch {
-		case err == nil && retryArmed:
+		case !want && retryArmed:
 			if !retry.Stop() {
 				select {
 				case <-retry.C:
@@ -373,10 +370,32 @@ func (w *workspaceWatcher) run() {
 				}
 			}
 			retryArmed = false
-		case err != nil && !retryArmed:
+		case want && !retryArmed:
 			retry.Reset(w.pollInterval)
 			retryArmed = true
 		}
+	}
+	settle := func(err error) {
+		refreshFailed = err != nil
+		syncRetry()
+	}
+	// applyRebuild runs a pending watch-root rebuild and folds its
+	// outcome into the polling state. A rebuild whose reinstall fails
+	// leaves the watcher blind, so it escalates to polling; a later
+	// reinstall that succeeds proves the watches are live again, so the
+	// now-redundant ticker stops. An unfinished rebuild is retried.
+	applyRebuild := func() rebuildOutcome {
+		outcome, unfinished := w.maybeRebuildWatches()
+		switch outcome {
+		case rebuildLostWatches:
+			startPolling()
+		case rebuildReinstalled:
+			stopPolling()
+		case rebuildNone:
+		}
+		rebuildUnfinished = unfinished
+		syncRetry()
+		return outcome
 	}
 	// prRecheck re-runs a refresh when a failed open-PR lookup is due to
 	// be asked again (GitStatus.OpenPRRecheckAt). A forge that recovers
@@ -440,7 +459,7 @@ func (w *workspaceWatcher) run() {
 	defer liveness.Stop()
 
 	// The roots installed at start are revalidated now that events flow
-	// (needsRebuild starts set).
+	// (the install left needsRebuild set).
 	rebuildThenRefresh()
 
 	for {
