@@ -13,11 +13,9 @@
   import type { ProjectWithCounts, Thread, ThreadGroup } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import {
-    entryIdFor,
     getProjectLiveActivityAt,
     getProjects,
-    projectEntries,
-    projectMembers,
+    mergeProjectRows,
     updateProjectLocal,
   } from '../../stores/projects.svelte';
   import {
@@ -100,9 +98,9 @@
   // not rebuild the Assistants section's tree.
   //
   // Every row of a computer's tree is held until the tree lists
-  // (catalogTreeListed): its project headers in visibleProjects, its project
-  // threads and its groups here. An assistant's row belongs to no project
-  // and is not held.
+  // (catalogTreeListed): its project headers through listedProjects below,
+  // its project threads and its groups here. An assistant's row belongs to
+  // no project and is not held.
   //
   // `treeListed` is the only reader of that gate in this file, so what a
   // computer shows before its first complete round is one decision. Its memo
@@ -117,17 +115,42 @@
     };
   }
 
+  // The rows the sidebar may show, regrouped by repository from those rows
+  // alone: a member whose computer holds its tree, or whose computer the
+  // device filter hides, contributes no header, no representative and no
+  // part of an entry's thread count or activity. Grouping after the filter
+  // is what keeps a computer that answers its projects before its threads
+  // from raising an entry's activity and re-sorting the list, and then
+  // moving it again when its rows arrive. One member must pass both tests
+  // for its entry to show, so a filter that hides the only listed computer
+  // leaves no empty header behind.
+  //
+  // This is the sidebar's one projection of the project rows, and it is
+  // derived, not stored: the store's `merged` stays complete for the
+  // pickers, the settings page and routing, which answer for the whole
+  // repository.
+  let listedProjects = $derived.by(() => {
+    const listedOn = treeListed();
+    return mergeProjectRows(getProjects().filter((row) => {
+      const backend = projectBackend(row.project.id) ?? HOME_BACKEND;
+      return listedOn(backend) && sidebarBackendVisible(backend);
+    }));
+  });
+
   let previousThreadBuckets: ReadonlyMap<string, Thread[]> = new Map();
   let previousGroupBuckets: ReadonlyMap<string, ThreadGroup[]> = new Map();
   let previousAssistantLists: ReadonlyMap<'assistants', Thread[]> = new Map();
   let searchBuckets = $derived.by(() => {
     const filterDevices = sidebarDeviceFilterActive();
     const listedOn = treeListed();
+    const entries = listedProjects.entryOf;
     const buckets = bucketSidebarThreads({
       threads: getThreads(),
       groups: getThreadGroups(),
       query,
-      entryOf: entryIdFor,
+      // The listed projection's representatives, so a thread buckets under
+      // the header the sidebar actually renders.
+      entryOf: (projectId) => entries.get(projectId) ?? projectId,
       threadVisible: (thread) => sidebarThreadVisible(thread) && !hiddenAssistantThread(thread)
         && (!!thread.agentId || listedOn(threadMachine(thread.id, thread.projectId))),
       groupVisible: (group) => listedOn(threadGroupBackend(group.id) ?? HOME_BACKEND),
@@ -176,30 +199,14 @@
   // when the re-sort lands in the same order the PREVIOUS array is
   // returned and the animated project each-block (FLIP measure = forced
   // layout) never reconciles for a beat that changed no ordering.
-  const deviceProjectIds = $derived.by(() => {
-    if (!sidebarDeviceFilterActive()) return null;
-    const visible = new Set<string>();
-    for (const row of getProjects()) {
-      if (!row.project.archived && sidebarBackendVisible(projectBackend(row.project.id))) {
-        visible.add(entryIdFor(row.project.id));
-      }
-    }
-    return visible;
-  });
+  // The listing and device tests are already applied, by member, in
+  // listedProjects: every entry here has a member on a computer that passes
+  // both, so this derivation reads no computer and makes one pass.
   let prevVisibleProjects: ProjectWithCounts[] = [];
   let visibleProjects = $derived.by(() => {
     const mode = getProjectSortMode();
-    const listedOn = treeListed();
-    // An entry is one repository with at most one member per computer, so it
-    // has a row while any computer holding a member lists its tree. A
-    // computer whose tree is held contributes neither its header nor the
-    // threads under it, so the two appear in one step.
-    const entryListed = (entry: ProjectWithCounts): boolean => projectMembers(entry.project.id)
-      .some((member) => listedOn(projectBackend(member.project.id) ?? HOME_BACKEND));
-    const entries = projectEntries()
+    const entries: readonly ProjectWithCounts[] = listedProjects.entries
       .filter((p) => !p.project.archived)
-      .filter(entryListed)
-      .filter((p) => deviceProjectIds === null || deviceProjectIds.has(p.project.id))
       .filter((p) => {
         if (!query) return true;
         if (p.project.name.toLowerCase().includes(query)) return true;
@@ -317,24 +324,31 @@
   };
 
   /**
-   * Commit a manual reorder. Updates each project's sortPosition
-   * locally so the next derive() reorders without a refresh-flicker,
-   * then persists to the backend. On error we re-fetch to recover.
+   * Commit a manual reorder. Updates each project's sortPosition locally so
+   * the next derive() reorders without a refresh-flicker, then persists to
+   * the backend. A refused write is undone from the rows it replaced, not by
+   * a read: the projects are read only beside the threads under them
+   * (stores/sidebarCatalogs.ts), so a read whose thread half fails withholds
+   * the project answer and would leave the rejected order on screen until
+   * some later round. The read after the undo is only a refresh, and
+   * reconciles an order the backend applied in part.
    */
   async function handleReorder(newOrderedIds: string[]): Promise<void> {
+    const rows = new Map(getProjects().map((row) => [row.project.id, row.project]));
+    const replaced = newOrderedIds.flatMap((id) => {
+      const project = rows.get(id);
+      return project ? [project] : [];
+    });
     for (const [index, id] of newOrderedIds.entries()) {
-      const existing = getProjects().find((p) => p.project.id === id);
-      if (!existing) continue;
-      updateProjectLocal({ ...existing.project, sortPosition: index });
+      const project = rows.get(id);
+      if (project) updateProjectLocal({ ...project, sortPosition: index });
     }
     try {
       await UpdateProjectSortPositions(newOrderedIds);
     } catch (err) {
+      for (const project of replaced) updateProjectLocal(project);
       console.error('Failed to persist project order:', err);
       addErrorToast(userFacingError(err), err);
-      // The whole tree, because the projects are read only beside the
-      // threads under them (stores/sidebarCatalogs.ts). The round reports
-      // each computer's failure through the catalog state.
       try {
         await loadSidebarCatalogs();
       } catch {

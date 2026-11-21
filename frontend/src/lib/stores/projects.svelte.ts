@@ -40,9 +40,14 @@ export function getProjects(): readonly ProjectWithCounts[] {
   return projects;
 }
 
+// Indexed, not scanned: a project row is looked up per rendered row (its
+// entry's members) and per entry of several projections, so a scan here made
+// the cost of showing the list quadratic in its length.
+const rowById = $derived.by(() => new Map(projects.map((row) => [row.project.id, row])));
+
 /** Lookup helper. Returns undefined when the id isn't in the store. */
 export function getProject(id: string): ProjectWithCounts | undefined {
-  return projects.find((p) => p.project.id === id);
+  return rowById.get(id);
 }
 
 // ---------------------------------------------------------------------------
@@ -61,8 +66,8 @@ export function getProject(id: string): ProjectWithCounts | undefined {
 // Computed only while more than one backend is attached: a single-backend
 // app returns the list itself, same array identity, and pays nothing.
 
-interface MergedEntries {
-  entries: ProjectWithCounts[];
+export interface MergedProjects {
+  entries: readonly ProjectWithCounts[];
   /** member project id → the entry (representative) id it belongs to. */
   entryOf: Map<string, string>;
   /** representative id → every member, home first. */
@@ -71,7 +76,7 @@ interface MergedEntries {
   repoKeyOf: Map<string, string>;
 }
 
-const NO_MERGE: Pick<MergedEntries, 'entryOf' | 'members' | 'repoKeyOf'> = {
+const NO_MERGE: Pick<MergedProjects, 'entryOf' | 'members' | 'repoKeyOf'> = {
   entryOf: new Map(), members: new Map(), repoKeyOf: new Map(),
 };
 
@@ -89,10 +94,22 @@ function groupRows<T extends { project: Project }>(rows: readonly T[], computers
   return { keyOf, members };
 }
 
-const merged = $derived.by((): MergedEntries => {
-  if (!hasMultipleBackends()) return { entries: projects, ...NO_MERGE };
-  const { keyOf, members: groups } = groupRows(projects);
-  const position = new Map(projects.map((row, index) => [row, index]));
+/**
+ * Group `rows` into one entry per repository: at most one member per
+ * computer, the entry worn by its home member when there is one, and the
+ * thread count and activity summed over the members given here.
+ *
+ * The caller chooses the rows, so a surface showing only some of them gets a
+ * representative and an aggregate of those alone. The sidebar passes the
+ * members whose computer lists its tree, which is what keeps a computer that
+ * lists later from re-sorting or relabelling an entry already on screen; the
+ * store's own `merged` passes every row, for the pickers, settings and
+ * routing that answer for the whole repository.
+ */
+export function mergeProjectRows(rows: readonly ProjectWithCounts[]): MergedProjects {
+  if (!hasMultipleBackends()) return { entries: rows, ...NO_MERGE };
+  const { keyOf, members: groups } = groupRows(rows);
+  const position = new Map(rows.map((row, index) => [row, index]));
   const repoKeyOf = new Map<string, string>();
   const groupOf = new Map<ProjectWithCounts, ProjectWithCounts[]>();
   for (const group of groups) {
@@ -109,7 +126,7 @@ const merged = $derived.by((): MergedEntries => {
   const entryOf = new Map<string, string>();
   const members = new Map<string, ProjectWithCounts[]>();
   const entries: ProjectWithCounts[] = [];
-  for (const row of projects) {
+  for (const row of rows) {
     const group = groupOf.get(row);
     if (!group) {
       entries.push(row);
@@ -134,7 +151,9 @@ const merged = $derived.by((): MergedEntries => {
     );
   }
   return { entries, entryOf, members, repoKeyOf };
-});
+}
+
+const merged = $derived.by(() => mergeProjectRows(projects));
 
 /** The repository key of the merged entry `projectId` is a member of; ''
  *  when it is in no merged entry. */

@@ -52,6 +52,10 @@ function mkProject(id: string, overrides: Partial<Project> = {}): Project {
   };
 }
 
+async function settleTicks(): Promise<void> {
+  for (let i = 0; i < 4; i++) await tick();
+}
+
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (error: unknown) => void } {
   let resolve!: (value: T) => void;
   let reject!: (error: unknown) => void;
@@ -334,6 +338,93 @@ describe('<ProjectsSection>', () => {
     expect(ids).toEqual(['p-b', 'p-c', 'p-a']);
   });
 
+  function itemIds(container: HTMLElement): string[] {
+    return Array.from(container.querySelectorAll('[data-testid="project-item"]'))
+      .map((el) => el.getAttribute('data-project-id') ?? '');
+  }
+
+  // Showing the list costs what the list is long, not its square. The gate
+  // this replaced asked, per entry, which computers held that entry's
+  // members, and the question reached a scan of every row; each rendered row
+  // asks the same question for its identity errors. Doubling the list
+  // doubles the row reads while the cost is linear, and quadruples them if
+  // any of those scans returns.
+  async function rowReadsFor(count: number): Promise<number> {
+    let reads = 0;
+    const rows: ProjectWithCounts[] = Array.from({ length: count }, (_, i) => {
+      const id = `p-${String(i).padStart(3, '0')}`;
+      return {
+        project: { ...mkProject(id), get id() { reads++; return id; } },
+        threadCount: 0,
+        lastActive: 0,
+      };
+    });
+    await seedProjects(rows);
+    const { container, unmount } = render(ProjectsSection, { props: { pane: null } });
+    await tick();
+    expect(itemIds(container)).toHaveLength(count);
+    unmount();
+    return reads;
+  }
+
+  it('reads the project rows a number of times linear in the list length', async () => {
+    const small = await rowReadsFor(50);
+    resetProjectsForTest();
+    resetSidebarForTest();
+    const large = await rowReadsFor(100);
+    expect(large / small).toBeLessThan(2.6);
+  });
+
+  // A refused reorder is undone from the rows it replaced. It cannot wait for
+  // the read that follows: the projects are read only beside the threads
+  // under them, so a round whose thread half fails withholds the project
+  // answer and would leave the rejected order on screen.
+  it('puts the previous order back when the reorder write is refused and the read after it fails', async () => {
+    await seedProjects([
+      { project: mkProject('p-a', { name: 'A', sortPosition: 0 }), threadCount: 0, lastActive: 0 },
+      { project: mkProject('p-b', { name: 'B', sortPosition: 1 }), threadCount: 0, lastActive: 0 },
+    ]);
+    setProjectSortMode('manual');
+    const { container } = render(ProjectsSection, { props: { pane: null } });
+    await tick();
+    expect(itemIds(container)).toEqual(['p-a', 'p-b']);
+
+    const write = vi.fn(async () => { throw new Error('refused'); });
+    setBindingMock('UpdateProjectSortPositions', write);
+    // The computer would answer the new order if the round ever listed it.
+    setBindingMock('ListProjects', async () => [
+      { project: mkProject('p-b', { name: 'B', sortPosition: 0 }), threadCount: 0, lastActive: 0 },
+      { project: mkProject('p-a', { name: 'A', sortPosition: 1 }), threadCount: 0, lastActive: 0 },
+    ]);
+    setBindingMock('ListThreads', async () => { throw new Error('offline'); });
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const items = container.querySelectorAll('[data-testid="project-item"]');
+      const dataTransfer = { effectAllowed: '', dropEffect: '', setData: vi.fn(), getData: () => '' };
+      // jsdom has no DragEvent, so each event carries its own dataTransfer.
+      const drag = async (type: string, target: Element, props: Record<string, unknown> = {}): Promise<void> => {
+        const event = new Event(type, { bubbles: true, cancelable: true });
+        Object.defineProperty(event, 'dataTransfer', { value: dataTransfer });
+        for (const [key, value] of Object.entries(props)) Object.defineProperty(event, key, { value });
+        await fireEvent(target, event);
+      };
+      // The drag starts on the header, the drop lands on the whole row.
+      // An empty rect puts the cursor past the row's midpoint: dropped after it.
+      const header = items[0].querySelector('[aria-expanded]');
+      expect(header).not.toBeNull();
+      await drag('dragstart', header!);
+      await drag('dragover', items[1], { clientY: 1 });
+      await drag('drop', items[1]);
+      // The write went out with the dropped order, so the optimistic reorder
+      // this undoes really happened.
+      await vi.waitFor(() => expect(write).toHaveBeenCalledWith(['p-b', 'p-a']));
+      await settleTicks();
+      expect(itemIds(container)).toEqual(['p-a', 'p-b']);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
   it('opens the inline rename on the row a group create just mounted', async () => {
     // Why the request lives INSIDE createThreadGroupAction: the store write
     // schedules the flush that mounts the row, and that flush runs before the
@@ -516,6 +607,88 @@ describe('<ProjectsSection> threads and their groups', () => {
       await settle();
       expect(headers(container).sort()).toEqual(['p1', 'p2']);
     } finally {
+      resetStagedBackends();
+    }
+  });
+
+  // A held computer must not feed the grouping either: its member would
+  // raise the entry's activity and re-sort the list before its rows exist,
+  // and move the list again when they arrive.
+  const repoProject = (id: string, repo: string, path: string) =>
+    mkProject(id, { name: `Repo ${repo}`, path, repositoryID: `github:github.com:${repo}` });
+
+  it("leaves a held computer out of a merged entry's activity, so the order changes once", async () => {
+    const { stageBackend, resetStagedBackends } = await import('../../../../test/helpers/backends');
+    const { takePinnedBackend } = await import('../../../transport/backends');
+    stageBackend({ id: 'gpu' });
+    try {
+      const gpuThreads = deferred<Thread[]>();
+      setBindingMock('ListProjects', async () => (takePinnedBackend() === 'gpu'
+        // The GPU checkout of repository A carries the newest activity in
+        // the entry it merges into.
+        ? [{ project: repoProject('a-gpu', 'A', '/gpu/a'), threadCount: 1, lastActive: 300 }]
+        : [
+          { project: repoProject('a-home', 'A', '/repo/a'), threadCount: 1, lastActive: 100 },
+          { project: repoProject('b-home', 'B', '/repo/b'), threadCount: 1, lastActive: 200 },
+        ]));
+      setBindingMock('ListThreads', () => (takePinnedBackend() === 'gpu'
+        ? gpuThreads.promise
+        : Promise.resolve([makeThread({ id: 'ta', projectId: 'a-home' }), makeThread({ id: 'tb', projectId: 'b-home' })])));
+      setBindingMock('ListThreadGroups', async () => []);
+      const { container } = render(ProjectsSection, { props: { pane: null } });
+      await loadSidebarCatalogs();
+      await settle();
+      expect(catalogTreeListed('gpu')).toBe(false);
+      // B is still the newer entry: the held member's 300 is not folded in.
+      expect(headers(container)).toEqual(['b-home', 'a-home']);
+
+      gpuThreads.resolve([]);
+      await vi.waitFor(() => expect(catalogTreeListed('gpu')).toBe(true));
+      await settle();
+      // One change, and it is the whole change: the member joins its entry
+      // and the entry takes the top in the same step.
+      expect(headers(container)).toEqual(['a-home', 'b-home']);
+    } finally {
+      resetStagedBackends();
+    }
+  });
+
+  // One member has to pass both the listing test and the device filter for
+  // its entry to show, or a filter that hides the only listed computer
+  // leaves an empty header behind.
+  it('shows no header when the device filter hides the only computer whose tree lists', async () => {
+    const { stageBackend, resetStagedBackends } = await import('../../../../test/helpers/backends');
+    const { takePinnedBackend } = await import('../../../transport/backends');
+    const { setSidebarDeviceVisible, showAllSidebarDevices } = await import('../../../stores/sidebarDevices.svelte');
+    stageBackend({ id: 'mac', backendId: 'mac-uuid' });
+    stageBackend({ id: 'gpu', backendId: 'gpu-uuid' });
+    try {
+      const gpuThreads = deferred<Thread[]>();
+      setBindingMock('ListProjects', async () => {
+        const computer = takePinnedBackend();
+        if (computer === 'mac') return [{ project: repoProject('a-mac', 'A', '/mac/a'), threadCount: 0, lastActive: 100 }];
+        if (computer === 'gpu') return [{ project: repoProject('a-gpu', 'A', '/gpu/a'), threadCount: 0, lastActive: 0 }];
+        return [];
+      });
+      setBindingMock('ListThreads', () => (takePinnedBackend() === 'gpu' ? gpuThreads.promise : Promise.resolve([])));
+      setBindingMock('ListThreadGroups', async () => []);
+      const { container } = render(ProjectsSection, { props: { pane: null } });
+      await loadSidebarCatalogs();
+      await settle();
+      expect(headers(container)).toEqual(['a-mac']);
+
+      // Hide the Mac: the entry's only remaining member is the GPU one,
+      // whose tree is held, so the entry has nothing to show.
+      setSidebarDeviceVisible('mac-uuid', false);
+      await settle();
+      expect(headers(container)).toEqual([]);
+
+      gpuThreads.resolve([]);
+      await vi.waitFor(() => expect(catalogTreeListed('gpu')).toBe(true));
+      await settle();
+      expect(headers(container)).toEqual(['a-gpu']);
+    } finally {
+      showAllSidebarDevices();
       resetStagedBackends();
     }
   });
