@@ -181,6 +181,74 @@ func TestSettleWaitsForTheContinuesItsPassesStarted(t *testing.T) {
 	}
 }
 
+// A trigger queued after Settle began can join the batch holding the one
+// Settle waits for. The continue that batch starts is still part of that
+// trigger's outcome.
+func TestSettleWaitsForAContinueOfABatchItsTriggerShares(t *testing.T) {
+	f, c := readyToContinue()
+	g := newGate()
+	f.continueHook = func(context.Context, string) error {
+		g.hold()
+		return nil
+	}
+	c.ReadingUpdated("claude", "a")
+	c.mu.Lock()
+	target := c.pending.seq
+	c.mu.Unlock()
+	// Queued before the worker takes either: one batch holds both.
+	c.ReadingUpdated("claude", "a")
+	startHeld(t, context.Background(), c, g)
+	<-g.entered
+	awaitPassesDecided(c)
+
+	ended, end := context.WithCancel(context.Background())
+	end()
+	err := c.settleThrough(ended, target)
+	if err == nil || !strings.Contains(err.Error(), "the continue of thread t1 is still running") {
+		t.Fatalf("Settle through trigger %d with its batch's continue held = %v, want the continue named", target, err)
+	}
+	g.release()
+	if err := c.settleThrough(context.Background(), target); err != nil {
+		t.Fatalf("Settle after the continue ended = %v", err)
+	}
+	if _, _, _, cont := f.snapshot(); !equal(cont, []string{"t1"}) {
+		t.Fatalf("continued = %v, want t1", cont)
+	}
+}
+
+// After the worker stops, a continue still running keeps Settle waiting only
+// until its context ends.
+func TestSettleAfterAStopStillEndsWithItsContext(t *testing.T) {
+	f, c := readyToContinue()
+	g := newGate()
+	f.continueHook = func(context.Context, string) error {
+		g.hold()
+		return nil
+	}
+	worker, stop := context.WithCancel(context.Background())
+	startHeld(t, worker, c, g)
+	c.ReadingUpdated("claude", "a")
+	<-g.entered
+	awaitPassesDecided(c)
+	stop()
+	c.mu.Lock()
+	done := c.done
+	c.mu.Unlock()
+	<-done
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	settled := settleAsync(ctx, c)
+	select {
+	case err := <-settled:
+		if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "auto-switch did not settle: the continue of thread t1 is still running") {
+			t.Fatalf("Settle = %v, want the held continue named at the deadline", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Settle ignored its context after the worker stopped")
+	}
+}
+
 // Triggers queued before Start are settled once the worker decides on them.
 func TestSettleBeforeStartWaitsForTheWorker(t *testing.T) {
 	f := pastThresholdWhileRunning()

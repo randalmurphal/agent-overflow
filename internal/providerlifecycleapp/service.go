@@ -46,7 +46,7 @@ type SessionAccount struct {
 // provideraccountapp.
 type AccountDeps struct {
 	Selection         func(providerName string) Selection
-	Reconcile         func(providerName string) error
+	Reconcile         func(ctx context.Context, providerName string) error
 	RefreshUsage      func(context.Context, string, string) error
 	ResolveObserved   func(providerName, expectedAccountID string, info provider.AccountInfo) (string, *provideraccounts.Account, error)
 	PublishObserved   func(providerName string, account provideraccounts.Account)
@@ -87,7 +87,11 @@ type Deps struct {
 	// shortest gap between two usage probes of one provider. Nil or zero
 	// keeps the product gap; only a harness boot sets one.
 	ProbeMinInterval func() time.Duration
-	Emit             func(eventchan.Channel, any)
+	// PollInterval, read when a provider's poll starts, replaces the usage
+	// poll's tick. Nil or zero keeps the product tick; only a harness boot
+	// sets one.
+	PollInterval func() time.Duration
+	Emit         func(eventchan.Channel, any)
 	// OnReading is called once per reading merged into the cache, for any
 	// account, outside the cache lock and before the reading is published.
 	// It runs on the emitter's goroutine and must not block. Optional.

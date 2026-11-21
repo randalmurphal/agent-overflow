@@ -987,6 +987,9 @@ type App struct {
 	// one provider for an end-to-end test (IsolationConfig). Zero keeps the
 	// product gap.
 	usageProbeGap time.Duration
+	// usagePollInterval replaces the usage poll's tick for an end-to-end
+	// test (IsolationConfig). Zero keeps the product tick.
+	usagePollInterval time.Duration
 	// dataDirOverride overrides the data directory root that initStores
 	// otherwise resolves via os.UserConfigDir(). The app's data lives in
 	// <root>/agent-overflow. Set by the --data-dir CLI flag (harness mode

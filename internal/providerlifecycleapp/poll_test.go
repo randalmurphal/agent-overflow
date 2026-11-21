@@ -231,6 +231,19 @@ func TestRequestReadingGoesThroughTheGate(t *testing.T) {
 	}
 }
 
+func TestPollIntervalReplacesTheTickOnlyWhenSet(t *testing.T) {
+	t.Parallel()
+	if got := New(Deps{}).pollLoop(stringProviderClaude, func() {}).Interval; got != 0 {
+		t.Fatalf("default poll interval = %s, want 0 so StartProbeLoop keeps %s", got, defaultProbeInterval)
+	}
+	service := New(Deps{PollInterval: func() time.Duration { return time.Hour }})
+	for _, name := range []string{stringProviderClaude, stringProviderCodex} {
+		if got := service.pollLoop(name, func() {}).Interval; got != time.Hour {
+			t.Fatalf("%s poll interval = %s, want the configured 1h", name, got)
+		}
+	}
+}
+
 func TestProbeMinIntervalReplacesTheGateGapOnlyWhenSet(t *testing.T) {
 	t.Parallel()
 	if got := New(Deps{}).claudeUsageGate().minInterval; got != probeMinInterval {

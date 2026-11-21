@@ -27,7 +27,7 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, test, type Page } from '@playwright/test';
 
-import { launchHarness, type HarnessApp } from '../src/harness.js';
+import { HARNESS_TIMING, launchHarness, type HarnessApp } from '../src/harness.js';
 import type { HarnessMockEventData } from '../src/harness-app.js';
 import {
   RESULT_LINE,
@@ -226,7 +226,9 @@ const timeline = () => chatPage.getByTestId('message-timeline-scroll');
 
 test.describe.serial('Claude account auto-switch', () => {
   test.beforeAll(async ({ browser }) => {
-    harness = await launchHarness();
+    // The usage poll never ticks: every reading is one a case set, so what
+    // a case asserts after a reading is that reading's doing.
+    harness = await launchHarness({ env: { AO_HARNESS_TIMING: `${HARNESS_TIMING},usage-poll=24h` } });
     await seedNativeClaudeLogin(harness, A, Date.now() + 20 * 24 * 3600_000);
     const seed = await harness.rpc<SeedResult>('HarnessSeed', {
       projects: THREADS.map((spec) => ({
@@ -498,23 +500,24 @@ test.describe.serial('Claude account auto-switch', () => {
     expect(switchEvents()).toBe(before);
     expect(await selectedEmail()).toBe(B);
 
-    // A reading with the turn in flight, decided on before the call
-    // returned: nothing moves either.
+    // A reading with the turn in flight: nothing moves either.
     await setReading(B, [session(99), weeklyAll(30)], { limitId: 'session', percent: 99 });
     expect(switchEvents()).toBe(before);
     expect(await selectedEmail()).toBe(B);
     await expect(switchToasts()).toHaveCount(0);
     expect(await noticeItems('outside')).toEqual([]);
 
-    // Positive control. B goes back into the pool at a clear reading, so a
-    // usage poll while it is ticked cannot switch, then the next reading
-    // switches and is the only switch.
-    await setReading(B, [session(20), weeklyAll(30)], { limitId: 'session', percent: 20 });
+    // B goes back into the pool still at 99%. The harness call above
+    // returned only once auto-switch had decided on that reading with B
+    // outside the pool, and the usage poll takes no reading of its own, so
+    // ticking B decides nothing: the selection stays.
     await section().getByTestId(`provider-account-auto-switch-${bId}`).check();
     await expect.poll(() => autoSwitchOf(B)).toBe(true);
     expect(switchEvents()).toBe(before);
     expect(await selectedEmail()).toBe(B);
 
+    // Positive control: in the pool, the next reading switches, and it is
+    // the only switch.
     const switched = harness.waitForEvent<SwitchEvent>('provider:account_auto_switch', undefined, 30_000);
     await setReading(B, [session(100), weeklyAll(30)], { limitId: 'session', percent: 100 });
     expect(await switched).toMatchObject({ fromLabel: B, toLabel: A, reason: 'exhausted', usedPercent: 100 });

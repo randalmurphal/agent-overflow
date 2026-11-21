@@ -69,6 +69,7 @@ func (a *App) providerLifecycleService() *providerlifecycleapp.Service {
 			Context:          a.lifeCtx,
 			IsShuttingDown:   func() bool { return a.shuttingDown.Load() },
 			ProbeMinInterval: func() time.Duration { return a.usageProbeGap },
+			PollInterval:     func() time.Duration { return a.usagePollInterval },
 			Emit:             a.emit,
 			OnReading: func(providerName, accountID string) {
 				if accountID != "" {
@@ -80,7 +81,12 @@ func (a *App) providerLifecycleService() *providerlifecycleapp.Service {
 					selection := a.captureProviderAccountSelection(providerName)
 					return providerlifecycleapp.Selection{AccountID: selection.AccountID}
 				},
-				Reconcile: a.reconcileExternalProviderAccount,
+				Reconcile: func(ctx context.Context, providerName string) error {
+					if a.providerAccounts == nil {
+						return nil
+					}
+					return a.providerAccounts.ReconcileExternalProviderAccountContext(ctx, providerName)
+				},
 				RefreshUsage: func(ctx context.Context, providerName, accountID string) error {
 					return a.ensureProviderAccountManager().RefreshProviderAccountUsageContext(
 						ctx, providerName, accountID,

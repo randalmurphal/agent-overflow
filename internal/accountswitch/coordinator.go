@@ -55,9 +55,10 @@ type Coordinator struct {
 
 	// pending is the work queued for the worker.
 	pending triggers
-	// pass is the seq of the batch the worker is deciding on, and settled
-	// that of the last batch it finished deciding on.
-	pass, settled uint64
+	// passFirst is the seq of the first trigger in the batch the worker is
+	// deciding on, and settled the seq of the last trigger in the last batch
+	// it finished deciding on.
+	passFirst, settled uint64
 	// deliveries are the continues being delivered.
 	deliveries map[*deliveryRun]struct{}
 	// progress is closed and replaced when settled or deliveries change.
@@ -69,40 +70,49 @@ type Coordinator struct {
 	done    chan struct{}
 }
 
-// triggers is the work queued for the worker. Every add bumps seq, so a pass
-// knows which triggers it took.
+// triggers is the work queued for the worker. Every add takes the next seq,
+// so a batch knows which triggers it holds: first through seq.
 type triggers struct {
 	refusals []refusal
 	readings map[accountKey]bool
 	deliver  map[string]bool
 	check    bool
-	// seq counts the adds; a batch carries the seq of its last add.
-	seq uint64
+	// first is the seq of the first add since the last take, 0 when there
+	// is none; seq is the seq of the last add.
+	first, seq uint64
 }
 
 func newTriggers(seq uint64) triggers {
 	return triggers{readings: map[accountKey]bool{}, deliver: map[string]bool{}, seq: seq}
 }
 
+// next numbers one add.
+func (t *triggers) next() {
+	t.seq++
+	if t.first == 0 {
+		t.first = t.seq
+	}
+}
+
 func (t *triggers) addRefusal(r refusal) {
 	t.refusals = append(t.refusals, r)
-	t.seq++
+	t.next()
 }
 
 func (t *triggers) addReading(k accountKey) {
 	t.readings[k] = true
 	t.deliver[k.provider] = true
-	t.seq++
+	t.next()
 }
 
 func (t *triggers) addDeliver(prov string) {
 	t.deliver[prov] = true
-	t.seq++
+	t.next()
 }
 
 func (t *triggers) addCheck() {
 	t.check = true
-	t.seq++
+	t.next()
 }
 
 // take returns the queued work and leaves the queue empty.
@@ -189,20 +199,41 @@ func (c *Coordinator) awaitDeliveries() {
 // Settle returns once the coordinator has decided on every trigger queued
 // before the call: each reading, refusal, delivery request and waiting
 // check has been through a worker pass that finished deciding, including
-// any switch the pass made, and every continue those passes started has
-// returned. Work queued during the call is not waited for. Before Start it
-// waits for Start. It returns an error when ctx ends first, naming what is
-// still unsettled, or when Stop ends the worker before those passes
-// finished.
+// any switch the pass made, and every continue started by a pass whose
+// batch held one of those triggers has returned. Work queued during the
+// call is not waited for unless it shares such a batch. Before Start it
+// waits for Start. Every wait ends with ctx: it then returns an error
+// naming what is still unsettled. It also returns an error when Stop ends
+// the worker before those passes finished.
 //
 // Settle is the harness's and the tests' barrier before asserting what a
 // trigger did or did not change. The product never waits on it.
 func (c *Coordinator) Settle(ctx context.Context) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	target := c.pending.seq
-	for c.unsettledLocked(target) != "" {
+	c.mu.Unlock()
+	return c.settleThrough(ctx, target)
+}
+
+// settleThrough is Settle for the triggers up to seq target.
+func (c *Coordinator) settleThrough(ctx context.Context, target uint64) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	stopped := false
+	for {
+		reason := c.unsettledLocked(target)
+		if reason == "" {
+			return nil
+		}
+		if stopped && c.settled < target {
+			return errors.New("auto-switch stopped before deciding on its queued work")
+		}
+		// After a stop, the continues still running end with the worker's
+		// context; only progress and ctx are watched.
 		progress, done := c.progress, c.done
+		if stopped {
+			done = nil
+		}
 		c.mu.Unlock()
 		select {
 		case <-ctx.Done():
@@ -212,28 +243,17 @@ func (c *Coordinator) Settle(ctx context.Context) error {
 			}
 			return nil
 		case <-done:
-			c.mu.Lock()
-			// The continues still running end with the worker's context.
-			if c.settled < target {
-				return errors.New("auto-switch stopped before deciding on its queued work")
-			}
-			for c.unsettledLocked(target) != "" {
-				progress := c.progress
-				c.mu.Unlock()
-				<-progress
-				c.mu.Lock()
-			}
-			return nil
+			stopped = true
 		case <-progress:
 		}
 		c.mu.Lock()
 	}
-	return nil
 }
 
 // unsettledLocked says what keeps the work up to seq target unsettled: the
-// worker not started, a pass still deciding, or a continue those passes
-// started still running. It is empty when that work is settled.
+// worker not started, a pass still deciding, or a continue started by a
+// pass holding a trigger at or below target still running. It is empty when
+// that work is settled.
 func (c *Coordinator) unsettledLocked(target uint64) string {
 	if c.settled < target {
 		if !c.started {
@@ -243,7 +263,7 @@ func (c *Coordinator) unsettledLocked(target uint64) string {
 	}
 	var threads []string
 	for run := range c.deliveries {
-		if run.pass <= target {
+		if run.passFirst <= target {
 			threads = append(threads, run.threadID)
 		}
 	}
@@ -310,7 +330,7 @@ func (c *Coordinator) runPending(ctx context.Context) {
 	for ctx.Err() == nil {
 		c.mu.Lock()
 		batch := c.pending.take()
-		c.pass = batch.seq
+		c.passFirst = batch.first
 		c.mu.Unlock()
 		if batch.empty() {
 			return

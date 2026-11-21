@@ -113,7 +113,7 @@ func (m *Manager) adoptLogin(attempt *loginAttempt) (_ ManagedAccount, retErr er
 			reconcileMu.Unlock()
 		}
 	}()
-	if err := m.reconcileExternalProviderAccountWithMutexHeld(providerName); err != nil {
+	if err := m.reconcileExternalProviderAccountWithMutexHeld(m.context(), providerName); err != nil {
 		return ManagedAccount{}, fmt.Errorf(
 			"check current %s account before activation: %w",
 			providerName,

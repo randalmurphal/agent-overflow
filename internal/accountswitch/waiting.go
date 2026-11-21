@@ -227,9 +227,10 @@ func (c *Coordinator) continueThread(ctx context.Context, prov, threadID string,
 
 // deliveryRun is one continue goroutine, for Settle and Stop.
 type deliveryRun struct {
-	// pass is the seq of the pass that started it.
-	pass     uint64
-	threadID string
+	// passFirst is the seq of the first trigger in the batch whose pass
+	// started it.
+	passFirst uint64
+	threadID  string
 }
 
 // beginDeliveryRun records a continue goroutine of threadID against the
@@ -237,7 +238,7 @@ type deliveryRun struct {
 func (c *Coordinator) beginDeliveryRun(threadID string) *deliveryRun {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	run := &deliveryRun{pass: c.pass, threadID: threadID}
+	run := &deliveryRun{passFirst: c.passFirst, threadID: threadID}
 	c.deliveries[run] = struct{}{}
 	return run
 }

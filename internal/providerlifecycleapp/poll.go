@@ -82,7 +82,12 @@ func (s *Service) startPoll(providerName string, probe func()) {
 // pollLoop probes on a tick when the provider completed a turn since the last
 // poll or has one in flight now.
 func (s *Service) pollLoop(providerName string, probe func()) ProbeLoop {
+	var interval time.Duration
+	if s.deps.PollInterval != nil {
+		interval = s.deps.PollInterval()
+	}
 	return ProbeLoop{
+		Interval: interval,
 		TurnCompletedSince: func(mark time.Time) bool {
 			return s.TurnCompletedSince(providerName, mark)
 		},
