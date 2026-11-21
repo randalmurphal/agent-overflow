@@ -103,6 +103,20 @@ describe('App integration - pane restoration', () => {
     expect(getFocusedPaneId()).toBe('right');
   });
 
+  // The sidebar holds a computer's threads until its groups answer; the
+  // restore must not wait for them, or for the deadline, to keep the pane.
+  it('restores a saved pane while the group read is still out', async () => {
+    const left = makeThread({ id: 'left-thread', title: 'Left Thread' });
+    installThreadMocks([left]);
+    setBindingMock('ListThreadGroups', () => new Promise(() => {}));
+    installUIStateWithPaneLayout(savePaneLayout([{ paneId: 'left', threadId: left.id, widthPx: 660 }], 'left'));
+
+    const rendered = render(App);
+    await waitFor(() => expect(rendered.getByTestId('pane-host')).toBeInTheDocument());
+    const paneSections = Array.from(rendered.container.querySelectorAll<HTMLElement>('[data-pane-kind="thread"]'));
+    expect(paneSections.map((section) => section.dataset.paneId)).toEqual(['left']);
+  });
+
   it('preserves the saved pane layout if the app closes before startup restore finishes', async () => {
     const left = makeThread({ id: 'left-thread', title: 'Left Thread' });
     let resolveThreads: (threads: Thread[]) => void = () => {};

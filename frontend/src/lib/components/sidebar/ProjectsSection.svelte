@@ -55,7 +55,7 @@
     hasMultipleBackends,
     threadMachine,
   } from '../../stores/attachedBackends.svelte';
-  import { catalogLoadState, catalogReadFinished } from '../../stores/catalogLoad.svelte';
+  import { CATALOG_KINDS, catalogLoadState, catalogTreeListed } from '../../stores/catalogLoad.svelte';
   import CatalogStatusRow from './CatalogStatusRow.svelte';
   import ProjectList from './ProjectList.svelte';
   import { bucketSidebarThreads } from './sidebarBuckets';
@@ -98,14 +98,9 @@
   // rows keep their array the same way, so a project thread's change does
   // not rebuild the Assistants section's tree.
   //
-  // A computer's project threads and groups are listed only once a read of
-  // its threads and a read of its groups have both finished, answered or
-  // not: listed one catalog ahead of the other, its rows would show in one
-  // arrangement and then move to another. An assistant's row joins no
+  // A computer's project threads and groups are held until the catalog
+  // store lists them (catalogTreeListed). An assistant's row joins no
   // group and is not held.
-  function treeListed(backend: BackendKey): boolean {
-    return catalogReadFinished(backend, 'threads') && catalogReadFinished(backend, 'groups');
-  }
   let previousThreadBuckets: ReadonlyMap<string, Thread[]> = new Map();
   let previousGroupBuckets: ReadonlyMap<string, ThreadGroup[]> = new Map();
   let previousAssistantLists: ReadonlyMap<'assistants', Thread[]> = new Map();
@@ -114,7 +109,7 @@
     const listed = new Map<BackendKey, boolean>();
     const listedOn = (backend: BackendKey): boolean => {
       let value = listed.get(backend);
-      if (value === undefined) listed.set(backend, value = treeListed(backend));
+      if (value === undefined) listed.set(backend, value = catalogTreeListed(backend));
       return value;
     };
     const buckets = bucketSidebarThreads({
@@ -141,21 +136,21 @@
   let assistants = $derived(searchBuckets.assistants);
   let projectsShown = $derived(isSidebarSectionShown('projects', query !== ''));
 
-  // Visible computers whose threads or projects have not loaded, or whose
-  // threads are held for their groups, each with a status row. While any
-  // remains, what the list shows is incomplete, so it is never presented
-  // as empty.
+  // Visible computers with a catalog that has not loaded, or whose thread
+  // list is still held, each with a status row naming the first such
+  // catalog. While any remains, what the list shows is incomplete, so it is
+  // never presented as empty.
   let pendingCatalogs = $derived.by(() => getAttachedBackends().flatMap((entry) => {
     if (!sidebarBackendVisible(entry.id)) return [];
-    const projects = catalogLoadState(entry.id, 'projects');
-    const threads = catalogLoadState(entry.id, 'threads');
-    if (projects.phase === 'loaded' && threads.phase === 'loaded' && treeListed(entry.id)) return [];
-    const failed = projects.phase === 'failed' ? projects : threads.phase === 'failed' ? threads : null;
+    const loads = CATALOG_KINDS.map((kind) => ({ kind, load: catalogLoadState(entry.id, kind) }));
+    const unloaded = loads.find(({ load }) => load.phase !== 'loaded');
+    if (unloaded === undefined && catalogTreeListed(entry.id)) return [];
+    const failed = loads.find(({ load }) => load.phase === 'failed');
     return [{
       backend: entry.id,
       name: hasMultipleBackends() ? backendDisplayName(entry) : '',
-      kind: projects.phase === 'loaded' ? 'threads' as const : 'projects' as const,
-      error: failed === null ? null : failed.error,
+      kind: unloaded?.kind ?? 'threads',
+      error: failed === undefined ? null : failed.load.error,
     }];
   }));
 

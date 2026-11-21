@@ -1,25 +1,25 @@
-import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 import { invalidateReplicaCatalog } from '../replica/session';
 import { computerCatalogWriter } from './computerCatalogWriter';
-import { computerCatalog, readComputerRows, retainUnavailableComputerRows } from './computerRows';
-import { finishCatalogReads } from './catalogLoad.svelte';
+import { computerCatalog, readComputerRows, retainUnavailableComputerRows, type ComputerRows } from './computerRows';
+import { registerCatalogReader, settleCatalogAnswers } from './catalogLoad.svelte';
+import type { BackendKey } from '../transport/backendKey';
 import { noteThreadGroup, threadGroupBackend } from '../transport/entityIndex';
 // Thread groups: the named, collapsible sidebar rows that gather threads
 // of one project. Entity-keyed on the GROUP, not on the sidebar surface
 // that renders it — the tree builder, the context menus and the drop
 // targets all derive from this one list.
 //
-// Lifecycle mirrors `threads.svelte.ts`: a wholesale load at boot, the
-// same load again on the transport-gap resync path, and per-row patches
-// from the `thread-group:updated` channel in between. The list is small
+// Lifecycle mirrors `threads.svelte.ts`: a wholesale load beside the
+// threads it gathers (./threadCatalogs.ts) at boot, on a hello and on the
+// transport-gap resync path, a retry until it loads (./catalogLoad.svelte.ts),
+// and per-row patches from the `thread-group:updated` channel in between. The list is small
 // (tens of rows at most) and changes rarely, so there is no per-entity
 // signal box here — a group write is a real membership/order change and
 // re-deriving the sidebar for it is correct.
 
 import { ListThreadGroups } from './bindings';
 import { onBackendDetached } from '../transport/backends';
-import { clearThreadGroupMembership } from './threads.svelte';
-import { addErrorToast } from './toast.svelte';
+import { clearThreadGroupMembership, type CatalogReadScope } from './threads.svelte';
 import { collapseThreadList } from './sidebar.svelte';
 import type { ThreadGroup } from '../types/models';
 import type { ThreadGroupUpdateEvent } from '../types/events';
@@ -94,28 +94,35 @@ export function dropThreadGroupsForDetachedBackend(ids: readonly string[]): void
 
 onBackendDetached(({ threadGroupIds }) => dropThreadGroupsForDetachedBackend(threadGroupIds));
 
+function commitGroupRows(result: ComputerRows<ThreadGroup>): void {
+  threadGroups = retainUnavailableComputerRows(threadGroups, result, (row) => threadGroupBackend(row.id));
+  settleCatalogAnswers('groups', result.answered);
+}
+
 /**
- * Boot-time / resync wholesale load. Throws on failure so the caller
- * decides; `refreshThreadGroups` is the surfaced-error wrapper.
+ * Wholesale load. Rejects when no computer answered and none had rows to
+ * keep; every computer's failure is already settled into the catalog
+ * state, which shows it and retries.
  */
-export async function loadThreadGroups(): Promise<readonly ThreadGroup[]> {
+export async function loadThreadGroups({ only, round }: CatalogReadScope = {}): Promise<readonly ThreadGroup[]> {
+  const catalog = computerCatalog('groups', () => threadGroups, (row) => threadGroupBackend(row.id));
   await readComputerRows<ThreadGroup>(
-    async () => await ListThreadGroups() as ThreadGroup[], (row, backend) => noteThreadGroup(row.id, backend), (result) => {
-      threadGroups = retainUnavailableComputerRows(threadGroups, result, (row) => threadGroupBackend(row.id));
-      finishCatalogReads('groups', result.answered);
-    }, { catalog: computerCatalog('groups', () => threadGroups, (row) => threadGroupBackend(row.id)) });
+    async () => await ListThreadGroups() as ThreadGroup[], (row, backend) => noteThreadGroup(row.id, backend), commitGroupRows,
+    only === undefined ? { catalog, round } : { catalog, round, only, deadlineMs: null });
   return threadGroups;
 }
 
-export async function refreshThreadGroups(): Promise<void> {
+// The catalog store's retry for a computer whose groups have not loaded.
+async function retryGroupCatalog(backend: BackendKey): Promise<void> {
   try {
-    await loadThreadGroups();
-  } catch (err) {
-    if (isPassiveConnectionFailure(err)) return;
-    console.error('Failed to load thread groups:', err);
-    addErrorToast('Failed to load thread groups', err);
+    await loadThreadGroups({ only: backend });
+  } catch {
+    // readComputerRows settled this computer's failure into the catalog
+    // state, which is where it is shown and retried.
   }
 }
+
+registerCatalogReader('groups', retryGroupCatalog);
 
 /** Insert or replace one row. Used by every group RPC's response reconcile. */
 export function upsertThreadGroup(group: ThreadGroup): void {

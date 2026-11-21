@@ -27,7 +27,7 @@ import {
 import {
   refreshThreads,
 } from '../../../stores/threads.svelte';
-import { finishCatalogReadsForTest } from '../../../stores/catalogLoad.svelte';
+import { listCatalogTreesForTest } from '../../../stores/catalogLoad.svelte';
 import {
   resetProjectsForTest,
 } from '../../../stores/projects.svelte';
@@ -97,7 +97,7 @@ describe('<Sidebar>', () => {
     setBindingMock('SwitchThread', async () => runningThread);
 
     await refreshThreads();
-    finishCatalogReadsForTest();
+    listCatalogTreesForTest();
     const pane = createThreadPane();
     await pane.switchThread(runningThread);
     markThreadRunning(runningThread.id);

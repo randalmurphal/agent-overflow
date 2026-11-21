@@ -6,7 +6,7 @@ import { setBindingMock } from '../../test/mocks/bindings-app';
 import { resetStagedBackends } from '../../test/helpers/backends';
 import { refreshThreads, loadThreads } from './threads.svelte';
 import { refreshProjects } from './projects.svelte';
-import { refreshThreadGroups } from './threadGroups.svelte';
+import { loadThreadCatalogs } from './threadCatalogs';
 import { loadSettings } from './settings.svelte';
 import { getKeybindingRules, loadKeybindings, resyncKeybindings, saveKeybindings, setKeybindingsForTest } from './keybindings.svelte';
 import { getToasts, resetToastsForTest } from './toast.svelte';
@@ -26,7 +26,7 @@ it.each([
     setBindingMock(method, async () => { throw error; });
   }
   await Promise.all([
-    refreshThreads(), refreshProjects(), refreshThreadGroups(), loadSettings(), loadKeybindings(),
+    refreshThreads(), refreshProjects(), loadThreadCatalogs().catch(() => {}), loadSettings(), loadKeybindings(),
     loadProviderUpdates(HOME_BACKEND), checkProviderUpdates(HOME_BACKEND),
   ]);
   expect(providerUpdatesLoadError(HOME_BACKEND)).toBe('');

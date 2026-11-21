@@ -9,7 +9,7 @@ import { setBackendIdentityFromBootstrap } from '../../transport/backendIdentity
 import { noteProject, noteThread } from '../../transport/entityIndex';
 import { addProjectLocal, updateProjectLocal, resetProjectsForTest } from '../../stores/projects.svelte';
 import { replaceAllThreads } from '../../stores/threads.svelte';
-import { finishCatalogReadsForTest } from '../../stores/catalogLoad.svelte';
+import { listCatalogTreesForTest } from '../../stores/catalogLoad.svelte';
 import { upsertThreadGroup, resetThreadGroupsForTest } from '../../stores/threadGroups.svelte';
 import { showAllSidebarDevices, setSidebarDeviceVisible } from '../../stores/sidebarDevices.svelte';
 import { setThreadFilterQuery } from '../../stores/threadFilter.svelte';
@@ -31,7 +31,7 @@ afterEach(() => { setCompactLayoutForTest(false); showAllSidebarDevices(); reset
 for (const compact of [false, true]) it(`filters merged projects and search without changing the open thread or execution target (${compact ? 'phone' : 'desktop'})`, async () => {
   setCompactLayoutForTest(compact);
   const remote = stageBackend({ id: 'remote', backendId: 'remote-id', name: 'GPU' });
-  finishCatalogReadsForTest();
+  listCatalogTreesForTest();
   for (const [id, backend] of [['local-project', ''], ['remote-project', 'remote']] as const) {
     noteProject(id, backend);
     addProjectLocal({ id, name: 'Shared project', repositoryID: 'github:github.com:1', path: `/repo/${id}`, createdAt: 0, updatedAt: 0, sortPosition: 0, archived: false });
@@ -81,7 +81,7 @@ for (const remote of [true, false]) it(`renders the Projects heading as ${remote
 for (const compact of [false, true]) it(`labels only visible projects across filter and archive transitions (${compact ? 'phone' : 'desktop'})`, async () => {
   setCompactLayoutForTest(compact);
   stageBackend({ id: 'remote', backendId: 'remote-id', name: 'GPU' });
-  finishCatalogReadsForTest();
+  listCatalogTreesForTest();
   const local = { id: 'local', name: 'app', path: '/Users/randy/repos/app', repositoryID: 'github:github.com:1', createdAt: 0, updatedAt: 0, sortPosition: 0, archived: false };
   const cached = { ...local, id: 'cached', path: '/home/randy/repos/app', repositoryID: '', identityError: 'Repository identity has not been verified yet.' };
   noteProject(local.id, ''); noteProject(cached.id, 'remote');

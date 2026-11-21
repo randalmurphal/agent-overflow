@@ -7,12 +7,14 @@
 // failure through computerCatalog (./computerRows.ts), an answer in the
 // commit that readComputerRows calls with its rows.
 //
-// Apart from the phase, each computer's catalog records whether a read of
-// it has finished in any way: answered, failed, refused, offline or past
-// its deadline. The sidebar lists a computer's threads only once its
-// thread and group reads have both finished, so the two catalogs first
-// appear together and no row moves when the second arrives. The group
-// catalog has that fact alone: no phase, no status row and no retry.
+// It also holds whether each computer's thread list is listed in the
+// sidebar (catalogTreeListed). A computer becomes listed once its thread
+// catalog is known (answered, cached rows committed, or failed with an
+// error of its own) and no read of its threads or groups is in flight. A
+// read past its startup deadline is still in flight. Until then the
+// sidebar holds that computer's project threads and groups, so the two
+// catalogs first appear together. A listed computer stays listed until it
+// detaches; its later reads commit in pairs (./threadCatalogs.ts).
 //
 // Until a catalog loads, a failed read retries itself:
 //
@@ -31,7 +33,7 @@
 // One retry timer per catalog, whatever triggered the failure, so repeated
 // hellos cannot stack retries. An answer cancels it. A loaded catalog
 // stays loaded: later refreshes keep the last answer (./computerRows.ts).
-// Detaching a computer drops its state, its finished reads and its timers.
+// Detaching a computer drops its state, its listing and its timers.
 
 import { untrack } from 'svelte';
 import { attachedBackends, onBackendDetached } from '../transport/backends';
@@ -40,15 +42,11 @@ import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 import { isScopeRefusal } from '../transport/scopeRefusal';
 import { ReadDeadlineError } from '../utils/readBeforeDeadline';
 import { userFacingError } from '../utils/userFacingError';
+import { catalogReadInFlight } from './computerCatalogReads';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import { isTemporarilyUnavailableError } from './transportStatus.svelte';
 
-/** A catalog with a load phase, a status row and retries. */
-export type CatalogKind = 'threads' | 'projects';
-/** A catalog whose reads only record that they finished. */
-export type UnphasedCatalogKind = 'groups';
-/** Every catalog whose read can finish. */
-export type CatalogReadKind = CatalogKind | UnphasedCatalogKind;
+export type CatalogKind = 'threads' | 'projects' | 'groups';
 export type CatalogPhase = 'loading' | 'loaded' | 'failed';
 
 export interface CatalogLoad {
@@ -57,20 +55,31 @@ export interface CatalogLoad {
   error: string;
 }
 
+/**
+ * How one computer's read of a catalog ended: answered with its rows, or
+ * failed, with whether rows of that computer (kept or from the replica)
+ * stand in for the answer.
+ */
+export type CatalogReadOutcome = { answered: true } | { answered: false; error: unknown; cached: boolean };
+
 /** The retry delays before the cap, in order. */
 export const CATALOG_RETRY_DELAYS_MS: readonly number[] = [1_000, 2_000, 4_000, 8_000];
 export const CATALOG_RETRY_MAX_MS = 10_000;
 
-const CATALOG_KINDS: readonly CatalogKind[] = ['threads', 'projects'];
-const CATALOG_READ_KINDS: readonly CatalogReadKind[] = [...CATALOG_KINDS, 'groups'];
+/** Every catalog, in the order the sidebar's status row names them. */
+export const CATALOG_KINDS: readonly CatalogKind[] = ['projects', 'threads', 'groups'];
 const LOADING: CatalogLoad = { phase: 'loading', error: '' };
 const LOADED: CatalogLoad = { phase: 'loaded', error: '' };
 
 // Boxless keys read LOADING: an attached computer that has not answered is
 // loading, not empty.
 const states = createKeyedSignalRegistry<CatalogLoad>(LOADING);
-// Whether a read of the catalog has finished; boxless keys read false.
-const finished = createKeyedSignalRegistry<boolean>(false);
+// Whether each computer's thread list is listed, by backend. Boxless keys
+// read false: a computer is held until its catalogs say otherwise.
+const listed = createKeyedSignalRegistry<boolean>(false);
+// Computers whose thread catalog is known: answered, cached rows committed,
+// or failed with an error of its own. Read only by the listing's writer.
+const threadsKnown = new Set<BackendKey>();
 
 interface CatalogRetry {
   /** Consecutive failures; picks the next delay. */
@@ -82,7 +91,7 @@ const retries = new Map<string, CatalogRetry>();
 type CatalogReader = (backend: BackendKey) => Promise<void>;
 const readers = new Map<CatalogKind, CatalogReader>();
 
-function catalogKey(kind: CatalogReadKind, backend: BackendKey): string {
+function catalogKey(kind: CatalogKind, backend: BackendKey): string {
   return `${kind}\u0000${backend}`;
 }
 
@@ -92,18 +101,19 @@ export function catalogLoadState(backend: BackendKey, kind: CatalogKind): Catalo
 }
 
 /**
- * Whether a read of one computer's catalog has finished, whatever its
- * outcome. Reactive on that key alone.
+ * Whether the sidebar lists `backend`'s project threads and groups.
+ * Reactive on that computer alone.
  */
-export function catalogReadFinished(backend: BackendKey, kind: CatalogReadKind): boolean {
-  return finished.get(catalogKey(kind, backend));
+export function catalogTreeListed(backend: BackendKey): boolean {
+  return listed.get(backend);
 }
 
-// The one writer of `finished`. Only an attached computer's read counts.
-function finishRead(kind: CatalogReadKind, backend: BackendKey): boolean {
-  if (!attachedBackends().some((entry) => entry.id === backend)) return false;
-  finished.set(catalogKey(kind, backend), true);
-  return true;
+// The listing's one writer, run after every settled read: a read ending is
+// the only event that can make the condition true.
+function updateListing(backend: BackendKey): void {
+  if (untrack(() => listed.get(backend)) || !threadsKnown.has(backend)) return;
+  if (catalogReadInFlight(backend, 'threads') || catalogReadInFlight(backend, 'groups')) return;
+  listed.set(backend, true);
 }
 
 /**
@@ -116,17 +126,25 @@ export function registerCatalogReader(kind: CatalogKind, read: CatalogReader): v
 }
 
 /**
- * Record one computer's answer to a catalog read: `answered` when it
- * returned its rows, else the error it failed with.
+ * Record how one computer's read of a catalog ended. An answer settles in
+ * the same synchronous block as the commit of its rows.
  */
-export function settleCatalogRead(kind: CatalogKind, backend: BackendKey, answered: boolean, error?: unknown): void {
-  if (!finishRead(kind, backend)) return;
+export function settleCatalogRead(kind: CatalogKind, backend: BackendKey, outcome: CatalogReadOutcome): void {
+  if (!attachedBackends().some((entry) => entry.id === backend)) return;
+  settlePhase(kind, backend, outcome);
+  updateListing(backend);
+}
+
+function settlePhase(kind: CatalogKind, backend: BackendKey, outcome: CatalogReadOutcome): void {
   const key = catalogKey(kind, backend);
-  if (answered) {
+  if (outcome.answered) {
+    if (kind === 'threads') threadsKnown.add(backend);
     clearRetry(key);
     states.set(key, LOADED);
     return;
   }
+  const { error } = outcome;
+  if (outcome.cached && kind === 'threads') threadsKnown.add(backend);
   if (untrack(() => states.get(key)).phase === 'loaded') return;
   if (error instanceof ReadDeadlineError || isTemporarilyUnavailableError(error)) {
     scheduleRetry(kind, backend);
@@ -136,6 +154,7 @@ export function settleCatalogRead(kind: CatalogKind, backend: BackendKey, answer
     clearRetry(key);
     return;
   }
+  if (kind === 'threads') threadsKnown.add(backend);
   states.set(key, { phase: 'failed', error: userFacingError(error, `Could not load ${kind}.`) });
   if (isScopeRefusal(error)) {
     clearRetry(key);
@@ -150,16 +169,7 @@ export function settleCatalogRead(kind: CatalogKind, backend: BackendKey, answer
  * catalog without its rows.
  */
 export function settleCatalogAnswers(kind: CatalogKind, answered: Iterable<BackendKey>): void {
-  for (const backend of answered) settleCatalogRead(kind, backend, true);
-}
-
-/**
- * Record that a read of an unphased catalog finished for each of
- * `backends`, answered or not. An answer calls it in the same synchronous
- * block as its commit, as settleCatalogAnswers.
- */
-export function finishCatalogReads(kind: UnphasedCatalogKind, backends: Iterable<BackendKey>): void {
-  for (const backend of backends) finishRead(kind, backend);
+  for (const backend of answered) settleCatalogRead(kind, backend, { answered: true });
 }
 
 /**
@@ -210,12 +220,13 @@ function clearRetry(key: string): void {
 }
 
 function dropBackend(backend: BackendKey): void {
-  for (const kind of CATALOG_READ_KINDS) {
+  for (const kind of CATALOG_KINDS) {
     const key = catalogKey(kind, backend);
     clearRetry(key);
     states.drop(key);
-    finished.drop(key);
   }
+  threadsKnown.delete(backend);
+  listed.drop(backend);
 }
 
 onBackendDetached(({ backendId }) => dropBackend(backendId));
@@ -228,18 +239,17 @@ export function __catalogRetryCountForTest(): number {
 }
 
 /**
- * Test seam: mark every catalog read of each attached computer finished,
- * phases untouched, for a test that seeds the row stores directly.
+ * Test seam: list every attached computer's threads, phases untouched, for
+ * a test that seeds the row stores directly.
  */
-export function finishCatalogReadsForTest(): void {
-  for (const entry of attachedBackends()) {
-    for (const kind of CATALOG_READ_KINDS) finishRead(kind, entry.id);
-  }
+export function listCatalogTreesForTest(): void {
+  for (const entry of attachedBackends()) listed.set(entry.id, true);
 }
 
 /** Test seam: forget every state and timer. Readers are module wiring and stay. */
 export function resetCatalogLoadForTest(): void {
   for (const key of [...retries.keys()]) clearRetry(key);
   states.reset();
-  finished.reset();
+  threadsKnown.clear();
+  listed.reset();
 }

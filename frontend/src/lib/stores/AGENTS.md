@@ -214,14 +214,23 @@ request generation, and relevant catalog or mutation revision before applying.
 Ownership moves invalidate thread history stamps, item caches, interrupt state,
 pending reads, and watched-thread routing for the old owner.
 
-`catalogLoad.svelte.ts` holds whether each computer's thread and project
-catalogs have loaded, and owns their retries until they do. A catalog that
-has not loaded is never presented as empty. It also records whether a read
-of each computer's thread, project and group catalogs has finished, answered
-or not; the group catalog has only that fact, with no phase or retry. Every
-read settles there: a failure inside `readComputerRows`, an answer in the
-`commit` callback that commits its rows. `readComputerRows` calls `commit` in the same synchronous
+`catalogLoad.svelte.ts` holds whether each computer's thread, project and
+group catalogs have loaded, and owns their retries until they do. A catalog
+that has not loaded is never presented as empty. Every read settles there: a
+failure inside `readComputerRows`, an answer in the `commit` callback that
+commits its rows. `readComputerRows` calls `commit` in the same synchronous
 block that replays local mutations; never commit an answer after an `await`.
+
+A computer's threads and groups are one list in the sidebar and never show
+one catalog ahead of the other. Read both through `loadThreadCatalogs`
+(`threadCatalogs.ts`). Until a computer is listed (`catalogTreeListed`: its
+thread catalog is known and no read of either is in flight, a read past its
+deadline included), its answers commit as they arrive and the sidebar holds
+its rows. A listed computer's round commits both answers in one synchronous
+block. A thread answer never waits past the round's on-time window, because
+the layout restore drops a saved pane whose thread is missing; so a listed
+computer whose group answer comes after the deadline shows its new threads
+first and regroups when that answer lands. That is the known limit.
 
 Only a newer read of the same computer supersedes a sidebar catalog read.
 Change thread, project and group rows through the catalog writer's `mutate`,

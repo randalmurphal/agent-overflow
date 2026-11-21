@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 
@@ -14,7 +14,8 @@ import {
   resetProjectsForTest,
   touchProjectActivity,
 } from '../../../stores/projects.svelte';
-import { refreshThreads } from '../../../stores/threads.svelte';
+import { loadThreads } from '../../../stores/threads.svelte';
+import { loadThreadCatalogs } from '../../../stores/threadCatalogs';
 import {
   ensureMainPane,
   getAllPanes,
@@ -26,17 +27,18 @@ import { resetPaneLayoutForTest } from '../../../stores/paneLayout.svelte';
 import { setBindingMock } from '../../../../test/mocks/bindings-app';
 import { normalizedTextContent } from '../../../../test/helpers/textContent';
 import { makeThread } from '../../../../test/helpers/chat';
-import type { Project, ProjectWithCounts } from '../../../types/models';
+import { HOME_BACKEND } from '../../../transport/backendKey';
+import type { Project, ProjectWithCounts, Thread, ThreadGroup } from '../../../types/models';
 import { setThreadFilterQuery } from '../../../stores/threadFilter.svelte';
 import {
   consumePendingGroupRename,
-  refreshThreadGroups,
+  loadThreadGroups,
   resetThreadGroupsForTest,
 } from '../../../stores/threadGroups.svelte';
 import { createThreadGroupAction } from '../threadGroupActions';
-import { resetCatalogLoadForTest } from '../../../stores/catalogLoad.svelte';
+import { catalogTreeListed, resetCatalogLoadForTest } from '../../../stores/catalogLoad.svelte';
 import { __setTransportStatusForTest } from '../../../stores/transportStatus.svelte';
-import { TransportError } from '../../../transport/wsClient';
+import { DisconnectedError, TransportError } from '../../../transport/wsClient';
 
 function mkProject(id: string, overrides: Partial<Project> = {}): Project {
   return {
@@ -81,8 +83,7 @@ describe('<ProjectsSection>', () => {
     // into the next. The reads also settle HOME's catalogs as loaded and
     // its thread and group reads as finished, so the list renders instead
     // of its loading row.
-    await refreshThreads();
-    await refreshThreadGroups();
+    await loadThreadCatalogs();
     await refreshProjects();
   });
 
@@ -159,50 +160,16 @@ describe('<ProjectsSection>', () => {
       expect(getByTestId('sidebar-catalog-loading-label')).toHaveTextContent('Loading threads…');
       expect(queryByTestId('sidebar-projects-empty')).toBeNull();
 
-      await refreshThreads();
+      await loadThreads();
       await tick();
-      // The threads are held until the group read finishes as well.
-      expect(getByTestId('sidebar-catalog-loading-label')).toHaveTextContent('Loading threads…');
+      expect(getByTestId('sidebar-catalog-loading-label')).toHaveTextContent('Loading groups…');
       expect(queryByTestId('sidebar-projects-empty')).toBeNull();
 
-      await refreshThreadGroups();
+      await loadThreadGroups();
       await tick();
       expect(queryByTestId('sidebar-catalog-status')).toBeNull();
       expect(getByTestId('sidebar-projects-empty')).toBeInTheDocument();
     });
-
-    // Listed one catalog ahead of the other, the rows would show ungrouped
-    // (or the group empty) and then move under the group: whichever read
-    // answers first, nothing of the computer's threads is listed until both
-    // have, and then they appear in their final arrangement.
-    for (const first of ['threads', 'groups'] as const) {
-      it(`lists threads and their groups together when the ${first} answer first`, async () => {
-        await seedProjects([
-          { project: mkProject('p1', { name: 'Project One' }), threadCount: 3, lastActive: 0 },
-        ]);
-        setBindingMock('ListThreads', async () => [
-          makeThread({ id: 'member-old', projectId: 'p1', groupId: 'g1', updatedAt: 10 }),
-          makeThread({ id: 'member-new', projectId: 'p1', groupId: 'g1', updatedAt: 20 }),
-          makeThread({ id: 'outside', projectId: 'p1', updatedAt: 30 }),
-        ]);
-        setBindingMock('ListThreadGroups', async () => [
-          { id: 'g1', projectId: 'p1', name: 'Big group', createdAt: 0, updatedAt: 0 },
-        ]);
-        const { container, getByTestId } = render(ProjectsSection, { props: { pane: null } });
-        const arrangement = () => Array.from(
-          container.querySelectorAll('[data-sidebar-group-id], [data-sidebar-thread-id]'),
-        ).map((el) => el.getAttribute('data-sidebar-group-id') ?? el.getAttribute('data-sidebar-thread-id'));
-
-        await (first === 'threads' ? refreshThreads() : refreshThreadGroups());
-        await tick();
-        expect(arrangement()).toEqual([]);
-        expect(getByTestId('sidebar-catalog-loading-label')).toHaveTextContent('Loading threads…');
-
-        await (first === 'threads' ? refreshThreadGroups() : refreshThreads());
-        await tick();
-        expect(arrangement()).toEqual(['g1', 'member-new', 'member-old', 'outside']);
-      });
-    }
 
     it('keeps the rows it has visible beside the loading row', async () => {
       await seedProjects([
@@ -238,8 +205,7 @@ describe('<ProjectsSection>', () => {
         throw new TransportError('method_error', 'list projects: database disk image is malformed');
       });
       await refreshProjects();
-      await refreshThreads();
-      await refreshThreadGroups();
+      await loadThreadCatalogs();
       const { getByTestId, queryByTestId, findByTestId } = render(ProjectsSection, { props: { pane: null } });
       await tick();
       expect(normalizedTextContent(getByTestId('sidebar-catalog-failed'))).toMatch(/database disk image is malformed/i);
@@ -398,5 +364,165 @@ describe('<ProjectsSection>', () => {
 
     expect(getAllPanes().size).toBe(2);
     expect(getFocusedPaneId()).toBe('pane-1');
+  });
+});
+
+// A computer's thread list is two catalogs, threads and groups. Shown one
+// ahead of the other, its rows would appear in one arrangement and move to
+// another when the second commits, under whoever is clicking.
+describe('<ProjectsSection> threads and their groups', () => {
+  function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (error: unknown) => void } {
+    let resolve!: (value: T) => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+    return { promise, resolve, reject };
+  }
+  const group = (id: string): ThreadGroup => ({ id, projectId: 'p1', name: id, createdAt: 0, updatedAt: 0 });
+  const row = (id: string, updatedAt: number, groupId?: string): Thread =>
+    makeThread({ id, projectId: 'p1', groupId, updatedAt });
+  // Before: three threads, no group. After: a group made while the
+  // computer was away holds one of them and a new one.
+  const before = [row('a', 10), row('b', 20), row('outside', 30)];
+  const after = [row('a', 10, 'g2'), row('b', 20), row('outside', 30), row('c', 40, 'g2')];
+  const BEFORE = ['outside', 'b', 'a'];
+  const AFTER = ['g2', 'c', 'a', 'outside', 'b'];
+  const UNGROUPED_AFTER = ['c', 'outside', 'b', 'a'];
+
+  function arrangement(container: HTMLElement): string[] {
+    return Array.from(container.querySelectorAll('[data-sidebar-group-id], [data-sidebar-thread-id]'))
+      .map((el) => el.getAttribute('data-sidebar-group-id') ?? el.getAttribute('data-sidebar-thread-id') ?? '');
+  }
+
+  async function settle(): Promise<void> {
+    for (let i = 0; i < 4; i++) await tick();
+  }
+
+  beforeEach(async () => {
+    resetSidebarForTest();
+    resetProjectsForTest();
+    resetPanesForTest();
+    resetThreadGroupsForTest();
+    resetCatalogLoadForTest();
+    setThreadFilterQuery('');
+    setBindingMock('ListThreads', async () => []);
+    setBindingMock('ListThreadGroups', async () => []);
+    await loadThreadCatalogs();
+    resetCatalogLoadForTest();
+    await seedProjects([{ project: mkProject('p1', { name: 'Project One' }), threadCount: 3, lastActive: 0 }]);
+  });
+  afterEach(() => { vi.useRealTimers(); });
+
+  for (const first of ['threads', 'groups'] as const) {
+    it(`first lists a computer's rows when both answers are in, when the ${first} answer first`, async () => {
+      const threads = deferred<Thread[]>();
+      const groups = deferred<ThreadGroup[]>();
+      setBindingMock('ListThreads', () => threads.promise);
+      setBindingMock('ListThreadGroups', () => groups.promise);
+      const { container, getByTestId } = render(ProjectsSection, { props: { pane: null } });
+      const round = loadThreadCatalogs();
+      if (first === 'threads') threads.resolve(after); else groups.resolve([group('g2')]);
+      await settle();
+      expect(arrangement(container)).toEqual([]);
+      expect(getByTestId('sidebar-catalog-loading-label')).toHaveTextContent(first === 'threads' ? 'Loading groups…' : 'Loading threads…');
+
+      if (first === 'threads') groups.resolve([group('g2')]); else threads.resolve(after);
+      await round;
+      await settle();
+      expect(arrangement(container)).toEqual(AFTER);
+    });
+  }
+
+  it('holds a computer past the startup deadline until its late group answer, while the boot gets its thread rows', async () => {
+    vi.useFakeTimers();
+    const groups = deferred<ThreadGroup[]>();
+    setBindingMock('ListThreads', async () => after);
+    setBindingMock('ListThreadGroups', () => groups.promise);
+    const { container } = render(ProjectsSection, { props: { pane: null } });
+    const round = loadThreadCatalogs();
+    await vi.advanceTimersByTimeAsync(2500);
+    expect((await round).map((thread) => thread.id).sort()).toEqual(['a', 'b', 'c', 'outside']);
+    await settle();
+    expect(arrangement(container)).toEqual([]);
+
+    groups.resolve([group('g2')]);
+    await vi.advanceTimersByTimeAsync(0);
+    await settle();
+    expect(arrangement(container)).toEqual(AFTER);
+  });
+
+  it('holds a computer that was offline with nothing cached until both answers of its first connection', async () => {
+    setBindingMock('ListThreads', async () => { throw new DisconnectedError('Computer is offline.'); });
+    setBindingMock('ListThreadGroups', async () => { throw new DisconnectedError('Computer is offline.'); });
+    const { container } = render(ProjectsSection, { props: { pane: null } });
+    await expect(loadThreadCatalogs()).rejects.toBeInstanceOf(DisconnectedError);
+    expect(catalogTreeListed(HOME_BACKEND)).toBe(false);
+
+    // The first hello reads both again; the threads answer first.
+    const threads = deferred<Thread[]>();
+    const groups = deferred<ThreadGroup[]>();
+    setBindingMock('ListThreads', () => threads.promise);
+    setBindingMock('ListThreadGroups', () => groups.promise);
+    const hello = loadThreadCatalogs();
+    threads.resolve(after);
+    await settle();
+    expect(arrangement(container)).toEqual([]);
+    groups.resolve([group('g2')]);
+    await hello;
+    await settle();
+    expect(arrangement(container)).toEqual(AFTER);
+  });
+
+  for (const first of ['groups', 'threads'] as const) {
+    it(`moves a listed computer's rows in one step after a reconnect, when the ${first} answer first`, async () => {
+      setBindingMock('ListThreads', async () => before);
+      setBindingMock('ListThreadGroups', async () => []);
+      const { container } = render(ProjectsSection, { props: { pane: null } });
+      await loadThreadCatalogs();
+      await settle();
+      expect(arrangement(container)).toEqual(BEFORE);
+
+      const threads = deferred<Thread[]>();
+      const groups = deferred<ThreadGroup[]>();
+      setBindingMock('ListThreads', () => threads.promise);
+      setBindingMock('ListThreadGroups', () => groups.promise);
+      const reconnect = loadThreadCatalogs();
+      if (first === 'threads') threads.resolve(after); else groups.resolve([group('g2')]);
+      await settle();
+      expect(arrangement(container)).toEqual(BEFORE);
+
+      if (first === 'threads') groups.resolve([group('g2')]); else threads.resolve(after);
+      await reconnect;
+      await settle();
+      expect(arrangement(container)).toEqual(AFTER);
+    });
+  }
+
+  // The known limit (stores/AGENTS.md): a thread answer never waits past
+  // its round's on-time window, because the boot's restore drops a saved
+  // pane whose thread is missing. A listed computer whose groups answer
+  // past the deadline therefore shows its new threads first and regroups
+  // when the late answer lands.
+  it("commits a listed computer's on-time threads when its group read passes the deadline, then regroups", async () => {
+    setBindingMock('ListThreads', async () => before);
+    setBindingMock('ListThreadGroups', async () => []);
+    const { container } = render(ProjectsSection, { props: { pane: null } });
+    await loadThreadCatalogs();
+    vi.useFakeTimers();
+    const groups = deferred<ThreadGroup[]>();
+    setBindingMock('ListThreads', async () => after);
+    setBindingMock('ListThreadGroups', () => groups.promise);
+    const round = loadThreadCatalogs();
+    await vi.advanceTimersByTimeAsync(2499);
+    await settle();
+    expect(arrangement(container)).toEqual(BEFORE);
+    await vi.advanceTimersByTimeAsync(1);
+    await round;
+    await settle();
+    expect(arrangement(container)).toEqual(UNGROUPED_AFTER);
+
+    groups.resolve([group('g2')]);
+    await vi.advanceTimersByTimeAsync(0);
+    await settle();
+    expect(arrangement(container)).toEqual(AFTER);
   });
 });

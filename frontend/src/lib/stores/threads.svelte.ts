@@ -2,7 +2,7 @@ import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 import { getAllPanes } from './panes.svelte';
 import { reconcileThreadRows } from './eventsThreadRows';
 import { computerCatalogWriter } from './computerCatalogWriter';
-import { computerCatalog, readComputerRows, retainUnavailableComputerRows, type ComputerRows } from './computerRows';
+import { computerCatalog, readComputerRows, retainUnavailableComputerRows, type CatalogRoundRead, type ComputerRows } from './computerRows';
 import { currentThreadRow, noteThread, onThreadOwnershipChanged, threadBackend, threadGroupBackend } from '../transport/entityIndex';
 import type { Thread } from '../types/models';
 import { clearPayloadCacheForThread } from '../utils/payloadDataCache';
@@ -152,20 +152,28 @@ function commitThreadRows(result: ComputerRows<Thread>): void {
   settleCatalogAnswers('threads', result.answered);
 }
 
-function threadReadOptions(only?: BackendKey) {
+/** A catalog read of one computer alone, or of all; and the round it belongs to. */
+export interface CatalogReadScope {
+  /** Read this computer alone, waiting for its answer rather than the startup deadline. */
+  only?: BackendKey;
+  round?: CatalogRoundRead;
+}
+
+function threadReadOptions({ only, round }: CatalogReadScope) {
   const catalog = computerCatalog('threads', () => threads, threadRowOwner);
   return only === undefined
-    ? { catalog, admit: currentThreadRow }
-    : { catalog, admit: currentThreadRow, only, deadlineMs: null };
+    ? { catalog, admit: currentThreadRow, round }
+    : { catalog, admit: currentThreadRow, round, only, deadlineMs: null };
 }
 
 /**
- * Read every computer's threads and commit them. Resolves with the catalog
+ * Read the computers' threads and commit them. Resolves with the catalog
  * once this read, or a newer one that superseded it, has committed:
  * startup validates saved panes against the winning snapshot, even when a
- * first hello superseded its read.
+ * first hello superseded its read. The sidebar's reads go through
+ * loadThreadCatalogs (./threadCatalogs.ts), which pairs them with groups.
  */
-export async function loadThreads(): Promise<readonly Thread[]> {
+export async function loadThreads(scope: CatalogReadScope = {}): Promise<readonly Thread[]> {
   pendingThreadReads++;
   const request = readCurrentThreadRows();
   latestThreadRead = request;
@@ -174,7 +182,7 @@ export async function loadThreads(): Promise<readonly Thread[]> {
   return threads;
 
   async function readCurrentThreadRows(): Promise<void> {
-    if (await readComputerRows<Thread>(listThreadRows, noteThreadRow, commitThreadRows, threadReadOptions())) return;
+    if (await readComputerRows<Thread>(listThreadRows, noteThreadRow, commitThreadRows, threadReadOptions(scope))) return;
     if (latestThreadRead && latestThreadRead !== request) await latestThreadRead;
   }
 }
@@ -183,7 +191,7 @@ export async function loadThreads(): Promise<readonly Thread[]> {
 // its rows alone, waiting for the answer rather than the startup deadline.
 async function retryThreadCatalog(backend: BackendKey): Promise<void> {
   try {
-    await readComputerRows<Thread>(listThreadRows, noteThreadRow, commitThreadRows, threadReadOptions(backend));
+    await readComputerRows<Thread>(listThreadRows, noteThreadRow, commitThreadRows, threadReadOptions({ only: backend }));
   } catch {
     // readComputerRows settled this computer's failure into the catalog
     // state, which is where it is shown and retried.
