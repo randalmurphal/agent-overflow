@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/vektah/gqlparser/v2/ast"
-	"github.com/vektah/gqlparser/v2/parser"
 	"github.com/vektah/gqlparser/v2/validator"
 
 	"agent-overflow/internal/tracker/linear/linearschema"
@@ -43,22 +42,18 @@ type gqlRun struct {
 // linearMaxPage is the largest page (measured).
 const linearMaxPage = 250
 
-// execute runs a request already checked against the schema: the
-// pre-pass (checkOperation) refuses anything the executor does not
-// implement before anything runs. Callers hold mu.
-func (e *Engine) execute(w *linearWorkspace, in linearRequest) answer {
+// execute runs op, the operation of doc that in names, already checked
+// against the schema: the pre-pass (checkOperation) refuses anything the
+// executor does not implement before anything runs. rollback is the
+// pipeline's undo of the request (txn.go). Callers hold mu.
+func (e *Engine) execute(w *linearWorkspace, in linearRequest, doc *ast.QueryDocument, op *ast.OperationDefinition, rollback func()) answer {
 	s, err := linearschema.Schema()
 	if err != nil {
 		return unhandledf("load Linear's schema: %v", err)
 	}
-	doc, perr := parser.ParseQuery(&ast.Source{Input: in.Query})
-	if perr != nil {
-		return unhandledf("parse the document: %v", perr)
-	}
 	if errs := validator.ValidateWithRules(s, doc, nil); len(errs) > 0 {
 		return unhandledf("validate the document: %v", errs)
 	}
-	op := doc.Operations.ForName(in.OperationName)
 	raw := map[string]any{}
 	if len(in.Variables) > 0 && string(in.Variables) != "null" {
 		if err := json.Unmarshal(in.Variables, &raw); err != nil {
@@ -76,13 +71,8 @@ func (e *Engine) execute(w *linearWorkspace, in linearRequest) answer {
 	r := &gqlRun{e: e, w: w, s: s, vars: vars, filters: filters, now: e.now()}
 	w.clock = r.now
 	var root gqlObject = queryRoot{w}
-	undo := func() {}
 	if op.Operation == ast.Mutation {
 		root = mutationRoot{w}
-		var err error
-		if undo, err = e.saveLinear(w); err != nil {
-			return unhandledf("%v", err)
-		}
 	}
 	data, nulled := r.selectFields(root, op.SelectionSet, nil)
 	if r.unhandled != "" {
@@ -94,7 +84,7 @@ func (e *Engine) execute(w *linearWorkspace, in linearRequest) answer {
 	// document with any error changes nothing (one case measured; the
 	// fake applies it to every document).
 	if op.Operation == ast.Mutation && len(r.errors) > 0 {
-		undo()
+		rollback()
 	}
 	body := map[string]any{"data": data}
 	if nulled {

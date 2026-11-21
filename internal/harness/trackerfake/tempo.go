@@ -32,7 +32,6 @@ const tempoBase = "https://api.tempo.io/4/"
 
 func (tempoService) authenticate(e *Engine, x *exchange) *answer {
 	token, ok := strings.CutPrefix(x.r.Header.Get("Authorization"), "Bearer ")
-	x.secrets = append(x.secrets, token)
 	if s := e.tempoTenant(token); ok && s != nil {
 		x.tenant = s.Site
 		return nil
@@ -52,7 +51,7 @@ func (tempoService) route(e *Engine, x *exchange) match {
 		return match{unhandled: why}
 	}
 	c := &tempoCall{e: e, s: s, t: s.Tempo, x: x, params: params, query: q}
-	return match{name: r.name(), run: func() answer { return r.handle(c) }}
+	return match{name: r.name(), reads: r.reads, run: func() answer { return r.handle(c) }}
 }
 
 // rateLimited is Tempo's 429, which documents no headers and no body.
@@ -78,16 +77,16 @@ func tempoErrors(status int, messages ...string) answer {
 var tempoPage = []string{"offset", "limit"}
 
 var tempoRoutes = []tempoRoute{
-	{method: "GET", pattern: "4/worklogs/user/{account}", query: with(tempoPage, "from", "to", "updatedFrom"), handle: tempoUserWorklogs},
-	{method: "GET", pattern: "4/worklogs/{id}", handle: tempoGetWorklog},
+	{method: "GET", pattern: "4/worklogs/user/{account}", query: with(tempoPage, "from", "to", "updatedFrom"), reads: true, handle: tempoUserWorklogs},
+	{method: "GET", pattern: "4/worklogs/{id}", reads: true, handle: tempoGetWorklog},
 	{method: "POST", pattern: "4/worklogs", handle: tempoCreateWorklog},
 	{method: "PUT", pattern: "4/worklogs/{id}", handle: tempoUpdateWorklog},
 	{method: "DELETE", pattern: "4/worklogs/{id}", handle: tempoDeleteWorklog},
-	{method: "GET", pattern: "4/work-attributes", query: tempoPage, handle: tempoAttributes},
-	{method: "GET", pattern: "4/globalconfiguration", handle: tempoSettings},
-	{method: "POST", pattern: "4/accounts/search", query: tempoPage, handle: tempoAccounts},
-	{method: "GET", pattern: "4/user-schedule/{account}", query: []string{"from", "to"}, handle: tempoSchedule},
-	{method: "GET", pattern: "4/timesheet-approvals/user/{account}", query: []string{"from", "to"}, handle: tempoApproval},
+	{method: "GET", pattern: "4/work-attributes", query: tempoPage, reads: true, handle: tempoAttributes},
+	{method: "GET", pattern: "4/globalconfiguration", reads: true, handle: tempoSettings},
+	{method: "POST", pattern: "4/accounts/search", query: tempoPage, reads: true, handle: tempoAccounts},
+	{method: "GET", pattern: "4/user-schedule/{account}", query: []string{"from", "to"}, reads: true, handle: tempoSchedule},
+	{method: "GET", pattern: "4/timesheet-approvals/user/{account}", query: []string{"from", "to"}, reads: true, handle: tempoApproval},
 }
 
 // window reads offset and limit: limit 50 when absent, at most 5000

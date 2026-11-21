@@ -1,8 +1,10 @@
 package trackerfake
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"regexp"
 	"slices"
 	"strconv"
@@ -148,6 +150,82 @@ func TestEntriesNeverHoldACredential(t *testing.T) {
 				t.Errorf("the unhandled answer holds the credential: %s", rec.Body)
 			}
 		})
+	}
+}
+
+// credentialForms are the forms of an Authorization value a request may
+// repeat: the value, the credential after its scheme, and a Basic pair
+// decoded and its token.
+func credentialForms(t *testing.T, header string) []string {
+	t.Helper()
+	forms := []string{header}
+	scheme, cred, ok := strings.Cut(header, " ")
+	if !ok {
+		return forms
+	}
+	forms = append(forms, cred)
+	if scheme == "Basic" {
+		pair, err := base64.StdEncoding.DecodeString(cred)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, token, _ := strings.Cut(string(pair), ":")
+		forms = append(forms, string(pair), token)
+	}
+	return forms
+}
+
+// TestPresentedCredentialsNeverLogged presents, to every origin, its own
+// credential and unknown ones of each scheme, with the tenants seeded and
+// after Reset, and repeats each form of the credential in the path and in
+// a body the fake refuses. Neither the entry nor an unhandled answer
+// holds any form, whatever the credential check and tenant lookup found.
+func TestPresentedCredentialsNeverLogged(t *testing.T) {
+	unknown := []string{basic("presented-secret-1")["Authorization"], "Bearer presented-bearer-1", "lin_api_presented1"}
+	for _, o := range []struct {
+		origin Origin
+		prefix string
+		own    string
+	}{
+		{jiraOrigin, "/rest/api/3/issue/", basic(testJiraToken)["Authorization"]},
+		{tempoOrigin, "/4/worklogs/", "Bearer " + testTempo},
+		{linearOrigin, "/graphql/", testLinearKey},
+	} {
+		for _, header := range append([]string{o.own}, unknown...) {
+			for _, reset := range []bool{false, true} {
+				forms := credentialForms(t, header)
+				body, err := json.Marshal(map[string]any{"body": forms})
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, form := range forms {
+					t.Run(fmt.Sprintf("%s %q reset %v in the path %q", o.origin.Tracker, header, reset, form), func(t *testing.T) {
+						g := newRig(t, testFixture())
+						if reset {
+							g.e.Reset()
+						}
+						rec := g.do(call{origin: o.origin, method: "POST", path: o.prefix + url.PathEscape(form), body: string(body),
+							header: map[string]string{"Authorization": header}})
+						logged := g.e.Requests(0).Requests
+						if len(logged) != 1 {
+							t.Fatalf("logged %d", len(logged))
+						}
+						raw, err := json.Marshal(logged[0])
+						if err != nil {
+							t.Fatal(err)
+						}
+						for _, f := range forms {
+							if holds(t, string(raw), f) {
+								t.Errorf("the entry holds %q: %s", f, raw)
+							}
+							if rec.Code == 501 && holds(t, rec.Body.String(), f) {
+								t.Errorf("the unhandled answer holds %q: %s", f, rec.Body)
+							}
+						}
+					})
+				}
+			}
+		}
 	}
 }
 

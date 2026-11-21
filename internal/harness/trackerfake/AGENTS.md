@@ -55,9 +55,13 @@ client contract it answers is
   tracker's own not-found or refusal and changes nothing. Every handler
   runs in a transaction the pipeline owns (`txn.go`): an unhandled
   answer, a refusal (400 or more) or a panic puts back the tenant, the
-  ID counter and the clock. A Linear document with a mutation refused
-  with an error rolls back whole and answers null data, as measured for
-  aliased `issueUpdate` and for `issueBatchUpdate` with a missing issue.
+  ID counter and the clock. The tenant is saved only for a write: a
+  route that does not set `reads` is one, and so is a Linear document
+  with a mutation, so a read costs the same on any size of tenant. A
+  Linear document with a mutation refused with an error rolls back whole
+  and answers null data, as measured for aliased `issueUpdate` and for
+  `issueBatchUpdate` with a missing issue. A refused `Seed` puts back
+  the ID counter and the clock as well as the tenants.
 - A null Linear input member clears a field the schema lets be null and
   is refused for one the schema declares non-null (an issue's state,
   team, title, priority, sort orders, labels); an empty ID counts as
@@ -79,7 +83,9 @@ client contract it answers is
   `tokenWindow`, Tempo's `page`, Linear's `connection`.
 - No log entry or unhandled answer repeats a credential. `logEntry` is
   the only way an entry is made: it drops `Authorization`, replaces every
-  known or presented credential with `<redacted>` in every text and in
+  credential the engine holds or the request presented (every form of
+  each Authorization value, taken on arrival by `presentedSecrets`,
+  whatever the tenant lookup finds) with `<redacted>` in every text and in
   every decoded JSON string, number and key, written plainly or with
   JSON or GraphQL string escapes at any depth (`scrubText`), and bounds
   each member at 64 KiB (text cut, JSON left out, each named in
@@ -110,15 +116,18 @@ client contract it answers is
 
 1. Jira or Tempo: one row in the route table (`jira_routes.go` or
    `tempo.go`) with its method, pattern and accepted query parameters,
-   and one handler. Linear: the executor serves any schema-valid
-   operation; add a row for each field the operation reads to its type's
-   table, a mutation to `mutations` and its input members to
-   `linearInputs`. `TestLinearTablesMatchTheSchema` checks every row
-   against the schema.
+   `reads: true` when it changes nothing (the method does not say:
+   `POST search/jql` reads), and one handler. Linear: the executor
+   serves any schema-valid operation; add a row for each field the
+   operation reads to its type's table, a mutation to `mutations` and
+   its input members to `linearInputs`. `TestLinearTablesMatchTheSchema`
+   checks every row against the schema.
 2. Note the evidence for each behavior beside it.
-3. A write adds a refused request to `refusals` (`txn_test.go`), a paged
-   read a row to `pagedRows` (`paging_test.go`); each test's walk fails
-   for a route or connection with none.
+3. A write adds a refused request to `refusals` (`txn_test.go`), a route
+   that sets `reads` or a Linear query root field an answered request to
+   `readRows` (`reads_test.go`), a paged read a row to `pagedRows`
+   (`paging_test.go`); each test's walk fails for a route or connection
+   with none.
 4. Drive the client method through the conformance test in its package
    (`internal/tracker/{jira,tempo,linear}/fake_*_test.go`), whose
    reflection walk fails for a Client method with no case. Linear's also

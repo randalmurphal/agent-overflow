@@ -203,6 +203,27 @@ func TestEveryRefusalChangesNothing(t *testing.T) {
 	}
 }
 
+// TestRefusedSeedKeepsIDsAndClock: a fixture whose normalization takes
+// IDs, reserves a seeded one and reads the clock, and is then refused,
+// leaves the next IDs and stamps as an engine that never saw it makes
+// them, though its clock read later than the writes that follow.
+func TestRefusedSeedKeepsIDsAndClock(t *testing.T) {
+	g, twin := newRig(t, txnFixture()), newRig(t, txnFixture())
+	bad := testFixture()
+	site := &bad.Jira[0]
+	site.Site, site.Token, site.Tempo = "other.example.com", "other-token-1", nil
+	site.Issues = []JiraIssue{{Key: "WEB-1", Project: "WEB", Type: "10001", Summary: "Generated ID"},
+		{ID: "5000000", Key: "WEB-2", Project: "WEB", Type: "10001", Summary: "Reserved ID"}}
+	bad.Linear[0].URLKey, bad.Linear[0].APIKey, bad.Linear[0].Viewer = "other", "lin_api_other01", "nobody"
+	bad.Linear[0].Teams = append(bad.Linear[0].Teams, LinearTeam{Key: "APP", Name: "Generated ID"})
+	g.e.opts.Now = func() time.Time { return testStart.Add(time.Hour) }
+	if err := g.e.Seed(bad); err == nil || !strings.Contains(err.Error(), "viewer") {
+		t.Fatalf("the late-failing fixture: %v", err)
+	}
+	g.e.opts.Now = func() time.Time { return testStart }
+	sameWorld(t, g, twin)
+}
+
 // TestLinearMutationDocumentRollsBackWhole: a document with a refused
 // mutation changes nothing, its other mutations included (measured:
 // three aliased issueUpdate fields, the middle one naming a missing

@@ -51,7 +51,6 @@ func (j jiraService) authenticate(e *Engine, x *exchange) *answer {
 		return nil // route() reports the unseeded site as unhandled
 	}
 	user, token, presented := basicAuth(x.r.Header.Get("Authorization"))
-	x.secrets = append(x.secrets, token)
 	me := s.user(s.Account)
 	if presented && strings.EqualFold(user, me.Email) && sameSecret(s.token, token) {
 		x.tenant = s.Site
@@ -101,7 +100,7 @@ func (j jiraService) route(e *Engine, x *exchange) match {
 		return match{unhandled: why}
 	}
 	c := &jiraCall{e: e, s: s, x: x, params: params, query: q, viewer: s.Account}
-	return match{name: r.name(), run: func() answer { return forAccount(dated(r.handle(c), e.now()), c.viewer) }}
+	return match{name: r.name(), reads: r.reads, run: func() answer { return forAccount(dated(r.handle(c), e.now()), c.viewer) }}
 }
 
 // forAccount is a naming the account it was made for. Measured: every

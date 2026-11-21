@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"cmp"
 	"crypto/subtle"
+	"encoding/base64"
 	"fmt"
 	"maps"
 	"mime/multipart"
 	"slices"
+	"strings"
 )
 
 // SetToken replaces a tenant's credential, so a test rotates it while
@@ -118,6 +120,32 @@ func (e *Engine) linearTenant(key string) *linearWorkspace {
 
 func sameSecret(want, got string) bool {
 	return want != "" && subtle.ConstantTimeCompare([]byte(want), []byte(got)) == 1
+}
+
+// presentedSecrets are every form of the credentials Authorization
+// values present: each whole value (a Linear API key), the credential
+// after its scheme (a bearer token, a Basic pair's encoding), and a Basic
+// pair decoded, whole and its token. serve takes them when a request
+// arrives, before any tenant lookup, refusal or route can log one.
+func presentedSecrets(values []string) []string {
+	var out []string
+	for _, v := range values {
+		out = append(out, v)
+		scheme, cred, ok := strings.Cut(strings.TrimSpace(v), " ")
+		if !ok {
+			continue
+		}
+		cred = strings.TrimSpace(cred)
+		out = append(out, cred)
+		if !strings.EqualFold(scheme, "Basic") {
+			continue
+		}
+		if pair, err := base64.StdEncoding.DecodeString(cred); err == nil {
+			_, token, _ := strings.Cut(string(pair), ":")
+			out = append(out, string(pair), token)
+		}
+	}
+	return out
 }
 
 // secrets are every credential the engine holds and those x presented,

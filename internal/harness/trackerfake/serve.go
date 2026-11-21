@@ -46,8 +46,8 @@ type exchange struct {
 	body   []byte
 	// tenant is the Jira site or Linear workspace the credential names.
 	tenant string
-	// secrets are the credentials the request presented, scrubbed from
-	// what is logged.
+	// secrets are every form of the credentials the request presented
+	// (presentedSecrets), scrubbed from what is logged.
 	secrets []string
 	// gen is the engine generation the request arrived in.
 	gen uint64
@@ -69,8 +69,11 @@ func (x *exchange) rollback() {
 
 // match is a route and its handler, or why the request is unhandled.
 type match struct {
-	name      string
-	run       func() answer
+	name string
+	run  func() answer
+	// reads marks a handler that changes no tenant state, so its run
+	// saves no copy of the tenant (txn.go). The zero value is a write.
+	reads     bool
 	unhandled string
 }
 
@@ -105,7 +108,8 @@ func unhandledf(format string, args ...any) answer {
 // route, fault, handler, log, answer. A held request is logged when it
 // arrives and again when it is answered.
 func (e *Engine) serve(o Origin, svc service, w http.ResponseWriter, r *http.Request) {
-	x := &exchange{origin: o, r: r, entry: Request{Origin: o, Method: r.Method, Path: r.URL.Path}}
+	x := &exchange{origin: o, r: r, secrets: presentedSecrets(r.Header.Values("Authorization")),
+		entry: Request{Origin: o, Method: r.Method, Path: r.URL.Path}}
 	if q := r.URL.Query(); len(q) > 0 {
 		x.entry.Query = q
 	}
@@ -241,7 +245,7 @@ func (e *Engine) dispatch(svc service, x *exchange, faults bool) (answer, *hold)
 // unhandled answer or a refusal (status 400 or more) is rolled back, as
 // guarded rolls back a panic. Callers hold mu.
 func (e *Engine) run(svc service, x *exchange, m match) answer {
-	undo, err := e.save(x)
+	undo, err := e.save(x, m.reads)
 	if err != nil {
 		return e.unhandled(svc, x, err.Error())
 	}

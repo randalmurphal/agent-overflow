@@ -7,6 +7,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vektah/gqlparser/v2/ast"
+	"github.com/vektah/gqlparser/v2/parser"
+
 	"agent-overflow/internal/tracker/linear/linearschema"
 )
 
@@ -35,7 +38,6 @@ type linearRequest struct {
 func (linearService) authenticate(e *Engine, x *exchange) *answer {
 	header := x.r.Header.Get("Authorization")
 	bare, bearer := strings.CutPrefix(header, "Bearer ")
-	x.secrets = append(x.secrets, header, bare)
 	if !bearer {
 		if w := e.linearTenant(header); w != nil {
 			x.tenant = w.key()
@@ -71,8 +73,15 @@ func (linearService) route(e *Engine, x *exchange) match {
 	if problems := linearschema.VariableProblems(in.Query, in.OperationName, in.Variables); len(problems) > 0 {
 		return match{unhandled: "the variables fail Linear's schema: " + strings.Join(problems, "; ")}
 	}
+	doc, err := parser.ParseQuery(&ast.Source{Input: in.Query})
+	if err != nil {
+		return match{unhandled: "parse the document: " + err.Error()}
+	}
+	// DocumentProblems admits exactly one operation, named in.OperationName.
+	op := doc.Operations.ForName(in.OperationName)
 	w := e.linear[x.tenant]
-	return match{name: in.OperationName, run: func() answer { return e.execute(w, in) }}
+	return match{name: in.OperationName, reads: op.Operation == ast.Query,
+		run: func() answer { return e.execute(w, in, doc, op, x.rollback) }}
 }
 
 // rateLimited is Linear's 429: a RATELIMITED error, Retry-After and an

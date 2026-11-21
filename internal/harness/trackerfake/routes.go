@@ -12,12 +12,15 @@ import (
 // the origin's root ({name} matches one segment), the query parameters it
 // implements (repeat names those it takes more than once), whether an
 // anonymous request gets its not-found answer rather than a 401 (Jira),
-// and its handler.
+// whether it only reads, and its handler. A route that does not set
+// reads is a write, and its handler runs on a saved copy of the tenant
+// (txn.go); TestReadRoutesChangeNothing drives every one that sets it.
 type route[C any] struct {
 	method, pattern string
 	query           []string
 	repeat          []string
 	anonymous404    bool
+	reads           bool
 	handle          func(c C) answer
 }
 

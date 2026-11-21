@@ -15,9 +15,16 @@ type Fixture struct {
 }
 
 // seed normalizes every tenant of f, then installs them all, so a refused
-// fixture changes nothing. Callers hold mu.
-func (e *Engine) seed(f Fixture) error {
-	f, err := cloneFixture(f)
+// fixture changes nothing: normalizing takes IDs and reads the clock, and
+// a refusal puts both back. Callers hold mu.
+func (e *Engine) seed(f Fixture) (err error) {
+	undo := e.saveCounters()
+	defer func() {
+		if err != nil {
+			undo()
+		}
+	}()
+	f, err = cloneFixture(f)
 	if err != nil {
 		return err
 	}
