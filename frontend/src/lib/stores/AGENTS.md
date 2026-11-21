@@ -266,11 +266,15 @@ Thread and project catalogs from several computers merge by repository identity,
 never by filesystem path. The merge is over every row the client holds, so an
 entry's identity and representative do not depend on what a surface shows; a
 surface showing some members aggregates those itself. The manual reorder is the
-store's (`reorderProjects`): it writes the positions before the round trip and
-a refused write puts back only the positions it wrote, and only where it is
-still the call that placed them. Do not add permanent frontend tombstones for
-moved or retired entities; pending reads hold only enough ownership evidence to
-reject stale replies.
+store's (`reorderProjects`): the order the user dragged is an overlay the
+sidebar sorts by (`projectOrderPosition`), never a write to the rows, so the
+rows carry the last order a computer accepted and a refusal drops the overlay
+with nothing to undo. One write at a time, and only the newest order waiting
+behind it is sent. Collapse and the show-more limit, which `sidebar.svelte.ts`
+persists by project id, are read and written over an entry's members, so no
+persisted state depends on which member represents it. Do not add permanent
+frontend tombstones for moved or retired entities; pending reads hold only
+enough ownership evidence to reject stale replies.
 
 ## The ThreadPane modules
 

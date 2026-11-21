@@ -16,8 +16,10 @@
     entryIdFor,
     getProjectLiveActivityAt,
     getProjects,
-    projectEntries,
+    projectEntryKey,
+    projectOrderPosition,
     reorderProjects,
+    representativeOf,
   } from '../../stores/projects.svelte';
   import {
     expandProject,
@@ -115,48 +117,78 @@
     };
   }
 
-  // What the sidebar shows of each merged entry, computed from the members
-  // it may show: a member whose computer holds its tree, or whose computer
-  // the device filter hides, contributes no part of an entry's thread count
-  // or activity, and nothing a header says about its members. One member
-  // must pass both tests for the entry to show at all, so a computer that
-  // answers its projects before its threads cannot raise an entry's
-  // activity and re-sort the list before its rows exist, and a filter that
-  // hides the only listed computer leaves no empty header behind.
+  // One derivation of every entry the sidebar renders, and of everything a
+  // header shows or the list sorts by.
   //
-  // The entry itself is the store's complete merge: its id, its
-  // representative and so its label, and the ids its actions carry. An
-  // entry's identity may not depend on what has listed or what the filter
-  // hides, because the each key, the collapse state and the show-more limit
-  // are persisted by it and a reorder sends it to the computer that holds
-  // it. This is a projection, not a second store: nothing here is kept.
+  // Members whose computer holds its tree are out of it entirely, and of
+  // those that remain the device filter decides which ones an entry counts,
+  // dates and speaks for. So a computer that answers its projects before
+  // its threads changes nothing on screen, and a filter changes only what
+  // the filter is for.
+  //
+  // The entry each member renders under, its key, and which member
+  // represents it are three separate things:
+  //   - `entryOf` is the id of the row rendered, so threads bucket under
+  //     the header that exists;
+  //   - `keys` is the entry's repository key (stores/projects.svelte.ts),
+  //     stable across every representative change, so the each block never
+  //     remounts a row that is still the same entry;
+  //   - the representative is elected over the LISTED members, filter
+  //     ignored, so the label, the action target and the manual position
+  //     can change only when a computer's tree lists, and never because
+  //     the filter changed.
+  // Disclosure needs none of the three: it is persisted by project id and
+  // read over an entry's members (stores/sidebar.svelte.ts).
   let listedProjects = $derived.by(() => {
     const listedOn = treeListed();
-    const members = new Map<string, ProjectWithCounts[]>();
+    const groups = new Map<string, { listed: ProjectWithCounts[]; shown: ProjectWithCounts[] }>();
     for (const row of getProjects()) {
       const backend = projectBackend(row.project.id) ?? HOME_BACKEND;
-      if (!listedOn(backend) || !sidebarBackendVisible(backend)) continue;
-      const entry = entryIdFor(row.project.id);
-      const shown = members.get(entry);
-      if (shown) shown.push(row);
-      else members.set(entry, [row]);
+      if (!listedOn(backend)) continue;
+      // The store's entry id groups the members; which one of them wears
+      // the entry here is decided below.
+      const token = entryIdFor(row.project.id);
+      let group = groups.get(token);
+      if (group === undefined) groups.set(token, group = { listed: [], shown: [] });
+      group.listed.push(row);
+      if (sidebarBackendVisible(backend)) group.shown.push(row);
     }
-    const entries = projectEntries().flatMap((entry) => {
-      const shown = members.get(entry.project.id);
-      if (shown === undefined) return [];
+    const entries: ProjectWithCounts[] = [];
+    const entryOf = new Map<string, string>();
+    const members = new Map<string, ProjectWithCounts[]>();
+    const keys = new Map<string, string>();
+    for (const group of groups.values()) {
+      if (group.shown.length === 0) continue;
+      const rep = representativeOf(group.listed);
+      const id = rep.project.id;
       let threadCount = 0;
       let lastActive = 0;
-      for (const member of shown) {
+      for (const member of group.shown) {
         threadCount += member.threadCount;
         lastActive = Math.max(lastActive, member.lastActive ?? 0);
       }
-      // The entry's own row while it speaks for every member it has, so the
-      // identity the cutoffs downstream compare stays stable.
-      return [threadCount === entry.threadCount && lastActive === (entry.lastActive ?? 0)
-        ? entry
-        : { ...entry, threadCount, lastActive }];
-    });
-    return { entries, members };
+      for (const member of group.listed) entryOf.set(member.project.id, id);
+      members.set(id, group.shown);
+      keys.set(id, projectEntryKey(id));
+      // The representative's own row while it speaks for every member it
+      // has, so the identity the cutoffs downstream compare stays stable.
+      entries.push(threadCount === rep.threadCount && lastActive === (rep.lastActive ?? 0)
+        ? rep
+        : { ...rep, threadCount, lastActive });
+    }
+    // The newest activity of an entry, over the members it shows: a
+    // streaming beat bumps a box keyed by its own project id, so reading
+    // the representative's alone missed a member's beat and counted a
+    // filtered-out member's. A function, not a field: a field would
+    // allocate a new entry on every beat and defeat the cutoff below.
+    const activityOf = (entryId: string): number => {
+      let newest = 0;
+      for (const member of members.get(entryId) ?? []) {
+        newest = Math.max(newest, getProjectLiveActivityAt(member));
+      }
+      return newest;
+    };
+    return { entries, entryOf, members, keys, activityOf };
   });
 
   let previousThreadBuckets: ReadonlyMap<string, Thread[]> = new Map();
@@ -165,11 +197,14 @@
   let searchBuckets = $derived.by(() => {
     const filterDevices = sidebarDeviceFilterActive();
     const listedOn = treeListed();
+    const entryOf = listedProjects.entryOf;
     const buckets = bucketSidebarThreads({
       threads: getThreads(),
       groups: getThreadGroups(),
       query,
-      entryOf: entryIdFor,
+      // The id of the header that exists, which is the listed members'
+      // representative and not always the store's.
+      entryOf: (projectId) => entryOf.get(projectId) ?? projectId,
       threadVisible: (thread) => sidebarThreadVisible(thread) && !hiddenAssistantThread(thread)
         && (!!thread.agentId || listedOn(threadMachine(thread.id, thread.projectId))),
       groupVisible: (group) => listedOn(threadGroupBackend(group.id) ?? HOME_BACKEND),
@@ -238,7 +273,7 @@
     const next = [...entries].sort((a, b) => {
       switch (mode) {
         case 'manual': {
-          const cmp = a.project.sortPosition - b.project.sortPosition;
+          const cmp = projectOrderPosition(a) - projectOrderPosition(b);
           if (cmp !== 0) return cmp;
           return a.project.createdAt - b.project.createdAt;
         }
@@ -246,8 +281,8 @@
           return b.project.createdAt - a.project.createdAt;
         case 'lastActivity':
         default: {
-          const aActive = getProjectLiveActivityAt(a);
-          const bActive = getProjectLiveActivityAt(b);
+          const aActive = listedProjects.activityOf(a.project.id);
+          const bActive = listedProjects.activityOf(b.project.id);
           // Fall back to project.updatedAt when no thread has touched
           // this project yet — the sidebar still surfaces a freshly
           // renamed / added project even with zero threads.
@@ -454,6 +489,7 @@
           <ProjectList
             projects={visibleProjects}
             membersByProject={listedProjects.members}
+            entryKeys={listedProjects.keys}
             emptyMessage={sidebarDeviceFilterActive() ? 'No projects on the selected computers.' : undefined}
             {threadsByProject}
             {groupsByProject}

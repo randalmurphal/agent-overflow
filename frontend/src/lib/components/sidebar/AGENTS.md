@@ -38,15 +38,24 @@ which adds the project's empty state and drop targets.
   `ProjectsSection.svelte` is the only reader of that gate here, so what a
   held computer shows is one decision. The rule is in
   [stores/AGENTS.md](../../stores/AGENTS.md#computer-owned-and-frontend-owned-state).
-- A merged entry's identity is the store's complete merge: its id, its
-  representative and so its label, and the ids its actions carry. Nothing
-  about what has listed or what the filter hides may change it, because the
-  each key, the collapse state and the show-more limit are persisted by it
-  and a reorder sends it to the computer that holds it. `listedProjects` in
-  `ProjectsSection.svelte` adds what the sidebar shows of each entry from
-  the members it may show: whether it has a row at all, its thread count,
-  its activity, and the members a header speaks for. A header's identity
-  warning and its recheck come from those members, not from the store's.
+- An entry is three separate things, and `listedProjects` in
+  `ProjectsSection.svelte` is the one derivation that decides all of them
+  with everything else a header shows or the list sorts by. Its key is the
+  repository key of the computer's chosen checkout (`projectEntryKey`),
+  which no listing, filter, attach or detach changes, so the each block
+  never remounts a row that is still the same entry. Its representative,
+  which gives the label, the action target and the manual position, is
+  elected over the members whose tree is listed, filter ignored, so it can
+  change only at a listing. What it counts, how it is dated and what a
+  header says about its members, its identity warning and its recheck
+  included, come from the members the filter also shows. Nothing reads a
+  per-entry fact out of a global keyed by one member's id: the entry's live
+  activity is `activityOf`, over the members it shows, because a streaming
+  beat bumps a box keyed by its own project id.
+- Disclosure needs none of the three. Collapse and the show-more limit stay
+  persisted by project id and are read and written over an entry's members
+  (`stores/sidebar.svelte.ts`), so what a user set survives every
+  representative change with no key to migrate.
 - A row's worker count and needs-you badge read
   `stores/threadWorkerSummaries.svelte.ts`.
 - `threadRowActions.ts` and `threadGroupActions.ts` own mutations from this

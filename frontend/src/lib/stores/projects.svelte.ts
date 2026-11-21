@@ -95,6 +95,51 @@ function groupRows<T extends { project: Project }>(rows: readonly T[], computers
 }
 
 /**
+ * The member of an entry that wears it: its home member when it has one,
+ * else the first in the order given, and never an archived member while a
+ * live one is there (the sidebar hides an entry by its representative's
+ * archived flag). Home first and then the given order is what keeps an
+ * entry from swapping representative when a computer reconnects; the
+ * sidebar elects over the members whose tree is listed, so for it the
+ * representative can change only at a listing
+ * (components/sidebar/ProjectsSection.svelte).
+ */
+export function representativeOf(members: readonly ProjectWithCounts[]): ProjectWithCounts {
+  const home = members.filter((row) => computerOf(row.project.id) === HOME_BACKEND);
+  const ordered = home.length === 0 || home.length === members.length
+    ? members
+    : [...home, ...members.filter((row) => computerOf(row.project.id) !== HOME_BACKEND)];
+  return ordered.find((row) => !row.project.archived) ?? ordered[0];
+}
+
+// The key a sidebar entry keeps while which of its members represents it
+// may change: the each key, so a representative change neither remounts the
+// row nor loses the animation's identity.
+//
+// `groupRepositories` keeps one checkout per computer in a verified
+// repository, so every member of an entry shares its repository key while a
+// second checkout on the same computer is an entry of its own under that
+// same key. The chosen checkout of a computer therefore wears the
+// repository key and every other row wears its project id, which is unique
+// whatever is attached: the choosing is per computer, so a key cannot
+// change when a computer attaches, detaches or lists. Computed with one
+// computer exactly as with several, because what it keys is persisted and
+// rendered state, not the merge.
+const entryKeys = $derived.by(() => {
+  const wrapped = projects.map((row) => ({ project: row.project, computer: computerOf(row.project.id) }));
+  const keys = new Map(wrapped.map((item) => [item.project.id, item.project.id]));
+  for (const [key, chosen] of groupRepositories(wrapped).members) {
+    for (const item of chosen) keys.set(item.project.id, key);
+  }
+  return keys;
+});
+
+/** The key the sidebar's each block gives the entry `projectId` renders as. */
+export function projectEntryKey(projectId: string): string {
+  return entryKeys.get(projectId) ?? projectId;
+}
+
+/**
  * Group `rows` into one entry per repository: at most one member per
  * computer, the entry worn by its home member when there is one, and the
  * thread count and activity summed over its members.
@@ -112,8 +157,6 @@ function mergeProjectRows(rows: readonly ProjectWithCounts[]): MergedProjects {
   const groupOf = new Map<ProjectWithCounts, ProjectWithCounts[]>();
   for (const group of groups) {
     if (group.length < 2) continue;
-    // Home first, then list order — stable, so the entry does not swap its
-    // representative when a machine reconnects.
     group.sort((a, b) => Number(computerOf(b.project.id) === HOME_BACKEND) - Number(computerOf(a.project.id) === HOME_BACKEND)
       || position.get(a)! - position.get(b)!);
     for (const row of group) {
@@ -131,9 +174,7 @@ function mergeProjectRows(rows: readonly ProjectWithCounts[]): MergedProjects {
       continue;
     }
     if (entryOf.has(row.project.id)) continue;
-    // An archived member never represents a live one: the sidebar hides an
-    // entry by its representative's archived flag.
-    const rep = group.find((member) => !member.project.archived) ?? group[0];
+    const rep = representativeOf(group);
     let threadCount = 0;
     let lastActive = 0;
     for (const member of group) {
@@ -241,54 +282,103 @@ export function getProjectLabelText(id: string): string {
   return label ? formatPathLabel(label) : '';
 }
 
-// Manual reorder. The positions are written locally first so the list does
-// not wait for the round trip, and each written row records the call that
-// wrote it: an undo must not move a row a later reorder has since placed,
-// and comparing positions alone cannot tell the two apart when the later
-// call wrote the same index.
-let reorderGeneration = 0;
-const reorderedBy = new Map<string, number>();
+// Manual reorder.
+//
+// The order the user dragged is an overlay, not a write to the rows: the
+// rows carry the last order a computer accepted and the overlay carries the
+// one still out. A refusal drops the overlay, so there is nothing to undo,
+// nothing to undo onto a row something else changed meanwhile, and no
+// sequence of refusals can leave an order no write accepted.
+//
+// One write at a time and the newest order wins: a request made while a
+// write is out replaces whatever was waiting, which was never sent, and is
+// sent when the write settles.
+interface OrderRequest {
+  ids: readonly string[];
+  order: ReadonlyMap<string, number>;
+  resolve: () => void;
+  reject: (err: unknown) => void;
+}
+
+let pendingOrder: ReadonlyMap<string, number> | null = $state.raw(null);
+let orderInFlight = false;
+let orderWaiting: OrderRequest | null = null;
 
 /**
- * Put the projects `orderedIds` names at those positions, locally and then
- * on the computers that hold them. Ids this client does not hold are passed
- * through: a computer answers only for its own rows.
- *
- * A refused write puts each row back where it was, and only where this call
- * is still the one that placed it and the position it wrote is still the one
- * the row carries. So a rename, an archive or a pushed row that landed while
- * the write was out survives, and so does a later reorder. Rethrows what the
- * write threw; its caller owns what the user sees.
+ * The position the sidebar sorts `row` by: the order still out while a
+ * reorder has not settled, else the position the row carries.
  */
-export async function reorderProjects(orderedIds: readonly string[]): Promise<void> {
-  const generation = ++reorderGeneration;
-  const written = orderedIds.flatMap((id, index) => {
-    const row = getProject(id);
-    if (!row) return [];
-    const from = row.project.sortPosition;
-    reorderedBy.set(id, generation);
-    updateProjectLocal({ ...row.project, sortPosition: index });
-    return [{ id, from, to: index }];
+export function projectOrderPosition(row: ProjectWithCounts): number {
+  return pendingOrder?.get(row.project.id) ?? row.project.sortPosition;
+}
+
+/**
+ * Put the projects `orderedIds` names at those positions: at once for the
+ * sidebar, then on this computer, which holds no other computer's rows and
+ * skips an id it does not hold.
+ *
+ * Rejects with what the write threw. A request made while another is out
+ * supersedes any other that was waiting, and such a superseded request
+ * resolves without being sent, because the order that replaced it is the
+ * one the user is waiting to see.
+ */
+export function reorderProjects(orderedIds: readonly string[]): Promise<void> {
+  const ids = [...orderedIds];
+  const order = new Map(ids.map((id, index) => [id, index]));
+  pendingOrder = order;
+  return new Promise<void>((resolve, reject) => {
+    const request: OrderRequest = { ids, order, resolve, reject };
+    if (orderInFlight) {
+      orderWaiting?.resolve();
+      orderWaiting = request;
+      return;
+    }
+    void driveOrderWrites(request);
   });
-  const release = (): void => {
-    for (const { id } of written) {
-      if (reorderedBy.get(id) === generation) reorderedBy.delete(id);
-    }
-  };
+}
+
+async function driveOrderWrites(first: OrderRequest): Promise<void> {
+  orderInFlight = true;
   try {
-    await UpdateProjectSortPositions([...orderedIds]);
-    release();
-  } catch (err) {
-    for (const { id, from, to } of written) {
-      if (reorderedBy.get(id) !== generation) continue;
-      const row = getProject(id);
-      // Only the position, from the row as it stands: the row this call
-      // replaced may have been renamed or archived since.
-      if (row && row.project.sortPosition === to) updateProjectLocal({ ...row.project, sortPosition: from });
+    let request: OrderRequest | null = first;
+    while (request !== null) {
+      let error: unknown = null;
+      try {
+        await UpdateProjectSortPositions([...request.ids]);
+        applyAcceptedOrder(request.ids);
+      } catch (err) {
+        error = err;
+      }
+      // Only when the overlay is still the order this write carried: a
+      // newer request has replaced it otherwise, and that order is what
+      // the sidebar must keep showing until its own write settles.
+      if (pendingOrder === request.order) pendingOrder = null;
+      if (error === null) request.resolve();
+      else request.reject(error);
+      request = orderWaiting;
+      orderWaiting = null;
     }
-    release();
-    throw err;
+  } finally {
+    orderInFlight = false;
   }
+}
+
+/** Fold an accepted order into the rows, one pass over the catalog. */
+function applyAcceptedOrder(ids: readonly string[]): void {
+  const positions = new Map<string, number>();
+  const backends = new Set<BackendKey | undefined>();
+  for (const [index, id] of ids.entries()) {
+    if (getProject(id) === undefined) continue;
+    positions.set(id, index);
+    backends.add(projectBackend(id));
+  }
+  if (positions.size === 0) return;
+  catalogWriter.mutate(backends, (rows) => rows.map((row) => {
+    const position = positions.get(row.project.id);
+    return position === undefined || row.project.sortPosition === position
+      ? row
+      : { ...row, project: { ...row.project, sortPosition: position } };
+  }));
 }
 
 /** True once a round has committed at least one computer's project rows. */
@@ -382,7 +472,7 @@ export function updateProjectLocal(p: Project): void {
  */
 export function touchProjectActivity(projectId: string | undefined, updatedAt: number): void {
   if (!projectId || !Number.isFinite(updatedAt)) return;
-  const existing = projects.find((p) => p.project.id === projectId);
+  const existing = getProject(projectId);
   if (existing === undefined) return;
   if (getProjectLiveActivityAt(existing) >= updatedAt) return;
   liveActivityAt.set(projectId, updatedAt);
@@ -427,5 +517,7 @@ export function resetProjectsForTest(): void {
   projects = [];
   loaded = false;
   liveActivityAt.reset();
-  reorderedBy.clear();
+  pendingOrder = null;
+  orderInFlight = false;
+  orderWaiting = null;
 }

@@ -21,6 +21,10 @@
     /** Entry id -> the members the sidebar shows of it, from the same
      *  projection that decided the entry has a row. */
     membersByProject: ReadonlyMap<string, readonly ProjectWithCounts[]>;
+    /** Entry id -> the key it keeps while which member represents it may
+     *  change, so the each block never remounts a row that is still the
+     *  same entry. */
+    entryKeys: ReadonlyMap<string, string>;
     pane: ThreadPane | null;
     onNewThread?: ProjectNewThreadHandler;
     onNewTerminal?: ProjectNewTerminalHandler;
@@ -35,6 +39,7 @@
     threadsByProject,
     groupsByProject,
     membersByProject,
+    entryKeys,
     pane,
     onNewThread,
     onNewTerminal,
@@ -62,7 +67,7 @@
     class="px-2 py-1"
     data-testid="sidebar-project-list"
   >
-    {#each projects as project, index (project.project.id)}
+    {#each projects as project, index (entryKeys.get(project.project.id) ?? project.project.id)}
       <!-- animate:/transition: need an element as the each's immediate
            child; ProjectItem is a component, so a layout-neutral block
            wrapper carries them. -->

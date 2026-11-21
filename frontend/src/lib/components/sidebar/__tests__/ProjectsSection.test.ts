@@ -755,18 +755,20 @@ describe('<ProjectsSection> threads and their groups', () => {
     }
   });
 
-  it("keeps a collapsed entry's identity when another computer's tree lists first", async () => {
+  it("keeps the row it rendered, and its disclosure, through a held member's commit and its listing", async () => {
     const { stageBackend, resetStagedBackends } = await import('../../../../test/helpers/backends');
-    const { collapseProject } = await import('../../../stores/sidebar.svelte');
+    const { collapseProject, getThreadListVisibleLimit, setThreadListVisibleLimit } = await import('../../../stores/sidebar.svelte');
     stageBackend({ id: 'gpu', backendId: 'gpu-id' });
     try {
-      // Collapsed in an earlier session, by the entry's id.
-      collapseProject('a-home');
+      // The user collapsed the entry and revealed more of it while GPU was
+      // the only computer showing it.
+      collapseProject('a-gpu');
+      setThreadListVisibleLimit('a-gpu', 10);
+      const homeProjects = deferred<ProjectWithCounts[]>();
       const homeThreads = deferred<Thread[]>();
-      mergedRepoMocks(
-        [{ project: repoProject('a-home', 'A', '/home/a'), threadCount: 1, lastActive: 1 }],
-        [{ project: repoProject('a-gpu', 'A', '/gpu/a'), threadCount: 1, lastActive: 2 }],
-      );
+      setBindingMock('ListProjects', () => (takePinnedBackend() === 'gpu'
+        ? Promise.resolve([{ project: repoProject('a-gpu', 'A', '/gpu/a'), threadCount: 1, lastActive: 2 }])
+        : homeProjects.promise));
       setBindingMock('ListThreads', () => (takePinnedBackend() === 'gpu'
         ? Promise.resolve([makeThread({ id: 'g0', projectId: 'a-gpu' })])
         : homeThreads.promise));
@@ -775,24 +777,124 @@ describe('<ProjectsSection> threads and their groups', () => {
       const { container } = render(ProjectsSection, { props: { pane: null } });
       void loadSidebarCatalogs();
       // GPU's answers wait on the round's windows, which the startup
-      // deadline closes while Home's thread read is still out.
+      // deadline closes while Home's reads are still out.
       await vi.advanceTimersByTimeAsync(2500);
       await settle();
       expect(catalogTreeListed('gpu')).toBe(true);
-      // Home's row committed at its own window, so the entry is Home's
-      // entry though Home's tree is still held. Keyed by the GPU member it
-      // would read as a project nobody collapsed.
-      expect(catalogTreeListed(HOME_BACKEND)).toBe(false);
-      expect(headers(container)).toEqual(['a-home']);
-      expect(expandedOf(container, 'a-home')).toBe('false');
+      expect(headers(container)).toEqual(['a-gpu']);
+      expect(expandedOf(container, 'a-gpu')).toBe('false');
+      const row = container.querySelector('[data-testid="project-item"]');
 
+      // Home's project row commits at its own window while Home's threads
+      // are still out. Nothing of the entry on screen may move for it.
+      homeProjects.resolve([{ project: repoProject('a-home', 'A', '/home/a'), threadCount: 1, lastActive: 1 }]);
+      await vi.advanceTimersByTimeAsync(0);
+      await settle();
+      expect(catalogTreeListed(HOME_BACKEND)).toBe(false);
+      expect(headers(container)).toEqual(['a-gpu']);
+      expect(expandedOf(container, 'a-gpu')).toBe('false');
+      expect(getThreadListVisibleLimit('a-gpu')).toBe(10);
+      expect(container.querySelector('[data-testid="project-item"]')).toBe(row);
+
+      // At Home's listing the entry changes hands, by design. Its key does
+      // not, so the row is the same row, and the disclosure the user set
+      // under the GPU member still answers for it.
       homeThreads.resolve([makeThread({ id: 'h0', projectId: 'a-home' })]);
       await vi.advanceTimersByTimeAsync(0);
       await settle();
       expect(catalogTreeListed(HOME_BACKEND)).toBe(true);
       expect(headers(container)).toEqual(['a-home']);
+      expect(container.querySelector('[data-testid="project-item"]')).toBe(row);
       expect(expandedOf(container, 'a-home')).toBe('false');
+      expect(getThreadListVisibleLimit('a-home')).toBe(10);
     } finally {
+      resetStagedBackends();
+    }
+  });
+
+  it('gives a second checkout on one computer its own row, and keeps the first one when a computer attaches', async () => {
+    const { stageBackend, resetStagedBackends } = await import('../../../../test/helpers/backends');
+    const { collapseProject } = await import('../../../stores/sidebar.svelte');
+    const homeRows = [
+      { project: { ...repoProject('a1', 'A', '/home/a1'), createdAt: 1 }, threadCount: 0, lastActive: 200 },
+      { project: { ...repoProject('a2', 'A', '/home/a2'), createdAt: 2 }, threadCount: 0, lastActive: 100 },
+    ];
+    setBindingMock('ListProjects', async () => (takePinnedBackend() === 'gpu'
+      ? [{ project: { ...repoProject('a-gpu', 'A', '/gpu/a'), createdAt: 3 }, threadCount: 0, lastActive: 50 }]
+      : homeRows));
+    setBindingMock('ListThreads', async () => []);
+    setBindingMock('ListThreadGroups', async () => []);
+    const { container } = render(ProjectsSection, { props: { pane: null } });
+    await loadSidebarCatalogs();
+    await settle();
+    // One repository, two checkouts on one computer: two entries, so two
+    // keys. The repository key belongs to the computer's chosen checkout.
+    expect(headers(container)).toEqual(['a1', 'a2']);
+    collapseProject('a1');
+    await settle();
+    expect(expandedOf(container, 'a1')).toBe('false');
+    expect(expandedOf(container, 'a2')).toBe('true');
+    const first = container.querySelector('[data-project-id="a1"]');
+
+    // Two rows of one repository re-sort past each other and keep their
+    // own row and their own disclosure, which two blocks under one key
+    // cannot.
+    touchProjectActivity('a2', 500);
+    await settle();
+    expect(headers(container)).toEqual(['a2', 'a1']);
+    expect(expandedOf(container, 'a1')).toBe('false');
+    expect(expandedOf(container, 'a2')).toBe('true');
+    expect(container.querySelector('[data-project-id="a1"]')).toBe(first);
+
+    try {
+      stageBackend({ id: 'gpu', backendId: 'gpu-id' });
+      await loadSidebarCatalogs();
+      await settle();
+      // The GPU checkout merges into the chosen one, whose key was already
+      // the repository's, so its row is the same row.
+      expect(headers(container)).toEqual(['a2', 'a1']);
+      expect(container.querySelector('[data-project-id="a1"]')).toBe(first);
+      expect(expandedOf(container, 'a1')).toBe('false');
+      expect(expandedOf(container, 'a2')).toBe('true');
+    } finally {
+      resetStagedBackends();
+    }
+  });
+
+  it('dates a merged entry by the members it shows, not by the one that represents it', async () => {
+    const { stageBackend, resetStagedBackends } = await import('../../../../test/helpers/backends');
+    const { setSidebarDeviceVisible, showAllSidebarDevices } = await import('../../../stores/sidebarDevices.svelte');
+    stageBackend({ id: 'gpu', backendId: 'gpu-id' });
+    setBackendIdentityFromBootstrap('home-id', 'gen-1', 'Mac', HOME_BACKEND);
+    try {
+      setBindingMock('ListProjects', async () => (takePinnedBackend() === 'gpu'
+        ? [
+          { project: repoProject('a-gpu', 'A', '/gpu/a'), threadCount: 0, lastActive: 100 },
+          { project: repoProject('b-gpu', 'B', '/gpu/b'), threadCount: 0, lastActive: 200 },
+        ]
+        : [{ project: repoProject('a-home', 'A', '/home/a'), threadCount: 0, lastActive: 100 }]));
+      setBindingMock('ListThreads', async () => []);
+      setBindingMock('ListThreadGroups', async () => []);
+      const { container } = render(ProjectsSection, { props: { pane: null } });
+      await loadSidebarCatalogs();
+      await settle();
+      setSidebarDeviceVisible('home-id', false);
+      await settle();
+      expect(headers(container)).toEqual(['b-gpu', 'a-home']);
+
+      // The representative's own box, on a computer the filter hides: not
+      // this entry's activity.
+      touchProjectActivity('a-home', 400);
+      await settle();
+      expect(headers(container)).toEqual(['b-gpu', 'a-home']);
+
+      // The member it shows: its beat is the entry's.
+      touchProjectActivity('a-gpu', 300);
+      await settle();
+      expect(headers(container)).toEqual(['a-home', 'b-gpu']);
+    } finally {
+      showAllSidebarDevices();
+      setBackendIdentityFromBootstrap('', '', '', HOME_BACKEND);
       resetStagedBackends();
     }
   });

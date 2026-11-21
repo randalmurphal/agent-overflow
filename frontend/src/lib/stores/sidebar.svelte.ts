@@ -37,6 +37,7 @@ import {
   appStorageSet,
 } from './appStorage';
 import { getSettings, updateSettingsPatch } from './settings.svelte';
+import { projectMembers } from './projects.svelte';
 import { readFrontendValue, writeFrontendValue, onFrontendValueChanged } from './frontendStorage';
 
 export type { ProjectSortMode };
@@ -198,31 +199,52 @@ let collapsedSections: Set<string> = $state(stringSetFromStorage(COLLAPSED_SECTI
 let threadListVisibleLimits: Record<string, number> = $state(readThreadListVisibleLimits());
 let projectSortMode: ProjectSortMode = $state(readProjectSortMode());
 
+// A project's disclosure, and the preview size of its list, are persisted
+// by project id. A repository checked out on several computers is ONE
+// sidebar entry, and which of its members represents it changes when a
+// computer lists or a checkout is added, so every project id below is read
+// and written over the members of the entry it belongs to: collapsed when
+// any member is collapsed, a collapse writes every member, an expand clears
+// every member, and the preview size is the largest any member carries.
+// Nothing depends on which member represents, and what a user set before a
+// second computer attached still applies, with no key to migrate.
+//
+// An id with no project row of its own is its only member: a group id and
+// the Assistants key share the preview-size map and must answer for
+// themselves.
+function entryMembers(id: string): readonly string[] {
+  const members = projectMembers(id);
+  return members.length === 0 ? [id] : members.map((row) => row.project.id);
+}
+
+function writeCollapsed(next: Set<string>): void {
+  collapsedProjects = next;
+  writeStringSet(COLLAPSED_KEY, next);
+}
+
 export function isProjectExpanded(id: string): boolean {
-  return !collapsedProjects.has(id);
+  return entryMembers(id).every((member) => !collapsedProjects.has(member));
 }
 
 export function toggleProject(id: string): void {
-  const next = new Set(collapsedProjects);
-  if (next.has(id)) next.delete(id);
-  else next.add(id);
-  collapsedProjects = next;
-  writeStringSet(COLLAPSED_KEY, next);
+  if (isProjectExpanded(id)) collapseProject(id);
+  else expandProject(id);
 }
 
 export function expandProject(id: string): void {
-  if (!collapsedProjects.has(id)) return;
+  const members = entryMembers(id).filter((member) => collapsedProjects.has(member));
+  if (members.length === 0) return;
   const next = new Set(collapsedProjects);
-  next.delete(id);
-  collapsedProjects = next;
-  writeStringSet(COLLAPSED_KEY, next);
+  for (const member of members) next.delete(member);
+  writeCollapsed(next);
 }
 
 export function collapseProject(id: string): void {
-  if (collapsedProjects.has(id)) return;
-  const next = new Set(collapsedProjects).add(id);
-  collapsedProjects = next;
-  writeStringSet(COLLAPSED_KEY, next);
+  const members = entryMembers(id).filter((member) => !collapsedProjects.has(member));
+  if (members.length === 0) return;
+  const next = new Set(collapsedProjects);
+  for (const member of members) next.add(member);
+  writeCollapsed(next);
 }
 
 export function getProjectSortMode(): ProjectSortMode {
@@ -363,7 +385,11 @@ export const ASSISTANTS_LIST_KEY = 'assistants';
  * drops it back to the default preview.
  */
 export function getThreadListVisibleLimit(id: string): number {
-  return threadListVisibleLimits[id] ?? THREAD_PREVIEW_LIMIT;
+  let limit = THREAD_PREVIEW_LIMIT;
+  for (const member of entryMembers(id)) {
+    limit = Math.max(limit, threadListVisibleLimits[member] ?? THREAD_PREVIEW_LIMIT);
+  }
+  return limit;
 }
 
 export function setThreadListVisibleLimit(id: string, limit: number): void {
@@ -372,25 +398,21 @@ export function setThreadListVisibleLimit(id: string, limit: number): void {
     collapseThreadList(id);
     return;
   }
-  if (getThreadListVisibleLimit(id) === roundedLimit) return;
-  const next = visibleLimitsWith(id, roundedLimit);
+  const members = entryMembers(id).filter((member) => threadListVisibleLimits[member] !== roundedLimit);
+  if (members.length === 0) return;
+  const next = { ...threadListVisibleLimits };
+  for (const member of members) next[member] = roundedLimit;
   threadListVisibleLimits = next;
   writeThreadListVisibleLimits(next);
 }
 
 export function collapseThreadList(id: string): void {
-  if (!(id in threadListVisibleLimits)) return;
+  const members = entryMembers(id).filter((member) => member in threadListVisibleLimits);
+  if (members.length === 0) return;
   const next = { ...threadListVisibleLimits };
-  delete next[id];
+  for (const member of members) delete next[member];
   threadListVisibleLimits = next;
   writeThreadListVisibleLimits(next);
-}
-
-function visibleLimitsWith(id: string, limit: number): Record<string, number> {
-  return {
-    ...threadListVisibleLimits,
-    [id]: limit,
-  };
 }
 
 /** Test helper: clears in-memory state and the sort-mode cache. View
