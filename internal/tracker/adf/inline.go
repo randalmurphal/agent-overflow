@@ -151,15 +151,7 @@ func sigDiff(md string, toks []tok, ctx inlineCtx) (int, bool) {
 // (see sigDiff) until visit returns false. It reports false when md
 // cannot be parsed. Entries name their marks through names.
 func parseSig(md string, ctx inlineCtx, names *sigNames, visit func(sigEntry) bool) bool {
-	switch ctx {
-	case ctxHeading:
-		md = "# " + md
-	case ctxCell:
-		md = "| |\n| --- |\n| " + md + " |"
-	case ctxTask:
-		md = "- [ ] " + strings.ReplaceAll(md, "\n", "\n  ")
-	}
-	c := newConverter(context.Background(), md, nil, true)
+	c := newConverter(context.Background(), ctx.document(md), nil, true)
 	blocks, err := c.document()
 	if err != nil {
 		return false
@@ -201,6 +193,9 @@ func tokenSig(toks []tok, ctx inlineCtx, names *sigNames) ([]sigEntry, bool) {
 			size += countSig(t.s)
 		case tkBreak:
 			size++
+		case tkRaw, tkOpen, tkClose:
+			// A raw token's entries are known only once it parses below;
+			// marks add none.
 		}
 	}
 	out := make([]sigEntry, 0, size)
@@ -306,6 +301,8 @@ func dropOffending(items []item, ctx inlineCtx, d int) ([]item, bool) {
 		case tkRaw:
 			var names sigNames
 			parseSig(it.s, ctx, &names, func(sigEntry) bool { n++; return true })
+		case tkOpen, tkClose:
+			// Marks add no signature entry.
 		}
 		if n > d {
 			at = i
@@ -354,18 +351,26 @@ func dropOffending(items []item, ctx inlineCtx, d int) ([]item, bool) {
 // parseKey parses rendered inline Markdown in its context and returns a
 // canonical key for the result.
 func parseKey(md string, ctx inlineCtx) (string, bool) {
-	switch ctx {
-	case ctxHeading:
-		md = "# " + md
-	case ctxCell:
-		md = "| |\n| --- |\n| " + md + " |"
-	case ctxTask:
-		md = "- [ ] " + strings.ReplaceAll(md, "\n", "\n  ")
-	}
-	c := newConverter(context.Background(), md, nil, true)
+	c := newConverter(context.Background(), ctx.document(md), nil, true)
 	blocks, err := c.document()
 	if err != nil {
 		return "", false
 	}
 	return key(Doc(blocks...)), true
+}
+
+// document is a Markdown document that holds inline Markdown md where ctx
+// places it, for parsing it back.
+func (ctx inlineCtx) document(md string) string {
+	switch ctx {
+	case ctxHeading:
+		return "# " + md
+	case ctxCell:
+		return "| |\n| --- |\n| " + md + " |"
+	case ctxTask:
+		return "- [ ] " + strings.ReplaceAll(md, "\n", "\n  ")
+	case ctxPara:
+		// A paragraph is the document itself.
+	}
+	return md
 }

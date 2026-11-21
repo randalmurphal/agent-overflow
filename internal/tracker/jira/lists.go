@@ -55,34 +55,29 @@ func EpicIssues(epic string) IssueList { return IssueList{kind: listEpic, epic: 
 // path is the list's path from the site root, its references checked.
 func (l IssueList) path() (string, error) {
 	board, sprint := strconv.FormatInt(l.board, 10), strconv.FormatInt(l.sprint, 10)
+	var path string
+	var err error
 	switch l.kind {
-	case listBoard, listBacklog, listBoardSprint:
-		if err := checkAgileID("board", l.board); err != nil {
-			return "", err
-		}
-	}
-	switch l.kind {
-	case listSprint, listBoardSprint:
-		if err := checkAgileID("sprint", l.sprint); err != nil {
-			return "", err
-		}
-	}
-	switch l.kind {
+	case listNone:
+		return "", notSent("no issue list named")
 	case listBoard:
-		return softwarePath + "board/" + board + "/issue", nil
+		path, err = softwarePath+"board/"+board+"/issue", checkAgileID("board", l.board)
 	case listBacklog:
-		return softwarePath + "board/" + board + "/backlog", nil
+		path, err = softwarePath+"board/"+board+"/backlog", checkAgileID("board", l.board)
 	case listSprint:
-		return softwarePath + "sprint/" + sprint + "/issue", nil
+		path, err = softwarePath+"sprint/"+sprint+"/issue", checkAgileID("sprint", l.sprint)
 	case listBoardSprint:
-		return softwarePath + "board/" + board + "/sprint/" + sprint + "/issue", nil
-	case listEpic:
-		if err := checkIssue(l.epic); err != nil {
-			return "", err
+		path, err = softwarePath+"board/"+board+"/sprint/"+sprint+"/issue", checkAgileID("board", l.board)
+		if err == nil {
+			err = checkAgileID("sprint", l.sprint)
 		}
-		return softwarePath + "epic/" + url.PathEscape(l.epic) + "/issue", nil
+	case listEpic:
+		path, err = softwarePath+"epic/"+url.PathEscape(l.epic)+"/issue", checkIssue(l.epic)
 	}
-	return "", notSent("no issue list named")
+	if err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 // ListQuery is one page of an issue list.

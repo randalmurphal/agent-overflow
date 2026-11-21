@@ -27,6 +27,8 @@ func (c *connCount) track(_ net.Conn, s http.ConnState) {
 		c.opened++
 	case http.StateClosed, http.StateHijacked:
 		c.closed++
+	case http.StateActive, http.StateIdle:
+		// Neither opens nor closes a connection.
 	}
 }
 

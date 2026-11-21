@@ -34,6 +34,8 @@ func inert(toks []tok, ctx inlineCtx) bool {
 		case tkBreak:
 			lineStart = true
 			continue
+		case tkCode, tkOpen, tkClose:
+			// Written the same at every escape level.
 		}
 		lineStart = false
 	}

@@ -184,8 +184,11 @@ func TestResultCheckNamesWhatAStepChanges(t *testing.T) {
 			return DetailOf(issue)
 		case ResourceStructure:
 			return StructureOf("b")
+		case ResourceWorklogs:
+			return WorklogsOf("acc-user1", day)
 		}
-		return WorklogsOf("acc-user1", day)
+		t.Fatalf("no resource of kind %s", kind)
+		return Resource{}
 	}
 	for step := StepCreate; step <= StepWorklog; step++ {
 		kinds := stepChanges[step]

@@ -25,12 +25,15 @@ func checkOperation(s *ast.Schema, op *ast.OperationDefinition, vars map[string]
 	for _, v := range op.VariableDefinitions {
 		c.directives("variable $"+v.Variable, v.Directives)
 	}
-	root := "Query"
+	var root string
 	switch op.Operation {
+	case ast.Query:
+		root = "Query"
 	case ast.Mutation:
 		root = "Mutation"
 	case ast.Subscription:
 		c.fail("subscriptions are not implemented")
+		return c.filters, c.problem
 	}
 	c.selections(root, linearType(root), op.SelectionSet)
 	return c.filters, c.problem

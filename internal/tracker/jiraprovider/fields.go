@@ -158,6 +158,8 @@ func rawValue(raw jira.FieldValue, kind tracker.Kind, list bool, cat *catalog) (
 		return userValue(raw, list, cat)
 	case tracker.KindOption:
 		return optionValue(raw, list)
+	case tracker.KindReadOnly:
+		// Its JSON as text, below.
 	}
 	return tracker.ReadOnlyValue(display(raw.JSON())), nil
 }

@@ -51,6 +51,7 @@ func (o Optional[T]) MarshalJSON() ([]byte, error) {
 		return json.Marshal(o.value)
 	case null:
 		return []byte("null"), nil
+	case unset:
 	}
 	return nil, errors.New("linear: an unset Optional was encoded; its field needs omitzero")
 }

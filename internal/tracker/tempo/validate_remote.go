@@ -41,6 +41,10 @@ func attributeRules(p *prepared, attrs []Attribute) {
 			if n, err := strconv.ParseFloat(v.Value, 64); err != nil || math.IsInf(n, 0) || math.IsNaN(n) {
 				p.problem(FieldAttribute, v.Key, NotAllowed, "%s takes a number, not %q", a.Name, v.Value)
 			}
+		case AttributeText:
+			// Any text.
+		case AttributeAccount:
+			// checkAccounts judges account values.
 		}
 	}
 	for _, a := range attrs {

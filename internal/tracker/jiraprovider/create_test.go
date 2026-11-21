@@ -162,6 +162,8 @@ func TestCreateRefusals(t *testing.T) {
 				if len(r.Fields) != 1 || r.Fields[0].Field != "customfield_10050" {
 					t.Errorf("fields %+v", r.Fields)
 				}
+			case tracker.ReasonInvalid, tracker.ReasonUnsupported, tracker.ReasonStale, tracker.ReasonLoss:
+				// The reason is the whole check.
 			}
 		})
 	}

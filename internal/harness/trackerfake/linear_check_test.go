@@ -233,18 +233,22 @@ func sample(s *ast.Schema, t *ast.Type) any {
 			}
 		}
 		return out
+	case ast.Scalar:
+		switch def.Name {
+		case "Int", "Float":
+			return 1
+		case "Boolean":
+			return true
+		case "DateTime", "DateTimeOrDuration":
+			return "2026-01-01T00:00:00.000Z"
+		case "TimelessDate", "TimelessDateOrDuration":
+			return "2026-01-01"
+		case "JSON", "JSONObject":
+			return map[string]any{}
+		}
+		return "x"
+	case ast.Object, ast.Interface, ast.Union:
+		// An input value's type is a scalar, an enum or an input object.
 	}
-	switch def.Name {
-	case "Int", "Float":
-		return 1
-	case "Boolean":
-		return true
-	case "DateTime", "DateTimeOrDuration":
-		return "2026-01-01T00:00:00.000Z"
-	case "TimelessDate", "TimelessDateOrDuration":
-		return "2026-01-01"
-	case "JSON", "JSONObject":
-		return map[string]any{}
-	}
-	return "x"
+	panic("sample: " + def.Name + " is not an input type")
 }

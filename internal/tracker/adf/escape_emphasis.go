@@ -52,6 +52,8 @@ func (w *writer) rawEdge(i int, last bool) rune {
 		return '`'
 	case tkBreak:
 		return '\n'
+	case tkOpen, tkClose:
+		// A mark's delimiter starts and ends with punctuation, as '*' is.
 	}
 	return '*'
 }
@@ -104,6 +106,9 @@ func (w *writer) countRuns() {
 			case "strike":
 				w.runs[2] += 2
 			}
+		case tkRaw, tkBreak, tkClose:
+			// Raw markup is not text the writer escapes, a break holds
+			// no delimiter, and an open counts its close's run.
 		}
 	}
 }

@@ -101,7 +101,7 @@ func (v *varCheck) value(path string, t *ast.Type, value any) {
 		}
 	case ast.InputObject:
 		v.object(path, def, value)
-	default:
+	case ast.Object, ast.Interface, ast.Union:
 		v.fail("%s has non-input type %s", path, def.Name)
 	}
 }

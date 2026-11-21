@@ -172,6 +172,8 @@ func estimateScales(s linear.EstimateScale) (estimateScale, bool) {
 		return linearScale, true
 	case linear.EstimateTShirt:
 		return tShirtScale, true
+	case linear.EstimateNotUsed:
+		// No estimates, so no scale.
 	}
 	return estimateScale{}, false
 }

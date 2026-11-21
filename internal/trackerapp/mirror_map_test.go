@@ -42,39 +42,53 @@ func fill(v reflect.Value, path string) {
 		}
 		v.Set(reflect.ValueOf(d))
 		return
+	case reflect.TypeFor[time.Duration]():
+		v.SetInt(int64(time.Hour))
+		return
 	}
-	switch v.Kind() {
-	case reflect.Struct:
+	// The kinds the model's types use; any other panics.
+	k := v.Kind()
+	if k == reflect.Struct {
 		for i := range v.NumField() {
 			if f := v.Type().Field(i); f.IsExported() {
 				fill(v.Field(i), path+"."+f.Name)
 			}
 		}
-	case reflect.String:
-		v.SetString(path)
-	case reflect.Int, reflect.Int64:
-		if v.Type() == reflect.TypeFor[time.Duration]() {
-			v.SetInt(int64(time.Hour))
-			return
-		}
-		v.SetInt(1)
-	case reflect.Uint8:
-		v.SetUint(1)
-	case reflect.Float64:
-		v.SetFloat(1.5)
-	case reflect.Bool:
-		v.SetBool(true)
-	case reflect.Slice:
+		return
+	}
+	if k == reflect.Slice {
 		s := reflect.MakeSlice(v.Type(), 1, 1)
 		fill(s.Index(0), path+"[0]")
 		v.Set(s)
-	case reflect.Pointer:
+		return
+	}
+	if k == reflect.Pointer {
 		p := reflect.New(v.Type().Elem())
 		fill(p.Elem(), path)
 		v.Set(p)
-	default:
-		panic("fill: " + v.Type().String() + " at " + path)
+		return
 	}
+	if k == reflect.String {
+		v.SetString(path)
+		return
+	}
+	if k == reflect.Int || k == reflect.Int64 {
+		v.SetInt(1)
+		return
+	}
+	if k == reflect.Uint8 {
+		v.SetUint(1)
+		return
+	}
+	if k == reflect.Float64 {
+		v.SetFloat(1.5)
+		return
+	}
+	if k == reflect.Bool {
+		v.SetBool(true)
+		return
+	}
+	panic("fill: " + v.Type().String() + " at " + path)
 }
 
 func same(t *testing.T, what string, got, want any) {
@@ -255,8 +269,9 @@ func shapeOf(t reflect.Type) string {
 	case timeType, valueType, dateType:
 		return t.String()
 	}
-	switch t.Kind() {
-	case reflect.Struct:
+	// A struct, slice or pointer by its members; any other kind by name.
+	k := t.Kind()
+	if k == reflect.Struct {
 		var parts []string
 		for i := range t.NumField() {
 			if f := t.Field(i); f.IsExported() {
@@ -264,12 +279,14 @@ func shapeOf(t reflect.Type) string {
 			}
 		}
 		return "{" + strings.Join(parts, ",") + "}"
-	case reflect.Slice:
+	}
+	if k == reflect.Slice {
 		return "[]" + shapeOf(t.Elem())
-	case reflect.Pointer:
+	}
+	if k == reflect.Pointer {
 		return "*" + shapeOf(t.Elem())
 	}
-	return t.Kind().String()
+	return k.String()
 }
 
 // wantDetailShape is tracker.Detail's shape that detailBlobVersion 1

@@ -140,6 +140,8 @@ func (p *Provider) Choices(ctx context.Context, scope tracker.FieldScope, field 
 		return p.userChoices(ctx, scope, f, text)
 	case tracker.KindOption:
 		return p.allowedChoices(ctx, f, text)
+	case tracker.KindText, tracker.KindRichText, tracker.KindNumber, tracker.KindDate, tracker.KindDateTime, tracker.KindReadOnly:
+		// Free values, or none to set: no choices.
 	}
 	return tracker.ChoiceList{}, nil
 }

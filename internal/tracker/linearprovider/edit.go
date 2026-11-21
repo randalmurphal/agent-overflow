@@ -28,12 +28,10 @@ type changes struct {
 // resolver turns field edits into changes for one team, reading a
 // catalog the first time a typed value needs it.
 type resolver struct {
-	p        *Provider
-	team     string
-	members  []linear.User
-	labels   []linear.Label
-	projects []linear.Project
-	read     map[tracker.FieldID]bool
+	p    *Provider
+	team string
+	// catalogs are the candidates of each field read so far.
+	catalogs map[tracker.FieldID][]candidate
 }
 
 // refusedEdit is an edit refused before any request.
@@ -70,7 +68,7 @@ func (r *resolver) resolve(ctx context.Context, edits []tracker.FieldEdit, creat
 	for _, e := range edits {
 		f, ok := spec(e.Field)
 		if !ok {
-			return changes{}, refusedf(tracker.ReasonUnsupported, "Linear has no field %q", e.Field)
+			return changes{}, noField(e.Field)
 		}
 		var err error
 		switch e.Value.Form() {
@@ -92,6 +90,12 @@ func (r *resolver) resolve(ctx context.Context, edits []tracker.FieldEdit, creat
 	return ch, nil
 }
 
+// noField refuses a field spec does not list, such as the type: Linear
+// issues have none.
+func noField(id tracker.FieldID) *refusedEdit {
+	return refusedf(tracker.ReasonUnsupported, "Linear has no field %q", id)
+}
+
 func clearField(f fieldSpec, ch *changes) error {
 	switch f.id {
 	case tracker.FieldTitle:
@@ -110,6 +114,8 @@ func clearField(f fieldSpec, ch *changes) error {
 		ch.project = linear.Null[string]()
 	case FieldDueDate:
 		ch.dueDate = linear.Null[linear.Date]()
+	case tracker.FieldType:
+		return noField(f.id)
 	}
 	return nil
 }
@@ -141,6 +147,10 @@ func pick(f fieldSpec, ids []string, ch *changes) error {
 		ch.parent = linear.Set(ids[0])
 	case FieldProject:
 		ch.project = linear.Set(ids[0])
+	case tracker.FieldTitle, tracker.FieldDescription, FieldDueDate:
+		// Their kinds are refused above.
+	case tracker.FieldType:
+		return noField(f.id)
 	}
 	return nil
 }
@@ -200,27 +210,26 @@ func (r *resolver) typed(ctx context.Context, f fieldSpec, texts []string, ch *c
 		}
 		v, _ := strconv.Atoi(id)
 		ch.priority = linear.Set(linear.Priority(v))
-	default:
-		all, err := r.candidates(ctx, f.id)
+	case tracker.FieldAssignee:
+		ids, err := r.match(ctx, f, texts, r.memberCandidates)
 		if err != nil {
 			return err
 		}
-		var ids []string
-		for _, t := range texts {
-			id, err := matchOne(f, strings.TrimSpace(t), all)
-			if err != nil {
-				return err
-			}
-			ids = append(ids, id)
+		ch.assignee = linear.Set(ids[0])
+	case tracker.FieldLabels:
+		ids, err := r.match(ctx, f, texts, r.labelCandidates)
+		if err != nil {
+			return err
 		}
-		switch f.id {
-		case tracker.FieldAssignee:
-			ch.assignee = linear.Set(ids[0])
-		case tracker.FieldLabels:
-			ch.labels = linear.Set(ids)
-		case FieldProject:
-			ch.project = linear.Set(ids[0])
+		ch.labels = linear.Set(ids)
+	case FieldProject:
+		ids, err := r.match(ctx, f, texts, r.projectCandidates)
+		if err != nil {
+			return err
 		}
+		ch.project = linear.Set(ids[0])
+	case tracker.FieldType:
+		return noField(f.id)
 	}
 	return nil
 }
@@ -231,41 +240,64 @@ type candidate struct {
 	keys   []string
 }
 
-// candidates are the values of an assignee, labels or project field in
-// the resolver's team, read once.
-func (r *resolver) candidates(ctx context.Context, field tracker.FieldID) ([]candidate, error) {
-	if r.read == nil {
-		r.read = map[tracker.FieldID]bool{}
-	}
-	var err error
-	if !r.read[field] {
-		switch field {
-		case tracker.FieldAssignee:
-			r.members, err = r.p.assignable(ctx, r.team)
-		case tracker.FieldLabels:
-			r.labels, err = r.p.applicableLabels(ctx, r.team)
-		case FieldProject:
-			r.projects, err = r.p.teamProjects(ctx, r.team)
+// match is the ID of the candidate each of texts names among f's
+// candidates in the resolver's team, which load reads the first time f
+// needs them.
+func (r *resolver) match(ctx context.Context, f fieldSpec, texts []string, load func(context.Context) ([]candidate, error)) ([]string, error) {
+	all, ok := r.catalogs[f.id]
+	if !ok {
+		var err error
+		if all, err = load(ctx); err != nil {
+			return nil, err
 		}
+		if r.catalogs == nil {
+			r.catalogs = map[tracker.FieldID][]candidate{}
+		}
+		r.catalogs[f.id] = all
+	}
+	var ids []string
+	for _, t := range texts {
+		id, err := matchOne(f, strings.TrimSpace(t), all)
 		if err != nil {
 			return nil, err
 		}
-		r.read[field] = true
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
+func (r *resolver) memberCandidates(ctx context.Context) ([]candidate, error) {
+	members, err := r.p.assignable(ctx, r.team)
+	if err != nil {
+		return nil, err
 	}
 	var out []candidate
-	switch field {
-	case tracker.FieldAssignee:
-		for _, u := range r.members {
-			out = append(out, candidate{tracker.Choice{ID: u.ID, Name: userName(u)}, []string{u.Name, u.DisplayName, u.Email}})
-		}
-	case tracker.FieldLabels:
-		for _, l := range r.labels {
-			out = append(out, candidate{tracker.Choice{ID: l.ID, Name: l.Name}, []string{l.Name}})
-		}
-	case FieldProject:
-		for _, pr := range r.projects {
-			out = append(out, candidate{tracker.Choice{ID: pr.ID, Name: pr.Name}, []string{pr.Name}})
-		}
+	for _, u := range members {
+		out = append(out, candidate{tracker.Choice{ID: u.ID, Name: userName(u)}, []string{u.Name, u.DisplayName, u.Email}})
+	}
+	return out, nil
+}
+
+func (r *resolver) labelCandidates(ctx context.Context) ([]candidate, error) {
+	labels, err := r.p.applicableLabels(ctx, r.team)
+	if err != nil {
+		return nil, err
+	}
+	var out []candidate
+	for _, l := range labels {
+		out = append(out, candidate{tracker.Choice{ID: l.ID, Name: l.Name}, []string{l.Name}})
+	}
+	return out, nil
+}
+
+func (r *resolver) projectCandidates(ctx context.Context) ([]candidate, error) {
+	projects, err := r.p.teamProjects(ctx, r.team)
+	if err != nil {
+		return nil, err
+	}
+	var out []candidate
+	for _, pr := range projects {
+		out = append(out, candidate{tracker.Choice{ID: pr.ID, Name: pr.Name}, []string{pr.Name}})
 	}
 	return out, nil
 }

@@ -111,6 +111,10 @@ func noDeprecated(found map[string]string) func(*core.Events, core.AddErrFunc) {
 						use(value.Definition.Name+"."+child.Name, def.Directives)
 					}
 				}
+			case ast.Variable, ast.IntValue, ast.FloatValue, ast.StringValue, ast.BlockValue,
+				ast.BooleanValue, ast.NullValue, ast.ListValue:
+				// These name no schema member that can carry a directive;
+				// the walker visits a list's items as values of their own.
 			}
 		})
 	}

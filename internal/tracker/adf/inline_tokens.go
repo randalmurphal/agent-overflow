@@ -361,7 +361,7 @@ func pairUp(toks []tok) []tok {
 			if toks[i].mark.Type == "link" {
 				links--
 			}
-		default:
+		case tkText, tkRaw, tkCode, tkBreak:
 			toks[i].inLink = links > 0
 		}
 	}

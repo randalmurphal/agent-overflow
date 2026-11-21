@@ -209,51 +209,10 @@ func (s *jiraSite) setValue(is *JiraIssue, f *fieldDef, raw json.RawMessage) (re
 			return "", ""
 		}
 		return s.store(is, f, len(v) == 0, mustJSON(orEmpty(v)))
-	}
-	return s.setReference(is, f, raw, null, invalid)
-}
-
-// setReference writes the kinds whose values name other things: users,
-// options, priorities, types, components, the parent and the sprint.
-func (s *jiraSite) setReference(is *JiraIssue, f *fieldDef, raw json.RawMessage, null bool, invalid string) (refusal, unhandled string) {
-	switch f.kind {
 	case kindUser:
-		account := ""
-		if !null {
-			r, why := readRef(raw, "accountId")
-			if why != "" {
-				return "", why
-			}
-			if u := s.user(r.AccountID); u == nil || u.Inactive {
-				return invalid, ""
-			}
-			account = r.AccountID
-		}
-		switch f.id {
-		case "assignee":
-			if account != "" && !s.assignable(s.project(is.Project), account) {
-				return "User '" + account + "' cannot be assigned issues.", ""
-			}
-			is.Assignee = account
-		case "reporter":
-			is.Reporter = account
-		default:
-			return s.store(is, f, null, mustJSON(s.userJSON(account)))
-		}
-		return "", ""
+		return s.setUser(is, f, raw, null, invalid)
 	case kindUsers:
-		refs, why := readRefs(raw, "accountId")
-		if why != "" && !null {
-			return "", why
-		}
-		users := []any{}
-		for _, r := range refs {
-			if u := s.user(r.AccountID); u == nil {
-				return invalid, ""
-			}
-			users = append(users, s.userJSON(r.AccountID))
-		}
-		return s.store(is, f, len(users) == 0, mustJSON(users))
+		return s.setUsers(is, f, raw, null, invalid)
 	case kindOption, kindCascade:
 		if null {
 			return s.store(is, f, true, nil)
@@ -264,88 +223,146 @@ func (s *jiraSite) setReference(is *JiraIssue, f *fieldDef, raw json.RawMessage,
 		}
 		return s.store(is, f, false, mustJSON(v))
 	case kindOptions:
-		refs, why := readRefs(raw, "id", "value")
-		if why != "" && !null {
-			return "", why
-		}
-		values := []any{}
-		for _, r := range refs {
-			o := findOption(f.options, r)
-			if o == nil {
-				return invalid, ""
-			}
-			values = append(values, s.optionJSON(*o))
-		}
-		return s.store(is, f, len(values) == 0, mustJSON(values))
-	}
-	return s.setIssueReference(is, f, raw, null, invalid)
-}
-
-// setIssueReference writes priority, type, components, parent and sprint.
-func (s *jiraSite) setIssueReference(is *JiraIssue, f *fieldDef, raw json.RawMessage, null bool, invalid string) (refusal, unhandled string) {
-	p := s.project(is.Project)
-	switch f.kind {
+		return s.setOptions(is, f, raw, null, invalid)
 	case kindPriority:
-		if null {
-			is.Priority = ""
-			return "", ""
-		}
-		r, why := readRef(raw, "id", "name")
-		if why != "" {
-			return "", why
-		}
-		for _, pr := range s.Priorities {
-			if pr.ID == r.ID || (r.ID == "" && pr.Name == r.Name) {
-				is.Priority = pr.ID
-				return "", ""
-			}
-		}
-		return invalid, ""
+		return s.setPriority(is, raw, null, invalid)
 	case kindIssueType:
-		r, why := readRef(raw, "id")
-		if why != "" {
-			return "", why
-		}
-		t := p.issueType(r.ID)
-		if t == nil || t.Subtask != p.issueType(is.Type).Subtask {
-			return "Specify a valid issue type", ""
-		}
-		is.Type = t.ID
-		return "", ""
+		return s.setIssueType(is, raw)
 	case kindComponents:
-		refs, why := readRefs(raw, "id", "name")
-		if why != "" && !null {
-			return "", why
-		}
-		var ids []string
-		for _, r := range refs {
-			i := slices.IndexFunc(p.Components, func(c JiraNamed) bool { return c.ID == r.ID || (r.ID == "" && c.Name == r.Name) })
-			if i < 0 {
-				return "Component name '" + r.Name + r.ID + "' is not valid", ""
-			}
-			ids = append(ids, p.Components[i].ID)
-		}
-		is.Components = ids
-		return "", ""
+		return s.setComponents(is, raw, null)
 	case kindParent:
-		if null {
-			is.Parent = ""
-			return "", ""
-		}
-		r, why := readRef(raw, "id", "key")
-		if why != "" {
-			return "", why
-		}
-		parent := s.issue(r.ID + r.Key)
-		if parent == nil || parent.ID == is.ID {
-			return "Could not find issue by id or key.", ""
-		}
-		is.Parent = parent.ID
-		return "", ""
+		return s.setParent(is, raw, null)
 	case kindSprint:
 		return s.setSprintField(is, raw, null)
+	case kindUnsupported, kindReadOnly, kindRank, kindTimeEstimate:
 	}
 	return f.name + " cannot be set.", ""
+}
+
+// setUser writes a user field: the assignee, the reporter or a custom
+// user field.
+func (s *jiraSite) setUser(is *JiraIssue, f *fieldDef, raw json.RawMessage, null bool, invalid string) (refusal, unhandled string) {
+	account := ""
+	if !null {
+		r, why := readRef(raw, "accountId")
+		if why != "" {
+			return "", why
+		}
+		if u := s.user(r.AccountID); u == nil || u.Inactive {
+			return invalid, ""
+		}
+		account = r.AccountID
+	}
+	switch f.id {
+	case "assignee":
+		if account != "" && !s.assignable(s.project(is.Project), account) {
+			return "User '" + account + "' cannot be assigned issues.", ""
+		}
+		is.Assignee = account
+	case "reporter":
+		is.Reporter = account
+	default:
+		return s.store(is, f, null, mustJSON(s.userJSON(account)))
+	}
+	return "", ""
+}
+
+func (s *jiraSite) setUsers(is *JiraIssue, f *fieldDef, raw json.RawMessage, null bool, invalid string) (refusal, unhandled string) {
+	refs, why := readRefs(raw, "accountId")
+	if why != "" && !null {
+		return "", why
+	}
+	users := []any{}
+	for _, r := range refs {
+		if u := s.user(r.AccountID); u == nil {
+			return invalid, ""
+		}
+		users = append(users, s.userJSON(r.AccountID))
+	}
+	return s.store(is, f, len(users) == 0, mustJSON(users))
+}
+
+func (s *jiraSite) setOptions(is *JiraIssue, f *fieldDef, raw json.RawMessage, null bool, invalid string) (refusal, unhandled string) {
+	refs, why := readRefs(raw, "id", "value")
+	if why != "" && !null {
+		return "", why
+	}
+	values := []any{}
+	for _, r := range refs {
+		o := findOption(f.options, r)
+		if o == nil {
+			return invalid, ""
+		}
+		values = append(values, s.optionJSON(*o))
+	}
+	return s.store(is, f, len(values) == 0, mustJSON(values))
+}
+
+func (s *jiraSite) setPriority(is *JiraIssue, raw json.RawMessage, null bool, invalid string) (refusal, unhandled string) {
+	if null {
+		is.Priority = ""
+		return "", ""
+	}
+	r, why := readRef(raw, "id", "name")
+	if why != "" {
+		return "", why
+	}
+	for _, pr := range s.Priorities {
+		if pr.ID == r.ID || (r.ID == "" && pr.Name == r.Name) {
+			is.Priority = pr.ID
+			return "", ""
+		}
+	}
+	return invalid, ""
+}
+
+func (s *jiraSite) setIssueType(is *JiraIssue, raw json.RawMessage) (refusal, unhandled string) {
+	p := s.project(is.Project)
+	r, why := readRef(raw, "id")
+	if why != "" {
+		return "", why
+	}
+	t := p.issueType(r.ID)
+	if t == nil || t.Subtask != p.issueType(is.Type).Subtask {
+		return "Specify a valid issue type", ""
+	}
+	is.Type = t.ID
+	return "", ""
+}
+
+func (s *jiraSite) setComponents(is *JiraIssue, raw json.RawMessage, null bool) (refusal, unhandled string) {
+	p := s.project(is.Project)
+	refs, why := readRefs(raw, "id", "name")
+	if why != "" && !null {
+		return "", why
+	}
+	var ids []string
+	for _, r := range refs {
+		i := slices.IndexFunc(p.Components, func(c JiraNamed) bool { return c.ID == r.ID || (r.ID == "" && c.Name == r.Name) })
+		if i < 0 {
+			return "Component name '" + r.Name + r.ID + "' is not valid", ""
+		}
+		ids = append(ids, p.Components[i].ID)
+	}
+	is.Components = ids
+	return "", ""
+}
+
+func (s *jiraSite) setParent(is *JiraIssue, raw json.RawMessage, null bool) (refusal, unhandled string) {
+	if null {
+		is.Parent = ""
+		return "", ""
+	}
+	r, why := readRef(raw, "id", "key")
+	if why != "" {
+		return "", why
+	}
+	parent := s.issue(r.ID + r.Key)
+	if parent == nil || parent.ID == is.ID {
+		return "Could not find issue by id or key.", ""
+	}
+	is.Parent = parent.ID
+	return "", ""
 }
 
 // setSprintField moves is into the sprint raw names, or out of its open

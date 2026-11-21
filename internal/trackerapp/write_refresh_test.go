@@ -40,7 +40,7 @@ func TestARefreshReadsEveryResourceKind(t *testing.T) {
 	f.linkThread("thread-1", "10009")
 	must[Outcome](t)(f.svc.tickCards(t.Context(), f.conn.ID, Background))
 	f.openDetail(t, "10002")
-	f.svc.SubscribeTicket(f.conn.ID, "10003")
+	must[TicketSubscription](t)(f.svc.SubscribeTicket(f.conn.ID, "10003"))
 	f.events.issueEvents(t, 1)
 	f.settledTickets(t)
 	u := tracker.UserID("acc-user1")
@@ -128,7 +128,7 @@ func TestWriteCosts(t *testing.T) {
 	t.Parallel()
 	f := newWriteFixture(t)
 	f.openDetail(t, "10002")
-	f.svc.SubscribeTicket(f.conn.ID, "10003")
+	must[TicketSubscription](t)(f.svc.SubscribeTicket(f.conn.ID, "10003"))
 	f.events.issueEvents(t, 1)
 	f.settledTickets(t)
 	var mu sync.Mutex

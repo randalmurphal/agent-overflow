@@ -247,7 +247,7 @@ func (r Result) Tally() Tally {
 			t.Refused++
 		case StateNotSent:
 			t.NotSent++
-		default:
+		case StateUnknown:
 			t.Unknown++
 		}
 	}
@@ -394,7 +394,7 @@ func (p Part) names(kind ResourceKind) bool {
 			if res.issue == p.Issue {
 				return true
 			}
-		default:
+		case ResourceStructure, ResourceWorklogs:
 			return true
 		}
 	}

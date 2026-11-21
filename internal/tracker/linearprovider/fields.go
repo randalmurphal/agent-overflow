@@ -219,11 +219,19 @@ func (p *Provider) Choices(ctx context.Context, scope tracker.FieldScope, field 
 		for _, pr := range projects {
 			keep(pr.ID, pr.Name)
 		}
+	case tracker.FieldType:
+		// Linear issues have no type.
+		return tracker.ChoiceList{}, noChoices(field)
 	default:
-		return tracker.ChoiceList{}, fmt.Errorf("linearprovider: choices of %s: %w", field, tracker.ErrUnsupported)
+		return tracker.ChoiceList{}, noChoices(field)
 	}
 	choices, more := capped(out)
 	return tracker.ChoiceList{Choices: choices, More: more}, nil
+}
+
+// noChoices is the error of Choices for a field Linear does not have.
+func noChoices(field tracker.FieldID) error {
+	return fmt.Errorf("linearprovider: choices of %s: %w", field, tracker.ErrUnsupported)
 }
 
 // applicableLabels are the labels team's issues can carry: the team's and

@@ -89,6 +89,8 @@ func (section MirrorSection) ruleArg() any {
 		return section.SprintID
 	case MirrorSectionColumn:
 		return section.Column
+	case MirrorSectionBacklog:
+		// The backlog's rule names no ?5.
 	}
 	return nil
 }

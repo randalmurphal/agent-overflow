@@ -159,6 +159,8 @@ func (srv *server) track(c net.Conn, state http.ConnState) {
 		srv.conns[c] = struct{}{}
 	case http.StateClosed, http.StateHijacked:
 		delete(srv.conns, c)
+	case http.StateActive, http.StateIdle:
+		// Still open, and tracked since StateNew.
 	}
 }
 

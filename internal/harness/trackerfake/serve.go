@@ -33,8 +33,10 @@ func serviceFor(o Origin) service {
 		return jiraService{site: o.Site}
 	case TrackerTempo:
 		return tempoService{}
+	case TrackerLinear:
+		return linearService{}
 	}
-	return linearService{}
+	panic(fmt.Sprintf("trackerfake: no service for tracker %q; Origin.check refuses it", o.Tracker))
 }
 
 // exchange is one request on its way through the pipeline.
@@ -222,13 +224,17 @@ func (e *Engine) dispatch(svc service, x *exchange, faults bool) (answer, *hold)
 		return refusalAnswer(f.Fault), nil
 	case FaultHold:
 		return answer{}, f.hold
+	case FaultFailAfterApply:
+		a := e.run(svc, x, m)
+		if a.unhandled != "" {
+			return a, nil
+		}
+		x.entry.Detail = fmt.Sprintf("applied and answered %d; the answer was dropped", a.status)
+		return answer{abort: true}, nil
+	case FaultOffline:
+		// Fault.check refuses to arm it.
 	}
-	a := e.run(svc, x, m)
-	if a.unhandled != "" {
-		return a, nil
-	}
-	x.entry.Detail = fmt.Sprintf("applied and answered %d; the answer was dropped", a.status)
-	return answer{abort: true}, nil
+	return e.unhandled(svc, x, fmt.Sprintf("trackerfake: an armed fault of kind %q", f.Kind)), nil
 }
 
 // run runs a route's handler in the transaction txn.go describes: an

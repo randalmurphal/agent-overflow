@@ -367,6 +367,9 @@ func (s *jiraSite) fieldMeta(p *JiraProject, is *JiraIssue, sf JiraScreenField, 
 			where = "issueKey=" + is.Key
 		}
 		out["autoCompleteUrl"] = s.self("user/assignable/search?" + where + "&query=")
+	case kindUnsupported, kindReadOnly, kindText, kindDoc, kindNumber, kindDate, kindDateTime,
+		kindLabels, kindParent, kindSprint, kindRank, kindTimeEstimate:
+		// No allowed values and no autocomplete URL.
 	}
 	if allowed != nil {
 		out["allowedValues"] = allowed
@@ -389,6 +392,8 @@ func fieldOperations(k fieldKind) []string {
 		return []string{"add", "set", "remove"}
 	case kindReadOnly, kindRank, kindTimeEstimate:
 		return []string{}
+	case kindUnsupported, kindText, kindDoc, kindNumber, kindDate, kindDateTime, kindUser,
+		kindOption, kindCascade, kindPriority, kindIssueType, kindParent, kindSprint:
 	}
 	return []string{"set"}
 }

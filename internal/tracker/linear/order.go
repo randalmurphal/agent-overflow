@@ -248,6 +248,7 @@ func (f OrderField) of(is Issue) float64 {
 			return math.NaN()
 		}
 		return *is.SubIssueSortOrder
+	case OrderSort:
 	}
 	return is.SortOrder
 }

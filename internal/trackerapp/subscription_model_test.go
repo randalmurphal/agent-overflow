@@ -118,6 +118,13 @@ func subscriptionModel(t *testing.T, r *rand.Rand) {
 		st.mu.Unlock()
 		m.tracks(rows)
 	}
+	// syncBoard runs units of a board's tick. The store failing is the
+	// model's to make; any other error fails the test.
+	syncBoard := func(scope Scope, due BoardDue) {
+		if _, err := m.svc.SyncBoard(ctx, scope, due, Background); err != nil && !errors.Is(err, errStoreDown) {
+			t.Fatal(err)
+		}
+	}
 	var subs []*modelSub
 	subscribe := func() {
 		s := &modelSub{}
@@ -225,7 +232,7 @@ func subscriptionModel(t *testing.T, r *rand.Rand) {
 			// The card changes, and a board's read stores it.
 			st.edit(issue, func(c *tracker.Card) { c.Title = fmt.Sprint("Title ", r.IntN(100)) })
 			deliver()
-			m.svc.SyncBoard(ctx, board, BoardDue{Delta: true}, Background)
+			syncBoard(board, BoardDue{Delta: true})
 		case op == 6:
 			// The document changes and no card does.
 			st.comment(issue, fmt.Sprint("Comment ", r.IntN(100)))
@@ -242,25 +249,25 @@ func subscriptionModel(t *testing.T, r *rand.Rand) {
 					return h, nil
 				}
 			})
-			m.svc.SyncBoard(ctx, board, BoardDue{History: true}, Background)
+			syncBoard(board, BoardDue{History: true})
 		case op == 8:
 			// A user is renamed, read with a board's structure.
 			name := fmt.Sprint("User 1 v", step)
 			m.p.set(func(p *scripted) {
 				p.structure = func(b tracker.BoardID, _ time.Time) (tracker.Structure, error) {
 					s := webStructure(b)
-					s.Catalog.Users = []tracker.User{user1}
-					s.Catalog.Users[0].Name = name
+					s.Users = []tracker.User{user1}
+					s.Users[0].Name = name
 					return s, nil
 				}
 			})
-			m.svc.SyncBoard(ctx, board, BoardDue{Structure: true}, Background)
+			syncBoard(board, BoardDue{Structure: true})
 		case op == 9:
 			// The issue leaves both boards, or comes back to them.
 			kept[issue] = !kept[issue]
 			deliver()
 			for _, b := range boards {
-				m.svc.SyncBoard(ctx, Scope{Connection: m.conn.ID, Board: b}, BoardDue{Reconcile: true}, Background)
+				syncBoard(Scope{Connection: m.conn.ID, Board: b}, BoardDue{Reconcile: true})
 			}
 		case op == 10:
 			// The cleanup deletes what the mirror no longer keeps, the

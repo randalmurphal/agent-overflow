@@ -192,6 +192,7 @@ func batchErr(step Step, res BatchResult, stop error) error {
 			e.Unknown++
 		case OutcomeNotSent:
 			e.NotSent++
+		case OutcomeDone:
 		}
 	}
 	if stop == nil && e.Refused+e.Unknown+e.NotSent == 0 {

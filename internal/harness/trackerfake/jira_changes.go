@@ -160,6 +160,12 @@ func secondsChange(n *int64) changeValue {
 // customChange is a custom field's change value, read from its stored
 // value.
 func (s *jiraSite) customChange(f *fieldDef, is *JiraIssue) changeValue {
+	// The sprint field is read from is.Sprints, every other kind from its
+	// stored value.
+	raw := is.Values[f.id]
+	if f.kind != kindSprint && len(raw) == 0 {
+		return changeValue{}
+	}
 	switch f.kind {
 	case kindSprint:
 		var ids, names []string
@@ -174,12 +180,6 @@ func (s *jiraSite) customChange(f *fieldDef, is *JiraIssue) changeValue {
 		return changeValue{raw: &raw, text: &text}
 	case kindRank:
 		return changeValue{}
-	}
-	raw := is.Values[f.id]
-	if len(raw) == 0 {
-		return changeValue{}
-	}
-	switch f.kind {
 	case kindUser:
 		var u struct{ AccountID string }
 		_ = json.Unmarshal(raw, &u)
@@ -210,6 +210,9 @@ func (s *jiraSite) customChange(f *fieldDef, is *JiraIssue) changeValue {
 		return changeValue{text: strPtr(strings.Join(list, " "))}
 	case kindDoc:
 		return changeValue{text: strPtr(strings.TrimSpace(docText(raw)))}
+	case kindUnsupported, kindReadOnly, kindText, kindNumber, kindDate, kindDateTime,
+		kindPriority, kindIssueType, kindComponents, kindParent, kindTimeEstimate:
+		// Text only, read from the stored string or number below.
 	}
 	var v any
 	_ = json.Unmarshal(raw, &v)

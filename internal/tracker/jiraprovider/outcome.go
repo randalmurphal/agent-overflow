@@ -171,6 +171,8 @@ func jiraField(f tracker.FieldID) string {
 		return jiraSummary
 	case tracker.FieldType:
 		return jiraIssueType
+	case tracker.FieldAssignee, tracker.FieldPriority, tracker.FieldLabels, tracker.FieldParent, tracker.FieldDescription:
+		// The same ID on both sides.
 	}
 	return string(f)
 }

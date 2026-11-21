@@ -61,6 +61,9 @@ func mainOutcome(err error) tracker.Outcome {
 		}
 	case jira.StepUpload, jira.StepMediaID:
 		return tracker.NotSent(fmt.Errorf("jiraprovider: not sent after an image's upload failed: %w", err))
+	case jira.StepCreate, jira.StepEdit, jira.StepFinish, jira.StepTransition, jira.StepComment, jira.StepRemoteLink,
+		jira.StepRank, jira.StepMove, jira.StepSprint, jira.StepEstimate, jira.StepWorklog:
+		// The write's own step: its answer.
 	}
 	return outcome(err)
 }
@@ -379,7 +382,7 @@ func batchParts(board tracker.BoardID, step tracker.Step, issues []tracker.Issue
 			parts[i].Outcome = tracker.Refused(tracker.Refusal{Reason: tracker.ReasonTracker, Message: o.Reason, Err: err})
 		case jira.OutcomeUnknown:
 			parts[i].Outcome = tracker.Unknown(err)
-		default:
+		case jira.OutcomeNotSent:
 			parts[i].Outcome = tracker.NotSent(err)
 		}
 	}

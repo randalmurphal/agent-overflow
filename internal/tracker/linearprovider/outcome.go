@@ -100,14 +100,15 @@ func refuse(step tracker.Step, r tracker.Refusal, issues ...tracker.IssueID) tra
 // reasons, and wraps cause, the tracker's answer it rests on, when there
 // is one.
 func refusalErr(reason tracker.Reason, msg string, cause error) error {
-	var err error
+	err := errors.New("linearprovider: " + msg)
 	switch reason {
 	case tracker.ReasonInvalid:
 		err = fmt.Errorf("linearprovider: %w: %s", tracker.ErrInvalidInput, msg)
 	case tracker.ReasonUnsupported:
 		err = fmt.Errorf("linearprovider: %w: %s", tracker.ErrUnsupported, msg)
-	default:
-		err = errors.New("linearprovider: " + msg)
+	case tracker.ReasonTracker, tracker.ReasonStale, tracker.ReasonLoss, tracker.ReasonNoMatch,
+		tracker.ReasonAmbiguous, tracker.ReasonMissing:
+		// Matches neither sentinel.
 	}
 	if cause != nil {
 		err = fmt.Errorf("%w: %w", err, cause)

@@ -201,6 +201,8 @@ func (f Fault) check() error {
 		if f.RetryAfter != 0 {
 			return fmt.Errorf("trackerfake: fault: %s takes no retryAfter", f.Kind)
 		}
+	case FaultOffline:
+		return fmt.Errorf("trackerfake: fault: %s is not armed as a fault; SetOffline takes an origin down", f.Kind)
 	default:
 		return fmt.Errorf("trackerfake: fault: unknown kind %q", f.Kind)
 	}

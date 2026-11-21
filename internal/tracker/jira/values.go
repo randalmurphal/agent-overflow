@@ -224,6 +224,8 @@ func (b *builder) build(ctx context.Context, f FieldMeta, in Input) (Value, erro
 		}
 		v.Fields, v.Display = in.raw, string(in.raw)
 		return v, nil
+	case inputText, inputTexts:
+		// Built from the texts by the field's kind, below.
 	}
 	texts := in.texts
 	switch {

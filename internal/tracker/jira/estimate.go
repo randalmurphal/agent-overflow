@@ -167,7 +167,7 @@ func estimateText(cfg BoardConfig, v EstimateValue) (*string, error) {
 			return nil, fmt.Errorf("%s is not a whole number of minutes", v.time)
 		}
 		s = strconv.FormatInt(int64(v.time/time.Minute), 10) + "m"
-	default:
+	case estimateUnset:
 		return nil, errors.New("no estimate given")
 	}
 	return &s, nil

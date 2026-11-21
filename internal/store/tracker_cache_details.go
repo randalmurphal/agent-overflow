@@ -291,21 +291,17 @@ func (s *Store) ListMirrorDetailStates(rootID int64, issueIDs []string) ([]Mirro
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.reader().Query(mirrorDetailStatesSQL, rootID, list)
-	if err != nil {
-		return nil, fmt.Errorf("store: read tracker mirror %d details of %d issues: %w", rootID, len(issueIDs), err)
-	}
-	defer rows.Close()
 	var out []MirrorDetail
-	for rows.Next() {
+	err = scanMirrorRows(s.reader(), mirrorDetailStatesSQL, []any{rootID, list}, func(r rowScanner) error {
 		var d MirrorDetail
-		if err := rows.Scan(&d.IssueID, &d.row, &d.sweep, &d.OpenedAt, &d.ReadAt, &d.CardUpdatedAt); err != nil {
-			return nil, fmt.Errorf("store: read tracker mirror %d details: %w", rootID, err)
+		if err := r.Scan(&d.IssueID, &d.row, &d.sweep, &d.OpenedAt, &d.ReadAt, &d.CardUpdatedAt); err != nil {
+			return err
 		}
 		out = append(out, d)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: read tracker mirror %d details: %w", rootID, err)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("store: read tracker mirror %d details of %d issues: %w", rootID, len(issueIDs), err)
 	}
 	return out, nil
 }
