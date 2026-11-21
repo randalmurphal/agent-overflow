@@ -263,9 +263,14 @@ computer device buckets, without holding a local save open for an unavailable
 computer. Appearance file locality is decided only after grants resolve.
 
 Thread and project catalogs from several computers merge by repository identity,
-never by filesystem path. Do not add permanent frontend tombstones for moved or
-retired entities; pending reads hold only enough ownership evidence to reject
-stale replies.
+never by filesystem path. The merge is over every row the client holds, so an
+entry's identity and representative do not depend on what a surface shows; a
+surface showing some members aggregates those itself. The manual reorder is the
+store's (`reorderProjects`): it writes the positions before the round trip and
+a refused write puts back only the positions it wrote, and only where it is
+still the call that placed them. Do not add permanent frontend tombstones for
+moved or retired entities; pending reads hold only enough ownership evidence to
+reject stale replies.
 
 ## The ThreadPane modules
 

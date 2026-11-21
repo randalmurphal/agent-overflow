@@ -13,10 +13,11 @@
   import type { ProjectWithCounts, Thread, ThreadGroup } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import {
+    entryIdFor,
     getProjectLiveActivityAt,
     getProjects,
-    mergeProjectRows,
-    updateProjectLocal,
+    projectEntries,
+    reorderProjects,
   } from '../../stores/projects.svelte';
   import {
     expandProject,
@@ -29,7 +30,6 @@
   import { getThreadFilterQuery } from '../../stores/threadFilter.svelte';
   import { getThreads } from '../../stores/threads.svelte';
   import { getThreadGroups } from '../../stores/threadGroups.svelte';
-  import { UpdateProjectSortPositions } from '../../stores/bindings';
   import { addErrorToast } from '../../stores/toast.svelte';
   import { userFacingError } from '../../utils/userFacingError';
   import { reuseUnchangedBuckets } from '../../utils/stableBuckets';
@@ -115,26 +115,48 @@
     };
   }
 
-  // The rows the sidebar may show, regrouped by repository from those rows
-  // alone: a member whose computer holds its tree, or whose computer the
-  // device filter hides, contributes no header, no representative and no
-  // part of an entry's thread count or activity. Grouping after the filter
-  // is what keeps a computer that answers its projects before its threads
-  // from raising an entry's activity and re-sorting the list, and then
-  // moving it again when its rows arrive. One member must pass both tests
-  // for its entry to show, so a filter that hides the only listed computer
-  // leaves no empty header behind.
+  // What the sidebar shows of each merged entry, computed from the members
+  // it may show: a member whose computer holds its tree, or whose computer
+  // the device filter hides, contributes no part of an entry's thread count
+  // or activity, and nothing a header says about its members. One member
+  // must pass both tests for the entry to show at all, so a computer that
+  // answers its projects before its threads cannot raise an entry's
+  // activity and re-sort the list before its rows exist, and a filter that
+  // hides the only listed computer leaves no empty header behind.
   //
-  // This is the sidebar's one projection of the project rows, and it is
-  // derived, not stored: the store's `merged` stays complete for the
-  // pickers, the settings page and routing, which answer for the whole
-  // repository.
+  // The entry itself is the store's complete merge: its id, its
+  // representative and so its label, and the ids its actions carry. An
+  // entry's identity may not depend on what has listed or what the filter
+  // hides, because the each key, the collapse state and the show-more limit
+  // are persisted by it and a reorder sends it to the computer that holds
+  // it. This is a projection, not a second store: nothing here is kept.
   let listedProjects = $derived.by(() => {
     const listedOn = treeListed();
-    return mergeProjectRows(getProjects().filter((row) => {
+    const members = new Map<string, ProjectWithCounts[]>();
+    for (const row of getProjects()) {
       const backend = projectBackend(row.project.id) ?? HOME_BACKEND;
-      return listedOn(backend) && sidebarBackendVisible(backend);
-    }));
+      if (!listedOn(backend) || !sidebarBackendVisible(backend)) continue;
+      const entry = entryIdFor(row.project.id);
+      const shown = members.get(entry);
+      if (shown) shown.push(row);
+      else members.set(entry, [row]);
+    }
+    const entries = projectEntries().flatMap((entry) => {
+      const shown = members.get(entry.project.id);
+      if (shown === undefined) return [];
+      let threadCount = 0;
+      let lastActive = 0;
+      for (const member of shown) {
+        threadCount += member.threadCount;
+        lastActive = Math.max(lastActive, member.lastActive ?? 0);
+      }
+      // The entry's own row while it speaks for every member it has, so the
+      // identity the cutoffs downstream compare stays stable.
+      return [threadCount === entry.threadCount && lastActive === (entry.lastActive ?? 0)
+        ? entry
+        : { ...entry, threadCount, lastActive }];
+    });
+    return { entries, members };
   });
 
   let previousThreadBuckets: ReadonlyMap<string, Thread[]> = new Map();
@@ -143,14 +165,11 @@
   let searchBuckets = $derived.by(() => {
     const filterDevices = sidebarDeviceFilterActive();
     const listedOn = treeListed();
-    const entries = listedProjects.entryOf;
     const buckets = bucketSidebarThreads({
       threads: getThreads(),
       groups: getThreadGroups(),
       query,
-      // The listed projection's representatives, so a thread buckets under
-      // the header the sidebar actually renders.
-      entryOf: (projectId) => entries.get(projectId) ?? projectId,
+      entryOf: entryIdFor,
       threadVisible: (thread) => sidebarThreadVisible(thread) && !hiddenAssistantThread(thread)
         && (!!thread.agentId || listedOn(threadMachine(thread.id, thread.projectId))),
       groupVisible: (group) => listedOn(threadGroupBackend(group.id) ?? HOME_BACKEND),
@@ -323,30 +342,17 @@
     void openTerminalThread({ projectId });
   };
 
-  /**
-   * Commit a manual reorder. Updates each project's sortPosition locally so
-   * the next derive() reorders without a refresh-flicker, then persists to
-   * the backend. A refused write is undone from the rows it replaced, not by
-   * a read: the projects are read only beside the threads under them
-   * (stores/sidebarCatalogs.ts), so a read whose thread half fails withholds
-   * the project answer and would leave the rejected order on screen until
-   * some later round. The read after the undo is only a refresh, and
-   * reconciles an order the backend applied in part.
-   */
+  // Commit a manual reorder. The operation is the store's
+  // (stores/projects.svelte.ts#reorderProjects): it writes the positions
+  // locally so the list does not wait for the round trip, and puts back
+  // what it wrote, where it is still what it wrote, if the write is
+  // refused. What the user sees of a failure is this section's: the toast,
+  // and a refresh of the tree, which reconciles an order the computer
+  // applied in part.
   async function handleReorder(newOrderedIds: string[]): Promise<void> {
-    const rows = new Map(getProjects().map((row) => [row.project.id, row.project]));
-    const replaced = newOrderedIds.flatMap((id) => {
-      const project = rows.get(id);
-      return project ? [project] : [];
-    });
-    for (const [index, id] of newOrderedIds.entries()) {
-      const project = rows.get(id);
-      if (project) updateProjectLocal({ ...project, sortPosition: index });
-    }
     try {
-      await UpdateProjectSortPositions(newOrderedIds);
+      await reorderProjects(newOrderedIds);
     } catch (err) {
-      for (const project of replaced) updateProjectLocal(project);
       console.error('Failed to persist project order:', err);
       addErrorToast(userFacingError(err), err);
       try {
@@ -447,6 +453,7 @@
         {#if visibleProjects.length > 0 || pendingCatalogs.length === 0}
           <ProjectList
             projects={visibleProjects}
+            membersByProject={listedProjects.members}
             emptyMessage={sidebarDeviceFilterActive() ? 'No projects on the selected computers.' : undefined}
             {threadsByProject}
             {groupsByProject}

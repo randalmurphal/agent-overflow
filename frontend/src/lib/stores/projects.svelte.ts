@@ -13,7 +13,7 @@ import { settleCatalogAnswers } from './catalogLoad.svelte';
 // successful RPC so the list stays in sync with the backend.
 
 import type { Project, ProjectWithCounts } from '../types/models';
-import { ListProjects } from './bindings';
+import { ListProjects, UpdateProjectSortPositions } from './bindings';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import {
   disambiguatedPathLabels,
@@ -66,7 +66,7 @@ export function getProject(id: string): ProjectWithCounts | undefined {
 // Computed only while more than one backend is attached: a single-backend
 // app returns the list itself, same array identity, and pays nothing.
 
-export interface MergedProjects {
+interface MergedProjects {
   entries: readonly ProjectWithCounts[];
   /** member project id → the entry (representative) id it belongs to. */
   entryOf: Map<string, string>;
@@ -97,16 +97,14 @@ function groupRows<T extends { project: Project }>(rows: readonly T[], computers
 /**
  * Group `rows` into one entry per repository: at most one member per
  * computer, the entry worn by its home member when there is one, and the
- * thread count and activity summed over the members given here.
+ * thread count and activity summed over its members.
  *
- * The caller chooses the rows, so a surface showing only some of them gets a
- * representative and an aggregate of those alone. The sidebar passes the
- * members whose computer lists its tree, which is what keeps a computer that
- * lists later from re-sorting or relabelling an entry already on screen; the
- * store's own `merged` passes every row, for the pickers, settings and
- * routing that answer for the whole repository.
+ * Every row the client holds, so an entry's identity and representative do
+ * not depend on what a surface shows. A surface that shows only some members
+ * aggregates those itself over these entries; the sidebar does
+ * (components/sidebar/ProjectsSection.svelte).
  */
-export function mergeProjectRows(rows: readonly ProjectWithCounts[]): MergedProjects {
+function mergeProjectRows(rows: readonly ProjectWithCounts[]): MergedProjects {
   if (!hasMultipleBackends()) return { entries: rows, ...NO_MERGE };
   const { keyOf, members: groups } = groupRows(rows);
   const position = new Map(rows.map((row, index) => [row, index]));
@@ -241,6 +239,56 @@ export function getProjectLabel(id: string): PathLabel | undefined {
 export function getProjectLabelText(id: string): string {
   const label = projectLabels.get(entryIdFor(id));
   return label ? formatPathLabel(label) : '';
+}
+
+// Manual reorder. The positions are written locally first so the list does
+// not wait for the round trip, and each written row records the call that
+// wrote it: an undo must not move a row a later reorder has since placed,
+// and comparing positions alone cannot tell the two apart when the later
+// call wrote the same index.
+let reorderGeneration = 0;
+const reorderedBy = new Map<string, number>();
+
+/**
+ * Put the projects `orderedIds` names at those positions, locally and then
+ * on the computers that hold them. Ids this client does not hold are passed
+ * through: a computer answers only for its own rows.
+ *
+ * A refused write puts each row back where it was, and only where this call
+ * is still the one that placed it and the position it wrote is still the one
+ * the row carries. So a rename, an archive or a pushed row that landed while
+ * the write was out survives, and so does a later reorder. Rethrows what the
+ * write threw; its caller owns what the user sees.
+ */
+export async function reorderProjects(orderedIds: readonly string[]): Promise<void> {
+  const generation = ++reorderGeneration;
+  const written = orderedIds.flatMap((id, index) => {
+    const row = getProject(id);
+    if (!row) return [];
+    const from = row.project.sortPosition;
+    reorderedBy.set(id, generation);
+    updateProjectLocal({ ...row.project, sortPosition: index });
+    return [{ id, from, to: index }];
+  });
+  const release = (): void => {
+    for (const { id } of written) {
+      if (reorderedBy.get(id) === generation) reorderedBy.delete(id);
+    }
+  };
+  try {
+    await UpdateProjectSortPositions([...orderedIds]);
+    release();
+  } catch (err) {
+    for (const { id, from, to } of written) {
+      if (reorderedBy.get(id) !== generation) continue;
+      const row = getProject(id);
+      // Only the position, from the row as it stands: the row this call
+      // replaced may have been renamed or archived since.
+      if (row && row.project.sortPosition === to) updateProjectLocal({ ...row.project, sortPosition: from });
+    }
+    release();
+    throw err;
+  }
 }
 
 /** True once a round has committed at least one computer's project rows. */
@@ -379,4 +427,5 @@ export function resetProjectsForTest(): void {
   projects = [];
   loaded = false;
   liveActivityAt.reset();
+  reorderedBy.clear();
 }

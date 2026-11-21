@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { tick } from 'svelte';
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import ProjectItem from './ProjectItem.svelte';
-import { addProjectLocal, resetProjectsForTest, updateProjectLocal } from '../../stores/projects.svelte';
+import { addProjectLocal, projectMembers, resetProjectsForTest, updateProjectLocal } from '../../stores/projects.svelte';
 import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
 import type { Project, ProjectWithCounts } from '../../types/models';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
@@ -37,9 +37,17 @@ function withCounts(p: Project): ProjectWithCounts {
   return { project: p, threadCount: 0, lastActive: 0 };
 }
 
+// The sidebar hands the row the members of its entry that it shows
+// (ProjectsSection's projection). Here that is the store's whole entry,
+// read through a getter so a row the test changes reaches the row.
 function renderItem(p: Project) {
   return render(ProjectItem, {
-    props: { project: withCounts(p), threads: [], pane: null } as never,
+    props: {
+      project: withCounts(p),
+      threads: [],
+      pane: null,
+      get members() { return projectMembers(p.id); },
+    } as never,
   });
 }
 
@@ -137,7 +145,7 @@ describe('ProjectItem compact layout', () => {
     addProjectLocal(p);
     const onNewTerminal = vi.fn();
     const { getByTestId, getByRole } = render(ProjectItem, {
-      props: { project: withCounts(p), threads: [], pane: null, onNewTerminal } as never,
+      props: { project: withCounts(p), threads: [], pane: null, onNewTerminal, get members() { return projectMembers(p.id); } } as never,
     });
     expect(getByTestId('project-item').querySelector('[draggable]')?.getAttribute('draggable')).toBe('false');
     await fireEvent.click(getByTestId('project-item-menu'));
@@ -227,7 +235,9 @@ describe('ProjectItem status rollup', () => {
     const staged = stageBackend({ status: 'reconnecting' });
     noteThread('remote', 'laptop');
     projectTurnStarted('remote', 'turn-1', 0, 0);
-    const { getByTestId } = render(ProjectItem, { props: { project: withCounts(p), threads: [thread], pane: null } as never });
+    const { getByTestId } = render(ProjectItem, {
+      props: { project: withCounts(p), threads: [thread], pane: null, get members() { return projectMembers(p.id); } } as never,
+    });
     const dot = () => getByTestId('project-item-status-dot').firstElementChild;
     expect(getByTestId('project-item-status-dot')).toHaveAttribute('data-status', 'running');
     expect(dot()).not.toHaveClass('animate-pulse');

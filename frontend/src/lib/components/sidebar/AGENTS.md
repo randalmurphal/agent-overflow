@@ -38,6 +38,15 @@ which adds the project's empty state and drop targets.
   `ProjectsSection.svelte` is the only reader of that gate here, so what a
   held computer shows is one decision. The rule is in
   [stores/AGENTS.md](../../stores/AGENTS.md#computer-owned-and-frontend-owned-state).
+- A merged entry's identity is the store's complete merge: its id, its
+  representative and so its label, and the ids its actions carry. Nothing
+  about what has listed or what the filter hides may change it, because the
+  each key, the collapse state and the show-more limit are persisted by it
+  and a reorder sends it to the computer that holds it. `listedProjects` in
+  `ProjectsSection.svelte` adds what the sidebar shows of each entry from
+  the members it may show: whether it has a row at all, its thread count,
+  its activity, and the members a header speaks for. A header's identity
+  warning and its recheck come from those members, not from the store's.
 - A row's worker count and needs-you badge read
   `stores/threadWorkerSummaries.svelte.ts`.
 - `threadRowActions.ts` and `threadGroupActions.ts` own mutations from this
@@ -84,8 +93,10 @@ Synchronizing one project's tree must not remove another project's state.
   confirms it.
 - Computer filters affect sidebar visibility only. They do not change transport
   subscriptions, execution routing, or mounted panes.
-- Apply computer visibility before search and group projection. A hidden clone
-  must not hide a visible checkout of the same repository on another computer.
+- Apply computer visibility by member, before search and before an entry's
+  aggregates, and never by regrouping the rows that pass. A hidden clone must
+  not hide a visible checkout of the same repository on another computer, and
+  must not change which entry that checkout belongs to.
 - Usage and system statistics retain explicit computer identity. Do not present
   cached offline data as current totals or combine separately priced account
   reports as one host-local value.

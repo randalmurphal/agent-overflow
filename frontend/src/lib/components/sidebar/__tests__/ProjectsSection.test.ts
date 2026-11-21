@@ -27,6 +27,7 @@ import { setBindingMock } from '../../../../test/mocks/bindings-app';
 import { normalizedTextContent } from '../../../../test/helpers/textContent';
 import { makeThread } from '../../../../test/helpers/chat';
 import { HOME_BACKEND } from '../../../transport/backendKey';
+import { takePinnedBackend } from '../../../transport/backends';
 import type { Project, ProjectWithCounts, Thread, ThreadGroup } from '../../../types/models';
 import { setThreadFilterQuery } from '../../../stores/threadFilter.svelte';
 import {
@@ -686,9 +687,200 @@ describe('<ProjectsSection> threads and their groups', () => {
       gpuThreads.resolve([]);
       await vi.waitFor(() => expect(catalogTreeListed('gpu')).toBe(true));
       await settle();
-      expect(headers(container)).toEqual(['a-gpu']);
+      // The entry it comes back as is the one it left: identity is the
+      // complete merge's representative, not the member being shown.
+      expect(headers(container)).toEqual(['a-mac']);
     } finally {
       showAllSidebarDevices();
+      resetStagedBackends();
+    }
+  });
+
+  // An entry's identity is the complete merge's representative, so what the
+  // sidebar shows of it cannot move the state persisted under it. The each
+  // key, the collapse set and the show-more limit all key on it, and a
+  // reorder sends it to the computer that holds it.
+  const mergedRepoMocks = (homeRows: ProjectWithCounts[], gpuRows: ProjectWithCounts[]) => {
+    setBindingMock('ListProjects', async () => (takePinnedBackend() === 'gpu' ? gpuRows : homeRows));
+  };
+  const chevron = (container: HTMLElement, id: string): HTMLElement => {
+    const el = container.querySelector(`[data-project-id="${id}"] [data-testid="project-item-chevron"]`);
+    if (!(el instanceof HTMLElement)) throw new Error(`no chevron for ${id}`);
+    return el;
+  };
+  const expandedOf = (container: HTMLElement, id: string): string | null =>
+    container.querySelector(`[data-project-id="${id}"] [aria-expanded]`)?.getAttribute('aria-expanded') ?? null;
+
+  it("keeps a collapsed entry's identity, and its show-more limit, when the filter hides its home member", async () => {
+    const { stageBackend, resetStagedBackends } = await import('../../../../test/helpers/backends');
+    const { setSidebarDeviceVisible, showAllSidebarDevices } = await import('../../../stores/sidebarDevices.svelte');
+    const { getThreadListVisibleLimit, setThreadListVisibleLimit } = await import('../../../stores/sidebar.svelte');
+    stageBackend({ id: 'gpu', backendId: 'gpu-id' });
+    setBackendIdentityFromBootstrap('home-id', 'gen-1', 'Mac', HOME_BACKEND);
+    try {
+      mergedRepoMocks(
+        [{ project: repoProject('a-home', 'A', '/home/a'), threadCount: 1, lastActive: 1 }],
+        [{ project: repoProject('a-gpu', 'A', '/gpu/a'), threadCount: 12, lastActive: 2 }],
+      );
+      setBindingMock('ListThreads', async () => (takePinnedBackend() === 'gpu'
+        ? Array.from({ length: 12 }, (_, i) => makeThread({ id: `g${i}`, projectId: 'a-gpu' }))
+        : [makeThread({ id: 'h0', projectId: 'a-home' })]));
+      setBindingMock('ListThreadGroups', async () => []);
+      const { container } = render(ProjectsSection, { props: { pane: null } });
+      await loadSidebarCatalogs();
+      await settle();
+      expect(headers(container)).toEqual(['a-home']);
+
+      await fireEvent.click(chevron(container, 'a-home'));
+      setThreadListVisibleLimit('a-home', 10);
+      await settle();
+      expect(expandedOf(container, 'a-home')).toBe('false');
+
+      setSidebarDeviceVisible('home-id', false);
+      await settle();
+      // Same entry, still collapsed, and the limit still the one the user
+      // revealed to: a rekey to the GPU member would show it expanded at
+      // the default preview.
+      expect(headers(container)).toEqual(['a-home']);
+      expect(expandedOf(container, 'a-home')).toBe('false');
+      expect(getThreadListVisibleLimit('a-home')).toBe(10);
+
+      await fireEvent.click(chevron(container, 'a-home'));
+      await settle();
+      expect(arrangement(container)).toHaveLength(10);
+    } finally {
+      showAllSidebarDevices();
+      setBackendIdentityFromBootstrap('', '', '', HOME_BACKEND);
+      resetStagedBackends();
+    }
+  });
+
+  it("keeps a collapsed entry's identity when another computer's tree lists first", async () => {
+    const { stageBackend, resetStagedBackends } = await import('../../../../test/helpers/backends');
+    const { collapseProject } = await import('../../../stores/sidebar.svelte');
+    stageBackend({ id: 'gpu', backendId: 'gpu-id' });
+    try {
+      // Collapsed in an earlier session, by the entry's id.
+      collapseProject('a-home');
+      const homeThreads = deferred<Thread[]>();
+      mergedRepoMocks(
+        [{ project: repoProject('a-home', 'A', '/home/a'), threadCount: 1, lastActive: 1 }],
+        [{ project: repoProject('a-gpu', 'A', '/gpu/a'), threadCount: 1, lastActive: 2 }],
+      );
+      setBindingMock('ListThreads', () => (takePinnedBackend() === 'gpu'
+        ? Promise.resolve([makeThread({ id: 'g0', projectId: 'a-gpu' })])
+        : homeThreads.promise));
+      setBindingMock('ListThreadGroups', async () => []);
+      vi.useFakeTimers();
+      const { container } = render(ProjectsSection, { props: { pane: null } });
+      void loadSidebarCatalogs();
+      // GPU's answers wait on the round's windows, which the startup
+      // deadline closes while Home's thread read is still out.
+      await vi.advanceTimersByTimeAsync(2500);
+      await settle();
+      expect(catalogTreeListed('gpu')).toBe(true);
+      // Home's row committed at its own window, so the entry is Home's
+      // entry though Home's tree is still held. Keyed by the GPU member it
+      // would read as a project nobody collapsed.
+      expect(catalogTreeListed(HOME_BACKEND)).toBe(false);
+      expect(headers(container)).toEqual(['a-home']);
+      expect(expandedOf(container, 'a-home')).toBe('false');
+
+      homeThreads.resolve([makeThread({ id: 'h0', projectId: 'a-home' })]);
+      await vi.advanceTimersByTimeAsync(0);
+      await settle();
+      expect(catalogTreeListed(HOME_BACKEND)).toBe(true);
+      expect(headers(container)).toEqual(['a-home']);
+      expect(expandedOf(container, 'a-home')).toBe('false');
+    } finally {
+      resetStagedBackends();
+    }
+  });
+
+  it('reorders by the ids of the computer that holds them while the filter hides it', async () => {
+    const { stageBackend, resetStagedBackends } = await import('../../../../test/helpers/backends');
+    const { setSidebarDeviceVisible, showAllSidebarDevices } = await import('../../../stores/sidebarDevices.svelte');
+    stageBackend({ id: 'gpu', backendId: 'gpu-id' });
+    setBackendIdentityFromBootstrap('home-id', 'gen-1', 'Mac', HOME_BACKEND);
+    try {
+      mergedRepoMocks(
+        [
+          { project: { ...repoProject('a-home', 'A', '/home/a'), sortPosition: 0 }, threadCount: 0, lastActive: 0 },
+          { project: { ...repoProject('b-home', 'B', '/home/b'), sortPosition: 1 }, threadCount: 0, lastActive: 0 },
+        ],
+        [
+          { project: { ...repoProject('a-gpu', 'A', '/gpu/a'), sortPosition: 0 }, threadCount: 0, lastActive: 0 },
+          { project: { ...repoProject('b-gpu', 'B', '/gpu/b'), sortPosition: 1 }, threadCount: 0, lastActive: 0 },
+        ],
+      );
+      setBindingMock('ListThreads', async () => []);
+      setBindingMock('ListThreadGroups', async () => []);
+      setProjectSortMode('manual');
+      const write = vi.fn(async () => []);
+      setBindingMock('UpdateProjectSortPositions', write);
+      const { container } = render(ProjectsSection, { props: { pane: null } });
+      await loadSidebarCatalogs();
+      await settle();
+      setSidebarDeviceVisible('home-id', false);
+      await settle();
+      expect(headers(container)).toEqual(['a-home', 'b-home']);
+
+      const items = container.querySelectorAll('[data-testid="project-item"]');
+      const dataTransfer = { effectAllowed: '', dropEffect: '', setData: vi.fn(), getData: () => '' };
+      const drag = async (type: string, target: Element, props: Record<string, unknown> = {}): Promise<void> => {
+        const event = new Event(type, { bubbles: true, cancelable: true });
+        Object.defineProperty(event, 'dataTransfer', { value: dataTransfer });
+        for (const [key, value] of Object.entries(props)) Object.defineProperty(event, key, { value });
+        await fireEvent(target, event);
+      };
+      await drag('dragstart', items[1].querySelector('[aria-expanded]')!);
+      await drag('dragover', items[0], { clientY: -1 });
+      await drag('drop', items[0]);
+      // Home's ids, which Home holds and can save, though Home is hidden.
+      await vi.waitFor(() => expect(write).toHaveBeenCalledWith(['b-home', 'a-home']));
+    } finally {
+      showAllSidebarDevices();
+      setBackendIdentityFromBootstrap('', '', '', HOME_BACKEND);
+      resetStagedBackends();
+    }
+  });
+
+  // What a header says about its members comes from the same projection
+  // that decided the header: a member with no row yet is not one of them.
+  it('leaves a held member out of the header\'s identity warning and out of its recheck', async () => {
+    const { stageBackend, resetStagedBackends } = await import('../../../../test/helpers/backends');
+    stageBackend({ id: 'gpu', backendId: 'gpu-id' });
+    try {
+      const gpuThreads = deferred<Thread[]>();
+      mergedRepoMocks(
+        [{ project: { ...repoProject('a-home', 'A', '/home/a'), identityError: 'home reason' }, threadCount: 0, lastActive: 0 }],
+        [{ project: { ...repoProject('a-gpu', 'A', '/gpu/a'), identityError: 'gpu reason' }, threadCount: 0, lastActive: 0 }],
+      );
+      setBindingMock('ListThreads', () => (takePinnedBackend() === 'gpu' ? gpuThreads.promise : Promise.resolve([])));
+      setBindingMock('ListThreadGroups', async () => []);
+      const refresh = vi.fn(async (id: string) => ({ ...repoProject(id, 'A', '/home/a'), identityError: '' }));
+      setBindingMock('RefreshProjectIdentity', refresh);
+      const { container, getByTestId, queryByTestId } = render(ProjectsSection, { props: { pane: null } });
+      await loadSidebarCatalogs();
+      await settle();
+      expect(headers(container)).toEqual(['a-home']);
+      expect(getByTestId('project-item-identity-error').getAttribute('title'))
+        .toBe('Could not fully verify /home/a: home reason');
+
+      await fireEvent.click(getByTestId('project-item-identity-error'));
+      // Only the member with a row: the held one is never asked.
+      await vi.waitFor(() => expect(refresh).toHaveBeenCalledWith('a-home'));
+      expect(refresh).toHaveBeenCalledTimes(1);
+      await vi.waitFor(() => expect(queryByTestId('project-item-identity-error')).toBeNull());
+
+      // The held member joins the header's account of itself when its own
+      // row exists, and not before.
+      gpuThreads.resolve([]);
+      await vi.waitFor(() => expect(catalogTreeListed('gpu')).toBe(true));
+      await settle();
+      expect(getByTestId('project-item-identity-error').getAttribute('title'))
+        .toBe('Could not fully verify /gpu/a: gpu reason');
+    } finally {
       resetStagedBackends();
     }
   });

@@ -21,7 +21,7 @@
   import type { ProjectWithCounts, Thread, ThreadGroup } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { RefreshProjectIdentity, RenameProject } from '../../stores/bindings';
-  import { getProjectLabel, projectMembers, updateProjectLocal } from '../../stores/projects.svelte';
+  import { getProjectLabel, updateProjectLocal } from '../../stores/projects.svelte';
   import {
     getProjectSortMode,
     isProjectExpanded,
@@ -88,6 +88,12 @@
     orderedIds?: readonly string[];
     /** Commit a new ordering. Caller updates store + persists. */
     onReorder?: (newOrderedIds: string[]) => void;
+    /** The members of this entry the sidebar shows, from the projection
+     *  that decided the entry has a row (ProjectsSection). Everything the
+     *  header says about its members comes from these: a member whose
+     *  computer holds its tree or whose computer the filter hides has no
+     *  row yet, so the header must not speak for it. */
+    members: readonly ProjectWithCounts[];
     /** Draws the hairline divider that separates this project from the one above. */
     separatedFromPrevious?: boolean;
   }
@@ -102,6 +108,7 @@
     onNewTerminal,
     orderedIds,
     onReorder,
+    members,
     separatedFromPrevious = false,
   }: Props = $props();
 
@@ -203,7 +210,7 @@
     if (recheckingIdentity) return;
     recheckingIdentity = true;
     try {
-      const failing = projectMembers(project.project.id).filter((row) => row.project.identityError);
+      const failing = members.filter((row) => row.project.identityError);
       const results = await Promise.allSettled(failing.map((row) => RefreshProjectIdentity(row.project.id)));
       for (const result of results) {
         if (result.status === 'fulfilled') updateProjectLocal(result.value);
@@ -289,7 +296,7 @@
 
   // A checkout git could not read keeps its last identity and may not merge
   // with its other checkouts; say why on the entry rather than nowhere.
-  let identityProblem = $derived(projectMembers(project.project.id)
+  let identityProblem = $derived(members
     .filter((row) => row.project.identityError)
     .map((row) => `Could not fully verify ${row.project.path}: ${row.project.identityError}`)
     .join('\n'));

@@ -18,6 +18,9 @@
     threadsByProject: Map<string, Thread[]>;
     /** Map of project id -> visible thread groups for that project. */
     groupsByProject?: Map<string, ThreadGroup[]>;
+    /** Entry id -> the members the sidebar shows of it, from the same
+     *  projection that decided the entry has a row. */
+    membersByProject: ReadonlyMap<string, readonly ProjectWithCounts[]>;
     pane: ThreadPane | null;
     onNewThread?: ProjectNewThreadHandler;
     onNewTerminal?: ProjectNewTerminalHandler;
@@ -31,6 +34,7 @@
     emptyMessage = 'No projects yet. Click + to add one.',
     threadsByProject,
     groupsByProject,
+    membersByProject,
     pane,
     onNewThread,
     onNewTerminal,
@@ -40,6 +44,7 @@
   // One array for every project with no threads, so its list is not
   // handed a new empty one on each render.
   const NO_THREADS: Thread[] = [];
+  const NO_MEMBERS: readonly ProjectWithCounts[] = [];
 
   let orderedIds = $derived(projects.map((p) => p.project.id));
   let labels = $derived(disambiguatedPathLabels(projects.map((p) => p.project)));
@@ -67,6 +72,7 @@
         displayLabel={labels.get(project.project.id)}
         threads={threadsByProject.get(project.project.id) ?? NO_THREADS}
         groups={groupsByProject?.get(project.project.id) ?? NO_GROUPS}
+        members={membersByProject.get(project.project.id) ?? NO_MEMBERS}
         {pane}
         {onNewThread}
         {onNewTerminal}

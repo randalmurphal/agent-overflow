@@ -16,6 +16,7 @@ import {
   projectSiblingOn,
   projectSpansBackends,
   removeProjectLocal,
+  reorderProjects,
   resetProjectsForTest,
   touchProjectActivity,
   updateProjectLocal,
@@ -282,5 +283,54 @@ describe('projects store — merged entries (wave 7d)', () => {
     await load([wrap(makeProject('a', { name: 'x' })), wrap(makeProject('b', { name: 'x' }))]);
     noteProject('b', 'laptop');
     expect(projectEntries()).toHaveLength(2);
+  });
+});
+
+// Manual reorder. The positions are written before the round trip, so a
+// refused write has to put them back without undoing anything that happened
+// while it was out.
+describe('reorderProjects', () => {
+  function refusal(): { promise: Promise<Project[]>; refuse: (error: unknown) => void } {
+    let refuse!: (error: unknown) => void;
+    const promise = new Promise<Project[]>((_resolve, reject) => { refuse = reject; });
+    return { promise, refuse };
+  }
+  const positionOf = (id: string): number | undefined => getProject(id)?.project.sortPosition;
+
+  beforeEach(() => {
+    resetProjectsForTest();
+    for (const [index, id] of ['a', 'b', 'c'].entries()) {
+      addProjectLocal(makeProject(id, { name: id.toUpperCase(), sortPosition: index }));
+    }
+  });
+
+  it('keeps a rename that landed while a refused write was out', async () => {
+    const write = refusal();
+    setBindingMock('UpdateProjectSortPositions', () => write.promise);
+    const call = reorderProjects(['b', 'a', 'c']);
+    expect([positionOf('a'), positionOf('b')]).toEqual([1, 0]);
+
+    updateProjectLocal({ ...getProject('a')!.project, name: 'Renamed' });
+    write.refuse(new Error('refused'));
+    await expect(call).rejects.toThrow('refused');
+    // The position goes back; the name the row carries now stays.
+    expect(getProject('a')!.project.name).toBe('Renamed');
+    expect([positionOf('a'), positionOf('b'), positionOf('c')]).toEqual([0, 1, 2]);
+  });
+
+  it('leaves a later reorder in place when an earlier write is refused', async () => {
+    const first = refusal();
+    setBindingMock('UpdateProjectSortPositions', () => first.promise);
+    const call = reorderProjects(['b', 'a', 'c']);
+
+    setBindingMock('UpdateProjectSortPositions', async () => []);
+    await reorderProjects(['b', 'c', 'a']);
+    expect([positionOf('a'), positionOf('b'), positionOf('c')]).toEqual([2, 0, 1]);
+
+    first.refuse(new Error('refused'));
+    await expect(call).rejects.toThrow('refused');
+    // Every row was placed by the second call, so the first undoes none of
+    // it — including the one it had written to the same position.
+    expect([positionOf('a'), positionOf('b'), positionOf('c')]).toEqual([2, 0, 1]);
   });
 });
