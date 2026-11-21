@@ -316,15 +316,18 @@ programmatic scroll and must not re-arm) plus a 350ms cooldown fallback.
 `shouldLoad` only admits. The window owns the progress guard: each edge
 has a stalled flag (`olderStalled` / `newerStalled` on
 `threadTimelineWindow`). A page load at that edge (auto-load, the viewport
-fill, the Load older and Load newer buttons) sets it when the load commits
-without moving the edge's cursor, or fails while the edge is still at the
-cursor it loaded from. The cursor writer clears it whenever that edge's
+fill, the Load older and Load newer buttons, an agent digest's boundary)
+sets it when the page lands or fails with the edge still at the cursor it
+asked from; a live upsert that moved the edge while the page was out
+leaves it open. The cursor writer clears it whenever that edge's
 cursor changes (a later page, a cut, a reset), and a replacement (a
 refresh, a jump, a thread switch) or a conversation revert clears both,
 also where a cursor keeps its value. A load starting
 does not clear it, so a click that fails again leaves the edge stalled.
-Auto-load passes the flag to `shouldLoad` as `stalled`, and the viewport
-fill skips a stalled edge. A refused page (its edge moved while it was
+Automatic paging skips a stalled edge: auto-load passes the flag to
+`shouldLoad` as `stalled`, the viewport fill reads it, and so does an
+agent digest's boundary when it comes into view. A click on a boundary or
+a Load button still asks. A refused page (its edge moved while it was
 out, **Load Paging** below) sets nothing and leaves the gate armed, so the
 next scroll or gesture probes. The flag compares the **full** cursor
 (`oldestLoadedCursor` / `newestLoadedCursor`), turnIndex **and** itemIndex.

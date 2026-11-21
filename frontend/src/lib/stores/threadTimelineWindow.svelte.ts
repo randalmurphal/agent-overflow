@@ -362,8 +362,9 @@ export function createThreadTimelineWindow(
   let loadingNewer = $state<number | null>(null);
   /**
    * Per edge: the last page asked at it failed or left it where it was,
-   * and the edge has not moved since. The load sets it from what it
-   * committed, only while the edge has a cursor. Every cursor write that
+   * and the edge has not moved since. A page sets it when it lands or
+   * fails with its edge still at the cursor it asked from, so a stalled
+   * edge always has a cursor. Every cursor write that
    * changes the edge (`setLoadedCursors`, a reset's null cursors among
    * them), a replacement of the window and a conversation revert clear
    * it; a load starting does not, so a retry that fails again leaves it
@@ -458,6 +459,18 @@ export function createThreadTimelineWindow(
   function clearStalledEdges(): void {
     olderStalled = false;
     newerStalled = false;
+  }
+
+  // A page asked from `from` ended, landed or failed, and went nowhere if
+  // its edge is still there. A live upsert can move an edge while its page
+  // is out without refusing the page; an edge that is no longer at `from`
+  // is not the one the page asked about.
+  function stallOlderIfStillAt(from: TimelineCursorLike): void {
+    if (sameCursor(from, oldestLoadedCursor)) olderStalled = true;
+  }
+
+  function stallNewerIfStillAt(from: TimelineCursorLike): void {
+    if (sameCursor(from, newestLoadedCursor)) newerStalled = true;
   }
 
   /**
@@ -979,7 +992,7 @@ export function createThreadTimelineWindow(
         : cloneCursor(newestLoadedCursor) ?? newestCursorFromItems(next);
       // The backend's answer is the only source for "more older". An empty
       // page reports false itself (finalizePagedItems), and a page that
-      // leaves the floor where it was stalls the edge (`olderStalled`).
+      // leaves the floor where it asked from stalls the edge (`olderStalled`).
       const nextHasMoreHistory = pagedHasMoreOlder(paged);
       // Fold the page's stubs against the merged window, then account for
       // the cut over the same array — both while the rows the cut drops
@@ -993,11 +1006,10 @@ export function createThreadTimelineWindow(
           windowVersion++;
           // The cut dropped the newer edge a newer page in flight extends.
           if (cut?.droppedTail) moveEdges(false, true);
-          const floorBefore = oldestLoadedCursor;
           setLoadedCursors(nextFloor, nextNewest);
-          // Decided from this commit, not a later read: a page that left
-          // its edge where it was went nowhere.
-          if (sameCursor(floorBefore, oldestLoadedCursor)) olderStalled = true;
+          // Decided from this commit, not a later read: a later cut can
+          // carry the floor back to `floor` after this page moved it.
+          stallOlderIfStillAt(floor);
           hasMoreHistory = nextHasMoreHistory;
           if (cut?.droppedTail) hasMoreNewer = true;
           options.activityRuns().syncRunSpans(options.getItems());
@@ -1011,9 +1023,7 @@ export function createThreadTimelineWindow(
         !claimHolds(claim)
       )
         return loadOlderResult('stale');
-      // The failed query is the one from `floor`: it stalls the edge only
-      // while the edge is still there.
-      if (sameCursor(floor, oldestLoadedCursor)) olderStalled = true;
+      stallOlderIfStillAt(floor);
       console.error('loadOlder failed:', err);
       addErrorToast('Failed to load older messages', err);
       return loadOlderResult('error');
@@ -1231,10 +1241,9 @@ export function createThreadTimelineWindow(
           windowVersion++;
           // The cut dropped the older edge an older page in flight extends.
           if (cut?.droppedHead) moveEdges(true, false);
-          const ceilingBefore = newestLoadedCursor;
           setLoadedCursors(nextOldest, nextCeiling);
           // Mirror of loadOlder: decided from this commit.
-          if (sameCursor(ceilingBefore, newestLoadedCursor)) newerStalled = true;
+          stallNewerIfStillAt(ceiling);
           hasMoreNewer = nextHasMoreNewer;
           if (cut?.droppedHead) hasMoreHistory = true;
           options.activityRuns().syncRunSpans(options.getItems());
@@ -1248,7 +1257,7 @@ export function createThreadTimelineWindow(
         !claimHolds(claim)
       )
         return loadOlderResult('stale');
-      if (sameCursor(ceiling, newestLoadedCursor)) newerStalled = true;
+      stallNewerIfStillAt(ceiling);
       console.error('loadNewer failed:', err);
       addErrorToast('Failed to load newer messages', err);
       return loadOlderResult('error');

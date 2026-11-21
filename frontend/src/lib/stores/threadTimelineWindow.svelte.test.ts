@@ -12,6 +12,7 @@ import { type Item } from '../types/models';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { makeItem, makeThread, stubScrollController } from '../../test/helpers/chat';
 import { flushMicrotasks, installThreadPaneTestEnv } from '../../test/helpers/threadPane';
+import { createAutoLoadGate } from '../components/chat/timelineScroll';
 import {
   ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS,
   ACTIVE_TIMELINE_WINDOW_MAX_ITEMS,
@@ -118,6 +119,21 @@ describe('threadTimelineWindow', () => {
       return pane;
     }
 
+    // Whether auto-load would page this edge now, read through the gate
+    // from the pane's own state, with the reader in the trigger zone.
+    function autoLoadAdmits(pane: ThreadPane, direction: 'older' | 'newer'): boolean {
+      const older = direction === 'older';
+      return createAutoLoadGate().shouldLoad({
+        hasMore: older ? pane.hasMoreHistory : pane.hasMoreNewer,
+        loading: older ? pane.loadingOlder : pane.loadingNewer,
+        stalled: older ? pane.olderStalled : pane.newerStalled,
+        floorCursor: older ? pane.oldestLoadedCursor : pane.newestLoadedCursor,
+        restoredThreadId: pane.threadId,
+        threadId: pane.threadId,
+        inTriggerZone: () => true,
+      });
+    }
+
     it.each([10, 12])('moving boundary %s to an unloaded tail cannot skip intervening history', async (boundary) => {
       const pane = await pagedPane();
       pane.applyProviderItemUpserts([makeItem({ id: `row-${boundary}`, turnIndex: 2, itemIndex: 20 })]);
@@ -162,6 +178,10 @@ describe('threadTimelineWindow', () => {
       await loading;
       expect(pane.oldestLoadedCursor).toEqual({ turnIndex: 2, itemIndex: 12, itemId: 'row-10' });
       expect(pane.newestLoadedCursor).toEqual({ turnIndex: 2, itemIndex: 14, itemId: 'row-12' });
+      // The edge is no longer where the page asked from, so its empty
+      // answer says nothing about the edge: automatic paging still asks.
+      expect(direction === 'older' ? pane.olderStalled : pane.newerStalled).toBe(false);
+      expect(autoLoadAdmits(pane, direction)).toBe(true);
     });
 
     it.each([false, true])('a stale page anchor preserves newer live coverage, full page=%s', async (fullPage) => {
@@ -174,6 +194,31 @@ describe('threadTimelineWindow', () => {
       release({ items: (fullPage ? [10, 11, 12] : [12]).map((itemIndex) => makeItem({ id: `row-${itemIndex}`, turnIndex: 2, itemIndex })), hasMoreNewer: true });
       await loading;
       expect(pane.newestLoadedCursor).toEqual({ turnIndex: 2, itemIndex: 14, itemId: 'row-12' });
+      expect(pane.newerStalled).toBe(false);
+      expect(autoLoadAdmits(pane, 'newer')).toBe(true);
+    });
+
+    // The page asked from item 12; live rows carried the ceiling to the
+    // page's own end before it landed, and the page's ceiling is clamped
+    // to it. The ceiling did not move in this commit, but it is not where
+    // the page asked from either.
+    it('a newer page that lands where live rows already carried the ceiling leaves the edge open', async () => {
+      const pane = await pagedPane();
+      let release!: (value: { items: Item[]; hasMoreNewer: boolean }) => void;
+      const newer = setBindingMock('ListItemsAfterCursor', () => new Promise((resolve) => { release = resolve; }));
+      const loading = pane.loadNewer();
+      pane.applyProviderItemUpserts([10, 11, 12].map((original) =>
+        makeItem({ id: `row-${original}`, turnIndex: 2, itemIndex: original + 200 })));
+      expect(pane.newestLoadedCursor).toEqual({ turnIndex: 2, itemIndex: 212, itemId: 'row-12' });
+      release({
+        items: Array.from({ length: 200 }, (_, index) => makeItem({ id: `page-${index + 13}`, turnIndex: 2, itemIndex: index + 13 })),
+        hasMoreNewer: true,
+      });
+      await loading;
+      expect(newer.mock.calls[0]?.[1]).toMatchObject({ itemIndex: 12 });
+      expect(pane.newestLoadedCursor?.itemIndex).toBe(212);
+      expect(pane.newerStalled).toBe(false);
+      expect(autoLoadAdmits(pane, 'newer')).toBe(true);
     });
   });
 

@@ -34,7 +34,7 @@ beforeEach(async () => {
   setBindingMock('GetSettings', async () => makeSettings({ activityRunDefault: 'expanded' }));
   await loadSettings();
 });
-afterEach(() => { cleanup(); resetPanesForTest(); });
+afterEach(() => { cleanup(); resetPanesForTest(); vi.unstubAllGlobals(); });
 
 it('regroups on structural changes only', async () => {
   const rows = [tool('t1', 1), tool('t2', 2), tool('t3', 3)];
@@ -93,4 +93,73 @@ it('lands earlier and newer activities asked for together', async () => {
     .toEqual(['t1', 't2', 't3', 't4']));
   expect(view.queryByText('Load earlier activities')).toBeNull();
   expect(view.queryByText('Load newer activities')).toBeNull();
+});
+
+// Stands in for the browser's observer so a test decides when a boundary
+// enters and leaves the clip.
+class BoundaryObserver {
+  static all: BoundaryObserver[] = [];
+  readonly targets = new Set<Element>();
+  constructor(private readonly callback: IntersectionObserverCallback) { BoundaryObserver.all.push(this); }
+  observe(target: Element) { this.targets.add(target); }
+  unobserve(target: Element) { this.targets.delete(target); }
+  disconnect() { this.targets.clear(); }
+  takeRecords(): IntersectionObserverEntry[] { return []; }
+  static show(target: Element, isIntersecting: boolean) {
+    for (const observer of BoundaryObserver.all) {
+      if (!observer.targets.has(target)) continue;
+      observer.callback([{ target, isIntersecting } as IntersectionObserverEntry], observer as unknown as IntersectionObserver);
+    }
+  }
+}
+
+// A boundary reaching the clip is automatic paging, under the rule
+// auto-load and the viewport fill follow: an edge whose page failed waits
+// until the edge moves, and a click still asks.
+it.each([
+  { label: 'earlier', binding: 'ListItemsBeforeCursor', moved: tool('t1', 1) },
+  { label: 'newer', binding: 'ListItemsAfterCursor', moved: tool('t4', 4) },
+] as const)('after a failed page the $label boundary waits for its edge to move before loading on sight', async ({ label, binding, moved }) => {
+  BoundaryObserver.all = [];
+  vi.stubGlobal('IntersectionObserver', BoundaryObserver);
+  installPaneMocks([launch, tool('t2', 2), tool('t3', 3)]);
+  const pane = createThreadPane({ paneId: 'main' });
+  registerPaneForTest('main', pane);
+  await pane.switchThread(makeThread({ id: threadId }));
+  const page = await getBindingMock('ListThreadSliceAround')!(threadId, '', 200, { selection: { scopeRootId: launch.id, tools: true } }) as PagedItems;
+  setBindingMock('SyncThreadWindow', async () => ({
+    status: 'stale', generation: 'test-generation', page: { ...page, hasMore: true, hasMoreOlder: true, hasMoreNewer: true },
+  }));
+  const request = setBindingMock(binding, async () => { throw new Error('page failed'); });
+  const view = render(AgentDigestTimeline, { props: { pane, scopeId: launch.id, id: 'digest', viewKey: 'tray', live: true } });
+  const text = `Load ${label} activities`;
+  await waitFor(() => expect(view.getByText(text)).toBeEnabled());
+  const passBy = async () => {
+    BoundaryObserver.show(view.getByText(text), false);
+    BoundaryObserver.show(view.getByText(text), true);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    await waitFor(() => expect(view.getByText(text)).toBeEnabled());
+  };
+
+  BoundaryObserver.show(view.getByText(text), true);
+  await waitFor(() => expect(request).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(view.getByText(text)).toBeEnabled());
+  await passBy();
+  expect(request).toHaveBeenCalledTimes(1);
+
+  // A click is the reader asking: it retries, and failing again keeps
+  // the edge where the observer leaves it alone.
+  await fireEvent.click(view.getByText(text));
+  await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(view.getByText(text)).toBeEnabled());
+  await passBy();
+  expect(request).toHaveBeenCalledTimes(2);
+
+  // A page that moves the edge hands it back to the observer.
+  request.mockImplementation(async () => ({ items: [moved], hasMore: true, hasMoreOlder: true, hasMoreNewer: true }));
+  await fireEvent.click(view.getByText(text));
+  await waitFor(() => expect(view.getByTestId('subagent-group-body').querySelector(`[data-item-id="${moved.id}"]`)).not.toBeNull());
+  await waitFor(() => expect(view.getByText(text)).toBeEnabled());
+  await passBy();
+  expect(request).toHaveBeenCalledTimes(4);
 });
