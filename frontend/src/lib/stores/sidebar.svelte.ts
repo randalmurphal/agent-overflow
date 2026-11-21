@@ -35,32 +35,40 @@ import {
   appStorageDelete,
   appStorageGet,
   appStorageSet,
+  isAppStorageHydrated,
 } from './appStorage';
 import { getSettings, updateSettingsPatch } from './settings.svelte';
 import { readFrontendValue, writeFrontendValue, onFrontendValueChanged } from './frontendStorage';
 
 export type { ProjectSortMode };
 
-// appStorage (per-client) keys. Both records are keyed by opaque strings and
-// hold every kind of list together: a project's top level by its sidebar
-// entry's key (`stores/projectDisclosure.ts` chooses it), a group's members
-// by the group id, the Assistants section's rows by ASSISTANTS_LIST_KEY.
+// appStorage (per-client) keys.
 //
-// A project's key used to be its own id, before a repository checked out on
-// several computers became one entry. Nothing migrates those: an id cannot
-// be turned into an entry key without every computer's project rows, which
-// the sidebar has not read when this module initializes. A repository
-// entry's key is its repository key, so what was saved under a member's
-// project id is simply never read again, which is the whole price: that
-// project opens once. An entry whose key IS its project id keeps what it
-// saved, and so do groups and the Assistants section, because none of them
-// changed key.
+// A project row's disclosure, its fold and the size of its own list, is
+// keyed by the sidebar ENTRY (`stores/projectDisclosure.ts` chooses the
+// key) and lives in records of its own, which nothing else writes.
 //
-// A project's key does move with its repository identity, which Recheck can
-// restore and a lost remote can take away: an entry folded while its
-// identity was unknown opens when the identity lands, and the fold under its
-// id answers again if the identity goes away. One row, one fold, either way.
-const COLLAPSED_KEY = 'sidebar:collapsedProjects';
+// They are new records because a project's disclosure used to be keyed by
+// its own id, before a repository checked out on several computers became
+// one entry, and that cannot be migrated: an id cannot be turned into an
+// entry key without every computer's project rows, which the sidebar has
+// not read when this module initializes. Separate records are what makes
+// the old state unreachable rather than merely unread. An entry's key moves
+// with its repository identity, which Recheck can restore and a lost remote
+// can take away, so a shared record would answer a project's id again the
+// moment its identity went: it would be the same fold the upgrade dropped,
+// coming back. Every project therefore opens once, whatever its key is.
+const COLLAPSED_PROJECTS_KEY = 'sidebar:collapsedProjectEntries';
+const PROJECT_LIST_LIMITS_KEY = 'sidebar:projectEntryListLimits';
+// Read by nothing: the id-keyed fold from before the entry key. Dropped
+// after hydration rather than at init, because the first write of a boot
+// marks this client migrated (`persist` in ./appStorage.ts) and a boot whose
+// host read then fails must still be able to read the host bucket.
+const RETIRED_COLLAPSED_PROJECTS_KEY = 'sidebar:collapsedProjects';
+// A group's members and the Assistants section's rows, by group id and by
+// ASSISTANTS_LIST_KEY. Untouched by the entry key: neither ever changed key,
+// so this record and its legacy adoption stay as they were. Limits a project
+// id saved here before the entry key are read by nothing.
 const THREAD_LIST_VISIBLE_LIMITS_KEY = 'sidebar:threadListVisibleLimits';
 // Groups default to EXPANDED, so the persisted set holds the COLLAPSED
 // ids — the same inversion collapsedProjects uses, for the same reason:
@@ -70,7 +78,9 @@ const COLLAPSED_GROUPS_KEY = 'sidebar:collapsedGroups';
 // The Assistants and Projects sections, each folded whole from its header.
 const COLLAPSED_SECTIONS_KEY = 'sidebar:collapsedSections';
 
-// Pre-appStorage localStorage keys, adopted once at module init.
+// Pre-appStorage localStorage keys. The two project ones are removed, not
+// adopted: both were keyed by a project id. Removing a localStorage key
+// writes nothing to appStorage.
 const LEGACY_COLLAPSED_STORAGE_KEY = 'agent-overflow:sidebar:collapsedProjects';
 const LEGACY_EXPANDED_STORAGE_KEY = 'agent-overflow:sidebar:expandedProjects';
 const LEGACY_EXPANDED_THREAD_LISTS_KEY = 'agent-overflow:sidebar:expandedThreadLists';
@@ -132,13 +142,10 @@ function writeStringSet(key: string, set: ReadonlySet<string>): void {
   appStorageSet(key, JSON.stringify([...set]));
 }
 
-function readCollapsed(): Set<string> {
-  // Drop the pre-inversion legacy "expanded" key so old data doesn't
-  // linger forever. Its contents can't be migrated meaningfully: the
-  // old set listed user-expanded ids, and computing the inverse needs
-  // the full project list, which isn't loaded here.
+function readCollapsedProjects(): Set<string> {
+  removeLocalStorageKey(LEGACY_COLLAPSED_STORAGE_KEY);
   removeLocalStorageKey(LEGACY_EXPANDED_STORAGE_KEY);
-  return stringSetFromStorage(COLLAPSED_KEY, LEGACY_COLLAPSED_STORAGE_KEY);
+  return stringSetFromStorage(COLLAPSED_PROJECTS_KEY);
 }
 
 function readProjectSortMode(): ProjectSortMode {
@@ -154,7 +161,7 @@ function readProjectSortMode(): ProjectSortMode {
   }
 }
 
-function parseThreadListVisibleLimits(raw: string): Record<string, number> | null {
+function parseListLimits(raw: string): Record<string, number> | null {
   try {
     const parsed: unknown = JSON.parse(raw);
     if (parsed == null || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
@@ -170,23 +177,33 @@ function parseThreadListVisibleLimits(raw: string): Record<string, number> | nul
   }
 }
 
+function readListLimits(key: string): Record<string, number> {
+  const raw = appStorageGet(key);
+  if (raw === null) return {};
+  return parseListLimits(raw) ?? {};
+}
+
+function writeListLimits(key: string, limits: Record<string, number>): void {
+  if (Object.keys(limits).length === 0) {
+    appStorageDelete(key);
+    return;
+  }
+  appStorageSet(key, JSON.stringify(limits));
+}
+
 function readThreadListVisibleLimits(): Record<string, number> {
   removeLocalStorageKey(LEGACY_EXPANDED_THREAD_LISTS_KEY);
   const raw =
     appStorageGet(THREAD_LIST_VISIBLE_LIMITS_KEY) ??
     appStorageAdoptLegacyKey(THREAD_LIST_VISIBLE_LIMITS_KEY, LEGACY_THREAD_LIST_LIMITS_KEY, (legacy) =>
-      parseThreadListVisibleLimits(legacy) === null ? null : legacy,
+      parseListLimits(legacy) === null ? null : legacy,
     );
   if (raw === null) return {};
-  return parseThreadListVisibleLimits(raw) ?? {};
+  return parseListLimits(raw) ?? {};
 }
 
 function writeThreadListVisibleLimits(limits: Record<string, number>): void {
-  if (Object.keys(limits).length === 0) {
-    appStorageDelete(THREAD_LIST_VISIBLE_LIMITS_KEY);
-    return;
-  }
-  appStorageSet(THREAD_LIST_VISIBLE_LIMITS_KEY, JSON.stringify(limits));
+  writeListLimits(THREAD_LIST_VISIBLE_LIMITS_KEY, limits);
 }
 
 function writeProjectSortMode(mode: ProjectSortMode): void {
@@ -207,23 +224,24 @@ function removeLocalStorageKey(key: string): void {
   }
 }
 
-let collapsedProjects: Set<string> = $state(readCollapsed());
+let collapsedProjects: Set<string> = $state(readCollapsedProjects());
+// How many rows a project's own list shows, by entry key.
+let projectListLimits: Record<string, number> = $state(readListLimits(PROJECT_LIST_LIMITS_KEY));
 let collapsedGroups: Set<string> = $state(stringSetFromStorage(COLLAPSED_GROUPS_KEY));
 let collapsedSections: Set<string> = $state(stringSetFromStorage(COLLAPSED_SECTIONS_KEY));
-// How many rows each list shows: a project's top level by its entry key, a
-// group's members by the group id, and the Assistants section's rows by
-// ASSISTANTS_LIST_KEY.
+// How many rows a group's members and the Assistants section's rows show,
+// by group id and by ASSISTANTS_LIST_KEY.
 let threadListVisibleLimits: Record<string, number> = $state(readThreadListVisibleLimits());
 let projectSortMode: ProjectSortMode = $state(readProjectSortMode());
 
-// Disclosure is persisted by the key its caller gives, and this module does
-// not know what that key is about. A sidebar entry's key is the entry's own
+// Each record is persisted by the key its caller gives, and this module does
+// not know what that key is about. A project's is its sidebar entry's key
 // (`stores/projectDisclosure.ts` chooses it); a group's is the group id, the
 // Assistants section's is ASSISTANTS_LIST_KEY.
 
 function writeCollapsed(next: Set<string>): void {
   collapsedProjects = next;
-  writeStringSet(COLLAPSED_KEY, next);
+  writeStringSet(COLLAPSED_PROJECTS_KEY, next);
 }
 
 export function isProjectExpanded(key: string): boolean {
@@ -284,10 +302,17 @@ export function syncSidebarFromSettings(): void {
  * just adopts whatever the bucket now holds.
  */
 export function syncSidebarFromAppStorage(): void {
-  const collapsed = new Set(parseStringArray(appStorageGet(COLLAPSED_KEY) ?? '[]') ?? []);
+  // The id-keyed fold is read by nothing; this is the first point in a boot
+  // where dropping it cannot be mistaken for a migration this client has
+  // already done.
+  if (isAppStorageHydrated() && appStorageGet(RETIRED_COLLAPSED_PROJECTS_KEY) !== null) {
+    appStorageDelete(RETIRED_COLLAPSED_PROJECTS_KEY);
+  }
+  const collapsed = new Set(parseStringArray(appStorageGet(COLLAPSED_PROJECTS_KEY) ?? '[]') ?? []);
   if (!setsEqual(collapsed, collapsedProjects)) {
     collapsedProjects = collapsed;
   }
+  projectListLimits = readListLimits(PROJECT_LIST_LIMITS_KEY);
   const groups = new Set(
     parseStringArray(appStorageGet(COLLAPSED_GROUPS_KEY) ?? '[]') ?? [],
   );
@@ -301,7 +326,7 @@ export function syncSidebarFromAppStorage(): void {
     collapsedSections = sections;
   }
   const rawLimits = appStorageGet(THREAD_LIST_VISIBLE_LIMITS_KEY);
-  threadListVisibleLimits = rawLimits === null ? {} : (parseThreadListVisibleLimits(rawLimits) ?? {});
+  threadListVisibleLimits = rawLimits === null ? {} : (parseListLimits(rawLimits) ?? {});
 }
 
 function setsEqual(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
@@ -379,6 +404,44 @@ export const ASSISTANTS_LIST_KEY = 'assistants';
  * click reveals up to THREAD_REVEAL_INCREMENT hidden rows, and "Show less"
  * drops it back to the default preview.
  */
+/**
+ * What a sidebar list's top level pages under. Its two kinds page in two
+ * records, so the caller names which it is instead of a key alone saying it:
+ * a project's record is keyed by its entry and holds nothing else.
+ */
+export type SidebarTopLevelList =
+  | { readonly kind: 'project'; readonly entryKey: string }
+  | { readonly kind: 'assistants' };
+
+/**
+ * How many rows a project's own list shows, by its sidebar entry's key. Its
+ * own record: nothing a project saved under its project id before the entry
+ * key can be read here, whatever its key is today.
+ */
+export function getProjectListLimit(entryKey: string): number {
+  return Math.max(THREAD_PREVIEW_LIMIT, projectListLimits[entryKey] ?? THREAD_PREVIEW_LIMIT);
+}
+
+export function setProjectListLimit(entryKey: string, limit: number): void {
+  const roundedLimit = Math.floor(limit);
+  if (!Number.isFinite(roundedLimit) || roundedLimit <= THREAD_PREVIEW_LIMIT) {
+    collapseProjectList(entryKey);
+    return;
+  }
+  if (projectListLimits[entryKey] === roundedLimit) return;
+  const next = { ...projectListLimits, [entryKey]: roundedLimit };
+  projectListLimits = next;
+  writeListLimits(PROJECT_LIST_LIMITS_KEY, next);
+}
+
+export function collapseProjectList(entryKey: string): void {
+  if (!(entryKey in projectListLimits)) return;
+  const next = { ...projectListLimits };
+  delete next[entryKey];
+  projectListLimits = next;
+  writeListLimits(PROJECT_LIST_LIMITS_KEY, next);
+}
+
 export function getThreadListVisibleLimit(key: string): number {
   return Math.max(THREAD_PREVIEW_LIMIT, threadListVisibleLimits[key] ?? THREAD_PREVIEW_LIMIT);
 }
@@ -408,6 +471,7 @@ export function collapseThreadList(key: string): void {
 export function resetSidebarForTest(): void {
   showProviderIcons = false;
   collapsedProjects = new Set();
+  projectListLimits = {};
   collapsedGroups = new Set();
   collapsedSections = new Set();
   threadListVisibleLimits = {};

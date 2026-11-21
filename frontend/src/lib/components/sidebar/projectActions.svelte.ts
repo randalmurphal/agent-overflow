@@ -9,7 +9,7 @@
 // target from a later gesture and the call took one from each.
 //
 // A run owns its target and everything derived from it, and only the row's
-// current run is shown or sent, `reraise` after a failed call included.
+// current run is shown or sent, `reraiseDelete` after a failed call included.
 // Starting a run retires the one before it,
 // and a run that is not live cannot show, collect or send anything:
 // `beginSubmit` answers false, which is how the call it ends in is gated.
@@ -47,21 +47,41 @@ export interface ProjectActionRun {
   end(): void;
 }
 
+/** A run of one kind: what an operation on that kind takes. */
+export type ProjectRunOf<K extends ProjectActionKind> = ProjectActionRun & { readonly kind: K };
+
 export interface ProjectActions {
   /** The run the row is showing. The only run anything renders. */
   readonly current: ProjectActionRun | null;
   start(kind: ProjectActionKind, target: ProjectTarget): ProjectActionRun;
   /**
-   * Raise a failed run's dialog again, as a new run on the same target
-   * carrying what the old one had collected, and answer it.
+   * Raise a delete's preview dialog again after its call failed, as a new
+   * run on the same project carrying the same answer, and give it back.
    *
    * Nothing happens, and the answer is null, unless the failed run is still
    * the row's current one: a call answers after the user has moved on, and a
    * run they cancelled or one a newer gesture replaced has lost the row. It
    * must not take the row back, which is the only reason this is the owner's
    * operation and not a second `start` at the call site.
+   *
+   * Delete only, because the preview is the only thing a run collects that
+   * outlives the call it is spent on: a confirmation and a typed name are
+   * both answered and gone before their call goes out.
    */
-  reraise(run: ProjectActionRun): ProjectActionRun | null;
+  reraiseDelete(run: ProjectRunOf<'delete'>): ProjectActionRun | null;
+}
+
+/**
+ * The row's current run when it is of `kind`, else null: what a dialog of
+ * that kind renders from, narrowed so an operation on one kind cannot be
+ * handed another's run.
+ */
+export function currentRunOf<K extends ProjectActionKind>(
+  actions: ProjectActions,
+  kind: K,
+): ProjectRunOf<K> | null {
+  const run = actions.current;
+  return run !== null && run.kind === kind ? (run as ProjectRunOf<K>) : null;
 }
 
 // A run's whole life. It leaves `live` once, and never comes back: the user
@@ -158,12 +178,11 @@ export function createProjectActions(): ProjectActions {
       return current;
     },
     start,
-    reraise(run: ProjectActionRun): ProjectActionRun | null {
+    reraiseDelete(run: ProjectRunOf<'delete'>): ProjectActionRun | null {
       if (current !== run) return null;
-      const next = start(run.kind, run.target);
-      // What the dialog it is raising again was rendered from. A one-line
-      // confirmation is answered and gone at the press, so a run that is
-      // still the row's own here is one that was showing a preview.
+      const next = start('delete', run.target);
+      // The dialog it is raising again is the preview's, which is all a
+      // delete still holds once it has been taken for its call.
       if (run.preview !== null) next.offer(run.preview);
       return next;
     },

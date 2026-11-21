@@ -9,10 +9,13 @@ import {
   getProjectSortMode,
   getShowProviderIcons,
   setShowProviderIcons,
+  collapseProjectList,
+  getProjectListLimit,
   getThreadListVisibleLimit,
   isGroupExpanded,
   isProjectExpanded,
   resetSidebarForTest,
+  setProjectListLimit,
   setThreadListVisibleLimit,
   setProjectSortMode,
   toggleGroup,
@@ -26,7 +29,7 @@ import { makeSettings } from '../../test/helpers/settings';
 import { THREAD_PREVIEW_LIMIT, THREAD_REVEAL_INCREMENT } from '../utils/sidebarThreadLimits';
 import { removeThreadGroup } from './threadGroups.svelte';
 
-const COLLAPSED_KEY = 'sidebar:collapsedProjects';
+const COLLAPSED_KEY = 'sidebar:collapsedProjectEntries';
 const COLLAPSED_GROUPS_KEY = 'sidebar:collapsedGroups';
 
 // The store writes a fold under the key it is given; a toggle is the
@@ -261,8 +264,9 @@ describe('sidebar store', () => {
   describe('syncSidebarFromAppStorage', () => {
     it('adopts hydrated view state from the per-client bucket', async () => {
       setBindingMock('GetUIState', async () => ({
-        'sidebar:collapsedProjects': JSON.stringify(['proj-1', 'proj-2']),
-        'sidebar:threadListVisibleLimits': JSON.stringify({ 'proj-1': 40 }),
+        'sidebar:collapsedProjectEntries': JSON.stringify(['proj-1', 'proj-2']),
+        'sidebar:projectEntryListLimits': JSON.stringify({ 'proj-1': 40 }),
+        'sidebar:threadListVisibleLimits': JSON.stringify({ 'group-1': 25 }),
         'sidebar:collapsedGroups': JSON.stringify(['group-1']),
       }));
       await hydrateAppStorage();
@@ -274,8 +278,10 @@ describe('sidebar store', () => {
       expect(isProjectExpanded('proj-1')).toBe(false);
       expect(isProjectExpanded('proj-2')).toBe(false);
       expect(isProjectExpanded('proj-3')).toBe(true);
-      expect(getThreadListVisibleLimit('proj-1')).toBe(40);
-      expect(getThreadListVisibleLimit('proj-2')).toBe(THREAD_PREVIEW_LIMIT);
+      expect(getProjectListLimit('proj-1')).toBe(40);
+      expect(getProjectListLimit('proj-2')).toBe(THREAD_PREVIEW_LIMIT);
+      // A group's size lives in the record it always did.
+      expect(getThreadListVisibleLimit('group-1')).toBe(25);
     });
 
     it('local pre-hydration writes survive an empty server bucket (pending wins)', async () => {
@@ -306,25 +312,48 @@ describe('sidebar store', () => {
 
   describe('thread list visible limit', () => {
     it('starts at the preview limit', () => {
-      expect(getThreadListVisibleLimit('p1')).toBe(THREAD_PREVIEW_LIMIT);
+      expect(getThreadListVisibleLimit('g1')).toBe(THREAD_PREVIEW_LIMIT);
     });
 
     it('collapseThreadList resets one list to the preview limit, twice in a row', () => {
-      setThreadListVisibleLimit('p1', THREAD_PREVIEW_LIMIT + THREAD_REVEAL_INCREMENT);
-      setThreadListVisibleLimit('g1', 40);
-      collapseThreadList('p1');
-      collapseThreadList('p1');
-      expect(getThreadListVisibleLimit('p1')).toBe(THREAD_PREVIEW_LIMIT);
-      // A group's list is keyed by its own id and keeps its size.
-      expect(getThreadListVisibleLimit('g1')).toBe(40);
+      setThreadListVisibleLimit('g1', THREAD_PREVIEW_LIMIT + THREAD_REVEAL_INCREMENT);
+      setThreadListVisibleLimit('g2', 40);
+      collapseThreadList('g1');
+      collapseThreadList('g1');
+      expect(getThreadListVisibleLimit('g1')).toBe(THREAD_PREVIEW_LIMIT);
+      // The other list is keyed by its own id and keeps its size.
+      expect(getThreadListVisibleLimit('g2')).toBe(40);
     });
 
     it('setThreadListVisibleLimit persists explicit reveal sizes and resets defaults', () => {
-      setThreadListVisibleLimit('p1', 27);
-      expect(getThreadListVisibleLimit('p1')).toBe(27);
+      setThreadListVisibleLimit('g1', 27);
+      expect(getThreadListVisibleLimit('g1')).toBe(27);
 
-      setThreadListVisibleLimit('p1', THREAD_PREVIEW_LIMIT);
-      expect(getThreadListVisibleLimit('p1')).toBe(THREAD_PREVIEW_LIMIT);
+      setThreadListVisibleLimit('g1', THREAD_PREVIEW_LIMIT);
+      expect(getThreadListVisibleLimit('g1')).toBe(THREAD_PREVIEW_LIMIT);
+    });
+  });
+
+  // A project's list pages in a record of its own, which is what keeps an
+  // id-keyed size from ever answering for an entry.
+  describe('project list limit', () => {
+    it('persists an entry\'s reveal size where nothing else writes, and resets it', () => {
+      setProjectListLimit('forge:R', 27);
+      expect(getProjectListLimit('forge:R')).toBe(27);
+      expect(appStorageGet('sidebar:projectEntryListLimits')).toContain('forge:R');
+      // Not the record a group or the Assistants section pages in.
+      expect(getThreadListVisibleLimit('forge:R')).toBe(THREAD_PREVIEW_LIMIT);
+      expect(appStorageGet('sidebar:threadListVisibleLimits')).toBeNull();
+
+      collapseProjectList('forge:R');
+      expect(getProjectListLimit('forge:R')).toBe(THREAD_PREVIEW_LIMIT);
+    });
+
+    it('takes the default preview as no size at all', () => {
+      setProjectListLimit('forge:R', 27);
+      setProjectListLimit('forge:R', THREAD_PREVIEW_LIMIT);
+      expect(getProjectListLimit('forge:R')).toBe(THREAD_PREVIEW_LIMIT);
+      expect(appStorageGet('sidebar:projectEntryListLimits')).toBeNull();
     });
   });
 });

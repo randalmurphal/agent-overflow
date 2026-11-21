@@ -280,12 +280,17 @@ time the overlay is dropped. One write at a time, and only the newest order
 waiting behind it is sent. Collapse and the show-more limit live in
 `sidebar.svelte.ts` under whatever key the caller gives, and
 `projectDisclosure.ts` is the one module that turns a project into a key (the
-entry's). Nothing migrates what a project id was the key of: an id cannot
-become an entry key without every computer's project rows, which the sidebar
-has not read when the store initializes. A repository entry's key is its
-repository key, so a member's saved state is never read again and that
-project opens once; an entry keyed by its own project id, a group and the
-Assistants section keep theirs, because none of them changed key. Do not add permanent
+entry's). A project row's fold and list size live in records of their own,
+keyed by the entry and written by nothing else; a group's and the Assistants
+section's stay in the record they always used. Nothing migrates what a
+project id was the key of: an id cannot become an entry key without every
+computer's project rows, which the store has not read when it initializes.
+Separate records are what makes that state unreachable rather than unread,
+because an entry's key moves with its repository identity and a shared record
+would answer the id again the moment the identity went. Every project opens
+once. The id-keyed fold is dropped in `syncSidebarFromAppStorage`, after
+hydration, since the first write of a boot marks the client migrated and a
+boot whose host read failed must still be able to read the host bucket. Do not add permanent
 frontend tombstones for moved or retired entities; pending reads hold only
 enough ownership evidence to reject stale replies.
 

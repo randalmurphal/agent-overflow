@@ -774,7 +774,7 @@ describe('<ProjectsSection> threads and their groups', () => {
   it("keeps a collapsed entry's identity, and its show-more limit, when the filter hides its home member", async () => {
     const { stageBackend, resetStagedBackends } = await import('../../../../test/helpers/backends');
     const { setSidebarDeviceVisible, showAllSidebarDevices } = await import('../../../stores/sidebarDevices.svelte');
-    const { getThreadListVisibleLimit, setThreadListVisibleLimit } = await import('../../../stores/sidebar.svelte');
+    const { getProjectListLimit, setProjectListLimit } = await import('../../../stores/sidebar.svelte');
     const { projectDisclosureKey } = await import('../../../stores/projectDisclosure');
     stageBackend({ id: 'gpu', backendId: 'gpu-id' });
     setBackendIdentityFromBootstrap('home-id', 'gen-1', 'Mac', HOME_BACKEND);
@@ -793,7 +793,7 @@ describe('<ProjectsSection> threads and their groups', () => {
       expect(headers(container)).toEqual(['a-home']);
 
       await fireEvent.click(chevron(container, 'a-home'));
-      setThreadListVisibleLimit(projectDisclosureKey('a-home'), 10);
+      setProjectListLimit(projectDisclosureKey('a-home'), 10);
       await settle();
       expect(expandedOf(container, 'a-home')).toBe('false');
 
@@ -804,7 +804,7 @@ describe('<ProjectsSection> threads and their groups', () => {
       // the default preview.
       expect(headers(container)).toEqual(['a-home']);
       expect(expandedOf(container, 'a-home')).toBe('false');
-      expect(getThreadListVisibleLimit(projectDisclosureKey('a-home'))).toBe(10);
+      expect(getProjectListLimit(projectDisclosureKey('a-home'))).toBe(10);
 
       await fireEvent.click(chevron(container, 'a-home'));
       await settle();
@@ -820,8 +820,8 @@ describe('<ProjectsSection> threads and their groups', () => {
     const { stageBackend, resetStagedBackends } = await import('../../../../test/helpers/backends');
     const {
       collapseProject,
-      getThreadListVisibleLimit,
-      setThreadListVisibleLimit,
+      getProjectListLimit,
+      setProjectListLimit,
     } = await import('../../../stores/sidebar.svelte');
     const { projectDisclosureKey } = await import('../../../stores/projectDisclosure');
     stageBackend({ id: 'gpu', backendId: 'gpu-id' });
@@ -831,7 +831,7 @@ describe('<ProjectsSection> threads and their groups', () => {
       // A's, which is the key whatever checkout represents it.
       const keyOfA = 'forge:github:github.com:A';
       collapseProject(keyOfA);
-      setThreadListVisibleLimit(keyOfA, 10);
+      setProjectListLimit(keyOfA, 10);
       const homeProjects = deferred<ProjectWithCounts[]>();
       const homeThreads = deferred<Thread[]>();
       setBindingMock('ListProjects', () => (takePinnedBackend() === 'gpu'
@@ -852,7 +852,7 @@ describe('<ProjectsSection> threads and their groups', () => {
       expect(headers(container)).toEqual(['a-gpu']);
       expect(expandedOf(container, 'a-gpu')).toBe('false');
       expect(projectDisclosureKey('a-gpu')).toBe(keyOfA);
-      expect(getThreadListVisibleLimit(keyOfA)).toBe(10);
+      expect(getProjectListLimit(keyOfA)).toBe(10);
       const row = container.querySelector('[data-testid="project-item"]');
 
       // Home's project row commits at its own window while Home's threads
@@ -863,7 +863,7 @@ describe('<ProjectsSection> threads and their groups', () => {
       expect(catalogTreeListed(HOME_BACKEND)).toBe(false);
       expect(headers(container)).toEqual(['a-gpu']);
       expect(expandedOf(container, 'a-gpu')).toBe('false');
-      expect(getThreadListVisibleLimit(projectDisclosureKey('a-gpu'))).toBe(10);
+      expect(getProjectListLimit(projectDisclosureKey('a-gpu'))).toBe(10);
       expect(container.querySelector('[data-testid="project-item"]')).toBe(row);
 
       // At Home's listing the entry changes hands, by design. Its key does
@@ -875,7 +875,7 @@ describe('<ProjectsSection> threads and their groups', () => {
       expect(headers(container)).toEqual(['a-home']);
       expect(container.querySelector('[data-testid="project-item"]')).toBe(row);
       expect(expandedOf(container, 'a-home')).toBe('false');
-      expect(getThreadListVisibleLimit(projectDisclosureKey('a-home'))).toBe(10);
+      expect(getProjectListLimit(projectDisclosureKey('a-home'))).toBe(10);
     } finally {
       resetStagedBackends();
     }

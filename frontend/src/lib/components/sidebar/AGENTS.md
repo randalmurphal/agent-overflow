@@ -59,14 +59,20 @@ which adds the project's empty state and drop targets.
   alike. A run is live once: it stops being live when it is replaced, when
   it is ended and when it takes itself for its call, so nothing but the
   row's current run can act and nothing can act twice. A failed delete
-  leaves its dialog up as a new run on the same project and answer. Every menu action, rename included, takes
+  leaves its dialog up as a new run on the same project and answer
+  (`reraiseDelete`, which does nothing unless the failed run still owns the
+  row; a preview is the only thing a run collects that outlives its call). Every menu action, rename included, takes
   the target the menu was opened on, never the row's current one.
 - A row's label is disambiguated by `ProjectList.svelte` over the entries it
   renders, so a query that hides one of two same-named projects drops the
   other's prefix; the entry carries the name and path, not the label.
 - Disclosure is keyed by the entry's key: collapse, and the show-more limit
   of the entry's own list, which `ProjectItem` passes down as `listKey`
-  beside the `projectId` an action targets. `ProjectsSection.svelte` and
+  beside the `projectId` an action targets. Both live in records only
+  projects write, so nothing a project saved when its own id was the key can
+  answer for an entry; a list's top level names which record it pages in
+  (`SidebarTopLevelList`), since a group's and the Assistants section's
+  sizes share the older one. `ProjectsSection.svelte` and
   `SidebarTreeList.svelte` are the only readers of those writers here, which
   `lib/architecture.test.ts` enforces; a row reports a toggle through
   `onSetExpanded` instead of writing one. Anything that wants a project's

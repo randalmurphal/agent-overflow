@@ -1,13 +1,15 @@
-// What a client's saved disclosure is worth now that a project's key is its
-// sidebar entry's.
+// What a client's saved disclosure is worth now that a project's fold and
+// list size are keyed by its sidebar entry, in records of their own.
 //
 // Nothing migrates: an id cannot become an entry key without every
 // computer's project rows, which the sidebar has not read when the store
-// initializes. So a repository project's saved state is never read again and
-// that project opens once, while every key that did not change - a project
-// with no repository identity, a group, the Assistants section - keeps what
-// it saved. Each case seeds the bucket as the older version left it and then
-// imports the store, which is when it reads.
+// initializes. Separate records are what makes the old state unreachable
+// rather than merely unread, which matters because an entry's key moves with
+// its repository identity: sharing the record would answer a project's id
+// again the moment its identity went. So every project opens once, and the
+// records that did not change key - a group's, the Assistants section's -
+// keep what they saved. Each case seeds the bucket as the older version left
+// it and then imports the store, which is when it reads.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { THREAD_PREVIEW_LIMIT } from '../utils/sidebarThreadLimits';
 import type { Project } from '../types/models';
@@ -41,16 +43,22 @@ async function freshStores() {
   const entityIndex = await import('../transport/entityIndex');
   const projects = await import('./projects.svelte');
   const catalogs = await import('./sidebarCatalogs');
+  const appStorage = await import('./appStorage');
   const sidebar = await import('./sidebar.svelte');
   const disclosure = await import('./projectDisclosure');
   backends.stageBackend({ id: 'laptop', backendId: 'laptop-id', name: 'Laptop' });
   catalogs.listCatalogTreesForTest();
   return {
+    appStorage,
     sidebar,
     disclosure,
     addOn(backend: string, project: Project) {
       entityIndex.noteProject(project.id, backend as never);
       projects.addProjectLocal(project);
+    },
+    /** A row the computer answered again, its identity changed. */
+    update(project: Project) {
+      projects.updateProjectLocal(project);
     },
     reset() {
       projects.resetProjectsForTest();
@@ -89,7 +97,7 @@ describe('saved disclosure after the entry key', () => {
     expect(sidebar.isGroupExpanded('group-2')).toBe(false);
   });
 
-  it('keeps a project with no repository identity folded, at its size', async () => {
+  it('opens a project with no repository identity once, like every other', async () => {
     seedBucket({
       'sidebar:collapsedProjects': JSON.stringify(['alone']),
       'sidebar:threadListVisibleLimits': JSON.stringify({ alone: 20 }),
@@ -99,13 +107,93 @@ describe('saved disclosure after the entry key', () => {
     cleanup = reset;
     addOn('', mkProject('alone'));
 
-    // Its entry key is its own id, so nothing moved out from under it.
-    expect(disclosure.projectDisclosureKey('alone')).toBe('alone');
-    expect(sidebar.isProjectExpanded(disclosure.projectDisclosureKey('alone'))).toBe(false);
-    expect(sidebar.getThreadListVisibleLimit(disclosure.projectDisclosureKey('alone'))).toBe(20);
+    // Its entry key is its own id, but the records it saved in are not the
+    // ones a project is read from any more.
+    const key = disclosure.projectDisclosureKey('alone');
+    expect(key).toBe('alone');
+    expect(sidebar.isProjectExpanded(key)).toBe(true);
+    expect(sidebar.getProjectListLimit(key)).toBe(THREAD_PREVIEW_LIMIT);
+  });
+
+  it('never answers a project from what its id saved, before or after its identity goes', async () => {
+    seedBucket({
+      'sidebar:collapsedProjects': JSON.stringify(['p']),
+      'sidebar:threadListVisibleLimits': JSON.stringify({ p: 50 }),
+    });
+
+    const { sidebar, disclosure, addOn, update, reset } = await freshStores();
+    cleanup = reset;
+    addOn('', mkProject('p', { repositoryID: 'github:github.com:1' }));
+
+    // With the identity: the row is keyed by the repository.
+    expect(disclosure.projectDisclosureKey('p')).toBe('forge:github:github.com:1');
+    expect(sidebar.isProjectExpanded('forge:github:github.com:1')).toBe(true);
+    expect(sidebar.getProjectListLimit('forge:github:github.com:1')).toBe(THREAD_PREVIEW_LIMIT);
+
+    // And without it, which is where a shared record would hand the old
+    // fold back: the remote is removed or retargeted and the key falls back
+    // to the project's own id.
+    update(mkProject('p'));
+    expect(disclosure.projectDisclosureKey('p')).toBe('p');
+    expect(sidebar.isProjectExpanded('p')).toBe(true);
+    expect(sidebar.getProjectListLimit('p')).toBe(THREAD_PREVIEW_LIMIT);
+  });
+
+  it('keeps what the user sets under the key it was set under, across an identity change', async () => {
+    const { sidebar, disclosure, addOn, update, reset } = await freshStores();
+    cleanup = reset;
+    addOn('', mkProject('p', { repositoryID: 'github:github.com:1' }));
+    const repoKey = disclosure.projectDisclosureKey('p');
+
+    // Set while the identity holds, so stored under the repository.
+    sidebar.collapseProject(repoKey);
+    sidebar.setProjectListLimit(repoKey, 50);
+
+    // The identity goes: a different key, so the row shows the default. The
+    // fold is not lost, it is the other key's.
+    update(mkProject('p'));
+    expect(disclosure.projectDisclosureKey('p')).toBe('p');
+    expect(sidebar.isProjectExpanded('p')).toBe(true);
+    expect(sidebar.getProjectListLimit('p')).toBe(THREAD_PREVIEW_LIMIT);
+
+    // And it answers again when the identity returns, which is the same rule
+    // read the other way: one row, one key, one fold.
+    update(mkProject('p', { repositoryID: 'github:github.com:1' }));
+    expect(disclosure.projectDisclosureKey('p')).toBe(repoKey);
+    expect(sidebar.isProjectExpanded(repoKey)).toBe(false);
+    expect(sidebar.getProjectListLimit(repoKey)).toBe(50);
+  });
+
+  it('drops the id-keyed fold from the bucket once the bucket has hydrated', async () => {
+    seedBucket({ 'sidebar:collapsedProjects': JSON.stringify(['p']) });
+
+    const { appStorage, sidebar, reset } = await freshStores();
+    cleanup = reset;
+    sidebar.syncSidebarFromAppStorage();
+
+    expect(appStorage.appStorageGet('sidebar:collapsedProjects')).toBeNull();
+  });
+
+  it('leaves it alone when this boot never hydrated, so the host read can happen again', async () => {
+    // The bucket is here, the migration mark is not: the first boot's host
+    // read failed. A write now would mark this client migrated.
+    localStorage.setItem(BUCKET_KEY, JSON.stringify({ 'sidebar:collapsedProjects': JSON.stringify(['p']) }));
+
+    const { appStorage, sidebar, reset } = await freshStores();
+    cleanup = reset;
+    sidebar.syncSidebarFromAppStorage();
+
+    expect(appStorage.isAppStorageHydrated()).toBe(false);
+    expect(appStorage.appStorageGet('sidebar:collapsedProjects')).not.toBeNull();
+    expect(localStorage.getItem(MIGRATED_KEY)).toBeNull();
   });
 
   it('writes nothing at all on a boot nobody has touched the sidebar on', async () => {
+    // The pre-appStorage project keys, which are removed rather than
+    // adopted: adopting one would be a write. (The pre-appStorage LIMITS
+    // key is still adopted, as on main, for the groups that may be in it.)
+    localStorage.setItem('agent-overflow:sidebar:collapsedProjects', JSON.stringify(['p']));
+    localStorage.setItem('agent-overflow:sidebar:expandedProjects', JSON.stringify(['q']));
     const { sidebar, reset } = await freshStores();
     cleanup = reset;
 
@@ -114,7 +202,10 @@ describe('saved disclosure after the entry key', () => {
     // would then never read the server bucket again.
     expect(localStorage.getItem(MIGRATED_KEY)).toBeNull();
     expect(localStorage.getItem(BUCKET_KEY)).toBeNull();
-    expect(sidebar.isProjectExpanded('anything')).toBe(true);
+    expect(sidebar.isProjectExpanded('p')).toBe(true);
+    // Gone from localStorage too, so no later boot can read one either.
+    expect(localStorage.getItem('agent-overflow:sidebar:collapsedProjects')).toBeNull();
+    expect(localStorage.getItem('agent-overflow:sidebar:expandedProjects')).toBeNull();
   });
 
   it('opens a repository project once, whichever checkout saved the fold', async () => {
@@ -132,7 +223,7 @@ describe('saved disclosure after the entry key', () => {
     const key = disclosure.projectDisclosureKey('home');
     expect(key).toBe('forge:github:github.com:1');
     expect(sidebar.isProjectExpanded(key)).toBe(true);
-    expect(sidebar.getThreadListVisibleLimit(key)).toBe(THREAD_PREVIEW_LIMIT);
+    expect(sidebar.getProjectListLimit(key)).toBe(THREAD_PREVIEW_LIMIT);
     // And once: the fold the user makes now is under the key that stays.
     sidebar.collapseProject(key);
     expect(sidebar.isProjectExpanded(key)).toBe(false);

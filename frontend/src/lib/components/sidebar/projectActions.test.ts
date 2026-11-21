@@ -1,6 +1,10 @@
 // A run's life: one live run per row, and nothing outside it can act.
 import { describe, expect, it } from 'vitest';
-import { createProjectActions, type ProjectActionKind } from './projectActions.svelte';
+import {
+  createProjectActions,
+  type ProjectActionKind,
+  type ProjectRunOf,
+} from './projectActions.svelte';
 import type { ProjectTarget } from './sidebarEntries';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import type { ProjectDeletionPreview } from '../../types/workflow';
@@ -88,10 +92,10 @@ describe('createProjectActions', () => {
 
   // The hole this closes: a failed call re-raised its dialog with a plain
   // `start`, so a project the user had moved on from came back on the row.
-  describe('reraise', () => {
+  describe('reraiseDelete', () => {
     /** A preview delete taken for its call: the run outlives it. */
     function submitted(actions: ReturnType<typeof createProjectActions>, id: string) {
-      const run = actions.start('delete', target(id));
+      const run = actions.start('delete', target(id)) as ProjectRunOf<'delete'>;
       run.offer(preview(id));
       expect(run.beginSubmit()).toBe(true);
       return run;
@@ -101,7 +105,7 @@ describe('createProjectActions', () => {
       const actions = createProjectActions();
       const run = submitted(actions, 'a');
 
-      const again = actions.reraise(run);
+      const again = actions.reraiseDelete(run);
 
       expect(again).not.toBeNull();
       expect(actions.current).toBe(again);
@@ -117,8 +121,19 @@ describe('createProjectActions', () => {
       const run = submitted(actions, 'a');
       run.end();
 
-      expect(actions.reraise(run)).toBeNull();
+      expect(actions.reraiseDelete(run)).toBeNull();
       expect(actions.current).toBeNull();
+    });
+
+    it('cannot be handed a run of another kind', () => {
+      const actions = createProjectActions();
+      const archive = actions.start('archive', target('a'));
+      archive.end();
+
+      // @ts-expect-error an archive run is not a delete's. Nothing a failed
+      // archive or rename collects outlives its call, so there is no dialog
+      // of theirs to raise again, and no call site may pass one here.
+      expect(actions.reraiseDelete(archive)).toBeNull();
     });
 
     it('leaves a newer action alone', () => {
@@ -126,7 +141,7 @@ describe('createProjectActions', () => {
       const run = submitted(actions, 'a');
       const rename = actions.start('rename', target('b'));
 
-      expect(actions.reraise(run)).toBeNull();
+      expect(actions.reraiseDelete(run)).toBeNull();
       expect(actions.current).toBe(rename);
       expect(rename.retired).toBe(false);
     });

@@ -17,7 +17,12 @@
   // only one that can still show a dialog or send a call.
 
   import type { ProjectTarget } from './sidebarEntries';
-  import type { ProjectActionRun, ProjectActions } from './projectActions.svelte';
+  import {
+    currentRunOf,
+    type ProjectActionRun,
+    type ProjectActions,
+    type ProjectRunOf,
+  } from './projectActions.svelte';
   import {
     ArchiveProject,
     DeleteProject,
@@ -78,13 +83,9 @@
 
   // What this menu's dialogs show: the row's current run, whose target and
   // preview are its own. A run the user replaced is not here to be shown.
-  let archiveRun = $derived(runOf('archive'));
-  let deleteRun = $derived(runOf('delete'));
+  let archiveRun = $derived(currentRunOf(actions, 'archive'));
+  let deleteRun = $derived(currentRunOf(actions, 'delete'));
   let deletePreview = $derived(deleteRun?.preview ?? null);
-  function runOf(kind: 'archive' | 'delete'): ProjectActionRun | null {
-    const run = actions.current;
-    return run !== null && run.kind === kind ? run : null;
-  }
 
   async function doNewGroup(): Promise<void> {
     const project = target;
@@ -139,7 +140,7 @@
     }
   }
 
-  async function doDelete(run: ProjectActionRun): Promise<void> {
+  async function doDelete(run: ProjectRunOf<'delete'>): Promise<void> {
     if (!run.beginSubmit()) return;
     const project = run.target;
     // The one-line confirmation is answered and gone at the press. The
@@ -166,7 +167,7 @@
       // its own run on the same project and the same answer, because this
       // one has spent itself on the call that failed. Nothing comes back if
       // the user closed that dialog or started something else meanwhile.
-      actions.reraise(run);
+      actions.reraiseDelete(run);
     }
   }
 </script>
