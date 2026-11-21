@@ -335,6 +335,10 @@ export const SETTINGS_KEYS_OMITTED_WHEN_EMPTY = [
   "spinnerDisabledAnimations",
 ] as const;
 
+// The model family text generation runs the newest listed model of when
+// textGenerationModel is blank, per provider (settings.TextGenerationDefaultFamily).
+export const TEXT_GENERATION_DEFAULT_FAMILIES: Readonly<Record<string, string>> = {"claude":"claude-haiku","codex":"gpt-luna"};
+
 export const FRONTEND_SETTING_OPTIONS: Partial<Record<keyof Settings, readonly string[]>> = {
   "accountAutoSwitchStrategy": ["account-order","soonest-reset"],
   "activityRunDefault": ["collapsed","expanded"],

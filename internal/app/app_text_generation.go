@@ -146,13 +146,8 @@ func (a *App) resolveTextGenerationConfigFor(providerName string) (textgen.Confi
 // what it lists. The row comes from the same catalog read the choice did,
 // so the run's effort is decided by the model that runs.
 func (a *App) textGenerationDefaultModel(providerName string) (provider.ModelInfo, error) {
-	var family string
-	switch providerName {
-	case string(provider.Codex):
-		family = textgen.DefaultCodexFamily
-	case string(provider.Claude):
-		family = textgen.DefaultClaudeFamily
-	default:
+	family, ok := settings.TextGenerationDefaultFamily(providerName)
+	if !ok {
 		return provider.ModelInfo{}, fmt.Errorf("text generation does not run on %s", providerName)
 	}
 	catalog, err := a.modelCatalog(providerName)

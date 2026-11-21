@@ -18,6 +18,7 @@
   } from '../../providers/catalog';
   import SettingsField from './SettingsField.svelte';
   import { INPUT_CLASS, SELECT_CLASS } from './styles';
+  import { TEXT_GENERATION_DEFAULT_FAMILIES } from '../../generated/settingsDefaults';
 
   const PROVIDERS: ProviderDefinition[] = PROVIDER_SETTINGS_ORDER.map((provider) =>
     getProviderDefinition(provider),
@@ -34,7 +35,7 @@
     getProviderDefinition(settings.textGenerationProvider).textGenerationEffortOptions,
   );
   let textGenerationDefaultFamily = $derived(
-    getProviderDefinition(settings.textGenerationProvider).textGenerationDefaultFamily,
+    TEXT_GENERATION_DEFAULT_FAMILIES[settings.textGenerationProvider],
   );
 
   function isTextGenerationEffortAllowed(

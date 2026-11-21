@@ -106,6 +106,10 @@ func FrontendDefaultsSource() string {
 		b.WriteString("  " + strconv.Quote(key) + ",\n")
 	}
 	b.WriteString("] as const;\n")
+	families, _ := json.Marshal(textGenerationDefaultFamilies)
+	b.WriteString("\n// The model family text generation runs the newest listed model of when\n")
+	b.WriteString("// textGenerationModel is blank, per provider (settings.TextGenerationDefaultFamily).\n")
+	fmt.Fprintf(&b, "export const TEXT_GENERATION_DEFAULT_FAMILIES: Readonly<Record<string, string>> = %s;\n", families)
 
 	emitFrontendConstraints(&b)
 	return b.String()
