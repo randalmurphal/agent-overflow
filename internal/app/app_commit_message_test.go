@@ -181,7 +181,7 @@ func TestGenerateCommitMessage_ClaudeDefaultFollowsTheCLIModelList(t *testing.T)
 		{
 			name: "cli lists haiku 5.5",
 			wire: []claude.WireModel{
-				{Value: "haiku", ResolvedModel: "claude-haiku-5-5"},
+				{Value: "haiku", ResolvedModel: "claude-haiku-5-5", SupportsEffort: true, SupportedEffortLevels: []string{"low", "medium", "high"}},
 				{Value: "claude-haiku-4-5-20251001", ResolvedModel: "claude-haiku-4-5-20251001"},
 			},
 			wantModel:  "claude-haiku-5-5",

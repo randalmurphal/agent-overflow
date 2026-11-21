@@ -86,6 +86,41 @@ func TestTextGenerationRunsTheNewestModelOfItsFamily(t *testing.T) {
 	}
 }
 
+// The model text generation picks decides its effort from the same list it
+// was picked from, not the shipped table: a live Luna the shipped catalog
+// lacks that offers only medium and high runs medium (its default) for the
+// low setting, one that offers no effort runs with none, and so does a
+// Haiku the Claude CLI reports without effort levels.
+func TestTextGenerationEffortFollowsTheModelItPicked(t *testing.T) {
+	app := newTestAppWithStore(t)
+	resetProviderBinarySettings(t, app)
+	app.lookPathFn = fakeLookPath("claude", "codex")
+	claudecatalog.Reset()
+	t.Cleanup(claudecatalog.Reset)
+	if _, err := app.settings.Update(map[string]any{"textGenerationProvider": "codex", "textGenerationReasoningEffort": "low"}); err != nil {
+		t.Fatal(err)
+	}
+	luna := provider.ModelInfo{Slug: "gpt-7-luna", Name: "gpt-7-luna", Provider: string(provider.Codex), ReasoningEfforts: []provider.ReasoningEffortOption{
+		{Slug: "medium", Label: "Medium", Default: true}, {Slug: "high", Label: "High"},
+	}}
+	plain := provider.ModelInfo{Slug: "gpt-8-luna", Name: "gpt-8-luna", Provider: string(provider.Codex)}
+	for _, tc := range []struct {
+		model provider.ModelInfo
+		want  string
+	}{{luna, "medium"}, {plain, ""}} {
+		listCodexModels(app, []provider.ModelInfo{tc.model})
+		if cfg := textGenConfig(t, app); cfg.Model != tc.model.Slug || cfg.Effort != tc.want {
+			t.Errorf("codex text generation runs %s at effort %q, want %s at %q", cfg.Model, cfg.Effort, tc.model.Slug, tc.want)
+		}
+	}
+	capture := claudecatalog.ModelCapture{}
+	capture.Capture([]claude.WireModel{{Value: "claude-haiku-6", ResolvedModel: "claude-haiku-6"}}, nil)
+	capture.Store(app.claudeProbeModelKey())
+	if cfg, ok := app.resolveTextGenerationConfigFor(string(provider.Claude)); !ok || cfg.Model != "claude-haiku-6" || cfg.Effort != "" {
+		t.Errorf("claude text generation runs %s at effort %q (ok %v), want claude-haiku-6 with none", cfg.Model, cfg.Effort, ok)
+	}
+}
+
 // A provider that lists no model of the family fails the attempt with a
 // message naming what it lists, and the other provider runs instead.
 func TestTextGenerationWithNoModelOfItsFamilyTurnsToTheOtherProvider(t *testing.T) {

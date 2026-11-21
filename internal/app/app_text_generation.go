@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -77,15 +78,15 @@ func (a *App) resolveTextGenerationConfig() (textgen.Config, error) {
 	}
 	// Neither binary resolves: the run fails on the binary, which is the
 	// error to surface, so no model list is read for it.
+	model, known := provider.ModelInfo{Slug: cfg.Model}, false
 	if cfg.Model == "" && cfg.Binary != "" && lookPath(cfg.Binary) == nil {
-		model, err := a.textGenerationDefaultModel(chosen)
-		if err != nil {
+		var err error
+		if model, err = a.textGenerationDefaultModel(chosen); err != nil {
 			return cfg, err
 		}
-		cfg.Model = model
+		cfg.Model, known = model.Slug, true
 	}
-
-	coerceTextGenerationEffort(&cfg)
+	cfg.Effort = textGenerationEffort(cfg.Provider, cfg.Effort, model, known)
 	return cfg, nil
 }
 
@@ -131,18 +132,20 @@ func (a *App) resolveTextGenerationConfigFor(providerName string) (textgen.Confi
 		log.Printf("textgen: fallback %s skipped: %v", providerName, err)
 		return textgen.Config{}, false
 	}
-	cfg.Model = model
-	coerceTextGenerationEffort(&cfg)
+	cfg.Model = model.Slug
+	cfg.Effort = textGenerationEffort(cfg.Provider, cfg.Effort, model, true)
 	return cfg, true
 }
 
-// textGenerationDefaultModel is the model a run on providerName takes when
-// settings leave the model blank: the newest model of the provider's
-// text-generation family this computer lists (provider.ResolveModel), the
-// rule agent profiles follow. Before the Claude CLI has reported its
-// models it is textgen.FallbackClaudeModel. A provider that lists no model
-// of the family is an error naming what it lists.
-func (a *App) textGenerationDefaultModel(providerName string) (string, error) {
+// textGenerationDefaultModel is the catalog row of the model a run on
+// providerName takes when settings leave the model blank: the newest model
+// of the provider's text-generation family this computer lists
+// (provider.ResolveModel), the rule agent profiles follow. Before the
+// Claude CLI has reported its models it is textgen.FallbackClaudeModel's
+// row. A provider that lists no model of the family is an error naming
+// what it lists. The row comes from the same catalog read the choice did,
+// so the run's effort is decided by the model that runs.
+func (a *App) textGenerationDefaultModel(providerName string) (provider.ModelInfo, error) {
 	var family string
 	switch providerName {
 	case string(provider.Codex):
@@ -150,14 +153,11 @@ func (a *App) textGenerationDefaultModel(providerName string) (string, error) {
 	case string(provider.Claude):
 		family = textgen.DefaultClaudeFamily
 	default:
-		return "", fmt.Errorf("text generation does not run on %s", providerName)
+		return provider.ModelInfo{}, fmt.Errorf("text generation does not run on %s", providerName)
 	}
 	catalog, err := a.modelCatalog(providerName)
 	if err != nil {
-		return "", fmt.Errorf("text generation: %s model list: %w", providerName, err)
-	}
-	if providerName == string(provider.Claude) && catalog.Provenance != provider.CatalogProbed {
-		return textgen.FallbackClaudeModel, nil
+		return provider.ModelInfo{}, fmt.Errorf("text generation: %s model list: %w", providerName, err)
 	}
 	var listed, kept []string
 	for _, model := range catalog.Models {
@@ -168,32 +168,38 @@ func (a *App) textGenerationDefaultModel(providerName string) (string, error) {
 		}
 	}
 	slug, ok := provider.ResolveModel(provider.ParseModelRef(providerName, family), listed, kept)
-	if !ok {
-		return "", fmt.Errorf("text generation: %s lists no %s model; it lists %s", providerName, family, strings.Join(listed, ", "))
+	if providerName == string(provider.Claude) && catalog.Provenance != provider.CatalogProbed {
+		slug, ok = textgen.FallbackClaudeModel, true
 	}
-	return slug, nil
+	if !ok {
+		return provider.ModelInfo{}, fmt.Errorf("text generation: %s lists no %s model; it lists %s", providerName, family, strings.Join(listed, ", "))
+	}
+	index := slices.IndexFunc(catalog.Models, func(model provider.ModelInfo) bool { return model.Slug == slug })
+	if index < 0 {
+		return provider.ModelInfo{}, fmt.Errorf("text generation: %s's model list has no row for %s", providerName, slug)
+	}
+	return catalog.Models[index], nil
 }
 
-// coerceTextGenerationEffort resolves the effort a one-shot generation run
-// passes to the CLI. Unlike a thread's effort this value is never persisted, so
-// it can express "this model takes no effort at all" — which the CLI runners
-// render as an omitted flag rather than an invented tier. Coercing a model
-// without tiers up to the provider default would raise cost silently, on the
-// one surface the user never sees a control for.
-func coerceTextGenerationEffort(cfg *textgen.Config) {
-	if model, found := provider.FindModel(cfg.Provider, cfg.Model); found {
-		if len(model.ReasoningEfforts) == 0 {
-			cfg.Effort = ""
-		} else {
-			cfg.Effort = string(provider.CoerceReasoningEffortForModelInfo(model, provider.NormalizeReasoningEffort(cfg.Effort)))
-		}
-		return
+// textGenerationEffort is the effort a one-shot generation run passes to the
+// CLI for model, given its row when known. Unlike a thread's effort this value
+// is never persisted, so it can express "this model takes no effort at all",
+// which the CLI runners render as an omitted flag rather than an invented
+// tier. Coercing a model without tiers up to the provider default would raise
+// cost silently, on the one surface the user never sees a control for. A
+// model named in settings has no row from a catalog read; the shipped table
+// answers for it.
+func textGenerationEffort(providerName, effort string, model provider.ModelInfo, known bool) string {
+	if !known {
+		model, known = provider.FindModel(providerName, model.Slug)
 	}
-	cfg.Effort = string(provider.CoerceReasoningEffortForModel(
-		cfg.Provider,
-		cfg.Model,
-		provider.NormalizeReasoningEffort(cfg.Effort),
-	))
+	if known {
+		if len(model.ReasoningEfforts) == 0 {
+			return ""
+		}
+		return string(provider.CoerceReasoningEffortForModelInfo(model, provider.NormalizeReasoningEffort(effort)))
+	}
+	return string(provider.CoerceReasoningEffortForModel(providerName, model.Slug, provider.NormalizeReasoningEffort(effort)))
 }
 
 // availableTextGenerationProviders probes the configured provider
