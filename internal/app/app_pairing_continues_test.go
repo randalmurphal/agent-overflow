@@ -17,6 +17,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/remotejobs"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/transport"
 )
 
@@ -376,7 +377,7 @@ func TestAnAutomaticUpgradeOfAPairingKeepsItsWork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 	defer cancel()
 	if err := a.app.SetAgentComputerEnabled(ctx, c.id, true); err != nil {
 		t.Fatal(err)

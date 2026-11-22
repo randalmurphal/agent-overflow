@@ -20,6 +20,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/remotejobs"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 	"github.com/google/uuid"
 )
 
@@ -45,7 +46,7 @@ func newRemoteWaitFixture(t *testing.T) *remoteWaitFixture {
 	}
 	f.source.backends = manager
 	t.Cleanup(func() { _ = f.source.remoteMCPServer().Close() })
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 	t.Cleanup(cancel)
 	invite, _ := f.receiver.mintLink(t, "full")
 	peer, err := manager.Add(ctx, invite.URL)

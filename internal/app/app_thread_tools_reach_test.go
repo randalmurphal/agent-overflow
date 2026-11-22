@@ -736,7 +736,7 @@ func serveFaultyApp(t *testing.T, app *App, configure ...func(*transport.Config)
 // id the source's pairings give it.
 func attachDestination(t *testing.T, pair *reachPair, wire *pairedBackend, dest *App) string {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 	defer cancel()
 	invite, _ := wire.mintLink(t, "full")
 	peer, err := pair.manager.Add(ctx, invite.URL)

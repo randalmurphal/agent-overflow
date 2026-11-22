@@ -12,11 +12,11 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/remotejobs"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 	"github.com/google/uuid"
 )
 
@@ -35,7 +35,7 @@ func TestRemoteMCPExtendedToolsCrossPairedTLS(t *testing.T) {
 	}
 	source.backends = manager
 	t.Cleanup(func() { _ = source.remoteMCPServer().Close() })
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 	defer cancel()
 	invite, _ := destination.mintLink(t, "full")
 	peer, err := manager.Add(ctx, invite.URL)

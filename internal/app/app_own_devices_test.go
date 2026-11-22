@@ -71,7 +71,7 @@ func TestPersonalPhoneEnrollmentReadsOwnCatalogOverRealTLS(t *testing.T) {
 	if payload.Purpose != "own-device" {
 		t.Fatal("invitation omitted intent")
 	}
-	client, _, e := deviceclient.Pair(context.Background(), t.TempDir(), payload, "Pixel", "android")
+	client, _, e := pairTestDevice(t, t.TempDir(), payload, "Pixel", "android")
 	if e != nil {
 		t.Fatal(e)
 	}

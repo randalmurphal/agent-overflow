@@ -18,6 +18,7 @@ import (
 	"agent-overflow/internal/gitapp"
 	"agent-overflow/internal/remotejobs"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/transport"
 
 	"github.com/google/uuid"
@@ -37,7 +38,7 @@ func TestAJobOverAPairedDestinationFollowsTwoHandOffs(t *testing.T) {
 	}
 	source.backends = manager
 	invite, _ := backend.mintLink(t, "full")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 	defer cancel()
 	attached, err := manager.Add(ctx, invite.URL)
 	if err != nil {

@@ -23,6 +23,7 @@ import (
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/remotejobs"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/transport"
 	"github.com/google/uuid"
 )
@@ -115,7 +116,7 @@ func TestRemoteMCPCommandsCrossPairedTLSAndRespectOwnership(t *testing.T) {
 	}
 	source.backends = manager
 	t.Cleanup(func() { _ = source.remoteMCPServer().Close() })
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 	defer cancel()
 	invite, _ := destination.mintLink(t, "full")
 	peer, err := manager.Add(ctx, invite.URL)

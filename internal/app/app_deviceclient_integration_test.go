@@ -22,6 +22,7 @@ import (
 	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/identity"
 	"agent-overflow/internal/servercert"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/transport"
 
 	"github.com/coder/websocket"
@@ -173,10 +174,10 @@ func TestAPairedDeviceAttachesOverPinnedTLS(t *testing.T) {
 		t.Fatalf("endpoint %q: the payload names the cleartext authority a browser uses", link.Endpoint)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 	defer cancel()
 	profile := t.TempDir()
-	client, pairing, err := deviceclient.Pair(ctx, profile, link, "integration device", "linux")
+	client, pairing, err := pairTestDevice(t, profile, link, "integration device", "linux")
 	if err != nil {
 		t.Fatalf("Pair: %v", err)
 	}
@@ -260,9 +261,9 @@ func TestAViewOnlyLinkGrantsOnlyWhatItNamed(t *testing.T) {
 	backend := newPairedBackend(t)
 	invite, link := backend.mintLink(t, string(identity.PairingAccessViewOnly))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 	defer cancel()
-	client, _, err := deviceclient.Pair(ctx, t.TempDir(), link, "view only", "linux")
+	client, _, err := pairTestDevice(t, t.TempDir(), link, "view only", "linux")
 	if err != nil {
 		t.Fatalf("Pair: %v", err)
 	}
@@ -306,10 +307,8 @@ func TestAFingerprintMismatchRefusesBeforeAnyCredentialLeaves(t *testing.T) {
 	// Same endpoint, a fingerprint that is not this listener's.
 	link.CertFingerprint = servercert.Fingerprint(otherCertificate(t))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
 	profile := t.TempDir()
-	_, _, err := deviceclient.Pair(ctx, profile, link, "mismatched", "linux")
+	_, _, err := pairTestDevice(t, profile, link, "mismatched", "linux")
 	if !errors.Is(err, deviceclient.ErrCertificateMismatch) {
 		t.Fatalf("Pair against a mismatched pin = %v, want ErrCertificateMismatch", err)
 	}
@@ -318,7 +317,7 @@ func TestAFingerprintMismatchRefusesBeforeAnyCredentialLeaves(t *testing.T) {
 	}
 	// The link was never presented, so the owner's link is still theirs to
 	// spend on a device that CAN verify this backend.
-	if _, _, err := deviceclient.Pair(ctx, profile, mustPin(t, link, backend.fingerprint), "corrected", "linux"); err != nil {
+	if _, _, err := pairTestDevice(t, profile, mustPin(t, link, backend.fingerprint), "corrected", "linux"); err != nil {
 		t.Fatalf("the mismatched attempt spent the link: %v", err)
 	}
 }
@@ -334,10 +333,10 @@ func TestARevokedDeviceIsRefusedAndTheClientNamesTheRemedy(t *testing.T) {
 	backend := newPairedBackend(t)
 	invite, link := backend.mintLink(t, string(identity.PairingAccessFull))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 	defer cancel()
 	profile := t.TempDir()
-	client, _, err := deviceclient.Pair(ctx, profile, link, "to be revoked", "linux")
+	client, _, err := pairTestDevice(t, profile, link, "to be revoked", "linux")
 	if err != nil {
 		t.Fatalf("Pair: %v", err)
 	}
@@ -395,10 +394,10 @@ func TestRefreshReuseEndsTheSessionOnBothSides(t *testing.T) {
 	backend := newPairedBackend(t)
 	invite, link := backend.mintLink(t, string(identity.PairingAccessFull))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 	defer cancel()
 	profile := t.TempDir()
-	client, _, err := deviceclient.Pair(ctx, profile, link, "reuse", "linux")
+	client, _, err := pairTestDevice(t, profile, link, "reuse", "linux")
 	if err != nil {
 		t.Fatalf("Pair: %v", err)
 	}
@@ -419,7 +418,7 @@ func TestRefreshReuseEndsTheSessionOnBothSides(t *testing.T) {
 	if err := deviceclient.SaveSession(profile, held); err != nil {
 		t.Fatalf("SaveSession: %v", err)
 	}
-	original, err := deviceclient.Open(profile, held)
+	original, err := openTestDevice(t, profile, held)
 	if err != nil {
 		t.Fatalf("Open the original: %v", err)
 	}
@@ -434,7 +433,7 @@ func TestRefreshReuseEndsTheSessionOnBothSides(t *testing.T) {
 	if err := deviceclient.SaveSession(copiedProfile, held); err != nil {
 		t.Fatal(err)
 	}
-	copied, err := deviceclient.Open(copiedProfile, held)
+	copied, err := openTestDevice(t, copiedProfile, held)
 	if err != nil {
 		t.Fatalf("Open the copy: %v", err)
 	}

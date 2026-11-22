@@ -18,6 +18,7 @@ import (
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/rpcclient"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/transport"
 )
@@ -290,7 +291,7 @@ func TestAPairingThatEndsMidCopyEndsTheCopy(t *testing.T) {
 	}{
 		{"forgotten", func(_ *testing.T, pair *reachPair) error { return pair.source.RemoveBackend(pair.computer, true) }, "remote_not_paired"},
 		{"paired again", func(t *testing.T, pair *reachPair) error {
-			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 			defer cancel()
 			invite, _ := pair.destWire.mintLink(t, "full")
 			_, err := pair.manager.Add(ctx, invite.URL)

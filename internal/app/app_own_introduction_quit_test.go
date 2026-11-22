@@ -22,6 +22,7 @@ import (
 	"agent-overflow/internal/owndevices"
 	"agent-overflow/internal/rpcclient"
 	"agent-overflow/internal/servercert"
+	"agent-overflow/internal/testutil"
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
 )
@@ -360,7 +361,7 @@ func TestTheIntroductionsRotationKeepsItsSessionThroughTheNextIntroduction(t *te
 	ownConnectionNetwork(t)
 	a, b := ownConnectionBackend(t), ownConnectionBackend(t)
 	pairOwnConnection(t, b, a.app.backends, true)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 	defer cancel()
 	var catalog owndevices.List
 	if err := a.app.backends.CallOwnDevice(ctx, b.id, "ListOwnDevices", &catalog); err != nil {
@@ -397,7 +398,7 @@ func TestTheIntroductionsRotationKeepsItsSessionThroughTheNextIntroduction(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	renewer, err := deviceclient.Open(b.profile, saved, deviceclient.WithDialContext(dialOwnFixture))
+	renewer, err := openTestDevice(t, b.profile, saved, deviceclient.WithDialContext(dialOwnFixture))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -158,7 +158,7 @@ func newAgentChain(t *testing.T, n int) *agentChain {
 		if err != nil {
 			t.Fatalf("attachedbackends.New: %v", err)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 		invite, _ := c.wires[i+1].mintLink(t, "full")
 		peer, err := manager.Add(ctx, invite.URL)
 		if err != nil {

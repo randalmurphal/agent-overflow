@@ -18,6 +18,7 @@ import (
 	"agent-overflow/internal/gitapp"
 	"agent-overflow/internal/remotejobs"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/transport"
 	"github.com/google/uuid"
 )
@@ -89,7 +90,7 @@ func remoteAdmissionFixture(t *testing.T) (*App, *remoteAdmissionReceiver, conte
 		t.Fatal(err)
 	}
 	source.backends = manager
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 	t.Cleanup(cancel)
 	invite, _ := backend.mintLink(t, "full")
 	peer, err := manager.Add(ctx, invite.URL)

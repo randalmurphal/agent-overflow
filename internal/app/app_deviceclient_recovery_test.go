@@ -15,6 +15,7 @@ import (
 	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/identity"
 	"agent-overflow/internal/servercert"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/transport"
 )
 
@@ -42,10 +43,10 @@ func testLostCommittedRenewal(t *testing.T, switchRoute bool) {
 		advertised.Store([]computerroute.Route{alternatePairedListener(t, backend)})
 	}
 	invite, link := backend.mintLink(t, string(identity.PairingAccessFull))
-	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), testutil.WaitBudget(t))
 	defer cancel()
 	dir := t.TempDir()
-	client, _, err := deviceclient.Pair(ctx, dir, link, "recovery test", "linux")
+	client, _, err := pairTestDevice(t, dir, link, "recovery test", "linux")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +111,7 @@ func testLostCommittedRenewal(t *testing.T, switchRoute bool) {
 	if err := deviceclient.SaveSession(dir, held); err != nil {
 		t.Fatal(err)
 	}
-	remote, err := deviceclient.Open(dir, held)
+	remote, err := openTestDevice(t, dir, held)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +141,7 @@ func testLostCommittedRenewal(t *testing.T, switchRoute bool) {
 	if switchRoute {
 		relay.Close()
 	}
-	restarted, err := deviceclient.Open(dir, pending)
+	restarted, err := openTestDevice(t, dir, pending)
 	if err != nil {
 		t.Fatal(err)
 	}

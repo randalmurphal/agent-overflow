@@ -20,6 +20,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/remotejobs"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
@@ -203,7 +204,7 @@ func TestRemoteWatchPairedCompletionStartsIdleAgentAndRespectsThreadOwnership(t 
 		t.Fatal(err)
 	}
 	source.backends = peers
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 	defer cancel()
 	invite, _ := destination.mintLink(t, "full")
 	peer, err := peers.Add(ctx, invite.URL)
@@ -918,7 +919,7 @@ func pairedRemoteSource(t *testing.T, run remotejobs.Run) (source *App, destinat
 		t.Fatal(err)
 	}
 	source.backends = peers
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 	defer cancel()
 	invite, _ := destination.mintLink(t, "full")
 	peer, err := peers.Add(ctx, invite.URL)
