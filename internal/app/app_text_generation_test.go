@@ -363,16 +363,19 @@ func TestRunTextGenWithFallback_NoAlternateSpawnDuringShutdown(t *testing.T) {
 	}
 }
 
-func TestOtherProvider(t *testing.T) {
+func TestTextGenerationFallbackOrder(t *testing.T) {
 	t.Parallel()
-	if got := otherProvider(string(provider.Claude)); got != string(provider.Codex) {
-		t.Fatalf("otherProvider(claude) = %q, want codex", got)
+	if got := textGenerationFallbackOrder(string(provider.Claude)); len(got) != 2 || got[0] != string(provider.Codex) || got[1] != string(provider.Agy) {
+		t.Fatalf("textGenerationFallbackOrder(claude) = %v, want [codex agy]", got)
 	}
-	if got := otherProvider(string(provider.Codex)); got != string(provider.Claude) {
-		t.Fatalf("otherProvider(codex) = %q, want claude", got)
+	if got := textGenerationFallbackOrder(string(provider.Codex)); len(got) != 2 || got[0] != string(provider.Claude) || got[1] != string(provider.Agy) {
+		t.Fatalf("textGenerationFallbackOrder(codex) = %v, want [claude agy]", got)
 	}
-	if got := otherProvider("bogus"); got != "" {
-		t.Fatalf("otherProvider(bogus) = %q, want empty", got)
+	if got := textGenerationFallbackOrder(string(provider.Agy)); len(got) != 2 || got[0] != string(provider.Codex) || got[1] != string(provider.Claude) {
+		t.Fatalf("textGenerationFallbackOrder(agy) = %v, want [codex claude]", got)
+	}
+	if got := textGenerationFallbackOrder("bogus"); len(got) != 0 {
+		t.Fatalf("textGenerationFallbackOrder(bogus) = %v, want empty", got)
 	}
 }
 

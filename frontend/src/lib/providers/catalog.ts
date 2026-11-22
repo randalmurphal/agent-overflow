@@ -305,7 +305,7 @@ export const PROVIDER_DEFINITIONS: Record<ProviderID, ProviderDefinition> = {
       autoCompact: false,
       promptOverrides: true,
       disabledTools: false,
-      textGeneration: false,
+      textGeneration: true,
       ownMemory: false,
       transfer: false,
       rollbackGranularity: 'item',

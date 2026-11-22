@@ -34,11 +34,21 @@ func (a *App) resolveTextGenerationConfig() textgen.Config {
 
 	claudeBin := a.providerBinaryPath(string(provider.Claude))
 	codexBin := a.providerBinaryPath(string(provider.Codex))
-	chosen := textgen.PickAvailableProvider(preferred, claudeBin, codexBin, a.resolveLookPath())
+	agyBin := a.providerBinaryPath(string(provider.Agy))
+	chosen := textgen.PickAvailableProviderOrdered(
+		preferred,
+		map[string]string{
+			string(provider.Claude): claudeBin,
+			string(provider.Codex):  codexBin,
+			string(provider.Agy):    agyBin,
+		},
+		textGenerationFallbackOrder(preferred),
+		a.resolveLookPath(),
+	)
 
-	// Effort is set from settings regardless of provider — both Codex's
-	// `--config model_reasoning_effort=...` and Claude commit-message's
-	// `--effort` flag consume it. (Claude's thread-title path ignores it.)
+	// Effort is set from settings regardless of provider — Codex's
+	// `--config model_reasoning_effort=...`, Claude's `--effort`, and Agy's
+	// `--effort` flag consume it.
 	effort := strings.TrimSpace(s.TextGenerationReasoningEffort)
 	if effort == "" {
 		effort = settings.DefaultSettings.TextGenerationReasoningEffort
@@ -76,6 +86,14 @@ func (a *App) resolveTextGenerationConfig() textgen.Config {
 		}
 		if cfg.Model == "" {
 			cfg.Model = a.defaultClaudeTextGenerationModel()
+		}
+	case string(provider.Agy):
+		cfg.Binary = agyBin
+		if chosen == preferred {
+			cfg.Model = strings.TrimSpace(s.TextGenerationModel)
+		}
+		if cfg.Model == "" {
+			cfg.Model = textgen.DefaultAgyModel
 		}
 	}
 
@@ -118,6 +136,12 @@ func (a *App) resolveTextGenerationConfigFor(providerName string) (textgen.Confi
 		}
 		cfg.Model = a.defaultClaudeTextGenerationModel()
 		cfg.ClaudeRetention = a.claudeRetention
+	case string(provider.Agy):
+		cfg.Binary = a.providerBinaryPath(string(provider.Agy))
+		if cfg.Binary == "" || lookPath(cfg.Binary) != nil {
+			return textgen.Config{}, false
+		}
+		cfg.Model = textgen.DefaultAgyModel
 	default:
 		return textgen.Config{}, false
 	}
@@ -165,7 +189,8 @@ func coerceTextGenerationEffort(cfg *textgen.Config) {
 func (a *App) availableTextGenerationProviders() []string {
 	lookPath := a.resolveLookPath()
 	var available []string
-	for _, name := range []string{string(provider.Claude), string(provider.Codex)} {
+	for _, kind := range provider.StandaloneProviders() {
+		name := string(kind)
 		bin := a.providerBinaryPath(name)
 		if bin != "" && lookPath(bin) == nil {
 			available = append(available, name)
@@ -213,37 +238,35 @@ func runTextGenWithFallback[T any](
 		// shape that leaves orphans behind.
 		return result, err
 	}
-	altName := otherProvider(primary.Provider)
-	if altName == "" {
-		return result, err
-	}
-	altCfg, ok := a.resolveTextGenerationConfigFor(altName)
-	if !ok {
-		return result, err
-	}
-	altResult, altErr := runOnce(altCfg, time.Now().Add(budget))
-	if altErr != nil {
+	for _, altName := range textGenerationFallbackOrder(primary.Provider) {
+		altCfg, ok := a.resolveTextGenerationConfigFor(altName)
+		if !ok {
+			continue
+		}
+		altResult, altErr := runOnce(altCfg, time.Now().Add(budget))
+		if altErr == nil {
+			return altResult, nil
+		}
 		// No budget in the line: a timeout error from textgen already
 		// names the CLI and the duration it was given.
 		log.Printf(
 			"textgen: fallback %s failed after primary %s error: %s",
 			altCfg.Provider, primary.Provider, textgen.RedactError(altErr),
 		)
-		return result, err
 	}
-	return altResult, nil
+	return result, err
 }
 
-// otherProvider returns the two-provider universe's complement. Trivial,
-// but lives here so the call sites read like English.
-func otherProvider(name string) string {
-	switch name {
+func textGenerationFallbackOrder(primary string) []string {
+	switch primary {
 	case string(provider.Claude):
-		return string(provider.Codex)
+		return []string{string(provider.Codex), string(provider.Agy)}
 	case string(provider.Codex):
-		return string(provider.Claude)
+		return []string{string(provider.Claude), string(provider.Agy)}
+	case string(provider.Agy):
+		return []string{string(provider.Codex), string(provider.Claude)}
 	default:
-		return ""
+		return nil
 	}
 }
 

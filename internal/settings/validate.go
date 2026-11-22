@@ -23,6 +23,7 @@ var (
 	allowedTextGenerationProviders = map[string]struct{}{
 		"claude": {},
 		"codex":  {},
+		"agy":    {},
 	}
 	// Text-generation efforts are provider-specific. Claude has no "none",
 	// "minimal", or "ultra". Duplicated here to keep internal/settings
@@ -51,6 +52,12 @@ var (
 		"high":   {},
 		"xhigh":  {},
 		"max":    {},
+	}
+	allowedAgyTextGenerationEfforts = map[string]struct{}{
+		"low":    {},
+		"medium": {},
+		"high":   {},
+		"xhigh":  {},
 	}
 	allowedThreadEnvModes = map[string]struct{}{
 		"local":    {},
@@ -761,6 +768,8 @@ func allowedTextGenerationEfforts(provider string) map[string]struct{} {
 		return allowedClaudeTextGenerationEfforts
 	case "codex":
 		return allowedCodexTextGenerationEfforts
+	case "agy":
+		return allowedAgyTextGenerationEfforts
 	default:
 		return nil
 	}

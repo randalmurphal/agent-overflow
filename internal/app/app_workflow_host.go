@@ -474,6 +474,15 @@ Template WHAT IT NEEDS: %s`, workflowDigestMaxRunes, item.Goal, item.State, item
 			}
 			return sanitizeWorkflowDigest(decoded)
 		}
+	case string(provider.Agy):
+		raw, err = textgen.RunAgy(ctx, cfg, workspace, workflowDigestSchemaJSON, nil, prompt, workflowDigestTimeout)
+		if err == nil {
+			decoded, decodeErr := textgen.DecodeAgyStructured[WorkflowDigest](raw)
+			if decodeErr != nil {
+				return WorkflowDigest{}, decodeErr
+			}
+			return sanitizeWorkflowDigest(decoded)
+		}
 	default:
 		return WorkflowDigest{}, fmt.Errorf("workflow digest: unsupported provider %q", cfg.Provider)
 	}

@@ -103,9 +103,11 @@ func (a *App) runCommitMessageOnce(
 		return a.generateCodexCommitMessage(ctx, cfg, workspace, prompt)
 	case string(provider.Claude):
 		return a.generateClaudeCommitMessage(ctx, cfg, workspace, prompt)
+	case string(provider.Agy):
+		return a.generateAgyCommitMessage(ctx, cfg, workspace, prompt)
 	default:
 		return GeneratedCommitMessage{}, fmt.Errorf(
-			"generate commit message: unsupported provider %q; expected 'codex' or 'claude'",
+			"generate commit message: unsupported provider %q; expected 'codex', 'claude', or 'agy'",
 			cfg.Provider,
 		)
 	}
@@ -166,6 +168,26 @@ func (a *App) generateClaudeCommitMessage(
 	}
 
 	subject, body, err := commitmsg.DecodeClaude(stdout)
+	if err != nil {
+		return GeneratedCommitMessage{}, err
+	}
+	return GeneratedCommitMessage{
+		Subject: commitmsg.SanitizeSubject(subject),
+		Body:    commitmsg.SanitizeBody(body),
+	}, nil
+}
+
+func (a *App) generateAgyCommitMessage(
+	ctx context.Context,
+	cfg textgen.Config,
+	workspace string,
+	prompt string,
+) (GeneratedCommitMessage, error) {
+	stdout, err := textgen.RunAgy(ctx, cfg, workspace, commitmsg.ClaudeSchemaJSON, nil, prompt, commitmsg.Timeout)
+	if err != nil {
+		return GeneratedCommitMessage{}, err
+	}
+	subject, body, err := commitmsg.DecodeAgy(stdout)
 	if err != nil {
 		return GeneratedCommitMessage{}, err
 	}
