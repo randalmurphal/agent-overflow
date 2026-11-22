@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, within } from '@testing-library/svelte';
 import AgentProfilesSettings from './AgentProfilesSettings.svelte';
+import pageSource from './AgentProfilesSettings.svelte?raw';
 import { applySettingsSnapshot, loadSettings, resetSettingsForTest } from '../../stores/settings.svelte';
 import ComputerSettingsPage from './ComputerSettingsPage.svelte';
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
@@ -1053,5 +1054,17 @@ describe('<AgentProfilesSettings>', () => {
     await settle();
     expect(view.queryAllByTestId('agent-profile')).toHaveLength(0);
     expect(view.getByText('No profiles. Threads spawn with their own provider and model.')).toBeTruthy();
+  });
+});
+
+// The page's drafts are the roster editor's state, which it changes only
+// through the editor's methods so the editor orders every change. The
+// editor's readonly views stop an assignment at type-check, but svelte-check
+// accepts a bind: on them and no lint rule knows the editor, so this reads
+// the source.
+describe('the agent roster page binds nothing', () => {
+  it('writes the editor state only through its methods', () => {
+    const source = pageSource.replace(/<!--[\s\S]*?-->/g, '');
+    expect([...source.matchAll(/\sbind:(?!this\b)[\w$]+/g)].map((m) => m[0].trim())).toEqual([]);
   });
 });

@@ -479,8 +479,8 @@ happened while the computer answered: anything the person does
 (typing, a save, adding, deleting, answering a mark, another Restore,
 closing the page) retires it silently, and a change saved elsewhere
 retires it with a line saying so. A save that began before the click
-and writes while Restore waits does not retire it; Restore's write
-follows it.
+and writes while Restore waits does not retire it, whether the computer
+saves or refuses that write; Restore's write follows it.
 
 The settings page edits the profiles and the notes as two drafts, each
 saved whole when a control commits. A change saved elsewhere replaces
@@ -497,7 +497,9 @@ answer, taking the other version and an outside change each start a new
 revision. Only the newest check's answer shows. The page's own write
 coming back is not an outside change; a write the computer refuses
 leaves the person's edits on the page, unsaved, for the next commit to
-send again. One owner orders all of it
+send again. Of several writes of a list in flight at once, what the
+computer saved is saved on the page and the edits of the writes it
+refused stay unsaved. One owner orders all of it
 (`frontend/src/lib/components/settings/rosterEditor.svelte.ts`).
 
 `thread_options` lists, per computer, the profiles that computer can

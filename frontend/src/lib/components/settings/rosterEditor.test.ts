@@ -77,18 +77,23 @@ class Store {
 
   /** When set, a write waits for settleNext() instead of settling at once. */
   manual = false;
+  /** When set, the next write waits for settleNext() and is then refused. */
+  holdRefusal = false;
   /** When set, the page hears what a settled write left only after the write resolves. */
   followLate = false;
-  #unsettled: (() => void)[] = [];
+  /** Writes not yet settled, in the order the computer settles them: a held one holds those after it. */
+  #queue: { settle: () => void; held: boolean }[] = [];
 
   write(patch: RosterPatch): Promise<void> {
     this.writes.push(patch);
     this.pending.push(patch);
+    const refused = this.holdRefusal;
+    this.holdRefusal = false;
     this.notify();
     return new Promise((resolve) => {
       const settle = () => {
         this.pending = this.pending.filter((p) => p !== patch);
-        if (!this.refuse) this.saved = { ...this.saved, ...patch };
+        if (!this.refuse && !refused) this.saved = { ...this.saved, ...patch };
         if (this.followLate) {
           resolve();
           setTimeout(() => this.notify(), 0);
@@ -97,14 +102,21 @@ class Store {
         this.notify();
         resolve();
       };
-      if (this.manual) this.#unsettled.push(settle);
-      else queueMicrotask(settle);
+      this.#queue.push({ settle, held: this.manual || refused });
+      queueMicrotask(() => this.#drain());
     });
   }
 
-  /** Settles the oldest write still waiting: saved, or put back when refuse is set. */
+  #drain(): void {
+    while (this.#queue[0] && !this.#queue[0].held) this.#queue.shift()!.settle();
+  }
+
+  /** Settles the oldest write still waiting: saved, or put back when it is refused. */
   settleNext(): void {
-    this.#unsettled.shift()?.();
+    const head = this.#queue[0];
+    if (!head) return;
+    head.held = false;
+    this.#drain();
   }
 
   elsewhere(patch: RosterPatch): void {
@@ -158,9 +170,20 @@ const offline = (d: Deferred<ProfileCheck[]>) => d.reject(new Error('offline'));
 
 const markedNote = (editor: RosterEditor) => editor.notes.entries.findIndex((entry) => entry.theirs !== undefined);
 
-type Event = 'mount' | 'save' | 'restore' | 'elsewhere' | 'typing' | 'add' | 'delete' | 'keepMine' | 'takeTheirs' | 'close';
-const EVENTS: Event[] = ['mount', 'save', 'restore', 'elsewhere', 'typing', 'add', 'delete', 'keepMine', 'takeTheirs', 'close'];
-const ASYNC = new Set<Event>(['mount', 'save', 'restore', 'delete']);
+type Event =
+  | 'mount'
+  | 'save'
+  | 'refused'
+  | 'restore'
+  | 'elsewhere'
+  | 'typing'
+  | 'add'
+  | 'delete'
+  | 'keepMine'
+  | 'takeTheirs'
+  | 'close';
+const EVENTS: Event[] = ['mount', 'save', 'refused', 'restore', 'elsewhere', 'typing', 'add', 'delete', 'keepMine', 'takeTheirs', 'close'];
+const ASYNC = new Set<Event>(['mount', 'save', 'refused', 'restore', 'delete']);
 
 /** Starts `event`; the returned function completes what it waits on. */
 function start(h: ReturnType<typeof harness>, event: Event): () => void {
@@ -173,6 +196,12 @@ function start(h: ReturnType<typeof harness>, event: Event): () => void {
         editor.editProfile(0, { name: 'Sam' });
         editor.commit('profiles');
       }, ok);
+    case 'refused':
+      // A save whose write the computer holds, then refuses.
+      store.holdRefusal = true;
+      editor.editProfile(1, { name: 'Ref' });
+      editor.commit('profiles');
+      return () => store.settleNext();
     case 'restore': {
       void editor.restore();
       const seeds = held.seeds.at(-1)!;
@@ -270,6 +299,8 @@ const TABLE: Record<string, string> = {
   "mount > mount, later answers first": "[] Alpha,Beta | theirs,mine! checkFailed",
   "mount > save, mount answers first": "[P:Sam,Beta] Sam,Beta | theirs,mine!",
   "mount > save, save answers first": "[P:Sam,Beta] Sam,Beta | theirs,mine!",
+  "mount > refused, mount answers first": "[P:Alpha,Ref] Alpha,Ref* | theirs,mine!",
+  "mount > refused, refused answers first": "[P:Alpha,Ref] Alpha,Ref* | theirs,mine!",
   "mount > restore, mount answers first": "[P:Seed+N:seeded] Seed | seeded",
   "mount > restore, restore answers first": "[P:Seed+N:seeded] Seed | seeded",
   "mount > elsewhere, mount answers first": "[] Alpha,Beta | theirs,mine!",
@@ -290,6 +321,8 @@ const TABLE: Record<string, string> = {
   "save > mount, mount answers first": "[P:Sam,Beta] Sam,Beta | theirs,mine! checkFailed",
   "save > save, earlier answers first": "[P:Sam,Beta] Sam,Beta | theirs,mine!",
   "save > save, later answers first": "[P:Sam,Beta] Sam,Beta | theirs,mine!",
+  "save > refused, save answers first": "[P:Sam,Ref] Sam*,Ref* | theirs,mine!",
+  "save > refused, refused answers first": "[P:Sam,Ref] Sam*,Ref* | theirs,mine!",
   "save > restore, save answers first": "[P:Sam,Beta P:Seed+N:seeded] Seed | seeded",
   "save > restore, restore answers first": "[P:Seed+N:seeded] Seed | seeded",
   "save > elsewhere, save answers first": "[] Sam!,Beta | theirs,mine!",
@@ -306,10 +339,34 @@ const TABLE: Record<string, string> = {
   "save > takeTheirs, takeTheirs answers first": "[P:Sam,Beta] Sam,Beta | theirs",
   "save > close, save answers first": "[P:Sam,Beta] Sam,Beta | theirs,mine!",
   "save > close, close answers first": "[P:Sam,Beta] Sam,Beta | theirs,mine!",
+  "refused > mount, refused answers first": "[P:Alpha,Ref] Alpha,Ref* | theirs,mine!",
+  "refused > mount, mount answers first": "[P:Alpha,Ref] Alpha,Ref* | theirs,mine!",
+  "refused > save, refused answers first": "[P:Alpha,Ref P:Sam,Ref] Sam,Ref | theirs,mine!",
+  "refused > save, save answers first": "[P:Alpha,Ref P:Sam,Ref] Sam,Ref | theirs,mine!",
+  "refused > refused, earlier answers first": "[P:Alpha,Ref P:Alpha,Ref] Alpha,Ref* | theirs,mine!",
+  "refused > refused, later answers first": "[P:Alpha,Ref P:Alpha,Ref] Alpha,Ref* | theirs,mine!",
+  "refused > restore, refused answers first": "[P:Alpha,Ref P:Seed+N:seeded] Seed | seeded",
+  "refused > restore, restore answers first": "[P:Alpha,Ref P:Seed+N:seeded] Seed | seeded",
+  "refused > elsewhere, refused answers first": "[P:Alpha,Ref] Alpha,Ref* | theirs,mine!",
+  "refused > elsewhere, elsewhere answers first": "[P:Alpha,Ref] Alpha,Ref* | theirs,mine!",
+  "refused > typing, refused answers first": "[P:Alpha,Ref] Alpha~*,Ref* | theirs,mine!",
+  "refused > typing, typing answers first": "[P:Alpha,Ref] Alpha~*,Ref* | theirs,mine!",
+  "refused > add, refused answers first": "[P:Alpha,Ref] Alpha,Ref*,_* | theirs,mine!",
+  "refused > add, add answers first": "[P:Alpha,Ref] Alpha,Ref*,_* | theirs,mine!",
+  "refused > delete, refused answers first": "[P:Alpha,Ref P:Alpha] Alpha | theirs,mine!",
+  "refused > delete, delete answers first": "[P:Alpha,Ref P:Alpha] Alpha | theirs,mine!",
+  "refused > keepMine, refused answers first": "[P:Alpha,Ref N:theirs,mine] Alpha,Ref* | theirs,mine",
+  "refused > keepMine, keepMine answers first": "[P:Alpha,Ref N:theirs,mine] Alpha,Ref* | theirs,mine",
+  "refused > takeTheirs, refused answers first": "[P:Alpha,Ref] Alpha,Ref* | theirs",
+  "refused > takeTheirs, takeTheirs answers first": "[P:Alpha,Ref] Alpha,Ref* | theirs",
+  "refused > close, refused answers first": "[P:Alpha,Ref] Alpha,Ref* | theirs,mine!",
+  "refused > close, close answers first": "[P:Alpha,Ref] Alpha,Ref* | theirs,mine!",
   "restore > mount, restore answers first": "[P:Seed+N:seeded] Seed | seeded",
   "restore > mount, mount answers first": "[P:Seed+N:seeded] Seed | seeded",
   "restore > save, restore answers first": "[P:Sam,Beta] Sam,Beta | theirs,mine!",
   "restore > save, save answers first": "[P:Sam,Beta] Sam,Beta | theirs,mine!",
+  "restore > refused, restore answers first": "[P:Alpha,Ref] Alpha,Ref* | theirs,mine!",
+  "restore > refused, refused answers first": "[P:Alpha,Ref] Alpha,Ref* | theirs,mine!",
   "restore > restore, earlier answers first": "[P:Seed+N:seeded] Seed | seeded",
   "restore > restore, later answers first": "[P:Seed+N:seeded] Seed | seeded",
   "restore > elsewhere, restore answers first": "[] Alpha,Beta | theirs,mine! overtaken",
@@ -330,6 +387,8 @@ const TABLE: Record<string, string> = {
   "elsewhere > mount, mount answers first": "[] Alpha,Beta | theirs,mine! checkFailed",
   "elsewhere > save, elsewhere answers first": "[P:Sam,Beta] Sam,Beta | theirs,mine!",
   "elsewhere > save, save answers first": "[P:Sam,Beta] Sam,Beta | theirs,mine!",
+  "elsewhere > refused, elsewhere answers first": "[P:Alpha,Ref] Alpha,Ref* | theirs,mine!",
+  "elsewhere > refused, refused answers first": "[P:Alpha,Ref] Alpha,Ref* | theirs,mine!",
   "elsewhere > restore, elsewhere answers first": "[P:Seed+N:seeded] Seed | seeded",
   "elsewhere > restore, restore answers first": "[P:Seed+N:seeded] Seed | seeded",
   "elsewhere > elsewhere": "[] Alpha,Beta | theirs,mine!",
@@ -344,6 +403,8 @@ const TABLE: Record<string, string> = {
   "typing > mount, mount answers first": "[] Alpha~*,Beta | theirs,mine! checkFailed",
   "typing > save, typing answers first": "[P:Sam,Beta] Sam~,Beta | theirs,mine!",
   "typing > save, save answers first": "[P:Sam,Beta] Sam~,Beta | theirs,mine!",
+  "typing > refused, typing answers first": "[P:Alpha,Ref] Alpha~*,Ref* | theirs,mine!",
+  "typing > refused, refused answers first": "[P:Alpha,Ref] Alpha~*,Ref* | theirs,mine!",
   "typing > restore, typing answers first": "[P:Seed+N:seeded] Seed | seeded",
   "typing > restore, restore answers first": "[P:Seed+N:seeded] Seed | seeded",
   "typing > elsewhere": "[] Alpha~!,Beta | theirs,mine!",
@@ -358,6 +419,8 @@ const TABLE: Record<string, string> = {
   "add > mount, mount answers first": "[] Alpha,Beta,_* | theirs,mine! checkFailed",
   "add > save, add answers first": "[] Sam*,Beta,_* | theirs,mine!",
   "add > save, save answers first": "[] Sam*,Beta,_* | theirs,mine!",
+  "add > refused, add answers first": "[] Alpha,Ref*,_* | theirs,mine!",
+  "add > refused, refused answers first": "[] Alpha,Ref*,_* | theirs,mine!",
   "add > restore, add answers first": "[P:Seed+N:seeded] Seed | seeded",
   "add > restore, restore answers first": "[P:Seed+N:seeded] Seed | seeded",
   "add > elsewhere": "[] Alpha,Beta,_* | theirs,mine!",
@@ -372,6 +435,8 @@ const TABLE: Record<string, string> = {
   "delete > mount, mount answers first": "[P:Alpha] Alpha | theirs,mine! checkFailed",
   "delete > save, delete answers first": "[P:Sam] Sam | theirs,mine!",
   "delete > save, save answers first": "[P:Sam] Sam | theirs,mine!",
+  "delete > refused, delete answers first": "[P:Alpha] Alpha -Beta | theirs,mine!",
+  "delete > refused, refused answers first": "[P:Alpha] Alpha -Beta | theirs,mine!",
   "delete > restore, delete answers first": "[P:Alpha P:Seed+N:seeded] Seed | seeded",
   "delete > restore, restore answers first": "[P:Seed+N:seeded] Seed | seeded",
   "delete > elsewhere, delete answers first": "[P:Alpha] Alpha | theirs,mine!",
@@ -392,6 +457,8 @@ const TABLE: Record<string, string> = {
   "keepMine > mount, mount answers first": "[N:theirs,mine] Alpha,Beta | theirs,mine checkFailed",
   "keepMine > save, keepMine answers first": "[N:theirs,mine P:Sam,Beta] Sam,Beta | theirs,mine",
   "keepMine > save, save answers first": "[N:theirs,mine P:Sam,Beta] Sam,Beta | theirs,mine",
+  "keepMine > refused, keepMine answers first": "[N:theirs,mine P:Alpha,Ref] Alpha,Ref* | theirs,mine",
+  "keepMine > refused, refused answers first": "[N:theirs,mine P:Alpha,Ref] Alpha,Ref* | theirs,mine",
   "keepMine > restore, keepMine answers first": "[N:theirs,mine P:Seed+N:seeded] Seed | seeded",
   "keepMine > restore, restore answers first": "[N:theirs,mine P:Seed+N:seeded] Seed | seeded",
   "keepMine > elsewhere": "[N:theirs,mine] Alpha,Beta | theirs,mine",
@@ -406,6 +473,8 @@ const TABLE: Record<string, string> = {
   "takeTheirs > mount, mount answers first": "[] Alpha,Beta | theirs checkFailed",
   "takeTheirs > save, takeTheirs answers first": "[P:Sam,Beta] Sam,Beta | theirs",
   "takeTheirs > save, save answers first": "[P:Sam,Beta] Sam,Beta | theirs",
+  "takeTheirs > refused, takeTheirs answers first": "[P:Alpha,Ref] Alpha,Ref* | theirs",
+  "takeTheirs > refused, refused answers first": "[P:Alpha,Ref] Alpha,Ref* | theirs",
   "takeTheirs > restore, takeTheirs answers first": "[P:Seed+N:seeded] Seed | seeded",
   "takeTheirs > restore, restore answers first": "[P:Seed+N:seeded] Seed | seeded",
   "takeTheirs > elsewhere": "[] Alpha,Beta | theirs",
@@ -420,6 +489,8 @@ const TABLE: Record<string, string> = {
   "close > mount, mount answers first": "[] Alpha,Beta | theirs,mine! checkFailed",
   "close > save, close answers first": "[P:Sam,Beta] Sam,Beta | theirs,mine!",
   "close > save, save answers first": "[P:Sam,Beta] Sam,Beta | theirs,mine!",
+  "close > refused, close answers first": "[P:Alpha,Ref] Alpha,Ref* | theirs,mine!",
+  "close > refused, refused answers first": "[P:Alpha,Ref] Alpha,Ref* | theirs,mine!",
   "close > restore, close answers first": "[P:Seed+N:seeded] Seed | seeded",
   "close > restore, restore answers first": "[P:Seed+N:seeded] Seed | seeded",
   "close > elsewhere": "[] Alpha,Beta | theirs,mine!",
@@ -494,6 +565,61 @@ describe('a write the computer refuses', () => {
     h.editor.commit('profiles');
     await flush();
     expect(outcome(h)).toBe('[P:Sam,Beta] Sam*,Beta | ');
+  });
+
+  // The store putting back this page's own refused write is no change made
+  // elsewhere: a Restore waiting across it still acts on its answer.
+  it('leaves a Restore waiting across a refused write to act on its answer', async () => {
+    const h = harness({ agentProfiles: [ALPHA, BETA], agentNotes: [note('one')] });
+    h.store.holdRefusal = true;
+    h.editor.editProfile(0, { name: 'Sam' });
+    h.editor.commit('profiles');
+    await flush();
+    void h.editor.restore();
+    h.store.settleNext();
+    await flush();
+    expect(outcome(h)).toBe('[P:Sam,Beta] Sam*,Beta | one');
+
+    h.held.seeds[0].resolve(SEEDS);
+    await flush();
+    expect(outcome(h)).toBe('[P:Sam,Beta P:Seed+N:seeded] Seed | seeded');
+  });
+
+  // While a later write is outstanding the store shows its list, so an
+  // earlier write's settling says nothing of how it ended.
+  it('keeps the edits of two writes of one list that are both refused', async () => {
+    const h = harness({ agentProfiles: [ALPHA, BETA], agentNotes: [] });
+    h.store.manual = true;
+    h.store.refuse = true;
+    h.editor.editProfile(0, { name: 'Sam' });
+    h.editor.commit('profiles');
+    await flush();
+    h.editor.commit('profiles');
+    await flush();
+    h.store.settleNext();
+    await flush();
+    h.store.settleNext();
+    await flush();
+    expect(outcome(h)).toBe('[P:Sam,Beta P:Sam,Beta] Sam*,Beta | ');
+  });
+
+  it('marks saved what an earlier write saved when a later one is refused', async () => {
+    const h = harness({ agentProfiles: [ALPHA, BETA], agentNotes: [] });
+    h.store.manual = true;
+    h.editor.editProfile(0, { name: 'Sam' });
+    h.editor.commit('profiles');
+    await flush();
+    h.editor.editProfile(0, { name: 'Sid' });
+    h.editor.commit('profiles');
+    await flush();
+    h.store.settleNext();
+    await flush();
+    h.store.refuse = true;
+    h.store.settleNext();
+    await flush();
+    // Sid is unsaved over the saved Sam, not marked as changed elsewhere too.
+    expect(outcome(h)).toBe('[P:Sam,Beta P:Sid,Beta] Sid*,Beta | ');
+    expect(h.editor.profiles.entries[0].origin?.name).toBe('Sam');
   });
 
   // A change saved elsewhere that lands while a save checks drops that save
