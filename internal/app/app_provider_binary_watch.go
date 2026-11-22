@@ -226,7 +226,8 @@ func (a *App) refreshProviderCatalogAfterUpgrade(providerName string) error {
 		return err
 	case string(provider.Agy):
 		a.refreshAgyModelCatalog()
-		return nil
+		_, err := a.providerDiscoveryService().RecheckAgyAccount()
+		return err
 	}
 	return fmt.Errorf("no catalog refresh for provider %q", providerName)
 }

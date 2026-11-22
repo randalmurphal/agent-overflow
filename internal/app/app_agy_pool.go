@@ -147,17 +147,10 @@ func (a *App) drainAgyConnections() {
 }
 
 // agyAppDataDir returns Antigravity's per-home appData directory
-// (<home>/.gemini/antigravity-cli), honoring credentialHomeOverride in tests.
+// (<providerHome>/.gemini/antigravity-cli).
 func (a *App) agyAppDataDir() string {
-	home := a.credentialHomeOverride
-	if home == "" {
-		if resolved, err := a.providerHome(); err == nil && resolved != "" {
-			home = resolved
-		} else if resolved, err := os.UserHomeDir(); err == nil {
-			home = resolved
-		}
-	}
-	if home == "" {
+	home, err := a.providerHome()
+	if err != nil || home == "" {
 		return ""
 	}
 	return filepath.Join(home, ".gemini", agy.DefaultAppDataName)

@@ -6,7 +6,6 @@ import (
 	"maps"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"strings"
 
@@ -88,31 +87,6 @@ func ResolveBinary(configured string) string {
 		}
 	}
 	return DefaultBinaryName
-}
-
-// DefaultGeminiDir returns the resolved Gemini root directory (~/.gemini or
-// GEMINI_HOME when set).
-func DefaultGeminiDir(env map[string]string) string {
-	if v := strings.TrimSpace(env["GEMINI_HOME"]); v != "" {
-		return v
-	}
-	if v := strings.TrimSpace(os.Getenv("GEMINI_HOME")); v != "" {
-		return v
-	}
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return ""
-	}
-	return filepath.Join(home, ".gemini")
-}
-
-// DefaultAppDataDir returns `<geminiDir>/antigravity-cli`.
-func DefaultAppDataDir(env map[string]string) string {
-	root := DefaultGeminiDir(env)
-	if root == "" {
-		return ""
-	}
-	return filepath.Join(root, DefaultAppDataName)
 }
 
 // ProviderKind returns provider.Agy.

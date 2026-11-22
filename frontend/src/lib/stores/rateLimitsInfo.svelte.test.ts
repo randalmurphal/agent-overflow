@@ -821,6 +821,24 @@ describe('rateLimitsInfo', () => {
     });
   });
 
+  it('selects the primary Gemini bucket and scoped secondary for Antigravity', () => {
+    setProviderRateLimits({
+      provider: 'agy',
+      accountId: 'agy-1',
+      limits: [
+        { limitId: '3p-5h', limitName: 'Claude & GPT (shared) · 5-hour', usedPercent: 80, windowMins: 300, resetsAt: 0 },
+        { limitId: 'gemini-5h', limitName: 'Gemini · 5-hour', usedPercent: 25, windowMins: 300, resetsAt: 0 },
+        { limitId: 'gemini-weekly', limitName: 'Gemini · Weekly', usedPercent: 10, windowMins: 10080, resetsAt: 0 },
+      ],
+      updatedAt: 1784823000,
+    });
+
+    const fiveHour = getProviderRateLimitsForWindow('agy', 300, 'agy-1');
+    expect(fiveHour.primary?.limitId).toBe('gemini-5h');
+    expect(fiveHour.secondary?.limitId).toBe('3p-5h');
+    expect(getComposerRateLimitWindows('agy', 'agy-1')).toEqual([300, 10080]);
+  });
+
   it('provides readable names for unnamed provider limits', () => {
     expect(rateLimitDisplayName({
       limitId: 'codex',

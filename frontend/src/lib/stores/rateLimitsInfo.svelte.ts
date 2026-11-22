@@ -159,6 +159,12 @@ function defaultLimit(provider: ProviderID, entries: RateLimitEntry[]): RateLimi
         || id === 'five_hour' || id === 'seven_day';
     }) ?? null;
   }
+  if (provider === 'agy') {
+    return entries.find((entry) => {
+      const id = entry.limitId.toLowerCase();
+      return id === 'gemini-5h' || id === 'gemini-weekly' || id === 'gemini-quota';
+    }) ?? entries[0] ?? null;
+  }
   return null;
 }
 

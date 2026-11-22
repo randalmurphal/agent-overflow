@@ -8,9 +8,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 
+	"agent-overflow/internal/mcpstatus"
 	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/acp"
@@ -623,5 +625,30 @@ func TestFileChangeDiffChangesFeedTriageExactPatch(t *testing.T) {
 	}
 	if delRes.InlineDiff.Availability != "exact_patch" || delRes.InlineDiff.Insertions != 0 || delRes.InlineDiff.Deletions != 2 || delRes.InlineDiff.Files[0].Kind != "deleted" || len(delDiff) == 0 {
 		t.Fatalf("delete inline diff = %+v (bytes=%d), want exact_patch deleted (+0 -2)", delRes.InlineDiff, len(delDiff))
+	}
+}
+
+func TestParseMCPListOutput(t *testing.T) {
+	t.Parallel()
+	raw := `NAME    TYPE   STATUS    COMMAND/URL
+demo    http   enabled   https://example.com/mcp
+local   stdio  disabled  npx -y @example/mcp
+broken  http   failed    https://broken.example/mcp
+`
+	statuses := ParseMCPListOutput(raw, time.Unix(1700000000, 0))
+	if len(statuses) != 3 {
+		t.Fatalf("len(statuses) = %d, want 3: %+v", len(statuses), statuses)
+	}
+	if statuses[0].Key.Provider != mcpstatus.ProviderAgy || statuses[0].Key.Name != "demo" || statuses[0].Status != mcpstatus.StatusNotStarted {
+		t.Fatalf("statuses[0] = %+v", statuses[0])
+	}
+	if statuses[1].Key.Name != "local" || statuses[1].Status != mcpstatus.StatusDisabled {
+		t.Fatalf("statuses[1] = %+v", statuses[1])
+	}
+	if statuses[2].Key.Name != "broken" || statuses[2].Status != mcpstatus.StatusFailed {
+		t.Fatalf("statuses[2] = %+v", statuses[2])
+	}
+	if empty := ParseMCPListOutput("No MCP servers configured.\n", time.Now()); len(empty) != 0 {
+		t.Fatalf("expected empty slice for no servers, got %+v", empty)
 	}
 }

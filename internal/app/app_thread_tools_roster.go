@@ -121,6 +121,10 @@ func (a *App) providerOffered(name string) bool {
 		if !current.CodexEnabled {
 			return false
 		}
+	case string(provider.Agy):
+		if !current.AgyEnabled {
+			return false
+		}
 	default:
 		return false
 	}

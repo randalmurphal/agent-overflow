@@ -31,22 +31,26 @@ var ErrNoCredentials = errors.New("agy: no OAuth credentials found")
 var ErrOAuthUnauthorized = errors.New("agy: OAuth access token rejected")
 
 // Credential is the parsed OAuth token record stored by agy 1.5.x in
-// `<appDataDir>/antigravity-oauth-token`.
+// `<appDataDir>/antigravity-oauth-token` or macOS Keychain (`gemini`/`antigravity`).
 type Credential struct {
+	Email        string
 	AccessToken  string
 	RefreshToken string
 	Expiry       time.Time
 	HasExpiry    bool
 }
 
-// ParseCredential decodes agy's `antigravity-oauth-token` JSON bytes.
-// Supports both the nested `{"token":{...}}` CLI format and a flat token object.
+// ParseCredential decodes agy's OAuth JSON bytes.
+// Supports both the nested `{"token":{...}}` CLI format (including
+// `id_token_email`) and a flat token object.
 func ParseCredential(data []byte) (Credential, error) {
 	if len(strings.TrimSpace(string(data))) == 0 {
 		return Credential{}, ErrNoCredentials
 	}
 	var nested struct {
-		Token *struct {
+		IDTokenEmail string `json:"id_token_email"`
+		Email        string `json:"email"`
+		Token        *struct {
 			AccessToken  string `json:"access_token"`
 			RefreshToken string `json:"refresh_token"`
 			Expiry       string `json:"expiry"`
@@ -71,7 +75,12 @@ func ParseCredential(data []byte) (Credential, error) {
 	if access == "" && refresh == "" {
 		return Credential{}, ErrNoCredentials
 	}
+	email := strings.TrimSpace(nested.IDTokenEmail)
+	if email == "" {
+		email = strings.TrimSpace(nested.Email)
+	}
 	cred := Credential{
+		Email:        email,
 		AccessToken:  access,
 		RefreshToken: refresh,
 	}
@@ -175,8 +184,12 @@ func identifyAccountAtURL(
 		tokenSource = "oauth-business"
 		orgName = hd
 	}
+	email := strings.TrimSpace(userInfo.Email)
+	if email == "" {
+		email = cred.Email
+	}
 	return provider.AccountInfo{
-		Email:           strings.TrimSpace(userInfo.Email),
+		Email:           email,
 		DisplayName:     strings.TrimSpace(userInfo.Name),
 		OrgID:           orgID,
 		OrgName:         orgName,

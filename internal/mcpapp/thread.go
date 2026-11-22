@@ -127,6 +127,8 @@ func (a *Service) ListWorkspaceMcpServers(providerName, workspacePath string) ([
 		return a.claudeConfigMCPRows(workspacePath)
 	case mcpProviderCodex:
 		return a.codexConfigMCPRows()
+	case mcpProviderAgy:
+		return a.agyConfigMCPRows()
 	default:
 		return nil, fmt.Errorf("%w: %s", ErrMCPProviderUnsupported, providerName)
 	}
@@ -161,6 +163,8 @@ func (a *Service) SetThreadMcpServerEnabled(threadID, name string, enabled bool)
 		return a.setClaudeThreadMCPEnabled(t, name, enabled)
 	case string(provider.Codex):
 		return a.setCodexMCPEnabled(t.ID, name, enabled)
+	case string(provider.Agy):
+		return a.setAgyMCPEnabled(name, enabled)
 	default:
 		return fmt.Errorf("%w: %s", ErrMCPProviderUnsupported, t.Provider)
 	}
@@ -180,6 +184,8 @@ func (a *Service) SetWorkspaceMcpServerEnabled(providerName, workspacePath, name
 		return a.setClaudeWorkspaceMCPDisabled(workspacePath, name, !enabled)
 	case mcpProviderCodex:
 		return a.setCodexMCPEnabled("", name, enabled)
+	case mcpProviderAgy:
+		return a.setAgyMCPEnabled(name, enabled)
 	default:
 		return fmt.Errorf("%w: %s", ErrMCPProviderUnsupported, providerName)
 	}
@@ -517,6 +523,38 @@ func (a *Service) codexConfigMCPRows() ([]ThreadMCPServer, error) {
 	// show through live-session truth (codexSessionMCPRows).
 	sortThreadMCPServers(rows)
 	return rows, nil
+}
+
+// ---------------- Antigravity ----------------
+
+func (a *Service) agyConfigMCPRows() ([]ThreadMCPServer, error) {
+	st, err := a.agyConfig()
+	if err != nil {
+		return nil, err
+	}
+	servers, err := st.ListServers()
+	if err != nil {
+		return nil, fmt.Errorf("list agy mcp servers: %w", err)
+	}
+	cached := a.cachedMCPStatusByName(mcpstatus.ProviderAgy)
+	rows := make([]ThreadMCPServer, 0, len(servers))
+	for _, srv := range servers {
+		rows = append(rows, configMCPRow(mcpProviderAgy, srv.Name, "", srv.Disabled, cached))
+	}
+	sortThreadMCPServers(rows)
+	return rows, nil
+}
+
+func (a *Service) setAgyMCPEnabled(name string, enabled bool) error {
+	st, err := a.agyConfig()
+	if err != nil {
+		return err
+	}
+	if err := st.SetDisabled(name, !enabled); err != nil {
+		return fmt.Errorf("set agy mcp enabled: %w", err)
+	}
+	a.mcpStatus().Invalidate(mcpstatus.Key{Provider: mcpstatus.ProviderAgy, Name: name})
+	return nil
 }
 
 // ---------------- shared row shaping ----------------

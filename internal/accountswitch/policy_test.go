@@ -356,3 +356,38 @@ func TestEarliestServe(t *testing.T) {
 		t.Fatalf("earliest = %v %q %v", when, who.ID, ok)
 	}
 }
+
+func TestAgyQuotaBucketPolicyAndAutoSwitch(t *testing.T) {
+	t.Parallel()
+	gemini5h := func(pct float64, reset int64) provider.RateLimitEntry {
+		return provider.RateLimitEntry{LimitID: "gemini-5h", LimitName: "Gemini · 5-hour", UsedPercent: pct, WindowMins: 300, ResetsAt: reset}
+	}
+	thirdParty5h := func(pct float64, reset int64) provider.RateLimitEntry {
+		return provider.RateLimitEntry{LimitID: "3p-5h", LimitName: "Claude & GPT (shared) · 5-hour", UsedPercent: pct, WindowMins: 300, ResetsAt: reset}
+	}
+
+	// Exhausted 3p-5h bucket triggers switch for claude-opus-5-5 on agy, but not for gemini-4-neon.
+	dClaude := decide(decideInput{
+		provider: "agy", selectedID: "a",
+		accounts: []candidate{
+			cand("a", gemini5h(15, at(2*time.Hour)), thirdParty5h(100, at(3*time.Hour))),
+			cand("b", gemini5h(10, at(2*time.Hour)), thirdParty5h(20, at(3*time.Hour))),
+		},
+		demand: buildDemand("agy", []string{"claude-opus-5-5"}), strategy: StrategySoonestReset, threshold: 95, now: testNow,
+	})
+	if dClaude.to.ID != "b" {
+		t.Fatalf("agy claude-opus-5-5 target = %q, want b", dClaude.to.ID)
+	}
+
+	dGemini := decide(decideInput{
+		provider: "agy", selectedID: "a",
+		accounts: []candidate{
+			cand("a", gemini5h(15, at(2*time.Hour)), thirdParty5h(100, at(3*time.Hour))),
+			cand("b", gemini5h(10, at(2*time.Hour)), thirdParty5h(20, at(3*time.Hour))),
+		},
+		demand: buildDemand("agy", []string{"gemini-4-neon"}), strategy: StrategySoonestReset, threshold: 95, now: testNow,
+	})
+	if dGemini.to.ID != "" {
+		t.Fatalf("agy gemini-4-neon unexpectedly switched to %q when only 3p-5h was exhausted", dGemini.to.ID)
+	}
+}

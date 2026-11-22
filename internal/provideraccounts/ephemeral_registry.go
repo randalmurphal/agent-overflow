@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
@@ -521,8 +520,8 @@ func (c *Credentials) chainAdvances(providerName string, current, next []byte) b
 // path sweepable.
 func (c *Credentials) removeEphemeralRemnants(providerName, configHome string) error {
 	var errs []error
-	if runtime.GOOS == "darwin" && providerName == "claude" {
-		if err := c.keychain.remove(configHome, false); err != nil {
+	if kc, ok := c.keychainFor(providerName); ok {
+		if err := kc.remove(configHome, false); err != nil {
 			errs = append(errs, err)
 		}
 	}

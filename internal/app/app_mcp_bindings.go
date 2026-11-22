@@ -144,6 +144,7 @@ func (a *App) mcpDeps() mcpapp.Deps {
 		ReadClaudeCredential: a.readClaudeMCPCredential,
 		ClaudeConfigPath:     a.claudeConfigJSONPath,
 		CodexConfigPath:      a.codexConfigTOMLPath,
+		AgyConfigPath:        a.agyMCPConfigJSONPath,
 		Emit:                 a.emit,
 		EmitThreadError:      a.emitErrorToThread,
 		EmitWireError:        a.emitWireErrorToThread,

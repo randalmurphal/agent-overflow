@@ -27,6 +27,7 @@ const (
 const (
 	providerClaude = "claude"
 	providerCodex  = "codex"
+	providerAgy    = "agy"
 
 	// noReadingMarkDuration bounds a refusal mark when no limit names a reset.
 	noReadingMarkDuration = time.Hour
@@ -49,6 +50,8 @@ func providerWide(prov string, entry provider.RateLimitEntry) bool {
 		return id == "codex"
 	case providerClaude:
 		return id == "session" || id == "weekly_all" || id == "five_hour" || id == "seven_day"
+	case providerAgy:
+		return id == "gemini-5h" || id == "gemini-weekly" || id == "gemini-quota"
 	}
 	return false
 }
@@ -63,13 +66,28 @@ func modelKey(prov, model string) string {
 }
 
 // modelFamily maps a model key onto the name scoped limits use for it: the
-// token after `claude-` for Claude, the whole slug for Codex.
+// token after `claude-` for Claude, the quota family for Antigravity, the
+// whole slug for Codex.
 func modelFamily(prov, key string) string {
 	if key == "" {
 		return ""
 	}
-	if prov == providerClaude {
+	switch prov {
+	case providerClaude:
 		return claudeFamilyToken(key)
+	case providerAgy:
+		switch {
+		case strings.Contains(key, "argon"):
+			return "gemini-argon"
+		case strings.Contains(key, "carbon"):
+			return "gemini-carbon"
+		case strings.HasPrefix(key, "gemini"):
+			return "gemini"
+		case strings.HasPrefix(key, "claude"):
+			return "claude"
+		case strings.HasPrefix(key, "gpt"):
+			return "gpt"
+		}
 	}
 	return key
 }
@@ -106,6 +124,25 @@ func bucketFamilies(prov string, entry provider.RateLimitEntry) []string {
 		add(claudeFamilyToken(slugify(entry.LimitName)))
 	case providerCodex:
 		add(slugify(entry.LimitName))
+	case providerAgy:
+		id := strings.ToLower(strings.TrimSpace(entry.LimitID))
+		switch {
+		case strings.HasPrefix(id, "gemini-argon"):
+			add("gemini-argon")
+		case strings.HasPrefix(id, "gemini-carbon"):
+			add("gemini-carbon")
+		case strings.HasPrefix(id, "gemini"):
+			add("gemini")
+		case strings.HasPrefix(id, "3p"):
+			add("claude")
+			add("gpt")
+		case strings.HasPrefix(id, "claude"):
+			add("claude")
+		case strings.HasPrefix(id, "gpt"):
+			add("gpt")
+		default:
+			add(slugify(entry.LimitName))
+		}
 	}
 	return out
 }

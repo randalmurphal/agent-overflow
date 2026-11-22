@@ -17,12 +17,12 @@ import (
 
 func TestParseCredentialAndPolicyHelpers(t *testing.T) {
 	t.Parallel()
-	raw := []byte(`{"token":{"access_token":"ya29.abc","refresh_token":"1//ref-xyz","expiry":"2026-12-01T10:00:00Z"}}`)
+	raw := []byte(`{"id_token_email":"dev@example.com","token":{"access_token":"ya29.abc","refresh_token":"1//ref-xyz","expiry":"2026-12-01T10:00:00Z"}}`)
 	cred, err := ParseCredential(raw)
 	if err != nil {
 		t.Fatalf("ParseCredential: %v", err)
 	}
-	if cred.AccessToken != "ya29.abc" || cred.RefreshToken != "1//ref-xyz" || !cred.HasExpiry {
+	if cred.Email != "dev@example.com" || cred.AccessToken != "ya29.abc" || cred.RefreshToken != "1//ref-xyz" || !cred.HasExpiry {
 		t.Fatalf("unexpected cred: %+v", cred)
 	}
 	expMs, ok := CredentialExpiresAt(raw)

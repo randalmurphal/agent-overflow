@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 
 	"agent-overflow/internal/atomicfile"
 	"agent-overflow/internal/claudeconfig"
@@ -215,8 +214,8 @@ func (h *EphemeralHome) Cleanup() error {
 		return nil
 	}
 	var cleanupErrs []error
-	if runtime.GOOS == "darwin" && h.providerName == "claude" {
-		if err := h.credentials.keychain.remove(h.Path, false); err != nil {
+	if kc, ok := h.credentials.keychainFor(h.providerName); ok {
+		if err := kc.remove(h.Path, false); err != nil {
 			cleanupErrs = append(cleanupErrs, err)
 		}
 	}
