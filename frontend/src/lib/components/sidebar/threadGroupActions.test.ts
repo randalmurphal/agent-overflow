@@ -15,6 +15,7 @@ import {
   getThreadGroupById,
   getThreadGroups,
   resetThreadGroupsForTest,
+  upsertThreadGroup,
 } from '../../stores/threadGroups.svelte';
 import { getThreadById, getThreads, prependThread, removeThread } from '../../stores/threads.svelte';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
@@ -124,6 +125,7 @@ describe('threadGroupActions', () => {
 
   describe('renameThreadGroupAction', () => {
     it('sends the trimmed name and adopts the row the backend returned', async () => {
+      upsertThreadGroup(mkGroup('g1', { name: 'Old' }));
       const mock = setBindingMock('RenameThreadGroup', async () => mkGroup('g1', { name: 'Ship It' }));
       const renamed = await renameThreadGroupAction(mkGroup('g1', { name: 'Old' }), '  Ship It  ');
 

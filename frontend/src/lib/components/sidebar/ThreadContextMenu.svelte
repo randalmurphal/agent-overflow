@@ -55,7 +55,7 @@
   } from '../../stores/threadFilter.svelte';
   import { getThreadById } from '../../stores/threads.svelte';
   import { getThreadGroupsForProject } from '../../stores/threadGroups.svelte';
-  import { expandProject } from '../../stores/sidebar.svelte';
+  import { revealProject } from '../../stores/sidebarEntryContinuity.svelte';
   import {
     createThreadGroupAndMoveAction,
     moveThreadsToGroupAction,
@@ -376,7 +376,7 @@
   // does it: the new group's row opens inline rename, and a row inside a
   // collapsed project would never render the editor.
   async function createGroupAndMove(): Promise<void> {
-    expandProject(groupProjectId);
+    revealProject(groupProjectId);
     await createThreadGroupAndMoveAction(groupProjectId, moveTargetIds);
   }
 </script>

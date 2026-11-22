@@ -7,7 +7,14 @@
   import UserRoundPlus from '@lucide/svelte/icons/user-round-plus';
   import type { Thread } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import { ASSISTANTS_LIST_KEY, isSidebarSectionShown, toggleSidebarSection } from '../../stores/sidebar.svelte';
+  import {
+    isSidebarSectionShown,
+    toggleSidebarSection,
+    type SidebarTopLevelList,
+  } from '../../stores/sidebar.svelte';
+
+  // The section's rows page under their own key, not a project's entry.
+  const ASSISTANTS_LIST: SidebarTopLevelList = { kind: 'assistants' };
   import { openNewAssistantDialog } from '../../stores/newAssistant.svelte';
   import { getProjectLabelText } from '../../stores/projects.svelte';
   import { selectedBackend } from '../../stores/selectedBackend.svelte';
@@ -71,7 +78,7 @@
   {#if shown && assistants.length > 0}
     <div class="px-2 pb-1">
       <div class="flex flex-col gap-px rounded-[var(--radius-field)]" role="list" aria-label="Assistants" data-testid="assistant-card-list">
-        <SidebarTreeList threads={assistants} listKey={ASSISTANTS_LIST_KEY} {pane} agentProjects={servedProjectsLabel} />
+        <SidebarTreeList threads={assistants} list={ASSISTANTS_LIST} {pane} agentProjects={servedProjectsLabel} />
       </div>
     </div>
   {/if}

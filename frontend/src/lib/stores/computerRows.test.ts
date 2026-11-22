@@ -4,9 +4,10 @@ import { setBindingMock } from '../../test/mocks/bindings-app';
 import { deferred } from '../../test/helpers/providerAccounts';
 import { takePinnedBackend, detachBackend } from '../transport/backends';
 import { __resetEntityIndexForTest, currentThreadRow, noteThread, projectBackend, resolveThreadBackend } from '../transport/entityIndex';
-import { addProjectLocal, getProjects, isLoaded, refreshProjects, resetProjectsForTest } from './projects.svelte';
+import { addProjectLocal, getProjects, isLoaded, resetProjectsForTest } from './projects.svelte';
 import { getToasts } from './toast.svelte';
-import { loadThreadCatalogs } from './threadCatalogs';
+import { loadSidebarCatalogs } from './sidebarCatalogs';
+import { readSidebarCatalogs } from '../../test/helpers/sidebarCatalogs';
 import { setBackendIdentityFromBootstrap } from '../transport/backendIdentity';
 import { writeFrontendValue } from './frontendStorage';
 import { preferredProjectTarget, rememberProjectTarget } from './projectTargets';
@@ -44,16 +45,16 @@ describe('unavailable computer catalogs', () => {
       }
       return local;
     });
-    await refreshProjects();
+    await readSidebarCatalogs();
     expect(getProjects().map((entry) => entry.project.id)).toEqual(['mac', 'gpu']);
     expect(projectBackend('gpu')).toBe('gpu');
     offline = true;
     local = [];
-    await refreshProjects();
+    await readSidebarCatalogs();
     expect(getProjects().map((entry) => entry.project.id)).toEqual(['gpu']);
     offline = false;
     local = [row('new-mac')];
-    await refreshProjects();
+    await readSidebarCatalogs();
     expect(getProjects().map((entry) => entry.project.id)).toEqual(['new-mac', 'gpu']);
   });
 
@@ -75,7 +76,7 @@ describe('unavailable computer catalogs', () => {
     stageBackend({ id: 'gpu' });
     const home = deferred<ProjectWithCounts[]>();
     setBindingMock('ListProjects', async () => takePinnedBackend() === 'gpu' ? [row('gpu')] : home.promise);
-    const refresh = refreshProjects();
+    const refresh = readSidebarCatalogs();
     await vi.advanceTimersByTimeAsync(2500);
     await refresh;
     expect(getProjects().map((entry) => entry.project.id)).toEqual(['gpu']);
@@ -89,7 +90,7 @@ describe('unavailable computer catalogs', () => {
     const gpu = stageBackend({ id: 'gpu', status: 'disconnected' });
     const read = setBindingMock('ListProjects', async () => takePinnedBackend() === 'gpu' ? new Promise<never>(() => {}) : [row('mac')]);
     // Never dialed: the read goes out and the deadline bounds it.
-    let refresh = refreshProjects();
+    let refresh = readSidebarCatalogs();
     await vi.advanceTimersByTimeAsync(2500);
     await refresh;
     expect(read).toHaveBeenCalledTimes(2);
@@ -97,7 +98,7 @@ describe('unavailable computer catalogs', () => {
     // First attempt failed, ladder running: offline like any other
     // disconnected computer, so no read is issued and nothing waits.
     gpu.setStatus('reconnecting');
-    refresh = refreshProjects();
+    refresh = readSidebarCatalogs();
     await vi.advanceTimersByTimeAsync(0);
     await refresh;
     expect(read).toHaveBeenCalledTimes(3);
@@ -109,7 +110,7 @@ describe('unavailable computer catalogs', () => {
     stageBackend({ id: 'gpu' });
     const home = deferred<ProjectWithCounts[]>();
     setBindingMock('ListProjects', async () => takePinnedBackend() === 'gpu' ? [row('gpu')] : home.promise);
-    const refresh = refreshProjects();
+    const refresh = readSidebarCatalogs();
     await vi.advanceTimersByTimeAsync(2500);
     await refresh;
     addProjectLocal(row('just-added').project);
@@ -122,7 +123,7 @@ describe('unavailable computer catalogs', () => {
     const machine = stageBackend({ id: 'gpu' });
     setBackendIdentityFromBootstrap('gpu-uuid', 'db-generation', 'GPU', 'gpu');
     setBindingMock('ListProjects', async () => [row(takePinnedBackend() === 'gpu' ? 'gpu' : 'mac')]);
-    await refreshProjects();
+    await readSidebarCatalogs();
     rememberProjectTarget(row('mac').project, 'gpu');
     machine.setStatus('disconnected');
     expect(preferredProjectTarget(row('mac').project).id).toBe('gpu');
@@ -136,7 +137,7 @@ describe('unavailable computer catalogs', () => {
     // Explicitly seed the former per-project choice; no URL/ancestry key is adopted.
     writeFrontendValue('project-targets', [['project:mac', 'gpu-uuid']]);
     setBindingMock('ListProjects', async () => [row(takePinnedBackend() === 'gpu' ? 'gpu' : 'mac')]);
-    await refreshProjects();
+    await readSidebarCatalogs();
     expect(preferredProjectTarget(row('mac').project).id).toBe('gpu');
   });
 
@@ -147,7 +148,7 @@ describe('unavailable computer catalogs', () => {
       const id = takePinnedBackend() === 'gpu' ? 'gpu' : 'mac';
       return [{ ...row(id), project: { ...row(id).project, repositoryID: `github:github.com:${id}` } }];
     });
-    await refreshProjects();
+    await readSidebarCatalogs();
     writeFrontendValue('project-targets', [['commit:shared', 'gpu-uuid'], ['remote:github.com/me/app', 'gpu-uuid']]);
     expect(preferredProjectTarget(row('mac').project).id).toBe('mac');
   });
@@ -157,27 +158,29 @@ describe('unavailable computer catalogs', () => {
     const next = deferred<ProjectWithCounts[]>();
     const read = setBindingMock('ListProjects', () => old.promise);
     const toasts = getToasts().length;
-    const first = refreshProjects();
+    const first = readSidebarCatalogs();
     read.mockImplementation(() => next.promise);
-    const second = refreshProjects();
+    const second = readSidebarCatalogs();
     old.resolve([row('obsolete')]);
     await first;
     expect(isLoaded()).toBe(false);
     expect(getProjects()).toEqual([]);
     expect(getToasts().slice(toasts)).toEqual([]);
     next.resolve([row('current')]);
+    // The round resolves on its thread window, so the project answer's
+    // commit is awaited for itself.
     await second;
+    await vi.waitFor(() => expect(getProjects().map((entry) => entry.project.id)).toEqual(['current']));
     expect(isLoaded()).toBe(true);
-    expect(getProjects().map((entry) => entry.project.id)).toEqual(['current']);
   });
 
   it.each([false, true])('startup follows the winning thread read before validating saved panes (winner finishes first: %s)', async (winnerFirst) => {
     const old = deferred<Thread[]>();
     const next = deferred<Thread[]>();
     const read = setBindingMock('ListThreads', () => old.promise);
-    const startup = loadThreadCatalogs();
+    const startup = loadSidebarCatalogs();
     read.mockImplementation(() => next.promise);
-    const reconnect = loadThreadCatalogs();
+    const reconnect = loadSidebarCatalogs();
     const current = [{ id: 'saved-pane', ownershipEpoch: 1 }] as Thread[];
     if (winnerFirst) { next.resolve(current); await reconnect; }
     old.resolve([]);

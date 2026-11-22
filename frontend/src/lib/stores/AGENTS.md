@@ -231,16 +231,28 @@ failure inside `commitShares` (`computerRows.ts`), an answer in the `commit`
 callback that commits its rows. Answers commit in the same synchronous block
 that replays local mutations; never commit an answer after an `await`.
 
-A computer's threads and groups are one list in the sidebar, read only as a
-pair by `loadThreadCatalogs` (`threadCatalogs.ts`), which owns their
-supersession, commit timing, the sidebar listing (`catalogTreeListed`) and
-the rows the boot's layout restore validates against. A listed computer's
-two answers commit together once neither read is out, so its rows change
-arrangement at most once per round. The pair is atomic in the sidebar
-without exception: when one read fails, on any attempt, the other's answer is
-never listed. While a catalog keeps failing, the sidebar shows its error row
-with Retry beside the last complete pair, or alone if there was none, and
-never a half-arranged list. The module comment has the rules.
+A computer's projects, the threads under them and the groups that gather
+those threads are one tree in the sidebar, read only as a set by
+`loadSidebarCatalogs` (`sidebarCatalogs.ts`), which owns their supersession,
+commit timing, the sidebar listing (`catalogTreeListed`) and the rows the
+boot's layout restore validates against. Nothing else reads any of the three:
+a second reader would supersede the round's and leave its tree held. A listed
+computer's three answers commit together once no read is out, so its rows
+change arrangement at most once per round; an unlisted computer's commit at
+their own windows, for the panes and pickers that read those stores, while
+`catalogTreeListed` holds every row of its tree. The set is atomic in the
+sidebar without exception: when one read fails, on any attempt, the others'
+answers are never listed. While a catalog keeps failing, the sidebar shows
+its error row with Retry beside the last complete tree, or alone if there was
+none, and never a half-arranged list, so a computer whose read keeps failing
+before it ever listed shows no project header. A computer lists the first
+time one read of it is a complete tree: all three answered in that round, or
+rows standing in that are one kept tree by their provenance, which
+`catalogLoad.svelte.ts` owns. The replica keeps only complete trees and the
+changes pushed onto them, and each computer's write queue
+(`computerCatalogWriter.ts`) is the one writer of its three records; the
+architecture test refuses any other caller. The module comments have the
+rules.
 
 Only a newer read of the same computer supersedes a sidebar catalog read.
 Change thread, project and group rows through the catalog writer's `mutate`,
@@ -257,9 +269,47 @@ computer device buckets, without holding a local save open for an unavailable
 computer. Appearance file locality is decided only after grants resolve.
 
 Thread and project catalogs from several computers merge by repository identity,
-never by filesystem path. Do not add permanent frontend tombstones for moved or
-retired entities; pending reads hold only enough ownership evidence to reject
-stale replies.
+never by filesystem path. The merge is over every row the client holds, so an
+entry's identity and representative do not depend on what a surface shows; a
+surface showing some members aggregates those itself. Which listed rows form a
+sidebar entry, and which earlier row it continues, is decided in
+`sidebarEntryContinuity.svelte.ts`; what the sidebar's rows are is one value
+from `components/sidebar/sidebarEntries.ts`, the only module in that directory
+that may import from this store or that one beyond the writers
+`lib/architecture.test.ts` lists. The manual reorder is the
+store's (`reorderProjects`): the order the user dragged is an overlay the
+sidebar sorts by (`projectOrderPosition`), never a write to the rows, so the
+rows carry the last order a computer accepted and a refusal drops the overlay
+with nothing to undo. Nothing folds an accepted order into the rows: the
+computer broadcasts one frame per row it moved before it returns, and the
+transport delivers an event queued before a reply ahead of that reply
+(`internal/transport/conn.go#writeReply`), so the rows carry the order by the
+time the overlay is dropped. One write at a time, and only the newest order
+waiting behind it is sent. A group's and a section's fold and the Assistants
+section's and a group's list size live in `sidebar.svelte.ts`, which also
+holds the record factories (`keySetRecord`, `listLimitRecord`); only
+`sidebarEntryContinuity.svelte.ts` may import them, which `lib/architecture.test.ts`
+enforces through re-exports. A project row's fold and list size live in records
+of their own, keyed by the entry, which `sidebarEntryContinuity.svelte.ts`
+creates and exports nothing to read or write by key. When an entry's key moves
+under a row that stays, it copies the row's fold and limit to the new key and
+clears the old one, and its writers commit a waiting move before they write.
+A project deleted through `deleteProjectLocal` clears its key's records once
+no project the client holds wears that key; an archived, detached or
+unlisted row keeps them. The fence does not see a write through `appStorage` under the same storage
+key. `App.svelte` starts it and reloads
+its records after hydration (`syncSidebarEntryDisclosureFromAppStorage`); the
+test setup starts it and resets it, records included. Nothing migrates what a
+project id was the key of: an id cannot become an entry key without every
+computer's project rows, which the store has not read when it initializes.
+Separate records are what makes that state unreachable rather than unread,
+because an entry's key moves with its repository identity and a shared record
+would answer the id again the moment the identity went. Every project opens
+once. The id-keyed fold is dropped in `syncSidebarFromAppStorage`, after
+hydration, since the first write of a boot marks the client migrated and a
+boot whose host read failed must still be able to read the host bucket. Do not add permanent
+frontend tombstones for moved or retired entities; pending reads hold only
+enough ownership evidence to reject stale replies.
 
 ## The ThreadPane modules
 

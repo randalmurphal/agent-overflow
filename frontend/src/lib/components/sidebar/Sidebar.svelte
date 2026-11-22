@@ -6,7 +6,6 @@
 
   import { onDestroy } from 'svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import { refreshProjects } from '../../stores/projects.svelte';
   import { subscribeJumpHints, trackSidebarJumpRows } from '../../stores/keyboardModifiers.svelte';
   import {
     SIDEBAR_RAIL_WIDTH,
@@ -39,11 +38,10 @@
     registerFocusSearch,
   }: Props = $props();
 
-  // Kick off the projects fetch on mount. Callers refresh threads from
-  // App.svelte, so the sidebar only needs to own project loading.
-  $effect(() => {
-    void refreshProjects();
-  });
+  // No read of its own: the projects, their threads and their groups are one
+  // tree, read as one round from boot and from every hello and gap
+  // (stores/sidebarCatalogs.ts). A read here would supersede that round's
+  // project read and leave its tree held.
 
   // Install the global Cmd/Ctrl modifier listener for the Cmd+1..9 jump
   // hints. The store refcounts subscribers so multiple sidebar mounts
@@ -71,8 +69,8 @@
   in a three-pane layout.
 
   The branch lives in the template, not around the component, so the
-  script's project fetch, jump-hint subscription, and the PR-dialog
-  registration the palette owns all survive a collapse.
+  script's jump-hint subscription and the PR-dialog registration the
+  palette owns both survive a collapse.
 -->
 {#if collapsed}
   <aside

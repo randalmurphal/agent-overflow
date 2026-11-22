@@ -77,6 +77,21 @@ Mechanism in
   projects have answered, the sidebar shows a loading row for it, naming its
   boot phase while it is starting, or its error with Retry. The empty-list
   message appears only once both have loaded; rows already held stay visible.
+- A computer's projects, the threads under them and their groups list in the
+  sidebar as one set, with no exception. A computer that has never listed a
+  complete tree shows only its error row with Retry: no project header, no
+  project row and no New Thread button. A computer that has listed one keeps
+  that tree, with the error row beside it while a read fails. Nothing from a
+  failing attempt reaches the sidebar. A complete tree is all three catalogs
+  answered in one round, or, for a computer whose reads all fail, the last
+  tree it answered together plus the changes pushed since. The replica
+  keeps only that tree across a restart: rows answered apart, rows of a
+  partial round and pushed changes alone never make one and are never
+  written over it. The replica writes a computer's three catalogs
+  together, so the three it holds, an older build's included, list as that
+  computer's tree. The price is accepted: a computer whose thread list keeps failing
+  shows none of its projects, which a half-arranged list would show and then
+  rearrange (ruling 2026-11-21).
 - Readiness reports progress. A starting backend names its phase, step and
   elapsed time, and a boot right after an in-app update reads as finishing
   that update. The launcher's loading page, the startup screen and the

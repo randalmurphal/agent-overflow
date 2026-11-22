@@ -10,8 +10,7 @@
   // standing grant reaches it from a remote session. The picker says so instead of
   // rendering an editor whose every save would fail.
 
-  import { onMount } from 'svelte';
-  import { getProjects, isLoaded, refreshProjects } from '../../stores/projects.svelte';
+  import { getProjects, isLoaded } from '../../stores/projects.svelte';
   import { disambiguatedPathLabels, formatPathLabel } from '../../utils/pathDisplay';
 
   import SettingsField from './SettingsField.svelte';
@@ -27,9 +26,12 @@
   let ungranted = $derived(!hasScope('terminal:operate'));
   let selectedId = $state('');
 
-  onMount(() => {
-    if (!isLoaded()) void refreshProjects();
-  });
+  // No read of its own. The projects are one tree with the threads under
+  // them (stores/sidebarCatalogs.ts), read from boot and from every hello
+  // and gap, and this page opens only from a control in an already mounted
+  // surface, so a round has always begun before it mounts. A failed round
+  // is retried by the catalog state, and `loaded` shows its loading row
+  // meanwhile.
 
   // Keep the selection valid without stealing it: only fall back to the first
   // project when the current pick is gone (or was never made).

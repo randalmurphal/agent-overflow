@@ -17,18 +17,19 @@ it('reconciles the thread list once for an on-time refresh of three listed compu
   const { makeThread } = await import('../../test/helpers/chat');
   const { HOME_BACKEND, takePinnedBackend } = await import('../transport/backends');
   const { getThreads } = await import('./threads.svelte');
-  const { catalogTreeListed, loadThreadCatalogs } = await import('./threadCatalogs');
+  const { catalogTreeListed, loadSidebarCatalogs } = await import('./sidebarCatalogs');
   try {
     stageBackend({ id: 'gpu' });
     stageBackend({ id: 'laptop' });
+    setBindingMock('ListProjects', async () => []);
     setBindingMock('ListThreadGroups', async () => []);
     setBindingMock('ListThreads', async () => [makeThread({ id: `${takePinnedBackend() || 'home'}-thread` })]);
-    await loadThreadCatalogs();
+    await loadSidebarCatalogs();
     await vi.waitFor(() => expect([HOME_BACKEND, 'gpu', 'laptop'].map(catalogTreeListed)).toEqual([true, true, true]));
     reconcile.mockClear();
 
     setBindingMock('ListThreads', async () => [makeThread({ id: `${takePinnedBackend() || 'home'}-refreshed` })]);
-    await loadThreadCatalogs();
+    await loadSidebarCatalogs();
     await vi.waitFor(() => expect(getThreads().map((thread) => thread.id).sort())
       .toEqual(['gpu-refreshed', 'home-refreshed', 'laptop-refreshed']));
     await new Promise((resolve) => setTimeout(resolve, 0));
