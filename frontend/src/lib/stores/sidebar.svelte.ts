@@ -217,8 +217,6 @@ export function keySetRecord(storageKey: string, legacyKey?: string): KeySetReco
 }
 
 export interface ListLimitRecord {
-  /** Whether the record holds a size for `key`, one above the preview. */
-  has(key: string): boolean;
   limitOf(key: string): number;
   setLimit(key: string, limit: number): void;
   clear(key: string): void;
@@ -273,7 +271,6 @@ export function listLimitRecord(storageKey: string, legacyKey?: string): ListLim
 
   return {
     clear,
-    has: (key) => key in limits,
     apply(changes: RecordKeyChanges): void {
       const next = { ...limits };
       for (const key of changes.clears) delete next[key];

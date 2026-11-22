@@ -291,13 +291,11 @@ holds the record factories (`keySetRecord`, `listLimitRecord`); only
 `sidebarEntryContinuity.svelte.ts` may import them, which `lib/architecture.test.ts`
 enforces through re-exports. A project row's fold and list size live in records
 of their own, keyed by the entry, which `sidebarEntryContinuity.svelte.ts`
-creates and exports nothing to read or write by key; the fence does not see a
-write through `appStorage` under the same storage key: when an entry's key moves under a row that stays, it copies the
-row's fold and limit to the new key and clears the old one, and its writers
-commit a waiting move before they write. It also keeps, in a third record of
-its own, the member ids of each key that has a record, so a key that moved
-while the client was closed takes its record at the next boot, however late
-its computer lists. `App.svelte` starts it and reloads
+creates and exports nothing to read or write by key. When an entry's key moves
+under a row that stays, it copies the row's fold and limit to the new key and
+clears the old one, and its writers commit a waiting move before they write.
+The fence does not see a write through `appStorage` under the same storage
+key. `App.svelte` starts it and reloads
 its records after hydration (`syncSidebarEntryDisclosureFromAppStorage`); the
 test setup starts it and resets it, records included. Nothing migrates what a
 project id was the key of: an id cannot become an entry key without every

@@ -3,7 +3,9 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { flushSync } from 'svelte';
 import {
+  entryExpanded,
   entryRecordForTest,
+  rememberedRowCountForTest,
   resetEntryListLimit,
   resetSidebarEntryContinuityForTest,
   revealProject,
@@ -32,6 +34,7 @@ import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app
 import { THREAD_PREVIEW_LIMIT } from '../utils/sidebarThreadLimits';
 import { getThreadListVisibleLimit } from './sidebar.svelte';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
+import { detachBackend } from '../transport/backends';
 import type { Project } from '../types/models';
 
 const REPO = 'github:github.com:1';
@@ -209,6 +212,71 @@ describe('two checkouts of one repository on one computer', () => {
     settle();
     expect(groupOf('b').key).toBe(FORGE);
     expect(entryRecordForTest(FORGE).expanded).toBe(true);
+  });
+
+  it('gives a checkout that lists as the chosen one no fold of the one it replaced, in the same change', () => {
+    addOn(HOME_BACKEND, mkProject('a', { repositoryID: REPO, createdAt: 1 }));
+    settle();
+    setEntryExpanded(FORGE, false);
+    // One answer archives the chosen checkout and lists a new one, which is
+    // chosen in its place.
+    updateProjectLocal(mkProject('a', { repositoryID: REPO, createdAt: 1, archived: true }));
+    addOn(HOME_BACKEND, mkProject('b', { repositoryID: REPO, createdAt: 2 }));
+    settle();
+    expect(groupOf('b').key).toBe(FORGE);
+    expect(entryRecordForTest(FORGE).expanded).toBe(true);
+    expect(groupOf('a').key).toBe('a');
+    expect(entryRecordForTest('a').expanded).toBe(false);
+  });
+
+  it('gives that checkout no fold while the change waits to commit', () => {
+    addOn(HOME_BACKEND, mkProject('a', { repositoryID: REPO, createdAt: 1 }));
+    settle();
+    setEntryExpanded(FORGE, false);
+    stopSidebarEntryContinuity();
+    updateProjectLocal(mkProject('a', { repositoryID: REPO, createdAt: 1, archived: true }));
+    addOn(HOME_BACKEND, mkProject('b', { repositoryID: REPO, createdAt: 2 }));
+    expect(entryRecordForTest(FORGE).expanded).toBe(false);
+    expect(entryExpanded(groupOf('b'))).toBe(true);
+    expect(entryExpanded(groupOf('a'))).toBe(false);
+  });
+});
+
+describe('what it remembers', () => {
+  it('remembers nothing of the projects created and deleted', () => {
+    for (let index = 0; index < 20; index++) {
+      addOn(HOME_BACKEND, mkProject(`p${index}`));
+      settle();
+      setEntryExpanded(`p${index}`, false);
+    }
+    expect(rememberedRowCountForTest()).toBe(20);
+    for (let index = 0; index < 20; index++) {
+      removeProjectLocal(`p${index}`);
+      settle();
+    }
+    expect(sidebarEntryGroups()).toEqual([]);
+    expect(rememberedRowCountForTest()).toBe(0);
+  });
+
+  it('gives a detached computer\'s row no key a row listed meanwhile takes', () => {
+    addOn('laptop', mkProject('p', { repositoryID: REPO }));
+    settle();
+    expect(groupOf('p').rowKey).toBe(FORGE);
+    detachBackend('laptop');
+    settle();
+    addOn(HOME_BACKEND, mkProject('q', { repositoryID: REPO }));
+    settle();
+    expect(groupOf('q').rowKey).toBe(FORGE);
+
+    // The laptop comes back with the checkout's identity changed.
+    stageBackend({ id: 'laptop', backendId: 'laptop-id', name: 'Laptop' });
+    listCatalogTreesForTest();
+    addOn('laptop', mkProject('p', { repositoryID: 'github:github.com:2' }));
+    settle();
+    const rows = sidebarEntryGroups();
+    expect(rows).toHaveLength(2);
+    expect(new Set(rows.map((row) => row.rowKey)).size).toBe(2);
+    expect(new Set(rows.map((row) => row.key)).size).toBe(2);
   });
 });
 
