@@ -14,7 +14,7 @@ func Data(fields string) string { return `{"data":{` + fields + `}}` }
 func ViewerAnswer(urlKey string) string {
 	return Data(`"viewer":{"id":"user-1","name":"User 1","displayName":"user1","email":"user1@example.com","avatarUrl":null,` +
 		`"active":true,"admin":false,"guest":false,"app":false,"isMe":true},` +
-		`"organization":{"id":"org-` + urlKey + `","name":"Example","urlKey":"` + urlKey + `"}`)
+		`"organization":{"id":` + quoted("org-"+urlKey) + `,"name":"Example","urlKey":` + quoted(urlKey) + `}`)
 }
 
 // PageJSON is a connection's JSON, aliased as page.
@@ -24,7 +24,7 @@ func PageJSON(nodes []string, hasNext bool, cursor string) string {
 
 // ConnectionJSON is a connection's JSON object.
 func ConnectionJSON(nodes []string, hasNext bool, cursor string) string {
-	return fmt.Sprintf(`{"nodes":[%s],"pageInfo":{"hasNextPage":%t,"endCursor":%q}}`, strings.Join(nodes, ","), hasNext, cursor)
+	return fmt.Sprintf(`{"nodes":[%s],"pageInfo":{"hasNextPage":%t,"endCursor":%s}}`, strings.Join(nodes, ","), hasNext, quoted(cursor))
 }
 
 // NodePageJSON is a connection hanging off one entity, aliased as page

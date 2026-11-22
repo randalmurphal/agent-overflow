@@ -13,6 +13,15 @@ func encode(v map[string]any) string {
 	return string(b)
 }
 
+// quoted is s as a JSON string.
+func quoted(s string) string {
+	b, err := json.Marshal(s)
+	if err != nil {
+		panic(err) // a string always encodes
+	}
+	return string(b)
+}
+
 func ref(id string) any {
 	if id == "" {
 		return nil
@@ -203,7 +212,7 @@ func (r IssueRef) JSON() string {
 // RelationJSON is a relation: issue blocks, duplicates or relates to
 // related.
 func RelationJSON(id, kind string, issue, related IssueRef) string {
-	return `{"id":"` + id + `","type":"` + kind + `","issue":` + issue.JSON() + `,"relatedIssue":` + related.JSON() + `}`
+	return `{"id":` + quoted(id) + `,"type":` + quoted(kind) + `,"issue":` + issue.JSON() + `,"relatedIssue":` + related.JSON() + `}`
 }
 
 // Detail is what the single-issue read adds to an issue; each list is
@@ -265,6 +274,6 @@ func DetailJSON(i Issue, d Detail) string {
 // IssueChangesJSON is one node of the batched history read: an issue's
 // team, creation time and its newest history entries.
 func IssueChangesJSON(id, team, createdAt string, entries []string, more bool, cursor string) string {
-	return `{"id":"` + id + `","team":{"id":"` + team + `"},"createdAt":"` + createdAt + `","history":` +
+	return `{"id":` + quoted(id) + `,"team":{"id":` + quoted(team) + `},"createdAt":` + quoted(createdAt) + `,"history":` +
 		ConnectionJSON(entries, more, cursor) + `}`
 }
