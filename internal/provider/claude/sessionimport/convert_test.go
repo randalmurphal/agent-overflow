@@ -196,8 +196,7 @@ func TestConvertStartsOneTurnPerUserPrompt(t *testing.T) {
 	// The first turn must close before the second opens.
 	var order []string
 	for _, e := range events {
-		switch e.Kind {
-		case provider.EventTurnStart, provider.EventTurnComplete:
+		if e.Kind == provider.EventTurnStart || e.Kind == provider.EventTurnComplete {
 			order = append(order, fmt.Sprintf("%s/%d", e.Kind, e.TurnIndex))
 		}
 	}

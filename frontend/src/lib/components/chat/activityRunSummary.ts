@@ -49,6 +49,12 @@ export interface ActivityRunSummary {
   hasFailure: boolean;
   /** Tool name of the newest still-running member, or null. */
   runningLabel: string | null;
+  /**
+   * The id of the run's only member when that member is a loaded agent
+   * message, or null. A collapsed run of one message names it in its
+   * header instead of counting it (`ActivityRunHeader`).
+   */
+  loneAgentMessageId: string | null;
 }
 
 interface ActivityRunPresentation {
@@ -73,13 +79,28 @@ const WAIT_PRESENTATION: ActivityRunPresentation = {
 };
 
 // Notification bells absorbed into a run (`activityRunGrouping.ts`
-// `isAbsorbedNotification`): a Monitor ping or background-task bell that
+// `isAbsorbedRow`): a Monitor ping or background-task bell that
 // landed mid-run. Label pluralized in the entry post-pass — "2 notification"
 // reads as a typo where "12 thinking" does not.
 const NOTIFICATION_PRESENTATION: ActivityRunPresentation = {
   key: 'notification',
   label: 'notification',
   icon: 'speech-bubble',
+  isThinking: false,
+};
+
+// Agent messages, which are run members (`isActivityRunMemberRow`): another
+// thread's reply or request, a wake, a reminder, a loop or a watch. The only
+// user_text a run holds, since the person's own messages end runs.
+// One bucket, not one per row label (`Reply`, `Alarm`, ...): the server
+// counts the members a history page does not ship by row kind
+// (`ActivityRunGroupKey`), which cannot tell those apart, and both halves of
+// a half-loaded run's header must agree. The gutter-less hue matches the
+// row's own uncoloured icon. Pluralized like notifications.
+const AGENT_MESSAGE_PRESENTATION: ActivityRunPresentation = {
+  key: 'agent-message',
+  label: 'agent message',
+  icon: 'generic',
   isThinking: false,
 };
 
@@ -156,6 +177,7 @@ function presentationFor(
   if (kind === 'thinking') return THINKING_PRESENTATION;
   if (kind === 'terminal_interaction') return WAIT_PRESENTATION;
   if (kind === 'notification') return NOTIFICATION_PRESENTATION;
+  if (kind === 'user_text') return AGENT_MESSAGE_PRESENTATION;
 
   const ao = mcpMeta === null ? null : aoToolPresentation(mcpMeta);
   const sourceKey = ao ? `${rawName}@${ao.server}` : rawName || UNNAMED_TOOL_LABEL;
@@ -331,10 +353,14 @@ export function activityRunSummary(
   const entries = [...buckets.values()]
     .sort((a, b) => {
       // Ambient rows last regardless of count — a reader scanning a header
-      // wants the tools first. Notifications before thinking: they are
-      // events, thinking is background hum.
-      const rank = (e: ActivityRunCountEntry): number =>
-        e.isThinking ? 2 : e.key === NOTIFICATION_PRESENTATION.key ? 1 : 0;
+      // wants the tools first. Agent messages next: each carries words
+      // addressed to this thread. Then notifications: they are events,
+      // thinking is background hum.
+      const rank = (e: ActivityRunCountEntry): number => {
+        if (e.isThinking) return 3;
+        if (e.key === NOTIFICATION_PRESENTATION.key) return 2;
+        return e.key === AGENT_MESSAGE_PRESENTATION.key ? 1 : 0;
+      };
       const aRank = rank(a);
       const bRank = rank(b);
       if (aRank !== bRank) return aRank - bRank;
@@ -342,10 +368,15 @@ export function activityRunSummary(
       return a.label.localeCompare(b.label);
     });
   for (const entry of entries) {
-    if (entry.key === NOTIFICATION_PRESENTATION.key && entry.count > 1) {
-      entry.label = 'notifications';
-    }
+    if (entry.count < 2) continue;
+    if (entry.key === NOTIFICATION_PRESENTATION.key) entry.label = 'notifications';
+    else if (entry.key === AGENT_MESSAGE_PRESENTATION.key) entry.label = 'agent messages';
   }
 
-  return { counts: { entries, total }, hasFailure, runningLabel };
+  let loneAgentMessageId: string | null = null;
+  if (total === 1 && entries.length === 1 && entries[0].key === AGENT_MESSAGE_PRESENTATION.key) {
+    loneAgentMessageId = items.find((item) => item.kind === 'user_text')?.id ?? null;
+  }
+
+  return { counts: { entries, total }, hasFailure, runningLabel, loneAgentMessageId };
 }

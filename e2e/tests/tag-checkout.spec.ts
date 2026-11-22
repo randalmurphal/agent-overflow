@@ -116,7 +116,7 @@ test('a tag checks out detached, a commit there reads as detached, and a new bra
   // Unsearched: every branch, then the tags newest first, each marked.
   await branchTrigger(page).click();
   await expect(pickerRow(page, OLD_TAG)).toBeVisible();
-  expect(await refRows(page)).toEqual([
+  await expect.poll(() => refRows(page)).toEqual([
     expect.stringMatching(/^main/),
     expect.stringMatching(new RegExp(`^${BRANCH}`)),
     `${NEW_TAG} tag`,

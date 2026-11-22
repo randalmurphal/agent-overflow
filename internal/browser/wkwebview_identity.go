@@ -11,14 +11,15 @@ import (
 // in-memory store, and two workspaces could end up sharing one — so the rule
 // that produces it is compiled and tested on every platform.
 
-// wkStoreIdentifier turns a workspace root into the stable UUID
-// +dataStoreForIdentifier: keys its directory on. The workspace DIGEST, not its
-// path: a workspace root can be long, holds characters an identifier cannot,
-// and must not be readable from anything WebKit writes. The RFC 4122 version
+// wkStoreIdentifier turns a jar identity (jar.go; a worktree jar's is its
+// workspace root) into the stable UUID +dataStoreForIdentifier: keys its
+// directory on. The DIGEST, not the identity: a workspace root can be long,
+// holds characters an identifier cannot, and must not be readable from
+// anything WebKit writes. The RFC 4122 version
 // and variant bits are set because WebKit takes an NSUUID, and the all-zero
 // UUID is documented as invalid.
-func wkStoreIdentifier(workspace string) string {
-	digest := sha256.Sum256([]byte(workspace))
+func wkStoreIdentifier(jar jarKey) string {
+	digest := sha256.Sum256([]byte(jar))
 	var raw [16]byte
 	copy(raw[:], digest[:16])
 	raw[6] = (raw[6] & 0x0f) | 0x40

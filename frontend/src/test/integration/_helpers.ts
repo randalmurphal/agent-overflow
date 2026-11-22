@@ -24,7 +24,8 @@ import type { Project, ProjectWithCounts, Thread } from '../../lib/types/models'
 import type { GitStatus } from '../../lib/types/git';
 import { resetProjectsForTest } from '../../lib/stores/projects.svelte';
 import { resetAppStorageForTest } from '../../lib/stores/appStorage';
-import { resetSidebarForTest, expandProject } from '../../lib/stores/sidebar.svelte';
+import { resetSidebarForTest } from '../../lib/stores/sidebar.svelte';
+import { revealProject } from '../../lib/stores/sidebarEntryContinuity.svelte';
 import { resetProviderModelsForTest } from '../../lib/stores/providerModels.svelte';
 import { resetSettingsForTest } from '../../lib/stores/settings.svelte';
 import { resetThreadActionConfirmationsForTest } from '../../lib/stores/threadActionConfirmations.svelte';
@@ -186,7 +187,7 @@ export function seedSidebarProject(threads: Thread[]): Project {
     lastActive: 0,
   };
   setBindingMock('ListProjects', async () => [pwc]);
-  expandProject(project.id);
+  revealProject(project.id);
   return project;
 }
 

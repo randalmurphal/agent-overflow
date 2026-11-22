@@ -56,11 +56,28 @@ func (f *requestFixture) plainThread(t *testing.T) store.Thread {
 // take several live threads to reach.
 func (f *requestFixture) seedAgentRow(t *testing.T, token, caller, kind, target string, notify bool) {
 	t.Helper()
-	if err := f.app.store.InsertThreadRequest(store.ThreadRequest{
+	row := store.ThreadRequest{
 		Token: token, CallerThreadID: caller, Kind: kind, TargetThreadID: target, Notify: notify,
 		State: store.ThreadRequestAccepted,
-	}); err != nil {
+	}
+	seedSpawnRun(f.app, &row)
+	if err := f.app.store.InsertThreadRequest(row); err != nil {
 		t.Fatalf("insert %s: %v", token, err)
+	}
+}
+
+// seedSpawnRun gives row, a spawn a test writes by hand, the run every
+// spawn starts with, and keeps that run open whatever its worker does
+// (App.runEndsHeldForTest): such a test settles the spawn while its worker
+// is at rest and then gives the worker work it means as the spawn's run,
+// the state the rest pass leaves only at the worker's next rest.
+func seedSpawnRun(a *App, row *store.ThreadRequest) {
+	if row.Kind != store.ThreadRequestSpawn || row.RunBase != nil {
+		return
+	}
+	row.RunBase = &store.RunFigures{}
+	if row.TargetComputerID == "" && row.TargetThreadID != "" {
+		a.runEndsHeldForTest.Store(row.TargetThreadID, struct{}{})
 	}
 }
 
@@ -350,13 +367,17 @@ func TestAWorkersParkedQuietSendListsUnderItsOwner(t *testing.T) {
 		})
 		done <- sent{ack, err}
 	}()
+	// The send holds its token from before its request is written
+	// (holdNewRequest), so the row is read once it exists.
 	var token string
 	waitUntil(t, 10*time.Second, func() bool {
 		parked := f.app.parkedRequestTokens()
-		if len(parked) == 1 {
-			token = parked[0]
+		if len(parked) != 1 {
+			return false
 		}
-		return token != ""
+		token = parked[0]
+		_, found, err := f.app.store.GetThreadRequest(token)
+		return err == nil && found
 	})
 	if row := f.request(t, token); row.Notify || row.CallerThreadID != worker.ID {
 		t.Fatalf("the parked send %+v; want the worker's, with no wake armed", row)

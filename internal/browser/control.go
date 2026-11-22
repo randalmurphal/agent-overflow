@@ -2,36 +2,149 @@ package browser
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"slices"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"agent-overflow/internal/browser/turnorder"
 )
 
-func (m *Manager) SelectPage(ctx context.Context, access Access, pageID string) (PageInfo, error) {
+// SelectPage pins one of the caller's tabs as the companion's. The pane
+// presents it first; a suspended page then restores, a page that lags the
+// pane takes its size and is shown, and its info is read.
+func (m *Manager) SelectPage(ctx context.Context, access Access, pageID PageID) (PageInfo, error) {
+	if err := m.bound(access); err != nil {
+		return PageInfo{}, err
+	}
+	pageID = pageID.trim()
+	// An agent's selection keeps arrival order (selection.go).
+	if _, err := m.selectTab(access, turnorder.Unordered(), pageID); err != nil {
+		return PageInfo{}, err
+	}
 	p, _, err := m.resolvePage(ctx, access, pageID, false)
 	if err != nil {
 		return PageInfo{}, err
 	}
-	p.mu.Lock()
+	// The page takes the thread viewport before its info is read: a page
+	// that lagged the pane is shown as soon as that layout lands
+	// (presentLaidOut), not after the read, which the drain would otherwise
+	// wait behind for the page lock.
+	if err := m.lockPageForOperation(ctx, p); err != nil {
+		return PageInfo{}, err
+	}
 	opCtx, cancel := operationContext(ctx, p.ctx, 5*time.Second)
-	info, infoErr := m.pageInfo(opCtx, p)
+	info, _, infoErr := m.readInfo(opCtx, p, pageListing{})
 	cancel()
 	p.mu.Unlock()
 	if infoErr != nil {
 		return PageInfo{}, infoErr
 	}
-	p.setInfo(info)
-	info = p.cachedInfo()
-	p.touch()
-	m.setActivePage(access.ThreadID, p.id)
-	m.emitThreadState(access.ThreadID)
-	m.syncPanePresentation(access.ThreadID)
+	m.publishPages(access.ThreadID())
 	return info, nil
 }
 
-func (m *Manager) LabelPage(ctx context.Context, access Access, pageID, label string) (PageInfo, error) {
+// selectTab makes one of the thread's tabs, in any state, the active one and
+// presents it before any page work: a live page is shown at once, and a tab
+// with no page yet (creating, restoring, suspended, failed) shows its state
+// until it has one. A live page counts as used. turn is the selection's
+// place in the user's order (selection.go), which its hold commits. It
+// answers the tab it selected, the only one its caller may restore, and ""
+// when turn was passed and selected nothing.
+func (m *Manager) selectTab(access Access, turn *turnorder.Turn, pageID PageID) (PageID, error) {
+	return m.selectTabWhere(access, turn, func(tabs []threadTab, _ PageID) int {
+		for i := range tabs {
+			if tabs[i].id == pageID {
+				return i
+			}
+		}
+		return -1
+	})
+}
+
+// selectTabWhere is selectTab of the tab pick chooses from the companion's
+// tabs in strip order and the active tab's id, under one hold of m.mu that
+// commits turn, so the choice and the selection see the same tabs. A pick
+// of -1 is errPageNotFound. The hold waits for a jar switch of the thread
+// writing its saved copy, which holds the active tab.
+func (m *Manager) selectTabWhere(access Access, turn *turnorder.Turn, pick func(tabs []threadTab, activePageID PageID) int) (PageID, error) {
+	defer turn.Release()
+	if err := m.lockStructure(context.Background(), access.tb); err != nil {
+		return "", err
+	}
+	if err := access.admitLocked(); err != nil {
+		m.mu.Unlock()
+		return "", err
+	}
+	if turn.Commit() == turnorder.Passed {
+		// A repeat, or the pane it came from is gone.
+		m.mu.Unlock()
+		return "", nil
+	}
+	tb := access.tb
+	tabs := m.companionTabsLocked(tb)
+	at := pick(tabs, tb.session.activePage())
+	if at < 0 || at >= len(tabs) {
+		m.mu.Unlock()
+		return "", errPageNotFound
+	}
+	found := &tabs[at]
+	pageID := found.id
+	tb.session.ActivePageID = string(pageID)
+	m.mu.Unlock()
+	if found.live != nil {
+		found.live.touch()
+	}
+	m.emitThreadState(access.ThreadID())
+	m.syncPanePresentation(access.ThreadID())
+	return pageID, nil
+}
+
+// labelHolderLocked answers tb's other tab (not pageID) whose label equals
+// label, ignoring case, or for which a LabelPage call claims it, or ""
+// when none does: a thread's labels are unique, and every label write
+// checks here in the m.mu hold that commits it. An empty label is never
+// held. The caller holds m.mu.
+func (m *Manager) labelHolderLocked(tb *threadBrowser, pageID PageID, label string) PageID {
+	if label == "" {
+		return ""
+	}
+	for _, tab := range m.threadTabsLocked(tb) {
+		if tab.id != pageID && strings.EqualFold(tab.info.Label, label) {
+			return tab.id
+		}
+	}
+	for _, claim := range tb.labelClaims {
+		if claim.page != pageID && strings.EqualFold(claim.label, label) {
+			return claim.page
+		}
+	}
+	return ""
+}
+
+// labelClaim is a label a LabelPage call holds for its tab from its
+// admission to its commit, so the suspended tab it restores for the label
+// is restored for a label no other write takes meanwhile.
+type labelClaim struct {
+	label string
+	page  PageID
+}
+
+// releaseLabelClaim ends claim, one of tb's.
+func (m *Manager) releaseLabelClaim(tb *threadBrowser, claim *labelClaim) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	tb.labelClaims = slices.DeleteFunc(tb.labelClaims, func(c *labelClaim) bool { return c == claim })
+}
+
+func (m *Manager) LabelPage(ctx context.Context, access Access, pageID PageID, label string) (PageInfo, error) {
+	if err := m.bound(access); err != nil {
+		return PageInfo{}, err
+	}
 	label = strings.TrimSpace(label)
 	if utf8.RuneCountInString(label) > maxPageLabelRunes {
 		return PageInfo{}, fmt.Errorf("browser: page label exceeds 80 characters")
@@ -39,35 +152,71 @@ func (m *Manager) LabelPage(ctx context.Context, access Access, pageID, label st
 	if strings.IndexFunc(label, unicode.IsControl) >= 0 {
 		return PageInfo{}, fmt.Errorf("browser: page label cannot contain control characters")
 	}
-	p, _, err := m.resolvePage(ctx, access, pageID, false)
-	if err != nil {
-		return PageInfo{}, err
+	pageID = pageID.trim()
+	taken := func(holder PageID) error {
+		return fmt.Errorf("browser: page label %q is already used by page %s", label, holder)
 	}
+	// A label another tab holds or a call claims is refused before a
+	// suspended tab restores for it, and the label is claimed for the tab
+	// until it commits, so no other write takes it while the tab restores.
+	// An omitted page_id names the thread's one tab.
 	m.mu.Lock()
-	for _, tab := range m.threadTabsLocked(access.ThreadID) {
-		if tab.id != p.id && label != "" && strings.EqualFold(tab.info.Label, label) {
-			m.mu.Unlock()
-			return PageInfo{}, fmt.Errorf("browser: page label %q is already used by page %s", label, tab.id)
-		}
+	if tabs := m.threadTabsLocked(access.tb); pageID == "" && len(tabs) == 1 {
+		pageID = tabs[0].id
 	}
-	info := p.setLabel(label)
+	holder := m.labelHolderLocked(access.tb, pageID, label)
+	if holder == "" && label != "" {
+		claim := &labelClaim{label: label, page: pageID}
+		access.tb.labelClaims = append(access.tb.labelClaims, claim)
+		defer m.releaseLabelClaim(access.tb, claim)
+	}
 	m.mu.Unlock()
-	m.emitThreadState(access.ThreadID)
-	return info, nil
+	if holder != "" {
+		return PageInfo{}, taken(holder)
+	}
+	// The label lands on the page the tab is when it commits, after any jar
+	// switch writing the saved copy that holds the label (lockHeld): a tab
+	// the switch suspended meanwhile is resolved, and restored, again.
+	for {
+		p, _, err := m.resolvePage(ctx, access, pageID, false)
+		if err != nil {
+			return PageInfo{}, err
+		}
+		err = m.lockHeld(ctx, access, tabHold{p: p})
+		if errors.Is(err, errTabReplaced) {
+			continue
+		}
+		if err != nil {
+			return PageInfo{}, err
+		}
+		if holder := m.labelHolderLocked(access.tb, p.id, label); holder != "" {
+			m.mu.Unlock()
+			return PageInfo{}, taken(holder)
+		}
+		info, _ := p.commitInfo(pageUpdate{Label: &label})
+		m.mu.Unlock()
+		m.emitThreadState(access.ThreadID())
+		return info, nil
+	}
 }
 
 func (m *Manager) NameSession(_ context.Context, access Access, name string) (SessionInfo, error) {
+	if err := m.bound(access); err != nil {
+		return SessionInfo{}, err
+	}
 	name = strings.TrimSpace(name)
 	if utf8.RuneCountInString(name) > 120 {
 		return SessionInfo{}, fmt.Errorf("browser: session name exceeds 120 characters")
 	}
 	m.mu.Lock()
-	info := m.sessionLocked(access.ThreadID)
-	info.Name = name
-	info.UpdatedAt = time.Now()
-	m.sessions[access.ThreadID] = info
+	if err := access.admitLocked(); err != nil {
+		m.mu.Unlock()
+		return SessionInfo{}, err
+	}
+	access.tb.session.Name = name
+	info := access.tb.session
 	m.mu.Unlock()
-	m.emitThreadState(access.ThreadID)
+	m.emitThreadState(access.ThreadID())
 	return info, nil
 }
 
@@ -75,11 +224,14 @@ func (m *Manager) NameSession(_ context.Context, access Access, name string) (Se
 // by the pane that presents it (BrowserPane), not here, so a page that
 // cannot be restored still opens the companion, where its refusal shows and
 // the user can navigate or close it. Hiding touches no page.
-func (m *Manager) Visibility(ctx context.Context, access Access, visible *bool, pageID string) (SessionInfo, error) {
-	pageID = strings.TrimSpace(pageID)
+func (m *Manager) Visibility(ctx context.Context, access Access, visible *bool, pageID PageID) (SessionInfo, error) {
+	if err := m.bound(access); err != nil {
+		return SessionInfo{}, err
+	}
+	pageID = pageID.trim()
 	if visible != nil && *visible {
 		if pageID == "" {
-			tabs := m.threadTabs(access.ThreadID)
+			tabs := m.threadTabs(access.tb)
 			switch len(tabs) {
 			case 0:
 				return SessionInfo{}, fmt.Errorf("browser: cannot show the companion because this thread has no open pages")
@@ -89,84 +241,133 @@ func (m *Manager) Visibility(ctx context.Context, access Access, visible *bool, 
 				return SessionInfo{}, ambiguousPageError(tabs)
 			}
 		}
-		if !m.hasTab(access.ThreadID, pageID) {
-			return SessionInfo{}, errPageNotFound
-		}
 	} else if pageID != "" {
 		return SessionInfo{}, fmt.Errorf("browser: page_id is only valid when visible is true")
 	}
-	m.mu.Lock()
-	info := m.sessionLocked(access.ThreadID)
-	if visible != nil {
-		info.Visible = *visible
-		if *visible {
-			info.ActivePageID = pageID
-		}
-		info.UpdatedAt = time.Now()
-		m.sessions[access.ThreadID] = info
+	if err := m.lockStructure(ctx, access.tb); err != nil {
+		return SessionInfo{}, err
 	}
+	if err := access.admitLocked(); err != nil {
+		m.mu.Unlock()
+		return SessionInfo{}, err
+	}
+	tb := access.tb
+	// The tab shown is one the thread has in the hold that shows it: a
+	// close during the wait for a jar switch leaves nothing to show.
+	if visible != nil && *visible && !m.hasTabLocked(tb, pageID) {
+		m.mu.Unlock()
+		return SessionInfo{}, errPageNotFound
+	}
+	if visible != nil {
+		tb.session.Visible = *visible
+		if *visible {
+			tb.session.ActivePageID = string(pageID)
+		}
+	}
+	info := tb.session
 	m.mu.Unlock()
 	if visible != nil {
-		m.emitThreadState(access.ThreadID)
-		m.syncPanePresentation(access.ThreadID)
+		m.emitThreadState(access.ThreadID())
+		m.syncPanePresentation(access.ThreadID())
 	}
 	return info, nil
 }
 
-func (m *Manager) sessionLocked(threadID string) SessionInfo {
-	info, ok := m.sessions[threadID]
-	if !ok {
-		info = SessionInfo{Visible: false, ViewportW: defaultViewportWidth, ViewportH: defaultViewportHeight}
+// Pages lists the thread's pages, suspended ones included as they were saved:
+// listing is not a touch, so it restores nothing.
+func (m *Manager) Pages(ctx context.Context, access Access) ([]PageInfo, error) {
+	if err := m.bound(access); err != nil {
+		return nil, err
 	}
-	return info
+	m.mu.Lock()
+	tabs := m.threadTabsLocked(access.tb)
+	activePageID := access.tb.session.activePage()
+	m.mu.Unlock()
+	out := make([]PageInfo, 0, len(tabs))
+	for _, tab := range tabs {
+		p := tab.live
+		if p == nil {
+			info := tab.info
+			info.Selected = PageID(info.ID) == activePageID
+			info.LastOpened = time.Unix(0, tab.lastUse).UTC().Format(time.RFC3339Nano)
+			out = append(out, info)
+			continue
+		}
+		p.mu.Lock()
+		opCtx, cancel := operationContext(ctx, p.ctx, 5*time.Second)
+		listing := pageListing{Selected: p.id == activePageID, LastOpened: time.Unix(0, p.lastUse.Load()).UTC().Format(time.RFC3339Nano)}
+		info, _, err := m.readInfo(opCtx, p, listing)
+		cancel()
+		p.mu.Unlock()
+		if err != nil {
+			// The page is still a tab: listed as last known, with the failure.
+			info = p.cachedInfo()
+			info.ReadError = err.Error()
+		}
+		info.Selected, info.LastOpened = listing.Selected, listing.LastOpened
+		out = append(out, info)
+	}
+	// What the reads found, the tabs show.
+	m.publishPages(access.ThreadID())
+	sort.Slice(out, func(i, j int) bool { return out[i].LastOpened > out[j].LastOpened })
+	return out, nil
 }
 
-func (m *Manager) ensureActivePage(threadID, pageID string) {
-	m.mu.Lock()
-	info := m.sessionLocked(threadID)
-	if info.ActivePageID == "" {
-		info.ActivePageID = pageID
-		info.UpdatedAt = time.Now()
-		m.sessions[threadID] = info
+// ensureActivePage is ensureActivePageLocked in a hold of its own. A
+// selection is a structural change: it waits out a jar switch writing the
+// active tab (lockStructure).
+func (m *Manager) ensureActivePage(tb *threadBrowser, pageID PageID) bool {
+	_ = m.lockStructure(context.Background(), tb)
+	defer m.mu.Unlock()
+	return m.ensureActivePageLocked(tb, pageID)
+}
+
+// ensureActivePageLocked makes pageID tb's active page when it has none
+// and pageID is one of its tabs in this hold, and reports whether it did.
+// The caller holds m.mu.
+func (m *Manager) ensureActivePageLocked(tb *threadBrowser, pageID PageID) bool {
+	if tb.session.activePage() != "" || !m.hasTabLocked(tb, pageID) {
+		return false
 	}
+	tb.session.ActivePageID = string(pageID)
+	return true
+}
+
+// repairActivePage keeps tb's active page one of its tabs, live, suspended
+// or pending: a missing one is replaced by the most recently used tab
+// (recentTabLocked), and a lifetime with none hides its companion. It waits
+// out a jar switch writing the active tab (lockStructure).
+func (m *Manager) repairActivePage(tb *threadBrowser) {
+	_ = m.lockStructure(context.Background(), tb)
+	m.repairActivePageLocked(tb)
 	m.mu.Unlock()
 }
 
-func (m *Manager) setActivePage(threadID, pageID string) {
-	m.mu.Lock()
-	info := m.sessionLocked(threadID)
-	info.ActivePageID = pageID
-	info.UpdatedAt = time.Now()
-	m.sessions[threadID] = info
-	m.mu.Unlock()
+// repairActivePageLocked is repairActivePage's hold. The caller holds m.mu.
+func (m *Manager) repairActivePageLocked(tb *threadBrowser) {
+	tabs := m.companionTabsLocked(tb)
+	for _, tab := range tabs {
+		if tab.id == tb.session.activePage() {
+			return
+		}
+	}
+	tb.session.ActivePageID = string(recentTabLocked(tabs))
+	if tb.session.activePage() == "" {
+		tb.session.Visible = false
+	}
 }
 
-// repairActivePage keeps the thread's active page one of its pages, live or
-// suspended: a missing one is replaced by the most recently used page, and a
-// thread with none hides its companion.
-func (m *Manager) repairActivePage(threadID string) {
-	m.mu.Lock()
-	info := m.sessionLocked(threadID)
-	var replacement *threadTab
-	activeExists := false
-	tabs := m.threadTabsLocked(threadID)
+// recentTabLocked is the most recently used of tabs, "" for none: the tab
+// a thread with no active tab shows. The caller holds m.mu.
+func recentTabLocked(tabs []threadTab) PageID {
+	var recent *threadTab
 	for i := range tabs {
-		if tabs[i].id == info.ActivePageID {
-			activeExists = true
-		}
-		if replacement == nil || tabs[i].lastUse > replacement.lastUse {
-			replacement = &tabs[i]
+		if recent == nil || tabs[i].lastUse > recent.lastUse {
+			recent = &tabs[i]
 		}
 	}
-	if !activeExists {
-		info.ActivePageID = ""
-		if replacement != nil {
-			info.ActivePageID = replacement.id
-		} else {
-			info.Visible = false
-		}
-		info.UpdatedAt = time.Now()
-		m.sessions[threadID] = info
+	if recent == nil {
+		return ""
 	}
-	m.mu.Unlock()
+	return recent.id
 }

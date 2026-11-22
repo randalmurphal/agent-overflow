@@ -168,6 +168,7 @@ func (r LauncherRecord) UnsuccessfulUpdate(from string) (to, reason string, ok b
 	switch update.State {
 	case UpdateRolledBack, UpdateFailed:
 		return update.To, update.Reason, true
+	case UpdatePending, UpdateCommitted:
 	}
 	return "", "", false
 }

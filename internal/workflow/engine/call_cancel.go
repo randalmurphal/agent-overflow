@@ -33,6 +33,8 @@ func (e *Engine) cancelCallChildren(item *runtimeItem) error {
 		return e.cancelDescendants(item.item.ID, 0)
 	case def.ShapeFanOut:
 		return e.cancelAttemptUnitChildren(item)
+	case def.ShapeSingle:
+		fallthrough
 	default:
 		return nil
 	}

@@ -17,7 +17,9 @@ import (
 // what its context reaches. Such a context ends when its caller's
 // connection does, so it may reach only store reads, in-memory state,
 // local file reads and resources the connection's cleanup releases: never a
-// subprocess, a network request, a shared operation or a write. Every other
+// subprocess, a network request, a shared operation or a write, unless the
+// package that owns the operation defines and tests what a cut at each
+// point leaves. Every other
 // method runs until it returns or the server stops (internal/app/AGENTS.md
 // § Authorization and caller state).
 var callerBoundMethods = map[string]string{
@@ -47,6 +49,10 @@ var callerBoundMethods = map[string]string{
 	"SubscribePRList":           "store read; subscription released by cleanup",
 	"WatchBackgroundTaskOutput": "store read; local file tail released by cleanup",
 	"ProviderTerminalAttach":    "in-memory attachment released by cleanup",
+	// A cut before the save leaves nothing stored, and the far side revokes
+	// the session it issued at its next mint; once the save has begun the
+	// cut changes only the caller's answer (attachedbackends enroll).
+	"AcceptOwnDeviceIntroduction": "own-device introduction's wait and redemption, which its owner ends cleanly",
 }
 
 func TestCallerBoundMethodsAreReviewed(t *testing.T) {
@@ -80,7 +86,7 @@ func TestCallerBoundMethodsAreReviewed(t *testing.T) {
 		marked[meta.Name] = true
 		if _, reviewed := callerBoundMethods[meta.Name]; !reviewed {
 			t.Errorf("%s is //ao:callerbound but not in callerBoundMethods. A disconnect cuts it anywhere: "+
-				"mark it only if it has no durable, provider-visible or remote effect, and add the reason", meta.Name)
+				"mark it only if it has no durable, provider-visible or remote effect, or its owner defines and tests every cut, and add the reason", meta.Name)
 		}
 		if !takesContext[meta.Name] {
 			t.Errorf("%s is //ao:callerbound but takes no leading context, so nothing can end it", meta.Name)

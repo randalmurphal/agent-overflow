@@ -13,12 +13,15 @@ import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { addProjectLocal, resetProjectsForTest } from '../../stores/projects.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { __resetGitStatusStoreForTest, __seedGitStatusForTest } from '../../stores/gitStatusStore.svelte';
+import { PANE_DENSITY_MIN_WIDTHS } from '../../utils/paneWidths';
 
 const PROJECT = 'agent-overflow';
 const LONG_PROJECT = 'a-project-with-a-very-long-descriptive-name-indeed';
 const LONG_TITLE = 'BLITZ-965 adversarial review (MR !515 + release two) and every follow-up it turned up';
 const TITLE_FLOOR_PX = 128;
 const ONE_ROW_MAX_PX = 48;
+// The narrowest a thread pane gets on the desktop.
+const NARROWEST_PANE_PX = PANE_DENSITY_MIN_WIDTHS.compact;
 
 let host: HTMLDivElement;
 const mounted: ReturnType<typeof mount>[] = [];
@@ -79,6 +82,7 @@ async function mountHeader(width: number, title = LONG_TITLE) {
     header: q('chat-header'),
     crumb: q('chat-header-project'),
     title: q('chat-header-title'),
+    promote: q('pane-promote'),
     close: q('pane-close'),
     prBadge: q('chat-header-pr-badge'),
     more: q('chat-header-more'),
@@ -108,7 +112,9 @@ it.each([900, 720, 620])('shows the whole project name and truncates the title a
   expectNothingPastTheHeader(header);
 });
 
-it.each([600, 480])('leaves the crumb out of a header under 36rem and keeps one row at %ipx', async (width) => {
+it('leaves the crumb out of a header under 36rem and keeps one row in the narrowest thread pane', async () => {
+  const width = NARROWEST_PANE_PX;
+  expect(width).toBeLessThan(576);
   const { header, crumb, title } = await mountHeader(width);
   expect(getComputedStyle(crumb).display).toBe('none');
   expect(title.getBoundingClientRect().width).toBeGreaterThanOrEqual(TITLE_FLOOR_PX);
@@ -175,10 +181,23 @@ it('keeps the rename editor at the title floor, with the cluster where it was', 
   expectNothingPastTheHeader(header);
 });
 
-it.each([900, 480])('leaves a short title its own width, with the close control beside it, at %ipx', async (width) => {
-  const { header, title, close } = await mountHeader(width, 'Ops');
+it.each([900, NARROWEST_PANE_PX])('leaves a short title its own width, with the pane controls beside it, at %ipx', async (width) => {
+  const { header, title, promote, close } = await mountHeader(width, 'Ops');
   expect(title.scrollWidth).toBeLessThanOrEqual(title.clientWidth);
   expect(title.getBoundingClientRect().width).toBeLessThan(64);
-  expect(close.getBoundingClientRect().left - title.getBoundingClientRect().right).toBeLessThan(16);
+  expect(promote.getBoundingClientRect().left - title.getBoundingClientRect().right).toBeLessThan(16);
+  expect(close.getBoundingClientRect().left - promote.getBoundingClientRect().right).toBeLessThan(16);
   expectOneRow(header);
+});
+
+it('gives the cluster a second row in a companion narrower than a thread pane, with nothing cut off', async () => {
+  // A side chat or agent thread may sit under the thread pane minimum. With
+  // the cluster at its fullest the title is at its floor there, so the
+  // cluster wraps whole.
+  const { header, title, prBadge, more } = await mountHeader(440);
+  const titleBox = title.getBoundingClientRect();
+  expect(titleBox.width).toBeGreaterThanOrEqual(TITLE_FLOOR_PX);
+  expect(prBadge.getBoundingClientRect().top).toBeGreaterThanOrEqual(titleBox.bottom);
+  expect(more.getBoundingClientRect().top).toBe(prBadge.getBoundingClientRect().top);
+  expectNothingPastTheHeader(header);
 });

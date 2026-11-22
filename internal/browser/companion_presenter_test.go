@@ -4,6 +4,7 @@ import (
 	"sync"
 	"testing"
 
+	"agent-overflow/internal/browser/ids"
 	"agent-overflow/internal/keybindings"
 )
 
@@ -21,7 +22,7 @@ func TestOneMountPresentsAThreadsPages(t *testing.T) {
 			manager, engine, access, _, pageID := newPaneHostManager(t)
 			handle := paneHandle(manager, access, pageID)
 			show := true
-			if _, err := manager.Visibility(t.Context(), access, &show, pageID); err != nil {
+			if _, err := manager.Visibility(t.Context(), access, &show, PageID(pageID)); err != nil {
 				t.Fatal(err)
 			}
 			var mu sync.Mutex
@@ -36,11 +37,17 @@ func TestOneMountPresentsAThreadsPages(t *testing.T) {
 			// The pages take a presenter's new size on their own goroutine,
 			// whose pass also presents; each change of size is waited for.
 			applied := make(chan string, 16)
-			manager.viewportApplied = func(threadID string) { applied <- threadID }
+			manager.viewportApplied = func(threadID ThreadID) { applied <- string(threadID) }
 			resized := func() {
 				t.Helper()
-				if got := <-applied; got != access.ThreadID {
+				if got := <-applied; ThreadID(got) != access.ThreadID() {
 					t.Fatalf("viewport applied for %q", got)
+				}
+				// A pass that saw the page lag may owe the drain another
+				// pass; it settles before the next step.
+				awaitViewportIdle(t, manager, string(access.ThreadID()))
+				for len(applied) > 0 {
+					<-applied
 				}
 			}
 			var routed []CompanionEvent
@@ -53,7 +60,7 @@ func TestOneMountPresentsAThreadsPages(t *testing.T) {
 			})
 			attach := func() string {
 				t.Helper()
-				mount, err := manager.AttachPane(access)
+				mount, err := manager.AttachPane(access.Caller())
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -61,7 +68,7 @@ func TestOneMountPresentsAThreadsPages(t *testing.T) {
 			}
 			report := func(mount string, rect PaneRect) {
 				t.Helper()
-				if err := manager.SetPaneRect(mount, rect); err != nil {
+				if err := manager.SetPaneRect(MountID(mount), rect); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -73,16 +80,16 @@ func TestOneMountPresentsAThreadsPages(t *testing.T) {
 				mu.Lock()
 				placed, routed = nil, nil
 				mu.Unlock()
-				manager.syncPanePresentation(access.ThreadID)
-				manager.emitAccelerator(handle, bound)
-				manager.emitEscape(handle)
+				manager.syncPanePresentation(access.ThreadID())
+				manager.emitAccelerator(ids.PageHandle(handle), bound)
+				manager.emitEscape(ids.PageHandle(handle))
 				mu.Lock()
 				defer mu.Unlock()
 				if len(placed) == 0 || placed[len(placed)-1].Rect.X != rect.X {
 					t.Fatalf("%s: presented at %+v, want at x=%v", state, placed, rect.X)
 				}
 				manager.mu.Lock()
-				session := manager.sessions[access.ThreadID]
+				session := access.tb.session
 				manager.mu.Unlock()
 				if session.PaneW != int(rect.Width) || session.PaneH != int(rect.Height) {
 					t.Fatalf("%s: the pages follow a %dx%d pane, want %vx%v", state, session.PaneW, session.PaneH, rect.Width, rect.Height)
@@ -93,6 +100,11 @@ func TestOneMountPresentsAThreadsPages(t *testing.T) {
 				for _, event := range routed {
 					if event.Mount != mount {
 						t.Fatalf("%s: a %s event names mount %q, want %q", state, event.Kind, event.Mount, mount)
+					}
+					// A chord names the page it was pressed in, which the
+					// window's close and reload act on.
+					if event.PageID != pageID {
+						t.Fatalf("%s: a %s event names page %q, want %q", state, event.Kind, event.PageID, pageID)
 					}
 				}
 			}
@@ -117,8 +129,8 @@ func TestOneMountPresentsAThreadsPages(t *testing.T) {
 			mu.Lock()
 			placed, routed = nil, nil
 			mu.Unlock()
-			manager.syncPanePresentation(access.ThreadID)
-			manager.emitAccelerator(handle, bound)
+			manager.syncPanePresentation(access.ThreadID())
+			manager.emitAccelerator(ids.PageHandle(handle), bound)
 			mu.Lock()
 			if len(placed) != 0 {
 				mu.Unlock()
@@ -134,7 +146,7 @@ func TestOneMountPresentsAThreadsPages(t *testing.T) {
 			report(a, first)
 			expect("the presenter back on screen", a, first)
 
-			manager.DetachPane(a)
+			manager.DetachPane(MountID(a))
 			resized()
 			expect("the presenter detached", b, second)
 			a = attach()

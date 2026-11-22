@@ -105,49 +105,53 @@ func TestListThreadAgentTreeAtScale(t *testing.T) {
 		{history: 50_000, open: 200, openSpawns: 2_000}, {history: 50_000, open: 200, deep: 500},
 		{history: 50_000, open: 200, spawns: 5_000, openSpawns: 2_000, deep: 500},
 	} {
-		s := newTestStore(t)
-		chief, since := agentTreeSpawnHistory(t, s, shape)
-		read := ThreadAgentTreeRead{Root: chief, SettledSince: since, Depth: 4, Limit: 128, AnswerHead: 160}
-		timed := func(call func()) time.Duration {
-			start := time.Now()
-			call()
-			return time.Since(start)
-		}
-		named := []struct {
-			token string
-			depth int
-		}{{"recent-000050", 0}}
-		if shape.deep > 0 {
-			named = append(named, struct {
+		// A subtest per shape removes each shape's database, a few hundred
+		// MB, before the next is seeded.
+		t.Run(shape.String(), func(t *testing.T) {
+			s := newTestStore(t)
+			chief, since := agentTreeSpawnHistory(t, s, shape)
+			read := ThreadAgentTreeRead{Root: chief, SettledSince: since, Depth: 4, Limit: 128, AnswerHead: 160}
+			timed := func(call func()) time.Duration {
+				start := time.Now()
+				call()
+				return time.Since(start)
+			}
+			named := []struct {
 				token string
 				depth int
-			}{"deep-000100", 2})
-		}
-		for _, analyzed := range []bool{false, true} {
-			if analyzed {
-				mustExec(t, s.db, `ANALYZE`)
+			}{{"recent-000050", 0}}
+			if shape.deep > 0 {
+				named = append(named, struct {
+					token string
+					depth int
+				}{"deep-000100", 2})
 			}
-			name := fmt.Sprintf("%v, analyzed %v", shape, analyzed)
-			listing := timed(func() {
-				rows, more, err := s.ListThreadAgentTree(read)
-				if err != nil || len(rows) != read.Limit || !more {
-					t.Fatalf("%s: listing %d rows, more %v, %v", name, len(rows), more, err)
+			for _, analyzed := range []bool{false, true} {
+				if analyzed {
+					mustExec(t, s.db, `ANALYZE`)
 				}
-			})
-			report := fmt.Sprintf("listing %v", listing)
-			for _, row := range named {
-				one := read
-				one.Tokens = []string{row.token}
-				took := timed(func() {
-					rows, _, err := s.ListThreadAgentTree(one)
-					if err != nil || len(rows) != 1 || rows[0].Token != row.token || rows[0].Depth != row.depth {
-						t.Fatalf("%s: named read of %s: %+v, %v", name, row.token, rows, err)
+				name := fmt.Sprintf("%v, analyzed %v", shape, analyzed)
+				listing := timed(func() {
+					rows, more, err := s.ListThreadAgentTree(read)
+					if err != nil || len(rows) != read.Limit || !more {
+						t.Fatalf("%s: listing %d rows, more %v, %v", name, len(rows), more, err)
 					}
 				})
-				report += fmt.Sprintf(", %s %v", row.token, took)
+				report := fmt.Sprintf("listing %v", listing)
+				for _, row := range named {
+					one := read
+					one.Tokens = []string{row.token}
+					took := timed(func() {
+						rows, _, err := s.ListThreadAgentTree(one)
+						if err != nil || len(rows) != 1 || rows[0].Token != row.token || rows[0].Depth != row.depth {
+							t.Fatalf("%s: named read of %s: %+v, %v", name, row.token, rows, err)
+						}
+					})
+					report += fmt.Sprintf(", %s %v", row.token, took)
+				}
+				t.Logf("%s: %s", name, report)
 			}
-			t.Logf("%s: %s", name, report)
-		}
+		})
 	}
 }
 

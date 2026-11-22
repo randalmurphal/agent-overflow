@@ -48,7 +48,7 @@ func TestThreadMoveCancelledAfterStoppingItsCommandsStillRecordsTheFence(t *test
 		done <- err
 	}()
 	// The commands are stopped (their watch dismissed) before the lock wait.
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testutil.WaitBudget(t))
 	for {
 		watch, err := source.store.GetRemoteWatch(computerID, requestID)
 		if err != nil {

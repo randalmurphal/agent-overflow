@@ -5,17 +5,20 @@ import (
 	"fmt"
 	"maps"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
 
 // v155 counts what each thread did before it: its top-level tool calls, the
 // tokens its settled turns spent itself, cache reads not among them, and the
-// time its settled turns ran. A nested tool call, another row kind, the
-// ledger rows of a deleted thread, and what a pointer fork inherited through
-// its cut count for nothing; nor does the ledger of a Claude turn that ran a
-// native subagent, whose modelUsage includes the subagent's and which kept
-// no figure of the thread's own. A Codex turn's ledger is its own.
+// time its settled turns ran. A nested tool call, another row kind (a plan
+// update among them), the ledger rows of a deleted thread, and what a
+// pointer fork inherited through its cut count for nothing; nor does the
+// ledger of a Claude turn that ran a native subagent, whose modelUsage
+// includes the subagent's and which kept no figure of the thread's own. A
+// Codex turn's ledger is its own. A turn row without an id names no ledger
+// row, whatever it ran.
 func TestThreadTalliesMigrationCountsEachThreadsPast(t *testing.T) {
 	db := migrateThrough(t, assistantsMigrationVersion-1)
 	mustExec(t, db, `INSERT INTO projects (id, path, name, created_at, updated_at) VALUES ('p', '/tmp/p', 'P', 1, 1)`)
@@ -28,12 +31,19 @@ func TestThreadTalliesMigrationCountsEachThreadsPast(t *testing.T) {
 		{"call-1", "busy", "tool_call", ""}, {"call-2", "busy", "tool_call", ""}, {"nested", "busy", "tool_call", "call-1"},
 		{"said", "busy", "assistant_text", ""}, {"call-1", "forked", "tool_call", ""},
 		{"agent", "codexy", "tool_call", ""}, {"child", "codexy", "assistant_text", "agent"},
+		{"plan", "busy", "notification", ""},
 	} {
-		mustExec(t, db, `INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary, parent_id, created_at, updated_at)
-			VALUES (?, ?, 0, ?, ?, 'assistant', 'completed', '', ?, 1, 1)`, row.id, row.thread, i, row.kind, row.parent)
+		tool := ""
+		if row.kind == "notification" {
+			tool = "plan_update"
+		}
+		mustExec(t, db, `INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary, parent_id, tool_name, created_at, updated_at)
+			VALUES (?, ?, 0, ?, ?, 'assistant', 'completed', '', ?, ?, 1, 1)`, row.id, row.thread, i, row.kind, row.parent, tool)
 	}
 	mustExec(t, db, `INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary, parent_id, created_at, updated_at)
-		VALUES ('own', 'forked', 1, 0, 'tool_call', 'assistant', 'completed', '', '', 1, 1)`)
+		VALUES ('own', 'forked', 1, 0, 'tool_call', 'assistant', 'completed', '', '', 1, 1),
+		       ('unnamed-launch', 'busy', 2, 0, 'tool_call', 'assistant', 'completed', '', '', 1, 1),
+		       ('unnamed-child', 'busy', 2, 1, 'tool_call', 'assistant', 'completed', '', 'unnamed-launch', 1, 1)`)
 	for _, turn := range []struct {
 		thread           string
 		index            int
@@ -42,6 +52,8 @@ func TestThreadTalliesMigrationCountsEachThreadsPast(t *testing.T) {
 		mustExec(t, db, `INSERT INTO turns (turn_id, thread_id, turn_index, started_at, completed_at, stop_reason, assistant_message_id, token_usage_json, error_message)
 			VALUES (? || ':' || ?, ?, ?, ?, ?, '', '', '', '')`, turn.thread, turn.index, turn.thread, turn.index, turn.started, turn.settled)
 	}
+	mustExec(t, db, `INSERT INTO turns (turn_id, thread_id, turn_index, started_at, completed_at, stop_reason, assistant_message_id, token_usage_json, error_message)
+		VALUES (NULL, 'busy', 2, 40, 45, '', '', '', '')`)
 	// busy's turn 0 ran a native subagent (its nested rows); turn 1 did not.
 	for _, row := range []struct{ thread, turn, provider string }{
 		{"busy", "busy:0", "claude"}, {"busy", "busy:1", "claude"}, {"busy", "", "claude"},
@@ -55,12 +67,82 @@ func TestThreadTalliesMigrationCountsEachThreadsPast(t *testing.T) {
 
 	got := readTallies(t, db)
 	want := map[string]ThreadTally{
-		"busy":   {ToolCalls: 2, Tokens: 2 * 34, RuntimeMs: 10},
+		"busy":   {ToolCalls: 3, Tokens: 2 * 34, RuntimeMs: 15},
 		"forked": {ToolCalls: 1, RuntimeMs: 5},
 		"codexy": {ToolCalls: 1, Tokens: 34, RuntimeMs: 1},
 	}
 	if !maps.Equal(got, want) {
 		t.Fatalf("tallies after the upgrade %+v; want %+v", got, want)
+	}
+}
+
+// v155's count reads items (aliases i and n) only by scanning a covering
+// index, once each: no read fetches a table row per item, and none runs
+// under a correlated subquery, which would repeat it per ledger row. The
+// turns that ran a nested row are found by probing turns with each one,
+// not by scanning every turn.
+func TestThreadTalliesMigrationReadsCoveringIndexes(t *testing.T) {
+	db := migrateThrough(t, assistantsMigrationVersion-1)
+	var count string
+	for _, stmt := range sqlStatements(threadTalliesV155SQL) {
+		if strings.HasPrefix(strings.TrimSpace(stmt), "INSERT INTO thread_tallies") {
+			count = stmt
+			continue
+		}
+		mustExec(t, db, stmt)
+	}
+	if count == "" {
+		t.Fatal("no INSERT INTO thread_tallies in the v155 SQL")
+	}
+	rows, err := db.Query("EXPLAIN QUERY PLAN " + count)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	type node struct {
+		parent int
+		detail string
+	}
+	plan := map[int]node{}
+	var order []int
+	var text strings.Builder
+	for rows.Next() {
+		var id, parent, notUsed int
+		var detail string
+		if err := rows.Scan(&id, &parent, &notUsed, &detail); err != nil {
+			t.Fatal(err)
+		}
+		plan[id] = node{parent, detail}
+		order = append(order, id)
+		fmt.Fprintf(&text, "%d %d %s\n", id, parent, detail)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, id := range order {
+		seen[plan[id].detail] = true
+		fields := strings.Fields(plan[id].detail)
+		if len(fields) < 2 || (fields[0] != "SCAN" && fields[0] != "SEARCH") || (fields[1] != "i" && fields[1] != "n") {
+			continue
+		}
+		if !strings.HasPrefix(plan[id].detail, "SCAN "+fields[1]+" USING COVERING INDEX ") {
+			t.Errorf("the count reads items by %q, not a covering index scan:\n%s", plan[id].detail, text.String())
+		}
+		for up := plan[id].parent; up != 0; up = plan[up].parent {
+			if strings.HasPrefix(plan[up].detail, "CORRELATED") {
+				t.Errorf("the count reads items by %q under %q, once per outer row:\n%s", plan[id].detail, plan[up].detail, text.String())
+			}
+		}
+	}
+	for _, want := range []string{
+		"SCAN i USING COVERING INDEX idx_items_top_level",
+		"SCAN n USING COVERING INDEX idx_items_parent",
+		"SEARCH t USING INDEX sqlite_autoindex_turns_2 (thread_id=? AND turn_index=?)",
+	} {
+		if !seen[want] {
+			t.Errorf("the count does not read %q:\n%s", want, text.String())
+		}
 	}
 }
 

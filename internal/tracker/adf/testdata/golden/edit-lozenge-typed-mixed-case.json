@@ -1,0 +1,44 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "Build is "
+        },
+        {
+          "type": "status",
+          "attrs": {
+            "color": "green",
+            "localId": "s1",
+            "text": "In review"
+          }
+        },
+        {
+          "type": "text",
+          "text": " today."
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "status",
+          "attrs": {
+            "color": "neutral",
+            "localId": "s2",
+            "text": "None documented"
+          }
+        },
+        {
+          "type": "text",
+          "text": " for the audit, again."
+        }
+      ]
+    }
+  ]
+}

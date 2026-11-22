@@ -124,7 +124,7 @@ func TestAnInterruptedRestoreIsFinishedFromTheMarkerAlone(t *testing.T) {
 	}
 	writeFile(t, filepath.Join(dataDir, "agent-overflow.db"), "half-restored")
 
-	marker, resumed, err := ResumeRestore(layout, nil)
+	marker, resumed, err := ResumeRestore(layout, RestoreOptions{})
 	if err != nil || !resumed {
 		t.Fatalf("ResumeRestore = (%t, %v)", resumed, err)
 	}
@@ -140,7 +140,7 @@ func TestAnInterruptedRestoreIsFinishedFromTheMarkerAlone(t *testing.T) {
 		t.Error("the marker survived the resumed restore")
 	}
 	// And a second boot has nothing to finish.
-	if _, resumed, err := ResumeRestore(layout, nil); err != nil || resumed {
+	if _, resumed, err := ResumeRestore(layout, RestoreOptions{}); err != nil || resumed {
 		t.Fatalf("second ResumeRestore = (%t, %v), want (false, nil)", resumed, err)
 	}
 }
@@ -217,7 +217,7 @@ func TestRestoreLeavesNoMarkerWhenThereIsNothingToRestore(t *testing.T) {
 			layout.MarkerPath())
 	}
 	// And the next boot finds nothing to resume, so it proceeds normally.
-	if _, resumed, err := ResumeRestore(layout, nil); err != nil || resumed {
+	if _, resumed, err := ResumeRestore(layout, RestoreOptions{}); err != nil || resumed {
 		t.Fatalf("ResumeRestore = (%t, %v), want (false, nil)", resumed, err)
 	}
 	// The live database was not touched on the way to the refusal.

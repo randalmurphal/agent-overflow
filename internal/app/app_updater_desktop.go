@@ -79,6 +79,9 @@ func InitWindowUpdater(service *appupdate.Service, app *application.App, version
 	}
 
 	bridgeUpdaterEvents(service, app)
+	// The framework's Restart quits through this shutdown before it
+	// returns, and a swap's shutdown phase begins here.
+	app.OnShutdown(service.RestartQuitting)
 	log.Printf("updater: configured (current version %s)", version)
 	return true
 }

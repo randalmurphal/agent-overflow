@@ -6,7 +6,8 @@ import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { connectedAfterConfirm, headlessPairing } from './headless-pairing-helpers.js';
 import { startTogether } from './launch-helpers.js';
 import { reloadAtRoot } from './compact-history-helpers.js';
-import { instrument } from './offhost-helpers.js';
+import { instrument, socketAnswers } from './offhost-helpers.js';
+import { expectProjectsMenuSays, watchProjectsQuiet } from './sidebar-quiet-helpers.js';
 import { runSessionCLI } from './session-cli-helpers.js';
 import { randomUUID } from 'node:crypto';
 import { unusedPort } from '../src/ports.js';
@@ -40,9 +41,10 @@ export function connectedComputersFlow(): void {
     const surfaced = await instrument(page);
     let remoteOnline = true;
     let remoteSocket: { page: WebSocketRoute; server: WebSocketRoute } | undefined;
+    const answers = socketAnswers();
     await page.routeWebSocket(/\/ws\/backend\//, (socket) => {
       if (!remoteOnline) { void socket.close({ code: 1012 }); return; }
-      const server = socket.connectToServer();
+      const server = answers.connect(socket);
       remoteSocket = { page: socket, server };
     });
     page.on('pageerror', (error) => errors.push(error.message));
@@ -119,7 +121,9 @@ export function connectedComputersFlow(): void {
       await remoteSocket!.page.close({ code: 1012, reason: 'attached computer outage' });
       await remoteSocket!.server.close();
       await createRemoteDraft('Created during outage');
+      const answered = answers.count();
       remoteOnline = true;
+      await answers.waitBeyond(answered);
       await expect(page.getByTestId('thread-row').filter({ hasText: 'Created during outage' })).toBeVisible();
       await createRemoteDraft('Created after outage');
       await expect(page.getByTestId('thread-row').filter({ hasText: 'Created after outage' })).toBeVisible();
@@ -220,6 +224,11 @@ export function connectedComputersFlow(): void {
       await reloadAtRoot(page);
       await expect(page.getByText('already-cloned', { exact: true })).toBeVisible();
       await expect(page.getByText('Mac checkout', { exact: true })).toBeVisible();
+      // Through the first several of its dials, the stopped computer adds
+      // no status line and no animation to the closed Projects section; the
+      // Projects menu says it is offline.
+      expect(await watchProjectsQuiet(page, 8_000)).toMatchObject({ statusLines: [], animations: [] });
+      await expectProjectsMenuSays(page, /Offline/);
       await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).fontSize)).toBe(changedFont);
       expect(errors).toEqual([]);
       expect(surfaced.errorToasts).toEqual([]);

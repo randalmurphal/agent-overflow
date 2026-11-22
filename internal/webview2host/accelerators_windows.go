@@ -31,8 +31,19 @@ func (h *Host) setAccelerators(list []keybindings.Accelerator) {
 	h.mu.Unlock()
 }
 
+// A key event whose kind or key cannot be read goes to the page, logged.
 func (h *Host) acceleratorPressed(page *hostPage, args *iAcceleratorKeyPressedEventArgs) {
-	if kind := args.keyEventKind(); kind != keyEventKindKeyDown && kind != keyEventKindSystemKeyDown {
+	kind, err := args.keyEventKind()
+	if err != nil {
+		h.config.Logf("browser host: page %s accelerator: %v", page.id, err)
+		return
+	}
+	if kind != keyEventKindKeyDown && kind != keyEventKindSystemKeyDown {
+		return
+	}
+	key, err := args.virtualKey()
+	if err != nil {
+		h.config.Logf("browser host: page %s accelerator: %v", page.id, err)
 		return
 	}
 	pressed := keybindings.Accelerator{
@@ -41,7 +52,7 @@ func (h *Host) acceleratorPressed(page *hostPage, args *iAcceleratorKeyPressedEv
 		Alt:   keyDown(vkMenu),
 		Shift: keyDown(vkShift),
 	}
-	pressed.Key = domKeyForVirtualKey(args.virtualKey())
+	pressed.Key = domKeyForVirtualKey(key)
 	if pressed.Key == "" {
 		return
 	}
@@ -57,9 +68,10 @@ func (h *Host) acceleratorPressed(page *hostPage, args *iAcceleratorKeyPressedEv
 	}
 	detail, err := json.Marshal(bound)
 	if err != nil {
+		h.config.Logf("browser host: page %s accelerator report: %v", page.id, err)
 		return
 	}
-	h.config.Report(page.id, ReportAccelerator, string(detail))
+	h.pageReport(page, ReportAccelerator, string(detail))
 }
 
 // releaseFocus ends a page's hold on keyboard focus when it stops being

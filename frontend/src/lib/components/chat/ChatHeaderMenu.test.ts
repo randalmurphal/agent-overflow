@@ -291,7 +291,7 @@ describe('<ChatHeaderMenu> on desktop', () => {
     // The row opens AND focuses, identical to the terminal.toggle chord: it
     // routes through runTerminalToggle, which latches the focus intent the
     // drawer consumes on mount (read-and-clear, so set exactly once).
-    expect(pane.consumeTerminalFocusRequest()).toBe(true);
+    expect(pane.consumeTerminalFocusRequest()?.current).toBe(true);
 
     await reopen(view);
     expect(row(/^Terminal/).textContent).toContain('✓');

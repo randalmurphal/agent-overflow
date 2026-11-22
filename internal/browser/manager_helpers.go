@@ -4,21 +4,25 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"agent-overflow/internal/browser/ids"
 )
 
-func (m *Manager) ownedPages(threadID string) []*managedPage {
+// ownedPages answers tb's live pages.
+func (m *Manager) ownedPages(tb *threadBrowser) []*managedPage {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var out []*managedPage
 	for _, scope := range m.scopes {
 		for _, p := range scope.pages {
-			if p.owner == threadID {
+			if p.owner == tb {
 				out = append(out, p)
 			}
 		}
@@ -33,12 +37,12 @@ var errPageNotFound = errors.New("browser: page not found")
 // after the page closed: the view is never touched then.
 var errViewClosed = errors.New("browser: the page is closed")
 
-func (m *Manager) lookupOwnedPage(access Access, pageID string) (*managedPage, *workspaceScope, error) {
+func (m *Manager) lookupOwnedPage(access Access, pageID PageID) (*managedPage, *jarScope, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, scope := range m.scopes {
 		if p := scope.pages[pageID]; p != nil {
-			if p.owner != access.ThreadID {
+			if p.owner != access.tb {
 				return nil, nil, errPageNotFound
 			}
 			return p, scope, nil
@@ -47,48 +51,67 @@ func (m *Manager) lookupOwnedPage(access Access, pageID string) (*managedPage, *
 	return nil, nil, errPageNotFound
 }
 
-func (m *Manager) workspaceForPage(pageID string) string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for workspace, scope := range m.scopes {
-		if scope.pages[pageID] != nil {
-			return workspace
+// pageByHandleLocked answers the listed page whose driver has handle, or
+// nil. The caller holds m.mu.
+func (m *Manager) pageByHandleLocked(handle ids.PageHandle) *managedPage {
+	for _, scope := range m.scopes {
+		if p := pageWithHandle(scope, handle); p != nil {
+			return p
 		}
 	}
-	return ""
+	return nil
 }
 
-// threadPageCountLocked counts the thread's tabs, live and suspended: a
-// suspended page holds no engine resource but keeps its slot in the
-// thread's page cap, which is what bounds the saved pages a thread keeps.
-// The caller holds m.mu.
-func (m *Manager) threadPageCountLocked(threadID string) int {
+// threadPageCountLocked counts the tabs of the thread lifetime tb, live, suspended and
+// pending, and its pages still closing: a suspended page holds no engine
+// resource but keeps its slot in the thread's page cap, which is what bounds
+// the saved pages a thread keeps, and a closed page holds its slot until its
+// engine page is gone (lifecycle.go). A page a jar switch closed and the
+// record it left under the same id are one tab, counted once; a closed
+// record leaves the slot to the page until its teardown ends (SetJar). The
+// caller holds m.mu.
+func (m *Manager) threadPageCountLocked(tb *threadBrowser) int {
 	count := 0
 	for _, scope := range m.scopes {
 		for _, p := range scope.pages {
-			if p.owner == threadID {
+			if p.owner == tb {
+				count++
+			}
+		}
+		for _, c := range scope.closing {
+			if c.p.owner == tb && m.suspended[c.p.id] == nil {
 				count++
 			}
 		}
 	}
+	for _, pending := range m.pending {
+		if pending.p.owner == tb {
+			count++
+		}
+	}
 	for _, rec := range m.suspended {
-		if rec.owner == threadID {
+		if rec.owner == tb {
+			count++
+		}
+	}
+	for _, p := range m.adopting {
+		if p != nil && p.owner == tb {
 			count++
 		}
 	}
 	return count
 }
 
-// scopeLoadLocked counts the engine pages a scope holds or is creating: the
-// quantity the workspace cap bounds. Suspended pages hold none. The caller
-// holds m.mu.
-func scopeLoadLocked(scope *workspaceScope) int {
-	return len(scope.pages) + scope.creating
+// scopeLoadLocked counts the engine pages a jar holds, is creating or is
+// still closing: a jar is one profile, and it holds no more pages than one
+// workspace may. Suspended pages hold none. The caller holds m.mu.
+func scopeLoadLocked(scope *jarScope) int {
+	return len(scope.pages) + len(scope.closing) + len(scope.creating)
 }
 
 // countPagesLocked counts the engine pages of every scope, the quantity the
 // process cap bounds. The caller holds m.mu.
-func countPagesLocked(scopes map[string]*workspaceScope) int {
+func countPagesLocked(scopes map[jarKey]*jarScope) int {
 	count := 0
 	for _, scope := range scopes {
 		count += scopeLoadLocked(scope)
@@ -121,22 +144,63 @@ func operationContext(caller, pageCtx context.Context, timeout time.Duration) (c
 	return ctx, func() { stop(); cancel() }
 }
 
-// pageInfo reads and bounds one page's live URL, title, and history state.
-func (m *Manager) pageInfo(ctx context.Context, p *managedPage) (PageInfo, error) {
+// pageRead is what a read of a page's info found: the address and title it
+// read, and whether they were committed, which they are unless a write that
+// began later (an engine report) set the address during the read.
+type pageRead struct {
+	Location pageLocation
+	Located  bool
+}
+
+// readInfo reads one page's live URL, title, and history state and commits
+// them with listing as a read stamped before it asked (commitRead). It
+// answers the info the tab shows after, whose fields a write that began
+// during the read may hold instead, and what it read.
+func (m *Manager) readInfo(ctx context.Context, p *managedPage, listing pageListing) (PageInfo, pageRead, error) {
+	stamp := p.readStamp()
 	location, title, err := p.driver.Info(ctx)
 	if err != nil {
-		return PageInfo{}, err
+		return PageInfo{}, pageRead{}, err
 	}
 	back, forward, err := p.driver.HistoryState(ctx)
 	if err != nil {
-		return PageInfo{}, err
+		return PageInfo{}, pageRead{}, err
 	}
-	return PageInfo{
-		ID:        p.id,
-		URL:       truncateUTF8(location, maxBrowserURLBytes),
-		Title:     truncateUTF8(title, maxBrowserTitleBytes),
-		CanGoBack: back, CanGoForward: forward,
-	}, nil
+	read := pageRead{Location: pageLocation{URL: location, Title: title}}
+	info, located := m.commitRead(p, pageUpdate{
+		Location: &read.Location,
+		History:  &pageHistory{CanGoBack: back, CanGoForward: forward},
+		Listing:  listing,
+	}, stamp)
+	read.Located = located
+	return info, read, nil
+}
+
+// maxSettleReads bounds settledAddress on a page that keeps navigating.
+const maxSettleReads = 4
+
+// settledAddress reads p's address until a read commits with no engine
+// report landing during it, which makes that read the engine's address as
+// of then: a report committed during a read may be newer than the read's
+// answer (the page navigated itself) or older (delivered late), and a stamp
+// alone cannot tell which, but a read is at least as new as every report
+// committed before it began. After maxSettleReads it answers the last read.
+// The caller holds the page-operation lock, so no operation moves the page
+// between the reads.
+func (m *Manager) settledAddress(ctx context.Context, p *managedPage) (pageLocation, error) {
+	for attempt := 1; ; attempt++ {
+		_, read, err := m.readInfo(ctx, p, pageListing{})
+		if err != nil {
+			return pageLocation{}, err
+		}
+		if read.Located {
+			return read.Location, nil
+		}
+		if attempt == maxSettleReads {
+			log.Printf("browser: page %s reported a new address during each of %d reads; keeping the last read, %s", p.id, maxSettleReads, read.Location.URL)
+			return read.Location, nil
+		}
+	}
 }
 
 // truncateUTF8 bounds value to limit bytes at a rune boundary. A truncated
@@ -180,25 +244,47 @@ func canonicalRoot(path string) (string, error) {
 	return filepath.Clean(abs), nil
 }
 
-func (m *Manager) authorizeFile(access Access, path string) (string, error) {
+func (m *Manager) authorizeFile(access Caller, path string) (string, error) {
+	resolved, _, err := m.authorizeFileGrant(access, path)
+	return resolved, err
+}
+
+// authorizeFileGrant is authorizeFile answering, for a file granted only as
+// a listed finished download's (listedDownloadFile), that download's file
+// as it finished, which an open checks again where it opens it; nil for a
+// file granted by its directory.
+func (m *Manager) authorizeFileGrant(access Caller, path string) (string, os.FileInfo, error) {
 	resolved, err := canonicalRoot(path)
 	if err != nil {
-		return "", fmt.Errorf("browser: resolve file: %w", err)
+		return "", nil, fmt.Errorf("browser: resolve file: %w", err)
 	}
 	info, err := os.Stat(resolved)
 	if err != nil {
-		return "", fmt.Errorf("browser: open file: %w", err)
+		return "", nil, fmt.Errorf("browser: open file: %w", err)
 	}
 	if !info.Mode().IsRegular() {
-		return "", fmt.Errorf("browser: local path is not a regular file")
+		return "", nil, fmt.Errorf("browser: local path is not a regular file")
 	}
 	m.mu.Lock()
 	allowOutside := m.config.AllowOutsideWorkspace
 	m.mu.Unlock()
 	if allowOutside {
-		return resolved, nil
+		return resolved, nil, nil
 	}
-	for _, root := range []string{access.Workspace, access.ProjectRoot} {
+	roots := []string{access.Workspace, access.ProjectRoot}
+	// The workspace's own downloads, which the pane opens in a tab
+	// (OpenThreadDownload): its artifact directory on an engine whose
+	// downloads stay AO's, and otherwise the files of its listed finished
+	// downloads in the user's Downloads folder, never the folder
+	// (download_files.go).
+	if workspace, err := canonicalRoot(access.Workspace); err == nil && strings.TrimSpace(access.Workspace) != "" {
+		if m.downloadsToArtifacts() {
+			roots = append(roots, m.workspaceDownloadDir(workspace))
+		} else if file := m.listedDownloadFile(workspace, resolved); file != nil {
+			return resolved, file, nil
+		}
+	}
+	for _, root := range roots {
 		if strings.TrimSpace(root) == "" {
 			continue
 		}
@@ -208,13 +294,13 @@ func (m *Manager) authorizeFile(access Access, path string) (string, error) {
 		}
 		rel, err := filepath.Rel(canonical, resolved)
 		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
-			return resolved, nil
+			return resolved, nil, nil
 		}
 	}
-	return "", fmt.Errorf("browser: file is outside the workspace; enable outside-workspace file access to open it")
+	return "", nil, fmt.Errorf("browser: file is outside the workspace; enable outside-workspace file access to open it")
 }
 
-func (m *Manager) navigationAllowed(access Access, rawURL string) bool {
+func (m *Manager) navigationAllowed(access Caller, rawURL string) bool {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return false

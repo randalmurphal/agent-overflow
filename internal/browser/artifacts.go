@@ -1,10 +1,16 @@
 package browser
 
 import (
+	"errors"
+	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
+
+	"agent-overflow/internal/browser/quota"
 )
 
 const (
@@ -13,19 +19,50 @@ const (
 	maxArtifactScanEntries = 100_000
 )
 
-func (m *Manager) prepareArtifacts() {
+// The artifact root is opened once per Manager and held (artifactDir), and
+// the quota's measurement and every write the Manager makes in it go
+// through the held directory (artifactsIn, openArtifactDir): what is
+// measured is where the Manager writes, whatever the root's name, or a
+// directory's in it, names later. A link in it leaving it is followed by
+// nothing that goes through it. A path handed out in it, to a caller or
+// to Chromium, is checked to reach what is held when it is handed out
+// (nameReaches). Headless Chromium alone writes in it by name: a running
+// download into its room, made through the held root, by the path checked
+// at its launch (openDownloadRoom), and the Manager reads the finished
+// file only through the held root, to link it into a workspace's
+// directory there (placeArtifact).
+
+// errArtifactsClosed refuses artifact work once the Manager has closed.
+var errArtifactsClosed = errors.New("browser: the artifact folder is closed")
+
+// prepareArtifacts holds the artifact root (holdArtifactRoot) and measures,
+// once per Manager, what it holds into the artifact quota, removing the
+// artifacts older than artifactMaxAge as it goes. A scan it cannot finish
+// answers the error and measures nothing, so every reservation is refused
+// with the reason until a later call measures it all. An expired artifact
+// it cannot remove stays charged and is logged; one gone meanwhile is not
+// charged. Chromium writes by name and follows a link, so a link in the
+// root to a directory, or out of it, is refused: what the quota measures is
+// where the artifacts are written.
+func (m *Manager) prepareArtifacts() error {
 	m.artifactInitMu.Lock()
 	defer m.artifactInitMu.Unlock()
 	if m.artifactReady {
-		return
+		return nil
 	}
-	_ = os.MkdirAll(m.artifactRoot, 0o700)
+	root, err := m.holdArtifactRootLocked()
+	if err != nil {
+		return err
+	}
 	cutoff := time.Now().Add(-artifactMaxAge)
 	var total int64
 	entries := 0
-	_ = filepath.WalkDir(m.artifactRoot, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
+	err = fs.WalkDir(root.FS(), ".", func(name string, entry fs.DirEntry, walkErr error) error {
+		if errors.Is(walkErr, fs.ErrNotExist) {
 			return nil
+		}
+		if walkErr != nil {
+			return walkErr
 		}
 		entries++
 		if entries > maxArtifactScanEntries {
@@ -35,37 +72,258 @@ func (m *Manager) prepareArtifacts() {
 			return nil
 		}
 		info, err := entry.Info()
-		if err != nil || !info.Mode().IsRegular() {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		rel := filepath.FromSlash(name)
+		path := filepath.Join(m.artifactRoot, rel)
+		if info.Mode()&fs.ModeSymlink != 0 {
+			target, err := root.Stat(rel)
+			switch {
+			case errors.Is(err, fs.ErrNotExist):
+			case err != nil:
+				return fmt.Errorf("%s is a link the artifact quota cannot follow: %w", path, err)
+			case target.IsDir():
+				return fmt.Errorf("%s is a link to a folder, whose size the artifact quota cannot measure", path)
+			}
+		}
+		if !info.Mode().IsRegular() {
 			return nil
 		}
 		if info.ModTime().Before(cutoff) {
-			if os.Remove(path) == nil {
+			err := root.Remove(rel)
+			if err == nil || errors.Is(err, fs.ErrNotExist) {
 				return nil
 			}
+			log.Printf("browser: remove the expired artifact %s: %v; its %d bytes stay charged", path, err, info.Size())
 		}
 		total += info.Size()
 		return nil
 	})
+	if err != nil {
+		return fmt.Errorf("browser: measure the artifact folder %s: %w", m.artifactRoot, err)
+	}
 	if entries > maxArtifactScanEntries {
 		total = maxArtifactRootBytes
 	}
-	m.artifactBytes.Store(total)
+	m.artifactBytes.SetUsed(total)
 	m.artifactReady = true
+	return nil
 }
 
-func (m *Manager) reserveArtifacts(bytes int64) bool {
-	m.prepareArtifacts()
-	for {
-		current := m.artifactBytes.Load()
-		if bytes < 0 || current > maxArtifactRootBytes-bytes {
-			return false
+// holdArtifactRootLocked answers the held artifact root, opening it the
+// first time: made if it is missing, refused while its name is a link, and
+// held only once the directory opened is the one its name named. The caller
+// holds artifactInitMu.
+func (m *Manager) holdArtifactRootLocked() (*os.Root, error) {
+	if m.artifactsClosed {
+		return nil, errArtifactsClosed
+	}
+	if root := m.artifactDir.Load(); root != nil {
+		return root, nil
+	}
+	if err := os.MkdirAll(m.artifactRoot, 0o700); err != nil {
+		return nil, fmt.Errorf("browser: create the artifact folder: %w", err)
+	}
+	named, err := os.Lstat(m.artifactRoot)
+	if err != nil {
+		return nil, fmt.Errorf("browser: the artifact folder: %w", err)
+	}
+	if !named.IsDir() {
+		return nil, fmt.Errorf("browser: the artifact folder %s is a link, not a folder, so its size cannot be measured and nothing is kept there", m.artifactRoot)
+	}
+	root, err := os.OpenRoot(m.artifactRoot)
+	if err != nil {
+		return nil, fmt.Errorf("browser: open the artifact folder: %w", err)
+	}
+	opened, err := root.Stat(".")
+	if err == nil && !os.SameFile(named, opened) {
+		err = fmt.Errorf("%s changed as it was opened", m.artifactRoot)
+	}
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("browser: open the artifact folder: %w", err), root.Close())
+	}
+	m.artifactDir.Store(root)
+	return root, nil
+}
+
+// artifactsIn answers the held artifact root and path, a name inside the
+// artifact root, relative to it. It refuses a path outside the root, and
+// answers why the root is not held when it is not.
+func (m *Manager) artifactsIn(path string) (*os.Root, string, error) {
+	rel, err := filepath.Rel(m.artifactRoot, path)
+	if err != nil || !filepath.IsLocal(rel) {
+		return nil, "", fmt.Errorf("browser: %s is outside the artifact folder", path)
+	}
+	if root := m.artifactDir.Load(); root != nil {
+		return root, rel, nil
+	}
+	m.artifactInitMu.Lock()
+	defer m.artifactInitMu.Unlock()
+	root, err := m.holdArtifactRootLocked()
+	if err != nil {
+		return nil, "", err
+	}
+	return root, rel, nil
+}
+
+// openArtifactDir makes dir, a directory inside the artifact root, if it
+// is missing, and opens it, both through the held root.
+func (m *Manager) openArtifactDir(dir string) (*os.Root, error) {
+	root, rel, err := m.artifactsIn(dir)
+	if err != nil {
+		return nil, err
+	}
+	if err := root.MkdirAll(rel, 0o700); err != nil {
+		return nil, fmt.Errorf("browser: create %s: %w", dir, err)
+	}
+	held, err := root.OpenRoot(rel)
+	if err != nil {
+		return nil, fmt.Errorf("browser: open %s: %w", dir, err)
+	}
+	return held, nil
+}
+
+// makeArtifactDir makes dir, a directory inside the artifact root, if it
+// is missing, through the held root.
+func (m *Manager) makeArtifactDir(dir string) error {
+	root, rel, err := m.artifactsIn(dir)
+	if err != nil {
+		return err
+	}
+	if err := root.MkdirAll(rel, 0o700); err != nil {
+		return fmt.Errorf("browser: create %s: %w", dir, err)
+	}
+	return nil
+}
+
+// removeHeldArtifacts removes wrote, the files AO wrote in held, a
+// directory inside the artifact root that dir named as it was opened:
+// each through the directory's handle, wherever its name was moved since,
+// and nothing else in it. Then dir's own entry goes, only while that name
+// still holds this directory, and empty (removeMadeIn). It answers left,
+// the bytes of the files the directory still holds, measured through its
+// handle, which the artifact quota is charged whatever their names, or -1
+// when they could not be measured; and what failed. Anything else in the
+// directory, and whatever took dir's name meanwhile, stays.
+func (m *Manager) removeHeldArtifacts(held *os.Root, dir string, wrote []string) (left int64, err error) {
+	var errs []error
+	for _, name := range wrote {
+		if err := held.Remove(name); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			errs = append(errs, fmt.Errorf("browser: remove %s from %s: %w", name, dir, err))
 		}
-		if m.artifactBytes.CompareAndSwap(current, current+bytes) {
-			return true
+	}
+	left, err = heldFileBytes(held)
+	if err != nil {
+		return -1, errors.Join(append(errs, fmt.Errorf("browser: measure what is left in %s: %w", dir, err))...)
+	}
+	self, err := held.Stat(".")
+	if err != nil {
+		return left, errors.Join(append(errs, fmt.Errorf("browser: read %s: %w", dir, err))...)
+	}
+	root, rel, err := m.artifactsIn(dir)
+	if err != nil {
+		return left, errors.Join(append(errs, err)...)
+	}
+	parent, err := root.OpenRoot(filepath.Dir(rel))
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return left, errors.Join(errs...)
+	case err != nil:
+		return left, errors.Join(append(errs, fmt.Errorf("browser: remove %s: %w", dir, err))...)
+	}
+	return left, errors.Join(append(errs, removeMadeIn(parent, filepath.Base(rel), self), parent.Close())...)
+}
+
+// heldFileBytes is the size of every regular file in the directory held
+// holds, at any depth.
+func heldFileBytes(held *os.Root) (int64, error) {
+	var total int64
+	err := fs.WalkDir(held.FS(), ".", func(_ string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
 		}
+		info, err := entry.Info()
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode().IsRegular() {
+			total += info.Size()
+		}
+		return nil
+	})
+	return total, err
+}
+
+// removeMadeIn removes name from parent, held open, while it is still the
+// directory AO made there, made, and empty; anything else at the name
+// stays. The removal takes only an empty directory (rmdirIn), so a file or
+// a directory holding anything put at the name after the comparison stays.
+func removeMadeIn(parent *os.Root, name string, made os.FileInfo) error {
+	current, err := parent.Lstat(name)
+	if err != nil || !os.SameFile(current, made) {
+		return nil
+	}
+	err = rmdirIn(parent, name)
+	switch {
+	case err == nil, errors.Is(err, fs.ErrNotExist), errors.Is(err, syscall.ENOTEMPTY), errors.Is(err, syscall.EEXIST), errors.Is(err, syscall.ENOTDIR):
+		// Gone, or what is at the name now is not the empty directory made.
+		return nil
+	}
+	return fmt.Errorf("browser: remove %s from %s: %w", name, parent.Name(), err)
+}
+
+// nameReaches answers nil when path, a name AO hands to a caller or to
+// Chromium for a file or folder it holds, reaches held, that file or
+// folder as read through its handle; otherwise why it does not, so the
+// name is not handed out. A name that reaches another file or folder
+// would send its reader to something AO neither wrote nor measures: the
+// artifact folder's name, or a folder's in it, was moved since it was
+// held.
+func nameReaches(path string, held os.FileInfo) error {
+	named, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("browser: %s no longer reaches what AO wrote there: %w", path, err)
+	}
+	if !os.SameFile(named, held) {
+		return fmt.Errorf("browser: %s names another file or folder than the one AO wrote there, so it is not handed out", path)
+	}
+	return nil
+}
+
+// closeArtifacts lets the held artifact root go, once nothing writes in it;
+// nothing opens it again.
+func (m *Manager) closeArtifacts() error {
+	m.artifactInitMu.Lock()
+	defer m.artifactInitMu.Unlock()
+	m.artifactsClosed = true
+	if root := m.artifactDir.Swap(nil); root != nil {
+		if err := root.Close(); err != nil {
+			return fmt.Errorf("browser: close the artifact folder: %w", err)
+		}
+	}
+	return nil
+}
+
+// closeArtifactDir closes a directory openArtifactDir opened, logging a
+// failure: the work in it is done by then.
+func closeArtifactDir(dir *os.Root, name string) {
+	if err := dir.Close(); err != nil {
+		log.Printf("browser: close %s: %v", name, err)
 	}
 }
 
-func (m *Manager) settleArtifactReservation(reserved, actual int64) {
-	m.artifactBytes.Add(actual - reserved)
+// reserveArtifacts holds bytes of the artifact quota, measured on first use
+// (prepareArtifacts), and of any pools besides it, all or none.
+func (m *Manager) reserveArtifacts(bytes int64, pools ...*quota.Pool) (*quota.Reservation, error) {
+	if err := m.prepareArtifacts(); err != nil {
+		return nil, err
+	}
+	return quota.Reserve(bytes, append(pools, m.artifactBytes)...)
 }

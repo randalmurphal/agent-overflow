@@ -12,7 +12,7 @@ import { expect } from '@playwright/test';
 import type { HarnessApp } from '../src/harness.js';
 import { topUpScenarios, type TopUpScenario } from './upgrade-corpus-config.js';
 import type { CensusGrowth } from './upgrade-corpus-helpers.js';
-import { writeReviewDrafts, writeThreadRequests } from './upgrade-corpus-topup-records.js';
+import { writePeerSpawns, writeReviewDrafts, writeThreadRequests } from './upgrade-corpus-topup-records.js';
 import { timed } from './upgrade-corpus-tools.js';
 import { compactBoundaryLine } from './agent-visibility-helpers.js';
 import { awaitToolAnswer, awaitTurnCompleted, plainScenario, threadToolsScenario } from './thread-tools-helpers.js';
@@ -195,7 +195,7 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
     await harness.rpc('StopSession', agent.id);
     await harness.rpc('HarnessSetScenario', {
       cwd: home,
-      scenario: plainScenario({ name: 'topup-helper', provider: 'codex', texts: ['Collected the notes.'] }),
+      scenario: plainScenario({ name: 'topup-helper', provider: 'codex', texts: ['Collected the notes.', 'Added your note.'] }),
     });
     await harness.rpc('HarnessSetScenario', {
       scenario: threadToolsScenario({
@@ -262,6 +262,11 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
     const flagged = await awaitToolAnswer(harness, { tool: 'thread_attention', timeoutMs: TURN_TIMEOUT_MS });
     if (flagged.isError) throw new Error(`top-up thread_attention was refused: ${flagged.text}`);
     await awaitTurnCompleted(harness, agent.id, TURN_TIMEOUT_MS);
+    // The person's message to the helper, which has no sidebar row, is a
+    // nudge: its work is a run of the assistant's (thread_requests.nudge).
+    const nudged = awaitTurnCompleted(harness, spawned.value.thread_id, TURN_TIMEOUT_MS);
+    await harness.rpc('SendMessage', spawned.value.thread_id, 'Add one more note.', null);
+    await nudged;
     // A cancel keeps nothing the row carried, so the hourly watch, run once
     // now, is the row that keeps a stderr tail. It stays armed an hour out.
     // The mailbox watch, run once now, cannot start, so it keeps its
@@ -350,11 +355,15 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
   ms.threadRequests = requests.ms;
   threadIds.push(...requests.value);
 
+  const peerSpawns = await timed(() => writePeerSpawns(harness, version, nonce));
+  ms.peerSpawns = peerSpawns.ms;
+  threadIds.push(...peerSpawns.value.threadIds);
+
   // Workflow runs add a thread per phase beside the threads listed here,
-  // so the thread counts are floors. The thread-request project is new on
-  // every run.
+  // so the thread counts are floors. The thread-request and peer-spawn
+  // projects are new on every run.
   const growth: CensusGrowth = {
-    exact: { projects: (project.value.created ? 1 : 0) + (unverified.value.created ? 1 : 0) + 1, archivedProjects: 1, pinned: 2, groups: 1 },
+    exact: { projects: (project.value.created ? 1 : 0) + (unverified.value.created ? 1 : 0) + 2, archivedProjects: 1, pinned: 2, groups: 1 },
     atLeast: { threads: threadIds.length - 1, archived: 1 },
   };
   return { projectId, growth, threadIds, scenarioThreads, workItemId: workflow.value, ms };

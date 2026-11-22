@@ -463,6 +463,26 @@ export function dispatchKey(
   return false;
 }
 
+/**
+ * Whether dispatchKey would run a command for `event` in `ctx`, without
+ * running it. Reactive: it reads the effective bindings and whatever the
+ * matching rules' `when` and commands read.
+ */
+export function keyWouldDispatch(
+  event: KeyboardEvent,
+  ctx: CommandContext,
+  options: { isMac?: boolean } = {},
+): boolean {
+  const isMac = options.isMac ?? isMacPlatform();
+  for (let i = resolved.length - 1; i >= 0; i -= 1) {
+    const r = resolved[i];
+    if (!chordMatches(r.chord, event, isMac)) continue;
+    if (r.whenAst && !evaluateRuleWhen(r.whenAst, ctx)) continue;
+    if (isCommandEnabled(r.rule.command, ctx)) return true;
+  }
+  return false;
+}
+
 export function eventMatchesKeybindingCommand(
   event: KeyboardEvent,
   ctx: CommandContext,

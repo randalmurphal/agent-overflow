@@ -16,7 +16,7 @@ func (s *Service) probeClaudeRateLimits(ctx context.Context) error {
 		return nil
 	}
 	if s.deps.Accounts.Reconcile != nil {
-		if err := s.deps.Accounts.Reconcile(string(provider.Claude)); err != nil {
+		if err := s.deps.Accounts.Reconcile(ctx, string(provider.Claude)); err != nil {
 			log.Printf("claude: reconcile external account before rate-limit probe: %v", err)
 			return err
 		}
@@ -67,7 +67,7 @@ func (s *Service) probeCodexRateLimits(ctx context.Context) error {
 		return nil
 	}
 	if s.deps.Accounts.Reconcile != nil {
-		if err := s.deps.Accounts.Reconcile(string(provider.Codex)); err != nil {
+		if err := s.deps.Accounts.Reconcile(ctx, string(provider.Codex)); err != nil {
 			log.Printf("codex: reconcile external account before rate-limit probe: %v", err)
 			return err
 		}

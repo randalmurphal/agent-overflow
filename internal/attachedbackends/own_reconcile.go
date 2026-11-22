@@ -50,6 +50,10 @@ const (
 	ownRetryMax = 5 * time.Minute
 )
 
+// ownPeerTimeout bounds one peer's part of a pass, the introductions it
+// pairs included, so an unavailable host cannot hold a worker.
+const ownPeerTimeout = 12 * time.Second
+
 func (m *Manager) ownWake() chan struct{} {
 	m.own.wakeOnce.Do(func() { m.own.wake = make(chan struct{}, 1) })
 	return m.own.wake
@@ -120,12 +124,10 @@ func (m *Manager) ReconcileOwnDevices(ctx context.Context, hooks OwnDeviceHooks)
 	for range min(4, len(profiles)) {
 		workers.Go(func() {
 			for id := range jobs {
-				peerCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
 				err := stateErr
 				if err == nil {
-					err = m.reconcileOwnPeer(peerCtx, id, hooks)
+					err = m.reconcileOwnPeerWithin(ctx, id, hooks)
 				}
-				cancel()
 				message := ""
 				if err != nil && ctx.Err() == nil {
 					message = err.Error()
@@ -151,6 +153,17 @@ func (m *Manager) ReconcileOwnDevices(ctx context.Context, hooks OwnDeviceHooks)
 	close(jobs)
 	workers.Wait()
 	return stateErr != nil || failures.Load() > 0
+}
+
+// reconcileOwnPeerWithin is one peer's part of a pass, under its bound.
+func (m *Manager) reconcileOwnPeerWithin(ctx context.Context, id string, hooks OwnDeviceHooks) error {
+	bound, err := m.stepBound(ownPeerTimeout)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, bound)
+	defer cancel()
+	return m.reconcileOwnPeer(ctx, id, hooks)
 }
 
 func (m *Manager) reconcileOwnPeer(ctx context.Context, id string, hooks OwnDeviceHooks) error {
@@ -228,15 +241,10 @@ func (m *Manager) reconcileOwnPeer(ctx context.Context, id string, hooks OwnDevi
 		if member.Removed || member.BackendID == "" || member.KeyThumbprint == key || member.BackendID == id {
 			continue
 		}
-		if excluded, err := m.ownDeviceExcluded(member.BackendID); err != nil {
+		if wanted, err := m.introductionWanted(member.BackendID); err != nil {
 			return err
-		} else if excluded {
+		} else if !wanted {
 			continue
-		}
-		if session, err := deviceclient.LoadSession(m.dir, member.BackendID); err == nil && session.OwnDevice {
-			continue
-		} else if err != nil && !errors.Is(err, deviceclient.ErrNoSession) {
-			return err
 		}
 		var invitation struct {
 			URL string `json:"url"`
@@ -355,28 +363,4 @@ func (m *Manager) pruneOwnProfiles(snapshot owndevices.List) (bool, error) {
 		}
 	}
 	return changed, nil
-}
-
-// retireOwnProfile forgets one own-device profile the way a tombstone does,
-// if it still holds the session named (any session when sessionID is empty),
-// and announces it as SetRemoved, as every removal is. Ordinary limited
-// shares are separate grants and are never touched.
-func (m *Manager) retireOwnProfile(id, sessionID string) (bool, error) {
-	unlock := m.profiles.Lock(id)
-	defer unlock()
-	current, err := deviceclient.LoadSession(m.dir, id)
-	if err != nil {
-		if errors.Is(err, deviceclient.ErrNoSession) {
-			err = nil
-		}
-		return false, err
-	}
-	if !current.OwnDevice || (sessionID != "" && current.SessionID != sessionID) {
-		return false, nil
-	}
-	if err := m.forgetLocked(id); err != nil {
-		return false, err
-	}
-	m.notifyChanged(SetChange{Action: SetRemoved, ID: id})
-	return true, nil
 }

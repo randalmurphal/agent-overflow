@@ -27,6 +27,7 @@ require (
 	github.com/miekg/dns v1.1.73
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2
 	github.com/rjeczalik/notify v0.9.3
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	github.com/shirou/gopsutil/v4 v4.26.9
 	github.com/tree-sitter-grammars/tree-sitter-hcl v1.2.0
 	github.com/tree-sitter-grammars/tree-sitter-toml v0.7.0
@@ -47,7 +48,7 @@ require (
 	github.com/tree-sitter/tree-sitter-typescript v0.23.2
 	github.com/vektah/gqlparser/v2 v2.5.64
 	github.com/wailsapp/wails/v3 v3.0.0-beta.4
-	github.com/yuin/goldmark v1.7.16
+	github.com/yuin/goldmark v1.8.7
 	go.opentelemetry.io/otel v1.47.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.47.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.47.0
@@ -67,6 +68,7 @@ require (
 	golang.org/x/text v0.42.0
 	modernc.org/libc v1.77.1
 	modernc.org/sqlite v1.60.1
+	mvdan.cc/sh/v3 v3.12.0
 	tailscale.com v1.104.1
 )
 
@@ -300,7 +302,6 @@ require (
 	howett.net/plist v1.0.2-0.20250314012144-ee69052608d9 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
-	mvdan.cc/sh/v3 v3.12.0 // indirect
 )
 
 tool github.com/wailsapp/wails/v3/cmd/wails3

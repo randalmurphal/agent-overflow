@@ -170,7 +170,7 @@ func TestUnarchivingSupersedesTheArchivesOwedForItsLinks(t *testing.T) {
 		}
 	}
 	for _, id := range []string{"owner", "other"} {
-		if _, err := s.OweRemoteArchives(id); err != nil {
+		if _, err := s.OweRemoteArchives(id, nil); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isEnterKey } from '../../utils/localEnter';
   import { untrack } from 'svelte';
   import Modal from '../primitives/Modal.svelte';
   import Button from '../primitives/Button.svelte';
@@ -7,7 +8,7 @@
   import CommitFilePreview from './CommitFilePreview.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { threadMachine } from '../../stores/attachedBackends.svelte';
-  import { projectHasScope } from '../../transport/entityScopes';
+  import { projectScopeGrant } from '../../transport/entityScopes';
   import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import { FIELD_CLASS, FIELD_ACTION_CLASS } from './dialogFieldClass';
   import { createCommitDialogState, type CommitDialogState } from './commitDialogState.svelte';
@@ -100,7 +101,7 @@
   }
 
   function handleKeydown(event: KeyboardEvent): void {
-    if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+    if (isEnterKey(event) && (event.ctrlKey || event.metaKey)) {
       event.preventDefault();
       void handleCommit();
     }
@@ -161,7 +162,7 @@
                 {workspace}
                 backend={threadMachine(pane.threadId ?? '', workspace.projectId)}
                 file={activeFile}
-                ungranted={!projectHasScope('files:read', workspace.projectId)}
+                grant={projectScopeGrant('files:read', workspace.projectId)}
               />
             {/if}
           </div>

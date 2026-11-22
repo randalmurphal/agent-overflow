@@ -6,6 +6,7 @@
   import PaneTitleHandle from '../panes/PaneTitleHandle.svelte';
   import PaneHeaderLine from '../panes/PaneHeaderLine.svelte';
   import PaneCloseButton from '../panes/PaneCloseButton.svelte';
+  import PanePromoteButton from '../panes/PanePromoteButton.svelte';
   import TerminalSurface from './TerminalSurface.svelte';
   import type { ThreadTerminalSurfaceContext } from './terminalDrawerTypes';
 
@@ -81,6 +82,7 @@
          gated when:'!terminalFocus' so ctrl-w reaches the shell. This button
          is the affordance that closes the pane. The PTY keeps running (close
          removes the pane, never CloseTerminal); reopening the thread reattaches. -->
+    <PanePromoteButton paneId={pane.paneId} testId="terminal-pane-promote" />
     <PaneCloseButton paneId={pane.paneId} testId="terminal-pane-close" />
   </header>
 

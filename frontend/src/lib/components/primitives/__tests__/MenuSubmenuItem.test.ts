@@ -54,6 +54,18 @@ describe('<MenuSubmenuItem>', () => {
     expect(trigger.getAttribute('aria-expanded')).toBe('true');
   });
 
+  it('leaves Alt+Shift+Enter on the trigger to the app', async () => {
+    render(Harness);
+    await flushMicrotasks();
+    const trigger = submenuTrigger();
+    trigger.focus();
+    const event = new KeyboardEvent('keydown', { key: 'Enter', altKey: true, shiftKey: true, bubbles: true, cancelable: true });
+    trigger.dispatchEvent(event);
+    await flushMicrotasks();
+    expect(event.defaultPrevented).toBe(false);
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+  });
+
   it('ArrowLeft on the trigger closes an open submenu', async () => {
     render(Harness);
     await flushMicrotasks();

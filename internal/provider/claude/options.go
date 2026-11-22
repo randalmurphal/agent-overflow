@@ -39,6 +39,8 @@ func claudeEffortFromOption(effort provider.ReasoningEffort) string {
 		return "xhigh"
 	case provider.EffortMax:
 		return "max"
+	case provider.EffortNone, provider.EffortMinimal, provider.EffortUltra:
+		fallthrough
 	default:
 		return ""
 	}
@@ -162,6 +164,8 @@ func thinkingArgs(thinking ThinkingConfig) []string {
 			"--max-thinking-tokens", strconv.Itoa(thinking.BudgetTokens),
 			"--thinking-display", display,
 		}
+	case ThinkingDefault:
+		fallthrough
 	default:
 		return []string{"--thinking-display", display}
 	}

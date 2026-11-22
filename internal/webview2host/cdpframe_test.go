@@ -51,9 +51,9 @@ func TestDecodeTunnelDataRejectsAShortFrame(t *testing.T) {
 			t.Fatalf("DecodeTunnelData(%v) error = %v, want ErrShortDataFrame", frame, err)
 		}
 	}
-	// Exactly four bytes is a legal empty payload, not an error.
-	if _, payload, err := DecodeTunnelData([]byte{0, 0, 0, 9}); err != nil || len(payload) != 0 {
-		t.Fatalf("DecodeTunnelData(prefix only) = %v, %v", payload, err)
+	// Exactly four bytes is a frame with no data, which no end sends.
+	if _, _, err := DecodeTunnelData([]byte{0, 0, 0, 9}); !errors.Is(err, ErrEmptyDataFrame) {
+		t.Fatalf("DecodeTunnelData(prefix only) error = %v, want ErrEmptyDataFrame", err)
 	}
 }
 

@@ -135,6 +135,13 @@ const CapabilityPRSuggestionsReactions = "pr-suggestions-reactions.v1"
 // client reading a backend without it offers no tags.
 const CapabilityGitTags = "git-tags.v1"
 
+// CapabilityAgentMessageRunMembers names agent messages as activity-run
+// members on sight: a page, members or sync request whose shape sets
+// agentMessageMembers groups them so, and one that does not groups them
+// by the v0.0.19 absorbed rule. A client reading a backend without it
+// groups agent messages by the absorbed rule and does not set the field.
+const CapabilityAgentMessageRunMembers = "activity-runs.agent-message-members.v1"
+
 var serverCapabilities = []string{
 	CapabilityRemoteNotifications,
 	CapabilityPasskeys,
@@ -157,6 +164,7 @@ var serverCapabilities = []string{
 	CapabilityPRCommentActions,
 	CapabilityPRSuggestionsReactions,
 	CapabilityGitTags,
+	CapabilityAgentMessageRunMembers,
 }
 
 // serverCapabilitiesWithBrowser is that list plus the one flag whose
@@ -220,12 +228,15 @@ const CapabilityFilePreview = "preview.files.v1"
 //
 // A nil hook means the same thing false does: no browser tools here.
 //
-// threadToolsOlderThan is the one subtraction, and it is test isolation
-// only: an isolated boot standing in for a build that predates that thread
-// peer protocol generation drops it and every later one, so a caller takes
-// the path an older destination gives it. Config.ThreadToolsOlderThan says
-// when, and only a test or a harness boot sets it.
-func advertisedCapabilities(browserAvailable func() bool, transfers, filePreviews bool, threadToolsOlderThan string) []string {
+// threadToolsOlderThan and omitAgentMessageRunMembers are the two
+// subtractions, and both are test isolation only: an isolated boot
+// standing in for a build that predates a thread peer protocol generation
+// drops it and every later one, and one standing in for a build before
+// CapabilityAgentMessageRunMembers drops that, so a caller takes the path
+// an older destination gives it. Config.ThreadToolsOlderThan and
+// Config.OmitAgentMessageRunMembers say when, and only a test or a harness
+// boot sets them.
+func advertisedCapabilities(browserAvailable func() bool, transfers, filePreviews bool, threadToolsOlderThan string, omitAgentMessageRunMembers bool) []string {
 	var capabilities []string
 	if browserAvailable != nil && browserAvailable() {
 		if transfers {
@@ -241,11 +252,16 @@ func advertisedCapabilities(browserAvailable func() bool, transfers, filePreview
 	if filePreviews {
 		capabilities = append(slices.Clone(capabilities), CapabilityFilePreview)
 	}
-	first := slices.Index(threadToolsGenerations, threadToolsOlderThan)
-	if first < 0 {
+	var omitted []string
+	if first := slices.Index(threadToolsGenerations, threadToolsOlderThan); first >= 0 {
+		omitted = threadToolsGenerations[first:]
+	}
+	if omitAgentMessageRunMembers {
+		omitted = append(slices.Clone(omitted), CapabilityAgentMessageRunMembers)
+	}
+	if len(omitted) == 0 {
 		return capabilities
 	}
-	omitted := threadToolsGenerations[first:]
 	return slices.DeleteFunc(slices.Clone(capabilities), func(name string) bool {
 		return slices.Contains(omitted, name)
 	})

@@ -61,6 +61,70 @@ describe('counts', () => {
     ]);
   });
 
+  it('counts agent messages after tools and before notifications and thinking', () => {
+    const agent = (id: string) => {
+      seq += 1;
+      return makeItem({
+        id,
+        itemIndex: seq,
+        kind: 'user_text',
+        role: 'user',
+        meta: JSON.stringify({ origin: 'agent-thread', originThread: { threadId: 't-x', title: 'Review', kind: 'wake' } }),
+      });
+    };
+    seq += 1;
+    const bell = makeItem({ id: 'bell', itemIndex: seq, kind: 'notification' });
+    const one = activityRunSummary([tool('a', 'Bash'), agent('r1'), thinking('th')], 'claude');
+    expect(one.counts.entries.map(({ label, count }) => ({ label, count }))).toEqual([
+      { label: 'Bash', count: 1 },
+      { label: 'agent message', count: 1 },
+      { label: 'thinking', count: 1 },
+    ]);
+    expect(one.counts.total).toBe(3);
+
+    const many = activityRunSummary([
+      thinking('th2'), bell, tool('b', 'Bash'), tool('c', 'Bash'), agent('r2'), agent('r3'), agent('r4'),
+    ], 'claude');
+    expect(many.counts.entries.map(({ label, count }) => ({ label, count }))).toEqual([
+      { label: 'Bash', count: 2 },
+      { label: 'agent messages', count: 3 },
+      { label: 'notification', count: 1 },
+      { label: 'thinking', count: 1 },
+    ]);
+    expect(many.hasFailure).toBe(false);
+    expect(many.runningLabel).toBeNull();
+  });
+
+  it('counts agent messages a history page did not ship under the same term', () => {
+    seq += 1;
+    const loaded = makeItem({
+      id: 'r1', itemIndex: seq, kind: 'user_text', role: 'user',
+      meta: JSON.stringify({ origin: 'agent-wake', originWake: { kind: 'loop', label: 'nightly' } }),
+    });
+    const { counts } = activityRunSummary([tool('a', 'Bash'), loaded], 'claude', {
+      memberCount: 4,
+      unshippedBefore: 2,
+      unshippedAfter: 0,
+      unshippedGroups: [
+        { kind: 'tool_call', toolName: 'Bash', mcp: '', rows: 1 },
+        { kind: 'user_text', toolName: '', mcp: '', rows: 1 },
+      ],
+      unshippedPairedLaunchIds: [],
+      shippedSupersededLaunchIds: [],
+      unshippedFailed: false,
+      runningBefore: null,
+      runningAfter: null,
+      shed: [],
+      loadedFirstItemId: 'a',
+      loadedLastItemId: 'r1',
+    });
+
+    expect(counts.entries.map(({ label, count }) => ({ label, count }))).toEqual([
+      { label: 'Bash', count: 2 },
+      { label: 'agent messages', count: 2 },
+    ]);
+  });
+
   it('keeps the singular label for one bell', () => {
     seq += 1;
     const bell = makeItem({ id: 'bell', itemIndex: seq, kind: 'notification' });
@@ -391,6 +455,41 @@ describe('attention state', () => {
       counts: { entries: [], total: 0 },
       hasFailure: false,
       runningLabel: null,
+      loneAgentMessageId: null,
     });
+  });
+});
+
+describe('a run of one agent message', () => {
+  const agent = (id: string, itemIndex: number) => makeItem({
+    id,
+    itemIndex,
+    kind: 'user_text',
+    role: 'user',
+    meta: JSON.stringify({ origin: 'agent-thread', originThread: { threadId: 't-x', title: 'Review', kind: 'wake' } }),
+  });
+
+  it('names the message when it is the only member and loaded', () => {
+    expect(activityRunSummary([agent('r1', 1)], 'claude').loneAgentMessageId).toBe('r1');
+  });
+
+  it('names none beside another member, for two messages, or when the page did not ship it', () => {
+    const bash = makeItem({ id: 'b', itemIndex: 2, kind: 'tool_call', toolName: 'Bash' });
+    expect(activityRunSummary([agent('r1', 1), bash], 'claude').loneAgentMessageId).toBeNull();
+    expect(activityRunSummary([agent('r1', 1), agent('r2', 2)], 'claude').loneAgentMessageId).toBeNull();
+    expect(activityRunSummary([], 'claude', {
+      memberCount: 1,
+      unshippedBefore: 1,
+      unshippedAfter: 0,
+      unshippedGroups: [{ kind: 'user_text', toolName: '', mcp: '', rows: 1 }],
+      unshippedPairedLaunchIds: [],
+      shippedSupersededLaunchIds: [],
+      unshippedFailed: false,
+      runningBefore: null,
+      runningAfter: null,
+      shed: [],
+      loadedFirstItemId: '',
+      loadedLastItemId: '',
+    }).loneAgentMessageId).toBeNull();
   });
 });

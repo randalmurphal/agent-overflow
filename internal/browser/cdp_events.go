@@ -7,20 +7,21 @@ import (
 	"sync"
 	"time"
 
-	cdpbrowser "github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/network"
+	"github.com/chromedp/cdproto/page"
+	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 )
 
 // chromedp delivers each CDP event method on its own buffered subscription,
 // and each subscription here is read by its own goroutine. Within one method
 // the events keep the browser's order; across methods they do not, so two
-// events the browser sent in one order can be handled in the other. chromedp
-// has no exported ordered join of arbitrary methods (Console is the one
-// fixed join it offers), so the state below, which is fed by more than one
-// method, is keyed by the protocol's own ids and settles to the same answer
-// in every handling order.
+// events the browser sent in one order can be handled in the other. A
+// page's frames and its loading are read in the browser's order from one
+// ordered input (cdporder, cdpPage.lifecycle). The request set below, fed
+// by more than one method, is keyed by the protocol's own ids and settles
+// to the same answer in every handling order.
 
 // errNoBrowserConnection is a browser subscription that connected nothing
 // and reported no reason.
@@ -128,6 +129,18 @@ func (m *boundedMap[K, V]) take(key K) (V, bool) {
 
 func (m *boundedMap[K, V]) delete(key K) { delete(m.entries, key) }
 
+// all yields every entry, in no order; yield may delete the entry it is
+// given.
+func (m *boundedMap[K, V]) all() iter.Seq2[K, V] {
+	return func(yield func(K, V) bool) {
+		for key, entry := range m.entries {
+			if !yield(key, entry.value) {
+				return
+			}
+		}
+	}
+}
+
 func (m *boundedMap[K, V]) len() int { return len(m.entries) }
 
 // networkTracker is the in-flight request set the network-idle wait reads.
@@ -186,13 +199,6 @@ func (t *networkTracker) ended(id network.RequestID, now time.Time) {
 	t.endedEarly.put(id, struct{}{})
 }
 
-// retained reports how many request ids the tracker keeps.
-func (t *networkTracker) retained() int {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return len(t.inFlight) + t.endedEarly.len()
-}
-
 // idle reports no request in flight and none started or ended for quiet.
 func (t *networkTracker) idle(now time.Time, quiet time.Duration) bool {
 	t.mu.Lock()
@@ -200,188 +206,135 @@ func (t *networkTracker) idle(now time.Time, quiet time.Duration) bool {
 	return len(t.inFlight) == 0 && now.Sub(t.last) >= quiet
 }
 
-// frameTracker is the set of frames a page has reported, which downloads are
-// routed by.
+// cdpLoadTracker numbers a page's main-frame loading reports, from
+// Page.frameStartedLoading and Page.frameStoppedLoading in the order the
+// browser sent them (cdpPage.lifecycle): a start means loading and a stop
+// idle, whatever came before and however long ago. A page attached
+// mid-load has sent neither, and reports nothing until one comes. The
+// Manager keeps the highest number (pageHooks.Loading). Used by the
+// session's one lifecycle goroutine alone.
+type cdpLoadTracker struct {
+	handled uint64
+}
+
+// observe answers the report for a start (loading) or stop and its number.
+func (t *cdpLoadTracker) observe(loading bool) (bool, uint64) {
+	t.handled++
+	return loading, t.handled
+}
+
+// frameTracker is the set of frames a page has, which downloads are routed
+// by, from the page session's frame and target events in the order the
+// browser sent them and the frame tree read at the page's attach at its
+// place among them (cdpPage.lifecycle).
 //
-// frameAttached, frameNavigated and frameDetached arrive on three
-// subscriptions, so the tracker counts rather than toggles. Attaches and
-// detaches of one frame alternate, starting with an attach (a frame swapped
-// to another process and back is attached twice), so once every event is
-// handled the frame is live exactly when it has more attaches than
-// detaches, in whatever order they were handled. A navigation stands in for
-// the attach of a frame that attached before the page subscribed.
-//
-// A live frame is kept until it detaches; the page's own frames bound that.
-// A frame that is not live keeps its counts in gone to absorb its late
-// events, and gone is bounded by orderSlack, so detached frames do not pile
-// up.
+// A frame the page's own renderer hosts is local: Page.frameAttached or
+// frameNavigated makes it live, frameDetached for its removal makes it
+// gone, and the tree replaces the set: it reflects every event sent before
+// its reply, and the events after it apply on top. A cross-site iframe
+// moves to a renderer of its own: Chromium attaches its iframe target to
+// the page's session (Target.attachedToTarget, the target id being the
+// frame id) and then detaches the frame from the page's renderer with
+// reason swap, and the tree no longer names it. Such a frame is remote,
+// the page's from its target's attach to its target's detach, and the
+// swap leaves its local entry as it is, so a frame that swaps back in is
+// still the page's. Frames inside a remote frame's own renderer are
+// reported only on its own session, which nothing here reads, so they are
+// not the page's. The page's own frames bound both sets.
 type frameTracker struct {
-	mu   sync.RWMutex
-	live map[cdp.FrameID]frameEvents
-	gone *boundedMap[cdp.FrameID, frameEvents]
-}
-
-// frameEvents counts what has been handled for one frame.
-type frameEvents struct {
-	attaches, detaches int
-	navigated          bool
-}
-
-func (f frameEvents) live() bool {
-	attaches := f.attaches
-	if attaches == 0 && f.navigated {
-		attaches = 1
-	}
-	return attaches > f.detaches
+	mu    sync.RWMutex
+	local map[cdp.FrameID]struct{}
+	// remote is each out-of-process frame by the session of its iframe
+	// target, and remoteFrames how many sessions name each.
+	remote       map[target.SessionID]cdp.FrameID
+	remoteFrames map[cdp.FrameID]int
 }
 
 func newFrameTracker() *frameTracker {
-	return &frameTracker{live: make(map[cdp.FrameID]frameEvents), gone: newBoundedMap[cdp.FrameID, frameEvents](orderSlack)}
+	return &frameTracker{
+		local:  make(map[cdp.FrameID]struct{}),
+		remote: make(map[target.SessionID]cdp.FrameID), remoteFrames: make(map[cdp.FrameID]int),
+	}
 }
 
 func (t *frameTracker) attached(id cdp.FrameID) {
-	t.record(id, func(f *frameEvents) { f.attaches++ })
-}
-
-func (t *frameTracker) navigated(id cdp.FrameID) {
-	t.record(id, func(f *frameEvents) { f.navigated = true })
-}
-
-func (t *frameTracker) detached(id cdp.FrameID) {
-	t.record(id, func(f *frameEvents) { f.detaches++ })
-}
-
-func (t *frameTracker) record(id cdp.FrameID, event func(*frameEvents)) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	f, ok := t.live[id]
-	if !ok {
-		f, _ = t.gone.get(id)
+	t.local[id] = struct{}{}
+}
+
+// detached applies a Page.frameDetached: a frame removed is gone, and one
+// swapped into a renderer of its own stays the page's.
+func (t *frameTracker) detached(id cdp.FrameID, reason page.FrameDetachedReason) {
+	switch reason {
+	case page.FrameDetachedReasonSwap:
+		return
+	case page.FrameDetachedReasonRemove:
+	default:
+		// A reason this protocol version does not name ends the frame in
+		// the page's renderer, as a removal does.
 	}
-	event(&f)
-	if f.live() {
-		t.gone.delete(id)
-		t.live[id] = f
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.local, id)
+}
+
+// targetAttached applies a Target.attachedToTarget on the page's session:
+// an iframe target is an out-of-process frame of the page.
+func (t *frameTracker) targetAttached(session target.SessionID, info *target.Info) {
+	if info == nil || info.Type != "iframe" {
 		return
 	}
-	delete(t.live, id)
-	t.gone.put(id, f)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if _, known := t.remote[session]; known {
+		return
+	}
+	frame := cdp.FrameID(info.TargetID)
+	t.remote[session] = frame
+	t.remoteFrames[frame]++
+}
+
+// targetDetached applies a Target.detachedFromTarget on the page's
+// session: the frame its iframe target was is no longer remote.
+func (t *frameTracker) targetDetached(session target.SessionID) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	frame, ok := t.remote[session]
+	if !ok {
+		return
+	}
+	delete(t.remote, session)
+	if t.remoteFrames[frame]--; t.remoteFrames[frame] <= 0 {
+		delete(t.remoteFrames, frame)
+	}
+}
+
+// reset makes the local set the frames of tree. The tree names none of
+// the remote frames, which their targets keep.
+func (t *frameTracker) reset(tree *page.FrameTree) {
+	local := make(map[cdp.FrameID]struct{})
+	var walk func(*page.FrameTree)
+	walk = func(node *page.FrameTree) {
+		if node == nil {
+			return
+		}
+		if node.Frame != nil {
+			local[node.Frame.ID] = struct{}{}
+		}
+		for _, child := range node.ChildFrames {
+			walk(child)
+		}
+	}
+	walk(tree)
+	t.mu.Lock()
+	t.local = local
+	t.mu.Unlock()
 }
 
 func (t *frameTracker) owns(id cdp.FrameID) bool {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	_, ok := t.live[id]
-	return ok
-}
-
-// retained reports how many frames the tracker keeps.
-func (t *frameTracker) retained() int {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	return len(t.live) + t.gone.len()
-}
-
-// downloadTracker translates the two browser-level download events of one
-// browser connection into the seam's vocabulary. A download the Manager
-// refuses is cancelled through cancel, on its own goroutine because the
-// cancel is a CDP round trip.
-//
-// Shared by both CDP engines: downloads are a browser-level CDP fact with no
-// engine-specific identity in them (the GUID IS the handle on both engines),
-// so a second copy could only drift.
-//
-// downloadWillBegin and downloadProgress arrive on two subscriptions, and a
-// small download can be complete before its start is handled. The Manager
-// ignores progress for a download it has not seen start, so the tracker
-// keeps each GUID in one of two states: started (progress is forwarded),
-// or progress held (the newest progress before the start, forwarded right
-// after it). A terminal progress after the start ends the lifecycle and
-// nothing is kept. The start and the forward of held progress happen under
-// one lock with the progress handler, so no progress slips between them.
-//
-// Both states are bounded by orderSlack; the oldest GUID is dropped first.
-// A dropped started download's later progress is held as if early, which
-// the bound then drops in turn. The Manager's own page cancellation still
-// settles such a download.
-type downloadTracker struct {
-	events engineEvents
-	cancel func(id string)
-
-	mu        sync.Mutex
-	downloads *boundedMap[string, downloadLifecycle]
-}
-
-type downloadLifecycle struct {
-	started bool
-	held    *downloadProgress
-}
-
-func newDownloadTracker(events engineEvents, cancel func(id string)) *downloadTracker {
-	return &downloadTracker{events: events, cancel: cancel, downloads: newBoundedMap[string, downloadLifecycle](orderSlack)}
-}
-
-func (t *downloadTracker) willBegin(event cdpbrowser.EventDownloadWillBegin) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	lifecycle, _ := t.downloads.take(event.GUID)
-	if !t.events.DownloadStarted(downloadStart{
-		Frame: string(event.FrameID), ID: event.GUID,
-		URL: event.URL, SuggestedName: event.SuggestedFilename,
-	}) {
-		go t.cancel(event.GUID)
-	}
-	if held := lifecycle.held; held != nil {
-		t.events.DownloadProgress(*held)
-		if downloadSettled(held.State) {
-			return
-		}
-	}
-	t.downloads.put(event.GUID, downloadLifecycle{started: true})
-}
-
-func (t *downloadTracker) progress(event cdpbrowser.EventDownloadProgress) {
-	progress := cdpDownloadProgress(event)
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	lifecycle, _ := t.downloads.get(event.GUID)
-	if !lifecycle.started {
-		t.downloads.put(event.GUID, downloadLifecycle{held: &progress})
-		return
-	}
-	t.events.DownloadProgress(progress)
-	if downloadSettled(progress.State) {
-		t.downloads.delete(event.GUID)
-	}
-}
-
-// retained reports how many downloads the tracker keeps.
-func (t *downloadTracker) retained() int {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.downloads.len()
-}
-
-func downloadSettled(state string) bool {
-	return state == downloadCompleted || state == downloadCanceled
-}
-
-func cdpDownloadProgress(event cdpbrowser.EventDownloadProgress) downloadProgress {
-	state := downloadInProgress
-	switch event.State {
-	case cdpbrowser.DownloadProgressStateCompleted:
-		state = downloadCompleted
-	case cdpbrowser.DownloadProgressStateCanceled:
-		state = downloadCanceled
-	}
-	return downloadProgress{ID: event.GUID, Received: event.ReceivedBytes, State: state, FilePath: event.FilePath}
-}
-
-// subscribe connects the tracker to the download events of the browser of
-// ctx.
-func (t *downloadTracker) subscribe(ctx context.Context, logf func(string, ...any)) error {
-	if err := onBrowserEvent(ctx, cdpbrowser.DownloadWillBegin, logf, t.willBegin); err != nil {
-		return err
-	}
-	return onBrowserEvent(ctx, cdpbrowser.DownloadProgress, logf, t.progress)
+	_, local := t.local[id]
+	return local || t.remoteFrames[id] > 0
 }

@@ -1,0 +1,83 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "taskList",
+      "attrs": {
+        "localId": "ddd66b77-4d4f-49c8-aa57-ad9461b31cad"
+      },
+      "content": [
+        {
+          "type": "taskItem",
+          "attrs": {
+            "localId": "9c0db6aa-bc33-4196-a845-efd436823188",
+            "state": "TODO"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "write tests"
+            }
+          ]
+        },
+        {
+          "type": "taskItem",
+          "attrs": {
+            "localId": "a5fa29aa-46ea-457a-a341-052912dda358",
+            "state": "DONE"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "write code"
+            }
+          ]
+        },
+        {
+          "type": "taskList",
+          "attrs": {
+            "localId": "e0ac5885-b574-4936-aa66-9f57d781b354"
+          },
+          "content": [
+            {
+              "type": "taskItem",
+              "attrs": {
+                "localId": "cf319253-c704-4788-a370-c37559bc728a",
+                "state": "TODO"
+              },
+              "content": [
+                {
+                  "type": "text",
+                  "text": "nested task"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "taskItem",
+          "attrs": {
+            "localId": "4099b343-af91-48f9-a366-7eb1a06cc93c",
+            "state": "TODO"
+          },
+          "content": [
+            {
+              "type": "text",
+              "marks": [
+                {
+                  "type": "strong"
+                }
+              ],
+              "text": "bold"
+            },
+            {
+              "type": "text",
+              "text": " task"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

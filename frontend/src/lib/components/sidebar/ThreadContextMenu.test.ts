@@ -26,13 +26,12 @@ import {
   upsertThreadGroup,
 } from '../../stores/threadGroups.svelte';
 import {
-  collapseProject,
-  isProjectExpanded,
   resetSidebarForTest,
 } from '../../stores/sidebar.svelte';
 import type { Thread } from '../../types/models';
 import type { Settings } from '../../types/settings';
 import { OBSERVE_SCOPES, pairViewOnly, pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
+import { entryRecordForTest, setEntryExpanded } from '../../stores/sidebarEntryContinuity.svelte';
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return {
@@ -1003,7 +1002,7 @@ describe('<ThreadContextMenu> group items', () => {
       updatedAt: 0,
     }));
     setBindingMock('SetThreadGroup', vi.fn(async () => []));
-    collapseProject('project-1');
+    setEntryExpanded('project-1', false);
     const { baseElement } = renderMenu(makeThread({ id: 'row', projectId: 'project-1' }));
     await openSubmenu(baseElement);
 
@@ -1013,7 +1012,7 @@ describe('<ThreadContextMenu> group items', () => {
     await fireEvent.click(create);
     for (let i = 0; i < 10; i += 1) await Promise.resolve();
 
-    expect(isProjectExpanded('project-1')).toBe(true);
+    expect(entryRecordForTest('project-1').expanded).toBe(true);
   });
 
   it('moves the whole bulk selection in one call', async () => {

@@ -17,6 +17,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/remotejobs"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/transport"
 )
 
@@ -376,7 +377,7 @@ func TestAnAutomaticUpgradeOfAPairingKeepsItsWork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 	defer cancel()
 	if err := a.app.SetAgentComputerEnabled(ctx, c.id, true); err != nil {
 		t.Fatal(err)
@@ -385,7 +386,7 @@ func TestAnAutomaticUpgradeOfAPairingKeepsItsWork(t *testing.T) {
 	caller := transport.WithCallerScope(context.Background(), transport.CallerScope{Kind: transport.ScopeKindInteractive, ThreadID: thread.ID, ProjectID: thread.ProjectID})
 	commandID := uuid.NewString()
 	if _, err := a.app.AgentRemoteStart(caller, AgentRemoteRequest{ComputerID: c.id, Workspace: gitapp.WorkspaceRef{ProjectID: project.ID},
-		Request: remotejobs.Request{ID: commandID, Argv: []string{"build", commandID}, TimeoutSeconds: 60}}); err != nil {
+		Request: remotejobs.Request{ID: commandID, Argv: []string{"build", commandID}}}); err != nil {
 		t.Fatal(err)
 	}
 

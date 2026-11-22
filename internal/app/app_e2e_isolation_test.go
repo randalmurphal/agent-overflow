@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/kerneltest"
 	"agent-overflow/internal/power"
@@ -114,6 +115,11 @@ func isolateE2EProviderSpawns(t *testing.T, app *App) {
 	// incidentally from a test. A test asserting generated text installs its
 	// own fake over this.
 	app.textGenerationExecutor = kerneltest.StubTextGenerationExecutor()
+	// A test's Claude CLI reports its models only when the test stores a
+	// report, so text generation on Claude would wait the probe's whole
+	// timeout for one that never comes. It gives up at once instead; a test
+	// of the wait sets its own bound.
+	app.claudeModelsWaitForTest = time.Nanosecond
 
 	// A provider update check runs `claude doctor` and reads the release
 	// hosts; a run replaces the provider CLI. The runner is stubbed and the

@@ -1,4 +1,5 @@
 // A thread change rebuilds the sidebar tree of its own project only.
+import { readSidebarCatalogs } from '../../../../test/helpers/sidebarCatalogs';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { render } from '@testing-library/svelte';
 import { tick } from 'svelte';
@@ -6,8 +7,10 @@ import { tick } from 'svelte';
 import ProjectsSection from '../ProjectsSection.svelte';
 import { createThreadPane } from '../../../stores/thread.svelte';
 import { resetSidebarForTest } from '../../../stores/sidebar.svelte';
-import { refreshProjects, resetProjectsForTest } from '../../../stores/projects.svelte';
-import { refreshThreads, updateThreadTitle } from '../../../stores/threads.svelte';
+import { resetProjectsForTest } from '../../../stores/projects.svelte';
+import { updateThreadTitle } from '../../../stores/threads.svelte';
+import { listCatalogTreesForTest, loadSidebarCatalogs } from '../../../stores/sidebarCatalogs';
+
 import { resetPanesForTest } from '../../../stores/panes.svelte';
 import { resetPaneLayoutForTest } from '../../../stores/paneLayout.svelte';
 import { resetThreadGroupsForTest } from '../../../stores/threadGroups.svelte';
@@ -43,9 +46,11 @@ beforeEach(async () => {
   setBindingMock('ListThreads', async () => [
     thread('a1', 'alpha'), thread('a2', 'alpha'), thread('b1', 'beta'), thread('b2', 'beta'),
   ]);
+  setBindingMock('ListThreadGroups', async () => []);
   setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: false }));
-  await refreshThreads();
-  await refreshProjects();
+  await loadSidebarCatalogs();
+  await readSidebarCatalogs();
+  listCatalogTreesForTest();
 });
 
 it('rebuilds the tree of the project whose thread changed and of no other', async () => {
@@ -70,7 +75,7 @@ it('rebuilds neither the Assistants section nor a project with a placed worker f
     thread('b1', 'beta'),
     thread('b2', 'beta'),
   ] as Thread[]);
-  await refreshThreads();
+  await loadSidebarCatalogs();
   const view = render(ProjectsSection, { props: { pane: createThreadPane() } });
   await tick();
   const built = () => vi.mocked(buildSidebarThreadTree).mock.calls.map(([input]) => input.threads.map((row) => row.id).join(','));

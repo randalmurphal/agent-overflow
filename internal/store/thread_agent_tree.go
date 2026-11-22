@@ -52,6 +52,10 @@ type ThreadAgentRequest struct {
 	// depth below it, as agentTargetOpenSQL reads it: the one answer the
 	// listing's membership, the row's state and Past share.
 	TargetOpen bool
+	// Node is the token of the request whose place the row takes
+	// (agentNodeSQL): the spawn of the worker a send of a run went to, or the
+	// request itself. Empty in Past, where a row is its own request.
+	Node string
 }
 
 // ThreadAgentTreeRead is one read of a thread's Agents rows.
@@ -78,11 +82,12 @@ type ThreadAgentTreeRead struct {
 
 // ListThreadAgentTree returns the spawns, sends and asks Root made that its
 // activity rail lists as agents, then under each local spawn those its
-// thread made, in tree order, oldest first among siblings: every spawn, and
-// a send or ask whose answer its caller is still owed a wake for (`notify`)
-// or is parked waiting on (one of Waiting). Each is open, settled at or
-// after SettledSince, or a spawn whose thread is not at rest
-// (agentTargetOpenSQL): a local spawn with open work at any depth below its
+// thread made, in tree order, oldest first among siblings: every spawn, a
+// send that tracks a run, and a send or ask whose answer its caller is
+// still owed a wake for (`notify`) or is parked waiting on (one of
+// Waiting). Each is open, settled at or after SettledSince, or has its run
+// open on a thread not at rest (agentTargetOpenSQL): a local spawn with
+// open work at any depth below its
 // target, its own thread included (its marks, a parked request, a thread
 // among Live, or stored work deeper than the marks count), or a remote
 // spawn whose computer last reported open work or its thread live
@@ -116,7 +121,7 @@ func (s *Store) ListThreadAgentTree(read ThreadAgentTreeRead) (_ []ThreadAgentRe
 	for rows.Next() {
 		var row ThreadAgentRequest
 		var late, hidden, open int
-		row.ThreadRequest, err = scanThreadRequestWith(rows, &row.AnswerHead, &late, &row.WakeItemID, &row.Depth, &hidden, &open)
+		row.ThreadRequest, err = scanThreadRequestWith(rows, &row.AnswerHead, &late, &row.WakeItemID, &row.Depth, &hidden, &open, &row.Node)
 		if err != nil {
 			return nil, false, fmt.Errorf("%s: scan: %w", action, err)
 		}
@@ -144,66 +149,84 @@ func (s *Store) ListThreadAgentTree(read ThreadAgentTreeRead) (_ []ThreadAgentRe
 // each arm, the first limit rows in that order (agentRowArms): what the
 // listing reads follows the rows it returns and its depth, not the
 // threads' history or how many rows lie past the limit.
+//
+// The tree's rows are nodes (agentNodeSQL): each arm's requests in the
+// rows they fall in, the arms joined with UNION, so a worker its caller
+// spawned is one row however many of its runs and requests the arms find,
+// and the limit counts rows. The select shows each node's request
+// (agentDisplayedSQL); t_free is whether its row may show open work.
 func threadAgentTreeSQL(limit int) string {
 	n := strconv.Itoa(limit)
+	nodes := func(arm agentArm, where string) string {
+		return `SELECT ` + agentNodeSQL("x") + ` FROM thread_requests x WHERE x.token IN (` + arm.first(n) + `) AND ` + where
+	}
 	var seeds, steps []string
 	for _, arm := range agentRowArms("a", agentRootSQL) {
 		seeds = append(seeds, `SELECT r.token, 0, printf('%020d', r.created_at) || r.token || char(1), json_array(r.caller_thread_id),
-           r.kind, r.target_computer_id, r.target_thread_id
+           r.kind, r.target_computer_id, r.target_thread_id, `+spawnActiveSQL("r")+`, 1
       FROM thread_requests r
-     WHERE r.token IN (`+arm.first(n)+`)`)
+     WHERE r.token IN (`+nodes(arm, "1")+`)`)
 	}
 	for _, arm := range agentRowArms("a", "tree.t_target") {
 		steps = append(steps, `SELECT r.token, tree.t_depth + 1, tree.t_sort || printf('%020d', r.created_at) || r.token || char(1),
-           json_insert(tree.t_path, '$[#]', tree.t_target), r.kind, r.target_computer_id, r.target_thread_id
+           json_insert(tree.t_path, '$[#]', tree.t_target), r.kind, r.target_computer_id, r.target_thread_id, tree.t_active AND `+spawnActiveSQL("r")+`, tree.t_active
       FROM tree CROSS JOIN thread_requests r
-     WHERE tree.t_kind = 'spawn' AND tree.t_computer = '' AND tree.t_target <> '' AND tree.t_depth + 1 < ?4
+     WHERE tree.t_kind = 'spawn' AND (tree.t_active OR `+doneRowSQL("r")+`) AND tree.t_computer = '' AND tree.t_target <> '' AND tree.t_depth + 1 < ?4
        AND NOT EXISTS (SELECT 1 FROM json_each(tree.t_path) WHERE json_each.value = tree.t_target)
-       AND r.token IN (`+arm.first(n)+`)`)
+       AND r.token IN (`+nodes(arm, "(tree.t_active OR "+doneRowSQL("x")+")")+`)`)
 	}
 	return `WITH RECURSIVE
   ` + agentHeldSQL + `,
-  tree(t_token, t_depth, t_sort, t_path, t_kind, t_computer, t_target) AS (
+  tree(t_token, t_depth, t_sort, t_path, t_kind, t_computer, t_target, t_active, t_free) AS (
     ` + strings.Join(seeds, `
-    UNION ALL
+    UNION
     `) + `
-    UNION ALL
+    UNION
     ` + strings.Join(steps, `
-    UNION ALL
+    UNION
     `) + `
     ORDER BY 3 LIMIT ` + n + `)
 SELECT ` + threadAgentRequestColumns + `, tree.t_depth,
-       tree.t_depth = ?4 - 1 AND tree.t_kind = 'spawn' AND tree.t_computer = '' AND tree.t_target <> ''
+       tree.t_depth = ?4 - 1 AND tree.t_kind = 'spawn' AND tree.t_active AND tree.t_computer = '' AND tree.t_target <> ''
          AND NOT EXISTS (SELECT 1 FROM json_each(tree.t_path) WHERE json_each.value = tree.t_target)
          AND (` + agentRowsUnderSQL("tree.t_target") + `),
-       ` + agentTargetOpenSQL("r") + `
-  FROM tree CROSS JOIN thread_requests r
- WHERE r.token = tree.t_token
+       ` + agentTargetOpenSQL("r") + `, tree.t_token
+  FROM tree CROSS JOIN thread_requests nd CROSS JOIN thread_requests r
+ WHERE nd.token = tree.t_token AND r.token = ` + agentDisplayedSQL("nd", "tree.t_free") + `
  ORDER BY tree.t_sort`
 }
 
 // threadAgentNamedRowsSQL reads the listing's rows among ?6, each at the
 // place the listing gives it, with the parameters of threadAgentTreeSQL.
-// `up` climbs from each named row's caller to the root, one spawn a step
+// A named request is read at its node (agentNodeSQL) and listed when it is
+// the request the node's row shows (agentDisplayedSQL). `up` climbs from
+// the node's caller to the root, one spawn a step
 // (idx_thread_requests_spawn_link), prefixing each spawn's part of the
-// listing's sort key: the row is listed when the row and every spawn above
-// it are, within the depth. The cost is the depth per named row.
+// listing's sort key: the row is listed when its node and every spawn
+// above it are (agentNodeListedSQL), within the depth, and every row below
+// a spawn whose run ended is done and listed by done requests (doneRowSQL),
+// as the tree nests them; free is whether every spawn above carries its
+// worker. The cost is the depth per named row.
 var threadAgentNamedRowsSQL = `WITH RECURSIVE
   ` + agentHeldSQL + `,
-  up(token, at, depth, sort) AS (
-    SELECT r.token, r.caller_thread_id, 0, printf('%020d', r.created_at) || r.token || char(1)
-      FROM json_each(?6) CROSS JOIN thread_requests r
-     WHERE r.token = json_each.value AND ` + agentRowListedSQL("r") + ` AND ` + agentRowKindSQL("r") + `
+  up(token, node, at, depth, sort, done, free) AS (
+    SELECT nm.token, n.token, n.caller_thread_id, 0, printf('%020d', n.created_at) || n.token || char(1),
+           ` + doneRowSQL("n") + ` AND ` + agentNodeListedSQL("n", doneRowSQL("lm")) + `, 1
+      FROM json_each(?6) CROSS JOIN thread_requests nm CROSS JOIN thread_requests n
+     WHERE nm.token = json_each.value AND ` + agentRowKindSQL("nm") + ` AND n.token = ` + agentNodeSQL("nm") + `
+       AND ` + agentNodeListedSQL("n", "1") + `
     UNION ALL
-    SELECT up.token, sp.caller_thread_id, up.depth + 1, printf('%020d', sp.created_at) || sp.token || char(1) || up.sort
+    SELECT up.token, up.node, sp.caller_thread_id, up.depth + 1, printf('%020d', sp.created_at) || sp.token || char(1) || up.sort,
+           up.done AND ` + doneRowSQL("sp") + ` AND ` + agentNodeListedSQL("sp", doneRowSQL("lm")) + `, up.free AND ` + spawnActiveSQL("sp") + `
       FROM up CROSS JOIN thread_requests sp
      WHERE up.at <> ` + agentRootSQL + ` AND up.depth + 1 < ?4 AND ` + agentSpawnLinkSQL("sp") + ` AND sp.target_thread_id = up.at
-       AND ` + agentRowListedSQL("sp") + `)
+       AND ` + agentNodeListedSQL("sp", "1") + ` AND (` + spawnActiveSQL("sp") + ` OR up.done))
 SELECT ` + threadAgentRequestColumns + `, up.depth,
-       up.depth = ?4 - 1 AND ` + agentSpawnLinkSQL("r") + ` AND (` + agentRowsUnderSQL("r.target_thread_id") + `),
-       ` + agentTargetOpenSQL("r") + `
-  FROM up CROSS JOIN thread_requests r
- WHERE up.at = ` + agentRootSQL + ` AND r.token = up.token
+       up.depth = ?4 - 1 AND ` + agentSpawnLinkSQL("n") + ` AND ` + spawnActiveSQL("n") + ` AND (` + agentRowsUnderSQL("n.target_thread_id") + `),
+       ` + agentTargetOpenSQL("r") + `, up.node
+  FROM up CROSS JOIN thread_requests n CROSS JOIN thread_requests r
+ WHERE up.at = ` + agentRootSQL + ` AND n.token = up.node AND r.token = up.token
+   AND r.token = ` + agentDisplayedSQL("n", "up.free") + `
  ORDER BY up.sort`
 
 // ThreadAgentStateRead is one read of what a thread's own Agents listing
@@ -323,7 +346,8 @@ const threadAgentRequestColumns = `r.token, r.caller_thread_id, r.kind, COALESCE
     COALESCE(r.confirmed_at, 0), COALESCE(r.late_confirmed_at, 0), r.answer_agent, r.answer_agent_role,
     r.target_provider, r.nested_open, r.late_delivered_how, r.made_in_thread_id,
     r.late_reply_agent, r.late_reply_agent_role, r.rest_unreported, r.answer_cause, r.answer_cause_arg, r.admit_until,
-    r.late_reply_expired, r.ack_owed, r.target_computer_name, r.link_end, ` + wakeItemSQL
+    r.late_reply_expired, r.ack_owed, r.target_computer_name, r.link_end,
+    r.run_base_tool_calls, r.run_base_tokens, r.run_base_turn_ms, r.run_tool_calls, r.run_tokens, r.run_turn_ms, COALESCE(r.run_token, ''), r.nudge, ` + wakeItemSQL
 
 // wakeItemSQL is the caller's row that carried request r's answer: the late
 // reply's confirmed wake, else the first answer's, each while the caller's

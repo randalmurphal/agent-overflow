@@ -354,6 +354,7 @@ func TestMintDevicePairing_AccessLevelDecidesTheGrantSet(t *testing.T) {
 		string(identity.ScopeThreadsRead),
 		string(identity.ScopeFilesRead),
 		string(identity.ScopeSettingsRead),
+		string(identity.ScopeTrackerRead),
 	}
 	if !slices.Equal(view.Scopes, want) {
 		t.Fatalf("view-only granted %v, want exactly %v", view.Scopes, want)

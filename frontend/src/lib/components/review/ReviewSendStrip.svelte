@@ -3,6 +3,7 @@
   import ReviewPreviewToggle from './ReviewPreviewToggle.svelte';
   import { EDITOR_PREVIEW_KEY } from '../../stores/reviewEditorPreview.svelte';
   import type { ReviewPaneState } from '../../stores/reviewPane.svelte';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
 
   // The drafts' send strip: the count, the target (the linked agent or the
   // PR as a review; a pinned review has only the PR), and for a PR review
@@ -41,8 +42,8 @@
       <button
         type="button"
         class="rounded border border-accent/45 px-2 py-1 text-[0.6875rem] font-medium text-accent hover:bg-accent/10 disabled:opacity-45"
-        disabled={!review.commentsGranted || review.sendingComments || (review.effectiveSubmitTarget === 'agent' && review.isTurnActive)}
-        title={!review.commentsGranted ? 'Not granted to this device' : review.isTurnActive && review.effectiveSubmitTarget === 'agent' ? 'Send from the chat box while the agent is working' : 'Send comments'}
+        disabled={review.commentsGrant !== 'granted' || review.sendingComments || (review.effectiveSubmitTarget === 'agent' && review.isTurnActive)}
+        title={grantBlockedTitle(review.commentsGrant) ?? (review.isTurnActive && review.effectiveSubmitTarget === 'agent' ? 'Send from the chat box while the agent is working' : 'Send comments')}
         data-testid="review-send-comments"
         onclick={() => {
           // Both set the pane's error (and submitError) before they reject;

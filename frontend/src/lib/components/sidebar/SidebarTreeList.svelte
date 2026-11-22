@@ -32,12 +32,15 @@
   import type { Thread, ThreadGroup } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import {
+    ASSISTANTS_LIST_KEY,
     collapseThreadList,
     getCollapsedGroups,
     getThreadListVisibleLimit,
     isGroupExpanded,
     setThreadListVisibleLimit,
+    type SidebarTopLevelList,
   } from '../../stores/sidebar.svelte';
+  import { resetEntryListLimit, setEntryListLimit } from '../../stores/sidebarEntryContinuity.svelte';
   import { isThreadSelected, toggleThreadSelection } from '../../stores/threadFilter.svelte';
   import { getEffectiveThreadStatus, getThreadWaitingOn } from '../../stores/threadStatuses.svelte';
   import { unreachableThreadMachineName } from '../../stores/attachedBackends.svelte';
@@ -65,8 +68,10 @@
     threads: readonly Thread[];
     /** The project's groups, already search-filtered by ProjectsSection. */
     groups?: readonly ThreadGroup[];
-    /** The key the list's top-level show-more paging persists under (stores/sidebar.svelte.ts). */
-    listKey: string;
+    /** What the list's top level pages under: a project entry, or the
+     *  Assistants section. The two page in records of their own
+     *  (stores/sidebar.svelte.ts). */
+    list: SidebarTopLevelList;
     pane: ThreadPane | null;
     /** An assistant row's third line, the projects its assistant serves; none when absent. */
     agentProjects?: (agent: Thread) => string;
@@ -74,7 +79,7 @@
     drops?: SidebarTreeDrops;
   }
 
-  let { threads, groups = [], listKey, pane, agentProjects, drops }: Props = $props();
+  let { threads, groups = [], list, pane, agentProjects, drops }: Props = $props();
 
   // Tree is built per-render: cheap (small N) and lets us reactively
   // pick up effective live-status changes from the status store and
@@ -96,7 +101,9 @@
   // Threads mounted in any pane never hide behind the cut. Re-minted only
   // when a pane opens, closes, or swaps thread.
   let openIds = $derived(openThreadIds());
-  let visibleLimit = $derived(getThreadListVisibleLimit(listKey));
+  let visibleLimit = $derived(list.kind === 'project'
+    ? list.limit
+    : getThreadListVisibleLimit(ASSISTANTS_LIST_KEY));
 
   // Truncation operates on top-level nodes only: group members sit under
   // their group and don't compete for preview slots.
@@ -147,23 +154,33 @@
     return next;
   });
 
-  /**
-   * Reveal the next step of a thread list: the list's top level (`ownerId`
-   * = listKey) or a group's members (`ownerId` = the group).
-   */
-  function showMore(ownerId: string, nodes: readonly SidebarTreeNode[]): void {
-    setThreadListVisibleLimit(ownerId, nextSidebarThreadRevealLimit({
+  /** The next step of a list, from the rows it holds. */
+  function nextLimit(nodes: readonly SidebarTreeNode[], currentLimit: number): number {
+    return nextSidebarThreadRevealLimit({
       nodes,
       openThreadIds: openIds,
-      currentLimit: getThreadListVisibleLimit(ownerId),
+      currentLimit,
       revealCount: THREAD_REVEAL_INCREMENT,
-    }));
+    });
   }
 
+  /** Reveal the next step of the list's own top level, in its own record. */
+  function showMoreTopLevel(): void {
+    const limit = nextLimit(tree, visibleLimit);
+    if (list.kind === 'project') setEntryListLimit(list.entryKey, limit);
+    else setThreadListVisibleLimit(ASSISTANTS_LIST_KEY, limit);
+  }
+
+  function collapseTopLevel(): void {
+    if (list.kind === 'project') resetEntryListLimit(list.entryKey);
+    else collapseThreadList(ASSISTANTS_LIST_KEY);
+  }
+
+  /** A group's members page by group id, whatever list they are in. */
   function showMoreGroup(groupId: string): void {
     const group = tree.find((node): node is SidebarGroupTreeNode => node.kind === 'group' && node.group.id === groupId);
-    if (!group) throw new Error(`Show more: group ${groupId} is not in list ${listKey}`);
-    showMore(groupId, group.children);
+    if (!group) throw new Error(`Show more: group ${groupId} is not in this list`);
+    setThreadListVisibleLimit(groupId, nextLimit(group.children, getThreadListVisibleLimit(groupId)));
   }
 
   /**
@@ -283,7 +300,7 @@
     {hiddenStatus}
     canShowLess={preview.canShowLess}
     testIdPrefix="project-thread-list"
-    onShowMore={() => showMore(listKey, tree)}
-    onShowLess={() => collapseThreadList(listKey)}
+    onShowMore={showMoreTopLevel}
+    onShowLess={collapseTopLevel}
   />
 {/if}

@@ -10,6 +10,7 @@ import type { PaneScrollController } from './threadPaneShared';
 import { installDiagnosticsCapture } from '../../test/helpers/diagnostics';
 import { makeItem } from '../../test/helpers/chat';
 import { pass, registry, rows } from '../../test/helpers/activityRuns';
+import { AGENT_MESSAGE_MEMBERS_RULE } from '../utils/activityRunSpans';
 
 describe('collapse state', () => {
   it('follows the setting default until explicitly toggled', () => {
@@ -30,6 +31,7 @@ describe('collapse state', () => {
   it('an override survives a default flip in either direction', () => {
     let collapsedDefault = false;
     const runs = createThreadActivityRuns({
+      activityRunRule: () => AGENT_MESSAGE_MEMBERS_RULE,
       defaultCollapsed: () => collapsedDefault,
       windowRows: () => 30,
       windowVerified: () => true,
@@ -483,6 +485,7 @@ describe('mount window', () => {
   it('tracks the setting until the user pulls in another chunk', () => {
     let windowRows = 30;
     const runs = createThreadActivityRuns({
+      activityRunRule: () => AGENT_MESSAGE_MEMBERS_RULE,
       defaultCollapsed: () => false,
       windowRows: () => windowRows,
       windowVerified: () => true,
@@ -577,6 +580,7 @@ describe('mount window', () => {
   it('an anchored window keeps tracking the size setting', () => {
     let windowRows = 30;
     const runs = createThreadActivityRuns({
+      activityRunRule: () => AGENT_MESSAGE_MEMBERS_RULE,
       defaultCollapsed: () => false,
       windowRows: () => windowRows,
       windowVerified: () => true,
@@ -1142,6 +1146,7 @@ describe('viewport hold ownership', () => {
       },
     };
     const runs = createThreadActivityRuns({
+      activityRunRule: () => AGENT_MESSAGE_MEMBERS_RULE,
       defaultCollapsed: () => overrides.defaultCollapsed ?? false,
       windowRows: () => 30,
       windowVerified: () => true,

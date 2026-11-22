@@ -114,14 +114,18 @@ const maxActivityRunMemberLimit = 500
 // resolves RunFirstItemID's coordinate, expands the whole run around it,
 // and refuses the request unless the run still starts there and every id
 // the caller claims to hold is a member. Nothing the caller sends is
-// trusted as a description of the run.
-func (s *Store) ListActivityRunMembers(ctx context.Context, threadID string, req ActivityRunMembersRequest) (ActivityRunMembers, error) {
+// trusted as a description of the run. `rule` is how the caller groups
+// agent messages, so the run is the one the caller's own grouping found.
+func (s *Store) ListActivityRunMembers(ctx context.Context, threadID string, req ActivityRunMembersRequest, rule ActivityRunRule) (ActivityRunMembers, error) {
+	if err := rule.validate(); err != nil {
+		return ActivityRunMembers{}, err
+	}
 	return historyReadSnapshot(ctx, s, "activity members read", func(q sqlQueryer) (ActivityRunMembers, error) {
-		return s.listActivityRunMembers(q, threadID, req)
+		return s.listActivityRunMembers(q, threadID, req, rule)
 	})
 }
 
-func (s *Store) listActivityRunMembers(q sqlQueryer, threadID string, req ActivityRunMembersRequest) (ActivityRunMembers, error) {
+func (s *Store) listActivityRunMembers(q sqlQueryer, threadID string, req ActivityRunMembersRequest, rule ActivityRunRule) (ActivityRunMembers, error) {
 	if threadID == "" || req.RunFirstItemID == "" {
 		return ActivityRunMembers{}, fmt.Errorf(
 			"store: list activity run members needs a thread and a run: %w", ErrActivityRunStale)
@@ -135,7 +139,7 @@ func (s *Store) listActivityRunMembers(q sqlQueryer, threadID string, req Activi
 	if err != nil {
 		return ActivityRunMembers{}, err
 	}
-	rows, err := s.activityRunMembers(q, threadID, req.RunFirstItemID, scope)
+	rows, err := s.activityRunMembers(q, threadID, req.RunFirstItemID, scope, rule)
 	if err != nil {
 		return ActivityRunMembers{}, err
 	}
@@ -168,7 +172,7 @@ func (s *Store) listActivityRunMembers(q sqlQueryer, threadID string, req Activi
 // and refuses anything else: a run is identified by its first member, so
 // a run that now starts earlier is a different run to every client rule
 // that reads the id.
-func (s *Store) activityRunMembers(q sqlQueryer, threadID, firstItemID string, scope timelineScope) ([]activityScanRow, error) {
+func (s *Store) activityRunMembers(q sqlQueryer, threadID, firstItemID string, scope timelineScope, rule ActivityRunRule) ([]activityScanRow, error) {
 	first, found, err := s.getThreadItem(q, threadID, firstItemID)
 	if err != nil {
 		return nil, fmt.Errorf("store: resolve activity run %s/%s: %w", threadID, firstItemID, err)
@@ -177,7 +181,7 @@ func (s *Store) activityRunMembers(q sqlQueryer, threadID, firstItemID string, s
 		return nil, fmt.Errorf("store: activity run %s/%s is gone: %w",
 			threadID, firstItemID, ErrActivityRunStale)
 	}
-	unit, _, _, found, err := unitAtOrBefore(q, threadID, cursorFromItem(first), scope)
+	unit, _, _, found, err := unitAtOrBefore(q, threadID, cursorFromItem(first), scope, rule)
 	if err != nil {
 		return nil, err
 	}

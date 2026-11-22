@@ -27,6 +27,7 @@
   import PaneTitleHandle from '../panes/PaneTitleHandle.svelte';
   import PaneHeaderLine from '../panes/PaneHeaderLine.svelte';
   import PaneCloseButton from '../panes/PaneCloseButton.svelte';
+  import PanePromoteButton from '../panes/PanePromoteButton.svelte';
   import SideChatKeepButton from '../panes/SideChatKeepButton.svelte';
   import AgentThreadOpenAsPaneButton from '../panes/AgentThreadOpenAsPaneButton.svelte';
   import ChatHeaderActions from './ChatHeaderActions.svelte';
@@ -113,6 +114,7 @@
       {@render titlePendingMark()}
       <SideChatKeepButton {pane} />
       <AgentThreadOpenAsPaneButton {pane} />
+      <PanePromoteButton paneId={pane.paneId} />
       <PaneCloseButton paneId={pane.paneId} testId="pane-close" />
       <ChatHeaderActions {pane} />
     {/if}

@@ -1,6 +1,6 @@
 import { TransportError } from './wsClient';
 import { passkeysUsable } from './passkey';
-import { isScope, type Scope } from './scopes';
+import { isScope, type ControlAccess, type Scope } from './scopes';
 
 /**
  * The client-side half of the AUTHORIZATION refusal vocabulary — the
@@ -69,6 +69,8 @@ const CAPABILITY_NOUNS: Record<Exclude<Scope, 'host' | 'session'>, string> = {
   'settings:read': 'reading settings',
   'settings:write': 'changing settings',
   'access:admin': 'managing devices and accounts',
+  'tracker:read': 'reading issue tracker connections',
+  'tracker:operate': 'changing issue tracker connections',
 };
 
 /** Where a grant comes from. One sentence, reused so it stays one sentence. */
@@ -130,6 +132,24 @@ export const STEP_UP_PASSKEY_REFUSAL: ScopeRefusalPresentation = {
  */
 function stepUpRefusal(): ScopeRefusalPresentation {
   return passkeysUsable() ? STEP_UP_PASSKEY_REFUSAL : STEP_UP_REFUSAL;
+}
+
+/**
+ * Why a control that a grant or a connection switches off is off, and the
+ * only place these sentences are written: `undefined` when `access` lets
+ * the control act. A refusal is said only when a known grant refuses; a
+ * computer that has not answered in this window (offline, or still
+ * connecting) is never described as having refused this device, and an
+ * item whose computer is not known is not blamed on a connection.
+ */
+export function grantBlockedTitle(access: ControlAccess): string | undefined {
+  switch (access) {
+    case 'granted': return undefined;
+    case 'refused': return 'Not granted to this device';
+    case 'pending': return 'Unavailable until this computer connects';
+    case 'unrouted': return 'Unavailable until the computer that holds this is known';
+    case 'offline': return 'Unavailable while this computer is offline';
+  }
 }
 
 /** Whether this call was refused for want of a capability. */

@@ -6,7 +6,7 @@
 // bar closes it. A navigation to another document ends the search on the
 // backend, which closes the bar, and closing the pane ends it, twice. The
 // harness runs the fake engine, whose find searches the page title
-// (fake_engine.go) and which has no native key gate: an Escape pressed in a
+// (fake_page.go) and which has no native key gate: an Escape pressed in a
 // real page, and the escape event it raises, are covered by the
 // AO_NATIVE_BROWSER_SMOKE gate and the unit tests. Unit and component
 // coverage:

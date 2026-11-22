@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isEnterKey } from '../../utils/localEnter';
   import Button from '../primitives/Button.svelte';
   import ReviewEditorPreview from './ReviewEditorPreview.svelte';
   import ReviewManageError from './ReviewManageError.svelte';
@@ -60,7 +61,7 @@
   // while saving Escape passes on (Back goes to its next step).
   function onKeydown(event: KeyboardEvent): void {
     if (isImeComposingEvent(event)) return;
-    if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+    if (isEnterKey(event) && (event.ctrlKey || event.metaKey)) {
       event.preventDefault();
       if (event.repeat || blocked !== null) return;
       void manage.saveDescription();

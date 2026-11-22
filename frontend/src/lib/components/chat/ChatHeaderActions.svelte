@@ -11,6 +11,7 @@
   // the two badges read the resulting status through `pane.gitStatus`, which
   // is a view onto the same entry — so two panes on one worktree share one
   // subscription and can never show different Commit/Push state.
+  import { untrack } from 'svelte';
   import Globe from '@lucide/svelte/icons/globe';
   import SquarePen from '@lucide/svelte/icons/square-pen';
   import { nextAssistantThreadAction } from '../sidebar/threadRowActions';
@@ -18,10 +19,10 @@
   import { openThreadFromNavigation } from '../../stores/panes.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
-  import { addErrorToast } from '../../stores/toast.svelte';
   import { chordHintForCommand } from '../../stores/keybindings.svelte';
   import { isCompanionOpen } from '../../stores/companionPanes.svelte';
-  import { threadHasScope } from '../../transport/entityScopes';
+  import { threadScopeGrant } from '../../transport/entityScopes';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
   import { attachGitStatus } from '../../stores/gitStatusStore.svelte';
   import { workspaceKeyForThread } from '../../utils/workspaceKey';
   import GitActionsControl from '../git/GitActionsControl.svelte';
@@ -33,11 +34,11 @@
   import Icon from '../primitives/Icon.svelte';
   import ProviderIcon from '../shared/ProviderIcon.svelte';
   import {
-    browserCompanionAct,
-    browserCompanionState,
-    canUseNativeBrowser,
+    browserPresentationWanted,
     hydrateBrowserCompanionState,
+    reconcileBrowserCompanionForPane,
   } from '../../stores/browserCompanion.svelte';
+  import { browserHeaderButton, runBrowserHeaderIntent } from '../../stores/browserActions';
 
   let { pane }: { pane: ThreadPane } = $props();
 
@@ -48,7 +49,7 @@
   // its computer has assistants on.
   let isAssistant = $derived(Boolean(pane.thread?.agentId) && !pane.thread?.archived && pane.threadId !== null && assistantsOn(threadComputer(pane.threadId)));
   // StartNextAssistantThread rides threads:autonomy.
-  let nextThreadUngranted = $derived(!threadHasScope('threads:autonomy', pane.threadId, pane.thread?.projectId));
+  let nextThreadGrant = $derived(threadScopeGrant('threads:autonomy', pane.threadId, pane.thread?.projectId));
   function startNextAssistantThread(): void {
     const thread = pane.thread;
     if (!thread) return;
@@ -68,7 +69,7 @@
   // with a reason rather than absent, like every other ungranted control.
   let isClaudeTui = $derived(pane.thread?.provider === 'claude-tui');
   let takeControlOpen = $derived(isCompanionOpen(pane.paneId, 'take-control'));
-  let takeControlUngranted = $derived(!threadHasScope('terminal:operate', pane.threadId, pane.thread?.projectId));
+  let takeControlGrant = $derived(threadScopeGrant('terminal:operate', pane.threadId, pane.thread?.projectId));
 
   let reviewToggleChord = $derived(chordHintForCommand('diff.panel.toggle'));
 
@@ -109,39 +110,24 @@
     return () => attachment.release();
   });
 
-  // The browser chip renders only while this thread has live browser pages,
-  // so closing the companion pane no longer strands them: the chip is the
-  // reopen door. Hidden entirely when no pages exist — a control that could
-  // only say "there is nothing to show" is noise. The state read is per-key
-  // reactive, and the hydration read fills in what the ephemeral
-  // `browser:companion-state` channel cannot replay to a fresh UI.
-  // The chip's own gate, not only the hydration read's: the pane is a native
-  // view this machine paints, so a page that cannot host one offers no chip
-  // however many pages the thread has.
+  // The browser chip: how it renders and what a press means are one answer
+  // (browserHeaderButton), its intent chosen from what it shows. The
+  // hydration read fills in what the ephemeral `browser:companion-state`
+  // channel cannot replay to a fresh UI, and a state the layout could not
+  // present when it arrived (compact) is presented once it can.
   let threadIdForBrowser = $derived(pane.threadId ?? '');
-  let browserState = $derived(
-    threadIdForBrowser && canUseNativeBrowser(threadIdForBrowser)
-      ? browserCompanionState(threadIdForBrowser)
-      : null,
-  );
-  let browserVisible = $derived(browserState?.visible === true);
+  let browserButton = $derived(browserHeaderButton(threadIdForBrowser));
+  let browserWanted = $derived(threadIdForBrowser !== '' && browserPresentationWanted(threadIdForBrowser));
 
   $effect(() => {
     if (threadIdForBrowser) hydrateBrowserCompanionState(threadIdForBrowser);
   });
 
-  async function toggleBrowserCompanion(): Promise<void> {
+  $effect(() => {
     const threadId = threadIdForBrowser;
-    const state = browserState;
-    if (!threadId || !state) return;
-    // A hidden companion has no pane to carry the banner, so the refusal
-    // comes back here and goes to a toast.
-    const failure = await browserCompanionAct(threadId, {
-      kind: browserVisible ? 'hide' : 'show',
-      pageId: browserVisible ? '' : (state.activePageId ?? ''),
-    });
-    if (failure) addErrorToast(failure.error, failure.cause);
-  }
+    if (!browserWanted) return;
+    untrack(() => reconcileBrowserCompanionForPane(pane.paneId, threadId));
+  });
 </script>
 
 <!-- Visible on placeholders too: the caller's `pane.thread` gate already
@@ -174,9 +160,9 @@
     <Button
       variant="secondary"
       size="xs"
-      disabled={nextThreadUngranted}
+      disabled={nextThreadGrant !== 'granted'}
       ariaLabel="New Thread, Same Assistant"
-      title={nextThreadUngranted ? 'Not granted to this device' : 'New Thread, Same Assistant'}
+      title={grantBlockedTitle(nextThreadGrant) ?? 'New Thread, Same Assistant'}
       onclick={startNextAssistantThread}
       testId="chat-header-next-thread"
       class="shrink-0 w-6 compact:w-9 px-0"
@@ -194,9 +180,9 @@
       variant="secondary"
       size="xs"
       pressed={takeControlOpen}
-      disabled={takeControlUngranted}
+      disabled={takeControlGrant !== 'granted'}
       ariaLabel="Toggle take-control terminal"
-      title={takeControlUngranted ? 'Not granted to this device' : 'Take control — open the live Claude TUI terminal'}
+      title={grantBlockedTitle(takeControlGrant) ?? 'Take control — open the live Claude TUI terminal'}
       onclick={() => toggleTakeControl(pane)}
       testId="take-control-toggle"
       class="shrink-0 w-6 compact:w-9 px-0"
@@ -207,19 +193,20 @@
     </Button>
   {/if}
 
-  {#if !compact && browserState}
-    <!-- Browser companion toggle. Present only while the thread's shared
-         browser session has live pages; reopens the pane after the user
-         closed it (closing the pane never closes the pages). Desktop only:
-         the companion is a native view on the host, which the compact
-         screen never shows. -->
+  {#if !compact && browserButton.rendered}
+    {@const intent = browserButton.intent}
+    <!-- Browser companion toggle, on the desktop only (the compact menu has
+         no browser row). Pressed while the pane is in the layout, and a
+         press then hides it; otherwise a press shows the tabs, or opens the
+         pane on a new tab when there are none. Closing the pane never closes
+         the pages. -->
     <Button
       variant="secondary"
       size="xs"
-      pressed={browserVisible}
-      ariaLabel="Toggle browser pane"
-      title="Toggle browser pane"
-      onclick={() => void toggleBrowserCompanion()}
+      pressed={browserButton.pressed}
+      ariaLabel={browserButton.label}
+      title={browserButton.label}
+      onclick={() => void runBrowserHeaderIntent(intent)}
       testId="browser-companion-toggle"
       class="shrink-0 w-6 compact:w-9 px-0"
     >

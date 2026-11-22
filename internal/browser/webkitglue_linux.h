@@ -32,39 +32,39 @@ void ao_wk_set_find_frame_script(const char *script, const char *world);
 // teardown over a fanned-out one. 0 until the host has attached once.
 int ao_wk_on_main_thread(void);
 
-// ao_wk_host_park puts a view's host into the background park at its own
-// slot. The park clips to 1x1, so a parked view is mapped at its full
-// viewport (real layout, fresh snapshots) while costing the window no size at
-// all. A GtkFixed at offscreen coordinates would instead propagate its size
-// and balloon the window.
-void ao_wk_host_park(void *view, int slot);
+// ao_wk_host_park parks a view: its host stays an overlay child as an empty
+// box, so a parked view is mapped at its full viewport (real layout, fresh
+// snapshots) while showing nothing and costing the window no size at all.
+void ao_wk_host_park(void *view);
 
-// ao_wk_host_unpark removes a view's host from whichever container holds it.
-void ao_wk_host_unpark(void *view);
+// ao_wk_overlay_size reads the pane overlay's size in its logical pixels. It
+// answers 0, leaving both untouched, when there is no overlay.
+int ao_wk_overlay_size(int *width, int *height);
 
-// ao_wk_host_present shows one view inside the pane: its host becomes an
-// overlay child filling the pane's VISIBLE clip rect (four margins with
-// ALIGN_FILL), and the view is drawn inside it at the FITTED rect's offset,
-// scaled. The view's own allocation stays its viewport (ao_wk_view_set_size);
-// the pane never resizes a page, it shows it scaled to fit.
-// x/y/width/height is the fitted rect and clip_* its visible intersection,
-// both in the SPA's CSS pixels; vw/vh are the SPA viewport they were measured
-// in, and the overlay's own size over that viewport is the CSS-to-overlay
-// proportion. vw/vh <= 0 means the rects are already in overlay units. scale
-// is the fitted rect's size over the viewport, in CSS pixels.
-void ao_wk_host_present(void *view, double x, double y, double width,
-                        double height, double clip_x, double clip_y,
-                        double clip_width, double clip_height, double vw,
-                        double vh, double scale);
+// ao_wk_host_present shows one view inside the pane: its host fills the pane's VISIBLE clip box (four margins with
+// ALIGN_FILL), and the view is drawn inside it at off_x/off_y from the box's
+// top-left, scaled by scale. The view's own allocation stays its viewport
+// (ao_wk_view_set_size); the pane never resizes a page, it shows it scaled to
+// fit. Every value is in overlay logical pixels, already snapped by the Go
+// side (paneplace.Layout, webkitPaneLayout), which owns the arithmetic.
+void ao_wk_host_present(void *view, int clip_left, int clip_top,
+                        int clip_right, int clip_bottom, int off_x, int off_y,
+                        double scale);
 
-// ao_wk_host_hide ends a presentation and parks the view at slot. A view
+// ao_wk_host_hide ends a presentation and parks the view. A view
 // that held keyboard focus hands it to the SPA's webview: it answers 1 when
 // it did, -1 when the view held focus and the handoff failed, 0 otherwise.
-int ao_wk_host_hide(void *view, int slot);
+int ao_wk_host_hide(void *view);
 
 // ao_wk_host_presented reports whether this view is presented, which is what
 // decides whether a dialog, picker, or context menu is shown or answered.
 int ao_wk_host_presented(void *view);
+
+// ao_wk_view_focus_presented gives a presented view keyboard focus within
+// its window, as a click into it does: 1 when GTK made it the focus widget,
+// 0 when GTK refused, -1 when the view is not presented and focus was left
+// alone. GTK moves focus only inside the window; it never activates it.
+int ao_wk_view_focus_presented(void *view);
 
 // ---- session -------------------------------------------------------------
 
@@ -72,8 +72,7 @@ int ao_wk_host_presented(void *view);
 // an AO-owned data directory, or an ephemeral one. Never touches the default
 // session, which would write into ~/.local/share/webkitgtk/.
 void *ao_wk_session_new(const char *data_dir, const char *cache_dir,
-                        const char *cookie_file, const char *download_dir,
-                        int ephemeral, uint64_t profile_id);
+                        const char *cookie_file, int ephemeral, uint64_t profile_id);
 void ao_wk_session_free(void *session);
 
 // ---- view ----------------------------------------------------------------
@@ -149,6 +148,10 @@ void ao_wk_view_find_finish(void *view);
 // cannot make a real input event. The native smoke's door into the gate.
 int ao_wk_view_offer_escape(void *view, int ctrl, int release);
 
+// ao_wk_view_terminate_web_process ends the view's web process, which
+// WebKit reports as web-process-terminated. The native smoke's crash.
+void ao_wk_view_terminate_web_process(void *view);
+
 // ao_wk_view_offer_ctrl_key delivers one Control press of the key whose
 // character is unicode to the view's key controller, as
 // ao_wk_view_offer_escape does, and answers the same way.
@@ -180,7 +183,16 @@ void ao_wk_free(void *pointer);
 
 // ---- downloads -----------------------------------------------------------
 
+// ao_wk_download_decide completes the destination decision
+// ao_download_destination left open: the download is written to path, or
+// with none canceled. It answers 0, deciding nothing, for a download that
+// failed meanwhile.
+int ao_wk_download_decide(void *download, const char *path);
 void ao_wk_download_cancel(void *download);
 void ao_wk_download_unref(void *download);
+// ao_wk_download_counts sets how many downloads WebKit started and how many
+// it finalized since the process began; both only grow, and it is safe
+// from any thread.
+void ao_wk_download_counts(int *started, int *freed);
 
 #endif

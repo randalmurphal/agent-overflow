@@ -10,6 +10,7 @@ import (
 
 	"agent-overflow/internal/forgeapi"
 	gitops "agent-overflow/internal/git"
+	"agent-overflow/internal/pump"
 	"agent-overflow/internal/transport"
 )
 
@@ -114,7 +115,7 @@ type prListPump struct {
 }
 
 type prListHandle struct {
-	active bool
+	ref *pump.Handle[prPumpRequest]
 }
 
 func prListCleanupKey(id string) string { return "pr-list:" + id }
@@ -180,15 +181,14 @@ func (a *App) takePRListHandle() (id string, pump *prListPump, start bool, publi
 		return "", nil, false, nil, 0, ErrTooManyPRListSubscriptions
 	}
 	pump = a.prUpdates.list
-	if pump == nil || pump.dead {
+	if pump == nil || pump.DeadLocked() {
 		a.prUpdates.listGen++
 		pump = &prListPump{pumpCore: a.newPumpCore(), gen: a.prUpdates.listGen, projects: map[string]*prListProjectState{}}
 		a.prUpdates.list = pump
 		start = true
 	}
 	id = uuid.NewString()
-	pump.takeLocked()
-	a.prUpdates.listHandles[id] = &prListHandle{active: true}
+	a.prUpdates.listHandles[id] = &prListHandle{ref: pump.TakeLocked()}
 	if pump.snapshot.Seq != 0 {
 		snapshot := pump.snapshot
 		return id, pump, start, &snapshot, 0, nil
@@ -204,18 +204,10 @@ func (a *App) takePRListHandle() (id string, pump *prListPump, start bool, publi
 //ao:route home
 func (a *App) SetPRListActive(ctx context.Context, subscriptionID string, active bool) error {
 	a.prUpdates.mu.Lock()
-	handle, ok := a.prUpdates.listHandles[subscriptionID]
-	pump := a.prUpdates.list
-	if !ok || handle.active == active || pump == nil || pump.dead {
-		a.prUpdates.mu.Unlock()
-		return nil
+	if handle, ok := a.prUpdates.listHandles[subscriptionID]; ok {
+		handle.ref.VoteLocked(active)
 	}
-	handle.active = active
-	resumed := pump.voteLocked(active)
 	a.prUpdates.mu.Unlock()
-	if resumed {
-		pump.wakeUp()
-	}
 	return nil
 }
 
@@ -231,11 +223,12 @@ func (a *App) RefreshPRList(ctx context.Context, subscriptionID string) error {
 	a.prUpdates.mu.Lock()
 	_, ok := a.prUpdates.listHandles[subscriptionID]
 	pump := a.prUpdates.list
+	live := ok && pump != nil && !pump.DeadLocked()
 	a.prUpdates.mu.Unlock()
-	if !ok || pump == nil || pump.dead {
+	if !live {
 		return errPRUpdatesUnknownSubscription
 	}
-	return a.requestPump(ctx, &pump.pumpCore, &prPumpRequest{snapshot: true})
+	return pump.Request(ctx, prPumpRequest{snapshot: true})
 }
 
 //ao:scope git:operate
@@ -255,25 +248,20 @@ func (a *App) unsubscribePRList(id string) {
 		return
 	}
 	delete(a.prUpdates.listHandles, id)
-	var teardown *prListPump
-	if pump.releaseLocked(handle.active) {
-		teardown = pump
+	if handle.ref.ReleaseLocked() {
 		a.prUpdates.list = nil
 	}
 	a.prUpdates.mu.Unlock()
-	if teardown != nil {
-		teardown.stop()
-	}
 }
 
-// dropPRListPump forgets a pump whose goroutine exited, with every handle
-// on it when it exited on its own, and drops what it held: the next
-// subscribe reads the store.
+// dropPRListPump stops a pump whose goroutine exited, forgets it with
+// every handle on it when it exited on its own, and drops what it held: a
+// request still waiting on it is refused, and the next subscribe reads the
+// store.
 func (a *App) dropPRListPump(pump *prListPump) {
-	pump.cancel()
 	a.prUpdates.mu.Lock()
 	defer a.prUpdates.mu.Unlock()
-	pump.dead = true
+	pump.StopLocked()
 	if a.prUpdates.list == pump {
 		a.prUpdates.list = nil
 		clear(a.prUpdates.listHandles)
@@ -295,11 +283,10 @@ func (a *App) closePRListPump() {
 		a.unsubscribePRList(id)
 	}
 	a.prUpdates.mu.Lock()
-	pump := a.prUpdates.list
-	a.prUpdates.list = nil
-	a.prUpdates.mu.Unlock()
-	if pump != nil {
-		pump.stop()
+	defer a.prUpdates.mu.Unlock()
+	if pump := a.prUpdates.list; pump != nil {
+		a.prUpdates.list = nil
+		pump.StopLocked()
 	}
 }
 
@@ -313,7 +300,7 @@ func (a *App) pumpPRList(pump *prListPump) {
 	interval := a.prUpdatePollInterval()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	var retry retrySchedule
+	retry := a.newPumpRetry(interval)
 	missed := false
 	tick := func(ctx context.Context) {
 		missed = false
@@ -321,39 +308,36 @@ func (a *App) pumpPRList(pump *prListPump) {
 		// A failing project retries on the doubling schedule; one held by a
 		// rate limit waits for its release, while the others ride the
 		// ticker.
-		retry.arm(failing, time.Time{}, a.prUpdateRetryBase(), interval)
-		if !release.IsZero() && (retry.timer == nil || heldUntil(release) < retry.delay) {
-			retry.timer = time.After(heldUntil(release))
-		}
+		retry.ArmBy(failing, release)
 	}
-	tick(forgeapi.WithInteractive(pump.ctx))
+	tick(forgeapi.WithInteractive(pump.Context()))
 	for {
 		select {
-		case <-pump.done:
+		case <-pump.Done():
 			return
-		case <-pump.ctx.Done():
+		case <-pump.Context().Done():
 			return
-		case req := <-pump.requests:
-			tick(forgeapi.WithInteractive(pump.ctx))
-			close(req.done)
-		case <-pump.wake:
-			if pump.paused.Load() || !missed {
+		case req := <-pump.Requests():
+			tick(forgeapi.WithInteractive(pump.Context()))
+			req.Finish(nil)
+		case <-pump.Wake():
+			if pump.Paused() || !missed {
 				continue
 			}
-			tick(pump.ctx)
-		case <-retry.timer:
-			if pump.paused.Load() {
-				retry.pausedRetry()
+			tick(pump.Context())
+		case <-retry.C():
+			if pump.Paused() {
+				retry.FiredWhilePaused()
 				missed = true
 				continue
 			}
-			tick(pump.ctx)
+			tick(pump.Context())
 		case <-ticker.C:
-			if pump.paused.Load() {
+			if pump.Paused() {
 				missed = true
 				continue
 			}
-			tick(pump.ctx)
+			tick(pump.Context())
 		}
 	}
 }

@@ -11,6 +11,7 @@ import {
   type ReplicaBody,
 } from './envelope';
 import type { Item } from '../types/models';
+import { AGENT_MESSAGES_ABSORBED_RULE, AGENT_MESSAGE_MEMBERS_RULE } from '../utils/activityRunSpans';
 
 function item(overrides: Partial<Item> = {}): Item {
   return {
@@ -39,7 +40,7 @@ function body(overrides: Partial<ReplicaBody> = {}): ReplicaBody {
     newestCursor: { turnIndex: 0, itemIndex: 0, itemId: 'i-1' },
     hasMoreOlder: true,
     hasMoreNewer: false,
-    latestSettledTurn: null,
+    latestSettledTurn: null, activityRunRule: AGENT_MESSAGES_ABSORBED_RULE,
     runs: [],
     ...overrides,
   };
@@ -114,6 +115,15 @@ describe('replica envelope', () => {
     const legacy = normalizeBody(body()) as unknown as { runs?: unknown };
     delete legacy.runs;
     expect(readEnvelope({ v: 1, cipher: 'none', body: legacy })).toBeNull();
+  });
+
+  it('keeps the activity-run rule and drops a body that names none', () => {
+    expect(readEnvelope(wrapEnvelope(normalizeBody(body({ activityRunRule: AGENT_MESSAGE_MEMBERS_RULE }))))?.activityRunRule)
+      .toBe(AGENT_MESSAGE_MEMBERS_RULE);
+    const unnamed = normalizeBody(body()) as unknown as { activityRunRule?: unknown };
+    delete unnamed.activityRunRule;
+    expect(readEnvelope({ v: 1, cipher: 'none', body: unnamed })).toBeNull();
+    expect(readEnvelope({ v: 1, cipher: 'none', body: { ...unnamed, activityRunRule: 'other' } })).toBeNull();
   });
 
   it('drops a body with a malformed stub', () => {

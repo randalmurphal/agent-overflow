@@ -4,6 +4,7 @@ import (
 	"errors"
 	"testing"
 
+	"agent-overflow/internal/browser/ids"
 	"agent-overflow/internal/webview2host"
 )
 
@@ -12,7 +13,7 @@ import (
 // itself.
 func TestHostedPageFindIsTheLaunchersFindBar(t *testing.T) {
 	engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{})
-	engine.bind("page1", "TARGET-1")
+	bindTestPage(t, engine, "page1", "TARGET-1")
 	page := &hostedPage{engine: engine, id: "page1"}
 	if mode := page.FindMode(); mode != FindModeEngine {
 		t.Fatalf("find mode = %q", mode)
@@ -54,8 +55,8 @@ func TestHostedEngineFindUnavailableReport(t *testing.T) {
 			profile := testProfile(t, engine)
 			go func() {
 				directive := sink.next(t)
-				engine.Report(directive.PageID, webview2host.ReportFindUnavailable, "")
-				engine.Report(directive.PageID, tc.answer, "TARGET-1")
+				engine.Report(ids.PageHandle(directive.PageID), webview2host.ReportFindUnavailable, "")
+				engine.Report(ids.PageHandle(directive.PageID), tc.answer, "TARGET-1")
 			}()
 			if _, err := profile.NewPage(t.Context(), pageHooks{}); err == nil {
 				t.Fatal("create succeeded")
@@ -70,7 +71,7 @@ func TestHostedEngineFindUnavailableReport(t *testing.T) {
 	}
 
 	engine, _ := newTestHostedEngine(t, stubRelay{}, engineEvents{})
-	engine.bind("page2", "TARGET-2")
+	bindTestPage(t, engine, "page2", "TARGET-2")
 	engine.Report("page2", webview2host.ReportFindUnavailable, "")
 	if mode := (&hostedPage{engine: engine, id: "page2"}).FindMode(); mode != "" {
 		t.Fatalf("find mode after find-unavailable = %q", mode)
@@ -82,7 +83,7 @@ func TestHostedEngineFindUnavailableReport(t *testing.T) {
 	if unknown {
 		t.Fatal("a report for an unknown page was recorded")
 	}
-	engine.closePage("page2")
+	mustRetire(t, engine.closePage("page2"))
 	engine.mu.Lock()
 	_, kept := engine.noFind["page2"]
 	engine.mu.Unlock()

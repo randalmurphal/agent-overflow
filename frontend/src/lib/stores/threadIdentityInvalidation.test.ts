@@ -6,6 +6,7 @@ import { noteThread } from '../transport/entityIndex';
 
 import { threadItemCache } from './threadItemCache';
 import { beginThreadInterrupt, finishThreadInterrupt, isThreadInterruptPending, resetThreadInterruptStateForTest } from './threadInterruptState.svelte';
+import { AGENT_MESSAGES_ABSORBED_RULE } from '../utils/activityRunSpans';
 
 afterEach(() => { resetStagedBackends(); resetThreadInterruptStateForTest(); threadItemCache.clear(); });
 
@@ -15,7 +16,7 @@ it('invalidates only the moving conversation when its execution owner changes', 
     noteThread(id, '', 0);
     beginThreadInterrupt(id);
     threadItemCache.set(id, { items: [], oldestLoadedTurnIndex: null, newestLoadedTurnIndex: null,
-      hasMoreHistory: false, hasMoreNewer: false, latestSettledTurn: null,
+      hasMoreHistory: false, hasMoreNewer: false, latestSettledTurn: null, activityRunRule: AGENT_MESSAGES_ABSORBED_RULE,
       historyStamp: { epoch: 7, rev: 19, attested: true } });
   }
   noteThread('moved', 'gpu', 1);
@@ -34,7 +35,7 @@ it('scopes history invalidation and ignores computer renames', () => {
   for (const id of ['local', 'remote']) {
     beginThreadInterrupt(id);
     threadItemCache.set(id, { items: [], oldestLoadedTurnIndex: null, newestLoadedTurnIndex: null,
-      hasMoreHistory: false, hasMoreNewer: false, latestSettledTurn: null });
+      hasMoreHistory: false, hasMoreNewer: false, latestSettledTurn: null , activityRunRule: AGENT_MESSAGES_ABSORBED_RULE});
   }
   setBackendIdentityFromBootstrap('gpu-id', 'g1', 'Renamed GPU', 'gpu');
   expect(isThreadInterruptPending('remote')).toBe(true);

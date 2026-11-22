@@ -54,6 +54,7 @@ export function stageBackend(
       return () => replayListeners.delete(listener);
     }),
     setWatchedThreads: vi.fn(),
+    setPresence: vi.fn(),
     setDiagnosticsSink: vi.fn(),
     getStatus: vi.fn(() => snapshot),
     onStatusChange: vi.fn((listener: (next: TransportStatusSnapshot) => void) => {

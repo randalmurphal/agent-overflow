@@ -324,6 +324,8 @@ func (f WatchFailure) phrase() string {
 		return "timed out after " + f.Timeout.String()
 	case WatchExited:
 		return "exited"
+	case WatchErrored:
+		fallthrough
 	default:
 		return "ended with an error"
 	}

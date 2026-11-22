@@ -14,12 +14,16 @@ import (
 // not reap, so the zombie holds its PID and group id until the launcher's
 // cmd.Wait. A child that already exited is refused with ESRCH and is
 // still unreaped.
-func awaitExitUnreaped(pid int) error {
+func awaitExitUnreaped(pid int) (err error) {
 	kq, err := unix.Kqueue()
 	if err != nil {
 		return fmt.Errorf("watch backend %d exit: kqueue: %w", pid, err)
 	}
-	defer unix.Close(kq)
+	defer func() {
+		if closeErr := unix.Close(kq); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("watch backend %d exit: close kqueue: %w", pid, closeErr))
+		}
+	}()
 	change := []unix.Kevent_t{{
 		Ident:  uint64(pid),
 		Filter: unix.EVFILT_PROC,

@@ -3,6 +3,7 @@ package assetwatch
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -36,7 +37,13 @@ func TestPromptWatcherDebouncesWritesAndIgnoresNonPromptFiles(t *testing.T) {
 	observed.write(t, testPromptName, "one")
 	observed.write(t, testPromptName, "two")
 	observed.write(t, "other.MD", "three")
-	observed.expectQueued(t, 0, 2, "a write burst")
+	// kqueue finds new files by listing their directory and watches them
+	// only then, so a burst that ends first can arrive as one event.
+	burstWaits := 2
+	if runtime.GOOS == "darwin" {
+		burstWaits = 1
+	}
+	observed.expectQueued(t, 0, burstWaits, "a write burst")
 	observed.releaseOneEmit(t, "a write burst")
 
 	// A backup an editor leaves beside the file, a swap file and a

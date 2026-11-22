@@ -1,0 +1,5 @@
+{"type":"doc","version":1,"content":[
+{"type":"paragraph","content":[{"type":"text","text":"Intro"}]},
+{"type":"panel","attrs":{"panelType":"custom","panelColor":"#E3FCEF","panelIcon":":rocket:"},"content":[{"type":"paragraph","content":[{"type":"text","text":"Launch window opens on Monday morning"}]}]},
+{"type":"panel","attrs":{"panelType":"custom","panelColor":"#FFEBE6","panelIcon":":warning:"},"content":[{"type":"paragraph","content":[{"type":"text","text":"Rollback plan lives in the runbook"}]}]},
+{"type":"paragraph","content":[{"type":"text","text":"Outro"}]}]}

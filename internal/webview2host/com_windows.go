@@ -6,20 +6,17 @@
 // WebView2 bindings, but they live under github.com/wailsapp/wails/v3/
 // internal/ and Go's internal rule makes them unimportable from here. The
 // public github.com/jchv/go-webview2 has the pieces but its high-level
-// Chromium type carries the two bugs the 2026-08-31 spike found and
-// patched (/tmp/spike-webview2-dual/VERDICTS.md, "Patches applied"):
+// Chromium type has two defects this package cannot carry:
 //
 //  1. `int64(res) < 0` never detects a failed HRESULT on 64-bit, because
-//     0x80070057 widens to a POSITIVE int64. Every completion handler
-//     there fell through the guard and nil-dereferenced the controller
-//     instead of reporting the error, which is what turned a diagnosable
-//     ERROR_INVALID_STATE into a crash. Everything below tests HRESULTs
-//     as `uint32(hr) != 0`, and `hresult` is the one conversion.
-//  2. `environmentOptions` was hard-wired to 0, so
-//     AdditionalBrowserArguments — and therefore
-//     --remote-debugging-port, the entire point of the pane environment —
-//     was unreachable. Here the options object is a first-class argument
-//     (envoptions_windows.go).
+//     0x80070057 widens to a positive int64, so its completion handlers
+//     dereference a nil controller instead of reporting the error.
+//     Everything below tests HRESULTs as `uint32(hr) != 0`, and `hresult`
+//     is the one conversion.
+//  2. Its environment options are hard-wired to 0, so
+//     AdditionalBrowserArguments, and with it --remote-debugging-port,
+//     which the pane environment exists for, is unreachable. Here the
+//     options object is a first-class argument (envoptions_windows.go).
 //
 // Only the LOADER is reused, from github.com/jchv/go-webview2/
 // webviewloader: it locates or memory-loads WebView2Loader.dll, which is
@@ -38,6 +35,7 @@ package webview2host
 
 import (
 	"errors"
+	"fmt"
 	"strconv"
 	"syscall"
 	"unsafe"
@@ -373,13 +371,6 @@ func (f *iCoreWebView2Find) stop() error {
 	return hresult(hr)
 }
 
-// matchCount is get_MatchCount([out, retval] INT32* value).
-func (f *iCoreWebView2Find) matchCount() (int32, error) {
-	var value int32
-	hr, _, _ := f.vtbl.GetMatchCount.Call(uintptr(unsafe.Pointer(f)), uintptr(unsafe.Pointer(&value)))
-	return value, hresult(hr)
-}
-
 // ---------------------------------------------------------------------
 // ICoreWebView2_28 (Find)
 // ---------------------------------------------------------------------
@@ -542,14 +533,16 @@ func (c *iCoreWebView2Controller) putBounds(bounds rect) error {
 	return hresult(hr)
 }
 
-func (c *iCoreWebView2Controller) addAcceleratorKeyPressed(handler *iAcceleratorKeyPressedHandler) (eventRegistrationToken, error) {
+// addAcceleratorKeyPressed subscribes handler for the controller's life;
+// its registration token is never needed.
+func (c *iCoreWebView2Controller) addAcceleratorKeyPressed(handler *iAcceleratorKeyPressedHandler) error {
 	var token eventRegistrationToken
 	hr, _, _ := c.vtbl.AddAcceleratorKeyPressed.Call(
 		uintptr(unsafe.Pointer(c)),
 		uintptr(unsafe.Pointer(handler)),
 		uintptr(unsafe.Pointer(&token)),
 	)
-	return token, hresult(hr)
+	return hresult(hr)
 }
 
 // moveFocusProgrammatic is COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC (0)
@@ -558,6 +551,15 @@ const moveFocusProgrammatic = 0
 
 // moveFocus is MoveFocus([in] COREWEBVIEW2_MOVE_FOCUS_REASON reason): keyboard
 // focus moves into the page.
+//
+// Slot checked against the official SDK header (Microsoft.Web.WebView2
+// 1.0.2903.40, build/native/include/WebView2.h, ICoreWebView2ControllerVtbl):
+// QueryInterface 0, AddRef 1, Release 2, get_IsVisible 3, put_IsVisible 4,
+// get_Bounds 5, put_Bounds 6, get_ZoomFactor 7, put_ZoomFactor 8,
+// add_ZoomFactorChanged 9, remove_ZoomFactorChanged 10,
+// SetBoundsAndZoomFactor 11, MoveFocus 12. iCoreWebView2ControllerVtbl puts
+// MoveFocus at the same index (TestControllerMoveFocusSlot), and the reason
+// enum there reads COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC = 0.
 func (c *iCoreWebView2Controller) moveFocus(reason uint32) error {
 	hr, _, _ := c.vtbl.MoveFocus.Call(uintptr(unsafe.Pointer(c)), uintptr(reason))
 	return hresult(hr)
@@ -733,14 +735,16 @@ func (v *iCoreWebView2) openDevToolsWindow() error {
 	return hresult(hr)
 }
 
-func (v *iCoreWebView2) addProcessFailed(handler *iProcessFailedHandler) (eventRegistrationToken, error) {
+// addProcessFailed subscribes handler for the view's life; its
+// registration token is never needed.
+func (v *iCoreWebView2) addProcessFailed(handler *iProcessFailedHandler) error {
 	var token eventRegistrationToken
 	hr, _, _ := v.vtbl.AddProcessFailed.Call(
 		uintptr(unsafe.Pointer(v)),
 		uintptr(unsafe.Pointer(handler)),
 		uintptr(unsafe.Pointer(&token)),
 	)
-	return token, hresult(hr)
+	return hresult(hr)
 }
 
 func (v *iCoreWebView2) callDevToolsProtocolMethod(method, paramsJSON string, handler *iDevToolsCompletedHandler) error {
@@ -768,119 +772,119 @@ func (v *iCoreWebView2) callDevToolsProtocolMethod(method, paramsJSON string, ha
 // Completion / event handlers
 // ---------------------------------------------------------------------
 
-// Handler objects are Go structs whose first field is a vtable pointer,
-// which is what makes &handler a valid COM interface pointer. Their
-// IUnknown is a no-op: each handler is kept alive by a Go reference for
-// exactly as long as WebView2 can call it (the host's handler map, or the
-// pending-create slot), so refcounting would add bookkeeping that decides
-// nothing. AddRef/Release therefore return 1 rather than a real count.
+// Handler objects are Go structs laid out as comObject (comref_windows.go):
+// the vtable pointer, which makes &handler a valid COM interface pointer,
+// then the reference count. Each constructor returns with the creator's
+// reference. A one-shot completion detaches its function when invoked;
+// event handlers and the reusable find handler are detached when their page
+// closes.
 
 type handlerVtbl struct {
 	iUnknownVtbl
 	Invoke comProc
 }
 
-func noopQueryInterface(_ uintptr, _, _ uintptr) uintptr {
-	// E_NOINTERFACE. WebView2 never queries these back to another
-	// interface; answering "no" is both honest and safe.
-	return 0x80004002
-}
-
-func noopAddRefRelease(_ uintptr) uintptr { return 1 }
-
 // --- environment created ---
 
 type iEnvironmentCompletedHandler struct {
 	vtbl *handlerVtbl
-	done func(hr uintptr, env *iCoreWebView2Environment)
+	ref  comRef
+	done callback[func(hr uintptr, env *iCoreWebView2Environment)]
 }
 
 var environmentCompletedVtbl = handlerVtbl{
-	iUnknownVtbl: iUnknownVtbl{
-		QueryInterface: newComProc(noopQueryInterface),
-		AddRef:         newComProc(noopAddRefRelease),
-		Release:        newComProc(noopAddRefRelease),
-	},
+	iUnknownVtbl: handlerIUnknown,
 	Invoke: newComProc(func(this *iEnvironmentCompletedHandler, hr uintptr, env *iCoreWebView2Environment) uintptr {
-		this.done(hr, env)
+		if done, ok := this.done.take(); ok {
+			done(hr, env)
+		}
 		return 0
 	}),
 }
 
 func newEnvironmentCompletedHandler(done func(uintptr, *iCoreWebView2Environment)) *iEnvironmentCompletedHandler {
-	return &iEnvironmentCompletedHandler{vtbl: &environmentCompletedVtbl, done: done}
+	h := &iEnvironmentCompletedHandler{vtbl: &environmentCompletedVtbl}
+	h.done.set(done)
+	h.ref.own()
+	return h
 }
 
 // --- controller created ---
 
 type iControllerCompletedHandler struct {
 	vtbl *handlerVtbl
-	done func(hr uintptr, controller *iCoreWebView2Controller)
+	ref  comRef
+	done callback[func(hr uintptr, controller *iCoreWebView2Controller)]
 }
 
 var controllerCompletedVtbl = handlerVtbl{
-	iUnknownVtbl: iUnknownVtbl{
-		QueryInterface: newComProc(noopQueryInterface),
-		AddRef:         newComProc(noopAddRefRelease),
-		Release:        newComProc(noopAddRefRelease),
-	},
+	iUnknownVtbl: handlerIUnknown,
 	Invoke: newComProc(func(this *iControllerCompletedHandler, hr uintptr, controller *iCoreWebView2Controller) uintptr {
-		this.done(hr, controller)
+		if done, ok := this.done.take(); ok {
+			done(hr, controller)
+		}
 		return 0
 	}),
 }
 
 func newControllerCompletedHandler(done func(uintptr, *iCoreWebView2Controller)) *iControllerCompletedHandler {
-	return &iControllerCompletedHandler{vtbl: &controllerCompletedVtbl, done: done}
+	h := &iControllerCompletedHandler{vtbl: &controllerCompletedVtbl}
+	h.done.set(done)
+	h.ref.own()
+	return h
 }
 
 // --- CallDevToolsProtocolMethod completed ---
 
 type iDevToolsCompletedHandler struct {
 	vtbl *handlerVtbl
-	done func(hr uintptr, resultJSON string)
+	ref  comRef
+	done callback[func(hr uintptr, resultJSON string)]
 }
 
 var devToolsCompletedVtbl = handlerVtbl{
-	iUnknownVtbl: iUnknownVtbl{
-		QueryInterface: newComProc(noopQueryInterface),
-		AddRef:         newComProc(noopAddRefRelease),
-		Release:        newComProc(noopAddRefRelease),
-	},
+	iUnknownVtbl: handlerIUnknown,
 	Invoke: newComProc(func(this *iDevToolsCompletedHandler, hr uintptr, result *uint16) uintptr {
-		this.done(hr, windows.UTF16PtrToString(result))
+		if done, ok := this.done.take(); ok {
+			done(hr, windows.UTF16PtrToString(result))
+		}
 		return 0
 	}),
 }
 
 func newDevToolsCompletedHandler(done func(uintptr, string)) *iDevToolsCompletedHandler {
-	return &iDevToolsCompletedHandler{vtbl: &devToolsCompletedVtbl, done: done}
+	h := &iDevToolsCompletedHandler{vtbl: &devToolsCompletedVtbl}
+	h.done.set(done)
+	h.ref.own()
+	return h
 }
 
 // --- Find Start completed ---
 
 // iFindStartCompletedHandler is ICoreWebView2FindStartCompletedHandler,
 // whose Invoke is Invoke([in] HRESULT errorCode) (WebView2.h, SDK
-// 1.0.3405.78).
+// 1.0.3405.78). A page reuses one for every find.
 type iFindStartCompletedHandler struct {
 	vtbl *handlerVtbl
-	done func(hr uintptr)
+	ref  comRef
+	done callback[func(hr uintptr)]
 }
 
 var findStartCompletedVtbl = handlerVtbl{
-	iUnknownVtbl: iUnknownVtbl{
-		QueryInterface: newComProc(noopQueryInterface),
-		AddRef:         newComProc(noopAddRefRelease),
-		Release:        newComProc(noopAddRefRelease),
-	},
+	iUnknownVtbl: handlerIUnknown,
 	Invoke: newComProc(func(this *iFindStartCompletedHandler, hr uintptr) uintptr {
-		this.done(hr)
+		if done, ok := this.done.load(); ok {
+			done(hr)
+		}
 		return 0
 	}),
 }
 
 func newFindStartCompletedHandler(done func(uintptr)) *iFindStartCompletedHandler {
-	return &iFindStartCompletedHandler{vtbl: &findStartCompletedVtbl, done: done}
+	h := &iFindStartCompletedHandler{vtbl: &findStartCompletedVtbl}
+	h.done.set(done)
+	h.ref.own()
+	return h
 }
 
 // --- AcceleratorKeyPressed ---
@@ -908,16 +912,22 @@ const (
 	keyEventKindSystemKeyDown uint32 = 2
 )
 
-func (a *iAcceleratorKeyPressedEventArgs) keyEventKind() uint32 {
-	value := uint32(0xffffffff)
-	_, _, _ = a.vtbl.GetKeyEventKind.Call(uintptr(unsafe.Pointer(a)), uintptr(unsafe.Pointer(&value)))
-	return value
+func (a *iAcceleratorKeyPressedEventArgs) keyEventKind() (uint32, error) {
+	var value uint32
+	hr, _, _ := a.vtbl.GetKeyEventKind.Call(uintptr(unsafe.Pointer(a)), uintptr(unsafe.Pointer(&value)))
+	if err := hresult(hr); err != nil {
+		return 0, fmt.Errorf("read the key event kind: %w", err)
+	}
+	return value, nil
 }
 
-func (a *iAcceleratorKeyPressedEventArgs) virtualKey() uint32 {
+func (a *iAcceleratorKeyPressedEventArgs) virtualKey() (uint32, error) {
 	var value uint32
-	_, _, _ = a.vtbl.GetVirtualKey.Call(uintptr(unsafe.Pointer(a)), uintptr(unsafe.Pointer(&value)))
-	return value
+	hr, _, _ := a.vtbl.GetVirtualKey.Call(uintptr(unsafe.Pointer(a)), uintptr(unsafe.Pointer(&value)))
+	if err := hresult(hr); err != nil {
+		return 0, fmt.Errorf("read the virtual key: %w", err)
+	}
+	return value, nil
 }
 
 func (a *iAcceleratorKeyPressedEventArgs) putHandled(handled bool) error {
@@ -931,25 +941,25 @@ func (a *iAcceleratorKeyPressedEventArgs) putHandled(handled bool) error {
 
 type iAcceleratorKeyPressedHandler struct {
 	vtbl    *handlerVtbl
-	pressed func(args *iAcceleratorKeyPressedEventArgs)
+	ref     comRef
+	pressed callback[func(args *iAcceleratorKeyPressedEventArgs)]
 }
 
 var acceleratorKeyPressedVtbl = handlerVtbl{
-	iUnknownVtbl: iUnknownVtbl{
-		QueryInterface: newComProc(noopQueryInterface),
-		AddRef:         newComProc(noopAddRefRelease),
-		Release:        newComProc(noopAddRefRelease),
-	},
+	iUnknownVtbl: handlerIUnknown,
 	Invoke: newComProc(func(this *iAcceleratorKeyPressedHandler, _ *iCoreWebView2Controller, args *iAcceleratorKeyPressedEventArgs) uintptr {
-		if args != nil {
-			this.pressed(args)
+		if pressed, ok := this.pressed.load(); ok && args != nil {
+			pressed(args)
 		}
 		return 0
 	}),
 }
 
 func newAcceleratorKeyPressedHandler(pressed func(*iAcceleratorKeyPressedEventArgs)) *iAcceleratorKeyPressedHandler {
-	return &iAcceleratorKeyPressedHandler{vtbl: &acceleratorKeyPressedVtbl, pressed: pressed}
+	h := &iAcceleratorKeyPressedHandler{vtbl: &acceleratorKeyPressedVtbl}
+	h.pressed.set(pressed)
+	h.ref.own()
+	return h
 }
 
 // --- ProcessFailed ---
@@ -963,38 +973,52 @@ type iProcessFailedEventArgs struct {
 	vtbl *iProcessFailedEventArgsVtbl
 }
 
-func (a *iProcessFailedEventArgs) kind() uint32 {
-	value := uint32(0xffffffff)
-	_, _, _ = a.vtbl.GetProcessFailedKind.Call(
+// unknownProcessFailedKind is the kind of a failure whose kind could not be
+// read.
+const unknownProcessFailedKind = uint32(0xffffffff)
+
+func (a *iProcessFailedEventArgs) kind() (uint32, error) {
+	var value uint32
+	hr, _, _ := a.vtbl.GetProcessFailedKind.Call(
 		uintptr(unsafe.Pointer(a)),
 		uintptr(unsafe.Pointer(&value)),
 	)
-	return value
+	if err := hresult(hr); err != nil {
+		return unknownProcessFailedKind, fmt.Errorf("read the process failure's kind: %w", err)
+	}
+	return value, nil
 }
 
+// iProcessFailedHandler is ICoreWebView2ProcessFailedEventHandler. done
+// gets the failure's kind, unknownProcessFailedKind with the read's error
+// when it cannot be read.
 type iProcessFailedHandler struct {
 	vtbl *handlerVtbl
-	done func(kind uint32)
+	ref  comRef
+	done callback[func(kind uint32, err error)]
 }
 
 var processFailedVtbl = handlerVtbl{
-	iUnknownVtbl: iUnknownVtbl{
-		QueryInterface: newComProc(noopQueryInterface),
-		AddRef:         newComProc(noopAddRefRelease),
-		Release:        newComProc(noopAddRefRelease),
-	},
+	iUnknownVtbl: handlerIUnknown,
 	Invoke: newComProc(func(this *iProcessFailedHandler, _ *iCoreWebView2, args *iProcessFailedEventArgs) uintptr {
-		kind := uint32(0xffffffff)
-		if args != nil {
-			kind = args.kind()
+		done, ok := this.done.load()
+		if !ok {
+			return 0
 		}
-		this.done(kind)
+		if args == nil {
+			done(unknownProcessFailedKind, errors.New("the process failure has no event args"))
+			return 0
+		}
+		done(args.kind())
 		return 0
 	}),
 }
 
-func newProcessFailedHandler(done func(uint32)) *iProcessFailedHandler {
-	return &iProcessFailedHandler{vtbl: &processFailedVtbl, done: done}
+func newProcessFailedHandler(done func(uint32, error)) *iProcessFailedHandler {
+	h := &iProcessFailedHandler{vtbl: &processFailedVtbl}
+	h.done.set(done)
+	h.ref.own()
+	return h
 }
 
 // processFailedKindName renders COREWEBVIEW2_PROCESS_FAILED_KIND for the

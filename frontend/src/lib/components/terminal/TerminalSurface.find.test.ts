@@ -51,7 +51,9 @@ function terminalSummary(terminalID: string) {
 vi.mock('../../stores/bindings', () => ({
   OpenTerminal: vi.fn(),
   CloseTerminal: vi.fn(async () => {}),
-  ListTerminals: vi.fn(async () => []),
+  // The list a surface reads as it mounts, held unanswered: these tests
+  // drive the tabs themselves, and the mount neither lists nor opens one.
+  ListTerminals: vi.fn(() => new Promise(() => {})),
   RefreshTerminal: vi.fn(async () => {}),
   TerminalOpenOptions: class TerminalOpenOptions {},
 }));
@@ -73,7 +75,7 @@ function makeSurface(): ThreadTerminalSurfaceContext {
     workspacePath: undefined,
     setVisible: () => {},
     acquireResizeLease: () => null,
-    consumeFocusRequest: () => false,
+    consumeFocusRequest: () => null,
   };
 }
 
@@ -90,7 +92,7 @@ function paneElement(): { pane: HTMLElement; timeline: HTMLElement } {
 }
 
 function mount(target: HTMLElement) {
-  return render(TerminalSurface, { target, props: { surface: makeSurface(), manual: true } });
+  return render(TerminalSurface, { target, props: { surface: makeSurface() } });
 }
 
 async function settle(): Promise<void> {

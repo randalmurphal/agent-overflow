@@ -17,6 +17,7 @@ import { tick } from 'svelte';
 import Harness from './PopoverHarness.svelte';
 import NestedHarness from './NestedPopoverHarness.svelte';
 import { setCompactLayoutForTest } from '../../../stores/layoutMode.svelte';
+import { airspaceSurfaces } from '../../../utils/paneAirspace.svelte';
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -82,6 +83,23 @@ describe('<Popover>', () => {
     const { getByTestId } = render(Harness, { props: { open: true } });
     await tick();
     expect(getByTestId('popover-content')).toBeInTheDocument();
+  });
+
+  // Command gates read the overlay list: a popover open while it stops
+  // taking the keyboard must leave it, and one that starts must join it.
+  it('follows takesKeyboard changing while open, both ways, on the same element', async () => {
+    const { getByTestId, rerender } = render(Harness, { props: { open: true, takesKeyboard: true } });
+    await tick();
+    const floating = getByTestId('popover-content').closest<HTMLElement>('[data-popover]')!;
+    expect(airspaceSurfaces()).toEqual([floating]);
+    await rerender({ open: true, takesKeyboard: false });
+    expect(getByTestId('popover-content').closest('[data-popover]')).toBe(floating);
+    expect(airspaceSurfaces()).toEqual([]);
+    await rerender({ open: true, takesKeyboard: true });
+    expect(getByTestId('popover-content').closest('[data-popover]')).toBe(floating);
+    expect(airspaceSurfaces()).toEqual([floating]);
+    await rerender({ open: false, takesKeyboard: true });
+    expect(airspaceSurfaces()).toEqual([]);
   });
 
   it('Escape on the document calls onClose with reason "escape"', async () => {

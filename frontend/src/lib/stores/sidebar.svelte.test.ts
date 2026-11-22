@@ -1,9 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
-  collapseProject,
   isSidebarSectionExpanded,
   toggleSidebarSection,
-  expandProject,
   collapseThreadList,
   getCollapsedGroups,
   getProjectSortMode,
@@ -11,23 +9,20 @@ import {
   setShowProviderIcons,
   getThreadListVisibleLimit,
   isGroupExpanded,
-  isProjectExpanded,
   resetSidebarForTest,
   setThreadListVisibleLimit,
   setProjectSortMode,
   toggleGroup,
   syncSidebarFromAppStorage,
   syncSidebarFromSettings,
-  toggleProject,
 } from './sidebar.svelte';
 import { appStorageGet, hydrateAppStorage, resetAppStorageForTest } from './appStorage';
 import { loadSettings, resetSettingsForTest } from './settings.svelte';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import { makeSettings } from '../../test/helpers/settings';
 import { THREAD_PREVIEW_LIMIT, THREAD_REVEAL_INCREMENT } from '../utils/sidebarThreadLimits';
-import { removeThreadGroup } from './threadGroups.svelte';
+import { deleteThreadGroupLocal } from './threadGroups.svelte';
 
-const COLLAPSED_KEY = 'sidebar:collapsedProjects';
 const COLLAPSED_GROUPS_KEY = 'sidebar:collapsedGroups';
 
 describe('sidebar store', () => {
@@ -40,7 +35,7 @@ describe('sidebar store', () => {
   it('forgets a group\'s paging when the group goes', () => {
     setThreadListVisibleLimit('group-1', THREAD_PREVIEW_LIMIT + THREAD_REVEAL_INCREMENT);
     setThreadListVisibleLimit('other', THREAD_PREVIEW_LIMIT + THREAD_REVEAL_INCREMENT);
-    removeThreadGroup('group-1');
+    deleteThreadGroupLocal('group-1');
     expect(getThreadListVisibleLimit('group-1')).toBe(THREAD_PREVIEW_LIMIT);
     expect(getThreadListVisibleLimit('other')).toBe(THREAD_PREVIEW_LIMIT + THREAD_REVEAL_INCREMENT);
   });
@@ -64,43 +59,6 @@ describe('sidebar store', () => {
       expect(isSidebarSectionExpanded('assistants')).toBe(false);
       resetSidebarForTest();
       expect(isSidebarSectionExpanded('assistants')).toBe(true);
-    });
-  });
-
-  describe('expansion', () => {
-    it('projects default to expanded and toggleProject persists explicit collapses', () => {
-      // Inverted storage: the persisted set lists explicit *collapses*,
-      // so an unseen id reads as expanded. Toggling adds it to the
-      // collapsed set; toggling again removes it.
-      expect(isProjectExpanded('p1')).toBe(true);
-      toggleProject('p1');
-      expect(isProjectExpanded('p1')).toBe(false);
-
-      const raw = appStorageGet(COLLAPSED_KEY);
-      expect(raw).not.toBeNull();
-      expect(JSON.parse(raw as string)).toContain('p1');
-
-      toggleProject('p1');
-      expect(isProjectExpanded('p1')).toBe(true);
-      const raw2 = appStorageGet(COLLAPSED_KEY);
-      expect(JSON.parse(raw2 as string)).not.toContain('p1');
-    });
-
-    it('expandProject / collapseProject are idempotent', () => {
-      expandProject('p1');
-      expandProject('p1');
-      expect(isProjectExpanded('p1')).toBe(true);
-      collapseProject('p1');
-      collapseProject('p1');
-      expect(isProjectExpanded('p1')).toBe(false);
-    });
-
-    it('corrupt legacy stored JSON does not crash subsequent operations', () => {
-      localStorage.setItem('agent-overflow:sidebar:collapsedProjects', '{not json');
-      // Module init already read storage once; this just verifies that
-      // a write/read round-trip serializes over the garbage cleanly.
-      toggleProject('p1');
-      expect(isProjectExpanded('p1')).toBe(false);
     });
   });
 
@@ -255,8 +213,7 @@ describe('sidebar store', () => {
   describe('syncSidebarFromAppStorage', () => {
     it('adopts hydrated view state from the per-client bucket', async () => {
       setBindingMock('GetUIState', async () => ({
-        'sidebar:collapsedProjects': JSON.stringify(['proj-1', 'proj-2']),
-        'sidebar:threadListVisibleLimits': JSON.stringify({ 'proj-1': 40 }),
+        'sidebar:threadListVisibleLimits': JSON.stringify({ 'group-1': 25 }),
         'sidebar:collapsedGroups': JSON.stringify(['group-1']),
       }));
       await hydrateAppStorage();
@@ -265,64 +222,59 @@ describe('sidebar store', () => {
 
       expect(isGroupExpanded('group-1')).toBe(false);
       expect(isGroupExpanded('group-2')).toBe(true);
-      expect(isProjectExpanded('proj-1')).toBe(false);
-      expect(isProjectExpanded('proj-2')).toBe(false);
-      expect(isProjectExpanded('proj-3')).toBe(true);
-      expect(getThreadListVisibleLimit('proj-1')).toBe(40);
-      expect(getThreadListVisibleLimit('proj-2')).toBe(THREAD_PREVIEW_LIMIT);
+      expect(getThreadListVisibleLimit('group-1')).toBe(25);
     });
 
     it('local pre-hydration writes survive an empty server bucket (pending wins)', async () => {
-      toggleProject('proj-local');
-      expect(isProjectExpanded('proj-local')).toBe(false);
+      toggleGroup('group-local');
+      expect(isGroupExpanded('group-local')).toBe(false);
 
       setBindingMock('GetUIState', async () => ({}));
       await hydrateAppStorage();
 
       syncSidebarFromAppStorage();
-      expect(isProjectExpanded('proj-local')).toBe(false);
+      expect(isGroupExpanded('group-local')).toBe(false);
     });
 
     it('resets to defaults when the hydrated bucket has no view state', async () => {
       // Simulate a fresh client: memory holds stale state from a prior
       // identity, the new bucket is empty and holds no pending writes.
-      toggleProject('proj-stale');
+      toggleGroup('group-stale');
       resetAppStorageForTest();
       setBindingMock('GetUIState', async () => ({}));
       await hydrateAppStorage();
 
       syncSidebarFromAppStorage();
 
-      expect(isProjectExpanded('proj-stale')).toBe(true);
+      expect(isGroupExpanded('group-stale')).toBe(true);
       expect(getThreadListVisibleLimit('any')).toBe(THREAD_PREVIEW_LIMIT);
     });
   });
 
   describe('thread list visible limit', () => {
     it('starts at the preview limit', () => {
-      expect(getThreadListVisibleLimit('p1')).toBe(THREAD_PREVIEW_LIMIT);
+      expect(getThreadListVisibleLimit('g1')).toBe(THREAD_PREVIEW_LIMIT);
     });
 
     it('collapseThreadList resets one list to the preview limit, twice in a row', () => {
-      setThreadListVisibleLimit('p1', THREAD_PREVIEW_LIMIT + THREAD_REVEAL_INCREMENT);
-      setThreadListVisibleLimit('g1', 40);
-      collapseThreadList('p1');
-      collapseThreadList('p1');
-      expect(getThreadListVisibleLimit('p1')).toBe(THREAD_PREVIEW_LIMIT);
-      // A group's list is keyed by its own id and keeps its size.
-      expect(getThreadListVisibleLimit('g1')).toBe(40);
+      setThreadListVisibleLimit('g1', THREAD_PREVIEW_LIMIT + THREAD_REVEAL_INCREMENT);
+      setThreadListVisibleLimit('g2', 40);
+      collapseThreadList('g1');
+      collapseThreadList('g1');
+      expect(getThreadListVisibleLimit('g1')).toBe(THREAD_PREVIEW_LIMIT);
+      // The other list is keyed by its own id and keeps its size.
+      expect(getThreadListVisibleLimit('g2')).toBe(40);
     });
 
     it('setThreadListVisibleLimit persists explicit reveal sizes and resets defaults', () => {
-      setThreadListVisibleLimit('p1', 27);
-      expect(getThreadListVisibleLimit('p1')).toBe(27);
+      setThreadListVisibleLimit('g1', 27);
+      expect(getThreadListVisibleLimit('g1')).toBe(27);
 
-      setThreadListVisibleLimit('p1', THREAD_PREVIEW_LIMIT);
-      expect(getThreadListVisibleLimit('p1')).toBe(THREAD_PREVIEW_LIMIT);
+      setThreadListVisibleLimit('g1', THREAD_PREVIEW_LIMIT);
+      expect(getThreadListVisibleLimit('g1')).toBe(THREAD_PREVIEW_LIMIT);
     });
   });
 });
-
 
 describe('sidebar provider icon preference', () => {
   beforeEach(resetSidebarForTest);

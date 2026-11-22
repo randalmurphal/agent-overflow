@@ -1,3 +1,4 @@
+import { readSidebarCatalogs } from '../../../test/helpers/sidebarCatalogs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
@@ -5,7 +6,7 @@ import NewAssistantDialog from './NewAssistantDialog.svelte';
 import { closeNewAssistantDialog, getNewAssistantRequest, openNewAssistantDialog } from '../../stores/newAssistant.svelte';
 import { setSelectedBackend } from '../../stores/selectedBackend.svelte';
 import { HOME_BACKEND } from '../../transport/backendKey';
-import { refreshProjects, resetProjectsForTest } from '../../stores/projects.svelte';
+import { resetProjectsForTest } from '../../stores/projects.svelte';
 import { getThreads } from '../../stores/threads.svelte';
 import { applyThreadUpdated } from '../../stores/eventsThreadRows';
 import { createPane, destroyPane, ensureMainPane, findPaneShowingThread, getPane, resetPanesForTest } from '../../stores/panes.svelte';
@@ -32,7 +33,7 @@ describe('<NewAssistantDialog>', () => {
       { project: project('p1', 'Alpha'), threadCount: 0 },
       { project: project('p2', 'Beta'), threadCount: 0 },
     ]);
-    await refreshProjects();
+    await readSidebarCatalogs();
     setBindingMock('SwitchThread', async () => {});
     setBindingMock('ListItems', async () => []);
   });

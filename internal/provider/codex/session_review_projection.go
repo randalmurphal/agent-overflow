@@ -410,6 +410,8 @@ func reviewTargetLabel(target ReviewTarget) string {
 		return "Review commit " + target.sha
 	case ReviewTargetCustom:
 		return target.instructions
+	case ReviewTargetUncommittedChanges:
+		fallthrough
 	default:
 		return "Review uncommitted changes"
 	}

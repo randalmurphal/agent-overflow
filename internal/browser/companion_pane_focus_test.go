@@ -2,6 +2,8 @@ package browser
 
 import (
 	"testing"
+
+	"agent-overflow/internal/browser/ids"
 )
 
 // focusPaneHost models the one keyboard focus a windowed engine's pages
@@ -14,25 +16,57 @@ type focusPaneHost struct {
 	*recordingPaneHost
 	shown map[string]bool
 	focus string
+	// beforeFocus, when set, runs inside FocusPage before the engine's
+	// checks: a request delayed on its way to the UI thread.
+	beforeFocus func(handle string)
 }
 
 const focusHeldByTheApp = "app"
 
-func (e *focusPaneHost) ShowPage(handle string) {
+var _ paneHost = (*focusPaneHost)(nil)
+
+func (e *focusPaneHost) ShowPage(handle ids.PageHandle) {
 	e.recordingPaneHost.ShowPage(handle)
 	e.mu.Lock()
-	e.shown[handle] = true
+	e.shown[string(handle)] = true
 	e.mu.Unlock()
 }
 
-func (e *focusPaneHost) HidePage(handle string) {
+func (e *focusPaneHost) HidePage(handle ids.PageHandle) {
 	e.recordingPaneHost.HidePage(handle)
 	e.mu.Lock()
-	e.shown[handle] = false
-	if e.focus == handle {
+	e.shown[string(handle)] = false
+	if e.focus == string(handle) {
 		e.focus = focusHeldByTheApp
 	}
 	e.mu.Unlock()
+}
+
+// FocusPage gives a shown page the focus, as a click does, while the request
+// is live, and leaves a page that is not shown alone, as every engine does.
+// Both are read after beforeFocus, which stands in for the wait for the
+// engine's UI thread.
+func (e *focusPaneHost) FocusPage(handle ids.PageHandle, req focusRequest) (focusResult, error) {
+	h := string(handle)
+	if _, err := e.recordingPaneHost.FocusPage(handle, req); err != nil {
+		return focusNotPresented, err
+	}
+	e.mu.Lock()
+	before := e.beforeFocus
+	e.mu.Unlock()
+	if before != nil {
+		before(h)
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	switch {
+	case !e.shown[h]:
+		return focusNotPresented, nil
+	case !req.Live():
+		return focusWithdrawn, nil
+	}
+	e.focus = h
+	return focusMoved, nil
 }
 
 func (e *focusPaneHost) click(t *testing.T, handle string) {
@@ -63,7 +97,7 @@ type focusWorld struct {
 	a, b           Access
 	aPage, aOther  string
 	bPage          string
-	aMount, bMount string
+	aMount, bMount MountID
 }
 
 func (w *focusWorld) handle(access Access, pageID string) string {
@@ -86,15 +120,15 @@ func newFocusWorld(t *testing.T) *focusWorld {
 	m.engine = e
 	w := &focusWorld{
 		m: m, e: e,
-		a: Access{ThreadID: "thread-a", Workspace: t.TempDir()},
-		b: Access{ThreadID: "thread-b", Workspace: t.TempDir()},
+		a: m.Bind(Caller{ThreadID: "thread-a", Workspace: t.TempDir()}),
+		b: m.Bind(Caller{ThreadID: "thread-b", Workspace: t.TempDir()}),
 	}
 	other, err := m.Open(t.Context(), w.a, "https://example.test/other", OpenOptions{})
 	if err != nil {
 		t.Fatalf("open thread a's other page: %v", err)
 	}
 	w.aOther = other.ID
-	page, err := m.NewCompanionPage(t.Context(), w.a)
+	page, err := m.NewCompanionPage(t.Context(), w.a, "")
 	if err != nil {
 		t.Fatalf("open thread a's page: %v", err)
 	}
@@ -107,13 +141,13 @@ func newFocusWorld(t *testing.T) *focusWorld {
 	for _, side := range []struct {
 		access Access
 		page   string
-		mount  *string
+		mount  *MountID
 	}{{w.a, w.aPage, &w.aMount}, {w.b, w.bPage, &w.bMount}} {
 		show := true
-		if _, err := m.Visibility(t.Context(), side.access, &show, side.page); err != nil {
-			t.Fatalf("show %s: %v", side.access.ThreadID, err)
+		if _, err := m.Visibility(t.Context(), side.access, &show, PageID(side.page)); err != nil {
+			t.Fatalf("show %s: %v", side.access.ThreadID(), err)
 		}
-		*side.mount = attachSizedPane(t, m, e.recordingPaneHost, side.access)
+		*side.mount = MountID(attachSizedPane(t, m, e.recordingPaneHost, side.access))
 	}
 	return w
 }
@@ -122,11 +156,11 @@ func newFocusWorld(t *testing.T) *focusWorld {
 // have, so the presentation runs inside SetPaneRect. It answers the mount.
 func remountPane(t *testing.T, m *Manager, access Access) string {
 	t.Helper()
-	mount, err := m.AttachPane(access)
+	mount, err := m.AttachPane(access.Caller())
 	if err != nil {
 		t.Fatalf("mount the pane again: %v", err)
 	}
-	if err := m.SetPaneRect(mount.ID, visiblePaneRect); err != nil {
+	if err := m.SetPaneRect(MountID(mount.ID), visiblePaneRect); err != nil {
 		t.Fatalf("report the pane's rect: %v", err)
 	}
 	return mount.ID
@@ -149,12 +183,12 @@ func TestHidingAPaneTakesKeyboardFocusOutOfItsPage(t *testing.T) {
 		{
 			name: "a tab switch",
 			hide: func(t *testing.T, w *focusWorld) {
-				if err := w.m.ActivateCompanionPage(t.Context(), w.a, w.aOther); err != nil {
+				if err := w.m.ActivateCompanionPage(t.Context(), w.a, PageID(w.aOther)); err != nil {
 					t.Fatalf("switch tabs: %v", err)
 				}
 			},
 			show: func(t *testing.T, w *focusWorld) {
-				if err := w.m.ActivateCompanionPage(t.Context(), w.a, w.aPage); err != nil {
+				if err := w.m.ActivateCompanionPage(t.Context(), w.a, PageID(w.aPage)); err != nil {
 					t.Fatalf("switch back: %v", err)
 				}
 			},
@@ -163,7 +197,7 @@ func TestHidingAPaneTakesKeyboardFocusOutOfItsPage(t *testing.T) {
 			name: "the pane closed",
 			hide: func(t *testing.T, w *focusWorld) { w.m.DetachPane(w.aMount) },
 			show: func(t *testing.T, w *focusWorld) {
-				w.aMount = remountPane(t, w.m, w.a)
+				w.aMount = MountID(remountPane(t, w.m, w.a))
 			},
 		},
 		{
@@ -191,7 +225,7 @@ func TestHidingAPaneTakesKeyboardFocusOutOfItsPage(t *testing.T) {
 			},
 			show: func(t *testing.T, w *focusWorld) {
 				show := true
-				if _, err := w.m.Visibility(t.Context(), w.a, &show, w.aPage); err != nil {
+				if _, err := w.m.Visibility(t.Context(), w.a, &show, PageID(w.aPage)); err != nil {
 					t.Fatalf("show the companion: %v", err)
 				}
 			},
@@ -201,7 +235,7 @@ func TestHidingAPaneTakesKeyboardFocusOutOfItsPage(t *testing.T) {
 			keeps: true,
 			hide:  func(t *testing.T, w *focusWorld) { w.m.DetachPane(w.bMount) },
 			show: func(t *testing.T, w *focusWorld) {
-				w.bMount = remountPane(t, w.m, w.b)
+				w.bMount = MountID(remountPane(t, w.m, w.b))
 			},
 		},
 	} {
@@ -210,8 +244,17 @@ func TestHidingAPaneTakesKeyboardFocusOutOfItsPage(t *testing.T) {
 			aHandle := w.handle(w.a, w.aPage)
 			bHandle := w.handle(w.b, w.bPage)
 			w.e.click(t, aHandle)
+			// A change can return before its presentation: one asked for
+			// while another pass of the thread runs (here the drain's, laying
+			// out a tab the switch made active) is left to that pass's loop,
+			// which runs once more and reads the newest selection.
+			settle := func() {
+				awaitViewportIdle(t, w.m, string(w.a.ThreadID()))
+				awaitViewportIdle(t, w.m, string(w.b.ThreadID()))
+			}
 
 			tc.hide(t, w)
+			settle()
 			focus, shown := w.e.state()
 			if tc.keeps {
 				if !shown[aHandle] || focus != aHandle {
@@ -233,6 +276,7 @@ func TestHidingAPaneTakesKeyboardFocusOutOfItsPage(t *testing.T) {
 			}
 
 			tc.show(t, w)
+			settle()
 			focus, shown = w.e.state()
 			if !shown[aHandle] || !shown[bHandle] {
 				t.Fatalf("after the show the pages are shown a=%v b=%v, want both", shown[aHandle], shown[bHandle])

@@ -27,10 +27,13 @@
 // window; its Agents row names the computer and opens it, and Show in
 // Sidebar places it there, which Remove from Sidebar in that computer's
 // window undoes; a window attached only to the spawner's computer names it
-// and can neither open nor place it. Its approval wakes the spawner here,
+// and can neither open nor place it. The person's message to it there once
+// its spawn's run ended is one nudge row of the spawner's here, counting
+// that run alone, that ends at its rest and wakes nothing. Its approval wakes the spawner here,
 // whose Agents row reads "waiting on" the spawner, whose wake row opens
 // it there, and whose reply answers it there; with the spawner's computer
-// stopped, it reaches the person there once the lease runs out. Archiving
+// stopped, it stays the spawner's and that reply answers it once the
+// computer is back. Archiving
 // and deleting the spawner archive and delete it there, the delete
 // confirmation saying so; with that computer stopped, both stand here, are
 // named as pending there, and land when it is back; a computer older than
@@ -52,7 +55,8 @@ import { startTogether } from './launch-helpers.js';
 import { centerInTimeline } from './standing-agent-home-contents-helpers.js';
 import { capture, captureAgentMessage } from './wake-rows-helpers.js';
 import type { ProviderOptionRow } from './thread-tools-helpers.js';
-import { backgroundShellSteps, openPast } from './agents-tray-helpers.js';
+import { backgroundShellSteps, heldSendIds, openPast, pastRow, pastTotal } from './agents-tray-helpers.js';
+import { toolResultLine, toolUseLine } from './agent-visibility-helpers.js';
 import {
   CODEX_STEER_NOT_STEERABLE,
   FOOTER_TOKEN_PATTERN,
@@ -62,12 +66,15 @@ import {
   advanceGate,
   aoMessageOpening,
   awaitGate,
+  awaitInputsCarrying,
   awaitToolAnswer,
   awaitTurnCompleted,
   bigItemFixture,
   bigThreadFixture,
   expectEffortsPerModel,
+  parkedOn,
   plainScenario,
+  releaseAfterBackgrounded,
   setScenario,
   threadRows,
   threadToolsScenario,
@@ -292,10 +299,10 @@ test('a spawn on the other computer runs there and its answer wakes the caller',
   await setScenario(
     remote,
     there.path,
-    plainScenario({
+    threadToolsScenario({
       name: 'remote-spawn-worker',
       provider: 'claude',
-      texts: ['The kernel build finished clean.'],
+      turns: [{ steps: [{ gate: 'remote-spawn-answer' }], text: 'The kernel build finished clean.' }],
     }),
   );
   await setScenario(
@@ -349,9 +356,9 @@ test('a spawn on the other computer runs there and its answer wakes the caller',
   });
   expect(spawn.isError, spawn.text).toBe(false);
   const spawned = spawn.value!;
-  expect(spawned.outcome).toBe('backgrounded');
   expect(spawned.computer_id).toBe(remoteID);
   expect(spawned.computer).toBe('GPU computer');
+  await releaseAfterBackgrounded(spawn, { harness: remote, gate: 'remote-spawn-answer', cwd: there.path });
 
   // The prompt became the first user message of a thread on the OTHER
   // computer, with the footer naming the calling thread and its computer.
@@ -413,8 +420,10 @@ test('a standing agent on the other computer is named on its wake as a local one
     // Two heading markers: the remote role is bounded on both computers.
     writeFileSync(join(promoted.home, 'instructions.md'), `# #\t${role}\n\nGrants: none.\n`);
   }
-  await setScenario(home, homes[0], plainScenario({ name: 'wake-role-local', provider: 'claude', texts: ['Local review: the parser is fine.'] }));
-  await setScenario(remote, homes[1], plainScenario({ name: 'wake-role-remote', provider: 'claude', texts: ['Remote review: the parser is fine.'] }));
+  // Each reviewer answers once its send has returned.
+  const reviewer = (name: string, text: string) => threadToolsScenario({ name, provider: 'claude', turns: [{ steps: [{ gate: 'review-answer' }], text }] });
+  await setScenario(home, homes[0], reviewer('wake-role-local', 'Local review: the parser is fine.'));
+  await setScenario(remote, homes[1], reviewer('wake-role-remote', 'Remote review: the parser is fine.'));
   const send = (threadID: string, computerID?: string) => ({
     call: {
       tool: 'thread_send',
@@ -437,24 +446,26 @@ test('a standing agent on the other computer is named on its wake as a local one
   );
   await home.rpc('StartSession', caller.threadIds[0]);
   await home.rpc('SendMessage', caller.threadIds[0], 'ask both reviewers about the parser', null);
+  for (const [app, cwd] of [[home, homes[0]], [remote, homes[1]]] as const) {
+    const sent = await awaitToolAnswer<{ outcome: string }>(home, { tool: 'thread_send', cwd: caller.path, timeoutMs: 120_000 });
+    await releaseAfterBackgrounded(sent, { harness: app, gate: 'review-answer', cwd });
+  }
 
-  // Each wake names its agent on the line after its status line. A wake
-  // that arrived with the other in one input is read from the same text.
-  const agentLine = async (answer: string): Promise<string> => {
-    const wake = await home.waitForEvent<HarnessMockEventData>(
-      'harness:mock',
-      (ev) => ev.report.kind === 'user_input' && ev.cwd === caller.path && (ev.report.input ?? '').includes(answer),
-      120_000,
-    );
+  // Each wake names its agent on the line after its status line. The two
+  // wakes reach the caller in one input or in two, so each is read from the
+  // input that carried it.
+  const answers = ['Local review: the parser is fine.', 'Remote review: the parser is fine.'];
+  const carried = await awaitInputsCarrying(home, { cwd: caller.path, parts: answers, timeoutMs: 120_000 });
+  const agentLine = (answer: string): string => {
+    const input = carried.get(answer)!;
     // What stands between the status line and the answer is the agent line.
-    const lines = (wake.report.input ?? '').split('\n');
+    const lines = input.split('\n');
     const at = lines.indexOf(answer);
     const status = lines.slice(0, at).findLastIndex((line) => line.endsWith('Its final message:'));
-    expect(status, wake.report.input).toBeGreaterThanOrEqual(0);
+    expect(status, input).toBeGreaterThanOrEqual(0);
     return lines.slice(status + 1, at).join('\n');
   };
-  const localLine = await agentLine('Local review: the parser is fine.');
-  const remoteLine = await agentLine('Remote review: the parser is fine.');
+  const [localLine, remoteLine] = answers.map(agentLine);
   const want = `That thread is a standing agent. Its role, in its own words: ${JSON.stringify(role)}`;
   expect(localLine).toBe(want);
   expect(remoteLine).toBe(localLine);
@@ -462,7 +473,9 @@ test('a standing agent on the other computer is named on its wake as a local one
   // Both wakes are agent rows in the caller's timeline
   // (docs/specs/agent-thread-tools.md, "How agent messages appear"), each
   // naming its standing agent's role, the remote one its computer. Two
-  // wakes the provider joined are one row with a part each.
+  // wakes the provider joined are one row with a part each. The rows sit
+  // inside activity runs.
+  await home.rpc('UpdateSettings', { activityRunDefault: 'expanded' });
   await home.open(page);
   await page.getByTestId('thread-row-title').filter({ hasText: 'Wake role caller' }).first().click();
   const rows = page.getByTestId('agent-message-row');
@@ -831,6 +844,11 @@ test('thread_status watches a request running on the other computer, and a prefi
   const caller = await seed(home, 'remote-status-caller', ['Remote status caller']);
   const there = await seed(remote, 'remote-status-target', ['Long remote job'], true);
   const target = there.threadIds[0];
+  // The probe holds for good: it shows when the status wait below has parked.
+  const probe = await seed(home, 'remote-status-probe', ['Status probe']);
+  await setScenario(home, probe.path, threadToolsScenario({
+    name: 'remote-status-probe-script', provider: 'claude', turns: [{ steps: [{ gate: 'remote-status-probe' }], text: 'Never answered.' }], afterTurns: 'silent',
+  }));
 
   await setScenario(
     remote,
@@ -864,6 +882,8 @@ test('thread_status watches a request running on the other computer, and a prefi
       turns: [
         {
           steps: [
+            { call: { tool: 'thread_send', args: { thread_id: probe.threadIds[0], message: 'Hold on.', wait_seconds: 0 } } },
+            { capture: { var: 'PROBE', from: '${MCP_RESULT}', pattern: RESULT_TOKEN_PATTERN } },
             {
               call: {
                 tool: 'thread_send',
@@ -887,7 +907,7 @@ test('thread_status watches a request running on the other computer, and a prefi
             {
               call: {
                 tool: 'thread_status',
-                args: { tokens: ['${TOKEN}'], wait_seconds: 60 },
+                args: { tokens: ['${TOKEN}', '${PROBE}'], wait_seconds: 60 },
                 timeoutMs: 120_000,
               },
             },
@@ -914,6 +934,9 @@ test('thread_status watches a request running on the other computer, and a prefi
 
   await home.rpc('StartSession', caller.threadIds[0]);
   await home.rpc('SendMessage', caller.threadIds[0], 'give the GPU computer the long job', null);
+  const probeSend = await awaitToolAnswer<{ token: string }>(home, { tool: 'thread_send', cwd: caller.path, timeoutMs: 60_000 });
+  expect(probeSend.isError, probeSend.text).toBe(false);
+  const probeToken = probeSend.value!.token;
 
   interface StatusAnswer {
     requests?: Array<{
@@ -940,12 +963,15 @@ test('thread_status watches a request running on the other computer, and a prefi
   expect(row.computer).toBe('GPU computer');
   expect(['accepted', 'running']).toContain(row.state);
 
-  // Let the remote turn finish: the status wait on this computer ends on
-  // the settlement the poller brings back. A thread that is still working
-  // refuses a send, so each send waits for the caller's previous turn.
+  // Let the remote turn finish once the status wait on this computer has
+  // parked: it ends on the settlement the poller brings back, and no wake is
+  // owed. A thread that is still working refuses a send, so each send waits
+  // for the caller's previous turn.
   const gate = await awaitGate(remote, 'hold-remote-status', there.path);
   await awaitTurnCompleted(home, caller.threadIds[0]);
+  await expect.poll(() => parkedOn(home, probeToken), { message: 'nothing waits on the probe yet' }).toBe(false);
   await home.rpc('SendMessage', caller.threadIds[0], 'watch it until it finishes', null);
+  await expect.poll(() => parkedOn(home, probeToken), { timeout: 60_000, message: 'the status wait parks' }).toBe(true);
   await advanceGate(remote, gate.mockId, 'hold-remote-status');
 
   const settled = await awaitToolAnswer<StatusAnswer>(home, {
@@ -1395,7 +1421,11 @@ async function rowMenuItem(view: Page, layout: 'desktop' | 'compact', id: string
   else await item.tap();
 }
 
-/** One caller here spawning one owned worker over there, which holds its turn on a gate when `gate` is given. */
+/**
+ * One caller here spawning one owned worker over there. With `gate` the
+ * worker holds its turn on it; without, it answers once the spawn has
+ * returned and its wake ends the caller's second turn.
+ */
 async function spawnOwnedThere(tag: string, callerTitle: string, workerTitle: string, gate?: string) {
   const caller = await seed(home, `${tag}-caller`, [callerTitle]);
   // A sibling with history, so the worker project's rows are listed and an
@@ -1403,7 +1433,7 @@ async function spawnOwnedThere(tag: string, callerTitle: string, workerTitle: st
   const there = await seed(remote, `${tag}-work`, [`${tag} sibling`], true);
   await setScenario(remote, there.path, threadToolsScenario({
     name: `${tag}-worker`, provider: 'claude',
-    turns: [{ steps: gate ? [{ gate }] : [], text: `${workerTitle} is done.` }],
+    turns: [{ steps: [{ gate: gate ?? `${tag}-answer` }], text: `${workerTitle} is done.` }],
     afterTurns: 'repeatLast',
   }));
   await setScenario(home, caller.path, threadToolsScenario({
@@ -1420,11 +1450,11 @@ async function spawnOwnedThere(tag: string, callerTitle: string, workerTitle: st
   }));
   await home.rpc('StartSession', caller.threadIds[0]);
   await home.rpc('SendMessage', caller.threadIds[0], `have the GPU computer do ${workerTitle}`, null);
-  const spawn = await awaitToolAnswer<{ token: string; thread_id: string }>(home, { tool: 'thread_spawn', cwd: caller.path, timeoutMs: 120_000 });
+  const spawn = await awaitToolAnswer<{ token: string; thread_id: string; outcome: string }>(home, { tool: 'thread_spawn', cwd: caller.path, timeoutMs: 120_000 });
   expect(spawn.isError, spawn.text).toBe(false);
   const held = gate ? await awaitGate(remote, gate, there.path) : null;
   if (!gate) {
-    // The worker answers at once; its wake ends the caller's second turn.
+    await releaseAfterBackgrounded(spawn, { harness: remote, gate: `${tag}-answer`, cwd: there.path });
     await awaitTurnCompleted(remote, spawn.value!.thread_id);
     await awaitTurnCompleted(home, caller.threadIds[0]);
     await awaitTurnCompleted(home, caller.threadIds[0]);
@@ -1549,6 +1579,90 @@ test('a spawn on the other computer is owned there: no sidebar row, its Agents r
   await awaitTurnCompleted(remote, run.worker);
 });
 
+/** A Bash call the worker runs to its end: one top-level tool call. */
+function bashCall(id: string, command: string): string[] {
+  return [toolUseLine(`msg-${id}`, `tu-${id}`, 'Bash', { command }), toolResultLine(`tu-${id}`, 'ok')];
+}
+
+// The person's message to an owned worker over there whose spawn's run
+// ended is a nudge of its spawner here: one active row of the spawner's,
+// counting only that run, ended at the worker's rest there, and delivering
+// the spawner nothing (docs/specs/standing-agents.md, "Owned workers").
+test('a nudge to a rested owned worker over there is one row of its spawner here that wakes nothing', async ({ page }) => {
+  test.setTimeout(240_000);
+  page.setDefaultTimeout(30_000);
+  const caller = await seed(home, 'nudge-there-caller', ['Nudging caller']);
+  const callerId = caller.threadIds[0];
+  const there = await seed(remote, 'nudge-there-work', ['nudge-there sibling'], true);
+  await setScenario(remote, there.path, threadToolsScenario({
+    name: 'nudge-there-worker', provider: 'claude',
+    turns: [
+      { steps: [{ emitLines: [...bashCall('spawn-ls', 'ls'), ...bashCall('spawn-make', 'make')] }], text: 'Built it.' },
+      { steps: [{ emitLines: bashCall('nudge-lint', 'make lint') }, { gate: 'nudge-there-hold' }], text: 'Linted it.' },
+    ],
+    afterTurns: 'repeatLast',
+  }));
+  await setScenario(home, caller.path, threadToolsScenario({
+    name: 'nudge-there-caller-script', provider: 'claude',
+    turns: [
+      { steps: [{ call: {
+        tool: 'thread_spawn',
+        args: { prompt: 'Build it.', title: 'Nudged remote worker', computer_id: remoteID, project_id: there.projectId, notify: true },
+        timeoutMs: 120_000,
+      } }], text: 'Started it over there.' },
+      { text: 'Noted.' },
+    ],
+    afterTurns: 'repeatLast',
+  }));
+  await home.rpc('StartSession', callerId);
+  await home.rpc('SendMessage', callerId, 'have the GPU computer build it', null);
+  const spawned = await awaitToolAnswer<{ token: string; thread_id: string }>(home, { tool: 'thread_spawn', cwd: caller.path, timeoutMs: 120_000 });
+  expect(spawned.isError, spawned.text).toBe(false);
+  const { token: spawn, thread_id: worker } = spawned.value!;
+  // The worker answers and rests; its answer wakes the caller once.
+  await awaitTurnCompleted(remote, worker);
+  await awaitTurnCompleted(home, callerId);
+  await awaitTurnCompleted(home, callerId);
+  await expect.poll(() => placementThere(remote, worker)).toBe('owned');
+  await expect.poll(() => pastTotal(home, callerId), { timeout: 60_000 }).toBe(1);
+
+  await home.open(page);
+  const body = await openAgentsTray(page, callerId, 'desktop');
+  const open = body.locator('[data-testid="agent-tray-row"]:not([data-past])');
+  await expect(open).toHaveCount(0, { timeout: 60_000 });
+  const callerItems = (await home.rpc<unknown[]>('ListItems', callerId, false)).length;
+
+  // The person there continues it from its own pane.
+  await remote.rpc('SendMessage', worker, 'lint it too', null);
+  const hold = await awaitGate(remote, 'nudge-there-hold', there.path);
+  const nudgeRow = body.locator('[data-testid="agent-tray-row"][data-kind="nudge"]:not([data-past])');
+  await expect(nudgeRow).toHaveCount(1, { timeout: 60_000 });
+  await expect(open).toHaveCount(1);
+  await expect(nudgeRow.getByTestId('agent-tray-row-computer')).toHaveText('on GPU computer');
+  await expect(nudgeRow.getByTestId('agent-tray-row-state')).toHaveText('running');
+  await expect(nudgeRow.getByTestId('agent-tray-row-tools')).toHaveText('1 tool', { timeout: 60_000 });
+  await expect.poll(async () => (await home.rpc<{ open: number }>('GetThreadWorkerSummary', callerId)).open).toBe(1);
+  const nudge = await nudgeRow.getAttribute('data-token');
+  expect(nudge).toBeTruthy();
+  expect(nudge).not.toBe(spawn);
+  await page.mouse.move(800, 400);
+  await capture(page, 'nudge-remote-running.png', body);
+
+  // It ends at the worker's rest there: Past keeps it beside the spawn,
+  // each with its own run's figures, and the caller is delivered nothing.
+  const workerDone = awaitTurnCompleted(remote, worker);
+  await advanceGate(remote, hold.mockId, 'nudge-there-hold');
+  await workerDone;
+  await expect(open).toHaveCount(0, { timeout: 60_000 });
+  await expect.poll(() => pastTotal(home, callerId), { timeout: 60_000 }).toBe(2);
+  await openPast(page);
+  await expect(pastRow(page, nudge!).getByTestId('agent-tray-row-tools')).toHaveText('1 tool');
+  await expect(pastRow(page, spawn).getByTestId('agent-tray-row-tools')).toHaveText('2 tools');
+  await capture(page, 'nudge-remote-past.png', body);
+  expect(heldSendIds(home, callerId)).toEqual([]);
+  expect((await home.rpc<unknown[]>('ListItems', callerId, false)).length).toBe(callerItems);
+});
+
 const PROMPT_TOKEN = 'thread_reply, token (\\S+), once';
 
 test("a question over there wakes the spawner here, whose reply answers it there", async ({ page, browser }) => {
@@ -1645,72 +1759,63 @@ test("a question over there wakes the spawner here, whose reply answers it there
   await done;
 });
 
-test("with the spawner's computer stopped, a question over there reaches the person there once the lease runs out", async () => {
-  test.setTimeout(300_000);
-  // The lease is shortened on the worker's computer only.
-  const leased = await launchHarness({ env: { AO_HARNESS_TIMING: `${HARNESS_TIMING},prompt-lease=10s` } });
-  let leasedID = '';
-  try {
-    leasedID = await pairOwnDevice(home, leased, 'Lease computer');
-    const caller = await seed(home, 'lease-caller', ['Lease caller']);
-    const there = await seed(leased, 'lease-work', []);
-    await setScenario(leased, there.path, threadToolsScenario({
-      name: 'lease-worker', provider: 'claude',
-      turns: [{ steps: [
-        { approval: { toolName: 'Bash', input: { command: 'make soak' }, onAllow: [], onDeny: [] } },
-      ], text: 'Soaked.' }],
-      afterTurns: 'repeatLast',
-    }));
-    // The spawner takes the wake and holds it, unanswered.
-    await setScenario(home, caller.path, threadToolsScenario({
-      name: 'lease-caller-script', provider: 'claude',
-      turns: [
-        { steps: [{ call: {
-          tool: 'thread_spawn',
-          args: { prompt: 'Run the soak.', title: 'Lease worker', computer_id: leasedID, project_id: there.projectId, notify: true },
-          timeoutMs: 120_000,
-        } }], text: 'Started it over there.' },
-        { steps: [{ gate: 'lease-caller-hold' }], text: 'Not now.' },
-        { text: 'Noted.' },
-      ],
-      afterTurns: 'repeatLast',
-    }));
-    await home.rpc('StartSession', caller.threadIds[0]);
-    await home.rpc('SendMessage', caller.threadIds[0], 'have the lease computer run the soak', null);
-    const spawn = await awaitToolAnswer<{ thread_id: string }>(home, { tool: 'thread_spawn', cwd: caller.path, timeoutMs: 120_000 });
-    expect(spawn.isError, spawn.text).toBe(false);
-    const worker = spawn.value!.thread_id;
-    const holding = await awaitGate(home, 'lease-caller-hold', caller.path);
-    type Pending = { requestId: string; routedTo?: { threadId: string } | null };
-    const approvals = async () => (await leased.rpc<{ approvals: Pending[] }>('ListPendingInteractiveRequests', worker)).approvals;
-    await expect.poll(async () => (await approvals())[0]?.routedTo?.threadId ?? '').toBe(caller.threadIds[0]);
+test("with the spawner's computer stopped, a question over there stays the spawner's and its reply answers it once that computer is back", async () => {
+  test.setTimeout(240_000);
+  const caller = await seed(home, 'stopped-caller', ['Stopped caller']);
+  const there = await seed(remote, 'stopped-work', []);
+  await setScenario(remote, there.path, threadToolsScenario({
+    name: 'stopped-worker', provider: 'claude',
+    turns: [{ steps: [
+      { approval: { toolName: 'Bash', input: { command: 'make soak' }, onAllow: [], onDeny: [] } },
+    ], text: 'Soaked.' }],
+    afterTurns: 'repeatLast',
+  }));
+  // The spawner takes the wake and holds it, unanswered, until it is let go.
+  await setScenario(home, caller.path, threadToolsScenario({
+    name: 'stopped-caller-script', provider: 'claude',
+    turns: [
+      { steps: [{ call: {
+        tool: 'thread_spawn',
+        args: { prompt: 'Run the soak.', title: 'Soak worker', computer_id: remoteID, project_id: there.projectId, notify: true },
+        timeoutMs: 120_000,
+      } }], text: 'Started it over there.' },
+      { steps: [
+        { capture: { var: 'TOKEN', from: '${USER_INPUT}', pattern: PROMPT_TOKEN } },
+        { gate: 'stopped-caller-hold' },
+        { call: { tool: 'thread_reply', args: { token: '${TOKEN}', decision: 'allow', text: 'Run it.' } } },
+      ], text: 'Allowed it.' },
+      { text: 'Noted.' },
+    ],
+    afterTurns: 'repeatLast',
+  }));
+  await home.rpc('StartSession', caller.threadIds[0]);
+  await home.rpc('SendMessage', caller.threadIds[0], 'have the GPU computer run the soak', null);
+  const spawn = await awaitToolAnswer<{ thread_id: string }>(home, { tool: 'thread_spawn', cwd: caller.path, timeoutMs: 120_000 });
+  expect(spawn.isError, spawn.text).toBe(false);
+  const worker = spawn.value!.thread_id;
+  const holding = await awaitGate(home, 'stopped-caller-hold', caller.path);
+  type Pending = { requestId: string; routedTo?: { threadId: string } | null };
+  const approvals = async () => (await remote.rpc<{ approvals: Pending[] }>('ListPendingInteractiveRequests', worker)).approvals;
+  await expect.poll(async () => (await approvals())[0]?.routedTo?.threadId ?? '').toBe(caller.threadIds[0]);
 
-    // While the spawner's computer holds it, it outlasts the lease.
+  // Stopped, the spawner's computer answers nothing; the worker's computer
+  // keeps the question routed to the spawner, not to the person there. No
+  // timer moves it, so the wait only has to cover several of that
+  // computer's reads of the spawner's prompts.
+  const pid = home.bootstrap.pid;
+  expect(pid).toBeGreaterThan(0);
+  process.kill(pid, 'SIGSTOP');
+  try {
     await new Promise((resolve) => setTimeout(resolve, 15_000));
     expect((await approvals())[0]?.routedTo?.threadId).toBe(caller.threadIds[0]);
-
-    // Stopped, the spawner's computer holds it no longer: once the lease
-    // runs out, the person there has it.
-    const pid = home.bootstrap.pid;
-    expect(pid).toBeGreaterThan(0);
-    process.kill(pid, 'SIGSTOP');
-    try {
-      await expect.poll(async () => {
-        const [approval] = await approvals();
-        return approval ? (approval.routedTo?.threadId ?? 'the person') : 'none';
-      }, { timeout: 60_000 }).toBe('the person');
-    } finally {
-      process.kill(pid, 'SIGCONT');
-    }
-    // The person answers it there.
-    const done = awaitTurnCompleted(leased, worker);
-    await leased.rpc('RespondToApproval', worker, { requestId: (await approvals())[0].requestId, decision: 'allow' });
-    await done;
-    await advanceGate(home, holding.mockId, 'lease-caller-hold');
   } finally {
-    if (leasedID !== '') await home.rpc('RemoveBackend', leasedID, true);
-    await leased.close();
+    process.kill(pid, 'SIGCONT');
   }
+  // Back, the spawner's reply answers it there.
+  const done = awaitTurnCompleted(remote, worker);
+  await advanceGate(home, holding.mockId, 'stopped-caller-hold');
+  await expect.poll(async () => (await approvals()).length, { timeout: 60_000 }).toBe(0);
+  await done;
 });
 
 test('an accepted send shows the approval blocking a busy ordinary thread on the other computer', async ({ page }) => {
@@ -2046,8 +2151,9 @@ test('a nested row on the other computer names the wake row its answer reached t
       { text: 'Packaged, noted.' },
     ],
   }));
-  await setScenario(remote, grand.path, plainScenario({
-    name: 'agents-wake-grand-script', provider: 'claude', texts: ['Packaged.'],
+  await setScenario(remote, grand.path, threadToolsScenario({
+    name: 'agents-wake-grand-script', provider: 'claude',
+    turns: [{ steps: [{ gate: 'agents-wake-grand-answer' }], text: 'Packaged.' }],
   }));
 
   // The grandchild's answer wakes the child there.
@@ -2060,8 +2166,8 @@ test('a nested row on the other computer names the wake row its answer reached t
   await home.rpc('SendMessage', caller.threadIds[0], 'have the GPU computer build it', null);
   const spawn = await awaitToolAnswer<{ token: string; thread_id: string }>(home, { tool: 'thread_spawn', timeoutMs: 120_000 });
   expect(spawn.isError, spawn.text).toBe(false);
-  const nested = await awaitToolAnswer<{ token: string }>(remote, { tool: 'thread_spawn', cwd: child.path, timeoutMs: 120_000 });
-  expect(nested.isError, nested.text).toBe(false);
+  const nested = await awaitToolAnswer<{ token: string; outcome: string }>(remote, { tool: 'thread_spawn', cwd: child.path, timeoutMs: 120_000 });
+  await releaseAfterBackgrounded(nested, { harness: remote, gate: 'agents-wake-grand-answer', cwd: grand.path });
   expect((await woken).report.input).toContain(nested.value!.token);
 
   // The child's computer records the row that carried the wake once the
@@ -2227,10 +2333,10 @@ test('the origin chip names the other computer on both ends of a spawn', async (
   await setScenario(
     remote,
     there.path,
-    plainScenario({
+    threadToolsScenario({
       name: 'remote-chip-worker',
       provider: 'claude',
-      texts: ['The chip run finished.'],
+      turns: [{ steps: [{ gate: 'remote-chip-answer' }], text: 'The chip run finished.' }],
     }),
   );
   await setScenario(
@@ -2277,7 +2383,7 @@ test('the origin chip names the other computer on both ends of a spawn', async (
     tool: 'thread_spawn',
     timeoutMs: 120_000,
   });
-  expect(spawn.isError, spawn.text).toBe(false);
+  await releaseAfterBackgrounded(spawn, { harness: remote, gate: 'remote-chip-answer', cwd: there.path });
   expect(await remote.rpc('GetThreadDefaults', { projectId: there.projectId })).toEqual(defaults);
   // Wait for the wake, which is the caller-side row that carries a chip.
   await home.waitForEvent<HarnessMockEventData>(
@@ -2292,7 +2398,9 @@ test('the origin chip names the other computer on both ends of a spawn', async (
   const sidebarRow = (title: string) =>
     page.getByTestId('thread-row-title').filter({ hasText: title }).first();
 
-  // The destination's first message says which computer asked for it.
+  // The destination's first message says which computer asked for it. The
+  // agent rows sit inside activity runs.
+  await Promise.all([home, remote].map((app) => app.rpc('UpdateSettings', { activityRunDefault: 'expanded' })));
   await remote.open(page);
   await sidebarRow('Chip work').click();
   await expect(page.getByTestId('agent-message-sender').first()).toHaveText(

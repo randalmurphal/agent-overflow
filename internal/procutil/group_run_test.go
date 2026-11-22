@@ -111,6 +111,27 @@ func TestRunGroupReportsTheExitCodeAndCombinedOutput(t *testing.T) {
 	}
 }
 
+// Stdin reaches the command; without it the command reads the null device.
+func TestRunGroupFeedsStdinWhenGiven(t *testing.T) {
+	t.Parallel()
+	var output syncBuffer
+	command := shellCommand(t, "cat", &output)
+	command.Stdin = strings.NewReader("the prompt\n")
+	if _, err := RunGroup(context.Background(), &recordingReaper{}, command); err != nil {
+		t.Fatal(err)
+	}
+	if text := output.String(); text != "the prompt\n" {
+		t.Fatalf("output = %q, want the stdin it was given", text)
+	}
+	var empty syncBuffer
+	if _, err := RunGroup(context.Background(), &recordingReaper{}, shellCommand(t, "cat", &empty)); err != nil {
+		t.Fatal(err)
+	}
+	if text := empty.String(); text != "" {
+		t.Fatalf("output without stdin = %q, want nothing", text)
+	}
+}
+
 // With Stderr set, stderr from the command and from what it starts reaches
 // Stderr alone, and Output carries only stdout.
 func TestRunGroupGivesStderrItsOwnSinkWhenAsked(t *testing.T) {

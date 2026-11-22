@@ -3,13 +3,14 @@
     backendDisplayName, backendReachable, getAttachedBackends,
   } from '../../stores/attachedBackends.svelte';
   import type { BackendKey } from '../../transport/backendKey';
-  import { hasScope, type Scope } from '../../transport/scopes';
+  import { scopeGrant, type Scope } from '../../transport/scopes';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
 
   let { value, onchange, disabled = false, scope, label = 'Computer' }: {
     value: BackendKey;
     onchange: (backend: BackendKey) => void;
     disabled?: boolean;
-    scope?: Scope;
+    scope?: Exclude<Scope, 'host'>;
     label?: string;
   } = $props();
   let computers = $derived(getAttachedBackends());
@@ -26,8 +27,9 @@
   >
     {#each computers as computer (computer.id)}
       {@const offline = !backendReachable(computer.id)}
-      {@const denied = scope !== undefined && !hasScope(scope, computer.id)}
-      <option value={computer.id} disabled={offline || denied}>
+      {@const grant = scope === undefined ? 'granted' : scopeGrant(scope, computer.id)}
+      {@const denied = grant === 'refused'}
+      <option value={computer.id} disabled={offline || grant !== 'granted'} title={offline ? undefined : grantBlockedTitle(grant)}>
         {backendDisplayName(computer)}{offline ? ' · Offline' : denied ? ' · No access' : ''}
       </option>
     {/each}

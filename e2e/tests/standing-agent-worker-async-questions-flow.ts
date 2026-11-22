@@ -5,8 +5,12 @@
 // spawned it as its blocking prompts do: the spawner's agent is woken with
 // it and answers it with thread_reply, and the answer reaches the worker as
 // its next message. When the spawner's session dies before taking the
-// question in, it goes to the person: it notifies, the spawner's row counts
-// a worker waiting on them, and their answer withdraws both.
+// question in, an owned worker's stays the spawner's: nothing notifies or
+// waits on the person, the spawner's row reads waiting on the spawner, and
+// the person can still answer it in the worker. A worker with a sidebar row,
+// asking in its spawner's run, gives it to the person: its turn's end
+// notified them, the spawner's row counts a worker waiting on them, and
+// their answer withdraws the count.
 import type { Locator, Page } from '@playwright/test';
 
 import { expect, type SeedResult } from './fixtures.js';
@@ -156,13 +160,20 @@ export async function runAsyncQuestionAnsweredBySpawner(
 }
 
 /**
- * A Codex lead's session dies before taking its worker's question in: the
- * question goes to the person, notifies for the owned worker, and badges
- * the lead's sidebar row and Agents row as waiting on the person, until the
- * person answers it in the worker.
+ * A Codex lead's session dies before taking its worker's question in. An
+ * owned worker's question stays the lead's: it raises no notification and
+ * the lead's Agents row reads it as waiting on the lead. A worker with a
+ * sidebar row, whose turn's end notified the person, gives it to the
+ * person: it badges the lead's sidebar row and Agents row as waiting on
+ * the person. Either way the person's answer in the worker ends it.
  */
-export async function runAsyncQuestionHandedBack(harness: HarnessApp, page: Page, layout: 'desktop' | 'compact'): Promise<void> {
-  const tag = `async-handback-${layout}`;
+export async function runAsyncQuestionHandedBack(
+  harness: HarnessApp,
+  page: Page,
+  layout: 'desktop' | 'compact',
+  placement: 'owned' | 'standalone',
+): Promise<void> {
+  const tag = `async-handback-${layout}-${placement}`;
   const LEAD = 'Ops lead';
   const QUESTION = 'When should the logs rotate?';
   // A notification is sent whatever the window's focus, so the spec reads it.
@@ -179,7 +190,10 @@ export async function runAsyncQuestionHandedBack(harness: HarnessApp, page: Page
   await setScenario(harness, leadP.path, threadToolsScenario({
     name: `${tag}-lead`, provider: 'codex', echoUserMessage: true,
     turns: [
-      { steps: [{ call: { tool: 'thread_spawn', args: { prompt: 'Rotate the logs.', title: 'Ops worker', project_id: workerP.projectId, provider: 'codex' } } }], text: 'Started the ops worker.' },
+      { steps: [{ call: { tool: 'thread_spawn', args: {
+        prompt: 'Rotate the logs.', title: 'Ops worker', project_id: workerP.projectId, provider: 'codex',
+        ...(placement === 'standalone' ? { placement } : {}),
+      } } }], text: 'Started the ops worker.' },
       { steps: [{ gate: 'hold' }], text: 'unreached', echo: false },
     ],
     afterTurns: 'silent',
@@ -202,17 +216,41 @@ export async function runAsyncQuestionHandedBack(harness: HarnessApp, page: Page
   await awaitTurnCompleted(harness, leadID);
   const ask = await awaitGate(harness, 'ask', workerP.path);
   const notice = questionNotice(worker, 'question:ask-rotate');
-  const handedBack = harness.waitForEvent<NotificationSend>('notification:send', (data) => notice(data) && !data.retract, 60_000);
+  // A worker with a sidebar row notifies at its turn's end, as any such
+  // thread does; an owned one does not.
+  const turnEnded = (data: NotificationSend) => !data.retract && data.kind === 'turn-complete' && data.target.threadId === worker;
+  const rested = placement === 'standalone'
+    ? harness.waitForEvent<NotificationSend>('notification:send', turnEnded, 60_000)
+    : undefined;
   await advanceGate(harness, ask.mockId, 'ask');
   await wakeInput(harness, leadP.path, QUESTION);
   const hold = await awaitGate(harness, 'hold', leadP.path);
   expect(harness.countEvents<NotificationSend>('notification:send', (data) => notice(data) && !data.retract)).toBe(0);
 
-  // ---- The lead's session dies with the wake unconfirmed: the question is
-  // the person's now, and says so.
+  // ---- The lead's session dies with the wake unconfirmed.
   await harness.rpc('HarnessMockCommand', hold.mockId, { type: 'exit', code: 1 });
-  const raised = await handedBack;
-  expect(raised.body).toBe('Waiting for your answer');
+  if (placement === 'owned') {
+    // The question stays the lead's, and waits for its next turn.
+    await openAgents(page, LEAD);
+    const row = openAgentRow(page, spawn.value!.token);
+    await expect(row.getByTestId('agent-tray-row-state')).toHaveText('blocked', { timeout: 30_000 });
+    await expect(row.getByTestId('agent-tray-row-blocked')).toHaveText(`Asks: ${QUESTION}, waiting on ${LEAD}`, { timeout: 30_000 });
+    expect((await harness.rpc<{ needYou: number }>('GetThreadWorkerSummary', leadID)).needYou).toBe(0);
+    await expect(page.getByTestId('thread-row').filter({ hasText: LEAD }).getByTestId('thread-row-workers-need-you')).toHaveCount(0);
+    expect(harness.countEvents<NotificationSend>('notification:send', (data) => (notice(data) || turnEnded(data)) && !data.retract)).toBe(0);
+    if (layout === 'desktop') await page.mouse.move(800, 400);
+    await capture(page, `async-question-${layout}-waits-for-its-lead.png`, row);
+    // The person can still answer it in the worker, which ends it.
+    await harness.rpc('SubmitAsyncAnswers', worker, 'async-answer:person-rotate', [{ itemId: 'question:ask-rotate', index: 0, answer: 'tonight' }]);
+    await wakeInput(harness, workerP.path, 'Answer: tonight');
+    await awaitTurnCompleted(harness, worker);
+    await expect(row.getByTestId('agent-tray-row-blocked')).toHaveCount(0);
+    expect(harness.countEvents<NotificationSend>('notification:send', (data) => notice(data) && !data.retract)).toBe(0);
+    return;
+  }
+  // The question is the person's now, and says so.
+  const raised = await rested!;
+  expect(raised.body).toBe('Completed');
   expect(raised.title).toBe('Ops worker');
   await expect.poll(() => harness.rpc<{ needYou: number }>('GetThreadWorkerSummary', leadID).then((s) => s.needYou), { timeout: 30_000 }).toBe(1);
   const badge = page.getByTestId('thread-row').filter({ hasText: LEAD }).getByTestId('thread-row-workers-need-you');

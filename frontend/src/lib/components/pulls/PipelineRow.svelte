@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isLocalEnter } from '../../utils/localEnter';
   import GitBranch from '@lucide/svelte/icons/git-branch';
   import GitPullRequestArrow from '@lucide/svelte/icons/git-pull-request-arrow';
   import Tag from '@lucide/svelte/icons/tag';
@@ -44,7 +45,7 @@
     aria-current={selected ? 'true' : undefined}
     onclick={(event) => onOpen(row, event)}
     onkeydown={(event) => {
-      if (event.key === 'Enter' || event.key === ' ') {
+      if (isLocalEnter(event) || event.key === ' ') {
         event.preventDefault();
         onOpen(row, event);
       }

@@ -1,0 +1,15 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "Some \u003cspan\u003einline\u003c/span\u003e HTML, List\u003cString\u003e, Map\u003cK, V\u003e and \u003ca href=\"x\"\u003ey\u003c/a\u003e."
+        }
+      ]
+    }
+  ]
+}

@@ -422,17 +422,17 @@ describe('createThreadPane', () => {
   describe('terminal focus intent', () => {
     it('has no pending request on a fresh pane', () => {
       const pane = createThreadPane();
-      expect(pane.consumeTerminalFocusRequest()).toBe(false);
+      expect(pane.consumeTerminalFocusRequest()).toBeNull();
     });
 
     it('consumes a latched request exactly once', () => {
       const pane = createThreadPane();
       pane.requestTerminalFocus();
       // First consume sees the intent...
-      expect(pane.consumeTerminalFocusRequest()).toBe(true);
+      expect(pane.consumeTerminalFocusRequest()?.current).toBe(true);
       // ...and clears it, so a drawer remount ({#key threadId}) can't
       // re-grab focus the user never asked for.
-      expect(pane.consumeTerminalFocusRequest()).toBe(false);
+      expect(pane.consumeTerminalFocusRequest()).toBeNull();
     });
 
     it('keeps the request across setShowTerminal(true) so the drawer can consume it', () => {
@@ -441,7 +441,7 @@ describe('createThreadPane', () => {
       // clear the intent or the cold-open focus would be lost again.
       pane.requestTerminalFocus();
       pane.setShowTerminal(true);
-      expect(pane.consumeTerminalFocusRequest()).toBe(true);
+      expect(pane.consumeTerminalFocusRequest()?.current).toBe(true);
     });
 
     it('drops a pending request when the terminal is hidden before it mounts', () => {
@@ -452,7 +452,7 @@ describe('createThreadPane', () => {
       // persisted — doesn't inherit a stale "steal focus".
       pane.requestTerminalFocus();
       pane.setShowTerminal(false);
-      expect(pane.consumeTerminalFocusRequest()).toBe(false);
+      expect(pane.consumeTerminalFocusRequest()).toBeNull();
     });
 
     it('reactively re-fires the consume effect when focus is requested on a LIVE pane', () => {

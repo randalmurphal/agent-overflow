@@ -48,8 +48,9 @@ type ActivityRunMembersRequest struct {
 	// stub for the span the caller already holds.
 	Limit int `json:"limit,omitempty"`
 	// Shape applies as it does to a page: InlinePreviews projects the
-	// rows, MaxBytes bounds them. RunWindowRows has no meaning here — the
-	// caller names the count it wants with Limit.
+	// rows, MaxBytes bounds them, AgentMessageMembers names the rule the
+	// run is found by. RunWindowRows has no meaning here — the caller
+	// names the count it wants with Limit.
 	Shape PageShape `json:"shape"`
 }
 
@@ -84,7 +85,7 @@ func (a *App) ListActivityRunMembers(ctx context.Context, threadID string, req A
 		return store.ActivityRunMembers{}, err
 	}
 	shape := req.Shape.normalize()
-	members, err := a.store.ListActivityRunMembers(ctx, threadID, req.storeRequest(req.Limit))
+	members, err := a.store.ListActivityRunMembers(ctx, threadID, req.storeRequest(req.Limit), a.activityRunRule(shape))
 	if err != nil {
 		return store.ActivityRunMembers{}, activityRunMembersError(err)
 	}

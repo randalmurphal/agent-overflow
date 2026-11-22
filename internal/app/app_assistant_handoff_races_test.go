@@ -7,17 +7,18 @@ import (
 	"io"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/attachment"
 	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/gitapp"
 	"agent-overflow/internal/remotejobs"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/transport"
 
 	"github.com/google/uuid"
@@ -31,13 +32,13 @@ func TestAJobOverAPairedDestinationFollowsTwoHandOffs(t *testing.T) {
 	remotetest.Require(t)
 	backend := newPairedBackend(t)
 	source := identityApp(t)
-	manager, err := attachedbackends.New(t.TempDir(), "workhorse", "linux")
+	manager, err := newTestBackends(t, t.TempDir(), "workhorse", "linux")
 	if err != nil {
 		t.Fatal(err)
 	}
 	source.backends = manager
 	invite, _ := backend.mintLink(t, "full")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 	defer cancel()
 	attached, err := manager.Add(ctx, invite.URL)
 	if err != nil {
@@ -438,43 +439,107 @@ func TestASendRacingTheDraftMoveLandsOnce(t *testing.T) {
 	}
 }
 
-// Sends racing a failed handoff's return of the carried messages: every
-// carried message ends in a composer once, wherever the assistant is.
+// Sends racing a failed handoff's end: every carried message ends in an
+// open composer once. The second send finds the session gone while the end
+// waits on the composer, so the end keeps it with the first. The third
+// finds the session gone after the end took them and while it writes them
+// back; it starts the next handoff, whose composer move waits for that
+// write. The successor's composer reads third, first, second: a handoff puts
+// the sends it carried ahead of the old composer's text, and what the
+// failed handoff wrote back is that text, the person's draft, once it is in
+// a composer they see.
 func TestSendsDuringAFailedReturnAreEachKeptOnce(t *testing.T) {
 	t.Parallel()
-	for run := range 20 {
-		f, threadID, _ := lostSessionAssistant(t)
-		agentID := assistantIDOf(t, f.app, threadID)
-		if !f.app.assistantHandOffs.begin(agentID, threadID) {
-			t.Fatal("begin")
+	f, threadID, _ := lostSessionAssistant(t)
+	agentID := assistantIDOf(t, f.app, threadID)
+	if !f.app.assistantHandOffs.begin(agentID, threadID) {
+		t.Fatal("begin")
+	}
+	sendFindingTheSessionGone(t, f.app, threadID, "first message")
+	committed := make(chan struct{})
+	f.app.handOffCommittedForTest = func(old, _ string) {
+		if old == threadID {
+			close(committed)
 		}
-		sendFindingTheSessionGone(t, f.app, threadID, "first message")
-		sendFindingTheSessionGone(t, f.app, threadID, "second message")
-		items := f.app.assistantHandOffs.finish(agentID)
-		done := make(chan struct{})
-		go func() {
-			f.app.returnSessionLossCarries(threadID, items)
-			close(done)
-		}()
-		_, err := f.app.SendMessageWithOptions(t.Context(), threadID, "third message", SendMessageOptions{SendID: uuid.NewString(), ConsumeDraft: &DraftSnapshot{Content: "third message"}})
-		<-done
-		awaitCurrentThread(t, f.app, threadID)
-		f.app.waitAgentNoticeWork()
-		threads, err2 := f.app.store.ListThreads()
-		if err2 != nil {
-			t.Fatal(err2)
-		}
-		total := map[string]int{}
-		for _, th := range threads {
-			d := draftContent(t, f.app, th.ID)
-			for _, text := range []string{"first message", "second message"} {
-				total[text] += strings.Count(d, text)
+	}
+	third := make(chan error, 1)
+	var once sync.Once
+	f.app.assistantHandOffEndedForTest = func(string) {
+		once.Do(func() {
+			go func() {
+				_, err := f.app.SendMessageWithOptions(t.Context(), threadID, "third message", SendMessageOptions{SendID: uuid.NewString(), ConsumeDraft: &DraftSnapshot{Content: "third message"}})
+				third <- err
+			}()
+			// The handoff the third send starts waits on this composer, or,
+			// were the write not under its lock, moves it first.
+			deadline := time.Now().Add(20 * time.Second)
+			for time.Now().Before(deadline) {
+				select {
+				case <-committed:
+					return
+				default:
+				}
+				if handOffRunning(f.app, agentID) && f.app.threadApplication().MutationRefs(threadID) >= 2 {
+					return
+				}
+				time.Sleep(time.Millisecond)
 			}
+			t.Error("the handoff the third send started never reached the composer")
+		})
+	}
+	// The failed handoff's end waits on the composer, and the second send
+	// finds the session gone meanwhile.
+	var unlockOnce sync.Once
+	locked := f.app.threadApplication().LockMutations(threadID)
+	unlock := func() { unlockOnce.Do(locked) }
+	t.Cleanup(unlock)
+	ended := make(chan struct{})
+	go func() {
+		defer close(ended)
+		f.app.endAssistantHandOff(agentID, threadID)
+	}()
+	waitUntil(t, 20*time.Second, func() bool {
+		return f.app.threadApplication().MutationRefs(threadID) >= 2
+	})
+	second := make(chan error, 1)
+	go func() {
+		_, err := f.app.SendMessageWithOptions(t.Context(), threadID, "second message", SendMessageOptions{SendID: uuid.NewString()})
+		second <- err
+	}()
+	select {
+	case err := <-second:
+		if !isSessionGone(err) {
+			t.Fatalf("second send = %v, want %s", err, transport.ErrCodeAssistantSessionGone)
 		}
-		if total["first message"] != 1 || total["second message"] != 1 {
-			code, _, _ := errorsx.PublicDetails(err)
-			t.Errorf("run %d: third %q; totals %v", run, code, total)
+	case <-time.After(20 * time.Second):
+		t.Fatal("the second send never returned: another handoff began before the failed one wrote its messages back")
+	}
+	unlock()
+	<-ended
+	if err := <-third; !isSessionGone(err) {
+		t.Fatalf("third send = %v, want %s", err, transport.ErrCodeAssistantSessionGone)
+	}
+	successor := awaitCurrentThread(t, f.app, threadID)
+	f.app.waitAgentNoticeWork()
+	if got, want := draftContent(t, f.app, successor), "third message\n\nfirst message\n\nsecond message"; got != want {
+		t.Errorf("successor's composer = %q, want %q", got, want)
+	}
+	if got := draftContent(t, f.app, threadID); got != "" {
+		t.Errorf("past thread's composer = %q, want it empty", got)
+	}
+	threads, err := f.app.store.ListThreads()
+	if err != nil {
+		t.Fatal(err)
+	}
+	total := map[string]int{}
+	for _, th := range threads {
+		d := draftContent(t, f.app, th.ID)
+		for _, text := range []string{"first message", "second message", "third message"} {
+			total[text] += strings.Count(d, text)
 		}
+	}
+	if total["first message"] != 1 || total["second message"] != 1 || total["third message"] != 1 {
+		t.Errorf("totals in open composers %v; successor's %q, past thread's %q", total, draftContent(t, f.app, successor), draftContent(t, f.app, threadID))
 	}
 }
 
@@ -596,7 +661,7 @@ func TestASessionLossDuringAManualHandOffIsCarriedOnce(t *testing.T) {
 		}
 		_, sendErr := f.app.SendMessageWithOptions(t.Context(), threadID, "lost-session message", SendMessageOptions{SendID: uuid.NewString(), ConsumeDraft: &DraftSnapshot{Content: "lost-session message"}})
 		successor, err := f.app.nextAssistantThread(t.Context(), threadID, false)
-		f.app.endAssistantHandOff(agentID, threadID, successor.ID)
+		f.app.endAssistantHandOff(agentID, threadID)
 		if err != nil {
 			t.Fatalf("run %d: manual handoff: %v", run, err)
 		}

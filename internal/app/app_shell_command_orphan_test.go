@@ -185,10 +185,8 @@ func TestABackendsDeathEndsItsShellCommand(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			dataDir := t.TempDir()
 			backend := exec.Command(os.Args[0], "-test.run=^TestShellCommandBackendHelper$")
-			// The backend's temporary files land where this test removes them.
 			backend.Env = append(os.Environ(),
-				shellBackendDataEnv+"="+dataDir, shellBackendCommandEnv+"="+c.command,
-				"TMPDIR="+t.TempDir())
+				shellBackendDataEnv+"="+dataDir, shellBackendCommandEnv+"="+c.command)
 			stdout, err := backend.StdoutPipe()
 			if err != nil {
 				t.Fatal(err)

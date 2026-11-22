@@ -25,7 +25,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
 
-  let { surface, manual = false }: ThreadTerminalDrawerProps = $props();
+  let { surface }: ThreadTerminalDrawerProps = $props();
 
   let Drawer = $state<Component<ThreadTerminalDrawerProps> | null>(cachedDrawer);
   let loadError = $state<string | null>(null);
@@ -62,7 +62,7 @@
 </script>
 
 {#if Drawer}
-  <Drawer {surface} {manual} />
+  <Drawer {surface} />
 {:else if loadError}
   <div class="border-t border-border bg-panel px-3 py-2 text-[0.75rem] text-error" data-testid="terminal-drawer-load-error">
     Failed to load terminal drawer: {loadError}

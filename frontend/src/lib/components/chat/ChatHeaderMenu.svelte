@@ -29,7 +29,8 @@
   import { openTerminalThread } from '../../stores/threadCreation.svelte';
   import { regenerateThreadTitle, titleGenerationPending } from '../../stores/threadTitleGeneration.svelte';
   import { addErrorToast } from '../../stores/toast.svelte';
-  import { threadHasScope } from '../../transport/entityScopes';
+  import { threadScopeGrant } from '../../transport/entityScopes';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
   import { hasScope } from '../../transport/scopes';
   import { errString } from '../../utils/errors';
   import { handleExternalURL, safeExternalURL } from '../../utils/externalLinks';
@@ -48,8 +49,6 @@
   import { openPrReview, toggleTakeControl, toggleWorkspaceReview } from './headerPaneActions';
 
   let { pane }: { pane: ThreadPane } = $props();
-
-  const UNGRANTED = 'Not granted to this device';
 
   let compact = $derived(isCompactLayout());
   let open = $state(false);
@@ -87,8 +86,9 @@
   // mirror all open a PTY on the thread's computer under `terminal:operate`:
   // the same gate the palette's terminal commands read. Inert with a reason
   // rather than absent, like every other ungranted control.
-  let terminalUngranted = $derived(!threadHasScope('terminal:operate', pane.threadId, pane.thread?.projectId));
-  let terminalTitle = $derived(terminalUngranted ? UNGRANTED : undefined);
+  let terminalGrant = $derived(threadScopeGrant('terminal:operate', pane.threadId, pane.thread?.projectId));
+  let terminalUngranted = $derived(terminalGrant !== 'granted');
+  let terminalTitle = $derived(grantBlockedTitle(terminalGrant));
   // A row names its command's chord, read from the loaded keybindings. The
   // phone has no chords, so its rows name none.
   function chordFor(commandId: string): string | undefined {
@@ -127,7 +127,7 @@
   // title. RegenerateThreadTitle runs provider CLIs on the host under
   // `threads:operate`.
   let regeneratePending = $derived(pane.threadId ? titleGenerationPending(pane.threadId) : false);
-  let regenerateUngranted = $derived(!threadHasScope('threads:operate', pane.threadId, pane.thread?.projectId));
+  let regenerateGrant = $derived(threadScopeGrant('threads:operate', pane.threadId, pane.thread?.projectId));
 
   function regenerateTitle(): void {
     if (pane.threadId) void regenerateThreadTitle(pane.threadId);
@@ -272,8 +272,8 @@
       {/if}
       <MenuItem
         label="Regenerate title"
-        disabled={regeneratePending || regenerateUngranted}
-        title={regenerateUngranted ? UNGRANTED : undefined}
+        disabled={regeneratePending || regenerateGrant !== 'granted'}
+        title={grantBlockedTitle(regenerateGrant)}
         onSelect={() => pick(regenerateTitle)}
       />
       {#if editorRows.length > 0}

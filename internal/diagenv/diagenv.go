@@ -40,10 +40,12 @@ const (
 	// ArchiveThread and DeleteThread answer a success with null,
 	// agent_owner_op is an unknown thread tools write call, so a paired
 	// computer archiving or deleting a spawner whose worker is here names
-	// this one as running an older version, and its hello advertises
-	// thread-tools.v1 without thread-tools.v2. Test isolation only: honored
-	// solely by a harness boot, and the only way an end-to-end test can
-	// stand up such a computer.
+	// this one as running an older version, its hello advertises
+	// thread-tools.v1 without thread-tools.v2 and without
+	// activity-runs.agent-message-members.v1, and it groups agent messages
+	// by the absorbed rule whatever a request asks. Test isolation only:
+	// honored solely by a harness boot, and the only way an end-to-end test
+	// can stand up such a computer.
 	HarnessOlderComputer = "AO_HARNESS_OLDER_COMPUTER"
 
 	// HarnessHoldStartup holds a harness boot before App.Start until the

@@ -122,12 +122,15 @@ func TestScopeValidationRefusesWhatItCannotName(t *testing.T) {
 // change one. `preview:open` joined in wave 9 with the dev-server port
 // gateway: a named reviewer may look at a preview without being able to
 // run terminals on the machine serving it, and `terminal:operate` reused
-// there could only have granted both.
+// there could only have granted both. `tracker:read` and `tracker:operate`
+// joined with the issue tracker connections: reading a connection's state
+// is observe, and verifying one sends its token to the tracker.
 func TestScopeSetMatchesTheSpecTable(t *testing.T) {
 	want := []string{
 		"threads:read", "files:read", "threads:operate", "approvals:respond",
 		"threads:autonomy", "terminal:operate", "preview:open", "git:operate",
 		"attachments:write", "settings:read", "settings:write", "access:admin",
+		"tracker:read", "tracker:operate",
 	}
 	if !slices.Equal(asStrings(Scopes), want) {
 		t.Fatalf("scope set = %v\nwant %v", asStrings(Scopes), want)
@@ -159,7 +162,7 @@ func TestPairingAccessResolvesItsGrantSet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("view-only Grants(): %v", err)
 	}
-	want := []Scope{ScopeThreadsRead, ScopeFilesRead, ScopeSettingsRead}
+	want := []Scope{ScopeThreadsRead, ScopeFilesRead, ScopeSettingsRead, ScopeTrackerRead}
 	if !slices.Equal(grants, want) {
 		t.Errorf("view-only grants %v, want exactly %v", grants, want)
 	}

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isLocalEnter } from '../../utils/localEnter';
   // Mirrors internal/settings.validateBareHostname: client + server must
   // reject the same shapes so the UI never surfaces "looks fine" for an
   // input the strict-update path would refuse.
@@ -49,8 +50,8 @@
   function handleKeydown(e: KeyboardEvent): void {
     // Enter confirms the IME candidate while composing; adding here would
     // persist the pre-composition host string.
-    if (e.key === 'Enter' && isImeComposingEvent(e)) return;
-    if (e.key === 'Enter' && canAdd) {
+    if (isLocalEnter(e) && isImeComposingEvent(e)) return;
+    if (isLocalEnter(e) && canAdd) {
       e.preventDefault();
       void addHost();
     }

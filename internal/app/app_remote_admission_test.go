@@ -13,12 +13,12 @@ import (
 	"testing"
 	"time"
 
-	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/gitapp"
 	"agent-overflow/internal/remotejobs"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/transport"
 	"github.com/google/uuid"
 )
@@ -85,12 +85,12 @@ func remoteAdmissionFixture(t *testing.T) (*App, *remoteAdmissionReceiver, conte
 	})
 	receiver.App, receiver.wire = backend.app, backend
 	source := identityApp(t)
-	manager, err := attachedbackends.New(t.TempDir(), "admission source", "linux")
+	manager, err := newTestBackends(t, t.TempDir(), "admission source", "linux")
 	if err != nil {
 		t.Fatal(err)
 	}
 	source.backends = manager
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 	t.Cleanup(cancel)
 	invite, _ := backend.mintLink(t, "full")
 	peer, err := manager.Add(ctx, invite.URL)

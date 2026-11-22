@@ -339,80 +339,41 @@ func (m *Manager) switchProviderAccount(
 			reconcileMu.Unlock()
 		}
 	}()
-	if err := m.reconcileExternalProviderAccountWithMutexHeld(providerName); err != nil {
-		return ManagedAccount{}, fmt.Errorf("check current %s account before switch: %w", providerName, err)
+	// The switch decides from the reconciled canonical state and ends the
+	// running uses of the outgoing account only for a switch it will make: a
+	// refused or declined switch stops nothing. A use may write a refreshed
+	// login as it exits, so once they have ended the switch reconciles and
+	// decides again from what they left, and only that decision reads and
+	// replaces the canonical credential. Only selection writers hold the
+	// reconcile lock, so nothing else moves the selection in between.
+	var plan switchPlan
+	for drained := false; ; drained = true {
+		if err := m.reconcileExternalProviderAccountWithMutexHeld(m.context(), providerName); err != nil {
+			return ManagedAccount{}, fmt.Errorf("check current %s account before switch: %w", providerName, err)
+		}
+		m.mu.Lock()
+		plan, err = m.planSwitchLocked(providerName, accountID, kind)
+		if err != nil || plan.answer != nil {
+			m.mu.Unlock()
+			if err != nil {
+				return ManagedAccount{}, err
+			}
+			return *plan.answer, nil
+		}
+		if drained {
+			break
+		}
+		m.mu.Unlock()
+		m.selectionChanging(providerName)
 	}
-
-	m.mu.Lock()
 	accountLocked := true
 	defer func() {
 		if accountLocked {
 			m.mu.Unlock()
 		}
 	}()
-	current, hasCurrent := m.store.Active(providerName, time.Now())
-	if hasCurrent && current.ID == accountID {
-		return ManagedAccount{
-			Account:    current,
-			Active:     true,
-			Generation: m.store.Generation(providerName),
-			AutoSwitch: m.store.AutoSwitch(providerName, current.ID),
-		}, nil
-	}
-	target, exists := m.store.Get(providerName, accountID, time.Now())
-	if !exists {
-		return ManagedAccount{}, fmt.Errorf("%s account %q is not saved", providerName, accountID)
-	}
-	targetCredential, err := m.credentials.ReadCredentialSnapshot(
-		providerName,
-		accountID,
-		false,
-	)
-	if err != nil {
-		if provideraccounts.IsCredentialMissing(err) {
-			return ManagedAccount{}, errProviderAccountNeedsLogin(providerName, target)
-		}
-		return ManagedAccount{}, fmt.Errorf(
-			"read selected %s credentials: %w",
-			providerName,
-			err,
-		)
-	}
-	// A husked slot is a login the provider already ended. Installing it into
-	// the canonical store would retire the working account for a dead one and
-	// leave the app looking signed in until the next request failed.
-	if m.credentials.CredentialSignedOut(providerName, targetCredential.Bytes()) {
-		m.audit(
-			"refused to %s to %s account %s: its saved credential is the provider's sign-out marker",
-			kind,
-			providerName,
-			accountID,
-		)
-		return ManagedAccount{}, errProviderAccountNeedsLogin(providerName, target)
-	}
-	// An expired login is not yet a husk — the tokens are all still there —
-	// but activating it hands the provider a refresh token the server will
-	// reject, and the CLI answers that rejection by blanking the credential.
-	// So the switch stops here instead: the account is reported as needing a
-	// sign-in, and the answer says so rather than failing, because nothing
-	// went wrong.
-	if m.credentials.CredentialLoginExpired(providerName, targetCredential.Bytes(), time.Now()) {
-		m.audit(
-			"declined to %s to %s account %s: its login expired at %s",
-			kind,
-			providerName,
-			accountID,
-			describeLoginExpiry(providerName, targetCredential.Bytes()),
-		)
-		expired := m.withRecordedLoginExpiry(target, targetCredential.Bytes())
-		return ManagedAccount{
-			Account:        expired,
-			Generation:     m.store.Generation(providerName),
-			NeedsLogin:     true,
-			SignInRequired: true,
-			AutoSwitch:     m.store.AutoSwitch(providerName, expired.ID),
-		}, nil
-	}
+	current, hasCurrent := plan.current, plan.hasCurrent
+	target, targetCredential := plan.target, plan.targetCredential
 	currentID := ""
 	if hasCurrent {
 		currentID = current.ID
@@ -488,6 +449,89 @@ func (m *Manager) switchProviderAccount(
 		Active:     true,
 		Generation: generation,
 		AutoSwitch: m.store.AutoSwitch(providerName, account.ID),
+	}, nil
+}
+
+// switchPlan is what a switch decided under mu from the reconciled state:
+// an answer that changes nothing (the target is already selected, or its
+// login expired), or the target and the credential to install.
+type switchPlan struct {
+	answer           *ManagedAccount
+	current          provideraccounts.Account
+	hasCurrent       bool
+	target           provideraccounts.Account
+	targetCredential provideraccounts.CredentialSnapshot
+}
+
+// planSwitchLocked decides a switch to accountID. A refusal is its error.
+// The caller holds mu.
+func (m *Manager) planSwitchLocked(providerName, accountID string, kind switchKind) (switchPlan, error) {
+	current, hasCurrent := m.store.Active(providerName, time.Now())
+	if hasCurrent && current.ID == accountID {
+		return switchPlan{answer: &ManagedAccount{
+			Account:    current,
+			Active:     true,
+			Generation: m.store.Generation(providerName),
+			AutoSwitch: m.store.AutoSwitch(providerName, current.ID),
+		}}, nil
+	}
+	target, exists := m.store.Get(providerName, accountID, time.Now())
+	if !exists {
+		return switchPlan{}, fmt.Errorf("%s account %q is not saved", providerName, accountID)
+	}
+	targetCredential, err := m.credentials.ReadCredentialSnapshot(
+		providerName,
+		accountID,
+		false,
+	)
+	if err != nil {
+		if provideraccounts.IsCredentialMissing(err) {
+			return switchPlan{}, errProviderAccountNeedsLogin(providerName, target)
+		}
+		return switchPlan{}, fmt.Errorf(
+			"read selected %s credentials: %w",
+			providerName,
+			err,
+		)
+	}
+	// A husked slot is a login the provider already ended. Installing it into
+	// the canonical store would retire the working account for a dead one and
+	// leave the app looking signed in until the next request failed.
+	if m.credentials.CredentialSignedOut(providerName, targetCredential.Bytes()) {
+		m.audit(
+			"refused to %s to %s account %s: its saved credential is the provider's sign-out marker",
+			kind,
+			providerName,
+			accountID,
+		)
+		return switchPlan{}, errProviderAccountNeedsLogin(providerName, target)
+	}
+	// An expired login is not yet a husk — the tokens are all still there —
+	// but activating it hands the provider a refresh token the server will
+	// reject, and the CLI answers that rejection by blanking the credential.
+	// So the switch stops here instead: the account is reported as needing a
+	// sign-in, and the answer says so rather than failing, because nothing
+	// went wrong.
+	if m.credentials.CredentialLoginExpired(providerName, targetCredential.Bytes(), time.Now()) {
+		m.audit(
+			"declined to %s to %s account %s: its login expired at %s",
+			kind,
+			providerName,
+			accountID,
+			describeLoginExpiry(providerName, targetCredential.Bytes()),
+		)
+		expired := m.withRecordedLoginExpiry(target, targetCredential.Bytes())
+		return switchPlan{answer: &ManagedAccount{
+			Account:        expired,
+			Generation:     m.store.Generation(providerName),
+			NeedsLogin:     true,
+			SignInRequired: true,
+			AutoSwitch:     m.store.AutoSwitch(providerName, expired.ID),
+		}}, nil
+	}
+	return switchPlan{
+		current: current, hasCurrent: hasCurrent,
+		target: target, targetCredential: targetCredential,
 	}, nil
 }
 
@@ -680,6 +724,11 @@ func (m *Manager) adoptCurrentProviderAccountLocked(
 	if credential == nil {
 		return provideraccounts.Account{}, SignIn{}, nil
 	}
+	// With nothing selected, adopting the login selects it: the uses running
+	// on the unselected login end before its credential is checked.
+	if _, hasActive := m.store.Active(providerName, time.Now()); !hasActive {
+		m.selectionChanging(providerName)
+	}
 	if err := m.verifyCanonicalProviderCredentialLocked(
 		providerName,
 		credential.Bytes(),
@@ -751,6 +800,7 @@ func (m *Manager) adoptCanonicalProviderAccountLocked(providerName, binary strin
 	// mu is held here, and nothing is selected to attribute the credential
 	// to, so it is asked about directly.
 	info, credential, err := m.runStableAccountProbe(
+		m.context(),
 		providerName,
 		m.canonicalProviderAccountProbe(providerName, binary),
 		m.identifyClaudeCredential,
@@ -761,6 +811,8 @@ func (m *Manager) adoptCanonicalProviderAccountLocked(providerName, binary strin
 	if credential == nil {
 		return SignIn{}, nil
 	}
+	// Nothing is selected, so adopting the login selects it.
+	m.selectionChanging(providerName)
 	if err := m.verifyCanonicalProviderCredentialLocked(
 		providerName,
 		credential.Bytes(),

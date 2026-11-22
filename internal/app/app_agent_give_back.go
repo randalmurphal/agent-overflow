@@ -51,7 +51,7 @@ func ownedSendID(sendID string) bool {
 // unasked; a watch is pending again, and the watcher delivers its completion
 // as it does one that finishes later, starting the session for it; a
 // spawner's answer to its worker's async questions puts them back to
-// unanswered, routed again (returnWorkerAnswer). None of them goes to the
+// unanswered (returnWorkerAnswer). None of them goes to the
 // composer: it is not the person's to send.
 //
 // A completion a session end gave back (ended) is delivered again on the

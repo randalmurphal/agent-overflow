@@ -105,12 +105,11 @@ func TestParseReviewFailureWithoutAResultStaysFailed(t *testing.T) {
 	var toolComplete, commandResult, turnComplete *provider.ProviderEvent
 	for i := range result.Events {
 		event := &result.Events[i].ProviderEvent
-		switch event.Kind {
-		case provider.EventToolComplete:
+		if event.Kind == provider.EventToolComplete {
 			toolComplete = event
-		case provider.EventCommandResult:
+		} else if event.Kind == provider.EventCommandResult {
 			commandResult = event
-		case provider.EventTurnComplete:
+		} else if event.Kind == provider.EventTurnComplete {
 			turnComplete = event
 		}
 	}
@@ -135,19 +134,24 @@ func TestParseReviewResultWinsOverAnInternalError(t *testing.T) {
 	lines = append(lines, `{"timestamp":"2026-08-07T19:07:57.500Z","type":"event_msg","payload":{"type":"error","message":"report tool failed"}}`)
 	lines = append(lines, base[4:]...)
 	result := parseFixture(t, writeRollout(t, testSessionID, lines...))
+	var launches, turns int
 	for i := range result.Events {
 		event := result.Events[i].ProviderEvent
-		switch event.Kind {
-		case provider.EventToolComplete:
+		if event.Kind == provider.EventToolComplete {
+			launches++
 			if !strings.Contains(string(event.Meta), `"item_status":"completed"`) {
 				t.Fatalf("review with a result was marked failed: %s", event.Meta)
 			}
-		case provider.EventTurnComplete:
+		} else if event.Kind == provider.EventTurnComplete {
+			turns++
 			complete := event.TurnComplete.(*provider.WireTurnCompleteMeta)
 			if complete.StopReason != "end_turn" {
 				t.Fatalf("review with a result completion = %+v", complete)
 			}
 		}
+	}
+	if launches != 1 || turns != 1 {
+		t.Fatalf("review ended with %d launch completion(s) and %d turn completion(s), want one of each", launches, turns)
 	}
 }
 

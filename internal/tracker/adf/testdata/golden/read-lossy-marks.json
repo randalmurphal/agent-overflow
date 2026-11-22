@@ -1,0 +1,69 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "3"
+        },
+        {
+          "type": "text",
+          "text": ". starts with punctuation",
+          "marks": [
+            {
+              "type": "strong"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "colored",
+          "marks": [
+            {
+              "type": "strong"
+            },
+            {
+              "type": "textColor",
+              "attrs": {
+                "color": "#ff0000"
+              }
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "text": " and "
+        },
+        {
+          "type": "text",
+          "text": "hl",
+          "marks": [
+            {
+              "type": "backgroundColor",
+              "attrs": {
+                "color": "#f8e6a0"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "multi\nline text"
+        }
+      ]
+    }
+  ]
+}

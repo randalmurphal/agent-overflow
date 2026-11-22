@@ -282,6 +282,7 @@ func TestStatementCacheCompilesOncePerConnection(t *testing.T) {
 			}
 		case sqlStmtRun:
 			runs[key.query] += n
+		case sqlStmtClose:
 		}
 	}
 	for conn, n := range compiled {
@@ -512,7 +513,7 @@ func TestPagesOfAnyLengthShareStatements(t *testing.T) {
 	}
 	lengths := map[int]bool{}
 	page := func(target int) {
-		got, err := s.ListThreadSliceAround(context.Background(), thread, "row-030", target, testRunWindowRows, TimelineSelection{})
+		got, err := s.ListThreadSliceAround(context.Background(), thread, "row-030", target, testRunWindowRows, TimelineSelection{}, AgentMessagesAreMembers)
 		if err != nil {
 			t.Fatal(err)
 		}

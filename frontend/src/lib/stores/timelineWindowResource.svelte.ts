@@ -3,10 +3,11 @@ import type { BackendKey } from '../transport/backendKey';
 import type { PagedItems, TimelineScopeContext } from '../../../bindings/agent-overflow/internal/store/models';
 import type { Item } from '../types/models';
 import type { TimelineMutation } from './timelineSurfaces';
+import type { RuledRead } from './bindings';
 import { holdBackendRecovery } from './transportRecovery';
 
 export type WindowObservation = TimelineMutation
-  | { kind: 'snapshot'; page?: PagedItems | null; scope?: TimelineScopeContext | null; gone: boolean; contextVersion: number; touched: ReadonlySet<string>; unheldItems: ReadonlyMap<string, Item> };
+  | { kind: 'snapshot'; page?: RuledRead<PagedItems> | null; scope?: TimelineScopeContext | null; gone: boolean; contextVersion: number; touched: ReadonlySet<string>; unheldItems: ReadonlyMap<string, Item> };
 export interface WindowResource {
   backend(): BackendKey | undefined;
   read(signal: AbortSignal): Promise<WindowObservation | null>;

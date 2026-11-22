@@ -232,12 +232,11 @@ func (s *Session) childLifecycleRevisionForThread(providerThreadID string) uint6
 // (assistant text, thinking, tools, command output, diffs, warnings) remain
 // allowed and receive ParentToolUseID in the normal dispatch path.
 //
-// `EventSubagentProgress` is allowed by default (it is not listed) and
-// that is deliberate: it is the child's OWN usage channel, scoped to the
-// spawn tool_use and consumed as per-agent live state, never folded into
-// the parent's meter. `EventTokenUsage` below stays forbidden, which is
-// what keeps the two apart — a child's numbers reach the UI only under
-// the agent's own id.
+// `EventSubagentProgress` is allowed, and that is deliberate: it is the
+// child's OWN usage channel, scoped to the spawn tool_use and consumed as
+// per-agent live state, never folded into the parent's meter.
+// `EventTokenUsage` below stays forbidden, which is what keeps the two
+// apart: a child's numbers reach the UI only under the agent's own id.
 func isUnsafeChildProjectionEvent(kind provider.EventKind) bool {
 	switch kind {
 	case provider.EventInit,
@@ -257,6 +256,42 @@ func isUnsafeChildProjectionEvent(kind provider.EventKind) bool {
 		provider.EventUserText,
 		provider.EventProposedPlan:
 		return true
+	case provider.EventTextDelta,
+		provider.EventToolStart,
+		provider.EventToolComplete,
+		provider.EventApprovalRequest,
+		provider.EventApprovalResolved,
+		provider.EventUserInputRequest,
+		provider.EventUserInputResolved,
+		provider.EventUsageProgress,
+		provider.EventError,
+		provider.EventNotification,
+		provider.EventContentBlockStart,
+		provider.EventContentBlockStop,
+		provider.EventBlocksAbandoned,
+		provider.EventBackgroundTaskTerminal,
+		provider.EventBackgroundTaskNotification,
+		provider.EventSessionWakeup,
+		provider.EventScheduledJobs,
+		provider.EventCompactionStatus,
+		provider.EventSubagentNotification,
+		provider.EventSubagentStatus,
+		provider.EventSubagentProgress,
+		provider.EventSubagentBackgrounded,
+		provider.EventBackgroundTasksChanged,
+		provider.EventAgentWakeDropped,
+		provider.EventBackgroundTaskStopAcked,
+		provider.EventCodexExecResult,
+		provider.EventTerminalInteraction,
+		provider.EventCommandLifecycle,
+		provider.EventCommandsChanged,
+		provider.EventCommandResult,
+		provider.EventDiff,
+		provider.EventCommandOutput,
+		provider.EventThinking,
+		provider.EventWorkspaceChanged,
+		provider.EventPermissionModeChanged:
+		fallthrough
 	default:
 		return false
 	}
@@ -994,8 +1029,7 @@ func (s *Session) preserveWaitAgentReceiverTargets(evt *provider.ProviderEvent) 
 	if itemID == "" {
 		return
 	}
-	switch evt.Kind {
-	case provider.EventToolStart:
+	if evt.Kind == provider.EventToolStart {
 		receiverThreadIDs := receiverThreadIDsFromEventMeta(evt.Meta)
 		if len(receiverThreadIDs) == 0 {
 			return
@@ -1006,7 +1040,7 @@ func (s *Session) preserveWaitAgentReceiverTargets(evt *provider.ProviderEvent) 
 		}
 		s.rawCalls.waitReceiverIDsByCall[itemID] = append([]string(nil), receiverThreadIDs...)
 		s.mu.Unlock()
-	case provider.EventToolComplete:
+	} else if evt.Kind == provider.EventToolComplete {
 		s.mu.Lock()
 		receiverThreadIDs := append([]string(nil), s.rawCalls.waitReceiverIDsByCall[itemID]...)
 		delete(s.rawCalls.waitReceiverIDsByCall, itemID)

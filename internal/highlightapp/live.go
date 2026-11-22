@@ -492,6 +492,7 @@ func (s *Service) appendLiveFence(item *liveItem, fence *liveFence, text []byte)
 	case highlight.StreamOK:
 		fence.changed = min(fence.changed, from)
 		fence.dirty = true
+	case highlight.StreamIncomplete:
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -13,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1311,6 +1313,69 @@ func TestHTTPOfflineDropsTheConnectionWithoutAReply(t *testing.T) {
 	}
 	if inv := lastInvocation(t, e); inv.Route != "offline" || inv.Via != ViaHTTP {
 		t.Fatalf("invocation = %+v", inv)
+	}
+}
+
+// A request the client gives up while sending its body (a cancelled call)
+// is recorded as aborted. It is not a call the fake fails to implement.
+// An offline forge and a wrong token still read as they do for a whole
+// request, and a body that cannot be read on a connection still open stays
+// unhandled.
+func TestHTTPRequestCutShortMidBodyIsRecordedAsAborted(t *testing.T) {
+	t.Parallel()
+	const cutShort = "Content-Length: 4096\r\n\r\n{\"query\":"
+	for _, tc := range []struct {
+		name, token string
+		offline     bool
+		// body is the request from its body headers on; connected leaves
+		// the send side open after it.
+		body      string
+		connected bool
+		route     string
+		unhandled bool
+		reply     string
+	}{
+		{name: "the forge transport's request", token: testAPIToken, body: cutShort, route: "aborted"},
+		{name: "while the forge is offline", token: testAPIToken, offline: true, body: cutShort, route: "offline"},
+		{name: "with a wrong token", token: "not-the-token", body: cutShort, unhandled: true, reply: "HTTP/1.1 401 "},
+		{name: "a malformed body on an open connection", token: testAPIToken, body: "Transfer-Encoding: chunked\r\n\r\nZ\r\n", connected: true, unhandled: true, reply: "HTTP/1.1 404 "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			e, _ := seeded(t, Options{})
+			srv := testServer(t, e)
+			e.SetOffline(tc.offline)
+			conn, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", srv.Listener.Addr().String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = conn.Close() }()
+			if err := conn.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			head := "POST /github/graphql HTTP/1.1\r\nHost: github.com\r\nAuthorization: Bearer " + tc.token +
+				"\r\nContent-Type: application/json\r\n" + tc.body
+			if _, err := io.WriteString(conn, head); err != nil {
+				t.Fatal(err)
+			}
+			if !tc.connected {
+				// The send side ends short of the declared body; the read
+				// side stays open, so a reply would arrive.
+				if err := conn.(*net.TCPConn).CloseWrite(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			reply, err := io.ReadAll(conn)
+			if err != nil && !errors.Is(err, syscall.ECONNRESET) {
+				t.Fatalf("read the reply: %v", err)
+			}
+			if !strings.HasPrefix(string(reply), tc.reply) || (tc.reply == "" && len(reply) != 0) {
+				t.Fatalf("reply = %q, want prefix %q", reply, tc.reply)
+			}
+			if inv := lastInvocation(t, e); inv.Unhandled != tc.unhandled || inv.Route != tc.route || inv.Via != ViaHTTP {
+				t.Fatalf("invocation = %+v, want route %q, unhandled %t", inv, tc.route, tc.unhandled)
+			}
+		})
 	}
 }
 

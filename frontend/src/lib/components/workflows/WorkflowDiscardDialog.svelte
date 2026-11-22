@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { workflowItemHasScope } from '../../transport/entityScopes';
+  import { workflowItemScopeGrant } from '../../transport/entityScopes';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
   // Discard — preview is consent (UI-SPEC §4.5, D23). Nothing is destroyed
   // until this dialog has shown exactly what would be: one row per worktree in
   // the run's tree (the run's own, its units' sub-worktrees, its children's),
@@ -25,7 +26,8 @@
   let { open, itemId, onClose }: Props = $props();
 
   // Every control here drives the workflow engine, which is `threads:autonomy`.
-  let ungranted = $derived(!workflowItemHasScope('threads:autonomy', itemId));
+  let grant = $derived(workflowItemScopeGrant('threads:autonomy', itemId));
+  let ungranted = $derived(grant !== 'granted');
   let item = $derived(getWorkflowRun(itemId));
   // Composed spend (see WorkflowRunDetail): `usage.costUsd` is wire-reported
   // cost alone and reads as zero for a run that ran on Codex.
@@ -117,6 +119,7 @@
       testId="workflow-discard-confirm"
       onclick={() => { void confirm(); }}
       disabled={ungranted || submitting || loading || !item || Boolean(error)}
+      title={grantBlockedTitle(grant)}
       loading={submitting}
     >
       {#snippet children()}{submitting ? 'Discarding…' : 'Discard'}{/snippet}

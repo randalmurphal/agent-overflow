@@ -78,10 +78,11 @@ func (a *App) browserMCPConfigForThread(thread store.Thread, sessionToken string
 		// subsystems. Both mean the thread is offered no browser server.
 		return nil, nil
 	}
-	return a.browser.mcp.RegisterThread(appbrowser.Access{
-		ThreadID:    thread.ID,
+	return a.browser.mcp.RegisterThread(appbrowser.Caller{
+		ThreadID:    appbrowser.ThreadID(thread.ID),
 		Workspace:   thread.WorkspacePath,
 		ProjectRoot: thread.ProjectPath,
+		ProjectID:   thread.ProjectID,
 	}, sessionToken)
 }
 
@@ -159,7 +160,8 @@ func (a *App) setBrowserThreadMCPEnabled(thread store.Thread, enabled bool) erro
 // closeThreadBrowserPages closes the pages a deleted or archived
 // conversation owns, suspended ones included. Its browser tools calls finish
 // first, so none opens a page after the close; the caller's thread lock keeps
-// a session start from registering the thread again meanwhile.
+// a session start from registering the thread again meanwhile. A companion
+// action bound before the close opens no page after it (Manager.BindThread).
 func (a *App) closeThreadBrowserPages(threadID string) error {
 	if a.closeBrowserPagesFn != nil {
 		return a.closeBrowserPagesFn(threadID)
@@ -172,7 +174,7 @@ func (a *App) closeThreadBrowserPages(threadID string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return a.browser.manager.CloseThread(ctx, threadID)
+	return a.browser.manager.CloseThread(ctx, appbrowser.ThreadID(threadID))
 }
 
 // suspendThreadBrowserPages unloads the browser pages of a thread whose idle
@@ -186,14 +188,14 @@ func (a *App) suspendThreadBrowserPages(threadID string) error {
 	}
 	ctx, cancel := context.WithTimeout(a.lifeCtx(), 10*time.Second)
 	defer cancel()
-	return a.browser.manager.SuspendThread(ctx, threadID)
+	return a.browser.manager.SuspendThread(ctx, appbrowser.ThreadID(threadID))
 }
 
 // browserThreadKeepsPages answers at boot whether a thread's saved browser
 // pages still belong to it: the thread exists and is not archived. Pages a
 // delete or archive could not close (the app stopped mid-way) go here.
-func (a *App) browserThreadKeepsPages(threadID string) (bool, error) {
-	thread, err := a.browserThread(threadID)
+func (a *App) browserThreadKeepsPages(threadID appbrowser.ThreadID) (bool, error) {
+	thread, err := a.browserThread(string(threadID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -203,9 +205,9 @@ func (a *App) browserThreadKeepsPages(threadID string) (bool, error) {
 	return !thread.Archived, nil
 }
 
-// ClearBrowserSiteData closes active browser contexts before deleting their
-// encrypted checkpoints, preventing a later teardown from writing cleared
-// cookies back to disk.
+// ClearBrowserSiteData closes every browser page before clearing the
+// engines' profile data (Manager.ClearSiteData), so no open profile writes
+// cleared cookies back to disk.
 //
 //ao:scope terminal:operate
 //ao:route home

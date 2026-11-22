@@ -14,13 +14,13 @@ import (
 	"testing"
 	"time"
 
-	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/gitapp"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/remotejobs"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
@@ -199,12 +199,12 @@ func TestRemoteWatchPairedCompletionStartsIdleAgentAndRespectsThreadOwnership(t 
 	remotetest.Require(t)
 	destination := newPairedBackend(t)
 	source, rec := newAppForFlushQueueRPC(t)
-	peers, err := attachedbackends.New(t.TempDir(), "source", "test")
+	peers, err := newTestBackends(t, t.TempDir(), "source", "test")
 	if err != nil {
 		t.Fatal(err)
 	}
 	source.backends = peers
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 	defer cancel()
 	invite, _ := destination.mintLink(t, "full")
 	peer, err := peers.Add(ctx, invite.URL)
@@ -914,12 +914,12 @@ func pairedRemoteSource(t *testing.T, run remotejobs.Run) (source *App, destinat
 	t.Helper()
 	destination = newPairedBackend(t)
 	source, _ = newAppForFlushQueueRPC(t)
-	peers, err := attachedbackends.New(t.TempDir(), "source", "test")
+	peers, err := newTestBackends(t, t.TempDir(), "source", "test")
 	if err != nil {
 		t.Fatal(err)
 	}
 	source.backends = peers
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 	defer cancel()
 	invite, _ := destination.mintLink(t, "full")
 	peer, err := peers.Add(ctx, invite.URL)

@@ -150,12 +150,10 @@ func TestABackendsDeathEndsItsProviderSession(t *testing.T) {
 			binary := providerMock(t, onTerm)
 			dataDir := t.TempDir()
 			backend := exec.Command(os.Args[0], "-test.run=^TestProviderBackendHelper$")
-			// The backend's temporary files land where this test removes them.
 			backend.Env = append(os.Environ(),
 				providerBackendDataEnv+"="+dataDir,
 				providerBackendStartEnv+"="+c.start,
-				providerBackendBinaryEnv+"="+binary,
-				"TMPDIR="+t.TempDir())
+				providerBackendBinaryEnv+"="+binary)
 			stdout, err := backend.StdoutPipe()
 			if err != nil {
 				t.Fatal(err)

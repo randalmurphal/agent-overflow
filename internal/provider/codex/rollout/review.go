@@ -36,15 +36,14 @@ func (r *reviewConversion) scopes(evt provider.ProviderEvent) bool {
 	if evt.ParentToolUseID != "" {
 		return false
 	}
-	switch evt.Kind {
-	case provider.EventTurnStart, provider.EventTurnComplete, provider.EventUserText,
-		provider.EventCommandResult:
+	if evt.Kind == provider.EventTurnStart || evt.Kind == provider.EventTurnComplete ||
+		evt.Kind == provider.EventUserText || evt.Kind == provider.EventCommandResult {
 		return false
-	case provider.EventToolStart:
-		return evt.ItemID != r.launchID
-	default:
-		return true
 	}
+	if evt.Kind == provider.EventToolStart {
+		return evt.ItemID != r.launchID
+	}
+	return true
 }
 
 func (c *converter) beginReview(env envelope) {

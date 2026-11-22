@@ -62,9 +62,22 @@
   // cache-replay dance existed to feed).
 
   const DEFAULT_ESTIMATE_PX = 56;
-  // Keep in sync with MessageTimeline's BUFFER_SIZE_PX — the rationale
-  // (scroll-runway sizing; deliberately NOT a memory dial) lives on
-  // that constant.
+  // Extra buffer rendered above + below the viewport so fast scrolls
+  // (trackpad fling, scrollbar drag) don't outrun the rendered window,
+  // which shows as text disappearing under the composer and reappearing.
+  // The window recenters on every scroll event (any landing point mounts
+  // same-frame), so the buffer only bridges the compositor-vs-main-thread
+  // gap: 1-2 frames of scroll velocity in the steady state, plus
+  // main-thread stall bursts (streaming markdown parse, highlight ingest:
+  // tens of ms) at fling speed. It also lets row-size estimate
+  // corrections and async row content (images, first-visit
+  // mermaid/katex/spans) settle offscreen instead of at the visible edge.
+  //
+  // Not a memory dial: buffered rows cost DOM, not raster, since tiles
+  // exist only near each pane's viewport, and a parked-at-bottom pane
+  // fills only the buffer above it. Below ~800px the stall and fling
+  // blanking above shows, for low-single-digit-MB DOM savings; 1200 is
+  // about a viewport of stall insurance.
   const DEFAULT_BUFFER_PX = 1200;
   // Matches upstream virtua's scrollend timing, which the app's snapshot
   // persistence and the browser harness quiet-waits already assume.

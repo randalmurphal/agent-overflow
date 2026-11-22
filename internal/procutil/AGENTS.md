@@ -1,6 +1,6 @@
 # Process helpers
 
-This package owns six utilities:
+This package owns seven utilities:
 
 - `ConfigureGroup` and `KillConfiguredGroup` arrange and terminate an owned
   child process group using the platform implementation.
@@ -43,6 +43,8 @@ This package owns six utilities:
   output pipe, so output from grandchildren is captured, from the start and
   never after `Wait` returns. `GroupCommand.Stderr` gives stderr a pipe and
   sink of its own, owned the same way; without it stderr joins `Output`.
+  `GroupCommand.Stdin` is the command's input; without it stdin is the null
+  device.
   Cancellation sends SIGTERM, then SIGKILL after
   `TerminateGrace`, and sets `Stopped`: an exit status is then the command's
   answer to the signal, not its result. After the leader exits `Wait` stops
@@ -74,6 +76,10 @@ This package owns six utilities:
   it busy, and running it fails with "text file busy". Every process start
   waits, so hold it only across the write, and not for an executable another
   process runs.
+- `SetJobInformation` and `QueryJobInformation` (Windows) pass a Job
+  Object information buffer pinned across the call. Use them for every Job
+  Object limit or accounting call, never a bare `uintptr(unsafe.Pointer(...))`
+  to the x/sys wrapper.
 
 Tests whose subject refuses to start without a reaper pass
 `procutiltest.Reaper()`, which watches nothing, or a `procutiltest.Recorder`

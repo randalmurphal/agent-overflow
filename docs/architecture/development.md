@@ -15,8 +15,8 @@ Linux GUI builds need `libgtk-4-dev`, `libwebkitgtk-6.0-dev`, `pkg-config`
 and `gcc`. Wails uses GTK4/WebKitGTK 6.0. The SQLite driver is pure Go;
 syntax highlighting and platform webview glue require cgo. The release
 scripts and their tests also need `git`, `zip` and `unzip`. Linux test runs
-need unprivileged user namespaces
-([network isolation](../specs/testing-harness.md#network-isolation)).
+need unprivileged user namespaces and mounts in them
+([isolation](../specs/testing-harness.md#isolation-network-temp-directory-and-priority)).
 
 `make install` installs the Wails CLI and frontend dependencies, including
 Chromium for the browser tests. `make dev` builds the dev bundle once and
@@ -34,6 +34,24 @@ traces and from `runtime.Caller` are module-relative
 (`agent-overflow/internal/...`), so a test finds the checkout with
 `internal/testutil/reporoot`, and a debugger attached to a `make dev` build
 needs that prefix mapped to the checkout.
+
+Make lowers itself to nice 19, so every build and test recipe yields to
+the developer's running app; goals that launch an app (`make dev`,
+`make harness` and the like) keep normal priority. The test targets run
+under `bin/ao-netns`, whose private temp directory and on-disk Go work
+directory are described with the
+[isolation](../specs/testing-harness.md#isolation-network-temp-directory-and-priority).
+Go trims its build cache only by age, so `go-build`, `go-test` and
+`test-race` run a `cmd/ao-gocache-trim` pass before their build or test and
+another when it ends. A pass walks the cache at most every five minutes,
+one at a time across sessions, and once `go env GOCACHE` passes 20 GiB
+(`AO_GOCACHE_MAX_GIB`; 0 turns it off) deletes its least recently used
+entries, linked executables included, never one used in the last hour;
+when those alone keep the cache over the cap it says so. It resolves
+`GOCACHE` by the go command's own rules and refuses a directory without
+the `README` the go command writes in its cache. There a failed pass prints its error and the
+target goes on, while an invalid `AO_GOCACHE_MAX_GIB` fails it;
+`make gocache-trim` fails on either. It does nothing in CI.
 
 ## Generated artifacts
 
@@ -98,8 +116,8 @@ of the real-provider smoke tests.
 Every step calls a Make target, so the local command is the same check.
 The jobs fill the Free plan's 20 concurrent slots where the time is: one
 Linux job for `fmt-check`, `tidy-check`, `go-vet`, `go-build`, `provider-smoke-compile`
-and `bindings-check`, a macOS `go-build`, one job for `go-lint` and
-`go-vuln`, the frontend job (`check`, `build`, `frontend-lint`), `go-test`
+and `bindings-check`, a macOS `go-build` and `exhaustive` pass, one job
+for `go-lint`, `go-lint-exhaustive` and `go-vuln`, the frontend job (`check`, `build`, `frontend-lint`), `go-test`
 in three shards by package weight (`GO_TEST_PKGS`, `GO_TEST_EXCLUDE`) plus
 two with `GO_TEST_FLAGS='-tags noremote'`, the
 Vitest unit and browser projects as two jobs under `bin/ao-netns`, and
@@ -141,7 +159,18 @@ checked by `scripts/test-ci-change.sh`) and `go-lint` runs with
 `--new-from-patch`, while
 `frontend-lint` runs `--deny-warnings` on the changed frontend files. Both
 widen to the whole tree once the existing backlog is cleared
-(`make go-lint` and `make frontend-lint` show it). Branch protection
+(`make go-lint` and `make frontend-lint` show it). The `exhaustive` linter
+has none, so the `go-lint` job also runs it alone over the whole tree
+(`make go-lint-exhaustive`): a constant added to an enum fails at every
+switch that does not name it. The target reaches every Go file its host
+compiles in two passes, one with no build tag and one with `nogui`,
+`noremote`, `providersmoke` and `linearlive` together
+(`TestExhaustiveLintPassesReachEveryFile` fails for a file no pass
+compiles), then lints the Windows
+launcher's packages as Windows compiles them. The macOS job runs the linter
+over the default file set alone, which holds every file only macOS
+compiles. A Windows-only file outside the
+launcher's packages is compiled by no job and is not checked. Branch protection
 requiring these checks is a repository setting, not part of the tree.
 
 ## Releases

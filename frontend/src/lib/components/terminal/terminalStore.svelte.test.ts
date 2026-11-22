@@ -10,7 +10,6 @@ import {
   resetTerminalFocusForTest,
   terminalFocusRegion,
   TERMINAL_DRAWER_LIMITS,
-  trimPendingOutput,
 } from './terminalStore.svelte';
 import type { TerminalSessionSummary } from '../../types/terminal';
 
@@ -201,7 +200,7 @@ describe('ThreadTerminalState', () => {
 
   it('keeps per-chunk sequences aligned with output after eviction', () => {
     // Eviction shifts the oldest chunk off pendingOutput AND its parallel
-    // sequence entry (trimPendingOutputEntries does both in lockstep). If
+    // sequence entry (appendPendingOutput does both in lockstep). If
     // those arrays drift, markReplayed walks sequences[i] against the wrong
     // pendingOutput[i] and drops the wrong chunk. Force an eviction between
     // distinctly-sequenced chunks, then replay-cover one survivor and assert
@@ -407,7 +406,6 @@ describe('terminal focus registry', () => {
   });
 });
 
-// --- Bug D7 regression: pendingOutput cap ---
 describe('pendingOutput cap', () => {
   const cap = PENDING_OUTPUT_LIMITS.bytes;
 
@@ -415,35 +413,49 @@ describe('pendingOutput cap', () => {
     return queue.reduce((acc, s) => acc + s.length, 0);
   }
 
-  it('appends as-is while total stays below the cap', () => {
-    const q = trimPendingOutput([filled(100, 'a')], filled(200, 'b'));
-    expect(q.map(dec)).toEqual(['a'.repeat(100), 'b'.repeat(200)]);
-    expect(bytesIn(q)).toBe(300);
+  function tab(): ReturnType<typeof createThreadTerminalState> {
+    const s = createThreadTerminalState();
+    s.addTab(makeSummary({ terminalID: 'T' }));
+    return s;
+  }
+
+  it('appends as-is while total stays within the cap', () => {
+    const s = tab();
+    s.appendOutput('T', filled(100, 'a'));
+    s.appendOutput('T', filled(cap - 100, 'b'));
+    const q = s.drainOutput('T');
+    expect(q.map((c) => [c[0], c.length])).toEqual([['a'.charCodeAt(0), 100], ['b'.charCodeAt(0), cap - 100]]);
+    expect(bytesIn(q)).toBe(cap);
+    expect(s.drainOutput('T')).toEqual([]);
   });
 
-  it('drops oldest chunks when total would exceed the cap', () => {
-    // Build a queue that is already full.
-    const queue = [filled(cap / 2, 'x'), filled(cap / 2, 'y')];
-    // Add a chunk that would overflow by 100 bytes — oldest 'x' is dropped.
-    const next = trimPendingOutput(queue, filled(100, 'z'));
-    expect(bytesIn(next)).toBeLessThanOrEqual(cap);
-    expect(next[0]![0]).toBe('y'.charCodeAt(0));
-    expect(next[next.length - 1]![0]).toBe('z'.charCodeAt(0));
+  it('drops the oldest whole chunks when total would exceed the cap', () => {
+    const s = tab();
+    s.appendOutput('T', filled(cap / 2, 'x'));
+    s.appendOutput('T', filled(cap / 2, 'y'));
+    // Over by 100 bytes: all of x goes, none of y.
+    s.appendOutput('T', filled(100, 'z'));
+    const q = s.drainOutput('T');
+    expect(q.map((c) => [c[0], c.length])).toEqual([['y'.charCodeAt(0), cap / 2], ['z'.charCodeAt(0), 100]]);
   });
 
-  it('truncates a single oversized chunk to the cap and discards the rest', () => {
-    const queue = [enc('pre')];
+  it('keeps only the tail of a single chunk past the cap', () => {
+    const s = tab();
+    s.appendOutput('T', enc('pre'));
     const jumbo = filled(cap + 123, 'J');
-    const next = trimPendingOutput(queue, jumbo);
-    expect(next).toHaveLength(1);
-    expect(next[0]!.length).toBe(cap);
-    // Kept the tail of the jumbo (most recent bytes).
-    expect(next[0]![0]).toBe('J'.charCodeAt(0));
+    jumbo[123] = 'K'.charCodeAt(0);
+    s.appendOutput('T', jumbo);
+    const q = s.drainOutput('T');
+    expect(q).toHaveLength(1);
+    expect(q[0]!.length).toBe(cap);
+    expect(q[0]![0]).toBe('K'.charCodeAt(0));
   });
 
-  it('returns existing when chunk is empty (no work done)', () => {
-    const queue = [enc('a'), enc('b')];
-    expect(trimPendingOutput(queue, new Uint8Array(0))).toBe(queue);
+  it('ignores an empty chunk', () => {
+    const s = tab();
+    s.appendOutput('T', enc('a'));
+    s.appendOutput('T', new Uint8Array(0));
+    expect(s.drainOutput('T').map(dec)).toEqual(['a']);
   });
 
   it('stress: 2 MB of appended output during unmount stays under the cap', () => {

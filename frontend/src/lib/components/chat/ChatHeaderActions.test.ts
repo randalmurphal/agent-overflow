@@ -12,12 +12,14 @@ import { setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { resetEditorsForTest } from '../../stores/editors.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
+import { applyBrowserCompanionState, resetBrowserCompanionForTest } from '../../stores/browserCompanion.svelte';
+import { closeCompanion, companionForSource, installCompanionPanes, resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
 import type { GitStatus } from '../../types/git';
 import type { Project, Thread } from '../../types/models';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { setBindingMock, getBindingMock } from '../../../test/mocks/bindings-app';
 import { commitList } from '../../../test/helpers/commitList';
-import { __setTransportStatusForTest } from '../../stores/transportStatus.svelte';
+import { __setTransportHelloForTest, __setTransportStatusForTest } from '../../stores/transportStatus.svelte';
 import { emitWailsEvent } from '../../../test/mocks/wailsio-runtime';
 import {
   buildPane as buildRegisteredPane,
@@ -586,5 +588,69 @@ describe('<ChatHeaderActions> New Thread, Same Assistant with assistants off', (
       __resetEntityIndexForTest();
       applySettingsSnapshot(makeSettings({ assistantsEnabled: true }));
     }
+  });
+});
+
+describe('<ChatHeaderActions> browser toggle', () => {
+  const THREAD = 'thread-browser';
+  const tab = { id: 'page-1', url: 'https://example.com/', title: 'Example', canGoBack: false, canGoForward: false };
+  const shown = (seq: number) => ({ kind: 'state', threadId: THREAD, activePageId: 'page-1', visible: true, pages: [tab], seq });
+
+  beforeEach(async () => {
+    resetPanesForTest();
+    resetEditorsForTest();
+    resetBrowserCompanionForTest();
+    resetCompanionPanesForTest();
+    installCompanionPanes();
+    setBindingMock('GetSettings', async () => null);
+    setBindingMock('GetProviderStatuses', async () => []);
+    setBindingMock('ListAvailableEditors', async () => []);
+    setBindingMock('GetEditorSettings', async () => ({ preference: '' }));
+    setBindingMock('BrowserCompanionThreadState', async () => shown(1));
+    await loadSettings();
+    // The home backend has a browser engine and the browser is on, so the
+    // button offers the show (canPresentNativeBrowser).
+    __setTransportHelloForTest({ protocolVersion: 1, capabilities: ['browser'],
+      backendId: '', backendName: '', serverTimeMs: 0, clockSkewMs: 0,
+      bundleId: '', bundleVersion: '', minShellBuild: 0 });
+    applySettingsSnapshot(makeSettings({ browserEnabled: true }));
+  });
+
+  afterEach(() => {
+    __setTransportHelloForTest(null);
+    setCompactLayoutForTest(false);
+    resetBrowserCompanionForTest();
+    resetCompanionPanesForTest();
+  });
+
+  // Pressed is what the layout presents, not the session's visibility.
+  it('reads unpressed when the session is visible but its pane is not in the layout', async () => {
+    installSubscribeMock(status({}));
+    const pane = await buildPane(makeThread({ id: THREAD }));
+    setPaneLayoutItemsForTest([{ id: 'main', paneId: 'main', kind: 'thread', widthPx: 640 }]);
+    const { getByTestId } = render(ChatHeaderActions, { props: { pane } });
+    applyBrowserCompanionState(shown(2) as never);
+    await flush();
+    expect(companionForSource('main', 'browser')).not.toBeNull();
+    expect(getByTestId('browser-companion-toggle')).toHaveAttribute('aria-pressed', 'true');
+    closeCompanion('browser-main');
+    await flush();
+    expect(getByTestId('browser-companion-toggle')).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  // Compact records a visible session without opening its pane; the push
+  // that recorded it is not sent again when the layout returns to desktop.
+  it('presents on the desktop a session made visible under compact', async () => {
+    installSubscribeMock(status({}));
+    const pane = await buildPane(makeThread({ id: THREAD }));
+    setPaneLayoutItemsForTest([{ id: 'main', paneId: 'main', kind: 'thread', widthPx: 640 }]);
+    setCompactLayoutForTest(true);
+    render(ChatHeaderActions, { props: { pane } });
+    applyBrowserCompanionState(shown(2) as never);
+    await flush();
+    expect(companionForSource('main', 'browser')).toBeNull();
+    setCompactLayoutForTest(false);
+    await flush();
+    expect(companionForSource('main', 'browser')).not.toBeNull();
   });
 });

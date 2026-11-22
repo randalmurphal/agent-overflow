@@ -17,10 +17,11 @@ import (
 	"agent-overflow/internal/atomicfile"
 )
 
-// The saved copy of the suspended pages: one JSON file per thread under
-// browserPageRecordDir, named by a digest of the thread id, written whole and
-// atomically whenever the thread's suspended pages change and for every open
-// page at shutdown. A thread keeps at most maxPagesPerThread pages, live and
+// The saved copy of the suspended pages and of the thread's cookie jar
+// setting: one JSON file per thread under browserPageRecordDir, named by a
+// digest of the thread id, written whole and atomically whenever the thread's
+// suspended pages or its jar setting change and for every open page at
+// shutdown. A thread with no saved page and the default jar has no file. A thread keeps at most maxPagesPerThread pages, live and
 // suspended together, so a file is bounded and a write costs one small file
 // however many threads keep pages. The records are browser state like the
 // profile tree beside them: the Manager alone reads and writes them, and
@@ -40,10 +41,13 @@ const (
 )
 
 type pageRecordFile struct {
-	Version      int          `json:"version"`
-	ThreadID     string       `json:"threadId"`
-	ActivePageID string       `json:"activePageId,omitempty"`
-	Pages        []pageRecord `json:"pages"`
+	Version      int    `json:"version"`
+	ThreadID     string `json:"threadId"`
+	ActivePageID string `json:"activePageId,omitempty"`
+	// Jar is the thread's jar setting (jar.go), which every one of its pages
+	// opens and restores in; omitted for the default.
+	Jar   string       `json:"jar,omitempty"`
+	Pages []pageRecord `json:"pages"`
 }
 
 type pageRecord struct {
@@ -56,14 +60,15 @@ type pageRecord struct {
 	LastUsed int64  `json:"lastUsed"`
 }
 
-func (m *Manager) recordPath(threadID string) string {
+func (m *Manager) recordPath(threadID ThreadID) string {
 	digest := sha256.Sum256([]byte(threadID))
 	return filepath.Join(m.recordDir, hex.EncodeToString(digest[:16])+".json")
 }
 
 // persistThreads rewrites the saved copy of each thread from its current
-// suspended pages, removing the file of a thread that has none.
-func (m *Manager) persistThreads(threadIDs []string) error {
+// suspended pages and jar setting, removing the file of a thread that has no
+// page and the default jar.
+func (m *Manager) persistThreads(threadIDs []ThreadID) error {
 	m.persistMu.Lock()
 	defer m.persistMu.Unlock()
 	return m.writeRecordFilesLocked(threadIDs)
@@ -72,39 +77,74 @@ func (m *Manager) persistThreads(threadIDs []string) error {
 // writeRecordFilesLocked snapshots the threads' records under m.mu and writes
 // them. The caller holds persistMu, which keeps the snapshot and its write in
 // order with every other write.
-func (m *Manager) writeRecordFilesLocked(threadIDs []string) error {
+func (m *Manager) writeRecordFilesLocked(threadIDs []ThreadID) error {
 	m.mu.Lock()
 	files := make([]pageRecordFile, 0, len(threadIDs))
 	for _, threadID := range threadIDs {
-		file := pageRecordFile{Version: pageRecordVersion, ThreadID: threadID}
-		for _, tab := range m.threadTabsLocked(threadID) {
-			if rec := tab.rec; rec != nil {
-				file.Pages = append(file.Pages, pageRecord{
-					ID: rec.id, URL: rec.url, Title: rec.title, Label: rec.label,
-					Order: rec.tabOrder, Created: rec.createdAt, LastUsed: rec.lastUse,
-				})
-			}
-		}
-		if session, ok := m.sessions[threadID]; ok {
-			file.ActivePageID = session.ActivePageID
-		}
-		files = append(files, file)
+		files = append(files, m.recordFileLocked(threadID))
 	}
 	m.mu.Unlock()
 	var errs []error
 	for _, file := range files {
-		path := m.recordPath(file.ThreadID)
-		if len(file.Pages) == 0 {
-			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-				errs = append(errs, fmt.Errorf("browser: remove saved pages: %w", err))
-			}
-			continue
-		}
-		if err := atomicfile.WriteJSON(path, file); err != nil {
-			errs = append(errs, fmt.Errorf("browser: save pages: %w", err))
+		if err := m.writeRecordFile(file); err != nil {
+			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// recordFileLocked is the saved copy of the thread as its current lifetime
+// is: its suspended pages. A thread with no current lifetime
+// saves nothing, which removes its file. The copy on disk is one name for
+// every lifetime of the thread, so it is only ever written from the current
+// one, in persistMu order: an earlier lifetime's cleanup, or a save it
+// asks for, writes the current lifetime's tabs. The caller holds m.mu.
+func (m *Manager) recordFileLocked(threadID ThreadID) pageRecordFile {
+	file := pageRecordFile{Version: pageRecordVersion, ThreadID: string(threadID)}
+	tb := m.currentLocked(threadID)
+	for _, tab := range m.threadTabsLocked(tb) {
+		if tab.rec != nil {
+			file.Pages = append(file.Pages, tab.rec.saved())
+		}
+	}
+	if tb != nil {
+		file.ActivePageID = tb.session.ActivePageID
+		file.Jar = savedJar(jarKindOf(tb.session))
+	}
+	return file
+}
+
+// saved is the record as its thread's saved copy holds it.
+func (r *suspendedPage) saved() pageRecord {
+	return pageRecord{
+		ID: string(r.id), URL: r.url, Title: r.title, Label: r.label,
+		Order: r.tabOrder, Created: r.createdAt, LastUsed: r.lastUse,
+	}
+}
+
+// writeRecordFile writes one thread's saved copy, or removes it when it
+// holds no page and the default jar. The caller holds persistMu.
+func (m *Manager) writeRecordFile(file pageRecordFile) error {
+	path := m.recordPath(ThreadID(file.ThreadID))
+	if len(file.Pages) == 0 && file.Jar == "" {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("browser: remove saved pages: %w", err)
+		}
+		return nil
+	}
+	if err := atomicfile.WriteJSON(path, file); err != nil {
+		return fmt.Errorf("browser: save pages: %w", err)
+	}
+	return nil
+}
+
+// savedJar is a jar kind as a saved copy writes it: the default is omitted,
+// so a thread that never chose a jar saves what earlier builds saved.
+func savedJar(kind string) string {
+	if kind == JarWorktree {
+		return ""
+	}
+	return kind
 }
 
 func removeRecordDir(dir string) error {
@@ -120,7 +160,7 @@ func removeRecordDir(dir string) error {
 // read, is not a valid record of its thread, or belongs to a thread keep
 // rejects is removed; each such outcome is logged, because the pages it held
 // are gone from their thread.
-func (m *Manager) loadPageRecords(keep func(threadID string) (bool, error)) {
+func (m *Manager) loadPageRecords(keep func(threadID ThreadID) (bool, error)) {
 	if !m.Available() {
 		return
 	}
@@ -143,7 +183,7 @@ func (m *Manager) loadPageRecords(keep func(threadID string) (bool, error)) {
 		file, err := m.readRecordFile(path)
 		if err == nil && keep != nil {
 			var kept bool
-			if kept, err = keep(file.ThreadID); err != nil {
+			if kept, err = keep(ThreadID(file.ThreadID)); err != nil {
 				log.Printf("browser: saved pages of thread %s kept for the next boot: %v", file.ThreadID, err)
 				continue
 			}
@@ -163,6 +203,14 @@ func (m *Manager) loadPageRecords(keep func(threadID string) (bool, error)) {
 		}
 		m.addLoadedRecords(file)
 	}
+}
+
+// loadedJar is a saved jar kind as the Manager holds it.
+func loadedJar(saved string) string {
+	if saved == "" {
+		return JarWorktree
+	}
+	return saved
 }
 
 // readRecordFile reads and validates one saved file. Pages beyond the
@@ -190,14 +238,17 @@ func (m *Manager) readRecordFile(path string) (pageRecordFile, error) {
 	if file.Version != pageRecordVersion {
 		return file, fmt.Errorf("unknown version %d", file.Version)
 	}
-	if file.ThreadID == "" || m.recordPath(file.ThreadID) != path {
+	if file.ThreadID == "" || m.recordPath(ThreadID(file.ThreadID)) != path {
 		return file, errors.New("not the saved pages of the thread it names")
+	}
+	if file.Jar != "" && !validJarKind(file.Jar) {
+		return file, fmt.Errorf("unknown cookie jar %q", truncateUTF8(file.Jar, 32))
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	seen := make(map[string]bool, len(file.Pages))
 	for _, page := range file.Pages {
-		if page.ID == "" || len(page.ID) > maxPageIDBytes || !utf8.ValidString(page.ID) || seen[page.ID] || m.suspended[page.ID] != nil {
+		if page.ID == "" || len(page.ID) > maxPageIDBytes || !utf8.ValidString(page.ID) || seen[page.ID] || m.suspended[PageID(page.ID)] != nil {
 			return file, fmt.Errorf("invalid or repeated page id %q", truncateUTF8(page.ID, maxPageIDBytes))
 		}
 		seen[page.ID] = true
@@ -215,20 +266,21 @@ func (m *Manager) readRecordFile(path string) (pageRecordFile, error) {
 	return file, nil
 }
 
-// addLoadedRecords registers one thread's saved pages as suspended and
-// selects its saved active page, or its most recently used one.
+// addLoadedRecords registers one thread's saved pages as suspended, sets its
+// jar setting, and selects its saved active page, or its most recently used
+// one.
 func (m *Manager) addLoadedRecords(file pageRecordFile) {
 	m.mu.Lock()
+	tb := m.threadLocked(ThreadID(file.ThreadID))
 	for _, page := range file.Pages {
-		m.suspended[page.ID] = &suspendedPage{
-			id: page.ID, owner: file.ThreadID,
+		m.suspended[PageID(page.ID)] = &suspendedPage{
+			id: PageID(page.ID), owner: tb,
 			url: page.URL, title: page.Title, label: page.Label,
 			tabOrder: page.Order, createdAt: page.Created, lastUse: page.LastUsed,
 		}
 	}
-	info := m.sessionLocked(file.ThreadID)
-	info.ActivePageID = file.ActivePageID
-	m.sessions[file.ThreadID] = info
+	tb.session.ActivePageID = file.ActivePageID
+	tb.session.Jar = loadedJar(file.Jar)
+	m.repairActivePageLocked(tb)
 	m.mu.Unlock()
-	m.repairActivePage(file.ThreadID)
 }

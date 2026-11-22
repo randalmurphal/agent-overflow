@@ -20,11 +20,13 @@ const DefaultTerminateGrace = 5 * time.Second
 // settle.
 const groupDrainGrace = time.Second
 
-// GroupCommand is one command StartGroup supervises. Stdin is the null device.
+// GroupCommand is one command StartGroup supervises.
 type GroupCommand struct {
 	Dir  string
 	Env  []string
 	Argv []string
+	// Stdin is the command's standard input; nil is the null device.
+	Stdin io.Reader
 	// Output receives stdout and stderr interleaved, including what a child
 	// the command left behind writes until the sweep stops it. It is written
 	// from one goroutine, and never after Wait returns.
@@ -173,6 +175,7 @@ func StartGroup(ctx context.Context, reaper Reaper, command GroupCommand) (*Grou
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = command.Dir
 	cmd.Env = command.Env
+	cmd.Stdin = command.Stdin
 	ConfigureGroup(cmd)
 	// os/exec refuses a Cancel hook without CommandContext, and Wait drives
 	// cancellation itself so SIGTERM can precede the group kill.

@@ -27,24 +27,25 @@ import { toggleAccountSwitcher } from './accountSwitcher.svelte';
 import { addErrorToast, addToast } from './toast.svelte';
 import { getActiveTurn, isSendInFlight } from './threadStatuses.svelte';
 import {
-  focusAdjacentPane,
   getFocusedPaneId,
-  getFocusedThreadPaneId,
-  getPane,
+  paneCommandTarget,
   moveFocusedPane,
   openThreadFromNavigation,
   openThreadInNewPane,
   openThreadInPane,
   syncThreadReply,
+  togglePanePromotion,
 } from './panes.svelte';
 import { threadRowFrameMark } from './threadRowFrames';
 import { closePaneFind, hasPaneFindBarFocus, hasPaneFindProvider, isPaneFindOpen, paneFindTarget } from './paneFind.svelte';
 import { openPaneFindForReader } from '../utils/paneFindSeed';
-import { closeFocusedPaneOrCompanion } from './companionPanes.svelte';
-import { closeFocusedBrowserTab, isReplayingBrowserPageChord } from './browserCompanion.svelte';
-import type { PaneLayoutItem } from './paneLayout.svelte';
-import { focusPaneComposerIfEditableActive } from '../components/panes/paneComposerFocus';
+import { closePaneById } from './companionPanes.svelte';
+import { closeFocusedBrowserTab, isBrowserAddressUnavailable, isBrowserClosedTabMissing, isBrowserPaneUnattached } from './browserActions';
+import { isReplayingBrowserPageChord } from './browserPageChords';
+import { carryCaretIntoPane, isEditingFocusedIn } from '../components/panes/paneComposerFocus';
+import { navigateToAdjacentPane } from '../components/panes/paneNavigation';
 import { getThreadById } from './threads.svelte';
+import { threadMachineCallable } from './attachedBackends.svelte';
 import { openTerminalThread } from './threadCreation.svelte';
 import {
   archiveThreadAction,
@@ -97,6 +98,7 @@ import { PICKER_TOGGLE_INPUT_EVENT, type GitDialogKind } from './eventNames';
 import { startPaneTitleRename } from './paneTitleRename';
 import { registerWorkflowCommands } from './workflowCommands.svelte';
 import { isPullsPaneFocused, registerPullsCommands } from './pullsCommands.svelte';
+import { isBrowserPaneFocused, registerBrowserCommands } from './browserCommands.svelte';
 import {
   getWorkflowsOverlayTop,
   isWorkflowsPaneFocused,
@@ -107,7 +109,7 @@ import {
   isSettingsOpen,
   openSettingsOverlay,
 } from './settingsOverlay.svelte';
-import { getCompactScreen, isCompactLayout, onScreenCompactPaneId } from './layoutMode.svelte';
+import { isCompactLayout } from './layoutMode.svelte';
 import { hasScope } from '../transport/scopes';
 
 export interface BuiltinCommandHooks {
@@ -294,29 +296,24 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     id: 'pane.close',
     label: 'Pane: Close Focused',
     icon: '×',
-    when: '!terminalFocus',
+    // It closes the pane the screen shows (paneCommandTarget), and nothing
+    // on the compact list. A browser pane whose attach has not answered
+    // closes neither a tab nor itself: the chord is not taken.
+    when: '!terminalFocus && !noPaneTarget && !browserPaneUnattached',
     editableReachable: true,
     run: () => {
-      // A focused browser companion closes a TAB; the pane goes with its last
-      // tab (browserCompanion.svelte.ts). Focus stays where it is.
+      // A browser companion closes a TAB; the pane goes with its last tab
+      // (browserCompanion.svelte.ts). Focus stays where it is.
       if (closeFocusedBrowserTab()) return;
-      closeFocusedPaneOrCompanion();
-      const nextFocused = getFocusedThreadPaneId();
-      if (nextFocused) focusPaneComposerIfEditableActive(nextFocused);
+      const target = paneCommandTarget();
+      if (!target) return;
+      // A caret typing in the closed pane goes to the pane focus falls to.
+      const carrying = isEditingFocusedIn(target);
+      closePaneById(target);
+      const nextFocused = getFocusedPaneId();
+      if (carrying && nextFocused) carryCaretIntoPane(nextFocused);
     },
   });
-
-  // Landing on a thread pane moves DOM focus with the logical focus: latch
-  // a terminal-mode thread's xterm, otherwise carry an editing caret to the
-  // pane's composer. Companion / take-control stops keep logical focus only —
-  // they have no composer, and yanking the caret out of one would surprise.
-  function followPaneNavDomFocus(item: PaneLayoutItem): void {
-    if (item.kind !== 'thread') return;
-    const nextPane = getPane(item.paneId);
-    if (!nextPane) return;
-    if (nextPane.thread?.mode === 'terminal') nextPane.requestTerminalFocus();
-    else focusPaneComposerIfEditableActive(nextPane.paneId);
-  }
 
   // Pane navigation stays reachable from inside a focused terminal: the default
   // vim chords (alt+h/l, alt+shift+h/l) are un-gated here AND in the Go
@@ -328,8 +325,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     icon: '←',
     editableReachable: true,
     run: () => {
-      const next = focusAdjacentPane(-1);
-      if (next) followPaneNavDomFocus(next);
+      navigateToAdjacentPane(-1);
     },
   });
 
@@ -339,8 +335,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     icon: '→',
     editableReachable: true,
     run: () => {
-      const next = focusAdjacentPane(1);
-      if (next) followPaneNavDomFocus(next);
+      navigateToAdjacentPane(1);
     },
   });
 
@@ -358,6 +353,20 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     icon: '⇢',
     editableReachable: true,
     run: () => { moveFocusedPane(1); },
+  });
+
+  // Compact shows one pane at a time; the layout store refuses a promotion
+  // there, so the command is not offered.
+  registerCommand({
+    id: 'pane.togglePromoted',
+    label: 'Pane: Maximize or Restore',
+    icon: '⤢',
+    when: '!compactLayout',
+    editableReachable: true,
+    run: () => {
+      const paneId = getFocusedPaneId();
+      if (paneId) togglePanePromotion(paneId);
+    },
   });
 
   registerCommand({
@@ -454,7 +463,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     id: 'thread.interrupt',
     label: 'Thread: Interrupt Turn',
     icon: '■',
-    when: 'hasActiveThread && threadsOperate && (turnActive || sendInFlight || hasPendingPrompt) && !anyModalOpen',
+    when: 'hasActiveThread && threadsOperate && threadCallable && (turnActive || sendInFlight || hasPendingPrompt) && !anyModalOpen',
     editableReachable: true,
     run: (ctx) => {
       // Industry-pattern interrupt: clear UI state synchronously,
@@ -720,7 +729,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
   });
 
   // The target pane's own find bar, or its target region's
-  // (stores/paneFind.svelte.ts; target: `paneFindTargetId`, then
+  // (stores/paneFind.svelte.ts; target: `paneCommandTarget`, then
   // `paneFindTarget`). A pane kind with no provider, or a pane under an
   // overlay, leaves the command disabled.
   registerCommand({
@@ -732,7 +741,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     // Reachable while the composer textarea (or the bar's own input) has focus.
     editableReachable: true,
     run: () => {
-      const key = paneFindTarget(paneFindTargetId());
+      const key = paneFindTarget(paneCommandTarget());
       if (key) openPaneFindForReader(key);
     },
   });
@@ -746,7 +755,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     when: 'paneFindOpen && !overlayOpen',
     editableReachable: true,
     run: () => {
-      const key = paneFindTarget(paneFindTargetId());
+      const key = paneFindTarget(paneCommandTarget());
       if (key) closePaneFind(key);
     },
   });
@@ -1156,16 +1165,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
   // so this file doesn't grow another surface's worth of registrations.
   registerWorkflowCommands();
   registerPullsCommands();
-}
-
-/**
- * The pane find commands act on: the focused pane, or under compact the
- * pane on the thread screen, since opening a companion leaves focus on its
- * source thread. The compact list screen shows no pane.
- */
-function paneFindTargetId(): string | null {
-  if (!isCompactLayout()) return getFocusedPaneId();
-  return getCompactScreen() === 'thread' ? onScreenCompactPaneId() : null;
+  registerBrowserCommands();
 }
 
 /**
@@ -1187,7 +1187,7 @@ function documentHasFocus(): boolean {
 export function makeCommandContext(pane: ThreadPane | null, extra: Partial<CommandFlags>): CommandContext {
   const thread = pane?.thread ?? null;
   const overlayOpen = extra.overlayOpen ?? airspaceSurfaces().length > 0;
-  const findTarget = paneFindTarget(paneFindTargetId());
+  const findTarget = paneFindTarget(paneCommandTarget());
   const flags: CommandFlags = {
     paletteOpen: false,
     terminalOpen: pane?.showTerminal ?? false,
@@ -1206,6 +1206,7 @@ export function makeCommandContext(pane: ThreadPane | null, extra: Partial<Comma
     approvalPending: pane ? pane.pendingApprovals.length > 0 : false,
     anyModalOpen: false,
     hasActiveThread: thread !== null,
+    threadCallable: thread !== null && threadMachineCallable(thread.id, thread.projectId),
     turnActive: getActiveTurn(pane?.threadId ?? null) !== null,
     sendInFlight: isSendInFlight(pane?.threadId ?? null, pane?.sendInFlight ?? false),
     hasPendingPrompt: pane ? pane.pendingApprovals.length > 0 || pane.pendingUserInputs.length > 0 : false,
@@ -1232,10 +1233,15 @@ export function makeCommandContext(pane: ThreadPane | null, extra: Partial<Comma
     toolDetailOpen: focusedToolDetailOpen(),
     workflowsPaneFocused: isWorkflowsPaneFocused(),
     pullsPaneFocused: isPullsPaneFocused(),
+    browserPaneFocused: isBrowserPaneFocused(),
     // The run detail's bare keys act on the pane, so an overlay above it
     // (settings, a dialog) leaves them to the overlay.
     workflowsRunDetail: isWorkflowsPaneFocused() && getWorkflowsOverlayTop().level === 'run' && !overlayOpen,
     compactLayout: isCompactLayout(),
+    noPaneTarget: paneCommandTarget() === null,
+    browserPaneUnattached: isBrowserPaneUnattached(),
+    browserAddressUnavailable: isBrowserAddressUnavailable(),
+    browserNoClosedTab: isBrowserClosedTabMissing(),
     // Derived here, not passed in, for the same reason as the overlay flags:
     // the palette, per-keypress dispatch and tests must all see one answer for
     // "was this session granted that".

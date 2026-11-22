@@ -2,25 +2,20 @@ package browser
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"agent-overflow/internal/browser/ids"
 	"agent-overflow/internal/keybindings"
 	"agent-overflow/internal/webview2host"
 
-	cdpbrowser "github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/target"
-	"github.com/chromedp/chromedp"
-	"github.com/chromedp/chromedp/remote"
-	"github.com/google/uuid"
 )
 
 // The hosted engine: the Windows/WSL implementation of the driver.go seam.
@@ -41,19 +36,23 @@ import (
 //   - a page id is the backend's own handle, minted here and validated
 //     against the launcher's vocabulary. The CDP target id is what the
 //     `created` report carries back, and it is used for exactly one thing:
-//     attaching chromedp.
+//     attaching chromedp;
+//   - a download is the launcher's: WebView2 saves it to the Windows
+//     user's Downloads folder and the launcher reports its life
+//     (hosted_downloads.go). No download crosses CDP.
 //
 // Policy stays in the Manager, as everywhere else on this seam.
 
 const (
 	// hostCreateTimeout bounds the wait for a `created` report. The FIRST
-	// create additionally pays for a cold WebView2 environment, which the
-	// spike measured in seconds; past this the launcher is wedged or gone,
+	// create additionally pays for a cold WebView2 environment, which takes
+	// seconds; past this the launcher is wedged or gone,
 	// and the tool call must fail rather than hang.
 	hostCreateTimeout = 45 * time.Second
 	// hostAttachTimeout bounds establishing the CDP browser connection
 	// through the tunnel: waiting for the launcher's tunnel to dial back,
-	// one /json/version round trip, and the browser-level handshake.
+	// one /json/version round trip, and the browser-level handshake. It
+	// bounds each page's attach on that connection too (startCDPPage).
 	hostAttachTimeout = 30 * time.Second
 	// hostClearTimeout bounds the wait for a `cleared` report. It is
 	// deliberately the largest of the three: the launcher closes every
@@ -61,6 +60,19 @@ const (
 	// user-data folder for up to its own 15s budget while the WebView2
 	// browser process lets go of its file handles.
 	hostClearTimeout = 45 * time.Second
+	// hostDevToolsTimeout bounds the wait for a DevTools request's answer:
+	// the launcher opens the window in one native call on its UI thread.
+	hostDevToolsTimeout = 5 * time.Second
+	// hostClosedFallback bounds how long a page whose CDP target went
+	// waits for the launcher's close before the engine retires it itself.
+	// The launcher reports a closing page's download ends and then its
+	// close on one serial queue, each call bounded at 5 seconds
+	// (wsllauncher's notificationBridgeRPCTimeout), and a finished
+	// download's apply here waits up to hostedPathTimeout, so the close
+	// follows the destroy well within it. Past it the close was lost (the
+	// launcher delivers reports once, with no retry), and a page with no
+	// target must not stay listed.
+	hostClosedFallback = 30 * time.Second
 	// hostProfilePrefix keeps a derived profile id inside
 	// ValidateProfileID's character class whatever the digest looks like.
 	hostProfilePrefix = "ws"
@@ -73,36 +85,6 @@ type hostRelay interface {
 	// endpoint through the tunnel and returns it re-addressed onto the
 	// relay's own loopback listener.
 	BrowserWebSocketURL(ctx context.Context) (string, error)
-}
-
-// paneHost is the engine capability the Manager's visibility path drives.
-// Every windowed engine implements it; an engine with no window to show does
-// not. The Manager decides WHICH page is presented (policy); the engine
-// decides how a controller is made to appear (mechanism).
-//
-// A page that is not visible never holds keyboard focus. HidePage, and the
-// close of a page, give keyboard focus the page held to the app's webview,
-// done by the same code that hands it over for a claimed chord
-// (engineAppFocus, or the launcher's chord gate). ShowPage never takes focus.
-type paneHost interface {
-	ShowPage(handle string)
-	HidePage(handle string)
-	// SetPageBounds carries the placement the Manager computed: the page's
-	// own viewport, the scale the pane shows it at, and the fitted rect in
-	// the SPA's CSS pixels. The host scales that rect by its own client
-	// size over the rect's viewport, so no engine ever equates CSS pixels
-	// with its native units. Always sent before a show.
-	SetPageBounds(handle string, placement PanePlacement)
-}
-
-// paneDevTools is the OPTIONAL inspector half, split from paneHost because
-// implementing it is a capability claim: WKWebView has no public call that
-// opens its inspector (macOS devtools are Safari's Develop menu against an
-// inspectable view), so the darwin engine deliberately does not implement
-// this and the Manager's assertion failure — "devtools are not available on
-// this browser engine" — is the true answer there.
-type paneDevTools interface {
-	OpenPageDevTools(handle string)
 }
 
 // hostReport is one launcher answer, delivered to whoever is waiting on
@@ -123,13 +105,32 @@ type hostedEngine struct {
 
 	// The two bounds are fields rather than the constants directly so a
 	// test can drive the timeout paths without spending them.
-	createTimeout time.Duration
-	attachTimeout time.Duration
-	clearTimeout  time.Duration
+	createTimeout   time.Duration
+	attachTimeout   time.Duration
+	clearTimeout    time.Duration
+	devtoolsTimeout time.Duration
+	// devtools holds each DevTools request's wait for its answer.
+	devtools devToolsRequests
+	// ownerWait bounds a paused request's wait for its owner
+	// (awaitRequestOwner); zero is requestOwnerWait.
+	ownerWait time.Duration
+	// closeFallback bounds the wait for the launcher's close of a page
+	// whose target went (hostClosedFallback), and closeFallbacks are the
+	// pages waiting, each with the timer that retires it at the bound.
+	closeFallback  time.Duration
+	closeFallbacks map[ids.PageHandle]*time.Timer
 
 	// attachMu serializes ensureBrowser so a burst of concurrent creates
 	// establishes one browser connection rather than one each.
 	attachMu sync.Mutex
+	// setups are the page attaches under way, which Interrupt ends.
+	setups cdpPageSetups
+
+	// waiters are the creates and clears waiting for the launcher's answer.
+	waiters hostWaiters
+
+	// infoOrder numbers the page info reports (engineEvents.PageInfoChanged).
+	infoOrder atomic.Uint64
 
 	mu            sync.Mutex
 	started       bool
@@ -137,57 +138,104 @@ type hostedEngine struct {
 	browserCtx    context.Context
 	browserCancel context.CancelFunc
 	attachCancel  context.CancelFunc
-	pending       map[string]chan hostReport
-	pageByTarget  map[string]string
-	targetByPage  map[string]string
-	shown         map[string]bool
-	bounds        map[string]PanePlacement
+	pageByTarget  map[target.ID]ids.PageHandle
+	targetByPage  map[ids.PageHandle]target.ID
+	// pageConn is the browser connection each bound page's session runs on
+	// (bind), until the page leaves or that connection's retirement claims
+	// it (claimLostLocked).
+	pageConn map[ids.PageHandle]context.Context
+	// connectionEnded is a test seam: called by a connection's watcher once
+	// the connection ended, before it retires it. Production leaves it nil.
+	connectionEnded func()
+	shown           map[ids.PageHandle]bool
+	bounds          map[ids.PageHandle]PanePlacement
 	// drivers reaches a page's CDP half from its handle, for the one
 	// presentation fact the launcher cannot apply: the scale the device
 	// metrics override draws a presented page at.
-	drivers map[string]*cdpPage
+	drivers map[ids.PageHandle]*cdpPage
 	// ratios caches each page's devicePixelRatio against the pane ratio it
 	// was read under: a rect report arrives per changed frame while the pane
 	// is dragged, and the page's ratio (the OS scale) only changes when the
 	// window changes monitor, which changes the pane's ratio with it.
-	ratios map[string]pageRatio
+	ratios map[ids.PageHandle]pageRatio
 	// scales is the latest-wins queue behind applyViewScale: one CDP override
 	// in flight per page, and every scale asked for while it runs collapses
 	// into the next one.
-	scales map[string]*viewScaleState
+	scales map[ids.PageHandle]*viewScaleState
 	// noFind holds the pages whose runtime has no find API, as the launcher
 	// reported before their created report.
-	noFind map[string]bool
-}
+	noFind map[ids.PageHandle]bool
+	// pageProfile is each page's profile id, created or popup, and policies
+	// each live profile's navigation policy (profileOptions.Allow), for a
+	// popup's profile and the browser-wide policy (hosted_popups.go).
+	pageProfile map[ids.PageHandle]profileHandle
+	policies    map[profileHandle]func(owners []frameID, rawURL string) (allowed, resolved bool)
+	// popups are the popups the launcher reported whose pages have not
+	// gone (hostedPopup), and popupByTarget their pages by CDP target.
+	popups        map[ids.PageHandle]*hostedPopup
+	popupByTarget map[target.ID]ids.PageHandle
+	// targets is the current connection's record of its targets
+	// (cdp_targets.go): the info of a target no page answers to yet, and
+	// the target that opened each popup target, as the browser reports it.
+	// Each connection has its own, which goes with it.
+	targets *cdpTargets
+	// pages is the record of each page's lifecycle and downloads as the
+	// launcher reports them, and the lanes those reports run on
+	// (hosted_pages.go). It has its own lock, which may be taken under
+	// e.mu, never the reverse.
+	pages *hostedPages
+	// downloadQuiet overrides hostedDownloadQuiet when set (tests).
+	downloadQuiet time.Duration
 
-type pageRatio struct{ pane, page float64 }
-
-type viewScaleState struct {
-	want float64
-	busy bool
+	// readPageRatio reads a page's own devicePixelRatio; a test replaces it
+	// to stand in for the CDP evaluate.
+	readPageRatio func(ctx context.Context, p *cdpPage) (float64, error)
+	// windowsPath is the backend path's Windows view (`wslpath -w`), and
+	// backendPath a Windows path's backend view (`wslpath -u`); a test
+	// replaces them.
+	windowsPath func(ctx context.Context, path string) (string, error)
+	backendPath func(ctx context.Context, path string) (string, error)
 }
 
 func newHostedEngine(relay hostRelay, send func(webview2host.Directive), accelerators func() keybindings.AcceleratorSet, events engineEvents) *hostedEngine {
-	return &hostedEngine{
-		relay:         relay,
-		send:          send,
-		events:        events,
-		accelerators:  accelerators,
-		logf:          log.Printf,
-		createTimeout: hostCreateTimeout,
-		attachTimeout: hostAttachTimeout,
-		clearTimeout:  hostClearTimeout,
+	e := &hostedEngine{
+		relay:           relay,
+		send:            send,
+		events:          events,
+		accelerators:    accelerators,
+		logf:            log.Printf,
+		createTimeout:   hostCreateTimeout,
+		attachTimeout:   hostAttachTimeout,
+		clearTimeout:    hostClearTimeout,
+		devtoolsTimeout: hostDevToolsTimeout,
+		closeFallback:   hostClosedFallback,
 
-		pending:      make(map[string]chan hostReport),
-		pageByTarget: make(map[string]string),
-		targetByPage: make(map[string]string),
-		shown:        make(map[string]bool),
-		bounds:       make(map[string]PanePlacement),
-		drivers:      make(map[string]*cdpPage),
-		ratios:       make(map[string]pageRatio),
-		scales:       make(map[string]*viewScaleState),
-		noFind:       make(map[string]bool),
+		pageByTarget: make(map[target.ID]ids.PageHandle),
+		targetByPage: make(map[ids.PageHandle]target.ID),
+		pageConn:     make(map[ids.PageHandle]context.Context),
+		shown:        make(map[ids.PageHandle]bool),
+		bounds:       make(map[ids.PageHandle]PanePlacement),
+		drivers:      make(map[ids.PageHandle]*cdpPage),
+		ratios:       make(map[ids.PageHandle]pageRatio),
+		scales:       make(map[ids.PageHandle]*viewScaleState),
+		noFind:       make(map[ids.PageHandle]bool),
+
+		pageProfile:   make(map[ids.PageHandle]profileHandle),
+		policies:      make(map[profileHandle]func([]frameID, string) (bool, bool)),
+		popups:        make(map[ids.PageHandle]*hostedPopup),
+		popupByTarget: make(map[target.ID]ids.PageHandle),
+
+		closeFallbacks: make(map[ids.PageHandle]*time.Timer),
+
+		readPageRatio: func(ctx context.Context, p *cdpPage) (float64, error) { return p.devicePixelRatio(ctx) },
+		windowsPath:   windowsPathFor,
+		backendPath:   func(ctx context.Context, path string) (string, error) { return runWSLPath(ctx, "-u", path) },
 	}
+	e.targets = e.newTargets()
+	e.pages = newHostedPages(e.process, func(stop <-chan struct{}) { go e.askQuietDownloads(stop) }, func(page ids.PageHandle, closed bool, crash string, openers []ids.PageHandle) {
+		e.events.PageEndReceived(page, closed, crash, openers)
+	})
+	return e
 }
 
 // Start has nothing to start, and that is the design rather than a gap.
@@ -242,18 +290,13 @@ func (e *hostedEngine) Running() bool {
 func (e *hostedEngine) Interrupt() {
 	e.mu.Lock()
 	cancel := e.attachCancel
-	pending := make([]chan hostReport, 0, len(e.pending))
-	for id, waiter := range e.pending {
-		pending = append(pending, waiter)
-		delete(e.pending, id)
-	}
 	e.mu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
-	for _, waiter := range pending {
-		close(waiter)
-	}
+	e.waiters.interrupt()
+	e.devtools.interrupt()
+	e.setups.interrupt()
 }
 
 func (e *hostedEngine) Stop() {
@@ -261,14 +304,23 @@ func (e *hostedEngine) Stop() {
 	browserCancel, allocCancel := e.browserCancel, e.allocCancel
 	e.browserCtx, e.browserCancel, e.allocCancel = nil, nil, nil
 	e.started = false
-	e.pageByTarget = make(map[string]string)
-	e.targetByPage = make(map[string]string)
-	e.shown = make(map[string]bool)
-	e.bounds = make(map[string]PanePlacement)
-	e.drivers = make(map[string]*cdpPage)
-	e.ratios = make(map[string]pageRatio)
-	e.scales = make(map[string]*viewScaleState)
-	e.noFind = make(map[string]bool)
+	e.pageByTarget = make(map[target.ID]ids.PageHandle)
+	e.targetByPage = make(map[ids.PageHandle]target.ID)
+	e.pageConn = make(map[ids.PageHandle]context.Context)
+	e.shown = make(map[ids.PageHandle]bool)
+	e.bounds = make(map[ids.PageHandle]PanePlacement)
+	e.drivers = make(map[ids.PageHandle]*cdpPage)
+	e.ratios = make(map[ids.PageHandle]pageRatio)
+	e.scales = make(map[ids.PageHandle]*viewScaleState)
+	e.noFind = make(map[ids.PageHandle]bool)
+	e.pageProfile = make(map[ids.PageHandle]profileHandle)
+	e.popups = make(map[ids.PageHandle]*hostedPopup)
+	e.popupByTarget = make(map[target.ID]ids.PageHandle)
+	for pageID := range e.closeFallbacks {
+		e.endCloseFallbackLocked(pageID)
+	}
+	e.targets = e.newTargets()
+	joinLanes, ends, paid := e.pages.stopAll()
 	e.mu.Unlock()
 	if browserCancel != nil {
 		browserCancel()
@@ -276,78 +328,13 @@ func (e *hostedEngine) Stop() {
 	if allocCancel != nil {
 		allocCancel()
 	}
-}
-
-// NewProfile derives a launcher profile id from the canonical workspace.
-// Same isolation semantics as the managed-Chrome BrowserContext: one
-// profile per workspace, threads on a workspace share logins. The digest
-// is what makes the id stable across restarts, which is what makes those
-// logins survive one.
-func (e *hostedEngine) NewProfile(_ context.Context, opts profileOptions) (engineProfile, error) {
-	id, err := hostedProfileID(opts.Workspace)
-	if err != nil {
-		return nil, err
+	joinLanes()
+	// A received end the lanes no longer process is still the end of a row
+	// the Manager may have left to it (downloadStart.EndReported).
+	for _, end := range ends {
+		e.events.DownloadProgress(end.progress)
+		paid(end)
 	}
-	// Site data is the engine's own (spec §4): a hosted profile is a real
-	// browser profile on disk and WebView2 persists it, so AO seeds nothing
-	// into it and reads nothing out of it.
-	return &hostedProfile{engine: e, id: id, ephemeral: !opts.Persist}, nil
-}
-
-func hostedProfileID(workspace string) (string, error) {
-	trimmed := strings.TrimSpace(workspace)
-	if trimmed == "" {
-		return "", errors.New("browser: workspace is required for a pane profile")
-	}
-	digest := sha256.Sum256([]byte(trimmed))
-	id := hostProfilePrefix + hex.EncodeToString(digest[:16])
-	if err := webview2host.ValidateProfileID(id); err != nil {
-		return "", fmt.Errorf("browser: derive pane profile id: %w", err)
-	}
-	return id, nil
-}
-
-// ClearSiteData is the engineSiteData half of Settings → Clear site data.
-//
-// On this deployment the Manager's own `browser-profiles/` tree is EMPTY:
-// every cookie jar lives in the launcher's WebView2 user-data folder on the
-// Windows side of the WSL boundary, one folder holding every workspace's
-// named profile. The backend cannot delete it by path — it is a different
-// machine's filesystem, and a live WebView2 environment holds it open — so
-// the clear is a directive like every other pane-host operation, and the
-// launcher's answer is what makes it a real clear rather than a hope.
-//
-// The Manager calls this only after closeBrowser, so no page or profile is
-// live. The launcher still closes every controller of its own accord: its
-// controller set is the authority on what is actually open, and a stale one
-// would keep a handle on the folder being deleted.
-func (e *hostedEngine) ClearSiteData(ctx context.Context) error {
-	// The clear addresses no page, but the launcher's report machinery is
-	// keyed on a page id, so it carries a correlation id minted the same
-	// way. Registering the waiter BEFORE dispatching is what makes an
-	// instant answer impossible to miss.
-	correlationID := newHostedPageID()
-	waiter, err := e.watch(correlationID)
-	if err != nil {
-		return err
-	}
-	defer e.unwatch(correlationID)
-
-	if !e.dispatch(webview2host.Directive{Op: webview2host.OpClearData, PageID: correlationID}) {
-		return errors.New("browser: pane host refused the clear-data directive")
-	}
-
-	report, err := awaitHostReport(ctx, waiter, e.clearTimeout)
-	if err != nil {
-		// The site data may or may not be gone. Saying so is the honest
-		// answer: a Settings button that reported success here would leave
-		// the user believing cookies were destroyed that are still on disk.
-		return fmt.Errorf("browser: clear pane site data: %w", err)
-	}
-	if report.kind != webview2host.ReportCleared {
-		return fmt.Errorf("browser: pane host could not clear site data (%s): %s", report.kind, report.detail)
-	}
-	return nil
 }
 
 // FileURL answers the file URL the Windows-side renderer can actually
@@ -356,7 +343,7 @@ func (e *hostedEngine) ClearSiteData(ctx context.Context) error {
 // view (or a drive path for /mnt/<letter>), which is the same boundary
 // the show-in-folder reveal crosses in the other direction.
 func (e *hostedEngine) FileURL(ctx context.Context, path string) (string, error) {
-	converted, err := windowsPathFor(ctx, path)
+	converted, err := e.windowsPath(ctx, path)
 	if err != nil {
 		return "", err
 	}
@@ -374,7 +361,7 @@ func (e *hostedEngine) BackendFilePath(ctx context.Context, rawURL string) (stri
 	if err != nil {
 		return "", err
 	}
-	return runWSLPath(ctx, "-u", windowsPath)
+	return e.backendPath(ctx, windowsPath)
 }
 
 // windowsPathFromFileURL is windowsFileURL's pure inverse: the URL authority
@@ -416,562 +403,6 @@ func windowsFileURL(windowsPath string) (string, error) {
 	return (&url.URL{Scheme: "file", Path: "/" + slashed}).String(), nil
 }
 
-// DiscardPage closes a controller the Manager declined to adopt. The handle
-// is this engine's page id, because that is what pageDriver.Handle answers.
-func (e *hostedEngine) DiscardPage(handle string) {
-	e.closePage(handle)
-}
-
-// hostedProfile is one workspace's named CoreWebView2Profile in the
-// launcher's pane environment.
-type hostedProfile struct {
-	engine    *hostedEngine
-	id        string
-	ephemeral bool
-}
-
-func (p *hostedProfile) Handle() string { return p.id }
-
-func (p *hostedProfile) NewPage(ctx context.Context, hooks pageHooks) (pageDriver, error) {
-	return p.engine.createPage(ctx, p, hooks)
-}
-
-// AttachPage would adopt a page the engine opened by itself. The launcher
-// does not surface WebView2's NewWindowRequested, so no popup is ever
-// reported and this is unreachable; failing loudly beats returning a
-// driver for a controller nobody created.
-func (p *hostedProfile) AttachPage(context.Context, string, pageHooks) (pageDriver, error) {
-	return nil, errors.New("browser: the pane host does not report engine-opened popups")
-}
-
-func (p *hostedProfile) CancelDownload(id string) { p.engine.cancelDownload(id) }
-
-// cancelDownload keeps the CDP path. Browser.cancelDownload's support in
-// WebView2 is unverified; a refusal leaves the download running.
-func (e *hostedEngine) cancelDownload(id string) {
-	browserCtx, ok := e.browser()
-	if !ok {
-		return
-	}
-	if _, err := chromedp.CallBrowser(browserCtx, cdpbrowser.CancelDownload, cdpbrowser.CancelDownloadParams{GUID: id}); err != nil {
-		e.logf("browser: cancel download %s: %v", id, err)
-	}
-}
-
-func (p *hostedProfile) Dispose(context.Context) error {
-	p.engine.dispatch(webview2host.Directive{Op: webview2host.OpCloseProfile, ProfileID: p.id, Ephemeral: p.ephemeral})
-	return nil
-}
-
-// createPage runs the full round trip: directive out, report back, chromedp
-// attached to the target the report named.
-func (e *hostedEngine) createPage(ctx context.Context, profile *hostedProfile, hooks pageHooks) (pageDriver, error) {
-	pageID := newHostedPageID()
-	waiter, err := e.watch(pageID)
-	if err != nil {
-		return nil, err
-	}
-	defer e.unwatch(pageID)
-
-	if !e.dispatch(webview2host.Directive{Op: webview2host.OpCreate, PageID: pageID, ProfileID: profile.id, Ephemeral: profile.ephemeral}) {
-		return nil, errors.New("browser: pane host refused the create directive")
-	}
-
-	report, err := awaitHostReport(ctx, waiter, e.createTimeout)
-	if err != nil {
-		// The launcher may still be mid-create; a close for a page it has
-		// not finished is harmless, and skipping it would leak a controller.
-		e.closePage(pageID)
-		return nil, fmt.Errorf("browser: create pane page: %w", err)
-	}
-	if report.kind != webview2host.ReportCreated {
-		// No controller is left to close, but a find-unavailable report may
-		// have preceded the failure.
-		e.mu.Lock()
-		delete(e.noFind, pageID)
-		e.mu.Unlock()
-		return nil, fmt.Errorf("browser: pane host reported %s: %s", report.kind, report.detail)
-	}
-	targetID := strings.TrimSpace(report.detail)
-	if targetID == "" {
-		e.closePage(pageID)
-		return nil, errors.New("browser: pane host reported a page with no CDP target")
-	}
-
-	browserCtx, err := e.ensureBrowser()
-	if err != nil {
-		e.closePage(pageID)
-		return nil, err
-	}
-	pageCtx, pageCancel := chromedp.NewContext(browserCtx, chromedp.WithTargetID(target.ID(targetID)))
-	driver, err := startCDPPage(browserCtx, pageCtx, pageCancel, hooks)
-	if err != nil {
-		e.closePage(pageID)
-		return nil, err
-	}
-	e.bind(pageID, targetID)
-	if cdp, ok := driver.(*cdpPage); ok {
-		e.mu.Lock()
-		e.drivers[pageID] = cdp
-		e.mu.Unlock()
-	}
-	return &hostedPage{pageDriver: driver, engine: e, id: pageID}, nil
-}
-
-// ensureBrowser establishes (once) the CDP browser connection through the
-// tunnel.
-//
-// Bounded on its own clock rather than the caller's: two tool calls can
-// race here, and the first one's cancellation must not abort the
-// connection the second is about to share. Interrupt cancels it for
-// shutdown.
-func (e *hostedEngine) ensureBrowser() (context.Context, error) {
-	if browserCtx, ok := e.browser(); ok {
-		return browserCtx, nil
-	}
-	e.attachMu.Lock()
-	defer e.attachMu.Unlock()
-	if browserCtx, ok := e.browser(); ok {
-		return browserCtx, nil
-	}
-
-	attachCtx, attachCancel := context.WithTimeout(context.Background(), e.attachTimeout)
-	e.mu.Lock()
-	e.attachCancel = attachCancel
-	e.mu.Unlock()
-	defer func() {
-		attachCancel()
-		e.mu.Lock()
-		e.attachCancel = nil
-		e.mu.Unlock()
-	}()
-
-	wsURL, err := e.relay.BrowserWebSocketURL(attachCtx)
-	if err != nil {
-		return nil, fmt.Errorf("browser: reach the pane CDP endpoint: %w", err)
-	}
-	// NoModifyURL: the URL was already rewritten onto the relay listener,
-	// and chromedp's own /json/version probe would re-read the Windows-side
-	// address and dial it.
-	allocCtx, allocCancel := remote.NewAllocator(context.Background(), wsURL, remote.NoModifyURL)
-	browserCtx, browserCancel := chromedp.NewContext(allocCtx, chromedp.WithErrorf(func(format string, args ...any) {
-		e.logf("browser: chromedp: "+format, args...)
-	}))
-	// The dial must NOT go through chromedp.Do, because WebView2 answers
-	// its Target.createTarget with `-32000 no browser is open`: a WebView2
-	// target exists only as a launcher-created controller (the spike's
-	// "WebView2 has no /json/new"). dialCDPBrowser (cdp_page.go) is that
-	// target-less dial, shared with the headless engine, and it is also the
-	// only sender of the target discovery the targetDestroyed backstop
-	// reads.
-	//
-	// chromedp bounds none of this: a launcher that never answers would park
-	// the dial forever. So the wait is ours, on attachCtx, and a timeout
-	// tears the connection down rather than leaving a half-built browser
-	// behind.
-	attached := make(chan error, 1)
-	go func() { attached <- dialCDPBrowser(browserCtx, func() error { return e.subscribe(browserCtx) }) }()
-	select {
-	case err := <-attached:
-		if err != nil {
-			browserCancel()
-			allocCancel()
-			return nil, fmt.Errorf("browser: attach to the pane browser: %w", err)
-		}
-	case <-attachCtx.Done():
-		browserCancel()
-		allocCancel()
-		return nil, fmt.Errorf("browser: attach to the pane browser: %w", attachCtx.Err())
-	}
-	e.mu.Lock()
-	e.browserCtx, e.browserCancel, e.allocCancel = browserCtx, browserCancel, allocCancel
-	e.mu.Unlock()
-	return browserCtx, nil
-}
-
-func (e *hostedEngine) browser() (context.Context, bool) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.browserCtx == nil || e.browserCtx.Err() != nil {
-		return nil, false
-	}
-	return e.browserCtx, true
-}
-
-// subscribe connects the browser-level CDP events of browserCtx to the seam.
-// Target ids are the engine's private business, so every event is re-keyed
-// onto the page id the Manager knows; an event for a target this engine did
-// not create is dropped rather than reported under a handle nobody owns.
-//
-// Lifecycle is the launcher's to report (`closed` / `process-failed`), and
-// targetDestroyed is the backstop for a controller that dies without one.
-// Popups are not wired: the launcher does not surface WebView2's
-// NewWindowRequested, so no page can be created behind the Manager's back.
-func (e *hostedEngine) subscribe(browserCtx context.Context) error {
-	// Downloads carry no engine identity (the GUID is the handle on every
-	// CDP engine), so the shared tracker translates them.
-	if err := newDownloadTracker(e.events, e.cancelDownload).subscribe(browserCtx, e.logf); err != nil {
-		return err
-	}
-	if err := onBrowserEvent(browserCtx, target.TargetDestroyed, e.logf, e.targetDestroyed); err != nil {
-		return err
-	}
-	return onBrowserEvent(browserCtx, target.TargetInfoChanged, e.logf, e.targetInfoChanged)
-}
-
-func (e *hostedEngine) targetDestroyed(event target.EventTargetDestroyed) {
-	if pageID, ok := e.pageForTarget(string(event.TargetID)); ok {
-		// On its own goroutine, as both CDP engines report a closed page:
-		// retirePage ends in the Manager's teardown, which must not hold
-		// the target events queued behind it.
-		go e.retirePage(pageID)
-	}
-}
-
-func (e *hostedEngine) targetInfoChanged(event target.EventTargetInfoChanged) {
-	if event.TargetInfo == nil || event.TargetInfo.Type != "page" {
-		return
-	}
-	if pageID, ok := e.pageForTarget(string(event.TargetInfo.TargetID)); ok {
-		e.events.PageInfoChanged(pageID, event.TargetInfo.URL, event.TargetInfo.Title)
-	}
-}
-
-// Report routes one launcher answer. Called from the App's
-// BrowserHostReport binding, which is the backend end of the RPC the
-// launcher posts over the notification bridge.
-func (e *hostedEngine) Report(pageID string, kind webview2host.ReportKind, detail string) {
-	switch kind {
-	case webview2host.ReportCreated:
-		if !e.deliver(pageID, hostReport{kind: kind, detail: detail}) {
-			// Nobody is waiting: the create already timed out or was
-			// abandoned. The controller is real, so close it rather than
-			// leaving an orphan window in the launcher.
-			e.closePage(pageID)
-		}
-	case webview2host.ReportCreateFailed:
-		e.deliver(pageID, hostReport{kind: kind, detail: detail})
-	case webview2host.ReportProcessFailed:
-		// A process death can land on a page still being created OR on a
-		// live one. Whichever it is, the page is gone.
-		if !e.deliver(pageID, hostReport{kind: kind, detail: detail}) {
-			e.retirePage(pageID)
-		}
-	case webview2host.ReportClosed:
-		if !e.deliver(pageID, hostReport{kind: kind, detail: detail}) {
-			e.retirePage(pageID)
-		}
-	case webview2host.ReportAccelerator:
-		// The launcher already matched and swallowed the chord; the Manager
-		// re-matches (same set) and routes it to the owning thread.
-		var pressed keybindings.Accelerator
-		if err := json.Unmarshal([]byte(detail), &pressed); err != nil {
-			e.logf("browser: pane host accelerator for page %s is unreadable: %v", pageID, err)
-			return
-		}
-		e.events.KeyChord(pageID, pressed, KeyPress{})
-	case webview2host.ReportFindUnavailable:
-		e.noteFindUnavailable(pageID)
-	case webview2host.ReportCleared, webview2host.ReportClearFailed:
-		// A clear names a correlation id, not a page: there is no controller
-		// to close and no page to retire. Nobody waiting means ClearSiteData
-		// already gave up on its own bound and has reported that.
-		if !e.deliver(pageID, hostReport{kind: kind, detail: detail}) {
-			e.logf("browser: pane host reported %s for an abandoned clear %s", kind, pageID)
-		}
-	default:
-		e.logf("browser: ignoring unknown pane host report %q for page %s", kind, pageID)
-	}
-}
-
-// retirePage drops the engine's bookkeeping and tells the Manager the page
-// is gone. The Manager alone decides what that means for its registry.
-//
-// PageClosed is called inline here because every SYNCHRONOUS caller is the
-// launcher's report path, which is an RPC goroutine of its own. The one
-// caller that reads CDP events starts this on a goroutine instead
-// (targetDestroyed above).
-func (e *hostedEngine) retirePage(pageID string) {
-	e.mu.Lock()
-	targetID, known := e.targetByPage[pageID]
-	delete(e.targetByPage, pageID)
-	delete(e.pageByTarget, targetID)
-	delete(e.shown, pageID)
-	delete(e.bounds, pageID)
-	delete(e.drivers, pageID)
-	delete(e.ratios, pageID)
-	delete(e.scales, pageID)
-	delete(e.noFind, pageID)
-	e.mu.Unlock()
-	if !known {
-		return
-	}
-	e.events.PageClosed(pageID)
-}
-
-func (e *hostedEngine) watch(pageID string) (chan hostReport, error) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if _, exists := e.pending[pageID]; exists {
-		return nil, fmt.Errorf("browser: pane page %s is already being created", pageID)
-	}
-	waiter := make(chan hostReport, 1)
-	e.pending[pageID] = waiter
-	return waiter, nil
-}
-
-func (e *hostedEngine) unwatch(pageID string) {
-	e.mu.Lock()
-	delete(e.pending, pageID)
-	e.mu.Unlock()
-}
-
-// deliver hands one report to a pending create. Reports whether a waiter
-// took it, which is what tells the caller a late or unmatched report needs
-// its own handling.
-func (e *hostedEngine) deliver(pageID string, report hostReport) bool {
-	e.mu.Lock()
-	waiter, ok := e.pending[pageID]
-	if ok {
-		delete(e.pending, pageID)
-	}
-	e.mu.Unlock()
-	if !ok {
-		return false
-	}
-	waiter <- report
-	return true
-}
-
-func (e *hostedEngine) bind(pageID, targetID string) {
-	e.mu.Lock()
-	e.targetByPage[pageID] = targetID
-	e.pageByTarget[targetID] = pageID
-	e.mu.Unlock()
-}
-
-func (e *hostedEngine) pageForTarget(targetID string) (string, bool) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	pageID, ok := e.pageByTarget[targetID]
-	return pageID, ok
-}
-
-// closePage retires the bookkeeping and asks the launcher to destroy the
-// controller. The launcher answers `closed`, which is a no-op by then —
-// the close a page's own Close already accounted for must not be reported
-// to the Manager twice.
-func (e *hostedEngine) closePage(pageID string) {
-	e.mu.Lock()
-	targetID := e.targetByPage[pageID]
-	delete(e.targetByPage, pageID)
-	delete(e.pageByTarget, targetID)
-	delete(e.shown, pageID)
-	delete(e.bounds, pageID)
-	delete(e.drivers, pageID)
-	delete(e.ratios, pageID)
-	delete(e.scales, pageID)
-	delete(e.noFind, pageID)
-	e.mu.Unlock()
-	e.dispatch(webview2host.Directive{Op: webview2host.OpClose, PageID: pageID})
-}
-
-func (e *hostedEngine) ShowPage(handle string) {
-	if e.setShown(handle, true) {
-		e.dispatch(webview2host.Directive{Op: webview2host.OpShow, PageID: handle})
-		// A hide put the override back at 1; a re-show at an unchanged
-		// placement sends no bounds, so the placement's scale is restored
-		// here or the page would draw at 1:1 and be cropped by the pane.
-		e.syncViewScale(handle)
-	}
-}
-
-// HidePage hides the page's clip container. The controller itself stays
-// visible to Chromium, so a hidden page keeps compositing: screenshots and
-// scroll state stay live exactly as on the WebKit engines' 1x1 park.
-func (e *hostedEngine) HidePage(handle string) {
-	if e.setShown(handle, false) {
-		e.dispatch(webview2host.Directive{Op: webview2host.OpHide, PageID: handle})
-		e.syncViewScale(handle)
-	}
-}
-
-// SetPageBounds positions the controller at the FITTED rect (the page scaled
-// to fit the pane) and tells the page's device-metrics override the same
-// scale, so the emulated viewport draws exactly into that rect. The launcher
-// scales the rect by its client size over the SPA viewport (OS scale times
-// webview zoom); the override draws at the OS scale alone, so the zoom is
-// recovered from the two device pixel ratios.
-func (e *hostedEngine) SetPageBounds(handle string, placement PanePlacement) {
-	if !e.setBounds(handle, placement) {
-		return
-	}
-	rect := placement.Rect
-	e.dispatch(webview2host.Directive{
-		Op: webview2host.OpBounds, PageID: handle,
-		X: rect.X, Y: rect.Y, W: rect.Width, H: rect.Height,
-		CX: rect.ClipX, CY: rect.ClipY, CW: rect.ClipWidth, CH: rect.ClipHeight,
-		VW: rect.ViewportWidth, VH: rect.ViewportHeight,
-		Bg: rect.Background,
-	})
-	e.syncViewScale(handle)
-}
-
-// syncViewScale asks the page's override for the scale its presentation
-// state calls for: the placement's scale times the pane zoom while shown,
-// 1 while hidden.
-func (e *hostedEngine) syncViewScale(handle string) {
-	e.mu.Lock()
-	shown := e.shown[handle]
-	placement, hasBounds := e.bounds[handle]
-	e.mu.Unlock()
-	if !shown || !hasBounds {
-		e.applyViewScale(handle, 1)
-		return
-	}
-	rect := placement.Rect
-	e.applyViewScale(handle, placement.Scale*paneZoom(rect.DevicePixelRatio, e.pageDevicePixelRatio(handle, rect.DevicePixelRatio)))
-}
-
-// paneZoom is the SPA's webview zoom: its device pixel ratio over the page's
-// own (the OS scale). Unknown ratios mean no zoom.
-func paneZoom(paneRatio, pageRatio float64) float64 {
-	if paneRatio <= 0 || pageRatio <= 0 {
-		return 1
-	}
-	return paneRatio / pageRatio
-}
-
-func (e *hostedEngine) driverFor(handle string) *cdpPage {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.drivers[handle]
-}
-
-// pageDevicePixelRatio answers the page's own devicePixelRatio, read once per
-// pane ratio it is asked under (see ratios) so a drag costs no CDP round trip
-// per frame. 0 means unknown, which paneZoom treats as no zoom.
-func (e *hostedEngine) pageDevicePixelRatio(handle string, paneRatio float64) float64 {
-	e.mu.Lock()
-	cached, ok := e.ratios[handle]
-	p := e.drivers[handle]
-	e.mu.Unlock()
-	if ok && cached.pane == paneRatio && cached.page > 0 {
-		return cached.page
-	}
-	if p == nil {
-		return 0
-	}
-	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
-	defer cancel()
-	ratio, err := p.devicePixelRatio(ctx)
-	if err != nil {
-		e.logf("browser: pane page %s device pixel ratio: %v", handle, err)
-		return 0
-	}
-	e.mu.Lock()
-	if _, known := e.drivers[handle]; known {
-		e.ratios[handle] = pageRatio{pane: paneRatio, page: ratio}
-	}
-	e.mu.Unlock()
-	return ratio
-}
-
-// applyViewScale asks the page's override for a scale and returns at once.
-// A pane drag reports a rect per frame, and each one is a CDP round trip;
-// applied inline and in order they queued behind one another for seconds
-// after the drag ended, with the controller already at its final rect and the
-// page drawn at every stale scale on the way. So the call is latest-wins:
-// one override in flight per page, and the newest scale asked for while it
-// runs is the only one applied after it. Failures are logged rather than
-// returned: the caller (a pane rect report) has nothing to do with one, and a
-// page that refuses is one that is closing.
-func (e *hostedEngine) applyViewScale(handle string, scale float64) {
-	e.mu.Lock()
-	if _, known := e.drivers[handle]; !known {
-		e.mu.Unlock()
-		return
-	}
-	st := e.scales[handle]
-	if st == nil {
-		st = &viewScaleState{}
-		e.scales[handle] = st
-	}
-	st.want = scale
-	if st.busy {
-		e.mu.Unlock()
-		return
-	}
-	st.busy = true
-	e.mu.Unlock()
-	go e.drainViewScale(handle, st)
-}
-
-func (e *hostedEngine) drainViewScale(handle string, st *viewScaleState) {
-	for {
-		e.mu.Lock()
-		want := st.want
-		p := e.drivers[handle]
-		e.mu.Unlock()
-		if p == nil {
-			e.mu.Lock()
-			st.busy = false
-			e.mu.Unlock()
-			return
-		}
-		ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
-		err := p.SetViewScale(ctx, want)
-		cancel()
-		if err != nil && p.ctx.Err() == nil {
-			e.logf("browser: pane page %s view scale: %v", handle, err)
-		}
-		e.mu.Lock()
-		if st.want == want || p.ctx.Err() != nil {
-			st.busy = false
-			e.mu.Unlock()
-			return
-		}
-		e.mu.Unlock()
-	}
-}
-
-// setBounds is the bounds half of the setShown dedupe: the presentation sync
-// re-sends the active page's placement on every selection, focus and
-// page-list change, and only an actually-changed one should cost a directive.
-func (e *hostedEngine) setBounds(handle string, placement PanePlacement) bool {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if _, known := e.targetByPage[handle]; !known {
-		return false
-	}
-	if e.bounds[handle] == placement {
-		return false
-	}
-	e.bounds[handle] = placement
-	return true
-}
-
-func (e *hostedEngine) OpenPageDevTools(handle string) {
-	e.dispatch(webview2host.Directive{Op: webview2host.OpDevTools, PageID: handle})
-}
-
-// setShown reports whether the visibility actually changed for a page this
-// engine still owns. Visibility is recomputed on every selection, focus
-// and page-list change, so re-emitting an unchanged state would put a
-// directive on the wire for every one of them.
-func (e *hostedEngine) setShown(handle string, visible bool) bool {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if _, known := e.targetByPage[handle]; !known {
-		return false
-	}
-	if e.shown[handle] == visible {
-		return false
-	}
-	e.shown[handle] = visible
-	return true
-}
-
 // dispatch validates before emitting. Both ends validate on purpose: the
 // launcher's check is the trust boundary, and this one makes a bug fail at
 // the line that wrote it instead of as a dropped frame in launcher.log.
@@ -991,95 +422,4 @@ func (e *hostedEngine) dispatch(directive webview2host.Directive) bool {
 	}
 	e.send(directive)
 	return true
-}
-
-// awaitHostReport waits for one report, the caller's cancellation, or the
-// bound. Every path returns; a launcher that never answers is an error,
-// never a hang.
-func awaitHostReport(ctx context.Context, waiter chan hostReport, timeout time.Duration) (hostReport, error) {
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	select {
-	case report, ok := <-waiter:
-		if !ok {
-			return hostReport{}, errors.New("pane host was interrupted")
-		}
-		return report, nil
-	case <-ctx.Done():
-		return hostReport{}, ctx.Err()
-	case <-timer.C:
-		return hostReport{}, fmt.Errorf("pane host did not answer within %s", timeout)
-	}
-}
-
-func newHostedPageID() string {
-	return strings.ReplaceAll(uuid.NewString(), "-", "")
-}
-
-// hostedPage is one launcher-hosted controller. Every operation is the CDP
-// driver's; only destruction differs, because detaching chromedp leaves a
-// real window on the user's screen.
-type hostedPage struct {
-	pageDriver
-	engine    *hostedEngine
-	id        string
-	closeOnce sync.Once
-}
-
-// Handle is the PAGE id, not the CDP target id: it is what the launcher's
-// reports name and what every directive addresses, so it is the one handle
-// both halves of this engine agree on.
-func (p *hostedPage) Handle() string { return p.id }
-
-// noteFindUnavailable records a page the launcher says has no find API. It
-// arrives while the page's create waits or after it is bound; any other page
-// id is not one this engine holds.
-func (e *hostedEngine) noteFindUnavailable(pageID string) {
-	e.mu.Lock()
-	_, creating := e.pending[pageID]
-	_, bound := e.targetByPage[pageID]
-	if creating || bound {
-		e.noFind[pageID] = true
-	}
-	e.mu.Unlock()
-	if !creating && !bound {
-		e.logf("browser: pane host reported no find for unknown page %s", pageID)
-	}
-}
-
-// FindMode is the engine's own find bar, unless the page's runtime has none.
-func (p *hostedPage) FindMode() string {
-	p.engine.mu.Lock()
-	defer p.engine.mu.Unlock()
-	if p.engine.noFind[p.id] {
-		return ""
-	}
-	return FindModeEngine
-}
-
-// FindStart opens the page's find bar in the launcher. The bar counts and
-// steps itself, so there is no answer to wait for.
-func (p *hostedPage) FindStart(_ context.Context, query string) (findResult, error) {
-	if !p.engine.dispatch(webview2host.Directive{Op: webview2host.OpFind, PageID: p.id, Query: query}) {
-		return findResult{}, errors.New("browser: pane host refused the find directive")
-	}
-	return findResult{}, nil
-}
-
-func (p *hostedPage) FindStep(context.Context, bool) (findResult, error) {
-	return findResult{}, errors.New("browser: the pane host steps through matches in its own find bar")
-}
-
-func (p *hostedPage) FindStop(context.Context) error {
-	if !p.engine.dispatch(webview2host.Directive{Op: webview2host.OpFindStop, PageID: p.id}) {
-		return errors.New("browser: pane host refused the find-stop directive")
-	}
-	return nil
-}
-
-var _ pageFind = (*hostedPage)(nil)
-
-func (p *hostedPage) Close() {
-	p.pageDriver.Close()
-	p.closeOnce.Do(func() { p.engine.closePage(p.id) })
 }

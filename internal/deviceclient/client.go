@@ -43,6 +43,12 @@ type Client struct {
 	// now is the clock, so a test can age a credential without sleeping.
 	// Never nil: New fills it.
 	now func() time.Time
+	// lifetime is the owner's (WithLifetime), nil without one; live ends
+	// when this client retires. Both bound a rotation's waits
+	// (rotationWait).
+	lifetime context.Context
+	live     context.Context
+	endLive  context.CancelFunc
 
 	mu sync.Mutex
 	// session is the stored pair, held in memory because it is read on
@@ -152,7 +158,48 @@ type Pairing struct {
 	Scopes    []string
 }
 
-// Pair spends a pairing link and enrolls this installation as a device.
+// Pair spends a pairing link, saves the session it issued, and returns the
+// client that owns it. It is Redeem followed by Save with the redemption
+// detached from ctx: once sent, the redemption spends the single-use link on
+// the far side, so it and the save finish whatever the caller does, and a
+// caller that stopped waiting cannot burn the link with nothing stored. The
+// HTTP client's timeout bounds it.
+//
+// The returned credential is real and admits nothing yet. Every
+// presentation refuses until the owner matches Pairing.VerificationNumber,
+// which is what AwaitActivation waits for.
+func Pair(ctx context.Context, dir string, link Link, label, platform string, opts ...Option) (*Client, Pairing, error) {
+	redeemed, err := Redeem(context.WithoutCancel(ctx), dir, link, label, platform, opts...)
+	if err != nil {
+		return nil, Pairing{}, err
+	}
+	var client *Client
+	var pairing Pairing
+	err = WithSession(dir, link.BackendID, func(held *HeldSession) (err error) {
+		client, pairing, err = redeemed.Save(held, "")
+		return err
+	})
+	return client, pairing, err
+}
+
+// Redemption is a pairing link this installation has spent, with the
+// session the far side issued for it not saved yet (Redeem). Save stores
+// it, once. A redemption that is dropped leaves that session on the far side
+// with nobody holding it, until it expires or that computer ends it.
+type Redemption struct {
+	client  *Client
+	session Session
+	pairing Pairing
+	// spent is set by the first Save, whatever it answers.
+	mu    sync.Mutex
+	spent bool
+}
+
+// errRedemptionSpent answers a Save after the first.
+var errRedemptionSpent = errors.New("deviceclient: this redemption was already saved once; pair again for a new session")
+
+// Redeem spends a pairing link and enrolls this installation as a device,
+// returning the issued session unsaved.
 //
 // The order is the mechanism, and it is `internal/identity`'s rather than
 // this package's: the key is generated and persisted FIRST, the redemption
@@ -161,27 +208,19 @@ type Pairing struct {
 // demonstrated it holds. There is no separate "register the key" step that
 // could be skipped, and a link read off a screen buys nothing without it.
 //
-// The returned credential is real and admits nothing yet. Every
-// presentation refuses until the owner matches Pairing.VerificationNumber,
-// which is what AwaitActivation waits for.
-func Pair(ctx context.Context, dir string, link Link, label, platform string, opts ...Option) (*Client, Pairing, error) {
+// ctx ends the redemption at any point, its exchange included; a caller
+// that must not burn the link with nothing stored detaches it (Pair). The
+// owner's lifetime (WithLifetime) ends it only before the exchange is sent.
+func Redeem(ctx context.Context, dir string, link Link, label, platform string, opts ...Option) (*Redemption, error) {
 	key, err := EnrollDeviceKey(dir)
 	if err != nil {
-		return nil, Pairing{}, err
+		return nil, err
 	}
 	base, err := dialBase(link.Endpoint, link.CertFingerprint)
 	if err != nil {
-		return nil, Pairing{}, err
+		return nil, err
 	}
-	client := &Client{
-		dir:   dir,
-		key:   key,
-		base:  base,
-		http:  credentialHTTPClient(link.CertFingerprint, opts...),
-		dial:  resolveOptions(opts).dial,
-		probe: resolveOptions(opts).probe,
-		now:   time.Now,
-	}
+	client := newClient(dir, key, base, link.CertFingerprint, Session{}, opts)
 
 	body, err := json.Marshal(struct {
 		Token string `json:"token"`
@@ -194,45 +233,86 @@ func Pair(ctx context.Context, dir string, link Link, label, platform string, op
 		Platform string `json:"platform,omitempty"`
 	}{Token: link.Token, Label: label, Platform: platform})
 	if err != nil {
-		return nil, Pairing{}, fmt.Errorf("deviceclient: encode the redemption: %w", err)
+		return nil, fmt.Errorf("deviceclient: encode the redemption: %w", err)
 	}
-
-	// The redemption spends the single-use link on the far side, so it and
-	// the save below finish once sent: a caller that stopped waiting would
-	// otherwise burn the link with nothing stored. The HTTP client's
-	// timeout bounds it.
-	issued, err := client.exchange(context.WithoutCancel(ctx), authPairPath, body, nil)
+	if client.lifetime != nil && client.lifetime.Err() != nil {
+		return nil, fmt.Errorf("deviceclient: the redemption was not sent: %w", context.Cause(client.lifetime))
+	}
+	redeemer, err := redemptionHTTP(client.http, resolveOptions(opts).redemption)
 	if err != nil {
-		return nil, Pairing{}, err
+		return nil, err
 	}
-
-	session := Session{
-		OwnDevice:          link.Purpose == "own-device" || link.Purpose == "own-introduction",
-		RefreshRecovery:    &issued.refreshRecovery,
-		BackendID:          link.BackendID,
-		BackendName:        link.BackendName,
-		Endpoint:           link.Endpoint,
-		CertFingerprint:    link.CertFingerprint,
-		SessionID:          issued.SessionID,
-		Credential:         issued.Credential,
-		ExpiresAtMs:        issued.ExpiresAtMs,
-		RefreshSecret:      issued.RefreshSecret,
-		RefreshExpiresAtMs: issued.RefreshExpiresAtMs,
-		Scopes:             issued.Scopes,
-		Label:              label,
+	issued, err := client.exchange(ctx, redeemer, authPairPath, body, nil)
+	if err != nil {
+		return nil, err
 	}
-	if err := SaveSession(dir, session); err != nil {
-		return nil, Pairing{}, err
-	}
-	client.session = session
-	client.installRoutes()
-	return client, Pairing{
-		BackendName:        link.BackendName,
-		Endpoint:           link.Endpoint,
-		VerificationNumber: issued.VerificationNumber,
-		SessionID:          issued.SessionID,
-		Scopes:             issued.Scopes,
+	return &Redemption{
+		client: client,
+		session: Session{
+			OwnDevice:          link.Purpose == "own-device" || link.Purpose == "own-introduction",
+			RefreshRecovery:    &issued.refreshRecovery,
+			BackendID:          link.BackendID,
+			BackendName:        link.BackendName,
+			Endpoint:           link.Endpoint,
+			CertFingerprint:    link.CertFingerprint,
+			SessionID:          issued.SessionID,
+			Credential:         issued.Credential,
+			ExpiresAtMs:        issued.ExpiresAtMs,
+			RefreshSecret:      issued.RefreshSecret,
+			RefreshExpiresAtMs: issued.RefreshExpiresAtMs,
+			Scopes:             issued.Scopes,
+			Label:              label,
+		},
+		pairing: Pairing{
+			BackendName:        link.BackendName,
+			Endpoint:           link.Endpoint,
+			VerificationNumber: issued.VerificationNumber,
+			SessionID:          issued.SessionID,
+			Scopes:             issued.Scopes,
+		},
 	}, nil
+}
+
+// Save writes the redeemed session to the computer's held session file,
+// named nickname, and returns the client that owns it. The caller decides
+// under the same hold whether the computer may be enrolled
+// (HeldSession.Stored), so another process cannot write between that
+// decision and this write.
+//
+// The saved session replaces the stored one whole. A re-pairing starts
+// without the stored routes and last endpoint: its endpoint and pin come
+// from the link, routes stored under the old pairing were verified against
+// the old pin, and the new client learns the computer's routes again on its
+// first authenticated connection. The caller says which nickname, if any,
+// the replacement keeps.
+//
+// Save is single use: every call after the first, concurrent ones included,
+// writes nothing and answers errRedemptionSpent. It refuses a held session
+// of another profile directory: the session's credential is bound to this
+// directory's device key.
+func (r *Redemption) Save(held *HeldSession, nickname string) (*Client, Pairing, error) {
+	if !held.inProfile(r.client.dir) {
+		return nil, Pairing{}, fmt.Errorf("deviceclient: a session redeemed for the device in %s cannot be saved in another profile", r.client.dir)
+	}
+	r.mu.Lock()
+	spent := r.spent
+	r.spent = true
+	r.mu.Unlock()
+	if spent {
+		return nil, Pairing{}, errRedemptionSpent
+	}
+	session := r.session
+	session.Nickname = nickname
+	if err := held.Write(session); err != nil {
+		return nil, Pairing{}, err
+	}
+	// Nobody holds the client until Save returns it, so its mutex is free
+	// under the session file's lock; it is for the readers that will.
+	r.client.mu.Lock()
+	r.client.session = session
+	r.client.installRoutes()
+	r.client.mu.Unlock()
+	return r.client, r.pairing, nil
 }
 
 // Open builds a client over a session this installation already holds.
@@ -251,18 +331,27 @@ func Open(dir string, session Session, opts ...Option) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	client := &Client{
-		dir:     dir,
-		key:     key,
-		base:    base,
-		http:    credentialHTTPClient(session.CertFingerprint, opts...),
-		dial:    resolveOptions(opts).dial,
-		probe:   resolveOptions(opts).probe,
-		now:     time.Now,
-		session: session,
-	}
+	client := newClient(dir, key, base, session.CertFingerprint, session, opts)
 	client.installRoutes()
 	return client, nil
+}
+
+func newClient(dir string, key *ecdsa.PrivateKey, base, fingerprint string, session Session, opts []Option) *Client {
+	resolved := resolveOptions(opts)
+	live, endLive := context.WithCancel(context.Background())
+	return &Client{
+		dir:      dir,
+		key:      key,
+		base:     base,
+		http:     credentialHTTPClient(fingerprint, opts...),
+		dial:     resolved.dial,
+		probe:    resolved.probe,
+		now:      time.Now,
+		lifetime: resolved.lifetime,
+		live:     live,
+		endLive:  endLive,
+		session:  session,
+	}
 }
 
 // Session returns a snapshot of the stored session. A copy: the caller
@@ -461,24 +550,6 @@ func (c *Client) SetNickname(nickname string) error {
 	})
 }
 
-// Forget retires this owner and deletes only the pairing it still owns.
-func (c *Client) Forget() error {
-	ctx, cancel := context.WithTimeout(context.Background(), profileWriteTimeout)
-	defer cancel()
-	err := c.sessionTransaction(ctx, func(path string, latest *Session) error {
-		if err := removeSessionFile(path); err != nil {
-			return err
-		}
-		c.retired = true
-		*latest = Session{BackendID: latest.BackendID, Endpoint: latest.Endpoint}
-		return nil
-	})
-	if errors.Is(err, ErrSessionEnded) {
-		return nil
-	}
-	return err
-}
-
 // Retired reports whether this owner can never authorize or write again:
 // the backend refused its session for good, or a replacement now owns the
 // profile. A cache holding one has a miss, not a client.
@@ -489,14 +560,25 @@ func (c *Client) Retired() bool {
 }
 
 // Retire closes this in-memory owner before a replacement writes the same
-// profile. It preserves the file so a failed new pairing can still recover.
+// profile or the profile is forgotten (ForgetSession), so a rotation in
+// flight cannot write it back. It leaves the file alone.
 func (c *Client) Retire() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.retired = true
+	c.retireLocked()
 	c.session = Session{BackendID: c.session.BackendID, Endpoint: c.session.Endpoint}
 	if c.routes != nil {
 		c.routes.CloseIdleConnections()
+	}
+}
+
+// retireLocked marks this owner retired and ends a renewal exchange it has
+// in flight, whose answer it would never write. Caller holds c.mu. A zero
+// Client has no exchange to end.
+func (c *Client) retireLocked() {
+	c.retired = true
+	if c.endLive != nil {
+		c.endLive()
 	}
 }
 
@@ -572,12 +654,18 @@ func (c *Client) renewIfStale(ctx context.Context) error {
 // this is how a caller that fetched one tells an aged credential from a
 // dead session: a live session rotates and the retried fetch serves, a
 // dead one refuses the rotation and answers ErrSessionEnded.
+//
+// ctx bounds the caller's wait, not the rotation (see renew). A ctx that has
+// already ended still starts or joins the rotation, and the call answers
+// ctx's error. A ctx that ends during the wait answers the rotation's
+// outcome if the rotation has finished by then, and ctx's error otherwise.
 func (c *Client) Renew(ctx context.Context) error { return c.renew(ctx) }
 
 // WaitRenewal blocks until the rotation in flight, if any, has finished and
 // saved its outcome. Shutdown calls it so that a rotation the backend may
 // already have committed is not cut off before its successor is saved. The
-// HTTP client's timeout bounds the wait.
+// HTTP client's timeout bounds the wait; once the owner's lifetime has ended,
+// only a legacy exchange already sent is still waited for (rotationWait).
 func (c *Client) WaitRenewal() {
 	c.mu.Lock()
 	flight := c.renewing
@@ -596,6 +684,8 @@ func (c *Client) WaitRenewal() {
 // next rotation would present a secret the backend has already spent. The
 // HTTP client's timeout and the profile lock waits keep it finite, and a
 // cancelled caller returns at once while the rotation finishes for the rest.
+// Only retirement and the owner's lifetime end the rotation itself
+// (rotationWait).
 func (c *Client) renew(ctx context.Context) error {
 	c.mu.Lock()
 	if c.retired {
@@ -616,10 +706,23 @@ func (c *Client) renew(ctx context.Context) error {
 		}()
 	}
 	c.mu.Unlock()
+	return flight.wait(ctx)
+}
+
+// wait is the answer Renew documents.
+func (r *renewal) wait(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	select {
-	case <-flight.done:
-		return flight.err
+	case <-r.done:
+		return r.err
 	case <-ctx.Done():
+	}
+	select {
+	case <-r.done:
+		return r.err
+	default:
 		return ctx.Err()
 	}
 }
@@ -639,7 +742,7 @@ const maxResponseBytes = 64 << 10
 // secret in the body and its proof in the header. Neither ever puts a
 // proof in the body — a proof a caller may write into the same document it
 // is proving something about is not a proof.
-func (c *Client) exchange(ctx context.Context, path string, body []byte, held *Session) (_ grant, err error) {
+func (c *Client) exchange(ctx context.Context, hc *http.Client, path string, body []byte, held *Session) (_ grant, err error) {
 	step := stepRenew
 	if path == authPairPath {
 		step = stepPair
@@ -659,7 +762,7 @@ func (c *Client) exchange(ctx context.Context, path string, body []byte, held *S
 		req.Header.Set(SessionCredentialHeader, held.Credential)
 	}
 
-	resp, err := c.http.Do(req)
+	resp, err := hc.Do(req)
 	if err != nil {
 		return grant{}, fmt.Errorf("deviceclient: reach %s%s: %w", c.base, path, err)
 	}

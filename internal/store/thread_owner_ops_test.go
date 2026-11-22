@@ -49,7 +49,7 @@ func commitDelete(t *testing.T, s *Store, op string, ids ...string) DeleteCommit
 	if _, err := s.ClaimDeleteFamily(op, ids); err != nil {
 		t.Fatalf("claim %v: %v", ids, err)
 	}
-	commit, err := s.CommitDeleteClaim(op)
+	commit, err := s.CommitDeleteClaim(op, nil)
 	if err != nil {
 		t.Fatalf("commit %v: %v", ids, err)
 	}
@@ -131,7 +131,7 @@ func TestCommitDeleteClaimOwesNothingWhenItRollsBack(t *testing.T) {
 	if _, err := s.db.Exec(`CREATE TRIGGER refuse_owe BEFORE INSERT ON thread_owner_ops BEGIN SELECT RAISE(ABORT, 'disk failure'); END`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.CommitDeleteClaim("op"); err == nil {
+	if _, err := s.CommitDeleteClaim("op", nil); err == nil {
 		t.Fatal("the commit went ahead without its owed operation")
 	}
 	if _, committed := deleteClaimOf(t, s, "lead"); committed {
@@ -152,7 +152,7 @@ func TestADeleteOverridesAnOwedArchive(t *testing.T) {
 	if _, _, err := s.ArchiveThread("lead"); err != nil {
 		t.Fatal(err)
 	}
-	if owed, err := s.OweRemoteArchives("lead"); err != nil || len(owed) != 1 || owed[0].Op != OwnerOpArchive || owed[0].Seq != 1 {
+	if owed, err := s.OweRemoteArchives("lead", nil); err != nil || len(owed) != 1 || owed[0].Op != OwnerOpArchive || owed[0].Seq != 1 {
 		t.Fatalf("owe archives = %+v, %v", owed, err)
 	}
 	if marked, err := s.MarkOwnerOpSent("r", 1); err != nil || !marked {
@@ -168,7 +168,7 @@ func TestADeleteOverridesAnOwedArchive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := oweRemoteOpsTx(tx, []string{"lead"}, OwnerOpArchive, 5000); err != nil {
+	if _, err := oweRemoteOpsTx(tx, []string{"lead"}, OwnerOpArchive, 5000, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -223,10 +223,10 @@ func TestOweRemoteArchives(t *testing.T) {
 		seedRemoteSpawn(t, s, seed.token, seed.caller, "pc", "w-"+seed.token)
 	}
 
-	if owed, err := s.OweRemoteArchives("free"); err != nil || len(owed) != 0 {
+	if owed, err := s.OweRemoteArchives("free", nil); err != nil || len(owed) != 0 {
 		t.Fatalf("an open owner owed %+v, %v", owed, err)
 	}
-	owed, err := s.OweRemoteArchives("owner")
+	owed, err := s.OweRemoteArchives("owner", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,7 +254,7 @@ func TestOwnerOpsDueList(t *testing.T) {
 	if _, _, err := s.ArchiveThread("lead"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.OweRemoteArchives("lead"); err != nil {
+	if _, err := s.OweRemoteArchives("lead", nil); err != nil {
 		t.Fatal(err)
 	}
 	now := ownerOps(t, s)["a"].NextAt
@@ -296,7 +296,7 @@ func TestNextThreadRequestWorkReportsOwnerOps(t *testing.T) {
 	if _, _, err := s.ArchiveThread("lead"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.OweRemoteArchives("lead"); err != nil {
+	if _, err := s.OweRemoteArchives("lead", nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.RescheduleOwnerOp("r", 1, 4242); err != nil {
@@ -316,7 +316,7 @@ func TestForgettingAComputerDropsItsOwedOps(t *testing.T) {
 	if _, _, err := s.ArchiveThread("lead"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.OweRemoteArchives("lead"); err != nil {
+	if _, err := s.OweRemoteArchives("lead", nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.ForgetRemoteSpawnsOnComputer("pc-gone"); err != nil {
@@ -359,7 +359,7 @@ func TestRestoreKeepsOwedOwnerOps(t *testing.T) {
 	if _, _, err := s.ArchiveThread("lead"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.OweRemoteArchives("lead"); err != nil {
+	if _, err := s.OweRemoteArchives("lead", nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.RestoreFrom(path); err != nil {
@@ -381,7 +381,7 @@ func TestRemoteOwnershipReadsUseTheirIndexes(t *testing.T) {
 		"owner op moment": {`SELECT MIN(next_at) FROM thread_owner_ops`, "idx_thread_owner_ops_due", nil},
 		"forget":          {forgetOwnerOpsSQL, "idx_thread_owner_ops_computer", []any{"pc"}},
 		"remote spawn":    {remoteSpawnLinkToSQL, "idx_thread_requests_remote_spawn_target", []any{"pc", "w"}},
-		"remote owner":    {spawnOwnerRemoteSQL, "idx_thread_request_receipts_spawn_link", []any{"w"}},
+		"remote owner":    {spawnOwnerRemoteSQL, "idx_thread_request_receipts_target", []any{"w"}},
 		"spawned on":      {`SELECT ` + spawnedByComputerSQL("?"), "idx_thread_request_receipts_spawn_link", []any{"w"}},
 		"spawn link":      {`SELECT ` + spawnLinkSQL, "idx_thread_request_receipts_spawn_link", []any{"w"}},
 		"stale links":     {`SELECT 1 FROM thread_request_receipts WHERE ` + staleSpawnLinkSQL, "idx_thread_request_receipts_owner_seen", []any{1, 1}},

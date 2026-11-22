@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -19,8 +20,7 @@ import (
 )
 
 // heldIntroduction is an own-device introduction whose redemption the far
-// side holds: the manager holds the destination's profile lock until the
-// test releases the redemption.
+// side holds until the test releases it.
 type heldIntroduction struct {
 	m         *Manager
 	backendID string
@@ -122,24 +122,34 @@ func (h *heldIntroduction) finish(t *testing.T) heldAnswer {
 	}
 }
 
-// An accepted introduction spends the far side's single-use invitation. A
-// caller that stops waiting once the redemption was sent still gets the
-// pairing saved, activated and published.
-func TestOwnIntroductionFinishesWhenTheCallerCancelsDuringRedemption(t *testing.T) {
+// An introduction is bound to its caller: a caller that leaves while the
+// redemption waits on the far side ends the redemption, and nothing is
+// saved, rotated or published. The far side's invitation is spent; the
+// session it issued is revoked when that computer mints its next
+// introduction.
+func TestOwnIntroductionEndsWhenTheCallerLeavesDuringRedemption(t *testing.T) {
 	t.Parallel()
 	held := startHeldIntroduction(t, "backend-far")
 	held.cancel()
-	got := held.finish(t)
-	if got.err != nil || !got.added {
-		t.Fatalf("introduction after the caller cancelled = added %t, %v; want it enrolled", got.added, got.err)
+	// The far side is still holding the redemption: the answer comes from
+	// the caller leaving, not from the far side.
+	select {
+	case got := <-held.done:
+		if got.added || !errors.Is(got.err, context.Canceled) {
+			t.Fatalf("introduction after the caller left = added %t, %v; want not added and the caller's cancellation", got.added, got.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the introduction outlived its caller")
 	}
-	if saved, err := deviceclient.LoadSession(held.m.dir, held.backendID); err != nil || !saved.OwnDevice {
-		t.Fatalf("saved session = %+v, %v; want the own-device pairing", saved, err)
+	held.released.Do(func() { close(held.release) })
+	if _, err := deviceclient.LoadSession(held.m.dir, held.backendID); !errors.Is(err, deviceclient.ErrNoSession) {
+		t.Fatalf("stored session after the caller left = %v; want none", err)
 	}
-	if held.rotations.Load() == 0 {
-		t.Fatal("the pairing was never activated")
+	nothingEnrolled(t, held.m, held.backendID)
+	if n := held.rotations.Load(); n != 0 {
+		t.Fatalf("%d rotations; want none for a pairing that was not saved", n)
 	}
-	if held.published.Load() == 0 {
-		t.Fatal("the new pairing was not published")
+	if n := held.published.Load(); n != 0 {
+		t.Fatalf("%d publications; want none", n)
 	}
 }

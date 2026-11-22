@@ -1,17 +1,18 @@
+import { readSidebarCatalogs } from '../../../test/helpers/sidebarCatalogs';
 import { afterEach, beforeEach, expect, it } from 'vitest';
 import { render, waitFor } from '@testing-library/svelte';
 import ProjectsSettings from './ProjectsSettings.svelte';
 import { stageBackend, resetStagedBackends } from '../../../test/helpers/backends';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { noteProject } from '../../transport/entityIndex';
-import { addProjectLocal, refreshProjects, resetProjectsForTest, updateProjectLocal } from '../../stores/projects.svelte';
+import { addProjectLocal, resetProjectsForTest, updateProjectLocal } from '../../stores/projects.svelte';
 import type { Project } from '../../types/models';
 
 beforeEach(async () => {
   resetStagedBackends();
   resetProjectsForTest();
   setBindingMock('ListProjects', async () => []);
-  await refreshProjects();
+  await readSidebarCatalogs();
   setBindingMock('GetProjectWorktreeSetup', async () => ({ copy: [], run: [], timeout: '' }));
 });
 
@@ -33,4 +34,19 @@ it('labels only the selected computer’s projects and updates after a rename', 
   await waitFor(() => expect(options()).toEqual(['/work/repos/app', 'randy/repos/app']));
   updateProjectLocal({ ...other, name: 'other' });
   await waitFor(() => expect(options()).toEqual(['app', 'other']));
+});
+
+// The page reads no catalog of its own: the tree's one round
+// (stores/sidebarCatalogs.ts) owns the project rows, so a read here would
+// supersede that round's and leave its tree held.
+it('reads no catalog when it mounts', async () => {
+  const reads = (['ListProjects', 'ListThreads', 'ListThreadGroups'] as const)
+    .map((name) => setBindingMock(name, async () => []));
+  noteProject('local', '');
+  addProjectLocal({ id: 'local', name: 'app', path: '/repos/app', createdAt: 1, updatedAt: 1, sortPosition: 0, archived: false });
+  const view = render(ProjectsSettings);
+  await waitFor(() => expect(view.getByTestId('settings-projects-select')).toBeInTheDocument());
+  expect(reads.map((mock) => mock.mock.calls.length)).toEqual([0, 0, 0]);
+  expect([...view.getByTestId('settings-projects-select').querySelectorAll('option')].map((el) => el.textContent))
+    .toEqual(['app']);
 });

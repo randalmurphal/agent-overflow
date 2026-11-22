@@ -110,7 +110,8 @@ func threadAgentStopRowsSQL(limit int) string {
 		}
 		arms = append(arms, `SELECT token FROM (SELECT a.token FROM `+arm.from("a")+`
         WHERE `+arm.where+` AND `+agentRowKindSQL("a")+`
-          AND (a.settled_at IS NULL OR a.kind = 'spawn') AND `+cursor+`
+          AND (a.settled_at IS NULL OR (a.kind = 'spawn' AND `+ownRunOpenSQL("a")+`) OR (a.kind = 'send' AND `+runOpenSQL("a")+`))
+          AND `+cursor+`
         ORDER BY a.created_at, a.token LIMIT `+n+`)`)
 	}
 	return `WITH RECURSIVE

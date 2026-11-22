@@ -201,6 +201,24 @@ func TestModWClosesPaneAndYieldsToTerminalFocus(t *testing.T) {
 	}
 }
 
+// TestPanePromoteDefaultIsUngatedAndUncontested pins the maximize chord:
+// un-gated so it escapes a focused terminal, and the only default on its
+// chord so no other row shadows it or is shadowed by it.
+func TestPanePromoteDefaultIsUngatedAndUncontested(t *testing.T) {
+	var matches []Keybinding
+	for _, b := range Defaults {
+		if b.Key == "alt+shift+enter" {
+			matches = append(matches, b)
+		}
+	}
+	if len(matches) != 1 {
+		t.Fatalf("want exactly one alt+shift+enter binding, got %d: %+v", len(matches), matches)
+	}
+	if matches[0].Command != "pane.togglePromoted" || matches[0].When != "" {
+		t.Errorf("alt+shift+enter = {Command:%q When:%q}, want {pane.togglePromoted, \"\"}", matches[0].Command, matches[0].When)
+	}
+}
+
 // TestPaneNavDefaultsUseVimChordsOnly pins the macOS-friendly default: alt+h/l
 // navigate panes, while alt+arrow is left to native text-editing word motion.
 // The vim pane-nav chords are UN-gated (no !terminalFocus) so they bubble out of

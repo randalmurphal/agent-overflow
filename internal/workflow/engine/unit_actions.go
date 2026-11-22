@@ -298,12 +298,7 @@ func droppable(itemID, unitID, action string, unit *unitRun) error {
 // state worth repairing: a unit failed, the run was stopped mid-attempt (by a
 // pause or by the process dying), or a human took a unit over.
 func recoverableUnitPark(reason Reason) bool {
-	switch reason {
-	case ReasonUnitFailed, ReasonTakenOver:
-		return true
-	default:
-		return ResumableReason(reason)
-	}
+	return reason == ReasonUnitFailed || reason == ReasonTakenOver || ResumableReason(reason)
 }
 
 // resumeRepairedFanOut returns an attempt to running once nothing blocks it any
@@ -405,6 +400,8 @@ func (e *Engine) resumeUnitCallChildren(item *runtimeItem) error {
 			// A child parked for a reason of its own keeps its park. The unit is
 			// back to waiting on it, which is the correct resting shape: the
 			// child's resolution re-enters this attempt exactly as it would have.
+		case StateDone, StateFailed, StateCancelled:
+			fallthrough
 		default:
 			// The child finished while the attempt was parked, so nothing will
 			// re-enter the unit on its own. Settle it now.

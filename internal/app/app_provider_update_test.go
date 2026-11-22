@@ -90,8 +90,8 @@ func TestProviderUpdateBinaryNamesTheNpmLauncher(t *testing.T) {
 	putCodexOnPath(t, app, f)
 
 	binary := app.providerUpdateBinary(string(provider.Codex))
-	if binary.Path != nativePath(t, f) || binary.Launcher != f.wrapper {
-		t.Fatalf("codex = %+v, want the native binary %q started by the npm launcher %q", binary, nativePath(t, f), f.wrapper)
+	if binary.Path != nativePath(t, f) || binary.Launcher != realPath(t, f.wrapper) {
+		t.Fatalf("codex = %+v, want the native binary %q started by the npm launcher %q", binary, nativePath(t, f), realPath(t, f.wrapper))
 	}
 	if binary.ResolvedPath != nativePath(t, f) {
 		t.Errorf("resolved path = %q, want the native binary %q", binary.ResolvedPath, nativePath(t, f))

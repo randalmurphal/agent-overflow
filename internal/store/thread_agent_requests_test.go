@@ -31,10 +31,15 @@ func listAgentRequests(s *Store, caller string, waiting []string, since int64, l
 
 func seedAgentRequest(t *testing.T, s *Store, token, caller, kind, target string, notify bool, createdAt int64) {
 	t.Helper()
-	if err := s.InsertThreadRequest(ThreadRequest{
+	request := ThreadRequest{
 		Token: token, CallerThreadID: caller, Kind: kind, TargetThreadID: target, Notify: notify,
 		State: ThreadRequestRunning, CreatedAt: createdAt, UpdatedAt: createdAt,
-	}); err != nil {
+	}
+	if kind == ThreadRequestSpawn {
+		// As every spawn is written now: its run starts from nothing.
+		request.RunBase = &RunFigures{}
+	}
+	if err := s.InsertThreadRequest(request); err != nil {
 		t.Fatalf("insert request %s: %v", token, err)
 	}
 }
@@ -196,7 +201,8 @@ func TestListThreadAgentTreeOwnRowsKeepsARemoteSpawnWithOpenWork(t *testing.T) {
 	seedAgentRequest(t, s, "l-c", "lead", ThreadRequestSpawn, "child", false, 100)
 	settleAgentRequest(t, s, "l-c", 200)
 	if err := s.InsertThreadRequest(ThreadRequest{Token: "remote", CallerThreadID: "child", Kind: ThreadRequestSpawn,
-		TargetThreadID: "remote-child", TargetComputerID: "peer-1", State: ThreadRequestRunning, CreatedAt: 110, UpdatedAt: 110}); err != nil {
+		TargetThreadID: "remote-child", TargetComputerID: "peer-1", State: ThreadRequestRunning, CreatedAt: 110, UpdatedAt: 110,
+		RunBase: &RunFigures{}}); err != nil {
 		t.Fatal(err)
 	}
 	settleAgentRequest(t, s, "remote", 210)

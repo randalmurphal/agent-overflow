@@ -192,7 +192,7 @@ type providerSmokeClaudeTurn struct {
 
 // providerSmokeClaudeTurnResult is what one turn tells the scenario: the
 // session the CLI reported on `system/init`, the settled leaf its own live
-// tracker picked (the same value production feeds `--resume-session-at`), and
+// tracker picked (the value production pins a mid-turn fork at), and
 // the assistant text.
 type providerSmokeClaudeTurnResult struct {
 	sessionID string
@@ -269,8 +269,7 @@ func (d *providerSmokeClaudeDriver) runTurn(t *testing.T, turn providerSmokeClau
 		// The collector keeps the bounded, filtered diagnostic log the whole
 		// gate is read from; it selects the events that explain a failure.
 		d.collector.observeProviderEvent(event)
-		switch event.Kind {
-		case provider.EventInit:
+		if event.Kind == provider.EventInit {
 			// `system/init` names the session whose transcript the CLI writes.
 			var info provider.SessionInfo
 			if json.Unmarshal(event.Meta, &info) == nil && info.SessionID != "" {
@@ -278,13 +277,13 @@ func (d *providerSmokeClaudeDriver) runTurn(t *testing.T, turn providerSmokeClau
 				sessionID = info.SessionID
 				mu.Unlock()
 			}
-		case provider.EventTextDelta:
+		} else if event.Kind == provider.EventTextDelta {
 			mu.Lock()
 			text.WriteString(event.Content)
 			mu.Unlock()
-		case provider.EventTurnComplete:
+		} else if event.Kind == provider.EventTurnComplete {
 			settle()
-		case provider.EventSessionStatus:
+		} else if event.Kind == provider.EventSessionStatus {
 			// A process that dies (a refused `--resume`, an auth failure) is
 			// reported here with its stderr tail on Meta. Only a death is
 			// terminal — every other status is live-state noise.

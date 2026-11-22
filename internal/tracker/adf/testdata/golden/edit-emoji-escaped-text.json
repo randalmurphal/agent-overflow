@@ -1,0 +1,39 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "emoji",
+          "attrs": {
+            "id": "1f4cb",
+            "shortName": ":clipboard:",
+            "text": "\\ud83d\\udccb"
+          }
+        },
+        {
+          "type": "text",
+          "text": " Steps to retest"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "emoji",
+          "attrs": {
+            "shortName": ":broken:",
+            "text": "\\ud83d"
+          }
+        },
+        {
+          "type": "text",
+          "text": " Broken escape"
+        }
+      ]
+    }
+  ]
+}

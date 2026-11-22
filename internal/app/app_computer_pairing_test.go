@@ -18,6 +18,7 @@ import (
 	"agent-overflow/internal/network"
 	"agent-overflow/internal/pairbootstrap"
 	"agent-overflow/internal/settings"
+	"agent-overflow/internal/testutil"
 )
 
 // Only the discovery window is installed directly: the fixture advertises no
@@ -40,11 +41,7 @@ func computerPairingBackend(t *testing.T) (*pairedBackend, pairbootstrap.Snapsho
 
 func exchangeComputerPairing(t *testing.T, b *pairedBackend) (pairbootstrap.Invitation, string) {
 	t.Helper()
-	hc := pairbootstrap.NewHTTPClient(nil)
-	defer hc.CloseIdleConnections()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	invite, sas, err := pairbootstrap.Exchange(ctx, hc, "https://"+b.srv.Addr(), "Windows desktop", "windows")
+	invite, sas, err := nearbyTestExchange(t, "https://"+b.srv.Addr(), "Windows desktop", "windows")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,9 +57,7 @@ func redeemComputerInvitation(t *testing.T, b *pairedBackend, invite pairbootstr
 	if link.CertFingerprint != b.fingerprint {
 		t.Fatal("bootstrap did not carry the actual host certificate")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	client, _, err := deviceclient.Pair(ctx, t.TempDir(), link, "Windows desktop", "windows")
+	client, _, err := pairTestDevice(t, t.TempDir(), link, "Windows desktop", "windows")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +136,7 @@ func TestComputerPairingCancelAndStaleConfirmationAdmitNothing(t *testing.T) {
 				}
 			} else {
 				link, _ := deviceclient.DecodeLink(invite.URL)
-				if _, _, err := deviceclient.Pair(ctx, t.TempDir(), link, "late", "linux"); err == nil {
+				if _, _, err := pairTestDevice(t, t.TempDir(), link, "late", "linux"); err == nil {
 					t.Fatal("canceled encrypted invite redeemed")
 				}
 			}
@@ -180,11 +175,9 @@ func TestComputerPairingClosedWindowCannotConfirmWhileCancellationIsPending(t *t
 func TestComputerPairingRequiresExplicitOpenAndLeaksNoOwnerData(t *testing.T) {
 	t.Parallel()
 	b := newPairedBackend(t)
-	hc := pairbootstrap.NewHTTPClient(nil)
-	defer hc.CloseIdleConnections()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, _, err := pairbootstrap.Exchange(ctx, hc, "https://"+b.srv.Addr(), "uninvited", "windows"); err == nil {
+	if _, _, err := nearbyTestExchange(t, "https://"+b.srv.Addr(), "uninvited", "windows"); err == nil {
 		t.Fatal("closed host accepted nearby pairing")
 	}
 	info, err := (authEndpoints{app: b.app}).NearbyPair(ctx, b.srv.Addr(), pairbootstrap.Request{Op: "info"})
@@ -204,9 +197,9 @@ func TestComputerPairingRestartRetiresLostComparisonButKeepsExistingDevice(t *te
 	remotetest.Require(t)
 	b, window := computerPairingBackend(t)
 	ordinary, link := b.mintLink(t, "full")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 	defer cancel()
-	existing, _, err := deviceclient.Pair(ctx, t.TempDir(), link, "existing", "linux")
+	existing, _, err := pairTestDevice(t, t.TempDir(), link, "existing", "linux")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -5,9 +5,11 @@ import { threadBackend } from '../transport/entityIndex';
 import { resyncDraftsForBackend } from './eventsDraftRows';
 import { resyncKeybindings } from './keybindings.svelte';
 import { refreshProviderMemory } from './providerMemory.svelte';
+import { refreshBrowserCompanionStates } from './browserCompanion.svelte';
 // Refresh computer-owned snapshots on reconnect and first attachment. Each
 // read is pinned; one offline or ungranted computer cannot block the others.
 import { refreshSidebarProjections } from './eventsThreadRows';
+import { refreshTimelineSurfaces } from './timelineSurfaces';
 import type { BackendKey } from '../transport/backendKey';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { isFrontendOnly } from '../transport/runMode';
@@ -49,6 +51,10 @@ export function installComputerHydration(): () => void {
   function hydrate(backend: BackendKey): void {
     mirrorFrontendPreferences(backend);
     resyncDraftsForBackend(backend);
+    // The scoped timelines this computer owns (agent panes, agent cards),
+    // as the panes below: a changed hello can change the activity-run rule
+    // their windows were read under (activityRunRule.ts).
+    if (hasScope('threads:read', backend)) refreshTimelineSurfaces({ backend });
     for (const pane of iterPanes()) {
       const threadId = pane.threadId;
       if (!threadId || threadBackend(threadId) !== backend || !hasScope('threads:read', backend)) continue;
@@ -60,6 +66,9 @@ export function installComputerHydration(): () => void {
       }));
     }
     if (backend === HOME_BACKEND && hasScope('settings:read', backend)) void resyncKeybindings();
+    // The browser's state channel has no replay: what changed while away is
+    // read again.
+    if (backend === HOME_BACKEND) refreshBrowserCompanionStates();
     refreshProviderMemory(backend);
     if (isWorkflowOverlayLoaded()) void resyncWorkflowEngineState(backend);
     // Boot's initial read can fail while a computer is offline. Its first

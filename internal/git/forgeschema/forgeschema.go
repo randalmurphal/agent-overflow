@@ -108,12 +108,11 @@ func check(schema *ast.Schema, document string) (*ast.QueryDocument, []string, m
 			if value.Definition == nil {
 				return
 			}
-			switch value.Kind {
-			case ast.EnumValue:
+			if value.Kind == ast.EnumValue {
 				if def := value.Definition.EnumValues.ForName(value.Raw); def != nil {
 					use(value.Definition.Name+"."+value.Raw, def.Directives)
 				}
-			case ast.ObjectValue:
+			} else if value.Kind == ast.ObjectValue {
 				for _, child := range value.Children {
 					if def := value.Definition.Fields.ForName(child.Name); def != nil {
 						use(value.Definition.Name+"."+child.Name, def.Directives)
@@ -165,6 +164,7 @@ func AnswerProblems(forge, document string, body []byte) ([]string, error) {
 	op := doc.Operations[0]
 	root := schema.Query
 	switch op.Operation {
+	case ast.Query:
 	case ast.Mutation:
 		root = schema.Mutation
 	case ast.Subscription:

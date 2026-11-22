@@ -1,0 +1,89 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "Bare "
+        },
+        {
+          "type": "text",
+          "marks": [
+            {
+              "type": "link",
+              "attrs": {
+                "href": "https://example.com/x"
+              }
+            }
+          ],
+          "text": "https://example.com/x"
+        },
+        {
+          "type": "text",
+          "text": ", angle "
+        },
+        {
+          "type": "inlineCard",
+          "attrs": {
+            "url": "https://example.com/card"
+          }
+        },
+        {
+          "type": "text",
+          "text": ", email "
+        },
+        {
+          "type": "text",
+          "marks": [
+            {
+              "type": "link",
+              "attrs": {
+                "href": "mailto:bob@example.com"
+              }
+            }
+          ],
+          "text": "bob@example.com"
+        },
+        {
+          "type": "text",
+          "text": ", angle email "
+        },
+        {
+          "type": "text",
+          "marks": [
+            {
+              "type": "link",
+              "attrs": {
+                "href": "mailto:bob@example.com"
+              }
+            }
+          ],
+          "text": "bob@example.com"
+        },
+        {
+          "type": "text",
+          "text": ", and "
+        },
+        {
+          "type": "text",
+          "marks": [
+            {
+              "type": "link",
+              "attrs": {
+                "href": "http://www.example.com"
+              }
+            }
+          ],
+          "text": "www.example.com"
+        },
+        {
+          "type": "text",
+          "text": "."
+        }
+      ]
+    }
+  ]
+}

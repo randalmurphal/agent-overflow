@@ -56,8 +56,15 @@ func paneViewportSize(rect PaneRect) (int, int, bool) {
 // pages lay out at, whether it is pinned, and the pane size it would follow;
 // set pins a bounded size; reset returns to following the pane.
 func (m *Manager) Viewport(_ context.Context, access Access, opts ViewportOptions) (SessionInfo, error) {
+	if err := m.bound(access); err != nil {
+		return SessionInfo{}, err
+	}
 	m.mu.Lock()
-	info := m.sessionLocked(access.ThreadID)
+	if err := access.admitLocked(); err != nil {
+		m.mu.Unlock()
+		return SessionInfo{}, err
+	}
+	info := access.tb.session
 	switch strings.ToLower(strings.TrimSpace(opts.Action)) {
 	case "get", "":
 		m.mu.Unlock()
@@ -76,23 +83,30 @@ func (m *Manager) Viewport(_ context.Context, access Access, opts ViewportOption
 		m.mu.Unlock()
 		return SessionInfo{}, fmt.Errorf("browser: viewport action must be get, set, or reset")
 	}
-	info.UpdatedAt = time.Now()
-	m.sessions[access.ThreadID] = info
+	access.tb.session = info
 	m.mu.Unlock()
-	if err := m.applyThreadViewport(access.ThreadID); err != nil {
+	if err := m.applyThreadViewport(access.ThreadID()); err != nil {
 		return SessionInfo{}, err
 	}
-	m.emitThreadState(access.ThreadID)
-	m.syncPanePresentation(access.ThreadID)
+	m.emitThreadState(access.ThreadID())
+	m.syncPanePresentation(access.ThreadID())
 	return info, nil
 }
 
 // viewportSync serializes laying a thread's pages out at its viewport. A pane
-// drag reports a rect per frame and each page takes a round trip to size, so
-// rect reports are applied latest-wins by one drain goroutine per thread
+// drag reports a rect per frame and each layout is an engine round trip, so
+// pane sizes are applied latest-wins by one drain goroutine per thread
 // (busy/dirty, guarded by Manager.mu), and a browser_viewport call applies
 // inline under the same apply lock so the two can never leave pages at each
 // other's size.
+//
+// A pane resize lays out only the thread's active page, the one the pane
+// shows. Every other page lags until it is needed: lockPageForOperation
+// brings a page to the viewport under the operation's own lock (coordinates
+// and screenshots mean the current viewport), and presentPanes never newly
+// shows a page that lags; it asks the drain to lay the page out, and the
+// first apply that does (the drain's or an operation's) shows it
+// (presentLaidOut).
 type viewportSync struct {
 	apply sync.Mutex
 	busy  bool
@@ -100,7 +114,7 @@ type viewportSync struct {
 }
 
 // viewportSyncLocked answers the thread's sync record. Caller holds m.mu.
-func (m *Manager) viewportSyncLocked(threadID string) *viewportSync {
+func (m *Manager) viewportSyncLocked(threadID ThreadID) *viewportSync {
 	st := m.viewportSyncs[threadID]
 	if st == nil {
 		st = &viewportSync{}
@@ -109,10 +123,10 @@ func (m *Manager) viewportSyncLocked(threadID string) *viewportSync {
 	return st
 }
 
-// scheduleViewport asks for the thread's pages to take the session viewport
-// and returns at once; the newest request while a pass runs is the only one
-// applied after it.
-func (m *Manager) scheduleViewport(threadID string) {
+// scheduleViewport asks for the thread's active page to take the session
+// viewport and returns at once; the newest request while a pass runs is the
+// only one applied after it.
+func (m *Manager) scheduleViewport(threadID ThreadID) {
 	m.mu.Lock()
 	st := m.viewportSyncLocked(threadID)
 	st.dirty = true
@@ -125,22 +139,26 @@ func (m *Manager) scheduleViewport(threadID string) {
 	go m.drainViewport(threadID, st)
 }
 
-func (m *Manager) drainViewport(threadID string, st *viewportSync) {
+// drainViewport runs passes until no request is left. Each pass lays the
+// active page out and re-presents the thread; the thread's state, which
+// carries the viewport, is pushed once when the drain settles rather than
+// once per pass.
+func (m *Manager) drainViewport(threadID ThreadID, st *viewportSync) {
 	for {
 		m.mu.Lock()
 		if !st.dirty {
 			st.busy = false
 			m.mu.Unlock()
+			m.emitThreadState(threadID)
 			return
 		}
 		st.dirty = false
 		m.mu.Unlock()
 		// A page left at the old size while the pane places it at the new
 		// one is visibly wrong, so the failure replaces the pane body.
-		if err := m.applyThreadViewport(threadID); err != nil {
-			m.emit(CompanionEvent{Kind: "error", ThreadID: threadID, Error: err.Error()})
+		if err := m.applyActiveViewport(threadID, st); err != nil {
+			m.emit(CompanionEvent{Kind: "error", ThreadID: string(threadID), Error: err.Error()})
 		}
-		m.emitThreadState(threadID)
 		m.syncPanePresentation(threadID)
 		if m.viewportApplied != nil {
 			m.viewportApplied(threadID)
@@ -148,17 +166,36 @@ func (m *Manager) drainViewport(threadID string, st *viewportSync) {
 	}
 }
 
+// applyActiveViewport lays the thread's active page out at the session
+// viewport. A page already at it costs nothing.
+func (m *Manager) applyActiveViewport(threadID ThreadID, st *viewportSync) error {
+	m.mu.Lock()
+	current := m.currentLocked(threadID)
+	active, _ := m.livePageLocked(m.currentSessionLocked(threadID).activePage())
+	m.mu.Unlock()
+	if active == nil || active.owner != current {
+		return nil
+	}
+	st.apply.Lock()
+	defer st.apply.Unlock()
+	if err := m.syncPageViewport(active); err != nil && active.ctx.Err() == nil {
+		return fmt.Errorf("%w (page %s)", err, active.id)
+	}
+	return nil
+}
+
 // applyThreadViewport lays every page the thread owns out at the session
 // viewport as it stands when each page is reached. Every page is attempted;
 // the first failure of a page that is not closing is the answer.
-func (m *Manager) applyThreadViewport(threadID string) error {
+func (m *Manager) applyThreadViewport(threadID ThreadID) error {
 	m.mu.Lock()
 	st := m.viewportSyncLocked(threadID)
+	current := m.currentLocked(threadID)
 	m.mu.Unlock()
 	st.apply.Lock()
 	defer st.apply.Unlock()
 	var firstErr error
-	for _, p := range m.ownedPages(threadID) {
+	for _, p := range m.ownedPages(current) {
 		p.mu.Lock()
 		err := m.applyViewportLocked(p)
 		p.mu.Unlock()
@@ -167,6 +204,75 @@ func (m *Manager) applyThreadViewport(threadID string) error {
 		}
 	}
 	return firstErr
+}
+
+// lockPageForOperation takes p.mu for an operation that acts on the page's
+// content, coordinates or screenshots (find, which locks on its own
+// schedule, calls syncViewportLocked) and, under that lock, brings the page
+// to its thread's viewport. Holding the lock is what makes the size stick: a
+// resize that lands after a check made before the lock, or while the size
+// is being applied, is seen here and applied before the operation runs. The
+// wait for the lock ends with ctx, answering its error. On error p.mu is not
+// held. An agent's tool call shows on the page's tab from here
+// (activity.go).
+func (m *Manager) lockPageForOperation(ctx context.Context, p *managedPage) error {
+	if err := p.mu.LockContext(ctx); err != nil {
+		return err
+	}
+	m.noteAgentOperation(ctx, p)
+	if err := m.syncViewportLocked(ctx, p); err != nil {
+		p.mu.Unlock()
+		return err
+	}
+	return nil
+}
+
+// syncViewportLocked brings a page whose p.mu the caller holds to its
+// thread's viewport, applying again while the viewport moved during the last
+// apply. A drag that never settles holds the operation until ctx ends. Each
+// apply shows a page held hidden for its layout (presentLaidOut): the
+// operation keeps the page lock for its own work, which the drain's
+// presentation would wait behind.
+func (m *Manager) syncViewportLocked(ctx context.Context, p *managedPage) error {
+	for !m.pageViewportCurrent(p) {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		err := m.applyViewportLocked(p)
+		m.presentLaidOut(p)
+		if err != nil {
+			return fmt.Errorf("%w (page %s)", err, p.id)
+		}
+	}
+	return nil
+}
+
+// syncPageViewport lays a page out at its thread's viewport unless it is
+// already there: the drain's lazy half of a pane resize for the active page.
+func (m *Manager) syncPageViewport(p *managedPage) error {
+	if m.pageViewportCurrent(p) {
+		return nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if m.pageViewportCurrent(p) {
+		return nil
+	}
+	return m.applyViewportLocked(p)
+}
+
+// pageViewportCurrent reports whether the page lays out at its thread's
+// viewport now.
+func (m *Manager) pageViewportCurrent(p *managedPage) bool {
+	m.mu.Lock()
+	width, height := sessionViewport(p.owner.session)
+	m.mu.Unlock()
+	return p.viewport.Load() == packViewport(width, height)
+}
+
+// packViewport is a page size as one comparable word; 0 is none.
+func packViewport(width, height int) uint64 {
+	return uint64(uint32(width))<<32 | uint64(uint32(height))
 }
 
 // applyViewport pins a page to its thread's viewport. Every page gets one at
@@ -179,15 +285,39 @@ func (m *Manager) applyViewport(p *managedPage) error {
 	return m.applyViewportLocked(p)
 }
 
-// applyViewportLocked is applyViewport with p.mu held by the caller.
+// applyViewportLocked is applyViewport with p.mu held by the caller. It
+// records the size the page took, or the size it refused.
 func (m *Manager) applyViewportLocked(p *managedPage) error {
 	m.mu.Lock()
-	width, height := sessionViewport(m.sessionLocked(p.owner))
+	width, height := sessionViewport(p.owner.session)
 	m.mu.Unlock()
 	ctx, cancel := operationContext(context.Background(), p.ctx, 5*time.Second)
 	defer cancel()
 	if err := p.driver.SetViewport(ctx, width, height); err != nil {
+		p.viewportFailed.Store(packViewport(width, height))
 		return fmt.Errorf("browser: apply viewport: %w", err)
 	}
+	p.viewport.Store(packViewport(width, height))
+	p.viewportFailed.Store(0)
 	return nil
+}
+
+// presentLaidOut runs the presentation pass for a page that presentPanes
+// held hidden until it was laid out, now that an operation's apply settled
+// it (a refused size is shown too). The drain runs its own pass after each
+// apply. The caller holds p.mu, which the operation keeps for its own work,
+// so the pass runs on a goroutine of its own: the show waits for the layout
+// only, never for page work, and no engine host call is made under the page
+// lock. presentPanes re-checks the page under Manager.mu after recording
+// it, so an apply that lands before the record is seen there instead.
+func (m *Manager) presentLaidOut(p *managedPage) {
+	m.mu.Lock()
+	awaiting := m.awaitingLayout[p.owner.id] == p.id
+	if awaiting {
+		delete(m.awaitingLayout, p.owner.id)
+	}
+	m.mu.Unlock()
+	if awaiting {
+		m.goLife(func() { m.syncPanePresentation(p.owner.id) })
+	}
 }

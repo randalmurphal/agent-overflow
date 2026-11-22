@@ -43,11 +43,11 @@ func (a *App) providerDiscoveryService() *providerdiscoveryapp.Service {
 					AfterAdopt:      request.AfterAdopt,
 				})
 			},
-			ClaudeConfig: func(binary string) claude.ProbeConfig {
-				return a.claudeProbeConfig(binary, nil)
+			ClaudeProbe: func(binary, accountID string) (provider.ProbeCacheKey, claude.ProbeConfig) {
+				return a.ensureProviderAccountManager().ClaudeAccountProbe(binary, accountID)
 			},
-			CodexConfig: func(binary string) codex.ProbeConfig {
-				return a.codexProbeConfig(binary, nil)
+			CodexProbe: func(binary, accountID string) (provider.ProbeCacheKey, codex.ProbeConfig) {
+				return a.ensureProviderAccountManager().CodexAccountProbe(binary, accountID)
 			},
 			EmitStatus:     a.emitProviderStatus,
 			EmitRateLimits: a.emitRateLimitsSnapshot,
@@ -69,6 +69,7 @@ func (a *App) providerLifecycleService() *providerlifecycleapp.Service {
 			Context:          a.lifeCtx,
 			IsShuttingDown:   func() bool { return a.shuttingDown.Load() },
 			ProbeMinInterval: func() time.Duration { return a.usageProbeGap },
+			PollInterval:     func() time.Duration { return a.usagePollInterval },
 			Emit:             a.emit,
 			OnReading: func(providerName, accountID string) {
 				if accountID != "" {
@@ -80,7 +81,12 @@ func (a *App) providerLifecycleService() *providerlifecycleapp.Service {
 					selection := a.captureProviderAccountSelection(providerName)
 					return providerlifecycleapp.Selection{AccountID: selection.AccountID}
 				},
-				Reconcile: a.reconcileExternalProviderAccount,
+				Reconcile: func(ctx context.Context, providerName string) error {
+					if a.providerAccounts == nil {
+						return nil
+					}
+					return a.providerAccounts.ReconcileExternalProviderAccountContext(ctx, providerName)
+				},
 				RefreshUsage: func(ctx context.Context, providerName, accountID string) error {
 					return a.ensureProviderAccountManager().RefreshProviderAccountUsageContext(
 						ctx, providerName, accountID,
@@ -124,13 +130,8 @@ func (a *App) providerLifecycleService() *providerlifecycleapp.Service {
 				TurnInFlight: a.providerHasTurnInFlight,
 				RecordActivity: func(threadID, token string, kind provider.EventKind, content string, now time.Time) {
 					a.sessionManager().runtime.RecordActivity(threadID, token, kind, content, now)
-					switch kind {
-					case provider.EventTurnStart, provider.EventTurnComplete:
+					if kind == provider.EventTurnStart || kind == provider.EventTurnComplete || (kind == provider.EventSessionStatus && content == "disconnected") {
 						a.turnActivityUnixNano.Store(now.UnixNano())
-					case provider.EventSessionStatus:
-						if content == "disconnected" {
-							a.turnActivityUnixNano.Store(now.UnixNano())
-						}
 					}
 				},
 			},

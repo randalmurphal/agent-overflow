@@ -96,9 +96,6 @@ func (a *App) startThreadRequestSweeps() {
 // pass.
 func (a *App) recoverThreadRequestsAtBoot() {
 	a.recoverAgentWakesAtBoot()
-	// The async questions a restart left open go to their threads'
-	// spawners again, and their threads read as waiting on them.
-	a.seedAsyncQuestionPrompts()
 	// With assistants off, what the last run's pause had not reached
 	// settles as the pause settles it, before any held request may settle
 	// at rest.

@@ -10,10 +10,12 @@
 //  3. Drops the embedded Linux ELF backend into the chosen distro
 //     under ~/.local/bin/agent-overflow if the version on disk
 //     doesn't match what's bundled.
-//  4. Spawns wsl.exe -d <distro> -- ~/.local/bin/agent-overflow
-//     --listen 127.0.0.1:0 --print-url-fd 0 and pins the child to a
-//     Win32 Job Object so closing this process kills the WSL-side one.
-//  5. Reads the bootstrap line { port, token } back from the child.
+//  4. Spawns wsl.exe --cd ~ -d <distro> --exec ~/.local/bin/agent-overflow
+//     --print-url-fd 0 (wsllauncher.buildLaunchArgs) and pins the child
+//     to a Win32 Job Object so closing this process kills the WSL-side
+//     one.
+//  5. Reads the bootstrap line { port, token } back from the child's
+//     stdout.
 //  6. Points the Wails WebView2 window at a BARE
 //     http://localhost:<port>/?host=webview page URL and injects the
 //     one-time page ticket into the document it just loaded, so the
@@ -29,15 +31,6 @@
 // would repeat on every launch, so launchAndProbe relaunches once with
 // --reset-transport-port before giving up. The picker shows a clear
 // error only if the retry fails too.
-//
-// The launcher is split across this file and three siblings:
-//
-//   - config.go  — wsl.json read/write under %APPDATA%.
-//   - payload.go — embedded ELF install + WSL HOME resolution.
-//   - picker.go  — picker / loading / connectivity-error HTML serving.
-//
-// This file owns the entry point and the launcherApp method surface
-// (PickDistro, validateDistroName, launchAndShow, run).
 package main
 
 import (
@@ -67,8 +60,8 @@ import (
 	"agent-overflow/internal/notify"
 	"agent-overflow/internal/observability/pprofserve"
 	"agent-overflow/internal/pagehost"
-	"agent-overflow/internal/serialqueue"
 	"agent-overflow/internal/startuppage"
+	"agent-overflow/internal/supervise"
 	"agent-overflow/internal/uikeys"
 	"agent-overflow/internal/uiwindow"
 	"agent-overflow/internal/webview2host"
@@ -269,8 +262,13 @@ func main() {
 	// overrides the folder we just pinned, and a SET BUT EMPTY one does it
 	// silently: every environment collapses onto the default profile, the
 	// pane would read the app's cookies, and nothing reports an error.
-	if removed := webview2host.ScrubEnvOverrides(); len(removed) > 0 {
+	removed, err := webview2host.ScrubEnvOverrides()
+	if len(removed) > 0 {
 		log.Printf("launcher: cleared inherited WebView2 env overrides: %s", webview2host.FormatScrub(removed))
+	}
+	if err != nil {
+		// The pane host refuses its environment while one is left set.
+		log.Printf("launcher: WebView2 env overrides left set: %v", err)
 	}
 	applier := flags.UpdateApply != ""
 	if err := prepareWebviewStorage(launcherWebviewDataDir(launcherRuntimeMode(), applier), renderDiagnosticsDir(launcherRuntimeMode())); err != nil {
@@ -510,7 +508,9 @@ func openLog(profile string) (*os.File, error) {
 		return nil, err
 	}
 	if err := os.Chmod(f.Name(), launcherLogFilePerm); err != nil {
-		_ = f.Close()
+		if closeErr := f.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
 		return nil, err
 	}
 	return f, nil
@@ -555,10 +555,20 @@ type launcherApp struct {
 	// get the same switches the app window got.
 	disableGPUVsync bool
 	// browserReports serializes the host's answers back to the backend.
-	// It is deliberately NOT under mu: its jobs take mu themselves, and
-	// submission happens from a WebView2 completion handler on the UI
-	// thread, which must never block. Zero value ready.
-	browserReports serialqueue.Queue
+	// It is deliberately NOT under mu: its deliveries take mu themselves,
+	// and submission happens from a WebView2 completion handler on the UI
+	// thread, which must never block.
+	browserReports *webview2host.ReportQueue
+	// paneGeometry holds the SPA's own browser pane geometry reports, posted
+	// to the launcher directly (handlePaneGeometryMessage). It exists before
+	// the browser host and is safe from any goroutine.
+	paneGeometry *webview2host.GeometryMailbox
+	// paneFocus holds the SPA's page focus intent arms and withdrawals
+	// (handlePaneFocusMessage); safe from any goroutine.
+	paneFocus *webview2host.FocusIntents
+	// chords routes Ctrl+R to the SPA while it asks for the chord
+	// (uikeys.PageChords), reported over the same raw message channel.
+	chords *uikeys.PageChords
 
 	// flushGeometry persists the window placement immediately. Set on the
 	// ApplicationStarted handler (with window) and read on shutdown as a
@@ -572,6 +582,12 @@ type launcherApp struct {
 	// bridge's dispatch goroutine and held across the whole install, which
 	// would otherwise block every lifecycle path that takes the mutex.
 	updateInstalling atomic.Bool
+	// updateSwap times an install that took the framework's swap, from the
+	// directive to this process's end (run); nil until one does. Under mu.
+	updateSwap *supervise.SwapTiming
+	// shutdownErr is OnShutdown's failed backend teardown, which run ends
+	// updateSwap's shutdown with. Under mu.
+	shutdownErr error
 	// payloadDistro and payloadPath are the running backend's distro and
 	// Linux path, recorded by launchAndShow for an in-app update (under mu).
 	// payloadTransient is whether that launch saves its distro choice,
@@ -602,10 +618,9 @@ type launcherApp struct {
 	backendUpdateArgs atomic.Pointer[[]string]
 
 	// backendURL holds the page URL launchAndShow pointed the WebView at.
-	// Read by the reload keybinding (uikeys.BrowserWithReload) so Ctrl+R
-	// re-navigates with a credential instead of reloading the SPA's
-	// scrubbed URL. atomic.Pointer because the writer is launchAndShow
-	// (goroutine) and the reader is the Wails event loop.
+	// The reload keybinding (currentBackendURL) falls back to it when the
+	// backend cannot answer a fresh one. atomic.Pointer because the writer
+	// is launchAndShow (goroutine) and the reader is the Wails event loop.
 	backendURL     atomic.Pointer[string]
 	startupFailure atomic.Pointer[[]byte]
 	// loading is what /loading.json reports while the backend starts.
@@ -807,7 +822,7 @@ func (a *launcherApp) launchAndShow(distro string, transient, retryMigration boo
 		}
 	}
 
-	if err := a.startNotificationBridge(bs, l); err != nil {
+	if err := a.startNotificationBridge(bs); err != nil {
 		log.Printf("notifications: start launcher bridge: %v", err)
 	}
 
@@ -981,8 +996,7 @@ func (a *launcherApp) launchBackend(ctx context.Context, distro, binPath string,
 	}
 	profileArgs, err := profileBackendArgs()
 	if err != nil {
-		_ = a.releaseHarnessReservation()
-		return nil, nil, err
+		return nil, nil, errors.Join(err, a.releaseHarnessReservation())
 	}
 	args := append(profileArgs, extraArgs...)
 	if update := a.backendUpdateArgs.Load(); update != nil {
@@ -1010,8 +1024,7 @@ func (a *launcherApp) launchBackend(ctx context.Context, distro, binPath string,
 	})
 	logBootPhase("launcher.wsl_launch", phaseStarted)
 	if err != nil {
-		_ = a.releaseHarnessReservation()
-		return nil, nil, fmt.Errorf("%w: %w", errLaunchFailed, err)
+		return nil, nil, errors.Join(fmt.Errorf("%w: %w", errLaunchFailed, err), a.releaseHarnessReservation())
 	}
 
 	a.mu.Lock()
@@ -1187,8 +1200,8 @@ func (a *launcherApp) probeLaunchedBackend(ctx context.Context, bs *wsllauncher.
 // It asks the backend for a FRESH page URL first, because the boot URL
 // is a string the backend assembled for one navigation and a rebind (the
 // LAN toggle) moves the origin out from under it. The credential is not
-// on either URL — the reloaded document is ticketed by injection like
-// every other one — so the stored URL is a perfectly good fallback and a
+// on either URL (the reloaded document is ticketed by injection like
+// every other one), so the stored URL is a perfectly good fallback and a
 // blip costs a reload nothing. The request is one loopback GET against a
 // backend that is by definition serving.
 func (a *launcherApp) currentBackendURL() string {
@@ -1331,7 +1344,12 @@ func (a *launcherApp) persistSuccessfulLaunch(distro, binPath string, rememberDi
 		log.Printf("launcher: profile=%s — not persisting the distro choice to wsl.json", activeProfile)
 		return nil
 	}
-	cfg, _ := loadConfig()
+	cfg, err := loadConfig()
+	if err != nil {
+		// A record that cannot be read is left as it is: writing the
+		// install fields over it would drop every field it holds.
+		return fmt.Errorf("read wsl.json before recording the launch: %w", err)
+	}
 	if cfg == nil {
 		cfg = &wsldistro.Config{}
 	}
@@ -1382,7 +1400,11 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 		distros:                 distros,
 		notificationActivations: wsllauncher.NewNotificationActivationQueue(),
 		disableGPUVsync:         disableGPUVsync,
+		paneGeometry:            webview2host.NewGeometryMailbox(),
+		paneFocus:               webview2host.NewFocusIntents(),
+		chords:                  uikeys.NewPageChords(),
 	}
+	a.browserReports = webview2host.NewReportQueue(a.deliverBrowserReport)
 	if disableGPUVsync {
 		log.Printf("webview2: GPU vsync disabled by Settings > Performance (%s on the app window and the browser pane)", disableGPUVsyncArg)
 	}
@@ -1391,7 +1413,7 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 		a.queueNotificationActivation(target)
 	})
 	a.notificationService = notificationService
-	mode := wslSingleInstanceMode()
+	mode := launcherRuntimeMode()
 	title := appidentity.AppTitle(mode)
 
 	// Preserve the previous browser session's Chromium log before this
@@ -1437,6 +1459,9 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 			}, func() startuppage.Report { return a.loading.Report(time.Now()) }),
 		},
 		Windows: webviewBrowserOptions(mode, profileDir, diagnosticsDir, !applier, disableGPUVsync),
+		// The SPA's browser pane geometry, posted straight to this process
+		// (browserhost.go). Wails keeps "wails:" messages for itself.
+		RawMessageHandler: a.handleRawMessage,
 		// Cancel app shutdown until the user explicitly closes the
 		// window. Without this, a transient WSL hiccup during launch
 		// would crash us silently.
@@ -1455,7 +1480,11 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 			l := a.launcher
 			bs := a.backendBootstrap
 			cancelNotifications := a.notificationCancel
+			swap := a.updateSwap
 			a.mu.Unlock()
+			// An install's framework swap quits through here before its
+			// Restart returns; its shutdown phase begins now.
+			swap.Quitting()
 			if flush != nil {
 				flush()
 			}
@@ -1467,7 +1496,12 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 			// blocked on us.
 			a.closeBrowserHost()
 			if l != nil {
-				a.stopLaunchedBackend(l, bs)
+				if err := a.stopLaunchedBackend(l, bs); err != nil {
+					log.Printf("launcher: backend teardown: %v", err)
+					a.mu.Lock()
+					a.shutdownErr = fmt.Errorf("backend teardown: %w", err)
+					a.mu.Unlock()
+				}
 			}
 			if cancelNotifications != nil {
 				cancelNotifications()
@@ -1479,16 +1513,16 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 	// Without KeyBindings the WebView2 swallows zoom/reload/fullscreen
 	// and there's no menu bar to fall back on. `make dev-wsl` makes
 	// this the only window the user touches, so the missing bindings
-	// were the most user-visible symptom. BrowserWithReload reads
-	// a.backendURL on each reload so Ctrl+R re-navigates with the
-	// bootstrap token after the SPA scrubs it from window.location —
-	// see uikeys.BrowserWithReload.
+	// were the most user-visible symptom. BrowserWithReload asks
+	// currentBackendURL on each reload, so Ctrl+R navigates to the
+	// backend's current bare page URL, whose document is ticketed by
+	// injection like the first one.
 	//
 	// F12 devtools is gated on launcherMode because dev and prod ship
 	// the same .exe (only this ldflags string differs) and Wails
 	// compiles WebView2 devtools in unconditionally — the binding is
 	// the only thing standing between prod users and an inspector.
-	keyBindings := uikeys.BrowserWithReload(a.currentBackendURL)
+	keyBindings := a.chords.Bindings(uikeys.BrowserWithReload(a.currentBackendURL))
 	if launcherMode == "dev" {
 		keyBindings = uikeys.WithDevTools(keyBindings)
 	}
@@ -1534,6 +1568,10 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 		// so the picker / loading / error pages never reach this — and
 		// a.pageTicket refuses anyway until a backend exists to mint one.
 		uiwindow.DeliverPageTicket(w, a.pageTicket)
+		advertisePaneGeometry(w)
+		w.OnWindowEvent(events.Common.WindowRuntimeReady, func(*application.WindowEvent) {
+			a.chords.DocumentLoaded(w)
+		})
 		a.mu.Lock()
 		a.window = w
 		a.flushGeometry = flush
@@ -1566,7 +1604,7 @@ func (a *launcherApp) afterWindow(chosen string, transient bool) {
 	}
 }
 
-func (a *launcherApp) startNotificationBridge(bs *wsllauncher.Bootstrap, launcher *wsllauncher.Launcher) error {
+func (a *launcherApp) startNotificationBridge(bs *wsllauncher.Bootstrap) error {
 	client, err := wsllauncher.NewNotificationClient(wsllauncher.NotificationClientConfig{
 		WSURL:   fmt.Sprintf("ws://127.0.0.1:%d/ws", bs.Port),
 		Token:   bs.Token,
@@ -1677,19 +1715,11 @@ func (a *launcherApp) drainNotificationActivations() {
 
 func wslSingleInstanceOptions(window func() *application.WebviewWindow) *application.SingleInstanceOptions {
 	return &application.SingleInstanceOptions{
-		UniqueID: appidentity.SingleInstanceID("wsl", wslSingleInstanceMode()),
+		UniqueID: appidentity.SingleInstanceID("wsl", launcherRuntimeMode()),
 		OnSecondInstanceLaunch: func(_ application.SecondInstanceData) {
 			uiwindow.Reveal(window())
 		},
 	}
-}
-
-// wslSingleInstanceMode is the folded (build stamp + runtime profile)
-// mode every per-instance name is derived from. Named for its oldest
-// caller; it is the same string that picks the title, WebView2 profile,
-// CDP port, log file, and window-state file.
-func wslSingleInstanceMode() string {
-	return launcherRuntimeMode()
 }
 
 // browserArgs returns the Chromium command-line flags forwarded to
@@ -1739,15 +1769,10 @@ func wslSingleInstanceMode() string {
 // (displayBrowserArgs); the browser pane's environment takes the same
 // switches through ensureBrowserHost.
 //
-// Memory experiments tried and pulled back: --single-process (~290 MB
-// savings, but couples all rendering work onto one thread pool and
-// removes the renderer-crash recovery boundary), --enable-low-end-
-// device-mode (smaller raster workers + image caches; perceptible
-// decode-time regression on strong machines), and
-// --js-flags=--max-old-space-size=128 (V8 cap; combined with
-// single-process turns any future big-memory feature — large diffs,
-// terminal log dumps — into a whole-window crash). Revisit if memory
-// becomes a real constraint.
+// --single-process, --enable-low-end-device-mode and a V8 heap cap are
+// left out: the first removes the renderer-crash recovery boundary, the
+// second slows image decoding, and a heap cap turns a large diff or log
+// into a whole-window crash.
 func browserArgs(mode string, devTools, disableGPUVsync bool) []string {
 	args := []string{
 		"--disable-background-networking",
@@ -1926,10 +1951,9 @@ func launcherWebviewDataDir(mode string, applier bool) string {
 }
 
 // renderDiagnosticsDir is where the wails fork's render watchdog drops a
-// renderer minidump + breadcrumb the moment it declares a hang — BEFORE
+// renderer minidump and breadcrumb the moment it declares a hang, before
 // recovery reaps the wedged process tree, which is the only instant the
-// evidence exists (incident 2026-08-18: third renderer-hang episode with
-// zero artifact; Crashpad writes nothing for a hang). Always on, in every
+// evidence exists: Crashpad writes nothing for a hang. Always on, in every
 // mode: a production user's hang report is only fixable if the dump was
 // already taken when they hit it. The fork caps the directory at three
 // dumps, so it never needs tending. Empty (unresolvable %APPDATA%)
@@ -1946,8 +1970,9 @@ func renderDiagnosticsDir(mode string) string {
 // run drives the Wails app loop. Errors are logged but don't take
 // down the launcher silently — the user sees the WebView regardless.
 func (a *launcherApp) run() {
-	if err := a.wails.Run(); err != nil {
-		log.Printf("wails run: %v", err)
+	runErr := a.wails.Run()
+	if runErr != nil {
+		log.Printf("wails run: %v", runErr)
 	}
 	// Defensive cleanup: if the user closes the window before the
 	// backend finishes booting, OnShutdown still fires, but we run
@@ -1956,11 +1981,20 @@ func (a *launcherApp) run() {
 	l := a.launcher
 	bs := a.backendBootstrap
 	a.mu.Unlock()
+	var teardownErr error
 	if l != nil {
 		if err := a.stopLaunchedBackend(l, bs); err != nil {
 			log.Printf("launcher: final backend teardown: %v", err)
+			teardownErr = fmt.Errorf("final backend teardown: %w", err)
 		}
 	}
+	// An install that took the framework's swap ends its shutdown here,
+	// with what failed in it.
+	a.mu.Lock()
+	swap := a.updateSwap
+	shutdownErr := a.shutdownErr
+	a.mu.Unlock()
+	swap.End(errors.Join(runErr, shutdownErr, teardownErr))
 }
 
 func logBootPhase(phase string, started time.Time) {

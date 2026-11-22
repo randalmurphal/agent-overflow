@@ -326,6 +326,7 @@
     stats={diffStats}
     {collapsibleFileCount}
     onClose={ctx ? () => ctx?.close() : undefined}
+    promotePaneId={companionPaneId}
   />
   {#if findKey && review}
     <ReviewPaneFind
@@ -492,8 +493,8 @@
           prThreads={review.shownPRThreads}
           expandedPRThreadIds={review.expandedPRThreadIds}
           generation={review.shownGeneration}
-          onAddComment={review.canDraftComments && review.commentsGranted ? (anchor, generation) => review?.openDraftEditor(anchor, generation) : undefined}
-          onExtendRange={review.canDraftComments && review.commentsGranted && review.canPostNow && !review.headRange ? (anchor, generation) => review?.extendEditorRange(anchor, generation) : undefined}
+          onAddComment={review.canDraftComments && review.commentsGrant === 'granted' ? (anchor, generation) => review?.openDraftEditor(anchor, generation) : undefined}
+          onExtendRange={review.canDraftComments && review.commentsGrant === 'granted' && review.canPostNow && !review.headRange ? (anchor, generation) => review?.extendEditorRange(anchor, generation) : undefined}
           lineComment={review.headRange ? (anchor) => review?.lineComment(anchor) ?? null : undefined}
           onLineMenu={lineLinkTarget ? openLineMenu : undefined}
           rangesFor={(path) => review?.rangeTintsFor(path) ?? []}
