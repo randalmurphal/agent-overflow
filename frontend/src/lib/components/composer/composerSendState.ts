@@ -1,18 +1,18 @@
 import type { SendButtonAction } from './toolbar/sendButtonTypes';
-import type { ScopeGrant } from '../../transport/scopes';
+import type { ControlAccess } from '../../transport/scopes';
 
 export interface ComposerSendStateInput {
   isDisabled: boolean;
   /**
-   * Whether this session holds `threads:operate` on the thread's computer
-   * (`threadScopeGrant`); absent means granted. Anything but `granted`
-   * means nothing the send button does can reach the backend. `refused`
-   * is a known grant without it; `unknown` is a computer whose grant has
-   * not arrived in this window. Separate from `isDisabled`, which is
-   * "there is no thread to send into": they want different placeholder
-   * copy, and this one is a property of the session rather than the pane.
+   * Whether a send can reach the thread's computer now (composerAccess.ts
+   * `send`); absent means granted. Anything but `granted` means nothing
+   * the send button does can reach the backend: the computer is offline,
+   * or its grant refuses `threads:operate`, has not arrived, or cannot be
+   * routed. Separate from `isDisabled`, which is "there is no thread to
+   * send into": they want different placeholder copy, and this one is a
+   * property of the session rather than the pane.
    */
-  sendGrant?: ScopeGrant;
+  sendAccess?: ControlAccess;
   /**
    * The thread is the hidden copy an agent's question runs in
    * (`Thread.askCopy`): it takes no message from a person, and the
@@ -100,7 +100,7 @@ export function deriveComposerSendState(input: ComposerSendStateInput): Composer
 }
 
 function sendGranted(input: ComposerSendStateInput): boolean {
-  return (input.sendGrant ?? 'granted') === 'granted';
+  return (input.sendAccess ?? 'granted') === 'granted';
 }
 
 function sendLabel(action: SendButtonAction): string | undefined {

@@ -32,6 +32,7 @@ import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import {
   DisconnectedError,
   TransportError,
+  isTransportOutage,
   wsClient,
   type TransportHello,
   type TransportStatusSnapshot,
@@ -82,10 +83,10 @@ const helloEdgeListeners = new Set<BackendHelloListener>();
 type BackendStatusListener = (backend: BackendKey, status: TransportStatusSnapshot) => void;
 const backendStatusListeners = new Set<BackendStatusListener>();
 
-// Whether each attached computer has been unreachable for
-// UNREACHABLE_SETTLE_MS without a break, counted from when its status left
-// `connected`, or from when this window began watching one that has not
-// connected yet. Everything that shows a computer as unreachable without
+// Whether each attached computer has been in an outage
+// (`isTransportOutage`) for UNREACHABLE_SETTLE_MS without a break. A
+// computer that answered and is still starting is not in one, and neither
+// is a first connect still in flight; either clears the count. Everything that shows a computer as unreachable without
 // being asked waits for it: the rows that dim or relabel its threads, a
 // paired computer's banner, and the Projects list, which stops waiting for
 // that computer's lists before it says it is empty. So a connection that
@@ -101,7 +102,7 @@ const unreachableSettled = createKeyedSignalRegistry<boolean>(false);
 const settleTimers = new Map<BackendKey, ReturnType<typeof setTimeout>>();
 
 function trackReachability(id: BackendKey, next: TransportStatusSnapshot): void {
-  if (next.status === 'connected') {
+  if (!isTransportOutage(next.status)) {
     forgetReachability(id);
     return;
   }

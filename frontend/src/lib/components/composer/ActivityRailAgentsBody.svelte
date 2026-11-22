@@ -40,7 +40,7 @@
   import { activityRailIconActionClasses, activityRailRevealClasses } from './activityRailClasses';
   import { trayWriteGrant } from './trayWrites';
   import { grantBlockedTitle } from '../../transport/scopeRefusal';
-  import type { ScopeGrant } from '../../transport/scopes';
+  import type { EntityScopeGrant } from '../../transport/scopes';
   import type { AgentController, IncomingAgentMessage } from './activityRailAgents.svelte';
 
   interface Props {
@@ -245,11 +245,11 @@
   }
 
   let canStopAll = $derived(agents.count > 0);
-  // No thread, or no computer to place on, has no grant to read.
-  let stopGrant = $derived<ScopeGrant>(threadId ? trayWriteGrant({ threadId, projectId: pane.thread?.projectId }) : 'unknown');
-  const placeGrant = (row: ThreadAgentRow): ScopeGrant => {
+  // No thread, or no computer to place on, has no computer to ask.
+  let stopGrant = $derived<EntityScopeGrant>(threadId ? trayWriteGrant({ threadId, projectId: pane.thread?.projectId }) : 'unrouted');
+  const placeGrant = (row: ThreadAgentRow): EntityScopeGrant => {
     const backend = placementBackend(row);
-    return backend === null ? 'unknown' : trayWriteGrant({ computer: backend });
+    return backend === null ? 'unrouted' : trayWriteGrant({ computer: backend });
   };
 </script>
 

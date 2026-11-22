@@ -1334,4 +1334,37 @@ describe('architecture', () => {
       + ' set the title to grantBlockedTitle(grant) ?? <the title the control has when granted>.',
     );
   });
+
+  // A component holds only the grant (`scopeGrant` and the entity
+  // `…ScopeGrant`), never the yes/no answer, so a control it switches off
+  // has its reason in hand: the yes/no answer is false for a refusal, for a
+  // computer that has not answered, and for an item no computer is known to
+  // hold, and a title built from it says the wrong one. Stores keep the
+  // yes/no helpers for gates that show nothing. TypeScript cannot keep an
+  // export out of one directory, so this scan does.
+  it('keeps the yes/no grant helpers out of components', () => {
+    const offenders = new Map<string, string[]>();
+    let grantReads = 0;
+    for (const file of scannedSources(SOURCE_EXTENSIONS)) {
+      if (!repoPath(file).startsWith('lib/components/')) continue;
+      const findings: string[] = [];
+      readFileSync(file, 'utf8').split('\n').forEach((line, index) => {
+        if (/ScopeGrant\(|\bscopeGrant\(/.test(line)) grantReads += 1;
+        if (/\b(?:threadHasScope|projectHasScope|workflowItemHasScope)\b/.test(line)) {
+          findings.push(`line ${index + 1}: uses an entity's yes/no grant helper`);
+        } else if (/\bhasScope\(\s*(?!['"]host['"])/.test(line)) {
+          findings.push(`line ${index + 1}: asks hasScope for a grant`);
+        }
+      });
+      if (findings.length > 0) offenders.set(repoPath(file), findings);
+    }
+    expect(grantReads, 'the scan found no grant reads in components; it would pass vacuously').toBeGreaterThan(30);
+    expectAllowlistExact(
+      offenders,
+      {},
+      'New violations.',
+      'Read the grant (scopeGrant, threadScopeGrant, projectScopeGrant, workflowItemScopeGrant). A control it'
+      + " switches off takes grantBlockedTitle(grant) as its reason; a gate that shows nothing compares it with 'granted'.",
+    );
+  });
 });

@@ -97,7 +97,7 @@ describe('verifiedThreadMachine', () => {
 });
 
 // Thread rows dim and relabel a computer's threads only once it has been
-// unreachable for UNREACHABLE_SETTLE_MS without a break, so a spotty
+// in an outage for UNREACHABLE_SETTLE_MS without a break, so a spotty
 // connection never flips them. The composer's answer does not wait.
 describe('threadMachineUnreachableSettled', () => {
   let laptop: ReturnType<typeof stageBackend>;
@@ -166,7 +166,6 @@ describe('threadMachineUnreachableSettled', () => {
     laptop.setStatus('reconnecting');
     vi.advanceTimersByTime(10_000);
     // The ladder reports each attempt while the computer stays down.
-    laptop.setStatus('disconnected');
     laptop.setStatus('reconnecting');
     vi.advanceTimersByTime(UNREACHABLE_SETTLE_MS - 10_000);
     expect(settled()).toBe(true);
@@ -179,11 +178,45 @@ describe('threadMachineUnreachableSettled', () => {
     expect(settled()).toBe(false);
   });
 
-  it('dims a computer that never connects the settle time after this window starts watching it', () => {
+  // The first dial in flight is not an outage yet; its failure starts one.
+  it('counts a computer that never connects from its first failed dial', () => {
     stage('disconnected');
+    vi.advanceTimersByTime(UNREACHABLE_SETTLE_MS * 2);
+    expect(settled()).toBe(false);
+    laptop.setStatus('reconnecting');
     vi.advanceTimersByTime(UNREACHABLE_SETTLE_MS - 1);
     expect(settled()).toBe(false);
     vi.advanceTimersByTime(1);
+    expect(settled()).toBe(true);
+  });
+
+  // A computer that answered it is starting (a cold attach, a long
+  // migration) is not unreachable, however long it starts.
+  it('never dims a computer while it is starting, and starting ends a drop', () => {
+    stage('disconnected');
+    laptop.setStatus('starting');
+    vi.advanceTimersByTime(UNREACHABLE_SETTLE_MS * 3);
+    expect(settled()).toBe(false);
+    // A drop, then the computer answers that it is starting for 40 s.
+    laptop.setStatus('connected');
+    laptop.setStatus('reconnecting');
+    vi.advanceTimersByTime(UNREACHABLE_SETTLE_MS - 5_000);
+    laptop.setStatus('starting');
+    vi.advanceTimersByTime(40_000);
+    expect(settled()).toBe(false);
+    // Starting also clears a drop that had already settled.
+    laptop.setStatus('reconnecting');
+    vi.advanceTimersByTime(UNREACHABLE_SETTLE_MS);
+    expect(settled()).toBe(true);
+    laptop.setStatus('starting');
+    expect(settled()).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('counts a refusal as an outage', () => {
+    stage();
+    laptop.setStatus('unauthorized');
+    vi.advanceTimersByTime(UNREACHABLE_SETTLE_MS);
     expect(settled()).toBe(true);
   });
 

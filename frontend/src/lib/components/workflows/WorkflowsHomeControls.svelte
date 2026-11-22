@@ -14,7 +14,7 @@
   import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import { userFacingError } from '../../utils/userFacingError';
   import { getProjectLabelText, getProjects } from '../../stores/projects.svelte';
-  import { anyOfGrants, hasScope, scopeGrant } from '../../transport/scopes';
+  import { allOfGrants, anyOfGrants, scopeGrant } from '../../transport/scopes';
   import { grantBlockedTitle } from '../../transport/scopeRefusal';
   import { isWorkflowEnginePaused, resyncWorkflowEngineState } from '../../stores/workflowRuns.svelte';
   import {
@@ -27,7 +27,8 @@
   let computers = $derived(getAttachedBackends());
   let grant = $derived(anyOfGrants(computers.map((entry) => scopeGrant('threads:autonomy', entry.id))));
   let ungranted = $derived(grant !== 'granted');
-  let pauseUngrant = $derived(computers.length === 0 || computers.some((entry) => !hasScope('threads:autonomy', entry.id)));
+  let pauseGrant = $derived(computers.length === 0 ? 'refused' : allOfGrants(computers.map((entry) => scopeGrant('threads:autonomy', entry.id))));
+  let pauseUngrant = $derived(pauseGrant !== 'granted');
   let paused = $derived(isWorkflowEnginePaused());
   let projects = $derived(getProjects());
   let filter = $derived(getWorkflowProjectFilter());
@@ -63,7 +64,7 @@
     class="rounded-md border border-border-subtle px-2 py-1 text-xs text-fg-muted hover:text-fg disabled:cursor-not-allowed disabled:opacity-50"
     onclick={togglePause}
     disabled={pauseUngrant || pausing}
-    title={pauseUngrant ? 'Workflow control is required on every computer to pause all' : 'Pause stops new phase starts on every connected computer; in-flight turns finish'}
+    title={pauseGrant === 'refused' ? 'Workflow control is required on every computer to pause all' : grantBlockedTitle(pauseGrant) ?? 'Pause stops new phase starts on every connected computer; in-flight turns finish'}
     data-testid="workflows-pause-all"
     aria-pressed={paused}
   >{paused ? '▶ Resume all' : '❚❚ Pause all'}</button>

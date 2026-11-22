@@ -37,7 +37,7 @@ import type { BackendKey } from '../transport/backendKey';
 import { onBackendDetached, withBackendTarget } from '../transport/backends';
 import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 import { presentScope, scopeRefusalMessage } from '../transport/scopeRefusal';
-import { hasScope, pageGrantsKnown, pageGrantsKnownTracked } from '../transport/scopes';
+import { pageGrantsKnown, pageGrantsKnownTracked, scopeGrant, type ScopeGrant } from '../transport/scopes';
 import { TransportError } from '../transport/wsClient';
 import { errString } from '../utils/errors';
 import { findNeedle } from '../utils/findMatch';
@@ -86,7 +86,7 @@ interface StageRead {
 
 /** Whether the computer granted this page `git:operate`; unknown until
  * the page's grants resolve. */
-type Grant = 'unknown' | 'granted' | 'refused';
+type Grant = ScopeGrant;
 
 function notGrantedMessage(): string {
   const { title, hint } = presentScope('git:operate');
@@ -97,9 +97,9 @@ function readError(err: unknown): string {
   return scopeRefusalMessage(err) ?? errString(err);
 }
 
+// Before this page's manifest no grant is known on any computer.
 function grantOf(backend: BackendKey, known: boolean): Grant {
-  if (!known) return 'unknown';
-  return hasScope('git:operate', backend) ? 'granted' : 'refused';
+  return known ? scopeGrant('git:operate', backend) : 'pending';
 }
 
 export interface PipelinesSelection {
@@ -137,7 +137,7 @@ class PipelinesPageBackend {
   loaded = $state(false);
   /** The projects read failed: nothing else can list. */
   error = $state<string | null>(null);
-  grant = $state<Grant>('unknown');
+  grant = $state<Grant>('pending');
   /** The owning computer's connection, as its status box last said. */
   connected = false;
   /** The next list read is the refresh button's, which runs ungated. */

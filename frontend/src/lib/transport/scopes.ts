@@ -366,18 +366,34 @@ export function hasScope(scope: Scope, backendId: BackendKey = HOME_BACKEND): bo
 
 function grantOf(snapshot: ScopeSnapshot, scope: Scope): ScopeGrant {
   if (snapshot.everyScope || snapshot.scopes.has(scope)) return 'granted';
-  return snapshot.source === 'unknown' ? 'unknown' : 'refused';
+  return snapshot.source === 'unknown' ? 'pending' : 'refused';
 }
 
 /**
  * `hasScope` with its third answer kept: `refused` only when a grant is
- * known and does not hold `scope`, `unknown` while nothing has said. A
- * gate reads `hasScope`, which answers false for both. A surface that
- * TELLS the person a capability was not granted ("read-only access")
- * reads this, so a computer that has not answered in this window is
- * never described as having refused.
+ * known and does not hold `scope`, `pending` while that computer's grant
+ * has not arrived in this window. A gate reads `hasScope`, which answers
+ * false for both. A surface that TELLS the person why a control is off
+ * reads this, through `grantBlockedTitle` (./scopeRefusal.ts), so a
+ * computer that has not answered is never described as having refused.
  */
-export type ScopeGrant = 'granted' | 'refused' | 'unknown';
+export type ScopeGrant = 'granted' | 'refused' | 'pending';
+
+/**
+ * The grant on an entity's computer (./entityScopes.ts): a `ScopeGrant`,
+ * or `unrouted` when routing cannot name the computer that owns the
+ * entity (several computers and no owner known), which no connection to a
+ * computer resolves.
+ */
+export type EntityScopeGrant = ScopeGrant | 'unrouted';
+
+/**
+ * Whether a control that calls a computer can act now: its grant, or
+ * `offline` while that computer cannot be reached. The composer's actions
+ * read this (components/composer/composerAccess.ts); `grantBlockedTitle`
+ * says why a control is off for every answer but `granted`.
+ */
+export type ControlAccess = EntityScopeGrant | 'offline';
 
 export function scopeGrant(scope: Exclude<Scope, 'host'>, backendId: BackendKey): ScopeGrant {
   return grantOf(readSnapshot(backendId, `scopeGrant(${scope})`), scope);
@@ -385,23 +401,29 @@ export function scopeGrant(scope: Exclude<Scope, 'host'>, backendId: BackendKey)
 
 /**
  * The grant of an action that needs every one of `grants`, such as one
- * action applied to several selected threads: refused when any is known
- * to refuse, otherwise unknown while any has not answered.
+ * action applied to several selected threads: refused when any is known to
+ * refuse, otherwise pending while any computer has not answered, otherwise
+ * unrouted while any owner is not known.
  */
-export function allOfGrants(grants: readonly ScopeGrant[]): ScopeGrant {
-  if (grants.includes('refused')) return 'refused';
-  return grants.includes('unknown') ? 'unknown' : 'granted';
+export function allOfGrants(grants: readonly EntityScopeGrant[]): EntityScopeGrant {
+  for (const rank of ['refused', 'pending', 'unrouted'] as const) {
+    if (grants.includes(rank)) return rank;
+  }
+  return 'granted';
 }
 
 /**
  * The grant of an action that any one of `grants` allows, such as a
  * control that acts on whichever computer the person then picks: granted
- * when any grants, otherwise unknown while any has not answered. No
- * candidate at all is a refusal.
+ * when any grants, otherwise pending while any computer has not answered,
+ * otherwise unrouted while any owner is not known. No candidate at all is
+ * a refusal.
  */
-export function anyOfGrants(grants: readonly ScopeGrant[]): ScopeGrant {
-  if (grants.includes('granted')) return 'granted';
-  return grants.includes('unknown') ? 'unknown' : 'refused';
+export function anyOfGrants(grants: readonly EntityScopeGrant[]): EntityScopeGrant {
+  for (const rank of ['granted', 'pending', 'unrouted'] as const) {
+    if (grants.includes(rank)) return rank;
+  }
+  return 'refused';
 }
 
 /**

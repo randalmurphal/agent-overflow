@@ -81,57 +81,48 @@ describe('deriveComposerInputState', () => {
 
 describe('deriveComposerInputState — an unreachable machine', () => {
   it('disables the input and names the machine, after the read-only case and before the prompts', () => {
-    expect(deriveComposerInputState(input({ unreachableTarget: 'Laptop', hasBlockingPrompt: true }))).toEqual({
+    expect(deriveComposerInputState(input({ sendAccess: 'offline', unreachableTarget: 'Laptop', hasBlockingPrompt: true }))).toEqual({
       disabled: true,
       value: 'draft text',
       placeholder: 'Laptop is offline',
     });
+    // composerAccess keeps a known refusal over the outage.
     expect(
-      deriveComposerInputState(input({ unreachableTarget: 'Laptop', sendGrant: 'refused' })).placeholder,
+      deriveComposerInputState(input({ unreachableTarget: 'Laptop', sendAccess: 'refused' })).placeholder,
     ).toBe('This device has read-only access');
   });
 
-  // A computer that was off when this window loaded has not said what this
-  // device may do there. That is not a refusal: the composer names the
-  // computer as offline, the one thing the person can act on.
-  it('names the machine as offline while its grant is unknown, and still takes no message', () => {
-    expect(deriveComposerInputState(input({ unreachableTarget: 'Laptop', sendGrant: 'unknown' }))).toEqual({
-      disabled: true,
-      value: 'draft text',
-      placeholder: 'Laptop is offline',
-    });
-    expect(deriveComposerInputState(input({ offline: true, sendGrant: 'unknown' })).placeholder)
-      .toBe('Disconnected from the agent backend');
-    // Reachable with no known grant: never "read-only".
-    expect(deriveComposerInputState(input({ sendGrant: 'unknown' }))).toEqual({
+  // Reachable, but the computer has not said what this device may do, or
+  // no computer is known to hold the thread: never "read-only".
+  it('waits, and takes no message, while the grant has not arrived or the computer is not known', () => {
+    expect(deriveComposerInputState(input({ sendAccess: 'pending' }))).toEqual({
       disabled: true,
       value: 'draft text',
       placeholder: 'Waiting for this thread’s computer to answer',
+    });
+    expect(deriveComposerInputState(input({ sendAccess: 'unrouted' }))).toEqual({
+      disabled: true,
+      value: 'draft text',
+      placeholder: 'Waiting to learn which computer holds this thread',
     });
   });
 });
 
 describe('deriveComposerInputState, the page own backend being down', () => {
-  it('disables the input and says so, ranked under the named machine', () => {
-    expect(deriveComposerInputState(input({ offline: true }))).toEqual({
+  it('disables the input and says so, naming the machine when it is another one', () => {
+    expect(deriveComposerInputState(input({ sendAccess: 'offline' }))).toEqual({
       disabled: true,
       value: 'draft text',
       placeholder: 'Disconnected from the agent backend',
     });
-    // Both are true when another machine is what dropped. The named one
-    // wins because it says more.
     expect(
-      deriveComposerInputState(input({ offline: true, unreachableTarget: 'Laptop' })).placeholder,
+      deriveComposerInputState(input({ sendAccess: 'offline', unreachableTarget: 'Laptop' })).placeholder,
     ).toBe('Laptop is offline');
-    // Read-only outranks both: a session that cannot send says why once.
-    expect(
-      deriveComposerInputState(input({ offline: true, sendGrant: 'refused' })).placeholder,
-    ).toBe('This device has read-only access');
   });
 
   it('outranks the approval prompt, which cannot be answered while offline', () => {
     expect(
-      deriveComposerInputState(input({ offline: true, hasBlockingPrompt: true })).placeholder,
+      deriveComposerInputState(input({ sendAccess: 'offline', hasBlockingPrompt: true })).placeholder,
     ).toBe('Disconnected from the agent backend');
   });
 });
@@ -147,7 +138,7 @@ describe('deriveComposerInputState, compact layout', () => {
   });
 
   it('yields to every placeholder that reports a state', () => {
-    expect(deriveComposerInputState(input({ compact: true, offline: true })).placeholder)
+    expect(deriveComposerInputState(input({ compact: true, sendAccess: 'offline' })).placeholder)
       .toBe('Disconnected from the agent backend');
     expect(deriveComposerInputState(input({ compact: true, hasPlanSource: true })).placeholder)
       .toBe('Add feedback to refine the plan, or leave blank to implement it');
@@ -163,7 +154,7 @@ describe('deriveComposerInputState, an ask copy', () => {
     });
     expect(deriveComposerInputState(input({ askCopy: true, hasBlockingPrompt: true })).placeholder)
       .toBe("An agent's question runs in this copy. It takes no messages.");
-    expect(deriveComposerInputState(input({ askCopy: true, sendGrant: 'refused' })).placeholder)
+    expect(deriveComposerInputState(input({ askCopy: true, sendAccess: 'refused' })).placeholder)
       .toBe('This device has read-only access');
   });
 });

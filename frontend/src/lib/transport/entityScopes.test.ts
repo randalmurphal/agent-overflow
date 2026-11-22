@@ -21,14 +21,15 @@ it('refuses ambiguous unknown entities instead of borrowing HOME permissions', (
   expect(threadHasScope('threads:operate', 'unknown')).toBe(false);
   expect(projectHasScope('git:operate', 'unknown')).toBe(false);
   expect(workflowItemHasScope('threads:autonomy', 'unknown')).toBe(false);
-  // Holding nothing there is not a known refusal.
-  expect(threadScopeGrant('threads:operate', 'unknown')).toBe('unknown');
-  expect(projectScopeGrant('git:operate', 'unknown')).toBe('unknown');
-  expect(workflowItemScopeGrant('threads:autonomy', 'unknown')).toBe('unknown');
+  // No computer is known to hold them: that is neither a refusal nor a
+  // computer whose grant has not arrived.
+  expect(threadScopeGrant('threads:operate', 'unknown')).toBe('unrouted');
+  expect(projectScopeGrant('git:operate', 'unknown')).toBe('unrouted');
+  expect(workflowItemScopeGrant('threads:autonomy', 'unknown')).toBe('unrouted');
 });
 
 it('says which of granted, refused and unknown a project\'s and a run\'s computer answers', () => {
-  for (const [computer, grant] of [['writable', 'granted'], ['readonly', 'refused'], ['silent', 'unknown']] as const) {
+  for (const [computer, grant] of [['writable', 'granted'], ['readonly', 'refused'], ['silent', 'pending']] as const) {
     noteProject(`project-${computer}`, computer);
     noteWorkflowItem(`run-${computer}`, computer);
     expect(projectScopeGrant('git:operate', `project-${computer}`)).toBe(grant);
@@ -38,14 +39,14 @@ it('says which of granted, refused and unknown a project\'s and a run\'s compute
 });
 
 // The answer a surface may describe: refused only for a grant known to lack
-// the capability, unknown for a computer whose grant has not arrived.
+// the capability, pending for a computer whose grant has not arrived.
 it('says which of granted, refused and unknown a thread\'s computer answers', () => {
   noteThread('thread-writable', 'writable', 0);
   noteThread('thread-readonly', 'readonly', 0);
   noteThread('thread-silent', 'silent', 0);
   expect(threadScopeGrant('threads:operate', 'thread-writable')).toBe('granted');
   expect(threadScopeGrant('threads:operate', 'thread-readonly')).toBe('refused');
-  expect(threadScopeGrant('threads:operate', 'thread-silent')).toBe('unknown');
+  expect(threadScopeGrant('threads:operate', 'thread-silent')).toBe('pending');
   expect(threadHasScope('threads:operate', 'thread-silent')).toBe(false);
 });
 

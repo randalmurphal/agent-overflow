@@ -66,7 +66,7 @@ describe('scopes', () => {
     refreshGrantedScopes('gpu');
     expect(grantedScopes('gpu').source).toBe('unknown');
     expect(hasScope('threads:operate', 'gpu')).toBe(false);
-    expect(scopeGrant('threads:operate', 'gpu')).toBe('unknown');
+    expect(scopeGrant('threads:operate', 'gpu')).toBe('pending');
     setCarriedSessionScopes('gpu', ['threads:read']);
     expect(scopeGrant('threads:operate', 'gpu')).toBe('refused');
     setCarriedSessionScopes('gpu', []);
@@ -74,7 +74,7 @@ describe('scopes', () => {
     setCarriedSessionScopes('gpu', ['threads:read', 'threads:operate']);
     expect(scopeGrant('threads:operate', 'gpu')).toBe('granted');
     forgetGrantedScopes('gpu');
-    expect(scopeGrant('threads:operate', 'gpu')).toBe('unknown');
+    expect(scopeGrant('threads:operate', 'gpu')).toBe('pending');
   });
   beforeEach(() => {
     clearPairedSession();

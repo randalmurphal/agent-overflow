@@ -27,7 +27,9 @@ export function settingsComputer() {
   return {
     backend,
     call: <T>(operation: () => T): T => withBackendTarget(backend, operation),
-    hasScope: (scope: Scope) => hasScope(scope, backend),
+    /** Whether this page runs on the computer itself (`host` presence). */
+    onHost: () => hasScope('host', backend),
+    /** The grant here; a control it switches off says why with `grantBlockedTitle`. */
     scopeGrant: (scope: Exclude<Scope, 'host'>) => scopeGrant(scope, backend),
     /**
      * Whether a host-tier key (internal/settings/tier.go) can be written

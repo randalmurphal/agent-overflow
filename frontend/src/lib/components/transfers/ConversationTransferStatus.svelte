@@ -8,7 +8,8 @@
   import { getThreadById } from '../../stores/threads.svelte';
   import { openThreadFromNavigation } from '../../stores/panes.svelte';
   import type { BackendKey } from '../../transport/backendKey';
-  import { hasScope } from '../../transport/scopes';
+  import { scopeGrant } from '../../transport/scopes';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
   import { asSentence, userFacingError } from '../../utils/userFacingError';
 
   let { backend, row, showTitle = true }: { backend: BackendKey; row: ConversationTransfer; showTitle?: boolean } = $props();
@@ -20,7 +21,9 @@
   let name = $derived(peer ? backendDisplayName(peer) : 'another computer');
   let recipientError = $derived(row.direction === 'outgoing' && peer ? computerTransfers(peer.id).rows.find((value) => value.id === row.id)?.error : undefined);
   let rowError = $derived(recipientError || row.error || '');
-  let enabled = $derived(!busy && backendReachable(backend) && hasScope('threads:operate', backend));
+  let grant = $derived(scopeGrant('threads:operate', backend));
+  let blocked = $derived(grantBlockedTitle(backendReachable(backend) ? grant : 'offline'));
+  let enabled = $derived(!busy && blocked === undefined);
   let canCancel = $derived(!terminal(row) && !row.cancelRequested && (row.direction === 'outgoing' ? row.phase !== 'committed' : row.phase === 'preparing'));
   let status = $derived(row.phase === 'complete' ? (row.kind === 'copy' ? 'Copied' : 'Moved') : row.phase === 'canceled' ? 'Canceled' : row.cancelRequested ? 'Canceling' : row.needsDestination ? 'Finish setup' : row.phase === 'committed' ? 'Finishing on destination' : row.phase === 'prepared' ? 'Ready on destination' : 'Preparing and transferring');
   let targetHost = $derived(target ? attachedBackendEntry(threadMachine(target.id, target.projectId)) : undefined);
@@ -43,11 +46,11 @@
   {#if error}<p role="alert" class="text-xs text-error break-words">{error}</p>{/if}
   <div class="flex flex-wrap gap-2">
     {#if row.needsDestination}
-      <Button variant="primary" size="xs" disabled={!enabled || !peer || !backendReachable(peer.id)} onclick={() => void act(() => recoverConversationTransfer(backend, row, thread))}>Finish setup</Button>
+      <Button variant="primary" size="xs" disabled={!enabled || !peer || !backendReachable(peer.id)} title={blocked} onclick={() => void act(() => recoverConversationTransfer(backend, row, thread))}>Finish setup</Button>
     {:else if !terminal(row)}
-      <Button variant="secondary" size="xs" disabled={!enabled} onclick={() => void act(() => retryConversationTransfer(backend, row))}>Retry now</Button>
+      <Button variant="secondary" size="xs" disabled={!enabled} title={blocked} onclick={() => void act(() => retryConversationTransfer(backend, row))}>Retry now</Button>
     {/if}
-    {#if canCancel}<Button variant="ghost" size="xs" disabled={!enabled} onclick={() => void act(() => cancelConversationTransfer(backend, row))}>{row.direction === 'incoming' ? 'Discard setup' : 'Cancel transfer'}</Button>{/if}
+    {#if canCancel}<Button variant="ghost" size="xs" disabled={!enabled} title={blocked} onclick={() => void act(() => cancelConversationTransfer(backend, row))}>{row.direction === 'incoming' ? 'Discard setup' : 'Cancel transfer'}</Button>{/if}
     {#if row.phase === 'complete' && target && targetHost}
       <Button variant="secondary" size="xs" disabled={!backendReachable(targetHost.id)} onclick={() => void act(async () => { await openThreadFromNavigation(target!); closeConversationTransfer(); })}>Open conversation</Button>
     {/if}

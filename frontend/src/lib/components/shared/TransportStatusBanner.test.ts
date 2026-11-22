@@ -397,8 +397,6 @@ describe('<TransportStatusBanner>', () => {
       expect(queryByTestId('transport-status-banner')).toBeNull();
       await vi.advanceTimersByTimeAsync(UNREACHABLE_SETTLE_MS);
       const banner = getByTestId('transport-status-banner');
-      // The timers armed once the strip shows.
-      const armed = vi.getTimerCount();
       const said = `Offline since ${formatTimeOfDay(lastConnectedAt)}.`;
       expect(banner).toHaveTextContent(said);
       for (let attempt = 0; attempt < 3; attempt++) {
@@ -408,10 +406,56 @@ describe('<TransportStatusBanner>', () => {
         expect(banner).toHaveTextContent(said);
         expect(banner.textContent).not.toContain('Reconnecting in');
       }
-      // Nothing re-renders it each second: the strip runs no clock.
-      expect(vi.getTimerCount()).toBe(armed);
       await fireEvent.click(getByTestId('transport-status-retry'));
       expect(laptop.reconnect).toHaveBeenCalledOnce();
+    } finally {
+      resetStagedBackends();
+    }
+  });
+
+  // The strip's clock is the 1 Hz interval this computer's countdown and
+  // last-seen sentence read. A paired computer's strip reads neither, so it
+  // installs none; this computer's strip, shown the same way, does.
+  it("runs no clock for a paired computer's strip, and one for this computer's", async () => {
+    stageBackend();
+    const setInterval = vi.spyOn(globalThis, 'setInterval');
+    try {
+      const ticks = () => setInterval.mock.calls.filter(([, ms]) => ms === 1000).length;
+      __setBackendStatusForTest('laptop', { status: 'reconnecting', nextAttemptAt: Date.now() + 4_000, lastConnectedAt: Date.now() - 60_000 });
+      const paired = render(ComputerTransportStatus, { backend: 'laptop' });
+      await vi.advanceTimersByTimeAsync(UNREACHABLE_SETTLE_MS);
+      expect(paired.getByTestId('transport-status-banner')).toBeInTheDocument();
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(ticks()).toBe(0);
+      paired.unmount();
+
+      h.snapshot = { status: 'reconnecting', nextAttemptAt: Date.now() + 4_000 };
+      const home = render(TransportStatusBanner);
+      await settleBootGrace();
+      expect(home.getByTestId('transport-status-banner')).toBeInTheDocument();
+      expect(ticks()).toBe(1);
+    } finally {
+      setInterval.mockRestore();
+      resetStagedBackends();
+    }
+  });
+
+  // A resume check runs while the socket is still open, on every return to
+  // the app. A paired computer's strip waits for the settle time for that
+  // reason too; this computer's says it is checking at once.
+  it('shows no resume check for a paired computer, and shows it for this computer', async () => {
+    stageBackend();
+    try {
+      __setBackendStatusForTest('laptop', { status: 'connected', nextAttemptAt: null, checkingConnection: true });
+      const paired = render(ComputerTransportStatus, { backend: 'laptop' });
+      await vi.advanceTimersByTimeAsync(UNREACHABLE_SETTLE_MS * 2);
+      expect(paired.queryByTestId('transport-status-banner')).toBeNull();
+      paired.unmount();
+
+      h.snapshot = { status: 'connected', nextAttemptAt: null, checkingConnection: true };
+      const home = render(TransportStatusBanner);
+      await settleBootGrace();
+      expect(home.getByTestId('transport-status-banner')).toHaveTextContent('Checking connection…');
     } finally {
       resetStagedBackends();
     }

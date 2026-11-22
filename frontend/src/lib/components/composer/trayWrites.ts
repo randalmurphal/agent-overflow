@@ -5,9 +5,9 @@
 // inert, saying why (`grantBlockedTitle`), as the sidebar's do.
 import type { BackendKey } from '../../transport/backendKey';
 import { threadScopeGrant } from '../../transport/entityScopes';
-import { scopeGrant, type ScopeGrant } from '../../transport/scopes';
+import { scopeGrant, type EntityScopeGrant } from '../../transport/scopes';
 
-export function trayWriteGrant(to: { threadId: string; projectId?: string | null } | { computer: BackendKey }): ScopeGrant {
+export function trayWriteGrant(to: { threadId: string; projectId?: string | null } | { computer: BackendKey }): EntityScopeGrant {
   return 'computer' in to
     ? scopeGrant('threads:operate', to.computer)
     : threadScopeGrant('threads:operate', to.threadId, to.projectId);

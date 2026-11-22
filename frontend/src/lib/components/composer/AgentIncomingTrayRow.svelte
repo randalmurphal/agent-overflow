@@ -18,7 +18,7 @@
   import Icon from '../primitives/Icon.svelte';
   import Inbox from '@lucide/svelte/icons/inbox';
   import { grantBlockedTitle } from '../../transport/scopeRefusal';
-  import type { ScopeGrant } from '../../transport/scopes';
+  import type { EntityScopeGrant } from '../../transport/scopes';
 
   interface Props {
     message: IncomingAgentMessage;
@@ -28,7 +28,7 @@
     now: number;
     isStopping: boolean;
     /** Whether this device may withdraw it (trayWrites.ts). */
-    stopGrant: ScopeGrant;
+    stopGrant: EntityScopeGrant;
     onStop: (message: IncomingAgentMessage) => void;
     /** Where the sending thread opens, made on each click. */
     place: PlaceThread;

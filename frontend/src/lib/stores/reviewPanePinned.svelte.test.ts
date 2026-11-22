@@ -452,7 +452,7 @@ describe('pinned routing and grants', () => {
     const state = pinned(5, 'laptop');
     await settle();
     expect(subscribe).not.toHaveBeenCalled();
-    expect(state.commentsGrant).toBe('unknown');
+    expect(state.commentsGrant).toBe('pending');
     expect(state.nowWithheldReason).toBe('Unavailable until this computer connects');
   });
 });

@@ -7,7 +7,7 @@
   import X from '@lucide/svelte/icons/x';
   import Icon from '../primitives/Icon.svelte';
   import { grantBlockedTitle } from '../../transport/scopeRefusal';
-  import type { ScopeGrant } from '../../transport/scopes';
+  import type { EntityScopeGrant } from '../../transport/scopes';
 
   let {
     onArchive,
@@ -17,7 +17,7 @@
     onArchive?: (e: MouseEvent) => void;
     onDelete?: (e: MouseEvent) => void;
     /** Whether the session holds the write; without it the button stays, inert, and says why. */
-    grant?: ScopeGrant;
+    grant?: EntityScopeGrant;
   } = $props();
 
   let disabled = $derived(grant !== 'granted');

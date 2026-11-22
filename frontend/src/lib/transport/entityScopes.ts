@@ -10,16 +10,16 @@
 import type { BackendKey } from './backendKey';
 import { requireEntityBackend } from './backends';
 import { projectBackend, workflowItemBackend } from './entityIndex';
-import { scopeGrant, type Scope, type ScopeGrant } from './scopes';
+import { scopeGrant, type EntityScopeGrant, type Scope } from './scopes';
 import { threadClaimant } from './threadOwner';
 
 type GrantableScope = Exclude<Scope, 'host'>;
 
-/** An entity whose computer is ambiguous has no known grant. */
-function entityScopeGrant(scope: GrantableScope, owner: BackendKey | undefined): ScopeGrant {
+/** An entity whose computer routing cannot name is `unrouted`. */
+function entityScopeGrant(scope: GrantableScope, owner: BackendKey | undefined): EntityScopeGrant {
   let backend: BackendKey;
   try { backend = requireEntityBackend(owner); }
-  catch { return 'unknown'; }
+  catch { return 'unrouted'; }
   return scopeGrant(scope, backend);
 }
 
@@ -29,21 +29,21 @@ function threadOwnerOf(threadId: string | null | undefined, projectId?: string |
 
 export function threadScopeGrant(
   scope: GrantableScope, threadId: string | null | undefined, projectId?: string | null,
-): ScopeGrant {
+): EntityScopeGrant {
   return entityScopeGrant(scope, threadOwnerOf(threadId, projectId));
 }
 export function threadHasScope(scope: GrantableScope, threadId: string | null | undefined, projectId?: string | null): boolean {
   return threadScopeGrant(scope, threadId, projectId) === 'granted';
 }
 
-export function projectScopeGrant(scope: GrantableScope, projectId: string | null | undefined): ScopeGrant {
+export function projectScopeGrant(scope: GrantableScope, projectId: string | null | undefined): EntityScopeGrant {
   return entityScopeGrant(scope, projectId ? projectBackend(projectId) : undefined);
 }
 export function projectHasScope(scope: GrantableScope, projectId: string | null | undefined): boolean {
   return projectScopeGrant(scope, projectId) === 'granted';
 }
 
-export function workflowItemScopeGrant(scope: GrantableScope, itemId: string): ScopeGrant {
+export function workflowItemScopeGrant(scope: GrantableScope, itemId: string): EntityScopeGrant {
   return entityScopeGrant(scope, workflowItemBackend(itemId));
 }
 export function workflowItemHasScope(scope: GrantableScope, itemId: string): boolean {

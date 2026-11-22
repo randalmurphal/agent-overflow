@@ -146,6 +146,42 @@ for (const compact of [false, true]) it(`names each computer's state in its menu
   }
 });
 
+// A load error is the row's answer only while the computer can serve its
+// Retry. After the error the computer going offline, refused or asking to
+// pair is what the row says, with no Retry; reached again, the error and
+// its Retry return.
+it('names the connection before a kept load error, and offers Retry only while it can be served', async () => {
+  vi.spyOn(console, 'error').mockImplementation(() => {});
+  resetCatalogLoadForTest(); resetSidebarCatalogsForTest();
+  __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
+  const gpu = stageBackend({ id: 'remote', backendId: 'remote-id', name: 'GPU' });
+  setBindingMock('ListProjects', async () => {
+    if (takePinnedBackend() === 'remote') throw new TransportError('method_error', 'list projects: database disk image is malformed');
+    return [];
+  });
+  setBindingMock('ListThreads', async () => []);
+  setBindingMock('ListThreadGroups', async () => []);
+  try {
+    await loadSidebarCatalogs();
+    const view = render(ProjectsSection, { props: { pane: null } });
+    await tick();
+    await fireEvent.click(view.getByRole('button', { name: 'Filter projects by computer' }));
+    const row = () => view.getByTestId('sidebar-device-remote-id');
+    expect(normalizedTextContent(row())).toBe('GPU Database disk image is malformed. ✓ Retry');
+    for (const [status, text] of [
+      ['reconnecting', 'GPU Offline ✓'], ['unauthorized', 'GPU Not connected ✓'], ['pairing-required', 'GPU Not connected ✓'],
+    ] as const) {
+      gpu.setStatus(status); await tick();
+      expect(normalizedTextContent(row()), status).toBe(text);
+      expect(within(row()).queryByRole('button'), status).toBeNull();
+    }
+    gpu.setStatus('connected'); await tick();
+    expect(normalizedTextContent(row())).toBe('GPU Database disk image is malformed. ✓ Retry');
+  } finally {
+    resetCatalogLoadForTest(); resetSidebarCatalogsForTest(); resetBindingMocks(); vi.restoreAllMocks();
+  }
+});
+
 for (const remote of [true, false]) it(`renders the Projects heading as ${remote ? 'a computer filter' : 'plain text in a build without remote access'}`, () => {
   if (!remote) stageNoRemoteBuild();
   const view = render(SidebarDeviceFilter);

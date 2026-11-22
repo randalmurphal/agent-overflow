@@ -40,7 +40,7 @@
   import AgentMetrics from './AgentMetrics.svelte';
   import { activityRailIconActionClasses } from './activityRailClasses';
   import { grantBlockedTitle } from '../../transport/scopeRefusal';
-  import type { ScopeGrant } from '../../transport/scopes';
+  import type { EntityScopeGrant } from '../../transport/scopes';
 
   interface Props {
     row: ThreadAgentRow;
@@ -62,9 +62,9 @@
      */
     canPlace: boolean;
     /** Whether this device may stop the row (trayWrites.ts). */
-    stopGrant: ScopeGrant;
+    stopGrant: EntityScopeGrant;
     /** Whether this device may place the row's thread on its computer (trayWrites.ts). */
-    placeGrant: ScopeGrant;
+    placeGrant: EntityScopeGrant;
     onToggleExpanded: (row: ThreadAgentRow) => void;
     onActivate: (row: ThreadAgentRow) => void;
     onOpenPane: (row: ThreadAgentRow) => void;

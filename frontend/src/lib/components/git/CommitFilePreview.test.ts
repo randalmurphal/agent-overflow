@@ -4,12 +4,12 @@ import CommitFilePreview from './CommitFilePreview.svelte';
 import { resetBindingMocks, setReviewDiffMock } from '../../../test/mocks/bindings-app';
 import { normalizedTextContent } from '../../../test/helpers/textContent';
 import type { CommitFile, WorkspaceRef } from '../../types/git';
-import type { ScopeGrant } from '../../transport/scopes';
+import type { EntityScopeGrant } from '../../transport/scopes';
 
 const WORKSPACE = { projectId: 'p1', workspacePath: '/tmp/workspace' } as WorkspaceRef;
 const FILE: CommitFile = { path: 'src/a.ts', status: 'M', additions: 1, deletions: 0, version: '100644:src/a.ts' };
 
-function mount(grant: ScopeGrant) {
+function mount(grant: EntityScopeGrant) {
   const diff = setReviewDiffMock('OpenCommitFileDiff', () => 'diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1 @@\n-before\n+after\n');
   const view = render(CommitFilePreview, { props: { workspace: WORKSPACE, backend: '', file: FILE, grant } });
   return { diff, preview: () => normalizedTextContent(view.getByTestId('commit-file-preview')) };
@@ -23,7 +23,7 @@ afterEach(() => {
 // The preview body says why it shows no patch, and reads nothing it may not.
 describe('CommitFilePreview without the files:read grant', () => {
   it('says the computer has to connect while its grant has not arrived', () => {
-    const { diff, preview } = mount('unknown');
+    const { diff, preview } = mount('pending');
     expect(preview()).toBe('Unavailable until this computer connects');
     expect(diff).not.toHaveBeenCalled();
   });

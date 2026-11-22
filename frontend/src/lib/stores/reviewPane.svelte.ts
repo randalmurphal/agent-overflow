@@ -4,7 +4,7 @@ import { withBackendTarget } from '../transport/backends';
 import type { BackendKey } from '../transport/backendKey';
 import { composeWorkspaceKey } from '../utils/workspaceKey';
 import { threadHasScope, threadScopeGrant } from '../transport/entityScopes';
-import { hasScope, scopeGrant, type ScopeGrant } from '../transport/scopes';
+import { hasScope, scopeGrant, type EntityScopeGrant } from '../transport/scopes';
 import {
   createPRDiffReviewComment,
   deletePRDiffReviewComment,
@@ -226,7 +226,7 @@ export interface ReviewPaneState extends ReviewCommentActionsState, ReviewCommen
   /** Whether the session holds the grant the comment writes need on this
    * review's computer: `threads:operate` for a thread's drafts,
    * `git:operate` for a pinned review's forge submission. */
-  readonly commentsGrant: ScopeGrant;
+  readonly commentsGrant: EntityScopeGrant;
   /** Line comments have a home here: the thread row, or for a pinned
    * review the PR's full diff (a picked commit's line numbers would
    * misanchor against the head diff, and there is no agent to send them to). */

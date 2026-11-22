@@ -67,7 +67,7 @@
   import { openThreadFromNavigation, openThreadInNewPane } from '../../stores/panes.svelte';
   import { addErrorToast } from '../../stores/toast.svelte';
   import { getSettings } from '../../stores/settings.svelte';
-  import { allOfGrants, hasScope } from '../../transport/scopes';
+  import { allOfGrants, scopeGrant } from '../../transport/scopes';
   import { countNoun } from '../../utils/format';
   import { canOfferConversationTransfer } from '../../stores/conversationTransfers.svelte';
   import {
@@ -213,6 +213,8 @@
   // StartNextAssistantThread and SetAssistantProjects ride threads:autonomy.
   let nextThreadGrant = $derived(threadScopeGrant('threads:autonomy', thread.id, thread.projectId));
   let nextThreadUngranted = $derived(nextThreadGrant !== 'granted');
+  // A transfer asks the thread's computer to send it (ExportConversation).
+  let transferGrant = $derived(scopeGrant('threads:operate', threadMachine(thread.id, thread.projectId)));
 
   /**
    * Run an async per-thread action across the selection sequentially —
@@ -540,7 +542,8 @@
           {#if canOfferConversationTransfer(thread)}
             <MenuItem
               label="Move or copy to computer…"
-              disabled={!hasScope('threads:operate', threadMachine(thread.id, thread.projectId))}
+              disabled={transferGrant !== 'granted'}
+              title={grantBlockedTitle(transferGrant)}
               onSelect={() => { onClose(); transferThreadAction(ctx()); }}
             />
           {/if}

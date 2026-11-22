@@ -1,5 +1,7 @@
 <script lang="ts">
-  import { threadHasScope, threadScopeGrant } from '../../transport/entityScopes';
+  import { threadScopeGrant } from '../../transport/entityScopes';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
+  import { composerAccess } from './composerAccess';
   // Send + prompt shell. The editing core — textarea, completion menus,
   // attachments, uploads, image placeholders, terminal chips — is
   // ComposerInputSurface.svelte; everything else (model/provider picker,
@@ -32,12 +34,11 @@
   import {
     attachedBackendEntry,
     backendDisplayName,
-    backendReachable,
     threadMachine,
+    threadMachineCallable,
     threadMachineUnreachable,
     verifiedThreadMachine,
   } from '../../stores/attachedBackends.svelte';
-  import { HOME_BACKEND } from '../../transport/backendKey';
   import { DictationSession } from '../../dictation/dictationSession.svelte';
   import DictationButton from './DictationButton.svelte';
   import ComposerDictationCaption from './ComposerDictationCaption.svelte';
@@ -88,7 +89,6 @@
   } from '../../stores/worktreeIntent.svelte';
   import { prepareThreadWorktreeIntent } from '../../stores/worktreeIntentMaterialize';
   import { providerSupports } from '../../providers/catalog';
-  import { hasScope } from '../../transport/scopes';
   import { personPendingMessages, registerQueueItem } from '../../stores/sendQueue.svelte';
   import { buildSendOptions } from '../../utils/sendOptions';
   import { registerComposerDraft } from '../../stores/composerDraftRegistry.svelte';
@@ -130,20 +130,16 @@
 
   let isDisabled = $derived(!pane.canCompose || draft.moving);
   // Sending rides `threads:operate`, answering a prompt rides
-  // `approvals:respond`, and attaching rides `attachments:write`. Each
-  // control asks for the capability IT needs rather than for a mode: a
-  // grant set narrower than full is not necessarily view-only, and one
-  // predicate for the whole composer would take the wrong things away.
+  // `approvals:respond`, attaching rides `attachments:write`, and running a
+  // shell command rides `terminal:operate`. Each control asks for the
+  // capability IT needs rather than for a mode: a grant set narrower than
+  // full is not necessarily view-only.
   //
   // The controls stay where they are and go inert. A composer that
   // vanished would leave a thread looking broken rather than read-only,
   // and the disabled state is the affordance the rest of the app already
-  // uses for a control that is out of reach.
-  //
-  // `refused` only when a grant that says so is known: a computer that has
-  // not answered in this window (it was off when the window loaded) has no
-  // known grant, and its composer says it is offline, not read-only.
-  let sendGrant = $derived(threadScopeGrant('threads:operate', pane.threadId, pane.thread?.projectId));
+  // uses for a control that is out of reach. `access` below is the one
+  // answer every action reads.
   // An agent's question runs in this hidden copy: it is watched and
   // stopped from here, never written to.
   let askCopy = $derived(Boolean(pane.thread?.askCopy));
@@ -156,23 +152,16 @@
     const entry = attachedBackendEntry(threadMachine(thread.id, thread.projectId));
     return entry ? backendDisplayName(entry) : 'That computer';
   });
-  // This client cannot reach the machine the thread runs on, and there is
-  // no local process to fall back on. There is deliberately no
+  // `access` is the one answer every action reads (composerAccess.ts): the
+  // grant on the thread's computer, `offline` while that computer cannot
+  // be called (`threadMachineCallable`). There is deliberately no
   // cross-disconnect send queue (spec, "Pairing and remote-only"), so a
   // composer that stayed live would take a message it cannot deliver.
-  //
-  // The embedded desktop webview is excluded by `host` presence, not by a
-  // run-mode check: what makes its outage different is that the backend is
-  // on this machine and the transport banner is already its story. A phone,
-  // a `--connect` window and a remote browser all hold no host presence and
-  // all mean the same thing by "disconnected".
-  let offline = $derived.by(() => {
-    const thread = pane.thread;
-    if (!thread) return false;
-    const machine = threadMachine(thread.id, thread.projectId);
-    if (backendReachable(machine)) return false;
-    return !(machine === HOME_BACKEND && hasScope('host'));
-  });
+  // `refused` only when a grant that says so is known.
+  let access = $derived(composerAccess(
+    !pane.thread || threadMachineCallable(pane.thread.id, pane.thread.projectId),
+    (scope) => threadScopeGrant(scope, pane.threadId, pane.thread?.projectId),
+  ));
   let compactLayout = $derived(isCompactLayout());
 
   // Dictation records here and transcribes on the computer the thread runs
@@ -209,7 +198,7 @@
   // An engine that cannot capture for any source the computer has on shows
   // no mic rather than one that fails.
   let showDictation = $derived(
-    !isDisabled && sendGrant === 'granted' && !askCopy && !offline && dictationMachine !== null
+    !isDisabled && access.send === 'granted' && !askCopy && dictationMachine !== null
       && dictationSource(dictationMachine, dictationEngine) !== null,
   );
   // Hiding the mic mid-recording (a sign-out, a lost grant) abandons the
@@ -224,7 +213,6 @@
     if (active !== null && active !== source) untrack(() => session.cancel());
   });
 
-  let respondUngranted = $derived(!threadHasScope('approvals:respond', pane.threadId, pane.thread?.projectId));
   // Mid-round signal: a wire round is currently in flight (the model
   // is streaming text/tool work). The composer stays typeable during
   // a round and Send routes through the backend-owned per-thread
@@ -319,13 +307,11 @@
       && !draft.attachments.some((attachment) => attachment.shell),
   );
   let shellCommand = $derived(shellMode ? shellCommandFromInput(draft.content) : null);
-  let shellUngranted = $derived(!threadHasScope('terminal:operate', pane.threadId, pane.thread?.projectId));
   let shellRunning = $derived(isShellRunActive(pane.threadId));
   let shellBlockedReason = $derived(
     !shellMode ? ''
-      : shellUngranted ? 'This session cannot run commands'
-      : shellRunning ? 'A command is already running'
-      : '',
+      : access.shell === 'refused' ? 'This session cannot run commands'
+      : grantBlockedTitle(access.shell) ?? (shellRunning ? 'A command is already running' : ''),
   );
   let shellSendState = $derived<'ready' | 'empty' | 'blocked' | undefined>(
     !shellMode ? undefined
@@ -336,7 +322,7 @@
   let sendState = $derived(deriveComposerSendState({
     shell: shellSendState,
     isDisabled,
-    sendGrant,
+    sendAccess: access.send,
     askCopy,
     sending: false,
     sendSuspended: sendSuspended || interruptPending,
@@ -355,10 +341,9 @@
   let hasPlanImplementAction = $derived(sendState.hasPlanImplementAction);
   let inputState = $derived(deriveComposerInputState({
     isDisabled,
-    sendGrant,
+    sendAccess: access.send,
     askCopy,
     unreachableTarget,
-    offline,
     compact: compactLayout,
     hasBlockingPrompt,
     hasUserInputPrompt,
@@ -928,7 +913,7 @@
   }
 
   async function sendPlanToNewThread() {
-    if (!latestPlanSource || sending || isTurnActive) return;
+    if (!latestPlanSource || sending || isTurnActive || access.send !== 'granted') return;
     sending = true;
     try {
       await implementProposedPlanInNewThread(pane, latestPlanSource, {
@@ -949,12 +934,13 @@
     // The Stop owns the working presentation: it clears it in this tick or,
     // when a background agent would die with the turn, after the person
     // confirms (stores/threadInterrupt.svelte.ts).
+    if (access.send !== 'granted') return;
     runInterrupt(pane);
   }
 
   function endSession() {
     const thread = pane.thread;
-    if (thread) void endThreadSession(thread);
+    if (thread && access.send === 'granted') void endThreadSession(thread);
   }
 
   function resetTextareaHeight() {
@@ -1083,10 +1069,11 @@
   let supportsAttachments = $derived(providerSupports(pane.thread?.provider, 'attachments'));
 
   function blockAttachment(event: Event, notify = true): boolean {
-    // Uploading rides `attachments:write`, and a paste or a drop is not a
-    // control anybody chose to press — so this refuses without a toast.
-    // Nothing was offered, so nothing failed.
-    if (!threadHasScope('attachments:write', pane.threadId, pane.thread?.projectId)) {
+    // Uploading rides `attachments:write` on a computer this page can
+    // reach, and a paste or a drop is not a control anybody chose to press
+    // — so this refuses without a toast. Nothing was offered, so nothing
+    // failed.
+    if (access.attach !== 'granted') {
       event.preventDefault();
       return true;
     }
@@ -1112,13 +1099,13 @@
 
   async function resolveApproval(response: ApprovalResponse): Promise<void> {
     const threadId = pane.threadId;
-    if (!threadId || respondUngranted) return;
+    if (!threadId || access.respond !== 'granted') return;
     await ignoringAlreadyHandled(RespondToApproval(threadId, response));
   }
 
   async function resolveUserInput(response: UserInputResponse): Promise<void> {
     const threadId = pane.threadId;
-    if (!threadId || respondUngranted) return;
+    if (!threadId || access.respond !== 'granted') return;
     await ignoringAlreadyHandled(RespondToUserInput(threadId, response));
   }
 
@@ -1229,7 +1216,7 @@
         <ComposerPendingApprovalPanel
           approval={activeApproval}
           count={blockingApprovals.length}
-          ungranted={respondUngranted}
+          access={access.respond}
           onResolve={resolveApproval}
           onError={handlePromptError}
         />
@@ -1238,7 +1225,7 @@
       {#key promptKey(activeUserInput)}
         <ComposerPendingUserInputPanel
           request={activeUserInput}
-          ungranted={respondUngranted}
+          access={access.respond}
           customAnswer={userInputCustomAnswer}
           submitSignal={userInputSubmitSignal}
           collapsed={userInputCollapsed}
@@ -1269,6 +1256,7 @@
       editsDraft={!hasUserInputPrompt}
       showDraftRows={!hasInteractivePrompt}
       shellPrefix={shellMode}
+      attachAccess={access.attach}
       {blockAttachment}
       attachmentsDeferred={hasInteractivePrompt}
       uploadThreadId={threadIdForUpload}
@@ -1330,7 +1318,7 @@
         ? shellBlockedReason
         : interruptPending
         ? 'Wait for the stop or message edit to finish'
-        : undefined}
+        : grantBlockedTitle(access.send)}
       hasCurrentPlan={Boolean(latestPlanItem)}
       planCommentCount={hasDraftDiffReviewComments ? activeDiffReviewDraftComments.length : latestPlanDraftComments.length}
       hideSendButton={hasInteractivePrompt}
@@ -1341,7 +1329,7 @@
       onInterrupt={interrupt}
       onEndSession={pane.thread?.agentId ? endSession : undefined}
       sessionLive={threadSessionLive(pane.threadId)}
-      sessionGrant={sendGrant}
+      sessionAccess={access.send}
     />
     <ComposerWorkspaceStrip {pane} />
   </div>

@@ -16,7 +16,7 @@
   import Icon from '../primitives/Icon.svelte';
   import { PIN_GROUP_BACK } from './threadRowActions';
   import { grantBlockedTitle } from '../../transport/scopeRefusal';
-  import type { ScopeGrant } from '../../transport/scopes';
+  import type { EntityScopeGrant } from '../../transport/scopes';
 
   interface Props {
     isPinned: boolean;
@@ -27,7 +27,7 @@
     onCycleBurner: () => void;
     /** Whether the session holds `threads:operate` for the row's computer.
      *  Without it the affordance stays where it is, inert, and says why. */
-    grant?: ScopeGrant;
+    grant?: EntityScopeGrant;
   }
 
   let {

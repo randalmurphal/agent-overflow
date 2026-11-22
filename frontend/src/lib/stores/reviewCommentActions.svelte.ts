@@ -5,7 +5,7 @@ import { commentWriteKey, createCommentWrites, threadWhere, type CommentWrites }
 import type { ReviewPRIdentity } from './reviewPRIdentity.svelte';
 import type { BackendKey } from '../transport/backendKey';
 import { grantBlockedTitle } from '../transport/scopeRefusal';
-import type { ScopeGrant } from '../transport/scopes';
+import type { EntityScopeGrant } from '../transport/scopes';
 import { prReferenceWire, type PRRef } from '../utils/prReference';
 import { threadRange } from '../utils/reviewRange';
 import type { CommentAnchor } from '../utils/reviewRows';
@@ -86,7 +86,7 @@ export interface ReviewCommentActionsHost {
   launch(): string;
   updateFailing(): boolean;
   /** Whether this device may write to the forge here (`git:operate`). */
-  forgeGrant(): ScopeGrant;
+  forgeGrant(): EntityScopeGrant;
   /** Why acting on the PR is withheld now (the merge actions' gates). */
   prWithheld(): string | null;
   /** Drafts can be saved here and this device may save them. */

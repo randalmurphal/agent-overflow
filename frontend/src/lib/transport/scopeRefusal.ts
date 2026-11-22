@@ -1,6 +1,6 @@
 import { TransportError } from './wsClient';
 import { passkeysUsable } from './passkey';
-import { isScope, type Scope, type ScopeGrant } from './scopes';
+import { isScope, type ControlAccess, type Scope } from './scopes';
 
 /**
  * The client-side half of the AUTHORIZATION refusal vocabulary — the
@@ -133,17 +133,20 @@ function stepUpRefusal(): ScopeRefusalPresentation {
 }
 
 /**
- * The hover title of a control that a grant switches off, and the only
- * place either sentence is written: `undefined` when `grant` allows the
- * control. A refusal is said only when a known grant refuses; a computer
- * that has not answered in this window (offline, or still connecting) is
- * never described as having refused this device.
+ * Why a control that a grant or a connection switches off is off, and the
+ * only place these sentences are written: `undefined` when `access` lets
+ * the control act. A refusal is said only when a known grant refuses; a
+ * computer that has not answered in this window (offline, or still
+ * connecting) is never described as having refused this device, and an
+ * item whose computer is not known is not blamed on a connection.
  */
-export function grantBlockedTitle(grant: ScopeGrant): string | undefined {
-  switch (grant) {
+export function grantBlockedTitle(access: ControlAccess): string | undefined {
+  switch (access) {
     case 'granted': return undefined;
     case 'refused': return 'Not granted to this device';
-    case 'unknown': return 'Unavailable until this computer connects';
+    case 'pending': return 'Unavailable until this computer connects';
+    case 'unrouted': return 'Unavailable until the computer that holds this is known';
+    case 'offline': return 'Unavailable while this computer is offline';
   }
 }
 

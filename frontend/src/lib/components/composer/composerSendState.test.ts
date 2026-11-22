@@ -42,11 +42,16 @@ describe('deriveComposerSendState', () => {
     ['send in flight', { sending: true }],
     ['approval prompt', { hasBlockingPrompt: true }],
     ['user-input prompt', { hasUserInputPrompt: true }],
+    ['computer offline', { sendAccess: 'offline' as const }],
+    ['grant not yet known', { sendAccess: 'pending' as const }],
+    ['owner not yet known', { sendAccess: 'unrouted' as const }],
+    ['refused grant', { sendAccess: 'refused' as const }],
   ])('blocks sends for %s', (_, overrides) => {
     expect(deriveComposerSendState(input({
       hasDraftContent: true,
       ...overrides,
     })).canSend).toBe(false);
+    expect(deriveComposerSendState(input({ hasDraftContent: true, sendAccess: 'granted' })).canSend).toBe(true);
   });
 
   it('derives idle plan implementation state', () => {
@@ -136,7 +141,7 @@ describe('deriveComposerSendState', () => {
 
   it('keeps every refusal that applies to a send in force for a command', () => {
     for (const refusal of [
-      { isDisabled: true }, { sendGrant: 'refused' as const }, { sendGrant: 'unknown' as const }, { sending: true }, { sendSuspended: true },
+      { isDisabled: true }, { sendAccess: 'refused' as const }, { sendAccess: 'pending' as const }, { sendAccess: 'unrouted' as const }, { sendAccess: 'offline' as const }, { sending: true }, { sendSuspended: true },
       { hasBlockingPrompt: true }, { hasUserInputPrompt: true }, { askCopy: true },
     ]) {
       expect(deriveComposerSendState(input({ shell: 'ready', hasDraftContent: true, ...refusal })).canSend).toBe(false);

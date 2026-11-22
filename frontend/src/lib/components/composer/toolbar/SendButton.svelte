@@ -12,7 +12,7 @@
   // (docs/specs/standing-agents.md, "Interrupt and end session").
 
   import ArrowUp from '@lucide/svelte/icons/arrow-up';
-  import type { ScopeGrant } from '../../../transport/scopes';
+  import type { ControlAccess } from '../../../transport/scopes';
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import Play from '@lucide/svelte/icons/play';
   import Square from '@lucide/svelte/icons/square';
@@ -68,7 +68,7 @@
      * This device's `threads:operate` there. Both items are inert unless
      * `granted`, and say why only when the grant is known to lack it.
      */
-    sessionGrant?: ScopeGrant;
+    sessionAccess?: ControlAccess;
   }
 
   let {
@@ -87,7 +87,7 @@
     interruptLabel = 'Interrupt current turn',
     onEndSession,
     sessionLive,
-    sessionGrant = 'granted',
+    sessionAccess = 'granted',
   }: Props = $props();
   let menuTriggerEl: HTMLButtonElement | undefined = $state(undefined);
   let menuOpen = $state(false);
@@ -333,14 +333,14 @@
       <Menu ariaLabel="Session" onClose={closeMenu}>
         <MenuItem
           label="Interrupt"
-          disabled={!turnRunning || sessionGrant !== 'granted'}
-          title={grantBlockedTitle(sessionGrant)}
+          disabled={!turnRunning || sessionAccess !== 'granted'}
+          title={grantBlockedTitle(sessionAccess)}
           onSelect={handleMenuInterrupt}
         />
         <MenuItem
           label="End Session"
-          disabled={sessionLive === false || sessionGrant !== 'granted'}
-          title={grantBlockedTitle(sessionGrant) ?? (sessionLive === false ? 'No session is running' : undefined)}
+          disabled={sessionLive === false || sessionAccess !== 'granted'}
+          title={grantBlockedTitle(sessionAccess) ?? (sessionLive === false ? 'No session is running' : undefined)}
           onSelect={handleEndSession}
         />
       </Menu>

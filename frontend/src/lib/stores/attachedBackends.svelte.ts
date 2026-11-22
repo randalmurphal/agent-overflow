@@ -214,6 +214,19 @@ export function threadMachineUnreachable(threadId: string, projectId: string | n
 }
 
 /**
+ * Whether an action on a thread may call the computer it runs on now: the
+ * composer's actions (composerAccess.ts) and the Stop that Esc or the
+ * palette sends. False while that computer cannot be reached, except this
+ * page's own backend on a client with no other computer: its outage is the
+ * transport banner's to explain, and its composer stays live.
+ */
+export function threadMachineCallable(threadId: string, projectId: string | null | undefined): boolean {
+  const machine = threadMachine(threadId, projectId);
+  if (backendReachable(machine)) return true;
+  return list.length < 2 && machine === HOME_BACKEND && hasScope('host');
+}
+
+/**
  * Whether a thread's machine has been unreachable long enough for its rows
  * to say so (`backendUnreachableSettled`), on a client with several
  * computers. Thread rows and pickers dim and relabel by this, so a spotty

@@ -1589,7 +1589,7 @@ describe('<ProjectsSection> threads and their groups', () => {
 // reachable, connecting, off or failing to load: its own rows are the only
 // difference, and nothing in the section moves or repeats while it retries.
 describe('<ProjectsSection> while a paired computer is not loaded', () => {
-  type GpuState = 'reachable' | 'loading' | 'connecting' | 'offline' | 'failed';
+  type GpuState = 'reachable' | 'loading' | 'connecting' | 'starting' | 'offline' | 'failed';
   const homeRows = (): ProjectWithCounts[] => [{ project: mkProject('p1', { name: 'Project One' }), threadCount: 0, lastActive: 0 }];
   const never = new Promise<never>(() => {});
 
@@ -1610,10 +1610,10 @@ describe('<ProjectsSection> while a paired computer is not loaded', () => {
     __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
     stageBackend({
       id: 'gpu', backendId: 'gpu-uuid', name: 'GPU',
-      status: gpu === 'connecting' ? 'disconnected' : gpu === 'offline' ? 'reconnecting' : 'connected',
+      status: gpu === 'connecting' ? 'disconnected' : gpu === 'starting' ? 'starting' : gpu === 'offline' ? 'reconnecting' : 'connected',
     });
     const gpuAnswer = <T,>(rows: T[]): Promise<T[]> => {
-      if (gpu === 'connecting' || gpu === 'loading') return never;
+      if (gpu === 'connecting' || gpu === 'starting' || gpu === 'loading') return never;
       if (gpu === 'offline') return Promise.reject(new DisconnectedError('Computer is offline.'));
       return Promise.resolve(rows);
     };
@@ -1647,7 +1647,7 @@ describe('<ProjectsSection> while a paired computer is not loaded', () => {
     vi.restoreAllMocks();
   });
 
-  for (const state of ['connecting', 'offline', 'failed'] as const) {
+  for (const state of ['connecting', 'starting', 'offline', 'failed'] as const) {
     it(`shows the section a reachable computer with no projects gives while it is ${state}, through its retries`, async () => {
       const reachable = await renderWith('reachable');
       expect(catalogTreeListed('gpu')).toBe(true);
@@ -1672,19 +1672,29 @@ describe('<ProjectsSection> while a paired computer is not loaded', () => {
     expect(view.getAllByTestId('sidebar-catalog-loading').map((el) => el.getAttribute('data-backend'))).toEqual([HOME_BACKEND]);
   });
 
-  for (const state of ['connecting', 'offline'] as const) {
-    it(`shows a blank list while this computer has no projects and a paired one is ${state}, and the empty hint once that one has been unreachable the settle time`, async () => {
+  it('shows a blank list while this computer has no projects and a paired one is offline, and the empty hint once that one has been unreachable the settle time', async () => {
+    const view = await renderWith('offline', []);
+    expect(view.queryByTestId('sidebar-catalog-status')).toBeNull();
+    expect(view.queryByTestId('sidebar-projects-empty')).toBeNull();
+    expect(view.queryAllByTestId('project-item')).toHaveLength(0);
+    // renderWith has already run 3 s of the settle time.
+    await vi.advanceTimersByTimeAsync(UNREACHABLE_SETTLE_MS - 3_000 - 1);
+    await settle();
+    expect(view.queryByTestId('sidebar-projects-empty')).toBeNull();
+    await vi.advanceTimersByTimeAsync(1);
+    await settle();
+    expect(view.getByTestId('sidebar-projects-empty')).toBeInTheDocument();
+    expect(view.queryByTestId('sidebar-catalog-status')).toBeNull();
+  });
+
+  // Neither a first dial still in flight nor a computer that answered it is
+  // starting is an outage: either may still list projects.
+  for (const state of ['connecting', 'starting'] as const) {
+    it(`keeps the list blank while a paired computer is ${state}, however long it takes`, async () => {
       const view = await renderWith(state, []);
-      expect(view.queryByTestId('sidebar-catalog-status')).toBeNull();
-      expect(view.queryByTestId('sidebar-projects-empty')).toBeNull();
-      expect(view.queryAllByTestId('project-item')).toHaveLength(0);
-      // renderWith has already run 3 s of the settle time.
-      await vi.advanceTimersByTimeAsync(UNREACHABLE_SETTLE_MS - 3_000 - 1);
+      await vi.advanceTimersByTimeAsync(40_000);
       await settle();
       expect(view.queryByTestId('sidebar-projects-empty')).toBeNull();
-      await vi.advanceTimersByTimeAsync(1);
-      await settle();
-      expect(view.getByTestId('sidebar-projects-empty')).toBeInTheDocument();
       expect(view.queryByTestId('sidebar-catalog-status')).toBeNull();
     });
   }

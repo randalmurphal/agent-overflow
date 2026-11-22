@@ -8,7 +8,7 @@
   import type { CommitFile, WorkspaceRef } from '../../types/git';
   import { userFacingError } from '../../utils/userFacingError';
   import { grantBlockedTitle } from '../../transport/scopeRefusal';
-  import type { ScopeGrant } from '../../transport/scopes';
+  import type { EntityScopeGrant } from '../../transport/scopes';
   import { changeKey, rowPaths } from './commitFiles';
 
   // The uncommitted patch of the commit dialog's active row. One file is
@@ -21,7 +21,7 @@
     backend: BackendKey;
     file: CommitFile | null;
     /** Whether this device may read workspace files. */
-    grant: ScopeGrant;
+    grant: EntityScopeGrant;
   }
   let { workspace, backend, file, grant }: Props = $props();
   let blocked = $derived(grantBlockedTitle(grant));

@@ -75,6 +75,7 @@
   import { isBackendResyncing, onBackendRecovery } from '../../stores/transportRecovery';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import { installTapHold } from '../../utils/tapHold';
+  import { transportBannerReason } from './transportBannerReason';
 
   // Tick once per second so the countdown stays in sync. We only mount
   // when the banner is visible; on a steady-state connection the
@@ -135,33 +136,27 @@
       if (id === target) resyncing = isBackendResyncing(target);
     });
   });
-  // A paired computer's drop is shown only once it has lasted
-  // UNREACHABLE_SETTLE_MS, by the same answer that dims its thread rows, so
-  // a connection that drops and returns sooner never shows, hides or
-  // resizes anything. The composer in an open thread of that computer says
-  // at once that a message cannot be sent. Its resync after a reconnect is
-  // not shown either: the strip leaves when the computer is reached. A
-  // removed computer is a fact to act on, not a drop, and shows at once.
-  let paired = $derived(backend !== HOME_BACKEND && !removed);
-  let checking = $derived(snapshot.status === 'connected' && snapshot.checkingConnection === true);
-  let syncing = $derived(snapshot.status === 'connected' && resyncing && !paired);
-  let showingBootFailure = $derived(snapshot.status === 'connected' && !checking && !syncing && bootFailure !== '');
-
-  // A connection problem outranks a connected notice (a failed boot phase
-  // or a bundle notice): it is happening now. The notice keeps the strip
-  // up on its own once the transport is healthy again.
-  //
-  // A backend that is starting is not a problem, and before this page
-  // first connects its boot is shown by the startup screen and the
-  // sidebar's catalog rows. The strip reports it only for a backend this
-  // page was already using, which is a restart.
+  // Whether the strip shows, and why, is `transportBannerReason`'s rule
+  // alone: a paired computer's connection problems wait for the settle
+  // time that dims its thread rows, this computer's do not. A connection
+  // problem outranks a connected notice (a failed boot phase or a bundle
+  // notice): it is happening now. The notice keeps the strip up on its own
+  // once the transport is healthy again.
   let starting = $derived(snapshot.status === 'starting');
-  let outageShown = $derived(
-    paired ? backendUnreachableSettled(backend) : starting ? hasEverConnected : hasEverConnected || bootGraceExpired,
-  );
-  let visible = $derived(
-    (snapshot.status !== 'connected' && outageShown) || checking || syncing || connectedNotice !== '',
-  );
+  let reason = $derived(transportBannerReason({
+    paired: backend !== HOME_BACKEND && !removed,
+    status: snapshot.status,
+    checking: snapshot.checkingConnection === true,
+    resyncing,
+    unreachableSettled: backendUnreachableSettled(backend),
+    hasEverConnected,
+    bootGraceExpired,
+    notice: connectedNotice !== '',
+  }));
+  let visible = $derived(reason !== null);
+  let checking = $derived(reason === 'checking');
+  let syncing = $derived(reason === 'syncing');
+  let showingBootFailure = $derived(reason === 'notice' && bootFailure !== '');
 
   // A page that mounted while the transport was TERMINAL loaded nothing.
   // Every store's first fetch was refused by the latched client, and only
@@ -337,7 +332,7 @@
   // for the rest of the session, eating its taps (found on the first
   // real-phone run, 2026-09-04). Dismissing a boot failure leaves any
   // bundle notice it outranked.
-  let dismissable = $derived(snapshot.status === 'connected' && !checking && !syncing && connectedNotice !== '');
+  let dismissable = $derived(reason === 'notice');
 
   function handleDismiss(): void {
     if (bootFailure !== '') dismissBootFailureNotice(backend);

@@ -5,6 +5,7 @@ import type { BackendKey } from '../transport/backendKey';
 import type { Thread } from '../types/models';
 import { backendDisplayName, backendOfflineLabel, getAttachedBackends, threadMachine } from './attachedBackends.svelte';
 import { computerCatalogPending } from './sidebarCatalogs';
+import { catalogReadServable } from './computerRows';
 import { getTransportStatusFor } from './transportStatus.svelte';
 import { startupStatusText } from '../transport/startupProgress';
 import { onFrontendValueChanged, readFrontendValue, writeFrontendValue } from './frontendStorage';
@@ -47,7 +48,10 @@ export function sidebarDevices() { return devices; }
 /** A computer's state as its row in the Projects menu says it. */
 export interface SidebarDeviceStatus {
   text: string;
-  /** Its lists failed to load for a reason other than reaching it: Retry applies. */
+  /**
+   * Its lists failed to load while it can serve a read again: the failure
+   * is the row's text, and Retry applies.
+   */
   failed: boolean;
 }
 
@@ -58,8 +62,13 @@ export interface SidebarDeviceStatus {
  */
 export function sidebarDeviceStatus(backend: BackendKey): SidebarDeviceStatus {
   const pending = computerCatalogPending(backend);
-  if (pending !== null && pending.error !== null) return { text: pending.error, failed: true };
   const status = getTransportStatusFor(backend);
+  // The connection comes first: a load error kept from before the
+  // computer went offline, or was refused, is not why its lists are
+  // missing now, and its Retry would be rejected without a call.
+  if (pending !== null && pending.error !== null && catalogReadServable(status.status)) {
+    return { text: pending.error, failed: true };
+  }
   switch (status.status) {
     case 'connected':
       return { text: pending === null ? 'Connected' : 'Loading…', failed: false };

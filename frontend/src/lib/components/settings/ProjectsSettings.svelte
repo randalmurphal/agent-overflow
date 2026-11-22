@@ -1,6 +1,7 @@
 <script lang="ts">
   import { settingsComputer } from './settingsComputer';
-  const { backend, hasScope } = settingsComputer();
+  const { backend, scopeGrant } = settingsComputer();
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
   // Per-project settings. Today that is one thing — the worktree setup recipe
   // — so the section is a project picker over a single editor rather than a
   // nested tab set.
@@ -23,7 +24,8 @@
   let labels = $derived(disambiguatedPathLabels(projects.map((row) => row.project)));
   let loaded = $derived(isLoaded());
   // The editable half is the worktree setup command, which runs in a PTY.
-  let ungranted = $derived(!hasScope('terminal:operate'));
+  let grant = $derived(scopeGrant('terminal:operate'));
+  let ungranted = $derived(grant !== 'granted');
   let selectedId = $state('');
 
   // No read of its own. The projects are one tree with the threads under
@@ -49,7 +51,7 @@
 <div class="settings-sections">
   {#if ungranted}
     <p class="text-[0.75rem] text-fg-muted" data-testid="settings-projects-local-only">
-      This connection does not have permission to configure projects on this computer.
+      {grant === 'refused' ? 'This connection does not have permission to configure projects on this computer.' : grantBlockedTitle(grant)}
     </p>
   {:else if loaded && projects.length === 0}
     <p class="text-[0.75rem] text-fg-muted" data-testid="settings-projects-empty">
