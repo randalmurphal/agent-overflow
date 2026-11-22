@@ -231,7 +231,7 @@ func (d *restDecision) stillAtRest(subtree store.SubtreeRest) []string {
 			_, read := d.noted[id]
 			src := subtree.Sources[id]
 			waits, _ := restWaits(src, memoryWaits{}, nil)
-			at = read && !moved[id] && !(src.TurnOpen && !d.ended[id]) && !src.OpenWork && waits.unrest == ""
+			at = read && !moved[id] && (!src.TurnOpen || d.ended[id]) && !src.OpenWork && waits.unrest == ""
 			for _, token := range src.Unarmed {
 				at = at && d.unarmed[id][token]
 			}
