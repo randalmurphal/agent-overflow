@@ -90,19 +90,7 @@ var threadColumns = `id, COALESCE(project_id, ''),
          AND proposed_plans.implemented_at = 0
          AND EXISTS (` + proposedPlanItemSQL() + `)
     ),
-    COALESCE((
-      SELECT CASE
-          WHEN turns.completed_at IS NULL
-            THEN (threads.last_read_at IS NULL OR threads.last_read_at < turns.started_at)
-          WHEN turns.stop_reason = 'interrupted'
-            THEN (threads.last_read_at IS NULL OR threads.last_read_at < turns.completed_at)
-          ELSE 0
-        END
-        FROM turns
-       WHERE turns.thread_id = threads.id
-       ORDER BY turns.turn_index DESC
-       LIMIT 1
-    ), 0),
+    ` + newestTurnStateSQL() + `,
     COALESCE((
       SELECT turns.stop_reason = 'error'
          AND (threads.last_read_at IS NULL OR threads.last_read_at < turns.completed_at)
@@ -236,7 +224,7 @@ func validAutoCompactPercent(percent int) bool {
 
 func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 	var t Thread
-	var archived, fastMode, hasActionableProposedPlan, hasIncompleteTurn, hasFailedTurn, isDraft, askCopy int
+	var archived, fastMode, hasActionableProposedPlan, newestTurn, hasFailedTurn, isDraft, askCopy int
 	var agentRecord sql.NullString
 	var latestTurnCompletedAt, lastReadAt, pinnedAt, pinGroup, agentSupersededAt, attentionAt sql.NullInt64
 	var attentionKind, attentionReason string
@@ -252,7 +240,7 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 		&t.GroupID, &t.Placement,
 		&t.WorktreeSetupState, &t.ImportSource,
 		&t.CreatedByDevice, &t.Origin.Branch, &t.Origin.HeadCommit,
-		&hasActionableProposedPlan, &hasIncompleteTurn, &hasFailedTurn, &isDraft, &t.OwnershipEpoch,
+		&hasActionableProposedPlan, &newestTurn, &hasFailedTurn, &isDraft, &t.OwnershipEpoch,
 		&agentRecord, &t.PastAgentID, &agentSupersededAt, &t.HelperOfAgentID, &t.SpawnedByThreadID, &t.SpawnedByComputerID,
 		&attentionKind, &attentionReason, &attentionAt,
 		&t.SpawnInstructions, &t.SpawnLevel, &askCopy,
@@ -263,7 +251,8 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 	t.AskCopy = askCopy != 0
 	t.Archived = archived != 0
 	t.HasActionableProposedPlan = hasActionableProposedPlan != 0
-	t.HasIncompleteTurn = hasIncompleteTurn != 0
+	t.HasOpenTurn = newestTurn == newestTurnOpen
+	t.HasIncompleteTurn = newestTurn == newestTurnInterruptedUnread
 	t.HasFailedTurn = hasFailedTurn != 0
 	t.IsDraft = isDraft != 0
 	if latestTurnCompletedAt.Valid {

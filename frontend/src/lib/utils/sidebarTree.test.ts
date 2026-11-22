@@ -157,7 +157,7 @@ describe('buildSidebarThreadTree', () => {
     expect(tree[1].displayLiveStatus).toBe('interrupted');
   });
 
-  it('does not bubble durable interrupted while authoritative live state is hydrating', () => {
+  it('takes a supplied status as the row status without re-deriving durable fallbacks', () => {
     const member = mkThread('member', { groupId: 'g1', updatedAt: 2, hasIncompleteTurn: true });
     const tree = buildSidebarThreadTree({
       threads: [member],

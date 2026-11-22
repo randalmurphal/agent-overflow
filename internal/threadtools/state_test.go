@@ -7,12 +7,14 @@ import (
 )
 
 // The fixture's own shape. Documented beside the file itself. The Go test
-// reads live; liveStatus is the same case stated as the frontend's input
-// to resolveEffectiveThreadStatus, so both must produce want.
+// reads thread and live; liveStatus is the same case stated as the
+// frontend's input to resolveEffectiveThreadStatus, so both must produce
+// want.
 type stateFixture struct {
 	Cases []struct {
 		Name   string `json:"name"`
 		Thread struct {
+			HasOpenTurn               bool   `json:"hasOpenTurn"`
 			HasIncompleteTurn         bool   `json:"hasIncompleteTurn"`
 			HasFailedTurn             bool   `json:"hasFailedTurn"`
 			HasActionableProposedPlan bool   `json:"hasActionableProposedPlan"`
@@ -46,7 +48,11 @@ func TestStateFixture(t *testing.T) {
 	}
 	for _, testCase := range fixture.Cases {
 		t.Run(testCase.Name, func(t *testing.T) {
+			if testCase.Thread.HasOpenTurn && testCase.Thread.HasIncompleteTurn {
+				t.Fatal("hasOpenTurn and hasIncompleteTurn both read the newest turn row and cannot both hold")
+			}
 			thread := Thread{
+				HasOpenTurn:               testCase.Thread.HasOpenTurn,
 				HasIncompleteTurn:         testCase.Thread.HasIncompleteTurn,
 				HasFailedTurn:             testCase.Thread.HasFailedTurn,
 				HasActionableProposedPlan: testCase.Thread.HasActionableProposedPlan,
@@ -63,7 +69,7 @@ func TestStateFixture(t *testing.T) {
 			}
 			// The frontend input has to agree with the Go input, or the
 			// two tests would be checking different things.
-			if got := liveStatusOf(live); got != testCase.LiveStatus {
+			if got := liveStatusOf(thread, live); got != testCase.LiveStatus {
 				t.Fatalf("liveStatus in the fixture is %q, but live derives %q", testCase.LiveStatus, got)
 			}
 		})
@@ -71,14 +77,16 @@ func TestStateFixture(t *testing.T) {
 }
 
 // liveStatusOf is what the frontend's getThreadStatus derives from the
-// same live inputs, so the fixture's two input columns cannot disagree.
-func liveStatusOf(live LiveState) string {
+// same inputs, so the fixture's two input columns cannot disagree. An open
+// row is running there because the frontend's live registry holds the turn
+// until provider:turn_completed, which follows the settle write.
+func liveStatusOf(thread Thread, live LiveState) string {
 	switch {
 	case live.PendingApprovals > 0:
 		return StatePendingApproval
 	case live.PendingUserInputs > 0:
 		return StateAwaitingInput
-	case live.ActiveTurn || live.PendingSends:
+	case live.ActiveTurn || live.PendingSends || thread.HasOpenTurn:
 		return StateRunning
 	default:
 		return StateIdle

@@ -833,10 +833,16 @@ every client shows ([startup readiness](transport.md#startup-readiness)),
 and the next start runs it again.
 
 Post-sweep, a `completed_at=null` row during an app run means
-genuinely live provider work. The durable "interrupted" signal that
-survives restarts is `stop_reason='interrupted'`; the sidebar's boot
-pill (`Thread.HasIncompleteTurn`) covers both encodings: an unseen
-in-flight turn, or an unseen settled-interrupted turn.
+genuinely live provider work, and every durable reader reads it as
+running (`Thread.HasOpenTurn`, `GetActiveTurn`, the rest sources). The
+row is open until `UpdateTurnCompleted` settles it, after the live
+round has already ended, so the row and not the round says whether the
+turn still runs. The durable "interrupted" signal that survives
+restarts is `stop_reason='interrupted'`, the only thing the sidebar's
+boot pill (`Thread.HasIncompleteTurn`) reads: an unseen settled
+interruption. A row whose settle write fails stays open and reads as
+running until the next boot's sweep records it
+(`internal/store/turn_newest.go`).
 
 The frontend still shows no active-turn spinner for any of this
 (spinner requires a live `activeTurn` push, not a DB row), and we do

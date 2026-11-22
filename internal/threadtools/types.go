@@ -112,8 +112,10 @@ type Thread struct {
 	Assistant *Assistant `json:"assistant,omitempty"`
 	SpawnedBy string     `json:"spawned_by,omitempty"`
 
-	// The four derived columns State reads, named as the frontend's
-	// reference implementation names them.
+	// The derived columns State reads. The last four are named as the
+	// frontend's reference implementation names them; HasOpenTurn has no
+	// frontend twin, which learns a running turn from its live events.
+	HasOpenTurn               bool   `json:"-"`
 	HasIncompleteTurn         bool   `json:"-"`
 	HasFailedTurn             bool   `json:"-"`
 	HasActionableProposedPlan bool   `json:"-"`
@@ -173,7 +175,10 @@ func checkPlacement(placement string, group *string) error {
 // needs. Everything here dies with the provider session; the durable
 // fallbacks live on Thread.
 type LiveState struct {
-	// ActiveTurn is true between turn start and turn end.
+	// ActiveTurn is true while the provider's round runs. The round ends
+	// when the provider reports the turn complete, before the turn's row
+	// settles, so a turn still settling reads as running from
+	// Thread.HasOpenTurn.
 	ActiveTurn bool
 	// PendingSends is true while a queued or flushed message has not yet
 	// produced its provider-visible echo. It keeps a thread reported as

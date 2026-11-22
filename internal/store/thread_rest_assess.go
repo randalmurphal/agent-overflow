@@ -274,8 +274,7 @@ func remoteCommandRunningSQL(alias string) string {
 // probe of turns_thread_index. An accepted reminder is open (settled_at IS NULL),
 // so it is read among the open rows, not the caller's history.
 var threadRestSourcesSQL = `SELECT j.value,
-       COALESCE((SELECT t.completed_at IS NULL FROM turns t INDEXED BY turns_thread_index
-                  WHERE t.thread_id = j.value ORDER BY t.turn_index DESC LIMIT 1), 0),
+       COALESCE(` + newestTurnSQL("j.value", turnOpenSQL) + `, 0),
        EXISTS (SELECT 1 FROM async_questions q INDEXED BY idx_async_questions_pending
                 WHERE q.thread_id = j.value AND q.state IN ('unanswered','submitted','restored') AND q.state = 'unanswered')
          AND EXISTS (SELECT 1 FROM owned_threads t WHERE t.id = j.value AND t.archived = 0),

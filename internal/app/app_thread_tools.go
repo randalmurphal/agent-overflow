@@ -165,6 +165,7 @@ func (p *threadProjector) thread(thread store.Thread) threadtools.Thread {
 		Assistant:     p.assistant(thread),
 		SpawnedBy:     thread.SpawnedByThreadID,
 
+		HasOpenTurn:               thread.HasOpenTurn,
 		HasIncompleteTurn:         thread.HasIncompleteTurn,
 		HasFailedTurn:             thread.HasFailedTurn,
 		HasActionableProposedPlan: thread.HasActionableProposedPlan,

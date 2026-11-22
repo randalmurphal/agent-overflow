@@ -1977,9 +1977,11 @@ func TestListThreadsWithItemsDoesNotDeriveActionablePlanForNonActionableRows(t *
 	}
 }
 
-func TestListThreadsWithItemsDerivesIncompleteNewestTurn(t *testing.T) {
+// An open newest turn row is a running turn, read or not, and never an
+// interruption; the one write that settles it decides which it was.
+func TestListThreadsWithItemsReadsOpenNewestTurnAsRunning(t *testing.T) {
 	s := newTestStore(t)
-	thread := makeThread("thread-interrupted", "claude")
+	thread := makeThread("thread-open", "claude")
 	if err := s.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread(): %v", err)
 	}
@@ -1993,55 +1995,41 @@ func TestListThreadsWithItemsDerivesIncompleteNewestTurn(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("InsertTurn(): %v", err)
 	}
-
-	got := mustListSingleThreadWithItems(t, s)
-	if !got.HasIncompleteTurn {
-		t.Fatal("HasIncompleteTurn = false, want true")
+	wantNewestTurn := func(what string, open, interrupted bool) {
+		t.Helper()
+		got := mustListSingleThreadWithItems(t, s)
+		if got.HasOpenTurn != open || got.HasIncompleteTurn != interrupted {
+			t.Fatalf("%s: HasOpenTurn %v, HasIncompleteTurn %v; want %v, %v", what, got.HasOpenTurn, got.HasIncompleteTurn, open, interrupted)
+		}
+		src, err := s.ReadThreadRestSources(thread.ID)
+		if err != nil {
+			t.Fatalf("ReadThreadRestSources(): %v", err)
+		}
+		if src.TurnOpen != open {
+			t.Fatalf("%s: rest sources TurnOpen %v, want %v", what, src.TurnOpen, open)
+		}
+	}
+	wantNewestTurn("open, never read", true, false)
+	for _, lastReadAt := range []int64{startedAt - 1, startedAt, startedAt + 10} {
+		if _, _, err := s.setThreadLastRead(thread.ID, &lastReadAt); err != nil {
+			t.Fatalf("setThreadLastRead(%d): %v", lastReadAt, err)
+		}
+		wantNewestTurn("open, read", true, false)
 	}
 
 	if err := s.UpdateTurnCompleted("turn-1", startedAt+100, "end_turn", "", "", ""); err != nil {
 		t.Fatalf("UpdateTurnCompleted(): %v", err)
 	}
-	got = mustListSingleThreadWithItems(t, s)
-	if got.HasIncompleteTurn {
-		t.Fatal("HasIncompleteTurn = true after completion, want false")
-	}
-}
+	wantNewestTurn("settled end_turn", false, false)
 
-func TestListThreadsWithItemsClearsIncompleteNewestTurnAfterRead(t *testing.T) {
-	s := newTestStore(t)
-	thread := makeThread("thread-interrupted-read", "claude")
-	if err := s.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread(): %v", err)
+	if err := s.InsertTurn(Turn{TurnID: "turn-2", ThreadID: thread.ID, TurnIndex: 1, StartedAt: startedAt + 200}); err != nil {
+		t.Fatalf("InsertTurn(next): %v", err)
 	}
-	seedItem(t, s, thread.ID, "item-1", 0, 0, "")
-	startedAt := thread.CreatedAt + 100
-	if err := s.InsertTurn(Turn{
-		TurnID:    "turn-1",
-		ThreadID:  thread.ID,
-		TurnIndex: 0,
-		StartedAt: startedAt,
-	}); err != nil {
-		t.Fatalf("InsertTurn(): %v", err)
+	wantNewestTurn("next turn open", true, false)
+	if err := s.UpdateTurnCompleted("turn-2", startedAt+300, "interrupted", "", "", ""); err != nil {
+		t.Fatalf("UpdateTurnCompleted(interrupted): %v", err)
 	}
-
-	lastReadAt := startedAt - 1
-	if _, _, err := s.setThreadLastRead(thread.ID, &lastReadAt); err != nil {
-		t.Fatalf("setThreadLastRead(before): %v", err)
-	}
-	got := mustListSingleThreadWithItems(t, s)
-	if !got.HasIncompleteTurn {
-		t.Fatal("HasIncompleteTurn = false before read, want true")
-	}
-
-	lastReadAt = startedAt
-	if _, _, err := s.setThreadLastRead(thread.ID, &lastReadAt); err != nil {
-		t.Fatalf("setThreadLastRead(equal): %v", err)
-	}
-	got = mustListSingleThreadWithItems(t, s)
-	if got.HasIncompleteTurn {
-		t.Fatal("HasIncompleteTurn = true after read at turn start, want false")
-	}
+	wantNewestTurn("settled interrupted, unread", false, true)
 }
 
 func TestListThreadsWithItemsDerivesIncompleteOnlyForNewestTurn(t *testing.T) {
@@ -2074,8 +2062,8 @@ func TestListThreadsWithItemsDerivesIncompleteOnlyForNewestTurn(t *testing.T) {
 	}
 
 	got := mustListSingleThreadWithItems(t, s)
-	if got.HasIncompleteTurn {
-		t.Fatal("HasIncompleteTurn = true for old incomplete turn, want false")
+	if got.HasIncompleteTurn || got.HasOpenTurn {
+		t.Fatalf("old open turn under a settled newest: HasIncompleteTurn %v, HasOpenTurn %v; want neither", got.HasIncompleteTurn, got.HasOpenTurn)
 	}
 }
 
@@ -2354,8 +2342,8 @@ func TestMarkThreadReadNowClearsIncompleteNewestTurn(t *testing.T) {
 	if *got.LastReadAt != startedAt {
 		t.Fatalf("LastReadAt = %d, want latest incomplete turn start %d", *got.LastReadAt, startedAt)
 	}
-	if got.HasIncompleteTurn {
-		t.Fatal("HasIncompleteTurn = true after MarkThreadReadNow, want false")
+	if got.HasIncompleteTurn || !got.HasOpenTurn {
+		t.Fatalf("after MarkThreadReadNow: HasIncompleteTurn %v, HasOpenTurn %v; want an open turn only", got.HasIncompleteTurn, got.HasOpenTurn)
 	}
 }
 
@@ -2709,10 +2697,9 @@ func TestUpdateThreadPreservesPinState(t *testing.T) {
 	}
 }
 
-// A boot-swept crashed turn (settled with stop_reason='interrupted' by
-// RecoverCrashedTurns) must keep lighting the sidebar's durable
-// Interrupted pill until the user views the thread — same UX as the
-// completed_at=NULL row it replaced.
+// A turn settled with stop_reason='interrupted' (an interrupt, or a crash
+// RecoverCrashedTurns swept at boot) lights the sidebar's durable
+// Interrupted pill until the user views the thread.
 func TestListThreadsWithItemsDerivesInterruptedSettledNewestTurn(t *testing.T) {
 	s := newTestStore(t)
 	thread := makeThread("thread-swept-interrupted", "claude")
@@ -3008,8 +2995,8 @@ func TestListThreadsWithItemsDerivesFailedTurn(t *testing.T) {
 	if got := mustListSingleThreadWithItems(t, s); got.HasFailedTurn {
 		t.Fatal("HasFailedTurn = true once the next turn opened, want false")
 	}
-	if got := mustListSingleThreadWithItems(t, s); !got.HasIncompleteTurn {
-		t.Fatal("HasIncompleteTurn = false for the open next turn, want true")
+	if got := mustListSingleThreadWithItems(t, s); got.HasIncompleteTurn || !got.HasOpenTurn {
+		t.Fatalf("open next turn: HasIncompleteTurn %v, HasOpenTurn %v; want an open turn only", got.HasIncompleteTurn, got.HasOpenTurn)
 	}
 }
 

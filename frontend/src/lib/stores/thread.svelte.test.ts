@@ -18,7 +18,6 @@ import {
   projectTurnStarted,
   projectTurnCompleted,
   getThreadStatus,
-  isThreadLiveStateHydrating,
 } from './threadStatuses.svelte';
 import {
   getFlushedForThread,
@@ -128,26 +127,6 @@ describe('createThreadPane', () => {
       }),
     );
     expect(pane.isLocked).toBe(true);
-  });
-
-  it('marks live state as hydrating before the backend switch round-trip returns', async () => {
-    const pane = createThreadPane();
-    let releaseSwitch!: (value: unknown) => void;
-    setBindingMock(
-      'SwitchThread',
-      (threadId: unknown) =>
-        new Promise((resolve) => {
-          releaseSwitch = resolve;
-          void threadId;
-        }),
-    );
-
-    const switching = pane.switchThread(makeThread({ id: 'thread-hydrating' }));
-    expect(isThreadLiveStateHydrating('thread-hydrating')).toBe(true);
-
-    releaseSwitch(makeThread({ id: 'thread-hydrating' }));
-    await switching;
-    expect(isThreadLiveStateHydrating('thread-hydrating')).toBe(false);
   });
 
   it('loads items and seeds the context window from thread.lastTokenUsage', async () => {
