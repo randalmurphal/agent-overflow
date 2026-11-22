@@ -3,6 +3,7 @@ package devscan
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -136,8 +137,8 @@ func normalizePathForMatch(p string) string {
 	cleaned := filepath.Clean(p)
 	// On macOS, /var and /tmp symlink to /private/var and /private/tmp;
 	// lsof often reports /private/... while thread WorkDir holds /tmp/...
-	if cleaned == "/private/tmp" || strings.HasPrefix(cleaned, "/private/tmp/") ||
-		cleaned == "/private/var" || strings.HasPrefix(cleaned, "/private/var/") {
+	if runtime.GOOS == "darwin" && (cleaned == "/private/tmp" || strings.HasPrefix(cleaned, "/private/tmp/") ||
+		cleaned == "/private/var" || strings.HasPrefix(cleaned, "/private/var/")) {
 		cleaned = strings.TrimPrefix(cleaned, "/private")
 	}
 	return cleaned

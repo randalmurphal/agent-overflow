@@ -1638,19 +1638,39 @@ func (s *Store) ClearLastTokenUsage(threadID string) error {
 	return s.UpdateLastTokenUsage(threadID, "")
 }
 
-// UpdateProvider overwrites the provider ('claude' / 'codex' / 'claude-tui').
-// Invalid values surface ErrInvalidProvider before hitting SQLite so the
-// binding can translate to a user-facing error.
+// UpdateProvider overwrites the provider ('claude' / 'codex' / 'claude-tui' /
+// 'agy') and clears reasoning_effort if the thread's existing effort tier is
+// illegal for the new provider.
 func (s *Store) UpdateProvider(threadID, prov string) error {
 	if _, ok := legalProviders[prov]; !ok {
 		return fmt.Errorf("%w: %q", ErrInvalidProvider, prov)
 	}
-	result, err := s.db.Exec(`UPDATE threads SET provider = ? WHERE id = ?`,
-		prov, threadID)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: begin update provider for %s: %w", threadID, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var currentEffort string
+	if err := tx.QueryRow(`SELECT reasoning_effort FROM threads WHERE id = ?`, threadID).Scan(&currentEffort); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("store: update provider for %s: %w", threadID, sql.ErrNoRows)
+		}
+		return fmt.Errorf("store: read effort for provider update %s: %w", threadID, err)
+	}
+	nextEffort := normalizeEffort(currentEffort)
+	if !legalEffortForProvider(prov, nextEffort) {
+		nextEffort = normalizeEffort("")
+	}
+	result, err := tx.Exec(`UPDATE threads SET provider = ?, reasoning_effort = ? WHERE id = ?`,
+		prov, nextEffort, threadID)
 	if err != nil {
 		return fmt.Errorf("store: update provider for %s: %w", threadID, err)
 	}
-	return requireRowsAffected(result, fmt.Sprintf("store: update provider for %s", threadID))
+	if err := requireRowsAffected(result, fmt.Sprintf("store: update provider for %s", threadID)); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // UpdateMode overwrites the thread's mode (chat, plan, terminal, or a
@@ -1679,21 +1699,33 @@ func (s *Store) UpdateReasoningEffort(threadID, effort string) (Thread, bool, er
 	if _, ok := legalEfforts[normalized]; !ok {
 		return Thread{}, false, fmt.Errorf("%w: %q", ErrInvalidEffort, effort)
 	}
-	var providerName string
-	if err := s.reader().QueryRow(`SELECT provider FROM threads WHERE id = ?`, threadID).Scan(&providerName); err != nil {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return Thread{}, false, fmt.Errorf("store: begin reasoning effort update %s: %w", threadID, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var providerName, currentEffort string
+	if err := tx.QueryRow(`SELECT provider, reasoning_effort FROM threads WHERE id = ?`, threadID).Scan(&providerName, &currentEffort); err != nil {
 		return Thread{}, false, fmt.Errorf("store: load provider for effort update %s: %w", threadID, err)
 	}
 	if !legalEffortForProvider(providerName, normalized) {
 		return Thread{}, false, fmt.Errorf("%w: %s/%s", ErrInvalidEffort, providerName, normalized)
 	}
-	return s.applyThreadRowWrite(rowWrite{
-		Action:     fmt.Sprintf("store: update reasoning effort for %s", threadID),
-		ID:         threadID,
-		Set:        "reasoning_effort = ?",
-		SetArgs:    []any{normalized},
-		Change:     "reasoning_effort IS NOT ?",
-		ChangeArgs: []any{normalized},
-	})
+	changed := currentEffort != normalized
+	if changed {
+		if _, err := tx.Exec(`UPDATE threads SET reasoning_effort = ? WHERE id = ?`, normalized, threadID); err != nil {
+			return Thread{}, false, fmt.Errorf("store: update reasoning effort for %s: %w", threadID, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return Thread{}, false, fmt.Errorf("store: commit reasoning effort update %s: %w", threadID, err)
+	}
+	thread, err := s.GetThread(threadID)
+	if err != nil {
+		return Thread{}, false, fmt.Errorf("store: reload thread after effort update %s: %w", threadID, err)
+	}
+	return thread, changed, nil
 }
 
 // UpdateFastMode flips the fast-mode boolean and hands back the row it wrote.

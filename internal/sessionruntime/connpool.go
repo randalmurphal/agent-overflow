@@ -168,6 +168,13 @@ func (p *ConnPool) Acquire(
 				}
 				if removed && len(lead.waiters) == 0 {
 					lead.cancel()
+					// Detach the canceled dial immediately so a fresh caller
+					// arriving before runDial unwinds starts a new dial rather
+					// than inheriting this canceled one.
+					if p.dialing[key] == lead {
+						delete(p.dialing, key)
+					}
+					lead.done = true
 				}
 			}
 			p.mu.Unlock()
@@ -200,7 +207,9 @@ func (p *ConnPool) runDial(
 	completed := false
 	func() {
 		defer func() {
-			if !completed {
+			if r := recover(); r != nil {
+				err = fmt.Errorf("sessionruntime: dial for key %q panicked: %v", key, r)
+			} else if !completed {
 				err = fmt.Errorf("sessionruntime: dial for key %q panicked", key)
 			}
 		}()

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/agy"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/stringsx"
 )
@@ -550,19 +551,14 @@ func RunAgy(
 	args = append(args, extraArgs...)
 	args = append(args, "--print="+stdin)
 
-	env := make(map[string]string, len(cfg.Env)+1)
-	for k, v := range cfg.Env {
-		env[k] = v
-	}
-	if _, ok := env["AGY_CLI_DISABLE_AUTO_UPDATE"]; !ok {
-		env["AGY_CLI_DISABLE_AUTO_UPDATE"] = "1"
-	}
+	env, unsetEnv := agy.LaunchEnv(cfg.Env, nil)
 
 	result, err := cfg.Exec(ctx, CLISpec{
-		Binary: cfg.Binary,
-		Args:   args,
-		Cwd:    workspace,
-		Env:    env,
+		Binary:   cfg.Binary,
+		Args:     args,
+		Cwd:      workspace,
+		Env:      env,
+		UnsetEnv: unsetEnv,
 	})
 	if err != nil {
 		return nil, TranslateCLINotFound("agy", timeout, err)

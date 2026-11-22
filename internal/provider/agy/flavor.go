@@ -735,23 +735,6 @@ func (f *Flavor) ExtractPendingQuestion(u *acp.ToolCallUpdate) ([]provider.UserI
 	return questions, true
 }
 
-func (f *Flavor) ToolOutlivesPrompt(u *acp.ToolCallUpdate) bool {
-	switch strings.ToLower(strings.TrimSpace(u.Name)) {
-	case "schedule":
-		return true
-	case "run_command":
-		var params struct {
-			IsDaemon bool `json:"IsDaemon"`
-		}
-		if len(u.EffectiveInput()) > 0 && json.Unmarshal(u.EffectiveInput(), &params) == nil && params.IsDaemon {
-			return false
-		}
-		return true
-	default:
-		return false
-	}
-}
-
 func (f *Flavor) BeforePrompt(_ context.Context, sessionID string) any {
 	if f.AppDataDir == "" || sessionID == "" {
 		return nil

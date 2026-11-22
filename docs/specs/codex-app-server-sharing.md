@@ -1,7 +1,8 @@
 # Codex app-server sharing
 
-Status: design, not scheduled. Nothing here is implemented. Wire facts are
-in [codex-wire.md](../references/codex-wire.md) and
+Status: implemented on this branch (`internal/sessionruntime/connpool.go`,
+`internal/provider/codex/conn.go`, `internal/app/app_codex_pool.go`). Wire facts
+are in [codex-wire.md](../references/codex-wire.md) and
 [codex.md](../references/codex.md#app-server-process-cost-measured-01621);
 this spec cites them rather than repeating them.
 

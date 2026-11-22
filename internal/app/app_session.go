@@ -681,6 +681,23 @@ func (a *App) spawnProviderSession(
 			return session{}, err
 		}
 		sess, err := conn.OpenPooled(a.lifeCtx(), threadID, cfg, onEvent, releaseConn)
+		if err != nil && errors.Is(err, codex.ErrThreadUnloadFailed) {
+			// The shared app-server could not unload the prior loaded thread;
+			// fall back to a dedicated process so changed sandbox/config
+			// overrides take effect cleanly.
+			log.Printf("codex: shared conn unload failed for %s (%v); spawning dedicated app-server", threadID, err)
+			poolKey = ""
+			conn = nil
+			sess, err = codex.NewSession(a.lifeCtx(), threadID, cfg, onEvent)
+			if err == nil {
+				sess.SetSkillsChangedHandler(func() {
+					a.handleCodexSkillsChanged()
+				})
+				sess.SetMCPStartupUpdateHandler(func(u codex.MCPStartupUpdate) {
+					a.handleCodexMCPStartupUpdate(u)
+				})
+			}
+		}
 		if err != nil {
 			return session{}, err
 		}

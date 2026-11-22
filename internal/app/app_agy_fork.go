@@ -1,17 +1,41 @@
 package app
 
 import (
+	"encoding/json"
 	"fmt"
+	"strings"
 
 	"agent-overflow/internal/provider/agy"
 	"agent-overflow/internal/store"
 )
 
+// isAgyNativePromptItem reports whether item corresponds to a native
+// Antigravity USER_INPUT step (step_type=14) in the conversation SQLite DB:
+// either a visible user_text row or a resolved AskUserQuestion whose answer
+// dispatched a follow-up session/prompt.
+func isAgyNativePromptItem(item store.Item) bool {
+	if item.Kind == "user_text" && item.Role == "user" && !store.IsWireOnlyUserItem(item) {
+		return true
+	}
+	if item.Kind == "tool_call" && strings.TrimSpace(item.ToolName) == "AskUserQuestion" && item.Meta != "" {
+		var meta struct {
+			PromptDispatched bool `json:"prompt_dispatched"`
+		}
+		if json.Unmarshal([]byte(item.Meta), &meta) == nil && meta.PromptDispatched {
+			return true
+		}
+	}
+	return false
+}
+
 // forkAgyThread creates a native Antigravity conversation clone using SQLite
 // VACUUM INTO so the child thread starts with its own independent conversation
-// database. When atTurnIndex is nil, the full conversation is cloned; when set,
-// steps from the first dropped user turn onward are sliced off.
-func (a *App) forkAgyThread(source store.Thread, atTurnIndex *int) (forkResumeState, error) {
+// database. When atTurnIndex is set, steps from the first dropped user turn
+// onward are sliced off; for a live tail fork (atTurnIndex == nil) with a
+// committed pointer forkID, steps beyond the pointer fork's committed prompt
+// count are sliced off so a concurrently streaming source cannot leak into the
+// fork.
+func (a *App) forkAgyThread(source store.Thread, forkID string, atTurnIndex *int) (forkResumeState, error) {
 	if source.SessionRef == "" {
 		return forkResumeState{}, nil
 	}
@@ -25,7 +49,7 @@ func (a *App) forkAgyThread(source store.Thread, atTurnIndex *int) (forkResumeSt
 		userOrdinal := 0
 		foundDrop := false
 		for _, item := range items {
-			if item.Kind != "user_text" || item.Role != "user" || store.IsWireOnlyUserItem(item) {
+			if !isAgyNativePromptItem(item) {
 				continue
 			}
 			if item.TurnIndex > *atTurnIndex {
@@ -41,6 +65,30 @@ func (a *App) forkAgyThread(source store.Thread, atTurnIndex *int) (forkResumeSt
 			idx, hasPrefix, err := agy.FindCutIndexBeforeUserTurn(appDataDir, source.SessionRef, userOrdinal)
 			if err != nil {
 				return forkResumeState{}, fmt.Errorf("fork agy thread: locate cut index: %w", err)
+			}
+			if !hasPrefix {
+				return forkResumeState{}, nil
+			}
+			cutIdx = idx
+		}
+	} else if strings.TrimSpace(forkID) != "" {
+		// Bound live tail forks to the exact prompts committed into the
+		// pointer fork so turns appended to the streaming source after
+		// CreatePointerFork cannot leak into the cloned native DB.
+		forkItems, err := a.store.ListItems(forkID)
+		if err != nil {
+			return forkResumeState{}, fmt.Errorf("fork agy thread: list committed fork items: %w", err)
+		}
+		committedPrompts := 0
+		for _, item := range forkItems {
+			if isAgyNativePromptItem(item) {
+				committedPrompts++
+			}
+		}
+		if committedPrompts > 0 {
+			idx, hasPrefix, err := agy.FindCutIndexBeforeUserTurn(appDataDir, source.SessionRef, committedPrompts)
+			if err != nil {
+				return forkResumeState{}, fmt.Errorf("fork agy thread: locate live tail cut index: %w", err)
 			}
 			if !hasPrefix {
 				return forkResumeState{}, nil
@@ -132,7 +180,7 @@ func (a *App) agyUserOrdinalBeforeItem(threadID, targetItemID string) (int, erro
 		if item.ID == targetItemID {
 			return ordinal, nil
 		}
-		if item.Kind != "user_text" || item.Role != "user" || store.IsWireOnlyUserItem(item) {
+		if !isAgyNativePromptItem(item) {
 			continue
 		}
 		ordinal++

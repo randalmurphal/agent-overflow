@@ -99,6 +99,42 @@ func TestMigrationV159WidensProviderChecksAndPreservesSchemaObjects(t *testing.T
 	}
 }
 
+func TestUpdateProviderClearsIllegalReasoningEffort(t *testing.T) {
+	t.Parallel()
+	st := newTestStore(t)
+	if _, err := st.CreateProject(Project{ID: "p-eff", Path: "/tmp/p-eff", Name: "PEff", CreatedAt: 1, UpdatedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateThread(Thread{
+		ID:              "t-ultra",
+		ProjectID:       "p-eff",
+		Title:           "Codex Ultra",
+		Provider:        "codex",
+		Model:           "gpt-5.6-sol",
+		ReasoningEffort: "ultra",
+		WorkspacePath:   "/tmp/p-eff",
+		CreatedAt:       1,
+		UpdatedAt:       1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Switching Codex (ultra) -> Claude must reset illegal "ultra" reasoning effort to the schema default "high".
+	if err := st.UpdateProvider("t-ultra", "claude"); err != nil {
+		t.Fatalf("UpdateProvider(claude): %v", err)
+	}
+	got, err := st.GetThread("t-ultra")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Provider != "claude" || got.ReasoningEffort != "high" {
+		t.Fatalf("after UpdateProvider(claude): provider=%q effort=%q, want (claude, \"high\")", got.Provider, got.ReasoningEffort)
+	}
+	// Subsequent UpdateReasoningEffort("ultra") on the Claude thread must be rejected.
+	if _, _, err := st.UpdateReasoningEffort("t-ultra", "ultra"); err == nil {
+		t.Fatal("UpdateReasoningEffort(ultra) succeeded on claude thread")
+	}
+}
+
 func snapshotSchemaObjectNames(t *testing.T, db *sql.DB) []string {
 	t.Helper()
 	rows, err := db.Query(`SELECT type || ':' || name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name`)

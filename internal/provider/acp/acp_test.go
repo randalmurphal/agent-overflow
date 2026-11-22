@@ -1053,7 +1053,6 @@ func TestSessionConfigSyncAndToolUpdateStreamingAndCancel(t *testing.T) {
 		onEvent:          func(e provider.ProviderEvent) { events = append(events, e) },
 		startedTools:     make(map[string]NormalizedToolStart),
 		trackedSubagents: make(map[string]SubagentLaunchContext),
-		outlivingTools:   make(map[string]struct{}),
 		model:            "gemini-4-neon",
 		reasoningEffort:  "medium",
 		activeTurnID:     "turn-1",
@@ -1115,4 +1114,218 @@ func TestSessionConfigSyncAndToolUpdateStreamingAndCancel(t *testing.T) {
 	if !sawKilled {
 		t.Fatalf("expected cancelled tool_call_update to emit item_status=killed: %+v", events)
 	}
+}
+
+func TestReadOnlyPolicyFailsClosedAndAvailableDecisionsMatchOptions(t *testing.T) {
+	t.Parallel()
+	f := DefaultFlavor{Kind: provider.Agy}
+
+	// 1. RuntimeReadOnly + ModePlan MUST keep PolicyDenyMutating (never fail open to PolicyPrompt).
+	modeID, policy := f.MapRuntimeMode(provider.RuntimeReadOnly, provider.ModePlan, []SessionMode{{ID: "plan"}, {ID: "default"}})
+	if modeID != "plan" || policy != PolicyDenyMutating {
+		t.Fatalf("MapRuntimeMode(ReadOnly, Plan) = (%q, %v), want (plan, PolicyDenyMutating)", modeID, policy)
+	}
+
+	// 2. PolicyDenyMutating fails closed on unknown / "other" MCP tools and allows explicit read kinds.
+	mcpReq := RequestPermissionParams{
+		ToolCall: ToolCallUpdate{ToolCallID: "t-mcp", Name: "mcp_github_create_issue", Kind: "other"},
+		Options: []PermissionOption{
+			{OptionID: "allow_1", Kind: "allow_once", Name: "Allow"},
+			{OptionID: "deny_1", Kind: "reject_once", Name: "Reject"},
+		},
+	}
+	clsMCP := f.ClassifyPermission("thr", "turn", "req-1", mcpReq, PolicyDenyMutating)
+	if clsMCP.Action != PermissionAutoDeny {
+		t.Fatalf("PolicyDenyMutating on kind=other MCP tool = %v, want PermissionAutoDeny", clsMCP.Action)
+	}
+	readReq := RequestPermissionParams{
+		ToolCall: ToolCallUpdate{ToolCallID: "t-read", Name: "read_file", Kind: "read"},
+		Options: []PermissionOption{
+			{OptionID: "allow_1", Kind: "allow_once", Name: "Allow"},
+		},
+	}
+	clsRead := f.ClassifyPermission("thr", "turn", "req-2", readReq, PolicyDenyMutating)
+	if clsRead.Action != PermissionAutoAllow {
+		t.Fatalf("PolicyDenyMutating on kind=read = %v, want PermissionAutoAllow", clsRead.Action)
+	}
+
+	// 3. AvailableDecisions advertises ONLY the scopes actually offered by ACP options.
+	alwaysOnlyReq := RequestPermissionParams{
+		ToolCall: ToolCallUpdate{ToolCallID: "t-bash", Name: "run_command", Kind: "execute"},
+		Options: []PermissionOption{
+			{OptionID: "allow_all", Kind: "allow_always", Name: "Always allow"},
+			{OptionID: "deny_1", Kind: "reject_once", Name: "Reject"},
+		},
+	}
+	clsAsk := f.ClassifyPermission("thr", "turn", "req-3", alwaysOnlyReq, PolicyPrompt)
+	if clsAsk.Action != PermissionAskUser || clsAsk.Approval.AvailableDecisions == nil {
+		t.Fatalf("ClassifyPermission(alwaysOnly) = %+v", clsAsk)
+	}
+	encodedAvail, _ := json.Marshal(*clsAsk.Approval.AvailableDecisions)
+	availStr := string(encodedAvail)
+	if strings.Contains(availStr, `"accept"`) || !strings.Contains(availStr, `"acceptForSession"`) || !strings.Contains(availStr, `"decline"`) || !strings.Contains(availStr, `"cancel"`) {
+		t.Fatalf("AvailableDecisions = %s, want [cancel, decline, acceptForSession] without accept", availStr)
+	}
+	if _, hasAccept := clsAsk.OptionByKey["accept"]; hasAccept {
+		t.Fatalf("OptionByKey unexpectedly mapped accept to allow_always: %+v", clsAsk.OptionByKey)
+	}
+
+	// 4. Distinct Session instances generate distinct turn IDs so reconnect never collides.
+	s1 := &Session{instanceID: newSessionInstanceID(), turnSeq: 1}
+	s2 := &Session{instanceID: newSessionInstanceID(), turnSeq: 1}
+	if s1.nextTurnID("turn") == s2.nextTurnID("turn") {
+		t.Fatalf("distinct sessions produced identical turn ID %q", s1.nextTurnID("turn"))
+	}
+}
+
+func TestSessionOpenFailsOnRejectedInitialConfig(t *testing.T) {
+	t.Parallel()
+	const rejectModelScript = `#!/usr/bin/env python3
+import json, sys
+for raw in sys.stdin:
+    raw = raw.strip()
+    if not raw:
+        continue
+    msg = json.loads(raw)
+    mid = msg.get("id")
+    method = msg.get("method")
+    if method == "initialize":
+        print(json.dumps({"jsonrpc":"2.0","id":mid,"result":{"protocolVersion":1,"agentInfo":{"name":"mock","version":"1.0"}}}), flush=True)
+    elif method == "session/new":
+        print(json.dumps({"jsonrpc":"2.0","id":mid,"result":{"sessionId":"s-reject","configOptions":[{"id":"model","currentValue":"default-model","options":[{"value":"default-model","name":"Default"}]}]}}), flush=True)
+    elif method == "session/set_config_option":
+        print(json.dumps({"jsonrpc":"2.0","id":mid,"error":{"code":-32602,"message":"unknown model"}}), flush=True)
+    elif method == "session/close":
+        print(json.dumps({"jsonrpc":"2.0","id":mid,"result":{}}), flush=True)
+`
+	bin := writeFakeACPServer(t, rejectModelScript)
+	conn, err := Dial(context.Background(), ConnConfig{
+		Binary:       bin,
+		WorkDir:      t.TempDir(),
+		Reaper:       procutiltest.Reaper(),
+		ProviderName: "agy",
+	})
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	_, err = conn.Open(context.Background(), "t-reject", SessionConfig{
+		WorkDir: t.TempDir(),
+		Model:   "nonexistent-model",
+	}, func(provider.ProviderEvent) {})
+	if err == nil || !strings.Contains(err.Error(), "unknown model") {
+		t.Fatalf("Open with rejected model err = %v, want error containing 'unknown model'", err)
+	}
+	if conn.HasActiveSession("s-reject") {
+		t.Fatal("failed Open left session registered on Conn")
+	}
+}
+
+func TestSessionSendEmitsTranscriptRecordedConfirmationAndCancelApproval(t *testing.T) {
+	t.Parallel()
+	const cancelCheckScript = `#!/usr/bin/env python3
+import json, sys
+cancelled_sessions = []
+for raw in sys.stdin:
+    raw = raw.strip()
+    if not raw:
+        continue
+    msg = json.loads(raw)
+    mid = msg.get("id")
+    method = msg.get("method")
+    params = msg.get("params") or {}
+    if method == "initialize":
+        print(json.dumps({"jsonrpc":"2.0","id":mid,"result":{"protocolVersion":1,"agentInfo":{"name":"mock","version":"1.0"}}}), flush=True)
+    elif method == "session/new":
+        print(json.dumps({"jsonrpc":"2.0","id":mid,"result":{"sessionId":"s-confirm","modes":{"currentModeId":"ask","availableModes":[{"id":"ask","name":"Ask"}]}}}), flush=True)
+    elif method == "session/cancel":
+        cancelled_sessions.append(params.get("sessionId"))
+    elif method == "session/prompt":
+        sid = params.get("sessionId")
+        prompt = params.get("prompt") or []
+        text = prompt[0].get("text", "") if prompt else ""
+        if text == "CANCEL_ME":
+            print(json.dumps({"jsonrpc":"2.0","id":99,"method":"session/request_permission","params":{"sessionId":sid,"toolCall":{"toolCallId":"tc-cancel","name":"run_command","kind":"execute"},"options":[{"optionId":"allow_1","kind":"allow_once","name":"Allow"},{"optionId":"deny_1","kind":"reject_once","name":"Reject"}]}}), flush=True)
+            resp_line = sys.stdin.readline().strip()
+            resp = json.loads(resp_line)
+            outcome = ((resp.get("result") or {}).get("outcome") or {}).get("outcome")
+            # Wait for the follow-up session/cancel notification.
+            cancel_line = sys.stdin.readline().strip()
+            cancel_msg = json.loads(cancel_line)
+            got_cancel = cancel_msg.get("method") == "session/cancel"
+            print(json.dumps({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":sid,"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":f"outcome={outcome},cancel={got_cancel}"}}}}), flush=True)
+            print(json.dumps({"jsonrpc":"2.0","id":mid,"result":{"stopReason":"cancelled"}}), flush=True)
+        else:
+            print(json.dumps({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":sid,"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ok"}}}}), flush=True)
+            print(json.dumps({"jsonrpc":"2.0","id":mid,"result":{"stopReason":"end_turn"}}), flush=True)
+    elif method == "session/close":
+        print(json.dumps({"jsonrpc":"2.0","id":mid,"result":{}}), flush=True)
+`
+	bin := writeFakeACPServer(t, cancelCheckScript)
+	conn, err := Dial(context.Background(), ConnConfig{
+		Binary:       bin,
+		WorkDir:      t.TempDir(),
+		Reaper:       procutiltest.Reaper(),
+		ProviderName: "agy",
+	})
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	ev := newEventCollector()
+	sess, err := conn.Open(context.Background(), "t-confirm", SessionConfig{
+		WorkDir:     t.TempDir(),
+		RuntimeMode: provider.RuntimeApprovalRequired,
+	}, ev.record)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = sess.Close() }()
+
+	// 1. Send with UserMessageUUID must emit EventUserText confirmation before EventTurnStart.
+	if err := sess.Send(context.Background(), "hello queue", provider.SendOptions{UserMessageUUID: "send-uuid-123"}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	ev.waitFor(t, 5*time.Second, func(e provider.ProviderEvent) bool { return e.Kind == provider.EventTurnComplete })
+	all := ev.all()
+	userIdx, startIdx := -1, -1
+	for i, e := range all {
+		if e.Kind == provider.EventUserText && userIdx < 0 {
+			userIdx = i
+			var meta map[string]any
+			if err := json.Unmarshal(e.Meta, &meta); err != nil {
+				t.Fatalf("unmarshal EventUserText meta: %v", err)
+			}
+			if meta["provider_item_id"] != "send-uuid-123" || meta[provider.MetaUserTextTranscriptRecordedKey] != true {
+				t.Fatalf("unexpected EventUserText confirmation meta: %+v", meta)
+			}
+		}
+		if e.Kind == provider.EventTurnStart && startIdx < 0 {
+			startIdx = i
+		}
+	}
+	if userIdx < 0 || startIdx < 0 || userIdx >= startIdx {
+		t.Fatalf("expected EventUserText before EventTurnStart, got userIdx=%d startIdx=%d", userIdx, startIdx)
+	}
+
+	// 2. RespondToApproval("cancel") must send ACP outcome=cancelled AND session/cancel.
+	if err := sess.Send(context.Background(), "CANCEL_ME", provider.SendOptions{}); err != nil {
+		t.Fatalf("Send CANCEL_ME: %v", err)
+	}
+	appEvt := ev.waitFor(t, 5*time.Second, func(e provider.ProviderEvent) bool { return e.Kind == provider.EventApprovalRequest })
+	var req provider.ApprovalRequest
+	if err := json.Unmarshal(appEvt.Meta, &req); err != nil {
+		t.Fatalf("unmarshal approval req: %v", err)
+	}
+	if err := sess.RespondToApproval(context.Background(), provider.ApprovalResponse{
+		RequestID: req.RequestID,
+		Decision:  "cancel",
+	}); err != nil {
+		t.Fatalf("RespondToApproval(cancel): %v", err)
+	}
+	ev.waitFor(t, 5*time.Second, func(e provider.ProviderEvent) bool {
+		return e.Kind == provider.EventTextDelta && strings.Contains(e.Content, "outcome=cancelled,cancel=True")
+	})
 }

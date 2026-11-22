@@ -124,11 +124,17 @@ func ProbeCatalogOnConn(ctx context.Context, conn *acp.Conn, workDir string) ([]
 		return u.SessionUpdate == "usage_update" && u.Size > 0
 	}
 	out := make([]provider.ModelInfo, 0, len(modelOpt.Options))
+	var lastSwitchErr error
 	for _, choice := range modelOpt.Options {
 		cap := conn.StartUpdateCapture(sessionID, 32)
 		if choice.Value != currentOptionValue(currentOpts, "model") {
 			updated, setErr := conn.SetConfigOption(ctx, sessionID, "model", choice.Value)
-			if setErr == nil && len(updated) > 0 {
+			if setErr != nil {
+				cap.Stop()
+				lastSwitchErr = setErr
+				continue
+			}
+			if len(updated) > 0 {
 				currentOpts = updated
 			}
 			// Real agy emits `usage_update` asynchronously right after the
@@ -167,6 +173,9 @@ func ProbeCatalogOnConn(ctx context.Context, conn *acp.Conn, workDir string) ([]
 			ContextWindows:   agyContextWindowOptions(currentSize),
 			ReasoningEfforts: efforts,
 		})
+	}
+	if len(out) == 0 && lastSwitchErr != nil {
+		return nil, fmt.Errorf("agy: probe catalog model switches failed: %w", lastSwitchErr)
 	}
 	return out, nil
 }

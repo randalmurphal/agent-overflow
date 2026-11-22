@@ -2,6 +2,8 @@ package codex
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -305,6 +307,107 @@ func TestConnCrashTearsDownEveryAttachedSession(t *testing.T) {
 	case <-conn.Done():
 	case <-time.After(5 * time.Second):
 		t.Fatal("Conn.Done did not close after crash")
+	}
+}
+
+func TestConnRouteTargetQuarantinesUnclaimedChildWhileSiblingStarts(t *testing.T) {
+	t.Parallel()
+	sessA := &Session{threadID: "ao-a"}
+	sessB := &Session{threadID: "ao-b"}
+	conn := &Conn{
+		allSessions:            map[*Session]struct{}{sessA: {}, sessB: {}},
+		byThread:               map[string]*Session{"codex-a": sessA},
+		bySessionID:            map[string]*Session{},
+		starting:               sessB,
+		deferredChild:          map[string][]deferredChildWireEvent{},
+		deferredChildDeadlines: map[string]*time.Timer{},
+	}
+
+	// An unclaimed child frame or approval (allowStartingFallback=false) MUST NOT
+	// route to sibling sessB while sessB is starting.
+	if got := conn.routeTarget("codex-child-of-a", "", "", false); got != nil {
+		t.Fatalf("routeTarget(child, allowStartingFallback=false) = %v, want nil (quarantine)", got)
+	}
+	// A root thread/started notification (allowStartingFallback=true) still routes to sessB.
+	if got := conn.routeTarget("codex-b", "", "", true); got != sessB {
+		t.Fatalf("routeTarget(root thread/started, allowStartingFallback=true) = %v, want sessB", got)
+	}
+}
+
+func TestConnThreadScopedMCPStartupUpdateNotifiesConnHandler(t *testing.T) {
+	t.Parallel()
+	sessA := &Session{threadID: "ao-a"}
+	var gotUpdates []MCPStartupUpdate
+	conn := &Conn{
+		allSessions:             map[*Session]struct{}{sessA: {}},
+		byThread:                map[string]*Session{"codex-a": sessA},
+		bySessionID:             map[string]*Session{},
+		mcpStartupUpdateHandler: func(u MCPStartupUpdate) { gotUpdates = append(gotUpdates, u) },
+	}
+	params := json.RawMessage(`{"threadId":"codex-a","name":"github","status":"ready"}`)
+	conn.dispatchNotification("mcpServer/startupStatus/updated", params)
+	if len(gotUpdates) != 1 || gotUpdates[0].Name != "github" || gotUpdates[0].State != "ready" {
+		t.Fatalf("conn mcpStartupUpdateHandler got %+v, want github/ready", gotUpdates)
+	}
+}
+
+func TestConnOpenPooledFailsWithErrThreadUnloadFailedWhenUnsubscribeUnsupported(t *testing.T) {
+	t.Parallel()
+	const noUnsubscribeScript = `#!/usr/bin/env python3
+import json, sys
+
+def emit(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    msg = json.loads(line)
+    mid = msg.get("id")
+    method = msg.get("method")
+    if method == "initialize":
+        emit({"jsonrpc": "2.0", "id": mid, "result": {"userAgent": "codex-old"}})
+    elif method == "thread/start":
+        emit({"jsonrpc": "2.0", "id": mid, "result": {"thread": {"id": "codex-thr-loaded"}}})
+        emit({"jsonrpc": "2.0", "method": "thread/started", "params": {"thread": {"id": "codex-thr-loaded"}}})
+    elif method == "thread/unsubscribe":
+        emit({"jsonrpc": "2.0", "id": mid, "error": {"code": -32601, "message": "Method not found"}})
+`
+	bin := writeFakeMultiplexCodex(t, noUnsubscribeScript)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	conn, err := Dial(ctx, ConnConfig{
+		Binary:  bin,
+		WorkDir: t.TempDir(),
+		Reaper:  procutiltest.Reaper(),
+	})
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	// First open starts the thread on Conn; Close fails to unsubscribe so
+	// Conn keeps codex-thr-loaded marked as loaded.
+	sess1, err := conn.OpenPooled(ctx, "ao-resume-old", Config{
+		WorkDir: t.TempDir(),
+	}, func(provider.ProviderEvent) {}, func() {})
+	if err != nil {
+		t.Fatalf("initial OpenPooled: %v", err)
+	}
+	_ = sess1.Close()
+
+	var released atomic.Int32
+	_, err = conn.OpenPooled(ctx, "ao-resume-old", Config{
+		WorkDir:        t.TempDir(),
+		ResumeThreadID: "codex-thr-loaded",
+	}, func(provider.ProviderEvent) {}, func() { released.Add(1) })
+	if !errors.Is(err, ErrThreadUnloadFailed) {
+		t.Fatalf("OpenPooled err = %v, want ErrThreadUnloadFailed", err)
+	}
+	if released.Load() != 1 {
+		t.Fatalf("release callback called %d times, want 1", released.Load())
 	}
 }
 

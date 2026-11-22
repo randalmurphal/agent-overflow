@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -15,8 +14,14 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/acp"
 	"agent-overflow/internal/provider/agy"
+	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/sessionimport"
 )
+
+// maxAgyReplayUpdates bounds a single ACP session/load replay capture while
+// staying large enough for long conversations; hitting it fails loudly rather
+// than silently truncating imported history.
+const maxAgyReplayUpdates = 100000
 
 // agyConnIdleGrace keeps an idle shared agy acp server warm for 5 minutes
 // after its last thread detaches so switching threads does not pay another
@@ -120,11 +125,7 @@ func (a *App) hasManagedAgyCredentialFile() bool {
 }
 
 func hasManagedAgyCredentialFileAt(appData string) bool {
-	if strings.TrimSpace(appData) == "" {
-		return false
-	}
-	info, err := os.Stat(filepath.Join(appData, "antigravity-oauth-token"))
-	return err == nil && !info.IsDir()
+	return provideraccounts.AgyShouldForceFileStorage(appData)
 }
 
 func (a *App) borrowAgyConnForBinary(binary string) (*acp.Conn, func()) {
@@ -195,7 +196,7 @@ func (a *App) withAgyImportConn(ctx context.Context, appDataDir, avoidSessionID 
 			"SSH_CONNECTION":             "127.0.0.1 0 127.0.0.1 0",
 		}
 	}
-	env, unset := agy.LaunchEnv(a.sessionProcessEnv(string(provider.Agy), nil), extra)
+	env, unset := agy.LaunchEnv(a.ensureProviderAccountManager().ProbeEnv(string(provider.Agy), nil), extra)
 	conn, err := acp.Dial(ctx, acp.ConnConfig{
 		Binary:       agy.ResolveBinary(binary),
 		Args:         agy.LaunchArgs(geminiDir, appDataSubdir),
@@ -248,9 +249,12 @@ func (a *App) replayAgyImportSession(ctx context.Context, appDataDir, sessionID,
 			SessionID:  sessionID,
 			CWD:        workDir,
 			MCPServers: []acp.MCPServerConfig{},
-		}, 10000)
+		}, maxAgyReplayUpdates)
 		if replayErr != nil {
 			return replayErr
+		}
+		if res.Truncated {
+			return fmt.Errorf("agy session %s exceeded replay limit (%d updates) and could not be imported completely", sessionID, maxAgyReplayUpdates)
 		}
 		events = acp.ReplayUpdatesToEvents(res.Updates, agy.NewFlavor(appDataDir))
 		return nil

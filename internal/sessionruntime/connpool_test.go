@@ -3,6 +3,7 @@ package sessionruntime
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -429,5 +430,64 @@ func TestConnPoolDrainPrefixMarksInFlightDialStale(t *testing.T) {
 		t.Fatal("stale in-flight connection was not closed")
 	}
 	rel()
+	_ = pool.CloseAll()
+}
+
+func TestConnPoolLastWaiterCancelAllowsImmediateFreshDial(t *testing.T) {
+	t.Parallel()
+	pool := NewConnPool()
+	dial1Started := make(chan struct{})
+	dial1Release := make(chan struct{})
+	freshConn := newFakeConn(901)
+	var dials atomic.Int32
+
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	err1Ch := make(chan error, 1)
+	go func() {
+		_, _, err := pool.Acquire(ctx1, "agy|cancel", time.Minute, func(dialCtx context.Context) (provider.Connection, error) {
+			if dials.Add(1) == 1 {
+				close(dial1Started)
+				<-dialCtx.Done()
+				// Block unwinding briefly to simulate a slow cleanup after cancel.
+				<-dial1Release
+				return nil, dialCtx.Err()
+			}
+			return freshConn, nil
+		})
+		err1Ch <- err
+	}()
+
+	<-dial1Started
+	cancel1()
+	if err := <-err1Ch; !errors.Is(err, context.Canceled) {
+		t.Fatalf("first Acquire err = %v, want context.Canceled", err)
+	}
+
+	// While dial 1 is still unwinding, a fresh caller with a live context MUST
+	// start dial 2 and succeed rather than joining the canceled dial.
+	got, rel, err := pool.Acquire(context.Background(), "agy|cancel", time.Minute, func(context.Context) (provider.Connection, error) {
+		dials.Add(1)
+		return freshConn, nil
+	})
+	close(dial1Release)
+	if err != nil {
+		t.Fatalf("second Acquire err = %v, want nil", err)
+	}
+	if got != freshConn {
+		t.Fatalf("got conn %v, want freshConn", got)
+	}
+	rel()
+	_ = pool.CloseAll()
+}
+
+func TestConnPoolDialPanicRecoveredAsError(t *testing.T) {
+	t.Parallel()
+	pool := NewConnPool()
+	_, _, err := pool.Acquire(context.Background(), "agy|panic", 0, func(context.Context) (provider.Connection, error) {
+		panic("boom")
+	})
+	if err == nil || !strings.Contains(err.Error(), "panicked") {
+		t.Fatalf("Acquire panic err = %v, want recovered panic error", err)
+	}
 	_ = pool.CloseAll()
 }

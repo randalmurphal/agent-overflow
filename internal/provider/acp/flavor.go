@@ -117,7 +117,6 @@ type Flavor interface {
 	NormalizeToolComplete(u *ToolCallUpdate, started NormalizedToolStart) NormalizedToolComplete
 	ClassifyPermission(threadID, turnID, requestID string, req RequestPermissionParams, policy PermissionPolicy) PermissionClassification
 	ExtractPendingQuestion(u *ToolCallUpdate) ([]provider.UserInputQuestion, bool)
-	ToolOutlivesPrompt(u *ToolCallUpdate) bool
 	BeforePrompt(ctx context.Context, sessionID string) any
 	AfterPrompt(ctx context.Context, sessionID string, stopReason string, beforeToken any) *PromptOutcomeOverride
 	ShouldHoldSpontaneousWakeClose(ctx context.Context, sessionID string) bool
@@ -149,6 +148,9 @@ func (DefaultFlavor) MapRuntimeMode(rt provider.RuntimeMode, im provider.Interac
 		return false
 	}
 	if im == provider.ModePlan && hasMode("plan") {
+		if rt == provider.RuntimeReadOnly {
+			return "plan", PolicyDenyMutating
+		}
 		return "plan", PolicyPrompt
 	}
 	switch rt {
@@ -337,8 +339,9 @@ func (DefaultFlavor) NormalizeToolComplete(u *ToolCallUpdate, started Normalized
 }
 
 func (DefaultFlavor) ClassifyPermission(threadID, turnID, requestID string, req RequestPermissionParams, policy PermissionPolicy) PermissionClassification {
-	allowOpt := findPermissionOption(req.Options, "allow_once", "allow_always")
+	allowOnceOpt := findPermissionOption(req.Options, "allow_once", "")
 	allowAlwaysOpt := findPermissionOption(req.Options, "allow_always", "")
+	allowAnyOpt := findPermissionOption(req.Options, "allow_once", "allow_always")
 	denyOpt := findPermissionOption(req.Options, "reject_once", "reject_always")
 
 	// interaction_* requests are structured user questions, never silently auto-approved.
@@ -379,16 +382,16 @@ func (DefaultFlavor) ClassifyPermission(threadID, turnID, requestID string, req 
 
 	switch policy {
 	case PolicyAutoAllowNonQuestion:
-		if allowOpt != "" {
-			return PermissionClassification{Action: PermissionAutoAllow, OptionID: allowOpt}
+		if allowAnyOpt != "" {
+			return PermissionClassification{Action: PermissionAutoAllow, OptionID: allowAnyOpt}
 		}
 	case PolicyDenyMutating:
-		if isMutatingToolKind(req.ToolCall.Kind, req.ToolCall.Name) {
-			return PermissionClassification{Action: PermissionAutoDeny, OptionID: denyOpt}
+		// Fail closed in read-only mode: only explicitly read-only tool kinds
+		// and names are auto-allowed; unknown or "other" tools are denied.
+		if isReadOnlyToolKind(req.ToolCall.Kind, req.ToolCall.Name) && allowAnyOpt != "" {
+			return PermissionClassification{Action: PermissionAutoAllow, OptionID: allowAnyOpt}
 		}
-		if allowOpt != "" {
-			return PermissionClassification{Action: PermissionAutoAllow, OptionID: allowOpt}
-		}
+		return PermissionClassification{Action: PermissionAutoDeny, OptionID: denyOpt}
 	}
 
 	toolName := strings.TrimSpace(req.ToolCall.Name)
@@ -404,21 +407,22 @@ func (DefaultFlavor) ClassifyPermission(threadID, turnID, requestID string, req 
 	}
 	kind := approvalKindFromACP(req.ToolCall.Kind)
 	byKey := map[string]string{}
-	if allowOpt != "" {
-		byKey["allow"] = allowOpt
-		byKey["accept"] = allowOpt
+	avail := make([]json.RawMessage, 0, 4)
+	avail = append(avail, json.RawMessage(`"cancel"`))
+	if denyOpt != "" {
+		byKey["deny"] = denyOpt
+		byKey["decline"] = denyOpt
+		avail = append(avail, json.RawMessage(`"decline"`))
 	}
 	if allowAlwaysOpt != "" {
 		byKey["allow_session"] = allowAlwaysOpt
 		byKey["acceptForSession"] = allowAlwaysOpt
-	} else if allowOpt != "" {
-		byKey["allow_session"] = allowOpt
-		byKey["acceptForSession"] = allowOpt
+		avail = append(avail, json.RawMessage(`"acceptForSession"`))
 	}
-	if denyOpt != "" {
-		byKey["deny"] = denyOpt
-		byKey["decline"] = denyOpt
-		byKey["cancel"] = denyOpt
+	if allowOnceOpt != "" {
+		byKey["allow"] = allowOnceOpt
+		byKey["accept"] = allowOnceOpt
+		avail = append(avail, json.RawMessage(`"accept"`))
 	}
 	for _, opt := range req.Options {
 		byKey[opt.OptionID] = opt.OptionID
@@ -427,15 +431,16 @@ func (DefaultFlavor) ClassifyPermission(threadID, turnID, requestID string, req 
 	return PermissionClassification{
 		Action: PermissionAskUser,
 		Approval: provider.ApprovalRequest{
-			RequestID:   requestID,
-			ThreadID:    threadID,
-			TurnID:      turnID,
-			ToolUseID:   req.ToolCall.ToolCallID,
-			ToolName:    toolName,
-			Title:       title,
-			Description: title,
-			Input:       req.ToolCall.EffectiveInput(),
-			Kind:        kind,
+			RequestID:          requestID,
+			ThreadID:           threadID,
+			TurnID:             turnID,
+			ToolUseID:          req.ToolCall.ToolCallID,
+			ToolName:           toolName,
+			Title:              title,
+			Description:        title,
+			Input:              req.ToolCall.EffectiveInput(),
+			Kind:               kind,
+			AvailableDecisions: &avail,
 		},
 		OptionByKey: byKey,
 	}
@@ -443,10 +448,6 @@ func (DefaultFlavor) ClassifyPermission(threadID, turnID, requestID string, req 
 
 func (DefaultFlavor) ExtractPendingQuestion(*ToolCallUpdate) ([]provider.UserInputQuestion, bool) {
 	return nil, false
-}
-
-func (DefaultFlavor) ToolOutlivesPrompt(*ToolCallUpdate) bool {
-	return false
 }
 
 func (DefaultFlavor) BeforePrompt(context.Context, string) any {
@@ -483,19 +484,25 @@ func findPermissionOption(options []PermissionOption, preferredKind, fallbackKin
 	return ""
 }
 
-func isMutatingToolKind(kind, name string) bool {
+// isReadOnlyToolKind reports whether a permission request is positively known
+// to be read-only. Unknown kinds (including ACP's "other") return false so
+// PolicyDenyMutating fails closed.
+func isReadOnlyToolKind(kind, name string) bool {
 	switch strings.ToLower(strings.TrimSpace(kind)) {
-	case "edit", "delete", "execute", "move":
-		return true
 	case "read", "search", "think", "fetch":
+		return true
+	case "edit", "delete", "execute", "move", "other":
 		return false
 	}
-	lower := strings.ToLower(strings.TrimSpace(name))
-	return strings.Contains(lower, "write") ||
-		strings.Contains(lower, "edit") ||
-		strings.Contains(lower, "delete") ||
-		strings.Contains(lower, "run_command") ||
-		strings.Contains(lower, "bash")
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "read_file", "view_file", "read",
+		"grep_search", "ripgrep", "search_files", "grep",
+		"find_by_name", "glob", "list_dir",
+		"search_web", "web_search", "read_url_content", "fetch_url", "web_fetch":
+		return true
+	default:
+		return false
+	}
 }
 
 func approvalKindFromACP(kind string) string {

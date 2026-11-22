@@ -2,6 +2,8 @@ package sessionimport
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
@@ -79,10 +81,16 @@ func agyEventsToIR(sessionID string, events []provider.ProviderEvent, baseTimeMs
 		}
 		irEvents = append(irEvents, importir.Event{
 			ProviderEvent: ev,
-			SourceUUID:    fmt.Sprintf("acp:%s:%d", sessionID, i),
+			SourceUUID:    fmt.Sprintf("acp:%s:%d:%s", sessionID, i, agyEventFingerprint(ev)),
 		})
 	}
 	return irEvents
+}
+
+func agyEventFingerprint(ev provider.ProviderEvent) string {
+	h := sha256.New()
+	_, _ = fmt.Fprintf(h, "%s\x00%s\x00%s\x00%s\x00%s", ev.Kind, ev.Role, ev.ItemID, ev.ItemType, ev.Content)
+	return hex.EncodeToString(h.Sum(nil)[:6])
 }
 
 func importAgy(ctx context.Context, d Deps, row Row, proj store.Project) (ImportOutcome, error) {

@@ -238,6 +238,10 @@ func runTextGenWithFallback[T any](
 	budget time.Duration,
 	runOnce func(cfg textgen.Config, deadline time.Time) (T, error),
 ) (T, error) {
+	// Cap total wall time across primary + all fallbacks to 2*budget so a
+	// 3-provider fallback chain (e.g. commit messages with a 3m per-call
+	// budget and 7m RPC timeout) cannot outlive the caller's RPC deadline.
+	overallDeadline := time.Now().Add(budget * 2)
 	result, err := runOnce(primary, time.Now().Add(budget))
 	if err == nil {
 		return result, nil
@@ -253,12 +257,23 @@ func runTextGenWithFallback[T any](
 		// shape that leaves orphans behind.
 		return result, err
 	}
-	for _, altName := range textGenerationFallbackOrder(primary.Provider) {
-		altCfg, ok := a.resolveTextGenerationConfigFor(altName)
-		if !ok {
-			continue
+	fallbacks := textGenerationFallbackOrder(primary.Provider)
+	var available []textgen.Config
+	for _, altName := range fallbacks {
+		if altCfg, ok := a.resolveTextGenerationConfigFor(altName); ok {
+			available = append(available, altCfg)
 		}
-		altResult, altErr := runOnce(altCfg, time.Now().Add(budget))
+	}
+	for i, altCfg := range available {
+		remaining := time.Until(overallDeadline)
+		if remaining <= 0 {
+			break
+		}
+		perAttempt := remaining / time.Duration(len(available)-i)
+		if perAttempt > budget {
+			perAttempt = budget
+		}
+		altResult, altErr := runOnce(altCfg, time.Now().Add(perAttempt))
 		if altErr == nil {
 			return altResult, nil
 		}

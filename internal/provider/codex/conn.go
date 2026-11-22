@@ -3,6 +3,7 @@ package codex
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -266,6 +267,11 @@ func (c *Conn) AccountInfo(ctx context.Context) (provider.AccountInfo, error) {
 	return decodeAccountInfo(result)
 }
 
+// ErrThreadUnloadFailed is returned when resuming a thread on a shared Conn
+// whose server could not confirm the prior loaded instance was unloaded (so
+// thread/resume would silently ignore changed sandbox/config overrides).
+var ErrThreadUnloadFailed = errors.New("codex: failed to unload loaded thread before resume")
+
 // Open attaches a new or resumed conversation Session to this shared Conn.
 // Closing the returned Session detaches and unsubscribes the thread without
 // closing the Conn.
@@ -300,7 +306,12 @@ func (c *Conn) open(
 	// cleanly (a resume of an already-loaded thread ignores overrides).
 	if cfg.ResumeThreadID != "" && c.isThreadLoaded(cfg.ResumeThreadID) {
 		if err := c.unsubscribeAndWait(ctx, cfg.ResumeThreadID); err != nil {
-			log.Printf("codex: pre-resume unload of %s: %v", cfg.ResumeThreadID, err)
+			if ownsConn {
+				_ = c.Close()
+			} else if releaseConn != nil {
+				releaseConn()
+			}
+			return nil, fmt.Errorf("%w: %v", ErrThreadUnloadFailed, err)
 		}
 	}
 
@@ -414,10 +425,12 @@ func (c *Conn) open(
 
 	rootID := s.rootThreadID()
 	rootSessID := s.rootSessionID()
+	var earlyRootFrames []deferredChildWireEvent
 	c.routesMu.Lock()
 	if rootID != "" {
 		c.byThread[rootID] = s
 		c.loaded[rootID] = struct{}{}
+		earlyRootFrames = c.takeDeferredChildLocked(rootID)
 	}
 	if rootSessID != "" {
 		c.bySessionID[rootSessID] = s
@@ -428,6 +441,14 @@ func (c *Conn) open(
 	c.routesMu.Unlock()
 	if startingFresh {
 		c.startMu.Unlock()
+	}
+	for _, ev := range earlyRootFrames {
+		if ev.RequestID != "" {
+			reqID := json.Number(ev.RequestID)
+			s.dispatchServerRequest(ev.Method, &reqID, ev.Params, ev.RawLine)
+		} else {
+			s.dispatchNotification(ev.Method, ev.Params)
+		}
 	}
 
 	meta, _ := json.Marshal(provider.SessionInfo{
@@ -656,7 +677,7 @@ func (c *Conn) unsubscribeAndWait(ctx context.Context, providerThreadID string) 
 	})
 	if err != nil {
 		removeWaiter()
-		if IsMethodUnsupported(err, "thread/unsubscribe") || IsThreadNotFound(err) {
+		if IsThreadNotFound(err) {
 			c.markThreadClosed(providerThreadID)
 			return nil
 		}
@@ -890,7 +911,7 @@ func (c *Conn) dispatchServerRequest(method string, id *json.Number, params json
 		return
 	}
 
-	target := c.routeTarget(providerThreadID, "", "")
+	target := c.routeTarget(providerThreadID, "", "", false)
 	if target != nil {
 		target.dispatchServerRequest(method, id, params, line)
 		return
@@ -928,9 +949,19 @@ func (c *Conn) dispatchNotification(method string, params json.RawMessage) {
 
 	case "mcpServer/startupStatus/updated":
 		tid := providerThreadIDFromParams(params)
+		c.routesMu.Lock()
+		connHandler := c.mcpStartupUpdateHandler
+		c.routesMu.Unlock()
 		if tid != "" {
-			if target := c.routeTarget(tid, "", ""); target != nil {
-				target.dispatchMCPStartupUpdate(params)
+			if target := c.routeTarget(tid, "", "", false); target != nil {
+				target.retainMCPStartupUpdate(params)
+				if connHandler != nil {
+					if update, ok := decodeMCPStartupUpdate(params); ok {
+						connHandler(update)
+					}
+					return
+				}
+				target.notifyMCPStartupUpdate(params)
 				return
 			}
 		}
@@ -938,9 +969,6 @@ func (c *Conn) dispatchNotification(method string, params json.RawMessage) {
 		for _, s := range sessions {
 			s.retainMCPStartupUpdate(params)
 		}
-		c.routesMu.Lock()
-		connHandler := c.mcpStartupUpdateHandler
-		c.routesMu.Unlock()
 		if connHandler != nil {
 			if update, ok := decodeMCPStartupUpdate(params); ok {
 				connHandler(update)
@@ -956,7 +984,7 @@ func (c *Conn) dispatchNotification(method string, params json.RawMessage) {
 	case "mcpServer/oauthLogin/completed":
 		tid := providerThreadIDFromParams(params)
 		if tid != "" {
-			if target := c.routeTarget(tid, "", ""); target != nil {
+			if target := c.routeTarget(tid, "", "", false); target != nil {
 				target.dispatchMCPOAuthCompletion(params)
 				return
 			}
@@ -990,8 +1018,9 @@ func (c *Conn) dispatchNotification(method string, params json.RawMessage) {
 		sessionID = readNestedString(params, "thread", "sessionId")
 		parentThreadID = readNestedString(params, "thread", "parentThreadId")
 	}
+	allowStartingFallback := providerThreadID == "" || (method == "thread/started" && parentThreadID == "")
 
-	if target := c.routeTarget(providerThreadID, sessionID, parentThreadID); target != nil {
+	if target := c.routeTarget(providerThreadID, sessionID, parentThreadID, allowStartingFallback); target != nil {
 		target.dispatchNotification(method, params)
 		return
 	}
@@ -1018,7 +1047,7 @@ func isConnectionBroadcastNotification(method string) bool {
 	}
 }
 
-func (c *Conn) routeTarget(providerThreadID, sessionID, parentThreadID string) *Session {
+func (c *Conn) routeTarget(providerThreadID, sessionID, parentThreadID string, allowStartingFallback bool) *Session {
 	c.routesMu.Lock()
 	defer c.routesMu.Unlock()
 
@@ -1037,10 +1066,10 @@ func (c *Conn) routeTarget(providerThreadID, sessionID, parentThreadID string) *
 			return s
 		}
 	}
-	if c.starting != nil {
+	if allowStartingFallback && c.starting != nil {
 		return c.starting
 	}
-	if len(c.allSessions) == 1 {
+	if len(c.allSessions) == 1 && (allowStartingFallback || len(c.byThread) == 0) {
 		for s := range c.allSessions {
 			return s
 		}

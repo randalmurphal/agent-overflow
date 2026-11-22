@@ -51,7 +51,11 @@ func providerWide(prov string, entry provider.RateLimitEntry) bool {
 	case providerClaude:
 		return id == "session" || id == "weekly_all" || id == "five_hour" || id == "seven_day"
 	case providerAgy:
-		return id == "gemini-5h" || id == "gemini-weekly" || id == "gemini-quota"
+		// Antigravity splits Gemini and third-party (Claude/GPT `3p`) into
+		// independent quota pools; each entry is scoped by bucketFamilies
+		// rather than provider-wide so Gemini exhaustion does not switch 3p
+		// threads (and vice versa).
+		return false
 	}
 	return false
 }

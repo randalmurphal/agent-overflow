@@ -213,7 +213,7 @@ func TestAgyNativeSQLiteForkClonesConversation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	forkState, err := app.resolveForkResumeState(context.Background(), source, nil, nil, "")
+	forkState, err := app.resolveForkResumeState(context.Background(), source, "", nil, nil, "")
 	if err != nil {
 		t.Fatalf("resolveForkResumeState(agy): %v", err)
 	}
@@ -293,5 +293,97 @@ func TestAgyGeneratedImageImportContainment(t *testing.T) {
 	}
 	if _, err := app.importCodexGeneratedImage(thread.ID, outsideImg); err == nil {
 		t.Fatal("expected outside image path to be rejected")
+	}
+}
+
+func TestAgyModelPickerReconnectTurnUniquenessAndAskQuestionForkOrdinal(t *testing.T) {
+	t.Parallel()
+	app, _ := setupE2EApp(t)
+	app.configureTriageQueueCallbacks()
+	binary := writeSharedPoolAgyBinary(t, filepath.Join(t.TempDir(), "wire.log"))
+	if _, err := app.settings.Update(map[string]any{"agyBinaryPath": binary}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Start from a Claude thread and switch to Antigravity through the real
+	// model picker RPC (UpdateThreadModelSelection -> threadapp.ValidProvider).
+	thread, err := createTestThread(t, app, string(provider.Claude), t.TempDir(), "claude-sonnet-4-6", "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := app.UpdateThreadModelSelection(thread.ID, string(provider.Agy), "gemini-3.1-pro-high")
+	if err != nil {
+		t.Fatalf("UpdateThreadModelSelection(agy): %v", err)
+	}
+	if updated.Provider != string(provider.Agy) {
+		t.Fatalf("updated provider = %q, want agy", updated.Provider)
+	}
+
+	// 2. Run Turn 1, stop/disconnect session, reconnect, and run Turn 2.
+	// Both turns MUST land as distinct turn rows in SQLite (no acp-turn-1 collision).
+	if err := app.StartSession(thread.ID); err != nil {
+		t.Fatalf("StartSession(1): %v", err)
+	}
+	if err := app.SendMessage(context.Background(), thread.ID, "turn one", nil); err != nil {
+		t.Fatalf("SendMessage(1): %v", err)
+	}
+	waitAssistantCount := func(want int) {
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			items, listErr := app.store.ListItems(thread.ID)
+			if listErr == nil {
+				count := 0
+				for _, it := range items {
+					if it.Kind == "assistant_text" && it.Status == "completed" {
+						count++
+					}
+				}
+				if count >= want {
+					return
+				}
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
+		t.Fatalf("timed out waiting for %d completed assistant items", want)
+	}
+	waitAssistantCount(1)
+
+	if err := app.StopSession(thread.ID); err != nil {
+		t.Fatalf("StopSession: %v", err)
+	}
+	if err := app.StartSession(thread.ID); err != nil {
+		t.Fatalf("StartSession(2): %v", err)
+	}
+	if err := app.SendMessage(context.Background(), thread.ID, "turn two", nil); err != nil {
+		t.Fatalf("SendMessage(2): %v", err)
+	}
+	waitAssistantCount(2)
+
+	// Verify queued flush delivery confirms receipt so UnconfirmedFlushSends drains to 0.
+	queueHeldMessage(t, app, thread.ID, "queued follow-up")
+	app.triage.FlushQueuedItems(thread.ID)
+	waitAssistantCount(3)
+	if unconfirmed := app.triage.UnconfirmedFlushSends(thread.ID); len(unconfirmed) != 0 {
+		t.Fatalf("expected 0 unconfirmed flush sends on agy after delivery, got %d: %+v", len(unconfirmed), unconfirmed)
+	}
+
+	turns, err := app.store.ListRecentTurns(thread.ID, 10)
+	if err != nil {
+		t.Fatalf("ListRecentTurns: %v", err)
+	}
+	if len(turns) < 3 {
+		t.Fatalf("turns after reconnect + queued flush = %d (%+v), want >= 3 distinct turns", len(turns), turns)
+	}
+	if turns[0].TurnID == turns[1].TurnID || turns[1].TurnID == turns[2].TurnID {
+		t.Fatalf("reconnected turn overwrote prior turn ID: %q / %q / %q", turns[0].TurnID, turns[1].TurnID, turns[2].TurnID)
+	}
+	_ = app.StopSession(thread.ID)
+
+	// 3. isAgyNativePromptItem counts both visible user_text and AskUserQuestion with prompt_dispatched:true.
+	if !isAgyNativePromptItem(store.Item{Kind: "tool_call", ToolName: "AskUserQuestion", Meta: `{"prompt_dispatched":true}`}) {
+		t.Fatal("expected AskUserQuestion with prompt_dispatched:true to count as native prompt")
+	}
+	if isAgyNativePromptItem(store.Item{Kind: "tool_call", ToolName: "AskUserQuestion", Meta: `{}`}) {
+		t.Fatal("AskUserQuestion without prompt_dispatched must not count as native prompt")
 	}
 }

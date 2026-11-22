@@ -307,7 +307,7 @@ func (a *App) forkThreadAt(ctx context.Context, sourceThreadID string, atTurnInd
 		return store.Thread{}, errors.Join(err, cleanups.Run())
 	}
 	timing.next("provider")
-	resume, err := a.resolveForkResumeState(ctx, source, atTurnIndex, midTurnCut, opts.Lineage)
+	resume, err := a.resolveForkResumeState(ctx, source, fork.ID, atTurnIndex, midTurnCut, opts.Lineage)
 	if err != nil {
 		return store.Thread{}, errors.Join(err, cleanups.Run())
 	}

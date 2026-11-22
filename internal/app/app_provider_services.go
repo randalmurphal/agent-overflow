@@ -70,7 +70,7 @@ func (a *App) providerDiscoveryService() *providerdiscoveryapp.Service {
 					defer release()
 					return agy.ProbeCatalogOnConn(ctx, conn, providerProbeWorkDir())
 				}
-				env := a.sessionProcessEnv(string(provider.Agy), nil)
+				env := a.ensureProviderAccountManager().ProbeEnv(string(provider.Agy), nil)
 				if a.hasManagedAgyCredentialFile() {
 					merged := make(map[string]string, len(env)+2)
 					for k, v := range env {

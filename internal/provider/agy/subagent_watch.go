@@ -22,12 +22,32 @@ const (
 	defaultSubagentDiscoveryTimeout  = 15 * time.Second
 	defaultSubagentSettleGrace       = 400 * time.Millisecond
 	defaultSubagentParentReportGrace = 1200 * time.Millisecond
+	maxTranscriptReadChunkBytes      = 1 << 20 // 1 MiB per poll
+	maxTranscriptLineBytes           = 2 << 20 // 2 MiB max single JSONL line
 )
+
+// isSafeConversationID ensures an extracted subagent conversation ID is a
+// single safe directory token and cannot escape `<appDataDir>/brain/`.
+func isSafeConversationID(id string) bool {
+	id = strings.TrimSpace(id)
+	if id == "" || len(id) > 128 {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		isAlpha := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+		isDigit := c >= '0' && c <= '9'
+		if !isAlpha && !isDigit && c != '-' && c != '_' {
+			return false
+		}
+	}
+	return true
+}
 
 // CanTrackSubagent reports whether this flavor can watch Antigravity's
 // out-of-band subagent transcript.jsonl files for sessionID.
 func (f *Flavor) CanTrackSubagent(sessionID string) bool {
-	return strings.TrimSpace(f.AppDataDir) != "" && strings.TrimSpace(sessionID) != ""
+	return strings.TrimSpace(f.AppDataDir) != "" && isSafeConversationID(sessionID)
 }
 
 // ParseAgyTranscriptModel splits an Antigravity transcript model identifier
@@ -161,13 +181,15 @@ func (f *Flavor) WatchSubagent(ctx context.Context, launch acp.SubagentLaunchCon
 			break
 		}
 		if time.Now().After(discoveryDeadline) {
-			// Fallback settle so a launch whose transcript never materialized
-			// never stays a running zombie in the tray.
-			f.emitSubagentSettlement(launch, launch.ToolCallID, "completed", "", provider.SubagentProgressMeta{
-				TaskID:     launch.ToolCallID,
-				DurationMs: max(time.Since(launchTime).Milliseconds(), 1),
-				AgentType:  launch.Started.SubagentType,
-			})
+			// Settle as failed so a tracking/discovery failure never masquerades
+			// as a completed subagent task or leaves a running zombie in the tray.
+			f.emitSubagentSettlement(launch, launch.ToolCallID, "failed",
+				"Subagent transcript was not discovered before timeout",
+				provider.SubagentProgressMeta{
+					TaskID:     launch.ToolCallID,
+					DurationMs: max(time.Since(launchTime).Milliseconds(), 1),
+					AgentType:  launch.Started.SubagentType,
+				})
 			return
 		}
 		select {
@@ -178,6 +200,17 @@ func (f *Flavor) WatchSubagent(ctx context.Context, launch acp.SubagentLaunchCon
 	}
 
 	childID := child.conversationID
+	if !isSafeConversationID(childID) {
+		f.emitSubagentSettlement(launch, launch.ToolCallID, "failed",
+			"Subagent returned an invalid conversation identifier",
+			provider.SubagentProgressMeta{
+				TaskID:     launch.ToolCallID,
+				DurationMs: max(time.Since(launchTime).Milliseconds(), 1),
+				AgentType:  launch.Started.SubagentType,
+			})
+		return
+	}
+	childRoot := filepath.Join(f.AppDataDir, "brain", childID)
 	childPath := child.logPath
 	if childPath == "" {
 		childPath = transcriptPathForSession(f.AppDataDir, childID)
@@ -230,7 +263,7 @@ func (f *Flavor) WatchSubagent(ctx context.Context, launch acp.SubagentLaunchCon
 	}
 
 	for {
-		lines := readNewJSONLLines(childPath, &childOffset, &childRemainder)
+		lines := readNewJSONLLinesContained(childRoot, childPath, &childOffset, &childRemainder)
 		progressDirty := false
 		for _, line := range lines {
 			var step transcriptStep
@@ -437,15 +470,21 @@ func (f *Flavor) seedExistingSubagents(sessionID string) {
 		// discoveries from earlier turns in the same live session.
 		return
 	}
-	lines := readNewJSONLLines(coord.path, &coord.offset, &coord.remainder)
-	for _, line := range lines {
-		var step transcriptStep
-		if json.Unmarshal([]byte(line), &step) != nil {
-			continue
+	parentRoot := filepath.Join(f.AppDataDir, "brain", sessionID)
+	for {
+		lines := readNewJSONLLinesContained(parentRoot, coord.path, &coord.offset, &coord.remainder)
+		if len(lines) == 0 {
+			break
 		}
-		if strings.EqualFold(strings.TrimSpace(step.Type), "GENERIC") {
-			if convID, _ := parseCreatedSubagentResult(step.Content, f.AppDataDir); convID != "" {
-				coord.seenConvID[convID] = true
+		for _, line := range lines {
+			var step transcriptStep
+			if json.Unmarshal([]byte(line), &step) != nil {
+				continue
+			}
+			if strings.EqualFold(strings.TrimSpace(step.Type), "GENERIC") {
+				if convID, _ := parseCreatedSubagentResult(step.Content, f.AppDataDir); convID != "" {
+					coord.seenConvID[convID] = true
+				}
 			}
 		}
 	}
@@ -519,7 +558,8 @@ func (f *Flavor) emitSubagentSettlement(launch acp.SubagentLaunchContext, taskID
 func (c *parentSubagentCoordinator) refresh(appDataDir string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	lines := readNewJSONLLines(c.path, &c.offset, &c.remainder)
+	parentRoot := filepath.Dir(filepath.Dir(filepath.Dir(c.path)))
+	lines := readNewJSONLLinesContained(parentRoot, c.path, &c.offset, &c.remainder)
 	for _, line := range lines {
 		var step transcriptStep
 		if json.Unmarshal([]byte(line), &step) != nil {
@@ -590,12 +630,20 @@ func (c *parentSubagentCoordinator) claim(wantRole, wantType, wantPrompt string)
 			return d
 		}
 	}
-	// Positional fallback: first unclaimed discovered subagent.
+	// Positional fallback ONLY when neither side carries a conflicting role or
+	// typeName, preventing a parallel watcher that polls early from stealing a
+	// sibling launch's child transcript.
 	for _, d := range c.discovered {
-		if !d.claimed {
-			d.claimed = true
-			return d
+		if d.claimed {
+			continue
 		}
+		roleConflict := wantRole != "" && d.role != "" && d.role != wantRole
+		typeConflict := wantType != "" && d.typeName != "" && d.typeName != wantType
+		if roleConflict || typeConflict {
+			continue
+		}
+		d.claimed = true
+		return d
 	}
 	return nil
 }
@@ -632,18 +680,23 @@ func parseCreatedSubagentResult(content, appDataDir string) (conversationID, log
 			ConversationID string `json:"conversationId"`
 			LogAbsoluteURI string `json:"logAbsoluteUri"`
 		}
-		if json.Unmarshal([]byte(content[start:end+1]), &obj) == nil && strings.TrimSpace(obj.ConversationID) != "" {
+		if json.Unmarshal([]byte(content[start:end+1]), &obj) == nil && isSafeConversationID(obj.ConversationID) {
 			conversationID = strings.TrimSpace(obj.ConversationID)
 			if uri := strings.TrimSpace(obj.LogAbsoluteURI); uri != "" {
-				logPath = resolveTranscriptURI(uri, appDataDir)
+				childRoot := filepath.Join(appDataDir, "brain", conversationID)
+				logPath = resolveTranscriptURI(uri, childRoot)
 			}
 			return conversationID, logPath
 		}
 	}
-	return extractConversationID(nil, content), ""
+	fallbackID := extractConversationID(nil, content)
+	if !isSafeConversationID(fallbackID) {
+		return "", ""
+	}
+	return fallbackID, ""
 }
 
-func resolveTranscriptURI(rawURI, appDataDir string) string {
+func resolveTranscriptURI(rawURI, expectedRoot string) string {
 	var p string
 	if strings.HasPrefix(rawURI, "file://") {
 		if parsed, err := url.Parse(rawURI); err == nil && parsed.Path != "" {
@@ -659,10 +712,10 @@ func resolveTranscriptURI(rawURI, appDataDir string) string {
 		p = rawURI
 	}
 	p = filepath.Clean(p)
-	if appDataDir != "" {
-		base := filepath.Clean(appDataDir)
+	if expectedRoot != "" {
+		base := filepath.Clean(expectedRoot)
 		rel, err := filepath.Rel(base, p)
-		if err != nil || strings.HasPrefix(rel, "..") {
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
 			return ""
 		}
 	}
@@ -776,11 +829,39 @@ func parseStepTime(raw string) time.Time {
 	return time.Time{}
 }
 
-// readNewJSONLLines reads newly appended complete newline-terminated JSONL
-// lines from path starting at *offset, preserving any trailing partial line in
-// *remainder for the next poll.
-func readNewJSONLLines(path string, offset *int64, remainder *string) []string {
-	f, err := os.Open(path)
+// openContainedTranscript resolves symlinks on both expectedRoot and path and
+// refuses any file outside expectedRoot or any non-regular file.
+func openContainedTranscript(expectedRoot, path string) (*os.File, error) {
+	if strings.TrimSpace(expectedRoot) == "" || strings.TrimSpace(path) == "" {
+		return nil, os.ErrNotExist
+	}
+	rootReal, err := filepath.EvalSymlinks(expectedRoot)
+	if err != nil {
+		return nil, err
+	}
+	pathReal, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return nil, err
+	}
+	rel, err := filepath.Rel(rootReal, pathReal)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return nil, os.ErrPermission
+	}
+	info, err := os.Stat(pathReal)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, os.ErrPermission
+	}
+	return os.Open(pathReal)
+}
+
+// readNewJSONLLinesContained reads up to maxTranscriptReadChunkBytes of newly
+// appended complete newline-terminated JSONL lines from path (verified inside
+// expectedRoot via symlink resolution), keeping *remainder bounded.
+func readNewJSONLLinesContained(expectedRoot, path string, offset *int64, remainder *string) []string {
+	f, err := openContainedTranscript(expectedRoot, path)
 	if err != nil {
 		return nil
 	}
@@ -791,25 +872,30 @@ func readNewJSONLLines(path string, offset *int64, remainder *string) []string {
 			return nil
 		}
 	}
-	data, err := io.ReadAll(f)
-	if err != nil || len(data) == 0 {
+	buf := make([]byte, maxTranscriptReadChunkBytes)
+	n, err := f.Read(buf)
+	if n <= 0 || (err != nil && err != io.EOF) {
 		return nil
 	}
-	*offset += int64(len(data))
+	*offset += int64(n)
 
-	buf := *remainder + string(data)
+	chunk := *remainder + string(buf[:n])
 	var lines []string
 	for {
-		nl := strings.IndexByte(buf, '\n')
+		nl := strings.IndexByte(chunk, '\n')
 		if nl < 0 {
 			break
 		}
-		line := strings.TrimSpace(buf[:nl])
-		buf = buf[nl+1:]
-		if line != "" && bytes.HasPrefix([]byte(line), []byte("{")) {
+		line := strings.TrimSpace(chunk[:nl])
+		chunk = chunk[nl+1:]
+		if line != "" && len(line) <= maxTranscriptLineBytes && bytes.HasPrefix([]byte(line), []byte("{")) {
 			lines = append(lines, line)
 		}
 	}
-	*remainder = buf
+	if len(chunk) > maxTranscriptLineBytes {
+		// Drop oversized unterminated line fragment so memory stays bounded.
+		chunk = ""
+	}
+	*remainder = chunk
 	return lines
 }

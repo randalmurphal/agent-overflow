@@ -307,12 +307,12 @@ func TestWatchSubagentParallelAndResumedSession(t *testing.T) {
 	}
 }
 
-func TestWatchSubagentDiscoveryTimeoutSettles(t *testing.T) {
+func TestWatchSubagentDiscoveryTimeoutSettlesAsFailed(t *testing.T) {
 	flavor := NewFlavor(t.TempDir())
 	flavor.subagentPollInterval = 10 * time.Millisecond
 	flavor.subagentDiscoveryTimeout = 40 * time.Millisecond
 
-	var gotNotif bool
+	var gotStatus string
 	flavor.WatchSubagent(context.Background(), acp.SubagentLaunchContext{
 		SessionID:  "missing-session",
 		ThreadID:   "t1",
@@ -320,12 +320,58 @@ func TestWatchSubagentDiscoveryTimeoutSettles(t *testing.T) {
 		ToolCallID: "launch-timeout",
 		Emit: func(evt provider.ProviderEvent) {
 			if evt.Kind == provider.EventBackgroundTaskNotification && evt.ItemID == "launch-timeout" {
-				gotNotif = true
+				var m struct {
+					Status string `json:"status"`
+				}
+				_ = json.Unmarshal(evt.Meta, &m)
+				gotStatus = m.Status
 			}
 		},
 	})
-	if !gotNotif {
-		t.Fatal("expected fallback settlement notification on discovery timeout")
+	if gotStatus != "failed" {
+		t.Fatalf("discovery timeout status = %q, want failed", gotStatus)
+	}
+}
+
+func TestSubagentPathContainmentAndClaimRoleMismatch(t *testing.T) {
+	// Traversal conversationId is rejected outright.
+	if isSafeConversationID("../other-conv") || isSafeConversationID("a/b") || isSafeConversationID("") {
+		t.Fatal("expected unsafe conversation IDs to be rejected")
+	}
+	if convID, _ := parseCreatedSubagentResult(`{"conversationId":"../escape","logAbsoluteUri":"file:///etc/passwd"}`, t.TempDir()); convID != "" {
+		t.Fatalf("unsafe conversationId accepted: %q", convID)
+	}
+
+	// Symlink escaping child brain dir is refused by openContainedTranscript.
+	appDataDir := t.TempDir()
+	outsideFile := filepath.Join(t.TempDir(), "secret.jsonl")
+	if err := os.WriteFile(outsideFile, []byte(`{"step_index":1}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	childRoot := filepath.Join(appDataDir, "brain", "child-sym")
+	childLog := filepath.Join(childRoot, ".system_generated", "logs", "transcript.jsonl")
+	if err := os.MkdirAll(filepath.Dir(childLog), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outsideFile, childLog); err == nil {
+		var off int64
+		var rem string
+		if lines := readNewJSONLLinesContained(childRoot, childLog, &off, &rem); len(lines) != 0 {
+			t.Fatalf("symlink escape read lines: %v", lines)
+		}
+	}
+
+	// Parallel claim must not steal a child whose role conflicts with the caller's role.
+	coord := &parentSubagentCoordinator{
+		discovered: []*discoveredSubagent{
+			{conversationID: "child-alpha", role: "Alpha", typeName: "research"},
+		},
+	}
+	if stolen := coord.claim("Beta", "research", "Task B"); stolen != nil {
+		t.Fatalf("watcher Beta stole child with conflicting role Alpha: %+v", stolen)
+	}
+	if matched := coord.claim("Alpha", "research", "Task A"); matched == nil || matched.conversationID != "child-alpha" {
+		t.Fatalf("watcher Alpha did not claim its own child: %+v", matched)
 	}
 }
 

@@ -390,6 +390,31 @@ func TestAgyQuotaBucketPolicyAndAutoSwitch(t *testing.T) {
 	if dGemini.to.ID != "" {
 		t.Fatalf("agy gemini-4-neon unexpectedly switched to %q when only 3p-5h was exhausted", dGemini.to.ID)
 	}
+
+	// Reverse direction: exhausted gemini-5h must switch gemini-4-neon, NOT 3p claude/gpt threads.
+	dGeminiExhausted := decide(decideInput{
+		provider: "agy", selectedID: "a",
+		accounts: []candidate{
+			cand("a", gemini5h(100, at(2*time.Hour)), thirdParty5h(10, at(3*time.Hour))),
+			cand("b", gemini5h(10, at(2*time.Hour)), thirdParty5h(10, at(3*time.Hour))),
+		},
+		demand: buildDemand("agy", []string{"gemini-4-neon"}), strategy: StrategySoonestReset, threshold: 95, now: testNow,
+	})
+	if dGeminiExhausted.to.ID != "b" {
+		t.Fatalf("agy gemini-4-neon target = %q, want b when gemini-5h exhausted", dGeminiExhausted.to.ID)
+	}
+	dClaudeUnaffected := decide(decideInput{
+		provider: "agy", selectedID: "a",
+		accounts: []candidate{
+			cand("a", gemini5h(100, at(2*time.Hour)), thirdParty5h(10, at(3*time.Hour))),
+			cand("b", gemini5h(10, at(2*time.Hour)), thirdParty5h(10, at(3*time.Hour))),
+		},
+		demand: buildDemand("agy", []string{"claude-sonnet-4-6"}), strategy: StrategySoonestReset, threshold: 95, now: testNow,
+	})
+	if dClaudeUnaffected.to.ID != "" {
+		t.Fatalf("agy claude-sonnet-4-6 unexpectedly switched to %q when only gemini-5h was exhausted", dClaudeUnaffected.to.ID)
+	}
+
 	if got := providerTitle("agy"); got != "Antigravity" {
 		t.Fatalf("providerTitle(agy) = %q, want Antigravity", got)
 	}

@@ -161,9 +161,10 @@ type Conn struct {
 	agentInfo   AgentInfo
 	authMethods []AuthMethod
 
-	nextID    atomic.Int64
-	pendingMu sync.Mutex
-	pending   map[int64]chan json.RawMessage
+	nextID             atomic.Int64
+	pendingMu          sync.Mutex
+	pending            map[int64]chan json.RawMessage
+	pendingSessionOpen map[int64]*Session
 
 	routesMu sync.Mutex
 	sessions map[string]*Session
@@ -223,18 +224,19 @@ func Dial(ctx context.Context, cfg ConnConfig) (*Conn, error) {
 	}
 
 	c := &Conn{
-		proc:            proc,
-		cancel:          cancel,
-		binary:          binary,
-		providerName:    providerName,
-		flavor:          flavor,
-		requestTimeout:  timeout,
-		fsHandler:       cfg.FSHandler,
-		terminalHandler: cfg.TerminalHandler,
-		pending:         make(map[int64]chan json.RawMessage),
-		sessions:        make(map[string]*Session),
-		replays:         make(map[string]*replayCapture),
-		done:            make(chan struct{}),
+		proc:               proc,
+		cancel:             cancel,
+		binary:             binary,
+		providerName:       providerName,
+		flavor:             flavor,
+		requestTimeout:     timeout,
+		fsHandler:          cfg.FSHandler,
+		terminalHandler:    cfg.TerminalHandler,
+		pending:            make(map[int64]chan json.RawMessage),
+		pendingSessionOpen: make(map[int64]*Session),
+		sessions:           make(map[string]*Session),
+		replays:            make(map[string]*replayCapture),
+		done:               make(chan struct{}),
 	}
 
 	go c.readLoop()
@@ -490,10 +492,26 @@ func (c *Conn) sendRequest(ctx context.Context, method string, params any) (json
 	return wait(ctx)
 }
 
+// sendSessionNewRequest sends `session/new` and registers sess on Conn's
+// reader goroutine synchronously as soon as the response carries sessionId,
+// preventing immediate post-open notifications (such as
+// available_commands_update) from being dropped before open() returns.
+func (c *Conn) sendSessionNewRequest(ctx context.Context, params SessionNewParams, sess *Session) (json.RawMessage, error) {
+	wait, err := c.startRequestWithSessionOpen("session/new", params, c.requestTimeout, sess)
+	if err != nil {
+		return nil, err
+	}
+	return wait(ctx)
+}
+
 // startRequestWithTimeout writes a JSON-RPC request and returns a wait function.
 // A timeout <= 0 waits indefinitely until ctx cancels, the response arrives, or
 // the connection closes (used for long-running session/prompt RPCs).
 func (c *Conn) startRequestWithTimeout(method string, params any, timeout time.Duration) (func(context.Context) (json.RawMessage, error), error) {
+	return c.startRequestWithSessionOpen(method, params, timeout, nil)
+}
+
+func (c *Conn) startRequestWithSessionOpen(method string, params any, timeout time.Duration, openSess *Session) (func(context.Context) (json.RawMessage, error), error) {
 	id := c.nextID.Add(1)
 	ch := make(chan json.RawMessage, 1)
 
@@ -503,11 +521,15 @@ func (c *Conn) startRequestWithTimeout(method string, params any, timeout time.D
 		return nil, fmt.Errorf("acp: %s: connection closed", method)
 	}
 	c.pending[id] = ch
+	if openSess != nil {
+		c.pendingSessionOpen[id] = openSess
+	}
 	c.pendingMu.Unlock()
 
 	abandon := func() {
 		c.pendingMu.Lock()
 		delete(c.pending, id)
+		delete(c.pendingSessionOpen, id)
 		c.pendingMu.Unlock()
 		select {
 		case <-ch:
@@ -733,7 +755,24 @@ func (c *Conn) dispatchLine(line []byte) {
 		}
 		c.pendingMu.Lock()
 		ch, ok := c.pending[numericID]
+		openSess := c.pendingSessionOpen[numericID]
+		delete(c.pendingSessionOpen, numericID)
 		c.pendingMu.Unlock()
+		if openSess != nil {
+			var openResp struct {
+				Result *struct {
+					SessionID string `json:"sessionId"`
+				} `json:"result"`
+			}
+			if json.Unmarshal(line, &openResp) == nil && openResp.Result != nil && openResp.Result.SessionID != "" {
+				openSess.mu.Lock()
+				if openSess.sessionID == "" {
+					openSess.sessionID = openResp.Result.SessionID
+				}
+				openSess.mu.Unlock()
+				c.registerSession(openResp.Result.SessionID, openSess)
+			}
+		}
 		if ok {
 			select {
 			case ch <- append(json.RawMessage(nil), line...):
