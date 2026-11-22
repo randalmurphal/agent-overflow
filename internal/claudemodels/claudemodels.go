@@ -839,11 +839,10 @@ func (c *Catalog) evictOldestLocked() {
 // picker: learned models are claims about the binary (see DropBinary), and
 // the new identity's own probe replaces the borrowed answer when it lands.
 //
-// enriched reports that the answer came from a stored entry — this identity's
-// own or the same binary's newest — rather than the shipped catalog. It is the
-// provenance a caller needs to tell "no probe has reported yet" from "this is
-// what the binary says", and it is false for a provider this catalog does not
-// serve.
+// The Backing says what the answer stands on, which is what a caller
+// needs to tell "no probe has reported yet" from "this is what the binary
+// says" from "this is what this identity's CLI says". It is
+// BackedByShipped for a provider this catalog does not serve.
 //
 // providerName must be a provider whose ModelCatalog is
 // provider.ClaudeProbeEnrichedCatalog (claude, claude-tui). Anything else
@@ -852,20 +851,22 @@ func (c *Catalog) evictOldestLocked() {
 func (c *Catalog) ModelsFor(
 	key provider.ProbeCacheKey,
 	providerName string,
-) (models []provider.ModelInfo, enriched bool) {
+) (models []provider.ModelInfo, backing Backing) {
 	if provider.CapabilitiesForProvider(providerName).ModelCatalog != provider.ClaudeProbeEnrichedCatalog {
-		return nil, false
+		return nil, BackedByShipped
 	}
 
 	c.mu.Lock()
 	source := c.base
 	var wire []claude.WireModel
 	entry, ok := c.entries[key.String()]
+	found := BackedByIdentity
 	if !ok {
 		entry, ok = c.newestForBinaryLocked(key.Binary)
+		found = BackedBySameBinary
 	}
 	if ok && len(entry.wire) > 0 {
-		source, wire, enriched = entry.models, entry.wire, true
+		source, wire, backing = entry.models, entry.wire, found
 	}
 	models = provider.CloneModels(source)
 	c.mu.Unlock()
@@ -873,8 +874,28 @@ func (c *Catalog) ModelsFor(
 	for i := range models {
 		models[i].Provider = providerName
 	}
-	return markListed(models, wire), enriched
+	return markListed(models, wire), backing
 }
+
+// Backing is what a ModelsFor answer stands on.
+type Backing uint8
+
+const (
+	// BackedByShipped is the shipped catalog: no probe of this binary has
+	// reported a model list.
+	BackedByShipped Backing = iota
+	// BackedBySameBinary is the newest list another identity on the same
+	// binary reported, served while this identity has none of its own, so
+	// an account switch does not demote the picker.
+	BackedBySameBinary
+	// BackedByIdentity is this identity's own list: reported by its live
+	// probe, or restored (Seed) from its saved record.
+	BackedByIdentity
+)
+
+// Enriched reports that a probe's list backs the answer, this identity's
+// or the same binary's, rather than the shipped catalog.
+func (b Backing) Enriched() bool { return b != BackedByShipped }
 
 // markListed orders models as the CLI listed them and marks the rest
 // Unlisted, keeping them after the listed ones for capability lookup. The

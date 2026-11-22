@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/claudecatalog"
+	"agent-overflow/internal/claudemodels"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/settings"
@@ -183,22 +184,24 @@ func (a *App) textGenerationDefaultModel(ctx context.Context, providerName strin
 	return catalog.Models[index], nil
 }
 
-// awaitClaudeModels is Claude's catalog once its CLI has reported its
-// models, live or restored from the account's saved record. Until then
-// the list is the shipped one, which names models the CLI may not run, so
-// it waits for the report (claudecatalog.ModelsReported) as long as the
-// probe that makes it may take (claude.DefaultProbeTimeout), and past that
-// fails saying Claude has not reported. ctx and the app's shutdown end
-// the wait.
+// awaitClaudeModels is Claude's catalog once the CLI of the account in use
+// has reported its models, live or restored from that account's saved
+// record (claudemodels.BackedByIdentity). Until then the list is the
+// shipped one, which names models the CLI may not run, or the one another
+// account on the binary reported, which this account may not run. So it
+// waits for the report (claudecatalog.ModelsReported) as long as the probe
+// that makes it may take (claude.DefaultProbeTimeout), and past that fails
+// saying Claude has not reported. ctx and the app's shutdown end the wait.
 func (a *App) awaitClaudeModels(ctx context.Context) (provider.ModelCatalog, error) {
 	bound := cmp.Or(a.claudeModelsWaitForTest, claude.DefaultProbeTimeout)
 	timer := time.NewTimer(bound)
 	defer timer.Stop()
 	for {
 		reported := claudecatalog.ModelsReported()
-		catalog, err := a.modelCatalog(string(provider.Claude))
-		if err != nil || catalog.Provenance == provider.CatalogProbed {
-			return catalog, err
+		catalog, backing := a.providerDiscoveryService().ClaudeAccountCatalog(string(provider.Claude))
+		if backing == claudemodels.BackedByIdentity {
+			a.unreadableModels.report(string(provider.Claude), catalog.Models)
+			return catalog, nil
 		}
 		select {
 		case <-reported:

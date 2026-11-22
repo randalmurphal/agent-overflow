@@ -132,8 +132,9 @@ func ModelAliases(key provider.ProbeCacheKey) map[string]string {
 }
 
 // Models returns the picker catalog for one Claude-family provider, and
-// whether a probe answer backs it. A false enriched is the shipped list.
-func Models(key provider.ProbeCacheKey, providerName string) (models []provider.ModelInfo, enriched bool) {
+// what backs it: the shipped list, the same binary's newest report, or
+// this identity's own (claudemodels.Backing).
+func Models(key provider.ProbeCacheKey, providerName string) (models []provider.ModelInfo, backing claudemodels.Backing) {
 	return modelCatalog().ModelsFor(key, providerName)
 }
 

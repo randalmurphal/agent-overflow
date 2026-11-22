@@ -36,9 +36,13 @@ proves the record still describes the binary behind the key. The application
 layer persists an export per account (`internal/provideraccounts`) and seeds at
 boot while the binary identity is unchanged.
 
-`ModelsFor` reports whether the answer came from an entry. That flag is the
-catalog's provenance, not a quality claim: absence from an entry-backed answer
-still carries no information about a model.
+`ModelsFor` reports what backs the answer (`Backing`): the shipped list, the
+same binary's newest entry, or the identity's own. The picker treats either
+entry as probed; a caller that must act on what the account in use reports,
+such as text generation's choice of model or a saved fast-mode setting, waits
+for `BackedByIdentity`. The backing is provenance, not a quality claim:
+absence from an entry-backed answer still carries no information about a
+model.
 
 Never promote an unavailable effort default to a costlier tier.
 `SupportsAutoMode` remains `*bool`; nil means unknown, and consumers restrict

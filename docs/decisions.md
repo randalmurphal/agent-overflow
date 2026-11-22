@@ -616,8 +616,9 @@ Mechanism in
   provider; a slug the computer offers as written is that model (ruling
   2026-11-21). The seeded profiles name families, and text generation
   with no model set runs the newest of its default family (`claude-haiku`,
-  `gpt-luna`) the computer lists. On Claude that list is the CLI's report,
-  live or restored for the account: text generation waits for it as long
+  `gpt-luna`) the computer lists. On Claude that list is the CLI's report
+  for the account in use, live or restored for it; the list another account
+  on the binary reported does not count. Text generation waits for it as long
   as the account probe that makes it may take (`claude.DefaultProbeTimeout`),
   then fails saying Claude has not reported its models, and the other
   provider is tried.

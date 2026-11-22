@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"agent-overflow/internal/claudecatalog"
+	"agent-overflow/internal/claudemodels"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/providerstatus"
@@ -90,14 +91,24 @@ func (s *Service) ClaudeModels(providerName string) []provider.ModelInfo {
 
 // ClaudeCatalog is ClaudeModels plus its provenance: CatalogProbed once a
 // probe of this binary has reported (live or restored at boot from the
-// account's persisted record), CatalogShipped until then.
+// account's persisted record), CatalogShipped until then. A list another
+// account on the binary reported counts as probed, so the picker keeps it
+// across an account switch; ClaudeAccountCatalog tells the two apart.
 func (s *Service) ClaudeCatalog(providerName string) provider.ModelCatalog {
-	models, enriched := claudecatalog.Models(s.ClaudeProbeKey(), providerName)
+	catalog, _ := s.ClaudeAccountCatalog(providerName)
+	return catalog
+}
+
+// ClaudeAccountCatalog is ClaudeCatalog and what backs it, so a caller
+// that must run on what the current account's CLI lists can wait for
+// claudemodels.BackedByIdentity.
+func (s *Service) ClaudeAccountCatalog(providerName string) (provider.ModelCatalog, claudemodels.Backing) {
+	models, backing := claudecatalog.Models(s.ClaudeProbeKey(), providerName)
 	provenance := provider.CatalogShipped
-	if enriched {
+	if backing.Enriched() {
 		provenance = provider.CatalogProbed
 	}
-	return provider.ModelCatalog{Models: models, Provenance: provenance}
+	return provider.ModelCatalog{Models: models, Provenance: provenance}, backing
 }
 
 // ClaudeModelAliases returns the current Claude identity's probe-reported

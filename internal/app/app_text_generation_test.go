@@ -168,6 +168,49 @@ func TestATitleRequestedBeforeClaudeReportsRunsTheNewestReportedHaiku(t *testing
 	}
 }
 
+// After an account switch, a title waits for the report of the account now
+// in use: the list another account on the same binary reported serves the
+// picker until then, but it is not what this account's CLI lists. Not
+// parallel: the Claude catalog is process-wide.
+func TestATitleAfterAnAccountSwitchWaitsForThatAccountsReport(t *testing.T) {
+	app, ran := claudeTitleApp(t, time.Minute)
+	other := app.claudeProbeModelKey()
+	other.AccountID += "-before-the-switch"
+	before := claudecatalog.ModelCapture{}
+	before.Capture([]claude.WireModel{{Value: "haiku", ResolvedModel: "claude-haiku-5-5"}}, nil)
+	before.Store(other)
+	if got := app.providerDiscoveryService().ClaudeCatalog(string(provider.Claude)).Provenance; got != provider.CatalogProbed {
+		t.Fatalf("the picker's provenance is %q under the other account's list, want probed", got)
+	}
+
+	thread := testThread("title-after-switch")
+	thread.WorkspacePath = t.TempDir()
+	type answer struct {
+		title string
+		err   error
+	}
+	done := make(chan answer, 1)
+	go func() {
+		title, err := app.generateThreadTitlePrompt(thread, threadtitle.BuildPrompt("Fix the report wait.", nil), nil)
+		done <- answer{title, err}
+	}()
+	select {
+	case got := <-done:
+		t.Fatalf("the title ran on the other account's list: %+v, runs %v", got, ran())
+	case <-time.After(200 * time.Millisecond):
+	}
+	own := claudecatalog.ModelCapture{}
+	own.Capture([]claude.WireModel{{Value: "haiku", ResolvedModel: "claude-haiku-6"}}, nil)
+	own.Store(app.claudeProbeModelKey())
+	got := <-done
+	if got.err != nil || got.title != "From Claude" {
+		t.Fatalf("title = %q, %v", got.title, got.err)
+	}
+	if runs := ran(); !slices.Equal(runs, []string{"claude/claude-haiku-6"}) {
+		t.Fatalf("runs %v, want one on claude-haiku-6, the Haiku this account lists", runs)
+	}
+}
+
 // Past the probe's bound with no report, the Claude attempt fails saying
 // Claude has not reported its models, and Codex is tried. Not parallel:
 // the Claude catalog is process-wide.
