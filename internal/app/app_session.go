@@ -684,15 +684,26 @@ func (a *App) spawnProviderSession(
 		sess, err := conn.OpenPooled(a.lifeCtx(), threadID, cfg, onEvent, releaseConn)
 		if err != nil && errors.Is(err, codex.ErrThreadUnloadFailed) {
 			// The shared app-server could not unload the prior loaded thread;
-			// fall back to a dedicated process so changed sandbox/config
-			// overrides take effect cleanly.
+			// dial a dedicated process and verify the account identity BEFORE
+			// opening/resuming the thread so changed overrides take effect
+			// cleanly and no turn can start under a mismatched account.
 			log.Printf("codex: shared conn unload failed for %s (%v); spawning dedicated app-server", threadID, err)
 			poolKey = ""
 			conn = nil
-			sess, err = codex.NewSession(a.lifeCtx(), threadID, cfg, onEvent)
-			if err == nil && accountSelection.AccountID != "" {
+			dedicatedConn, dialErr := codex.Dial(a.lifeCtx(), codex.ConnConfig{
+				Binary:      cfg.Binary,
+				WorkDir:     cfg.WorkDir,
+				Env:         cfg.Env,
+				EventLogger: cfg.EventLogger,
+				Reaper:      cfg.Reaper,
+				ThreadID:    threadID,
+			})
+			if dialErr != nil {
+				return session{}, dialErr
+			}
+			if accountSelection.AccountID != "" {
 				accountCtx, cancelAccountRead := context.WithTimeout(a.lifeCtx(), codexAccountReadTimeout)
-				accountInfo, accountErr := sess.AccountInfo(accountCtx)
+				accountInfo, accountErr := dedicatedConn.AccountInfo(accountCtx)
 				cancelAccountRead()
 				if accountErr == nil {
 					var observedAccountID string
@@ -718,17 +729,21 @@ func (a *App) spawnProviderSession(
 					}
 				}
 				if accountErr != nil {
-					err = errors.Join(accountErr, sess.Close())
-					sess = nil
+					return session{}, errors.Join(accountErr, dedicatedConn.Close())
 				}
 			}
-			if err == nil {
-				sess.SetSkillsChangedHandler(func() {
-					a.handleCodexSkillsChanged()
-				})
-				sess.SetMCPStartupUpdateHandler(func(u codex.MCPStartupUpdate) {
-					a.handleCodexMCPStartupUpdate(u)
-				})
+			dedicatedConn.SetSkillsChangedHandler(func() {
+				a.handleCodexSkillsChanged()
+			})
+			dedicatedConn.SetMCPStartupUpdateHandler(func(u codex.MCPStartupUpdate) {
+				a.handleCodexMCPStartupUpdate(u)
+			})
+			dedicatedConn.SetMCPOAuthCompletedHandler(func(_ string, serverName string, success bool, errMsg string) {
+				a.handleCodexMCPOAuthCompleted("", serverName, success, errMsg)
+			})
+			sess, err = dedicatedConn.OpenOwned(a.lifeCtx(), threadID, cfg, onEvent)
+			if err != nil {
+				return session{}, errors.Join(err, dedicatedConn.Close())
 			}
 		}
 		if err != nil {

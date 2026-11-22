@@ -285,6 +285,13 @@ func (c *Conn) OpenPooled(ctx context.Context, threadID string, cfg Config, onEv
 	return c.open(ctx, threadID, cfg, onEvent, false, releaseConn)
 }
 
+// OpenOwned attaches a Session that owns this dedicated Conn (closing the
+// Session closes the underlying app-server process). Used when callers need to
+// run pre-open connection checks such as AccountInfo before thread/resume.
+func (c *Conn) OpenOwned(ctx context.Context, threadID string, cfg Config, onEvent func(provider.ProviderEvent)) (*Session, error) {
+	return c.open(ctx, threadID, cfg, onEvent, true, nil)
+}
+
 func (c *Conn) open(
 	ctx context.Context,
 	threadID string,
@@ -714,17 +721,23 @@ func (c *Conn) unsubscribeAndWait(ctx context.Context, providerThreadID string) 
 	}
 }
 
-func (c *Conn) registerChildRoute(childThreadID string, s *Session) []deferredChildWireEvent {
+func (c *Conn) registerChildRoute(childThreadID string, s *Session) bool {
 	childThreadID = strings.TrimSpace(childThreadID)
 	if c == nil || childThreadID == "" || s == nil {
-		return nil
+		return false
 	}
+	var hasHeld bool
 	c.routesMu.Lock()
 	c.byThread[childThreadID] = s
 	c.loaded[childThreadID] = struct{}{}
-	held := c.takeDeferredChildLocked(childThreadID)
+	if held := c.takeDeferredChildLocked(childThreadID); len(held) > 0 {
+		// Enqueue BEFORE releasing routesMu so any subsequent frame routed to s
+		// on the reader goroutine drains these quarantined frames first in FIFO order.
+		s.enqueueEarlyFrames(held)
+		hasHeld = true
+	}
 	c.routesMu.Unlock()
-	return held
+	return hasHeld
 }
 
 func (c *Conn) takeDeferredChildLocked(childThreadID string) []deferredChildWireEvent {

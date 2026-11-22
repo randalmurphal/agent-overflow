@@ -155,24 +155,15 @@ func (s securityAgyKeychain) write(configHome string, active bool, data []byte) 
 		strconv.Quote(agyKeychainService),
 		strconv.Quote(string(encoded)),
 	)
-	var cmd *exec.Cmd
-	var cmdErr error
-	if len(command) <= securityInteractiveLineLimit {
-		cmd, cmdErr = securityCommand("-i")
-		if cmdErr != nil {
-			return cmdErr
-		}
-		cmd.Stdin = strings.NewReader(command)
-	} else {
-		hexValue := hex.EncodeToString(encoded)
-		cmd, cmdErr = securityCommand(
-			"add-generic-password", "-U",
-			"-a", agyKeychainAccount, "-s", agyKeychainService, "-X", hexValue,
-		)
-		if cmdErr != nil {
-			return cmdErr
-		}
+	if len(command) > securityInteractiveLineLimit {
+		// Never expose OAuth refresh tokens on process argv (KERN_PROCARGS2).
+		return fmt.Errorf("provideraccounts: Antigravity Keychain credential (%d bytes encoded) exceeds security -i stdin limit", len(command))
 	}
+	cmd, cmdErr := securityCommand("-i")
+	if cmdErr != nil {
+		return cmdErr
+	}
+	cmd.Stdin = strings.NewReader(command)
 	if err := cmd.Run(); err != nil {
 		return errors.New("provideraccounts: update Antigravity Keychain credential")
 	}

@@ -1248,6 +1248,15 @@ for raw in sys.stdin:
         text = prompt[0].get("text", "") if prompt else ""
         if text == "REJECT_ME":
             print(json.dumps({"jsonrpc":"2.0","id":mid,"error":{"code":-32602,"message":"prompt rejected"}}), flush=True)
+        elif text == "OVERLAP_SLOW":
+            # Emit an update while steered prompt B may already be in flight, then wait for B and reject B before finishing A.
+            print(json.dumps({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":sid,"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"slow-a-1"}}}}), flush=True)
+            b_line = sys.stdin.readline().strip()
+            b_msg = json.loads(b_line)
+            b_id = b_msg.get("id")
+            print(json.dumps({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":sid,"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"slow-a-2"}}}}), flush=True)
+            print(json.dumps({"jsonrpc":"2.0","id":mid,"result":{"stopReason":"end_turn"}}), flush=True)
+            print(json.dumps({"jsonrpc":"2.0","id":b_id,"error":{"code":-32602,"message":"steered b rejected"}}), flush=True)
         elif text == "CANCEL_ME":
             print(json.dumps({"jsonrpc":"2.0","id":99,"method":"session/request_permission","params":{"sessionId":sid,"toolCall":{"toolCallId":"tc-cancel","name":"run_command","kind":"execute"},"options":[{"optionId":"allow_1","kind":"allow_once","name":"Allow"},{"optionId":"deny_1","kind":"reject_once","name":"Reject"}]}}), flush=True)
             resp_line = sys.stdin.readline().strip()
@@ -1327,6 +1336,46 @@ for raw in sys.stdin:
 		if e.Kind == provider.EventUserText {
 			t.Fatalf("rejected prompt falsely emitted EventUserText confirmation: %+v", e)
 		}
+	}
+
+	// 1b-2. Overlapping prompt A updates and A's completion MUST NOT falsely
+	// confirm a steered prompt B whose own RPC is rejected.
+	beforeOverlapCount := len(ev.all())
+	if err := sess.Send(context.Background(), "OVERLAP_SLOW", provider.SendOptions{UserMessageUUID: "send-uuid-a"}); err != nil {
+		t.Fatalf("Send OVERLAP_SLOW: %v", err)
+	}
+	if err := sess.Send(context.Background(), "STEER_B_REJECT", provider.SendOptions{UserMessageUUID: "send-uuid-b-rejected"}); err != nil {
+		t.Fatalf("Send STEER_B_REJECT: %v", err)
+	}
+	ev.waitFor(t, 5*time.Second, func(e provider.ProviderEvent) bool {
+		return e.Kind == provider.EventError && strings.Contains(e.Content, "steered b rejected")
+	})
+	// Wait for the logical turn to settle so subsequent sub-checks start cleanly.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		settled := false
+		for _, after := range ev.all()[beforeOverlapCount:] {
+			if after.Kind == provider.EventTurnComplete {
+				settled = true
+				break
+			}
+		}
+		if settled {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	var confirmedA bool
+	for _, e := range ev.all()[beforeOverlapCount:] {
+		if e.Kind == provider.EventUserText && strings.Contains(string(e.Meta), "send-uuid-a") {
+			confirmedA = true
+		}
+		if e.Kind == provider.EventUserText && strings.Contains(string(e.Meta), "send-uuid-b-rejected") {
+			t.Fatalf("overlapping prompt A falsely confirmed rejected steered prompt B: %+v", e)
+		}
+	}
+	if !confirmedA {
+		t.Fatalf("expected prompt A (send-uuid-a) to still be confirmed")
 	}
 
 	// 1c. ReplayLoad on an active sessionId on the same Conn must return ErrSessionBusy.

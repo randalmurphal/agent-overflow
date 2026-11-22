@@ -635,21 +635,21 @@ func promptsCompatible(wantPrompt, gotPrompt string) bool {
 func (c *parentSubagentCoordinator) claim(wantRole, wantType, wantPrompt string) *discoveredSubagent {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	// Exact match on role + typeName + prompt.
+	// Pass 1: exact match on role + typeName + exact prompt (never let a
+	// shorter prompt prefix overtake a later exact match).
 	for _, d := range c.discovered {
 		if d.claimed {
 			continue
 		}
 		if wantRole != "" && d.role == wantRole &&
 			(wantType == "" || d.typeName == wantType) &&
-			(wantPrompt == "" || d.prompt == wantPrompt || strings.HasPrefix(wantPrompt, d.prompt)) {
+			wantPrompt != "" && d.prompt == wantPrompt {
 			d.claimed = true
 			return d
 		}
 	}
-	// Match on role + typeName when prompts do not conflict (e.g. one side
-	// omitted or compacted its prompt, never when two parallel same-role
-	// launches carry distinct prompts).
+	// Pass 2: match on role + typeName with compatible prompt (prefix/compacted
+	// or one side omitted), never when prompts disagree.
 	for _, d := range c.discovered {
 		if d.claimed {
 			continue
@@ -661,8 +661,8 @@ func (c *parentSubagentCoordinator) claim(wantRole, wantType, wantPrompt string)
 			return d
 		}
 	}
-	// Positional fallback ONLY when the discovered entry carries no metadata at
-	// all, preventing early pollers from stealing a sibling launch's transcript.
+	// Pass 3: positional fallback ONLY when the discovered entry carries no
+	// metadata at all, preventing early pollers from stealing a sibling launch.
 	for _, d := range c.discovered {
 		if d.claimed {
 			continue
@@ -712,6 +712,11 @@ func parseInvokeSubagentInput(raw json.RawMessage) (role, typeName, prompt strin
 
 func parseCreatedSubagentResult(content, appDataDir string) (conversationID, logPath string) {
 	if !strings.Contains(content, "conversationId") {
+		return "", ""
+	}
+	hasSubagentSignal := strings.Contains(content, "logAbsoluteUri") ||
+		strings.Contains(strings.ToLower(content), "subagent")
+	if !hasSubagentSignal {
 		return "", ""
 	}
 	start := strings.IndexByte(content, '{')
@@ -870,9 +875,10 @@ func parseStepTime(raw string) time.Time {
 	return time.Time{}
 }
 
-// openContainedTranscript verifies that sessionID's directory stays inside the
-// resolved brainDir (rejecting symlinked brain/<id> escapes) and opens the
-// transcript through os.OpenRoot for kernel-enforced, symlink-safe containment.
+// openContainedTranscript traverses brainDir -> sessionID -> relFile strictly
+// through nested os.OpenRoot handles (kernel-enforced symlink containment with
+// no directory-replacement TOCTOU) and calls Lstat before Open so a Unix FIFO
+// or device node can never block open(2) during session cancellation.
 func openContainedTranscript(brainDir, sessionID, path string) (*os.File, error) {
 	if strings.TrimSpace(brainDir) == "" || !isSafeConversationID(sessionID) || strings.TrimSpace(path) == "" {
 		return nil, os.ErrNotExist
@@ -881,29 +887,41 @@ func openContainedTranscript(brainDir, sessionID, path string) (*os.File, error)
 	if err != nil {
 		return nil, err
 	}
-	sessionDir := filepath.Join(brainReal, sessionID)
-	sessionReal, err := filepath.EvalSymlinks(sessionDir)
+	brainRoot, err := os.OpenRoot(brainReal)
 	if err != nil {
 		return nil, err
 	}
-	relSession, err := filepath.Rel(brainReal, sessionReal)
-	if err != nil || relSession == ".." || strings.HasPrefix(relSession, ".."+string(os.PathSeparator)) || relSession != sessionID {
+	defer func() { _ = brainRoot.Close() }()
+
+	// Open sessionID directly from brainRoot so a symlinked brain/<id> cannot
+	// escape or be swapped between validation and open.
+	sessionRoot, err := brainRoot.OpenRoot(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = sessionRoot.Close() }()
+
+	expectedSessionDir := filepath.Join(brainDir, sessionID)
+	relFile, err := filepath.Rel(expectedSessionDir, path)
+	if err != nil || relFile == "" || relFile == "." || relFile == ".." || strings.HasPrefix(relFile, ".."+string(os.PathSeparator)) {
+		// Fall back to resolving against brainReal in case brainDir had a
+		// symlink ancestor (e.g. macOS /var -> /private/var).
+		if relReal, relErr := filepath.Rel(filepath.Join(brainReal, sessionID), path); relErr == nil &&
+			relReal != "" && relReal != "." && relReal != ".." && !strings.HasPrefix(relReal, ".."+string(os.PathSeparator)) {
+			relFile = relReal
+		} else {
+			return nil, os.ErrPermission
+		}
+	}
+	// Check Lstat BEFORE Open so opening a FIFO cannot hang cancellation.
+	linfo, err := sessionRoot.Lstat(relFile)
+	if err != nil {
+		return nil, err
+	}
+	if !linfo.Mode().IsRegular() {
 		return nil, os.ErrPermission
 	}
-	pathReal, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		return nil, err
-	}
-	relFile, err := filepath.Rel(sessionReal, pathReal)
-	if err != nil || relFile == ".." || strings.HasPrefix(relFile, ".."+string(os.PathSeparator)) {
-		return nil, os.ErrPermission
-	}
-	root, err := os.OpenRoot(sessionReal)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = root.Close() }()
-	f, err := root.Open(relFile)
+	f, err := sessionRoot.Open(relFile)
 	if err != nil {
 		return nil, err
 	}

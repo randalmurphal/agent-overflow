@@ -76,8 +76,26 @@ type replayCapture struct {
 }
 
 func estimateSessionUpdateBytes(u SessionUpdate) int64 {
-	n := int64(len(u.SessionUpdate)+len(u.ToolCallID)+len(u.Title)+len(u.Name)+len(u.Kind)+len(u.Status)+len(u.CurrentModeID)) +
-		int64(len(u.Content)+len(u.RawInput)+len(u.RawOutput)+len(u.Meta)) + 128
+	n := int64(len(u.SessionUpdate)+len(u.ToolCallID)+len(u.Title)+len(u.Name)+len(u.Kind)+len(u.Status)+len(u.CurrentModeID)+len(u.UpdatedAt)) +
+		int64(len(u.Content)+len(u.Args)+len(u.RawInput)+len(u.RawOutput)+len(u.Meta)) + 128
+	for _, loc := range u.Locations {
+		n += int64(len(loc.Path)) + 16
+	}
+	for _, e := range u.Entries {
+		n += int64(len(e.Content)+len(e.Priority)+len(e.Status)) + 32
+	}
+	for _, cmd := range u.AvailableCommands {
+		n += int64(len(cmd.Name)+len(cmd.Description)) + 32
+		if cmd.Input != nil {
+			n += int64(len(cmd.Input.Hint)) + 16
+		}
+	}
+	for _, opt := range u.ConfigOptions {
+		n += int64(len(opt.ID)+len(opt.Name)+len(opt.Description)+len(opt.Category)+len(opt.Type)+len(opt.CurrentValue)) + 64
+		for _, ch := range opt.Options {
+			n += int64(len(ch.Value)+len(ch.Name)+len(ch.Description)) + 32
+		}
+	}
 	return n
 }
 
@@ -164,6 +182,12 @@ func (u *UpdateCapture) Stop() []SessionUpdate {
 	return out
 }
 
+type pendingOpenEntry struct {
+	mu        sync.Mutex
+	sess      *Session
+	abandoned bool
+}
+
 // Conn hosts one multiplexed ACP server subprocess and demultiplexes many
 // Session conversations by sessionId. Implements provider.Connection.
 type Conn struct {
@@ -183,7 +207,7 @@ type Conn struct {
 	nextID             atomic.Int64
 	pendingMu          sync.Mutex
 	pending            map[int64]chan json.RawMessage
-	pendingSessionOpen map[int64]*Session
+	pendingSessionOpen map[int64]*pendingOpenEntry
 
 	routesMu sync.Mutex
 	sessions map[string]*Session
@@ -252,7 +276,7 @@ func Dial(ctx context.Context, cfg ConnConfig) (*Conn, error) {
 		fsHandler:          cfg.FSHandler,
 		terminalHandler:    cfg.TerminalHandler,
 		pending:            make(map[int64]chan json.RawMessage),
-		pendingSessionOpen: make(map[int64]*Session),
+		pendingSessionOpen: make(map[int64]*pendingOpenEntry),
 		sessions:           make(map[string]*Session),
 		replays:            make(map[string]*replayCapture),
 		done:               make(chan struct{}),
@@ -397,18 +421,19 @@ func (c *Conn) ReplayLoad(ctx context.Context, params SessionLoadParams, maxUpda
 
 	loadSucceeded := false
 	defer func() {
-		c.routesMu.Lock()
-		owned := c.replays[params.SessionID] == cap
-		if owned {
-			delete(c.replays, params.SessionID)
-		}
-		liveOwner := c.sessions[params.SessionID] != nil
-		c.routesMu.Unlock()
-		if owned && loadSucceeded && !liveOwner {
+		// Close the replayed session BEFORE releasing c.replays[sessionID] so
+		// no concurrent resume or second replay can enter the close gap and
+		// get closed by our cleanup.
+		if loadSucceeded {
 			closeCtx, cancel := context.WithTimeout(context.Background(), defaultCloseTimeout)
 			_, _ = c.sendRequest(closeCtx, "session/close", SessionCloseParams{SessionID: params.SessionID})
 			cancel()
 		}
+		c.routesMu.Lock()
+		if c.replays[params.SessionID] == cap {
+			delete(c.replays, params.SessionID)
+		}
+		c.routesMu.Unlock()
 	}()
 
 	raw, err := c.sendRequest(ctx, "session/load", params)
@@ -546,18 +571,27 @@ func (c *Conn) startRequestWithSessionOpen(method string, params any, timeout ti
 	id := c.nextID.Add(1)
 	ch := make(chan json.RawMessage, 1)
 
+	var openEntry *pendingOpenEntry
+	if openSess != nil {
+		openEntry = &pendingOpenEntry{sess: openSess}
+	}
 	c.pendingMu.Lock()
 	if c.pending == nil {
 		c.pendingMu.Unlock()
 		return nil, fmt.Errorf("acp: %s: connection closed", method)
 	}
 	c.pending[id] = ch
-	if openSess != nil {
-		c.pendingSessionOpen[id] = openSess
+	if openEntry != nil {
+		c.pendingSessionOpen[id] = openEntry
 	}
 	c.pendingMu.Unlock()
 
 	abandon := func() {
+		if openEntry != nil {
+			openEntry.mu.Lock()
+			openEntry.abandoned = true
+			openEntry.mu.Unlock()
+		}
 		c.pendingMu.Lock()
 		delete(c.pending, id)
 		delete(c.pendingSessionOpen, id)
@@ -686,10 +720,18 @@ func (c *Conn) writeErrorResponse(id json.RawMessage, code int, message string) 
 	return c.proc.WriteLine(data)
 }
 
-func (c *Conn) registerSession(sessionID string, s *Session) {
+func (c *Conn) registerSession(sessionID string, s *Session) bool {
+	if sessionID == "" || s == nil {
+		return false
+	}
 	c.routesMu.Lock()
+	if c.replays[sessionID] != nil {
+		c.routesMu.Unlock()
+		return false
+	}
 	c.sessions[sessionID] = s
 	c.routesMu.Unlock()
+	return true
 }
 
 func (c *Conn) unregisterSession(sessionID string, s *Session) {
@@ -786,22 +828,39 @@ func (c *Conn) dispatchLine(line []byte) {
 		}
 		c.pendingMu.Lock()
 		ch, ok := c.pending[numericID]
-		openSess := c.pendingSessionOpen[numericID]
+		openEntry := c.pendingSessionOpen[numericID]
 		delete(c.pendingSessionOpen, numericID)
 		c.pendingMu.Unlock()
-		if openSess != nil {
+		if openEntry != nil {
 			var openResp struct {
 				Result *struct {
 					SessionID string `json:"sessionId"`
 				} `json:"result"`
 			}
 			if json.Unmarshal(line, &openResp) == nil && openResp.Result != nil && openResp.Result.SessionID != "" {
-				openSess.mu.Lock()
-				if openSess.sessionID == "" {
-					openSess.sessionID = openResp.Result.SessionID
+				sid := openResp.Result.SessionID
+				openEntry.mu.Lock()
+				abandoned := openEntry.abandoned
+				openSess := openEntry.sess
+				if !abandoned && openSess != nil {
+					openSess.mu.Lock()
+					if openSess.sessionID == "" {
+						openSess.sessionID = sid
+					}
+					openSess.mu.Unlock()
+					c.registerSession(sid, openSess)
 				}
-				openSess.mu.Unlock()
-				c.registerSession(openResp.Result.SessionID, openSess)
+				openEntry.mu.Unlock()
+				if abandoned {
+					// Request was cancelled before registration; close the
+					// orphaned remote session asynchronously without blocking
+					// the reader loop.
+					go func(orphanID string) {
+						closeCtx, cancel := context.WithTimeout(context.Background(), defaultCloseTimeout)
+						_, _ = c.sendRequest(closeCtx, "session/close", SessionCloseParams{SessionID: orphanID})
+						cancel()
+					}(sid)
+				}
 			}
 		}
 		if ok {

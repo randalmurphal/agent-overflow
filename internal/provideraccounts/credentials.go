@@ -184,9 +184,18 @@ func NewCredentialsWithFileKeychain(userHome string, policy Policy) (*Credential
 // same credential source that this Credentials store manages.
 //
 // When this store was constructed with file-backed credentials (e.g. `serve`,
-// harness mode, Linux/WSL, or tests), it returns true whenever the file exists
-// without ever querying the host macOS Keychain.
+// harness mode, Linux/WSL, or tests), it returns true unconditionally (even
+// when the token file does not yet exist) so `agy` never falls back to the
+// host macOS desktop Keychain.
 func (c *Credentials) AgyShouldForceFileStorage(appDataDir string) bool {
+	if c != nil {
+		if _, isFile := c.agyKeychain.(fileAgyKeychain); isFile {
+			return true
+		}
+		if strings.TrimSpace(appDataDir) == "" && strings.TrimSpace(c.userHome) != "" {
+			appDataDir = filepath.Join(c.userHome, ".gemini", "antigravity-cli")
+		}
+	}
 	if strings.TrimSpace(appDataDir) == "" {
 		return false
 	}

@@ -71,7 +71,7 @@ func (a *App) forkAgyThread(source store.Thread, forkID string, atTurnIndex *int
 			}, nil
 		}
 	}
-	cutIdx := -1
+	cutIdx := agy.CutKeepAll
 	if preCutMaxIdx != nil {
 		cutIdx = *preCutMaxIdx
 	} else if strings.TrimSpace(forkID) != "" {

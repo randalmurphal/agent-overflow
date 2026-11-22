@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"agent-overflow/internal/agyconfig"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/acp"
 	"agent-overflow/internal/threadtools"
@@ -28,6 +29,15 @@ type Flavor struct {
 
 	subagentMu      sync.Mutex
 	subagentParents map[string]*parentSubagentCoordinator
+
+	// mcpTrustMu guards session-registered AO server membership and whether
+	// any colliding third-party MCP server name exists (in session config or
+	// user mcp_config.json), which disables ambiguous single-underscore MCP
+	// auto-approval so a third-party server can never spoof an AO tool.
+	mcpTrustMu             sync.Mutex
+	mcpConfigured          bool
+	registeredAOMCP        map[string]bool
+	collidingThirdPartyMCP bool
 
 	// Optional overrides for deterministic unit tests (zero uses defaults).
 	subagentPollInterval     time.Duration
@@ -48,6 +58,7 @@ func (f *Flavor) ProviderKind() provider.ProviderKind {
 }
 
 func (f *Flavor) BuildSessionMeta(cfg acp.SessionConfig) map[string]any {
+	f.recordSessionMCPTrust(cfg.MCPServers)
 	parts := make([]string, 0, 3)
 	if s := strings.TrimSpace(cfg.SystemPrompt); s != "" {
 		parts = append(parts, s)
@@ -643,9 +654,73 @@ func (f *Flavor) NormalizeToolComplete(u *acp.ToolCallUpdate, started acp.Normal
 	return norm
 }
 
-func isTrustedAOMCPTool(rawName string) bool {
-	server, tool, ok := parseAgyMCPToolName(strings.TrimSpace(rawName))
+func normalizeMCPPrefix(name string) string {
+	return strings.ReplaceAll(strings.ToLower(strings.TrimSpace(name)), "-", "_")
+}
+
+func isCollidingExternalServerName(name string) bool {
+	norm := normalizeMCPPrefix(name)
+	if norm == "" || norm == "ao_thread_tools" || norm == "ao_workflow_tools" {
+		return false
+	}
+	return strings.HasPrefix(norm, "ao_thread_tools") || strings.HasPrefix(norm, "ao_workflow_tools")
+}
+
+func (f *Flavor) recordSessionMCPTrust(servers []acp.MCPServerConfig) {
+	reg := make(map[string]bool, 2)
+	colliding := false
+	for _, s := range servers {
+		norm := normalizeMCPPrefix(s.Name)
+		switch norm {
+		case "ao_thread_tools":
+			reg["ao-thread-tools"] = true
+		case "ao_workflow_tools":
+			reg["ao-workflow-tools"] = true
+		default:
+			if isCollidingExternalServerName(s.Name) {
+				colliding = true
+			}
+		}
+	}
+	if !colliding && f.AppDataDir != "" {
+		// Check user's global mcp_config.json for any third-party server whose
+		// name shares the ao_thread_tools / ao_workflow_tools prefix.
+		geminiDir := filepath.Dir(f.AppDataDir)
+		homeDir := filepath.Dir(geminiDir)
+		if userServers, err := agyconfig.New(agyconfig.PathForHome(homeDir)).ListServers(); err == nil {
+			for _, us := range userServers {
+				if isCollidingExternalServerName(us.Name) {
+					colliding = true
+					break
+				}
+			}
+		}
+	}
+	f.mcpTrustMu.Lock()
+	f.mcpConfigured = true
+	f.registeredAOMCP = reg
+	f.collidingThirdPartyMCP = colliding
+	f.mcpTrustMu.Unlock()
+}
+
+func (f *Flavor) isTrustedAOMCPTool(rawName string) bool {
+	trimmed := strings.TrimSpace(rawName)
+	server, tool, ok := parseAgyMCPToolName(trimmed)
 	if !ok {
+		return false
+	}
+	isDoubleUnderscore := strings.HasPrefix(trimmed, "mcp__")
+	f.mcpTrustMu.Lock()
+	configured := f.mcpConfigured
+	registered := f.registeredAOMCP[server]
+	colliding := f.collidingThirdPartyMCP
+	f.mcpTrustMu.Unlock()
+	if configured && !registered {
+		return false
+	}
+	if !isDoubleUnderscore && colliding {
+		// Single-underscore encoding is ambiguous when a third-party server
+		// shares the AO prefix; require explicit user approval instead.
 		return false
 	}
 	switch server {
@@ -667,8 +742,9 @@ func isTrustedAOMCPTool(rawName string) bool {
 
 func (f *Flavor) ClassifyPermission(threadID, turnID, requestID string, req acp.RequestPermissionParams, policy acp.PermissionPolicy) acp.PermissionClassification {
 	// Never bypass read-only enforcement for any MCP tool; only auto-approve
-	// exact known AO coordination tools when the session is not read-only.
-	if policy != acp.PolicyDenyMutating && isTrustedAOMCPTool(req.ToolCall.Name) {
+	// exact known AO coordination tools when the session is not read-only and
+	// no third-party server name collides with the AO MCP prefix.
+	if policy != acp.PolicyDenyMutating && f.isTrustedAOMCPTool(req.ToolCall.Name) {
 		for _, opt := range req.Options {
 			if opt.Kind == "allow_once" || opt.Kind == "allow_always" {
 				return acp.PermissionClassification{

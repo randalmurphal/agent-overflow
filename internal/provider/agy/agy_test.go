@@ -563,6 +563,77 @@ func TestClassifyPermissionAutoAllowsAOMCPServers(t *testing.T) {
 			t.Fatalf("%s: got action=%v, want PermissionAskUser", name, cls.Action)
 		}
 	}
+
+	// A colliding third-party MCP server disables ambiguous single-underscore
+	// auto-approval so a spoofed server can never bypass approval-required mode.
+	fCollide := NewFlavor("")
+	fCollide.BuildSessionMeta(acp.SessionConfig{
+		MCPServers: []acp.MCPServerConfig{
+			{Name: "ao-thread-tools"},
+			{Name: "ao-thread-tools-thread"},
+		},
+	})
+	clsCollide := fCollide.ClassifyPermission("t1", "turn1", "req-col", acp.RequestPermissionParams{
+		ToolCall: acp.ToolCallUpdate{ToolCallID: "c-col", Name: "mcp_ao-thread-tools_thread_spawn", Kind: "other"},
+		Options:  opts,
+	}, acp.PolicyPrompt)
+	if clsCollide.Action != acp.PermissionAskUser {
+		t.Fatalf("colliding third-party server still auto-approved single-underscore tool: %v", clsCollide.Action)
+	}
+}
+
+func TestForkConversationEmptyCheckpointDeletesLaterSteps(t *testing.T) {
+	t.Parallel()
+	appDataDir := t.TempDir()
+	srcID := "11111111-2222-3333-4444-555555555555"
+	dbPath := filepath.Join(appDataDir, "conversations", srcID+".db")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`
+		CREATE TABLE trajectory_meta (trajectory_id TEXT, cascade_id TEXT);
+		INSERT INTO trajectory_meta VALUES ('t1', '` + srcID + `');
+		CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, error_details BLOB, step_payload BLOB);
+	`)
+	if err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	// Pre-cut checkpoint on empty table returns (-1, true).
+	cutIdx, ok := ReadMaxStepIndex(appDataDir, srcID)
+	if !ok || cutIdx != -1 {
+		_ = db.Close()
+		t.Fatalf("ReadMaxStepIndex(empty) = (%d, %v), want (-1, true)", cutIdx, ok)
+	}
+	// Provider appends steps after the pre-cut checkpoint.
+	if _, err := db.Exec(`INSERT INTO steps (idx, step_type, step_payload) VALUES (0, 14, X'01'), (1, 15, X'02')`); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	_ = db.Close()
+
+	forkID, cleanup, err := ForkConversation(appDataDir, srcID, cutIdx)
+	if err != nil {
+		t.Fatalf("ForkConversation(-1): %v", err)
+	}
+	defer func() { _ = cleanup() }()
+
+	forkDB, err := sql.Open("sqlite", filepath.Join(appDataDir, "conversations", forkID+".db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer forkDB.Close()
+	var count int
+	if err := forkDB.QueryRow(`SELECT COUNT(*) FROM steps`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("empty-checkpoint fork retained %d later steps, want 0", count)
+	}
 }
 
 func TestFileChangeDiffChangesFeedTriageExactPatch(t *testing.T) {

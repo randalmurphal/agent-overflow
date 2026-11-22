@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,11 +19,48 @@ import (
 // Verified against live agy 1.5.14 conversations/<id>.db (`steps.step_type`).
 const cortexStepTypeUserInput = 14
 
+// CutKeepAll tells ForkConversation to keep every step in the cloned database.
+// Any value >= -1 (including -1 from an empty pre-cut checkpoint) is treated as
+// an explicit upper-bound step index (`DELETE FROM <table> WHERE idx > cutIdx`).
+const CutKeepAll = math.MinInt
+
 // ReadMaxStepIndex returns the highest step `idx` currently committed in
 // `<appDataDir>/conversations/<sessionID>.db`, used to pin a live tail fork
 // before AO cuts the visible timeline.
 func ReadMaxStepIndex(appDataDir, sessionID string) (int, bool) {
 	return readMaxStepIndex(appDataDir, sessionID)
+}
+
+// ReadForkCheckpoint captures the pre-cut native step ceiling for a tail fork.
+// If the conversation DB does not exist yet on disk, it returns (-1, nil) so
+// any steps written before VACUUM INTO are truncated rather than leaked.
+// Transient lock contention or schema errors return a non-nil error so the
+// caller does not silently fall back to an unbounded fork.
+func ReadForkCheckpoint(appDataDir, sessionID string) (int, error) {
+	dbPath, err := conversationDBPath(appDataDir, sessionID)
+	if err != nil {
+		return 0, err
+	}
+	if _, err := os.Stat(dbPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return -1, nil
+		}
+		return 0, fmt.Errorf("stat agy conversation db: %w", err)
+	}
+	db, err := sql.Open("sqlite", sqliteFileDSN(dbPath, "mode=ro&_pragma=busy_timeout(5000)"))
+	if err != nil {
+		return 0, fmt.Errorf("open agy conversation db: %w", err)
+	}
+	defer db.Close()
+
+	var maxIdx sql.NullInt64
+	if err := db.QueryRow(`SELECT MAX(idx) FROM steps`).Scan(&maxIdx); err != nil {
+		return 0, fmt.Errorf("query agy max step idx: %w", err)
+	}
+	if !maxIdx.Valid {
+		return -1, nil
+	}
+	return int(maxIdx.Int64), nil
 }
 
 // ForkConversation clones `<appDataDir>/conversations/<srcSessionID>.db` into a
@@ -31,7 +69,8 @@ func ReadMaxStepIndex(appDataDir, sessionID string) (int, bool) {
 // `idx <= cutIdx`, copies companion `<appDataDir>/brain/<srcSessionID>` files,
 // and rewrites `trajectory_meta` to the new session ID.
 //
-// Pass cutIdx < 0 for a full tail fork (keeps every step).
+// Pass CutKeepAll for a full tail fork (keeps every step). Pass -1 to truncate
+// all steps (for example, an empty pre-cut checkpoint).
 // Returns the newly minted session UUID and a cleanup function that removes the
 // cloned DB file and brain directory if a later step in the caller fails.
 func ForkConversation(appDataDir, srcSessionID string, cutIdx int) (newSessionID string, cleanup func() error, err error) {
@@ -47,7 +86,7 @@ func ForkConversationAtUserTurn(appDataDir, srcSessionID string, beforeUserTurnI
 	if beforeUserTurnIndex <= 0 {
 		return "", nil, fmt.Errorf("agy fork: beforeUserTurnIndex must be positive, got %d", beforeUserTurnIndex)
 	}
-	return forkConversation(appDataDir, srcSessionID, -1, beforeUserTurnIndex)
+	return forkConversation(appDataDir, srcSessionID, CutKeepAll, beforeUserTurnIndex)
 }
 
 func forkConversation(appDataDir, srcSessionID string, cutIdx int, cutBeforeUserTurn int) (newSessionID string, cleanup func() error, err error) {
@@ -159,7 +198,7 @@ func rewriteClonedConversationDB(dstPath, newSessionID string, cutIdx int, cutBe
 		}
 	}
 
-	if cutIdx >= 0 {
+	if cutIdx != CutKeepAll {
 		for _, table := range []string{"steps", "gen_metadata", "executor_metadata", "parent_references", "battle_mode_infos"} {
 			hasTable, checkErr := tableExists(tx, table)
 			if checkErr != nil {

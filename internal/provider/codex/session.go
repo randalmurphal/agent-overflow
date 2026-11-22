@@ -617,21 +617,22 @@ func (s *Session) enqueueEarlyFrames(frames []deferredChildWireEvent) {
 func (s *Session) flushEarlyFrames() {
 	s.earlyDeliveryMu.Lock()
 	defer s.earlyDeliveryMu.Unlock()
-	if len(s.earlyFrames) == 0 {
-		s.earlyPending.Store(false)
-		return
-	}
-	frames := s.earlyFrames
-	s.earlyFrames = nil
-	s.earlyPending.Store(false)
-	for _, ev := range frames {
-		if ev.RequestID != "" {
-			reqID := json.Number(ev.RequestID)
-			s.dispatchServerRequestDirect(ev.Method, &reqID, ev.Params, ev.RawLine)
-		} else {
-			s.dispatchNotificationDirect(ev.Method, ev.Params)
+	for len(s.earlyFrames) > 0 {
+		frames := s.earlyFrames
+		s.earlyFrames = nil
+		for _, ev := range frames {
+			if ev.RequestID != "" {
+				reqID := json.Number(ev.RequestID)
+				s.dispatchServerRequestDirect(ev.Method, &reqID, ev.Params, ev.RawLine)
+			} else {
+				s.dispatchNotificationDirect(ev.Method, ev.Params)
+			}
 		}
 	}
+	// Clear earlyPending ONLY after every buffered frame has finished
+	// dispatching (while still holding earlyDeliveryMu) so a concurrent reader
+	// frame cannot bypass earlyDeliveryMu and overtake an in-progress replay.
+	s.earlyPending.Store(false)
 }
 
 // Binary returns the codex CLI path this session's app-server process was

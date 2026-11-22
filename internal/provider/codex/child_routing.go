@@ -287,11 +287,12 @@ func (s *Session) expireDeferredChildWireEvents(providerThreadID string) {
 
 func (s *Session) drainDeferredChildWireEvents(providerThreadIDs ...string) {
 	for _, providerThreadID := range providerThreadIDs {
-		var connHeld []deferredChildWireEvent
 		if s.conn != nil {
-			connHeld = s.conn.registerChildRoute(providerThreadID, s)
+			if s.conn.registerChildRoute(providerThreadID, s) {
+				s.flushEarlyFrames()
+			}
 		}
-		events := append(connHeld, s.takeDeferredChildWireEvents(providerThreadID)...)
+		events := s.takeDeferredChildWireEvents(providerThreadID)
 		for _, event := range events {
 			if event.RequestID == "" {
 				s.dispatchNotification(event.Method, event.Params)

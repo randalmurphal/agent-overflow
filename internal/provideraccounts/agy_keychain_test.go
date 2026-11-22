@@ -177,19 +177,19 @@ func TestAgyFileKeychainForceStorageAndEncodedPrefix(t *testing.T) {
 		t.Fatalf("decodeGoKeyringPayload(encoded) = %q, %v; want %q", got, err, raw)
 	}
 
-	// 2. NewCredentialsWithFileKeychain forces file storage when token file exists
-	// without ever invoking security(1) on macOS.
+	// 2. NewCredentialsWithFileKeychain forces file storage unconditionally
+	// (even before any token file exists) without ever invoking security(1).
 	home := t.TempDir()
 	creds, err := NewCredentialsWithFileKeychain(home, Policy{})
 	if err != nil {
 		t.Fatalf("NewCredentialsWithFileKeychain: %v", err)
 	}
 	appData := filepath.Join(home, ".gemini", "antigravity-cli")
+	if !creds.AgyShouldForceFileStorage(appData) {
+		t.Fatal("expected NewCredentialsWithFileKeychain to force file storage even when token file is absent")
+	}
 	if err := os.MkdirAll(appData, 0o700); err != nil {
 		t.Fatal(err)
-	}
-	if creds.AgyShouldForceFileStorage(appData) {
-		t.Fatal("expected false before token file exists")
 	}
 	if err := os.WriteFile(filepath.Join(appData, agyCredentialFileName), []byte(raw), 0o600); err != nil {
 		t.Fatal(err)

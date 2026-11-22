@@ -379,20 +379,28 @@ func TestSubagentPathContainmentAndClaimRoleMismatch(t *testing.T) {
 		}
 	}
 
-	// Parallel claim must not steal a child whose role OR prompt conflicts.
+	// Parallel claim must not steal a child whose role OR prompt conflicts,
+	// and an exact prompt match must beat an earlier shorter prefix match.
 	coord := &parentSubagentCoordinator{
 		discovered: []*discoveredSubagent{
+			{conversationID: "child-prefix", role: "Alpha", typeName: "research", prompt: "Inspect"},
 			{conversationID: "child-alpha", role: "Alpha", typeName: "research", prompt: "Inspect billing"},
 		},
 	}
 	if stolen := coord.claim("Beta", "research", "Task B"); stolen != nil {
 		t.Fatalf("watcher Beta stole child with conflicting role Alpha: %+v", stolen)
 	}
-	if stolenPrompt := coord.claim("Alpha", "research", "Inspect auth"); stolenPrompt != nil {
+	if stolenPrompt := coord.claim("Alpha", "research", "Different prompt"); stolenPrompt != nil {
 		t.Fatalf("watcher with conflicting prompt stole child: %+v", stolenPrompt)
 	}
 	if matched := coord.claim("Alpha", "research", "Inspect billing"); matched == nil || matched.conversationID != "child-alpha" {
-		t.Fatalf("watcher Alpha did not claim its own child: %+v", matched)
+		t.Fatalf("exact prompt match lost to prefix match: got %+v, want child-alpha", matched)
+	}
+
+	// Unrelated GENERIC JSON mentioning conversationId without subagent signal
+	// must be ignored even while an invoke_subagent launch is pending.
+	if cid, _ := parseCreatedSubagentResult(`{"conversationId":"unrelated-conv-99","status":"ok"}`, appDataDir); cid != "" {
+		t.Fatalf("unrelated GENERIC conversationId was admitted: %q", cid)
 	}
 
 	// GENERIC output with a conversationId when NO invoke_subagent is pending must not be admitted.

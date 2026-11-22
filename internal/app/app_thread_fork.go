@@ -247,9 +247,11 @@ func (a *App) forkThreadAt(ctx context.Context, sourceThreadID string, atTurnInd
 		// Pin the native Antigravity step ceiling BEFORE CreatePointerFork so a
 		// streaming turn completing between pointer commit and DB clone cannot
 		// hand the fork an assistant answer absent from its visible timeline.
-		if maxIdx, ok := agy.ReadMaxStepIndex(a.agyAppDataDir(), source.SessionRef); ok {
-			agyCutMaxIdx = &maxIdx
+		maxIdx, err := agy.ReadForkCheckpoint(a.agyAppDataDir(), source.SessionRef)
+		if err != nil {
+			return store.Thread{}, fmt.Errorf("fork thread: capture agy checkpoint: %w", err)
 		}
+		agyCutMaxIdx = &maxIdx
 	}
 
 	timing.next("origin")

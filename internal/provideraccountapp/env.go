@@ -206,6 +206,10 @@ func (m *Manager) CodexProbeConfig(binary string, pins map[string]string) codex.
 }
 
 func (m *Manager) agyProbeConfig(binary, geminiDir, appDataSubdir string, pins map[string]string) agy.ProbeConfig {
+	forceFile := strings.TrimSpace(geminiDir) != ""
+	if !forceFile && m != nil && m.credentials != nil {
+		forceFile = m.credentials.AgyShouldForceFileStorage("")
+	}
 	return agy.ProbeConfig{
 		Binary:        binary,
 		WorkDir:       providerProbeWorkDir(),
@@ -213,9 +217,7 @@ func (m *Manager) agyProbeConfig(binary, geminiDir, appDataSubdir string, pins m
 		AppDataSubdir: appDataSubdir,
 		Env:           m.providerProbeEnv(string(provider.Agy), pins),
 		Reaper:        m.deps.Reaper,
-		// Only force file-backed auth for isolated ephemeral homes; canonical
-		// probes must respect the OS Keychain when agy stores its login there.
-		ForceFileAuth: strings.TrimSpace(geminiDir) != "",
+		ForceFileAuth: forceFile,
 	}
 }
 

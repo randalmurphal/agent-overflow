@@ -133,6 +133,9 @@ func (a *App) acquireCodexConn(
 			conn.SetMCPStartupUpdateHandler(func(u codex.MCPStartupUpdate) {
 				a.handleCodexMCPStartupUpdate(u)
 			})
+			conn.SetMCPOAuthCompletedHandler(func(_ string, serverName string, success bool, errMsg string) {
+				a.handleCodexMCPOAuthCompleted("", serverName, success, errMsg)
+			})
 			return conn, nil
 		},
 	)
