@@ -17,7 +17,6 @@ import (
 
 	"github.com/google/uuid"
 
-	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
@@ -155,7 +154,7 @@ func newAgentChain(t *testing.T, n int) *agentChain {
 		c.ids, c.projects = append(c.ids, id), append(c.projects, project)
 	}
 	for i := range n - 1 {
-		manager, err := attachedbackends.New(t.TempDir(), fmt.Sprintf("computer %d", i), "test")
+		manager, err := newTestBackends(t, t.TempDir(), fmt.Sprintf("computer %d", i), "test")
 		if err != nil {
 			t.Fatalf("attachedbackends.New: %v", err)
 		}

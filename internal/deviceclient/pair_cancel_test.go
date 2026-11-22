@@ -8,11 +8,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/servercert"
+	"agent-overflow/internal/testutil"
 )
 
 // The redemption spends the link on the far side. A caller that stops
@@ -148,6 +150,32 @@ func TestARedemptionIsBoundedByTheHTTPTimeout(t *testing.T) {
 	t.Cleanup(redeemed.client.http.CloseIdleConnections)
 	if got := redeemed.client.http.Timeout; got != pinTimeout || pinTimeout != 10*time.Second {
 		t.Fatalf("the redemption's HTTP timeout = %s (pinTimeout %s); want 10s", got, pinTimeout)
+	}
+}
+
+// The exchange bound ends a redemption the backend holds, and a zero
+// WithExchangeTimeout keeps the product's bound. The bound is shortened here
+// so the test proves it fires without waiting 10 s.
+func TestTheExchangeBoundEndsAHeldRedemption(t *testing.T) {
+	t.Parallel()
+	h := newHeldRedemption(t)
+	started := time.Now()
+	_, err := Redeem(context.Background(), t.TempDir(), h.link, "test", "test", WithExchangeTimeout(100*time.Millisecond))
+	if err == nil || !strings.Contains(err.Error(), "Client.Timeout exceeded") {
+		t.Fatalf("a held redemption = %v, want it ended by the exchange bound", err)
+	}
+	if took := time.Since(started); took >= pinTimeout {
+		t.Fatalf("the held redemption ended after %s, at pinTimeout, not at the 100ms bound it was given", took)
+	}
+	select {
+	case <-h.abandoned:
+	case <-time.After(testutil.WaitBudget(t)):
+		t.Fatal("the backend never saw the redemption abandoned")
+	}
+	close(h.release)
+	kept := newClient(t.TempDir(), nil, h.URL, h.link.CertFingerprint, Session{}, []Option{WithExchangeTimeout(0)})
+	if kept.http.Timeout != pinTimeout {
+		t.Fatalf("a zero exchange bound gave %s, want pinTimeout %s", kept.http.Timeout, pinTimeout)
 	}
 }
 

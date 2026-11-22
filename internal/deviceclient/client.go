@@ -334,12 +334,16 @@ func Open(dir string, session Session, opts ...Option) (*Client, error) {
 
 func newClient(dir string, key *ecdsa.PrivateKey, base, fingerprint string, session Session, opts []Option) *Client {
 	resolved := resolveOptions(opts)
+	exchange := resolved.exchange
+	if exchange == 0 {
+		exchange = pinTimeout
+	}
 	live, endLive := context.WithCancel(context.Background())
 	return &Client{
 		dir:      dir,
 		key:      key,
 		base:     base,
-		http:     credentialHTTPClient(fingerprint, opts...),
+		http:     credentialHTTPClient(fingerprint, exchange, opts...),
 		dial:     resolved.dial,
 		probe:    resolved.probe,
 		now:      time.Now,

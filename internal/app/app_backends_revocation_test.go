@@ -63,7 +63,7 @@ func TestAFarSideRevocationRemovesTheProfileAndSaysWho(t *testing.T) {
 	remotetest.Require(t)
 	ownConnectionNetwork(t)
 	target := ownConnectionBackend(t)
-	source, err := attachedbackends.New(t.TempDir(), "Revoked desk", "linux")
+	source, err := newTestBackends(t, t.TempDir(), "Revoked desk", "linux")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestAFarSideRevocationRemovesTheProfileAndSaysWho(t *testing.T) {
 
 	// A removal this installation makes itself names no reason: the page
 	// asked for it, so there is nothing to explain.
-	local, err := attachedbackends.New(t.TempDir(), "Kept desk", "linux")
+	local, err := newTestBackends(t, t.TempDir(), "Kept desk", "linux")
 	if err != nil {
 		t.Fatal(err)
 	}

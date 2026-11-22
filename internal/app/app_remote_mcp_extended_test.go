@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/remotejobs"
 	"agent-overflow/internal/store"
@@ -30,7 +29,7 @@ func TestRemoteMCPExtendedToolsCrossPairedTLS(t *testing.T) {
 	destination := newPairedBackend(t)
 	source := identityApp(t)
 	source.configDir = t.TempDir()
-	manager, err := attachedbackends.New(t.TempDir(), "source", "test")
+	manager, err := newTestBackends(t, t.TempDir(), "source", "test")
 	if err != nil {
 		t.Fatal(err)
 	}

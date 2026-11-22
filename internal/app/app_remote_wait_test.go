@@ -16,7 +16,6 @@ import (
 	"testing"
 	"time"
 
-	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/remotejobs"
@@ -40,7 +39,7 @@ func newRemoteWaitFixture(t *testing.T) *remoteWaitFixture {
 	t.Helper()
 	f := &remoteWaitFixture{receiver: newPairedBackend(t), source: identityApp(t), release: make(chan struct{})}
 	f.source.configDir = t.TempDir()
-	manager, err := attachedbackends.New(t.TempDir(), "source", "test")
+	manager, err := newTestBackends(t, t.TempDir(), "source", "test")
 	if err != nil {
 		t.Fatal(err)
 	}

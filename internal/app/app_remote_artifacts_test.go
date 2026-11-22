@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/gitapp"
@@ -160,7 +159,7 @@ func TestRemoteArtifactRetrievalUsesPairedOwnerAndConversationAfterOptOut(t *tes
 	backend := newPairedBackend(t)
 	source := identityApp(t)
 	source.configDir = t.TempDir()
-	manager, err := attachedbackends.New(t.TempDir(), "source", "linux")
+	manager, err := newTestBackends(t, t.TempDir(), "source", "linux")
 	if err != nil {
 		t.Fatal(err)
 	}

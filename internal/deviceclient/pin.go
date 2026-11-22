@@ -30,7 +30,8 @@ var ErrCertificateMismatch = errors.New(
 // client makes is a small JSON round trip on a LAN, and the one that runs
 // inline on a carried WebSocket upgrade is the reason there is a bound at
 // all: a stalled mint must fail fast enough for the page's reconnect
-// ladder to own the retry.
+// ladder to own the retry. WithExchangeTimeout replaces it only for a test
+// whose in-process backend shares a crowded machine.
 const pinTimeout = 10 * time.Second
 
 // dialTimeout bounds one TCP connect for every consumer that brings no
@@ -130,8 +131,8 @@ func NewPinnedTransport(certFingerprint string, opts ...Option) *http.Transport 
 
 // A credential POST may neither change authority nor be replayed by net/http.
 // Endpoint changes require a separately verified computer route.
-func credentialHTTPClient(fingerprint string, opts ...Option) *http.Client {
-	return &http.Client{Transport: NewPinnedTransport(fingerprint, opts...), Timeout: pinTimeout,
+func credentialHTTPClient(fingerprint string, timeout time.Duration, opts ...Option) *http.Client {
+	return &http.Client{Transport: NewPinnedTransport(fingerprint, opts...), Timeout: timeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 }

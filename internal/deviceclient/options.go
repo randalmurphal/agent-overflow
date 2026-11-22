@@ -12,6 +12,7 @@ type DialContextFunc func(context.Context, string, string) (net.Conn, error)
 type options struct {
 	dial     DialContextFunc
 	probe    time.Duration
+	exchange time.Duration
 	lifetime context.Context
 }
 type Option func(*options)
@@ -27,6 +28,13 @@ func WithDialContext(dial DialContextFunc) Option { return func(o *options) { o.
 // shortens it: every probe is a request to the backend's credential routes.
 func WithProbeInterval(interval time.Duration) Option {
 	return func(o *options) { o.probe = interval }
+}
+
+// WithExchangeTimeout sets the bound on one credential exchange. Zero keeps
+// pinTimeout. Only a test lengthens it: its backend runs in the test process,
+// where a crowded machine can hold a pairing past pinTimeout.
+func WithExchangeTimeout(timeout time.Duration) Option {
+	return func(o *options) { o.exchange = timeout }
 }
 
 // WithLifetime is the owner's lifetime. When it ends, a rotation in flight

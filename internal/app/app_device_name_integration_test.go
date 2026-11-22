@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"agent-overflow/internal/appidentity"
-	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/identity"
@@ -22,7 +21,7 @@ func TestGoCarrierPublishesDeviceNameThroughAuthenticatedAppRPC(t *testing.T) {
 	if err := name.Set("Original"); err != nil {
 		t.Fatal(err)
 	}
-	manager, err := attachedbackends.New(profile, "Original", "linux")
+	manager, err := newTestBackends(t, profile, "Original", "linux")
 	if err != nil {
 		t.Fatal(err)
 	}

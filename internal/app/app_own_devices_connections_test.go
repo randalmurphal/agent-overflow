@@ -32,7 +32,7 @@ func ownConnectionBackend(t *testing.T) ownConnectionHost {
 	backend := newPairedBackend(t)
 	backend.app.storeIdentity.Store(&store.Identity{BackendID: uuid.NewString(), ReplicaGeneration: uuid.NewString()})
 	profile := t.TempDir()
-	manager, err := attachedbackends.New(profile, "Own device", "linux")
+	manager, err := newTestBackends(t, profile, "Own device", "linux")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func TestOwnDeviceConnectionsJoinThreeHostsAndControllerWithoutPermanentHub(t *t
 		}
 	}
 
-	controller, err := attachedbackends.New(t.TempDir(), "Screen only", "linux")
+	controller, err := newTestBackends(t, t.TempDir(), "Screen only", "linux")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +158,7 @@ func TestOwnDeviceLocalRemovalSurvivesReconciliationAndRestart(t *testing.T) {
 	if err := b.app.backends.Remove(a.id); err != nil {
 		t.Fatal(err)
 	}
-	manager, err := attachedbackends.New(b.profile, "Restarted", "linux")
+	manager, err := newTestBackends(t, b.profile, "Restarted", "linux")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/gitapp"
@@ -85,7 +84,7 @@ func remoteAdmissionFixture(t *testing.T) (*App, *remoteAdmissionReceiver, conte
 	})
 	receiver.App, receiver.wire = backend.app, backend
 	source := identityApp(t)
-	manager, err := attachedbackends.New(t.TempDir(), "admission source", "linux")
+	manager, err := newTestBackends(t, t.TempDir(), "admission source", "linux")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/transport"
@@ -122,7 +121,7 @@ func TestRemoteDiscoveryKeepsProjectsFromPeerWithoutEnvironmentRPC(t *testing.T)
 		cfg.Dispatcher = dispatcher
 	})
 	source := identityApp(t)
-	manager, err := attachedbackends.New(t.TempDir(), "source", "linux")
+	manager, err := newTestBackends(t, t.TempDir(), "source", "linux")
 	if err != nil {
 		t.Fatal(err)
 	}

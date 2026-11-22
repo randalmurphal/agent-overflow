@@ -11,7 +11,6 @@ import (
 
 	"github.com/google/uuid"
 
-	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/errorsx"
@@ -32,7 +31,7 @@ func holdPairing(t *testing.T, a *App, computerID string) {
 		t.Fatal("holdPairing: the app already holds pairings")
 	}
 	dir := t.TempDir()
-	manager, err := attachedbackends.New(dir, "source", "test")
+	manager, err := newTestBackends(t, dir, "source", "test")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/gitapp"
 	"agent-overflow/internal/remotejobs"
@@ -22,7 +21,7 @@ func TestAgentRemoteCommandUsesItsOwnPairedIdentityAndSurvivesSourceLoss(t *test
 	remotetest.Require(t)
 	backend := newPairedBackend(t)
 	source := identityApp(t)
-	manager, err := attachedbackends.New(t.TempDir(), "workhorse", "linux")
+	manager, err := newTestBackends(t, t.TempDir(), "workhorse", "linux")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +125,7 @@ func TestAgentRemoteEnableChecksPairingAndDestinationScope(t *testing.T) {
 		t.Run(access, func(t *testing.T) {
 			backend := newPairedBackend(t)
 			source := identityApp(t)
-			manager, err := attachedbackends.New(t.TempDir(), "test source", "linux")
+			manager, err := newTestBackends(t, t.TempDir(), "test source", "linux")
 			if err != nil {
 				t.Fatal(err)
 			}

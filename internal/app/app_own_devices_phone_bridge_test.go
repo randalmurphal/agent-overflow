@@ -34,7 +34,7 @@ func TestOwnDevicePhoneBridgesTwoPreviouslySeparateHosts(t *testing.T) {
 			}
 		}
 	}
-	phone, err := attachedbackends.New(t.TempDir(), "Phone", "android")
+	phone, err := newTestBackends(t, t.TempDir(), "Phone", "android")
 	if err != nil {
 		t.Fatal(err)
 	}

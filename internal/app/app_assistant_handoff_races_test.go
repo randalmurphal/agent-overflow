@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/attachment"
 	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/errorsx"
@@ -32,7 +31,7 @@ func TestAJobOverAPairedDestinationFollowsTwoHandOffs(t *testing.T) {
 	remotetest.Require(t)
 	backend := newPairedBackend(t)
 	source := identityApp(t)
-	manager, err := attachedbackends.New(t.TempDir(), "workhorse", "linux")
+	manager, err := newTestBackends(t, t.TempDir(), "workhorse", "linux")
 	if err != nil {
 		t.Fatal(err)
 	}

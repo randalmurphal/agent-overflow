@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/backendproxy"
 	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/computerroute"
@@ -110,7 +109,7 @@ func TestOrdinaryPairedClientsLearnNewRoutesThroughLiveBootstrapAndHello(t *test
 	if err != nil || !slices.Equal(saved.Routes, later) {
 		t.Fatalf("live route was not remembered: %v %v", saved.Routes, err)
 	}
-	manager, err := attachedbackends.New(dir, "Ordinary desktop", "linux")
+	manager, err := newTestBackends(t, dir, "Ordinary desktop", "linux")
 	if err != nil {
 		t.Fatal(err)
 	}

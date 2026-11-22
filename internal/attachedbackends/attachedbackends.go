@@ -74,6 +74,9 @@ type Manager struct {
 	// activationProbe is how often a pending pairing asks whether it was
 	// confirmed (SetActivationProbe). Zero keeps deviceclient's interval.
 	activationProbe time.Duration
+	// exchangeTimeout bounds one credential exchange (SetExchangeTimeout).
+	// Zero keeps deviceclient's bound.
+	exchangeTimeout time.Duration
 
 	// The profile lock serializes replacement. Release mu before waiting on a
 	// carrier fence. A fenced observation consumes already-resolved manager data.
@@ -742,8 +745,12 @@ func (m *Manager) SetLabelGetter(get func() (string, error)) { m.labelGetter = g
 // (deviceclient.WithProbeInterval).
 func (m *Manager) SetActivationProbe(interval time.Duration) { m.activationProbe = interval }
 
+// SetExchangeTimeout sets the bound on one credential exchange before
+// serving requests. Only a test calls it (deviceclient.WithExchangeTimeout).
+func (m *Manager) SetExchangeTimeout(timeout time.Duration) { m.exchangeTimeout = timeout }
+
 func (m *Manager) clientOptions() []deviceclient.Option {
-	return []deviceclient.Option{deviceclient.WithDialContext(m.dial), deviceclient.WithProbeInterval(m.activationProbe), deviceclient.WithLifetime(m.life)}
+	return []deviceclient.Option{deviceclient.WithDialContext(m.dial), deviceclient.WithProbeInterval(m.activationProbe), deviceclient.WithExchangeTimeout(m.exchangeTimeout), deviceclient.WithLifetime(m.life)}
 }
 func (m *Manager) localLabel() (string, error) {
 	if m.labelGetter != nil {
