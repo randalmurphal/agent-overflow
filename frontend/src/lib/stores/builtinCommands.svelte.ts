@@ -45,6 +45,7 @@ import { isReplayingBrowserPageChord } from './browserPageChords';
 import { carryCaretIntoPane, isEditingFocusedIn } from '../components/panes/paneComposerFocus';
 import { navigateToAdjacentPane } from '../components/panes/paneNavigation';
 import { getThreadById } from './threads.svelte';
+import { threadMachineCallable } from './attachedBackends.svelte';
 import { openTerminalThread } from './threadCreation.svelte';
 import {
   archiveThreadAction,
@@ -462,7 +463,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     id: 'thread.interrupt',
     label: 'Thread: Interrupt Turn',
     icon: '■',
-    when: 'hasActiveThread && threadsOperate && (turnActive || sendInFlight || hasPendingPrompt) && !anyModalOpen',
+    when: 'hasActiveThread && threadsOperate && threadCallable && (turnActive || sendInFlight || hasPendingPrompt) && !anyModalOpen',
     editableReachable: true,
     run: (ctx) => {
       // Industry-pattern interrupt: clear UI state synchronously,
@@ -1211,6 +1212,7 @@ export function makeCommandContext(pane: ThreadPane | null, extra: Partial<Comma
     approvalPending: pane ? pane.pendingApprovals.length > 0 : false,
     anyModalOpen: false,
     hasActiveThread: thread !== null,
+    threadCallable: thread !== null && threadMachineCallable(thread.id, thread.projectId),
     turnActive: getActiveTurn(pane?.threadId ?? null) !== null,
     sendInFlight: isSendInFlight(pane?.threadId ?? null, pane?.sendInFlight ?? false),
     hasPendingPrompt: pane ? pane.pendingApprovals.length > 0 || pane.pendingUserInputs.length > 0 : false,

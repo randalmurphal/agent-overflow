@@ -8,8 +8,8 @@
   // icon-only controls) AND the native title, so a hovering user sees the
   // same thing the AT user hears. `title` overrides only the hover text,
   // for the case where the tooltip has to explain why the control is
-  // unavailable ("Not granted to this device", or "Local only" for a
-  // host-presence gate) while the aria-label still names the action.
+  // unavailable (`grantBlockedTitle`, or "Local only" for a host-presence
+  // gate) while the aria-label still names the action.
 
   import type { Snippet } from 'svelte';
 

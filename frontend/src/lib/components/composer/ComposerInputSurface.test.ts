@@ -23,6 +23,7 @@ import { resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
 import type { Attachment } from '../../types/attachment';
 import type { ThreadPane } from '../../stores/thread.svelte';
+import type { ControlAccess } from '../../transport/scopes';
 
 const platform = vi.hoisted(() => ({ native: false }));
 vi.mock('../../native/platform', () => ({ isNativeShell: () => platform.native }));
@@ -73,6 +74,7 @@ interface MountOptions {
   disabled?: boolean;
   showDraftRows?: boolean;
   editsDraft?: boolean;
+  attachAccess?: ControlAccess;
   blockAttachment?: (event: Event, notify: boolean) => boolean;
   attachmentsDeferred?: boolean;
   shouldDeleteAttachmentRecord?: (id: string) => boolean;
@@ -135,6 +137,7 @@ async function mountSurface(options: MountOptions = {}) {
     onKeydown: options.onKeydown,
     showDraftRows: options.showDraftRows,
     editsDraft: options.editsDraft,
+    attachAccess: options.attachAccess ?? 'granted',
     blockAttachment: options.blockAttachment,
     attachmentsDeferred: options.attachmentsDeferred,
     shouldDeleteAttachmentRecord: options.shouldDeleteAttachmentRecord,
@@ -549,6 +552,26 @@ describe('<ComposerInputSurface>', () => {
       await waitFor(() => expect(draft.attachments.map((a) => a.id)).toEqual(['att-deferred']));
       expect(upload).toHaveBeenCalledOnce();
       unmount();
+    }
+  });
+
+  // The host's access decides the attach button: it stays in place and says
+  // why while only the computer's outage stops uploading, and is absent
+  // where uploading is refused or not yet known.
+  it('keeps the attach button in place, disabled with the reason, while the computer is offline', async () => {
+    const offline = await mountSurface({ attachAccess: 'offline' });
+    const attach = offline.getByTestId('composer-attach') as HTMLButtonElement;
+    expect(attach.disabled).toBe(true);
+    expect(attach.getAttribute('title')).toBe('Unavailable while this computer is offline');
+    offline.unmount();
+    const granted = await mountSurface({ attachAccess: 'granted' });
+    expect((granted.getByTestId('composer-attach') as HTMLButtonElement).disabled).toBe(false);
+    expect(granted.getByTestId('composer-attach').getAttribute('title')).toBe('Attach files');
+    granted.unmount();
+    for (const attachAccess of ['refused', 'pending', 'unrouted'] as const) {
+      const hidden = await mountSurface({ attachAccess });
+      expect(hidden.queryByTestId('composer-attach'), attachAccess).toBeNull();
+      hidden.unmount();
     }
   });
 

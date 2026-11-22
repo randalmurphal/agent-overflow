@@ -28,7 +28,8 @@
     removeThreadsFromGroupAction,
   } from './threadGroupActions';
   import { archiveThreadAction, markAllReadAction } from './threadRowActions';
-  import { projectHasScope } from '../../transport/entityScopes';
+  import { projectScopeGrant } from '../../transport/entityScopes';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
 
   interface Props {
     group: ThreadGroup;
@@ -58,8 +59,9 @@
   let memberCount = $derived(memberThreadIds.length);
   // Every row writes the group or its members on the project's computer;
   // all of it rides `threads:operate`. Inert with a reason, never hidden.
-  let operateUngranted = $derived(!projectHasScope('threads:operate', group.projectId));
-  let ungrantedTitle = $derived(operateUngranted ? 'Not granted to this device' : undefined);
+  let operateGrant = $derived(projectScopeGrant('threads:operate', group.projectId));
+  let operateUngranted = $derived(operateGrant !== 'granted');
+  let ungrantedTitle = $derived(grantBlockedTitle(operateGrant));
 
   /**
    * Archive every member, sequentially and for the same reason

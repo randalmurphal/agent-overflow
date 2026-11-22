@@ -6,8 +6,10 @@
   import MenuItem from '../primitives/MenuItem.svelte';
   import { isNativeShell } from '../../native/platform';
 
-  let { disabled = false, onChoose }: {
+  let { disabled = false, blockedReason, onChoose }: {
     disabled?: boolean;
+    /** Why uploading is unavailable, as the button's hover text. */
+    blockedReason?: string;
     onChoose: (accept: string, capture?: boolean) => void;
   } = $props();
   let anchor: HTMLButtonElement | undefined = $state();
@@ -23,7 +25,7 @@
   type="button"
   {disabled}
   aria-label="Attach files"
-  title="Attach files"
+  title={blockedReason ?? 'Attach files'}
   data-testid="composer-attach"
   onclick={() => isNativeShell() ? (open = !open) : choose('')}
   class="inline-flex size-8 compact:size-10 shrink-0 items-center justify-center rounded-[var(--radius-control)] text-fg-muted hover:bg-surface-2/40 hover:text-fg disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"

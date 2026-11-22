@@ -12,7 +12,7 @@ import { applyThreadUpdated } from '../../stores/eventsThreadRows';
 import { buildPane, makeItem, makeThread as makeTestThread } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { mockAttachmentUpload, mockAttachmentDownload } from '../../../test/mocks/attachmentTransfer';
-import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
+import { grantBackendScopes, pairViewOnly, resetToLocalPage, revokeBackendScopes } from '../../../test/helpers/scopes';
 import type { Attachment } from '../../types/attachment';
 import { classifyAttachment } from './attachmentHelpers';
 import {
@@ -59,7 +59,7 @@ import { UsageBucket } from '../../stores/bindings';
 import { resetThreadInterruptStateForTest } from '../../stores/threadInterruptState.svelte';
 import { resetDirectSendsForTest } from '../../stores/threadInterrupt.svelte';
 import { resetResendRevertMarkersForTest } from '../../stores/eventsMessageRevert';
-import { __setTransportHelloForTest } from '../../stores/transportStatus.svelte';
+import { __setTransportHelloForTest, UNREACHABLE_SETTLE_MS } from '../../stores/transportStatus.svelte';
 import { applySessionLive } from '../../stores/threadSessionLive.svelte';
 import { DisconnectedError, TransportError } from '../../transport/wsClient';
 import { getToasts, resetToastsForTest } from '../../stores/toast.svelte';
@@ -71,6 +71,10 @@ import {
 } from '../../stores/shellCommands.svelte';
 import { probeReactivity } from '../../../test/helpers/reactivity.svelte';
 import { untrack } from 'svelte';
+import TransportStatusBanner from '../shared/TransportStatusBanner.svelte';
+import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
+import { __resetEntityIndexForTest, noteThread } from '../../transport/entityIndex';
+import { selectedBackend } from '../../stores/selectedBackend.svelte';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import type { ComposerDraftStore } from '../../stores/composerDraft.svelte';
 
@@ -303,6 +307,211 @@ describe('<Composer>', () => {
 
     expect((getByLabelText('Message Input') as HTMLTextAreaElement).disabled).toBe(true);
     expect((getByTestId('composer-send') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  // With a thread of a paired computer focused, a drop shorter than the
+  // settle time changes only this composer's notice: the banner neither
+  // shows nor hides, so on compact no row comes and goes. A drop past it
+  // shows the banner once, and the reconnect removes it.
+  for (const compact of [false, true]) it(`answers a paired computer's short drops in the composer alone (${compact ? 'phone' : 'desktop'})`, async () => {
+    setCompactLayoutForTest(compact);
+    const laptop = stageBackend({ name: 'Laptop' });
+    let observer: MutationObserver | null = null;
+    try {
+      await grantBackendScopes('laptop', ['threads:read', 'threads:operate']);
+      vi.useFakeTimers();
+      noteThread('thread-1', 'laptop', 0);
+      const pane = createThreadPane({ paneId: 'main' });
+      pane.replaceThread(makeTestThread({ id: 'thread-1' }));
+      registerPaneForTest('main', pane);
+      focusPane('main');
+      expect(selectedBackend()).toBe('laptop');
+      const draft = await buildDraft('thread-1');
+      const { getByLabelText } = render(Composer, { props: { pane, draft } });
+      const banner = render(TransportStatusBanner);
+      const placeholder = () => getByLabelText('Message Input').getAttribute('placeholder');
+      const shown = () => banner.queryByTestId('transport-status-banner') !== null;
+      let mounts = 0;
+      observer = new MutationObserver((records) => {
+        for (const record of records) for (const node of record.addedNodes) {
+          if (node instanceof Element && (node.matches('[data-testid="transport-status-banner"]')
+            || node.querySelector('[data-testid="transport-status-banner"]'))) mounts++;
+        }
+      });
+      observer.observe(document.body, { childList: true, subtree: true });
+      await tick();
+      const online = placeholder();
+      expect(online).not.toBe('Laptop is offline');
+
+      for (let drop = 0; drop < 4; drop++) {
+        laptop.setStatus('reconnecting');
+        await tick();
+        expect(placeholder()).toBe('Laptop is offline');
+        await vi.advanceTimersByTimeAsync(UNREACHABLE_SETTLE_MS - 5_000);
+        expect(shown()).toBe(false);
+        laptop.setStatus('connected');
+        await tick();
+        expect(placeholder()).toBe(online);
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(shown()).toBe(false);
+      }
+      expect(mounts).toBe(0);
+
+      laptop.setStatus('reconnecting');
+      await vi.advanceTimersByTimeAsync(UNREACHABLE_SETTLE_MS);
+      expect(shown()).toBe(true);
+      expect(mounts).toBe(1);
+      laptop.setStatus('connected');
+      await vi.advanceTimersByTimeAsync(500);
+      expect(shown()).toBe(false);
+      expect(mounts).toBe(1);
+      expect(placeholder()).toBe(online);
+    } finally {
+      observer?.disconnect();
+      revokeBackendScopes('laptop');
+      resetStagedBackends();
+      __resetEntityIndexForTest();
+      setCompactLayoutForTest(false);
+      vi.useRealTimers();
+    }
+  });
+
+  // A window loaded while the paired computer was off has never heard that
+  // computer's grant. Its thread's composer says the computer is offline at
+  // once; "read-only" is said only for a grant known to say so.
+  for (const compact of [false, true]) it(`says a paired computer is offline when its grant has not arrived in this window (${compact ? 'phone' : 'desktop'})`, async () => {
+    setCompactLayoutForTest(compact);
+    stageBackend({ name: 'Laptop', status: 'reconnecting' });
+    try {
+      noteThread('thread-1', 'laptop', 0);
+      const pane = createThreadPane();
+      pane.replaceThread(makeTestThread({ id: 'thread-1' }));
+      const draft = await buildDraft('thread-1');
+      const { getByLabelText } = render(Composer, { props: { pane, draft } });
+      const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+      await tick();
+      expect(textarea.getAttribute('placeholder')).toBe('Laptop is offline');
+      expect(textarea.disabled).toBe(true);
+
+      // A known view-only grant is a refusal, and says so.
+      await grantBackendScopes('laptop', ['threads:read']);
+      await tick();
+      expect(textarea.getAttribute('placeholder')).toBe('This device has read-only access');
+      expect(textarea.disabled).toBe(true);
+    } finally {
+      revokeBackendScopes('laptop');
+      resetStagedBackends();
+      __resetEntityIndexForTest();
+      setCompactLayoutForTest(false);
+    }
+  });
+
+  // A thread whose computer is unreachable keeps its draft and calls that
+  // computer for nothing, whatever this device was granted there: no send,
+  // no Stop, no approval answer, no upload. Each control says why, and the
+  // reconnect gives them back.
+  it("calls an unreachable computer for nothing and keeps the draft, though its grant is full", async () => {
+    const laptop = stageBackend({ name: 'Laptop' });
+    try {
+      await grantBackendScopes('laptop', ['threads:read', 'threads:operate', 'approvals:respond', 'attachments:write']);
+      noteThread('thread-1', 'laptop', 0);
+      const pane = createThreadPane();
+      pane.replaceThread(makeTestThread({ id: 'thread-1' }));
+      const draft = await buildDraft('thread-1');
+      const send = setBindingMock('SendMessageWithOptions', async () => makeTestThread({ id: 'thread-1' }));
+      const queue = setBindingMock('RegisterQueueItem', async () => { throw new Error('queued'); });
+      const respond = setBindingMock('RespondToApproval', async () => {});
+      const interrupt = setBindingMock('InterruptTurn', async () => {});
+      const upload = mockAttachmentUpload(async () => makeAttachment('dropped'));
+      const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
+      const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+      await fireEvent.input(textarea, { target: { value: 'hold this' } });
+      expect((getByTestId('composer-send') as HTMLButtonElement).disabled).toBe(false);
+
+      laptop.setStatus('reconnecting');
+      await tick();
+      expect(textarea.getAttribute('placeholder')).toBe('Laptop is offline');
+      const sendButton = getByTestId('composer-send') as HTMLButtonElement;
+      expect(sendButton.disabled).toBe(true);
+      expect(sendButton.getAttribute('title')).toBe('Unavailable while this computer is offline');
+      await fireEvent.click(sendButton);
+      await fireEvent.keyDown(textarea, { key: 'Enter' });
+      const attach = getByTestId('composer-attach') as HTMLButtonElement;
+      expect(attach.disabled).toBe(true);
+      expect(attach.getAttribute('title')).toBe('Unavailable while this computer is offline');
+      await fireEvent(getByTestId('composer-root'), makeFileDrop([new File(['png'], 'dropped.png', { type: 'image/png' })]));
+      await fireEvent(textarea, makeClipboardPaste([new File(['png'], 'pasted.png', { type: 'image/png' })]));
+
+      // A running turn: the draft would queue, and it does not.
+      pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 0 });
+      await tick();
+      expect((getByTestId('composer-send') as HTMLButtonElement).disabled).toBe(true);
+      await fireEvent.click(getByTestId('composer-send'));
+
+      pane.addApproval({
+        requestId: 'req-1', threadId: 'thread-1', kind: 'command', toolName: 'Bash',
+        title: 'Approve command', description: 'make deploy', input: { command: 'make deploy' }, occurrence: '1',
+      });
+      await tick();
+      const allow = getByTestId('approval-allow') as HTMLButtonElement;
+      expect(allow.disabled).toBe(true);
+      expect(allow.getAttribute('title')).toBe('Unavailable while this computer is offline');
+      await fireEvent.click(allow);
+      await Promise.resolve();
+
+      expect(send).not.toHaveBeenCalled();
+      expect(queue).not.toHaveBeenCalled();
+      expect(interrupt).not.toHaveBeenCalled();
+      expect(respond).not.toHaveBeenCalled();
+      expect(upload).not.toHaveBeenCalled();
+      expect(draft.content).toBe('hold this');
+
+      laptop.setStatus('connected');
+      await tick();
+      const answered = getByTestId('approval-allow') as HTMLButtonElement;
+      expect(answered.disabled).toBe(false);
+      expect(answered.getAttribute('title')).toBeNull();
+      await fireEvent.click(answered);
+      expect(respond).toHaveBeenCalledTimes(1);
+    } finally {
+      revokeBackendScopes('laptop');
+      resetStagedBackends();
+      __resetEntityIndexForTest();
+    }
+  });
+
+  it('offers no Stop for a turn on an unreachable computer, and says why', async () => {
+    const laptop = stageBackend({ name: 'Laptop' });
+    try {
+      await grantBackendScopes('laptop', ['threads:read', 'threads:operate']);
+      noteThread('thread-1', 'laptop', 0);
+      const pane = createThreadPane();
+      pane.replaceThread(makeTestThread({ id: 'thread-1' }));
+      pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 0 });
+      const draft = await buildDraft('thread-1');
+      const interrupt = setBindingMock('InterruptTurn', async () => {});
+      const { getByTestId, queryByTestId } = render(Composer, { props: { pane, draft } });
+      expect(queryByTestId('composer-interrupt')).not.toBeNull();
+
+      laptop.setStatus('reconnecting');
+      await tick();
+      expect(queryByTestId('composer-interrupt')).toBeNull();
+      const button = getByTestId('composer-send') as HTMLButtonElement;
+      expect(button.disabled).toBe(true);
+      expect(button.getAttribute('title')).toBe('Unavailable while this computer is offline');
+      await fireEvent.click(button);
+      expect(interrupt).not.toHaveBeenCalled();
+      expect(getActiveTurn('thread-1')).not.toBeNull();
+
+      laptop.setStatus('connected');
+      await tick();
+      await fireEvent.click(getByTestId('composer-interrupt'));
+      expect(interrupt).toHaveBeenCalledTimes(1);
+    } finally {
+      revokeBackendScopes('laptop');
+      resetStagedBackends();
+      __resetEntityIndexForTest();
+    }
   });
 
   it('materializes a placeholder and sends through the same draft store', async () => {

@@ -33,7 +33,8 @@
   import { addErrorToast } from '../../../stores/toast.svelte';
   import { userFacingError } from '../../../utils/userFacingError';
   import { canOfferConversationTransfer, openConversationTransfer, supportsConversationTransfer } from '../../../stores/conversationTransfers.svelte';
-  import { hasScope } from '../../../transport/scopes';
+  import { scopeGrant } from '../../../transport/scopes';
+  import { grantBlockedTitle } from '../../../transport/scopeRefusal';
 
   interface Props {
     pane: ThreadPane;
@@ -66,7 +67,7 @@
     const entry = attachedBackendEntry(activeKey);
     return entry ? backendDisplayName(entry) : 'Computer';
   });
-  let canTransfer = $derived(Boolean(pane.thread && isLocked && canOfferConversationTransfer(pane.thread) && hasScope('threads:operate', activeKey)));
+  let canTransfer = $derived(Boolean(pane.thread && isLocked && canOfferConversationTransfer(pane.thread) && scopeGrant('threads:operate', activeKey) === 'granted'));
   let selectable = $derived(!isLocked || canTransfer);
   // Read by a host that draws its own trigger (the compact chat header's
   // facts line): the label, and whether a tap does anything.
@@ -88,7 +89,7 @@
 
   async function selectMachine(key: BackendKey): Promise<void> {
     if (!selectable || switching) return;
-    if (!backendReachable(key) || !hasScope('threads:operate', key)) return;
+    if (!backendReachable(key) || scopeGrant('threads:operate', key) !== 'granted') return;
     const thread = pane.thread;
     if (!thread) return;
     if (key === activeKey) {
@@ -182,18 +183,19 @@
       <Menu ariaLabel="Computer" onClose={closeMenu}>
         {#each backends as entry (entry.id)}
           {@const reachable = backendReachable(entry.id)}
-          {@const viewOnly = !hasScope('threads:operate', entry.id)}
-          {@const transferUnavailable = isLocked && entry.id !== activeKey && (!supportsConversationTransfer(entry.id) || !hasScope('threads:operate', entry.id))}
+          {@const grant = scopeGrant('threads:operate', entry.id)}
+          {@const viewOnly = grant === 'refused'}
+          {@const transferUnavailable = isLocked && entry.id !== activeKey && !supportsConversationTransfer(entry.id)}
           <MenuItem
             label={backendDisplayName(entry)}
             description={!reachable ? backendOfflineLabel(entry.id) : viewOnly ? 'View only' : transferUnavailable ? 'Update required' : isLocked && entry.id !== activeKey ? 'Move or copy conversation…' : undefined}
             checked={entry.id === activeKey}
-            disabled={!reachable || viewOnly || transferUnavailable}
+            disabled={!reachable || grant !== 'granted' || transferUnavailable}
             title={!reachable
               ? 'This computer is offline right now.'
               : viewOnly
                 ? 'This connection can view threads but cannot create or move them'
-                : undefined}
+                : grantBlockedTitle(grant)}
             onSelect={() => void selectMachine(entry.id)}
           />
         {/each}

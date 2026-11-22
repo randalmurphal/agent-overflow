@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { projectHasScope } from '../../transport/entityScopes';
+  import { projectScopeGrant } from '../../transport/entityScopes';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
   // What deleting a project involves when it owns workflow work (D25).
   //
   // Informational, not a consent gate: deletion is cleanup. It removes the runs
@@ -36,7 +37,8 @@
   }: Props = $props();
 
   // Deleting a project is thread/project bookkeeping.
-  let ungranted = $derived(!projectHasScope('threads:operate', preview.projectId));
+  let grant = $derived(projectScopeGrant('threads:operate', preview.projectId));
+  let ungranted = $derived(grant !== 'granted');
   let workSummary = $derived(
     cleanupSummary(preview.runCount, preview.liveRunIds.length),
   );
@@ -85,7 +87,7 @@
       variant="danger"
       size="sm"
       testId="project-delete-confirm"
-      title={ungranted ? 'Not granted to this device' : undefined}
+      title={grantBlockedTitle(grant)}
       onclick={onConfirm}
       disabled={ungranted || submitting}
       loading={submitting}
