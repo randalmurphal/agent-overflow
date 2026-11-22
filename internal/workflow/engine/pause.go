@@ -419,12 +419,18 @@ func resumeNote(reason Reason, context resumeContext) string {
 		note = "resumed after the workflow loop limit was exhausted"
 	case ReasonRetriesExhausted:
 		note = "resumed after the phase ran out of retries"
+	// Paused keeps the default note; the rest are not continuable and never reach here.
+	case ReasonPaused, ReasonGate, ReasonQuestion, ReasonStuck, ReasonStalled, ReasonBudgetExhausted,
+		ReasonCheckFailedGenuine, ReasonAgentError, ReasonWiringError, ReasonDisposition,
+		ReasonSetupFailed, ReasonTakenOver, ReasonChildFailed:
 	}
 	switch context {
 	case resumeContextUnavailable:
 		return note + "; " + continuationUnavailableNote
 	case resumeContextNotStarted:
 		return note + "; the parked attempt never started a provider turn, so run its full prompt now"
+	case resumeContextAvailable:
+		fallthrough
 	default:
 		return note + "; " + continuationAvailableNote
 	}
@@ -469,6 +475,8 @@ func (e *Engine) resumeCallPhase(item *runtimeItem) error {
 		return e.resumeItem(child.ID)
 	case StateRunning:
 		return nil // Already live; the parent is simply waiting on it again.
+	case StateDone, StateFailed, StateCancelled:
+		fallthrough
 	default:
 		// The child finished while the parent was parked, so nothing will
 		// re-enter the parent on its own. Settle it now.

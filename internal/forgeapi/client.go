@@ -450,9 +450,10 @@ func (c *Client) settle(ctx context.Context, ex *exchange, answered *http.Reques
 			}
 		}
 		return out, false, result.err
-	default:
+	case outcomeNotFound, outcomeStatus:
 		return nil, false, result.err
 	}
+	panic(fmt.Sprintf("forgeapi: response outcome %d", result.outcome))
 }
 
 // observe records the response's quota and returns it.

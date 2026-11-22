@@ -261,6 +261,18 @@ func (a *App) parkedOn(token string) bool {
 	return a.threadRequests.parked[token] > 0
 }
 
+// requestsHeld is parkedOn for several tokens under one read of the
+// registry, each named in the result.
+func (a *App) requestsHeld(tokens []string) map[string]bool {
+	a.threadRequests.mu.Lock()
+	defer a.threadRequests.mu.Unlock()
+	out := make(map[string]bool, len(tokens))
+	for _, token := range tokens {
+		out[token] = a.threadRequests.parked[token] > 0
+	}
+	return out
+}
+
 // requestWaitActive reports whether a call is parked on this key. The
 // collector checks it under the key's settle lock before queuing a wake, and
 // the remote completion watcher checks it before queuing a completion: the
@@ -497,6 +509,9 @@ type waitRequestOutcome struct {
 // willing to end on. That is what lets `thread_status` end on a settlement
 // past a revision, on a thread coming to rest, and on a target that became
 // blocked on a person, without this function knowing any of the three.
+//
+// thread_status parks here. A call that starts a request registers before it
+// dispatches the message (holdNewRequest) and parks with parkRequest.
 //
 // The call is registered before its first check, so one that finds the
 // answer already there is held as well as one that parks, and it stays

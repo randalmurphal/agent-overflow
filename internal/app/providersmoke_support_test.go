@@ -209,9 +209,7 @@ func (c *providerSmokeCollector) snapshot() ([]providerSmokeEntry, int) {
 // text when `claude --json-schema` refuses a schema at spawn. EventError is
 // where Codex's per-turn `outputSchema` rejection arrives.
 func (c *providerSmokeCollector) observeProviderEvent(event provider.ProviderEvent) {
-	switch event.Kind {
-	case provider.EventError, provider.EventAPIRetry, provider.EventSessionStatus:
-	default:
+	if event.Kind != provider.EventError && event.Kind != provider.EventAPIRetry && event.Kind != provider.EventSessionStatus {
 		return
 	}
 	if event.Kind == provider.EventSessionStatus && strings.TrimSpace(event.Content) != "error" {

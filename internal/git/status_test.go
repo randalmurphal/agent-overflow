@@ -1208,6 +1208,7 @@ func countPatchAddsDels(patch string) (insertions, deletions int) {
 			case strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---"):
 				deletions++
 			}
+		case unidiff.HunkHeader, unidiff.Context, unidiff.NoNewline:
 		}
 	}
 	return insertions, deletions

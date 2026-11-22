@@ -134,6 +134,8 @@ export function createAgentScopeView(
     get hasMoreNewer() { return window.hasMoreNewer; },
     get loadingOlder() { return window.loadingOlder; },
     get loadingNewer() { return window.loadingNewer; },
+    get olderStalled() { return window.olderStalled; },
+    get newerStalled() { return window.newerStalled; },
     get oldestLoadedCursor() { return window.oldestLoadedCursor; },
     get newestLoadedCursor() { return window.newestLoadedCursor; },
     get oldestLoadedTurnIndex() { return window.oldestLoadedTurnIndex; },

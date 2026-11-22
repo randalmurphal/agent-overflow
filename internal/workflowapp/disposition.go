@@ -257,6 +257,8 @@ func (s *Service) landDisposition(ctx context.Context, receipt *DispositionRecei
 		}
 		receipt.PRRef, receipt.SHA = prRef, sha
 		return nil
+	case dispositionDiscard:
+		fallthrough
 	default:
 		return fmt.Errorf("workflow disposition %s: %q does not land a branch", item.ID, action)
 	}

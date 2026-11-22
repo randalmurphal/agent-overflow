@@ -112,6 +112,10 @@ type IsolationConfig struct {
 	// one provider, so a spec that sets a usage answer is not held behind a
 	// probe the boot just made. Zero keeps the product gap.
 	UsageProbeGap time.Duration
+	// UsagePollInterval replaces the usage poll's tick, so a spec that
+	// asserts what the readings it sets did can keep the poll from taking
+	// one of its own in between. Zero keeps the product tick.
+	UsagePollInterval time.Duration
 	// WorkerPromptLease replaces workerPromptLease, how long a worker's
 	// prompt stays routed to its spawner on a paired computer without that
 	// computer saying it holds it, so a test can see it reach the person
@@ -149,6 +153,7 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 	a.workerPromptLeaseOverride = config.WorkerPromptLease
 	a.ownerOpsOmitted = config.OmitOwnerOps
 	a.usageProbeGap = config.UsageProbeGap
+	a.usagePollInterval = config.UsagePollInterval
 	a.transferPendingRetry = config.TransferPendingRetry
 	a.prUpdates.interval = config.PRUpdateInterval
 	a.prUpdates.retryBase = config.PRUpdateRetryBase

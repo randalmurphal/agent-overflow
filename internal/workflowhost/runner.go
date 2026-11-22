@@ -581,6 +581,9 @@ func workflowOutcomeCarriesEnvelope(kind engine.OutcomeKind) bool {
 	switch kind {
 	case engine.OutcomeDone, engine.OutcomeQuestion, engine.OutcomeStuck:
 		return true
+	case engine.OutcomeStalled, engine.OutcomeTransientExhausted, engine.OutcomeProviderUsageLimited,
+		engine.OutcomeExecutionFailure, engine.OutcomeStopped, engine.OutcomeSetupFailure:
+		fallthrough
 	default:
 		return false
 	}

@@ -214,12 +214,33 @@ request generation, and relevant catalog or mutation revision before applying.
 Ownership moves invalidate thread history stamps, item caches, interrupt state,
 pending reads, and watched-thread routing for the old owner.
 
-`catalogLoad.svelte.ts` holds whether each computer's thread and project
-catalogs have loaded, and owns their retries until they do. A catalog that
-has not loaded is never presented as empty. Every read settles there: a
-failure inside `readComputerRows`, an answer in the `commit` callback that
-commits its rows. `readComputerRows` calls `commit` in the same synchronous
-block that replays local mutations; never commit an answer after an `await`.
+`catalogLoad.svelte.ts` holds whether each computer's thread, project and
+group catalogs have loaded, and owns their retries: one timer per registered
+reader and computer, armed while any catalog that reader covers wants one and
+no attempt is in flight. Every catalog read, whatever started it, is an
+attempt (`beginCatalogAttempt`) from its begin until `computerCatalogReads.ts`
+releases it, when it ends or a newer read supersedes it: beginning one
+consumes the retry and cancels the armed timer, so a retry never supersedes
+a live read, and Retry then only restarts the schedule. A read past its
+startup deadline whose catalog has not loaded is the one exception: its
+attempt ends there and one replacement, which waits for its answer, follows
+on the retry schedule; a loaded catalog waits for the late outcome. A catalog
+that has not loaded is never presented as empty; a loaded one that fails
+shows its error beside the rows it keeps. Every read settles there: a
+failure inside `commitShares` (`computerRows.ts`), an answer in the `commit`
+callback that commits its rows. Answers commit in the same synchronous block
+that replays local mutations; never commit an answer after an `await`.
+
+A computer's threads and groups are one list in the sidebar, read only as a
+pair by `loadThreadCatalogs` (`threadCatalogs.ts`), which owns their
+supersession, commit timing, the sidebar listing (`catalogTreeListed`) and
+the rows the boot's layout restore validates against. A listed computer's
+two answers commit together once neither read is out, so its rows change
+arrangement at most once per round. The pair is atomic in the sidebar
+without exception: when one read fails, on any attempt, the other's answer is
+never listed. While a catalog keeps failing, the sidebar shows its error row
+with Retry beside the last complete pair, or alone if there was none, and
+never a half-arranged list. The module comment has the rules.
 
 Only a newer read of the same computer supersedes a sidebar catalog read.
 Change thread, project and group rows through the catalog writer's `mutate`,

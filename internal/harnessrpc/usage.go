@@ -1,7 +1,9 @@
 package harnessrpc
 
 import (
+	"context"
 	"errors"
+	"time"
 
 	"agent-overflow/internal/provider/claude/claudefake"
 )
@@ -15,10 +17,19 @@ type HarnessClaudeUsageSpec struct {
 	Limits []claudefake.UsageLimit `json:"limits,omitempty"`
 }
 
+// harnessUsageReadTimeout bounds the read and auto-switch's decision on it.
+// It stays below the e2e client's RPC wait (RPC_TIMEOUT_MS, 15 s), so a call
+// that cannot settle answers with what did not settle instead of the
+// client's bare timeout.
+const harnessUsageReadTimeout = 10 * time.Second
+
 // HarnessSetClaudeUsage sets or clears the isolated Claude usage answer for
-// one identity, then requests a reading of the selected Claude account so a
-// caller need not wait for the poll. Reset clears every answer.
-func (h *Harness) HarnessSetClaudeUsage(spec HarnessClaudeUsageSpec) error {
+// one identity, then reads the selected Claude account. It returns once that
+// reading is cached and auto-switch has decided on it, so a caller can assert
+// what the reading did or did not change; a failed read, or a decision not
+// made within harnessUsageReadTimeout, is its error. Reset clears every
+// answer.
+func (h *Harness) HarnessSetClaudeUsage(ctx context.Context, spec HarnessClaudeUsageSpec) error {
 	if h.config.Host == nil {
 		return errors.New("harness host unavailable")
 	}
@@ -34,6 +45,7 @@ func (h *Harness) HarnessSetClaudeUsage(spec HarnessClaudeUsageSpec) error {
 	} else if err := fake.Set(spec.Email, spec.Limits); err != nil {
 		return err
 	}
-	h.config.Host.RequestClaudeUsageReading()
-	return nil
+	ctx, cancel := context.WithTimeout(ctx, harnessUsageReadTimeout)
+	defer cancel()
+	return h.config.Host.ReadClaudeUsage(ctx)
 }

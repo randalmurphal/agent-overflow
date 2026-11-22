@@ -6,7 +6,7 @@ import { takePinnedBackend, detachBackend } from '../transport/backends';
 import { __resetEntityIndexForTest, currentThreadRow, noteThread, projectBackend, resolveThreadBackend } from '../transport/entityIndex';
 import { addProjectLocal, getProjects, isLoaded, refreshProjects, resetProjectsForTest } from './projects.svelte';
 import { getToasts } from './toast.svelte';
-import { loadThreads } from './threads.svelte';
+import { loadThreadCatalogs } from './threadCatalogs';
 import { setBackendIdentityFromBootstrap } from '../transport/backendIdentity';
 import { writeFrontendValue } from './frontendStorage';
 import { preferredProjectTarget, rememberProjectTarget } from './projectTargets';
@@ -175,9 +175,9 @@ describe('unavailable computer catalogs', () => {
     const old = deferred<Thread[]>();
     const next = deferred<Thread[]>();
     const read = setBindingMock('ListThreads', () => old.promise);
-    const startup = loadThreads();
+    const startup = loadThreadCatalogs();
     read.mockImplementation(() => next.promise);
-    const reconnect = loadThreads();
+    const reconnect = loadThreadCatalogs();
     const current = [{ id: 'saved-pane', ownershipEpoch: 1 }] as Thread[];
     if (winnerFirst) { next.resolve(current); await reconnect; }
     old.resolve([]);

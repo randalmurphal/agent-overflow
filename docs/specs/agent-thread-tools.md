@@ -1225,7 +1225,10 @@ A wait ends when the request settles (see Wakes for what settles it),
 when the target becomes blocked on a person (a pending approval or a
 question to the user: the wait returns `blocked` and the request stays
 open), or when the time runs out. Settled: the answer is in the reply,
-and the request is done; the reply is the delivery. Any other end of a
+and the request is done; the reply is the delivery. The call holds its
+token from before its message is sent until its reply is written, at any
+wait, so an answer that lands before the call reads the request is in the
+reply and no wake is queued for it. Any other end of a
 positive wait (timed out, blocked, or the caller's turn interrupted)
 returns `backgrounded` or `blocked` with the token, the work continues,
 and the answer arrives later as a message, exactly as a remote job's

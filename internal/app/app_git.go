@@ -608,6 +608,8 @@ func (a *App) ensureWorkspaceChangeAllowed(action, workspace string, threads []s
 		return fmt.Errorf("cannot %s while an agent is responding in it", action)
 	case workBackgroundTasks:
 		return fmt.Errorf("cannot %s while %d background task(s) are running in it", action, work.count)
+	case workAwaitingAnswer, workQueuedMessages, workShellCommand, workTerminal, workWorktreeSetup, workRemoteWatch, workRemoteJob, workWorkflow, workProviderUpdate, workAgentWatch:
+		fallthrough
 	default:
 		return fmt.Errorf("cannot %s while %s", action, work.kind)
 	}
@@ -673,6 +675,8 @@ func (a *App) threadWorkBlockReason(threadID string, handled ...workKind) (strin
 		return work.kind.String(), nil
 	case workBackgroundTasks:
 		return fmt.Sprintf("%d background task(s) are running", work.count), nil
+	case workAwaitingAnswer, workQueuedMessages, workShellCommand, workTerminal, workWorktreeSetup, workRemoteWatch, workRemoteJob, workWorkflow, workProviderUpdate, workAgentWatch:
+		fallthrough
 	default:
 		return work.kind.String(), nil
 	}

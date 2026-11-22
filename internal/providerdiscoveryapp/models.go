@@ -21,6 +21,8 @@ func (s *Service) ModelsForProvider(ctx context.Context, providerName string) (p
 		return provider.ModelCatalog{Models: models, Provenance: provider.CatalogLive}, nil
 	case provider.ClaudeProbeEnrichedCatalog:
 		return s.ClaudeCatalog(providerName), nil
+	case provider.StaticModelCatalog:
+		fallthrough
 	default:
 		return provider.ModelCatalog{
 			Models:     provider.ModelsForProvider(providerName),

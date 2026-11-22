@@ -200,6 +200,7 @@ func (a *App) reconcileRemotePrompts(spawn store.ThreadRequest, listed []ThreadA
 			prompt.state, prompt.closedAt, prompt.held = remotePromptClosed, now, false
 		case remotePromptReturned:
 			prompt.state, prompt.closedAt = remotePromptClosed, now
+		case remotePromptAnswering, remotePromptAnswered, remotePromptClosed:
 		}
 		if prompt.state == remotePromptClosed && prompt.delivery != "" {
 			withdraw = append(withdraw, *prompt)

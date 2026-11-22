@@ -196,8 +196,10 @@ func (a *App) probeThreadWork(kind workKind, threadID string) (int, error) {
 		return boolCount(pending), err
 	case workAgentWatch:
 		return boolCount(len(a.agentWatchDirs(threadID)) > 0), nil
+	case workWorktreeSetup, workRemoteJob, workWorkflow, workProviderUpdate:
+		// These kinds belong to a directory or to the computer.
+		fallthrough
 	default:
-		// The other kinds belong to a directory or to the computer.
 		return 0, nil
 	}
 }
@@ -214,8 +216,10 @@ func (a *App) probeDirWork(kind workKind, dir string) (bool, error) {
 		return a.worktreeSetupService().HasRunningPath(dir), nil
 	case workAgentWatch:
 		return slices.ContainsFunc(a.agentWatchDirs(""), func(running string) bool { return pathWithin(running, dir) }), nil
+	case workTurn, workAwaitingAnswer, workQueuedMessages, workBackgroundTasks, workRemoteWatch, workRemoteJob, workWorkflow, workProviderUpdate:
+		// These kinds belong to a thread or to the computer.
+		fallthrough
 	default:
-		// The other kinds belong to a thread or to the computer.
 		return false, nil
 	}
 }
@@ -272,7 +276,7 @@ func (a *App) probeComputerWork(kind workKind) (int, error) {
 			}
 		}
 		return 0, nil
-	default:
+	case workAwaitingAnswer, workWorktreeSetup, workRemoteWatch, workAgentWatch:
 		// workAwaitingAnswer is part of the triage read under workTurn. A
 		// setup recipe holds a work admission lease for its whole run, which
 		// the update's quiescence reports before it asks here. A remote
@@ -280,6 +284,8 @@ func (a *App) probeComputerWork(kind workKind) (int, error) {
 		// assistant's watch: the row of an interval run cut short stays
 		// `running` and the next boot runs it again, and a long-running
 		// watch starts afresh (recoverAgentWakesAtBoot).
+		fallthrough
+	default:
 		return 0, nil
 	}
 }

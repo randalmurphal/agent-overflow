@@ -3,6 +3,7 @@ package provideraccountapp
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
@@ -18,7 +19,7 @@ func (m *Manager) CheckClaudeTransferAccount(ctx context.Context, binary string)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	_, err := m.RunAccountProbe(ProbeRequest{ProviderName: string(provider.Claude), Validate: checkClaudeTransferCredential, Probe: func(life context.Context) (provider.AccountInfo, error) {
+	_, err := m.RunAccountProbe(ProbeRequest{ProviderName: string(provider.Claude), Context: ctx, Validate: checkClaudeTransferCredential, Probe: func(life context.Context) (provider.AccountInfo, error) {
 		probeCtx, cancel := context.WithCancel(life)
 		stop := context.AfterFunc(ctx, cancel)
 		defer stop()
@@ -47,10 +48,9 @@ func (m *Manager) CheckCodexTransferAccount(ctx context.Context, binary string) 
 	}
 	defer endWork()
 	lock := m.reconcileMutex(string(provider.Codex))
-	lock.Lock()
-	defer lock.Unlock()
-	if err := ctx.Err(); err != nil {
-		return err
+	if err := lock.LockContext(ctx); err != nil {
+		return fmt.Errorf("wait for the codex account lock to check the transfer's Codex account: %w", err)
 	}
+	defer lock.Unlock()
 	return codex.CheckTransferAccount(ctx, m.CodexProbeConfig(binary, nil))
 }

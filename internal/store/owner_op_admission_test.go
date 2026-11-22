@@ -105,7 +105,7 @@ func TestOwesWorkerEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	owes(false, "lead", "with the archive not yet owed")
-	owed, err := s.OweRemoteArchives("lead")
+	owed, err := s.OweRemoteArchives("lead", nil)
 	if err != nil || len(owed) != 1 {
 		t.Fatalf("owe: %+v, %v", owed, err)
 	}
@@ -120,7 +120,7 @@ func TestOwesWorkerEnd(t *testing.T) {
 	if _, _, err := s.ArchiveThread("lead"); err != nil {
 		t.Fatal(err)
 	}
-	owed, err = s.OweRemoteArchives("lead")
+	owed, err = s.OweRemoteArchives("lead", nil)
 	if err != nil || len(owed) != 1 {
 		t.Fatalf("owe again: %+v, %v", owed, err)
 	}

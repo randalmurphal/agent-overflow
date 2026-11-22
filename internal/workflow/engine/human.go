@@ -482,6 +482,8 @@ func (e *Engine) continueHumanDecision(item *runtimeItem, decision def.RouteDeci
 		return e.transition(item, StateFailed, ReasonCheckFailedGenuine)
 	case def.DecisionRetriesExhausted:
 		return e.transition(item, StateNeedsHuman, ReasonLoopLimitExhausted)
+	case def.DecisionPark, def.DecisionHuman, def.DecisionNoMatch:
+		fallthrough
 	default:
 		return fmt.Errorf("continue human gate %q: unsupported decision %q", item.item.ID, decision.Kind)
 	}

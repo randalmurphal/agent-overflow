@@ -13,7 +13,16 @@
 // A group longer than the preview shows its first members and reveals the
 // rest like a project list, and the reveal persists through reload.
 // Collapse keeps only the focused member visible across pane switches,
-// backend updates and reload.
+// backend updates and reload. With either catalog's answer held, a
+// project's threads and groups are not listed until both have answered,
+// then appear in their final arrangement and do not move, at open and
+// after reload. A listed project's refresh whose group answer comes past
+// the read deadline keeps its rows still until that answer lands, then
+// changes arrangement once. A refresh whose thread read fails, and whose
+// retry's fails again, keeps its rows as they were beside the failure, the
+// new group's answer never shown alone, until a complete pair changes the
+// arrangement once.
+import type { Page } from '@playwright/test';
 import { test, expect, type SeedResult } from './fixtures.js';
 import { attachWorktree, seedWorktreeProject } from './worktree-removal-helpers.js';
 
@@ -290,6 +299,349 @@ test('a large group shows its first members, reveals the rest, and keeps the rev
   await expect(showMore).toHaveText('Show 3 More');
 });
 
+const LIST_THREADS = 1090132042;
+const LIST_THREAD_GROUPS = 2176447381;
+
+interface SidebarFrame { order: string; tops: number[] }
+
+// Every animation frame, the sidebar's rows in order with where each one is
+// drawn, and the RPC replies the page's socket has received.
+function recordSidebar(): void {
+  const state = { frames: [] as SidebarFrame[], replies: [] as string[] };
+  (window as unknown as { __sidebar: typeof state }).__sidebar = state;
+  const Native = window.WebSocket;
+  window.WebSocket = class extends Native {
+    constructor(...args: ConstructorParameters<typeof WebSocket>) {
+      super(...args);
+      this.addEventListener('message', (event) => {
+        if (typeof event.data !== 'string') return;
+        const frame = JSON.parse(event.data) as { type?: string; id?: string };
+        if (frame.type === 'rpc' && frame.id) state.replies.push(frame.id);
+      });
+    }
+  };
+  const rows = '[data-sidebar-group-id], [data-sidebar-thread-id], [data-testid="thread-group-show-more"], [data-testid="thread-group-show-less"]';
+  const sample = () => {
+    const els = Array.from(document.querySelectorAll(rows));
+    state.frames.push({
+      order: els.map((el) => el.getAttribute('data-sidebar-group-id') ?? el.getAttribute('data-sidebar-thread-id') ?? el.getAttribute('data-testid')).join(' '),
+      tops: els.map((el) => el.getBoundingClientRect().top),
+    });
+    requestAnimationFrame(sample);
+  };
+  requestAnimationFrame(sample);
+}
+
+async function sidebarRecord(page: Page): Promise<{ frames: SidebarFrame[]; replies: string[] }> {
+  return await page.evaluate(() => {
+    const { frames, replies } = (window as unknown as { __sidebar: { frames: SidebarFrame[]; replies: string[] } }).__sidebar;
+    return { frames: [...frames], replies: [...replies] };
+  });
+}
+
+async function nextFrames(page: Page, count: number): Promise<void> {
+  await page.evaluate(async (frames) => {
+    for (let i = 0; i < frames; i++) await new Promise((resolve) => requestAnimationFrame(resolve));
+  }, count);
+}
+
+// The arrangements the sidebar showed, each once, in order, without the
+// frames it listed nothing.
+function arrangements(frames: SidebarFrame[]): string[] {
+  const shown: string[] = [];
+  for (const { order } of frames) if (order !== '' && order !== shown.at(-1)) shown.push(order);
+  return shown;
+}
+
+// Frames in which a row is drawn more than a pixel from where the frame
+// before drew it: a slide, or a shift from above. A row entering scales
+// from .98, which moves its top by a fraction of a pixel.
+function movedFrames(frames: SidebarFrame[]): number {
+  const { slid, shifted } = movement(frames);
+  return slid + shifted;
+}
+
+// The moved frames by kind. `shifted`: every row moved by the same distance,
+// which is the whole list pushed by something entering or leaving above it,
+// such as the catalog status row. `slid`: rows moved by different distances,
+// which is rows changing places.
+function movement(frames: SidebarFrame[]): { slid: number; shifted: number } {
+  let slid = 0;
+  let shifted = 0;
+  let previous = new Map<string, number>();
+  for (const { order, tops } of frames) {
+    const current = new Map(order === '' ? [] : order.split(' ').map((id, i) => [id, tops[i]] as const));
+    const deltas = [...current].filter(([id]) => previous.has(id)).map(([id, top]) => top - previous.get(id)!);
+    if (deltas.some((delta) => Math.abs(delta) > 1)) {
+      if (deltas.every((delta) => Math.abs(delta - deltas[0]) <= 1)) shifted++;
+      else slid++;
+    }
+    previous = current;
+  }
+  return { slid, shifted };
+}
+
+// Whichever of the two catalogs answers last, a project's thread rows and
+// group rows first appear together and in their final arrangement, at open
+// and after reload. Shown one catalog ahead of the other, the threads list
+// ungrouped (or the group alone) and then slide into place, under the
+// pointer of whoever is clicking.
+for (const held of ['groups', 'threads'] as const) {
+  test(`threads and their groups first appear together when the ${held} answer last`, async ({ harness, page }) => {
+    const titles = Array.from({ length: 11 }, (_, i) => `Member ${i}`);
+    const seed = await harness.rpc<SeedResult>('HarnessSeed', seedProject(`group-together-${held}`, [...titles, 'Outside']));
+    const { projectId, threadIds } = seed.projects[0];
+    const group = await harness.rpc<ThreadGroup>('CreateThreadGroup', projectId, 'Big group');
+    await harness.rpc('SetThreadGroup', threadIds.slice(0, 11), group.id);
+
+    const heldMethod = held === 'groups' ? LIST_THREAD_GROUPS : LIST_THREADS;
+    const otherMethod = held === 'groups' ? LIST_THREADS : LIST_THREAD_GROUPS;
+    const requests = new Map<string, number>();
+    const otherAnswers: string[] = [];
+    let holding = true;
+    let heldReplies: Array<() => void> = [];
+    await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
+      const server = socket.connectToServer();
+      socket.onMessage((message) => {
+        const frame = JSON.parse(String(message)) as { type?: string; id?: string; methodId?: number };
+        if (frame.type === 'rpc' && frame.id && frame.methodId !== undefined) requests.set(frame.id, frame.methodId);
+        server.send(message);
+      });
+      server.onMessage((message) => {
+        const frame = JSON.parse(String(message)) as { type?: string; id?: string };
+        const method = frame.type === 'rpc' && frame.id ? requests.get(frame.id) : undefined;
+        if (method === heldMethod && holding) {
+          heldReplies.push(() => socket.send(message));
+          return;
+        }
+        if (method === otherMethod) otherAnswers.push(frame.id!);
+        socket.send(message);
+      });
+    });
+    await page.addInitScript(recordSidebar);
+    const release = () => {
+      holding = false;
+      for (const send of heldReplies) send();
+      heldReplies = [];
+    };
+    const members = page.locator('[data-group-member] [data-sidebar-thread-id]');
+
+    // Held: the other catalog has answered and the page has received it,
+    // two frames have painted since, and nothing of the project's threads
+    // or groups is listed, only the loading row.
+    async function expectHeldThenTogether(final: { members: number; footer: string }): Promise<void> {
+      await expect.poll(() => heldReplies.length).toBeGreaterThan(0);
+      await expect.poll(async () => (await sidebarRecord(page)).replies.some((id) => otherAnswers.includes(id))).toBe(true);
+      await nextFrames(page, 2);
+      expect(arrangements((await sidebarRecord(page)).frames)).toEqual([]);
+      await expect(page.getByTestId('sidebar-catalog-loading')).toBeVisible();
+
+      release();
+      await expect(members).toHaveCount(final.members);
+      await expect(page.getByTestId(final.footer)).toBeVisible();
+      await expect(page.locator(`[data-sidebar-thread-id="${threadIds[11]}"]`)).toBeVisible();
+      await expect(page.getByTestId('sidebar-catalog-status')).toHaveCount(0);
+      // Anything else that rearranged the list after it first appeared
+      // would show as a second arrangement here.
+      await nextFrames(page, 30);
+      const { frames } = await sidebarRecord(page);
+      const shown = arrangements(frames);
+      expect(shown).toHaveLength(1);
+      expect(movedFrames(frames)).toBe(0);
+      const order = shown[0].split(' ');
+      expect(order[0]).toBe(group.id);
+      expect(order.at(-1)).toBe(threadIds[11]);
+      expect(order.at(-2)).toBe(final.footer);
+    }
+
+    await harness.open(page);
+    await expectHeldThenTogether({ members: 8, footer: 'thread-group-show-more' });
+
+    await page.getByTestId('thread-group-show-more').click();
+    await expect(members).toHaveCount(11);
+
+    holding = true;
+    await page.reload();
+    await expectHeldThenTogether({ members: 11, footer: 'thread-group-show-less' });
+  });
+}
+
+// The page's startup read budget (computerRows.ts COMPUTER_READ_DEADLINE_MS).
+const READ_DEADLINE_MS = 2500;
+
+// A listed project whose frames were lost re-reads its threads and groups.
+// With the group reply held past the read deadline, the rows stay as they
+// were, without moving, until it lands, and then change arrangement once:
+// the thread answer never shows ahead of the groups it belongs to.
+test('a refresh whose group answer is late moves the rows once, when it lands', async ({ harness, page }) => {
+  const seed = await harness.rpc<SeedResult>('HarnessSeed', seedProject('group-refresh-late', ['Member A', 'Member B', 'Outside']));
+  const { projectId, threadIds } = seed.projects[0];
+
+  const requests = new Map<string, number>();
+  let losing = false;
+  let holding = false;
+  let heldReplies: Array<() => void> = [];
+  await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
+    const server = socket.connectToServer();
+    socket.onMessage((message) => {
+      const frame = JSON.parse(String(message)) as { type?: string; id?: string; methodId?: number };
+      if (frame.type === 'rpc' && frame.id && frame.methodId !== undefined) requests.set(frame.id, frame.methodId);
+      server.send(message);
+    });
+    server.onMessage((message) => {
+      const frame = JSON.parse(String(message)) as { type?: string; id?: string; events?: Array<{ channel?: string; seq?: number }>; channel?: string; seq?: number };
+      if (frame.type === 'rpc' && frame.id && requests.get(frame.id) === LIST_THREAD_GROUPS && holding) {
+        heldReplies.push(() => socket.send(message));
+        return;
+      }
+      // While losing, the thread frames arrive as a gap and the group frames
+      // not at all: the page learns of the change only by re-reading.
+      const lose = (event: { channel?: string; seq?: number }) => {
+        if (!losing) return event;
+        if (event.channel === 'thread-group:updated') return null;
+        if (event.channel === 'thread:updated') return { type: 'event', channel: event.channel, seq: event.seq, gap: true };
+        return event;
+      };
+      if (frame.type === 'event') {
+        const kept = lose(frame);
+        if (kept) socket.send(kept === frame ? message : JSON.stringify(kept));
+      } else if (frame.type === 'batch' && frame.events) {
+        socket.send(JSON.stringify({ ...frame, events: frame.events.map(lose).filter((event) => event !== null) }));
+      } else {
+        socket.send(message);
+      }
+    });
+  });
+  await page.addInitScript(recordSidebar);
+  await harness.open(page);
+  await expect(page.locator('[data-sidebar-thread-id]')).toHaveCount(3);
+  await nextFrames(page, 2);
+  const listedAt = (await sidebarRecord(page)).frames.length;
+  const initial = arrangements((await sidebarRecord(page)).frames.slice(listedAt - 1));
+  expect(initial).toHaveLength(1);
+
+  losing = true;
+  holding = true;
+  const group = await harness.rpc<ThreadGroup>('CreateThreadGroup', projectId, 'Made while lost');
+  await harness.rpc('SetThreadGroup', threadIds.slice(0, 2), group.id);
+  await expect.poll(() => heldReplies.length).toBeGreaterThan(0);
+  // The deadline passing is what this case is about: the thread answer is
+  // in, the group answer is not, and the page has given up waiting on time.
+  await page.evaluate((ms) => new Promise((resolve) => setTimeout(resolve, ms)), READ_DEADLINE_MS + 500);
+  await nextFrames(page, 2);
+  const held = (await sidebarRecord(page)).frames.slice(listedAt);
+  expect(arrangements(held)).toEqual(initial);
+  expect(movedFrames(held)).toBe(0);
+  await expect(page.locator(`[data-sidebar-group-id="${group.id}"]`)).toHaveCount(0);
+
+  losing = false;
+  holding = false;
+  for (const send of heldReplies.splice(0)) send();
+  await expect(page.locator(`[data-sidebar-group-id="${group.id}"]`)).toHaveCount(1);
+  await expect(page.locator('[data-group-member] [data-sidebar-thread-id]')).toHaveCount(2);
+  await nextFrames(page, 30);
+  const shown = arrangements((await sidebarRecord(page)).frames.slice(listedAt - 1));
+  expect(shown).toHaveLength(2);
+  expect(shown[0]).toBe(initial[0]);
+  expect(shown[1].split(' ')[0]).toBe(group.id);
+});
+
+// A listed project's refresh whose thread read fails: the group answer does
+// not show alone while the failure retries, on any attempt. The first two
+// thread replies after the frames are lost are replaced with a method error;
+// every thread reply after them is held, so no later round can commit, until
+// released.
+test('a refresh whose thread read fails, and then its retry\'s, keeps the rows still beside the failure, then the next retry moves them once', async ({ harness, page }) => {
+  const seed = await harness.rpc<SeedResult>('HarnessSeed', seedProject('group-refresh-failed', ['Member A', 'Member B', 'Outside']));
+  const { projectId, threadIds } = seed.projects[0];
+
+  const requests = new Map<string, number>();
+  let losing = false;
+  let failing = 0;
+  const failed: string[] = [];
+  let holding = false;
+  let heldReplies: Array<() => void> = [];
+  await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
+    const server = socket.connectToServer();
+    socket.onMessage((message) => {
+      const frame = JSON.parse(String(message)) as { type?: string; id?: string; methodId?: number };
+      if (frame.type === 'rpc' && frame.id && frame.methodId !== undefined) requests.set(frame.id, frame.methodId);
+      server.send(message);
+    });
+    server.onMessage((message) => {
+      const frame = JSON.parse(String(message)) as { type?: string; id?: string; events?: Array<{ channel?: string; seq?: number }>; channel?: string; seq?: number };
+      if (frame.type === 'rpc' && frame.id && requests.get(frame.id) === LIST_THREADS) {
+        if (failing > 0) {
+          failing--;
+          if (failing === 0) holding = true;
+          failed.push(frame.id);
+          socket.send(JSON.stringify({ type: 'rpc', id: frame.id, error: { code: 'method_error', message: 'list threads: disk I/O error' } }));
+          return;
+        }
+        if (holding) {
+          heldReplies.push(() => socket.send(message));
+          return;
+        }
+      }
+      const lose = (event: { channel?: string; seq?: number }) => {
+        if (!losing) return event;
+        if (event.channel === 'thread-group:updated') return null;
+        if (event.channel === 'thread:updated') return { type: 'event', channel: event.channel, seq: event.seq, gap: true };
+        return event;
+      };
+      if (frame.type === 'event') {
+        const kept = lose(frame);
+        if (kept) socket.send(kept === frame ? message : JSON.stringify(kept));
+      } else if (frame.type === 'batch' && frame.events) {
+        socket.send(JSON.stringify({ ...frame, events: frame.events.map(lose).filter((event) => event !== null) }));
+      } else {
+        socket.send(message);
+      }
+    });
+  });
+  await page.addInitScript(recordSidebar);
+  await harness.open(page);
+  await expect(page.locator('[data-sidebar-thread-id]')).toHaveCount(3);
+  await nextFrames(page, 2);
+  const listedAt = (await sidebarRecord(page)).frames.length;
+  const initial = arrangements((await sidebarRecord(page)).frames.slice(listedAt - 1));
+  expect(initial).toHaveLength(1);
+
+  // The refresh's thread reply and the next one, the retry's, fail; every
+  // thread reply after them is held.
+  losing = true;
+  failing = 2;
+  const group = await harness.rpc<ThreadGroup>('CreateThreadGroup', projectId, 'Made while failing');
+  await harness.rpc('SetThreadGroup', threadIds.slice(0, 2), group.id);
+  await expect(page.getByTestId('sidebar-catalog-failed')).toContainText(/disk I\/O error/i);
+  await expect.poll(async () => {
+    const { replies } = await sidebarRecord(page);
+    return failed.length === 2 && failed.every((id) => replies.includes(id));
+  }).toBe(true);
+  // The next retry's thread reply is held; its group answer is in.
+  await expect.poll(() => heldReplies.length).toBeGreaterThan(0);
+  await expect(page.getByTestId('sidebar-catalog-failed')).toContainText(/disk I\/O error/i);
+  await nextFrames(page, 2);
+  const held = (await sidebarRecord(page)).frames.slice(listedAt);
+  expect(arrangements(held)).toEqual(initial);
+  // The failure row enters above the list at the first failure and pushes
+  // every row down by its height, in one frame; at the second it is already
+  // there, and no row changes place.
+  expect(movement(held)).toEqual({ slid: 0, shifted: 1 });
+  await expect(page.locator(`[data-sidebar-group-id="${group.id}"]`)).toHaveCount(0);
+
+  losing = false;
+  holding = false;
+  for (const send of heldReplies.splice(0)) send();
+  await expect(page.locator(`[data-sidebar-group-id="${group.id}"]`)).toHaveCount(1);
+  await expect(page.locator('[data-group-member] [data-sidebar-thread-id]')).toHaveCount(2);
+  await expect(page.getByTestId('sidebar-catalog-status')).toHaveCount(0);
+  await nextFrames(page, 30);
+  const shown = arrangements((await sidebarRecord(page)).frames.slice(listedAt - 1));
+  expect(shown).toHaveLength(2);
+  expect(shown[0]).toBe(initial[0]);
+  expect(shown[1].split(' ')[0]).toBe(group.id);
+});
 
 for (const entry of ['button', 'menu'] as const) {
   test(`new thread from group ${entry} keeps membership through draft cleanup and first send`, async ({ harness, page }) => {

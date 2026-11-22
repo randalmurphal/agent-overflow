@@ -36,6 +36,10 @@ type ProbeRequest struct {
 	// Validate runs on a fresh identity/credential pair under the reconcile
 	// lock. Admission checks must never be satisfied by a display cache hit.
 	Validate func(provider.AccountInfo, *provideraccounts.CredentialSnapshot) error
+	// Context, when the caller has a bound of its own, ends the admission
+	// and the wait for the reconcile lock with it. Nil waits on the
+	// manager's lifetime.
+	Context context.Context
 }
 
 // runAccountProbe is the shared cache-aware probe orchestrator behind
@@ -46,7 +50,11 @@ type ProbeRequest struct {
 // for providers (Claude) where an empty AccountInfo is an unambiguous
 // "not logged in" signal.
 func (m *Manager) RunAccountProbe(r ProbeRequest) (provider.AccountInfo, error) {
-	endWork, err := m.beginWork(m.context())
+	ctx := r.Context
+	if ctx == nil {
+		ctx = m.context()
+	}
+	endWork, err := m.beginWork(ctx)
 	if err != nil {
 		return provider.AccountInfo{}, err
 	}
@@ -59,12 +67,15 @@ func (m *Manager) RunAccountProbe(r ProbeRequest) (provider.AccountInfo, error) 
 	}
 
 	reconcileMu := m.reconcileMutex(r.ProviderName)
-	reconcileMu.Lock()
+	if err := reconcileMu.LockContext(ctx); err != nil {
+		return provider.AccountInfo{}, fmt.Errorf("wait for the %s account lock to identify its account: %w", r.ProviderName, err)
+	}
 	if err := m.promoteActiveSlot(r.ProviderName); err != nil {
 		reconcileMu.Unlock()
 		return provider.AccountInfo{}, err
 	}
 	info, credential, err := m.runStableAccountProbe(
+		ctx,
 		r.ProviderName,
 		r.Probe,
 		m.identifyCanonicalClaudeCredential,
@@ -156,13 +167,24 @@ type claudeIdentifier func(info provider.AccountInfo, credential []byte) (provid
 // credential value. A provider may legitimately rotate credentials while its
 // probe initializes, so one changed read retries the probe. A second change is
 // treated as a concurrent native login and left for the next reconciliation.
+//
+// start is the caller's bound: once it has ended no probe starts, the retry
+// included. A probe that has started runs on the manager's lifetime, since
+// the CLI it starts can be rotating the login.
 func (m *Manager) runStableAccountProbe(
+	start context.Context,
 	providerName string,
 	probe func(context.Context) (provider.AccountInfo, error),
 	identifyClaude claudeIdentifier,
 ) (provider.AccountInfo, *provideraccounts.CredentialSnapshot, error) {
+	startProbe := func() (provider.AccountInfo, error) {
+		if err := start.Err(); err != nil {
+			return provider.AccountInfo{}, fmt.Errorf("stopped before starting the %s identity probe: %w", providerName, err)
+		}
+		return probe(m.context())
+	}
 	if m.credentials == nil {
-		info, err := probe(m.context())
+		info, err := startProbe()
 		return info, nil, err
 	}
 	for attempt := 0; attempt < 2; attempt++ {
@@ -186,7 +208,7 @@ func (m *Manager) runStableAccountProbe(
 		) {
 			return provider.AccountInfo{}, nil, errClaudeLoginExpired
 		}
-		info, err := probe(m.context())
+		info, err := startProbe()
 		if err != nil {
 			return provider.AccountInfo{}, nil, err
 		}

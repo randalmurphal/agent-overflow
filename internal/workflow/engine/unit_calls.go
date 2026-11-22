@@ -163,6 +163,8 @@ func (e *Engine) settleUnitCallChild(parent *runtimeItem, child store.WorkItem) 
 			return err
 		}
 		return e.advanceFanOut(parent)
+	case StateRunning, StateNeedsHuman:
+		fallthrough
 	default:
 		return nil // Still running or parked: the unit keeps waiting.
 	}

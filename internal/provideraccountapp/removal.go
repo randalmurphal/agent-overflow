@@ -30,7 +30,7 @@ func (m *Manager) RemoveProviderAccount(providerName, accountID string) error {
 	reconcileMu := m.reconcileMutex(providerName)
 	reconcileMu.Lock()
 	defer reconcileMu.Unlock()
-	if err := m.reconcileExternalProviderAccountWithMutexHeld(providerName); err != nil {
+	if err := m.reconcileExternalProviderAccountWithMutexHeld(m.context(), providerName); err != nil {
 		return fmt.Errorf("check current %s account before removal: %w", providerName, err)
 	}
 

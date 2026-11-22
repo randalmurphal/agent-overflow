@@ -108,6 +108,7 @@ func ExtractDiffMeta(patch string) DiffMeta {
 			} else if strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---") {
 				dm.Deletions++
 			}
+		case unidiff.Context, unidiff.NoNewline:
 		}
 	}
 

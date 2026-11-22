@@ -773,6 +773,11 @@ type App struct {
 	// created the successor and before it takes the old thread's locks
 	// (nextAssistantThread), so a test can rename or archive meanwhile.
 	handOffSuccessorMadeForTest func(oldThreadID, successorID string)
+	// assistantHandOffEndedForTest, when set, runs as soon as an assistant's
+	// handoff has ended and before the messages it kept are back in the old
+	// composer, holding that thread's mutation lock (endAssistantHandOff), so
+	// a test can start the next handoff at that moment.
+	assistantHandOffEndedForTest func(agentID string)
 	// remoteReplySettledForTest, when set, runs in a parked remote call's
 	// after-response work between the dismissal and the end of its wait.
 	remoteReplySettledForTest func()
@@ -860,6 +865,10 @@ type App struct {
 	// made and before the spawn names it (acceptRequest), so a test can hold
 	// an admitted spawn there.
 	spawnNamingForTest func(callerThreadID string)
+	// requestAckForTest, when set, runs in a spawn, send, ask or new
+	// assistant once its message is dispatched and before its ack reads the
+	// request (ackRequest), so a test can answer the request there.
+	requestAckForTest func(token string)
 	// peerAdmissionForTest, when set, runs in a paired computer's spawn,
 	// send or ask once its handler holds the token and before anything can
 	// admit it (runThreadPeerRequest), so a test can hold it there.
@@ -915,6 +924,15 @@ type App struct {
 	// threadID's archive decided to end it and before the store ends it
 	// (endArchiveWalk), so a test can archive the thread again then.
 	archiveWalkEndingForTest func(threadID string)
+	// ownerOpsDeliveringForTest, when set, runs once a door that owed owner
+	// operations is about to make its attempt at them (deliverOwnerOps), with
+	// the context its attempts run under, so a test can run the request sweep
+	// then or read the door's bound.
+	ownerOpsDeliveringForTest func(ctx context.Context)
+	// ownerOpWaitingForTest, when set, runs once a door's attempt at the
+	// operation owed for token found another under way and before it waits
+	// for it (beginOwnerOpSend).
+	ownerOpWaitingForTest func(token string)
 	// workerPromptAnsweringForTest, when set, runs once an answer claimed
 	// a routed prompt and before it is written to the worker
 	// (answerRoutedPrompt); an error it returns is that write's failure.
@@ -954,6 +972,10 @@ type App struct {
 	// paired computer (workerPromptLease) for a test. Zero keeps the
 	// product lease.
 	workerPromptLeaseOverride time.Duration
+	// ownerOpReachOverride replaces the bound on a door's attempt at what
+	// it owes paired computers (ownerOpReach) for a test. Zero keeps the
+	// product bound.
+	ownerOpReachOverride time.Duration
 	// ownerOpsOmitted answers agent_owner_op as a build before owner
 	// operations does (IsolationConfig.OmitOwnerOps). False serves them.
 	ownerOpsOmitted bool
@@ -968,6 +990,9 @@ type App struct {
 	// one provider for an end-to-end test (IsolationConfig). Zero keeps the
 	// product gap.
 	usageProbeGap time.Duration
+	// usagePollInterval replaces the usage poll's tick for an end-to-end
+	// test (IsolationConfig). Zero keeps the product tick.
+	usagePollInterval time.Duration
 	// dataDirOverride overrides the data directory root that initStores
 	// otherwise resolves via os.UserConfigDir(). The app's data lives in
 	// <root>/agent-overflow. Set by the --data-dir CLI flag (harness mode

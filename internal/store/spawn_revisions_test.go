@@ -76,7 +76,7 @@ func TestEndedRemoteSpawnKeepsHistoryAndOwesNoOwnerOperation(t *testing.T) {
 		if _, _, err := s.ArchiveThread("caller"); err != nil {
 			t.Fatal(err)
 		}
-		ops, err := s.OweRemoteArchives("caller")
+		ops, err := s.OweRemoteArchives("caller", nil)
 		if err != nil || len(ops) != 0 {
 			t.Fatalf("archive owes %+v, %v", ops, err)
 		}

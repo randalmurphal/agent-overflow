@@ -310,6 +310,7 @@ func (r healthReport) Worst() healthStatus {
 			return healthRed
 		case healthWarn:
 			worst = healthWarn
+		case healthOK, healthNA:
 		}
 	}
 	return worst

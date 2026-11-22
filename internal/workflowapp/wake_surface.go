@@ -454,6 +454,8 @@ func (s *Service) GateDecision(itemID string) (kind, label string) {
 			return "human", ""
 		case def.DecisionPark:
 			return "park", trace.Decision.Target
+		case def.DecisionAdvance, def.DecisionLoop, def.DecisionDone, def.DecisionFailed,
+			def.DecisionRetriesExhausted, def.DecisionNoMatch:
 		}
 		return "", ""
 	}

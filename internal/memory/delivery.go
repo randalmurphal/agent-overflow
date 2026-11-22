@@ -598,6 +598,7 @@ func (d *delivery) nameOf(part Part) string {
 		return "the project memory index"
 	case PartUser:
 		return "the user memory index"
+	case PartWarnings:
 	}
 	return "the memory maintenance warnings"
 }

@@ -175,6 +175,7 @@ func (a *App) defaultModelForProvider(providerName string) string {
 		if models, err, ok := a.cachedCodexModelsForBinary(a.providerBinaryPath(providerName)); ok && err == nil {
 			served = models
 		}
+	case provider.StaticModelCatalog:
 	}
 	hidden := a.currentSettings().HiddenModelsForProvider(providerName)
 	visible := func(m provider.ModelInfo) bool { return !m.Unlisted && !slices.Contains(hidden, m.Slug) }
