@@ -345,6 +345,54 @@ func TestProviderEventDrainWaitsOnlyForEventsQueuedBeforeIt(t *testing.T) {
 	}
 }
 
+// A stall returns once the events queued ahead of it are handled, so the
+// pending count read right after it is the stall alone, and it grows only by
+// the events queued behind the stall.
+func TestProviderEventStallReturnsOnceTheEventsAheadOfItAreHandled(t *testing.T) {
+	t.Parallel()
+	const threadID = "thread-stall-ahead"
+	var qs providerEventQueues
+	started := make(chan struct{})
+	finish := make(chan struct{})
+	enqueueWithin(t, &qs, threadID, seqEvent(0, 0), func(provider.ProviderEvent) {
+		close(started)
+		<-finish
+	})
+	<-started
+
+	stalled := make(chan error, 1)
+	go func() { stalled <- qs.stall(threadID) }()
+	if !waitForQueueWaiter(&qs, threadID) {
+		t.Fatal("stall never waited for the event ahead of it")
+	}
+	select {
+	case err := <-stalled:
+		t.Fatalf("stall returned (%v) while the event ahead of it was being handled", err)
+	default:
+	}
+	close(finish)
+	select {
+	case err := <-stalled:
+		if err != nil {
+			t.Fatalf("stall: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("stall did not return once the event ahead of it was handled")
+	}
+	t.Cleanup(func() {
+		if err := qs.releaseStall(threadID); err != nil {
+			t.Error(err)
+		}
+	})
+	if got := qs.pending(threadID); got != 1 {
+		t.Fatalf("pending after the stall = %d, want 1 (the stall alone)", got)
+	}
+	enqueueWithin(t, &qs, threadID, seqEvent(1, 0), func(provider.ProviderEvent) {})
+	if got := qs.pending(threadID); got != 2 {
+		t.Fatalf("pending after one event queued behind the stall = %d, want 2", got)
+	}
+}
+
 // Retirement is what keeps a thread without a session from holding a queue:
 // once the session's "disconnected" is handled and nothing is pending, the
 // registry forgets the thread, and a later session starts a fresh queue.

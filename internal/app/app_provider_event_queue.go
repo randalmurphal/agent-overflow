@@ -121,8 +121,10 @@ type providerEventQueue struct {
 }
 
 // enqueue appends evt to the thread's queue and returns once it is queued,
-// blocking while the queue is full. handle runs on the thread's worker.
-func (qs *providerEventQueues) enqueue(threadID string, evt provider.ProviderEvent, handle func(provider.ProviderEvent)) {
+// blocking while the queue is full. handle runs on the thread's worker. The
+// answer is evt's sequence number: the events before it are the ones a
+// handled count below it has not reached.
+func (qs *providerEventQueues) enqueue(threadID string, evt provider.ProviderEvent, handle func(provider.ProviderEvent)) uint64 {
 	item := queuedProviderEvent{evt: evt, handle: handle, size: providerEventSize(evt)}
 	for {
 		q := qs.queueFor(threadID)
@@ -139,6 +141,7 @@ func (qs *providerEventQueues) enqueue(threadID string, evt provider.ProviderEve
 		}
 		q.pushLocked(item)
 		q.enqueued++
+		seq := q.enqueued
 		// An event queued after the retire mark belongs to a replacement
 		// session; that session's own end re-arms the mark.
 		q.retireWhenIdle = false
@@ -148,7 +151,7 @@ func (qs *providerEventQueues) enqueue(threadID string, evt provider.ProviderEve
 		if start {
 			go qs.run(q)
 		}
-		return
+		return seq
 	}
 }
 
@@ -276,7 +279,16 @@ func (qs *providerEventQueues) retireIfIdle(q *providerEventQueue) {
 // handled, failing when the worker handles none for stall.
 func (q *providerEventQueue) waitHandled(stall time.Duration) error {
 	q.mu.Lock()
-	target, progress := q.enqueued, q.handled
+	target := q.enqueued
+	q.mu.Unlock()
+	return q.waitHandledThrough(target, stall)
+}
+
+// waitHandledThrough waits until the handled count reaches target, failing
+// when the worker handles none for stall.
+func (q *providerEventQueue) waitHandledThrough(target uint64, stall time.Duration) error {
+	q.mu.Lock()
+	progress := q.handled
 	q.mu.Unlock()
 	timer := time.NewTimer(stall)
 	defer timer.Stop()

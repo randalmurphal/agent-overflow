@@ -7,9 +7,11 @@ import (
 )
 
 // stall queues a handler that holds threadID's worker until releaseStall,
-// as a handler stuck on a slow write would. Events queued after it wait,
-// and a drain gives up on them at its stall bound. Harness only
-// (HarnessStallProviderEvents).
+// as a handler stuck on a slow write would, and returns once every event
+// queued before it has been handled. From then on the thread's pending
+// count is the stall and the events queued behind it, so it only grows
+// until the release. Events queued after it wait, and a drain gives up on
+// them at its stall bound. Harness only (HarnessStallProviderEvents).
 func (qs *providerEventQueues) stall(threadID string) error {
 	release := make(chan struct{})
 	qs.mu.Lock()
@@ -22,7 +24,12 @@ func (qs *providerEventQueues) stall(threadID string) error {
 	}
 	qs.stalls[threadID] = release
 	qs.mu.Unlock()
-	qs.enqueue(threadID, provider.ProviderEvent{ThreadID: threadID}, func(provider.ProviderEvent) { <-release })
+	seq := qs.enqueue(threadID, provider.ProviderEvent{ThreadID: threadID}, func(provider.ProviderEvent) { <-release })
+	// The queue holding the stall stays registered until the release: a
+	// queue retires only once it is empty and its worker idle.
+	if err := qs.lookup(threadID).waitHandledThrough(seq-1, providerEventDrainStall); err != nil {
+		return fmt.Errorf("stall provider events for thread %s: the events queued ahead of the stall were not handled, and the stall stays queued until released: %w", threadID, err)
+	}
 	return nil
 }
 
