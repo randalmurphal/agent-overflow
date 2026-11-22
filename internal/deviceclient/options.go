@@ -29,9 +29,9 @@ func WithProbeInterval(interval time.Duration) Option {
 	return func(o *options) { o.probe = interval }
 }
 
-// WithLifetime is the owner's lifetime. When it ends, a recoverable renewal
-// exchange in flight stops at once (Client.exchangeContext). A client without
-// one finishes every exchange it sent, bounded by the HTTP timeout.
+// WithLifetime is the owner's lifetime. When it ends, a rotation in flight
+// stops at once unless a legacy exchange has been sent (Client.rotationWait).
+// A client without one finishes every rotation, bounded by the HTTP timeout.
 func WithLifetime(lifetime context.Context) Option {
 	return func(o *options) { o.lifetime = lifetime }
 }

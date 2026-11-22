@@ -161,7 +161,8 @@ func (m *Manager) Carrier(ctx context.Context, id string) transport.BackendCarri
 
 // carrier resolves the live hop for one profile, building it on first use.
 // It waits for a change to the profile in progress (a pairing or an
-// introduction, which can hold it for minutes) only as long as ctx lasts.
+// introduction, which holds it across one redemption) only as long as ctx
+// lasts.
 func (m *Manager) carrier(ctx context.Context, id string) (*carrier, error) {
 	unlock, err := m.profiles.LockCtx(ctx, id)
 	if err != nil {
@@ -229,9 +230,8 @@ func (m *Manager) wire(built *carrier, id string) {
 }
 
 // Close stops every carrier's session renewal and waits for it to end.
-// Ending the manager's life ends a recoverable rotation in flight, whose
-// saved successor the next launch completes; a legacy rotation already sent
-// runs to completion so its successor is saved. Later carrier requests fail
+// Ending the manager's life ends every rotation in flight except a legacy
+// exchange already sent, which runs to completion so its successor is saved. Later carrier requests fail
 // with ErrClosed. Carriers already handed out keep their sessions; only the
 // renewal stops. Close is idempotent.
 func (m *Manager) Close() {

@@ -51,7 +51,11 @@ func (c *Client) rotate(ctx context.Context, observed Session) (err error) {
 	if held.RefreshSecret == "" {
 		return ErrSessionEnded
 	}
-	support, err := c.refreshRecoverySupport(ctx, held)
+	// Nothing is spent before the exchange is sent, so the owner's lifetime
+	// ends every wait until then.
+	unspent, endUnspent := c.rotationWait(ctx, true)
+	defer endUnspent()
+	support, err := c.refreshRecoverySupport(unspent, held)
 	if err != nil {
 		return err
 	}
@@ -59,7 +63,7 @@ func (c *Client) rotate(ctx context.Context, observed Session) (err error) {
 		// Old hosts cannot recognize an identical retry. Serialize their exchange
 		// across current client processes with a separate lock; profile transactions
 		// and forgetting/renaming remain available while the network is slow.
-		wait, cancel := context.WithTimeout(ctx, profileWriteTimeout)
+		wait, cancel := context.WithTimeout(unspent, profileWriteTimeout)
 		release, lockErr := lockProfile(wait, c.dir, "legacy-renewal-"+held.BackendID)
 		cancel()
 		if lockErr != nil {
@@ -113,7 +117,10 @@ func (c *Client) rotate(ctx context.Context, observed Session) (err error) {
 	if support {
 		path = authTokenRecoverPath
 	}
-	exchangeCtx, endExchange := c.exchangeContext(ctx, support)
+	if err := unspent.Err(); err != nil {
+		return err
+	}
+	exchangeCtx, endExchange := c.rotationWait(ctx, support)
 	issued, exchangeErr := c.exchange(exchangeCtx, path, body, &held)
 	endExchange()
 	// Compare AFTER the network too. A suspended process's late grant/refusal
@@ -159,16 +166,17 @@ func (c *Client) rotate(ctx context.Context, observed Session) (err error) {
 	})
 }
 
-// exchangeContext is what one renewal exchange is sent on. A retired owner
-// never writes the answer, so retirement ends any exchange at once. The
-// owner's lifetime (WithLifetime) ends only a recoverable one: its successor
-// was saved before sending, and the next rotation, in this process or the
+// rotationWait is what a rotation's network and lock waits run on. A retired
+// owner never writes the answer, so retirement ends every wait at once. The
+// owner's lifetime (WithLifetime) ends a wait when ownerMayEnd: before the
+// exchange is sent nothing is spent, and a recoverable exchange's successor
+// was saved before sending, so the next rotation, in this process or the
 // next, completes the same operation. A legacy exchange the backend may
 // already have committed runs to completion so its answer is saved.
-func (c *Client) exchangeContext(ctx context.Context, recoverable bool) (context.Context, context.CancelFunc) {
+func (c *Client) rotationWait(ctx context.Context, ownerMayEnd bool) (context.Context, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(ctx)
 	stops := []func() bool{context.AfterFunc(c.live, cancel)}
-	if recoverable && c.lifetime != nil {
+	if ownerMayEnd && c.lifetime != nil {
 		stops = append(stops, context.AfterFunc(c.lifetime, cancel))
 	}
 	return ctx, func() {

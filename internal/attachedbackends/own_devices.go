@@ -183,7 +183,8 @@ func (m *Manager) AcceptOwnDeviceIntroduction(ctx context.Context, raw string, r
 	// person is waited for. This one rotation is what tells the other
 	// computer the introduction completed: until its redemption's refresh
 	// secret is spent, that computer's next introduction of this device
-	// revokes the session (store.RetireOwnIntroductions).
+	// revokes the session (store.RetireOwnIntroductions). ctx bounds only this
+	// caller's wait; Forget and the manager's life end the rotation itself.
 	if err := held.client.Renew(ctx); err != nil {
 		return true, fmt.Errorf("attachedbackends: acknowledge the introduction to %s: %w", link.BackendID, err)
 	}

@@ -228,15 +228,10 @@ func (m *Manager) reconcileOwnPeer(ctx context.Context, id string, hooks OwnDevi
 		if member.Removed || member.BackendID == "" || member.KeyThumbprint == key || member.BackendID == id {
 			continue
 		}
-		if excluded, err := m.ownDeviceExcluded(member.BackendID); err != nil {
+		if wanted, err := m.introductionWanted(member.BackendID); err != nil {
 			return err
-		} else if excluded {
+		} else if !wanted {
 			continue
-		}
-		if session, err := deviceclient.LoadSession(m.dir, member.BackendID); err == nil && session.OwnDevice {
-			continue
-		} else if err != nil && !errors.Is(err, deviceclient.ErrNoSession) {
-			return err
 		}
 		var invitation struct {
 			URL string `json:"url"`

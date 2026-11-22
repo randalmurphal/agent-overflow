@@ -44,8 +44,8 @@ type Client struct {
 	// Never nil: New fills it.
 	now func() time.Time
 	// lifetime is the owner's (WithLifetime), nil without one; live ends
-	// when this client retires. Both bound a renewal exchange
-	// (exchangeContext).
+	// when this client retires. Both bound a rotation's waits
+	// (rotationWait).
 	lifetime context.Context
 	live     context.Context
 	endLive  context.CancelFunc
@@ -589,13 +589,18 @@ func (c *Client) renewIfStale(ctx context.Context) error {
 // this is how a caller that fetched one tells an aged credential from a
 // dead session: a live session rotates and the retried fetch serves, a
 // dead one refuses the rotation and answers ErrSessionEnded.
+//
+// ctx bounds the caller's wait, not the rotation (see renew). A ctx that has
+// already ended still starts or joins the rotation, and the call answers
+// ctx's error. A ctx that ends during the wait answers the rotation's
+// outcome if the rotation has finished by then, and ctx's error otherwise.
 func (c *Client) Renew(ctx context.Context) error { return c.renew(ctx) }
 
 // WaitRenewal blocks until the rotation in flight, if any, has finished and
 // saved its outcome. Shutdown calls it so that a rotation the backend may
 // already have committed is not cut off before its successor is saved. The
 // HTTP client's timeout bounds the wait; once the owner's lifetime has ended,
-// a recoverable rotation returns at once (exchangeContext).
+// only a legacy exchange already sent is still waited for (rotationWait).
 func (c *Client) WaitRenewal() {
 	c.mu.Lock()
 	flight := c.renewing
@@ -614,8 +619,8 @@ func (c *Client) WaitRenewal() {
 // next rotation would present a secret the backend has already spent. The
 // HTTP client's timeout and the profile lock waits keep it finite, and a
 // cancelled caller returns at once while the rotation finishes for the rest.
-// Only retirement and the owner's lifetime end the exchange itself
-// (exchangeContext).
+// Only retirement and the owner's lifetime end the rotation itself
+// (rotationWait).
 func (c *Client) renew(ctx context.Context) error {
 	c.mu.Lock()
 	if c.retired {
@@ -636,10 +641,23 @@ func (c *Client) renew(ctx context.Context) error {
 		}()
 	}
 	c.mu.Unlock()
+	return flight.wait(ctx)
+}
+
+// wait is the answer Renew documents.
+func (r *renewal) wait(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	select {
-	case <-flight.done:
-		return flight.err
+	case <-r.done:
+		return r.err
 	case <-ctx.Done():
+	}
+	select {
+	case <-r.done:
+		return r.err
+	default:
 		return ctx.Err()
 	}
 }

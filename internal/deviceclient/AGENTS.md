@@ -39,10 +39,11 @@ fall back to the legacy endpoint with a pending operation. Transient HTTP or
 proof failures and unknown future refusal codes preserve pairing. The exchange
 runs detached from the caller that started it: a cancelled caller returns at
 once while the rotation completes for every waiter, bounded by the HTTP
-timeout and the lock waits. Retirement ends the exchange, whose answer a
-retired client never writes, and the owner's lifetime (`WithLifetime`) ends a
-recoverable one, which the next rotation completes from its saved successor;
-a legacy exchange still runs to completion. So a rotation can outlive the test that cancelled
+timeout and the lock waits. Retirement ends the rotation, whose answer a
+retired client never writes, and the owner's lifetime (`WithLifetime`) ends it
+too unless a legacy exchange has been sent: nothing is spent before the
+exchange, and a recoverable one is completed by the next rotation from its
+saved successor. So a rotation can outlive the test that cancelled
 it, still touching the profile directory's lock files: `openAgainst` registers
 a cleanup that waits for it before the TempDir is removed, and a fixture that
 builds a client another way owes the same wait. Session/key file locks cover short local
