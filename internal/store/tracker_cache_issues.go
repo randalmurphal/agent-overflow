@@ -19,8 +19,8 @@ const (
 // MirrorCard is an issue as a board or backlog row draws it, the same on
 // every board. Sprints are the sprints the card read names. Data is the
 // rest of the card. StatusSince is when the card's status began, set by
-// the store from the issue's stored history (zero: unknown); writes ignore
-// it.
+// the store from the issue's stored history (mirrorStatusSinceSQL; zero:
+// unknown); writes ignore it.
 type MirrorCard struct {
 	IssueID, Key, ProjectID          string
 	TypeID                           string
@@ -182,8 +182,8 @@ func mirrorCardRefusedSQL(readAt string) string {
 // when their read began, and a card's filter that names the card c. A
 // card replaces the stored one when the stored one does not supersede it
 // (mirrorCardSupersededSQL) and its content differs; its sprints are
-// replaced by the same rule. status_since is derived again from the new
-// card and the stored history.
+// replaced by the same rule. status_since follows mirrorStatusSinceSQL
+// for the new card and the stored history.
 const mirrorCardUpsertSQL = `INSERT INTO tracker_cache_issues(root_id, issue_id, issue_key, project_id, type_id, type_level,
 	        status_id, assignee_id, priority_id, parent_id, created_at, updated_at, resolved_at, read_at, data)
 	SELECT ?1, c.value ->> 'i', c.value ->> 'k', c.value ->> 'p', c.value ->> 't', c.value ->> 'l', c.value ->> 's',
@@ -198,7 +198,8 @@ var mirrorCardConflictSQL = `
 	    created_at = excluded.created_at, updated_at = excluded.updated_at, resolved_at = excluded.resolved_at,
 	    read_at = excluded.read_at, data = excluded.data, status_since = ` + mirrorStatusSinceSQL(mirrorStatusSinceOf{
 	issue: "tracker_cache_issues.issue_id", status: "excluded.status_id", updatedAt: "excluded.updated_at",
-	createdAt: "excluded.created_at", from: "history_from", readFor: "history_for", wait: "history_wait", gen: "history_gen"}) + `
+	createdAt: "excluded.created_at", from: "history_from", readFor: "history_for", wait: "history_wait", gen: "history_gen",
+	kept: mirrorStatusKeptBy("excluded.status_id")}) + `
 	WHERE NOT ` + mirrorCardSupersededSQL("tracker_cache_issues", "excluded.updated_at", "excluded.read_at") + `
 	  AND ` + mirrorCardDiffersSQL("", func(column, _ string) string { return "excluded." + column }) + `
 	RETURNING issue_id`

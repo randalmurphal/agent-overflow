@@ -159,23 +159,39 @@ type MirrorHistoryResult struct {
 // mirrorStatusSinceOf names, as SQL expressions, what the time an issue's
 // status began derives from: the card (issue, status, update and creation
 // times) and the stored history (the time it is complete from, the update
-// time it was read for and its wait, and its generation).
+// time it was read for and its wait, and its generation). kept is the time
+// the row holds while the history does not cover the card: mirrorStatusKept
+// or, for a write that brings a card, mirrorStatusKeptBy.
 type mirrorStatusSinceOf struct {
-	issue, status, updatedAt, createdAt, from, readFor, wait, gen string
+	issue, status, updatedAt, createdAt, from, readFor, wait, gen, kept string
 }
 
-// mirrorStatusSinceSQL is the one rule for when a card's status began, by
-// the stored history, in statements whose ?1 is the root: zero unless the
-// history was read for the card's update time or a later one and is final
-// for it (no wait); then the time of the
-// history's last status change when that change led to the card's status,
-// zero when it led elsewhere, and the issue's creation when the history is
-// complete from creation and holds no status change. Every writer of
-// either side derives it again (the card upsert, the history writes), so
-// the order the two arrive in does not matter. The last status change is
-// one key probe, newest first.
+// mirrorStatusKept keeps the stored time: the write leaves the card as it
+// is.
+const mirrorStatusKept = "tracker_cache_issues.status_since"
+
+// mirrorStatusKeptBy keeps the stored time when the card the write brings
+// has the stored card's status, and holds zero when it has another: the
+// stored time is that of a status the issue left.
+func mirrorStatusKeptBy(status string) string {
+	return `iif(` + status + ` IS tracker_cache_issues.status_id, tracker_cache_issues.status_since, 0)`
+}
+
+// mirrorStatusSinceSQL is the one rule for when a card's status began, in
+// statements whose ?1 is the root. When the history was read for the
+// card's update time or a later one and is final for it (no wait), it is
+// the time of the history's last status change when that change led to
+// the card's status, zero when it led elsewhere, and the issue's creation
+// when the history is complete from creation and holds no status change.
+// Until then it is of.kept: the last time so derived while the card keeps
+// its status, so an edit that changes no status leaves the time standing,
+// and zero once the status changes. An issue that left its status and
+// came back between two reads of its card keeps the earlier stay's time
+// until the history read for the newer card is stored. Every writer of
+// either side applies the rule (the card upsert, the history writes). The
+// last status change is one key probe, newest first.
 func mirrorStatusSinceSQL(of mirrorStatusSinceOf) string {
-	return `CASE WHEN ` + of.updatedAt + ` > ` + of.readFor + ` OR ` + of.wait + ` > 0 THEN 0 ELSE coalesce(
+	return `CASE WHEN ` + of.updatedAt + ` > ` + of.readFor + ` OR ` + of.wait + ` > 0 THEN ` + of.kept + ` ELSE coalesce(
 	  (SELECT iif(sc.to_value = ` + of.status + `, sc.at, 0) FROM tracker_cache_changes sc
 	    WHERE sc.root_id = ?1 AND sc.issue_id = ` + of.issue + ` AND sc.gen = ` + of.gen + ` AND sc.kind = 1
 	    ORDER BY sc.seq DESC LIMIT 1),
@@ -243,7 +259,7 @@ func mirrorHistoryTimesOf(extra string) string {
 		mirrorStatusSinceSQL(mirrorStatusSinceOf{
 			issue: "tracker_cache_issues.issue_id", status: "tracker_cache_issues.status_id", updatedAt: "tracker_cache_issues.updated_at",
 			createdAt: "tracker_cache_issues.created_at", from: "(h.value ->> 'f')", readFor: "(h.value ->> 'v')", wait: "(h.value ->> 'w')",
-			gen: "tracker_cache_issues.history_gen"}) + extra + ` FROM json_each(?2) h WHERE h.value ->> 'i' = tracker_cache_issues.issue_id`
+			gen: "tracker_cache_issues.history_gen", kept: mirrorStatusKept}) + extra + ` FROM json_each(?2) h WHERE h.value ->> 'i' = tracker_cache_issues.issue_id`
 }
 
 // mirrorHistoryInput is one checked history, encoded at generation 0; a

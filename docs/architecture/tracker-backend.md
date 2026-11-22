@@ -417,7 +417,11 @@ users and parents) in one snapshot (`ReadMirrorBoardView`), so its totals,
 rows and names are one state; a section page reads its names with its rows
 (`ListMirrorSection`). A card's
 status time is derived from the card and the stored history by every write
-of either. A detail's read time starts at its opening, so a document read
+of either. While no final history read for the card's update is stored,
+the time stands as long as the card keeps its status and is unknown once
+the status changes: an edit to another field does not blank it. An issue
+that left its status and came back between two reads of its card shows
+the earlier stay's time until that history is stored. A detail's read time starts at its opening, so a document read
 before the opening is superseded.
 
 A board's backlog is its rows in no future or active sprint of that board

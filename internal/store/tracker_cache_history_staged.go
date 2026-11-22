@@ -45,7 +45,7 @@ var (
 		history_answered_at = ?7, history_wait = ?8, history_receipt = ?9 + 1,
 		status_since = ` + mirrorStatusSinceSQL(mirrorStatusSinceOf{issue: "tracker_cache_issues.issue_id",
 		status: "tracker_cache_issues.status_id", updatedAt: "tracker_cache_issues.updated_at",
-		createdAt: "tracker_cache_issues.created_at", from: "?4", readFor: "?5", wait: "?8", gen: "?3"}) + `
+		createdAt: "tracker_cache_issues.created_at", from: "?4", readFor: "?5", wait: "?8", gen: "?3", kept: mirrorStatusKept}) + `
 		WHERE root_id = ?1 AND issue_id = ?2 AND history_receipt = ?9`
 )
 

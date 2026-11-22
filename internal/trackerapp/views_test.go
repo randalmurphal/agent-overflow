@@ -225,19 +225,57 @@ func TestCardShowsWhenItsStatusBegan(t *testing.T) {
 	}
 }
 
-// A detail shows when its status began only when the mirror's time
-// describes that status and stay: a detail read before the delta and
-// history caught up shows it unknown, read through and as the mirror's
-// copy, and so does a detail read before a newer card was stored,
-// whatever its status.
+// An edit that leaves an issue's status as it was leaves the time the
+// status began on its board card, before any history is read for the
+// edit; an edit that changes the status shows none until one is.
+func TestAnEditThatKeepsTheStatusKeepsWhenItBegan(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	m.seedBoard(t)
+	began := time.UnixMilli(1_798_500_000_000).UTC()
+	m.p.history = func(q tracker.HistoryQuery) (tracker.History, error) {
+		var h tracker.History
+		for _, id := range q.Issues {
+			h.Issues = append(h.Issues, tracker.IssueHistory{Issue: id, CompleteTo: m.now(),
+				Status: []tracker.StatusChange{{Change: tracker.Change{At: began}, From: "s2", To: "s1"}}})
+		}
+		return h, nil
+	}
+	must[Outcome](t)(m.svc.tickHistory(t.Context(), m.scope(), Background))
+	sprint := []Section{{Kind: SectionSprint, Sprint: "1"}}
+	shown := func(what string, edit func(*tracker.Card), updated, want int64) {
+		t.Helper()
+		edited := row("10001", updated, "a")
+		edited.Card.Sprints = []tracker.SprintID{"1"}
+		edit(&edited.Card)
+		stored := must[store.MirrorRow](t)(mirrorRow(edited))
+		must[store.MirrorChanges](t)(m.st.WriteMirrorRows(m.root(), store.MirrorRowPage{BoardID: string(testBoard), Lifetime: m.sync(testBoard).Lifetime,
+			Rows: []store.MirrorRow{stored}, ReadAt: m.now().UnixMilli() + updated}))
+		c := must[BoardView](t)(m.svc.Board(m.scope(), sprint)).Sections[0].Rows[0].Card
+		if c.Updated != updated || c.StatusSince != want {
+			t.Fatalf("%s: card updated %d shows its status since %d; want %d", what, c.Updated, c.StatusSince, want)
+		}
+	}
+	shown("a new title", func(c *tracker.Card) { c.Title = "Renamed" }, 1_799_000_100_000, began.UnixMilli())
+	shown("another status", func(c *tracker.Card) { c.Status = "s2" }, 1_799_000_200_000, 0)
+	shown("the first status again", func(c *tracker.Card) {}, 1_799_000_300_000, 0)
+}
+
+// A detail shows when its status began from the mirror's card when it has
+// that card's status and is that version or a later one: an edit that
+// changes no status leaves the time standing, read through and as the
+// mirror's copy. A detail of another status shows it unknown, and so does
+// a detail read before a newer card was stored, whatever its status.
 func TestDetailShowsStatusSinceOnlyOfItsOwnCard(t *testing.T) {
 	t.Parallel()
+	began := time.UnixMilli(1_798_500_000_000).UTC()
 	for name, tc := range map[string]struct {
 		updated int64
 		status  tracker.StatusID
+		want    int64
 	}{
 		"another status":                  {updated: 1_799_000_100_000, status: "s2"},
-		"the same status entered again":   {updated: 1_799_000_100_000, status: "s1"},
+		"a newer card of the same status": {updated: 1_799_000_100_000, status: "s1", want: began.UnixMilli()},
 		"an older card of another status": {updated: 1_798_900_000_000, status: "s2"},
 		// The issue may have left the status and come back between the two
 		// versions, so the mirror's time is a later stay's.
@@ -247,7 +285,6 @@ func TestDetailShowsStatusSinceOnlyOfItsOwnCard(t *testing.T) {
 			t.Parallel()
 			m := newMirrorFixture(t)
 			m.seedBoard(t)
-			began := time.UnixMilli(1_798_500_000_000).UTC()
 			m.p.history = func(q tracker.HistoryQuery) (tracker.History, error) {
 				var h tracker.History
 				for _, id := range q.Issues {
@@ -276,8 +313,8 @@ func TestDetailShowsStatusSinceOnlyOfItsOwnCard(t *testing.T) {
 				} else {
 					v, _, err = m.svc.IssueDetail(t.Context(), m.conn.ID, "10001", Interactive)
 				}
-				if err != nil || v.Card.StatusSince != 0 || v.Card.Updated != tc.updated {
-					t.Fatalf("detail (mirror's copy %v): status %s since %d, updated %d, %v", mirrored, v.Card.Status.ID, v.Card.StatusSince, v.Card.Updated, err)
+				if err != nil || v.Card.StatusSince != tc.want || v.Card.Updated != tc.updated {
+					t.Fatalf("detail (mirror's copy %v): status %s since %d, want %d, updated %d, %v", mirrored, v.Card.Status.ID, v.Card.StatusSince, tc.want, v.Card.Updated, err)
 				}
 			}
 		})

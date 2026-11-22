@@ -81,6 +81,46 @@ func TestMirrorLongHistoryIsStagedWhole(t *testing.T) {
 	}
 }
 
+// A staged history that is not final for the card leaves the time the
+// card's status began standing, as a batch's does; the final one sets it.
+func TestMirrorStagedHistoryKeepsTheStatusTimeUntilFinal(t *testing.T) {
+	t.Parallel()
+	s, _, root := newMirror(t)
+	writeMirrorBoard(t, s, root, "10", []MirrorRow{webRow("10001", 5, "a")})
+	const n = 5000
+	mustReplaceHistory(t, s, root, longHistory("10001", n, 1), MirrorWrite{Changed: true})
+	mustWriteRowPage(t, s, root, webPage("10", webRow("10001", 6, "a")), nil)
+	// Every change a time unit later: no stored change is kept, so the
+	// history is staged as a new generation and switched to.
+	later := func(wait int64) MirrorHistory {
+		h := longHistory("10001", n, 2)
+		for i := range h.Changes {
+			h.Changes[i].At++
+		}
+		h.Wait = wait
+		return h
+	}
+	gen := func() (g int64) {
+		t.Helper()
+		if err := s.db.QueryRow(`SELECT history_gen FROM tracker_cache_issues WHERE issue_id = '10001'`).Scan(&g); err != nil {
+			t.Fatal(err)
+		}
+		return g
+	}
+	before := gen()
+	mustReplaceHistory(t, s, root, later(60_000), MirrorWrite{Changed: true})
+	if gen() == before {
+		t.Fatal("the history was not staged as a new generation")
+	}
+	if got := mustStatusSince(t, s, root, "10001"); got != n {
+		t.Fatalf("after a staged history still waiting: %d; want the time it had, %d", got, n)
+	}
+	mustReplaceHistory(t, s, root, later(0), MirrorWrite{Changed: true})
+	if got := mustStatusSince(t, s, root, "10001"); got != n+1 {
+		t.Fatalf("after the final history: %d; want %d", got, n+1)
+	}
+}
+
 // A staging stopped between its chunks leaves the stored history what
 // every read sees, before its switch, and the new one after it; the
 // cleanup, or the issue's next history, deletes what it left.

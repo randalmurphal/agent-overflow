@@ -102,8 +102,8 @@ package store
 //     earlier is superseded. No index or trigger reads it, so an identical
 //     read moves it alone. status_since is when the card's status began,
 //     derived from the card and the stored history whenever either is
-//     written (mirrorStatusSinceSQL), zero when the history does not cover
-//     the card. history_from is the time the stored changes are complete
+//     written (mirrorStatusSinceSQL); while the history does not cover
+//     the card it stands until the card's status changes, then is zero. history_from is the time the stored changes are complete
 //     from (zero: from creation). history_for is the update time the read
 //     was made for (zero: none read), history_answered_at when its answer
 //     arrived by the reader's steady clock, and history_wait how long

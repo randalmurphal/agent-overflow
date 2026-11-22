@@ -162,9 +162,11 @@ func mustStatusSince(t *testing.T, s *Store, root int64, issue string) int64 {
 // A stored history sets the time the card's status began when it shows
 // it: the history was read for the card's update time and is final, and
 // its last status change led to the card's status, or it changed no status
-// and is complete from the issue's creation. Otherwise the time is zero,
-// never guessed, and a card updated after the update its history was read
-// for reads as unknown until a history read for it is stored.
+// and is complete from the issue's creation; a history that shows
+// otherwise gives zero. A card updated after the update its history was
+// read for keeps the time it had while it keeps its status, through the
+// histories that do not cover it, and reads as unknown once its status
+// changes, until a history read for it is stored.
 func TestMirrorStatusSinceComesFromTheHistory(t *testing.T) {
 	t.Parallel()
 	s, _, root := newMirror(t)
@@ -198,8 +200,22 @@ func TestMirrorStatusSinceComesFromTheHistory(t *testing.T) {
 	same := row("10001", "10001")
 	same.Card.UpdatedAt = 10
 	mustWriteRowPage(t, s, root, webPage("10", same), nil)
-	if got := mustStatusSince(t, s, root, "10001"); got != 0 {
-		t.Fatalf("after an update the history does not cover: %d; want unknown", got)
+	if got := mustStatusSince(t, s, root, "10001"); got != 7 {
+		t.Fatalf("after an update that kept the status: %d; want the time it had, 7", got)
+	}
+	for _, uncovering := range []struct {
+		name string
+		edit func(*MirrorHistory)
+	}{
+		{"read for an earlier update", func(h *MirrorHistory) { h.For = 9; h.Changes[len(h.Changes)-1].At = 8 }},
+		{"not final", func(h *MirrorHistory) { h.Wait = 60_000 }},
+	} {
+		h := webHistory("10001")
+		uncovering.edit(&h)
+		mustReplaceHistory(t, s, root, h, MirrorWrite{Changed: true})
+		if got := mustStatusSince(t, s, root, "10001"); got != 7 {
+			t.Fatalf("after a history %s: %d; want the time it had, 7", uncovering.name, got)
+		}
 	}
 	moved := row("10001", "3")
 	moved.Card.UpdatedAt = 11
@@ -215,8 +231,9 @@ func TestMirrorStatusSinceComesFromTheHistory(t *testing.T) {
 	}
 
 	// A history read for an earlier update than the card's does not cover
-	// the card, even holding the change that made it: the time is unknown
-	// until a history read for the card's update is stored.
+	// the card, even holding the change that made it: a card of another
+	// status reads as unknown until a history read for its update is
+	// stored.
 	h.Changes = append(h.Changes, MirrorChange{Kind: MirrorChangeStatus, At: 15, From: "3", To: "1"})
 	mustReplaceHistory(t, s, root, h, MirrorWrite{Changed: true})
 	back := row("10001", "1")
