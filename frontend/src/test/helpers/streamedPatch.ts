@@ -133,18 +133,28 @@ export function fakeDiff(patch: string | Uint8Array): FakeDiff {
   const bytes = typeof patch === 'string' ? new TextEncoder().encode(patch) : patch;
   // The key at each boundary read so far.
   const keys = new Map<number, PatchTextKey>([[0, { hash: FNV_OFFSET_BASIS_32, units: 0 }]]);
+  // A read is the same for the same offset and window, and a store with a
+  // small budget reads one chunk back many times: each is cut, decoded and
+  // keyed once.
+  const reads = new Map<string, StreamedChunk>();
   return {
     bytes,
     read(offset, maxBytes, keyed = true) {
       // The backend's window is never shorter than a character; one here
       // is widened to the character at the offset.
-      const next = chunkCut(bytes, offset, Math.max(1, maxBytes, sequenceAt(bytes, offset)));
-      const text = jsonText(bytes, offset, next);
-      const before = keys.get(offset) ?? textKey(jsonText(bytes, 0, offset));
-      const key = { hash: appendFNV1a32(before.hash, text), units: before.units + text.length };
-      keys.set(next, key);
-      const eof = next === bytes.length;
-      return keyed ? { data: text, key, offset, nextOffset: next, eof } : { data: text, offset, nextOffset: next, eof };
+      const window = Math.max(1, maxBytes, sequenceAt(bytes, offset));
+      const id = `${offset}:${window}`;
+      let chunk = reads.get(id);
+      if (chunk === undefined) {
+        const next = chunkCut(bytes, offset, window);
+        const text = jsonText(bytes, offset, next);
+        const before = keys.get(offset) ?? textKey(jsonText(bytes, 0, offset));
+        const key = { hash: appendFNV1a32(before.hash, text), units: before.units + text.length };
+        keys.set(next, key);
+        chunk = { data: text, key, offset, nextOffset: next, eof: next === bytes.length };
+        reads.set(id, chunk);
+      }
+      return keyed ? { ...chunk } : unkeyed(chunk);
     },
   };
 }
