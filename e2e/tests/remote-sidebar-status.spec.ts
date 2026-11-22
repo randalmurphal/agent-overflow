@@ -12,6 +12,7 @@
 import { expect, test, type WebSocketRoute } from '@playwright/test';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { headlessPairing } from './headless-pairing-helpers.js';
+import { socketAnswers } from './offhost-helpers.js';
 import {
   RESULT_LINE, advance, claudeTurnsScenario, emit, seedAgentThread, startMock, textLines, waitForGate,
 } from './agent-visibility-helpers.js';
@@ -25,6 +26,7 @@ test('a remote thread with no pane here settles to idle after its queued message
   let home: HarnessApp | undefined;
   let remote: HarnessApp | undefined;
   let remoteOnline = true;
+  const answers = socketAnswers();
   let withholdLive = false;
   let withheld = 0;
   let remoteSocket: { page: WebSocketRoute; server: WebSocketRoute } | undefined;
@@ -37,10 +39,7 @@ test('a remote thread with no pane here settles to idle after its queued message
   };
   await page.routeWebSocket(/\/ws\/backend\//, (socket) => {
     if (!remoteOnline) { void socket.close({ code: 1012 }); return; }
-    const server = socket.connectToServer();
-    remoteSocket = { page: socket, server };
-    socket.onMessage((message) => server.send(message));
-    server.onMessage((message) => {
+    const server = answers.connect(socket, (message) => {
       if (typeof message !== 'string') { socket.send(message); return; }
       const frame = JSON.parse(message) as { type?: string; channel?: string; events?: { channel?: string }[] };
       if (frame.type === 'event') {
@@ -53,6 +52,8 @@ test('a remote thread with no pane here settles to idle after its queued message
         socket.send(message);
       }
     });
+    remoteSocket = { page: socket, server };
+    socket.onMessage((message) => server.send(message));
   });
   try {
     home = await launchHarness();
@@ -140,8 +141,12 @@ test('a remote thread with no pane here settles to idle after its queued message
     await advance(remote, mockId, 'later');
     await expect.poll(async () => (await remote!.rpc<{ activeTurn?: unknown }>('GetThreadLiveState', threadId)).activeTurn).toBeFalsy();
     withholdLive = true;
+    const answered = answers.count();
     remoteOnline = true;
-    await expect(laptopRow).not.toHaveAttribute('data-machine-unreachable', 'true', { timeout: 30_000 });
+    // The row clears once the laptop answers the ladder's next dial,
+    // wherever in its climb the outage ended.
+    await answers.waitBeyond(answered);
+    await expect(laptopRow).not.toHaveAttribute('data-machine-unreachable', 'true');
     await expect(dot).toHaveAttribute('data-status', 'idle');
     await expect(dot).not.toHaveAttribute('title', /Last known/);
     expect(withheld).toBeGreaterThan(0);
