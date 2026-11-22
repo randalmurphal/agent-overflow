@@ -317,8 +317,8 @@ round's **background carrier**.
   path, with no special-casing needed there.
 
 Why: the idle-session reaper (`app_session_reaper.go`) keeps a quiet
-session alive only while `ListRunningBackgroundToolCalls` is
-non-empty. The ORIGINAL launch already has its round-1 sibling once
+session alive only while `CountLiveRunningBackgroundToolCalls` is
+above zero. The ORIGINAL launch already has its round-1 sibling once
 round 1 completes, so it can never satisfy that predicate again. If
 nothing else is backgrounded, a quiet resumed agent would get its
 whole session reaped mid-run without the carrier. The original launch

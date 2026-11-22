@@ -76,11 +76,11 @@ func (a *App) ensureProviderAccountSelectionReadyForSendLocked(
 		if sess.Liveness != nil && sess.Liveness.ActiveTurns.Load() > 0 {
 			return fmt.Errorf("Codex account switch is pending for this thread until its active turn finishes")
 		}
-		running, err := a.store.ListRunningBackgroundToolCalls(thread.ID)
+		running, err := a.hasRunningBackgroundTasks(thread.ID)
 		if err != nil {
 			return fmt.Errorf("check Codex background work before account switch: %w", err)
 		}
-		if len(running) > 0 {
+		if running {
 			return fmt.Errorf("Codex account switch is pending for this thread until its background work finishes")
 		}
 		if err := a.reconnectSessionLocked(context.Background(), thread.ID); err != nil {

@@ -133,15 +133,15 @@ func (a *Service) ReconcileOnReopen(ctx context.Context, threadID string) (Recon
 		return ReconcileResult{}, fmt.Errorf("app: reconcile codex probe: %w", err)
 	}
 
-	runningBg, err := a.store.ListRunningBackgroundToolCalls(threadID)
+	runningBg, err := a.store.CountLiveRunningBackgroundToolCalls(threadID)
 	if err != nil {
-		return ReconcileResult{}, fmt.Errorf("app: reconcile codex list running: %w", err)
+		return ReconcileResult{}, fmt.Errorf("app: reconcile codex count running: %w", err)
 	}
 
 	result := ReconcileResult{
 		ThreadID: threadID,
 		Status:   probe.Status,
-		Running:  len(runningBg),
+		Running:  runningBg,
 	}
 
 	switch probe.Status {
@@ -201,7 +201,7 @@ func (a *Service) retireCodexBackgroundRuntimeForReconcile(threadID string) (int
 type ReconcileResult struct {
 	ThreadID    string                 `json:"threadId"`
 	Status      codex.ThreadStatusKind `json:"status"`
-	Running     int                    `json:"running"`     // count of running background rows found
+	Running     int                    `json:"running"`     // count of live background launches found
 	Flipped     int                    `json:"flipped"`     // count we transitioned to errored/lost
 	NeedsResume bool                   `json:"needsResume"` // true when status=notLoaded
 }

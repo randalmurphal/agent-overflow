@@ -1131,7 +1131,7 @@ func TestParseTaskStarted_FreshLocalAgentLaunchIsNotAResume(t *testing.T) {
 // section), the SendMessage tool_use becomes the resumed round's
 // background carrier: `rememberTaskToolUse` rebinds normally (no
 // first-binding-wins) and the carrier is marked backgrounded so
-// triage's reaper-protection predicate (ListRunningBackgroundToolCalls)
+// the reaper's protection predicate (CountLiveRunningBackgroundToolCalls)
 // stays satisfied through round 2.
 func TestReplay_LocalAgentAsyncResume(t *testing.T) {
 	events := replayFixture(t, fixtureLocalAgentAsyncResume)

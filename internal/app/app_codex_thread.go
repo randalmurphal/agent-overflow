@@ -75,7 +75,7 @@ func (a *App) ReconcileCodexOnReopen(ctx context.Context, threadID string) (Reco
 type ReconcileResult struct {
 	ThreadID    string                 `json:"threadId"`
 	Status      codex.ThreadStatusKind `json:"status"`
-	Running     int                    `json:"running"`     // count of running background rows found
+	Running     int                    `json:"running"`     // count of live background launches found
 	Flipped     int                    `json:"flipped"`     // count we transitioned to errored/lost
 	NeedsResume bool                   `json:"needsResume"` // true when status=notLoaded
 }

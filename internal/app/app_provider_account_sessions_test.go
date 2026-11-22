@@ -124,6 +124,80 @@ func TestCodexAccountSwitchWaitsForBackgroundWork(t *testing.T) {
 	}
 }
 
+// A running Codex command exists only in the router. The switch waits for
+// it as it does for a stored launch.
+func TestCodexAccountSwitchWaitsForWorkOnlyTheRouterHolds(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithTriage(t)
+	thread := testThread("codex-account-router-only")
+	thread.Provider = string(provider.Codex)
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatal(err)
+	}
+	installTestProviderAccounts(t, app, string(provider.Codex))
+	app.sessionManager().put(thread.ID, session{
+		Provider:             string(provider.Codex),
+		Token:                "old-process",
+		CredentialGeneration: 1,
+		Liveness:             newSessionLiveness(time.Now()),
+	})
+	seedSettledCodexUnifiedExecTracker(t, app, thread.ID)
+
+	err := app.ensureProviderAccountReadyForSendLocked(thread)
+	if err == nil || !strings.Contains(err.Error(), "background work finishes") {
+		t.Fatalf("error = %v, want background-work pending message", err)
+	}
+	if got, _ := app.sessionManager().get(thread.ID); got.Token != "old-process" || got.CredentialGeneration != 1 {
+		t.Fatalf("background Codex session was modified: %+v", got)
+	}
+}
+
+// A launch that left the live set keeps `status='running'`. It does not
+// hold the switch.
+func TestCodexAccountSwitchIgnoresLaunchesNoLongerLive(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	thread := testThread("codex-account-inactive-launch")
+	thread.Provider = string(provider.Codex)
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatal(err)
+	}
+	installTestProviderAccounts(t, app, string(provider.Codex))
+	app.sessionManager().put(thread.ID, session{
+		Provider:             string(provider.Codex),
+		Token:                "old-process",
+		CredentialGeneration: 1,
+		CredentialAccountID:  "first",
+		Liveness:             newSessionLiveness(time.Now()),
+	})
+	insertRunningBackgroundToolCall(t, app.store, thread.ID, "background-tool", 0, 0)
+	if n, err := app.store.MarkLiveBackgroundToolCallsInactive(thread.ID, time.Now().UnixMilli()); err != nil || n != 1 {
+		t.Fatalf("mark the launch inactive = %d, %v; want 1", n, err)
+	}
+	app.stopSessionFn = func(threadID string) error {
+		app.sessionManager().take(threadID)
+		return nil
+	}
+	app.startSessionFn = func(threadID string) error {
+		selection := app.captureProviderAccountSelection(string(provider.Codex))
+		app.sessionManager().put(threadID, session{
+			Provider:             string(provider.Codex),
+			Token:                "new-process",
+			CredentialGeneration: selection.Generation,
+			CredentialAccountID:  selection.AccountID,
+			Liveness:             newSessionLiveness(time.Now()),
+		})
+		return nil
+	}
+
+	if err := app.ensureProviderAccountReadyForSendLocked(thread); err != nil {
+		t.Fatalf("ensureProviderAccountReadyForSendLocked() error = %v", err)
+	}
+	if got, _ := app.sessionManager().get(thread.ID); got.Token != "new-process" || got.CredentialAccountID != "second" {
+		t.Fatalf("reconnected session = %+v", got)
+	}
+}
+
 func TestCodexIdleAccountSwitchReconnectsToSelectedAccount(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)

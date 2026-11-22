@@ -562,12 +562,12 @@ func TestToolCompleteWatchTaskKeepsRunningButNotQueueBlocking(t *testing.T) {
 		t.Fatalf("watch_task must be merged onto the launch row meta; meta=%v", meta)
 	}
 
-	running, err := st.ListRunningBackgroundToolCalls("t1")
+	running, err := st.CountLiveRunningBackgroundToolCalls("t1")
 	if err != nil {
-		t.Fatalf("ListRunningBackgroundToolCalls: %v", err)
+		t.Fatalf("CountLiveRunningBackgroundToolCalls: %v", err)
 	}
-	if len(running) != 1 {
-		t.Fatalf("a running watch IS live background work (reaper view); running = %d, want 1", len(running))
+	if running != 1 {
+		t.Fatalf("a running watch IS live background work (reaper view); running = %d, want 1", running)
 	}
 	blocking, err := st.HasQueueBlockingBackgroundToolCall("t1")
 	if err != nil {
@@ -3557,12 +3557,12 @@ func TestToolCompleteUnflaggedSettlesFlaggedClaudeLaunch(t *testing.T) {
 	if live, err := st.HasQueueBlockingBackgroundToolCall("t1"); err != nil || live {
 		t.Fatalf("a refused launch must not count as live background work (live=%v err=%v)", live, err)
 	}
-	running, err := st.ListRunningBackgroundToolCalls("t1")
+	running, err := st.CountLiveRunningBackgroundToolCalls("t1")
 	if err != nil {
-		t.Fatalf("ListRunningBackgroundToolCalls: %v", err)
+		t.Fatalf("CountLiveRunningBackgroundToolCalls: %v", err)
 	}
-	if len(running) != 0 {
-		t.Fatalf("reaper view must be empty, got %d rows", len(running))
+	if running != 0 {
+		t.Fatalf("reaper view must be empty, got %d rows", running)
 	}
 }
 
