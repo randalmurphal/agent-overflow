@@ -106,7 +106,7 @@ function oneCurrentThreadPerAssistant(before: readonly Thread[], rows: readonly 
 // (currentThreadRow) drops the moved row from its answer.
 onThreadOwnershipChanged((_id, previousBackend) => {
   invalidateReplicaCatalog(previousBackend, 'threads');
-  catalogWriter.persist(previousBackend);
+  catalogWriter.changed(previousBackend);
 });
 
 // Live-activity bumps arrive on every streaming flush (tens per second
@@ -156,15 +156,15 @@ function commitThreadRows(result: ComputerRows<Thread>): void {
 
 /**
  * How the thread catalog is read from each computer and committed. The
- * sidebar reads it only beside the groups, as one round
- * (./threadCatalogs.ts).
+ * sidebar reads it only beside the groups that gather these rows and the
+ * projects they hang from, as one round (./sidebarCatalogs.ts).
  */
 export function threadCatalogPart(): CatalogPart<Thread> {
   return {
     read: listThreadRows,
     note: noteThreadRow,
     commit: commitThreadRows,
-    catalog: computerCatalog('threads', () => threads, threadRowOwner),
+    catalog: computerCatalog('threads'),
     admit: currentThreadRow,
   };
 }
@@ -182,10 +182,11 @@ function currentRows(rows: Thread[]): Thread[] {
  * Wholesale registry replacement for catalog answers. The caller owns the
  * merge policy — rows must already be reconciled against local state
  * (see eventsThreadRows.reconcileThreadRows); this setter stays dumb so
- * that policy lives in one place.
+ * that policy lives in one place. It writes no replica record: an answer
+ * alone is no tree, and the round that answers all three catalogs writes the
+ * tree (./sidebarCatalogs.ts).
  */
 export function replaceAllThreads(rows: Thread[]): void {
-  for (const backend of new Set([...threads, ...rows].map((row) => threadBackend(row.id)))) catalogWriter.persist(backend);
   setThreads(rows);
   // Callers hand rows already reconciled against local state (including
   // the live-activity box, via mergeThreadRowWithLocal), so the boxes'
@@ -193,8 +194,7 @@ export function replaceAllThreads(rows: Thread[]): void {
   liveActivityAt.reset();
 }
 
-/** Test-only: an empty catalog with no live-activity bumps, without the
- *  catalog write a replacement records. */
+/** Test-only: an empty catalog with no live-activity bumps. */
 export function resetThreadsForTest(): void {
   setThreads([]);
   liveActivityAt.reset();
@@ -221,8 +221,16 @@ export function listThread(thread: Thread): void {
  * state they use, stay; `removeThread` is for a thread that is gone.
  */
 export function unlistThread(id: string): void {
-  invalidateReplicaCatalog(threadBackend(id) ?? '', 'threads');
-  catalogWriter.mutate(threadBackend(id), (rows) => rows.filter((t) => t.id !== id));
+  dropThreadRow(id);
+}
+
+// Take the row out of the catalog of the computer it is noted under, or
+// home's for a row never noted, which is where the catalog writer files such
+// a row.
+function dropThreadRow(id: string): void {
+  const backend = threadBackend(id) ?? HOME_BACKEND;
+  invalidateReplicaCatalog(backend, 'threads');
+  catalogWriter.mutate(backend, (rows) => rows.filter((t) => t.id !== id));
 }
 
 /**
@@ -252,8 +260,7 @@ export function addThreadRemovedObserver(observer: (id: string) => void): () => 
 }
 
 export function removeThread(id: string): void {
-  invalidateReplicaCatalog(threadBackend(id) ?? '', 'threads');
-  catalogWriter.mutate(threadBackend(id), (rows) => rows.filter((t) => t.id !== id));
+  dropThreadRow(id);
   liveActivityAt.drop(id);
   // Drop any live-status entry so the sidebar doesn't keep painting a
   // dot for a thread that no longer exists in the list.

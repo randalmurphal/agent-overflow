@@ -243,7 +243,7 @@ func TestTimelineArmsMatchTheViewForWindowReads(t *testing.T) {
 	assertTimelineParityFixtureIsRepresentative(t, s)
 
 	t.Run("tail slice", func(t *testing.T) {
-		page, err := s.ListThreadSliceAround(context.Background(), timelineParityThreadID, "", 5, testRunWindowRows, TimelineSelection{})
+		page, err := s.ListThreadSliceAround(context.Background(), timelineParityThreadID, "", 5, testRunWindowRows, TimelineSelection{}, AgentMessagesAreMembers)
 		if err != nil {
 			t.Fatalf("tail slice: %v", err)
 		}
@@ -254,7 +254,7 @@ func TestTimelineArmsMatchTheViewForWindowReads(t *testing.T) {
 	})
 
 	t.Run("slice around an anchor", func(t *testing.T) {
-		page, err := s.ListThreadSliceAround(context.Background(), timelineParityThreadID, "loc-launch-2", 6, testRunWindowRows, TimelineSelection{})
+		page, err := s.ListThreadSliceAround(context.Background(), timelineParityThreadID, "loc-launch-2", 6, testRunWindowRows, TimelineSelection{}, AgentMessagesAreMembers)
 		if err != nil {
 			t.Fatalf("slice around: %v", err)
 		}
@@ -277,7 +277,7 @@ func TestTimelineArmsMatchTheViewForWindowReads(t *testing.T) {
 
 	t.Run("before cursor", func(t *testing.T) {
 		cursor := TimelineCursor{TurnIndex: 2, ItemIndex: 5, ItemID: "loc-answer-2"}
-		page, err := s.ListItemsBeforeCursor(context.Background(), timelineParityThreadID, cursor, 4, testRunWindowRows, TimelineSelection{})
+		page, err := s.ListItemsBeforeCursor(context.Background(), timelineParityThreadID, cursor, 4, testRunWindowRows, TimelineSelection{}, AgentMessagesAreMembers)
 		if err != nil {
 			t.Fatalf("before cursor: %v", err)
 		}
@@ -294,7 +294,7 @@ func TestTimelineArmsMatchTheViewForWindowReads(t *testing.T) {
 
 	t.Run("after cursor", func(t *testing.T) {
 		cursor := TimelineCursor{TurnIndex: 0, ItemIndex: 1, ItemID: "imp-launch-0"}
-		page, err := s.ListItemsAfterCursor(context.Background(), timelineParityThreadID, cursor, 4, testRunWindowRows, TimelineSelection{})
+		page, err := s.ListItemsAfterCursor(context.Background(), timelineParityThreadID, cursor, 4, testRunWindowRows, TimelineSelection{}, AgentMessagesAreMembers)
 		if err != nil {
 			t.Fatalf("after cursor: %v", err)
 		}
@@ -752,7 +752,7 @@ func TestMainTimelineArmsWalkTopLevelIndexes(t *testing.T) {
 		reads := []mainRead{
 			{"held window check", func(t *testing.T) {
 				window := held[threadID]
-				got, err := s.SyncThreadWindow(ctx, threadID, "", 200, testRunWindowRows, stale[threadID], &window, TimelineSelection{})
+				got, err := s.SyncThreadWindow(ctx, threadID, "", 200, testRunWindowRows, stale[threadID], &window, TimelineSelection{}, AgentMessagesAreMembers)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -762,22 +762,22 @@ func TestMainTimelineArmsWalkTopLevelIndexes(t *testing.T) {
 				}
 			}},
 			{"slice", func(t *testing.T) {
-				if _, err := s.ListThreadSliceAround(ctx, threadID, "", 3, testRunWindowRows, TimelineSelection{}); err != nil {
+				if _, err := s.ListThreadSliceAround(ctx, threadID, "", 3, testRunWindowRows, TimelineSelection{}, AgentMessagesAreMembers); err != nil {
 					t.Fatal(err)
 				}
 			}},
 			{"older page", func(t *testing.T) {
 				last := held[threadID].NewestItemID
-				page, err := s.ListThreadSliceAround(ctx, threadID, last, 1, testRunWindowRows, TimelineSelection{})
+				page, err := s.ListThreadSliceAround(ctx, threadID, last, 1, testRunWindowRows, TimelineSelection{}, AgentMessagesAreMembers)
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := s.ListItemsBeforeCursor(ctx, threadID, page.OldestCursor, 3, testRunWindowRows, TimelineSelection{}); err != nil {
+				if _, err := s.ListItemsBeforeCursor(ctx, threadID, page.OldestCursor, 3, testRunWindowRows, TimelineSelection{}, AgentMessagesAreMembers); err != nil {
 					t.Fatal(err)
 				}
 			}},
 			{"newer page", func(t *testing.T) {
-				if _, err := s.ListItemsAfterCursor(ctx, threadID, TimelineCursor{TurnIndex: 0, ItemIndex: 0}, 3, testRunWindowRows, TimelineSelection{}); err != nil {
+				if _, err := s.ListItemsAfterCursor(ctx, threadID, TimelineCursor{TurnIndex: 0, ItemIndex: 0}, 3, testRunWindowRows, TimelineSelection{}, AgentMessagesAreMembers); err != nil {
 					t.Fatal(err)
 				}
 			}},
@@ -793,7 +793,7 @@ func TestMainTimelineArmsWalkTopLevelIndexes(t *testing.T) {
 			reads = append(reads, mainRead{"run members", func(t *testing.T) {
 				if _, err := s.ListActivityRunMembers(ctx, threadID, ActivityRunMembersRequest{
 					RunFirstItemID: runIDs[1], Direction: ActivityRunMembersAfter, Limit: 2,
-				}); err != nil {
+				}, AgentMessagesAreMembers); err != nil {
 					t.Fatal(err)
 				}
 			}})

@@ -7,7 +7,7 @@
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
   import { INPUT_CLASS } from './styles';
 
-  const { backend, hasScope } = settingsComputer();
+  const { backend, scopeGrant } = settingsComputer();
   const computers = createAgentComputers(backend);
   let target = $state('');
   async function connect(): Promise<void> {
@@ -17,10 +17,10 @@
 
 <section>
   <SettingsHeader title="Agent remote tools" description="Off by default. Enable a computer below to let agents run commands in its projects." />
-  {#if computers.capable() && hasScope('terminal:operate')}
+  {#if computers.capable() && scopeGrant('terminal:operate') === 'granted'}
     {#if computers.error}
       <p role="alert" class="mb-2 text-sm text-error">{computers.error}</p>
-      {#if computers.repairTarget && hasScope('access:admin')}
+      {#if computers.repairTarget && scopeGrant('access:admin') === 'granted'}
         <Button size="xs" variant="secondary" disabled={computers.busy} onclick={() => void computers.connect(computers.repairTarget)}>Connect again</Button>
       {:else}
         <Button size="xs" variant="ghost" disabled={computers.busy} onclick={() => void computers.load()}>Retry</Button>
@@ -32,7 +32,7 @@
         <Button size="xs" variant={row.enabled ? 'secondary' : 'primary'} disabled={computers.busy} onclick={() => void computers.toggle(row)} pressed={row.enabled}>{row.enabled ? 'Enabled' : 'Enable'}</Button>
       </div>
     {/each}
-    {#if computers.candidates.length > 0 && hasScope('access:admin')}
+    {#if computers.candidates.length > 0 && scopeGrant('access:admin') === 'granted'}
       <div class="mt-2 flex gap-2">
         <select class={`${INPUT_CLASS} min-w-0 flex-1`} bind:value={target} disabled={computers.busy} aria-label="Computer for agent commands">
           <option value="">Choose a computer…</option>

@@ -92,6 +92,46 @@ describe('settings store', () => {
     });
   });
 
+  describe('says how a write ended', () => {
+    it('answers saved with the computer settings it stored', async () => {
+      const serverReturn: Settings = { ...FULL_SETTINGS, codexEnabled: true, claudeBinaryPath: '/opt/claude' };
+      setBindingMock('UpdateSettings', async () => serverReturn);
+      const result = await updateSetting('codexEnabled', true);
+      expect(result.status).toBe('saved');
+      if (result.status !== 'saved') return;
+      expect(result.saved.codexEnabled).toBe(true);
+      expect(result.saved.claudeBinaryPath).toBe('/opt/claude');
+    });
+
+    it('answers refused with the computer settings the write left unchanged', async () => {
+      const failure = new Error('refused');
+      setBindingMock('UpdateSettings', async () => { throw failure; });
+      const consoleErr = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const result = await updateSetting('codexEnabled', true);
+      consoleErr.mockRestore();
+      expect(result.status).toBe('refused');
+      if (result.status !== 'refused') return;
+      expect(result.error).toBe(failure);
+      expect(result.saved.codexEnabled).toBe(false);
+      expect(getSettings().codexEnabled).toBe(false);
+    });
+
+    it('answers dropped when the store resets before the computer answers', async () => {
+      let answer: (value: Settings) => void = () => {};
+      setBindingMock('UpdateSettings', () => new Promise<Settings>((resolve) => { answer = resolve; }));
+      const pending = updateSetting('codexEnabled', true);
+      await Promise.resolve();
+      resetSettingsForTest();
+      answer({ ...FULL_SETTINGS, codexEnabled: true });
+      expect((await pending).status).toBe('dropped');
+    });
+
+    it('answers local for a frontend preference, which the computer does not store', async () => {
+      const result = await updateSetting('timestampFormat', '24-hour');
+      expect(result.status).toBe('local');
+    });
+  });
+
   describe('updateSetting() optimistic update', () => {
     it('applies the change immediately and persists', async () => {
       const serverReturn: Settings = { ...FULL_SETTINGS, timestampFormat: '24-hour' };

@@ -11,13 +11,14 @@
   import { backendDisplayName, backendReachable, getAttachedBackends } from '../../stores/attachedBackends.svelte';
   import { getProject, getProjects, projectSiblingOn } from '../../stores/projects.svelte';
   import { projectBackend } from '../../transport/entityIndex';
-  import { hasScope } from '../../transport/scopes';
+  import { scopeGrant } from '../../transport/scopes';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
   import type { BackendKey } from '../../transport/backendKey';
   import type { Project } from '../../types/models';
 
   let { request }: { request: TransferRequest } = $props();
   let computers = $derived(getAttachedBackends().filter((entry) => entry.id !== request.source));
-  let destination = $state<BackendKey>(untrack(() => request.destination ?? computers.find((entry) => backendReachable(entry.id) && supportsConversationTransfer(entry.id) && hasScope('threads:operate', entry.id))?.id ?? ''));
+  let destination = $state<BackendKey>(untrack(() => request.destination ?? computers.find((entry) => backendReachable(entry.id) && supportsConversationTransfer(entry.id) && scopeGrant('threads:operate', entry.id) === 'granted')?.id ?? ''));
   // An assistant stays on its computer with its home, so its current
   // thread is only copied; the source refuses a move as well.
   let moveRefused = $derived(request.standingAgent ?? Boolean(request.thread.agentId));
@@ -33,9 +34,11 @@
   let row = $derived(computerTransfers(request.source).rows.find((row) => row.id === request.operationID));
   let running = $derived(Boolean(row && (!row.needsDestination || row.cancelRequested || row.phase === 'canceled')));
   let locked = $derived(request.submitted || Boolean(request.intent));
+  // Carrying the workspace, and adding a project there, ride `git:operate` on the destination.
+  let workspaceGrant = $derived(destination ? scopeGrant('git:operate', destination) : 'granted');
   let ready = $derived(Boolean(destination && projectID) && backendReachable(request.source) && backendReachable(destination) &&
-    supportsConversationTransfer(destination) && hasScope('threads:operate', request.source) && hasScope('threads:operate', destination) &&
-    (!includeWorkspace || hasScope('git:operate', destination)));
+    supportsConversationTransfer(destination) && scopeGrant('threads:operate', request.source) === 'granted'
+    && scopeGrant('threads:operate', destination) === 'granted' && (!includeWorkspace || workspaceGrant === 'granted'));
   const fieldClass = 'min-w-0 w-full rounded-[var(--radius-field)] border border-border-subtle bg-surface-1 px-2 py-2 text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40';
 
   function sibling(backend: BackendKey): string {
@@ -90,9 +93,9 @@
           {#each computers as computer (computer.id)}
             {@const offline = !backendReachable(computer.id)}
             {@const supported = supportsConversationTransfer(computer.id)}
-            {@const granted = hasScope('threads:operate', computer.id)}
-            <option value={computer.id} disabled={offline || !supported || !granted}>
-              {backendDisplayName(computer)}{offline ? ' · Offline' : !supported ? ' · Update required' : !granted ? ' · No access' : ''}
+            {@const grant = scopeGrant('threads:operate', computer.id)}
+            <option value={computer.id} disabled={offline || !supported || grant !== 'granted'} title={offline || !supported ? undefined : grantBlockedTitle(grant)}>
+              {backendDisplayName(computer)}{offline ? ' · Offline' : !supported ? ' · Update required' : grant === 'refused' ? ' · No access' : ''}
             </option>
           {/each}
         </select>
@@ -106,7 +109,7 @@
           {/each}
         </select>
       </label>
-      {#if !request.submitted && destination && hasScope('git:operate', destination)}
+      {#if !request.submitted && destination && workspaceGrant === 'granted'}
         <div><Button variant="ghost" size="xs" disabled={!backendReachable(destination)} onclick={() => { adding = true; }}>Add an existing project…</Button></div>
       {/if}
       {#if hasWorkspace}
@@ -116,7 +119,7 @@
         </label>
       {/if}
       {#if !includeWorkspace}<p class="text-xs text-fg-muted">The conversation will use the destination project’s existing checkout.</p>{/if}
-      {#if includeWorkspace && destination && !hasScope('git:operate', destination)}<p class="text-xs text-warning">Workspace access is needed on the destination to include these changes.</p>{/if}
+      {#if includeWorkspace && destination && workspaceGrant === 'refused'}<p class="text-xs text-warning">Workspace access is needed on the destination to include these changes.</p>{:else if includeWorkspace && destination && workspaceGrant !== 'granted'}<p class="text-xs text-warning">{grantBlockedTitle(workspaceGrant)}</p>{/if}
       {#if !backendReachable(request.source) || (destination && !backendReachable(destination))}<p role="status" class="text-xs text-warning">Reconnect both computers to finish setup.</p>{/if}
     {/if}
     {#if request.error}<p role="alert" class="break-words text-xs text-error">{request.error}</p>{/if}

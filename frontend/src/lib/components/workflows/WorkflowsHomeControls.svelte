@@ -7,14 +7,15 @@
   // triage-agent spawners.
   //
   // Remote posture (§10): every control here mutates, so all of them disable
-  // with a "Not granted to this device" tooltip in a view-only session; the project filter is
-  // pure view state and stays live.
+  // with the reason (`grantBlockedTitle`) in a view-only session; the project
+  // filter is pure view state and stays live.
 
   import { WorkflowSetGlobalPause } from '../../stores/bindings';
   import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import { userFacingError } from '../../utils/userFacingError';
   import { getProjectLabelText, getProjects } from '../../stores/projects.svelte';
-  import { hasScope } from '../../transport/scopes';
+  import { allOfGrants, anyOfGrants, scopeGrant } from '../../transport/scopes';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
   import { isWorkflowEnginePaused, resyncWorkflowEngineState } from '../../stores/workflowRuns.svelte';
   import {
     getWorkflowProjectFilter,
@@ -24,14 +25,16 @@
 
   // Every control here drives the workflow engine, which is `threads:autonomy`.
   let computers = $derived(getAttachedBackends());
-  let ungranted = $derived(!computers.some((entry) => hasScope('threads:autonomy', entry.id)));
-  let pauseUngrant = $derived(computers.length === 0 || computers.some((entry) => !hasScope('threads:autonomy', entry.id)));
+  let grant = $derived(anyOfGrants(computers.map((entry) => scopeGrant('threads:autonomy', entry.id))));
+  let ungranted = $derived(grant !== 'granted');
+  let pauseGrant = $derived(computers.length === 0 ? 'refused' : allOfGrants(computers.map((entry) => scopeGrant('threads:autonomy', entry.id))));
+  let pauseUngrant = $derived(pauseGrant !== 'granted');
   let paused = $derived(isWorkflowEnginePaused());
   let projects = $derived(getProjects());
   let filter = $derived(getWorkflowProjectFilter());
   let pausing = $state(false);
 
-  const ungrantedTitle = $derived(ungranted ? 'Not granted to this device' : undefined);
+  const ungrantedTitle = $derived(grantBlockedTitle(grant));
 
   async function togglePause(): Promise<void> {
     if (pauseUngrant || pausing) return;
@@ -61,7 +64,7 @@
     class="rounded-md border border-border-subtle px-2 py-1 text-xs text-fg-muted hover:text-fg disabled:cursor-not-allowed disabled:opacity-50"
     onclick={togglePause}
     disabled={pauseUngrant || pausing}
-    title={pauseUngrant ? 'Workflow control is required on every computer to pause all' : 'Pause stops new phase starts on every connected computer; in-flight turns finish'}
+    title={pauseGrant === 'refused' ? 'Workflow control is required on every computer to pause all' : grantBlockedTitle(pauseGrant) ?? 'Pause stops new phase starts on every connected computer; in-flight turns finish'}
     data-testid="workflows-pause-all"
     aria-pressed={paused}
   >{paused ? '▶ Resume all' : '❚❚ Pause all'}</button>

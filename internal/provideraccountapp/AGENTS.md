@@ -7,8 +7,14 @@ and credential-committing usage refresh.
 
 Keep each lock with all of its wards. `internal/app` owns live provider
 sessions and implements `SessionGateway`; sends hold a `SelectionLease`
-across provider writes so account activation occurs wholly before or after the
-write. Rate-limit persistence and emission enter through narrow
+across provider writes, so account activation occurs wholly before or after
+the write. A text-generation CLI is a credential use (`credentialuse.go`) for
+its whole run. Every path that changes the selected account calls
+`selectionChanging` under the reconcile lock once it has decided to change it
+and before it reads the outgoing canonical credential or replaces it; it ends
+every running use, and none is admitted until the lock is released. A refused
+or declined change stops nothing. The store refuses a selection change while a use is
+alive. Rate-limit persistence and emission enter through narrow
 `providerlifecycleapp` ports.
 
 ## Credential operations

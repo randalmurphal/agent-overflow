@@ -33,6 +33,13 @@ type threadAgentRemoteSlot struct {
 	index int
 	depth int
 	spawn store.ThreadRequest
+	// shown is the request the row shows: the spawn, or a send of a later
+	// run of its caller's there (store.ThreadAgentRequest.Node).
+	shown store.ThreadRequest
+	// ended says the spawn's run ended (remoteSpawnEnded): it nests only
+	// the rows its run left there, none of the work someone else's run
+	// does since.
+	ended bool
 }
 
 // remoteAgentAnswers reads each remote spawn's rows: the last answer, with
@@ -92,19 +99,24 @@ func (a *App) nestPeerAgentRows(parent *ThreadAgentRow, slot threadAgentRemoteSl
 	// row's nested_open says once recorded. A failed call is no news of
 	// rest: the last answer stands, which a refusal clears
 	// (noteAnswerLocked). It says where the thread is placed and what it
-	// waits on there too.
-	switch open := answer.listing.Open; {
-	case answer.listing.Worker != "":
-		parent.Worker = answer.listing.Worker
-	case open != nil && *open && parent.Worker == "":
-		parent.Worker = string(workerWaiting)
-	}
-	peerSpawnReport(parent, answer)
-	if parent.Worker == string(workerBlocked) || parent.State == threadtools.RequestBlocked {
-		a.peerSpawnBlocked(parent, answer.listing)
-	}
-	if parent.open() && parent.BlockedOn == "" {
-		parent.Activity = answer.listing.Activity
+	// waits on there too. A send of a later run in the spawn's place keeps
+	// the state its own request reads (threadAgentView.row).
+	if slot.shown.Token == slot.spawn.Token {
+		switch open := answer.listing.Open; {
+		case slot.spawn.RunEnded():
+			// Its run ended: what the thread does there now is not this row's.
+		case answer.listing.Worker != "":
+			parent.Worker = answer.listing.Worker
+		case open != nil && *open && parent.Worker == "":
+			parent.Worker = string(workerWaiting)
+		}
+		peerSpawnReport(parent, slot.spawn, answer)
+		if parent.Worker == string(workerBlocked) || parent.State == threadtools.RequestBlocked {
+			a.peerSpawnBlocked(parent, answer.listing)
+		}
+		if parent.open() && parent.BlockedOn == "" {
+			parent.Activity = answer.listing.Activity
+		}
 	}
 	if answer.err != nil {
 		parent.NestedUnavailable = threadAgentPeerUnavailable(parent.Computer, answer.err)
@@ -113,16 +125,33 @@ func (a *App) nestPeerAgentRows(parent *ThreadAgentRow, slot threadAgentRemoteSl
 	if parent.Provider == "" {
 		parent.Provider = answer.listing.ThreadProvider
 	}
-	if slot.depth >= maxDepth && answer.listing.Hidden {
+	if !slot.ended && slot.depth >= maxDepth && answer.listing.Hidden {
 		// The thread's state alone, for a thread with rows past the bound.
 		parent.NestedHidden = true
 	}
 	self, _ := a.backendIdentity()
 	rows := make([]ThreadAgentRow, 0, len(answer.listing.Rows))
 	entries := make([]threadAgentEntry, 0, len(answer.listing.Rows))
+	// Under a spawn whose run ended only its run's rows nest, every one done
+	// by then: an open row there, and the rows under it, are work someone
+	// else started since (doneRowSQL reads a local spawn the same way).
+	cut := -1
 	for _, row := range answer.listing.Rows {
+		if slot.ended {
+			if cut >= 0 && row.Depth > cut {
+				continue
+			}
+			cut = -1
+			if row.open() {
+				cut = row.Depth
+				continue
+			}
+		}
 		row.Depth += slot.depth
 		if row.Depth >= maxDepth {
+			if slot.ended {
+				continue
+			}
 			if row.Depth == slot.depth {
 				parent.NestedHidden = true
 			}
@@ -161,9 +190,8 @@ func (a *App) nestPeerAgentRows(parent *ThreadAgentRow, slot threadAgentRemoteSl
 // thread is placed there, as that computer's last answer reported it: the
 // one projection of a paired spawn's counts, placement and archive state,
 // for its open row and its Past row alike.
-func peerSpawnReport(row *ThreadAgentRow, answer threadAgentPeerAnswer) {
-	row.ToolCalls, row.Tokens = answer.listing.ToolCalls, answer.listing.Tokens
-	row.RuntimeMs, row.TurnOpen, row.TurnStartedAt = answer.listing.RuntimeMs, answer.listing.TurnOpen, answer.listing.TurnStartedAt
+func peerSpawnReport(row *ThreadAgentRow, spawn store.ThreadRequest, answer threadAgentPeerAnswer) {
+	row.runFigures(spawn, peerFigures(answer.listing))
 	row.Placement, row.Archived = answer.listing.Placement, answer.listing.Archived
 }
 
@@ -232,7 +260,7 @@ func (a *App) pastPeerSpawnCounts(rows []ThreadAgentRow, requests []store.Thread
 		}
 		answer, ok := a.cachedPeerAgentRows(spawn)
 		if ok {
-			peerSpawnReport(&rows[i], answer)
+			peerSpawnReport(&rows[i], spawn, answer)
 			if answer.err != nil {
 				rows[i].NestedUnavailable = threadAgentPeerUnavailable(rows[i].Computer, answer.err)
 			}

@@ -11,8 +11,10 @@
 // opens its copy with a composer that takes no message, no pickers, no
 // attach, no edit or fork on its messages and no Keep, and
 // once answered the copy's pane goes, its Past row's digest carries the
-// answer and its icon offers the thread asked; and an assistant's helper row, open and past, has Open in
-// Agent Pane and no Show in Sidebar.
+// answer and its icon offers the thread asked; an assistant's helper row, open and past, has Open in
+// Agent Pane and no Show in Sidebar; and Past's count sits beside its label
+// and its touch-sized Show more and Show less page it and go back to the
+// first page.
 import type { Locator } from '@playwright/test';
 
 import { test, expect } from './fixtures.js';
@@ -29,16 +31,19 @@ import {
   approvalTool,
   companionPane,
   expectAskCopyReadOnly,
+  expectPastCountBesideLabel,
   failAgentReads,
   ledgerRow,
   mockInterrupt,
   openAgentRow,
   openAgents,
   openPast,
+  pastList,
   pastRow,
   seedAgentsTree,
   seedAssistantWithHelper,
   seedPastWithAsk,
+  seedSettledWorkers,
   startTree,
 } from './agents-tray-helpers.js';
 
@@ -56,6 +61,13 @@ async function expectFits(row: Locator, viewportWidth: number, buttons = ['agent
     expect(button.height, id).toBeGreaterThanOrEqual(36);
     expect(button.x + button.width, id).toBeLessThanOrEqual(viewportWidth);
   }
+}
+
+/** A text control inside the window with a touch-sized height. */
+async function expectTouchSized(button: Locator, viewportWidth: number): Promise<void> {
+  const box = (await button.boundingBox())!;
+  expect(box.height, 'touch-sized').toBeGreaterThanOrEqual(36);
+  expect(box.x + box.width).toBeLessThanOrEqual(viewportWidth);
 }
 
 for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderName[]) {
@@ -198,5 +210,31 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     const past = pastRow(page, token);
     await expect(past.getByTestId('agent-tray-row-show-in-sidebar')).toHaveCount(0);
     await expectFits(past, width, ['agent-tray-row-open-pane']);
+  });
+
+  test(`${provider}: Past's count sits beside its label, and Show more and Show less are touch-sized and page it`, async ({ harness, page }) => {
+    test.setTimeout(240_000);
+    await seedSettledWorkers(harness, provider, `compact-agents-paging-${provider}`, 9);
+    await harness.open(page);
+    await openAgents(page, LEAD);
+    const width = page.viewportSize()!.width;
+    await expect(agentsBody(page).getByTestId('activity-rail-agents-past-count')).toHaveText('9', { timeout: 30_000 });
+    await expectPastCountBesideLabel(page);
+    const rows = (await openPast(page)).getByTestId('agent-tray-row');
+    await expect(rows).toHaveCount(8);
+    const more = agentsBody(page).getByTestId('activity-rail-agents-past-more');
+    const less = agentsBody(page).getByTestId('activity-rail-agents-past-less');
+    await expect(more).toHaveText('Show 1 more…');
+    await expect(less).toHaveCount(0);
+    await expectTouchSized(more, width);
+    await more.tap();
+    await expect(rows).toHaveCount(9);
+    await expect(more).toHaveCount(0);
+    await expectTouchSized(less, width);
+    await capture(page, `agents-${provider}-compact-past-paged.png`, agentsBody(page));
+    await less.tap();
+    await expect(pastList(page).getByTestId('agent-tray-row')).toHaveCount(8);
+    await expect(less).toHaveCount(0);
+    await expect(more).toHaveText('Show 1 more…');
   });
 }

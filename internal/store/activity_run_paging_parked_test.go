@@ -54,7 +54,7 @@ func seedParkedAgentRun(t *testing.T, s *Store, threadID string, ends bool) []st
 // Items[i] is ids[i].
 func wholeParkedAgentPage(t *testing.T, s *Store, threadID string, ids []string) PagedItems {
 	t.Helper()
-	page, err := s.ListThreadSliceAround(context.Background(), threadID, "", 20, 20, TimelineSelection{})
+	page, err := s.ListThreadSliceAround(context.Background(), threadID, "", 20, 20, TimelineSelection{}, AgentMessagesAreMembers)
 	if err != nil {
 		t.Fatalf("tail slice: %v", err)
 	}

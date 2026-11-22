@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readSidebarCatalogs } from '../../test/helpers/sidebarCatalogs';
 import { setupEventListeners } from './events';
 import { __setTransportHelloForTest } from './transportStatus.svelte';
 import { createThreadPane } from './thread.svelte';
@@ -13,13 +14,13 @@ import {
 import { resetForTest as resetSendQueue, markItemsFlushed, getFlushedForThread, registerQueueItem } from './sendQueue.svelte';
 import { resetLiveUsageSnapshotsForTest } from './threadContextWindow';
 import { addThreadRemovedObserver, getThreads, getThreadLiveActivityAt } from './threads.svelte';
-import { loadThreadCatalogs } from './threadCatalogs';
+import { loadSidebarCatalogs } from './sidebarCatalogs';
 import { hasUnread } from '../utils/threadStatusPill';
 import { sidebarListsThread } from '../components/sidebar/sidebarBuckets';
 import { claimLocalReadMarker, resetLocalReadMarkersForTest } from './threadReadWrites';
 import { withEmptyDraftCleanup } from './emptyDraftCleanup';
 import { getToasts } from './toast.svelte';
-import { getProjectLiveActivityAt, getProjects, refreshProjects, resetProjectsForTest } from './projects.svelte';
+import { getProjectLiveActivityAt, getProjects, resetProjectsForTest } from './projects.svelte';
 import {
   getProviderRateLimit,
   resetForTest as resetRateLimitsInfo,
@@ -47,6 +48,7 @@ import {
 } from '../../test/helpers/chat';
 import type { ProviderStatusEvent } from '../types/events';
 import type { Item, ProjectWithCounts } from '../types/models';
+import { AGENT_MESSAGES_ABSORBED_RULE } from '../utils/activityRunSpans';
 
 function providerStatusEvent(overrides: Partial<ProviderStatusEvent> = {}): ProviderStatusEvent {
   return {
@@ -367,7 +369,7 @@ describe('setupEventListeners', () => {
       newestLoadedTurnIndex: 0,
       hasMoreHistory: false,
       hasMoreNewer: false,
-      latestSettledTurn: null,
+      latestSettledTurn: null, activityRunRule: AGENT_MESSAGES_ABSORBED_RULE,
     });
     cacheModule.threadItemCache.set('thread-other', {
       items: [makeItem({ id: 'cached-other', threadId: 'thread-other' })],
@@ -375,7 +377,7 @@ describe('setupEventListeners', () => {
       newestLoadedTurnIndex: 0,
       hasMoreHistory: false,
       hasMoreNewer: false,
-      latestSettledTurn: null,
+      latestSettledTurn: null, activityRunRule: AGENT_MESSAGES_ABSORBED_RULE,
     });
     expect(cacheModule.threadItemCache.size).toBe(2);
 
@@ -422,7 +424,7 @@ describe('setupEventListeners', () => {
       newestLoadedTurnIndex: 0,
       hasMoreHistory: false,
       hasMoreNewer: false,
-      latestSettledTurn: null,
+      latestSettledTurn: null, activityRunRule: AGENT_MESSAGES_ABSORBED_RULE,
     });
     cacheModule.threadItemCache.set('thread-a', snapshot('thread-a'));
     cacheModule.threadItemCache.set('thread-closed', snapshot('thread-closed'));
@@ -469,7 +471,7 @@ describe('setupEventListeners', () => {
       newestLoadedTurnIndex: 0,
       hasMoreHistory: false,
       hasMoreNewer: false,
-      latestSettledTurn: null,
+      latestSettledTurn: null, activityRunRule: AGENT_MESSAGES_ABSORBED_RULE,
     });
 
     emitWailsEvent('provider:item_event', {
@@ -1285,7 +1287,7 @@ describe('setupEventListeners', () => {
   it('raises cached durable Plan Ready from a thread:updated full row', async () => {
     const cached = makeThread({ id: 'thread-1', hasActionableProposedPlan: false });
     setBindingMock('ListThreads', async () => [cached]);
-    await loadThreadCatalogs();
+    await loadSidebarCatalogs();
     const pane = await buildPane(cached);
 
     emitWailsEvent('thread:updated', {
@@ -1300,7 +1302,7 @@ describe('setupEventListeners', () => {
   it('clears cached durable Plan Ready from a thread:updated full row', async () => {
     const cached = makeThread({ id: 'thread-1', hasActionableProposedPlan: true });
     setBindingMock('ListThreads', async () => [cached]);
-    await loadThreadCatalogs();
+    await loadSidebarCatalogs();
     const pane = await buildPane(cached);
 
     emitWailsEvent('thread:updated', {
@@ -1315,7 +1317,7 @@ describe('setupEventListeners', () => {
   it('does not move durable Plan Ready from a proposed-plan item upsert', async () => {
     const cached = makeThread({ id: 'thread-1', hasActionableProposedPlan: false });
     setBindingMock('ListThreads', async () => [cached]);
-    await loadThreadCatalogs();
+    await loadSidebarCatalogs();
 
     const item = makeItem({
       id: 'plan-1',
@@ -1892,7 +1894,7 @@ describe('setupEventListeners', () => {
         latestTurnCompletedAt: 300,
       }),
     ]);
-    await loadThreadCatalogs();
+    await loadSidebarCatalogs();
 
     const pane = await buildPane(makeThread({
       id: 'thread-1',
@@ -1901,7 +1903,7 @@ describe('setupEventListeners', () => {
       lastReadAt: 200,
       latestTurnCompletedAt: 200,
     }));
-    await loadThreadCatalogs();
+    await loadSidebarCatalogs();
 
     emitWailsEvent('thread:updated', {
       action: 'full',
@@ -1931,7 +1933,7 @@ describe('setupEventListeners', () => {
     setBindingMock('ListThreads', async () => [
       makeThread({ id: 'thread-1', pinnedAt: 900, pinGroup: 1 }),
     ]);
-    await loadThreadCatalogs();
+    await loadSidebarCatalogs();
     const pane = await buildPane(makeThread({ id: 'thread-1', pinnedAt: 900, pinGroup: 1 }));
 
     emitWailsEvent('thread:updated', {
@@ -1953,7 +1955,7 @@ describe('setupEventListeners', () => {
     setBindingMock('ListThreads', async () => [
       makeThread({ id: 'thread-1', title: 'Fresh' }),
     ]);
-    await loadThreadCatalogs();
+    await loadSidebarCatalogs();
     const pane = await buildPane(makeThread({ id: 'thread-1', title: 'Fresh' }));
     expect(getThreads()[0]?.sessionRef).toBeUndefined();
 
@@ -1987,7 +1989,7 @@ describe('setupEventListeners', () => {
           workspacePath: '/repo',
         }),
       ]);
-      await loadThreadCatalogs();
+      await loadSidebarCatalogs();
 
       emitWailsEvent('thread:updated', {
         action: 'full',
@@ -2019,7 +2021,7 @@ describe('setupEventListeners', () => {
 
     it('inserts a row this client has never seen from a listed event', async () => {
       setBindingMock('ListThreads', async () => [makeThread({ id: 'thread-1' })]);
-      await loadThreadCatalogs();
+      await loadSidebarCatalogs();
       expect(getThreads().map((t) => t.id)).toEqual(['thread-1']);
 
       emitWailsEvent('thread:updated', {
@@ -2044,7 +2046,7 @@ describe('setupEventListeners', () => {
         makeThread({ id: 'thread-1' }),
         makeThread({ id: 'thread-2' }),
       ]);
-      await loadThreadCatalogs();
+      await loadSidebarCatalogs();
 
       emitWailsEvent('thread:updated', {
         action: 'unlisted',
@@ -2058,7 +2060,7 @@ describe('setupEventListeners', () => {
 
     it("moves a pane showing an assistant's old thread to the one its handoff listed", async () => {
       setBindingMock('ListThreads', async () => [makeThread({ id: 'thread-1', title: 'Ops', agentId: 'agent-1' })]);
-      await loadThreadCatalogs();
+      await loadSidebarCatalogs();
       const pane = await buildPane(makeThread({ id: 'thread-1', title: 'Ops', agentId: 'agent-1' }));
       const successor = makeThread({ id: 'thread-2', title: 'Ops', agentId: 'agent-1' });
       setBindingMock('GetThread', async () => successor);
@@ -2076,7 +2078,7 @@ describe('setupEventListeners', () => {
 
     it("moves a pane on a handoff whose old thread was unarchived first, and keeps that row listed", async () => {
       setBindingMock('ListThreads', async () => [makeThread({ id: 'thread-1', title: 'Ops', agentId: 'agent-1' })]);
-      await loadThreadCatalogs();
+      await loadSidebarCatalogs();
       const pane = await buildPane(makeThread({ id: 'thread-1', title: 'Ops', agentId: 'agent-1' }));
       const successor = makeThread({ id: 'thread-2', title: 'Ops', agentId: 'agent-1' });
       setBindingMock('GetThread', async () => successor);
@@ -2095,42 +2097,42 @@ describe('setupEventListeners', () => {
 
     it("moves a pane on a handoff whose frame was lost, from the catalog naming the assistant's new thread", async () => {
       setBindingMock('ListThreads', async () => [makeThread({ id: 'thread-1', title: 'Ops', agentId: 'agent-1' })]);
-      await loadThreadCatalogs();
+      await loadSidebarCatalogs();
       const pane = await buildPane(makeThread({ id: 'thread-1', title: 'Ops', agentId: 'agent-1' }));
       const successor = makeThread({ id: 'thread-2', title: 'Ops', agentId: 'agent-1' });
       setBindingMock('GetThread', async () => successor);
 
       // No frame: the next catalog lists the new thread and not the old one.
       setBindingMock('ListThreads', async () => [successor]);
-      await loadThreadCatalogs();
+      await loadSidebarCatalogs();
 
       await vi.waitFor(() => expect(pane.threadId).toBe('thread-2'));
     });
 
     it("moves a pane on a handoff whose unlisted frame was lost after the new thread's listed frame", async () => {
       setBindingMock('ListThreads', async () => [makeThread({ id: 'thread-1', title: 'Ops', agentId: 'agent-1' })]);
-      await loadThreadCatalogs();
+      await loadSidebarCatalogs();
       const pane = await buildPane(makeThread({ id: 'thread-1', title: 'Ops', agentId: 'agent-1' }));
       const successor = makeThread({ id: 'thread-2', title: 'Ops', agentId: 'agent-1' });
       setBindingMock('GetThread', async () => successor);
 
       emitWailsEvent('thread:updated', { action: 'listed', thread: successor });
       setBindingMock('ListThreads', async () => [successor]);
-      await loadThreadCatalogs();
+      await loadSidebarCatalogs();
 
       await vi.waitFor(() => expect(pane.threadId).toBe('thread-2'));
     });
 
     it('moves a pane to the new thread from a catalog read while the handoff ran, listing both as current', async () => {
       setBindingMock('ListThreads', async () => [makeThread({ id: 'thread-1', title: 'Ops', agentId: 'agent-1' })]);
-      await loadThreadCatalogs();
+      await loadSidebarCatalogs();
       const pane = await buildPane(makeThread({ id: 'thread-1', title: 'Ops', agentId: 'agent-1' }));
       const successor = makeThread({ id: 'thread-2', title: 'Ops', agentId: 'agent-1' });
       setBindingMock('GetThread', async () => successor);
 
       // The list holds the new thread as current and the old one as past.
       setBindingMock('ListThreads', async () => [successor, makeThread({ id: 'thread-1', title: 'Ops', agentId: 'agent-1' })]);
-      await loadThreadCatalogs();
+      await loadSidebarCatalogs();
 
       expect(getThreads().find((t) => t.id === 'thread-1')?.pastAgentId).toBe('agent-1');
       await vi.waitFor(() => expect(pane.threadId).toBe('thread-2'));
@@ -2138,13 +2140,13 @@ describe('setupEventListeners', () => {
 
     it('keeps a pane a live handoff moved when a catalog read from before the handoff lands', async () => {
       setBindingMock('ListThreads', async () => [makeThread({ id: 'thread-1', title: 'Ops', agentId: 'agent-1' })]);
-      await loadThreadCatalogs();
+      await loadSidebarCatalogs();
       const pane = await buildPane(makeThread({ id: 'thread-1', title: 'Ops', agentId: 'agent-1' }));
       const successor = makeThread({ id: 'thread-2', title: 'Ops', agentId: 'agent-1' });
       setBindingMock('GetThread', async () => successor);
       let answer!: (rows: unknown[]) => void;
       setBindingMock('ListThreads', () => new Promise((resolve) => { answer = resolve; }));
-      const read = loadThreadCatalogs();
+      const read = loadSidebarCatalogs();
       await vi.waitFor(() => expect(answer).toBeDefined());
 
       emitWailsEvent('thread:updated', { action: 'listed', thread: successor });
@@ -2166,10 +2168,10 @@ describe('setupEventListeners', () => {
         makeThread({ id: 'thread-1', title: 'Ops', pastAgentId: 'agent-1' }),
         makeThread({ id: 'thread-2', title: 'Ops', agentId: 'agent-1' }),
       ]);
-      await loadThreadCatalogs();
+      await loadSidebarCatalogs();
       const pane = await buildPane(makeThread({ id: 'thread-1', title: 'Ops', pastAgentId: 'agent-1' }));
 
-      await loadThreadCatalogs();
+      await loadSidebarCatalogs();
 
       expect(pane.threadId).toBe('thread-1');
       expect(findPaneShowingThread('thread-2')).toBeNull();
@@ -2180,7 +2182,7 @@ describe('setupEventListeners', () => {
         makeThread({ id: 'thread-1', title: 'Ops', pastAgentId: 'agent-1' }),
         makeThread({ id: 'thread-2', title: 'Ops', agentId: 'agent-1' }),
       ]);
-      await loadThreadCatalogs();
+      await loadSidebarCatalogs();
       await buildPane(makeThread({ id: 'thread-1', title: 'Ops', pastAgentId: 'agent-1' }));
 
       emitWailsEvent('thread:updated', {
@@ -2194,7 +2196,7 @@ describe('setupEventListeners', () => {
 
     it('closes the pane of an archived thread that no handoff replaced', async () => {
       setBindingMock('ListThreads', async () => [makeThread({ id: 'thread-1', agentId: 'agent-1' })]);
-      await loadThreadCatalogs();
+      await loadSidebarCatalogs();
       await buildPane(makeThread({ id: 'thread-1', agentId: 'agent-1' }));
 
       emitWailsEvent('thread:updated', { action: 'unlisted', thread: makeThread({ id: 'thread-1', archived: true, agentId: 'agent-1' }) });
@@ -2214,7 +2216,7 @@ describe('setupEventListeners', () => {
     it('takes an emptied thread off the sidebar and keeps the pane showing it', async () => {
       const thread = makeThread({ id: 'thread-1', isDraft: true });
       setBindingMock('ListThreads', async () => [thread, makeThread({ id: 'thread-2' })]);
-      await loadThreadCatalogs();
+      await loadSidebarCatalogs();
       const pane = await buildPane(thread);
       const removed: string[] = [];
       const stopObserving = addThreadRemovedObserver((id) => removed.push(id));
@@ -2235,7 +2237,7 @@ describe('setupEventListeners', () => {
     it('keeps an owned worker off the sidebar whatever frame announces it, and a pane on it open', async () => {
       const worker = makeThread({ id: 'worker', placement: 'standalone' });
       setBindingMock('ListThreads', async () => [worker, makeThread({ id: 'thread-2' })]);
-      await loadThreadCatalogs();
+      await loadSidebarCatalogs();
       const pane = await buildPane(worker);
       const removed: string[] = [];
       const stopObserving = addThreadRemovedObserver((id) => removed.push(id));
@@ -2269,7 +2271,7 @@ describe('setupEventListeners', () => {
     it('evicts an empty draft during local cleanup but lets its composer restage, releasing on failure', async () => {
       const thread = makeThread({ id: 'thread-1', isDraft: true });
       setBindingMock('ListThreads', async () => [thread]);
-      await loadThreadCatalogs();
+      await loadSidebarCatalogs();
       const pane = await buildPane(thread);
 
       await expect(withEmptyDraftCleanup(thread.id, async () => {
@@ -2291,7 +2293,7 @@ describe('setupEventListeners', () => {
 
     it('leaves a full row for an unknown thread alone', async () => {
       setBindingMock('ListThreads', async () => [makeThread({ id: 'thread-1' })]);
-      await loadThreadCatalogs();
+      await loadSidebarCatalogs();
 
       // 'full' says what the row IS, never that it belongs in the sidebar:
       // listing also depends on items and draft content, which only the
@@ -2340,7 +2342,7 @@ describe('setupEventListeners', () => {
     setBindingMock('ListThreads', async () => [
       makeThread({ id: 'thread-1', mode: 'chat' }),
     ]);
-    await loadThreadCatalogs();
+    await loadSidebarCatalogs();
     const pane = await buildPane(makeThread({ id: 'thread-1', mode: 'chat' }));
 
     emitWailsEvent('thread:mode_changed', {
@@ -2358,7 +2360,7 @@ describe('setupEventListeners', () => {
     setBindingMock('ListThreads', async () => [
       makeThread({ id: 'thread-1', mode: 'chat' }),
     ]);
-    await loadThreadCatalogs();
+    await loadSidebarCatalogs();
     const pane = await buildPane(makeThread({ id: 'thread-1', mode: 'chat' }));
     const toastCountBefore = getToasts().length;
 
@@ -2377,7 +2379,7 @@ describe('setupEventListeners', () => {
     setBindingMock('ListThreads', async () => [
       makeThread({ id: 'thread-1', runtimeMode: 'approval-required' }),
     ]);
-    await loadThreadCatalogs();
+    await loadSidebarCatalogs();
     const paneA = await buildPane(makeThread({ id: 'thread-1', runtimeMode: 'approval-required' }), [], 'a');
     const paneB = await buildPane(makeThread({ id: 'thread-2', runtimeMode: 'approval-required' }), [], 'b');
 
@@ -2401,8 +2403,8 @@ describe('setupEventListeners', () => {
       projectWithCounts('project-stale', 100),
       projectWithCounts('project-fresh', 9000),
     ]);
-    await loadThreadCatalogs();
-    await refreshProjects();
+    await loadSidebarCatalogs();
+    await readSidebarCatalogs();
     const pane = await buildPane(makeThread({
       id: 'thread-stale',
       projectId: 'project-stale',
@@ -2441,8 +2443,8 @@ describe('setupEventListeners', () => {
       projectWithCounts('project-child', 100),
       projectWithCounts('project-other', 100),
     ]);
-    await loadThreadCatalogs();
-    await refreshProjects();
+    await loadSidebarCatalogs();
+    await readSidebarCatalogs();
     const complete = (threadId: string, completedAt: number) => emitWailsEvent('provider:turn_completed', {
       threadId, turnId: 'turn-1', turnIndex: 0, startedAt: 150,
       completedAt, stopReason: 'end_turn', assistantMessageId: '', tokenUsage: '',
@@ -2467,8 +2469,8 @@ describe('setupEventListeners', () => {
       projectWithCounts('project-stale', 100),
       projectWithCounts('project-fresh', 9000),
     ]);
-    await loadThreadCatalogs();
-    await refreshProjects();
+    await loadSidebarCatalogs();
+    await readSidebarCatalogs();
 
     emitWailsEvent('provider:item_event', {
       action: 'delta',
@@ -2500,8 +2502,8 @@ describe('setupEventListeners', () => {
       projectWithCounts('project-stale', 100),
       projectWithCounts('project-fresh', 9000),
     ]);
-    await loadThreadCatalogs();
-    await refreshProjects();
+    await loadSidebarCatalogs();
+    await readSidebarCatalogs();
     const pane = await buildPane(makeThread({
       id: 'thread-stale',
       projectId: 'project-stale',
@@ -2529,8 +2531,8 @@ describe('setupEventListeners', () => {
     setBindingMock('ListProjects', async () => [
       projectWithCounts('project-stale', 100),
     ]);
-    await loadThreadCatalogs();
-    await refreshProjects();
+    await loadSidebarCatalogs();
+    await readSidebarCatalogs();
 
     emitWailsEvent('provider:item_event', {
       action: 'upsert',
@@ -2552,7 +2554,7 @@ describe('setupEventListeners', () => {
     setBindingMock('ListThreads', async () => [
       makeThread({ id: 'thread-stale', projectId: 'project-stale', updatedAt: 100 }),
     ]);
-    await loadThreadCatalogs();
+    await loadSidebarCatalogs();
     emitWailsEvent('thread:error_notice', { threadId: 'thread-stale', itemId: 'error-1' });
     expect(getThreadStatus('thread-stale')).toBe('error');
 
@@ -2567,7 +2569,7 @@ describe('setupEventListeners', () => {
 
   it('applies an activity patch for a thread this client holds no row for', async () => {
     setBindingMock('ListThreads', async () => []);
-    await loadThreadCatalogs();
+    await loadSidebarCatalogs();
     emitWailsEvent('thread:error_notice', { threadId: 'thread-unlisted', itemId: 'error-1' });
 
     // The patch branch's cached-row guard covers the FIELD merges only:
@@ -2591,8 +2593,8 @@ describe('setupEventListeners', () => {
     setBindingMock('ListProjects', async () => [
       projectWithCounts('project-stale', 100),
     ]);
-    await loadThreadCatalogs();
-    await refreshProjects();
+    await loadSidebarCatalogs();
+    await readSidebarCatalogs();
 
     emitWailsEvent('provider:turn_completed', {
       threadId: 'thread-stale',
@@ -2624,8 +2626,8 @@ describe('setupEventListeners', () => {
     setBindingMock('ListProjects', async () => [
       projectWithCounts('project-stale', 100),
     ]);
-    await loadThreadCatalogs();
-    await refreshProjects();
+    await loadSidebarCatalogs();
+    await readSidebarCatalogs();
 
     emitWailsEvent('provider:turn_completed', {
       threadId: 'thread-stale',
@@ -2654,8 +2656,8 @@ describe('setupEventListeners', () => {
     setBindingMock('ListProjects', async () => [
       projectWithCounts('project-tick', 100),
     ]);
-    await loadThreadCatalogs();
-    await refreshProjects();
+    await loadSidebarCatalogs();
+    await readSidebarCatalogs();
 
     // The row triage sent before the event: the read marker it kept past
     // the tick's completion.
@@ -2689,8 +2691,8 @@ describe('setupEventListeners', () => {
     setBindingMock('ListProjects', async () => [
       projectWithCounts('project-stale', 100),
     ]);
-    await loadThreadCatalogs();
-    await refreshProjects();
+    await loadSidebarCatalogs();
+    await readSidebarCatalogs();
     await buildPane(makeThread({
       id: 'thread-stale',
       projectId: 'project-stale',
@@ -2727,8 +2729,8 @@ describe('setupEventListeners', () => {
     setBindingMock('ListProjects', async () => [
       projectWithCounts('project-stale', 100),
     ]);
-    await loadThreadCatalogs();
-    await refreshProjects();
+    await loadSidebarCatalogs();
+    await readSidebarCatalogs();
     await buildPane(makeThread({
       id: 'thread-stale',
       projectId: 'project-stale',
@@ -2773,8 +2775,8 @@ describe('setupEventListeners', () => {
     setBindingMock('ListProjects', async () => [
       projectWithCounts('project-stale', 100),
     ]);
-    await loadThreadCatalogs();
-    await refreshProjects();
+    await loadSidebarCatalogs();
+    await readSidebarCatalogs();
 
     emitWailsEvent('provider:approval', {
       action: 'resolve',
@@ -2797,8 +2799,8 @@ describe('setupEventListeners', () => {
     setBindingMock('ListProjects', async () => [
       projectWithCounts('project-1', 500),
     ]);
-    await loadThreadCatalogs();
-    await refreshProjects();
+    await loadSidebarCatalogs();
+    await readSidebarCatalogs();
 
     emitWailsEvent('thread:updated', {
       action: 'full',
@@ -2824,8 +2826,8 @@ describe('setupEventListeners', () => {
       projectWithCounts('project-stale', 100),
       projectWithCounts('project-fresh', 9000),
     ]);
-    await loadThreadCatalogs();
-    await refreshProjects();
+    await loadSidebarCatalogs();
+    await readSidebarCatalogs();
 
     setBindingMock('ListThreads', async () => [
       makeThread({ id: 'thread-stale', projectId: 'project-stale', updatedAt: 10_000 }),
@@ -2933,7 +2935,7 @@ describe('setupEventListeners', () => {
     setBindingMock('ListThreads', async () => [
       makeThread({ id: 'thread-1', lastReadAt: 2_000, latestTurnCompletedAt: 1_000 }),
     ]);
-    await loadThreadCatalogs();
+    await loadSidebarCatalogs();
 
     setBindingMock('ListThreads', async () => [
       makeThread({ id: 'thread-1', lastReadAt: 500, latestTurnCompletedAt: 1_000 }),
@@ -2953,7 +2955,7 @@ describe('setupEventListeners', () => {
     setBindingMock('ListThreads', async () => [
       makeThread({ id: 'thread-1', lastReadAt: 0, latestTurnCompletedAt: 300 }),
     ]);
-    await loadThreadCatalogs();
+    await loadSidebarCatalogs();
 
     // The mark-unread RPC has not answered yet, so the backend's row
     // still carries the old stamp. Epoch 0 is the SMALLEST value the
@@ -2983,7 +2985,7 @@ describe('setupEventListeners', () => {
     setBindingMock('ListThreads', async () => [
       makeThread({ id: 'thread-1', lastReadAt: 0, latestTurnCompletedAt: 300 }),
     ]);
-    await loadThreadCatalogs();
+    await loadSidebarCatalogs();
 
     setBindingMock('ListThreads', async () => [
       makeThread({ id: 'thread-1', lastReadAt: 500, latestTurnCompletedAt: 300 }),
@@ -3029,7 +3031,7 @@ describe('setupEventListeners', () => {
         latestTurnCompletedAt: 300,
       }),
     ]);
-    await loadThreadCatalogs();
+    await loadSidebarCatalogs();
 
     const release = claimLocalReadMarker('thread-1', 0);
     emitWailsEvent('thread:updated', {
@@ -3054,7 +3056,7 @@ describe('setupEventListeners', () => {
     setBindingMock('ListThreads', async () => [
       makeThread({ id: 'thread-1', lastReadAt: 900, latestTurnCompletedAt: 300 }),
     ]);
-    await loadThreadCatalogs();
+    await loadSidebarCatalogs();
 
     emitWailsEvent('thread:updated', {
       action: 'full',
@@ -3071,7 +3073,7 @@ describe('setupEventListeners', () => {
     setBindingMock('ListThreads', async () => [
       makeThread({ id: 'thread-1', lastReadAt: 900, latestTurnCompletedAt: 300 }),
     ]);
-    await loadThreadCatalogs();
+    await loadSidebarCatalogs();
 
     const release = claimLocalReadMarker('thread-1', 900);
     emitWailsEvent('thread:updated', {
@@ -3250,7 +3252,7 @@ describe('setupEventListeners', () => {
   it('mid-turn usage events update the meter without rewriting the thread row', async () => {
     const thread = makeThread({ id: 'thread-1', contextWindow: 200000 });
     setBindingMock('ListThreads', async () => [thread]);
-    await loadThreadCatalogs();
+    await loadSidebarCatalogs();
     const pane = await buildPane(thread);
 
     emitWailsEvent('provider:usage', {
@@ -3278,7 +3280,7 @@ describe('setupEventListeners', () => {
   it('flushes the cached usage snapshot into the thread row at turn completion', async () => {
     const thread = makeThread({ id: 'thread-1', contextWindow: 200000 });
     setBindingMock('ListThreads', async () => [thread]);
-    await loadThreadCatalogs();
+    await loadSidebarCatalogs();
     const pane = await buildPane(thread);
 
     emitWailsEvent('provider:usage', {
@@ -3364,7 +3366,7 @@ describe('setupEventListeners', () => {
       }),
     });
     setBindingMock('ListThreads', async () => [thread]);
-    await loadThreadCatalogs();
+    await loadSidebarCatalogs();
     const pane = await buildPane(thread);
     expect(pane.contextWindow?.usedTokens).toBe(10000);
 
@@ -3893,7 +3895,7 @@ describe('setupEventListeners', () => {
 
   it('routes provider:turn_completed to pane.settleTurn and clears activeTurn', async () => {
     setBindingMock('ListThreads', async () => [makeThread({ id: 'thread-1' })]);
-    await loadThreadCatalogs();
+    await loadSidebarCatalogs();
     const pane = await buildPane(makeThread({ id: 'thread-1' }));
 
     emitWailsEvent('provider:turn_started', {

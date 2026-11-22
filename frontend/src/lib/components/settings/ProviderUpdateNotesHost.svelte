@@ -16,7 +16,7 @@
   import ChatMarkdown from '../chat/ChatMarkdown.svelte';
   import { EMPTY_PATH_REFS } from '../../utils/pathLinkify';
   import { providerLabel } from '../../providers/catalog';
-  import { hasScope } from '../../transport/scopes';
+  import { scopeGrant } from '../../transport/scopes';
   import {
     closeProviderUpdateNotes,
     providerUpdate,
@@ -36,7 +36,7 @@
   let omitted = $derived(notes?.omitted ?? 0);
   let releasesUrl = $derived(notes?.url ?? '');
 
-  let update = $derived(view !== null && hasScope('access:admin', backend) ? providerUpdate(provider, backend) : null);
+  let update = $derived(view !== null && scopeGrant('access:admin', backend) === 'granted' ? providerUpdate(provider, backend) : null);
   let computer = $derived(view !== null ? providerUpdateComputerName(backend) : '');
   let fromVersion = $derived(notes?.fromVersion || update?.installedVersion || '');
   let toVersion = $derived(notes?.toVersion || update?.latestVersion || '');

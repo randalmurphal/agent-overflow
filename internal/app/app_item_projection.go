@@ -36,7 +36,7 @@ const itemWindowMaxBytes = 512 << 10
 //
 // It rides `ListThreadSliceAround`, `ListItemsBeforeCursor`,
 // `ListItemsAfterCursor` and `ListActivityRunMembers` as a parameter, and
-// `SyncThreadWindow` as three fields of its flat JSON request body.
+// `SyncThreadWindow` as fields of its flat JSON request body.
 type PageShape struct {
 	// InlinePreviews is true when the client paints inline diff previews
 	// on arrival, false when they sit behind a chevron
@@ -52,6 +52,29 @@ type PageShape struct {
 	// trimmed to. 0 means itemWindowMaxBytes; anything larger is capped
 	// to it.
 	MaxBytes int `json:"maxBytes,omitempty"`
+	// AgentMessageMembers asks for agent messages grouped as activity-run
+	// members on sight (store.AgentMessagesAreMembers). A client sets it
+	// exactly when this backend advertised
+	// transport.CapabilityAgentMessageRunMembers; a request without it,
+	// which is every older client's, is grouped by
+	// store.AgentMessagesAbsorbed, the rule that client applies.
+	AgentMessageMembers bool `json:"agentMessageMembers,omitempty"`
+}
+
+// activityRunRule is the run membership rule the shape's caller groups by.
+func (s PageShape) activityRunRule() store.ActivityRunRule {
+	return store.ActivityRunRuleFor(s.AgentMessageMembers)
+}
+
+// activityRunRule is the rule this computer groups a read by: the one the
+// shape asks for, or the absorbed rule on a computer standing in for a
+// build before the field, which never read it
+// (IsolationConfig.OmitAgentMessageRunMembers).
+func (a *App) activityRunRule(shape PageShape) store.ActivityRunRule {
+	if a.agentMessageRunMembersOmitted {
+		return store.AgentMessagesAbsorbed
+	}
+	return shape.activityRunRule()
 }
 
 // normalize is the one place a caller-supplied shape becomes the shape a

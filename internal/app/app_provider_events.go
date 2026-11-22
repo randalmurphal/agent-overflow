@@ -25,13 +25,6 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 	// deathRestoreGuard is the death restore's guard, kept for the
 	// reconnect that follows the same death. Same worker-only access.
 	var deathRestoreGuard func() bool
-	// sawInit flips true on the session's first EventInit. An error
-	// turn-complete BEFORE init is the dead-on-arrival signature: the
-	// process failed during startup (Claude rejecting its
-	// --resume-session-at cursor emits result{error_during_execution}
-	// pre-init, then lingers alive) and can never serve a send. Same
-	// single-worker justification as deathReported.
-	var sawInit bool
 	// deathEpoch is the triage epoch when a status "error" was READ, which
 	// is what the queue restore below must compare against: by the time
 	// the worker handles the event, a replacement start may have bumped
@@ -76,11 +69,8 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 		// (with the provider's own credentials) without a separate
 		// fetch. Codex equivalents are wired in app_session.go via
 		// the dedicated startup-update handler.
-		if evt.Kind == provider.EventInit {
-			sawInit = true
-			if providerType == string(provider.Claude) {
-				a.ingestClaudeInitMCPStatus(evt.Meta)
-			}
+		if evt.Kind == provider.EventInit && providerType == string(provider.Claude) {
+			a.ingestClaudeInitMCPStatus(evt.Meta)
 		}
 
 		// A TOP-LEVEL turn boundary: a subagent's completion is not the
@@ -117,23 +107,21 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 			a.reconcileStalePromptSession(threadID)
 		}
 
-		// Dead-on-arrival reap: a wire error result before this session
-		// ever reached init means startup failed and the process is
-		// useless yet still alive — Claude does not exit after failing
-		// its --resume-session-at validation. Runs AFTER triage.Handle
-		// so the orphan error item is already persisted and visible.
-		// Goroutine because the teardown closes this session, and a close
+		// Dead-on-arrival reap: the provider marks the error result a
+		// process reports when it failed before it initialized
+		// (provider.IsStartupFailure; Claude's start outcome decides it).
+		// Such a process serves no send and can linger alive: Claude does
+		// not exit after a failed --resume-session-at validation. Runs
+		// AFTER triage.Handle so the orphan error item is already
+		// persisted and visible. Goroutine because the teardown waits for
+		// the thread action lock and closes this session, and a close
 		// drains this worker's queue.
-		// Claude-only: the lingering-process failure mode is specific to
-		// the Claude CLI, Codex startup failures surface through its
-		// session-status/error paths, and Codex's readLoop starts before
-		// its synchronous EventInit emission — sawInit could in
-		// principle still be false when an early Codex wire frame lands,
-		// so gating on it alone would not be sound there.
-		if !sawInit && providerType == string(provider.Claude) && evt.Kind == provider.EventTurnComplete {
-			if wire, ok := evt.TurnComplete.(*provider.WireTurnCompleteMeta); ok && wire != nil && wire.ErrorMessage != "" {
-				go a.teardownDeadPreInitSession(threadID, sessionToken)
-			}
+		if provider.IsStartupFailure(evt) {
+			go func() {
+				if err := a.teardownDeadPreInitSession(threadID, sessionToken); err != nil {
+					log.Printf("app: %v", err)
+				}
+			}()
 		}
 
 		// Codex's own cumulative cost estimate for this thread, read once per

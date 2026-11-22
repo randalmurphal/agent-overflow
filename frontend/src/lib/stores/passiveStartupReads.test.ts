@@ -4,8 +4,7 @@ import { ReadDeadlineError } from '../utils/readBeforeDeadline';
 import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { resetStagedBackends } from '../../test/helpers/backends';
-import { refreshProjects } from './projects.svelte';
-import { loadThreadCatalogs } from './threadCatalogs';
+import { loadSidebarCatalogs } from './sidebarCatalogs';
 import { loadSettings } from './settings.svelte';
 import { getKeybindingRules, loadKeybindings, resyncKeybindings, saveKeybindings, setKeybindingsForTest } from './keybindings.svelte';
 import { getToasts, resetToastsForTest } from './toast.svelte';
@@ -25,15 +24,15 @@ it.each([
     setBindingMock(method, async () => { throw error; });
   }
   await Promise.all([
-    loadThreadCatalogs().catch(() => {}), refreshProjects(), loadSettings(), loadKeybindings(),
+    loadSidebarCatalogs().catch(() => {}), loadSettings(), loadKeybindings(),
     loadProviderUpdates(HOME_BACKEND), checkProviderUpdates(HOME_BACKEND),
   ]);
   expect(providerUpdatesLoadError(HOME_BACKEND)).toBe('');
-  await loadThreadCatalogs().catch(() => {});
+  await loadSidebarCatalogs().catch(() => {});
   expect(getToasts()).toEqual([]);
   // Unknown catalogs must not become a successful empty response: startup
   // needs to retry pane restoration after the connection returns.
-  await expect(loadThreadCatalogs()).rejects.toBe(error);
+  await expect(loadSidebarCatalogs()).rejects.toBe(error);
 });
 
 it('retains working shortcuts across a failed read, then replaces them on recovery', async () => {

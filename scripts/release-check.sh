@@ -1,4 +1,5 @@
 #!/usr/bin/env sh
+# shellcheck disable=SC2006 # backquotes after the handlers: main_shell_signals_unix_test.go
 set -eu
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -16,8 +17,11 @@ run() {
 # outputs as on CI's fresh checkout; the repository's .task cache would skip
 # tasks whose sources are unchanged even when the generator's output changed.
 STATUS_BEFORE=$(git -C "$ROOT_DIR" status --porcelain)
-tmpdir=$(mktemp -d)
-trap 'rm -rf "$tmpdir"' EXIT
+os=$(uname -s)
+TMP_PREFIX=${TMPDIR:-/tmp}/ao-release-check.$$.
+trap 'rm -rf "$TMP_PREFIX"*' EXIT
+trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
+tmpdir=`mktemp -d "${TMP_PREFIX}XXXXXX"`
 TASK_TEMP_DIR="$tmpdir/task"
 export TASK_TEMP_DIR
 
@@ -33,22 +37,22 @@ run sh -c "cd '$ROOT_DIR/frontend' && AO_PERF_CONTRACT=1 '$ROOT_DIR/bin/ao-netns
 run sh -c "cd '$ROOT_DIR/frontend' && AO_PERF_CONTRACT=1 '$ROOT_DIR/bin/ao-netns' pnpm run test:browser"
 run make -C "$ROOT_DIR" build
 
-case "$(uname -s)" in
+case "$os" in
 	Darwin)
 		run "$ROOT_DIR/scripts/verify-macos-app.sh" "$ROOT_DIR/bin/agent-overflow.app"
 		;;
 esac
 
-case "$(uname -s)" in
+case "$os" in
 	Linux)
 		run make -C "$ROOT_DIR" build-wsl
 		;;
 	*)
-		printf '\n==> Skipping make build-wsl on %s; run it from Linux/WSL for Windows release artifacts.\n' "$(uname -s)"
+		printf '\n==> Skipping make build-wsl on %s; run it from Linux/WSL for Windows release artifacts.\n' "$os"
 		;;
 esac
 
-STATUS_AFTER=$(git -C "$ROOT_DIR" status --porcelain)
+STATUS_AFTER=`git -C "$ROOT_DIR" status --porcelain`
 if [ "$STATUS_AFTER" != "$STATUS_BEFORE" ]; then
 	echo "ERROR: the checks changed tracked files — regenerated output differs from what's committed." >&2
 	echo "Commit the changes below or the release workflow's clean-tree guard will fail in CI:" >&2

@@ -35,7 +35,7 @@ import {
   getThreads,
   prependThread,
 } from './threads.svelte';
-import { loadThreadCatalogs } from './threadCatalogs';
+import { loadSidebarCatalogs } from './sidebarCatalogs';
 import {
   addPaneLayoutItem,
   getPaneLayoutItems,
@@ -729,7 +729,7 @@ describe('panes store', () => {
       const original = makeThread({ id: 't', title: 'Old' });
       // Seed the global registry with the original.
       setBindingMock('ListThreads', async () => [original]);
-      await loadThreadCatalogs();
+      await loadSidebarCatalogs();
       await buildPaneWithThread(original);
 
       syncThread({ ...original, title: 'New' });

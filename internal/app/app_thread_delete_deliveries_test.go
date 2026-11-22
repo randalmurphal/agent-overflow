@@ -16,7 +16,6 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadapp"
-	"agent-overflow/internal/triage"
 	"agent-overflow/internal/workflow/wake"
 )
 
@@ -735,24 +734,15 @@ func TestAWorkerAnswerForAClaimedWorkerIsQueuedAndWaitsForTheDecision(t *testing
 			case "restart":
 				crashedDelete(t, f.app, f.worker.ID, during)
 				f.drain(t)
-				// What a restart is to the worker's prompts: the registry and
-				// the in-memory queue are gone, the durable rows stay.
-				f.app.workerPrompts.mu.Lock()
-				f.app.workerPrompts.byToken, f.app.workerPrompts.current = nil, nil
-				f.app.workerPrompts.mu.Unlock()
-				f.app.workerPrompts.async.mu.Lock()
-				f.app.workerPrompts.async.open = nil
-				f.app.workerPrompts.async.mu.Unlock()
-				f.app.triage = triage.NewRouter(f.app.store, f.app.emit)
-				f.app.configureTriageQueueCallbacks()
-				f.app.releaseUndecidedDeletes()
-				untouched(t, f.app, f.worker.ID)
-				f.app.restoreDurableFlushQueueAtBoot()
-				f.drain(t)
-				f.requireReturned(t, sendID)
-				f.app.seedAsyncQuestionPrompts()
-				f.drain(t)
-				f.requireRoutedAgain(t, sendID)
+				// The registry and the in-memory queue are gone with the
+				// restart, the durable rows stay.
+				after := f.restart(t)
+				after.app.releaseUndecidedDeletes()
+				untouched(t, after.app, f.worker.ID)
+				after.app.restoreDurableFlushQueueAtBoot()
+				after.drain(t)
+				after.requireReturned(t, sendID)
+				after.requireThePersons(t)
 			}
 		})
 	}

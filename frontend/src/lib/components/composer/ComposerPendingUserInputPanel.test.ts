@@ -151,6 +151,41 @@ describe('<ComposerPendingUserInputPanel>', () => {
     expect(onResolve.mock.calls[0][0].answers).toEqual({ framework: 'Svelte' });
   });
 
+  // The composer's access for answers: while it is not granted (here the
+  // computer is offline) the options and Submit say why and answer nothing.
+  it('answers nothing while the access is not granted, and says why', async () => {
+    const onResolve = vi.fn<(response: UserInputResponse) => Promise<void>>(async () => {});
+    const { getByTestId, rerender } = render(ComposerPendingUserInputPanel, {
+      props: {
+        request: request(),
+        access: 'offline',
+        customAnswer: '',
+        submitSignal: 0,
+        setCustomAnswerText: vi.fn(),
+        onResolve,
+        onResolved: vi.fn(),
+        onError: vi.fn(),
+        threadId: 'thread-1',
+      },
+    });
+    const option = getByTestId('user-input-option-2') as HTMLButtonElement;
+    const submit = getByTestId('user-input-submit') as HTMLButtonElement;
+    expect(option.disabled).toBe(true);
+    expect(option.getAttribute('title')).toBe('Unavailable while this computer is offline');
+    expect(submit.disabled).toBe(true);
+    expect(submit.getAttribute('title')).toBe('Unavailable while this computer is offline');
+    await fireEvent.click(option);
+    await fireEvent.click(submit);
+    await fireEvent.keyDown(option, { key: '1' });
+    expect(onResolve).not.toHaveBeenCalled();
+
+    await rerender({ access: 'granted' });
+    expect(option.getAttribute('title')).toBeNull();
+    await fireEvent.click(getByTestId('user-input-option-2'));
+    await fireEvent.click(getByTestId('user-input-submit'));
+    expect(onResolve).toHaveBeenCalledTimes(1);
+  });
+
   it('auto-submits when the user picks an option via the keyboard number key', async () => {
     // Keyboard fast path: number keys still auto-advance/auto-submit.
     // This is the existing behavior we explicitly preserved when

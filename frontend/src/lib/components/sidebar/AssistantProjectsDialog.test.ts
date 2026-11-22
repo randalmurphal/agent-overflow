@@ -1,11 +1,12 @@
+import { readSidebarCatalogs } from '../../../test/helpers/sidebarCatalogs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import AssistantProjectsDialog from './AssistantProjectsDialog.svelte';
 import { closeAssistantProjectsDialog, getAssistantProjectsAgentId, openAssistantProjectsDialog } from '../../stores/newAssistant.svelte';
-import { refreshProjects, resetProjectsForTest } from '../../stores/projects.svelte';
+import { resetProjectsForTest } from '../../stores/projects.svelte';
 import { replaceAllThreads } from '../../stores/threads.svelte';
-import { loadThreadCatalogs } from '../../stores/threadCatalogs';
+import { loadSidebarCatalogs } from '../../stores/sidebarCatalogs';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { makeThread } from '../../../test/helpers/chat';
 import { __resetEntityIndexForTest, noteThread, threadBackend } from '../../transport/entityIndex';
@@ -36,9 +37,9 @@ describe('<AssistantProjectsDialog>', () => {
       { project: project('p3', 'Gamma', true), threadCount: 0 },
       { project: project('p4', 'Delta', true), threadCount: 0 },
     ]);
-    await refreshProjects();
+    await readSidebarCatalogs();
     setBindingMock('ListThreads', async () => [agent]);
-    await loadThreadCatalogs();
+    await loadSidebarCatalogs();
   });
   afterEach(() => closeAssistantProjectsDialog());
 

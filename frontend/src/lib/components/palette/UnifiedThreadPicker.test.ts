@@ -2,7 +2,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import UnifiedThreadPicker from './UnifiedThreadPicker.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
-import { loadThreadCatalogs } from '../../stores/threadCatalogs';
+import { loadSidebarCatalogs } from '../../stores/sidebarCatalogs';
 import {
   projectTurnStarted,
   resetForTest as resetThreadStatuses,
@@ -12,6 +12,7 @@ import { installAnimateShim } from '../../../test/integration/_helpers';
 import type { Thread } from '../../types/models';
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 import { __resetEntityIndexForTest, noteThread } from '../../transport/entityIndex';
+import { UNREACHABLE_SETTLE_MS } from '../../stores/transportStatus.svelte';
 import { tick } from 'svelte';
 import { applySettingsSnapshot } from '../../stores/settings.svelte';
 import { makeSettings } from '../../../test/helpers/settings';
@@ -36,7 +37,7 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
 
 async function seedThreads(threads: Thread[]): Promise<void> {
   setBindingMock('ListThreads', async () => threads);
-  await loadThreadCatalogs();
+  await loadSidebarCatalogs();
 }
 
 beforeEach(async () => {
@@ -456,20 +457,31 @@ describe('<UnifiedThreadPicker> — status dots', () => {
     expect(idleRow.querySelector('[data-testid="thread-picker-status-dot"]')).toBeNull();
   });
 
-  it("shows an unreachable computer's status still and labelled as its last report", async () => {
+  it("shows an unreachable computer's status still and labelled as its last report, once it has been down a while", async () => {
     await seedThreads([makeThread({ id: 'remote', title: 'Remote' })]);
-    stageBackend({ status: 'reconnecting' });
+    vi.useFakeTimers();
+    const laptop = stageBackend({ status: 'reconnecting' });
     // Newer than the claim the catalog read above made for home.
     noteThread('remote', 'laptop', 2);
     markThreadRunning('remote');
     try {
       const { getByTestId } = render(UnifiedThreadPicker, { open: true, pane: makePane(), onClose: vi.fn() });
       const dot = getByTestId('thread-picker-hit-remote').querySelector('[data-testid="thread-picker-status-dot"]');
+      vi.advanceTimersByTime(UNREACHABLE_SETTLE_MS - 1);
+      await tick();
+      expect(dot).toHaveClass('animate-pulse');
+      expect(dot?.getAttribute('aria-label')).toBe('Working');
+      vi.advanceTimersByTime(1);
+      await tick();
       expect(dot).not.toHaveClass('animate-pulse');
       expect(dot?.getAttribute('aria-label')).toMatch(/^Last known: Working\. .+ is unreachable$/);
+      laptop.setStatus('connected');
+      await tick();
+      expect(dot?.getAttribute('aria-label')).toBe('Working');
     } finally {
       resetStagedBackends();
       __resetEntityIndexForTest();
+      vi.useRealTimers();
     }
   });
 

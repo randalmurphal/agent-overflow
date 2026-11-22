@@ -43,6 +43,7 @@ func (a *App) projectPeerRows(thread string) {
 }
 
 func (a *App) noteThreadRequestChanged(change store.ThreadRequestChange) {
+	a.noteRunsMayBeOpen()
 	if change.Token == "" {
 		a.queueThreadAgentEmit(func(e *threadAgentEmits) { e.callers[change.CallerThreadID] = struct{}{} })
 		return

@@ -24,7 +24,7 @@ import type { PaneLayoutPersistedSettings } from '../../lib/types/settings';
 import { __setTransportStatusForTest } from '../../lib/stores/transportStatus.svelte';
 import { DisconnectedError, type TransportStatusSnapshot } from '../../lib/transport/wsClient';
 import { getThreadById } from '../../lib/stores/threads.svelte';
-import { catalogTreeListed, loadThreadCatalogs } from '../../lib/stores/threadCatalogs';
+import { catalogTreeListed, loadSidebarCatalogs } from '../../lib/stores/sidebarCatalogs';
 import { HOME_BACKEND } from '../../lib/transport/backendKey';
 import { takePinnedBackend } from '../../lib/transport/backends';
 import { stageBackend } from '../helpers/backends';
@@ -141,7 +141,7 @@ describe('App integration - pane restoration', () => {
     stageBackend({ id: 'gpu' });
     setBindingMock('ListThreads', async () => (takePinnedBackend() === 'gpu' ? [] : [kept]));
     setBindingMock('ListThreadGroups', async () => []);
-    await loadThreadCatalogs();
+    await loadSidebarCatalogs();
     await waitFor(() => expect(catalogTreeListed(HOME_BACKEND)).toBe(true));
 
     setBindingMock('ListThreads', async () => (takePinnedBackend() === 'gpu' ? [] : [kept, fresh]));

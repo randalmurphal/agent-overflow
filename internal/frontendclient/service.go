@@ -129,6 +129,9 @@ func (s *service) close() {
 	s.closed = true
 	s.cancel()
 	s.mu.Unlock()
+	// Before the joins below: an own-device sync waiting on an
+	// introduction's redemption returns once it is cancelled.
+	s.computers.BeginClose()
 	s.ssh.Close()
 	s.jobs.Wait()
 	s.computers.WaitOwnDevices()

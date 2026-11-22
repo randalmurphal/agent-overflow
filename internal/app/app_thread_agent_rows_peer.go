@@ -79,6 +79,11 @@ type threadAgentPeerArgs struct {
 	// Held names the listed prompts the caller holds now: their leases
 	// are renewed.
 	Held []string `json:"held,omitempty"`
+	// NudgesTaken names the ended nudge runs the caller recorded from an
+	// earlier answer (ThreadAgentRows.Nudges): they are forgotten here
+	// before the answer is read (store.TakeNudgeRuns). A computer that
+	// predates it ignores it and reports none.
+	NudgesTaken []string `json:"nudges_taken,omitempty"`
 }
 
 // errThreadAgentPeerTimedOut marks a forwarded call that ran out its own
@@ -146,7 +151,10 @@ func (a *App) callThreadAgentPeer(ctx context.Context, method, computerID, sourc
 // paired computer, nested depth levels, or with depth 0 the thread's state
 // alone, and the prompts its worker routed here, renewing those held here.
 func (a *App) peerThreadAgentRows(ctx context.Context, spawn store.ThreadRequest, depth int) (ThreadAgentRows, attachedbackends.PeerRead, error) {
-	args := threadAgentPeerArgs{ThreadID: spawn.TargetThreadID, Depth: depth, Spawn: spawn.Token, Held: a.heldRemotePrompts(spawn)}
+	args := threadAgentPeerArgs{
+		ThreadID: spawn.TargetThreadID, Depth: depth, Spawn: spawn.Token,
+		Held: a.heldRemotePrompts(spawn), NudgesTaken: a.threadAgentPeers.nudgesTakenOf(spawn.Token),
+	}
 	if depth <= 0 {
 		args.Depth, args.StateOnly = 1, true
 	}
@@ -178,18 +186,21 @@ func (a *App) serveThreadAgentPeer(ctx context.Context, owner string, call Threa
 	if !reached {
 		return ThreadPeerReply{}, threadNotYoursToInterrupt(args.ThreadID)
 	}
+	if hook := a.peerAgentsReachedForTest; hook != nil {
+		hook(args.ThreadID)
+	}
 	var result any
 	switch call.Tool {
 	case threadAgentPeerRows:
 		listing, err := a.answerThreadAgentRows(ctx, owner, source, args)
 		if err != nil {
-			return ThreadPeerReply{}, err
+			return ThreadPeerReply{}, a.peerAnswerError(owner, source, args.ThreadID, err)
 		}
 		result = listing
 	case threadAgentPeerStop:
 		stop, err := a.stopThreadAgentWorkHere(ctx, args.ThreadID, args.Token)
 		if err != nil {
-			return ThreadPeerReply{}, err
+			return ThreadPeerReply{}, a.peerAnswerError(owner, source, args.ThreadID, err)
 		}
 		result = stop
 	default:
@@ -201,6 +212,21 @@ func (a *App) serveThreadAgentPeer(ctx context.Context, owner string, call Threa
 		return ThreadPeerReply{}, fmt.Errorf("thread tools: encode %s result: %w", call.Tool, err)
 	}
 	return ThreadPeerReply{Result: encoded}, nil
+}
+
+// peerAnswerError is what an agents call that passed its reach check and
+// then failed answers: the refusal when the thread stopped being the
+// caller's meanwhile, deleted or moved away, which the caller takes as
+// certain, and err otherwise.
+func (a *App) peerAnswerError(owner, source, threadID string, err error) error {
+	reached, reachErr := a.peerReachesThread(owner, source, threadID)
+	switch {
+	case reachErr != nil:
+		return fmt.Errorf("%w (and read whether the thread is still the caller's: %v)", err, reachErr)
+	case !reached:
+		return threadNotYoursToInterrupt(threadID)
+	}
+	return err
 }
 
 // answerThreadAgentRows is agent_rows on this computer: the thread's rows
@@ -216,7 +242,9 @@ func (a *App) serveThreadAgentPeer(ctx context.Context, owner string, call Threa
 // thread is placed here, whether it is archived, and what prompt it waits
 // on, routed back to the calling thread or not (RoutedToAsker),
 // and for a call that names the spawn whose link owns it, the prompts
-// routed to that spawn's thread (peerPromptsOf).
+// routed to that spawn's thread (peerPromptsOf). Once the calling thread's
+// runs on it all ended here, it says what the thread had done when the last
+// ended (RunEnd).
 func (a *App) answerThreadAgentRows(ctx context.Context, owner, source string, args threadAgentPeerArgs) (ThreadAgentRows, error) {
 	var listing ThreadAgentRows
 	if !args.StateOnly {
@@ -256,6 +284,26 @@ func (a *App) answerThreadAgentRows(ctx context.Context, owner, source string, a
 	}
 	open := rest.unrest != ""
 	listing.Open = &open
+	if err := a.store.TakeNudgeRuns(owner, source, args.ThreadID, args.NudgesTaken); err != nil {
+		return ThreadAgentRows{}, err
+	}
+	run, err := a.store.ReceiptRunOf(owner, source, args.ThreadID)
+	if err != nil {
+		return ThreadAgentRows{}, err
+	}
+	if run.End != nil {
+		listing.RunEnd = runEndOf(*run.End)
+	}
+	listing.RunOpen = run.Open
+	for _, nudge := range run.Nudges {
+		reported := ThreadAgentNudge{Token: nudge.Token, StartedAt: nudge.StartedAt, Base: *runEndOf(nudge.Base)}
+		if nudge.End != nil {
+			reported.End = runEndOf(*nudge.End)
+		} else {
+			listing.RunOpen = true
+		}
+		listing.Nudges = append(listing.Nudges, reported)
+	}
 	now := time.Now()
 	tallies, err := a.store.ThreadTallies([]string{args.ThreadID}, now)
 	if err != nil {
@@ -284,6 +332,11 @@ func (a *App) answerThreadAgentRows(ctx context.Context, owner, source string, a
 	}
 	a.withholdApprovalDetail(ctx, &listing)
 	return listing, nil
+}
+
+// runEndOf is figures as the agent_rows answer carries them.
+func runEndOf(figures store.RunFigures) *ThreadAgentRunEnd {
+	return &ThreadAgentRunEnd{ToolCalls: figures.ToolCalls, Tokens: figures.Tokens, RuntimeMs: figures.TurnMs}
 }
 
 // stopThreadAgentWorkHere is agent_stop on this computer: one row of

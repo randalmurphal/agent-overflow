@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test';
 import { launchHarness } from '../src/harness.js';
 import { seedAgentThread } from './agent-visibility-helpers.js';
 import { PAIRED_APP_MOUNT_MS, confirmOnHost, mintInvite, nonLoopbackIPv4, redeemOnScreen } from './offhost-helpers.js';
+import { watchProjectsQuiet } from './sidebar-quiet-helpers.js';
 
 export function offlineStartupFlow(): void {
   test('a paired frontend opens offline without toast spam and restores its thread on reconnect', async ({ page }) => {
@@ -71,6 +72,13 @@ export function offlineStartupFlow(): void {
         const deadlines = (window as unknown as { __bootDeadlines: { fired: number; pending: Set<unknown> } }).__bootDeadlines;
         return deadlines.fired > 0 && deadlines.pending.size === 0;
       });
+      // The asleep computer lists the tree its last complete read kept.
+      await expect(page.getByTestId('thread-row')).toHaveCount(1);
+      // The banner says the computer is unreachable and carries Retry, so
+      // the Projects section adds no line and runs nothing through the
+      // ladder's attempts.
+      expect(await watchProjectsQuiet(page, 6_000)).toMatchObject({ statusLines: [], animations: [] });
+      await expect(page.getByTestId('transport-status-retry')).toBeVisible();
       expect(toasts).toEqual([]);
       online = true;
       await expect(page.getByTestId('transport-status-banner')).toHaveCount(0, { timeout: 20_000 });

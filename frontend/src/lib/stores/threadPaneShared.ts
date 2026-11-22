@@ -92,9 +92,10 @@ export const TIMELINE_PAGE_MAX_BYTES = 160 << 10;
  * quietly ask for a different shape than the rest of the window; mixed
  * rows in one window is the failure mode. The backend cannot read any of
  * the three for itself — one backend serves several clients that disagree
- * about all of them.
+ * about all of them. `agentMessageMembers` is not the client's but the
+ * thread's backend's, so `stores/bindings.ts` sets it per call.
  */
-export type TimelinePageShape = Required<PageShape>;
+export type TimelinePageShape = Required<Omit<PageShape, 'agentMessageMembers'>>;
 
 export function timelinePageShape(): TimelinePageShape {
   return {

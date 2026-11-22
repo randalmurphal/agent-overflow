@@ -16,3 +16,7 @@ and release it before calling that cache, whose own lock owns its entries.
 `Seed` are the model catalog's process boundary: the application layer persists
 an export per account and seeds it at boot, and owns checking that the record
 still describes the binary behind the key.
+
+`ModelsReported` is how a caller waits for a model answer instead of polling:
+every model `Store` and `Seed` closes the current channel, for any identity.
+Take it before reading `Models` and read again when it closes.

@@ -483,7 +483,7 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	// Orphan error result: an error turn-complete with no open round, no
 	// open turn, and no prior settlement means the provider failed before
 	// the turn machinery ever engaged — e.g. Claude dying pre-init when
-	// its --resume-session-at cursor is unusable (the resulting
+	// a fork start's --resume-session-at cursor is unusable (the resulting
 	// result{error_during_execution} is the only wire output such a
 	// session ever produces). There is no round to emit and no turns row
 	// to settle, so without this branch the error reaches nothing the
@@ -2530,7 +2530,7 @@ func (r *Router) SessionCurrent(threadID, sessionToken string) bool {
 // ones Handle admits. The host calls this from the session-start path
 // BEFORE spawning the new subprocess. It must not wait for a wire
 // signal, because a session that dies during startup (e.g. Claude
-// rejecting --resume-session-at pre-init) emits its only diagnostics
+// rejecting a fork start's --resume-session-at pre-init) emits its only diagnostics
 // before anything init-like, and those must route. No stale frame passes
 // the gate after this call: every provider frame carries the token of
 // the session that produced it, and a frame of any earlier session no

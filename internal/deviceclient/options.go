@@ -10,8 +10,9 @@ import (
 // the destination authority, credential scope, or request retry policy.
 type DialContextFunc func(context.Context, string, string) (net.Conn, error)
 type options struct {
-	dial  DialContextFunc
-	probe time.Duration
+	dial     DialContextFunc
+	probe    time.Duration
+	lifetime context.Context
 }
 type Option func(*options)
 
@@ -26,6 +27,13 @@ func WithDialContext(dial DialContextFunc) Option { return func(o *options) { o.
 // shortens it: every probe is a request to the backend's credential routes.
 func WithProbeInterval(interval time.Duration) Option {
 	return func(o *options) { o.probe = interval }
+}
+
+// WithLifetime is the owner's lifetime. When it ends, a rotation in flight
+// stops at once unless a legacy exchange has been sent (Client.rotationWait).
+// A client without one finishes every rotation, bounded by the HTTP timeout.
+func WithLifetime(lifetime context.Context) Option {
+	return func(o *options) { o.lifetime = lifetime }
 }
 func resolveOptions(values []Option) options {
 	var result options

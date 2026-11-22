@@ -4,7 +4,8 @@
   import { addErrorToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import { HOST_TIER_REASON, settingsComputer } from './settingsComputer';
-  const { call, hasScope, getSettings, updateSetting, hostTierWritable } = settingsComputer();
+  const { call, scopeGrant, getSettings, updateSetting, hostTierWritable } = settingsComputer();
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
   import SettingsCallout from './SettingsCallout.svelte';
   import SettingsField from './SettingsField.svelte';
@@ -18,7 +19,8 @@
   // The backend leaves the endpoint out of a settings read for a caller
   // without access:admin (internal/app/app_settings.go settingsForCaller),
   // so an empty value here does not mean the default is in use.
-  let endpointHidden = $derived(!hasScope('access:admin'));
+  let adminGrant = $derived(scopeGrant('access:admin'));
+  let endpointHidden = $derived(adminGrant !== 'granted');
 
   // Tracing is wired once at start, so a saved value that differs from the
   // one this backend started with waits on a restart. The backend reports
@@ -41,7 +43,7 @@
 
   // The gate is the only tracked read; see WebviewGPUVsyncField.
   $effect(() => {
-    if (!hasScope('settings:read')) return;
+    if (scopeGrant('settings:read') !== 'granted') return;
     untrack(() => void loadLaunchValue());
   });
 
@@ -86,9 +88,9 @@
       <SettingsField
         id="observability.otlp-endpoint"
         label="OTLP endpoint"
-        hint={endpointHidden
+        hint={adminGrant === 'refused'
           ? 'This connection cannot read the endpoint. Connect with full access to see it.'
-          : 'gRPC host:port. Leave blank to use the OTel default (localhost:4317). Only used when tracing is enabled.'}
+          : grantBlockedTitle(adminGrant) ?? 'gRPC host:port. Leave blank to use the OTel default (localhost:4317). Only used when tracing is enabled.'}
         htmlFor="otlp-endpoint"
         stacked
       >

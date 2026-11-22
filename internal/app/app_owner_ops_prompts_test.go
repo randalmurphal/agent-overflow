@@ -16,7 +16,7 @@ import (
 
 // promptOwnerOpPair is a remotePromptPair whose destination answers
 // through an ownerOpPeer, so a test can hold or drop what reaches it.
-func promptOwnerOpPair(t *testing.T, lease time.Duration) (*remotePromptPair, *ownerOpPeer) {
+func promptOwnerOpPair(t *testing.T) (*remotePromptPair, *ownerOpPeer) {
 	t.Helper()
 	remotetest.Require(t)
 	var peer *ownerOpPeer
@@ -24,7 +24,7 @@ func promptOwnerOpPair(t *testing.T, lease time.Duration) (*remotePromptPair, *o
 		peer = &ownerOpPeer{App: app}
 		return serveAppAs(t, app, peer)
 	})
-	return newRemotePromptPairOn(t, pair, lease, remoteApproveLine), peer
+	return newRemotePromptPairOn(t, pair, remoteApproveLine), peer
 }
 
 // givenToThePerson waits until the worker's approval there is the
@@ -39,7 +39,7 @@ func (p *remotePromptPair) givenToThePerson(t *testing.T) {
 
 // Revoking the last session of the spawner's device on the worker's
 // computer ends the link, and the worker's prompt routed to the spawner is
-// the person's there at once, not when the lease runs out.
+// the person's there at once.
 func TestRevokingTheSpawnersLastSessionThereGivesThePersonTheWorkersPrompt(t *testing.T) {
 	t.Parallel()
 	p := newRemotePromptPair(t, remoteApproveLine)
@@ -72,7 +72,7 @@ func TestRevokingTheSpawnersLastSessionThereGivesThePersonTheWorkersPrompt(t *te
 // prompt routed to the spawner is the person's there at once.
 func TestAReleaseGivesThePersonTheWorkersPrompt(t *testing.T) {
 	t.Parallel()
-	p, _ := promptOwnerOpPair(t, 0)
+	p, _ := promptOwnerOpPair(t)
 	p.openThere(t, 1)
 	answer, err := p.source.callOwnerOp(t.Context(), store.OwnerOp{
 		Token: p.spawn.Token, ComputerID: p.computer, SourceThreadID: p.spawn.MadeIn(), Op: store.OwnerOpRelease, Seq: 1,
@@ -112,7 +112,7 @@ func TestAnOwnerOpEndsAPromptRoutedToTheSpawner(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			p, peer := promptOwnerOpPair(t, 0)
+			p, peer := promptOwnerOpPair(t)
 			p.openThere(t, 1)
 			p.readOwnerState(t, p.source)
 			p.wakesFor(t, p.caller.ID, 1)
@@ -148,13 +148,12 @@ func TestAnOwnerOpEndsAPromptRoutedToTheSpawner(t *testing.T) {
 	}
 }
 
-// The spawner's computer cannot reach the worker's: its archive is owed
-// and its prompt's hand-back lost, so the prompt is the person's there
-// once its lease runs out, and stays open for them until the archive
-// lands.
-func TestAPromptOfAWorkerWhoseSpawnerIsArchivedOutOfReachGoesToThePerson(t *testing.T) {
+// The spawner's computer cannot reach the worker's: its archive is owed,
+// and the prompt stays the spawner's there, the person there never asked,
+// until the archive lands and ends it with the worker.
+func TestAPromptOfAWorkerWhoseSpawnerIsArchivedOutOfReachEndsWithTheArchive(t *testing.T) {
 	t.Parallel()
-	p, peer := promptOwnerOpPair(t, 0)
+	p, peer := promptOwnerOpPair(t)
 	p.openThere(t, 1)
 	p.readOwnerState(t, p.source)
 	p.wakesFor(t, p.caller.ID, 1)
@@ -170,9 +169,11 @@ func TestAPromptOfAWorkerWhoseSpawnerIsArchivedOutOfReachGoesToThePerson(t *test
 	if len(result.WorkersNotArchived) != 1 || !result.WorkersNotArchived[0].Pending {
 		t.Fatalf("WorkersNotArchived = %+v, want the worker pending there", result.WorkersNotArchived)
 	}
-	// Nothing reaches that computer now; its lease is what hands it on.
-	(&linkedWorkers{app: p.dest}).shortenLease(time.Second, held[0].token)
-	p.givenToThePerson(t)
+	// Nothing reaches that computer now.
+	time.Sleep(3 * time.Second)
+	if route, open := p.routeThere("req-allow"); !open || route == nil || route.ThreadID != p.caller.ID || p.announcedToPerson("req-allow") {
+		t.Fatalf("the prompt there is routed to %+v (open %v) while its spawner's computer is out of reach, want it the spawner's", route, open)
+	}
 	// The computer answers again: the archive lands, and the prompt ends
 	// with the worker.
 	peer.unreachable.Store(false)
@@ -188,7 +189,7 @@ func TestAPromptOfAWorkerWhoseSpawnerIsArchivedOutOfReachGoesToThePerson(t *test
 // as it was: to the spawner here.
 func TestASupersedeLeavesTheWorkersPromptsRoutedToItsSpawner(t *testing.T) {
 	t.Parallel()
-	p, _ := promptOwnerOpPair(t, 0)
+	p, _ := promptOwnerOpPair(t)
 	p.openThere(t, 1)
 	if _, err := p.source.ArchiveThread(p.caller.ID); err != nil {
 		t.Fatal(err)

@@ -189,7 +189,7 @@ func TestSpawnTextSaysASpawnIsAWorkerWithoutASidebarRow(t *testing.T) {
 			t.Errorf("paired=%v: placement does not state the owned default: %s", shape.Paired(), placement)
 		}
 		for name, text := range texts {
-			for _, stale := range []string{"visible", "the user sees it in the sidebar"} {
+			for _, stale := range []string{"visible", "the user sees it in the sidebar", "appears in its sidebar"} {
 				if strings.Contains(text, stale) {
 					t.Errorf("paired=%v: thread_spawn %s still says %q: %s", shape.Paired(), name, stale, text)
 				}
@@ -198,6 +198,32 @@ func TestSpawnTextSaysASpawnIsAWorkerWithoutASidebarRow(t *testing.T) {
 		guide := New(newFakeApp("laptop")).Instructions(shape)
 		if !strings.Contains(guide, "your worker, with no sidebar row unless you give it one") || !strings.Contains(guide, rowRule) {
 			t.Errorf("paired=%v: the guide does not say a spawn is a worker with a row only for the user's threads", shape.Paired())
+		}
+		// A group is a sidebar row, so the choice is the same one: the text
+		// says who a group is for where the group is chosen, and never
+		// offers it as the way to keep a batch of workers together.
+		const workerRule = "A worker whose answer comes back to you, such as a reviewer, a researcher or a helper, takes "
+		if group := texts["group"]; !strings.Contains(group, "a row in the user's sidebar") || !strings.Contains(group, workerRule+"no group") {
+			t.Errorf("paired=%v: group does not say it is a sidebar row and not for a worker: %s", shape.Paired(), group)
+		}
+		if !strings.Contains(guide, workerRule+"neither") {
+			t.Errorf("paired=%v: the guide does not say a worker takes no placement or group", shape.Paired())
+		}
+		for name, text := range map[string]string{"group": texts["group"], "guide": guide} {
+			if strings.Contains(text, "sweep of threads") || strings.Contains(text, "threads of one sweep") {
+				t.Errorf("paired=%v: %s offers a group for a batch of threads: %s", shape.Paired(), name, text)
+			}
+		}
+	}
+}
+
+// The spawn's model says a family runs the newest model of it the target
+// lists, in both shapes.
+func TestSpawnModelTextSaysAFamilyRunsItsNewestModel(t *testing.T) {
+	for _, shape := range []Shape{soloShape(), pairedShape()} {
+		text := schemaProperties(t, toolsByName(t, shape)["thread_spawn"])["model"].(map[string]any)["description"].(string)
+		if !strings.Contains(text, "A family named without a version, such as claude-opus or gpt-sol, runs the newest model of that family the target computer lists") {
+			t.Errorf("paired=%v: model does not say what a family runs: %s", shape.Paired(), text)
 		}
 	}
 }

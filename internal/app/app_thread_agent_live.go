@@ -13,14 +13,16 @@ import (
 // (docs/specs/standing-agents.md, "Owned workers"), whatever its request's
 // state. A thread is at rest when it has no turn, no queued message, no
 // open prompt, no running background work, no provider timer, no armed
-// loop, watch or reminder, and no open work below it at any depth.
+// loop, watch or reminder, and no open work below it at any depth that its
+// own runs started (docs/specs/standing-agents.md, "At rest").
 // liveWorkers is the one record of why the spawned threads are not at rest
 // by their own state. It is memory, so the boot records every thread a
 // recovered source names before any request settles on rest
 // (recoverRestAtBoot); the memory sources report themselves once a turn
 // starts or a message is queued. The work below a thread is the
 // listing's reads' to answer: they climb from each live worker and each
-// piece of open work to every spawn above it, up to the root
+// piece of open work to every spawn above it, up to the root, through a
+// spawn only while a run of its caller's is open on its thread
 // (store.ThreadAgentRequest.TargetOpen), and the row of a spawn whose
 // thread has nothing of its own shows it waiting.
 //

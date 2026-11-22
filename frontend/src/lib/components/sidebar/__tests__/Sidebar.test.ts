@@ -16,15 +16,13 @@ import {
 } from '../../../stores/keybindings.svelte';
 import { createThreadPane } from '../../../stores/thread.svelte';
 import {
-  collapseProject,
-  isProjectExpanded,
   resetSidebarForTest,
 } from '../../../stores/sidebar.svelte';
 import {
   projectTurnStarted,
   resetForTest as resetThreadStatuses,
 } from '../../../stores/threadStatuses.svelte';
-import { listCatalogTreesForTest, loadThreadCatalogs } from '../../../stores/threadCatalogs';
+import { listCatalogTreesForTest, loadSidebarCatalogs } from '../../../stores/sidebarCatalogs';
 
 import {
   resetProjectsForTest,
@@ -34,6 +32,7 @@ import {
   resetBindingMocks,
   setBindingMock,
 } from '../../../../test/mocks/bindings-app';
+import { entryRecordForTest, setEntryExpanded } from '../../../stores/sidebarEntryContinuity.svelte';
 
 function project(id: string, overrides: Partial<Project> = {}): ProjectWithCounts {
   return {
@@ -87,14 +86,14 @@ describe('<Sidebar>', () => {
     // Projects default to expanded — we explicitly collapse so the test
     // exercises the collapsed-render path (status dot + active pin
     // surfacing the running work without requiring the user to expand).
-    collapseProject('p1');
+    setEntryExpanded('p1', false);
     const runningThread = thread('t-running', { title: 'Active work' });
     const projectRow = project('p1', { name: 'Project One' });
     setBindingMock('ListThreads', async () => [runningThread]);
     setBindingMock('ListProjects', async () => [projectRow]);
     setBindingMock('SwitchThread', async () => runningThread);
 
-    await loadThreadCatalogs();
+    await loadSidebarCatalogs();
     listCatalogTreesForTest();
     const pane = createThreadPane();
     await pane.switchThread(runningThread);
@@ -109,11 +108,23 @@ describe('<Sidebar>', () => {
       expect(getByTestId('project-item-status-dot').getAttribute('data-status')).toBe('running');
     });
 
-    expect(isProjectExpanded('p1')).toBe(false);
+    expect(entryRecordForTest('p1').expanded).toBe(false);
     expect(getByTestId('project-item-chevron').getAttribute('aria-expanded')).toBe('false');
     expect(getByTestId('project-item-active-pin')).toBeInTheDocument();
     expect(getByText('Active work')).toBeInTheDocument();
     expect(queryByTestId('project-thread-list')).toBeNull();
+  });
+
+  // The sidebar reads no catalog of its own: the tree is one round
+  // (stores/sidebarCatalogs.ts), from boot and from every hello and gap. A
+  // read here would supersede that round's and leave its tree held.
+  it('reads no catalog when it mounts', async () => {
+    const reads = (['ListProjects', 'ListThreads', 'ListThreadGroups'] as const)
+      .map((name) => setBindingMock(name, async () => []));
+    const { getByTestId } = render(Sidebar, { props: { pane: null } });
+    await waitFor(() => expect(getByTestId('sidebar')).toBeInTheDocument());
+    await tick();
+    expect(reads.map((mock) => mock.mock.calls.length)).toEqual([0, 0, 0]);
   });
 });
 
@@ -122,7 +133,7 @@ describe('<Sidebar>', () => {
 // Collapsed renders a RAIL, not nothing: the expand control has to
 // exist in every app state, including the ones where no chat header is
 // mounted. The branch lives in Sidebar's template so the component's
-// project fetch and palette registrations survive the transition.
+// palette registrations survive the transition.
 
 describe('<Sidebar> collapse toggle', () => {
   beforeEach(() => {

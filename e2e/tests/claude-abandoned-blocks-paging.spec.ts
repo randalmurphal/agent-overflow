@@ -35,6 +35,7 @@ import type { Locator, Page } from '@playwright/test';
 import type { HarnessApp } from '../src/harness.js';
 import { test, expect, type SeedResult } from './fixtures.js';
 import { RESULT_LINE, claudeScenario, emit, emitBurst, listItems, startMock, toolResultLine, toolUseLine } from './agent-visibility-helpers.js';
+import { awaitTurnCompleted } from './thread-tools-helpers.js';
 
 const LIST_ITEMS_BEFORE_CURSOR = 162135710;
 const LIST_ITEMS_AFTER_CURSOR = 2915892537;
@@ -282,19 +283,48 @@ test('a discarded reasoning row served without its record still shows the cue', 
 // turn through the discarded row. The record is the first row dropped;
 // neither cut edge lands inside a run, so nothing snaps. The rows after it
 // take more than one newer page.
+//
+// The page shows the turn's end only after the reveal gate has released its
+// prose one row at a time (stores/threadRevealGate.svelte.ts): the retry,
+// 13 notes and the closing answer, each with the run of tool calls behind
+// it. That sequence grows with the turn and with how slowly the page
+// paints, so the spec waits for the turn to complete and then for each
+// prose row in order, each step under the default timeout.
 const LIVE_CUT_TEXT = 'The live answer Claude streamed before the stall and then dropped.';
 const LIVE_RETRY_TEXT = 'The live answer Claude gave after the retry.';
+const LIVE_LAST_TEXT = 'The live turn ends here.';
+/** Where each run of tool calls after the retry starts; a note follows every run but the last. */
+const LIVE_RUN_STARTS = Array.from({ length: Math.ceil(398 / 30) }, (_, i) => 398 + i * 30);
+const liveNote = (runStart: number): string => `Checked ${runStart + 30}.`;
+const LIVE_NOTES = LIVE_RUN_STARTS.filter(from => from + 30 < 796).map(liveNote);
+
+/**
+ * Waits for the reveal gate to release `texts`, the turn's prose in
+ * timeline order, through the last one. Each step, one prose row and the
+ * run behind it, gets the default timeout; a gate that stops moving fails
+ * naming the last row it released.
+ */
+async function expectRevealedInOrder(scroller: Locator, texts: string[]): Promise<void> {
+  const furthest = async (): Promise<number> => {
+    for (let index = texts.length - 1; index >= 0; index--) {
+      if ((await scroller.getByText(texts[index], { exact: true }).count()) > 0) return index;
+    }
+    return -1;
+  };
+  for (let reached = -1; reached < texts.length - 1; reached = await furthest()) {
+    await expect.poll(furthest, { message: `the reveal stopped after "${texts[reached] ?? 'the turn start'}"` }).toBeGreaterThan(reached);
+  }
+}
 
 /** Streams the live turn, then pages older once so the cut drops the record; returns at the window's top. */
 async function openLiveCut(harness: HarnessApp, page: Page, hold: PagingHold): Promise<{ scroller: Locator; cutRow: Locator; record: Locator }> {
-  const LAST_TEXT = 'The live turn ends here.';
   const seed = await harness.rpc<SeedResult>('HarnessSeed', {
     projects: [{ name: 'abandoned-cut', repo: {}, threads: [{ title: 'Cut live', provider: 'claude', turns: [
       { userText: 'Earlier question', items: [answer('Earlier answer.')], repeat: 210 },
     ] }] }],
   });
   const threadId = seed.projects[0].threadIds[0];
-  await harness.rpc('HarnessSetScenario', { scenario: liveScenario(LIVE_CUT_TEXT, LIVE_RETRY_TEXT, LAST_TEXT) });
+  await harness.rpc('HarnessSetScenario', { scenario: liveScenario(LIVE_CUT_TEXT, LIVE_RETRY_TEXT, LIVE_LAST_TEXT) });
 
   await harness.open(page);
   await page.getByTestId('thread-row').getByText('Cut live', { exact: true }).click();
@@ -303,7 +333,9 @@ async function openLiveCut(harness: HarnessApp, page: Page, hold: PagingHold): P
 
   await startMock(harness, threadId);
   await harness.rpc('SendMessage', threadId, 'Cut question', null);
-  await expect(scroller.getByText(LAST_TEXT, { exact: true })).toBeVisible();
+  await awaitTurnCompleted(harness, threadId);
+  await expectRevealedInOrder(scroller, [LIVE_RETRY_TEXT, ...LIVE_NOTES, LIVE_LAST_TEXT]);
+  await expect(scroller.getByText(LIVE_LAST_TEXT, { exact: true })).toBeVisible();
   await expect.poll(async () => (await listItems(harness, threadId)).filter(item => item.kind === 'tool_call' && item.status === 'completed').length).toBe(796);
   const records = (await listItems(harness, threadId)).filter(item => item.kind === 'notification' && item.toolName === 'abandoned_blocks');
   expect(records).toHaveLength(1);
@@ -380,9 +412,9 @@ function liveScenario(cutText: string, retryText: string, lastText: string): unk
   // between runs: a newer page ships at most 30 members of a run, so runs
   // this short ship whole and the newer side spans more than one page.
   const trailing: string[] = [];
-  for (let from = 398; from < 796; from += 30) {
+  for (const from of LIVE_RUN_STARTS) {
     trailing.push(...fillers(from, Math.min(30, 796 - from)));
-    if (from + 30 < 796) trailing.push(snapshot(`msg_live_note_${from}`, `Checked ${from + 30}.`));
+    if (from + 30 < 796) trailing.push(snapshot(`msg_live_note_${from}`, liveNote(from)));
   }
   return claudeScenario('claude-abandoned-live-cut', [
     emitBurst(fillers(0, 398)),

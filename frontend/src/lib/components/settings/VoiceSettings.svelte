@@ -35,10 +35,10 @@
   import { refreshReadAloudSource } from '../../stores/readAloudSource.svelte';
   import { onMount } from 'svelte';
 
-  const { backend, call, hasScope, getSettings, updateSetting, hostTierWritable } = settingsComputer();
+  const { backend, call, onHost: onThisHost, getSettings, updateSetting, hostTierWritable, scopeGrant } = settingsComputer();
 
   let settings = $derived(getSettings());
-  let granted = $derived(hasScope('threads:operate'));
+  let granted = $derived(scopeGrant('threads:operate') === 'granted');
   let on = $derived(settings.dictationSubscriptionEnabled);
   let signedIn = $derived(dictationSignedIn(backend));
   let ready = $derived(dictationSubscriptionReady(backend));
@@ -62,7 +62,7 @@
   let liveReady = $derived(dictationLiveReady(backend));
   // Only a connection on the computer can open its editor; the file is
   // owner-only there, so a remote client puts the key in it itself.
-  let onHost = $derived(hasScope('host'));
+  let onHost = $derived(onThisHost());
   let keyFile = $state<OpenAIKeyFileStatus | null>(null);
   let keyError = $state('');
   // The editor action's own failure, which no status read replaces.
@@ -86,7 +86,7 @@
   let keyGeneration = 0;
 
   async function readKeyFile(): Promise<void> {
-    if (!hasScope('settings:read')) return;
+    if (scopeGrant('settings:read') !== 'granted') return;
     const generation = ++keyGeneration;
     try {
       const file = await call(() => OpenAIKeyFile());

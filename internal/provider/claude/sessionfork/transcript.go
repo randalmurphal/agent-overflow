@@ -25,7 +25,8 @@ const (
 // Exported because the claude package's branch validator
 // (sessionleaf_branch.go) must admit exactly the rows claude's own
 // parentUuid walk sees. The fork transform and the validator sharing
-// one set is what keeps them in lockstep (invariant 28).
+// one set is what keeps them in lockstep (claude-wire.md §"Session JSONL:
+// active-branch semantics").
 var TranscriptTypes = map[string]struct{}{
 	"user":       {},
 	"assistant":  {},

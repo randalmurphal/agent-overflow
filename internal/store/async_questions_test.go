@@ -247,7 +247,7 @@ func TestUnansweredAsyncQuestionsAreListedAndDismissedByThread(t *testing.T) {
 	if ids, err := s.ThreadsWithUnansweredAsyncQuestions(); err != nil || !slices.Equal(slices.Sorted(slices.Values(ids)), []string{"open", "other"}) {
 		t.Fatalf("threads with unanswered questions = %q, %v", ids, err)
 	}
-	assertPlanUses(t, s.db, "idx_async_questions_pending", "EXPLAIN QUERY PLAN "+threadsWithUnansweredAsyncQuestionsSQL)
+	assertPlanUses(t, s.db, "idx_async_questions_pending", "EXPLAIN QUERY PLAN "+threadsWithUnansweredAsyncQuestionsSQL, s.run)
 	if n, err := s.DismissUnansweredAsyncQuestions("open"); err != nil || n != 2 {
 		t.Fatalf("dismissed %d, %v; want both of its questions", n, err)
 	}
@@ -410,7 +410,7 @@ func TestAsyncAnswersAreClaimedAgainstTheirItemsRevision(t *testing.T) {
 	if err != nil || len(groups) != 1 || groups[0].ItemID != "question:call" || len(groups[0].Questions) != 2 || groups[0].Questions[1].Title != "Deadline?" {
 		t.Fatalf("unanswered = %+v, %v", groups, err)
 	}
-	assertPlanUses(t, s.db, "idx_async_questions_pending", "EXPLAIN QUERY PLAN "+unansweredAsyncQuestionsSQL, "q")
+	assertPlanUses(t, s.db, "idx_async_questions_pending", "EXPLAIN QUERY PLAN "+unansweredAsyncQuestionsSQL, "q", s.run)
 	asked := groups[0].Revision
 	if err := s.SetAsyncQuestionDismissed("q", "question:call", 1, true); err != nil {
 		t.Fatal(err)

@@ -513,7 +513,10 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		// had. Gated on the harness receiver, so an ordinary boot cannot be
 		// talked out of a capability it has.
 		ThreadToolsOlderThan: harnessThreadToolsOlderThan(opts),
-		WatermarkInterval:    opts.HarnessTiming.Watermark,
+		// The same boot's App groups by the absorbed rule
+		// (app.IsolationConfig.OmitAgentMessageRunMembers).
+		OmitAgentMessageRunMembers: opts.HarnessReceiver != nil && opts.HarnessOlderComputer,
+		WatermarkInterval:          opts.HarnessTiming.Watermark,
 		// Late-bound for the same reason: the store opens during
 		// ServiceStartup, after this config is built. The transport only
 		// ever sees two strings.
@@ -774,6 +777,10 @@ func runHeadless(listenAddr string, printURLFD int, updatingTo string, updateFai
 	// fully wired App.updater.handle / App.updater.wsl without a race. Gated at runtime
 	// on the Windows launcher having spawned us; a no-op otherwise.
 	appservice.InitWSLUpdater(appService.App, bootSettingsDir(), updateFailure)
+	// This boot ends the phase of the update it follows on every exit.
+	markerTo, markerApplied := appservice.UpdateBootFollows(appService.App)
+	followedTo, committed := followedUpdate(updatingTo, updateFailure, markerTo, markerApplied)
+	boot := beginUpdateBoot(log.Printf, followedTo, committed, processStarted)
 	// The launcher closes its window by asking this backend to stop. This
 	// mode's shell is the signal wait below, so the door hands the request
 	// to that wait and the teardown a Ctrl-C would get runs unchanged.
@@ -830,15 +837,17 @@ func runHeadless(listenAddr string, printURLFD int, updatingTo string, updateFai
 	defer bootCancel()
 	cancelBootOnShutdownRequest(bootCtx, bootCancel, shutdownRequested)
 	phaseStarted = time.Now()
-	if err := appService.Start(bootCtx); err != nil {
+	startErr := appService.Start(bootCtx)
+	if startErr != nil {
 		logBootPhase("headless.service_startup", phaseStarted)
+		boot.end(startErr)
 		if bootCtx.Err() != nil {
-			log.Printf("headless: startup stopped by a shutdown request: %v", err)
+			log.Printf("headless: startup stopped by a shutdown request: %v", startErr)
 			waitForHeadlessShutdown(appService, srv, shutdownRequested)
 			return
 		}
-		log.Printf("app: service startup: %v", err)
-		if pending := (*store.MigrationsPendingError)(nil); errors.As(err, &pending) {
+		log.Printf("app: service startup: %v", startErr)
+		if pending := (*store.MigrationsPendingError)(nil); errors.As(startErr, &pending) {
 			// The launcher that asked for the refusal stops this backend,
 			// migrates through a snapshot and a trial, and starts it again.
 			srv.MarkMigrationsPending(startupprogress.MigrationsPending{
@@ -858,6 +867,7 @@ func runHeadless(listenAddr string, printURLFD int, updatingTo string, updateFai
 	phaseStarted = time.Now()
 	srv.MarkReady()
 	logBootPhase("headless.mark_ready", phaseStarted)
+	boot.end(nil)
 
 	waitForHeadlessShutdown(appService, srv, shutdownRequested)
 }
@@ -1100,8 +1110,10 @@ func envTruthy(v string) bool {
 
 // fatalf prints the formatted message to stderr and exits 1. Used at
 // startup before logging is fully wired so the developer sees the
-// reason for boot failure on the console.
+// reason for boot failure on the console. A boot that follows an update
+// ends its phase with the message first.
 func fatalf(format string, args ...any) {
+	endActiveUpdateBoot(fmt.Errorf(format, args...))
 	fmt.Fprintf(os.Stderr, format+"\n", args...)
 	os.Exit(1)
 }

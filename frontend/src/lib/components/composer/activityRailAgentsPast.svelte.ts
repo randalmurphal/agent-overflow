@@ -3,7 +3,8 @@
 // settled first, from ListThreadPastAgentRows. Collapsed it holds the
 // total alone, read as a page of one row; expanded it holds the rows it
 // shows, PAST_FIRST_PAGE and then PAST_MORE_PAGE more per Show more, and
-// drops them when it collapses or its thread changes.
+// drops them when it collapses or its thread changes. Show less drops every
+// row after the first PAST_FIRST_PAGE: it holds only the rows it shows.
 //
 // The agents controller says when the ledger may have changed (`due`): the
 // thread opened, its computer reconnected or lost a frame, a frame named
@@ -15,9 +16,10 @@
 // settled, as it reads now; open again, because its worker was continued,
 // out of Past.
 // Reads run through one refresh scheduler, so a newer read supersedes an
-// older one and a `due` during a read reads again after it. Each expansion
-// is its own lifetime: a read that answers after Past collapsed, or after
-// it collapsed and opened again, lands nothing but the total.
+// older one and a `due` during a read reads again after it. Each expansion,
+// and each Show less, is its own lifetime: a read that answers after Past
+// collapsed, after it collapsed and opened again, or after Show less, lands
+// nothing but the total.
 //
 // Read order: one clock orders every read, Past's own or the open list's
 // (`readStarted`), which takes a tick when it starts. A shown row keeps the
@@ -83,12 +85,18 @@ export interface PastAgentRows {
   readonly rows: ThreadAgentRow[];
   /** How many the next Show more adds; 0 when every row is shown. */
   readonly moreCount: number;
+  /** Rows not yet shown; 0 when every row is shown. */
+  readonly hiddenCount: number;
+  /** Whether more than the first page is shown. */
+  readonly canShowLess: boolean;
   readonly loadingMore: boolean;
   /** Why the last read failed, until one succeeds. */
   readonly error: string;
   toggle(): void;
   collapse(): void;
   showMore(): void;
+  /** Back to the first page, dropping the rows after it. */
+  showLess(): void;
   /** Read again after a failure. */
   retry(): void;
   /** The sidebar placement `backend`, the computer holding the thread, said it has. */
@@ -132,8 +140,8 @@ export function createPastAgentRows(getThreadId: () => string | null): PastAgent
   let error = $state('');
   let moreWanted = $state(false);
   let headDue = true;
-  // Bumped when Past opens, collapses or changes thread; a read lands rows
-  // only in the expansion it started in.
+  // Bumped when Past opens, collapses, shows less or changes thread; a read
+  // lands rows only in the lifetime it started in.
   let lifetime = 0;
   // The read order's clock, the tick each shown row's content came from,
   // and the newest row an open-list read supplied, by token, held for page
@@ -293,6 +301,10 @@ export function createPastAgentRows(getThreadId: () => string | null): PastAgent
     drop();
   }
 
+  function hidden(): number {
+    return expanded && next ? Math.max(0, total - rows.length) : 0;
+  }
+
   function drop(): void {
     rows = [];
     stamps = new Map();
@@ -305,7 +317,9 @@ export function createPastAgentRows(getThreadId: () => string | null): PastAgent
     get status() { return error ? 'error' : loaded ? 'loaded' : 'loading'; },
     get expanded() { return expanded; },
     get rows() { return rows; },
-    get moreCount() { return expanded && next ? Math.min(PAST_MORE_PAGE, Math.max(0, total - rows.length)) : 0; },
+    get moreCount() { return Math.min(PAST_MORE_PAGE, hidden()); },
+    get hiddenCount() { return hidden(); },
+    get canShowLess() { return expanded && rows.length > PAST_FIRST_PAGE; },
     get loadingMore() { return moreWanted; },
     get error() { return error; },
 
@@ -326,6 +340,17 @@ export function createPastAgentRows(getThreadId: () => string | null): PastAgent
       if (!expanded || !next || moreWanted) return;
       moreWanted = true;
       refresh.request({ immediate: true });
+    },
+
+    showLess(): void {
+      if (!expanded || rows.length <= PAST_FIRST_PAGE) return;
+      // A read in flight was for the rows dropped here: it lands nothing.
+      lifetime++;
+      moreWanted = false;
+      rows = rows.slice(0, PAST_FIRST_PAGE);
+      const kept = new Set(rows.map((row) => row.token));
+      stamps = new Map([...stamps].filter(([token]) => kept.has(token)));
+      next = cursorOf(rows[rows.length - 1]);
     },
 
     retry(): void {

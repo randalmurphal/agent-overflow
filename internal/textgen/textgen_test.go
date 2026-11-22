@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider/claude"
 )
 
@@ -162,7 +163,7 @@ func TestExecCLI_StreamsExitCodeWithoutError(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	res, err := ExecCLI(ctx, CLISpec{
+	res, err := ExecCLI(ctx, procutiltest.Reaper(), CLISpec{
 		Binary: "sh",
 		Args:   []string{"-c", "echo hello; exit 3"},
 	})
@@ -183,7 +184,7 @@ func TestExecCLI_TimeoutSurfacesCtxErr(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	_, err := ExecCLI(ctx, CLISpec{
+	_, err := ExecCLI(ctx, procutiltest.Reaper(), CLISpec{
 		Binary: "sh",
 		Args:   []string{"-c", "sleep 1"},
 	})
@@ -618,11 +619,156 @@ func TestRunCodex_DropsAnInheritedCodexHome(t *testing.T) {
 	}
 }
 
+// A refused admission starts no process, and its error is the run's.
+func TestExecCLI_RefusedAdmissionStartsNothing(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "started")
+	refused := errors.New("refused")
+	_, err := ExecCLI(context.Background(), procutiltest.Reaper(), CLISpec{
+		Binary: "/bin/sh",
+		Args:   []string{"-c", `: > "$0"`, marker},
+		Admit:  func(context.Context, func(error)) (func(), error) { return nil, refused },
+	})
+	if !errors.Is(err, refused) {
+		t.Fatalf("ExecCLI = %v, want the admission's refusal", err)
+	}
+	if _, statErr := os.Stat(marker); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("the process ran after a refused admission (stat: %v)", statErr)
+	}
+}
+
+// What an admission holds is released once the process has exited, not once
+// it has started: the process here starts with a pause and ends by writing a
+// file, and the release looks for that file.
+func TestExecCLI_HoldsTheAdmissionUntilTheProcessExits(t *testing.T) {
+	exited := filepath.Join(t.TempDir(), "exited")
+	released := 0
+	result, err := ExecCLI(context.Background(), procutiltest.Reaper(), CLISpec{
+		Binary: "/bin/sh",
+		Args:   []string{"-c", `sleep 0.2; echo ran; : > "$0"`, exited},
+		Admit: func(context.Context, func(error)) (func(), error) {
+			return func() {
+				released++
+				if _, err := os.Stat(exited); err != nil {
+					t.Errorf("released before the process exited: %v", err)
+				}
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("ExecCLI: %v", err)
+	}
+	if released != 1 || strings.TrimSpace(result.Stdout) != "ran" {
+		t.Fatalf("released %d times, stdout %q; want one release and the run's output", released, result.Stdout)
+	}
+}
+
+// A process that fails to start releases its admission all the same.
+func TestExecCLI_ReleasesTheAdmissionWhenTheStartFails(t *testing.T) {
+	released := 0
+	_, err := ExecCLI(context.Background(), procutiltest.Reaper(), CLISpec{
+		Binary: filepath.Join(t.TempDir(), "missing"),
+		Admit: func(context.Context, func(error)) (func(), error) {
+			return func() { released++ }, nil
+		},
+	})
+	if err == nil {
+		t.Fatal("ExecCLI started a binary that does not exist")
+	}
+	if released != 1 {
+		t.Fatalf("released %d times, want one", released)
+	}
+}
+
+// The admission's stop ends a running process, and the run returns the cause
+// the stop gave, after the process has exited.
+func TestExecCLI_TheAdmissionsStopEndsTheRunWithItsCause(t *testing.T) {
+	started := filepath.Join(t.TempDir(), "started")
+	moved := errors.New("moved")
+	stopped := make(chan func(error), 1)
+	released := make(chan struct{})
+	// The bound only ends a failing run: a stop that does not reach the
+	// process leaves it running this long.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := ExecCLI(ctx, procutiltest.Reaper(), CLISpec{
+			Binary: "/bin/sh",
+			Args:   []string{"-c", `: > "$0"; while :; do sleep 0.05; done`, started},
+			Admit: func(_ context.Context, stop func(error)) (func(), error) {
+				stopped <- stop
+				return func() { close(released) }, nil
+			},
+		})
+		done <- err
+	}()
+	stop := <-stopped
+	waitForFile(t, started)
+	stop(moved)
+	err := <-done
+	if !errors.Is(err, moved) {
+		t.Fatalf("ExecCLI = %v, want the stop's cause", err)
+	}
+	select {
+	case <-released:
+	default:
+		t.Fatal("the stopped run returned without releasing its admission")
+	}
+}
+
+func waitForFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s never appeared", path)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// Both runners hand the config's admission to the executor.
+func TestRunners_PassTheAdmissionToTheExecutor(t *testing.T) {
+	admitted := 0
+	cfg := Config{
+		Binary:          "cli",
+		Model:           "m",
+		ClaudeRetention: userHome,
+		Admit: func(context.Context, func(error)) (func(), error) {
+			admitted++
+			return func() {}, nil
+		},
+		Exec: func(ctx context.Context, spec CLISpec) (CLIResult, error) {
+			if spec.Admit == nil {
+				return CLIResult{}, errors.New("no admission in the spec")
+			}
+			release, err := spec.Admit(ctx, func(error) {})
+			if err != nil {
+				return CLIResult{}, err
+			}
+			release()
+			return CLIResult{Stdout: "{}"}, nil
+		},
+	}
+	if _, err := RunClaude(context.Background(), cfg, t.TempDir(), "{}", nil, "", time.Second); err != nil {
+		t.Fatalf("RunClaude: %v", err)
+	}
+	if _, err := RunCodex(context.Background(), cfg, t.TempDir(), "{}", nil, "", time.Second); err != nil {
+		t.Fatalf("RunCodex: %v", err)
+	}
+	if admitted != 2 {
+		t.Fatalf("admitted %d starts, want one per runner", admitted)
+	}
+}
+
 // ExecCLI removes the variables a spec names from the child's environment.
 func TestExecCLI_DropsUnsetEnv(t *testing.T) {
 	t.Setenv("CLAUDE_CONFIG_DIR", "/alternate")
 	t.Setenv("AO_TEXTGEN_KEPT", "kept")
-	result, err := ExecCLI(context.Background(), CLISpec{
+	result, err := ExecCLI(context.Background(), procutiltest.Reaper(), CLISpec{
 		Binary:   "/bin/sh",
 		Args:     []string{"-c", `printf '%s|%s' "${CLAUDE_CONFIG_DIR-unset}" "${AO_TEXTGEN_KEPT-unset}"`},
 		UnsetEnv: []string{"CLAUDE_CONFIG_DIR"},

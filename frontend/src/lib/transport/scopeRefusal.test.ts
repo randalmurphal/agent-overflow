@@ -4,17 +4,45 @@ import {
   SESSION_REFUSAL,
   STEP_UP_REFUSAL,
   UNKNOWN_SCOPE_REFUSAL,
+  grantBlockedTitle,
   isScopeRefusal,
   isStepUpRefusal,
   presentScope,
   scopeRefusalMessage,
   scopeRefusalPresentation,
 } from './scopeRefusal';
-import { SCOPES } from './scopes';
+import { SCOPES, allOfGrants, anyOfGrants } from './scopes';
 
 function refusal(scope?: string): TransportError {
   return new TransportError('scope_required', 'not authorized', { scope });
 }
+
+describe('grantBlockedTitle', () => {
+  // Each reason a control is off has its own true sentence: a refusal only
+  // for a known grant, and neither an unanswered computer nor an unknown
+  // owner is told it refused or that a connection would fix it.
+  it('says why a control is off for each answer, and nothing when it may act', () => {
+    expect(grantBlockedTitle('granted')).toBeUndefined();
+    expect(grantBlockedTitle('refused')).toBe('Not granted to this device');
+    expect(grantBlockedTitle('pending')).toBe('Unavailable until this computer connects');
+    expect(grantBlockedTitle('unrouted')).toBe('Unavailable until the computer that holds this is known');
+    expect(grantBlockedTitle('offline')).toBe('Unavailable while this computer is offline');
+  });
+
+  it('judges a control that needs every grant and one that needs any', () => {
+    // A bulk action over threads on several computers.
+    expect(allOfGrants(['granted', 'granted'])).toBe('granted');
+    expect(allOfGrants(['granted', 'unrouted'])).toBe('unrouted');
+    expect(allOfGrants(['unrouted', 'pending'])).toBe('pending');
+    expect(allOfGrants(['pending', 'refused'])).toBe('refused');
+    // A control that acts on whichever computer the person picks.
+    expect(anyOfGrants(['refused', 'granted'])).toBe('granted');
+    expect(anyOfGrants(['refused', 'unrouted'])).toBe('unrouted');
+    expect(anyOfGrants(['unrouted', 'pending'])).toBe('pending');
+    expect(anyOfGrants(['refused'])).toBe('refused');
+    expect(anyOfGrants([])).toBe('refused');
+  });
+});
 
 describe('scopeRefusal', () => {
   it('names the capability the backend named', () => {

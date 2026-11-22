@@ -543,12 +543,22 @@ export class ModelInfo {
     "isCustom"?: boolean;
 
     /**
-     * Unlisted marks a catalog row the provider did not offer in its latest
-     * model list. The row still resolves capabilities for threads already on
-     * the model; pickers leave it out. A catalog no provider answer backs
-     * marks nothing.
+     * Unlisted marks a row the model picker leaves out: one the provider
+     * does not list (ProviderUnlisted) and no thread ran within the last
+     * week. It is the picker's visibility, the meaning every released
+     * frontend filters on, and only the picker's answer
+     * (GetModelsForProvider) sets it; Go code reads ProviderUnlisted.
      */
     "unlisted"?: boolean;
+
+    /**
+     * ProviderUnlisted marks a catalog row the provider did not offer in
+     * its latest model list: the provider's evidence, and the only fact a
+     * model family, a provider's default and a withdrawal warning read. The
+     * row still resolves capabilities for threads already on the model. A
+     * catalog no provider answer backs marks nothing.
+     */
+    "providerUnlisted"?: boolean;
 
     /**
      * IsDefault marks the model the provider names as its own default.
@@ -589,22 +599,22 @@ export class ModelInfo {
      * Creates a new ModelInfo instance from a string or object.
      */
     static createFrom($$source: any = {}): ModelInfo {
-        const $$createField6_0 = $$createType10;
-        const $$createField7_0 = $$createType14;
-        const $$createField9_0 = $$createType16;
-        const $$createField10_0 = $$createType18;
+        const $$createField7_0 = $$createType10;
+        const $$createField8_0 = $$createType14;
+        const $$createField10_0 = $$createType16;
+        const $$createField11_0 = $$createType18;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("capabilities" in $$parsedSource) {
-            $$parsedSource["capabilities"] = $$createField6_0($$parsedSource["capabilities"]);
+            $$parsedSource["capabilities"] = $$createField7_0($$parsedSource["capabilities"]);
         }
         if ("fastModeTier" in $$parsedSource) {
-            $$parsedSource["fastModeTier"] = $$createField7_0($$parsedSource["fastModeTier"]);
+            $$parsedSource["fastModeTier"] = $$createField8_0($$parsedSource["fastModeTier"]);
         }
         if ("contextWindows" in $$parsedSource) {
-            $$parsedSource["contextWindows"] = $$createField9_0($$parsedSource["contextWindows"]);
+            $$parsedSource["contextWindows"] = $$createField10_0($$parsedSource["contextWindows"]);
         }
         if ("reasoningEfforts" in $$parsedSource) {
-            $$parsedSource["reasoningEfforts"] = $$createField10_0($$parsedSource["reasoningEfforts"]);
+            $$parsedSource["reasoningEfforts"] = $$createField11_0($$parsedSource["reasoningEfforts"]);
         }
         return new ModelInfo($$parsedSource as Partial<ModelInfo>);
     }

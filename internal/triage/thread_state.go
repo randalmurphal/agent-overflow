@@ -464,7 +464,7 @@ type threadIdentity struct {
 	// leave orphan rows on the stopped thread (Bug B5). Cleared ONLY by
 	// the host's session-start path via MarkThreadActive — never by a wire
 	// event. A session that dies before emitting anything recognizable
-	// (e.g. Claude failing its --resume-session-at validation pre-init)
+	// (e.g. Claude failing a fork start's --resume-session-at validation pre-init)
 	// must still have its error results routed, so the host declares the
 	// thread active when it commits to a replacement session rather than
 	// waiting for proof of life from the wire. Host-synthesized events

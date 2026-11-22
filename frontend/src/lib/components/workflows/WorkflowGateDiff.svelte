@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { projectHasScope } from '../../transport/entityScopes';
+  import { projectScopeGrant } from '../../transport/entityScopes';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
   // Gate / done evidence: the changed-file list, expanding hunks in place, and
   // the hand-off to the real ReviewPane (UI-SPEC §4.3, §4.7). There is no
   // parallel diff renderer here — the file list reuses WorkflowDiff, and
@@ -38,7 +39,8 @@
 
   // Both controls read workspace content — the branch-base diff, and the
   // review companion opened over it.
-  let ungranted = $derived(!projectHasScope('files:read', workspace?.projectId));
+  let grant = $derived(projectScopeGrant('files:read', workspace?.projectId));
+  let ungranted = $derived(grant !== 'granted');
   let read: ReviewDiffRead | null = null;
   let files = $state.raw<readonly ReviewFile[]>([]);
   let loading = $state(false);
@@ -124,7 +126,7 @@
       class="text-xs text-error hover:underline disabled:cursor-not-allowed disabled:opacity-50"
       onclick={() => { void load(); }}
       disabled={ungranted}
-      title={ungranted ? 'Not granted to this device' : undefined}
+      title={grantBlockedTitle(grant)}
       data-testid="workflow-diff-retry"
     >{error} · retry</button>
   {:else if loaded}
@@ -134,7 +136,7 @@
       class="rounded-md border border-border-subtle px-2.5 py-1.5 text-xs text-fg-muted hover:text-fg disabled:cursor-not-allowed disabled:opacity-50"
       onclick={() => { void load(); }}
       disabled={ungranted || !workspace}
-      title={ungranted ? 'Not granted to this device' : undefined}
+      title={grantBlockedTitle(grant)}
       data-testid="workflow-diff-load"
     >Load changes</button>
   {/if}
@@ -144,7 +146,7 @@
       class="rounded-md border border-border-subtle px-2.5 py-1.5 text-xs text-fg-muted hover:text-fg disabled:cursor-not-allowed disabled:opacity-50"
       onclick={() => { void openFullReview(); }}
       disabled={ungranted}
-      title={ungranted ? 'Not granted to this device' : undefined}
+      title={grantBlockedTitle(grant)}
       data-testid="workflow-open-full-review"
     >Open full review</button>
   {/if}

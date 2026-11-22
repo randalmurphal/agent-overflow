@@ -43,7 +43,7 @@ type SpawnShape struct {
 	// computed for no session.
 	Level, Limit int
 	// Providers are the providers this computer offers, and Profiles the
-	// names of the agent profiles it can run.
+	// names of the agent profiles on them (GuideProfileNames).
 	Providers []string
 	Profiles  []string
 }

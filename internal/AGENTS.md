@@ -15,7 +15,7 @@ All non-main Go packages live under `internal/`. Root `main*.go` and
 | SQLite queries, migrations, restore and pruning | [store/](store/AGENTS.md) |
 | HTTP/WebSocket calls, events and connection policy | [transport/](transport/AGENTS.md) |
 | Sign-in, pairing and session permissions | [identity/](identity/AGENTS.md) |
-| Connected computers and profiles | [deviceclient/](deviceclient/AGENTS.md), [computerroute/](computerroute/AGENTS.md) |
+| Connected computers and profiles | [deviceclient/](deviceclient/AGENTS.md), [computerroute/](computerroute/AGENTS.md), `attachedbackends/` (a computer's pairing state and its one transaction: `computer_state.go`; enrollments: `enrollment.go`) |
 | Conversation move/copy | [threadtransfer/](threadtransfer/AGENTS.md) |
 | Workflow definitions and execution | [workflow/def/](workflow/def/AGENTS.md), [workflow/engine/](workflow/engine/AGENTS.md) |
 | Application services and their boundaries | [Application composition](../docs/architecture/root-decomposition.md) |

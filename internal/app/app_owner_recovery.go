@@ -165,6 +165,10 @@ type OwnerLinkRead struct {
 
 	// Held lists the prompt tokens whose leases the caller renews.
 	Held []string `json:"held,omitempty"`
+
+	// NudgesTaken lists the ended nudge runs the caller recorded
+	// (threadAgentPeerArgs.NudgesTaken).
+	NudgesTaken []string `json:"nudgesTaken,omitempty"`
 }
 
 // OwnerLinkState reports the target or the reason its listing is unavailable.
@@ -197,7 +201,9 @@ func (a *App) ownerLinkStates(ctx context.Context, owner string, links []OwnerLi
 				result.End = "detached"
 			}
 		default:
-			state, err := a.answerThreadAgentRows(ctx, owner, link.Source, threadAgentPeerArgs{ThreadID: reach.TargetThreadID, Spawn: link.Token, StateOnly: true, Depth: 1, Held: link.Held})
+			state, err := a.answerThreadAgentRows(ctx, owner, link.Source, threadAgentPeerArgs{
+				ThreadID: reach.TargetThreadID, Spawn: link.Token, StateOnly: true, Depth: 1, Held: link.Held, NudgesTaken: link.NudgesTaken,
+			})
 			if err != nil {
 				return nil, err
 			}

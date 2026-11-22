@@ -33,6 +33,7 @@ import {
   isThreadInterruptPending,
   resetThreadInterruptStateForTest,
 } from './threadInterruptState.svelte';
+import { AGENT_MESSAGES_ABSORBED_RULE } from '../utils/activityRunSpans';
 
 function stubDraft(): { draft: ComposerDraftStore; reloadFromBackend: ReturnType<typeof vi.fn> } {
   const reloadFromBackend = vi.fn(async () => {});
@@ -72,7 +73,7 @@ describe('applyUserMessageReverted', () => {
       newestLoadedTurnIndex: 1,
       hasMoreHistory: false,
       hasMoreNewer: false,
-      latestSettledTurn: null,
+      latestSettledTurn: null, activityRunRule: AGENT_MESSAGES_ABSORBED_RULE,
       historyStamp: { epoch: 1, rev: 5, attested: true },
     });
 

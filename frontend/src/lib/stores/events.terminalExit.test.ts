@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { setupEventListeners } from './events';
 import { prependThread, getThreadById } from './threads.svelte';
-import { loadThreadCatalogs } from './threadCatalogs';
+import { loadSidebarCatalogs } from './sidebarCatalogs';
 import {
   getExistingThreadTerminalState,
   getThreadTerminalState,
@@ -85,7 +85,7 @@ beforeEach(async () => {
   resetBindingMocks();
   // Reset the threads store to a known-empty baseline.
   setBindingMock('ListThreads', async () => []);
-  await loadThreadCatalogs();
+  await loadSidebarCatalogs();
   deleteThread = setBindingMock('DeleteThread', async () => undefined);
   cleanupEvents = setupEventListeners();
 });

@@ -579,7 +579,8 @@ export interface Settings {
   textGenerationProvider: ProviderID;
   /**
    * Text generation model id. Empty string = "use the per-provider
-   * default" (codex → gpt-6-luna, claude → claude-haiku-5-5).
+   * default": the newest gpt-luna (codex) or claude-haiku (claude) model
+   * the computer lists.
    */
   textGenerationModel: string;
   /** Text generation reasoning-effort tier. Defaults to "low" — these
@@ -799,9 +800,14 @@ export interface ModelInfo {
   name: string;
   provider: string;
   isCustom?: boolean;
-  // Mirrors provider.ModelInfo.Unlisted: the provider's latest list does not
-  // offer this model. The row stays for threads already on it; pickers drop it.
+  // Mirrors provider.ModelInfo.Unlisted: pickers leave this row out
+  // (hiddenModels.pickerOffers). The provider does not list it and no
+  // thread ran it this week; the row stays for threads already on it.
   unlisted?: boolean;
+  // Mirrors provider.ModelInfo.ProviderUnlisted: the provider's latest list
+  // does not offer this model, though pickers may keep it for recent use.
+  // A computer that predates it states only unlisted.
+  providerUnlisted?: boolean;
   // Mirrors provider.ModelInfo.IsDefault: the provider's own default model.
   isDefault?: boolean;
   capabilities?: string[];

@@ -43,11 +43,11 @@ func (a *App) providerDiscoveryService() *providerdiscoveryapp.Service {
 					AfterAdopt:      request.AfterAdopt,
 				})
 			},
-			ClaudeConfig: func(binary string) claude.ProbeConfig {
-				return a.claudeProbeConfig(binary, nil)
+			ClaudeProbe: func(binary, accountID string) (provider.ProbeCacheKey, claude.ProbeConfig) {
+				return a.ensureProviderAccountManager().ClaudeAccountProbe(binary, accountID)
 			},
-			CodexConfig: func(binary string) codex.ProbeConfig {
-				return a.codexProbeConfig(binary, nil)
+			CodexProbe: func(binary, accountID string) (provider.ProbeCacheKey, codex.ProbeConfig) {
+				return a.ensureProviderAccountManager().CodexAccountProbe(binary, accountID)
 			},
 			EmitStatus:     a.emitProviderStatus,
 			EmitRateLimits: a.emitRateLimitsSnapshot,

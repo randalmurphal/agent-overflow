@@ -1,9 +1,13 @@
 package app
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -12,6 +16,7 @@ import (
 	"agent-overflow/internal/claudecatalog"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
+	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
 )
@@ -30,6 +35,10 @@ func seedClaudeWire(t *testing.T, app *App, wire []claude.WireModel) {
 
 // A model the CLI's latest answer omits leaves the picker unless a thread ran
 // it recently; either way it still resolves capabilities for threads on it.
+// The picker's answer tells the two facts apart: unlisted is the picker's
+// visibility, the meaning every released frontend filters on, so a model
+// kept by recent use is not unlisted; providerUnlisted is the provider's
+// own evidence, which a withdrawal warning reads.
 func TestGetModelsForProviderKeepsRecentlyUsedModelsListed(t *testing.T) {
 	app := newTestAppWithStore(t)
 	seedClaudeWire(t, app, []claude.WireModel{
@@ -48,27 +57,100 @@ func TestGetModelsForProviderKeepsRecentlyUsedModelsListed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetModelsForProvider: %v", err)
 	}
-	unlisted := map[string]bool{}
-	for _, m := range catalog.Models {
-		unlisted[m.Slug] = m.Unlisted
+	// The answer as JSON, the only form a frontend sees.
+	encoded, err := json.Marshal(catalog)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for slug, want := range map[string]bool{
-		"claude-opus-5":   false, // listed by the CLI
-		"claude-opus-4-7": false, // omitted, but ran within the window
-		"claude-opus-4-6": true,  // omitted, last ran before the window
-		"claude-opus-4-8": true,  // omitted, never ran
+	var wire struct {
+		Models []map[string]any `json:"models"`
+	}
+	if err := json.Unmarshal(encoded, &wire); err != nil {
+		t.Fatal(err)
+	}
+	type row struct{ unlisted, providerUnlisted bool }
+	rows := map[string]row{}
+	for _, m := range wire.Models {
+		slug, _ := m["slug"].(string)
+		unlisted, _ := m["unlisted"].(bool)
+		providerUnlisted, _ := m["providerUnlisted"].(bool)
+		rows[slug] = row{unlisted, providerUnlisted}
+		if _, present := m["recentlyUsed"]; present {
+			t.Errorf("%s carries recentlyUsed, which no frontend reads", slug)
+		}
+	}
+	for slug, want := range map[string]row{
+		"claude-opus-5":   {false, false}, // listed by the CLI
+		"claude-opus-4-7": {false, true},  // omitted, but ran within the window
+		"claude-opus-4-6": {true, true},   // omitted, last ran before the window
+		"claude-opus-4-8": {true, true},   // omitted, never ran
 	} {
-		got, ok := unlisted[slug]
+		got, ok := rows[slug]
 		if !ok {
 			t.Errorf("%s missing from the served catalog; it must stay for capability lookup", slug)
 			continue
 		}
 		if got != want {
-			t.Errorf("%s Unlisted = %v, want %v", slug, got, want)
+			t.Errorf("%s (unlisted, providerUnlisted) = %+v, want %+v", slug, got, want)
 		}
 	}
 	if _, found := app.modelInfoWithoutLiveCodex(string(provider.Claude), "claude-opus-4-6"); !found {
 		t.Error("an unlisted model no longer resolves capabilities")
+	}
+}
+
+// The picker keeps a model a thread ran this week, but that is the picker's
+// policy, not the provider offering it: a family profile, a family spawn and
+// text generation resolve from what the provider lists, so the CLI listing
+// only Haiku 4.5 runs Haiku 4.5 though Haiku 5.5 ran yesterday. The picker
+// still shows Haiku 5.5, and text generation reads no usage ledger.
+func TestAFamilyNeverRunsAModelOnlyThePickerKeeps(t *testing.T) {
+	app := newTestAppWithStore(t)
+	resetProviderBinarySettings(t, app)
+	app.lookPathFn = fakeLookPath("claude")
+	seedClaudeWire(t, app, []claude.WireModel{
+		{Value: "default", ResolvedModel: "claude-opus-5"},
+		{Value: "haiku", ResolvedModel: "claude-haiku-4-5"},
+	})
+	if err := app.store.AppendUsage([]store.UsageLedgerRow{
+		{CreatedAt: time.Now().Add(-24 * time.Hour).UnixMilli(), ThreadID: "t-recent", TurnID: "1", Provider: "claude", Model: "claude-haiku-5-5"},
+	}); err != nil {
+		t.Fatalf("AppendUsage: %v", err)
+	}
+
+	picker, err := app.GetModelsForProvider(string(provider.Claude))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if index := slices.IndexFunc(picker.Models, func(m provider.ModelInfo) bool { return m.Slug == "claude-haiku-5-5" }); index < 0 ||
+		picker.Models[index].Unlisted || !picker.Models[index].ProviderUnlisted {
+		t.Errorf("picker rows %+v, want claude-haiku-5-5 unlisted by the provider and kept for recent use", picker.Models)
+	}
+
+	checks, err := app.CheckAgentProfiles(context.Background(), []settings.AgentProfile{
+		{Name: "Haiku", UseFor: "Small things.", Provider: "claude", Model: "claude-haiku"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checks[0].Runs != "claude-haiku-4-5" {
+		t.Errorf("the Haiku profile runs %+v, want claude-haiku-4-5", checks[0])
+	}
+
+	var logged bytes.Buffer
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	// With no store a ledger read fails loudly in the log, so a read shows
+	// here.
+	saved := app.store
+	app.store = nil
+	cfg, ok := app.resolveTextGenerationConfigFor(context.Background(), string(provider.Claude))
+	app.store = saved
+	if !ok || cfg.Model != "claude-haiku-4-5" {
+		t.Errorf("text generation runs %q (ok %v), want claude-haiku-4-5", cfg.Model, ok)
+	}
+	if strings.Contains(logged.String(), "recent usage") {
+		t.Errorf("text generation read the usage ledger: %s", logged.String())
 	}
 }
 
@@ -132,7 +214,7 @@ func TestGetModelsForProviderBeforeAnyAnswerListsTheShippedCatalog(t *testing.T)
 		t.Fatalf("provenance = %q, want shipped", catalog.Provenance)
 	}
 	for _, m := range catalog.Models {
-		if m.Unlisted {
+		if m.Unlisted || m.ProviderUnlisted {
 			t.Fatalf("%s unlisted with no CLI answer", m.Slug)
 		}
 	}

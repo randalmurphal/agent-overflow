@@ -10,7 +10,7 @@
 
   // `days` is the retention value the page shows, saved or not.
   let { days }: { days: number } = $props();
-  const { call, hasScope } = settingsComputer();
+  const { call, scopeGrant } = settingsComputer();
 
   type Retention = Awaited<ReturnType<typeof GetClaudeTranscriptRetention>>;
   // The last answer and the value it answers. It renders only while `days`
@@ -20,7 +20,7 @@
 
   $effect(() => {
     const requested = days;
-    if (!hasScope('settings:read')) {
+    if (scopeGrant('settings:read') !== 'granted') {
       answer = null;
       return;
     }

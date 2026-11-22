@@ -1,6 +1,7 @@
 package triage
 
 import (
+	"slices"
 	"strings"
 	"time"
 
@@ -181,6 +182,77 @@ func (r *Router) promptRouteLocked(ref PromptRef) (*provider.PromptRoute, bool) 
 // nowhere. It returns how many moved.
 func (r *Router) ReroutePrompts(from string) int {
 	return r.reroutePrompts(from, nil, false)
+}
+
+// RouteThreadPrompts reconciles threadID's open prompts with where the
+// prompt router routes the thread now, after a change its routes depend on
+// (its placement): each whose route that changes moves and is announced
+// again, as reroutePrompts announces. fromPerson says the router's route
+// also applies to a prompt that is the user's; otherwise such a prompt
+// stays the user's. A route to or from another computer moves by the same
+// rule. skip names prompts left as they are, read outside the router's
+// lock. It returns how many moved.
+func (r *Router) RouteThreadPrompts(threadID string, fromPerson bool, skip func(PromptRef) bool) int {
+	if r == nil || threadID == "" {
+		return 0
+	}
+	var open []PromptRef
+	r.mu.Lock()
+	if st := r.threadStateIfPresent(threadID); st != nil {
+		for requestID, pending := range st.pendingApprovals {
+			open = append(open, PromptRef{ThreadID: threadID, RequestID: requestID, Occurrence: pending.Request.Occurrence})
+		}
+		for requestID, request := range st.pendingUserInputs {
+			open = append(open, PromptRef{ThreadID: threadID, RequestID: requestID, Occurrence: request.Occurrence})
+		}
+	}
+	r.mu.Unlock()
+	if len(open) == 0 {
+		return 0
+	}
+	open = slices.DeleteFunc(open, skip)
+	// The router reads the store, so it runs outside r.mu.
+	to := r.routePrompt(threadID)
+	sameRoute := func(a, b *provider.PromptRoute) bool {
+		return (a == nil) == (b == nil) && (a == nil || (a.ThreadID == b.ThreadID && a.ComputerID == b.ComputerID))
+	}
+	route := func() *provider.PromptRoute {
+		if to == nil {
+			return nil
+		}
+		copied := *to
+		return &copied
+	}
+	var approvals []provider.ApprovalEvent
+	var questions []provider.UserInputEvent
+	now := time.Now().UnixMilli()
+	r.mu.Lock()
+	st := r.threadStateIfPresent(threadID)
+	for _, ref := range open {
+		current, isOpen := r.promptRouteLocked(ref)
+		if st == nil || !isOpen || sameRoute(current, to) || (current == nil && !fromPerson) {
+			continue
+		}
+		if pending, ok := st.pendingApprovals[ref.RequestID]; ok {
+			pending.Request.RoutedTo = route()
+			st.pendingApprovals[ref.RequestID] = pending
+			request := pending.Request
+			approvals = append(approvals, provider.ApprovalEvent{Action: "request", ThreadID: threadID, Request: &request, RequestedAt: now})
+			continue
+		}
+		request := st.pendingUserInputs[ref.RequestID]
+		request.RoutedTo = route()
+		st.pendingUserInputs[ref.RequestID] = request
+		questions = append(questions, provider.UserInputEvent{Action: "request", ThreadID: threadID, Request: &request, RequestedAt: now})
+	}
+	r.mu.Unlock()
+	for _, event := range approvals {
+		r.emit(eventchan.ProviderApproval, event)
+	}
+	for _, event := range questions {
+		r.emit(eventchan.ProviderUserInput, event)
+	}
+	return len(approvals) + len(questions)
 }
 
 // RejectPrompt moves the one prompt ref names off from, which could not

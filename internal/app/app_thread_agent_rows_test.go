@@ -56,11 +56,28 @@ func (f *requestFixture) plainThread(t *testing.T) store.Thread {
 // take several live threads to reach.
 func (f *requestFixture) seedAgentRow(t *testing.T, token, caller, kind, target string, notify bool) {
 	t.Helper()
-	if err := f.app.store.InsertThreadRequest(store.ThreadRequest{
+	row := store.ThreadRequest{
 		Token: token, CallerThreadID: caller, Kind: kind, TargetThreadID: target, Notify: notify,
 		State: store.ThreadRequestAccepted,
-	}); err != nil {
+	}
+	seedSpawnRun(f.app, &row)
+	if err := f.app.store.InsertThreadRequest(row); err != nil {
 		t.Fatalf("insert %s: %v", token, err)
+	}
+}
+
+// seedSpawnRun gives row, a spawn a test writes by hand, the run every
+// spawn starts with, and keeps that run open whatever its worker does
+// (App.runEndsHeldForTest): such a test settles the spawn while its worker
+// is at rest and then gives the worker work it means as the spawn's run,
+// the state the rest pass leaves only at the worker's next rest.
+func seedSpawnRun(a *App, row *store.ThreadRequest) {
+	if row.Kind != store.ThreadRequestSpawn || row.RunBase != nil {
+		return
+	}
+	row.RunBase = &store.RunFigures{}
+	if row.TargetComputerID == "" && row.TargetThreadID != "" {
+		a.runEndsHeldForTest.Store(row.TargetThreadID, struct{}{})
 	}
 }
 

@@ -384,10 +384,11 @@ function applySettledTransportGap(gap: TransportGap, origin?: EventOrigin): void
       // 'deleted' or 'unlisted' leaves a project in the sidebar that is not
       // there any more, which nothing else corrects.
       //
-      // refreshSidebarProjections re-reads the authoritative ListProjects (and
-      // the thread rows beside it, which is what a project gap usually implies
-      // anyway — a deletion takes its threads with it). Blanket rather than
-      // per-row because the gap carries no entity key.
+      // refreshSidebarProjections re-reads the authoritative ListProjects,
+      // and the thread and group rows with it as one round, which is what a
+      // project gap usually implies anyway — a deletion takes its threads
+      // with it. Blanket rather than per-row because the gap carries no
+      // entity key.
       refreshSidebarProjections();
       return;
     }

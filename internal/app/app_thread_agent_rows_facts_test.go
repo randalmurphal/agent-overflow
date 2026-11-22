@@ -127,7 +127,7 @@ func TestARemoteWorkerRowCountsWhatItsThreadDid(t *testing.T) {
 	}
 
 	parent := ThreadAgentRow{Token: agentPair.spawn.Token, Worker: string(workerRunning)}
-	pair.source.nestPeerAgentRows(&parent, threadAgentRemoteSlot{spawn: agentPair.spawn},
+	pair.source.nestPeerAgentRows(&parent, threadAgentRemoteSlot{spawn: agentPair.spawn, shown: agentPair.spawn},
 		threadAgentPeerAnswer{listing: ThreadAgentRows{Worker: string(workerRunning)}}, threadAgentRowDepth)
 	if parent.ToolCalls != 0 || parent.Tokens != 0 || parent.Activity != "" {
 		t.Fatalf("row from an answer without counts %+v; want none", parent)

@@ -12,7 +12,8 @@ import (
 // A decision on rest that cannot be taken back, a held request settling
 // `finished` (heldThreadAtRest) or the retention sweep clearing a spawn
 // past the floor (sweepThreadRequestsBefore), reads the rest of the thread
-// in question and of every thread a local spawn link reaches below it,
+// in question and of every thread a local spawn link with a run of its
+// caller's open reaches below it (store.ReadSubtreeRest),
 // from those threads' own sources (docs/specs/standing-agents.md, "Owned
 // workers"). It reads neither liveWorkers nor the open_below marks, which
 // only draw rows, frames and summaries, and writes neither.

@@ -1,3 +1,4 @@
+import { readSidebarCatalogs } from '../../../../test/helpers/sidebarCatalogs';
 import { takePinnedBackend } from '../../../transport/backends';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
@@ -9,7 +10,7 @@ import { resetBindingMocks, setBindingMock } from '../../../../test/mocks/bindin
 import { buildPane as buildRegisteredPane, makeThread as makeBaseThread } from '../../../../test/helpers/chat';
 import { idleWorkspaceActivity } from '../../../../test/helpers/workspaceLock';
 import { resetPanesForTest } from '../../../stores/panes.svelte';
-import { refreshProjects, resetProjectsForTest } from '../../../stores/projects.svelte';
+import { resetProjectsForTest } from '../../../stores/projects.svelte';
 import { __resetSelectedBackendForTest, selectedBackend } from '../../../stores/selectedBackend.svelte';
 import { __resetEntityIndexForTest, noteProject, noteThread } from '../../../transport/entityIndex';
 import { __resetBackendIdentityForTest, setBackendIdentityFromBootstrap } from '../../../transport/backendIdentity';
@@ -66,7 +67,7 @@ async function seedProjects(projects: Project[]): Promise<void> {
     return projects.filter((_project, index) => backend === 'laptop' ? index > 0 : index === 0)
       .map((project) => ({ project, threadCount: 0 }));
   });
-  await refreshProjects();
+  await readSidebarCatalogs();
 }
 
 describe('<MachinePicker>', () => {
@@ -293,6 +294,21 @@ describe('<MachinePicker>', () => {
       await grantBackendScopes('laptop', ['threads:read', 'threads:operate']);
       await waitFor(() => expect(laptop).not.toHaveAttribute('aria-disabled', 'true'));
       expect(laptop.textContent).not.toContain('View only');
+    });
+
+    // A connected computer whose grant has not reached this window is not a
+    // refusal: the row waits, and says what it waits for.
+    it('holds a connected computer whose grant has not arrived, without calling it view only', async () => {
+      stageBackend();
+      revokeBackendScopes('laptop');
+      await seedProjects([makeProject()]);
+      const pane = buildPlaceholderPane();
+      const { getByTestId, findByRole } = render(MachinePicker, { props: { pane } });
+      await fireEvent.click(getByTestId('machine-picker-trigger'));
+      const laptop = await findByRole('menuitem', { name: /Laptop/ });
+      expect(laptop).toHaveAttribute('aria-disabled', 'true');
+      expect(laptop.textContent).not.toContain('View only');
+      expect(laptop.getAttribute('title')).toBe('Unavailable until this computer connects');
     });
 
     it('says nothing about a machine that has them', async () => {

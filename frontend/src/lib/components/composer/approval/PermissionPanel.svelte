@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { grantBlockedTitle } from '../../../transport/scopeRefusal';
+  import type { ControlAccess } from '../../../transport/scopes';
   import { onMount } from 'svelte';
   import type { ApprovalRequest } from '../../../types/events';
   import { ApprovalResponse, PermissionProfile } from '../../../stores/bindings';
@@ -18,11 +20,13 @@
     onResolve: (response: ApprovalResponse) => Promise<void>;
     onError?: (message: string, err?: unknown) => void;
     responding?: boolean;
-    /** Ungranted `approvals:respond`: every action is inert, never loading. */
-    ungranted?: boolean;
+    /** Whether an answer can reach the computer (`approvals:respond`); otherwise every action is inert, never loading, and says why. */
+    access?: ControlAccess;
   }
 
-  let { approval, onResolve, onError, responding = false, ungranted = false }: Props = $props();
+  let { approval, onResolve, onError, responding = false, access = 'granted' }: Props = $props();
+  let ungranted = $derived(access !== 'granted');
+  let blocked = $derived(grantBlockedTitle(access));
   let actionRow: HTMLDivElement | undefined = $state(undefined);
 
   async function grant(scope: 'turn' | 'session') {
@@ -84,16 +88,16 @@
   tabindex="0"
   onkeydown={(event) => focusApprovalActionFromKey(event, actionRow)}
 >
-  <Button variant="danger-ghost" size="sm" onclick={() => respond('cancel')} testId="permission-cancel" disabled={responding || ungranted}>
+  <Button variant="danger-ghost" size="sm" onclick={() => respond('cancel')} testId="permission-cancel" disabled={responding || ungranted} title={blocked}>
     {#snippet children()}Cancel turn{/snippet}
   </Button>
-  <Button variant="danger-outline" size="sm" onclick={() => respond('decline')} testId="permission-deny" disabled={responding || ungranted}>
+  <Button variant="danger-outline" size="sm" onclick={() => respond('decline')} testId="permission-deny" disabled={responding || ungranted} title={blocked}>
     {#snippet children()}Decline{/snippet}
   </Button>
-  <Button variant="secondary" size="sm" onclick={() => grant('session')} testId="permission-grant-session" disabled={responding || ungranted}>
+  <Button variant="secondary" size="sm" onclick={() => grant('session')} testId="permission-grant-session" disabled={responding || ungranted} title={blocked}>
     {#snippet children()}Always allow this session{/snippet}
   </Button>
-  <Button variant="primary" size="sm" onclick={() => grant('turn')} testId="permission-grant" disabled={ungranted} loading={!ungranted && responding}>
+  <Button variant="primary" size="sm" onclick={() => grant('turn')} testId="permission-grant" disabled={ungranted} title={blocked} loading={!ungranted && responding}>
     {#snippet children()}Approve once{/snippet}
   </Button>
 </div>

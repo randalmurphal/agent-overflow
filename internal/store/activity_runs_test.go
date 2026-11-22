@@ -20,8 +20,15 @@ type activityRunVectorFile struct {
 type activityRunVector struct {
 	Name  string                  `json:"name"`
 	Why   string                  `json:"why"`
+	Rules []string                `json:"rules"`
 	Items []activityRunVectorItem `json:"items"`
 	Runs  []activityRunVectorRun  `json:"runs"`
+}
+
+// activityRunVectorRules maps a vector's rule names to the store's rules.
+var activityRunVectorRules = map[string]ActivityRunRule{
+	"agent-message-members":   AgentMessagesAreMembers,
+	"agent-messages-absorbed": AgentMessagesAbsorbed,
 }
 
 type activityRunVectorItem struct {
@@ -69,14 +76,30 @@ func TestActivityRunVectors(t *testing.T) {
 	if len(file.Cases) == 0 {
 		t.Fatal("vector file carries no cases")
 	}
+	ruled := map[ActivityRunRule]int{}
 	for _, vector := range file.Cases {
-		t.Run(vector.Name, func(t *testing.T) {
-			s := newTestStore(t)
-			seedActivityRunVector(t, s, "t", vector)
-			units := allTimelineUnits(t, s, "t")
-			assertVectorRuns(t, vector, units)
-			assertVectorStubs(t, vector, units)
-		})
+		if len(vector.Rules) == 0 {
+			t.Fatalf("%s names no rule", vector.Name)
+		}
+		for _, name := range vector.Rules {
+			rule, ok := activityRunVectorRules[name]
+			if !ok {
+				t.Fatalf("%s names unknown rule %q", vector.Name, name)
+			}
+			ruled[rule]++
+			t.Run(vector.Name+"/"+name, func(t *testing.T) {
+				s := newTestStore(t)
+				seedActivityRunVector(t, s, "t", vector)
+				units := allTimelineUnits(t, s, "t", rule)
+				assertVectorRuns(t, vector, units)
+				assertVectorStubs(t, vector, units)
+			})
+		}
+	}
+	for name, rule := range activityRunVectorRules {
+		if ruled[rule] == 0 {
+			t.Errorf("no vector holds under %s", name)
+		}
 	}
 }
 
@@ -168,9 +191,9 @@ func vectorItemRole(kind string) string {
 
 // allTimelineUnits walks a whole thread through the production unit
 // walker, oldest first.
-func allTimelineUnits(t *testing.T, s *Store, threadID string) []pageUnit {
+func allTimelineUnits(t *testing.T, s *Store, threadID string, rule ActivityRunRule) []pageUnit {
 	t.Helper()
-	walk := newActivityScanWalk(s.reader(), threadID, timelineTailBound(), false, timelineScope{})
+	walk := newActivityScanWalk(s.reader(), threadID, timelineTailBound(), false, timelineScope{}, rule)
 	var units []pageUnit
 	for {
 		unit, found, err := nextOlderUnit(walk)

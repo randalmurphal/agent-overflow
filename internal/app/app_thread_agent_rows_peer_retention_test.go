@@ -10,6 +10,7 @@ package app
 import (
 	"context"
 	"database/sql"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -18,21 +19,33 @@ import (
 	"agent-overflow/internal/threadtools"
 )
 
-// remoteLoopWorker spawns a thread on the pair's destination that arms a
-// loop and ends its turn, and waits until the source records it open there.
+// remoteLoopWorker spawns a thread on the pair's destination that answers,
+// arms a loop and ends its turn, its spawn's run kept open by the loop, and
+// waits until the source records it open there.
 func remoteLoopWorker(t *testing.T, pair *reachPair) (*agentPeerPair, string) {
 	t.Helper()
-	installMockClaudeReplies(t, pair.dest, "watching the deploy")
+	gate := filepath.Join(t.TempDir(), "spawn-turn")
+	installMockClaudeTurns(t, pair.dest, [][]string{gatedTurn(gate, "watching the deploy")})
 	// The caller here is told when a person stops the worker.
-	installMockClaudeReplies(t, pair.source, "noted")
+	installMockClaudeReplies(t, pair.source, "noted", "noted")
 	ack := pair.spawnThere(t, "watch the deploy", nil)
 	child := pair.receipt(t, ack.Token).TargetThreadID
-	waitUntil(t, 10*time.Second, func() bool { return pair.receipt(t, ack.Token).SettledAt != 0 })
+	waitUntil(t, 10*time.Second, func() bool {
+		return threadToolsLiveState(pair.dest.triage.LiveStateSnapshotForThread(child)).ActiveTurn
+	})
 	destID, _ := pair.dest.backendIdentity()
 	there := threadtools.Caller{ThreadID: child, ComputerID: destID, ComputerName: "destination"}
+	if _, err := (threadToolsApp{app: pair.dest}).Reply(t.Context(), there, threadtools.ReplyCall{Token: ack.Token, Text: "Watching the deploy."}); err != nil {
+		t.Fatalf("Reply there: %v", err)
+	}
 	if _, err := (threadToolsApp{app: pair.dest}).Loop(t.Context(), there, threadtools.LoopCall{Label: "deploy check", Note: "check", EverySeconds: 3600}); err != nil {
 		t.Fatalf("Loop there: %v", err)
 	}
+	release(t, gate)
+	waitUntil(t, 10*time.Second, func() bool {
+		return pair.receipt(t, ack.Token).SettledAt != 0 &&
+			!threadToolsLiveState(pair.dest.triage.LiveStateSnapshotForThread(child)).ActiveTurn
+	})
 	pair.poll(t)
 	agentPair := &agentPeerPair{reachPair: pair, spawn: pair.request(t, ack.Token)}
 	agentPair.askAgainUntil(t, func(row store.ThreadRequest) bool { return threadRequestSettled(row) && row.NestedOpen })
@@ -167,13 +180,14 @@ func sweepPastTheFloor(t *testing.T, pair *reachPair, token string) {
 // A remote worker at rest through both retention sweeps keeps its link at
 // both ends: the source keeps the spawn as its lineage, payload cleared and
 // token unknown, as the destination keeps the receipt. Continued there with
-// its spawner's pane closed, the owner update finds it: its row is
-// open, counted and out of Past, and its Stop reaches it.
+// its spawner's pane closed, the owner update finds it, and the run it
+// finds is not the spawner's: no row opens for it.
 func TestARemoteWorkerAtRestPastTheFloorIsFoundWhenContinued(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
-	spawn, child := remoteRestedWorker(t, pair)
+	agentPair, child := restedRemoteRun(t, pair)
+	spawn := agentPair.spawn
 	startReconciledOwner(t, pair)
 	sweepPastTheFloor(t, pair, spawn.Token)
 	if _, found, err := pair.source.store.GetThreadRequest(spawn.Token); err != nil || found {
@@ -188,23 +202,15 @@ func TestARemoteWorkerAtRestPastTheFloorIsFoundWhenContinued(t *testing.T) {
 		t.Fatalf("SendMessage there: %v", err)
 	}
 	waitUntil(t, 20*time.Second, func() bool { return readRemoteSpawnRow(t, pair, spawn.Token).nested })
-	var row ThreadAgentRow
-	waitUntil(t, 10*time.Second, func() bool {
-		listing, err := pair.source.ListThreadAgentRows(t.Context(), pair.caller.ID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		row, _ = agentRowByToken(listing.Rows, spawn.Token)
-		return row.Worker == string(workerRunning)
-	})
-	(&agentPeerPair{reachPair: pair, spawn: spawn}).expectRemoteRowOpen(t, row, string(workerRunning))
-	stop, err := pair.source.StopThreadAgentRow(t.Context(), pair.caller.ID, spawn.Token)
-	if err != nil || len(stop.Failures) != 0 || !stop.Interrupted {
-		t.Fatalf("the Stop of the lineage's worker = %+v, %v; want its turn interrupted there", stop, err)
+	if listing, err := pair.source.ListThreadAgentRows(t.Context(), pair.caller.ID); err != nil || len(listing.Rows) != 0 {
+		t.Fatalf("listing %+v, %v; want no row for the person's run there", listing.Rows, err)
 	}
-	waitUntil(t, 10*time.Second, func() bool {
-		return !threadToolsLiveState(pair.dest.triage.LiveStateSnapshotForThread(child)).ActiveTurn
-	})
+	if stops, err := pair.source.StopThreadAgentRows(t.Context(), pair.caller.ID); err != nil || len(stops) != 0 {
+		t.Fatalf("Stop All = %+v, %v; want nothing of the spawner's to stop", stops, err)
+	}
+	if !threadToolsLiveState(pair.dest.triage.LiveStateSnapshotForThread(child)).ActiveTurn {
+		t.Fatal("Stop All interrupted the person's turn there")
+	}
 }
 
 // The source's lineage of a remote spawn lasts until that computer says
@@ -236,6 +242,28 @@ func TestAnEndedRemoteLineageIsExcludedFromDeleteConfirmation(t *testing.T) {
 	})
 	if row := readRemoteSpawnRow(t, pair, spawn.Token); !row.found || !row.lineage {
 		t.Fatalf("ended lineage = %+v", row)
+	}
+}
+
+// A thread deleted there while that computer answers for it is refused as
+// not the spawn's, the answer every later call gets, never a failure to
+// answer, which would keep the last answer's state on the spawn's row.
+func TestAThreadDeletedDuringItsListingIsRefused(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	pair := newReachPair(t)
+	spawn, child := remoteRestedWorker(t, pair)
+	pair.dest.peerAgentsReachedForTest = func(threadID string) {
+		if threadID != child {
+			return
+		}
+		if err := pair.dest.deleteThread(child); err != nil {
+			t.Errorf("delete the thread there: %v", err)
+		}
+	}
+	_, _, err := pair.source.peerThreadAgentRows(t.Context(), spawn, 1)
+	if !threadAgentPeerRefused(err) {
+		t.Fatalf("the listing of a thread deleted during it failed with %v; want the refusal of a thread not the spawn's", err)
 	}
 }
 

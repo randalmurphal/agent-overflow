@@ -50,7 +50,7 @@ func spawnSchema(shape Shape) map[string]any {
 		"group": map[string]any{
 			"type":        "string",
 			"maxLength":   MaxTitleRunes,
-			"description": "Sidebar group to put the new thread in, by name inside the thread's own project, created when it does not exist. The same name in another project is a different group. Put your own thread there with thread_update to keep a sweep of threads together. Implies placement grouped.",
+			"description": "Gives the new thread a row in the user's sidebar, inside this group: only for a thread the user will open and work in themselves. A worker whose answer comes back to you, such as a reviewer, a researcher or a helper, takes no group: your workers are already listed together under your thread's Agents. The group is named inside the thread's own project and created when it does not exist; the same name in another project is a different group. Implies placement grouped.",
 		},
 		"placement": placementProperty("Whether the user sees the new thread in the sidebar. owned, the default: it is your worker, with no sidebar row; the user reaches it from your thread. standalone gives it a plain row in its own project, and grouped, which group implies, a row in that group. Give it a row when the thread is for the user to read or continue themselves. On another computer it applies there."),
 		"provider": map[string]any{
@@ -59,7 +59,7 @@ func spawnSchema(shape Shape) map[string]any {
 		},
 		"model": map[string]any{
 			"type":        "string",
-			"description": spawnDefaultText("Model slug for the new thread", defaults.Model) + " A model the target computer does not offer is refused with the list it does; thread_options lists them per provider.",
+			"description": spawnDefaultText("Model slug for the new thread", defaults.Model) + " A family named without a version, such as claude-opus or gpt-sol, runs the newest model of that family the target computer lists; a slug it offers as written is that model. A model or family the target computer does not offer is refused with the list it does; thread_options lists them per provider.",
 		},
 		"effort": map[string]any{
 			"type":        "string",
@@ -92,17 +92,18 @@ func spawnSchema(shape Shape) map[string]any {
 	computerIDProperty(shape, properties, "the project the thread should run in")
 	description := "Open a new thread, your worker, send prompt as its first user message, start its turn, and return the thread id and a request token. It inherits your project, workspace, provider, model, effort, mode and runtime mode unless you override them. By default it has no sidebar row: the user reaches it from your thread, and its questions and approvals come to you. A thread meant for the user to read or continue themselves gets a sidebar row: pass placement standalone, or group to file it in a group. Use your own subagents for pieces of your current task; use this " + spawnWhen(shape) + "."
 	if shape.Paired() {
-		description += " With computer_id the thread is created on that computer, runs on its account, appears in its sidebar, and project_id must name one of its projects."
+		description += " With computer_id the thread is created on that computer, runs on its account, and project_id must name one of its projects."
 	}
 	return tool("thread_spawn", description, properties, "prompt")
 }
 
-// profileDescription states the profiles this computer can run beside the
-// parameter, so a spawn by profile needs no discovery call for the name.
+// profileDescription states the profiles on this computer's providers
+// beside the parameter (GuideProfileNames), so a spawn by profile needs no
+// discovery call for the name.
 func profileDescription(names []string) string {
 	text := "Agent profile to spawn as, by name: the provider, model, effort, runtime mode and instructions the user set up for one kind of work. provider, model, effort and runtime_mode passed beside it override that part of it. thread_options lists each profile's use-for line and what it runs on each computer."
 	if len(names) > 0 {
-		text += " This computer runs: " + strings.Join(names, ", ") + "."
+		text += " Profiles on this computer's providers: " + strings.Join(names, ", ") + "."
 	}
 	return text
 }

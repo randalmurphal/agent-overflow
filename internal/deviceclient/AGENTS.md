@@ -4,6 +4,22 @@
 Production code imports neither identity nor transport; wire spellings are
 pinned by tests. Credential requests never follow redirects.
 
+A redemption spends a single-use link. `Redeem` honors its context and
+returns the session unsaved, so its owner decides whether to keep it; `Pair`
+detaches it and saves, for a caller that must not lose the link. Neither is
+sent once the owner's lifetime has ended. The session file's OS lock is the
+one per-computer fence across processes: `WithSession` holds it and hands
+its callback a `HeldSession`, through which the stored session is read,
+written, removed and restored to the bytes the lock found, so another
+process cannot write between a decision and the write it leads to. A
+`HeldSession` is a handle whose copies share one state, so none writes after
+the release. A write can take effect and still answer an error (a failed
+directory sync); `Restore` reads the file back to say whether it is as
+found. `WithSession` states the lock order. `Redemption.Save` writes through
+a `HeldSession` of its own profile directory only, is single use, and takes
+the nickname its caller chooses (a re-pairing starts without one).
+`ForgetSession` drops whatever is stored, after the owner retires its client.
+
 Confirmation waits poll renewal, not socket tickets. Pending confirmation is
 read-only on the server and preserves the saved renewal operation; approval
 performs one successful rotation. Terminal refusal ends promptly and retires
@@ -39,7 +55,11 @@ fall back to the legacy endpoint with a pending operation. Transient HTTP or
 proof failures and unknown future refusal codes preserve pairing. The exchange
 runs detached from the caller that started it: a cancelled caller returns at
 once while the rotation completes for every waiter, bounded by the HTTP
-timeout and the lock waits. So a rotation can outlive the test that cancelled
+timeout and the lock waits. Retirement ends the rotation, whose answer a
+retired client never writes, and the owner's lifetime (`WithLifetime`) ends it
+too unless a legacy exchange has been sent: nothing is spent before the
+exchange, and a recoverable one is completed by the next rotation from its
+saved successor. So a rotation can outlive the test that cancelled
 it, still touching the profile directory's lock files: `openAgainst` registers
 a cleanup that waits for it before the TempDir is removed, and a fixture that
 builds a client another way owes the same wait. Session/key file locks cover short local
@@ -76,7 +96,7 @@ Automatic own-device introductions select among the target member's bounded trus
 before redemption. Credential-free health probes verify both TLS trust and
 backend identity; the first verified route wins without waiting for a dead LAN
 or cold VPN alternative. Selection never sends the invitation token or a device
-proof. Pair then performs one redemption only: a lost reply cannot safely retry
+proof. The redemption is then performed once only: a lost reply cannot safely retry
 an invitation that may already have been spent.
 
 

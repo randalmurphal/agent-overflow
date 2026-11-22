@@ -28,8 +28,9 @@ export function defaultSettings(): Settings {
     codexCustomEnv: [...SETTINGS_DEFAULTS.codexCustomEnv],
     spinnerCustomVerbs: [...SETTINGS_DEFAULTS.spinnerCustomVerbs],
     spinnerDisabledAnimations: [...SETTINGS_DEFAULTS.spinnerDisabledAnimations],
-    agentProfiles: SETTINGS_DEFAULTS.agentProfiles.map((profile) => ({ ...profile })),
-    agentNotes: SETTINGS_DEFAULTS.agentNotes.map((note) => ({ ...note })),
+    // A computer's roster is its own settings answer; none is assumed.
+    agentProfiles: [],
+    agentNotes: [],
   };
 }
 
@@ -91,7 +92,9 @@ export function mergeSettingsWithDefaults(raw: Partial<Settings>): Settings {
       ? [...result.spinnerDisabledAnimations]
       : defaults.spinnerDisabledAnimations,
     // An emptied roster is the person's (the backend sends [], never
-    // null): only a missing key falls back to the seeds.
+    // null). Only a release without a roster leaves the key out, and it
+    // falls back to none: the seeds are each computer's own
+    // (AgentRosterSeeds), never this window's.
     agentProfiles: result.agentProfiles
       ? result.agentProfiles.map((profile) => ({ ...profile }))
       : defaults.agentProfiles,

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { settingsComputer } from './settingsComputer';
-  const { call, hasScope } = settingsComputer();
+  const { call, scopeGrant } = settingsComputer();
 
   // Settings → General → Notifications → Phone push: whether this backend
   // can wake a paired phone that is not connected, and the credential it
@@ -50,7 +50,7 @@
     loadFailed: 'Could not read the push status',
   } as const;
 
-  let ungranted = $derived(!hasScope('access:admin'));
+  let ungranted = $derived(scopeGrant('access:admin') !== 'granted');
 
   let status = $state<PushSenderStatus | null>(null);
   let pasted = $state('');
