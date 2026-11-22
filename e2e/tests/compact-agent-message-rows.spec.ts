@@ -8,6 +8,7 @@
 import type { Locator, Page } from '@playwright/test';
 import { test, expect } from './fixtures.js';
 import { captureAgentMessageInView as keep } from './wake-rows-helpers.js';
+import { timelineOf } from './timeline-follow-helpers.js';
 import { expectUncovered, showTextUncovered } from './standing-agent-home-contents-helpers.js';
 import {
   AUDIT,
@@ -58,10 +59,10 @@ for (const provider of ['claude', 'codex'] as const) {
     await expect(request.getByTestId('agent-message-sender')).toHaveText(LEAD);
     await expect(request.getByTestId('agent-message-first-line')).toHaveText(REQUEST);
     await expectUncovered(request.getByTestId('agent-message-toggle'));
-    await keep(page, `compact-${provider}-request-collapsed.png`, request);
+    await keep(timelineOf(request), `compact-${provider}-request-collapsed.png`, request);
     await open(page, request, flow.token);
     await expect(request.locator('[data-fact="User said"]')).toHaveText(LEAD_ASK);
-    await keep(page, `compact-${provider}-request-expanded.png`);
+    await keep(timelineOf(request), `compact-${provider}-request-expanded.png`);
     await request.getByTestId('agent-message-sender').tap();
     await expect(page.getByTestId('chat-header-title')).toHaveText(LEAD);
 
@@ -69,9 +70,9 @@ for (const provider of ['claude', 'codex'] as const) {
     await expect(reply.getByTestId('agent-message-sender')).toHaveText(BUSY);
     await expect(reply.getByTestId('agent-message-first-line')).toHaveText(REPLY);
     await expect(agentRow(page, 'finished').getByTestId('agent-message-sender')).toHaveText(AUDIT);
-    await keep(page, `compact-${provider}-replies-collapsed.png`, reply);
+    await keep(timelineOf(reply), `compact-${provider}-replies-collapsed.png`, reply);
     await open(page, reply, flow.token);
-    await keep(page, `compact-${provider}-reply-expanded.png`);
+    await keep(timelineOf(reply), `compact-${provider}-reply-expanded.png`);
 
     // The audit is the lead's worker, so it opens from its answer's row.
     await agentRow(page, 'finished').getByTestId('agent-message-sender').tap();
@@ -79,9 +80,9 @@ for (const provider of ['claude', 'codex'] as const) {
     const spawn = agentRow(page, 'spawn');
     await expect(spawn.getByTestId('agent-message-first-line')).toHaveText(SPAWN_PROMPT);
     await expect(page.getByTestId('user-message-bubble')).toHaveCount(0);
-    await keep(page, `compact-${provider}-spawn-collapsed.png`, spawn);
+    await keep(timelineOf(spawn), `compact-${provider}-spawn-collapsed.png`, spawn);
     await open(page, spawn, LEAD_ASK);
-    await keep(page, `compact-${provider}-spawn-expanded.png`);
+    await keep(timelineOf(spawn), `compact-${provider}-spawn-expanded.png`);
   });
 
   test(`compact ${provider}: every other kind folds and opens on the phone`, async ({ harness, page }) => {
@@ -95,15 +96,15 @@ for (const provider of ['claude', 'codex'] as const) {
       await expect(locator.getByTestId('agent-message-sender')).toHaveText(row.sender);
       await expect(locator.getByTestId('agent-message-first-line')).toHaveText(row.firstLine);
     }
-    await keep(page, `compact-${provider}-inbox-collapsed.png`);
+    await keep(timelineOf(agentRow(page, 'question')), `compact-${provider}-inbox-collapsed.png`);
     await open(page, agentRow(page, 'question'), 'Yes, for an answer');
-    await keep(page, `compact-${provider}-question-expanded.png`);
+    await keep(timelineOf(agentRow(page, 'question')), `compact-${provider}-question-expanded.png`);
     await open(page, agentRow(page, 'worker-question'), 'option: Yes');
     await open(page, agentRow(page, 'loop'), 'Check the overnight build.');
-    await keep(page, `compact-${provider}-loop-expanded.png`);
+    await keep(timelineOf(agentRow(page, 'loop')), `compact-${provider}-loop-expanded.png`);
     const joined = agentRow(page, 'request');
     await open(page, joined, 'Do the task.');
     await expect(joined.getByTestId('agent-message-part-source-sender')).toHaveText(JOINED_SENDERS);
-    await keep(page, `compact-${provider}-joined-senders-expanded.png`, joined);
+    await keep(timelineOf(joined), `compact-${provider}-joined-senders-expanded.png`, joined);
   });
 }

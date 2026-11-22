@@ -8,7 +8,8 @@
 //   2. A depth-2 background agent renders as a running card under its
 //      parent's card, with the live tool count and activity line
 //      `system/task_progress` supplies, and appears in the background tray
-//      indented under its parent.
+//      indented under its parent. The inner agent's tool row opens in its
+//      pane beside the thread's timeline, which keeps following.
 //
 // Both open the UI BEFORE the live turn starts: `task_progress` ticks are
 // in-memory frontend state (nothing persists until the terminal), so a tick
@@ -33,6 +34,7 @@ import {
   toolUseLine,
   waitForGate,
 } from './agent-visibility-helpers.js';
+import { expandRow } from './ao-tool-rows-helpers.js';
 
 const FORK_DIFF_COMMAND = 'git diff HEAD~2 --stat';
 
@@ -214,8 +216,10 @@ test('a depth-2 background agent nests under its parent card and indents in the 
       { waitSignal: { name: 'tick' } },
       emit([
         // The inner agent's own tool call: a row of ITS transcript, which
-        // the tray digest shows and the main timeline never does.
+        // the tray digest shows and the main timeline never does. Its
+        // result is the body the row opens to.
         toolUseLine('msg-inner-grep', 'tu-inner-grep', 'Grep', { pattern: 'drift' }, 'tu-inner'),
+        toolResultLine('tu-inner-grep', 'parser.go:12: drift', { parentToolUseId: 'tu-inner' }),
         taskProgressLine(
           'task-inner',
           'tu-inner',
@@ -307,6 +311,12 @@ test('a depth-2 background agent nests under its parent card and indents in the 
   await expect(trayRows.nth(1).getByTestId('background-task-tray-row-activity')).toContainText(
     'Scanning the parser for drift',
   );
+  // The inner agent's tool row opens in its pane with the thread's timeline
+  // mounted beside it; opening it leaves the thread's timeline following.
+  const paneGrep = pane.getByTestId('agent-pane-timeline').locator('[data-item-id="tu-inner-grep"]').getByTestId('tool-call-card');
+  await expandRow(paneGrep);
+  await expect(paneGrep.getByTestId('tool-call-card-body')).toContainText('parser.go:12: drift');
+  await expect.poll(() => mainTimeline.evaluate(atBottom)).toBe(true);
   // The row's header expands the inner agent's digest in place: its own
   // tool call, as a normal tool row, while the main timeline still shows
   // none of the inner agent's rows and keeps following its tail (the old

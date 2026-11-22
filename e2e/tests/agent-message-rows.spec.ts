@@ -24,6 +24,7 @@ import { test, expect, type SeedResult } from './fixtures.js';
 import { launchHarness } from '../src/harness.js';
 import { startTogether } from './launch-helpers.js';
 import { captureAgentMessage, captureAgentMessageInView as keep } from './wake-rows-helpers.js';
+import { timelineOf } from './timeline-follow-helpers.js';
 import {
   AUDIT,
   AUDIT_ANSWER,
@@ -109,14 +110,14 @@ for (const provider of ['claude', 'codex'] as const) {
     await expect(request).not.toContainText('Agent request from thread');
     await expect(page.getByTestId('user-message-bubble')).toHaveCount(2);
     await expect(ticks(page)).toHaveCount(2);
-    await keep(page, `${provider}-request-collapsed.png`, request);
+    await keep(timelineOf(request), `${provider}-request-collapsed.png`, request);
     const requestBody = await expand(request);
     await expect(requestBody.getByTestId('agent-message-text')).toHaveText(REQUEST);
     await expect(fact(requestBody, 'Token')).toHaveText(flow.token);
     await expect(fact(requestBody, 'Waiting')).toHaveText('Yes, for an answer');
     await expect(fact(requestBody, 'User said')).toHaveText(LEAD_ASK);
     await expect(requestBody).not.toContainText('call thread_reply');
-    await keep(page, `${provider}-request-expanded.png`, request);
+    await keep(timelineOf(request), `${provider}-request-expanded.png`, request);
 
     // The sender opens from the header.
     await request.getByTestId('agent-message-sender').click();
@@ -137,7 +138,7 @@ for (const provider of ['claude', 'codex'] as const) {
     await expect(reply.getByTestId('agent-message-kind')).toHaveText('Reply');
     await expect(reply.getByTestId('agent-message-sender')).toHaveText(BUSY);
     await expect(reply.getByTestId('agent-message-first-line')).toHaveText(REPLY);
-    await keep(page, `${provider}-replies-collapsed.png`, reply);
+    await keep(timelineOf(reply), `${provider}-replies-collapsed.png`, reply);
     const replyBody = await expand(reply);
     await expect(replyBody.getByTestId('agent-message-text')).toHaveText(REPLY);
     await expect(fact(replyBody, 'Token')).toHaveText(flow.token);
@@ -145,8 +146,8 @@ for (const provider of ['claude', 'codex'] as const) {
     const finishedBody = await expand(finished);
     await expect(finishedBody.getByTestId('agent-message-text')).toHaveText(AUDIT_ANSWER);
     await expect(finishedBody).not.toContainText('without calling thread_reply');
-    await keep(page, `${provider}-finished-expanded.png`, finished);
-    await keep(page, `${provider}-reply-expanded.png`, reply);
+    await keep(timelineOf(finished), `${provider}-finished-expanded.png`, finished);
+    await keep(timelineOf(reply), `${provider}-reply-expanded.png`, reply);
     await reply.getByTestId('agent-message-sender').click();
     await expect(page.getByTestId('chat-header-title').filter({ hasText: BUSY })).toBeVisible();
 
@@ -161,11 +162,11 @@ for (const provider of ['claude', 'codex'] as const) {
     await expect(spawn.getByTestId('agent-message-sender')).toHaveText(LEAD);
     await expect(spawn.getByTestId('agent-message-first-line')).toHaveText(SPAWN_PROMPT);
     await expect(page.getByTestId('user-message-bubble')).toHaveCount(0);
-    await keep(page, `${provider}-spawn-collapsed.png`, spawn);
+    await keep(timelineOf(spawn), `${provider}-spawn-collapsed.png`, spawn);
     const spawnBody = await expand(spawn);
     await expect(spawnBody.getByTestId('agent-message-text')).toHaveText(SPAWN_PROMPT);
     await expect(fact(spawnBody, 'User said')).toHaveText(LEAD_ASK);
-    await keep(page, `${provider}-spawn-expanded.png`, spawn);
+    await keep(timelineOf(spawn), `${provider}-spawn-expanded.png`, spawn);
     // Keyboard parity with a tool row: Enter on the focused header folds it.
     await spawn.getByTestId('agent-message-toggle').focus();
     await page.keyboard.press('Enter');
@@ -196,7 +197,7 @@ for (const provider of ['claude', 'codex'] as const) {
     const rail = page.getByTestId('message-nav-rail');
     await expect(ticks(page)).toHaveCount(2);
     await rail.hover();
-    await keep(page, `${provider}-inbox-collapsed.png`);
+    await keep(timelineOf(agentRow(page, 'question')), `${provider}-inbox-collapsed.png`);
     const scroller = page.getByTestId('message-timeline-scroll');
     // A tick is clicked through the strip at the tick's height.
     const clickTick = async (index: number) => {
@@ -220,7 +221,7 @@ for (const provider of ['claude', 'codex'] as const) {
     const erroredBody = await expand(errored);
     await expect(fact(erroredBody, 'Role')).toHaveText('Standing agent');
     await expect(erroredBody.getByTestId('agent-message-text')).toContainText('stack');
-    await keep(page, `${provider}-inbox-expanded.png`, question);
+    await keep(timelineOf(question), `${provider}-inbox-expanded.png`, question);
 
     // A row joined from two threads' requests names each message's sender.
     const joined = agentRow(page, 'request');
@@ -228,7 +229,7 @@ for (const provider of ['claude', 'codex'] as const) {
     await expect(joinedBody.getByTestId('agent-message-part-source-sender')).toHaveText(JOINED_SENDERS);
     await expect(joinedBody.getByTestId('agent-message-text')).toHaveText(['Ship it.', 'Do the task.']);
     await expect(fact(joinedBody.getByTestId('agent-message-part').nth(1), 'Role')).toHaveText('Keeps the "plan" honest.');
-    await keep(page, `${provider}-joined-senders-expanded.png`, joined);
+    await keep(timelineOf(joined), `${provider}-joined-senders-expanded.png`, joined);
   });
 }
 
@@ -281,7 +282,7 @@ test('claude: a waiting request is not listed as the person\'s queued message', 
   await expect(preview.filter({ hasText: OWN_QUEUED })).toHaveCount(1);
   await expect(preview.filter({ hasText: QUEUED_REQUEST })).toHaveCount(0);
   await expect(agentRow(page, 'request').getByTestId('agent-message-first-line')).toHaveText(QUEUED_REQUEST);
-  await keep(page, 'claude-queue-preview.png', page.getByTestId('send-queue-preview'));
+  await keep(timelineOf(agentRow(page, 'request')), 'claude-queue-preview.png', page.getByTestId('send-queue-preview'));
   await queued.release();
   await expect(preview).toHaveCount(0, { timeout: 30_000 });
   await expect(agentRow(page, 'request')).toHaveCount(1);
@@ -307,7 +308,7 @@ test('claude: a remote job\'s completion is the app\'s report, not the person\'s
     await expect(job.getByTestId('agent-message-kind')).toHaveText('Job');
     await expect(job.getByTestId('agent-message-sender')).toHaveText('nightly build on Build box');
     await expect(job.getByTestId('agent-message-first-line')).toHaveText('succeeded; exit code: 0');
-    await keep(page, 'claude-remote-completion-queue-preview.png', page.getByTestId('send-queue-preview'));
+    await keep(timelineOf(agentRow(page, 'job')), 'claude-remote-completion-queue-preview.png', page.getByTestId('send-queue-preview'));
     await queued.release();
     await expect(preview).toHaveCount(0, { timeout: 30_000 });
 
@@ -329,7 +330,7 @@ test('claude: a remote job\'s completion is the app\'s report, not the person\'s
         if (text.includes('Workspace: /')) node.textContent = text.replace(/Workspace: \S+/g, 'Workspace: <remote workspace>');
       }
     });
-    await keep(page, 'claude-remote-completion-row.png', job);
+    await keep(timelineOf(job), 'claude-remote-completion-row.png', job);
   } finally {
     await Promise.allSettled([harness.close(), remote.close()]);
   }
@@ -350,7 +351,7 @@ test("claude: a digest opens a thread it answers for on a paired computer", asyn
     const remoteThread = body.getByTestId('agent-message-thread-source-sender').nth(1);
     await expect(remoteThread).toHaveText(`${REMOTE_LEXER} on Build box`);
     await expect(remoteThread).toHaveJSProperty('tagName', 'BUTTON');
-    await keep(page, 'claude-remote-digest-member.png', digest);
+    await keep(timelineOf(digest), 'claude-remote-digest-member.png', digest);
     await remoteThread.click();
     await expect(page.getByTestId('chat-header-title').filter({ hasText: REMOTE_LEXER })).toBeVisible();
   } finally {

@@ -28,7 +28,8 @@ import {
   doneFlowYaml,
   otherProvider,
 } from './workflows-agent-tools-helpers.js';
-import { expectRowTextWhole, shootRow } from './ao-tool-rows-helpers.js';
+import { expectRowTextWhole, pressToggle, shootRow } from './ao-tool-rows-helpers.js';
+import { timelineOf } from './timeline-follow-helpers.js';
 
 export const MORE_LEAD_TITLE = 'Lead thread';
 export const MORE_TARGET_TITLE = 'Parser work';
@@ -265,10 +266,10 @@ export async function readRow(page: Page, tool: string, shot: (name: string) => 
     const clip = el.closest<HTMLElement>('[data-testid="activity-run-clip"]');
     return el.getBoundingClientRect().top + (clip?.scrollTop ?? 0);
   });
-  const timelineTop = () => page.getByTestId('message-timeline-scroll').evaluate((el) => Math.round(el.scrollTop));
+  const timelineTop = () => timelineOf(row).evaluate((el) => Math.round(el.scrollTop));
   const placedBefore = await placed();
   const timelineBefore = await timelineTop();
-  await row.getByTestId('tool-call-card-toggle').click();
+  await pressToggle(row);
   await expect(row.getByTestId('tool-call-card-toggle')).toHaveAttribute('aria-expanded', 'true');
   const body = row.getByTestId('tool-call-card-body');
   await expect(body).toBeVisible();
