@@ -207,7 +207,8 @@ export async function writeThreadRequests(harness: HarnessApp, version: string, 
  * record their figures (run_open 0, run_tool_calls and the rest), the other
  * keeps an hourly loop armed, so its run stays open (run_open 1). The
  * spawning computer is a backend of the top-up's own, closed once the
- * receipts are written; its pairing stays in the store. The person here
+ * receipts are written and its pairing has renewed its session (the spent
+ * refresh secret); its pairing stays in the store. The person here
  * then nudges both rested workers, and each nudge's run is kept for the
  * spawn's link (thread_receipt_nudges) until that computer takes it, which
  * it never does once closed: one ends at rest with its figures (run_open
@@ -278,6 +279,13 @@ export async function writePeerSpawns(harness: HarnessApp, version: string, nonc
       message: "top-up: the paired spawns' receipts never recorded two ended runs and one open run",
       timeout: TURN_TIMEOUT_MS,
     }).toEqual([{ run_open: 0, figures: 1 }, { run_open: 1, figures: 0 }, { run_open: 0, figures: 1 }]);
+    // The paired computer's first renewal activates its pairing and spends
+    // the refresh secret its redemption was issued. It probes for that on
+    // an interval and closing it ends the probe, so the renewal is awaited.
+    await expect.poll(() => renewals(harness), {
+      message: 'top-up: the paired computer never renewed the session its pairing opened',
+      timeout: TURN_TIMEOUT_MS,
+    }).toBeGreaterThan(0);
   } finally {
     await peer.close();
   }
@@ -306,6 +314,18 @@ function receiptRuns(harness: HarnessApp, workers: string[]): Array<{ run_open: 
         FROM thread_request_receipts WHERE target_thread_id = ? AND kind = 'spawn'`).get(worker) as { run_open: number | null; figures: number } | undefined;
       return row ? { run_open: row.run_open, figures: row.figures } : { run_open: null, figures: 0 };
     });
+  } finally {
+    database.close();
+  }
+}
+
+/** How many refresh secrets a renewal spent here: the spent secret names its successor and the device key that spent it. */
+function renewals(harness: HarnessApp): number {
+  const database = new DatabaseSync(path.join(harness.bootstrap.dataDir, 'agent-overflow.db'), { readOnly: true });
+  try {
+    const row = database.prepare(`SELECT count(*) AS n FROM refresh_secrets
+      WHERE consumed_at IS NOT NULL AND consumed_by IS NOT NULL AND next_secret_hash IS NOT NULL`).get() as { n: number };
+    return row.n;
   } finally {
     database.close();
   }
