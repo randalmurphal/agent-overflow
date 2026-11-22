@@ -206,6 +206,34 @@ func TestARePairingStartsWithoutTheNickname(t *testing.T) {
 	}
 }
 
+// An introduction that upgrades a person's pairing to an own-device one
+// keeps the name the person gave the computer, as it keeps the agent
+// opt-in: it is not a new grant.
+func TestAnIntroductionKeepsTheNicknameAndTheAgentOptIn(t *testing.T) {
+	t.Parallel()
+	p := newIntroducedPeer(t, nil)
+	m, dir := newManager(t)
+	if got := within(t, "the person's pairing", 5*time.Second, p.pair(m)); !got.added || got.err != nil {
+		t.Fatalf("person's pairing = added %t, %v", got.added, got.err)
+	}
+	if err := m.Rename(p.backendID, "GPU computer"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetAgentAccess(p.backendID, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := within(t, "the introduction", 5*time.Second, p.introduce(context.Background(), m)); !got.added || got.err != nil {
+		t.Fatalf("introduction = added %t, %v", got.added, got.err)
+	}
+	saved, err := deviceclient.LoadSession(dir, p.backendID)
+	if err != nil || !saved.OwnDevice || saved.Nickname != "GPU computer" {
+		t.Fatalf("after the introduction = %+v, %v; want the own-device pairing named as before", saved, err)
+	}
+	if access, err := m.AgentAccess(); err != nil || !access[p.backendID] {
+		t.Fatalf("agent access after the introduction = %v, %v; want it kept", access, err)
+	}
+}
+
 // A rename waiting on an enrollment ends when that enrollment is forgotten
 // and when shutdown begins.
 func TestARenameWaitingOnAnEnrollmentEnds(t *testing.T) {

@@ -50,7 +50,9 @@ var lockedContextCalls = map[string]string{
 // one, or into an interface method's implementations: it checks only an
 // interface method's own signature.
 //
-// The calls in sessionFileDecisions run code of this package under the
+// A transition passed to Manager.transact runs under the profile lock that
+// transact takes, so its function literal is walked as a held region. The
+// calls in sessionFileDecisions run code of this package under the
 // computer's session file lock, deviceclient's fence across processes, which
 // this walk cannot enter. Each must be made inside a profile-locked region,
 // so the code it is handed is checked here like the rest of that region.
@@ -69,8 +71,12 @@ func TestNothingUnderAProfileLockWaitsOnAContext(t *testing.T) {
 // this package under a session file's OS lock.
 var sessionFileDecisions = []string{
 	"(*agent-overflow/internal/deviceclient.Redemption).Save",
-	"agent-overflow/internal/deviceclient.ForgetSessionIf",
+	"agent-overflow/internal/deviceclient.WithSession",
 }
+
+// transactName is the function whose function-literal argument is a held
+// region (computer_state.go).
+const transactName = "(*agent-overflow/internal/attachedbackends.Manager).transact"
 
 type lockedListedPackage struct {
 	ImportPath string
@@ -175,6 +181,28 @@ func profileLockViolations(pkg *types.Package, fset *token.FileSet, files []*ast
 		// A rename of the lock's type or methods would otherwise pass
 		// this test with nothing checked.
 		c.found = append(c.found, "no profile lock acquisitions found in "+pkg.Path())
+	}
+	transitions := 0
+	for _, file := range files {
+		ast.Inspect(file, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			if fn := c.callee(call); fn == nil || fn.Origin().FullName() != transactName {
+				return true
+			}
+			for _, arg := range call.Args {
+				if lit, ok := arg.(*ast.FuncLit); ok {
+					transitions++
+					c.walk(lit.Body, c.position(call.Pos()))
+				}
+			}
+			return true
+		})
+	}
+	if transitions == 0 {
+		c.found = append(c.found, "no transitions passed to "+transactName)
 	}
 	decisions := 0
 	for _, file := range files {

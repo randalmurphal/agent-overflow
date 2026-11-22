@@ -176,18 +176,21 @@ func (m *Manager) carrier(ctx context.Context, id string) (*carrier, error) {
 	}
 	defer unlock()
 	m.mu.Lock()
-	if m.closed {
-		m.mu.Unlock()
+	closed, held := m.closed, m.carriers[id]
+	m.mu.Unlock()
+	if closed {
 		return nil, ErrClosed
 	}
-	held := m.carriers[id]
+	// The client is asked outside the manager mutex, which is a leaf
+	// (computer_state.go). Every writer of id's cache entry holds the
+	// profile lock held here, except Close, which empties the cache.
 	if held != nil && !held.client.Retired() {
-		m.mu.Unlock()
 		return held, nil
 	}
-	delete(m.carriers, id)
-	m.mu.Unlock()
 	if held != nil {
+		m.mu.Lock()
+		delete(m.carriers, id)
+		m.mu.Unlock()
 		held.leave(errPairingReplaced)
 	}
 	session, err := deviceclient.LoadSession(m.dir, id)
@@ -276,30 +279,6 @@ func (m *Manager) Close() {
 	for _, c := range held {
 		c.client.WaitRenewal()
 	}
-}
-
-// endSession is the verdict path: the far side stopped honouring one
-// pairing for good. deviceclient has already dropped the refused session
-// file and retired the owner; what is left is this process's cache and the
-// people watching it. The carrier leaves so nothing keeps answering for a
-// session that is gone, its agent opt-in goes the way a removal takes it,
-// and the observer retires the row. A carrier a newer pairing has already
-// replaced is not the cached one, and nothing here touches it. The verdict
-// is kept, with the name the pairing gave the computer, for TakeVerdict.
-func (m *Manager) endSession(id string, held *carrier) {
-	m.mu.Lock()
-	current := m.carriers[id] == held
-	if current {
-		delete(m.carriers, id)
-		m.verdicts[id] = strings.Join(strings.Fields(displayName(held.client.Session())), " ")
-	}
-	m.mu.Unlock()
-	if !current {
-		return
-	}
-	held.leave(errPairingEnded)
-	_ = m.writeAgentAccess(id, false)
-	m.notifyChanged(SetChange{Action: SetRemoved, ID: id, Reason: RemovedByComputer})
 }
 
 // TakeVerdict reports whether the last pairing this installation held with
@@ -496,65 +475,6 @@ func (m *Manager) Await(ctx context.Context, id string) error {
 	return nil
 }
 
-// Remove forgets one machine, whichever pairing with it is stored, also one
-// another manager over the same profile directory saved. The device key
-// survives: it names this DEVICE, and the far side adopts its row by
-// thumbprint if this installation ever pairs with it again.
-//
-// A pairing or introduction with the computer still in flight is cancelled
-// first, without waiting for it: whatever its redemption answers is not
-// saved (enrollment). Forgetting is the decision, so it stays cancelled
-// even if the removal below fails. The exclusion is written before the
-// session is deleted, so another manager's save, which reads the exclusion
-// and writes under the session file's lock, either lands before the delete
-// or refuses.
-func (m *Manager) Remove(id string) error {
-	m.cancelEnrollment(id, errPairingForgotten)
-	unlock := m.profiles.Lock(id)
-	defer unlock()
-	if err := m.excludeOwnDevice(id, true); err != nil {
-		return err
-	}
-	if _, err := m.forgetLocked(id, func() (bool, error) { return true, deviceclient.ForgetSession(m.dir, id) }); err != nil {
-		// The pairing stays, so neither does its exclusion.
-		return errors.Join(err, m.excludeOwnDevice(id, false))
-	}
-	m.notifyChanged(SetChange{Action: SetRemoved, ID: id})
-	return nil
-}
-
-// forgetLocked drops one profile with drop, which reports whether it
-// removed the stored session; the caller holds its profile lock. The live
-// owner, when there is one, leaves the cache and retires first, so a
-// renewal already in flight cannot write the credential back, and the
-// caller's profile lock keeps a second owner from being built from the
-// file in the meantime. A removal that failed or did not happen leaves the
-// old owner retired all the same, so the lookup that rebuilds a carrier
-// never has two, and gives back the agent opt-in it took, since the pairing
-// stays.
-func (m *Manager) forgetLocked(id string, drop func() (bool, error)) (bool, error) {
-	access, err := m.AgentAccess()
-	if err != nil {
-		return false, err
-	}
-	if err := m.writeAgentAccess(id, false); err != nil {
-		return false, err
-	}
-	m.mu.Lock()
-	held := m.carriers[id]
-	delete(m.carriers, id)
-	m.mu.Unlock()
-	if held != nil {
-		held.leave(errPairingForgotten)
-		held.client.Retire()
-	}
-	dropped, err := drop()
-	if (err != nil || !dropped) && access[id] {
-		err = errors.Join(err, m.writeAgentAccess(id, true))
-	}
-	return dropped, err
-}
-
 // Rename sets the owner's own label for one machine, or clears it when
 // the nickname is empty.
 //
@@ -563,8 +483,8 @@ func (m *Manager) forgetLocked(id string, drop func() (bool, error)) (bool, erro
 // comes due — and a rename that raced one would either lose the nickname
 // or roll the credential back. A rename during a pairing or introduction
 // with the computer waits for it (awaitEnrollment) and applies to the
-// pairing it leaves, since a re-pairing replaces the stored nickname. That
-// wait ends when shutdown begins.
+// pairing it leaves, since a person's re-pairing clears the stored nickname
+// (commitEnrollment). That wait ends when shutdown begins.
 func (m *Manager) Rename(id, nickname string) error {
 	if _, err := m.awaitEnrollment(m.life, id); err != nil {
 		return err

@@ -11,7 +11,8 @@ func TestReplacingPairingAllowsManagerReadsDuringCarrierRetirement(t *testing.T)
 	for _, retired := range []bool{false, true} {
 		t.Run(map[bool]string{false: "re-pair", true: "retired profile"}[retired], func(t *testing.T) {
 			const id = "remote"
-			m, err := New(t.TempDir(), "Computer", "linux")
+			dir := t.TempDir()
+			m, err := New(dir, "Computer", "linux")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -30,8 +31,10 @@ func TestReplacingPairingAllowsManagerReadsDuringCarrierRetirement(t *testing.T)
 					finished <- err
 				} else {
 					// What a re-pairing's save does to the carrier it replaces.
-					m.retireCarrier(id)
-					finished <- nil
+					finished <- m.transact(id, func(tx *computerTx) error {
+						tx.drop(errPairingReplaced)
+						return nil
+					})
 				}
 			}()
 			<-leaving

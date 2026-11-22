@@ -24,27 +24,91 @@ func redeemed(t *testing.T, dir string) *Redemption {
 	return redemption
 }
 
-// The save decides on the session stored now, and a refusal is its answer
-// with nothing written.
-func TestASaveAdmitsOnTheStoredSessionAndARefusalWritesNothing(t *testing.T) {
+// saveHeld saves a redemption under its session file's lock, as an owner
+// that decided to keep it does.
+func saveHeld(dir string, r *Redemption, nickname string) (*Client, Pairing, error) {
+	var client *Client
+	var pairing Pairing
+	err := WithSession(dir, r.session.BackendID, func(held *HeldSession) (err error) {
+		client, pairing, err = r.Save(held, nickname)
+		return err
+	})
+	return client, pairing, err
+}
+
+// A held session answers what is stored now, follows its own writes, and
+// is unusable once the lock is released.
+func TestAHeldSessionReadsAndWritesUnderItsLock(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	redemption := redeemed(t, dir)
-	stored := Session{BackendID: "backend-a", Endpoint: "https://other.example", SessionID: "other-manager", Credential: "ao1.other"}
+	stored := Session{BackendID: "backend-a", Endpoint: "https://a.example", SessionID: "stored", Credential: "ao1.stored"}
 	if err := SaveSession(dir, stored); err != nil {
 		t.Fatal(err)
 	}
-	refused := errors.New("refused")
-	var seen Session
-	var seenErr error
-	if _, _, err := redemption.Save(func(s Session, err error) error { seen, seenErr = s, err; return refused }); !errors.Is(err, refused) {
-		t.Fatalf("Save after a refusal = %v; want the refusal", err)
+	var kept *HeldSession
+	err := WithSession(dir, "backend-a", func(held *HeldSession) error {
+		kept = held
+		if got, err := held.Stored(); err != nil || got.SessionID != "stored" {
+			t.Fatalf("Stored = %+v, %v; want the stored session", got, err)
+		}
+		other := stored
+		other.BackendID = "backend-b"
+		if err := held.Write(other); err == nil {
+			t.Fatal("wrote another backend's session under this one's file")
+		}
+		if err := held.Remove(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := held.Stored(); !errors.Is(err, ErrNoSession) {
+			t.Fatalf("Stored after Remove = %v; want ErrNoSession", err)
+		}
+		replacement := stored
+		replacement.SessionID = "replacement"
+		if err := held.Write(replacement); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := held.Stored(); err != nil || got.SessionID != "replacement" {
+			t.Fatalf("Stored after Write = %+v, %v; want the replacement", got, err)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if seenErr != nil || seen.SessionID != "other-manager" {
-		t.Fatalf("admit saw %+v, %v; want the stored session", seen, seenErr)
+	if got, err := LoadSession(dir, "backend-a"); err != nil || got.SessionID != "replacement" {
+		t.Fatalf("stored after the hold = %+v, %v; want the replacement", got, err)
 	}
-	if kept, err := LoadSession(dir, "backend-a"); err != nil || kept.SessionID != "other-manager" {
-		t.Fatalf("stored after a refusal = %+v, %v; want it unchanged", kept, err)
+	if err := kept.Write(stored); !errors.Is(err, errSessionReleased) {
+		t.Fatalf("Write after the hold = %v; want errSessionReleased", err)
+	}
+	if err := kept.Remove(); !errors.Is(err, errSessionReleased) {
+		t.Fatalf("Remove after the hold = %v; want errSessionReleased", err)
+	}
+	if _, err := kept.Stored(); !errors.Is(err, errSessionReleased) {
+		t.Fatalf("Stored after the hold = %v; want errSessionReleased", err)
+	}
+	path := filepath.Join(dir, SessionsDirName, "backend-a.json")
+	if err := os.WriteFile(path, []byte(`{"backendId":"backend-a"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ForgetSession(dir, "backend-a"); err != nil {
+		t.Fatalf("ForgetSession over an unreadable file: %v", err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the unreadable file after ForgetSession: %v; want it gone", err)
+	}
+}
+
+// A save names the replacement as its caller says.
+func TestASaveKeepsTheNicknameItIsGiven(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	client, _, err := saveHeld(dir, redeemed(t, dir), "GPU computer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved, err := LoadSession(dir, "backend-a"); err != nil || saved.Nickname != "GPU computer" || client.Session().Nickname != "GPU computer" {
+		t.Fatalf("saved %+v, %v; want the nickname given", saved, err)
 	}
 }
 
@@ -52,39 +116,42 @@ func TestASaveAdmitsOnTheStoredSessionAndARefusalWritesNothing(t *testing.T) {
 // happened to the stored session since.
 func TestASaveIsSingleUse(t *testing.T) {
 	t.Parallel()
-	accept := func(Session, error) error { return nil }
 	t.Run("twice", func(t *testing.T) {
 		t.Parallel()
-		redemption := redeemed(t, t.TempDir())
-		if _, _, err := redemption.Save(accept); err != nil {
+		dir := t.TempDir()
+		redemption := redeemed(t, dir)
+		if _, _, err := saveHeld(dir, redemption, ""); err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := redemption.Save(accept); !errors.Is(err, errRedemptionSpent) {
+		if _, _, err := saveHeld(dir, redemption, ""); !errors.Is(err, errRedemptionSpent) {
 			t.Fatalf("second Save = %v; want errRedemptionSpent", err)
 		}
 	})
 	t.Run("concurrently", func(t *testing.T) {
 		t.Parallel()
-		redemption := redeemed(t, t.TempDir())
-		var writes atomic.Int32
-		admit := func(Session, error) error { writes.Add(1); return nil }
+		dir := t.TempDir()
+		redemption := redeemed(t, dir)
+		var saved atomic.Int32
 		errs := make(chan error, 2)
 		for range 2 {
-			go func() { _, _, err := redemption.Save(admit); errs <- err }()
+			go func() {
+				_, _, err := saveHeld(dir, redemption, "")
+				if err == nil {
+					saved.Add(1)
+				}
+				errs <- err
+			}()
 		}
 		first, second := <-errs, <-errs
-		if (first == nil) == (second == nil) || !errors.Is(errors.Join(first, second), errRedemptionSpent) {
+		if saved.Load() != 1 || !errors.Is(errors.Join(first, second), errRedemptionSpent) {
 			t.Fatalf("concurrent Saves = %v, %v; want one saved and one errRedemptionSpent", first, second)
-		}
-		if n := writes.Load(); n != 1 {
-			t.Fatalf("%d saves reached the stored session; want 1", n)
 		}
 	})
 	t.Run("after a renewal", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
 		redemption := redeemed(t, dir)
-		client, _, err := redemption.Save(accept)
+		client, _, err := saveHeld(dir, redemption, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -95,7 +162,7 @@ func TestASaveIsSingleUse(t *testing.T) {
 		if err != nil || renewed.RefreshSecret == redemption.session.RefreshSecret {
 			t.Fatalf("after Renew: %+v, %v; want a rotated session", renewed, err)
 		}
-		if _, _, err := redemption.Save(accept); !errors.Is(err, errRedemptionSpent) {
+		if _, _, err := saveHeld(dir, redemption, ""); !errors.Is(err, errRedemptionSpent) {
 			t.Fatalf("Save after a renewal = %v; want errRedemptionSpent", err)
 		}
 		if kept, err := LoadSession(dir, "backend-a"); err != nil || kept.RefreshSecret != renewed.RefreshSecret {
@@ -106,7 +173,7 @@ func TestASaveIsSingleUse(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
 		redemption := redeemed(t, dir)
-		client, _, err := redemption.Save(accept)
+		client, _, err := saveHeld(dir, redemption, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -114,48 +181,11 @@ func TestASaveIsSingleUse(t *testing.T) {
 		if err := ForgetSession(dir, "backend-a"); err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := redemption.Save(accept); !errors.Is(err, errRedemptionSpent) {
+		if _, _, err := saveHeld(dir, redemption, ""); !errors.Is(err, errRedemptionSpent) {
 			t.Fatalf("Save after a forget = %v; want errRedemptionSpent", err)
 		}
 		if _, err := LoadSession(dir, "backend-a"); !errors.Is(err, ErrNoSession) {
 			t.Fatalf("stored after the second Save = %v; want nothing", err)
 		}
 	})
-}
-
-// A conditional forget decides on the session stored now, and leaves what
-// it refuses, what is absent and what cannot be read.
-func TestForgetSessionIfDecidesOnTheStoredSession(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	if dropped, err := ForgetSessionIf(dir, "backend-a", func(Session) bool { return true }); dropped || err != nil {
-		t.Fatalf("with nothing stored = %v, %v; want false, nil", dropped, err)
-	}
-	stored := Session{BackendID: "backend-a", Endpoint: "https://a.example", SessionID: "newer", Credential: "ao1.newer"}
-	if err := SaveSession(dir, stored); err != nil {
-		t.Fatal(err)
-	}
-	named := func(id string) func(Session) bool { return func(s Session) bool { return s.SessionID == id } }
-	if dropped, err := ForgetSessionIf(dir, "backend-a", named("older")); dropped || err != nil {
-		t.Fatalf("for another session = %v, %v; want false, nil", dropped, err)
-	}
-	if _, err := LoadSession(dir, "backend-a"); err != nil {
-		t.Fatalf("a refused forget dropped the session: %v", err)
-	}
-	if dropped, err := ForgetSessionIf(dir, "backend-a", named("newer")); !dropped || err != nil {
-		t.Fatalf("for the stored session = %v, %v; want true, nil", dropped, err)
-	}
-	if _, err := LoadSession(dir, "backend-a"); !errors.Is(err, ErrNoSession) {
-		t.Fatalf("after the forget = %v; want nothing stored", err)
-	}
-	path := filepath.Join(dir, SessionsDirName, "backend-a.json")
-	if err := os.WriteFile(path, []byte(`{"backendId":"backend-a"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if dropped, err := ForgetSessionIf(dir, "backend-a", func(Session) bool { return true }); dropped || err == nil {
-		t.Fatalf("over an unreadable file = %v, %v; want false and the read error", dropped, err)
-	}
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("the unreadable file was dropped: %v", err)
-	}
 }

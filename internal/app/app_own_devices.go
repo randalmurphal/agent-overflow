@@ -384,6 +384,7 @@ func (a *App) IntroduceOwnDevice(ctx context.Context, targetBackendID string) (P
 //ao:scope session
 //ao:route home
 //ao:remote
+//ao:callerbound
 func (a *App) AcceptOwnDeviceIntroduction(ctx context.Context, link string) error {
 	_, e := a.ownCaller(ctx)
 	if e != nil {

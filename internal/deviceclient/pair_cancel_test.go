@@ -124,7 +124,7 @@ func TestRedeemSavesNothingUntilSaved(t *testing.T) {
 	if _, err := LoadSession(dir, "backend-a"); !errors.Is(err, ErrNoSession) {
 		t.Fatalf("session before Save = %v; want none stored", err)
 	}
-	client, pairing, err := redeemed.Save(nil)
+	client, pairing, err := saveHeld(dir, redeemed, "")
 	if err != nil {
 		t.Fatal(err)
 	}

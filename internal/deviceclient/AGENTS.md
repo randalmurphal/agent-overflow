@@ -7,14 +7,14 @@ pinned by tests. Credential requests never follow redirects.
 A redemption spends a single-use link. `Redeem` honors its context and
 returns the session unsaved, so its owner decides whether to keep it; `Pair`
 detaches it and saves, for a caller that must not lose the link. Neither is
-sent once the owner's lifetime has ended. `Redemption.Save` is single use and
-runs its owner's admission on the stored session under the session file's
-lock, then writes in the same hold. That lock is the one per-computer fence
-across processes (`decideSession` states its order): every decision about a
-stored session and the write it leads to goes through it, so another process
-cannot write between them. Forgetting drops whatever is stored
-(`ForgetSession`, after the owner retires its client) or only what a check on
-the stored session names (`ForgetSessionIf`).
+sent once the owner's lifetime has ended. The session file's OS lock is the
+one per-computer fence across processes: `WithSession` holds it and hands
+its callback a `HeldSession`, through which the stored session is read,
+written and removed, so another process cannot write between a decision and
+the write it leads to. `WithSession` states the lock order. `Redemption.Save`
+writes through a `HeldSession`, is single use, and takes the nickname its
+caller chooses (a re-pairing starts without one). `ForgetSession` drops
+whatever is stored, after the owner retires its client.
 
 Confirmation waits poll renewal, not socket tickets. Pending confirmation is
 read-only on the server and preserves the saved renewal operation; approval

@@ -145,13 +145,15 @@ func (c *carrier) openRPC(ctx context.Context, capability string) (*rpcclient.Cl
 // The destination independently binds redemption to our key.
 //
 // It reports added once the pairing is saved and published, even when the
-// rotation that follows fails; the error then says why. ctx bounds route
-// selection and the wait for that rotation. The redemption between them is
-// an enrollment (enroll), which Forget and the start of shutdown cancel and
-// ctx does not. While another enrollment with the computer is in flight it
-// waits for that one to end, within ctx and until shutdown begins, then
-// decides on what that one left: not added, with no error, once an
-// own-device pairing is stored or the computer was forgotten.
+// rotation that follows fails; the error then says why. ctx is the caller's
+// (App.AcceptOwnDeviceIntroduction is caller-bound). It bounds route
+// selection, the wait for another enrollment with the computer, the
+// redemption and the wait for that rotation; once the save has begun its
+// end changes nothing but this caller's answer. The redemption is an
+// enrollment (enroll), which Forget and the start of shutdown also cancel.
+// While another enrollment with the computer is in flight it waits for that
+// one to end, then decides on what that one left: not added, with no error,
+// once an own-device pairing is stored or the computer was forgotten.
 func (m *Manager) AcceptOwnDeviceIntroduction(ctx context.Context, raw string, routes []computerroute.Route) (bool, error) {
 	link, err := deviceclient.DecodeLink(raw)
 	if err != nil {

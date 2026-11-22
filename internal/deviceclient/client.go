@@ -173,7 +173,13 @@ func Pair(ctx context.Context, dir string, link Link, label, platform string, op
 	if err != nil {
 		return nil, Pairing{}, err
 	}
-	return redeemed.Save(nil)
+	var client *Client
+	var pairing Pairing
+	err = WithSession(dir, link.BackendID, func(held *HeldSession) (err error) {
+		client, pairing, err = redeemed.Save(held, "")
+		return err
+	})
+	return client, pairing, err
 }
 
 // Redemption is a pairing link this installation has spent, with the
@@ -263,22 +269,22 @@ func Redeem(ctx context.Context, dir string, link Link, label, platform string, 
 	}, nil
 }
 
-// Save stores the redeemed session if admit accepts it, and returns the
-// client that owns it. admit runs on the session stored for the computer
-// now, as LoadSession answers it, under the session file's lock
-// (decideSession), and the write follows in the same hold; an error from
-// admit is Save's answer and nothing is written. A nil admit accepts
-// anything. It waits only for that local file lock.
+// Save writes the redeemed session to the computer's held session file,
+// named nickname, and returns the client that owns it. The caller decides
+// under the same hold whether the computer may be enrolled
+// (HeldSession.Stored), so another process cannot write between that
+// decision and this write.
 //
 // The saved session replaces the stored one whole. A re-pairing starts
-// without the stored nickname, routes and last endpoint: its endpoint and
-// pin come from the link, routes stored under the old pairing were verified
-// against the old pin, and the new client learns the computer's routes again
-// on its first authenticated connection.
+// without the stored routes and last endpoint: its endpoint and pin come
+// from the link, routes stored under the old pairing were verified against
+// the old pin, and the new client learns the computer's routes again on its
+// first authenticated connection. The caller says which nickname, if any,
+// the replacement keeps.
 //
 // Save is single use: every call after the first, concurrent ones included,
 // writes nothing and answers errRedemptionSpent.
-func (r *Redemption) Save(admit func(stored Session, err error) error) (*Client, Pairing, error) {
+func (r *Redemption) Save(held *HeldSession, nickname string) (*Client, Pairing, error) {
 	r.mu.Lock()
 	spent := r.spent
 	r.spent = true
@@ -286,21 +292,15 @@ func (r *Redemption) Save(admit func(stored Session, err error) error) (*Client,
 	if spent {
 		return nil, Pairing{}, errRedemptionSpent
 	}
-	err := decideSession(r.client.dir, r.session.BackendID, func(path string, stored Session, err error) error {
-		if admit != nil {
-			if err := admit(stored, err); err != nil {
-				return err
-			}
-		}
-		return writeSession(path, r.session)
-	})
-	if err != nil {
+	session := r.session
+	session.Nickname = nickname
+	if err := held.Write(session); err != nil {
 		return nil, Pairing{}, err
 	}
-	// Nobody holds the client until Save returns it; the lock is for the
-	// readers that will.
+	// Nobody holds the client until Save returns it, so its mutex is free
+	// under the session file's lock; it is for the readers that will.
 	r.client.mu.Lock()
-	r.client.session = r.session
+	r.client.session = session
 	r.client.installRoutes()
 	r.client.mu.Unlock()
 	return r.client, r.pairing, nil

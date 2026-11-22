@@ -28,9 +28,10 @@ import (
 
 // introducingComputer is another own computer. After an introduction's
 // redemption it either drops every connection (introducingGone) or holds
-// the rotation that acknowledges it until the request ends
-// (introducingHoldsRotation); introducingHoldsRedemption holds the
-// redemption itself instead, until release or the request ends.
+// the rotation that acknowledges it until release or the request ends
+// (introducingHoldsRotation); introducingHoldsRedemption holds the first
+// redemption itself instead, until release or the request ends. After
+// release every rotation is granted.
 type introducingComputer struct {
 	backendID       string
 	invitation      string
@@ -43,7 +44,11 @@ type introducingComputer struct {
 	// held request up.
 	rotationAbandoned atomic.Bool
 	pairAbandoned     atomic.Bool
-	release           func()
+	// redemptions counts the redemptions that reached it, probes its
+	// reachability checks.
+	redemptions atomic.Int32
+	probes      atomic.Int32
+	release     func()
 }
 
 type introducingMode int
@@ -74,8 +79,10 @@ func newIntroducingComputer(t *testing.T, host ownConnectionHost, mode introduci
 		w.Header().Set(deviceclient.RefreshRecoveryHeader, "1")
 		switch r.URL.Path {
 		case "/healthz":
+			c.probes.Add(1)
 			_ = json.NewEncoder(w).Encode(map[string]string{"backendId": c.backendID})
 		case "/auth/pair":
+			c.redemptions.Add(1)
 			// Read to the end so the server notices when the client hangs up.
 			_, _ = io.Copy(io.Discard, r.Body)
 			if c.mode == introducingHoldsRedemption && pairArrived.CompareAndSwap(false, true) {
@@ -95,6 +102,10 @@ func newIntroducingComputer(t *testing.T, host ownConnectionHost, mode introduci
 			})
 		case "/auth/token/recover":
 			// Read to the end so the server notices when the client hangs up.
+			var recovery struct {
+				NextRefreshSecret string `json:"nextRefreshSecret"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&recovery)
 			_, _ = io.Copy(io.Discard, r.Body)
 			if arrived.CompareAndSwap(false, true) {
 				close(c.rotationArrived)
@@ -103,6 +114,13 @@ func newIntroducingComputer(t *testing.T, host ownConnectionHost, mode introduci
 			case <-r.Context().Done():
 				c.rotationAbandoned.Store(true)
 			case <-released:
+				// Once released, the rotation is granted with the secret the
+				// client proposed.
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"sessionId": "session-1", "credential": "ao1.rotated", "expiresAtMs": time.Now().Add(time.Hour).UnixMilli(),
+					"refreshSecret": recovery.NextRefreshSecret, "refreshExpiresAtMs": time.Now().Add(24 * time.Hour).UnixMilli(),
+					"scopes": []string{"threads:read"},
+				})
 			}
 		default:
 			http.NotFound(w, r)
@@ -145,6 +163,14 @@ func newIntroducingComputer(t *testing.T, host ownConnectionHost, mode introduci
 // page or a peer does, so the transport's drain waits for it.
 func callOverTheWire(t *testing.T, host ownConnectionHost, method string, params ...any) <-chan error {
 	t.Helper()
+	called, _ := callOverTheWireUntilCut(t, host, method, params...)
+	return called
+}
+
+// callOverTheWireUntilCut is callOverTheWire whose caller can leave: cut
+// ends the call's context, which closes its connection.
+func callOverTheWireUntilCut(t *testing.T, host ownConnectionHost, method string, params ...any) (called <-chan error, cut context.CancelFunc) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	t.Cleanup(cancel)
 	conn, _, err := websocket.Dial(ctx, fmt.Sprintf("ws://%s/ws?token=launch-credential-under-test", host.srv.Addr()), nil)
@@ -152,9 +178,9 @@ func callOverTheWire(t *testing.T, host ownConnectionHost, method string, params
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = conn.CloseNow() })
-	called := make(chan error, 1)
-	go func() { called <- rpcclient.New(conn).Call(ctx, method, nil, params...) }()
-	return called
+	answer := make(chan error, 1)
+	go func() { answer <- rpcclient.New(conn).Call(ctx, method, nil, params...) }()
+	return answer, cancel
 }
 
 // awaitArrival waits for a held request to reach the other computer.
