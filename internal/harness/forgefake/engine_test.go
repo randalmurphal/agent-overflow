@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1311,6 +1312,35 @@ func TestHTTPOfflineDropsTheConnectionWithoutAReply(t *testing.T) {
 	}
 	if inv := lastInvocation(t, e); inv.Route != "offline" || inv.Via != ViaHTTP {
 		t.Fatalf("invocation = %+v", inv)
+	}
+}
+
+// A request the client gives up while sending its body (a cancelled call)
+// is recorded as aborted. It is not a call the fake fails to implement.
+func TestHTTPRequestTheClientAbortsMidBodyIsRecordedAsAborted(t *testing.T) {
+	t.Parallel()
+	recorded := make(chan Invocation, 1)
+	e, _ := seeded(t, Options{OnInvocation: func(inv Invocation) { recorded <- inv }})
+	srv := testServer(t, e)
+	conn, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", srv.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := "POST /github/graphql HTTP/1.1\r\nHost: github.com\r\nAuthorization: Bearer " + testAPIToken +
+		"\r\nContent-Type: application/json\r\nContent-Length: 4096\r\n\r\n{\"query\":"
+	if _, err := io.WriteString(conn, head); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case inv := <-recorded:
+		if inv.Unhandled || inv.Route != "aborted" || inv.Via != ViaHTTP {
+			t.Fatalf("invocation = %+v, want an aborted http request that is not unhandled", inv)
+		}
+	case <-t.Context().Done():
+		t.Fatal("the aborted request was never recorded")
 	}
 }
 

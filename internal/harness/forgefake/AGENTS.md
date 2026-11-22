@@ -63,7 +63,9 @@ inspection go through the harness wire with no fixture files.
   no schema; the documents are validated where they are defined. An HTTP request with a token
   other than the fixed one is an unhandled 401; one with no token at all
   (the boot's dev-server scan probing its own listeners) is a 401 that is
-  not recorded. Specs assert none occurred
+  not recorded. A request its client closes before the body arrives (a
+  cancelled call) gets no reply and is recorded on route `aborted`, not
+  as unhandled. Specs assert none occurred
   (`e2e/tests/forge-helpers.ts`, `expectEveryForgeCallHandled`).
 - A well-formed call for something the fixture lacks (an unknown PR, a
   missing upload) answers the forge's own not-found error: GitHub GraphQL

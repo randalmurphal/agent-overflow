@@ -74,6 +74,16 @@ func (e *Engine) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		host, _, _ := strings.Cut(rest, "/")
 		inv.Host = strings.ToLower(host)
 	}
+	if readErr != nil && r.Context().Err() != nil {
+		// The client gave the request up before its body arrived, as a
+		// cancelled call does. There is no reply to send and nothing the
+		// fake lacks.
+		inv.Route = "aborted"
+		inv.Detail = "the client closed the request before its body arrived: " + readErr.Error()
+		e.mu.Lock()
+		e.record(inv)
+		panic(http.ErrAbortHandler)
+	}
 	switch {
 	case readErr != nil:
 		reason = "read request body: " + readErr.Error()
