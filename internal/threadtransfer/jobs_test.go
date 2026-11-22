@@ -178,7 +178,7 @@ func TestTransferJobsRecoverParkedIncomingWorkAfterRestart(t *testing.T) {
 	})
 	j := testJobs(t, st, runner, runner, nil)
 	nextJobSignal(t, started)
-	deadline := testutil.WaitDeadline(t)
+	deadline := time.Now().Add(testutil.WaitBudget(t))
 	for {
 		jobs, err := st.NextThreadTransferJobs(1)
 		if err != nil {

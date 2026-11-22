@@ -188,7 +188,7 @@ func testConversationTransfer(t *testing.T, kind string, fork, initiallyUnavaila
 	}
 	cancel() // The phone can now disconnect; jobs use each host's lifetime.
 	if initiallyUnavailable {
-		deadline := testutil.WaitDeadline(t)
+		deadline := time.Now().Add(testutil.WaitBudget(t))
 		for {
 			pending, err := destination.store.GetThreadTransfer(operation)
 			if err != nil {
@@ -383,7 +383,7 @@ func transferTally(t *testing.T, s *store.Store, threadID string) store.ThreadTa
 // keeps the unassisted interval covered.
 func awaitTransferComplete(t *testing.T, outgoing, incoming *App, id string, recovering bool) {
 	t.Helper()
-	deadline := testutil.WaitDeadline(t)
+	deadline := time.Now().Add(testutil.WaitBudget(t))
 	for time.Now().Before(deadline) {
 		out, err := outgoing.store.GetThreadTransfer(id)
 		if err != nil {
@@ -413,7 +413,7 @@ func awaitTransferComplete(t *testing.T, outgoing, incoming *App, id string, rec
 
 func awaitTransferPhase(t *testing.T, a *App, id, phase string, recovering ...bool) store.ThreadTransfer {
 	t.Helper()
-	deadline := testutil.WaitDeadline(t)
+	deadline := time.Now().Add(testutil.WaitBudget(t))
 	for time.Now().Before(deadline) {
 		row, err := a.store.GetThreadTransfer(id)
 		if err != nil {

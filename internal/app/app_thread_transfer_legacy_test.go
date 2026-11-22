@@ -156,7 +156,7 @@ func testTransferredDiscussionInstallsAsChat(t *testing.T, preparedBeforeUpdate 
 // the archive and returns its path on the destination.
 func awaitTransferredArchive(t *testing.T, source *App, directory, operation string) string {
 	t.Helper()
-	deadline := testutil.WaitDeadline(t)
+	deadline := time.Now().Add(testutil.WaitBudget(t))
 	for {
 		archive, _, err := transferfiles.UploadedArchive(directory)
 		if err == nil {
@@ -174,7 +174,7 @@ func awaitTransferredArchive(t *testing.T, source *App, directory, operation str
 // destination, committed and sent its activation proof.
 func awaitTransferActivation(t *testing.T, source *App, directory, operation string) {
 	t.Helper()
-	deadline := testutil.WaitDeadline(t)
+	deadline := time.Now().Add(testutil.WaitBudget(t))
 	for {
 		_, err := os.Stat(filepath.Join(directory, "activation.json"))
 		if err == nil {

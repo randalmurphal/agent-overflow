@@ -15,6 +15,7 @@ import (
 
 	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/threadtools"
 )
 
@@ -225,7 +226,7 @@ func TestARemoteChainPastTheDepthBoundStaysOpenAndIsNotListedPastIt(t *testing.T
 	}
 	await := func(what string, done func() bool) {
 		t.Helper()
-		for deadline := time.Now().Add(peerRowsWait); ; time.Sleep(10 * time.Millisecond) {
+		for deadline := time.Now().Add(testutil.WaitBudget(t)); ; time.Sleep(10 * time.Millisecond) {
 			listing = read()
 			if done() {
 				return

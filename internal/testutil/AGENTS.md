@@ -38,6 +38,11 @@ packages. Test-specific setup stays beside the test that owns it.
   temporary directory for one itself. Standard library only.
 - `deadline.go` is a context whose deadline the test ends at a chosen
   moment, for code that acts on a deadline without racing a real clock.
+- `waitbudget.go` is the one budget for a test's wait on work the code under
+  test does not bound itself: two minutes, cut short to end 10 s before go
+  test's timeout. The transfer and paired-computer waits and the test
+  pairing exchange use it; a new wait of that kind uses it in place of a
+  duration of its own.
 - `git.go` creates local repositories and local bare origins. No helper here
   reaches a network, and its git commands do not read the user's global
   config: a fixture that commits sets its own identity.
