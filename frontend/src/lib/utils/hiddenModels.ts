@@ -38,24 +38,23 @@ export function hiddenModelSlugs(
 }
 
 /**
- * Whether pickers offer a catalog row: the provider lists it, or it is an
- * `unlisted` row a thread ran this week (`recentlyUsed`, the picker's own
- * retention policy).
+ * Whether pickers offer a catalog row: it is not `unlisted`, which the
+ * backend sets on a row the provider does not list and no thread ran this
+ * week.
  */
-export function pickerOffers(model: { unlisted?: boolean; recentlyUsed?: boolean }): boolean {
-  return !model.unlisted || model.recentlyUsed === true;
+export function pickerOffers(model: { unlisted?: boolean }): boolean {
+  return !model.unlisted;
 }
 
 /** The catalog rows pickers offer (pickerOffers). */
-export function offeredModels<T extends { unlisted?: boolean; recentlyUsed?: boolean }>(models: readonly T[]): T[] {
+export function offeredModels<T extends { unlisted?: boolean }>(models: readonly T[]): T[] {
   return models.filter(pickerOffers);
 }
 
 /**
- * The models a picker for `provider` offers: the catalog minus rows the
- * provider no longer lists and no thread ran this week (pickerOffers; such
- * rows stay in the catalog only so threads already on them resolve
- * capabilities) and minus the hidden slugs, except
+ * The models a picker for `provider` offers: the catalog minus `unlisted`
+ * rows (pickerOffers; such rows stay in the catalog only so threads already
+ * on them resolve capabilities) and minus the hidden slugs, except
  * `keepSlug` (a thread already riding such a model keeps its checkmark row,
  * so the picker never shows "nothing selected").
  *
@@ -67,7 +66,7 @@ export function offeredModels<T extends { unlisted?: boolean; recentlyUsed?: boo
  * Shared by the model submenu and the composer's `/model <arg>` resolver so
  * the two cannot disagree about which models exist.
  */
-export function pickerVisibleModels<T extends { slug: string; unlisted?: boolean; recentlyUsed?: boolean }>(
+export function pickerVisibleModels<T extends { slug: string; unlisted?: boolean }>(
   settings: Settings,
   provider: string,
   models: readonly T[],

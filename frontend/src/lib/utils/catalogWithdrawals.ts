@@ -1,5 +1,4 @@
 import type { ModelInfo } from '../types/settings';
-import { pickerOffers } from './hiddenModels';
 
 interface Selection {
   provider?: string;
@@ -18,8 +17,11 @@ interface Selection {
  */
 export function catalogWithdrawals(selection: Selection, models: ModelInfo[]): string[] {
   const slug = selection.provider === 'claude' ? selection.model.replace(/\[1m\]$/, '') : selection.model;
-  // A row pickers do not offer is kept only for capability lookup.
-  const model = models.find((candidate) => candidate.slug === slug && pickerOffers(candidate));
+  // A row the provider does not list is kept for capability lookup and,
+  // when a thread ran it this week, for pickers; the provider has still
+  // withdrawn it. A row pickers hide is one the provider does not list,
+  // which is all a computer that predates providerUnlisted states.
+  const model = models.find((candidate) => candidate.slug === slug && !candidate.providerUnlisted && !candidate.unlisted);
   if (!model) return [selection.model];
   const withdrawn: string[] = [];
   if (selection.reasoningEffort && (selection.provider === 'codex' || model.reasoningEfforts?.length) && !model.reasoningEfforts?.some((effort) => effort.slug === selection.reasoningEffort)) {

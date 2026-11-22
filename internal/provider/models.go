@@ -70,17 +70,18 @@ type ModelInfo struct {
 	Name     string `json:"name"`
 	Provider string `json:"provider"`
 	IsCustom bool   `json:"isCustom,omitempty"`
-	// Unlisted marks a catalog row the provider did not offer in its latest
-	// model list: the provider's evidence, and the only fact a model family
-	// resolves by. The row still resolves capabilities for threads already
-	// on the model; pickers leave it out unless RecentlyUsed. A catalog no
-	// provider answer backs marks nothing.
+	// Unlisted marks a row the model picker leaves out: one the provider
+	// does not list (ProviderUnlisted) and no thread ran within the last
+	// week. It is the picker's visibility, the meaning every released
+	// frontend filters on, and only the picker's answer
+	// (GetModelsForProvider) sets it; Go code reads ProviderUnlisted.
 	Unlisted bool `json:"unlisted,omitempty"`
-	// RecentlyUsed marks an Unlisted row the model picker still shows
-	// because a thread ran the model within the last week. It is the
-	// picker's retention policy, set only on the picker's answer
-	// (GetModelsForProvider), never evidence the provider offers the model.
-	RecentlyUsed bool `json:"recentlyUsed,omitempty"`
+	// ProviderUnlisted marks a catalog row the provider did not offer in
+	// its latest model list: the provider's evidence, and the only fact a
+	// model family, a provider's default and a withdrawal warning read. The
+	// row still resolves capabilities for threads already on the model. A
+	// catalog no provider answer backs marks nothing.
+	ProviderUnlisted bool `json:"providerUnlisted,omitempty"`
 	// IsDefault marks the model the provider names as its own default.
 	IsDefault    bool          `json:"isDefault,omitempty"`
 	Capabilities []string      `json:"capabilities,omitempty"`

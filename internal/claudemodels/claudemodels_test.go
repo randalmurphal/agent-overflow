@@ -1169,7 +1169,7 @@ func TestCatalogReportsWhatBacksEachAnswer(t *testing.T) {
 
 // The served list follows the CLI's latest answer: listed models in the CLI's
 // order with its default marked, every other catalog row kept after them as
-// Unlisted so threads already on it still resolve capabilities.
+// ProviderUnlisted so threads already on it still resolve capabilities.
 func TestModelsForMarksWhatTheLatestAnswerLists(t *testing.T) {
 	catalog := NewCatalogWith([]provider.ModelInfo{
 		{Slug: "claude-opus-5", Name: "Opus 5", Provider: "claude"},
@@ -1192,8 +1192,8 @@ func TestModelsForMarksWhatTheLatestAnswerLists(t *testing.T) {
 		t.Fatalf("order = %v, want %v", slugs(models), want)
 	}
 	for _, m := range models {
-		if m.Unlisted != (m.Slug == "claude-opus-4-5") {
-			t.Errorf("%s Unlisted = %v", m.Slug, m.Unlisted)
+		if m.ProviderUnlisted != (m.Slug == "claude-opus-4-5") {
+			t.Errorf("%s ProviderUnlisted = %v", m.Slug, m.ProviderUnlisted)
 		}
 		if m.IsDefault != (m.Slug == "claude-opus-5-5") {
 			t.Errorf("%s IsDefault = %v", m.Slug, m.IsDefault)
@@ -1203,10 +1203,10 @@ func TestModelsForMarksWhatTheLatestAnswerLists(t *testing.T) {
 	// A later answer that drops opus-5 unlists it; nothing remembers it.
 	catalog.Store(testKey("a"), []claude.WireModel{{Value: "opus", ResolvedModel: "claude-opus-5-5"}}, nil)
 	models, _ = catalog.ModelsFor(testKey("a"), string(provider.Claude))
-	if m, _ := findModel(models, "claude-opus-5"); !m.Unlisted {
+	if m, _ := findModel(models, "claude-opus-5"); !m.ProviderUnlisted {
 		t.Error("a model the latest answer dropped stayed listed")
 	}
-	if m, ok := findModel(models, "claude-opus-5-5"); !ok || m.Unlisted || m.IsDefault {
+	if m, ok := findModel(models, "claude-opus-5-5"); !ok || m.ProviderUnlisted || m.IsDefault {
 		t.Errorf("opus-5-5 = %+v, %v; want listed, not default (no default row)", m, ok)
 	}
 }
@@ -1224,8 +1224,8 @@ func TestModelsForTreatsAnAnswerWithoutModelsAsUnprobed(t *testing.T) {
 		t.Fatalf("models = %v, want the shipped catalog", slugs(models))
 	}
 	for _, m := range models {
-		if m.Unlisted || m.IsDefault {
-			t.Fatalf("%s marked (Unlisted=%v IsDefault=%v) with no answer", m.Slug, m.Unlisted, m.IsDefault)
+		if m.ProviderUnlisted || m.IsDefault {
+			t.Fatalf("%s marked (ProviderUnlisted=%v IsDefault=%v) with no answer", m.Slug, m.ProviderUnlisted, m.IsDefault)
 		}
 	}
 }
@@ -1240,7 +1240,7 @@ func TestHaiku55TakesItsContextWindowsFromTheShippedEntry(t *testing.T) {
 	}}, nil)
 	models, _ := catalog.ModelsFor(testKey("a"), string(provider.Claude))
 	haiku, ok := findModel(models, "claude-haiku-5-5")
-	if !ok || haiku.Unlisted {
+	if !ok || haiku.ProviderUnlisted {
 		t.Fatalf("haiku 5.5 = %+v, %v; want listed", haiku, ok)
 	}
 	var tokens []int

@@ -898,7 +898,7 @@ const (
 func (b Backing) Enriched() bool { return b != BackedByShipped }
 
 // markListed orders models as the CLI listed them and marks the rest
-// Unlisted, keeping them after the listed ones for capability lookup. The
+// ProviderUnlisted, keeping them after the listed ones for capability lookup. The
 // model the CLI's `default` row resolves to is marked IsDefault. With no wire
 // rows (no probe yet, or a CLI too old to report models) nothing is marked.
 func markListed(models []provider.ModelInfo, wire []claude.WireModel) []provider.ModelInfo {
@@ -916,7 +916,7 @@ func markListed(models []provider.ModelInfo, wire []claude.WireModel) []provider
 	defaultSlug := claude.ModelAliases(wire)["default"]
 	for i := range models {
 		_, listed := rank[models[i].Slug]
-		models[i].Unlisted = !listed
+		models[i].ProviderUnlisted = !listed
 		models[i].IsDefault = listed && models[i].Slug == defaultSlug
 	}
 	slices.SortStableFunc(models, func(a, b provider.ModelInfo) int {

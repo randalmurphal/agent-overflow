@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"log"
 	"os"
 	"path/filepath"
@@ -34,6 +35,10 @@ func seedClaudeWire(t *testing.T, app *App, wire []claude.WireModel) {
 
 // A model the CLI's latest answer omits leaves the picker unless a thread ran
 // it recently; either way it still resolves capabilities for threads on it.
+// The picker's answer tells the two facts apart: unlisted is the picker's
+// visibility, the meaning every released frontend filters on, so a model
+// kept by recent use is not unlisted; providerUnlisted is the provider's
+// own evidence, which a withdrawal warning reads.
 func TestGetModelsForProviderKeepsRecentlyUsedModelsListed(t *testing.T) {
 	app := newTestAppWithStore(t)
 	seedClaudeWire(t, app, []claude.WireModel{
@@ -52,16 +57,33 @@ func TestGetModelsForProviderKeepsRecentlyUsedModelsListed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetModelsForProvider: %v", err)
 	}
-	type row struct{ unlisted, recentlyUsed bool }
+	// The answer as JSON, the only form a frontend sees.
+	encoded, err := json.Marshal(catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire struct {
+		Models []map[string]any `json:"models"`
+	}
+	if err := json.Unmarshal(encoded, &wire); err != nil {
+		t.Fatal(err)
+	}
+	type row struct{ unlisted, providerUnlisted bool }
 	rows := map[string]row{}
-	for _, m := range catalog.Models {
-		rows[m.Slug] = row{m.Unlisted, m.RecentlyUsed}
+	for _, m := range wire.Models {
+		slug, _ := m["slug"].(string)
+		unlisted, _ := m["unlisted"].(bool)
+		providerUnlisted, _ := m["providerUnlisted"].(bool)
+		rows[slug] = row{unlisted, providerUnlisted}
+		if _, present := m["recentlyUsed"]; present {
+			t.Errorf("%s carries recentlyUsed, which no frontend reads", slug)
+		}
 	}
 	for slug, want := range map[string]row{
 		"claude-opus-5":   {false, false}, // listed by the CLI
-		"claude-opus-4-7": {true, true},   // omitted, but ran within the window
-		"claude-opus-4-6": {true, false},  // omitted, last ran before the window
-		"claude-opus-4-8": {true, false},  // omitted, never ran
+		"claude-opus-4-7": {false, true},  // omitted, but ran within the window
+		"claude-opus-4-6": {true, true},   // omitted, last ran before the window
+		"claude-opus-4-8": {true, true},   // omitted, never ran
 	} {
 		got, ok := rows[slug]
 		if !ok {
@@ -69,7 +91,7 @@ func TestGetModelsForProviderKeepsRecentlyUsedModelsListed(t *testing.T) {
 			continue
 		}
 		if got != want {
-			t.Errorf("%s (Unlisted, RecentlyUsed) = %+v, want %+v", slug, got, want)
+			t.Errorf("%s (unlisted, providerUnlisted) = %+v, want %+v", slug, got, want)
 		}
 	}
 	if _, found := app.modelInfoWithoutLiveCodex(string(provider.Claude), "claude-opus-4-6"); !found {
@@ -101,7 +123,7 @@ func TestAFamilyNeverRunsAModelOnlyThePickerKeeps(t *testing.T) {
 		t.Fatal(err)
 	}
 	if index := slices.IndexFunc(picker.Models, func(m provider.ModelInfo) bool { return m.Slug == "claude-haiku-5-5" }); index < 0 ||
-		!picker.Models[index].Unlisted || !picker.Models[index].RecentlyUsed {
+		picker.Models[index].Unlisted || !picker.Models[index].ProviderUnlisted {
 		t.Errorf("picker rows %+v, want claude-haiku-5-5 unlisted by the provider and kept for recent use", picker.Models)
 	}
 
@@ -192,7 +214,7 @@ func TestGetModelsForProviderBeforeAnyAnswerListsTheShippedCatalog(t *testing.T)
 		t.Fatalf("provenance = %q, want shipped", catalog.Provenance)
 	}
 	for _, m := range catalog.Models {
-		if m.Unlisted {
+		if m.Unlisted || m.ProviderUnlisted {
 			t.Fatalf("%s unlisted with no CLI answer", m.Slug)
 		}
 	}

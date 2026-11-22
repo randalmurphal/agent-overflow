@@ -167,7 +167,7 @@ func (a *App) textGenerationDefaultModel(ctx context.Context, providerName strin
 	}
 	var listed, kept []string
 	for _, model := range catalog.Models {
-		if model.Unlisted {
+		if model.ProviderUnlisted {
 			kept = append(kept, model.Slug)
 		} else {
 			listed = append(listed, model.Slug)
