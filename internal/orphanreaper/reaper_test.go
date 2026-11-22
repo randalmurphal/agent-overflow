@@ -16,6 +16,26 @@ import (
 	"time"
 )
 
+// sidecarInput is scriptInput for a test, closed when the test ends.
+func sidecarInput(t *testing.T, script string) *os.File {
+	t.Helper()
+	input, err := scriptInput(script)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = input.Close() })
+	return input
+}
+
+// scriptInput writes the script into a pipe nothing reads yet, so the
+// script must fit the smallest buffer a pipe has: one 4 KiB page on Linux
+// once the user's pipe pages pass /proc/sys/fs/pipe-user-pages-soft.
+func TestSidecarScriptFitsInAPipe(t *testing.T) {
+	if len(sidecarScript) > 4096 {
+		t.Fatalf("sidecarScript is %d bytes, more than a 4096-byte pipe holds", len(sidecarScript))
+	}
+}
+
 // recordSidecar runs sidecarScript on input with kill and sleep replaced by
 // shell functions that record their arguments, so pgids the script must
 // refuse (1 would signal every process the user owns) are never signalled.
@@ -30,8 +50,7 @@ func recordSidecar(t *testing.T, input string) (calls []string, stderr string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := sidecarCommand(control, 7*time.Second)
-	cmd.Stdin = strings.NewReader(`kill() { echo "kill $*" >&4; }; sleep() { echo "sleep $*" >&4; }` + "\n" + sidecarScript)
+	cmd := sidecarCommand(sidecarInput(t, `kill() { echo "kill $*" >&4; }; sleep() { echo "sleep $*" >&4; }`+"\n"+sidecarScript), control, 7*time.Second)
 	cmd.ExtraFiles = append(cmd.ExtraFiles, record) // fd 4
 	var errOut bytes.Buffer
 	cmd.Stderr = &errOut
@@ -81,8 +100,7 @@ func TestSidecarKillsWhenTheShellExitsAtTheGrace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := sidecarCommand(control, 7*time.Second)
-	cmd.Stdin = strings.NewReader(`kill() { echo "kill $*"; }; sleep() { exit 254; }` + "\n" + sidecarScript)
+	cmd := sidecarCommand(sidecarInput(t, `kill() { echo "kill $*"; }; sleep() { exit 254; }`+"\n"+sidecarScript), control, 7*time.Second)
 	var out, errOut bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errOut
 	if err := cmd.Start(); err != nil {
@@ -140,7 +158,7 @@ func TestSidecarKillsRealGroupsOnParentEOF(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sidecar := sidecarCommand(control, time.Second)
+	sidecar := sidecarCommand(sidecarInput(t, sidecarScript), control, time.Second)
 	if err := sidecar.Start(); err != nil {
 		t.Fatalf("start sidecar: %v", err)
 	}
@@ -197,7 +215,7 @@ func TestSidecarIgnoresFunctionsExportedInTheEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sidecar := sidecarCommand(control, time.Second)
+	sidecar := sidecarCommand(sidecarInput(t, sidecarScript), control, time.Second)
 	if err := sidecar.Start(); err != nil {
 		t.Fatalf("start sidecar: %v", err)
 	}
