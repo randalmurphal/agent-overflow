@@ -19,6 +19,7 @@ import (
 	"agent-overflow/internal/keyfile"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/store/storetest"
+	"agent-overflow/internal/testutil/providerpath"
 	"agent-overflow/internal/tracker"
 	"agent-overflow/internal/tracker/jira/jiratest"
 	"agent-overflow/internal/tracker/linear/lineartest"
@@ -26,7 +27,9 @@ import (
 	"agent-overflow/internal/tracker/tempo/tempotest"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Run(m)) }
+// TestMain keeps every test from running an installed claude or codex
+// found on PATH.
+func TestMain(m *testing.M) { os.Exit(providerpath.Guard(func() int { return storetest.Run(m) })) }
 
 // Recognizable tokens, searched for on every surface a test can read.
 const (
