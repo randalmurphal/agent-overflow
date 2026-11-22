@@ -73,9 +73,14 @@ func (a *App) ensureProviderAccountSelectionReadyForSendLocked(
 		a.emitProviderSessionAccount(thread.ID)
 		return nil
 	case string(provider.Codex):
-		// The session's own counter follows the wire, ahead of the events
-		// still queued for triage. A turn triage has open may yet start
-		// background work the count below cannot see.
+		// The checks below read triage, which trails the wire by the events
+		// still queued for it: a whole turn that started a command can be
+		// waiting there. Handle what was read before deciding.
+		if err := a.providerEvents.drain(thread.ID); err != nil {
+			return fmt.Errorf("Codex account switch is pending for this thread until its provider events are handled: %w", err)
+		}
+		// The session's own counter follows the wire, so it leads triage
+		// for a turn that is ending and trails it for one that is starting.
 		if (sess.Liveness != nil && sess.Liveness.ActiveTurns.Load() > 0) ||
 			(a.triage != nil && a.triage.HasInFlightTurnOrRound(thread.ID)) {
 			return fmt.Errorf("Codex account switch is pending for this thread until its active turn finishes")

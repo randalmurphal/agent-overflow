@@ -124,9 +124,66 @@ func TestCodexAccountSwitchWaitsForBackgroundWork(t *testing.T) {
 	}
 }
 
+// A whole turn that started a command can be read off the wire and still be
+// queued for triage, where neither turn counter nor the background count
+// shows it. The switch handles the queued events before it decides.
+func TestCodexAccountSwitchHandlesQueuedEventsBeforeDeciding(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithTriage(t)
+	thread := testThread("codex-account-queued-events")
+	thread.Provider = string(provider.Codex)
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatal(err)
+	}
+	installTestProviderAccounts(t, app, string(provider.Codex))
+	app.sessionManager().put(thread.ID, session{
+		Provider:             string(provider.Codex),
+		Token:                "old-process",
+		CredentialGeneration: 1,
+		Liveness:             newSessionLiveness(time.Now()),
+	})
+
+	// The worker is held on one event; behind it waits the turn whose
+	// command only the router will hold.
+	release := make(chan struct{})
+	app.providerEvents.enqueue(thread.ID, provider.ProviderEvent{}, func(provider.ProviderEvent) { <-release })
+	app.providerEvents.enqueue(thread.ID, provider.ProviderEvent{}, func(provider.ProviderEvent) {
+		seedSettledCodexUnifiedExecTracker(t, app, thread.ID)
+	})
+
+	result := make(chan error, 1)
+	go func() { result <- app.ensureProviderAccountReadyForSendLocked(thread) }()
+	queue := app.providerEvents.lookup(thread.ID)
+	deadline := time.Now().Add(10 * time.Second)
+	for waiting := false; !waiting; {
+		select {
+		case err := <-result:
+			close(release)
+			t.Fatalf("the switch decided with events still queued: %v", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			close(release)
+			t.Fatal("the switch never waited for the queued events")
+		}
+		queue.mu.Lock()
+		waiting = queue.changed != nil
+		queue.mu.Unlock()
+		time.Sleep(time.Millisecond)
+	}
+	close(release)
+
+	if err := <-result; err == nil || !strings.Contains(err.Error(), "background work finishes") {
+		t.Fatalf("error = %v, want background-work pending message", err)
+	}
+	if got, _ := app.sessionManager().get(thread.ID); got.Token != "old-process" || got.CredentialGeneration != 1 {
+		t.Fatalf("the Codex session was modified: %+v", got)
+	}
+}
+
 // The session's turn counter follows the wire and can read zero while
-// triage still has the turn's events to process. The switch waits for the
-// turn triage has open.
+// triage still has the turn open. The switch waits for the turn triage has
+// open.
 func TestCodexAccountSwitchWaitsForATurnTriageStillHasOpen(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithTriage(t)

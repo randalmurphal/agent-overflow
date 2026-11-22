@@ -127,10 +127,10 @@ func (a *Service) ReconcileOnReopen(ctx context.Context, threadID string) (Recon
 }
 
 // reconcileSession is ReconcileOnReopen for one session of the thread. The
-// verdict is about that session: what it asks for is done only while the
-// session is still the thread's (whileThreadSession). A session that
-// replaced it retired the prior runtime state at its own start and runs
-// its own reconcile.
+// verdict is about that session: the retirement a systemError asks for
+// writes the thread's rows, so it runs only while the session is still the
+// thread's (whileThreadSession). A session that replaced it retired the
+// prior runtime state at its own start and runs its own reconcile.
 func (a *Service) reconcileSession(ctx context.Context, threadID string, sess LiveSession) (ReconcileResult, error) {
 	if a.isShuttingDown() {
 		return ReconcileResult{}, a.shutdownError()
@@ -196,7 +196,8 @@ func (a *Service) reconcileSession(ctx context.Context, threadID string, sess Li
 // whileThreadSession runs act under the thread lock if sess is still the
 // thread's session, and does nothing otherwise. A restart holds that lock
 // from its stop through its start, so act never runs against the thread
-// of a session that replaced sess.
+// of a session that replaced sess. act does no provider IO: a write to a
+// provider that stopped reading would hold the lock a reconnect needs.
 func (a *Service) whileThreadSession(ctx context.Context, threadID string, sess LiveSession, act func() error) error {
 	if a.deps.LockThread == nil {
 		return fmt.Errorf("app: reconcile codex: no thread lock for %s", threadID)
@@ -234,10 +235,13 @@ func (a *Service) ReconcileAfterStart(threadID string, started LiveSession) {
 		log.Printf("app: reconcile codex on reopen for %s: %v", threadID, err)
 		return
 	}
-	if !result.NeedsResume {
+	// The resume is written to the probed session itself, never to the
+	// thread's session by lookup, so a replacement cannot receive it. One
+	// taken out since the probe is closing and is left alone.
+	if current, ok := a.session(threadID); !result.NeedsResume || !ok || current != started {
 		return
 	}
-	if err := a.whileThreadSession(ctx, threadID, started, func() error { return started.Session.Resume(ctx) }); err != nil {
+	if err := started.Session.Resume(ctx); err != nil {
 		log.Printf("app: reconcile codex resume for %s: %v", threadID, err)
 	}
 }
