@@ -1,7 +1,7 @@
 // Two windows of one origin over one computer's replica. Each window is the
 // stores imported afresh (vi.resetModules), over the one fake IndexedDB and
 // the one localStorage every window of an origin shares.
-import { installFakeIndexedDB } from '../../test/helpers/fakeIndexedDB';
+import { elapse, fakeTimeoutsBesideIndexedDB, installFakeIndexedDB } from '../../test/helpers/fakeIndexedDB';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { makeThread } from '../../test/helpers/chat';
 import { HOME_BACKEND } from '../transport/backendKey';
@@ -17,7 +17,6 @@ const project = (id: string, name = id): ProjectWithCounts => ({
 });
 const thread = (id: string, title = id): Thread => makeThread({ id, title, projectId: 'p1' });
 const group = (id: string): ThreadGroup => ({ id, projectId: 'p1', name: id, createdAt: 0, updatedAt: 0 });
-const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Every window's replica session, closed after each test.
 const sessions: (typeof import('../replica/session'))[] = [];
@@ -77,8 +76,11 @@ beforeEach(async () => {
     if (name) await new Promise<void>((resolve) => { const drop = indexedDB.deleteDatabase(name); drop.onsuccess = () => resolve(); });
   }
   vi.spyOn(console, 'error').mockImplementation(() => {});
+  // The writer's spacing passes on the fake clock.
+  fakeTimeoutsBesideIndexedDB();
 });
 afterEach(async () => {
+  vi.useRealTimers();
   for (const session of sessions.splice(0)) {
     await session.__replicaSweepForTest();
     session.__resetReplicaForTest();
@@ -92,7 +94,7 @@ it('lists one whole tree in a window that reads the kept records while another w
   const a = await openWindow();
   await a.round(TREE);
   await vi.waitFor(async () => expect(await storedTitles()).toEqual(['t1:t1']));
-  await pause(CATALOG_WRITE_SPACING_MS + 50);
+  await elapse(CATALOG_WRITE_SPACING_MS + 50);
 
   const b = await openWindow();
   // The moment the second window's read reaches the replica, the first one
@@ -118,7 +120,7 @@ it('lists one whole tree in a window that reads the kept records while another w
 it("keeps saving in a window after another window's write lands between its change and its write", async () => {
   const a = await openWindow();
   await a.round(TREE);
-  await pause(CATALOG_WRITE_SPACING_MS + 50);
+  await elapse(CATALOG_WRITE_SPACING_MS + 50);
   const b = await openWindow();
   await b.round(TREE);
   await vi.waitFor(async () => expect(await storedTitles()).toEqual(['t1:t1']));
@@ -130,10 +132,11 @@ it("keeps saving in a window after another window's write lands between its chan
   expect(await storedTitles()).toEqual(['t1:t1']);
 
   // The second window's write lands with its whole tree, as it holds it.
-  await vi.waitFor(async () => expect(await storedTitles()).toEqual(['t1:from b']), { timeout: CATALOG_WRITE_SPACING_MS * 2 });
+  await elapse(CATALOG_WRITE_SPACING_MS);
+  await vi.waitFor(async () => expect(await storedTitles()).toEqual(['t1:from b']));
   expect(await storedProjects()).toEqual(['p1:p1']);
   // And it keeps saving after that.
-  await pause(CATALOG_WRITE_SPACING_MS + 50);
+  await elapse(CATALOG_WRITE_SPACING_MS + 50);
   b.threads.updateThreadTitle('t1', 'again');
   await vi.waitFor(async () => expect(await storedTitles()).toEqual(['t1:again']));
 });
@@ -141,10 +144,10 @@ it("keeps saving in a window after another window's write lands between its chan
 it('holds a waiting write when another window replaces a stamp, and writes once it holds rows under the new stamp', async () => {
   const a = await openWindow();
   await a.round({ ...TREE, threads: [thread('t1'), thread('t2')] });
-  await pause(CATALOG_WRITE_SPACING_MS + 50);
+  await elapse(CATALOG_WRITE_SPACING_MS + 50);
   const b = await openWindow();
   await b.round({ ...TREE, threads: [thread('t1'), thread('t2')] });
-  await pause(CATALOG_WRITE_SPACING_MS + 50);
+  await elapse(CATALOG_WRITE_SPACING_MS + 50);
 
   // The first window changes a row and writes it; its next change waits out the spacing.
   a.threads.updateThreadTitle('t1', 'first');
@@ -156,10 +159,11 @@ it('holds a waiting write when another window replaces a stamp, and writes once 
   await vi.waitFor(async () => expect(await storedTitles()).toEqual(['t1:t1']));
 
   // The first window still holds t2 under the old stamp: it does not write it.
-  await pause(CATALOG_WRITE_SPACING_MS * 2);
+  await elapse(CATALOG_WRITE_SPACING_MS * 2);
   expect(await storedTitles()).toEqual(['t1:t1']);
 
   // The frame reaches the first window too, and it writes what it holds now.
   a.threads.removeThread('t2');
-  await vi.waitFor(async () => expect(await storedTitles()).toEqual(['t1:second']), { timeout: CATALOG_WRITE_SPACING_MS * 2 });
+  await elapse(CATALOG_WRITE_SPACING_MS);
+  await vi.waitFor(async () => expect(await storedTitles()).toEqual(['t1:second']));
 });

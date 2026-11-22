@@ -52,9 +52,11 @@ beforeEach(() => {
     return 'written';
   });
   cleanup = setupEventListeners();
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   cleanup();
   vi.restoreAllMocks();
   resetCatalogWritesForTest();
@@ -79,9 +81,13 @@ function stamps(kind: CatalogKind): Record<string, string> {
   return { home: currentCatalogStamp(HOME_BACKEND, kind), laptop: currentCatalogStamp(LAPTOP, kind) };
 }
 
-// A computer's writes start CATALOG_WRITE_SPACING_MS apart.
+// A computer's writes start CATALOG_WRITE_SPACING_MS apart: run the fake
+// clock until the laptop writes, within two spacings.
 async function laptopWrite(): Promise<(typeof writes)[number]> {
-  await vi.waitFor(() => expect(writes.some((write) => write.backend === LAPTOP)).toBe(true), { timeout: CATALOG_WRITE_SPACING_MS * 2 });
+  const wrote = () => writes.some((write) => write.backend === LAPTOP);
+  await vi.advanceTimersByTimeAsync(0);
+  for (let ran = 0; !wrote() && ran < CATALOG_WRITE_SPACING_MS * 2; ran += 50) await vi.advanceTimersByTimeAsync(50);
+  expect(wrote()).toBe(true);
   return writes.filter((write) => write.backend === LAPTOP).at(-1)!;
 }
 
