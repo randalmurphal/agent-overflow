@@ -10,9 +10,10 @@ sessions and implements `SessionGateway`; sends hold a `SelectionLease`
 across provider writes, so account activation occurs wholly before or after
 the write. A text-generation CLI is a credential use (`credentialuse.go`) for
 its whole run. Every path that changes the selected account calls
-`selectionChanging` under the reconcile lock before it reads or replaces the
-canonical credential; it ends every running use, and none is admitted until
-the lock is released. The store refuses a selection change while a use is
+`selectionChanging` under the reconcile lock once it has decided to change it
+and before it reads the outgoing canonical credential or replaces it; it ends
+every running use, and none is admitted until the lock is released. A refused
+or declined change stops nothing. The store refuses a selection change while a use is
 alive. Rate-limit persistence and emission enter through narrow
 `providerlifecycleapp` ports.
 

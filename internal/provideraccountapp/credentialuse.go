@@ -104,9 +104,9 @@ func (m *Manager) BeginCredentialUse(
 
 // selectionChanging is the one place a provider's running credential uses
 // are ended: every path calls it, holding the provider's reconcile lock,
-// before it changes which account is selected, and before it installs
-// another account's credential into the canonical store or reads the
-// canonical credential to decide that. It ends every running use, waits for
+// once it has decided to change which account is selected, and before it
+// reads the outgoing canonical credential or installs another account's. A
+// path that refuses or declines the change does not call it. It ends every running use, waits for
 // each to exit, and admits none until the reconcile lock is released. A
 // second call in the same hold finds the change already marked; no use was
 // admitted since. The store refuses a selection change while a use is alive

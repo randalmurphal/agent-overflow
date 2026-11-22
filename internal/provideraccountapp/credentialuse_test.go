@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -44,9 +45,11 @@ func beginUse(t *testing.T, manager *Manager, onEnd func()) *trackedUse {
 		if onEnd != nil {
 			onEnd()
 		}
-		release()
-		release()
+		// Exited before the release, as a process is: the release is what
+		// lets the change go on, so the change never returns before this.
 		close(use.exited)
+		release()
+		release()
 	}()
 	return use
 }
@@ -290,6 +293,66 @@ func TestAChangeThatKeepsTheSelectedAccountLeavesTheRunningUses(t *testing.T) {
 			tc.change(t, manager)
 			if active, _ := manager.store.Active(claudeName, time.Now()); active.ID != "current" {
 				t.Fatalf("selected = %q, want current kept", active.ID)
+			}
+			use.wantStillRunning(t)
+		})
+	}
+}
+
+// A switch that is refused or declined changes nothing, so it ends no running
+// use and leaves the generation where it was.
+func TestARefusedSwitchEndsNoRunningUse(t *testing.T) {
+	claudeName := string(provider.Claude)
+	otherSlot := func(t *testing.T, manager *Manager) string {
+		t.Helper()
+		path, err := manager.credentials.AccountCredentialPath(claudeName, "other")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	for _, tc := range []struct {
+		name    string
+		prepare func(t *testing.T, manager *Manager)
+		target  string
+		refused bool
+	}{
+		{"the target is not saved", func(*testing.T, *Manager) {}, "nobody", true},
+		{"the target's credential is missing", func(t *testing.T, manager *Manager) {
+			if err := os.Remove(otherSlot(t, manager)); err != nil {
+				t.Fatal(err)
+			}
+		}, "other", true},
+		{"the target is signed out", func(t *testing.T, manager *Manager) {
+			husk := []byte(`{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0}}`)
+			if err := os.WriteFile(otherSlot(t, manager), husk, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}, "other", true},
+		{"the target's login expired", func(t *testing.T, manager *Manager) {
+			expired := claudeLoginAs("other@example.com", "other-old", time.Now().Add(-time.Hour))
+			if err := manager.credentials.WriteAccountCredential(claudeName, "other", expired); err != nil {
+				t.Fatal(err)
+			}
+		}, "other", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			manager, _, _ := selectionRig(t)
+			tc.prepare(t, manager)
+			use := beginUse(t, manager, nil)
+			before := manager.Generation(claudeName)
+			result, err := manager.SwitchProviderAccount(claudeName, tc.target)
+			if tc.refused && err == nil {
+				t.Fatalf("SwitchProviderAccount = %+v, want it refused", result)
+			}
+			if !tc.refused && (err != nil || !result.SignInRequired) {
+				t.Fatalf("SwitchProviderAccount = %+v, %v; want it declined for a sign-in", result, err)
+			}
+			if active, _ := manager.store.Active(claudeName, time.Now()); active.ID != "current" {
+				t.Fatalf("selected = %q, want current kept", active.ID)
+			}
+			if after := manager.Generation(claudeName); after != before {
+				t.Fatalf("generation = %d, want %d unchanged", after, before)
 			}
 			use.wantStillRunning(t)
 		})
