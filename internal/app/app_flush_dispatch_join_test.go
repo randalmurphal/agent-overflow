@@ -3,6 +3,7 @@ package app
 import (
 	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/testutil/mockexec"
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -36,7 +37,9 @@ func writeClaudeStdinRecorderBinary(t *testing.T, logPath string) string {
 }
 
 // recordedUserEnvelopes returns the `type:"user"` lines the fake CLI saw.
-// Control requests (permission mode) share the stream and are ignored.
+// Control requests (permission mode) share the stream and are ignored. The
+// fake may still be appending: a read can end inside its write of a line,
+// at a page boundary, so only newline-terminated lines are read.
 func recordedUserEnvelopes(t *testing.T, logPath string) []map[string]any {
 	t.Helper()
 	data, err := os.ReadFile(logPath)
@@ -46,8 +49,9 @@ func recordedUserEnvelopes(t *testing.T, logPath string) []map[string]any {
 		}
 		t.Fatalf("read stdin log: %v", err)
 	}
+	written := string(data[:bytes.LastIndexByte(data, '\n')+1])
 	var out []map[string]any
-	for _, line := range strings.Split(string(data), "\n") {
+	for _, line := range strings.Split(written, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
