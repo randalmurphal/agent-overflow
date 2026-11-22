@@ -102,13 +102,43 @@ stop_jobs() {
   done
   wait $running 2>/dev/null || true
 }
-started="$(mktemp -d)"
-# A command's output that the script reads back.
-output="$(mktemp)"
 
-# Long steps run as supervised children: a signal is passed on to the
-# child and waited out before the exit cleanup runs, so nothing the step
-# started outlives the PIN, the adb server or the emulator it relies on.
+# The run exits through finish, with its status: from the EXIT trap, or
+# with 128 plus a signal's number from its handler. A handler that runs as
+# the EXIT trap begins runs inside the trap, so it calls finish rather than
+# exit, which would cut the trap short. finish stops the running step and
+# waits for it, then releases what the run acquired: the PIN before the
+# emulator stops, since it boots from the same AVD next time. The marks
+# directory is removed by its name's prefix, so a signal before mktemp's
+# answer is assigned still removes it.
+pinned=""
+own_emulator=""
+marks_prefix="${TMPDIR:-/tmp}/ao-android-smoke.$$."
+finish() {
+  local status="${1:-$?}"
+  # A second signal must not cut the stop or the cleanup short.
+  trap '' INT TERM HUP
+  trap - EXIT
+  stop_jobs
+  if [[ -n "$pinned" ]]; then
+    "$adb" -s "$pinned" shell locksettings clear --old "$pin" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$own_emulator" ]]; then
+    "$adb" kill-server >/dev/null 2>&1 || true
+    "$emulator" stop >/dev/null || true
+  fi
+  rm -rf "$marks_prefix"*
+  exit "$status"
+}
+trap finish EXIT
+started="$(mktemp -d "${marks_prefix}XXXXXX")"
+# A command's output that the script reads back. Marks are named by process
+# ID, so this name is never one.
+output="$started/output"
+
+# Long steps run as supervised children: finish passes a signal on to the
+# child and waits it out before the cleanup, so nothing the step started
+# outlives the PIN, the adb server or the emulator it relies on.
 # Background children of a script ignore SIGINT, so TERM carries them all.
 # The child is found with `jobs -p`, not `$!`: a trap can run after the fork
 # and before `$!` is read.
@@ -120,37 +150,13 @@ supervise() {
   rm -f "$started/$child"
   return "$status"
 }
-on_signal() {
-  # A second signal must not cut the stop or the cleanup short.
-  trap '' INT TERM HUP
-  stop_jobs
-  exit $((128 + $(kill -l "$1")))
-}
 # While these handlers are set, nothing here expands $(...), <(...) or
-# >(...), which would lose a signal (see the handlers in
-# android-emulator.sh); a command's output is read back from $output
-# instead. on_signal may, once it has ignored the signals.
-trap 'on_signal INT' INT
-trap 'on_signal TERM' TERM
-trap 'on_signal HUP' HUP
-
-# What the run acquired, released on every exit path: the PIN before the
-# emulator stops, since it boots from the same AVD next time.
-pinned=""
-own_emulator=""
-on_exit() {
-  # A second signal must not cut the cleanup short.
-  trap '' INT TERM HUP
-  if [[ -n "$pinned" ]]; then
-    "$adb" -s "$pinned" shell locksettings clear --old "$pin" >/dev/null 2>&1 || true
-  fi
-  if [[ -n "$own_emulator" ]]; then
-    "$adb" kill-server >/dev/null 2>&1 || true
-    "$emulator" stop >/dev/null || true
-  fi
-  rm -rf "$started" "$output"
-}
-trap on_exit EXIT
+# >(...), which can lose a signal under bash 5.2
+# (main_shell_signals_unix_test.go); a command's output is read back from
+# $output instead. finish may, once it has ignored the signals.
+trap 'finish 130' INT
+trap 'finish 143' TERM
+trap 'finish 129' HUP
 
 # A real phone is named, never chosen: every case clears the app's data.
 # Sets serial.
@@ -345,5 +351,5 @@ hold_lock
 supervise "$emulator" prepare
 # The device phase is another process with marks of its own, and exec runs
 # no exit cleanup.
-rm -rf "$started" "$output"
+rm -rf "$started"
 exec env AO_ANDROID_SMOKE_PHASE=device "$repo/bin/ao-netns" "$repo/e2e/scripts/android-smoke.sh" "$@"

@@ -30,13 +30,20 @@ type smokeFixture struct {
 // substitutionProbe is sourced through BASH_ENV by every run of the two
 // scripts. While a script's INT, TERM and HUP handlers are set, it records
 // each command of the script's own shell that expands $(...), <(...) or
-// >(...): in bash 4.4 through 5.2, a signal pending when such an expansion
-// starts runs its handler in the substitution's parser state, where the
-// handler fails to parse and the signal is lost. A case that sets a DEBUG trap of
-// its own calls ao_probe from it.
-const substitutionProbe = `[[ $0 == */android-smoke.sh || $0 == */android-emulator.sh ]] || return 0
+// >(...): in bash 5.2, a signal pending when such an expansion starts runs
+// its handler in the substitution's parser state, where the handler fails to
+// parse and the signal is lost. A case that sets a DEBUG trap of its own
+// calls ao_probe from it. Bash 3.2, which has no BASHPID, gets a probe that
+// does nothing: its DEBUG trap would stop a script run under set -u. Bash
+// before 5.2 sets $0 to the script only after BASH_ENV, so ao_probe, not the
+// file, picks the scripts out of every bash the run starts.
+const substitutionProbe = `if [[ -z ${BASHPID:-} ]]; then
+  ao_probe() { :; }
+  return 0
+fi
 set -o functrace
 ao_probe() {
+  [[ $0 == */android-smoke.sh || $0 == */android-emulator.sh ]] || return 0
   if [[ $BASHPID != "$$" ]]; then return 0; fi
   case $BASH_COMMAND in
     "trap '' "*) ao_handled="" ;;
@@ -82,13 +89,15 @@ func newSmokeFixture(t *testing.T) smokeFixture {
 			t.Errorf("a script expanded a substitution while its signal handlers were set:\n%s", body)
 		}
 	})
-	// The fake adb lists $AO_TEST_ADB_DEVICES, answers the emulator probe,
+	// The fake adb lists $AO_TEST_ADB_DEVICES, or fails to under
+	// AO_TEST_ADB_DEVICES_FAILS, answers the emulator probe,
 	// reports a completed boot under AO_TEST_BOOT_COMPLETED=1, and records
 	// every call. `install -r` fails with $AO_TEST_ADB_INSTALL_FAILURE when
 	// it is set; other installs and PIN changes succeed silently.
 	mockexec.WriteIn(t, filepath.Join(dir, "platform-tools"), "adb", `#!/usr/bin/env bash
 echo "adb $*" >>"$AO_TEST_LOG"
 if [[ "$1" == devices ]]; then
+  if [[ -n "${AO_TEST_ADB_DEVICES_FAILS:-}" ]]; then echo "adb: cannot list devices" >&2; exit 1; fi
   printf 'List of devices attached\n%s\n' "$AO_TEST_ADB_DEVICES"
 elif [[ "$*" == *'getprop ro.kernel.qemu' ]]; then
   [[ "$2" == emulator-* ]] && echo 1 || echo 0
@@ -144,11 +153,30 @@ echo "emulator $1" >>"$AO_TEST_LOG"
 func (f smokeFixture) signalAfterFork(t *testing.T, script, fork, args string) string {
 	t.Helper()
 	path := filepath.Join(f.dir, "signal-after-fork.bash")
+	// The trap, not the file, tests $0: see substitutionProbe.
 	body := `source ` + shellQuote(f.probe) + `
-[[ $0 == */` + script + ` ]] || return 0
 ao_fork=` + shellQuote(fork) + `
 ao_args=` + shellQuote(args) + `
-trap 'ao_probe; if [[ -n ${ao_forked:-} ]]; then trap ao_probe DEBUG; kill -TERM $$; fi; [[ $BASH_COMMAND == $ao_fork && $* == $ao_args ]] && ao_forked=1' DEBUG
+set -o functrace
+trap 'ao_probe; if [[ $0 == */` + script + ` ]]; then if [[ -n ${ao_forked:-} ]]; then trap ao_probe DEBUG; kill -TERM $$; fi; [[ $BASH_COMMAND == $ao_fork && $* == $ao_args ]] && ao_forked=1; fi' DEBUG
+`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return "BASH_ENV=" + path
+}
+
+// signalAsItExits arms the named script to send itself SIGTERM once, at the
+// first command of fn, the function its EXIT trap runs: a signal that lands
+// as the trap begins, before the function can ignore it. It returns the
+// BASH_ENV entry that arms it, which keeps the substitution probe.
+func (f smokeFixture) signalAsItExits(t *testing.T, script, fn string) string {
+	t.Helper()
+	path := filepath.Join(f.dir, "signal-as-it-exits.bash")
+	// The trap, not the file, tests $0: see substitutionProbe.
+	body := `source ` + shellQuote(f.probe) + `
+set -o functrace
+trap 'ao_probe; if [[ $0 == */` + script + ` && ${FUNCNAME[0]:-} == ` + fn + ` && -z ${ao_sent:-} ]]; then ao_sent=1; kill -TERM $$; fi' DEBUG
 `
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
@@ -173,6 +201,67 @@ func (f smokeFixture) calls(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return string(body)
+}
+
+// The substitution probe records a substitution expanded while a script's
+// handlers are set, and stays out of the way of a shell without BASHPID,
+// as bash 3.2 is, under set -u.
+func TestTheSubstitutionProbeRecordsOnlyWhereItCan(t *testing.T) {
+	for _, withoutBASHPID := range []bool{false, true} {
+		name := "with BASHPID"
+		if withoutBASHPID {
+			name = "without BASHPID"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := newSmokeFixture(t)
+			// The case without BASHPID unsets it to stand for bash 3.2, which
+			// bash 4.4 does not allow.
+			check := "echo ${BASHPID:-}"
+			if withoutBASHPID {
+				check = "unset BASHPID; " + check
+			}
+			pid, err := exec.Command("bash", "-c", check).Output()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if hasBASHPID := strings.TrimSpace(string(pid)) != ""; hasBASHPID == withoutBASHPID {
+				t.Skipf("this bash cannot run the case: BASHPID is %q", pid)
+			}
+			script := `set -euo pipefail
+trap 'exit 130' INT
+x="$(echo substituted)"
+echo "ran to the end: $x"
+`
+			if err := os.WriteFile(f.smoke, []byte(script), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			cmd := f.command()
+			if withoutBASHPID {
+				env := filepath.Join(f.dir, "without-bashpid.bash")
+				if err := os.WriteFile(env, []byte("unset BASHPID\nsource "+shellQuote(f.probe)+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				cmd.Env = append(cmd.Env, "BASH_ENV="+env)
+			}
+			out, err := cmd.CombinedOutput()
+			if err != nil || !strings.Contains(string(out), "ran to the end: substituted") {
+				t.Fatalf("the probed script did not run to its end: %v\n%s", err, out)
+			}
+			found := filepath.Join(f.dir, "substitutions.log")
+			recorded, _ := os.ReadFile(found)
+			want := ""
+			if !withoutBASHPID {
+				want = `android-smoke.sh: x="$(echo substituted)"` + "\n"
+			}
+			if string(recorded) != want {
+				t.Fatalf("the probe recorded %q, want %q", recorded, want)
+			}
+			// What this case recorded on purpose is not a finding.
+			if err := os.Remove(found); err != nil && !errors.Is(err, os.ErrNotExist) {
+				t.Fatal(err)
+			}
+		})
+	}
 }
 
 // The smoke clears app data and changes an emulator PIN. A real phone is
@@ -421,6 +510,38 @@ while :; do sleep 0.05; done
 	}
 }
 
+// A signal that lands as the smoke exits, before its cleanup could ignore
+// it, still leaves the cleanup to run whole: the PIN cleared, adb stopped
+// and the emulator stopped, in that order.
+func TestAndroidSmokeCleansUpWhenSignalledAsItExits(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the emulator path is Linux-only")
+	}
+	if _, err := exec.LookPath("flock"); err != nil {
+		t.Skip("flock unavailable")
+	}
+	f := newSmokeFixture(t)
+	f.fakeEmulator(t)
+	mockexec.WriteIn(t, filepath.Join(f.dir, "repo", "bin"), "ao-harness-e2e", "#!/bin/sh\nexit 0\n")
+	out, err := f.command(
+		"AO_ANDROID_SMOKE_PHASE=device",
+		"AO_TEST_ADB_DEVICES=emulator-5554\tdevice",
+		f.signalAsItExits(t, "android-smoke.sh", "finish"),
+	).CombinedOutput()
+	if !endedBySignal(err, syscall.SIGTERM) {
+		t.Fatalf("want the smoke ended by SIGTERM, got %v:\n%s", err, out)
+	}
+	calls := f.calls(t)
+	at := -1
+	for _, step := range []string{"adb -s emulator-5554 shell locksettings clear --old 1234", "adb kill-server", "emulator stop"} {
+		next := strings.Index(calls, step)
+		if next <= at {
+			t.Fatalf("want %q after the steps before it, in:\n%s", step, calls)
+		}
+		at = next
+	}
+}
+
 // The lock the host phase holds reaches the device phase as fd 9, and is
 // recognized by the file it is, not by how its path is spelled: a symlinked
 // runtime directory must not make the run refuse its own lock.
@@ -536,34 +657,148 @@ func (f smokeFixture) startCommand(t *testing.T, barrier, scope string, env ...s
 	return cmd
 }
 
-// A confirmed boot is the caller's to keep: start reports how long it took
-// and the emulator's adb serial, and leaves the scope running.
-func TestAndroidEmulatorStartKeepsABootedEmulator(t *testing.T) {
-	f, barrier, scope := startFixture(t)
-	if err := os.WriteFile(barrier, nil, 0o600); err != nil {
-		t.Fatal(err)
+// endedBySignal reports whether err is the exit of a shell that sig ended,
+// either by the signal itself or by an exit with 128 plus its number.
+func endedBySignal(err error, sig syscall.Signal) bool {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return false
 	}
-	cmd := f.startCommand(t, barrier, scope,
-		"AO_TEST_BOOT_COMPLETED=1",
-		"AO_TEST_ADB_DEVICES=emulator-5554\tdevice\nemulator-5556\tdevice",
-	)
-	// A file, not a pipe: the launcher start leaves running holds a pipe open.
-	output, err := os.Create(filepath.Join(f.dir, "start.out"))
+	status, ok := exitErr.Sys().(syscall.WaitStatus)
+	return ok && (status.Signaled() && status.Signal() == sig || status.Exited() && status.ExitStatus() == 128+int(sig))
+}
+
+// A signal that lands while mktemp makes a script's marks directory, before
+// the script has its name, still removes the directory.
+func TestTheAndroidScriptsRemoveTheirMarksWhenSignalledAsTheyMakeThem(t *testing.T) {
+	mktemp, err := exec.LookPath("mktemp")
+	if err != nil {
+		t.Skip("mktemp unavailable")
+	}
+	for _, script := range []string{"android-smoke.sh", "android-emulator.sh"} {
+		t.Run(script, func(t *testing.T) {
+			var f smokeFixture
+			var cmd *exec.Cmd
+			if script == "android-emulator.sh" {
+				var barrier, scope string
+				f, barrier, scope = startFixture(t)
+				cmd = f.startCommand(t, barrier, scope)
+			} else {
+				f = newSmokeFixture(t)
+				cmd = f.command()
+				cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+			}
+			// mktemp makes the directory, then the script, which leads its
+			// process group, is signalled while it reads the name back.
+			mockexec.WriteIn(t, filepath.Join(f.dir, "bin"), "mktemp", `#!/usr/bin/env bash
+`+shellQuote(mktemp)+` "$@"
+kill -TERM "$(ps -o pgid= -p $$ | tr -d ' ')"
+sleep 1
+`)
+			marks := filepath.Join(f.dir, "marks")
+			if err := os.Mkdir(marks, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			cmd.Env = append(cmd.Env, "TMPDIR="+marks)
+			out, err := cmd.CombinedOutput()
+			if !endedBySignal(err, syscall.SIGTERM) {
+				t.Fatalf("want the script ended by SIGTERM, got %v:\n%s", err, out)
+			}
+			if left, _ := filepath.Glob(filepath.Join(marks, "*")); len(left) > 0 {
+				t.Fatalf("the marks directory outlived the signal: %v\n%s", left, out)
+			}
+		})
+	}
+}
+
+// lockHeld reports whether a process holds the emulator lock.
+func (f smokeFixture) lockHeld(t *testing.T) bool {
+	t.Helper()
+	lock, err := os.OpenFile(filepath.Join(f.dir, "lock", "ao-emulator.lock"), os.O_WRONLY|os.O_APPEND, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = output.Close() })
-	cmd.Stdout, cmd.Stderr = output, output
-	err = cmd.Run()
-	printed, _ := os.ReadFile(output.Name())
+	defer func() { _ = lock.Close() }()
+	err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+	if errors.Is(err, syscall.EWOULDBLOCK) {
+		return true
+	}
 	if err != nil {
-		t.Fatalf("start failed on a booted emulator: %v\n%s\n%s", err, printed, f.calls(t))
+		t.Fatal(err)
 	}
-	if !regexp.MustCompile(`(?m)^==> booted in \d+s; adb serial emulator-5554$`).Match(printed) {
-		t.Fatalf("want the boot time and the first emulator's serial, got:\n%s", printed)
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatal(err)
 	}
-	if calls := f.calls(t); strings.Contains(calls, "scope stopped") {
-		t.Fatalf("start stopped the emulator it booted:\n%s", calls)
+	return false
+}
+
+// A confirmed boot is the caller's to keep only when start succeeds: it
+// reports how long the boot took and the emulator's adb serial, and leaves
+// the scope running with the lock held. A start that fails after the boot,
+// here because adb cannot list the devices, undoes the launch like any
+// other failure: no scope, and the lock free for the next run. So does a
+// signal that lands as start exits, after its last command succeeded.
+func TestAndroidEmulatorStartKeepsTheEmulatorOnlyWhenItSucceeds(t *testing.T) {
+	for _, tc := range []struct {
+		name                       string
+		listFails, signalAsItExits bool
+	}{
+		{name: "start succeeds"},
+		{name: "adb devices fails after the boot", listFails: true},
+		{name: "a signal lands as start exits", signalAsItExits: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, barrier, scope := startFixture(t)
+			if err := os.WriteFile(barrier, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			env := []string{"AO_TEST_BOOT_COMPLETED=1", "AO_TEST_ADB_DEVICES=emulator-5554\tdevice\nemulator-5556\tdevice"}
+			if tc.listFails {
+				env = append(env, "AO_TEST_ADB_DEVICES_FAILS=1")
+			}
+			if tc.signalAsItExits {
+				env = append(env, f.signalAsItExits(t, "android-emulator.sh", "abandon"))
+			}
+			cmd := f.startCommand(t, barrier, scope, env...)
+			// A file, not a pipe: a launcher start leaves running holds a pipe open.
+			output, err := os.Create(filepath.Join(f.dir, "start.out"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = output.Close() })
+			cmd.Stdout, cmd.Stderr = output, output
+			err = cmd.Run()
+			printed, _ := os.ReadFile(output.Name())
+			_, scopeErr := os.Stat(scope)
+			calls := f.calls(t)
+			if tc.listFails || tc.signalAsItExits {
+				if tc.listFails && err == nil {
+					t.Fatalf("start succeeded though adb could not list the devices:\n%s", printed)
+				}
+				if tc.signalAsItExits && !endedBySignal(err, syscall.SIGTERM) {
+					t.Fatalf("want start ended by SIGTERM, got %v:\n%s", err, printed)
+				}
+				if !strings.Contains(calls, "scope stopped") || scopeErr == nil {
+					t.Fatalf("a failed start left its scope running:\n%s\n%s", printed, calls)
+				}
+				if f.lockHeld(t) {
+					t.Fatalf("a failed start left the emulator lock held:\n%s\n%s", printed, calls)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("start failed on a booted emulator: %v\n%s\n%s", err, printed, calls)
+			}
+			if !regexp.MustCompile(`(?m)^==> booted in \d+s; adb serial emulator-5554$`).Match(printed) {
+				t.Fatalf("want the boot time and the first emulator's serial, got:\n%s", printed)
+			}
+			if strings.Contains(calls, "scope stopped") || scopeErr != nil {
+				t.Fatalf("start stopped the emulator it booted: %v\n%s", scopeErr, calls)
+			}
+			if !f.lockHeld(t) {
+				t.Fatalf("the booted emulator does not hold the lock:\n%s", calls)
+			}
+		})
 	}
 }
 
@@ -1006,8 +1241,9 @@ while :; do sleep 0.05; done
 		t.Fatalf("the smoke acted on a job that had not started:\n%s", calls)
 	}
 	// The first job's mark went when it finished: a later job can be given
-	// its process id.
-	if left, _ := filepath.Glob(filepath.Join(marks, "*", "*")); len(left) > 0 {
+	// its process id. Marks are named by process ID; the directory also
+	// holds the smoke's output file.
+	if left, _ := filepath.Glob(filepath.Join(marks, "*", "[0-9]*")); len(left) > 0 {
 		t.Fatalf("a finished job's start mark was kept: %v", left)
 	}
 	// More signals while it waits change nothing: the job is still stopped
