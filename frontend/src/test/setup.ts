@@ -47,6 +47,9 @@ import { setHostWindowFromBootstrap } from '../lib/transport/pageHost';
 import { resetBuildVariantPage } from './helpers/buildVariant';
 import { resetStagedBackends } from './helpers/backends';
 import { resetTelemetryFooterShapesForTest } from '../lib/stores/telemetryFooterShape.svelte';
+import { installWaitForBackoff } from './waitForBackoff';
+
+installWaitForBackoff();
 
 if (typeof globalThis.ResizeObserver === 'undefined') {
   class StubResizeObserver {

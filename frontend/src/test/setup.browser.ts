@@ -30,6 +30,9 @@ import { resetClientDeviceNameForTest } from '../lib/stores/clientDeviceName.sve
 import { writeFrontendValue } from '../lib/stores/frontendStorage';
 import { __resetSizePriorsStorageForTest } from '../lib/utils/virtual/priorsStorage';
 import { resetTelemetryFooterShapesForTest } from '../lib/stores/telemetryFooterShape.svelte';
+import { installWaitForBackoff } from './waitForBackoff';
+
+installWaitForBackoff();
 
 function installBrowserTraceSinks(): void {
   // uiRenderTrace is compiled in under MODE==='test' and flushes on a real
