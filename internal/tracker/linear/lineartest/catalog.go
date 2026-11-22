@@ -5,7 +5,7 @@ import "encoding/json"
 // The builders below write invented records with every field the
 // client's fragments select. An empty ID or time is null.
 
-func encode(v map[string]any) string {
+func encode(v any) string {
 	b, err := json.Marshal(v)
 	if err != nil {
 		panic(err) // every value the builders put in encodes
@@ -13,14 +13,8 @@ func encode(v map[string]any) string {
 	return string(b)
 }
 
-// quoted is s as a JSON string.
-func quoted(s string) string {
-	b, err := json.Marshal(s)
-	if err != nil {
-		panic(err) // a string always encodes
-	}
-	return string(b)
-}
+// raw is doc, a builder's JSON, as a member another builder encodes.
+func raw(doc string) json.RawMessage { return json.RawMessage(doc) }
 
 func ref(id string) any {
 	if id == "" {
@@ -212,7 +206,7 @@ func (r IssueRef) JSON() string {
 // RelationJSON is a relation: issue blocks, duplicates or relates to
 // related.
 func RelationJSON(id, kind string, issue, related IssueRef) string {
-	return `{"id":` + quoted(id) + `,"type":` + quoted(kind) + `,"issue":` + issue.JSON() + `,"relatedIssue":` + related.JSON() + `}`
+	return encode(map[string]any{"id": id, "type": kind, "issue": raw(issue.JSON()), "relatedIssue": raw(related.JSON())})
 }
 
 // Detail is what the single-issue read adds to an issue; each list is
@@ -256,24 +250,19 @@ func DetailJSON(i Issue, d Detail) string {
 	if i.Project != "" {
 		fields["project"] = json.RawMessage(encode(map[string]any{"id": i.Project, "name": d.ProjectName}))
 	}
-	b, err := json.Marshal(fields)
-	if err != nil {
-		panic(err) // every member is JSON
-	}
-	base := string(b)
-	return base[:len(base)-1] +
-		`,"children":` + ConnectionJSON(d.Children, d.MoreChildren, "") +
-		`,"comments":` + ConnectionJSON(d.Comments, d.MoreComments, d.CommentCursor) +
-		`,"attachments":` + ConnectionJSON(d.Attachments, d.MoreAttachments, "") +
-		`,"relations":` + ConnectionJSON(d.Relations, d.RelationCursor != "", d.RelationCursor) +
-		`,"inverseRelations":` + ConnectionJSON(d.InverseRelations, d.InverseRelationCursor != "", d.InverseRelationCursor) +
-		`,"history":` + ConnectionJSON(d.History, d.HistoryCursor != "", d.HistoryCursor) +
-		`,"stateTeam":{"states":` + ConnectionJSON(d.States, d.MoreStates, "") + `}}`
+	fields["children"] = raw(ConnectionJSON(d.Children, d.MoreChildren, ""))
+	fields["comments"] = raw(ConnectionJSON(d.Comments, d.MoreComments, d.CommentCursor))
+	fields["attachments"] = raw(ConnectionJSON(d.Attachments, d.MoreAttachments, ""))
+	fields["relations"] = raw(ConnectionJSON(d.Relations, d.RelationCursor != "", d.RelationCursor))
+	fields["inverseRelations"] = raw(ConnectionJSON(d.InverseRelations, d.InverseRelationCursor != "", d.InverseRelationCursor))
+	fields["history"] = raw(ConnectionJSON(d.History, d.HistoryCursor != "", d.HistoryCursor))
+	fields["stateTeam"] = raw(encode(map[string]any{"states": raw(ConnectionJSON(d.States, d.MoreStates, ""))}))
+	return encode(fields)
 }
 
 // IssueChangesJSON is one node of the batched history read: an issue's
 // team, creation time and its newest history entries.
 func IssueChangesJSON(id, team, createdAt string, entries []string, more bool, cursor string) string {
-	return `{"id":` + quoted(id) + `,"team":{"id":` + quoted(team) + `},"createdAt":` + quoted(createdAt) + `,"history":` +
-		ConnectionJSON(entries, more, cursor) + `}`
+	return encode(map[string]any{"id": id, "team": map[string]string{"id": team}, "createdAt": createdAt,
+		"history": raw(ConnectionJSON(entries, more, cursor))})
 }

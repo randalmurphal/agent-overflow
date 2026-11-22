@@ -1,10 +1,6 @@
 package lineartest
 
-import (
-	"encoding/json"
-	"fmt"
-	"strings"
-)
+import "encoding/json"
 
 // Data wraps fields as a GraphQL answer's data.
 func Data(fields string) string { return `{"data":{` + fields + `}}` }
@@ -14,7 +10,7 @@ func Data(fields string) string { return `{"data":{` + fields + `}}` }
 func ViewerAnswer(urlKey string) string {
 	return Data(`"viewer":{"id":"user-1","name":"User 1","displayName":"user1","email":"user1@example.com","avatarUrl":null,` +
 		`"active":true,"admin":false,"guest":false,"app":false,"isMe":true},` +
-		`"organization":{"id":` + quoted("org-"+urlKey) + `,"name":"Example","urlKey":` + quoted(urlKey) + `}`)
+		`"organization":` + encode(map[string]string{"id": "org-" + urlKey, "name": "Example", "urlKey": urlKey}))
 }
 
 // PageJSON is a connection's JSON, aliased as page.
@@ -24,7 +20,11 @@ func PageJSON(nodes []string, hasNext bool, cursor string) string {
 
 // ConnectionJSON is a connection's JSON object.
 func ConnectionJSON(nodes []string, hasNext bool, cursor string) string {
-	return fmt.Sprintf(`{"nodes":[%s],"pageInfo":{"hasNextPage":%t,"endCursor":%s}}`, strings.Join(nodes, ","), hasNext, quoted(cursor))
+	members := make([]json.RawMessage, len(nodes))
+	for i, n := range nodes {
+		members[i] = raw(n)
+	}
+	return encode(map[string]any{"nodes": members, "pageInfo": map[string]any{"hasNextPage": hasNext, "endCursor": cursor}})
 }
 
 // NodePageJSON is a connection hanging off one entity, aliased as page
