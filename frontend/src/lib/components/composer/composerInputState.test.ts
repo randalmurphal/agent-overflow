@@ -87,8 +87,27 @@ describe('deriveComposerInputState — an unreachable machine', () => {
       placeholder: 'Laptop is offline',
     });
     expect(
-      deriveComposerInputState(input({ unreachableTarget: 'Laptop', sendUngranted: true })).placeholder,
+      deriveComposerInputState(input({ unreachableTarget: 'Laptop', sendGrant: 'refused' })).placeholder,
     ).toBe('This device has read-only access');
+  });
+
+  // A computer that was off when this window loaded has not said what this
+  // device may do there. That is not a refusal: the composer names the
+  // computer as offline, the one thing the person can act on.
+  it('names the machine as offline while its grant is unknown, and still takes no message', () => {
+    expect(deriveComposerInputState(input({ unreachableTarget: 'Laptop', sendGrant: 'unknown' }))).toEqual({
+      disabled: true,
+      value: 'draft text',
+      placeholder: 'Laptop is offline',
+    });
+    expect(deriveComposerInputState(input({ offline: true, sendGrant: 'unknown' })).placeholder)
+      .toBe('Disconnected from the agent backend');
+    // Reachable with no known grant: never "read-only".
+    expect(deriveComposerInputState(input({ sendGrant: 'unknown' }))).toEqual({
+      disabled: true,
+      value: 'draft text',
+      placeholder: 'Waiting for this thread’s computer to answer',
+    });
   });
 });
 
@@ -106,7 +125,7 @@ describe('deriveComposerInputState, the page own backend being down', () => {
     ).toBe('Laptop is offline');
     // Read-only outranks both: a session that cannot send says why once.
     expect(
-      deriveComposerInputState(input({ offline: true, sendUngranted: true })).placeholder,
+      deriveComposerInputState(input({ offline: true, sendGrant: 'refused' })).placeholder,
     ).toBe('This device has read-only access');
   });
 
@@ -144,7 +163,7 @@ describe('deriveComposerInputState, an ask copy', () => {
     });
     expect(deriveComposerInputState(input({ askCopy: true, hasBlockingPrompt: true })).placeholder)
       .toBe("An agent's question runs in this copy. It takes no messages.");
-    expect(deriveComposerInputState(input({ askCopy: true, sendUngranted: true })).placeholder)
+    expect(deriveComposerInputState(input({ askCopy: true, sendGrant: 'refused' })).placeholder)
       .toBe('This device has read-only access');
   });
 });

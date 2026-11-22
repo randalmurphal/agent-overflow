@@ -1,15 +1,18 @@
 import type { SendButtonAction } from './toolbar/sendButtonTypes';
+import type { ScopeGrant } from '../../transport/scopes';
 
 export interface ComposerSendStateInput {
   isDisabled: boolean;
   /**
-   * This session was not granted `threads:operate`, so nothing the send
-   * button does can reach the backend. Separate from `isDisabled`, which
-   * is "there is no thread to send into": the two want different
-   * placeholder copy, and only this one is a standing property of the
-   * session rather than of the pane.
+   * Whether this session holds `threads:operate` on the thread's computer
+   * (`threadScopeGrant`); absent means granted. Anything but `granted`
+   * means nothing the send button does can reach the backend. `refused`
+   * is a known grant without it; `unknown` is a computer whose grant has
+   * not arrived in this window. Separate from `isDisabled`, which is
+   * "there is no thread to send into": they want different placeholder
+   * copy, and this one is a property of the session rather than the pane.
    */
-  sendUngranted?: boolean;
+  sendGrant?: ScopeGrant;
   /**
    * The thread is the hidden copy an agent's question runs in
    * (`Thread.askCopy`): it takes no message from a person, and the
@@ -57,7 +60,7 @@ export function deriveComposerSendState(input: ComposerSendStateInput): Composer
     return {
       canSend: input.shell === 'ready'
         && !input.isDisabled
-        && !input.sendUngranted
+        && sendGranted(input)
         && !input.askCopy
         && !input.sending
         && !input.sendSuspended
@@ -78,7 +81,7 @@ export function deriveComposerSendState(input: ComposerSendStateInput): Composer
     // still requires an idle turn because it runs the plan implementation
     // helper, not just a SendMessage RPC.
     canSend: !input.isDisabled
-      && !input.sendUngranted
+      && sendGranted(input)
       && !input.askCopy
       && !input.sending
       && !input.sendSuspended
@@ -94,6 +97,10 @@ export function deriveComposerSendState(input: ComposerSendStateInput): Composer
     label: sendLabel(action),
     hasPlanImplementAction,
   };
+}
+
+function sendGranted(input: ComposerSendStateInput): boolean {
+  return (input.sendGrant ?? 'granted') === 'granted';
 }
 
 function sendLabel(action: SendButtonAction): string | undefined {

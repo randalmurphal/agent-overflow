@@ -71,6 +71,18 @@ test('an offline paired computer logs once per outage and a draft pane is never 
       await localRow.click();
       await expect(page.getByTestId('message-timeline-scroll')).toBeVisible();
     };
+    // A thread on the laptop, opened once the drop has lasted the settle
+    // time: the banner says the laptop is offline, with no countdown, and
+    // so does the composer, which takes no message.
+    const expectLaptopThreadSaysOffline = async () => {
+      await laptopRow.click();
+      const banner = page.getByTestId('transport-status-banner');
+      await expect(banner).toContainText('Offline');
+      await expect(banner).not.toContainText('Reconnecting in');
+      const input = page.getByLabel('Message Input');
+      await expect(input).toBeDisabled();
+      await expect(input).toHaveAttribute('placeholder', / is offline$/);
+    };
     // The tray's own refresh trigger for the open thread.
     const poke = async () => {
       await home!.rpc('HarnessEmit', 'provider:background_tasks_changed', { threadId });
@@ -126,6 +138,9 @@ test('an offline paired computer logs once per outage and a draft pane is never 
     expect(Date.now() - outageStart).toBeGreaterThanOrEqual(30_000);
     await expectProjectsMenuSays(page, /Offline/);
     expect(await watchProjectsQuiet(page, 1_000)).toMatchObject({ statusLines: [], animations: [] });
+    // Its thread, opened now, says the laptop is offline.
+    await expectLaptopThreadSaysOffline();
+    await openLocal();
     drain();
 
     // A reload boots every store against the offline computer: one line
@@ -145,14 +160,9 @@ test('an offline paired computer logs once per outage and a draft pane is never 
     expect(boot.http503).toBeGreaterThanOrEqual(1);
     expect(boot).toMatchObject({ preparationFailed: 1, ensureConnected: 0, ownerUnknown: 0, errors: [] });
 
-    // A thread on the laptop, opened once the drop has lasted the settle
-    // time: the banner says the laptop is offline, with no countdown, and
-    // the composer takes no message.
-    await laptopRow.click();
-    const banner = page.getByTestId('transport-status-banner');
-    await expect(banner).toContainText('Offline');
-    await expect(banner).not.toContainText('Reconnecting in');
-    await expect(page.getByLabel('Message Input')).toBeDisabled();
+    // The same after the reload, where this window has never heard the
+    // laptop's grant: still offline, never "read-only".
+    await expectLaptopThreadSaysOffline();
   } finally {
     await page.close();
     await remote?.close();

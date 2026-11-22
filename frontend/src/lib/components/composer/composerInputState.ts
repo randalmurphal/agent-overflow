@@ -1,7 +1,9 @@
+import type { ScopeGrant } from '../../transport/scopes';
+
 export interface ComposerInputStateInput {
   isDisabled: boolean;
-  /** See ComposerSendStateInput.sendUngranted. */
-  sendUngranted?: boolean;
+  /** See ComposerSendStateInput.sendGrant. */
+  sendGrant?: ScopeGrant;
   /** See ComposerSendStateInput.askCopy. */
   askCopy?: boolean;
   /**
@@ -52,7 +54,7 @@ export function deriveComposerInputState(input: ComposerInputStateInput): Compos
   return {
     disabled:
       input.isDisabled ||
-      Boolean(input.sendUngranted) ||
+      (input.sendGrant ?? 'granted') !== 'granted' ||
       Boolean(input.askCopy) ||
       Boolean(input.unreachableTarget) ||
       Boolean(input.offline) ||
@@ -66,7 +68,9 @@ function inputPlaceholder(input: ComposerInputStateInput): string {
   if (input.isDisabled) return 'Select or create a thread to start';
   // Read before the prompt cases: a session that cannot send also cannot
   // answer, so offering the prompt's instructions would be a dead end.
-  if (input.sendUngranted) return 'This device has read-only access';
+  // Only a known grant says so: a computer whose grant has not arrived is
+  // named below, as offline, which is what keeps it from answering.
+  if (input.sendGrant === 'refused') return 'This device has read-only access';
   if (input.askCopy) return "An agent's question runs in this copy. It takes no messages.";
   // Named computer first: "<name> is offline" says more than "disconnected"
   // and both are true at once when another computer's socket is the one
@@ -74,6 +78,8 @@ function inputPlaceholder(input: ComposerInputStateInput): string {
   // socket (Settings, the computer picker, the transport banner).
   if (input.unreachableTarget) return `${input.unreachableTarget} is offline`;
   if (input.offline) return 'Disconnected from the agent backend';
+  // Reachable with no known grant: the thread's computer is ambiguous.
+  if (input.sendGrant === 'unknown') return 'Waiting for this thread’s computer to answer';
   if (input.hasBlockingPrompt) return 'Respond to the approval request to continue';
   if (input.hasUserInputPrompt) return 'Type a custom answer, or choose an option above';
   if (input.hasDiffReviewSource && input.hasDraftDiffReviewComments) {

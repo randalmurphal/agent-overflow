@@ -5,7 +5,7 @@
 import type { BackendKey } from './backendKey';
 import { requireEntityBackend } from './backends';
 import { projectBackend, workflowItemBackend } from './entityIndex';
-import { hasScope, type Scope } from './scopes';
+import { hasScope, scopeGrant, type Scope, type ScopeGrant } from './scopes';
 import { threadClaimant } from './threadOwner';
 
 function entityHasScope(scope: Scope, owner: BackendKey | undefined): boolean {
@@ -16,8 +16,25 @@ function entityHasScope(scope: Scope, owner: BackendKey | undefined): boolean {
 }
 
 export function threadHasScope(scope: Scope, threadId: string | null | undefined, projectId?: string | null): boolean {
-  return entityHasScope(scope, (threadId ? threadClaimant(threadId) : undefined)
-    ?? (projectId ? projectBackend(projectId) : undefined));
+  return entityHasScope(scope, threadOwnerOf(threadId, projectId));
+}
+
+/**
+ * `threadHasScope` with its third answer kept (`scopeGrant`), for a
+ * surface that tells the person a capability was not granted. A thread
+ * whose computer is ambiguous has no known grant.
+ */
+export function threadScopeGrant(
+  scope: Exclude<Scope, 'host'>, threadId: string | null | undefined, projectId?: string | null,
+): ScopeGrant {
+  let backend: BackendKey;
+  try { backend = requireEntityBackend(threadOwnerOf(threadId, projectId)); }
+  catch { return 'unknown'; }
+  return scopeGrant(scope, backend);
+}
+
+function threadOwnerOf(threadId: string | null | undefined, projectId?: string | null): BackendKey | undefined {
+  return (threadId ? threadClaimant(threadId) : undefined) ?? (projectId ? projectBackend(projectId) : undefined);
 }
 export function projectHasScope(scope: Scope, projectId: string | null | undefined): boolean {
   return entityHasScope(scope, projectId ? projectBackend(projectId) : undefined);

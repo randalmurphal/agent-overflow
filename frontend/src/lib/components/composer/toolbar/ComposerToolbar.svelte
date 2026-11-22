@@ -11,6 +11,7 @@
   // one stable control cluster.
 
   import { onMount } from 'svelte';
+  import type { ScopeGrant } from '../../../transport/scopes';
   import type { ThreadPane } from '../../../stores/thread.svelte';
   import ModelProviderMenu from './ModelProviderMenu.svelte';
   import EffortMenu from './EffortMenu.svelte';
@@ -65,8 +66,8 @@
     onEndSession?: () => void;
     /** Whether the thread has a provider session (End Session's gate). */
     sessionLive?: boolean;
-    /** This device lacks `threads:operate` there: the session menu is inert. */
-    sessionUngranted?: boolean;
+    /** This device's `threads:operate` there (SendButton.svelte). */
+    sessionGrant?: ScopeGrant;
     hideSendButton?: boolean;
     /** The composer's dictation, when this layout puts the mic here (the
      * desktop: an outlined circle immediately left of Send, in its grid). */
@@ -90,7 +91,7 @@
     onInterrupt,
     onEndSession,
     sessionLive,
-    sessionUngranted,
+    sessionGrant,
     hideSendButton = false,
     dictation = null,
   }: Props = $props();
@@ -267,7 +268,7 @@
         {onInterrupt}
         {onEndSession}
         {sessionLive}
-        {sessionUngranted}
+        {sessionGrant}
       />
     {/if}
   </div>

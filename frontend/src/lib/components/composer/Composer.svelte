@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { threadHasScope } from '../../transport/entityScopes';
+  import { threadHasScope, threadScopeGrant } from '../../transport/entityScopes';
   // Send + prompt shell. The editing core — textarea, completion menus,
   // attachments, uploads, image placeholders, terminal chips — is
   // ComposerInputSurface.svelte; everything else (model/provider picker,
@@ -139,7 +139,11 @@
   // vanished would leave a thread looking broken rather than read-only,
   // and the disabled state is the affordance the rest of the app already
   // uses for a control that is out of reach.
-  let sendUngranted = $derived(!threadHasScope('threads:operate', pane.threadId, pane.thread?.projectId));
+  //
+  // `refused` only when a grant that says so is known: a computer that has
+  // not answered in this window (it was off when the window loaded) has no
+  // known grant, and its composer says it is offline, not read-only.
+  let sendGrant = $derived(threadScopeGrant('threads:operate', pane.threadId, pane.thread?.projectId));
   // An agent's question runs in this hidden copy: it is watched and
   // stopped from here, never written to.
   let askCopy = $derived(Boolean(pane.thread?.askCopy));
@@ -205,7 +209,7 @@
   // An engine that cannot capture for any source the computer has on shows
   // no mic rather than one that fails.
   let showDictation = $derived(
-    !isDisabled && !sendUngranted && !askCopy && !offline && dictationMachine !== null
+    !isDisabled && sendGrant === 'granted' && !askCopy && !offline && dictationMachine !== null
       && dictationSource(dictationMachine, dictationEngine) !== null,
   );
   // Hiding the mic mid-recording (a sign-out, a lost grant) abandons the
@@ -332,7 +336,7 @@
   let sendState = $derived(deriveComposerSendState({
     shell: shellSendState,
     isDisabled,
-    sendUngranted,
+    sendGrant,
     askCopy,
     sending: false,
     sendSuspended: sendSuspended || interruptPending,
@@ -351,7 +355,7 @@
   let hasPlanImplementAction = $derived(sendState.hasPlanImplementAction);
   let inputState = $derived(deriveComposerInputState({
     isDisabled,
-    sendUngranted,
+    sendGrant,
     askCopy,
     unreachableTarget,
     offline,
@@ -1337,7 +1341,7 @@
       onInterrupt={interrupt}
       onEndSession={pane.thread?.agentId ? endSession : undefined}
       sessionLive={threadSessionLive(pane.threadId)}
-      sessionUngranted={sendUngranted}
+      sessionGrant={sendGrant}
     />
     <ComposerWorkspaceStrip {pane} />
   </div>

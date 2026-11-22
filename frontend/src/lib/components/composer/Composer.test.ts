@@ -376,6 +376,36 @@ describe('<Composer>', () => {
     }
   });
 
+  // A window loaded while the paired computer was off has never heard that
+  // computer's grant. Its thread's composer says the computer is offline at
+  // once; "read-only" is said only for a grant known to say so.
+  for (const compact of [false, true]) it(`says a paired computer is offline when its grant has not arrived in this window (${compact ? 'phone' : 'desktop'})`, async () => {
+    setCompactLayoutForTest(compact);
+    stageBackend({ name: 'Laptop', status: 'reconnecting' });
+    try {
+      noteThread('thread-1', 'laptop', 0);
+      const pane = createThreadPane();
+      pane.replaceThread(makeTestThread({ id: 'thread-1' }));
+      const draft = await buildDraft('thread-1');
+      const { getByLabelText } = render(Composer, { props: { pane, draft } });
+      const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+      await tick();
+      expect(textarea.getAttribute('placeholder')).toBe('Laptop is offline');
+      expect(textarea.disabled).toBe(true);
+
+      // A known view-only grant is a refusal, and says so.
+      await grantBackendScopes('laptop', ['threads:read']);
+      await tick();
+      expect(textarea.getAttribute('placeholder')).toBe('This device has read-only access');
+      expect(textarea.disabled).toBe(true);
+    } finally {
+      revokeBackendScopes('laptop');
+      resetStagedBackends();
+      __resetEntityIndexForTest();
+      setCompactLayoutForTest(false);
+    }
+  });
+
   it('materializes a placeholder and sends through the same draft store', async () => {
     const pane = createThreadPane({ paneId: 'placeholder-send' });
     pane.startDraftPlaceholder(makeProject(), 'chat');

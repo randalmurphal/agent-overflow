@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, it } from 'vitest';
 import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
 import { __resetEntityIndexForTest, noteProject, noteThread, noteWorkflowItem } from './entityIndex';
 import { __resetScopesForTest, setCarriedSessionScopes } from './scopes';
-import { projectHasScope, threadHasScope, workflowItemHasScope } from './entityScopes';
+import { projectHasScope, threadHasScope, threadScopeGrant, workflowItemHasScope } from './entityScopes';
 import { draftPlaceholderId } from '../stores/draftPlaceholderId';
 
 beforeEach(() => {
@@ -19,6 +19,20 @@ it('refuses ambiguous unknown entities instead of borrowing HOME permissions', (
   expect(threadHasScope('threads:operate', 'unknown')).toBe(false);
   expect(projectHasScope('git:operate', 'unknown')).toBe(false);
   expect(workflowItemHasScope('threads:autonomy', 'unknown')).toBe(false);
+  // Holding nothing there is not a known refusal.
+  expect(threadScopeGrant('threads:operate', 'unknown')).toBe('unknown');
+});
+
+// The answer a surface may describe: refused only for a grant known to lack
+// the capability, unknown for a computer whose grant has not arrived.
+it('says which of granted, refused and unknown a thread\'s computer answers', () => {
+  noteThread('thread-writable', 'writable', 0);
+  noteThread('thread-readonly', 'readonly', 0);
+  noteThread('thread-silent', 'silent', 0);
+  expect(threadScopeGrant('threads:operate', 'thread-writable')).toBe('granted');
+  expect(threadScopeGrant('threads:operate', 'thread-readonly')).toBe('refused');
+  expect(threadScopeGrant('threads:operate', 'thread-silent')).toBe('unknown');
+  expect(threadHasScope('threads:operate', 'thread-silent')).toBe(false);
 });
 
 it('checks the owning computer for each visible entity and for a draft’s project', () => {

@@ -168,12 +168,17 @@ export function isScope(value: unknown): value is Scope {
 /** Where the current answer came from, and what it says. */
 export interface ScopeSnapshot {
   /**
-   * Which of the three arms above resolved.
+   * Which of the three arms above resolved, or that none has yet.
    * - `local-page`: the owner's own screen; every grantable scope.
    * - `paired-session`: this browser's paired session; `scopes` names them.
    * - `unpaired`: a networked page holding no session of its own.
+   * - `unknown`: nothing has said yet: this page before its bootstrap
+   *   manifest, or an attached computer whose grant arrives with its own
+   *   manifest and that has not answered one in this window (it was off
+   *   when the window loaded). It holds nothing, as `unpaired` does, but
+   *   it is not a refusal, and nothing may tell the person it is one.
    */
-  source: 'local-page' | 'paired-session' | 'unpaired';
+  source: 'local-page' | 'paired-session' | 'unpaired' | 'unknown';
   /** True when every grantable scope is held; `scopes` is then empty. */
   everyScope: boolean;
   /** The named grants. Empty under `local-page` and `unpaired` alike. */
@@ -192,7 +197,7 @@ const NO_SCOPES: ReadonlySet<Scope> = new Set<Scope>();
 // assumed to be the owner's screen: a control that appears a frame late
 // is better than one that appears and then has to be taken away.
 const UNRESOLVED: ScopeSnapshot = {
-  source: 'unpaired',
+  source: 'unknown',
   everyScope: false,
   scopes: NO_SCOPES,
   onHost: false,
@@ -327,8 +332,12 @@ function resolve(backend: BackendKey): void {
     next = { source: 'paired-session', everyScope: false, scopes: known, onHost: false };
   } else if (onHost) {
     next = { source: 'local-page', everyScope: true, scopes: NO_SCOPES, onHost: true };
-  } else {
+  } else if (home) {
     next = { source: 'unpaired', everyScope: false, scopes: NO_SCOPES, onHost: false };
+  } else {
+    // An attached computer with no session of its own here and no grant
+    // carried by its manifest yet: its answer has not arrived.
+    next = UNRESOLVED;
   }
   const current = snapshots.get(backend) ?? UNRESOLVED;
   if (sameSnapshot(current, next)) return;
@@ -352,7 +361,26 @@ export function hasScope(scope: Scope, backendId: BackendKey): boolean;
 export function hasScope(scope: Scope, backendId: BackendKey = HOME_BACKEND): boolean {
   const snapshot = readSnapshot(backendId, `hasScope(${scope})`);
   if (scope === 'host') return snapshot.onHost;
-  return snapshot.everyScope || snapshot.scopes.has(scope);
+  return grantOf(snapshot, scope) === 'granted';
+}
+
+function grantOf(snapshot: ScopeSnapshot, scope: Scope): ScopeGrant {
+  if (snapshot.everyScope || snapshot.scopes.has(scope)) return 'granted';
+  return snapshot.source === 'unknown' ? 'unknown' : 'refused';
+}
+
+/**
+ * `hasScope` with its third answer kept: `refused` only when a grant is
+ * known and does not hold `scope`, `unknown` while nothing has said. A
+ * gate reads `hasScope`, which answers false for both. A surface that
+ * TELLS the person a capability was not granted ("read-only access")
+ * reads this, so a computer that has not answered in this window is
+ * never described as having refused.
+ */
+export type ScopeGrant = 'granted' | 'refused' | 'unknown';
+
+export function scopeGrant(scope: Exclude<Scope, 'host'>, backendId: BackendKey): ScopeGrant {
+  return grantOf(readSnapshot(backendId, `scopeGrant(${scope})`), scope);
 }
 
 /**

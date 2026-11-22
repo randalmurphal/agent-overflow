@@ -136,7 +136,7 @@ describe('deriveComposerSendState', () => {
 
   it('keeps every refusal that applies to a send in force for a command', () => {
     for (const refusal of [
-      { isDisabled: true }, { sendUngranted: true }, { sending: true }, { sendSuspended: true },
+      { isDisabled: true }, { sendGrant: 'refused' as const }, { sendGrant: 'unknown' as const }, { sending: true }, { sendSuspended: true },
       { hasBlockingPrompt: true }, { hasUserInputPrompt: true }, { askCopy: true },
     ]) {
       expect(deriveComposerSendState(input({ shell: 'ready', hasDraftContent: true, ...refusal })).canSend).toBe(false);
