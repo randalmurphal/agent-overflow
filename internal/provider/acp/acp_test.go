@@ -611,9 +611,11 @@ func TestACPMultiplexedSessionsLiveConfigAndCloseIsolation(t *testing.T) {
 	if !strings.Contains(textA.Content, "model-b|low|accept-edits") || !strings.Contains(textA.Content, "hello A") {
 		t.Fatalf("unexpected A reply: %q", textA.Content)
 	}
-	diffA := evA.waitFor(t, 2*time.Second, func(e provider.ProviderEvent) bool { return e.Kind == provider.EventDiff })
-	if !strings.Contains(diffA.Content, "--- a/foo.txt") || !strings.Contains(diffA.Content, "+b") {
-		t.Fatalf("unexpected unified diff: %q", diffA.Content)
+	toolCompA := evA.waitFor(t, 2*time.Second, func(e provider.ProviderEvent) bool {
+		return e.Kind == provider.EventToolComplete && e.ItemType == "file_change"
+	})
+	if !strings.Contains(string(toolCompA.Meta), "--- a/foo.txt") || !strings.Contains(string(toolCompA.Meta), "+b") || !strings.Contains(string(toolCompA.Meta), `"changes"`) {
+		t.Fatalf("unexpected file_change tool_complete meta: %s", string(toolCompA.Meta))
 	}
 
 	// Live config update on B without restarting.

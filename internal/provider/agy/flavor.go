@@ -69,14 +69,57 @@ func (f *Flavor) ConvertUsage(u acp.Usage, _ string) provider.TokenUsage {
 func (f *Flavor) NormalizeToolStart(u *acp.ToolCallUpdate) acp.NormalizedToolStart {
 	norm := f.DefaultFlavor.NormalizeToolStart(u)
 	rawIn := u.EffectiveInput()
+	rawName := strings.TrimSpace(u.Name)
 
-	switch strings.ToLower(strings.TrimSpace(u.Name)) {
-	case "read_file":
+	if server, tool, ok := parseAgyMCPToolName(rawName); ok {
+		norm.ToolName = "MCP/" + tool
+		norm.ItemType = "MCP/" + tool
+		if norm.ExtraMeta == nil {
+			norm.ExtraMeta = map[string]any{}
+		}
+		norm.ExtraMeta["mcp"] = map[string]string{
+			"server": server,
+			"tool":   tool,
+		}
+		return norm
+	}
+
+	switch strings.ToLower(rawName) {
+	case "read_file", "view_file":
 		norm.ToolName = "Read"
 		norm.ItemType = "Read"
-		path := extractLocationOrInputPath(u, rawIn, "Path", "file_path", "path")
+		path := extractLocationOrInputPath(u, rawIn, "Path", "AbsolutePath", "file_path", "path")
+		fields := map[string]any{}
 		if path != "" {
-			if reshaped, err := json.Marshal(map[string]any{"file_path": path}); err == nil {
+			fields["file_path"] = path
+		}
+		var params struct {
+			StartLine int `json:"StartLine"`
+			EndLine   int `json:"EndLine"`
+			Offset    int `json:"offset"`
+			Limit     int `json:"limit"`
+		}
+		if len(rawIn) > 0 && json.Unmarshal(rawIn, &params) == nil {
+			offset := params.StartLine
+			if offset <= 0 {
+				offset = params.Offset
+			}
+			if offset <= 0 && len(u.Locations) > 0 && u.Locations[0].Line > 0 {
+				offset = u.Locations[0].Line
+			}
+			if offset > 0 {
+				fields["offset"] = offset
+			}
+			limit := params.Limit
+			if limit <= 0 && params.StartLine > 0 && params.EndLine >= params.StartLine {
+				limit = params.EndLine - params.StartLine + 1
+			}
+			if limit > 0 {
+				fields["limit"] = limit
+			}
+		}
+		if len(fields) > 0 {
+			if reshaped, err := json.Marshal(fields); err == nil {
 				norm.Input = reshaped
 			}
 		}
@@ -85,18 +128,49 @@ func (f *Flavor) NormalizeToolStart(u *acp.ToolCallUpdate) acp.NormalizedToolSta
 		norm.ToolName = "Edit"
 		norm.ItemType = "file_change"
 		path := extractLocationOrInputPath(u, rawIn, "Path", "TargetFile", "file_path", "path")
+		fields := map[string]any{}
 		if path != "" {
-			if reshaped, err := json.Marshal(map[string]any{"file_path": path}); err == nil {
+			fields["file_path"] = path
+		}
+		var params struct {
+			Target             string `json:"Target"`
+			TargetContent      string `json:"TargetContent"`
+			Replacement        string `json:"Replacement"`
+			ReplacementContent string `json:"ReplacementContent"`
+		}
+		if len(rawIn) > 0 && json.Unmarshal(rawIn, &params) == nil {
+			if oldStr := firstNonEmpty(params.Target, params.TargetContent); oldStr != "" {
+				fields["old_string"] = oldStr
+			}
+			if newStr := firstNonEmpty(params.Replacement, params.ReplacementContent); newStr != "" {
+				fields["new_string"] = newStr
+			}
+		}
+		if len(fields) > 0 {
+			if reshaped, err := json.Marshal(fields); err == nil {
 				norm.Input = reshaped
 			}
 		}
 
-	case "write_file":
+	case "write_file", "write_to_file":
 		norm.ToolName = "Write"
 		norm.ItemType = "file_change"
 		path := extractLocationOrInputPath(u, rawIn, "Path", "TargetFile", "file_path", "path")
+		fields := map[string]any{}
 		if path != "" {
-			if reshaped, err := json.Marshal(map[string]any{"file_path": path}); err == nil {
+			fields["file_path"] = path
+		}
+		var params struct {
+			Content     string `json:"Content"`
+			CodeContent string `json:"CodeContent"`
+		}
+		if len(rawIn) > 0 && json.Unmarshal(rawIn, &params) == nil {
+			if content := firstNonEmpty(params.Content, params.CodeContent); content != "" {
+				fields["content"] = content
+			}
+		}
+		if len(fields) > 0 {
+			if reshaped, err := json.Marshal(fields); err == nil {
 				norm.Input = reshaped
 			}
 		}
@@ -105,17 +179,147 @@ func (f *Flavor) NormalizeToolStart(u *acp.ToolCallUpdate) acp.NormalizedToolSta
 		norm.ToolName = "Bash"
 		norm.ItemType = "command_execution"
 		var params struct {
-			CommandLine string `json:"CommandLine"`
-			ToolSummary string `json:"toolSummary"`
-			IsDaemon    bool   `json:"IsDaemon"`
+			CommandLine       string `json:"CommandLine"`
+			ToolSummary       string `json:"toolSummary"`
+			Cwd               string `json:"Cwd"`
+			IsDaemon          bool   `json:"IsDaemon"`
+			WaitMsBeforeAsync int    `json:"WaitMsBeforeAsync"`
 		}
 		if len(rawIn) > 0 && json.Unmarshal(rawIn, &params) == nil {
 			fields := map[string]any{}
 			if params.CommandLine != "" {
 				fields["command"] = params.CommandLine
+				if norm.ExtraMeta == nil {
+					norm.ExtraMeta = map[string]any{}
+				}
+				norm.ExtraMeta["command"] = params.CommandLine
 			}
 			if params.ToolSummary != "" {
 				fields["description"] = params.ToolSummary
+			}
+			if params.Cwd != "" {
+				fields["cwd"] = params.Cwd
+				if norm.ExtraMeta == nil {
+					norm.ExtraMeta = map[string]any{}
+				}
+				norm.ExtraMeta["cwd"] = params.Cwd
+			}
+			if params.IsDaemon {
+				fields["run_in_background"] = true
+				norm.IsBackground = true
+			}
+			if params.WaitMsBeforeAsync > 0 {
+				fields["timeout"] = params.WaitMsBeforeAsync
+			}
+			if len(fields) > 0 {
+				if reshaped, err := json.Marshal(fields); err == nil {
+					norm.Input = reshaped
+				}
+			}
+		}
+
+	case "grep_search", "ripgrep", "search_files":
+		norm.ToolName = "Grep"
+		norm.ItemType = "Grep"
+		var params struct {
+			Query           string   `json:"Query"`
+			Pattern         string   `json:"Pattern"`
+			PatternLower    string   `json:"pattern"`
+			SearchPath      string   `json:"SearchPath"`
+			Path            string   `json:"Path"`
+			PathLower       string   `json:"path"`
+			Includes        []string `json:"Includes"`
+			Glob            string   `json:"glob"`
+			CaseInsensitive bool     `json:"CaseInsensitive"`
+		}
+		if len(rawIn) > 0 && json.Unmarshal(rawIn, &params) == nil {
+			fields := map[string]any{}
+			if pat := firstNonEmpty(params.Query, params.Pattern, params.PatternLower); pat != "" {
+				fields["pattern"] = pat
+			}
+			if path := firstNonEmpty(params.SearchPath, params.Path, params.PathLower); path != "" {
+				fields["path"] = path
+			}
+			if params.Glob != "" {
+				fields["glob"] = params.Glob
+			} else if len(params.Includes) > 0 {
+				fields["glob"] = strings.Join(params.Includes, ",")
+			}
+			if params.CaseInsensitive {
+				fields["-i"] = true
+			}
+			if len(fields) > 0 {
+				if reshaped, err := json.Marshal(fields); err == nil {
+					norm.Input = reshaped
+				}
+			}
+		}
+
+	case "find_by_name", "glob", "list_dir":
+		norm.ToolName = "Glob"
+		norm.ItemType = "Glob"
+		var params struct {
+			Pattern         string `json:"Pattern"`
+			PatternLower    string `json:"pattern"`
+			SearchDirectory string `json:"SearchDirectory"`
+			DirectoryPath   string `json:"DirectoryPath"`
+			Path            string `json:"Path"`
+			PathLower       string `json:"path"`
+		}
+		if len(rawIn) > 0 && json.Unmarshal(rawIn, &params) == nil {
+			fields := map[string]any{}
+			if pat := firstNonEmpty(params.Pattern, params.PatternLower); pat != "" {
+				fields["pattern"] = pat
+			}
+			if path := firstNonEmpty(params.SearchDirectory, params.DirectoryPath, params.Path, params.PathLower); path != "" {
+				fields["path"] = path
+			}
+			if len(fields) > 0 {
+				if reshaped, err := json.Marshal(fields); err == nil {
+					norm.Input = reshaped
+				}
+			}
+		}
+
+	case "search_web", "web_search":
+		norm.ToolName = "WebSearch"
+		norm.ItemType = "WebSearch"
+		var params struct {
+			Query      string `json:"query"`
+			QueryUpper string `json:"Query"`
+			Domain     string `json:"domain"`
+			DomainUp   string `json:"Domain"`
+		}
+		if len(rawIn) > 0 && json.Unmarshal(rawIn, &params) == nil {
+			fields := map[string]any{}
+			if q := firstNonEmpty(params.Query, params.QueryUpper); q != "" {
+				fields["query"] = q
+			}
+			if d := firstNonEmpty(params.Domain, params.DomainUp); d != "" {
+				fields["allowed_domains"] = []string{d}
+			}
+			if len(fields) > 0 {
+				if reshaped, err := json.Marshal(fields); err == nil {
+					norm.Input = reshaped
+				}
+			}
+		}
+
+	case "read_url_content", "fetch_url", "web_fetch":
+		norm.ToolName = "WebFetch"
+		norm.ItemType = "WebFetch"
+		var params struct {
+			URL      string `json:"Url"`
+			URLLower string `json:"url"`
+			Prompt   string `json:"prompt"`
+		}
+		if len(rawIn) > 0 && json.Unmarshal(rawIn, &params) == nil {
+			fields := map[string]any{}
+			if targetURL := firstNonEmpty(params.URL, params.URLLower); targetURL != "" {
+				fields["url"] = targetURL
+			}
+			if params.Prompt != "" {
+				fields["prompt"] = params.Prompt
 			}
 			if len(fields) > 0 {
 				if reshaped, err := json.Marshal(fields); err == nil {
@@ -132,22 +336,78 @@ func (f *Flavor) NormalizeToolStart(u *acp.ToolCallUpdate) acp.NormalizedToolSta
 			TypeName string `json:"TypeName"`
 			Role     string `json:"Role"`
 			Prompt   string `json:"Prompt"`
+			Model    string `json:"Model"`
 		}
 		if len(rawIn) > 0 && json.Unmarshal(rawIn, &params) == nil {
 			norm.SubagentType = strings.TrimSpace(params.TypeName)
 			norm.Description = strings.TrimSpace(params.Role)
-			if reshaped, err := json.Marshal(map[string]any{
-				"subagent_type": norm.SubagentType,
-				"description":   norm.Description,
-				"prompt":        params.Prompt,
-			}); err == nil {
+			fields := map[string]any{
+				"subagent_type":     norm.SubagentType,
+				"description":       norm.Description,
+				"prompt":            params.Prompt,
+				"run_in_background": true,
+			}
+			if m := strings.TrimSpace(params.Model); m != "" && m != "inherit" {
+				fields["model"] = m
+			}
+			if reshaped, err := json.Marshal(fields); err == nil {
 				norm.Input = reshaped
+			}
+		}
+
+	case "send_message":
+		norm.ToolName = "SendMessage"
+		norm.ItemType = "SendMessage"
+		var params struct {
+			Recipient string `json:"Recipient"`
+			Message   string `json:"Message"`
+		}
+		if len(rawIn) > 0 && json.Unmarshal(rawIn, &params) == nil {
+			fields := map[string]any{}
+			if params.Recipient != "" {
+				fields["to"] = params.Recipient
+			}
+			if params.Message != "" {
+				fields["message"] = params.Message
+			}
+			if len(fields) > 0 {
+				if reshaped, err := json.Marshal(fields); err == nil {
+					norm.Input = reshaped
+				}
 			}
 		}
 
 	case "ask_question":
 		norm.ToolName = "AskUserQuestion"
 		norm.ItemType = "AskUserQuestion"
+		if questions, ok := f.ExtractPendingQuestion(u); ok {
+			if reshaped, err := json.Marshal(map[string]any{"questions": questions}); err == nil {
+				norm.Input = reshaped
+			}
+		}
+
+	case "generate_image":
+		norm.ToolName = "ImageGeneration"
+		norm.ItemType = "ImageGeneration"
+		var params struct {
+			Prompt    string `json:"Prompt"`
+			ImageName string `json:"ImageName"`
+			Path      string `json:"Path"`
+		}
+		if len(rawIn) > 0 && json.Unmarshal(rawIn, &params) == nil {
+			fields := map[string]any{}
+			if params.Prompt != "" {
+				fields["prompt"] = params.Prompt
+			}
+			if p := firstNonEmpty(params.Path, params.ImageName); p != "" {
+				fields["path"] = p
+			}
+			if len(fields) > 0 {
+				if reshaped, err := json.Marshal(fields); err == nil {
+					norm.Input = reshaped
+				}
+			}
+		}
 	}
 
 	return norm
@@ -155,20 +415,62 @@ func (f *Flavor) NormalizeToolStart(u *acp.ToolCallUpdate) acp.NormalizedToolSta
 
 func (f *Flavor) NormalizeToolComplete(u *acp.ToolCallUpdate, started acp.NormalizedToolStart) acp.NormalizedToolComplete {
 	norm := f.DefaultFlavor.NormalizeToolComplete(u, started)
+	rawName := strings.ToLower(strings.TrimSpace(u.Name))
+	rawIn := u.EffectiveInput()
 
-	// Plan-mode artifact write_file carries ArtifactMetadata.RequestFeedback=true.
-	if strings.EqualFold(strings.TrimSpace(u.Name), "write_file") {
+	// Plan-mode artifact write_file/edit_file carries ArtifactMetadata.RequestFeedback=true.
+	if rawName == "write_file" || rawName == "write_to_file" || rawName == "edit_file" {
 		var params struct {
+			Path             string `json:"Path"`
+			TargetFile       string `json:"TargetFile"`
 			Content          string `json:"Content"`
+			CodeContent      string `json:"CodeContent"`
+			Target           string `json:"Target"`
+			Replacement      string `json:"Replacement"`
 			ArtifactMetadata *struct {
 				RequestFeedback bool `json:"RequestFeedback"`
 				UserFacing      bool `json:"UserFacing"`
 			} `json:"ArtifactMetadata"`
 		}
-		if len(u.EffectiveInput()) > 0 && json.Unmarshal(u.EffectiveInput(), &params) == nil {
-			if params.ArtifactMetadata != nil && params.ArtifactMetadata.RequestFeedback && strings.TrimSpace(params.Content) != "" {
-				norm.ProposedPlan = params.Content
+		if len(rawIn) > 0 && json.Unmarshal(rawIn, &params) == nil {
+			body := firstNonEmpty(params.Content, params.CodeContent, params.Replacement)
+			if params.ArtifactMetadata != nil && params.ArtifactMetadata.RequestFeedback && strings.TrimSpace(body) != "" {
+				norm.ProposedPlan = body
 			}
+			// Fallback inline diff when an ACP update omitted content[{type:"diff"}].
+			if len(norm.DiffChanges) == 0 && norm.ItemType == "file_change" {
+				path := extractLocationOrInputPath(u, rawIn, "Path", "TargetFile", "file_path", "path")
+				if path != "" {
+					switch rawName {
+					case "write_file", "write_to_file":
+						if content := firstNonEmpty(params.Content, params.CodeContent); content != "" {
+							if patch := acp.BuildUnifiedDiff(path, "", content); patch != "" {
+								norm.DiffPatch = patch
+								norm.DiffFilePath = path
+								norm.DiffChanges = []acp.FileDiffChange{{Path: path, Kind: "add", Diff: patch}}
+							}
+						}
+					case "edit_file":
+						if params.Target != "" || params.Replacement != "" {
+							if patch := acp.BuildUnifiedDiff(path, params.Target, params.Replacement); patch != "" {
+								norm.DiffPatch = patch
+								norm.DiffFilePath = path
+								norm.DiffChanges = []acp.FileDiffChange{{Path: path, Kind: "update", Diff: patch}}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Preserve subagent conversationId on Agent completion for lineage linking.
+	if rawName == "invoke_subagent" || started.SubagentLaunch {
+		if convID := extractConversationID(u.RawOutput, norm.Content); convID != "" {
+			if norm.ExtraMeta == nil {
+				norm.ExtraMeta = map[string]any{}
+			}
+			norm.ExtraMeta["agent_id"] = convID
 		}
 	}
 
@@ -435,6 +737,87 @@ func extractLocationOrInputPath(u *acp.ToolCallUpdate, rawIn json.RawMessage, ke
 	for _, k := range keys {
 		if v, ok := obj[k].(string); ok && strings.TrimSpace(v) != "" {
 			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// knownAOMCPServers lists AO's own loopback MCP servers so single-underscore
+// `mcp_<server>_<tool>` names from agy split cleanly even when server names
+// contain hyphens or underscores.
+var knownAOMCPServers = []struct {
+	wire   string
+	server string
+}{
+	{"ao-thread-tools", "ao-thread-tools"},
+	{"ao_thread_tools", "ao-thread-tools"},
+	{"ao-browser-tools", "ao-browser-tools"},
+	{"ao_browser_tools", "ao-browser-tools"},
+	{"ao-remote-tools", "ao-remote-tools"},
+	{"ao_remote_tools", "ao-remote-tools"},
+	{"ao-workflow-tools", "ao-workflow-tools"},
+	{"ao_workflow_tools", "ao-workflow-tools"},
+}
+
+// parseAgyMCPToolName parses both `mcp__<server>__<tool>` and agy's
+// single-underscore `mcp_<server>_<tool>` tool names.
+func parseAgyMCPToolName(name string) (server, tool string, ok bool) {
+	if strings.HasPrefix(name, "mcp__") {
+		rest := name[len("mcp__"):]
+		if sep := strings.Index(rest, "__"); sep > 0 && sep+2 < len(rest) {
+			return rest[:sep], rest[sep+2:], true
+		}
+		return "", "", false
+	}
+	if !strings.HasPrefix(name, "mcp_") {
+		return "", "", false
+	}
+	rest := name[len("mcp_"):]
+	for _, known := range knownAOMCPServers {
+		prefix := known.wire + "_"
+		if strings.HasPrefix(rest, prefix) && len(rest) > len(prefix) {
+			return known.server, rest[len(prefix):], true
+		}
+	}
+	sep := strings.IndexByte(rest, '_')
+	if sep <= 0 || sep+1 >= len(rest) {
+		return "", "", false
+	}
+	return rest[:sep], rest[sep+1:], true
+}
+
+func extractConversationID(rawOut json.RawMessage, content string) string {
+	if len(rawOut) > 0 {
+		var obj struct {
+			ConversationID string `json:"conversationId"`
+			ID             string `json:"conversation_id"`
+		}
+		if json.Unmarshal(rawOut, &obj) == nil {
+			if id := firstNonEmpty(obj.ConversationID, obj.ID); id != "" {
+				return strings.TrimSpace(id)
+			}
+		}
+	}
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if idx := strings.Index(line, "conversationId"); idx >= 0 {
+			rest := line[idx+len("conversationId"):]
+			rest = strings.TrimLeft(rest, `":= `)
+			if end := strings.IndexAny(rest, `" ,}`); end > 0 {
+				return rest[:end]
+			}
+			if rest != "" {
+				return rest
+			}
 		}
 	}
 	return ""

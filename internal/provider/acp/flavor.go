@@ -56,6 +56,14 @@ type NormalizedToolStart struct {
 	ExtraMeta      map[string]any
 }
 
+// FileDiffChange describes one file change in the normalized shape triage's
+// ExtractFileChangeToolResult consumes to build rich inline diffs on Edit/Write rows.
+type FileDiffChange struct {
+	Path string
+	Kind string // "add", "update", "delete"
+	Diff string
+}
+
 // NormalizedToolComplete holds normalized outputs for EventToolComplete and
 // companion heavy payload events (EventDiff, EventCommandOutput, EventProposedPlan).
 type NormalizedToolComplete struct {
@@ -64,9 +72,11 @@ type NormalizedToolComplete struct {
 	Content      string
 	IsError      bool
 	ExitCode     *int
+	DurationMs   *int
 	ItemStatus   string
 	DiffPatch    string
 	DiffFilePath string
+	DiffChanges  []FileDiffChange
 	CommandOut   string
 	CommandLine  string
 	ProposedPlan string
@@ -224,6 +234,17 @@ func (DefaultFlavor) NormalizeToolComplete(u *ToolCallUpdate, started Normalized
 				if out.DiffFilePath == "" {
 					out.DiffFilePath = item.Path
 				}
+				changeKind := "update"
+				if item.OldText == "" && item.NewText != "" {
+					changeKind = "add"
+				} else if item.OldText != "" && item.NewText == "" {
+					changeKind = "delete"
+				}
+				out.DiffChanges = append(out.DiffChanges, FileDiffChange{
+					Path: item.Path,
+					Kind: changeKind,
+					Diff: patch,
+				})
 			}
 		case "content":
 			if item.Content != nil && item.Content.Text != "" {
@@ -234,15 +255,43 @@ func (DefaultFlavor) NormalizeToolComplete(u *ToolCallUpdate, started Normalized
 	if len(textParts) > 0 {
 		out.Content = strings.Join(textParts, "\n")
 	}
-	if out.Content == "" && len(u.RawOutput) > 0 && string(u.RawOutput) != "null" && string(u.RawOutput) != "{}" {
+	if len(u.RawOutput) > 0 && string(u.RawOutput) != "null" && string(u.RawOutput) != "{}" {
 		var rawObj struct {
-			Output   string `json:"output"`
-			ExitCode *int   `json:"exit_code"`
+			Output        string `json:"output"`
+			Stdout        string `json:"stdout"`
+			Stderr        string `json:"stderr"`
+			ExitCode      *int   `json:"exit_code"`
+			ExitCodeCamel *int   `json:"exitCode"`
+			DurationMs    *int   `json:"duration_ms"`
+			DurationCamel *int   `json:"durationMs"`
 		}
-		if json.Unmarshal(u.RawOutput, &rawObj) == nil && (rawObj.Output != "" || rawObj.ExitCode != nil) {
-			out.Content = rawObj.Output
-			out.ExitCode = rawObj.ExitCode
-		} else {
+		if json.Unmarshal(u.RawOutput, &rawObj) == nil &&
+			(rawObj.Output != "" || rawObj.Stdout != "" || rawObj.Stderr != "" ||
+				rawObj.ExitCode != nil || rawObj.ExitCodeCamel != nil ||
+				rawObj.DurationMs != nil || rawObj.DurationCamel != nil) {
+			if rawObj.ExitCode != nil {
+				out.ExitCode = rawObj.ExitCode
+			} else if rawObj.ExitCodeCamel != nil {
+				out.ExitCode = rawObj.ExitCodeCamel
+			}
+			if rawObj.DurationMs != nil {
+				out.DurationMs = rawObj.DurationMs
+			} else if rawObj.DurationCamel != nil {
+				out.DurationMs = rawObj.DurationCamel
+			}
+			if out.Content == "" {
+				switch {
+				case rawObj.Output != "":
+					out.Content = rawObj.Output
+				case rawObj.Stdout != "" && rawObj.Stderr != "":
+					out.Content = rawObj.Stdout + "\n" + rawObj.Stderr
+				case rawObj.Stdout != "":
+					out.Content = rawObj.Stdout
+				case rawObj.Stderr != "":
+					out.Content = rawObj.Stderr
+				}
+			}
+		} else if out.Content == "" {
 			var rawStr string
 			if json.Unmarshal(u.RawOutput, &rawStr) == nil {
 				out.Content = rawStr

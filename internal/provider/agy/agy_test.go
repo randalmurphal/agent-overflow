@@ -275,3 +275,131 @@ for line in sys.stdin:
 		t.Fatalf("unexpected model 1: %+v", models[1])
 	}
 }
+
+func TestAgyFlavorRichToolAndMCPMetadata(t *testing.T) {
+	t.Parallel()
+	f := NewFlavor("")
+
+	// 1. MCP tools (AO hyphenated/underscored + generic + double-underscore) stamp meta.mcp + MCP/<tool>.
+	mcpCases := []struct {
+		wire, server, tool string
+	}{
+		{"mcp_ao-thread-tools_spawn_thread", "ao-thread-tools", "spawn_thread"},
+		{"mcp_ao_browser_tools_click", "ao-browser-tools", "click"},
+		{"mcp__github__list_prs", "github", "list_prs"},
+		{"mcp_postgres_run_query", "postgres", "run_query"},
+	}
+	for _, tc := range mcpCases {
+		norm := f.NormalizeToolStart(&acp.ToolCallUpdate{
+			Name:     tc.wire,
+			RawInput: json.RawMessage(`{"x":1}`),
+		})
+		if norm.ToolName != "MCP/"+tc.tool {
+			t.Errorf("%s: ToolName = %q, want %q", tc.wire, norm.ToolName, "MCP/"+tc.tool)
+		}
+		mcp, _ := norm.ExtraMeta["mcp"].(map[string]string)
+		if mcp["server"] != tc.server || mcp["tool"] != tc.tool {
+			t.Errorf("%s: meta.mcp = %+v, want server=%q tool=%q", tc.wire, mcp, tc.server, tc.tool)
+		}
+	}
+
+	// 2. read_file preserves offset and limit.
+	readNorm := f.NormalizeToolStart(&acp.ToolCallUpdate{
+		Name:     "read_file",
+		RawInput: json.RawMessage(`{"Path":"/repo/main.go","StartLine":10,"EndLine":29}`),
+	})
+	var readIn map[string]any
+	if err := json.Unmarshal(readNorm.Input, &readIn); err != nil {
+		t.Fatal(err)
+	}
+	if readIn["file_path"] != "/repo/main.go" || readIn["offset"] != float64(10) || readIn["limit"] != float64(20) {
+		t.Fatalf("unexpected read input: %+v", readIn)
+	}
+
+	// 3. edit_file preserves old_string/new_string and synthesizes DiffChanges fallback on complete.
+	editUpdate := &acp.ToolCallUpdate{
+		Name:     "edit_file",
+		Status:   "completed",
+		RawInput: json.RawMessage(`{"Path":"/repo/a.go","Target":"old","Replacement":"new"}`),
+	}
+	editStart := f.NormalizeToolStart(editUpdate)
+	if editStart.ToolName != "Edit" || editStart.ItemType != "file_change" ||
+		!strings.Contains(string(editStart.Input), `"old_string":"old"`) ||
+		!strings.Contains(string(editStart.Input), `"new_string":"new"`) {
+		t.Fatalf("unexpected editStart: %+v input=%s", editStart, editStart.Input)
+	}
+	editComp := f.NormalizeToolComplete(editUpdate, editStart)
+	if len(editComp.DiffChanges) != 1 || editComp.DiffChanges[0].Kind != "update" || !strings.Contains(editComp.DiffChanges[0].Diff, "+new") {
+		t.Fatalf("expected synthesized edit DiffChanges, got %+v", editComp.DiffChanges)
+	}
+
+	// 4. grep_search, find_by_name, search_web, read_url_content, run_command, invoke_subagent, send_message, generate_image.
+	grepNorm := f.NormalizeToolStart(&acp.ToolCallUpdate{
+		Name:     "grep_search",
+		RawInput: json.RawMessage(`{"Query":"PlanLiveUpdate","SearchPath":"/repo","Includes":["*.go"],"CaseInsensitive":true}`),
+	})
+	if grepNorm.ToolName != "Grep" || !strings.Contains(string(grepNorm.Input), `"pattern":"PlanLiveUpdate"`) || !strings.Contains(string(grepNorm.Input), `"-i":true`) {
+		t.Fatalf("unexpected grepNorm: %+v input=%s", grepNorm, grepNorm.Input)
+	}
+
+	globNorm := f.NormalizeToolStart(&acp.ToolCallUpdate{
+		Name:     "find_by_name",
+		RawInput: json.RawMessage(`{"Pattern":"*.svelte","SearchDirectory":"/repo/frontend"}`),
+	})
+	if globNorm.ToolName != "Glob" || !strings.Contains(string(globNorm.Input), `"pattern":"*.svelte"`) {
+		t.Fatalf("unexpected globNorm: %+v input=%s", globNorm, globNorm.Input)
+	}
+
+	webNorm := f.NormalizeToolStart(&acp.ToolCallUpdate{
+		Name:     "search_web",
+		RawInput: json.RawMessage(`{"query":"golang acp","domain":"go.dev"}`),
+	})
+	if webNorm.ToolName != "WebSearch" || !strings.Contains(string(webNorm.Input), `"allowed_domains":["go.dev"]`) {
+		t.Fatalf("unexpected webNorm: %+v input=%s", webNorm, webNorm.Input)
+	}
+
+	fetchNorm := f.NormalizeToolStart(&acp.ToolCallUpdate{
+		Name:     "read_url_content",
+		RawInput: json.RawMessage(`{"Url":"https://example.com"}`),
+	})
+	if fetchNorm.ToolName != "WebFetch" || !strings.Contains(string(fetchNorm.Input), `"url":"https://example.com"`) {
+		t.Fatalf("unexpected fetchNorm: %+v input=%s", fetchNorm, fetchNorm.Input)
+	}
+
+	cmdNorm := f.NormalizeToolStart(&acp.ToolCallUpdate{
+		Name:     "run_command",
+		RawInput: json.RawMessage(`{"CommandLine":"make test","toolSummary":"Run tests","Cwd":"/repo","IsDaemon":true,"WaitMsBeforeAsync":5000}`),
+	})
+	if cmdNorm.ToolName != "Bash" || !cmdNorm.IsBackground || cmdNorm.ExtraMeta["command"] != "make test" || cmdNorm.ExtraMeta["cwd"] != "/repo" {
+		t.Fatalf("unexpected cmdNorm: %+v input=%s", cmdNorm, cmdNorm.Input)
+	}
+
+	subStart := f.NormalizeToolStart(&acp.ToolCallUpdate{
+		Name:     "invoke_subagent",
+		RawInput: json.RawMessage(`{"TypeName":"research","Role":"Auditor","Prompt":"audit","Model":"pro"}`),
+	})
+	subComp := f.NormalizeToolComplete(&acp.ToolCallUpdate{
+		Name:      "invoke_subagent",
+		Status:    "completed",
+		RawOutput: json.RawMessage(`{"conversationId":"child-conv-42"}`),
+	}, subStart)
+	if subComp.ExtraMeta["agent_id"] != "child-conv-42" {
+		t.Fatalf("expected agent_id on subagent complete, got %+v", subComp.ExtraMeta)
+	}
+
+	msgNorm := f.NormalizeToolStart(&acp.ToolCallUpdate{
+		Name:     "send_message",
+		RawInput: json.RawMessage(`{"Recipient":"child-conv-42","Message":"continue"}`),
+	})
+	if msgNorm.ToolName != "SendMessage" || !strings.Contains(string(msgNorm.Input), `"to":"child-conv-42"`) {
+		t.Fatalf("unexpected msgNorm: %+v input=%s", msgNorm, msgNorm.Input)
+	}
+
+	imgNorm := f.NormalizeToolStart(&acp.ToolCallUpdate{
+		Name:     "generate_image",
+		RawInput: json.RawMessage(`{"Prompt":"logo","ImageName":"logo.png"}`),
+	})
+	if imgNorm.ToolName != "ImageGeneration" || !strings.Contains(string(imgNorm.Input), `"path":"logo.png"`) {
+		t.Fatalf("unexpected imgNorm: %+v input=%s", imgNorm, imgNorm.Input)
+	}
+}

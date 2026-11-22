@@ -1292,7 +1292,12 @@ func (s *Session) handleToolCallComplete(tc *ToolCallUpdate) {
 	norm := s.flavor.NormalizeToolComplete(tc, started)
 	now := time.Now()
 
-	if norm.DiffPatch != "" {
+	// File-change tool rows carry structured item.changes on EventToolComplete
+	// so triage.ExtractFileChangeToolResult builds exact ToolInlineDiff previews
+	// and insertion/deletion tallies directly on the Edit/Write row. Only emit a
+	// standalone EventDiff when the tool isn't already a file_change row with
+	// structured changes.
+	if norm.DiffPatch != "" && (norm.ItemType != "file_change" || len(norm.DiffChanges) == 0) {
 		diffMeta, _ := json.Marshal(map[string]any{
 			"filePath": norm.DiffFilePath,
 			"toolName": norm.ToolName,
@@ -1316,6 +1321,10 @@ func (s *Session) handleToolCallComplete(tc *ToolCallUpdate) {
 		}
 		if norm.ExitCode != nil {
 			cmdMeta["exit_code"] = *norm.ExitCode
+			cmdMeta["exitCode"] = *norm.ExitCode
+		}
+		if norm.DurationMs != nil {
+			cmdMeta["durationMs"] = *norm.DurationMs
 		}
 		encoded, _ := json.Marshal(cmdMeta)
 		s.emitEvent(provider.ProviderEvent{
@@ -1346,11 +1355,38 @@ func (s *Session) handleToolCallComplete(tc *ToolCallUpdate) {
 		"toolName": norm.ToolName,
 		"is_error": norm.IsError,
 	}
+	if norm.CommandLine != "" {
+		metaFields["command"] = norm.CommandLine
+	}
 	if norm.ExitCode != nil {
 		metaFields["exit_code"] = *norm.ExitCode
+		metaFields["exitCode"] = *norm.ExitCode
+	}
+	if norm.DurationMs != nil {
+		metaFields["durationMs"] = *norm.DurationMs
 	}
 	if norm.ItemStatus != "" {
 		metaFields["item_status"] = norm.ItemStatus
+	}
+	if norm.ItemType == "file_change" && len(norm.DiffChanges) > 0 {
+		changes := make([]map[string]any, 0, len(norm.DiffChanges))
+		for _, ch := range norm.DiffChanges {
+			kindType := ch.Kind
+			if kindType == "" {
+				kindType = "update"
+			}
+			changes = append(changes, map[string]any{
+				"path": ch.Path,
+				"kind": map[string]string{"type": kindType},
+				"diff": ch.Diff,
+			})
+		}
+		metaFields["item"] = map[string]any{
+			"id":      tc.ToolCallID,
+			"type":    "file_change",
+			"status":  norm.ItemStatus,
+			"changes": changes,
+		}
 	}
 	for k, v := range norm.ExtraMeta {
 		metaFields[k] = v

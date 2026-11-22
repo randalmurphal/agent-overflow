@@ -523,7 +523,8 @@ func (t threadToolsApp) remoteDestination(computerID string) bool {
 // Catalog answers thread_options from the catalogs the app already keeps.
 func (t threadToolsApp) Catalog(ctx context.Context, q threadtools.CatalogQuery) (threadtools.Catalog, error) {
 	catalog := threadtools.Catalog{Reachable: true, OS: threadToolsOS()}
-	for _, name := range []string{string(provider.Claude), string(provider.Codex)} {
+	for _, kind := range provider.StandaloneProviders() {
+		name := string(kind)
 		if q.What == threadtools.OptionsProjects || q.What == threadtools.OptionsGroups {
 			break
 		}
@@ -604,6 +605,8 @@ func threadToolsProviderName(name string) string {
 		return "Claude Code"
 	case string(provider.Codex):
 		return "Codex"
+	case string(provider.Agy):
+		return "Antigravity"
 	}
 	return name
 }

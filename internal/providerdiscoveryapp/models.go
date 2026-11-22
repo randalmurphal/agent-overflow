@@ -103,6 +103,15 @@ func (s *Service) KnownAgyModel(binary, model string) (provider.ModelInfo, bool)
 	return provider.ModelInfo{}, false
 }
 
+// CachedAgyModelsForBinary performs a nonblocking read of the Antigravity live
+// model catalog cache.
+func (s *Service) CachedAgyModelsForBinary(binary string) ([]provider.ModelInfo, bool) {
+	if s.caches.AgyModels == nil {
+		return nil, false
+	}
+	return s.caches.AgyModels.Get(normalizedAgyBinary(binary))
+}
+
 // RefreshAgyModelCatalog clears cached Antigravity model catalogs.
 func (s *Service) RefreshAgyModelCatalog() {
 	if s.caches.AgyModels != nil {
