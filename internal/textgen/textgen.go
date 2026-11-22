@@ -101,9 +101,9 @@ type Config struct {
 	// sweep, so it carries what a session in that workspace does
 	// (claude/retention.go). A Claude run refuses to start without it.
 	ClaudeRetention func(workspace string) claude.Retention
-	// Admit orders the CLI's start against state the caller read while
+	// Admit holds the CLI's whole run against state the caller read while
 	// building this config (CLISpec.Admit).
-	Admit func() (release func(), err error)
+	Admit Admission
 	Exec  CLIExecutor
 }
 
@@ -130,11 +130,16 @@ type CLISpec struct {
 	// environment.
 	UnsetEnv []string
 	// Admit, when set, runs immediately before the process starts. The
-	// process starts only if it returns nil, and release runs as soon as the
-	// start has returned, never after the run: whatever Admit holds is held
-	// across the start alone.
-	Admit func() (release func(), err error)
+	// process starts only if it returns nil, and release runs once the
+	// process has exited, or once its start failed: whatever Admit holds is
+	// held for the whole run.
+	Admit Admission
 }
+
+// Admission admits one CLI run. ctx is the run's, so a wait inside the
+// admission ends with the run's budget. stop ends the admitted run: the
+// process is signalled as a cancelled run is, and the run returns cause.
+type Admission func(ctx context.Context, stop func(cause error)) (release func(), err error)
 
 // CLIResult is the observable outcome of a provider-CLI invocation.
 // ExitCode 0 indicates success.
@@ -149,6 +154,8 @@ type CLIResult struct {
 // exec.ExitError is normalised into a non-error return with the exit
 // code so callers branch on it cleanly.
 func ExecCLI(ctx context.Context, spec CLISpec) (CLIResult, error) {
+	ctx, stop := context.WithCancelCause(ctx)
+	defer stop(nil)
 	cmd := exec.CommandContext(ctx, spec.Binary, spec.Args...)
 	cmd.Dir = spec.Cwd
 	cmd.Stdin = strings.NewReader(spec.Stdin)
@@ -178,17 +185,15 @@ func ExecCLI(ctx context.Context, spec CLISpec) (CLIResult, error) {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err := startAdmitted(cmd, spec.Admit)
-	if err == nil {
-		err = cmd.Wait()
-	}
+	err := runAdmitted(ctx, cmd, spec.Admit, stop)
 	result := CLIResult{
 		Stdout: stdout.String(),
 		Stderr: stderr.String(),
 	}
 
 	if ctx.Err() != nil {
-		return result, ctx.Err()
+		// The caller's cancel or deadline, or the admission's stop.
+		return result, context.Cause(ctx)
 	}
 
 	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
@@ -201,18 +206,21 @@ func ExecCLI(ctx context.Context, spec CLISpec) (CLIResult, error) {
 	return result, nil
 }
 
-// startAdmitted starts cmd once admit allows it, releasing what admit holds
-// as soon as the start returns.
-func startAdmitted(cmd *exec.Cmd, admit func() (func(), error)) error {
-	if admit == nil {
-		return cmd.Start()
+// runAdmitted runs cmd once admit allows it, releasing what admit holds once
+// the process has exited or failed to start. stop cancels ctx, the context
+// cmd runs under.
+func runAdmitted(ctx context.Context, cmd *exec.Cmd, admit Admission, stop func(error)) error {
+	if admit != nil {
+		release, err := admit(ctx, stop)
+		if err != nil {
+			return err
+		}
+		defer release()
 	}
-	release, err := admit()
-	if err != nil {
+	if err := cmd.Start(); err != nil {
 		return err
 	}
-	defer release()
-	return cmd.Start()
+	return cmd.Wait()
 }
 
 type cappedOutput struct {

@@ -331,14 +331,11 @@ func (m *Manager) switchProviderAccount(
 		return ManagedAccount{}, err
 	}
 	defer endWork()
-	reconcileMu := m.reconcileMutex(providerName)
-	reconcileMu.Lock()
-	reconcileLocked := true
-	defer func() {
-		if reconcileLocked {
-			reconcileMu.Unlock()
-		}
-	}()
+	// The canonical credential changes below: no text-generation CLI may be
+	// alive against it, so one that refreshed it is reconciled as the
+	// outgoing account before activation preserves it.
+	endChange := m.lockCredentialChange(providerName)
+	defer endChange()
 	if err := m.reconcileExternalProviderAccountWithMutexHeld(m.context(), providerName); err != nil {
 		return ManagedAccount{}, fmt.Errorf("check current %s account before switch: %w", providerName, err)
 	}
@@ -481,8 +478,7 @@ func (m *Manager) switchProviderAccount(
 	// above carries no `active` flag for the card that just LOST it.
 	m.emitProviderAccountsChanged(providerName)
 	m.applySelection(providerName, generation, currentID, account.ID)
-	reconcileMu.Unlock()
-	reconcileLocked = false
+	endChange()
 	return ManagedAccount{
 		Account:    account,
 		Active:     true,

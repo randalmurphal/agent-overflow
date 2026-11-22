@@ -2,7 +2,10 @@ package app
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -71,7 +74,7 @@ func TestTextGenerationChoosesAgainWhenTheAccountSwitchesBeforeItsCLIStarts(t *t
 	claudeName := string(provider.Claude)
 	var started []string
 	switched := false
-	app.textGenerationExecutor = func(_ context.Context, spec textgen.CLISpec) (textgen.CLIResult, error) {
+	app.textGenerationExecutor = func(ctx context.Context, spec textgen.CLISpec) (textgen.CLIResult, error) {
 		if !switched {
 			switched = true
 			// The gate: the model is chosen and the CLI has not started.
@@ -79,7 +82,7 @@ func TestTextGenerationChoosesAgainWhenTheAccountSwitchesBeforeItsCLIStarts(t *t
 				t.Errorf("SwitchProviderAccount: %v", err)
 			}
 		}
-		release, err := spec.Admit()
+		release, err := spec.Admit(ctx, func(error) {})
 		if err != nil {
 			return textgen.CLIResult{}, err
 		}
@@ -100,48 +103,80 @@ func TestTextGenerationChoosesAgainWhenTheAccountSwitchesBeforeItsCLIStarts(t *t
 	}
 }
 
-// A switch asked for while a text-generation CLI is starting lands once the
-// start has returned: it never lands between the admission and the start,
-// and it does not wait for the run.
-func TestAnAccountSwitchWaitsForATextGenerationStartAndNotItsRun(t *testing.T) {
+// A switch ends a text-generation CLI that is running on the account it
+// leaves, and lands once that process has exited; the generation then runs
+// again with the model the new account lists. The CLI is a shell standing in
+// for Claude, run through the real executor. Not parallel: the Claude catalog
+// is process-wide.
+func TestAnAccountSwitchEndsARunningTextGenerationAndItRunsAgain(t *testing.T) {
 	app := twoAccountTitleApp(t)
 	claudeName := string(provider.Claude)
-	landedWhileStarting := false
-	var switchErr error
-	app.textGenerationExecutor = func(_ context.Context, spec textgen.CLISpec) (textgen.CLIResult, error) {
-		release, err := spec.Admit()
-		if err != nil {
-			return textgen.CLIResult{}, err
+	dir := t.TempDir()
+	started, hold := filepath.Join(dir, "started"), filepath.Join(dir, "hold")
+	if err := os.WriteFile(hold, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A CLI the switch did not end finishes once hold is gone, so a failing
+	// run does not wait out its budget.
+	t.Cleanup(func() { _ = os.Remove(hold) })
+	// The first model's CLI runs until it is stopped; any other prints a title.
+	const script = `if [ "$1" = claude-haiku-6 ]; then
+	: > "$0/started"
+	while [ -e "$0/hold" ]; do sleep 0.05; done
+	exit 1
+fi
+printf '%s\n' '{"structured_output":{"title":"From Claude"}}'`
+	var mu sync.Mutex
+	var ran []string
+	firstExited := make(chan struct{})
+	app.textGenerationExecutor = func(ctx context.Context, spec textgen.CLISpec) (textgen.CLIResult, error) {
+		model := nextArgAfter(spec.Args, "--model")
+		admit := spec.Admit
+		spec.Admit = func(ctx context.Context, stop func(error)) (func(), error) {
+			release, err := admit(ctx, stop)
+			if err != nil {
+				return nil, err
+			}
+			mu.Lock()
+			ran = append(ran, model)
+			mu.Unlock()
+			return func() {
+				release()
+				if model == "claude-haiku-6" {
+					close(firstExited)
+				}
+			}, nil
 		}
-		switched := make(chan error, 1)
-		go func() {
-			_, err := app.SwitchProviderAccount(claudeName, "second")
-			switched <- err
-		}()
-		// A slow machine only makes this check weaker: it cannot fail it.
-		select {
-		case switchErr = <-switched:
-			landedWhileStarting = true
-		case <-time.After(200 * time.Millisecond):
-		}
-		release()
-		// The run: the switch lands while it goes on.
-		if !landedWhileStarting {
-			switchErr = <-switched
-		}
-		return textgen.CLIResult{Stdout: `{"structured_output":{"title":"From Claude"}}`}, nil
+		spec.Binary = "/bin/sh"
+		spec.Args = []string{"-c", script, dir, model}
+		return textgen.ExecCLI(ctx, spec)
 	}
 
-	if _, err := generateTitle(t, app); err != nil {
-		t.Fatalf("generate title: %v", err)
+	type outcome struct {
+		title string
+		err   error
 	}
-	if switchErr != nil {
-		t.Fatalf("SwitchProviderAccount: %v", switchErr)
+	generated := make(chan outcome, 1)
+	go func() {
+		title, err := generateTitle(t, app)
+		generated <- outcome{title, err}
+	}()
+	waitForFile(t, started)
+	if _, err := app.SwitchProviderAccount(claudeName, "second"); err != nil {
+		t.Fatalf("SwitchProviderAccount: %v", err)
 	}
-	if landedWhileStarting {
-		t.Fatal("the account switch landed while the text-generation CLI was starting")
+	select {
+	case <-firstExited:
+	default:
+		t.Fatal("the switch landed while the text-generation CLI of the account it left was running")
 	}
-	if inUse := app.captureProviderAccountSelection(claudeName).AccountID; inUse != "second" {
-		t.Fatalf("account in use = %q, want second", inUse)
+	got := <-generated
+	if got.err != nil || got.title != "From Claude" {
+		t.Fatalf("title = %q, %v", got.title, got.err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Equal(ran, []string{"claude-haiku-6", "claude-haiku-5-5"}) {
+		t.Fatalf("CLIs ran with %v, want first's claude-haiku-6 ended and then second's claude-haiku-5-5", ran)
 	}
 }

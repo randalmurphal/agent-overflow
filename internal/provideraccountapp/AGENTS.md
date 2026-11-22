@@ -7,8 +7,11 @@ and credential-committing usage refresh.
 
 Keep each lock with all of its wards. `internal/app` owns live provider
 sessions and implements `SessionGateway`; sends hold a `SelectionLease`
-across provider writes, and text generation holds one across its CLI's start,
-so account activation occurs wholly before or after the write or start. Rate-limit persistence and emission enter through narrow
+across provider writes, so account activation occurs wholly before or after
+the write. A text-generation CLI is a credential use (`credentialuse.go`) for
+its whole run: switch, removal, and sign-in adoption take
+`lockCredentialChange`, which ends every running use and admits none until
+the change ends. Rate-limit persistence and emission enter through narrow
 `providerlifecycleapp` ports.
 
 ## Credential operations

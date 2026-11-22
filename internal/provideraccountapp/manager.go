@@ -109,6 +109,11 @@ type Manager struct {
 	loginStates map[string]LoginState
 	// loginSeq numbers every stored sign-in state (LoginState.Seq).
 	loginSeq uint64
+
+	// The credential-use registry (credentialuse.go). Its lock is a leaf
+	// too. A path that replaces a canonical credential drains it right after
+	// taking the provider's reconcile lock (lockCredentialChange), before mu.
+	uses credentialUses
 }
 
 // NewManager constructs an unattached manager. Attach installs the two stores

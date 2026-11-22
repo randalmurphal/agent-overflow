@@ -16,6 +16,7 @@ import (
 	"agent-overflow/internal/claudemodels"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
+	"agent-overflow/internal/provideraccountapp"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/textgen"
 )
@@ -285,9 +286,9 @@ func runTextGenWithFallback[T any](
 ) (T, error) {
 	// run runs runOnce on the config resolve returns, each run with a fresh
 	// budget. A run whose admission found the account selection moved since
-	// the config was resolved started no CLI, and is resolved and run again:
-	// the model a CLI starts with is always the one chosen for the account it
-	// starts under. A failed resolve still returns its config, which names
+	// the config was resolved started no CLI, and one whose CLI an account
+	// change ended has no result; both are resolved and run again: a CLI runs
+	// only with the model chosen for the account it runs under. A failed resolve still returns its config, which names
 	// the provider. runOnce is called here and not handed on, so the budget
 	// walk (TestEveryMethodReachingALongStepDeclaresItsBudget) follows each
 	// caller's runOnce to its own run.
@@ -354,22 +355,24 @@ var (
 
 // textGenerationAdmission is a text-generation config's textgen.Admit for
 // providerName. The selection generation is read before the config's model
-// is, so any switch that could have changed the model moves it. At the start
-// the admission takes the selection lease, the read side account switches
-// order against as a thread send does, and refuses when the generation has
-// moved. The lease is held across the CLI's start alone, so a switch waits
-// for at most one process start and never for a running generation.
-func (a *App) textGenerationAdmission(providerName string) func() (func(), error) {
-	resolving := a.providerAccountSelectionLease(providerName)
-	resolvedUnder := resolving.Selection.Generation
-	resolving.Release()
-	return func() (func(), error) {
-		lease := a.providerAccountSelectionLease(providerName)
-		if lease.Selection.Generation != resolvedUnder {
-			lease.Release()
+// is, so any switch that could have changed the model moves it. The CLI then
+// runs as a credential use of that generation
+// (provideraccountapp.Manager.BeginCredentialUse): it starts only while the
+// generation is still the provider's, and a switch, a removal or a finished
+// sign-in ends it before changing the credential. Either way the run fails
+// with errTextGenerationSelectionMoved, and runTextGenWithFallback chooses
+// again. A switch never waits for a generation's work, only for its process
+// to exit once stopped.
+func (a *App) textGenerationAdmission(providerName string) textgen.Admission {
+	resolvedUnder := a.providerAccounts.Generation(providerName)
+	return func(ctx context.Context, stop func(error)) (func(), error) {
+		release, err := a.providerAccounts.BeginCredentialUse(ctx, providerName, resolvedUnder, func() {
+			stop(errTextGenerationSelectionMoved)
+		})
+		if errors.Is(err, provideraccountapp.ErrSelectionMoved) {
 			return nil, errTextGenerationSelectionMoved
 		}
-		return lease.Release, nil
+		return release, err
 	}
 }
 

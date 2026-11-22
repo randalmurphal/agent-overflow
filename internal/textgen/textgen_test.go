@@ -625,7 +625,7 @@ func TestExecCLI_RefusedAdmissionStartsNothing(t *testing.T) {
 	_, err := ExecCLI(context.Background(), CLISpec{
 		Binary: "/bin/sh",
 		Args:   []string{"-c", `: > "$0"`, marker},
-		Admit:  func() (func(), error) { return nil, refused },
+		Admit:  func(context.Context, func(error)) (func(), error) { return nil, refused },
 	})
 	if !errors.Is(err, refused) {
 		t.Fatalf("ExecCLI = %v, want the admission's refusal", err)
@@ -635,23 +635,20 @@ func TestExecCLI_RefusedAdmissionStartsNothing(t *testing.T) {
 	}
 }
 
-// What an admission holds is released once the process has started, not
-// once it has exited: the process here exits only after the release.
-func TestExecCLI_ReleasesTheAdmissionOnceStarted(t *testing.T) {
-	gate := filepath.Join(t.TempDir(), "released")
+// What an admission holds is released once the process has exited, not once
+// it has started: the process here starts with a pause and ends by writing a
+// file, and the release looks for that file.
+func TestExecCLI_HoldsTheAdmissionUntilTheProcessExits(t *testing.T) {
+	exited := filepath.Join(t.TempDir(), "exited")
 	released := 0
-	// The bound only ends a failing run: a release held until exit
-	// never comes, and the process would wait for it forever.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	result, err := ExecCLI(ctx, CLISpec{
+	result, err := ExecCLI(context.Background(), CLISpec{
 		Binary: "/bin/sh",
-		Args:   []string{"-c", `while [ ! -e "$0" ]; do sleep 0.01; done; echo ran`, gate},
-		Admit: func() (func(), error) {
+		Args:   []string{"-c", `sleep 0.2; echo ran; : > "$0"`, exited},
+		Admit: func(context.Context, func(error)) (func(), error) {
 			return func() {
 				released++
-				if err := os.WriteFile(gate, nil, 0o600); err != nil {
-					t.Error(err)
+				if _, err := os.Stat(exited); err != nil {
+					t.Errorf("released before the process exited: %v", err)
 				}
 			}, nil
 		},
@@ -664,6 +661,74 @@ func TestExecCLI_ReleasesTheAdmissionOnceStarted(t *testing.T) {
 	}
 }
 
+// A process that fails to start releases its admission all the same.
+func TestExecCLI_ReleasesTheAdmissionWhenTheStartFails(t *testing.T) {
+	released := 0
+	_, err := ExecCLI(context.Background(), CLISpec{
+		Binary: filepath.Join(t.TempDir(), "missing"),
+		Admit: func(context.Context, func(error)) (func(), error) {
+			return func() { released++ }, nil
+		},
+	})
+	if err == nil {
+		t.Fatal("ExecCLI started a binary that does not exist")
+	}
+	if released != 1 {
+		t.Fatalf("released %d times, want one", released)
+	}
+}
+
+// The admission's stop ends a running process, and the run returns the cause
+// the stop gave, after the process has exited.
+func TestExecCLI_TheAdmissionsStopEndsTheRunWithItsCause(t *testing.T) {
+	started := filepath.Join(t.TempDir(), "started")
+	moved := errors.New("moved")
+	stopped := make(chan func(error), 1)
+	released := make(chan struct{})
+	// The bound only ends a failing run: a stop that does not reach the
+	// process leaves it running this long.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := ExecCLI(ctx, CLISpec{
+			Binary: "/bin/sh",
+			Args:   []string{"-c", `: > "$0"; while :; do sleep 0.05; done`, started},
+			Admit: func(_ context.Context, stop func(error)) (func(), error) {
+				stopped <- stop
+				return func() { close(released) }, nil
+			},
+		})
+		done <- err
+	}()
+	stop := <-stopped
+	waitForFile(t, started)
+	stop(moved)
+	err := <-done
+	if !errors.Is(err, moved) {
+		t.Fatalf("ExecCLI = %v, want the stop's cause", err)
+	}
+	select {
+	case <-released:
+	default:
+		t.Fatal("the stopped run returned without releasing its admission")
+	}
+}
+
+func waitForFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s never appeared", path)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // Both runners hand the config's admission to the executor.
 func TestRunners_PassTheAdmissionToTheExecutor(t *testing.T) {
 	admitted := 0
@@ -671,12 +736,15 @@ func TestRunners_PassTheAdmissionToTheExecutor(t *testing.T) {
 		Binary:          "cli",
 		Model:           "m",
 		ClaudeRetention: userHome,
-		Admit:           func() (func(), error) { admitted++; return func() {}, nil },
-		Exec: func(_ context.Context, spec CLISpec) (CLIResult, error) {
+		Admit: func(context.Context, func(error)) (func(), error) {
+			admitted++
+			return func() {}, nil
+		},
+		Exec: func(ctx context.Context, spec CLISpec) (CLIResult, error) {
 			if spec.Admit == nil {
 				return CLIResult{}, errors.New("no admission in the spec")
 			}
-			release, err := spec.Admit()
+			release, err := spec.Admit(ctx, func(error) {})
 			if err != nil {
 				return CLIResult{}, err
 			}
