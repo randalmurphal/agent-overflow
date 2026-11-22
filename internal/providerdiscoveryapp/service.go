@@ -58,10 +58,11 @@ type Deps struct {
 	ProbeCodex                 func(context.Context, codex.ProbeConfig) (provider.AccountInfo, error)
 	CheckClaudeTransferAccount func(context.Context, string) error
 	CheckCodexTransferAccount  func(context.Context, string) error
-	// RememberClaudeCatalog persists one account's probe-reported model
-	// answer so the next cold start serves the enriched picker before its
-	// own probe lands. Optional: a focused test may leave it nil.
-	RememberClaudeCatalog func(accountID string, snapshot claudemodels.Snapshot)
+	// RememberClaudeCatalog persists the model answer of the probe identity
+	// key (its adopted account included) so the next cold start serves the
+	// enriched picker before its own probe lands. Optional: a focused test
+	// may leave it nil.
+	RememberClaudeCatalog func(key provider.ProbeCacheKey, snapshot claudemodels.Snapshot)
 }
 
 // Caches is the bounded process-wide discovery cache set. Probe answers are

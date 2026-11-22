@@ -67,14 +67,13 @@ func identityRecordFor(t *testing.T, app *App, binary string) provideraccounts.C
 	if !ok {
 		t.Fatalf("could not resolve the fake binary at %s", binary)
 	}
-	return provideraccounts.ClaudeCatalogRecord{
-		Binary:       binary,
-		ResolvedPath: identity.path,
-		Size:         identity.size,
-		ModUnixNano:  identity.modUnixNano,
-		ProbedAt:     1700000000000,
-		Wire:         []claude.WireModel{{Value: "claude-newthing-1", DisplayName: "Newthing"}},
-	}
+	record := provideraccounts.ClaudeCatalogRecordFor(app.providerProbeCacheKeyForAccount(string(provider.Claude), binary, "acct-1"))
+	record.ResolvedPath = identity.path
+	record.Size = identity.size
+	record.ModUnixNano = identity.modUnixNano
+	record.ProbedAt = 1700000000000
+	record.Wire = []claude.WireModel{{Value: "claude-newthing-1", DisplayName: "Newthing"}}
+	return record
 }
 
 // The cold-start case this whole record exists for: the picker answers with
@@ -298,6 +297,64 @@ func TestAClaudeProbeFilesItsModelsUnderTheAccountItAdopts(t *testing.T) {
 				t.Errorf("text generation after the probe = %q, %v; want claude-haiku-6 at once", model.Slug, err)
 			}
 		})
+	}
+}
+
+// A record is a claim about the environment that answered. After the
+// custom environment changes and the app restarts, the previous
+// environment's answer must not be seeded under the new environment's key,
+// where text generation would take it as that environment's own report.
+func TestSeedClaudeCatalogSkipsARecordFromAnotherEnvironment(t *testing.T) {
+	binary := writeProbeMockBinaryWithModels(t,
+		`{"subscriptionType":"Claude Max","emailAddress":"person@example.com"}`,
+		`[{"value":"claude-newthing-1","displayName":"Newthing"}]`,
+	)
+	accountDir := t.TempDir()
+	credentialHome := t.TempDir()
+	newAppOn := func(t *testing.T, baseURL string) *App {
+		t.Helper()
+		app := newTestAppWithStore(t)
+		if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
+			t.Fatalf("set claude binary: %v", err)
+		}
+		if _, err := app.SetProviderCustomEnvVar(context.Background(), "claude", "ANTHROPIC_BASE_URL", baseURL, false); err != nil {
+			t.Fatalf("set custom environment: %v", err)
+		}
+		accounts, err := provideraccounts.NewStore(accountDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := accounts.UpsertAndActivate(provideraccounts.Account{
+			ID: "acct-1", Provider: string(provider.Claude), Email: "person@example.com",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		attachProviderAccountStoresForTest(t, app, accounts, newTestProviderCredentials(t, credentialHome))
+		return app
+	}
+
+	resetClaudeProbeCacheForTest(t)
+	first := newAppOn(t, "https://one.example.com")
+	if _, err := first.ProbeClaudeAccount(); err != nil {
+		t.Fatalf("ProbeClaudeAccount: %v", err)
+	}
+	if _, ok := first.providerAccounts.ClaudeCatalog("acct-1"); !ok {
+		t.Fatal("the first process persisted no model list")
+	}
+
+	resetClaudeProbeCacheForTest(t)
+	second := newAppOn(t, "https://two.example.com")
+	second.seedClaudeCatalogFromAccounts()
+
+	if _, backing := second.providerDiscoveryService().ClaudeAccountCatalog(string(provider.Claude)); backing == claudemodels.BackedByIdentity {
+		t.Error("the other environment's list was seeded as this environment's own")
+	}
+	answer, err := second.GetModelsForProvider(string(provider.Claude))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(modelSlugs(answer.Models), "claude-newthing-1") {
+		t.Errorf("catalog = %v, want no model from the other environment's record", modelSlugs(answer.Models))
 	}
 }
 

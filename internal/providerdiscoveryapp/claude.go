@@ -43,15 +43,15 @@ func (s *Service) ProbeClaudeAccount() (provider.AccountInfo, error) {
 		EmitUnauth:      s.EmitClaudeUnauthenticatedStatus,
 		AfterAdopt: func(account provideraccounts.Account) {
 			// The live entry and the persisted record are filed under the
-			// ADOPTED account, the one the selection names once the probe
-			// returns: a first probe runs with no selection at all, and a
+			// identity that answered: the key the probe started under, with
+			// the ADOPTED account, the one the selection names once the probe
+			// returns. A first probe runs with no selection at all, and a
 			// login changed outside AO adopts the account that actually
 			// answered. The selection the probe started under is the
 			// fallback for a probe that adopted nothing (no credential to
 			// attribute), where it is the only account the answer can
 			// belong to.
-			accountID := cmp.Or(account.ID, selection.AccountID)
-			filed := s.deps.ProbeKey(providerName, binary, accountID)
+			filed := key.WithAccount(cmp.Or(account.ID, key.AccountID))
 			wire.Store(filed)
 			wireCommands.Store(filed)
 			if s.deps.RememberClaudeCatalog == nil {
@@ -62,7 +62,7 @@ func (s *Service) ProbeClaudeAccount() (provider.AccountInfo, error) {
 			// probes of this binary learned and this one omitted, which is
 			// exactly what the next process must serve again.
 			if snapshot, ok := claudecatalog.Export(filed); ok {
-				s.deps.RememberClaudeCatalog(accountID, snapshot)
+				s.deps.RememberClaudeCatalog(filed, snapshot)
 			}
 		},
 	})

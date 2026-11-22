@@ -69,10 +69,16 @@ type Account struct {
 // event to every client for data the picker already reads from
 // GetModelsForProvider. It lives beside the accounts instead, keyed by id.
 type ClaudeCatalogRecord struct {
+	// Binary, WorkDir and EnvFingerprint are the probe identity that
+	// answered (provider.ProbeCacheKey, ProbeKey below), the account apart.
 	// Binary is the configured path (Settings.ClaudeBinaryPath as the app
-	// resolves it), which is also the ProbeCacheKey dimension the catalog is
-	// keyed and dropped by.
-	Binary string `json:"binary"`
+	// resolves it), which is also the dimension the catalog is dropped by.
+	// A record is served only under the identity it names, so an answer
+	// captured under another custom environment is never seeded as this
+	// one's.
+	Binary         string `json:"binary"`
+	WorkDir        string `json:"workDir"`
+	EnvFingerprint string `json:"envFingerprint,omitempty"`
 	// ResolvedPath is Binary after LookPath and EvalSymlinks, with Size and
 	// ModUnixNano describing that file. Together they are the same identity
 	// the provider-binary watcher compares, so an in-place upgrade under an
@@ -87,6 +93,18 @@ type ClaudeCatalogRecord struct {
 	// which survives a wire that omits it.
 	Wire    []claude.WireModel   `json:"wire"`
 	Learned []provider.ModelInfo `json:"learned,omitempty"`
+}
+
+// ClaudeCatalogRecordFor is the record of a probe that answered as key,
+// before the binary's resolved file is stamped on it.
+func ClaudeCatalogRecordFor(key provider.ProbeCacheKey) ClaudeCatalogRecord {
+	return ClaudeCatalogRecord{Binary: key.Binary, WorkDir: key.WorkDir, EnvFingerprint: key.EnvFingerprint}
+}
+
+// ProbeKey is the probe identity that produced the record, filed under
+// accountID.
+func (r ClaudeCatalogRecord) ProbeKey(accountID string) provider.ProbeCacheKey {
+	return provider.ProbeCacheKey{Binary: r.Binary, AccountID: accountID, WorkDir: r.WorkDir, EnvFingerprint: r.EnvFingerprint}
 }
 
 // ProviderState is the persisted account set and current selection for one

@@ -393,9 +393,9 @@ func TestClaudeProbePersistsTheCommittedCatalog(t *testing.T) {
 			cfg.OnModels([]claude.WireModel{{Value: "claude-newthing-1"}}, nil)
 			return provider.AccountInfo{SubscriptionType: "max"}, nil
 		},
-		RememberClaudeCatalog: func(accountID string, snapshot claudemodels.Snapshot) {
+		RememberClaudeCatalog: func(key provider.ProbeCacheKey, snapshot claudemodels.Snapshot) {
 			calls++
-			gotAccountID = accountID
+			gotAccountID = key.AccountID
 			got = snapshot
 		},
 	}, testCaches())
@@ -478,8 +478,8 @@ func TestClaudeProbePersistsUnderTheSelectionWhenAdoptionIsEmpty(t *testing.T) {
 			cfg.OnModels([]claude.WireModel{{Value: "claude-newthing-1"}}, nil)
 			return provider.AccountInfo{SubscriptionType: "max"}, nil
 		},
-		RememberClaudeCatalog: func(accountID string, _ claudemodels.Snapshot) {
-			gotAccountID = accountID
+		RememberClaudeCatalog: func(key provider.ProbeCacheKey, _ claudemodels.Snapshot) {
+			gotAccountID = key.AccountID
 		},
 	}, testCaches())
 
@@ -488,5 +488,57 @@ func TestClaudeProbePersistsUnderTheSelectionWhenAdoptionIsEmpty(t *testing.T) {
 	}
 	if gotAccountID != "selected" {
 		t.Errorf("account id = %q, want the selected account", gotAccountID)
+	}
+}
+
+// A probe's answer belongs to the identity that produced it. The custom
+// environment is read when the probe starts; an edit that lands while it
+// runs must not file the old environment's models under the new one's key,
+// where the next caller would take them as that environment's own report.
+func TestAClaudeProbeFilesItsAnswerUnderTheEnvironmentItRanIn(t *testing.T) {
+	claudecatalog.Reset()
+	t.Cleanup(claudecatalog.Reset)
+	env := "E1"
+	keyFor := func(_ string, binary, accountID string) provider.ProbeCacheKey {
+		return provider.ProbeCacheKey{Binary: binary, AccountID: accountID, WorkDir: "/tmp", EnvFingerprint: env}
+	}
+	var remembered provider.ProbeCacheKey
+	service := New(Deps{
+		Reaper:         procutiltest.Reaper(),
+		ProviderBinary: func(string) string { return "/mock/claude" },
+		Selection:      func(string) AccountSelection { return AccountSelection{AccountID: "account"} },
+		ProbeKey:       keyFor,
+		RunAccountProbe: func(request AccountProbeRequest) (provider.AccountInfo, error) {
+			info, err := request.Probe(context.Background())
+			if err != nil {
+				return provider.AccountInfo{}, err
+			}
+			request.AfterAdopt(provideraccounts.Account{ID: "adopted"})
+			return info, nil
+		},
+		ClaudeConfig: func(string) claude.ProbeConfig { return claude.ProbeConfig{Reaper: procutiltest.Reaper()} },
+		ProbeClaude: func(_ context.Context, cfg claude.ProbeConfig) (provider.AccountInfo, error) {
+			cfg.OnModels([]claude.WireModel{{Value: "claude-newthing-1"}}, nil)
+			// The person edits the provider environment while the probe runs.
+			env = "E2"
+			return provider.AccountInfo{SubscriptionType: "max"}, nil
+		},
+		RememberClaudeCatalog: func(key provider.ProbeCacheKey, _ claudemodels.Snapshot) { remembered = key },
+	}, testCaches())
+
+	if _, err := service.ProbeClaudeAccount(); err != nil {
+		t.Fatal(err)
+	}
+	ran := provider.ProbeCacheKey{Binary: "/mock/claude", AccountID: "adopted", WorkDir: "/tmp", EnvFingerprint: "E1"}
+	if _, ok := claudecatalog.Export(ran); !ok {
+		t.Error("no live entry under the environment the probe ran in")
+	}
+	edited := ran
+	edited.EnvFingerprint = "E2"
+	if _, ok := claudecatalog.Export(edited); ok {
+		t.Error("the probe filed its answer under the environment edited while it ran")
+	}
+	if remembered != ran {
+		t.Errorf("persisted under %+v, want the identity that ran %+v", remembered, ran)
 	}
 }
