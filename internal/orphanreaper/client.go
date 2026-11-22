@@ -62,16 +62,24 @@ func Spawn() (*Client, error) {
 // script, its write end closed. A Stdin that is not a file would be copied
 // to the shell by a goroutine of this process after the shell starts, and a
 // parent killed before that goroutine ran would leave the sidecar an empty
-// script: it would exit at once and reap nothing. The script must fit in the
-// pipe's buffer, since nothing reads it yet (TestSidecarScriptFitsInAPipe).
+// script: it would exit at once and reap nothing.
+//
+// Nothing reads the pipe yet, so the script must fit in the pipe's buffer,
+// and a script that does not is refused rather than waited on. Linux gives
+// a pipe at least one page. macOS guarantees only PIPE_BUF, 512 bytes, which
+// sidecarScript exceeds, so there it relies on the capacity the pipe
+// actually has.
 func scriptInput(script string) (*os.File, error) {
 	r, w, err := os.Pipe()
 	if err != nil {
 		return nil, fmt.Errorf("orphanreaper: script pipe: %w", err)
 	}
-	_, writeErr := w.WriteString(script)
+	written, writeErr := writeWithoutWaiting(w, script)
 	if err := errors.Join(writeErr, w.Close()); err != nil {
 		return nil, errors.Join(fmt.Errorf("orphanreaper: write the sidecar script: %w", err), r.Close())
+	}
+	if written < len(script) {
+		return nil, errors.Join(fmt.Errorf("orphanreaper: the sidecar script is %d bytes, and its pipe holds only %d", len(script), written), r.Close())
 	}
 	return r, nil
 }

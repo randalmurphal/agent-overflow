@@ -27,15 +27,6 @@ func sidecarInput(t *testing.T, script string) *os.File {
 	return input
 }
 
-// scriptInput writes the script into a pipe nothing reads yet, so the
-// script must fit the smallest buffer a pipe has: one 4 KiB page on Linux
-// once the user's pipe pages pass /proc/sys/fs/pipe-user-pages-soft.
-func TestSidecarScriptFitsInAPipe(t *testing.T) {
-	if len(sidecarScript) > 4096 {
-		t.Fatalf("sidecarScript is %d bytes, more than a 4096-byte pipe holds", len(sidecarScript))
-	}
-}
-
 // recordSidecar runs sidecarScript on input with kill and sleep replaced by
 // shell functions that record their arguments, so pgids the script must
 // refuse (1 would signal every process the user owns) are never signalled.
