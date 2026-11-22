@@ -66,7 +66,7 @@ type MethodMeta struct {
 // dispatcher allow-list from this set; the Scope column is what
 // AuthorizeSessionMethod compares a session's grants against.
 var GeneratedMethods = []MethodMeta{
-	{Name: "AcceptOwnDeviceIntroduction", ID: 2097968437, Scope: "session", Route: "home", Remote: true},                                     // main.App.AcceptOwnDeviceIntroduction
+	{Name: "AcceptOwnDeviceIntroduction", ID: 2097968437, Scope: "session", Route: "home", Remote: true, CallerBound: true},                  // main.App.AcceptOwnDeviceIntroduction
 	{Name: "AddBackend", ID: 2629313140, Scope: "host", Route: "home", Remote: true},                                                         // main.App.AddBackend
 	{Name: "AgentRemoteCancel", ID: 1158138718, Scope: "terminal:operate", Route: "selected"},                                                // main.App.AgentRemoteCancel
 	{Name: "AgentRemoteComputers", ID: 925837602, Scope: "terminal:operate", Route: "selected"},                                              // main.App.AgentRemoteComputers

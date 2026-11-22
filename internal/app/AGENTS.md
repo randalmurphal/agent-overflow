@@ -73,7 +73,9 @@ That context ends at server shutdown, not when the caller disconnects, unless
 the method is marked `//ao:callerbound`. Mark only a method whose context
 reaches nothing outside the process: no subprocess, no network request, no
 shared or deduplicated operation and no write. A subscription or stream
-qualifies when the connection's cleanup stack releases it. List it in
+qualifies when the connection's cleanup stack releases it, and so does an
+operation whose owning package defines the outcome of a cut at every point
+and tests it. List it in
 `callerBoundMethods` with what its context reaches; when in doubt, do not.
 Work past a method's first effect that must also survive shutdown runs on
 `context.WithoutCancel(ctx)`, or `ctxutil.Detach` onto its owner's lifetime,

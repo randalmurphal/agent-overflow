@@ -212,12 +212,12 @@ func TestProfileTransactionsPreserveUnknownFieldsAndReplacement(t *testing.T) {
 	if err := SaveSession(client.dir, newer); err != nil {
 		t.Fatal(err)
 	}
-	if err := client.Forget(); err != nil {
-		t.Fatal(err)
+	if err := client.SetNickname("stale"); !errors.Is(err, ErrSessionEnded) {
+		t.Fatalf("old owner's write: %v", err)
 	}
 	kept, err := LoadSession(client.dir, "backend-a")
-	if err != nil || kept.SessionID != newer.SessionID {
-		t.Fatal("old owner removed a newer pairing")
+	if err != nil || kept.SessionID != newer.SessionID || kept.Nickname != newer.Nickname {
+		t.Fatal("old owner changed a newer pairing")
 	}
 }
 

@@ -163,7 +163,10 @@ When the read loop exits, close the subscriber and cancel the connection
 context first, then join the RPC handlers and the connection's loops, then
 run the cleanup stack; a handler still running when its resources are
 released is a bug. Replies written after the socket is gone must fail
-without blocking.
+without blocking. `Server.Shutdown` joins every handler without a bound, so
+a method's work ends with the server's lifetime or under its own short
+timeout. A join that outlasts the shutdown context logs that once with the
+aggregated goroutine profile and keeps waiting (`joinHandlers`).
 
 Revocation teardown stops event delivery, cancels connection work, and closes
 the socket. Call close callbacks outside the registry lock and use the shared

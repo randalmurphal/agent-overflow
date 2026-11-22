@@ -16,6 +16,7 @@ package goroutinedump
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime/pprof"
@@ -61,6 +62,16 @@ func Write(dir string) (string, error) {
 		return "", fmt.Errorf("goroutinedump: close %s: %w", path, closeErr)
 	}
 	return path, nil
+}
+
+// WriteAggregated writes the goroutine profile at pprof debug level 1:
+// goroutines with the same stack counted once, short enough for a log
+// line's neighbour where a full dump would bury the log.
+func WriteAggregated(w io.Writer) error {
+	if err := pprof.Lookup("goroutine").WriteTo(w, 1); err != nil {
+		return fmt.Errorf("goroutinedump: write the goroutine profile: %w", err)
+	}
+	return nil
 }
 
 // ensurePrivateDir creates the log directory and REPAIRS its mode, the

@@ -13,7 +13,7 @@ import (
 // must not clear it when it replaces an ordinary profile with a group
 // session. The reset of an opt-in belongs only to an explicit user
 // re-pairing (Manager.Add), never to own-device re-enrollment, which runs
-// the same addLinkLocked primitive underneath.
+// the same enrollment save underneath.
 func TestOwnDeviceReconcileKeepsAgentAccessOptIn(t *testing.T) {
 	remotetest.Require(t)
 	ownConnectionNetwork(t)
