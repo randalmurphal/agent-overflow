@@ -370,12 +370,14 @@ func TestModelsForProviderReportsCodexLive(t *testing.T) {
 func TestClaudeProbePersistsTheCommittedCatalog(t *testing.T) {
 	claudecatalog.Reset()
 	t.Cleanup(claudecatalog.Reset)
-	key := testProbeKey("", "/mock/claude", "account")
-	// A model an earlier probe of this binary taught the catalog, which this
-	// probe's wire omits.
+	// The probe starts under "account" and adopts "adopted-account"
+	// (cachedProbeRunner).
+	adopted := testProbeKey("", "/mock/claude", "adopted-account")
+	// A model an earlier probe of the adopted identity taught the catalog,
+	// which this probe's wire omits.
 	var earlier claudecatalog.ModelCapture
 	earlier.Capture([]claude.WireModel{{Value: "claude-oldthing-1"}}, nil)
-	earlier.Store(key)
+	earlier.Store(adopted)
 
 	var gotAccountID string
 	var got claudemodels.Snapshot
@@ -415,6 +417,13 @@ func TestClaudeProbePersistsTheCommittedCatalog(t *testing.T) {
 	}
 	if !hasModel(got.Learned, "claude-newthing-1") || !hasModel(got.Learned, "claude-oldthing-1") {
 		t.Errorf("persisted learned = %v, want both the new and the retained model", got.Learned)
+	}
+	// The live entry is filed under the same identity as the record.
+	if live, ok := claudecatalog.Export(adopted); !ok || !hasModel(live.Learned, "claude-newthing-1") {
+		t.Errorf("live entry for the adopted account = %+v (ok=%v), want this probe's answer", live, ok)
+	}
+	if _, ok := claudecatalog.Export(testProbeKey("", "/mock/claude", "account")); ok {
+		t.Error("the probe filed a live entry under the selection it started from")
 	}
 }
 

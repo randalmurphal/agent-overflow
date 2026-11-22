@@ -1,6 +1,7 @@
 package providerdiscoveryapp
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 
@@ -41,28 +42,26 @@ func (s *Service) ProbeClaudeAccount() (provider.AccountInfo, error) {
 		Unauthenticated: providerstatus.ClaudeUnauthenticated,
 		EmitUnauth:      s.EmitClaudeUnauthenticatedStatus,
 		AfterAdopt: func(account provideraccounts.Account) {
-			wire.Store(key)
-			wireCommands.Store(key)
+			// The live entry and the persisted record are filed under the
+			// ADOPTED account, the one the selection names once the probe
+			// returns: a first probe runs with no selection at all, and a
+			// login changed outside AO adopts the account that actually
+			// answered. The selection the probe started under is the
+			// fallback for a probe that adopted nothing (no credential to
+			// attribute), where it is the only account the answer can
+			// belong to.
+			accountID := cmp.Or(account.ID, selection.AccountID)
+			filed := s.deps.ProbeKey(providerName, binary, accountID)
+			wire.Store(filed)
+			wireCommands.Store(filed)
+			if s.deps.RememberClaudeCatalog == nil {
+				return
+			}
 			// Exported from the catalog rather than taken from `wire`
 			// directly: the entry also holds the wire-only models earlier
 			// probes of this binary learned and this one omitted, which is
 			// exactly what the next process must serve again.
-			//
-			// Filed under the ADOPTED account, because that is the account
-			// the next boot will probe as: a first probe runs with no
-			// selection at all, and a login changed outside AO adopts the
-			// account that actually answered. The selection the key was
-			// built from is the fallback for a probe that adopted nothing
-			// (no credential to attribute), where it is the only account
-			// the answer can belong to.
-			if s.deps.RememberClaudeCatalog == nil {
-				return
-			}
-			accountID := account.ID
-			if accountID == "" {
-				accountID = selection.AccountID
-			}
-			if snapshot, ok := claudecatalog.Export(key); ok {
+			if snapshot, ok := claudecatalog.Export(filed); ok {
 				s.deps.RememberClaudeCatalog(accountID, snapshot)
 			}
 		},
