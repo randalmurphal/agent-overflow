@@ -1,8 +1,11 @@
 package provideraccountapp
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -186,4 +189,84 @@ func TestReconcileLockExcludesAndHandsOver(t *testing.T) {
 		t.Fatalf("LockContext on a free lock = %v", err)
 	}
 	lock.Unlock()
+}
+
+type blockingQuotaRoundTripper struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (b *blockingQuotaRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	b.once.Do(func() { close(b.entered) })
+	select {
+	case <-b.release:
+	case <-req.Context().Done():
+		return nil, req.Context().Err()
+	}
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body: io.NopCloser(bytes.NewBufferString(
+			`{"buckets":[{"bucketId":"gemini-argon-5h","window":"5h","remainingFraction":0.8}]}`,
+		)),
+	}, nil
+}
+
+// A read-only Antigravity HTTP quota probe must NOT hold reconcileMutex while
+// waiting on the network, so account switches and sibling checks are never stalled.
+func TestAgyReadOnlyUsageRefreshDoesNotHoldReconcileLock(t *testing.T) {
+	manager, _, credentials := newTestManager(t)
+	agyName := string(provider.Agy)
+	cred := []byte(`{"access_token":"ya29.valid","refresh_token":"1//ref","id_token_email":"dev@example.com"}`)
+	if err := credentials.WriteNativeCredentialForTest(agyName, cred); err != nil {
+		t.Fatalf("write agy native credential: %v", err)
+	}
+	if _, err := manager.RunAccountProbe(ProbeRequest{
+		ProviderName: agyName,
+		Context:      context.Background(),
+		Probe: func(context.Context) (provider.AccountInfo, error) {
+			return provider.AccountInfo{Email: "dev@example.com"}, nil
+		},
+	}); err != nil {
+		t.Fatalf("seed agy account: %v", err)
+	}
+	selection := manager.Selection(agyName)
+	if selection.AccountID == "" {
+		t.Fatalf("expected seeded active agy account, got empty selection: %+v", selection)
+	}
+
+	rt := &blockingQuotaRoundTripper{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	manager.deps.HTTPClient = func() *http.Client {
+		return &http.Client{Transport: rt}
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- manager.RefreshProviderAccountUsageContext(context.Background(), agyName, selection.AccountID)
+	}()
+
+	select {
+	case <-rt.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for agy quota HTTP request to start")
+	}
+
+	// While the HTTP request is blocked in-flight, reconcileMutex MUST be free.
+	lock := manager.reconcileMutex(agyName)
+	lockCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	if err := lock.LockContext(lockCtx); err != nil {
+		close(rt.release)
+		t.Fatalf("reconcileMutex was held during read-only agy HTTP probe: %v", err)
+	}
+	lock.Unlock()
+
+	close(rt.release)
+	if err := <-done; err != nil {
+		t.Fatalf("RefreshProviderAccountUsageContext(agy): %v", err)
+	}
 }

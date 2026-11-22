@@ -66,7 +66,7 @@ func (a *App) providerDiscoveryService() *providerdiscoveryapp.Service {
 			},
 			RememberClaudeCatalog: a.rememberClaudeCatalog,
 			ProbeAgyModels: func(ctx context.Context, binary string) ([]provider.ModelInfo, error) {
-				if conn, release := a.borrowAgyConnForBinary(binary); conn != nil {
+				if conn, release := a.borrowAgyConnForCurrentAccount(binary); conn != nil {
 					defer release()
 					return agy.ProbeCatalogOnConn(ctx, conn, providerProbeWorkDir())
 				}

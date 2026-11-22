@@ -19,12 +19,16 @@ const (
 	DefaultContextWindow = 1048576
 )
 
-// CatalogCache caches live-probed Antigravity model catalogs keyed by binary.
+// CatalogCache caches live-probed Antigravity model catalogs keyed by binary
+// and coalesces concurrent cache misses via singleflight so multiple callers
+// do not spawn duplicate cold agy acp processes.
 type CatalogCache struct {
-	mu       sync.Mutex
-	entries  map[string]catalogEntry
-	ttl      time.Duration
-	disabled bool
+	mu         sync.Mutex
+	entries    map[string]catalogEntry
+	inFlight   map[string]*catalogFlight
+	generation uint64
+	ttl        time.Duration
+	disabled   bool
 }
 
 type catalogEntry struct {
@@ -32,10 +36,19 @@ type catalogEntry struct {
 	fetchedAt time.Time
 }
 
+type catalogFlight struct {
+	done   chan struct{}
+	models []provider.ModelInfo
+	err    error
+}
+
+const catalogProbeTimeout = 30 * time.Second
+
 func NewCatalogCache() *CatalogCache {
 	return &CatalogCache{
-		entries: make(map[string]catalogEntry),
-		ttl:     DefaultCatalogTTL,
+		entries:  make(map[string]catalogEntry),
+		inFlight: make(map[string]*catalogFlight),
+		ttl:      DefaultCatalogTTL,
 	}
 }
 
@@ -44,6 +57,7 @@ func NewCatalogCache() *CatalogCache {
 func NewDisabledCatalogCache() *CatalogCache {
 	return &CatalogCache{
 		entries:  make(map[string]catalogEntry),
+		inFlight: make(map[string]*catalogFlight),
 		ttl:      DefaultCatalogTTL,
 		disabled: true,
 	}
@@ -75,7 +89,80 @@ func (c *CatalogCache) Put(key string, models []provider.ModelInfo) {
 func (c *CatalogCache) Clear() {
 	c.mu.Lock()
 	clear(c.entries)
+	c.generation++
 	c.mu.Unlock()
+}
+
+// GetOrProbe returns a fresh cached catalog for key or coalesces concurrent
+// callers onto a single probeFn invocation. A cancelling waiter returns ctx.Err()
+// immediately without aborting sibling waiters; Clear() bumps generation so an
+// in-flight probe from before invalidation cannot write stale results back.
+func (c *CatalogCache) GetOrProbe(
+	ctx context.Context,
+	key string,
+	probeFn func(context.Context, string) ([]provider.ModelInfo, error),
+) ([]provider.ModelInfo, error) {
+	if c == nil || c.disabled {
+		return nil, nil
+	}
+	c.mu.Lock()
+	if e, ok := c.entries[key]; ok && time.Since(e.fetchedAt) <= c.ttl && len(e.models) > 0 {
+		models := provider.CloneModels(e.models)
+		c.mu.Unlock()
+		return models, nil
+	}
+	if flight, ok := c.inFlight[key]; ok {
+		c.mu.Unlock()
+		select {
+		case <-flight.done:
+			if flight.err != nil {
+				return nil, flight.err
+			}
+			return provider.CloneModels(flight.models), nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	if probeFn == nil {
+		c.mu.Unlock()
+		return nil, nil
+	}
+	flight := &catalogFlight{done: make(chan struct{})}
+	if c.inFlight == nil {
+		c.inFlight = make(map[string]*catalogFlight)
+	}
+	c.inFlight[key] = flight
+	startGen := c.generation
+	c.mu.Unlock()
+
+	go func() {
+		probeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), catalogProbeTimeout)
+		models, err := probeFn(probeCtx, key)
+		cancel()
+
+		c.mu.Lock()
+		if err == nil && len(models) > 0 && c.generation == startGen {
+			c.entries[key] = catalogEntry{
+				models:    provider.CloneModels(models),
+				fetchedAt: time.Now(),
+			}
+		}
+		flight.models = provider.CloneModels(models)
+		flight.err = err
+		delete(c.inFlight, key)
+		close(flight.done)
+		c.mu.Unlock()
+	}()
+
+	select {
+	case <-flight.done:
+		if flight.err != nil {
+			return nil, flight.err
+		}
+		return provider.CloneModels(flight.models), nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // ProbeCatalogOnConn performs a zero-token model x thought_level x contextWindow
@@ -120,14 +207,31 @@ func ProbeCatalogOnConn(ctx context.Context, conn *acp.Conn, workDir string) ([]
 	defaultModelID := modelOpt.CurrentValue
 	currentOpts := openRes.ConfigOptions
 	currentSize := DefaultContextWindow
+	sizeObserved := false
 	isUsageSize := func(u acp.SessionUpdate) bool {
 		return u.SessionUpdate == "usage_update" && u.Size > 0
 	}
-	out := make([]provider.ModelInfo, 0, len(modelOpt.Options))
-	var lastSwitchErr error
+	// Order the already-active default model first so we inspect its initial
+	// configOptions/usage_update without an unnecessary switch, then cycle the
+	// remaining models.
+	orderedChoices := make([]acp.ConfigSelectOption, 0, len(modelOpt.Options))
 	for _, choice := range modelOpt.Options {
+		if choice.Value == defaultModelID {
+			orderedChoices = append(orderedChoices, choice)
+		}
+	}
+	for _, choice := range modelOpt.Options {
+		if choice.Value != defaultModelID {
+			orderedChoices = append(orderedChoices, choice)
+		}
+	}
+
+	out := make([]provider.ModelInfo, 0, len(orderedChoices))
+	var lastSwitchErr error
+	for _, choice := range orderedChoices {
 		cap := conn.StartUpdateCapture(sessionID, 32)
-		if choice.Value != currentOptionValue(currentOpts, "model") {
+		switched := choice.Value != currentOptionValue(currentOpts, "model")
+		if switched {
 			updated, setErr := conn.SetConfigOption(ctx, sessionID, "model", choice.Value)
 			if setErr != nil {
 				cap.Stop()
@@ -137,16 +241,19 @@ func ProbeCatalogOnConn(ctx context.Context, conn *acp.Conn, workDir string) ([]
 			if len(updated) > 0 {
 				currentOpts = updated
 			}
-			// Real agy emits `usage_update` asynchronously right after the
-			// `session/set_config_option` reply whenever the model's context
-			// window size changes. Wait briefly (returning immediately on signal)
-			// so unchanged-size switches do not stall catalog discovery.
-			cap.WaitFor(ctx, isUsageSize, 30*time.Millisecond)
+			// Real agy emits `usage_update` asynchronously right after
+			// `session/set_config_option` whenever context window size changes.
+			// Wait briefly (returning immediately on signal) so unchanged-size
+			// switches do not stall catalog discovery.
+			cap.WaitFor(ctx, isUsageSize, 25*time.Millisecond)
+		} else if !sizeObserved {
+			cap.WaitFor(ctx, isUsageSize, 15*time.Millisecond)
 		}
 		updates := cap.Stop()
 		for _, u := range updates {
 			if isUsageSize(u) {
 				currentSize = u.Size
+				sizeObserved = true
 			}
 		}
 

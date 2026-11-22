@@ -72,17 +72,10 @@ func (s *Service) AgyModelsForBinary(ctx context.Context, binary string) ([]prov
 		return nil, false
 	}
 	key := normalizedAgyBinary(binary)
-	if cached, ok := s.caches.AgyModels.Get(key); ok && len(cached) > 0 {
-		return cached, true
-	}
-	if s.deps.ProbeAgyModels == nil {
-		return nil, false
-	}
-	models, err := s.deps.ProbeAgyModels(ctx, key)
+	models, err := s.caches.AgyModels.GetOrProbe(ctx, key, s.deps.ProbeAgyModels)
 	if err != nil || len(models) == 0 {
 		return nil, false
 	}
-	s.caches.AgyModels.Put(key, models)
 	return models, true
 }
 

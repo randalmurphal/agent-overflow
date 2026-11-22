@@ -254,6 +254,20 @@ describe('<ToolApprovalPanel>', () => {
     });
     expect(fileView.getByText('/repo/src/app.ts')).toBeInTheDocument();
     expect(fileView.getByText('File')).toBeInTheDocument();
+
+    const diffView = render(ToolApprovalPanel, {
+      props: {
+        approval: bashApproval({
+          kind: 'file-change',
+          toolName: 'Edit',
+          input: { path: '/repo/src/app.ts', diff: '@@ -1 +1 @@\n-old\n+new' },
+        }),
+        onResolve: makeResolver(),
+      },
+    });
+    expect(diffView.getByText('Diff · /repo/src/app.ts')).toBeInTheDocument();
+    expect(diffView.getByText(/-old/)).toBeInTheDocument();
+    expect(diffView.getByText(/\+new/)).toBeInTheDocument();
   });
 
   it('renders write-stdin details and never offers input editing', () => {

@@ -73,6 +73,9 @@ func (m *Manager) refreshProviderAccountUsage(
 		return admitErr
 	}
 	defer endWork()
+	if providerName == string(provider.Agy) {
+		return m.refreshAgyAccountUsage(ctx, accountID, backoffHold)
+	}
 	refreshMu := m.reconcileMutex(providerName)
 	if err := refreshMu.LockContext(ctx); err != nil {
 		return fmt.Errorf("wait for the %s account lock to read account %s's usage: %w", providerName, accountID, err)
@@ -232,21 +235,6 @@ func (m *Manager) refreshProviderAccountUsage(
 		}
 		refresh.refreshed = refreshed
 		refresh.observed = info
-	case string(provider.Agy):
-		probeRan = true
-		if refresh.refreshesInCanonicalHome() {
-			var rotated []byte
-			snapshot, rotated, probeErr = m.probeSelectedAgyRateLimits(ctx, credential.Bytes())
-			refresh.refreshed = provideraccounts.NewCredentialSnapshot(rotated)
-			if probeErr != nil && len(refresh.refreshed.Bytes()) == 0 {
-				return mapProviderAccountLoginError(providerName, account, probeErr)
-			}
-		} else {
-			snapshot, probeErr = m.probeInactiveAgyRateLimits(ctx, credential.Bytes())
-			if probeErr != nil {
-				return mapProviderAccountLoginError(providerName, account, probeErr)
-			}
-		}
 	}
 
 	// A Codex rotation for a non-selected account is durable NOWHERE once the

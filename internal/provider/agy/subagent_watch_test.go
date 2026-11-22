@@ -414,13 +414,13 @@ func TestSubagentPathContainmentAndClaimRoleMismatch(t *testing.T) {
 			{conversationID: "child-alpha", role: "Alpha", typeName: "research", prompt: "Inspect billing"},
 		},
 	}
-	if stolen := coord.claim("Beta", "research", "Task B"); stolen != nil {
+	if stolen := coord.claim("", "Beta", "research", "Task B"); stolen != nil {
 		t.Fatalf("watcher Beta stole child with conflicting role Alpha: %+v", stolen)
 	}
-	if stolenPrompt := coord.claim("Alpha", "research", "Different prompt"); stolenPrompt != nil {
+	if stolenPrompt := coord.claim("", "Alpha", "research", "Different prompt"); stolenPrompt != nil {
 		t.Fatalf("watcher with conflicting prompt stole child: %+v", stolenPrompt)
 	}
-	if matched := coord.claim("Alpha", "research", "Inspect billing"); matched == nil || matched.conversationID != "child-alpha" {
+	if matched := coord.claim("", "Alpha", "research", "Inspect billing"); matched == nil || matched.conversationID != "child-alpha" {
 		t.Fatalf("exact prompt match lost to prefix match: got %+v, want child-alpha", matched)
 	}
 
@@ -462,13 +462,60 @@ func TestSubagentPathContainmentAndClaimRoleMismatch(t *testing.T) {
 		reports:    map[string]string{},
 	}
 	revCoord.refresh(appDataDir)
-	gotA := revCoord.claim("Worker", "research", "Audit billing")
-	gotB := revCoord.claim("Worker", "research", "Audit auth")
+	gotA := revCoord.claim("", "Worker", "research", "Audit billing")
+	gotB := revCoord.claim("", "Worker", "research", "Audit auth")
 	if gotA == nil || gotA.conversationID != "child-rev-a" {
 		t.Fatalf("reversed parallel claim A = %+v, want child-rev-a", gotA)
 	}
 	if gotB == nil || gotB.conversationID != "child-rev-b" {
 		t.Fatalf("reversed parallel claim B = %+v, want child-rev-b", gotB)
+	}
+
+	// Identical parallel launches (same role, same type, SAME prompt) resolved
+	// deterministically via child inbox sourceMetadata.tool.toolCall.id even when
+	// child-id-b arrives before child-id-a.
+	idParentLog := transcriptPathForSession(appDataDir, "parent-toolid")
+	idChildALog := transcriptPathForSession(appDataDir, "child-id-a")
+	idChildBLog := transcriptPathForSession(appDataDir, "child-id-b")
+	for cid, callID := range map[string]string{
+		"child-id-a": "call-sub-A",
+		"child-id-b": "call-sub-B",
+	} {
+		msgPath := filepath.Join(brainDir, cid, ".system_generated", "messages", "msg-1.json")
+		if err := os.MkdirAll(filepath.Dir(msgPath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(msgPath, []byte(`{"sourceMetadata":{"tool":{"toolCall":{"id":"`+callID+`"}}}}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	createdIDB, _ := json.Marshal(map[string]any{
+		"step_index": 2, "type": "GENERIC",
+		"content": "Created the following subagent:\n{\"conversationId\":\"child-id-b\",\"logAbsoluteUri\":\"file://" + filepath.ToSlash(idChildBLog) + "\"}",
+	})
+	createdIDA, _ := json.Marshal(map[string]any{
+		"step_index": 3, "type": "GENERIC",
+		"content": "Created the following subagent:\n{\"conversationId\":\"child-id-a\",\"logAbsoluteUri\":\"file://" + filepath.ToSlash(idChildALog) + "\"}",
+	})
+	writeJSONL(t, idParentLog,
+		`{"step_index":1,"type":"PLANNER_RESPONSE","tool_calls":[{"name":"invoke_subagent","args":{"Role":"\"Worker\"","TypeName":"\"research\"","Prompt":"\"Same prompt\""}},{"name":"invoke_subagent","args":{"Role":"\"Worker\"","TypeName":"\"research\"","Prompt":"\"Same prompt\""}}]}`,
+		string(createdIDB),
+		string(createdIDA),
+	)
+	idCoord := &parentSubagentCoordinator{
+		path:       idParentLog,
+		seenConvID: map[string]bool{},
+		reports:    map[string]string{},
+	}
+	idCoord.refresh(appDataDir)
+	// Claim A first even though B appeared first in GENERIC!
+	gotIDA := idCoord.claim("call-sub-A", "Worker", "research", "Same prompt")
+	gotIDB := idCoord.claim("call-sub-B", "Worker", "research", "Same prompt")
+	if gotIDA == nil || gotIDA.conversationID != "child-id-a" {
+		t.Fatalf("toolCallID claim A = %+v, want child-id-a", gotIDA)
+	}
+	if gotIDB == nil || gotIDB.conversationID != "child-id-b" {
+		t.Fatalf("toolCallID claim B = %+v, want child-id-b", gotIDB)
 	}
 
 	// GENERIC output with a conversationId when NO invoke_subagent is pending must not be admitted.

@@ -2339,11 +2339,19 @@ func (s *Session) emitEvent(evt provider.ProviderEvent) {
 }
 
 func buildPromptBlocks(content string, attachments []provider.ImageAttachment) []ContentBlock {
-	var blocks []ContentBlock
-	if content != "" {
-		blocks = append(blocks, ContentBlock{Type: "text", Text: content})
-	}
-	for _, att := range attachments {
+	parts := provider.SplitContentByImageMarkers(content, len(attachments))
+	blocks := make([]ContentBlock, 0, len(parts))
+	for _, part := range parts {
+		if part.ImageIndex < 0 {
+			if part.Text != "" {
+				blocks = append(blocks, ContentBlock{Type: "text", Text: part.Text})
+			}
+			continue
+		}
+		if part.ImageIndex >= len(attachments) {
+			continue
+		}
+		att := attachments[part.ImageIndex]
 		if len(att.Data) == 0 {
 			continue
 		}

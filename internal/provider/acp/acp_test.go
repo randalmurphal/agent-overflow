@@ -1402,3 +1402,53 @@ for raw in sys.stdin:
 		return e.Kind == provider.EventTextDelta && strings.Contains(e.Content, "outcome=cancelled,cancel=True")
 	})
 }
+
+func TestBuildPromptBlocksPreservesInlineImageOrderAndApprovalDiffPreview(t *testing.T) {
+	t.Parallel()
+	atts := []provider.ImageAttachment{
+		{ID: "img-1", MimeType: "image/png", Data: []byte("PNG1")},
+		{ID: "img-2", MimeType: "image/jpeg", Data: []byte("JPG2")},
+	}
+	blocks := buildPromptBlocks("Before [Image #1] middle [Image #2] after", atts)
+	if len(blocks) != 5 {
+		t.Fatalf("len(blocks) = %d, want 5: %+v", len(blocks), blocks)
+	}
+	if blocks[0].Type != "text" || blocks[0].Text != "Before " ||
+		blocks[1].Type != "image" || blocks[1].MimeType != "image/png" ||
+		blocks[2].Type != "text" || blocks[2].Text != " middle " ||
+		blocks[3].Type != "image" || blocks[3].MimeType != "image/jpeg" ||
+		blocks[4].Type != "text" || blocks[4].Text != " after" {
+		t.Fatalf("inline image order mismatch: %+v", blocks)
+	}
+
+	var df DefaultFlavor
+	cls := df.ClassifyPermission("t1", "turn-1", "req-1", RequestPermissionParams{
+		ToolCall: ToolCallUpdate{
+			ToolCallID: "tc-1",
+			Name:       "edit_file",
+			Title:      "Edit file",
+			Kind:       "edit",
+			Locations:  []ToolLocation{{Path: "/repo/main.go"}},
+			Content: []ToolContentItem{{
+				Type:    "diff",
+				Path:    "/repo/main.go",
+				OldText: "foo\n",
+				NewText: "bar\n",
+			}},
+		},
+		Options: []PermissionOption{
+			{OptionID: "allow", Kind: "allow_once", Name: "Allow"},
+			{OptionID: "deny", Kind: "reject_once", Name: "Deny"},
+		},
+	}, PolicyPrompt)
+	if !strings.Contains(cls.Approval.Description, "/repo/main.go") {
+		t.Fatalf("approval description = %q, want path included", cls.Approval.Description)
+	}
+	var in map[string]any
+	if err := json.Unmarshal(cls.Approval.Input, &in); err != nil {
+		t.Fatalf("unmarshal approval input: %v", err)
+	}
+	if in["path"] != "/repo/main.go" || !strings.Contains(in["diff"].(string), "-foo") || !strings.Contains(in["diff"].(string), "+bar") {
+		t.Fatalf("approval input missing path/diff preview: %s", string(cls.Approval.Input))
+	}
+}

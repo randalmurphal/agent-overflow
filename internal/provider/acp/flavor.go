@@ -432,6 +432,8 @@ func (DefaultFlavor) ClassifyPermission(threadID, turnID, requestID string, req 
 		byKey[opt.OptionID] = opt.OptionID
 	}
 
+	approvalInput, approvalDesc := buildApprovalPreview(&req.ToolCall, title)
+
 	return PermissionClassification{
 		Action: PermissionAskUser,
 		Approval: provider.ApprovalRequest{
@@ -441,13 +443,100 @@ func (DefaultFlavor) ClassifyPermission(threadID, turnID, requestID string, req 
 			ToolUseID:          req.ToolCall.ToolCallID,
 			ToolName:           toolName,
 			Title:              title,
-			Description:        title,
-			Input:              req.ToolCall.EffectiveInput(),
+			Description:        approvalDesc,
+			Input:              approvalInput,
 			Kind:               kind,
 			AvailableDecisions: &avail,
 		},
 		OptionByKey: byKey,
 	}
+}
+
+const maxApprovalDiffPreviewBytes = 16 * 1024
+
+// EnrichApprovalInput merges ACP's native pending diff hunks and file locations
+// from tc into base (if base is a JSON object or empty) so approval cards
+// display file paths and pending diffs before the user approves.
+func EnrichApprovalInput(base json.RawMessage, tc *ToolCallUpdate) json.RawMessage {
+	diffPath, combinedDiff := extractApprovalDiffAndPath(tc)
+	if diffPath == "" && combinedDiff == "" {
+		return base
+	}
+	obj := map[string]any{}
+	if len(base) > 0 {
+		if err := json.Unmarshal(base, &obj); err != nil {
+			return base
+		}
+	}
+	changed := false
+	if diffPath != "" {
+		hasPath := false
+		for _, k := range []string{"file_path", "path", "filePath", "TargetFile", "AbsolutePath", "Path"} {
+			if s, ok := obj[k].(string); ok && strings.TrimSpace(s) != "" {
+				hasPath = true
+				break
+			}
+		}
+		if !hasPath {
+			obj["path"] = diffPath
+			changed = true
+		}
+	}
+	if combinedDiff != "" {
+		if existing, ok := obj["diff"].(string); !ok || strings.TrimSpace(existing) == "" {
+			obj["diff"] = combinedDiff
+			changed = true
+		}
+	}
+	if !changed {
+		return base
+	}
+	enriched, err := json.Marshal(obj)
+	if err != nil {
+		return base
+	}
+	return enriched
+}
+
+func extractApprovalDiffAndPath(tc *ToolCallUpdate) (string, string) {
+	if tc == nil {
+		return "", ""
+	}
+	var diffPath string
+	var diffParts []string
+	for _, item := range tc.Content {
+		if item.Type != "diff" {
+			continue
+		}
+		p := strings.TrimSpace(item.Path)
+		if diffPath == "" && p != "" {
+			diffPath = p
+		}
+		if patch := BuildUnifiedDiff(p, item.OldText, item.NewText); patch != "" {
+			diffParts = append(diffParts, patch)
+		}
+	}
+	if diffPath == "" && len(tc.Locations) > 0 {
+		diffPath = strings.TrimSpace(tc.Locations[0].Path)
+	}
+	combinedDiff := strings.Join(diffParts, "\n")
+	if len(combinedDiff) > maxApprovalDiffPreviewBytes {
+		combinedDiff = combinedDiff[:maxApprovalDiffPreviewBytes] + "\n... (diff truncated)"
+	}
+	return diffPath, combinedDiff
+}
+
+func buildApprovalPreview(tc *ToolCallUpdate, fallbackDesc string) (json.RawMessage, string) {
+	diffPath, _ := extractApprovalDiffAndPath(tc)
+	desc := fallbackDesc
+	if diffPath != "" && !strings.Contains(desc, diffPath) {
+		if desc == "" {
+			desc = diffPath
+		} else {
+			desc = desc + ": " + diffPath
+		}
+	}
+	return EnrichApprovalInput(tc.EffectiveInput(), tc), desc
 }
 
 func (DefaultFlavor) ExtractPendingQuestion(*ToolCallUpdate) ([]provider.UserInputQuestion, bool) {

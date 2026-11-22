@@ -4,9 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -836,5 +838,91 @@ func TestClassifyPermissionNormalizesToolNameAndInput(t *testing.T) {
 	}
 	if in["command"] != "echo hello" || in["cwd"] != "/repo" {
 		t.Fatalf("Approval.Input = %s, want normalized command & cwd", string(cls.Approval.Input))
+	}
+
+	// File edit permission preserves ACP's pending diff preview alongside normalized path.
+	editCls := f.ClassifyPermission("t1", "turn-1", "req-edit", acp.RequestPermissionParams{
+		ToolCall: acp.ToolCallUpdate{
+			ToolCallID: "call-edit",
+			Name:       "replace_file_content",
+			Title:      "Edit app.go",
+			Kind:       "edit",
+			RawInput:   json.RawMessage(`{"TargetFile":"/repo/app.go"}`),
+			Content: []acp.ToolContentItem{{
+				Type:    "diff",
+				Path:    "/repo/app.go",
+				OldText: "old line\n",
+				NewText: "new line\n",
+			}},
+		},
+		Options: []acp.PermissionOption{
+			{OptionID: "allow", Name: "Allow", Kind: "allow_once"},
+			{OptionID: "deny", Name: "Deny", Kind: "reject_once"},
+		},
+	}, acp.PolicyPrompt)
+	var editIn map[string]any
+	if err := json.Unmarshal(editCls.Approval.Input, &editIn); err != nil {
+		t.Fatalf("unmarshal edit approval input: %v", err)
+	}
+	diffStr, _ := editIn["diff"].(string)
+	if !strings.Contains(diffStr, "-old line") || !strings.Contains(diffStr, "+new line") {
+		t.Fatalf("edit approval input missing unified diff preview: %s", string(editCls.Approval.Input))
+	}
+}
+
+func TestCatalogCacheGetOrProbeCoalescesConcurrentMisses(t *testing.T) {
+	t.Parallel()
+	cache := NewCatalogCache()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var calls int
+	var mu sync.Mutex
+	probe := func(ctx context.Context, key string) ([]provider.ModelInfo, error) {
+		mu.Lock()
+		calls++
+		first := calls == 1
+		mu.Unlock()
+		if first {
+			close(started)
+			<-release
+		}
+		return []provider.ModelInfo{{Slug: "gemini-4-neon", Name: "Gemini 4 Neon", Provider: string(provider.Agy)}}, nil
+	}
+
+	cancelCtx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	errs := make([]error, 4)
+	results := make([][]provider.ModelInfo, 4)
+	for i := range 4 {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			ctx := context.Background()
+			if idx == 0 {
+				ctx = cancelCtx
+			}
+			results[idx], errs[idx] = cache.GetOrProbe(ctx, "agy", probe)
+		}(i)
+	}
+	<-started
+	// Cancelling one waiter must return context.Canceled without aborting siblings.
+	cancel()
+	time.Sleep(20 * time.Millisecond)
+	close(release)
+	wg.Wait()
+
+	mu.Lock()
+	gotCalls := calls
+	mu.Unlock()
+	if gotCalls != 1 {
+		t.Fatalf("probe called %d times for 4 concurrent misses, want 1", gotCalls)
+	}
+	if !errors.Is(errs[0], context.Canceled) {
+		t.Fatalf("cancelled waiter err = %v, want context.Canceled", errs[0])
+	}
+	for i := 1; i < 4; i++ {
+		if errs[i] != nil || len(results[i]) != 1 || results[i][0].Slug != "gemini-4-neon" {
+			t.Fatalf("waiter %d = (%+v, %v), want 1 model", i, results[i], errs[i])
+		}
 	}
 }

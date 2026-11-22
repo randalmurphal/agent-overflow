@@ -778,7 +778,7 @@ func (f *Flavor) ClassifyPermission(threadID, turnID, requestID string, req acp.
 			cls.Approval.ToolName = norm.ToolName
 		}
 		if len(norm.Input) > 0 {
-			cls.Approval.Input = norm.Input
+			cls.Approval.Input = acp.EnrichApprovalInput(norm.Input, &req.ToolCall)
 		}
 		// Surface option._meta["agy.security.warning"] if present on any allow option.
 		for _, opt := range req.Options {

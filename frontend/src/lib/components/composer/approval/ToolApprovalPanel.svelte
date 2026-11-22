@@ -139,6 +139,11 @@
     }
     if (isFileTool(approval.toolName, approval.kind)) {
       const path = input.file_path ?? input.path ?? input.filePath ?? input.TargetFile ?? input.AbsolutePath ?? input.Path ?? '';
+      const diff = typeof input.diff === 'string' ? input.diff.trim() : '';
+      if (diff) {
+        const label = path ? `Diff · ${String(path)}` : 'Diff';
+        return { label, content: diff };
+      }
       return path ? { label: 'File', content: String(path) } : null;
     }
     return null;

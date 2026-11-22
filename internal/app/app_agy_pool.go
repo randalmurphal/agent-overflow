@@ -128,20 +128,31 @@ func (a *App) hasManagedAgyCredentialFileAt(appData string) bool {
 	return a.ensureProviderAccountManager().AgyShouldForceFileStorage(appData)
 }
 
-func (a *App) borrowAgyConnForBinary(binary string) (*acp.Conn, func()) {
+// borrowAgyConnForCurrentAccount borrows a warm pooled *acp.Conn ONLY when its
+// full pool identity (resolved binary + file identity + active account ID +
+// account generation + effective probe env) matches the current account state.
+// Never borrows across account generations, stale binaries, or harness-isolated
+// per-thread connections.
+func (a *App) borrowAgyConnForCurrentAccount(binary string) (*acp.Conn, func()) {
 	if a.sessionRuntime == nil {
 		return nil, nil
 	}
-	want := strings.TrimSpace(agy.ResolveBinary(binary))
+	if a.providerExtraEnv[control.EnvAddr] != "" {
+		// In isolated harness boots, live sessions are keyed per-thread with
+		// AO_HARNESS_CONTROL; probes and imports must never borrow them.
+		return nil, nil
+	}
+	resolvedBinary := agy.ResolveBinary(binary)
+	identity, _ := a.resolveProviderBinaryIdentity(string(provider.Agy))
+	selection := a.captureProviderAccountSelection(string(provider.Agy))
+	probeEnv := a.ensureProviderAccountManager().ProbeEnv(string(provider.Agy), nil)
+	wantKey := agyPoolKey(resolvedBinary, identity, selection.AccountID, selection.Generation, probeEnv, "")
 	conn, release, ok := a.sessionRuntime.Connections().BorrowMatching(func(key string, c provider.Connection) bool {
-		if !strings.HasPrefix(key, "agy|") {
+		if key != wantKey {
 			return false
 		}
-		ac, isACP := c.(*acp.Conn)
-		if !isACP {
-			return false
-		}
-		return strings.TrimSpace(ac.Binary()) == want
+		_, isACP := c.(*acp.Conn)
+		return isACP
 	})
 	if !ok {
 		return nil, nil
@@ -171,7 +182,7 @@ func (a *App) withAgyImportConn(ctx context.Context, appDataDir, avoidSessionID 
 	canonicalDir := a.agyAppDataDir()
 	useCanonical := appDataDir == "" || (canonicalDir != "" && filepath.Clean(appDataDir) == filepath.Clean(canonicalDir))
 	if useCanonical {
-		if conn, release := a.borrowAgyConnForBinary(binary); conn != nil {
+		if conn, release := a.borrowAgyConnForCurrentAccount(binary); conn != nil {
 			if avoidSessionID != "" && conn.HasActiveSession(avoidSessionID) {
 				// Never issue `session/load` for a session that is currently
 				// live on this pooled server: use an isolated one-shot conn

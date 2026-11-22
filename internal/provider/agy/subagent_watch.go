@@ -105,6 +105,7 @@ type pendingParentSpawn struct {
 type discoveredSubagent struct {
 	conversationID string
 	logPath        string
+	toolCallID     string
 	role           string
 	typeName       string
 	prompt         string
@@ -177,7 +178,7 @@ func (f *Flavor) WatchSubagent(ctx context.Context, launch acp.SubagentLaunchCon
 
 	for child == nil {
 		coord.refresh(f.AppDataDir)
-		child = coord.claim(wantRole, wantType, wantPrompt)
+		child = coord.claim(launch.ToolCallID, wantRole, wantType, wantPrompt)
 		if child != nil {
 			break
 		}
@@ -631,7 +632,108 @@ func (c *parentSubagentCoordinator) refresh(appDataDir string) {
 			}
 		}
 	}
+	c.enrichToolCallIDsLocked(brainDir)
 	c.resolveUnattributedLocked(brainDir)
+}
+
+const (
+	maxInboxMessagesToScan = 16
+	maxInboxMessageBytes   = 64 * 1024
+)
+
+// enrichToolCallIDsLocked reads each newly discovered child's inbox messages
+// (strictly contained under brainDir/<childID>/.system_generated/messages/) to
+// recover agy's authoritative sourceMetadata.tool.toolCall.id launch link.
+func (c *parentSubagentCoordinator) enrichToolCallIDsLocked(brainDir string) {
+	for _, d := range c.discovered {
+		if d.claimed || d.toolCallID != "" {
+			continue
+		}
+		if id := readChildLaunchToolCallIDContained(brainDir, d.conversationID); id != "" {
+			d.toolCallID = id
+		}
+	}
+}
+
+func readChildLaunchToolCallIDContained(brainDir, childID string) string {
+	if strings.TrimSpace(brainDir) == "" || !isSafeConversationID(childID) {
+		return ""
+	}
+	brainReal, err := filepath.EvalSymlinks(brainDir)
+	if err != nil {
+		return ""
+	}
+	brainRoot, err := os.OpenRoot(brainReal)
+	if err != nil {
+		return ""
+	}
+	defer func() { _ = brainRoot.Close() }()
+
+	dirInfo, err := brainRoot.Lstat(childID)
+	if err != nil || dirInfo.Mode()&os.ModeSymlink != 0 || !dirInfo.IsDir() {
+		return ""
+	}
+	sessionRoot, err := brainRoot.OpenRoot(childID)
+	if err != nil {
+		return ""
+	}
+	defer func() { _ = sessionRoot.Close() }()
+	openedDirInfo, err := sessionRoot.Stat(".")
+	if err != nil || !openedDirInfo.IsDir() || !os.SameFile(dirInfo, openedDirInfo) {
+		return ""
+	}
+
+	msgRelDir := filepath.Join(".system_generated", "messages")
+	msgDir, err := sessionRoot.Open(msgRelDir)
+	if err != nil {
+		return ""
+	}
+	entries, err := msgDir.ReadDir(maxInboxMessagesToScan)
+	_ = msgDir.Close()
+	if err != nil {
+		return ""
+	}
+
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || name == "read.json" || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		relFile := filepath.Join(msgRelDir, name)
+		linfo, err := sessionRoot.Lstat(relFile)
+		if err != nil || !linfo.Mode().IsRegular() {
+			continue
+		}
+		f, err := sessionRoot.OpenFile(relFile, os.O_RDONLY|openNonBlockFlag(), 0)
+		if err != nil {
+			continue
+		}
+		info, statErr := f.Stat()
+		if statErr != nil || !info.Mode().IsRegular() || !os.SameFile(linfo, info) {
+			_ = f.Close()
+			continue
+		}
+		data, readErr := io.ReadAll(io.LimitReader(f, maxInboxMessageBytes))
+		_ = f.Close()
+		if readErr != nil || len(data) == 0 {
+			continue
+		}
+		var msg struct {
+			SourceMetadata struct {
+				Tool struct {
+					ToolCall struct {
+						ID string `json:"id"`
+					} `json:"toolCall"`
+				} `json:"tool"`
+			} `json:"sourceMetadata"`
+		}
+		if json.Unmarshal(data, &msg) == nil {
+			if id := strings.TrimSpace(msg.SourceMetadata.Tool.ToolCall.ID); id != "" {
+				return id
+			}
+		}
+	}
+	return ""
 }
 
 // resolveUnattributedLocked attributes discovered subagents when multiple
@@ -720,13 +822,44 @@ func promptsCompatible(wantPrompt, gotPrompt string) bool {
 	return gotPrompt == wantPrompt || strings.HasPrefix(wantPrompt, gotPrompt) || strings.HasPrefix(gotPrompt, wantPrompt)
 }
 
-func (c *parentSubagentCoordinator) claim(wantRole, wantType, wantPrompt string) *discoveredSubagent {
+func (c *parentSubagentCoordinator) claim(wantToolCallID, wantRole, wantType, wantPrompt string) *discoveredSubagent {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	wantToolCallID = strings.TrimSpace(wantToolCallID)
+
+	// Pass 0: exact match on agy's authoritative sourceMetadata.tool.toolCall.id
+	// from the child inbox — 100% deterministic even for identical parallel
+	// launches with the same role and prompt.
+	if wantToolCallID != "" {
+		for _, d := range c.discovered {
+			if d.claimed {
+				continue
+			}
+			if d.toolCallID == wantToolCallID {
+				d.claimed = true
+				if d.unattributed {
+					d.unattributed = false
+					if len(c.pendingSpawn) > 0 {
+						if idx := matchPendingSpawnByPrompt(c.pendingSpawn, wantPrompt); idx >= 0 {
+							c.pendingSpawn = append(c.pendingSpawn[:idx], c.pendingSpawn[idx+1:]...)
+						} else {
+							c.pendingSpawn = c.pendingSpawn[1:]
+						}
+					}
+				}
+				return d
+			}
+		}
+	}
+
 	// Pass 1: exact match on role + typeName + exact prompt (never let a
-	// shorter prompt prefix overtake a later exact match).
+	// shorter prompt prefix overtake a later exact match, and never steal a
+	// child already tagged with a different toolCallID).
 	for _, d := range c.discovered {
 		if d.claimed || d.unattributed {
+			continue
+		}
+		if wantToolCallID != "" && d.toolCallID != "" && d.toolCallID != wantToolCallID {
 			continue
 		}
 		if wantRole != "" && d.role == wantRole &&
@@ -742,6 +875,9 @@ func (c *parentSubagentCoordinator) claim(wantRole, wantType, wantPrompt string)
 		if d.claimed || d.unattributed {
 			continue
 		}
+		if wantToolCallID != "" && d.toolCallID != "" && d.toolCallID != wantToolCallID {
+			continue
+		}
 		if wantRole != "" && d.role == wantRole &&
 			(wantType == "" || d.typeName == wantType) &&
 			promptsCompatible(wantPrompt, d.prompt) {
@@ -753,6 +889,9 @@ func (c *parentSubagentCoordinator) claim(wantRole, wantType, wantPrompt string)
 	// metadata at all and is not awaiting parallel prompt attribution.
 	for _, d := range c.discovered {
 		if d.claimed || d.unattributed {
+			continue
+		}
+		if wantToolCallID != "" && d.toolCallID != "" && d.toolCallID != wantToolCallID {
 			continue
 		}
 		if d.role != "" || d.typeName != "" || d.prompt != "" {

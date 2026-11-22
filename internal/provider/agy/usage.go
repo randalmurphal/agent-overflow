@@ -84,37 +84,48 @@ func probeRateLimitsAtEndpoints(
 	}
 
 	var lastErr error
+	sawUnauthorized := false
 	for _, base := range endpoints {
-		body, err := postQuotaJSON(ctx, client, strings.TrimRight(base, "/")+"/v1internal:retrieveUserQuotaSummary", cred.AccessToken)
+		trimmedBase := strings.TrimRight(base, "/")
+		body, err := postQuotaJSON(ctx, client, trimmedBase+"/v1internal:retrieveUserQuotaSummary", cred.AccessToken)
+		var parseErr error
 		if err != nil {
-			if errors.Is(err, ErrOAuthUnauthorized) {
-				return provider.RateLimitsSnapshot{}, err
-			}
 			var rl RateLimitedError
 			if errors.As(err, &rl) {
 				return provider.RateLimitsSnapshot{}, err
 			}
-			lastErr = err
-			continue
-		}
-		limits, parseErr := parseQuotaSummary(body, now)
-		if parseErr == nil && len(limits) > 0 {
-			return provider.RateLimitsSnapshot{
-				Provider:  string(provider.Agy),
-				Limits:    limits,
-				UpdatedAt: now.UnixMilli(),
-				Complete:  true,
-			}, nil
-		}
-		// Fallback for older accounts whose retrieveUserQuotaSummary returns empty buckets.
-		modelsBody, mErr := postQuotaJSON(ctx, client, strings.TrimRight(base, "/")+"/v1internal:fetchAvailableModels", cred.AccessToken)
-		if mErr != nil {
-			if errors.Is(mErr, ErrOAuthUnauthorized) {
-				return provider.RateLimitsSnapshot{}, mErr
+			if errors.Is(err, ErrOAuthUnauthorized) {
+				// An enterprise/Workspace token may receive 401/403 on the
+				// consumer endpoint (daily-cloudcode-pa) while succeeding on
+				// cloudcode-pa; try remaining endpoints before declaring auth
+				// invalid.
+				sawUnauthorized = true
+				lastErr = err
+				continue
 			}
+			lastErr = err
+		} else {
+			limits, pErr := parseQuotaSummary(body, now)
+			if pErr == nil && len(limits) > 0 {
+				return provider.RateLimitsSnapshot{
+					Provider:  string(provider.Agy),
+					Limits:    limits,
+					UpdatedAt: now.UnixMilli(),
+					Complete:  true,
+				}, nil
+			}
+			parseErr = pErr
+		}
+		// Fallback for accounts whose retrieveUserQuotaSummary is unsupported
+		// or returns empty buckets.
+		modelsBody, mErr := postQuotaJSON(ctx, client, trimmedBase+"/v1internal:fetchAvailableModels", cred.AccessToken)
+		if mErr != nil {
 			var rl RateLimitedError
 			if errors.As(mErr, &rl) {
 				return provider.RateLimitsSnapshot{}, mErr
+			}
+			if errors.Is(mErr, ErrOAuthUnauthorized) {
+				sawUnauthorized = true
 			}
 			lastErr = mErr
 			continue
@@ -130,9 +141,12 @@ func probeRateLimitsAtEndpoints(
 		}
 		if parseErr != nil {
 			lastErr = parseErr
-		} else {
+		} else if mParseErr != nil {
 			lastErr = mParseErr
 		}
+	}
+	if sawUnauthorized {
+		return provider.RateLimitsSnapshot{}, ErrOAuthUnauthorized
 	}
 	if lastErr != nil {
 		return provider.RateLimitsSnapshot{}, lastErr

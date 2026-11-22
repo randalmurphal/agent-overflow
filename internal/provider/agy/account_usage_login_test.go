@@ -172,3 +172,54 @@ printf '{"token":{"access_token":"ya29.fresh","refresh_token":"1//fresh-ref"}}\n
 		t.Fatalf("unexpected stored credential: %+v err=%v", cred, err)
 	}
 }
+
+func TestProbeRateLimitsEnterpriseFallbackAfterConsumer403And404(t *testing.T) {
+	t.Parallel()
+	credBytes := []byte(`{"access_token":"ya29.enterprise","refresh_token":"1//ref"}`)
+
+	// 1. Consumer endpoint rejects with 403 -> must fall back to enterprise endpoint.
+	consumer403 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer consumer403.Close()
+
+	enterpriseOK := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "retrieveUserQuotaSummary") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte(`{"models":{"gemini-4-neon":{"modelProvider":"MODEL_PROVIDER_GOOGLE","quotaInfo":{"remainingFraction":0.6,"resetTime":"2026-11-23T00:00:00Z"}}}}`))
+	}))
+	defer enterpriseOK.Close()
+
+	snap, err := probeRateLimitsAtEndpoints(
+		context.Background(),
+		enterpriseOK.Client(),
+		[]string{consumer403.URL, enterpriseOK.URL},
+		credBytes,
+		time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC),
+	)
+	if err != nil {
+		t.Fatalf("enterprise fallback after consumer 403 + summary 404 failed: %v", err)
+	}
+	if len(snap.Limits) != 1 || snap.Limits[0].LimitID != "gemini-quota" || snap.Limits[0].UsedPercent != 40 {
+		t.Fatalf("unexpected enterprise fallback limits: %+v", snap.Limits)
+	}
+
+	// 2. Both endpoints reject with 401 -> still returns ErrOAuthUnauthorized.
+	both401 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer both401.Close()
+
+	_, err = probeRateLimitsAtEndpoints(
+		context.Background(),
+		both401.Client(),
+		[]string{consumer403.URL, both401.URL},
+		credBytes,
+		time.Now(),
+	)
+	if !errors.Is(err, ErrOAuthUnauthorized) {
+		t.Fatalf("both unauthorized err = %v, want ErrOAuthUnauthorized", err)
+	}
+}
