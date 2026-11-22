@@ -15,7 +15,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"agent-overflow/internal/attachedbackends"
 	appbrowser "agent-overflow/internal/browser"
 	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/deviceclient"
@@ -24,6 +23,7 @@ import (
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/remotejobs"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/transport"
 	"github.com/google/uuid"
 )
@@ -110,13 +110,13 @@ func TestRemoteMCPCommandsCrossPairedTLSAndRespectOwnership(t *testing.T) {
 	remotetest.Require(t)
 	destination := newPairedBackend(t)
 	source := identityApp(t)
-	manager, err := attachedbackends.New(t.TempDir(), "source", "test")
+	manager, err := newTestBackends(t, t.TempDir(), "source", "test")
 	if err != nil {
 		t.Fatal(err)
 	}
 	source.backends = manager
 	t.Cleanup(func() { _ = source.remoteMCPServer().Close() })
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 	defer cancel()
 	invite, _ := destination.mintLink(t, "full")
 	peer, err := manager.Add(ctx, invite.URL)
@@ -282,7 +282,7 @@ func TestRemoteMCPToolErrorsNeverLeakPrivateCauses(t *testing.T) {
 	})
 	dir := t.TempDir()
 	var err error
-	if a.backends, err = attachedbackends.New(dir, "source", "test"); err != nil {
+	if a.backends, err = newTestBackends(t, dir, "source", "test"); err != nil {
 		t.Fatal(err)
 	}
 	thread, token := remoteMCPThread(t, a, string(provider.Codex))
@@ -327,7 +327,7 @@ func TestRemoteMCPToolErrorsNeverLeakPrivateCauses(t *testing.T) {
 func TestRemoteMCPRegistrationAndRowsKeepProvidersAndBrowserSeparate(t *testing.T) {
 	t.Parallel()
 	a := identityApp(t)
-	a.backends, _ = attachedbackends.New(t.TempDir(), "source", "test")
+	a.backends, _ = newTestBackends(t, t.TempDir(), "source", "test")
 	t.Cleanup(func() { _ = a.remoteMCPServer().Close() })
 	for _, name := range []string{string(provider.Claude), string(provider.Codex)} {
 		thread, token := remoteMCPThread(t, a, name)
@@ -370,7 +370,7 @@ func TestRemoteMCPRefreshesLiveProvidersAndKeepsThreadDisable(t *testing.T) {
 	for _, name := range []string{string(provider.Claude), string(provider.Codex)} {
 		t.Run(name, func(t *testing.T) {
 			a, _, _ := newMCPTestApp(t)
-			a.backends, _ = attachedbackends.New(t.TempDir(), "source", "test")
+			a.backends, _ = newTestBackends(t, t.TempDir(), "source", "test")
 			ctx, cancel := context.WithCancel(context.Background())
 			a.appCtx = ctx
 			t.Cleanup(func() { cancel(); a.remoteMCP.wg.Wait(); _ = a.remoteMCPServer().Close() })
@@ -429,7 +429,7 @@ func TestRemoteMCPRequiresEnabledPairedComputer(t *testing.T) {
 			a := identityApp(t)
 			dir := t.TempDir()
 			var err error
-			a.backends, err = attachedbackends.New(dir, "source", "test")
+			a.backends, err = newTestBackends(t, dir, "source", "test")
 			if err != nil {
 				t.Fatal(err)
 			}

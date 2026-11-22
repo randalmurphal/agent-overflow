@@ -161,7 +161,7 @@ func TestTheDispatcherStartWaitsForADeleteDecision(t *testing.T) {
 				decided(t, done, refuse)
 				if !refuse {
 					nothingWaits(t, f.app)
-					if n := len(recordedUserEnvelopes(t, f.stdin)); n != 0 {
+					if n := len(settledUserEnvelopes(t, f.stdin)); n != 0 {
 						t.Fatalf("the committed thread's provider was written %d messages", n)
 					}
 					return

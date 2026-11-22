@@ -238,7 +238,11 @@ func Redeem(ctx context.Context, dir string, link Link, label, platform string, 
 	if client.lifetime != nil && client.lifetime.Err() != nil {
 		return nil, fmt.Errorf("deviceclient: the redemption was not sent: %w", context.Cause(client.lifetime))
 	}
-	issued, err := client.exchange(ctx, authPairPath, body, nil)
+	redeemer, err := redemptionHTTP(client.http, resolveOptions(opts).redemption)
+	if err != nil {
+		return nil, err
+	}
+	issued, err := client.exchange(ctx, redeemer, authPairPath, body, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -738,7 +742,7 @@ const maxResponseBytes = 64 << 10
 // secret in the body and its proof in the header. Neither ever puts a
 // proof in the body — a proof a caller may write into the same document it
 // is proving something about is not a proof.
-func (c *Client) exchange(ctx context.Context, path string, body []byte, held *Session) (_ grant, err error) {
+func (c *Client) exchange(ctx context.Context, hc *http.Client, path string, body []byte, held *Session) (_ grant, err error) {
 	step := stepRenew
 	if path == authPairPath {
 		step = stepPair
@@ -758,7 +762,7 @@ func (c *Client) exchange(ctx context.Context, path string, body []byte, held *S
 		req.Header.Set(SessionCredentialHeader, held.Credential)
 	}
 
-	resp, err := c.http.Do(req)
+	resp, err := hc.Do(req)
 	if err != nil {
 		return grant{}, fmt.Errorf("deviceclient: reach %s%s: %w", c.base, path, err)
 	}

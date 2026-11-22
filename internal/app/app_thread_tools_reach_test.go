@@ -164,11 +164,11 @@ func (p *reachPair) pairWith(t *testing.T, label string) *attachedbackends.Manag
 // pairWithIn is pairWith over the device profile directory dir.
 func (p *reachPair) pairWithIn(t *testing.T, dir, label string) *attachedbackends.Manager {
 	t.Helper()
-	manager, err := attachedbackends.New(dir, label, "test")
+	manager, err := newTestBackends(t, dir, label, "test")
 	if err != nil {
 		t.Fatalf("attachedbackends.New: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 	defer cancel()
 	invite, _ := p.destWire.mintLink(t, "full")
 	peer, err := manager.Add(ctx, invite.URL)
@@ -736,7 +736,7 @@ func serveFaultyApp(t *testing.T, app *App, configure ...func(*transport.Config)
 // id the source's pairings give it.
 func attachDestination(t *testing.T, pair *reachPair, wire *pairedBackend, dest *App) string {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 	defer cancel()
 	invite, _ := wire.mintLink(t, "full")
 	peer, err := pair.manager.Add(ctx, invite.URL)

@@ -928,7 +928,7 @@ func TestADeliveryWhoseBindingFailsIsKeptUntilItIsWritten(t *testing.T) {
 			if receipt := f.receipt(t, token); receipt.TurnID != threadRequestTurnKey(h.thread.ID, 0) || receipt.OwnTurn {
 				t.Fatalf("receipt = %+v, want it bound to the running turn it was drained into", receipt)
 			}
-			if envelopes := recordedUserEnvelopes(t, h.stdinLog); len(envelopes) != 1 {
+			if envelopes := settledUserEnvelopes(t, h.stdinLog); len(envelopes) != 1 {
 				t.Fatalf("the provider was sent %d messages, want the request once", len(envelopes))
 			}
 		})

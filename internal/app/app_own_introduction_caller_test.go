@@ -12,6 +12,7 @@ import (
 	"agent-overflow/internal/computerroute"
 	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/owndevices"
+	"agent-overflow/internal/testutil"
 )
 
 // A peer's introduction call is bound to its caller. One that waits on a
@@ -116,7 +117,7 @@ func TestAnIntroductionsOrphanedSessionIsRevokedAtTheNextMint(t *testing.T) {
 	ownConnectionNetwork(t)
 	a, b := ownConnectionBackend(t), ownConnectionBackend(t)
 	pairOwnConnection(t, b, a.app.backends, true)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 	defer cancel()
 	var catalog owndevices.List
 	if err := a.app.backends.CallOwnDevice(ctx, b.id, "ListOwnDevices", &catalog); err != nil {
@@ -148,7 +149,7 @@ func TestAnIntroductionsOrphanedSessionIsRevokedAtTheNextMint(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(scratch, deviceclient.KeyFileName), key, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	redeemed, err := deviceclient.Redeem(ctx, scratch, link, "Own device", "linux", deviceclient.WithDialContext(dialOwnFixture))
+	redeemed, err := redeemTestDevice(t, scratch, link, "Own device", "linux", deviceclient.WithDialContext(dialOwnFixture))
 	if err != nil {
 		t.Fatal(err)
 	}

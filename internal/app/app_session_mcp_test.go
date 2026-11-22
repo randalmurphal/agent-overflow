@@ -4,7 +4,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"agent-overflow/internal/attachedbackends"
 	appbrowser "agent-overflow/internal/browser"
 	"agent-overflow/internal/buildvariant"
 	"agent-overflow/internal/deviceclient"
@@ -93,7 +92,7 @@ func TestFailedSessionStartRevokesEveryToolURL(t *testing.T) {
 	a.browser.manager, a.browser.mcp = manager, appbrowser.NewMCPServer(manager, true)
 	backends := t.TempDir()
 	var err error
-	if a.backends, err = attachedbackends.New(backends, "source", "test"); err != nil {
+	if a.backends, err = newTestBackends(t, backends, "source", "test"); err != nil {
 		t.Fatal(err)
 	}
 	peer := deviceclient.Session{BackendID: uuid.NewString(), SessionID: "test", Credential: "test", Endpoint: "https://127.0.0.1:1"}

@@ -58,6 +58,9 @@ func (t threadToolsApp) startRemoteRequest(
 		return threadtools.RequestAck{}, err
 	}
 	defer done()
+	if hook := t.app.remoteRequestAdmittedForTest; hook != nil {
+		hook(row.Token)
+	}
 	read := t.app.ownerReads.start(ctx, computerID, []string{row.Token})
 	defer read.close()
 	reply, sent, err := t.app.callThreadPeerRequest(ctx, peer.Computer(), ThreadPeerCall{
@@ -80,9 +83,14 @@ func (t threadToolsApp) startRemoteRequest(
 		// Nothing runs under the token. The error this returns is the
 		// delivery, as it is for a request this computer refused itself
 		// (failRequest), and the record keeps the same text: it names the
-		// computer that refused or could not be reached.
+		// computer that refused or could not be reached. Settled inside the
+		// computer's fence: a forget holds it from removing the pairing,
+		// which refuses this call, to ending the work admitted before it,
+		// and that end is what settles this row.
 		_, refusal, _ := errorsx.PublicDetails(err)
+		unlock := t.app.lockComputerPairing(computerID)
 		t.refuseRequest(row.Token, refusal, nil)
+		unlock()
 		return threadtools.RequestAck{}, err
 	}
 	return t.dispatchedAck(ctx, caller, hold, row, peer.Computer(), call, reply, read, err, waitSeconds, done)
