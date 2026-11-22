@@ -113,18 +113,25 @@ of the real-provider smoke tests.
 ## Continuous integration
 
 `.github/workflows/ci.yml` runs on every pull request and push to `main`.
-Every step calls a Make target, so the local command is the same check.
-The jobs fill the Free plan's 20 concurrent slots where the time is: one
-Linux job for `fmt-check`, `tidy-check`, `go-vet`, `go-build`, `provider-smoke-compile`
-and `bindings-check`, a macOS `go-build` and `exhaustive` pass, one job
-for `go-lint`, `go-lint-exhaustive` and `go-vuln`, the frontend job (`check`, `build`, `frontend-lint`), `go-test`
-in three shards by package weight (`GO_TEST_PKGS`, `GO_TEST_EXCLUDE`) plus
-two with `GO_TEST_FLAGS='-tags noremote'`, the
-Vitest unit and browser projects as two jobs under `bin/ao-netns`, and
-`make e2e` in eight Playwright shards with three workers each (`E2E_ARGS`,
-`AO_E2E_WORKERS`), and `make release-upgrade-check` as `upgrade-lineage`
-when the change reaches the store, the check or the version
-([release upgrade check](release-upgrade-check.md)).
+Every step calls a Make target, or a binary `make harness-build` built, so
+the local command is the same check. The `toolchain` job also decides which
+suites a pull request runs from the paths it changes
+(`scripts/ci-suites.mjs`, which holds the rules); a push or a manual run
+runs every suite. The jobs are one Linux job for `fmt-check`, `tidy-check`,
+`go-vet`, `go-build`, `provider-smoke-compile` and `bindings-check`, a
+macOS `go-build` and `exhaustive` pass, one job for `go-lint`,
+`go-lint-exhaustive` and `go-vuln`, the frontend job (`check`, `build`,
+`frontend-lint`), `go-test` in three shards by package weight
+(`GO_TEST_PKGS`, `GO_TEST_EXCLUDE`) plus `make go-test-noremote`, the
+Vitest projects as `make vitest-unit` and `make vitest-browser`, and one
+`make harness-build` whose binaries eight Playwright shards run with
+`bin/ao-harness-e2e --shard=N/8` and three workers each
+(`AO_E2E_WORKERS`). `upgrade-lineage` runs `scripts/release-upgrade-check.sh`
+on the same binaries when the change reaches the store, the check or the
+version ([release upgrade check](release-upgrade-check.md)). The `rest`
+shard also runs `make script-tests`. `CI result` passes when no job failed
+or was cancelled; it is the check branch protection requires, so a skipped
+suite or a renamed job needs no change to that repository setting.
 The Linux jobs run in the toolchain image, `ghcr.io/<repo>/ci-toolchain`,
 built from `ci/Dockerfile`: Go, Node, pnpm, the GTK headers, the Playwright
 browsers with their OS libraries (Chromium as the headless shell the
@@ -146,9 +153,17 @@ that fallback until it merges. `toolchain-image.yml` publishes on pushes to
 image, module cache and package store. The macOS job runs on the bare
 runner; the setup action installs its toolchains from the same pins.
 
-Go build caches are saved only by pushes to `main`; a pull request restores
-the newest `main` cache for its job slot, so it rebuilds and retests what
-it changed. `codeql.yml` scans Go and
+Every job restores its caches and only a push to `main` saves them, through
+`.github/actions/cache-save` as the job's last step: the Go build cache of
+its slot, cut to the entries that job used (`scripts/ci-go-cache.mjs`), and
+off the image the Go module cache and the pnpm store. A pull request
+restores the newest `main` entry of each slot. The Go test cache then
+reports a package as `(cached)` when its code, its dependencies and the
+files its tests read are unchanged; `scripts/ci-stable-mtimes.mjs` sets the
+checkout's file times from content first, since Go compares a read file by
+size and time. `cache-cleanup` keeps one entry per cache name after a push
+and fails when they pass 8 GB of GitHub's 10 GB
+(`scripts/ci-cache-cleanup.mjs`). `codeql.yml` scans Go and
 TypeScript; `dependabot.yml` opens only security updates for Go, npm,
 Gradle and actions; `dependency-review-action` checks pull request
 dependency changes.
@@ -170,8 +185,7 @@ compiles), then lints the Windows
 launcher's packages as Windows compiles them. The macOS job runs the linter
 over the default file set alone, which holds every file only macOS
 compiles. A Windows-only file outside the
-launcher's packages is compiled by no job and is not checked. Branch protection
-requiring these checks is a repository setting, not part of the tree.
+launcher's packages is compiled by no job and is not checked.
 
 ## Releases
 

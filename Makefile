@@ -1,4 +1,4 @@
-.PHONY: help ao-harness-docs methodgen forge-schemas go-lint go-lint-exhaustive go-vet fmt-check go-vuln bindings-check frontend-lint install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-wsl-noremote release-macos go-build netns-tool gocache-trim gocache-trim-tool go-test test-race provider-smoke-compile provider-smoke provider-smoke-revert import-corpus-smoke mockprovider mockforge harness-build harness harness-window soak-window e2e e2e-mobile-browser release-upgrade-check apk apk-release e2e-android
+.PHONY: help vitest-unit vitest-browser script-tests go-test-noremote ao-harness-docs methodgen forge-schemas go-lint go-lint-exhaustive go-vet fmt-check go-vuln bindings-check frontend-lint install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-wsl-noremote release-macos go-build netns-tool gocache-trim gocache-trim-tool go-test test-race provider-smoke-compile provider-smoke provider-smoke-revert import-corpus-smoke mockprovider mockforge harness-build harness harness-window soak-window e2e e2e-mobile-browser release-upgrade-check apk apk-release e2e-android
 
 # Print the supported build, test, harness, and smoke targets. Keep this
 # short enough to use from an unfamiliar checkout. `make e2e` is the
@@ -8,7 +8,7 @@
 help:
 	@printf '%s\n' \
 		'Build:   make build | make check | make verify' \
-		'Tests:   make test | make test-race | make go-test GO_TEST_PKGS=./internal/x GO_TEST_FLAGS=...' \
+		'Tests:   make test | make test-race | make go-test GO_TEST_PKGS=./internal/x GO_TEST_FLAGS=... | make go-test-noremote | make vitest-unit | make vitest-browser | make script-tests' \
 		'Static:  make fmt-check | make go-vet | make go-lint | make go-lint-exhaustive | make frontend-lint | make bindings-check | make go-vuln' \
 		'Android: make apk | make apk-release | make e2e-android' \
 		'Mobile browser: make e2e-mobile-browser (Chromium + WebKit)' \
@@ -228,6 +228,24 @@ go-test: netns-tool gocache-trim-tool
 	if [ -z "$$packages" ]; then echo "ERROR: no Go packages found"; exit 1; fi; \
 	$(call go-prefetch,$(GO_PACKAGE_ROOTS)); \
 	$(NETNS) go test -timeout 30m $(GO_TEST_FLAGS) $$packages
+
+# go-test-noremote runs the tests compiled without remote access
+# (docs/architecture/noremote-build.md) for the packages whose own code the
+# noremote tag changes: one whose own file set differs under the tag, or
+# whose non-test code imports internal/buildvariant. Any other package runs
+# the same code as in `make go-test`; a dependency's behavior under the tag
+# is tested in that dependency's own package, which is in the set.
+# GO_TEST_FLAGS adds flags as for go-test.
+GO_FILE_SET := {{.ImportPath}} {{.GoFiles}} {{.CgoFiles}} {{.TestGoFiles}} {{.XTestGoFiles}}
+go-test-noremote:
+	@set -e; \
+	differ=$$( { go list -f '$(GO_FILE_SET)' $(GO_PACKAGE_ROOTS); go list -tags noremote -f '$(GO_FILE_SET)' $(GO_PACKAGE_ROOTS); } | sort | uniq -u | cut -d' ' -f1 ); \
+	branch=$$( for tags in "" noremote; do go list -tags "$$tags" -f '{{.ImportPath}}{{range .Imports}} {{.}}{{end}}' $(GO_PACKAGE_ROOTS); done | awk '/ agent-overflow\/internal\/buildvariant( |$$)/ { print $$1 }' ); \
+	built=$$(go list -tags noremote -f '{{if or .GoFiles .CgoFiles .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' $(GO_PACKAGE_ROOTS)); \
+	packages=$$(printf '%s\n' $$differ $$branch | sort -u | awk -v built="$$built" 'BEGIN { n = split(built, list); for (i = 1; i <= n; i++) keep[list[i]] = 1 } keep[$$0]'); \
+	if [ -z "$$packages" ]; then echo "ERROR: no package's own code changes under -tags noremote"; exit 1; fi; \
+	echo "go-test-noremote:" $$packages; \
+	$(MAKE) go-test GO_TEST_PKGS="$$(echo $$packages)" GO_TEST_FLAGS='-tags noremote $(GO_TEST_FLAGS)'
 
 # Static checks. Each is one CI job (.github/workflows/ci.yml) and runs the
 # same way here. go-lint runs golangci-lint at the pinned version, installed
@@ -681,14 +699,18 @@ mockforge:
 # instance (docs/specs/testing-harness.md §3, cmd/ao-harness/AGENTS.md),
 # and it resolves the backend binary as its own sibling, so building the
 # two together is what makes `bin/ao-harness up` need no configuration.
+#
+# HARNESS_TEST_PKGS are the packages whose test binaries the suite runs
+# (bin/ao-<name>-test). Their test files are Playwright inputs, which CI's
+# change classifier (scripts/ci-suites.mjs) reads from this line.
+HARNESS_TEST_PKGS := ./internal/frontendclient ./internal/store
 harness-build: mockprovider mockforge $(FRONTEND_DEPS)
 	cd frontend && VITE_AGENT_OVERFLOW_UI_TRACE=$(UI_TRACE) VITE_AGENT_OVERFLOW_UI_ORACLES=$(UI_ORACLES) pnpm run build
 	go build -ldflags "-X main.version=$(VERSION)" -o bin/agent-overflow .
 	go build -tags noremote -ldflags "-X main.version=$(VERSION)" -o bin/agent-overflow-noremote .
 	go build -ldflags "-X main.version=$(VERSION)" -o bin/ao-harness ./cmd/ao-harness
 	go build -o bin/ao-harness-e2e ./cmd/ao-harness-e2e
-	go test -c -o bin/ao-frontendclient-test ./internal/frontendclient
-	go test -c -o bin/ao-store-test ./internal/store
+	$(foreach pkg,$(HARNESS_TEST_PKGS),go test -c -o bin/ao-$(notdir $(pkg))-test $(pkg) &&) true
 
 harness: harness-build
 	bin/agent-overflow --harness --data-dir "$(HARNESS_DATA_DIR)"
@@ -732,7 +754,8 @@ endif
 
 # e2e runs the Playwright harness suite (e2e/) against a fresh
 # harness-build. Browser downloads are versioned and cached by Playwright.
-# E2E_ARGS passes through to `playwright test` (CI: --shard=N/M).
+# E2E_ARGS passes through to `playwright test`. CI builds once and runs
+# bin/ao-harness-e2e --shard=N/8 in each shard.
 E2E_ARGS ?=
 e2e e2e-mobile-browser: harness-build
 	cd e2e && pnpm install --frozen-lockfile
@@ -742,8 +765,9 @@ e2e e2e-mobile-browser: harness-build
 # release-upgrade-check: the candidate migrates the corpus the previous
 # release published, boots on it, tops it up and archives it for the next
 # release (docs/architecture/release-upgrade-check.md). A release gate, an
-# operator tool and CI's upgrade-lineage job; every pull request runs the
-# upgrade-corpus-coverage spec in make e2e instead. PREVIOUS_RELEASE picks
+# operator tool; CI's upgrade-lineage job runs the script on the harness
+# build's binaries. Every pull request runs the upgrade-corpus-coverage
+# spec in the Playwright suite instead. PREVIOUS_RELEASE picks
 # the release to upgrade from (default:
 # the newest GitHub release); RELEASE_UPGRADE_BOOTSTRAP=1 seeds a synthetic
 # corpus with that release's binary instead of its published corpus, at
@@ -787,11 +811,23 @@ e2e-android: harness-build netns-tool
 # frontend/src/test/helpers/perfContract.ts). They are gated off by
 # default so an ad-hoc `pnpm test` beside the soak rig or a perf profile
 # reports the numbers instead of failing on borrowed CPU; the gate is
-# where they must always run.
+# where they must always run. vitest-unit and vitest-browser are the one
+# entry for each Vitest project: `make test`, `make verify` and CI's two
+# Vitest jobs run them.
 test: $(FRONTEND_DEPS)
 	$(MAKE) go-test
-	cd frontend && AO_PERF_CONTRACT=1 $(NETNS) pnpm test
-	cd frontend && AO_PERF_CONTRACT=1 $(NETNS) pnpm run test:browser
+	$(MAKE) vitest-unit
+	$(MAKE) vitest-browser
+
+vitest-unit vitest-browser: netns-tool $(FRONTEND_DEPS)
+	cd frontend && AO_PERF_CONTRACT=1 $(NETNS) pnpm run $(if $(filter vitest-browser,$@),test:browser,test)
+
+# script-tests runs the tests of the scripts under scripts/: every
+# scripts/*.test.mjs and the shell scripts' own tests.
+script-tests: netns-tool
+	$(NETNS) node --test scripts/*.test.mjs
+	$(NETNS) sh scripts/test-install-download.sh
+	$(NETNS) sh scripts/test-ci-change.sh
 
 check: $(FRONTEND_DEPS)
 	$(MAKE) go-build

@@ -28,13 +28,11 @@ export TASK_TEMP_DIR
 run sh -c "cd '$ROOT_DIR/frontend' && pnpm run build"
 run make -C "$ROOT_DIR" go-build
 run make -C "$ROOT_DIR" go-test
-run "$ROOT_DIR/bin/ao-netns" node --test "$ROOT_DIR/scripts/release-candidate.test.mjs"
+run make -C "$ROOT_DIR" script-tests
 run make -C "$ROOT_DIR" provider-smoke-compile
 run sh -c "cd '$ROOT_DIR/frontend' && pnpm run check"
-# make go-test built bin/ao-netns; Vitest runs in the same isolated network
-# namespace as the Go tests.
-run sh -c "cd '$ROOT_DIR/frontend' && AO_PERF_CONTRACT=1 '$ROOT_DIR/bin/ao-netns' pnpm test"
-run sh -c "cd '$ROOT_DIR/frontend' && AO_PERF_CONTRACT=1 '$ROOT_DIR/bin/ao-netns' pnpm run test:browser"
+run make -C "$ROOT_DIR" vitest-unit
+run make -C "$ROOT_DIR" vitest-browser
 run make -C "$ROOT_DIR" build
 
 case "$os" in

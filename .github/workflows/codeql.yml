@@ -71,3 +71,5 @@ jobs:
       - uses: github/codeql-action/analyze@d208ec71e39ae46397cbf6569bef8439b9aab974 # codeql-bundle-v2.27.2
         with:
           category: /language:${{ matrix.language }}
+      - uses: ./.github/actions/cache-save
+        if: matrix.language == 'go'

@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -39,6 +40,7 @@ func TestExhaustiveLintPassesReachEveryFile(t *testing.T) {
 			wholeTree = append(wholeTree, target)
 		}
 	}
+	ignored := gitIgnoredDirs(t)
 	var unreached []string
 	walkErr := filepath.WalkDir(".", func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
@@ -46,7 +48,7 @@ func TestExhaustiveLintPassesReachEveryFile(t *testing.T) {
 		}
 		name := entry.Name()
 		if entry.IsDir() {
-			if path != "." && (strings.HasPrefix(name, ".") || name == "node_modules") {
+			if path != "." && (strings.HasPrefix(name, ".") || ignored[filepath.ToSlash(path)+"/"]) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -75,6 +77,26 @@ func TestExhaustiveLintPassesReachEveryFile(t *testing.T) {
 			"go-lint-exhaustive recipe whose build tags satisfy them:\n%s",
 			strings.Join(unreached, "\n"))
 	}
+}
+
+// gitIgnoredDirs lists the directories git ignores, each with a trailing
+// slash: build outputs and installed dependencies, which hold no source.
+// Go records every file and directory listing a test opens as an input of
+// its cached result, so walking them would rerun this package whenever a
+// build rewrites one of their files.
+func gitIgnoredDirs(t *testing.T) map[string]bool {
+	t.Helper()
+	out, err := exec.Command("git", "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z").Output()
+	if err != nil {
+		t.Fatalf("list the directories git ignores: %v", err)
+	}
+	dirs := map[string]bool{}
+	for _, path := range strings.Split(string(out), "\x00") {
+		if strings.HasSuffix(path, "/") {
+			dirs[path] = true
+		}
+	}
+	return dirs
 }
 
 // exhaustiveLintTargets reads the passes from where they are run: this

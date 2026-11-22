@@ -2,6 +2,7 @@
 # Checks scripts/ci-change.sh against a pull request whose base branch moved
 # after the branch point: the change it reports must be the files the merge
 # changes (git merge-tree), not everything the base branch gained since.
+# The pull request also deletes a file: files leaves it out, paths keeps it.
 # shellcheck disable=SC2006 # backquotes after the handlers: main_shell_signals_unix_test.go
 set -eu
 
@@ -30,9 +31,11 @@ git init -q -b main "$remote"
 git -C "$remote" config uploadpack.allowAnySHA1InWant true
 printf 'one\n' > "$remote/shared.txt"
 printf 'one\n' > "$remote/feature.txt"
+printf 'one\n' > "$remote/removed.txt"
 git -C "$remote" add . && git -C "$remote" commit -qm base
 git -C "$remote" checkout -qb feature
 printf 'two\n' >> "$remote/feature.txt"
+git -C "$remote" rm -q removed.txt
 git -C "$remote" commit -qam feature
 head_sha=`git -C "$remote" rev-parse HEAD`
 git -C "$remote" checkout -q main
@@ -49,9 +52,13 @@ git -C "$remote" checkout -q main
 # What the merge changes, by git merge-tree.
 expected=$TMP_DIR/expected
 merged_tree=`git -C "$remote" merge-tree --write-tree "$main_sha" "$head_sha"`
-git -C "$remote" diff --name-only "$main_sha" "$merged_tree" > "$expected"
+git -C "$remote" diff --name-only --diff-filter=ACM "$main_sha" "$merged_tree" > "$expected"
 reported=`tr '\n' ' ' < "$expected"`
 [ "$reported" = 'feature.txt ' ] || fail "merge-tree reports $reported"
+expected_paths=$TMP_DIR/expected-paths
+git -C "$remote" diff --name-only "$main_sha" "$merged_tree" > "$expected_paths"
+reported_paths=`tr '\n' ' ' < "$expected_paths"`
+[ "$reported_paths" = 'feature.txt removed.txt ' ] || fail "merge-tree reports paths $reported_paths"
 
 # gh answers the compare API with the merge base, as GitHub would.
 bin=$TMP_DIR/bin
@@ -79,6 +86,10 @@ check() {
 	if ! cmp -s "$expected" "$TMP_DIR/$name-out/files"; then
 		files=`tr '\n' ' ' < "$TMP_DIR/$name-out/files"`
 		fail "$name: files are $files, want $reported"
+	fi
+	if ! cmp -s "$expected_paths" "$TMP_DIR/$name-out/paths"; then
+		paths=`tr '\n' ' ' < "$TMP_DIR/$name-out/paths"`
+		fail "$name: paths are $paths, want $reported_paths"
 	fi
 	grep -q '^+++ b/feature.txt' "$TMP_DIR/$name-out/change.diff" ||
 		fail "$name: change.diff does not carry feature.txt"

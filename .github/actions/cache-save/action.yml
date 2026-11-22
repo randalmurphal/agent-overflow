@@ -1,0 +1,36 @@
+name: Save caches
+description: >-
+  The last step of a job that ran .github/actions/setup. On a push to main
+  it saves the caches setup restored: the Go build cache cut to the entries
+  this job used (scripts/ci-go-cache.mjs), and off the toolchain image the
+  Go module cache and the pnpm store when their key was missed. Any other
+  event saves nothing, so a pull request never writes a cache.
+
+runs:
+  using: composite
+  steps:
+    - name: Cut the Go build cache to what this job used
+      if: github.event_name == 'push' && env.AO_GO_CACHE_KEY != ''
+      shell: bash
+      run: node scripts/ci-go-cache.mjs prune "$AO_GO_CACHE_PATH" "$RUNNER_TEMP/go-cache-state.json"
+
+    - name: Save the Go build cache
+      if: github.event_name == 'push' && env.AO_GO_CACHE_KEY != ''
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ env.AO_GO_CACHE_PATH }}
+        key: ${{ env.AO_GO_CACHE_KEY }}
+
+    - name: Save the Go module cache
+      if: github.event_name == 'push' && env.AO_GO_MOD_KEY != '' && env.AO_GO_MOD_HIT != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ env.AO_GO_MOD_PATH }}
+        key: ${{ env.AO_GO_MOD_KEY }}
+
+    - name: Save the pnpm store
+      if: github.event_name == 'push' && env.AO_PNPM_STORE_KEY != '' && env.AO_PNPM_STORE_HIT != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ env.AO_PNPM_STORE_PATH }}
+        key: ${{ env.AO_PNPM_STORE_KEY }}
