@@ -1,0 +1,4 @@
+line 1: a heading can't go in a quote; made it bold text
+line 3: a quote can't go in a quote; kept its content without it
+line 5: a horizontal rule can't go in a quote; dropped it
+line 7: a checklist can't go in a quote; made it a bullet list

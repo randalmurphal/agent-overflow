@@ -600,7 +600,7 @@ class is enforced at presentation.
 
 ## 5. Authorization
 
-### Two enforcement tiers, twelve grantable labels
+### Two enforcement tiers, fourteen grantable labels
 
 Scope names are the audit vocabulary; the enforced boundary is
 **observe vs. execute**, crossed with binding class (§2). Two more
@@ -622,6 +622,8 @@ the floor (its own tier below observe — wave 7b, §6), and `host`
 | `settings:read` | observe | settings and preference reads: settings snapshot, keybindings, themes, spinners, chat-bar favorites (added wave 6b — the original ten could not spell a settings read) |
 | `settings:write` | execute | user/device-tier settings; host-tier and the step-up set are excluded |
 | `access:admin` | execute | device list/revoke, audit read; **minting and network changes additionally require step-up** |
+| `tracker:read` | observe | issue tracker connection reads: site, account, verified identity, key file state and last problem, never the token |
+| `tracker:operate` | execute | adding, renaming, turning on and off, verifying and removing tracker connections, recording a token's expiry; editing a key file and opening a token page are `host` |
 | `session` | floor (not a grant) | any named live session: the per-argument methods — the settings patch (per-key tiers), `GetUIState` (own bucket only), review-diff handle reads (the opening method's scope, re-checked per read) |
 
 Rationale for the splits: answering an approval authorizes host command
@@ -1029,7 +1031,7 @@ Alongside it, §5's per-device narrowing became real at the mint
 surface: `MintDevicePairing(deviceClass, access)` with `full` (empty
 means full — the parameter was appended to an existing call) or
 `view-only`, resolving to `identity.ObserveScopes`
-(threads:read/files:read/settings:read, pinned to transport's observe
+(threads:read/files:read/settings:read/tracker:read, pinned to transport's observe
 tier by test); an undeclared level is refused, never widened, and the
 grant set is fixed at mint. The pairing modal offers the choice as a
 two-option control defaulting to Full access.

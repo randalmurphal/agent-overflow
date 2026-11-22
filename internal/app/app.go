@@ -57,6 +57,7 @@ import (
 	"agent-overflow/internal/theme"
 	"agent-overflow/internal/threadapp"
 	"agent-overflow/internal/threadtitleapp"
+	"agent-overflow/internal/trackerapp"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/uitrace"
@@ -1102,6 +1103,14 @@ type App struct {
 	// never resolves them on PATH. The zero value is the desktop
 	// behavior. Set once before Start; never mutated afterwards.
 	forgeCLIs isolatedForgeCLIs
+	// trackerOriginOverride says where tracker clients connect in an
+	// isolated boot (ConfigureIsolation): the harness's fake, or a refusal
+	// when it names none. Nil is the desktop behavior, except inside a
+	// test binary (trackerOrigin). Set once before Start.
+	trackerOriginOverride trackerapp.Origin
+	// trackers owns the tracker connections; built by initTrackers during
+	// Start and stopped by Shutdown before the store closes.
+	trackers *trackerapp.Service
 	// prLookupRetryBase replaces how long the git.Core caches a first
 	// failed open-PR lookup (git.WithPRLookupErrorBase); zero keeps the
 	// product value. Only a harness boot sets it. Set once before Start.

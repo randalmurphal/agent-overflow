@@ -279,6 +279,16 @@ const (
 	SystemStats Channel = "system:stats"
 )
 
+// tracker:* — this computer's issue tracker connections.
+//
+// TrackerConnectionsUpdated is a payload-less refetch nudge sent after
+// every change the connection list shows: a row, a key file the app made
+// or removed, a verification, a problem. Receivers re-read through
+// TrackerConnections, which never carries a token.
+const (
+	TrackerConnectionsUpdated Channel = "tracker:connections_updated"
+)
+
 // terminal:* — local PTY session bytes and lifecycle.
 //
 // TerminalOpened is the other half of TerminalExit: one frame per PTY

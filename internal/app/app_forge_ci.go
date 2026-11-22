@@ -70,11 +70,11 @@ func (a *App) pollPRCI(ctx context.Context, pump *prUpdatePump) (PRCIUpdatedEven
 func (a *App) refreshPRCI(ctx context.Context, subscriptionID string) error {
 	a.prUpdates.mu.Lock()
 	handle, ok := a.prUpdates.handles[subscriptionID]
-	if !ok || handle.pump.dead {
+	if !ok || handle.pump.DeadLocked() {
 		a.prUpdates.mu.Unlock()
 		return errPRUpdatesUnknownSubscription
 	}
 	pump := handle.pump
 	a.prUpdates.mu.Unlock()
-	return a.requestPump(ctx, &pump.pumpCore, &prPumpRequest{ci: true})
+	return pump.Request(ctx, prPumpRequest{ci: true})
 }

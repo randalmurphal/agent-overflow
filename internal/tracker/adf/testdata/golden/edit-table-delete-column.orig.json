@@ -1,0 +1,151 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "Release status"
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "attrs": {
+        "layout": "wide",
+        "isNumberColumnEnabled": false
+      },
+      "content": [
+        {
+          "type": "tableRow",
+          "content": [
+            {
+              "type": "tableHeader",
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "Item"
+                    }
+                  ]
+                }
+              ],
+              "attrs": {
+                "colwidth": [
+                  200
+                ]
+              }
+            },
+            {
+              "type": "tableHeader",
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "State"
+                    }
+                  ]
+                }
+              ],
+              "attrs": {
+                "colwidth": [
+                  120
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "type": "tableRow",
+          "content": [
+            {
+              "type": "tableHeader",
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "Build"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "tableCell",
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "status",
+                      "attrs": {
+                        "text": "DONE",
+                        "color": "green",
+                        "localId": "s1"
+                      }
+                    }
+                  ]
+                }
+              ],
+              "attrs": {
+                "background": "#e3fcef"
+              }
+            }
+          ]
+        },
+        {
+          "type": "tableRow",
+          "content": [
+            {
+              "type": "tableHeader",
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "Deploy"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "tableCell",
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "pending"
+                    }
+                  ],
+                  "marks": [
+                    {
+                      "type": "alignment",
+                      "attrs": {
+                        "align": "center"
+                      }
+                    }
+                  ]
+                }
+              ],
+              "attrs": {
+                "background": "#ffebe6"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

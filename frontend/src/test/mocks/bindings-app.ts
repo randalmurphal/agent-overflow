@@ -951,3 +951,13 @@ export const ReportNativeNetworkState = dispatch('ReportNativeNetworkState');
 export const ListAsyncQuestions = dispatch('ListAsyncQuestions');
 export const SubmitAsyncAnswers = dispatch('SubmitAsyncAnswers');
 export const SetAsyncQuestionDismissed = dispatch('SetAsyncQuestionDismissed');
+
+export const TrackerConnections = dispatch('TrackerConnections');
+export const AddTrackerConnection = dispatch('AddTrackerConnection');
+export const RenameTrackerConnection = dispatch('RenameTrackerConnection');
+export const RemoveTrackerConnection = dispatch('RemoveTrackerConnection');
+export const VerifyTrackerConnection = dispatch('VerifyTrackerConnection');
+export const SetTrackerConnectionEnabled = dispatch('SetTrackerConnectionEnabled');
+export const SetTrackerConnectionTokenExpiry = dispatch('SetTrackerConnectionTokenExpiry');
+export const EditTrackerKeyFile = dispatch('EditTrackerKeyFile');
+export const OpenTrackerTokenPage = dispatch('OpenTrackerTokenPage');

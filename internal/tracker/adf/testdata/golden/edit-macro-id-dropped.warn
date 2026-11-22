@@ -1,0 +1,2 @@
+refused: line 3: <!-- macro: jira --> matches none of the jira macros here (b461, 9860); write the marker with the ID it had
+removed a block that had a macro

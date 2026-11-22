@@ -1,0 +1,48 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "layoutSection",
+      "attrs": {
+        "localId": "L1"
+      },
+      "content": [
+        {
+          "type": "layoutColumn",
+          "attrs": {
+            "width": 50
+          },
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "left"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "layoutColumn",
+          "attrs": {
+            "width": 50
+          },
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "right changed"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -103,7 +103,7 @@ func (a *App) pollPRList(ctx context.Context, pump *prListPump) (bool, time.Time
 	current := map[string]bool{}
 	projects = slices.Clone(projects)
 	a.prUpdates.mu.Lock()
-	if pump.dead {
+	if pump.DeadLocked() {
 		a.prUpdates.mu.Unlock()
 		return false, time.Time{}
 	}
@@ -182,7 +182,7 @@ func (a *App) landPRListRead(pump *prListPump, read prListRepoRead) {
 	var detailErr *gitops.PRListDetailError
 	listed := read.err == nil || errors.As(read.err, &detailErr)
 	a.prUpdates.mu.Lock()
-	if pump.dead {
+	if pump.DeadLocked() {
 		a.prUpdates.mu.Unlock()
 		return
 	}
@@ -276,7 +276,7 @@ func (p *prListPump) listsLocked() map[string]ProjectPRList {
 // release, for the retry schedule.
 func (a *App) publishPRList(pump *prListPump) (PRListSnapshot, bool, time.Time) {
 	a.prUpdates.mu.Lock()
-	if pump.dead {
+	if pump.DeadLocked() {
 		a.prUpdates.mu.Unlock()
 		return PRListSnapshot{}, false, time.Time{}
 	}

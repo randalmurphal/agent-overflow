@@ -169,7 +169,7 @@ func prListProject(t *testing.T, snapshot PRListSnapshot, projectID string) Proj
 func prListPumpLive(app *App) bool {
 	app.prUpdates.mu.Lock()
 	defer app.prUpdates.mu.Unlock()
-	return app.prUpdates.list != nil && !app.prUpdates.list.dead
+	return app.prUpdates.list != nil && !app.prUpdates.list.DeadLocked()
 }
 
 func subscribePRList(t *testing.T, app *App) PRListSubscriptionResult {
