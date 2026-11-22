@@ -354,22 +354,22 @@ func TestWebviewBrowserOptionsLeaveTextAndScrollerCompositingAtChromiumDefaults(
 	}
 }
 
-func TestWSLSingleInstanceModeUsesLauncherMode(t *testing.T) {
+func TestLauncherRuntimeModeUsesLauncherMode(t *testing.T) {
 	orig := launcherMode
 	origProfile := activeProfile
 	t.Cleanup(func() { launcherMode = orig; activeProfile = origProfile })
 	activeProfile = ""
 
 	launcherMode = "dev"
-	if got := wslSingleInstanceMode(); got != "dev" {
+	if got := launcherRuntimeMode(); got != "dev" {
 		t.Fatalf("dev launcher mode = %q", got)
 	}
 	launcherMode = "prod"
-	if got := wslSingleInstanceMode(); got != "prod" {
+	if got := launcherRuntimeMode(); got != "prod" {
 		t.Fatalf("prod launcher mode = %q", got)
 	}
 	launcherMode = ""
-	if got := wslSingleInstanceMode(); got != "prod" {
+	if got := launcherRuntimeMode(); got != "prod" {
 		t.Fatalf("empty launcher mode = %q, want prod", got)
 	}
 }
@@ -591,10 +591,10 @@ func TestIsolatedProfilesFoldEveryPerInstanceName(t *testing.T) {
 		}
 		state, _ := windowStatePath()
 		for axis, value := range map[string]string{
-			"window state path":    state,
-			"webview data dir":     webviewDataDir(mode),
-			"single-instance mode": wslSingleInstanceMode(),
-			"log file":             appidentity.StateFileName("launcher.log", mode),
+			"window state path":  state,
+			"webview data dir":   webviewDataDir(mode),
+			"single-instance id": appidentity.SingleInstanceID("wsl", mode),
+			"log file":           appidentity.StateFileName("launcher.log", mode),
 		} {
 			if seen[axis] == nil {
 				seen[axis] = map[string]string{}
@@ -932,6 +932,38 @@ func TestTransientLaunchRecordsPayloadWithoutChangingDefaultDistro(t *testing.T)
 	}
 	if *isolated != *cfg {
 		t.Fatalf("isolated launch overwrote ordinary install record: %+v", isolated)
+	}
+}
+
+// A wsl.json the launcher cannot read stays as it is: recording a launch
+// over it would replace the fields it holds with only the install record.
+func TestALaunchIsNotRecordedOverAnUnreadableConfig(t *testing.T) {
+	t.Setenv("APPDATA", t.TempDir())
+	originalProfile := activeProfile
+	activeProfile = ""
+	t.Cleanup(func() { activeProfile = originalProfile })
+	dir, ok := wsldistro.WSLConfigDir()
+	if !ok {
+		t.Fatal("no config directory under the temporary APPDATA")
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, wsldistro.FileName)
+	unreadable := []byte(`{"distro": "Ubuntu", "installedVer": `)
+	if err := os.WriteFile(path, unreadable, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	app := &launcherApp{}
+	if err := app.persistSuccessfulLaunch("Debian", "/home/user/.local/bin/agent-overflow", true); err == nil {
+		t.Fatal("a launch was recorded over a config that could not be read")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(unreadable) {
+		t.Fatalf("wsl.json was rewritten to %q", got)
 	}
 }
 

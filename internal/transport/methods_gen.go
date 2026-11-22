@@ -99,6 +99,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "BrowserCompanionPaneAttach", ID: 205254296, Scope: "host", Route: "home"},                                                        // main.App.BrowserCompanionPaneAttach
 	{Name: "BrowserCompanionPaneDetach", ID: 3255514830, Scope: "host", Route: "home"},                                                       // main.App.BrowserCompanionPaneDetach
 	{Name: "BrowserCompanionPaneRect", ID: 2491183339, Scope: "host", Route: "home"},                                                         // main.App.BrowserCompanionPaneRect
+	{Name: "BrowserCompanionRecentAddresses", ID: 4292141824, Scope: "host", Route: "home"},                                                  // main.App.BrowserCompanionRecentAddresses
 	{Name: "BrowserCompanionRevealPageFile", ID: 535837959, Scope: "host", Route: "home"},                                                    // main.App.BrowserCompanionRevealPageFile
 	{Name: "BrowserCompanionThreadState", ID: 1485125416, Scope: "host", Route: "home"},                                                      // main.App.BrowserCompanionThreadState
 	{Name: "BrowserHostReport", ID: 2848608143, Scope: "host", Route: "home"},                                                                // main.App.BrowserHostReport

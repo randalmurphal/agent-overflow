@@ -32,7 +32,6 @@ import { normalizePaneWidthPx, paneMinWidthPx } from '../utils/paneWidths';
 import { isCompactLayout, onScreenCompactPaneId } from './layoutMode.svelte';
 import {
   addPaneDestroyedObserver,
-  closeFocusedPane,
   destroyPane,
   focusPane,
   getFocusedPaneId,
@@ -267,28 +266,12 @@ function takeDownCompanion(paneId: string, mode: 'close' | 'hide'): void {
 }
 
 /**
- * Pane-scoped close for whatever holds focus. A focused companion closes
- * ITSELF (never the thread it's paired to — closeCompanion hands focus
- * back to the source); a focused tool pane closes as a tool; anything else
- * destroys the focused thread pane.
- * This is the single owner of the companion-vs-tool-vs-thread close branch —
- * `pane.close` routes here. It lives in this store because
- * panes.svelte.ts must not depend on companion stores, while the reverse
- * dependency is the sanctioned direction.
- */
-export function closeFocusedPaneOrCompanion(): void {
-  const focusedId = getFocusedPaneId();
-  const companion = focusedId ? companionPanes.get(focusedId) : null;
-  if (companion) closeCompanion(companion.paneId);
-  else if (toolKindOf(focusedId)) closeToolPane(focusedId as string);
-  else closeFocusedPane();
-}
-
-/**
- * Close one pane by id, whichever kind it is. The pane-header close control
- * uses it so a companion closes as a companion (its registration dropped,
- * its source refocused, a side chat's thread deleted) rather than as a bare
- * pane destroy.
+ * Close one pane by id, whichever kind it is: a companion closes as a
+ * companion (its registration dropped, its source refocused, a side chat's
+ * thread deleted), a tool pane as a tool, a thread pane is destroyed. The
+ * single owner of that branch; the pane-header close control and
+ * `pane.close` (on its paneCommandTarget) route here. It lives in this store
+ * because panes.svelte.ts must not depend on companion stores.
  */
 export function closePaneById(paneId: string): void {
   const companion = companionPanes.get(paneId);

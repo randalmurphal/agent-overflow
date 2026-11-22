@@ -102,6 +102,10 @@ func TestAChromiumGroupStopCouldNotKillStaysWatched(t *testing.T) {
 	pid := process.cmd.Process.Pid
 	t.Cleanup(func() {
 		_ = syscall.Kill(-pid, syscall.SIGKILL)
+		// watchExit owns the child until it closes exited, and reaps it
+		// itself when it cannot wait without reaping; a Wait made before
+		// then races its own.
+		<-process.exited
 		_ = process.cmd.Wait()
 	})
 	// The group kill refuses a command that does not lead a group.

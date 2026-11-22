@@ -313,6 +313,11 @@ func workflowTemplateDigest(
 			// told. Saying "paused because …" here would read as a fault report
 			// for the human's own instruction.
 			digest.WhatHappened = "The run stopped at the checkpoint you asked for, before starting the next call."
+		case engine.ReasonStalled, engine.ReasonBudgetExhausted, engine.ReasonRetriesExhausted, engine.ReasonProviderRetriesExhausted,
+			engine.ReasonProviderUsageLimited, engine.ReasonLoopLimitExhausted, engine.ReasonCheckFailedGenuine, engine.ReasonAgentError,
+			engine.ReasonWiringError, engine.ReasonSetupFailed, engine.ReasonInterrupted, engine.ReasonTakenOver, engine.ReasonUnitFailed,
+			engine.ReasonChildFailed, engine.ReasonPaused:
+			fallthrough
 		default:
 			digest.WhatHappened = fmt.Sprintf("The run paused in %s because %s.", phase, workflowReasonText(reason))
 		}
@@ -353,6 +358,9 @@ func workflowTemplateDigest(
 		digest.WhatItNeeds = "Wait for the provider usage limit to reset or switch provider accounts, then resume the run."
 	case engine.ReasonCheckpoint:
 		digest.WhatItNeeds = "Resume the run to continue, or leave it stopped."
+	case engine.ReasonStalled, engine.ReasonRetriesExhausted, engine.ReasonProviderRetriesExhausted, engine.ReasonLoopLimitExhausted,
+		engine.ReasonWiringError, engine.ReasonInterrupted, engine.ReasonUnitFailed, engine.ReasonChildFailed, engine.ReasonPaused:
+		fallthrough
 	default:
 		digest.WhatItNeeds = "Review the run and choose whether to retry, take over, or discard it."
 	}
@@ -414,6 +422,9 @@ func workflowReasonText(reason engine.Reason) string {
 		return "execution was interrupted"
 	case engine.ReasonTakenOver:
 		return "a human took control of the phase"
+	case engine.ReasonGate, engine.ReasonQuestion, engine.ReasonStuck, engine.ReasonCheckFailedGenuine, engine.ReasonDisposition,
+		engine.ReasonUnitFailed, engine.ReasonChildFailed, engine.ReasonPaused, engine.ReasonCheckpoint:
+		fallthrough
 	default:
 		return "human input is required"
 	}

@@ -121,6 +121,23 @@ be the full-suite gate before merge. A failing check in a relevant suite belongs
 change whether the code or the test is wrong: fix it before finishing, never
 record it as pre-existing.
 
+Reproduce a flaky test by constraining the test, never by loading the
+machine. The developer is working on this machine while tests run.
+
+- Never start a process whose purpose is to consume CPU, memory, disk or
+  I/O: no busy loops, `dd`, `yes`, `stress` or parallel copies of an
+  unrelated suite.
+- To create scheduling pressure, give the test fewer resources: prefix the
+  run with `taskset -c 0`, or use `GOMAXPROCS=1`, `-cpu 1,2`, `-race`,
+  `-shuffle=on`, or Playwright's `--repeat-each` and `--workers=1`.
+- Raise the rate with a narrowed `-run` and `-count`, at most 4 test
+  processes at a time, with the count and timeout stated before the run.
+- A test that fails only when starved names a wait it assumes. Read the
+  test for that wait and prove the cause with a gate, a fake clock or an
+  injected delay at the suspected point, which fails every time. Odds are
+  not a reproduction.
+- Everything a command starts ends with that command.
+
 `make help` lists supported commands; [Development](docs/architecture/development.md)
 routes manual and release checks.
 

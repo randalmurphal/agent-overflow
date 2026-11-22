@@ -278,6 +278,7 @@ func (c *Credentials) sweepEphemeralHomes(providerName string, now time.Time, se
 			continue
 		case entryGone:
 			continue
+		case entryClaimed:
 		}
 
 		result, entryErr := c.sweepOneEphemeralHome(providerName, entry, selectedAccountID)

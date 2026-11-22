@@ -2,146 +2,17 @@ package browser
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
-	"net"
-	"net/http"
-	"net/http/httptest"
+	"fmt"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
+	"agent-overflow/internal/browser/ids"
 	"agent-overflow/internal/keybindings"
 	"agent-overflow/internal/webview2host"
 
 	"github.com/chromedp/cdproto/target"
-	"github.com/gobwas/ws"
-	"github.com/gobwas/ws/wsutil"
 )
-
-// The hosted engine is exercised against a fake directive sink and a fake
-// report source. Nothing here reaches a launcher, a WebView2, or a CDP
-// endpoint: the relay is a stub, and every failure path below is one the
-// engine must answer with an error rather than a hang.
-
-const hostedTestDeadline = 3 * time.Second
-
-// directiveSink is the launcher's inbox.
-type directiveSink struct {
-	mu   sync.Mutex
-	all  []webview2host.Directive
-	feed chan webview2host.Directive
-}
-
-func newDirectiveSink() *directiveSink {
-	return &directiveSink{feed: make(chan webview2host.Directive, 64)}
-}
-
-func (s *directiveSink) send(directive webview2host.Directive) {
-	s.mu.Lock()
-	s.all = append(s.all, directive)
-	s.mu.Unlock()
-	select {
-	case s.feed <- directive:
-	default:
-	}
-}
-
-func (s *directiveSink) ops() []webview2host.Op {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ops := make([]webview2host.Op, 0, len(s.all))
-	for _, directive := range s.all {
-		ops = append(ops, directive.Op)
-	}
-	return ops
-}
-
-func (s *directiveSink) next(t *testing.T) webview2host.Directive {
-	t.Helper()
-	select {
-	case directive := <-s.feed:
-		return directive
-	case <-time.After(hostedTestDeadline):
-		t.Fatal("timed out waiting for a directive")
-	}
-	return webview2host.Directive{}
-}
-
-// expectOps asserts the exact directive sequence, which is the whole
-// observable contract of a failed create: ask, then clean up.
-func (s *directiveSink) expectOps(t *testing.T, want ...webview2host.Op) {
-	t.Helper()
-	got := s.ops()
-	if len(got) != len(want) {
-		t.Fatalf("directives %v, want %v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("directives %v, want %v", got, want)
-		}
-	}
-}
-
-type stubRelay struct {
-	url string
-	err error
-}
-
-func (r stubRelay) BrowserWebSocketURL(context.Context) (string, error) {
-	if r.err != nil {
-		return "", r.err
-	}
-	return r.url, nil
-}
-
-func newTestHostedEngine(t *testing.T, relay hostRelay, events engineEvents) (*hostedEngine, *directiveSink) {
-	t.Helper()
-	sink := newDirectiveSink()
-	engine := newHostedEngine(relay, sink.send, nil, events)
-	engine.logf = func(format string, args ...any) { t.Logf(format, args...) }
-	engine.createTimeout = 150 * time.Millisecond
-	engine.attachTimeout = 150 * time.Millisecond
-	engine.clearTimeout = 150 * time.Millisecond
-	return engine, sink
-}
-
-func testProfile(t *testing.T, engine *hostedEngine) *hostedProfile {
-	t.Helper()
-	profile, err := engine.NewProfile(context.Background(), profileOptions{Workspace: "/home/dev/repo"})
-	if err != nil {
-		t.Fatalf("new profile: %v", err)
-	}
-	return profile.(*hostedProfile)
-}
-
-func TestHostedProfileIDIsDerivedStableAndValid(t *testing.T) {
-	first, err := hostedProfileID("/home/dev/repo")
-	if err != nil {
-		t.Fatalf("derive: %v", err)
-	}
-	again, err := hostedProfileID("/home/dev/repo")
-	if err != nil {
-		t.Fatalf("derive again: %v", err)
-	}
-	if first != again {
-		t.Fatalf("profile id is not stable: %q vs %q", first, again)
-	}
-	other, err := hostedProfileID("/home/dev/other")
-	if err != nil {
-		t.Fatalf("derive other: %v", err)
-	}
-	if other == first {
-		t.Fatal("two workspaces share one profile id")
-	}
-	if err := webview2host.ValidateProfileID(first); err != nil {
-		t.Fatalf("derived id is not a legal profile id: %v", err)
-	}
-	if _, err := hostedProfileID("   "); err == nil {
-		t.Fatal("an empty workspace was accepted")
-	}
-}
 
 func TestHostedEngineStartRequiresWiring(t *testing.T) {
 	engine := newHostedEngine(nil, nil, nil, engineEvents{})
@@ -161,174 +32,25 @@ func TestHostedEngineStartRequiresWiring(t *testing.T) {
 	}
 }
 
-func TestHostedEngineCreateTimesOutAndClosesTheController(t *testing.T) {
-	engine, sink := newTestHostedEngine(t, stubRelay{err: errors.New("unused")}, engineEvents{})
-	profile := testProfile(t, engine)
-
-	started := time.Now()
-	_, err := profile.NewPage(context.Background(), pageHooks{})
-	if err == nil {
-		t.Fatal("a create with no answer succeeded")
-	}
-	if !strings.Contains(err.Error(), "did not answer") {
-		t.Fatalf("error %v does not name the timeout", err)
-	}
-	if elapsed := time.Since(started); elapsed > hostedTestDeadline {
-		t.Fatalf("the create took %s: the wait is not bounded", elapsed)
-	}
-	// The launcher may be mid-create, so the controller is closed anyway.
-	sink.expectOps(t, webview2host.OpCreate, webview2host.OpClose)
-}
-
-func TestHostedEngineCreateRespectsCallerCancellation(t *testing.T) {
-	engine, sink := newTestHostedEngine(t, stubRelay{err: errors.New("unused")}, engineEvents{})
-	engine.createTimeout = time.Hour
-	profile := testProfile(t, engine)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() {
-		_, err := profile.NewPage(ctx, pageHooks{})
-		done <- err
-	}()
-	sink.next(t)
-	cancel()
-
-	select {
-	case err := <-done:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("got %v, want context.Canceled", err)
-		}
-	case <-time.After(hostedTestDeadline):
-		t.Fatal("a cancelled create did not return")
-	}
-	sink.expectOps(t, webview2host.OpCreate, webview2host.OpClose)
-}
-
-// answer replies to the next create directive with one report, which is
-// what a launcher does over the notification bridge.
-func answerCreate(t *testing.T, engine *hostedEngine, sink *directiveSink, kind webview2host.ReportKind, detail string) {
-	t.Helper()
-	go func() {
-		directive := sink.next(t)
-		if directive.Op != webview2host.OpCreate {
-			t.Errorf("first directive was %q, want create", directive.Op)
-			return
-		}
-		engine.Report(directive.PageID, kind, detail)
-	}()
-}
-
-func TestHostedEngineSurfacesACreateFailedReport(t *testing.T) {
-	engine, sink := newTestHostedEngine(t, stubRelay{err: errors.New("unused")}, engineEvents{})
-	profile := testProfile(t, engine)
-	answerCreate(t, engine, sink, webview2host.ReportCreateFailed, "WebView2 runtime missing")
-
-	_, err := profile.NewPage(context.Background(), pageHooks{})
-	if err == nil {
-		t.Fatal("a failed create succeeded")
-	}
-	if !strings.Contains(err.Error(), "WebView2 runtime missing") {
-		t.Fatalf("error %v drops the launcher's reason", err)
-	}
-	// Nothing was created, so nothing is closed.
-	sink.expectOps(t, webview2host.OpCreate)
-}
-
-func TestHostedEngineSurfacesACloseRacingTheCreate(t *testing.T) {
-	engine, sink := newTestHostedEngine(t, stubRelay{err: errors.New("unused")}, engineEvents{})
-	profile := testProfile(t, engine)
-	answerCreate(t, engine, sink, webview2host.ReportClosed, "window closed")
-
-	_, err := profile.NewPage(context.Background(), pageHooks{})
-	if err == nil {
-		t.Fatal("a create closed under us succeeded")
-	}
-	if !strings.Contains(err.Error(), string(webview2host.ReportClosed)) {
-		t.Fatalf("error %v does not name the report", err)
-	}
-}
-
-func TestHostedEngineRefusesACreatedReportWithNoTarget(t *testing.T) {
-	engine, sink := newTestHostedEngine(t, stubRelay{err: errors.New("unused")}, engineEvents{})
-	profile := testProfile(t, engine)
-	answerCreate(t, engine, sink, webview2host.ReportCreated, "   ")
-
-	_, err := profile.NewPage(context.Background(), pageHooks{})
-	if err == nil {
-		t.Fatal("a created report with no CDP target was accepted")
-	}
-	if !strings.Contains(err.Error(), "no CDP target") {
-		t.Fatalf("error %v does not name the missing target", err)
-	}
-	sink.expectOps(t, webview2host.OpCreate, webview2host.OpClose)
-}
-
-func TestHostedEngineClosesTheControllerWhenTheAttachFails(t *testing.T) {
-	engine, sink := newTestHostedEngine(t, stubRelay{err: errors.New("no browser host tunnel is connected")}, engineEvents{})
-	profile := testProfile(t, engine)
-	answerCreate(t, engine, sink, webview2host.ReportCreated, "TARGET-1")
-
-	_, err := profile.NewPage(context.Background(), pageHooks{})
-	if err == nil {
-		t.Fatal("a create with an unreachable CDP endpoint succeeded")
-	}
-	if !strings.Contains(err.Error(), "reach the pane CDP endpoint") {
-		t.Fatalf("error %v does not name the relay failure", err)
-	}
-	// A real controller exists on the far side; leaving it would be a
-	// window the user cannot close.
-	sink.expectOps(t, webview2host.OpCreate, webview2host.OpClose)
-}
-
-func TestHostedEngineClosesAnOrphanCreatedReport(t *testing.T) {
-	engine, sink := newTestHostedEngine(t, stubRelay{err: errors.New("unused")}, engineEvents{})
-	engine.Report("0123456789abcdef0123456789abcdef", webview2host.ReportCreated, "TARGET-9")
-	sink.expectOps(t, webview2host.OpClose)
-	if got := sink.next(t); got.PageID != "0123456789abcdef0123456789abcdef" {
-		t.Fatalf("closed %q", got.PageID)
-	}
-}
-
-func TestHostedEngineInterruptReleasesAPendingCreate(t *testing.T) {
-	engine, sink := newTestHostedEngine(t, stubRelay{err: errors.New("unused")}, engineEvents{})
-	engine.createTimeout = time.Hour
-	profile := testProfile(t, engine)
-
-	done := make(chan error, 1)
-	go func() {
-		_, err := profile.NewPage(context.Background(), pageHooks{})
-		done <- err
-	}()
-	sink.next(t)
-	engine.Interrupt()
-
-	select {
-	case err := <-done:
-		if err == nil || !strings.Contains(err.Error(), "interrupted") {
-			t.Fatalf("got %v, want an interruption", err)
-		}
-	case <-time.After(hostedTestDeadline):
-		t.Fatal("Interrupt did not release the pending create")
-	}
-}
-
 func TestHostedEngineRetiresAPageOnTheLauncherReports(t *testing.T) {
-	for _, kind := range []webview2host.ReportKind{webview2host.ReportClosed, webview2host.ReportProcessFailed} {
+	// A process failure is a crash, not a close (crash_test.go).
+	for _, kind := range []webview2host.ReportKind{webview2host.ReportClosed} {
 		t.Run(string(kind), func(t *testing.T) {
 			var closed []string
 			engine, _ := newTestHostedEngine(t, stubRelay{}, engineEvents{
-				PageClosed: func(handle string) { closed = append(closed, handle) },
+				PageClosed: func(handle ids.PageHandle) { closed = append(closed, string(handle)) },
 			})
-			engine.bind("page1", "TARGET-1")
+			bindTestPage(t, engine, "page1", "TARGET-1")
 
 			engine.Report("page1", kind, "")
+			settleReports(t, engine, "")
 			if len(closed) != 1 || closed[0] != "page1" {
 				t.Fatalf("PageClosed saw %v", closed)
 			}
 			// The retirement is the engine's whole bookkeeping, so a repeat
 			// report must not reach the Manager twice.
 			engine.Report("page1", kind, "")
+			settleReports(t, engine, "")
 			if len(closed) != 1 {
 				t.Fatalf("a repeated report was reported again: %v", closed)
 			}
@@ -338,7 +60,7 @@ func TestHostedEngineRetiresAPageOnTheLauncherReports(t *testing.T) {
 
 func TestHostedEngineShowAndHideAreDedupedAndPageScoped(t *testing.T) {
 	engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{})
-	engine.bind("page1", "TARGET-1")
+	bindTestPage(t, engine, "page1", "TARGET-1")
 
 	engine.ShowPage("page1")
 	engine.ShowPage("page1")
@@ -355,7 +77,7 @@ func TestHostedEngineShowAndHideAreDedupedAndPageScoped(t *testing.T) {
 
 func TestHostedEngineBoundsAndDevToolsEmitValidDirectives(t *testing.T) {
 	engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{})
-	engine.bind("page1", "TARGET-1")
+	bindTestPage(t, engine, "page1", "TARGET-1")
 	// An 800x600 pane showing a 1280x720 page: the placement is the fitted,
 	// centered rect (scale 0.625 -> 800x450, 75px down) and that is what the
 	// launcher positions the controller at.
@@ -365,7 +87,12 @@ func TestHostedEngineBoundsAndDevToolsEmitValidDirectives(t *testing.T) {
 		t.Fatal("an 800x600 pane must place a 1280x720 page")
 	}
 	engine.SetPageBounds("page1", placement)
-	engine.OpenPageDevTools("page1")
+	if err := answerDevTools(t, engine, sink, "page1", webview2host.ReportDevToolsOpened, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.OpenPageDevTools(t.Context(), ""); err == nil {
+		t.Fatal("a devtools directive the launcher would refuse was reported sent")
+	}
 	sink.expectOps(t, webview2host.OpBounds, webview2host.OpDevTools)
 
 	bounds := sink.next(t)
@@ -385,9 +112,37 @@ func TestHostedEngineBoundsAndDevToolsEmitValidDirectives(t *testing.T) {
 	sink.expectOps(t, webview2host.OpBounds, webview2host.OpDevTools)
 }
 
+// A page's base reaches the launcher on its own directive, with no bounds
+// and no show before it, and a placement carries no color.
+func TestHostedEngineSendsAPageBaseApartFromItsPlacement(t *testing.T) {
+	engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{})
+	bindTestPage(t, engine, "page1", "TARGET-1")
+	engine.SetPageBase("page1", "#1e1e2e")
+	sink.expectOps(t, webview2host.OpBackground)
+	if base := sink.next(t); base.PageID != "page1" || base.Bg != "#1e1e2e" {
+		t.Fatalf("background directive = %+v", base)
+	}
+	// A page this engine does not own, and a color the launcher would
+	// refuse, never reach the wire.
+	engine.SetPageBase("page2", "#ffffff")
+	engine.SetPageBase("page1", "red")
+	sink.expectOps(t, webview2host.OpBackground)
+
+	pane := PaneRect{X: 12, Y: 34, Width: 800, Height: 600, ClipX: 12, ClipY: 34, ClipWidth: 800, ClipHeight: 600, ViewportWidth: 1600, ViewportHeight: 900, Visible: true, Background: "#123456"}
+	placement, ok := placePage(pane, 800, 600)
+	if !ok {
+		t.Fatal("an 800x600 pane must place an 800x600 page")
+	}
+	engine.SetPageBounds("page1", placement)
+	sink.expectOps(t, webview2host.OpBackground, webview2host.OpBounds)
+	if bounds := sink.next(t); bounds.Bg != "" {
+		t.Fatalf("a bounds directive carries the color %q", bounds.Bg)
+	}
+}
+
 func TestHostedEngineRefusesAnInvalidPageID(t *testing.T) {
 	engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{})
-	engine.bind("not a page id", "TARGET-1")
+	bindTestPage(t, engine, "not a page id", "TARGET-1")
 	engine.ShowPage("not a page id")
 	engine.closePage("not a page id")
 	sink.expectOps(t)
@@ -399,237 +154,57 @@ func TestHostedEngineRekeysBrowserEventsOntoPageIDs(t *testing.T) {
 	// closure it lands in has to be synchronized like the real one.
 	closed := make(chan string, 4)
 	engine, _ := newTestHostedEngine(t, stubRelay{}, engineEvents{
-		PageClosed:      func(handle string) { closed <- handle },
-		PageInfoChanged: func(handle, url, title string) { infos = append(infos, handle+" "+url+" "+title) },
+		PageClosed: func(handle ids.PageHandle) { closed <- string(handle) },
+		PageInfoChanged: func(handle ids.PageHandle, url, title string, order uint64) {
+			infos = append(infos, fmt.Sprintf("%s %s %s %d", handle, url, title, order))
+		},
 	})
-	engine.bind("page1", "TARGET-1")
+	bindTestPage(t, engine, "page1", "TARGET-1")
 
-	engine.targetInfoChanged(target.EventTargetInfoChanged{TargetInfo: &target.Info{
+	engine.targetInfoChanged(engine.currentTargets(), target.EventTargetInfoChanged{TargetInfo: &target.Info{
 		TargetID: "TARGET-1", Type: "page", URL: "https://example.test/", Title: "Example",
 	}})
-	if len(infos) != 1 || infos[0] != "page1 https://example.test/ Example" {
+	// The reports are numbered in the browser's order, which the Manager
+	// keeps the highest of.
+	engine.targetInfoChanged(engine.currentTargets(), target.EventTargetInfoChanged{TargetInfo: &target.Info{
+		TargetID: "TARGET-1", Type: "page", URL: "https://example.test/", Title: "Retitled",
+	}})
+	if len(infos) != 2 || infos[0] != "page1 https://example.test/ Example 1" || infos[1] != "page1 https://example.test/ Retitled 2" {
 		t.Fatalf("PageInfoChanged saw %v", infos)
 	}
 	// A target this engine never created is dropped rather than reported
 	// under a handle the Manager does not own.
-	engine.targetInfoChanged(target.EventTargetInfoChanged{TargetInfo: &target.Info{
+	engine.targetInfoChanged(engine.currentTargets(), target.EventTargetInfoChanged{TargetInfo: &target.Info{
 		TargetID: "TARGET-9", Type: "page", URL: "https://elsewhere.test/",
 	}})
-	if len(infos) != 1 {
+	if len(infos) != 2 {
 		t.Fatalf("an unknown target was reported: %v", infos)
 	}
 
-	engine.targetDestroyed(target.EventTargetDestroyed{TargetID: "TARGET-1"})
+	// The launcher's close ends a page whose target went; with none, the
+	// destroy does at the fallback bound.
+	engine.closeFallback = 100 * time.Millisecond
+	destroyed := time.Now()
+	engine.targetDestroyed(engine.currentTargets(), target.EventTargetDestroyed{TargetID: "TARGET-1"})
 	select {
 	case handle := <-closed:
 		if handle != "page1" {
 			t.Fatalf("PageClosed saw %q", handle)
+		}
+		if waited := time.Since(destroyed); waited < engine.closeFallback {
+			t.Fatalf("the page was retired %v after its target went, before the launcher's close could come", waited)
 		}
 	case <-time.After(hostedTestDeadline):
 		t.Fatal("targetDestroyed did not retire the page")
 	}
 }
 
-func TestHostedProfileDisposeClosesTheWholeProfile(t *testing.T) {
-	engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{})
-	profile, err := engine.NewProfile(context.Background(), profileOptions{Workspace: "/home/dev/repo", Persist: false})
-	if err != nil {
-		t.Fatalf("new profile: %v", err)
-	}
-	if err := profile.Dispose(context.Background()); err != nil {
-		t.Fatalf("dispose: %v", err)
-	}
-	sink.expectOps(t, webview2host.OpCloseProfile)
-	directive := sink.next(t)
-	if directive.ProfileID != profile.Handle() || !directive.Ephemeral {
-		t.Fatalf("close-profile directive is %+v", directive)
-	}
-}
-
-func TestHostedProfileReportsNoPopups(t *testing.T) {
-	engine, _ := newTestHostedEngine(t, stubRelay{}, engineEvents{})
-	profile := testProfile(t, engine)
-
-	if _, err := profile.AttachPage(context.Background(), "TARGET-1", pageHooks{}); err == nil {
-		t.Fatal("the pane host adopted a popup it can never report")
-	}
-}
-
 func TestHostedEngineDiscardPageClosesTheController(t *testing.T) {
 	engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{})
-	engine.DiscardPage("0123456789abcdef0123456789abcdef")
+	if err := engine.DiscardPage(t.Context(), "0123456789abcdef0123456789abcdef"); err != nil {
+		t.Fatal(err)
+	}
 	sink.expectOps(t, webview2host.OpClose)
-}
-
-// ---------------------------------------------------------------------
-// Clear site data
-// ---------------------------------------------------------------------
-
-// On the Windows/WSL deployment the Manager's own profile tree is empty and
-// every cookie jar is on the far side of the WSL boundary, so this seam is
-// the ENTIRE clear. An engine that stopped implementing it would make the
-// Settings button a silent no-op again, with nothing failing to compile.
-var _ engineSiteData = (*hostedEngine)(nil)
-
-// answerClear replies to the next clear-data directive, which is what the
-// launcher does once it has closed every controller, released the
-// environment, and finished deleting its user-data folder.
-// It hands back the directive it answered, because the feed is consumed by
-// the reply and a caller cannot read it twice.
-func answerClear(t *testing.T, engine *hostedEngine, sink *directiveSink, kind webview2host.ReportKind, detail string) <-chan webview2host.Directive {
-	t.Helper()
-	seen := make(chan webview2host.Directive, 1)
-	go func() {
-		directive := sink.next(t)
-		if directive.Op != webview2host.OpClearData {
-			t.Errorf("first directive was %q, want clear-data", directive.Op)
-			return
-		}
-		seen <- directive
-		engine.Report(directive.PageID, kind, detail)
-	}()
-	return seen
-}
-
-func TestHostedEngineClearSiteDataDispatchesAndSucceeds(t *testing.T) {
-	engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{})
-	seen := answerClear(t, engine, sink, webview2host.ReportCleared, "")
-
-	if err := engine.ClearSiteData(context.Background()); err != nil {
-		t.Fatalf("clear site data: %v", err)
-	}
-	sink.expectOps(t, webview2host.OpClearData)
-	// The clear addresses the whole user-data folder: naming a profile would
-	// be a claim the launcher cannot honour, since one folder holds every
-	// workspace's named profile.
-	directive := <-seen
-	if directive.ProfileID != "" {
-		t.Fatalf("clear-data named profile %q", directive.ProfileID)
-	}
-	if err := webview2host.ValidatePageID(directive.PageID); err != nil {
-		t.Fatalf("clear-data correlation id is not addressable: %v", err)
-	}
-}
-
-func TestHostedEngineClearSiteDataSurfacesTheLauncherFailure(t *testing.T) {
-	engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{})
-	answerClear(t, engine, sink, webview2host.ReportClearFailed, "delete C:\\...\\browser-profiles: Access is denied.")
-
-	err := engine.ClearSiteData(context.Background())
-	if err == nil {
-		t.Fatal("a failed clear reported success; the user would believe cookies were destroyed")
-	}
-	if !strings.Contains(err.Error(), "Access is denied") {
-		t.Fatalf("error %v drops the launcher's reason", err)
-	}
-}
-
-func TestHostedEngineClearSiteDataIsBounded(t *testing.T) {
-	engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{})
-
-	started := time.Now()
-	err := engine.ClearSiteData(context.Background())
-	if err == nil {
-		t.Fatal("a clear with no answer succeeded")
-	}
-	if !strings.Contains(err.Error(), "did not answer") {
-		t.Fatalf("error %v does not name the timeout", err)
-	}
-	if elapsed := time.Since(started); elapsed > hostedTestDeadline {
-		t.Fatalf("the clear took %s: the wait is not bounded", elapsed)
-	}
-	// Nothing is closed on the way out: the clear owns no controller, and
-	// the launcher closes its own before deleting anything.
-	sink.expectOps(t, webview2host.OpClearData)
-}
-
-func TestHostedEngineClearSiteDataRespectsCancellationAndInterrupt(t *testing.T) {
-	t.Run("caller cancellation", func(t *testing.T) {
-		engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{})
-		engine.clearTimeout = time.Hour
-		ctx, cancel := context.WithCancel(context.Background())
-		done := make(chan error, 1)
-		go func() { done <- engine.ClearSiteData(ctx) }()
-		sink.next(t)
-		cancel()
-
-		select {
-		case err := <-done:
-			if !errors.Is(err, context.Canceled) {
-				t.Fatalf("got %v, want context.Canceled", err)
-			}
-		case <-time.After(hostedTestDeadline):
-			t.Fatal("a cancelled clear did not return")
-		}
-	})
-
-	t.Run("shutdown interrupt", func(t *testing.T) {
-		engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{})
-		engine.clearTimeout = time.Hour
-		done := make(chan error, 1)
-		go func() { done <- engine.ClearSiteData(context.Background()) }()
-		sink.next(t)
-		engine.Interrupt()
-
-		select {
-		case err := <-done:
-			if err == nil || !strings.Contains(err.Error(), "interrupted") {
-				t.Fatalf("got %v, want an interruption", err)
-			}
-		case <-time.After(hostedTestDeadline):
-			t.Fatal("Interrupt did not release the pending clear")
-		}
-	})
-}
-
-// A late or duplicated clear report names a correlation id, not a page. It
-// must not be mistaken for one: closing or retiring "page" clear-abc123
-// would tear down nothing and tell the Manager a page it never knew about
-// had died.
-func TestHostedEngineIgnoresAnAbandonedClearReport(t *testing.T) {
-	var closed []string
-	engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{
-		PageClosed: func(handle string) { closed = append(closed, handle) },
-	})
-	engine.Report("0123456789abcdef0123456789abcdef", webview2host.ReportCleared, "")
-	engine.Report("0123456789abcdef0123456789abcdef", webview2host.ReportClearFailed, "too late")
-	sink.expectOps(t)
-	if len(closed) != 0 {
-		t.Fatalf("a clear report was mistaken for a page: %v", closed)
-	}
-}
-
-// The Manager is the only router of launcher reports, and it refuses any
-// kind it does not recognise. A clear whose report kind never reached
-// ValidKind would be rejected at the RPC and the engine would wait out its
-// whole timeout for an answer that was already in the building.
-func TestManagerRoutesClearReportsToTheHostedEngine(t *testing.T) {
-	sink := newDirectiveSink()
-	manager := NewManager(t.TempDir(), Config{}, ManagerOptions{PaneHost: &PaneHostOptions{
-		Directive: sink.send,
-		Relay:     stubRelay{},
-	}})
-	engine, ok := manager.engine.(*hostedEngine)
-	if !ok {
-		t.Fatalf("engine is %T, want the hosted engine", manager.engine)
-	}
-	engine.clearTimeout = time.Hour
-
-	done := make(chan error, 1)
-	go func() { done <- engine.ClearSiteData(context.Background()) }()
-	directive := sink.next(t)
-	if err := manager.ReportPaneHost(directive.PageID, webview2host.ReportCleared, ""); err != nil {
-		t.Fatalf("route a cleared report: %v", err)
-	}
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("clear site data: %v", err)
-		}
-	case <-time.After(hostedTestDeadline):
-		t.Fatal("the routed report never reached the clear's waiter")
-	}
 }
 
 // The pane presentation path the companion drives is an engine
@@ -675,277 +250,10 @@ func TestManagerWithoutAWindowHasNoEngineAtAll(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------
-// The browser-level dial
-// ---------------------------------------------------------------------
-
-// fakeCDPCall is one command a fake endpoint answered, the session it was
-// sent on (empty for the browser), and the path of the connection it
-// arrived on.
-type fakeCDPCall struct {
-	Method    string
-	Params    json.RawMessage
-	SessionID string
-	Path      string
-}
-
-// newFakeCDPServer is a loopback websocket endpoint speaking just enough CDP
-// to accept a browser-level connection: every command is recorded and
-// answered, by default with an empty success. `respond` may return a richer
-// result body for one method — which is how the headless engine's tests get
-// a browser that can hand out a target — and nil falls back to the empty
-// success.
-//
-// It answers on the SESSION the command arrived on: chromedp routes a
-// response to a target's executor by the sessionId echoed back, and a reply
-// that dropped it would be delivered to the browser instead and the caller
-// would wait forever.
-//
-// No browser is started by any of this, on either engine's tests.
-func newFakeCDPServer(t *testing.T, respond func(call fakeCDPCall) any) (wsURL string, calls func() []fakeCDPCall) {
-	t.Helper()
-	endpoint := startFakeCDPEndpoint(t, respond, nil)
-	return endpoint.wsURL, endpoint.calls
-}
-
-// fakeCDPEndpoint is a started fake CDP server. announce, when set, returns
-// the events to send before the reply to one command, as {method, params}
-// maps, the order Chromium uses: the targets Target.setDiscoverTargets
-// reports arrive before its reply. send writes one event to every open
-// connection. hangUp closes every open connection, which is what a browser
-// that died looks like to its client.
-type fakeCDPEndpoint struct {
-	wsURL  string
-	calls  func() []fakeCDPCall
-	send   func(event map[string]any)
-	hangUp func()
-}
-
-func startFakeCDPEndpoint(t *testing.T, respond func(call fakeCDPCall) any, announce func(call fakeCDPCall) []map[string]any) *fakeCDPEndpoint {
-	t.Helper()
-	var mu sync.Mutex
-	var seen []fakeCDPCall
-	// Each open connection with the lock its writers share.
-	open := make(map[net.Conn]*sync.Mutex)
-	write := func(conn net.Conn, lock *sync.Mutex, frame any) error {
-		body, _ := json.Marshal(frame)
-		lock.Lock()
-		defer lock.Unlock()
-		return wsutil.WriteServerText(conn, body)
-	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Local discovery may probe any listening port. Only CDP WebSocket
-		// handshakes belong to this fixture; unrelated HTTP is not a test failure.
-		if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
-			http.NotFound(w, r)
-			return
-		}
-
-		conn, _, _, err := ws.UpgradeHTTP(r, w)
-		if err != nil {
-			t.Errorf("upgrade: %v", err)
-			return
-		}
-		lock := &sync.Mutex{}
-		mu.Lock()
-		open[conn] = lock
-		mu.Unlock()
-		defer func() {
-			mu.Lock()
-			delete(open, conn)
-			mu.Unlock()
-			conn.Close()
-		}()
-		for {
-			payload, err := wsutil.ReadClientText(conn)
-			if err != nil {
-				return
-			}
-			var msg struct {
-				ID        int64           `json:"id"`
-				Method    string          `json:"method"`
-				Params    json.RawMessage `json:"params"`
-				SessionID string          `json:"sessionId"`
-			}
-			if err := json.Unmarshal(payload, &msg); err != nil {
-				t.Errorf("bad CDP frame %q: %v", payload, err)
-				return
-			}
-			call := fakeCDPCall{Method: msg.Method, Params: msg.Params, SessionID: msg.SessionID, Path: r.URL.Path}
-			mu.Lock()
-			seen = append(seen, call)
-			mu.Unlock()
-			if announce != nil {
-				for _, event := range announce(call) {
-					if err := write(conn, lock, event); err != nil {
-						return
-					}
-				}
-			}
-			var result any = map[string]any{}
-			if respond != nil {
-				if answer := respond(call); answer != nil {
-					result = answer
-				}
-			}
-			frame := map[string]any{"id": msg.ID, "result": result}
-			if msg.SessionID != "" {
-				frame["sessionId"] = msg.SessionID
-			}
-			if err := write(conn, lock, frame); err != nil {
-				return
-			}
-		}
-	}))
-	t.Cleanup(server.Close)
-	return &fakeCDPEndpoint{
-		wsURL: "ws" + strings.TrimPrefix(server.URL, "http"),
-		calls: func() []fakeCDPCall {
-			mu.Lock()
-			defer mu.Unlock()
-			return append([]fakeCDPCall(nil), seen...)
-		},
-		send: func(event map[string]any) {
-			mu.Lock()
-			defer mu.Unlock()
-			for conn, lock := range open {
-				if err := write(conn, lock, event); err != nil {
-					t.Errorf("send %v: %v", event["method"], err)
-				}
-			}
-		},
-		hangUp: func() {
-			mu.Lock()
-			defer mu.Unlock()
-			for conn := range open {
-				conn.Close()
-			}
-		},
-	}
-}
-
-// fakeCDPBrowser is what the launcher's WebView2 debugging endpoint looks
-// like to the dial: a browser that answers commands but has NO tabs of its
-// own to hand out.
-func fakeCDPBrowser(t *testing.T) (wsURL string, methods func() []string) {
-	t.Helper()
-	wsURL, calls := newFakeCDPServer(t, nil)
-	return wsURL, func() []string {
-		seen := calls()
-		names := make([]string, 0, len(seen))
-		for _, call := range seen {
-			names = append(names, call.Method)
-		}
-		return names
-	}
-}
-
-// The regression this pins: chromedp.Do on a target-less remote context
-// issues Target.createTarget, which Chrome quietly answers with a
-// throwaway tab and WebView2 refuses with `-32000 no browser is open` —
-// a WebView2 target exists only as a launcher-created controller, so the
-// browser-level dial must never create one (2026-08-31, the first live
-// pane attach). It must instead enable target discovery, which is the
-// only thing that feeds the engine's targetDestroyed backstop.
-func TestHostedEngineBrowserDialCreatesNoTargetAndEnablesDiscovery(t *testing.T) {
-	wsURL, methods := fakeCDPBrowser(t)
-	engine, _ := newTestHostedEngine(t, stubRelay{url: wsURL}, engineEvents{})
-	engine.attachTimeout = 5 * time.Second
-
-	if _, err := engine.ensureBrowser(); err != nil {
-		t.Fatalf("ensureBrowser against the fake endpoint: %v", err)
-	}
-	defer engine.Interrupt()
-
-	sawDiscovery := false
-	for _, method := range methods() {
-		if method == "Target.createTarget" {
-			t.Fatal("the browser-level dial created a target; WebView2 answers that with -32000 no browser is open")
-		}
-		if method == "Target.setDiscoverTargets" {
-			sawDiscovery = true
-		}
-	}
-	if !sawDiscovery {
-		t.Fatal("the dial never enabled target discovery; the targetDestroyed backstop would hear nothing")
-	}
-}
-
-// The browser connection's events reach the Manager only through the
-// subscriptions the dial makes: a page's title and its target's destruction
-// arrive on that connection and nowhere else.
-func TestHostedEngineRoutesItsBrowserConnectionEvents(t *testing.T) {
-	endpoint := startFakeCDPEndpoint(t, nil, nil)
-	infos := make(chan string, 1)
-	closed := make(chan string, 1)
-	engine, _ := newTestHostedEngine(t, stubRelay{url: endpoint.wsURL}, engineEvents{
-		PageInfoChanged: func(handle, url, title string) { infos <- handle + " " + url + " " + title },
-		PageClosed:      func(handle string) { closed <- handle },
-	})
-	engine.attachTimeout = 5 * time.Second
-	engine.bind("page1", "TARGET-1")
-	if _, err := engine.ensureBrowser(); err != nil {
-		t.Fatalf("ensureBrowser against the fake endpoint: %v", err)
-	}
-	defer engine.Interrupt()
-
-	endpoint.send(map[string]any{"method": "Target.targetInfoChanged", "params": map[string]any{"targetInfo": map[string]any{
-		"targetId": "TARGET-1", "type": "page", "title": "Example", "url": "https://example.test/",
-		"attached": true, "canAccessOpener": false,
-	}}})
-	select {
-	case got := <-infos:
-		if got != "page1 https://example.test/ Example" {
-			t.Fatalf("PageInfoChanged saw %q", got)
-		}
-	case <-time.After(hostedTestDeadline):
-		t.Fatal("targetInfoChanged on the browser connection never reached the Manager")
-	}
-	endpoint.send(map[string]any{"method": "Target.targetDestroyed", "params": map[string]any{"targetId": "TARGET-1"}})
-	select {
-	case got := <-closed:
-		if got != "page1" {
-			t.Fatalf("PageClosed saw %q", got)
-		}
-	case <-time.After(hostedTestDeadline):
-		t.Fatal("targetDestroyed on the browser connection never retired the page")
-	}
-}
-
-// A download the Manager refuses is cancelled on the browser connection
-// that reported it.
-func TestHostedEngineCancelsADownloadTheManagerRefuses(t *testing.T) {
-	endpoint := startFakeCDPEndpoint(t, nil, nil)
-	engine, _ := newTestHostedEngine(t, stubRelay{url: endpoint.wsURL}, engineEvents{
-		DownloadStarted: func(downloadStart) bool { return false },
-	})
-	engine.attachTimeout = 5 * time.Second
-	if _, err := engine.ensureBrowser(); err != nil {
-		t.Fatalf("ensureBrowser against the fake endpoint: %v", err)
-	}
-	defer engine.Interrupt()
-
-	endpoint.send(map[string]any{"method": "Browser.downloadWillBegin", "params": map[string]any{
-		"frameId": "F-1", "guid": "G-refused", "url": "https://example.test/file.bin", "suggestedFilename": "file.bin",
-	}})
-	deadline := time.Now().Add(hostedTestDeadline)
-	for {
-		for _, call := range endpoint.calls() {
-			if call.Method == "Browser.cancelDownload" && call.SessionID == "" && strings.Contains(string(call.Params), `"G-refused"`) {
-				return
-			}
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the refused download was never cancelled")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-}
-
 // A file the agent opens is on the WSL filesystem, but the renderer that
 // must load it is a Windows-side WebView2, so the URL has to carry the
-// Windows VIEW of the path (2026-08-31: file:///home/... navigated a live
-// pane to ERR_FILE_NOT_FOUND). The engine advertises that through
+// Windows view of the path: file:///home/... answers ERR_FILE_NOT_FOUND
+// there. The engine advertises that through
 // engineFileURL; losing the implementation would silently regress
 // browser_open_file to a URL no Windows renderer can read.
 var _ engineFileURL = (*hostedEngine)(nil)
@@ -974,8 +282,8 @@ func TestWindowsFileURLCarriesTheRendererView(t *testing.T) {
 
 // The interceptor and the companion address bar hand back renderer-form
 // file URLs; windowsPathFromFileURL must invert windowsFileURL exactly, or
-// the authority check blocks the navigation OpenFile just authorized
-// (live incident 2026-08-31, ERR_BLOCKED_BY_CLIENT).
+// the authority check blocks the navigation OpenFile just authorized with
+// ERR_BLOCKED_BY_CLIENT.
 func TestWindowsPathFromFileURLInvertsTheRendererView(t *testing.T) {
 	for _, tc := range []struct {
 		name, rawURL, want string
@@ -1022,7 +330,7 @@ func TestHostedEngineShipsAcceleratorsAndRoutesAMatch(t *testing.T) {
 	set := keybindings.AcceleratorSet{{Key: "w", Ctrl: true}: {}}
 	var chords []keybindings.Accelerator
 	engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{
-		KeyChord: func(handle string, pressed keybindings.Accelerator, _ KeyPress) bool {
+		KeyChord: func(handle ids.PageHandle, pressed keybindings.Accelerator, _ keyPress) bool {
 			if handle != "page1" {
 				t.Errorf("KeyChord for %q, want page1", handle)
 			}
@@ -1052,7 +360,7 @@ func TestHostedEngineShipsAcceleratorsAndRoutesAMatch(t *testing.T) {
 // through every intermediate one after the drag has stopped.
 func TestHostedEngineViewScaleIsLatestWins(t *testing.T) {
 	engine, _ := newTestHostedEngine(t, stubRelay{}, engineEvents{})
-	engine.bind("page1", "TARGET-1")
+	bindTestPage(t, engine, "page1", "TARGET-1")
 	// No viewport yet, so SetViewScale records the scale without a CDP call.
 	page := &cdpPage{ctx: t.Context()}
 	engine.mu.Lock()
@@ -1060,7 +368,7 @@ func TestHostedEngineViewScaleIsLatestWins(t *testing.T) {
 	engine.mu.Unlock()
 
 	for i := 1; i <= 50; i++ {
-		engine.applyViewScale("page1", float64(i)/100)
+		engine.applyViewScale("page1", viewScale{placement: float64(i) / 100})
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for {
@@ -1082,7 +390,7 @@ func TestHostedEngineViewScaleIsLatestWins(t *testing.T) {
 		t.Fatalf("the page must end at the last scale asked for, got %v", got)
 	}
 	// A page this engine no longer owns gets no drain at all.
-	engine.applyViewScale("page2", 0.25)
+	engine.applyViewScale("page2", viewScale{placement: 0.25})
 	engine.mu.Lock()
 	_, queued := engine.scales["page2"]
 	engine.mu.Unlock()
@@ -1096,7 +404,7 @@ func TestHostedEngineViewScaleIsLatestWins(t *testing.T) {
 // scale. Losing that drew the page 1:1, cropped by the pane, until a resize.
 func TestHostedEngineReShowRestoresThePlacementScale(t *testing.T) {
 	engine, _ := newTestHostedEngine(t, stubRelay{}, engineEvents{})
-	engine.bind("page1", "TARGET-1")
+	bindTestPage(t, engine, "page1", "TARGET-1")
 	page := &cdpPage{ctx: t.Context()}
 	engine.mu.Lock()
 	engine.drivers["page1"] = page
@@ -1136,5 +444,83 @@ func TestHostedEngineReShowRestoresThePlacementScale(t *testing.T) {
 	engine.ShowPage("page1")
 	if got := scaleOf(); got != 0.5 {
 		t.Fatalf("re-show at an unchanged placement must restore its scale, got %v", got)
+	}
+}
+
+// answerDevTools runs a DevTools open of page, answers its directive as
+// the launcher would with kind and errText (no answer when kind is
+// empty), and returns what the open answered.
+func answerDevTools(t *testing.T, engine *hostedEngine, sink *directiveSink, page string, kind webview2host.ReportKind, errText string) error {
+	t.Helper()
+	before := len(sink.ops())
+	done := make(chan error, 1)
+	go func() { done <- engine.OpenPageDevTools(t.Context(), ids.PageHandle(page)) }()
+	var directive webview2host.Directive
+	for deadline := time.Now().Add(hostedTestDeadline); ; time.Sleep(time.Millisecond) {
+		sink.mu.Lock()
+		sent := len(sink.all) > before
+		if sent {
+			directive = sink.all[before]
+		}
+		sink.mu.Unlock()
+		if sent {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the devtools directive was never sent")
+		}
+	}
+	if directive.Op != webview2host.OpDevTools || directive.PageID != page || directive.Request == 0 {
+		t.Fatalf("the devtools open sent %+v", directive)
+	}
+	if kind != "" {
+		engine.Report(ids.PageHandle(page), kind, webview2host.DevToolsReport{Request: directive.Request, Error: errText}.Encode())
+	}
+	return awaitAnswer(t, done, "the devtools open")
+}
+
+// A DevTools open answers what the launcher reported of its numbered
+// request: nil once opened, the launcher's error when it failed, and an
+// error saying no answer arrived when none came within the bound, as from
+// a launcher that predates the answer. An answer naming another page or
+// another request is not the request's, and an interrupt ends the wait.
+func TestADevToolsOpenAnswersWhatTheLauncherReported(t *testing.T) {
+	engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{})
+	bindTestPage(t, engine, "page1", "TARGET-1")
+	if err := answerDevTools(t, engine, sink, "page1", webview2host.ReportDevToolsOpened, ""); err != nil {
+		t.Fatalf("an opened window answered %v", err)
+	}
+	if err := answerDevTools(t, engine, sink, "page1", webview2host.ReportDevToolsFailed, "E_FAIL"); err == nil || !strings.Contains(err.Error(), "E_FAIL") {
+		t.Fatalf("a refused window answered %v, want the launcher's error", err)
+	}
+	engine.devtoolsTimeout = 50 * time.Millisecond
+	if err := answerDevTools(t, engine, sink, "page1", "", ""); err == nil || !strings.Contains(err.Error(), "no answer arrived") {
+		t.Fatalf("a request nobody answered answered %v", err)
+	}
+	engine.devtoolsTimeout = hostedTestDeadline
+
+	sink.drain()
+	done := make(chan error, 1)
+	go func() { done <- engine.OpenPageDevTools(t.Context(), "page1") }()
+	directive := sink.next(t)
+	if directive.Op != webview2host.OpDevTools {
+		t.Fatalf("the devtools open sent %+v", directive)
+	}
+	engine.Report("page2", webview2host.ReportDevToolsOpened, webview2host.DevToolsReport{Request: directive.Request}.Encode())
+	engine.Report("page1", webview2host.ReportDevToolsOpened, webview2host.DevToolsReport{Request: directive.Request + 1}.Encode())
+	select {
+	case err := <-done:
+		t.Fatalf("an answer for another page or request ended the open with %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	engine.Interrupt()
+	if err := awaitAnswer(t, done, "the interrupted open"); err == nil || !strings.Contains(err.Error(), "interrupted") {
+		t.Fatalf("an interrupted open answered %v", err)
+	}
+	engine.devtools.mu.Lock()
+	waiting := len(engine.devtools.waiting)
+	engine.devtools.mu.Unlock()
+	if waiting != 0 {
+		t.Fatalf("%d devtools requests still wait", waiting)
 	}
 }

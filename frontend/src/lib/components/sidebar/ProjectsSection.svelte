@@ -9,29 +9,21 @@
   // filtering happens here so each section only sees what matches the
   // current query.
 
-  import { onDestroy } from 'svelte';
-  import type { ProjectWithCounts, Thread, ThreadGroup } from '../../types/models';
+  import { onDestroy, untrack } from 'svelte';
+  import type { Thread, ThreadGroup } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
+  import { reorderProjects } from '../../stores/projects.svelte';
+  import { buildSidebarEntries, rankOf, sidebarBucketOf, type SidebarEntry } from './sidebarEntries';
+  import { revealProject, setEntryExpanded } from '../../stores/sidebarEntryContinuity.svelte';
   import {
-    entryIdFor,
-    getProjectLiveActivityAt,
-    getProjects,
-    projectEntries,
-    refreshProjects,
-    updateProjectLocal,
-  } from '../../stores/projects.svelte';
-  import {
-    expandProject,
-    collapseProject,
-    isProjectExpanded,
     isSidebarSectionShown,
     getProjectSortMode,
     setSidebarSectionExpanded,
+    type ProjectSortMode,
   } from '../../stores/sidebar.svelte';
   import { getThreadFilterQuery } from '../../stores/threadFilter.svelte';
   import { getThreads } from '../../stores/threads.svelte';
   import { getThreadGroups } from '../../stores/threadGroups.svelte';
-  import { UpdateProjectSortPositions } from '../../stores/bindings';
   import { addErrorToast } from '../../stores/toast.svelte';
   import { userFacingError } from '../../utils/userFacingError';
   import { reuseUnchangedBuckets } from '../../utils/stableBuckets';
@@ -47,13 +39,16 @@
   import Icon from '../primitives/Icon.svelte';
   import SidebarDeviceFilter from './SidebarDeviceFilter.svelte';
   import { sidebarBackendVisible, sidebarDeviceFilterActive, sidebarThreadVisible } from '../../stores/sidebarDevices.svelte';
-  import { projectBackend } from '../../transport/entityIndex';
+  import { threadGroupBackend } from '../../transport/entityIndex';
+  import { HOME_BACKEND, type BackendKey } from '../../transport/backendKey';
   import {
     backendDisplayName,
     getAttachedBackends,
     hasMultipleBackends,
+    threadMachine,
   } from '../../stores/attachedBackends.svelte';
-  import { catalogLoadState } from '../../stores/catalogLoad.svelte';
+  import { CATALOG_KINDS, catalogLoadState } from '../../stores/catalogLoad.svelte';
+  import { catalogTreeListed, loadSidebarCatalogs } from '../../stores/sidebarCatalogs';
   import CatalogStatusRow from './CatalogStatusRow.svelte';
   import ProjectList from './ProjectList.svelte';
   import { bucketSidebarThreads } from './sidebarBuckets';
@@ -95,17 +90,52 @@
   // SidebarTreeList) keep a streaming beat off the DOM. The assistants'
   // rows keep their array the same way, so a project thread's change does
   // not rebuild the Assistants section's tree.
+  //
+  // Every row of a computer's tree is held until the tree lists
+  // (catalogTreeListed): its project headers by the entry continuity store,
+  // which groups only listed computers' rows, and its project threads and
+  // its groups here. An assistant's row belongs to no project and is not
+  // held.
+  //
+  // `treeListed` is what holds the threads and groups, so what a computer
+  // shows of them before its first complete round is one decision. Its memo
+  // is per derivation: each derivation reads the gate once per computer and
+  // nothing may cache a reactive read across derivations.
+  function treeListed(): (backend: BackendKey) => boolean {
+    const seen = new Map<BackendKey, boolean>();
+    return (backend) => {
+      let value = seen.get(backend);
+      if (value === undefined) seen.set(backend, value = catalogTreeListed(backend));
+      return value;
+    };
+  }
+
+  // One derivation of every entry the sidebar renders and of everything a
+  // header shows or the list sorts by (./sidebarEntries.ts, which carries
+  // the rules). Nothing below reads a project row.
+  let previousEntries: readonly SidebarEntry[] = [];
+  let sidebarEntries = $derived.by(() => {
+    const built = buildSidebarEntries({ visible: sidebarBackendVisible, previous: previousEntries });
+    previousEntries = built;
+    return built;
+  });
+
   let previousThreadBuckets: ReadonlyMap<string, Thread[]> = new Map();
   let previousGroupBuckets: ReadonlyMap<string, ThreadGroup[]> = new Map();
   let previousAssistantLists: ReadonlyMap<'assistants', Thread[]> = new Map();
   let searchBuckets = $derived.by(() => {
     const filterDevices = sidebarDeviceFilterActive();
+    const listedOn = treeListed();
     const buckets = bucketSidebarThreads({
       threads: getThreads(),
       groups: getThreadGroups(),
       query,
-      entryOf: entryIdFor,
-      threadVisible: (thread) => sidebarThreadVisible(thread) && !hiddenAssistantThread(thread),
+      // The rowKey of the project's entry, which neither the filter nor its
+      // key moving changes.
+      entryOf: sidebarBucketOf,
+      threadVisible: (thread) => sidebarThreadVisible(thread) && !hiddenAssistantThread(thread)
+        && (!!thread.agentId || listedOn(threadMachine(thread.id, thread.projectId))),
+      groupVisible: (group) => listedOn(threadGroupBackend(group.id) ?? HOME_BACKEND),
       filterDevices,
     });
     previousThreadBuckets = reuseUnchangedBuckets(previousThreadBuckets, buckets.threadsByProject);
@@ -122,20 +152,21 @@
   let assistants = $derived(searchBuckets.assistants);
   let projectsShown = $derived(isSidebarSectionShown('projects', query !== ''));
 
-  // Visible computers whose threads or projects have not loaded, each with
-  // a status row. While any remains, what the list shows is incomplete, so
-  // it is never presented as empty.
+  // Visible computers with a catalog that has not loaded, or whose thread
+  // list is still held, each with a status row naming the first such
+  // catalog. While any remains, what the list shows is incomplete, so it is
+  // never presented as empty.
   let pendingCatalogs = $derived.by(() => getAttachedBackends().flatMap((entry) => {
     if (!sidebarBackendVisible(entry.id)) return [];
-    const projects = catalogLoadState(entry.id, 'projects');
-    const threads = catalogLoadState(entry.id, 'threads');
-    if (projects.phase === 'loaded' && threads.phase === 'loaded') return [];
-    const failed = projects.phase === 'failed' ? projects : threads.phase === 'failed' ? threads : null;
+    const loads = CATALOG_KINDS.map((kind) => ({ kind, load: catalogLoadState(entry.id, kind) }));
+    const unloaded = loads.find(({ load }) => load.phase !== 'loaded');
+    if (unloaded === undefined && catalogTreeListed(entry.id)) return [];
+    const failed = loads.find(({ load }) => load.phase === 'failed');
     return [{
       backend: entry.id,
       name: hasMultipleBackends() ? backendDisplayName(entry) : '',
-      kind: projects.phase === 'loaded' ? 'threads' as const : 'projects' as const,
-      error: failed === null ? null : failed.error,
+      kind: unloaded?.kind ?? 'threads',
+      error: failed === undefined ? null : failed.load.error,
     }];
   }));
 
@@ -150,57 +181,25 @@
   // when the re-sort lands in the same order the PREVIOUS array is
   // returned and the animated project each-block (FLIP measure = forced
   // layout) never reconciles for a beat that changed no ordering.
-  const deviceProjectIds = $derived.by(() => {
-    if (!sidebarDeviceFilterActive()) return null;
-    const visible = new Set<string>();
-    for (const row of getProjects()) {
-      if (!row.project.archived && sidebarBackendVisible(projectBackend(row.project.id))) {
-        visible.add(entryIdFor(row.project.id));
-      }
-    }
-    return visible;
-  });
-  let prevVisibleProjects: ProjectWithCounts[] = [];
+  // The listing and device tests are applied by member in sidebarEntries,
+  // and an entry keeps its identity while nothing about it changed, so a
+  // beat that moves no row returns the previous array.
+  let prevVisibleProjects: readonly SidebarEntry[] = [];
   let visibleProjects = $derived.by(() => {
     const mode = getProjectSortMode();
-    const entries = projectEntries()
-      .filter((p) => !p.project.archived)
-      .filter((p) => deviceProjectIds === null || deviceProjectIds.has(p.project.id))
-      .filter((p) => {
-        if (!query) return true;
-        if (p.project.name.toLowerCase().includes(query)) return true;
-        if ((threadsByProject.get(p.project.id)?.length ?? 0) > 0) return true;
-        // A group whose name matched but whose members are all archived
-        // still makes its project visible — the row the user searched for
-        // is in it.
-        return (groupsByProject.get(p.project.id)?.length ?? 0) > 0;
-      });
-    const next = [...entries].sort((a, b) => {
-      switch (mode) {
-        case 'manual': {
-          const cmp = a.project.sortPosition - b.project.sortPosition;
-          if (cmp !== 0) return cmp;
-          return a.project.createdAt - b.project.createdAt;
-        }
-        case 'createdAt':
-          return b.project.createdAt - a.project.createdAt;
-        case 'lastActivity':
-        default: {
-          const aActive = getProjectLiveActivityAt(a);
-          const bActive = getProjectLiveActivityAt(b);
-          // Fall back to project.updatedAt when no thread has touched
-          // this project yet — the sidebar still surfaces a freshly
-          // renamed / added project even with zero threads.
-          const aRank = aActive > 0 ? aActive : a.project.updatedAt;
-          const bRank = bActive > 0 ? bActive : b.project.updatedAt;
-          if (aRank !== bRank) return bRank - aRank;
-          return a.project.name.localeCompare(b.project.name);
-        }
-      }
+    const entries = sidebarEntries.filter((entry) => {
+      if (!query) return true;
+      if (entry.name.toLowerCase().includes(query)) return true;
+      if ((threadsByProject.get(entry.rowKey)?.length ?? 0) > 0) return true;
+      // A group whose name matched but whose members are all archived
+      // still makes its project visible — the row the user searched for
+      // is in it.
+      return (groupsByProject.get(entry.rowKey)?.length ?? 0) > 0;
     });
+    const next = sortEntries(entries, mode);
     if (
       next.length === prevVisibleProjects.length
-      && next.every((p, i) => p === prevVisibleProjects[i])
+      && next.every((entry, i) => entry === prevVisibleProjects[i])
     ) {
       return prevVisibleProjects;
     }
@@ -208,59 +207,64 @@
     return next;
   });
 
-  // When a search is active, auto-expand any project whose threads
-  // matched so results are visible without a manual chevron click.
-  // The projects we auto-expanded on the previous render get tracked
-  // so we can collapse them again when the search clears — otherwise
-  // clearing the query left every matched project expanded, which
-  // isn't what the user asked for.
-  //
-  // Only track ids we actually flipped from collapsed → expanded.
-  // Projects that were already expanded (the default, or the user
-  // expanded them manually) stay untouched — we don't own their state,
-  // so we mustn't re-collapse them on search clear.
-  //
-  // Plain `let`, NOT $state — the $effect below reads AND writes this
-  // set. If it were reactive, every assignment would re-trigger the
-  // effect on the same `query` value and loop infinitely. The set
-  // exists only to remember which auto-expansions to roll back when the
-  // query clears; nothing else reads it.
-  let searchAutoExpanded = new Set<string>();
-  $effect(() => {
-    if (!query) {
-      // Search cleared — undo anything we expanded for this session.
-      for (const id of searchAutoExpanded) collapseProject(id);
-      searchAutoExpanded = new Set<string>();
-      return;
-    }
-    const next = new Set<string>();
-    const matchedProjectIds = new Set<string>();
-    for (const [projectId, threads] of threadsByProject.entries()) {
-      if (threads.length > 0) matchedProjectIds.add(projectId);
-    }
-    for (const [projectId, groups] of groupsByProject.entries()) {
-      if (groups.length > 0) matchedProjectIds.add(projectId);
-    }
-    for (const projectId of matchedProjectIds) {
-      if (searchAutoExpanded.has(projectId)) {
-        // Already auto-expanded earlier in this search session — keep
-        // tracking so we still own the rollback.
-        next.add(projectId);
-      } else if (!isProjectExpanded(projectId)) {
-        // Was collapsed before search — flip and remember.
-        expandProject(projectId);
-        next.add(projectId);
+  // The three orders. Last activity ranks each entry once per sort: a rank
+  // scans the members and reads their live activity, which the comparator
+  // would otherwise repeat for every pair it compares.
+  function sortEntries(entries: readonly SidebarEntry[], mode: ProjectSortMode): SidebarEntry[] {
+    switch (mode) {
+      case 'manual':
+        return [...entries].sort((a, b) => (a.position - b.position) || (a.createdAt - b.createdAt));
+      case 'createdAt':
+        return [...entries].sort((a, b) => b.createdAt - a.createdAt);
+      case 'lastActivity': {
+        const rank = new Map(entries.map((entry) => [entry, rankOf(entry)]));
+        return [...entries].sort((a, b) => (rank.get(b)! - rank.get(a)!) || a.name.localeCompare(b.name));
       }
-      // else: user/default-expanded — leave alone, don't track.
     }
-    // Collapse projects we previously auto-expanded that no longer
-    // match the refined query (user typed more characters, matches
-    // shrank).
-    for (const id of searchAutoExpanded) {
-      if (!next.has(id)) collapseProject(id);
+  }
+
+  // A search opens every row whose threads or groups matched, so its results
+  // show without a chevron click. The opening is this section's view of the
+  // search, never a write to the row's fold: a fold written here would be
+  // copied to a checkout that splits off mid-search, and kept by a client
+  // closed mid-search. A row shows open while its fold says so or the search
+  // opens it.
+  //
+  // A row the user folds or unfolds during the search is theirs again: its
+  // fold is written as always, and the search stops opening it until the row
+  // stops matching or the search clears.
+  const NO_ROWS: ReadonlySet<string> = new Set();
+  let searchMatched = $derived.by(() => {
+    if (!query) return NO_ROWS;
+    const matched = new Set<string>();
+    for (const entry of sidebarEntries) {
+      if ((threadsByProject.get(entry.rowKey)?.length ?? 0) > 0 || (groupsByProject.get(entry.rowKey)?.length ?? 0) > 0) {
+        matched.add(entry.rowKey);
+      }
     }
-    searchAutoExpanded = next;
+    return matched;
   });
+  let searchToggled: ReadonlySet<string> = $state.raw(NO_ROWS);
+  $effect.pre(() => {
+    const matched = searchMatched;
+    untrack(() => {
+      if (searchToggled.size === 0) return;
+      const kept = new Set([...searchToggled].filter((rowKey) => matched.has(rowKey)));
+      if (kept.size !== searchToggled.size) searchToggled = kept.size === 0 ? NO_ROWS : kept;
+    });
+  });
+  let searchOpened = $derived.by(() => {
+    if (searchMatched.size === 0) return NO_ROWS;
+    if (searchToggled.size === 0) return searchMatched;
+    return new Set([...searchMatched].filter((rowKey) => !searchToggled.has(rowKey)));
+  });
+
+  function setRowExpanded(entry: SidebarEntry, expanded: boolean): void {
+    if (searchMatched.has(entry.rowKey) && !searchToggled.has(entry.rowKey)) {
+      searchToggled = new Set(searchToggled).add(entry.rowKey);
+    }
+    setEntryExpanded(entry.key, expanded);
+  }
 
   const handleNewThread: ProjectNewThreadHandler = async (projectId, options = {}) => {
     // Sidebar "+" opens a chat draft.
@@ -282,23 +286,24 @@
     void openTerminalThread({ projectId });
   };
 
-  /**
-   * Commit a manual reorder. Updates each project's sortPosition
-   * locally so the next derive() reorders without a refresh-flicker,
-   * then persists to the backend. On error we re-fetch to recover.
-   */
+  // Commit a manual reorder. The operation is the store's
+  // (stores/projects.svelte.ts#reorderProjects): it writes the positions
+  // locally so the list does not wait for the round trip, and puts back
+  // what it wrote, where it is still what it wrote, if the write is
+  // refused. What the user sees of a failure is this section's: the toast,
+  // and a refresh of the tree, which reconciles an order the computer
+  // applied in part.
   async function handleReorder(newOrderedIds: string[]): Promise<void> {
-    for (const [index, id] of newOrderedIds.entries()) {
-      const existing = getProjects().find((p) => p.project.id === id);
-      if (!existing) continue;
-      updateProjectLocal({ ...existing.project, sortPosition: index });
-    }
     try {
-      await UpdateProjectSortPositions(newOrderedIds);
+      await reorderProjects(newOrderedIds);
     } catch (err) {
       console.error('Failed to persist project order:', err);
       addErrorToast(userFacingError(err), err);
-      await refreshProjects();
+      try {
+        await loadSidebarCatalogs();
+      } catch {
+        // Already shown by the catalog status row and retried there.
+      }
     }
   }
 
@@ -318,7 +323,7 @@
     // The added or duplicate project is brought into view: a folded
     // Projects section unfolds, and so does its row.
     setSidebarSectionExpanded('projects', true);
-    expandProject(id);
+    revealProject(id);
     flashProjectId = id;
     if (flashTimer) clearTimeout(flashTimer);
     // 1.2s feels substantial but not distracting.
@@ -391,7 +396,9 @@
         {/if}
         {#if visibleProjects.length > 0 || pendingCatalogs.length === 0}
           <ProjectList
-            projects={visibleProjects}
+            entries={visibleProjects}
+            onSetExpanded={setRowExpanded}
+            {searchOpened}
             emptyMessage={sidebarDeviceFilterActive() ? 'No projects on the selected computers.' : undefined}
             {threadsByProject}
             {groupsByProject}

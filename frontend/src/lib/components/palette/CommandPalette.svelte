@@ -12,6 +12,7 @@
 </script>
 
 <script lang="ts">
+  import { isLocalEnter } from '../../utils/localEnter';
   // Command palette. Routes backdrop + focus-trap + Escape + role=dialog
   // through the Modal primitive (top-aligned, no body padding, no
   // default header) so we don't reimplement any of that here. The
@@ -20,7 +21,7 @@
 
   import { tick } from 'svelte';
   import { closePalette, isPaletteOpen } from '../../stores/palette.svelte';
-  import { enabledCommands, type CommandContext } from '../../stores/commandRegistry.svelte';
+  import { offeredCommands, type CommandContext } from '../../stores/commandRegistry.svelte';
   import { fuzzyFilter } from '../../utils/fuzzy';
   import { isImeComposingEvent } from '../../utils/imeComposition';
   import { chordHintForCommand } from '../../stores/keybindings.svelte';
@@ -82,7 +83,7 @@
       : null,
   );
   let allCommands = $derived(
-    activeContext ? enabledCommands(activeContext) : CLOSED_COMMANDS,
+    activeContext ? offeredCommands(activeContext) : CLOSED_COMMANDS,
   );
 
   let results: PaletteRow[] = $derived.by(() => {
@@ -91,14 +92,10 @@
     const matches = fuzzyFilter(query.trim(), candidates);
     return matches.map((m) => ({
       command: m.item,
-      shortcut: shortcutFor(m.item.id),
+      shortcut: chordHintForCommand(m.item.id),
       indices: m.indices,
     }));
   });
-
-  function shortcutFor(id: string): string | null {
-    return chordHintForCommand(id);
-  }
 
   $effect(() => {
     // Clamp active index when results shrink.
@@ -135,7 +132,7 @@
       scrollActiveIntoView();
       return true;
     }
-    if (ev.key === 'Enter') {
+    if (isLocalEnter(ev)) {
       // Mid-IME-composition Enter confirms the candidate in the filter input;
       // running the highlighted command would act on a half-typed query.
       if (isImeComposingEvent(ev)) return false;

@@ -2,7 +2,6 @@ package browser
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log"
@@ -10,11 +9,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"agent-overflow/internal/browser/ids"
 	"agent-overflow/internal/procutil"
 )
 
@@ -22,9 +23,9 @@ import (
 // driver.go seam (docs/specs/remote-access.md §7, "Headless Chromium
 // engine (serve mode)").
 //
-// A page's OPERATIONS are plain CDP — cdp_page.go drives a headless
-// Chromium target exactly as it drives a launcher-hosted WebView2
-// controller, and that file is reused whole. What differs is LIFETIME:
+// A page's OPERATIONS are plain CDP: cdp_page.go and its siblings drive a headless
+// Chromium target exactly as they drive a launcher-hosted WebView2
+// controller, and those files are reused whole. What differs is LIFETIME:
 //
 //   - a Chromium process belongs to a PROFILE, not to the engine. One
 //     workspace is one process with its own --user-data-dir, which is what
@@ -56,8 +57,11 @@ const (
 	// chromiumCloseTimeout bounds how long a persisted profile's Chromium is
 	// given to exit when asked (headlessProfile.closeBrowser). It exits in
 	// about a tenth of a second; one that takes this long is wedged, and it
-	// is killed.
+	// is killed. It bounds a download's cancel too (callBounded).
 	chromiumCloseTimeout = 5 * time.Second
+	// headlessAttachTimeout bounds one page's attach to its target: the
+	// attach, its domains and its frame tree (startCDPPage).
+	headlessAttachTimeout = 30 * time.Second
 )
 
 // HeadlessChromiumOptions selects this engine. It is an explicit POSITIVE
@@ -84,6 +88,10 @@ type headlessEngine struct {
 	logf   func(string, ...any)
 	// closeTimeout is chromiumCloseTimeout, shorter in a unit test.
 	closeTimeout time.Duration
+	// attachTimeout bounds a page's attach; zero is headlessAttachTimeout.
+	attachTimeout time.Duration
+	// setups are the page attaches under way, which Interrupt ends.
+	setups cdpPageSetups
 
 	// tempRoot is where an ephemeral profile's directory is created and
 	// the only directory Start sweeps. Empty in a unit test's engine,
@@ -91,13 +99,19 @@ type headlessEngine struct {
 	// directory (headless_ephemeral.go).
 	tempRoot string
 
+	// profileSeq numbers the profiles made, for their handles.
+	profileSeq atomic.Uint64
+
 	mu       sync.Mutex
 	started  bool
 	profiles map[*headlessProfile]struct{}
 	// pageProfile is the only engine-wide page bookkeeping: DiscardPage
 	// and the popup path address a page by handle with no profile in hand,
 	// and a target this engine never bound must not be closed as one.
-	pageProfile map[string]*headlessProfile
+	pageProfile map[ids.PageHandle]*headlessProfile
+	// ownerWait bounds a paused request's wait for its owner
+	// (awaitRequestOwner); zero is requestOwnerWait.
+	ownerWait time.Duration
 }
 
 // newHeadlessChromiumEngine resolves the browser or explains why it could
@@ -120,14 +134,19 @@ func newHeadlessChromiumEngine(configDir string, opts HeadlessChromiumOptions, e
 		logf:         log.Printf,
 		closeTimeout: chromiumCloseTimeout,
 		profiles:     make(map[*headlessProfile]struct{}),
-		pageProfile:  make(map[string]*headlessProfile),
+		pageProfile:  make(map[ids.PageHandle]*headlessProfile),
 	}, nil
 }
 
-// Start validates the binary and does nothing else, which is the design
-// rather than a gap: a process belongs to a profile here, and the first
-// page of the first profile is what launches one. Starting a browser now
-// would run one on every serve host whose agent never opens a page.
+// DownloadSaving: a serve host's downloads are AO's, kept in its artifact
+// directories under its quotas.
+func (e *headlessEngine) DownloadSaving() downloadSaving { return downloadsAsArtifacts }
+
+// Start validates the binary and reclaims what a backend that ended
+// without its Dispose left on disk, and launches no browser: a process
+// belongs to a profile here, and the first page of the first profile is
+// what launches one. Starting a browser now would run one on every serve
+// host whose agent never opens a page.
 func (e *headlessEngine) Start(context.Context) error {
 	if err := validateChromiumBinary(e.binary, exec.LookPath); err != nil {
 		return fmt.Errorf("browser: %w", err)
@@ -155,6 +174,17 @@ func (e *headlessEngine) Interrupt() {
 	for _, p := range e.liveProfiles() {
 		p.interrupt()
 	}
+	e.setups.interrupt()
+}
+
+// beginAttach answers the setup context of one page's attach
+// (cdpPageSetups.begin).
+func (e *headlessEngine) beginAttach(ctx context.Context) (context.Context, func()) {
+	timeout := e.attachTimeout
+	if timeout <= 0 {
+		timeout = headlessAttachTimeout
+	}
+	return e.setups.begin(ctx, timeout)
 }
 
 // Stop disposes every profile, which is what kills every process: this
@@ -186,13 +216,11 @@ func (e *headlessEngine) liveProfiles() []*headlessProfile {
 	return live
 }
 
-// NewProfile lays one workspace's Chromium user-data directory out; the
-// process itself waits for the first page.
+// NewProfile lays one jar's Chromium user-data directory out; the process
+// itself waits for the first page.
 //
-// The workspace DIGEST names the directory, not its path: a workspace root
-// can be long, can hold characters a directory name cannot, and must not be
-// readable from a listing of the profile tree. That is the same rule and
-// the same tree (browserProfileDir) the WebKitGTK engine uses, which is
+// The jar's digest names the directory (jarDirName). That is the same rule
+// and the same tree (browserProfileDir) the WebKitGTK engine uses, which is
 // what makes Settings → Clear site data a real clear here — deleting the
 // tree deletes this engine's cookies too, so it implements no engineSiteData
 // of its own.
@@ -200,16 +228,23 @@ func (e *headlessEngine) NewProfile(_ context.Context, opts profileOptions) (eng
 	if !e.Running() {
 		return nil, errors.New("browser: engine unavailable")
 	}
-	if strings.TrimSpace(opts.Workspace) == "" {
-		return nil, errors.New("browser: workspace is required for a browser profile")
+	if strings.TrimSpace(string(opts.Jar)) == "" {
+		return nil, errors.New("browser: a cookie jar is required for a browser profile")
 	}
 	if opts.Allow == nil {
 		return nil, errors.New("browser: a navigation policy is required for a browser profile")
 	}
-	digest := sha256.Sum256([]byte(opts.Workspace))
-	p := &headlessProfile{engine: e, handle: fmt.Sprintf("%x", digest[:12]), downloadDir: opts.DownloadDir, allow: opts.Allow}
-	if opts.Persist {
-		p.userDataDir = filepath.Join(e.configDir, browserProfileDir, p.handle, "chromium")
+	if opts.DownloadDir == "" || opts.OpenDownloadDir == nil {
+		return nil, errors.New("browser: headless Chromium keeps its downloads as artifacts, so its profile needs their directory")
+	}
+	// A profile is a browser of its own, so a jar's next profile is another
+	// in this engine's reports: a report of the one before names no open
+	// profile.
+	dir := jarDirName(opts.Jar)
+	handle := profileHandle(fmt.Sprintf("%s-%d", dir, e.profileSeq.Add(1)))
+	p := &headlessProfile{engine: e, handle: handle, downloadDir: opts.DownloadDir, openDownloadDir: opts.OpenDownloadDir, allow: opts.Allow}
+	if !opts.Ephemeral {
+		p.userDataDir = filepath.Join(e.configDir, browserProfileDir, dir, "chromium")
 	} else {
 		// An ephemeral session is a real Chromium profile on a directory
 		// nothing outlives (spec §4: browserPersistSiteData=false is an
@@ -230,8 +265,7 @@ func (e *headlessEngine) NewProfile(_ context.Context, opts profileOptions) (eng
 		p.userDataDir = filepath.Join(root, "chromium")
 	}
 	if err := os.MkdirAll(p.userDataDir, 0o700); err != nil {
-		p.removeEphemeralRoot()
-		return nil, fmt.Errorf("browser: create site data directory: %w", err)
+		return nil, errors.Join(fmt.Errorf("browser: create site data directory: %w", err), p.removeEphemeralRoot())
 	}
 	e.mu.Lock()
 	e.profiles[p] = struct{}{}
@@ -242,16 +276,17 @@ func (e *headlessEngine) NewProfile(_ context.Context, opts profileOptions) (eng
 // DiscardPage closes a page the Manager declined to adopt — always a popup
 // Chromium opened by itself, since every other page is one the Manager
 // asked for.
-func (e *headlessEngine) DiscardPage(handle string) {
+func (e *headlessEngine) DiscardPage(ctx context.Context, handle ids.PageHandle) error {
 	if p, ok := e.profileForPage(handle); ok {
-		p.closeTarget(handle)
+		return p.closeTarget(ctx, handle)
 	}
+	return nil
 }
 
 // bindPage records which profile a page belongs to. Reported by the
 // profile's own event stream and by NewPage, so a target that arrived from
 // nowhere is never addressable.
-func (e *headlessEngine) bindPage(handle string, p *headlessProfile) {
+func (e *headlessEngine) bindPage(handle ids.PageHandle, p *headlessProfile) {
 	e.mu.Lock()
 	e.pageProfile[handle] = p
 	e.mu.Unlock()
@@ -260,7 +295,7 @@ func (e *headlessEngine) bindPage(handle string, p *headlessProfile) {
 // unbindPage drops a page and reports whether this engine had it, which is
 // what stops a destroyed target nobody owns from being reported as a page
 // the Manager lost.
-func (e *headlessEngine) unbindPage(handle string) bool {
+func (e *headlessEngine) unbindPage(handle ids.PageHandle) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	_, known := e.pageProfile[handle]
@@ -268,7 +303,7 @@ func (e *headlessEngine) unbindPage(handle string) bool {
 	return known
 }
 
-func (e *headlessEngine) profileForPage(handle string) (*headlessProfile, bool) {
+func (e *headlessEngine) profileForPage(handle ids.PageHandle) (*headlessProfile, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	p, ok := e.pageProfile[handle]
@@ -278,10 +313,10 @@ func (e *headlessEngine) profileForPage(handle string) (*headlessProfile, bool) 
 // pagesOf TAKES every page bound to a profile, unbinding each as it goes.
 // Taking rather than reading, because the caller is about to report them
 // closed and a second caller must not report the same page a second time.
-func (e *headlessEngine) pagesOf(p *headlessProfile) []string {
+func (e *headlessEngine) pagesOf(p *headlessProfile) []ids.PageHandle {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	var handles []string
+	var handles []ids.PageHandle
 	for handle, owner := range e.pageProfile {
 		if owner == p {
 			handles = append(handles, handle)
@@ -290,7 +325,7 @@ func (e *headlessEngine) pagesOf(p *headlessProfile) []string {
 	}
 	// Sorted, so a profile that lost several pages reports them in one
 	// order rather than in map order.
-	sort.Strings(handles)
+	slices.Sort(handles)
 	return handles
 }
 
@@ -329,6 +364,10 @@ func chromiumArgs(userDataDir string) []string {
 		"--disable-gpu",
 		"--no-first-run",
 		"--no-default-browser-check",
+		// A window a page opens with no gesture is a popup the Manager
+		// adopts or refuses at its caps, as WebView2's are, rather than one
+		// Chromium's blocker drops with no report.
+		"--disable-popup-blocking",
 		// The kernel picks a free loopback port, and Chromium prints the
 		// browser websocket URL on it (startChromium reads that line).
 		"--remote-debugging-port=0",

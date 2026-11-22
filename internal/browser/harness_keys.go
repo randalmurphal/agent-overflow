@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"agent-overflow/internal/browser/ids"
 	"agent-overflow/internal/keybindings"
 )
 
@@ -12,14 +13,17 @@ import (
 // with a real in-process view implements it; the fake engine and the
 // launcher-hosted engine refuse by name.
 type engineKeyPress interface {
-	PressKey(handle string, chord keybindings.Accelerator) error
+	PressKey(handle ids.PageHandle, chord keybindings.Accelerator) error
 }
 
 // HarnessPressKey is the Harness receiver's door to engineKeyPress. It is
 // what makes the keyboard path (browser-tools.md § Keyboard) testable on a
 // machine where the driver holds no Accessibility trust: the app posts the
 // key event into its own window, and the chord gate sees a real NSEvent.
-func (m *Manager) HarnessPressKey(ctx context.Context, access Access, pageID string, chord keybindings.Accelerator) error {
+func (m *Manager) HarnessPressKey(ctx context.Context, access Access, pageID PageID, chord keybindings.Accelerator) error {
+	if err := m.bound(access); err != nil {
+		return err
+	}
 	engine, ok := m.engine.(engineKeyPress)
 	if !ok {
 		return fmt.Errorf("browser: key injection is not available on this browser engine")

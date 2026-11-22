@@ -1,4 +1,4 @@
-.PHONY: help ao-harness-docs methodgen forge-schemas go-lint go-vet fmt-check go-vuln bindings-check frontend-lint install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-wsl-noremote release-macos go-build netns-tool gocache-trim gocache-trim-tool go-test test-race provider-smoke-compile provider-smoke provider-smoke-revert import-corpus-smoke mockprovider mockforge harness-build harness harness-window soak-window e2e e2e-mobile-browser release-upgrade-check apk apk-release e2e-android
+.PHONY: help ao-harness-docs methodgen forge-schemas go-lint go-lint-exhaustive go-vet fmt-check go-vuln bindings-check frontend-lint install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-wsl-noremote release-macos go-build netns-tool gocache-trim gocache-trim-tool go-test test-race provider-smoke-compile provider-smoke provider-smoke-revert import-corpus-smoke mockprovider mockforge harness-build harness harness-window soak-window e2e e2e-mobile-browser release-upgrade-check apk apk-release e2e-android
 
 # Print the supported build, test, harness, and smoke targets. Keep this
 # short enough to use from an unfamiliar checkout. `make e2e` is the
@@ -9,7 +9,7 @@ help:
 	@printf '%s\n' \
 		'Build:   make build | make check | make verify' \
 		'Tests:   make test | make test-race | make go-test GO_TEST_PKGS=./internal/x GO_TEST_FLAGS=...' \
-		'Static:  make fmt-check | make go-vet | make go-lint | make frontend-lint | make bindings-check | make go-vuln' \
+		'Static:  make fmt-check | make go-vet | make go-lint | make go-lint-exhaustive | make frontend-lint | make bindings-check | make go-vuln' \
 		'Android: make apk | make apk-release | make e2e-android' \
 		'Mobile browser: make e2e-mobile-browser (Chromium + WebKit)' \
 		'Harness: make harness | make harness-window | make harness-wsl' \
@@ -230,17 +230,46 @@ go-test: netns-tool gocache-trim-tool
 	$(NETNS) go test -timeout 30m $(GO_TEST_FLAGS) $$packages
 
 # Static checks. Each is one CI job (.github/workflows/ci.yml) and runs the
-# same way here. go-lint runs golangci-lint at the pinned version through
-# `go run`, so it is compiled with this repo's Go toolchain (a release
-# binary built with an older Go refuses a newer go.mod); the build is cached
-# after the first run. GOLANGCI_LINT names a prebuilt binary instead, which
-# the CI toolchain image carries at the same pin. GO_LINT_FLAGS carries
-# extra flags, such as --new-from-patch for the new-issues gate.
+# same way here. go-lint runs golangci-lint at the pinned version, installed
+# under bin/ with this repo's Go toolchain (a release binary built with an
+# older Go refuses a newer go.mod). `go install` runs every time and does
+# nothing when the binary is current. It is a host executable rather than
+# `go run` because the Windows pass below sets GOOS for the packages it
+# reads, which `go run` would apply to the linter's own build.
+# GOLANGCI_LINT names a prebuilt binary instead, which the CI toolchain
+# image carries at the same pin. GO_LINT_FLAGS carries extra flags, such as
+# --new-from-patch for the new-issues gate.
 GOLANGCI_LINT_VERSION := v2.14.0
-GOLANGCI_LINT ?= go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+GOLANGCI_LINT_BUILT := bin/golangci-lint-$(GOLANGCI_LINT_VERSION)/golangci-lint
+GOLANGCI_LINT ?= $(GOLANGCI_LINT_BUILT)
+GOLANGCI_LINT_BUILD := $(filter $(GOLANGCI_LINT_BUILT),$(GOLANGCI_LINT))
+.PHONY: $(GOLANGCI_LINT_BUILT)
+$(GOLANGCI_LINT_BUILT):
+	GOBIN=$(abspath $(dir $@)) go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 GO_LINT_FLAGS ?=
-go-lint:
+go-lint: $(GOLANGCI_LINT_BUILD)
 	$(GOLANGCI_LINT) run --timeout 20m $(GO_LINT_FLAGS) ./...
+
+# go-lint-exhaustive runs the exhaustive linter alone over every Go file
+# this host compiles and over the Windows launcher's packages as Windows
+# compiles them. The linter reports at the switch, not at the constant a
+# change added, and has no backlog, so it is not limited to a change's
+# lines. Two passes reach every file here: one with no build tag and one
+# with every tag that selects files, because no file needs one of those
+# tags on and another off. TestExhaustiveLintPassesReachEveryFile reads
+# the passes from this recipe and fails for a file none of them compiles.
+# Every file only macOS compiles is in the untagged set, which CI's macOS
+# job lints with `make go-lint GO_LINT_FLAGS="--enable-only exhaustive"`.
+GO_LINT_EXHAUSTIVE = $(GOLANGCI_LINT) run --timeout 20m --enable-only exhaustive
+go-lint-exhaustive: $(GOLANGCI_LINT_BUILD)
+	$(GO_LINT_EXHAUSTIVE) ./...
+	$(GO_LINT_EXHAUSTIVE) --build-tags nogui,noremote,providersmoke ./...
+	@set -e; for tags in "" noremote; do \
+		packages=$$(GOOS=windows CGO_ENABLED=0 go list -deps -tags "$$tags" ./cmd/agent-overflow-windows | sed -n 's|^agent-overflow/|./|p'); \
+		if [ -z "$$packages" ]; then echo "ERROR: no packages found for the Windows launcher"; exit 1; fi; \
+		echo "exhaustive: the Windows launcher's packages, tags '$$tags'"; \
+		GOOS=windows CGO_ENABLED=0 $(GO_LINT_EXHAUSTIVE) --build-tags "$$tags" $$packages; \
+	done
 
 go-vet:
 	go vet $(GO_PACKAGE_ROOTS)

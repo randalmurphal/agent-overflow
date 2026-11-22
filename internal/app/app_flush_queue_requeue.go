@@ -137,6 +137,7 @@ func requeueParts(threadID string, item triage.UnconfirmedFlushItem, rows map[st
 			return nil, unconfirmedRowID(item), nil
 		case cutWhole:
 			return nil, "", &rest
+		case cutKept:
 		}
 		item = rest
 	}

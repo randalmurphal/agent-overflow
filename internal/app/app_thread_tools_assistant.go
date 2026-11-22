@@ -65,7 +65,9 @@ func (t threadToolsApp) NewAssistant(ctx context.Context, caller threadtools.Cal
 	}
 	prompt := agenthome.CreatedOpeningMessage(thread.Title, agent.Home, creatorThread.Title, caller.ThreadID, call.Role)
 	// The thread exists, so the request is written accepted and naming it.
-	token := newThreadRequestToken()
+	hold, release := t.holdNewRequest(ctx, caller)
+	defer release()
+	token := hold.token
 	_, _, err = t.acceptRequest(origin, store.ThreadRequest{
 		Token:          token,
 		Kind:           store.ThreadRequestSpawn,
@@ -80,7 +82,7 @@ func (t threadToolsApp) NewAssistant(ctx context.Context, caller threadtools.Cal
 		err = t.failRequest(token, err)
 	} else {
 		done()
-		ack, err = t.ackRequest(ctx, caller, token, 0)
+		ack, err = t.ackRequest(ctx, caller, hold, 0)
 	}
 	if err != nil {
 		// The assistant exists with no opening message; the user sees its

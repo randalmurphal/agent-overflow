@@ -43,7 +43,11 @@ export const UNKNOWN_BACKEND_IDENTITY: BackendIdentity = {
   name: '',
 };
 
-export type BackendIdentityChange = 'identity' | 'name';
+/**
+ * What changed: the identity a manifest reported, a generation a response
+ * reported mid-session (observeBackendGeneration), or the display name.
+ */
+export type BackendIdentityChange = 'identity' | 'generation' | 'name';
 type IdentityListener = (identity: BackendIdentity, backendId: BackendKey, change: BackendIdentityChange) => void;
 
 // Per-backend identity. Home has an entry from module load so a reader
@@ -145,7 +149,7 @@ export function observeBackendGeneration(
   if (generation === current.generation) return false;
   const next = { backendId: current.backendId, generation, name: current.name };
   rememberIdentity(backend, next);
-  publish(backend, next);
+  publish(backend, next, 'generation');
   return true;
 }
 
@@ -165,7 +169,7 @@ export function forgetBackendIdentity(backend: BackendKey): void {
  * unsubscribe them for every later test in the run.
  */
 export function __resetBackendIdentityForTest(): void {
-  for (const backend of [...identities.keys()]) forgetBackendIdentity(backend);
+  for (const backend of identities.keys()) forgetBackendIdentity(backend);
   if (getBackendIdentity() === UNKNOWN_BACKEND_IDENTITY) return;
   publish(HOME_BACKEND, UNKNOWN_BACKEND_IDENTITY);
 }

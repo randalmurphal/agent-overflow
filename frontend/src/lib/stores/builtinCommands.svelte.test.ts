@@ -1,6 +1,7 @@
 // Focused tests for makeCommandContext — keeps palette / keybindings gates
 // honest about the live pane / terminal-focus state.
 
+import { refreshWatchedThreads } from './watchedThreads';
 import { describe, expect, it, afterEach, beforeEach, vi } from 'vitest';
 import { tick } from 'svelte';
 import { render } from '@testing-library/svelte';
@@ -12,9 +13,8 @@ import {
   setSidebarCollapsed,
 } from './sidebarLayout.svelte';
 import { resetSidebarCursorStore, setSidebarCursorForTest } from './sidebarCursor.svelte';
-import { getCompactScreen, setCompactLayoutForTest, showCompactList, showCompactThread } from './layoutMode.svelte';
-import { installCompanionPanes, isCompanionOpen, openCompanion, resetCompanionPanesForTest } from './companionPanes.svelte';
-import { stepBack } from '../utils/stepBack';
+import { getCompactScreen, noteCompactPaneShown, setCompactLayoutForTest, showCompactList, showCompactThread } from './layoutMode.svelte';
+import { companionForSource, installCompanionPanes, isCompanionOpen, openCompanion, resetCompanionPanesForTest } from './companionPanes.svelte';import { stepBack } from '../utils/stepBack';
 import { resetAppStorageForTest } from './appStorage';
 import {
   getActiveTurn,
@@ -33,9 +33,10 @@ import {
 } from './commandRegistry.svelte';
 import { registerAirspaceSurface, resetAirspaceForTest } from '../utils/paneAirspace.svelte';
 import { closePalette, openPalette } from './palette.svelte';
-import { focusPane, registerPaneForTest, resetPanesForTest } from './panes.svelte';
+import { focusPane, getFocusedPaneId, registerPaneForTest, resetPanesForTest } from './panes.svelte';
 import { PANE_NAV_COMMAND_IDS, TERMINAL_ESCAPE_COMMAND_IDS } from './paneNavCommands';
-import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
+import { getPaneLayoutItems, getPromotedPaneId, promotePane, resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
+import { applyBrowserCompanionState, resetBrowserCompanionForTest } from './browserCompanion.svelte';
 import {
   closeMessageSearch,
   isMessageSearchOpen,
@@ -76,6 +77,7 @@ import {
   terminalStateKeyForPane,
 } from '../components/terminal/terminalStore.svelte';
 import { setBindingMock } from '../../test/mocks/bindings-app';
+import { attachBrowserPaneForTest } from '../../test/helpers/browserPane';
 import { DisconnectedError, TransportError } from '../transport/wsClient';
 import { withEmptyDraftCleanup } from './emptyDraftCleanup';
 import {
@@ -157,7 +159,8 @@ function mountComposerForPane(paneId: string): {
   textarea: HTMLTextAreaElement;
   cleanup: () => void;
 } {
-  const root = document.createElement('div');
+  // PaneHost's section.
+  const root = document.createElement('section');
   root.setAttribute('data-pane-id', paneId);
   const textarea = document.createElement('textarea');
   textarea.setAttribute('aria-label', 'Message Input');
@@ -868,7 +871,7 @@ describe('terminal tab management commands', () => {
     await Promise.resolve();
     expect(handle.tabs.map((t) => t.terminalID)).toEqual(['term-existing', 'term-new']);
     // The new tab is now active → focus is requested so the cursor lands in it.
-    expect(pane.consumeTerminalFocusRequest()).toBe(true);
+    expect(pane.consumeTerminalFocusRequest()?.current).toBe(true);
   });
 
   it('terminal.newTab adds no tab for a shell whose exit overtook the OpenTerminal reply', async () => {
@@ -885,7 +888,7 @@ describe('terminal tab management commands', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(handle.tabs.map((t) => t.terminalID)).toEqual(['term-existing']);
     expect(handle.activeTerminalID).toBe('term-existing');
-    expect(pane.consumeTerminalFocusRequest()).toBe(false);
+    expect(pane.consumeTerminalFocusRequest()).toBeNull();
   });
 
   it('terminal.newTab removes the tab when the exit follows the reply', async () => {
@@ -913,7 +916,7 @@ describe('terminal tab management commands', () => {
     expect(closeMock).toHaveBeenCalledWith('term-b');
     expect(handle.tabs.map((t) => t.terminalID)).toEqual(['term-a']);
     // term-a is promoted to active → focus follows the user into it.
-    expect(pane.consumeTerminalFocusRequest()).toBe(true);
+    expect(pane.consumeTerminalFocusRequest()?.current).toBe(true);
   });
 
   it('terminal.closeTab does not request focus when the last tab is closed', () => {
@@ -926,7 +929,7 @@ describe('terminal tab management commands', () => {
     runCommand('terminal.closeTab', makeCommandContext(pane, { terminalFocus: true }));
     expect(handle.tabs).toHaveLength(0);
     // Nothing remains to focus (the surface collapses instead), so no intent.
-    expect(pane.consumeTerminalFocusRequest()).toBe(false);
+    expect(pane.consumeTerminalFocusRequest()).toBeNull();
   });
 
   it('terminal.nextTab / prevTab cycle the active tab with wraparound', () => {
@@ -945,7 +948,7 @@ describe('terminal tab management commands', () => {
     runCommand('terminal.prevTab', ctx); // c → b
     expect(handle.activeTerminalID).toBe('b');
     // A switch remounts the body, so the cursor must follow into the new tab.
-    expect(pane.consumeTerminalFocusRequest()).toBe(true);
+    expect(pane.consumeTerminalFocusRequest()?.current).toBe(true);
   });
 
   it('terminal.nextTab is a no-op with a single tab', () => {
@@ -957,7 +960,7 @@ describe('terminal tab management commands', () => {
     runCommand('terminal.nextTab', makeCommandContext(pane, { terminalFocus: true }));
     expect(handle.activeTerminalID).toBe('only');
     // No switch happened (< 2 tabs), so no focus intent is set.
-    expect(pane.consumeTerminalFocusRequest()).toBe(false);
+    expect(pane.consumeTerminalFocusRequest()).toBeNull();
   });
 
   it('newTab/closeTab/nextTab are safe no-ops when the pane has no terminal state', () => {
@@ -982,7 +985,7 @@ describe('terminal tab management commands', () => {
     expect(closeMock).not.toHaveBeenCalled();
     // Every command bailed at its state guard before mutating, so none of them
     // requested terminal focus.
-    expect(pane.consumeTerminalFocusRequest()).toBe(false);
+    expect(pane.consumeTerminalFocusRequest()).toBeNull();
   });
 });
 
@@ -1116,7 +1119,7 @@ describe('find.in-pane command', () => {
   });
 
   // A chord from the browser pane's native view is replayed on the window
-  // with the companion focused (browserCompanion.replayBrowserAccelerator)
+  // with the companion focused (browserPageChords.replayBrowserAccelerator)
   // while the document has no keyboard focus. The context is the source
   // thread pane's, whose terminal may still hold DOM focus: that focus is
   // stale and must not gate the chord, while a terminal the user is typing
@@ -1517,15 +1520,7 @@ describe('find.in-pane over pane regions', () => {
     focusPane(PULLS);
     setCompactLayoutForTest(true);
     showCompactThread();
-    const strip = document.createElement('div');
-    strip.className = 'compact-screen-thread';
-    const rect = { left: 0, right: 412, top: 0, bottom: 800, width: 412, height: 800, x: 0, y: 0, toJSON: () => ({}) };
-    strip.getBoundingClientRect = () => rect;
-    const section = document.createElement('section');
-    section.dataset.paneId = PULLS;
-    section.getBoundingClientRect = () => rect;
-    strip.appendChild(section);
-    document.body.appendChild(strip);
+    noteCompactPaneShown(PULLS);
 
     // The reader last touched the detail, but the list is on screen.
     activatePaneFindRegion(paneFindDetailKey(PULLS));
@@ -1566,6 +1561,8 @@ describe('pane find under compact', () => {
       strip.appendChild(section);
     }
     document.body.appendChild(strip);
+    // PaneHost's report of the strip's centre, which the keyboard targets.
+    noteCompactPaneShown(onScreen);
   }
 
   beforeEach(() => {
@@ -1640,8 +1637,8 @@ describe('pane find under compact', () => {
     expect(ctx.flags.paneFindAvailable).toBe(false);
   });
 
-  // The bar's input keeps DOM focus while keyboard navigation reveals the
-  // companion: Back must close the companion on screen, not the bar behind it.
+  // The bar's input keeps DOM focus while a swipe shows the companion:
+  // Back must close the companion on screen, not the bar behind it.
   it('a focused bar\'s Escape goes through the same target: Back passes an off-screen bar, desktop Escape closes it', async () => {
     const pane = readyPane();
     registerPaneForTest('a', pane);
@@ -1667,6 +1664,7 @@ describe('pane find under compact', () => {
       sections.set(paneId, section);
     }
     document.body.appendChild(strip);
+    noteCompactPaneShown(onScreen);
     render(PaneFindBar, { target: sections.get('a')!, props: { paneId: 'a', title: 'A', fallbackFocus: () => null } });
 
     // App.svelte's window handler, reduced to its dispatch rules.
@@ -1686,9 +1684,9 @@ describe('pane find under compact', () => {
     const input = sections.get('a')!.querySelector<HTMLInputElement>('[data-testid="pane-find-input"]')!;
     await vi.waitFor(() => expect(document.activeElement).toBe(input));
 
-    // Keyboard navigation reveals the plan; DOM focus stays in A's input.
-    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'l', code: 'KeyL', altKey: true, bubbles: true, cancelable: true }));
+    // A swipe shows the plan; DOM focus stays in A's input.
     onScreen = plan.paneId;
+    noteCompactPaneShown(onScreen);
     expect(document.activeElement).toBe(input);
 
     // Back closes the plan on screen; A's bar, off screen, stays open.
@@ -2021,8 +2019,8 @@ describe('thread.fork command', () => {
     // Reset the persisted "expanded projects" set so the assertion
     // proves the command did the expansion (not a leftover from an
     // earlier test).
-    const sidebar = await import('./sidebar.svelte');
-    sidebar.collapseProject('project-fork');
+    const continuity = await import('./sidebarEntryContinuity.svelte');
+    continuity.setEntryExpanded('project-fork', false);
 
     setBindingMock('ListItems', async () => []);
     setBindingMock('SwitchThread', async () => ({
@@ -2061,7 +2059,7 @@ describe('thread.fork command', () => {
 
     await command.run(makeCommandContext(pane, {}));
 
-    const isExpanded = sidebar.isProjectExpanded('project-fork');
+    const isExpanded = continuity.entryRecordForTest('project-fork').expanded;
     expect(isExpanded).toBe(true);
   });
 });
@@ -2090,10 +2088,10 @@ describe('terminal.toggle command', () => {
     // Opening latches a one-shot focus intent synchronously (no rAF). The
     // drawer consumes it in onMount — whenever its lazily-loaded chunk
     // resolves — so the intent survives the cold-open mount delay.
-    expect(pane.consumeTerminalFocusRequest()).toBe(true);
+    expect(pane.consumeTerminalFocusRequest()?.current).toBe(true);
     // Read-and-clear: a second consume (e.g. a drawer remount) returns false,
     // so focus is never re-grabbed without a fresh open.
-    expect(pane.consumeTerminalFocusRequest()).toBe(false);
+    expect(pane.consumeTerminalFocusRequest()).toBeNull();
   });
 
   it('closes the terminal and returns focus to the composer when the terminal was focused', () => {
@@ -2110,7 +2108,7 @@ describe('terminal.toggle command', () => {
       // Focus handed back to the composer so the unmount doesn't orphan it.
       expect(document.activeElement).toBe(composer.textarea);
       // A close never latches a focus request — it only ever closes.
-      expect(pane.consumeTerminalFocusRequest()).toBe(false);
+      expect(pane.consumeTerminalFocusRequest()).toBeNull();
     } finally {
       composer.cleanup();
     }
@@ -2135,7 +2133,7 @@ describe('terminal.toggle command', () => {
       runCommand('terminal.toggle', makeCommandContext(pane, {}) as CommandContext);
       expect(pane.showTerminal).toBe(false);
       expect(document.activeElement).toBe(sentinel);
-      expect(pane.consumeTerminalFocusRequest()).toBe(false);
+      expect(pane.consumeTerminalFocusRequest()).toBeNull();
     } finally {
       document.body.removeChild(sentinel);
       composer.cleanup();
@@ -2417,13 +2415,157 @@ describe('pane navigation into a terminal pane', () => {
     const ran = runCommand('pane.focusRight', makeCommandContext(left, {}));
     expect(ran).toBe(true);
     // requestTerminalFocus was called → the read-and-clear intent is set.
-    expect(right.consumeTerminalFocusRequest()).toBe(true);
+    expect(right.consumeTerminalFocusRequest()?.current).toBe(true);
   });
+
+  // A side chat and an agent thread host a conversation under the companion
+  // pane's own id, with their own composer: typing after the move goes there.
+  for (const kind of ['agent-thread', 'side-chat'] as const) {
+    it(`carries the caret to the composer of the ${kind} pane focusRight lands on`, () => {
+      const left = createThreadPane({ paneId: 'main' });
+      left.replaceThread(makeThread({ id: 'left', mode: 'chat' }));
+      const hosted = createThreadPane({ paneId: `${kind}-main` });
+      hosted.replaceThread(makeThread({ id: 'hosted', mode: 'chat' }));
+      registerPaneForTest('main', left);
+      registerPaneForTest(`${kind}-main`, hosted);
+      setPaneLayoutItemsForTest([
+        { id: 'i-main', paneId: 'main', kind: 'thread', widthPx: 1 },
+        { id: `i-${kind}`, paneId: `${kind}-main`, kind, sourcePaneId: 'main', widthPx: 1 },
+      ]);
+      focusPane('main');
+      registerFixtureCommands(left);
+      const leftComposer = mountComposerForPane('main');
+      const hostedComposer = mountComposerForPane(`${kind}-main`);
+      try {
+        leftComposer.textarea.focus();
+        runCommand('pane.focusRight', makeCommandContext(left, {}));
+        expect(getFocusedPaneId()).toBe(`${kind}-main`);
+        expect(document.activeElement).toBe(hostedComposer.textarea);
+      } finally {
+        leftComposer.cleanup();
+        hostedComposer.cleanup();
+      }
+    });
+
+    // A blocking approval disables the composer; a side chat still
+    // preparing has none. The caret must not stay where Enter sends to
+    // the pane logical focus left.
+    it(`takes the caret out of the pane it left when the ${kind} pane's composer is disabled or absent`, () => {
+      const left = createThreadPane({ paneId: 'main' });
+      left.replaceThread(makeThread({ id: 'left', mode: 'chat' }));
+      registerPaneForTest('main', left);
+      const hosted = createThreadPane({ paneId: `${kind}-main` });
+      hosted.replaceThread(makeThread({ id: 'hosted', mode: 'chat' }));
+      registerPaneForTest(`${kind}-main`, hosted);
+      setPaneLayoutItemsForTest([
+        { id: 'i-main', paneId: 'main', kind: 'thread', widthPx: 1 },
+        { id: `i-${kind}`, paneId: `${kind}-main`, kind, sourcePaneId: 'main', widthPx: 1 },
+      ]);
+      registerFixtureCommands(left);
+      const leftComposer = mountComposerForPane('main');
+      const hostedComposer = mountComposerForPane(`${kind}-main`);
+      const hostedSection = hostedComposer.textarea.parentElement!;
+      try {
+        hostedComposer.textarea.disabled = true;
+        focusPane('main');
+        leftComposer.textarea.focus();
+        runCommand('pane.focusRight', makeCommandContext(left, {}));
+        expect(getFocusedPaneId()).toBe(`${kind}-main`);
+        expect(document.activeElement).toBe(hostedSection);
+
+        hostedComposer.textarea.remove();
+        focusPane('main');
+        leftComposer.textarea.focus();
+        runCommand('pane.focusRight', makeCommandContext(left, {}));
+        expect(getFocusedPaneId()).toBe(`${kind}-main`);
+        expect(document.activeElement).toBe(hostedSection);
+      } finally {
+        leftComposer.cleanup();
+        hostedComposer.cleanup();
+      }
+    });
+
+    it(`takes the caret out of the pane it left when the ${kind} pane has no registered pane yet`, () => {
+      const left = createThreadPane({ paneId: 'main' });
+      left.replaceThread(makeThread({ id: 'left', mode: 'chat' }));
+      registerPaneForTest('main', left);
+      setPaneLayoutItemsForTest([
+        { id: 'i-main', paneId: 'main', kind: 'thread', widthPx: 1 },
+        { id: `i-${kind}`, paneId: `${kind}-main`, kind, sourcePaneId: 'main', widthPx: 1 },
+      ]);
+      focusPane('main');
+      registerFixtureCommands(left);
+      const leftComposer = mountComposerForPane('main');
+      // PaneHost renders the companion's section, with no composer yet.
+      const preparing = mountComposerForPane(`${kind}-main`);
+      preparing.textarea.remove();
+      const section = document.querySelector(`[data-pane-id="${kind}-main"]`);
+      try {
+        leftComposer.textarea.focus();
+        runCommand('pane.focusRight', makeCommandContext(left, {}));
+        expect(getFocusedPaneId()).toBe(`${kind}-main`);
+        expect(document.activeElement).toBe(section);
+      } finally {
+        leftComposer.cleanup();
+        preparing.cleanup();
+      }
+    });
+
+    // Mod+W from the composer of the pane it closes: the caret goes to the
+    // pane focus falls to, not to <body>, and a caret elsewhere stays.
+    it(`pane.close carries a caret typing in the closed ${kind} pane to the pane focus falls to`, () => {
+      installCompanionPanes();
+      const left = createThreadPane({ paneId: 'main' });
+      left.replaceThread(makeThread({ id: 'left', mode: 'chat' }));
+      registerPaneForTest('main', left);
+      setPaneLayoutItemsForTest([{ id: 'i-main', paneId: 'main', kind: 'thread', widthPx: 1 }]);
+      const companion = openCompanion('main', kind)!;
+      expect(companion.kind).toBe(kind);
+      const hosted = createThreadPane({ paneId: companion.paneId });
+      hosted.replaceThread(makeThread({ id: 'hosted', mode: 'chat' }));
+      registerPaneForTest(companion.paneId, hosted);
+      // A side chat's close deletes its fork.
+      setBindingMock('DeleteThread', async () => null);
+      registerFixtureCommands(left);
+      const leftComposer = mountComposerForPane('main');
+      const hostedComposer = mountComposerForPane(companion.paneId);
+      try {
+        focusPane(companion.paneId);
+        hostedComposer.textarea.focus();
+        runCommand('pane.close', makeCommandContext(left, {}));
+        expect(companionForSource('main', kind)).toBeNull();
+        expect(getFocusedPaneId()).toBe('main');
+        expect(document.activeElement).toBe(leftComposer.textarea);
+      } finally {
+        leftComposer.cleanup();
+        hostedComposer.cleanup();
+        resetCompanionPanesForTest();
+      }
+    });
+  }
 
   it('does not latch terminal focus when focusRight lands on a chat pane', () => {
     const { left, right } = twoPaneLayout(makeThread({ id: 'chat2', mode: 'chat' }));
     runCommand('pane.focusRight', makeCommandContext(left, {}));
-    expect(right.consumeTerminalFocusRequest()).toBe(false);
+    expect(right.consumeTerminalFocusRequest()).toBeNull();
+  });
+
+  it('pane.togglePromoted promotes the focused pane, restores it on the second run, and is off under compact', () => {
+    const { left } = twoPaneLayout(makeThread({ id: 'chat2', mode: 'chat' }));
+    focusPane('right');
+    expect(runCommand('pane.togglePromoted', makeCommandContext(left, {}))).toBe(true);
+    expect(getPromotedPaneId()).toBe('right');
+    expect(getFocusedPaneId()).toBe('right');
+    runCommand('pane.togglePromoted', makeCommandContext(left, {}));
+    expect(getPromotedPaneId()).toBeNull();
+
+    setCompactLayoutForTest(true);
+    try {
+      expect(isCommandEnabled('pane.togglePromoted', makeCommandContext(left, {}))).toBe(false);
+    } finally {
+      setCompactLayoutForTest(false);
+    }
+    expect(TERMINAL_ESCAPE_COMMAND_IDS.has('pane.togglePromoted')).toBe(true);
   });
 
   it('every PANE_NAV_COMMAND_IDS entry is a registered builtin command', () => {
@@ -2786,6 +2928,10 @@ describe('sound.toggleMute command', () => {
 // Compact shows one thread pane. The two commands that open a second one
 // are disabled there, so Back from a thread always reaches the list.
 describe('compact-gated commands', () => {
+  beforeEach(() => {
+    clearCommandRegistry();
+    registerBuiltinCommands(makeBuiltinHooks());
+  });
   afterEach(() => {
     setCompactLayoutForTest(false);
     resetSidebarCursorStore();
@@ -2807,6 +2953,136 @@ describe('compact-gated commands', () => {
     // The single-pane siblings stay available.
     expect(isCommandEnabled('thread.new', compact)).toBe(true);
     expect(isCommandEnabled('sidebar.cursor.open', compact)).toBe(true);
+  });
+
+  // The list screen shows no pane, and the thread screen only the one its
+  // strip shows: pane.close closes that one, whichever pane holds focus.
+  it('closes the pane the screen shows, and none on the compact list', () => {
+    installCompanionPanes();
+    const pane = readyPane();
+    registerPaneForTest('a', pane);
+    setPaneLayoutItemsForTest([{ id: 'a', paneId: 'a', kind: 'thread', widthPx: 640 }]);
+    const plan = openCompanion('a', 'plan')!;
+    focusPane('a');
+    expect(isCommandEnabled('pane.close', makeCommandContext(pane, {}) as CommandContext)).toBe(true);
+
+    setCompactLayoutForTest(true);
+    expect(getCompactScreen()).toBe('list');
+    const onList = makeCommandContext(pane, {}) as CommandContext;
+    expect(onList.flags.noPaneTarget).toBe(true);
+    expect(isCommandEnabled('pane.close', onList)).toBe(false);
+    expect(isCompanionOpen('a', 'plan')).toBe(true);
+
+    // Focus stays on the source; the screen shows the plan.
+    showCompactThread();
+    noteCompactPaneShown(plan.paneId);
+    expect(runCommand('pane.close', makeCommandContext(pane, {}) as CommandContext)).toBe(true);
+    expect(isCompanionOpen('a', 'plan')).toBe(false);
+    expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual(['a']);
+    resetCompanionPanesForTest();
+  });
+
+  // Focus a browser on the desktop, then the compact list covers it: the
+  // close chord is not the browser's, nor any pane's.
+  it('sends neither a tab close nor a pane close from the compact list while a browser holds focus', async () => {
+    installCompanionPanes();
+    setKeybindingsForTest([...KEYBINDING_DEFAULTS]);
+    const pane = readyPane();
+    registerPaneForTest('a', pane);
+    // A pane registered here composes no watched set; the browser keeps
+    // state only for the threads one names.
+    refreshWatchedThreads();
+    setPaneLayoutItemsForTest([{ id: 'a', paneId: 'a', kind: 'thread', widthPx: 640 }]);
+    const browser = openCompanion('a', 'browser')!;
+    applyBrowserCompanionState({
+      kind: 'state', threadId: 'thread-1', activePageId: 'p1', visible: true, seq: 1,
+      pages: [{ id: 'p1', url: 'https://example.test/', title: 'P1', canGoBack: false, canGoForward: false }],
+    });
+    const attached = await attachBrowserPaneForTest('thread-1', 'mount-1');
+    const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => ({ kind: 'state', threadId: 'thread-1', seq: 2, pages: [] })));
+    const close = () => dispatchKey(new KeyboardEvent('keydown', { key: 'w', ctrlKey: true, cancelable: true }), makeCommandContext(pane, {}) as CommandContext, { isMac: false });
+    focusPane(browser.paneId);
+
+    setCompactLayoutForTest(true);
+    expect(close()).toBe(false);
+    expect(act).not.toHaveBeenCalled();
+    expect(isCompanionOpen('a', 'browser')).toBe(true);
+    expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual(['a', browser.paneId]);
+
+    // The same chord on the desktop closes the browser's tab.
+    setCompactLayoutForTest(false);
+    expect(close()).toBe(true);
+    expect(act).toHaveBeenCalledWith('thread-1', expect.objectContaining({ kind: 'close', pageId: 'p1', mount: 'mount-1' }));
+    attached.release();
+    resetBrowserCompanionForTest();
+    resetCompanionPanesForTest();
+    resetKeybindingsStore();
+  });
+
+  // Before its attach answers a browser pane shows its tabs but has no
+  // place in its mount's order: Mod+W is not taken, closing neither a tab
+  // nor the pane, and is the browser's once the attach answers.
+  it('leaves Mod+W untaken on a browser pane whose attach has not answered', async () => {
+    installCompanionPanes();
+    setKeybindingsForTest([...KEYBINDING_DEFAULTS]);
+    const pane = readyPane();
+    registerPaneForTest('a', pane);
+    // A pane registered here composes no watched set; the browser keeps
+    // state only for the threads one names.
+    refreshWatchedThreads();
+    setPaneLayoutItemsForTest([{ id: 'a', paneId: 'a', kind: 'thread', widthPx: 640 }]);
+    const browser = openCompanion('a', 'browser')!;
+    applyBrowserCompanionState({
+      kind: 'state', threadId: 'thread-1', activePageId: 'p1', visible: true, seq: 1,
+      pages: [{ id: 'p1', url: 'https://example.test/', title: 'P1', canGoBack: false, canGoForward: false }],
+    });
+    const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => ({ kind: 'state', threadId: 'thread-1', seq: 2, pages: [] })));
+    focusPane(browser.paneId);
+    const chord = new KeyboardEvent('keydown', { key: 'w', ctrlKey: true, cancelable: true });
+    expect(dispatchKey(chord, makeCommandContext(pane, {}) as CommandContext, { isMac: false })).toBe(false);
+    expect(chord.defaultPrevented).toBe(false);
+    expect(act).not.toHaveBeenCalled();
+    expect(isCompanionOpen('a', 'browser')).toBe(true);
+
+    const attached = await attachBrowserPaneForTest('thread-1', 'mount-1');
+    expect(dispatchKey(new KeyboardEvent('keydown', { key: 'w', ctrlKey: true, cancelable: true }), makeCommandContext(pane, {}) as CommandContext, { isMac: false })).toBe(true);
+    expect(act).toHaveBeenCalledWith('thread-1', expect.objectContaining({ kind: 'close', pageId: 'p1', mount: 'mount-1' }));
+
+    // Mod+W pressed in page p1 reaches the window after the user switched
+    // to p2: the close names p1, the page the keys were pressed in.
+    applyBrowserCompanionState({
+      kind: 'state', threadId: 'thread-1', activePageId: 'p2', visible: true, seq: 3,
+      pages: ['p1', 'p2'].map((id) => ({ id, url: `https://example.test/${id}`, title: id, canGoBack: false, canGoForward: false })),
+    });
+    const dispatcher = (event: KeyboardEvent): void => {
+      dispatchKey(event, makeCommandContext(pane, {}) as CommandContext, { isMac: false });
+    };
+    window.addEventListener('keydown', dispatcher);
+    try {
+      applyBrowserCompanionState({ kind: 'accelerator', threadId: 'thread-1', mount: 'mount-1', pageId: 'p1', accelerator: { key: 'w', ctrl: true } } as never);
+    } finally {
+      window.removeEventListener('keydown', dispatcher);
+    }
+    expect(act).toHaveBeenLastCalledWith('thread-1', expect.objectContaining({ kind: 'close', pageId: 'p1', mount: 'mount-1' }));
+    attached.release();
+    resetBrowserCompanionForTest();
+    resetCompanionPanesForTest();
+    resetKeybindingsStore();
+  });
+
+  // A promoted pane covers the strip: the keyboard's pane is the one shown.
+  it('closes the promoted pane on the desktop while focus is on one it covers', () => {
+    installCompanionPanes();
+    const pane = readyPane();
+    registerPaneForTest('a', pane);
+    setPaneLayoutItemsForTest([{ id: 'a', paneId: 'a', kind: 'thread', widthPx: 640 }]);
+    const plan = openCompanion('a', 'plan')!;
+    expect(promotePane(plan.paneId)).toBe(true);
+    focusPane('a');
+    expect(runCommand('pane.close', makeCommandContext(pane, {}) as CommandContext)).toBe(true);
+    expect(isCompanionOpen('a', 'plan')).toBe(false);
+    expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual(['a']);
+    resetCompanionPanesForTest();
   });
 });
 

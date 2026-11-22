@@ -22,6 +22,7 @@ import type { HarnessApp } from '../src/harness.js';
 import { advanceGate, awaitGate, awaitToolAnswer, plainScenario, setScenario, threadToolsScenario } from './thread-tools-helpers.js';
 import { goRow, type FlushedEvent } from './agent-message-rows-helpers.js';
 import { captureAgentMessage, captureAgentMessageInView } from './wake-rows-helpers.js';
+import { timelineOf } from './timeline-follow-helpers.js';
 import { agentsBody, openAgents } from './agents-tray-helpers.js';
 
 test.beforeEach(async ({ harness }) => {
@@ -223,7 +224,7 @@ for (const provider of ['claude', 'codex'] as const) {
       await expect(fact(body, 'Stopped by')).toHaveText(want.stoppedBy);
       if (want.text) await expect(body.getByTestId('agent-message-text')).toHaveText(want.text);
       else await expect(body.getByTestId('agent-message-text')).toHaveCount(0);
-      await captureAgentMessageInView(page, `${provider}-${want.shot}.png`, row);
+      await captureAgentMessageInView(timelineOf(row), `${provider}-${want.shot}.png`, row);
       await row.getByTestId('agent-message-toggle').click();
     }
   });

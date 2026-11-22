@@ -17,7 +17,7 @@ import {
   type ProviderName,
   type ScriptedTurn,
 } from './thread-tools-helpers.js';
-import { escapeTimelineFollow } from './timeline-follow-helpers.js';
+import { escapeTimelineFollow, timelineOf } from './timeline-follow-helpers.js';
 
 /** The computer name a capture may show. */
 export const DEVICE_NAME = 'Wake tray computer';
@@ -227,7 +227,7 @@ export async function capture(page: Page, name: string, ...targets: Locator[]): 
     } catch (error) {
       const box = await target.boundingBox();
       const viewport = page.viewportSize()!;
-      const scrollTop = await page.getByTestId('message-timeline-scroll').first().evaluate((el) => el.scrollTop).catch(() => NaN);
+      const scrollTop = await timelineOf(target).evaluate((el) => el.scrollTop, undefined, { timeout: 1_000 }).catch(() => NaN);
       throw new Error(`${name}: target at ${box ? `y ${Math.round(box.y)}, height ${Math.round(box.height)}` : 'no box'} in a ${viewport.width}x${viewport.height} viewport, timeline scrollTop ${Math.round(scrollTop)}`, { cause: error });
     }
   }
@@ -261,12 +261,12 @@ export async function captureAgentMessage(page: Page, name: string, ...targets: 
 }
 
 /**
- * captureAgentMessage of rows brought into view with the timeline's follow
+ * captureAgentMessage of rows brought into view with `timeline`'s follow
  * left first, so a timeline following its bottom does not carry a row the
  * test just opened back out of view.
  */
-export async function captureAgentMessageInView(page: Page, name: string, ...targets: Locator[]): Promise<void> {
-  await escapeTimelineFollow(page);
+export async function captureAgentMessageInView(timeline: Locator, name: string, ...targets: Locator[]): Promise<void> {
+  await escapeTimelineFollow(timeline);
   for (const target of targets) await target.scrollIntoViewIfNeeded();
-  await captureAgentMessage(page, name, ...targets);
+  await captureAgentMessage(timeline.page(), name, ...targets);
 }

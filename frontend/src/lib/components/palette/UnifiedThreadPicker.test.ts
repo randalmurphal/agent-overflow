@@ -2,7 +2,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import UnifiedThreadPicker from './UnifiedThreadPicker.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
-import { refreshThreads } from '../../stores/threads.svelte';
+import { loadSidebarCatalogs } from '../../stores/sidebarCatalogs';
 import {
   projectTurnStarted,
   resetForTest as resetThreadStatuses,
@@ -36,7 +36,7 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
 
 async function seedThreads(threads: Thread[]): Promise<void> {
   setBindingMock('ListThreads', async () => threads);
-  await refreshThreads();
+  await loadSidebarCatalogs();
 }
 
 beforeEach(async () => {

@@ -178,23 +178,25 @@ func (o *startOutcome) observe(evt provider.ProviderEvent) provider.ProviderEven
 	if o.initialized {
 		return evt
 	}
-	switch evt.Kind {
-	case provider.EventInit:
+	if evt.Kind == provider.EventInit {
 		o.initialized = true
 		o.resolveFrom(o.initError(evt), true)
-	case provider.EventTurnComplete:
-		wire, ok := evt.TurnComplete.(*provider.WireTurnCompleteMeta)
-		if !ok || wire == nil || wire.ErrorMessage == "" {
-			return evt
-		}
-		failure := provider.FailureMeta{Class: provider.FailureFatal}
-		if evt.Failure != nil {
-			failure = *evt.Failure
-		}
-		failure.Reason = provider.FailureReasonStartup
-		evt.Failure = &failure
-		o.resolve(startFailure(wire.ErrorMessage))
+		return evt
 	}
+	if evt.Kind != provider.EventTurnComplete {
+		return evt
+	}
+	wire, ok := evt.TurnComplete.(*provider.WireTurnCompleteMeta)
+	if !ok || wire == nil || wire.ErrorMessage == "" {
+		return evt
+	}
+	failure := provider.FailureMeta{Class: provider.FailureFatal}
+	if evt.Failure != nil {
+		failure = *evt.Failure
+	}
+	failure.Reason = provider.FailureReasonStartup
+	evt.Failure = &failure
+	o.resolve(startFailure(wire.ErrorMessage))
 	return evt
 }
 

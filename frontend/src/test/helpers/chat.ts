@@ -1,3 +1,4 @@
+import { refreshWatchedThreads } from '../../lib/stores/watchedThreads';
 import { registerPaneForTest } from '../../lib/stores/panes.svelte';
 import { AGENT_MESSAGE_RUN_MEMBERS_CAPABILITY } from '../../lib/stores/activityRunRule';
 import { upsertProposedPlanForTests } from '../../lib/stores/proposedPlans.svelte';
@@ -256,5 +257,8 @@ export async function buildPane(
   // bursts (insert + completion in one batch) mis-resolve against
   // post-apply state. Multi-pane tests pass distinct `paneKey`s instead.
   registerPaneForTest(paneKey, pane);
+  // Production composes the watched threads once its pane holds the thread
+  // (assignThread); here the pane switched before it was registered.
+  refreshWatchedThreads();
   return pane;
 }

@@ -597,6 +597,7 @@
     tabindex="0"
     role="grid"
     aria-label="Review diff"
+    data-pane-scroller
     data-testid="review-scroll"
     onkeydown={handleKeydown}
   >

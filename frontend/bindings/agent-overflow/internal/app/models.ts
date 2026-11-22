@@ -909,10 +909,68 @@ export class BrowserCompanionAction {
     "address"?: string;
 
     /**
-     * Index is the target tab position for "move". Not omitempty: index 0
-     * (move to the front) is a real value.
+     * Index is the relative step for "step" (1 next, -1 previous,
+     * wrapping).
      */
     "index": number;
+
+    /**
+     * Beside and After are where a "move" drops PageID: beside the tab
+     * Beside, after it when After and before it otherwise. The Manager
+     * resolves the position from that neighbor at the move's turn
+     * (Manager.MoveCompanionPage).
+     */
+    "beside"?: string;
+    "after"?: boolean;
+
+    /**
+     * Jar is the cookie jar for "jar": worktree, project, thread or private.
+     */
+    "jar"?: string;
+
+    /**
+     * Confirmed says the user agreed, for "jar", to lose the live tabs' page
+     * state. Unconfirmed, a switch with a live tab is refused with code
+     * browser_jar_unconfirmed and changes nothing; the pane asks and sends
+     * it again confirmed.
+     */
+    "confirmed"?: boolean;
+
+    /**
+     * Mount and Intent name a page focus intent for "focus-page" and
+     * "focus-page-withdraw": the pane mount and its number for the request.
+     * Mount alone is the pane a "jar" switch was chosen in, which it acts
+     * on the browser of (Manager.BindMount).
+     */
+    "mount"?: string;
+    "intent"?: number;
+
+    /**
+     * Select numbers a user's tab selection made in Mount ("activate",
+     * "step", "show-browser", and the "new", "reopen", "duplicate" and
+     * "download-open" that select the tab they open) and a close ("close",
+     * "close-others", "close-right"), consecutive from 1 in each Epoch of a
+     * mount in the order the user acted. The Manager admits a mount's
+     * commands in that order (internal/browser/selection.go). A close
+     * requires Mount, Epoch and Select; a selection carries all three or
+     * none, and with none applies in arrival order. Validated by
+     * parseCompanionAction.
+     */
+    "select"?: number;
+
+    /**
+     * Epoch is the client's run of numbered commands Select counts in, from
+     * 1: the client starts the next one only when every command it sent in
+     * this one has answered or failed, and the Manager then refuses what
+     * arrives of an older one.
+     */
+    "epoch"?: number;
+
+    /**
+     * DownloadID names one of the thread's downloads (ThreadDownload.ID)
+     * for "download-cancel", "download-reveal" and "download-open".
+     */
+    "downloadId"?: string;
 
     /** Creates a new BrowserCompanionAction instance. */
     constructor($$source: Partial<BrowserCompanionAction> = {}) {

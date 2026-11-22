@@ -54,7 +54,7 @@ function surface(): ThreadTerminalSurfaceContext {
     workspacePath: undefined,
     setVisible: () => {},
     acquireResizeLease: () => null,
-    consumeFocusRequest: () => false,
+    consumeFocusRequest: () => null,
   };
 }
 
@@ -78,6 +78,8 @@ async function mountTabs(ids: string[]): Promise<void> {
   handle = getThreadTerminalState(terminalStateKeyForPane(THREAD, PANE));
   for (const id of ids) handle.addTab(tab(id));
   handle.setActive(ids.at(-1)!);
+  // The thread's computer lists the same shells when the surface mounts.
+  setBindingMock('ListTerminals', async () => ids.map(tab));
   const attach = handle.attachXterm.bind(handle);
   handle.attachXterm = (terminalID, xterm) => {
     terms.set(terminalID, xterm as Terminal);
@@ -87,7 +89,7 @@ async function mountTabs(ids: string[]): Promise<void> {
   pane.dataset.paneId = PANE;
   pane.style.cssText = 'display:flex;flex-direction:column;width:412px;height:700px';
   document.body.appendChild(pane);
-  component = mount(TerminalSurface, { target: pane, props: { surface: surface(), manual: true } });
+  component = mount(TerminalSurface, { target: pane, props: { surface: surface() } });
   await vi.waitFor(() => expect(getPaneFindProvider(terminalFindKey(PANE, ids.at(-1)!))).not.toBeNull(), { timeout: 3000 });
   await frames();
 }

@@ -258,12 +258,6 @@ const webkitFindFrameScript = `(()=>{` + webkitFrameClearJS + `const aoMax=256;l
 // chord, matching the CDP driver's expression exactly.
 const webkitSelectionTextScript = `const a=document.activeElement;if(a&&(a instanceof HTMLInputElement||a instanceof HTMLTextAreaElement)&&a.selectionStart!==null)return a.value.slice(a.selectionStart,a.selectionEnd);return String(getSelection()||"");`
 
-// webkitVisibleScript reports whether a selector currently has a visible
-// match. The Manager polls it; the driver never loops.
-func webkitVisibleScript(selector string) string {
-	return fmt.Sprintf(`const nodes=document.querySelectorAll(%s);for(const el of nodes){const r=el.getBoundingClientRect(),s=getComputedStyle(el);if(r.width&&r.height&&s.display!=="none"&&s.visibility!=="hidden"&&s.visibility!=="collapse")return true}return false;`, jsonString(selector))
-}
-
 // webkitInfoScript reads location and title in one call.
 const webkitInfoScript = `return {url:location.href,title:document.title};`
 
@@ -274,7 +268,8 @@ const webkitPageStatusScript = `return {url:location.href,ready:document.readySt
 
 // webkitNavigationMarkScript captures the page's navigation identity. WebKit
 // has no loader id, so the history length stands in: it changes on a pushState
-// or a same-URL navigation the URL alone would hide.
+// or a new history entry at the same URL. A reload changes neither; the
+// Manager counts it by its document commit (pageNavigation).
 const webkitNavigationMarkScript = `return {url:location.href,loader:String(history.length)};`
 
 // webkitPointerScript dispatches a raw pointer gesture at viewport

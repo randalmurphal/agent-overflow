@@ -1,5 +1,6 @@
 import { takePinnedBackend, attachedBackendCount } from '../transport/backends';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readSidebarCatalogs } from '../../test/helpers/sidebarCatalogs';
 import {
   addProjectLocal,
   entryIdFor,
@@ -14,17 +15,19 @@ import {
   projectRepoKey,
   projectSiblingOn,
   projectSpansBackends,
-  refreshProjects,
   removeProjectLocal,
+  reorderProjects,
+  projectOrderPosition,
   resetProjectsForTest,
   touchProjectActivity,
   updateProjectLocal,
 } from './projects.svelte';
 import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
-import { __resetEntityIndexForTest, noteProject } from '../transport/entityIndex';
+import { __resetEntityIndexForTest, noteProject, projectBackend } from '../transport/entityIndex';
 import { HOME_BACKEND } from '../transport/backendKey';
 import type { Project, ProjectWithCounts } from '../types/models';
 import { setBindingMock } from '../../test/mocks/bindings-app';
+import { applyProjectUpdated } from './eventsProjectRows';
 
 function makeProject(id: string, overrides: Partial<Project> = {}): Project {
   return {
@@ -61,32 +64,32 @@ describe('projects store', () => {
     expect(getProjectLabelText(active.id)).toBe('app');
   });
 
-  describe('refreshProjects', () => {
+  describe('reading the catalog', () => {
     it('replaces the store with the RPC result', async () => {
       const loaded = [wrap(makeProject('p1'), 3), wrap(makeProject('p2'), 0)];
       setBindingMock('ListProjects', async () => loaded);
-      await refreshProjects();
+      await readSidebarCatalogs();
       expect(getProjects().map((p) => p.project.id)).toEqual(['p1', 'p2']);
       expect(isLoaded()).toBe(true);
     });
 
     it('leaves the store alone on failure', async () => {
       setBindingMock('ListProjects', async () => [wrap(makeProject('keep'))]);
-      await refreshProjects();
+      await readSidebarCatalogs();
       expect(getProjects().map((p) => p.project.id)).toEqual(['keep']);
 
       setBindingMock('ListProjects', async () => {
         throw new Error('rpc down');
       });
       const err = vi.spyOn(console, 'error').mockImplementation(() => {});
-      await refreshProjects();
+      await readSidebarCatalogs();
       expect(getProjects().map((p) => p.project.id)).toEqual(['keep']);
       err.mockRestore();
     });
 
     it('treats a null response as an empty list', async () => {
       setBindingMock('ListProjects', async () => null);
-      await refreshProjects();
+      await readSidebarCatalogs();
       expect(getProjects()).toEqual([]);
       expect(isLoaded()).toBe(true);
     });
@@ -101,7 +104,7 @@ describe('projects store', () => {
 
     it('addProjectLocal is a no-op when id already present', async () => {
       setBindingMock('ListProjects', async () => [wrap(makeProject('p1'), 2)]);
-      await refreshProjects();
+      await readSidebarCatalogs();
       addProjectLocal(makeProject('p1'));
       expect(getProjects()).toHaveLength(1);
       // Original count preserved — the add didn't overwrite.
@@ -110,7 +113,7 @@ describe('projects store', () => {
 
     it('updateProjectLocal replaces the project row in place', async () => {
       setBindingMock('ListProjects', async () => [wrap(makeProject('p1'), 4)]);
-      await refreshProjects();
+      await readSidebarCatalogs();
       updateProjectLocal(makeProject('p1', { name: 'renamed' }));
       expect(getProject('p1')?.project.name).toBe('renamed');
       // Thread count preserved across a rename.
@@ -122,14 +125,14 @@ describe('projects store', () => {
         wrap(makeProject('a')),
         wrap(makeProject('b')),
       ]);
-      await refreshProjects();
+      await readSidebarCatalogs();
       removeProjectLocal('a');
       expect(getProjects().map((p) => p.project.id)).toEqual(['b']);
     });
 
     it('removeProjectLocal on missing id is a no-op', async () => {
       setBindingMock('ListProjects', async () => [wrap(makeProject('a'))]);
-      await refreshProjects();
+      await readSidebarCatalogs();
       removeProjectLocal('missing');
       expect(getProjects()).toHaveLength(1);
     });
@@ -138,7 +141,7 @@ describe('projects store', () => {
       setBindingMock('ListProjects', async () => [
         { ...wrap(makeProject('a')), lastActive: 100 },
       ]);
-      await refreshProjects();
+      await readSidebarCatalogs();
 
       const before = getProjects();
       touchProjectActivity('a', 500);
@@ -154,7 +157,7 @@ describe('projects store', () => {
       setBindingMock('ListProjects', async () => [
         { ...wrap(makeProject('a')), lastActive: 500 },
       ]);
-      await refreshProjects();
+      await readSidebarCatalogs();
 
       touchProjectActivity('a', 100);
       touchProjectActivity('missing', 900);
@@ -190,7 +193,7 @@ describe('projects store — merged entries (wave 7d)', () => {
         return backend === 'laptop' ? remote : !remote;
       });
     });
-    await refreshProjects();
+    await readSidebarCatalogs();
   }
 
   it('is the list itself, same identity, on a single-backend page', async () => {
@@ -282,5 +285,153 @@ describe('projects store — merged entries (wave 7d)', () => {
     await load([wrap(makeProject('a', { name: 'x' })), wrap(makeProject('b', { name: 'x' }))]);
     noteProject('b', 'laptop');
     expect(projectEntries()).toHaveLength(2);
+  });
+});
+
+// Manual reorder. The order the user dragged is an overlay until a write
+// settles, so no sequence of refusals can leave the rows at an order no
+// write accepted, and nothing that lands while a write is out is undone.
+describe('reorderProjects', () => {
+  function writeQueue(): { sent: string[][]; refuse: (index: number, error: unknown) => void; accept: (index: number) => void } {
+    const sent: string[][] = [];
+    const settlers: { resolve: (rows: Project[]) => void; reject: (error: unknown) => void }[] = [];
+    setBindingMock('UpdateProjectSortPositions', (ids: string[]) => {
+      sent.push([...ids]);
+      return new Promise<Project[]>((resolve, reject) => { settlers.push({ resolve, reject }); });
+    });
+    return {
+      sent,
+      refuse: (index, error) => settlers[index].reject(error),
+      // What the computer that accepted an order does: one project:updated
+      // frame per row IT MOVED, which the transport delivers ahead of the
+      // reply (internal/transport/conn.go#writeReply). The write is routed
+      // home (transport/methodRoutes.ts), and the store skips an id it does
+      // not hold (internal/store/projects.go, sql.ErrNoRows -> continue), so
+      // a project that lives only on another computer is written nowhere and
+      // gets no frame. Through the real applier, because the rows carrying
+      // the order is the whole reason the overlay can be dropped with
+      // nothing written here.
+      accept: (index) => {
+        for (const [position, id] of sent[index].entries()) {
+          const row = getProject(id);
+          if (row === undefined) continue;
+          if ((projectBackend(id) ?? HOME_BACKEND) !== HOME_BACKEND) continue;
+          applyProjectUpdated({ action: 'full', project: { ...row.project, sortPosition: position } });
+        }
+        settlers[index].resolve([]);
+      },
+    };
+  }
+  // What the sidebar sorts by, and what the rows carry under it.
+  const shown = (): number[] => ['a', 'b', 'c'].map((id) => projectOrderPosition(getProject(id)!));
+  const stored = (): number[] => ['a', 'b', 'c'].map((id) => getProject(id)!.project.sortPosition);
+
+  beforeEach(() => {
+    resetProjectsForTest();
+    for (const [index, id] of ['a', 'b', 'c'].entries()) {
+      addProjectLocal(makeProject(id, { name: id.toUpperCase(), sortPosition: index }));
+    }
+  });
+
+  it('shows the order still out, and the rows keep the last one accepted', async () => {
+    const writes = writeQueue();
+    const first = reorderProjects(['b', 'a', 'c']);
+    expect(shown()).toEqual([1, 0, 2]);
+    expect(stored()).toEqual([0, 1, 2]);
+
+    writes.accept(0);
+    await first;
+    expect(stored()).toEqual([1, 0, 2]);
+    expect(shown()).toEqual([1, 0, 2]);
+  });
+
+  it('leaves the rows at the last accepted order when two writes in a row are refused', async () => {
+    const writes = writeQueue();
+    const first = reorderProjects(['b', 'a', 'c']);
+    const second = reorderProjects(['b', 'c', 'a']);
+    expect(shown()).toEqual([2, 0, 1]);
+
+    writes.refuse(0, new Error('refused one'));
+    await expect(first).rejects.toThrow('refused one');
+    // The first refusal keeps the order still out, which is the second's.
+    expect(shown()).toEqual([2, 0, 1]);
+    expect(writes.sent).toEqual([['b', 'a', 'c'], ['b', 'c', 'a']]);
+
+    writes.refuse(1, new Error('refused two'));
+    await expect(second).rejects.toThrow('refused two');
+    // No write was accepted, so the rows are where they started and the
+    // list shows that, not either order that was refused.
+    expect(stored()).toEqual([0, 1, 2]);
+    expect(shown()).toEqual([0, 1, 2]);
+  });
+
+  it('shows the accepted order when the write after it is refused', async () => {
+    const writes = writeQueue();
+    const first = reorderProjects(['b', 'a', 'c']);
+    const second = reorderProjects(['b', 'c', 'a']);
+    writes.accept(0);
+    await first;
+    expect(stored()).toEqual([1, 0, 2]);
+    writes.refuse(1, new Error('refused'));
+    await expect(second).rejects.toThrow('refused');
+    expect(shown()).toEqual([1, 0, 2]);
+    expect(stored()).toEqual([1, 0, 2]);
+  });
+
+  it('sends only the newest order waiting behind a write', async () => {
+    const writes = writeQueue();
+    const first = reorderProjects(['b', 'a', 'c']);
+    const superseded = reorderProjects(['c', 'b', 'a']);
+    const newest = reorderProjects(['b', 'c', 'a']);
+    // The order it replaced was never sent, so its caller has nothing to
+    // report and does not wait on a write of its own.
+    await superseded;
+    expect(writes.sent).toEqual([['b', 'a', 'c']]);
+
+    writes.accept(0);
+    await first;
+    expect(writes.sent).toEqual([['b', 'a', 'c'], ['b', 'c', 'a']]);
+    writes.accept(1);
+    await newest;
+    expect(stored()).toEqual([2, 0, 1]);
+  });
+
+  // A drag that moves a project only another computer holds. The write goes
+  // home, because that is where UpdateProjectSortPositions is routed
+  // (transport/methodRoutes.ts), home has no row for it to write, and the
+  // call still succeeds. So the overlay shows the dropped order until the
+  // write settles and the rows then answer with the order they still carry:
+  // the drag comes back. That is the behavior as it stands, with the missing
+  // save left with the user.
+  it('returns a remote-only drag to its stored order at the settlement', async () => {
+    stageBackend({ id: 'laptop', backendId: 'laptop-id' });
+    try {
+      noteProject('b', 'laptop');
+      const writes = writeQueue();
+      const call = reorderProjects(['b', 'a', 'c']);
+      expect(shown()).toEqual([1, 0, 2]);
+
+      writes.accept(0);
+      await call;
+      // Home wrote and announced its own two rows; nothing moved the one it
+      // does not hold, so the order the user dropped is not the order shown.
+      expect(stored()).toEqual([1, 1, 2]);
+      expect(shown()).toEqual([1, 1, 2]);
+    } finally {
+      __resetEntityIndexForTest();
+      resetStagedBackends();
+    }
+  });
+
+  it('leaves a rename that landed while a refused write was out alone', async () => {
+    const writes = writeQueue();
+    const call = reorderProjects(['b', 'a', 'c']);
+    updateProjectLocal({ ...getProject('a')!.project, name: 'Renamed' });
+    writes.refuse(0, new Error('refused'));
+    await expect(call).rejects.toThrow('refused');
+    // Nothing was written to a row to undo, so nothing of the rename is.
+    expect(getProject('a')!.project.name).toBe('Renamed');
+    expect(stored()).toEqual([0, 1, 2]);
+    expect(shown()).toEqual([0, 1, 2]);
   });
 });

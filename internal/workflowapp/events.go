@@ -62,7 +62,7 @@ func (s *Service) afterEngineEvent(name eventchan.Channel, payload any) {
 			return
 		}
 		s.afterWorkflowStateEvent(event)
-	case "workflow:gate-notify":
+	case eventchan.WorkflowGateNotify:
 		// A gate took a `notify:` route and the run continued (K1). It is the
 		// one surface that reports without a park, so it is decided from its own
 		// event rather than from a transition that never happens.
@@ -129,6 +129,8 @@ func restingWorkflowState(state engine.State) bool {
 	switch state {
 	case engine.StateNeedsHuman, engine.StateDone, engine.StateFailed, engine.StateCancelled:
 		return true
+	case engine.StateRunning:
+		fallthrough
 	default:
 		return false
 	}

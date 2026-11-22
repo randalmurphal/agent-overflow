@@ -55,6 +55,8 @@ import { createThreadActivityRuns } from './threadActivityRuns.svelte';
 import { addErrorToast } from './toast.svelte';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { errString } from '../utils/errors';
+import { intendFocus, paneFocusScope, type FocusIntent } from '../utils/focusIntent';
+import { TERMINAL_FOCUS_REGION } from '../components/terminal/terminalStore.svelte';
 import { activityRunDefaultCollapsed, activityRunWindowRows } from './activityRunPrefs.svelte';
 import type { TimelineTurnFacet } from './threadTurnProjection';
 import { createThreadRowUiState, type RowUiStateRetention } from './threadRowUiState.svelte';
@@ -413,7 +415,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // stays set until the surface mounts and reads it. Replaces the old
   // fire-once FOCUS_TERMINAL_EVENT, whose listener didn't exist yet when the
   // event fired on a cold first open (the lazy import hadn't resolved).
-  let pendingTerminalFocus = $state(false);
+  let pendingTerminalFocus = $state.raw<FocusIntent | null>(null);
 
   // Read view onto the shared, workspace-keyed git-status store —
   // GitActionsControl and its dialogs, the header diff/PR badges, and the
@@ -725,7 +727,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     // leak into the next thread.
     switchLoad.resetPipeline();
     timelineWindow.resetForFreshThread();
-    // `timelineWindow`'s internal `pagingGeneration` stays monotonic for
+    // `timelineWindow`'s internal edge generations stay monotonic for
     // the pane's lifetime so no consumer observes a regressed counter. An
     // untaken scroll-to-item request goes stale with the generation bump
     // below.
@@ -963,6 +965,12 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     },
     get loadingNewer() {
       return timelineWindow.loadingNewer;
+    },
+    get olderStalled() {
+      return timelineWindow.olderStalled;
+    },
+    get newerStalled() {
+      return timelineWindow.newerStalled;
     },
     debugMemoryStats() {
       const streamingStats = streamingReveal.debugStats();
@@ -1614,28 +1622,34 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       // open→close), drop it so a later visibility-only reopen — or a
       // thread-restore that mounts the drawer with showTerminal persisted —
       // doesn't inherit a stale "steal focus" intent.
-      if (!value) pendingTerminalFocus = false;
+      if (!value) {
+        pendingTerminalFocus?.end();
+        pendingTerminalFocus = null;
+      }
     },
 
     /**
      * Latch intent to move DOM focus into the terminal once its drawer mounts.
-     * Called by runTerminalToggle BEFORE setShowTerminal(true) so the flag is
-     * already set when the (lazily-loaded) drawer's onMount consumes it,
-     * however many frames later the import resolves.
+     * Called by runTerminalToggle BEFORE setShowTerminal(true) so the intent
+     * is already set when the (lazily-loaded) drawer's onMount consumes it,
+     * however many frames later the import resolves. It is the latest focus
+     * intent (utils/focusIntent.ts) from now: any later focus choice outside
+     * this pane, or press outside its terminal, cancels it.
      */
     requestTerminalFocus(): void {
-      pendingTerminalFocus = true;
+      pendingTerminalFocus = intendFocus(paneFocusScope(paneId, TERMINAL_FOCUS_REGION));
     },
 
     /**
-     * Read-and-clear the terminal focus intent. Returns true at most once per
-     * requestTerminalFocus() so a drawer remount (e.g. {#key threadId}) can't
-     * re-grab focus the user didn't ask for.
+     * Read-and-clear the terminal focus intent. Returns it at most once per
+     * requestTerminalFocus(), and only while no later focus choice canceled
+     * it, so a drawer remount (e.g. {#key threadId}) can't re-grab focus the
+     * user didn't ask for.
      */
-    consumeTerminalFocusRequest(): boolean {
+    consumeTerminalFocusRequest(): FocusIntent | null {
       const requested = pendingTerminalFocus;
-      pendingTerminalFocus = false;
-      return requested;
+      pendingTerminalFocus = null;
+      return requested?.current ? requested : null;
     },
 
     togglePlanSidebar: companions.togglePlanSidebar,

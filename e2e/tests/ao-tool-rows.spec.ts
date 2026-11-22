@@ -7,21 +7,31 @@
 // requests until the answers arrive, by a wake or by a status call that
 // collected the answer. The spawn's prompt is over the wire projection's
 // budget, so its header proves the clipped opening survives
-// (internal/itemwire). Screenshots of every row collapsed and expanded go to
-// the test's output directory.
+// (internal/itemwire). expandRow opens a row left with its toggle's center
+// less than a pixel above the "Jump to bottom" chip. Screenshots of every
+// row collapsed and expanded go to the test's output directory.
 
 import { test, expect, type SeedResult } from './fixtures.js';
 import {
   LEAD_TITLE,
   SPAWN_TITLE,
   TARGET_TITLE,
+  atJumpChipEdge,
   driveAoToolRows,
   expandRow,
   openLead,
   shootRow,
   toolRow,
 } from './ao-tool-rows-helpers.js';
-import { RESULT_TOKEN_PATTERN, awaitToolAnswer, plainScenario, setScenario, threadToolsScenario } from './thread-tools-helpers.js';
+import {
+  RESULT_TOKEN_PATTERN,
+  awaitToolAnswer,
+  awaitTurnCompleted,
+  parkedOn,
+  releaseAfterBackgrounded,
+  setScenario,
+  threadToolsScenario,
+} from './thread-tools-helpers.js';
 
 test.beforeEach(async ({ harness }) => {
   // These assertions read agent message rows, which sit inside activity runs.
@@ -102,7 +112,10 @@ for (const provider of ['claude', 'codex'] as const) {
     const loop = toolRow(page, 'loop', /^board · every 10m · next /);
     await expect(loop).toHaveCount(1);
     await shot('loop-collapsed', loop);
-    await expandRow(loop);
+    // Left with its toggle's center less than a pixel above the "Jump to
+    // bottom" chip, where a mouse press reaches neither, the row still
+    // opens through expandRow.
+    await atJumpChipEdge(loop, () => expandRow(loop));
     await expect(loop.getByTestId('tool-call-card-ao-outcome')).toContainText('next');
     await shot('loop-expanded', loop);
 
@@ -145,35 +158,64 @@ for (const provider of ['claude', 'codex'] as const) {
 
   // A thread_status that collects the answer is its delivery, so no wake row
   // follows; the send row still reads the answer as arrived rather than
-  // following the target thread (GetThreadRequestStates' answered).
+  // following the target thread (GetThreadRequestStates' answered). The
+  // target answers only once the send has returned and the status call is
+  // parked on its request, so the status call is what collects it.
   test(`${provider}: a send whose answer a status call collected reads answer arrived`, async ({ harness, page }) => {
     const tag = `inline-${provider}`;
     const seed = await harness.rpc<SeedResult>('HarnessSeed', {
       projects: [
         { name: `ao-rows-lead-${tag}`, repo: {}, threads: [{ title: LEAD_TITLE, provider }] },
         { name: `ao-rows-target-${tag}`, repo: {}, threads: [{ title: TARGET_TITLE, provider }] },
+        { name: `ao-rows-probe-${tag}`, repo: {}, threads: [{ title: 'Probe', provider }] },
       ],
     });
-    const [lead, target] = seed.projects;
-    await setScenario(harness, target.path, plainScenario({ name: `ao-rows-target-${tag}`, provider, texts: ['Rebased and green.'] }));
+    const [lead, target, probe] = seed.projects;
+    const leadId = lead.threadIds[0];
+    await setScenario(harness, target.path, threadToolsScenario({
+      name: `ao-rows-target-${tag}`, provider, turns: [{ steps: [{ gate: 'inline-answer' }], text: 'Rebased and green.' }],
+    }));
+    // The probe holds for good: it shows when the status call has parked.
+    await setScenario(harness, probe.path, threadToolsScenario({
+      name: `ao-rows-probe-${tag}`, provider, turns: [{ steps: [{ gate: 'inline-probe' }], text: 'Never answered.' }], afterTurns: 'silent',
+    }));
     await setScenario(harness, lead.path, threadToolsScenario({
       name: `ao-rows-lead-${tag}`,
       provider,
       echoUserMessage: true,
-      turns: [{
-        steps: [
-          { call: { tool: 'thread_send', args: { thread_id: target.threadIds[0], message: 'Rebase onto main', notify: true } } },
-          { capture: { var: 'SEND', from: '${MCP_RESULT}', pattern: RESULT_TOKEN_PATTERN } },
-          // Parks until the target's turn settles the request, and carries
-          // the answer back in its own reply.
-          { call: { tool: 'thread_status', args: { tokens: ['${SEND}'], wait_seconds: 60 }, timeoutMs: 90_000 } },
-        ],
-        text: 'Read the answer.',
-      }],
+      turns: [
+        {
+          steps: [
+            { call: { tool: 'thread_send', args: { thread_id: probe.threadIds[0], message: 'Hold on.', wait_seconds: 0 } } },
+            { capture: { var: 'PROBE', from: '${MCP_RESULT}', pattern: RESULT_TOKEN_PATTERN } },
+          ],
+          text: 'Sent the probe.',
+        },
+        {
+          steps: [
+            { call: { tool: 'thread_send', args: { thread_id: target.threadIds[0], message: 'Rebase onto main', notify: true } } },
+            { capture: { var: 'SEND', from: '${MCP_RESULT}', pattern: RESULT_TOKEN_PATTERN } },
+            // Parks until the target's turn settles the request, and carries
+            // the answer back in its own reply.
+            { call: { tool: 'thread_status', args: { tokens: ['${SEND}', '${PROBE}'], wait_seconds: 60 }, timeoutMs: 90_000 } },
+          ],
+          text: 'Read the answer.',
+        },
+      ],
+      afterTurns: 'silent',
     }));
 
-    await harness.rpc('StartSession', lead.threadIds[0]);
-    await harness.rpc('SendMessage', lead.threadIds[0], 'rebase the target', null);
+    await harness.rpc('StartSession', leadId);
+    await harness.rpc('SendMessage', leadId, 'send the probe', null);
+    const probeSend = await awaitToolAnswer<{ token: string }>(harness, { tool: 'thread_send', cwd: lead.path });
+    expect(probeSend.isError, probeSend.text).toBe(false);
+    const probeToken = probeSend.value!.token;
+    await awaitTurnCompleted(harness, leadId);
+    await expect.poll(() => parkedOn(harness, probeToken), { message: 'nothing waits on the probe yet' }).toBe(false);
+    await harness.rpc('SendMessage', leadId, 'rebase the target', null);
+    const sent = await awaitToolAnswer<{ outcome: string }>(harness, { tool: 'thread_send', cwd: lead.path });
+    await expect.poll(() => parkedOn(harness, probeToken), { timeout: 30_000, message: 'the status call parks' }).toBe(true);
+    await releaseAfterBackgrounded(sent, { harness, gate: 'inline-answer', cwd: target.path });
     const status = await awaitToolAnswer<{ requests: { state: string; delivered?: string }[] }>(
       harness, { tool: 'thread_status', cwd: lead.path, timeoutMs: 90_000 });
     expect(status.isError, status.text).toBe(false);

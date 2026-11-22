@@ -227,13 +227,14 @@ func runUpdateCommand(name string, args []string) int {
 	if err := supervise.WriteUpdateEvent(out, result); err != nil {
 		log.Printf("update: %s: report the result: %v", name, err)
 	}
-	code := 1
-	var failure error
+	// Every outcome but the two that succeed fails the command with its
+	// reason.
+	code, failure := 1, errors.New(result.Reason)
 	switch result.Outcome {
 	case supervise.UpdateOutcomeOK, supervise.UpdateOutcomePrepared:
-		code = 0
-	default:
-		failure = errors.New(result.Reason)
+		code, failure = 0, nil
+	case supervise.UpdateOutcomeRolledBack, supervise.UpdateOutcomeRefused, supervise.UpdateOutcomeChanged,
+		supervise.UpdateOutcomeNoSnapshot, supervise.UpdateOutcomeFailed:
 	}
 	running.End(failure, "outcome", result.Outcome)
 	return code

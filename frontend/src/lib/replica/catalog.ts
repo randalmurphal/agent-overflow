@@ -10,6 +10,7 @@ export const MAX_CATALOG_ROWS = 5000;
 export const MAX_CATALOG_CHARS = 4 * 1024 * 1024;
 const MAX_ROW_CHARS = 64 * 1024;
 interface Catalog { version: 2; generation: string; stamp: string; rows: unknown[] }
+
 export function catalogKey(kind: CatalogKind): string { return `catalog:${kind}`; }
 
 type RecordValue = Record<string, unknown>;

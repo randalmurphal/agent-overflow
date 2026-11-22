@@ -47,14 +47,15 @@ func (a *App) archiveWalking(threadID string) bool {
 // (store.OweRemoteArchives), in the transaction that owes the paired
 // computers the archives of its workers there, and only then stops counting
 // it, so those archives are on their way throughout (owesWorkerEnd). It
-// returns what it owed for its caller to deliver (deliverOwnerOps). A
-// failure owes nothing; archiving the thread again walks again.
+// returns what it owed for its caller to deliver (deliverOwnerOps), which
+// holds holds from inside that transaction. A failure owes nothing;
+// archiving the thread again walks again.
 //
 // It holds the thread's action lock across the decision and the end: a new
 // archive commits and records its walk under that lock (runArchive), so it
 // lands before the decision, which then counts it, or after the end, which
 // then leaves its count alone.
-func (a *App) endArchiveWalk(threadID string) ([]store.OwnerOp, error) {
+func (a *App) endArchiveWalk(threadID string, holds *ownerOpHolds) ([]store.OwnerOp, error) {
 	unlock := a.threadLocks().Lock(threadID)
 	defer unlock()
 	w := &a.archiveWalks
@@ -68,7 +69,7 @@ func (a *App) endArchiveWalk(threadID string) ([]store.OwnerOp, error) {
 	if hook := a.archiveWalkEndingForTest; hook != nil {
 		hook(threadID)
 	}
-	owed, err := a.store.OweRemoteArchives(threadID)
+	owed, err := a.store.OweRemoteArchives(threadID, holds.owing())
 	w.mu.Lock()
 	delete(w.running, threadID)
 	w.mu.Unlock()

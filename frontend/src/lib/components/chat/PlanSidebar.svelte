@@ -31,6 +31,7 @@
   import Button from '../primitives/Button.svelte';
   import Icon from '../primitives/Icon.svelte';
   import IconButton from '../primitives/IconButton.svelte';
+  import PanePromoteButton from '../panes/PanePromoteButton.svelte';
   import ProposedPlanActions from './ProposedPlanActions.svelte';
   import ProposedPlanReviewSurface from './ProposedPlanReviewSurface.svelte';
   import ProposedPlanSaveModal from './ProposedPlanSaveModal.svelte';
@@ -249,6 +250,9 @@
             onSave={planExport.openSaveDialog}
           />
         {/if}
+        {#if planPaneId}
+          <PanePromoteButton paneId={planPaneId} testId="plan-sidebar-promote" />
+        {/if}
         <IconButton
           label="Close Plan Sidebar"
           size="sm"
@@ -271,6 +275,7 @@
       bind:this={planScrollEl}
       class="flex-1 overflow-y-auto px-8 pb-2 focus-visible:outline-none"
       tabindex="-1"
+      data-pane-scroller
       data-testid="plan-sidebar-scroll"
     >
       {#if currentPlan}

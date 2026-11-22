@@ -664,13 +664,12 @@ func TestDispatchLineSubagentNotificationCarrierDoesNotEmitUserTextWhenMapped(t 
 
 	var sawNotification bool
 	for _, evt := range events {
-		switch evt.Kind {
-		case provider.EventSubagentNotification:
+		if evt.Kind == provider.EventSubagentNotification {
 			sawNotification = true
 			if evt.ItemID != "call-collab-1" {
 				t.Fatalf("notification ItemID = %q, want call-collab-1", evt.ItemID)
 			}
-		case provider.EventUserText:
+		} else if evt.Kind == provider.EventUserText {
 			t.Fatalf("carrier userMessage emitted EventUserText: %+v", evt)
 		}
 	}
@@ -699,10 +698,9 @@ func TestDispatchLineSubagentNotificationMixedContentKeepsUserText(t *testing.T)
 	var sawNotification bool
 	var sawUserText bool
 	for _, evt := range events {
-		switch evt.Kind {
-		case provider.EventSubagentNotification:
+		if evt.Kind == provider.EventSubagentNotification {
 			sawNotification = true
-		case provider.EventUserText:
+		} else if evt.Kind == provider.EventUserText {
 			sawUserText = true
 		}
 	}

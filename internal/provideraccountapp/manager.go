@@ -97,8 +97,8 @@ type Manager struct {
 	credentials  *provideraccounts.Credentials
 	fingerprints map[string][32]byte
 
-	claudeReconcileMu sync.Mutex
-	codexReconcileMu  sync.Mutex
+	claudeReconcileMu reconcileLock
+	codexReconcileMu  reconcileLock
 	auditPath         string
 
 	// The sign-in registry (loginsession.go). Its lock is a leaf: no other
@@ -177,7 +177,42 @@ func (m *Manager) providerBinaryPath(providerName string) string {
 	return ""
 }
 
-func (m *Manager) reconcileMutex(providerName string) *sync.Mutex {
+// reconcileLock is one provider's reconcile mutex. A caller bounded by a
+// context waits for it with LockContext; the zero value is unlocked.
+type reconcileLock struct {
+	once sync.Once
+	sem  chan struct{}
+}
+
+func (l *reconcileLock) slot() chan struct{} {
+	l.once.Do(func() { l.sem = make(chan struct{}, 1) })
+	return l.sem
+}
+
+func (l *reconcileLock) Lock() { l.slot() <- struct{}{} }
+
+// LockContext takes the lock, or returns ctx's error once ctx ends first.
+func (l *reconcileLock) LockContext(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case l.slot() <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (l *reconcileLock) Unlock() {
+	select {
+	case <-l.slot():
+	default:
+		panic("provider-account reconcile lock unlocked while not held")
+	}
+}
+
+func (m *Manager) reconcileMutex(providerName string) *reconcileLock {
 	switch providerName {
 	case string(provider.Claude):
 		return &m.claudeReconcileMu

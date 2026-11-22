@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isLocalEnter } from '../../utils/localEnter';
   import { untrack } from 'svelte';
   // The New Assistant dialog (docs/specs/standing-agents.md, "Sidebar"): a
   // name, the projects it serves (one or more, or all), and Create. The
@@ -104,7 +105,7 @@
   }
 
   function handleKeydown(e: KeyboardEvent): void {
-    if (e.key === 'Enter' && !e.isComposing) {
+    if (isLocalEnter(e) && !e.isComposing) {
       e.preventDefault();
       void create();
     }

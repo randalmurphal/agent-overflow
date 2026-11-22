@@ -146,7 +146,7 @@ func TestAutoSwitchRefusedClaudeTurnSwitchesAndContinues(t *testing.T) {
 				return strings.Count(string(text), accountswitch.ContinueMessage)
 			}
 			if !autoContinue {
-				holdsFor(t, "a continue was sent with auto-continue off", func() bool {
+				rig.holdsOnceSettled(t, "a continue was sent with auto-continue off", func() bool {
 					return continues() == 0 && len(queuedMessages(app, thread.ID)) == 0
 				})
 				return
@@ -185,7 +185,7 @@ func TestAutoSwitchRefusedHiddenThreadSwitchesWithoutContinue(t *testing.T) {
 			if got := rig.selected(); got != "first" {
 				t.Fatalf("selected account = %q, want first", got)
 			}
-			holdsFor(t, "a hidden thread was continued", func() bool {
+			rig.holdsOnceSettled(t, "a hidden thread was continued", func() bool {
 				return len(queuedMessages(app, thread.ID)) == 0
 			})
 		})
@@ -224,7 +224,7 @@ func TestAutoSwitchSendEndsTheWait(t *testing.T) {
 	if got := queuedMessages(app, untouched.ID); got[0] != accountswitch.ContinueMessage {
 		t.Fatalf("untouched thread queue = %q, want the continue message", got)
 	}
-	holdsFor(t, "the messaged thread was continued", func() bool {
+	rig.holdsOnceSettled(t, "the messaged thread was continued", func() bool {
 		return len(queuedMessages(app, messaged.ID)) == 0
 	})
 }
@@ -258,7 +258,7 @@ func TestAutoSwitchSettingOffEndsEarlierWaits(t *testing.T) {
 	waitForCondition(t, "the later thread's continue", func() bool {
 		return len(queuedMessages(app, later.ID)) == 1
 	})
-	holdsFor(t, "a thread that waited before the setting was turned off was continued", func() bool {
+	rig.holdsOnceSettled(t, "a thread that waited before the setting was turned off was continued", func() bool {
 		return len(queuedMessages(app, earlier.ID)) == 0
 	})
 }

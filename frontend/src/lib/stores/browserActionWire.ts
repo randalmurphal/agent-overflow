@@ -1,0 +1,375 @@
+import {
+  BrowserCompanionAction,
+  BrowserCompanionDo,
+  BrowserCompanionRecentAddresses,
+  BrowserCompanionRevealPageFile,
+  type BrowserCompanionEvent,
+  type BrowserRecentAddress,
+} from './bindings';
+import { untrack } from 'svelte';
+import {
+  admitBrowserState,
+  browserPaneMountId,
+  browserStateStamp,
+  isCurrentBrowserPane,
+  nativeBrowserRefusal,
+  observeBrowserCompanion,
+  type BrowserMountId,
+  type BrowserPaneAttachment,
+} from './browserCompanion.svelte';
+import { errString } from '../utils/errors';
+import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
+
+// The user's actions on a thread's browser as values, and the one function
+// that sends them (sendFromPane, sendForThread). Every BrowserCompanionDo
+// call is made here, and so are the pane's other calls on the thread's
+// browser (readRecentAddresses, revealPageFile), and each is checked as it
+// is sent, whatever its kind:
+// the thread's owner (nativeBrowserRefusal, which the owner moving or
+// becoming contested since the gesture turns into a refusal), the pane it
+// came from (still the thread's attached mount, else nothing is sent), and
+// the connection generation its answer is admitted in. A pane's action is
+// numbered in its mount's order here, so no other path can send one
+// unnumbered. browserActions.ts says what the user's gestures mean;
+// browserPageFocus.ts sends page focus requests.
+
+/** The cookie jars a thread's browser can use (internal/browser/jar.go). */
+export type BrowserJar = 'worktree' | 'project' | 'thread' | 'private';
+
+/** A tab's page id: never blank, minted only by pageIdOf. */
+export type PageId = string & { readonly __brand: 'PageId' };
+/** One of the thread's downloads (ThreadDownload.id): never blank, minted only by downloadIdOf. */
+export type DownloadId = string & { readonly __brand: 'DownloadId' };
+
+function isPageId(raw: string): raw is PageId {
+  return raw.trim() !== '';
+}
+
+function isDownloadId(raw: string): raw is DownloadId {
+  return raw.trim() !== '';
+}
+
+/** The page id `raw` names, or null for a blank one, which names no page. */
+export function pageIdOf(raw: string | null | undefined): PageId | null {
+  return raw && isPageId(raw) ? raw : null;
+}
+
+/** The download id `raw` names, or null for a blank one. */
+export function downloadIdOf(raw: string | null | undefined): DownloadId | null {
+  return raw && isDownloadId(raw) ? raw : null;
+}
+
+/** The commands that act on the tab they name and select nothing. */
+export type NamedTabKind = 'back' | 'forward' | 'reload' | 'stop' | 'restore' | 'close' | 'close-others' | 'close-right' | 'devtools';
+
+/** The download rows' commands. */
+export type DownloadKind = 'download-cancel' | 'download-reveal' | 'download-open';
+
+/**
+ * One user action on a thread's browser. Every command that acts on a tab
+ * names the tab the user meant when they acted; a keyboard command names
+ * the tab the window showed (browserActions.ts#keyboardTabTarget). Built by
+ * the constructors in `browserAction`.
+ */
+export type BrowserAction =
+  | { readonly kind: NamedTabKind; readonly pageId: PageId }
+  | { readonly kind: 'navigate'; readonly pageId: PageId; readonly address: string }
+  /** A dragged tab dropped beside `beside`, after it when `after`: the
+   *  backend finds that neighbor at the move's turn. */
+  | { readonly kind: 'move'; readonly pageId: PageId; readonly beside: PageId; readonly after: boolean }
+  | { readonly kind: 'activate' | 'duplicate'; readonly pageId: PageId }
+  | { readonly kind: 'step'; readonly step: 1 | -1 }
+  | { readonly kind: 'new'; readonly address: string }
+  | { readonly kind: 'reopen' }
+  | { readonly kind: 'show-browser' }
+  | { readonly kind: 'hide' }
+  | { readonly kind: 'jar'; readonly jar: BrowserJar; readonly confirmed: boolean }
+  | { readonly kind: DownloadKind; readonly downloadId: DownloadId }
+  | { readonly kind: 'downloads-clear' };
+
+/**
+ * The actions that make sense with no pane in hand: the chat header's, a
+ * mod-clicked link's and a download toast's. Every other kind comes from a
+ * pane and is sent only from its attachment (sendFromPane).
+ */
+export type ThreadAction = Extract<BrowserAction, { readonly kind: 'new' | 'show-browser' | 'hide' | DownloadKind | 'downloads-clear' }>;
+
+/** One constructor per kind of BrowserAction. */
+export const browserAction = {
+  onTab: (kind: NamedTabKind, pageId: PageId): BrowserAction => ({ kind, pageId }),
+  navigate: (pageId: PageId, address: string): BrowserAction => ({ kind: 'navigate', pageId, address }),
+  move: (pageId: PageId, beside: PageId, after: boolean): BrowserAction => ({ kind: 'move', pageId, beside, after }),
+  select: (pageId: PageId): BrowserAction => ({ kind: 'activate', pageId }),
+  duplicate: (pageId: PageId): BrowserAction => ({ kind: 'duplicate', pageId }),
+  step: (step: 1 | -1): BrowserAction => ({ kind: 'step', step }),
+  newTab: (address = ''): ThreadAction => ({ kind: 'new', address }),
+  reopen: (): BrowserAction => ({ kind: 'reopen' }),
+  showBrowser: (): ThreadAction => ({ kind: 'show-browser' }),
+  hide: (): ThreadAction => ({ kind: 'hide' }),
+  jar: (jar: BrowserJar, confirmed: boolean): BrowserAction => ({ kind: 'jar', jar, confirmed }),
+  download: (kind: DownloadKind, downloadId: DownloadId): ThreadAction => ({ kind, downloadId }),
+  clearDownloads: (): ThreadAction => ({ kind: 'downloads-clear' }),
+};
+
+/** A page focus intent's arm or withdrawal (browserPageFocus.ts), which only a pane sends. */
+export type PageFocusRequest =
+  | { readonly kind: 'focus-page'; readonly pageId: PageId; readonly intent: number }
+  | { readonly kind: 'focus-page-withdraw'; readonly intent: number };
+
+/** Every kind of action the window sends on the wire. */
+export type WireKind = BrowserAction['kind'] | PageFocusRequest['kind'];
+
+/**
+ * Whether each kind takes a number in its pane mount's order: every kind
+ * whose result depends on, or changes, the tab strip's selection, order or
+ * membership (a selection, a step, an opening, a close, a move), so none
+ * overtakes the pane's earlier one. The backend's companionSpecs agree
+ * (internal/app/app_browser_companion_action.go), and architecture.test.ts
+ * says why each kind is or is not numbered.
+ */
+export const NUMBERED_KINDS: { readonly [K in WireKind]: boolean } = {
+  activate: true,
+  step: true,
+  new: true,
+  reopen: true,
+  duplicate: true,
+  'download-open': true,
+  'show-browser': true,
+  close: true,
+  'close-others': true,
+  'close-right': true,
+  move: true,
+  back: false,
+  forward: false,
+  reload: false,
+  stop: false,
+  restore: false,
+  devtools: false,
+  navigate: false,
+  hide: false,
+  jar: false,
+  'download-cancel': false,
+  'download-reveal': false,
+  'downloads-clear': false,
+  'focus-page': false,
+  'focus-page-withdraw': false,
+};
+
+function unhandled(action: never): never {
+  throw new Error(`browser action ${JSON.stringify(action)} has no wire form`);
+}
+
+/** A numbered action's place in its mount's order. */
+interface Place {
+  readonly mount: BrowserMountId;
+  readonly epoch: number;
+  readonly select: number;
+}
+
+/** The wire form of action sent from origin, with its place in the mount's order. */
+function wireAction(action: BrowserAction | PageFocusRequest, origin: ActionOrigin, place: Place | null): BrowserCompanionAction {
+  const base = { kind: '', pageId: '', address: '', index: 0, ...place };
+  switch (action.kind) {
+    case 'back':
+    case 'forward':
+    case 'reload':
+    case 'stop':
+    case 'restore':
+    case 'close':
+    case 'close-others':
+    case 'close-right':
+    case 'devtools':
+    case 'activate':
+    case 'duplicate':
+      return new BrowserCompanionAction({ ...base, kind: action.kind, pageId: action.pageId });
+    case 'navigate':
+      return new BrowserCompanionAction({ ...base, kind: 'navigate', pageId: action.pageId, address: action.address });
+    case 'move':
+      return new BrowserCompanionAction({ ...base, kind: 'move', pageId: action.pageId, beside: action.beside, after: action.after });
+    case 'step':
+      return new BrowserCompanionAction({ ...base, kind: 'step', index: action.step });
+    case 'new':
+      return new BrowserCompanionAction({ ...base, kind: 'new', address: action.address });
+    case 'reopen':
+    case 'hide':
+    case 'downloads-clear':
+    case 'show-browser':
+      return new BrowserCompanionAction({ ...base, kind: action.kind });
+    case 'jar':
+      // The pane the user chose it in: the backend switches the browser
+      // that pane shows, or nothing once it is gone (BindMount).
+      if (origin.kind !== 'pane') throw new Error('A cookie jar switch is sent from its pane.');
+      return new BrowserCompanionAction({ ...base, kind: 'jar', jar: action.jar, confirmed: action.confirmed, mount: origin.pane.mount });
+    case 'download-cancel':
+    case 'download-reveal':
+    case 'download-open':
+      return new BrowserCompanionAction({ ...base, kind: action.kind, downloadId: action.downloadId });
+    case 'focus-page':
+    case 'focus-page-withdraw': {
+      if (origin.kind !== 'pane') throw new Error('A page focus request is sent from its pane.');
+      const pageId = action.kind === 'focus-page' ? action.pageId : '';
+      return new BrowserCompanionAction({ ...base, kind: action.kind, pageId, mount: origin.pane.mount, intent: action.intent });
+    }
+    default:
+      return unhandled(action);
+  }
+}
+
+// Each live mount's numbering (internal/browser/turnorder). The backend
+// admits a mount's numbers in order within an epoch and refuses what
+// arrives of an older epoch, so a mount starts its next epoch only with
+// the first action it sends while none of its own is unanswered: then
+// nothing of the older epoch is still meant to act, and a gap the backend
+// recorded there (a number lost or overtaken) no longer holds its keyboard
+// commands. A new mount (a re-attach) starts again.
+interface MountNumbering {
+  epoch: number;
+  seq: number;
+  unanswered: number;
+}
+
+const mountNumberings = new Map<BrowserMountId, MountNumbering>();
+
+/** The kinds that select a tab: the user's selection gestures. */
+const SELECTING_KINDS = new Set<WireKind>(['activate', 'step', 'new', 'reopen', 'duplicate', 'download-open', 'show-browser']);
+
+// The tab selections sent from each mount, counted as each is sent, so a
+// gesture that waits on its own selection knows when the user made a later
+// one (BrowserAddressBar's pending switch). A selection sent with no pane in
+// hand (a link's new tab, the chat header's chip) counts on the mount
+// attached to its thread. A mount's count ends with it.
+const selectionsSent = createKeyedSignalRegistry<number>(0);
+
+/** How many tab selections have been sent from `mount`. Reactive. */
+export function browserSelectionsSent(mount: BrowserMountId): number {
+  return selectionsSent.get(mount);
+}
+
+// Untracked, so a send from inside an effect never subscribes it.
+function countSelection(mount: BrowserMountId | null): void {
+  if (mount) selectionsSent.set(mount, untrack(() => selectionsSent.get(mount)) + 1);
+}
+
+/** A numbered action's place, and the end of its wait for an answer (safe to call more than once). */
+function takePlace(mount: BrowserMountId): { readonly place: Place; readonly answered: () => void } {
+  let numbering = mountNumberings.get(mount);
+  if (!numbering) {
+    numbering = { epoch: 0, seq: 0, unanswered: 0 };
+    mountNumberings.set(mount, numbering);
+  }
+  if (numbering.unanswered === 0) {
+    numbering.epoch += 1;
+    numbering.seq = 0;
+  }
+  numbering.seq += 1;
+  numbering.unanswered += 1;
+  const taken = numbering;
+  let waiting = true;
+  return {
+    place: { mount, epoch: taken.epoch, select: taken.seq },
+    answered: () => {
+      if (!waiting) return;
+      waiting = false;
+      taken.unanswered -= 1;
+    },
+  };
+}
+
+/** Where an action is sent from: an attached pane, or its thread with no pane in hand. */
+type ActionOrigin =
+  | { readonly kind: 'pane'; readonly pane: BrowserPaneAttachment }
+  | { readonly kind: 'thread'; readonly threadId: string };
+
+/** What a sent action came to. */
+export type BrowserActionAnswer =
+  | { readonly kind: 'answered'; readonly state: BrowserCompanionEvent }
+  /** Refused here (this page cannot host the thread's browser) or by the backend. */
+  | { readonly kind: 'refused'; readonly error: string; readonly cause: unknown }
+  /** Its pane detached before it was sent: nothing was sent. */
+  | { readonly kind: 'pane-gone' };
+
+/**
+ * Sends `action` from `pane`: numbered in the pane mount's order when its
+ * kind is numbered (NUMBERED_KINDS), and only while `pane` is still the thread's attached
+ * mount.
+ */
+export function sendFromPane(pane: BrowserPaneAttachment, action: BrowserAction | PageFocusRequest): Promise<BrowserActionAnswer> {
+  return send({ kind: 'pane', pane }, action);
+}
+
+/** Sends `action` for the thread with no pane in hand: never numbered, it applies in arrival order. */
+export function sendForThread(threadId: string, action: ThreadAction): Promise<BrowserActionAnswer> {
+  return send({ kind: 'thread', threadId }, action);
+}
+
+async function send(origin: ActionOrigin, action: BrowserAction | PageFocusRequest): Promise<BrowserActionAnswer> {
+  const threadId = origin.kind === 'pane' ? origin.pane.threadId : origin.threadId;
+  if (SELECTING_KINDS.has(action.kind)) countSelection(origin.kind === 'pane' ? origin.pane.mount : untrack(() => browserPaneMountId(threadId)));
+  const refusal = nativeBrowserRefusal(threadId);
+  if (refusal) return { kind: 'refused', error: refusal.message, cause: refusal };
+  if (origin.kind === 'pane' && !isCurrentBrowserPane(origin.pane)) return { kind: 'pane-gone' };
+  const taken = origin.kind === 'pane' && NUMBERED_KINDS[action.kind] ? takePlace(origin.pane.mount) : null;
+  const stamp = browserStateStamp(threadId);
+  try {
+    const state = await BrowserCompanionDo(threadId, wireAction(action, origin, taken?.place ?? null));
+    admitBrowserState(state, stamp);
+    return { kind: 'answered', state };
+  } catch (err) {
+    return { kind: 'refused', error: errString(err), cause: err };
+  } finally {
+    taken?.answered();
+  }
+}
+
+/** What one of the pane's calls on the thread's browser came to. */
+export type PaneCallAnswer<T> =
+  | { readonly kind: 'answered'; readonly value: T }
+  /** Refused here (this page cannot host the thread's browser) or by the backend. */
+  | { readonly kind: 'refused'; readonly error: string; readonly cause: unknown }
+  /** Its pane detached, or this page stopped hosting the thread's browser, before it was sent or answered. */
+  | { readonly kind: 'pane-gone' };
+
+/**
+ * Makes `call` from `pane`, checked as send does: this page hosts the
+ * thread's browser and `pane` is its attached mount, before the call and
+ * again at its answer, so an answer that arrives after the owner moved or
+ * the pane detached shows nothing.
+ */
+async function callFromPane<T>(pane: BrowserPaneAttachment, call: () => Promise<T>): Promise<PaneCallAnswer<T>> {
+  const before = paneGate(pane);
+  if (before) return before;
+  try {
+    const value = await call();
+    return paneGate(pane) ?? { kind: 'answered', value };
+  } catch (err) {
+    return paneGate(pane) ?? { kind: 'refused', error: errString(err), cause: err };
+  }
+}
+
+function paneGate(pane: BrowserPaneAttachment): Exclude<PaneCallAnswer<never>, { kind: 'answered' }> | null {
+  const refusal = nativeBrowserRefusal(pane.threadId);
+  if (refusal) return { kind: 'refused', error: refusal.message, cause: refusal };
+  return isCurrentBrowserPane(pane) ? null : { kind: 'pane-gone' };
+}
+
+/** The addresses the thread's pages recently opened, for `pane`'s address suggestions. */
+export function readRecentAddresses(pane: BrowserPaneAttachment): Promise<PaneCallAnswer<readonly BrowserRecentAddress[]>> {
+  return callFromPane(pane, async () => (await BrowserCompanionRecentAddresses(pane.threadId)) ?? []);
+}
+
+/** Opens the file manager at the local file `pageId` shows, from `pane`. */
+export function revealPageFile(pane: BrowserPaneAttachment, pageId: PageId): Promise<PaneCallAnswer<void>> {
+  return callFromPane(pane, () => BrowserCompanionRevealPageFile(pane.threadId, pageId));
+}
+
+observeBrowserCompanion({
+  // A new mount (a re-attach) numbers its actions afresh.
+  mountEnded: (mount) => {
+    mountNumberings.delete(mount);
+    selectionsSent.drop(mount);
+  },
+  resetForTest: () => {
+    mountNumberings.clear();
+    selectionsSent.reset();
+  },
+});

@@ -74,7 +74,9 @@ func (m *Manager) refreshProviderAccountUsage(
 	}
 	defer endWork()
 	refreshMu := m.reconcileMutex(providerName)
-	refreshMu.Lock()
+	if err := refreshMu.LockContext(ctx); err != nil {
+		return fmt.Errorf("wait for the %s account lock to read account %s's usage: %w", providerName, accountID, err)
+	}
 	defer refreshMu.Unlock()
 	// Re-checked now that this call holds the mutex: the manual path and the
 	// automatic poll gate independently, so both can pass the pre-lock check,

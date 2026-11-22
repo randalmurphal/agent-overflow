@@ -153,12 +153,11 @@ func TestReviewProjectionFlushesIntermediateProseAndPublishesOneSourcedResult(t 
 
 	var childResults, commandResults, completes, turnCompletes int
 	for _, event := range events {
-		switch event.Kind {
-		case provider.EventContentBlockStop:
+		if event.Kind == provider.EventContentBlockStop {
 			if event.Content == "No findings." && event.ParentToolUseID == launchID {
 				childResults++
 			}
-		case provider.EventCommandResult:
+		} else if event.Kind == provider.EventCommandResult {
 			commandResults++
 			if event.Content != "No findings." || event.ParentToolUseID != "" {
 				t.Errorf("command result = %+v", event)
@@ -170,9 +169,9 @@ func TestReviewProjectionFlushesIntermediateProseAndPublishesOneSourcedResult(t 
 			if meta.AgentResult == nil || meta.AgentResult.LaunchID != launchID || meta.AgentResult.SourceKind != "review" {
 				t.Errorf("agent result meta = %+v", meta.AgentResult)
 			}
-		case provider.EventToolComplete:
+		} else if event.Kind == provider.EventToolComplete {
 			completes++
-		case provider.EventTurnComplete:
+		} else if event.Kind == provider.EventTurnComplete {
 			turnCompletes++
 		}
 	}
@@ -238,13 +237,15 @@ func TestReviewProjectionKeepsAReportedResultSuccessfulAfterProviderFailure(t *t
 		"threadId":"codex-thread","turn":{"id":"outer-turn","status":"failed","error":{"message":"report delivery failed"},"items":[]}
 	}`))
 
+	var results, launches, turns int
 	for _, event := range events {
-		switch event.Kind {
-		case provider.EventCommandResult:
+		if event.Kind == provider.EventCommandResult {
+			results++
 			if event.Content != "One finding." {
 				t.Fatalf("result = %q", event.Content)
 			}
-		case provider.EventToolComplete:
+		} else if event.Kind == provider.EventToolComplete {
+			launches++
 			var meta struct {
 				ItemStatus string `json:"item_status"`
 			}
@@ -254,11 +255,15 @@ func TestReviewProjectionKeepsAReportedResultSuccessfulAfterProviderFailure(t *t
 			if meta.ItemStatus != "completed" {
 				t.Fatalf("review launch status = %q, want completed", meta.ItemStatus)
 			}
-		case provider.EventTurnComplete:
+		} else if event.Kind == provider.EventTurnComplete {
+			turns++
 			complete := event.TurnComplete.(*provider.WireTurnCompleteMeta)
 			if complete.StopReason != "end_turn" || event.Failure != nil {
 				t.Fatalf("logical review completion = %+v, failure=%+v", complete, event.Failure)
 			}
 		}
+	}
+	if results != 1 || launches != 1 || turns != 1 {
+		t.Fatalf("review ended with %d result(s), %d launch completion(s) and %d turn completion(s), want one of each", results, launches, turns)
 	}
 }

@@ -30,8 +30,9 @@ import {
 import {
   FOOTER_TOKEN_PATTERN,
   THREAD_TOOLS_SERVER,
-  advanceGate,
   awaitGate,
+  awaitToolAnswer,
+  releaseAfterBackgrounded,
   setScenario,
   threadToolsScenario,
 } from './thread-tools-helpers.js';
@@ -494,12 +495,10 @@ test.describe('mid-loop consumption', () => {
           : (item.summary ?? '').includes(MID_LOOP_QUEUED)));
       let callerMock: string;
       if (source === 'agent') {
-        const target = await harness.waitForEvent<{ mockId: string; cwd: string; report: { kind: string; detail?: string } }>(
-          'harness:mock',
-          (ev) => ev.cwd === targetPath && ev.report.kind === 'waiting_signal' && ev.report.detail === 'hold-reply',
-          240_000,
-        );
-        await advanceGate(harness, target.mockId, 'hold-reply');
+        // The reply waits for the send to return, so it reaches the caller
+        // as a message rather than inside the send's answer.
+        const send = await awaitToolAnswer<{ outcome: string }>(harness, { tool: 'thread_send', cwd: callerPath, timeoutMs: 240_000 });
+        await releaseAfterBackgrounded(send, { harness, gate: 'hold-reply', cwd: targetPath });
         await expect.poll(async () => (await consumedRows()).length, { timeout: 60_000 }).toBe(1);
         callerMock = (await awaitGate(harness, 'reserved', callerPath)).mockId;
       } else {

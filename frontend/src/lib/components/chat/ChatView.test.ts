@@ -21,7 +21,8 @@ import '../terminal/TerminalView.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { focusPane, registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
 import { resetComposerDraftSnapshotsForTest } from '../../stores/composerDraft.svelte';
-import { getThreads, refreshThreads } from '../../stores/threads.svelte';
+import { getThreads } from '../../stores/threads.svelte';
+import { loadSidebarCatalogs } from '../../stores/sidebarCatalogs';
 import {
   getThreadStatus,
   projectTurnStarted,
@@ -915,7 +916,7 @@ describe('<ChatView>', () => {
     try {
       const thread = { ...seedThread(), latestTurnCompletedAt: 1_000 };
       setBindingMock('ListThreads', async () => [thread]);
-      await refreshThreads();
+      await loadSidebarCatalogs();
       const pane = await buildPane(thread);
       const markRead = setBindingMock('MarkThreadRead', async () => {});
 
@@ -955,7 +956,7 @@ describe('<ChatView>', () => {
     try {
       const thread = { ...seedThread(), hasIncompleteTurn: true };
       setBindingMock('ListThreads', async () => [thread]);
-      await refreshThreads();
+      await loadSidebarCatalogs();
       const pane = await buildPane(thread);
       const markRead = setBindingMock('MarkThreadRead', async () => {});
 
@@ -980,7 +981,7 @@ describe('<ChatView>', () => {
       // must stamp at now, the way Interrupted does.
       const thread = { ...seedThread(), hasFailedTurn: true };
       setBindingMock('ListThreads', async () => [thread]);
-      await refreshThreads();
+      await loadSidebarCatalogs();
       const pane = await buildPane(thread);
       const markRead = setBindingMock('MarkThreadRead', async () => {});
 
@@ -1003,7 +1004,7 @@ describe('<ChatView>', () => {
     try {
       const thread = { ...seedThread(), lastReadAt: 500, latestTurnCompletedAt: 400, attention: { kind: 'decision' as const, reason: 'r', at: 2_000 } };
       setBindingMock('ListThreads', async () => [thread]);
-      await refreshThreads();
+      await loadSidebarCatalogs();
       const pane = await buildPane(thread);
       const markRead = setBindingMock('MarkThreadRead', async () => {});
 
@@ -1025,7 +1026,7 @@ describe('<ChatView>', () => {
       const latestTurnCompletedAt = 2_000;
       const thread = { ...seedThread(), latestTurnCompletedAt };
       setBindingMock('ListThreads', async () => [thread]);
-      await refreshThreads();
+      await loadSidebarCatalogs();
       const pane = await buildPane(thread);
       setBindingMock('MarkThreadRead', async () => {});
 
@@ -1049,7 +1050,7 @@ describe('<ChatView>', () => {
       const focusedThread = { ...seedThread(), id: 'thread-focused', latestTurnCompletedAt: 500 };
       const backgroundThread = { ...seedThread(), id: 'thread-background', latestTurnCompletedAt: 1_000 };
       setBindingMock('ListThreads', async () => [focusedThread, backgroundThread]);
-      await refreshThreads();
+      await loadSidebarCatalogs();
 
       // Register a 'main' pane so we can actually focus it; focusPane
       // is a no-op if the target isn't in the registry.
@@ -1100,7 +1101,7 @@ describe('<ChatView>', () => {
   it('does not rewrite read state when the active thread is already read', async () => {
     const thread = { ...seedThread(), latestTurnCompletedAt: 1_000, lastReadAt: 1_500 };
     setBindingMock('ListThreads', async () => [thread]);
-    await refreshThreads();
+    await loadSidebarCatalogs();
     const pane = await buildPane(thread);
     const markRead = setBindingMock('MarkThreadRead', async () => {});
 
@@ -1116,7 +1117,7 @@ describe('<ChatView>', () => {
     try {
       const thread = { ...seedThread(), latestTurnCompletedAt: 1_000, lastReadAt: 1_500 };
       setBindingMock('ListThreads', async () => [thread]);
-      await refreshThreads();
+      await loadSidebarCatalogs();
       const pane = await buildPane(thread);
       const markRead = setBindingMock('MarkThreadRead', async () => {});
 
@@ -1147,7 +1148,7 @@ describe('<ChatView>', () => {
     try {
       const thread = { ...seedThread(), latestTurnCompletedAt: 1_000, lastReadAt: 1_500 };
       setBindingMock('ListThreads', async () => [thread]);
-      await refreshThreads();
+      await loadSidebarCatalogs();
       const pane = await buildPane(thread);
       const markRead = setBindingMock('MarkThreadRead', async () => {});
 
@@ -1186,7 +1187,7 @@ describe('<ChatView>', () => {
   it('clears a stale sidebar error status once the thread is open', async () => {
     const thread = seedThread();
     setBindingMock('ListThreads', async () => [thread]);
-    await refreshThreads();
+    await loadSidebarCatalogs();
     const pane = await buildPane(thread);
     projectThreadError('thread-1');
 
@@ -1199,7 +1200,7 @@ describe('<ChatView>', () => {
   it('clears a stale sidebar interrupted status once the thread is open', async () => {
     const thread = seedThread();
     setBindingMock('ListThreads', async () => [thread]);
-    await refreshThreads();
+    await loadSidebarCatalogs();
     const pane = await buildPane(thread);
     projectTurnStarted('thread-1', 'turn-1', 0, 0);
     projectTurnCompleted('thread-1', 'turn-1', { aborted: true });

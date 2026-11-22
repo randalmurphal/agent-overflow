@@ -321,11 +321,6 @@ export async function awaitToolAnswer<T = Record<string, unknown>>(
 }
 
 /**
- * Await the next input a mock takes whose text includes every part, from
- * the mock in `cwd` when one is named. `input` on the report is the text
- * the provider received for the turn.
- */
-/**
  * The line a message Agent Overflow writes into a thread reaches the model
  * under, naming its sender, or the app itself with no sender
  * (agentmeta.WireText).
@@ -339,6 +334,11 @@ export function aoMessageOpening(sender?: string): string {
 /** The line that closes such a message. */
 export const AO_MESSAGE_CLOSING = '\n[End of Agent Overflow message]';
 
+/**
+ * Await the next input a mock takes whose text includes every part, from
+ * the mock in `cwd` when one is named. `input` on the report is the text
+ * the provider received for the turn.
+ */
 export async function awaitMockInput(
   harness: HarnessApp,
   filter: { includes: string | readonly string[]; cwd?: string; timeoutMs?: number },
@@ -352,6 +352,39 @@ export async function awaitMockInput(
       parts.every((part) => (ev.report.input ?? '').includes(part)),
     filter.timeoutMs ?? 60_000,
   );
+}
+
+/**
+ * Await inputs the mock in `cwd` takes until every part has reached it, and
+ * return, for each part, the input that carried it.
+ *
+ * Headless Claude takes every message one queue drain hands it as one input
+ * (flushDispatchJoinsMessages, internal/app/app_flush_queue.go), so two
+ * answers that wait at one turn boundary arrive in one input and two that
+ * do not arrive in two. awaitMockInput once per part consumes a joined
+ * input on the first part and then waits for one that never comes; this
+ * consumes each input once, whatever it carries.
+ */
+export async function awaitInputsCarrying(
+  harness: HarnessApp,
+  filter: { cwd: string; parts: readonly string[]; timeoutMs?: number },
+): Promise<Map<string, string>> {
+  const deadline = Date.now() + (filter.timeoutMs ?? 60_000);
+  const carried = new Map<string, string>();
+  for (;;) {
+    const missing = filter.parts.filter((part) => !carried.has(part));
+    if (missing.length === 0) return carried;
+    const event = await harness.waitForEvent<HarnessMockEventData>(
+      'harness:mock',
+      (ev) =>
+        ev.report.kind === 'user_input' &&
+        ev.cwd === filter.cwd &&
+        missing.some((part) => (ev.report.input ?? '').includes(part)),
+      Math.max(1, deadline - Date.now()),
+    );
+    const input = event.report.input ?? '';
+    for (const part of missing) if (input.includes(part)) carried.set(part, input);
+  }
 }
 
 /** Release one parked `gate` step. */
@@ -376,6 +409,45 @@ export async function awaitGate(
       ev.report.detail === name &&
       (cwd === undefined || ev.cwd === cwd),
   );
+}
+
+/**
+ * Release a responder parked on `responder.gate` once the call that asked
+ * it has answered `backgrounded`.
+ *
+ * A spawn, send or new assistant without a wait reads its request once, as
+ * it returns. A responder that settles before that read is answered in the
+ * call's reply, and an answer delivered inline queues no message
+ * (docs/specs/agent-thread-tools.md, "notify"). A test that waits for the
+ * answer as a message parks its responder on a gate before it replies or
+ * ends, and opens the gate here, so the call returns first by order rather
+ * than by speed.
+ */
+export async function releaseAfterBackgrounded(
+  answer: ToolAnswer<{ outcome?: string }>,
+  responder: { harness: HarnessApp; gate: string; cwd: string },
+): Promise<void> {
+  expect(answer.isError, answer.text).toBe(false);
+  expect(answer.value?.outcome, answer.text).toBe('backgrounded');
+  const parked = await awaitGate(responder.harness, responder.gate, responder.cwd);
+  await advanceGate(responder.harness, parked.mockId, responder.gate);
+}
+
+/**
+ * Whether a tool call holds `probe` in the wait registry now
+ * (HarnessRequestWaits).
+ *
+ * The call that makes a request holds its token until its response is
+ * written, so the token of the request under test reads held twice: by its
+ * send, then by the status call. A probe is a request sent in an earlier
+ * turn to a thread that holds and never answers. Once that turn has ended
+ * nothing holds it, and named among a thread_status call's tokens it is held
+ * exactly while that status call is parked: the one event a test can order a
+ * settlement after, so the parked call, not a wake, collects the answer.
+ */
+export async function parkedOn(harness: HarnessApp, probe: string): Promise<boolean> {
+  const held = await harness.rpc<Record<string, boolean>>('HarnessRequestWaits', [probe]);
+  return held[probe] === true;
 }
 
 /** Thread row shape the specs read back through HarnessListThreadRows. */

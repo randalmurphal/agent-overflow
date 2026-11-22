@@ -2,9 +2,10 @@
 // that runs the real backend + real SPA headless on an isolated data
 // directory, with both provider binaries pointed at ao-mockprovider so
 // no real Claude/Codex process (or account) is ever touched. The
-// Harness RPC receiver (app_harness.go) is registered on the transport
-// only on this path — every other boot leaves the harness surface off
-// the wire entirely.
+// Harness RPC receiver (internal/harnessrpc) is registered on the
+// transport only by the two isolated boots, this one and --soak
+// (main_soak.go); every other boot leaves the harness surface off the
+// wire entirely.
 //
 // See docs/architecture/agent-harness.md for the full guide.
 package main
@@ -309,6 +310,9 @@ type harnessTiming struct {
 	// UsageProbeGap is the shortest gap between two usage probes of one
 	// provider (app.IsolationConfig.UsageProbeGap).
 	UsageProbeGap time.Duration
+	// UsagePoll is the usage poll's tick while a provider has a turn in
+	// flight or completed one (app.IsolationConfig.UsagePollInterval).
+	UsagePoll time.Duration
 }
 
 // parseHarnessTiming reads a diagenv.HarnessTiming value. Empty is the
@@ -336,6 +340,7 @@ func parseHarnessTiming(value string) (harnessTiming, error) {
 		"remote-watch-poll":    &timing.RemoteWatchPoll,
 		"drain-stall":          &timing.DrainStall,
 		"usage-probe-gap":      &timing.UsageProbeGap,
+		"usage-poll":           &timing.UsagePoll,
 	}
 	for _, entry := range strings.Split(value, ",") {
 		entry = strings.TrimSpace(entry)
@@ -464,7 +469,16 @@ func isolationOptionsFor(flags cliFlags) isolationOptions {
 // rather than by remembering to call a second function.
 func newIsolatedProviderApp(paths harnessPaths, opts isolationOptions) (*App, *isolatedNativeWindow) {
 	appService := newApp()
-	appservice.ConfigureIsolation(appService.App, appservice.IsolationConfig{
+	appservice.ConfigureIsolation(appService.App, isolationConfig(paths, opts))
+	window := &isolatedNativeWindow{}
+	appservice.SetBrowserNativeWindow(appService.App, window.pointer)
+	return appService, window
+}
+
+// isolationConfig maps a mocked boot's paths and options to the isolation
+// the App applies (newIsolatedProviderApp).
+func isolationConfig(paths harnessPaths, opts isolationOptions) appservice.IsolationConfig {
+	return appservice.IsolationConfig{
 		ProviderBinary:         paths.MockProvider,
 		CredentialHome:         paths.CredentialHome,
 		UseFileKeychain:        true,
@@ -499,15 +513,13 @@ func newIsolatedProviderApp(paths harnessPaths, opts isolationOptions) (*App, *i
 		RemoteWatchPoll:         opts.Timing.RemoteWatchPoll,
 		ProviderEventDrainStall: opts.Timing.DrainStall,
 		UsageProbeGap:           opts.Timing.UsageProbeGap,
+		UsagePollInterval:       opts.Timing.UsagePoll,
 		OmitOwnerOps:            opts.OlderComputer,
 		// v0.0.19 groups agent messages by the absorbed rule and never
 		// reads agentMessageMembers; bootTransport leaves the capability
 		// out of its hello for the same boot.
 		OmitAgentMessageRunMembers: opts.OlderComputer,
-	})
-	window := &isolatedNativeWindow{}
-	appservice.SetBrowserNativeWindow(appService.App, window.pointer)
-	return appService, window
+	}
 }
 
 // realBrowserEngineRequested answers whether this isolated boot may host a
@@ -734,9 +746,8 @@ func prepareHarness(flags cliFlags) (harnessPaths, error) {
 }
 
 // ensureHarnessPrivateDir creates a harness-owned directory at 0700,
-// stamping the mode explicitly because MkdirAll only ever subtracts from
-// its argument through the umask (an 0022 process would get 0755, an
-// 0000 one 0777).
+// stamping the mode explicitly because MkdirAll applies the umask, and a
+// restrictive one (0277, say) would leave the owner unable to write it.
 //
 // A directory that ALREADY exists is left exactly as found, unlike
 // ensureAppPrivateDir: the caller's next move is to refuse a planted one,
@@ -802,10 +813,8 @@ func refuseSymlink(path string) error {
 // canonical credential, orphan prune) under it via
 // App.credentialHomeOverride, so the flag only ever widens what the
 // harness can READ (~/.claude session files, ~/.codex rollouts) — never
-// what it can destroy. Before that pin existed, a keep-home run whose
-// reused data dir already listed a mock account handed the boot-time
-// prune a non-empty foreign keep-set aimed at the real ~/.claude — the
-// 2026-07-29 incident class.
+// what it can destroy: a keep-home run whose reused data dir lists a mock
+// account still prunes only the harness home, never the real ~/.claude.
 func isolateHarnessHome(dataRoot string) (string, error) {
 	homeDir := filepath.Join(dataRoot, "home")
 	if err := refuseSymlink(homeDir); err != nil {
@@ -834,6 +843,15 @@ func isolateHarnessHome(dataRoot string) (string, error) {
 	}
 	if err := os.Setenv("HOME", homeDir); err != nil {
 		return "", fmt.Errorf("redirect HOME: %w", err)
+	}
+	// The browser pane saves downloads to the user's Downloads folder, which
+	// XDG_CONFIG_HOME's user-dirs file can name outside HOME: both follow the
+	// harness home, and its Downloads folder exists as a user's does.
+	if err := os.Setenv("XDG_CONFIG_HOME", filepath.Join(homeDir, ".config")); err != nil {
+		return "", fmt.Errorf("redirect XDG_CONFIG_HOME: %w", err)
+	}
+	if err := ensureHarnessPrivateDir(filepath.Join(homeDir, "Downloads")); err != nil {
+		return "", fmt.Errorf("create the harness Downloads folder: %w", err)
 	}
 	if runtime.GOOS == "windows" {
 		if err := os.Setenv("USERPROFILE", homeDir); err != nil {

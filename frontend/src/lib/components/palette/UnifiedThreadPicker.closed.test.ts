@@ -3,7 +3,8 @@ import { render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import UnifiedThreadPicker from './UnifiedThreadPicker.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
-import { refreshThreads, updateThreadTitle } from '../../stores/threads.svelte';
+import { updateThreadTitle } from '../../stores/threads.svelte';
+import { loadSidebarCatalogs } from '../../stores/sidebarCatalogs';
 import { isHiddenThreadMode } from '../../utils/threadModes';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { installAnimateShim } from '../../../test/integration/_helpers';
@@ -23,7 +24,7 @@ const thread = (id: string, title: string): Thread => ({
 
 beforeEach(async () => {
   setBindingMock('ListThreads', async () => [thread('a', 'Alpha'), thread('b', 'Beta'), thread('c', 'Gamma')]);
-  await refreshThreads();
+  await loadSidebarCatalogs();
 });
 
 it('filters no threads while closed, and lists the current ones when it opens', async () => {

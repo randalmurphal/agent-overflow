@@ -71,6 +71,8 @@ export function offlineStartupFlow(): void {
         const deadlines = (window as unknown as { __bootDeadlines: { fired: number; pending: Set<unknown> } }).__bootDeadlines;
         return deadlines.fired > 0 && deadlines.pending.size === 0;
       });
+      // The asleep computer lists the tree its last complete read kept.
+      await expect(page.getByTestId('thread-row')).toHaveCount(1);
       expect(toasts).toEqual([]);
       online = true;
       await expect(page.getByTestId('transport-status-banner')).toHaveCount(0, { timeout: 20_000 });

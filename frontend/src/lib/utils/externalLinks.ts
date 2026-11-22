@@ -1,5 +1,6 @@
 import { OpenExternalURL } from '../stores/bindings';
-import { browserCompanionAct, browserCompanionState, canUseNativeBrowser } from '../stores/browserCompanion.svelte';
+import { openBrowserTab } from '../stores/browserActions';
+import { canPresentNativeBrowser } from '../stores/browserCompanion.svelte';
 import { addErrorToast } from '../stores/toast.svelte';
 import { runMode } from '../transport/runMode';
 import type { BackendKey } from '../transport/backendKey';
@@ -175,22 +176,6 @@ function threadIdForTarget(target: EventTarget | null): string {
   return target.closest<HTMLElement>('[data-thread-id]')?.dataset.threadId ?? '';
 }
 
-/**
- * Open a URL in the thread's companion browser pane.
- *
- * Two calls because the backend has no new-page-with-address action: `new`
- * mints the page and pushes the state that names it active, and the
- * navigate follows on that id. A refused `new` stops the sequence rather
- * than navigating whatever tab happened to be active, which would take a
- * page the person was reading.
- */
-async function openInCompanionBrowser(threadId: string, url: string): Promise<void> {
-  if (await browserCompanionAct(threadId, { kind: 'new' })) return;
-  const pageId = browserCompanionState(threadId)?.activePageId ?? '';
-  if (!pageId) return;
-  await browserCompanionAct(threadId, { kind: 'navigate', pageId, address: url });
-}
-
 function handleExternalLinkClick(event: MouseEvent): void {
   if (event.defaultPrevented) return;
   if (event.button !== 0 && event.button !== 1) return;
@@ -233,10 +218,11 @@ function handleExternalLinkClick(event: MouseEvent): void {
   // Mod+click opens the link in the thread's companion browser, which is a
   // NATIVE view of ONE host process — the thread's, since that is where
   // `browserCompanionAct` routes. So the gesture needs more than `host` in
-  // hand: with the thread on another machine, or in a browser tab on the
-  // host, it would mint a page this window has no way to show, and the
-  // person would see nothing happen. `canUseNativeBrowser` is the pane's
-  // one question, and off it the click falls back to the plain behaviour.
+  // hand: with the thread on another machine, in a browser tab on the
+  // host, with no browser engine or the browser turned off, or under
+  // compact, which shows no browser pane, it would mint a page nobody sees
+  // or nothing at all. `canPresentNativeBrowser` answers all of it, and
+  // off it the click falls back to the plain behaviour.
   // Middle-click is deliberately not in this branch: it means "somewhere
   // other than here" in every browser, and the system browser is that
   // somewhere.
@@ -244,8 +230,11 @@ function handleExternalLinkClick(event: MouseEvent): void {
   // handler scheme (mailto:, vscode://) falls through to the OS opener.
   if (event.button === 0 && isModClick(event) && safeExternalURL(safeURL) !== null) {
     const threadId = threadIdForTarget(event.target);
-    if (threadId && canUseNativeBrowser(threadId)) {
-      void openInCompanionBrowser(threadId, safeURL);
+    if (threadId && canPresentNativeBrowser(threadId)) {
+      // A new tab carrying the address, which opens the pane even when the
+      // thread had no tab and navigates no other tab; a refusal reaches the
+      // pane's banner or a toast.
+      void openBrowserTab(threadId, { address: safeURL });
       return;
     }
   }

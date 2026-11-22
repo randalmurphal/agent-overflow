@@ -14,6 +14,8 @@ export interface SidebarBucketsInput {
   entryOf: (projectId: string) => string;
   /** False for a thread on a computer the device filter hides. */
   threadVisible: (thread: Thread) => boolean;
+  /** False for a group the sidebar does not list yet. */
+  groupVisible: (group: ThreadGroup) => boolean;
   /** Whether the device filter is on: a group then shows only with a visible member. */
   filterDevices: boolean;
 }
@@ -82,7 +84,7 @@ export function bucketSidebarThreads(input: SidebarBucketsInput): SidebarBuckets
 
   const groupsByProject = new Map<string, ThreadGroup[]>();
   for (const group of input.groups) {
-    if (!group.projectId) continue;
+    if (!group.projectId || !input.groupVisible(group)) continue;
     if (input.filterDevices && !populatedGroupIds.has(group.id)) continue;
     if (query && !nameMatchedGroupIds.has(group.id) && !populatedGroupIds.has(group.id)) continue;
     // Keyed by ENTRY, like the thread buckets: ProjectList looks both up

@@ -11,6 +11,7 @@
 </script>
 
 <script lang="ts">
+  import { isEnterKey } from '../../utils/localEnter';
   import { tick, type Snippet } from 'svelte';
   import SteppedSpinner from '../primitives/SteppedSpinner.svelte';
   import ReviewEditorPreview from './ReviewEditorPreview.svelte';
@@ -162,8 +163,8 @@
     }
     // Mid-composition the text is still in the IME buffer, so a submit
     // chord would post a truncated comment.
-    if (event.key === 'Enter' && isImeComposingEvent(event)) return;
-    if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+    if (isEnterKey(event) && isImeComposingEvent(event)) return;
+    if (isEnterKey(event) && (event.ctrlKey || event.metaKey)) {
       event.preventDefault();
       if (event.repeat) return;
       fire(event.shiftKey ? secondary : primary);

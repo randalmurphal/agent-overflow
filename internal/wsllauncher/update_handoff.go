@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -218,17 +219,25 @@ func PublishLauncherFile(staged, install, id string, replace func(from, to strin
 	}
 	aside := install + ".old-" + id
 	if asideErr := replace(install, aside); asideErr != nil {
-		_ = os.Remove(next)
-		return fmt.Errorf("replace %s: %w (moving it aside failed too: %v)", install, err, asideErr)
+		err = fmt.Errorf("replace %s: %w (moving it aside failed too: %v)", install, err, asideErr)
+		return removeAfter(next, err)
 	}
 	if err := replace(next, install); err != nil {
 		if backErr := replace(aside, install); backErr != nil {
 			return fmt.Errorf("replace %s: %w (and restoring the previous launcher from %s failed: %v)", install, err, aside, backErr)
 		}
-		_ = os.Remove(next)
-		return fmt.Errorf("replace %s: %w", install, err)
+		return removeAfter(next, fmt.Errorf("replace %s: %w", install, err))
 	}
 	return nil
+}
+
+// removeAfter removes a file a failed step left behind, joining a failed
+// removal into cause.
+func removeAfter(path string, cause error) error {
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return errors.Join(cause, fmt.Errorf("remove %s: %w", path, err))
+	}
+	return cause
 }
 
 // RemoveLauncherFiles deletes the staged launcher and what a publish set
@@ -265,7 +274,7 @@ func copyFileSynced(src, dst string) (err error) {
 			err = closeErr
 		}
 		if err != nil {
-			_ = os.Remove(dst)
+			err = removeAfter(dst, err)
 		}
 	}()
 	if _, err := io.Copy(out, in); err != nil {

@@ -16,3 +16,17 @@
 export function isModClick(event: MouseEvent | KeyboardEvent): boolean {
   return event.metaKey || event.ctrlKey;
 }
+
+/** What a press of a row asks for what it names: open it in place, or in a new pane beside the focused one. */
+export interface ActivationIntent {
+  readonly openInNewPane: boolean;
+}
+
+/**
+ * The intent of a click or a key press (`roleButtonKeys`) on a row: the
+ * modifier opens a new pane. A row hands it to the one activation its
+ * pointer and keyboard input share, so neither drops the modifier.
+ */
+export function activationIntent(event: MouseEvent | KeyboardEvent): ActivationIntent {
+  return { openInNewPane: isModClick(event) };
+}

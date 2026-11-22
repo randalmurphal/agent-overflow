@@ -32,6 +32,21 @@ describe('<MenuItem>', () => {
     expect(onSelect).toHaveBeenCalled();
   });
 
+  // Enter with Alt, Ctrl or Meta is an app chord (alt+shift+enter maximizes
+  // the pane): the item neither acts nor takes the event from the dispatcher.
+  it('leaves an Enter chord with Alt, Ctrl or Meta to the app', async () => {
+    const onSelect = vi.fn();
+    const { getByRole } = render(Harness, { props: { label: 'Close other tabs', onSelect } });
+    for (const chord of [{ altKey: true, shiftKey: true }, { ctrlKey: true }, { metaKey: true }]) {
+      const event = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, ...chord });
+      getByRole('menuitem').dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(false);
+    }
+    expect(onSelect).not.toHaveBeenCalled();
+    await fireEvent.keyDown(getByRole('menuitem'), { key: 'Enter', shiftKey: true });
+    expect(onSelect).toHaveBeenCalledTimes(1);
+  });
+
   it('Space key activates onSelect', async () => {
     const onSelect = vi.fn();
     const { getByRole } = render(Harness, { props: { label: 'Apple', onSelect } });

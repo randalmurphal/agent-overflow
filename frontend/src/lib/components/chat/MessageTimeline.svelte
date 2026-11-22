@@ -68,28 +68,6 @@
   import { readAloudPreferences } from '../../stores/readAloudPreferences.svelte';
   import { refreshReadAloudSource } from '../../stores/readAloudSource.svelte';
 
-  // Extra buffer rendered above + below the viewport so fast scrolls
-  // (trackpad fling, scrollbar drag) don't outrun the rendered window —
-  // that was the source of the "text disappears under the composer then
-  // reappears" flicker. Mechanically the window recenters on every
-  // scroll event (any landing point mounts same-frame), so the buffer
-  // only bridges the compositor-vs-main-thread gap: 1-2 frames of
-  // scroll velocity in the steady state, plus main-thread stall bursts
-  // (streaming markdown parse, highlight ingest — tens of ms) at fling
-  // speed. It also lets row-size estimate corrections and async row
-  // content (images, first-visit mermaid/katex/spans) settle offscreen
-  // instead of at the visible edge.
-  //
-  // NOT a memory dial. The 1800 -> 1200 trim (2026-07-21) was tried as
-  // a tile-memory cut and measured ~nothing (86.4 -> 89.9MB renderer
-  // cc/tile_memory, within noise): parked-at-bottom panes only fill
-  // the above-side buffer, and layer overheads dominated — buffered
-  // rows cost DOM, not raster; tiles only exist near each pane's
-  // viewport. Shrinking below ~800px starts exposing the stall x
-  // fling blanking scenarios above for low-single-digit-MB DOM
-  // savings; 1200 ≈ a viewport of stall insurance. Keep in sync with
-  // TimelineVirtualizer's DEFAULT_BUFFER_PX.
-  const BUFFER_SIZE_PX = 1200;
   // Visual breathing room between the last message and the composer
   // overlay; combined with the --composer-height variable from ChatView.
   const BOTTOM_PAD_PX = 16;
@@ -894,8 +872,9 @@
     navRail?.scheduleViewportSync();
     // Older and newer zones are geometrically exclusive in a normal window
     // (you can't be near both edges at once), but a degenerate window that
-    // fits in the viewport could satisfy both; firing one direction per
-    // frame avoids two concurrent loads racing the shared pagingGeneration.
+    // fits in the viewport could satisfy both; one direction per frame
+    // keeps a single scroll event to one load. Pages at the two edges may
+    // still be in flight together: each claims only its own edge.
     if (paging.maybeAutoLoadOlder(offset)) return;
     paging.maybeAutoLoadNewer(offset);
     // No prune here: this fires every scroll frame (60Hz under the
@@ -1039,6 +1018,7 @@
     style:overflow-anchor="none"
     style:padding-bottom={`calc(var(--composer-height, 0px) + ${BOTTOM_PAD_PX}px)`}
     tabindex="-1"
+    data-pane-scroller
     data-testid="message-timeline-scroll"
     role="log"
     aria-label="Message History"
@@ -1103,7 +1083,6 @@
           data={revealedNodes}
           estimate={sizePriors.rowEstimate}
           getKey={(node) => timelineNodeKey(node)}
-          bufferSize={BUFFER_SIZE_PX}
           renderAll={IS_TEST}
           headerSize={pane.hasMoreHistory ? TIMELINE_LOAD_OLDER_HEADER_PX : TIMELINE_TOP_SPACER_PX}
           onscroll={handleTimelineScroll}

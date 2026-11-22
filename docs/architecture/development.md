@@ -116,8 +116,8 @@ of the real-provider smoke tests.
 Every step calls a Make target, so the local command is the same check.
 The jobs fill the Free plan's 20 concurrent slots where the time is: one
 Linux job for `fmt-check`, `tidy-check`, `go-vet`, `go-build`, `provider-smoke-compile`
-and `bindings-check`, a macOS `go-build`, one job for `go-lint` and
-`go-vuln`, the frontend job (`check`, `build`, `frontend-lint`), `go-test`
+and `bindings-check`, a macOS `go-build` and `exhaustive` pass, one job
+for `go-lint`, `go-lint-exhaustive` and `go-vuln`, the frontend job (`check`, `build`, `frontend-lint`), `go-test`
 in three shards by package weight (`GO_TEST_PKGS`, `GO_TEST_EXCLUDE`) plus
 two with `GO_TEST_FLAGS='-tags noremote'`, the
 Vitest unit and browser projects as two jobs under `bin/ao-netns`, and
@@ -159,7 +159,18 @@ checked by `scripts/test-ci-change.sh`) and `go-lint` runs with
 `--new-from-patch`, while
 `frontend-lint` runs `--deny-warnings` on the changed frontend files. Both
 widen to the whole tree once the existing backlog is cleared
-(`make go-lint` and `make frontend-lint` show it). Branch protection
+(`make go-lint` and `make frontend-lint` show it). The `exhaustive` linter
+has none, so the `go-lint` job also runs it alone over the whole tree
+(`make go-lint-exhaustive`): a constant added to an enum fails at every
+switch that does not name it. The target reaches every Go file its host
+compiles in two passes, one with no build tag and one with `nogui`,
+`noremote` and `providersmoke` together
+(`TestExhaustiveLintPassesReachEveryFile` fails for a file no pass
+compiles), then lints the Windows
+launcher's packages as Windows compiles them. The macOS job runs the linter
+over the default file set alone, which holds every file only macOS
+compiles. A Windows-only file outside the
+launcher's packages is compiled by no job and is not checked. Branch protection
 requiring these checks is a repository setting, not part of the tree.
 
 ## Releases

@@ -779,7 +779,7 @@ describe('TailClampedText wrap-stable window', () => {
     await raf();
     expect(appliedCut(body, after)).toBeGreaterThan(0);
     expectSamplesEqual(relBefore, sampleRelative(body, after, samples));
-    expect(tailOverflowPx(body)).toBeLessThanOrEqual(1);
+    await waitFor(() => tailOverflowPx(body) <= 1, 'the appended words slid into view');
   });
 
   // One paragraph with no newline, over the cap.

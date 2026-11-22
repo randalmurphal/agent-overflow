@@ -1,34 +1,36 @@
 <script lang="ts">
-  import ArrowLeft from '@lucide/svelte/icons/arrow-left';
-  import ArrowRight from '@lucide/svelte/icons/arrow-right';
-  import FolderOpen from '@lucide/svelte/icons/folder-open';
-  import Plus from '@lucide/svelte/icons/plus';
-  import RefreshCw from '@lucide/svelte/icons/refresh-cw';
-  import SquareCode from '@lucide/svelte/icons/square-code';
-  import X from '@lucide/svelte/icons/x';
   import type { PanelContext } from '../../stores/panelContext.svelte';
   import {
     attachBrowserCompanion,
-    browserCompanionAct,
+    browserActionError,
+    browserPaneAttachment,
     browserPaneMountId,
-    noteBrowserActionError,
+    browserShownPage,
+    browserThreadState,
+    canUseNativeBrowser,
+    noteBrowserPaneError,
     noteBrowserFindCleanupError,
     browserFindCleanupError,
-    reportBrowserPaneRect,
   } from '../../stores/browserCompanion.svelte';
-  import { BrowserCompanionRevealPageFile } from '../../stores/bindings';
-  import Icon from '../primitives/Icon.svelte';
-  import { errString } from '../../utils/errors';
-  import { airspaceIntersects, airspaceSurfaces } from '../../utils/paneAirspace.svelte';
-  import { rgbChannels, toConcreteColor } from '../../utils/cssColorProbe';
-  import { getPaneLayoutItems } from '../../stores/paneLayout.svelte';
-  import { getSidebarWidth, isSidebarCollapsed } from '../../stores/sidebarLayout.svelte';
-  import { getAppliedTheme } from '../../theme/themeApply.svelte';
-  import { untrack } from 'svelte';
+  import { actInPane, openBrowserTabInPane, tabTakesAddress } from '../../stores/browserActions';
+  import { browserAction, pageIdOf, revealPageFile as revealBrowserPageFile, type BrowserAction } from '../../stores/browserActionWire';
+  import { addressFocusIntent, registerBrowserAddressBar, takeAddressFocus } from '../../stores/browserAddressFocus.svelte';
+  import { focusBrowserPage } from '../../stores/browserPageFocus';
+  import { tick, untrack } from 'svelte';
   import PaneFindBar from '../panes/PaneFindBar.svelte';
   import { companionForSource } from '../../stores/companionPanes.svelte';
   import { closePaneFind, registerPaneFindProvider } from '../../stores/paneFind.svelte';
   import { createBrowserFind } from '../../stores/browserFind.svelte';
+  import BrowserAddressBar from './BrowserAddressBar.svelte';
+  import BrowserFilePicker from './BrowserFilePicker.svelte';
+  import { togglePanePromotion } from '../../stores/panes.svelte';
+  import { isCompactLayout } from '../../stores/layoutMode.svelte';
+  import { threadBackend } from '../../transport/entityIndex';
+  import { HOME_BACKEND } from '../../transport/backendKey';
+  import BrowserTabStrip from './BrowserTabStrip.svelte';
+  import Button from '../primitives/Button.svelte';
+  import { createBrowserPaneGeometry } from './browserPaneGeometry.svelte';
+  import { provideBrowserPaneThread } from './browserPaneThread';
 
   // The pane surface is an empty HOST RECT: the platform positions a real
   // native browser view over it (spec docs/specs/embedded-browser.md §7).
@@ -38,67 +40,50 @@
   // through the airspace registry.
 
   let { ctx }: { ctx: PanelContext } = $props();
+  provideBrowserPaneThread(() => ctx.threadId);
   let surface: HTMLDivElement | undefined = $state(undefined);
   let attachment = $state<ReturnType<typeof attachBrowserCompanion> | null>(null);
-  let address = $state('');
-  let addressFocused = $state(false);
-  let rectFrame = 0;
-  let lastSentKey = '';
-  let bgRaw = '';
-  let bgHex = '';
-  // The host rect's own size, read off the same report as the geometry, so
-  // the size label can say how far the page is scaled down to fit.
-  let hostWidth = $state(0);
-  let hostHeight = $state(0);
 
-  let view = $derived(attachment?.current ?? null);
+  // The thread's admitted state (the header and the keyboard read the same
+  // one) while this window may host the thread's browser: its tabs are the
+  // home computer's, so a thread another computer claims too shows none.
+  // Before the attach answers the strip shows them in the inert chrome.
+  let mayHost = $derived(ctx.threadId ? canUseNativeBrowser(ctx.threadId) : false);
+  let threadState = $derived(mayHost && ctx.threadId ? browserThreadState(ctx.threadId) : null);
+  let actionError = $derived(ctx.threadId ? browserActionError(ctx.threadId) : '');
   let findCleanupError = $derived(ctx.threadId ? browserFindCleanupError(ctx.threadId) : '');
-  let pages = $derived(view?.state.pages ?? []);
-  let sessionName = $derived(view?.state.sessionName ?? '');
-  let activePageId = $derived(view?.state.activePageId ?? '');
-  let activePage = $derived(pages.find((page) => page.id === activePageId) ?? pages[0] ?? null);
-  let activeIsLocalFile = $derived((activePage?.url ?? '').toLowerCase().startsWith('file:'));
-  // Boolean, not the view object: the re-report effect below must fire on
-  // attach, never on every page-state push.
-  let attached = $derived(view !== null);
-  // The page lays out at the thread's viewport. By default that is this host
-  // rect, so the page fills the pane at 1:1 and nothing needs saying. The
-  // label appears when the size is not the pane's: the agent pinned one, or
-  // the pane is below the viewport minimum, and then carries the size and,
-  // when the host rect is smaller, the percentage it is shown at.
-  let viewportWidth = $derived(view?.state.viewportWidth ?? 0);
-  let viewportHeight = $derived(view?.state.viewportHeight ?? 0);
-  let viewportPinned = $derived(view?.state.viewportSet === true);
-  let viewScale = $derived(
-    viewportWidth > 0 && viewportHeight > 0 && hostWidth > 0 && hostHeight > 0
-      ? Math.min(1, hostWidth / viewportWidth, hostHeight / viewportHeight)
-      : 1,
-  );
-  let sizeLabel = $derived(
-    viewportWidth > 0 && viewportHeight > 0 && (viewportPinned || viewScale < 1)
-      ? `${viewportWidth} × ${viewportHeight}` + (viewScale < 1 ? ` · ${Math.round(viewScale * 100)}%` : '')
-      : '',
-  );
+  let pages = $derived(threadState?.pages ?? []);
+  let sessionName = $derived(threadState?.sessionName ?? '');
+  let activePageId = $derived(threadState?.activePageId ?? '');
+  let closedTabs = $derived(threadState?.closedTabs ?? 0);
+  let activePage = $derived(browserShownPage(threadState));
+  // The validated attachment the pane's actions are sent from and its
+  // surfaces read through (browserPaneAttachment): null until the attach
+  // answers and while this window may not host the thread's browser, and
+  // the chrome is unavailable then.
+  let pane = $derived(ctx.threadId ? browserPaneAttachment(ctx.threadId) : null);
+  let attached = $derived(pane !== null);
 
+  // The pane's mount, held only while this window may host the thread's
+  // browser: losing that (the owner moving, or two computers claiming the
+  // thread) releases it, which detaches the native view the mount
+  // presents, and a verified owner again attaches afresh.
   $effect(() => {
     const threadId = ctx.threadId;
-    if (!threadId) return;
+    if (!threadId || !mayHost) return;
     attachment = attachBrowserCompanion(threadId);
     return () => {
-      if (rectFrame) cancelAnimationFrame(rectFrame);
-      rectFrame = 0;
-      lastSentKey = '';
       attachment?.release();
       attachment = null;
     };
   });
 
   // Find in the page, through the engine's own find (stores/browserFind). It
-  // belongs to this companion's layout pane, and exists only while the shown
-  // page's engine has one: "bar" drives the shared bar, "engine" opens the
-  // engine's own find UI.
+  // belongs to this companion's layout pane, and exists only while the pane
+  // has a mount to address and the shown page's engine has one: "bar" drives
+  // the shared bar, "engine" opens the engine's own find UI.
   let browserPaneId = $derived(companionForSource(ctx.paneId, 'browser')?.paneId ?? null);
-  let findMode = $derived(view?.state.findMode ?? '');
+  let findMode = $derived(attached ? (threadState?.findMode ?? '') : '');
   $effect(() => {
     const paneId = browserPaneId;
     const threadId = ctx.threadId;
@@ -122,352 +107,175 @@
     });
   });
 
-  $effect(() => {
-    const url = activePage?.url ?? '';
-    if (!addressFocused) address = url;
+  const geometry = createBrowserPaneGeometry({
+    surface: () => surface,
+    threadId: () => ctx.threadId,
+    mount: () => (ctx.threadId ? browserPaneMountId(ctx.threadId) : null),
   });
 
-  // ─── Host-rect geometry ────────────────────────────────────────────────
-  // One report per changed frame: every signal below only SCHEDULES, and the
-  // flush reads geometry once. There is deliberately no standing rAF loop —
-  // a per-frame callback would pin frame production at panel refresh.
+  // The page lays out at the thread's viewport. By default that is this host
+  // rect, so the page fills the pane at 1:1 and nothing needs saying. The
+  // label appears when the size is not the pane's: the agent pinned one, or
+  // the pane is below the viewport minimum, and then carries the size and,
+  // when the host rect is smaller, the percentage it is shown at.
+  let viewportWidth = $derived(threadState?.viewportWidth ?? 0);
+  let viewportHeight = $derived(threadState?.viewportHeight ?? 0);
+  let viewportPinned = $derived(threadState?.viewportSet === true);
+  let viewScale = $derived(
+    viewportWidth > 0 && viewportHeight > 0 && geometry.hostWidth > 0 && geometry.hostHeight > 0
+      ? Math.min(1, geometry.hostWidth / viewportWidth, geometry.hostHeight / viewportHeight)
+      : 1,
+  );
+  let sizeLabel = $derived(
+    viewportWidth > 0 && viewportHeight > 0 && (viewportPinned || viewScale < 1)
+      ? `${viewportWidth} × ${viewportHeight}` + (viewScale < 1 ? ` · ${Math.round(viewScale * 100)}%` : '')
+      : '',
+  );
 
-  function scheduleRect(): void {
-    if (rectFrame) return;
-    rectFrame = requestAnimationFrame(() => {
-      rectFrame = 0;
-      flushRect();
-    });
-  }
-
-  // A native view cannot be partially cropped by the DOM, so the report
-  // carries the VISIBLE INTERSECTION of the host rect with every clipping
-  // ancestor (and the viewport): the platform host crops the view to it
-  // while the page keeps the full rect's size. A pane half behind the
-  // sidebar shows its visible half instead of hiding or overhanging.
-  function visibleClip(el: HTMLElement, rect: DOMRect): { left: number; top: number; right: number; bottom: number } {
-    let left = Math.max(rect.left, 0);
-    let top = Math.max(rect.top, 0);
-    let right = Math.min(rect.right, window.innerWidth);
-    let bottom = Math.min(rect.bottom, window.innerHeight);
-    for (let node = el.parentElement; node; node = node.parentElement) {
-      const style = getComputedStyle(node);
-      if (style.overflowX === 'visible' && style.overflowY === 'visible') continue;
-      const r = node.getBoundingClientRect();
-      if (style.overflowX !== 'visible') {
-        left = Math.max(left, r.left);
-        right = Math.min(right, r.right);
-      }
-      if (style.overflowY !== 'visible') {
-        top = Math.max(top, r.top);
-        bottom = Math.min(bottom, r.bottom);
-      }
-    }
-    return { left, top, right, bottom };
-  }
-
-  // The pane surface's resolved background color, memoized on the computed
-  // string so the canvas round trip only runs when the theme actually
-  // changes; the theme-change trigger below clears the memo.
-  function paneBackground(el: HTMLElement): string {
-    const raw = getComputedStyle(el).backgroundColor;
-    if (raw === bgRaw) return bgHex;
-    bgRaw = raw;
-    const channels = rgbChannels(toConcreteColor(raw));
-    bgHex =
-      channels && channels.a === 1
-        ? '#' + [channels.r, channels.g, channels.b].map((c) => c.toString(16).padStart(2, '0')).join('')
-        : '';
-    return bgHex;
-  }
-
-  const round2 = (value: number): number => Math.round(value * 100) / 100;
-
-  function flushRect(): void {
-    const el = surface;
-    const threadId = ctx.threadId;
-    if (!el || !threadId) return;
-    const rect = el.getBoundingClientRect();
-    hostWidth = rect.width;
-    hostHeight = rect.height;
-    const clip = visibleClip(el, rect);
-    const clipWidth = Math.max(0, clip.right - clip.left);
-    const clipHeight = Math.max(0, clip.bottom - clip.top);
-    // Obscurity is judged against the VISIBLE part: an overlay above a
-    // clipped-away strip does not hide the pane.
-    const visible =
-      rect.width >= 1 &&
-      rect.height >= 1 &&
-      clipWidth >= 1 &&
-      clipHeight >= 1 &&
-      !airspaceIntersects({ left: clip.left, top: clip.top, right: clip.right, bottom: clip.bottom });
-    const report = {
-      x: round2(rect.left),
-      y: round2(rect.top),
-      width: round2(rect.width),
-      height: round2(rect.height),
-      clipX: round2(clip.left),
-      clipY: round2(clip.top),
-      clipWidth: round2(clipWidth),
-      clipHeight: round2(clipHeight),
-      viewportWidth: window.innerWidth,
-      viewportHeight: window.innerHeight,
-      // The SPA's own pixel ratio (DPI times webview zoom): the host draws the
-      // page's CSS pixels at its own ratio, and the difference is the zoom the
-      // presentation must carry so the page fills the fitted rect.
-      devicePixelRatio: window.devicePixelRatio,
-      visible,
-      background: paneBackground(el),
-    };
-    const key =
-      `${report.x},${report.y},${report.width},${report.height},` +
-      `${report.clipX},${report.clipY},${report.clipWidth},${report.clipHeight},` +
-      `${report.viewportWidth},${report.viewportHeight},${report.devicePixelRatio},` +
-      `${report.visible},${report.background}`;
-    if (key === lastSentKey) return;
-    lastSentKey = key;
-    reportBrowserPaneRect(threadId, report);
-  }
-
-  $effect(() => {
-    const el = surface;
-    if (!el || !ctx.threadId) return;
-    const observer = new ResizeObserver(() => scheduleRect());
-    observer.observe(el);
-    const onLayoutShift = (): void => scheduleRect();
-    window.addEventListener('resize', onLayoutShift);
-    // Capture-phase: a scroll anywhere in an ancestor chain moves the rect
-    // without resizing it (the pane strip scrolling behind the sidebar).
-    document.addEventListener('scroll', onLayoutShift, true);
-    scheduleRect();
-    return () => {
-      observer.disconnect();
-      window.removeEventListener('resize', onLayoutShift);
-      document.removeEventListener('scroll', onLayoutShift, true);
-    };
-  });
-
-  // Overlay open/close re-evaluates obscurity; the mount acquiring its pane
-  // id re-sends the rect a too-early report dropped.
-  $effect(() => {
-    airspaceSurfaces();
-    if (attached) lastSentKey = '';
-    scheduleRect();
-  });
-
-  // Layout-driven POSITION changes: a divider drag on another pane slides
-  // this pane sideways without resizing it, which no ResizeObserver, window
-  // resize or scroll event reports (live incident 2026-08-31: the native
-  // view stayed planted until the next scroll). Pane widths and the sidebar
-  // are the app's own movers, so reading them here re-measures on every
-  // frame of a drag. Over-firing is fine — flushRect dedupes.
-  $effect(() => {
-    for (const item of getPaneLayoutItems()) void item.widthPx;
-    void getSidebarWidth();
-    void isSidebarCollapsed();
-    scheduleRect();
-  });
-
-  // A theme or mode change recolors the pane surface without moving it.
-  $effect(() => {
-    void getAppliedTheme();
-    bgRaw = '';
-    scheduleRect();
-  });
-
-  async function act(kind: string, pageId = activePageId, nextAddress = '', index = 0): Promise<void> {
-    const threadId = ctx.threadId;
-    if (!threadId) return;
-    await browserCompanionAct(threadId, { kind, pageId, address: nextAddress, index });
+  async function act(action: BrowserAction): Promise<void> {
+    if (pane) await actInPane(pane, action);
   }
 
   // A suspended page (its session went idle, or the app restarted) has no
   // native view. Presenting it restores it: the pane asks once each time the
   // active page is found suspended, so a refusal stays in the banner until
-  // the user acts on the page.
+  // the user acts on the page. A page that crashed (suspended, with its
+  // error) waits for its Reload instead, so it is not loaded again unasked.
   let restoreAsked = '';
   $effect(() => {
     const page = attached ? activePage : null;
-    if (!page?.suspended) {
+    const pageId = pageIdOf(page?.id);
+    if (!page?.suspended || page.error || !pageId) {
       restoreAsked = '';
       return;
     }
-    if (page.id === restoreAsked) return;
-    restoreAsked = page.id;
-    void act('activate', page.id);
+    if (pageId === restoreAsked) return;
+    restoreAsked = pageId;
+    // Not a selection: the backend restores the tab only while it is the
+    // active one, so this cannot undo a tab the user picked since.
+    void act(browserAction.onTab('restore', pageId));
   });
 
-  async function revealPageFile(): Promise<void> {
+  // A new tab the user opened takes the address bar's focus once it is ready
+  // (stores/browserActions#openBrowserTab) and the pane's attach answered,
+  // which makes the bar available; the store withdraws the intent when the
+  // user does anything else first or another tab is shown.
+  let addressBar: ReturnType<typeof BrowserAddressBar> | undefined = $state(undefined);
+  $effect(() => {
     const threadId = ctx.threadId;
-    if (!threadId || !activePageId) return;
-    noteBrowserActionError(threadId, '');
-    try {
-      await BrowserCompanionRevealPageFile(threadId, activePageId);
-    } catch (err) {
-      noteBrowserActionError(threadId, errString(err));
-    }
+    const page = activePage;
+    if (!threadId || !attached || addressFocusIntent(threadId) === null) return;
+    if (!untrack(() => takeAddressFocus(threadId, page))) return;
+    // After this update renders the bar enabled for the ready page.
+    void tick().then(() => addressBar?.focusAddress());
+  });
+
+  // The focus-address command (mod+l) reaches the bar through the store.
+  $effect(() => {
+    const threadId = ctx.threadId;
+    if (!threadId) return;
+    return registerBrowserAddressBar(threadId, () => addressBar?.focusAddress());
+  });
+
+  function openNewTab(): void {
+    if (pane) void openBrowserTabInPane(pane, { focusAddress: true });
   }
 
-  // ─── Tab drag-reorder ──────────────────────────────────────────────────
-  // Same HTML5 DnD protocol the pane host uses for pane reordering. The
-  // drop slot is a thin insertion bar between tabs; the drop commits a
-  // "move" action and the authoritative order comes back with the state.
-
-  const TAB_DRAG_MIME = 'application/x-ao-browser-tab';
-  let dragPageId = $state('');
-  let dropSlot = $state(-1);
-
-  function tabDragStart(event: DragEvent, pageId: string): void {
-    if (!event.dataTransfer) return;
-    event.dataTransfer.setData(TAB_DRAG_MIME, pageId);
-    event.dataTransfer.effectAllowed = 'move';
-    dragPageId = pageId;
+  /**
+   * Leaves the address for the page. The host rect takes DOM focus first so
+   * the address field blurs at once and a pane with no page shown still
+   * holds focus; the engine then gives the active page the keyboard once it
+   * is shown, unless the user focuses or presses anywhere outside the host
+   * rect first.
+   */
+  function leaveAddress(): void {
+    surface?.focus();
+    const threadId = ctx.threadId;
+    if (threadId && surface && activePageId) void focusBrowserPage(threadId, activePageId, surface);
   }
 
-  function tabDragOver(event: DragEvent, index: number): void {
-    if (!dragPageId || !event.dataTransfer?.types.includes(TAB_DRAG_MIME)) return;
-    event.preventDefault();
-    event.dataTransfer.dropEffect = 'move';
-    const tab = event.currentTarget as HTMLElement;
-    const rect = tab.getBoundingClientRect();
-    dropSlot = event.clientX < rect.left + rect.width / 2 ? index : index + 1;
+  function togglePromotion(): void {
+    if (browserPaneId && !isCompactLayout()) togglePanePromotion(browserPaneId);
   }
 
-  function stripDragOver(event: DragEvent): void {
-    if (!dragPageId || !event.dataTransfer?.types.includes(TAB_DRAG_MIME)) return;
-    // Only the strip's own empty tail; a tab under the pointer already set
-    // its slot and stopped the event from bubbling this far unhandled.
-    if (event.target !== event.currentTarget) return;
-    event.preventDefault();
-    event.dataTransfer.dropEffect = 'move';
-    dropSlot = pages.length;
+  // The file picker. A chosen file opens in the active tab, or in a new tab
+  // when no tab can take an address, through the companion's navigation, so
+  // the backend's file authorization decides and its refusal is the banner.
+  let pickingFile = $state(false);
+  let pickerBackend = $derived(ctx.threadId ? (threadBackend(ctx.threadId) ?? HOME_BACKEND) : HOME_BACKEND);
+
+  function openPickedFile(path: string): void {
+    pickingFile = false;
+    if (!pane) return;
+    const page = activePage;
+    const pageId = pageIdOf(page?.id);
+    if (pageId && tabTakesAddress(page)) void act(browserAction.navigate(pageId, path));
+    else void openBrowserTabInPane(pane, { address: path });
   }
 
-  function tabDrop(event: DragEvent): void {
-    const pageId = event.dataTransfer?.getData(TAB_DRAG_MIME) ?? '';
-    const slot = dropSlot;
-    dragPageId = '';
-    dropSlot = -1;
-    if (!pageId || slot < 0) return;
-    event.preventDefault();
-    const from = pages.findIndex((page) => page.id === pageId);
-    if (from < 0) return;
-    // The backend's move index addresses the list WITHOUT the moved tab.
-    const to = from < slot ? slot - 1 : slot;
-    if (to === from) return;
-    void act('move', pageId, '', to);
-  }
+  // What the host rect says while the active tab has no page to present.
+  let crashed = $derived(activePage?.suspended === true && !!activePage.error && !activePage.restoring);
+  let pendingNote = $derived(
+    crashed
+      ? `This page stopped: ${activePage?.error}`
+      : activePage?.error && !activePage.suspended
+      ? `This tab could not be opened: ${activePage.error}`
+      : activePage?.creating
+        ? 'Opening…'
+        : activePage?.restoring
+          ? 'Restoring…'
+          : '',
+  );
 
-  function tabDragEnd(): void {
-    dragPageId = '';
-    dropSlot = -1;
+  async function revealPageFile(): Promise<void> {
+    const from = pane;
+    const pageId = pageIdOf(activePageId);
+    if (!from || !pageId) return;
+    noteBrowserPaneError(from, '');
+    const answer = await revealBrowserPageFile(from, pageId);
+    if (answer.kind === 'refused') noteBrowserPaneError(from, answer.error);
   }
-
 </script>
 
 <div class="flex h-full min-h-0 flex-col bg-surface-0" data-testid="browser-pane">
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <!-- Until the attach answers the pane has nothing to send from: its
+       chrome takes no input, and dims if the wait is long enough to see. -->
   <div
-    class="flex min-h-9 items-end gap-1 overflow-x-auto border-b border-border-subtle bg-surface-1 px-1 pt-1"
-    onmousedown={(event) => {
-      // Middle-press would start OS autoscroll; on a tab strip it closes tabs.
-      if (event.button === 1) event.preventDefault();
-    }}
-    ondragover={stripDragOver}
-    ondrop={tabDrop}
+    class="flex shrink-0 flex-col {attached ? '' : 'opacity-60 transition-opacity delay-150 duration-150'}"
+    data-testid="browser-pane-chrome"
+    inert={!attached}
+    aria-busy={!attached}
   >
-    {#if sessionName}
-      <span class="mb-1 max-w-36 shrink-0 truncate px-1.5 text-[0.68rem] text-fg-muted" title={sessionName}>{sessionName}</span>
-    {/if}
-    {#each pages as page, tabIndex (page.id)}
-      {#if dropSlot === tabIndex && dragPageId}
-        <div class="h-6 w-0.5 shrink-0 self-center rounded bg-accent"></div>
-      {/if}
-      <div
-        class="group flex h-8 min-w-28 max-w-48 items-center rounded-t-md {page.id === activePageId ? 'bg-surface-0 text-fg' : 'text-fg-muted hover:bg-surface-2'} {page.id === dragPageId ? 'opacity-50' : ''}"
-        title={page.label ? `${page.label} — ${page.title || page.url}` : page.title || page.url}
-        draggable="true"
-        ondragstart={(event) => tabDragStart(event, page.id)}
-        ondragover={(event) => tabDragOver(event, tabIndex)}
-        ondrop={tabDrop}
-        ondragend={tabDragEnd}
-        onauxclick={(event) => {
-          if (event.button !== 1) return;
-          event.preventDefault();
-          void act('close', page.id);
-        }}
-      >
-        <button
-          class="h-full min-w-0 flex-1 truncate pl-2 text-left text-[0.72rem]"
-          onclick={() => void act('activate', page.id)}
-        >{page.label || page.title || page.url || 'New tab'}</button>
-        <button
-          type="button"
-          aria-label="Close tab"
-          class="mr-1 rounded p-0.5 opacity-60 hover:bg-surface-3 hover:opacity-100"
-          onclick={() => void act('close', page.id)}
-        ><Icon icon={X} size={12} /></button>
-      </div>
-    {/each}
-    {#if dropSlot === pages.length && dragPageId}
-      <div class="h-6 w-0.5 shrink-0 self-center rounded bg-accent"></div>
-    {/if}
-    <button class="mb-1 rounded p-1.5 text-fg-muted hover:bg-surface-2 hover:text-fg" aria-label="New tab" title="New tab" onclick={() => void act('new', '')}>
-      <Icon icon={Plus} size={14} />
-    </button>
+    <BrowserTabStrip {sessionName} {pages} {activePageId} {closedTabs} onAct={act} onNewTab={openNewTab} onEmptyDoubleClick={togglePromotion} />
+
+    <BrowserAddressBar
+      bind:this={addressBar}
+      {activePage}
+      {sizeLabel}
+      promotePaneId={browserPaneId}
+      onAct={act}
+      onRevealPageFile={revealPageFile}
+      onOpenFile={() => (pickingFile = true)}
+      onLeave={leaveAddress}
+    />
   </div>
 
-  <div class="flex h-10 shrink-0 items-center gap-1 border-b border-border-subtle bg-surface-1 px-2">
-    <button class="rounded p-1.5 text-fg-muted enabled:hover:bg-surface-2 enabled:hover:text-fg disabled:opacity-35" aria-label="Back" disabled={!activePage?.canGoBack} onclick={() => void act('back')}><Icon icon={ArrowLeft} size={14} /></button>
-    <button class="rounded p-1.5 text-fg-muted enabled:hover:bg-surface-2 enabled:hover:text-fg disabled:opacity-35" aria-label="Forward" disabled={!activePage?.canGoForward} onclick={() => void act('forward')}><Icon icon={ArrowRight} size={14} /></button>
-    <button class="rounded p-1.5 text-fg-muted hover:bg-surface-2 hover:text-fg" aria-label="Reload" onclick={() => void act('reload')}><Icon icon={RefreshCw} size={13} /></button>
-    <input
-      class="h-7 min-w-0 flex-1 rounded-md border border-border-subtle bg-surface-0 px-2 text-[0.75rem] text-fg outline-none focus:border-accent/60"
-      aria-label="Address"
-      bind:value={address}
-      disabled={!activePage}
-      onfocus={() => (addressFocused = true)}
-      onblur={() => (addressFocused = false)}
-      onkeydown={(event) => {
-        // Until the pane knows the page it shows there is none to name, and
-        // a navigation naming none opens a new page.
-        if (event.key === 'Enter' && activePage) {
-          event.preventDefault();
-          (event.currentTarget as HTMLInputElement).blur();
-          void act('navigate', activePage.id, address);
-        }
-      }}
+  {#if pickingFile}
+    <BrowserFilePicker
+      workspace={ctx.workspace}
+      rootPath={ctx.workspacePath ?? '~'}
+      backend={pickerBackend}
+      onChoose={openPickedFile}
+      onClose={() => (pickingFile = false)}
     />
-    {#if sizeLabel}
-      <span
-        class="shrink-0 whitespace-nowrap px-1 font-mono text-[0.65rem] tabular-nums text-fg-muted"
-        data-testid="browser-pane-size"
-        title="The page is laid out at this size and shown scaled to fit the pane"
-      >{sizeLabel}</span>
-    {/if}
-    {#if activeIsLocalFile}
-      <button
-        class="rounded p-1.5 text-fg-muted hover:bg-surface-2 hover:text-fg"
-        aria-label="Show in folder"
-        title="Show in folder"
-        onclick={() => void revealPageFile()}
-      ><Icon icon={FolderOpen} size={13} /></button>
-    {/if}
-    <button
-      class="rounded p-1.5 text-fg-muted hover:bg-surface-2 hover:text-fg"
-      aria-label="Open devtools"
-      title="Open devtools"
-      onclick={() => void act('devtools')}
-    ><Icon icon={SquareCode} size={13} /></button>
-    <button class="rounded p-1.5 text-fg-muted hover:bg-surface-2 hover:text-fg" aria-label="Close browser" title="Close browser" onclick={() => void act('hide', '')}><Icon icon={X} size={14} /></button>
-  </div>
+  {/if}
 
   {#if browserPaneId}
     <PaneFindBar paneId={browserPaneId} title={activePage?.title || 'Browser'} fallbackFocus={() => surface ?? null} />
   {/if}
 
-  {#if view?.actionError}
-    <div class="shrink-0 border-b border-error/25 bg-error/10 px-3 py-1.5 text-[0.7rem] text-error" role="alert">{view.actionError}</div>
+  {#if actionError}
+    <div class="shrink-0 border-b border-error/25 bg-error/10 px-3 py-1.5 text-[0.7rem] text-error" role="alert">{actionError}</div>
   {/if}
   {#if findCleanupError}
     <div class="shrink-0 border-b border-error/25 bg-error/10 px-3 py-1.5 text-[0.7rem] text-error" role="alert" data-testid="browser-find-cleanup-error">Find could not clear the page: {findCleanupError}</div>
@@ -475,16 +283,30 @@
 
   <!-- The host rect. The native browser view is positioned exactly over this
        element by the platform host; what renders HERE is only visible when
-       no view is presented (no engine, or the page is hidden). -->
+       no view is presented (no engine, or the page is hidden). It takes DOM
+       focus only as a stand-in for the page, so it draws no focus ring. -->
   <div
     bind:this={surface}
-    class="relative min-h-0 flex-1 overflow-hidden bg-surface-0"
+    class="relative min-h-0 flex-1 overflow-hidden bg-surface-0 outline-none"
     data-testid="browser-pane-host-rect"
     aria-label="Browser page"
     tabindex="-1"
   >
-    {#if view?.error || attachment?.error}
-      <div class="flex h-full items-center justify-center px-4 text-sm text-error">{view?.error || attachment?.error}</div>
+    {#if attachment?.error}
+      <div class="flex h-full items-center justify-center px-4 text-sm text-error">{attachment.error}</div>
+    {:else if pendingNote}
+      <div
+        class="flex h-full flex-col items-center justify-center gap-3 px-4 text-sm {activePage?.error ? 'text-error' : 'text-fg-muted'}"
+        data-testid="browser-pane-pending"
+      ><span data-testid="browser-pane-pending-note">{pendingNote}</span>{#if crashed && activePage}<Button
+            variant="secondary"
+            size="sm"
+            testId="browser-pane-crash-reload"
+            onclick={() => {
+              const pageId = pageIdOf(activePage?.id);
+              if (pageId) void act(browserAction.onTab('reload', pageId));
+            }}
+          >Reload</Button>{/if}</div>
     {/if}
   </div>
 </div>

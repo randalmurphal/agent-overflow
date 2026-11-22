@@ -253,6 +253,7 @@ func scopeForTier(tier Tier, bucket string) string {
 		return UserScope
 	case TierDevice:
 		return bucket
+	case TierHost:
 	}
 	return ""
 }

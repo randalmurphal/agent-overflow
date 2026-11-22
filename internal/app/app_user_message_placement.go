@@ -154,6 +154,7 @@ func (a *App) userMessageItemID(threadID, sendID string, turnIndex int, intent u
 		scope = "steer"
 	case messageFlush, messageFlushFallback:
 		scope = "flush"
+	case messageDirect, messageComposer, messageLegacyComposer:
 	}
 	if sendID != "" && intent != messageLegacyComposer {
 		id := uuid.NewSHA1(uuid.NameSpaceOID, []byte(sendID)).String()

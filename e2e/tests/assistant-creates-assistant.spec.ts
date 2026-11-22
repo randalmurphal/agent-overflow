@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import { test, expect, type SeedResult } from './fixtures.js';
 import { captureAgentMessage } from './wake-rows-helpers.js';
 import { assistantRow, assistantShell } from './sidebar-sections-helpers.js';
-import { assistantHome, awaitMockInput, awaitToolAnswer, awaitTurnCompleted, setScenario, threadRows, threadToolsScenario, type ProviderName } from './thread-tools-helpers.js';
+import { assistantHome, awaitMockInput, awaitToolAnswer, awaitTurnCompleted, releaseAfterBackgrounded, setScenario, threadRows, threadToolsScenario, type ProviderName } from './thread-tools-helpers.js';
 
 test.beforeEach(async ({ harness }) => {
   // These assertions read agent message rows, which sit inside activity runs.
@@ -39,7 +39,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     const cwd = await assistantHome(harness, lead);
 
     // The lead's own session takes the creating scenario; the new
-    // assistant, in any other workspace, takes a reply.
+    // assistant, in any other workspace, takes a reply, once the creating
+    // call has returned.
     await setScenario(harness, cwd, threadToolsScenario({
       name: `assistant-creates-lead-${provider}`, provider, echoUserMessage: true,
       turns: [
@@ -53,17 +54,18 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     }));
     await setScenario(harness, '', threadToolsScenario({
       name: `assistant-creates-scout-${provider}`, provider, echoUserMessage: true,
-      turns: [{ text: 'I am Scout. I propose: watch the nightly build.' }],
+      turns: [{ steps: [{ gate: 'scout-report' }], text: 'I am Scout. I propose: watch the nightly build.' }],
       afterTurns: 'repeatLast',
     }));
 
     const opening = awaitMockInput(harness, { includes: 'You are "Scout", a new standing agent in Agent Overflow, created by the standing agent "Lead"' });
     const reported = awaitMockInput(harness, { cwd, includes: 'I am Scout. I propose: watch the nightly build.' });
     await harness.rpc('SendMessage', lead, 'Make an assistant for the nightly build.', null);
-    const created = await awaitToolAnswer<{ token: string; thread_id: string; assistant_id: string; name: string; home: string }>(
+    const created = await awaitToolAnswer<{ token: string; thread_id: string; assistant_id: string; name: string; home: string; outcome: string }>(
       harness, { tool: 'thread_new_assistant', cwd, timeoutMs: 60_000 });
     expect(created.isError, created.text).toBe(false);
     const scout = created.value!;
+    await releaseAfterBackgrounded(created, { harness, gate: 'scout-report', cwd: scout.home });
     expect(scout.name).toBe('Scout');
     expect(scout.home).toBe(join(harness.bootstrap.dataDir, 'agents', scout.assistant_id));
     const taken = await awaitToolAnswer(harness, { tool: 'thread_new_assistant', cwd, timeoutMs: 60_000 });

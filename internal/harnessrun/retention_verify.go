@@ -43,6 +43,7 @@ func verifyRetainable(entry ArtifactEntry) error {
 	switch m.State {
 	case StateCreated, StatePreparing, StateReady, StateRunning, StateStopping:
 		return errRetentionProtected
+	case StateSucceeded, StateFailed, StateQuarantined:
 	}
 	if m.State != StateQuarantined || m.Plan.Ownership != OwnershipFresh || m.Plan.RunID != entry.RunID {
 		return fmt.Errorf("manifest identity does not match run %q", entry.RunID)

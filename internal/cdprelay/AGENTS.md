@@ -9,7 +9,9 @@ owns the frame protocol in `internal/webview2host`; the browser manager consumes
   package listens only on an ephemeral WSL loopback address for chromedp.
 - Never dial an address supplied by a tunnel frame or debugger response.
   `RewriteDebuggerURL` retains only the debugger path and substitutes the
-  endpoint's own scheme and address. Keep `chromedp.NoModifyURL`.
+  endpoint's own scheme and address. The browser manager dials that URL as
+  given (`cdporder.NewAllocator`, which behaves as `remote.NoModifyURL`);
+  never let chromedp re-read `/json/version`.
 - Bind a local connection to its stream before sending `open`, wait for
   `opened` before data, and split data at `TunnelChunkBytes`. Enforce
   `MaxTunnelFrameBytes` and `MaxTunnelStreams`.
@@ -18,6 +20,17 @@ owns the frame protocol in `internal/webview2host`; the browser manager consumes
   replacement. Local connections are closed immediately when no tunnel exists.
 - Preserve the bounded stream-open, write, and discovery timeouts. Discovery
   response bodies remain bounded.
+- The tunnel's reader never writes a stream's socket. Each stream's data goes
+  through its `webview2host.TunnelStreamWriter`, on both ends: a bounded
+  queue with its own writer, which closes the stream when the queue passes
+  its bound or a write its timeout, so one stalled stream never holds
+  another's frames or the tunnel's teardown. A peer's close or error runs
+  after the data the peer sent before it (`End`), and teardown closes every
+  stream socket, so a parked write returns. A stream whose close was
+  received stays its session's, counted toward `MaxTunnelStreams` and
+  closed by teardown, until its writer finished. A data frame with no data
+  is refused at the decoder (`DecodeTunnelData`), so it never takes a
+  place in a stream's queue.
 
 Tests use loopback HTTP and WebSocket fixtures and do not start a launcher or
 WebView2. Transport admission for `/browser-cdp` remains in

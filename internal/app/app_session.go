@@ -1614,6 +1614,8 @@ func (a *App) settleQueueForTeardown(threadID string, mutationsHeld bool, queue 
 		// (agentPartsNotTakenIn): answers and completions back to their
 		// owners, other threads' requests back to their queue.
 		restore = a.restoreUnconfirmedQueueOwing(threadID)
+	case dropQueue:
+		fallthrough
 	default:
 		requests = a.returnRequestsAtTeardown(threadID)
 		var dispatched []triage.QueuedFlushItem

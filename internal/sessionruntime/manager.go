@@ -367,12 +367,11 @@ func (m *Manager) RecordActivity(threadID, sessionToken string, kind provider.Ev
 		return
 	}
 	entry.Liveness.BumpActivity(now)
-	switch kind {
-	case provider.EventTurnStart:
+	if kind == provider.EventTurnStart {
 		entry.Liveness.ActiveTurns.Add(1)
-	case provider.EventTurnComplete:
+	} else if kind == provider.EventTurnComplete {
 		decrementActiveTurnsClamped(&entry.Liveness.ActiveTurns)
-	case provider.EventSessionStatus:
+	} else if kind == provider.EventSessionStatus {
 		if content == "disconnected" {
 			entry.Liveness.ActiveTurns.Store(0)
 		}

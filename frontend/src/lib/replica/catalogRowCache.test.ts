@@ -2,6 +2,7 @@ import { expect, it } from 'vitest';
 import { MAX_CATALOG_ROWS, makeCatalogRecord, readCatalogRecord, type CatalogRowCache } from './catalog';
 import type { Thread } from '../types/models';
 
+
 const thread = (id: string, title = `title-${id}`): Thread => ({
   id, title, provider: 'claude', workspacePath: '/w', projectPath: '/w', mode: 'chat', model: 'm',
   createdAt: 1, updatedAt: 1, archived: false,

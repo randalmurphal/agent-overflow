@@ -11,8 +11,8 @@
   import { getFocusedPaneOrNull, getPane, iterPanes, openThreadFromNavigation, resetPaneRegistry } from './lib/stores/panes.svelte';
   import { setupEventListeners } from './lib/stores/events';
   import { OPEN_GIT_DIALOG_EVENT, type OpenGitDialogDetail } from './lib/stores/eventNames';
-  import { getThreads, loadThreads } from './lib/stores/threads.svelte';
-  import { refreshThreadGroups } from './lib/stores/threadGroups.svelte';
+  import { getThreads } from './lib/stores/threads.svelte';
+  import { loadSidebarCatalogs } from './lib/stores/sidebarCatalogs';
   import { refreshAgentWakes } from './lib/stores/threadWakes.svelte';
   import { markNotificationHydrated } from './lib/stores/eventsNotification';
   import {
@@ -28,6 +28,7 @@
   import { HOME_BACKEND } from './lib/transport/backendKey';
   import { backendReachable } from './lib/stores/attachedBackends.svelte';
   import { syncSidebarFromAppStorage, syncSidebarFromSettings } from './lib/stores/sidebar.svelte';
+  import { startSidebarEntryContinuity, syncSidebarEntryDisclosureFromAppStorage } from './lib/stores/sidebarEntryContinuity.svelte';
   import { syncWorkflowsOverlayFromAppStorage } from './lib/stores/workflowsOverlay.svelte';
   import { installToolPanes, syncToolPanesFromAppStorage } from './lib/stores/toolPanes.svelte';
   import { syncPullsFiltersFromAppStorage } from './lib/stores/pullsPageFilters.svelte';
@@ -71,6 +72,7 @@
   import { applyFonts } from './lib/utils/fonts';
   import { startAmbientTicker } from './lib/utils/ambientTicker';
   import { installWorkingSpriteReadiness } from './lib/stores/spinners.svelte';
+  import { installShellChords } from './lib/native/shellChords.svelte';
   import { startIdleMemoryTrim } from './lib/utils/idleMemoryTrim';
   import { applyFontScale, installZoomKeybindings } from './lib/utils/zoom';
   import Sidebar from './lib/components/sidebar/Sidebar.svelte';
@@ -417,6 +419,11 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
     refreshScreenPresence();
   });
 
+  // A sidebar row keeps its fold and list limit through its key moving,
+  // whether or not the sidebar is mounted to see it move
+  // (stores/sidebarEntryContinuity.svelte.ts).
+  const stopSidebarEntryContinuity = startSidebarEntryContinuity();
+
   onMount(() => {
     let disposed = false;
     const cleanupEvents = setupEventListeners();
@@ -478,17 +485,17 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
       restoringLayout = true;
       heldForStartingBackend = false;
       try {
-        const threads = await loadThreads();
+        // The projects, the threads under them and the groups that gather
+        // those threads, read as one round. A failed project or group load
+        // is not a failed boot: the catalog state shows and retries it.
+        const threads = await loadSidebarCatalogs();
         if (disposed) return;
-        // Groups load beside the threads they contain, but never gate the
-        // layout restore below: a failed group load must not be read as a
-        // failed boot (refreshThreadGroups owns its own error surface).
-        void refreshThreadGroups();
         void refreshAgentWakes();
         await appStorageReady;
         if (disposed) return;
         syncSidebarLayoutFromAppStorage();
         syncSidebarFromAppStorage();
+        syncSidebarEntryDisclosureFromAppStorage();
         // The workflows stack/filter/sweep cursor and the last-used tool are
         // durable per client (UI-SPEC §2.1), so they adopt the hydrated copy
         // the same way the sidebar's view state does.
@@ -595,6 +602,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
     });
 
     void loadKeybindings();
+    const cleanupShellChords = installShellChords(() => makeAppCommandContext(currentContextPane()));
     const flushPaneLayout = () => {
       // Writes the pending debounced resize. Every other layout change
       // is saved synchronously when it happens.
@@ -647,6 +655,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
       cleanupReadAloudSources();
       cleanupWorkingSprites();
       cleanupDeviceNames();
+      cleanupShellChords();
       cleanupOwnDevices();
       cleanupComputerRoutes();
       cleanupLoafTrace();
@@ -662,6 +671,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
       window.removeEventListener('keydown', handleGlobalKeydown);
     }
     clearCommandRegistry();
+    stopSidebarEntryContinuity();
   });
 </script>
 

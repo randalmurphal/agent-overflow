@@ -2,644 +2,107 @@ package browser
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"log"
-	"math"
-	"net"
-	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
-	"time"
 
-	"agent-overflow/internal/keybindings"
-
-	"github.com/google/uuid"
+	"agent-overflow/internal/browser/turnorder"
 )
 
-const (
-	// The viewport bounds `browser_viewport` accepts, and the box every
-	// pointer coordinate must fall inside.
-	minCompanionWidth  = 320
-	minCompanionHeight = 240
-	maxCompanionWidth  = 1920
-	maxCompanionHeight = 1200
-	// maxCompanionPanes bounds the mounted pane surfaces one process tracks,
-	// so a client that never detaches cannot grow the registry without end.
-	maxCompanionPanes = 64
-)
-
-// PaneRect is where a mounted browser pane's host rect sits, in the SPA's own
-// CSS pixels, together with the SPA viewport it was measured in. A host never
-// assumes CSS pixels equal its units: it scales the rect by its own client
-// size over the viewport, which makes the position exact under webview zoom
-// (Ctrl+=) and any DPI without either side knowing the other's scale factor.
-// Visible is false while the pane is mounted but must not be painted over: an
-// AO overlay intersects the rect, or the rect is entirely off the pane strip.
-//
-// Clip* is the VISIBLE intersection of the rect with every clipping ancestor,
-// in the same CSS-pixel space. A native view cannot be cropped by the DOM, so
-// the engine crops it: the view keeps the full rect's size (the page must not
-// relayout because it scrolled half behind the sidebar) and the host clips its
-// presentation to the clip rect. An unclipped pane reports clip == rect.
-// Background is the pane surface's resolved CSS color ("#rrggbb"); engines
-// paint it where the page has not presented yet, so freshly exposed strips
-// match the pane instead of flashing the engine default.
-//
-// DevicePixelRatio is the SPA's window.devicePixelRatio: OS scale times
-// webview zoom. An engine whose page renders at the OS scale alone (the
-// hosted WebView2) divides by the page's own ratio to recover the zoom.
-// Zero means unknown, which every consumer treats as 1.
-type PaneRect struct {
-	X                float64 `json:"x"`
-	Y                float64 `json:"y"`
-	Width            float64 `json:"width"`
-	Height           float64 `json:"height"`
-	ClipX            float64 `json:"clipX"`
-	ClipY            float64 `json:"clipY"`
-	ClipWidth        float64 `json:"clipWidth"`
-	ClipHeight       float64 `json:"clipHeight"`
-	ViewportWidth    float64 `json:"viewportWidth"`
-	ViewportHeight   float64 `json:"viewportHeight"`
-	DevicePixelRatio float64 `json:"devicePixelRatio,omitempty"`
-	Visible          bool    `json:"visible"`
-	Background       string  `json:"background,omitempty"`
+// TabPlace is where the user dropped a dragged tab: beside the tab Beside,
+// after it when After and before it otherwise.
+type TabPlace struct {
+	Beside PageID
+	After  bool
 }
 
-// PanePlacement is where a presented page's view goes: the page keeps its
-// own viewport (PageWidth x PageHeight, the size the agent works against)
-// and the pane shows it scaled by Scale, never resized by the placement. A
-// page following the pane is its size and Scale is 1; a pinned page larger
-// than the pane scales down. Rect is the FITTED rect in the SPA's CSS pixels,
-// the page scaled to fit inside the pane's host rect and centered, with its
-// clip already intersected with the host rect's visible clip. Rect's
-// viewport, background and device pixel ratio are the host rect's own.
-type PanePlacement struct {
-	Rect       PaneRect
-	PageWidth  int
-	PageHeight int
-	Scale      float64
-}
-
-// placePage fits a page of pageW x pageH CSS pixels inside a host rect: it is
-// scaled down to fit (never up, so text stays sharp) and centered, and the
-// fitted rect is cropped by the host's visible clip. ok is false when nothing
-// of the page would be visible, which the caller treats as hidden.
-func placePage(rect PaneRect, pageW, pageH int) (PanePlacement, bool) {
-	if pageW <= 0 || pageH <= 0 || rect.Width < 1 || rect.Height < 1 {
-		return PanePlacement{}, false
+// MoveCompanionPage places one of the thread's tabs, in any state, beside
+// the tab the user dropped it next to, on the side they dropped it (place).
+// Moving a tab is not a touch. A suspended page's new position is saved
+// with it. From a pane it carries its numbered place in the pane's order
+// (ctx, WithSelection) and moves the tab in the m.mu hold that ends its
+// turn, so a close that reads the strip's order (close to the right) acts
+// on the order the user saw when they asked for it; a passed turn moves
+// nothing. The position is resolved from the neighbor at that turn, so a
+// tab an earlier command opened, reopened or closed meanwhile does not
+// shift where the tab lands. A neighbor gone by then leaves the tab where
+// it is: the place the user chose no longer exists, and any other place
+// would be one they did not choose. A tab that is gone is errPageNotFound;
+// a neighbor that is the moved tab itself is refused.
+func (m *Manager) MoveCompanionPage(ctx context.Context, access Access, pageID PageID, place TabPlace) error {
+	if err := m.bound(access); err != nil {
+		return err
 	}
-	scale := math.Min(rect.Width/float64(pageW), rect.Height/float64(pageH))
-	if scale > 1 {
-		scale = 1
-	}
-	fitted := rect
-	fitted.Width = float64(pageW) * scale
-	fitted.Height = float64(pageH) * scale
-	fitted.X = rect.X + (rect.Width-fitted.Width)/2
-	fitted.Y = rect.Y + (rect.Height-fitted.Height)/2
-	left := math.Max(fitted.X, rect.ClipX)
-	top := math.Max(fitted.Y, rect.ClipY)
-	right := math.Min(fitted.X+fitted.Width, rect.ClipX+rect.ClipWidth)
-	bottom := math.Min(fitted.Y+fitted.Height, rect.ClipY+rect.ClipHeight)
-	if right-left < 1 || bottom-top < 1 {
-		return PanePlacement{}, false
-	}
-	fitted.ClipX, fitted.ClipY = left, top
-	fitted.ClipWidth, fitted.ClipHeight = right-left, bottom-top
-	return PanePlacement{Rect: fitted, PageWidth: pageW, PageHeight: pageH, Scale: scale}, true
-}
-
-// paneMount is one mounted pane surface: the frontend's claim that a host rect
-// for this thread exists, plus the last rect it reported. The mount is the
-// unit connection cleanup releases, so a dead UI can never leave a native view
-// painted over a window that no longer renders the pane under it.
-type paneMount struct {
-	threadID string
-	rect     PaneRect
-	hasRect  bool
-	// seq is the mount's place in attach order, which decides between two
-	// mounts that could both present the thread's page (presenterLocked).
-	seq uint64
-	// findSeq is the sequence of the newest find start the Manager took
-	// from this mount (admitFindStart).
-	findSeq uint64
-}
-
-func (p *managedPage) setInfo(info PageInfo) {
-	p.metaMu.Lock()
-	info.Label = p.info.Label
-	p.info = info
-	p.metaMu.Unlock()
-}
-
-// setHistoryState updates only the back/forward flags and reports whether
-// anything changed, so the async refresh behind an engine info event emits
-// no state push when the answer is the one already shown.
-func (p *managedPage) setHistoryState(canGoBack, canGoForward bool) bool {
-	p.metaMu.Lock()
-	changed := p.info.CanGoBack != canGoBack || p.info.CanGoForward != canGoForward
-	p.info.CanGoBack, p.info.CanGoForward = canGoBack, canGoForward
-	p.metaMu.Unlock()
-	return changed
-}
-
-func (p *managedPage) setLabel(label string) PageInfo {
-	p.metaMu.Lock()
-	p.info.Label = label
-	info := p.info
-	p.metaMu.Unlock()
-	return info
-}
-
-func (p *managedPage) cachedInfo() PageInfo {
-	p.metaMu.RLock()
-	info := p.info
-	p.metaMu.RUnlock()
-	return info
-}
-
-func (m *Manager) pageChanged(p *managedPage) {
-	p.touch()
-	m.ensureActivePage(p.owner, p.id)
-	m.emitThreadState(p.owner)
-	m.syncPanePresentation(p.owner)
-}
-
-func (m *Manager) threadState(threadID string) CompanionEvent {
-	m.mu.Lock()
-	tabs := m.threadTabsLocked(threadID)
-	session, hasSession := m.sessions[threadID]
-	active, _ := m.livePageLocked(session.ActivePageID)
-	m.stateSeq++
-	seq := m.stateSeq
-	m.mu.Unlock()
-	event := CompanionEvent{Kind: "state", ThreadID: threadID, Pages: make([]PageInfo, 0, len(tabs)), Seq: seq}
-	if active != nil && active.owner == threadID {
-		event.FindMode = findModeOf(active)
-	}
-	visible := false
-	if hasSession {
-		visible = session.Visible
-		event.SessionName = session.Name
-	}
-	event.Visible = &visible
-	for _, tab := range tabs {
-		event.Pages = append(event.Pages, tab.info)
-	}
-	event.ActivePageID = session.ActivePageID
-	event.ViewportWidth, event.ViewportHeight = sessionViewport(session)
-	event.ViewportSet = session.ViewportSet
-	return event
-}
-
-func (m *Manager) emit(event CompanionEvent) {
-	m.mu.Lock()
-	sink := m.eventSink
-	m.mu.Unlock()
-	if sink != nil {
-		sink(event)
-	}
-}
-
-func (m *Manager) emitThreadState(threadID string) {
-	if strings.TrimSpace(threadID) != "" {
-		m.emit(m.threadState(threadID))
-	}
-}
-
-// pageByHandleLocked resolves an engine handle to the page it drives. Caller
-// holds m.mu.
-func (m *Manager) pageByHandleLocked(handle string) *managedPage {
-	for _, scope := range m.scopes {
-		for _, p := range scope.pages {
-			if p.driver.Handle() == handle {
-				return p
-			}
-		}
-	}
-	return nil
-}
-
-// pageEscape is the key the page always keeps: a bare Escape, which AO only
-// observes (keyChord).
-var pageEscape = keybindings.Accelerator{Key: "escape"}
-
-// pageEscapeAnnounced decides whether a key pressed in a page is announced
-// as the page's Escape: a bare Escape, newly pressed (not repeating, not
-// held), that no input method composition takes to cancel itself.
-func pageEscapeAnnounced(pressed keybindings.Accelerator, press KeyPress) bool {
-	return pressed == pageEscape && !press.Repeat && !press.Held && !press.Composing
-}
-
-// keyChord is engineEvents.KeyChord: it answers on the engine's UI thread, so
-// it is one set lookup, and the routing that takes m.mu happens off it.
-//
-// A bare Escape is never AO's: the page has it exactly as if AO were not
-// there. When pageEscapeAnnounced says so it is announced (emitEscape), so
-// a find bar the pane shows over the page can close.
-//
-// A chord AO claims takes keyboard focus out of the page: the command it
-// runs puts focus where it wants it (a find bar's input, the palette), and
-// the keys typed next must reach that, not the page. So every claim hands
-// focus to the app (engineAppFocus) before it returns; a chord AO does not
-// claim leaves focus in the page.
-func (m *Manager) keyChord(handle string, pressed keybindings.Accelerator, press KeyPress) bool {
-	if pressed == pageEscape {
-		if pageEscapeAnnounced(pressed, press) {
-			go m.emitEscape(handle)
-		}
-		return false
-	}
-	if m.accelerators == nil {
-		return false
-	}
-	bound, ok := m.accelerators().Match(pressed)
-	if !ok {
-		return false
-	}
-	if engine, ok := m.engine.(engineAppFocus); ok {
-		if err := engine.FocusApp(); err != nil {
-			// The chord still runs; its surface opens with focus left in
-			// the page, as before the handoff existed.
-			log.Printf("browser: hand keyboard focus to the app for %s: %v", handle, err)
-		}
-	}
-	go m.emitAccelerator(handle, bound)
-	return true
-}
-
-// emitEscape announces a bare Escape pressed in a page a pane shows, as a
-// Kind "escape" event naming the thread, the page and the presenting mount,
-// whose client's find bar it closes.
-func (m *Manager) emitEscape(handle string) {
-	m.mu.Lock()
-	p := m.pageByHandleLocked(handle)
-	mount := ""
-	if p != nil {
-		mount, _, _ = m.presenterLocked(p.owner)
-	}
-	m.mu.Unlock()
-	if p == nil || mount == "" || !m.pageShown(p.owner, p.id) {
-		return
-	}
-	m.emit(CompanionEvent{Kind: "escape", ThreadID: p.owner, PageID: p.id, Mount: mount})
-}
-
-// emitAccelerator routes a claimed chord to the pane mount showing the page,
-// so that only the client holding the mount replays it. A page no pane shows
-// has nobody to act for, and its chord is dropped.
-func (m *Manager) emitAccelerator(handle string, bound keybindings.Accelerator) {
-	m.mu.Lock()
-	p := m.pageByHandleLocked(handle)
-	mount := ""
-	if p != nil && m.presentedPageLocked(p.owner) == p.id {
-		mount, _, _ = m.presenterLocked(p.owner)
-	}
-	m.mu.Unlock()
-	if p == nil {
-		return
-	}
-	if mount == "" {
-		log.Printf("browser: drop the chord %+v pressed in page %s: no pane shows the page", bound, p.id)
-		return
-	}
-	m.emit(CompanionEvent{Kind: "accelerator", ThreadID: p.owner, Mount: mount, Accelerator: &bound})
-}
-
-// AcceleratorsChanged tells an engine that matches chords out of process
-// (engineAccelerators) that the bound set it holds is stale.
-func (m *Manager) AcceleratorsChanged() {
-	if engine, ok := m.engine.(engineAccelerators); ok {
-		engine.SyncAccelerators()
-	}
-}
-
-func (m *Manager) updatePageInfo(handle, url, title string) {
-	m.mu.Lock()
-	found := m.pageByHandleLocked(handle)
-	m.mu.Unlock()
-	if found == nil {
-		return
-	}
-	previous := found.cachedInfo()
-	found.setInfo(PageInfo{
-		ID:    found.id,
-		URL:   truncateUTF8(url, maxBrowserURLBytes),
-		Title: truncateUTF8(title, maxBrowserTitleBytes),
-		// The engine event carries no history state; keep what is shown
-		// and let the async refresh below correct it.
-		CanGoBack: previous.CanGoBack, CanGoForward: previous.CanGoForward,
-	})
-	m.emitThreadState(found.owner)
-	go m.refreshHistoryState(found)
-}
-
-// refreshHistoryState re-reads one page's back/forward availability after an
-// engine announced a navigation, off the engine's event goroutine — the read
-// is a driver round trip, and blocking the event dispatcher on it could
-// deadlock an engine whose events and commands share a loop. A late answer
-// only ever disables a button one push later; the next state emission wins.
-func (m *Manager) refreshHistoryState(p *managedPage) {
-	ctx, cancel := operationContext(context.Background(), p.driver.Lifetime(), operationTimeout)
-	defer cancel()
-	back, forward, err := p.driver.HistoryState(ctx)
-	if err != nil {
-		return
-	}
-	if p.setHistoryState(back, forward) {
-		m.emitThreadState(p.owner)
-	}
-}
-
-func (m *Manager) CompanionState(access Access) CompanionEvent {
-	return m.threadState(access.ThreadID)
-}
-
-// AttachPane registers one mounted pane surface for a thread and answers the
-// state snapshot the pane renders its chrome from. The returned id is what
-// SetPaneRect addresses and what DetachPane (or connection cleanup) releases.
-func (m *Manager) AttachPane(access Access) (CompanionSubscription, error) {
-	state := m.threadState(access.ThreadID)
-	if len(state.Pages) == 0 {
-		return CompanionSubscription{}, fmt.Errorf("browser: thread has no open pages")
-	}
-	id := uuid.NewString()
-	m.mu.Lock()
-	if len(m.panes) >= maxCompanionPanes {
-		m.mu.Unlock()
-		return CompanionSubscription{}, fmt.Errorf("browser: too many mounted browser panes")
-	}
-	m.paneSeq++
-	m.panes[id] = paneMount{threadID: access.ThreadID, seq: m.paneSeq}
-	m.mu.Unlock()
-	return CompanionSubscription{ID: id, State: state}, nil
-}
-
-// DetachPane releases one pane mount. The presentation sync runs so an engine
-// with a presented native view hides it rather than painting over whatever
-// replaced the pane. A mount that remains for the thread becomes the
-// presenter if this one was it (presenterLocked) and hands the pages its
-// own size.
-func (m *Manager) DetachPane(id string) {
-	m.mu.Lock()
-	mount, ok := m.panes[id]
-	resize := false
-	if ok {
-		delete(m.panes, id)
-		if next, _, _ := m.presenterLocked(mount.threadID); next != "" {
-			if other := m.panes[next]; other.hasRect {
-				resize = m.notePaneSizeLocked(other.threadID, other.rect)
-			}
-		}
-	}
-	m.mu.Unlock()
-	if ok {
-		if resize {
-			m.scheduleViewport(mount.threadID)
-		}
-		m.syncPanePresentation(mount.threadID)
-	}
-}
-
-// notePaneSizeLocked records a mounted pane's size on its thread's session
-// and reports whether the pages should take it: the size changed and no
-// viewport is pinned. Caller holds m.mu.
-func (m *Manager) notePaneSizeLocked(threadID string, rect PaneRect) bool {
-	w, h, sized := paneViewportSize(rect)
-	if !sized {
-		return false
-	}
-	info := m.sessionLocked(threadID)
-	if info.PaneW == w && info.PaneH == h {
-		return false
-	}
-	info.PaneW, info.PaneH = w, h
-	info.resolveViewport()
-	info.UpdatedAt = time.Now()
-	m.sessions[threadID] = info
-	return !info.ViewportSet
-}
-
-// SetPaneRect records the mounted pane's current host rect. The frontend
-// coalesces to one report per changed frame, so this path must stay cheap: a
-// bookkeeping write, one presentation sync, and while no viewport is pinned a
-// latest-wins request for the pages to take the rect's size (viewport.go).
-func (m *Manager) SetPaneRect(id string, rect PaneRect) error {
-	if rect.Width < 0 || rect.Height < 0 {
-		rect.Width, rect.Height = 0, 0
-	}
-	if rect.ClipX == 0 && rect.ClipY == 0 && rect.ClipWidth == 0 && rect.ClipHeight == 0 {
-		// A reporter that predates clipping (tests, the harness bridge) means
-		// "unclipped", and downstream engines must never see a zero clip they
-		// would crop everything away with.
-		rect.ClipX, rect.ClipY = rect.X, rect.Y
-		rect.ClipWidth, rect.ClipHeight = rect.Width, rect.Height
-	}
-	if rect.ClipWidth < 0 || rect.ClipHeight < 0 {
-		rect.ClipWidth, rect.ClipHeight = 0, 0
-	}
-	m.mu.Lock()
-	mount, ok := m.panes[strings.TrimSpace(id)]
-	resize := false
-	if ok {
-		mount.rect = rect
-		mount.hasRect = true
-		m.panes[strings.TrimSpace(id)] = mount
-		// The size is tracked whether or not the rect is paintable: a drag
-		// hides the view and the page must already be at the new size when
-		// the drop shows it again. Only the presenter's rect sizes the pages.
-		if presenter, _, _ := m.presenterLocked(mount.threadID); presenter == strings.TrimSpace(id) {
-			resize = m.notePaneSizeLocked(mount.threadID, rect)
-		}
-	}
-	m.mu.Unlock()
-	if !ok {
-		return fmt.Errorf("browser: pane mount not found")
-	}
-	if resize {
-		m.scheduleViewport(mount.threadID)
-	}
-	m.syncPanePresentation(mount.threadID)
-	return nil
-}
-
-// paneCanShow reports whether a mount's rect can show a page: reported,
-// visible, and neither empty nor clipped away.
-func paneCanShow(mount paneMount) bool {
-	return mount.hasRect && mount.rect.Visible && mount.rect.Width >= 1 && mount.rect.Height >= 1 &&
-		mount.rect.ClipWidth >= 1 && mount.rect.ClipHeight >= 1
-}
-
-// presenterLocked answers the one mount the thread's pages are presented in,
-// its rect, and whether that rect can show a page now. A native view is
-// placed at exactly one rect, so every reader asks this one rule and none
-// chooses for itself: the presentation, the pages' size, a routed chord and
-// a routed Escape. The presenter is the thread's earliest attached live
-// mount. Attach order only grows, so the role stays with a mount until it
-// detaches, through a hidden or off-screen spell (a drag, a compact screen),
-// and a mount attached later never takes it. Only a mount the host window
-// attached exists here (BrowserCompanionPaneAttach). The caller holds m.mu.
-func (m *Manager) presenterLocked(threadID string) (string, PaneRect, bool) {
-	id := ""
-	var mount paneMount
-	for candidate, other := range m.panes {
-		if other.threadID == threadID && (id == "" || other.seq < mount.seq) {
-			id, mount = candidate, other
-		}
-	}
-	if id == "" {
-		return "", PaneRect{}, false
-	}
-	return id, mount.rect, paneCanShow(mount)
-}
-
-// presentedPageLocked answers the page a mounted pane shows: the thread's
-// active page while its companion is visible and a pane can show it, or "".
-// The caller holds m.mu.
-func (m *Manager) presentedPageLocked(threadID string) string {
-	session, ok := m.sessions[threadID]
-	if !ok || !session.Visible {
-		return ""
-	}
-	_, rect, shown := m.presenterLocked(threadID)
-	if !shown {
-		return ""
-	}
-	pageW, pageH := sessionViewport(session)
-	if _, ok := placePage(rect, pageW, pageH); !ok {
-		return ""
-	}
-	return session.ActivePageID
-}
-
-// OpenPaneDevTools opens the engine's inspector for one of the thread's pages.
-// Only engines with an inspector they can open implement paneDevTools;
-// WKWebView (Safari's Develop menu is the inspector) and the fake engine
-// answer with an explained refusal rather than a silent no-op.
-func (m *Manager) OpenPaneDevTools(ctx context.Context, access Access, pageID string) error {
-	host, ok := m.engine.(paneDevTools)
-	if !ok {
-		return fmt.Errorf("browser: devtools are not available on this browser engine")
-	}
-	p, _, err := m.lookupOrSelectPage(ctx, access, pageID)
+	pageID = pageID.trim()
+	place.Beside = place.Beside.trim()
+	turn, err := m.selectionTurn(ctx, access)
 	if err != nil {
 		return err
 	}
-	host.OpenPageDevTools(p.driver.Handle())
+	defer turn.Release()
+	if err := m.lockStructure(ctx, access.tb); err != nil {
+		return err
+	}
+	if turn.Commit() == turnorder.Passed {
+		m.mu.Unlock()
+		return nil
+	}
+	if place.Beside == "" || place.Beside == pageID {
+		// Refused inside the turn, so the numbers after it do not wait.
+		m.mu.Unlock()
+		return fmt.Errorf("browser: a tab moves beside another tab")
+	}
+	if err := access.admitLocked(); err != nil {
+		m.mu.Unlock()
+		return err
+	}
+	index, found := besideIndexLocked(m.companionTabsLocked(access.tb), pageID, place)
+	if !found {
+		m.mu.Unlock()
+		return errPageNotFound
+	}
+	if index < 0 {
+		m.mu.Unlock()
+		return nil
+	}
+	savedMoved, _ := m.placeTabLocked(access.tb, pageID, index)
+	m.mu.Unlock()
+	m.emitThreadState(access.ThreadID())
+	if savedMoved {
+		return m.persistThreads([]ThreadID{access.ThreadID()})
+	}
 	return nil
 }
 
-// syncPanePresentation decides WHICH of a thread's pages is presented and
-// whether the pane is showing at all, then tells the engine the outcome. The
-// decision itself stays here, in the Manager: an engine is told the outcome,
-// never the rule.
-//
-// Where the pane SITS is the frontend's answer: the mounted pane reports its
-// host rect (SetPaneRect) and that rect rides along, so bounds always land
-// before the show. At most one pane per thread exists (a frontend invariant),
-// and a mounted pane without a usable rect yet keeps the view hidden rather
-// than flashing it at a stale place.
-//
-// An engine whose pages are not real windows implements no paneHost, so this
-// is a type assertion that fails and costs nothing on every deployment that
-// cannot present a page at all.
-//
-// A find runs on the shown active page only, so this is also where a find on
-// a page that stopped being it (a tab switch, a hidden companion) ends, and
-// so does a find bar whose pane mount is gone.
-// Occlusion is not hiding: an overlay over the pane leaves the find running.
-//
-// Passes of a thread never overlap: each reads the state and tells the
-// engine without a lock held, so two at once could land in either order and
-// leave a page shown that the newer state hides. A call made while a pass
-// runs leaves it to that caller, which runs one more pass after its own, so
-// the last pass always reads the newest state and no caller waits on a pass
-// it did not start (an engine's UI thread among them).
-func (m *Manager) syncPanePresentation(threadID string) {
-	m.mu.Lock()
-	st := m.presenting[threadID]
-	if st == nil {
-		if m.presenting == nil {
-			m.presenting = make(map[string]*presentSync)
-		}
-		st = &presentSync{}
-		m.presenting[threadID] = st
-	}
-	st.dirty = true
-	if st.busy {
-		m.mu.Unlock()
-		return
-	}
-	st.busy = true
-	for st.dirty {
-		st.dirty = false
-		m.mu.Unlock()
-		m.presentPanes(threadID)
-		m.mu.Lock()
-	}
-	delete(m.presenting, threadID)
-	m.mu.Unlock()
-}
-
-// presentSync is one thread's presentation passes: busy while one runs,
-// dirty when another was asked for. Guarded by Manager.mu.
-type presentSync struct{ busy, dirty bool }
-
-// presentPanes is one presentation pass of syncPanePresentation.
-func (m *Manager) presentPanes(threadID string) {
-	host, ok := m.engine.(paneHost)
-	m.mu.Lock()
-	session, hasSession := m.sessions[threadID]
-	_, rect, shown := m.presenterLocked(threadID)
-	visible := hasSession && session.Visible && shown
-	var pages []*managedPage
-	var active *managedPage
-	for _, scope := range m.scopes {
-		for _, p := range scope.pages {
-			if p.owner != threadID {
-				continue
-			}
-			pages = append(pages, p)
-			if p.id == session.ActivePageID {
-				active = p
-			}
-		}
-	}
-	m.mu.Unlock()
-	m.endHiddenFinds(pages)
-	if !ok {
-		return
-	}
-	var placement PanePlacement
-	if visible {
-		// The page keeps the session's viewport; the pane shows it scaled to
-		// fit. A pane too small or too occluded to show any of it presents
-		// nothing rather than a sliver.
-		pageW, pageH := sessionViewport(session)
-		placement, visible = placePage(rect, pageW, pageH)
-	}
-	for _, p := range pages {
-		if p == active && visible {
+// besideIndexLocked is where place puts pageID among tabs, as an index in
+// the order without pageID (placeTabLocked's): -1 when the neighbor is not
+// among them. found reports whether pageID is.
+func besideIndexLocked(tabs []threadTab, pageID PageID, place TabPlace) (index int, found bool) {
+	index = -1
+	at := 0
+	for _, tab := range tabs {
+		switch tab.id {
+		case pageID:
+			found = true
 			continue
+		case place.Beside:
+			index = at
+			if place.After {
+				index++
+			}
 		}
-		host.HidePage(p.driver.Handle())
+		at++
 	}
-	if visible && active != nil {
-		host.SetPageBounds(active.driver.Handle(), placement)
-		host.ShowPage(active.driver.Handle())
-	}
+	return index, found
 }
 
-// MoveCompanionPage places one of the thread's pages, live or suspended, at
-// index in tab order (clamped). Moving a tab is not a touch. The moved prefix
-// is renumbered 1..n, and a page opened later keeps appending at the end
-// because its creation-time key is always larger. A suspended page's new
-// position is saved with it.
-func (m *Manager) MoveCompanionPage(access Access, pageID string, index int) error {
-	pageID = strings.TrimSpace(pageID)
-	m.mu.Lock()
-	tabs := m.threadTabsLocked(access.ThreadID)
+// placeTabLocked places tb's tab pageID at index in tab order (clamped),
+// and reports whether a suspended tab's saved position changed and whether
+// the tab exists. The moved prefix is renumbered 1..n, and a page opened
+// later keeps appending at the end because its creation-time key is always
+// larger. The caller holds m.mu.
+func (m *Manager) placeTabLocked(tb *threadBrowser, pageID PageID, index int) (savedMoved, found bool) {
+	tabs := m.companionTabsLocked(tb)
 	ordered := make([]threadTab, 0, len(tabs))
 	var moved *threadTab
 	for i := range tabs {
@@ -650,93 +113,188 @@ func (m *Manager) MoveCompanionPage(access Access, pageID string, index int) err
 		}
 	}
 	if moved == nil {
-		m.mu.Unlock()
-		return errPageNotFound
+		return false, false
 	}
 	index = max(0, min(index, len(ordered)))
 	ordered = append(ordered[:index], append([]threadTab{*moved}, ordered[index:]...)...)
-	savedMoved := false
 	for i, tab := range ordered {
 		if tab.live != nil {
 			tab.live.tabOrder.Store(int64(i + 1))
+		} else if tab.pending != nil {
+			tab.pending.p.tabOrder.Store(int64(i + 1))
 		} else if tab.rec.tabOrder != int64(i+1) {
 			tab.rec.tabOrder = int64(i + 1)
 			savedMoved = true
 		}
 	}
-	m.mu.Unlock()
-	m.emitThreadState(access.ThreadID)
-	if savedMoved {
-		return m.persistThreads([]string{access.ThreadID})
-	}
-	return nil
+	return savedMoved, true
 }
 
-func (m *Manager) NewCompanionPage(ctx context.Context, access Access) (PageInfo, error) {
-	p, err := m.createPage(ctx, access)
+// NewCompanionPage is the user opening a tab: it is selected and the
+// companion shown while the engine page is created, and a failed creation
+// stays as the tab's error (createPage). A non-empty address is then
+// navigated as the address bar would. It answers the new page, even when its
+// navigation failed; an empty ID with no error when the tab was closed while
+// it was created or shows why it could not be, or when ctx's numbered
+// selection was passed (selection.go) and nothing opened.
+func (m *Manager) NewCompanionPage(ctx context.Context, access Access, address string) (PageInfo, error) {
+	if err := m.bound(access); err != nil {
+		return PageInfo{}, err
+	}
+	turn, err := m.selectionTurn(ctx, access)
+	if err != nil || turn.Standing() == turnorder.Passed {
+		return PageInfo{}, err
+	}
+	defer turn.Release()
+	info, err := m.openUserTab(ctx, access, turn, address, "", -1, nil)
+	if errors.Is(err, errSelectionPassed) || errors.Is(err, errTabReplaced) {
+		// Nothing to report: the pane detached, or the new tab was closed or
+		// replaced before its address loaded, which then loads nowhere.
+		return PageInfo{}, nil
+	}
+	return info, err
+}
+
+// openUserTab is NewCompanionPage, in turn (selectionTurn), with the tab
+// placed at index in tab order (negative appends it), given label and
+// taking claim (createPageAt). It answers errSelectionPassed, opening
+// nothing, when the turn's pane detached before the tab was added. The
+// label and the address go to the page the creation made, never to the
+// tab's id (tabHold): when a jar switch, a close or a forget of the
+// claim's browsing came first, they go nowhere, and it answers
+// errTabReplaced or errClaimVoid.
+func (m *Manager) openUserTab(ctx context.Context, access Access, turn *turnorder.Turn, address, label string, index int, claim *tabClaim) (PageInfo, error) {
+	if strings.TrimSpace(access.Workspace()) == "" {
+		return PageInfo{}, fmt.Errorf("browser: invalid caller scope")
+	}
+	p, err := m.createPageAt(ctx, access, turn, index, claim)
+	var onTab *shownOnTab
+	if errors.Is(err, errClosedWhileCreating) || errors.As(err, &onTab) {
+		return PageInfo{}, nil
+	}
 	if err != nil {
 		return PageInfo{}, err
 	}
-	if _, err := m.SelectPage(ctx, access, p.id); err != nil {
-		return PageInfo{}, err
+	hold := tabHold{p: p, claim: claim}
+	if label != "" {
+		// A closed tab's label, unless another tab took it meanwhile, which
+		// keeps it (labelHolderLocked). The tab was pushed without it, and
+		// a navigation that fails before its operation would not push it.
+		// A relabel waits out a jar switch (lockHeld); no cancel, a switch
+		// ends with its one write.
+		if err := m.lockHeld(context.Background(), access, hold); err != nil {
+			return p.cachedInfo(), err
+		}
+		if m.labelHolderLocked(p.owner, p.id, label) == "" {
+			p.commitInfo(pageUpdate{Label: &label})
+		}
+		m.mu.Unlock()
+		m.publishPages(p.owner.id)
+	}
+	if strings.TrimSpace(address) != "" {
+		if _, err := m.navigateUserAddress(ctx, access, OpenOptions{tab: &hold}, address); err != nil {
+			return p.cachedInfo(), err
+		}
 	}
 	return p.cachedInfo(), nil
 }
 
-// ActivateCompanionPage is the user selecting a tab in the pane, which
-// presents it: a suspended page is restored first.
-func (m *Manager) ActivateCompanionPage(ctx context.Context, access Access, pageID string) error {
-	p, _, err := m.resolvePage(ctx, access, pageID, false)
+// ActivateCompanionPage is the user selecting a tab in the pane. It is
+// presented first (selectTab); a suspended page is then restored, and the
+// call answers when it is. A tab closed while it restored is no error.
+// ctx's numbered selection takes its turn in the user's order first
+// (selection.go); a passed one changes and restores nothing.
+func (m *Manager) ActivateCompanionPage(ctx context.Context, access Access, pageID PageID) error {
+	if err := m.bound(access); err != nil {
+		return err
+	}
+	turn, err := m.selectionTurn(ctx, access)
 	if err != nil {
 		return err
 	}
-	p.touch()
-	m.setActivePage(access.ThreadID, p.id)
-	m.emitThreadState(access.ThreadID)
-	m.syncPanePresentation(access.ThreadID)
-	return nil
+	selected, err := m.selectTab(access, turn, pageID.trim())
+	if err != nil || selected == "" {
+		return err
+	}
+	return m.restoreSelectedTab(ctx, access, selected)
 }
 
-func (m *Manager) NavigateCompanion(ctx context.Context, access Access, pageID, address string) (PageInfo, error) {
-	address = strings.TrimSpace(address)
-	if address == "" {
-		return PageInfo{}, fmt.Errorf("browser: address is required")
+// RestoreActiveCompanionPage is the pane asking for the suspended tab it
+// shows, the thread's active one, to be restored. It selects nothing, so it
+// cannot undo a selection the user made since the pane saw that tab; a tab
+// that is no longer active is left as it is.
+func (m *Manager) RestoreActiveCompanionPage(ctx context.Context, access Access, pageID PageID) error {
+	if err := m.bound(access); err != nil {
+		return err
 	}
-	lower := strings.ToLower(address)
-	parsed, _ := url.Parse(address)
-	if parsed != nil && strings.EqualFold(parsed.Scheme, "file") {
-		localPath := filepath.FromSlash(parsed.Path)
-		if engine, ok := m.engine.(engineFileURL); ok {
-			// A pasted file URL is in the RENDERER's form; OpenFile wants
-			// the backend path behind it.
-			mapped, err := engine.BackendFilePath(ctx, address)
-			if err != nil {
-				return PageInfo{}, err
+	pageID = pageID.trim()
+	if err := access.End(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	active := access.tb.session.activePage()
+	m.mu.Unlock()
+	if pageID == "" || pageID != active {
+		return nil
+	}
+	return m.restoreSelectedTab(ctx, access, pageID)
+}
+
+// StepCompanionPage is the user's next/previous tab: it selects the tab step
+// places from the active one in strip order, wrapping, as one change to the
+// Manager's own order and selection, so presses in a row each move one tab
+// whatever the client last saw. With no active tab, a forward step selects
+// the first tab and a backward one the last. Then it is ActivateCompanionPage,
+// in the user's order with the mount's other selections (selection.go).
+func (m *Manager) StepCompanionPage(ctx context.Context, access Access, step int) error {
+	if err := m.bound(access); err != nil {
+		return err
+	}
+	turn, err := m.selectionTurn(ctx, access)
+	if err != nil {
+		return err
+	}
+	selected, err := m.selectTabWhere(access, turn, func(tabs []threadTab, active PageID) int {
+		n := len(tabs)
+		if n == 0 || step == 0 {
+			return -1
+		}
+		at := -1
+		for i := range tabs {
+			if tabs[i].id == active {
+				at = i
 			}
-			localPath = mapped
 		}
-		return m.OpenFile(ctx, access, localPath, OpenOptions{PageID: pageID})
-	}
-	if filepath.IsAbs(address) {
-		return m.OpenFile(ctx, access, address, OpenOptions{PageID: pageID})
-	}
-	workspaceFile := filepath.Join(access.Workspace, filepath.FromSlash(address))
-	if info, err := os.Stat(workspaceFile); err == nil && info.Mode().IsRegular() {
-		return m.OpenFile(ctx, access, workspaceFile, OpenOptions{PageID: pageID})
-	}
-	if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
-		host := address
-		if before, _, ok := strings.Cut(address, ":"); ok {
-			host = before
+		if at < 0 && step < 0 {
+			at = 0
 		}
-		isHost := strings.Contains(host, ".") || strings.EqualFold(host, "localhost") || net.ParseIP(strings.Trim(host, "[]")) != nil
-		if strings.ContainsAny(address, " \t\r\n") || !isHost {
-			address = "https://www.google.com/search?q=" + url.QueryEscape(address)
-		} else if strings.EqualFold(host, "localhost") || net.ParseIP(strings.Trim(host, "[]")) != nil {
-			address = "http://" + address
-		} else {
-			address = "https://" + address
-		}
+		return wrapTab(at+step, n)
+	})
+	if step == 0 {
+		// Refused inside the turn, so the numbers after it do not wait.
+		return fmt.Errorf("browser: tab step must not be 0")
 	}
-	return m.Open(ctx, access, address, OpenOptions{PageID: pageID})
+	if err != nil || selected == "" {
+		return err
+	}
+	return m.restoreSelectedTab(ctx, access, selected)
+}
+
+// restoreSelectedTab restores the selected tab when it is suspended and
+// answers once it is; a tab closed meanwhile is no error. A tab whose page
+// crashed comes back by its Reload only (ReloadCompanionPage), so selecting
+// it does not load a page that may crash again.
+func (m *Manager) restoreSelectedTab(ctx context.Context, access Access, pageID PageID) error {
+	m.mu.Lock()
+	rec := m.suspended[pageID]
+	crashed := rec != nil && rec.failure != ""
+	m.mu.Unlock()
+	if rec == nil || crashed {
+		return nil
+	}
+	_, _, err := m.resolvePage(ctx, access, pageID, false)
+	if err != nil && errors.Is(err, errPageNotFound) && !m.hasTab(access.tb, pageID) {
+		return nil
+	}
+	return err
 }

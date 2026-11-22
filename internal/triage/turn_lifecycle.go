@@ -504,6 +504,7 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 			// queued sends — leave the flush queue for the next session.
 			flushQueueAtBoundary = false
 			return r.persistProviderErrorItem(evt.ThreadID, attributedTurn, meta.Error, nil, "", "", now)
+		case orphanErrorNone:
 		}
 	}
 
@@ -2058,6 +2059,7 @@ func (r *Router) MarkInterrupt(threadID string, sample InterruptSample, tok Flus
 			if !cut {
 				return "", nil
 			}
+		case stopOwed:
 		}
 	} else {
 		r.dropWaitingStop(threadID, turnIndex)

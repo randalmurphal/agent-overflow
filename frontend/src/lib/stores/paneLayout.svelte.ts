@@ -9,6 +9,7 @@ import {
   type PaneBoundaryDrag,
 } from '../utils/paneWidths';
 import { getPaneHostWidth } from './layoutMetrics.svelte';
+import { compactShownPaneId, getCompactScreen, isCompactLayout } from './layoutMode.svelte';
 import type { AgentPaneScopeSnapshot } from '../types/settings';
 
 // 'thread' panes host a ChatView for a ThreadPane (the registry in
@@ -123,9 +124,57 @@ export function onPaneLayoutItemsRemoved(listener: (paneIds: readonly string[]) 
   return () => { removalListeners.delete(listener); };
 }
 
+// The promoted pane: one layout item laid over the strip as if it were the
+// only pane, until demoted. Per client and never persisted. Compact shows
+// one pane already, so it ignores the promotion, refuses a new one, and
+// PaneHost clears it on entering compact. PaneHost owns the animation
+// toward this intent (panePromotion.svelte.ts).
+let promotedPaneId: string | null = $state(null);
+
+/** Reactive: the promoted pane, null when none or under compact. */
+export function getPromotedPaneId(): string | null {
+  return isCompactLayout() ? null : promotedPaneId;
+}
+
+/**
+ * Promote a layout pane, replacing any other promotion. Refused (false)
+ * under compact or for an id not in the layout.
+ */
+export function promotePane(paneId: string): boolean {
+  if (isCompactLayout()) return false;
+  if (!layoutItems.some((item) => item.paneId === paneId)) return false;
+  promotedPaneId = paneId;
+  return true;
+}
+
+export function demotePane(): void {
+  promotedPaneId = null;
+}
+
+/**
+ * Reactive: whether the person can see the mounted pane `paneId` now.
+ * The one answer for work that should run only while its pane is seen.
+ * - Desktop: true for every mounted pane (the strip shows them side by
+ *   side; scrolled partly out of view still counts), except while another
+ *   pane is promoted over the strip: then only the promoted pane.
+ * - Compact: true only on the thread screen, and only for the one pane the
+ *   strip shows (its section holds the strip's centre). During a reveal's
+ *   glide that changes once the glide passes halfway, not at the reveal.
+ * False for a pane id that is not mounted on compact. Re-evaluates when
+ * the mode, the compact screen, the shown pane or the promotion changes;
+ * read it inside an effect or `$derived` to follow it.
+ */
+export function isPaneOnScreen(paneId: string): boolean {
+  if (isCompactLayout()) return getCompactScreen() === 'thread' && compactShownPaneId() === paneId;
+  return promotedPaneId === null || promotedPaneId === paneId;
+}
+
 function replaceLayoutItems(next: PaneLayoutItem[]): void {
   const previous = layoutItems;
   layoutItems = next;
+  if (promotedPaneId !== null && !next.some((item) => item.paneId === promotedPaneId)) {
+    promotedPaneId = null;
+  }
   if (removalListeners.size === 0) return;
   const kept = new Set(next.map((item) => item.paneId));
   const removed = previous.filter((item) => !kept.has(item.paneId)).map((item) => item.paneId);
@@ -489,6 +538,7 @@ export function averagePaneWidthPx(): number {
 }
 
 export function resetPaneLayoutForTest(): void {
+  promotedPaneId = null;
   replaceLayoutItems([defaultMainPaneLayoutItem()]);
 }
 

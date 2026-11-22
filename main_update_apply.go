@@ -590,6 +590,7 @@ func (b desktopBoot) reconcile(ctx context.Context) desktopBootPlan {
 	case supervise.DesktopBlocked:
 		b.logf("updater: update %s blocks this launch: %s", record.Update.ID, decision.Title)
 		return b.refuse(decision.Title, decision.Detail)
+	case supervise.DesktopLaunch:
 	}
 	if schema, pending := b.pendingMigrations(); pending {
 		if err := b.migrate(schema); err != nil {

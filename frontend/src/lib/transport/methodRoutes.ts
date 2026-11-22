@@ -47,6 +47,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	205254296: 'home', // BrowserCompanionPaneAttach
 	3255514830: 'home', // BrowserCompanionPaneDetach
 	2491183339: 'home', // BrowserCompanionPaneRect
+	4292141824: 'home', // BrowserCompanionRecentAddresses
 	535837959: 'home', // BrowserCompanionRevealPageFile
 	1485125416: 'home', // BrowserCompanionThreadState
 	2848608143: 'home', // BrowserHostReport

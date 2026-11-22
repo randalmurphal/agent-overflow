@@ -17,19 +17,24 @@ func TestDirectiveValidateAcceptsEveryOp(t *testing.T) {
 		{Op: OpCreate, PageID: "page-1", ProfileID: "ws_abc", Ephemeral: true},
 		{Op: OpBounds, PageID: "page-1", X: 12, Y: 34, W: 800, H: 600},
 		{Op: OpBounds, PageID: "page-1", X: -1200, Y: -50, W: 1, H: 1},
-		{Op: OpBounds, PageID: "page-1", X: 12, Y: 34, W: 800, H: 600, CX: 12, CY: 34, CW: 400, CH: 600, Bg: "#1a1d21"},
+		{Op: OpBounds, PageID: "page-1", X: 12, Y: 34, W: 800, H: 600, CX: 12, CY: 34, CW: 400, CH: 600},
+		{Op: OpBackground, PageID: "page-1", Bg: "#1a1d21"},
+		{Op: OpBackground, PageID: "page-1", Bg: "#FFFFFF"},
 		{Op: OpShow, PageID: "page-1"},
 		{Op: OpHide, PageID: "page-1"},
 		{Op: OpClose, PageID: "page-1"},
 		{Op: OpDevTools, PageID: "page-1"},
+		{Op: OpFocus, PageID: "page-1", Mount: "mount-1", Intent: 1},
 		{Op: OpCloseProfile, ProfileID: "ws_abc"},
 		// A clear addresses the whole folder, so it names no profile: its
 		// page id is purely the correlation id the report comes back under.
 		{Op: OpClearData, PageID: "0123456789abcdef"},
 		{Op: OpFind, PageID: "page-1"},
 		{Op: OpFind, PageID: "page-1", Query: "größe \U0001F600"},
-		{Op: OpFind, PageID: "page-1", Query: strings.Repeat("a", MaxFindQueryBytes)},
+		{Op: OpFind, PageID: "page-1", Query: strings.Repeat("a", maxFindQueryBytes)},
 		{Op: OpFindStop, PageID: "page-1"},
+		{Op: OpCancelDownload, PageID: "page-1", Download: "dl-abc-1", Cancel: 1},
+		{Op: OpDownloadStatus, PageID: "page-1", Download: "dl-abc-1", Cancel: 2},
 	} {
 		if err := directive.Validate(); err != nil {
 			t.Errorf("Validate(%#v) = %v, want nil", directive, err)
@@ -48,6 +53,10 @@ func TestDirectiveValidateRejects(t *testing.T) {
 		{"create without page", Directive{Op: OpCreate, ProfileID: "ws"}, "page id is required"},
 		{"create without profile", Directive{Op: OpCreate, PageID: "p"}, "profile id is required"},
 		{"show without page", Directive{Op: OpShow}, "page id is required"},
+		{"focus without page", Directive{Op: OpFocus}, "page id is required"},
+		{"focus with a bad page id", Directive{Op: OpFocus, PageID: "a/b", Mount: "m", Intent: 1}, "page id"},
+		{"focus without mount", Directive{Op: OpFocus, PageID: "p", Intent: 1}, "mount id"},
+		{"focus without intent", Directive{Op: OpFocus, PageID: "p", Mount: "m"}, "intent"},
 		{"close-profile without profile", Directive{Op: OpCloseProfile}, "profile id is required"},
 		{"bounds zero size", Directive{Op: OpBounds, PageID: "p", W: 0, H: 10}, "positive width and height"},
 		{"bounds negative size", Directive{Op: OpBounds, PageID: "p", W: 10, H: -1}, "positive width and height"},
@@ -55,11 +64,14 @@ func TestDirectiveValidateRejects(t *testing.T) {
 		{"bounds Inf", Directive{Op: OpBounds, PageID: "p", W: math.Inf(1), H: 1}, "not a finite number"},
 		{"bounds absurd", Directive{Op: OpBounds, PageID: "p", X: 1e9, W: 1, H: 1}, "outside"},
 		{"bounds half clip", Directive{Op: OpBounds, PageID: "p", W: 10, H: 10, CW: 5}, "clip must be a positive pair"},
-		{"bounds negative clip", Directive{Op: OpBounds, PageID: "p", W: 10, H: 10, CW: 5, CH: -1}, "clip must be a positive pair"},
+		{"bounds negative clip", Directive{Op: OpBounds, PageID: "p", W: 10, H: 10, CW: 5, CH: -1}, "clip size must not be negative"},
 		{"bounds clip NaN", Directive{Op: OpBounds, PageID: "p", W: 10, H: 10, CX: math.NaN(), CW: 5, CH: 5}, "not a finite number"},
-		{"bounds bg not hex", Directive{Op: OpBounds, PageID: "p", W: 10, H: 10, Bg: "red"}, "not #rrggbb"},
-		{"bounds bg short", Directive{Op: OpBounds, PageID: "p", W: 10, H: 10, Bg: "#fff"}, "not #rrggbb"},
-		{"bounds bg alpha", Directive{Op: OpBounds, PageID: "p", W: 10, H: 10, Bg: "#11223344"}, "not #rrggbb"},
+		{"background not hex", Directive{Op: OpBackground, PageID: "p", Bg: "red"}, "not #rrggbb"},
+		{"background short", Directive{Op: OpBackground, PageID: "p", Bg: "#fff"}, "not #rrggbb"},
+		{"background alpha", Directive{Op: OpBackground, PageID: "p", Bg: "#11223344"}, "not #rrggbb"},
+		{"background with a non-hex digit", Directive{Op: OpBackground, PageID: "p", Bg: "#12345g"}, "not #rrggbb"},
+		{"background without color", Directive{Op: OpBackground, PageID: "p"}, "must name a color"},
+		{"background without page", Directive{Op: OpBackground, Bg: "#000000"}, "page id is required"},
 		{"page id with path", Directive{Op: OpShow, PageID: "../evil"}, "disallowed byte"},
 		{"profile id with separator", Directive{Op: OpCloseProfile, ProfileID: `a\b`}, "disallowed byte"},
 		{"profile id with trailing dot", Directive{Op: OpCloseProfile, ProfileID: "ws."}, "disallowed byte"},
@@ -71,9 +83,13 @@ func TestDirectiveValidateRejects(t *testing.T) {
 		{"clear-data with a path correlation id", Directive{Op: OpClearData, PageID: "../evil"}, "disallowed byte"},
 		{"find without page", Directive{Op: OpFind, Query: "a"}, "page id is required"},
 		{"find-stop without page", Directive{Op: OpFindStop}, "page id is required"},
-		{"find query too long", Directive{Op: OpFind, PageID: "p", Query: strings.Repeat("a", MaxFindQueryBytes+1)}, "exceeds"},
+		{"find query too long", Directive{Op: OpFind, PageID: "p", Query: strings.Repeat("a", maxFindQueryBytes+1)}, "exceeds"},
 		{"find query with NUL", Directive{Op: OpFind, PageID: "p", Query: "a\x00b"}, "without NUL"},
 		{"find query not UTF-8", Directive{Op: OpFind, PageID: "p", Query: "a\xffb"}, "UTF-8"},
+		{"cancel-download without page", Directive{Op: OpCancelDownload, Download: "dl-1", Cancel: 1}, "page id is required"},
+		{"cancel-download without its number", Directive{Op: OpCancelDownload, PageID: "p", Download: "dl-1"}, "must carry its number"},
+		{"cancel-download without download", Directive{Op: OpCancelDownload, PageID: "p", Cancel: 1}, "download id is required"},
+		{"cancel-download with a bad download id", Directive{Op: OpCancelDownload, PageID: "p", Download: "a b", Cancel: 1}, "disallowed byte"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := tc.directive.Validate()
@@ -91,8 +107,8 @@ func TestDirectiveValidateRejects(t *testing.T) {
 // and drops on it rather than treating it as a malformed frame.
 func TestDirectiveUnknownOpIsSentinelWrapped(t *testing.T) {
 	err := Directive{Op: "teleport", PageID: "p"}.Validate()
-	if !errors.Is(err, ErrUnknownOp) {
-		t.Fatalf("Validate error = %v, want it to wrap ErrUnknownOp", err)
+	if !errors.Is(err, errUnknownOp) {
+		t.Fatalf("Validate error = %v, want it to wrap errUnknownOp", err)
 	}
 }
 
@@ -136,6 +152,8 @@ func TestValidKind(t *testing.T) {
 	for _, kind := range []ReportKind{
 		ReportCreated, ReportCreateFailed, ReportClosed, ReportProcessFailed,
 		ReportCleared, ReportClearFailed, ReportAccelerator, ReportFindUnavailable,
+		ReportFocused, ReportFocusFailed, ReportDevToolsOpened, ReportDevToolsFailed,
+		ReportDownload, ReportPopup,
 	} {
 		if !ValidKind(kind) {
 			t.Errorf("ValidKind(%q) = false, want true", kind)

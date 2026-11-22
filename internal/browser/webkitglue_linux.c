@@ -7,41 +7,66 @@
 #include <string.h>
 #include <stdlib.h>
 
-// Callbacks implemented in Go (webkitexport_linux.go).
+// Callbacks implemented in Go (webkit_cgo_linux.go).
 extern void aoWebKitEvalDone(uint64_t call_id, char *json, char *err);
 extern void aoWebKitSnapshotDone(uint64_t call_id, void *pixels, int width,
                                  int height, int stride, char *err);
-extern void aoWebKitAllow(uint64_t page_id, uint64_t profile_id, void *decision, char *uri);
+extern void aoWebKitAllow(uint64_t page_id, void *decision, char *uri);
 extern void aoWebKitConsole(uint64_t page_id, char *payload);
 extern void aoWebKitPageInfo(uint64_t page_id, char *uri, char *title);
 extern void aoWebKitDocumentCommitted(uint64_t page_id);
-extern void aoWebKitPageClosed(uint64_t page_id);
-extern void aoWebKitPopup(uint64_t opener_page_id, uint64_t profile_id,
-                          void *view, char *uri);
+extern void aoWebKitPageLoading(uint64_t page_id, int loading);
+extern void aoWebKitPageClosed(uint64_t page_id, uint64_t popup_id, uint64_t profile_id);
+extern void aoWebKitPageCrashed(uint64_t page_id, uint64_t popup_id, uint64_t profile_id,
+                                const char *reason);
+extern uint64_t aoWebKitPopup(uint64_t opener_page_id, uint64_t opener_popup_id,
+                              uint64_t profile_id, void *view, char *uri);
 extern int aoWebKitPagePresented(uint64_t page_id);
-extern void aoWebKitDownloadStarted(uint64_t profile_id, uint64_t page_id,
-                                    uint64_t download_id, void *download,
-                                    char *uri, char *suggested);
-extern void aoWebKitDownloadProgress(uint64_t download_id, double received,
-                                     int state, char *path);
+extern void aoWebKitDownloadDestination(uint64_t profile_id, uint64_t page_id,
+                                        uint64_t popup_id, uint64_t download_id,
+                                        void *download, char *uri, char *suggested);
+extern void aoWebKitDownloadProgress(uint64_t download_id, double received, double total,
+                                     int state, char *path, char *error);
 extern int aoWebKitKeyChord(uint64_t page_id, const char *key, int ctrl, int meta,
                             int alt, int shift, int held, int composing);
 extern void aoWebKitFindDone(uint64_t call_id, int found, unsigned int match_count);
 
-// The download state vocabulary the Go seam uses (driver.go).
+// The download states aoWebKitDownloadProgress maps onto the Go seam's
+// (driver_events.go): canceled is WebKit's cancel, which only AO's makes, and
+// failed any other error.
 #define AO_DL_IN_PROGRESS 0
 #define AO_DL_COMPLETED 1
 #define AO_DL_CANCELED 2
+#define AO_DL_FAILED 3
 
 #define AO_PAGE_KEY "ao-page-id"
+#define AO_OPENER_KEY "ao-opener-page-id"
+#define AO_POPUP_KEY "ao-popup-id"
 #define AO_PROFILE_KEY "ao-profile-id"
-#define AO_SESSION_DL_DIR "ao-download-dir"
 #define AO_SESSION_KEY "ao-session"
 #define AO_DOWNLOAD_KEY "ao-download-id"
 #define AO_FIND_CALLS_KEY "ao-find-calls"
 
 static uint64_t ao_view_page_id(gpointer view) {
   return (uint64_t)GPOINTER_TO_SIZE(g_object_get_data(G_OBJECT(view), AO_PAGE_KEY));
+}
+
+// ao_view_popup_id is the number the Go side gave the view when WebKit
+// created it as a popup (ao_create_view), zero for any other view. It names
+// the popup before and after the Manager adopts it.
+static uint64_t ao_view_popup_id(gpointer view) {
+  return (uint64_t)GPOINTER_TO_SIZE(g_object_get_data(G_OBJECT(view), AO_POPUP_KEY));
+}
+
+// ao_view_policy_page_id names the page whose navigation policy answers for
+// view: its own once the Manager has adopted it, and before that, for a
+// popup, the page that opened it (set by ao_create_view). Zero refuses.
+static uint64_t ao_view_policy_page_id(gpointer view) {
+  uint64_t page_id = ao_view_page_id(view);
+  if (page_id != 0) {
+    return page_id;
+  }
+  return (uint64_t)GPOINTER_TO_SIZE(g_object_get_data(G_OBJECT(view), AO_OPENER_KEY));
 }
 
 // ao_view_profile_id reads the profile off the view's network session. A popup
@@ -59,11 +84,11 @@ static uint64_t ao_view_profile_id(WebKitWebView *view) {
 //   GtkWindow
 //   └── GtkOverlay
 //       ├── main child : the Wails SPA WebKitWebView (unchanged, still live)
-//       ├── overlay 1  : 1x1 clipping GtkScrolledWindow -> GtkFixed (the park)
-//       │                └── one AoViewHost per hidden page
-//       └── overlay 2..N : one AoViewHost per PRESENTED page, ALIGN_FILL +
-//                          four margins at the pane's visible clip rect,
-//                          overflow hidden.
+//       └── overlay 1..N : one AoViewHost per page, overflow hidden. A
+//                          PRESENTED host fills the pane's visible clip rect
+//                          (ALIGN_FILL + four margins); a PARKED one is an
+//                          empty box at the overlay's origin (ALIGN_START, no
+//                          margins, and a host measures 0x0).
 //
 // AoViewHost is the one widget a page view ever lives in. It allocates the
 // view at EXACTLY the page's viewport — gtk_widget_allocate takes the size it
@@ -72,12 +97,15 @@ static uint64_t ao_view_profile_id(WebKitWebView *view) {
 // scale transform. That transform is the whole pane presentation: the page
 // keeps its viewport and is drawn scaled to fit, centered by the offset, and
 // GTK maps pointer input back through the same transform. Parked, the host
-// draws at scale 1 into the 1x1 clip, so a hidden page stays mapped with a
-// real viewport and fresh snapshots.
+// clips the view at scale 1 to nothing, so a hidden page stays mapped with a
+// real viewport and fresh snapshots, and costs the window no size (GtkOverlay
+// measures its main child alone).
 //
-// Order matters: the park is added BEFORE anything else so the SPA paints
-// over its 1px footprint, and a presented host is added last so it sits on
-// top.
+// A host is an overlay child from its first park to its close; hiding or
+// showing it only moves its box. Moving it to another parent would unrealize
+// the view, which drops the frame WebKit last drew, and the web process draws
+// a new one only when the page changes, so a static page shown again would
+// stay empty.
 //
 // MORE THAN ONE page can be presented at once — one per thread with a
 // visible pane — so nothing here is "the presented view". A host belongs to
@@ -101,6 +129,7 @@ static uint64_t ao_view_profile_id(WebKitWebView *view) {
 typedef struct {
   GtkWidget parent;
   GtkWidget *view;
+  gboolean presented;
   int page_w;
   int page_h;
   double scale;
@@ -164,7 +193,6 @@ static void ao_view_host_init(AoViewHost *host) {
 }
 
 static GtkWidget *ao_overlay = NULL;
-static GtkWidget *ao_park = NULL; // the GtkFixed inside the clipping scroller
 // The Wails SPA's own WebKitWebView, the widget a claimed chord hands
 // keyboard focus to (ao_wk_focus_app). Weak: it is the window's.
 static GtkWidget *ao_app_view = NULL;
@@ -207,17 +235,20 @@ static AoViewHost *ao_host_for(GtkWidget *view) {
   return host;
 }
 
-// ao_host_detach takes a host out of whichever AO container holds it.
+// ao_host_detach takes a host out of the overlay, on its view's close.
 static void ao_host_detach(AoViewHost *host) {
   GtkWidget *w = GTK_WIDGET(host);
-  GtkWidget *parent = gtk_widget_get_parent(w);
-  if (parent == NULL) {
-    return;
-  }
-  if (parent == ao_park && ao_park != NULL) {
-    gtk_fixed_remove(GTK_FIXED(ao_park), w);
-  } else if (parent == ao_overlay && ao_overlay != NULL) {
+  if (ao_overlay != NULL && gtk_widget_get_parent(w) == ao_overlay) {
     gtk_overlay_remove_overlay(GTK_OVERLAY(ao_overlay), w);
+  }
+}
+
+// ao_host_in_overlay makes a host an overlay child, where it stays until its
+// view closes (see the header for why it never moves).
+static void ao_host_in_overlay(AoViewHost *host) {
+  GtkWidget *w = GTK_WIDGET(host);
+  if (gtk_widget_get_parent(w) != ao_overlay) {
+    gtk_overlay_add_overlay(GTK_OVERLAY(ao_overlay), w);
   }
 }
 
@@ -255,29 +286,11 @@ int ao_wk_host_attach(void *gtk_window) {
   g_object_ref(existing);
   gtk_window_set_child(win, NULL);
   GtkWidget *overlay = gtk_overlay_new();
-
-  GtkWidget *scroller = gtk_scrolled_window_new();
-  gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroller), GTK_POLICY_EXTERNAL,
-                                 GTK_POLICY_EXTERNAL);
-  gtk_scrolled_window_set_min_content_width(GTK_SCROLLED_WINDOW(scroller), 1);
-  gtk_scrolled_window_set_min_content_height(GTK_SCROLLED_WINDOW(scroller), 1);
-  gtk_scrolled_window_set_propagate_natural_width(GTK_SCROLLED_WINDOW(scroller), FALSE);
-  gtk_scrolled_window_set_propagate_natural_height(GTK_SCROLLED_WINDOW(scroller), FALSE);
-  gtk_widget_set_halign(scroller, GTK_ALIGN_START);
-  gtk_widget_set_valign(scroller, GTK_ALIGN_START);
-  gtk_widget_set_size_request(scroller, 1, 1);
-  GtkWidget *fixed = gtk_fixed_new();
-  gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroller), fixed);
-
-  gtk_overlay_add_overlay(GTK_OVERLAY(overlay), scroller);
   gtk_overlay_set_child(GTK_OVERLAY(overlay), existing);
   g_object_unref(existing);
   gtk_window_set_child(win, overlay);
 
   ao_overlay = overlay;
-  // gtk_scrolled_window_get_child() returns the auto-inserted GtkViewport, not
-  // this GtkFixed, so keep our own pointer.
-  ao_park = fixed;
   // The SPA view sits in the Wails window's child (its box), which is the
   // overlay's main child now; no page view has been added yet.
   ao_app_view = ao_find_web_view(existing);
@@ -317,37 +330,26 @@ int ao_wk_window_active(void *view) {
   return root != NULL && GTK_IS_WINDOW(root) && gtk_window_is_active(GTK_WINDOW(root)) ? 1 : 0;
 }
 
-void ao_wk_host_park(void *view, int slot) {
-  if (ao_park == NULL) {
+void ao_wk_host_park(void *view) {
+  if (ao_overlay == NULL) {
     return;
   }
   AoViewHost *host = ao_host_for(GTK_WIDGET(view));
   GtkWidget *w = GTK_WIDGET(host);
-  // Parked is drawn whole at scale 1 into the clip; the presentation offset
-  // and scale are the overlay's alone.
+  ao_host_in_overlay(host);
+  // Parked is drawn at scale 1 into an empty box; the presentation offset and
+  // scale are a presented host's alone.
+  host->presented = FALSE;
   host->scale = 1.0;
   host->off_x = 0;
   host->off_y = 0;
-  if (gtk_widget_get_parent(w) == ao_park) {
-    gtk_widget_queue_allocate(w);
-    return;
-  }
-  ao_host_detach(host);
   gtk_widget_set_halign(w, GTK_ALIGN_START);
   gtk_widget_set_valign(w, GTK_ALIGN_START);
   gtk_widget_set_margin_start(w, 0);
   gtk_widget_set_margin_top(w, 0);
   gtk_widget_set_margin_end(w, 0);
   gtk_widget_set_margin_bottom(w, 0);
-  // Slots keep parked hosts off one another; the clip hides all of them.
-  gtk_fixed_put(GTK_FIXED(ao_park), w, 0, slot * 10);
-}
-
-void ao_wk_host_unpark(void *view) {
-  AoViewHost *host = ao_view_host_of(GTK_WIDGET(view));
-  if (host != NULL) {
-    ao_host_detach(host);
-  }
+  gtk_widget_queue_allocate(w);
 }
 
 // ao_fill_at is the ONE positioning primitive for a host inside the overlay:
@@ -362,10 +364,18 @@ static void ao_fill_at(GtkWidget *w, int x, int y, int right, int bottom) {
   gtk_widget_set_margin_bottom(w, bottom < 0 ? 0 : bottom);
 }
 
-void ao_wk_host_present(void *view, double x, double y, double width,
-                        double height, double clip_x, double clip_y,
-                        double clip_width, double clip_height, double vw,
-                        double vh, double scale) {
+int ao_wk_overlay_size(int *width, int *height) {
+  if (ao_overlay == NULL) {
+    return 0;
+  }
+  *width = gtk_widget_get_width(ao_overlay);
+  *height = gtk_widget_get_height(ao_overlay);
+  return 1;
+}
+
+void ao_wk_host_present(void *view, int clip_left, int clip_top,
+                        int clip_right, int clip_bottom, int off_x, int off_y,
+                        double scale) {
   if (ao_overlay == NULL) {
     return;
   }
@@ -376,47 +386,14 @@ void ao_wk_host_present(void *view, double x, double y, double width,
   GtkWidget *w = GTK_WIDGET(host);
   int overlay_w = gtk_widget_get_width(ao_overlay);
   int overlay_h = gtk_widget_get_height(ao_overlay);
-  // CSS pixels -> overlay logical pixels by proportion (see header).
-  double sx = (vw > 0.0 && overlay_w > 0) ? overlay_w / vw : 1.0;
-  double sy = (vh > 0.0 && overlay_h > 0) ? overlay_h / vh : 1.0;
-  int ix = (int)(x * sx + 0.5);
-  int iy = (int)(y * sy + 0.5);
-  int iw = (int)(width * sx + 0.5);
-  int ih = (int)(height * sy + 0.5);
-  int cx = (int)(clip_x * sx + 0.5);
-  int cy = (int)(clip_y * sy + 0.5);
-  int cw = (int)(clip_width * sx + 0.5);
-  int ch = (int)(clip_height * sy + 0.5);
-  // The clip is the visible intersection, so it can only ever crop the rect.
-  // A caller that sends none (or one rounding left empty) means unclipped; an
-  // empty intersection is the Manager's to withhold, never a host's to invent.
-  if (cx < ix) {
-    cw -= ix - cx;
-    cx = ix;
-  }
-  if (cy < iy) {
-    ch -= iy - cy;
-    cy = iy;
-  }
-  if (cx + cw > ix + iw) cw = ix + iw - cx;
-  if (cy + ch > iy + ih) ch = iy + ih - cy;
-  if (cw <= 0 || ch <= 0) {
-    cx = ix;
-    cy = iy;
-    cw = iw;
-    ch = ih;
-  }
-  if (gtk_widget_get_parent(w) != ao_overlay) {
-    ao_host_detach(host);
-    gtk_overlay_add_overlay(GTK_OVERLAY(ao_overlay), w);
-  }
+  ao_host_in_overlay(host);
+  host->presented = TRUE;
   // The host is the clip box; the view is drawn inside it at the fitted
-  // rect's offset from the clip, scaled by the pane's scale times the
-  // CSS-to-overlay proportion (the page's CSS pixels are overlay pixels).
-  ao_fill_at(w, cx, cy, overlay_w - (cx + cw), overlay_h - (cy + ch));
-  host->off_x = ix - cx;
-  host->off_y = iy - cy;
-  host->scale = (scale > 0.0 ? scale : 1.0) * sx;
+  // rect's offset from the clip, scaled (see header).
+  ao_fill_at(w, clip_left, clip_top, overlay_w - clip_right, overlay_h - clip_bottom);
+  host->off_x = off_x;
+  host->off_y = off_y;
+  host->scale = scale > 0.0 ? scale : 1.0;
   // A pane scrolling under a fixed header changes the offset while the clip
   // keeps its size, and nothing about the host's own box changed then, so
   // the re-allocation has to be asked for.
@@ -443,23 +420,29 @@ static int ao_release_focus(int held) {
   return ao_wk_focus_app() ? 1 : -1;
 }
 
-int ao_wk_host_hide(void *view, int slot) {
+int ao_wk_host_hide(void *view) {
   // Presentation ends with the park, which resets the offset and scale.
   int held = ao_view_holds_focus(GTK_WIDGET(view));
-  ao_wk_host_park(view, slot);
+  ao_wk_host_park(view);
   return ao_release_focus(held);
 }
 
-// ao_wk_host_presented is read off the WIDGET TREE, never a pointer: a view is
-// presented when its host is an overlay child. More than one view answers yes
-// at a time, which is exactly why no single "the presented view" pointer can
-// live here.
+// ao_wk_host_presented is read off the view's own host, never a pointer: more
+// than one view answers yes at a time, which is exactly why no single "the
+// presented view" pointer can live here.
 int ao_wk_host_presented(void *view) {
   AoViewHost *host = ao_view_host_of(GTK_WIDGET(view));
   if (host == NULL || ao_overlay == NULL) {
     return 0;
   }
-  return gtk_widget_get_parent(GTK_WIDGET(host)) == ao_overlay ? 1 : 0;
+  return host->presented && gtk_widget_get_parent(GTK_WIDGET(host)) == ao_overlay ? 1 : 0;
+}
+
+int ao_wk_view_focus_presented(void *view) {
+  if (!ao_wk_host_presented(view)) {
+    return -1;
+  }
+  return gtk_widget_grab_focus(GTK_WIDGET(view)) ? 1 : 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -468,39 +451,61 @@ int ao_wk_host_presented(void *view) {
 
 static uint64_t ao_download_seq = 0;
 
-// ao_download_destination forces the file into the profile's artifact directory
-// and is where the download is REPORTED: the suggested filename the Manager
-// sanitizes only exists once the response headers have been seen, and this
-// runs before any byte is written.
+// ao_downloads_started and ao_downloads_freed count every WebKitDownload
+// WebKit started and every one finalized since the process began
+// (ao_wk_download_counts). Both only grow, so a reader sees a download
+// that came and went between two reads.
+static gint ao_downloads_started = 0;
+static gint ao_downloads_freed = 0;
+
+static void ao_download_gone(gpointer data, GObject *download) {
+  (void)data;
+  (void)download;
+  g_atomic_int_inc(&ao_downloads_freed);
+}
+
+void ao_wk_download_counts(int *started, int *freed) {
+  // Freed first: a download is counted started before it can be freed.
+  *freed = g_atomic_int_get(&ao_downloads_freed);
+  *started = g_atomic_int_get(&ao_downloads_started);
+}
+
+// ao_download_destination hands the download to the Go side, which names
+// the staged file it is written to (the app's staging directory in the
+// user's Downloads folder) and nowhere else, with none canceling it before a
+// byte is written, and reports it: the suggested filename the Manager
+// sanitizes only exists once the response headers have been seen. Naming the
+// file is file system work, so the decision is left open here and completed
+// on a later turn of this thread (ao_wk_download_decide).
 static gboolean ao_download_destination(WebKitDownload *download, gchar *suggested,
                                         gpointer data) {
   (void)data;
-  // The session stamped its artifact directory onto the download when it
-  // started; WebKitGTK 6.0 offers no download -> session accessor.
-  const char *dir = g_object_get_data(G_OBJECT(download), AO_SESSION_DL_DIR);
-  if (dir == NULL) {
-    webkit_download_cancel(download);
-    return TRUE;
-  }
   uint64_t id = (uint64_t)GPOINTER_TO_SIZE(g_object_get_data(G_OBJECT(download), AO_DOWNLOAD_KEY));
-  // The handle IS the on-disk name. The Manager renames the finished file to a
-  // sanitized unique name inside the same directory; giving it a handle-named
-  // file also lets it clean up a download it had to cancel mid-flight.
-  char *name = g_strdup_printf("dl-%llu", (unsigned long long)id);
-  char *path = g_build_filename(dir, name, NULL);
-  webkit_download_set_destination(download, path);
-  g_free(path);
-  g_free(name);
+  // The Go side owns the download from here until it releases it, so a
+  // cancel arriving after the page closed cannot reach a freed object. A
+  // download that fails before this is never the Go side's, and WebKit
+  // frees it.
+  g_object_ref(download);
+  // WebKitGTK 6.0 offers no download -> session accessor; the session rode
+  // in on the download when it started.
   WebKitNetworkSession *session = g_object_get_data(G_OBJECT(download), AO_SESSION_KEY);
   uint64_t profile_id =
       session ? (uint64_t)GPOINTER_TO_SIZE(g_object_get_data(G_OBJECT(session), AO_PROFILE_KEY)) : 0;
   WebKitWebView *view = webkit_download_get_web_view(download);
   WebKitURIRequest *request = webkit_download_get_request(download);
   const char *uri = request ? webkit_uri_request_get_uri(request) : NULL;
-  aoWebKitDownloadStarted(profile_id, view ? ao_view_page_id(view) : 0, id, download,
-                          uri ? g_strdup(uri) : NULL,
-                          suggested ? g_strdup(suggested) : NULL);
+  aoWebKitDownloadDestination(profile_id, view ? ao_view_page_id(view) : 0,
+                              view ? ao_view_popup_id(view) : 0, id, download,
+                              uri ? g_strdup(uri) : NULL,
+                              suggested ? g_strdup(suggested) : NULL);
   return TRUE;
+}
+
+// ao_download_total is the size the response announced, 0 when it announced
+// none or has not arrived.
+static double ao_download_total(WebKitDownload *download) {
+  WebKitURIResponse *response = webkit_download_get_response(download);
+  return response ? (double)webkit_uri_response_get_content_length(response) : 0;
 }
 
 static void ao_download_received(WebKitDownload *download, guint64 length, gpointer data) {
@@ -508,23 +513,47 @@ static void ao_download_received(WebKitDownload *download, guint64 length, gpoin
   (void)data;
   uint64_t id = (uint64_t)GPOINTER_TO_SIZE(g_object_get_data(G_OBJECT(download), AO_DOWNLOAD_KEY));
   aoWebKitDownloadProgress(id, (double)webkit_download_get_received_data_length(download),
-                           AO_DL_IN_PROGRESS, NULL);
+                           ao_download_total(download), AO_DL_IN_PROGRESS, NULL, NULL);
 }
+
+// WebKit emits "finished" after "failed" as well, so a failed download is
+// marked and its "finished" is not reported as a completion.
+#define AO_DOWNLOAD_FAILED_KEY "ao-download-failed"
 
 static void ao_download_finished(WebKitDownload *download, gpointer data) {
   (void)data;
+  if (g_object_get_data(G_OBJECT(download), AO_DOWNLOAD_FAILED_KEY) != NULL) {
+    return;
+  }
   uint64_t id = (uint64_t)GPOINTER_TO_SIZE(g_object_get_data(G_OBJECT(download), AO_DOWNLOAD_KEY));
   const char *destination = webkit_download_get_destination(download);
   aoWebKitDownloadProgress(id, (double)webkit_download_get_received_data_length(download),
-                           AO_DL_COMPLETED, destination ? g_strdup(destination) : NULL);
+                           ao_download_total(download), AO_DL_COMPLETED,
+                           destination ? g_strdup(destination) : NULL, NULL);
 }
 
 static void ao_download_failed(WebKitDownload *download, GError *error, gpointer data) {
-  (void)error;
   (void)data;
+  g_object_set_data(G_OBJECT(download), AO_DOWNLOAD_FAILED_KEY, GINT_TO_POINTER(1));
   uint64_t id = (uint64_t)GPOINTER_TO_SIZE(g_object_get_data(G_OBJECT(download), AO_DOWNLOAD_KEY));
+  int state = g_error_matches(error, WEBKIT_DOWNLOAD_ERROR, WEBKIT_DOWNLOAD_ERROR_CANCELLED_BY_USER)
+                  ? AO_DL_CANCELED
+                  : AO_DL_FAILED;
   aoWebKitDownloadProgress(id, (double)webkit_download_get_received_data_length(download),
-                           AO_DL_CANCELED, NULL);
+                           ao_download_total(download), state, NULL,
+                           error && error->message ? g_strdup(error->message) : NULL);
+}
+
+int ao_wk_download_decide(void *download, const char *path) {
+  if (g_object_get_data(G_OBJECT(download), AO_DOWNLOAD_FAILED_KEY) != NULL) {
+    return 0;
+  }
+  if (path != NULL) {
+    webkit_download_set_destination(WEBKIT_DOWNLOAD(download), path);
+  } else {
+    webkit_download_cancel(WEBKIT_DOWNLOAD(download));
+  }
+  return 1;
 }
 
 static void ao_session_download_started(WebKitNetworkSession *session,
@@ -532,15 +561,11 @@ static void ao_session_download_started(WebKitNetworkSession *session,
   (void)data;
   uint64_t id = ++ao_download_seq;
   g_object_set_data(G_OBJECT(download), AO_DOWNLOAD_KEY, GSIZE_TO_POINTER((gsize)id));
-  // WebKitGTK 6.0 has no download -> session accessor, so the two facts the
-  // destination callback needs travel on the download itself.
+  // WebKitGTK 6.0 has no download -> session accessor, so the session the
+  // destination callback needs travels on the download itself.
   g_object_set_data(G_OBJECT(download), AO_SESSION_KEY, session);
-  const char *dir = g_object_get_data(G_OBJECT(session), AO_SESSION_DL_DIR);
-  g_object_set_data_full(G_OBJECT(download), AO_SESSION_DL_DIR,
-                         dir ? g_strdup(dir) : NULL, g_free);
-  // Held until the Go side releases it, so a cancel arriving after the page
-  // closed cannot reach a freed object.
-  g_object_ref(download);
+  g_atomic_int_inc(&ao_downloads_started);
+  g_object_weak_ref(G_OBJECT(download), ao_download_gone, NULL);
   g_signal_connect(download, "decide-destination", G_CALLBACK(ao_download_destination), NULL);
   g_signal_connect(download, "received-data", G_CALLBACK(ao_download_received), NULL);
   g_signal_connect(download, "finished", G_CALLBACK(ao_download_finished), NULL);
@@ -564,8 +589,7 @@ void ao_wk_download_unref(void *download) {
 // ---------------------------------------------------------------------------
 
 void *ao_wk_session_new(const char *data_dir, const char *cache_dir,
-                        const char *cookie_file, const char *download_dir,
-                        int ephemeral, uint64_t profile_id) {
+                        const char *cookie_file, int ephemeral, uint64_t profile_id) {
   WebKitNetworkSession *session =
       ephemeral ? webkit_network_session_new_ephemeral()
                 : webkit_network_session_new(data_dir, cache_dir);
@@ -573,7 +597,6 @@ void *ao_wk_session_new(const char *data_dir, const char *cache_dir,
     return NULL;
   }
   g_object_set_data(G_OBJECT(session), AO_PROFILE_KEY, GSIZE_TO_POINTER((gsize)profile_id));
-  g_object_set_data_full(G_OBJECT(session), AO_SESSION_DL_DIR, g_strdup(download_dir), g_free);
   if (!ephemeral && cookie_file != NULL) {
     webkit_cookie_manager_set_persistent_storage(
         webkit_network_session_get_cookie_manager(session), cookie_file,
@@ -612,10 +635,10 @@ static gboolean ao_decide_policy(WebKitWebView *view, WebKitPolicyDecision *deci
   // Manager's, and asking it takes Manager locks. Blocking the GTK thread on a
   // Go lock is how the whole UI freezes behind one browser operation, so the
   // decision is held with a reference and finished from a goroutine. A popup
-  // the Manager has not adopted has no page id yet; its profile's workspace
-  // policy answers for it.
+  // the Manager has not adopted has no page id yet; its opener's policy
+  // answers for it, so the file policy is the same before and after adoption.
   g_object_ref(decision);
-  aoWebKitAllow(ao_view_page_id(view), ao_view_profile_id(view), decision, g_strdup(uri));
+  aoWebKitAllow(ao_view_policy_page_id(view), decision, g_strdup(uri));
   return TRUE;
 }
 
@@ -659,9 +682,44 @@ static void ao_load_changed(WebKitWebView *view, WebKitLoadEvent event, gpointer
   }
 }
 
+// WebKitWebView:is-loading is the view's own answer, read when it changes
+// (WebKit-6.0.gir, webkit_web_view_is_loading).
+static void ao_notify_loading(GObject *object, GParamSpec *spec, gpointer data) {
+  (void)spec;
+  (void)data;
+  WebKitWebView *view = WEBKIT_WEB_VIEW(object);
+  aoWebKitPageLoading(ao_view_page_id(view), webkit_web_view_is_loading(view) ? 1 : 0);
+}
+
+// ao_view_closed and ao_web_process_terminated are connected where each view
+// is created (ao_wk_view_new, ao_create_view): a popup can close itself or
+// lose its process before the Manager adopts it, and names itself by its
+// popup number until then.
 static void ao_view_closed(WebKitWebView *view, gpointer data) {
   (void)data;
-  aoWebKitPageClosed(ao_view_page_id(view));
+  aoWebKitPageClosed(ao_view_page_id(view), ao_view_popup_id(view), ao_view_profile_id(view));
+}
+
+// WebKitWebView::web-process-terminated (WebKit-6.0.gir): the view's web
+// process ended while the view lives on, showing nothing. AO never calls
+// webkit_web_view_terminate_web_process, so every reason is reported.
+static void ao_web_process_terminated(WebKitWebView *view, WebKitWebProcessTerminationReason reason,
+                                      gpointer data) {
+  (void)data;
+  const char *name = "unknown";
+  switch (reason) {
+  case WEBKIT_WEB_PROCESS_CRASHED:
+    name = "crashed";
+    break;
+  case WEBKIT_WEB_PROCESS_EXCEEDED_MEMORY_LIMIT:
+    name = "exceeded memory limit";
+    break;
+  case WEBKIT_WEB_PROCESS_TERMINATED_BY_API:
+    name = "terminated";
+    break;
+  }
+  aoWebKitPageCrashed(ao_view_page_id(view), ao_view_popup_id(view), ao_view_profile_id(view),
+                      name);
 }
 
 // ao_script_dialog answers JavaScript dialogs the way the CDP driver does:
@@ -703,8 +761,7 @@ static gboolean ao_file_chooser(WebKitWebView *view, WebKitFileChooserRequest *r
 }
 
 // ao_context_menu suppresses the menu on a hidden agent page and shows the real
-// site menu on a presented one. Appending AO's own items to that menu is the
-// pane wave's work (spec §7), and lands on this same callback.
+// site menu on a presented one.
 static gboolean ao_context_menu(WebKitWebView *view, WebKitContextMenu *menu,
                                 WebKitHitTestResult *hit, gpointer data) {
   (void)menu;
@@ -724,12 +781,25 @@ static GtkWidget *ao_create_view(WebKitWebView *view, WebKitNavigationAction *ac
   // Hold the popup until the Manager adopts or discards it.
   g_object_ref_sink(popup);
   // The popup starts loading as soon as this returns, before the Manager can
-  // adopt it, so every navigation in it is checked from the first one.
+  // adopt it, so every navigation in it is checked from the first one, under
+  // its opener's policy until adoption gives it its own.
+  g_object_set_data(G_OBJECT(popup), AO_OPENER_KEY,
+                    GSIZE_TO_POINTER((gsize)ao_view_policy_page_id(view)));
   g_signal_connect(popup, "decide-policy", G_CALLBACK(ao_decide_policy), NULL);
+  // A popup can open its own as its first document parses, before the
+  // Manager adopts it: it gets the create handler and the window setting
+  // now, and names this view by its popup number until adoption.
+  g_signal_connect(popup, "create", G_CALLBACK(ao_create_view), NULL);
+  g_signal_connect(popup, "close", G_CALLBACK(ao_view_closed), NULL);
+  g_signal_connect(popup, "web-process-terminated", G_CALLBACK(ao_web_process_terminated), NULL);
+  webkit_settings_set_javascript_can_open_windows_automatically(
+      webkit_web_view_get_settings(popup), TRUE);
   WebKitURIRequest *request = action ? webkit_navigation_action_get_request(action) : NULL;
   const char *uri = request ? webkit_uri_request_get_uri(request) : NULL;
-  aoWebKitPopup(ao_view_page_id(view), ao_view_profile_id(view), popup,
-                uri ? g_strdup(uri) : NULL);
+  uint64_t popup_id = aoWebKitPopup(ao_view_page_id(view), ao_view_popup_id(view),
+                                    ao_view_profile_id(view), popup, uri ? g_strdup(uri) : NULL);
+  // A download the popup starts names it by this (ao_download_destination).
+  g_object_set_data(G_OBJECT(popup), AO_POPUP_KEY, GSIZE_TO_POINTER((gsize)popup_id));
   return GTK_WIDGET(popup);
 }
 
@@ -874,6 +944,10 @@ int ao_wk_view_offer_ctrl_key(void *view, unsigned int unicode) {
   return handled ? 1 : 0;
 }
 
+void ao_wk_view_terminate_web_process(void *view) {
+  webkit_web_view_terminate_web_process(WEBKIT_WEB_VIEW(view));
+}
+
 int ao_wk_view_offer_escape(void *view, int ctrl, int release) {
   GtkEventController *keys = g_object_get_data(G_OBJECT(view), "ao-key-controller");
   if (keys == NULL) {
@@ -1010,11 +1084,10 @@ static void ao_connect_view(WebKitWebView *view, uint64_t page_id, const char *u
   g_signal_connect(view, "notify::title", G_CALLBACK(ao_notify_info), NULL);
   g_signal_connect(view, "notify::uri", G_CALLBACK(ao_notify_info), NULL);
   g_signal_connect(view, "load-changed", G_CALLBACK(ao_load_changed), NULL);
-  g_signal_connect(view, "close", G_CALLBACK(ao_view_closed), NULL);
+  g_signal_connect(view, "notify::is-loading", G_CALLBACK(ao_notify_loading), NULL);
   g_signal_connect(view, "script-dialog", G_CALLBACK(ao_script_dialog), NULL);
   g_signal_connect(view, "run-file-chooser", G_CALLBACK(ao_file_chooser), NULL);
   g_signal_connect(view, "context-menu", G_CALLBACK(ao_context_menu), NULL);
-  g_signal_connect(view, "create", G_CALLBACK(ao_create_view), NULL);
   ao_connect_find(view);
 }
 
@@ -1029,9 +1102,13 @@ void *ao_wk_view_new(void *session, uint64_t page_id, const char *user_script,
     return NULL;
   }
   g_object_ref_sink(view);
-  // The policy is connected where each view is created, never in
-  // ao_connect_view: a popup needs it before adoption (ao_create_view).
+  // The policy, create, close and termination handlers are connected where
+  // each view is created, never in ao_connect_view: a popup needs them
+  // before adoption (ao_create_view).
   g_signal_connect(view, "decide-policy", G_CALLBACK(ao_decide_policy), NULL);
+  g_signal_connect(view, "create", G_CALLBACK(ao_create_view), NULL);
+  g_signal_connect(view, "close", G_CALLBACK(ao_view_closed), NULL);
+  g_signal_connect(view, "web-process-terminated", G_CALLBACK(ao_web_process_terminated), NULL);
   ao_connect_view(view, page_id, user_script, console_handler);
   return view;
 }
@@ -1039,6 +1116,9 @@ void *ao_wk_view_new(void *session, uint64_t page_id, const char *user_script,
 void ao_wk_view_adopt(void *view, uint64_t page_id, const char *user_script,
                       const char *console_handler) {
   ao_connect_view(WEBKIT_WEB_VIEW(view), page_id, user_script, console_handler);
+  // The popup's address and title changed unobserved until now: report them
+  // as they are, so its tab starts from them.
+  ao_notify_info(G_OBJECT(view), NULL, NULL);
 }
 
 int ao_wk_view_close(void *view) {
@@ -1055,10 +1135,11 @@ int ao_wk_view_close(void *view) {
   return ao_release_focus(held);
 }
 
-// ao_wk_view_set_background paints the page's base color — what shows wherever
-// the document has not painted yet, including a strip a clip rect just exposed.
-// Always opaque: the pane surface is a solid CSS color, and a translucent view
-// would show the SPA through the page.
+// ao_wk_view_set_background paints the page's base color (the Manager's
+// pageBase) — what shows wherever the document leaves its background
+// transparent or has not painted yet, including a strip a clip rect just
+// exposed. Always opaque: a translucent view would show the SPA through the
+// page.
 void ao_wk_view_set_background(void *view, double red, double green, double blue) {
   GdkRGBA color = {(float)red, (float)green, (float)blue, 1.0f};
   webkit_web_view_set_background_color(WEBKIT_WEB_VIEW(view), &color);

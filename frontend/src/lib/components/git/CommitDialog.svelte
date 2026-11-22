@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isEnterKey } from '../../utils/localEnter';
   import { untrack } from 'svelte';
   import Modal from '../primitives/Modal.svelte';
   import Button from '../primitives/Button.svelte';
@@ -100,7 +101,7 @@
   }
 
   function handleKeydown(event: KeyboardEvent): void {
-    if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+    if (isEnterKey(event) && (event.ctrlKey || event.metaKey)) {
       event.preventDefault();
       void handleCommit();
     }

@@ -1,8 +1,7 @@
-import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 import { getAllPanes } from './panes.svelte';
 import { reconcileThreadRows } from './eventsThreadRows';
 import { computerCatalogWriter } from './computerCatalogWriter';
-import { computerCatalog, readComputerRows, retainUnavailableComputerRows, type ComputerRows } from './computerRows';
+import { computerCatalog, retainUnavailableComputerRows, type CatalogPart, type ComputerRows } from './computerRows';
 import { currentThreadRow, noteThread, onThreadOwnershipChanged, threadBackend, threadGroupBackend } from '../transport/entityIndex';
 import type { Thread } from '../types/models';
 import { clearPayloadCacheForThread } from '../utils/payloadDataCache';
@@ -19,7 +18,6 @@ import { invalidateReplicaCatalog } from '../replica/session';
 
 import { clearLiveUsageSnapshot } from './threadContextWindow';
 import { clearThreadStatus } from './threadStatuses.svelte';
-import { addErrorToast } from './toast.svelte';
 import { notifyStandingAgentEnded } from './standingAgentEnded';
 import { releaseThreadTerminalState } from '../components/terminal/terminalStore.svelte';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
@@ -27,7 +25,7 @@ import { onBackendDetached, withBackendTarget } from '../transport/backends';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { claimLocalReadMarker, withLocalReadMarker } from './threadReadWrites';
 import { threadReplyRow, threadRowFrameMark, threadRowFramedSince } from './threadRowFrames';
-import { registerCatalogReader, settleCatalogAnswers } from './catalogLoad.svelte';
+import { settleCatalogAnswers } from './catalogLoad.svelte';
 
 type ThreadReadStatePatch = Partial<Pick<Thread, 'lastReadAt' | 'hasIncompleteTurn' | 'hasFailedTurn'>>;
 
@@ -108,7 +106,7 @@ function oneCurrentThreadPerAssistant(before: readonly Thread[], rows: readonly 
 // (currentThreadRow) drops the moved row from its answer.
 onThreadOwnershipChanged((_id, previousBackend) => {
   invalidateReplicaCatalog(previousBackend, 'threads');
-  catalogWriter.persist(previousBackend);
+  catalogWriter.changed(previousBackend);
 });
 
 // Live-activity bumps arrive on every streaming flush (tens per second
@@ -128,11 +126,6 @@ export function getThreads(): readonly Thread[] {
   return threads;
 }
 
-// Only outstanding reads retain the latest promise; startup follows a newer
-// reconnect snapshot before validating saved pane IDs.
-let latestThreadRead: Promise<void> | null = null;
-let pendingThreadReads = 0;
-
 async function listThreadRows(): Promise<Thread[]> {
   return await ListThreads() as Thread[];
 }
@@ -145,52 +138,36 @@ function threadRowOwner(row: Thread): BackendKey | undefined {
   return threadBackend(row.id);
 }
 
+/**
+ * The thread list a commit of `result` would leave: every answered
+ * computer's rows, every other attached computer's kept rows, each thread
+ * once and only from its current owner.
+ */
+export function threadRowsWith(result: ComputerRows<Thread>): Thread[] {
+  return currentRows(retainUnavailableComputerRows(threads, result, threadRowOwner));
+}
+
 // Every thread answer, on time, late or retried, merges with live local
 // state: a read mark or completion newer than the snapshot survives it.
 function commitThreadRows(result: ComputerRows<Thread>): void {
-  reconcileThreadRows(currentRows(retainUnavailableComputerRows(threads, result, threadRowOwner)));
+  reconcileThreadRows(threadRowsWith(result));
   settleCatalogAnswers('threads', result.answered);
 }
 
-function threadReadOptions(only?: BackendKey) {
-  const catalog = computerCatalog('threads', () => threads, threadRowOwner);
-  return only === undefined
-    ? { catalog, admit: currentThreadRow }
-    : { catalog, admit: currentThreadRow, only, deadlineMs: null };
-}
-
 /**
- * Read every computer's threads and commit them. Resolves with the catalog
- * once this read, or a newer one that superseded it, has committed:
- * startup validates saved panes against the winning snapshot, even when a
- * first hello superseded its read.
+ * How the thread catalog is read from each computer and committed. The
+ * sidebar reads it only beside the groups that gather these rows and the
+ * projects they hang from, as one round (./sidebarCatalogs.ts).
  */
-export async function loadThreads(): Promise<readonly Thread[]> {
-  pendingThreadReads++;
-  const request = readCurrentThreadRows();
-  latestThreadRead = request;
-  try { await request; }
-  finally { if (--pendingThreadReads === 0) latestThreadRead = null; }
-  return threads;
-
-  async function readCurrentThreadRows(): Promise<void> {
-    if (await readComputerRows<Thread>(listThreadRows, noteThreadRow, commitThreadRows, threadReadOptions())) return;
-    if (latestThreadRead && latestThreadRead !== request) await latestThreadRead;
-  }
+export function threadCatalogPart(): CatalogPart<Thread> {
+  return {
+    read: listThreadRows,
+    note: noteThreadRow,
+    commit: commitThreadRows,
+    catalog: computerCatalog('threads'),
+    admit: currentThreadRow,
+  };
 }
-
-// The catalog store's retry for a computer whose threads have not loaded:
-// its rows alone, waiting for the answer rather than the startup deadline.
-async function retryThreadCatalog(backend: BackendKey): Promise<void> {
-  try {
-    await readComputerRows<Thread>(listThreadRows, noteThreadRow, commitThreadRows, threadReadOptions(backend));
-  } catch {
-    // readComputerRows settled this computer's failure into the catalog
-    // state, which is where it is shown and retried.
-  }
-}
-
-registerCatalogReader('threads', retryThreadCatalog);
 
 function currentRows(rows: Thread[]): Thread[] {
   const seen = new Set<string>();
@@ -201,24 +178,15 @@ function currentRows(rows: Thread[]): Thread[] {
   });
 }
 
-export async function refreshThreads(): Promise<void> {
-  try {
-    await loadThreads();
-  } catch (err) {
-    if (isPassiveConnectionFailure(err)) return;
-    console.error('Failed to load threads:', err);
-    addErrorToast('Failed to load threads', err);
-  }
-}
-
 /**
  * Wholesale registry replacement for catalog answers. The caller owns the
  * merge policy — rows must already be reconciled against local state
  * (see eventsThreadRows.reconcileThreadRows); this setter stays dumb so
- * that policy lives in one place.
+ * that policy lives in one place. It writes no replica record: an answer
+ * alone is no tree, and the round that answers all three catalogs writes the
+ * tree (./sidebarCatalogs.ts).
  */
 export function replaceAllThreads(rows: Thread[]): void {
-  for (const backend of new Set([...threads, ...rows].map((row) => threadBackend(row.id)))) catalogWriter.persist(backend);
   setThreads(rows);
   // Callers hand rows already reconciled against local state (including
   // the live-activity box, via mergeThreadRowWithLocal), so the boxes'
@@ -226,8 +194,7 @@ export function replaceAllThreads(rows: Thread[]): void {
   liveActivityAt.reset();
 }
 
-/** Test-only: an empty catalog with no live-activity bumps, without the
- *  catalog write a replacement records. */
+/** Test-only: an empty catalog with no live-activity bumps. */
 export function resetThreadsForTest(): void {
   setThreads([]);
   liveActivityAt.reset();
@@ -254,8 +221,16 @@ export function listThread(thread: Thread): void {
  * state they use, stay; `removeThread` is for a thread that is gone.
  */
 export function unlistThread(id: string): void {
-  invalidateReplicaCatalog(threadBackend(id) ?? '', 'threads');
-  catalogWriter.mutate(threadBackend(id), (rows) => rows.filter((t) => t.id !== id));
+  dropThreadRow(id);
+}
+
+// Take the row out of the catalog of the computer it is noted under, or
+// home's for a row never noted, which is where the catalog writer files such
+// a row.
+function dropThreadRow(id: string): void {
+  const backend = threadBackend(id) ?? HOME_BACKEND;
+  invalidateReplicaCatalog(backend, 'threads');
+  catalogWriter.mutate(backend, (rows) => rows.filter((t) => t.id !== id));
 }
 
 /**
@@ -285,8 +260,7 @@ export function addThreadRemovedObserver(observer: (id: string) => void): () => 
 }
 
 export function removeThread(id: string): void {
-  invalidateReplicaCatalog(threadBackend(id) ?? '', 'threads');
-  catalogWriter.mutate(threadBackend(id), (rows) => rows.filter((t) => t.id !== id));
+  dropThreadRow(id);
   liveActivityAt.drop(id);
   // Drop any live-status entry so the sidebar doesn't keep painting a
   // dot for a thread that no longer exists in the list.
@@ -354,8 +328,7 @@ export function getThreadLiveActivityAt(thread: Pick<Thread, 'id' | 'updatedAt'>
  * Patches local sidebar read state immediately after a MarkThreadRead /
  * MarkThreadUnread request. `hasIncompleteTurn` and `hasFailedTurn` are
  * included because Interrupted and Failed are also unseen read-state;
- * opening the thread clears them before the next refreshThreads()
- * round-trip.
+ * opening the thread clears them before the next catalog read.
  */
 export function updateThreadReadState(
   id: string,
@@ -369,7 +342,7 @@ export function updateThreadReadState(
 /**
  * Patches the thread's lastReadAt locally so the sidebar reflects a
  * Mark-read / Mark-unread action immediately, without waiting for the
- * next refreshThreads() round-trip. `undefined` encodes "never tracked";
+ * next catalog read. `undefined` encodes "never tracked";
  * explicit unread uses `0`.
  */
 export function updateThreadLastRead(id: string, lastReadAt: number | undefined): void {

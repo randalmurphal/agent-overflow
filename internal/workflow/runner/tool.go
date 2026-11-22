@@ -215,6 +215,8 @@ func toolEnvelopeDescription(source ToolEnvelopeSource) string {
 		return "written by the command to AO_ENVELOPE"
 	case ToolEnvelopeSynthesized:
 		return "synthesized from the process exit status"
+	case ToolEnvelopeAbsent:
+		fallthrough
 	default:
 		return "not produced"
 	}

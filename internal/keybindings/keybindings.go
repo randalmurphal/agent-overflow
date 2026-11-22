@@ -171,6 +171,31 @@ var Defaults = []Keybinding{
 	{Key: "alt+l", Command: "pane.focusRight", DefaultID: "pane.focusRight.vim"},
 	{Key: "alt+shift+h", Command: "pane.moveLeft", DefaultID: "pane.moveLeft.vim"},
 	{Key: "alt+shift+l", Command: "pane.moveRight", DefaultID: "pane.moveRight.vim"},
+	// Maximize the focused pane over the strip, or restore it. Joins the
+	// alt+shift pane family; Enter for "enter this pane", as iTerm2's
+	// Cmd+Shift+Enter maximizes a split. Un-gated like the pane-nav chords so
+	// it escapes a focused terminal (TERMINAL_ESCAPE_COMMAND_IDS); the
+	// command itself is inert under compact, which shows one pane already.
+	{Key: "alt+shift+enter", Command: "pane.togglePromoted", DefaultID: "pane.togglePromoted"},
+	// Browser pane chrome, the desktop-browser chords, live only while the
+	// browser pane is the focused pane: a chord pressed in the native page is
+	// claimed by the engine (every chord with ctrl, meta or alt bound here is)
+	// and replayed after the pane is focused (docs/architecture/browser-tools.md
+	// § Keyboard). ctrl+tab is literal ctrl, as for terminal tabs: mod+tab is
+	// the macOS app switcher. The app window binds mod+r to reloading the app
+	// before the SPA sees it, and hands the chord to the SPA while this
+	// binding applies (internal/uikeys PageChords), so mod+r reloads the page
+	// from the pane's chrome as from inside the page; f5 is a second reload
+	// chord.
+	{Key: "mod+t", Command: "browser.newTab", When: "browserPaneFocused", DefaultID: "browser.newTab"},
+	{Key: "mod+l", Command: "browser.focusAddress", When: "browserPaneFocused", DefaultID: "browser.focusAddress"},
+	{Key: "mod+r", Command: "browser.reload", When: "browserPaneFocused", DefaultID: "browser.reload"},
+	{Key: "f5", Command: "browser.reload", When: "browserPaneFocused", DefaultID: "browser.reload.f5"},
+	{Key: "ctrl+tab", Command: "browser.nextTab", When: "browserPaneFocused", DefaultID: "browser.nextTab"},
+	{Key: "ctrl+shift+tab", Command: "browser.prevTab", When: "browserPaneFocused", DefaultID: "browser.prevTab"},
+	// Reopen the last closed tab. Shares mod+shift+t with terminal.newTab,
+	// whose terminalFocus gate never holds while the browser pane is focused.
+	{Key: "mod+shift+t", Command: "browser.reopenTab", When: "browserPaneFocused", DefaultID: "browser.reopenTab"},
 	{Key: "mod+shift+g", Command: "diff.panel.toggle", When: "hasActiveThread && !terminalFocus", DefaultID: "diff.panel.toggle"},
 	// mod+f opens the focused pane's find bar, matching the editor convention
 	// where Ctrl+F finds in the current document and Ctrl+Shift+F
@@ -241,10 +266,11 @@ var Defaults = []Keybinding{
 	// alt+shift+h/l pane moves already use for exactly that reason, and
 	// keeps the m-for-mute mnemonic.
 	{Key: "alt+shift+m", Command: "sound.toggleMute", DefaultID: "sound.toggleMute"},
-	// shift+tab cycles the active thread through chat → plan →
-	// design. The `when` expression keeps the chord inert while the
-	// palette or any modal has focus so Shift+Tab's default "focus
-	// prev" behaviour still wins inside those surfaces.
+	// shift+tab cycles the active thread between chat and plan
+	// (frontend/src/lib/utils/modeCycle.ts). The `when` expression keeps
+	// the chord inert while the palette or any modal has focus so
+	// Shift+Tab's default "focus prev" behaviour still wins inside those
+	// surfaces.
 	{Key: "shift+tab", Command: "mode.cycle", When: "hasActiveThread && !paletteOpen && !anyModalOpen", DefaultID: "mode.cycle"},
 	// Workflows pane (docs/specs/workflows-system-ui/UI-SPEC.md §8).
 	// Every chord is gated on the workflows pane holding focus, so the bare

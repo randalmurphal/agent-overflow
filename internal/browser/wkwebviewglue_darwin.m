@@ -6,6 +6,7 @@
 #import <WebKit/WebKit.h>
 #import <objc/runtime.h>
 #include <Block.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -18,30 +19,41 @@ extern void aoWKVAllow(uint64_t page_id, uint64_t profile_id, void *decision, ch
 extern void aoWKVConsole(uint64_t page_id, char *payload);
 extern void aoWKVPageInfo(uint64_t page_id, char *uri, char *title);
 extern void aoWKVDocumentCommitted(uint64_t page_id);
-extern void aoWKVPageClosed(uint64_t page_id);
-extern void aoWKVPopup(uint64_t opener_page_id, uint64_t profile_id, void *view, char *uri);
+extern void aoWKVPageLoading(uint64_t page_id, int loading);
+extern void aoWKVPageClosed(uint64_t page_id, uint64_t popup_id, uint64_t profile_id);
+extern void aoWKVPageCrashed(uint64_t page_id, uint64_t popup_id, uint64_t profile_id);
+extern uint64_t aoWKVPopup(uint64_t opener_page_id, uint64_t opener_popup_id, uint64_t profile_id,
+                           void *view, char *uri);
 extern int aoWKVPagePresented(uint64_t page_id);
-extern void aoWKVDownloadStarted(uint64_t profile_id, uint64_t page_id, uint64_t download_id,
-                                 void *download, char *uri, char *suggested);
-extern void aoWKVDownloadFinished(uint64_t download_id, double received, int state, char *path);
+extern void aoWKVDownloadDestination(uint64_t profile_id, uint64_t page_id, uint64_t popup_id,
+                                     uint64_t download_id, void *download, char *uri,
+                                     char *suggested);
+extern void aoWKVDownloadFinished(uint64_t download_id, double received, int state, char *path,
+                                  char *error);
 extern void aoWKVClearDone(uint64_t call_id, char *err);
 extern int aoWKVKeyChord(uint64_t page_id, const char *key, int ctrl, int meta, int alt, int shift, int repeat,
                          int composing);
 extern void aoWKVFindDone(uint64_t call_id, int found);
 
-// The download state vocabulary the Go seam uses (driver.go).
-#define AO_DL_IN_PROGRESS 0
+// The download states aoWKVDownloadFinished maps onto the Go seam's
+// (driver_events.go): canceled is the completion of AO's cancel, and failed
+// didFailWithError, which WebKit never sends for a cancel it was asked for.
 #define AO_DL_COMPLETED 1
 #define AO_DL_CANCELED 2
+#define AO_DL_FAILED 3
 
 // Association keys. The address is the key, so each needs storage of its own.
 static const char kAOPageIDKey;
+static const char kAOOpenerIDKey;
+static const char kAOPopupIDKey;
 static const char kAOProfileIDKey;
-static const char kAODownloadDirKey;
 static const char kAODownloadIDKey;
 static const char kAODownloadPageKey;
+static const char kAODownloadPopupKey;
 static const char kAODownloadProfileKey;
 static const char kAODownloadPathKey;
+static const char kAODownloadDecisionKey;
+static const char kAODownloadFailedKey;
 static const char kAOBackgroundKey;
 static const char kAOClipKey;
 static const char kAOPageSizeKey;
@@ -67,6 +79,25 @@ static uint64_t ao_view_page_id(id view) {
 
 static uint64_t ao_view_profile_id(id view) {
   return ao_number(objc_getAssociatedObject(view, &kAOProfileIDKey));
+}
+
+// ao_view_popup_id is the number the Go side gave the view when WebKit
+// created it as a popup, zero for any other view. It names the popup before
+// and after the Manager adopts it.
+static uint64_t ao_view_popup_id(id view) {
+  return ao_number(objc_getAssociatedObject(view, &kAOPopupIDKey));
+}
+
+// ao_view_policy_page_id names the page whose navigation policy answers for
+// view: its own once the Manager has adopted it, and before that, for a
+// popup, the page that opened it (set when WebKit asks for the popup). Zero
+// refuses.
+static uint64_t ao_view_policy_page_id(id view) {
+  uint64_t page_id = ao_view_page_id(view);
+  if (page_id != 0) {
+    return page_id;
+  }
+  return ao_number(objc_getAssociatedObject(view, &kAOOpenerIDKey));
 }
 
 // ---------------------------------------------------------------------------
@@ -243,10 +274,9 @@ void ao_wkv_view_press_key(void *view, const char *key, int ctrl, int meta, int 
 // shared between them (one container, one "the presented view" pointer) would
 // let the second pane move or hide the first.
 //
-// This is the WKWebView analogue of the Linux 1x1 clipping GtkScrolledWindow.
-// An off-window WKWebView is the trap it avoids: WebKit only guarantees layout
-// and snapshots for a view that is IN a window, so hidden pages stay in the
-// window and are clipped away instead of being unparented.
+// Parking keeps every hidden page in the window: WebKit only guarantees layout
+// and snapshots for a view that is IN a window, so a hidden page is clipped
+// away inside the 1x1 park view instead of being unparented.
 // ---------------------------------------------------------------------------
 
 static NSView *ao_host = nil;
@@ -415,6 +445,25 @@ void ao_wkv_host_unpark(void *view) {
   }
 }
 
+// ao_bg_color turns a packed 0xRRGGBB into an NSColor. Negative means "no
+// colour", which restores the engine default.
+static NSColor *ao_bg_color(int bg) {
+  if (bg < 0) {
+    return nil;
+  }
+  return [NSColor colorWithSRGBRed:(CGFloat)((bg >> 16) & 0xFF) / 255.0
+                             green:(CGFloat)((bg >> 8) & 0xFF) / 255.0
+                              blue:(CGFloat)(bg & 0xFF) / 255.0
+                             alpha:1.0];
+}
+
+// ao_view_background answers the base colour last set on the view, or -1
+// when none was.
+static int ao_view_background(NSView *view) {
+  NSNumber *stored = objc_getAssociatedObject(view, &kAOBackgroundKey);
+  return stored == nil ? -1 : [stored intValue];
+}
+
 // ao_clip_for answers one page's clipping container, creating it on first
 // present and re-attaching it if it ever lost its superview. The association
 // owns it; ao_wkv_view_close is what takes it down, because a per-page view
@@ -436,8 +485,10 @@ static NSView *ao_clip_for(NSView *view) {
       [clip setClipsToBounds:YES];
     }
     // Hidden until the page is actually inside it: an empty container carrying
-    // the pane's background colour would paint over the SPA.
+    // the page's base colour would paint over the SPA.
     [clip setHidden:YES];
+    NSColor *base = ao_bg_color(ao_view_background(view));
+    [[clip layer] setBackgroundColor:base == nil ? NULL : [base CGColor]];
     // The association is the retain that keeps it alive past this pool.
     objc_setAssociatedObject(view, &kAOClipKey, clip, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
   }
@@ -461,60 +512,56 @@ static void ao_release_clip(NSView *view) {
   objc_setAssociatedObject(view, &kAOClipKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
-// ao_bg_color turns the packed 0xRRGGBB the Go half parsed into an NSColor.
-// Negative means "no colour", which restores the engine default.
-static NSColor *ao_bg_color(int bg) {
-  if (bg < 0) {
-    return nil;
-  }
-  return [NSColor colorWithSRGBRed:(CGFloat)((bg >> 16) & 0xFF) / 255.0
-                             green:(CGFloat)((bg >> 8) & 0xFF) / 255.0
-                              blue:(CGFloat)(bg & 0xFF) / 255.0
-                             alpha:1.0];
-}
-
-// ao_apply_background paints the pane's resolved colour where the page has not
-// presented yet, so a strip exposed by a resize matches the pane instead of
-// flashing the engine default. Three surfaces need it: WKWebView's own
-// under-page colour (what WebKit paints outside the drawn content)
-// and both layers, because the web content arrives on a remote layer that can
-// lag the view's own frame by a frame or two — the clip container is the thing
-// behind that gap.
-//
-// Applied only when it CHANGED. A pane rect arrives once per changed frame
-// while the user drags, and dirtying two layer backgrounds on every one of
-// those frames is work nobody asked for. One stamp covers both surfaces
-// because the container is this page's own and is created with no colour at
-// all, so the two can never disagree.
-static void ao_apply_background(WKWebView *view, NSView *clip, int bg) {
-  NSNumber *previous = objc_getAssociatedObject(view, &kAOBackgroundKey);
-  if (previous != nil && [previous intValue] == bg) {
-    return;
-  }
-  objc_setAssociatedObject(view, &kAOBackgroundKey, [NSNumber numberWithInt:bg],
-                           OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-  NSColor *color = ao_bg_color(bg);
-  CGColorRef cg = color == nil ? NULL : [color CGColor];
-  [view setUnderPageBackgroundColor:color];
-  if ([view layer] != nil) {
-    [[view layer] setBackgroundColor:cg];
-  }
-  if ([clip layer] != nil) {
-    [[clip layer] setBackgroundColor:cg];
+// ao_wkv_view_set_background paints the page's base colour (the Manager's
+// pageBase: white under a document, the pane's colour under a blank tab)
+// where the page has not drawn. Three surfaces need it: WKWebView's own
+// under-page colour (what WebKit paints outside the drawn content) and both
+// layers, because the web content arrives on a remote layer that can lag the
+// view's own frame by a frame or two, and the clip container is the thing
+// behind that gap. The colour is stored on the view, so a container present
+// creates later takes it too (ao_clip_for).
+void ao_wkv_view_set_background(void *view, int bg) {
+  @autoreleasepool {
+    if (view == NULL) {
+      return;
+    }
+    WKWebView *v = (WKWebView *)view;
+    objc_setAssociatedObject(v, &kAOBackgroundKey, [NSNumber numberWithInt:bg],
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    NSColor *color = ao_bg_color(bg);
+    CGColorRef cg = color == nil ? NULL : [color CGColor];
+    [v setUnderPageBackgroundColor:color];
+    if ([v layer] != nil) {
+      [[v layer] setBackgroundColor:cg];
+    }
+    NSView *clip = ao_view_clip(v);
+    if ([clip layer] != nil) {
+      [[clip layer] setBackgroundColor:cg];
+    }
   }
 }
 
-void ao_wkv_host_present(void *view, double x, double y, double width, double height,
-                         double clip_x, double clip_y, double clip_width, double clip_height,
-                         double vw, double vh, int bg) {
+// ao_snap_edge mirrors paneplace.SnapEdge in backing pixels: an edge given in
+// host points lands on the nearest device pixel, halves going up, the same
+// way on both sides of zero.
+static CGFloat ao_snap_edge(CGFloat v, CGFloat backing) {
+  if (!(backing > 0.0)) {
+    backing = 1.0;
+  }
+  return floor(v * backing + 0.5) / backing;
+}
+
+int ao_wkv_host_present(void *view, int slot, double x, double y, double width, double height,
+                        double clip_x, double clip_y, double clip_width, double clip_height,
+                        double vw, double vh) {
   @autoreleasepool {
     if (ao_host == nil || view == NULL) {
-      return;
+      return 0;
     }
     NSView *v = (NSView *)view;
     NSView *clip = ao_clip_for(v);
     if (clip == nil) {
-      return;
+      return 0;
     }
     if ([v superview] != clip) {
       ao_wkv_host_unpark(view);
@@ -540,15 +587,35 @@ void ao_wkv_host_present(void *view, double x, double y, double width, double he
                      ? bounds.size.height / (CGFloat)vh
                      : 1.0;
     // Both rects are in the SPA's TOP-LEFT coordinates, so fy / cy are
-    // distances from the host's top edge and grow downwards.
-    CGFloat fx = (CGFloat)x * sx;
-    CGFloat fy = (CGFloat)y * sy;
-    CGFloat fw = (CGFloat)width * sx;
-    CGFloat fh = (CGFloat)height * sy;
-    CGFloat cx = (CGFloat)clip_x * sx;
-    CGFloat cy = (CGFloat)clip_y * sy;
-    CGFloat cw = (CGFloat)clip_width * sx;
-    CGFloat ch = (CGFloat)clip_height * sy;
+    // distances from the host's top edge and grow downwards. Every EDGE is
+    // snapped to a backing pixel (paneplace.Layout's rule) and sizes are
+    // right minus left, so the page never sits between device pixels and the
+    // clip shares the page's edges exactly.
+    NSWindow *window = [ao_host window];
+    CGFloat backing = window != nil ? [window backingScaleFactor] : 1.0;
+    CGFloat fl = ao_snap_edge((CGFloat)x * sx, backing);
+    CGFloat ft = ao_snap_edge((CGFloat)y * sy, backing);
+    CGFloat fr = ao_snap_edge((CGFloat)(x + width) * sx, backing);
+    CGFloat fb = ao_snap_edge((CGFloat)(y + height) * sy, backing);
+    CGFloat cl = MAX(ao_snap_edge((CGFloat)clip_x * sx, backing), fl);
+    CGFloat ct = MAX(ao_snap_edge((CGFloat)clip_y * sy, backing), ft);
+    CGFloat cr = MIN(ao_snap_edge((CGFloat)(clip_x + clip_width) * sx, backing), fr);
+    CGFloat cb = MIN(ao_snap_edge((CGFloat)(clip_y + clip_height) * sy, backing), fb);
+    if (!(cr > cl) || !(cb > ct)) {
+      // No backing pixel of the page is left to show: the clip rounded away
+      // at this scale (paneplace.Layout's rule). Hidden as a hide hides it,
+      // parked so it keeps producing frames, never shown unclipped over the
+      // pane.
+      return ao_wkv_host_hide(view, slot);
+    }
+    CGFloat fx = fl;
+    CGFloat fy = ft;
+    CGFloat fw = fr - fl;
+    CGFloat fh = fb - ft;
+    CGFloat cx = cl;
+    CGFloat cy = ct;
+    CGFloat cw = cr - cl;
+    CGFloat ch = cb - ct;
     // AppKit's content view is bottom-left unless it says otherwise, so the
     // flip is asked for rather than assumed. The container takes the clip
     // rect, exactly where the whole view used to go.
@@ -574,9 +641,9 @@ void ao_wkv_host_present(void *view, double x, double y, double width, double he
     // same reason the host is.
     CGFloat childY = [clip isFlipped] ? (fy - cy) : (cy + ch) - (fy + fh);
     ao_place(v, NSMakeRect(fx - cx, childY, fw, fh));
-    ao_apply_background((WKWebView *)v, clip, bg);
     [v setHidden:NO];
     [clip setHidden:NO];
+    return 0;
   }
 }
 
@@ -613,6 +680,20 @@ int ao_wkv_host_hide(void *view, int slot) {
     [ao_view_clip((NSView *)view) setHidden:YES];
     ao_wkv_host_park(view, slot);
     return ao_release_focus(held);
+  }
+}
+
+int ao_wkv_view_focus_presented(void *view) {
+  @autoreleasepool {
+    if (!ao_wkv_host_presented(view)) {
+      return -1;
+    }
+    NSView *v = (NSView *)view;
+    NSWindow *window = [v window];
+    if (window == nil) {
+      return 0;
+    }
+    return [window makeFirstResponder:v] ? 1 : 0;
   }
 }
 
@@ -666,7 +747,7 @@ static id ao_download_delegate(void) {
 
 static uint64_t ao_download_seq = 0;
 
-// ao_attach_download stamps the four facts the download delegate needs onto the
+// ao_attach_download stamps the three facts the download delegate needs onto the
 // download itself: WKDownload exposes no route back to the store or the page,
 // and its -webView is nil for a resumed one.
 static void ao_attach_download(WKWebView *view, WKDownload *download) {
@@ -675,14 +756,10 @@ static void ao_attach_download(WKWebView *view, WKDownload *download) {
                            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
   objc_setAssociatedObject(download, &kAODownloadPageKey, @(ao_view_page_id(view)),
                            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+  objc_setAssociatedObject(download, &kAODownloadPopupKey, @(ao_view_popup_id(view)),
+                           OBJC_ASSOCIATION_RETAIN_NONATOMIC);
   objc_setAssociatedObject(download, &kAODownloadProfileKey, @(ao_view_profile_id(view)),
                            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-  objc_setAssociatedObject(download, &kAODownloadDirKey,
-                           objc_getAssociatedObject(view, &kAODownloadDirKey),
-                           OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-  // Held until the Go side releases it, so a cancel arriving after the page
-  // closed cannot reach a freed object.
-  [download retain];
   [download setDelegate:ao_download_delegate()];
 }
 
@@ -706,11 +783,12 @@ static void ao_attach_download(WKWebView *view, WKDownload *download) {
   // navigation: WebKit only turns it into a WKDownload when the answer is
   // WKNavigationActionPolicyDownload, so the flag rides along with the
   // deferred decision and the Go side answers 2 for an allowed download.
-  // A popup the Manager has not adopted has no page id yet; its profile's
-  // workspace policy answers for it.
+  // A popup the Manager has not adopted has no page id yet; its opener's
+  // policy answers for it, so the file policy is the same before and after
+  // adoption.
   int download = [navigationAction shouldPerformDownload] ? 1 : 0;
   void (^held)(WKNavigationActionPolicy) = Block_copy(decisionHandler);
-  aoWKVAllow(ao_view_page_id(webView), ao_view_profile_id(webView), (void *)held,
+  aoWKVAllow(ao_view_policy_page_id(webView), ao_view_profile_id(webView), (void *)held,
              ao_dup([url absoluteString]), download);
 }
 
@@ -756,6 +834,11 @@ static void ao_attach_download(WKWebView *view, WKDownload *download) {
     return;
   }
   WKWebView *view = (WKWebView *)object;
+  if ([keyPath isEqualToString:@"loading"]) {
+    // WKWebView.loading is the view's own answer, read when it changes.
+    aoWKVPageLoading(ao_view_page_id(view), [view isLoading] ? 1 : 0);
+    return;
+  }
   aoWKVPageInfo(ao_view_page_id(view), ao_dup([[view URL] absoluteString]), ao_dup([view title]));
 }
 
@@ -771,27 +854,44 @@ static void ao_attach_download(WKWebView *view, WKDownload *download) {
   WKWebView *popup = [[AOWebView alloc] initWithFrame:NSMakeRect(0, 0, 1280, 800)
                                         configuration:configuration];
   // The popup starts loading as soon as this returns, before the Manager can
-  // adopt it, so every navigation in it is checked from the first one. It
-  // carries the opener's profile and download directory: the profile's
-  // workspace policy answers until adoption, and a download it starts before
-  // then reaches the Go side, which refuses one outside every page. The UI
-  // delegate waits for adoption.
+  // adopt it, so every navigation in it is checked from the first one. It is
+  // stamped with its opener's page id and profile id: the opener's policy
+  // answers its requests until adoption, and a download it starts before then
+  // reaches the Go side naming the popup by its popup number, which the
+  // Manager parks until the popup's fate lists it. The UI
+  // delegate is set now too: a popup can open its own as its first document
+  // parses, before adoption, and names this view by its popup number until
+  // then. Its dialogs and pickers are refused while it has no page id
+  // (aoWKVPagePresented answers no), as a hidden page's are.
+  objc_setAssociatedObject(popup, &kAOOpenerIDKey, @(ao_view_policy_page_id(webView)),
+                           OBJC_ASSOCIATION_RETAIN_NONATOMIC);
   objc_setAssociatedObject(popup, &kAOProfileIDKey, @(ao_view_profile_id(webView)),
                            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-  objc_setAssociatedObject(popup, &kAODownloadDirKey,
-                           objc_getAssociatedObject(webView, &kAODownloadDirKey),
-                           OBJC_ASSOCIATION_RETAIN_NONATOMIC);
   [popup setNavigationDelegate:ao_delegate()];
+  [popup setUIDelegate:ao_delegate()];
   NSURL *url = [[navigationAction request] URL];
   // Held (the +1 from -alloc) until the Manager adopts or discards it. WebKit
   // does not retain the view it is handed back.
-  aoWKVPopup(ao_view_page_id(webView), ao_view_profile_id(webView), popup,
-             ao_dup([url absoluteString]));
+  uint64_t popup_id = aoWKVPopup(ao_view_page_id(webView), ao_view_popup_id(webView),
+                                 ao_view_profile_id(webView), popup, ao_dup([url absoluteString]));
+  // A download the popup starts names it by this (ao_attach_download).
+  objc_setAssociatedObject(popup, &kAOPopupIDKey, @(popup_id), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
   return popup;
 }
 
+// A popup can close itself or lose its process before the Manager adopts it,
+// while its page id is still zero: it names itself by its popup number
+// until then.
 - (void)webViewDidClose:(WKWebView *)webView {
-  aoWKVPageClosed(ao_view_page_id(webView));
+  aoWKVPageClosed(ao_view_page_id(webView), ao_view_popup_id(webView),
+                  ao_view_profile_id(webView));
+}
+
+// WKNavigationDelegate.h: the view's web content process ended while the
+// view lives on, showing nothing.
+- (void)webViewWebContentProcessDidTerminate:(WKWebView *)webView {
+  aoWKVPageCrashed(ao_view_page_id(webView), ao_view_popup_id(webView),
+                   ao_view_profile_id(webView));
 }
 
 // ---- dialogs ----
@@ -944,43 +1044,40 @@ static void ao_attach_download(WKWebView *view, WKDownload *download) {
     decideDestinationUsingResponse:(NSURLResponse *)response
                  suggestedFilename:(NSString *)suggestedFilename
                  completionHandler:(void (^)(NSURL *))completionHandler {
-  NSString *dir = objc_getAssociatedObject(download, &kAODownloadDirKey);
-  if (dir == nil || [dir length] == 0) {
-    // A nil destination cancels the download, which is the only right answer
-    // for a profile with no AO artifact directory to write into.
-    completionHandler(nil);
-    return;
-  }
-  uint64_t identifier = ao_number(objc_getAssociatedObject(download, &kAODownloadIDKey));
-  // The handle IS the on-disk name. The Manager renames the finished file to a
-  // sanitized unique name inside the same directory; giving it a handle-named
-  // file also lets it clean up a download it had to cancel mid-flight.
-  NSString *path =
-      [dir stringByAppendingPathComponent:[NSString stringWithFormat:@"dl-%llu",
-                                                                    (unsigned long long)identifier]];
-  // WebKit refuses a destination that already exists.
-  [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
-  objc_setAssociatedObject(download, &kAODownloadPathKey, path, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-  completionHandler([NSURL fileURLWithPath:path]);
+  // The download is written to the staged file the Go side names for it (the
+  // app's staging directory in the user's Downloads folder) and nowhere else;
+  // with none, a nil destination cancels it before a byte is written. Naming
+  // the file is file system work, so the handler is kept and called on a
+  // later turn of this thread (ao_wkv_download_decide).
+  objc_setAssociatedObject(download, &kAODownloadDecisionKey, completionHandler,
+                           OBJC_ASSOCIATION_COPY_NONATOMIC);
+  // The Go side owns the download from here until it releases it
+  // (ao_wkv_download_release), so a cancel arriving after the page closed
+  // cannot reach a freed object. A download that fails before this is never
+  // the Go side's, and WebKit frees it.
+  [download retain];
   NSURL *url = [[download originalRequest] URL];
-  aoWKVDownloadStarted(ao_number(objc_getAssociatedObject(download, &kAODownloadProfileKey)),
-                       ao_number(objc_getAssociatedObject(download, &kAODownloadPageKey)),
-                       identifier, download, ao_dup([url absoluteString]),
-                       ao_dup(suggestedFilename));
+  aoWKVDownloadDestination(ao_number(objc_getAssociatedObject(download, &kAODownloadProfileKey)),
+                           ao_number(objc_getAssociatedObject(download, &kAODownloadPageKey)),
+                           ao_number(objc_getAssociatedObject(download, &kAODownloadPopupKey)),
+                           ao_number(objc_getAssociatedObject(download, &kAODownloadIDKey)),
+                           download, ao_dup([url absoluteString]), ao_dup(suggestedFilename));
 }
 
 - (void)downloadDidFinish:(WKDownload *)download {
   NSString *path = objc_getAssociatedObject(download, &kAODownloadPathKey);
   aoWKVDownloadFinished(ao_number(objc_getAssociatedObject(download, &kAODownloadIDKey)),
                         (double)[[download progress] completedUnitCount], AO_DL_COMPLETED,
-                        ao_dup(path));
+                        ao_dup(path), NULL);
 }
 
 - (void)download:(WKDownload *)download
     didFailWithError:(NSError *)error
           resumeData:(NSData *)resumeData {
+  objc_setAssociatedObject(download, &kAODownloadFailedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
   aoWKVDownloadFinished(ao_number(objc_getAssociatedObject(download, &kAODownloadIDKey)),
-                        (double)[[download progress] completedUnitCount], AO_DL_CANCELED, NULL);
+                        (double)[[download progress] completedUnitCount], AO_DL_FAILED, NULL,
+                        error ? ao_dup([error localizedDescription]) : NULL);
 }
 
 @end
@@ -1116,27 +1213,26 @@ void ao_wkv_clear_data(uint64_t call_id) {
 // ---------------------------------------------------------------------------
 
 static void ao_connect_view(WKWebView *view, uint64_t page_id, uint64_t profile_id,
-                            const char *user_script, const char *console_handler,
-                            const char *download_dir) {
+                            const char *user_script, const char *console_handler) {
   objc_setAssociatedObject(view, &kAOPageIDKey, @(page_id), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
   objc_setAssociatedObject(view, &kAOProfileIDKey, @(profile_id),
                            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-  objc_setAssociatedObject(
-      view, &kAODownloadDirKey,
-      download_dir == NULL ? nil : [NSString stringWithUTF8String:download_dir],
-      OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
   WKUserContentController *controller = [[view configuration] userContentController];
   if (controller != nil && console_handler != NULL) {
     NSString *name = [NSString stringWithUTF8String:console_handler];
     // A popup's configuration may already carry the opener's controller, and
-    // adding a handler name twice RAISES. Removing first would leave a window
-    // in which the opener's live page posts into nothing, so the duplicate is
-    // caught instead — the handler being added is the same shared object.
+    // adding a handler name twice raises NSInvalidArgumentException. Removing
+    // first would leave a window in which the opener's live page posts into
+    // nothing, so the duplicate is caught instead: the handler being added is
+    // the same shared object. Any other exception is logged.
     @try {
       [controller addScriptMessageHandler:ao_delegate() name:name];
-    } @catch (NSException *ignored) {
-      (void)ignored;
+    } @catch (NSException *refused) {
+      if (![[refused name] isEqualToString:NSInvalidArgumentException]) {
+        NSLog(@"browser: the console handler was not registered: %@: %@", [refused name],
+              [refused reason]);
+      }
     }
     // The same controller may already carry the opener's script; adding it
     // again would double every console entry the opener reports.
@@ -1162,6 +1258,10 @@ static void ao_connect_view(WKWebView *view, uint64_t page_id, uint64_t profile_
          forKeyPath:@"URL"
             options:NSKeyValueObservingOptionNew
             context:&kAOObserverContext];
+  [view addObserver:ao_delegate()
+         forKeyPath:@"loading"
+            options:NSKeyValueObservingOptionNew
+            context:&kAOObserverContext];
   // Spec §7: macOS devtools are Safari's Develop menu against an inspectable
   // view, not an in-app inspector.
   if (@available(macOS 13.3, *)) {
@@ -1170,8 +1270,7 @@ static void ao_connect_view(WKWebView *view, uint64_t page_id, uint64_t profile_
 }
 
 void *ao_wkv_view_new(void *store, uint64_t page_id, uint64_t profile_id,
-                      const char *user_script, const char *console_handler,
-                      const char *download_dir) {
+                      const char *user_script, const char *console_handler) {
   @autoreleasepool {
     WKWebViewConfiguration *configuration = [[[WKWebViewConfiguration alloc] init] autorelease];
     if (store != NULL) {
@@ -1185,18 +1284,20 @@ void *ao_wkv_view_new(void *store, uint64_t page_id, uint64_t profile_id,
     if (view == nil) {
       return NULL;
     }
-    ao_connect_view(view, page_id, profile_id, user_script, console_handler, download_dir);
+    ao_connect_view(view, page_id, profile_id, user_script, console_handler);
     return view;
   }
 }
 
 void ao_wkv_view_adopt(void *view, uint64_t page_id, uint64_t profile_id,
-                       const char *user_script, const char *console_handler,
-                       const char *download_dir) {
+                       const char *user_script, const char *console_handler) {
   @autoreleasepool {
     if (view != NULL) {
-      ao_connect_view((WKWebView *)view, page_id, profile_id, user_script, console_handler,
-                      download_dir);
+      WKWebView *v = (WKWebView *)view;
+      ao_connect_view(v, page_id, profile_id, user_script, console_handler);
+      // The popup's URL and title changed unobserved until now: report them
+      // as they are, so its tab starts from them.
+      aoWKVPageInfo(page_id, ao_dup([[v URL] absoluteString]), ao_dup([v title]));
     }
   }
 }
@@ -1218,12 +1319,18 @@ int ao_wkv_view_close(void *view) {
     [v setNavigationDelegate:nil];
     [v setUIDelegate:nil];
     // An observer left registered on a deallocating object is a hard crash, and
-    // a view that never reached ao_connect_view has none.
+    // a view that never reached ao_connect_view has none: removing one that is
+    // not registered raises NSRangeException, which is expected here. Any
+    // other exception is logged.
     @try {
       [v removeObserver:ao_delegate() forKeyPath:@"title" context:&kAOObserverContext];
       [v removeObserver:ao_delegate() forKeyPath:@"URL" context:&kAOObserverContext];
-    } @catch (NSException *ignored) {
-      (void)ignored;
+      [v removeObserver:ao_delegate() forKeyPath:@"loading" context:&kAOObserverContext];
+    } @catch (NSException *refused) {
+      if (![[refused name] isEqualToString:NSRangeException]) {
+        NSLog(@"browser: the page's observers were not removed: %@: %@", [refused name],
+              [refused reason]);
+      }
     }
     objc_setAssociatedObject(v, &kAOPageIDKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     [v release];
@@ -1466,7 +1573,7 @@ static void ao_snapshot_deliver(uint64_t call_id, NSImage *image, int width, int
   }
   // No CTM flip: CGContextDrawImage into a bitmap context already writes the
   // image top-down (row 0 is the top row), which is what webkitimage.go and the
-  // clip math expect. Flipping here inverted every screenshot (2026-08-31).
+  // clip math expect; a flip here would invert every screenshot.
   CGContextDrawImage(ctx, CGRectMake(0, 0, (CGFloat)width, (CGFloat)height), cg);
   CGContextRelease(ctx);
   aoWKVSnapshotDone(call_id, pixels, width, height, (int)stride, NULL);
@@ -1506,7 +1613,40 @@ void ao_wkv_download_cancel(void *download) {
     if (download == NULL) {
       return;
     }
-    [(WKDownload *)download cancel:nil];
+    // WebKit reports a cancel it was asked for to neither downloadDidFinish
+    // nor didFailWithError, so the cancel's completion is its terminal
+    // report, through the same export: that releases the record and stops
+    // the progress poller once (wkProfile.releaseDownload), and settles the
+    // download. A download not registered with a profile is a lookup miss
+    // there.
+    WKDownload *target = (WKDownload *)download;
+    uint64_t identifier = ao_number(objc_getAssociatedObject(target, &kAODownloadIDKey));
+    double received = (double)[[target progress] completedUnitCount];
+    [target cancel:^(NSData *resumeData) {
+      aoWKVDownloadFinished(identifier, received, AO_DL_CANCELED, NULL, NULL);
+    }];
+  }
+}
+
+int ao_wkv_download_decide(void *download, const char *path) {
+  @autoreleasepool {
+    WKDownload *target = (WKDownload *)download;
+    void (^decide)(NSURL *) = [objc_getAssociatedObject(target, &kAODownloadDecisionKey) retain];
+    objc_setAssociatedObject(target, &kAODownloadDecisionKey, nil, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    if (decide == nil) {
+      return 0;
+    }
+    int live = objc_getAssociatedObject(target, &kAODownloadFailedKey) == nil;
+    NSURL *destination = nil;
+    if (live && path != NULL) {
+      NSString *staged = [NSString stringWithUTF8String:path];
+      objc_setAssociatedObject(target, &kAODownloadPathKey, staged,
+                               OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+      destination = [NSURL fileURLWithPath:staged];
+    }
+    decide(destination);
+    [decide release];
+    return live;
   }
 }
 
@@ -1524,5 +1664,15 @@ double ao_wkv_download_received(void *download) {
       return 0;
     }
     return (double)[[(WKDownload *)download progress] completedUnitCount];
+  }
+}
+
+double ao_wkv_download_total(void *download) {
+  @autoreleasepool {
+    if (download == NULL) {
+      return 0;
+    }
+    int64_t total = [[(WKDownload *)download progress] totalUnitCount];
+    return total > 0 ? (double)total : 0;
   }
 }

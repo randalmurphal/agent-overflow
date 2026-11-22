@@ -5,38 +5,52 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
-	"time"
 )
 
-func (m *Manager) Snapshot(ctx context.Context, access Access, pageID string) (Snapshot, error) {
+func (m *Manager) Snapshot(ctx context.Context, access Access, pageID PageID) (Snapshot, error) {
+	if err := m.bound(access); err != nil {
+		return Snapshot{}, err
+	}
 	p, _, err := m.lookupOrSelectPage(ctx, access, pageID)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	p.mu.Lock()
+	if err := m.lockPageForOperation(ctx, p); err != nil {
+		return Snapshot{}, err
+	}
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	defer cancel()
+	stamp := p.readStamp()
 	snapshot, err := p.driver.Snapshot(opCtx)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	snapshot.ID = p.id
+	snapshot.ID = string(p.id)
 	for i := range snapshot.Elements {
 		snapshot.Elements[i].NodeID = p.rememberNode(nodeReference{Selector: snapshot.Elements[i].Selector, Tag: snapshot.Elements[i].Tag, Text: snapshot.Elements[i].Text})
 	}
-	p.setInfo(snapshot.PageInfo)
-	m.pageChanged(p)
+	// The snapshot script reads the address and title, not the session
+	// history: the tab keeps its back/forward state, and the agent is told it.
+	info, _ := m.commitRead(p, pageUpdate{Location: &pageLocation{URL: snapshot.URL, Title: snapshot.Title}}, stamp)
+	snapshot.CanGoBack, snapshot.CanGoForward = info.CanGoBack, info.CanGoForward
+	m.pageUsed(p)
 	return snapshot, nil
 }
 
 func (m *Manager) Screenshot(ctx context.Context, access Access, opts ScreenshotOptions) ([]byte, error) {
+	if err := m.bound(access); err != nil {
+		return nil, err
+	}
 	p, _, err := m.lookupOrSelectPage(ctx, access, opts.PageID)
 	if err != nil {
 		return nil, err
 	}
-	p.mu.Lock()
+	if err := m.lockPageForOperation(ctx, p); err != nil {
+		return nil, err
+	}
 	defer p.mu.Unlock()
 	if opts.FullPage && opts.Clip != nil {
 		return nil, fmt.Errorf("browser: screenshot clip and full_page are mutually exclusive")
@@ -68,7 +82,10 @@ func (m *Manager) Screenshot(ctx context.Context, access Access, opts Screenshot
 	return data, nil
 }
 
-func (m *Manager) Click(ctx context.Context, access Access, pageID, selector string) (PageInfo, error) {
+func (m *Manager) Click(ctx context.Context, access Access, pageID PageID, selector string) (PageInfo, error) {
+	if err := m.bound(access); err != nil {
+		return PageInfo{}, err
+	}
 	selector = strings.TrimSpace(selector)
 	if selector == "" {
 		return PageInfo{}, fmt.Errorf("browser: selector is required")
@@ -77,7 +94,9 @@ func (m *Manager) Click(ctx context.Context, access Access, pageID, selector str
 	if err != nil {
 		return PageInfo{}, err
 	}
-	p.mu.Lock()
+	if err := m.lockPageForOperation(ctx, p); err != nil {
+		return PageInfo{}, err
+	}
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	defer cancel()
@@ -88,6 +107,9 @@ func (m *Manager) Click(ctx context.Context, access Access, pageID, selector str
 }
 
 func (m *Manager) Type(ctx context.Context, access Access, opts TypeOptions) (PageInfo, error) {
+	if err := m.bound(access); err != nil {
+		return PageInfo{}, err
+	}
 	if len(opts.Text) > maxBrowserInputBytes {
 		return PageInfo{}, fmt.Errorf("browser: input text exceeds %d bytes", maxBrowserInputBytes)
 	}
@@ -99,7 +121,9 @@ func (m *Manager) Type(ctx context.Context, access Access, opts TypeOptions) (Pa
 	if err != nil {
 		return PageInfo{}, err
 	}
-	p.mu.Lock()
+	if err := m.lockPageForOperation(ctx, p); err != nil {
+		return PageInfo{}, err
+	}
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	defer cancel()
@@ -109,7 +133,10 @@ func (m *Manager) Type(ctx context.Context, access Access, opts TypeOptions) (Pa
 	return m.finishPageOperation(opCtx, p)
 }
 
-func (m *Manager) Press(ctx context.Context, access Access, pageID, key string) (PageInfo, error) {
+func (m *Manager) Press(ctx context.Context, access Access, pageID PageID, key string) (PageInfo, error) {
+	if err := m.bound(access); err != nil {
+		return PageInfo{}, err
+	}
 	if len(key) > maxBrowserInputBytes {
 		return PageInfo{}, fmt.Errorf("browser: key input exceeds %d bytes", maxBrowserInputBytes)
 	}
@@ -120,7 +147,9 @@ func (m *Manager) Press(ctx context.Context, access Access, pageID, key string) 
 	if err != nil {
 		return PageInfo{}, err
 	}
-	p.mu.Lock()
+	if err := m.lockPageForOperation(ctx, p); err != nil {
+		return PageInfo{}, err
+	}
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	defer cancel()
@@ -138,7 +167,11 @@ func (m *Manager) Press(ctx context.Context, access Access, pageID, key string) 
 		return PageInfo{}, err
 	}
 	if isModifierChord(key, "c") {
-		if selected := p.driver.SelectionText(opCtx); selected != "" {
+		selected, err := p.driver.SelectionText(opCtx)
+		if err != nil {
+			return PageInfo{}, fmt.Errorf("browser: copy the selection: %w", err)
+		}
+		if selected != "" {
 			p.setClipboardText(selected)
 		}
 	}
@@ -196,7 +229,10 @@ func (p *managedPage) setClipboardText(text string) {
 	p.clipboardMu.Unlock()
 }
 
-func (m *Manager) Scroll(ctx context.Context, access Access, pageID, selector string, x, y float64) (PageInfo, error) {
+func (m *Manager) Scroll(ctx context.Context, access Access, pageID PageID, selector string, x, y float64) (PageInfo, error) {
+	if err := m.bound(access); err != nil {
+		return PageInfo{}, err
+	}
 	if err := validateScrollDelta(x, y); err != nil {
 		return PageInfo{}, err
 	}
@@ -204,7 +240,9 @@ func (m *Manager) Scroll(ctx context.Context, access Access, pageID, selector st
 	if err != nil {
 		return PageInfo{}, err
 	}
-	p.mu.Lock()
+	if err := m.lockPageForOperation(ctx, p); err != nil {
+		return PageInfo{}, err
+	}
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	defer cancel()
@@ -214,46 +252,17 @@ func (m *Manager) Scroll(ctx context.Context, access Access, pageID, selector st
 	return m.finishPageOperation(opCtx, p)
 }
 
-func (m *Manager) Wait(ctx context.Context, access Access, pageID, selector string, milliseconds int) (PageInfo, error) {
+func (m *Manager) History(ctx context.Context, access Access, pageID PageID, action string) (PageInfo, error) {
+	if err := m.bound(access); err != nil {
+		return PageInfo{}, err
+	}
 	p, _, err := m.lookupOrSelectPage(ctx, access, pageID)
 	if err != nil {
 		return PageInfo{}, err
 	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if milliseconds < 0 || milliseconds > 30_000 {
-		return PageInfo{}, fmt.Errorf("browser: wait duration must be between 0 and 30000 ms")
-	}
-	timeout := operationTimeout
-	if milliseconds > 0 {
-		timeout = time.Duration(milliseconds+1000) * time.Millisecond
-	}
-	opCtx, cancel := operationContext(ctx, p.ctx, timeout)
-	defer cancel()
-	if strings.TrimSpace(selector) != "" {
-		if err := p.driver.WaitVisible(opCtx, selector); err != nil {
-			return PageInfo{}, fmt.Errorf("browser: wait for %q: %w", selector, err)
-		}
-	} else if milliseconds > 0 {
-		timer := time.NewTimer(time.Duration(milliseconds) * time.Millisecond)
-		defer timer.Stop()
-		select {
-		case <-timer.C:
-		case <-opCtx.Done():
-			return PageInfo{}, opCtx.Err()
-		}
-	} else {
-		return PageInfo{}, fmt.Errorf("browser: selector or duration is required")
-	}
-	return m.finishPageOperation(opCtx, p)
-}
-
-func (m *Manager) History(ctx context.Context, access Access, pageID, action string) (PageInfo, error) {
-	p, _, err := m.lookupOrSelectPage(ctx, access, pageID)
-	if err != nil {
+	if err := m.lockPageForOperation(ctx, p); err != nil {
 		return PageInfo{}, err
 	}
-	p.mu.Lock()
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	defer cancel()
@@ -277,7 +286,10 @@ func (m *Manager) History(ctx context.Context, access Access, pageID, action str
 // Evaluate runs JavaScript in the page as evaluate.go describes, with the
 // optional JSON argument for code that is one function. It returns the result
 // and a note the tool result carries, or "".
-func (m *Manager) Evaluate(ctx context.Context, access Access, pageID, code string, argument json.RawMessage) (any, string, error) {
+func (m *Manager) Evaluate(ctx context.Context, access Access, pageID PageID, code string, argument json.RawMessage) (any, string, error) {
+	if err := m.bound(access); err != nil {
+		return nil, "", err
+	}
 	return m.evaluate(ctx, access, pageID, code, argument, false)
 }
 
@@ -287,11 +299,14 @@ func (m *Manager) Evaluate(ctx context.Context, access Access, pageID, code stri
 // not a Manager judgement: an engine with engine-level side-effect rejection
 // returns none, and one that can only be best-effort says so in the tool
 // result rather than looking identical.
-func (m *Manager) EvaluateReadOnly(ctx context.Context, access Access, pageID, code string, argument json.RawMessage) (any, string, error) {
+func (m *Manager) EvaluateReadOnly(ctx context.Context, access Access, pageID PageID, code string, argument json.RawMessage) (any, string, error) {
+	if err := m.bound(access); err != nil {
+		return nil, "", err
+	}
 	return m.evaluate(ctx, access, pageID, code, argument, true)
 }
 
-func (m *Manager) evaluate(ctx context.Context, access Access, pageID, code string, argument json.RawMessage, readOnly bool) (any, string, error) {
+func (m *Manager) evaluate(ctx context.Context, access Access, pageID PageID, code string, argument json.RawMessage, readOnly bool) (any, string, error) {
 	// The evaluation's own failures (a refusal, a throw, a result the tools
 	// cannot send) are named for the tool; an engine failure already carries
 	// the package prefix.
@@ -311,7 +326,9 @@ func (m *Manager) evaluate(ctx context.Context, access Access, pageID, code stri
 	if err != nil {
 		return nil, "", err
 	}
-	p.mu.Lock()
+	if err := m.lockPageForOperation(ctx, p); err != nil {
+		return nil, "", err
+	}
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	defer cancel()
@@ -333,32 +350,32 @@ func (m *Manager) evaluate(ctx context.Context, access Access, pageID, code stri
 	return value, caveat + note, nil
 }
 
+// finishPageOperation reads and commits p's info after an operation. The
+// caller holds the page-operation lock.
 func (m *Manager) finishPageOperation(ctx context.Context, p *managedPage) (PageInfo, error) {
-	info, err := m.pageInfo(ctx, p)
-	if err == nil {
-		p.setInfo(info)
-		info = p.cachedInfo()
-	}
-	m.pageChanged(p)
+	info, _, err := m.readInfo(ctx, p, pageListing{})
+	m.pageUsed(p)
 	return info, err
 }
 
+// refreshPageAfterOperation is finishPageOperation with no answer.
 func (m *Manager) refreshPageAfterOperation(ctx context.Context, p *managedPage) {
-	info, err := m.pageInfo(ctx, p)
-	if err == nil {
-		p.setInfo(info)
+	// A failed read leaves the tab as it was and is logged; the operation's
+	// own result reports its outcome.
+	if _, _, err := m.readInfo(ctx, p, pageListing{}); err != nil && p.ctx.Err() == nil {
+		log.Printf("browser: refresh page %s after an operation: %v", p.id, err)
 	}
-	m.pageChanged(p)
+	m.pageUsed(p)
 }
 
 // lookupOrSelectPage answers the live page a page-scoped call acts on: the
 // named page, or with none named the thread's only page, or a new one when it
 // has none. A suspended page is restored, since the call touches it.
-func (m *Manager) lookupOrSelectPage(ctx context.Context, access Access, pageID string) (*managedPage, *workspaceScope, error) {
-	if pageID = strings.TrimSpace(pageID); pageID != "" {
+func (m *Manager) lookupOrSelectPage(ctx context.Context, access Access, pageID PageID) (*managedPage, *jarScope, error) {
+	if pageID = pageID.trim(); pageID != "" {
 		return m.resolvePage(ctx, access, pageID, false)
 	}
-	tabs := m.threadTabs(access.ThreadID)
+	tabs := m.threadTabs(access.tb)
 	switch len(tabs) {
 	case 0:
 		p, err := m.createPage(ctx, access)

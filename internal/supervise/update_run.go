@@ -256,6 +256,8 @@ func (r UpdateRun) runTrials(ctx context.Context, state State, trace *trialTrace
 			return r.SettleFailed(ctx, state, result.Reason)
 		}
 		return r.RollBack(ctx, state, result.Reason)
+	case UpdateOutcomeOK, UpdateOutcomeFailed:
+		fallthrough
 	default:
 		return r.RollBack(ctx, state, result.Reason)
 	}
@@ -480,6 +482,8 @@ func (r UpdateRun) FinishMigration(id string, end UpdateEnd, err error) Migratio
 			Title:  MigrationFailedTitle,
 			Detail: "The backup was restored, so the data is as it was. " + r.reasonSentence(end.Reason),
 		}
+	case UpdatePending, UpdateFailed:
+		fallthrough
 	default:
 		return MigrationEnd{
 			Title:  MigrationFailedTitle,

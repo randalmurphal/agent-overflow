@@ -13,6 +13,7 @@ import type { Locator, Page } from '@playwright/test';
 import { test, expect, type SeedResult } from './fixtures.js';
 import type { HarnessApp } from '../src/harness.js';
 import { captureAgentMessageInView } from './wake-rows-helpers.js';
+import { timelineOf } from './timeline-follow-helpers.js';
 import { awaitGate, awaitToolAnswer, setScenario, threadToolsScenario, type TurnStep } from './thread-tools-helpers.js';
 
 test.beforeEach(async ({ harness }) => {
@@ -122,7 +123,7 @@ for (const provider of ['claude', 'codex'] as const) {
     await expect(fact(body, 'Stopped by')).toHaveText('the user');
     await expect(body).not.toContainText('restart');
     if (provider === 'claude') await expect(body.getByTestId('agent-message-text')).toContainText(PARTIAL);
-    await captureAgentMessageInView(page, `${provider}-person-stop-expanded.png`, wake);
+    await captureAgentMessageInView(timelineOf(wake), `${provider}-person-stop-expanded.png`, wake);
     const raw = db<{ summary: string }>(harness,
       `SELECT summary FROM items WHERE thread_id = ? AND kind = 'user_text' AND summary LIKE '%[token ' || ? || ']%'`, sender, token);
     expect(raw.map((row) => row.summary).join('\n')).toContain('The user stopped this turn before it answered.');

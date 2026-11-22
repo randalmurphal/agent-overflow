@@ -278,6 +278,8 @@ func (a *App) answerRemoteWorkerPrompt(ctx context.Context, caller threadtools.C
 		if prompt.answer != answer {
 			err = errWorkerPromptAnswered
 		}
+	case remotePromptReturned, remotePromptClosed:
+		fallthrough
 	default:
 		err = errWorkerPromptClosed
 	}

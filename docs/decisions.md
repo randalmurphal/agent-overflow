@@ -77,6 +77,21 @@ Mechanism in
   projects have answered, the sidebar shows a loading row for it, naming its
   boot phase while it is starting, or its error with Retry. The empty-list
   message appears only once both have loaded; rows already held stay visible.
+- A computer's projects, the threads under them and their groups list in the
+  sidebar as one set, with no exception. A computer that has never listed a
+  complete tree shows only its error row with Retry: no project header, no
+  project row and no New Thread button. A computer that has listed one keeps
+  that tree, with the error row beside it while a read fails. Nothing from a
+  failing attempt reaches the sidebar. A complete tree is all three catalogs
+  answered in one round, or, for a computer whose reads all fail, the last
+  tree it answered together plus the changes pushed since. The replica
+  keeps only that tree across a restart: rows answered apart, rows of a
+  partial round and pushed changes alone never make one and are never
+  written over it. The replica writes a computer's three catalogs
+  together, so the three it holds, an older build's included, list as that
+  computer's tree. The price is accepted: a computer whose thread list keeps failing
+  shows none of its projects, which a half-arranged list would show and then
+  rearrange (ruling 2026-11-21).
 - Readiness reports progress. A starting backend names its phase, step and
   elapsed time, and a boot right after an in-app update reads as finishing
   that update. The launcher's loading page, the startup screen and the
@@ -287,6 +302,17 @@ Mechanism in
   thread an Agents row opened; closing it never deletes the thread.
   Nothing is shared across clients. The browser pane follows its backend
   state instead (`frontend/src/lib/stores/companionStash.ts`).
+- Any pane (thread, companion, tool) can be promoted to fill the pane
+  area as if it were the only pane, and demoted back to its slot: its
+  header's maximize control, a double-click on its title, or
+  `alt+shift+enter`. Per client, never persisted; compact ignores it.
+  Nothing remounts or reloads: the pane keeps its element, its slot holds
+  its place so no other pane moves, and a clip reveal of about 180 ms
+  (none under reduced motion) animates both ways. The strip does not
+  scroll under a promoted pane. Focusing or revealing another pane, or
+  starting a drag that places a pane, demotes first, so the pane asked for
+  is always shown; closing the promoted pane ends the promotion. Escape
+  does not demote: in a thread pane it interrupts a turn.
 - Thread groups, pins, and auto-pin rulings: `docs/specs/sidebar-thread-groups.md`
   and `internal/store/AGENTS.md`. Re-pin-to-bump is deliberately dead.
 - Assistants (standing agents) are records with a name, a home and one
@@ -751,6 +777,61 @@ and anti-changes that live only here:
 - A browser page fills the pane at 1:1 and reflows with it, like a tab in
   any browser. A fixed page size is an explicit `browser_viewport set`,
   never a default the pane scales down.
+- Browser tabs are the backend's state, never invented by the client: a new
+  tab shows as opening, a failed one the user opened stays with its error,
+  and a closed one leaves at once while the engine finishes in the
+  background. A failure of that teardown is shown, never only logged. A new
+  tab the user opened focuses the address bar; an agent's never takes focus.
+  A tab whose page process died stays, failed with the reason, until the
+  user reloads it at its address; selecting it does not reload it. A tab
+  marks the time an agent tool works on its page, and the user's own
+  actions on that page are never blocked. A tab the user closed can be
+  reopened at its place for the life of the app (the last 10 per thread);
+  an agent's close is not reopenable. Clearing site
+  data, a jar switch or the thread's deletion forgets them, and a private
+  jar keeps none. `docs/architecture/browser-tools.md`.
+- The browser pane's chrome behaves like a desktop browser's (tab sizing,
+  select-all address, stop, the usual chords while the pane is focused). A
+  Windows or `\\wsl` path typed into it opens the file it names or fails
+  naming the path, never a web search; a file can also be picked from the
+  workspace without knowing its path.
+- The browser's address suggests only from this thread: its open tabs, its
+  dev servers and the addresses its pages recently opened. No network
+  suggestions or search queries while typing, and no inline completion: the
+  typed text is the user's until a row is chosen. Recent addresses are kept
+  in memory only, never for a private jar, and are forgotten by a jar
+  switch, Clear site data, turning the browser off and closing the thread.
+- Each thread's browser chooses its cookie jar: this worktree (default),
+  the whole project, this browser only, or private. A jar shares sign-ins
+  and site data only; file and navigation permissions and finished
+  downloads stay with the thread's workspace, and a popup keeps its opener's. A
+  private jar is never part of a persistent profile and is discarded when
+  its last tab closes. Switching with tabs open asks first, then suspends
+  the tabs into the new jar, where they load again when used; page state is
+  not carried over. Agents read the jar but cannot change it.
+  `docs/architecture/browser-tools.md`.
+- A file downloaded in the browser pane is visible to the user: a downloads
+  button in the address row shows running downloads' progress in steps and
+  lists the thread's downloads with cancel, Show in folder, and open in a
+  tab for a type a tab shows. A finished download is announced once with
+  Show in folder, a failed one with its reason. Clearing the list deletes
+  no file. Downloads never open with the system's default app.
+- A pane download goes to the Downloads folder of the machine that runs the
+  page's engine, as in any browser there; there is no setting.
+  AO applies no quota, cap or pruning there and deletes or replaces no
+  file it did not put there; an engine in AO's process downloads into AO's
+  private staging folder inside Downloads and AO moves the finished file
+  beside it without copying or replacing. A missing
+  Downloads folder is created; one that cannot be created or written fails
+  the download with its reason rather than falling back.
+  Headless Chromium in serve mode alone keeps AO's artifact directories,
+  quotas, caps and pruning. An agent may open a finished download of its
+  workspace's, never the folder around it. On WebView2 the mark of the web
+  stays. A popup is a tab on every engine, so its downloads are listed like
+  any other, and one that never becomes a tab leaves them in its nearest
+  opener's tab; the download dialog WebView2 opens by itself for a popup whose
+  first navigation is a download is closed as it opens.
+  `docs/architecture/browser-tools.md`.
 - Every thread/workspace event reaches any client with visibility; channel
   audience is by data class, loopback-only is for host directives only. A
   mutation that persists without emitting is a bug.

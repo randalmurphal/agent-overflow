@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isLocalEnter } from '../../utils/localEnter';
   // Menu row that expands a nested Popover+Menu on hover / ArrowRight.
   // The child menu re-uses the Menu primitive so arrow-nav, typeahead,
   // and tabindex rules all come for free inside the submenu.
@@ -79,14 +80,13 @@
 
   function handleKeydown(e: KeyboardEvent): void {
     if (disabled) return;
+    if (e.key === 'ArrowRight' || e.key === ' ' || isLocalEnter(e)) {
+      e.preventDefault();
+      e.stopPropagation();
+      openImmediate();
+      return;
+    }
     switch (e.key) {
-      case 'ArrowRight':
-      case 'Enter':
-      case ' ':
-        e.preventDefault();
-        e.stopPropagation();
-        openImmediate();
-        return;
       case 'ArrowLeft':
         if (open) {
           e.preventDefault();
@@ -131,8 +131,8 @@
   }
 
   // Bubbled menuitem-select from a descendant item inside the submenu
-  // closes the submenu. Combined with the parent Menu's own handler for
-  // the same event, the full stack collapses on selection.
+  // closes the submenu. The parent menu's own dismissal belongs to its
+  // caller, which closes it from the item's onSelect.
   // The custom event isn't part of HTML's typed handler list, so we
   // attach it via addEventListener once the wrapper mounts.
   let submenuWrapperEl: HTMLDivElement | undefined = $state(undefined);

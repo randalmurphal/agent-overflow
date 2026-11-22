@@ -38,6 +38,7 @@ import {
   bigThreadFixture,
   expectEffortsPerModel,
   plainScenario,
+  releaseAfterBackgrounded,
   setScenario,
   threadRows,
   threadToolsScenario,
@@ -550,14 +551,15 @@ test('thread_spawn opens a visible thread, delivers the prompt with its footer a
       ],
     }),
   );
-  // The spawned thread answers on its own project's workspace.
+  // The spawned thread answers on its own project's workspace, once the
+  // spawn has returned.
   await setScenario(
     harness,
     targetPath,
-    plainScenario({
+    threadToolsScenario({
       name: 'tt-spawn-target-script',
       provider: 'claude',
-      texts: ['The launcher starts in main.go.'],
+      turns: [{ steps: [{ gate: 'hold-answer' }], text: 'The launcher starts in main.go.' }],
     }),
   );
 
@@ -574,9 +576,9 @@ test('thread_spawn opens a visible thread, delivers the prompt with its footer a
   const spawn = await awaitToolAnswer<SpawnAnswer>(harness, { tool: 'thread_spawn' });
   expect(spawn.isError).toBe(false);
   const spawned = spawn.value!;
-  expect(spawned.outcome).toBe('backgrounded');
   expect(spawned.notify).toBe(true);
   expect(spawned.thread_id).not.toBe('');
+  await releaseAfterBackgrounded(spawn, { harness, gate: 'hold-answer', cwd: targetPath });
 
   // The prompt reached the new thread as its first user message, with the
   // footer naming the sender, the token and what the user asked for.
@@ -1420,7 +1422,10 @@ test('thread_status lists the caller requests, watches a thread and carries a la
       provider: 'claude',
       turns: [
         {
-          steps: [{ capture: { var: 'TOKEN', from: '${USER_INPUT}', pattern: FOOTER_TOKEN_PATTERN } }],
+          steps: [
+            { capture: { var: 'TOKEN', from: '${USER_INPUT}', pattern: FOOTER_TOKEN_PATTERN } },
+            { gate: 'hold-final' },
+          ],
           text: 'I will look into it.',
         },
         {
@@ -1503,9 +1508,8 @@ test('thread_status lists the caller requests, watches a thread and carries a la
     notify: boolean;
   }
   const send = await awaitToolAnswer<SendAnswer>(harness, { tool: 'thread_send' });
-  expect(send.isError, send.text).toBe(false);
-  expect(send.value!.outcome).toBe('backgrounded');
-  expect(send.value!.notify).toBe(true);
+  expect(send.value?.notify, send.text).toBe(true);
+  await releaseAfterBackgrounded(send, { harness, gate: 'hold-final', cwd: targetPath });
   const token = send.value!.token;
 
   interface StatusAnswer {
@@ -3727,7 +3731,6 @@ test('a thread_reply reaches a sender that asked for no wait and no notification
   }
   const send = await awaitToolAnswer<SendAnswer>(harness, { tool: 'thread_send' });
   expect(send.isError).toBe(false);
-  expect(send.value!.outcome).toBe('backgrounded');
   expect(send.value!.notify).toBe(false);
   // The sender is told what it will and will not hear.
   expect(send.text).toContain('hears back only if that thread calls thread_reply');
@@ -3739,8 +3742,8 @@ test('a thread_reply reaches a sender that asked for no wait and no notification
   expect(delivered.report.input).toContain('It is not waiting for an answer.');
   expect(delivered.report.input).toContain(`thread_reply with token ${send.value!.token}, once`);
 
-  const held = await awaitGate(harness, 'hold-reply', targetPath);
-  const wake = harness.waitForEvent<HarnessMockEvent>(
+  await releaseAfterBackgrounded(send, { harness, gate: 'hold-reply', cwd: targetPath });
+  const woke = await harness.waitForEvent<HarnessMockEvent>(
     'harness:mock',
     (ev) =>
       ev.report.kind === 'user_input' &&
@@ -3748,8 +3751,6 @@ test('a thread_reply reaches a sender that asked for no wait and no notification
       (ev.report.input ?? '').includes(send.value!.token),
     30_000,
   );
-  await advanceGate(harness, held.mockId, 'hold-reply');
-  const woke = await wake;
   expect(woke.report.input).toContain('Reply from "Quiet target"');
   expect(woke.report.input).toContain('The stall is in the watchdog.');
 });

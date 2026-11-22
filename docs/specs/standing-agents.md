@@ -626,11 +626,14 @@ join the successor's composer draft rather than becoming a message, the
 client shows the error as a notice instead of restoring the old
 composer, and the opening block says how many messages wait unsent in
 the user's composer. Every send that finds the session gone while the
-handoff runs is kept, in the order sent, one blank line between them.
-A handoff that fails, or never starts because the app is stopping, puts
-them back in the old thread's composer; a send that finds the session
-gone with no handoff running fails as any start failure does, and its
-client keeps the text.
+handoff runs is kept, in the order sent, one blank line between them,
+until the handoff takes them once: its composer move, or, for a handoff
+that fails or never starts because the app is stopping, its end, which
+puts them back in the old thread's composer under the lock the next
+handoff's composer move takes. A send that finds the session gone after
+a failed handoff took them starts the next handoff; a send that finds
+the session gone with no handoff running fails as any start failure
+does, and its client keeps the text.
 
 ### Agent home contents
 
@@ -959,7 +962,13 @@ Ruling 36, as built:
   computer. Workers with
   different reasons keep each one: the reasons follow, each after the
   workers it applies to (`"<title>", "<title>": <reason>. "<title>":
-  <reason>.`). The request sweep sends the rest, 5 s after an attempt
+  <reason>.`). Such a door holds what its write owes from inside that
+  write until it returns (`ownerOpHolds`), so its report is the attempt
+  it made: the request sweep leaves a held operation alone, and a door
+  that finds an earlier operation's attempt on its way to the spawn waits
+  for it within those 5 s, then makes its own, taking that attempt's
+  answer when it found the computer on an older version or no longer
+  connected. The request sweep sends the rest, 5 s after an attempt
   doubling to 10 min, until that computer answers
   (`deliverOwedOwnerOps`); a refusal or a computer that does not answer
   never undoes the archive or delete here. That computer reads the

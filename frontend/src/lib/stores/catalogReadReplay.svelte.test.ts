@@ -3,6 +3,7 @@
 // computer's catalog stayed 'loading', and nothing re-read it.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readSidebarCatalogs } from '../../test/helpers/sidebarCatalogs';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
 import { makeThread } from '../../test/helpers/chat';
@@ -15,13 +16,14 @@ import { COMPUTER_READ_DEADLINE_MS } from './computerRows';
 import { applyProjectUpdated } from './eventsProjectRows';
 import { applyThreadUpdated, refreshSidebarProjections } from './eventsThreadRows';
 import {
-  addProjectLocal, getProjects, refreshProjects, removeProjectLocal, resetProjectsForTest, updateProjectLocal,
+  addProjectLocal, getProjects, removeProjectLocal, resetProjectsForTest, updateProjectLocal,
 } from './projects.svelte';
 import {
-  clearThreadGroupMembership, getThreads, loadThreads, prependThread, removeThread, replaceThread,
+  clearThreadGroupMembership, getThreads, prependThread, removeThread, replaceThread,
   resetThreadsForTest, updateThreadTitle,
 } from './threads.svelte';
-import { getThreadGroups, loadThreadGroups, resetThreadGroupsForTest, upsertThreadGroup } from './threadGroups.svelte';
+import { getThreadGroups, resetThreadGroupsForTest, upsertThreadGroup } from './threadGroups.svelte';
+import { loadSidebarCatalogs } from './sidebarCatalogs';
 
 const LOADED = { phase: 'loaded', error: '' };
 const LAPTOP = 'laptop';
@@ -55,6 +57,11 @@ beforeEach(() => {
   resetProjectsForTest();
   resetThreadGroupsForTest();
   resetCatalogLoadForTest();
+  // A round reads all three catalogs of the tree; a case mocks the one it
+  // is about and these answer the rest.
+  setBindingMock('ListProjects', async () => []);
+  setBindingMock('ListThreads', async () => []);
+  setBindingMock('ListThreadGroups', async () => []);
   vi.useFakeTimers();
   vi.spyOn(console, 'error').mockImplementation(() => {});
 });
@@ -68,7 +75,7 @@ describe('a thread catalog read', () => {
   it('loads with a pushed row that landed while it was out', async () => {
     const list = deferred<Thread[]>();
     setBindingMock('ListThreads', () => list.promise);
-    const boot = loadThreads();
+    const boot = loadSidebarCatalogs();
     noteThread('pushed', HOME_BACKEND);
     replaceThread(makeThread({ id: 'pushed', title: 'pushed title' }));
     updateThreadTitle('t1', 'renamed while out');
@@ -85,7 +92,7 @@ describe('a thread catalog read', () => {
   it('keeps a thread removed while it was out removed, and one added while it was out', async () => {
     const list = deferred<Thread[]>();
     setBindingMock('ListThreads', () => list.promise);
-    const boot = loadThreads();
+    const boot = loadSidebarCatalogs();
     removeThread('deleted');
     prependThread(makeThread({ id: 'created' }));
     list.resolve(threads('kept', 'deleted'));
@@ -99,7 +106,7 @@ describe('a thread catalog read', () => {
     const list = deferred<Thread[]>();
     setBindingMock('ListThreads', () => list.promise);
     // No cache and no answer: the boot read itself rejects (computerRows).
-    await Promise.all([loadThreads().catch(() => {}), vi.advanceTimersByTimeAsync(COMPUTER_READ_DEADLINE_MS)]);
+    await Promise.all([loadSidebarCatalogs().catch(() => {}), vi.advanceTimersByTimeAsync(COMPUTER_READ_DEADLINE_MS)]);
     // Past the deadline: retry is scheduled, the read keeps recording.
     expect(catalogLoadState(HOME_BACKEND, 'threads').phase).toBe('loading');
     expect(openCatalogReadsForTest(HOME_BACKEND, 'threads')).toBe(1);
@@ -118,7 +125,7 @@ describe('a thread catalog read', () => {
     let calls = 0;
     setBindingMock('ListThreads', () => ++calls === 1 ? list.promise : new Promise<never>(() => {}));
     // No cache and no answer: the boot read itself rejects (computerRows).
-    await Promise.all([loadThreads().catch(() => {}), vi.advanceTimersByTimeAsync(COMPUTER_READ_DEADLINE_MS)]);
+    await Promise.all([loadSidebarCatalogs().catch(() => {}), vi.advanceTimersByTimeAsync(COMPUTER_READ_DEADLINE_MS)]);
     expect(openCatalogReadsForTest(HOME_BACKEND, 'threads')).toBe(1);
     list.reject(new Error('late failure'));
     await vi.advanceTimersByTimeAsync(0);
@@ -130,8 +137,8 @@ describe('a thread catalog read', () => {
     const second = deferred<Thread[]>();
     let calls = 0;
     setBindingMock('ListThreads', () => ++calls === 1 ? first.promise : second.promise);
-    const older = loadThreads();
-    const newer = loadThreads();
+    const older = loadSidebarCatalogs();
+    const newer = loadSidebarCatalogs();
     first.resolve(threads('older'));
     await vi.advanceTimersByTimeAsync(0);
     expect(ids(getThreads())).toEqual([]);
@@ -146,7 +153,7 @@ describe('a thread catalog read', () => {
     stageBackend({ id: LAPTOP });
     const laptop = deferred<Thread[]>();
     setBindingMock('ListThreads', async () => takePinnedBackend() === LAPTOP ? laptop.promise : threads('home-old'));
-    const boot = loadThreads();
+    const boot = loadSidebarCatalogs();
     await vi.advanceTimersByTimeAsync(0);
     removeThread('home-old');
     laptop.resolve(threads('laptop-old'));
@@ -160,7 +167,7 @@ describe('a thread catalog read', () => {
     noteThread('moved', LAPTOP, 0);
     const laptop = deferred<Thread[]>();
     setBindingMock('ListThreads', async () => takePinnedBackend() === LAPTOP ? laptop.promise : []);
-    const boot = loadThreads();
+    const boot = loadSidebarCatalogs();
     noteThread('moved', HOME_BACKEND, 1);
     laptop.resolve([makeThread({ id: 'moved', ownershipEpoch: 0 }), makeThread({ id: 'stays' })]);
     await boot;
@@ -174,7 +181,7 @@ describe('a thread catalog read', () => {
     noteThreadGroup('g1', LAPTOP);
     const laptop = deferred<Thread[]>();
     setBindingMock('ListThreads', async () => takePinnedBackend() === LAPTOP ? laptop.promise : []);
-    const boot = loadThreads();
+    const boot = loadSidebarCatalogs();
     clearThreadGroupMembership('g1');
     laptop.resolve([makeThread({ id: 'member', groupId: 'g1', pinnedAt: 5, pinGroup: 1 })]);
     await boot;
@@ -186,7 +193,7 @@ describe('a thread catalog read', () => {
     stageBackend({ id: LAPTOP });
     const laptop = deferred<Thread[]>();
     setBindingMock('ListThreads', async () => takePinnedBackend() === LAPTOP ? laptop.promise : []);
-    const boot = loadThreads();
+    const boot = loadSidebarCatalogs();
     expect(openCatalogReadsForTest(LAPTOP, 'threads')).toBe(1);
     detachBackend(LAPTOP);
     expect(openCatalogReadsForTest(LAPTOP, 'threads')).toBe(0);
@@ -219,7 +226,7 @@ describe('a thread catalog read', () => {
     applyThreadUpdated({ action: 'listed', thread: makeThread({ id: 'new' }) });
     const list = deferred<Thread[]>();
     setBindingMock('ListThreads', () => list.promise);
-    const boot = loadThreads();
+    const boot = loadSidebarCatalogs();
     applyThreadUpdated({ action: 'listed', thread: makeThread({ id: 'new', title: 'listed again' }) });
     list.resolve(threads('old'));
     await boot;
@@ -232,7 +239,7 @@ describe('a project catalog read', () => {
   it('loads with the projects added, renamed and removed while it was out', async () => {
     const list = deferred<ProjectWithCounts[]>();
     setBindingMock('ListProjects', () => list.promise);
-    const refresh = refreshProjects();
+    const refresh = readSidebarCatalogs();
     addProjectLocal(project('added').project);
     updateProjectLocal(project('renamed', 'new name').project);
     removeProjectLocal('removed');
@@ -250,7 +257,7 @@ describe('a project catalog read', () => {
     const home = deferred<ProjectWithCounts[]>();
     const laptop = deferred<ProjectWithCounts[]>();
     setBindingMock('ListProjects', () => takePinnedBackend() === LAPTOP ? laptop.promise : home.promise);
-    const refresh = refreshProjects();
+    const refresh = readSidebarCatalogs();
     addProjectLocal(project('home-new').project);
     home.resolve([project('home-old')]);
     laptop.resolve([project('laptop-old')]);
@@ -263,7 +270,7 @@ describe('a project catalog read', () => {
   it('does not duplicate a project the answer already lists', async () => {
     const list = deferred<ProjectWithCounts[]>();
     setBindingMock('ListProjects', () => list.promise);
-    const refresh = refreshProjects();
+    const refresh = readSidebarCatalogs();
     addProjectLocal(project('p1').project);
     list.resolve([project('p1')]);
     await refresh;
@@ -274,7 +281,7 @@ describe('a project catalog read', () => {
     addProjectLocal(project('held').project);
     const list = deferred<ProjectWithCounts[]>();
     setBindingMock('ListProjects', () => list.promise);
-    const refresh = refreshProjects();
+    const refresh = readSidebarCatalogs();
     applyProjectUpdated({ action: 'listed', project: project('held', 'listed again').project });
     list.resolve([project('old')]);
     await refresh;
@@ -287,7 +294,7 @@ describe('a thread group catalog read', () => {
   it('keeps a group upserted while it was out', async () => {
     const list = deferred<ThreadGroup[]>();
     setBindingMock('ListThreadGroups', () => list.promise);
-    const load = loadThreadGroups();
+    const load = loadSidebarCatalogs();
     upsertThreadGroup(group('created'));
     list.resolve([group('existing')]);
     await load;
@@ -308,7 +315,7 @@ describe('a mutation while an answer settles', () => {
   it.each(SETTLING)('keeps a thread created %i microtasks after the boot answer', async (count) => {
     const list = deferred<Thread[]>();
     setBindingMock('ListThreads', () => list.promise);
-    const boot = loadThreads();
+    const boot = loadSidebarCatalogs();
     list.resolve(threads('t1'));
     await afterMicrotasks(count);
     prependThread(makeThread({ id: 'created' }));
@@ -318,7 +325,7 @@ describe('a mutation while an answer settles', () => {
 
   it.each(SETTLING)('keeps a thread created %i microtasks after a retry’s answer', async (count) => {
     setBindingMock('ListThreads', () => Promise.reject(new Error('database is busy')));
-    await loadThreads().catch(() => {});
+    await loadSidebarCatalogs().catch(() => {});
     expect(catalogLoadState(HOME_BACKEND, 'threads').phase).toBe('failed');
     const list = deferred<Thread[]>();
     setBindingMock('ListThreads', () => list.promise);
@@ -334,7 +341,7 @@ describe('a mutation while an answer settles', () => {
   it.each(SETTLING)('keeps a project added %i microtasks after the answer', async (count) => {
     const list = deferred<ProjectWithCounts[]>();
     setBindingMock('ListProjects', () => list.promise);
-    const refresh = refreshProjects();
+    const refresh = readSidebarCatalogs();
     list.resolve([project('p1')]);
     await afterMicrotasks(count);
     addProjectLocal(project('created').project);
@@ -345,7 +352,7 @@ describe('a mutation while an answer settles', () => {
   it.each(SETTLING)('keeps a group upserted %i microtasks after the answer', async (count) => {
     const list = deferred<ThreadGroup[]>();
     setBindingMock('ListThreadGroups', () => list.promise);
-    const load = loadThreadGroups();
+    const load = loadSidebarCatalogs();
     list.resolve([group('existing')]);
     await afterMicrotasks(count);
     upsertThreadGroup(group('created'));

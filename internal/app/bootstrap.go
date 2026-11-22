@@ -106,6 +106,10 @@ type IsolationConfig struct {
 	// one provider, so a spec that sets a usage answer is not held behind a
 	// probe the boot just made. Zero keeps the product gap.
 	UsageProbeGap time.Duration
+	// UsagePollInterval replaces the usage poll's tick, so a spec that
+	// asserts what the readings it sets did can keep the poll from taking
+	// one of its own in between. Zero keeps the product tick.
+	UsagePollInterval time.Duration
 	// OmitOwnerOps makes this computer answer agent_owner_op as a build
 	// before owner operations does, an unknown write call, so a paired
 	// spawner's archive or delete names it as running an older version.
@@ -141,6 +145,7 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 	a.ownerOpsOmitted = config.OmitOwnerOps
 	a.agentMessageRunMembersOmitted = config.OmitAgentMessageRunMembers
 	a.usageProbeGap = config.UsageProbeGap
+	a.usagePollInterval = config.UsagePollInterval
 	a.transferPendingRetry = config.TransferPendingRetry
 	a.prUpdates.interval = config.PRUpdateInterval
 	a.prUpdates.retryBase = config.PRUpdateRetryBase
