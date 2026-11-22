@@ -201,18 +201,41 @@ export function jumpChipOf(row: Locator): Locator {
 
 /**
  * Runs `press` with the row's toggle center, cut to 0.01 px as Playwright
- * presses it, less than a pixel above the top of `overlay` (the "Jump to
- * bottom" chip or the composer, which float over the timeline's bottom)
- * and inside its width, then gives the row back to its timeline's layout.
- * There a mouse press reaches the chip, and a tap the composer, while
- * elementFromPoint finds the toggle. Whole pixels come from scrolling the
- * timeline, or the row's activity run clip where the timeline stops; the
- * fraction from offsetting the row.
+ * presses it, where the press that this device makes reaches `overlay`
+ * (the "Jump to bottom" chip or the composer, which float over the
+ * timeline's bottom) while elementFromPoint finds the toggle, then gives
+ * the row back to its timeline's layout. Whole pixels come from scrolling
+ * the timeline, or the row's activity run clip where the timeline stops;
+ * the fraction from offsetting the row.
+ *
+ * A tap is hit-tested at the nearest whole pixel, so the center goes a
+ * quarter pixel above the first y where elementFromPoint finds the
+ * overlay, and the fixture fails unless that whole pixel is the
+ * overlay's. A mouse press goes less than a pixel above the overlay's top:
+ * there Chromium sends it to the chip while elementFromPoint finds the
+ * toggle both at the press point and at the press's own clientY, so the
+ * page can name no point that shows the miss, and that leg checks only
+ * where it presses.
  */
 export async function atOverlayEdge(row: Locator, overlay: Locator, press: () => Promise<void>): Promise<void> {
   const toggle = row.getByTestId('tool-call-card-toggle');
+  const touch = await touchScreen(row.page());
   await placeRow(row);
   await expect(overlay).toBeVisible();
+  const toggleBox = (await toggle.boundingBox())!;
+  const x = Math.trunc((toggleBox.x + toggleBox.width / 2) * 100) / 100;
+  // The first y, in 1/64 px steps, where elementFromPoint at the press's x
+  // finds the overlay; the overlay floats over the row, so the row's own
+  // position does not move it.
+  const hitTop = await overlay.evaluate((el, at) => {
+    const top = el.getBoundingClientRect().top;
+    for (let y = Math.floor(top) - 2; y <= top + 1; y += 1 / 64) {
+      if (el.contains(document.elementFromPoint(at, y))) return y;
+    }
+    return null;
+  }, x);
+  expect(hitTop, `elementFromPoint finds the overlay nowhere near its top at x ${x}`).not.toBeNull();
+  const want = touch ? hitTop! - 1 / 4 : (await overlay.boundingBox())!.y - 1 + 1 / 64;
   await row.evaluate(async (card, want) => {
     const button = card.querySelector('[data-testid="tool-call-card-toggle"]')!;
     const timeline = card.closest<HTMLElement>('[data-testid="message-timeline-scroll"]')!;
@@ -233,21 +256,38 @@ export async function atOverlayEdge(row: Locator, overlay: Locator, press: () =>
     card.style.position = 'relative';
     card.style.top = `${short()}px`;
     await frames();
-  }, (await overlay.boundingBox())!.y - 1 + 1 / 64);
+  }, want);
   try {
     const box = (await toggle.boundingBox())!;
     const edge = (await overlay.boundingBox())!;
     const at = { x: Math.trunc((box.x + box.width / 2) * 100) / 100, y: Math.trunc((box.y + box.height / 2) * 100) / 100 };
-    const where = `press at ${at.x},${at.y}; overlay at ${edge.x},${edge.y} ${edge.width}x${edge.height}`;
-    expect(at.y, where).toBeGreaterThan(edge.y - 1);
-    expect(at.y, where).toBeLessThan(edge.y);
+    const where = `press at ${at.x},${at.y}; overlay at ${edge.x},${edge.y} ${edge.width}x${edge.height}, hit from y ${hitTop}`;
+    if (!touch) {
+      expect(at.y, where).toBeGreaterThan(edge.y - 1);
+      expect(at.y, where).toBeLessThan(edge.y);
+    }
     expect(at.x, where).toBeGreaterThan(edge.x);
     expect(at.x, where).toBeLessThan(edge.x + edge.width);
-    const hit = await toggle.evaluate((button, { x, y }) => {
-      const found = document.elementFromPoint(x, y);
-      return { inside: found !== null && button.contains(found), testId: found?.closest('[data-testid]')?.getAttribute('data-testid') };
-    }, at);
-    expect(hit.inside, `elementFromPoint at the ${where} finds ${hit.testId}, not the toggle`).toBe(true);
+    const overlayTestId = (await overlay.getAttribute('data-testid'))!;
+    const found = (point: { x: number; y: number }) =>
+      toggle.evaluate((button, { point, overlayTestId }) => {
+        const el = document.elementFromPoint(point.x, point.y);
+        return {
+          toggle: el !== null && button.contains(el),
+          overlay: el?.closest(`[data-testid="${overlayTestId}"]`) != null,
+          testId: el?.closest('[data-testid]')?.getAttribute('data-testid'),
+        };
+      }, { point, overlayTestId });
+    const there = await found(at);
+    expect(there.toggle, `elementFromPoint at the ${where} finds ${there.testId}, not the toggle`).toBe(true);
+    if (touch) {
+      const tapped = { x: Math.round(at.x), y: Math.round(at.y) };
+      const hit = await found(tapped);
+      expect(
+        hit.overlay,
+        `the setup no longer reproduces the miss: a tap at the ${where} is hit-tested at ${tapped.x},${tapped.y}, where elementFromPoint finds ${hit.testId}, not the overlay`,
+      ).toBe(true);
+    }
     await press();
   } finally {
     await row.evaluate((card) => {
