@@ -260,6 +260,13 @@ export function nonLoopbackIPv4(): string | null {
 // is named, never a count of loop turns (frontend/AGENTS.md § Testing).
 export const PAIRED_APP_MOUNT_MS = 20_000;
 
+// A spec that refuses a paired computer's dials and then lets them through
+// waits this long for the next dial. Nothing tells the page the computer
+// answers again, so it dials on its reconnect ladder's next rung, and for a
+// remote computer one rung can be wsClient's RECONNECT_MAX_REMOTE_MS (30s)
+// away. The rest is margin for a slow runner.
+export const PAIRED_REDIAL_MS = 35_000;
+
 // The access wire shapes (internal/app/app_access_types.go).
 
 export interface AccessSession {
