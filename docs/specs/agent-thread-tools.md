@@ -475,8 +475,12 @@ it does not offer is held back with the reason, read as a family by the
 window's own computer (`CheckAgentProfiles` `family`). When a lookup that
 decision needs fails or has no answer, the profiles stay unsaved and the
 page says it could not check them. A Restore acts only if nothing newer
-happened while the computer answered: an edit, a save, a change saved
-elsewhere, another Restore or closing the page retires it.
+happened while the computer answered: anything the person does
+(typing, a save, adding, deleting, answering a mark, another Restore,
+closing the page) retires it silently, and a change saved elsewhere
+retires it with a line saying so. A save that began before the click
+and writes while Restore waits does not retire it; Restore's write
+follows it.
 
 The settings page edits the profiles and the notes as two drafts, each
 saved whole when a control commits. A change saved elsewhere replaces
@@ -488,9 +492,13 @@ the entry's fields in tab order, answer it: Save mine writes the
 person's version over the other, and Use the other version (Discard
 mine, when the other no longer exists) puts it back; either saves what
 waited once no mark is left. A save checks the profiles before writing,
-and writes only the draft revision it checked: a newer save, Restore,
-taking the other version and an outside change each start a new
-revision (`frontend/src/lib/components/settings/rosterDraft.ts`).
+and writes only the draft revision it checked: a newer save, Restore's
+answer, taking the other version and an outside change each start a new
+revision. Only the newest check's answer shows. The page's own write
+coming back is not an outside change; a write the computer refuses
+leaves the person's edits on the page, unsaved, for the next commit to
+send again. One owner orders all of it
+(`frontend/src/lib/components/settings/rosterEditor.svelte.ts`).
 
 `thread_options` lists, per computer, the profiles that computer can
 run (`profiles`: name, `use_for`, the provider and model it resolves to,

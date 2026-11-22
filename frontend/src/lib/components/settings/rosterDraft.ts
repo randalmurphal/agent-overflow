@@ -109,16 +109,27 @@ export function reconcile<T extends object>(
 }
 
 /**
- * The draft as saved: each entry's origin is what was sent, and nothing is
- * marked or pending deletion. Typing that followed the snapshot stays
- * dirty against it.
+ * The draft once `sent` is saved: each entry the save took has what was sent
+ * as its origin and no mark, and the deletions the save carried are no
+ * longer pending. Typing that followed the snapshot stays dirty against it;
+ * an entry added or deleted since stays unsaved.
  */
-export function markSaved<T extends object>(draft: Draft<T>, entries: readonly DraftEntry<T>[], sent: readonly T[]): void {
+export function markSaved<T extends object>(
+  draft: Draft<T>,
+  entries: readonly DraftEntry<T>[],
+  sent: readonly T[],
+  removed: readonly T[],
+): void {
   entries.forEach((entry, index) => {
     entry.origin = clone(sent[index]);
     delete entry.theirs;
   });
-  draft.removed = [];
+  draft.removed = draft.removed.filter((gone) => !removed.includes(gone));
+}
+
+/** Whether two lists hold the same entries in the same order. */
+export function sameList<T extends object>(a: readonly T[], b: readonly T[]): boolean {
+  return a.length === b.length && a.every((entry, index) => same(entry, b[index]));
 }
 
 /** Whether an entry waits on the person to keep theirs or take the other. */
@@ -152,79 +163,4 @@ export function takeTheirs<T extends object>(draft: Draft<T>, index: number): vo
     return;
   }
   draft.entries[index] = { value: clone(entry.theirs), origin: clone(entry.theirs) };
-}
-
-/**
- * The one Restore in flight, if any. Restore waits on the computer for the
- * roster it starts with, and its answer replaces both lists' drafts and
- * saves them. Anything newer retires it: an edit, a save or a replacement
- * of either draft (DraftRevision), another Restore, or the page closing. A
- * retired restore does nothing when its answer arrives.
- */
-export class RestoreInFlight {
-  #gesture: symbol | null = null;
-
-  /** Begins a restore, retiring any earlier one. */
-  begin(): symbol {
-    this.#gesture = Symbol('restore');
-    return this.#gesture;
-  }
-
-  /** Retires the restore in flight. */
-  retire(): void {
-    this.#gesture = null;
-  }
-
-  /** Whether the restore begun as `gesture` may still act; ends it if so. */
-  finish(gesture: symbol): boolean {
-    if (this.#gesture !== gesture) return false;
-    this.#gesture = null;
-    return true;
-  }
-}
-
-/**
- * The revision of one list's draft, which every save and every replacement
- * of the draft advances: a save may write only the revision it began with,
- * so a check still running when the draft is replaced (restored, the other
- * version taken, a change saved elsewhere applied) or a newer save begins
- * never writes the draft it checked. Either one also retires a restore in
- * flight.
- */
-export class DraftRevision {
-  #current = 0;
-  #saving = false;
-  readonly #restoring: RestoreInFlight;
-
-  constructor(restoring: RestoreInFlight) {
-    this.#restoring = restoring;
-  }
-
-  /** Begins a save of the draft as it is now. */
-  beginSave(): number {
-    this.#restoring.retire();
-    this.#current += 1;
-    this.#saving = true;
-    return this.#current;
-  }
-
-  /** Whether the save that began at `revision` may write; ends it if so. */
-  finishSave(revision: number): boolean {
-    if (revision !== this.#current) return false;
-    this.#saving = false;
-    return true;
-  }
-
-  /**
-   * Records a replacement of the draft, which drops any save in progress;
-   * true when one was, so a replacement the person did not make can save
-   * the draft that replaced it.
-   */
-  replace(): boolean {
-    this.#restoring.retire();
-    const dropped = this.#saving;
-    this.#current += 1;
-    this.#saving = false;
-    return dropped;
-  }
 }

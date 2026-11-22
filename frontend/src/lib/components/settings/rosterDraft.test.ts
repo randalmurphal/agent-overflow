@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { draftOf, markSaved, reconcile, takeTheirs } from './rosterDraft';
+import { draftOf, markSaved, reconcile, takeTheirs, unsaved } from './rosterDraft';
 
 type Note = { text: string };
 const trim = (note: Note): Note => ({ text: note.text.trim() });
@@ -57,9 +57,25 @@ describe('roster draft', () => {
     const marked = reconcile(draft, [{ text: 'theirs' }, { text: 'b' }], trim, () => true);
     marked.removed.push({ text: 'b' });
     const sent = marked.entries.map((entry) => trim(entry.value));
-    markSaved(marked, marked.entries, sent);
+    markSaved(marked, [...marked.entries], sent, [...marked.removed]);
     expect(marked.entries.map((entry) => entry.theirs)).toEqual([undefined, undefined]);
     expect(marked.removed).toEqual([]);
     expect(values(reconcile(marked, sent, trim))).toEqual(['mine', 'b']);
+  });
+
+  // A save's answer lands after the person went on editing: only what the
+  // save took becomes saved.
+  it('leaves what changed after the save took its snapshot unsaved', () => {
+    const draft = draftOf<Note>([{ text: 'a' }, { text: 'b' }, { text: 'c' }]);
+    const entries = [...draft.entries];
+    const sent = entries.map((entry) => trim(entry.value));
+    const [deleted] = draft.entries.splice(2, 1);
+    draft.removed.push(deleted.origin!);
+    draft.entries.push({ value: { text: 'added' }, origin: null });
+    draft.entries[0].value.text = 'typed after';
+    markSaved(draft, entries, sent, []);
+    expect(draft.removed).toEqual([{ text: 'c' }]);
+    expect(draft.entries.map((entry) => entry.origin?.text ?? null)).toEqual(['a', 'b', null]);
+    expect(unsaved(draft, trim)).toBe(true);
   });
 });

@@ -10,6 +10,7 @@ import { makeSettings } from '../../../test/helpers/settings';
 import { TransportError } from '../../transport/wsClient';
 import { takePinnedBackend } from '../../transport/backends';
 import type { AgentNote, AgentProfile, Settings } from '../../types/settings';
+import { RESTORE_OVERTAKEN } from './rosterEditor.svelte';
 
 const PROFILE: AgentProfile = {
   name: 'Reviewer',
@@ -200,10 +201,10 @@ describe('<AgentProfilesSettings>', () => {
     await seed({ agentProfiles: SEEDS.profiles, agentNotes: SEEDS.notes });
     const view = render(AgentProfilesSettings);
     await settle();
-    let release: () => void = () => {};
+    const releases: (() => void)[] = [];
     setBindingMock('CheckAgentProfiles', (profiles: AgentProfile[]) =>
       new Promise((resolve) => {
-        release = () => resolve(profiles.map(() => ({})));
+        releases.push(() => resolve(profiles.map(() => ({}))));
       }),
     );
 
@@ -212,7 +213,9 @@ describe('<AgentProfilesSettings>', () => {
     await fireEvent.change(name);
     await fireEvent.click(view.getByTestId('agent-profiles-restore'));
     await settle();
-    release();
+    // The save's check, then the check of the restored profiles.
+    expect(releases).toHaveLength(2);
+    for (const release of releases) release();
     await settle();
 
     expect(lastPatch()).toEqual({ agentProfiles: SEEDS.profiles, agentNotes: SEEDS.notes });
@@ -271,6 +274,8 @@ describe('<AgentProfilesSettings>', () => {
 
       expect(name.value).toBe('Typed meanwhile');
       expect(getBindingMock('UpdateSettings')!.mock.calls).toHaveLength(0);
+      // Retired by the person's own newer action, it says nothing.
+      expect(view.queryByTestId('agent-profiles-restore-refusal')).toBeNull();
     });
 
     it('keeps a save made meanwhile and writes nothing over it', async () => {
@@ -334,6 +339,7 @@ describe('<AgentProfilesSettings>', () => {
 
       expect((view.getByLabelText('Name') as HTMLInputElement).value).toBe('From elsewhere');
       expect(getBindingMock('UpdateSettings')!.mock.calls).toHaveLength(0);
+      expect(view.getByTestId('agent-profiles-restore-refusal').textContent).toBe(RESTORE_OVERTAKEN);
     });
 
     it('writes once, for the later of two Restores', async () => {
@@ -894,6 +900,150 @@ describe('<AgentProfilesSettings>', () => {
         ],
       });
       expect(view.queryByTestId('agent-note-conflict')).toBeNull();
+    });
+  });
+
+  describe('in the order things happen', () => {
+    /** Each call to `name` waits until the test answers it, in call order. */
+    function holdBinding<T>(name: 'CheckAgentProfiles' | 'AgentRosterSeeds') {
+      const waiting: { resolve: (value: T) => void; reject: (err: unknown) => void; args: unknown[] }[] = [];
+      setBindingMock(name, (...args: unknown[]) => new Promise<T>((resolve, reject) => waiting.push({ resolve, reject, args })));
+      return waiting;
+    }
+    const writes = () => getBindingMock('UpdateSettings')!.mock.calls.map((call) => call[0]);
+    const passes = (args: unknown[]) => (args[0] as AgentProfile[]).map(() => ({}));
+
+    // A save that began before Restore and writes while Restore waits does
+    // not cancel it: its write is this page's own, and Restore's follows it.
+    it('restores after a save that was checking when Restore was clicked writes', async () => {
+      await seed({ agentProfiles: [PROFILE], agentNotes: [NOTE] });
+      const view = render(AgentProfilesSettings);
+      await settle();
+      const checks = holdBinding<Check[]>('CheckAgentProfiles');
+      const name = view.getByLabelText('Name') as HTMLInputElement;
+      await fireEvent.input(name, { target: { value: 'Saved first' } });
+      await fireEvent.change(name);
+      const seeds = holdBinding<typeof SEEDS>('AgentRosterSeeds');
+      await fireEvent.click(view.getByTestId('agent-profiles-restore'));
+      await settle();
+      checks[0].resolve(passes(checks[0].args));
+      await settle();
+      seeds[0].resolve(SEEDS);
+      await settle();
+
+      expect(writes()).toEqual([
+        { agentProfiles: [{ ...PROFILE, name: 'Saved first' }] },
+        { agentProfiles: SEEDS.profiles, agentNotes: SEEDS.notes },
+      ]);
+      expect(view.getAllByTestId('agent-profile').map((row) => row.dataset.profileName)).toEqual(
+        SEEDS.profiles.map((profile) => profile.name),
+      );
+    });
+
+    // Only the newest check's answer shows, whichever answers last.
+    it('does not show a failure of a check older than one that answered', async () => {
+      await seed({ agentProfiles: [PROFILE], agentNotes: [] });
+      const checks = holdBinding<Check[]>('CheckAgentProfiles');
+      const view = render(AgentProfilesSettings);
+      await settle();
+      const name = view.getByLabelText('Name') as HTMLInputElement;
+      await fireEvent.input(name, { target: { value: 'Critic' } });
+      await fireEvent.change(name);
+      await settle();
+      checks[1].resolve(passes(checks[1].args));
+      await settle();
+      checks[0].reject(new Error('the connection dropped'));
+      await settle();
+
+      expect(view.queryByTestId('agent-profiles-check-failure')).toBeNull();
+      expect(lastPatch()).toEqual({ agentProfiles: [{ ...PROFILE, name: 'Critic' }] });
+    });
+
+    it('keeps the failure of the newest check when an older one answers after it', async () => {
+      await seed({ agentProfiles: [PROFILE], agentNotes: [] });
+      const checks = holdBinding<Check[]>('CheckAgentProfiles');
+      const view = render(AgentProfilesSettings);
+      await settle();
+      const name = view.getByLabelText('Name') as HTMLInputElement;
+      await fireEvent.input(name, { target: { value: 'Critic' } });
+      await fireEvent.change(name);
+      await settle();
+      checks[1].reject(new Error('the connection dropped'));
+      await settle();
+      checks[0].resolve(passes(checks[0].args));
+      await settle();
+
+      expect(view.getByTestId('agent-profiles-check-failure').textContent).toContain('the connection dropped');
+      expect(getBindingMock('UpdateSettings')!.mock.calls).toHaveLength(0);
+    });
+
+    // Deleting, or keeping one's version, is the person's newer action even
+    // when the list cannot save yet: a Restore waiting does nothing after it.
+    it('retires a waiting Restore when a delete cannot save yet', async () => {
+      const other = { ...PROFILE, name: 'Other', useFor: 'Other things.' };
+      await seed({ agentProfiles: [PROFILE, other], agentNotes: [NOTE] });
+      const view = render(AgentProfilesSettings);
+      await settle();
+      const [first, second] = view.getAllByTestId('agent-profile');
+      await fireEvent.input(within(first).getByLabelText('Name'), { target: { value: '' } });
+      const seeds = holdBinding<typeof SEEDS>('AgentRosterSeeds');
+      await fireEvent.click(view.getByTestId('agent-profiles-restore'));
+      await settle();
+      await fireEvent.click(within(second).getByRole('button', { name: 'Delete Other' }));
+      seeds[0].resolve(SEEDS);
+      await settle();
+
+      expect(getBindingMock('UpdateSettings')!.mock.calls).toHaveLength(0);
+      expect(view.getAllByTestId('agent-profile')).toHaveLength(1);
+      expect(view.getByTestId('agent-profile-error').textContent).toBe('Give the profile a name.');
+    });
+
+    it('retires a waiting Restore when Save mine cannot save yet', async () => {
+      const other = { ...PROFILE, name: 'Other', useFor: 'Other things.' };
+      await seed({ agentProfiles: [PROFILE, other], agentNotes: [NOTE] });
+      const view = render(AgentProfilesSettings);
+      await settle();
+      for (const row of view.getAllByTestId('agent-profile')) {
+        await fireEvent.input(within(row).getByLabelText('Use for'), { target: { value: 'Mine.' } });
+      }
+      savedElsewhere({ agentProfiles: [{ ...PROFILE, useFor: 'Theirs.' }, { ...other, useFor: 'Theirs too.' }] });
+      await settle();
+      expect(view.getAllByTestId('agent-profile-conflict')).toHaveLength(2);
+      const seeds = holdBinding<typeof SEEDS>('AgentRosterSeeds');
+      await fireEvent.click(view.getByTestId('agent-profiles-restore'));
+      await settle();
+      const [conflict] = view.getAllByTestId('agent-profile-conflict');
+      await fireEvent.click(within(conflict).getByRole('button', { name: 'Save mine' }));
+      seeds[0].resolve(SEEDS);
+      await settle();
+
+      expect(getBindingMock('UpdateSettings')!.mock.calls).toHaveLength(0);
+      expect(view.getAllByTestId('agent-profile-conflict')).toHaveLength(1);
+      expect(view.getAllByTestId('agent-profile').map((row) => row.dataset.profileName)).toEqual(['Reviewer', 'Other']);
+    });
+
+    // The store puts back the saved list when the computer refuses a write;
+    // what the person typed stays on the page, and the next commit sends it.
+    it('keeps a refused edit on the page and sends it again on the next commit', async () => {
+      await seed({ agentProfiles: [PROFILE], agentNotes: [] });
+      const keep = getBindingMock('UpdateSettings')!.getMockImplementation()!;
+      setBindingMock('UpdateSettings', vi.fn(async () => {
+        throw new Error('refused');
+      }));
+      const view = render(AgentProfilesSettings);
+      await settle();
+      const name = view.getByLabelText('Name') as HTMLInputElement;
+      await fireEvent.input(name, { target: { value: 'Critic' } });
+      await fireEvent.change(name);
+      await settle();
+      expect(getBindingMock('UpdateSettings')!.mock.calls).toHaveLength(1);
+      expect(name.value).toBe('Critic');
+
+      setBindingMock('UpdateSettings', vi.fn(keep));
+      await fireEvent.change(name);
+      await settle();
+      expect(lastPatch()).toEqual({ agentProfiles: [{ ...PROFILE, name: 'Critic' }] });
+      expect((view.getByLabelText('Name') as HTMLInputElement).value).toBe('Critic');
     });
   });
 

@@ -1,0 +1,523 @@
+import { describe, expect, it } from 'vitest';
+import { trimNote, trimProfile } from './agentRoster';
+import { dirty, type DraftEntry } from './rosterDraft';
+import {
+  RESTORE_OVERTAKEN,
+  RosterEditor,
+  type ProfileCheck,
+  type Roster,
+  type RosterPatch,
+  type RosterSaved,
+} from './rosterEditor.svelte';
+import type { AgentNote, AgentProfile } from '../../types/settings';
+
+const profile = (name: string, extra: Partial<AgentProfile> = {}): AgentProfile => ({
+  name,
+  useFor: `${name} work.`,
+  provider: 'codex',
+  model: 'gpt-sol',
+  effort: '',
+  runtimeMode: '',
+  instructions: '',
+  ...extra,
+});
+const note = (text: string): AgentNote => ({ text, when: '' });
+
+const ALPHA = profile('Alpha');
+const BETA = profile('Beta');
+const SEEDS: Roster = { profiles: [profile('Seed')], notes: [note('seeded')] };
+
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve(value: T): void;
+  reject(err: unknown): void;
+}
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  let reject!: (err: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+async function flush(): Promise<void> {
+  for (let i = 0; i < 10; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+/**
+ * The settings store as the page sees it: a write shows its patch at once
+ * and settles in the order it was sent; a refused write puts back the saved
+ * list. Every change it shows is passed to the editor, as the page's
+ * effects do.
+ */
+class Store {
+  saved: RosterSaved;
+  pending: RosterPatch[] = [];
+  writes: RosterPatch[] = [];
+  refuse = false;
+  editor: RosterEditor | null = null;
+
+  constructor(saved: RosterSaved) {
+    this.saved = saved;
+  }
+
+  shown(): RosterSaved {
+    const value = { ...this.saved };
+    for (const patch of this.pending) Object.assign(value, patch);
+    return value;
+  }
+
+  notify(): void {
+    const shown = this.shown();
+    this.editor?.follow('profiles', shown.agentProfiles);
+    this.editor?.follow('notes', shown.agentNotes);
+  }
+
+  /** When set, a write waits for settleNext() instead of settling at once. */
+  manual = false;
+  /** When set, the page hears what a settled write left only after the write resolves. */
+  followLate = false;
+  #unsettled: (() => void)[] = [];
+
+  write(patch: RosterPatch): Promise<void> {
+    this.writes.push(patch);
+    this.pending.push(patch);
+    this.notify();
+    return new Promise((resolve) => {
+      const settle = () => {
+        this.pending = this.pending.filter((p) => p !== patch);
+        if (!this.refuse) this.saved = { ...this.saved, ...patch };
+        if (this.followLate) {
+          resolve();
+          setTimeout(() => this.notify(), 0);
+          return;
+        }
+        this.notify();
+        resolve();
+      };
+      if (this.manual) this.#unsettled.push(settle);
+      else queueMicrotask(settle);
+    });
+  }
+
+  /** Settles the oldest write still waiting: saved, or put back when refuse is set. */
+  settleNext(): void {
+    this.#unsettled.shift()?.();
+  }
+
+  elsewhere(patch: RosterPatch): void {
+    this.saved = { ...this.saved, ...patch };
+    this.notify();
+  }
+}
+
+/** An editor over `store`, whose checks and starting roster the test holds when asked. */
+function harness(saved: RosterSaved) {
+  const store = new Store(saved);
+  const held = { checks: [] as Deferred<ProfileCheck[]>[], seeds: [] as Deferred<Roster | null>[], holdCheck: false };
+  const failures: unknown[] = [];
+  const editor = new RosterEditor({
+    saved: () => store.shown(),
+    check: (profiles) => {
+      if (!held.holdCheck) return Promise.resolve(profiles.map(() => ({})));
+      held.holdCheck = false;
+      const check = deferred<ProfileCheck[]>();
+      held.checks.push(check);
+      return check.promise;
+    },
+    checkFailure: (err) => `could not check: ${(err as Error).message}`,
+    seeds: () => {
+      const seeds = deferred<Roster | null>();
+      held.seeds.push(seeds);
+      return seeds.promise;
+    },
+    noSeeds: () => 'no starting roster',
+    seedsFailed: (err) => failures.push(err),
+    write: (patch) => store.write(patch),
+  });
+  store.editor = editor;
+  return { store, held, editor, failures };
+}
+
+/** Holds the check the next action starts; the returned function answers it. */
+function holdingCheck(h: ReturnType<typeof harness>, act: () => void, answer: (d: Deferred<ProfileCheck[]>) => void) {
+  h.held.holdCheck = true;
+  const before = h.held.checks.length;
+  act();
+  h.held.holdCheck = false;
+  const check = h.held.checks.length > before ? h.held.checks.at(-1)! : null;
+  return () => {
+    if (check) answer(check);
+  };
+}
+
+const ok = (d: Deferred<ProfileCheck[]>) => d.resolve([{}, {}, {}, {}]);
+const offline = (d: Deferred<ProfileCheck[]>) => d.reject(new Error('offline'));
+
+const markedNote = (editor: RosterEditor) => editor.notes.entries.findIndex((entry) => entry.theirs !== undefined);
+
+type Event = 'mount' | 'save' | 'restore' | 'elsewhere' | 'typing' | 'add' | 'delete' | 'keepMine' | 'takeTheirs' | 'close';
+const EVENTS: Event[] = ['mount', 'save', 'restore', 'elsewhere', 'typing', 'add', 'delete', 'keepMine', 'takeTheirs', 'close'];
+const ASYNC = new Set<Event>(['mount', 'save', 'restore', 'delete']);
+
+/** Starts `event`; the returned function completes what it waits on. */
+function start(h: ReturnType<typeof harness>, event: Event): () => void {
+  const { editor, store, held } = h;
+  switch (event) {
+    case 'mount':
+      return holdingCheck(h, () => editor.mount(), offline);
+    case 'save':
+      return holdingCheck(h, () => {
+        editor.editProfile(0, { name: 'Sam' });
+        editor.commit('profiles');
+      }, ok);
+    case 'restore': {
+      void editor.restore();
+      const seeds = held.seeds.at(-1)!;
+      return () => seeds.resolve(SEEDS);
+    }
+    case 'elsewhere':
+      store.elsewhere({ agentProfiles: [profile('Alpha', { model: 'gpt-terra' }), BETA] });
+      return () => {};
+    case 'typing':
+      editor.editProfile(0, { useFor: 'Typed.' });
+      return () => {};
+    case 'add':
+      editor.addProfile();
+      return () => {};
+    case 'delete':
+      return holdingCheck(h, () => editor.remove('profiles', editor.profiles.entries.length - 1), ok);
+    case 'keepMine': {
+      const index = markedNote(editor);
+      if (index >= 0) editor.keepMine('notes', index);
+      return () => {};
+    }
+    case 'takeTheirs': {
+      const index = markedNote(editor);
+      if (index >= 0) editor.takeTheirs('notes', index);
+      return () => {};
+    }
+    case 'close':
+      editor.close();
+      return () => {};
+  }
+}
+
+const names = (list: readonly { name: string }[]) => list.map((p) => p.name).join(',');
+const texts = (list: readonly { text: string }[]) => list.map((n) => n.text).join(',');
+
+/**
+ * One line for what a row ends with: the writes in order, then each list as
+ * the draft holds it (an unsaved entry ends in *, a marked one in !), then
+ * what the Restore slot and the check say.
+ */
+function outcome(h: ReturnType<typeof harness>): string {
+  const { editor, store } = h;
+  const writes = store.writes
+    .map((w) => [w.agentProfiles && `P:${names(w.agentProfiles)}`, w.agentNotes && `N:${texts(w.agentNotes)}`].filter(Boolean).join('+'))
+    .join(' ');
+  const mark = <T extends object>(entry: DraftEntry<T>, trim: (value: T) => T, label: string) =>
+    label + (entry.theirs !== undefined ? '!' : dirty(entry, trim) ? '*' : '');
+  const profiles = editor.profiles.entries
+    .map((e) => mark(e as DraftEntry<AgentProfile>, trimProfile, `${e.value.name || '_'}${e.value.useFor === 'Typed.' ? '~' : ''}`))
+    .join(',');
+  const notes = editor.notes.entries.map((e) => mark(e as DraftEntry<AgentNote>, trimNote, e.value.text)).join(',');
+  const removed = editor.profiles.removed.length ? ` -${names(editor.profiles.removed)}` : '';
+  const restore = editor.restoreRefusal === RESTORE_OVERTAKEN ? ' overtaken' : editor.restoreRefusal ? ` refused` : '';
+  const check = editor.checkFailure ? ' checkFailed' : '';
+  return `[${writes}] ${profiles}${removed} | ${notes}${restore}${check}`;
+}
+
+/**
+ * Saved: profiles Alpha and Beta, a note "one". The note was then edited
+ * here to "mine" while elsewhere changed it to "theirs", so the notes draft
+ * holds "theirs" and "mine", marked.
+ */
+async function baseline() {
+  const h = harness({ agentProfiles: [ALPHA, BETA], agentNotes: [note('one')] });
+  h.editor.editNote(0, { text: 'mine' });
+  h.store.elsewhere({ agentNotes: [note('theirs')] });
+  await flush();
+  return h;
+}
+
+async function run(first: Event, second: Event, order: 'first' | 'second'): Promise<string> {
+  const h = await baseline();
+  const completeFirst = start(h, first);
+  await flush();
+  const completeSecond = start(h, second);
+  await flush();
+  for (const complete of order === 'first' ? [completeFirst, completeSecond] : [completeSecond, completeFirst]) {
+    complete();
+    await flush();
+  }
+  return outcome(h);
+}
+
+// Every ordered pair of the page's events: the first starts and waits on
+// what it waits for (a check, the starting roster), the second starts, and
+// then each completes, the first's wait answering first or second. An event
+// with nothing to wait on completes as it starts, so a pair of two such
+// events has one order. The baseline and each event are described on
+// baseline() and start(); the line a row ends with on outcome().
+//
+// The mount check here always fails (" checkFailed"), so a row shows
+// whether its failure is the one on the page; every other check passes.
+const TABLE: Record<string, string> = {
+  "mount > mount, earlier answers first": "[] Alpha,Beta | theirs,mine! checkFailed",
+  "mount > mount, later answers first": "[] Alpha,Beta | theirs,mine! checkFailed",
+  "mount > save, mount answers first": "[P:Sam,Beta] Sam,Beta | theirs,mine!",
+  "mount > save, save answers first": "[P:Sam,Beta] Sam,Beta | theirs,mine!",
+  "mount > restore, mount answers first": "[P:Seed+N:seeded] Seed | seeded",
+  "mount > restore, restore answers first": "[P:Seed+N:seeded] Seed | seeded",
+  "mount > elsewhere, mount answers first": "[] Alpha,Beta | theirs,mine!",
+  "mount > elsewhere, elsewhere answers first": "[] Alpha,Beta | theirs,mine!",
+  "mount > typing, mount answers first": "[] Alpha~*,Beta | theirs,mine! checkFailed",
+  "mount > typing, typing answers first": "[] Alpha~*,Beta | theirs,mine! checkFailed",
+  "mount > add, mount answers first": "[] Alpha,Beta,_* | theirs,mine! checkFailed",
+  "mount > add, add answers first": "[] Alpha,Beta,_* | theirs,mine! checkFailed",
+  "mount > delete, mount answers first": "[P:Alpha] Alpha | theirs,mine!",
+  "mount > delete, delete answers first": "[P:Alpha] Alpha | theirs,mine!",
+  "mount > keepMine, mount answers first": "[N:theirs,mine] Alpha,Beta | theirs,mine checkFailed",
+  "mount > keepMine, keepMine answers first": "[N:theirs,mine] Alpha,Beta | theirs,mine checkFailed",
+  "mount > takeTheirs, mount answers first": "[] Alpha,Beta | theirs checkFailed",
+  "mount > takeTheirs, takeTheirs answers first": "[] Alpha,Beta | theirs checkFailed",
+  "mount > close, mount answers first": "[] Alpha,Beta | theirs,mine! checkFailed",
+  "mount > close, close answers first": "[] Alpha,Beta | theirs,mine! checkFailed",
+  "save > mount, save answers first": "[P:Sam,Beta] Sam,Beta | theirs,mine! checkFailed",
+  "save > mount, mount answers first": "[P:Sam,Beta] Sam,Beta | theirs,mine! checkFailed",
+  "save > save, earlier answers first": "[P:Sam,Beta] Sam,Beta | theirs,mine!",
+  "save > save, later answers first": "[P:Sam,Beta] Sam,Beta | theirs,mine!",
+  "save > restore, save answers first": "[P:Sam,Beta P:Seed+N:seeded] Seed | seeded",
+  "save > restore, restore answers first": "[P:Seed+N:seeded] Seed | seeded",
+  "save > elsewhere, save answers first": "[] Sam!,Beta | theirs,mine!",
+  "save > elsewhere, elsewhere answers first": "[] Sam!,Beta | theirs,mine!",
+  "save > typing, save answers first": "[P:Sam,Beta] Sam~*,Beta | theirs,mine!",
+  "save > typing, typing answers first": "[P:Sam,Beta] Sam~*,Beta | theirs,mine!",
+  "save > add, save answers first": "[P:Sam,Beta] Sam,Beta,_* | theirs,mine!",
+  "save > add, add answers first": "[P:Sam,Beta] Sam,Beta,_* | theirs,mine!",
+  "save > delete, save answers first": "[P:Sam] Sam | theirs,mine!",
+  "save > delete, delete answers first": "[P:Sam] Sam | theirs,mine!",
+  "save > keepMine, save answers first": "[N:theirs,mine P:Sam,Beta] Sam,Beta | theirs,mine",
+  "save > keepMine, keepMine answers first": "[N:theirs,mine P:Sam,Beta] Sam,Beta | theirs,mine",
+  "save > takeTheirs, save answers first": "[P:Sam,Beta] Sam,Beta | theirs",
+  "save > takeTheirs, takeTheirs answers first": "[P:Sam,Beta] Sam,Beta | theirs",
+  "save > close, save answers first": "[P:Sam,Beta] Sam,Beta | theirs,mine!",
+  "save > close, close answers first": "[P:Sam,Beta] Sam,Beta | theirs,mine!",
+  "restore > mount, restore answers first": "[P:Seed+N:seeded] Seed | seeded",
+  "restore > mount, mount answers first": "[P:Seed+N:seeded] Seed | seeded",
+  "restore > save, restore answers first": "[P:Sam,Beta] Sam,Beta | theirs,mine!",
+  "restore > save, save answers first": "[P:Sam,Beta] Sam,Beta | theirs,mine!",
+  "restore > restore, earlier answers first": "[P:Seed+N:seeded] Seed | seeded",
+  "restore > restore, later answers first": "[P:Seed+N:seeded] Seed | seeded",
+  "restore > elsewhere, restore answers first": "[] Alpha,Beta | theirs,mine! overtaken",
+  "restore > elsewhere, elsewhere answers first": "[] Alpha,Beta | theirs,mine! overtaken",
+  "restore > typing, restore answers first": "[] Alpha~*,Beta | theirs,mine!",
+  "restore > typing, typing answers first": "[] Alpha~*,Beta | theirs,mine!",
+  "restore > add, restore answers first": "[] Alpha,Beta,_* | theirs,mine!",
+  "restore > add, add answers first": "[] Alpha,Beta,_* | theirs,mine!",
+  "restore > delete, restore answers first": "[P:Alpha] Alpha | theirs,mine!",
+  "restore > delete, delete answers first": "[P:Alpha] Alpha | theirs,mine!",
+  "restore > keepMine, restore answers first": "[N:theirs,mine] Alpha,Beta | theirs,mine",
+  "restore > keepMine, keepMine answers first": "[N:theirs,mine] Alpha,Beta | theirs,mine",
+  "restore > takeTheirs, restore answers first": "[] Alpha,Beta | theirs",
+  "restore > takeTheirs, takeTheirs answers first": "[] Alpha,Beta | theirs",
+  "restore > close, restore answers first": "[] Alpha,Beta | theirs,mine!",
+  "restore > close, close answers first": "[] Alpha,Beta | theirs,mine!",
+  "elsewhere > mount, elsewhere answers first": "[] Alpha,Beta | theirs,mine! checkFailed",
+  "elsewhere > mount, mount answers first": "[] Alpha,Beta | theirs,mine! checkFailed",
+  "elsewhere > save, elsewhere answers first": "[P:Sam,Beta] Sam,Beta | theirs,mine!",
+  "elsewhere > save, save answers first": "[P:Sam,Beta] Sam,Beta | theirs,mine!",
+  "elsewhere > restore, elsewhere answers first": "[P:Seed+N:seeded] Seed | seeded",
+  "elsewhere > restore, restore answers first": "[P:Seed+N:seeded] Seed | seeded",
+  "elsewhere > elsewhere": "[] Alpha,Beta | theirs,mine!",
+  "elsewhere > typing": "[] Alpha~*,Beta | theirs,mine!",
+  "elsewhere > add": "[] Alpha,Beta,_* | theirs,mine!",
+  "elsewhere > delete, elsewhere answers first": "[P:Alpha] Alpha | theirs,mine!",
+  "elsewhere > delete, delete answers first": "[P:Alpha] Alpha | theirs,mine!",
+  "elsewhere > keepMine": "[N:theirs,mine] Alpha,Beta | theirs,mine",
+  "elsewhere > takeTheirs": "[] Alpha,Beta | theirs",
+  "elsewhere > close": "[] Alpha,Beta | theirs,mine!",
+  "typing > mount, typing answers first": "[] Alpha~*,Beta | theirs,mine! checkFailed",
+  "typing > mount, mount answers first": "[] Alpha~*,Beta | theirs,mine! checkFailed",
+  "typing > save, typing answers first": "[P:Sam,Beta] Sam~,Beta | theirs,mine!",
+  "typing > save, save answers first": "[P:Sam,Beta] Sam~,Beta | theirs,mine!",
+  "typing > restore, typing answers first": "[P:Seed+N:seeded] Seed | seeded",
+  "typing > restore, restore answers first": "[P:Seed+N:seeded] Seed | seeded",
+  "typing > elsewhere": "[] Alpha~!,Beta | theirs,mine!",
+  "typing > typing": "[] Alpha~*,Beta | theirs,mine!",
+  "typing > add": "[] Alpha~*,Beta,_* | theirs,mine!",
+  "typing > delete, typing answers first": "[P:Alpha] Alpha~ | theirs,mine!",
+  "typing > delete, delete answers first": "[P:Alpha] Alpha~ | theirs,mine!",
+  "typing > keepMine": "[N:theirs,mine] Alpha~*,Beta | theirs,mine",
+  "typing > takeTheirs": "[] Alpha~*,Beta | theirs",
+  "typing > close": "[] Alpha~*,Beta | theirs,mine!",
+  "add > mount, add answers first": "[] Alpha,Beta,_* | theirs,mine! checkFailed",
+  "add > mount, mount answers first": "[] Alpha,Beta,_* | theirs,mine! checkFailed",
+  "add > save, add answers first": "[] Sam*,Beta,_* | theirs,mine!",
+  "add > save, save answers first": "[] Sam*,Beta,_* | theirs,mine!",
+  "add > restore, add answers first": "[P:Seed+N:seeded] Seed | seeded",
+  "add > restore, restore answers first": "[P:Seed+N:seeded] Seed | seeded",
+  "add > elsewhere": "[] Alpha,Beta,_* | theirs,mine!",
+  "add > typing": "[] Alpha~*,Beta,_* | theirs,mine!",
+  "add > add": "[] Alpha,Beta,_*,_* | theirs,mine!",
+  "add > delete, add answers first": "[P:Alpha,Beta] Alpha,Beta | theirs,mine!",
+  "add > delete, delete answers first": "[P:Alpha,Beta] Alpha,Beta | theirs,mine!",
+  "add > keepMine": "[N:theirs,mine] Alpha,Beta,_* | theirs,mine",
+  "add > takeTheirs": "[] Alpha,Beta,_* | theirs",
+  "add > close": "[] Alpha,Beta,_* | theirs,mine!",
+  "delete > mount, delete answers first": "[P:Alpha] Alpha | theirs,mine! checkFailed",
+  "delete > mount, mount answers first": "[P:Alpha] Alpha | theirs,mine! checkFailed",
+  "delete > save, delete answers first": "[P:Sam] Sam | theirs,mine!",
+  "delete > save, save answers first": "[P:Sam] Sam | theirs,mine!",
+  "delete > restore, delete answers first": "[P:Alpha P:Seed+N:seeded] Seed | seeded",
+  "delete > restore, restore answers first": "[P:Seed+N:seeded] Seed | seeded",
+  "delete > elsewhere, delete answers first": "[P:Alpha] Alpha | theirs,mine!",
+  "delete > elsewhere, elsewhere answers first": "[P:Alpha] Alpha | theirs,mine!",
+  "delete > typing, delete answers first": "[P:Alpha] Alpha~* | theirs,mine!",
+  "delete > typing, typing answers first": "[P:Alpha] Alpha~* | theirs,mine!",
+  "delete > add, delete answers first": "[P:Alpha] Alpha,_* | theirs,mine!",
+  "delete > add, add answers first": "[P:Alpha] Alpha,_* | theirs,mine!",
+  "delete > delete, earlier answers first": "[P:]  | theirs,mine!",
+  "delete > delete, later answers first": "[P:]  | theirs,mine!",
+  "delete > keepMine, delete answers first": "[N:theirs,mine P:Alpha] Alpha | theirs,mine",
+  "delete > keepMine, keepMine answers first": "[N:theirs,mine P:Alpha] Alpha | theirs,mine",
+  "delete > takeTheirs, delete answers first": "[P:Alpha] Alpha | theirs",
+  "delete > takeTheirs, takeTheirs answers first": "[P:Alpha] Alpha | theirs",
+  "delete > close, delete answers first": "[P:Alpha] Alpha | theirs,mine!",
+  "delete > close, close answers first": "[P:Alpha] Alpha | theirs,mine!",
+  "keepMine > mount, keepMine answers first": "[N:theirs,mine] Alpha,Beta | theirs,mine checkFailed",
+  "keepMine > mount, mount answers first": "[N:theirs,mine] Alpha,Beta | theirs,mine checkFailed",
+  "keepMine > save, keepMine answers first": "[N:theirs,mine P:Sam,Beta] Sam,Beta | theirs,mine",
+  "keepMine > save, save answers first": "[N:theirs,mine P:Sam,Beta] Sam,Beta | theirs,mine",
+  "keepMine > restore, keepMine answers first": "[N:theirs,mine P:Seed+N:seeded] Seed | seeded",
+  "keepMine > restore, restore answers first": "[N:theirs,mine P:Seed+N:seeded] Seed | seeded",
+  "keepMine > elsewhere": "[N:theirs,mine] Alpha,Beta | theirs,mine",
+  "keepMine > typing": "[N:theirs,mine] Alpha~*,Beta | theirs,mine",
+  "keepMine > add": "[N:theirs,mine] Alpha,Beta,_* | theirs,mine",
+  "keepMine > delete, keepMine answers first": "[N:theirs,mine P:Alpha] Alpha | theirs,mine",
+  "keepMine > delete, delete answers first": "[N:theirs,mine P:Alpha] Alpha | theirs,mine",
+  "keepMine > keepMine": "[N:theirs,mine] Alpha,Beta | theirs,mine",
+  "keepMine > takeTheirs": "[N:theirs,mine] Alpha,Beta | theirs,mine",
+  "keepMine > close": "[N:theirs,mine] Alpha,Beta | theirs,mine",
+  "takeTheirs > mount, takeTheirs answers first": "[] Alpha,Beta | theirs checkFailed",
+  "takeTheirs > mount, mount answers first": "[] Alpha,Beta | theirs checkFailed",
+  "takeTheirs > save, takeTheirs answers first": "[P:Sam,Beta] Sam,Beta | theirs",
+  "takeTheirs > save, save answers first": "[P:Sam,Beta] Sam,Beta | theirs",
+  "takeTheirs > restore, takeTheirs answers first": "[P:Seed+N:seeded] Seed | seeded",
+  "takeTheirs > restore, restore answers first": "[P:Seed+N:seeded] Seed | seeded",
+  "takeTheirs > elsewhere": "[] Alpha,Beta | theirs",
+  "takeTheirs > typing": "[] Alpha~*,Beta | theirs",
+  "takeTheirs > add": "[] Alpha,Beta,_* | theirs",
+  "takeTheirs > delete, takeTheirs answers first": "[P:Alpha] Alpha | theirs",
+  "takeTheirs > delete, delete answers first": "[P:Alpha] Alpha | theirs",
+  "takeTheirs > keepMine": "[] Alpha,Beta | theirs",
+  "takeTheirs > takeTheirs": "[] Alpha,Beta | theirs",
+  "takeTheirs > close": "[] Alpha,Beta | theirs",
+  "close > mount, close answers first": "[] Alpha,Beta | theirs,mine! checkFailed",
+  "close > mount, mount answers first": "[] Alpha,Beta | theirs,mine! checkFailed",
+  "close > save, close answers first": "[P:Sam,Beta] Sam,Beta | theirs,mine!",
+  "close > save, save answers first": "[P:Sam,Beta] Sam,Beta | theirs,mine!",
+  "close > restore, close answers first": "[P:Seed+N:seeded] Seed | seeded",
+  "close > restore, restore answers first": "[P:Seed+N:seeded] Seed | seeded",
+  "close > elsewhere": "[] Alpha,Beta | theirs,mine!",
+  "close > typing": "[] Alpha~*,Beta | theirs,mine!",
+  "close > add": "[] Alpha,Beta,_* | theirs,mine!",
+  "close > delete, close answers first": "[P:Alpha] Alpha | theirs,mine!",
+  "close > delete, delete answers first": "[P:Alpha] Alpha | theirs,mine!",
+  "close > keepMine": "[N:theirs,mine] Alpha,Beta | theirs,mine",
+  "close > takeTheirs": "[] Alpha,Beta | theirs",
+  "close > close": "[] Alpha,Beta | theirs,mine!",
+};
+
+describe('the roster editor orders every pair of events', () => {
+  const rows: [string, Event, Event, 'first' | 'second'][] = [];
+  for (const first of EVENTS) {
+    for (const second of EVENTS) {
+      const orders: ('first' | 'second')[] = ASYNC.has(first) || ASYNC.has(second) ? ['first', 'second'] : ['first'];
+      for (const order of orders) {
+        const answersFirst = first === second ? (order === 'first' ? 'earlier' : 'later') : order === 'first' ? first : second;
+        rows.push([`${first} > ${second}${orders.length > 1 ? `, ${answersFirst} answers first` : ''}`, first, second, order]);
+      }
+    }
+  }
+  it.each(rows)('%s', async (name, first, second, order) => {
+    const got = await run(first, second, order);
+    if (process.env.ROSTER_TABLE_PRINT) console.log(`  ${JSON.stringify(name)}: ${JSON.stringify(got)},`);
+    expect(got).toBe(TABLE[name]);
+  });
+});
+
+describe('a write the computer refuses', () => {
+  // The store puts back the saved list with its error toast; the person's
+  // edits stay on the page, unsaved, and the next commit sends them again.
+  it('leaves the typed values in the draft, unsaved, for the next commit to send', async () => {
+    const h = harness({ agentProfiles: [ALPHA, BETA], agentNotes: [] });
+    h.store.refuse = true;
+    h.editor.editProfile(0, { name: 'Sam' });
+    h.editor.commit('profiles');
+    await flush();
+    expect(h.store.writes).toHaveLength(1);
+    expect(outcome(h)).toBe('[P:Sam,Beta] Sam*,Beta | ');
+
+    h.store.refuse = false;
+    h.editor.commit('profiles');
+    await flush();
+    expect(outcome(h)).toBe('[P:Sam,Beta P:Sam,Beta] Sam,Beta | ');
+  });
+
+  // Restore writes through the same path: refused, the starting roster stays
+  // on the page as an unsaved edit of the saved one.
+  it('leaves a refused Restore on the page, unsaved, for the next commit to send', async () => {
+    const h = harness({ agentProfiles: [ALPHA, BETA], agentNotes: [note('one')] });
+    h.store.refuse = true;
+    void h.editor.restore();
+    h.held.seeds[0].resolve(SEEDS);
+    await flush();
+    expect(outcome(h)).toBe('[P:Seed+N:seeded] Seed* -Alpha,Beta | seeded*');
+
+    h.store.refuse = false;
+    h.editor.commit('profiles');
+    await flush();
+    expect(outcome(h)).toBe('[P:Seed+N:seeded P:Seed] Seed | seeded*');
+  });
+
+  // The page's effect hears of the put-back list before the write resolves
+  // today; the draft must not depend on that order.
+  it('leaves the edits unsaved when the write resolves before the page hears it was put back', async () => {
+    const h = harness({ agentProfiles: [ALPHA, BETA], agentNotes: [] });
+    h.store.refuse = true;
+    h.store.followLate = true;
+    h.editor.editProfile(0, { name: 'Sam' });
+    h.editor.commit('profiles');
+    await flush();
+    expect(outcome(h)).toBe('[P:Sam,Beta] Sam*,Beta | ');
+  });
+
+  // A change saved elsewhere that lands while a save checks drops that save
+  // and saves the reconciled draft. The store putting back a refused write
+  // is such a change, so it re-saves a save that was checking, once: the
+  // re-save's own refusal finds no save checking and stops.
+  it('re-saves a save that was checking once, and does not loop', async () => {
+    const h = harness({ agentProfiles: [ALPHA, BETA], agentNotes: [] });
+    h.store.manual = true;
+    h.store.refuse = true;
+    h.editor.editProfile(0, { name: 'Sam' });
+    h.editor.commit('profiles');
+    await flush();
+    h.editor.editProfile(0, { useFor: 'Typed.' });
+    const answer = holdingCheck(h, () => h.editor.commit('profiles'), ok);
+    h.store.settleNext();
+    await flush();
+    expect(h.store.writes).toHaveLength(2);
+    h.store.settleNext();
+    await flush();
+    answer();
+    await flush();
+
+    expect(h.store.writes).toHaveLength(2);
+    expect(outcome(h)).toBe('[P:Sam,Beta P:Sam,Beta] Sam~*,Beta | ');
+  });
+});
