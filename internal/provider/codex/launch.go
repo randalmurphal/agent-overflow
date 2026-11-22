@@ -12,3 +12,17 @@ func codexAppServerArgs() []string {
 		"app-server",
 	}
 }
+
+// codexSharedAppServerArgs adds immediate unload on thread/unsubscribe for
+// long-lived multiplexed app-server connections so unsubscribed threads
+// release their writer locks and MCP children right away instead of waiting
+// out Codex's 60-second default delay.
+func codexSharedAppServerArgs() []string {
+	return []string{
+		"-c",
+		`cli_auth_credentials_store="file"`,
+		"-c",
+		"thread_unload_delay_secs=0",
+		"app-server",
+	}
+}

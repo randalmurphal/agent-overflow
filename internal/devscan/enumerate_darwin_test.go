@@ -27,3 +27,14 @@ func TestParseLSOFCarriesTheAddressThatReachesEachSocket(t *testing.T) {
 		}
 	}
 }
+
+func TestParseLSOFCWDsExtractsWorkingDirectories(t *testing.T) {
+	output := "p100\nfcwd\nn/tmp/ws-a/app\np200\nfcwd\nn/Users/dev/project with spaces\n"
+	got := parseLSOFCWDs(output)
+	if got[100] != "/tmp/ws-a/app" {
+		t.Fatalf("pid 100 cwd = %q, want /tmp/ws-a/app", got[100])
+	}
+	if got[200] != "/Users/dev/project with spaces" {
+		t.Fatalf("pid 200 cwd = %q, want /Users/dev/project with spaces", got[200])
+	}
+}

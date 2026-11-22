@@ -584,6 +584,17 @@ type Session struct {
 	// recordThreadQueueSupport, because the two queues must be mutually
 	// exclusive for the whole life of the session.
 	threadQueueNative atomic.Bool
+
+	// conn is the multiplexed app-server connection this session runs on (nil
+	// only in synthetic unit-test Sessions constructed without Dial/NewSession).
+	// ownsConn is true for standalone NewSession callers where Close ends the
+	// connection; pooled sessions leave ownsConn false and call releaseConn.
+	conn            *Conn
+	ownsConn        bool
+	releaseConn     func()
+	releaseConnOnce sync.Once
+	readDoneOnce    sync.Once
+	teardownEmitted atomic.Bool
 }
 
 // Binary returns the codex CLI path this session's app-server process was
@@ -913,14 +924,80 @@ func (s *Session) ForgetMCPStartupState(name string) {
 // PID returns the OS process id (and process-group id) of the Codex
 // app-server subprocess, or 0 when no process is live.
 func (s *Session) PID() int {
+	if s.conn != nil {
+		return s.conn.PID()
+	}
 	if s.proc == nil {
 		return 0
 	}
 	return s.proc.PID()
 }
 
-// Close shuts down the app-server process.
-// Closes stdin first for graceful shutdown, then cancels the context as fallback.
+// Connection returns the underlying app-server connection backing this session.
+func (s *Session) Connection() provider.Connection {
+	if s == nil {
+		return nil
+	}
+	if s.conn != nil {
+		return s.conn
+	}
+	if s.proc == nil {
+		return nil
+	}
+	return provider.FuncConnection{
+		PIDFn:   s.PID,
+		DoneCh:  s.readDone,
+		CloseFn: s.Close,
+	}
+}
+
+// OwnedProcesses returns this session's process root and workspace for dev-server attribution.
+func (s *Session) OwnedProcesses() []provider.OwnedProcess {
+	pid := s.PID()
+	if pid <= 0 {
+		return nil
+	}
+	return []provider.OwnedProcess{{PID: pid, PGID: pid, WorkDir: s.workDir}}
+}
+
+func (s *Session) hasTransport() bool {
+	return s != nil && (s.conn != nil || s.proc != nil)
+}
+
+func (s *Session) finishReadDone() {
+	if s.readDone != nil {
+		s.readDoneOnce.Do(func() {
+			close(s.readDone)
+		})
+	}
+}
+
+func (s *Session) emitTeardownOnce(exitMeta json.RawMessage, intentional bool) {
+	if !s.teardownEmitted.CompareAndSwap(false, true) {
+		return
+	}
+	provider.EmitTeardownStatusWithMeta(s.emitEvent, s.threadID, exitMeta, intentional)
+}
+
+// onConnClosed runs on every attached session when its shared Conn's readLoop
+// ends (either from Conn.Close or an unexpected app-server crash).
+func (s *Session) onConnClosed(exitMeta json.RawMessage, connClosing bool) {
+	s.drainPendingApprovals("lost", true, false)
+	s.endSessionStartDeliveryAtTeardown()
+	s.emitTeardownOnce(exitMeta, connClosing || s.closing.Load())
+	s.finishReadDone()
+}
+
+func (s *Session) releasePoolRef() {
+	if s.releaseConn != nil {
+		s.releaseConnOnce.Do(s.releaseConn)
+	}
+}
+
+// Close ends this conversation session. On a standalone NewSession (ownsConn),
+// Close shuts down the app-server process. On a shared Conn, Close interrupts
+// active turns, cleans background terminals, unsubscribes the thread, detaches
+// routes, and releases its pool reference without ending the Conn.
 func (s *Session) Close() error {
 	s.closing.Store(true)
 	s.settingsSync.mu.Lock()
@@ -930,12 +1007,30 @@ func (s *Session) Close() error {
 	s.collabAsyncMu.Lock()
 	s.collabAsyncClosing = true
 	s.collabAsyncMu.Unlock()
-	s.clearPendingApprovals()
-	err := s.proc.Close()
-	s.cancel()
-	if s.readDone != nil {
-		<-s.readDone
+
+	var err error
+	switch {
+	case s.conn != nil && !s.ownsConn:
+		err = s.closeShared()
+	case s.conn != nil && s.ownsConn:
+		s.clearPendingApprovals()
+		err = s.conn.Close()
+		if s.readDone != nil {
+			<-s.readDone
+		}
+	default:
+		s.clearPendingApprovals()
+		if s.proc != nil {
+			err = s.proc.Close()
+		}
+		if s.cancel != nil {
+			s.cancel()
+		}
+		if s.readDone != nil {
+			<-s.readDone
+		}
 	}
+
 	s.rolloutObserverWG.Wait()
 	s.collabAsyncWG.Wait()
 	s.settingsSync.wg.Wait()
@@ -978,4 +1073,84 @@ func (s *Session) Close() error {
 	s.childLifecycleMu.Unlock()
 	s.mu.Unlock()
 	return err
+}
+
+func (s *Session) closeShared() error {
+	rootThreadID := s.rootThreadID()
+	rootSessionID := s.rootSessionID()
+
+	s.mu.Lock()
+	activeTurnID := s.turn.activeTurnID
+	childTargets := make([]childInterruptTarget, 0, len(s.collab.childRuntimeByThread))
+	childIDs := make([]string, 0, len(s.collab.childParentByThread))
+	for childID := range s.collab.childParentByThread {
+		childIDs = append(childIDs, childID)
+		if rt, ok := s.collab.childRuntimeByThread[childID]; ok && (rt.phase == childRuntimePending || rt.phase == childRuntimeRunning) {
+			childTargets = append(childTargets, childInterruptTarget{
+				threadID: childID,
+				turnID:   rt.turnID,
+			})
+		}
+	}
+	s.mu.Unlock()
+
+	// Settle any pending approvals with turnTransition so the server drops
+	// them cleanly before we unsubscribe.
+	s.drainPendingApprovals("cancel", true, true)
+	s.endSessionStartDeliveryAtTeardown()
+
+	var closeErrs []error
+	connAlive := true
+	select {
+	case <-s.conn.Done():
+		connAlive = false
+	default:
+	}
+
+	if connAlive && rootThreadID != "" {
+		// 1. Best-effort interrupt of active root and child turns.
+		if activeTurnID != "" {
+			intCtx, cancel := context.WithTimeout(context.Background(), codexCloseInterruptTimeout)
+			_, _ = s.conn.sendRequest(intCtx, "turn/interrupt", map[string]any{
+				"threadId": rootThreadID,
+				"turnId":   activeTurnID,
+			})
+			cancel()
+		}
+		for _, target := range childTargets {
+			intCtx, cancel := context.WithTimeout(context.Background(), codexCloseInterruptTimeout)
+			_, _ = s.conn.sendRequest(intCtx, "turn/interrupt", map[string]any{
+				"threadId": target.threadID,
+				"turnId":   target.turnID,
+			})
+			cancel()
+		}
+
+		// 2. Best-effort background terminal cleanup for this thread only.
+		cleanCtx, cancelClean := context.WithTimeout(context.Background(), codexCloseInterruptTimeout)
+		if err := s.CleanBackgroundTerminals(cleanCtx); err != nil && !IsMethodUnsupported(err, "thread/backgroundTerminals/clean") {
+			log.Printf("codex: shared close background terminal clean %s: %v", rootThreadID, err)
+		}
+		cancelClean()
+
+		// 3. Unsubscribe loaded children, then the root thread, waiting for thread/closed.
+		for _, childID := range childIDs {
+			if s.conn.isThreadLoaded(childID) {
+				if err := s.conn.unsubscribeAndWait(context.Background(), childID); err != nil {
+					closeErrs = append(closeErrs, err)
+				}
+			}
+		}
+		if err := s.conn.unsubscribeAndWait(context.Background(), rootThreadID); err != nil {
+			closeErrs = append(closeErrs, err)
+		}
+	}
+
+	s.conn.detachSession(s, rootThreadID, rootSessionID, childIDs)
+	s.emitTeardownOnce(nil, true)
+	s.finishReadDone()
+	if s.releaseConn != nil {
+		s.releaseConnOnce.Do(s.releaseConn)
+	}
+	return errors.Join(closeErrs...)
 }

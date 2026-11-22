@@ -675,7 +675,7 @@ func hasProviderEventKind(events []provider.ProviderEvent, kind provider.EventKi
 // re-clamp harder), and a full map stops admitting NEW names — updates
 // for already-retained servers still land, so a chatty peer cannot
 // freeze real lifecycle state out.
-func (s *Session) dispatchMCPStartupUpdate(params json.RawMessage) {
+func decodeMCPStartupUpdate(params json.RawMessage) (MCPStartupUpdate, bool) {
 	var parsed struct {
 		Name          string `json:"name"`
 		Status        string `json:"status"`
@@ -684,23 +684,29 @@ func (s *Session) dispatchMCPStartupUpdate(params json.RawMessage) {
 	}
 	if err := json.Unmarshal(params, &parsed); err != nil {
 		log.Printf("codex: decode mcpServer/startupStatus/updated: %v", err)
-		return
+		return MCPStartupUpdate{}, false
 	}
 	if strings.TrimSpace(parsed.Name) == "" {
 		log.Printf("codex: mcpServer/startupStatus/updated: missing name")
-		return
+		return MCPStartupUpdate{}, false
 	}
 	if len(parsed.Name) > mcpStartupNameMaxBytes {
 		log.Printf("codex: mcpServer/startupStatus/updated: dropping update for %d-byte server name", len(parsed.Name))
-		return
+		return MCPStartupUpdate{}, false
 	}
-	update := MCPStartupUpdate{
+	return MCPStartupUpdate{
 		Name:          parsed.Name,
 		State:         parsed.Status,
 		Error:         truncateRuneSafe(parsed.Error, mcpStartupErrorMaxBytes),
 		FailureReason: strings.TrimSpace(parsed.FailureReason),
-	}
+	}, true
+}
 
+func (s *Session) retainMCPStartupUpdate(params json.RawMessage) (MCPStartupUpdate, MCPStartupUpdateHandler, bool) {
+	update, ok := decodeMCPStartupUpdate(params)
+	if !ok {
+		return MCPStartupUpdate{}, nil, false
+	}
 	s.mu.Lock()
 	if s.mcpStartupStates == nil {
 		s.mcpStartupStates = make(map[string]MCPStartupUpdate)
@@ -713,8 +719,25 @@ func (s *Session) dispatchMCPStartupUpdate(params json.RawMessage) {
 	}
 	handler := s.mcpStartupUpdateHandler
 	s.mu.Unlock()
+	return update, handler, true
+}
 
-	if handler == nil {
+func (s *Session) notifyMCPStartupUpdate(params json.RawMessage) {
+	update, ok := decodeMCPStartupUpdate(params)
+	if !ok {
+		return
+	}
+	s.mu.Lock()
+	handler := s.mcpStartupUpdateHandler
+	s.mu.Unlock()
+	if handler != nil {
+		handler(update)
+	}
+}
+
+func (s *Session) dispatchMCPStartupUpdate(params json.RawMessage) {
+	update, handler, ok := s.retainMCPStartupUpdate(params)
+	if !ok || handler == nil {
 		return
 	}
 	handler(update)
@@ -746,13 +769,7 @@ func truncateRuneSafe(s string, limit int) string {
 	return s[:limit]
 }
 
-func (s *Session) dispatchMCPOAuthCompletion(params json.RawMessage) {
-	s.mu.Lock()
-	handler := s.mcpOAuthCompletedHandler
-	s.mu.Unlock()
-	if handler == nil {
-		return
-	}
+func decodeMCPOAuthCompletion(params json.RawMessage) (name string, success bool, errMsg string, ok bool) {
 	// Wire field is `name` (McpServerOauthLoginCompletedNotification,
 	// camelCase serde) — decoding `serverName` here meant OAuth completion
 	// never resolved in AO.
@@ -763,11 +780,25 @@ func (s *Session) dispatchMCPOAuthCompletion(params json.RawMessage) {
 	}
 	if err := json.Unmarshal(params, &parsed); err != nil {
 		log.Printf("codex: decode mcpServer/oauthLogin/completed: %v", err)
-		return
+		return "", false, "", false
 	}
 	if parsed.Name == "" {
 		log.Printf("codex: mcpServer/oauthLogin/completed: missing name")
+		return "", false, "", false
+	}
+	return parsed.Name, parsed.Success, parsed.Error, true
+}
+
+func (s *Session) dispatchMCPOAuthCompletion(params json.RawMessage) {
+	s.mu.Lock()
+	handler := s.mcpOAuthCompletedHandler
+	s.mu.Unlock()
+	if handler == nil {
 		return
 	}
-	handler(parsed.Name, parsed.Success, parsed.Error)
+	name, success, errMsg, ok := decodeMCPOAuthCompletion(params)
+	if !ok {
+		return
+	}
+	handler(name, success, errMsg)
 }

@@ -193,6 +193,9 @@ func (a *App) recordProbedProviderVersion(providerName string, identity provider
 	log.Printf("provider binary watch: %s upgraded %s -> %s; model catalog refreshed",
 		providerName, previous.version, version)
 	a.providerBinaries.storeInstalled(providerName, providerBinaryVersion{identity: identity, version: version})
+	if providerName == string(provider.Codex) {
+		a.drainCodexConnections()
+	}
 }
 
 // refreshProviderCatalogAfterUpgrade re-reads everything the app cached

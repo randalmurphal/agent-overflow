@@ -84,6 +84,10 @@ type Host interface {
 	// ResetProviderUsage forgets the cached usage readings, the turn
 	// activity that paces their polling and the server holds.
 	ResetProviderUsage()
+	// ResetProviderConnections closes every pooled provider connection and
+	// waits for its process to exit so no shared server survives into the
+	// next test.
+	ResetProviderConnections() error
 	// CancelProviderLogins ends every provider sign-in and leaves each
 	// provider idle.
 	CancelProviderLogins()

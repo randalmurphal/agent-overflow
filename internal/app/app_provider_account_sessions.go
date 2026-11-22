@@ -106,6 +106,10 @@ func (a *App) applyProviderAccountSelectionToSessions(
 	generation uint64,
 	accountID string,
 ) {
+	if providerName == string(provider.Codex) {
+		a.drainCodexConnections()
+		return
+	}
 	if providerName != string(provider.Claude) {
 		return
 	}

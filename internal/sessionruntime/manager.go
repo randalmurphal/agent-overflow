@@ -35,16 +35,19 @@ type BrowserMCPSession struct {
 	Codex    *codex.Session
 }
 
-// ThreadProcess is one live provider process, named by the thread it
+// ThreadProcess is one live provider process root, named by the thread it
 // serves. The dev-server scan (internal/devscan) traces a listening
 // socket back to a thread through these: a dev server an agent started
 // is a descendant of one of them, or a member of its process group.
 type ThreadProcess struct {
 	ThreadID string
-	// PID is the provider subprocess. Because every spawn sets Setpgid,
-	// it is also that process's group id (provider.Session.PID says so),
-	// which is the half that survives a dev server daemonising.
+	// PID is the provider subprocess (or owned child root).
 	PID int
+	// PGID is the process group id for daemonised descendants.
+	PGID int
+	// WorkDir is the thread's workspace directory, used as a tie-breaker
+	// when multiple threads share a multiplexed provider connection.
+	WorkDir string
 }
 
 // ClaudeLiveApply is one asynchronous /effort or /fast confirmation.
@@ -92,6 +95,7 @@ type Manager struct {
 	idleReaperWG                        sync.WaitGroup
 	retentionCleanupStop                chan struct{}
 	retentionCleanupWG                  sync.WaitGroup
+	connections                         *ConnPool
 }
 
 func New() *Manager {
@@ -104,7 +108,13 @@ func New() *Manager {
 		claudeLiveApplies:          make(map[string]ClaudeLiveApply),
 		claudeLiveApplyDegraded:    make(map[liveApplyKey]struct{}),
 		claudeLiveApplyGenerations: make(map[liveApplyKey]uint64),
+		connections:                NewConnPool(),
 	}
+}
+
+// Connections returns the shared provider-connection pool owned by this manager.
+func (m *Manager) Connections() *ConnPool {
+	return m.connections
 }
 
 func (m *Manager) Get(threadID string) (Entry, bool) {
@@ -307,7 +317,12 @@ func (m *Manager) RecordActivity(threadID, sessionToken string, kind provider.Ev
 	if !ok || entry.Token != sessionToken || entry.Liveness == nil {
 		return
 	}
-	entry.Liveness.BumpActivity(now)
+	// Connection-wide broadcasts (such as account/rateLimits/updated) fan out
+	// to every session on a shared process and must not reset idle timers on
+	// quiet threads.
+	if kind != provider.EventRateLimits {
+		entry.Liveness.BumpActivity(now)
+	}
 	if kind == provider.EventTurnStart {
 		entry.Liveness.ActiveTurns.Add(1)
 	} else if kind == provider.EventTurnComplete {
@@ -391,33 +406,51 @@ func (m *Manager) BrowserMCPSessions() []BrowserMCPSession {
 	return result
 }
 
-// ThreadProcesses returns the live provider process of every registered
-// thread. Sessions are snapshotted under the manager's lock and PID is
-// read after it is released: PID takes the SESSION's own lock, and the
-// two must never be held together.
+// ThreadProcesses returns the live provider process roots of every registered
+// thread. Sessions are snapshotted under the manager's lock and process roots
+// are read after it is released so the manager mutex and a session mutex are
+// never held together.
 func (m *Manager) ThreadProcesses() []ThreadProcess {
 	type live struct {
 		threadID string
+		workDir  string
 		session  provider.Session
 	}
 	m.mu.Lock()
 	sessions := make([]live, 0, len(m.sessions))
 	for threadID, entry := range m.sessions {
 		if session := entry.ProviderSession(); session != nil {
-			sessions = append(sessions, live{threadID: threadID, session: session})
+			sessions = append(sessions, live{
+				threadID: threadID,
+				workDir:  entry.LaunchOptions.WorkDir,
+				session:  session,
+			})
 		}
 	}
 	m.mu.Unlock()
 
 	processes := make([]ThreadProcess, 0, len(sessions))
 	for _, entry := range sessions {
-		pid := entry.session.PID()
-		if pid <= 0 {
-			// A session whose process has already gone. Nothing can
-			// descend from it.
-			continue
+		owned := entry.session.OwnedProcesses()
+		for _, root := range owned {
+			if root.PID <= 0 {
+				continue
+			}
+			pgid := root.PGID
+			if pgid <= 0 {
+				pgid = root.PID
+			}
+			workDir := root.WorkDir
+			if workDir == "" {
+				workDir = entry.workDir
+			}
+			processes = append(processes, ThreadProcess{
+				ThreadID: entry.threadID,
+				PID:      root.PID,
+				PGID:     pgid,
+				WorkDir:  workDir,
+			})
 		}
-		processes = append(processes, ThreadProcess{ThreadID: entry.threadID, PID: pid})
 	}
 	return processes
 }

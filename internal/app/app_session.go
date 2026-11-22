@@ -16,7 +16,6 @@ import (
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/claudetui"
 	"agent-overflow/internal/provider/codex"
-	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
@@ -669,75 +668,26 @@ func (a *App) spawnProviderSession(
 			}
 			cfg.ResumeHasUnresolvedSubagents = len(cfg.ResumeCollabLaunches) > 0
 		}
-		sess, err := codex.NewSession(context.Background(), threadID, cfg, onEvent)
+		conn, releaseConn, poolKey, err := a.acquireCodexConn(
+			context.Background(),
+			threadID,
+			cfg.Binary,
+			cfg.WorkDir,
+			cfg.Env,
+			&accountSelection,
+		)
 		if err != nil {
 			return session{}, err
 		}
-		if accountSelection.AccountID != "" {
-			accountCtx, cancelAccountRead := context.WithTimeout(
-				a.lifeCtx(),
-				codexAccountReadTimeout,
-			)
-			accountInfo, accountErr := sess.AccountInfo(accountCtx)
-			cancelAccountRead()
-			if accountErr == nil {
-				var observedAccountID string
-				var updatedAccount *provideraccounts.Account
-				observedAccountID, updatedAccount, accountErr = a.accountIDForObservedIdentity(
-					string(provider.Codex),
-					accountSelection.AccountID,
-					accountInfo,
-				)
-				if accountErr == nil && updatedAccount != nil {
-					a.emitProviderAccountIfCurrent(
-						string(provider.Codex),
-						*updatedAccount,
-						providerAccountInfo(*updatedAccount),
-					)
-				}
-				if accountErr == nil && observedAccountID != accountSelection.AccountID {
-					accountErr = fmt.Errorf(
-						"codex app-server authenticated as account %q instead of selected account %q",
-						observedAccountID,
-						accountSelection.AccountID,
-					)
-				}
-				if accountErr == nil && a.providerAccounts != nil {
-					if account, ok := a.providerAccounts.Get(
-						string(provider.Codex),
-						accountSelection.AccountID,
-						time.Now(),
-					); ok {
-						accountSelection.Account = providerAccountInfo(account)
-					}
-				}
-			}
-			if accountErr != nil {
-				closeErr := sess.Close()
-				return session{}, errors.Join(accountErr, closeErr)
-			}
+		sess, err := conn.OpenPooled(context.Background(), threadID, cfg, onEvent, releaseConn)
+		if err != nil {
+			return session{}, err
 		}
-		// Wire the OAuth-completion observer before any RPC can fly so
-		// the first `mcpServer/oauthLogin/completed` notification has a
-		// handler ready. Claude has no equivalent wire signal — its
-		// completion is internal to the CLI's loopback listener and the
-		// popup's "Refresh" path covers that side.
+		// Wire the per-session OAuth-completion observer; connection-wide
+		// skills/changed and mcpServer/startupStatus/updated handlers are
+		// installed once on the Conn during Dial.
 		sess.SetMCPOAuthCompletedHandler(func(serverName string, success bool, errMsg string) {
 			a.handleCodexMCPOAuthCompleted(threadID, serverName, success, errMsg)
-		})
-		// `mcpServer/startupStatus/updated` carries per-server live
-		// state during/after thread/start. Feed it into the mcpstatus
-		// cache so the popup reflects the running provider's view
-		// without an ephemeral refetch.
-		sess.SetMCPStartupUpdateHandler(func(u codex.MCPStartupUpdate) {
-			a.handleCodexMCPStartupUpdate(u)
-		})
-		// `skills/changed` is the app-server's own signal that its watched
-		// skill files moved. Drop the skills cache so the next composer
-		// render re-reads instead of offering a list that no longer
-		// matches disk.
-		sess.SetSkillsChangedHandler(func() {
-			a.handleCodexSkillsChanged()
 		})
 		return session{
 			Provider:             string(provider.Codex),
@@ -746,6 +696,8 @@ func (a *App) spawnProviderSession(
 			CredentialAccountID:  accountSelection.AccountID,
 			CredentialAccount:    accountSelection.Account,
 			Codex:                sess,
+			Conn:                 conn,
+			PoolKey:              poolKey,
 			LaunchOptions:        opts,
 			Liveness:             liveness,
 		}, nil

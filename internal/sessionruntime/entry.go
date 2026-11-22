@@ -11,7 +11,7 @@ import (
 	"agent-overflow/internal/provider/codex"
 )
 
-// Entry is one live provider process. It is process-local runtime state and is
+// Entry is one live provider session. It is process-local runtime state and is
 // never exposed on the wire.
 type Entry struct {
 	Provider             string
@@ -22,8 +22,13 @@ type Entry struct {
 	Claude               *claude.Session
 	Codex                *codex.Session
 	ClaudeTUI            *claudetui.Session
-	LaunchOptions        provider.SessionOptions
-	Liveness             *Liveness
+	// Session holds the provider-agnostic handle for providers whose
+	// app-layer interactions stay on provider.Session (such as ACP / agy).
+	Session       provider.Session
+	Conn          provider.Connection
+	PoolKey       string
+	LaunchOptions provider.SessionOptions
+	Liveness      *Liveness
 	// MemoryPlan is the memory the session's SessionStart hook delivers,
 	// which a compaction delivers again; nil for none.
 	MemoryPlan *memory.Plan
@@ -32,6 +37,8 @@ type Entry struct {
 // ProviderSession returns the provider-agnostic live handle.
 func (e Entry) ProviderSession() provider.Session {
 	switch {
+	case e.Session != nil:
+		return e.Session
 	case e.Claude != nil:
 		return e.Claude
 	case e.Codex != nil:

@@ -332,6 +332,17 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 		// observable order while the engine owns the shared abort behavior.
 		a.respond(id, method, a.e.currentVars())
 		a.e.interruptTurn(readParamString(params, "turnId"))
+	case "thread/unsubscribe":
+		tid := readParamString(params, "threadId")
+		if tid == "" {
+			tid = a.e.currentVars()["THREAD_ID"]
+		}
+		a.writeRPCResult(id, `{}`)
+		a.w.writeLine(mustJSON(map[string]any{
+			"jsonrpc": "2.0",
+			"method":  "thread/closed",
+			"params":  map[string]any{"threadId": tid},
+		}), 0, 0)
 	default:
 		if a.handleQueueRequest(id, method, params) {
 			return

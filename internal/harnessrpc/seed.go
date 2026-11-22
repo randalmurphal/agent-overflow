@@ -828,6 +828,9 @@ func (h *Harness) HarnessReset() (err error) {
 	// meter would otherwise draw in the next spec's composer. A sign-in a
 	// spec left open would be rejoined by the next page that loads.
 	h.config.Host.ResetProviderUsage()
+	if err := h.config.Host.ResetProviderConnections(); err != nil {
+		return fmt.Errorf("reset provider connections: %w", err)
+	}
 	h.config.Host.CancelProviderLogins()
 	// A repository's fetch freshness and failure backoff are keyed by its
 	// path, which the next fixture can reuse for another repository.

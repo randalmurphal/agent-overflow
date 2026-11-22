@@ -381,6 +381,13 @@ func (h *harnessHost) ResetForgeCaches() { h.app.gitCore().ResetForgeCaches() }
 
 func (h *harnessHost) ResetProviderUsage() { h.app.providerLifecycleService().Reset() }
 
+func (h *harnessHost) ResetProviderConnections() error {
+	if h.app.sessionRuntime == nil {
+		return nil
+	}
+	return h.app.sessionRuntime.Connections().Reset()
+}
+
 func (h *harnessHost) CancelProviderLogins() {
 	if h.app.providerAccounts == nil {
 		return
