@@ -463,6 +463,39 @@ func TestProviderEventStallReleasedDuringAcquisitionHoldsNothing(t *testing.T) {
 	}
 }
 
+// A marker the worker reaches after its stall was released does not report
+// the worker held, however late the acquisition reads the outcome.
+func TestProviderEventStallMarkerReachedAfterReleaseReportsNoHold(t *testing.T) {
+	t.Parallel()
+	qs := &providerEventQueues{}
+	const threadID = "thread-stall-late-marker"
+	started := make(chan struct{})
+	gate := make(chan struct{})
+	openGate := sync.OnceFunc(func() { close(gate) })
+	t.Cleanup(openGate)
+	enqueueWithin(t, qs, threadID, seqEvent(0, 0), func(provider.ProviderEvent) {
+		close(started)
+		<-gate
+	})
+	<-started
+	held, _, _, err := qs.beginStall(threadID)
+	if err != nil {
+		t.Fatalf("beginStall: %v", err)
+	}
+	if err := qs.releaseStall(threadID); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	openGate()
+	if err := qs.drain(threadID); err != nil {
+		t.Fatalf("the released marker still holds the worker: %v", err)
+	}
+	select {
+	case <-held:
+		t.Fatal("the marker reported the worker held after its stall was released")
+	default:
+	}
+}
+
 // Retirement is what keeps a thread without a session from holding a queue:
 // once the session's "disconnected" is handled and nothing is pending, the
 // registry forgets the thread, and a later session starts a fresh queue.

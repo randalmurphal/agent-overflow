@@ -23,44 +23,67 @@ const providerEventStallAcquire = 10 * time.Second
 // the stall is released first, stall returns an error and holds nothing.
 // Harness only (HarnessStallProviderEvents).
 func (qs *providerEventQueues) stall(threadID string) error {
-	release := make(chan struct{})
-	held := make(chan struct{})
-	qs.mu.Lock()
-	if _, taken := qs.stalls[threadID]; taken {
-		qs.mu.Unlock()
-		return fmt.Errorf("provider events for thread %s are already stalled", threadID)
+	held, release, bound, err := qs.beginStall(threadID)
+	if err != nil {
+		return err
 	}
-	if qs.stalls == nil {
-		qs.stalls = make(map[string]chan struct{})
-	}
-	qs.stalls[threadID] = release
-	bound := qs.stallAcquire
-	if bound <= 0 {
-		bound = providerEventStallAcquire
-	}
-	qs.mu.Unlock()
-	qs.enqueue(threadID, provider.ProviderEvent{ThreadID: threadID}, func(provider.ProviderEvent) {
-		close(held)
-		<-release
-	})
 	timer := time.NewTimer(bound)
 	defer timer.Stop()
 	select {
 	case <-held:
 		return nil
 	case <-release:
-		return fmt.Errorf("provider events for thread %s were released before the worker reached the stall", threadID)
 	case <-timer.C:
 	}
-	// Give the reservation up, unless a release took it meanwhile, and let
-	// the marker through so it cannot hold the worker later.
 	qs.mu.Lock()
-	if qs.stalls[threadID] == release {
-		delete(qs.stalls, threadID)
-		close(release)
+	defer qs.mu.Unlock()
+	select {
+	case <-held:
+		// The worker reached the stall before the release or the bound.
+		return nil
+	default:
+	}
+	if qs.stalls[threadID] != release {
+		return fmt.Errorf("provider events for thread %s were released before the worker reached the stall", threadID)
+	}
+	// Give the reservation up and let the marker through, so it cannot hold
+	// the worker later.
+	delete(qs.stalls, threadID)
+	close(release)
+	return fmt.Errorf("provider events for thread %s: the worker did not reach the stall within %s; nothing is stalled", threadID, bound)
+}
+
+// beginStall reserves threadID's stall and queues its marker. The worker
+// closes held when it reaches the marker with the reservation still in
+// place; a marker whose reservation was released or given up first passes
+// with held open. Both sides decide under qs.mu, so held closed means the
+// worker was held.
+func (qs *providerEventQueues) beginStall(threadID string) (held, release chan struct{}, bound time.Duration, err error) {
+	release = make(chan struct{})
+	held = make(chan struct{})
+	qs.mu.Lock()
+	if _, taken := qs.stalls[threadID]; taken {
+		qs.mu.Unlock()
+		return nil, nil, 0, fmt.Errorf("provider events for thread %s are already stalled", threadID)
+	}
+	if qs.stalls == nil {
+		qs.stalls = make(map[string]chan struct{})
+	}
+	qs.stalls[threadID] = release
+	bound = qs.stallAcquire
+	if bound <= 0 {
+		bound = providerEventStallAcquire
 	}
 	qs.mu.Unlock()
-	return fmt.Errorf("provider events for thread %s: the worker did not reach the stall within %s; nothing is stalled", threadID, bound)
+	qs.enqueue(threadID, provider.ProviderEvent{ThreadID: threadID}, func(provider.ProviderEvent) {
+		qs.mu.Lock()
+		if qs.stalls[threadID] == release {
+			close(held)
+		}
+		qs.mu.Unlock()
+		<-release
+	})
+	return held, release, bound, nil
 }
 
 // releaseStall lets the worker held by stall go on.
