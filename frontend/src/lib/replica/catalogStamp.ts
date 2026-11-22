@@ -8,6 +8,7 @@ import { randomId } from '../utils/randomId';
 const PREFIX = 'agent-overflow:catalog-stamp:';
 const LIMIT = 192;
 const observed = new Map<string, string>();
+const observers = new Set<(backend: BackendKey) => void>();
 const keyFor = (backend: BackendKey, kind: CatalogKind) => PREFIX + JSON.stringify([backend, kind]);
 
 /** Read afresh so another window's invalidation fences this window's writes. */
@@ -36,6 +37,13 @@ export function observeCatalogStamp(backend: BackendKey, kind: CatalogKind, stam
   observed.delete(key);
   observed.set(key, stamp);
   while (observed.size > LIMIT) observed.delete(observed.keys().next().value!);
+  for (const observer of observers) observer(backend);
+}
+
+/** Call `observer` each time this window comes to hold a stamp of one of `backend`'s catalogs. */
+export function onCatalogStampObserved(observer: (backend: BackendKey) => void): () => void {
+  observers.add(observer);
+  return () => { observers.delete(observer); };
 }
 
 /** Ordinary local mutations keep the stamp under which their rows were read. */

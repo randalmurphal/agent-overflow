@@ -128,7 +128,7 @@ describe('threads store', () => {
       // The round answered all three catalogs, so the tree is written, with
       // the rows the thread store holds and its cache.
       await vi.waitFor(() => expect(write).toHaveBeenCalled());
-      const threads = write.mock.calls[0][2].threads;
+      const threads = write.mock.calls[0][1].threads;
       expect(threads.rows).toEqual([makeThread('t1')]);
       expect(threads.cache).toBeInstanceOf(WeakMap);
       write.mockRestore();

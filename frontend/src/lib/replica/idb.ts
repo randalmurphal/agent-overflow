@@ -293,35 +293,13 @@ export function writeRecords(db: IDBDatabase, store: string, entries: readonly (
   });
 }
 
-/**
- * Put `value` under `key` in one transaction only if `accept` takes the record
- * stored there now. Resolves whether it was put.
- */
-export function replaceRecordIf(
-  db: IDBDatabase, store: string, key: string, value: unknown, accept: (stored: unknown) => boolean,
-): Promise<boolean> {
-  return withTimeout(`write ${store}`, () => new Promise<boolean>((resolve, reject) => {
-    const tx = db.transaction(store, 'readwrite');
+/** Read every one of `keys` in one transaction, in order; an absent key reads as undefined. */
+export function readRecords(db: IDBDatabase, store: string, keys: readonly string[]): Promise<unknown[]> {
+  return withTimeout(`read ${store}`, async () => {
+    const tx = db.transaction(store, 'readonly');
     const objects = tx.objectStore(store);
-    let put = false;
-    let failure: unknown = null;
-    const read = objects.get(key);
-    // Issued from the read's success handler, so the transaction cannot
-    // commit between the read and the put.
-    read.onsuccess = () => {
-      try {
-        if (!accept(read.result)) return;
-        objects.put(value, key);
-        put = true;
-      } catch (error) {
-        failure = error;
-        tx.abort();
-      }
-    };
-    tx.oncomplete = () => resolve(put);
-    tx.onabort = () => reject(asError(failure ?? tx.error, `replica: write ${store} aborted`));
-    tx.onerror = () => reject(asError(tx.error, `replica: write ${store} failed`));
-  }));
+    return await Promise.all(keys.map((key) => requestToPromise<unknown>(objects.get(key))));
+  });
 }
 
 /**

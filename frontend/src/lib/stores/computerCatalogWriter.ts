@@ -1,39 +1,43 @@
-// A computer's kept catalogs, written at store mutation boundaries and when a
-// round completes a tree, never from a render effect.
+// The one writer of a computer's kept catalogs, written at store mutation
+// boundaries and when a round completes a tree, never from a render effect.
 //
-// The replica keeps a computer's last complete tree and the changes pushed
-// onto it, nothing else (./catalogLoad.svelte.ts has the provenance). Every
-// write of the three catalog records goes through one queue per computer,
-// here:
-//   - A round that answered all three catalogs asks for the tree
-//     (persistCatalogTree): the three records, written in one IndexedDB
-//     transaction under the tree's id. It does not wait out the spacing.
-//   - A change to a catalog that is `tree` asks for that one record, written
-//     only while the record stored holds the same tree. A catalog that is
-//     `none`, `unrecorded` or `partial` is never written: its rows are not a
-//     tree the replica holds.
-//   - One write per computer runs at a time, and a tree waiting to be written
-//     goes before any single record and takes its place, so no record of an
-//     older tree can land after a newer tree's transaction.
-//   - A write IndexedDB fails stays waiting and is tried again after the
-//     spacing; nothing counts as written until it is. A write that must not
-//     land (another window replaced a stamp, the record holds another tree,
-//     the session is gone) is dropped.
+// Every write is the computer's whole tree: its three catalog records, in
+// one IndexedDB transaction (../replica/session.ts#putReplicaTree), so the
+// replica never holds catalogs that were not written together. Each computer
+// has one queue here:
+//   - A change to any of its catalogs, and a round that answered all three
+//     (persistCatalogTree), ask for a write. The request stays waiting until
+//     a write that started after it lands.
+//   - A write starts only while the computer's three catalogs are one tree
+//     (./catalogLoad.svelte.ts). A request made before they are one, such as
+//     a change pushed while kept rows are read, waits, and the queue wakes
+//     when they become one (onCatalogTree).
+//   - A write carries the stamp this window holds for each catalog. When one
+//     is not the current stamp, the write waits until this window holds
+//     another, which it does once it has rows read or changed under the
+//     current stamp (onCatalogStampObserved): another window's invalidation
+//     must not bless rows this window read before it.
+//   - A write IndexedDB failed is tried again after the spacing. A write for
+//     a session that is gone is dropped with the session's requests.
+//   - One write per computer runs at a time.
 //
-// A write encodes every row of the computer's catalog, so its cost grows
-// with the catalog while changes arrive per row. A catalog's single-record
-// writes therefore start at least CATALOG_WRITE_SPACING_MS apart: the first
-// change after a quiet spell is written at once, and changes during the
-// spacing are written together when it ends. A page going hidden writes what
-// is waiting, so a window that closes does not leave the offline tree behind.
-// Tokens keep a queued write from reaching a replaced or detached session.
+// A write encodes every row of the computer's catalogs, so its cost grows
+// with them while changes arrive per row. A computer's writes therefore
+// start at least CATALOG_WRITE_SPACING_MS apart: the first request after a
+// quiet spell is written at once, and requests during the spacing are
+// written together when it ends. A page going hidden writes what is waiting,
+// so a window that closes does not leave the offline tree behind. Tokens keep
+// a queued write from reaching a replaced or detached session.
+//
+// Windows are not ordered against each other: the backend gives catalogs no
+// revision, so the last window to write a computer's tree wins.
 import { untrack } from 'svelte';
 import { backendById } from '../transport/backends';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
-import { putReplicaCatalog, putReplicaTree, replicaToken, type CatalogWriteOutcome, type TreeCatalog } from '../replica/session';
-import { observedCatalogStamp } from '../replica/catalogStamp';
+import { putReplicaTree, replicaToken, type CatalogWriteOutcome, type TreeCatalog } from '../replica/session';
+import { observedCatalogStamp, onCatalogStampObserved } from '../replica/catalogStamp';
 import type { CatalogKind, CatalogRowCache, CatalogRows } from '../replica/catalog';
-import { catalogProvenance, catalogTreeOf, noteCatalogChange } from './catalogLoad.svelte';
+import { catalogTreeOf, noteCatalogChange, onCatalogTree } from './catalogLoad.svelte';
 import { recordCatalogMutation, type CatalogMutation } from './computerCatalogReads';
 
 export const CATALOG_WRITE_SPACING_MS = 2000;
@@ -56,40 +60,39 @@ const sources: { [K in CatalogKind]?: CatalogSource<K> } = {};
 
 // What one computer has waiting and running.
 interface ComputerWrites {
-  /** The replica session the waiting writes are for. */
+  /** The replica session the requests are for. */
   token: number;
-  /** The tree is waiting to be written. */
-  tree: boolean;
-  /** Catalogs whose single record is waiting to be written. */
-  kinds: Set<CatalogKind>;
+  /** Requests made, counted; the write that lands carries the count it started with. */
+  requested: number;
+  /** The request count the last landed write started with. */
+  saved: number;
   running: boolean;
-  /** Catalogs whose last single-record write started less than the spacing ago. */
-  spacing: Map<CatalogKind, ReturnType<typeof setTimeout>>;
-  /** Set while a failed tree write waits to be tried again. */
-  retry: ReturnType<typeof setTimeout> | null;
+  /** Set while the last write started less than the spacing ago. */
+  spacing: ReturnType<typeof setTimeout> | null;
+  /** The stamps this window held when a write met a stale one, until it holds another. */
+  staleAt: number | null;
 }
 const computers = new Map<BackendKey, ComputerWrites>();
+// How many stamps this window has come to hold, per computer.
+const stampsObserved = new Map<BackendKey, number>();
 let queued = false;
 let epoch = 0;
 
-function clearTimers(writes: ComputerWrites): void {
-  for (const timer of writes.spacing.values()) clearTimeout(timer);
-  writes.spacing.clear();
-  if (writes.retry !== null) clearTimeout(writes.retry);
-  writes.retry = null;
+function clearSpacing(writes: ComputerWrites): void {
+  if (writes.spacing !== null) clearTimeout(writes.spacing);
+  writes.spacing = null;
 }
 
-function request(backend: BackendKey, kind: CatalogKind | null): void {
+function request(backend: BackendKey): void {
   if (!backendById(backend)) return;
   const token = replicaToken(backend);
   let writes = computers.get(backend);
   if (writes === undefined || writes.token !== token) {
-    if (writes !== undefined) clearTimers(writes);
-    writes = { token, tree: false, kinds: new Set(), running: false, spacing: new Map(), retry: null };
+    if (writes !== undefined) clearSpacing(writes);
+    writes = { token, requested: 0, saved: 0, running: false, spacing: null, staleAt: null };
     computers.set(backend, writes);
   }
-  if (kind === null) writes.tree = true;
-  else writes.kinds.add(kind);
+  writes.requested++;
   schedule();
 }
 
@@ -117,87 +120,89 @@ function catalogOf<K extends CatalogKind>(backend: BackendKey, kind: K): TreeCat
 }
 
 function drain(backend: BackendKey, writes: ComputerWrites): void {
-  if (writes.running) return;
   if (!backendById(backend) || replicaToken(backend) !== writes.token) {
-    clearTimers(writes);
-    computers.delete(backend);
+    drop(backend, writes);
     return;
   }
-  if (writes.tree) {
-    if (writes.retry !== null) return;
-    writes.tree = false;
-    const tree = catalogTreeOf(backend);
-    if (tree !== null) {
-      // The tree's snapshot holds every change waiting for a single record.
-      writes.kinds.clear();
-      const catalogs = {
-        projects: catalogOf(backend, 'projects'),
-        threads: catalogOf(backend, 'threads'),
-        groups: catalogOf(backend, 'groups'),
-      };
-      run(backend, writes, putReplicaTree(backend, tree, catalogs, writes.token), () => {
-        writes.tree = true;
-        writes.retry = setTimeout(() => {
-          writes.retry = null;
-          schedule();
-        }, CATALOG_WRITE_SPACING_MS);
-      });
-      return;
-    }
-  }
-  for (const kind of writes.kinds) {
-    if (writes.spacing.has(kind)) continue;
-    writes.kinds.delete(kind);
-    const provenance = catalogProvenance(backend, kind);
-    if (provenance.kind !== 'tree') continue;
-    const { rows, stamp, cache } = catalogOf(backend, kind);
-    writes.spacing.set(kind, setTimeout(() => {
-      writes.spacing.delete(kind);
-      schedule();
-    }, CATALOG_WRITE_SPACING_MS));
-    run(backend, writes, putReplicaCatalog(backend, kind, rows, provenance, stamp, writes.token, cache), () => {
-      writes.kinds.add(kind);
-    });
-    return;
-  }
-}
-
-function run(backend: BackendKey, writes: ComputerWrites, write: Promise<CatalogWriteOutcome>, onFailed: () => void): void {
+  if (writes.running || writes.spacing !== null || writes.requested === writes.saved) return;
+  const observed = stampsObserved.get(backend) ?? 0;
+  if (writes.staleAt === observed || catalogTreeOf(backend) === null) return;
+  writes.staleAt = null;
+  const started = writes.requested;
+  const catalogs = {
+    projects: catalogOf(backend, 'projects'),
+    threads: catalogOf(backend, 'threads'),
+    groups: catalogOf(backend, 'groups'),
+  };
   writes.running = true;
+  writes.spacing = setTimeout(() => {
+    writes.spacing = null;
+    schedule();
+  }, CATALOG_WRITE_SPACING_MS);
   const version = epoch;
-  void write.then((outcome) => {
+  void putReplicaTree(backend, catalogs, writes.token).then((outcome) => {
     if (version !== epoch || computers.get(backend) !== writes) return;
     writes.running = false;
-    if (outcome === 'failed') onFailed();
+    settle(backend, writes, outcome, started, observed);
     schedule();
   });
 }
 
+function settle(backend: BackendKey, writes: ComputerWrites, outcome: CatalogWriteOutcome, started: number, observed: number): void {
+  switch (outcome) {
+    case 'written':
+      writes.saved = started;
+      return;
+    case 'failed':
+      // The spacing's end tries it again.
+      return;
+    case 'stale-stamp':
+      writes.staleAt = observed;
+      return;
+    case 'gone':
+      drop(backend, writes);
+      return;
+  }
+  outcome satisfies never;
+}
+
+function drop(backend: BackendKey, writes: ComputerWrites): void {
+  clearSpacing(writes);
+  if (computers.get(backend) === writes) computers.delete(backend);
+}
+
+onCatalogTree(() => { if (computers.size > 0) schedule(); });
+onCatalogStampObserved((backend) => {
+  stampsObserved.set(backend, (stampsObserved.get(backend) ?? 0) + 1);
+  if (computers.has(backend)) schedule();
+});
+
 if (typeof document !== 'undefined') {
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState !== 'hidden') return;
-    for (const writes of computers.values()) clearTimers(writes);
+    for (const writes of computers.values()) clearSpacing(writes);
     if (computers.size > 0) schedule();
   });
 }
 
 /** Write `backend`'s tree: a round just answered and committed all three of its catalogs. */
 export function persistCatalogTree(backend: BackendKey): void {
-  request(backend, null);
+  request(backend);
 }
 
 /** Test seam: drop every waiting write and timer. */
 export function resetCatalogWritesForTest(): void {
   ++epoch;
   queued = false;
-  for (const writes of computers.values()) clearTimers(writes);
+  for (const writes of computers.values()) clearSpacing(writes);
   computers.clear();
+  stampsObserved.clear();
 }
 
 /**
  * The writer of one store's catalog: it applies the store's changes and asks
- * the computer's queue to write what they changed. Creating one registers the
- * store as where the queue reads that catalog's rows.
+ * the computer's queue to write them. Creating one registers the store as
+ * where the queue reads that catalog's rows.
  */
 export function computerCatalogWriter<K extends CatalogKind>(
   kind: K, rows: () => CatalogRows[K][], commit: (rows: CatalogRows[K][]) => void,
@@ -208,16 +213,16 @@ export function computerCatalogWriter<K extends CatalogKind>(
 
   function changed(backend: BackendKey): void {
     noteCatalogChange(kind, backend);
-    request(backend, kind);
+    request(backend);
   }
 
   return {
     /**
      * Apply a local mutation to the rows of `backends`: commit it, record it
      * for their reads in flight (./computerCatalogReads.ts) and ask the
-     * computer's queue to write it.
-     * `mutation` must be a pure transform that touches only those computers'
-     * rows, because it is replayed over each one's answer.
+     * computer's queue to write it. `mutation` must be a pure transform that
+     * touches only those computers' rows, because it is replayed over each
+     * one's answer.
      */
     mutate(backends: BackendKey | undefined | Iterable<BackendKey | undefined>, mutation: CatalogMutation<CatalogRows[K]>): void {
       const current = untrack(rows);

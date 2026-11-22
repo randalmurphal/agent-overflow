@@ -87,11 +87,9 @@ Mechanism in
   tree it answered together plus the changes pushed since. The replica
   keeps only that tree across a restart: rows answered apart, rows of a
   partial round and pushed changes alone never make one and are never
-  written over it. Kept rows a build wrote before records said where they
-  came from are unrecorded: they list when all three catalogs of the
-  computer are unrecorded, as that build listed them, until a complete
-  round's tree replaces them. The price is
-  accepted: a computer whose thread list keeps failing
+  written over it. The replica writes a computer's three catalogs
+  together, so the three it holds, an older build's included, list as that
+  computer's tree. The price is accepted: a computer whose thread list keeps failing
   shows none of its projects, which a half-arranged list would show and then
   rearrange (ruling 2026-11-21).
 - Readiness reports progress. A starting backend names its phase, step and

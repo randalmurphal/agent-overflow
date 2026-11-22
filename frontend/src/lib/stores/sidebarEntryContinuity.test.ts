@@ -20,6 +20,7 @@ import {
 import { resetSidebarForTest } from './sidebar.svelte';
 import {
   addProjectLocal,
+  deleteProjectLocal,
   projectEntryKey,
   removeProjectLocal,
   resetProjectsForTest,
@@ -242,20 +243,84 @@ describe('two checkouts of one repository on one computer', () => {
   });
 });
 
+function persistedLimits(): Record<string, number> {
+  return JSON.parse(appStorageGet(LIMITS_RECORD) ?? '{}') as Record<string, number>;
+}
+
 describe('what it remembers', () => {
-  it('remembers nothing of the projects created and deleted', () => {
+  it('remembers nothing of the projects created and deleted, and keeps no record of them', () => {
     for (let index = 0; index < 20; index++) {
       addOn(HOME_BACKEND, mkProject(`p${index}`));
       settle();
       setEntryExpanded(`p${index}`, false);
+      setEntryListLimit(`p${index}`, 28);
     }
     expect(rememberedRowCountForTest()).toBe(20);
+    expect(persistedCollapsed()).toHaveLength(20);
     for (let index = 0; index < 20; index++) {
-      removeProjectLocal(`p${index}`);
+      deleteProjectLocal(`p${index}`);
       settle();
     }
     expect(sidebarEntryGroups()).toEqual([]);
     expect(rememberedRowCountForTest()).toBe(0);
+    expect(persistedCollapsed()).toEqual([]);
+    expect(persistedLimits()).toEqual({});
+  });
+
+  // A folded checkout whose row goes away without being deleted.
+  function folded(backend: BackendKey, id: string): void {
+    addOn(backend, mkProject(id, { repositoryID: REPO }));
+    settle();
+    setEntryExpanded(FORGE, false);
+    setEntryListLimit(FORGE, 28);
+  }
+  const KEPT = { collapsed: [FORGE], limits: { [FORGE]: 28 } };
+  const records = () => ({ collapsed: persistedCollapsed(), limits: persistedLimits() });
+
+  it("keeps the record of an archived checkout's entry", () => {
+    folded(HOME_BACKEND, 'p');
+    removeProjectLocal('p');
+    settle();
+    expect(records()).toEqual(KEPT);
+  });
+
+  it("keeps the record of a detached computer's entry", () => {
+    folded('laptop', 'p');
+    detachBackend('laptop');
+    settle();
+    expect(records()).toEqual(KEPT);
+  });
+
+  it('keeps the record of an entry whose computer no longer lists', () => {
+    folded('laptop', 'p');
+    resetSidebarCatalogsForTest();
+    listCatalogTreesForTest([HOME_BACKEND]);
+    settle();
+    expect(sidebarEntryGroups()).toEqual([]);
+    expect(records()).toEqual(KEPT);
+  });
+
+  it('keeps the record when a deleted checkout leaves another checkout wearing its key', () => {
+    addOn(HOME_BACKEND, mkProject('a', { repositoryID: REPO, createdAt: 1 }));
+    addOn(HOME_BACKEND, mkProject('b', { repositoryID: REPO, createdAt: 2 }));
+    settle();
+    setEntryExpanded('b', false);
+    deleteProjectLocal('a');
+    settle();
+    // B was promoted to the repository key and took its own fold there.
+    expect(groupOf('b').key).toBe(FORGE);
+    expect(records()).toEqual({ collapsed: [FORGE], limits: {} });
+  });
+
+  it("keeps the record of an entry whose other member, on an unlisted computer, still wears its key", () => {
+    folded(HOME_BACKEND, 'p');
+    resetSidebarCatalogsForTest();
+    listCatalogTreesForTest([HOME_BACKEND]);
+    addOn('laptop', mkProject('q', { repositoryID: REPO }));
+    settle();
+    deleteProjectLocal('p');
+    settle();
+    expect(records()).toEqual(KEPT);
   });
 
   it('gives a detached computer\'s row no key a row listed meanwhile takes', () => {

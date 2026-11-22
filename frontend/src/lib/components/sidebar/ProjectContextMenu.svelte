@@ -31,7 +31,7 @@
     ProjectDeletionPreview as fetchDeletionPreview,
   } from '../../stores/bindings';
   import { openInEditor } from '../../stores/openInEditor';
-  import { removeProjectLocal } from '../../stores/projects.svelte';
+  import { deleteProjectLocal, removeProjectLocal } from '../../stores/projects.svelte';
   import { closePanesShowingThreads } from '../../stores/panes.svelte';
   import { removeThread } from '../../stores/threads.svelte';
   import { addErrorToast, addToast } from '../../stores/toast.svelte';
@@ -152,7 +152,7 @@
     try {
       const result = await DeleteProject(project.id);
       for (const id of result.threadIds) removeThread(id);
-      removeProjectLocal(project.id);
+      deleteProjectLocal(project.id);
       closePanesShowingThreads(result.threadIds);
       addToast('info', `Deleted project "${project.label}".`);
       // A checkout git declined to remove is reported separately and stays on

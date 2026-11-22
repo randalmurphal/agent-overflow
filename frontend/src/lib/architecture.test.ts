@@ -633,6 +633,8 @@ const SIDEBAR_FENCED_IMPORTS: ReadonlyMap<string, Readonly<Record<string, string
   [PROJECTS_STORE, {
     updateProjectLocal: ANY_SIDEBAR_FILE,
     removeProjectLocal: ANY_SIDEBAR_FILE,
+    // The delete action confirms a deletion, which forgets the entry's disclosure.
+    deleteProjectLocal: 'lib/components/sidebar/ProjectContextMenu.svelte',
     reorderProjects: ANY_SIDEBAR_FILE,
   }],
   [ENTRY_CONTINUITY_STORE, {
@@ -685,15 +687,15 @@ const RECORD_CONSTRUCTOR_ALLOWLIST: Record<string, string> = {};
 
 // Rule: a computer's kept catalog records are written only by its write queue.
 //
-// The replica holds a computer's last complete tree and the changes pushed
-// onto it, and that holds only while one queue per computer orders every
-// write of the three records (stores/computerCatalogWriter.ts). A second
-// caller of either write could land a record of an older tree after a newer
-// tree's transaction. Default-deny over every source outside tests: only the
-// queue may import the writes, resolved through re-exports like the rules
-// above, and a whole-module import that reaches the replica session is
-// refused anywhere else.
-const REPLICA_CATALOG_WRITES = new Set(['putReplicaCatalog', 'putReplicaTree']);
+// Every write of the three records is the computer's whole tree, made by the
+// one queue per computer (stores/computerCatalogWriter.ts), which writes only
+// while the computer's three catalogs are one tree and only under the stamps
+// this window holds. A second caller could write catalogs that were never
+// held together, or a request the queue is still holding. Default-deny over
+// every source outside tests: only the queue may import the write, resolved
+// through re-exports like the rules above, and a whole-module import that
+// reaches the replica session is refused anywhere else.
+const REPLICA_CATALOG_WRITES = new Set(['putReplicaTree']);
 const REPLICA_SESSION = join(SRC_ROOT, 'lib', 'replica', 'session');
 const REPLICA_CATALOG_WRITER = 'lib/stores/computerCatalogWriter.ts';
 // Shrink-only, and empty.

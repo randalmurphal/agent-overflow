@@ -24,7 +24,9 @@
 //     which would otherwise come back when that member splits off again;
 //   - a row that splits off takes a copy of the record it split from, so
 //     whichever half is on screen keeps the fold;
-//   - a row whose members are all gone (deleted, detached) keeps its record;
+//   - a row whose members are all gone keeps its record (detached, unlisted,
+//     archived), except that a deleted project's key loses its record once
+//     no project the client holds wears it (forgetDeletedEntry);
 //   - a key whose row moved away or lost a merge is cleared, and a new row
 //     that now wears that key reads no record: a checkout promoted to its
 //     computer's chosen one does not inherit the fold of the one it replaced.
@@ -53,7 +55,7 @@ import { untrack } from 'svelte';
 import type { ProjectWithCounts } from '../types/models';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { projectBackend } from '../transport/entityIndex';
-import { entryIdFor, getProjects, projectEntryKey } from './projects.svelte';
+import { addProjectDeletedObserver, entryIdFor, getProjects, projectEntryKey } from './projects.svelte';
 import { catalogTreeListed } from './sidebarCatalogs';
 import { keySetRecord, listLimitRecord, type RecordKeyChanges } from './sidebar.svelte';
 import { THREAD_PREVIEW_LIMIT } from '../utils/sidebarThreadLimits';
@@ -276,6 +278,18 @@ export function revealProject(projectId: string): void {
   commit();
   collapsed.set(untrack(() => projectEntryKey(projectId)), false);
 }
+
+// A deleted project's key, once nothing the client holds wears it, keeps no
+// record. A checkout promoted onto the key wears it, so the record stays for
+// the commit that moves that checkout's own record there.
+function forgetDeletedEntry(key: string): void {
+  const worn = untrack(() => getProjects().some((row) => projectEntryKey(row.project.id) === key));
+  if (worn) return;
+  const forget: RecordKeyChanges = { copies: new Map(), clears: new Set([key]) };
+  collapsed.apply(forget);
+  listLimits.apply(forget);
+}
+addProjectDeletedObserver(forgetDeletedEntry);
 
 let stopEffect: (() => void) | null = null;
 

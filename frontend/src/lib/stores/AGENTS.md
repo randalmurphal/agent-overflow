@@ -294,7 +294,9 @@ of their own, keyed by the entry, which `sidebarEntryContinuity.svelte.ts`
 creates and exports nothing to read or write by key. When an entry's key moves
 under a row that stays, it copies the row's fold and limit to the new key and
 clears the old one, and its writers commit a waiting move before they write.
-The fence does not see a write through `appStorage` under the same storage
+A project deleted through `deleteProjectLocal` clears its key's records once
+no project the client holds wears that key; an archived, detached or
+unlisted row keeps them. The fence does not see a write through `appStorage` under the same storage
 key. `App.svelte` starts it and reloads
 its records after hydration (`syncSidebarEntryDisclosureFromAppStorage`); the
 test setup starts it and resets it, records included. Nothing migrates what a

@@ -5,23 +5,17 @@ import {
 import * as replicaSession from '../replica/session';
 import { stageBackend, resetStagedBackends } from '../../test/helpers/backends';
 import { detachBackend } from '../transport/backends';
-import { observeCatalogStamp, resetCatalogStampsForTest } from '../replica/catalogStamp';
+import { invalidateCatalogStamp, observeCatalogStamp, resetCatalogStampsForTest } from '../replica/catalogStamp';
 import {
-  catalogProvenance, catalogTreeOf, markCatalogTree, resetCatalogLoadForTest, settleCatalogAnswers, settleCatalogRead,
+  catalogProvenance, catalogTreeOf, markCatalogTree, PARTIAL_PROVENANCE, resetCatalogLoadForTest, settleCatalogAnswers, settleCatalogRead,
 } from './catalogLoad.svelte';
 import type { CatalogKind } from '../replica/catalog';
 import type { ProjectWithCounts, Thread, ThreadGroup } from '../types/models';
 import type { BackendKey } from '../transport/backendKey';
 
-const replica = {
-  token: 1,
-  single: vi.fn<typeof replicaSession.putReplicaCatalog>(),
-  tree: vi.fn<typeof replicaSession.putReplicaTree>(),
-};
+const replica = { token: 1, tree: vi.fn<typeof replicaSession.putReplicaTree>() };
 beforeEach(() => {
-  replica.single.mockResolvedValue('written');
   replica.tree.mockResolvedValue('written');
-  vi.spyOn(replicaSession, 'putReplicaCatalog').mockImplementation(replica.single);
   vi.spyOn(replicaSession, 'putReplicaTree').mockImplementation(replica.tree);
   vi.spyOn(replicaSession, 'replicaToken').mockImplementation(() => replica.token);
 });
@@ -32,7 +26,6 @@ afterEach(() => {
   resetStagedBackends();
   resetCatalogLoadForTest();
   vi.restoreAllMocks();
-  replica.single.mockReset();
   replica.tree.mockReset();
   replica.token = 1;
 });
@@ -67,223 +60,204 @@ function attach(backend: BackendKey): void {
 }
 
 /** Make `backend`'s three catalogs one tree, as a round that answered all three does. */
-function answerTree(backend: BackendKey): string {
+function answerTree(backend: BackendKey): void {
   for (const kind of KINDS) settleCatalogAnswers(kind, [backend]);
   markCatalogTree(backend);
-  return catalogTreeOf(backend)!.tree;
 }
 
-const singles = () => replica.single.mock.calls.map(([backend, kind, rows, tree]) => ({ backend, kind, rows, tree: tree.tree }));
-const trees = () => replica.tree.mock.calls.map(([backend, tree, catalogs]) => ({ backend, tree: tree.tree, catalogs }));
+const writes = () => replica.tree.mock.calls.map(([backend, catalogs]) => ({
+  backend,
+  projects: catalogs.projects.rows, threads: catalogs.threads.rows, groups: catalogs.groups.rows,
+}));
 
-it('writes a change to a tree catalog as that one record, with only its computer\'s rows', async () => {
+it('writes a change as the whole tree of its computer, with only that computer\'s rows', async () => {
+  vi.useFakeTimers();
   attach('gpu');
   const { rows, groups } = stores();
+  rows.projects = [project('gpu:p'), project('home:p')];
   rows.groups = [group('gpu:a'), group('home:b')];
-  const tree = answerTree('gpu');
+  answerTree('gpu');
   groups.changed('gpu');
   groups.changed('gpu');
-  await vi.waitFor(() => expect(replica.single).toHaveBeenCalledTimes(1));
-  expect(replica.single).toHaveBeenLastCalledWith('gpu', 'groups', [group('gpu:a')], { kind: 'tree', tree }, 'groups-stamp', 1, undefined);
-  expect(replica.tree).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(writes()).toEqual([{ backend: 'gpu', projects: [project('gpu:p')], threads: [], groups: [group('gpu:a')] }]);
+  const [, catalogs, token] = replica.tree.mock.calls[0]!;
+  expect([catalogs.projects.stamp, catalogs.threads.stamp, catalogs.groups.stamp, token]).toEqual(['projects-stamp', 'threads-stamp', 'groups-stamp', 1]);
 });
 
-it('writes nothing for a catalog of no known source, a partial one or an unrecorded one', async () => {
+it('keeps a request made while the catalogs are not one tree, and writes it when they become one', async () => {
   vi.useFakeTimers();
   attach('gpu');
   const { rows, groups } = stores();
   rows.groups = [group('gpu:a')];
-  // No known source: the change makes it partial.
   groups.mutate('gpu', (current) => [...current, group('gpu:b')]);
-  expect(catalogProvenance('gpu', 'groups')).toEqual({ kind: 'partial' });
-  // An answer alone is partial.
-  settleCatalogAnswers('groups', ['gpu']);
-  groups.changed('gpu');
-  // Unrecorded kept rows, and a change applied to them.
-  settleCatalogRead('groups', 'gpu', { answered: false, error: new Error('offline'), kept: { kind: 'unrecorded' }, changed: false });
-  groups.changed('gpu');
   await vi.advanceTimersByTimeAsync(3 * CATALOG_WRITE_SPACING_MS);
-  expect(replica.single).not.toHaveBeenCalled();
+  expect(replica.tree).not.toHaveBeenCalled();
+
+  // Kept rows adopted for all three make them one tree.
+  const kept = { kind: 'tree', tree: 'read-1' } as const;
+  for (const kind of KINDS) settleCatalogRead(kind, 'gpu', { answered: false, error: new Error('offline'), kept, changed: kind === 'groups' });
+  expect(catalogTreeOf('gpu')).toEqual(kept);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(writes()).toEqual([{ backend: 'gpu', projects: [], threads: [], groups: [group('gpu:a'), group('gpu:b')] }]);
+});
+
+it('writes nothing for kept rows a read adopted when nothing asked for a write', async () => {
+  vi.useFakeTimers();
+  attach('gpu');
+  stores();
+  const kept = { kind: 'tree', tree: 'read-1' } as const;
+  for (const kind of KINDS) settleCatalogRead(kind, 'gpu', { answered: false, error: new Error('offline'), kept, changed: false });
+  await vi.advanceTimersByTimeAsync(3 * CATALOG_WRITE_SPACING_MS);
   expect(replica.tree).not.toHaveBeenCalled();
 });
 
-it('writes a tree as the three catalogs of its computer in one write, without waiting out a spacing', async () => {
+it('writes nothing while one catalog is partial', async () => {
   vi.useFakeTimers();
   attach('gpu');
-  const { rows, groups } = stores({ valueThreads: true });
-  rows.projects = [project('gpu:p'), project('home:p')];
-  rows.threads = [thread('gpu:t')];
-  rows.groups = [group('gpu:g')];
-  const first = answerTree('gpu');
+  const { groups } = stores();
+  const kept = { kind: 'tree', tree: 'read-1' } as const;
+  settleCatalogRead('projects', 'gpu', { answered: false, error: new Error('offline'), kept, changed: false });
+  settleCatalogRead('threads', 'gpu', { answered: false, error: new Error('offline'), kept, changed: false });
+  settleCatalogRead('groups', 'gpu', { answered: false, error: new Error('offline'), kept: PARTIAL_PROVENANCE, changed: false });
   groups.changed('gpu');
-  await vi.advanceTimersByTimeAsync(0);
-  expect(replica.single).toHaveBeenCalledTimes(1);
-
-  const tree = answerTree('gpu');
-  persistCatalogTree('gpu');
-  await vi.advanceTimersByTimeAsync(0);
-  expect(tree).not.toBe(first);
-  expect(trees()).toEqual([{
-    backend: 'gpu', tree,
-    catalogs: {
-      projects: { rows: [project('gpu:p')], stamp: 'projects-stamp', cache: undefined },
-      threads: { rows: [thread('gpu:t')], stamp: 'threads-stamp', cache: expect.any(WeakMap) },
-      groups: { rows: [group('gpu:g')], stamp: 'groups-stamp', cache: undefined },
-    },
-  }]);
-  expect(replica.tree.mock.calls[0][3]).toBe(1);
+  await vi.advanceTimersByTimeAsync(3 * CATALOG_WRITE_SPACING_MS);
+  expect(catalogProvenance('gpu', 'groups')).toEqual(PARTIAL_PROVENANCE);
+  expect(replica.tree).not.toHaveBeenCalled();
 });
 
-it('writes a tree after the write that runs, in place of the changes that wait, and never an older tree\'s record after it', async () => {
+it('writes after the write that runs, with the rows of then, and keeps a request that came during it', async () => {
   vi.useFakeTimers();
   attach('gpu');
   const { rows, groups, threads } = stores();
   rows.groups = [group('gpu:a')];
-  const older = answerTree('gpu');
+  answerTree('gpu');
   let done!: (outcome: 'written') => void;
-  replica.single.mockImplementationOnce(() => new Promise((resolve) => { done = resolve; }));
-  groups.mutate('gpu', (current) => [...current, group('gpu:b')]);
+  replica.tree.mockImplementationOnce(() => new Promise((resolve) => { done = resolve; }));
+  groups.changed('gpu');
   await vi.advanceTimersByTimeAsync(0);
-  expect(singles()).toEqual([{ backend: 'gpu', kind: 'groups', rows: [group('gpu:a'), group('gpu:b')], tree: older }]);
-
-  // A round completes a new tree while that write runs, and a change waits.
-  const newer = answerTree('gpu');
-  persistCatalogTree('gpu');
   threads.mutate('gpu', (current) => [...current, thread('gpu:t')]);
-  await vi.advanceTimersByTimeAsync(0);
-  expect(replica.tree).not.toHaveBeenCalled();
-
+  await vi.advanceTimersByTimeAsync(CATALOG_WRITE_SPACING_MS);
+  expect(replica.tree).toHaveBeenCalledTimes(1);
   done('written');
   await vi.advanceTimersByTimeAsync(0);
-  expect(trees().map(({ tree }) => tree)).toEqual([newer]);
-  expect(trees()[0].catalogs.threads.rows).toEqual([thread('gpu:t')]);
+  expect(writes().map((write) => write.threads)).toEqual([[], [thread('gpu:t')]]);
   await vi.advanceTimersByTimeAsync(3 * CATALOG_WRITE_SPACING_MS);
-  // The waiting change went with the tree; nothing of the older tree follows.
-  expect(singles()).toHaveLength(1);
+  expect(replica.tree).toHaveBeenCalledTimes(2);
 });
 
-it('tries a tree IndexedDB failed again after the spacing, with the rows of then, and writes no change before it', async () => {
-  vi.useFakeTimers();
-  attach('gpu');
-  const { rows, groups } = stores();
-  rows.groups = [group('gpu:a')];
-  const tree = answerTree('gpu');
-  replica.tree.mockResolvedValueOnce('failed');
-  persistCatalogTree('gpu');
-  await vi.advanceTimersByTimeAsync(0);
-  expect(replica.tree).toHaveBeenCalledTimes(1);
-
-  groups.mutate('gpu', (current) => [...current, group('gpu:b')]);
-  await vi.advanceTimersByTimeAsync(CATALOG_WRITE_SPACING_MS - 1);
-  expect(replica.tree).toHaveBeenCalledTimes(1);
-  expect(replica.single).not.toHaveBeenCalled();
-
-  await vi.advanceTimersByTimeAsync(1);
-  expect(trees().map(({ tree: id }) => id)).toEqual([tree, tree]);
-  expect(trees()[1].catalogs.groups.rows).toEqual([group('gpu:a'), group('gpu:b')]);
-  await vi.advanceTimersByTimeAsync(3 * CATALOG_WRITE_SPACING_MS);
-  expect(replica.single).not.toHaveBeenCalled();
-});
-
-it('tries a change IndexedDB failed again after the spacing, and drops one that was refused', async () => {
+it('tries a write IndexedDB failed again after the spacing, with the rows of then', async () => {
   vi.useFakeTimers();
   attach('gpu');
   const { rows, groups } = stores();
   rows.groups = [group('gpu:a')];
   answerTree('gpu');
-  replica.single.mockResolvedValueOnce('failed');
-  groups.changed('gpu');
+  replica.tree.mockResolvedValueOnce('failed');
+  persistCatalogTree('gpu');
   await vi.advanceTimersByTimeAsync(0);
-  expect(replica.single).toHaveBeenCalledTimes(1);
-  await vi.advanceTimersByTimeAsync(CATALOG_WRITE_SPACING_MS);
-  expect(replica.single).toHaveBeenCalledTimes(2);
-
-  replica.single.mockResolvedValueOnce('refused');
-  await vi.advanceTimersByTimeAsync(CATALOG_WRITE_SPACING_MS);
-  groups.changed('gpu');
-  await vi.advanceTimersByTimeAsync(0);
-  expect(replica.single).toHaveBeenCalledTimes(3);
+  groups.mutate('gpu', (current) => [...current, group('gpu:b')]);
+  await vi.advanceTimersByTimeAsync(CATALOG_WRITE_SPACING_MS - 1);
+  expect(replica.tree).toHaveBeenCalledTimes(1);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(writes().map((write) => write.groups)).toEqual([[group('gpu:a')], [group('gpu:a'), group('gpu:b')]]);
   await vi.advanceTimersByTimeAsync(3 * CATALOG_WRITE_SPACING_MS);
-  expect(replica.single).toHaveBeenCalledTimes(3);
+  expect(replica.tree).toHaveBeenCalledTimes(2);
+});
+
+it('holds a write that met a stale stamp until this window holds another stamp, then writes it', async () => {
+  vi.useFakeTimers();
+  attach('gpu');
+  const { rows, groups } = stores();
+  rows.groups = [group('gpu:a')];
+  answerTree('gpu');
+  replica.tree.mockResolvedValueOnce('stale-stamp');
+  groups.changed('gpu');
+  await vi.advanceTimersByTimeAsync(5 * CATALOG_WRITE_SPACING_MS);
+  expect(replica.tree).toHaveBeenCalledTimes(1);
+  // A change of this window's own replaces the stamp, which it then holds.
+  invalidateCatalogStamp('gpu', 'groups');
+  await vi.advanceTimersByTimeAsync(0);
+  expect(replica.tree).toHaveBeenCalledTimes(2);
+  expect(replica.tree.mock.calls[1]![1].groups.stamp).not.toBe('groups-stamp');
+});
+
+it('tries a stale write again at once when this window came to hold a stamp while it ran', async () => {
+  vi.useFakeTimers();
+  attach('gpu');
+  const { groups } = stores();
+  answerTree('gpu');
+  let done!: (outcome: 'stale-stamp') => void;
+  replica.tree.mockImplementationOnce(() => new Promise((resolve) => { done = resolve; }));
+  groups.changed('gpu');
+  await vi.advanceTimersByTimeAsync(0);
+  invalidateCatalogStamp('gpu', 'groups');
+  done('stale-stamp');
+  await vi.advanceTimersByTimeAsync(CATALOG_WRITE_SPACING_MS);
+  expect(replica.tree).toHaveBeenCalledTimes(2);
+});
+
+it('drops the requests of a session that is gone', async () => {
+  vi.useFakeTimers();
+  attach('gpu');
+  const { groups } = stores();
+  answerTree('gpu');
+  replica.tree.mockResolvedValueOnce('gone');
+  groups.changed('gpu');
+  await vi.advanceTimersByTimeAsync(5 * CATALOG_WRITE_SPACING_MS);
+  invalidateCatalogStamp('gpu', 'groups');
+  markCatalogTree('gpu');
+  await vi.advanceTimersByTimeAsync(5 * CATALOG_WRITE_SPACING_MS);
+  expect(replica.tree).toHaveBeenCalledTimes(1);
 });
 
 it('does not write queued rows to a removed computer or a new generation', async () => {
   attach('gpu');
-  const { rows, groups } = stores();
-  rows.groups = [group('gpu:a')];
+  const { groups } = stores();
   answerTree('gpu');
   groups.changed('gpu');
-  persistCatalogTree('gpu');
   ++replica.token;
   await Promise.resolve();
-  expect(replica.single).not.toHaveBeenCalled();
   expect(replica.tree).not.toHaveBeenCalled();
   groups.changed('gpu');
-  persistCatalogTree('gpu');
   detachBackend('gpu');
   await Promise.resolve();
-  expect(replica.single).not.toHaveBeenCalled();
   expect(replica.tree).not.toHaveBeenCalled();
 });
 
-it('keeps at most one write running per computer and saves the newest rows after it finishes', async () => {
+it("starts a computer's writes a spacing apart and writes the newest rows when it ends", async () => {
   vi.useFakeTimers();
   attach('gpu');
   const { rows, groups, projects } = stores();
   rows.groups = [group('gpu:first')];
   answerTree('gpu');
-  let done!: (outcome: 'written') => void;
-  replica.single.mockImplementationOnce(() => new Promise((resolve) => { done = resolve; }));
   groups.changed('gpu');
   await vi.advanceTimersByTimeAsync(0);
-  rows.groups = [group('gpu:last')];
-  groups.changed('gpu');
-  projects.changed('gpu');
-  // The spacing ends while the first write still runs: the next waits for it.
-  await vi.advanceTimersByTimeAsync(CATALOG_WRITE_SPACING_MS);
-  expect(replica.single).toHaveBeenCalledTimes(1);
-  done('written');
-  await vi.advanceTimersByTimeAsync(0);
-  expect(singles().map(({ kind }) => kind)).toEqual(['groups', 'groups', 'projects']);
-  expect(singles()[1].rows).toEqual([group('gpu:last')]);
-});
+  expect(replica.tree).toHaveBeenCalledTimes(1);
 
-it('starts a catalog\'s writes a spacing apart and writes the newest rows when it ends', async () => {
-  vi.useFakeTimers();
-  attach('gpu');
-  const { rows, groups } = stores();
-  rows.groups = [group('gpu:first')];
-  answerTree('gpu');
-  groups.changed('gpu');
-  await vi.advanceTimersByTimeAsync(0);
-  expect(replica.single).toHaveBeenCalledTimes(1);
-
-  // A change every 100 ms for five spacings: one write per spacing.
+  // A change to one catalog or another every 100 ms for five spacings: one write per spacing.
   for (let i = 0; i < (5 * CATALOG_WRITE_SPACING_MS) / 100; i++) {
     rows.groups = [group(`gpu:change-${i}`)];
-    groups.changed('gpu');
+    (i % 2 === 0 ? groups : projects).changed('gpu');
     await vi.advanceTimersByTimeAsync(100);
   }
-  expect(replica.single).toHaveBeenCalledTimes(6);
+  expect(replica.tree).toHaveBeenCalledTimes(6);
   await vi.advanceTimersByTimeAsync(CATALOG_WRITE_SPACING_MS);
-  expect(singles().at(-1)!.rows).toEqual(rows.groups);
+  expect(writes().at(-1)!.groups).toEqual(rows.groups);
 
   // After a quiet spell the next change is written at once.
-  const settled = replica.single.mock.calls.length;
+  const settled = replica.tree.mock.calls.length;
   await vi.advanceTimersByTimeAsync(CATALOG_WRITE_SPACING_MS);
   rows.groups = [group('gpu:after-quiet')];
   groups.changed('gpu');
   await vi.advanceTimersByTimeAsync(0);
-  expect(replica.single).toHaveBeenCalledTimes(settled + 1);
-  expect(singles().at(-1)!.rows).toEqual(rows.groups);
+  expect(replica.tree).toHaveBeenCalledTimes(settled + 1);
 });
 
 it('spaces each computer apart from the others', async () => {
   vi.useFakeTimers();
   attach('gpu');
   attach('lab');
-  const { rows, groups } = stores();
-  rows.groups = [group('gpu:a'), group('lab:a')];
+  const { groups } = stores();
   answerTree('gpu');
   answerTree('lab');
   groups.changed('gpu');
@@ -291,21 +265,20 @@ it('spaces each computer apart from the others', async () => {
   groups.changed('gpu');
   groups.changed('lab');
   await vi.advanceTimersByTimeAsync(0);
-  expect(singles().map(({ backend }) => backend)).toEqual(['gpu', 'lab']);
+  expect(writes().map(({ backend }) => backend)).toEqual(['gpu', 'lab']);
 });
 
 it('does not write rows waiting out a spacing to a new generation', async () => {
   vi.useFakeTimers();
   attach('gpu');
-  const { rows, groups } = stores();
-  rows.groups = [group('gpu:a')];
+  const { groups } = stores();
   answerTree('gpu');
   groups.changed('gpu');
   await vi.advanceTimersByTimeAsync(0);
   groups.changed('gpu');
   ++replica.token;
   await vi.advanceTimersByTimeAsync(CATALOG_WRITE_SPACING_MS);
-  expect(replica.single).toHaveBeenCalledTimes(1);
+  expect(replica.tree).toHaveBeenCalledTimes(1);
 });
 
 it('writes what is waiting when the page goes hidden', async () => {
@@ -319,36 +292,22 @@ it('writes what is waiting when the page goes hidden', async () => {
   rows.groups = [group('gpu:closing')];
   groups.changed('gpu');
   await vi.advanceTimersByTimeAsync(0);
-  expect(replica.single).toHaveBeenCalledTimes(1);
+  expect(replica.tree).toHaveBeenCalledTimes(1);
 
   const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
   document.dispatchEvent(new Event('visibilitychange'));
   await vi.advanceTimersByTimeAsync(0);
-  expect(replica.single).toHaveBeenCalledTimes(2);
-  expect(singles()[1].rows).toEqual([group('gpu:closing')]);
+  expect(replica.tree).toHaveBeenCalledTimes(2);
+  expect(writes()[1]!.groups).toEqual([group('gpu:closing')]);
 
   // Becoming visible again does not cut a spacing short.
   groups.changed('gpu');
   visibility.mockReturnValue('visible');
   document.dispatchEvent(new Event('visibilitychange'));
   await vi.advanceTimersByTimeAsync(0);
-  expect(replica.single).toHaveBeenCalledTimes(2);
-  await vi.advanceTimersByTimeAsync(CATALOG_WRITE_SPACING_MS);
-  expect(replica.single).toHaveBeenCalledTimes(3);
-});
-
-it('tries a failed tree again at once when the page goes hidden', async () => {
-  vi.useFakeTimers();
-  attach('gpu');
-  stores();
-  answerTree('gpu');
-  replica.tree.mockResolvedValueOnce('failed');
-  persistCatalogTree('gpu');
-  await vi.advanceTimersByTimeAsync(0);
-  vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
-  document.dispatchEvent(new Event('visibilitychange'));
-  await vi.advanceTimersByTimeAsync(0);
   expect(replica.tree).toHaveBeenCalledTimes(2);
+  await vi.advanceTimersByTimeAsync(CATALOG_WRITE_SPACING_MS);
+  expect(replica.tree).toHaveBeenCalledTimes(3);
 });
 
 it('hands every write of a values writer the same row cache', async () => {
@@ -360,44 +319,41 @@ it('hands every write of a values writer the same row cache', async () => {
   threads.changed('gpu');
   await vi.advanceTimersByTimeAsync(0);
   persistCatalogTree('gpu');
-  await vi.advanceTimersByTimeAsync(0);
-  threads.changed('gpu');
   await vi.advanceTimersByTimeAsync(CATALOG_WRITE_SPACING_MS);
-  const caches = [
-    replica.single.mock.calls[0][6], replica.tree.mock.calls[0][2].threads.cache, replica.single.mock.calls[1][6],
-  ];
+  const caches = replica.tree.mock.calls.map((call) => call[1].threads.cache);
+  expect(caches).toHaveLength(2);
   expect(caches[0]).toBeInstanceOf(WeakMap);
-  expect(new Set(caches).size).toBe(1);
+  expect(caches[1]).toBe(caches[0]);
+  expect(replica.tree.mock.calls[0]![1].projects.cache).toBeUndefined();
 });
 
 it('cancels queued writes and spacings on reset and accepts new changes', async () => {
   vi.useFakeTimers();
   attach('gpu');
-  const { rows, groups } = stores();
-  rows.groups = [group('gpu:a')];
+  const { groups } = stores();
   answerTree('gpu');
   groups.changed('gpu');
   resetCatalogWritesForTest();
   await vi.advanceTimersByTimeAsync(0);
-  expect(replica.single).not.toHaveBeenCalled();
+  expect(replica.tree).not.toHaveBeenCalled();
   groups.changed('gpu');
   await vi.advanceTimersByTimeAsync(0);
   resetCatalogWritesForTest();
   groups.changed('gpu');
   await vi.advanceTimersByTimeAsync(0);
-  expect(replica.single).toHaveBeenCalledTimes(2);
+  expect(replica.tree).toHaveBeenCalledTimes(2);
 });
 
 it('commits a mutation, writes its computer, and skips a commit that changes nothing', async () => {
   attach('gpu');
   const { rows, groups } = stores();
   rows.groups = [group('gpu:a')];
-  const tree = answerTree('gpu');
+  answerTree('gpu');
   const before = rows.groups;
   groups.mutate('gpu', (current) => current.map((row) => row.id === 'missing' ? group('gpu:x') : row));
   expect(rows.groups).toBe(before);
   groups.mutate('gpu', (current) => [...current, group('gpu:b')]);
   expect(rows.groups.map((row) => row.id)).toEqual(['gpu:a', 'gpu:b']);
-  expect(catalogProvenance('gpu', 'groups')).toEqual({ kind: 'tree', tree });
-  await vi.waitFor(() => expect(singles().at(-1)).toEqual({ backend: 'gpu', kind: 'groups', rows: rows.groups, tree }));
+  expect(catalogTreeOf('gpu')).not.toBeNull();
+  await vi.waitFor(() => expect(writes().at(-1)?.groups).toEqual(rows.groups));
 });

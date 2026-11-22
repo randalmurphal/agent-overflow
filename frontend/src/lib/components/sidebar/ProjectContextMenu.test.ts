@@ -34,6 +34,7 @@ import {
   setThreadFilterQuery,
 } from '../../stores/threadFilter.svelte';
 import { entryRecordForTest } from '../../stores/sidebarEntryContinuity.svelte';
+import { addProjectDeletedObserver } from '../../stores/projects.svelte';
 
 // The menu takes the project frozen at the gesture that opened it, never a
 // row it could read again.
@@ -170,6 +171,34 @@ describe('<ProjectContextMenu> delete flow', () => {
     await waitFor(() => {
       expect(getBindingMock('DeleteProject')).toHaveBeenCalledWith('project-1');
     });
+  });
+
+  it('tells what keeps state by entry key that a confirmed delete deleted the project, and an archive did not', async () => {
+    const deleted: string[] = [];
+    const stop = addProjectDeletedObserver((key) => deleted.push(key));
+    try {
+      setBindingMock('ArchiveProject', async () => undefined);
+      const archive = renderMenu();
+      const archiveItem = Array.from(archive.baseElement.querySelectorAll('[role="menuitem"]'))
+        .find((el) => el.textContent?.trim() === 'Archive Project');
+      await fireEvent.click(archiveItem as Element);
+      await waitFor(() => expect(archive.baseElement.querySelector('[role="dialog"]')).not.toBeNull());
+      await fireEvent.click(Array.from(archive.baseElement.querySelectorAll('button'))
+        .find((el) => el.textContent?.trim() === 'Archive') as Element);
+      await waitFor(() => expect(toastMessages()).toContain('Archived project "Repo".'));
+      expect(deleted).toEqual([]);
+      archive.unmount();
+
+      setBindingMock('ProjectDeletionPreview', async () => emptyPreview());
+      const { baseElement } = renderMenu();
+      await selectDelete(baseElement);
+      await waitFor(() => expect(baseElement.textContent).toContain('Permanently delete "Repo"'));
+      await fireEvent.click(Array.from(baseElement.querySelectorAll('button'))
+        .find((el) => el.textContent?.trim() === 'Delete') as Element);
+      await waitFor(() => expect(deleted).toEqual(['project-1']));
+    } finally {
+      stop();
+    }
   });
 
   // What a confirmation promises is what the one call affects.

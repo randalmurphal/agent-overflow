@@ -35,15 +35,16 @@
 //   - A round whose read of a computer answered all three catalogs marks
 //     them one tree (markCatalogTree, ./catalogLoad.svelte.ts) and asks the
 //     computer's write queue to keep it (persistCatalogTree,
-//     ./computerCatalogWriter.ts). No answer is written alone, so the
-//     replica keeps the last set answered together.
+//     ./computerCatalogWriter.ts).
+//   - A computer's catalogs that fail with no rows of a known source read
+//     the replica's kept rows once per round, all three records in one
+//     transaction (getReplicaTree), so every catalog of the computer that
+//     stands in from the replica stands in from the same set.
 //   - A computer lists the first time one read of it is a complete tree
 //     (treeCompleteness): all three catalogs answered in that round, or
-//     every read done with rows standing in that are one kept tree
-//     (catalogTreeKept): the last set answered together plus the changes
-//     pushed since, or three records an older build wrote, which record no
-//     provenance (`unrecorded`) and list together as that build listed
-//     them. Rows answered apart, rows of a partial round and pushed changes
+//     every read done with rows standing in that are one tree
+//     (catalogTreeOf): the last set held together plus the changes pushed
+//     since. Rows answered apart, rows of a partial round and pushed changes
 //     never make one; the computer then shows its error row until a round
 //     answers all three.
 //   - Answers that commit at a window's end commit in one batch per
@@ -75,11 +76,16 @@ import { attachedBackends, onBackendDetached, type BackendEntry } from '../trans
 import type { BackendKey } from '../transport/backendKey';
 import { ReadDeadlineError } from '../utils/readBeforeDeadline';
 import type { ProjectWithCounts, Thread, ThreadGroup } from '../types/models';
-import { catalogFailureShown, catalogTreeKept, markCatalogTree, registerCatalogReader } from './catalogLoad.svelte';
+import {
+  catalogFailureShown, catalogTreeOf, markCatalogTree, PARTIAL_PROVENANCE, registerCatalogReader,
+} from './catalogLoad.svelte';
+import { getReplicaTree, type KeptTree } from '../replica/session';
+import type { CatalogKind, CatalogRows } from '../replica/catalog';
+import { randomId } from '../utils/randomId';
 import { persistCatalogTree } from './computerCatalogWriter';
 import {
   beginShare, commitShares, COMPUTER_READ_DEADLINE_MS, readShare,
-  type CatalogPart, type ComputerShare, type ShareResult,
+  type CatalogPart, type ComputerShare, type KeptRows, type ShareResult,
 } from './computerRows';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import { projectCatalogPart } from './projects.svelte';
@@ -143,6 +149,8 @@ interface ComputerRead {
   /** Listed when the round began: its three answers commit together. */
   paired: boolean;
   ownersNoted: boolean;
+  /** The replica's kept rows of this computer, read once for the round, with the id the read drew. */
+  kept: Promise<{ tree: KeptTree | null; id: string }> | null;
   projects: PartRead<ProjectWithCounts>;
   threads: PartRead<Thread>;
   groups: PartRead<ThreadGroup>;
@@ -215,6 +223,7 @@ function beginComputer(round: Round, target: BackendEntry, parts: RoundParts): C
     round,
     paired: untrack(() => listed.get(target.id)),
     ownersNoted: false,
+    kept: null,
     projects: partRead(parts.projects, target),
     threads: partRead(parts.threads, target),
     groups: partRead(parts.groups, target),
@@ -445,7 +454,7 @@ function treeCompleteness(read: ComputerRead): TreeCompleteness | null {
   const parts = partsOf(read);
   if (!parts.every((part) => part.state === 'done')) return null;
   if (parts.every((part) => part.outcome.answered)) return 'answered';
-  return catalogTreeKept(read.backend) ? 'kept' : null;
+  return catalogTreeOf(read.backend) !== null ? 'kept' : null;
 }
 
 // Once every part of a read is done: a set answered together becomes the
@@ -479,14 +488,28 @@ function threadRowsNow(round: Round): readonly Thread[] {
   return threadRowsWith({ rows, answered, replaced: answered, attached: new Set(attachedBackends().map((entry) => entry.id)) });
 }
 
+// The kept rows of `kind` that stand in for `read`'s failed catalog, from
+// the one replica read of the round: `tree` with the read's id when the
+// replica held all three records, else `partial`.
+async function keptRows<K extends CatalogKind>(read: ComputerRead, kind: K): Promise<KeptRows<CatalogRows[K]> | null> {
+  read.kept ??= getReplicaTree(read.backend).then((tree) => ({ tree, id: randomId() }));
+  const { tree, id } = await read.kept;
+  const rows = tree?.rows[kind] ?? null;
+  if (tree === null || rows === null) return null;
+  return { rows: rows.slice(), provenance: tree.tree ? { kind: 'tree', tree: id } : PARTIAL_PROVENANCE };
+}
+
 // Read one catalog of every computer in the round. Resolves when that
 // catalog's window ends, after the commit it allows.
-async function readCatalog<T>(
-  begun: readonly ComputerRead[], part: CatalogPart<T>, of: (read: ComputerRead) => PartRead<T>, deadlineMs: number | null,
+async function readCatalog<K extends CatalogKind>(
+  begun: readonly ComputerRead[], kind: K, part: CatalogPart<CatalogRows[K]>,
+  of: (read: ComputerRead) => PartRead<CatalogRows[K]>, deadlineMs: number | null,
 ): Promise<void> {
   await Promise.all(begun.map(async (read) => {
     const share = of(read);
-    arrive(share, await readShare(part, share.share, deadlineMs, { onLate: (result) => arriveLate(read, share, result) }));
+    arrive(share, await readShare(part, share.share, deadlineMs, {
+      onLate: (result) => arriveLate(read, share, result),
+    }, () => keptRows(read, kind)));
   }));
   for (const read of begun) of(read).ready = true;
   commitReads(begun);
@@ -500,13 +523,13 @@ async function runRound(
     budgetTimer = setTimeout(() => resolve('budget'), deadlineMs);
   });
   try {
-    void readCatalog(begun, parts.projects, (read) => read.projects, deadlineMs).catch((error: unknown) => {
+    void readCatalog(begun, 'projects', parts.projects, (read) => read.projects, deadlineMs).catch((error: unknown) => {
       console.error('Failed to read the projects:', error);
     });
-    void readCatalog(begun, parts.groups, (read) => read.groups, deadlineMs).catch((error: unknown) => {
+    void readCatalog(begun, 'groups', parts.groups, (read) => read.groups, deadlineMs).catch((error: unknown) => {
       console.error('Failed to read the thread groups:', error);
     });
-    await readCatalog(begun, parts.threads, (read) => read.threads, deadlineMs);
+    await readCatalog(begun, 'threads', parts.threads, (read) => read.threads, deadlineMs);
     // Follow every newer round that superseded a read of this one, those
     // that supersede one while this waits included, within the budget.
     const followed = new Set<Round>();

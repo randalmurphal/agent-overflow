@@ -4,17 +4,17 @@ import { beginCatalogRead, type CatalogRead } from './computerCatalogReads';
 // independently and retain only that computer's cached rows on failure.
 import { attachedBackends, withBackendTarget, type BackendEntry } from '../transport/backends';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
-import { adoptReplicaCatalogStamp, getReplicaCatalog, replicaCatalogStamp } from '../replica/session';
-import type { CatalogKind, CatalogRows, KeptCatalog, KeptProvenance } from '../replica/catalog';
+import { adoptReplicaCatalogStamp, replicaCatalogStamp } from '../replica/session';
+import type { CatalogKind, CatalogRows } from '../replica/catalog';
 import { getBackendIdentity, type BackendIdentity } from '../transport/backendIdentity';
 import { readBeforeDeadline, ReadDeadlineError } from '../utils/readBeforeDeadline';
-import { beginCatalogAttempt, catalogProvenance, settleCatalogRead, type CatalogProvenance } from './catalogLoad.svelte';
+import {
+  beginCatalogAttempt, catalogProvenance, settleCatalogRead, type CatalogProvenance, type HeldProvenance,
+} from './catalogLoad.svelte';
 
 export interface ComputerCatalog<T> {
   /** Where the rows the store holds of `backend` came from (./catalogLoad.svelte.ts). */
   provenance(backend: BackendKey): CatalogProvenance;
-  /** The rows the replica keeps of `backend`, with the provenance their record holds. */
-  read(backend: BackendKey): Promise<KeptCatalog<T> | null>;
   begin(backend: BackendKey): CatalogRead<T>;
   /**
    * One computer's answer committed: a tree written with it uses the stamp
@@ -28,7 +28,13 @@ export interface ComputerCatalog<T> {
    * and `changed` whether its journal replayed changes over them. An answer,
    * on time or late, is settled by the read's commit (settleCatalogAnswers).
    */
-  settle(backend: BackendKey, error: unknown, kept: KeptProvenance | null, changed: boolean): void;
+  settle(backend: BackendKey, error: unknown, kept: HeldProvenance | null, changed: boolean): void;
+}
+
+/** A computer's kept rows of one catalog, standing in for a failed read, and where they came from. */
+export interface KeptRows<T> {
+  readonly rows: T[];
+  readonly provenance: HeldProvenance;
 }
 
 // The startup read budget: past it, a computer's answer commits late and
@@ -69,7 +75,6 @@ export function computerCatalog<K extends CatalogKind>(kind: K): ComputerCatalog
       // superseded (./computerCatalogReads.ts).
       return beginCatalogRead<CatalogRows[K]>(backend, kind, beginCatalogAttempt(kind, backend));
     },
-    read: (backend) => getReplicaCatalog(backend, kind),
     answered: (backend) => adoptReplicaCatalogStamp(backend, kind, stamps.get(backend) ?? null),
     settle: (backend, error, kept, changed) => settleCatalogRead(kind, backend, { answered: false, error, kept, changed }),
   };
@@ -117,7 +122,7 @@ export interface ShareResult<T> {
    * read. Replica rows replace the computer's rows in the store, with the
    * read's journal replayed over them as over an answer.
    */
-  kept: KeptProvenance | null;
+  kept: HeldProvenance | null;
 }
 
 /** Where a share past its deadline delivers its late answer or late failure. */
@@ -157,10 +162,12 @@ export function beginShare<T>(part: CatalogPart<T>, target: BackendEntry): Compu
 /**
  * Read one computer's rows. Resolves on time with the answer, the failure,
  * or a late result once `deadlineMs` passed; the late answer or late
- * failure then goes to `late`.
+ * failure then goes to `late`. A failure with no rows of a known source in
+ * the store takes the rows `kept` resolves, if any.
  */
 export async function readShare<T>(
   part: CatalogPart<T>, share: ComputerShare<T>, deadlineMs: number | null, late: LateShare<T>,
+  kept: () => Promise<KeptRows<T> | null> = async () => null,
 ): Promise<ShareResult<T>> {
   const { target } = share;
   const startIdentity = getBackendIdentity(target.id);
@@ -195,12 +202,12 @@ export async function readShare<T>(
   const isLate = error instanceof ReadDeadlineError;
   const identity = getBackendIdentity(target.id);
   // Rows of a known source in the store stand in as they are; with none,
-  // the replica's kept rows do, with the provenance their record holds.
+  // the replica's kept rows do.
   const held = part.catalog !== undefined && part.catalog.provenance(target.id).kind !== 'none';
-  const kept = part.catalog && !held ? await part.catalog.read(target.id) : null;
+  const standIn = part.catalog && !held ? await kept() : null;
   return {
-    share, rows: kept?.rows ?? [], answered: false, error, identity, late: isLate,
-    cached: held || kept !== null, kept: kept?.provenance ?? null,
+    share, rows: standIn?.rows ?? [], answered: false, error, identity, late: isLate,
+    cached: held || standIn !== null, kept: standIn?.provenance ?? null,
   };
 }
 

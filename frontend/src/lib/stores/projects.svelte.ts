@@ -1,3 +1,4 @@
+import { untrack } from 'svelte';
 import { invalidateReplicaCatalog } from '../replica/session';
 import { computerCatalogWriter, resetCatalogWritesForTest } from './computerCatalogWriter';
 import { computerCatalog, retainUnavailableComputerRows, type CatalogPart, type ComputerRows } from './computerRows';
@@ -472,6 +473,29 @@ export function touchProjectActivity(projectId: string | undefined, updatedAt: n
  */
 export function getProjectLiveActivityAt(p: ProjectWithCounts): number {
   return Math.max(p.lastActive ?? 0, liveActivityAt.get(p.project.id));
+}
+
+let projectDeletedObservers: Array<(key: string) => void> = [];
+
+/**
+ * Run `observer` after every `deleteProjectLocal`, with the entry key the
+ * project wore: state kept by that key must go when nothing wears it now.
+ */
+export function addProjectDeletedObserver(observer: (key: string) => void): () => void {
+  projectDeletedObservers = [...projectDeletedObservers, observer];
+  return () => {
+    projectDeletedObservers = projectDeletedObservers.filter((existing) => existing !== observer);
+  };
+}
+
+/**
+ * The project was deleted, not archived and not left unlisted by its
+ * computer: drop its row, then tell what keeps state by its entry key.
+ */
+export function deleteProjectLocal(id: string): void {
+  const key = untrack(() => projectEntryKey(id));
+  removeProjectLocal(id);
+  for (const observer of projectDeletedObservers) observer(key);
 }
 
 /** Drop a project row and any related thread counts. */
