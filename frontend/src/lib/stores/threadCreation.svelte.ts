@@ -10,7 +10,8 @@ import {
 import { revealProject } from './sidebarEntryContinuity.svelte';
 import { prependThreadReply } from './threads.svelte';
 import { threadRowFrameMark } from './threadRowFrames';
-import { addErrorToast } from './toast.svelte';
+import { addErrorToast, addToast } from './toast.svelte';
+import { isCompactLayout } from './layoutMode.svelte';
 import { errString } from '../utils/errors';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import type { DraftPlaceholderDefaults, ThreadPane } from './thread.svelte';
@@ -239,11 +240,23 @@ export interface OpenTerminalThreadOptions {
 }
 
 /**
+ * Whether a new terminal pane rooted at `projectId` can be returned to in
+ * this layout. A terminal is listed in the sidebar under its project, and
+ * compact reaches a pane only through that list: there a terminal outside
+ * every project (one opened beside an assistant's thread) would be a live
+ * shell with no way back to it. The desktop keeps its pane on screen.
+ */
+export function terminalPaneReachable(projectId: string | null | undefined): boolean {
+  return !isCompactLayout() || Boolean(projectId);
+}
+
+/**
  * Create a `mode:'terminal'` thread and open it in a fresh pane.
- * Every terminal entry point routes here — the per-project `+terminal`
- * button, the `mod+shift+~` chord, and the chat header menu's New terminal
+ * Every terminal entry point routes here — the project menu's New Terminal
+ * row, the `mod+shift+~` chord, and the chat header menu's New terminal
  * pane row — so a terminal always lands in its own new pane (locked
- * decision: always fresh).
+ * decision: always fresh). One that could not be returned to
+ * (`terminalPaneReachable`) is refused with a toast.
  *
  * `StartTerminal` writes the SQLite row (sentinel provider; `workspacePath` =
  * resolved cwd — project root when `projectId` is set, else home) but does NOT
@@ -264,14 +277,18 @@ export interface OpenTerminalThreadOptions {
  *    never hit it anyway) and the empty-pane → terminal transition stays in a
  *    single paint frame — no "pick a project" flash.
  *
- * Returns the opened pane, or `null` when `StartTerminal` fails — the failure is
- * surfaced as an error toast rather than an unhandled rejection, since the user
- * clicked expecting a terminal.
+ * Returns the opened pane, or `null` when the terminal is refused or
+ * `StartTerminal` fails — the failure is surfaced as an error toast rather
+ * than an unhandled rejection, since the user clicked expecting a terminal.
  */
 export async function openTerminalThread(
   options: OpenTerminalThreadOptions = {},
 ): Promise<ThreadPane | null> {
   const { projectId, cwd } = options;
+  if (!terminalPaneReachable(projectId)) {
+    addToast('info', 'A terminal outside a project has no place in the thread list on this screen.');
+    return null;
+  }
   let thread: Thread;
   const mark = threadRowFrameMark();
   try {

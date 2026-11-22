@@ -20,15 +20,23 @@ export function terminalGrant(pane: ThreadPane): EntityScopeGrant {
   return threadScopeGrant('terminal:operate', pane.threadId, pane.thread?.projectId);
 }
 
+export type TakeControlState =
+  | { offered: false }
+  | { offered: true; grant: EntityScopeGrant; open: boolean };
+
+const TAKE_CONTROL_NOT_OFFERED: TakeControlState = { offered: false };
+
 /**
  * Take control for the pane, as its button and its menu row both show it.
  * It mirrors a live claude-tui session in a paired terminal pane, so no
  * other provider offers it (an unsupported control is not shown rather
- * than shown disabled), and it rides the terminal grant.
+ * than shown disabled), and it rides the terminal grant. A thread that
+ * does not offer it reads nothing further.
  */
-export function takeControlState(pane: ThreadPane): { offered: boolean; grant: EntityScopeGrant; open: boolean } {
+export function takeControlState(pane: ThreadPane): TakeControlState {
+  if (pane.thread?.provider !== 'claude-tui') return TAKE_CONTROL_NOT_OFFERED;
   return {
-    offered: pane.thread?.provider === 'claude-tui',
+    offered: true,
     grant: terminalGrant(pane),
     open: isCompanionOpen(pane.paneId, 'take-control'),
   };

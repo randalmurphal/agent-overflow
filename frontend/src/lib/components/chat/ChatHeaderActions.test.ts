@@ -27,7 +27,10 @@ import {
 } from '../../../test/helpers/chat';
 import { OBSERVE_SCOPES, pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 
-vi.mock('../../stores/threadCreation.svelte', () => ({ openTerminalThread: vi.fn() }));
+vi.mock('../../stores/threadCreation.svelte', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../stores/threadCreation.svelte')>()),
+  openTerminalThread: vi.fn(),
+}));
 
 // Transport is pinned connected globally (src/test/setup.ts) so the git-status
 // store sources instead of staying suspended. It is not mocked here: the store

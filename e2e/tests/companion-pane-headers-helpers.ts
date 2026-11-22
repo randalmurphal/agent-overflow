@@ -61,8 +61,9 @@ export async function expectHeadersShareTheWidth(panes: Locator[]): Promise<void
       });
       if (narrow) {
         await expect(crumb, 'a narrow header leaves the crumb out').toBeHidden();
-      } else if (await crumb.count() > 0) {
-        await expect(crumb, 'a header with room shows the crumb').toBeVisible();
+      } else {
+        // Every pane these specs open is a thread of a project.
+        await expect(crumb, 'a header with room shows the project crumb').toBeVisible();
         // The row never shrinks the crumb: its name is whole, or it is a
         // name past the cap, which holds the cap's width.
         const shown = await crumb.evaluate((el) => {

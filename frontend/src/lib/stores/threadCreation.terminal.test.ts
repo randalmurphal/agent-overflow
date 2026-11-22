@@ -1,5 +1,5 @@
 // Orchestration tests for openTerminalThread — the create helper every
-// terminal entry point (the per-project +terminal button, the mod+shift+~
+// terminal entry point (the project menu's New Terminal row, the mod+shift+~
 // chord, the chat header menu's New terminal pane row) routes through.
 //
 // We replace the four collaborators (StartTerminal, revealProject,
@@ -80,7 +80,8 @@ vi.mock('./toast.svelte', async (importOriginal) => ({
   addErrorToast: h.addErrorToast,
 }));
 
-import { openTerminalThread } from './threadCreation.svelte';
+import { openTerminalThread, terminalPaneReachable } from './threadCreation.svelte';
+import { setCompactLayoutForTest } from './layoutMode.svelte';
 // ./threads.svelte is intentionally NOT mocked — openTerminalThread prepends
 // into the real store, and these tests assert the row actually lands there.
 import { getThreadById, getThreads } from './threads.svelte';
@@ -109,6 +110,7 @@ beforeEach(() => {
 
 afterEach(() => {
   errorSpy.mockRestore();
+  setCompactLayoutForTest(false);
 });
 
 describe('openTerminalThread', () => {
@@ -146,6 +148,26 @@ describe('openTerminalThread', () => {
       'requestTerminalFocus',
       'mountThreadInPane',
     ]);
+  });
+
+  // Compact reaches a pane only through the thread list, which lists a
+  // terminal under its project.
+  it('refuses a terminal outside every project under compact, and says why', async () => {
+    setCompactLayoutForTest(true);
+    expect(terminalPaneReachable(undefined)).toBe(false);
+    expect(await openTerminalThread({ cwd: '/home/me' })).toBeNull();
+    expect(h.startTerminal).not.toHaveBeenCalled();
+    expect(h.openEmptyPane).not.toHaveBeenCalled();
+    expect(h.addToast).toHaveBeenCalledWith('info', 'A terminal outside a project has no place in the thread list on this screen.');
+
+    // A project's terminal has its row there, and the desktop keeps the
+    // pane on screen either way.
+    expect(terminalPaneReachable('proj-1')).toBe(true);
+    expect(await openTerminalThread({ projectId: 'proj-1' })).toBe(h.fakePane);
+    setCompactLayoutForTest(false);
+    expect(terminalPaneReachable(undefined)).toBe(true);
+    expect(await openTerminalThread({ cwd: '/home/me' })).toBe(h.fakePane);
+    expect(h.startTerminal).toHaveBeenCalledTimes(2);
   });
 
   it('skips the project reveal when no projectId is given', async () => {

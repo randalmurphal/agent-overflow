@@ -201,10 +201,24 @@ it('keeps a refused rename beside its editor, with the cluster where it was', as
   expect(errorBox.top).toBeLessThan(inputBox.bottom);
   expect(errorBox.left).toBeGreaterThanOrEqual(inputBox.right);
   expect(errorBox.width).toBeGreaterThan(0);
-  expect(inputBox.width).toBeGreaterThanOrEqual(64);
+  // The refusal takes at most half of the editor's place.
+  expect(errorBox.width).toBeLessThanOrEqual((errorBox.right - inputBox.left) / 2 + 1);
   expect(prBadge.getBoundingClientRect().top).toBeGreaterThanOrEqual(inputBox.bottom);
   expect(header.getBoundingClientRect().height, 'the refusal adds no row').toBe(before);
   expectNothingPastTheHeader(header);
+});
+
+it('shrinks the rename editor on a phone too narrow for it, clear of the controls beside it', async () => {
+  // The compact title row does not wrap: what the editor cannot have, it
+  // gives up, and it never lies over the badge or the menu.
+  setCompactLayoutForTest(true);
+  const { header, title, more } = await mountHeader(200);
+  const badge = host.querySelector<HTMLElement>('[data-testid="review-toggle"]')!;
+  const input = await startRename(title);
+  const inputBox = input.getBoundingClientRect();
+  expect(inputBox.width).toBeLessThan(64);
+  expect(inputBox.right).toBeLessThanOrEqual(badge.getBoundingClientRect().left + 0.5);
+  expect(more.getBoundingClientRect().right).toBeLessThanOrEqual(header.getBoundingClientRect().right + 0.5);
 });
 
 it.each([900, NARROWEST_PANE_PX])('leaves a short title its own width, with the pane controls beside it, at %ipx', async (width) => {

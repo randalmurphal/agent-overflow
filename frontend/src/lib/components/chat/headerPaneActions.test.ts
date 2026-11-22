@@ -43,17 +43,17 @@ describe('take control', () => {
 
     toggleTakeControl(pane);
     expect(takeControlPane(pane)).not.toBeNull();
-    expect(takeControlState(pane).open).toBe(true);
+    expect(takeControlState(pane)).toMatchObject({ open: true });
 
     toggleTakeControl(pane);
     expect(takeControlPane(pane)).toBeNull();
-    expect(takeControlState(pane).open).toBe(false);
+    expect(takeControlState(pane)).toMatchObject({ open: false });
   });
 
   it('does nothing for a thread that does not offer it', async () => {
     const pane = await buildPane(makeThread({ provider: 'claude' }));
     inLayout(pane);
-    expect(takeControlState(pane).offered).toBe(false);
+    expect(takeControlState(pane)).toEqual({ offered: false });
     toggleTakeControl(pane);
     expect(takeControlPane(pane)).toBeNull();
     expect(getToasts()).toEqual([]);

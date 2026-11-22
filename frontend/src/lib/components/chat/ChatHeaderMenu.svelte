@@ -25,7 +25,7 @@
   import { openInEditor } from '../../stores/openInEditor';
   import { getProject } from '../../stores/projects.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import { openTerminalThread } from '../../stores/threadCreation.svelte';
+  import { openTerminalThread, terminalPaneReachable } from '../../stores/threadCreation.svelte';
   import { regenerateThreadTitle, titleGenerationPending } from '../../stores/threadTitleGeneration.svelte';
   import { addErrorToast } from '../../stores/toast.svelte';
   import { threadScopeGrant } from '../../transport/entityScopes';
@@ -69,6 +69,7 @@
       return;
     }
     openSeed = seed;
+    editorRows = readEditorRows();
     open = true;
   }
 
@@ -91,11 +92,10 @@
     return compact ? undefined : (chordHintForCommand(commandId) ?? undefined);
   }
 
-  // A new terminal pane roots at the thread's project, which is also what
-  // lists it in the sidebar. The phone reaches a pane only through that
-  // list, so there a thread outside every project (an assistant's) has no
-  // row: its terminal would be a live shell with no way back to it.
-  let newTerminalPaneOffered = $derived(!compact || Boolean(pane.thread?.projectId));
+  // A new terminal pane roots at the thread's project. Where it could not
+  // be returned to (terminalPaneReachable: the phone, for a thread outside
+  // every project) there is no row.
+  let newTerminalPaneOffered = $derived(terminalPaneReachable(pane.thread?.projectId));
   let takeControl = $derived(takeControlState(pane));
 
   function openNewTerminalPane(): void {
@@ -116,12 +116,13 @@
   // the press reads it (`pressSeed`) and the click that press ends in hands
   // it to the menu it opens (`openSeed`, set on every open). A menu opened
   // from the keyboard has none and reads the selection when the row runs.
-  // A pane with no find has no row to seed, so its press reads nothing.
+  // A press that closes the menu, or one on a pane with no find, has no
+  // row to seed and reads nothing.
   let pressSeed: string | undefined;
   let openSeed: string | undefined;
 
   function readPressSeed(): void {
-    pressSeed = findAvailable ? paneFindSeed(pane.paneId) : undefined;
+    pressSeed = !open && findAvailable ? paneFindSeed(pane.paneId) : undefined;
   }
 
   function findInThread(): void {
@@ -144,11 +145,14 @@
 
   // Open in editor acts on the host desktop, at the project root. One row
   // per installed editor, the default first; picking another opens there
-  // this once and leaves the saved default (Settings) alone. The default's
-  // row is there before the catalog loads, with an empty editor id that
-  // lets the backend resolve the default itself; once the row names an
-  // editor it opens that one. It keeps one key through the load, so a
-  // catalog that arrives under an open menu leaves keyboard focus on it.
+  // this once and leaves the saved default (Settings) alone. A row that
+  // names an editor opens that one. Before the catalog loads there is one
+  // unnamed row, with an empty editor id that lets the backend resolve the
+  // default itself.
+  //
+  // The rows are read when the menu opens and stay as they are until it
+  // closes: a catalog or a default that changes under an open menu would
+  // otherwise move or rename the row the keyboard is on.
   //
   // projectId is a primitive first so the project lookup re-runs only when
   // the id changes, not on every row sync that mints a new thread object.
@@ -156,21 +160,18 @@
   let projectPath = $derived(projectId ? (getProject(projectId)?.project.path ?? null) : null);
   let backend = $derived(threadMachine(pane.threadId ?? '', pane.thread?.projectId));
   let canOpenInEditor = $derived(projectPath !== null && hasScope('host', backend));
-  let editorRows = $derived.by((): { key: string; id: string; label: string }[] => {
+  interface EditorRow { id: string; label: string }
+  let editorRows: EditorRow[] = $state.raw([]);
+
+  function readEditorRows(): EditorRow[] {
     if (!canOpenInEditor) return [];
     const resolved = getResolvedEditor(backend);
-    const rows = [{
-      key: 'default',
-      id: resolved?.id ?? '',
-      label: resolved ? `Open in ${resolved.name}` : 'Open in editor',
-    }];
+    const rows = [{ id: resolved?.id ?? '', label: resolved ? `Open in ${resolved.name}` : 'Open in editor' }];
     for (const editor of getAvailableEditors(backend)) {
-      if (editor.id !== resolved?.id) {
-        rows.push({ key: `editor:${editor.id}`, id: editor.id, label: `Open in ${editor.name}` });
-      }
+      if (editor.id !== resolved?.id) rows.push({ id: editor.id, label: `Open in ${editor.name}` });
     }
     return rows;
-  });
+  }
 
   $effect(() => {
     if (canOpenInEditor) void ensureEditorsLoaded(backend);
@@ -265,12 +266,13 @@
         />
       {/if}
       {#if compact && takeControl.offered}
+        {@const grant = takeControl.grant}
         <MenuItem
           label="Take control"
           checkbox
           checked={takeControl.open}
-          disabled={takeControl.grant !== 'granted'}
-          title={grantBlockedTitle(takeControl.grant)}
+          disabled={grant !== 'granted'}
+          title={grantBlockedTitle(grant)}
           onSelect={() => pick(() => toggleTakeControl(pane))}
         />
       {/if}
@@ -298,7 +300,7 @@
       {/if}
       {#if editorRows.length > 0}
         <MenuDivider />
-        {#each editorRows as editor (editor.key)}
+        {#each editorRows as editor (editor.id)}
           <MenuItem label={editor.label} onSelect={() => pick(() => void openIn(editor.id))} />
         {/each}
       {/if}

@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, within } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ChatHeaderMenu from './ChatHeaderMenu.svelte';
-import { ensureEditorsLoaded, resetEditorsForTest } from '../../stores/editors.svelte';
+import { ensureEditorsLoaded, getResolvedEditor, resetEditorsForTest, setEditorPreference } from '../../stores/editors.svelte';
 import { resetKeybindingsStore, setKeybindingsForTest } from '../../stores/keybindings.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { isMessageSearchOpen } from '../../stores/messageSearch.svelte';
@@ -34,7 +34,10 @@ import { buildPane, makeThread as makeBaseThread } from '../../../test/helpers/c
 import { OBSERVE_SCOPES, pairViewOnly, pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 
-vi.mock('../../stores/threadCreation.svelte', () => ({ openTerminalThread: vi.fn() }));
+vi.mock('../../stores/threadCreation.svelte', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../stores/threadCreation.svelte')>()),
+  openTerminalThread: vi.fn(),
+}));
 
 // Popover/Menu transitions poke Element.animate on mount; happy-dom lacks it.
 if (typeof Element !== 'undefined' && !('animate' in Element.prototype)) {
@@ -437,7 +440,14 @@ describe('<ChatHeaderMenu> on desktop', () => {
       registerPaneFindProvider(pane.paneId, findProvider());
       await flush();
       await fireEvent.pointerDown(button);
-      expect(selection).toHaveBeenCalled();
+      expect(selection).toHaveBeenCalledTimes(1);
+
+      // The press that closes the open menu seeds nothing.
+      await fireEvent.click(button);
+      await flush();
+      expect(queryRow('Find in thread')).not.toBeNull();
+      await fireEvent.pointerDown(button);
+      expect(selection).toHaveBeenCalledTimes(1);
     } finally {
       selection.mockRestore();
       section.remove();
@@ -467,24 +477,54 @@ describe('<ChatHeaderMenu> on desktop', () => {
     expect(open.mock.calls[0]).toEqual(['/tmp/proj', 0, 0, '', 'code']);
   });
 
-  it('keeps keyboard focus on the editor row when the catalog arrives under the open menu', async () => {
+  it('leaves the open menu\'s editor row alone when the catalog arrives, and lists the editors on the next open', async () => {
     addProject();
     let deliver: (editors: EditorInfo[]) => void = () => {};
     setBindingMock('ListAvailableEditors', () => new Promise<EditorInfo[]>((resolve) => { deliver = resolve; }));
     const open = setBindingMock('OpenInEditor', async () => undefined);
-    await renderOpen();
+    const view = await renderOpen();
     const before = row('Open in editor');
     before.focus();
-    expect(document.activeElement).toBe(before);
 
     deliver([ed('code', 'Visual Studio Code'), ed('cursor', 'Cursor')]);
-    await vi.waitFor(() => expect(queryRow('Open in Cursor')).not.toBeNull());
-    // The default's row is the same row, renamed: focus never left the menu.
-    expect(document.activeElement).toBe(row('Open in Visual Studio Code'));
-    expect(row('Open in Visual Studio Code')).toBe(before);
+    await ensureEditorsLoaded();
+    await flush();
+    // The row the keyboard is on is still there, unnamed, and still opens
+    // the default.
+    expect(row('Open in editor')).toBe(before);
+    expect(document.activeElement).toBe(before);
+    expect(queryRow('Open in Cursor')).toBeNull();
     await fireEvent.click(before);
     await vi.waitFor(() => expect(open).toHaveBeenCalledTimes(1));
+    expect(open.mock.calls[0]).toEqual(['/tmp/proj', 0, 0, '', '']);
+
+    await reopen(view);
+    expect(rows().slice(-2)).toEqual(['Open in Visual Studio Code', 'Open in Cursor']);
+  });
+
+  it('keeps each editor row what it was when the default changes under the open menu', async () => {
+    addProject();
+    await seedEditors([ed('code', 'Visual Studio Code'), ed('cursor', 'Cursor')]);
+    const open = setBindingMock('OpenInEditor', async () => undefined);
+    setBindingMock('SetEditorSettings', async () => ({ preference: 'cursor' }));
+    const view = await renderOpen();
+    const code = row('Open in Visual Studio Code');
+    const cursor = row('Open in Cursor');
+    cursor.focus();
+
+    // Another surface makes Cursor the default while the menu is open.
+    await setEditorPreference('cursor');
+    await flush();
+    expect(getResolvedEditor()?.id).toBe('cursor');
+    expect(row('Open in Cursor')).toBe(cursor);
+    expect(document.activeElement).toBe(cursor);
+    expect(row('Open in Visual Studio Code')).toBe(code);
+    await fireEvent.click(code);
+    await vi.waitFor(() => expect(open).toHaveBeenCalledTimes(1));
     expect(open.mock.calls[0]).toEqual(['/tmp/proj', 0, 0, '', 'code']);
+
+    await reopen(view);
+    expect(rows().slice(-2)).toEqual(['Open in Cursor', 'Open in Visual Studio Code']);
   });
 
   it('lists every installed editor, the default first, and opens a picked one by id', async () => {
