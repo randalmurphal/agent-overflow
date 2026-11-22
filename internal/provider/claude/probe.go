@@ -22,7 +22,7 @@ type ProbeConfig struct {
 	// inherited cwd is not an acceptable default here.
 	WorkDir string
 	Env     map[string]string
-	Timeout time.Duration // default: defaultProbeTimeout
+	Timeout time.Duration // default: DefaultProbeTimeout
 
 	// ReadCredential reads the credential the CLI this probe spawns will
 	// authenticate with — the canonical native store, or whatever home
@@ -98,7 +98,7 @@ type ProbeConfig struct {
 	OnCommands func(commands []provider.SlashCommand, err error)
 }
 
-// defaultProbeTimeout is the per-spawn deadline. Deliberately generous, and
+// DefaultProbeTimeout is the per-spawn deadline. Deliberately generous, and
 // it is a deadline rather than a sleep — raising it costs an authenticated
 // host nothing, while a timed-out probe fails the operation that needed it
 // (a send, a login, a usage refresh) and reports a working account as broken.
@@ -110,8 +110,9 @@ type ProbeConfig struct {
 // SDK runs its credential-refresh hook (`awsAuthRefresh`) before it can reply
 // at all, which routinely pushes first-probe latency past the double-digit
 // mark on a cold or slow host. t3-code raised the same constant to 25s for
-// this exact failure.
-const defaultProbeTimeout = 25 * time.Second
+// this exact failure. Text generation waits as long for the CLI's first
+// model list before it gives up on Claude.
+const DefaultProbeTimeout = 25 * time.Second
 
 // DefaultProbeTTL is how long a successful probe result stays cached for a
 // given binary path.
@@ -151,7 +152,7 @@ func ProbeAccount(ctx context.Context, cfg ProbeConfig) (provider.AccountInfo, e
 
 	timeout := cfg.Timeout
 	if timeout <= 0 {
-		timeout = defaultProbeTimeout
+		timeout = DefaultProbeTimeout
 	}
 
 	// Armed before the spawn, because the CLI can begin rotating the moment

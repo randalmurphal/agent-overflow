@@ -1,11 +1,14 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log"
 	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -344,7 +347,7 @@ func TestTheSpawnShapeNamesProfilesByOfferedProviderAndReadsNoModels(t *testing.
 		by, _ := ctx.Value(lookupBy{}).(string)
 		entered <- by
 		<-asked
-		// The shipped catalog has no gpt-6-astra, Astra's model.
+		// The shipped catalog has no model of gpt-astra, Astra's family.
 		return provider.CodexModels, nil
 	}, time.Now)
 	roster := append(slices.Clone(f.app.currentSettings().AgentProfiles),
@@ -446,7 +449,7 @@ func TestTheSpawnShapeNamesProfilesByOfferedProviderAndReadsNoModels(t *testing.
 		t.Errorf("thread_options lists %v, want Sol and Opus and neither Astra nor Ghost", listed)
 	}
 	for profile, reason := range map[string]string{
-		"Astra": `Agent profile "Astra" cannot run: Codex does not offer model "gpt-6-astra" on this computer.`,
+		"Astra": `Agent profile "Astra" cannot run: Codex offers no gpt-astra model on this computer.`,
 		"Ghost": `Agent profile "Ghost" cannot run: Claude Code does not offer model "claude-ghost-9" on this computer.`,
 	} {
 		_, err := server.Call(t.Context(), who, "thread_spawn", json.RawMessage(`{"prompt":"work","profile":"`+profile+`"}`))
@@ -600,11 +603,11 @@ func TestTheEditorRefusesAProfileItsModelCannotRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []AgentProfileCheck{
-		{},
+		{Runs: "claude-opus-5"},
 		{Problem: "Model claude-haiku-4-5 has no reasoning effort setting on this computer."},
 		{Missing: "Codex does not run on this computer."},
 	}
-	if !slices.Equal(checks, want) {
+	if !reflect.DeepEqual(checks, want) {
 		t.Fatalf("checks = %+v, want %+v", checks, want)
 	}
 	// An effort the model has a setting for but does not offer.
@@ -915,5 +918,313 @@ func TestAProfileOnAModelAPairedComputerRunsButDoesNotListIsOffered(t *testing.T
 		if thread.Model != model {
 			t.Errorf("%s runs %s there, want %s", name, thread.Model, model)
 		}
+	}
+}
+
+// Every seeded profile names a family its provider's grammar reads, so a
+// seed follows the newest model of it a computer lists and is never pinned
+// to one that goes stale.
+func TestTheSeededProfilesNameFamilies(t *testing.T) {
+	t.Parallel()
+	for _, profile := range settings.DefaultSettings.AgentProfiles {
+		if !provider.ParseModelRef(profile.Provider, profile.Model).IsFamily() {
+			t.Errorf("seeded profile %s names %s/%s, which is not a family", profile.Name, profile.Provider, profile.Model)
+		}
+	}
+}
+
+// The starting roster a computer answers is its own release's seeds, the
+// ones a fresh settings file starts with, and a change to the answer does
+// not reach the seeds.
+func TestAComputerAnswersItsOwnStartingRoster(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	seeds := app.AgentRosterSeeds()
+	if !reflect.DeepEqual(seeds.Profiles, settings.DefaultSettings.AgentProfiles) || !reflect.DeepEqual(seeds.Notes, settings.DefaultSettings.AgentNotes) {
+		t.Fatalf("the starting roster is %+v, want the release's seeds", seeds)
+	}
+	if len(seeds.Profiles) == 0 || len(seeds.Notes) == 0 {
+		t.Fatalf("the release seeds no roster: %+v", seeds)
+	}
+	seeds.Profiles[0].Name, seeds.Notes[0].Text = "Changed", "Changed"
+	if again := app.AgentRosterSeeds(); again.Profiles[0].Name == "Changed" || again.Notes[0].Text == "Changed" {
+		t.Fatal("a change to one answer reached the seeds")
+	}
+}
+
+// effortRow is a CLI model row that offers the efforts current models do.
+func effortRow(value, resolved string) claude.WireModel {
+	return claude.WireModel{Value: value, ResolvedModel: resolved, SupportsEffort: true,
+		SupportedEffortLevels: []string{"low", "medium", "high", "xhigh", "max"}}
+}
+
+// carriedModels serves the destination of a reach pair through a peer that
+// records the model each forwarded thread_spawn carries, and runs changing,
+// when set, before the spawn reaches the destination's app.
+func carriedModels(t *testing.T, changing func()) (*reachPair, func() []string) {
+	t.Helper()
+	var mu sync.Mutex
+	var carried []string
+	record := func(call ThreadPeerCall) {
+		var spawn threadtools.SpawnCall
+		if err := json.Unmarshal(call.Args, &spawn); err != nil {
+			t.Errorf("decode the forwarded spawn: %v", err)
+		}
+		mu.Lock()
+		carried = append(carried, spawn.Model)
+		mu.Unlock()
+		if changing != nil {
+			changing()
+		}
+	}
+	pair := newReachPairServedBy(t, func(t *testing.T, app *App) *pairedBackend {
+		peer := &ownerOpPeer{App: app}
+		peer.spawning.Store(&record)
+		return serveAppAs(t, app, peer)
+	})
+	return pair, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(carried)
+	}
+}
+
+// A family profile runs the newest model of its family each computer
+// lists, so one roster runs Opus 5.5 here and the Opus 4.8 an older CLI
+// lists on the paired computer. The spawn there carries the family, which
+// the destination resolves against its own list. A family the paired
+// computer lists nothing of is left out of its row, and that computer
+// refuses its spawn naming the profile. Not parallel: the probe catalog is
+// process-wide.
+func TestAFamilyProfileRunsTheNewestModelEachComputerLists(t *testing.T) {
+	remotetest.Require(t)
+	pair, carried := carriedModels(t, nil)
+	installMockClaudeTurns(t, pair.dest, [][]string{{mockClaudeInitLine}})
+	seedClaudeWire(t, pair.dest, []claude.WireModel{
+		effortRow("default", "claude-opus-4-8"),
+		effortRow("sonnet", "claude-sonnet-4-6"),
+	})
+	capture := claudecatalog.ModelCapture{}
+	capture.Capture([]claude.WireModel{
+		effortRow("default", "claude-opus-5-5"),
+		effortRow("claude-opus-5", "claude-opus-5"),
+		effortRow("fable", "claude-fable-5-2"),
+	}, nil)
+	capture.Store(pair.source.claudeProbeModelKey())
+	if pair.source.claudeProbeModelKey() == pair.dest.claudeProbeModelKey() {
+		t.Fatal("the two computers share one probe identity, so their lists cannot differ")
+	}
+	if _, err := pair.source.settings.Update(map[string]any{"agentProfiles": []any{
+		map[string]any{"name": "Opus", "useFor": "Anything.", "provider": "claude", "model": "claude-opus", "effort": "high"},
+		map[string]any{"name": "Fable", "useFor": "Anything.", "provider": "claude", "model": "claude-fable", "effort": "high"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	answer := pair.call(t, "thread_options", `{"what":"models"}`)
+	encoded, err := json.Marshal(answer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var options struct {
+		Computers []struct {
+			ComputerID string                      `json:"computer_id"`
+			Computer   string                      `json:"computer"`
+			Local      bool                        `json:"local"`
+			Profiles   []threadtools.ProfileOption `json:"profiles"`
+		} `json:"computers"`
+	}
+	if err := json.Unmarshal(encoded, &options); err != nil {
+		t.Fatal(err)
+	}
+	rows := map[bool]map[string]string{}
+	there := ""
+	for _, row := range options.Computers {
+		listed := map[string]string{}
+		for _, profile := range row.Profiles {
+			listed[profile.Name] = profile.Model
+		}
+		rows[row.Local] = listed
+		if row.ComputerID == pair.computer {
+			there = row.Computer
+		}
+	}
+	if want := (map[string]string{"Opus": "claude-opus-5-5", "Fable": "claude-fable-5-2"}); !maps.Equal(rows[true], want) {
+		t.Errorf("this computer lists %v, want %v", rows[true], want)
+	}
+	if want := (map[string]string{"Opus": "claude-opus-4-8"}); !maps.Equal(rows[false], want) {
+		t.Errorf("the paired computer lists %v, want %v", rows[false], want)
+	}
+
+	spawned := pair.call(t, "thread_spawn", `{"prompt":"work","profile":"Opus","computer_id":`+quoteJSON(pair.computer)+`,"project_id":`+quoteJSON(pair.project)+`}`)
+	token, _ := spawned["token"].(string)
+	thread, err := pair.dest.store.GetThread(pair.receipt(t, token).TargetThreadID)
+	if err != nil {
+		t.Fatalf("Opus spawned no thread there: %v (%v)", err, spawned)
+	}
+	if thread.Model != "claude-opus-4-8" {
+		t.Errorf("Opus runs %s there, want claude-opus-4-8", thread.Model)
+	}
+	if got := carried(); !slices.Equal(got, []string{"claude-opus"}) {
+		t.Errorf("the spawn there carried %v, want the family claude-opus", got)
+	}
+
+	_, err = pair.callRaw(t, "thread_spawn", `{"prompt":"work","profile":"Fable","computer_id":`+quoteJSON(pair.computer)+`,"project_id":`+quoteJSON(pair.project)+`}`)
+	// The computer that would create the thread refuses it, and the caller
+	// says which computer answered.
+	want := `Agent profile "Fable" cannot run: Claude Code offers no claude-fable model on this computer.`
+	if _, message, public := errorsx.PublicDetails(err); !public || !strings.HasPrefix(message, "thread_spawn on "+there) || !strings.Contains(message, want) {
+		t.Errorf("Fable's spawn there = %q, want a refusal from %s containing %q", message, there, want)
+	}
+	if got := carried(); !slices.Equal(got, []string{"claude-opus", "claude-fable"}) {
+		t.Errorf("the spawns there carried %v, want both families", got)
+	}
+}
+
+// A family runs what the computer that creates the thread lists when it
+// creates it: a paired computer whose CLI starts listing a newer Opus after
+// the caller checked the spawn runs the newer one, for a fresh spawn by
+// profile and for a fork. The fork is a Codex caller's of a Claude thread
+// there, so its family is read by the source's provider on the computer
+// that holds the source. Not parallel: the probe catalog is process-wide.
+func TestAFamilySpawnRunsWhatTheCreatingComputerListsAtCreation(t *testing.T) {
+	remotetest.Require(t)
+	var pair *reachPair
+	newer := []claude.WireModel{effortRow("default", "claude-opus-4-9"), effortRow("claude-opus-4-8", "claude-opus-4-8")}
+	pair, carried := carriedModels(t, func() {
+		capture := claudecatalog.ModelCapture{}
+		capture.Capture(newer, nil)
+		capture.Store(pair.dest.claudeProbeModelKey())
+	})
+	installMockClaudeTurns(t, pair.dest, [][]string{{mockClaudeInitLine}})
+	seedClaudeWire(t, pair.dest, []claude.WireModel{effortRow("default", "claude-opus-4-8")})
+	if _, err := pair.source.settings.Update(map[string]any{"agentProfiles": []any{
+		map[string]any{"name": "Opus", "useFor": "Anything.", "provider": "claude", "model": "claude-opus", "effort": "high"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	spawned := pair.call(t, "thread_spawn", `{"prompt":"work","profile":"Opus","computer_id":`+quoteJSON(pair.computer)+`,"project_id":`+quoteJSON(pair.project)+`}`)
+	token, _ := spawned["token"].(string)
+	thread, err := pair.dest.store.GetThread(pair.receipt(t, token).TargetThreadID)
+	if err != nil {
+		t.Fatalf("Opus spawned no thread there: %v (%v)", err, spawned)
+	}
+	if thread.Model != "claude-opus-4-9" {
+		t.Errorf("Opus runs %s there, want claude-opus-4-9, the newest Opus there when the thread was created", thread.Model)
+	}
+
+	caller := pair.caller
+	caller.Provider, caller.Model = string(provider.Codex), "gpt-5.5"
+	if err := pair.source.store.UpdateThread(caller); err != nil {
+		t.Fatal(err)
+	}
+	seedClaudeWire(t, pair.dest, []claude.WireModel{effortRow("default", "claude-opus-4-8")})
+	source := forkableThreadOn(t, pair.dest, "forked-there")
+	forked := pair.call(t, "thread_spawn", `{"prompt":"again","from_thread":`+quoteJSON(source.ID)+`,"model":"claude-opus"}`)
+	token, _ = forked["token"].(string)
+	fork, err := pair.dest.store.GetThread(pair.receipt(t, token).TargetThreadID)
+	if err != nil {
+		t.Fatalf("the fork made no thread there: %v (%v)", err, forked)
+	}
+	if fork.Provider != string(provider.Claude) || fork.Model != "claude-opus-4-9" {
+		t.Errorf("the fork runs %s/%s there, want claude/claude-opus-4-9", fork.Provider, fork.Model)
+	}
+	if got := carried(); !slices.Equal(got, []string{"claude-opus", "claude-opus"}) {
+		t.Errorf("the spawns there carried %v, want the family both times", got)
+	}
+}
+
+// The computer that creates the thread is the only one that decides a
+// spawn's model: a profile whose family the paired computer lists nothing
+// of when the caller looks, and lists by the time it creates the thread,
+// runs there. Not parallel: the probe catalog is process-wide.
+func TestAProfileThePairedComputerListsOnlyAtCreationRunsThere(t *testing.T) {
+	remotetest.Require(t)
+	var pair *reachPair
+	pair, carried := carriedModels(t, func() {
+		capture := claudecatalog.ModelCapture{}
+		capture.Capture([]claude.WireModel{effortRow("default", "claude-opus-4-9"), effortRow("sonnet", "claude-sonnet-4-6")}, nil)
+		capture.Store(pair.dest.claudeProbeModelKey())
+	})
+	installMockClaudeTurns(t, pair.dest, [][]string{{mockClaudeInitLine}})
+	seedClaudeWire(t, pair.dest, []claude.WireModel{effortRow("default", "claude-sonnet-4-6")})
+	if _, err := pair.source.settings.Update(map[string]any{"agentProfiles": []any{
+		map[string]any{"name": "Opus", "useFor": "Anything.", "provider": "claude", "model": "claude-opus", "effort": "high"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	spawned, err := pair.callRaw(t, "thread_spawn", `{"prompt":"work","profile":"Opus","computer_id":`+quoteJSON(pair.computer)+`,"project_id":`+quoteJSON(pair.project)+`}`)
+	if err != nil {
+		t.Fatalf("Opus was refused although the paired computer lists an Opus when it creates the thread: %v", err)
+	}
+	token, _ := spawned["token"].(string)
+	thread, err := pair.dest.store.GetThread(pair.receipt(t, token).TargetThreadID)
+	if err != nil {
+		t.Fatalf("Opus spawned no thread there: %v (%v)", err, spawned)
+	}
+	if thread.Model != "claude-opus-4-9" {
+		t.Errorf("Opus runs %s there, want claude-opus-4-9", thread.Model)
+	}
+	if got := carried(); !slices.Equal(got, []string{"claude-opus"}) {
+		t.Errorf("the spawn there carried %v, want the family claude-opus", got)
+	}
+}
+
+// The settings check reports the model each profile runs here: the newest
+// of a family, the exact model for one that names it, and beside a family
+// the listed models its version rule cannot read. Those are logged once
+// per change of the catalog, not on each read. It says which models are
+// families whether or not their provider runs here, which an editor reads
+// for a computer that predates families. Not parallel: the probe catalog
+// and the log are process-wide.
+func TestTheEditorShowsWhatEachProfileRuns(t *testing.T) {
+	app := newTestAppWithStore(t)
+	if _, err := app.settings.Update(map[string]any{
+		"claudeBinaryPath": createMockBinary(t, "2.1.284 (Claude Code)"),
+		"codexBinaryPath":  filepath.Join(t.TempDir(), "no-codex"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var logged bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(prev) })
+	seedClaudeWire(t, app, []claude.WireModel{
+		effortRow("default", "claude-opus-5-5"),
+		effortRow("claude-opus-6-preview", "claude-opus-6-preview"),
+	})
+	profiles := []settings.AgentProfile{
+		{Name: "Opus", UseFor: "x", Provider: "claude", Model: "claude-opus", Effort: "high"},
+		{Name: "Pinned", UseFor: "x", Provider: "claude", Model: "claude-opus-5", Effort: "high"},
+		{Name: "Sol", UseFor: "x", Provider: "codex", Model: "gpt-sol"},
+	}
+	want := []AgentProfileCheck{
+		{Runs: "claude-opus-5-5", Unreadable: []string{"claude-opus-6-preview"}, Family: true},
+		{Runs: "claude-opus-5"},
+		{Missing: "Codex does not run on this computer.", Family: true},
+	}
+	for range 2 {
+		checks, err := app.CheckAgentProfiles(context.Background(), profiles)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(checks, want) {
+			t.Fatalf("checks = %+v, want %+v", checks, want)
+		}
+	}
+	const line = "model catalog: claude lists claude-opus-6-preview, which its version rule cannot read"
+	if got := strings.Count(logged.String(), line); got != 1 {
+		t.Fatalf("logged the unreadable model %d times, want once: %q", got, logged.String())
+	}
+	capture := claudecatalog.ModelCapture{}
+	capture.Capture([]claude.WireModel{effortRow("default", "claude-opus-5-5"), effortRow("claude-opus-7-beta", "claude-opus-7-beta")}, nil)
+	capture.Store(app.claudeProbeModelKey())
+	if _, err := app.CheckAgentProfiles(context.Background(), profiles); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(logged.String(), "model catalog: claude lists claude-opus-7-beta, which its version rule cannot read") {
+		t.Fatalf("a changed catalog was not logged: %q", logged.String())
 	}
 }

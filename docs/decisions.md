@@ -650,6 +650,18 @@ Mechanism in
   (`opus`, `sonnet`) is refused as input with the offered IDs, and a Codex
   slug is passed as written for Codex to judge. An alias the CLI reports back
   is read only through its own model list (`internal/provider/AGENTS.md`).
+  An agent profile's model and `thread_spawn` `model` also accept a family
+  named without a version (`claude-opus`, `gpt-sol`), which runs the newest
+  model of it the target computer lists, by a version rule AO states per
+  provider; a slug the computer offers as written is that model (ruling
+  2026-11-21). The seeded profiles name families, and text generation
+  with no model set runs the newest of its default family (`claude-haiku`,
+  `gpt-luna`) the computer lists. On Claude that list is the CLI's report
+  for the account in use, live or restored for it; the list another account
+  on the binary reported does not count. Text generation waits for it as long
+  as the account probe that makes it may take (`claude.DefaultProbeTimeout`),
+  then fails saying Claude has not reported its models, and the other
+  provider is tried.
 - A sign-in in Agent Overflow never switches accounts: it renews the saved
   account its login belongs to or adds a new one at the bottom. Only the
   first account on a machine becomes active by signing in. Saved accounts

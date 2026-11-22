@@ -103,10 +103,17 @@ export function computerHasSetting(key: keyof Settings, backend: BackendKey = HO
 
 /** What a page or control for settings `lacks` says on a computer whose release has none. */
 export function olderComputerNote(backend: BackendKey, lacks: string): string {
+  return `${settingsComputerName(backend) || 'This computer'} runs an older version: it has no ${lacks}.`;
+}
+
+/**
+ * The name a settings page gives its computer: empty when only one
+ * computer is attached, where the page says "this computer".
+ */
+export function settingsComputerName(backend: BackendKey): string {
   const attached = getAttachedBackends();
   const entry = attached.find((candidate) => candidate.id === backend);
-  const named = entry && attached.length > 1 ? backendDisplayName(entry) : '';
-  return `${named || 'This computer'} runs an older version: it has no ${lacks}.`;
+  return entry && attached.length > 1 ? backendDisplayName(entry) : '';
 }
 
 function namedKeys(result: object): ReadonlySet<string> {
@@ -219,13 +226,33 @@ export async function loadSettings(backend: BackendKey = HOME_BACKEND): Promise<
 
 export function updateSetting<K extends keyof Settings>(
   key: K, value: Settings[K], backend: BackendKey = HOME_BACKEND,
-): Promise<void> {
+): Promise<SettingsWrite> {
   return updateSettingsPatch({ [key]: value } as Partial<Settings>, backend);
 }
 
+/**
+ * How a settings write ended. The store has already applied each outcome
+ * (shown the patch, then the saved snapshot, or put the saved values back
+ * with an error toast); the result tells a caller that must know which.
+ *
+ * - `local`: nothing for the computer to store; every key is a frontend
+ *   preference (saved before the call returns) or one the computer's release
+ *   lacks (computerHasSetting).
+ * - `saved`: the computer stored the patch; `saved` is its settings after.
+ * - `refused`: the computer refused the patch; `saved` is its settings,
+ *   unchanged by it.
+ * - `dropped`: the computer this write was for went away or the store was
+ *   reset before it answered, so how it ended is unknown.
+ */
+export type SettingsWrite =
+  | { status: 'local' }
+  | { status: 'saved'; saved: Settings }
+  | { status: 'refused'; saved: Settings; error: unknown }
+  | { status: 'dropped' };
+
 export function updateSettingsPatch(
   patch: Partial<Settings>, backend: BackendKey = HOME_BACKEND,
-): Promise<void> {
+): Promise<SettingsWrite> {
   updateFrontendPreferences(patch);
   const frontend = Object.fromEntries(Object.entries(patch).filter(([key]) => isFrontendPreference(key)));
   if (Object.keys(frontend).length) {
@@ -236,12 +263,13 @@ export function updateSettingsPatch(
     !isFrontendPreference(key) && computerHasSetting(key as keyof Settings, backend))) as Partial<Settings>;
   // A local preference is fully saved before returning. A sleeping host's
   // optional device-bucket mirror cannot hold a toggle or block host edits.
-  if (!Object.keys(host).length) return Promise.resolve();
+  if (!Object.keys(host).length) return Promise.resolve({ status: 'local' });
   const pending = { patch: host };
   const current = computers.get(backend);
   computers.set(backend, { ...current, pending: [...current.pending, pending] });
   const expected = generation;
   const target = backendById(backend);
+  let outcome: SettingsWrite = { status: 'dropped' };
   return enqueue(backend, async () => {
     if (expected !== generation || backendById(backend) !== target) return;
     try {
@@ -253,19 +281,21 @@ export function updateSettingsPatch(
         ? mergeSettingsWithDefaults(result as Partial<Settings>)
         : { ...state.saved, ...pending.patch };
       computers.set(backend, { ...state, saved, named: result ? namedKeys(result) : state.named });
+      outcome = { status: 'saved', saved };
     } catch (err) {
       if (expected !== generation || backendById(backend) !== target) return;
       console.error('Failed to update computer settings:', err);
       if (Object.keys(patch).some((key) => !isFrontendPreference(key))) {
         addErrorToast('Failed to save setting', err);
       }
+      outcome = { status: 'refused', saved: computers.get(backend).saved, error: err };
     } finally {
       if (expected === generation && backendById(backend) === target) {
         const state = computers.get(backend);
         computers.set(backend, { ...state, pending: state.pending.filter((p) => p !== pending) });
       }
     }
-  });
+  }).then(() => outcome);
 }
 
 /** Events contain changed keys, not secrets. Re-read their originating host. */

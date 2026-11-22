@@ -50,14 +50,14 @@ describe("<CommitMessageSettings>", () => {
     await seed({ textGenerationProvider: "codex" });
     const { getByTestId } = render(CommitMessageSettings);
     const input = getByTestId("settings-textgen-model") as HTMLInputElement;
-    expect(input.placeholder).toContain("gpt-6-luna");
+    expect(input.placeholder).toBe("Default: newest gpt-luna");
   });
 
   it("shows the claude default model in the placeholder when provider is claude", async () => {
     await seed({ textGenerationProvider: "claude" });
     const { getByTestId } = render(CommitMessageSettings);
     const input = getByTestId("settings-textgen-model") as HTMLInputElement;
-    expect(input.placeholder).toContain("claude-haiku-5-5");
+    expect(input.placeholder).toBe("Default: newest claude-haiku");
   });
 
   it("dispatches textGenerationProvider patch on change", async () => {

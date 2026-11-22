@@ -37,15 +37,24 @@ export function hiddenModelSlugs(
   return new Set(key ? (settings[key] ?? []) : []);
 }
 
-/** The catalog rows the provider currently offers (no `unlisted` rows). */
+/**
+ * Whether pickers offer a catalog row: it is not `unlisted`, which the
+ * backend sets on a row the provider does not list and no thread ran this
+ * week.
+ */
+export function pickerOffers(model: { unlisted?: boolean }): boolean {
+  return !model.unlisted;
+}
+
+/** The catalog rows pickers offer (pickerOffers). */
 export function offeredModels<T extends { unlisted?: boolean }>(models: readonly T[]): T[] {
-  return models.filter((model) => !model.unlisted);
+  return models.filter(pickerOffers);
 }
 
 /**
- * The models a picker for `provider` offers: the catalog minus rows the
- * provider no longer lists (`unlisted`, kept in the catalog only so threads
- * already on them resolve capabilities) and minus the hidden slugs, except
+ * The models a picker for `provider` offers: the catalog minus `unlisted`
+ * rows (pickerOffers; such rows stay in the catalog only so threads already
+ * on them resolve capabilities) and minus the hidden slugs, except
  * `keepSlug` (a thread already riding such a model keeps its checkmark row,
  * so the picker never shows "nothing selected").
  *
@@ -63,7 +72,7 @@ export function pickerVisibleModels<T extends { slug: string; unlisted?: boolean
   models: readonly T[],
   keepSlug?: string,
 ): T[] {
-  const offered = models.filter((model) => !model.unlisted || model.slug === keepSlug);
+  const offered = models.filter((model) => pickerOffers(model) || model.slug === keepSlug);
   const hidden = hiddenModelSlugs(settings, provider);
   if (hidden.size === 0) return offered;
   const visible = offered.filter(

@@ -1,14 +1,18 @@
 package app
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"testing"
+	"time"
 
+	"agent-overflow/internal/claudemodels"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
+	"agent-overflow/internal/provider/claude/claudefake"
 	"agent-overflow/internal/provideraccounts"
 )
 
@@ -63,14 +67,13 @@ func identityRecordFor(t *testing.T, app *App, binary string) provideraccounts.C
 	if !ok {
 		t.Fatalf("could not resolve the fake binary at %s", binary)
 	}
-	return provideraccounts.ClaudeCatalogRecord{
-		Binary:       binary,
-		ResolvedPath: identity.path,
-		Size:         identity.size,
-		ModUnixNano:  identity.modUnixNano,
-		ProbedAt:     1700000000000,
-		Wire:         []claude.WireModel{{Value: "claude-newthing-1", DisplayName: "Newthing"}},
-	}
+	record := provideraccounts.ClaudeCatalogRecordFor(app.providerProbeCacheKeyForAccount(string(provider.Claude), binary, "acct-1"))
+	record.ResolvedPath = identity.path
+	record.Size = identity.size
+	record.ModUnixNano = identity.modUnixNano
+	record.ProbedAt = 1700000000000
+	record.Wire = []claude.WireModel{{Value: "claude-newthing-1", DisplayName: "Newthing"}}
+	return record
 }
 
 // The cold-start case this whole record exists for: the picker answers with
@@ -224,6 +227,134 @@ func TestClaudeProbePersistsTheCatalogAgainstItsBinary(t *testing.T) {
 	}
 	if len(record.Wire) != 1 || record.Wire[0].Value != "claude-newthing-1" {
 		t.Errorf("record wire = %+v, want the probe's rows", record.Wire)
+	}
+}
+
+// A probe files its model list under the account it adopts, the live entry
+// and the persisted record alike, so the account in use afterwards is
+// backed by its own list and text generation runs on it at once. Two
+// adoptions: a first probe with no account selected, and a login changed
+// outside the app that answers as another account than the selected one.
+// Not parallel: the probe catalog is process-wide.
+func TestAClaudeProbeFilesItsModelsUnderTheAccountItAdopts(t *testing.T) {
+	// The native login names person@example.com in its token; the probe
+	// reports no email, as it does once the app retired the oauthAccount
+	// record, so the credential is what decides the adopted account.
+	native := []byte(`{"claudeAiOauth":{"accessToken":"` +
+		claudefake.AccessToken("person@example.com", "org-person", "1") +
+		`","scopes":["user:inference","user:profile"]}}`)
+	for _, tc := range []struct {
+		name     string
+		selected bool
+	}{
+		{"a first probe with no account selected", false},
+		{"a login changed outside the app", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resetClaudeProbeCacheForTest(t)
+			binary := writeProbeMockBinaryWithModels(t,
+				`{"subscriptionType":"Claude Max","apiProvider":"firstParty"}`,
+				`[{"value":"default","resolvedModel":"claude-opus-5-5"},{"value":"haiku","resolvedModel":"claude-haiku-6"}]`,
+			)
+			app := newTestAppWithStore(t)
+			if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
+				t.Fatal(err)
+			}
+			if tc.selected {
+				installIdentityTestAccount(t, app, string(provider.Claude), "first", "first@example.com",
+					[]byte(`{"claudeAiOauth":{"accessToken":"first"}}`))
+			} else {
+				accounts, err := provideraccounts.NewStore(t.TempDir())
+				if err != nil {
+					t.Fatal(err)
+				}
+				attachProviderAccountStoresForTest(t, app, accounts, newTestProviderCredentials(t, t.TempDir()))
+			}
+			if err := providerCredentialsForTest(t, app).WriteNativeCredentialForTest(string(provider.Claude), native); err != nil {
+				t.Fatal(err)
+			}
+			before := app.captureProviderAccountSelection(string(provider.Claude)).AccountID
+
+			if _, err := app.ProbeClaudeAccount(); err != nil {
+				t.Fatalf("ProbeClaudeAccount: %v", err)
+			}
+			active, ok := app.providerAccounts.Active(string(provider.Claude), time.Now())
+			if !ok || active.Email != "person@example.com" || active.ID == before {
+				t.Fatalf("after the probe the account in use is %+v (ok=%v), was %q; want the login's account", active, ok, before)
+			}
+			if inUse := app.captureProviderAccountSelection(string(provider.Claude)).AccountID; inUse != active.ID {
+				t.Fatalf("selection = %q, want the adopted account %q", inUse, active.ID)
+			}
+			if _, backing := app.providerDiscoveryService().ClaudeAccountCatalog(string(provider.Claude)); backing != claudemodels.BackedByIdentity {
+				t.Errorf("the account in use is backed by %v, want its own list", backing)
+			}
+			if _, ok := app.providerAccounts.ClaudeCatalog(active.ID); !ok {
+				t.Errorf("no persisted model list for the account in use (%s)", active.ID)
+			}
+			// A bound of a nanosecond: the list must already be there.
+			app.claudeModelsWaitForTest = time.Nanosecond
+			if model, err := app.textGenerationDefaultModel(context.Background(), string(provider.Claude)); err != nil || model.Slug != "claude-haiku-6" {
+				t.Errorf("text generation after the probe = %q, %v; want claude-haiku-6 at once", model.Slug, err)
+			}
+		})
+	}
+}
+
+// A record is a claim about the environment that answered. After the
+// custom environment changes and the app restarts, the previous
+// environment's answer must not be seeded under the new environment's key,
+// where text generation would take it as that environment's own report.
+func TestSeedClaudeCatalogSkipsARecordFromAnotherEnvironment(t *testing.T) {
+	binary := writeProbeMockBinaryWithModels(t,
+		`{"subscriptionType":"Claude Max","emailAddress":"person@example.com"}`,
+		`[{"value":"claude-newthing-1","displayName":"Newthing"}]`,
+	)
+	accountDir := t.TempDir()
+	credentialHome := t.TempDir()
+	newAppOn := func(t *testing.T, baseURL string) *App {
+		t.Helper()
+		app := newTestAppWithStore(t)
+		if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
+			t.Fatalf("set claude binary: %v", err)
+		}
+		if _, err := app.SetProviderCustomEnvVar(context.Background(), "claude", "ANTHROPIC_BASE_URL", baseURL, false); err != nil {
+			t.Fatalf("set custom environment: %v", err)
+		}
+		accounts, err := provideraccounts.NewStore(accountDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := accounts.UpsertAndActivate(provideraccounts.Account{
+			ID: "acct-1", Provider: string(provider.Claude), Email: "person@example.com",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		attachProviderAccountStoresForTest(t, app, accounts, newTestProviderCredentials(t, credentialHome))
+		return app
+	}
+
+	resetClaudeProbeCacheForTest(t)
+	first := newAppOn(t, "https://one.example.com")
+	if _, err := first.ProbeClaudeAccount(); err != nil {
+		t.Fatalf("ProbeClaudeAccount: %v", err)
+	}
+	if _, ok := first.providerAccounts.ClaudeCatalog("acct-1"); !ok {
+		t.Fatal("the first process persisted no model list")
+	}
+
+	resetClaudeProbeCacheForTest(t)
+	second := newAppOn(t, "https://two.example.com")
+	second.seedClaudeCatalogFromAccounts()
+
+	if _, backing := second.providerDiscoveryService().ClaudeAccountCatalog(string(provider.Claude)); backing == claudemodels.BackedByIdentity {
+		t.Error("the other environment's list was seeded as this environment's own")
+	}
+	answer, err := second.GetModelsForProvider(string(provider.Claude))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(modelSlugs(answer.Models), "claude-newthing-1") {
+		t.Errorf("catalog = %v, want no model from the other environment's record", modelSlugs(answer.Models))
 	}
 }
 

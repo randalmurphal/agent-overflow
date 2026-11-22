@@ -284,11 +284,10 @@ func TestDeleteThreadRemovesReplayLog(t *testing.T) {
 
 	replayDir := t.TempDir()
 	app.replay = replay.NewManager(replay.ManagerConfig{
-		RootDir:      replayDir,
-		QueueSize:    16,
-		WriterConfig: replay.WriterConfig{FsyncEvery: 1},
-		IdleTimeout:  100 * time.Second,
-		Enabled:      true,
+		RootDir:     replayDir,
+		QueueSize:   16,
+		IdleTimeout: 100 * time.Second,
+		Enabled:     true,
 	})
 	t.Cleanup(func() {
 		_ = app.replay.Shutdown(context.Background())
@@ -306,19 +305,14 @@ func TestDeleteThreadRemovesReplayLog(t *testing.T) {
 	if !app.replay.Enqueue(rec) {
 		t.Fatal("Enqueue dropped event on enabled manager")
 	}
-	// Wait for the writer to flush by polling for the file. The manager
-	// has no public waitForDrain, so we rely on FsyncEvery:1 + a short
-	// retry window.
-	replayPath := filepath.Join(replayDir, thread.ID+".jsonl")
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(replayPath); err == nil {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
+	// Nothing bounds the drain but go test's own timeout: a write can
+	// Sync, and deleteThread's Close does.
+	if err := app.replay.WaitForDrain(context.Background()); err != nil {
+		t.Fatalf("WaitForDrain: %v", err)
 	}
+	replayPath := filepath.Join(replayDir, thread.ID+".jsonl")
 	if _, err := os.Stat(replayPath); err != nil {
-		t.Fatalf("replay file did not appear within deadline: %v", err)
+		t.Fatalf("replay file missing after the drain: %v", err)
 	}
 
 	if err := app.deleteThread(thread.ID); err != nil {

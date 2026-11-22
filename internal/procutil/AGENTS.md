@@ -43,6 +43,8 @@ This package owns seven utilities:
   output pipe, so output from grandchildren is captured, from the start and
   never after `Wait` returns. `GroupCommand.Stderr` gives stderr a pipe and
   sink of its own, owned the same way; without it stderr joins `Output`.
+  `GroupCommand.Stdin` is the command's input; without it stdin is the null
+  device.
   Cancellation sends SIGTERM, then SIGKILL after
   `TerminateGrace`, and sets `Stopped`: an exit status is then the command's
   answer to the signal, not its result. After the leader exits `Wait` stops

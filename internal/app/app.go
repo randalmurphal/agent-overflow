@@ -631,6 +631,9 @@ type App struct {
 	// providerDiscoveryCaches is a test-only cache injection. Production leaves
 	// it nil and providerDiscoveryService uses the bounded process-wide set.
 	providerDiscoveryCaches *providerdiscoveryapp.Caches
+	// unreadableModels logs the listed models a provider's version rule
+	// cannot read, once per change (app_settings.go).
+	unreadableModels unreadableModelLog
 	// providerBinaries is the provider-binary upgrade watcher's concern
 	// (`app_provider_binary_watch.go`): the last version each binary
 	// reported and the live threads flagged stale against it. Zero value
@@ -712,6 +715,10 @@ type App struct {
 	// Tests install a fake so they can simulate "only claude installed"
 	// without touching $PATH.
 	lookPathFn func(string) error
+	// claudeModelsWaitForTest replaces claude.DefaultProbeTimeout as how
+	// long text generation waits for the Claude CLI's first model list
+	// (awaitClaudeModels). Production leaves it zero.
+	claudeModelsWaitForTest time.Duration
 	// codexLookPathFn replaces exec.LookPath when the default `codex`
 	// setting is resolved to the binary it runs (defaultCodexBinary).
 	// Production leaves it nil; test fixtures install one so the default

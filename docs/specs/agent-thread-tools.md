@@ -403,7 +403,9 @@ Because a fork runs in its source's workspace, `from_thread` with
 than silently ignored: a checkout of the caller's own choosing needs a
 fresh spawn.
 `mode` is `chat` or `plan`; `runtime_mode` is the permission level, a
-separate parameter. A provider or model the
+separate parameter. `model` is an exact ID or a family named without a
+version, which runs the newest model of it the target computer lists
+([Agent profiles](#agent-profiles)). A provider or model the
 target computer does not offer is refused with the list it does, locally
 as well as remotely; a provider override without a model uses that
 provider's default. No launch card: the call renders as the tool call
@@ -418,8 +420,9 @@ registered projects and worktrees in the error, so no separate
 discovery tool is needed. Provider, model, mode and runtime mode still
 default to the caller's and are validated on the destination: a
 provider or model that computer does not offer is refused with the list
-it does. The destination's own account runs and bills the thread. The
-thread is created on the destination with no special marking there
+it does, and a model family runs what that computer lists when it
+creates the thread ([Agent profiles](#agent-profiles)). The destination's own account runs
+and bills the thread. The thread is created on the destination with no special marking there
 either. Owned, the default, it is in no sidebar there: a window attached
 to that computer reaches it through the caller's Agents row, which opens
 it and gives it a sidebar row there (Show in Sidebar), and a window
@@ -465,7 +468,20 @@ seeded use-for line names another provider's profile, so a computer
 with one provider is never pointed at the other; the comparison across
 the families is a note shown only when both run. An edited roster or
 note list is the person's and no later seed replaces it. Restore puts
-the seeds back.
+back the seeds of the computer the page edits, which it asks that
+computer for (`AgentRosterSeeds`); the frontend holds no copy of them. A
+computer with a roster but without that method predates model families:
+Restore there writes nothing and says so, and a family typed there that
+it does not offer is held back with the reason, read as a family by the
+window's own computer (`CheckAgentProfiles` `family`). When a lookup that
+decision needs fails or has no answer, the profiles stay unsaved and the
+page says it could not check them. A Restore acts only if nothing newer
+happened while the computer answered: anything the person does
+(typing, a save, adding, deleting, answering a mark, another Restore,
+closing the page) retires it silently, and a change saved elsewhere
+retires it with a line saying so. A save that began before the click
+and writes while Restore waits does not retire it, whether the computer
+saves or refuses that write; Restore's write follows it.
 
 The settings page edits the profiles and the notes as two drafts, each
 saved whole when a control commits. A change saved elsewhere replaces
@@ -477,9 +493,17 @@ the entry's fields in tab order, answer it: Save mine writes the
 person's version over the other, and Use the other version (Discard
 mine, when the other no longer exists) puts it back; either saves what
 waited once no mark is left. A save checks the profiles before writing,
-and writes only the draft revision it checked: a newer save, Restore,
-taking the other version and an outside change each start a new
-revision (`frontend/src/lib/components/settings/rosterDraft.ts`).
+and writes only the draft revision it checked: a newer save, Restore's
+answer, taking the other version and an outside change each start a new
+revision. Only the newest check's answer shows. Each list has one write
+in flight at a time; a newer save waits for it and is sent when it
+settles. The settings store says how each write ended (`SettingsWrite`):
+a saved write marks what it sent saved, a write the computer refuses
+leaves the person's edits on the page, unsaved, for the next commit to
+send again, and a write whose computer went away leaves them unsaved
+too. A deletion follows its entry, so deleting a row while an edit of it
+is being saved deletes what that save stored. One owner orders all of it
+(`frontend/src/lib/components/settings/rosterEditor.svelte.ts`).
 
 `thread_options` lists, per computer, the profiles that computer can
 run (`profiles`: name, `use_for`, the provider and model it resolves to,
@@ -505,6 +529,36 @@ computer (`CheckAgentProfiles`): such an effort holds the save back with
 the reason, and `UpdateSettings` refuses it; a provider or model the
 computer lacks is a note that threads there are not offered the
 profile.
+
+A profile's model and `thread_spawn` `model` are an exact model ID or a
+family: a model named without a version, such as `claude-opus` or
+`gpt-sol`, read by its provider's version rule
+(`provider.ParseModelRef`, `internal/provider/modelfamily.go`). A family
+runs the newest model of it the target computer lists, so a newer model
+the provider lists moves a family profile with no settings change; an
+exact model never moves. A slug the computer offers as written is that
+model before any family reading. A model the computer runs but no
+longer lists is never chosen for a family, and neither is a listed slug
+the version rule cannot read: the settings page names those under the
+profile, and the app logs them once each time the list changes. A
+family with no listed member leaves the profile out of that computer's
+`profiles` and refuses a spawn there with the models it lists; so does
+an effort the family's model there does not take, which the settings
+page shows as a note rather than a reason to hold the save. The settings
+page says what a family profile runs on its computer. Every other model
+input is exact ([decisions](../decisions.md)).
+
+The computer that creates the thread is the only one that resolves the
+spawn's model and refuses one it cannot run, from the catalog read that
+creates the thread, so a list that changes after the call was made runs
+what it lists then. The spawn carries its profile's name, so that
+computer's refusal names the profile. A paired computer whose
+`thread_options` answer lacks `model_families` predates families, reads
+every model as exact and knows no profiles: for it alone the caller
+resolves the choice against that computer's list, refuses naming the
+profile, and carries the exact ID a family resolves to, and for a fork
+first asks that computer's `thread_show` for the source's provider. That
+path is deleted once no supported release lacks `model_families`.
 
 `thread_spawn` `profile` names one, compared without case. Explicit
 `provider`, `model`, `effort` and `runtime_mode` override the matching

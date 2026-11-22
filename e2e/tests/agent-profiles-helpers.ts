@@ -6,9 +6,9 @@
 // elsewhere; a spawn by that profile lands on its provider, model and
 // effort with its instructions and the call's appended to the worker's
 // system prompt; the spawn row shows them from the spawn's reply, also
-// after the worker is deleted and the page reloads; and the worker, and
+// after the worker is deleted and the page reloads; the worker, and
 // the copy behind the lead's thread_ask, at the limit, list no
-// thread_spawn.
+// thread_spawn; and Restore puts back the roster the computer starts with.
 import { expect, type Page } from '@playwright/test';
 
 import type { SeedResult } from './fixtures.js';
@@ -43,9 +43,11 @@ interface ProfileOption {
 const PROFILE = {
   name: 'Scout',
   useFor: 'A quick look at one file.',
-  model: 'gpt-5.6-sol',
+  model: 'gpt-sol',
   instructions: 'You only look; you never edit.',
 };
+/** The newest gpt-sol model the mock Codex lists (cmd/ao-mockprovider/codex.go). */
+const PROFILE_RUNS = 'gpt-5.6-sol';
 const CALL_INSTRUCTIONS = 'Answer in one line.';
 
 /** Adds the Scout profile and sets one sub-thread level through the page. */
@@ -74,10 +76,42 @@ async function editRoster(page: Page, layout: Layout): Promise<void> {
   await card.getByLabel('Provider').selectOption('codex');
   await card.getByLabel('Model').fill(PROFILE.model);
   await card.getByLabel('Model').blur();
+  // A family runs the newest model of it this computer lists.
+  await expect(card.getByTestId('agent-profile-runs')).toHaveText(
+    `Runs ${PROFILE_RUNS} here, the newest ${PROFILE.model} model this computer lists.`,
+  );
   await card.getByLabel('Effort').selectOption('low');
   await card.getByLabel('Instructions, appended to the sub-thread\'s system prompt (optional)').fill(PROFILE.instructions);
   await card.getByLabel('Instructions, appended to the sub-thread\'s system prompt (optional)').blur();
   await page.getByTestId('agent-profiles-levels').selectOption('1');
+}
+
+/**
+ * Restore puts back the roster the computer itself starts with, which the
+ * page asks it for: the edited Scout is gone and the computer's seeds are
+ * saved and shown.
+ */
+async function restoreRoster(harness: HarnessApp, page: Page, layout: Layout): Promise<void> {
+  if ((await page.locator('html').getAttribute('data-compact-screen')) === 'thread') {
+    await page.getByTestId('compact-back').click();
+  }
+  await page.getByTestId('sidebar-settings-button').click();
+  await page.getByRole('tablist', { name: 'Settings Sections' }).getByRole('tab', { name: 'Agent profiles', exact: true }).click();
+  const seeds = await harness.rpc<{ profiles: Array<Record<string, string>>; notes: Array<Record<string, string>> }>('AgentRosterSeeds');
+  expect(seeds.profiles.length).toBeGreaterThan(0);
+  expect(seeds.profiles.some((profile) => profile.name === PROFILE.name)).toBe(false);
+  await expect(page.locator(`[data-testid="agent-profile"][data-profile-name="${PROFILE.name}"]`)).toHaveCount(1);
+  const restore = page.getByTestId('agent-profiles-restore');
+  if (layout === 'desktop') await restore.click();
+  else await restore.tap();
+  await expect(page.getByTestId('agent-profile')).toHaveCount(seeds.profiles.length);
+  expect(await page.getByTestId('agent-profile').evaluateAll((rows) => rows.map((row) => (row as HTMLElement).dataset.profileName)))
+    .toEqual(seeds.profiles.map((profile) => profile.name));
+  await expect.poll(async () => {
+    const saved = await harness.rpc<RosterSettings>('GetSettings');
+    return [saved.agentProfiles, saved.agentNotes];
+  }).toEqual([seeds.profiles, seeds.notes]);
+  await expect(page.getByTestId('agent-profiles-restore-refusal')).toHaveCount(0);
 }
 
 /**
@@ -257,7 +291,7 @@ export async function runAgentProfiles(harness: HarnessApp, page: Page, layout: 
     const options = await awaitToolAnswer<{ profiles?: ProfileOption[]; profile_notes?: string[] }>(harness, { tool: 'thread_options', cwd: lead.path });
     expect(options.isError, options.text).toBe(false);
     expect(options.value?.profiles?.find((profile) => profile.name === PROFILE.name)).toEqual({
-      name: PROFILE.name, use_for: PROFILE.useFor, provider: 'codex', model: PROFILE.model, effort: 'low', instructions: true,
+      name: PROFILE.name, use_for: PROFILE.useFor, provider: 'codex', model: PROFILE_RUNS, effort: 'low', instructions: true,
     });
     // Both providers run here, so the council note names both.
     expect(options.value?.profile_notes?.some((note) => note.includes('both the Claude and the Codex profiles'))).toBe(true);
@@ -271,7 +305,7 @@ export async function runAgentProfiles(harness: HarnessApp, page: Page, layout: 
         const row = (await threadRows(harness)).find((r) => r.id === workerId);
         return row && [row.provider, row.model, row.reasoningEffort];
       })
-      .toEqual(['codex', PROFILE.model, 'low']);
+      .toEqual(['codex', PROFILE_RUNS, 'low']);
 
     // The worker reads the profile's instructions, then the call's, last in
     // its developer instructions, and at the limit lists no thread_spawn.
@@ -308,6 +342,8 @@ export async function runAgentProfiles(harness: HarnessApp, page: Page, layout: 
     await harness.rpc('DeleteThread', workerId);
     await expect.poll(async () => (await threadRows(harness)).some((r) => r.id === workerId)).toBe(false);
     await expect(await spawnRowInstructions(harness, page)).toHaveText(whole, { useInnerText: true });
+
+    await restoreRoster(harness, page, layout);
   } finally {
     await harness.rpc('UpdateSettings', {
       agentProfiles: before.agentProfiles,

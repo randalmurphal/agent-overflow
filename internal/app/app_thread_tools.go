@@ -563,10 +563,10 @@ func (t threadToolsApp) Catalog(ctx context.Context, q threadtools.CatalogQuery)
 }
 
 // providerOption answers thread_options for one provider: the models it
-// offers a new thread, and apart from them (Unlisted) the ones it still runs
+// offers a new thread, and apart from them (ProviderUnlisted) the ones it still runs
 // for a thread already on them, which a spawn resolves against too.
 func (t threadToolsApp) providerOption(name string) (threadtools.ProviderOption, error) {
-	models, err := t.app.GetModelsForProvider(name)
+	models, err := t.app.modelCatalog(name)
 	if err != nil {
 		return threadtools.ProviderOption{}, err
 	}
@@ -589,14 +589,14 @@ func providerOptionOf(name string, models provider.ModelCatalog) threadtools.Pro
 				entry.ContextWindow = window.Tokens
 			}
 		}
-		if model.Unlisted {
+		if model.ProviderUnlisted {
 			option.Unlisted = append(option.Unlisted, entry)
 			continue
 		}
 		option.Models = append(option.Models, entry)
 	}
 	for _, model := range models.Models {
-		if model.IsDefault && !model.Unlisted {
+		if model.IsDefault && !model.ProviderUnlisted {
 			option.DefaultModel = model.Slug
 			break
 		}
