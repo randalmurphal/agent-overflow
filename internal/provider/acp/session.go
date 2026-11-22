@@ -538,7 +538,7 @@ func (s *Session) applyConfigAxes(
 			s.mu.Lock()
 			s.reasoningEffort = currentConfigValue(opts, "thought_level")
 			s.mu.Unlock()
-			if strict && !applyModel {
+			if strict {
 				errs = append(errs, fmt.Errorf("acp: thought_level %q is not offered by server", effort))
 			}
 		}
@@ -621,32 +621,30 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 		return errors.New("acp: cannot send empty prompt")
 	}
 
-	// Snapshot ONLY questions already pending before this prompt is sent so a
-	// brand-new ask_question emitted by this very prompt on the reader loop
-	// can never be swept as answered.
-	preExistingQuestions := s.snapshotPendingToolQuestionIDs()
+	// Detach ONLY questions already pending BEFORE this prompt is written so:
+	// (a) a brand-new ask_question emitted by this prompt cannot be swept, and
+	// (b) a fast completion of this prompt cannot observe the old question in
+	// pendingToolQuestions and spuriously hold the turn open. If dispatchPrompt
+	// fails before writing, restore the detached questions intact.
+	detachedQuestions, detachedTools, detachTurnID := s.detachPendingToolQuestions()
 
 	if err := s.dispatchPrompt(ctx, blocks, hasOutputSchema, strings.TrimSpace(opts.UserMessageUUID), content); err != nil {
+		s.restorePendingToolQuestions(detachedQuestions, detachedTools)
 		return err
 	}
 
-	if len(preExistingQuestions) > 0 {
-		s.resolveSpecificToolQuestions(preExistingQuestions, "answered", map[string]provider.UserInputAnswer{
+	if len(detachedQuestions) > 0 {
+		s.emitResolvedDetachedToolQuestions(detachedQuestions, detachTurnID, "answered", map[string]provider.UserInputAnswer{
 			"reply": {content},
 		})
 	}
 	return nil
 }
 
-func (s *Session) startPromptRequest(ctx context.Context, blocks []ContentBlock) (func(context.Context) (json.RawMessage, error), any, error) {
-	s.mu.Lock()
-	sessionID := s.sessionID
-	s.mu.Unlock()
+func (s *Session) startPromptRequest(sessionID string, blocks []ContentBlock) (func(context.Context) (json.RawMessage, error), error) {
 	if sessionID == "" {
-		return nil, nil, errors.New("acp: session not initialized")
+		return nil, errors.New("acp: session not initialized")
 	}
-
-	beforeToken := s.flavor.BeforePrompt(ctx, sessionID)
 
 	// No timeout on session/prompt: turns can run for minutes or hours.
 	wait, err := s.conn.startRequestWithTimeout("session/prompt", SessionPromptParams{
@@ -654,9 +652,9 @@ func (s *Session) startPromptRequest(ctx context.Context, blocks []ContentBlock)
 		Prompt:    blocks,
 	}, 0)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	return wait, beforeToken, nil
+	return wait, nil
 }
 
 func (s *Session) emitPromptConfirmation(c *pendingPromptConfirm) {
@@ -688,6 +686,18 @@ func (s *Session) confirmSolePrompt() {
 }
 
 func (s *Session) dispatchPrompt(ctx context.Context, blocks []ContentBlock, hasOutputSchema bool, userMsgUUID, userContent string) error {
+	s.mu.Lock()
+	sessionID := s.sessionID
+	s.mu.Unlock()
+	if sessionID == "" {
+		return errors.New("acp: session not initialized")
+	}
+
+	// Capture any pre-prompt flavor token (e.g. agy SQLite max step idx)
+	// BEFORE registering in-flight state or arming solePromptConfirm so
+	// delayed updates arriving during I/O cannot confirm an unwritten prompt.
+	beforeToken := s.flavor.BeforePrompt(ctx, sessionID)
+
 	var confirm *pendingPromptConfirm
 	if userMsgUUID != "" {
 		confirm = &pendingPromptConfirm{uuid: userMsgUUID, content: userContent}
@@ -697,14 +707,16 @@ func (s *Session) dispatchPrompt(ctx context.Context, blocks []ContentBlock, has
 	// so early updates on the shared reader goroutine cannot slip in ahead of
 	// registration and open a spontaneous wake turn.
 	//
-	// Only attach confirm to solePromptConfirm when NO prior prompt is already
-	// in flight: if prompt A is still running while prompt B is steered, A's
-	// updates or completion must NEVER falsely confirm B — B is confirmed only
-	// when B's own RPC completes without error.
+	// Only arm solePromptConfirm when the session is completely quiescent
+	// (no prior in-flight prompt, no open spontaneous wake turn, and no
+	// unfinished background tool calls or tracked subagents). Otherwise, delayed
+	// updates from earlier activity must NEVER confirm this prompt; it is
+	// confirmed only when its own RPC completes without error.
 	var openTurnID string
 	var prevOutputSchema bool
 	s.mu.Lock()
 	priorInFlight := s.inFlightPrompts
+	quiescent := priorInFlight == 0 && !s.spontaneousTurnOpen && len(s.startedTools) == 0 && len(s.trackedSubagents) == 0
 	s.inFlightPrompts++
 	if !s.turnOpen {
 		s.turnSeq++
@@ -722,14 +734,14 @@ func (s *Session) dispatchPrompt(ctx context.Context, blocks []ContentBlock, has
 			s.turnHasOutputSchema = true
 		}
 	}
-	if priorInFlight == 0 {
+	if quiescent {
 		s.solePromptConfirm = confirm
 	} else {
 		s.solePromptConfirm = nil
 	}
 	s.mu.Unlock()
 
-	wait, beforeToken, err := s.startPromptRequest(ctx, blocks)
+	wait, err := s.startPromptRequest(sessionID, blocks)
 	if err != nil {
 		s.mu.Lock()
 		if s.inFlightPrompts > 0 {
@@ -1120,12 +1132,18 @@ func (s *Session) RespondToUserInput(ctx context.Context, resp provider.UserInpu
 			return errors.New("acp: ask_question response requires at least one answer")
 		}
 		if replyText != "" {
+			s.mu.Lock()
+			sessionID := s.sessionID
+			s.mu.Unlock()
+			if sessionID != "" {
+				followUpBefore = s.flavor.BeforePrompt(ctx, sessionID)
+			}
 			// Increment inFlightPrompts before writing so incoming updates
 			// from the follow-up prompt cannot open a spontaneous wake turn.
 			s.mu.Lock()
 			s.inFlightPrompts++
 			s.mu.Unlock()
-			followUpWait, followUpBefore, err = s.startPromptRequest(ctx, []ContentBlock{{Type: "text", Text: replyText}})
+			followUpWait, err = s.startPromptRequest(sessionID, []ContentBlock{{Type: "text", Text: replyText}})
 			if err != nil {
 				s.mu.Lock()
 				if s.inFlightPrompts > 0 {
@@ -1366,6 +1384,85 @@ func (s *Session) drainPendingApprovals(decision string, closeRegistry bool) {
 	}
 }
 
+func (s *Session) detachPendingToolQuestions() (map[string]pendingToolQuestion, map[string]NormalizedToolStart, string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.pendingToolQuestions) == 0 {
+		return nil, nil, ""
+	}
+	qs := make(map[string]pendingToolQuestion, len(s.pendingToolQuestions))
+	tools := make(map[string]NormalizedToolStart, len(s.pendingToolQuestions))
+	for id, q := range s.pendingToolQuestions {
+		qs[id] = q
+		if st, ok := s.startedTools[id]; ok {
+			tools[id] = st
+			delete(s.startedTools, id)
+		}
+		delete(s.pendingToolQuestions, id)
+	}
+	return qs, tools, s.activeTurnID
+}
+
+func (s *Session) restorePendingToolQuestions(qs map[string]pendingToolQuestion, tools map[string]NormalizedToolStart) {
+	if len(qs) == 0 {
+		return
+	}
+	s.mu.Lock()
+	for id, q := range qs {
+		if _, exists := s.pendingToolQuestions[id]; !exists {
+			s.pendingToolQuestions[id] = q
+		}
+	}
+	for id, st := range tools {
+		if _, exists := s.startedTools[id]; !exists {
+			s.startedTools[id] = st
+		}
+	}
+	s.mu.Unlock()
+}
+
+func (s *Session) emitResolvedDetachedToolQuestions(qs map[string]pendingToolQuestion, turnID, decision string, answers map[string]provider.UserInputAnswer) {
+	if len(qs) == 0 {
+		return
+	}
+	itemStatus := "completed"
+	if decision == "declined" || decision == "decline" {
+		itemStatus = "declined"
+	}
+	for id := range qs {
+		if !s.approvals.Claim(id, provider.EventUserInputResolved) {
+			continue
+		}
+		now := time.Now()
+		meta, _ := json.Marshal(map[string]any{
+			"requestId": id,
+			"decision":  decision,
+			"answers":   answers,
+		})
+		s.emitEvent(provider.ProviderEvent{
+			Kind:      provider.EventUserInputResolved,
+			ThreadID:  s.threadID,
+			ItemID:    id,
+			Meta:      meta,
+			Timestamp: now,
+		})
+		completeMeta, _ := json.Marshal(map[string]any{
+			"toolName":    "AskUserQuestion",
+			"item_status": itemStatus,
+			"answers":     answers,
+		})
+		s.emitEvent(provider.ProviderEvent{
+			Kind:      provider.EventToolComplete,
+			ThreadID:  s.threadID,
+			TurnID:    turnID,
+			ItemID:    id,
+			ItemType:  "AskUserQuestion",
+			Meta:      completeMeta,
+			Timestamp: now,
+		})
+	}
+}
+
 func (s *Session) snapshotPendingToolQuestionIDs() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1480,7 +1577,6 @@ func (s *Session) handleUpdate(u SessionUpdate) {
 		s.handleToolCallStart(&tc)
 
 	case "tool_call_update":
-		s.confirmSolePrompt()
 		s.flushChunks()
 		tc := u.toToolCallUpdate()
 		switch tc.Status {
@@ -1499,7 +1595,6 @@ func (s *Session) handleUpdate(u SessionUpdate) {
 		s.handlePlanUpdate(u.Entries)
 
 	case "usage_update":
-		s.confirmSolePrompt()
 		s.flushChunks()
 		s.handleUsageUpdate(u.Used, u.Size)
 

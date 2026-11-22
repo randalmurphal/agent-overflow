@@ -109,6 +109,7 @@ type discoveredSubagent struct {
 	typeName       string
 	prompt         string
 	claimed        bool
+	unattributed   bool
 }
 
 type parentSubagentCoordinator struct {
@@ -607,14 +608,21 @@ func (c *parentSubagentCoordinator) refresh(appDataDir string) {
 				continue
 			}
 			c.seenConvID[convID] = true
-			sp := c.pendingSpawn[0]
-			c.pendingSpawn = c.pendingSpawn[1:]
 			entry := &discoveredSubagent{
 				conversationID: convID,
 				logPath:        logPath,
-				role:           sp.role,
-				typeName:       sp.typeName,
-				prompt:         sp.prompt,
+			}
+			if len(c.pendingSpawn) == 1 {
+				sp := c.pendingSpawn[0]
+				c.pendingSpawn = c.pendingSpawn[1:]
+				entry.role = sp.role
+				entry.typeName = sp.typeName
+				entry.prompt = sp.prompt
+			} else {
+				// Multiple parallel spawns are pending; defer attribution until
+				// we can match the child's own USER_INPUT prompt (so reversed
+				// GENERIC completions never swap sibling launches).
+				entry.unattributed = true
 			}
 			c.discovered = append(c.discovered, entry)
 		case "SYSTEM_MESSAGE":
@@ -623,6 +631,86 @@ func (c *parentSubagentCoordinator) refresh(appDataDir string) {
 			}
 		}
 	}
+	c.resolveUnattributedLocked(brainDir)
+}
+
+// resolveUnattributedLocked attributes discovered subagents when multiple
+// parallel invoke_subagent calls were pending simultaneously. It inspects each
+// child's first USER_INPUT step (under brainDir containment) to match by exact
+// or compatible prompt before falling back to FIFO only if the child transcript
+// has already started without a USER_INPUT step.
+func (c *parentSubagentCoordinator) resolveUnattributedLocked(brainDir string) {
+	if len(c.pendingSpawn) == 0 {
+		return
+	}
+	for _, d := range c.discovered {
+		if !d.unattributed || d.claimed {
+			continue
+		}
+		if len(c.pendingSpawn) == 0 {
+			d.unattributed = false
+			continue
+		}
+		if len(c.pendingSpawn) == 1 {
+			sp := c.pendingSpawn[0]
+			c.pendingSpawn = c.pendingSpawn[1:]
+			d.role, d.typeName, d.prompt = sp.role, sp.typeName, sp.prompt
+			d.unattributed = false
+			continue
+		}
+		prompt, hasUserInput, hasAnyStep := readChildInitialPromptContained(brainDir, d.conversationID, d.logPath)
+		if hasUserInput && prompt != "" {
+			if idx := matchPendingSpawnByPrompt(c.pendingSpawn, prompt); idx >= 0 {
+				sp := c.pendingSpawn[idx]
+				c.pendingSpawn = append(c.pendingSpawn[:idx], c.pendingSpawn[idx+1:]...)
+				d.role, d.typeName, d.prompt = sp.role, sp.typeName, sp.prompt
+				d.unattributed = false
+				continue
+			}
+		}
+		if hasAnyStep && !hasUserInput {
+			// Child transcript already emitted non-USER_INPUT steps without a
+			// USER_INPUT prompt header; fall back to oldest pending spawn.
+			sp := c.pendingSpawn[0]
+			c.pendingSpawn = c.pendingSpawn[1:]
+			d.role, d.typeName, d.prompt = sp.role, sp.typeName, sp.prompt
+			d.unattributed = false
+		}
+	}
+}
+
+func matchPendingSpawnByPrompt(pending []pendingParentSpawn, childPrompt string) int {
+	for i, sp := range pending {
+		if sp.prompt != "" && sp.prompt == childPrompt {
+			return i
+		}
+	}
+	for i, sp := range pending {
+		if sp.prompt != "" && promptsCompatible(sp.prompt, childPrompt) {
+			return i
+		}
+	}
+	return -1
+}
+
+func readChildInitialPromptContained(brainDir, childID, logPath string) (prompt string, hasUserInput bool, hasAnyStep bool) {
+	if logPath == "" {
+		logPath = filepath.Join(brainDir, childID, ".system_generated", "logs", "transcript.jsonl")
+	}
+	var offset int64
+	var rem string
+	lines := readNewJSONLLinesContained(brainDir, childID, logPath, &offset, &rem)
+	for _, line := range lines {
+		var step transcriptStep
+		if json.Unmarshal([]byte(line), &step) != nil {
+			continue
+		}
+		hasAnyStep = true
+		if strings.EqualFold(strings.TrimSpace(step.Type), "USER_INPUT") {
+			return strings.TrimSpace(step.Content), true, true
+		}
+	}
+	return "", false, hasAnyStep
 }
 
 func promptsCompatible(wantPrompt, gotPrompt string) bool {
@@ -638,7 +726,7 @@ func (c *parentSubagentCoordinator) claim(wantRole, wantType, wantPrompt string)
 	// Pass 1: exact match on role + typeName + exact prompt (never let a
 	// shorter prompt prefix overtake a later exact match).
 	for _, d := range c.discovered {
-		if d.claimed {
+		if d.claimed || d.unattributed {
 			continue
 		}
 		if wantRole != "" && d.role == wantRole &&
@@ -651,7 +739,7 @@ func (c *parentSubagentCoordinator) claim(wantRole, wantType, wantPrompt string)
 	// Pass 2: match on role + typeName with compatible prompt (prefix/compacted
 	// or one side omitted), never when prompts disagree.
 	for _, d := range c.discovered {
-		if d.claimed {
+		if d.claimed || d.unattributed {
 			continue
 		}
 		if wantRole != "" && d.role == wantRole &&
@@ -662,9 +750,9 @@ func (c *parentSubagentCoordinator) claim(wantRole, wantType, wantPrompt string)
 		}
 	}
 	// Pass 3: positional fallback ONLY when the discovered entry carries no
-	// metadata at all, preventing early pollers from stealing a sibling launch.
+	// metadata at all and is not awaiting parallel prompt attribution.
 	for _, d := range c.discovered {
-		if d.claimed {
+		if d.claimed || d.unattributed {
 			continue
 		}
 		if d.role != "" || d.typeName != "" || d.prompt != "" {
@@ -711,35 +799,36 @@ func parseInvokeSubagentInput(raw json.RawMessage) (role, typeName, prompt strin
 }
 
 func parseCreatedSubagentResult(content, appDataDir string) (conversationID, logPath string) {
-	if !strings.Contains(content, "conversationId") {
+	// Require agy's exact invoke_subagent creation banner so unrelated GENERIC
+	// tool results mentioning a conversationId or logAbsoluteUri can never
+	// attach to a pending launch.
+	trimmed := strings.TrimSpace(content)
+	if !strings.HasPrefix(strings.ToLower(trimmed), "created the following subagent:") {
 		return "", ""
 	}
-	hasSubagentSignal := strings.Contains(content, "logAbsoluteUri") ||
-		strings.Contains(strings.ToLower(content), "subagent")
-	if !hasSubagentSignal {
+	start := strings.IndexByte(trimmed, '{')
+	end := strings.LastIndexByte(trimmed, '}')
+	if start < 0 || end <= start {
 		return "", ""
 	}
-	start := strings.IndexByte(content, '{')
-	end := strings.LastIndexByte(content, '}')
-	if start >= 0 && end > start {
-		var obj struct {
-			ConversationID string `json:"conversationId"`
-			LogAbsoluteURI string `json:"logAbsoluteUri"`
+	var obj struct {
+		ConversationID string `json:"conversationId"`
+		LogAbsoluteURI string `json:"logAbsoluteUri"`
+	}
+	if json.Unmarshal([]byte(trimmed[start:end+1]), &obj) != nil || !isSafeConversationID(obj.ConversationID) {
+		return "", ""
+	}
+	conversationID = strings.TrimSpace(obj.ConversationID)
+	if uri := strings.TrimSpace(obj.LogAbsoluteURI); uri != "" {
+		childRoot := filepath.Join(appDataDir, "brain", conversationID)
+		logPath = resolveTranscriptURI(uri, childRoot)
+		if logPath == "" {
+			// Reject a creation payload whose logAbsoluteUri points outside
+			// brain/<conversationID>.
+			return "", ""
 		}
-		if json.Unmarshal([]byte(content[start:end+1]), &obj) == nil && isSafeConversationID(obj.ConversationID) {
-			conversationID = strings.TrimSpace(obj.ConversationID)
-			if uri := strings.TrimSpace(obj.LogAbsoluteURI); uri != "" {
-				childRoot := filepath.Join(appDataDir, "brain", conversationID)
-				logPath = resolveTranscriptURI(uri, childRoot)
-			}
-			return conversationID, logPath
-		}
 	}
-	fallbackID := extractConversationID(nil, content)
-	if !isSafeConversationID(fallbackID) {
-		return "", ""
-	}
-	return fallbackID, ""
+	return conversationID, logPath
 }
 
 func resolveTranscriptURI(rawURI, expectedRoot string) string {
@@ -893,13 +982,28 @@ func openContainedTranscript(brainDir, sessionID, path string) (*os.File, error)
 	}
 	defer func() { _ = brainRoot.Close() }()
 
-	// Open sessionID directly from brainRoot so a symlinked brain/<id> cannot
-	// escape or be swapped between validation and open.
+	// Reject symlinked brain/<sessionID> directories (including relative
+	// symlinks pointing to a sibling conversation inside brainDir), then verify
+	// the opened root matches the Lstat'd directory identity via os.SameFile.
+	dirInfo, err := brainRoot.Lstat(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if dirInfo.Mode()&os.ModeSymlink != 0 || !dirInfo.IsDir() {
+		return nil, os.ErrPermission
+	}
 	sessionRoot, err := brainRoot.OpenRoot(sessionID)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = sessionRoot.Close() }()
+	openedDirInfo, err := sessionRoot.Stat(".")
+	if err != nil || !openedDirInfo.IsDir() || !os.SameFile(dirInfo, openedDirInfo) {
+		if err != nil {
+			return nil, err
+		}
+		return nil, os.ErrPermission
+	}
 
 	expectedSessionDir := filepath.Join(brainDir, sessionID)
 	relFile, err := filepath.Rel(expectedSessionDir, path)
@@ -913,7 +1017,8 @@ func openContainedTranscript(brainDir, sessionID, path string) (*os.File, error)
 			return nil, os.ErrPermission
 		}
 	}
-	// Check Lstat BEFORE Open so opening a FIFO cannot hang cancellation.
+	// Check Lstat AND open with O_NONBLOCK on Unix so a regular file swapped
+	// for a FIFO between Lstat and OpenFile never hangs session shutdown.
 	linfo, err := sessionRoot.Lstat(relFile)
 	if err != nil {
 		return nil, err
@@ -921,12 +1026,12 @@ func openContainedTranscript(brainDir, sessionID, path string) (*os.File, error)
 	if !linfo.Mode().IsRegular() {
 		return nil, os.ErrPermission
 	}
-	f, err := sessionRoot.Open(relFile)
+	f, err := sessionRoot.OpenFile(relFile, os.O_RDONLY|openNonBlockFlag(), 0)
 	if err != nil {
 		return nil, err
 	}
 	info, err := f.Stat()
-	if err != nil || !info.Mode().IsRegular() {
+	if err != nil || !info.Mode().IsRegular() || !os.SameFile(linfo, info) {
 		_ = f.Close()
 		if err != nil {
 			return nil, err

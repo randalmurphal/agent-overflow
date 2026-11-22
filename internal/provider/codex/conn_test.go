@@ -464,9 +464,49 @@ func TestConnAtomicRouteOrQuarantineAndEarlyRootFIFO(t *testing.T) {
 	target.dispatchNotification("item/agentMessage/delta", laterParams)
 
 	orderMu.Lock()
-	defer orderMu.Unlock()
-	if len(gotOrder) != 2 || gotOrder[0] != "first" || gotOrder[1] != "second" {
-		t.Fatalf("early/later delivery order = %v, want [first second]", gotOrder)
+	firstTwo := append([]string(nil), gotOrder...)
+	orderMu.Unlock()
+	if len(firstTwo) != 2 || firstTwo[0] != "first" || firstTwo[1] != "second" {
+		t.Fatalf("early/later delivery order = %v, want [first second]", firstTwo)
+	}
+
+	// 3. Re-entrant child-route registration during flushEarlyFrames must NEVER
+	// deadlock when the newly registered child already has quarantined frames.
+	rootID := "codex-a"
+	sessA.conn = conn
+	sessA.codexThreadID.Store(&rootID)
+	conn.routesMu.Lock()
+	conn.deferredChild["child-reentrant"] = []deferredChildWireEvent{{
+		Method: "item/agentMessage/delta",
+		Params: json.RawMessage(`{"threadId":"child-reentrant","turnId":"t-c","itemId":"m-c","delta":"child-after-spawn"}`),
+	}}
+	conn.routesMu.Unlock()
+	spawnCompleteParams := json.RawMessage(`{"threadId":"codex-a","turnId":"turn-1","item":{"type":"collabAgentToolCall","id":"spawn-1","tool":"spawnAgent","status":"completed","receiverThreadIds":["child-reentrant"]}}`)
+	sessA.enqueueEarlyFrames([]deferredChildWireEvent{{
+		Method: "item/completed",
+		Params: spawnCompleteParams,
+	}})
+	reentrantDone := make(chan struct{})
+	go func() {
+		defer close(reentrantDone)
+		sessA.flushEarlyFrames()
+	}()
+	select {
+	case <-reentrantDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("flushEarlyFrames deadlocked on re-entrant child route registration")
+	}
+	conn.routesMu.Lock()
+	gotChildOwner := conn.byThread["child-reentrant"]
+	conn.routesMu.Unlock()
+	if gotChildOwner != sessA {
+		t.Fatalf("child-reentrant route = %v, want sessA", gotChildOwner)
+	}
+	orderMu.Lock()
+	finalOrder := append([]string(nil), gotOrder...)
+	orderMu.Unlock()
+	if len(finalOrder) != 3 || finalOrder[2] != "child-after-spawn" {
+		t.Fatalf("re-entrant child frame delivery order = %v, want [first second child-after-spawn]", finalOrder)
 	}
 }
 

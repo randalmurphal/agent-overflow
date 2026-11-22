@@ -596,30 +596,69 @@ type Session struct {
 	readDoneOnce    sync.Once
 	teardownEmitted atomic.Bool
 
-	// earlyFrames holds root frames quarantined on Conn before open() bound
-	// c.byThread[rootID]. Enqueued under Conn.routesMu and flushed before any
-	// subsequently routed frame so strict wire FIFO order is preserved.
-	earlyDeliveryMu sync.Mutex
-	earlyPending    atomic.Bool
-	earlyFrames     []deferredChildWireEvent
+	// earlyFrames holds root/child frames quarantined on Conn before routing
+	// bound the thread to this Session. earlyFramesMu is a leaf mutex protecting
+	// ONLY the queue and earlyFlushing flag (never held during dispatch), so
+	// re-entrant child-route registration during replay cannot deadlock while
+	// preserving strict FIFO wire order.
+	earlyFramesMu sync.Mutex
+	earlyPending  atomic.Bool
+	earlyFlushing bool
+	earlyFrames   []deferredChildWireEvent
 }
 
 func (s *Session) enqueueEarlyFrames(frames []deferredChildWireEvent) {
 	if len(frames) == 0 {
 		return
 	}
-	s.earlyDeliveryMu.Lock()
+	s.earlyFramesMu.Lock()
 	s.earlyFrames = append(s.earlyFrames, frames...)
 	s.earlyPending.Store(true)
-	s.earlyDeliveryMu.Unlock()
+	s.earlyFramesMu.Unlock()
+}
+
+// enqueueFrameIfPending appends ev to earlyFrames when an early-frame drain is
+// pending, preserving strict FIFO wire ordering. Returns true if ev was queued
+// (either another goroutine is already draining it, or this call drained it).
+func (s *Session) enqueueFrameIfPending(ev deferredChildWireEvent) bool {
+	if !s.earlyPending.Load() {
+		return false
+	}
+	s.earlyFramesMu.Lock()
+	if !s.earlyPending.Load() {
+		s.earlyFramesMu.Unlock()
+		return false
+	}
+	s.earlyFrames = append(s.earlyFrames, ev)
+	alreadyFlushing := s.earlyFlushing
+	s.earlyFramesMu.Unlock()
+	if !alreadyFlushing {
+		s.flushEarlyFrames()
+	}
+	return true
 }
 
 func (s *Session) flushEarlyFrames() {
-	s.earlyDeliveryMu.Lock()
-	defer s.earlyDeliveryMu.Unlock()
-	for len(s.earlyFrames) > 0 {
+	s.earlyFramesMu.Lock()
+	if s.earlyFlushing {
+		s.earlyFramesMu.Unlock()
+		return
+	}
+	s.earlyFlushing = true
+	for {
+		if len(s.earlyFrames) == 0 {
+			// Clear earlyPending ONLY after every buffered (and re-entrantly
+			// enqueued) frame has finished dispatching, while holding
+			// earlyFramesMu, so no live reader frame can overtake replay.
+			s.earlyPending.Store(false)
+			s.earlyFlushing = false
+			s.earlyFramesMu.Unlock()
+			return
+		}
 		frames := s.earlyFrames
 		s.earlyFrames = nil
+		s.earlyFramesMu.Unlock()
+
 		for _, ev := range frames {
 			if ev.RequestID != "" {
 				reqID := json.Number(ev.RequestID)
@@ -628,11 +667,9 @@ func (s *Session) flushEarlyFrames() {
 				s.dispatchNotificationDirect(ev.Method, ev.Params)
 			}
 		}
+
+		s.earlyFramesMu.Lock()
 	}
-	// Clear earlyPending ONLY after every buffered frame has finished
-	// dispatching (while still holding earlyDeliveryMu) so a concurrent reader
-	// frame cannot bypass earlyDeliveryMu and overtake an in-progress replay.
-	s.earlyPending.Store(false)
 }
 
 // Binary returns the codex CLI path this session's app-server process was
@@ -1109,10 +1146,11 @@ func (s *Session) Close() error {
 	s.childLifecycleMu.Lock()
 	s.childLifecycleRevision = nil
 	s.childLifecycleMu.Unlock()
-	s.earlyDeliveryMu.Lock()
+	s.earlyFramesMu.Lock()
 	s.earlyFrames = nil
+	s.earlyFlushing = false
 	s.earlyPending.Store(false)
-	s.earlyDeliveryMu.Unlock()
+	s.earlyFramesMu.Unlock()
 	s.mu.Unlock()
 	return err
 }

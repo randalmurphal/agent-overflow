@@ -580,12 +580,50 @@ func TestClassifyPermissionAutoAllowsAOMCPServers(t *testing.T) {
 	if clsCollide.Action != acp.PermissionAskUser {
 		t.Fatalf("colliding third-party server still auto-approved single-underscore tool: %v", clsCollide.Action)
 	}
+
+	// Global mcp_config.json with exact "ao_thread_tools" spelling or corrupt JSON
+	// must fail closed and disable single-underscore auto-approval.
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"exact_underscore_global", `{"mcpServers":{"ao_thread_tools":{"command":"evil"}}}`},
+		{"corrupt_global_config", `{not-valid-json`},
+	} {
+		homeDir := t.TempDir()
+		appData := filepath.Join(homeDir, ".gemini", "antigravity-cli")
+		cfgPath := filepath.Join(homeDir, ".gemini", "config", "mcp_config.json")
+		if err := os.MkdirAll(filepath.Dir(cfgPath), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(cfgPath, []byte(tc.body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		fGlobal := NewFlavor(appData)
+		fGlobal.BuildSessionMeta(acp.SessionConfig{
+			MCPServers: []acp.MCPServerConfig{{Name: "ao-thread-tools"}},
+		})
+		clsG := fGlobal.ClassifyPermission("t1", "turn1", "req-g", acp.RequestPermissionParams{
+			ToolCall: acp.ToolCallUpdate{ToolCallID: "c-g", Name: "mcp_ao_thread_tools_thread_spawn", Kind: "other"},
+			Options:  opts,
+		}, acp.PolicyPrompt)
+		if clsG.Action != acp.PermissionAskUser {
+			t.Fatalf("%s: got action=%v, want PermissionAskUser", tc.name, clsG.Action)
+		}
+	}
 }
 
 func TestForkConversationEmptyCheckpointDeletesLaterSteps(t *testing.T) {
 	t.Parallel()
 	appDataDir := t.TempDir()
 	srcID := "11111111-2222-3333-4444-555555555555"
+
+	// Missing conversation DB before first write returns (-1, nil).
+	missingCut, err := ReadForkCheckpoint(appDataDir, srcID)
+	if err != nil || missingCut != -1 {
+		t.Fatalf("ReadForkCheckpoint(missing) = (%d, %v), want (-1, nil)", missingCut, err)
+	}
+
 	dbPath := filepath.Join(appDataDir, "conversations", srcID+".db")
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
 		t.Fatal(err)
@@ -603,11 +641,11 @@ func TestForkConversationEmptyCheckpointDeletesLaterSteps(t *testing.T) {
 		_ = db.Close()
 		t.Fatal(err)
 	}
-	// Pre-cut checkpoint on empty table returns (-1, true).
-	cutIdx, ok := ReadMaxStepIndex(appDataDir, srcID)
-	if !ok || cutIdx != -1 {
+	// Pre-cut checkpoint on empty table returns (-1, nil).
+	cutIdx, err := ReadForkCheckpoint(appDataDir, srcID)
+	if err != nil || cutIdx != -1 {
 		_ = db.Close()
-		t.Fatalf("ReadMaxStepIndex(empty) = (%d, %v), want (-1, true)", cutIdx, ok)
+		t.Fatalf("ReadForkCheckpoint(empty) = (%d, %v), want (-1, nil)", cutIdx, err)
 	}
 	// Provider appends steps after the pre-cut checkpoint.
 	if _, err := db.Exec(`INSERT INTO steps (idx, step_type, step_payload) VALUES (0, 14, X'01'), (1, 15, X'02')`); err != nil {

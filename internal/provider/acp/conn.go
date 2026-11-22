@@ -528,6 +528,10 @@ func (c *Conn) StartUpdateCapture(sessionID string, maxUpdates int) *UpdateCaptu
 		notify:   make(chan struct{}, 1),
 	}
 	c.routesMu.Lock()
+	if c.replays[sessionID] != nil {
+		c.routesMu.Unlock()
+		return &UpdateCapture{conn: c, sessionID: sessionID, cap: cap}
+	}
 	c.replays[sessionID] = cap
 	c.routesMu.Unlock()
 	return &UpdateCapture{conn: c, sessionID: sessionID, cap: cap}
@@ -594,7 +598,9 @@ func (c *Conn) startRequestWithSessionOpen(method string, params any, timeout ti
 		}
 		c.pendingMu.Lock()
 		delete(c.pending, id)
-		delete(c.pendingSessionOpen, id)
+		// Keep openEntry in c.pendingSessionOpen until dispatchLine consumes
+		// the late session/new response (or readLoop tears down) so an orphaned
+		// remote session created after cancellation still gets closed.
 		c.pendingMu.Unlock()
 		select {
 		case <-ch:
@@ -729,6 +735,10 @@ func (c *Conn) registerSession(sessionID string, s *Session) bool {
 		c.routesMu.Unlock()
 		return false
 	}
+	if existing, ok := c.sessions[sessionID]; ok && existing != s {
+		c.routesMu.Unlock()
+		return false
+	}
 	c.sessions[sessionID] = s
 	c.routesMu.Unlock()
 	return true
@@ -750,6 +760,7 @@ func (c *Conn) readLoop() {
 			delete(c.pending, id)
 		}
 		c.pending = nil
+		c.pendingSessionOpen = nil
 		c.pendingMu.Unlock()
 
 		c.routesMu.Lock()

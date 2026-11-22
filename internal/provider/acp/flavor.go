@@ -147,7 +147,13 @@ func (DefaultFlavor) MapRuntimeMode(rt provider.RuntimeMode, im provider.Interac
 		}
 		return false
 	}
-	if im == provider.ModePlan && hasMode("plan") {
+	if im == provider.ModePlan {
+		if !hasMode("plan") {
+			if rt == provider.RuntimeReadOnly {
+				return "", PolicyDenyMutating
+			}
+			return "", PolicyPrompt
+		}
 		if rt == provider.RuntimeReadOnly {
 			return "plan", PolicyDenyMutating
 		}

@@ -379,6 +379,23 @@ func TestSubagentPathContainmentAndClaimRoleMismatch(t *testing.T) {
 		}
 	}
 
+	// Relative symlink pointing to a SIBLING conversation inside brain/ must ALSO be rejected.
+	siblingLog := filepath.Join(brainDir, "sibling-secret", ".system_generated", "logs", "transcript.jsonl")
+	if err := os.MkdirAll(filepath.Dir(siblingLog), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(siblingLog, []byte(`{"step_index":1,"content":"SIBLING_SECRET"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("sibling-secret", filepath.Join(brainDir, "child-sibling-sym")); err == nil {
+		var off int64
+		var rem string
+		sibRedirectedLog := filepath.Join(brainDir, "child-sibling-sym", ".system_generated", "logs", "transcript.jsonl")
+		if lines := readNewJSONLLinesContained(brainDir, "child-sibling-sym", sibRedirectedLog, &off, &rem); len(lines) != 0 {
+			t.Fatalf("sibling brain/<id> symlink escape read lines: %v", lines)
+		}
+	}
+
 	// Parallel claim must not steal a child whose role OR prompt conflicts,
 	// and an exact prompt match must beat an earlier shorter prefix match.
 	coord := &parentSubagentCoordinator{
@@ -397,10 +414,50 @@ func TestSubagentPathContainmentAndClaimRoleMismatch(t *testing.T) {
 		t.Fatalf("exact prompt match lost to prefix match: got %+v, want child-alpha", matched)
 	}
 
-	// Unrelated GENERIC JSON mentioning conversationId without subagent signal
-	// must be ignored even while an invoke_subagent launch is pending.
-	if cid, _ := parseCreatedSubagentResult(`{"conversationId":"unrelated-conv-99","status":"ok"}`, appDataDir); cid != "" {
-		t.Fatalf("unrelated GENERIC conversationId was admitted: %q", cid)
+	// Unrelated GENERIC JSON mentioning conversationId/subagent/logAbsoluteUri
+	// WITHOUT agy's "Created the following subagent:" banner must be ignored.
+	for _, bogus := range []string{
+		`{"conversationId":"unrelated-conv-99","status":"ok"}`,
+		`{"note":"subagent check","conversationId":"unrelated-conv-99","logAbsoluteUri":"file:///tmp/x"}`,
+	} {
+		if cid, _ := parseCreatedSubagentResult(bogus, appDataDir); cid != "" {
+			t.Fatalf("unrelated GENERIC payload %q was admitted: %q", bogus, cid)
+		}
+	}
+
+	// Reversed parallel same-role launches: B's GENERIC creation arrives BEFORE A's,
+	// and child transcripts identify their own USER_INPUT prompts.
+	revParentLog := transcriptPathForSession(appDataDir, "parent-rev")
+	childALog := transcriptPathForSession(appDataDir, "child-rev-a")
+	childBLog := transcriptPathForSession(appDataDir, "child-rev-b")
+	writeJSONL(t, childALog, `{"step_index":0,"source":"USER","type":"USER_INPUT","content":"Audit billing"}`)
+	writeJSONL(t, childBLog, `{"step_index":0,"source":"USER","type":"USER_INPUT","content":"Audit auth"}`)
+	createdB, _ := json.Marshal(map[string]any{
+		"step_index": 2, "type": "GENERIC",
+		"content": "Created the following subagent:\n{\"conversationId\":\"child-rev-b\",\"logAbsoluteUri\":\"file://" + filepath.ToSlash(childBLog) + "\"}",
+	})
+	createdA, _ := json.Marshal(map[string]any{
+		"step_index": 3, "type": "GENERIC",
+		"content": "Created the following subagent:\n{\"conversationId\":\"child-rev-a\",\"logAbsoluteUri\":\"file://" + filepath.ToSlash(childALog) + "\"}",
+	})
+	writeJSONL(t, revParentLog,
+		`{"step_index":1,"type":"PLANNER_RESPONSE","tool_calls":[{"name":"invoke_subagent","args":{"Role":"\"Worker\"","TypeName":"\"research\"","Prompt":"\"Audit billing\""}},{"name":"invoke_subagent","args":{"Role":"\"Worker\"","TypeName":"\"research\"","Prompt":"\"Audit auth\""}}]}`,
+		string(createdB),
+		string(createdA),
+	)
+	revCoord := &parentSubagentCoordinator{
+		path:       revParentLog,
+		seenConvID: map[string]bool{},
+		reports:    map[string]string{},
+	}
+	revCoord.refresh(appDataDir)
+	gotA := revCoord.claim("Worker", "research", "Audit billing")
+	gotB := revCoord.claim("Worker", "research", "Audit auth")
+	if gotA == nil || gotA.conversationID != "child-rev-a" {
+		t.Fatalf("reversed parallel claim A = %+v, want child-rev-a", gotA)
+	}
+	if gotB == nil || gotB.conversationID != "child-rev-b" {
+		t.Fatalf("reversed parallel claim B = %+v, want child-rev-b", gotB)
 	}
 
 	// GENERIC output with a conversationId when NO invoke_subagent is pending must not be admitted.

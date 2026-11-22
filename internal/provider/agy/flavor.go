@@ -658,9 +658,9 @@ func normalizeMCPPrefix(name string) string {
 	return strings.ReplaceAll(strings.ToLower(strings.TrimSpace(name)), "-", "_")
 }
 
-func isCollidingExternalServerName(name string) bool {
+func isAOMCPNameOrPrefix(name string) bool {
 	norm := normalizeMCPPrefix(name)
-	if norm == "" || norm == "ao_thread_tools" || norm == "ao_workflow_tools" {
+	if norm == "" {
 		return false
 	}
 	return strings.HasPrefix(norm, "ao_thread_tools") || strings.HasPrefix(norm, "ao_workflow_tools")
@@ -670,26 +670,38 @@ func (f *Flavor) recordSessionMCPTrust(servers []acp.MCPServerConfig) {
 	reg := make(map[string]bool, 2)
 	colliding := false
 	for _, s := range servers {
-		norm := normalizeMCPPrefix(s.Name)
-		switch norm {
-		case "ao_thread_tools":
+		trimmed := strings.TrimSpace(s.Name)
+		switch trimmed {
+		case "ao-thread-tools":
+			if reg["ao-thread-tools"] {
+				colliding = true
+			}
 			reg["ao-thread-tools"] = true
-		case "ao_workflow_tools":
+		case "ao-workflow-tools":
+			if reg["ao-workflow-tools"] {
+				colliding = true
+			}
 			reg["ao-workflow-tools"] = true
 		default:
-			if isCollidingExternalServerName(s.Name) {
+			if isAOMCPNameOrPrefix(s.Name) {
 				colliding = true
 			}
 		}
 	}
 	if !colliding && f.AppDataDir != "" {
-		// Check user's global mcp_config.json for any third-party server whose
-		// name shares the ao_thread_tools / ao_workflow_tools prefix.
+		// Check user's global mcp_config.json for ANY third-party server whose
+		// normalized name matches or prefixes ao_thread_tools / ao_workflow_tools
+		// (including exact underscore/hyphen spellings, since AO injects its own
+		// loopback servers via ACP session/new, never via global mcp_config.json).
+		// Fail closed on read/parse errors (missing file returns nil, nil).
 		geminiDir := filepath.Dir(f.AppDataDir)
 		homeDir := filepath.Dir(geminiDir)
-		if userServers, err := agyconfig.New(agyconfig.PathForHome(homeDir)).ListServers(); err == nil {
+		userServers, err := agyconfig.New(agyconfig.PathForHome(homeDir)).ListServers()
+		if err != nil {
+			colliding = true
+		} else {
 			for _, us := range userServers {
-				if isCollidingExternalServerName(us.Name) {
+				if isAOMCPNameOrPrefix(us.Name) {
 					colliding = true
 					break
 				}
