@@ -723,7 +723,7 @@ named rows.
 | Patch read, 1 or 100 changed, totals held | 5 | 0.07 to 0.73 ms | 0.07 to 0.76 ms |
 | Ticket open, stored | 14 | 0.29 ms | 0.33 ms |
 | Jira round, 100 tickets, 10 changed | 21 | 5.4 ms | 5.5 ms |
-| Linear round, 100 tickets, 10 changed | 14 | 2.9 ms | 2.7 ms |
+| Linear round, 100 tickets, 10 changed | 20 | 4.2 ms | 4.2 ms |
 | `New` | 0 | 13.8 ms | 15.2 ms |
 
 A reconcile whose listing leaves out a quarter of the board removes

@@ -388,8 +388,19 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 				return err
 			}
 			read := docs(tickets, 0)
-			for i := range changedTickets {
-				read[i*10].Data = doc(tickets[i*10], 100+rep)
+			// A changed document's card is stored before it.
+			var changed []MirrorCard
+			for i, c := range cards(len(tickets)) {
+				if i%10 == 0 && i/10 < changedTickets {
+					read[i].Data = doc(tickets[i], 100+rep)
+					c.UpdatedAt = int64(2_000_000 + rep)
+					changed = append(changed, c)
+				}
+			}
+			if len(changed) > 0 {
+				if _, err := s.UpsertMirrorCards(root, sweep, changed, MirrorCatalog{}, next()); err != nil {
+					return err
+				}
 			}
 			_, err := s.StoreMirrorDetails(root, sweep, read, 0, next())
 			return err
