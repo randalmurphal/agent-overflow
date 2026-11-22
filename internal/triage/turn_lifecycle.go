@@ -110,7 +110,7 @@ func (r *Router) startTurn(evt provider.ProviderEvent, resolve func() (int, erro
 	if !r.setOpenRoundSnapshot(snapshot, evt.SessionToken) {
 		return openErr
 	}
-	r.emitTurnStarted(snapshot)
+	r.emit(eventchan.ProviderTurnStarted, TurnStartedEvent(snapshot))
 	return openErr
 }
 
@@ -469,7 +469,7 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 			// announcement starts (a worker's reassessment, a wait's
 			// read) finds it ended. The settle writes are done by now,
 			// so a reader between the two reads the turn as its row
-			// does, and a row they did not settle as ended (TurnEnded).
+			// does.
 			r.endRound(evt.ThreadID, round.TurnID)
 			r.emit(eventchan.ProviderTurnCompleted, event)
 		}()
@@ -773,7 +773,7 @@ func (r *Router) reopenSoftClosedTurn(evt provider.ProviderEvent) (bool, error) 
 		StartedAt: eventTimestampMillis(evt),
 	}
 	if r.setOpenRoundSnapshot(snapshot, evt.SessionToken) {
-		r.emitTurnStarted(snapshot)
+		r.emit(eventchan.ProviderTurnStarted, TurnStartedEvent(snapshot))
 	}
 	return true, err
 }
@@ -922,10 +922,11 @@ func (r *Router) settleTurnRow(evt provider.ProviderEvent, turnIndex int, now in
 	if gate != nil {
 		gate(evt.ThreadID)
 	}
-	settled := r.writeTurnEnd(evt.ThreadID, turnIndex, fields.logicalTurnID, turnEnd{
-		completedAt: now, stopReason: fields.stopReason, assistantMessageID: fields.assistantMessageID,
-		usageJSON: usageJSON, errorMessage: fields.errorMessage,
-	}) == nil
+	settled := true
+	if err := r.store.UpdateTurnCompleted(fields.logicalTurnID, now, fields.stopReason, fields.assistantMessageID, usageJSON, fields.errorMessage); err != nil {
+		settled = false
+		r.providerWriteFailed(evt.ThreadID, "update turn "+fields.logicalTurnID, err)
+	}
 	usageErr := r.appendUsageLedger(evt, fields.logicalTurnID, meta, now)
 	if quiet {
 		if settled {
@@ -1278,16 +1279,11 @@ func (r *Router) beginTurnStart(evt provider.ProviderEvent) (started, published 
 	return func() {
 		once.Do(func() {
 			r.mu.Lock()
-			ended := r.releaseLiveLocked(threadID, func() {
-				if st := r.threadStateIfPresent(threadID); st != nil && st.turnStarting == starting {
-					st.turnStarting = nil
-				}
-			})
+			if st := r.threadStateIfPresent(threadID); st != nil && st.turnStarting == starting {
+				st.turnStarting = nil
+			}
 			r.mu.Unlock()
 			close(starting)
-			if ended {
-				r.announceEnded(threadID)
-			}
 		})
 	}, r.markTurnOpeningLocked(threadID, st)
 }
@@ -1309,7 +1305,6 @@ func (r *Router) SetTurnOpeningObserver(fn func(threadID string)) {
 // is told to the turn-opening observer under the same lock.
 func (r *Router) markTurnOpeningLocked(threadID string, st *threadState) func() {
 	st.turnOpenings++
-	r.identity(threadID).openingsMarked++
 	if r.turnOpening != nil {
 		r.turnOpening(threadID)
 	}
@@ -1317,17 +1312,12 @@ func (r *Router) markTurnOpeningLocked(threadID string, st *threadState) func() 
 	return func() {
 		once.Do(func() {
 			r.mu.Lock()
-			ended := r.releaseLiveLocked(threadID, func() {
-				st.turnOpenings--
-				if st.turnOpenings == 0 && st.openingsDone != nil {
-					close(st.openingsDone)
-					st.openingsDone = nil
-				}
-			})
-			r.mu.Unlock()
-			if ended {
-				r.announceEnded(threadID)
+			st.turnOpenings--
+			if st.turnOpenings == 0 && st.openingsDone != nil {
+				close(st.openingsDone)
+				st.openingsDone = nil
 			}
+			r.mu.Unlock()
 		})
 	}
 }
@@ -1536,7 +1526,7 @@ func (r *Router) openQueuedEchoTurn(threadID string, turnIndex int, startedAt in
 	if !r.setOpenRoundSnapshot(snapshot, sessionToken) {
 		return
 	}
-	r.emitTurnStarted(snapshot)
+	r.emit(eventchan.ProviderTurnStarted, TurnStartedEvent(snapshot))
 }
 
 // predecessorStopReason is the stop reason of an open turn a new turn
@@ -1611,7 +1601,8 @@ func (r *Router) settleQueuedEchoPredecessor(threadID string, turnIndex int, com
 		}
 	}
 	turnID := r.persistedTurnID(provider.ProviderEvent{ThreadID: threadID}, turnIndex)
-	if err := r.writeTurnEnd(threadID, turnIndex, turnID, turnEnd{completedAt: completedAt, stopReason: stopReason}); err != nil {
+	if err := r.store.UpdateTurnCompleted(turnID, completedAt, stopReason, "", "", ""); err != nil {
+		log.Printf("triage: settle queued-echo predecessor turn %s: %v", turnID, err)
 		persistErr = errors.Join(persistErr, err)
 	}
 	r.finishTurnSpan(threadID, completedTurnOutcome(turnCompleteMeta{
@@ -1748,37 +1739,29 @@ func (r *Router) setOpenRoundSnapshot(snapshot ActiveTurnSnapshot, sessionToken 
 // synthesizes ahead of the wire's own turn-complete.
 func (r *Router) takeOpenRound(threadID, sessionToken string) (ActiveTurnSnapshot, bool) {
 	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.frameRetiredLocked(threadID, sessionToken) {
+		return ActiveTurnSnapshot{}, false
+	}
 	st := r.threadStateIfPresent(threadID)
-	if r.frameRetiredLocked(threadID, sessionToken) || st == nil || !st.currentRoundOpen {
-		r.mu.Unlock()
+	if st == nil || !st.currentRoundOpen {
 		return ActiveTurnSnapshot{}, false
 	}
 	round := st.currentRound
-	// The round moves from open to ending, a live mark either way.
-	ended := r.releaseLiveLocked(threadID, func() {
-		st.currentRound, st.currentRoundOpen = ActiveTurnSnapshot{}, false
-		st.endingRound, st.endingRoundSet = round, true
-	})
-	r.mu.Unlock()
-	if ended {
-		r.announceEnded(threadID)
-	}
+	st.currentRound = ActiveTurnSnapshot{}
+	st.currentRoundOpen = false
+	st.endingRound, st.endingRoundSet = round, true
 	return round, true
 }
 
 // endRound clears the ending round once the turn's settle writes are done,
 // right before its provider:turn_completed, unless a later round took the
-// slot. A thread left with no live mark is announced (announceEnded).
+// slot.
 func (r *Router) endRound(threadID, roundID string) {
 	r.mu.Lock()
-	ended := r.releaseLiveLocked(threadID, func() {
-		if st := r.threadStateIfPresent(threadID); st != nil && st.endingRoundSet && st.endingRound.TurnID == roundID {
-			st.endingRound, st.endingRoundSet = ActiveTurnSnapshot{}, false
-		}
-	})
-	r.mu.Unlock()
-	if ended {
-		r.announceEnded(threadID)
+	defer r.mu.Unlock()
+	if st := r.threadStateIfPresent(threadID); st != nil && st.endingRoundSet && st.endingRound.TurnID == roundID {
+		st.endingRound, st.endingRoundSet = ActiveTurnSnapshot{}, false
 	}
 }
 
@@ -1892,18 +1875,14 @@ func (r *Router) clearOpenTurn(threadID string, agentScopes map[string]bool) {
 		clear(st.pendingCommandDiffs)
 		dropTurnRequestsLocked(st, agentScopes)
 	}
-	ended := r.releaseLiveLocked(threadID, func() {
-		st.openTurn, st.openTurnSet = 0, false
-	})
+	st.openTurn = 0
+	st.openTurnSet = false
 	// openAPIRetryRows tracks "thread has a running api_retry row that
 	// still needs flipping". By turn-end the row was either flipped
 	// already or the turn closed without forward progress; either way
 	// the next turn starts with a clean flag.
 	st.openAPIRetryRow = false
 	r.mu.Unlock()
-	if ended {
-		r.announceEnded(threadID)
-	}
 }
 
 func isFatalProviderError(raw json.RawMessage) bool {
@@ -2040,10 +2019,6 @@ func stoppedSummary(summary string) string {
 // next boot. No frontend emission is needed — recovery runs before any
 // client connects, and the repaired rows are what the initial loads
 // read.
-//
-// When the sweep fails, the rows it left open have no live mark in this
-// process, so every reader reads their turns as ended (TurnEnded), as a
-// later boot's sweep will record them.
 //
 // Returns the count of settled turns.
 func (r *Router) RecoverCrashedTurns() (int, error) {
@@ -2339,15 +2314,6 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 	// reinsert would lose to it, resurrecting a stale entry into the
 	// replacement session (round-5, R5-2). Anchor before r.mu, per the
 	// lock order.
-	//
-	// A thread whose state goes with a live mark is announced once every
-	// lock below is released (announceEnded).
-	var ended bool
-	defer func() {
-		if ended {
-			r.announceEnded(threadID)
-		}
-	}()
 	anchor := r.flushAnchor(threadID)
 	anchor.Lock()
 	defer anchor.Unlock()
@@ -2430,7 +2396,7 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 		pendingUsage, hasPendingUsage = r.takeUsageEmitPendingLocked(threadID)
 		pendingProgress, hasPendingProgress = takeUsagePending(st.usageProgressThrottle)
 	}
-	ended = r.releaseLiveLocked(threadID, func() { delete(r.threads, threadID) })
+	delete(r.threads, threadID)
 	r.noteSendsPendingLocked(threadID)
 	if hadEffectiveModel {
 		// The revision counter lives on the identity, so it is still

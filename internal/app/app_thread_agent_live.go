@@ -2,7 +2,6 @@ package app
 
 import (
 	"fmt"
-	"log"
 	"sync"
 	"time"
 
@@ -43,17 +42,13 @@ import (
 // settling or the retention sweep clearing a spawn, reads neither it nor
 // the marks: it reads the threads' own sources (readRest).
 
-// workerState is why a worker is not at rest, in the order a row shows
-// them, or workerAtRest. Waiting is below the rest: background work, a
-// loop, watch or reminder, or a timer. A row carries it as its Worker word.
-type workerState string
-
+// Why a worker is not at rest, in the order a row shows them. Waiting is
+// below the rest: background work, a loop, watch or reminder, or a timer.
 const (
-	workerAtRest  workerState = ""
-	workerBlocked workerState = "blocked"
-	workerRunning workerState = "running"
-	workerQueued  workerState = "queued"
-	workerWaiting workerState = "waiting"
+	workerBlocked = "blocked"
+	workerRunning = "running"
+	workerQueued  = "queued"
+	workerWaiting = "waiting"
 )
 
 // liveWorkers is the threads on this computer last found not at rest.
@@ -83,7 +78,7 @@ type liveWorker struct {
 // waits on, in the words of the row's activity line; below marks a thread
 // waiting only on open work below it (threadRest).
 type workerRest struct {
-	unrest workerState
+	unrest string
 	detail string
 	below  bool
 }
@@ -173,7 +168,7 @@ func (a *App) ownRest(threadID string, src store.ThreadRestSources) workerRest {
 	if unrest := a.workerHeldUnrest(threadID); unrest != "" {
 		return workerRest{unrest: unrest}
 	}
-	if a.turnRuns(threadID, src.TurnOpen) {
+	if src.TurnOpen {
 		return workerRest{unrest: workerRunning}
 	}
 	if waits.unrest != "" {
@@ -182,54 +177,10 @@ func (a *App) ownRest(threadID string, src store.ThreadRestSources) workerRest {
 	return a.workerTimerUnrest(threadID)
 }
 
-// endedTurn is threadID's open newest turn row when its turn ended
-// unrecorded (triage.Router.TurnEnded), as the next boot's sweep will
-// record it. A failed read is logged and the row read as a running turn's,
-// as it reads before a reader asks.
-func (a *App) endedTurn(threadID string) (store.EndedTurn, bool) {
-	turn, ended, err := a.triage.TurnEnded(threadID)
-	if err != nil {
-		log.Printf("app: read whether the turn of %s ended: %v", threadID, err)
-		return store.EndedTurn{}, false
-	}
-	return turn, ended
-}
-
-// turnRuns is the one rule for whether threadID's newest turn row, read
-// open (rowOpen) or not, is a running turn: an open row is, unless its
-// turn ended unrecorded (endedTurn). A reader of the row that decides
-// running or rest reads it through here, liveTally or the thread tools'
-// projection (threadProjector.thread).
-func (a *App) turnRuns(threadID string, rowOpen bool) bool {
-	if !rowOpen {
-		return false
-	}
-	_, ended := a.endedTurn(threadID)
-	return !ended
-}
-
-// liveTally is threadID's tally read at now as the Agents rows show it: a
-// turn that ended unrecorded does not run, and its time is its span to its
-// end as the boot sweep will record it, the figure a run that ends at the
-// worker's rest keeps (store tallyFiguresAtRestSQL), rather than to now.
-func (a *App) liveTally(threadID string, tally store.ThreadTally, now time.Time) store.ThreadTally {
-	if !tally.Running {
-		return tally
-	}
-	ended, ok := a.endedTurn(threadID)
-	if !ok {
-		return tally
-	}
-	tally.RuntimeMs -= max(0, now.UnixMilli()-tally.TurnStartedAt)
-	tally.RuntimeMs += max(0, ended.EndedAt-ended.StartedAt)
-	tally.Running, tally.TurnStartedAt = false, 0
-	return tally
-}
-
 // workerHeldUnrest is why threadID is not at rest from what the app holds
 // in memory, no store read (threadWaitingOn): waiting on a prompt or an
 // async question, in a turn, or holding messages queued for one.
-func (a *App) workerHeldUnrest(threadID string) workerState {
+func (a *App) workerHeldUnrest(threadID string) string {
 	live := a.threadWaitingOn(threadID).live
 	switch {
 	case live.Blocked():
@@ -239,7 +190,7 @@ func (a *App) workerHeldUnrest(threadID string) workerState {
 	case live.PendingSends:
 		return workerQueued
 	}
-	return workerAtRest
+	return ""
 }
 
 // workerWaits is threadWaits over threadID's sources read now.

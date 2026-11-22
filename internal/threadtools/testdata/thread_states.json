@@ -25,10 +25,9 @@
     "also receives, by the order the Go function uses: pending-approval,",
     "awaiting-input, running for activeTurn or pendingSends, else idle.",
     "hasOpenTurn is Go's alone: an open row with no live round is a Go-only",
-    "case (state_test.go). hasIncompleteTurn is an interruption the user has",
-    "not read: a settled one, or a turn whose end the store did not take,",
-    "which reads as the boot sweep will record it. An open row of a running",
-    "turn never sets it, so the two never hold together."
+    "case (state_test.go). hasIncompleteTurn is a settled interruption the",
+    "user has not read. An open row never sets it, so the two never hold",
+    "together."
   ],
   "cases": [
     {

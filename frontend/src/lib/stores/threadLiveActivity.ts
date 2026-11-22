@@ -4,8 +4,7 @@
 //
 // The threads:read push channels (provider:turn_started / turn_completed,
 // provider:approval, provider:user_input, provider:compacting,
-// provider:sends_pending, provider:session_live,
-// provider:turn_end_unrecorded) keep a
+// provider:sends_pending, provider:session_live) keep a
 // connected client current. A client that connects mid-turn, reloads, or
 // drops frames learns nothing from them about threads it has no pane on:
 // the pane path (threadLiveStateHydration.ts) reads one thread, and only
@@ -37,13 +36,11 @@ import {
   endSendsPendingRead,
   getActiveTurn,
   hydrateSendsPending,
-  hydrateTurnEndedUnread,
   interactiveRequestsRevision,
   projectTurnCompleted,
   projectTurnStarted,
   replaceInteractiveRequestsForThread,
   sameActiveTurn,
-  endedUnreadRevision,
   type ActiveTurn,
 } from './threadStatuses.svelte';
 
@@ -62,7 +59,6 @@ interface ActivityGuard {
   interactive: number;
   compacting: number;
   sessionLive: number;
-  endedUnread: number;
 }
 function captureActivity(threadId: string): ActivityGuard {
   return {
@@ -70,7 +66,6 @@ function captureActivity(threadId: string): ActivityGuard {
     interactive: interactiveRequestsRevision(threadId),
     compacting: compactingRevision(threadId),
     sessionLive: sessionLiveRevision(threadId),
-    endedUnread: endedUnreadRevision(threadId),
   };
 }
 function applyRow(row: ThreadLiveActivity, guard: ActivityGuard, sendsPendingChanged: ReadonlySet<string>): void {
@@ -90,7 +85,6 @@ function applyRow(row: ThreadLiveActivity, guard: ActivityGuard, sendsPendingCha
   hydrateCompactingState(row.threadId, row.compactingSinceUnixMs ?? 0, guard.compacting);
   hydrateSendsPending(row.threadId, row.sendsPending === true, sendsPendingChanged);
   hydrateSessionLive(row.threadId, row.sessionLive === true, guard.sessionLive);
-  hydrateTurnEndedUnread(row.threadId, row.turnEndedUnread === true, guard.endedUnread);
 }
 
 // Per computer, the read in flight and the one queued behind it. A request
@@ -165,11 +159,7 @@ async function readThreadLiveActivity(backend: BackendKey, own: Reads): Promise<
     const owner = threadBackend(row.threadId);
     if (owner === undefined) noteThread(row.threadId, backend);
     else if (owner !== backend) continue;
-    applyRow(
-      row,
-      atRequest.get(row.threadId) ?? { turn: null, interactive: 0, compacting: 0, sessionLive: 0, endedUnread: 0 },
-      sendsPendingChanged,
-    );
+    applyRow(row, atRequest.get(row.threadId) ?? { turn: null, interactive: 0, compacting: 0, sessionLive: 0 }, sendsPendingChanged);
   }
   for (const [threadId, guard] of atRequest) {
     if (!named.has(threadId) && threadBackend(threadId) === backend) {

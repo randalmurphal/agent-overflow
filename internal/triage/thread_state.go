@@ -160,9 +160,9 @@ type threadState struct {
 	// while it writes the turn's end: provider:turn_completed follows the
 	// settle writes. The live-state snapshots report it as the active
 	// round (liveRoundLocked), so a snapshot taken while the turn's end is
-	// written reads the turn running, as the push stream does, and it is
-	// a live mark (liveLocked). endRound clears it right before the
-	// announcement. The claim of the round stays takeOpenRound's.
+	// written reads the turn running, as the push stream does. endRound
+	// clears it right before the announcement. The claim of the round
+	// stays takeOpenRound's.
 	endingRound    ActiveTurnSnapshot
 	endingRoundSet bool
 
@@ -416,18 +416,6 @@ type threadIdentity struct {
 	// the order of the reads they carry. A leaf: nothing else is taken
 	// while it is held. Never replaced (same reasoning as anchorLock).
 	trayLock sync.Mutex
-	// endedLock serializes, PER THREAD, announceEnded's read of whether
-	// the thread's turn ended with its frame, and every turn start's
-	// provider:turn_started (emitTurnStarted), so a start never reaches
-	// the bus ahead of an end decided before it (turn_ended.go). Taken
-	// before r.mu, never while holding it. Never replaced (same reasoning
-	// as anchorLock).
-	endedLock sync.Mutex
-	// openingsMarked counts the turn opens the thread ever marked
-	// (markTurnOpeningLocked), under r.mu. TurnEnded compares it across
-	// its read of the newest turn row to tell that no turn opened during
-	// the read. On the identity so a cleanup does not reset it.
-	openingsMarked uint64
 
 	// claimedFlushItems holds batch items mid-handoff between the
 	// queue delete in tryFlushQueue and the dispatcher's synchronous

@@ -481,7 +481,7 @@ func TestThreadAgentRowsKeepASettledRemoteSpawnWhileItsWorkRuns(t *testing.T) {
 		pair.listRows(t)
 		pair.source.threadRequestsWG.Wait()
 		row, ok := agentRowByToken(pair.listRows(t).Rows, pair.spawn.Token)
-		return ok && row.open() && row.Worker == string(workerWaiting)
+		return ok && row.open() && row.Worker == workerWaiting
 	})
 	if err := pair.dest.StopSession(grand.TargetThreadID); err != nil {
 		t.Fatalf("StopSession: %v", err)
@@ -1286,7 +1286,7 @@ func TestARemoteWorkerThatRepliesAndKeepsWorkingStaysOpen(t *testing.T) {
 	var row ThreadAgentRow
 	waitUntil(t, 10*time.Second, func() bool {
 		row, _ = rowOf()
-		return row.Worker == string(workerRunning)
+		return row.Worker == workerRunning
 	})
 	if !row.open() || row.State != threadtools.RequestReplied || row.ComputerID != pair.computer {
 		t.Fatalf("row = %+v; want the replied remote spawn open while its thread runs", row)

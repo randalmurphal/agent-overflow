@@ -115,10 +115,6 @@ type Thread struct {
 	// The derived columns State reads. The last four are named as the
 	// frontend's reference implementation names them; HasOpenTurn has no
 	// frontend twin, which learns a running turn from its live events.
-	// HasOpenTurn is a running turn's open newest row: an open row whose
-	// turn has ended (triage's Router.TurnEnded) reads as the boot sweep
-	// will record it, HasOpenTurn false and HasIncompleteTurn by the
-	// unread rule.
 	HasOpenTurn               bool   `json:"-"`
 	HasIncompleteTurn         bool   `json:"-"`
 	HasFailedTurn             bool   `json:"-"`

@@ -128,12 +128,9 @@ type restDecision struct {
 	// unarmed is, by thread, the open sends and asks with no wake armed
 	// whose parked calls the first read checked.
 	unarmed map[string]map[string]bool
-	// ended is the threads whose open newest turn row the first read
-	// found ended unrecorded (turnRuns), so at rest.
-	ended  map[string]bool
-	atRest map[string]bool
-	noted  map[string]uint64
-	once   sync.Once
+	atRest  map[string]bool
+	noted   map[string]uint64
+	once    sync.Once
 }
 
 // readRest reads whether each of roots, and every thread a local spawn link
@@ -141,7 +138,7 @@ type restDecision struct {
 // outstanding. The decision is always returned, to be done; a root whose
 // read failed is not at rest, and the error names each such thread.
 func (a *App) readRest(roots []string) (*restDecision, error) {
-	d := &restDecision{app: a, atRest: map[string]bool{}, unarmed: map[string]map[string]bool{}, ended: map[string]bool{}}
+	d := &restDecision{app: a, atRest: map[string]bool{}, unarmed: map[string]map[string]bool{}}
 	subtree, err := a.store.ReadSubtreeRest(roots)
 	if err != nil {
 		return d, err
@@ -162,7 +159,6 @@ func (a *App) readRest(roots []string) (*restDecision, error) {
 		}
 		d.unarmed[id] = checked
 		rests[id] = a.restsWithin(id, src)
-		d.ended[id] = rests[id] && src.TurnOpen
 	}
 	for _, root := range roots {
 		at := len(subtree.Reached[root]) > 0
@@ -212,13 +208,10 @@ func (d *restDecision) guard(roots ...string) *store.RestGuard {
 // stillAtRest is the guard's check, inside the write's transaction, of the
 // subtrees and durable sources that transaction read: a root is still at
 // rest when every thread it reaches was reached by the first read, reads at
-// rest by its durable sources (no open turn row but the one the first read
-// found ended, d.ended; no source restWaits counts) with no open work and
-// no open send or ask the first read did not check for a parked call, and
-// kept its revision. Every turn open bumps the revision before it writes
-// a row (SetTurnOpeningObserver), so an open row read here on a thread that
-// kept its revision is the one the first read found ended. It reads only
-// the revision record, no store and no triage state.
+// rest by its durable sources (no open turn row, no source restWaits
+// counts) with no open work and no open send or ask the first read did not
+// check for a parked call, and kept its revision. It reads only the
+// revision record.
 func (d *restDecision) stillAtRest(subtree store.SubtreeRest) []string {
 	moved := d.app.restRevisions.moved(d.noted)
 	var out []string
@@ -231,7 +224,7 @@ func (d *restDecision) stillAtRest(subtree store.SubtreeRest) []string {
 			_, read := d.noted[id]
 			src := subtree.Sources[id]
 			waits, _ := restWaits(src, memoryWaits{}, nil)
-			at = read && !moved[id] && (!src.TurnOpen || d.ended[id]) && !src.OpenWork && waits.unrest == ""
+			at = read && !moved[id] && !src.TurnOpen && !src.OpenWork && waits.unrest == ""
 			for _, token := range src.Unarmed {
 				at = at && d.unarmed[id][token]
 			}

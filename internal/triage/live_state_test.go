@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
@@ -132,6 +133,37 @@ func TestLiveActivitySnapshot_NamesOnlyThreadsWithLiveActivity(t *testing.T) {
 		if entry.ThreadID == "running" {
 			t.Fatalf("running still listed after its round closed: %+v", entry)
 		}
+	}
+}
+
+// The round ends before provider:turn_completed goes out, so whatever the
+// frame starts reads it ended; until then a snapshot carries it.
+func TestATurnsRoundEndsBeforeItsCompletionIsAnnounced(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	var roundAtEmit *ActiveTurnSnapshot
+	read := false
+	router.emit = func(name eventchan.Channel, data any) {
+		if name == eventchan.ProviderTurnCompleted && !read {
+			read = true
+			roundAtEmit = router.LiveStateSnapshotForThread("t1").ActiveTurn
+		}
+		emissions.add(emitted{name.String(), data})
+	}
+	base := time.UnixMilli(1_700_000_000_000)
+	for _, evt := range []provider.ProviderEvent{
+		{Kind: provider.EventTurnStart, ThreadID: "t1", Timestamp: base},
+		{Kind: provider.EventTurnComplete, ThreadID: "t1", Timestamp: base.Add(time.Second), TurnComplete: normalTurnCompleteMeta()},
+	} {
+		if err := router.Handle(evt); err != nil {
+			t.Fatalf("%s: %v", evt.Kind, err)
+		}
+	}
+	if !read {
+		t.Fatal("no provider:turn_completed")
+	}
+	if roundAtEmit != nil {
+		t.Fatalf("round when provider:turn_completed went out = %+v; want it ended", roundAtEmit)
 	}
 }
 

@@ -1202,15 +1202,6 @@ describe('setupEventListeners', () => {
     expect(getThreadStatus('thread-1')).toBe('error');
   });
 
-  it('reads a thread interrupted from provider:turn_end_unrecorded until its next turn starts', () => {
-    emitWailsEvent('provider:turn_end_unrecorded', { threadId: 'thread-unrecorded' });
-    expect(getThreadStatus('thread-unrecorded')).toBe('interrupted');
-    emitWailsEvent('provider:turn_started', { threadId: 'thread-unrecorded', turnId: 'round-next', turnIndex: 1, startedAt: 10 });
-    expect(getThreadStatus('thread-unrecorded')).toBe('running');
-    emitWailsEvent('provider:turn_completed', { threadId: 'thread-unrecorded', turnId: 'round-next', turnIndex: 1 });
-    expect(getThreadStatus('thread-unrecorded')).toBe('idle');
-  });
-
   it('projects provider:sends_pending onto a thread this client has no pane for', () => {
     __setTransportHelloForTest({
       protocolVersion: 1, capabilities: ['sends-pending.v1'], backendId: '', backendName: '',

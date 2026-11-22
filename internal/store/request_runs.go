@@ -126,16 +126,6 @@ func tallyFiguresSQL(id, now string) [3]string {
 	return tallyFiguresSpanSQL(id, newestTurnSQL(id, `CASE WHEN `+turnOpenSQL+` THEN MAX(0, `+now+` - nt.started_at) END`))
 }
 
-// tallyFiguresAtRestSQL is tallyFiguresSQL for a thread at rest: an open
-// newest row there is a turn that ended with its end unrecorded
-// (Router.TurnEnded), counted to its last activity as the boot sweep will
-// record it (turnLastActivitySQL), not to now. A run that ends at its
-// worker's rest keeps these figures, so they agree with what the rest
-// decision read and with the worker's live row.
-func tallyFiguresAtRestSQL(id, now string) [3]string {
-	return tallyFiguresSpanSQL(id, newestTurnSQL(id, `CASE WHEN `+turnOpenSQL+` THEN MAX(0, `+turnLastActivitySQL("nt", now)+` - nt.started_at) END`))
-}
-
 // tallyFiguresSpanSQL is the three figures with span the time the thread's
 // open newest turn has run, NULL for none, read by the caller.
 func tallyFiguresSpanSQL(id, span string) [3]string {
@@ -192,7 +182,7 @@ type endedRun struct {
 // (endReceiptRunsTx).
 func endThreadRunsTx(tx *sql.Tx, threadID string) ([]endedRun, error) {
 	now := nowMillis()
-	tally := tallyFiguresAtRestSQL("?1", "?2")
+	tally := tallyFiguresSQL("?1", "?2")
 	runs, err := endRunsTx(tx, `target_computer_id = '' AND target_thread_id = ?1`,
 		[3]string{tally[0], tally[1], tally[2]}, threadID, now)
 	if err != nil {
@@ -334,10 +324,10 @@ func nudgeLinkSQL(thread, by string) string {
 func endNudgeRunsTx(tx *sql.Tx, threadID string) ([]endedRun, error) {
 	now := nowMillis()
 	const unowned = `NOT EXISTS (SELECT 1 FROM threads nw WHERE nw.id = ?1 AND nw.placement = 'owned')`
-	tally := tallyFiguresSQL("?1", "?2")
-	if err := endReceiptNudgesTx(tx, tally, ` AND `+unowned, threadID, now); err != nil {
+	if err := endReceiptNudgesTx(tx, ` AND `+unowned, threadID, now); err != nil {
 		return nil, err
 	}
+	tally := tallyFiguresSQL("?1", "?2")
 	return endRunsTx(tx, `target_computer_id = '' AND target_thread_id = ?1 AND nudge = 1 AND `+unowned,
 		[3]string{tally[0], tally[1], tally[2]}, threadID, now)
 }

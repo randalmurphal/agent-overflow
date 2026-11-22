@@ -23,18 +23,13 @@ package threadtools
 // reader of it never sees a turn between the two. The live round holds
 // until right before provider:turn_completed, after that write, so the two
 // overlap and the absence of a round never makes a thread interrupted. An
-// interruption is the row's recorded stop reason. An open row whose turn
-// nothing in this process runs (its end write failed, a failed boot sweep
-// left it) reaches State as the next boot's sweep will record it: not
-// open, and interrupted while the thread is unread (Thread.HasOpenTurn).
+// interruption is the row's recorded stop reason.
 //
 // The frontend's live 'error' and 'interrupted' registries have no Go
 // equivalent; the two durable columns below carry the same facts, which is
 // what the reference falls back to once the live status is idle. The
 // frontend has no HasOpenTurn: its live registry holds a turn until
-// provider:turn_completed, and its live 'interrupted' registry takes an
-// unread ended turn from provider:turn_end_unrecorded and both live-state
-// snapshots.
+// provider:turn_completed.
 //
 // internal/threadtools/testdata/thread_states.json is the shared table for
 // this function (state_test.go) and for the reference's own test

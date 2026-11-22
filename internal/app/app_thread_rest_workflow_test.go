@@ -512,7 +512,7 @@ func TestARunningWorkflowRunKeepsTheThreadItReportsToFromRest(t *testing.T) {
 	}
 	waitUntil(t, 10*time.Second, func() bool {
 		r := row()
-		return r.Worker == string(workerWaiting) && r.Activity == "Workflow · ship it"
+		return r.Worker == workerWaiting && r.Activity == "Workflow · ship it"
 	})
 	if err := f.app.WorkflowPauseItem(context.Background(), item.ID); err != nil {
 		t.Fatal(err)
@@ -536,6 +536,6 @@ func TestARunningWorkflowRunKeepsTheThreadItReportsToFromRest(t *testing.T) {
 	}
 	waitUntil(t, 10*time.Second, func() bool {
 		r := row()
-		return r.Worker == string(workerWaiting) && r.Activity == "Workflow · ship it"
+		return r.Worker == workerWaiting && r.Activity == "Workflow · ship it"
 	})
 }

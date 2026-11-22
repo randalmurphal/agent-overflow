@@ -1016,17 +1016,6 @@ var channelPolicies = []ChannelPolicy{
 			"never latest-only.",
 	},
 	{
-		Channel:   eventchan.ProviderTurnEndUnrecorded,
-		Audience:  AudienceAny,
-		Retention: RetentionDefault,
-		Scope:     ScopeThreadsRead,
-		Why: "{threadId} only: the thread's newest turn ended with the store " +
-			"not holding its end, and the thread was not read since, which " +
-			"every sidebar shows as Interrupted instead of running. No " +
-			"content, so the sidebar audience of provider:turn_completed. " +
-			"Keyed per thread: never latest-only.",
-	},
-	{
 		Channel:   eventchan.ProviderTurnStarted,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,

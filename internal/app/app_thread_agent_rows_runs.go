@@ -102,7 +102,7 @@ func (a *App) remoteRunWorker(row store.ThreadRequest) workerRest {
 	}
 	switch {
 	case answer.listing.Worker != "":
-		return workerRest{unrest: workerState(answer.listing.Worker), detail: answer.listing.Activity}
+		return workerRest{unrest: answer.listing.Worker, detail: answer.listing.Activity}
 	case peerListingOpen(answer.listing):
 		return workerRest{unrest: workerWaiting, detail: answer.listing.Activity}
 	}

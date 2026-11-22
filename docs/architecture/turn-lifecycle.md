@@ -830,48 +830,25 @@ worktree setups and review-comment claims whose message was never
 delivered) each run in their own boot phase. A sweep that fails
 does not stop the boot: it is reported as a failed boot phase, which
 every client shows ([startup readiness](transport.md#startup-readiness)),
-and the next start runs it again. The rows a failed crashed-turn sweep
-leaves open read as ended turns (below).
+and the next start runs it again.
 
 Post-sweep, a thread's newest `completed_at=null` row during an app run
-is live provider work while triage holds the thread live, and every
-durable reader reads it as running (`Thread.HasOpenTurn`,
-`GetActiveTurn`, the rest sources). The row is open until
-`UpdateTurnCompleted` settles it. The live round
+means genuinely live provider work, and every durable reader reads it
+as running (`Thread.HasOpenTurn`, `GetActiveTurn`, the rest sources).
+The row is open until `UpdateTurnCompleted` settles it. The live round
 outlasts that write: triage takes the round when the completion
 arrives and reports it as the ending round in both live-state
 snapshots while the turn's end is written, so a reader sees the turn
 running throughout. The round ends right before
 `provider:turn_completed` goes out, so what that frame starts (a
-worker's reassessment, a wait's read) finds it ended. The durable "interrupted"
-signal that survives restarts is `stop_reason='interrupted'`, the only
-thing the sidebar's boot pill (`Thread.HasIncompleteTurn`) reads: an
-unseen settled interruption.
+worker's reassessment, a wait's read) finds it ended. The durable
+"interrupted" signal that survives restarts is
+`stop_reason='interrupted'`, the only thing the sidebar's boot pill
+(`Thread.HasIncompleteTurn`) reads: an unseen settled interruption.
 
-When the write of a turn's end fails, when the boot sweep fails, or
-when a start is refused after it wrote its row, the row stays open with
-nothing running its turn. `Router.TurnEnded`
-(`internal/triage/turn_ended.go`) is the one owner of that answer: the
-thread's newest row is open and the thread has no live mark (no turn
-start in progress, no turn open under way, no open turn, no open round,
-no round being ended). Every turn open marks the thread before it
-writes or reopens a row, and every settle writes the row before it
-drops the marks, so the answer never takes a running turn for an ended
-one. Such a turn reads as the next boot's sweep will record it:
-interrupted, ended at its last item write, unread by the rule of a
-recorded interruption. The thread tools read it so, the rest decision
-and the Agents rows count its time to that end, and a run that ends at
-the worker's rest keeps that figure. When the thread's last live mark
-drops, triage tells the app, and, for a thread not read since the end,
-every client (`provider:turn_end_unrecorded {threadId}`; both
-live-state snapshots carry `turnEndedUnread`), which reads it as an
-unread interruption until the thread is read or starts a turn. An error
-row that says why the end failed, when the store takes it, makes the
-thread read Failed. Nothing writes the end again: the row stays open
-until a later boot's sweep records it, so the turn's own stop reason,
-usage and message id are lost, `GetActiveTurn` still reads the row as
-active (send placement queues behind it, revert refuses), and the
-thread's runtime loses the turn's time once its next turn starts.
+When the write of a turn's end fails, or the boot sweep fails, the row
+stays open with nothing running its turn, and it reads as running until
+a later boot's sweep records it as interrupted.
 
 The frontend still shows no active-turn spinner for any of this
 (spinner requires a live `activeTurn` push, not a DB row), and we do

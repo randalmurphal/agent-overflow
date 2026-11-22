@@ -115,7 +115,7 @@ func (f *requestFixture) expectWaiting(t *testing.T, token, line string) ThreadA
 	if past := f.pastTokens(t, f.caller.ID); slices.Contains(past, token) {
 		t.Fatalf("past = %v; want the waiting worker kept out", past)
 	}
-	if after := f.listingAfterWindow(t, f.caller.ID); len(after.Rows) != 1 || after.Rows[0].Worker != string(workerWaiting) {
+	if after := f.listingAfterWindow(t, f.caller.ID); len(after.Rows) != 1 || after.Rows[0].Worker != workerWaiting {
 		t.Fatalf("after the settled window rows %+v; want the waiting worker kept", after.Rows)
 	}
 	return row
@@ -320,7 +320,7 @@ func TestWaitingWorkersAreOpenAfterARestart(t *testing.T) {
 		rows := after.agentRows(t, f.caller.ID).Rows
 		waiting := 0
 		for _, row := range rows {
-			if row.Worker == string(workerWaiting) {
+			if row.Worker == workerWaiting {
 				waiting++
 			}
 		}
@@ -367,7 +367,7 @@ func TestARemoteWorkerWithAnArmedLoopIsOpen(t *testing.T) {
 	var row ThreadAgentRow
 	waitUntil(t, 10*time.Second, func() bool {
 		row = rowOf()
-		return row.Worker == string(workerWaiting)
+		return row.Worker == workerWaiting
 	})
 	if !row.open() || row.needsYou() || row.ComputerID != pair.computer {
 		t.Fatalf("row = %+v; want the remote spawn open, waiting", row)

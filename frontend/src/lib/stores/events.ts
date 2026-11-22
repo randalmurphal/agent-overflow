@@ -164,7 +164,6 @@ import {
   type CompactingStatePayload,
 } from './compactingState.svelte';
 import { applySessionLive, type SessionLivePayload } from './threadSessionLive.svelte';
-import { applyTurnEndUnrecorded, type TurnEndUnrecordedPayload } from './threadStatuses.svelte';
 import { applySubagentProgress, clearSubagentProgressForThread } from './subagentProgress.svelte';
 import type { BackgroundTaskOutputEvent, BackgroundTrayEvent, SubagentProgressEvent } from '../types/events';
 import { applyBackgroundTrayEvent } from './eventsBackgroundTray';
@@ -563,15 +562,6 @@ export function setupEventListeners(): () => void {
     applySessionLive,
   );
 
-  // provider:turn_end_unrecorded: the thread's newest turn ended with the
-  // store not holding its end, and the thread was not read since, which
-  // the thread's status reads as an unread interruption. The snapshot legs
-  // are both live-state reads.
-  const cancelTurnEndUnrecorded = wailsEventOn<TurnEndUnrecordedPayload>(
-    'provider:turn_end_unrecorded',
-    applyTurnEndUnrecorded,
-  );
-
   // provider:subagent_progress — the latest live counters of one running
   // subagent (tool count, tokens, elapsed, activity line). Triage merges
   // each tick over the previous one, so the newest frame is the whole
@@ -900,7 +890,6 @@ export function setupEventListeners(): () => void {
     cancelFastModeState();
     cancelCompactingState();
     cancelSessionLive();
-    cancelTurnEndUnrecorded();
     cancelSubagentProgress();
     cancelBackgroundTray();
     cancelThreadWakes();

@@ -222,9 +222,6 @@ function applySettledTransportGap(gap: TransportGap, origin?: EventOrigin): void
     case 'provider:session_live':
       // A missed frame leaves End Session offered for a session that
       // ended, or withheld from one that started.
-    case 'provider:turn_end_unrecorded':
-      // A missed frame leaves a row idle for a turn whose end the store
-      // did not take, which reads as an unread interruption.
       resyncThreadLiveActivity(origin);
       return;
     case 'provider:sends_pending': {

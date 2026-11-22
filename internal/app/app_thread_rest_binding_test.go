@@ -113,13 +113,13 @@ func (r *reportingRuns) finish(t *testing.T, item store.WorkItem) {
 
 // awaitWorkerRow waits until token's row shows its worker as worker with
 // activity, "" for both once it rests.
-func (f *requestFixture) awaitWorkerRow(t *testing.T, token string, worker workerState, activity string) {
+func (f *requestFixture) awaitWorkerRow(t *testing.T, token, worker, activity string) {
 	t.Helper()
 	var row ThreadAgentRow
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		row, _ = agentRowByToken(f.agentRows(t, f.caller.ID).Rows, token)
-		if row.Worker == string(worker) && (worker == workerAtRest || row.Activity == activity) {
+		if row.Worker == worker && (worker == "" || row.Activity == activity) {
 			return
 		}
 		if time.Now().After(deadline) {

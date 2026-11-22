@@ -46,16 +46,16 @@ func spawnRunOpenSQL(alias string) string {
 
 // endReceiptRunsTx ends the open runs of the settled receipts to thread,
 // and the open nudge runs on it, recording its figures over its life at
-// now; thread is at rest (tallyFiguresAtRestSQL).
+// now.
 func endReceiptRunsTx(tx *sql.Tx, threadID string, now int64) error {
-	tally := tallyFiguresAtRestSQL("?1", "?2")
+	tally := tallyFiguresSQL("?1", "?2")
 	_, err := tx.Exec(`UPDATE thread_request_receipts INDEXED BY idx_thread_request_receipts_run_open
 		    SET run_open = 0, run_tool_calls = `+tally[0]+`, run_tokens = `+tally[1]+`, run_turn_ms = `+tally[2]+`
 		  WHERE target_thread_id = ?1 AND run_open = 1 AND settled_at IS NOT NULL`, threadID, now)
 	if err != nil {
 		return fmt.Errorf("end the runs of the receipts to %s: %w", threadID, err)
 	}
-	return endReceiptNudgesTx(tx, tally, "", threadID, now)
+	return endReceiptNudgesTx(tx, "", threadID, now)
 }
 
 // A paired computer's spawn link keeps the runs nudges of its worker here
@@ -113,9 +113,9 @@ func (s *Store) startPeerNudgeRun(token, threadID, byThreadID string, start Nudg
 }
 
 // endReceiptNudgesTx ends the open nudge runs on threadID (?1) at now (?2)
-// where also holds, recording the thread's figures over its life then, as
-// tally reads them with those parameters.
-func endReceiptNudgesTx(tx *sql.Tx, tally [3]string, also string, threadID string, now int64, args ...any) error {
+// where also holds, recording the thread's figures over its life then.
+func endReceiptNudgesTx(tx *sql.Tx, also string, threadID string, now int64, args ...any) error {
+	tally := tallyFiguresSQL("?1", "?2")
 	_, err := tx.Exec(`UPDATE thread_receipt_nudges INDEXED BY idx_thread_receipt_nudges_open
 		    SET run_open = 0, ended_at = ?2, run_tool_calls = `+tally[0]+`, run_tokens = `+tally[1]+`, run_turn_ms = `+tally[2]+`
 		  WHERE target_thread_id = ?1 AND run_open = 1`+also, append([]any{threadID, now}, args...)...)

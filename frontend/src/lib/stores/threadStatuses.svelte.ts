@@ -231,18 +231,6 @@ const activeTurns = createKeyedSignalRegistry<ActiveTurn | null>(null);
 const completedTurnIDsByThread = new Map<string, Set<string>>();
 const errorThreads = new Set<string>();
 const interruptedThreads = new Set<string>();
-// A turn whose end its computer's store did not hold, read unread by that
-// computer (`provider:turn_end_unrecorded`, and the `turnEndedUnread` field
-// of both live-state snapshots, threadLiveActivity.ts and
-// threadLiveStateHydration.ts), is an interruption the user has not read,
-// as that computer's next boot will record it: it joins interruptedThreads
-// and leaves it as any interruption does. The backend applies the unread
-// rule; this client only learns the answer. The revision moves on each
-// frame and on each event that ends such an interruption (a turn start, a
-// send, a view, a clear), so a snapshot read across one does not restate
-// it.
-const endedUnreadRevisions = new Map<string, number>();
-let endedUnreadRevisionCounter = 0;
 const liveStateHydrationTokenByThread = new Map<string, number>();
 // The turn a Stop optimistically cleared while its interrupt RPC is
 // unanswered, so a background-kill refusal can put it back. Any canonical
@@ -414,7 +402,6 @@ export function clearThreadStatus(threadId: string): void {
   interactiveRevisions.delete(threadId);
   errorThreads.delete(threadId);
   interruptedThreads.delete(threadId);
-  endedUnreadRevisions.delete(threadId);
   liveStateHydrationTokenByThread.delete(threadId);
   liveStateHydratingThreads.drop(threadId);
   clearSendQueueForThread(threadId);
@@ -445,7 +432,6 @@ export function projectSendStarted(threadId: string): void {
   // "Failed" — the user has moved past that failure.
   errorThreads.delete(threadId);
   interruptedThreads.delete(threadId);
-  noteEndedUnreadChange(threadId);
   pendingSendThreads.set(threadId, true);
   recalculateThreadStatus(threadId);
 }
@@ -602,42 +588,6 @@ export function endSendsPendingRead(read: ReadonlySet<string>): void {
   sendsPendingReads.delete(read as Set<string>);
 }
 
-export interface TurnEndUnrecordedPayload {
-  threadId: string;
-}
-
-/** The revision a live-state read captures before it asks (endedUnreadRevisions). */
-export function endedUnreadRevision(threadId: string): number {
-  return endedUnreadRevisions.get(threadId) ?? 0;
-}
-
-function noteEndedUnreadChange(threadId: string): void {
-  endedUnreadRevisions.set(threadId, ++endedUnreadRevisionCounter);
-}
-
-function projectEndedUnread(threadId: string): void {
-  interruptedThreads.add(threadId);
-  recalculateThreadStatus(threadId);
-}
-
-/** Apply a `provider:turn_end_unrecorded` frame: an interruption the user has not read. */
-export function applyTurnEndUnrecorded(evt: TurnEndUnrecordedPayload | null | undefined): void {
-  if (!evt?.threadId) return;
-  noteEndedUnreadChange(evt.threadId);
-  projectEndedUnread(evt.threadId);
-}
-
-/**
- * Apply a live-state snapshot's `turnEndedUnread`, unless a frame or an
- * event that ends such an interruption landed since `expectedRevision` was
- * read. A snapshot without it says nothing: an interruption this client
- * holds ends as any other does.
- */
-export function hydrateTurnEndedUnread(threadId: string, endedUnread: boolean, expectedRevision: number): void {
-  if (!threadId || !endedUnread || endedUnreadRevision(threadId) !== expectedRevision) return;
-  projectEndedUnread(threadId);
-}
-
 /** Apply a snapshot's answer unless the thread's answer changed during the read. */
 export function hydrateSendsPending(threadId: string, pending: boolean, read: ReadonlySet<string>): void {
   if (!threadId || read.has(threadId)) return;
@@ -752,7 +702,6 @@ export function projectTurnStarted(
   // where the pill reads it from for panes and off-pane sidebars alike.
   pendingSendThreads.set(threadId, false);
   refusableStops.delete(threadId);
-  noteEndedUnreadChange(threadId);
   if (hasCompletedTurnID(threadId, turnId)) {
     recalculateThreadStatus(threadId);
     return;
@@ -1079,7 +1028,6 @@ export function projectUserInputResolution(
  */
 export function projectThreadViewed(threadId: string): void {
   if (!threadId) return;
-  noteEndedUnreadChange(threadId);
   const hadAttentionStatus = errorThreads.has(threadId) || interruptedThreads.has(threadId);
   if (!hadAttentionStatus) return;
   errorThreads.delete(threadId);
@@ -1109,7 +1057,6 @@ export function resetForTest(): void {
   waitingOnAgents.reset();
   errorThreads.clear();
   interruptedThreads.clear();
-  endedUnreadRevisions.clear();
   liveStateHydrationTokenByThread.clear();
   resetSendQueueForTest();
   resetFastModeStateForTest();

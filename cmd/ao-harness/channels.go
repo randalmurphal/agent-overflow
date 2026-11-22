@@ -88,7 +88,6 @@ func eventChannelConstants() []eventchan.Channel {
 		eventchan.ProviderTerminalOutput,
 		eventchan.ProviderTodoUpdate,
 		eventchan.ProviderTurnCompleted,
-		eventchan.ProviderTurnEndUnrecorded,
 		eventchan.ProviderTurnStarted,
 		eventchan.ProviderUpdates,
 		eventchan.ProviderUsage,

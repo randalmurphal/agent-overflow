@@ -107,10 +107,6 @@ func (a *App) configureTriageQueueCallbacks() {
 	// A turn opening is memory until its row commits: a decision on rest
 	// under way learns of it at the mark.
 	a.triage.SetTurnOpeningObserver(a.noteThreadRestChange)
-	// A turn that ended unrecorded has no turn frame when its start was
-	// refused after its row was written: its worker reads at rest again,
-	// and its Agents rows stop showing it running.
-	a.triage.SetTurnEndedObserver(a.noteWorkerLiveness)
 	a.triage.SetSendUndeliveredHook(func(threadID string) {
 		// Off the provider event worker: the restore takes the thread
 		// action lock, which an interrupt holds while it waits on this

@@ -95,8 +95,7 @@ func liveStatusOf(live LiveState) string {
 // TestStateReadsAnOpenRow covers what only Go reads, the newest turn row:
 // open with no live round, it is a running turn. The frontend has no
 // open-row input; its live registry holds a turn until
-// provider:turn_completed. An open row whose turn has ended reaches State
-// already read as the boot sweep will record it (Thread.HasOpenTurn).
+// provider:turn_completed.
 func TestStateReadsAnOpenRow(t *testing.T) {
 	if got := State(Thread{HasOpenTurn: true}, LiveState{}); got != StateRunning {
 		t.Errorf("an open row with no live round = %q, want running", got)

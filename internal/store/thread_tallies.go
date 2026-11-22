@@ -155,8 +155,7 @@ func addOwnSpendTx(tx *sql.Tx, spend OwnSpend) error {
 // TurnStartedAt that turn's start as this computer recorded it: which turn
 // it is, so a reader can tell a later read of the same open turn from one
 // of the next. The turn is the thread's newest row while it is open
-// (turn_newest.go); the app reads one whose turn ended unrecorded as ended
-// (App.liveTally).
+// (turn_newest.go).
 type ThreadTally struct {
 	ToolCalls     int64
 	Tokens        int64

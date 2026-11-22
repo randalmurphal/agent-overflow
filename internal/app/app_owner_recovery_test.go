@@ -371,12 +371,12 @@ func TestOwnerPaneReadsChangedDescendantsBeforeTheCachedTreeAges(t *testing.T) {
 		}
 		return agentRowByToken(rows.Rows, c.spawns[1])
 	}
-	waitUntil(t, 10*time.Second, func() bool { row, ok := grandchild(); return ok && row.Worker == string(workerRunning) })
+	waitUntil(t, 10*time.Second, func() bool { row, ok := grandchild(); return ok && row.Worker == workerRunning })
 	cache := &c.apps[0].threadAgentPeers
 	cache.mu.Lock()
 	cache.entries[c.spawns[0]].at = time.Now().Add(time.Hour)
 	cache.mu.Unlock()
 	approvalOn(t, c.apps[2], c.threads[1], "release-approval")
-	waitUntil(t, 10*time.Second, func() bool { row, ok := grandchild(); return ok && row.Worker == string(workerBlocked) })
+	waitUntil(t, 10*time.Second, func() bool { row, ok := grandchild(); return ok && row.Worker == workerBlocked })
 
 }

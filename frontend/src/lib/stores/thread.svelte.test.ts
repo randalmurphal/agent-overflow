@@ -15,7 +15,6 @@ import { LIVE_TODO_AUTOHIDE_MS } from './liveTodoState.svelte';
 import { type Item } from '../types/models';
 import {
   getActiveTurn,
-  projectThreadViewed,
   projectTurnStarted,
   projectTurnCompleted,
   getThreadStatus,
@@ -23,7 +22,6 @@ import {
   isThreadLiveStateHydrating,
 } from './threadStatuses.svelte';
 import settling from '../../../../internal/app/testdata/turn_settling_snapshot.json';
-import unrecorded from '../../../../internal/app/testdata/turn_end_unrecorded_snapshot.json';
 import {
   getFlushedForThread,
   getQueueForThread,
@@ -107,45 +105,6 @@ describe('createThreadPane', () => {
       expect(getThreadStatus(threadId)).toBe('running');
       projectTurnCompleted(threadId, activeTurn.turnId);
       expect(getActiveTurn(threadId)).toBeNull();
-      expect(getThreadStatus(threadId)).toBe('idle');
-    });
-  });
-
-  // The snapshot GetThreadLiveState gives once the store refused a turn's
-  // end (internal/app/testdata/turn_end_unrecorded_snapshot.json): the
-  // thread reads as an interruption the user has not read, as its next boot
-  // will record it.
-  describe('the snapshot of a turn whose end was not recorded', () => {
-    const { threadId } = unrecorded.liveState;
-
-    it('reads the thread interrupted until it is viewed', async () => {
-      const pane = await buildPane(makeThread({ id: threadId }));
-      setBindingMock('GetThreadLiveState', async () => unrecorded.liveState);
-      await pane.refreshFromBackend(true);
-      expect(getActiveTurn(threadId)).toBeNull();
-      expect(getThreadStatus(threadId)).toBe('interrupted');
-      projectThreadViewed(threadId);
-      expect(getThreadStatus(threadId)).toBe('idle');
-    });
-
-    it('yields to a turn start that landed while the read was out', async () => {
-      const pane = await buildPane(makeThread({ id: threadId }));
-      let answer: ((value: unknown) => void) | undefined;
-      setBindingMock('GetThreadLiveState', () => new Promise((resolve) => { answer = resolve; }));
-      const refreshing = pane.refreshFromBackend(true);
-      await vi.waitFor(() => expect(answer).toBeDefined());
-      projectTurnStarted(threadId, 'round-next', 1, 10);
-      projectTurnCompleted(threadId, 'round-next');
-      answer!(unrecorded.liveState);
-      await refreshing;
-      expect(getThreadStatus(threadId)).toBe('idle');
-    });
-
-    it('reads as before from a backend that does not send the field', async () => {
-      const pane = await buildPane(makeThread({ id: threadId }));
-      const { turnEndedUnread: _, ...older } = unrecorded.liveState;
-      setBindingMock('GetThreadLiveState', async () => older);
-      await pane.refreshFromBackend(true);
       expect(getThreadStatus(threadId)).toBe('idle');
     });
   });

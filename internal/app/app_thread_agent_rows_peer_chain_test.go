@@ -378,11 +378,11 @@ func TestAForwardedListingKeepsTheLastAnswerOfAComputerFurtherOn(t *testing.T) {
 			got := summary()
 			switch outcome {
 			case "unreachable":
-				if got.NeedYou != 1 || row.Worker != string(workerBlocked) || !row.needsYou() || row.NestedUnavailable == "" {
+				if got.NeedYou != 1 || row.Worker != workerBlocked || !row.needsYou() || row.NestedUnavailable == "" {
 					t.Fatalf("with computer 2 not answering: summary %+v, its worker's row %+v; want the approval still waiting on the person, saying it did not answer", got, row)
 				}
 			case "refused":
-				if got.NeedYou != 0 || row.Worker == string(workerBlocked) {
+				if got.NeedYou != 0 || row.Worker == workerBlocked {
 					t.Fatalf("with the worker gone there: summary %+v, its row %+v; want nothing waiting on the person", got, row)
 				}
 			}

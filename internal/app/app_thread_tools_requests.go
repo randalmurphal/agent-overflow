@@ -384,29 +384,26 @@ func (t threadToolsApp) threadStateNow(ctx context.Context, threadID string) (th
 	}
 	projected := t.projectThread(thread)
 	out := threadtools.ThreadState{ThreadID: thread.ID, Title: thread.Title, State: threadtools.State(projected, live)}
-	if !threadtools.Resting(out.State) {
-		return out, nil
-	}
-	// Its turn is over; it rests once nothing it started is left
-	// (threadRest), the rest a spawn's request settles on. That read comes
-	// after the state's, so what it finds is the newer of the two.
-	if hook := t.app.threadStateReadForTest; hook != nil {
-		hook(threadID)
-	}
-	rest, err := t.app.threadRest(threadID)
-	if err != nil {
-		return threadtools.ThreadState{}, err
-	}
-	switch rest.unrest {
-	case workerAtRest:
-	case workerBlocked:
-		// An async question nothing else shows, or a prompt that opened
-		// after the state was read.
-		out.State = threadtools.StateAwaitingInput
-	case workerRunning:
-		// A turn that started after the state was read.
-		out.State = threadtools.StateRunning
-	case workerQueued, workerWaiting:
+	if threadtools.Resting(out.State) {
+		// Its turn is over; it rests once nothing it started is left
+		// (threadRest), the rest a spawn's request settles on. That read
+		// comes after the state's, so what it finds is the newer of the two.
+		if hook := t.app.threadStateReadForTest; hook != nil {
+			hook(threadID)
+		}
+		rest, err := t.app.threadRest(threadID)
+		if err != nil {
+			return threadtools.ThreadState{}, err
+		}
+		switch rest.unrest {
+		case workerBlocked:
+			// An async question nothing else shows, or a prompt that
+			// opened after the state was read.
+			out.State = threadtools.StateAwaitingInput
+		case workerRunning:
+			// A turn that started after the state was read.
+			out.State = threadtools.StateRunning
+		}
 		out.WaitingOn = rest.waitingLine()
 	}
 	out.Resting = threadtools.Rests(out)

@@ -87,7 +87,7 @@ func (f *requestFixture) pastTokens(t *testing.T, threadID string) []string {
 // awaitWorker waits until the row token of threadID's listing reports the
 // worker state want, empty for a worker at rest, and returns the row; a
 // row the listing no longer shows reads as at rest.
-func (f *requestFixture) awaitWorker(t *testing.T, threadID, token string, want workerState) ThreadAgentRow {
+func (f *requestFixture) awaitWorker(t *testing.T, threadID, token, want string) ThreadAgentRow {
 	t.Helper()
 	var row ThreadAgentRow
 	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
@@ -98,7 +98,7 @@ func (f *requestFixture) awaitWorker(t *testing.T, threadID, token string, want 
 				row = r
 			}
 		}
-		if row.Worker == string(want) {
+		if row.Worker == want {
 			return row
 		}
 		if time.Now().After(deadline) {
@@ -208,7 +208,7 @@ func TestAWorkerThatRepliesAndKeepsWorkingStaysOpen(t *testing.T) {
 	if past := f.pastTokens(t, f.caller.ID); len(past) != 0 {
 		t.Fatalf("past = %v; want the running worker kept out", past)
 	}
-	if after := f.listingAfterWindow(t, f.caller.ID); len(after.Rows) != 1 || after.Rows[0].Worker != string(workerRunning) {
+	if after := f.listingAfterWindow(t, f.caller.ID); len(after.Rows) != 1 || after.Rows[0].Worker != workerRunning {
 		t.Fatalf("after the settled window: rows %+v; want the running worker kept", after.Rows)
 	}
 
@@ -353,7 +353,7 @@ func TestAWorkerBlockedWithNoRequestRunning(t *testing.T) {
 	if got, want := agentRowTokens(rows), []string{"lead-child", "child-grand"}; !slices.Equal(got, want) {
 		t.Fatalf("rows %v; want %v", got, want)
 	}
-	if !rows[0].open() || rows[0].Worker != string(workerWaiting) || row.Depth != 1 || row.BlockedOn != "approval" || row.BlockedRoutedTo != child.Title {
+	if !rows[0].open() || rows[0].Worker != workerWaiting || row.Depth != 1 || row.BlockedOn != "approval" || row.BlockedRoutedTo != child.Title {
 		t.Fatalf("rows %+v; want the top row waiting on its blocked nested worker", rows)
 	}
 	f.awaitCallerFrame(t, f.caller.ID, leadFrames)

@@ -9296,14 +9296,6 @@ export class ThreadLiveActivity {
      */
     "sessionLive"?: boolean;
 
-    /**
-     * TurnEndedUnread says the thread's newest turn ended with its end
-     * unrecorded and the thread was not read since
-     * (provider:turn_end_unrecorded): it reads as an interruption the user
-     * has not read, as the next boot's sweep will record it.
-     */
-    "turnEndedUnread"?: boolean;
-
     /** Creates a new ThreadLiveActivity instance. */
     constructor($$source: Partial<ThreadLiveActivity> = {}) {
         if (!("threadId" in $$source)) {
@@ -9384,12 +9376,6 @@ export class ThreadLiveState {
      * window can span minutes of wire silence, so no push will restate it.
      */
     "compactingSinceUnixMs"?: number;
-
-    /**
-     * TurnEndedUnread is ThreadLiveActivity's: provider:turn_end_unrecorded
-     * for refresh and reconnect.
-     */
-    "turnEndedUnread"?: boolean;
 
     /**
      * SessionCLIVersion / InstalledCLIVersion mirror the `binary_stale`

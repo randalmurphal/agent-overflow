@@ -108,10 +108,10 @@ func (a *App) nestPeerAgentRows(parent *ThreadAgentRow, slot threadAgentRemoteSl
 		case answer.listing.Worker != "":
 			parent.Worker = answer.listing.Worker
 		case open != nil && *open && parent.Worker == "":
-			parent.Worker = string(workerWaiting)
+			parent.Worker = workerWaiting
 		}
 		peerSpawnReport(parent, slot.spawn, answer)
-		if parent.Worker == string(workerBlocked) || parent.State == threadtools.RequestBlocked {
+		if parent.Worker == workerBlocked || parent.State == threadtools.RequestBlocked {
 			a.peerSpawnBlocked(parent, answer.listing)
 		}
 		if parent.open() && parent.BlockedOn == "" {

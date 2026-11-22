@@ -23,13 +23,11 @@ import { cursorFromItem } from './threadItems';
 import {
   finishThreadLiveStateHydration,
   getActiveTurn,
-  hydrateTurnEndedUnread,
   isThreadLiveStateHydrationCurrent,
   projectTurnCompleted,
   projectTurnStarted,
   replaceInteractiveRequestsForThread,
   sameActiveTurn,
-  endedUnreadRevision,
   type ActiveTurn,
 } from './threadStatuses.svelte';
 import {
@@ -231,7 +229,6 @@ export function createThreadLiveStateHydration(
     // window has no upcoming frame to learn it from — the snapshot is the
     // only source. 0 clears a flag the window's close outran.
     hydrateCompactingState(threadID, snapshot.compactingSinceUnixMs ?? 0, guard.compactingRevisionAtRequest);
-    hydrateTurnEndedUnread(threadID, snapshot.turnEndedUnread === true, guard.endedUnreadRevisionAtRequest);
     // A composer shell command outlives the client that started it, and its
     // `finished` frame is the only push that ends it here.
     reconcileShellRun(threadID, snapshot.shellCommandRunId ?? '', guard.shellRunRevisionAtRequest);
@@ -257,7 +254,6 @@ export function createThreadLiveStateHydration(
     };
     const guard: LiveStateHydrationGuard = {
       compactingRevisionAtRequest: compactingRevision(threadID),
-      endedUnreadRevisionAtRequest: endedUnreadRevision(threadID),
       shellRunRevisionAtRequest: shellRunRevision(threadID),
       codexAgentRevisionAtRequest: codexAgentRevision(threadID),
       subagentProgressRevisionAtRequest: subagentProgressRevision(threadID),

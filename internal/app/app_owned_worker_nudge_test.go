@@ -160,7 +160,7 @@ func TestANudgeOfAWorkerSpawnedBeforeRunsIsARunOfItsOwn(t *testing.T) {
 	waitUntil(t, 10*time.Second, func() bool {
 		f.app.threadRequestsWG.Wait()
 		open = f.openRows(t, f.caller.ID)
-		return len(open) == 1 && open[0].Worker == string(workerRunning)
+		return len(open) == 1 && open[0].Worker == workerRunning
 	})
 	if open[0].Kind != threadAgentKindNudge || open[0].Token == "old-nudged-spawn" || open[0].Tokens != 0 {
 		t.Fatalf("open rows %+v; want the nudge's run alone, counted from the nudge", open)
@@ -246,7 +246,7 @@ func TestAStopOfANudgedWorkersRowTellsItsSpawner(t *testing.T) {
 		if len(open) == 1 {
 			row = open[0]
 		}
-		return len(open) == 1 && open[0].Worker == string(workerRunning)
+		return len(open) == 1 && open[0].Worker == workerRunning
 	})
 	stop, err := f.app.StopThreadAgentRow(t.Context(), f.caller.ID, row.Token)
 	if err != nil || stop.Outcome != threadAgentStopped {
@@ -350,7 +350,7 @@ func TestShowInSidebarEndsANudgesRun(t *testing.T) {
 		if len(open) == 1 {
 			nudge = open[0].Token
 		}
-		return len(open) == 1 && open[0].Worker == string(workerRunning)
+		return len(open) == 1 && open[0].Worker == workerRunning
 	})
 	if _, err := f.app.SetThreadPlacement([]string{worker.ID}, store.PlacementStandalone); err != nil {
 		t.Fatal(err)

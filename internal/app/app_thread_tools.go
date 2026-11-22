@@ -171,13 +171,6 @@ func (p *threadProjector) thread(thread store.Thread) threadtools.Thread {
 		HasActionableProposedPlan: thread.HasActionableProposedPlan,
 		WorktreeSetupState:        thread.WorktreeSetupState,
 	}
-	if thread.HasOpenTurn {
-		// A turn that ended unrecorded reads as the boot sweep will record
-		// it: settled as interrupted, unread by the rule of a recorded one.
-		if ended, ok := p.app.endedTurn(thread.ID); ok {
-			out.HasOpenTurn, out.HasIncompleteTurn = false, ended.Unread
-		}
-	}
 	if thread.WorktreePath != "" {
 		out.WorkspacePath = thread.WorktreePath
 	}

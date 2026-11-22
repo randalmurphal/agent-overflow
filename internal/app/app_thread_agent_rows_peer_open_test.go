@@ -54,7 +54,7 @@ func paneShowsTheRemoteSpawnOpen(t *testing.T, pair *reachPair, token string, do
 			t.Fatal(err)
 		}
 		row, _ = agentRowByToken(listing.Rows, token)
-		return row.Worker == string(workerWaiting) && pair.request(t, token).NestedOpen && done(listing)
+		return row.Worker == workerWaiting && pair.request(t, token).NestedOpen && done(listing)
 	})
 	return row
 }
@@ -89,7 +89,7 @@ func TestARemoteWorkersOpenWorkPastItsListingsLimitKeepsItOpen(t *testing.T) {
 			t.Fatal(err)
 		}
 		row, _ := agentRowByToken(listing.Rows, spawn.Token)
-		if !row.open() || row.Worker != string(workerWaiting) || !row.NestedHidden || row.NestedUnavailable != "" || len(listing.Rows) != 1 || listing.Hidden {
+		if !row.open() || row.Worker != workerWaiting || !row.NestedHidden || row.NestedUnavailable != "" || len(listing.Rows) != 1 || listing.Hidden {
 			t.Fatalf("at the last level the listing = %+v; want the spawn alone, waiting, saying more nests below", listing)
 		}
 		return row
@@ -146,7 +146,7 @@ func TestARemoteWorkersOpenWorkPastItsListingsLimitKeepsItOpen(t *testing.T) {
 		t.Fatal(err)
 	}
 	row, _ := agentRowByToken(listing.Rows, spawn.Token)
-	(&agentPeerPair{reachPair: pair, spawn: spawn}).expectRemoteRowOpen(t, row, string(workerWaiting))
+	(&agentPeerPair{reachPair: pair, spawn: spawn}).expectRemoteRowOpen(t, row, workerWaiting)
 }
 
 // A chain of remote workers longer than the listing's depth, each at rest
@@ -207,7 +207,7 @@ func TestARemoteChainPastTheDepthBoundStaysOpenAndIsNotListedPastIt(t *testing.T
 			return false
 		}
 		for _, row := range listing.Rows {
-			if row.Worker != string(workerWaiting) || !row.open() {
+			if row.Worker != workerWaiting || !row.open() {
 				return false
 			}
 		}

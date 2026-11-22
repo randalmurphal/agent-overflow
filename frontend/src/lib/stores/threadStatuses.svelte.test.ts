@@ -3,7 +3,6 @@ import { confirmBackgroundKill, pendingBackgroundKillConfirmation } from './back
 import { flushSync } from 'svelte';
 import { probeReactivity } from '../../test/helpers/reactivity.svelte';
 import {
-  applyTurnEndUnrecorded,
   beginThreadLiveStateHydration,
   clearPendingSend,
   clearThreadStatus,
@@ -32,7 +31,6 @@ import {
   restoreRefusedTurnStop,
   sameActiveTurn,
   settleTurnStopRequest,
-  endedUnreadRevision,
 } from './threadStatuses.svelte';
 import {
   confirmFlushedByUserItemId,
@@ -659,38 +657,6 @@ describe('threadStatuses store', () => {
       } finally {
         turn.dispose();
       }
-    });
-
-    it('a reader of the status follows an unrecorded turn end, and clearThreadStatus forgets it', () => {
-      const status = probeReactivity(() => getThreadStatus('thread-1'));
-      try {
-        expect(status.latest).toBe('idle');
-        applyTurnEndUnrecorded({ threadId: 'thread-1' });
-        flushSync();
-        expect(status.latest).toBe('interrupted');
-
-        clearThreadStatus('thread-1');
-        flushSync();
-        expect(status.latest).toBe('idle');
-        expect(endedUnreadRevision('thread-1')).toBe(0);
-      } finally {
-        status.dispose();
-      }
-    });
-
-    it('an unrecorded turn end under a failed one reads Failed, as a recorded interruption does', () => {
-      projectTurnStarted('thread-1', 'round-1', 0, 10);
-      applyTurnEndUnrecorded({ threadId: 'thread-1' });
-      projectTurnCompleted('thread-1', 'round-1', { errorMessage: 'provider failed' });
-      expect(getThreadStatus('thread-1')).toBe('error');
-    });
-
-    it('an unrecorded turn end the completion follows stays an interruption', () => {
-      projectTurnStarted('thread-1', 'round-1', 0, 10);
-      applyTurnEndUnrecorded({ threadId: 'thread-1' });
-      expect(getThreadStatus('thread-1')).toBe('running');
-      projectTurnCompleted('thread-1', 'round-1');
-      expect(getThreadStatus('thread-1')).toBe('interrupted');
     });
   });
 
