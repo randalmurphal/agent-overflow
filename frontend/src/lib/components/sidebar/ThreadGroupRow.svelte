@@ -23,7 +23,8 @@
     endThreadRowDrag,
     threadDragPayloadForEvent,
   } from '../../utils/threadDragPayload';
-  import { projectHasScope } from '../../transport/entityScopes';
+  import { projectScopeGrant } from '../../transport/entityScopes';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
   import type { ThreadLiveStatus } from '../../stores/threadStatuses.svelte';
   import type { ThreadStatusPill } from '../../utils/threadStatusPill';
 
@@ -71,7 +72,8 @@
   const rowPaddingLeftPx = GROUP_ROW_PADDING_LEFT_PX;
   // Rename, new-thread and the menu's rows all write on the project's
   // computer under `threads:operate`. The controls stay and go inert.
-  let operateUngranted = $derived(!projectHasScope('threads:operate', group.projectId));
+  let operateGrant = $derived(projectScopeGrant('threads:operate', group.projectId));
+  let operateUngranted = $derived(operateGrant !== 'granted');
 
   // ── Inline rename ────────────────────────────────────────────────────────
   let editing = $state(false);
@@ -326,7 +328,7 @@
       <button
         type="button"
         aria-label="New Thread in Group"
-        title={operateUngranted ? 'Not granted to this device' : 'New Thread in Group'}
+        title={grantBlockedTitle(operateGrant) ?? 'New Thread in Group'}
         disabled={operateUngranted}
         data-testid="thread-group-new-thread"
         onclick={(e) => {

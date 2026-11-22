@@ -2,7 +2,9 @@
 
 Write and WriteJSON durably replace small private state through a same-directory
 temporary file, file sync, rename, and directory sync. ReadJSON distinguishes an
-absent file from invalid content. Preserve 0600 files and 0700 directories.
+absent file from invalid content. Remove deletes a file and syncs its
+directory; a sync error after the unlink is still an error. Preserve 0600 files
+and 0700 directories.
 
 RenameNoReplace must never use a check-then-rename fallback. It refuses an
 existing destination and unsupported platforms, stays on one filesystem, and

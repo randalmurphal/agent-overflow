@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { threadHasScope } from '../../transport/entityScopes';
+  import { threadScopeGrant } from '../../transport/entityScopes';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
   // Split-button control: primary action on the left, caret opens a menu
   // with the remaining git actions. The dropdown composes the Popover +
   // Menu + MenuItem primitives so it inherits portaling, arrow-key nav,
@@ -91,7 +92,8 @@
   // (the store's own guard), so this control is normally absent rather than
   // inert; the gate is what keeps every action honest if a status ever
   // arrives without the grant to act on it.
-  let gitUngranted = $derived(!threadHasScope('git:operate', pane.threadId, pane.thread?.projectId));
+  let gitGrant = $derived(threadScopeGrant('git:operate', pane.threadId, pane.thread?.projectId));
+  let gitUngranted = $derived(gitGrant !== 'granted');
 
   let actionLoading = $state(false);
 
@@ -258,9 +260,8 @@
       size="xs"
       onclick={() => void guard(() => runFetchOriginAction(ctx(ws)))}
       disabled={actionLoading || gitUngranted}
-      title={gitUngranted
-        ? 'Not granted to this device'
-        : `Could not fetch from origin without signing in: ${signInError}. Click to fetch and sign in.`}
+      title={grantBlockedTitle(gitGrant)
+        ?? `Could not fetch from origin without signing in: ${signInError}. Click to fetch and sign in.`}
       testId="git-sign-in-needed"
     >
       {#snippet children()}Sign-in needed{/snippet}
@@ -271,7 +272,7 @@
     <button
       onclick={() => void executePrimary(ws)}
       disabled={primaryAction.disabled || actionLoading || gitUngranted}
-      title={gitUngranted ? 'Not granted to this device' : primaryAction.tooltip}
+      title={grantBlockedTitle(gitGrant) ?? primaryAction.tooltip}
       class="{SPLIT_BTN_BASE} px-2.5 rounded-l disabled:opacity-40 disabled:cursor-not-allowed"
     >
       {actionLoading ? '...' : primaryAction.label}
@@ -372,7 +373,7 @@
             label="Remove Worktree"
             variant="danger"
             disabled={workspaceLock.locked || gitUngranted}
-            title={gitUngranted ? 'Not granted to this device' : workspaceLock.locked ? workspaceLock.reason : undefined}
+            title={grantBlockedTitle(gitGrant) ?? (workspaceLock.locked ? workspaceLock.reason : undefined)}
             onSelect={() => {
               showDropdown = false;
               openRemoveWorktreeConfirm();

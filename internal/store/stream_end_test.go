@@ -87,12 +87,12 @@ func TestStreamEndIsTheStreamedByteLength(t *testing.T) {
 		one = append(one, item)
 	}
 	check("GetThreadItem", one)
-	page, err := s.ListThreadSliceAround(context.Background(), "t", "", 50, 50, TimelineSelection{})
+	page, err := s.ListThreadSliceAround(context.Background(), "t", "", 50, 50, TimelineSelection{}, AgentMessagesAreMembers)
 	if err != nil {
 		t.Fatalf("slice around: %v", err)
 	}
 	check("ListThreadSliceAround", page.Items)
-	synced, err := s.SyncThreadWindow(context.Background(), "t", "", 50, 50, HistoryStamp{}, nil, TimelineSelection{})
+	synced, err := s.SyncThreadWindow(context.Background(), "t", "", 50, 50, HistoryStamp{}, nil, TimelineSelection{}, AgentMessagesAreMembers)
 	if err != nil || synced.Page == nil {
 		t.Fatalf("sync window: page=%v err=%v", synced.Page, err)
 	}

@@ -8,7 +8,7 @@ import {
 import { resetPanesForTest } from './panes.svelte';
 import { setBindingMock, resetBindingMocks } from '../../test/mocks/bindings-app';
 import { emitWailsEvent } from '../../test/mocks/wailsio-runtime';
-import { loadThreadCatalogs } from './threadCatalogs';
+import { loadSidebarCatalogs } from './sidebarCatalogs';
 import type { TerminalSessionSummary } from '../types/terminal';
 import { __resetEntityIndexForTest, terminalBackend } from '../transport/entityIndex';
 import { HOME_BACKEND } from '../transport/backendKey';
@@ -51,7 +51,7 @@ beforeEach(async () => {
   resetPanesForTest();
   resetBindingMocks();
   setBindingMock('ListThreads', async () => []);
-  await loadThreadCatalogs();
+  await loadSidebarCatalogs();
   cleanupEvents = setupEventListeners();
 });
 

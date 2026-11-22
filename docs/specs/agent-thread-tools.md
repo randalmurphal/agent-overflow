@@ -145,8 +145,9 @@ whole page, pinned to each thread's latest turn row. State is the UI's
 enum (idle / running / awaiting-input / pending-approval / plan-ready /
 error / interrupted), reachable because the handler runs inside the
 app that owns the thread. A Codex thread with an async question not yet
-answered or dismissed reads awaiting-input while no turn runs and
-nothing is queued, as its Agents row reads it blocked
+answered or dismissed, recorded by this run of the app
+([`thread_reply`](#thread_reply-q25)), reads awaiting-input while no turn
+runs and nothing is queued, as its Agents row reads it blocked
 (`threadWaitingOn`).
 
 `query` is FTS5 match syntax: words are ANDed, `"quoted phrases"`
@@ -645,7 +646,12 @@ start on their own, not whether they can answer.
 A spawner also answers its workers with it
 ([ruling 19](standing-agents.md#decisions)). A thread another thread
 spawned on this computer does not put an approval or a question to the
-user while that spawner is not archived: each prompt is delivered to
+user while that spawner is not archived: an owned worker asks its
+spawner in every run, and a worker with a sidebar row only in a run the
+spawner started, its spawn or a later send of its, until the worker is
+next at rest (`store.SpawnOwnerOf`,
+[owned workers](standing-agents.md#owned-workers)); in a run the person
+or another thread started, such a worker's prompt is the user's. Each prompt the spawner takes is delivered to
 the spawner, an assistant, an ordinary thread or another worker alike,
 as a wake badged with the worker, the worker's text quoted as data,
 carrying a token for this tool. The spawner is the caller of the
@@ -658,8 +664,10 @@ whose `text` is the agent's reason. A form-style MCP elicitation can
 only be denied this way. The prompt stays open in the worker, so the
 user can still answer it there; that withdraws a wake still queued and
 refuses the agent's later reply. A wake the agent's session never took
-in, or that
-the end of its session cleared, hands the prompt back to the user. The
+in, or that the end of its session cleared, leaves an owned worker's
+prompt the spawner's until its next turn
+([owned workers](standing-agents.md#owned-workers)), and hands any other
+prompt back to the user. The
 token lives as long as the prompt, in memory: a restart ends the
 worker's session and its prompts with it. A Codex worker's async
 question, which its turn ends by asking and a later message answers,
@@ -668,18 +676,33 @@ is written to the worker as one message attributed to the spawner, and
 any change to its parts (the user answering, dismissing or reopening
 one in the worker) refuses the token, a reply already on its way
 included, and puts the parts left to the spawner under a new one. It
-outlives the worker's session, is put to the spawner again under a new
-token after a restart, and is dismissed by a Stop of the worker; an
+outlives the worker's session and is dismissed by a Stop of the worker; an
 archived worker's question waits for its unarchive, and a conversation
-copied or moved to another computer takes it there, where it waits on
-the user from the moment it lands and no longer on the spawner here. A reply the worker
-never takes in (its session ends or refuses it, a queue drop, an archive,
-a restart) puts its parts back unanswered, to the spawner under a new
+copied or moved to another computer takes it there, where it is the
+user's (below) and no longer the spawner's here. A reply the worker
+never takes in (its session ends or refuses it, a queue drop, an archive)
+puts its parts back unanswered, to the spawner under a new
 token; one the worker took in stays answered, its echo's own write failed
 or not; one
 the user withdraws from the worker's Incoming rows puts them to the
 user. It never becomes text in the worker's composer. `decision` and
 `answers` on any other token are refused.
+
+A question not recorded by this run of the app goes to no agent on any
+computer, raises no notification and is not what its thread waits on
+(`threadWaitingOn`). In a thread with a sidebar row it is the user's, as
+every question was before a spawner could answer one, and as an
+unanswered question it still keeps the thread from rest. In an owned
+worker it is asked of nobody and holds nothing: neither the worker nor
+its spawner, and no boot pass takes it up. The boot reads none. The store marks each question with
+the run that recorded it, not with a time, since the clock can be set
+during a run; the mark never changes and a fork copies it, so parts a
+later change leaves open (the user answering one, a reply the restart
+returned) stay the user's, and so does a fork's copy. A question
+from before the mark existed, one from imported history and one that
+arrives by transfer carry no run's mark. The user answers it in the
+worker as any question. A wake still queued for it when the app quit is
+discarded at the boot.
 
 ### `thread_status`
 
@@ -982,7 +1005,7 @@ The text, maintained beside the tool schemas in `internal/threadtools`:
 > is when the branch exists here or on a remote, detached at the tag when
 > the name is no branch but a tag, and otherwise created from `base` (a
 > branch or tag; origin's head of a branch unless `base_local`),
-> `group` files it in a sidebar group beside the threads of one sweep,
+> `group` gives it a sidebar row in that group,
 > and `instructions` adds a one-off role to its system prompt for its
 > whole life. `thread_send` continues an existing thread as if the
 > user typed your `message`, queued after its current turn. `thread_ask`
@@ -1000,7 +1023,9 @@ The text, maintained beside the tool schemas in `internal/threadtools`:
 > with its context kept, or when the user should be able to open, steer
 > or take it over. A thread meant for the user to read
 > or continue themselves gets a sidebar row: pass `placement` `standalone`
-> or a `group`. You
+> or a `group`. A worker whose answer comes back to you, such as a
+> reviewer, a researcher or a helper, takes neither: your workers are
+> already listed together under your thread's Agents. You
 > cannot send to or ask your own thread. An assistant lives outside
 > every project: its `thread_spawn` without `project_id` makes a helper
 > for its own work in its home, and with one names a project it serves;
@@ -1166,9 +1191,14 @@ the "Other computers" paragraph is absent, and `computers` and
 the providers this computer offers: with one, "another provider or
 model" reads "another model" (or "a provider another computer offers"
 when one is paired), the read-only sentence names only that provider's
-effect, and the profile names are those its catalog runs, in roster
-order; with no profile it can run the profile sentence is left out, or
-points at `thread_options` when a paired computer may run some. A
+effect, and the profile names are every profile whose provider this
+computer offers (one that inherits its provider is on the spawning
+thread's), in roster order; with none the profile sentence is left out,
+or points at `thread_options` when a paired computer may run some. The
+guide checks no model: it is fixed when the session starts, so a model
+list read then could be stale or absent. `thread_options` and the spawn
+check the model against a real catalog and refuse with the reason
+([Agent profiles](#agent-profiles)). A
 session at the deepest sub-thread level reads a Starting paragraph
 without `thread_spawn`, no Defaults paragraph, and no Waiting sentences
 on when a spawn ends ([Sub-thread depth](#sub-thread-depth)); one level
@@ -1444,7 +1474,8 @@ What settles a request, in order:
    as a second wake, so a responder that ended its turn to wait on a
    command costs the caller nothing. A spawn, and a send from the
    thread that spawned its target, settle `finished` only once that
-   thread and every thread below it are at rest, by the rule for
+   thread is at rest with everything below it that its own runs started
+   ([at rest](standing-agents.md#at-rest)), by the rule for
    decisions that cannot be taken back
    ([owned workers](standing-agents.md#owned-workers)): a turn that ends as it would settle `finished` while
    the thread is not at rest leaves the request `running`, its gate in
@@ -1656,8 +1687,8 @@ still wants the work. A target deleted while a request is open settles
 `errored` with that reason.
 
 An owned worker's prompt reaches its spawner through the paired owner's
-wait. The spawner's computer queues the prompt as a wake and renews its
-lease while it holds it. See [reaching another computer](#reaching-another-computer).
+wait. The spawner's computer queues the prompt as a wake. See
+[reaching another computer](#reaching-another-computer).
 
 ## Attribution (Q9, Q16)
 
@@ -1725,7 +1756,16 @@ The timeline renders such a row folded, in the register of a tool row
 (`AgentMessageRow.svelte`): an icon and a gutter label for the kind,
 then one header line naming the sender (with `on <computer>` when
 remote, a button opening its thread in a pane when this client reaches
-it), a standing agent's role line, and the message's first line. It
+it), a standing agent's role line, and the message's first line. Such a
+row is an activity-run member exactly as a tool row is, wherever it
+lands: it renders inside a run and folds with it, a tool row or another
+agent message beside it shares that run, and alone it is a run of one
+whose collapsed header shows the row's kind, sender and first line. The
+run's header counts it as an agent message; the person's messages and
+assistant prose end a run
+([activity runs](../architecture/activity-runs.md#shape)). A thread on a
+computer from before this rule keeps that computer's grouping, where the
+row joins only a run it follows. It
 renders from the row's facts, never from its text. Every read and push
 of the row (`itemwire.Project`, a meta patch) serves its meta as
 `agentmeta.Describe` reads it, the one reading the Edits selector and
@@ -2008,7 +2048,10 @@ lists instead), and says why that thread is not at rest (`worker`) and
 whether it is open at any depth below it (`open`), so the caller nests
 them under its spawn named by their computer and keeps the spawn open
 while its thread works there
-([owned workers](standing-agents.md#owned-workers)), and `agent_stop` over `ThreadToolCall` runs a Stop's
+([owned workers](standing-agents.md#owned-workers)); once every run the
+calling thread started there ended, it says what the thread had done
+when the last ended (`runEnd`), which ends those runs on the caller's
+computer whoever runs the thread since, and `agent_stop` over `ThreadToolCall` runs a Stop's
 cascade there, for the whole thread (its Backgrounded items, its turn and
 its own rows) or for one nested row by token. A request inside that
 lineage is cancelled with its wake disarmed. A forwarded spawn, send or
@@ -2025,18 +2068,26 @@ spawn's link, is reached by three more forwarded write calls over
 ride the `agent_rows` answer and wake the spawner here, as a local
 worker's do: the wake names the worker on its computer and opens it
 there. `agent_prompt_reply` carries the spawner's `thread_reply`, and
-`agent_prompt_return` gives a prompt back to the person there when the
-spawner here cannot take it. The destination keeps a prompt with the
-spawner while the spawner's computer names it as held on its
-`agent_rows` calls, and gives it to the person there two minutes after
-it was routed or last named. `agent_owner_op` carries what archiving or
+`agent_prompt_return` gives a prompt back to the person there when no
+thread here can hold it, and says so (`reason` `no_holder`). The
+destination keeps a prompt with the spawner for as long as the worker's
+prompts are the spawner's, however long the spawner's computer takes to
+answer. A return with no reason, from a computer that predates it and
+also returns a prompt its thread did not take at once, keeps the prompt
+the spawner's: the worker reads waiting on the spawner, the person there
+can answer it in the worker and is not asked, and the prompt is listed
+again under a new token after a wait of a minute, doubled with each
+return up to 30 minutes; its owner changes report the spawn when the
+wait ends, not when the prompt is given back. The prompts a call names as held renew the
+lease of a destination on an older version, which gives a prompt to its
+person two minutes after it was routed or last named. `agent_owner_op` carries what archiving or
 deleting the spawner owes the worker, sent until that computer answers.
 A computer that predates `agent_owner_op` answers that it is not a
 thread tools write call, and the operation is reported once as on a
 computer that runs an older version. An isolated boot with `AO_HARNESS_OLDER_COMPUTER=1` answers
 `agent_owner_op` that way, as a computer on v0.0.19 does
-([testing harness](testing-harness.md#8-e2e-and-gates)), and `AO_HARNESS_TIMING`'s `prompt-lease`
-shortens the two minutes; no other boot honors either.
+([testing harness](testing-harness.md#8-e2e-and-gates)); no other boot
+honors it.
 
 Errors follow the remote-commands shape: stable codes, prose that names
 the operation, the computer and the thread with the ids beside the

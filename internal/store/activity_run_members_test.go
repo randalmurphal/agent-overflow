@@ -32,13 +32,13 @@ func TestActivityRunMembersTrimFreshMatchesSmallerRead(t *testing.T) {
 	for _, req := range cases {
 		largeReq := req
 		largeReq.Limit = 5
-		large, err := s.ListActivityRunMembers(context.Background(), "t", largeReq)
+		large, err := s.ListActivityRunMembers(context.Background(), "t", largeReq, AgentMessagesAreMembers)
 		if err != nil {
 			t.Fatal(err)
 		}
 		smallReq := req
 		smallReq.Limit = 2
-		small, err := s.ListActivityRunMembers(context.Background(), "t", smallReq)
+		small, err := s.ListActivityRunMembers(context.Background(), "t", smallReq, AgentMessagesAreMembers)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -75,7 +75,7 @@ func TestListActivityRunMembersWalksEachDirection(t *testing.T) {
 		RunFirstItemID: run,
 		Direction:      ActivityRunMembersBefore,
 		Limit:          5,
-	})
+	}, AgentMessagesAreMembers)
 	if err != nil {
 		t.Fatalf("before with no span: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestListActivityRunMembersWalksEachDirection(t *testing.T) {
 		LoadedLastItemID:  newest.Stub.LoadedLastItemID,
 		Direction:         ActivityRunMembersBefore,
 		Limit:             5,
-	})
+	}, AgentMessagesAreMembers)
 	if err != nil {
 		t.Fatalf("before an existing span: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestListActivityRunMembersWalksEachDirection(t *testing.T) {
 		LoadedLastItemID:  ids[6],
 		Direction:         ActivityRunMembersAfter,
 		Limit:             3,
-	})
+	}, AgentMessagesAreMembers)
 	if err != nil {
 		t.Fatalf("after: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestListActivityRunMembersWalksEachDirection(t *testing.T) {
 		Direction:         ActivityRunMembersAround,
 		AroundItemID:      ids[6],
 		Limit:             4,
-	})
+	}, AgentMessagesAreMembers)
 	if err != nil {
 		t.Fatalf("around: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestListActivityRunMembersWalksEachDirection(t *testing.T) {
 		LoadedLastItemID:  ids[7],
 		Direction:         ActivityRunMembersBefore,
 		Limit:             0,
-	})
+	}, AgentMessagesAreMembers)
 	if err != nil {
 		t.Fatalf("stub refresh: %v", err)
 	}
@@ -224,7 +224,7 @@ func TestListActivityRunMembersRefusesAStaleRun(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := s.ListActivityRunMembers(context.Background(), "t", tc.req); !errors.Is(err, ErrActivityRunStale) {
+			if _, err := s.ListActivityRunMembers(context.Background(), "t", tc.req, AgentMessagesAreMembers); !errors.Is(err, ErrActivityRunStale) {
 				t.Fatalf("err = %v, want ErrActivityRunStale", err)
 			}
 		})
@@ -233,7 +233,7 @@ func TestListActivityRunMembersRefusesAStaleRun(t *testing.T) {
 	t.Run("unknown direction", func(t *testing.T) {
 		_, err := s.ListActivityRunMembers(context.Background(), "t", ActivityRunMembersRequest{
 			RunFirstItemID: run, Direction: "sideways", Limit: 2,
-		})
+		}, AgentMessagesAreMembers)
 		if err == nil || !strings.Contains(err.Error(), "sideways") {
 			t.Fatalf("err = %v, want a direction error", err)
 		}
@@ -243,12 +243,59 @@ func TestListActivityRunMembersRefusesAStaleRun(t *testing.T) {
 		for _, limit := range []int{-1, maxActivityRunMemberLimit + 1} {
 			_, err := s.ListActivityRunMembers(context.Background(), "t", ActivityRunMembersRequest{
 				RunFirstItemID: run, Direction: ActivityRunMembersBefore, Limit: limit,
-			})
+			}, AgentMessagesAreMembers)
 			if err == nil {
 				t.Fatalf("limit %d: expected an error", limit)
 			}
 		}
 	})
+}
+
+// TestAgentMessageAheadOfARunMovesItsFirstMember: an agent message placed
+// at the head of a turn, ahead of the run its turn's work already began,
+// joins that run at its older edge. The run now starts at the message, so
+// the old first member no longer names it and the call is refused as stale,
+// which is the refusal a client answers by reloading its window.
+func TestAgentMessageAheadOfARunMovesItsFirstMember(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	write := func(item Item) {
+		t.Helper()
+		item.ThreadID, item.Status, item.Summary = "t", "completed", item.ID
+		item.CreatedAt = int64(item.TurnIndex*10 + item.ItemIndex + 2)
+		if err := insertCarded(s, item); err != nil {
+			t.Fatalf("insert %s: %v", item.ID, err)
+		}
+	}
+	write(Item{ID: "p0", TurnIndex: 0, ItemIndex: 0, Kind: "assistant_text", Role: "assistant"})
+	write(Item{ID: "t1", TurnIndex: 1, ItemIndex: 0, Kind: "tool_call", Role: "assistant", ToolName: "Bash"})
+	write(Item{ID: "t2", TurnIndex: 1, ItemIndex: 1, Kind: "tool_call", Role: "assistant", ToolName: "Bash"})
+	members := func(first string) (ActivityRunMembers, error) {
+		return s.ListActivityRunMembers(context.Background(), "t", ActivityRunMembersRequest{
+			RunFirstItemID: first, Direction: ActivityRunMembersBefore,
+		}, AgentMessagesAreMembers)
+	}
+	if got, err := members("t1"); err != nil || got.Stub.MemberCount != 2 {
+		t.Fatalf("run t1 before the message = %+v, %v; want 2 members", got.Stub, err)
+	}
+
+	write(Item{
+		ID: "m1", TurnIndex: 1, ItemIndex: -1, Kind: "user_text", Role: "user",
+		Meta: `{"origin":"agent-thread","originThread":{"threadId":"t-review","title":"Review","kind":"wake","token":"tok-1"}}`,
+	})
+	if _, err := members("t1"); !errors.Is(err, ErrActivityRunStale) {
+		t.Fatalf("run t1 after the message: err = %v, want ErrActivityRunStale", err)
+	}
+	got, err := members("m1")
+	if err != nil {
+		t.Fatalf("run m1: %v", err)
+	}
+	if got.Stub.FirstItemID != "m1" || got.Stub.LastItemID != "t2" || got.Stub.MemberCount != 3 {
+		t.Errorf("run m1 = %s..%s with %d members, want m1..t2 with 3",
+			got.Stub.FirstItemID, got.Stub.LastItemID, got.Stub.MemberCount)
+	}
 }
 
 // TestHeldWindowFoldsRunStubs is the §5 round trip: a client that holds a
@@ -259,7 +306,7 @@ func TestHeldWindowFoldsRunStubs(t *testing.T) {
 	s := newTestStore(t)
 	seedRunThread(t, s, "t", runSpec(30))
 
-	page, err := s.ListThreadSliceAround(context.Background(), "t", "", 200, 10, TimelineSelection{})
+	page, err := s.ListThreadSliceAround(context.Background(), "t", "", 200, 10, TimelineSelection{}, AgentMessagesAreMembers)
 	if err != nil {
 		t.Fatalf("window: %v", err)
 	}
@@ -283,7 +330,7 @@ func TestHeldWindowFoldsRunStubs(t *testing.T) {
 	if err := s.InsertItem(notification); err != nil {
 		t.Fatalf("insert plan_update notification: %v", err)
 	}
-	got, err := s.SyncThreadWindow(context.Background(), "t", "", 200, 10, stale, &held, TimelineSelection{})
+	got, err := s.SyncThreadWindow(context.Background(), "t", "", 200, 10, stale, &held, TimelineSelection{}, AgentMessagesAreMembers)
 	if err != nil {
 		t.Fatalf("sync a folded window: %v", err)
 	}
@@ -300,7 +347,7 @@ func TestHeldWindowFoldsRunStubs(t *testing.T) {
 	}
 	stale = historyStampOf(t, s, "t")
 	stale.Rev--
-	got, err = s.SyncThreadWindow(context.Background(), "t", "", 200, 10, stale, &held, TimelineSelection{})
+	got, err = s.SyncThreadWindow(context.Background(), "t", "", 200, 10, stale, &held, TimelineSelection{}, AgentMessagesAreMembers)
 	if err != nil {
 		t.Fatalf("sync after editing an unshipped member: %v", err)
 	}
@@ -324,7 +371,7 @@ func TestStubRefreshAfterTailAppendMovesOnlyTheNewerEdge(t *testing.T) {
 		answer, err := s.ListActivityRunMembers(context.Background(), "t", ActivityRunMembersRequest{
 			RunFirstItemID: run, LoadedFirstItemID: first, LoadedLastItemID: last,
 			Direction: ActivityRunMembersBefore,
-		})
+		}, AgentMessagesAreMembers)
 		if err != nil {
 			t.Fatal(err)
 		}

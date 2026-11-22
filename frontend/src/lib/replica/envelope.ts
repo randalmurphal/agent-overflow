@@ -23,6 +23,11 @@ import type {
   ActivityRunStub,
 } from '../../../bindings/agent-overflow/internal/store/models';
 import type { TimelineCursorLike } from '../stores/threadItems';
+import {
+  AGENT_MESSAGES_ABSORBED_RULE,
+  AGENT_MESSAGE_MEMBERS_RULE,
+  type ActivityRunRule,
+} from '../utils/activityRunSpans';
 import type { SettledTurn } from '../stores/threadTurnProjection';
 
 /**
@@ -51,7 +56,10 @@ export const REPLICA_ENVELOPE_VERSION = 1;
 // stored stub that ends a run at the record describes runs that no longer
 // exist, and a window holding only one side of the old split would never
 // be corrected.
-export const REPLICA_SCHEMA_VERSION = 8;
+// Schema 9 names the activity-run rule the body's stubs were read under
+// (`activityRunRule`): agent messages group differently under each, so
+// stubs of one rule describe runs the other does not have.
+export const REPLICA_SCHEMA_VERSION = 9;
 
 /**
  * Per-envelope caps, deliberately the same numbers `threadItemCache`
@@ -105,6 +113,8 @@ export interface ReplicaBody {
    * window with no runs, which is a different fact from "not stored".
    */
   runs: ActivityRunStub[];
+  /** The membership rule `runs` were read under. Another rule's window is not painted. */
+  activityRunRule: ActivityRunRule;
   /** Paint-only; `ListRecentTurns` re-fetches it on every open. */
   latestSettledTurn: SettledTurn | null;
 }
@@ -200,6 +210,7 @@ export function normalizeBody(input: ReplicaBody): ReplicaBody {
     hasMoreOlder: input.hasMoreOlder === true,
     hasMoreNewer: input.hasMoreNewer === true,
     runs: plainRuns(input.runs),
+    activityRunRule: input.activityRunRule,
     latestSettledTurn: plainSettledTurn(input.latestSettledTurn),
   };
 }
@@ -277,6 +288,9 @@ export function readEnvelope(raw: unknown): ReplicaBody | null {
     if (!Array.isArray((run as ActivityRunStub).unshippedPairedLaunchIds)) return null;
     if (!Array.isArray((run as ActivityRunStub).shippedSupersededLaunchIds)) return null;
   }
+  if (body.activityRunRule !== AGENT_MESSAGE_MEMBERS_RULE && body.activityRunRule !== AGENT_MESSAGES_ABSORBED_RULE) {
+    return null;
+  }
   return {
     epoch: body.epoch,
     rev: body.rev,
@@ -287,6 +301,7 @@ export function readEnvelope(raw: unknown): ReplicaBody | null {
     hasMoreOlder: body.hasMoreOlder === true,
     hasMoreNewer: body.hasMoreNewer === true,
     runs: plainRuns(body.runs as ActivityRunStub[]),
+    activityRunRule: body.activityRunRule,
     latestSettledTurn: (body.latestSettledTurn as SettledTurn | null) ?? null,
   };
 }

@@ -13,14 +13,17 @@
 // every length regardless, because the rail is a collapse control on all
 // runs and the node is where collapse state lives.
 //
-// Membership is rail participation (`timelineRail.ts`), read against the
-// CURRENT item so a late-arriving payloadKind is honored. Prose, user
-// messages, errors, notifications, and every other non-rail kind break runs.
+// Membership is rail participation (`timelineRail.ts`) and, under the
+// thread's rule, agent messages (`isActivityRunMemberRow`), read against
+// the CURRENT item so a late-arriving payloadKind is honored, plus the rows
+// an open run absorbs (`isAbsorbedRow`). Prose, the person's messages,
+// errors, and every other kind break runs.
 //
-// That read needs no reactivity gate of its own: rail participation is part of
-// `itemTimelineStructureKey`, so a row leaving the rail bumps
-// `timelineRevision` like any other structure change and the projection
-// rebuilds through the same path an appended row takes.
+// That read needs no reactivity gate of its own: rail participation and
+// whether a user row is an agent's are part of `itemTimelineStructureKey`, so
+// a row changing either bumps `timelineRevision` like any other structure
+// change and the projection rebuilds through the same path an appended row
+// takes.
 //
 // Pure: fresh array out, no mutation of `nodes`. Identity is the one piece
 // it cannot derive alone — see `ActivityRunIdentity`.
@@ -35,6 +38,7 @@ import {
 import { completionEndsLaunch } from './parkedStop';
 import { isPotentialSubagentLaunch } from './subagentLaunch';
 import { timelineNodeHasRail } from './timelineRail';
+import { isActivityRunAbsorbedRow, isActivityRunMemberRow, type ActivityRunRule } from './activityRunSpans';
 
 /** What the registry resolves for one run, per projection pass. */
 export interface ActivityRunResolution {
@@ -103,7 +107,7 @@ export function activityRunSummaryFieldsChanged(previous: Item, next: Item): boo
  * so entries no longer present can be swept.
  */
 export interface ActivityRunIdentity {
-  /** Membership supplied by a history page, including leading notifications. */
+  /** Membership supplied by a history page, including leading absorbed rows. */
   isLoadedMember(itemId: string): boolean;
   beginPass(): void;
   /**
@@ -192,6 +196,12 @@ export interface GroupActivityRunsOptions {
    * live nor the one the reader is watching, so no run in it is stamped.
    */
   windowReachesTail: boolean;
+  /**
+   * How agent messages group: the rule of the backend that owns the
+   * thread (`threadActivityRunRule`), so the runs this pass builds are the
+   * runs that backend's stubs describe.
+   */
+  rule: ActivityRunRule;
 }
 
 function currentLeafItem(node: TimelineNode, getItem: (id: string) => Item | undefined): Item | null {
@@ -199,46 +209,50 @@ function currentLeafItem(node: TimelineNode, getItem: (id: string) => Item | und
   return getItem(node.item.id) ?? node.item;
 }
 
-function isRunMember(node: TimelineNode, getItem: (id: string) => Item | undefined, identity: ActivityRunIdentity): boolean {
+function isRunMember(node: TimelineNode, options: GroupActivityRunsOptions): boolean {
   // A run can never contain another run: this pass runs once, last, over a
   // node list that has none.
   if (node.kind === 'activity_run') return false;
-  const item = currentLeafItem(node, getItem);
-  return timelineNodeHasRail(node, item)
-    || (item?.kind === 'notification' && identity.isLoadedMember(item.id));
+  const item = currentLeafItem(node, options.getItem);
+  // A group container sits on the rail; a leaf is a member by its row
+  // (`isActivityRunMemberRow`: a rail row, or an agent message under the
+  // member rule).
+  if (item === null) return timelineNodeHasRail(node, null);
+  if (isActivityRunMemberRow(item, options.rule)) return true;
+  // A leading absorbed row whose member predecessor a history page did not
+  // ship: the page says it belongs to the run.
+  return options.identity.isLoadedMember(item.id) && isActivityRunAbsorbedRow(item, options.rule);
 }
 
 /**
- * A notification bell is ABSORBED into a run that is already open — it joins
- * the run when a rail member precedes it, and stays standalone otherwise.
+ * A notification bell is ABSORBED into a run that is already open
+ * (`isActivityRunAbsorbedRow`): it joins the run when a member precedes it,
+ * and stays standalone otherwise. So is an agent message under
+ * `AGENT_MESSAGES_ABSORBED_RULE`, the rule of a backend without the
+ * member capability.
  *
- * Bells are activity-shaped interim history (a Monitor ping, a background
- * launch), and they land at the CURRENT WRITE HEAD (`internal/triage/
- * tool_lifecycle.go` `backgroundCompletionTurnIndex`) — which during a turn is
- * inside the live run. Before absorption every such bell CUT the run: the head
- * kept the id, the rows after minted a fresh one, and the reader watched the
- * clip they were following restart from a one-row unfaded clip on every ping
- * (~30s under a Monitor — the 2026-08-22 fade-flap investigation). Absorbed
- * bells keep the run whole and its identity, controller, and scroll state
- * intact.
+ * A bell is activity-shaped interim history (a Monitor ping, a background
+ * launch) that lands at the CURRENT WRITE HEAD (`internal/triage/
+ * tool_lifecycle.go` `backgroundCompletionTurnIndex`), which during a turn
+ * is inside the live run. Breaking there cut the stretch of work the reader
+ * was following: the head kept the id, the rows after minted a fresh one
+ * and restarted from a one-row unfaded clip on every ping. Absorbed bells
+ * keep the run whole and its identity, controller, and scroll state intact.
  *
- * Absorption is one-directional and stable: a TRAILING bell (nothing after it
- * yet — the live-tail case this exists for) stays absorbed even once prose
- * settles the run, so membership never churns when the next node arrives. A
- * bell with no rail member before it (idle-time ping after prose) is not a
- * run and renders standalone, as before.
+ * Absorption is one-directional and stable: a TRAILING bell (nothing after
+ * it yet, the live-tail case) stays absorbed even once prose settles the
+ * run, so membership never churns when the next node arrives. A bell with
+ * no member before it (an idle-time ping after prose) is not a run and
+ * renders standalone.
  *
  * The abandoned-blocks record is a bell too: it lands right after the rows
  * Claude discarded, so it joins the run of discarded thinking or tool rows
  * and stands alone after discarded prose. The store applies the same rule
- * (`isBell`, internal/store/activity_runs.go).
+ * (`isAbsorbed`, internal/store/activity_runs.go).
  */
-function isAbsorbedNotification(
-  node: TimelineNode,
-  getItem: (id: string) => Item | undefined,
-): boolean {
-  const item = currentLeafItem(node, getItem);
-  return item !== null && item.kind === 'notification';
+function isAbsorbedRow(node: TimelineNode, options: GroupActivityRunsOptions): boolean {
+  const item = currentLeafItem(node, options.getItem);
+  return item !== null && isActivityRunAbsorbedRow(item, options.rule);
 }
 
 /** Every positional identity item one run row represents. */
@@ -566,7 +580,7 @@ export function groupActivityRuns(
 
   let hasAnyMember = false;
   for (const node of nodes) {
-    if (isRunMember(node, options.getItem, options.identity)) {
+    if (isRunMember(node, options)) {
       hasAnyMember = true;
       break;
     }
@@ -595,7 +609,7 @@ export function groupActivityRuns(
   };
   let i = 0;
   while (i < nodes.length) {
-    if (!isRunMember(nodes[i], options.getItem, options.identity)) {
+    if (!isRunMember(nodes[i], options)) {
       out.push(nodes[i]);
       i += 1;
       continue;
@@ -603,8 +617,7 @@ export function groupActivityRuns(
     let j = i + 1;
     while (
       j < nodes.length
-      && (isRunMember(nodes[j], options.getItem, options.identity)
-        || isAbsorbedNotification(nodes[j], options.getItem))
+      && (isRunMember(nodes[j], options) || isAbsorbedRow(nodes[j], options))
     ) j += 1;
     // Checked against the slice bounds BEFORE slicing, so a hit allocates
     // only the fresh run node.
@@ -631,10 +644,9 @@ export function groupActivityRuns(
   // is the tail, and it is not loaded.
   const tail = out[out.length - 1];
   if (tail?.kind === 'activity_run' && options.windowReachesTail) {
-    // An absorbable bell behind the gate joins this very run when revealed,
-    // same as withheld activity — it must not read as closing prose.
-    tail.live = options.withheld.every((node) =>
-      isRunMember(node, options.getItem, options.identity) || isAbsorbedNotification(node, options.getItem));
+    // An absorbable row behind the gate joins this very run when revealed,
+    // same as withheld activity: it must not read as closing prose.
+    tail.live = options.withheld.every((node) => isRunMember(node, options) || isAbsorbedRow(node, options));
     // Tail-ness is the wider, reader-facing fact: this run is the newest
     // node ON SCREEN, whatever the wire holds behind the gate. It is what
     // collapse resolution keys on, and what the row's scroll controller

@@ -316,17 +316,19 @@ func copyForkTurnsTx(tx *sql.Tx, forkID, sourceID string, from, through int) err
 }
 
 // copyForkQuestionsTx copies the question state of the rows the fork
-// shows. A submission still waiting for its message in the source did not
-// reach the fork's history, so it reopens.
+// shows, each with the mark of the run that recorded it, so a question an
+// earlier run asked is the person's in the fork too. A submission still
+// waiting for its message in the source did not reach the fork's history,
+// so it reopens.
 func copyForkQuestionsTx(tx *sql.Tx, sourceID, forkID string) error {
-	rows, err := tx.Query(`SELECT `+asyncQuestionColumns+` FROM async_questions
+	rows, err := tx.Query(`SELECT `+asyncQuestionColumns+`,run_id FROM async_questions
 		WHERE thread_id = ? ORDER BY created_at, rowid`, sourceID)
 	if err != nil {
 		return fmt.Errorf("store: read fork questions of %s: %w", sourceID, err)
 	}
 	var questions []AsyncQuestion
 	for rows.Next() {
-		q, err := scanAsyncQuestion(rows)
+		q, err := scanAsyncQuestionWithRun(rows)
 		if err != nil {
 			return errors.Join(err, rows.Close())
 		}

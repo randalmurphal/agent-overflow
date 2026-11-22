@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { projectHasScope } from '../../transport/entityScopes';
+  import { projectScopeGrant } from '../../transport/entityScopes';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
   // What deleting a project involves when it owns workflow work (D25).
   //
   // Informational, not a consent gate: deletion is cleanup. It removes the runs
@@ -19,8 +20,8 @@
 
   interface Props {
     open: boolean;
-    projectName: string;
-    threadCount: number;
+    /** What the deletion affects, as the confirmation says it (projectActions.svelte.ts). */
+    summary: string;
     preview: ProjectDeletionPreview;
     submitting: boolean;
     onConfirm: () => void;
@@ -28,8 +29,7 @@
   }
   let {
     open,
-    projectName,
-    threadCount,
+    summary,
     preview,
     submitting,
     onConfirm,
@@ -37,12 +37,8 @@
   }: Props = $props();
 
   // Deleting a project is thread/project bookkeeping.
-  let ungranted = $derived(!projectHasScope('threads:operate', preview.projectId));
-  let threadSummary = $derived(
-    `Permanently delete "${projectName}" and all ${threadCount} thread${
-      threadCount === 1 ? '' : 's'
-    } it contains.`,
-  );
+  let grant = $derived(projectScopeGrant('threads:operate', preview.projectId));
+  let ungranted = $derived(grant !== 'granted');
   let workSummary = $derived(
     cleanupSummary(preview.runCount, preview.liveRunIds.length),
   );
@@ -52,7 +48,7 @@
 <Modal {open} title="Delete Project" onClose={onCancel} width="lg" padding="comfortable">
   {#snippet children()}
     <div class="space-y-3 text-sm" data-testid="project-delete-dialog">
-      <p class="text-[0.8125rem] text-fg-muted leading-relaxed">{threadSummary}</p>
+      <p class="text-[0.8125rem] text-fg-muted leading-relaxed">{summary}</p>
       {#if workSummary}
         <p class="text-xs text-fg-muted" data-testid="project-delete-work">{workSummary}</p>
       {/if}
@@ -91,7 +87,7 @@
       variant="danger"
       size="sm"
       testId="project-delete-confirm"
-      title={ungranted ? 'Not granted to this device' : undefined}
+      title={grantBlockedTitle(grant)}
       onclick={onConfirm}
       disabled={ungranted || submitting}
       loading={submitting}

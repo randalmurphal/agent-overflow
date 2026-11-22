@@ -9,11 +9,11 @@ import (
 )
 
 func TestParseHarnessTiming(t *testing.T) {
-	got, err := parseHarnessTiming(" pairing-probe=500ms, watermark=1s ,thread-poll=250ms,transfer-retry=100ms,pr-update=2s,pr-update-retry=20ms,pr-ci-live=30ms,pr-ci-follow=15ms,pr-ci-log-wait=40ms,merged-pr-poll=300ms,pr-lookup-retry=600ms,idle-reap=3s,idle-reap-sweep=500ms,wakeup-grace=2s,wake-floor=1s,watch-failure-window=3s,remote-watch-poll=90s,drain-stall=750ms,usage-probe-gap=700ms,usage-poll=2h,prompt-lease=4s,")
+	got, err := parseHarnessTiming(" pairing-probe=500ms, watermark=1s ,thread-poll=250ms,transfer-retry=100ms,pr-update=2s,pr-update-retry=20ms,pr-ci-live=30ms,pr-ci-follow=15ms,pr-ci-log-wait=40ms,merged-pr-poll=300ms,pr-lookup-retry=600ms,idle-reap=3s,idle-reap-sweep=500ms,wakeup-grace=2s,wake-floor=1s,watch-failure-window=3s,remote-watch-poll=90s,drain-stall=750ms,usage-probe-gap=700ms,usage-poll=2h,")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := harnessTiming{PairingProbe: 500 * time.Millisecond, Watermark: time.Second, ThreadPoll: 250 * time.Millisecond, TransferRetry: 100 * time.Millisecond, PRUpdate: 2 * time.Second, PRUpdateRetry: 20 * time.Millisecond, PRCILive: 30 * time.Millisecond, PRCIFollow: 15 * time.Millisecond, PRCILogWait: 40 * time.Millisecond, MergedPRPoll: 300 * time.Millisecond, PRLookupRetry: 600 * time.Millisecond, IdleReap: 3 * time.Second, IdleReapSweep: 500 * time.Millisecond, WakeupGrace: 2 * time.Second, WakeFloor: time.Second, WatchFailureWindow: 3 * time.Second, RemoteWatchPoll: 90 * time.Second, DrainStall: 750 * time.Millisecond, UsageProbeGap: 700 * time.Millisecond, UsagePoll: 2 * time.Hour, PromptLease: 4 * time.Second}
+	want := harnessTiming{PairingProbe: 500 * time.Millisecond, Watermark: time.Second, ThreadPoll: 250 * time.Millisecond, TransferRetry: 100 * time.Millisecond, PRUpdate: 2 * time.Second, PRUpdateRetry: 20 * time.Millisecond, PRCILive: 30 * time.Millisecond, PRCIFollow: 15 * time.Millisecond, PRCILogWait: 40 * time.Millisecond, MergedPRPoll: 300 * time.Millisecond, PRLookupRetry: 600 * time.Millisecond, IdleReap: 3 * time.Second, IdleReapSweep: 500 * time.Millisecond, WakeupGrace: 2 * time.Second, WakeFloor: time.Second, WatchFailureWindow: 3 * time.Second, RemoteWatchPoll: 90 * time.Second, DrainStall: 750 * time.Millisecond, UsageProbeGap: 700 * time.Millisecond, UsagePoll: 2 * time.Hour}
 	if got != want {
 		t.Fatalf("parsed %+v, want %+v", got, want)
 	}
@@ -78,8 +78,8 @@ func TestHarnessTimingOnlyInHarnessBoot(t *testing.T) {
 			`PRLookupRetryBase:\s+opts\.Timing\.PRLookupRetry,`,
 			`UsageProbeGap:\s+opts\.Timing\.UsageProbeGap,`,
 			`UsagePollInterval:\s+opts\.Timing\.UsagePoll,`,
-			`WorkerPromptLease:\s+opts\.Timing\.PromptLease,`,
 			`OmitOwnerOps:\s+opts\.OlderComputer,`,
+			`OmitAgentMessageRunMembers:\s+opts\.OlderComputer,`,
 			`isolation\.OlderComputer = envTruthy\(os\.Getenv\(diagenv\.HarnessOlderComputer\)\)`,
 			`HarnessOlderComputer:\s+isolation\.OlderComputer,`,
 		},
@@ -88,6 +88,7 @@ func TestHarnessTimingOnlyInHarnessBoot(t *testing.T) {
 			`bootAttachedBackends\(opts\.HarnessTiming\.PairingProbe\)`,
 			`manager\.SetActivationProbe\(activationProbe\)`,
 			`if opts\.HarnessOlderComputer \{\s+appOptions\.Skip, appOptions\.Reshape = olderComputerSurface\(\)`,
+			`OmitAgentMessageRunMembers:\s+opts\.HarnessReceiver != nil && opts\.HarnessOlderComputer,`,
 		},
 	} {
 		source := readRootSource(t, file)

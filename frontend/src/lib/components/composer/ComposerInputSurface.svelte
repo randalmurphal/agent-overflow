@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { threadHasScope } from '../../transport/entityScopes';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
   import { threadMachine } from '../../stores/attachedBackends.svelte';
   // The composer's editing core: text entry + attachments. Everything the
   // host decides — send, thread lifecycle, pending prompts, toolbar — is
@@ -43,6 +43,7 @@
     editsDraft = true,
     showDraftRows = true,
     shellPrefix = false,
+    attachAccess,
     blockAttachment,
     attachmentsDeferred = false,
     shouldDeleteAttachmentRecord,
@@ -506,9 +507,9 @@
     />
   </div>
   <!-- An ask's copy (Thread.askCopy) takes no message, so nothing to attach. -->
-  {#if !pane.thread?.askCopy && threadHasScope('attachments:write', pane.threadId, pane.thread?.projectId) && providerSupports(pane.thread?.provider, 'attachments')}
+  {#if !pane.thread?.askCopy && (attachAccess === 'granted' || attachAccess === 'offline') && providerSupports(pane.thread?.provider, 'attachments')}
     {#if showDraftRows && editsDraft}
-      <AttachmentPicker disabled={attachmentsOnHold} onChoose={chooseAttachments} />
+      <AttachmentPicker disabled={attachmentsOnHold || attachAccess !== 'granted'} blockedReason={grantBlockedTitle(attachAccess)} onChoose={chooseAttachments} />
     {/if}
     <!-- Outlives the picker button: a prompt that hides the draft rows
          while the platform picker is open must not take away the element

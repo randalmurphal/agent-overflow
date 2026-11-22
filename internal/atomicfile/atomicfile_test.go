@@ -1,9 +1,11 @@
 package atomicfile
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -143,5 +145,46 @@ func TestWriteSyncsTheDirectoryItRenamedInto(t *testing.T) {
 	}
 	if len(entries) != 1 {
 		t.Errorf("directory holds %d entries, want just the written file", len(entries))
+	}
+}
+
+// Remove makes a deletion durable the way Write makes a rename durable: it
+// syncs the directory after the unlink, and a sync that fails is its error
+// even though the file is gone. A directory that allows the unlink and not
+// the open for the sync (write and search, no read) shows it.
+func TestRemoveSyncsTheDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("SyncDir is a no-op on Windows")
+	}
+	dir := filepath.Join(t.TempDir(), "d")
+	path := filepath.Join(dir, "state.json")
+	if err := Write(path, []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o300); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, dirMode) })
+	err := Remove(path)
+	if err == nil || !strings.Contains(err.Error(), "sync dir") {
+		t.Fatalf("Remove = %v; want the directory sync's failure", err)
+	}
+	if _, statErr := os.Lstat(path); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("the file is still there: %v", statErr)
+	}
+}
+
+// Remove of a file that is not there, also in a directory that is not
+// there, succeeds: the deletion it asks for already holds.
+func TestRemoveOfAnAbsentFileSucceeds(t *testing.T) {
+	dir := t.TempDir()
+	if err := Remove(filepath.Join(dir, "absent.json")); err != nil {
+		t.Fatalf("Remove of an absent file = %v", err)
+	}
+	if err := Remove(filepath.Join(dir, "no-dir", "absent.json")); err != nil {
+		t.Fatalf("Remove in an absent directory = %v", err)
+	}
+	if err := Remove(""); err == nil {
+		t.Fatal("Remove accepted an empty path")
 	}
 }

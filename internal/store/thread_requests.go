@@ -189,6 +189,18 @@ type ThreadRequest struct {
 	// request was admitted, or when its pairing ended for a request that
 	// kept none (EndPairing), which names it once no pairing here does.
 	TargetComputerName string `json:"-"`
+	// RunBase is what the worker had done when this request's run began,
+	// nil for a request that tracks no run (request_runs.go); RunTotal is
+	// what the run did, set once the worker came to rest after it.
+	RunBase  *RunFigures `json:"-"`
+	RunTotal *RunFigures `json:"-"`
+	// RunToken is the token of the first request of the run this one
+	// counts, its own for that first, empty for a request that tracks none.
+	RunToken string `json:"-"`
+	// Nudge marks the record of a run of an owned worker that someone other
+	// than its spawner started (StartNudgeRun): CallerThreadID is the
+	// spawner, which made no request and is owed nothing.
+	Nudge bool `json:"-"`
 }
 
 // RemoteRequestSource is the thread a destination's receipts name for the
@@ -312,7 +324,7 @@ const threadRequestColumns = `token, caller_thread_id, kind, COALESCE(due_at, 0)
     COALESCE(confirmed_at, 0), COALESCE(late_confirmed_at, 0), answer_agent, answer_agent_role,
     target_provider, nested_open, late_delivered_how, made_in_thread_id,
     late_reply_agent, late_reply_agent_role, rest_unreported, answer_cause, answer_cause_arg, admit_until,
-    late_reply_expired, ack_owed, target_computer_name, link_end`
+    late_reply_expired, ack_owed, target_computer_name, link_end, ` + requestRunColumns
 
 func scanThreadRequest(row rowScanner) (ThreadRequest, error) {
 	return scanThreadRequestWith(row, nil, nil)
@@ -329,9 +341,10 @@ func (r ThreadRequest) RemoteListingReach() bool {
 // to extra.
 func scanThreadRequestWith(row rowScanner, answer, lateReply any, extra ...any) (ThreadRequest, error) {
 	var r ThreadRequest
-	var notify, polling, lineageOnly, nestedOpen, restUnreported, lateReplyExpired int
+	var notify, polling, lineageOnly, nestedOpen, restUnreported, lateReplyExpired, nudge int
 	var answerAgentRole, lateReplyAgentRole string
 	var answerAgent, lateReplyAgent int64
+	var run [6]sql.NullInt64
 	if answer == nil {
 		answer = &r.Answer
 	}
@@ -350,7 +363,10 @@ func scanThreadRequestWith(row rowScanner, answer, lateReply any, extra ...any) 
 		&r.TargetProvider, &nestedOpen, &r.LateDeliveredHow, &r.MadeInThreadID,
 		&lateReplyAgent, &lateReplyAgentRole, &restUnreported, &r.Cause, &r.CauseArg, &r.AdmitUntil,
 		&lateReplyExpired, &r.AckOwed, &r.TargetComputerName, &r.LinkEnd,
+		&run[0], &run[1], &run[2], &run[3], &run[4], &run[5], &r.RunToken, &nudge,
 	}, extra...)...)
+	r.Nudge = nudge != 0
+	r.RunBase, r.RunTotal = runFiguresOf(run[:3]), runFiguresOf(run[3:])
 	r.LateReplyExpired = lateReplyExpired != 0
 	r.NestedOpen = nestedOpen != 0
 	r.RestUnreported = restUnreported != 0
@@ -382,15 +398,18 @@ func collectThreadRequests(rows *sql.Rows, action string) ([]ThreadRequest, erro
 // The token is the caller-minted idempotency key, so a duplicate insert is an
 // error rather than a silent overwrite: a retry re-reads the existing row.
 func (s *Store) InsertThreadRequest(r ThreadRequest) error {
-	if err := insertThreadRequestTx(s.db, r); err != nil {
+	if err := insertThreadRequestTx(s.db, r, false); err != nil {
 		return err
 	}
 	s.noteThreadRequestChanged(ThreadRequestChange{Token: r.Token, CallerThreadID: r.CallerThreadID})
 	return nil
 }
 
-// insertThreadRequestTx validates and writes one source row on ex.
-func insertThreadRequestTx(ex sqlExecutor, r ThreadRequest) error {
+// insertThreadRequestTx validates and writes one source row on ex, with the
+// start of its run (insertThreadRequestSQL): r.RunBase when given, and for
+// a send this computer's tools accept (trackLocalSend), its target's tally
+// when its caller spawned the target.
+func insertThreadRequestTx(ex sqlExecutor, r ThreadRequest, trackLocalSend bool) error {
 	action := fmt.Sprintf("store: insert thread request %s", r.Token)
 	if r.Token == "" || r.CallerThreadID == "" {
 		return fmt.Errorf("%s: token and caller thread id are required", action)
@@ -410,15 +429,15 @@ func insertThreadRequestTx(ex sqlExecutor, r ThreadRequest) error {
 	if r.UpdatedAt == 0 {
 		r.UpdatedAt = r.CreatedAt
 	}
-	if _, err := ex.Exec(
-		`INSERT INTO thread_requests (
-		    token, caller_thread_id, kind, due_at, target_computer_id, target_thread_id,
-		    origin_thread_id, notify, state, answer, answer_kind, revision,
-		    next_check, attempts, issue, lineage_only, created_at, updated_at, admit_until, target_computer_name
-		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	var base [3]any
+	if b := r.RunBase; b != nil {
+		base = [3]any{b.ToolCalls, b.Tokens, b.TurnMs}
+	}
+	if _, err := ex.Exec(insertThreadRequestSQL,
 		r.Token, r.CallerThreadID, r.Kind, nilIfZero(r.DueAt), r.TargetComputerID, r.TargetThreadID,
 		r.OriginThreadID, boolToInt(r.Notify), r.State, nilIfEmptyBytes(r.Answer), r.AnswerKind, r.Revision,
 		r.NextCheck, r.Attempts, r.Issue, boolToInt(r.LineageOnly), r.CreatedAt, r.UpdatedAt, r.AdmitUntil, r.TargetComputerName,
+		base[0], base[1], base[2], boolToInt(trackLocalSend), nowMillis(),
 	); err != nil {
 		return fmt.Errorf("%s: %w", action, err)
 	}
@@ -1044,8 +1063,9 @@ func (s *Store) GetThreadRequests(tokens []string) ([]ThreadRequest, error) {
 
 // ListThreadRequestsByCaller returns one thread's requests, open ones first
 // and newest first within each group, which is how `thread_status` lists them
-// and how an agent recovers its tokens after a compaction. limit and offset
-// page the list; the tool layer encodes them into its opaque cursor.
+// and how an agent recovers its tokens after a compaction. A nudge's record
+// is no request the thread made and is left out. limit and offset page the
+// list; the tool layer encodes them into its opaque cursor.
 func (s *Store) ListThreadRequestsByCaller(callerThreadID string, limit, offset int) ([]ThreadRequest, error) {
 	if limit < 1 {
 		limit = 20
@@ -1055,7 +1075,7 @@ func (s *Store) ListThreadRequestsByCaller(callerThreadID string, limit, offset 
 	}
 	rows, err := s.reader().Query(
 		`SELECT `+threadRequestColumns+` FROM thread_requests
-		  WHERE caller_thread_id = ? AND lineage_only = 0
+		  WHERE caller_thread_id = ? AND lineage_only = 0 AND nudge = 0
 		  ORDER BY (settled_at IS NULL) DESC, created_at DESC, token ASC
 		  LIMIT `+strconv.Itoa(limit)+` OFFSET ?`,
 		callerThreadID, offset)

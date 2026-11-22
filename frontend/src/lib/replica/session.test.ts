@@ -24,6 +24,7 @@ import {
 } from './envelope';
 import { META_IDENTITY_KEY, META_STORE, THREADS_STORE, openReplicaDb, writeRecord } from './idb';
 import type { Item } from '../types/models';
+import { AGENT_MESSAGES_ABSORBED_RULE } from '../utils/activityRunSpans';
 
 installFakeIndexedDB();
 
@@ -60,7 +61,7 @@ function body(overrides: Partial<ReplicaBody> = {}): ReplicaBody {
     newestCursor: { turnIndex: 0, itemIndex: 0, itemId: 'i-1' },
     hasMoreOlder: false,
     hasMoreNewer: false,
-    latestSettledTurn: null,
+    latestSettledTurn: null, activityRunRule: AGENT_MESSAGES_ABSORBED_RULE,
     runs: [],
     ...overrides,
   };

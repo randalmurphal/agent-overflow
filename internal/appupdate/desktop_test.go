@@ -3,6 +3,7 @@ package appupdate
 import (
 	"context"
 	"errors"
+	"log"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -328,6 +329,215 @@ func TestDesktopTrialLeavesATargetWithoutItToTheFrameworkSwap(t *testing.T) {
 		t.Fatal("a failed swap left the updater busy")
 	}
 	d2.refuteExit(t)
+}
+
+// swapLines captures the standard logger's lines about a framework swap.
+// Serial: it replaces the standard logger's output.
+func swapLines(t *testing.T) func() []string {
+	t.Helper()
+	var mu sync.Mutex
+	var buf strings.Builder
+	previous, flags := log.Writer(), log.Flags()
+	log.SetOutput(writerFunc(func(p []byte) (int, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return buf.Write(p)
+	}))
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(previous)
+		log.SetFlags(flags)
+	})
+	return func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		var lines []string
+		for _, line := range strings.Split(buf.String(), "\n") {
+			if strings.HasPrefix(line, "updater: swap") {
+				lines = append(lines, line)
+			}
+		}
+		return lines
+	}
+}
+
+// wantSwapLines fails unless got times each phase of want once, ends with
+// one summary, and that summary lists want in order: a name, or
+// name:skipped for a phase that did not run.
+func wantSwapLines(t *testing.T, got []string, want ...string) {
+	t.Helper()
+	if len(got) != len(want)+1 {
+		t.Fatalf("logged %d lines, want %d phases and a summary:\n%s", len(got), len(want), strings.Join(got, "\n"))
+	}
+	var listed []string
+	for i, name := range want {
+		phase, skipped := strings.CutSuffix(name, ":skipped")
+		prefix := "updater: swap to 0.8.1: phase=" + phase + " duration="
+		listed = append(listed, phase+":")
+		if skipped {
+			prefix = "updater: swap to 0.8.1: phase=" + phase + " skipped: "
+			listed[i] = name
+		}
+		if !strings.HasPrefix(got[i], prefix) {
+			t.Fatalf("line %d = %q, want %q:\n%s", i, got[i], prefix, strings.Join(got, "\n"))
+		}
+	}
+	summary := got[len(want)]
+	_, phases, ok := strings.Cut(summary, " phases=")
+	if !strings.HasPrefix(summary, "updater: swap to 0.8.1: summary total=") || !ok {
+		t.Fatalf("last line = %q, want the summary:\n%s", summary, strings.Join(got, "\n"))
+	}
+	entries := strings.Split(strings.Fields(phases)[0], ",")
+	if len(entries) != len(listed) {
+		t.Fatalf("summary lists %q, want %q", entries, listed)
+	}
+	for i, entry := range entries {
+		if !strings.HasPrefix(entry, listed[i]) {
+			t.Fatalf("summary lists %q, want %q", entries, listed)
+		}
+	}
+}
+
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
+
+// A target without the trial takes the framework's swap, and the update
+// logs that branch as skipped, never failed, then the swap's start, this
+// process's shutdown once the host has shut down, and one summary. A swap
+// whose shutdown the watchdog cuts short says so, and one that cannot
+// start ends with its error and no shutdown.
+func TestDesktopSwapWithoutTheTrialLogsItsPhases(t *testing.T) {
+	t.Run("swapped", func(t *testing.T) {
+		d := newDesktopTestApp(t)
+		// The watchdog's own case is below; here the host shuts down first.
+		d.deps.RestartWatchdogDelay = time.Hour
+		d.download(t)
+		lines := swapLines(t)
+		frameworkRestart = func(*updater.Updater, context.Context) error { return nil }
+		if err := d.RestartToUpdate(nil); err != nil {
+			t.Fatalf("RestartToUpdate: %v", err)
+		}
+		d.EndRestart(nil)
+		d.EndRestart(errors.New("a second end"))
+		want := []string{
+			"updater: swap to 0.8.1: phase=handoff skipped: 0.8.1 does not apply updates with a trial",
+			"updater: swap to 0.8.1: phase=swap duration=",
+			"updater: swap to 0.8.1: phase=shutdown duration=",
+			"updater: swap to 0.8.1: summary total=",
+		}
+		got := lines()
+		if len(got) != len(want) {
+			t.Fatalf("logged %q\nwant %q", got, want)
+		}
+		for i, prefix := range want {
+			if !strings.HasPrefix(got[i], prefix) || strings.Contains(got[i], " failed: ") {
+				t.Fatalf("line %d = %q, want %q and no failure", i, got[i], prefix)
+			}
+		}
+		if !strings.Contains(got[3], "phases=handoff:skipped,swap:") || !strings.Contains(got[3], ",shutdown:") ||
+			!strings.HasSuffix(got[3], " outcome=swapped") {
+			t.Fatalf("summary = %q", got[3])
+		}
+	})
+	t.Run("the watchdog ends the shutdown", func(t *testing.T) {
+		d := newDesktopTestApp(t)
+		d.download(t)
+		lines := swapLines(t)
+		frameworkRestart = func(*updater.Updater, context.Context) error { return nil }
+		if err := d.RestartToUpdate(nil); err != nil {
+			t.Fatalf("RestartToUpdate: %v", err)
+		}
+		select {
+		case <-d.exited:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the restart watchdog did not fire")
+		}
+		d.EndRestart(nil)
+		got := strings.Join(lines(), "\n")
+		if strings.Count(got, "phase=shutdown duration=") != 1 ||
+			!strings.Contains(got, "phase=shutdown duration=") || !strings.Contains(got, "failed: the shutdown did not finish within 50ms") ||
+			strings.Count(got, "summary total=") != 1 || !strings.Contains(got, "outcome=error") {
+			t.Fatalf("logged:\n%s\nwant the shutdown failed once and one summary", got)
+		}
+	})
+	// The framework's Restart quits the host before it returns, so the app
+	// loop can end the swap first; the summary still comes last and lists
+	// the swap.
+	t.Run("the app loop ends before Restart returns", func(t *testing.T) {
+		d := newDesktopTestApp(t)
+		d.deps.RestartWatchdogDelay = time.Hour
+		d.download(t)
+		lines := swapLines(t)
+		frameworkRestart = func(*updater.Updater, context.Context) error {
+			d.EndRestart(nil)
+			return nil
+		}
+		if err := d.RestartToUpdate(nil); err != nil {
+			t.Fatalf("RestartToUpdate: %v", err)
+		}
+		d.EndRestart(nil)
+		wantSwapLines(t, lines(), "handoff:skipped", "swap")
+	})
+	// The host's shutdown callback begins the shutdown inside Restart, and
+	// the app loop ends it there or later, while the code after Restart
+	// runs: the shutdown is timed from the callback, once.
+	for _, tc := range []struct {
+		name string
+		// during is what the host does before Restart returns.
+		during func(d *desktopTestApp, ended *sync.WaitGroup)
+	}{
+		{"the app loop ends after Restart returns", func(d *desktopTestApp, _ *sync.WaitGroup) {
+			d.RestartQuitting()
+		}},
+		{"the app loop ends before Restart returns", func(d *desktopTestApp, _ *sync.WaitGroup) {
+			d.RestartQuitting()
+			d.EndRestart(nil)
+		}},
+		{"the app loop ends while Restart returns", func(d *desktopTestApp, ended *sync.WaitGroup) {
+			d.RestartQuitting()
+			ended.Add(1)
+			go func() {
+				defer ended.Done()
+				d.EndRestart(nil)
+			}()
+		}},
+	} {
+		t.Run("the shutdown callback runs inside Restart; "+tc.name, func(t *testing.T) {
+			d := newDesktopTestApp(t)
+			d.deps.RestartWatchdogDelay = time.Hour
+			d.download(t)
+			lines := swapLines(t)
+			var ended sync.WaitGroup
+			frameworkRestart = func(*updater.Updater, context.Context) error {
+				tc.during(d, &ended)
+				return nil
+			}
+			if err := d.RestartToUpdate(nil); err != nil {
+				t.Fatalf("RestartToUpdate: %v", err)
+			}
+			ended.Wait()
+			d.EndRestart(nil)
+			d.RestartQuitting()
+			wantSwapLines(t, lines(), "handoff:skipped", "swap", "shutdown")
+		})
+	}
+	t.Run("the swap cannot start", func(t *testing.T) {
+		d := newDesktopTestApp(t)
+		d.download(t)
+		lines := swapLines(t)
+		frameworkRestart = func(*updater.Updater, context.Context) error { return errors.New("spawn helper: boom") }
+		if err := d.RestartToUpdate(nil); err == nil {
+			t.Fatal("RestartToUpdate succeeded without its helper")
+		}
+		d.EndRestart(nil)
+		got := strings.Join(lines(), "\n")
+		if !strings.Contains(got, "phase=swap duration=") || !strings.Contains(got, "failed: spawn helper: boom") ||
+			strings.Contains(got, "phase=shutdown") || strings.Count(got, "summary total=") != 1 ||
+			!strings.Contains(got, "outcome=error") {
+			t.Fatalf("logged:\n%s\nwant the swap failed, no shutdown and one summary", got)
+		}
+	})
 }
 
 func TestReportUnsuccessfulUpdateIsTheBootNotice(t *testing.T) {

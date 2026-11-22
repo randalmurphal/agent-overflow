@@ -18,6 +18,7 @@
     value={draft.content}
     disabled={false}
     placeholder="Message"
+    attachAccess="granted"
     oninput={handleInput}
     onSubmitEnter={() => {}}
   />

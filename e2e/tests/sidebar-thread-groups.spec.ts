@@ -21,7 +21,9 @@
 // changes arrangement once. A refresh whose thread read fails, and whose
 // retry's fails again, keeps its rows as they were beside the failure, the
 // new group's answer never shown alone, until a complete pair changes the
-// arrangement once.
+// arrangement once. The project headers are held by the same gate: with the
+// project reply or the thread reply held, a project has no header and no
+// rows, and header and rows appear together in one arrangement.
 import type { Page } from '@playwright/test';
 import { test, expect, type SeedResult } from './fixtures.js';
 import { attachWorktree, seedWorktreeProject } from './worktree-removal-helpers.js';
@@ -301,12 +303,15 @@ test('a large group shows its first members, reveals the rest, and keeps the rev
 
 const LIST_THREADS = 1090132042;
 const LIST_THREAD_GROUPS = 2176447381;
+const LIST_PROJECTS = 2721360259;
 
 interface SidebarFrame { order: string; tops: number[] }
 
 // Every animation frame, the sidebar's rows in order with where each one is
-// drawn, and the RPC replies the page's socket has received.
-function recordSidebar(): void {
+// drawn, and the RPC replies the page's socket has received. With
+// `withProjects`, the project headers join the recorded rows, for a case
+// about when a header itself appears.
+function recordSidebar(withProjects?: boolean): void {
   const state = { frames: [] as SidebarFrame[], replies: [] as string[] };
   (window as unknown as { __sidebar: typeof state }).__sidebar = state;
   const Native = window.WebSocket;
@@ -320,11 +325,13 @@ function recordSidebar(): void {
       });
     }
   };
-  const rows = '[data-sidebar-group-id], [data-sidebar-thread-id], [data-testid="thread-group-show-more"], [data-testid="thread-group-show-less"]';
+  const rows = '[data-sidebar-group-id], [data-sidebar-thread-id], [data-testid="thread-group-show-more"], [data-testid="thread-group-show-less"]'
+    + (withProjects ? ', [data-project-id]' : '');
   const sample = () => {
     const els = Array.from(document.querySelectorAll(rows));
     state.frames.push({
-      order: els.map((el) => el.getAttribute('data-sidebar-group-id') ?? el.getAttribute('data-sidebar-thread-id') ?? el.getAttribute('data-testid')).join(' '),
+      order: els.map((el) => el.getAttribute('data-sidebar-group-id') ?? el.getAttribute('data-sidebar-thread-id')
+        ?? el.getAttribute('data-project-id') ?? el.getAttribute('data-testid')).join(' '),
       tops: els.map((el) => el.getBoundingClientRect().top),
     });
     requestAnimationFrame(sample);
@@ -463,6 +470,89 @@ for (const held of ['groups', 'threads'] as const) {
     holding = true;
     await page.reload();
     await expectHeldThenTogether({ members: 11, footer: 'thread-group-show-less' });
+  });
+}
+
+// A project's header is one unit with the threads under it: whichever of the
+// three catalogs answers last, the header and its rows first appear together
+// and in their final arrangement, at open and after reload. Shown a header
+// ahead of its threads, the project lists its empty "New Thread" button and
+// then grows a thread list, pushing every row below it down, under the
+// pointer of whoever is clicking.
+for (const held of ['projects', 'threads'] as const) {
+  test(`a project header and its rows first appear together when the ${held} answer last`, async ({ harness, page }) => {
+    const seed = await harness.rpc<SeedResult>('HarnessSeed', seedProject(`project-together-${held}`, ['Member A', 'Member B', 'Outside']));
+    const { projectId, threadIds } = seed.projects[0];
+    const group = await harness.rpc<ThreadGroup>('CreateThreadGroup', projectId, 'A group');
+    await harness.rpc('SetThreadGroup', threadIds.slice(0, 2), group.id);
+
+    const heldMethod = held === 'projects' ? LIST_PROJECTS : LIST_THREADS;
+    const otherMethod = held === 'projects' ? LIST_THREADS : LIST_PROJECTS;
+    const requests = new Map<string, number>();
+    const otherAnswers: string[] = [];
+    let holding = true;
+    let heldReplies: Array<() => void> = [];
+    await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
+      const server = socket.connectToServer();
+      socket.onMessage((message) => {
+        const frame = JSON.parse(String(message)) as { type?: string; id?: string; methodId?: number };
+        if (frame.type === 'rpc' && frame.id && frame.methodId !== undefined) requests.set(frame.id, frame.methodId);
+        server.send(message);
+      });
+      server.onMessage((message) => {
+        const frame = JSON.parse(String(message)) as { type?: string; id?: string };
+        const method = frame.type === 'rpc' && frame.id ? requests.get(frame.id) : undefined;
+        if (method === heldMethod && holding) {
+          heldReplies.push(() => socket.send(message));
+          return;
+        }
+        if (method === otherMethod) otherAnswers.push(frame.id!);
+        socket.send(message);
+      });
+    });
+    await page.addInitScript(recordSidebar, true);
+    const release = () => {
+      holding = false;
+      for (const send of heldReplies) send();
+      heldReplies = [];
+    };
+
+    // Held: the other catalog has answered and the page has received it,
+    // two frames have painted since, and the project has no header and no
+    // row of any kind, only the loading row.
+    async function expectHeldThenTogether(): Promise<void> {
+      await expect.poll(() => heldReplies.length).toBeGreaterThan(0);
+      await expect.poll(async () => (await sidebarRecord(page)).replies.some((id) => otherAnswers.includes(id))).toBe(true);
+      await nextFrames(page, 2);
+      expect(arrangements((await sidebarRecord(page)).frames)).toEqual([]);
+      await expect(page.locator(`[data-project-id="${projectId}"]`)).toHaveCount(0);
+      await expect(page.getByTestId('project-thread-list-empty')).toHaveCount(0);
+      await expect(page.getByTestId('sidebar-catalog-loading')).toBeVisible();
+
+      release();
+      await expect(page.locator(`[data-project-id="${projectId}"]`)).toHaveCount(1);
+      await expect(page.locator('[data-group-member] [data-sidebar-thread-id]')).toHaveCount(2);
+      await expect(page.locator(`[data-sidebar-thread-id="${threadIds[2]}"]`)).toBeVisible();
+      await expect(page.getByTestId('sidebar-catalog-status')).toHaveCount(0);
+      // Anything else that rearranged the list after it first appeared
+      // would show as a second arrangement here.
+      await nextFrames(page, 30);
+      const { frames } = await sidebarRecord(page);
+      const shown = arrangements(frames);
+      expect(shown).toHaveLength(1);
+      expect(movedFrames(frames)).toBe(0);
+      const order = shown[0].split(' ');
+      expect(order[0]).toBe(projectId);
+      expect(order[1]).toBe(group.id);
+      expect(order.at(-1)).toBe(threadIds[2]);
+    }
+
+    await harness.open(page);
+    await expectHeldThenTogether();
+
+    holding = true;
+    await page.reload();
+    await expectHeldThenTogether();
   });
 }
 

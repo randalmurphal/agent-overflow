@@ -338,15 +338,21 @@ func TestARemoteWorkerWithAnArmedLoopIsOpen(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
-	installMockClaudeReplies(t, pair.dest, "watching the deploy")
+	gate := filepath.Join(t.TempDir(), "spawn-turn")
+	installMockClaudeTurns(t, pair.dest, [][]string{gatedTurn(gate, "watching the deploy")})
 	ack := pair.spawnThere(t, "watch the deploy", nil)
 	child := pair.receipt(t, ack.Token).TargetThreadID
-	waitUntil(t, 10*time.Second, func() bool { return pair.receipt(t, ack.Token).SettledAt != 0 })
+	waitUntil(t, 10*time.Second, func() bool {
+		return threadToolsLiveState(pair.dest.triage.LiveStateSnapshotForThread(child)).ActiveTurn
+	})
+	// The spawn's turn arms the loop, so it is the spawn's run that keeps it.
 	destID, _ := pair.dest.backendIdentity()
 	there := threadtools.Caller{ThreadID: child, ComputerID: destID, ComputerName: "destination"}
 	if _, err := (threadToolsApp{app: pair.dest}).Loop(t.Context(), there, threadtools.LoopCall{Label: "deploy check", Note: "check", EverySeconds: 3600}); err != nil {
 		t.Fatalf("Loop there: %v", err)
 	}
+	release(t, gate)
+	waitUntil(t, 10*time.Second, func() bool { return pair.dest.restHeld(child, ack.Token) })
 	pair.poll(t)
 	agentPair := &agentPeerPair{reachPair: pair, spawn: pair.request(t, ack.Token)}
 	agentPair.askAgainUntil(t, func(row store.ThreadRequest) bool { return row.NestedOpen })
@@ -377,7 +383,12 @@ func TestARemoteWorkerWithAnArmedLoopIsOpen(t *testing.T) {
 	if err := pair.dest.CancelThreadWake(child, store.AgentWakeLoop, wakes[0].ID); err != nil {
 		t.Fatalf("CancelThreadWake there: %v", err)
 	}
-	agentPair.askAgainUntil(t, func(row store.ThreadRequest) bool { return !row.NestedOpen })
+	// At rest there, the spawn settles: its poll collects it.
+	waitUntil(t, 10*time.Second, func() bool {
+		pair.poll(t)
+		return threadRequestSettled(pair.request(t, ack.Token))
+	})
+	agentPair.askAgainUntil(t, func(row store.ThreadRequest) bool { return !row.NestedOpen && row.RunEnded() })
 	if row := rowOf(); row.open() {
 		t.Fatalf("row = %+v; want the resting remote worker settled", row)
 	}

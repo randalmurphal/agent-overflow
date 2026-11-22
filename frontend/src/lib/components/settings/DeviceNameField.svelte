@@ -7,7 +7,8 @@
   import { HOME_BACKEND, type BackendKey } from '../../transport/backendKey';
   import { withBackendTarget } from '../../transport/backends';
   import { backendHasCapability, getTransportHelloFor } from '../../stores/transportStatus.svelte';
-  import { hasScope } from '../../transport/scopes';
+  import { scopeGrant } from '../../transport/scopes';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
   import { errString } from '../../utils/errors';
   import { onDeviceNameChanged } from '../../stores/deviceNames';
   import SettingsField from './SettingsField.svelte';
@@ -46,7 +47,8 @@
   }
   onDestroy(() => clearTimeout(messageTimer));
   let supported = $derived(clientOwned || (target === HOME_BACKEND ? backendHasCapability('device-name.v1') : getTransportHelloFor(target)?.capabilities.includes('device-name.v1')));
-  let canEdit = $derived(clientOwned || hasScope('access:admin', target));
+  let grant = $derived(clientOwned ? 'granted' : scopeGrant('access:admin', target));
+  let canEdit = $derived(grant === 'granted');
 
   function acceptName(value: string): void {
     if (name === baseline) name = value;
@@ -100,7 +102,7 @@
   <SettingsField id={fieldId} label="Device name" hint="The name this device shares with other computers and phones." htmlFor={fieldId} stacked>
     <form class="flex gap-2" onsubmit={(event) => { event.preventDefault(); void save(); }}>
       <input id={fieldId} class={`${INPUT_CLASS} min-w-0 flex-1`} bind:value={name} oninput={clearMessage} disabled={!loaded || !supported || busy || !canEdit} placeholder="Use the default name" />
-      <Button type="submit" variant="primary" size="sm" disabled={!loaded || !supported || busy || !canEdit}>Save</Button>
+      <Button type="submit" variant="primary" size="sm" disabled={!loaded || !supported || busy || !canEdit} title={grantBlockedTitle(grant)}>Save</Button>
     </form>
     {#if error}<p class="mt-2 text-xs text-error" role="alert">{error}</p>
     {:else if !supported}<p class="mt-2 text-xs text-fg-muted">Update this computer to edit its device name.</p>

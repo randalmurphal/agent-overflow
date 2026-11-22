@@ -15,8 +15,8 @@ Linux GUI builds need `libgtk-4-dev`, `libwebkitgtk-6.0-dev`, `pkg-config`
 and `gcc`. Wails uses GTK4/WebKitGTK 6.0. The SQLite driver is pure Go;
 syntax highlighting and platform webview glue require cgo. The release
 scripts and their tests also need `git`, `zip` and `unzip`. Linux test runs
-need unprivileged user namespaces
-([network isolation](../specs/testing-harness.md#network-isolation)).
+need unprivileged user namespaces and mounts in them
+([isolation](../specs/testing-harness.md#isolation-network-temp-directory-and-priority)).
 
 `make install` installs the Wails CLI and frontend dependencies, including
 Chromium for the browser tests. `make dev` builds the dev bundle once and
@@ -34,6 +34,24 @@ traces and from `runtime.Caller` are module-relative
 (`agent-overflow/internal/...`), so a test finds the checkout with
 `internal/testutil/reporoot`, and a debugger attached to a `make dev` build
 needs that prefix mapped to the checkout.
+
+Make lowers itself to nice 19, so every build and test recipe yields to
+the developer's running app; goals that launch an app (`make dev`,
+`make harness` and the like) keep normal priority. The test targets run
+under `bin/ao-netns`, whose private temp directory and on-disk Go work
+directory are described with the
+[isolation](../specs/testing-harness.md#isolation-network-temp-directory-and-priority).
+Go trims its build cache only by age, so `go-build`, `go-test` and
+`test-race` run a `cmd/ao-gocache-trim` pass before their build or test and
+another when it ends. A pass walks the cache at most every five minutes,
+one at a time across sessions, and once `go env GOCACHE` passes 20 GiB
+(`AO_GOCACHE_MAX_GIB`; 0 turns it off) deletes its least recently used
+entries, linked executables included, never one used in the last hour;
+when those alone keep the cache over the cap it says so. It resolves
+`GOCACHE` by the go command's own rules and refuses a directory without
+the `README` the go command writes in its cache. There a failed pass prints its error and the
+target goes on, while an invalid `AO_GOCACHE_MAX_GIB` fails it;
+`make gocache-trim` fails on either. It does nothing in CI.
 
 ## Generated artifacts
 

@@ -102,6 +102,56 @@ type UpdateRun struct {
 	Progress func(startupprogress.Progress)
 	Now      func() time.Time
 	Logf     func(string, ...any)
+
+	// phases times the update an entry point runs (timed): the steps'
+	// waits and this run's own phases, for its summary. nil times nothing.
+	phases *PhaseLog
+}
+
+// timed returns r timing the update state holds, and the func that ends
+// it with the summary line: the phases, the total, the outcome, and the
+// time since the update was recorded (since_begin), which on an update
+// includes the previous version's shutdown.
+func (r UpdateRun) timed(state State) (UpdateRun, func(UpdateEnd, error)) {
+	started := r.now()
+	prefix := "updater: update " + state.Update.ID
+	if state.Migration() {
+		prefix = "updater: migration " + state.Update.ID
+	}
+	r.phases = NewPhaseLog(r.logf, prefix, r.now)
+	return r, func(end UpdateEnd, err error) {
+		outcome := string(end.State)
+		if err != nil {
+			outcome = "error"
+		}
+		fields := []any{"outcome", outcome}
+		if begun := state.Update.StartedAtMs; begun > 0 {
+			fields = append(fields, "since_begin", roundPhase(r.now().Sub(time.UnixMilli(begun))))
+		}
+		r.phases.Summary(r.now().Sub(started), fields...)
+	}
+}
+
+// stepFailure is the failure of a step that ended with result and err, nil
+// when it reached want.
+func stepFailure(result UpdateEvent, err error, want UpdateOutcome) error {
+	switch {
+	case err != nil:
+		return err
+	case result.Outcome == want:
+		return nil
+	case result.Reason != "":
+		return fmt.Errorf("%s: %s", result.Outcome, result.Reason)
+	}
+	return fmt.Errorf("%s", result.Outcome)
+}
+
+// save writes the record with state as phase.
+func (r UpdateRun) save(phase string, state State) error {
+	saving := r.phases.Begin(phase)
+	err := r.Steps.Save(state)
+	saving.End(err)
+	return err
 }
 
 // Apply continues the update state holds: a pending one runs the snapshot
@@ -112,16 +162,19 @@ type UpdateRun struct {
 // target and the schema version its database started from. It returns an
 // error when the record cannot be written, or when a publish step fails
 // after the commit became durable; the next launch resumes either.
-func (r UpdateRun) Apply(ctx context.Context, state State) (UpdateEnd, error) {
-	switch state.Update.State {
-	case UpdateCommitted:
-		return r.Commit(ctx, state)
-	case UpdateRolledBack, UpdateFailed:
+//
+// Every update it runs ends with a summary line of its phases.
+func (r UpdateRun) Apply(ctx context.Context, state State) (end UpdateEnd, err error) {
+	if state.Update.State == UpdateRolledBack || state.Update.State == UpdateFailed {
 		return UpdateEnd{State: state.Update.State, Reason: state.Update.Reason}, nil
-	case UpdatePending:
+	}
+	r, summarize := r.timed(state)
+	defer func() { summarize(end, err) }()
+	if state.Update.State == UpdateCommitted {
+		return r.Commit(ctx, state)
 	}
 	trace := trialTrace{schema: state.Update.FromSchema}
-	end, err := r.runTrials(ctx, state, &trace)
+	end, err = r.runTrials(ctx, state, &trace)
 	if err == nil && (end.State == UpdateRolledBack || end.State == UpdateFailed) {
 		r.rememberFailedTrial(state.Update.To, trace, end.Reason)
 	}
@@ -137,9 +190,13 @@ func (r UpdateRun) runTrials(ctx context.Context, state State, trace *trialTrace
 			"the trial was interrupted %d times without finishing", state.Update.Attempts))
 	}
 
-	if state.Update.Attempts == 0 {
+	if state.Update.Attempts > 0 {
+		r.phases.Skip("snapshot", fmt.Sprintf("attempt %d reuses the backup taken before the first", state.Update.Attempts+1))
+	} else {
 		trace.phase = ""
+		snapshot := r.phases.Begin("snapshot")
 		result, err := r.Steps.Snapshot(ctx, r.traced(trace))
+		snapshot.Waited(stepFailure(result, err, UpdateOutcomeOK))
 		if result.Schema > 0 {
 			trace.schema = result.Schema
 			update := *state.Update
@@ -160,13 +217,15 @@ func (r UpdateRun) runTrials(ctx context.Context, state State, trace *trialTrace
 	if err != nil {
 		return UpdateEnd{}, err
 	}
-	if err := r.Steps.Save(next); err != nil {
+	if err := r.save("record-attempt", next); err != nil {
 		return UpdateEnd{}, err
 	}
 	state = next
 	attempt := state.Update.Attempts
 	trace.phase = ""
+	trial := r.phases.Begin(fmt.Sprintf("trial.%d", attempt))
 	result, err := r.Steps.Trial(ctx, state.Update.To, attempt, r.traced(trace))
+	trial.Waited(stepFailure(result, err, UpdateOutcomePrepared))
 	if result.Step != "" {
 		trace.phase = result.Step
 	}
@@ -179,7 +238,7 @@ func (r UpdateRun) runTrials(ctx context.Context, state State, trace *trialTrace
 		if err != nil {
 			return UpdateEnd{}, err
 		}
-		if err := r.Steps.Save(committed); err != nil {
+		if err := r.save("settle", committed); err != nil {
 			return UpdateEnd{}, err
 		}
 		r.forgetFailedTrial()
@@ -209,10 +268,14 @@ func (r UpdateRun) runTrials(ctx context.Context, state State, trace *trialTrace
 func (r UpdateRun) Commit(ctx context.Context, state State) (UpdateEnd, error) {
 	if state.Migration() {
 		r.Discard(ctx, state)
+		r.phases.Skip("publish", "a database upgrade installs nothing")
 		return UpdateEnd{State: UpdateCommitted}, nil
 	}
 	r.step("update.commit", "Installing "+startupprogress.DisplayVersion(state.Update.To))
-	if err := r.Steps.Publish(ctx); err != nil {
+	publishing := r.phases.Begin("publish")
+	err := r.Steps.Publish(ctx)
+	publishing.End(err)
+	if err != nil {
 		return UpdateEnd{}, err
 	}
 	return UpdateEnd{State: UpdateCommitted}, nil
@@ -224,7 +287,9 @@ func (r UpdateRun) Commit(ctx context.Context, state State) (UpdateEnd, error) {
 // next launch tries again.
 func (r UpdateRun) RollBack(ctx context.Context, state State, reason string) (UpdateEnd, error) {
 	r.step(phaseRestore, "Restoring the previous version")
+	restoring := r.phases.Begin("restore")
 	result, err := r.Steps.Restore(ctx, reason, r.Progress)
+	restoring.Waited(stepFailure(result, err, UpdateOutcomeOK))
 	if err == nil && result.Outcome == UpdateOutcomeOK {
 		return r.settle(ctx, state, UpdateRolledBack, reason)
 	}
@@ -251,7 +316,7 @@ func (r UpdateRun) settle(ctx context.Context, state State, to UpdateState, reas
 	if err != nil {
 		return UpdateEnd{}, err
 	}
-	if err := r.Steps.Save(next); err != nil {
+	if err := r.save("settle", next); err != nil {
 		return UpdateEnd{}, err
 	}
 	r.logf("updater: update %s to %s %s: %s", next.Update.ID, next.Update.To, to, reason)
@@ -263,7 +328,9 @@ func (r UpdateRun) settle(ctx context.Context, state State, to UpdateState, reas
 // Discard removes the snapshot of the update state holds. A failure costs
 // disk until the next update replaces the snapshot, so it is logged.
 func (r UpdateRun) Discard(ctx context.Context, state State) {
+	discarding := r.phases.Begin("discard")
 	result, err := r.Steps.Discard(ctx, r.Progress)
+	discarding.Waited(stepFailure(result, err, UpdateOutcomeOK))
 	switch {
 	case err != nil:
 		r.logf("updater: update %s: discard the database backup: %v", state.Update.ID, err)
@@ -278,7 +345,10 @@ func (r UpdateRun) RemoveStaged(ctx context.Context, state State) {
 	if state.Migration() {
 		return
 	}
-	if err := r.Steps.RemoveStaged(ctx); err != nil {
+	removing := r.phases.Begin("remove-staged")
+	err := r.Steps.RemoveStaged(ctx)
+	removing.End(err)
+	if err != nil {
 		r.logf("updater: update %s: remove the staged version: %v", state.Update.ID, err)
 	}
 }
@@ -303,14 +373,19 @@ func (r UpdateRun) MarkReported(state State) (State, error) {
 // back; one whose trial was interrupted at every attempt is remembered.
 // stopped is the reason of one that cannot resume below the limit, as in
 // "the update was interrupted and its new launcher is missing".
+//
+// A recovery that settles the update, or tries to, ends with a summary
+// line of its phases.
 func (r UpdateRun) RecoverPending(ctx context.Context, state State, canResume bool, stopped string) (end UpdateEnd, resume bool, err error) {
 	update := state.Update
-	switch {
-	case update.Attempts == 0:
+	if update.Attempts > 0 && update.Attempts < TrialAttemptLimit && canResume {
+		return UpdateEnd{State: UpdatePending}, true, nil
+	}
+	r, summarize := r.timed(state)
+	defer func() { summarize(end, err) }()
+	if update.Attempts == 0 {
 		end, err = r.SettleFailed(ctx, state, "the update was interrupted before its trial started")
 		return end, false, err
-	case update.Attempts < TrialAttemptLimit && canResume:
-		return UpdateEnd{State: UpdatePending}, true, nil
 	}
 	exhausted := update.Attempts >= TrialAttemptLimit
 	reason := fmt.Sprintf("the trial was interrupted %d times without finishing", update.Attempts)
@@ -335,7 +410,10 @@ func (r UpdateRun) RecoverMigration(ctx context.Context, state State) (resume bo
 	case update.Settled():
 		r.Discard(ctx, state)
 	case update.Attempts == 0:
-		if _, err := r.SettleFailed(ctx, state, "the database upgrade was interrupted before its trial started"); err != nil {
+		timed, summarize := r.timed(state)
+		end, err := timed.SettleFailed(ctx, state, "the database upgrade was interrupted before its trial started")
+		summarize(end, err)
+		if err != nil {
 			return false, err
 		}
 	default:

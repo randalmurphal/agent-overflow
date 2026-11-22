@@ -3,7 +3,7 @@ import type { TimelinePageShape } from './threadPaneShared';
 import { ACTIVITY_RUN_WINDOW_ROWS_MAX } from '../utils/activityRunWindow';
 import type { ActivityRunStub, PagedItems, TimelineCursor, TimelineSelection } from '../../../bindings/agent-overflow/internal/store/models';
 import type { ActivityRunSpan } from '../utils/activityRunSpans';
-import { ListActivityRunMembers, ListItemsBeforeCursor } from './bindings';
+import { ListActivityRunMembers, ListItemsBeforeCursor, type RuledRead } from './bindings';
 import { compareCursors, compareItemToCursor, mergeItemsById } from './threadItems';
 import { requireEntityBackend, withBackendTarget } from '../transport/backends';
 import { threadBackend } from '../transport/entityIndex';
@@ -23,13 +23,13 @@ function bounds(run: ActivityRunStub): { first: TimelineCursor; last: TimelineCu
  * handle deleted members and runs split or joined since the previous paint. */
 export async function refreshRetainedRunWindows(
   threadId: string,
-  page: PagedItems,
+  page: RuledRead<PagedItems>,
   previous: readonly (ActivityRunSpan & { readerPinned?: boolean })[],
   shape: TimelinePageShape,
   isCurrent: () => boolean,
   selection: TimelineSelection = {},
   followingTail = false,
-): Promise<PagedItems> {
+): Promise<RuledRead<PagedItems>> {
   const pageItems = page.items;
   const present = new Set(pageItems.map(item => item.id));
   const retained = previous.filter(span => {
@@ -86,7 +86,9 @@ export async function refreshRetainedRunWindows(
       // One logical unit per response; advance by shipped rows, since a
       // logical run's cursor includes all of its unshipped members.
       const chunk = await withBackendTarget(backend, () => ListItemsBeforeCursor(threadId, before, 1, readShape, selection));
-      if (!isCurrent()) return page;
+      // A read of another rule (the hello changed mid-refresh) restates
+      // nothing in a page of this one.
+      if (!isCurrent() || chunk.activityRunRule !== page.activityRunRule) return page;
       const incoming = chunk.items as Item[];
       if (incoming.length === 0) break;
       const first = cursor(incoming[0]);
@@ -129,7 +131,7 @@ export async function refreshRetainedRunWindows(
       const answer = await withBackendTarget(backend, () => ListActivityRunMembers(threadId,
         { selection, runFirstItemId: run.firstItemId, loadedFirstItemId: members[0].id,
           loadedLastItemId: members[members.length - 1].id, direction: 'before', limit: 0, shape }));
-      if (!isCurrent()) return page;
+      if (!isCurrent() || answer.activityRunRule !== page.activityRunRule) return page;
       if (answer.stub.memberCount - answer.stub.unshippedBefore - answer.stub.unshippedAfter !== members.length) {
         throw new Error('Activity history changed during refresh');
       }

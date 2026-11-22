@@ -1,6 +1,8 @@
 // A row's needs-you badge (docs/specs/standing-agents.md, "Sidebar"): an
-// assistant's worker asks for an approval, the assistant's session dies
-// before taking it in, and the prompt goes back to the user. The assistant's
+// assistant's worker with a sidebar row asks for an approval in the
+// assistant's run, the assistant's session dies before taking it in, and
+// the prompt goes back to the user (an owned worker's would wait for the
+// assistant). The assistant's
 // row then counts its open worker and badges the one waiting on the user;
 // the badge goes once the user answers and the count once the worker ends.
 import { test, expect, type SeedResult } from './fixtures.js';
@@ -52,6 +54,8 @@ test('a worker waiting on the user badges its assistant row until answered', asy
   await harness.rpc('SendMessage', agent, 'rotate the logs', null);
   const spawn = await awaitToolAnswer<{ thread_id: string }>(harness, { tool: 'thread_spawn', cwd: home });
   const worker = spawn.value!.thread_id;
+  // Shown in the sidebar, as Show in Sidebar does.
+  await harness.rpc('SetThreadPlacement', [worker], 'standalone');
   await awaitTurnCompleted(harness, agent);
   const askGate = await awaitGate(harness, 'ask', workerP.path);
   const row = assistantRow(page, agent);

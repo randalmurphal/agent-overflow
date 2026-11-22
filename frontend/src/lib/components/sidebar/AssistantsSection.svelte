@@ -7,12 +7,20 @@
   import UserRoundPlus from '@lucide/svelte/icons/user-round-plus';
   import type { Thread } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import { ASSISTANTS_LIST_KEY, isSidebarSectionShown, toggleSidebarSection } from '../../stores/sidebar.svelte';
+  import {
+    isSidebarSectionShown,
+    toggleSidebarSection,
+    type SidebarTopLevelList,
+  } from '../../stores/sidebar.svelte';
+
+  // The section's rows page under their own key, not a project's entry.
+  const ASSISTANTS_LIST: SidebarTopLevelList = { kind: 'assistants' };
   import { openNewAssistantDialog } from '../../stores/newAssistant.svelte';
   import { getProjectLabelText } from '../../stores/projects.svelte';
   import { selectedBackend } from '../../stores/selectedBackend.svelte';
   import { assistantsOffOn, assistantsOn } from '../../stores/assistants.svelte';
-  import { hasScope } from '../../transport/scopes';
+  import { scopeGrant } from '../../transport/scopes';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
   import IconButton from '../primitives/IconButton.svelte';
   import Icon from '../primitives/Icon.svelte';
   import SidebarSectionToggle from './SidebarSectionToggle.svelte';
@@ -29,7 +37,7 @@
 
   let { assistants, pane, searching }: Props = $props();
   let shown = $derived(isSidebarSectionShown('assistants', searching));
-  let createUngranted = $derived(!hasScope('threads:autonomy', selectedBackend()));
+  let createGrant = $derived(scopeGrant('threads:autonomy', selectedBackend()));
   // New Assistant creates on the selected computer, which may have its
   // assistants off while another computer's show here.
   let createOff = $derived(!assistantsOn(selectedBackend()));
@@ -56,9 +64,9 @@
     </h2>
     <IconButton
       label="New Assistant"
-      title={createUngranted ? 'Not granted to this device' : createOff ? assistantsOffOn(selectedBackend()) : undefined}
+      title={grantBlockedTitle(createGrant) ?? (createOff ? assistantsOffOn(selectedBackend()) : undefined)}
       size="sm"
-      disabled={createUngranted || createOff}
+      disabled={createGrant !== 'granted' || createOff}
       onClick={(e) => openNewAssistantDialog({ targetPane: pane, openInNewPane: shouldOpenProjectThreadInNewPane(e) })}
     >
       {#snippet children()}
@@ -71,7 +79,7 @@
   {#if shown && assistants.length > 0}
     <div class="px-2 pb-1">
       <div class="flex flex-col gap-px rounded-[var(--radius-field)]" role="list" aria-label="Assistants" data-testid="assistant-card-list">
-        <SidebarTreeList threads={assistants} listKey={ASSISTANTS_LIST_KEY} {pane} agentProjects={servedProjectsLabel} />
+        <SidebarTreeList threads={assistants} list={ASSISTANTS_LIST} {pane} agentProjects={servedProjectsLabel} />
       </div>
     </div>
   {/if}

@@ -5,8 +5,9 @@
 // message and its echo has to come from provider:sends_pending. Once the
 // turns end, the row reads idle, as it does on the computer that ran them.
 //
-// While the computer is unreachable its row keeps the last status it
-// reported, shown still and labelled as such, and the reconnect snapshot
+// Once the computer has been unreachable for thirty seconds its row keeps
+// the last status it reported, shown still and labelled as such; a shorter
+// drop leaves the row as it was. The reconnect snapshot
 // corrects it: the frames that would otherwise correct it are withheld.
 import { expect, test, type WebSocketRoute } from '@playwright/test';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
@@ -119,9 +120,15 @@ test('a remote thread with no pane here settles to idle after its queued message
     await expect(dot).toHaveAttribute('data-status', 'running');
     await expect(dot).toHaveClass(/animate-pulse/);
     remoteOnline = false;
+    const outageStart = Date.now();
     await remoteSocket!.page.close({ code: 1012, reason: 'test network outage' });
     await remoteSocket!.server.close();
-    await expect(laptopRow).toHaveAttribute('data-machine-unreachable', 'true');
+    // A drop shorter than thirty seconds changes nothing on the row.
+    await page.waitForTimeout(5_000);
+    await expect(laptopRow).not.toHaveAttribute('data-machine-unreachable', 'true');
+    await expect(dot).toHaveClass(/animate-pulse/);
+    await expect(laptopRow).toHaveAttribute('data-machine-unreachable', 'true', { timeout: 40_000 });
+    expect(Date.now() - outageStart).toBeGreaterThanOrEqual(30_000);
     // The last report, shown still and labelled; its place in the list is
     // the one it had.
     await expect(dot).toHaveAttribute('data-status', 'running');

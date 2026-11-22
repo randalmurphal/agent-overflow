@@ -10,9 +10,11 @@ import (
 	"time"
 
 	"agent-overflow/internal/buildvariant/remotetest"
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
+	"agent-overflow/internal/triage"
 )
 
 // A worker on a paired computer that this computer's thread spawned, owned
@@ -41,22 +43,13 @@ type remotePromptPair struct {
 
 func newRemotePromptPair(t *testing.T, lines ...string) *remotePromptPair {
 	t.Helper()
-	return newRemotePromptPairLeased(t, 0, lines...)
-}
-
-// newRemotePromptPairLeased is newRemotePromptPair with the paired
-// computer's lease shortened to lease, zero for the product's.
-func newRemotePromptPairLeased(t *testing.T, lease time.Duration, lines ...string) *remotePromptPair {
-	t.Helper()
 	remotetest.Require(t)
-	return newRemotePromptPairOn(t, newReachPair(t), lease, lines...)
+	return newRemotePromptPairOn(t, newReachPair(t), lines...)
 }
 
-// newRemotePromptPairOn is newRemotePromptPairLeased on a pair the caller
-// built.
-func newRemotePromptPairOn(t *testing.T, pair *reachPair, lease time.Duration, lines ...string) *remotePromptPair {
+// newRemotePromptPairOn is newRemotePromptPair on a pair the caller built.
+func newRemotePromptPairOn(t *testing.T, pair *reachPair, lines ...string) *remotePromptPair {
 	t.Helper()
-	pair.dest.workerPromptLeaseOverride = lease
 	routeWorkerPromptsOn(pair.dest, pair.destBus)
 	pair.source.triage.SetPromptRouter(pair.source.routeWorkerPrompt)
 	p := &remotePromptPair{reachPair: pair}
@@ -272,54 +265,20 @@ func TestARemoteWorkersPromptsWakeItsSpawnerAndItsRepliesAnswerThem(t *testing.T
 	}
 }
 
-// A prompt the spawner's computer keeps asking about but never holds, its
-// own registry stopped, goes to the person there once the lease runs out.
-func TestAPromptItsSpawnerNeverHoldsGoesToThePersonThereAfterTheLease(t *testing.T) {
+// A prompt the spawner's computer keeps asking about but never takes, its
+// own registry stopped, stays its spawner's there: the person there is not
+// asked.
+func TestAPromptItsSpawnerNeverTakesStaysItsSpawnersThere(t *testing.T) {
 	t.Parallel()
-	p := newRemotePromptPairLeased(t, time.Second, remoteApproveLine)
+	p := newRemotePromptPair(t, remoteApproveLine)
 	p.source.workerPrompts.gate.Lock()
 	p.source.workerPrompts.closed = true
 	p.source.workerPrompts.gate.Unlock()
 	waitUntil(t, 15*time.Second, func() bool { return p.announcedRoutedHere("req-allow") })
 	p.sweep()
-	waitUntil(t, 15*time.Second, func() bool {
-		route, open := p.routeThere("req-allow")
-		return open && route == nil && p.announcedToPerson("req-allow")
-	})
-	if wakes := remoteWakes(t, p.source, p.caller.ID); len(wakes) != 0 {
-		t.Fatalf("the spawner holds wakes %+v", wakes)
-	}
-}
-
-// A prompt whose wake waits in its spawner's queue here outlasts the
-// lease there: each ask names it as held, which renews it.
-func TestAPromptItsSpawnerHoldsOutlastsTheLease(t *testing.T) {
-	t.Parallel()
-	p := newRemotePromptPair(t, remoteApproveLine)
-	p.openThere(t, 1)
-	p.sweep()
-	p.wakesFor(t, p.caller.ID, 1)
-	held := p.dest.workerPrompts.heldFor(p.spawn.Token, p.worker)
-	if len(held) != 1 {
-		t.Fatalf("the worker holds %d prompts for the spawner here, want one", len(held))
-	}
-	// The lease is shortened once an ask named it held, so the test does
-	// not race the first ask.
-	waitUntil(t, 15*time.Second, func() bool {
-		p.dest.workerPrompts.mu.Lock()
-		defer p.dest.workerPrompts.mu.Unlock()
-		prompt := p.dest.workerPrompts.byToken[held[0].token]
-		return prompt != nil && prompt.remote != nil && !prompt.remote.heldAt.IsZero()
-	})
-	const lease = 3 * time.Second
-	p.dest.workerPromptLeaseOverride = lease
-	p.dest.armPromptLease(held[0].token, 0)
-	time.Sleep(2*lease + time.Second)
-	if route, open := p.routeThere("req-allow"); !open || route == nil || route.ThreadID != p.caller.ID {
-		t.Fatalf("the held prompt is routed to %+v (open %v) past the lease, want the spawner here", route, open)
-	}
-	if p.announcedToPerson("req-allow") {
-		t.Fatal("the person there was asked about a prompt its spawner holds")
+	time.Sleep(3 * time.Second)
+	if route, open := p.routeThere("req-allow"); !open || route == nil || route.ThreadID != p.caller.ID || p.announcedToPerson("req-allow") {
+		t.Fatalf("the prompt there is routed to %+v (open %v); want it its spawner's, the person not asked", route, open)
 	}
 }
 
@@ -400,26 +359,38 @@ func TestAPersonsAnswerThereWithdrawsTheWakeAndRefusesALateReply(t *testing.T) {
 }
 
 // The spawner's session cannot start after its wake was queued: the
-// prompt goes back to the person there long before its lease would run
-// out, and stays theirs while this computer keeps asking.
-func TestAPromptWhoseSpawnerCannotStartGoesBackToThePersonThere(t *testing.T) {
+// prompt stays its spawner's there, and its wake stays queued here for the
+// spawner's next session, as a local worker's does; this computer starts
+// nothing more for it while that computer keeps asking.
+func TestAPromptWhoseSpawnerCannotStartWaitsForItsNextSession(t *testing.T) {
 	t.Parallel()
 	p := newRemotePromptPair(t, remoteApproveLine)
 	p.startErr = errors.New("the provider binary is missing")
 	p.openThere(t, 1)
 	p.sweep()
 	waitUntil(t, 15*time.Second, func() bool {
-		route, open := p.routeThere("req-allow")
-		return open && route == nil
+		p.drain(t)
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		return len(p.started) > 0
 	})
-	time.Sleep(time.Second)
-	p.drain(t)
-	if route, open := p.routeThere("req-allow"); !open || route != nil {
-		t.Fatalf("the prompt is routed to %+v (open %v) while this computer keeps asking, want it the person's", route, open)
+	p.mu.Lock()
+	starts := len(p.started)
+	p.mu.Unlock()
+	for range 3 {
+		p.readOwnerState(t, p.source)
+		p.drain(t)
 	}
-	if wakes := remoteWakes(t, p.source, p.caller.ID); len(wakes) != 0 {
-		t.Fatalf("the spawner still holds wakes %+v", wakes)
+	if route, open := p.routeThere("req-allow"); !open || route == nil || route.ThreadID != p.caller.ID || p.announcedToPerson("req-allow") {
+		t.Fatalf("the prompt is routed to %+v (open %v) while this computer keeps asking, want it its spawner's", route, open)
 	}
+	p.mu.Lock()
+	again := len(p.started)
+	p.mu.Unlock()
+	if again != starts {
+		t.Fatalf("the spawner was started %d more times for a prompt it did not take", again-starts)
+	}
+	p.wakesFor(t, p.caller.ID, 1)
 }
 
 // handOffOn runs New Thread, Same Assistant on from.
@@ -524,8 +495,9 @@ func TestARemoteWorkersPromptFollowsTheAssistantsHandoffs(t *testing.T) {
 }
 
 // A holder that can no longer answer gives the prompt back at once: the
-// person there gets it without waiting out the lease, and nothing is left
-// queued here. A rest stops the worker there too, which closes it.
+// person there gets it, and nothing is left queued here. A rest stops the
+// worker there too, which closes it, and the next read of that computer's
+// prompts ends its hold here.
 func TestAPromptGoesBackWhenItsHolderCannotAnswer(t *testing.T) {
 	t.Parallel()
 	for name, end := range map[string]func(*testing.T, *remotePromptPair){
@@ -558,6 +530,7 @@ func TestAPromptGoesBackWhenItsHolderCannotAnswer(t *testing.T) {
 			if _, open := p.routeThere("req-allow"); open && !p.announcedToPerson("req-allow") {
 				t.Fatal("the prompt went back without being announced to the person there")
 			}
+			p.readOwnerState(t, p.source)
 			p.drain(t)
 			if held := p.source.heldRemotePrompts(p.spawn); len(held) != 0 {
 				t.Fatalf("this computer still holds %q", held)
@@ -648,7 +621,7 @@ func TestARemoteAnswerWhoseAcknowledgementIsLostIsAcknowledgedOnTheRetry(t *test
 		faults = injected
 		return wire
 	})
-	p := newRemotePromptPairOn(t, pair, 0, remoteApproveLine)
+	p := newRemotePromptPairOn(t, pair, remoteApproveLine)
 	p.openThere(t, 1)
 	p.readOwnerState(t, p.source)
 	wake := p.wakesFor(t, p.caller.ID, 1)[0]
@@ -671,8 +644,8 @@ func TestARemoteAnswerWhoseAcknowledgementIsLostIsAcknowledgedOnTheRetry(t *test
 }
 
 // A wake the spawner did not take in, here withdrawn from its queue by the
-// person, ends that delivery's hold and gives the prompt back; the
-// hand-back of a delivery a handoff replaced ends nothing.
+// person, ends that delivery and keeps the prompt for its holder's next
+// turn; the hand-back of a delivery a handoff replaced ends nothing.
 func TestAWithdrawnRemoteWakeEndsItsOwnHold(t *testing.T) {
 	t.Parallel()
 	p := newRemotePromptPair(t, remoteApproveLine)
@@ -696,20 +669,32 @@ func TestAWithdrawnRemoteWakeEndsItsOwnHold(t *testing.T) {
 		t.Fatalf("the person's withdrawal: %v, %v", removal, err)
 	}
 	p.drain(t)
-	if held := p.source.heldRemotePrompts(p.spawn); len(held) != 0 {
-		t.Fatalf("after its wake was withdrawn this computer holds %q", held)
+	p.readOwnerState(t, p.source)
+	p.drain(t)
+	if wakes := remoteWakes(t, p.source, next.ID); len(wakes) != 0 {
+		t.Fatalf("after its wake was withdrawn the holder was given %+v before its next turn", wakes)
 	}
-	waitUntil(t, 15*time.Second, func() bool {
-		route, open := p.routeThere("req-allow")
-		return open && route == nil
-	})
+	if held := p.source.heldRemotePrompts(p.spawn); !slices.Equal(held, []string{current.token}) {
+		t.Fatalf("after its wake was withdrawn this computer holds %q, want the prompt kept for its holder", held)
+	}
+	if route, open := p.routeThere("req-allow"); !open || route == nil || route.ThreadID != p.caller.ID {
+		t.Fatalf("the prompt there is routed to %+v (open %v), want its spawner here", route, open)
+	}
+	// The holder's next turn puts it to the holder again, as a new delivery.
+	// This fixture's spawner computer has no event bus, so its turn start is
+	// handed to the prompts' observer as its bus would.
+	p.source.tapWorkerPrompt(eventchan.ProviderTurnStarted, triage.TurnStartedEvent{ThreadID: next.ID, TurnID: next.ID + ":next"})
+	p.drain(t)
+	if again := p.wakesFor(t, next.ID, 1)[0]; again.token != current.token || again.delivery == current.delivery {
+		t.Fatalf("the holder's next turn was given %+v after %+v, want the prompt under a new delivery", again, current)
+	}
 }
 
-// While assistants are off here, an assistant's worker there asks the
-// person there: a prompt already delivered goes back when the pause lands,
-// one asked during it goes back at once, and turning assistants on again
-// brings neither back.
-func TestAPausedAssistantsWorkerThereAsksThePersonThere(t *testing.T) {
+// While assistants are off here, an assistant's worker there still asks the
+// assistant: the person there is never asked, a prompt asked during the
+// pause waits in the assistant's queue, and turning assistants on starts the
+// assistant for what waits there.
+func TestAPausedAssistantsWorkerThereWaitsForIt(t *testing.T) {
 	t.Parallel()
 	p := newRemotePromptPair(t, remoteApproveLine)
 	testAssistant(t, p.source, p.caller.ID)
@@ -718,32 +703,30 @@ func TestAPausedAssistantsWorkerThereAsksThePersonThere(t *testing.T) {
 	p.wakesFor(t, p.caller.ID, 1)
 	switchAssistants(t, p.source, false)
 	p.source.convergeAssistants()
-	waitUntil(t, 15*time.Second, func() bool {
-		route, open := p.routeThere("req-allow")
-		return open && route == nil
-	})
 	askOn(t, p.dest, p.worker, "approval-2", false)
 	waitUntil(t, 15*time.Second, func() bool {
 		p.readOwnerState(t, p.source)
 		p.drain(t)
-		route, open := p.routeThere("approval-2")
-		return open && route == nil
+		return slices.ContainsFunc(remoteWakes(t, p.source, p.caller.ID), func(wake workerPromptWake) bool {
+			return p.requestOf(t, wake.token) == "approval-2"
+		})
 	})
-	if wakes := remoteWakes(t, p.source, p.caller.ID); len(wakes) != 0 {
-		t.Fatalf("the paused assistant holds %+v", wakes)
-	}
-	switchAssistants(t, p.source, true)
-	p.source.convergeAssistants()
-	p.readOwnerState(t, p.source)
-	p.drain(t)
 	for _, request := range []string{"req-allow", "approval-2"} {
-		if route, open := p.routeThere(request); !open || route != nil {
-			t.Fatalf("%s is routed to %+v (open %v) after assistants came back, want it still the person's", request, route, open)
+		if route, open := p.routeThere(request); !open || route == nil || route.ThreadID != p.caller.ID || p.announcedToPerson(request) {
+			t.Fatalf("%s is routed to %+v (open %v) while assistants are off, want it the paused assistant's", request, route, open)
 		}
 	}
-	if wakes := remoteWakes(t, p.source, p.caller.ID); len(wakes) != 0 {
-		t.Fatalf("turning assistants on queued %+v", wakes)
-	}
+	p.mu.Lock()
+	before := len(p.started)
+	p.mu.Unlock()
+	switchAssistants(t, p.source, true)
+	p.source.convergeAssistants()
+	waitUntil(t, 15*time.Second, func() bool {
+		p.drain(t)
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		return slices.Contains(p.started[before:], p.caller.ID)
+	})
 }
 
 // A send to the worker after it rested, which then asks something, is

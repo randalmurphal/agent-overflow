@@ -468,7 +468,16 @@ const (
 	// account usage allowance is exhausted. Reset windows remain advisory:
 	// consumers must not infer narrower model/bucket availability from them.
 	FailureReasonUsageLimit FailureReason = "usage-limit"
+	// FailureReasonStartup marks the turn completion a provider process
+	// reports when it failed before it initialized: it can serve no turn.
+	FailureReasonStartup FailureReason = "startup"
 )
+
+// IsStartupFailure reports whether evt is a provider's report that its
+// process failed before it initialized.
+func IsStartupFailure(evt ProviderEvent) bool {
+	return evt.Kind == EventTurnComplete && evt.Failure != nil && evt.Failure.Reason == FailureReasonStartup
+}
 
 // IsUsageLimitRefusal reports whether evt is a provider's typed usage-limit
 // refusal of a turn.

@@ -15,7 +15,7 @@ import (
 func TestNewPromptReachesItsOwnerWhileAnOrdinaryReadIsHeld(t *testing.T) {
 	var server observedOwnerPeer
 	pair := newReachPairServedBy(t, func(t *testing.T, a *App) *pairedBackend { return observeOwnerPeer(t, a, &server) })
-	p := newRemotePromptPairOn(t, pair, 0)
+	p := newRemotePromptPairOn(t, pair)
 	startReconciledOwner(t, pair)
 	held, _ := holdOwnerReply(t, &server.holdState)
 	owner := p.receipt(t, p.spawn.Token).OwnerDeviceID
@@ -65,7 +65,7 @@ func TestAnEditForARequestGoneHereIsAcknowledgedOffTheWait(t *testing.T) {
 	})
 	old, worker := remoteRestedWorker(t, pair)
 	owner := pair.receipt(t, old.Token).OwnerDeviceID
-	prompt := newRemotePromptPairOn(t, pair, 0)
+	prompt := newRemotePromptPairOn(t, pair)
 	startReconciledOwner(t, pair)
 	execOnStore(t, pair.dbPath, "DELETE FROM thread_requests WHERE token=?", old.Token)
 

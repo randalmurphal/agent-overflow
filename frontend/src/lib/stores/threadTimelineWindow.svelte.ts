@@ -3,6 +3,7 @@ import { isWindowedTimelineRow } from './threadWindowDigest';
 import { tick } from 'svelte';
 import type { Item, Thread } from '../types/models';
 import type { TimelineSelection, PagedItems } from '../../../bindings/agent-overflow/internal/store/models';
+import type { RuledRead } from './bindings';
 import type { ThreadItemSnapshot } from './threadItemCache';
 import {
   GetThreadItem,
@@ -114,9 +115,9 @@ export interface ThreadTimelineWindow {
   readonly olderStalled: boolean;
   readonly newerStalled: boolean;
   /** Apply `switchThread`'s single initial paged load (cache-miss path). */
-  applyInitialSlice(paged: PagedItems, threadID: string): void;
+  applyInitialSlice(paged: RuledRead<PagedItems>, threadID: string): void;
   /** Refresh cursors + hasMore flags from a paged response against the current window. Also used directly by `refreshFromBackend`. */
-  applyWindowMetadataFromPaged(paged: PagedItems): void;
+  applyWindowMetadataFromPaged(paged: RuledRead<PagedItems>): void;
   /** Cache-hit branch of `installCacheOrFreshState`: cursor/flag bookkeeping only — `replaceTimelineItems` + fold restore stay pane-side. */
   installFromSnapshot(cached: ThreadItemSnapshot): void;
   /** Fresh-thread branch of `installCacheOrFreshState`, and `clear()`. Never resets the edge generations (monotonic for the pane's lifetime). */
@@ -480,7 +481,7 @@ export function createThreadTimelineWindow(
    * a `replaceTimelineItems`, so the pane's live window is the right
    * fallback source for turn-index-only paged responses.
    */
-  function applyWindowMetadataFromPaged(paged: PagedItems): void {
+  function applyWindowMetadataFromPaged(paged: RuledRead<PagedItems>): void {
     windowVersion++;
     clearStalledEdges();
     const nextItems = options.getItems();
@@ -493,7 +494,10 @@ export function createThreadTimelineWindow(
     // The page's run stubs describe the members it did NOT ship, against
     // the span it did. Folded here, after the rows are installed, so the
     // records are compared with the window the pane actually holds.
-    options.activityRuns().syncRunSpans(nextItems, paged.runs);
+    options.activityRuns().syncRunSpans(nextItems, { rule: paged.activityRunRule, stubs: paged.runs });
+    // Every caller installs a whole window from this page, labeled with
+    // the rule its request asked for.
+    options.activityRuns().noteWindowRead(paged.activityRunRule);
   }
 
   /**
@@ -584,7 +588,8 @@ export function createThreadTimelineWindow(
     start: number,
     end: number,
   ): { start: number; end: number } {
-    const spans = groupActivityRunSpans(topLevel, item => options.activityRuns().isLoadedMember(item.id), includes);
+    const runs = options.activityRuns();
+    const spans = groupActivityRunSpans(topLevel, runs.activityRunRule(), item => runs.isLoadedMember(item.id), includes);
     if (spans.length === 0) return { start, end };
     const indexById = new Map<string, number>();
     for (let index = 0; index < topLevel.length; index += 1) {
@@ -750,7 +755,7 @@ export function createThreadTimelineWindow(
    * from the load — there is no second phase whose wider window
    * would need to be preserved.
    */
-  function applyInitialSlice(paged: PagedItems, threadID: string): void {
+  function applyInitialSlice(paged: RuledRead<PagedItems>, threadID: string): void {
     const incoming = itemsForThread((paged.items ?? []) as Item[], threadID);
     const nextItems = mergeMissingItemsById(incoming, options.getItems());
     options.installTimelineItems(nextItems, {
@@ -998,7 +1003,8 @@ export function createThreadTimelineWindow(
       // the cut over the same array — both while the rows the cut drops
       // are still in hand (a shed row copies fields off the `Item`).
       const mergedBounds = { oldest: nextFloor, newest: newestLoadedCursor ?? pagedNewestCursor(paged, merged) };
-      options.activityRuns().syncRunSpans(merged, paged.runs, mergedBounds);
+      options.activityRuns().syncRunSpans(merged, { rule: paged.activityRunRule, stubs: paged.runs }, mergedBounds);
+      options.activityRuns().noteEdgeRead(paged.activityRunRule);
       if (cut) options.activityRuns().applyWindowCut(merged, next, mergedBounds);
       options.replaceTimelineItems(next, {
         disposeDropped: true,
@@ -1233,7 +1239,8 @@ export function createThreadTimelineWindow(
       // Mirror of loadOlder: stubs first, then the cut, both over the
       // merged array while the dropped rows still exist.
       const mergedBounds = { oldest: oldestLoadedCursor ?? pagedOldestCursor(paged, merged), newest: nextCeiling };
-      options.activityRuns().syncRunSpans(merged, paged.runs, mergedBounds);
+      options.activityRuns().syncRunSpans(merged, { rule: paged.activityRunRule, stubs: paged.runs }, mergedBounds);
+      options.activityRuns().noteEdgeRead(paged.activityRunRule);
       if (cut) options.activityRuns().applyWindowCut(merged, next, mergedBounds);
       options.replaceTimelineItems(next, {
         disposeDropped: true,

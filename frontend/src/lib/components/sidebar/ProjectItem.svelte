@@ -1,6 +1,7 @@
 <script lang="ts">
   import { isLocalEnter } from '../../utils/localEnter';
-  import { projectHasScope } from '../../transport/entityScopes';
+  import { projectScopeGrant } from '../../transport/entityScopes';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
   // A single project row. Chevron + folder + name + new-group and new-thread
   // actions on the right. Right-click opens a small context menu
   // (Rename / Archive / Delete) rendered via ProjectContextMenu.
@@ -18,15 +19,11 @@
   //     single row underneath the collapsed header so the user never
   //     loses sight of where they are.
 
-  import type { ProjectWithCounts, Thread, ThreadGroup } from '../../types/models';
+  import type { Thread, ThreadGroup } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { RefreshProjectIdentity, RenameProject } from '../../stores/bindings';
-  import { getProjectLabel, projectMembers, updateProjectLocal } from '../../stores/projects.svelte';
-  import {
-    getProjectSortMode,
-    isProjectExpanded,
-    toggleProject,
-  } from '../../stores/sidebar.svelte';
+  import { updateProjectLocal } from '../../stores/projects.svelte';
+  import { getProjectSortMode } from '../../stores/sidebar.svelte';
   import {
     getEffectiveThreadStatus,
     getThreadWaitingOn,
@@ -65,13 +62,17 @@
   } from '../../stores/projectDnd.svelte';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import { formatPathLabel, type PathLabel } from '../../utils/pathDisplay';
+  import { projectTarget, type ProjectTarget, type SidebarEntry } from './sidebarEntries';
+  import { createProjectActions } from './projectActions.svelte';
 
   interface Props {
-    project: ProjectWithCounts;
-    /** Disambiguation within the containing list's visible projects. */
-    displayLabel?: PathLabel;
+    /** Everything this row shows and acts on (./sidebarEntries.ts). */
+    entry: SidebarEntry;
+    /** The row's label, disambiguated by the containing list against the
+     *  rows beside it. */
+    displayLabel: PathLabel;
     threads: Thread[];
-    /** The project's groups, already search-filtered by ProjectsSection. */
+    /** The entry's groups, already search-filtered by ProjectsSection. */
     groups?: readonly ThreadGroup[];
     pane: ThreadPane | null;
     /** Called with the project id when the user clicks the new-thread button
@@ -82,18 +83,23 @@
      *  project. Desktop has no per-project terminal control; terminals open
      *  from the palette, the chat header or the global control. */
     onNewTerminal?: ProjectNewTerminalHandler;
-    /** Current rendered ordering of project ids (visible projects in
+    /** Current rendered ordering of project ids (visible entries in
      *  ProjectsSection). Required for DnD to compute the new order on
      *  drop without an extra round-trip. */
     orderedIds?: readonly string[];
     /** Commit a new ordering. Caller updates store + persists. */
     onReorder?: (newOrderedIds: string[]) => void;
+    /** Fold or unfold this entry. The state belongs to the entry, so the
+     *  section writes it; this row only reports the gesture. */
+    onSetExpanded?: (entry: SidebarEntry, expanded: boolean) => void;
+    /** A search shows this row open whatever its fold. */
+    searchOpened?: boolean;
     /** Draws the hairline divider that separates this project from the one above. */
     separatedFromPrevious?: boolean;
   }
 
   let {
-    project,
+    entry,
     displayLabel,
     threads,
     groups = [],
@@ -102,6 +108,8 @@
     onNewTerminal,
     orderedIds,
     onReorder,
+    onSetExpanded,
+    searchOpened = false,
     separatedFromPrevious = false,
   }: Props = $props();
 
@@ -109,7 +117,8 @@
   // row and goes inert rather than disappearing — a project whose row lost
   // an affordance reads as a broken sidebar, not as a read-only one.
   // The hover-reveal is untouched, so nothing new is visible at rest.
-  let newThreadUngranted = $derived(!projectHasScope('threads:operate', project.project.id));
+  let newThreadGrant = $derived(projectScopeGrant('threads:operate', entry.id));
+  let newThreadUngranted = $derived(newThreadGrant !== 'granted');
   // Compact: no drag (a phone's long press is the menu, and Android starts a
   // drag on a held draggable), no text selection under a hold, a taller
   // header, and the create controls the hover would have revealed.
@@ -123,13 +132,15 @@
   let contextMenuOpen = $state(false);
   let lastNewThreadContextMenuAt = 0;
 
-  // Inline rename state — mirrors the pattern in ThreadRow.
-  let renaming = $state(false);
-  let renameValue = $state('');
+  // Every action this row starts, as one run at a time
+  // (./projectActions.svelte.ts): the rename below and the menu's archive
+  // and delete share it, so the newest gesture is the only one that can
+  // still show a dialog or send a call.
+  const actions = createProjectActions();
+  let renameRun = $derived(actions.current?.kind === 'rename' ? actions.current : null);
   let renameInputEl: HTMLInputElement | undefined = $state(undefined);
-  let renameSaving = $state(false);
 
-  let expanded = $derived(isProjectExpanded(project.project.id));
+  let expanded = $derived(entry.expanded || searchOpened);
 
   // Tree + rollup are only meaningful when the project is collapsed —
   // when expanded, the nested ProjectThreadList computes its own. We
@@ -159,28 +170,32 @@
     return threads.find((t) => t.id === activeId) ?? null;
   });
 
+  function toggle(): void {
+    onSetExpanded?.(entry, !expanded);
+  }
+
   function handleToggle(e: MouseEvent): void {
     e.stopPropagation();
-    toggleProject(project.project.id);
+    toggle();
   }
 
   function handleRowClick(): void {
     // Clicking the row body toggles expansion too — it's a bigger hit area
     // than the chevron and matches the t3-code feel.
-    toggleProject(project.project.id);
+    toggle();
   }
 
   function handleRowKeydown(e: KeyboardEvent): void {
     if (isLocalEnter(e) || e.key === ' ') {
       e.preventDefault();
-      toggleProject(project.project.id);
+      toggle();
     }
   }
 
   function handleNewThreadClick(e: MouseEvent): void {
     e.stopPropagation();
     if (Date.now() - lastNewThreadContextMenuAt < 500) return;
-    onNewThread?.(project.project.id, {
+    onNewThread?.(entry.id, {
       openInNewPane: shouldOpenProjectThreadInNewPane(e),
     });
   }
@@ -190,7 +205,7 @@
     e.preventDefault();
     e.stopPropagation();
     lastNewThreadContextMenuAt = Date.now();
-    onNewThread?.(project.project.id, { openInNewPane: true });
+    onNewThread?.(entry.id, { openInNewPane: true });
   }
 
   let recheckingIdentity = $state(false);
@@ -203,8 +218,10 @@
     if (recheckingIdentity) return;
     recheckingIdentity = true;
     try {
-      const failing = projectMembers(project.project.id).filter((row) => row.project.identityError);
-      const results = await Promise.allSettled(failing.map((row) => RefreshProjectIdentity(row.project.id)));
+      // Captured: the members this row speaks for now, not whatever it
+      // speaks for when the rechecks answer.
+      const failing = entry.warnings.map((warning) => warning.id);
+      const results = await Promise.allSettled(failing.map((id) => RefreshProjectIdentity(id)));
       for (const result of results) {
         if (result.status === 'fulfilled') updateProjectLocal(result.value);
         else addErrorToast(userFacingError(result.reason), result.reason);
@@ -217,22 +234,32 @@
 
   function handleNewGroupClick(e: MouseEvent): void {
     e.stopPropagation();
-    void newThreadGroupInProject(project.project.id);
+    void newThreadGroupInProject(entry.id);
+  }
+
+  // The menu and its confirmations act on the project the gesture named.
+  // The snapshot outlives the menu's close, because its confirm dialogs and
+  // its deletion preview run after it.
+  let menuTarget: ProjectTarget | null = $state(null);
+  function openContextMenu(): void {
+    menuTarget = projectTarget(entry, formatPathLabel(displayLabel));
+    contextMenuOpen = true;
   }
 
   function handleContextMenu(e: MouseEvent): void {
     e.preventDefault();
     e.stopPropagation();
-    if (headerEl) contextMenuOpen = true;
+    if (headerEl) openContextMenu();
   }
 
   function closeContextMenu(): void {
     contextMenuOpen = false;
   }
 
-  function beginRename(): void {
-    renaming = true;
-    renameValue = project.project.name;
+  // On the target the menu was opened on, which is not the row's current
+  // one once a listing has changed hands under the open menu.
+  function beginRename(target: ProjectTarget): void {
+    actions.start('rename', target);
     requestAnimationFrame(() => {
       renameInputEl?.focus();
       renameInputEl?.select();
@@ -240,27 +267,27 @@
   }
 
   async function commitRename(): Promise<void> {
-    if (renameSaving) return;
-    const next = renameValue.trim();
-    if (!next || next === project.project.name) {
-      renaming = false;
+    const run = renameRun;
+    if (run === null) return;
+    const next = run.name.trim();
+    if (!next || next === run.target.name) {
+      run.end();
       return;
     }
-    renameSaving = true;
+    if (!run.beginSubmit()) return;
     try {
-      const updated = await RenameProject(project.project.id, next);
+      const updated = await RenameProject(run.target.id, next);
       updateProjectLocal(updated);
     } catch (err) {
       console.error('Failed to rename project:', err);
       addErrorToast(userFacingError(err), err);
     } finally {
-      renameSaving = false;
-      renaming = false;
+      run.end();
     }
   }
 
   function cancelRename(): void {
-    renaming = false;
+    renameRun?.end();
   }
 
   function handleRenameKeydown(e: KeyboardEvent): void {
@@ -280,24 +307,18 @@
   // (cursor-grab on the whole row, no separate grip
   // icon). Click still toggles expand because click fires only when no
   // drag completed; HTML5 suppresses click after a successful drag.
-  // Duplicate names are legal (paths are the unique key), so the label
-  // comes from the containing list, or the store for a standalone row:
-  // unique names render bare, duplicates gain a dim parent-dir prefix.
-  let label = $derived(
-    displayLabel ?? getProjectLabel(project.project.id) ?? { prefix: '', name: project.project.name },
-  );
+  let label = $derived(displayLabel);
 
   // A checkout git could not read keeps its last identity and may not merge
   // with its other checkouts; say why on the entry rather than nowhere.
-  let identityProblem = $derived(projectMembers(project.project.id)
-    .filter((row) => row.project.identityError)
-    .map((row) => `Could not fully verify ${row.project.path}: ${row.project.identityError}`)
+  let identityProblem = $derived(entry.warnings
+    .map((warning) => `Could not fully verify ${warning.path}: ${warning.reason}`)
     .join('\n'));
 
   let manualMode = $derived(getProjectSortMode() === 'manual');
-  let isDragging = $derived(getDraggingProjectId() === project.project.id);
+  let isDragging = $derived(getDraggingProjectId() === entry.id);
   let dropMarker = $derived.by<'before' | 'after' | null>(() => {
-    if (getDropTargetProjectId() !== project.project.id) return null;
+    if (getDropTargetProjectId() !== entry.id) return null;
     return getDropPosition();
   });
 
@@ -306,13 +327,13 @@
       e.preventDefault();
       return;
     }
-    beginProjectDrag(project.project.id, e);
+    beginProjectDrag(entry.id, e);
   }
 
   function handleDragOver(e: DragEvent): void {
     if (!manualMode || !rowEl) return;
     if (getDraggingProjectId() === null) return;
-    updateDropTarget(project.project.id, e, rowEl);
+    updateDropTarget(entry.id, e, rowEl);
   }
 
   function handleDrop(e: DragEvent): void {
@@ -335,9 +356,9 @@
 <div
   bind:this={rowEl}
   role="group"
-  aria-label={`Project: ${project.project.name}`}
+  aria-label={`Project: ${entry.name}`}
   data-testid="project-item"
-  data-project-id={project.project.id}
+  data-project-id={entry.id}
   oncontextmenu={handleContextMenu}
   ondragover={handleDragOver}
   ondrop={handleDrop}
@@ -423,15 +444,17 @@
       {/if}
     </div>
     <Icon icon={FolderOpen} size={13} strokeWidth={2} class="shrink-0 text-accent/80 opacity-100" />
-    {#if renaming}
+    {#if renameRun}
+      {@const run = renameRun}
       <!-- svelte-ignore a11y_autofocus -->
       <input
         bind:this={renameInputEl}
-        bind:value={renameValue}
+        value={run.name}
+        oninput={(e) => run.setName(e.currentTarget.value)}
         onkeydown={handleRenameKeydown}
         onblur={commitRename}
         onclick={(e) => e.stopPropagation()}
-        disabled={renameSaving}
+        disabled={run.submitting}
         aria-label="Rename Project"
         class="text-[0.78125rem] compact:text-base flex-1 min-w-0 bg-surface-0 border border-accent/50 rounded-[var(--radius-field)] px-1 py-0.5 text-fg focus:outline-none"
       />
@@ -445,7 +468,7 @@
         -->
         <span
           class="flex-1 min-w-0 flex flex-wrap items-baseline gap-x-1"
-          title={project.project.path}
+          title={entry.path}
           data-testid="project-item-label"
         >
           <span class="text-[0.6875rem] text-fg-subtle min-w-0 break-all leading-tight">
@@ -458,10 +481,10 @@
       {:else}
         <span
           class="text-[0.78125rem] font-medium truncate flex-1 text-fg"
-          title={project.project.path}
+          title={entry.path}
           data-testid="project-item-label"
         >
-          {project.project.name}
+          {entry.name}
         </span>
       {/if}
       {#if identityProblem}
@@ -482,7 +505,7 @@
         type="button"
         onclick={handleNewGroupClick}
         disabled={newThreadUngranted}
-        title={newThreadUngranted ? 'Not granted to this device' : 'New Group in This Project'}
+        title={grantBlockedTitle(newThreadGrant) ?? 'New Group in This Project'}
         aria-label="New Group in This Project"
         data-testid="project-item-new-group"
         class="compact:hidden opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity shrink-0 flex h-5 w-5 items-center justify-center rounded text-fg-subtle hover:text-fg hover:bg-surface-2/40 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
@@ -494,7 +517,7 @@
         onclick={handleNewThreadClick}
         oncontextmenu={handleNewThreadContextMenu}
         disabled={newThreadUngranted}
-        title={newThreadUngranted ? 'Not granted to this device' : 'New Thread in This Project'}
+        title={grantBlockedTitle(newThreadGrant) ?? 'New Thread in This Project'}
         aria-label="New Thread in This Project"
         data-testid="project-item-new-thread"
         class="compact:opacity-100 compact:h-9 compact:w-9 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity shrink-0 flex h-5 w-5 items-center justify-center rounded text-fg-subtle hover:text-fg hover:bg-surface-2/40 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:text-fg-subtle disabled:hover:text-fg-subtle disabled:hover:bg-surface-2/0"
@@ -506,7 +529,7 @@
   </div>
 
   {#if expanded}
-    <ProjectThreadList projectId={project.project.id} {threads} {groups} {pane} {onNewThread} />
+    <ProjectThreadList projectId={entry.id} listKey={entry.key} listLimit={entry.listLimit} {threads} {groups} {pane} {onNewThread} />
   {:else if activeWhenCollapsed}
     <!--
       Active-thread pin: the user is reading this thread but the project
@@ -529,14 +552,17 @@
   {/if}
 </div>
 
-<ProjectContextMenu
-  {project}
-  labelText={formatPathLabel(label)}
-  onNewThread={() => onNewThread?.(project.project.id, { openInNewPane: false })}
-  onNewAssistant={() => openNewAssistantDialog({ projectId: project.project.id, targetPane: pane })}
-  onNewTerminal={() => onNewTerminal?.(project.project.id)}
-  anchor={headerEl}
-  open={contextMenuOpen}
-  onClose={closeContextMenu}
-  onRename={beginRename}
-/>
+{#if menuTarget}
+  {@const target = menuTarget}
+  <ProjectContextMenu
+    {target}
+    {actions}
+    onNewThread={() => onNewThread?.(target.id, { openInNewPane: false })}
+    onNewAssistant={() => openNewAssistantDialog({ projectId: target.id, targetPane: pane })}
+    onNewTerminal={() => onNewTerminal?.(target.id)}
+    anchor={headerEl}
+    open={contextMenuOpen}
+    onClose={closeContextMenu}
+    onRename={beginRename}
+  />
+{/if}

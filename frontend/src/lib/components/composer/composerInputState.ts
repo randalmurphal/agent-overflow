@@ -1,31 +1,20 @@
+import type { ControlAccess } from '../../transport/scopes';
+
 export interface ComposerInputStateInput {
   isDisabled: boolean;
-  /** See ComposerSendStateInput.sendUngranted. */
-  sendUngranted?: boolean;
+  /** See ComposerSendStateInput.sendAccess. */
+  sendAccess?: ControlAccess;
   /** See ComposerSendStateInput.askCopy. */
   askCopy?: boolean;
   /**
    * The display name of the thread's machine when this client cannot
-   * reach it, else empty. An attached backend dropping disables the
-   * composer for its threads in place (spec §10: never a silent failover
-   * to another machine); the page's own backend dropping is the
-   * transport banner's job and never sets this.
+   * reach it on a client with several computers, else empty. It names the
+   * computer when `sendAccess` is `offline`; without it the page's own
+   * backend is the one that dropped (the phone shell, `--connect`, a
+   * remote browser), and there is no cross-disconnect queue to hold a
+   * message (docs/specs/remote-access.md, "Pairing and remote-only").
    */
   unreachableTarget?: string;
-  /**
-   * True when this client's socket to the thread's own backend is down and
-   * there is nothing local to fall back on.
-   *
-   * Distinct from `unreachableTarget`, which names ANOTHER machine. This is
-   * the page's own backend, and it is deliberately not set for the embedded
-   * desktop webview: that window is on the machine, its outage is the
-   * transport banner's story, and disabling its composer would change a
-   * surface nobody asked to change. It IS set for the phone shell,
-   * `--connect` and a remote browser, where "disconnected" means the send
-   * cannot go anywhere and there is no cross-disconnect queue to hold it
-   * (docs/specs/remote-access.md, "Pairing and remote-only").
-   */
-  offline?: boolean;
   /**
    * Compact layout. Only the placeholder cares: Return inserts a newline on
    * a phone and Send is a button, so the desktop's chord hint would name a
@@ -52,10 +41,8 @@ export function deriveComposerInputState(input: ComposerInputStateInput): Compos
   return {
     disabled:
       input.isDisabled ||
-      Boolean(input.sendUngranted) ||
+      (input.sendAccess ?? 'granted') !== 'granted' ||
       Boolean(input.askCopy) ||
-      Boolean(input.unreachableTarget) ||
-      Boolean(input.offline) ||
       input.hasBlockingPrompt,
     value: input.hasUserInputPrompt ? input.userInputCustomAnswer : input.draftContent,
     placeholder: inputPlaceholder(input),
@@ -66,14 +53,21 @@ function inputPlaceholder(input: ComposerInputStateInput): string {
   if (input.isDisabled) return 'Select or create a thread to start';
   // Read before the prompt cases: a session that cannot send also cannot
   // answer, so offering the prompt's instructions would be a dead end.
-  if (input.sendUngranted) return 'This device has read-only access';
+  // Only a known grant says so: a computer whose grant has not arrived is
+  // named below, as offline, which is what keeps it from answering.
+  if (input.sendAccess === 'refused') return 'This device has read-only access';
   if (input.askCopy) return "An agent's question runs in this copy. It takes no messages.";
   // Named computer first: "<name> is offline" says more than "disconnected"
   // and both are true at once when another computer's socket is the one
   // that dropped. "Offline" is the one word every surface uses for a down
   // socket (Settings, the computer picker, the transport banner).
-  if (input.unreachableTarget) return `${input.unreachableTarget} is offline`;
-  if (input.offline) return 'Disconnected from the agent backend';
+  if (input.sendAccess === 'offline') {
+    return input.unreachableTarget ? `${input.unreachableTarget} is offline` : 'Disconnected from the agent backend';
+  }
+  // Reachable, and its grant has not arrived yet.
+  if (input.sendAccess === 'pending') return 'Waiting for this thread’s computer to answer';
+  // Several computers, and none is known to hold the thread.
+  if (input.sendAccess === 'unrouted') return 'Waiting to learn which computer holds this thread';
   if (input.hasBlockingPrompt) return 'Respond to the approval request to continue';
   if (input.hasUserInputPrompt) return 'Type a custom answer, or choose an option above';
   if (input.hasDiffReviewSource && input.hasDraftDiffReviewComments) {

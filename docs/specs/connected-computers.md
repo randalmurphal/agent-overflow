@@ -22,9 +22,11 @@ authority to execute there.
 
 A thread's status (working, needs attention, completed) is the answer of the
 computer that runs it, on every frontend, whether or not a pane is open on the
-thread. While that computer is unreachable its threads keep the last status it
-reported, shown without motion and labelled "Last known: <status>. <computer>
-is unreachable", and keep their sort position; the reconnect corrects them.
+thread. Once that computer has been unreachable for 30 seconds without a
+break, its threads keep the last status it reported, shown without motion and
+labelled "Last known: <status>. <computer> is unreachable", and keep their
+sort position; the reconnect corrects them at once. A shorter drop changes
+nothing on them.
 
 Pairing your own devices joins their existing personal groups and establishes
 independent connections among their available execution hosts and frontends.

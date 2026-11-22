@@ -118,9 +118,8 @@ func TestSessionLeafScannerSidechainTailNotBranchTip(t *testing.T) {
 
 // TestSessionLeafScannerBrokenChainReturnsEmptyLeaf: when the active
 // branch reaches no user/assistant row (tip's ancestry is broken and
-// content hangs off the missing part), the scan returns an empty leaf
-// — the app then omits --resume-session-at, which is claude's own
-// default-leaf semantics and the safe degenerate.
+// content hangs off the missing part), the scan returns an empty leaf:
+// no row of that file is a cursor the CLI would accept.
 func TestSessionLeafScannerBrokenChainReturnsEmptyLeaf(t *testing.T) {
 	transcript := strings.Join([]string{
 		`{"type":"user","uuid":"u1","parentUuid":"missing-root","message":{"role":"user","content":"hi"}}`,

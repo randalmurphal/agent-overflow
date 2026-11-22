@@ -520,10 +520,14 @@ func (t threadToolsApp) remoteDestination(computerID string) bool {
 	return computerID != self
 }
 
+// threadToolsProviders are the providers a thread tool spawn can run on,
+// in the order thread_options and the guide list them.
+var threadToolsProviders = []string{string(provider.Claude), string(provider.Codex)}
+
 // Catalog answers thread_options from the catalogs the app already keeps.
 func (t threadToolsApp) Catalog(ctx context.Context, q threadtools.CatalogQuery) (threadtools.Catalog, error) {
 	catalog := threadtools.Catalog{Reachable: true, OS: threadToolsOS()}
-	for _, name := range []string{string(provider.Claude), string(provider.Codex)} {
+	for _, name := range threadToolsProviders {
 		if q.What == threadtools.OptionsProjects || q.What == threadtools.OptionsGroups {
 			break
 		}
@@ -566,6 +570,11 @@ func (t threadToolsApp) providerOption(name string) (threadtools.ProviderOption,
 	if err != nil {
 		return threadtools.ProviderOption{}, err
 	}
+	return providerOptionOf(name, models), nil
+}
+
+// providerOptionOf is one provider's model catalog as thread tools read it.
+func providerOptionOf(name string, models provider.ModelCatalog) threadtools.ProviderOption {
 	option := threadtools.ProviderOption{ID: name, Name: threadToolsProviderName(name), Models: []threadtools.ModelOption{}}
 	for _, model := range models.Models {
 		entry := threadtools.ModelOption{Slug: model.Slug, Name: model.Name, Source: string(models.Provenance)}
@@ -595,7 +604,7 @@ func (t threadToolsApp) providerOption(name string) (threadtools.ProviderOption,
 	if option.DefaultModel == "" && len(option.Models) > 0 {
 		option.DefaultModel = option.Models[0].Slug
 	}
-	return option, nil
+	return option
 }
 
 func threadToolsProviderName(name string) string {

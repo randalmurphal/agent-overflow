@@ -20,7 +20,9 @@ func (a *App) ownerPoll(launch string, rows []store.ThreadRequest) (ThreadPeerPo
 	for _, row := range rows {
 		if row.RemoteListingReach() || (row.Kind == store.ThreadRequestSpawn && row.LinkEnd == "" && row.TargetThreadID == "" && !threadRequestSettled(row)) {
 			spawns[row.Token] = row
-			poll.Links = append(poll.Links, OwnerLinkRead{Token: row.Token, Source: row.MadeIn(), Held: a.heldRemotePrompts(row)})
+			poll.Links = append(poll.Links, OwnerLinkRead{
+				Token: row.Token, Source: row.MadeIn(), Held: a.heldRemotePrompts(row), NudgesTaken: a.threadAgentPeers.nudgesTakenOf(row.Token),
+			})
 		}
 		if row.Polling && !row.LineageOnly {
 			poll.Tokens = append(poll.Tokens, row.Token)
@@ -84,6 +86,11 @@ func (a *App) applyOwnerLink(read ownerRead, origin attachedbackends.PeerRead, s
 	}
 	if _, err := a.store.SetThreadRequestNestedOpen(state.Token, peerListingOpen(listing)); err != nil {
 		return nil, err
+	}
+	if state.State != nil {
+		if err := a.endRemoteRunsAtRest(spawn, listing); err != nil {
+			return nil, err
+		}
 	}
 	done := a.noteRemotePrompts(read.delivery(), origin, spawn, listing, nil)
 	c := &a.threadAgentPeers

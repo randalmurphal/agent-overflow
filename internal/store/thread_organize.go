@@ -101,6 +101,7 @@ func (s *Store) ApplyThreadOrganize(threadID string, write ThreadOrganizeWrite) 
 		return ThreadOrganizeResult{}, err
 	}
 	result := ThreadOrganizeResult{Thread: before}
+	var ended []endedRun
 
 	if write.Title != nil && *write.Title != before.Title {
 		if err := updateTitleTx(tx, threadID, *write.Title); err != nil {
@@ -124,7 +125,7 @@ func (s *Store) ApplyThreadOrganize(threadID string, write ThreadOrganizeWrite) 
 		groupID = group.ID
 	}
 	if write.MoveGroup {
-		if err := setThreadGroupTx(tx, []string{threadID}, groupID); err != nil {
+		if err := setThreadGroupTx(tx, []string{threadID}, groupID, &ended); err != nil {
 			return ThreadOrganizeResult{}, err
 		}
 		if groupID != before.GroupID {
@@ -132,7 +133,7 @@ func (s *Store) ApplyThreadOrganize(threadID string, write ThreadOrganizeWrite) 
 		}
 	}
 	if write.Placement != nil {
-		changed, err := setThreadPlacementTx(tx, threadID, *write.Placement)
+		changed, err := setThreadPlacementTx(tx, threadID, *write.Placement, &ended)
 		if err != nil {
 			return ThreadOrganizeResult{}, err
 		}
@@ -169,6 +170,7 @@ func (s *Store) ApplyThreadOrganize(threadID string, write ThreadOrganizeWrite) 
 	if err := tx.Commit(); err != nil {
 		return ThreadOrganizeResult{}, fmt.Errorf("store: commit organize thread %s: %w", threadID, err)
 	}
+	s.noteRunsEnded(ended)
 	return result, nil
 }
 

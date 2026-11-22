@@ -24,7 +24,13 @@ packages. Test-specific setup stays beside the test that owns it.
   that skips login startup files, so a shell sync cannot reorder PATH. Every
   test package that links a provider spawn package installs it;
   `TestEveryTestBinaryThatCanStartAProviderInstallsThePoison` fails one that
-  does not. Standard library only, like `mockexec/`.
+  does not. It imports only the standard library and internal packages
+  that do too.
+- A per-process directory a shared fixture makes in TestMain (the poison,
+  store templates, the detached home) is an `internal/ownedtemp`
+  directory, swept again after the run, so one left by a killed test
+  binary or a helper process that ended in `os.Exit` does not outlive the
+  next run.
 - `helperproc/` ties a helper process to the test binary that started it
   (`Tie`, `Hold`), so a helper that stands in for a backend ends when that
   binary is killed or times out, and its temporary files land in its test's

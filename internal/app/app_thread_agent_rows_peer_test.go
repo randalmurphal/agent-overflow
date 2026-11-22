@@ -77,16 +77,26 @@ func (p *agentPeerPair) listRows(t *testing.T) ThreadAgentRows {
 	return listing
 }
 
+// peerRowsWait is how long a test waits for rows a paired computer's answer
+// changes. Every app in a test opens a fresh store, whose statements compile
+// on first use; in a parallel run those compiles queue on the SQLite
+// driver's process-wide allocator lock, and a pass that takes milliseconds
+// alone can take seconds.
+const peerRowsWait = 45 * time.Second
+
 // listRowsUntil reads the listing until done holds of it: a spawn's rows on
 // the paired computer arrive with a read after the background call returns.
 func (p *agentPeerPair) listRowsUntil(t *testing.T, done func(ThreadAgentRows) bool) ThreadAgentRows {
 	t.Helper()
-	var listing ThreadAgentRows
-	waitUntil(t, 10*time.Second, func() bool {
-		listing = p.listRows(t)
-		return done(listing)
-	})
-	return listing
+	for deadline := time.Now().Add(peerRowsWait); ; time.Sleep(10 * time.Millisecond) {
+		listing := p.listRows(t)
+		if done(listing) {
+			return listing
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the rows never read as wanted: hidden %v, rows %+v", listing.Hidden, listing.Rows)
+		}
+	}
 }
 
 func agentRowByToken(rows []ThreadAgentRow, token string) (ThreadAgentRow, bool) {

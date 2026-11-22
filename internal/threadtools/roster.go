@@ -12,9 +12,10 @@ import (
 // Agent profiles (docs/specs/agent-thread-tools.md, "Agent profiles"). The
 // roster is the person's, read from the settings of the computer the
 // calling thread is on; what a profile resolves to is a fact about the
-// computer a spawn targets. One resolution serves thread_options, the
-// guide's list of names and the spawn that names a profile, so the three
-// never disagree about what a computer can run.
+// computer a spawn targets. One resolution serves thread_options and the
+// spawn that names a profile, so the two never disagree about what a
+// computer can run. The guide names profiles by offered provider alone
+// (GuideProfileNames).
 
 // AgentProfile is one profile of the roster, as the person set it up.
 // Every setting but Name and UseFor may be empty, which inherits the
@@ -224,11 +225,22 @@ func ListProfiles(roster Roster, providers []ProviderOption, defaults SpawnDefau
 	return out
 }
 
-// ProfileNames are the names of listed, for the guide.
-func ProfileNames(listed []ProfileOption) []string {
-	names := make([]string, 0, len(listed))
-	for _, option := range listed {
-		names = append(names, option.Name)
+// GuideProfileNames are the profiles a session's guide names, in the
+// person's order: every one whose provider is offered, a profile that
+// inherits its provider being on the spawner's. No model is checked: the
+// guide is fixed when the session starts, so a model list read then could
+// be stale or absent and still be wrong later. thread_options and the
+// spawn check the model (ResolveSpawn) and refuse with the reason.
+func GuideProfileNames(roster Roster, offered []string, spawnerProvider string) []string {
+	names := make([]string, 0, len(roster.Profiles))
+	for _, profile := range roster.Profiles {
+		providerID := profile.Provider
+		if providerID == "" {
+			providerID = spawnerProvider
+		}
+		if slices.Contains(offered, providerID) {
+			names = append(names, profile.Name)
+		}
 	}
 	return names
 }

@@ -44,8 +44,10 @@ func (f *requestFixture) settledChild(t *testing.T, worker string) store.Thread 
 	}
 	token := "spawn-of-" + child.ID
 	now := time.Now().UnixMilli()
-	if err := f.app.store.InsertThreadRequest(store.ThreadRequest{Token: token, CallerThreadID: worker,
-		Kind: store.ThreadRequestSpawn, TargetThreadID: child.ID, State: store.ThreadRequestRunning, CreatedAt: now, UpdatedAt: now}); err != nil {
+	row := store.ThreadRequest{Token: token, CallerThreadID: worker,
+		Kind: store.ThreadRequestSpawn, TargetThreadID: child.ID, State: store.ThreadRequestRunning, CreatedAt: now, UpdatedAt: now}
+	seedSpawnRun(f.app, &row)
+	if err := f.app.store.InsertThreadRequest(row); err != nil {
 		t.Fatal(err)
 	}
 	if settled, err := f.app.store.SettleThreadRequest(token, store.ThreadRequestOpenStates(), store.ThreadRequestSettlement{

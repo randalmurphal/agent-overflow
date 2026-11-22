@@ -23,6 +23,7 @@ import (
 	"agent-overflow/internal/computerroute"
 	"agent-overflow/internal/logging"
 	"agent-overflow/internal/loopback"
+	"agent-overflow/internal/observability/goroutinedump"
 	"agent-overflow/internal/pagehost"
 	"agent-overflow/internal/platform"
 	"agent-overflow/internal/startupprogress"
@@ -443,6 +444,13 @@ type Config struct {
 	// only on a harness boot, which is what an end-to-end test needs to
 	// reach the thread_unsupported refusal.
 	ThreadToolsOlderThan string
+
+	// OmitAgentMessageRunMembers leaves CapabilityAgentMessageRunMembers
+	// out of the hello frame, so this backend stands in for a build that
+	// predates it. Test isolation only: main.go sets it on a harness boot
+	// standing in for v0.0.19 (diagenv.HarnessOlderComputer), whose App
+	// also groups by the absorbed rule (app.IsolationConfig).
+	OmitAgentMessageRunMembers bool
 
 	// CrossOriginIsolate makes every asset response carry
 	// cross-origin isolation headers (COOP/COEP/CORP) so the SPA runs
@@ -1470,9 +1478,36 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		if s.cfg.EventBus != nil {
 			s.cfg.EventBus.Close()
 		}
-		s.wg.Wait()
+		s.joinHandlers(ctx)
 	})
 	return shutdownErr
+}
+
+// joinHandlers waits for every handler. The wait is not bounded by ctx: a
+// handler still running when the caller tears down what it uses is worse
+// than a visible hang. A join that outlasts ctx says so once, with the
+// goroutine profile that names what it waits on, and keeps waiting.
+func (s *Server) joinHandlers(ctx context.Context) {
+	joined := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(joined)
+	}()
+	select {
+	case <-joined:
+		return
+	case <-ctx.Done():
+	}
+	select {
+	case <-joined:
+		return
+	default:
+	}
+	log.Printf("transport: shutdown: connection handlers are still running past the drain deadline (%v); waiting for them. Goroutine profile follows.", context.Cause(ctx))
+	if err := goroutinedump.WriteAggregated(log.Writer()); err != nil {
+		log.Printf("transport: shutdown: %v", err)
+	}
+	<-joined
 }
 
 // SetOriginPatterns rotates the WS origin allow-list without binding a
@@ -2357,7 +2392,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			// Resolved per accept, not at boot: the browser Manager picks
 			// its engine during the App's startup, which runs after this
 			// Config is built.
-			Capabilities: advertisedCapabilities(browserAvailable, s.cfg.ThreadTransfers != nil, s.cfg.FilePreviews, s.cfg.ThreadToolsOlderThan),
+			Capabilities: advertisedCapabilities(browserAvailable, s.cfg.ThreadTransfers != nil, s.cfg.FilePreviews, s.cfg.ThreadToolsOlderThan, s.cfg.OmitAgentMessageRunMembers),
 			BackendID:    backendID,
 			LaunchID:     s.launchID,
 			BackendName:  backendName,
