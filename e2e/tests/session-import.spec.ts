@@ -44,6 +44,7 @@ import {
   seedImportFixtures,
   type FixtureSession,
 } from './session-import-fixtures.js';
+import { expandRow } from './ao-tool-rows-helpers.js';
 import type { Page } from '@playwright/test';
 import type { HarnessApp } from '../src/harness.js';
 
@@ -396,7 +397,7 @@ test('a Codex thread another Codex thread started lists by its prompt and opens 
   // as clipped escaped JSON. Its call-less twins add no second card.
   const card = page.getByTestId('tool-call-card');
   await expect(card).toHaveCount(1);
-  await card.getByTestId('tool-call-card-toggle').click();
+  await expandRow(card);
   const output = card.getByTestId('tool-call-card-output');
   await expect(output).toContainText(MCP_TEXT_HEAD);
   const showFull = card.getByTestId('tool-call-card-show-full');
