@@ -1,12 +1,13 @@
 import { test, expect } from '@playwright/test';
 import { launchHarness } from '../src/harness.js';
 import { seedAgentThread } from './agent-visibility-helpers.js';
-import { PAIRED_APP_MOUNT_MS, confirmOnHost, mintInvite, nonLoopbackIPv4, redeemOnScreen } from './offhost-helpers.js';
+import { PAIRED_APP_MOUNT_MS, confirmOnHost, mintInvite, nonLoopbackIPv4, redeemOnScreen, socketAnswers } from './offhost-helpers.js';
 import { watchProjectsQuiet } from './sidebar-quiet-helpers.js';
 
 export function offlineStartupFlow(): void {
   test('a paired frontend opens offline without toast spam and restores its thread on reconnect', async ({ page }) => {
-    test.setTimeout(60_000);
+    // Room for the reconnect's wait (PAIRED_REDIAL_MS) on top of the rest.
+    test.setTimeout(90_000);
     test.skip(nonLoopbackIPv4() === null, 'requires a non-loopback interface for the paired peer');
     const harness = await launchHarness();
     const exceptions: string[] = [];
@@ -49,9 +50,10 @@ export function offlineStartupFlow(): void {
         }
       }).observe(document, { subtree: true, childList: true });
     });
+    const answers = socketAnswers();
     await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
-      if (online) socket.connectToServer();
-      else void socket.close({ code: 1012, reason: 'test offline launch' });
+      if (!online) { void socket.close({ code: 1012, reason: 'test offline launch' }); return; }
+      answers.connect(socket);
     });
     try {
       await harness.rpc('SetNetworkSettings', { bindAll: true });
@@ -80,8 +82,12 @@ export function offlineStartupFlow(): void {
       expect(await watchProjectsQuiet(page, 6_000)).toMatchObject({ statusLines: [], animations: [] });
       await expect(page.getByTestId('transport-status-retry')).toBeVisible();
       expect(toasts).toEqual([]);
+      const answered = answers.count();
       online = true;
-      await expect(page.getByTestId('transport-status-banner')).toHaveCount(0, { timeout: 20_000 });
+      // The banner goes once the backend answers the ladder's next dial,
+      // wherever in its climb the outage ended.
+      await answers.waitBeyond(answered);
+      await expect(page.getByTestId('transport-status-banner')).toHaveCount(0);
       await expect(page.getByText('Ready.', { exact: true })).toBeVisible();
       await expect(page.getByLabel('Message Input')).toBeEnabled();
       await expect(page.getByLabel('Message Input')).toHaveValue('Keep this draft');
