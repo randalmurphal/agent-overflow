@@ -50,6 +50,10 @@ const (
 	ownRetryMax = 5 * time.Minute
 )
 
+// ownPeerTimeout bounds one peer's part of a pass, the introductions it
+// pairs included, so an unavailable host cannot hold a worker.
+const ownPeerTimeout = 12 * time.Second
+
 func (m *Manager) ownWake() chan struct{} {
 	m.own.wakeOnce.Do(func() { m.own.wake = make(chan struct{}, 1) })
 	return m.own.wake
@@ -120,12 +124,10 @@ func (m *Manager) ReconcileOwnDevices(ctx context.Context, hooks OwnDeviceHooks)
 	for range min(4, len(profiles)) {
 		workers.Go(func() {
 			for id := range jobs {
-				peerCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
 				err := stateErr
 				if err == nil {
-					err = m.reconcileOwnPeer(peerCtx, id, hooks)
+					err = m.reconcileOwnPeerWithin(ctx, id, hooks)
 				}
-				cancel()
 				message := ""
 				if err != nil && ctx.Err() == nil {
 					message = err.Error()
@@ -151,6 +153,17 @@ func (m *Manager) ReconcileOwnDevices(ctx context.Context, hooks OwnDeviceHooks)
 	close(jobs)
 	workers.Wait()
 	return stateErr != nil || failures.Load() > 0
+}
+
+// reconcileOwnPeerWithin is one peer's part of a pass, under its bound.
+func (m *Manager) reconcileOwnPeerWithin(ctx context.Context, id string, hooks OwnDeviceHooks) error {
+	bound, err := m.stepBound(ownPeerTimeout)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, bound)
+	defer cancel()
+	return m.reconcileOwnPeer(ctx, id, hooks)
 }
 
 func (m *Manager) reconcileOwnPeer(ctx context.Context, id string, hooks OwnDeviceHooks) error {

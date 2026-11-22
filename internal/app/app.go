@@ -880,6 +880,10 @@ type App struct {
 	// its authentication and before its admission, so a test can hold it
 	// there while the thread is brought to rest.
 	admitWorkForTest func(threadID string)
+	// remoteRequestAdmittedForTest, when set, runs in a remote request
+	// between its admission, out of its computer's fence, and its call
+	// there (startRemoteRequest), so a test can end the pairing first.
+	remoteRequestAdmittedForTest func(token string)
 	// asyncQuestionsReadForTest, when set, runs in a reconcile of threadID's
 	// async questions between its store read and what it registers
 	// (reconcileAsyncQuestions), so a test can change the thread at that

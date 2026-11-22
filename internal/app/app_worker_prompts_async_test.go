@@ -836,7 +836,7 @@ func TestAWrittenAnswerWithdrawnAfterAFailedRestoreStaysWithdrawn(t *testing.T) 
 	f.app.triage.FlushQueuedItems(f.worker.ID)
 	f.app.flushDispatch.wg.Wait()
 	f.drain(t)
-	if n := len(recordedUserEnvelopes(t, stdinLog)); n != 1 {
+	if n := len(settledUserEnvelopes(t, stdinLog)); n != 1 {
 		t.Fatalf("the worker was written %d messages, want the answer once", n)
 	}
 	f.requireReturned(t, sendID)

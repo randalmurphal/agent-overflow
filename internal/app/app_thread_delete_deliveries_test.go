@@ -158,7 +158,7 @@ func (f *claimFixture) startedNothing(t *testing.T) {
 	if _, live := f.app.sessionManager().get(f.caller.ID); live {
 		t.Error("a session started on a claimed thread")
 	}
-	if n := len(recordedUserEnvelopes(t, f.stdin)); n != 0 {
+	if n := len(settledUserEnvelopes(t, f.stdin)); n != 0 {
 		t.Errorf("the provider of a claimed thread was written %d messages", n)
 	}
 	// A start the claim turned away is no failure.
@@ -960,7 +960,7 @@ func TestALiveSessionsQueueWaitsForTheDecision(t *testing.T) {
 				if ids := queuedSendIDsOf(t, f.app, f.caller.ID, threadWakeSendID("")); len(ids) != 2 {
 					t.Errorf("queued while claimed = %q, want the two not withdrawn", ids)
 				}
-				if n := len(recordedUserEnvelopes(t, f.stdin)); n != 0 {
+				if n := len(settledUserEnvelopes(t, f.stdin)); n != 0 {
 					t.Errorf("a claimed thread's live session was written %d messages", n)
 				}
 			}
@@ -974,7 +974,7 @@ func TestALiveSessionsQueueWaitsForTheDecision(t *testing.T) {
 				})
 				committedDelete(t, f.app, f.caller.ID, during)
 				f.settle(t)
-				if n := len(recordedUserEnvelopes(t, f.stdin)); n != 0 {
+				if n := len(settledUserEnvelopes(t, f.stdin)); n != 0 {
 					t.Fatalf("a committed thread's session was written %d messages", n)
 				}
 				return

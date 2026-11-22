@@ -12,12 +12,12 @@ import (
 	"testing"
 	"time"
 
-	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/gitapp"
 	"agent-overflow/internal/remotejobs"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/transport"
 	"github.com/google/uuid"
 )
@@ -160,13 +160,13 @@ func TestRemoteArtifactRetrievalUsesPairedOwnerAndConversationAfterOptOut(t *tes
 	backend := newPairedBackend(t)
 	source := identityApp(t)
 	source.configDir = t.TempDir()
-	manager, err := attachedbackends.New(t.TempDir(), "source", "linux")
+	manager, err := newTestBackends(t, t.TempDir(), "source", "linux")
 	if err != nil {
 		t.Fatal(err)
 	}
 	source.backends = manager
 	invite, _ := backend.mintLink(t, "full")
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 	defer cancel()
 	peer, err := manager.Add(ctx, invite.URL)
 	if err != nil {

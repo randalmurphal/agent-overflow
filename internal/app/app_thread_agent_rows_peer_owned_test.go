@@ -8,6 +8,7 @@ import (
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/triage"
 )
@@ -248,7 +249,7 @@ func TestNestedRowsAcrossThreeComputersKeepTheirPlacement(t *testing.T) {
 			var first, nested ThreadAgentRow
 			var listed bool
 			var listErr error
-			deadline := time.Now().Add(peerRowsWait)
+			deadline := time.Now().Add(testutil.WaitBudget(t))
 			for {
 				var listing ThreadAgentRows
 				if listing, listErr = c.apps[0].ListThreadAgentRows(t.Context(), c.caller.ID); listErr == nil {

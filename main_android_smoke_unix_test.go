@@ -92,7 +92,10 @@ func newSmokeFixture(t *testing.T) smokeFixture {
 	// The fake adb lists $AO_TEST_ADB_DEVICES, or fails to under
 	// AO_TEST_ADB_DEVICES_FAILS, answers the emulator probe,
 	// reports a completed boot under AO_TEST_BOOT_COMPLETED=1, and records
-	// every call. `install -r` fails with $AO_TEST_ADB_INSTALL_FAILURE when
+	// every call. A real emulator runs in its scope and cannot boot before
+	// the scope exists, so the boot answer waits for $AO_TEST_SCOPE: a test
+	// of start that sees it succeed sees the scope. Waiting in adb, not
+	// answering "not yet", spares start's 3-second poll. `install -r` fails with $AO_TEST_ADB_INSTALL_FAILURE when
 	// it is set; other installs and PIN changes succeed silently.
 	mockexec.WriteIn(t, filepath.Join(dir, "platform-tools"), "adb", `#!/usr/bin/env bash
 echo "adb $*" >>"$AO_TEST_LOG"
@@ -102,7 +105,10 @@ if [[ "$1" == devices ]]; then
 elif [[ "$*" == *'getprop ro.kernel.qemu' ]]; then
   [[ "$2" == emulator-* ]] && echo 1 || echo 0
 elif [[ "$*" == 'shell getprop sys.boot_completed' ]]; then
-  if [[ "${AO_TEST_BOOT_COMPLETED:-}" == 1 ]]; then printf '1\r\n'; fi
+  if [[ "${AO_TEST_BOOT_COMPLETED:-}" == 1 ]]; then
+    while [[ ! -e "$AO_TEST_SCOPE" ]]; do sleep 0.02; done
+    printf '1\r\n'
+  fi
 elif [[ "$*" == *' install -r '* && -n "${AO_TEST_ADB_INSTALL_FAILURE:-}" ]]; then
   echo "Performing Streamed Install"
   echo "adb: failed to install: $AO_TEST_ADB_INSTALL_FAILURE"
@@ -942,12 +948,16 @@ func TestAndroidEmulatorStartUndoesAnInterruptedLaunch(t *testing.T) {
 			if !errors.As(waitErr, &exitErr) || exitErr.ExitCode() != 143 {
 				t.Fatalf("want exit 143 after SIGTERM, got %v:\n%s", waitErr, printed())
 			}
-			// Release a launcher that was still waiting; a joined one is gone
-			// and creates nothing.
-			if err := os.WriteFile(barrier, nil, 0o600); err != nil {
-				t.Fatal(err)
+			// No launcher outlives start, so none can make a scope later: no
+			// process of start's group runs systemd-run or is about to. The
+			// held touch of a killed launcher is neither.
+			left, err := exec.Command("pgrep", "-a", "-g", strconv.Itoa(cmd.Process.Pid), "-f", "systemd-run").Output()
+			switch {
+			case err == nil:
+				t.Fatalf("a launcher outlived the interrupted start:\n%s\n%s", left, f.calls(t))
+			case !errors.As(err, &exitErr) || exitErr.ExitCode() != 1:
+				t.Fatalf("list start's process group: %v", err)
 			}
-			time.Sleep(time.Second)
 			calls := f.calls(t)
 			stopped := strings.LastIndex(calls, "scope stopped")
 			if stopped < 0 || strings.LastIndex(calls, "scope created") > stopped {

@@ -74,6 +74,9 @@ type Manager struct {
 	// activationProbe is how often a pending pairing asks whether it was
 	// confirmed (SetActivationProbe). Zero keeps deviceclient's interval.
 	activationProbe time.Duration
+	// pairingBound is what each pairing step asks for its bound when it
+	// starts (SetPairingBound). Nil keeps each step's product bound.
+	pairingBound func() (time.Duration, error)
 
 	// The profile lock serializes replacement. Release mu before waiting on a
 	// carrier fence. A fenced observation consumes already-resolved manager data.
@@ -418,7 +421,10 @@ func (m *Manager) Add(ctx context.Context, pairingLink string) (Attachment, erro
 		if nameErr != nil {
 			return Attachment{}, nameErr
 		}
-		hc := pairbootstrap.NewHTTPClient(m.dial)
+		hc, clientErr := m.nearbyClient()
+		if clientErr != nil {
+			return Attachment{}, clientErr
+		}
 		defer hc.CloseIdleConnections()
 		// Public metadata may refuse redundant setup, never authorize it.
 		// Check before occupying the other computer's pairing window, and
@@ -741,6 +747,43 @@ func (m *Manager) SetLabelGetter(get func() (string, error)) { m.labelGetter = g
 // serving requests. Only an isolated test boot calls it
 // (deviceclient.WithProbeInterval).
 func (m *Manager) SetActivationProbe(interval time.Duration) { m.activationProbe = interval }
+
+// SetPairingBound sets, before serving requests, what each pairing step
+// this manager takes with another computer asks for its bound when it
+// starts: spending an invitation (deviceclient.WithRedemptionBound), a
+// nearby-pairing exchange (pairbootstrap.NewHTTPClient) and one peer's
+// part of an own-device pass, which pairs its introductions
+// (ownPeerTimeout). An error or a non-positive answer fails that step with
+// it. Nil keeps each product bound, and nothing after a pairing (renewal,
+// socket tickets) is affected. Only a test calls it, with the time its run
+// has left (testutil.StepBudget): the computers it pairs with run in its
+// process, where a crowded machine can hold a step past its product bound.
+func (m *Manager) SetPairingBound(bound func() (time.Duration, error)) { m.pairingBound = bound }
+
+// stepBound is the bound of a pairing step that starts now: product, or
+// what SetPairingBound's function answers.
+func (m *Manager) stepBound(product time.Duration) (time.Duration, error) {
+	if m.pairingBound == nil {
+		return product, nil
+	}
+	bound, err := m.pairingBound()
+	if err != nil {
+		return 0, fmt.Errorf("attachedbackends: this pairing step has no bound: %w", err)
+	}
+	if bound <= 0 {
+		return 0, fmt.Errorf("attachedbackends: this pairing step's bound %v is not positive", bound)
+	}
+	return bound, nil
+}
+
+// nearbyClient is the client of a nearby-pairing exchange that starts now.
+func (m *Manager) nearbyClient() (*http.Client, error) {
+	bound, err := m.stepBound(0) // Zero is pairbootstrap's own bound.
+	if err != nil {
+		return nil, err
+	}
+	return pairbootstrap.NewHTTPClient(m.dial, bound)
+}
 
 func (m *Manager) clientOptions() []deviceclient.Option {
 	return []deviceclient.Option{deviceclient.WithDialContext(m.dial), deviceclient.WithProbeInterval(m.activationProbe), deviceclient.WithLifetime(m.life)}

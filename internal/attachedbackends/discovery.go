@@ -93,7 +93,10 @@ func (m *Manager) probeCandidates(ctx context.Context, candidates []DiscoveredCo
 	if m.selfID != nil {
 		known[m.selfID()] = true
 	}
-	client := pairbootstrap.NewHTTPClient(m.dial)
+	client, err := pairbootstrap.NewHTTPClient(m.dial, 0)
+	if err != nil {
+		return nil, err
+	}
 	defer client.CloseIdleConnections()
 	var mu sync.Mutex
 	results := make(map[string]DiscoveredComputer)
