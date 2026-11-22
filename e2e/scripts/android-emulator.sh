@@ -197,9 +197,8 @@ abandon() {
 # Bash 4.4 through 5.2 runs a pending signal handler when it starts to
 # parse a command substitution it is expanding, in that substitution's
 # parser state: the handler fails with a syntax error and the signal is
-# lost. So
-# while these handlers are set, nothing here expands $(...), <(...) or
-# >(...); abandon may, once it has ignored the signals.
+# lost. So while these handlers are set, nothing here expands $(...),
+# <(...) or >(...); abandon may, once it has ignored the signals.
 trap abandon EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
