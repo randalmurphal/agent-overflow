@@ -110,6 +110,9 @@ type subscriptions struct {
 	stamps uint64
 	// gens is each connection's mirror generation (genLocked).
 	gens map[string]uint64
+	// pumps counts the ticket pumps made, numbering each
+	// (ticketPump.number).
+	pumps int64
 }
 
 // genLocked is connection conn's mirror generation: it moves when the

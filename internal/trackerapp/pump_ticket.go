@@ -1,6 +1,7 @@
 package trackerapp
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/pump"
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/tracker"
 )
 
@@ -20,6 +22,9 @@ import (
 type ticketPump struct {
 	core pump.Core[readRequest]
 	key  ticketKey
+	// number names the pump within the service's session: its row in the
+	// mirror's open tickets (keepTicket).
+	number int64
 	// gen is the mirror generation the pump shows (genLocked).
 	gen uint64
 	// every is the connection's round interval, the answer's PollEvery.
@@ -200,9 +205,10 @@ func (s *Service) takeTicketHandle(key ticketKey) (id string, tp *ticketPump, st
 		if s.subs.tickets == nil {
 			s.subs.tickets = map[ticketKey]*ticketPump{}
 		}
+		s.subs.pumps++
 		tp = &ticketPump{
-			core: s.newCore(), key: key, gen: s.genLocked(key.connection), every: s.cadence.ticket(kind), exited: make(chan struct{}),
-			viewChanged: make(chan struct{}, 1),
+			core: s.newCore(), key: key, number: s.subs.pumps, gen: s.genLocked(key.connection), every: s.cadence.ticket(kind),
+			exited: make(chan struct{}), viewChanged: make(chan struct{}, 1),
 		}
 		s.subs.tickets[key] = tp
 		start = true
@@ -275,10 +281,14 @@ func (s *Service) digestOf(v DetailView) uint64 {
 // that records the opening, a full read on a person's request, and a view
 // rebuild with no tracker call when an input of the view moved, made when
 // shown again if it came while hidden. A failed read is retried by the
-// connection's round.
+// connection's round. The mirror keeps the ticket's issue from before the
+// first read until the goroutine returns (keepTicket), which every end of
+// the pump comes to: its last handle released, its connection turned off
+// or removed, Stop, and a read that found the pump ended.
 func (s *Service) runTicketPump(tp *ticketPump) {
 	defer s.workers.Done()
 	defer close(tp.exited)
+	defer s.keepTicket(tp)()
 	ctx, conn, self := tp.core.Context(), tp.key.connection, []*ticketPump{tp}
 	over := s.readTickets(ctx, conn, self, Interactive, false, true).over
 	for !over {
@@ -348,4 +358,39 @@ func (s *Service) endTicketLocked(tp *ticketPump) {
 	}
 	s.endHandlesLocked(&tp.core)
 	s.followRoundLocked(tp.key.connection)
+}
+
+// keepTicket makes the mirror keep tp's issue (store KeepMirrorTicket) in
+// the root of tp's connection, and returns what ends the keep (store
+// DropMirrorTicket), which the pump's goroutine runs as it returns. A
+// pump of a mirror generation that ended keeps nothing: it is ending. A
+// keep that fails leaves the ticket working as one of an issue the mirror
+// does not keep (its pump holds its document, and it shows no time in its
+// status), and is logged; so is a drop that fails, whose row the next
+// boot drops (StartLinkedSync).
+func (s *Service) keepTicket(tp *ticketPump) (drop func()) {
+	none := func() {}
+	r, err := s.start(tp.core.Context(), tp.key.connection, Background)
+	switch {
+	case errors.Is(err, errEnded), errors.Is(err, ErrStopped), errors.Is(err, context.Canceled):
+		return none
+	case err != nil:
+		s.logf("trackerapp: keep the open ticket %s of connection %s: %v", tp.key.issue, tp.key.connection, err)
+		return none
+	}
+	defer r.finish()
+	if r.gen != tp.gen {
+		return none
+	}
+	if err := s.store.KeepMirrorTicket(r.root, string(tp.key.issue), s.session, tp.number); err != nil {
+		if !errors.Is(err, store.ErrTrackerCacheGone) {
+			s.logf("trackerapp: keep the open ticket %s of connection %s: %v", tp.key.issue, tp.key.connection, err)
+		}
+		return none
+	}
+	return func() {
+		if err := s.store.DropMirrorTicket(s.session, tp.number); err != nil {
+			s.logf("trackerapp: drop the open ticket %s of connection %s: %v; the next boot drops it", tp.key.issue, tp.key.connection, err)
+		}
+	}
 }

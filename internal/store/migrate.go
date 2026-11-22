@@ -1777,6 +1777,7 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: asyncQuestionRunMigrationVersion, Name: "async_question_run", SQL: asyncQuestionRunV160SQL},
 	{Version: receiptNudgeRunsMigrationVersion, Name: "receipt_nudge_runs", SQL: receiptNudgeRunsV161SQL},
 	{Version: trackerMigrationVersion, Name: "tracker", SQL: trackerV162SQL},
+	{Version: trackerOpenTicketsMigrationVersion, Name: "tracker_open_tickets", SQL: trackerOpenTicketsV163SQL},
 }
 
 // MigrationStep describes one pending migration as it begins, or a

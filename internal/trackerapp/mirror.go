@@ -33,6 +33,9 @@ type MirrorStore interface {
 	GetMirrorRoot(connectionID string) (int64, bool, error)
 	DetachMirror(connectionID string) (bool, error)
 	FinishMirrorCleanup(pause store.ChunkPause) error
+	KeepMirrorTicket(rootID int64, issueID string, session, pump int64) error
+	DropMirrorTicket(session, pump int64) error
+	DropMirrorTicketsOfOtherSessions(session int64) (int64, error)
 
 	GetMirrorSync(rootID int64, boardID string, now int64) (store.MirrorSync, bool, error)
 	RecordMirrorSyncAttempt(rootID int64, boardID string, a store.MirrorSyncAttempt) (bool, error)

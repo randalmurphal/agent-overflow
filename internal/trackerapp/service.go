@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"hash/maphash"
@@ -157,6 +158,10 @@ type Service struct {
 	digestSeed maphash.Seed
 	// readAtLast is the last time a read of the tracker began (readAtNext).
 	readAtLast atomic.Int64
+	// session names this service's open tickets in the mirror, each a
+	// pump of it (keepTicket): the rows of another session were left by
+	// a process that ended, and StartLinkedSync drops them.
+	session int64
 
 	// subMu is the one lock of the subscriptions, their pumps and the
 	// linked loop (subscriptions.go). It is held for map and flag work and
@@ -186,6 +191,8 @@ func New(deps Deps) (*Service, error) {
 	}
 	key := make([]byte, 32)
 	_, _ = rand.Read(key) // crypto/rand.Read never fails; it crashes instead
+	var session [8]byte
+	_, _ = rand.Read(session[:])
 	// time.Since reads the monotonic clock of mono, which deps.Now's value
 	// may not carry.
 	mono, wall := time.Now(), deps.Now()
@@ -200,7 +207,7 @@ func New(deps Deps) (*Service, error) {
 		logf:         log.Printf,
 		emitBoard:    deps.EmitBoard, emitIssue: deps.EmitIssue, settled: deps.Settled,
 		clientConnected: deps.ClientConnected, loopFailed: deps.LoopFailed, cadence: deps.Cadence.withDefaults(),
-		digestSeed: maphash.MakeSeed(),
+		digestSeed: maphash.MakeSeed(), session: int64(binary.LittleEndian.Uint64(session[:]) >> 1),
 	}, nil
 }
 
