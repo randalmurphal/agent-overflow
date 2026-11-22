@@ -161,7 +161,9 @@ restores the newest `main` entry of each slot. The Go test cache then
 reports a package as `(cached)` when its code, its dependencies and the
 files its tests read are unchanged; `scripts/ci-stable-mtimes.mjs` sets the
 checkout's file times from content first, since Go compares a read file by
-size and time. `cache-cleanup` keeps one entry per cache name after a push
+size and time. A test that lists a directory also depends on its entries'
+times, so `make go-test` neither rewrites an unchanged tool in `bin/` nor
+lets a Go command run `git status`, which touches `.git`. `cache-cleanup` keeps one entry per cache name after a push
 and fails when they pass 8 GB of GitHub's 10 GB
 (`scripts/ci-cache-cleanup.mjs`). `codeql.yml` scans Go and
 TypeScript; `dependabot.yml` opens only security updates for Go, npm,
