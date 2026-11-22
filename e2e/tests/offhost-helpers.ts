@@ -35,7 +35,7 @@
 import { readFileSync } from 'node:fs';
 import * as os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { expect, type Page } from '@playwright/test';
+import { expect, type Page, type WebSocketRoute } from '@playwright/test';
 
 import type { HarnessApp } from '../src/harness.js';
 
@@ -266,6 +266,46 @@ export const PAIRED_APP_MOUNT_MS = 20_000;
 // remote computer one rung can be wsClient's RECONNECT_MAX_REMOTE_MS (30s)
 // away. The rest is margin for a slow runner.
 export const PAIRED_REDIAL_MS = 35_000;
+
+/**
+ * Counts the routed sockets the backend has answered on. A dial let through
+ * can still fail before it opens (the carried path answers 503 while it
+ * mints its upstream ticket), so a reconnect is proven by the backend's
+ * first message on the new socket, not by the route admitting the dial.
+ */
+export interface SocketAnswers {
+  /**
+   * Connects a routed socket to its server. What the server sends is passed
+   * to `forward` (by default, to the page as it is).
+   */
+  connect(socket: WebSocketRoute, forward?: (message: string | Buffer) => void): WebSocketRoute;
+  /** How many connected sockets the backend has answered on so far. */
+  count(): number;
+  /** Waits up to PAIRED_REDIAL_MS for an answer on a socket beyond the first `seen`. */
+  waitBeyond(seen: number): Promise<void>;
+}
+
+export function socketAnswers(): SocketAnswers {
+  let answered = 0;
+  return {
+    connect(socket, forward = (message) => socket.send(message)) {
+      const server = socket.connectToServer();
+      let first = true;
+      server.onMessage((message) => {
+        if (first) {
+          first = false;
+          answered += 1;
+        }
+        forward(message);
+      });
+      return server;
+    },
+    count: () => answered,
+    async waitBeyond(seen) {
+      await expect.poll(() => answered, { timeout: PAIRED_REDIAL_MS }).toBeGreaterThan(seen);
+    },
+  };
+}
 
 // The access wire shapes (internal/app/app_access_types.go).
 
