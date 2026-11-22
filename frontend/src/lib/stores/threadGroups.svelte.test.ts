@@ -6,7 +6,7 @@ import {
   getThreadGroups,
   getThreadGroupsForProject,
   NO_GROUPS,
-  removeThreadGroup,
+  deleteThreadGroupLocal,
   resetThreadGroupsForTest,
   upsertThreadGroup,
 } from './threadGroups.svelte';
@@ -61,10 +61,10 @@ describe('threadGroups store', () => {
     expect(getThreadGroups()).toHaveLength(2);
     expect(getThreadGroupById('g1')?.name).toBe('Renamed');
 
-    removeThreadGroup('g1');
+    deleteThreadGroupLocal('g1');
     expect(getThreadGroups().map((g) => g.id)).toEqual(['g2']);
     // Removing an unknown id is a no-op, not a throw.
-    removeThreadGroup('nope');
+    deleteThreadGroupLocal('nope');
     expect(getThreadGroups()).toHaveLength(1);
   });
 

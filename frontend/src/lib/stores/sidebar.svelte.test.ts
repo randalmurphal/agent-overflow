@@ -21,7 +21,7 @@ import { loadSettings, resetSettingsForTest } from './settings.svelte';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import { makeSettings } from '../../test/helpers/settings';
 import { THREAD_PREVIEW_LIMIT, THREAD_REVEAL_INCREMENT } from '../utils/sidebarThreadLimits';
-import { removeThreadGroup } from './threadGroups.svelte';
+import { deleteThreadGroupLocal } from './threadGroups.svelte';
 
 const COLLAPSED_GROUPS_KEY = 'sidebar:collapsedGroups';
 
@@ -35,7 +35,7 @@ describe('sidebar store', () => {
   it('forgets a group\'s paging when the group goes', () => {
     setThreadListVisibleLimit('group-1', THREAD_PREVIEW_LIMIT + THREAD_REVEAL_INCREMENT);
     setThreadListVisibleLimit('other', THREAD_PREVIEW_LIMIT + THREAD_REVEAL_INCREMENT);
-    removeThreadGroup('group-1');
+    deleteThreadGroupLocal('group-1');
     expect(getThreadListVisibleLimit('group-1')).toBe(THREAD_PREVIEW_LIMIT);
     expect(getThreadListVisibleLimit('other')).toBe(THREAD_PREVIEW_LIMIT + THREAD_REVEAL_INCREMENT);
   });

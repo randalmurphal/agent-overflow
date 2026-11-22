@@ -221,8 +221,16 @@ export function listThread(thread: Thread): void {
  * state they use, stay; `removeThread` is for a thread that is gone.
  */
 export function unlistThread(id: string): void {
-  invalidateReplicaCatalog(threadBackend(id) ?? '', 'threads');
-  catalogWriter.mutate(threadBackend(id), (rows) => rows.filter((t) => t.id !== id));
+  dropThreadRow(id);
+}
+
+// Take the row out of the catalog of the computer it is noted under, or
+// home's for a row never noted, which is where the catalog writer files such
+// a row.
+function dropThreadRow(id: string): void {
+  const backend = threadBackend(id) ?? HOME_BACKEND;
+  invalidateReplicaCatalog(backend, 'threads');
+  catalogWriter.mutate(backend, (rows) => rows.filter((t) => t.id !== id));
 }
 
 /**
@@ -252,8 +260,7 @@ export function addThreadRemovedObserver(observer: (id: string) => void): () => 
 }
 
 export function removeThread(id: string): void {
-  invalidateReplicaCatalog(threadBackend(id) ?? '', 'threads');
-  catalogWriter.mutate(threadBackend(id), (rows) => rows.filter((t) => t.id !== id));
+  dropThreadRow(id);
   liveActivityAt.drop(id);
   // Drop any live-status entry so the sidebar doesn't keep painting a
   // dot for a thread that no longer exists in the list.

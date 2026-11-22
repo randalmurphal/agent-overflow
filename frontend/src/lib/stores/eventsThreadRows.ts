@@ -201,7 +201,6 @@ function closePanesOfDeletedThreads(rows: readonly Thread[]): void {
     withBackendTarget(backend, () => GetThread(id)).catch((err: unknown) => {
       if (!(err instanceof TransportError) || err.code !== 'not_found') return;
       applyThreadUpdated({ action: 'deleted', id });
-      forgetThread(id);
     });
   }
 }
@@ -441,6 +440,8 @@ export function applyThreadDeleted(id: string): void {
   removeThread(id);
   forgetThreadWorkerSummary(id);
   if (!deferEmptyDraftDeletion(id, () => followDeletedThread(id))) followDeletedThread(id);
+  // Last, so the removal reached the owner's catalog.
+  forgetThread(id);
 }
 
 export function applyThreadUpdated(evt: ThreadUpdateEvent): void {

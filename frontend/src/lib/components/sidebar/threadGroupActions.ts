@@ -23,14 +23,11 @@ import {
   SetThreadPlacement,
 } from '../../stores/bindings';
 import {
-  removeThreadGroup,
+  deleteThreadGroupLocal,
   requestGroupRename,
   upsertThreadGroup,
 } from '../../stores/threadGroups.svelte';
-import {
-  clearThreadGroupMembership,
-  updateThreadGroupState,
-} from '../../stores/threads.svelte';
+import { updateThreadGroupState } from '../../stores/threads.svelte';
 import { openDraftThreadForProject } from '../../stores/threadCreation.svelte';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import { revealProject } from '../../stores/sidebarEntryContinuity.svelte';
@@ -147,8 +144,7 @@ export async function renameThreadGroupAction(
 export async function deleteThreadGroupAction(groupId: string): Promise<boolean> {
   try {
     await DeleteThreadGroup(groupId);
-    removeThreadGroup(groupId);
-    clearThreadGroupMembership(groupId);
+    deleteThreadGroupLocal(groupId);
     return true;
   } catch (err) {
     reportGroupFailure('delete thread group', err);

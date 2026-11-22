@@ -22,7 +22,7 @@ import {
 } from '../utils/pathDisplay';
 import { groupRepositories } from '../utils/repoKey';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
-import { projectBackend, noteProject } from '../transport/entityIndex';
+import { forgetProject, projectBackend, noteProject } from '../transport/entityIndex';
 import { onBackendDetached } from '../transport/backends';
 import { hasMultipleBackends } from './attachedBackends.svelte';
 
@@ -490,18 +490,26 @@ export function addProjectDeletedObserver(observer: (key: string) => void): () =
 
 /**
  * The project was deleted, not archived and not left unlisted by its
- * computer: drop its row, then tell what keeps state by its entry key.
+ * computer: drop its row, tell what keeps state by its entry key, then
+ * forget which computer owned it. Forgetting comes last so the removal
+ * reaches the owner's catalog.
  */
 export function deleteProjectLocal(id: string): void {
   const key = untrack(() => projectEntryKey(id));
   removeProjectLocal(id);
   for (const observer of projectDeletedObservers) observer(key);
+  forgetProject(id);
 }
 
-/** Drop a project row and any related thread counts. */
+/**
+ * Drop a project row and its live-activity bump, from the catalog of the
+ * computer it is noted under, or home's for a row never noted, which is
+ * where the catalog writer files such a row.
+ */
 export function removeProjectLocal(id: string): void {
-  invalidateReplicaCatalog(projectBackend(id) ?? '', 'projects');
-  catalogWriter.mutate(projectBackend(id), (rows) => rows.filter((p) => p.project.id !== id));
+  const backend = projectBackend(id) ?? HOME_BACKEND;
+  invalidateReplicaCatalog(backend, 'projects');
+  catalogWriter.mutate(backend, (rows) => rows.filter((p) => p.project.id !== id));
   liveActivityAt.drop(id);
 }
 

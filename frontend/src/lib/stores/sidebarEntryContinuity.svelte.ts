@@ -26,7 +26,7 @@
 //     whichever half is on screen keeps the fold;
 //   - a row whose members are all gone keeps its record (detached, unlisted,
 //     archived), except that a deleted project's key loses its record once
-//     no project the client holds wears it (forgetDeletedEntry);
+//     no project the client holds wears it (withDeletedKeys);
 //   - a key whose row moved away or lost a merge is cleared, and a new row
 //     that now wears that key reads no record: a checkout promoted to its
 //     computer's chosen one does not inherit the fold of the one it replaced.
@@ -244,12 +244,30 @@ export function entryListLimit(group: SidebarEntryGroup): number {
 function commit(): void {
   untrack(() => {
     const next = continuity;
-    if (next.changes !== null) {
-      collapsed.apply(next.changes);
-      listLimits.apply(next.changes);
+    const changes = withDeletedKeys(next.changes);
+    if (changes !== null) {
+      collapsed.apply(changes);
+      listLimits.apply(changes);
     }
     if (next.rows !== remembered) remembered = next.rows;
   });
+}
+
+// The keys deleted projects wore, until the next commit settles them. A
+// deleted project's key keeps no record once no project the client holds
+// wears it. The clear rides the decision's own change, which reads every
+// copy before it clears, so a move still waiting when the project went takes
+// the record to the moved row's new key first.
+const deletedKeys = new Set<string>();
+addProjectDeletedObserver((key) => { deletedKeys.add(key); });
+
+function withDeletedKeys(changes: RecordKeyChanges | null): RecordKeyChanges | null {
+  if (deletedKeys.size === 0) return changes;
+  const worn = new Set(getProjects().map((row) => projectEntryKey(row.project.id)));
+  const cleared = [...deletedKeys].filter((key) => !worn.has(key));
+  deletedKeys.clear();
+  if (cleared.length === 0) return changes;
+  return { copies: changes?.copies ?? new Map(), clears: new Set([...(changes?.clears ?? []), ...cleared]) };
 }
 
 /** Fold or unfold the entry persisted under `key`. */
@@ -279,17 +297,6 @@ export function revealProject(projectId: string): void {
   collapsed.set(untrack(() => projectEntryKey(projectId)), false);
 }
 
-// A deleted project's key, once nothing the client holds wears it, keeps no
-// record. A checkout promoted onto the key wears it, so the record stays for
-// the commit that moves that checkout's own record there.
-function forgetDeletedEntry(key: string): void {
-  const worn = untrack(() => getProjects().some((row) => projectEntryKey(row.project.id) === key));
-  if (worn) return;
-  const forget: RecordKeyChanges = { copies: new Map(), clears: new Set([key]) };
-  collapsed.apply(forget);
-  listLimits.apply(forget);
-}
-addProjectDeletedObserver(forgetDeletedEntry);
 
 let stopEffect: (() => void) | null = null;
 
@@ -335,6 +342,7 @@ export function rememberedRowCountForTest(): number {
 export function resetSidebarEntryContinuityForTest(): void {
   stopSidebarEntryContinuity();
   remembered = [];
+  deletedKeys.clear();
   collapsed.resetForTest();
   listLimits.resetForTest();
 }

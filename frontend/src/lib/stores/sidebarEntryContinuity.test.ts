@@ -300,6 +300,30 @@ describe('what it remembers', () => {
     expect(records()).toEqual(KEPT);
   });
 
+  // A and B, on two computers, are one entry under FORGE. A's identity moves
+  // and B is deleted in one tick, before the move is committed.
+  for (const order of ['move then delete', 'delete then move'] as const) {
+    it(`carries the record to the moved row's new key when a deletion lands beside a waiting move (${order})`, () => {
+      const OTHER = 'github:github.com:2';
+      addOn(HOME_BACKEND, mkProject('a', { repositoryID: REPO }));
+      addOn('laptop', mkProject('b', { repositoryID: REPO }));
+      settle();
+      expect(groupOf('a').key).toBe(FORGE);
+      expect(groupOf('b').key).toBe(FORGE);
+      setEntryExpanded(FORGE, false);
+      setEntryListLimit(FORGE, 28);
+
+      const move = () => updateProjectLocal(mkProject('a', { repositoryID: OTHER }));
+      const remove = () => deleteProjectLocal('b');
+      if (order === 'move then delete') { move(); remove(); } else { remove(); move(); }
+      settle();
+
+      expect(groupOf('a').key).toBe(`forge:${OTHER}`);
+      expect(entryExpanded(groupOf('a'))).toBe(false);
+      expect(records()).toEqual({ collapsed: [`forge:${OTHER}`], limits: { [`forge:${OTHER}`]: 28 } });
+    });
+  }
+
   it('keeps the record when a deleted checkout leaves another checkout wearing its key', () => {
     addOn(HOME_BACKEND, mkProject('a', { repositoryID: REPO, createdAt: 1 }));
     addOn(HOME_BACKEND, mkProject('b', { repositoryID: REPO, createdAt: 2 }));

@@ -2,7 +2,8 @@ import { invalidateReplicaCatalog } from '../replica/session';
 import { computerCatalogWriter, resetCatalogWritesForTest } from './computerCatalogWriter';
 import { computerCatalog, retainUnavailableComputerRows, type CatalogPart, type ComputerRows } from './computerRows';
 import { settleCatalogAnswers } from './catalogLoad.svelte';
-import { noteThreadGroup, threadGroupBackend } from '../transport/entityIndex';
+import { forgetThreadGroup, noteThreadGroup, threadGroupBackend } from '../transport/entityIndex';
+import { HOME_BACKEND } from '../transport/backendKey';
 // Thread groups: the named, collapsible sidebar rows that gather threads
 // of one project. Entity-keyed on the GROUP, not on the sidebar surface
 // that renders it — the tree builder, the context menus and the drop
@@ -125,11 +126,23 @@ export function upsertThreadGroup(group: ThreadGroup): void {
   });
 }
 
-export function removeThreadGroup(id: string): void {
+/**
+ * The group was deleted: drop its row and its members' membership from its
+ * computer's catalogs, then forget which computer owned it. The delete
+ * emits no thread rows (SQLite nulls group_id itself), so the membership
+ * is cleared here for the caller and for a client that only saw the frame.
+ * Forgetting comes last so both reach the owner's catalogs.
+ */
+export function deleteThreadGroupLocal(id: string): void {
   if (!id) return;
   collapseThreadList(id);
-  invalidateReplicaCatalog(threadGroupBackend(id) ?? '', 'groups');
-  catalogWriter.mutate(threadGroupBackend(id), (rows) => rows.filter((group) => group.id !== id));
+  // The computer it is noted under, or home for a row never noted, which is
+  // where the catalog writer files such a row.
+  const backend = threadGroupBackend(id) ?? HOME_BACKEND;
+  invalidateReplicaCatalog(backend, 'groups');
+  catalogWriter.mutate(backend, (rows) => rows.filter((group) => group.id !== id));
+  clearThreadGroupMembership(id);
+  forgetThreadGroup(id);
 }
 
 /**
@@ -141,11 +154,7 @@ export function removeThreadGroup(id: string): void {
 export function applyThreadGroupUpdated(evt: ThreadGroupUpdateEvent): void {
   if (!evt?.group?.id) return;
   if (evt.action === 'delete') {
-    removeThreadGroup(evt.group.id);
-    // The delete emits no thread rows (SQLite nulls group_id itself), so
-    // a client that only saw the event clears the membership here — the
-    // same local half deleteThreadGroupAction does for the caller.
-    clearThreadGroupMembership(evt.group.id);
+    deleteThreadGroupLocal(evt.group.id);
     return;
   }
   upsertThreadGroup(evt.group);
