@@ -14,7 +14,8 @@
 // dash runs no EXIT trap on these signals, bash 3.2 runs none in a subshell,
 // and later bash runs it at once, beside the command that is still running.
 // Bash 4.4 does not wait while it reads a command substitution's output: it
-// runs the handler then, before the substitution's command has ended.
+// runs the handler then, before the substitution's command has ended, so
+// TestShellScriptsCleanUpOnSignal skips those cases under it.
 // Under dash a subshell does not keep its parent's handlers, so a subshell
 // that cleans up in an EXIT trap of its own sets the line again, as
 // publish_macos_bundle does.
@@ -359,6 +360,9 @@ type shellSignalRun struct {
 	// the machine need not have.
 	tool string
 	real string
+	// substitution says that the script runs the tool inside a command
+	// substitution.
+	substitution bool
 	// left lists globs that must match nothing after the run.
 	left []string
 	// check inspects the run's directory after the run; group says whether
@@ -404,16 +408,16 @@ func TestShellScriptsCleanUpOnSignal(t *testing.T) {
 	}
 	installed := "{dir}/apps/Agent Overflow.app"
 	runs := []shellSignalRun{
-		{name: "test-ci-change.sh makes its directory", script: "scripts/test-ci-change.sh", tool: "mktemp"},
+		{name: "test-ci-change.sh makes its directory", script: "scripts/test-ci-change.sh", tool: "mktemp", substitution: true},
 		{name: "test-ci-change.sh runs a command", script: "scripts/test-ci-change.sh", tool: "mkdir"},
-		{name: "test-install-download.sh makes its directory", script: "scripts/test-install-download.sh", tool: "mktemp"},
+		{name: "test-install-download.sh makes its directory", script: "scripts/test-install-download.sh", tool: "mktemp", substitution: true},
 		{name: "test-install-download.sh runs a command", script: "scripts/test-install-download.sh", tool: "mkdir"},
-		{name: "release-check.sh makes its directory", script: "scripts/release-check.sh", tool: "mktemp"},
-		{name: "install.sh makes its download directory", script: "scripts/install.sh", args: []string{"--macos", "--download", "--source", "{dir}/release"}, tool: "mktemp"},
+		{name: "release-check.sh makes its directory", script: "scripts/release-check.sh", tool: "mktemp", substitution: true},
+		{name: "install.sh makes its download directory", script: "scripts/install.sh", args: []string{"--macos", "--download", "--source", "{dir}/release"}, tool: "mktemp", substitution: true},
 		{name: "install.sh downloads from GitLab", script: "scripts/install.sh", args: []string{"--macos", "--source", "gitlab:example.test/group/agent-overflow", "--version", "0.0.1"}, tool: "glab", real: "true"},
-		{name: "install.sh makes its bundle directory", script: "scripts/install.sh", args: []string{"--macos", "{dir}/Agent Overflow.app"}, tool: "mktemp", left: []string{"{dir}/home/Applications/.ao-bundle.*"}},
+		{name: "install.sh makes its bundle directory", script: "scripts/install.sh", args: []string{"--macos", "{dir}/Agent Overflow.app"}, tool: "mktemp", substitution: true, left: []string{"{dir}/home/Applications/.ao-bundle.*"}},
 		{name: "install.sh copies the bundle", script: "scripts/install.sh", args: []string{"--macos", "{dir}/Agent Overflow.app"}, tool: "cp", left: []string{"{dir}/home/Applications/.ao-bundle.*", "{dir}/home/Applications/Agent Overflow.app"}},
-		{name: "package-macos-app.sh makes its stage", script: "scripts/package-macos-app.sh", args: []string{"{dir}/binary", "{dir}/Info.plist", installed}, tool: "mktemp", left: []string{"{dir}/apps/.ao-bundle.*"}},
+		{name: "package-macos-app.sh makes its stage", script: "scripts/package-macos-app.sh", args: []string{"{dir}/binary", "{dir}/Info.plist", installed}, tool: "mktemp", substitution: true, left: []string{"{dir}/apps/.ao-bundle.*"}},
 		{
 			// The first mv moves the installed bundle aside for the new one.
 			// A signal to the group stops the publish and puts the installed
@@ -436,6 +440,14 @@ func TestShellScriptsCleanUpOnSignal(t *testing.T) {
 			},
 		},
 	}
+	// The shell the scripts run under: sh from this process's PATH, as
+	// runShellSignalCase starts them.
+	version, err := exec.Command("sh", "-c", `printf '%s' "${BASH_VERSION:-}"`).Output()
+	if err != nil {
+		t.Fatalf("ask sh for its version: %v", err)
+	}
+	t.Logf("sh's BASH_VERSION is %q", version)
+	bash44 := strings.HasPrefix(string(version), "4.4.")
 	for _, sig := range signals {
 		for _, group := range []bool{false, true} {
 			target := "the script"
@@ -444,6 +456,9 @@ func TestShellScriptsCleanUpOnSignal(t *testing.T) {
 			}
 			for _, run := range runs {
 				t.Run(shellSignalName(sig)+"/"+target+"/"+run.name, func(t *testing.T) {
+					if bash44 && !group && run.substitution {
+						t.Skip("sh is bash 4.4, which runs a handler while it reads a command substitution's output, before the substitution's command ends; bash 5.0 fixed that (\"The shell no longer runs traps if a signal arrives while reading command substitution output\")")
+					}
 					runShellSignalCase(t, root, installed, run, sig, group)
 				})
 			}
