@@ -210,7 +210,7 @@ func (f *Flavor) WatchSubagent(ctx context.Context, launch acp.SubagentLaunchCon
 			})
 		return
 	}
-	childRoot := filepath.Join(f.AppDataDir, "brain", childID)
+	brainDir := filepath.Join(f.AppDataDir, "brain")
 	childPath := child.logPath
 	if childPath == "" {
 		childPath = transcriptPathForSession(f.AppDataDir, childID)
@@ -262,8 +262,22 @@ func (f *Flavor) WatchSubagent(ctx context.Context, launch acp.SubagentLaunchCon
 		}
 	}
 
+	idleTicks := 0
 	for {
-		lines := readNewJSONLLinesContained(childRoot, childPath, &childOffset, &childRemainder)
+		lines := readNewJSONLLinesContained(brainDir, childID, childPath, &childOffset, &childRemainder)
+		if len(lines) > 0 {
+			if idleTicks > 0 {
+				idleTicks = 0
+				ticker.Reset(pollInterval)
+			}
+		} else {
+			idleTicks++
+			if idleTicks == 4 {
+				ticker.Reset(pollInterval * 2)
+			} else if idleTicks == 12 {
+				ticker.Reset(pollInterval * 4)
+			}
+		}
 		progressDirty := false
 		for _, line := range lines {
 			var step transcriptStep
@@ -447,6 +461,7 @@ func (f *Flavor) WatchSubagent(ctx context.Context, launch acp.SubagentLaunchCon
 				report = lastError
 			}
 			f.emitSubagentSettlement(launch, childID, finalStatus, report, finalProgress)
+			coord.retire(childID)
 			return
 		}
 
@@ -470,9 +485,9 @@ func (f *Flavor) seedExistingSubagents(sessionID string) {
 		// discoveries from earlier turns in the same live session.
 		return
 	}
-	parentRoot := filepath.Join(f.AppDataDir, "brain", sessionID)
+	brainDir := filepath.Join(f.AppDataDir, "brain")
 	for {
-		lines := readNewJSONLLinesContained(parentRoot, coord.path, &coord.offset, &coord.remainder)
+		lines := readNewJSONLLinesContained(brainDir, sessionID, coord.path, &coord.offset, &coord.remainder)
 		if len(lines) == 0 {
 			break
 		}
@@ -558,8 +573,9 @@ func (f *Flavor) emitSubagentSettlement(launch acp.SubagentLaunchContext, taskID
 func (c *parentSubagentCoordinator) refresh(appDataDir string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	parentRoot := filepath.Dir(filepath.Dir(filepath.Dir(c.path)))
-	lines := readNewJSONLLinesContained(parentRoot, c.path, &c.offset, &c.remainder)
+	brainDir := filepath.Join(appDataDir, "brain")
+	parentID := filepath.Base(filepath.Dir(filepath.Dir(filepath.Dir(c.path))))
+	lines := readNewJSONLLinesContained(brainDir, parentID, c.path, &c.offset, &c.remainder)
 	for _, line := range lines {
 		var step transcriptStep
 		if json.Unmarshal([]byte(line), &step) != nil {
@@ -580,21 +596,25 @@ func (c *parentSubagentCoordinator) refresh(appDataDir string) {
 				}
 			}
 		case "GENERIC":
+			// Only admit subagent conversation IDs when an invoke_subagent
+			// launch is actually pending in the parent transcript; unrelated
+			// tool output mentioning a conversationId must never attach.
+			if len(c.pendingSpawn) == 0 {
+				continue
+			}
 			convID, logPath := parseCreatedSubagentResult(step.Content, appDataDir)
 			if convID == "" || c.seenConvID[convID] {
 				continue
 			}
 			c.seenConvID[convID] = true
+			sp := c.pendingSpawn[0]
+			c.pendingSpawn = c.pendingSpawn[1:]
 			entry := &discoveredSubagent{
 				conversationID: convID,
 				logPath:        logPath,
-			}
-			if len(c.pendingSpawn) > 0 {
-				sp := c.pendingSpawn[0]
-				c.pendingSpawn = c.pendingSpawn[1:]
-				entry.role = sp.role
-				entry.typeName = sp.typeName
-				entry.prompt = sp.prompt
+				role:           sp.role,
+				typeName:       sp.typeName,
+				prompt:         sp.prompt,
 			}
 			c.discovered = append(c.discovered, entry)
 		case "SYSTEM_MESSAGE":
@@ -603,6 +623,13 @@ func (c *parentSubagentCoordinator) refresh(appDataDir string) {
 			}
 		}
 	}
+}
+
+func promptsCompatible(wantPrompt, gotPrompt string) bool {
+	if wantPrompt == "" || gotPrompt == "" {
+		return true
+	}
+	return gotPrompt == wantPrompt || strings.HasPrefix(wantPrompt, gotPrompt) || strings.HasPrefix(gotPrompt, wantPrompt)
 }
 
 func (c *parentSubagentCoordinator) claim(wantRole, wantType, wantPrompt string) *discoveredSubagent {
@@ -620,26 +647,27 @@ func (c *parentSubagentCoordinator) claim(wantRole, wantType, wantPrompt string)
 			return d
 		}
 	}
-	// Match on role + typeName (in case prompt was compacted in transcript.jsonl).
+	// Match on role + typeName when prompts do not conflict (e.g. one side
+	// omitted or compacted its prompt, never when two parallel same-role
+	// launches carry distinct prompts).
 	for _, d := range c.discovered {
 		if d.claimed {
 			continue
 		}
-		if wantRole != "" && d.role == wantRole && (wantType == "" || d.typeName == wantType) {
+		if wantRole != "" && d.role == wantRole &&
+			(wantType == "" || d.typeName == wantType) &&
+			promptsCompatible(wantPrompt, d.prompt) {
 			d.claimed = true
 			return d
 		}
 	}
-	// Positional fallback ONLY when neither side carries a conflicting role or
-	// typeName, preventing a parallel watcher that polls early from stealing a
-	// sibling launch's child transcript.
+	// Positional fallback ONLY when the discovered entry carries no metadata at
+	// all, preventing early pollers from stealing a sibling launch's transcript.
 	for _, d := range c.discovered {
 		if d.claimed {
 			continue
 		}
-		roleConflict := wantRole != "" && d.role != "" && d.role != wantRole
-		typeConflict := wantType != "" && d.typeName != "" && d.typeName != wantType
-		if roleConflict || typeConflict {
+		if d.role != "" || d.typeName != "" || d.prompt != "" {
 			continue
 		}
 		d.claimed = true
@@ -652,6 +680,19 @@ func (c *parentSubagentCoordinator) reportFor(childID string) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.reports[childID]
+}
+
+func (c *parentSubagentCoordinator) retire(childID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.reports, childID)
+	kept := c.discovered[:0]
+	for _, d := range c.discovered {
+		if d.conversationID != childID {
+			kept = append(kept, d)
+		}
+	}
+	c.discovered = kept
 }
 
 func parseInvokeSubagentInput(raw json.RawMessage) (role, typeName, prompt string) {
@@ -829,50 +870,88 @@ func parseStepTime(raw string) time.Time {
 	return time.Time{}
 }
 
-// openContainedTranscript resolves symlinks on both expectedRoot and path and
-// refuses any file outside expectedRoot or any non-regular file.
-func openContainedTranscript(expectedRoot, path string) (*os.File, error) {
-	if strings.TrimSpace(expectedRoot) == "" || strings.TrimSpace(path) == "" {
+// openContainedTranscript verifies that sessionID's directory stays inside the
+// resolved brainDir (rejecting symlinked brain/<id> escapes) and opens the
+// transcript through os.OpenRoot for kernel-enforced, symlink-safe containment.
+func openContainedTranscript(brainDir, sessionID, path string) (*os.File, error) {
+	if strings.TrimSpace(brainDir) == "" || !isSafeConversationID(sessionID) || strings.TrimSpace(path) == "" {
 		return nil, os.ErrNotExist
 	}
-	rootReal, err := filepath.EvalSymlinks(expectedRoot)
+	brainReal, err := filepath.EvalSymlinks(brainDir)
 	if err != nil {
 		return nil, err
+	}
+	sessionDir := filepath.Join(brainReal, sessionID)
+	sessionReal, err := filepath.EvalSymlinks(sessionDir)
+	if err != nil {
+		return nil, err
+	}
+	relSession, err := filepath.Rel(brainReal, sessionReal)
+	if err != nil || relSession == ".." || strings.HasPrefix(relSession, ".."+string(os.PathSeparator)) || relSession != sessionID {
+		return nil, os.ErrPermission
 	}
 	pathReal, err := filepath.EvalSymlinks(path)
 	if err != nil {
 		return nil, err
 	}
-	rel, err := filepath.Rel(rootReal, pathReal)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+	relFile, err := filepath.Rel(sessionReal, pathReal)
+	if err != nil || relFile == ".." || strings.HasPrefix(relFile, ".."+string(os.PathSeparator)) {
 		return nil, os.ErrPermission
 	}
-	info, err := os.Stat(pathReal)
+	root, err := os.OpenRoot(sessionReal)
 	if err != nil {
 		return nil, err
 	}
-	if !info.Mode().IsRegular() {
+	defer func() { _ = root.Close() }()
+	f, err := root.Open(relFile)
+	if err != nil {
+		return nil, err
+	}
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		_ = f.Close()
+		if err != nil {
+			return nil, err
+		}
 		return nil, os.ErrPermission
 	}
-	return os.Open(pathReal)
+	return f, nil
 }
 
 // readNewJSONLLinesContained reads up to maxTranscriptReadChunkBytes of newly
 // appended complete newline-terminated JSONL lines from path (verified inside
-// expectedRoot via symlink resolution), keeping *remainder bounded.
-func readNewJSONLLinesContained(expectedRoot, path string, offset *int64, remainder *string) []string {
-	f, err := openContainedTranscript(expectedRoot, path)
+// brainDir/sessionID via os.OpenRoot). Idle ticks at EOF return nil with zero
+// buffer allocations.
+func readNewJSONLLinesContained(brainDir, sessionID, path string, offset *int64, remainder *string) []string {
+	f, err := openContainedTranscript(brainDir, sessionID, path)
 	if err != nil {
 		return nil
 	}
 	defer func() { _ = f.Close() }()
 
+	info, err := f.Stat()
+	if err != nil {
+		return nil
+	}
+	size := info.Size()
+	if size == *offset {
+		return nil
+	}
+	if size < *offset {
+		// File was truncated or replaced; restart from the beginning.
+		*offset = 0
+		*remainder = ""
+	}
 	if *offset > 0 {
 		if _, err := f.Seek(*offset, io.SeekStart); err != nil {
 			return nil
 		}
 	}
-	buf := make([]byte, maxTranscriptReadChunkBytes)
+	toRead := size - *offset
+	if toRead > maxTranscriptReadChunkBytes {
+		toRead = maxTranscriptReadChunkBytes
+	}
+	buf := make([]byte, toRead)
 	n, err := f.Read(buf)
 	if n <= 0 || (err != nil && err != io.EOF) {
 		return nil

@@ -16,6 +16,26 @@ import (
 // DefaultMCPStatusTimeout bounds one `agy mcp list` invocation.
 const DefaultMCPStatusTimeout = 15 * time.Second
 
+const maxMCPStatusOutputBytes = 2 << 20 // 2 MiB
+
+type limitedBuffer struct {
+	buf bytes.Buffer
+	max int
+}
+
+func (l *limitedBuffer) Write(p []byte) (int, error) {
+	if rem := l.max - l.buf.Len(); rem > 0 {
+		if len(p) > rem {
+			_, _ = l.buf.Write(p[:rem])
+		} else {
+			_, _ = l.buf.Write(p)
+		}
+	}
+	return len(p), nil
+}
+
+func (l *limitedBuffer) String() string { return l.buf.String() }
+
 // MCPStatusFetcher runs `agy mcp list` and projects the configured server
 // statuses into AO's shared mcpstatus cache.
 type MCPStatusFetcher struct {
@@ -52,9 +72,10 @@ func (f *MCPStatusFetcher) Fetch(ctx context.Context, _ mcpstatus.Provider) ([]m
 	}
 	cmd.WaitDelay = 2 * time.Second
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	stdout := &limitedBuffer{max: maxMCPStatusOutputBytes}
+	stderr := &limitedBuffer{max: maxMCPStatusOutputBytes}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 	if err := cmd.Run(); err != nil {
 		msg := strings.TrimSpace(stderr.String())
 		if msg == "" {

@@ -179,6 +179,32 @@ func NewCredentialsWithFileKeychain(userHome string, policy Policy) (*Credential
 	return credentials, nil
 }
 
+// AgyShouldForceFileStorage reports whether launching `agy` against appDataDir
+// should set AGY_ACP_FORCE_FILE_STORAGE=1 so the subprocess reads the exact
+// same credential source that this Credentials store manages.
+//
+// When this store was constructed with file-backed credentials (e.g. `serve`,
+// harness mode, Linux/WSL, or tests), it returns true whenever the file exists
+// without ever querying the host macOS Keychain.
+func (c *Credentials) AgyShouldForceFileStorage(appDataDir string) bool {
+	if strings.TrimSpace(appDataDir) == "" {
+		return false
+	}
+	info, err := os.Stat(filepath.Join(appDataDir, agyCredentialFileName))
+	if err != nil || info.IsDir() {
+		return false
+	}
+	if c == nil {
+		return AgyShouldForceFileStorage(appDataDir)
+	}
+	if sec, isSec := c.agyKeychain.(securityAgyKeychain); isSec && runtime.GOOS == "darwin" {
+		if present, kcErr := sec.itemPresent(); kcErr == nil && present {
+			return false
+		}
+	}
+	return true
+}
+
 func (c *Credentials) keychainFor(providerName string) (providerKeychain, bool) {
 	if runtime.GOOS != "darwin" {
 		return nil, false

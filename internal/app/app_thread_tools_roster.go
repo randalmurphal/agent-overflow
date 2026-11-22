@@ -183,6 +183,8 @@ func nativeSubagentTools(providerName string) []string {
 		return claude.SubagentLaunchTools
 	case string(provider.Codex):
 		return []string{codex.ToggleCollabAgents}
+	case string(provider.Agy):
+		return []string{"invoke_subagent"}
 	}
 	return nil
 }

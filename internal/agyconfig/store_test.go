@@ -84,3 +84,37 @@ func TestStoreListAndSetDisabled(t *testing.T) {
 		t.Fatalf("server headers lost: %+v", alpha)
 	}
 }
+
+func TestSetDisabledHandlesNullEntryAndConcurrentWrites(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mcp_config.json")
+	raw := `{"mcpServers":{"nullServer":null,"a":{"command":"a"},"b":{"command":"b"}}}`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st := New(path)
+	if err := st.SetDisabled("nullServer", true); err != nil {
+		t.Fatalf("SetDisabled(nullServer): %v", err)
+	}
+
+	errCh := make(chan error, 2)
+	go func() { errCh <- st.SetDisabled("a", true) }()
+	go func() { errCh <- st.SetDisabled("b", true) }()
+	for range 2 {
+		if err := <-errCh; err != nil {
+			t.Fatalf("concurrent SetDisabled: %v", err)
+		}
+	}
+	servers, err := st.ListServers()
+	if err != nil {
+		t.Fatalf("ListServers: %v", err)
+	}
+	disabled := map[string]bool{}
+	for _, s := range servers {
+		disabled[s.Name] = s.Disabled
+	}
+	if !disabled["nullServer"] || !disabled["a"] || !disabled["b"] {
+		t.Fatalf("expected all three servers disabled after concurrent writes, got %+v", disabled)
+	}
+}

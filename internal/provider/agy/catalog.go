@@ -139,9 +139,9 @@ func ProbeCatalogOnConn(ctx context.Context, conn *acp.Conn, workDir string) ([]
 			}
 			// Real agy emits `usage_update` asynchronously right after the
 			// `session/set_config_option` reply whenever the model's context
-			// window size changes. Wait briefly so the size is attributed to
-			// this model rather than spilling into the next iteration.
-			cap.WaitFor(ctx, isUsageSize, 80*time.Millisecond)
+			// window size changes. Wait briefly (returning immediately on signal)
+			// so unchanged-size switches do not stall catalog discovery.
+			cap.WaitFor(ctx, isUsageSize, 30*time.Millisecond)
 		}
 		updates := cap.Stop()
 		for _, u := range updates {

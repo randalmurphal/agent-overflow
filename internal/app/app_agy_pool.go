@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -14,7 +15,6 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/acp"
 	"agent-overflow/internal/provider/agy"
-	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/sessionimport"
 )
 
@@ -121,11 +121,11 @@ func (a *App) acquireAgyConn(
 }
 
 func (a *App) hasManagedAgyCredentialFile() bool {
-	return hasManagedAgyCredentialFileAt(a.agyAppDataDir())
+	return a.hasManagedAgyCredentialFileAt(a.agyAppDataDir())
 }
 
-func hasManagedAgyCredentialFileAt(appData string) bool {
-	return provideraccounts.AgyShouldForceFileStorage(appData)
+func (a *App) hasManagedAgyCredentialFileAt(appData string) bool {
+	return a.ensureProviderAccountManager().AgyShouldForceFileStorage(appData)
 }
 
 func (a *App) borrowAgyConnForBinary(binary string) (*acp.Conn, func()) {
@@ -178,8 +178,11 @@ func (a *App) withAgyImportConn(ctx context.Context, appDataDir, avoidSessionID 
 				// instead so live session state is never perturbed.
 				release()
 			} else {
-				defer release()
-				return fn(conn)
+				err := fn(conn)
+				release()
+				if !errors.Is(err, acp.ErrSessionBusy) {
+					return err
+				}
 			}
 		}
 	}
@@ -190,7 +193,7 @@ func (a *App) withAgyImportConn(ctx context.Context, appDataDir, avoidSessionID 
 		appDataSubdir = filepath.Base(cleaned)
 	}
 	var extra map[string]string
-	if geminiDir != "" || hasManagedAgyCredentialFileAt(appDataDir) {
+	if geminiDir != "" || a.hasManagedAgyCredentialFileAt(appDataDir) {
 		extra = map[string]string{
 			"AGY_ACP_FORCE_FILE_STORAGE": "1",
 			"SSH_CONNECTION":             "127.0.0.1 0 127.0.0.1 0",

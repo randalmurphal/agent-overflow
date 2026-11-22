@@ -213,7 +213,7 @@ func TestAgyNativeSQLiteForkClonesConversation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	forkState, err := app.resolveForkResumeState(context.Background(), source, "", nil, nil, "")
+	forkState, err := app.resolveForkResumeState(context.Background(), source, "", nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("resolveForkResumeState(agy): %v", err)
 	}

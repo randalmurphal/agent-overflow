@@ -224,6 +224,17 @@ func (m *Manager) AgyProbeConfig(binary string, pins map[string]string) agy.Prob
 	return m.agyProbeConfig(binary, "", "", pins)
 }
 
+// AgyShouldForceFileStorage reports whether launching `agy` against appDataDir
+// should force file-backed auth to match this Manager's configured credential
+// backend (respecting file-backed `serve` and harness boots without touching
+// the desktop macOS Keychain).
+func (m *Manager) AgyShouldForceFileStorage(appDataDir string) bool {
+	if m != nil && m.credentials != nil {
+		return m.credentials.AgyShouldForceFileStorage(appDataDir)
+	}
+	return provideraccounts.AgyShouldForceFileStorage(appDataDir)
+}
+
 // ProbeWorkDir is Claude's user scope and the parent for isolated Codex account directories.
 func ProbeWorkDir() string { return providerProbeWorkDir() }
 

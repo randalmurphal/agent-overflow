@@ -57,22 +57,41 @@ type ConnConfig struct {
 	TerminalHandler    TerminalHandler
 }
 
+// ErrSessionBusy is returned by ReplayLoad when the requested native session
+// ID is currently live or already being replayed on this Conn, so callers can
+// fall back to an isolated one-shot connection without disturbing the live
+// session.
+var ErrSessionBusy = errors.New("acp: session is currently active on this connection")
+
+const maxReplayCaptureBytes = 64 << 20 // 64 MiB byte budget per replay capture
+
 type replayCapture struct {
 	mu        sync.Mutex
 	maxCount  int
+	maxBytes  int64
+	bytes     int64
 	updates   []SessionUpdate
 	truncated bool
 	notify    chan struct{}
 }
 
+func estimateSessionUpdateBytes(u SessionUpdate) int64 {
+	n := int64(len(u.SessionUpdate)+len(u.ToolCallID)+len(u.Title)+len(u.Name)+len(u.Kind)+len(u.Status)+len(u.CurrentModeID)) +
+		int64(len(u.Content)+len(u.RawInput)+len(u.RawOutput)+len(u.Meta)) + 128
+	return n
+}
+
 func (r *replayCapture) add(u SessionUpdate) {
+	evBytes := estimateSessionUpdateBytes(u)
 	r.mu.Lock()
-	if r.maxCount > 0 && len(r.updates) >= r.maxCount {
+	if (r.maxCount > 0 && len(r.updates) >= r.maxCount) ||
+		(r.maxBytes > 0 && r.bytes+evBytes > r.maxBytes) {
 		r.truncated = true
 		r.mu.Unlock()
 		return
 	}
 	r.updates = append(r.updates, u)
+	r.bytes += evBytes
 	ch := r.notify
 	r.mu.Unlock()
 	if ch != nil {
@@ -341,11 +360,11 @@ func (c *Conn) ListSessions(ctx context.Context, cwd string) ([]SessionSummary, 
 			all = append(all, s)
 		}
 		if res.NextCursor == "" {
-			break
+			return all, nil
 		}
 		params.Cursor = res.NextCursor
 	}
-	return all, nil
+	return nil, errors.New("acp: session/list exceeded 32 pagination pages without completing")
 }
 
 // ReplayResult holds the updates replayed by an agent during session/load.
@@ -357,7 +376,9 @@ type ReplayResult struct {
 }
 
 // ReplayLoad runs session/load to capture replayed history updates (bounded by
-// maxUpdates) and immediately closes the loaded session on the agent.
+// maxUpdates and a 64 MiB byte budget) and immediately closes the loaded
+// session on the agent. Returns ErrSessionBusy atomically if sessionId is live
+// or already being replayed on this Conn.
 func (c *Conn) ReplayLoad(ctx context.Context, params SessionLoadParams, maxUpdates int) (ReplayResult, error) {
 	if strings.TrimSpace(params.SessionID) == "" {
 		return ReplayResult{}, errors.New("acp: ReplayLoad requires sessionId")
@@ -365,26 +386,36 @@ func (c *Conn) ReplayLoad(ctx context.Context, params SessionLoadParams, maxUpda
 	if params.MCPServers == nil {
 		params.MCPServers = []MCPServerConfig{}
 	}
-	cap := &replayCapture{maxCount: maxUpdates}
+	cap := &replayCapture{maxCount: maxUpdates, maxBytes: maxReplayCaptureBytes}
 	c.routesMu.Lock()
+	if c.sessions[params.SessionID] != nil || c.replays[params.SessionID] != nil {
+		c.routesMu.Unlock()
+		return ReplayResult{}, ErrSessionBusy
+	}
 	c.replays[params.SessionID] = cap
 	c.routesMu.Unlock()
 
+	loadSucceeded := false
 	defer func() {
 		c.routesMu.Lock()
-		if c.replays[params.SessionID] == cap {
+		owned := c.replays[params.SessionID] == cap
+		if owned {
 			delete(c.replays, params.SessionID)
 		}
+		liveOwner := c.sessions[params.SessionID] != nil
 		c.routesMu.Unlock()
-		closeCtx, cancel := context.WithTimeout(context.Background(), defaultCloseTimeout)
-		_, _ = c.sendRequest(closeCtx, "session/close", SessionCloseParams{SessionID: params.SessionID})
-		cancel()
+		if owned && loadSucceeded && !liveOwner {
+			closeCtx, cancel := context.WithTimeout(context.Background(), defaultCloseTimeout)
+			_, _ = c.sendRequest(closeCtx, "session/close", SessionCloseParams{SessionID: params.SessionID})
+			cancel()
+		}
 	}()
 
 	raw, err := c.sendRequest(ctx, "session/load", params)
 	if err != nil {
 		return ReplayResult{}, err
 	}
+	loadSucceeded = true
 	var openRes SessionOpenResult
 	_ = json.Unmarshal(raw, &openRes)
 	if openRes.SessionID == "" {

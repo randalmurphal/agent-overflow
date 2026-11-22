@@ -166,3 +166,35 @@ func TestFileAgyKeychainIsolationAndSymlinkRejection(t *testing.T) {
 		t.Fatalf("present on symlink = %v, %v; want false, nil", present, err)
 	}
 }
+
+func TestAgyFileKeychainForceStorageAndEncodedPrefix(t *testing.T) {
+	t.Parallel()
+	// 1. decodeGoKeyringPayload supports both go-keyring-base64: and go-keyring-encoded:.
+	raw := `{"token":{"access_token":"abc"}}`
+	encoded := []byte(goKeyringEncodedPrefix + base64.StdEncoding.EncodeToString([]byte(raw)))
+	got, err := decodeGoKeyringPayload(encoded)
+	if err != nil || string(got) != raw {
+		t.Fatalf("decodeGoKeyringPayload(encoded) = %q, %v; want %q", got, err, raw)
+	}
+
+	// 2. NewCredentialsWithFileKeychain forces file storage when token file exists
+	// without ever invoking security(1) on macOS.
+	home := t.TempDir()
+	creds, err := NewCredentialsWithFileKeychain(home, Policy{})
+	if err != nil {
+		t.Fatalf("NewCredentialsWithFileKeychain: %v", err)
+	}
+	appData := filepath.Join(home, ".gemini", "antigravity-cli")
+	if err := os.MkdirAll(appData, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if creds.AgyShouldForceFileStorage(appData) {
+		t.Fatal("expected false before token file exists")
+	}
+	if err := os.WriteFile(filepath.Join(appData, agyCredentialFileName), []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !creds.AgyShouldForceFileStorage(appData) {
+		t.Fatal("expected NewCredentialsWithFileKeychain to force file storage when token file exists")
+	}
+}

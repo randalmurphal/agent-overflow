@@ -133,6 +133,15 @@ func TestUpdateProviderClearsIllegalReasoningEffort(t *testing.T) {
 	if _, _, err := st.UpdateReasoningEffort("t-ultra", "ultra"); err == nil {
 		t.Fatal("UpdateReasoningEffort(ultra) succeeded on claude thread")
 	}
+	// CompareAndSwapModelProfile must refuse a stale cross-provider CAS so a
+	// Codex-validated effort cannot be written onto a Claude thread.
+	staleBefore := got
+	staleBefore.Provider = "codex"
+	staleAfter := staleBefore
+	staleAfter.ReasoningEffort = "ultra"
+	if swapped, err := st.CompareAndSwapModelProfile(staleBefore, staleAfter); err == nil && swapped {
+		t.Fatal("CompareAndSwapModelProfile unexpectedly wrote codex/ultra onto claude thread")
+	}
 }
 
 func snapshotSchemaObjectNames(t *testing.T, db *sql.DB) []string {

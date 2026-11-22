@@ -14,6 +14,8 @@ import (
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/acp"
+	"agent-overflow/internal/threadtools"
+	"agent-overflow/internal/workflowtools"
 )
 
 // Flavor implements acp.Flavor for Google Antigravity (`agy acp`).
@@ -46,12 +48,15 @@ func (f *Flavor) ProviderKind() provider.ProviderKind {
 }
 
 func (f *Flavor) BuildSessionMeta(cfg acp.SessionConfig) map[string]any {
-	parts := make([]string, 0, 2)
+	parts := make([]string, 0, 3)
 	if s := strings.TrimSpace(cfg.SystemPrompt); s != "" {
 		parts = append(parts, s)
 	}
 	if s := strings.TrimSpace(cfg.AppendSystemPrompt); s != "" {
 		parts = append(parts, s)
+	}
+	if len(cfg.DisabledTools) > 0 {
+		parts = append(parts, "The following native tools are disabled for this session and must not be called: "+strings.Join(cfg.DisabledTools, ", ")+".")
 	}
 	if len(parts) == 0 {
 		return nil
@@ -638,12 +643,32 @@ func (f *Flavor) NormalizeToolComplete(u *acp.ToolCallUpdate, started acp.Normal
 	return norm
 }
 
+func isTrustedAOMCPTool(rawName string) bool {
+	server, tool, ok := parseAgyMCPToolName(strings.TrimSpace(rawName))
+	if !ok {
+		return false
+	}
+	switch server {
+	case "ao-thread-tools":
+		for _, allowed := range threadtools.ToolNames {
+			if tool == allowed {
+				return true
+			}
+		}
+	case "ao-workflow-tools":
+		for _, allowed := range workflowtools.ToolNames() {
+			if tool == allowed {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (f *Flavor) ClassifyPermission(threadID, turnID, requestID string, req acp.RequestPermissionParams, policy acp.PermissionPolicy) acp.PermissionClassification {
-	// Auto-approve AO's own coordination MCP servers (ao-thread-tools and
-	// ao-workflow-tools), matching Claude's --allowedTools and Codex's
-	// default_tools_approval_mode="approve".
-	if server, _, ok := parseAgyMCPToolName(strings.TrimSpace(req.ToolCall.Name)); ok &&
-		(server == "ao-thread-tools" || server == "ao-workflow-tools") {
+	// Never bypass read-only enforcement for any MCP tool; only auto-approve
+	// exact known AO coordination tools when the session is not read-only.
+	if policy != acp.PolicyDenyMutating && isTrustedAOMCPTool(req.ToolCall.Name) {
 		for _, opt := range req.Options {
 			if opt.Kind == "allow_once" || opt.Kind == "allow_always" {
 				return acp.PermissionClassification{
@@ -751,9 +776,11 @@ func (f *Flavor) AfterPrompt(_ context.Context, sessionID string, stopReason str
 	if f.AppDataDir == "" || sessionID == "" || stopReason == "cancelled" {
 		return nil
 	}
-	sinceIdx := -1
-	if v, ok := beforeToken.(int); ok {
-		sinceIdx = v
+	sinceIdx, ok := beforeToken.(int)
+	if !ok {
+		// Baseline read failed before the prompt; skip post-prompt error scan
+		// rather than risking misattributing an older turn's error step.
+		return nil
 	}
 	return inspectTurnErrorStep(f.AppDataDir, sessionID, sinceIdx)
 }
@@ -779,8 +806,14 @@ func (f *Flavor) ShouldHoldSpontaneousWakeClose(_ context.Context, sessionID str
 		} else {
 			var obj map[string]any
 			if json.Unmarshal(raw, &obj) == nil {
-				for k := range obj {
-					readSet[k] = true
+				for k, v := range obj {
+					if b, isBool := v.(bool); isBool {
+						if b {
+							readSet[k] = true
+						}
+					} else if v != nil {
+						readSet[k] = true
+					}
 				}
 			}
 		}

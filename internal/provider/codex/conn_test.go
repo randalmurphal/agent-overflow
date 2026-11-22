@@ -411,6 +411,65 @@ for line in sys.stdin:
 	}
 }
 
+func TestConnAtomicRouteOrQuarantineAndEarlyRootFIFO(t *testing.T) {
+	t.Parallel()
+	var gotOrder []string
+	var orderMu sync.Mutex
+	sessA := &Session{
+		threadID: "ao-a",
+		onEvent: func(ev provider.ProviderEvent) {
+			if ev.Kind == provider.EventTextDelta {
+				orderMu.Lock()
+				gotOrder = append(gotOrder, ev.Content)
+				orderMu.Unlock()
+			}
+		},
+	}
+	sessA.setRootThreadID("codex-a")
+	sessB := &Session{threadID: "ao-b"}
+	conn := &Conn{
+		allSessions:            map[*Session]struct{}{sessA: {}, sessB: {}},
+		byThread:               map[string]*Session{"codex-b": sessB},
+		bySessionID:            map[string]*Session{},
+		loaded:                 map[string]struct{}{"codex-b": {}},
+		deferredChild:          map[string][]deferredChildWireEvent{},
+		deferredChildDeadlines: map[string]*time.Timer{},
+	}
+
+	// 1. Unregistered thread frame is atomically quarantined under routesMu.
+	earlyParams := json.RawMessage(`{"threadId":"codex-a","turnId":"turn-1","itemId":"m1","delta":"first"}`)
+	if target := conn.routeOrQuarantine("codex-a", "", "", false, deferredChildWireEvent{
+		Method: "item/agentMessage/delta",
+		Params: earlyParams,
+	}, nil); target != nil {
+		t.Fatalf("expected quarantine before route registration, got %v", target)
+	}
+
+	// 2. Register route and transfer quarantined frames under routesMu before
+	// delivering a newer frame: strict FIFO order must emit "first" then "second".
+	conn.routesMu.Lock()
+	conn.byThread["codex-a"] = sessA
+	early := conn.takeDeferredChildLocked("codex-a")
+	sessA.enqueueEarlyFrames(early)
+	conn.routesMu.Unlock()
+
+	laterParams := json.RawMessage(`{"threadId":"codex-a","turnId":"turn-1","itemId":"m1","delta":"second"}`)
+	target := conn.routeOrQuarantine("codex-a", "", "", false, deferredChildWireEvent{
+		Method: "item/agentMessage/delta",
+		Params: laterParams,
+	}, nil)
+	if target != sessA {
+		t.Fatalf("routeOrQuarantine after registration = %v, want sessA", target)
+	}
+	target.dispatchNotification("item/agentMessage/delta", laterParams)
+
+	orderMu.Lock()
+	defer orderMu.Unlock()
+	if len(gotOrder) != 2 || gotOrder[0] != "first" || gotOrder[1] != "second" {
+		t.Fatalf("early/later delivery order = %v, want [first second]", gotOrder)
+	}
+}
+
 func TestCodexEventLogRedactorMasksOutboundMCPHeaders(t *testing.T) {
 	t.Parallel()
 	redactor := newCodexProviderEventLogRedactor()

@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"slices"
 	"strconv"
 	"strings"
@@ -36,6 +35,7 @@ type SessionConfig struct {
 	SystemPrompt          string
 	AppendSystemPrompt    string
 	AdditionalDirectories []string
+	DisabledTools         []string
 	MCPServers            []MCPServerConfig
 	Flavor                Flavor
 }
@@ -98,6 +98,11 @@ type pendingToolQuestion struct {
 	answering  bool
 }
 
+type pendingPromptConfirm struct {
+	uuid    string
+	content string
+}
+
 type chunkBuffer struct {
 	kind  provider.EventKind // EventTextDelta or EventThinking
 	buf   strings.Builder
@@ -112,12 +117,18 @@ type Session struct {
 	releaseConn     func()
 	releaseConnOnce sync.Once
 
-	threadID   string
-	instanceID string
-	workDir    string
-	flavor     Flavor
-	onEvent    func(provider.ProviderEvent)
-	approvals  provider.ApprovalRegistry
+	threadID      string
+	instanceID    string
+	workDir       string
+	flavor        Flavor
+	onEvent       func(provider.ProviderEvent)
+	approvals     provider.ApprovalRegistry
+	disabledTools map[string]struct{}
+
+	// questionActionMu serializes ask_question answer dispatch, ordinary Send
+	// replies, and Interrupt so an interrupt or Send can never steal a pending
+	// question mid-write or leave an orphaned follow-up prompt.
+	questionActionMu sync.Mutex
 
 	mu                    sync.Mutex
 	sessionID             string
@@ -132,6 +143,7 @@ type Session struct {
 	lastRequestedModeID   string
 	lastContextSize       int
 	inFlightPrompts       int
+	pendingPromptConfirms []pendingPromptConfirm
 	turnOpen              bool
 	spontaneousTurnOpen   bool
 	turnSeq               int
@@ -212,6 +224,13 @@ func (c *Conn) open(
 	_, initialPolicy := flavor.MapRuntimeMode(rtMode, imMode, nil)
 
 	sessionCtx, sessionCancel := context.WithCancel(context.Background())
+	disabledTools := make(map[string]struct{}, len(cfg.DisabledTools))
+	for _, tool := range cfg.DisabledTools {
+		if t := strings.ToLower(strings.TrimSpace(tool)); t != "" {
+			disabledTools[t] = struct{}{}
+		}
+	}
+
 	s := &Session{
 		conn:                 c,
 		ownsConn:             ownsConn,
@@ -221,6 +240,7 @@ func (c *Conn) open(
 		workDir:              cfg.WorkDir,
 		flavor:               flavor,
 		onEvent:              onEvent,
+		disabledTools:        disabledTools,
 		runtimeMode:          rtMode,
 		interactionMode:      imMode,
 		permissionPolicy:     initialPolicy,
@@ -266,7 +286,15 @@ func (c *Conn) open(
 	}
 	cleanupOpen := func(closeRemote bool, sid string) {
 		sessionCancel()
-		if closeRemote && sid != "" {
+		// dispatchLine may already have registered a fresh sessionId on s even
+		// if ctx cancelled or decoding failed before openRes was unpacked.
+		s.mu.Lock()
+		registeredSID := s.sessionID
+		s.mu.Unlock()
+		if sid == "" {
+			sid = registeredSID
+		}
+		if sid != "" && (closeRemote || (!resuming && registeredSID != "")) {
 			closeCtx, cancel := context.WithTimeout(context.Background(), defaultCloseTimeout)
 			_, _ = c.sendRequest(closeCtx, "session/close", SessionCloseParams{SessionID: sid})
 			cancel()
@@ -449,9 +477,11 @@ func (s *Session) applyConfigAxes(
 						SessionID: sessionID,
 						ModelID:   model,
 					})
-					if legacyErr != nil && !IsMethodNotFound(legacyErr) {
-						errs = append(errs, legacyErr)
+					if legacyErr != nil {
 						modelApplied = false
+						if !IsMethodNotFound(legacyErr) {
+							errs = append(errs, legacyErr)
+						}
 					}
 				} else {
 					errs = append(errs, err)
@@ -472,22 +502,31 @@ func (s *Session) applyConfigAxes(
 	}
 
 	if applyEffort && effort != "" {
-		effortApplied := true
-		if optionOffered(opts, "thought_level", effort) && currentConfigValue(opts, "thought_level") != effort {
-			newOpts, err := s.conn.SetConfigOption(ctx, sessionID, "thought_level", effort)
-			if err != nil {
-				errs = append(errs, err)
-				effortApplied = false
-			} else if len(newOpts) > 0 {
-				opts = newOpts
+		if optionOffered(opts, "thought_level", effort) {
+			effortApplied := true
+			if currentConfigValue(opts, "thought_level") != effort {
+				newOpts, err := s.conn.SetConfigOption(ctx, sessionID, "thought_level", effort)
+				if err != nil {
+					errs = append(errs, err)
+					effortApplied = false
+				} else if len(newOpts) > 0 {
+					opts = newOpts
+					s.mu.Lock()
+					s.configOptions = append([]ConfigOption(nil), newOpts...)
+					s.mu.Unlock()
+				}
+			}
+			if effortApplied {
 				s.mu.Lock()
-				s.configOptions = append([]ConfigOption(nil), newOpts...)
+				s.reasoningEffort = effort
 				s.mu.Unlock()
 			}
-		}
-		if effortApplied {
+		} else {
+			// Server does not offer this effort (or thought_level at all):
+			// reflect the server's actual active value rather than claiming
+			// an unoffered effort took effect.
 			s.mu.Lock()
-			s.reasoningEffort = effort
+			s.reasoningEffort = currentConfigValue(opts, "thought_level")
 			s.mu.Unlock()
 		}
 	}
@@ -539,7 +578,11 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 		return errors.New("acp: session is closed")
 	}
 
+	s.questionActionMu.Lock()
+	defer s.questionActionMu.Unlock()
+
 	// Reconcile per-turn InteractionMode (chat vs plan) before sending prompt.
+	// Return the error rather than sending under the wrong mode.
 	if opts.InteractionMode != "" {
 		s.mu.Lock()
 		curIM := s.interactionMode
@@ -547,16 +590,10 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 		s.mu.Unlock()
 		if opts.InteractionMode != curIM {
 			if err := s.applyConfigAxes(ctx, "", "", rt, opts.InteractionMode, false, false, true); err != nil {
-				log.Printf("acp: reconcile interaction mode %s: %v", opts.InteractionMode, err)
+				return fmt.Errorf("acp: reconcile interaction mode %s: %w", opts.InteractionMode, err)
 			}
 		}
 	}
-
-	// If the user typed a normal reply while an ask_question tool prompt was
-	// pending, resolve the pending UI question cleanly.
-	s.resolvePendingToolQuestions("answered", map[string]provider.UserInputAnswer{
-		"reply": {content},
-	})
 
 	hasOutputSchema := len(opts.OutputSchema) > 0
 	promptText := content
@@ -568,7 +605,16 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 		return errors.New("acp: cannot send empty prompt")
 	}
 
-	return s.dispatchPrompt(ctx, blocks, hasOutputSchema, strings.TrimSpace(opts.UserMessageUUID), content)
+	if err := s.dispatchPrompt(ctx, blocks, hasOutputSchema, strings.TrimSpace(opts.UserMessageUUID), content); err != nil {
+		return err
+	}
+
+	// Only resolve pending ask_question prompts AFTER the replacement prompt
+	// was written successfully so a failed send never strands the held turn.
+	s.resolvePendingToolQuestions("answered", map[string]provider.UserInputAnswer{
+		"reply": {content},
+	})
+	return nil
 }
 
 func (s *Session) startPromptRequest(ctx context.Context, blocks []ContentBlock) (func(context.Context) (json.RawMessage, error), any, error) {
@@ -592,13 +638,45 @@ func (s *Session) startPromptRequest(ctx context.Context, blocks []ContentBlock)
 	return wait, beforeToken, nil
 }
 
-func (s *Session) dispatchPrompt(ctx context.Context, blocks []ContentBlock, hasOutputSchema bool, userMsgUUID, userContent string) error {
-	wait, beforeToken, err := s.startPromptRequest(ctx, blocks)
-	if err != nil {
-		return err
+func (s *Session) confirmPendingPrompts() {
+	s.mu.Lock()
+	if len(s.pendingPromptConfirms) == 0 {
+		s.mu.Unlock()
+		return
 	}
+	pending := s.pendingPromptConfirms
+	s.pendingPromptConfirms = nil
+	s.mu.Unlock()
 
+	now := time.Now()
+	for _, p := range pending {
+		confirmMeta, _ := json.Marshal(map[string]any{
+			"provider_item_id":                         p.uuid,
+			provider.MetaUserTextTranscriptRecordedKey: true,
+		})
+		s.emitEvent(provider.ProviderEvent{
+			Kind:      provider.EventUserText,
+			ThreadID:  s.threadID,
+			Role:      "user",
+			Content:   p.content,
+			Meta:      confirmMeta,
+			Timestamp: now,
+		})
+	}
+}
+
+func (s *Session) discardPendingPrompts() {
+	s.mu.Lock()
+	s.pendingPromptConfirms = nil
+	s.mu.Unlock()
+}
+
+func (s *Session) dispatchPrompt(ctx context.Context, blocks []ContentBlock, hasOutputSchema bool, userMsgUUID, userContent string) error {
+	// Register in-flight state and open the turn BEFORE writing session/prompt
+	// so early updates on the shared reader goroutine cannot slip in ahead of
+	// registration and open a spontaneous wake turn.
 	var openTurnID string
+	var prevOutputSchema bool
 	s.mu.Lock()
 	s.inFlightPrompts++
 	if !s.turnOpen {
@@ -611,27 +689,42 @@ func (s *Session) dispatchPrompt(ctx context.Context, blocks []ContentBlock, has
 		s.turnHasOutputSchema = hasOutputSchema
 		s.turnLastAssistantText.Reset()
 		openTurnID = s.activeTurnID
-	} else if hasOutputSchema {
-		s.turnHasOutputSchema = true
+	} else {
+		prevOutputSchema = s.turnHasOutputSchema
+		if hasOutputSchema {
+			s.turnHasOutputSchema = true
+		}
+	}
+	if userMsgUUID != "" {
+		s.pendingPromptConfirms = append(s.pendingPromptConfirms, pendingPromptConfirm{
+			uuid:    userMsgUUID,
+			content: userContent,
+		})
 	}
 	s.mu.Unlock()
 
-	// Confirm the queued/optimistic user send by its client-supplied UUID so
-	// triage publishes deferred flush rows before assistant output and session
-	// crash recovery never re-queues an already-dispatched prompt.
-	if userMsgUUID != "" {
-		confirmMeta, _ := json.Marshal(map[string]any{
-			"provider_item_id":                         userMsgUUID,
-			provider.MetaUserTextTranscriptRecordedKey: true,
-		})
-		s.emitEvent(provider.ProviderEvent{
-			Kind:      provider.EventUserText,
-			ThreadID:  s.threadID,
-			Role:      "user",
-			Content:   userContent,
-			Meta:      confirmMeta,
-			Timestamp: time.Now(),
-		})
+	wait, beforeToken, err := s.startPromptRequest(ctx, blocks)
+	if err != nil {
+		s.mu.Lock()
+		if s.inFlightPrompts > 0 {
+			s.inFlightPrompts--
+		}
+		if userMsgUUID != "" {
+			for i := len(s.pendingPromptConfirms) - 1; i >= 0; i-- {
+				if s.pendingPromptConfirms[i].uuid == userMsgUUID {
+					s.pendingPromptConfirms = append(s.pendingPromptConfirms[:i], s.pendingPromptConfirms[i+1:]...)
+					break
+				}
+			}
+		}
+		if openTurnID != "" && s.inFlightPrompts == 0 {
+			s.turnOpen = false
+			s.turnHasOutputSchema = false
+		} else if openTurnID == "" {
+			s.turnHasOutputSchema = prevOutputSchema
+		}
+		s.mu.Unlock()
+		return err
 	}
 
 	if openTurnID != "" {
@@ -654,6 +747,11 @@ func (s *Session) dispatchPrompt(ctx context.Context, blocks []ContentBlock, has
 }
 
 func (s *Session) finishPrompt(rawResp json.RawMessage, waitErr error, beforeToken any) {
+	if waitErr == nil {
+		// Provider accepted and completed the prompt; confirm any pending
+		// queued user send that produced no prior updates.
+		s.confirmPendingPrompts()
+	}
 	s.flushChunks()
 
 	var res SessionPromptResult
@@ -673,6 +771,11 @@ func (s *Session) finishPrompt(rawResp json.RawMessage, waitErr error, beforeTok
 		s.inFlightPrompts--
 	}
 	remaining := s.inFlightPrompts
+	if waitErr != nil && remaining == 0 {
+		// Drop unconfirmed queued-send confirmations on RPC error/disconnect so
+		// triage never marks an unaccepted prompt as delivered.
+		s.pendingPromptConfirms = nil
+	}
 	turnID := s.activeTurnID
 	// When the server ends a prompt solely to pause for a pending ask_question
 	// tool (e.g. agy emitting tool_call(status="pending") + end_turn before the
@@ -835,6 +938,7 @@ func buildModelUsage(model string, total *provider.TokenUsage) []provider.ModelT
 // Interrupt sends the ACP session/cancel notification and drains any pending
 // approvals for this session.
 func (s *Session) Interrupt(_ context.Context) error {
+	s.questionActionMu.Lock()
 	s.mu.Lock()
 	sessionID := s.sessionID
 	heldForQuestion := s.turnOpen && s.inFlightPrompts == 0 && len(s.pendingToolQuestions) > 0
@@ -853,10 +957,12 @@ func (s *Session) Interrupt(_ context.Context) error {
 	}
 	s.mu.Unlock()
 	if sessionID == "" {
+		s.questionActionMu.Unlock()
 		return nil
 	}
 	if heldForQuestion {
 		s.resolvePendingToolQuestions("declined", nil)
+		s.questionActionMu.Unlock()
 		s.emitEvent(provider.ProviderEvent{
 			Kind:      provider.EventTurnComplete,
 			ThreadID:  s.threadID,
@@ -870,6 +976,8 @@ func (s *Session) Interrupt(_ context.Context) error {
 				OwnUsage:   totalUsage,
 			},
 		})
+	} else {
+		s.questionActionMu.Unlock()
 	}
 	s.drainPendingApprovals("lost", false)
 	return s.conn.writeNotification("session/cancel", SessionCancelParams{
@@ -945,35 +1053,57 @@ func (s *Session) RespondToUserInput(ctx context.Context, resp provider.UserInpu
 		return err
 	}
 
+	s.questionActionMu.Lock()
 	s.mu.Lock()
 	_, isPermPeek := s.pendingPerms[resp.RequestID]
 	pendingQPeek, isToolQPeek := s.pendingToolQuestions[resp.RequestID]
 	if isToolQPeek && !isPermPeek {
 		if pendingQPeek.answering {
 			s.mu.Unlock()
+			s.questionActionMu.Unlock()
 			return provider.ErrStaleInteractiveRequest
 		}
 		pendingQPeek.answering = true
 		s.pendingToolQuestions[resp.RequestID] = pendingQPeek
 	}
 	s.mu.Unlock()
+	if !(isToolQPeek && !isPermPeek) {
+		s.questionActionMu.Unlock()
+	}
 
-	// For ask_question tool prompts, dispatch the follow-up session/prompt
-	// BEFORE claiming/resolving the UI question so a write error leaves the
-	// prompt intact and retryable, and increment inFlightPrompts atomically
-	// under the same lock that clears pendingToolQuestions so finishPrompt
-	// never races between the two.
+	// For ask_question tool prompts, questionActionMu stays held across
+	// validation, prompt dispatch, approval Claim, and inFlightPrompts++ so
+	// neither Interrupt nor Send can steal ownership mid-write or orphan a
+	// dispatched native prompt.
 	var (
 		followUpWait   func(context.Context) (json.RawMessage, error)
 		followUpBefore any
 		replyText      string
 	)
 	if isToolQPeek && !isPermPeek {
+		defer s.questionActionMu.Unlock()
 		replyText = formatToolQuestionAnswer(pendingQPeek.questions, resp.Answers, decision)
+		if decision != "decline" && strings.TrimSpace(replyText) == "" {
+			s.mu.Lock()
+			if cur, ok := s.pendingToolQuestions[resp.RequestID]; ok {
+				cur.answering = false
+				s.pendingToolQuestions[resp.RequestID] = cur
+			}
+			s.mu.Unlock()
+			return errors.New("acp: ask_question response requires at least one answer")
+		}
 		if replyText != "" {
+			// Increment inFlightPrompts before writing so incoming updates
+			// from the follow-up prompt cannot open a spontaneous wake turn.
+			s.mu.Lock()
+			s.inFlightPrompts++
+			s.mu.Unlock()
 			followUpWait, followUpBefore, err = s.startPromptRequest(ctx, []ContentBlock{{Type: "text", Text: replyText}})
 			if err != nil {
 				s.mu.Lock()
+				if s.inFlightPrompts > 0 {
+					s.inFlightPrompts--
+				}
 				if cur, ok := s.pendingToolQuestions[resp.RequestID]; ok {
 					cur.answering = false
 					s.pendingToolQuestions[resp.RequestID] = cur
@@ -985,6 +1115,14 @@ func (s *Session) RespondToUserInput(ctx context.Context, resp provider.UserInpu
 	}
 
 	if !s.approvals.Claim(resp.RequestID, provider.EventUserInputResolved) {
+		if followUpWait != nil {
+			s.promptWG.Add(1)
+			go func() {
+				defer s.promptWG.Done()
+				rawResp, waitErr := followUpWait(s.sessionCtx)
+				s.finishPrompt(rawResp, waitErr, followUpBefore)
+			}()
+		}
 		return provider.ErrStaleInteractiveRequest
 	}
 
@@ -998,15 +1136,12 @@ func (s *Session) RespondToUserInput(ctx context.Context, resp provider.UserInpu
 	if isToolQ {
 		delete(s.pendingToolQuestions, resp.RequestID)
 		delete(s.startedTools, pendingQ.toolCallID)
-		if followUpWait != nil {
-			s.inFlightPrompts++
-			if !s.turnOpen {
-				s.turnSeq++
-				s.activeTurnID = s.nextTurnID("turn")
-				s.turnOpen = true
-				s.spontaneousTurnOpen = false
-				turnID = s.activeTurnID
-			}
+		if followUpWait != nil && !s.turnOpen {
+			s.turnSeq++
+			s.activeTurnID = s.nextTurnID("turn")
+			s.turnOpen = true
+			s.spontaneousTurnOpen = false
+			turnID = s.activeTurnID
 		}
 	}
 	s.mu.Unlock()
@@ -1264,6 +1399,7 @@ func (s *Session) handleUpdate(u SessionUpdate) {
 		if !ok || block.Text == "" {
 			return
 		}
+		s.confirmPendingPrompts()
 		s.ensureSpontaneousTurnOpen()
 		s.bufferChunk(provider.EventThinking, block.Text)
 
@@ -1272,6 +1408,7 @@ func (s *Session) handleUpdate(u SessionUpdate) {
 		if !ok || block.Text == "" {
 			return
 		}
+		s.confirmPendingPrompts()
 		s.ensureSpontaneousTurnOpen()
 		s.mu.Lock()
 		if s.turnHasOutputSchema {
@@ -1281,6 +1418,7 @@ func (s *Session) handleUpdate(u SessionUpdate) {
 		s.bufferChunk(provider.EventTextDelta, block.Text)
 
 	case "tool_call":
+		s.confirmPendingPrompts()
 		s.flushChunks()
 		s.ensureSpontaneousTurnOpen()
 		s.mu.Lock()
@@ -1292,6 +1430,7 @@ func (s *Session) handleUpdate(u SessionUpdate) {
 		s.handleToolCallStart(&tc)
 
 	case "tool_call_update":
+		s.confirmPendingPrompts()
 		s.flushChunks()
 		tc := u.toToolCallUpdate()
 		switch tc.Status {
@@ -1305,10 +1444,12 @@ func (s *Session) handleUpdate(u SessionUpdate) {
 		}
 
 	case "plan":
+		s.confirmPendingPrompts()
 		s.flushChunks()
 		s.handlePlanUpdate(u.Entries)
 
 	case "usage_update":
+		s.confirmPendingPrompts()
 		s.flushChunks()
 		s.handleUsageUpdate(u.Used, u.Size)
 
@@ -1939,8 +2080,29 @@ func (s *Session) handleCurrentModeUpdate(modeID string) {
 	})
 }
 
+func (s *Session) isToolDisabled(name string) bool {
+	if len(s.disabledTools) == 0 {
+		return false
+	}
+	_, disabled := s.disabledTools[strings.ToLower(strings.TrimSpace(name))]
+	return disabled
+}
+
 func (s *Session) handlePermissionRequest(rpcID json.RawMessage, req RequestPermissionParams) {
+	s.confirmPendingPrompts()
 	s.flushChunks()
+
+	if s.isToolDisabled(req.ToolCall.Name) {
+		outcome := PermissionOutcome{Outcome: "cancelled"}
+		for _, opt := range req.Options {
+			if opt.Kind == "reject_once" || opt.Kind == "reject_always" {
+				outcome = PermissionOutcome{Outcome: "selected", OptionID: opt.OptionID}
+				break
+			}
+		}
+		_ = s.conn.writeResponse(rpcID, RequestPermissionResult{Outcome: outcome})
+		return
+	}
 
 	s.mu.Lock()
 	policy := s.permissionPolicy

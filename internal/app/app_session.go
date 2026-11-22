@@ -18,6 +18,7 @@ import (
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/claudetui"
 	"agent-overflow/internal/provider/codex"
+	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
@@ -689,6 +690,38 @@ func (a *App) spawnProviderSession(
 			poolKey = ""
 			conn = nil
 			sess, err = codex.NewSession(a.lifeCtx(), threadID, cfg, onEvent)
+			if err == nil && accountSelection.AccountID != "" {
+				accountCtx, cancelAccountRead := context.WithTimeout(a.lifeCtx(), codexAccountReadTimeout)
+				accountInfo, accountErr := sess.AccountInfo(accountCtx)
+				cancelAccountRead()
+				if accountErr == nil {
+					var observedAccountID string
+					var updatedAccount *provideraccounts.Account
+					observedAccountID, updatedAccount, accountErr = a.accountIDForObservedIdentity(
+						string(provider.Codex),
+						accountSelection.AccountID,
+						accountInfo,
+					)
+					if accountErr == nil && updatedAccount != nil {
+						a.emitProviderAccountIfCurrent(
+							string(provider.Codex),
+							*updatedAccount,
+							providerAccountInfo(*updatedAccount),
+						)
+					}
+					if accountErr == nil && observedAccountID != accountSelection.AccountID {
+						accountErr = fmt.Errorf(
+							"codex app-server authenticated as account %q instead of selected account %q",
+							observedAccountID,
+							accountSelection.AccountID,
+						)
+					}
+				}
+				if accountErr != nil {
+					err = errors.Join(accountErr, sess.Close())
+					sess = nil
+				}
+			}
 			if err == nil {
 				sess.SetSkillsChangedHandler(func() {
 					a.handleCodexSkillsChanged()
@@ -761,6 +794,7 @@ func (a *App) spawnProviderSession(
 			SystemPrompt:          opts.SystemPrompt,
 			AppendSystemPrompt:    joinPromptParts(prompts.claudeAppend, memoryPromptText(mem)),
 			AdditionalDirectories: mem.Dirs,
+			DisabledTools:         opts.DisabledTools,
 			MCPServers:            agy.TranslateMCPServers(mcpServers),
 			Flavor:                agy.NewFlavor(a.agyAppDataDir()),
 		}

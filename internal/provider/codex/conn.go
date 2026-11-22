@@ -425,12 +425,18 @@ func (c *Conn) open(
 
 	rootID := s.rootThreadID()
 	rootSessID := s.rootSessionID()
-	var earlyRootFrames []deferredChildWireEvent
+	var hasEarlyFrames bool
 	c.routesMu.Lock()
 	if rootID != "" {
 		c.byThread[rootID] = s
 		c.loaded[rootID] = struct{}{}
-		earlyRootFrames = c.takeDeferredChildLocked(rootID)
+		if earlyRootFrames := c.takeDeferredChildLocked(rootID); len(earlyRootFrames) > 0 {
+			// Enqueue BEFORE releasing routesMu so any subsequent frame routed
+			// to s by the reader goroutine sees earlyPending==true and drains
+			// these older frames first in strict FIFO order.
+			s.enqueueEarlyFrames(earlyRootFrames)
+			hasEarlyFrames = true
+		}
 	}
 	if rootSessID != "" {
 		c.bySessionID[rootSessID] = s
@@ -442,13 +448,8 @@ func (c *Conn) open(
 	if startingFresh {
 		c.startMu.Unlock()
 	}
-	for _, ev := range earlyRootFrames {
-		if ev.RequestID != "" {
-			reqID := json.Number(ev.RequestID)
-			s.dispatchServerRequest(ev.Method, &reqID, ev.Params, ev.RawLine)
-		} else {
-			s.dispatchNotification(ev.Method, ev.Params)
-		}
+	if hasEarlyFrames {
+		s.flushEarlyFrames()
 	}
 
 	meta, _ := json.Marshal(provider.SessionInfo{
@@ -686,10 +687,19 @@ func (c *Conn) unsubscribeAndWait(ctx context.Context, providerThreadID string) 
 	var unsubResp struct {
 		Status string `json:"status"`
 	}
-	if json.Unmarshal(rawResp, &unsubResp) == nil && (unsubResp.Status == "notLoaded" || unsubResp.Status == "notSubscribed") {
-		removeWaiter()
-		c.markThreadClosed(providerThreadID)
-		return nil
+	if json.Unmarshal(rawResp, &unsubResp) == nil {
+		switch unsubResp.Status {
+		case "notLoaded":
+			removeWaiter()
+			c.markThreadClosed(providerThreadID)
+			return nil
+		case "notSubscribed":
+			// Per codex-wire.md, notSubscribed means this connection had no
+			// subscription while the thread may remain loaded in memory with
+			// its old config; refuse to mark it closed so open() falls back.
+			removeWaiter()
+			return fmt.Errorf("codex: thread/unsubscribe %s returned notSubscribed", providerThreadID)
+		}
 	}
 
 	select {
@@ -911,17 +921,15 @@ func (c *Conn) dispatchServerRequest(method string, id *json.Number, params json
 		return
 	}
 
-	target := c.routeTarget(providerThreadID, "", "", false)
-	if target != nil {
-		target.dispatchServerRequest(method, id, params, line)
-		return
-	}
-	c.quarantineChildFrame(providerThreadID, deferredChildWireEvent{
+	target := c.routeOrQuarantine(providerThreadID, "", "", false, deferredChildWireEvent{
 		Method:    method,
 		Params:    params,
 		RequestID: id.String(),
 		RawLine:   line,
 	}, id)
+	if target != nil {
+		target.dispatchServerRequest(method, id, params, line)
+	}
 }
 
 func (c *Conn) dispatchNotification(method string, params json.RawMessage) {
@@ -998,8 +1006,11 @@ func (c *Conn) dispatchNotification(method string, params json.RawMessage) {
 			}
 			return
 		}
-		for _, s := range c.snapshotSessions() {
-			s.dispatchMCPOAuthCompletion(params)
+		// Never fan out an unscoped OAuth failure across unrelated threads on
+		// a shared app-server; only forward when a single session owns the conn.
+		sessions := c.snapshotSessions()
+		if len(sessions) == 1 {
+			sessions[0].dispatchMCPOAuthCompletion(params)
 		}
 		return
 	}
@@ -1020,22 +1031,24 @@ func (c *Conn) dispatchNotification(method string, params json.RawMessage) {
 	}
 	allowStartingFallback := providerThreadID == "" || (method == "thread/started" && parentThreadID == "")
 
-	if target := c.routeTarget(providerThreadID, sessionID, parentThreadID, allowStartingFallback); target != nil {
-		target.dispatchNotification(method, params)
-		return
-	}
 	if providerThreadID == "" {
-		// Fallback for notifications with no threadId on single-session conns.
+		if target := c.routeTarget("", sessionID, parentThreadID, allowStartingFallback); target != nil {
+			target.dispatchNotification(method, params)
+			return
+		}
 		sessions := c.snapshotSessions()
 		if len(sessions) == 1 {
 			sessions[0].dispatchNotification(method, params)
 		}
 		return
 	}
-	c.quarantineChildFrame(providerThreadID, deferredChildWireEvent{
+
+	if target := c.routeOrQuarantine(providerThreadID, sessionID, parentThreadID, allowStartingFallback, deferredChildWireEvent{
 		Method: method,
 		Params: params,
-	}, nil)
+	}, nil); target != nil {
+		target.dispatchNotification(method, params)
+	}
 }
 
 func isConnectionBroadcastNotification(method string) bool {
@@ -1047,10 +1060,7 @@ func isConnectionBroadcastNotification(method string) bool {
 	}
 }
 
-func (c *Conn) routeTarget(providerThreadID, sessionID, parentThreadID string, allowStartingFallback bool) *Session {
-	c.routesMu.Lock()
-	defer c.routesMu.Unlock()
-
+func (c *Conn) routeTargetLocked(providerThreadID, sessionID, parentThreadID string, allowStartingFallback bool) *Session {
 	if providerThreadID != "" {
 		if s := c.byThread[providerThreadID]; s != nil {
 			return s
@@ -1077,41 +1087,61 @@ func (c *Conn) routeTarget(providerThreadID, sessionID, parentThreadID string, a
 	return nil
 }
 
-func (c *Conn) quarantineChildFrame(providerThreadID string, ev deferredChildWireEvent, requestID *json.Number) {
-	providerThreadID = strings.TrimSpace(providerThreadID)
-	if providerThreadID == "" || len(providerThreadID) > maxDeferredChildThreadIDBytes {
-		c.rejectQuarantinedRequest(requestID, "subagent ownership was not available")
-		return
-	}
+func (c *Conn) routeTarget(providerThreadID, sessionID, parentThreadID string, allowStartingFallback bool) *Session {
+	c.routesMu.Lock()
+	defer c.routesMu.Unlock()
+	return c.routeTargetLocked(providerThreadID, sessionID, parentThreadID, allowStartingFallback)
+}
+
+// routeOrQuarantine performs route lookup and quarantine enqueue under ONE
+// routesMu acquisition so registerChildRoute or open() can never register and
+// drain an empty queue between lookup and enqueue.
+func (c *Conn) routeOrQuarantine(
+	providerThreadID, sessionID, parentThreadID string,
+	allowStartingFallback bool,
+	ev deferredChildWireEvent,
+	requestID *json.Number,
+) *Session {
+	trimmedID := strings.TrimSpace(providerThreadID)
 	evBytes := ev.sizeBytes()
 
 	c.routesMu.Lock()
+	if target := c.routeTargetLocked(providerThreadID, sessionID, parentThreadID, allowStartingFallback); target != nil {
+		c.routesMu.Unlock()
+		return target
+	}
+	if trimmedID == "" || len(trimmedID) > maxDeferredChildThreadIDBytes {
+		c.routesMu.Unlock()
+		c.rejectQuarantinedRequest(requestID, "subagent ownership was not available")
+		return nil
+	}
 	if c.deferredChild == nil {
 		c.routesMu.Unlock()
 		c.rejectQuarantinedRequest(requestID, "connection closed")
-		return
+		return nil
 	}
-	queued := c.deferredChild[providerThreadID]
+	queued := c.deferredChild[trimmedID]
 	if len(queued) >= maxDeferredChildEventsPerThread ||
 		c.deferredChildCount >= maxDeferredChildEventsTotal ||
 		evBytes > maxDeferredChildEventBytes ||
 		c.deferredChildBytes > maxDeferredChildEventBytes-evBytes {
 		c.routesMu.Unlock()
 		c.rejectQuarantinedRequest(requestID, "subagent ownership was not available before the routing buffer filled")
-		return
+		return nil
 	}
 	ev.Params = append(json.RawMessage(nil), ev.Params...)
 	ev.RawLine = append(json.RawMessage(nil), ev.RawLine...)
-	c.deferredChild[providerThreadID] = append(queued, ev)
+	c.deferredChild[trimmedID] = append(queued, ev)
 	c.deferredChildCount++
 	c.deferredChildBytes += evBytes
-	if c.deferredChildDeadlines[providerThreadID] == nil {
-		tid := providerThreadID
+	if c.deferredChildDeadlines[trimmedID] == nil {
+		tid := trimmedID
 		c.deferredChildDeadlines[tid] = time.AfterFunc(deferredChildOwnershipTimeout, func() {
 			c.expireDeferredChild(tid)
 		})
 	}
 	c.routesMu.Unlock()
+	return nil
 }
 
 func (c *Conn) expireDeferredChild(providerThreadID string) {

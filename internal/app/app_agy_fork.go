@@ -31,16 +31,15 @@ func isAgyNativePromptItem(item store.Item) bool {
 // forkAgyThread creates a native Antigravity conversation clone using SQLite
 // VACUUM INTO so the child thread starts with its own independent conversation
 // database. When atTurnIndex is set, steps from the first dropped user turn
-// onward are sliced off; for a live tail fork (atTurnIndex == nil) with a
-// committed pointer forkID, steps beyond the pointer fork's committed prompt
-// count are sliced off so a concurrently streaming source cannot leak into the
-// fork.
-func (a *App) forkAgyThread(source store.Thread, forkID string, atTurnIndex *int) (forkResumeState, error) {
+// onward are resolved and sliced inside the cloned snapshot; for a live tail
+// fork (atTurnIndex == nil), preCutMaxIdx (captured before CreatePointerFork)
+// pins the native step ceiling so output appended while committing the pointer
+// fork cannot leak into the cloned DB.
+func (a *App) forkAgyThread(source store.Thread, forkID string, atTurnIndex *int, preCutMaxIdx *int) (forkResumeState, error) {
 	if source.SessionRef == "" {
 		return forkResumeState{}, nil
 	}
 	appDataDir := a.agyAppDataDir()
-	cutIdx := -1
 	if atTurnIndex != nil {
 		items, err := a.store.ListItems(source.ID)
 		if err != nil {
@@ -62,19 +61,22 @@ func (a *App) forkAgyThread(source store.Thread, forkID string, atTurnIndex *int
 			if userOrdinal == 0 {
 				return forkResumeState{}, nil
 			}
-			idx, hasPrefix, err := agy.FindCutIndexBeforeUserTurn(appDataDir, source.SessionRef, userOrdinal)
+			newSessionID, cleanup, err := agy.ForkConversationAtUserTurn(appDataDir, source.SessionRef, userOrdinal)
 			if err != nil {
-				return forkResumeState{}, fmt.Errorf("fork agy thread: locate cut index: %w", err)
+				return forkResumeState{}, fmt.Errorf("fork agy thread: %w", err)
 			}
-			if !hasPrefix {
-				return forkResumeState{}, nil
-			}
-			cutIdx = idx
+			return forkResumeState{
+				SessionRef: newSessionID,
+				Cleanup:    cleanup,
+			}, nil
 		}
+	}
+	cutIdx := -1
+	if preCutMaxIdx != nil {
+		cutIdx = *preCutMaxIdx
 	} else if strings.TrimSpace(forkID) != "" {
-		// Bound live tail forks to the exact prompts committed into the
-		// pointer fork so turns appended to the streaming source after
-		// CreatePointerFork cannot leak into the cloned native DB.
+		// Fallback when no pre-cut max step index was provided: resolve
+		// against the committed pointer fork's prompt count inside the snapshot.
 		forkItems, err := a.store.ListItems(forkID)
 		if err != nil {
 			return forkResumeState{}, fmt.Errorf("fork agy thread: list committed fork items: %w", err)
@@ -86,14 +88,14 @@ func (a *App) forkAgyThread(source store.Thread, forkID string, atTurnIndex *int
 			}
 		}
 		if committedPrompts > 0 {
-			idx, hasPrefix, err := agy.FindCutIndexBeforeUserTurn(appDataDir, source.SessionRef, committedPrompts)
+			newSessionID, cleanup, err := agy.ForkConversationAtUserTurn(appDataDir, source.SessionRef, committedPrompts)
 			if err != nil {
-				return forkResumeState{}, fmt.Errorf("fork agy thread: locate live tail cut index: %w", err)
+				return forkResumeState{}, fmt.Errorf("fork agy thread: %w", err)
 			}
-			if !hasPrefix {
-				return forkResumeState{}, nil
-			}
-			cutIdx = idx
+			return forkResumeState{
+				SessionRef: newSessionID,
+				Cleanup:    cleanup,
+			}, nil
 		}
 	}
 	newSessionID, cleanup, err := agy.ForkConversation(appDataDir, source.SessionRef, cutIdx)
@@ -107,7 +109,8 @@ func (a *App) forkAgyThread(source store.Thread, forkID string, atTurnIndex *int
 }
 
 // forkAgyThreadBeforeMessage clones an Antigravity conversation cut strictly
-// before the anchored user message item.
+// before the anchored user message item (resolving the cut inside the cloned
+// snapshot in a single transaction).
 func (a *App) forkAgyThreadBeforeMessage(source store.Thread, _ store.MessageAnchor, anchorItem store.Item) (forkResumeState, error) {
 	if source.SessionRef == "" {
 		return forkResumeState{}, nil
@@ -120,14 +123,7 @@ func (a *App) forkAgyThreadBeforeMessage(source store.Thread, _ store.MessageAnc
 		return forkResumeState{}, nil
 	}
 	appDataDir := a.agyAppDataDir()
-	cutIdx, hasPrefix, err := agy.FindCutIndexBeforeUserTurn(appDataDir, source.SessionRef, userOrdinal)
-	if err != nil {
-		return forkResumeState{}, fmt.Errorf("fork agy thread from message: locate cut index: %w", err)
-	}
-	if !hasPrefix {
-		return forkResumeState{}, nil
-	}
-	newSessionID, cleanup, err := agy.ForkConversation(appDataDir, source.SessionRef, cutIdx)
+	newSessionID, cleanup, err := agy.ForkConversationAtUserTurn(appDataDir, source.SessionRef, userOrdinal)
 	if err != nil {
 		return forkResumeState{}, fmt.Errorf("fork agy thread from message: %w", err)
 	}

@@ -349,6 +349,13 @@ func (s *Session) warnChildRoutingOverflow(providerThreadID, method string, requ
 }
 
 func (s *Session) dispatchServerRequest(method string, id *json.Number, params json.RawMessage, line []byte) {
+	if s.earlyPending.Load() {
+		s.flushEarlyFrames()
+	}
+	s.dispatchServerRequestDirect(method, id, params, line)
+}
+
+func (s *Session) dispatchServerRequestDirect(method string, id *json.Number, params json.RawMessage, line []byte) {
 	providerThreadID := providerThreadIDFromParams(params)
 	requestID := ""
 	if id != nil {

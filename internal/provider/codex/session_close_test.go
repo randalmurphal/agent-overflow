@@ -168,6 +168,9 @@ var sessionCloseFieldDispositions = map[string]string{
 	// Join/serialization infrastructure Close waits on or latches.
 	"approvals":           "provider.ApprovalRegistry; Close drains it via clearPendingApprovals",
 	"childLifecycleMu":    "lock",
+	"earlyDeliveryMu":     "lock guarding earlyFrames FIFO replay",
+	"earlyPending":        "atomic flag cleared by Close",
+	"earlyFrames":         "bounded early-frame slice cleared by Close",
 	"rolloutObserverWG":   "joined by Close",
 	"collabMetadataReads": "serialization channel",
 	"collabAsyncMu":       "lock",

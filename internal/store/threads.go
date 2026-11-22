@@ -1587,17 +1587,24 @@ func (s *Store) CompareAndSwapModelProfile(before, after Thread) (bool, error) {
 	if before.ID == "" || after.ID != before.ID {
 		return false, fmt.Errorf("store: compare-and-swap model profile requires one matching thread id")
 	}
+	if before.Provider != "" && after.Provider != "" && before.Provider != after.Provider {
+		return false, fmt.Errorf("store: compare-and-swap model profile cannot change provider from %q to %q", before.Provider, after.Provider)
+	}
 	normalized, err := normalizeThreadForUpdate(after)
 	if err != nil {
 		return false, err
 	}
+	expectedProvider := before.Provider
+	if expectedProvider == "" {
+		expectedProvider = normalized.Provider
+	}
 	result, err := s.db.Exec(
 		`UPDATE threads
 		    SET model = ?, reasoning_effort = ?, fast_mode = ?, context_window = ?
-		  WHERE id = ? AND model = ? AND reasoning_effort = ?
+		  WHERE id = ? AND provider = ? AND model = ? AND reasoning_effort = ?
 		    AND fast_mode = ? AND context_window = ?`,
 		normalized.Model, normalized.ReasoningEffort, boolToInt(normalized.FastMode), normalized.ContextWindow,
-		before.ID, before.Model, before.ReasoningEffort, boolToInt(before.FastMode), before.ContextWindow,
+		before.ID, expectedProvider, before.Model, before.ReasoningEffort, boolToInt(before.FastMode), before.ContextWindow,
 	)
 	if err != nil {
 		return false, fmt.Errorf("store: compare-and-swap model profile for %s: %w", before.ID, err)

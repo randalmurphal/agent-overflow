@@ -180,6 +180,13 @@ func applies(prov string, entry provider.RateLimitEntry, family string) bool {
 		if f == family {
 			return true
 		}
+		// Antigravity's older-account fallback API groups every Gemini model
+		// under generic "gemini-quota"/"gemini-weekly" (family "gemini").
+		// Match that fallback bucket against Gemini subfamilies (Argon/Carbon)
+		// without ever applying it to third-party (claude/gpt) models.
+		if prov == providerAgy && f == "gemini" && strings.HasPrefix(family, "gemini-") {
+			return true
+		}
 	}
 	return false
 }

@@ -5,6 +5,7 @@
 package textgen
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -600,6 +601,15 @@ func DecodeAgyStructured[T any](stdout []byte) (T, error) {
 	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(candidate), &envelope); err != nil {
 		return zero, fmt.Errorf("decode agy structured output: %w", err)
+	}
+	if errRaw, hasErr := envelope["error"]; hasErr && len(errRaw) > 0 && string(bytes.TrimSpace(errRaw)) != "null" && string(bytes.TrimSpace(errRaw)) != `""` {
+		return zero, fmt.Errorf("agy returned error envelope: %s", strings.TrimSpace(string(errRaw)))
+	}
+	if statusRaw, hasStatus := envelope["status"]; hasStatus {
+		var status string
+		if json.Unmarshal(statusRaw, &status) == nil && strings.EqualFold(strings.TrimSpace(status), "error") {
+			return zero, fmt.Errorf("agy returned error status envelope: %s", candidate)
+		}
 	}
 	if raw, ok := envelope["structured_output"]; ok && len(raw) > 0 && string(raw) != "null" {
 		var out T

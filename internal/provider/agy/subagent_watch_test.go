@@ -342,13 +342,16 @@ func TestSubagentPathContainmentAndClaimRoleMismatch(t *testing.T) {
 		t.Fatalf("unsafe conversationId accepted: %q", convID)
 	}
 
-	// Symlink escaping child brain dir is refused by openContainedTranscript.
+	// Symlink escaping child brain dir (both file symlink and redirected child
+	// brain/<id> directory symlink) is refused by openContainedTranscript.
 	appDataDir := t.TempDir()
-	outsideFile := filepath.Join(t.TempDir(), "secret.jsonl")
+	brainDir := filepath.Join(appDataDir, "brain")
+	outsideDir := t.TempDir()
+	outsideFile := filepath.Join(outsideDir, "secret.jsonl")
 	if err := os.WriteFile(outsideFile, []byte(`{"step_index":1}`+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	childRoot := filepath.Join(appDataDir, "brain", "child-sym")
+	childRoot := filepath.Join(brainDir, "child-sym")
 	childLog := filepath.Join(childRoot, ".system_generated", "logs", "transcript.jsonl")
 	if err := os.MkdirAll(filepath.Dir(childLog), 0o755); err != nil {
 		t.Fatal(err)
@@ -356,22 +359,58 @@ func TestSubagentPathContainmentAndClaimRoleMismatch(t *testing.T) {
 	if err := os.Symlink(outsideFile, childLog); err == nil {
 		var off int64
 		var rem string
-		if lines := readNewJSONLLinesContained(childRoot, childLog, &off, &rem); len(lines) != 0 {
-			t.Fatalf("symlink escape read lines: %v", lines)
+		if lines := readNewJSONLLinesContained(brainDir, "child-sym", childLog, &off, &rem); len(lines) != 0 {
+			t.Fatalf("symlink file escape read lines: %v", lines)
+		}
+	}
+	outsideLog := filepath.Join(outsideDir, ".system_generated", "logs", "transcript.jsonl")
+	if err := os.MkdirAll(filepath.Dir(outsideLog), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(outsideLog, []byte(`{"step_index":2}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outsideDir, filepath.Join(brainDir, "child-dir-sym")); err == nil {
+		var off int64
+		var rem string
+		redirectedLog := filepath.Join(brainDir, "child-dir-sym", ".system_generated", "logs", "transcript.jsonl")
+		if lines := readNewJSONLLinesContained(brainDir, "child-dir-sym", redirectedLog, &off, &rem); len(lines) != 0 {
+			t.Fatalf("redirected brain/<id> symlink escape read lines: %v", lines)
 		}
 	}
 
-	// Parallel claim must not steal a child whose role conflicts with the caller's role.
+	// Parallel claim must not steal a child whose role OR prompt conflicts.
 	coord := &parentSubagentCoordinator{
 		discovered: []*discoveredSubagent{
-			{conversationID: "child-alpha", role: "Alpha", typeName: "research"},
+			{conversationID: "child-alpha", role: "Alpha", typeName: "research", prompt: "Inspect billing"},
 		},
 	}
 	if stolen := coord.claim("Beta", "research", "Task B"); stolen != nil {
 		t.Fatalf("watcher Beta stole child with conflicting role Alpha: %+v", stolen)
 	}
-	if matched := coord.claim("Alpha", "research", "Task A"); matched == nil || matched.conversationID != "child-alpha" {
+	if stolenPrompt := coord.claim("Alpha", "research", "Inspect auth"); stolenPrompt != nil {
+		t.Fatalf("watcher with conflicting prompt stole child: %+v", stolenPrompt)
+	}
+	if matched := coord.claim("Alpha", "research", "Inspect billing"); matched == nil || matched.conversationID != "child-alpha" {
 		t.Fatalf("watcher Alpha did not claim its own child: %+v", matched)
+	}
+
+	// GENERIC output with a conversationId when NO invoke_subagent is pending must not be admitted.
+	parentLog := filepath.Join(brainDir, "parent-no-spawn", ".system_generated", "logs", "transcript.jsonl")
+	if err := os.MkdirAll(filepath.Dir(parentLog), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(parentLog, []byte(`{"step_index":1,"type":"GENERIC","content":"{\"conversationId\":\"other-conv-123\"}"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	noSpawnCoord := &parentSubagentCoordinator{
+		path:       parentLog,
+		seenConvID: map[string]bool{},
+		reports:    map[string]string{},
+	}
+	noSpawnCoord.refresh(appDataDir)
+	if len(noSpawnCoord.discovered) != 0 {
+		t.Fatalf("GENERIC without pending invoke_subagent admitted foreign conversation: %+v", noSpawnCoord.discovered)
 	}
 }
 

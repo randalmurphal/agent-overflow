@@ -415,6 +415,26 @@ func TestAgyQuotaBucketPolicyAndAutoSwitch(t *testing.T) {
 		t.Fatalf("agy claude-sonnet-4-6 unexpectedly switched to %q when only gemini-5h was exhausted", dClaudeUnaffected.to.ID)
 	}
 
+	// Older-account fallback API groups all Gemini models into generic
+	// gemini-quota / gemini-weekly: Argon and Carbon MUST still match it, while
+	// 3p models remain unaffected.
+	geminiFallback := func(pct float64, reset int64) provider.RateLimitEntry {
+		return provider.RateLimitEntry{LimitID: "gemini-quota", LimitName: "Gemini", UsedPercent: pct, WindowMins: 300, ResetsAt: reset}
+	}
+	for _, model := range []string{"gemini-4-argon", "gemini-4-carbon"} {
+		dSub := decide(decideInput{
+			provider: "agy", selectedID: "a",
+			accounts: []candidate{
+				cand("a", geminiFallback(100, at(2*time.Hour))),
+				cand("b", geminiFallback(10, at(2*time.Hour))),
+			},
+			demand: buildDemand("agy", []string{model}), strategy: StrategySoonestReset, threshold: 95, now: testNow,
+		})
+		if dSub.to.ID != "b" {
+			t.Fatalf("agy %s did not match fallback gemini-quota bucket: got %q, want b", model, dSub.to.ID)
+		}
+	}
+
 	if got := providerTitle("agy"); got != "Antigravity" {
 		t.Fatalf("providerTitle(agy) = %q, want Antigravity", got)
 	}

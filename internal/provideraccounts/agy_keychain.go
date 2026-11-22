@@ -18,17 +18,18 @@ import (
 )
 
 const (
-	agyCredentialFileName = "antigravity-oauth-token"
-	agyKeychainService    = "gemini"
-	agyKeychainAccount    = "antigravity"
-	goKeyringBase64Prefix = "go-keyring-base64:"
+	agyCredentialFileName  = "antigravity-oauth-token"
+	agyKeychainService     = "gemini"
+	agyKeychainAccount     = "antigravity"
+	goKeyringBase64Prefix  = "go-keyring-base64:"
+	goKeyringEncodedPrefix = "go-keyring-encoded:"
 )
 
-// defaultAgyKeychain picks the Antigravity macOS Keychain backend: the real
-// security(1) Keychain in production runs, the file-backed stand-in inside
-// `go test`.
+// defaultAgyKeychain picks the Antigravity credential backend: security(1) on
+// macOS desktop production runs, and the file-backed backend on Linux/WSL/Windows
+// and inside `go test`.
 func defaultAgyKeychain() providerKeychain {
-	if testing.Testing() {
+	if testing.Testing() || runtime.GOOS != "darwin" {
 		return fileAgyKeychain{}
 	}
 	return securityAgyKeychain{}
@@ -144,12 +145,15 @@ func (s securityAgyKeychain) write(configHome string, active bool, data []byte) 
 		return fileAgyKeychain{}.write(configHome, false, data)
 	}
 	encoded := encodeGoKeyringPayload(data)
-	hexValue := hex.EncodeToString(encoded)
+	// encodeGoKeyringPayload emits pure printable ASCII ("go-keyring-base64:" +
+	// std base64), so `-w` passes it directly through `security -i` stdin at
+	// half the byte length of `-X` hex (keeping ~3 KiB raw OAuth credentials off
+	// process argv).
 	command := fmt.Sprintf(
-		"add-generic-password -U -a %s -s %s -X %s\n",
+		"add-generic-password -U -a %s -s %s -w %s\n",
 		strconv.Quote(agyKeychainAccount),
 		strconv.Quote(agyKeychainService),
-		strconv.Quote(hexValue),
+		strconv.Quote(string(encoded)),
 	)
 	var cmd *exec.Cmd
 	var cmdErr error
@@ -160,6 +164,7 @@ func (s securityAgyKeychain) write(configHome string, active bool, data []byte) 
 		}
 		cmd.Stdin = strings.NewReader(command)
 	} else {
+		hexValue := hex.EncodeToString(encoded)
 		cmd, cmdErr = securityCommand(
 			"add-generic-password", "-U",
 			"-a", agyKeychainAccount, "-s", agyKeychainService, "-X", hexValue,
@@ -224,13 +229,15 @@ func decodeGoKeyringPayload(raw []byte) ([]byte, error) {
 			trimmed = bytes.TrimSpace(unhexed)
 		}
 	}
-	if bytes.HasPrefix(trimmed, []byte(goKeyringBase64Prefix)) {
-		b64 := strings.TrimSpace(string(trimmed[len(goKeyringBase64Prefix):]))
-		decoded, err := base64.StdEncoding.DecodeString(b64)
-		if err != nil {
-			return nil, fmt.Errorf("decode go-keyring base64: %w", err)
+	for _, prefix := range []string{goKeyringBase64Prefix, goKeyringEncodedPrefix} {
+		if bytes.HasPrefix(trimmed, []byte(prefix)) {
+			b64 := strings.TrimSpace(string(trimmed[len(prefix):]))
+			decoded, err := base64.StdEncoding.DecodeString(b64)
+			if err != nil {
+				return nil, fmt.Errorf("decode %s: %w", prefix, err)
+			}
+			return decoded, nil
 		}
-		return decoded, nil
 	}
 	return trimmed, nil
 }

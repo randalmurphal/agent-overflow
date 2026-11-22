@@ -155,39 +155,37 @@ func (DefaultFlavor) MapRuntimeMode(rt provider.RuntimeMode, im provider.Interac
 	}
 	switch rt {
 	case provider.RuntimeReadOnly:
-		return pickMode("default", available), PolicyDenyMutating
+		return pickMode(available, "default", "ask"), PolicyDenyMutating
 	case provider.RuntimeApprovalRequired:
-		return pickMode("default", available), PolicyPrompt
+		return pickMode(available, "default", "ask"), PolicyPrompt
 	case provider.RuntimeAutoAcceptEdits:
-		if hasMode("accept-edits") {
-			return "accept-edits", PolicyPrompt
-		}
-		return pickMode("default", available), PolicyPrompt
+		return pickMode(available, "accept-edits", "default", "ask"), PolicyPrompt
 	case provider.RuntimeAuto:
-		if hasMode("auto") {
-			return "auto", PolicyPrompt
-		}
-		return pickMode("default", available), PolicyPrompt
+		return pickMode(available, "auto", "default", "ask"), PolicyPrompt
 	case provider.RuntimeFullAccess:
-		if hasMode("accept-edits") {
-			return "accept-edits", PolicyAutoAllowNonQuestion
-		}
-		return pickMode("default", available), PolicyAutoAllowNonQuestion
+		return pickMode(available, "accept-edits", "default", "ask"), PolicyAutoAllowNonQuestion
 	default:
-		return pickMode("default", available), PolicyPrompt
+		return pickMode(available, "default", "ask"), PolicyPrompt
 	}
 }
 
-func pickMode(preferred string, available []SessionMode) string {
-	for _, m := range available {
-		if m.ID == preferred {
-			return preferred
+func pickMode(available []SessionMode, preferred ...string) string {
+	for _, want := range preferred {
+		for _, m := range available {
+			if m.ID == want {
+				return want
+			}
 		}
 	}
 	if len(available) > 0 {
-		return available[0].ID
+		// Never silently fall back to an arbitrary mode (such as yolo) when
+		// none of the explicitly safe modes are advertised.
+		return ""
 	}
-	return preferred
+	if len(preferred) > 0 {
+		return preferred[0]
+	}
+	return ""
 }
 
 func (DefaultFlavor) ConvertUsage(u Usage, _ string) provider.TokenUsage {
@@ -269,7 +267,7 @@ func (DefaultFlavor) NormalizeToolComplete(u *ToolCallUpdate, started Normalized
 						Kind: "delete",
 						Diff: item.OldText,
 					})
-				} else if hunks := BuildUnifiedDiffHunks(item.OldText, item.NewText); hunks != "" {
+				} else if hunks := stripUnifiedDiffHeader(patch); hunks != "" {
 					out.DiffChanges = append(out.DiffChanges, FileDiffChange{
 						Path: item.Path,
 						Kind: "update",
@@ -534,6 +532,16 @@ func extractCommandLine(inputs ...json.RawMessage) string {
 		}
 	}
 	return ""
+}
+
+// stripUnifiedDiffHeader removes the leading `--- ...` and `+++ ...` lines from
+// a patch produced by BuildUnifiedDiff so callers do not compute the diff twice.
+func stripUnifiedDiffHeader(patch string) string {
+	idx := strings.Index(patch, "@@")
+	if idx < 0 {
+		return ""
+	}
+	return patch[idx:]
 }
 
 // BuildUnifiedDiff produces a unified diff patch from ACP's full oldText and

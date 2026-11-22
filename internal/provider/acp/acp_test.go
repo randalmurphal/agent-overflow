@@ -3,6 +3,7 @@ package acp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1245,7 +1246,9 @@ for raw in sys.stdin:
         sid = params.get("sessionId")
         prompt = params.get("prompt") or []
         text = prompt[0].get("text", "") if prompt else ""
-        if text == "CANCEL_ME":
+        if text == "REJECT_ME":
+            print(json.dumps({"jsonrpc":"2.0","id":mid,"error":{"code":-32602,"message":"prompt rejected"}}), flush=True)
+        elif text == "CANCEL_ME":
             print(json.dumps({"jsonrpc":"2.0","id":99,"method":"session/request_permission","params":{"sessionId":sid,"toolCall":{"toolCallId":"tc-cancel","name":"run_command","kind":"execute"},"options":[{"optionId":"allow_1","kind":"allow_once","name":"Allow"},{"optionId":"deny_1","kind":"reject_once","name":"Reject"}]}}), flush=True)
             resp_line = sys.stdin.readline().strip()
             resp = json.loads(resp_line)
@@ -1284,13 +1287,14 @@ for raw in sys.stdin:
 	}
 	defer func() { _ = sess.Close() }()
 
-	// 1. Send with UserMessageUUID must emit EventUserText confirmation before EventTurnStart.
+	// 1. Send with UserMessageUUID must emit EventUserText confirmation on
+	// provider acceptance (before assistant text output).
 	if err := sess.Send(context.Background(), "hello queue", provider.SendOptions{UserMessageUUID: "send-uuid-123"}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 	ev.waitFor(t, 5*time.Second, func(e provider.ProviderEvent) bool { return e.Kind == provider.EventTurnComplete })
 	all := ev.all()
-	userIdx, startIdx := -1, -1
+	userIdx, textIdx := -1, -1
 	for i, e := range all {
 		if e.Kind == provider.EventUserText && userIdx < 0 {
 			userIdx = i
@@ -1302,12 +1306,32 @@ for raw in sys.stdin:
 				t.Fatalf("unexpected EventUserText confirmation meta: %+v", meta)
 			}
 		}
-		if e.Kind == provider.EventTurnStart && startIdx < 0 {
-			startIdx = i
+		if e.Kind == provider.EventTextDelta && textIdx < 0 {
+			textIdx = i
 		}
 	}
-	if userIdx < 0 || startIdx < 0 || userIdx >= startIdx {
-		t.Fatalf("expected EventUserText before EventTurnStart, got userIdx=%d startIdx=%d", userIdx, startIdx)
+	if userIdx < 0 || textIdx < 0 || userIdx >= textIdx {
+		t.Fatalf("expected EventUserText before EventTextDelta, got userIdx=%d textIdx=%d", userIdx, textIdx)
+	}
+
+	// 1b. A prompt rejected by the provider before any update MUST NOT emit
+	// EventUserText confirmation (prevents false delivery receipts).
+	beforeRejectCount := len(ev.all())
+	if err := sess.Send(context.Background(), "REJECT_ME", provider.SendOptions{UserMessageUUID: "send-uuid-rejected"}); err != nil {
+		t.Fatalf("Send REJECT_ME: %v", err)
+	}
+	ev.waitFor(t, 5*time.Second, func(e provider.ProviderEvent) bool {
+		return e.Kind == provider.EventError && strings.Contains(e.Content, "prompt rejected")
+	})
+	for _, e := range ev.all()[beforeRejectCount:] {
+		if e.Kind == provider.EventUserText {
+			t.Fatalf("rejected prompt falsely emitted EventUserText confirmation: %+v", e)
+		}
+	}
+
+	// 1c. ReplayLoad on an active sessionId on the same Conn must return ErrSessionBusy.
+	if _, err := conn.ReplayLoad(context.Background(), SessionLoadParams{SessionID: "s-confirm", CWD: t.TempDir()}, 100); !errors.Is(err, ErrSessionBusy) {
+		t.Fatalf("ReplayLoad on live session err = %v, want ErrSessionBusy", err)
 	}
 
 	// 2. RespondToApproval("cancel") must send ACP outcome=cancelled AND session/cancel.

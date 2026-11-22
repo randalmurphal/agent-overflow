@@ -528,8 +528,8 @@ func TestClassifyPermissionAutoAllowsAOMCPServers(t *testing.T) {
 
 	for _, name := range []string{
 		"mcp_ao-thread-tools_thread_options",
-		"mcp__ao-thread-tools__spawn_thread",
-		"mcp_ao-workflow-tools_workflow_run",
+		"mcp__ao-thread-tools__thread_spawn",
+		"mcp_ao-workflow-tools_run_list",
 	} {
 		cls := f.ClassifyPermission("t1", "turn1", "req1", acp.RequestPermissionParams{
 			ToolCall: acp.ToolCallUpdate{ToolCallID: "c1", Name: name, Kind: "other"},
@@ -538,9 +538,19 @@ func TestClassifyPermissionAutoAllowsAOMCPServers(t *testing.T) {
 		if cls.Action != acp.PermissionAutoAllow || cls.OptionID != "allow" {
 			t.Fatalf("%s: got action=%v option=%q, want AutoAllow/allow", name, cls.Action, cls.OptionID)
 		}
+		// Read-only policy must NEVER be bypassed by AO MCP auto-approve.
+		clsRO := f.ClassifyPermission("t1", "turn1", "req-ro", acp.RequestPermissionParams{
+			ToolCall: acp.ToolCallUpdate{ToolCallID: "c-ro", Name: name, Kind: "other"},
+			Options:  opts,
+		}, acp.PolicyDenyMutating)
+		if clsRO.Action != acp.PermissionAutoDeny {
+			t.Fatalf("%s under PolicyDenyMutating: got action=%v, want AutoDeny", name, clsRO.Action)
+		}
 	}
 
 	for _, name := range []string{
+		"mcp_ao_thread_tools_evil_delete_repo",
+		"mcp_ao-thread-tools_evil_tool",
 		"mcp_ao-remote-tools_run_command",
 		"mcp_github_create_issue",
 		"run_command",

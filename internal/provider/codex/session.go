@@ -595,6 +595,43 @@ type Session struct {
 	releaseConnOnce sync.Once
 	readDoneOnce    sync.Once
 	teardownEmitted atomic.Bool
+
+	// earlyFrames holds root frames quarantined on Conn before open() bound
+	// c.byThread[rootID]. Enqueued under Conn.routesMu and flushed before any
+	// subsequently routed frame so strict wire FIFO order is preserved.
+	earlyDeliveryMu sync.Mutex
+	earlyPending    atomic.Bool
+	earlyFrames     []deferredChildWireEvent
+}
+
+func (s *Session) enqueueEarlyFrames(frames []deferredChildWireEvent) {
+	if len(frames) == 0 {
+		return
+	}
+	s.earlyDeliveryMu.Lock()
+	s.earlyFrames = append(s.earlyFrames, frames...)
+	s.earlyPending.Store(true)
+	s.earlyDeliveryMu.Unlock()
+}
+
+func (s *Session) flushEarlyFrames() {
+	s.earlyDeliveryMu.Lock()
+	defer s.earlyDeliveryMu.Unlock()
+	if len(s.earlyFrames) == 0 {
+		s.earlyPending.Store(false)
+		return
+	}
+	frames := s.earlyFrames
+	s.earlyFrames = nil
+	s.earlyPending.Store(false)
+	for _, ev := range frames {
+		if ev.RequestID != "" {
+			reqID := json.Number(ev.RequestID)
+			s.dispatchServerRequestDirect(ev.Method, &reqID, ev.Params, ev.RawLine)
+		} else {
+			s.dispatchNotificationDirect(ev.Method, ev.Params)
+		}
+	}
 }
 
 // Binary returns the codex CLI path this session's app-server process was
@@ -1071,6 +1108,10 @@ func (s *Session) Close() error {
 	s.childLifecycleMu.Lock()
 	s.childLifecycleRevision = nil
 	s.childLifecycleMu.Unlock()
+	s.earlyDeliveryMu.Lock()
+	s.earlyFrames = nil
+	s.earlyPending.Store(false)
+	s.earlyDeliveryMu.Unlock()
 	s.mu.Unlock()
 	return err
 }

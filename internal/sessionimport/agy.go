@@ -72,6 +72,10 @@ func agyEventsToIR(sessionID string, events []provider.ProviderEvent, baseTimeMs
 		baseTimeMs = time.Now().UnixMilli()
 	}
 	irEvents := make([]importir.Event, 0, len(events))
+	// Chain the SHA-256 digest across all preceding events so even a trailing
+	// synthetic turn_complete (with empty role/item/content) carries a unique
+	// prefix-dependent cursor fingerprint and refresh detects history divergence.
+	chain := sha256.New()
 	for i, ev := range events {
 		if ev.Timestamp.IsZero() {
 			ev.Timestamp = time.UnixMilli(baseTimeMs + int64(i))
@@ -79,18 +83,15 @@ func agyEventsToIR(sessionID string, events []provider.ProviderEvent, baseTimeMs
 		if ev.Kind == provider.EventTurnComplete && ev.TurnComplete == nil {
 			ev.TurnComplete = &provider.WireTurnCompleteMeta{StopReason: "end_turn"}
 		}
+		_, _ = fmt.Fprintf(chain, "%d\x00%s\x00%s\x00%s\x00%s\x00%s\x00%s\n",
+			i, ev.Kind, ev.Role, ev.ItemID, ev.ItemType, ev.Content, string(ev.Meta))
+		fp := hex.EncodeToString(chain.Sum(nil)[:8])
 		irEvents = append(irEvents, importir.Event{
 			ProviderEvent: ev,
-			SourceUUID:    fmt.Sprintf("acp:%s:%d:%s", sessionID, i, agyEventFingerprint(ev)),
+			SourceUUID:    fmt.Sprintf("acp:%s:%d:%s", sessionID, i, fp),
 		})
 	}
 	return irEvents
-}
-
-func agyEventFingerprint(ev provider.ProviderEvent) string {
-	h := sha256.New()
-	_, _ = fmt.Fprintf(h, "%s\x00%s\x00%s\x00%s\x00%s", ev.Kind, ev.Role, ev.ItemID, ev.ItemType, ev.Content)
-	return hex.EncodeToString(h.Sum(nil)[:6])
 }
 
 func importAgy(ctx context.Context, d Deps, row Row, proj store.Project) (ImportOutcome, error) {

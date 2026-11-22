@@ -41,6 +41,13 @@ var sessionSideChannelNotifications = map[string]func(*Session, json.RawMessage)
 }
 
 func (s *Session) dispatchNotification(method string, params json.RawMessage) {
+	if s.earlyPending.Load() {
+		s.flushEarlyFrames()
+	}
+	s.dispatchNotificationDirect(method, params)
+}
+
+func (s *Session) dispatchNotificationDirect(method string, params json.RawMessage) {
 	if handler, ok := sessionSideChannelNotifications[method]; ok {
 		handler(s, params)
 		return

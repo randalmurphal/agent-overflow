@@ -11,9 +11,28 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"agent-overflow/internal/atomicfile"
 )
+
+var (
+	pathLocksMu sync.Mutex
+	pathLocks   = map[string]*sync.Mutex{}
+)
+
+func lockPath(path string) func() {
+	clean := filepath.Clean(path)
+	pathLocksMu.Lock()
+	mu := pathLocks[clean]
+	if mu == nil {
+		mu = &sync.Mutex{}
+		pathLocks[clean] = mu
+	}
+	pathLocksMu.Unlock()
+	mu.Lock()
+	return mu.Unlock
+}
 
 const (
 	TransportStdio = "stdio"
@@ -113,6 +132,8 @@ func (s *Store) SetDisabled(name string, disabled bool) error {
 	if name == "" {
 		return ErrInvalidName
 	}
+	unlock := lockPath(s.path)
+	defer unlock()
 	data, statBefore, err := s.readFile()
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -139,6 +160,9 @@ func (s *Store) SetDisabled(name string, disabled bool) error {
 	var entry map[string]any
 	if err := json.Unmarshal(rawEntry, &entry); err != nil {
 		return fmt.Errorf("agyconfig: parse server %q: %w", name, err)
+	}
+	if entry == nil {
+		entry = map[string]any{}
 	}
 	if prev, has := entry["disabled"].(bool); has && prev == disabled {
 		return nil
