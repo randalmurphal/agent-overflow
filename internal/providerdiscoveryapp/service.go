@@ -52,11 +52,13 @@ type Deps struct {
 	RunAccountProbe            func(AccountProbeRequest) (provider.AccountInfo, error)
 	ClaudeConfig               func(binary string) claude.ProbeConfig
 	CodexConfig                func(binary string) codex.ProbeConfig
+	AgyConfig                  func(binary string) agy.ProbeConfig
 	EmitStatus                 func(providerstatus.Event)
 	EmitRateLimits             func(provider.RateLimitsSnapshot)
 	DetectProvider             func(providerName, binary string) provider.ProviderStatus
 	ProbeClaude                func(context.Context, claude.ProbeConfig) (provider.AccountInfo, error)
 	ProbeCodex                 func(context.Context, codex.ProbeConfig) (provider.AccountInfo, error)
+	ProbeAgy                   func(context.Context, agy.ProbeConfig) (provider.AccountInfo, error)
 	CheckClaudeTransferAccount func(context.Context, string) error
 	CheckCodexTransferAccount  func(context.Context, string) error
 	CheckAgyTransferAccount    func(context.Context, string) error
@@ -76,6 +78,7 @@ type Deps struct {
 type Caches struct {
 	Claude      *provider.ProbeCache
 	Codex       *provider.ProbeCache
+	Agy         *provider.ProbeCache
 	CodexModels *codexmodels.Cache
 	AgyModels   *agy.CatalogCache
 }
@@ -109,6 +112,7 @@ func NewCaches() *Caches {
 	return &Caches{
 		Claude:      provider.NewProbeCache(claude.DefaultProbeTTL),
 		Codex:       provider.NewProbeCache(codex.DefaultProbeTTL),
+		Agy:         provider.NewProbeCache(codex.DefaultProbeTTL),
 		CodexModels: codexmodels.New(),
 		AgyModels:   agy.NewCatalogCache(),
 	}
@@ -133,6 +137,9 @@ func New(deps Deps, caches *Caches) *Service {
 	}
 	if deps.ProbeCodex == nil {
 		deps.ProbeCodex = codex.ProbeAccount
+	}
+	if deps.ProbeAgy == nil {
+		deps.ProbeAgy = agy.ProbeAccount
 	}
 	return &Service{deps: deps, caches: caches}
 }

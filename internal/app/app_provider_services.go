@@ -50,6 +50,9 @@ func (a *App) providerDiscoveryService() *providerdiscoveryapp.Service {
 			CodexConfig: func(binary string) codex.ProbeConfig {
 				return a.codexProbeConfig(binary, nil)
 			},
+			AgyConfig: func(binary string) agy.ProbeConfig {
+				return a.ensureProviderAccountManager().AgyProbeConfig(binary, nil)
+			},
 			EmitStatus:     a.emitProviderStatus,
 			EmitRateLimits: a.emitRateLimitsSnapshot,
 			CheckClaudeTransferAccount: func(ctx context.Context, binary string) error {
@@ -57,6 +60,9 @@ func (a *App) providerDiscoveryService() *providerdiscoveryapp.Service {
 			},
 			CheckCodexTransferAccount: func(ctx context.Context, binary string) error {
 				return a.ensureProviderAccountManager().CheckCodexTransferAccount(ctx, binary)
+			},
+			CheckAgyTransferAccount: func(ctx context.Context, binary string) error {
+				return a.ensureProviderAccountManager().CheckAgyTransferAccount(ctx, binary)
 			},
 			RememberClaudeCatalog: a.rememberClaudeCatalog,
 			ProbeAgyModels: func(ctx context.Context, binary string) ([]provider.ModelInfo, error) {

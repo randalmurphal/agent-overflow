@@ -225,6 +225,11 @@ func (c *Credentials) Paths(providerName string) (ProviderPaths, error) {
 			SharedHome:     filepath.Join(c.userHome, ".codex"),
 			CredentialFile: "auth.json",
 		}, nil
+	case "agy":
+		return ProviderPaths{
+			SharedHome:     filepath.Join(c.userHome, ".gemini", "antigravity-cli"),
+			CredentialFile: "antigravity-oauth-token",
+		}, nil
 	default:
 		return ProviderPaths{}, fmt.Errorf("provideraccounts: unsupported provider %q", providerName)
 	}

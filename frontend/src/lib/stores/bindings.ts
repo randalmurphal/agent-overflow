@@ -334,8 +334,10 @@ export {
   GetClaudeSkills,
   GetCodexSkills,
   ProbeClaudeAccount,
+  ProbeAgyAccount,
   RecheckClaudeAccount,
   RecheckCodexAccount,
+  RecheckAgyAccount,
 
   // Git operations
   GenerateCommitMessage,

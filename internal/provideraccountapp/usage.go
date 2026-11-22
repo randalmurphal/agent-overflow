@@ -232,6 +232,21 @@ func (m *Manager) refreshProviderAccountUsage(
 		}
 		refresh.refreshed = refreshed
 		refresh.observed = info
+	case string(provider.Agy):
+		probeRan = true
+		if refresh.refreshesInCanonicalHome() {
+			var rotated []byte
+			snapshot, rotated, probeErr = m.probeSelectedAgyRateLimits(ctx, credential.Bytes())
+			refresh.refreshed = provideraccounts.NewCredentialSnapshot(rotated)
+			if probeErr != nil && len(refresh.refreshed.Bytes()) == 0 {
+				return mapProviderAccountLoginError(providerName, account, probeErr)
+			}
+		} else {
+			snapshot, probeErr = m.probeInactiveAgyRateLimits(ctx, credential.Bytes())
+			if probeErr != nil {
+				return mapProviderAccountLoginError(providerName, account, probeErr)
+			}
+		}
 	}
 
 	// A Codex rotation for a non-selected account is durable NOWHERE once the
@@ -329,7 +344,7 @@ func (r providerUsageRefresh) slotNeedsRotation() bool {
 // a lockfile scoped to the config home, so the selected account's refresh must
 // happen there and nowhere else — see probeSelectedClaudeRateLimits.
 func (r providerUsageRefresh) refreshesInCanonicalHome() bool {
-	return r.isSelected && r.providerName == string(provider.Claude)
+	return r.isSelected && (r.providerName == string(provider.Claude) || r.providerName == string(provider.Agy))
 }
 
 // canonicalCredential is the value the canonical native store must still hold

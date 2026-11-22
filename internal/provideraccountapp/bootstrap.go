@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"path/filepath"
 	"time"
-
-	"agent-overflow/internal/provider"
 )
 
 // ReconcileProviderHome binds metadata to its credential home, prunes only
@@ -24,7 +22,7 @@ func (m *Manager) ReconcileProviderHome(dbDir, userHome string) error {
 			filepath.Join(dbDir, "provider-accounts.json"), claimedHome, userHome,
 		)
 	} else {
-		for _, providerName := range []string{string(provider.Claude), string(provider.Codex)} {
+		for _, providerName := range ManagedAccountProviders {
 			keep := make(map[string]bool)
 			for _, account := range m.store.List(providerName, time.Now()) {
 				keep[account.ID] = true
@@ -40,7 +38,7 @@ func (m *Manager) ReconcileProviderHome(dbDir, userHome string) error {
 	}
 
 	selected := make(map[string]string)
-	for _, providerName := range []string{string(provider.Claude), string(provider.Codex)} {
+	for _, providerName := range ManagedAccountProviders {
 		if active, ok := m.store.Active(providerName, time.Now()); ok {
 			selected[providerName] = active.ID
 		}

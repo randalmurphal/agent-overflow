@@ -47,7 +47,7 @@ const unleasedEntryGrace = time.Hour
 
 // ephemeralProviders are the providers whose temporary homes the registry
 // covers, in sweep order.
-var ephemeralProviders = []string{"claude", "codex"}
+var ephemeralProviders = []string{"claude", "codex", "agy"}
 
 // ephemeralHomePrefix is the os.MkdirTemp prefix newEphemeralHome uses for
 // one provider's homes. The sweep refuses to act on any recorded path

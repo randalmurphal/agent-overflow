@@ -393,6 +393,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "PostPRLineComment", ID: 1583250136, Scope: "git:operate", Route: "selected"},                                                     // main.App.PostPRLineComment
 	{Name: "PrepareThreadWorktree", ID: 2870364785, Scope: "git:operate", Route: "thread", Budget: 12 * time.Minute},                         // main.App.PrepareThreadWorktree
 	{Name: "PreviewNotificationSound", ID: 2105157519, Scope: "host", Route: "home"},                                                         // main.App.PreviewNotificationSound
+	{Name: "ProbeAgyAccount", ID: 633322787, Scope: "access:admin", Route: "home"},                                                           // main.App.ProbeAgyAccount
 	{Name: "ProbeClaudeAccount", ID: 1313986574, Scope: "access:admin", Route: "home"},                                                       // main.App.ProbeClaudeAccount
 	{Name: "ProbeCodexAccount", ID: 2614227175, Scope: "access:admin", Route: "home"},                                                        // main.App.ProbeCodexAccount
 	{Name: "ProjectDeletionPreview", ID: 2575010484, Scope: "git:operate", Route: "project"},                                                 // main.App.ProjectDeletionPreview
@@ -410,6 +411,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ReadReviewDiff", ID: 2473150982, Scope: "session", Route: "home", CallerBound: true},                                             // main.App.ReadReviewDiff
 	{Name: "ReadShellAttachmentOutput", ID: 3285994337, Scope: "threads:read", Route: "thread"},                                              // main.App.ReadShellAttachmentOutput
 	{Name: "ReadThreadRemoteLog", ID: 2424974671, Scope: "terminal:operate", Route: "thread"},                                                // main.App.ReadThreadRemoteLog
+	{Name: "RecheckAgyAccount", ID: 4079519754, Scope: "access:admin", Route: "home"},                                                        // main.App.RecheckAgyAccount
 	{Name: "RecheckClaudeAccount", ID: 2274850917, Scope: "access:admin", Route: "home"},                                                     // main.App.RecheckClaudeAccount
 	{Name: "RecheckCodexAccount", ID: 227978482, Scope: "access:admin", Route: "home"},                                                       // main.App.RecheckCodexAccount
 	{Name: "ReconfigureObservability", ID: 225050321, Scope: "host", Route: "home"},                                                          // main.App.ReconfigureObservability

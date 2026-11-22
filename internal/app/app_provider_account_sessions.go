@@ -72,23 +72,27 @@ func (a *App) ensureProviderAccountSelectionReadyForSendLocked(
 		)
 		a.emitProviderSessionAccount(thread.ID)
 		return nil
-	case string(provider.Codex):
+	case string(provider.Codex), string(provider.Agy):
+		label := "Codex"
+		if thread.Provider == string(provider.Agy) {
+			label = "Antigravity"
+		}
 		if sess.Liveness != nil && sess.Liveness.ActiveTurns.Load() > 0 {
-			return fmt.Errorf("Codex account switch is pending for this thread until its active turn finishes")
+			return fmt.Errorf("%s account switch is pending for this thread until its active turn finishes", label)
 		}
 		running, err := a.store.ListRunningBackgroundToolCalls(thread.ID)
 		if err != nil {
-			return fmt.Errorf("check Codex background work before account switch: %w", err)
+			return fmt.Errorf("check %s background work before account switch: %w", label, err)
 		}
 		if len(running) > 0 {
-			return fmt.Errorf("Codex account switch is pending for this thread until its background work finishes")
+			return fmt.Errorf("%s account switch is pending for this thread until its background work finishes", label)
 		}
 		if err := a.reconnectSessionLocked(context.Background(), thread.ID); err != nil {
-			return fmt.Errorf("switch Codex account for this thread: %w", err)
+			return fmt.Errorf("switch %s account for this thread: %w", label, err)
 		}
 		current, exists := a.sessionManager().get(thread.ID)
 		if !exists || !providerSessionMatchesAccount(current, selection) {
-			return fmt.Errorf("Codex account did not switch for this thread; retry after its reconnect finishes")
+			return fmt.Errorf("%s account did not switch for this thread; retry after its reconnect finishes", label)
 		}
 		return nil
 	default:
@@ -108,6 +112,10 @@ func (a *App) applyProviderAccountSelectionToSessions(
 ) {
 	if providerName == string(provider.Codex) {
 		a.drainCodexConnections()
+		return
+	}
+	if providerName == string(provider.Agy) {
+		a.drainAgyConnections()
 		return
 	}
 	if providerName != string(provider.Claude) {

@@ -301,7 +301,7 @@ export const PROVIDER_DEFINITIONS: Record<ProviderID, ProviderDefinition> = {
     backgroundStop: 'none',
     capabilities: FULL_CAPABILITIES,
     features: {
-      accounts: false,
+      accounts: true,
       autoCompact: false,
       promptOverrides: true,
       disabledTools: false,

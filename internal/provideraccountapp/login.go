@@ -103,6 +103,9 @@ func (m *Manager) adoptLogin(attempt *loginAttempt) (_ ManagedAccount, retErr er
 			return ManagedAccount{}, fmt.Errorf("verify %s login: %w", providerName, err)
 		}
 	}
+	if providerName == string(provider.Agy) {
+		info = m.identifyAgyCredential(m.context(), info, loginCredential.Bytes())
+	}
 	if err := attempt.cleanup(); err != nil {
 		return ManagedAccount{}, err
 	}

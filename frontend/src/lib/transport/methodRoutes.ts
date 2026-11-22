@@ -341,6 +341,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1583250136: 'selected', // PostPRLineComment
 	2870364785: 'thread', // PrepareThreadWorktree
 	2105157519: 'home', // PreviewNotificationSound
+	633322787: 'home', // ProbeAgyAccount
 	1313986574: 'home', // ProbeClaudeAccount
 	2614227175: 'home', // ProbeCodexAccount
 	2575010484: 'project', // ProjectDeletionPreview
@@ -358,6 +359,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2473150982: 'home', // ReadReviewDiff
 	3285994337: 'thread', // ReadShellAttachmentOutput
 	2424974671: 'thread', // ReadThreadRemoteLog
+	4079519754: 'home', // RecheckAgyAccount
 	2274850917: 'home', // RecheckClaudeAccount
 	227978482: 'home', // RecheckCodexAccount
 	225050321: 'home', // ReconfigureObservability

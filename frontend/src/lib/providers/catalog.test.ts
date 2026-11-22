@@ -164,7 +164,7 @@ describe('provider catalog', () => {
         expect(def.settings.extendedCompactKey).toBeDefined();
       }
     }
-    expect(standaloneProvidersWithFeature('accounts')).toEqual(['claude', 'codex']);
+    expect(standaloneProvidersWithFeature('accounts')).toEqual(['claude', 'codex', 'agy']);
     expect(standaloneProvidersWithFeature('textGeneration')).toEqual(['claude', 'codex', 'agy']);
     expect(providerHasFeature('claude', 'transfer')).toBe(true);
     expect(providerHasFeature('codex', 'transfer')).toBe(true);

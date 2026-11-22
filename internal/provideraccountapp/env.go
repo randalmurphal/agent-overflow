@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/agy"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/provideraccounts"
@@ -201,6 +202,23 @@ func (m *Manager) codexProbeConfig(binary string, pins map[string]string) codex.
 // CodexProbeConfig constructs the canonical account probe configuration.
 func (m *Manager) CodexProbeConfig(binary string, pins map[string]string) codex.ProbeConfig {
 	return m.codexProbeConfig(binary, pins)
+}
+
+func (m *Manager) agyProbeConfig(binary, geminiDir, appDataSubdir string, pins map[string]string) agy.ProbeConfig {
+	return agy.ProbeConfig{
+		Binary:        binary,
+		WorkDir:       providerProbeWorkDir(),
+		GeminiDir:     geminiDir,
+		AppDataSubdir: appDataSubdir,
+		Env:           m.providerProbeEnv(string(provider.Agy), pins),
+		Reaper:        m.deps.Reaper,
+		ForceFileAuth: true,
+	}
+}
+
+// AgyProbeConfig constructs the canonical Antigravity account probe configuration.
+func (m *Manager) AgyProbeConfig(binary string, pins map[string]string) agy.ProbeConfig {
+	return m.agyProbeConfig(binary, "", "", pins)
 }
 
 // ProbeWorkDir is Claude's user scope and the parent for isolated Codex account directories.

@@ -26,6 +26,8 @@ const agyConnIdleGrace = 5 * time.Minute
 func agyPoolKey(
 	binary string,
 	identity providerBinaryIdentity,
+	accountID string,
+	accountGen uint64,
 	env map[string]string,
 	isolateThreadID string,
 ) string {
@@ -37,6 +39,8 @@ func agyPoolKey(
 	writePart("resolved", identity.path)
 	writePart("size", fmt.Sprintf("%d", identity.size))
 	writePart("mtime", fmt.Sprintf("%d", identity.modUnixNano))
+	writePart("account", accountID)
+	writePart("accountGen", fmt.Sprintf("%d", accountGen))
 	if isolateThreadID != "" {
 		writePart("thread", isolateThreadID)
 	}
@@ -62,6 +66,7 @@ func (a *App) acquireAgyConn(
 	env map[string]string,
 ) (*acp.Conn, func(), string, error) {
 	identity, _ := a.resolveProviderBinaryIdentity(string(provider.Agy))
+	selection := a.captureProviderAccountSelection(string(provider.Agy))
 	isolateThreadID := ""
 	idleGrace := agyConnIdleGrace
 	connWorkDir := providerProbeWorkDir()
@@ -71,14 +76,20 @@ func (a *App) acquireAgyConn(
 		connWorkDir = workDir
 	}
 	resolvedBinary := agy.ResolveBinary(binary)
-	key := agyPoolKey(resolvedBinary, identity, env, isolateThreadID)
+	key := agyPoolKey(resolvedBinary, identity, selection.AccountID, selection.Generation, env, isolateThreadID)
+
+	extra := map[string]string{}
+	if a.hasManagedAgyCredentialFile() {
+		extra["AGY_ACP_FORCE_FILE_STORAGE"] = "1"
+		extra["SSH_CONNECTION"] = "127.0.0.1 0 127.0.0.1 0"
+	}
 
 	rawConn, release, err := a.sessionManager().runtime.Connections().Acquire(
 		ctx,
 		key,
 		idleGrace,
 		func(dialCtx context.Context) (provider.Connection, error) {
-			launchEnv, unset := agy.LaunchEnv(env, nil)
+			launchEnv, unset := agy.LaunchEnv(env, extra)
 			return acp.Dial(dialCtx, acp.ConnConfig{
 				Binary:       resolvedBinary,
 				Args:         agy.LaunchArgs("", ""),
@@ -96,6 +107,15 @@ func (a *App) acquireAgyConn(
 		return nil, nil, "", err
 	}
 	return rawConn.(*acp.Conn), release, key, nil
+}
+
+func (a *App) hasManagedAgyCredentialFile() bool {
+	appData := a.agyAppDataDir()
+	if appData == "" {
+		return false
+	}
+	info, err := os.Stat(filepath.Join(appData, "antigravity-oauth-token"))
+	return err == nil && !info.IsDir()
 }
 
 func (a *App) borrowAgyConnForBinary(binary string) (*acp.Conn, func()) {

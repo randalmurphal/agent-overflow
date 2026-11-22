@@ -97,9 +97,9 @@ type Manager struct {
 	credentials  *provideraccounts.Credentials
 	fingerprints map[string][32]byte
 
-	claudeReconcileMu reconcileLock
-	codexReconcileMu  reconcileLock
-	auditPath         string
+	reconcileLocksMu sync.Mutex
+	reconcileLocks   map[string]*reconcileLock
+	auditPath        string
 
 	// The sign-in registry (loginsession.go). Its lock is a leaf: no other
 	// Manager lock is taken under it, and nothing is published while it is
@@ -213,14 +213,20 @@ func (l *reconcileLock) Unlock() {
 }
 
 func (m *Manager) reconcileMutex(providerName string) *reconcileLock {
-	switch providerName {
-	case string(provider.Claude):
-		return &m.claudeReconcileMu
-	case string(provider.Codex):
-		return &m.codexReconcileMu
-	default:
+	if err := ValidateProvider(providerName); err != nil {
 		panic(fmt.Sprintf("provider-account reconcile mutex requested for unsupported provider %q", providerName))
 	}
+	m.reconcileLocksMu.Lock()
+	defer m.reconcileLocksMu.Unlock()
+	if m.reconcileLocks == nil {
+		m.reconcileLocks = make(map[string]*reconcileLock, len(ManagedAccountProviders))
+	}
+	lock, ok := m.reconcileLocks[providerName]
+	if !ok {
+		lock = &reconcileLock{}
+		m.reconcileLocks[providerName] = lock
+	}
+	return lock
 }
 
 // Selection returns one provider's current managed selection.

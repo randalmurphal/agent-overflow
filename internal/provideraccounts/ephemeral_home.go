@@ -125,6 +125,10 @@ func ephemeralConfigSources(paths ProviderPaths, providerName string) []string {
 			filepath.Join(paths.SharedHome, "config.toml"),
 			filepath.Join(paths.SharedHome, "requirements.toml"),
 		}
+	case "agy":
+		return []string{
+			filepath.Join(paths.SharedHome, "settings.json"),
+		}
 	default:
 		return nil
 	}
