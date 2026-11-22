@@ -15,15 +15,16 @@ import (
 
 	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/deviceclient"
+	"agent-overflow/internal/pairbootstrap"
 	"agent-overflow/internal/testutil"
 )
 
-// The backend clients a test builds. Each credential exchange gets the
-// shared test budget (testutil.WaitBudget) in place of the product's 10 s:
-// the backend it pairs with runs in this test process, where a crowded
-// machine can hold a pairing past 10 s. The bound itself is deviceclient's
-// to test. TestAppTestsBuildBackendClientsThroughTheirHelpers keeps every
-// test in this package on these helpers.
+// The backend clients a test builds. Each pairing step gets the shared test
+// budget (testutil.WaitBudget) in place of its product bound: the computer
+// it pairs with runs in this test process, where a crowded machine can hold
+// a step past that bound. The bounds themselves are their owners' to test.
+// TestAppTestsBuildBackendClientsThroughTheirHelpers keeps every test in
+// this package on these helpers.
 
 // newTestBackends is attachedbackends.New for a test.
 func newTestBackends(t *testing.T, dir, label, platform string) (*attachedbackends.Manager, error) {
@@ -32,7 +33,7 @@ func newTestBackends(t *testing.T, dir, label, platform string) (*attachedbacken
 	if err != nil {
 		return nil, err
 	}
-	manager.SetExchangeTimeout(testutil.WaitBudget(t))
+	manager.SetPairingBound(testutil.WaitBudget(t))
 	return manager, nil
 }
 
@@ -58,12 +59,23 @@ func openTestDevice(t *testing.T, dir string, session deviceclient.Session, opts
 	return deviceclient.Open(dir, session, testDeviceOptions(t, opts)...)
 }
 
+// nearbyTestExchange is pairbootstrap.Exchange for a test, its client and
+// context bounded by the same budget.
+func nearbyTestExchange(t *testing.T, endpoint, label, platform string) (pairbootstrap.Invitation, string, error) {
+	t.Helper()
+	hc := pairbootstrap.NewHTTPClient(nil, testutil.WaitBudget(t))
+	defer hc.CloseIdleConnections()
+	ctx, cancel := context.WithTimeout(t.Context(), testutil.WaitBudget(t))
+	defer cancel()
+	return pairbootstrap.Exchange(ctx, hc, endpoint, label, platform)
+}
+
 func testDeviceOptions(t *testing.T, opts []deviceclient.Option) []deviceclient.Option {
 	return append(slices.Clip(opts), deviceclient.WithExchangeTimeout(testutil.WaitBudget(t)))
 }
 
 // The packages export these constructors to product code, so a test can
-// still call one directly and get the product's 10 s bound. This scan is the
+// still call one directly and get the product's bounds. This scan is the
 // rule's check: it reads every test file of the package, whatever its build
 // constraints.
 func TestAppTestsBuildBackendClientsThroughTheirHelpers(t *testing.T) {
@@ -71,6 +83,7 @@ func TestAppTestsBuildBackendClientsThroughTheirHelpers(t *testing.T) {
 	helpers := map[string]map[string]string{
 		"agent-overflow/internal/attachedbackends": {"New": "newTestBackends"},
 		"agent-overflow/internal/deviceclient":     {"Pair": "pairTestDevice", "Redeem": "redeemTestDevice", "Open": "openTestDevice"},
+		"agent-overflow/internal/pairbootstrap":    {"Exchange": "nearbyTestExchange", "NewHTTPClient": "nearbyTestExchange"},
 	}
 	// TestMain runs this package from the repository root.
 	helperFile := filepath.Join("internal", "app", "app_test_backends_test.go")
@@ -127,6 +140,6 @@ func TestAppTestsBuildBackendClientsThroughTheirHelpers(t *testing.T) {
 		})
 	}
 	if len(found) > 0 {
-		t.Fatalf("tests build backend clients past their helpers, with the product's 10 s exchange bound:\n%s", strings.Join(found, "\n"))
+		t.Fatalf("tests build backend clients past their helpers, with the product's pairing bounds:\n%s", strings.Join(found, "\n"))
 	}
 }

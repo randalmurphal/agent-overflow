@@ -2,6 +2,7 @@ package pairbootstrap
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -20,16 +21,33 @@ const Path = "/auth/pair/nearby"
 
 var ErrAddress = errors.New("Enter a hostname or IP address, with a port if needed")
 
+// exchangeTimeout bounds one exchange, both its round trips; one answer
+// within it waits at most responseHeaderTimeout.
+const (
+	exchangeTimeout       = 15 * time.Second
+	responseHeaderTimeout = 10 * time.Second
+)
+
 // NewHTTPClient is exclusively for the credential-free, committed bootstrap.
 // The invitation's authenticated pin is enforced by the ordinary pairing
 // client afterward. Never use this transport for a session, token or invite.
-func NewHTTPClient(dial func(context.Context, string, string) (net.Conn, error)) *http.Client {
+//
+// bound replaces exchangeTimeout, and the wait for one answer with it; zero
+// keeps both. Only a test sets it: the computer it pairs with runs in its
+// process, where a crowded machine can hold an answer past them.
+func NewHTTPClient(dial func(context.Context, string, string) (net.Conn, error), bound time.Duration) *http.Client {
 	if dial == nil {
 		dial = (&net.Dialer{Timeout: 5 * time.Second}).DialContext
 	}
+	answer := responseHeaderTimeout
+	if bound == 0 {
+		bound = exchangeTimeout
+	} else {
+		answer = bound
+	}
 	return &http.Client{
-		Transport:     &http.Transport{DialContext: dial, TLSClientConfig: &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12}, TLSHandshakeTimeout: 5 * time.Second, ResponseHeaderTimeout: 10 * time.Second},
-		Timeout:       15 * time.Second,
+		Transport:     &http.Transport{DialContext: dial, TLSClientConfig: &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12}, TLSHandshakeTimeout: 5 * time.Second, ResponseHeaderTimeout: answer},
+		Timeout:       bound,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 }
@@ -71,18 +89,20 @@ type Request struct {
 // on the host and client screens, not from discovery or these HTTP responses.
 // No redirect, cookie jar, authentication header or implicit mutation retry is
 // allowed. The returned invitation is redeemed by the ordinary pinned client.
+// The transport's Timeout bounds the whole exchange; a transport without one
+// gets exchangeTimeout.
 func Exchange(ctx context.Context, transport *http.Client, endpoint, label, platform string) (Invitation, string, error) {
 	endpoint, err := NormalizeAddress(endpoint)
 	if err != nil {
 		return Invitation{}, "", err
 	}
 	if transport == nil {
-		transport = NewHTTPClient(nil)
+		transport = NewHTTPClient(nil, 0)
 	}
 	hc := *transport
 	hc.Jar = nil
 	hc.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, cmp.Or(hc.Timeout, exchangeTimeout))
 	defer cancel()
 	client, err := Start(label, platform)
 	if err != nil {

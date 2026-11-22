@@ -74,9 +74,9 @@ type Manager struct {
 	// activationProbe is how often a pending pairing asks whether it was
 	// confirmed (SetActivationProbe). Zero keeps deviceclient's interval.
 	activationProbe time.Duration
-	// exchangeTimeout bounds one credential exchange (SetExchangeTimeout).
-	// Zero keeps deviceclient's bound.
-	exchangeTimeout time.Duration
+	// pairingBound bounds each pairing step with another computer
+	// (SetPairingBound). Zero keeps each step's product bound.
+	pairingBound time.Duration
 
 	// The profile lock serializes replacement. Release mu before waiting on a
 	// carrier fence. A fenced observation consumes already-resolved manager data.
@@ -421,7 +421,7 @@ func (m *Manager) Add(ctx context.Context, pairingLink string) (Attachment, erro
 		if nameErr != nil {
 			return Attachment{}, nameErr
 		}
-		hc := pairbootstrap.NewHTTPClient(m.dial)
+		hc := pairbootstrap.NewHTTPClient(m.dial, m.pairingBound)
 		defer hc.CloseIdleConnections()
 		// Public metadata may refuse redundant setup, never authorize it.
 		// Check before occupying the other computer's pairing window, and
@@ -745,12 +745,17 @@ func (m *Manager) SetLabelGetter(get func() (string, error)) { m.labelGetter = g
 // (deviceclient.WithProbeInterval).
 func (m *Manager) SetActivationProbe(interval time.Duration) { m.activationProbe = interval }
 
-// SetExchangeTimeout sets the bound on one credential exchange before
-// serving requests. Only a test calls it (deviceclient.WithExchangeTimeout).
-func (m *Manager) SetExchangeTimeout(timeout time.Duration) { m.exchangeTimeout = timeout }
+// SetPairingBound sets, before serving requests, the bound on each pairing
+// step this manager takes with another computer: one credential exchange
+// (deviceclient.WithExchangeTimeout), one nearby-pairing exchange
+// (pairbootstrap.NewHTTPClient) and one peer's own-device reconcile, which
+// introduces computers (ownPeerTimeout). Zero keeps each product bound. Only
+// a test calls it: the computers it pairs with run in its process, where a
+// crowded machine can hold a step past its product bound.
+func (m *Manager) SetPairingBound(bound time.Duration) { m.pairingBound = bound }
 
 func (m *Manager) clientOptions() []deviceclient.Option {
-	return []deviceclient.Option{deviceclient.WithDialContext(m.dial), deviceclient.WithProbeInterval(m.activationProbe), deviceclient.WithExchangeTimeout(m.exchangeTimeout), deviceclient.WithLifetime(m.life)}
+	return []deviceclient.Option{deviceclient.WithDialContext(m.dial), deviceclient.WithProbeInterval(m.activationProbe), deviceclient.WithExchangeTimeout(m.pairingBound), deviceclient.WithLifetime(m.life)}
 }
 func (m *Manager) localLabel() (string, error) {
 	if m.labelGetter != nil {

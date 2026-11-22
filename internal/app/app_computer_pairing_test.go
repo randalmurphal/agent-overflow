@@ -41,11 +41,7 @@ func computerPairingBackend(t *testing.T) (*pairedBackend, pairbootstrap.Snapsho
 
 func exchangeComputerPairing(t *testing.T, b *pairedBackend) (pairbootstrap.Invitation, string) {
 	t.Helper()
-	hc := pairbootstrap.NewHTTPClient(nil)
-	defer hc.CloseIdleConnections()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	invite, sas, err := pairbootstrap.Exchange(ctx, hc, "https://"+b.srv.Addr(), "Windows desktop", "windows")
+	invite, sas, err := nearbyTestExchange(t, "https://"+b.srv.Addr(), "Windows desktop", "windows")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,11 +175,9 @@ func TestComputerPairingClosedWindowCannotConfirmWhileCancellationIsPending(t *t
 func TestComputerPairingRequiresExplicitOpenAndLeaksNoOwnerData(t *testing.T) {
 	t.Parallel()
 	b := newPairedBackend(t)
-	hc := pairbootstrap.NewHTTPClient(nil)
-	defer hc.CloseIdleConnections()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, _, err := pairbootstrap.Exchange(ctx, hc, "https://"+b.srv.Addr(), "uninvited", "windows"); err == nil {
+	if _, _, err := nearbyTestExchange(t, "https://"+b.srv.Addr(), "uninvited", "windows"); err == nil {
 		t.Fatal("closed host accepted nearby pairing")
 	}
 	info, err := (authEndpoints{app: b.app}).NearbyPair(ctx, b.srv.Addr(), pairbootstrap.Request{Op: "info"})

@@ -1,6 +1,7 @@
 package attachedbackends
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -49,6 +50,14 @@ const (
 	ownRetryMin = 30 * time.Second
 	ownRetryMax = 5 * time.Minute
 )
+
+// ownPeerTimeout bounds one peer's part of a pass, the introductions it
+// pairs included, so an unavailable host cannot hold a worker.
+const ownPeerTimeout = 12 * time.Second
+
+// ownPeerBound is ownPeerTimeout, or the manager's pairing bound when a test
+// set one (SetPairingBound).
+func (m *Manager) ownPeerBound() time.Duration { return cmp.Or(m.pairingBound, ownPeerTimeout) }
 
 func (m *Manager) ownWake() chan struct{} {
 	m.own.wakeOnce.Do(func() { m.own.wake = make(chan struct{}, 1) })
@@ -120,7 +129,7 @@ func (m *Manager) ReconcileOwnDevices(ctx context.Context, hooks OwnDeviceHooks)
 	for range min(4, len(profiles)) {
 		workers.Go(func() {
 			for id := range jobs {
-				peerCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+				peerCtx, cancel := context.WithTimeout(ctx, m.ownPeerBound())
 				err := stateErr
 				if err == nil {
 					err = m.reconcileOwnPeer(peerCtx, id, hooks)

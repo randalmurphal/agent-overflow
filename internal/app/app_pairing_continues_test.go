@@ -386,7 +386,7 @@ func TestAnAutomaticUpgradeOfAPairingKeepsItsWork(t *testing.T) {
 	caller := transport.WithCallerScope(context.Background(), transport.CallerScope{Kind: transport.ScopeKindInteractive, ThreadID: thread.ID, ProjectID: thread.ProjectID})
 	commandID := uuid.NewString()
 	if _, err := a.app.AgentRemoteStart(caller, AgentRemoteRequest{ComputerID: c.id, Workspace: gitapp.WorkspaceRef{ProjectID: project.ID},
-		Request: remotejobs.Request{ID: commandID, Argv: []string{"build", commandID}, TimeoutSeconds: 60}}); err != nil {
+		Request: remotejobs.Request{ID: commandID, Argv: []string{"build", commandID}}}); err != nil {
 		t.Fatal(err)
 	}
 
