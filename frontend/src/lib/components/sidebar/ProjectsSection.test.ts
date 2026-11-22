@@ -9,14 +9,16 @@
 // surface. It hangs off App.svelte with the other store-gated overlays, and
 // the assertion below pins that this section raises `open` and nothing else.
 
+import { readSidebarCatalogs } from '../../../test/helpers/sidebarCatalogs';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ProjectsSection from './ProjectsSection.svelte';
 import { makeThread } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { refreshProjects, resetProjectsForTest } from '../../stores/projects.svelte';
+import { resetProjectsForTest } from '../../stores/projects.svelte';
 import { replaceAllThreads } from '../../stores/threads.svelte';
+import { listCatalogTreesForTest } from '../../stores/sidebarCatalogs';
 import { setThreadFilterQuery } from '../../stores/threadFilter.svelte';
 import { isSidebarSectionExpanded, resetSidebarForTest } from '../../stores/sidebar.svelte';
 import { closeNewAssistantDialog, getNewAssistantRequest } from '../../stores/newAssistant.svelte';
@@ -114,8 +116,9 @@ describe('ProjectsSection assistants and projects', () => {
     setBindingMock('ListProjects', async () => [
       { project: { id: 'p1', path: '/repo/p1', name: 'Alpha', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false }, threadCount: 2 },
     ]);
-    await refreshProjects();
+    await readSidebarCatalogs();
     replaceAllThreads([agent, helper, worker, work, plain]);
+    listCatalogTreesForTest();
   });
 
   afterEach(() => {

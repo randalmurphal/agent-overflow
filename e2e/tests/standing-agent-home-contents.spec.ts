@@ -49,6 +49,11 @@ import {
   undeliveredWarning,
 } from './standing-agent-home-contents-helpers.js';
 
+test.beforeEach(async ({ harness }) => {
+  // These assertions read agent message rows, which sit inside activity runs.
+  await harness.rpc('UpdateSettings', { activityRunDefault: 'expanded' });
+});
+
 /** Opens the row titled `title` in a sidebar section: an assistant's row, or a thread in a project. */
 async function openThread(page: Page, section: 'assistants' | 'projects', title: string): Promise<void> {
   await page.getByTestId(`sidebar-${section}-section`).getByTestId('thread-row').getByText(title, { exact: true }).click();

@@ -130,6 +130,7 @@ func TestRerunFailedRejectsOtherStatesAndBrokenSnapshot(t *testing.T) {
 			item.Reason = string(ReasonStuck)
 		case StateCancelled:
 			item.Reason = string(ReasonInterrupted)
+		case StateRunning, StateDone, StateFailed:
 		}
 		if err := h.store.CreateWorkItem(item); err != nil {
 			t.Fatal(err)

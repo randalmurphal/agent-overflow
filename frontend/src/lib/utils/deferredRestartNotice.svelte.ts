@@ -10,10 +10,10 @@
  * latch is wrong in the other direction, which is what this replaces. It
  * survived the two events that make it false, and the frontend can see both:
  *
- *   - the save FAILED. `updateSettingsPatch` never rejects — it restores the
- *     keys it patched and toasts — so a caller that latched on the way in has
- *     no idea, and the user is left reading a restart warning for a setting
- *     that was never stored.
+ *   - the save FAILED. `updateSettingsPatch` never rejects: it restores the
+ *     keys it patched and toasts, so a notice latched on the way in would
+ *     leave the user reading a restart warning for a setting that was never
+ *     stored.
  *   - the axis changed AGAIN, here or in another window (the settings event
  *     lands in the same store). The old notice then describes a value nobody
  *     is running toward any more.

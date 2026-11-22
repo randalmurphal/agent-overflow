@@ -1,0 +1,40 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "expand",
+      "attrs": {
+        "title": "Compact"
+      },
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "Content right after the summary."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "expand",
+      "attrs": {
+        "title": "Spaced"
+      },
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "Body."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -48,6 +48,10 @@ func (h workflowHostAdapter) StartSessionTakingLock(ctx context.Context, threadI
 	return h.app.startSessionTakingLock(ctx, threadID)
 }
 
+func (h workflowHostAdapter) EnsureProvenSession(ctx context.Context, threadID string, beforeStart func() error) (bool, error) {
+	return h.app.ensureProvenSession(ctx, threadID, beforeStart)
+}
+
 func (h workflowHostAdapter) StopSession(threadID string) error {
 	return h.app.stopSession(threadID)
 }
@@ -121,10 +125,6 @@ func (h workflowHostAdapter) LifeCtx() context.Context { return h.app.lifeCtx() 
 
 func (h workflowHostAdapter) ProcessReaper() procutil.Reaper {
 	return h.app.groupReaper("workflow command")
-}
-
-func (h workflowHostAdapter) ClaudeProjectsDir() (string, error) {
-	return h.app.claudeProjectsDir()
 }
 
 // newWorkflowAppRunner builds the workflow runner against this App. It is the
@@ -313,6 +313,11 @@ func workflowTemplateDigest(
 			// told. Saying "paused because …" here would read as a fault report
 			// for the human's own instruction.
 			digest.WhatHappened = "The run stopped at the checkpoint you asked for, before starting the next call."
+		case engine.ReasonStalled, engine.ReasonBudgetExhausted, engine.ReasonRetriesExhausted, engine.ReasonProviderRetriesExhausted,
+			engine.ReasonProviderUsageLimited, engine.ReasonLoopLimitExhausted, engine.ReasonCheckFailedGenuine, engine.ReasonAgentError,
+			engine.ReasonWiringError, engine.ReasonSetupFailed, engine.ReasonInterrupted, engine.ReasonTakenOver, engine.ReasonUnitFailed,
+			engine.ReasonChildFailed, engine.ReasonPaused:
+			fallthrough
 		default:
 			digest.WhatHappened = fmt.Sprintf("The run paused in %s because %s.", phase, workflowReasonText(reason))
 		}
@@ -353,6 +358,9 @@ func workflowTemplateDigest(
 		digest.WhatItNeeds = "Wait for the provider usage limit to reset or switch provider accounts, then resume the run."
 	case engine.ReasonCheckpoint:
 		digest.WhatItNeeds = "Resume the run to continue, or leave it stopped."
+	case engine.ReasonStalled, engine.ReasonRetriesExhausted, engine.ReasonProviderRetriesExhausted, engine.ReasonLoopLimitExhausted,
+		engine.ReasonWiringError, engine.ReasonInterrupted, engine.ReasonUnitFailed, engine.ReasonChildFailed, engine.ReasonPaused:
+		fallthrough
 	default:
 		digest.WhatItNeeds = "Review the run and choose whether to retry, take over, or discard it."
 	}
@@ -414,6 +422,9 @@ func workflowReasonText(reason engine.Reason) string {
 		return "execution was interrupted"
 	case engine.ReasonTakenOver:
 		return "a human took control of the phase"
+	case engine.ReasonGate, engine.ReasonQuestion, engine.ReasonStuck, engine.ReasonCheckFailedGenuine, engine.ReasonDisposition,
+		engine.ReasonUnitFailed, engine.ReasonChildFailed, engine.ReasonPaused, engine.ReasonCheckpoint:
+		fallthrough
 	default:
 		return "human input is required"
 	}
@@ -423,8 +434,7 @@ func (a *App) generateWorkflowDigest(item store.WorkItem, template WorkflowDiges
 	if err := a.waitForBootSteps(a.lifeCtx()); err != nil {
 		return WorkflowDigest{}, err
 	}
-	primary := a.resolveTextGenerationConfig()
-	return runTextGenWithFallback(a, primary, workflowDigestTimeout, func(cfg textgen.Config, deadline time.Time) (WorkflowDigest, error) {
+	return runTextGenWithFallback(a.lifeCtx(), a, workflowDigestTimeout, func(cfg textgen.Config, deadline time.Time) (WorkflowDigest, error) {
 		return a.runWorkflowDigestOnce(cfg, item, template, deadline)
 	})
 }

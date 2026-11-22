@@ -41,7 +41,9 @@ func (t threadToolsApp) startRemoteRequest(
 		return threadtools.RequestAck{}, err
 	}
 
-	row.Token = newThreadRequestToken()
+	hold, release := t.holdNewRequest(ctx, caller)
+	defer release()
+	row.Token = hold.token
 	row.CallerThreadID = caller.ThreadID
 	row.TargetComputerID = computerID
 	row.State = store.ThreadRequestUnconfirmed
@@ -56,6 +58,9 @@ func (t threadToolsApp) startRemoteRequest(
 		return threadtools.RequestAck{}, err
 	}
 	defer done()
+	if hook := t.app.remoteRequestAdmittedForTest; hook != nil {
+		hook(row.Token)
+	}
 	read := t.app.ownerReads.start(ctx, computerID, []string{row.Token})
 	defer read.close()
 	reply, sent, err := t.app.callThreadPeerRequest(ctx, peer.Computer(), ThreadPeerCall{
@@ -78,12 +83,17 @@ func (t threadToolsApp) startRemoteRequest(
 		// Nothing runs under the token. The error this returns is the
 		// delivery, as it is for a request this computer refused itself
 		// (failRequest), and the record keeps the same text: it names the
-		// computer that refused or could not be reached.
+		// computer that refused or could not be reached. Settled inside the
+		// computer's fence: a forget holds it from removing the pairing,
+		// which refuses this call, to ending the work admitted before it,
+		// and that end is what settles this row.
 		_, refusal, _ := errorsx.PublicDetails(err)
+		unlock := t.app.lockComputerPairing(computerID)
 		t.refuseRequest(row.Token, refusal, nil)
+		unlock()
 		return threadtools.RequestAck{}, err
 	}
-	return t.dispatchedAck(ctx, caller, row, peer.Computer(), call, reply, read, err, waitSeconds, done)
+	return t.dispatchedAck(ctx, caller, hold, row, peer.Computer(), call, reply, read, err, waitSeconds, done)
 }
 
 // dispatchedAck is every outcome of a remote request the destination may
@@ -95,7 +105,7 @@ func (t threadToolsApp) startRemoteRequest(
 // back is said in the acknowledgement's notice, beside the state known so
 // far; the request's row stays in the poll, which reconciles it.
 func (t threadToolsApp) dispatchedAck(
-	ctx context.Context, caller threadtools.Caller, row store.ThreadRequest, computer threadtools.Computer,
+	ctx context.Context, caller threadtools.Caller, hold requestHold, row store.ThreadRequest, computer threadtools.Computer,
 	call any, reply peerDispatchReply, read ownerRead, sendErr error, waitSeconds int, done func(),
 ) (threadtools.RequestAck, error) {
 	var failed error
@@ -113,7 +123,7 @@ func (t threadToolsApp) dispatchedAck(
 		}
 	}
 	done()
-	ack, err := t.ackRequest(ctx, caller, row.Token, waitSeconds)
+	ack, err := t.ackRequest(ctx, caller, hold, waitSeconds)
 	if err != nil {
 		failed = errors.Join(failed, fmt.Errorf("read the request back: %w", err))
 	}
@@ -188,6 +198,9 @@ func (t threadToolsApp) admitRemoteRequest(
 		return nil, nil, err
 	}
 	row.TargetComputerName = peer.Computer().Name
+	if row.RunBase, err = t.app.remoteRunBase(row); err != nil {
+		return nil, nil, err
+	}
 	done, err = t.app.admitWork(caller.ThreadID, caller.Session)
 	if err != nil {
 		return nil, nil, err

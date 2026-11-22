@@ -1,0 +1,49 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "Intro"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "Status: "
+        },
+        {
+          "type": "text",
+          "marks": [
+            {
+              "type": "textColor",
+              "attrs": {
+                "color": "#ff5630"
+              }
+            }
+          ],
+          "text": "blocked on vendor"
+        },
+        {
+          "type": "text",
+          "text": " since Tuesday."
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "End"
+        }
+      ]
+    }
+  ]
+}

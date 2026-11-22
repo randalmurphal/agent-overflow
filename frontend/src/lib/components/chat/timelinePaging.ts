@@ -15,7 +15,7 @@ import type {
 import type { UseStickToBottomController } from '../../utils/scroll/index.svelte';
 import type { TimelineVirtualizerHandle } from '../../utils/virtual/types';
 import type { TimelineNode } from '../../utils/subagentGrouping';
-import { ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS } from '../../stores/threadPaneShared';
+import { ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS, type LoadOlderResult } from '../../stores/threadPaneShared';
 import {
   autoLoadZonesDisjoint,
   bottomEdgeGeometry,
@@ -142,6 +142,7 @@ export function createTimelinePaging(options: TimelinePagingOptions): TimelinePa
       !autoLoadOlderGate.shouldLoad({
         hasMore: pane.hasMoreHistory,
         loading: pane.loadingOlder,
+        stalled: pane.olderStalled,
         floorCursor: pane.oldestLoadedCursor,
         restoredThreadId: options.getRestoredThreadId(),
         // Identity, not a thread id: restore bookkeeping is keyed by the
@@ -177,6 +178,7 @@ export function createTimelinePaging(options: TimelinePagingOptions): TimelinePa
       !autoLoadNewerGate.shouldLoad({
         hasMore: pane.hasMoreNewer,
         loading: pane.loadingNewer,
+        stalled: pane.newerStalled,
         floorCursor: pane.newestLoadedCursor,
         restoredThreadId: options.getRestoredThreadId(),
         // Identity, not a thread id: restore bookkeeping is keyed by the
@@ -214,11 +216,14 @@ export function createTimelinePaging(options: TimelinePagingOptions): TimelinePa
     if (viewport.scrollHeight >= viewport.clientHeight + 2 * AUTO_LOAD_OFFSET_PX) return false;
     // Older first: the reader entered at the tail, so history is what a
     // short window is missing. Newer only exists after a jump away from it.
-    if (pane.hasMoreHistory && !pane.loadingOlder) {
+    // A stalled edge (its last page failed or went nowhere) waits for the
+    // edge to move, as auto-load does: this pass reruns on every scheduler
+    // lap, and would otherwise send that page again on each one.
+    if (pane.hasMoreHistory && !pane.loadingOlder && !pane.olderStalled) {
       void handleLoadOlder();
       return true;
     }
-    if (pane.hasMoreNewer && !pane.loadingNewer) {
+    if (pane.hasMoreNewer && !pane.loadingNewer && !pane.newerStalled) {
       void handleLoadNewerAuto();
       return true;
     }
@@ -231,28 +236,34 @@ export function createTimelinePaging(options: TimelinePagingOptions): TimelinePa
     return true;
   }
 
-  // Shared shape behind all three load handlers below: pause auto-scroll
-  // for the duration of the load, run the caller's load body, then disarm
-  // the gate — UNLESS a thread switch happened mid-load (that switch
-  // already reset the new pane's gate, so disarming here would stomp on
-  // the wrong pane's state). Disarming matters because each load's own
-  // follow-up write — the older prepend's head-splice compensation, the
-  // newer-manual scrollToIndex, or the newer-auto head-prune's
-  // compensation — is a PROGRAMMATIC scrollTop write, not a user gesture,
-  // and must not re-fire the gate into a load cascade; a real
-  // wheel/touch/keydown re-arms it, and the gate's own 350ms cooldown is
-  // the fallback for devices where gesture detection misses an event.
+  // Shared shape behind all three load handlers below, and so behind every
+  // page load at an edge (auto-load, the viewport fill, both buttons):
+  // pause auto-scroll for the duration of the load, run the caller's load
+  // body, then disarm the gate. A thread switch mid-load skips the disarm
+  // (that switch already reset the new pane's gate, so disarming here
+  // would stomp on the wrong pane's state), and so does a refused page (it
+  // applied nothing, so no write follows it; the gate stays armed and the
+  // next scroll or gesture probes). Whether the page went anywhere is the
+  // window's to record (`olderStalled` / `newerStalled`). Disarming
+  // matters because each load's own follow-up write — the older prepend's
+  // head-splice compensation, the newer-manual scrollToIndex, or the
+  // newer-auto head-prune's compensation — is a PROGRAMMATIC scrollTop
+  // write, not a user gesture, and must not re-fire the gate into a load
+  // cascade; a real wheel/touch/keydown re-arms it, and the gate's own
+  // 350ms cooldown is the fallback for devices where gesture detection
+  // misses an event.
   async function withGuardedDisarm(
     gate: AutoLoadGate,
-    body: () => Promise<void>,
+    body: () => Promise<LoadOlderResult['status']>,
   ): Promise<void> {
     const release = options.stick.pauseAutoScroll();
     const switchGenAtStart = options.getPane().switchGeneration;
+    let status: LoadOlderResult['status'] | null = null;
     try {
-      await body();
+      status = await body();
     } finally {
       release();
-      if (options.getPane().switchGeneration === switchGenAtStart) gate.disarm();
+      if (options.getPane().switchGeneration === switchGenAtStart && status !== 'stale') gate.disarm();
     }
   }
 
@@ -274,9 +285,10 @@ export function createTimelinePaging(options: TimelinePagingOptions): TimelinePa
     if (!options.getListRef()) return;
     const pane = options.getPane();
     await withGuardedDisarm(autoLoadOlderGate, async () => {
-      await pane.loadOlder();
+      const result = await pane.loadOlder();
       await tick();
       options.saveScrollSnapshot();
+      return result.status;
     });
   }
 
@@ -290,9 +302,9 @@ export function createTimelinePaging(options: TimelinePagingOptions): TimelinePa
       const result = await pane.loadNewer();
       await tick();
       const currentListRef = options.getListRef();
-      if (!currentListRef || result.status !== 'loaded') return;
+      if (!currentListRef || result.status !== 'loaded') return result.status;
       const lastIndex = options.getRevealedNodes().length - 1;
-      if (lastIndex < 0 || !options.claimNavigation(myToken)) return;
+      if (lastIndex < 0 || !options.claimNavigation(myToken)) return result.status;
       // Explicit navigation into the middle of history (more-newer may
       // remain below): escape bottom follow, then jump.
       options.stick.markEscaped();
@@ -301,6 +313,7 @@ export function createTimelinePaging(options: TimelinePagingOptions): TimelinePa
       // auto-firing another load.
       currentListRef.scrollToIndex(lastIndex, { align: 'end' });
       options.saveScrollSnapshot();
+      return result.status;
     });
   }
 
@@ -313,9 +326,10 @@ export function createTimelinePaging(options: TimelinePagingOptions): TimelinePa
     if (!options.getListRef()) return;
     const pane = options.getPane();
     await withGuardedDisarm(autoLoadNewerGate, async () => {
-      await pane.loadNewer();
+      const result = await pane.loadNewer();
       await tick();
       options.saveScrollSnapshot();
+      return result.status;
     });
   }
 

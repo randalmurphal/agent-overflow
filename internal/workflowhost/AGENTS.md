@@ -26,7 +26,13 @@ the engine. The engine decides what runs next.
   must reach provider and tool subprocesses and their process groups.
 - Treat typed provider usage limits as parks rather than transient retries.
 - A continuation may reuse a provider session only after proving the expected
-  provider context still exists and belongs to the phase thread.
+  provider context still exists and belongs to the phase thread. A live or a
+  cold session is proven by the provider's own start
+  (`SessionHost.EnsureProvenSession`), never by reading its transcript or by
+  the session being registered. Only a Claude count of user messages, or the
+  CLI's report that it took a prompt written to it, proves the conversation;
+  a report that it is gone, empty or of unproven content makes the context
+  unavailable.
 - Human takeover detaches automation without discarding the reliability
   deadline and restores the correct schema when control returns.
 

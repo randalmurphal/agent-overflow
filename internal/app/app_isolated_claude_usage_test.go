@@ -55,13 +55,18 @@ func TestIsolatedBootAnswersClaudeUsageOnlyForASetIdentity(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	// The harness RPC's path: a requested reading of the selected account.
-	(&harnessHost{app: app}).RequestClaudeUsageReading()
+	// The harness RPC's path: a reading of the selected account, published
+	// before the call returns.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := (&harnessHost{app: app}).ReadClaudeUsage(ctx); err != nil {
+		t.Fatal(err)
+	}
 	var snapshot provider.RateLimitsSnapshot
 	select {
 	case snapshot = <-readings:
-	case <-time.After(10 * time.Second):
-		t.Fatal("a requested reading never reached provider:usage")
+	default:
+		t.Fatal("the reading had not reached provider:usage when the call returned")
 	}
 	var ids []string
 	for _, limit := range snapshot.Limits {

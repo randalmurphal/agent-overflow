@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { applyProjectUpdated } from './eventsProjectRows';
 import {
+  addProjectDeletedObserver,
   addProjectLocal,
   getProject,
   getProjects,
@@ -80,6 +81,21 @@ describe('applyProjectUpdated — project:updated convergence', () => {
 
   // A placeholder has no thread row, so no thread:updated frame names it.
   // Its project is what it would be created in, and that project is gone.
+  it("tells what keeps state by entry key about a 'deleted' frame, and not about an 'unlisted' one", () => {
+    const deleted: string[] = [];
+    const stop = addProjectDeletedObserver((key) => deleted.push(key));
+    try {
+      addProjectLocal(makeProject('p1'));
+      addProjectLocal(makeProject('p2'));
+      applyProjectUpdated({ action: 'unlisted', project: makeProject('p1', { archived: true }) });
+      expect(deleted).toEqual([]);
+      applyProjectUpdated({ action: 'deleted', id: 'p2' });
+      expect(deleted).toEqual(['p2']);
+    } finally {
+      stop();
+    }
+  });
+
   it("closes every draft placeholder on a deleted project, and leaves the rest", () => {
     const gone = makeProject('p1');
     const kept = makeProject('p2');

@@ -107,11 +107,36 @@ func runDesktopApply(args []string) int {
 		return 2
 	}
 	dataDirRoot = flags.dataDir
-	if err := waitForReplacedApp(flags.wait, desktopWaitTimeout); err != nil {
-		log.Printf("updater: %v", err)
+	if err := waitForReplacedApp(flags.wait, desktopWaitTimeout, desktopApplyPhases(flags, log.Printf)); err != nil {
 		return 1
 	}
 	return runDesktopApplyWindow(flags)
+}
+
+// waitForUpdateHelper waits for the helper that started this launch to
+// exit: it holds the single-instance identity and the backend lock until
+// then. The wait is the new version's first phase after the update; one
+// that runs out is logged and the launch goes on. It returns when this
+// boot's own work starts, where the boot that follows an update begins
+// (beginUpdateBoot): the wait's end by now, or the process's start when
+// no helper started it. nil now is time.Now.
+func waitForUpdateHelper(helper supervise.ProcessRef, timeout time.Duration, logf func(string, ...any), now func() time.Time) (bootStarted time.Time) {
+	if helper.PID == 0 {
+		return processStarted
+	}
+	waiting := supervise.NewPhaseLog(logf, "updater: update helper", now).Begin("wait-helper")
+	err := supervise.WaitForExit(context.Background(), helper, timeout)
+	return waiting.End(err, "pid", helper.PID)
+}
+
+// desktopApplyPhases logs the helper's own phases for the update or
+// migration flags name.
+func desktopApplyPhases(flags desktopApplyFlags, logf func(string, ...any)) *supervise.PhaseLog {
+	prefix := "updater: update " + flags.id
+	if flags.migrate {
+		prefix = "updater: database upgrade"
+	}
+	return supervise.NewPhaseLog(logf, prefix, nil)
 }
 
 // waitForReplacedApp waits for the app that started the helper to exit, so
@@ -119,12 +144,16 @@ func runDesktopApply(args []string) int {
 // record of an app that did not exit is left as it is: only a process that
 // holds the backend lock writes it, and that app holds it. The next launch
 // recovers it under the lock (a pending update without a trial settles
-// failed and is reported).
-func waitForReplacedApp(wait supervise.ProcessRef, timeout time.Duration) error {
-	if err := supervise.WaitForExit(context.Background(), wait, timeout); err != nil {
-		return fmt.Errorf("the app that started this helper (pid %d) did not exit; the next launch recovers the update: %w", wait.PID, err)
+// failed and is reported). The wait is the previous version's shutdown,
+// from the helper's side: phases logs it as wait-previous.
+func waitForReplacedApp(wait supervise.ProcessRef, timeout time.Duration, phases *supervise.PhaseLog) error {
+	waiting := phases.Begin("wait-previous")
+	err := supervise.WaitForExit(context.Background(), wait, timeout)
+	if err != nil {
+		err = fmt.Errorf("the app that started this helper (pid %d) did not exit; the next launch recovers the update: %w", wait.PID, err)
 	}
-	return nil
+	waiting.End(err)
+	return err
 }
 
 // desktopInstall is this binary as a helper or a relaunch starts it, and
@@ -320,7 +349,9 @@ func (a *desktopApplier) run(ctx context.Context) {
 // it, and the holder may be a helper of the same record between its lock
 // and its trial. The next launch recovers it under the lock.
 func (a *desktopApplier) lock(ctx context.Context, migration bool) bool {
+	locking := desktopApplyPhases(a.flags, a.logf).Begin("lock")
 	lock, err := a.acquireLock(ctx)
+	locking.End(err)
 	if err == nil {
 		a.update.Lock = lock
 		return true
@@ -417,6 +448,15 @@ func newDesktopGate(lock *os.File) desktopGate {
 		return desktopGate{unavailable: err, logPath: logPath, logf: logf}
 	}
 	return desktopGate{boot: &boot, logPath: logPath, logf: logf}
+}
+
+// updateLogf is where the boot's lines about the update go: the update log
+// too when the gate has one.
+func (g desktopGate) updateLogf() func(string, ...any) {
+	if g.logf == nil {
+		return log.Printf
+	}
+	return g.logf
 }
 
 // reconcile is the update half's plan; a boot without one launches, and its
@@ -550,6 +590,7 @@ func (b desktopBoot) reconcile(ctx context.Context) desktopBootPlan {
 	case supervise.DesktopBlocked:
 		b.logf("updater: update %s blocks this launch: %s", record.Update.ID, decision.Title)
 		return b.refuse(decision.Title, decision.Detail)
+	case supervise.DesktopLaunch:
 	}
 	if schema, pending := b.pendingMigrations(); pending {
 		if err := b.migrate(schema); err != nil {

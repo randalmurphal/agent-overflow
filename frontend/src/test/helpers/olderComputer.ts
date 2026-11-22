@@ -11,7 +11,7 @@ import { makeSettings } from './settings';
 
 /** The App methods this build has and v0.0.19 does not. */
 export const METHODS_AFTER_V0_0_19 = [
-  'CancelThreadWake', 'CheckAgentProfiles', 'CreateAssistant', 'DeleteThreads',
+  'AgentRosterSeeds', 'CancelThreadWake', 'CheckAgentProfiles', 'CreateAssistant', 'DeleteThreads',
   'GetDeleteDependents', 'GetGitBlobImage', 'GetNativeMemoryStatus', 'GetStandingAgent',
   'GetThreadAgentRows', 'GetThreadRequestStates', 'GetThreadWakeDetail',
   'GetThreadWorkerSummary', 'ListAssistantPastThreads', 'ListStandingAgentWakes',

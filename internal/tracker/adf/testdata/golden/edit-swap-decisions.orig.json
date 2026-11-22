@@ -1,0 +1,58 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "Intro"
+        }
+      ]
+    },
+    {
+      "type": "decisionList",
+      "attrs": {
+        "localId": "dl"
+      },
+      "content": [
+        {
+          "type": "decisionItem",
+          "attrs": {
+            "localId": "d1",
+            "state": "DECIDED"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Use Go for the CLI"
+            }
+          ]
+        },
+        {
+          "type": "decisionItem",
+          "attrs": {
+            "localId": "d2",
+            "state": "UNDECIDED"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Ship weekly releases"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "End"
+        }
+      ]
+    }
+  ]
+}

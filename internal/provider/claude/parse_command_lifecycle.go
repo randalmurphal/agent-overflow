@@ -88,6 +88,7 @@ func (p *Parser) parseCommandLifecycle(threadID string, raw map[string]json.RawM
 
 	var mirroredEvents []provider.ProviderEvent
 	switch state {
+	case provider.CommandQueued:
 	case provider.CommandStarted:
 		p.activeCommandUUID = commandUUID
 		mirroredEvents = p.startMirroredCommand(threadID, commandUUID, now)

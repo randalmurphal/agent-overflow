@@ -96,7 +96,10 @@ func projectPathForThread(t *testing.T, a *App, thread store.Thread) string {
 // action lock without depending on scheduler sleeps.
 func waitForThreadLockRefs(t *testing.T, locks interface{ Refs(string) int }, threadID string, want int) {
 	t.Helper()
-	deadline := time.Now().Add(time.Second)
+	// The bound only ends a wait that will never be met. A caller reaches
+	// its lock after store reads whose statements compile on first use,
+	// which takes seconds in a full parallel run.
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		if locks.Refs(threadID) == want {
 			return

@@ -178,26 +178,38 @@ stop_jobs() {
   wait $running 2>/dev/null || true
 }
 
-# Until the boot is confirmed the launch is this command's to undo. A signal
-# or a failed boot stops the launcher, before or after it made the scope,
-# waits for it so it cannot make one later, then stops the scope. Holding
-# the lock means no other run can have made one. The launcher is found with
-# `jobs -p`, not `$!`: a trap can run after the fork and before `$!` is read.
-booted=""
-started="$(mktemp -d)"
+# start exits through abandon, with its status: from the EXIT trap, or with
+# 128 plus a signal's number from its handler. A handler that runs as the
+# EXIT trap begins runs inside the trap, so it calls abandon rather than
+# exit, which would cut the trap short. The launch is this command's to undo
+# unless start exits 0. Undoing stops the launcher, before or after it made
+# the scope, and waits for it so it cannot make one later; then it stops the
+# scope, and the emulator with its hold on the lock. Holding the lock means
+# no other run can have made one. The launcher is found with `jobs -p`, not
+# `$!`: a trap can run after the fork and before `$!` is read. The marks
+# directory is removed by its name's prefix, so a signal before mktemp's
+# answer is assigned still removes it.
+marks_prefix="${TMPDIR:-/tmp}/ao-emulator-start.$$."
 abandon() {
+  local status="${1:-$?}"
   # A second signal must not cut the undoing short.
   trap '' INT TERM HUP
-  if [[ -z "$booted" ]]; then
+  trap - EXIT
+  if [[ "$status" != 0 ]]; then
     stop_jobs
     systemctl --user stop "$unit" >/dev/null 2>&1 || true
   fi
-  rm -rf "$started"
+  rm -rf "$marks_prefix"*
+  exit "$status"
 }
 trap abandon EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
-trap 'exit 129' HUP
+started="$(mktemp -d "${marks_prefix}XXXXXX")"
+# While these handlers are set, nothing here expands $(...), <(...) or
+# >(...), which can lose a signal under bash 5.2 (main_shell_signals_unix_test.go);
+# abandon may, once it has ignored the signals.
+trap 'abandon 130' INT
+trap 'abandon 143' TERM
+trap 'abandon 129' HUP
 "$BASH" -c "$START_MARKED" "$started" systemd-run --user --scope --unit="$unit" -q \
   -p MemoryMax="$memory" -p MemorySwapMax=0 -p CPUQuota=400% \
   bwrap --bind "$rootfs" / --dev /dev --dev-bind /dev/kvm /dev/kvm --proc /proc \
@@ -210,15 +222,15 @@ trap 'exit 129' HUP
   >"$log" 2>&1 &
 
 echo "==> booting $avd as $unit (memory cap $memory)"
-start=$(date +%s)
-until [[ "$("$adb" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" == 1 ]]; do
-  if (( $(date +%s) - start > 5 )) && ! systemctl --user is-active -q "$unit"; then
+SECONDS=0
+until "$adb" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' | grep -qx 1; do
+  if (( SECONDS > 5 )) && ! systemctl --user is-active -q "$unit"; then
     echo "emulator exited during boot:" >&2
     grep -v '^DEBUG' "$log" | tail -20 >&2
     exit 1
   fi
-  if (( $(date +%s) - start > 400 )); then echo "boot timed out" >&2; exit 1; fi
+  if (( SECONDS > 400 )); then echo "boot timed out" >&2; exit 1; fi
   sleep 3
 done
-booted=1
-echo "==> booted in $(( $(date +%s) - start ))s; adb serial $("$adb" devices | awk '/^emulator-/ { print $1; exit }')"
+printf '==> booted in %ss; adb serial ' "$SECONDS"
+"$adb" devices | awk '/^emulator-/ && serial == "" { serial = $1 } END { print serial }'

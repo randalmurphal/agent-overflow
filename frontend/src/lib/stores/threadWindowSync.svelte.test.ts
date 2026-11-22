@@ -36,6 +36,9 @@ import {
 import type { HeldWindow, PagedItems } from '../../../bindings/agent-overflow/internal/store/models';
 import { windowDigest } from './threadWindowDigest';
 import { TransportError } from '../transport/wsClient';
+import { AGENT_MESSAGES_ABSORBED_RULE, AGENT_MESSAGE_MEMBERS_RULE } from '../utils/activityRunSpans';
+import { AGENT_MESSAGE_RUN_MEMBERS_CAPABILITY } from './activityRunRule';
+import { __setTransportHelloForTest } from './transportStatus.svelte';
 
 installFakeIndexedDB();
 
@@ -139,7 +142,7 @@ function replicaBody(items: Item[], epoch: number, rev: number) {
     },
     hasMoreOlder: false,
     hasMoreNewer: false,
-    latestSettledTurn: null,
+    latestSettledTurn: null, activityRunRule: AGENT_MESSAGES_ABSORBED_RULE,
     runs: [],
   };
 }
@@ -214,6 +217,53 @@ describe('cold-open window sync', () => {
     expect(requests[0].haveRev).toBe(11);
     // A fresh answer applies nothing; the painted rows ARE the window.
     expect(pane.items.map((it) => it.id)).toEqual(['i0']);
+  });
+
+  it('does not paint a replica window read under the other activity-run rule', async () => {
+    // No hello: the thread's backend groups by the absorbed rule.
+    await putReplicaWindow(THREAD_ID, { ...replicaBody([row('i0')], 3, 11), activityRunRule: AGENT_MESSAGE_MEMBERS_RULE });
+    const pane = createThreadPane();
+    const staged: string[][] = [];
+    const requests = installSync(() => {
+      staged.push(pane.items.map((it) => it.id));
+      return { status: 'stale', epoch: 3, rev: 12, page: page([row('i0'), row('i1')]) };
+    });
+
+    await pane.switchThread(makeThread({ id: THREAD_ID }));
+
+    expect(staged).toEqual([[]]);
+    expect(requests[0]).toMatchObject({ haveEpoch: UNKNOWN_REV, haveRev: UNKNOWN_REV });
+    expect(requests[0].haveWindow).toBeUndefined();
+    expect(pane.items.map((it) => it.id)).toEqual(['i0', 'i1']);
+    pane.clear();
+  });
+
+  it('does not reinstall a window cached before its backend changed rule', async () => {
+    const thread = makeThread({ id: THREAD_ID });
+    const pane = createThreadPane();
+    installSync((_request, id) => ({ page: page(id === THREAD_ID ? [row('i0'), row('i1')] : []) }));
+    await pane.switchThread(thread);
+    await pane.switchThread(makeThread({ id: 'away' }));
+    expect(threadItemCache.get(THREAD_ID)?.activityRunRule).toBe(AGENT_MESSAGES_ABSORBED_RULE);
+
+    __setTransportHelloForTest({ protocolVersion: 1, capabilities: [AGENT_MESSAGE_RUN_MEMBERS_CAPABILITY],
+      backendId: '', backendName: '', serverTimeMs: 0, clockSkewMs: 0,
+      bundleId: '', bundleVersion: '', minShellBuild: 0 });
+    try {
+      const staged: string[][] = [];
+      const requests = installSync(() => {
+        staged.push(pane.items.map((it) => it.id));
+        return { status: 'stale', epoch: 1, rev: 2, page: page([row('i0'), row('i1')]) };
+      });
+      await pane.switchThread(thread);
+      expect(staged).toEqual([[]]);
+      expect(requests[0]).toMatchObject({ haveEpoch: UNKNOWN_REV, haveRev: UNKNOWN_REV });
+      expect(requests[0].haveWindow).toBeUndefined();
+      expect(pane.items.map((it) => it.id)).toEqual(['i0', 'i1']);
+    } finally {
+      __setTransportHelloForTest(null);
+      pane.clear();
+    }
   });
 
   it('asks with unknown stamps when nothing is cached', async () => {

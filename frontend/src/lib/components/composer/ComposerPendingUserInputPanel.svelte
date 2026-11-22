@@ -1,4 +1,7 @@
 <script lang="ts">
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
+  import type { ControlAccess } from '../../transport/scopes';
+  import { isLocalEnter } from '../../utils/localEnter';
   import { onDestroy, onMount, tick, untrack } from 'svelte';
   import { scale } from 'svelte/transition';
   import type { UserInputQuestion, UserInputRequest } from '../../types/events';
@@ -43,11 +46,12 @@
      *  chip). The component stays mounted so entered answers are preserved. */
     collapsed?: boolean;
     /**
-     * This session was not granted `approvals:respond`. The question still
-     * renders — it is what explains why the turn is parked — and every
-     * control that would answer it goes inert.
+     * Whether an answer can reach the thread's computer (composerAccess.ts
+     * `respond`). Otherwise the question still renders — it is what
+     * explains why the turn is parked — and every control that would
+     * answer it goes inert, saying why.
      */
-    ungranted?: boolean;
+    access?: ControlAccess;
   }
 
   let {
@@ -61,8 +65,10 @@
     threadId,
     workspacePath = '',
     collapsed = false,
-    ungranted = false,
+    access = 'granted',
   }: Props = $props();
+  let ungranted = $derived(access !== 'granted');
+  let blocked = $derived(grantBlockedTitle(access));
 
   let index = $state(0);
   let focusedOptionIndex = $state(0);
@@ -199,7 +205,7 @@
       moveOptionFocus(-1);
       return;
     }
-    if (event.key === 'Enter' || event.key === ' ') {
+    if (isLocalEnter(event) || event.key === ' ') {
       event.preventDefault();
       event.stopPropagation();
       selectOption(activeQuestion, label, 'keyboard');
@@ -388,7 +394,7 @@
       {/if}
     </div>
     {#snippet submitButton()}
-      <Button variant="primary" size="sm" onclick={() => submit()} testId="user-input-submit" disabled={!canSubmit} loading={!ungranted && responding}>
+      <Button variant="primary" size="sm" onclick={() => submit()} testId="user-input-submit" disabled={!canSubmit} title={blocked} loading={!ungranted && responding}>
         {#snippet children()}{isMulti ? 'Submit answers' : 'Submit answer'}{/snippet}
       </Button>
     {/snippet}
@@ -443,6 +449,7 @@
               {selected}
               focused={focusedOptionIndex === optionIndex}
               disabled={responding || ungranted}
+              title={blocked}
               tabIndex={focusedOptionIndex === optionIndex ? 0 : -1}
               onSelect={() => selectOption(question, option.label, 'mouse')}
               onFocus={() => (focusedOptionIndex = optionIndex)}
@@ -499,6 +506,7 @@
             {selected}
             focused={focusedOptionIndex === optionIndex}
             disabled={responding || ungranted}
+            title={blocked}
             tabIndex={focusedOptionIndex === optionIndex ? 0 : -1}
             onSelect={() => selectOption(question, option.label, 'mouse')}
             onFocus={() => (focusedOptionIndex = optionIndex)}

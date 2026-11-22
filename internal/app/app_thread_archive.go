@@ -103,7 +103,10 @@ func (o archiveOutcome) result(a *App) ArchiveThreadResult {
 // says when to deliver (deliverOwnerOps). A worker it could not archive is
 // reported, and the others are still archived.
 func (a *App) finishArchive(work restingThreadWork, reach ownerOpReach) archiveOutcome {
-	outcome, owed := a.walkArchive(work)
+	// What the archive's end owes is this door's to attempt until it returns.
+	holds := a.ownerOpHolds(reach)
+	defer holds.release()
+	outcome, owed := a.walkArchive(work, holds)
 	outcome.workers = append(outcome.workers, a.deliverOwnerOps(owed, nil, reach)...)
 	return outcome
 }
@@ -114,9 +117,9 @@ func (a *App) finishArchive(work restingThreadWork, reach ownerOpReach) archiveO
 // its owner's archive (ArchiveOwnedWorker), so a cleanup that runs late
 // leaves alone a worker moved since, and every worker of an owner reopened
 // since. Then the archive ends (endArchiveWalk), returning what it owes the
-// paired computers. A worker's own walk owes what the owner's end owes
-// again, under a newer sequence.
-func (a *App) walkArchive(work restingThreadWork) (archiveOutcome, []store.OwnerOp) {
+// paired computers, which holds holds. A worker's own walk owes what the
+// owner's end owes again, under a newer sequence, and holds nothing.
+func (a *App) walkArchive(work restingThreadWork, holds *ownerOpHolds) (archiveOutcome, []store.OwnerOp) {
 	outcome := archiveOutcome{cleanup: a.stopRestingThreadWork(work)}
 	outcome.cleanup.outcome = "archived"
 	for _, worker := range work.workers {
@@ -127,14 +130,14 @@ func (a *App) walkArchive(work restingThreadWork) (archiveOutcome, []store.Owner
 		case err != nil:
 			outcome.workers = append(outcome.workers, workerFailure{threadID: worker.ThreadID, err: err})
 		case child.captured:
-			childOutcome, _ := a.walkArchive(child)
+			childOutcome, _ := a.walkArchive(child, nil)
 			outcome.add(childOutcome)
 		}
 	}
 	// A prompt of a worker the archive left running goes back to the user,
 	// delivered or not; the archived workers' prompts ended with them.
 	a.reroutePromptsFrom(work.threadID)
-	owed, err := a.endArchiveWalk(work.threadID)
+	owed, err := a.endArchiveWalk(work.threadID, holds)
 	outcome.cleanup.remoteWorkers = err
 	return outcome, owed
 }

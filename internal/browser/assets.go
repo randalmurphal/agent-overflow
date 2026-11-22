@@ -4,7 +4,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -42,6 +45,9 @@ func (s *AssetSource) UnmarshalJSON(data []byte) error {
 }
 
 func (m *Manager) Assets(ctx context.Context, access Access, opts AssetOptions) (any, error) {
+	if err := m.bound(access); err != nil {
+		return nil, err
+	}
 	p, _, err := m.lookupOrSelectPage(ctx, access, opts.PageID)
 	if err != nil {
 		return nil, err
@@ -57,7 +63,9 @@ func (m *Manager) Assets(ctx context.Context, access Access, opts AssetOptions) 
 }
 
 func (m *Manager) listAssets(ctx context.Context, p *managedPage) (AssetInventory, error) {
-	p.mu.Lock()
+	if err := m.lockPageForOperation(ctx, p); err != nil {
+		return AssetInventory{}, err
+	}
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	defer cancel()
@@ -189,27 +197,46 @@ func (m *Manager) bundleAssets(ctx context.Context, p *managedPage, opts AssetOp
 		if len(kinds) > 0 && !kinds[asset.Kind] {
 			continue
 		}
-		if len(ids) == 0 && len(kinds) == 0 {
-			continue
-		}
 		selected = append(selected, asset)
 	}
 	if len(selected) > 200 {
 		return AssetBundle{}, fmt.Errorf("browser: asset bundle exceeds 200 files")
 	}
-	if !m.reserveArtifacts(maxAssetBundleBytes) {
-		return AssetBundle{}, fmt.Errorf("browser: artifacts exceed %d bytes", maxArtifactRootBytes)
+	reservation, err := m.reserveArtifacts(maxAssetBundleBytes)
+	if err != nil {
+		return AssetBundle{}, err
 	}
 	var settledBytes int64
-	defer func() { m.settleArtifactReservation(maxAssetBundleBytes, settledBytes) }()
+	defer func() { reservation.Settle(settledBytes) }()
+	// Every file of the bundle is written in its directory held open in the
+	// held artifact root (openArtifactDir), where the quota measures it.
 	dir := filepath.Join(m.artifactRoot, "assets", uuid.NewString())
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	held, err := m.openArtifactDir(dir)
+	if err != nil {
 		return AssetBundle{}, err
+	}
+	defer closeArtifactDir(held, dir)
+	// The manifest's name is taken before any asset's, so an asset named
+	// like it gets the next variant name (uniqueArtifactName).
+	const manifestName = "manifest.json"
+	manifestPath := filepath.Join(dir, manifestName)
+	reserved, err := held.OpenFile(manifestName, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return AssetBundle{}, fmt.Errorf("browser: reserve the asset manifest: %w", err)
+	}
+	if err := reserved.Close(); err != nil {
+		return AssetBundle{}, fmt.Errorf("browser: reserve the asset manifest: %w", err)
 	}
 	bundle := AssetBundle{DirectoryPath: dir, Assets: make([]BundledAsset, 0, len(selected)), Failures: make([]AssetFailure, 0)}
 	started := time.Now()
-	var total int64
-	p.mu.Lock()
+	// total is the bundle's bytes; stranded the bytes of failed files that
+	// could not be removed, which still hold the reservation, and
+	// strandedNames those files.
+	var total, stranded int64
+	var strandedNames []string
+	if err := p.mu.LockContext(ctx); err != nil {
+		return AssetBundle{}, fmt.Errorf("browser: bundle assets: %w", err)
+	}
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	defer cancel()
@@ -229,26 +256,34 @@ func (m *Manager) bundleAssets(ctx context.Context, p *managedPage, opts AssetOp
 		}
 		contentType := stream.ContentType
 		name := safeArtifactName(asset.Name, asset.Kind)
-		path, pathErr := uniqueArtifactPath(dir, name)
+		fileName, pathErr := uniqueArtifactName(held, name)
 		if pathErr != nil {
 			stream.Close()
 			bundle.Failures = append(bundle.Failures, AssetFailure{ID: asset.ID, Name: name, URL: asset.URL, Reason: pathErr.Error(), ContentType: contentType})
 			continue
 		}
-		file, fileErr := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		path := filepath.Join(dir, fileName)
+		file, fileErr := held.OpenFile(fileName, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if fileErr != nil {
 			stream.Close()
 			bundle.Failures = append(bundle.Failures, AssetFailure{ID: asset.ID, Name: name, URL: asset.URL, Reason: fileErr.Error(), ContentType: contentType})
 			continue
 		}
-		written, copyErr := stream.Copy(file, maxAssetBytes, min64(maxAssetBundleBytes-total, maxAssetBytes))
+		written, copyErr := stream.Copy(file, maxAssetBytes, min(maxAssetBundleBytes-total-stranded, maxAssetBytes))
 		closeErr := file.Close()
 		stream.Close()
 		if copyErr == nil {
 			copyErr = closeErr
 		}
 		if copyErr != nil {
-			_ = os.Remove(path)
+			if err := held.Remove(fileName); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				// The partial file stays on disk and is settled as kept.
+				log.Printf("browser: remove the partial asset %s: %v", path, err)
+				copyErr = fmt.Errorf("%w; its partial file %s could not be removed: %v", copyErr, path, err)
+				stranded += written
+				strandedNames = append(strandedNames, fileName)
+				settledBytes += written
+			}
 			bundle.Failures = append(bundle.Failures, AssetFailure{ID: asset.ID, Name: name, URL: asset.URL, Reason: copyErr.Error(), ContentType: contentType})
 			continue
 		}
@@ -256,22 +291,59 @@ func (m *Manager) bundleAssets(ctx context.Context, p *managedPage, opts AssetOp
 		settledBytes += written
 		bundle.Assets = append(bundle.Assets, BundledAsset{AssetInfo: asset, Path: path, ContentType: contentType})
 	}
-	manifestPath := filepath.Join(dir, "manifest.json")
-	manifest, _ := json.MarshalIndent(map[string]any{"inventoryId": inventory.ID, "pageUrl": inventory.PageURL, "assets": bundle.Assets, "failures": bundle.Failures}, "", "  ")
-	if err := os.WriteFile(manifestPath, append(manifest, '\n'), 0o600); err != nil {
+	manifest, err := json.MarshalIndent(map[string]any{"inventoryId": inventory.ID, "pageUrl": inventory.PageURL, "assets": bundle.Assets, "failures": bundle.Failures}, "", "  ")
+	if err != nil {
+		return AssetBundle{}, fmt.Errorf("browser: encode the asset manifest: %w", err)
+	}
+	if err := held.WriteFile(manifestName, append(manifest, '\n'), 0o600); err != nil {
 		return AssetBundle{}, err
 	}
 	settledBytes += int64(len(manifest) + 1)
 	bundle.ManifestPath = manifestPath
+	// Every path the bundle hands out must name the file written, in the
+	// folder held; when a name on the way to it was moved since it was
+	// held, the bundle is not kept. The files it wrote go through the held
+	// folder itself, a partial one that could not be removed before
+	// included, and the bundle settles as the bytes that folder still
+	// holds, or as written when they cannot be measured.
+	if err := bundleNamesReach(held, bundle, manifestName); err != nil {
+		wrote := append([]string{manifestName}, strandedNames...)
+		for _, asset := range bundle.Assets {
+			wrote = append(wrote, filepath.Base(asset.Path))
+		}
+		left, removeErr := m.removeHeldArtifacts(held, dir, wrote)
+		if left >= 0 {
+			settledBytes = left
+		}
+		return AssetBundle{}, errors.Join(err, removeErr)
+	}
 	bundle.Summary = map[string]any{"requestedCount": len(selected), "downloadedCount": len(bundle.Assets), "failedCount": len(bundle.Failures), "elapsedMs": time.Since(started).Milliseconds(), "bytes": total}
 	return bundle, nil
 }
 
-func min64(a, b int64) int64 {
-	if a < b {
-		return a
+// bundleNamesReach answers nil when the bundle's directory, manifest and
+// asset paths each reach the file or folder written through held, the
+// bundle's directory (nameReaches).
+func bundleNamesReach(held *os.Root, bundle AssetBundle, manifestName string) error {
+	reach := func(path, name string) error {
+		written, err := held.Stat(name)
+		if err != nil {
+			return fmt.Errorf("browser: read the asset bundle's %s: %w", name, err)
+		}
+		return nameReaches(path, written)
 	}
-	return b
+	if err := reach(bundle.DirectoryPath, "."); err != nil {
+		return err
+	}
+	if err := reach(bundle.ManifestPath, manifestName); err != nil {
+		return err
+	}
+	for _, asset := range bundle.Assets {
+		if err := reach(asset.Path, filepath.Base(asset.Path)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func assetInventoryExpression() string {

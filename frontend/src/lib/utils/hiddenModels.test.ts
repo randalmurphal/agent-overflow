@@ -55,12 +55,39 @@ describe('hiddenModels', () => {
         .toEqual(['claude-opus-5-5', 'claude-sonnet-5']);
     });
 
-    it('a selection on a model that became unlisted counts as withdrawn', () => {
+    it('a selection on a model the provider stopped listing counts as withdrawn', () => {
       const models = [
-        { slug: 'claude-opus-4-5', name: 'Opus 4.5', provider: 'claude', unlisted: true },
+        { slug: 'claude-opus-4-5', name: 'Opus 4.5', provider: 'claude', unlisted: true, providerUnlisted: true },
       ];
       expect(catalogWithdrawals({ provider: 'claude', model: 'claude-opus-4-5[1m]' }, models)).toEqual(['claude-opus-4-5[1m]']);
-      expect(catalogWithdrawals({ provider: 'claude', model: 'claude-opus-4-5' }, [{ ...models[0], unlisted: false }])).toEqual([]);
+      expect(catalogWithdrawals({ provider: 'claude', model: 'claude-opus-4-5' }, [{ slug: 'claude-opus-4-5', name: 'Opus 4.5', provider: 'claude' }])).toEqual([]);
+    });
+
+    it('pickers keep a model a thread ran this week, and its withdrawal by the provider still warns', () => {
+      // The backend clears unlisted for a model kept by recent use, and
+      // says the provider does not list it in providerUnlisted.
+      const kept = { slug: 'claude-opus-4-7', name: 'Opus 4.7', provider: 'claude', providerUnlisted: true };
+      const recent: { slug: string; unlisted?: boolean; providerUnlisted?: boolean }[] = [
+        { slug: 'claude-opus-5-5' },
+        kept,
+        { slug: 'claude-opus-4-5', unlisted: true, providerUnlisted: true },
+      ];
+      expect(pickerVisibleModels(makeSettings(), 'claude', recent).map((m) => m.slug))
+        .toEqual(['claude-opus-5-5', 'claude-opus-4-7']);
+      expect(offeredModels(recent).map((m) => m.slug)).toEqual(['claude-opus-5-5', 'claude-opus-4-7']);
+      expect(catalogWithdrawals({ provider: 'claude', model: 'claude-opus-4-7' }, [kept])).toEqual(['claude-opus-4-7']);
+    });
+
+    it('an older computer that states only unlisted still has its hidden rows read as withdrawn', () => {
+      // A computer that predates providerUnlisted marks unlisted alone, and
+      // clears it for a model kept by recent use.
+      const older = [
+        { slug: 'claude-opus-4-7', name: 'Opus 4.7', provider: 'claude' },
+        { slug: 'claude-opus-4-5', name: 'Opus 4.5', provider: 'claude', unlisted: true },
+      ];
+      expect(offeredModels(older).map((m) => m.slug)).toEqual(['claude-opus-4-7']);
+      expect(catalogWithdrawals({ provider: 'claude', model: 'claude-opus-4-5' }, older)).toEqual(['claude-opus-4-5']);
+      expect(catalogWithdrawals({ provider: 'claude', model: 'claude-opus-4-7' }, older)).toEqual([]);
     });
   });
 });

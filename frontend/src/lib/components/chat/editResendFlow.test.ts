@@ -944,6 +944,59 @@ describe('edit-and-resend flow — pending-cut dimming', () => {
     await waitFor(() => expect(rows()).toEqual([false, false, false]));
   });
 
+  it('dims only the doomed members of a run a Codex turn cut goes through', async () => {
+    // Codex drops the anchor's whole turn. A steered anchor shares its turn
+    // with the agent work before it, and the run that holds that work also
+    // holds the previous turn's tool row, through the agent message that
+    // opened the anchor's turn. The previous turn's row survives; the rest
+    // of the run is doomed.
+    const thread = seedThread({ provider: 'codex', model: 'gpt-5.5' });
+    const row = (id: string, turnIndex: number, itemIndex: number, overrides: Partial<Item>) =>
+      makeItem({ id, threadId: thread.id, turnIndex, itemIndex, status: 'completed', ...overrides });
+    const items = [
+      row('user:1', 1, 0, { kind: 'user_text', role: 'user', summary: 'first prompt' }),
+      row('tool:1', 1, 1, { kind: 'tool_call', role: 'assistant', toolName: 'command_execution', summary: 'ls' }),
+      row('reply:2', 2, 0, {
+        kind: 'user_text',
+        role: 'user',
+        summary: 'No findings.',
+        meta: JSON.stringify({ origin: 'agent-thread', originThread: { threadId: 't-review', title: 'Review', kind: 'wake' } }),
+      }),
+      row('tool:2', 2, 1, { kind: 'tool_call', role: 'assistant', toolName: 'command_execution', summary: 'pwd' }),
+      row('user:2', 2, 2, { kind: 'user_text', role: 'user', summary: 'steered prompt' }),
+      row('assistant:2', 2, 3, { kind: 'assistant_text', role: 'assistant', summary: 'an answer' }),
+    ];
+    const pane = await buildPane(thread, items);
+    setBindingMock('CountRunningBackgroundTasks', async () => 0);
+    const resend = deferred<void>();
+    setBindingMock('RevertConversationAndResendMessage', () => resend.promise);
+
+    const view = render(ChatView, { props: { pane } });
+    const rows = () => Array.from(
+      view.container.querySelectorAll<HTMLElement>('[data-row-index]'),
+    ).map((wrapper) => wrapper.classList.contains('chat-row-pending-cut'));
+    const runChildren = () => Array.from(
+      view.container.querySelectorAll<HTMLElement>('[data-run-child]'),
+    ).map((child) => child.dataset.pendingCut === 'true');
+    const header = () => view.getByTestId('activity-run-header');
+
+    await waitFor(() => expect(view.container.querySelectorAll('[data-testid="activity-run"]')).toHaveLength(1));
+    if (header().getAttribute('aria-expanded') !== 'true') await fireEvent.click(header());
+    await waitFor(() => expect(runChildren()).toEqual([false, false, false]));
+
+    await openMessageEditor(view, 1);
+    await fireEvent.click(view.getByTestId('user-message-edit-send'));
+    // The run's row stays: its first member survives. Inside it the reply
+    // and the tool row of the anchor's turn dim, and so does its header.
+    await waitFor(() => expect(rows()).toEqual([false, false, true, true]));
+    expect(runChildren()).toEqual([false, true, true]);
+    expect(header().closest('.opacity-\\[0\\.42\\]')).not.toBeNull();
+
+    resend.resolve();
+    await waitFor(() => expect(runChildren()).toEqual([false, false, false]));
+    expect(header().closest('.opacity-\\[0\\.42\\]')).toBeNull();
+  });
+
   it('clears the dimming when the flow ends in failure too', async () => {
     const thread = seedThread();
     const anchor = userItem('user:1', 1, 'anchor prompt');

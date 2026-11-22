@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/gitapp"
 	"agent-overflow/internal/remotejobs"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/transport"
 	"github.com/google/uuid"
 )
@@ -22,13 +22,13 @@ func TestAgentRemoteCommandUsesItsOwnPairedIdentityAndSurvivesSourceLoss(t *test
 	remotetest.Require(t)
 	backend := newPairedBackend(t)
 	source := identityApp(t)
-	manager, err := attachedbackends.New(t.TempDir(), "workhorse", "linux")
+	manager, err := newTestBackends(t, t.TempDir(), "workhorse", "linux")
 	if err != nil {
 		t.Fatal(err)
 	}
 	source.backends = manager
 	invite, link := backend.mintLink(t, "full")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 	defer cancel()
 	attached, err := manager.Add(ctx, invite.URL)
 	if err != nil {
@@ -126,13 +126,13 @@ func TestAgentRemoteEnableChecksPairingAndDestinationScope(t *testing.T) {
 		t.Run(access, func(t *testing.T) {
 			backend := newPairedBackend(t)
 			source := identityApp(t)
-			manager, err := attachedbackends.New(t.TempDir(), "test source", "linux")
+			manager, err := newTestBackends(t, t.TempDir(), "test source", "linux")
 			if err != nil {
 				t.Fatal(err)
 			}
 			source.backends = manager
 			invite, _ := backend.mintLink(t, access)
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 			defer cancel()
 			peer, err := manager.Add(ctx, invite.URL)
 			if err != nil {

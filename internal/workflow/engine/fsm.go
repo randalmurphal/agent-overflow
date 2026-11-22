@@ -50,6 +50,8 @@ func transitionAllowed(from, to State) bool {
 		// re-entered by starting a new one, and a cancelled run was stopped on
 		// purpose.
 		return to == StateRunning
+	case StateDone, StateCancelled:
+		fallthrough
 	default:
 		return false
 	}
@@ -536,6 +538,8 @@ func stepModeAutomaticDecision(kind def.DecisionKind) bool {
 	switch kind {
 	case def.DecisionAdvance, def.DecisionLoop, def.DecisionDone, def.DecisionFailed:
 		return true
+	case def.DecisionPark, def.DecisionHuman, def.DecisionRetriesExhausted, def.DecisionNoMatch:
+		fallthrough
 	default:
 		return false
 	}

@@ -236,10 +236,12 @@ an atomic persistence decision; they must not become a business-logic layer.
   scope. Keep selection separate from wire page shape.
 - A read whose duration grows with a thread's history (pages, run members,
   recomputes, whole-thread lists and searches) runs through
-  `historyReadSnapshot`, and other long work on the read pool, such as a
-  checkpoint, takes a history read slot before its connection. That keeps
-  one read connection free for single-statement reads such as provider
-  event handling's lookups (`historyReadSlots`).
+  `historyReadSnapshot`, a tracker mirror read that walks a board or a root,
+  or reads more than one statement, through `mirrorReadSnapshot`
+  (`TestMirrorReadsGoThroughTheSlot`), and other long work on the read pool,
+  such as a checkpoint, takes a history read slot before its connection.
+  That keeps one read connection free for single-statement reads such as
+  provider event handling's lookups (`historyReadSlots`).
 - Put connection-scoped PRAGMAs in the DSN. A post-open `Exec` does not cover
   replacement pooled connections. Keep boot verification for required PRAGMAs.
 - Each pooled connection keeps its recent statements compiled

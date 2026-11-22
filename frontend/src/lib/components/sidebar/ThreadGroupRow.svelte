@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isLocalEnter } from '../../utils/localEnter';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { ThreadGroup } from '../../types/models';
   import { toggleGroup } from '../../stores/sidebar.svelte';
@@ -22,7 +23,8 @@
     endThreadRowDrag,
     threadDragPayloadForEvent,
   } from '../../utils/threadDragPayload';
-  import { projectHasScope } from '../../transport/entityScopes';
+  import { projectScopeGrant } from '../../transport/entityScopes';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
   import type { ThreadLiveStatus } from '../../stores/threadStatuses.svelte';
   import type { ThreadStatusPill } from '../../utils/threadStatusPill';
 
@@ -70,7 +72,8 @@
   const rowPaddingLeftPx = GROUP_ROW_PADDING_LEFT_PX;
   // Rename, new-thread and the menu's rows all write on the project's
   // computer under `threads:operate`. The controls stay and go inert.
-  let operateUngranted = $derived(!projectHasScope('threads:operate', group.projectId));
+  let operateGrant = $derived(projectScopeGrant('threads:operate', group.projectId));
+  let operateUngranted = $derived(operateGrant !== 'granted');
 
   // ── Inline rename ────────────────────────────────────────────────────────
   let editing = $state(false);
@@ -115,8 +118,8 @@
   function handleRenameKeydown(e: KeyboardEvent): void {
     // Enter confirms the IME candidate while composing; committing here
     // would save the pre-composition text and leave edit mode.
-    if (e.key === 'Enter' && isImeComposingEvent(e)) return;
-    if (e.key === 'Enter') {
+    if (isLocalEnter(e) && isImeComposingEvent(e)) return;
+    if (isLocalEnter(e)) {
       e.preventDefault();
       void saveRename();
     } else if (e.key === 'Escape') {
@@ -144,7 +147,7 @@
 
   function handleKeydown(e: KeyboardEvent): void {
     if (editing || e.target !== e.currentTarget) return;
-    if (e.key === 'Enter' || e.key === ' ') {
+    if (isLocalEnter(e) || e.key === ' ') {
       e.preventDefault();
       toggleExpansion();
       return;
@@ -325,7 +328,7 @@
       <button
         type="button"
         aria-label="New Thread in Group"
-        title={operateUngranted ? 'Not granted to this device' : 'New Thread in Group'}
+        title={grantBlockedTitle(operateGrant) ?? 'New Thread in Group'}
         disabled={operateUngranted}
         data-testid="thread-group-new-thread"
         onclick={(e) => {

@@ -16,6 +16,10 @@ import (
 type Start struct {
 	Done chan struct{}
 	Err  error
+	// Registered is the session the start registered (Put), kept for its
+	// leader and joiners after the registry has moved on: a session that
+	// fails before it initializes can be unregistered before Done closes.
+	Registered Entry
 }
 
 type ClaudeMCPSession struct {
@@ -166,6 +170,9 @@ func (m *Manager) Put(threadID string, entry Entry) {
 	}
 	m.sessions[threadID] = entry
 	m.registerAOToken(entry)
+	if start := m.starting[threadID]; start != nil {
+		start.Registered = entry
+	}
 	m.mu.Unlock()
 }
 
@@ -360,12 +367,11 @@ func (m *Manager) RecordActivity(threadID, sessionToken string, kind provider.Ev
 		return
 	}
 	entry.Liveness.BumpActivity(now)
-	switch kind {
-	case provider.EventTurnStart:
+	if kind == provider.EventTurnStart {
 		entry.Liveness.ActiveTurns.Add(1)
-	case provider.EventTurnComplete:
+	} else if kind == provider.EventTurnComplete {
 		decrementActiveTurnsClamped(&entry.Liveness.ActiveTurns)
-	case provider.EventSessionStatus:
+	} else if kind == provider.EventSessionStatus {
 		if content == "disconnected" {
 			entry.Liveness.ActiveTurns.Store(0)
 		}

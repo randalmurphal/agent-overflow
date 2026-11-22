@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
@@ -16,24 +17,61 @@ import (
 	"agent-overflow/internal/workflow/engine"
 )
 
+// A cold resume is proven by the provider's start alone. Only the provider's
+// report that the conversation is gone, empty or of unproven content makes
+// the context unavailable, and the error names it; any other failure is the
+// start's own. Neither keeps the temporary schema.
 func TestWorkflowContinuationProvesColdProviderContext(t *testing.T) {
 	tests := []struct {
-		name     string
-		provider string
-		start    func(context.Context, string) error
+		name        string
+		provider    string
+		start       func(context.Context, string) error
+		unavailable bool
+		cancelled   bool
 	}{
 		{
-			name: "claude transcript missing", provider: string(provider.Claude),
+			name: "claude content unproven", provider: string(provider.Claude), unavailable: true,
 			start: func(context.Context, string) error {
-				return fmt.Errorf("Claude start must not run after the transcript preflight failed")
+				return fmt.Errorf("%w: get_context_usage refused: Unsupported control request subtype: get_context_usage", claude.ErrContentUnproven)
 			},
 		},
 		{
-			name: "codex rejects cursor", provider: string(provider.Codex),
+			name: "claude has no such conversation", provider: string(provider.Claude), unavailable: true,
+			start: func(context.Context, string) error {
+				return fmt.Errorf("%w: No conversation found with session ID: provider-session", claude.ErrSessionNotFound)
+			},
+		},
+		{
+			name: "claude conversation holds no user message", provider: string(provider.Claude), unavailable: true,
+			start: func(context.Context, string) error {
+				return fmt.Errorf("%w: get_context_usage counts 0 user-message tokens", claude.ErrConversationEmpty)
+			},
+		},
+		{
+			name: "codex rejects cursor", provider: string(provider.Codex), unavailable: true,
 			start: func(context.Context, string) error {
 				return fmt.Errorf("spawn Codex: %w", &codex.RPCError{
 					Method: "thread/resume", Code: -32600, Message: "no rollout found for thread id provider-session",
 				})
+			},
+		},
+		{
+			name: "claude initialized on another session", provider: string(provider.Claude),
+			start: func(context.Context, string) error {
+				return fmt.Errorf("%w: --resume named provider-session", claude.ErrResumedOtherSession)
+			},
+		},
+		{
+			name: "claude exited before init", provider: string(provider.Claude),
+			start: func(context.Context, string) error {
+				return errors.New("claude: the process exited before it initialized")
+			},
+		},
+		{
+			name: "cancelled while claude loads", provider: string(provider.Claude), cancelled: true,
+			start: func(ctx context.Context, _ string) error {
+				<-ctx.Done()
+				return fmt.Errorf("claude: wait for the session to initialize: %w", ctx.Err())
 			},
 		},
 	}
@@ -43,16 +81,41 @@ func TestWorkflowContinuationProvesColdProviderContext(t *testing.T) {
 				ID: "cold-context-" + strings.ReplaceAll(tc.name, " ", "-"), Mode: "workflow",
 				Provider: tc.provider, SessionRef: "provider-session", WorkspacePath: t.TempDir(),
 			}
-			runner := newTestRunner(t, &fakeHost{startSessionTakingLock: tc.start}, nil, nil)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			start := tc.start
+			if tc.cancelled {
+				// Cancelled while the provider loads, after the runner's own
+				// check of ctx.
+				start = func(ctx context.Context, threadID string) error {
+					cancel()
+					return tc.start(ctx, threadID)
+				}
+			}
+			var schemaAtStart json.RawMessage
+			var runner *Runner
+			runner = newTestRunner(t, &fakeHost{startSessionTakingLock: func(ctx context.Context, threadID string) error {
+				schemaAtStart = runner.schemaForThread(threadID)
+				return start(ctx, threadID)
+			}}, nil, nil)
 
 			started, err := runner.ensureReusableWorkflowSession(
-				t.Context(), thread, json.RawMessage(`{"type":"object"}`),
+				ctx, thread, json.RawMessage(`{"type":"object"}`),
 			)
-			if started || !errors.Is(err, engine.ErrProviderContextUnavailable) {
-				t.Fatalf("availability = started %v, err %v; want unavailable", started, err)
+			if started || err == nil || errors.Is(err, engine.ErrProviderContextUnavailable) != tc.unavailable {
+				t.Fatalf("availability = started %v, err %v; want unavailable %v", started, err, tc.unavailable)
+			}
+			if tc.unavailable && !strings.Contains(err.Error(), tc.start(t.Context(), thread.ID).Error()) {
+				t.Fatalf("unavailable = %v, want it to name the provider's report", err)
+			}
+			if len(schemaAtStart) == 0 {
+				t.Fatal("the start ran without the temporary schema")
+			}
+			if tc.cancelled && !strings.Contains(err.Error(), "startup cancelled") {
+				t.Fatalf("cancelled availability = %v, want a cancelled start", err)
 			}
 			if schema := runner.schemaForThread(thread.ID); len(schema) != 0 {
-				t.Fatalf("failed preflight retained temporary schema: %s", schema)
+				t.Fatalf("failed proof retained temporary schema: %s", schema)
 			}
 		})
 	}
@@ -84,6 +147,46 @@ func TestWorkflowContinuationAcceptsLiveContextBeforeCursorPersistence(t *testin
 	)
 	if started || !errors.Is(err, engine.ErrProviderContextUnavailable) {
 		t.Fatalf("cold cursor-less availability = started %v, err %v; want unavailable", started, err)
+	}
+}
+
+// A live session is proven too, not accepted because it is registered, and
+// its reuse registers no temporary schema: the runner did not start it.
+func TestWorkflowContinuationProvesALiveSession(t *testing.T) {
+	thread := store.Thread{
+		ID: "live-context-proven", Mode: "workflow",
+		Provider: string(provider.Claude), SessionRef: "provider-session",
+	}
+	var proofErr error
+	var schemaAtProof json.RawMessage
+	var runner *Runner
+	runner = newTestRunner(t, &fakeHost{
+		sessionActive: func(string) bool { return true },
+		startSessionTakingLock: func(context.Context, string) error {
+			return errors.New("a live session must not be started again")
+		},
+		proveSession: func(_ context.Context, threadID string, started bool) error {
+			if started {
+				return errors.New("the live session was not the one proven")
+			}
+			schemaAtProof = runner.schemaForThread(threadID)
+			return proofErr
+		},
+	}, nil, nil)
+	schema := json.RawMessage(`{"type":"object"}`)
+
+	started, err := runner.ensureReusableWorkflowSession(t.Context(), thread, schema)
+	if started || err != nil || len(schemaAtProof) != 0 {
+		t.Fatalf("live reuse = started %v, err %v, schema %s; want reuse with no schema", started, err, schemaAtProof)
+	}
+
+	proofErr = fmt.Errorf("%w: No conversation found with session ID: provider-session", claude.ErrSessionNotFound)
+	started, err = runner.ensureReusableWorkflowSession(t.Context(), thread, schema)
+	if started || !errors.Is(err, engine.ErrProviderContextUnavailable) {
+		t.Fatalf("unproven live session = started %v, err %v; want unavailable", started, err)
+	}
+	if registered := runner.schemaForThread(thread.ID); len(registered) != 0 {
+		t.Fatalf("an unproven live session left a schema: %s", registered)
 	}
 }
 

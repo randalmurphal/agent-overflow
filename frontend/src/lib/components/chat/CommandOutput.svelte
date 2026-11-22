@@ -42,7 +42,7 @@
   import Icon from '../primitives/Icon.svelte';
   import SendToBack from '@lucide/svelte/icons/send-to-back';
   import { BackgroundClaudeTask } from '../../stores/bindings';
-  import { threadHasScope } from '../../transport/entityScopes';
+  import { threadScopeGrant } from '../../transport/entityScopes';
 
   let {
     pane,
@@ -171,7 +171,7 @@
   let canBackground = $derived(
     pane !== undefined &&
       isRunning &&
-      threadHasScope('threads:operate', item.threadId) &&
+      threadScopeGrant('threads:operate', item.threadId) === 'granted' &&
       !isBackgroundedLaunch &&
       effectiveStatusItem.kind === 'tool_call' &&
       item.toolName === 'Bash' &&

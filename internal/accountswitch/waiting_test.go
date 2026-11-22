@@ -328,7 +328,7 @@ func TestContinueContextErrors(t *testing.T) {
 			return context.Canceled
 		}
 		c.checkWaiting(ctx)
-		c.deliveries.Wait()
+		c.awaitDeliveries()
 		c.TurnRefused("claude", "t2", opusModel, "a")
 		c.runPending(ctx)
 		c.handleRefusal(ctx, refusal{provider: "claude", threadID: "t2", model: opusModel})
@@ -358,7 +358,7 @@ func readyToContinue() (*fakeApp, *Coordinator) {
 	c := New(f.deps())
 	c.TurnRefused("claude", "t1", opusModel, "a")
 	c.mu.Lock()
-	c.pendingRefusals = nil
+	c.pending.take()
 	c.mu.Unlock()
 	f.advance(2 * time.Hour)
 	return f, c
@@ -431,7 +431,7 @@ func TestSlowContinueDoesNotBlockDecisions(t *testing.T) {
 		t.Fatalf("switches = %v while a continue blocked", s)
 	}
 	close(release)
-	c.deliveries.Wait()
+	c.awaitDeliveries()
 }
 
 // A waiting thread of a provider with no selected account is dropped, so

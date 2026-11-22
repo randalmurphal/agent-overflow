@@ -97,8 +97,8 @@ type Manager struct {
 	credentials  *provideraccounts.Credentials
 	fingerprints map[string][32]byte
 
-	claudeReconcileMu sync.Mutex
-	codexReconcileMu  sync.Mutex
+	claudeReconcileMu reconcileLock
+	codexReconcileMu  reconcileLock
 	auditPath         string
 
 	// The sign-in registry (loginsession.go). Its lock is a leaf: no other
@@ -138,6 +138,9 @@ func (m *Manager) Attach(store *provideraccounts.Store, credentials *provideracc
 	m.store = store
 	m.credentials = credentials
 	m.auditPath = auditPath
+	if store != nil {
+		store.GuardSelection(m.refuseSelectionWithLiveUses)
+	}
 	return nil
 }
 
@@ -177,7 +180,48 @@ func (m *Manager) providerBinaryPath(providerName string) string {
 	return ""
 }
 
-func (m *Manager) reconcileMutex(providerName string) *sync.Mutex {
+// reconcileLock is one provider's reconcile mutex. A caller bounded by a
+// context waits for it with LockContext; the zero value is unlocked.
+//
+// It also holds the provider's credential uses (credentialuse.go): a holder
+// that changes the selected account ends them first (selectionChanging), and
+// Unlock admits uses again, so no change outlives the hold it was made in.
+type reconcileLock struct {
+	once sync.Once
+	sem  chan struct{}
+	uses credentialUses
+}
+
+func (l *reconcileLock) slot() chan struct{} {
+	l.once.Do(func() { l.sem = make(chan struct{}, 1) })
+	return l.sem
+}
+
+func (l *reconcileLock) Lock() { l.slot() <- struct{}{} }
+
+// LockContext takes the lock, or returns ctx's error once ctx ends first.
+func (l *reconcileLock) LockContext(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case l.slot() <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (l *reconcileLock) Unlock() {
+	l.uses.endChange()
+	select {
+	case <-l.slot():
+	default:
+		panic("provider-account reconcile lock unlocked while not held")
+	}
+}
+
+func (m *Manager) reconcileMutex(providerName string) *reconcileLock {
 	switch providerName {
 	case string(provider.Claude):
 		return &m.claudeReconcileMu
@@ -241,13 +285,14 @@ func (m *Manager) ActiveAccount(providerName string) (provideraccounts.Account, 
 	return m.store.Active(providerName, time.Now())
 }
 
-// Generation returns the current provider credential generation.
+// Generation returns the current provider credential generation. It is one
+// value the store reads under its own lock, so it takes no Manager lock: a
+// credential use checks its admission with it while a selection change that
+// holds mu waits for that use to end.
 func (m *Manager) Generation(providerName string) uint64 {
 	if m == nil || m.store == nil {
 		return 0
 	}
-	m.mu.RLock()
-	defer m.mu.RUnlock()
 	return m.store.Generation(providerName)
 }
 

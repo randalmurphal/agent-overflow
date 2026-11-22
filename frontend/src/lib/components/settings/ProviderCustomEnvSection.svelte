@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isLocalEnter } from '../../utils/localEnter';
   // Per-provider custom environment variables, applied to the provider
   // processes the backend spawns (sessions, account probes, text generation).
   //
@@ -134,8 +135,8 @@
   }
 
   function handleDraftKeydown(e: KeyboardEvent): void {
-    if (e.key === 'Enter' && isImeComposingEvent(e)) return;
-    if (e.key === 'Enter' && canAdd) {
+    if (isLocalEnter(e) && isImeComposingEvent(e)) return;
+    if (isLocalEnter(e) && canAdd) {
       e.preventDefault();
       void addVar();
     }

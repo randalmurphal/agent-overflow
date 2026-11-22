@@ -9,7 +9,8 @@
 // session gets a disabled control rather than an RPC the transport would
 // refuse. Must be called from component init context.
 
-import { threadHasScope } from '../../transport/entityScopes';
+import { threadScopeGrant } from '../../transport/entityScopes';
+import { grantBlockedTitle } from '../../transport/scopeRefusal';
 import type { PaneSession } from '../../stores/threadPaneRoles';
 import {
   regenerateThreadTitle,
@@ -29,11 +30,12 @@ export function createThreadTitleRegenerate(getPane: () => PaneSession): ThreadT
     const threadId = getPane().threadId;
     return threadId ? titleGenerationPending(threadId) : false;
   });
-  const ungranted = $derived.by(() => {
+  const grant = $derived.by(() => {
     const pane = getPane();
-    return !threadHasScope('threads:operate', pane.threadId, pane.thread?.projectId);
+    return threadScopeGrant('threads:operate', pane.threadId, pane.thread?.projectId);
   });
-  const title = $derived(ungranted ? 'Not granted to this device' : 'Regenerate title');
+  const ungranted = $derived(grant !== 'granted');
+  const title = $derived(grantBlockedTitle(grant) ?? 'Regenerate title');
   return {
     get pending() { return pending; },
     get ungranted() { return ungranted; },

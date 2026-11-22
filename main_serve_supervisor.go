@@ -133,6 +133,17 @@ func attachServeSupervisor() (*serveSupervisor, error) {
 	return sup, nil
 }
 
+// followedUpdate is the settled update this boot follows, its target and
+// whether it committed: an ordinary boot the supervisor told of an outcome
+// not yet reported. "" for a trial, whose boot the supervisor times, for a
+// boot that follows none, and without a supervisor.
+func (s *serveSupervisor) followedUpdate() (to string, committed bool) {
+	if s == nil || s.trial || s.outcome == "" {
+		return "", false
+	}
+	return s.target, s.outcome == string(supervise.UpdateCommitted)
+}
+
 // bootProgress is the observer of this boot's startup reports: the trial's
 // relay to the supervisor, or nil when this boot is not a trial.
 func (s *serveSupervisor) bootProgress() func(startupprogress.Progress) {

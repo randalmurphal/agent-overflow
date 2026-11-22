@@ -1,0 +1,49 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "status",
+          "attrs": {
+            "color": "red",
+            "localId": "st-1",
+            "style": "bold",
+            "text": "BLOCKED"
+          }
+        },
+        {
+          "type": "text",
+          "text": " waiting on QA"
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "attrs": {
+        "level": 2,
+        "localId": "h-1"
+      },
+      "content": [
+        {
+          "type": "text",
+          "text": "Notes"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "attrs": {
+        "localId": "p-1"
+      },
+      "content": [
+        {
+          "type": "text",
+          "text": "old text"
+        }
+      ]
+    }
+  ]
+}

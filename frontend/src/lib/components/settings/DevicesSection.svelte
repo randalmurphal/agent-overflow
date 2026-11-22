@@ -2,7 +2,8 @@
   import { untrack } from 'svelte';
   import { onPairedDeviceNamesChanged } from '../../stores/deviceNames';
   import { settingsComputer } from './settingsComputer';
-  const { backend, call, hasScope } = settingsComputer();
+  const { backend, call, scopeGrant } = settingsComputer();
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
 
   // Settings → Remote access → Devices: which devices hold a credential on this
   // backend, the pairing flow that adds one (PairDeviceModal), and the
@@ -58,7 +59,8 @@
   // 2026-08-31). Asked for the CAPABILITY rather than for view-onlyness:
   // a session can lack `access:admin` without being view-only, and the
   // gate has to be right for that one too.
-  let ungranted = $derived(!hasScope('access:admin'));
+  let grant = $derived(scopeGrant('access:admin'));
+  let ungranted = $derived(grant !== 'granted');
   let unavailable = $derived(ungranted);
 
   const CLASS_ICONS = {
@@ -316,9 +318,9 @@
   <div class="flex flex-wrap items-start justify-between gap-3">
     <SettingsHeader
       title="Paired devices"
-      description={ungranted
+      description={grant === 'refused'
           ? 'This connection cannot manage device access. Connect with full access to pair or revoke devices.'
-          : 'Devices allowed to use this computer. Confirm matching numbers on both screens before granting access.'}
+          : grantBlockedTitle(grant) ?? 'Devices allowed to use this computer. Confirm matching numbers on both screens before granting access.'}
     />
     {#if !unavailable}
       <Button variant="primary" size="sm" class="shrink-0" onclick={openPairing}>

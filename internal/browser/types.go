@@ -3,7 +3,6 @@ package browser
 import (
 	"context"
 	"encoding/json"
-	"time"
 
 	"agent-overflow/internal/keybindings"
 )
@@ -37,25 +36,54 @@ type CompanionEvent struct {
 	// ViewportSet is whether browser_viewport pinned that size; otherwise it
 	// follows the pane and the pane shows the page at 1:1.
 	ViewportSet bool `json:"viewportSet,omitempty"`
+	// Jar rides a Kind "state" event: the cookie jar the thread's pages
+	// open in (SessionInfo.Jar).
+	Jar string `json:"jar,omitempty"`
+	// RecentGen rides a Kind "state" event: the Manager's forget generation
+	// of recent addresses (recent.go), an opaque token. A client holding a
+	// thread's list drops it when this changes.
+	RecentGen string `json:"recentGen,omitempty"`
 	// Accelerator rides a Kind "accelerator" event: a bound chord pressed
 	// while the thread's page view held keyboard focus, for the frontend to
-	// dispatch as if the SPA had received it.
+	// dispatch as if the SPA had received it. Its PageID is the page the
+	// chord was pressed in, which a command it runs on a tab acts on.
 	Accelerator *keybindings.Accelerator `json:"accelerator,omitempty"`
 	// Mount rides a Kind "accelerator" or "escape" event: the pane mount
 	// (AttachPane) the thread's pages are presented in. The event reaches
 	// every host client, and only the one holding that mount acts on it.
-	Mount string `json:"mount,omitempty"`
+	// It also rides a Kind "focus" event, which names the mount whose
+	// FocusIntent ended: the page took the keyboard, or Error says why not.
+	Mount       string `json:"mount,omitempty"`
+	FocusIntent uint64 `json:"focusIntent,omitempty"`
 	// FindMode rides a Kind "state" event: how the active page's find is
 	// presented (FindModeBar or FindModeEngine), empty when it has none.
 	FindMode string `json:"findMode,omitempty"`
 	// Find rides a Kind "find" event: a page's search ended without its
 	// owner asking (navigation, a tab switch, a hidden pane, the page
 	// closing, another owner's start), so a find bar showing it closes.
-	// A Kind "escape" event names only ThreadID and PageID: a bare Escape
-	// was pressed in that page while a pane showed it, and the page kept it.
+	// A Kind "escape" event names only ThreadID, PageID and Mount, the pane
+	// mount showing the page: a bare Escape was pressed in that page while
+	// a pane showed it, and the page kept it.
+	// A Kind "teardown" event names ThreadID, PageID and Error: a page that
+	// already left the tab set failed to close or to release its profile.
 	Find *FindState `json:"find,omitempty"`
+	// ClosedTabs rides a Kind "state" event: how many tabs the thread can
+	// reopen (companion_tabs.go).
+	ClosedTabs int `json:"closedTabs,omitempty"`
+	// Downloads rides a Kind "state" event: the thread's downloads, newest
+	// first (downloads_thread.go). Download rides a Kind "download" event:
+	// one download settled other than by the user's cancel, announced once.
+	Downloads []ThreadDownload `json:"downloads,omitempty"`
+	Download  *ThreadDownload  `json:"download,omitempty"`
+	// DownloadsGen rides both: a state's is the generation of the list it
+	// shows, which a clear or the thread's close changes, zero for none; a
+	// download's is the generation that resolves it as of its Seq, zero
+	// when none does. An action announced under one resolves until a state
+	// numbered after it carries another (downloads_thread.go).
+	DownloadsGen uint64 `json:"downloadsGen,omitempty"`
 	// Seq rides a Kind "state" event: this process's number for the
-	// snapshot, taken under the manager's lock as the snapshot is read.
+	// snapshot, taken under the manager's lock as the snapshot is read. A
+	// Kind "download" event takes one from the same count as it is made.
 	// Snapshots are published after that lock is released, and calls answer
 	// with one, so a client keeps the highest Seq it has seen for a thread.
 	Seq uint64 `json:"seq,omitempty"`
@@ -84,9 +112,10 @@ type FindState struct {
 	Seq uint64 `json:"seq"`
 	// Document is the epoch of the document the search started on.
 	Document uint64 `json:"document"`
-	// Session is the generation: it increases with every find action and
-	// end across the Manager, so an answer older than an end is
-	// recognizably stale.
+	// Session is the generation, from one counter across the Manager: a
+	// start, a stop and every end take a new one, and a step that succeeds
+	// keeps its search's, so an answer older than an end is recognizably
+	// stale.
 	Session uint64 `json:"session"`
 	// Foreign marks an answer for an action that changed nothing because
 	// the search it named is gone or another owner's; Mount and Seq then
@@ -113,10 +142,16 @@ type CompanionSubscription struct {
 	State CompanionEvent `json:"state"`
 }
 
-type Access struct {
-	ThreadID    string
+// Caller is the thread an action is for and the paths its authority comes
+// from. A read or a registration takes it as it is; an action that can add a
+// tab takes it bound to the thread's lifetime (Access, thread_life.go).
+type Caller struct {
+	ThreadID    ThreadID
 	Workspace   string
 	ProjectRoot string
+	// ProjectID is the store's id of the thread's project, which a
+	// "project" cookie jar is keyed by (jar.go).
+	ProjectID string
 }
 
 type PageInfo struct {
@@ -135,287 +170,30 @@ type PageInfo struct {
 	// thread's idle session was reaped or the app restarted. The next tool
 	// call on it, or presenting it, reloads its URL.
 	Suspended bool `json:"suspended,omitempty"`
-}
-
-type Snapshot struct {
-	PageInfo
-	Text     string            `json:"text"`
-	Elements []SnapshotElement `json:"elements"`
-}
-
-type SnapshotElement struct {
-	NodeID      string `json:"nodeId"`
-	Selector    string `json:"selector"`
-	Tag         string `json:"tag"`
-	Role        string `json:"role,omitempty"`
-	Text        string `json:"text,omitempty"`
-	Label       string `json:"label,omitempty"`
-	Type        string `json:"type,omitempty"`
-	Href        string `json:"href,omitempty"`
-	Placeholder string `json:"placeholder,omitempty"`
-	Disabled    bool   `json:"disabled,omitempty"`
-}
-
-type OpenOptions struct {
-	PageID string
-}
-
-type TypeOptions struct {
-	PageID   string
-	Selector string
-	Text     string
-	Clear    bool
-}
-
-type ScreenshotOptions struct {
-	PageID   string
-	FullPage bool
-	Clip     *ClipRect
-}
-
-type ClipRect struct {
-	X      float64 `json:"x"`
-	Y      float64 `json:"y"`
-	Width  float64 `json:"width"`
-	Height float64 `json:"height"`
-}
-
-// Locator is a serializable, stateless equivalent of the supported Playwright
-// locator builder. Nested locators are evaluated in the same document/frame.
-type Locator struct {
-	CSS         string     `json:"css,omitempty"`
-	Role        string     `json:"role,omitempty"`
-	Name        string     `json:"name,omitempty"`
-	Text        string     `json:"text,omitempty"`
-	Label       string     `json:"label,omitempty"`
-	Placeholder string     `json:"placeholder,omitempty"`
-	TestID      string     `json:"test_id,omitempty"`
-	Exact       bool       `json:"exact,omitempty"`
-	Regex       bool       `json:"regex,omitempty"`
-	RegexFlags  string     `json:"regex_flags,omitempty"`
-	Frames      []string   `json:"frames,omitempty"`
-	Scope       *Locator   `json:"scope,omitempty"`
-	Has         *Locator   `json:"has,omitempty"`
-	HasNot      *Locator   `json:"has_not,omitempty"`
-	HasText     string     `json:"has_text,omitempty"`
-	HasNotText  string     `json:"has_not_text,omitempty"`
-	Visible     *bool      `json:"visible,omitempty"`
-	And         []*Locator `json:"and,omitempty"`
-	Or          []*Locator `json:"or,omitempty"`
-	Index       *int       `json:"index,omitempty"`
-}
-
-type LocatorOptions struct {
-	PageID           string      `json:"page_id,omitempty"`
-	Locator          Locator     `json:"locator"`
-	Action           string      `json:"action"`
-	Value            string      `json:"value,omitempty"`
-	Values           []string    `json:"values,omitempty"`
-	Attribute        string      `json:"attribute,omitempty"`
-	Checked          *bool       `json:"checked,omitempty"`
-	Button           string      `json:"button,omitempty"`
-	Modifiers        []string    `json:"modifiers,omitempty"`
-	Force            bool        `json:"force,omitempty"`
-	TimeoutMS        int         `json:"timeout_ms,omitempty"`
-	WaitState        string      `json:"state,omitempty"`
-	ExpectNavigation bool        `json:"expect_navigation,omitempty"`
-	ExpectDownload   bool        `json:"expect_download,omitempty"`
-	URL              string      `json:"url,omitempty"`
-	WaitUntil        string      `json:"wait_until,omitempty"`
-	Select           []SelectArg `json:"select,omitempty"`
-}
-
-type SelectArg struct {
-	Value *string `json:"value,omitempty"`
-	Label *string `json:"label,omitempty"`
-	Index *int    `json:"index,omitempty"`
-}
-
-type LocatorResult struct {
-	Page      PageInfo       `json:"page"`
-	Count     int            `json:"count"`
-	Value     any            `json:"value,omitempty"`
-	Values    []string       `json:"values,omitempty"`
-	Matches   []LocatorMatch `json:"matches,omitempty"`
-	Download  *DownloadInfo  `json:"download,omitempty"`
-	Navigated bool           `json:"navigated,omitempty"`
-}
-
-type LocatorMatch struct {
-	NodeID     string `json:"nodeId"`
-	Selector   string `json:"selector"`
-	Tag        string `json:"tag"`
-	Role       string `json:"role,omitempty"`
-	Name       string `json:"name,omitempty"`
-	Text       string `json:"text,omitempty"`
-	InnerText  string `json:"innerText,omitempty"`
-	Visible    bool   `json:"visible"`
-	Enabled    bool   `json:"enabled"`
-	Checked    *bool  `json:"checked,omitempty"`
-	Value      string `json:"value,omitempty"`
-	FrameDepth int    `json:"frameDepth,omitempty"`
-}
-
-type PointerOptions struct {
-	PageID    string   `json:"page_id,omitempty"`
-	Action    string   `json:"action"`
-	X         float64  `json:"x,omitempty"`
-	Y         float64  `json:"y,omitempty"`
-	Button    string   `json:"button,omitempty"`
-	Modifiers []string `json:"modifiers,omitempty"`
-	ScrollX   float64  `json:"scroll_x,omitempty"`
-	ScrollY   float64  `json:"scroll_y,omitempty"`
-	Path      []Point  `json:"path,omitempty"`
-}
-
-type Point struct {
-	X float64 `json:"x"`
-	Y float64 `json:"y"`
-}
-
-type DOMActionOptions struct {
-	PageID string   `json:"page_id,omitempty"`
-	Action string   `json:"action"`
-	NodeID string   `json:"node_id,omitempty"`
-	Text   string   `json:"text,omitempty"`
-	Key    string   `json:"key,omitempty"`
-	Keys   []string `json:"keys,omitempty"`
-	X      float64  `json:"x,omitempty"`
-	Y      float64  `json:"y,omitempty"`
-}
-
-type WaitOptions struct {
-	PageID       string   `json:"page_id,omitempty"`
-	TimeoutMS    int      `json:"timeout_ms,omitempty"`
-	Milliseconds int      `json:"milliseconds,omitempty"`
-	Selector     string   `json:"selector,omitempty"`
-	Locator      *Locator `json:"locator,omitempty"`
-	State        string   `json:"state,omitempty"`
-	URL          string   `json:"url,omitempty"`
-	LoadState    string   `json:"load_state,omitempty"`
-}
-
-type ClipboardEntry struct {
-	MIMEType string `json:"mimeType"`
-	Text     string `json:"text,omitempty"`
-	Base64   string `json:"base64,omitempty"`
-}
-
-type ClipboardItem struct {
-	Entries           []ClipboardEntry `json:"entries"`
-	PresentationStyle string           `json:"presentationStyle,omitempty"`
-}
-
-type ClipboardOptions struct {
-	PageID string          `json:"page_id,omitempty"`
-	Action string          `json:"action"`
-	Text   string          `json:"text,omitempty"`
-	Items  []ClipboardItem `json:"items,omitempty"`
-}
-
-type ConsoleLog struct {
-	Level     string `json:"level"`
-	Message   string `json:"message"`
-	Timestamp string `json:"timestamp"`
-	URL       string `json:"url,omitempty"`
-}
-
-type ConsoleOptions struct {
-	PageID string   `json:"page_id,omitempty"`
-	Filter string   `json:"filter,omitempty"`
-	Levels []string `json:"levels,omitempty"`
-	Limit  int      `json:"limit,omitempty"`
-}
-
-type DownloadInfo struct {
-	Sequence      uint64 `json:"sequence"`
-	ID            string `json:"id"`
-	URL           string `json:"url"`
-	SuggestedName string `json:"suggestedName"`
-	Path          string `json:"path,omitempty"`
-	State         string `json:"state"`
-	Bytes         int64  `json:"bytes,omitempty"`
-	Error         string `json:"error,omitempty"`
-	StartedAt     string `json:"startedAt"`
-	reservedBytes int64
-}
-
-type DownloadOptions struct {
-	PageID    string `json:"page_id,omitempty"`
-	Action    string `json:"action"`
-	After     uint64 `json:"after,omitempty"`
-	TimeoutMS int    `json:"timeout_ms,omitempty"`
-}
-
-type AssetSource struct {
-	Kind     string `json:"kind"`
-	NodeID   string `json:"nodeId,omitempty"`
-	Property string `json:"property,omitempty"`
-	selector string
-}
-
-type AssetInfo struct {
-	ID      string        `json:"id"`
-	Kind    string        `json:"kind"`
-	Name    string        `json:"name"`
-	URL     string        `json:"url"`
-	Sources []AssetSource `json:"sources"`
-}
-
-type InlineSVG struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	Markup string `json:"markup"`
-}
-
-type AssetInventory struct {
-	ID         string       `json:"id"`
-	PageURL    string       `json:"pageUrl"`
-	Assets     []AssetInfo  `json:"assets"`
-	InlineSVGs []InlineSVG  `json:"inlineSvgs"`
-	Summary    AssetSummary `json:"summary"`
-}
-
-type AssetSummary struct {
-	ByKind         map[string]int `json:"byKind"`
-	TotalCount     int            `json:"totalCount"`
-	InlineSVGCount int            `json:"inlineSvgCount"`
-}
-
-type AssetOptions struct {
-	PageID      string   `json:"page_id,omitempty"`
-	Action      string   `json:"action"`
-	InventoryID string   `json:"inventory_id,omitempty"`
-	AssetIDs    []string `json:"asset_ids,omitempty"`
-	Kinds       []string `json:"kinds,omitempty"`
-}
-
-type AssetBundle struct {
-	DirectoryPath string         `json:"directoryPath"`
-	ManifestPath  string         `json:"manifestPath"`
-	Assets        []BundledAsset `json:"assets"`
-	Failures      []AssetFailure `json:"failures"`
-	Summary       map[string]any `json:"summary"`
-}
-
-type BundledAsset struct {
-	AssetInfo
-	Path        string `json:"path"`
-	ContentType string `json:"contentType,omitempty"`
-}
-
-type AssetFailure struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	URL         string `json:"url"`
-	Reason      string `json:"reason"`
-	ContentType string `json:"contentType,omitempty"`
-}
-
-type ViewportOptions struct {
-	Action string `json:"action"`
-	Width  int    `json:"width,omitempty"`
-	Height int    `json:"height,omitempty"`
+	// ReadError rides only a page listing (Pages): reading a live page
+	// failed, and its URL and title are the last the Manager knew.
+	ReadError string `json:"readError,omitempty"`
+	// The fields below ride only the companion state (threadState); a tool
+	// result never carries them.
+	//
+	// Creating marks a tab whose engine page is still being created, and
+	// Restoring a suspended tab whose reload is in flight. Error is why a
+	// tab the user opened could not be created, or, on a Suspended tab, why
+	// its page stopped (crash.go); either tab stays until it is closed. None
+	// of these has a page to present.
+	Creating  bool   `json:"creating,omitempty"`
+	Restoring bool   `json:"restoring,omitempty"`
+	Error     string `json:"error,omitempty"`
+	// Agent is whether an agent's tool call is acting on the page
+	// (activity.go).
+	Agent bool `json:"agent,omitempty"`
+	// Loading is whether the page's main frame is loading, as its engine
+	// reports it (pagestate.go).
+	Loading bool `json:"loading,omitempty"`
+	// Favicon is the page's icon as a bounded image data URL, read in the
+	// page on an engine with a pane; empty when the page has none, the
+	// engine cannot read one, or it was not an allowed image.
+	Favicon string `json:"favicon,omitempty"`
 }
 
 type SessionInfo struct {
@@ -428,23 +206,42 @@ type SessionInfo struct {
 	// PaneW/PaneH is the last mounted pane host size, whole CSS pixels inside
 	// the viewport bounds; the viewport pages follow while none is pinned.
 	// Zero until a pane reports a rect.
-	PaneW     int       `json:"paneWidth,omitempty"`
-	PaneH     int       `json:"paneHeight,omitempty"`
-	UpdatedAt time.Time `json:"-"`
+	PaneW int `json:"paneWidth,omitempty"`
+	PaneH int `json:"paneHeight,omitempty"`
+	// Jar is the cookie jar the thread's pages open in (jar.go): worktree,
+	// project, thread or private.
+	Jar string `json:"jar"`
+	// jarGen advances with every change of Jar; a page opened under an
+	// older generation is not admitted (jarCurrentLocked).
+	jarGen uint64
+	// jarTeardown holds the teardowns pending when Jar last changed (SetJar);
+	// no restore of the thread is admitted until all are done
+	// (jarTeardownLocked).
+	jarTeardown []<-chan struct{}
+	// privateJar is the token of the thread's live private jar, "" when it
+	// has none.
+	privateJar string
 }
 
+// activePage is the session's active tab; the DTO carries its id as a
+// string.
+func (s SessionInfo) activePage() PageID { return PageID(s.ActivePageID) }
+
 type Controller interface {
+	// Bind binds one tool call to its thread's browser lifetime
+	// (Manager.Bind).
+	Bind(Caller) Access
 	Open(context.Context, Access, string, OpenOptions) (PageInfo, error)
 	NewPage(context.Context, Access) (PageInfo, error)
 	OpenFile(context.Context, Access, string, OpenOptions) (PageInfo, error)
 	Pages(context.Context, Access) ([]PageInfo, error)
-	SelectPage(context.Context, Access, string) (PageInfo, error)
-	LabelPage(context.Context, Access, string, string) (PageInfo, error)
+	SelectPage(context.Context, Access, PageID) (PageInfo, error)
+	LabelPage(context.Context, Access, PageID, string) (PageInfo, error)
 	NameSession(context.Context, Access, string) (SessionInfo, error)
-	Visibility(context.Context, Access, *bool, string) (SessionInfo, error)
+	Visibility(context.Context, Access, *bool, PageID) (SessionInfo, error)
 	Viewport(context.Context, Access, ViewportOptions) (SessionInfo, error)
-	ClosePage(context.Context, Access, string) error
-	Snapshot(context.Context, Access, string) (Snapshot, error)
+	ClosePage(context.Context, Access, PageID) error
+	Snapshot(context.Context, Access, PageID) (Snapshot, error)
 	Screenshot(context.Context, Access, ScreenshotOptions) ([]byte, error)
 	Locator(context.Context, Access, LocatorOptions) (LocatorResult, error)
 	Pointer(context.Context, Access, PointerOptions) (PageInfo, error)
@@ -454,12 +251,11 @@ type Controller interface {
 	Downloads(context.Context, Access, DownloadOptions) (any, error)
 	Assets(context.Context, Access, AssetOptions) (any, error)
 	WaitAdvanced(context.Context, Access, WaitOptions) (PageInfo, error)
-	Click(context.Context, Access, string, string) (PageInfo, error)
+	Click(context.Context, Access, PageID, string) (PageInfo, error)
 	Type(context.Context, Access, TypeOptions) (PageInfo, error)
-	Press(context.Context, Access, string, string) (PageInfo, error)
-	Scroll(context.Context, Access, string, string, float64, float64) (PageInfo, error)
-	Wait(context.Context, Access, string, string, int) (PageInfo, error)
-	History(context.Context, Access, string, string) (PageInfo, error)
-	Evaluate(context.Context, Access, string, string, json.RawMessage) (any, string, error)
-	EvaluateReadOnly(context.Context, Access, string, string, json.RawMessage) (any, string, error)
+	Press(context.Context, Access, PageID, string) (PageInfo, error)
+	Scroll(context.Context, Access, PageID, string, float64, float64) (PageInfo, error)
+	History(context.Context, Access, PageID, string) (PageInfo, error)
+	Evaluate(context.Context, Access, PageID, string, json.RawMessage) (any, string, error)
+	EvaluateReadOnly(context.Context, Access, PageID, string, json.RawMessage) (any, string, error)
 }

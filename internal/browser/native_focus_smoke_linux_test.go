@@ -20,10 +20,7 @@ import (
 // the next key to; the page document's focus is checked as well when the
 // window is active, which a headless compositor may not make it.
 func TestNativeEngineRealClaimedChordFocusesTheApp(t *testing.T) {
-	window := nativeSmokeWindow.Load()
-	if window == nil {
-		t.Skipf("set %s=1 to drive this platform's browser engine in a real window", nativeBrowserSmokeEnv)
-	}
+	window := smokeWindow(t)
 	bound := keybindings.Accelerator{Key: "f", Ctrl: true}
 	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{
 		NativeWindow: window.NativeWindow,
@@ -41,9 +38,9 @@ func TestNativeEngineRealClaimedChordFocusesTheApp(t *testing.T) {
 		}
 	})
 	workspace := resolvedTempDir(t)
-	access := Access{ThreadID: "native-smoke-focus", Workspace: workspace}
+	access := manager.Bind(Caller{ThreadID: "native-smoke-focus", Workspace: workspace})
 	t.Cleanup(func() {
-		if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
+		if err := manager.CloseThread(context.Background(), access.ThreadID()); err != nil {
 			t.Errorf("close the thread's pages: %v", err)
 		}
 	})
@@ -55,19 +52,19 @@ func TestNativeEngineRealClaimedChordFocusesTheApp(t *testing.T) {
 		t.Fatalf("open the page: %v", err)
 	}
 	show := true
-	if _, err := manager.Visibility(ctx, access, &show, page.ID); err != nil {
+	if _, err := manager.Visibility(ctx, access, &show, PageID(page.ID)); err != nil {
 		t.Fatalf("show the page: %v", err)
 	}
-	mount, err := manager.AttachPane(access)
+	mount, err := manager.AttachPane(access.Caller())
 	if err != nil {
 		t.Fatalf("mount a pane: %v", err)
 	}
-	t.Cleanup(func() { manager.DetachPane(mount.ID) })
+	t.Cleanup(func() { manager.DetachPane(MountID(mount.ID)) })
 	// A chord is routed to the pane showing its page.
-	if err := manager.SetPaneRect(mount.ID, PaneRect{Width: 640, Height: 400, ViewportWidth: 1280, ViewportHeight: 800, Visible: true}); err != nil {
+	if err := manager.SetPaneRect(MountID(mount.ID), PaneRect{Width: 640, Height: 400, ViewportWidth: 1280, ViewportHeight: 800, Visible: true}); err != nil {
 		t.Fatalf("place the pane: %v", err)
 	}
-	p, _, err := manager.lookupOwnedPage(access, page.ID)
+	p, _, err := manager.lookupOwnedPage(access, PageID(page.ID))
 	if err != nil {
 		t.Fatalf("look the page up: %v", err)
 	}
@@ -85,7 +82,7 @@ func TestNativeEngineRealClaimedChordFocusesTheApp(t *testing.T) {
 	}
 	pageHasFocus := func(state string) bool {
 		t.Helper()
-		value, _, err := manager.Evaluate(ctx, access, page.ID, `document.hasFocus()`, nil)
+		value, _, err := manager.Evaluate(ctx, access, PageID(page.ID), `document.hasFocus()`, nil)
 		if err != nil {
 			t.Fatalf("%s: read the page's focus: %v", state, err)
 		}
@@ -140,12 +137,70 @@ func TestNativeEngineRealClaimedChordFocusesTheApp(t *testing.T) {
 		}
 	}
 
+	// The address bar's Enter and Escape hand the keyboard back to the
+	// presented page (FocusCompanionPage), as a click into it does.
+	if err := manager.FocusCompanionPage(access, MountID(mount.ID), PageID(page.ID), 1); err != nil {
+		t.Fatalf("focus the presented page: %v", err)
+	}
+	if who, _ := holder("focus the presented page"); who != focusHeldByPage {
+		t.Fatalf("focus the presented page: the window's focus widget is %d, want the page", who)
+	}
+	if active && !pageHasFocus("focus the presented page") {
+		t.Fatal("focus the presented page: an active window's page does not have document focus")
+	}
+	// A withdrawal that lands after the move changes nothing: the page keeps
+	// the keyboard, as it would after a click of its own.
+	if err := manager.WithdrawCompanionPageFocus(access, MountID(mount.ID), 1); err != nil {
+		t.Fatalf("withdraw the landed focus: %v", err)
+	}
+	if who, _ := holder("withdraw the landed focus"); who != focusHeldByPage {
+		t.Fatalf("withdraw the landed focus: the window's focus widget is %d, want the page", who)
+	}
+	// The engine checks the intent on the GTK thread: a withdrawn one moves
+	// nothing, the page shown or not.
+	if err := manager.engine.(engineAppFocus).FocusApp(); err != nil {
+		t.Fatalf("give the app the keyboard: %v", err)
+	}
+	host := manager.engine.(paneHost)
+	withdrawn := focusRequest{Mount: MountID(mount.ID), Intent: 9, Live: func() bool { return false }}
+	if result, err := host.FocusPage(view.Handle(), withdrawn); err != nil || result != focusWithdrawn {
+		t.Fatalf("focus a withdrawn intent = %v, %v", result, err)
+	}
+	if who, _ := holder("focus a withdrawn intent"); who != focusHeldByApp {
+		t.Fatalf("focus a withdrawn intent: the window's focus widget is %d, want the app's webview", who)
+	}
+
 	// The hide itself hands focus over (TestNativeEngineRealHiddenPageGivesUpFocus);
 	// a parked page given focus anyway hands it over on a claim too. No pane
 	// shows it, so the chord is not routed.
 	hide := false
 	if _, err := manager.Visibility(ctx, access, &hide, ""); err != nil {
 		t.Fatalf("hide the page: %v", err)
+	}
+	// A hidden page is never given the focus: the request waits.
+	if err := manager.FocusCompanionPage(access, MountID(mount.ID), PageID(page.ID), 2); err != nil {
+		t.Fatalf("focus with the page hidden: %v", err)
+	}
+	if who, _ := holder("focus with the page hidden"); who == focusHeldByPage {
+		t.Fatal("focus with the page hidden: the parked page took the focus")
+	}
+	// The engine's own check holds even when asked directly.
+	live := focusRequest{Mount: MountID(mount.ID), Intent: 9, Live: func() bool { return true }}
+	if result, err := host.FocusPage(view.Handle(), live); err != nil || result != focusNotPresented {
+		t.Fatalf("focus the parked page directly = %v, %v", result, err)
+	}
+	if who, _ := holder("focus the parked page directly"); who == focusHeldByPage {
+		t.Fatal("focus the parked page directly: the parked page took the focus")
+	}
+	// Presented again, the page takes the waiting request's focus.
+	if _, err := manager.Visibility(ctx, access, &show, PageID(page.ID)); err != nil {
+		t.Fatalf("show the page again: %v", err)
+	}
+	if who, _ := holder("the waiting focus"); who != focusHeldByPage {
+		t.Fatalf("the waiting focus: the window's focus widget is %d once the page is presented, want the page", who)
+	}
+	if _, err := manager.Visibility(ctx, access, &hide, ""); err != nil {
+		t.Fatalf("hide the page again: %v", err)
 	}
 	focusPage("the page hidden")
 	press("the page hidden", 'f', true)
@@ -160,10 +215,7 @@ func TestNativeEngineRealClaimedChordFocusesTheApp(t *testing.T) {
 // widget to the SPA's webview, and showing a page again takes nothing. A
 // click into the page is grabFocus, as in the chord smoke above.
 func TestNativeEngineRealHiddenPageGivesUpFocus(t *testing.T) {
-	window := nativeSmokeWindow.Load()
-	if window == nil {
-		t.Skipf("set %s=1 to drive this platform's browser engine in a real window", nativeBrowserSmokeEnv)
-	}
+	window := smokeWindow(t)
 	manager := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{NativeWindow: window.NativeWindow})
 	t.Cleanup(func() {
 		if err := manager.Close(); err != nil {
@@ -184,7 +236,7 @@ func TestNativeEngineRealHiddenPageGivesUpFocus(t *testing.T) {
 	}
 	view := func(t *testing.T, access Access, id string) *webkitPage {
 		t.Helper()
-		p, _, err := manager.lookupOwnedPage(access, id)
+		p, _, err := manager.lookupOwnedPage(access, PageID(id))
 		if err != nil {
 			t.Fatalf("look the page up: %v", err)
 		}
@@ -199,9 +251,9 @@ func TestNativeEngineRealHiddenPageGivesUpFocus(t *testing.T) {
 	open := func(t *testing.T, thread string, rect PaneRect) shownPage {
 		t.Helper()
 		workspace := resolvedTempDir(t)
-		access := Access{ThreadID: "native-smoke-hidden-focus-" + thread, Workspace: workspace}
+		access := manager.Bind(Caller{ThreadID: ThreadID("native-smoke-hidden-focus-" + thread), Workspace: workspace})
 		t.Cleanup(func() {
-			if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
+			if err := manager.CloseThread(context.Background(), access.ThreadID()); err != nil {
 				t.Errorf("close the thread's pages: %v", err)
 			}
 		})
@@ -211,18 +263,35 @@ func TestNativeEngineRealHiddenPageGivesUpFocus(t *testing.T) {
 			t.Fatalf("open the page: %v", err)
 		}
 		show := true
-		if _, err := manager.Visibility(ctx, access, &show, page.ID); err != nil {
+		if _, err := manager.Visibility(ctx, access, &show, PageID(page.ID)); err != nil {
 			t.Fatalf("show the page: %v", err)
 		}
-		mount, err := manager.AttachPane(access)
+		mount, err := manager.AttachPane(access.Caller())
 		if err != nil {
 			t.Fatalf("mount a pane: %v", err)
 		}
-		t.Cleanup(func() { manager.DetachPane(mount.ID) })
-		if err := manager.SetPaneRect(mount.ID, rect); err != nil {
+		t.Cleanup(func() { manager.DetachPane(MountID(mount.ID)) })
+		if err := manager.SetPaneRect(MountID(mount.ID), rect); err != nil {
 			t.Fatalf("place the pane: %v", err)
 		}
-		return shownPage{access: access, id: page.ID, view: view(t, access, page.ID), mount: mount.ID}
+		// The pane's size is the page's new viewport, and a page is shown
+		// only once it lays out at it (viewport.go), a drain pass later.
+		shown := view(t, access, page.ID)
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			on, err := shown.presented()
+			if err != nil {
+				t.Fatalf("read the presentation: %v", err)
+			}
+			if on {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("the page was never presented in its pane")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		return shownPage{access: access, id: page.ID, view: shown, mount: mount.ID}
 	}
 	// expect checks who holds the window's focus, read through any live view.
 	expect := func(t *testing.T, through *webkitPage, want webkitFocusHolder, state string) {
@@ -256,7 +325,7 @@ func TestNativeEngineRealHiddenPageGivesUpFocus(t *testing.T) {
 	}
 	setVisible := func(t *testing.T, access Access, on bool, id string) {
 		t.Helper()
-		if _, err := manager.Visibility(ctx, access, &on, id); err != nil {
+		if _, err := manager.Visibility(ctx, access, &on, PageID(id)); err != nil {
 			t.Fatalf("set the companion visible %v: %v", on, err)
 		}
 	}
@@ -264,7 +333,7 @@ func TestNativeEngineRealHiddenPageGivesUpFocus(t *testing.T) {
 	// asking the page while it navigates.
 	title := func(t *testing.T, access Access, id string) string {
 		t.Helper()
-		p, _, err := manager.lookupOwnedPage(access, id)
+		p, _, err := manager.lookupOwnedPage(access, PageID(id))
 		if err != nil {
 			t.Fatalf("look the page up: %v", err)
 		}
@@ -285,7 +354,7 @@ func TestNativeEngineRealHiddenPageGivesUpFocus(t *testing.T) {
 	t.Run("the pane closed", func(t *testing.T) {
 		page := open(t, "detached", left)
 		click(t, page.view)
-		manager.DetachPane(page.mount)
+		manager.DetachPane(MountID(page.mount))
 		expect(t, page.view, focusHeldByApp, "the pane closed")
 	})
 
@@ -294,11 +363,11 @@ func TestNativeEngineRealHiddenPageGivesUpFocus(t *testing.T) {
 		click(t, page.view)
 		offscreen := left
 		offscreen.Visible = false
-		if err := manager.SetPaneRect(page.mount, offscreen); err != nil {
+		if err := manager.SetPaneRect(MountID(page.mount), offscreen); err != nil {
 			t.Fatalf("report the pane off screen: %v", err)
 		}
 		expect(t, page.view, focusHeldByApp, "off screen")
-		if err := manager.SetPaneRect(page.mount, left); err != nil {
+		if err := manager.SetPaneRect(MountID(page.mount), left); err != nil {
 			t.Fatalf("report the pane on screen: %v", err)
 		}
 		expectPresented(t, page.view, true, "on screen again")
@@ -307,16 +376,16 @@ func TestNativeEngineRealHiddenPageGivesUpFocus(t *testing.T) {
 
 	t.Run("a tab switch", func(t *testing.T) {
 		page := open(t, "tabs", left)
-		other, err := manager.NewCompanionPage(ctx, page.access)
+		other, err := manager.NewCompanionPage(ctx, page.access, "")
 		if err != nil {
 			t.Fatalf("open a second tab: %v", err)
 		}
 		otherView := view(t, page.access, other.ID)
-		if err := manager.ActivateCompanionPage(ctx, page.access, page.id); err != nil {
+		if err := manager.ActivateCompanionPage(ctx, page.access, PageID(page.id)); err != nil {
 			t.Fatalf("select the first tab: %v", err)
 		}
 		click(t, page.view)
-		if err := manager.ActivateCompanionPage(ctx, page.access, other.ID); err != nil {
+		if err := manager.ActivateCompanionPage(ctx, page.access, PageID(other.ID)); err != nil {
 			t.Fatalf("switch tabs: %v", err)
 		}
 		expectPresented(t, otherView, true, "switched")
@@ -325,16 +394,16 @@ func TestNativeEngineRealHiddenPageGivesUpFocus(t *testing.T) {
 
 	t.Run("the focused page closed", func(t *testing.T) {
 		page := open(t, "closed", left)
-		other, err := manager.NewCompanionPage(ctx, page.access)
+		other, err := manager.NewCompanionPage(ctx, page.access, "")
 		if err != nil {
 			t.Fatalf("open a second tab: %v", err)
 		}
 		otherView := view(t, page.access, other.ID)
-		if err := manager.ActivateCompanionPage(ctx, page.access, page.id); err != nil {
+		if err := manager.ActivateCompanionPage(ctx, page.access, PageID(page.id)); err != nil {
 			t.Fatalf("select the first tab: %v", err)
 		}
 		click(t, page.view)
-		if err := manager.ClosePage(ctx, page.access, page.id); err != nil {
+		if err := manager.ClosePage(ctx, page.access, PageID(page.id)); err != nil {
 			t.Fatalf("close the page: %v", err)
 		}
 		expect(t, otherView, focusHeldByApp, "closed")
@@ -342,10 +411,10 @@ func TestNativeEngineRealHiddenPageGivesUpFocus(t *testing.T) {
 
 	t.Run("hide during a navigation", func(t *testing.T) {
 		page := open(t, "navigating", left)
-		next := writeSmokeFile(t, page.access.Workspace, "next.html",
+		next := writeSmokeFile(t, page.access.Workspace(), "next.html",
 			`<!doctype html><title>next</title><input autofocus>`)
 		click(t, page.view)
-		if _, _, err := manager.Evaluate(ctx, page.access, page.id,
+		if _, _, err := manager.Evaluate(ctx, page.access, PageID(page.id),
 			fmt.Sprintf(`location.href = %s; null`, jsonString(smokeFileURL(next))), nil); err != nil {
 			t.Fatalf("start the navigation: %v", err)
 		}
@@ -363,9 +432,9 @@ func TestNativeEngineRealHiddenPageGivesUpFocus(t *testing.T) {
 
 	t.Run("hide a popup page", func(t *testing.T) {
 		opener := open(t, "popup", left)
-		popupFile := writeSmokeFile(t, opener.access.Workspace, "popup.html",
+		popupFile := writeSmokeFile(t, opener.access.Workspace(), "popup.html",
 			`<!doctype html><title>popup</title><input autofocus>`)
-		if _, _, err := manager.Evaluate(ctx, opener.access, opener.id,
+		if _, _, err := manager.Evaluate(ctx, opener.access, PageID(opener.id),
 			fmt.Sprintf(`window.open(%s); null`, jsonString(smokeFileURL(popupFile))), nil); err != nil {
 			t.Fatalf("open the popup: %v", err)
 		}
@@ -382,7 +451,7 @@ func TestNativeEngineRealHiddenPageGivesUpFocus(t *testing.T) {
 			}
 		}
 		popup := view(t, opener.access, popupID)
-		if err := manager.ActivateCompanionPage(ctx, opener.access, popupID); err != nil {
+		if err := manager.ActivateCompanionPage(ctx, opener.access, PageID(popupID)); err != nil {
 			t.Fatalf("show the popup: %v", err)
 		}
 		if who, _, err := popup.focusHolder(); err != nil || who == focusHeldByPage {
@@ -398,11 +467,11 @@ func TestNativeEngineRealHiddenPageGivesUpFocus(t *testing.T) {
 		first := open(t, "first", left)
 		second := open(t, "second", right)
 		click(t, first.view)
-		manager.DetachPane(second.mount)
+		manager.DetachPane(MountID(second.mount))
 		expectPresented(t, second.view, false, "the other pane closed")
 		expectPresented(t, first.view, true, "the other pane closed")
 		expect(t, first.view, focusHeldByPage, "the other pane closed")
-		manager.DetachPane(first.mount)
+		manager.DetachPane(MountID(first.mount))
 		expect(t, first.view, focusHeldByApp, "its own pane closed")
 	})
 }

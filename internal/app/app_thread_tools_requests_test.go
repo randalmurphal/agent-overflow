@@ -2134,7 +2134,17 @@ func TestThreadSendStartsAnIdleThread(t *testing.T) {
 func (f *requestFixture) restart(t *testing.T) *requestFixture {
 	t.Helper()
 	bus := newCapturedEventBus()
-	app := &App{store: f.app.store, settings: f.app.settings}
+	// The restarted App opens the database again: its store is a new run.
+	st, err := store.New(f.dbPath)
+	if err != nil {
+		t.Fatalf("reopen the store: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Errorf("close the reopened store: %v", err)
+		}
+	})
+	app := &App{store: st, settings: f.app.settings}
 	app.triage = triage.NewRouter(app.store, bus.emitChannel)
 	app.triage.SetEventHook(bus.observeRouterEvent)
 	app.providerDiscoveryCaches = f.app.providerDiscoveryCaches

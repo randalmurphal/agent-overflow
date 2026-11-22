@@ -10,6 +10,19 @@ import (
 	"unsafe"
 )
 
+// holdDownloadEvents stops the engine's download reports from reaching the
+// Manager until the answered release runs, as a busy event queue would.
+func holdDownloadEvents(t *testing.T, manager *Manager) (release func()) {
+	t.Helper()
+	engine, ok := manager.engine.(*wkEngine)
+	if !ok {
+		t.Fatalf("the manager runs %T, not WKWebView", manager.engine)
+	}
+	gate := make(chan struct{})
+	engine.downloadEvents.Go(func() { <-gate })
+	return func() { close(gate) }
+}
+
 // Engine selection is the one part of the WKWebView engine that can be proven
 // without a window, and it is the part that decides what every OTHER
 // environment gets: no window means NO engine, which is what keeps
@@ -45,33 +58,6 @@ func TestNativeEngineRefusesToStartBeforeTheWindowExists(t *testing.T) {
 	engine.Interrupt()
 }
 
-// The pane background is the one piece of the present path that is pure Go, and
-// its failure mode is silent: a mis-parsed colour paints the wrong background
-// behind a page rather than raising anything.
-func TestPaneBackgroundCodeParsesOnlyRRGGBB(t *testing.T) {
-	for value, want := range map[string]int{
-		"#000000": 0x000000,
-		"#ffffff": 0xffffff,
-		"#1a1B26": 0x1a1b26,
-		"#0a0b0c": 0x0a0b0c,
-		// Everything that is not exactly #rrggbb is "no colour", never a
-		// partially parsed one.
-		"":           wkNoBackground,
-		"#fff":       wkNoBackground,
-		"1a1b26":     wkNoBackground,
-		"#1a1b2":     wkNoBackground,
-		"#1a1b26 ":   wkNoBackground,
-		" #1a1b26":   wkNoBackground,
-		"#1a1b2g":    wkNoBackground,
-		"#12345678":  wkNoBackground,
-		"rgb(0,0,0)": wkNoBackground,
-	} {
-		if got := wkBackgroundCode(value); got != want {
-			t.Fatalf("wkBackgroundCode(%q) = %#x, want %#x", value, got, want)
-		}
-	}
-}
-
 func TestNativeEngineRefusesProfilesWhileStopped(t *testing.T) {
 	engine := newNativeEngine(t.TempDir(), ManagerOptions{
 		NativeWindow: func() unsafe.Pointer { return nil },
@@ -79,69 +65,45 @@ func TestNativeEngineRefusesProfilesWhileStopped(t *testing.T) {
 	if engine == nil {
 		return
 	}
-	if _, err := engine.NewProfile(context.Background(), profileOptions{Workspace: t.TempDir()}); err == nil {
+	if _, err := engine.NewProfile(context.Background(), profileOptions{Jar: jarKey(t.TempDir()), Ephemeral: true}); err == nil {
 		t.Fatal("a profile on a stopped engine must be an error, not a live session")
 	}
 }
 
 // A popup loads the moment WebKit creates it, before the Manager adopts it,
-// so its first navigations reach Go with no page id. What answers them is the
-// file boundary: the workspace's policy until adoption, the page's own after,
-// and a refusal once either is gone.
-func TestWKNavigationPolicyCoversAPopupBeforeAdoption(t *testing.T) {
+// so the glue names its opener's page for its first navigations
+// (ao_view_policy_page_id). Every navigation answers with the policy of the
+// page named: its own once adopted, its opener's before. A page that is gone,
+// or a view with none, refuses.
+func TestWKNavigationPolicyIsThePagesOrItsOpeners(t *testing.T) {
 	const (
-		inside   = "file:///Users/dev/repo/index.html"
-		outside  = "file:///Users/dev/secret.txt"
-		pageOnly = "https://page.test/"
+		inside  = "file:///Users/dev/repo/index.html"
+		outside = "file:///Users/dev/secret.txt"
 	)
-	profile := &wkProfile{id: wkProfileSeq.Add(1), allow: func(url string) bool { return url == inside }}
-	wkProfileByID.Store(profile.id, profile)
-	t.Cleanup(func() { wkProfileByID.Delete(profile.id) })
-	page := &wkPage{id: wkPageSeq.Add(1), hooks: pageHooks{Allow: func(url string) bool { return url == pageOnly }}}
+	page := &wkPage{id: wkPageSeq.Add(1), hooks: pageHooks{Allow: func(url string) bool { return url == inside }}}
 	wkPageByID.Store(page.id, page)
 	t.Cleanup(func() { wkPageByID.Delete(page.id) })
-	closedPage, disposedProfile := wkPageSeq.Add(1), wkProfileSeq.Add(1)
+	closedPage := wkPageSeq.Add(1)
 
 	for _, tc := range []struct {
-		name              string
-		pageID, profileID uint64
-		url               string
-		want              bool
+		name   string
+		pageID uint64
+		url    string
+		want   bool
 	}{
-		{"an unadopted popup loads a workspace file", 0, profile.id, inside, true},
-		{"an unadopted popup is refused a file outside the workspace", 0, profile.id, outside, false},
-		{"an adopted page answers with its own policy", page.id, profile.id, pageOnly, true},
-		{"an adopted page does not fall back to the workspace's policy", page.id, profile.id, inside, false},
-		{"a closed page refuses", closedPage, profile.id, inside, false},
-		{"a popup of a disposed profile refuses", 0, disposedProfile, inside, false},
+		{"a page or a popup's opener allows its workspace's file", page.id, inside, true},
+		{"a page or a popup's opener refuses a file outside it", page.id, outside, false},
+		{"a closed page or opener refuses", closedPage, inside, false},
+		{"a view with no page and no opener refuses", 0, inside, false},
 	} {
-		if got := wkNavigationAllowed(tc.pageID, tc.profileID, tc.url); got != tc.want {
+		if got := wkNavigationAllowed(tc.pageID, tc.url); got != tc.want {
 			t.Errorf("%s: allowed = %v, want %v", tc.name, got, tc.want)
 		}
 	}
 }
 
-// The workspace policy is what answers for a popup before adoption, so a
-// profile without one must not exist.
-func TestNativeEngineRefusesAProfileWithoutANavigationPolicy(t *testing.T) {
-	engine := newNativeEngine(t.TempDir(), ManagerOptions{
-		NativeWindow: func() unsafe.Pointer { return nil },
-	}, engineEvents{}).(*wkEngine)
-	engine.started = true
-	_, err := engine.NewProfile(context.Background(), profileOptions{Workspace: t.TempDir()})
-	if err == nil || !strings.Contains(err.Error(), "navigation policy") {
-		t.Fatalf("profile error = %v, want a missing navigation policy refusal", err)
-	}
-}
-
-// holdPopupAdoption makes the Manager adopt each popup only after hold, so
-// the popup decides its first navigations with no page: the window a
-// profile's policy covers. Call it before the Manager opens a page.
+// holdPopupAdoption makes the Manager adopt each popup only after hold
+// (heldAdoption). Call it before the Manager opens a page.
 func holdPopupAdoption(manager *Manager, hold time.Duration) {
-	engine := manager.engine.(*wkEngine)
-	adopt := engine.events.PopupOpened
-	engine.events.PopupOpened = func(popup enginePopup) {
-		time.Sleep(hold)
-		adopt(popup)
-	}
+	manager.engine.(*wkEngine).events.PopupOpened = heldAdoption(manager, hold)
 }

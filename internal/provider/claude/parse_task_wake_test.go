@@ -211,15 +211,14 @@ func TestReplayLocalAgentOwnedShellWake(t *testing.T) {
 	agentTerminals, agentNotifications := 0, 0
 	for _, evt := range events {
 		meta := decodeEventMeta(t, evt)
-		switch evt.Kind {
-		case provider.EventBackgroundTaskTerminal:
+		if evt.Kind == provider.EventBackgroundTaskTerminal {
 			if meta["task_id"] == "ac1bb517c3154d44b" {
 				if evt.ItemID != launch {
 					t.Errorf("agent terminal on %q, want %s", evt.ItemID, launch)
 				}
 				agentTerminals++
 			}
-		case provider.EventBackgroundTaskNotification:
+		} else if evt.Kind == provider.EventBackgroundTaskNotification {
 			if meta["task_id"] == "ac1bb517c3154d44b" {
 				if evt.ItemID != launch {
 					t.Errorf("agent notification on %q, want %s", evt.ItemID, launch)

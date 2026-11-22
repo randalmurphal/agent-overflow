@@ -14,7 +14,8 @@
     UpdateProposedPlanComment,
   } from '../../stores/bindings';
   import { addErrorToast, addToast } from '../../stores/toast.svelte';
-  import { threadHasScope } from '../../transport/entityScopes';
+  import { threadScopeGrant } from '../../transport/entityScopes';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
   import type { PathRef, ProposedPlanComment } from '../../types/models';
 
   interface Props {
@@ -80,8 +81,9 @@
   // Create, edit and delete all write the thread's comments under
   // `threads:operate`. Without it the selection never grows a comment
   // trigger, and a draft's edit/delete controls go inert with a reason.
-  let operateUngranted = $derived(!threadHasScope('threads:operate', threadId));
-  let ungrantedTitle = $derived(operateUngranted ? 'Not granted to this device' : undefined);
+  let operateGrant = $derived(threadScopeGrant('threads:operate', threadId));
+  let operateUngranted = $derived(operateGrant !== 'granted');
+  let ungrantedTitle = $derived(grantBlockedTitle(operateGrant));
 
   const sourceBlocks = $derived(splitProposedPlanMarkdownBlocks(markdown));
   const blockCommentViews = $derived.by<BlockCommentView[]>(() => {

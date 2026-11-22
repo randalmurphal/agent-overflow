@@ -15,6 +15,9 @@ scenario, replay, and RPC architecture.
 - `forgefake` answers the `gh` and `glab` calls `cmd/ao-mockforge` forwards
   and the forge API requests on the harness's forge listener.
   Adding an endpoint: read [forgefake/AGENTS.md](forgefake/AGENTS.md).
+- `trackerfake` is the stateful fake of Jira, Tempo and Linear that the
+  tracker clients and providers are tested against. Adding a route: read
+  [trackerfake/AGENTS.md](trackerfake/AGENTS.md).
 - `instanceinfo` discovers instances by canonical data root. Registry rows are
   token-free discovery records; the authenticated token stays inside the owned
   data root.
@@ -42,5 +45,5 @@ scenario wire shapes must be checked against `cmd/ao-mockprovider` and `e2e`.
   interrupts, gates, and fixture failures. Provider terminal frames remain on
   provider stdout.
 
-Run `go test ./internal/harness/...` for changes in this tree. Harness boot and
+Run `make go-test GO_TEST_PKGS=./internal/harness/...` for changes in this tree. Harness boot and
 browser integration are covered by `make e2e`.

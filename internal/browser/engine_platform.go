@@ -26,7 +26,9 @@ import "log"
 func selectEngine(configDir string, opts ManagerOptions, events engineEvents) browserEngine {
 	switch {
 	case opts.FakeEngine:
-		return newFakeEngine()
+		engine := newFakeEngine()
+		engine.events = events
+		return engine
 	case opts.PaneHost != nil:
 		return newHostedEngine(opts.PaneHost.Relay, opts.PaneHost.Directive, opts.Accelerators, events)
 	case opts.HeadlessChromium != nil:

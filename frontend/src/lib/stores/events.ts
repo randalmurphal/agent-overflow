@@ -71,10 +71,7 @@ import type { BackendKey } from '../transport/backendKey';
 import { onBackendHelloChange } from './transportStatus.svelte';
 import {
   forgetBackendTerminals,
-  forgetProject,
   forgetTerminal,
-  forgetThread,
-  forgetThreadGroup,
   noteProject,
   noteTerminal,
   noteThread,
@@ -223,6 +220,7 @@ import {
 } from './eventsWorkflow';
 import { addToast } from './toast.svelte';
 import { applyBrowserCompanionState } from './browserCompanion.svelte';
+import { announceBrowserDownload, isBrowserDownloadAnnouncement } from './browserDownloads.svelte';
 import type { BrowserCompanionEvent } from './bindings';
 
 /**
@@ -235,7 +233,7 @@ export function setupEventListeners(): () => void {
 
   const cancelBrowserCompanionState = wailsEventOn<BrowserCompanionEvent>(
     'browser:companion-state',
-    applyBrowserCompanionState,
+    (event) => (isBrowserDownloadAnnouncement(event) ? announceBrowserDownload(event) : applyBrowserCompanionState(event)),
   );
 
   const cancelApproval = wailsEventOn<ApprovalEvent>('provider:approval', applyApprovalEvent);
@@ -636,9 +634,6 @@ export function setupEventListeners(): () => void {
     if (id && evt.action !== 'deleted' && typeof evt.thread?.placement === 'string') {
       publishThreadPlacementFrame(id, evt.thread.placement, backendKeyForOrigin(origin.backendId));
     }
-    // Store removal needs the origin to invalidate that computer's catalog.
-    // Forgetting first would make the writer fall back to the home computer.
-    if (id && evt.action === 'deleted') forgetThread(id);
   });
 
   // thread:error_notice — a row of kind `error` was persisted on some
@@ -688,11 +683,11 @@ export function setupEventListeners(): () => void {
   const cancelProjectUpdated = wailsEventOn<ProjectUpdateEvent>(
     'project:updated',
     (evt, origin) => {
+      // Every action, a deletion included, is noted to the computer the frame
+      // came from first: a deletion's removal reaches that computer's catalog
+      // and its reads in flight, and deleteProjectLocal forgets it after.
       const id = evt?.project?.id ?? evt?.id;
-      if (id) {
-        if (evt.action === 'deleted') forgetProject(id);
-        else noteProject(id, backendKeyForOrigin(origin.backendId));
-      }
+      if (id) noteProject(id, backendKeyForOrigin(origin.backendId));
       applyProjectUpdated(evt);
     },
   );
@@ -716,11 +711,11 @@ export function setupEventListeners(): () => void {
   const cancelThreadGroupUpdated = wailsEventOn<ThreadGroupUpdateEvent>(
     'thread-group:updated',
     (evt, origin) => {
+      // Noted first for a deletion too, as project:updated is:
+      // deleteThreadGroupLocal forgets it after its row and its members'
+      // membership left that computer's catalogs.
       const id = evt?.group?.id;
-      if (id) {
-        if (evt.action === 'delete') forgetThreadGroup(id);
-        else noteThreadGroup(id, backendKeyForOrigin(origin.backendId));
-      }
+      if (id) noteThreadGroup(id, backendKeyForOrigin(origin.backendId));
       applyThreadGroupUpdated(evt);
     },
   );

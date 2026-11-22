@@ -1,0 +1,41 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "Intro"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "The release went out on time and the vendor confirmed the fix today"
+        }
+      ],
+      "marks": [
+        {
+          "type": "alignment",
+          "attrs": {
+            "align": "center"
+          }
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "End"
+        }
+      ]
+    }
+  ]
+}

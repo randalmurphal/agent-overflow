@@ -23,7 +23,7 @@ import (
 // AbandonedBlocksNotificationKind is the tool_name and `meta.kind` of the
 // notification row recording that Claude discarded the streamed rows before
 // it after a stalled response. Runs treat it as any notification
-// (activityScanRow.isBell).
+// (activityScanRow.isAbsorbed).
 const AbandonedBlocksNotificationKind = "abandoned_blocks"
 
 // AbandonedBlocksRecordID is the id of the notification row recording that

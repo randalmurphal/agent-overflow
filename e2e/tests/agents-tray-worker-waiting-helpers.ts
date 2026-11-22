@@ -26,6 +26,7 @@ import {
   awaitGate,
   awaitMockInput,
   awaitToolAnswer,
+  releaseAfterBackgrounded,
   setScenario,
   threadToolsScenario,
   type ProviderName,
@@ -459,6 +460,7 @@ export async function runReplyThenRest(harness: HarnessApp, page: Page, provider
       { steps: [
         { capture: { var: 'TOKEN', from: '${USER_INPUT}', pattern: FOOTER_TOKEN_PATTERN } },
         { emitLines: commandCall(provider, 'cmd-deploy', 'make deploy') },
+        { gate: 'reply-send' },
         { call: { tool: 'thread_reply', args: { token: '${TOKEN}', text: REPLY } } },
         { emitLines: commandCall(provider, 'cmd-watch', 'make watch') },
         { gate: 'reply-continue' },
@@ -468,13 +470,13 @@ export async function runReplyThenRest(harness: HarnessApp, page: Page, provider
     afterTurns: 'repeatLast',
   }));
   await harness.rpc('StartSession', lead);
-  const told = awaitMockInput(harness, { cwd: leadP.path, includes: [REPLY] });
   await harness.rpc('SendMessage', lead, 'start the deploy', null);
-  const spawn = await awaitToolAnswer<{ token: string; thread_id: string }>(harness, { tool: 'thread_spawn', cwd: leadP.path, timeoutMs: 60_000 });
-  expect(spawn.isError, spawn.text).toBe(false);
+  const spawn = await awaitToolAnswer<{ token: string; thread_id: string; outcome: string }>(harness, { tool: 'thread_spawn', cwd: leadP.path, timeoutMs: 60_000 });
+  // The reply waits for the spawn to return, so it reaches the lead as a message.
+  await releaseAfterBackgrounded(spawn, { harness, gate: 'reply-send', cwd: workerP.path });
   const { token, thread_id: worker } = spawn.value!;
   const cont = await awaitGate(harness, 'reply-continue', workerP.path);
-  await told;
+  await awaitMockInput(harness, { cwd: leadP.path, includes: [token, REPLY] });
 
   // Replied and working on: open, running, the call after the reply counted.
   await harness.open(page);

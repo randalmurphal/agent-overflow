@@ -39,6 +39,7 @@ import { stubScrollController } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { makeSettings } from '../../../test/helpers/settings';
 import { getCompactScreen, setCompactLayoutForTest, showCompactList } from '../../stores/layoutMode.svelte';
+import { navigateToAdjacentPane } from './paneNavigation';
 
 class FireableResizeObserver {
   static instances: FireableResizeObserver[] = [];
@@ -283,6 +284,36 @@ describe('PaneHost', () => {
     });
     expect(companion.closest('[data-pane-id="plan-source"]')).toHaveAttribute('data-pane-kind', 'plan');
     expect(review.closest('[data-pane-id="review-source"]')).toHaveAttribute('data-pane-kind', 'review');
+  });
+
+  // Keyboard navigation carries an editing caret into the pane it lands on;
+  // a side chat still preparing has no composer, so its section takes the
+  // caret and keeps logical focus, and the composer it left gets no keys.
+  it('takes a navigated caret into the section of a preparing side chat', async () => {
+    registerPaneForTest('source', createThreadPane({ paneId: 'source' }));
+    setPaneLayoutItemsForTest([
+      { id: 'source', paneId: 'source', kind: 'thread', widthPx: 1 },
+      { id: 'side-chat-source', paneId: 'side-chat-source', kind: 'side-chat', widthPx: 1, sourcePaneId: 'source' },
+    ]);
+    const rendered = render(PaneHost);
+    const section = rendered.getByTestId('side-chat-preparing').closest('section');
+    // A click never focuses a pane section: a keyboard scroll starts where
+    // the browser would start it without one.
+    expect(section).not.toHaveAttribute('tabindex');
+    const input = document.createElement('textarea');
+    document.body.appendChild(input);
+    try {
+      focusPane('source');
+      input.focus();
+      expect(navigateToAdjacentPane(1)).toBe(true);
+      expect(document.activeElement).toBe(section);
+      expect(section).toHaveAttribute('data-pane-id', 'side-chat-source');
+      expect(getFocusedPaneId()).toBe('side-chat-source');
+      input.focus();
+      expect(section).not.toHaveAttribute('tabindex');
+    } finally {
+      input.remove();
+    }
   });
 
   // Regression: CompanionPane called its lazy loader inside the {#await}

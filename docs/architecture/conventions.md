@@ -22,6 +22,12 @@ not hide I/O; a persistence operation should make its write visible in the
 API. Avoid positional arguments with indistinguishable meanings when a typed
 input would prevent mistakes.
 
+A Go `switch` over an enum names every constant of the enum, and `default`
+covers only values outside them: the `exhaustive` linter fails a switch that
+leaves one out, so a new constant is decided at every dispatch. Code that
+picks a few constants out and treats the rest alike uses `if`.
+`.golangci.yml` lists the exempt types.
+
 ## Errors and resource ownership
 
 Return errors with enough operation context for the caller to handle them.

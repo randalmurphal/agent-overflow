@@ -21,7 +21,7 @@ function ingestPanes(): Iterable<ThreadPaneIngest> {
  * (`applyItemStreamEvent`), so every other thread is as current as before.
  */
 export function recoverThreadWindows(threads: ReadonlySet<string>): void {
-  refreshTimelineSurfaces(threads);
+  refreshTimelineSurfaces({ threads });
   threadItemCache.dropUnattestedStamps(threads);
   for (const pane of ingestPanes()) {
     if (!pane.threadId || !threads.has(pane.threadId)) continue;

@@ -131,7 +131,7 @@ func requireHolder(t *testing.T, s *Store, id, title string) {
 	if err := s.CheckThreadExecutionAccess(thread); !errors.Is(err, ErrThreadGone) {
 		t.Fatalf("running in holder %s = %v, want ErrThreadGone", id, err)
 	}
-	sync, err := s.SyncThreadWindow(context.Background(), id, "", 50, testRunWindowRows, HistoryStamp{}, nil, TimelineSelection{})
+	sync, err := s.SyncThreadWindow(context.Background(), id, "", 50, testRunWindowRows, HistoryStamp{}, nil, TimelineSelection{}, AgentMessagesAreMembers)
 	if err != nil || sync.Status != SyncGone {
 		t.Fatalf("sync of holder %s = %s, %v; want gone", id, sync.Status, err)
 	}

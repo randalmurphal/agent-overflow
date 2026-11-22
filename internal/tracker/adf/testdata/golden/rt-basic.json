@@ -1,0 +1,164 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "heading",
+      "attrs": {
+        "level": 1
+      },
+      "content": [
+        {
+          "type": "text",
+          "text": "Release plan"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "Ship the converter this sprint. Keep "
+        },
+        {
+          "type": "text",
+          "marks": [
+            {
+              "type": "code"
+            }
+          ],
+          "text": "snake_case"
+        },
+        {
+          "type": "text",
+          "text": " names and paths like src/app/main.go readable."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "attrs": {
+        "level": 2
+      },
+      "content": [
+        {
+          "type": "text",
+          "text": "Steps"
+        }
+      ]
+    },
+    {
+      "type": "orderedList",
+      "attrs": {
+        "order": 1
+      },
+      "content": [
+        {
+          "type": "listItem",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Parse with goldmark."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "listItem",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Build ADF."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "listItem",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Validate."
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "bulletList",
+      "content": [
+        {
+          "type": "listItem",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Read path"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "listItem",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Write path"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "rule"
+    },
+    {
+      "type": "blockquote",
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "Quoted text with a soft break."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "codeBlock",
+      "attrs": {
+        "language": "go"
+      },
+      "content": [
+        {
+          "type": "text",
+          "text": "func main() {\n\tfmt.Println(\"hi\")\n}"
+        }
+      ]
+    }
+  ]
+}

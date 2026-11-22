@@ -1,4 +1,6 @@
+import { refreshWatchedThreads } from '../../lib/stores/watchedThreads';
 import { registerPaneForTest } from '../../lib/stores/panes.svelte';
+import { AGENT_MESSAGE_RUN_MEMBERS_CAPABILITY } from '../../lib/stores/activityRunRule';
 import { upsertProposedPlanForTests } from '../../lib/stores/proposedPlans.svelte';
 import { getQueueForThread } from '../../lib/stores/sendQueue.svelte';
 import { createThreadPane, type ThreadPane } from '../../lib/stores/thread.svelte';
@@ -102,6 +104,18 @@ export function emitItemEventDelta(delta: ItemDeltaEvent): void {
 
 export function installTimelineScopeCapability(): void {
   __setTransportHelloForTest({ protocolVersion: 1, capabilities: ['timeline.scopes.v1', 'timeline.digests.v1'],
+    backendId: '', backendName: '', serverTimeMs: 0, clockSkewMs: 0,
+    bundleId: '', bundleVersion: '', minShellBuild: 0 });
+}
+
+/**
+ * A home backend that groups agent messages as activity-run members on
+ * sight. Without it a pane groups by the absorbed rule of a backend that
+ * sent no hello. Undo with `__setTransportHelloForTest(null)`.
+ */
+export function installAgentMessageRunMembersCapability(): void {
+  __setTransportHelloForTest({ protocolVersion: 1,
+    capabilities: ['timeline.scopes.v1', 'timeline.digests.v1', AGENT_MESSAGE_RUN_MEMBERS_CAPABILITY],
     backendId: '', backendName: '', serverTimeMs: 0, clockSkewMs: 0,
     bundleId: '', bundleVersion: '', minShellBuild: 0 });
 }
@@ -243,5 +257,8 @@ export async function buildPane(
   // bursts (insert + completion in one batch) mis-resolve against
   // post-apply state. Multi-pane tests pass distinct `paneKey`s instead.
   registerPaneForTest(paneKey, pane);
+  // Production composes the watched threads once its pane holds the thread
+  // (assignThread); here the pane switched before it was registered.
+  refreshWatchedThreads();
   return pane;
 }

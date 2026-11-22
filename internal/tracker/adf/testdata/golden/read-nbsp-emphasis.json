@@ -1,0 +1,16 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        {"type": "text", "text": "Total:"},
+        {"type": "text", "text": " bold ", "marks": [{"type": "strong"}]},
+        {"type": "text", "text": "after and"},
+        {"type": "text", "text": " italic", "marks": [{"type": "em"}]},
+        {"type": "text", "text": "."}
+      ]
+    }
+  ]
+}

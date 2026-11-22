@@ -8,7 +8,6 @@ import (
 
 	"github.com/google/uuid"
 
-	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
@@ -59,7 +58,7 @@ func (f cleanupFailureFixture) failBackgroundRetire(t *testing.T) {
 // include the one it returns, so every call to it fails.
 func (f cleanupFailureFixture) unreachableComputer(t *testing.T) string {
 	t.Helper()
-	manager, err := attachedbackends.New(t.TempDir(), "cleanup source", "linux")
+	manager, err := newTestBackends(t, t.TempDir(), "cleanup source", "linux")
 	if err != nil {
 		t.Fatal(err)
 	}

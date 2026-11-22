@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isLocalEnter } from '../../utils/localEnter';
   import { untrack } from 'svelte';
   // The New Assistant dialog (docs/specs/standing-agents.md, "Sidebar"): a
   // name, the projects it serves (one or more, or all), and Create. The
@@ -18,7 +19,8 @@
   import { attachedBackendEntry, backendDisplayName, hasMultipleBackends } from '../../stores/attachedBackends.svelte';
   import { requireEntityBackend, withBackendTarget } from '../../transport/backends';
   import { projectBackend } from '../../transport/entityIndex';
-  import { hasScope } from '../../transport/scopes';
+  import { scopeGrant } from '../../transport/scopes';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
   import type { Thread } from '../../types/models';
   import { userFacingError } from '../../utils/userFacingError';
   import AssistantProjectsPicker from './AssistantProjectsPicker.svelte';
@@ -40,7 +42,9 @@
     const entry = attachedBackendEntry(backend);
     return entry ? backendDisplayName(entry) : '';
   });
-  let ungranted = $derived(backend !== undefined && !hasScope('threads:autonomy', backend));
+  // No computer, no Create: `canCreate` already holds it off without a reason.
+  let grant = $derived(backend === undefined ? 'granted' : scopeGrant('threads:autonomy', backend));
+  let ungranted = $derived(grant !== 'granted');
   let canCreate = $derived(
     name.trim() !== '' && (all || selected.length > 0) && backend !== undefined && !ungranted && !submitting,
   );
@@ -104,7 +108,7 @@
   }
 
   function handleKeydown(e: KeyboardEvent): void {
-    if (e.key === 'Enter' && !e.isComposing) {
+    if (isLocalEnter(e) && !e.isComposing) {
       e.preventDefault();
       void create();
     }
@@ -166,7 +170,7 @@
       onclick={() => void create()}
       disabled={!canCreate}
       loading={submitting}
-      title={ungranted ? 'Not granted to this device' : undefined}
+      title={grantBlockedTitle(grant)}
       testId="new-assistant-create"
     >
       {#snippet children()}{submitting ? 'Creating…' : 'Create'}{/snippet}

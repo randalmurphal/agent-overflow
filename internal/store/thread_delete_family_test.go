@@ -346,7 +346,7 @@ func TestADeleteClaimsItsFamilyInOneTransaction(t *testing.T) {
 	if _, err := s.ClaimDeleteFamily("op-2", []string{"owned"}); err != nil {
 		t.Fatal(err)
 	}
-	commit, err := s.CommitDeleteClaim("op-2")
+	commit, err := s.CommitDeleteClaim("op-2", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

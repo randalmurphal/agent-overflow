@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/codexmodels"
+	"agent-overflow/internal/ownedtemp"
 	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/providerupdate"
@@ -156,15 +157,37 @@ func DetachProcessHome() (remove func() error, err error) {
 	if processHome != "" {
 		return nil, errors.New("kerneltest: DetachProcessHome called twice")
 	}
-	home, err := os.MkdirTemp("", "agent-overflow-test-home-")
+	sweepProcessHomes()
+	owned, release, err := ownedtemp.Make("", processHomePrefix)
 	if err != nil {
 		return nil, fmt.Errorf("create detached test home: %w", err)
 	}
+	// The home itself starts empty; the owned directory holds its lock.
+	home := filepath.Join(owned, "home")
+	if err := os.Mkdir(home, 0o700); err != nil {
+		return nil, errors.Join(fmt.Errorf("create detached test home: %w", err), release())
+	}
 	if err := detachEnv(home, os.Setenv); err != nil {
-		return nil, errors.Join(fmt.Errorf("detach test home: %w", err), os.RemoveAll(home))
+		return nil, errors.Join(fmt.Errorf("detach test home: %w", err), release())
 	}
 	processHome = home
-	return func() error { return os.RemoveAll(home) }, nil
+	return func() error {
+		err := release()
+		sweepProcessHomes()
+		return err
+	}, nil
+}
+
+// processHomePrefix names the detached homes, one per test process.
+const processHomePrefix = "agent-overflow-test-home-"
+
+// sweepProcessHomes removes the detached homes of test processes that exited
+// without removing theirs: killed, timed out, or a helper process that ended
+// in os.Exit. A failure leaves a directory, not a wrong result.
+func sweepProcessHomes() {
+	if err := ownedtemp.Sweep("", processHomePrefix); err != nil {
+		fmt.Fprintln(os.Stderr, "kerneltest: remove the homes of exited test processes:", err)
+	}
 }
 
 // IsolateProcessSpawns is IsolateSpawns for a test binary whose TestMain

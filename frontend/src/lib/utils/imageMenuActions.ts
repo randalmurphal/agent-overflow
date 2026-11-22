@@ -46,7 +46,7 @@ import { addErrorToast, addToast } from '../stores/toast.svelte';
 import { fetchAttachmentBytes } from '../transport/attachmentTransfer';
 import { requireEntityBackend, withBackendTarget } from '../transport/backends';
 import { resolveThreadBackend } from '../transport/entityIndex';
-import { hasScope } from '../transport/scopes';
+import { scopeGrant, type ScopeGrant } from '../transport/scopes';
 import { downloadBlob } from './blobDownload';
 import { copyToClipboard } from './clipboard';
 import { errString } from './errors';
@@ -212,6 +212,7 @@ export function localImageMarkdownText(image: LocalMenuImage): string {
 }
 
 function markdownDestination(destination: string): string {
+  // eslint-disable-next-line no-control-regex -- a bare destination may not hold control characters.
   if (destination !== '' && !/[\s()<>\u0000-\u001f]/.test(destination)) return destination;
   return `<${destination.replace(/[<>]/g, (char) => `\\${char}`)}>`;
 }
@@ -299,20 +300,21 @@ function saveAction(target: ImageMenuTarget): { backend: BackendKey; action: Fil
 }
 
 /**
- * Whether this page may carry out Save. A file written on the owning
+ * Whether this page may carry out Save (`grantBlockedTitle` says why not).
+ * A file written on the owning
  * computer needs the scope that computer's save RPC requires
  * (`SaveAttachment` is attachments:write, `SaveForgeAttachment` is
  * git:operate, `SaveLocalImage` and `SaveGitBlobImage` are files:read); a browser download reads
  * bytes this page can already read, and opening the forge's own page needs
- * no grant. An owner this page cannot resolve answers true, so the click
+ * no grant. An owner this page cannot resolve answers granted, so the click
  * reports the real error.
  */
-export function canSaveMenuImage(target: ImageMenuTarget): boolean {
+export function saveMenuImageGrant(target: ImageMenuTarget): ScopeGrant {
   const decided = saveAction(target);
-  if (!decided) return true;
+  if (!decided) return 'granted';
   const { backend, action } = decided;
-  if (action === 'download' || action === 'open-externally') return true;
-  return hasScope(SAVE_SCOPE[target.kind], backend);
+  if (action === 'download' || action === 'open-externally') return 'granted';
+  return scopeGrant(SAVE_SCOPE[target.kind], backend);
 }
 
 const SAVE_SCOPE = {

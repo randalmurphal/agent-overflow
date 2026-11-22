@@ -32,6 +32,8 @@ func (a *App) updateWorkReason() (string, error) {
 		return "Waiting for workflows to finish…", nil
 	case workProviderUpdate:
 		return "Waiting for a provider CLI update to finish…", nil
+	case workWorktreeSetup, workRemoteWatch, workAgentWatch:
+		fallthrough
 	default:
 		return fmt.Sprintf("Waiting to finish: %s…", work.kind), nil
 	}

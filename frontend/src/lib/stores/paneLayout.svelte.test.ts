@@ -1,6 +1,12 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   addPaneLayoutItem,
+  demotePane,
+  getPromotedPaneId,
+  paneLayoutMutationRevision,
+  promotePane,
+  setPaneLayoutItems,
+  setPaneLayoutPersistenceHandlers,
   applyPaneBoundaryDrag,
   averagePaneWidthPx,
   equalizePaneWidths,
@@ -16,6 +22,7 @@ import {
   type PaneLayoutItem,
 } from './paneLayout.svelte';
 import { resetLayoutMetricsForTest, setPaneHostWidth } from './layoutMetrics.svelte';
+import { setCompactLayoutForTest } from './layoutMode.svelte';
 
 function thread(paneId: string): PaneLayoutItem {
   return { id: paneId, paneId, kind: 'thread', widthPx: 560 };
@@ -406,5 +413,83 @@ describe('paneLayout store', () => {
     setPaneHostWidth(5000);
     minAnchorPaneLayoutWidths(560);
     expect(getPaneLayoutItems().map((item) => item.widthPx)).toEqual([560, 1120]);
+  });
+});
+
+describe('promoted pane', () => {
+  beforeEach(() => {
+    resetPaneLayoutForTest();
+    setPaneLayoutItemsForTest([thread('a'), review('a'), thread('b')]);
+  });
+
+  afterEach(() => {
+    setPaneLayoutPersistenceHandlers(null);
+    setCompactLayoutForTest(false);
+  });
+
+  it('promotes any layout item and demotes it, without touching the layout', () => {
+    const before = getPaneLayoutItems();
+    expect(promotePane('review-a')).toBe(true);
+    expect(getPromotedPaneId()).toBe('review-a');
+    expect(getPaneLayoutItems()).toBe(before);
+    demotePane();
+    expect(getPromotedPaneId()).toBeNull();
+    demotePane();
+    expect(getPromotedPaneId()).toBeNull();
+    expect(promotePane('b')).toBe(true);
+    expect(getPromotedPaneId()).toBe('b');
+  });
+
+  it('refuses an id that is not in the layout and keeps the current promotion', () => {
+    expect(promotePane('a')).toBe(true);
+    expect(promotePane('ghost')).toBe(false);
+    expect(getPromotedPaneId()).toBe('a');
+  });
+
+  it('promoting another pane replaces the promotion', () => {
+    promotePane('a');
+    expect(promotePane('b')).toBe(true);
+    expect(getPromotedPaneId()).toBe('b');
+  });
+
+  it('is never persisted and records no layout mutation', () => {
+    const immediate = vi.fn();
+    const debounced = vi.fn();
+    setPaneLayoutPersistenceHandlers({ immediate, debounced, flush: () => Promise.resolve() });
+    const revision = paneLayoutMutationRevision();
+    promotePane('a');
+    demotePane();
+    promotePane('b');
+    expect(immediate).not.toHaveBeenCalled();
+    expect(debounced).not.toHaveBeenCalled();
+    expect(paneLayoutMutationRevision()).toBe(revision);
+  });
+
+  it('closing the promoted pane clears it; closing another keeps it', () => {
+    promotePane('review-a');
+    removePaneLayoutItem('b');
+    expect(getPromotedPaneId()).toBe('review-a');
+    removePaneLayoutItem('review-a');
+    expect(getPromotedPaneId()).toBeNull();
+  });
+
+  it('a layout replaced without the promoted pane clears it', () => {
+    promotePane('review-a');
+    // The source closing takes its companions with it.
+    setPaneLayoutItems([thread('b')]);
+    expect(getPromotedPaneId()).toBeNull();
+    // A pane added back under the same id is not promoted again.
+    setPaneLayoutItems([thread('a'), review('a'), thread('b')]);
+    expect(getPromotedPaneId()).toBeNull();
+  });
+
+  it('compact ignores a promotion and refuses a new one', () => {
+    promotePane('a');
+    setCompactLayoutForTest(true);
+    expect(getPromotedPaneId()).toBeNull();
+    expect(promotePane('b')).toBe(false);
+    demotePane();
+    setCompactLayoutForTest(false);
+    expect(getPromotedPaneId()).toBeNull();
   });
 });

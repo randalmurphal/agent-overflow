@@ -1,13 +1,14 @@
+import { readSidebarCatalogs } from '../../../test/helpers/sidebarCatalogs';
 import { takePinnedBackend } from '../../transport/backends';
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ThreadRow from './ThreadRow.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
-import { registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
+import { listPanes, registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
 import { resetPaneLayoutForTest } from '../../stores/paneLayout.svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
-import { refreshThreads } from '../../stores/threads.svelte';
+import { loadSidebarCatalogs } from '../../stores/sidebarCatalogs';
 import { setupEventListeners } from '../../stores/events';
 import {
   beginThreadLiveStateHydration,
@@ -41,7 +42,8 @@ import {
   stageBackend,
 } from '../../../test/helpers/backends';
 import { __resetEntityIndexForTest, noteProject, noteThread } from '../../transport/entityIndex';
-import { refreshProjects, resetProjectsForTest } from '../../stores/projects.svelte';
+import { resetProjectsForTest } from '../../stores/projects.svelte';
+import { UNREACHABLE_SETTLE_MS } from '../../stores/transportStatus.svelte';
 import { __resetBackendIdentityForTest, setBackendIdentityFromBootstrap } from '../../transport/backendIdentity';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { resetSidebarForTest, setShowProviderIcons } from '../../stores/sidebar.svelte';
@@ -163,7 +165,7 @@ describe('<ThreadRow> archive action', () => {
     resetPaneLayoutForTest();
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
-    await refreshThreads();
+    await loadSidebarCatalogs();
     resetKeybindingsStore();
     resetKeyboardModifiersForTest();
   });
@@ -183,7 +185,7 @@ describe('<ThreadRow> open / focused marker', () => {
     resetPaneLayoutForTest();
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
-    await refreshThreads();
+    await loadSidebarCatalogs();
     resetKeybindingsStore();
     resetKeyboardModifiersForTest();
   });
@@ -231,7 +233,7 @@ describe('<ThreadRow> inline actions without threads:operate', () => {
     resetPaneLayoutForTest();
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
-    await refreshThreads();
+    await loadSidebarCatalogs();
     resetKeybindingsStore();
     resetKeyboardModifiersForTest();
     await pairViewOnly();
@@ -296,7 +298,7 @@ describe('<ThreadRow> terminal delete action', () => {
     resetPanesForTest();
     resetPaneLayoutForTest();
     setBindingMock('ListThreads', async () => []);
-    await refreshThreads();
+    await loadSidebarCatalogs();
     resetKeybindingsStore();
     resetKeyboardModifiersForTest();
     // Best-effort stop the (sentinel-provider) session before delete.
@@ -460,7 +462,7 @@ describe('<ThreadRow> drag source', () => {
     ['a thread an archived standing agent spawned', { spawnedByThreadId: 'archived-agent' }, false],
   ])('marks the payload of %s agent-bound only when it is the agent', async (_, overrides, bound) => {
     setBindingMock('ListThreads', async () => [makeThread({ id: 'agent-1', agentId: 'agent-1' })]);
-    await refreshThreads();
+    await loadSidebarCatalogs();
     const thread = makeThread({ id: 'drag-bound', projectId: 'project-1', ...overrides });
     const rendered = render(ThreadRow, { props: { thread, pane: createThreadPane() } });
     const dataTransfer = makeDataTransfer();
@@ -574,7 +576,7 @@ describe('<ThreadRow> fork lineage affordance', () => {
     resetPanesForTest();
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
-    await refreshThreads();
+    await loadSidebarCatalogs();
   });
   afterEach(resetSidebarForTest);
 
@@ -589,7 +591,7 @@ describe('<ThreadRow> fork lineage affordance', () => {
     const parent = makeThread({ id: 'parent', title: 'Original' });
     const forked = makeThread({ id: 'fork', title: 'Derived', forkedFromThreadId: 'parent' });
     setBindingMock('ListThreads', async () => [parent, forked]);
-    await refreshThreads();
+    await loadSidebarCatalogs();
 
     const pane = createThreadPane();
     const { getByTestId } = render(ThreadRow, { props: { thread: forked, pane } });
@@ -603,7 +605,7 @@ describe('<ThreadRow> fork lineage affordance', () => {
     const parent = makeThread({ id: 'parent', title: 'Original' });
     const forked = makeThread({ id: 'fork', title: 'Derived', forkedFromThreadId: 'parent' });
     setBindingMock('ListThreads', async () => [parent, forked]);
-    await refreshThreads();
+    await loadSidebarCatalogs();
 
     setShowProviderIcons(true);
     const pane = createThreadPane();
@@ -624,7 +626,7 @@ describe('<ThreadRow> fork lineage affordance', () => {
     const parent = makeThread({ id: 'parent', title: 'Original' });
     const forked = makeThread({ id: 'fork', forkedFromThreadId: 'parent' });
     setBindingMock('ListThreads', async () => [parent, forked]);
-    await refreshThreads();
+    await loadSidebarCatalogs();
 
     const pane = createThreadPane();
     const { getByTestId } = render(ThreadRow, { props: { thread: forked, pane } });
@@ -637,7 +639,7 @@ describe('<ThreadRow> fork lineage affordance', () => {
     const forked = makeThread({ id: 'fork', forkedFromThreadId: 'parent-not-loaded' });
     // Only the forked thread is in the list; the parent is absent.
     setBindingMock('ListThreads', async () => [forked]);
-    await refreshThreads();
+    await loadSidebarCatalogs();
 
     const pane = createThreadPane();
     const { getByTestId } = render(ThreadRow, { props: { thread: forked, pane } });
@@ -650,7 +652,7 @@ describe('<ThreadRow> fork lineage affordance', () => {
     const parent = makeThread({ id: 'parent', title: 'Original' });
     const forked = makeThread({ id: 'fork', forkedFromThreadId: 'parent' });
     setBindingMock('ListThreads', async () => [parent, forked]);
-    await refreshThreads();
+    await loadSidebarCatalogs();
     setBindingMock('SwitchThread', async () => {});
     setBindingMock('ListItems', async () => []);
 
@@ -665,7 +667,7 @@ describe('<ThreadRow> fork lineage affordance', () => {
     const parent = makeThread({ id: 'parent', title: 'Original' });
     const forked = makeThread({ id: 'fork', forkedFromThreadId: 'parent' });
     setBindingMock('ListThreads', async () => [parent, forked]);
-    await refreshThreads();
+    await loadSidebarCatalogs();
     setBindingMock('SwitchThread', async () => {});
     setBindingMock('ListItems', async () => []);
 
@@ -705,7 +707,7 @@ describe('<ThreadRow> keyboard activation', () => {
     const thread = makeThread({ id: 'space-row' });
     installThreadSwitchMocks(thread);
     setBindingMock('ListThreads', async () => [thread]);
-    await refreshThreads();
+    await loadSidebarCatalogs();
     const pane = createThreadPane();
     const view = render(ThreadRow, { props: { thread, pane } });
     const row = view.getByTestId('thread-row');
@@ -723,7 +725,7 @@ describe('<ThreadRow> keyboard activation', () => {
     const thread = makeThread({ id: 'nested-row', pinnedAt: 1 });
     installThreadSwitchMocks(thread);
     setBindingMock('ListThreads', async () => [thread]);
-    await refreshThreads();
+    await loadSidebarCatalogs();
     setCompactLayoutForTest(true);
     try {
       const pane = createThreadPane();
@@ -747,11 +749,31 @@ describe('<ThreadRow> keyboard activation', () => {
     }
   });
 
+  // A modified click opens the thread in a new pane; the same activation
+  // from the keyboard must too, not replace the pane's conversation.
+  for (const modifier of [{ ctrlKey: true }, { metaKey: true }]) {
+    it(`opens a new pane on ${modifier.ctrlKey ? 'Ctrl' : 'Cmd'}+Enter, leaving the current pane's thread`, async () => {
+      const thread = makeThread({ id: 'modified-row' });
+      installThreadSwitchMocks(thread);
+      setBindingMock('ListThreads', async () => [thread]);
+      await loadSidebarCatalogs();
+      const pane = createThreadPane({ paneId: 'main' });
+      registerPaneForTest('main', pane);
+      const view = render(ThreadRow, { props: { thread, pane } });
+      const row = view.getByTestId('thread-row');
+      row.focus();
+      await fireEvent.keyDown(row, { key: 'Enter', ...modifier });
+      await settle();
+      expect(pane.threadId).not.toBe('modified-row');
+      expect(listPanes().some((other) => other !== pane && other.threadId === 'modified-row')).toBe(true);
+    });
+  }
+
   it('opens nothing for a Space released after focus left, or for an Enter repeat', async () => {
     const thread = makeThread({ id: 'held-row' });
     installThreadSwitchMocks(thread);
     setBindingMock('ListThreads', async () => [thread]);
-    await refreshThreads();
+    await loadSidebarCatalogs();
     const pane = createThreadPane();
     const view = render(ThreadRow, { props: { thread, pane } });
     const row = view.getByTestId('thread-row');
@@ -780,7 +802,7 @@ describe('<ThreadRow> worktree metadata', () => {
     resetPanesForTest();
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
-    await refreshThreads();
+    await loadSidebarCatalogs();
   });
 
   it('renders the worktree basename under the row instead of the WT badge', () => {
@@ -931,7 +953,7 @@ describe('<ThreadRow> pin affordance placement', () => {
     resetPanesForTest();
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
-    await refreshThreads();
+    await loadSidebarCatalogs();
   });
 
   it('renders the pin in the leading gutter before the title', () => {
@@ -1046,7 +1068,7 @@ describe('<ThreadRow> hover-action reveal trigger', () => {
     resetPanesForTest();
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
-    await refreshThreads();
+    await loadSidebarCatalogs();
   });
 
   it('reveals the unpinned pin on hover and keyboard focus-visible, never on focus-within', () => {
@@ -1096,7 +1118,7 @@ describe('<ThreadRow> live status dot', () => {
     resetPanesForTest();
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
-    await refreshThreads();
+    await loadSidebarCatalogs();
     resetThreadStatuses();
   });
 
@@ -1441,7 +1463,7 @@ describe('<ThreadRow> row chrome', () => {
     resetPanesForTest();
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
-    await refreshThreads();
+    await loadSidebarCatalogs();
   });
 
   it.each([
@@ -1500,7 +1522,7 @@ describe('<ThreadRow> context menu dismissal', () => {
     resetPanesForTest();
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
-    await refreshThreads();
+    await loadSidebarCatalogs();
   });
 
   it('a left click on the row itself closes its open context menu', async () => {
@@ -1526,7 +1548,7 @@ describe('<ThreadRow> status is visual only', () => {
     resetPanesForTest();
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
-    await refreshThreads();
+    await loadSidebarCatalogs();
   });
 
   it('renders no status text: the label is the dot’s accessible name only', () => {
@@ -1562,37 +1584,65 @@ describe('<ThreadRow> status is visual only', () => {
 });
 
 describe('<ThreadRow> on an unreachable machine', () => {
-  // Wave 7c: a row whose backend is off-line dims, and home never does —
-  // the page's own outage is the transport banner's job.
+  // A row whose backend has been off-line for a while dims, and home never
+  // does: the page's own outage is the transport banner's job. A shorter
+  // drop changes nothing on the row.
   beforeEach(async () => {
     resetPanesForTest();
     resetPaneLayoutForTest();
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
-    await refreshThreads();
+    await loadSidebarCatalogs();
     resetKeybindingsStore();
     resetKeyboardModifiersForTest();
     resetStagedBackends();
     __resetEntityIndexForTest();
+    vi.useFakeTimers();
   });
 
   afterEach(() => {
     resetStagedBackends();
     __resetEntityIndexForTest();
+    vi.useRealTimers();
   });
 
-  it('dims a row whose machine cannot be reached, and clears when it returns', async () => {
+  it('dims a row once its machine has been unreachable a while, and clears when it returns', async () => {
     const staged = stageBackend({ status: 'reconnecting' });
     noteThread('thread-1', 'laptop');
     const thread = makeThread();
     const pane = createThreadPane();
     const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
     const row = getByTestId('thread-row');
+    vi.advanceTimersByTime(UNREACHABLE_SETTLE_MS - 1);
+    await tick();
+    expect(row).not.toHaveAttribute('data-machine-unreachable');
+    vi.advanceTimersByTime(1);
+    await tick();
     expect(row).toHaveAttribute('data-machine-unreachable', 'true');
 
     staged.setStatus('connected');
     await tick();
     expect(row).not.toHaveAttribute('data-machine-unreachable');
+  });
+
+  it("keeps a working row live through a drop shorter than the settle time", async () => {
+    resetThreadStatuses();
+    const staged = stageBackend();
+    noteThread('thread-1', 'laptop');
+    projectTurnStarted('thread-1', 'turn-1', 0, 0);
+    const { getByTestId } = render(ThreadRow, { props: { thread: makeThread(), pane: createThreadPane() } });
+    const dot = getByTestId('thread-row-status-dot');
+    for (let i = 0; i < 3; i++) {
+      staged.setStatus('reconnecting');
+      vi.advanceTimersByTime(UNREACHABLE_SETTLE_MS - 1);
+      await tick();
+      expect(dot).toHaveClass('animate-pulse');
+      expect(dot).toHaveAttribute('aria-label', 'Working');
+      expect(getByTestId('thread-row')).not.toHaveAttribute('data-machine-unreachable');
+      staged.setStatus('connected');
+      await tick();
+    }
+    resetThreadStatuses();
   });
 
   it("shows the computer's last-known status still, labelled, and live again on reconnect", async () => {
@@ -1602,6 +1652,8 @@ describe('<ThreadRow> on an unreachable machine', () => {
     projectTurnStarted('thread-1', 'turn-1', 0, 0);
     const { getByTestId } = render(ThreadRow, { props: { thread: makeThread(), pane: createThreadPane() } });
     const dot = getByTestId('thread-row-status-dot');
+    vi.advanceTimersByTime(UNREACHABLE_SETTLE_MS);
+    await tick();
     expect(dot).not.toHaveClass('animate-pulse');
     expect(dot.getAttribute('aria-label')).toMatch(/^Last known: Working\. .+ is unreachable$/);
     expect(dot).toHaveAttribute('title', dot.getAttribute('aria-label'));
@@ -1618,6 +1670,8 @@ describe('<ThreadRow> on an unreachable machine', () => {
     const thread = makeThread();
     const pane = createThreadPane();
     const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
+    vi.advanceTimersByTime(UNREACHABLE_SETTLE_MS);
+    await tick();
     expect(getByTestId('thread-row')).not.toHaveAttribute('data-machine-unreachable');
   });
 });
@@ -1632,7 +1686,7 @@ describe('<ThreadRow> machine chip', () => {
     resetPaneLayoutForTest();
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
-    await refreshThreads();
+    await loadSidebarCatalogs();
     resetKeybindingsStore();
     resetKeyboardModifiersForTest();
     resetStagedBackends();
@@ -1658,7 +1712,7 @@ describe('<ThreadRow> machine chip', () => {
       { project: { id: 'p-laptop', path: '/Users/me/app', name: 'app', repositoryID: 'github:github.com:1', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false }, threadCount: 1 },
     ].filter((row) => backend === 'laptop' ? row.project.id === 'p-laptop' : row.project.id === 'p-home');
     });
-    await refreshProjects();
+    await readSidebarCatalogs();
     noteProject('p-laptop', 'laptop');
   }
 
@@ -1714,7 +1768,7 @@ describe('<ThreadRow> machine chip', () => {
       { project: { id: 'p-laptop', path: '/Users/me/app', name: 'app', repositoryID: 'github:github.com:1', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false }, threadCount: 1 },
     ].filter((row) => backend === 'laptop' ? row.project.id === 'p-laptop' : row.project.id === 'p-home');
     });
-    await refreshProjects();
+    await readSidebarCatalogs();
     noteProject('p-laptop', 'laptop');
     noteThread('thread-1', 'laptop');
     const thread = makeThread({ projectId: 'p-laptop' });
@@ -1731,7 +1785,7 @@ describe('<ThreadRow> machine chip', () => {
       { project: { id: 'p-home', path: '/home/me/app', name: 'app', repositoryID: 'github:github.com:1', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false }, threadCount: 1 },
     ].filter((row) => backend === 'laptop' ? row.project.id === 'p-laptop' : row.project.id === 'p-home');
     });
-    await refreshProjects();
+    await readSidebarCatalogs();
     const thread = makeThread({ projectId: 'p-home' });
     const pane = createThreadPane();
     const { queryByTestId } = render(ThreadRow, { props: { thread, pane } });
@@ -1758,7 +1812,7 @@ describe('<ThreadRow> compact layout', () => {
     resetPaneLayoutForTest();
     await primeSettings();
     setBindingMock('ListThreads', async () => []);
-    await refreshThreads();
+    await loadSidebarCatalogs();
     resetKeybindingsStore();
     resetKeyboardModifiersForTest();
     setCompactLayoutForTest(true);

@@ -43,6 +43,8 @@ How the app works today. Under [`architecture/`](architecture/).
 | [`observability.md`](architecture/observability.md) | OpenTelemetry + per-thread NDJSON event log. |
 | [`transport.md`](architecture/transport.md) | Wire mechanism deep-dives: port pinning, the gap marker, scoped-token routes, coalescing, keepalive. |
 | [`forge-transport.md`](architecture/forge-transport.md) | Direct HTTPS to GitHub and GitLab with the user's `gh`/`glab` token: credential holder, hosts, typed errors, rate-limit gates, ETag and Range, the HTTP fake, the merged-PR worktree cleanup's reads. |
+| [`tracker-clients.md`](architecture/tracker-clients.md) | The typed Jira, Tempo and Linear clients under the Issues pane: the HTTP transport's credential, replay, redirect and rate-gate rules, typed errors, the ADF converter, and what each client's calls promise. |
+| [`tracker-backend.md`](architecture/tracker-backend.md) | What sits on the tracker clients, built below the app layer: the tracker-neutral model and providers, connections and key files, the mirror tables and their classification, sync, write outcomes, methods and events, and what agent tools need. |
 | [`release-candidates.md`](architecture/release-candidates.md) | Build and test an untagged production candidate, then publish its exact saved bytes. |
 | [`release-upgrade-check.md`](architecture/release-upgrade-check.md) | The candidate migrates a large previous-release database through the launcher's update path and boots on it. |
 | [`remote-access-setup.md`](architecture/remote-access-setup.md) | Mac-to-Android setup: Tailscale, APK installation, pairing, release signing, and troubleshooting. |
@@ -65,7 +67,7 @@ How the app works today. Under [`architecture/`](architecture/).
 | [`revert-modes.md`](architecture/revert-modes.md) | Message anchors, fork-from-message, and edit-and-resend conversation rollback. |
 | [`thread-replica-sync.md`](architecture/thread-replica-sync.md) | The `history_rev`/`history_epoch` stamp pair and the IndexedDB thread-window replica that paints before the sync RPC returns. |
 | [`browser-tools.md`](architecture/browser-tools.md) | Built-in browser MCP product contract, lifecycle, authority boundaries, and provider live-apply behavior. |
-| [`in-app-browser-spike.md`](architecture/in-app-browser-spike.md) | Measured Wails-webview versus shared-Chrome decision evidence behind the built-in browser. |
+| [`keyboard-focus.md`](architecture/keyboard-focus.md) | The browser pane's keyboard: AO chords taken back from a native page, focus handoff and focus intents, the page's Escape. |
 
 ### Frontend
 
@@ -85,6 +87,7 @@ How the app works today. Under [`architecture/`](architecture/).
 | [`agent-thread-tools-plan.md`](architecture/agent-thread-tools-plan.md) | Data model, ownership, edge cases and build record for the `ao-thread-tools` spec; amendments it makes to the spec are listed at its top. Implemented 2026-09-19. |
 | [`review-pane-design.md`](architecture/review-pane-design.md) | The review-pane surface `internal/gitdiff` feeds. |
 | [`review-diff-streaming.md`](architecture/review-diff-streaming.md) | Review diffs of any size: chunked reads over open handles, compact patch storage within a memory budget, and held rows for diffs taller than the browser. |
+| [`pane-find.md`](architecture/pane-find.md) | Find in panes: the bar, providers, regions and nested surfaces, and the browser pane's find sessions per engine. |
 
 ### Workflows
 
@@ -119,7 +122,7 @@ obsolete planning material. Update incoming links when moving or retiring a doc.
 | [`composer-shell-commands.md`](specs/composer-shell-commands.md) | `!command` in the composer and Run on a shell code block: the app runs it, streams it, and sends the output as a user message. Implemented 2026-11-10. |
 | [`file-attachments.md`](specs/file-attachments.md) | Any-file composer attachments: copy to the attachments root, path line in the prompt, `--add-dir` for Claude. Signed off 2026-09-02; implementation in progress. |
 | [`markdown-first-party.md`](specs/markdown-first-party.md) | Promoting the markdown renderer to first-party code (streamdown plus absorbed marked). Approved 2026-08-29. |
-| [`embedded-browser.md`](specs/embedded-browser.md) | The embedded native browser pane that replaced the Chrome screencast: platform drivers, recipes, and serve mode's headless tools-only engine. Implemented. |
+| [`embedded-browser.md`](specs/embedded-browser.md) | The embedded native browser pane: engines per platform, their hosting constraints, and serve mode's headless tools-only engine. Implemented. |
 | [`sidebar-thread-groups.md`](specs/sidebar-thread-groups.md) | Named, collapsible groups of threads inside a project's sidebar list, shown above the pin blocks; members pin individually. Signed off and implemented 2026-09-02. |
 | [`remote-access.md`](specs/remote-access.md) | Remote transport, pairing, Android, previews, and supervised updates; historical implementation notes and outstanding requirements. |
 | [`connected-computers.md`](specs/connected-computers.md) | Approved multi-computer product contract, ownership, portability, and acceptance matrix; implementation in progress. |

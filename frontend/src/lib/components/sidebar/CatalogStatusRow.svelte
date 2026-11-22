@@ -1,13 +1,13 @@
 <script lang="ts">
-  // One computer whose threads or projects have not loaded. Loading reads
-  // the computer's connection: a starting backend names its boot phase and
-  // step, an unreachable one says it is connecting. The elapsed clock is
-  // not repeated here; the startup screen or the connection banner for the
-  // same computer already ticks it. A failed load shows its error and a
-  // Retry; the catalog store keeps retrying on its own meanwhile.
+  // This computer's threads or projects, not loaded yet, while a load can
+  // make progress (ProjectsSection.svelte decides when). A starting backend
+  // names its boot phase and step; otherwise the row names the list it
+  // waits for. The elapsed clock is not repeated here; the startup screen
+  // or the connection banner for the same computer already ticks it. A
+  // failed load shows its error and a Retry; the catalog store keeps
+  // retrying on its own meanwhile.
   import type { BackendKey } from '../../transport/backendKey';
   import type { CatalogKind } from '../../stores/catalogLoad.svelte';
-  import { isTerminalConnectionStatus } from '../../transport/connectionRefusal';
   import { startupStatusText, startupStepText } from '../../transport/startupProgress';
   import { retryCatalogLoad } from '../../stores/catalogLoad.svelte';
   import { getSettings } from '../../stores/settings.svelte';
@@ -29,12 +29,7 @@
 
   let status = $derived(getTransportStatusFor(backend));
   let startup = $derived(status.status === 'starting' ? status.startup : undefined);
-  let label = $derived.by(() => {
-    if (startup) return startupStatusText(startup);
-    if (status.status === 'connected' || status.status === 'disconnected') return `Loading ${kind}…`;
-    if (isTerminalConnectionStatus(status.status)) return 'Not connected.';
-    return 'Connecting…';
-  });
+  let label = $derived(startup ? startupStatusText(startup) : `Loading ${kind}…`);
   let meta = $derived(startup ? startupStepText(startup) : '');
   let prefix = $derived(name ? `${name}: ` : '');
 </script>

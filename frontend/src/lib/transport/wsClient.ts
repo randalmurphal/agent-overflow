@@ -719,6 +719,25 @@ export type TerminalTransportStatus = Extract<
   'unauthorized' | 'pairing-required'
 >;
 
+/**
+ * Whether this status is an outage: the ladder retrying a lost
+ * connection, or stopped on a refusal. `starting` is a backend that
+ * answered and is not ready (enterStarting keeps it off the ladder), and
+ * `disconnected` is the first connect still in flight; neither is one.
+ */
+export function isTransportOutage(status: TransportStatus): boolean {
+  switch (status) {
+    case 'reconnecting':
+    case 'unauthorized':
+    case 'pairing-required':
+      return true;
+    case 'connected':
+    case 'starting':
+    case 'disconnected':
+      return false;
+  }
+}
+
 // TerminalLatch is what the client holds while the ladder is stopped:
 // which terminal state, and the sentence every rejection issued from
 // under it carries. The message is stored rather than rebuilt per

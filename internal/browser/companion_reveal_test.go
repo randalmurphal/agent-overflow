@@ -30,6 +30,7 @@ func TestLocalFilePathForPageURLAcceptsOnlyLocalFiles(t *testing.T) {
 }
 
 func TestRevealPageFileResolvesTheDisplayedFileAndRefusesTheRest(t *testing.T) {
+	threads := testThreads(map[string]SessionInfo{"thread": {ActivePageID: "page"}})
 	dir := t.TempDir()
 	real := filepath.Join(dir, "report.pdf")
 	if err := os.WriteFile(real, []byte("%PDF"), 0o644); err != nil {
@@ -40,21 +41,24 @@ func TestRevealPageFileResolvesTheDisplayedFileAndRefusesTheRest(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	p := &managedPage{id: "page", owner: "thread", ctx: context.Background()}
+	p := &managedPage{id: "page", owner: threads["thread"], ctx: context.Background()}
+	// Laid out at the thread viewport, as every created page is.
+	p.viewport.Store(packViewport(defaultViewportWidth, defaultViewportHeight))
 	var revealed string
 	m := &Manager{
-		scopes:   map[string]*workspaceScope{"/repo": {pages: map[string]*managedPage{p.id: p}}},
-		sessions: map[string]SessionInfo{"thread": {ActivePageID: p.id}},
+		scopes:  map[jarKey]*jarScope{"/repo": {pages: map[PageID]*managedPage{p.id: p}}},
+		threads: threads,
 		revealFileInFileManager: func(_ context.Context, path string) error {
 			revealed = path
 			return nil
 		},
 	}
-	access := Access{ThreadID: "thread", Workspace: "/repo"}
+	ownThreads(m)
+	access := m.Bind(Caller{ThreadID: "thread", Workspace: "/repo"})
 
 	// A symlinked address resolves to the real file: the file manager must
 	// select the file itself, not a link that may not survive a drag.
-	p.setInfo(PageInfo{ID: p.id, URL: "file://" + filepath.ToSlash(link)})
+	p.commitInfo(pageUpdate{Location: &pageLocation{URL: "file://" + filepath.ToSlash(link)}})
 	if err := m.RevealPageFile(context.Background(), access, p.id); err != nil {
 		t.Fatalf("reveal = %v", err)
 	}
@@ -63,11 +67,11 @@ func TestRevealPageFileResolvesTheDisplayedFileAndRefusesTheRest(t *testing.T) {
 	}
 
 	revealed = ""
-	p.setInfo(PageInfo{ID: p.id, URL: "https://example.test/report.pdf"})
+	p.commitInfo(pageUpdate{Location: &pageLocation{URL: "https://example.test/report.pdf"}})
 	if err := m.RevealPageFile(context.Background(), access, p.id); err == nil {
 		t.Fatal("a remote page was revealed")
 	}
-	p.setInfo(PageInfo{ID: p.id, URL: "file://" + filepath.ToSlash(filepath.Join(dir, "missing.pdf"))})
+	p.commitInfo(pageUpdate{Location: &pageLocation{URL: "file://" + filepath.ToSlash(filepath.Join(dir, "missing.pdf"))}})
 	if err := m.RevealPageFile(context.Background(), access, p.id); err == nil {
 		t.Fatal("a missing file was revealed")
 	}
@@ -95,29 +99,32 @@ func (e rendererFSEngine) BackendFilePath(_ context.Context, rawURL string) (str
 	return filepath.Join(e.base, filepath.FromSlash(rest)), nil
 }
 
-// A page's address on the hosted engine is in the RENDERER's form; the
-// reveal must resolve the backend path through the engine seam rather than
-// stat the URL's path (live incident 2026-08-31, from the clipboard-copy
-// predecessor of this feature).
+// A page's address on the hosted engine is in the renderer's form; the
+// reveal resolves the backend path through the engine seam rather than
+// stat the URL's path.
 func TestRevealPageFileResolvesRendererFormURLsThroughTheEngine(t *testing.T) {
+	threads := testThreads(map[string]SessionInfo{"thread": {ActivePageID: "page"}})
 	dir := t.TempDir()
 	real := filepath.Join(dir, "report.pdf")
 	if err := os.WriteFile(real, []byte("%PDF"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	p := &managedPage{id: "page", owner: "thread", ctx: context.Background()}
+	p := &managedPage{id: "page", owner: threads["thread"], ctx: context.Background()}
+	// Laid out at the thread viewport, as every created page is.
+	p.viewport.Store(packViewport(defaultViewportWidth, defaultViewportHeight))
 	var revealed string
 	m := &Manager{
-		engine:   rendererFSEngine{base: dir},
-		scopes:   map[string]*workspaceScope{"/repo": {pages: map[string]*managedPage{p.id: p}}},
-		sessions: map[string]SessionInfo{"thread": {ActivePageID: p.id}},
+		engine:  rendererFSEngine{base: dir},
+		scopes:  map[jarKey]*jarScope{"/repo": {pages: map[PageID]*managedPage{p.id: p}}},
+		threads: threads,
 		revealFileInFileManager: func(_ context.Context, path string) error {
 			revealed = path
 			return nil
 		},
 	}
-	access := Access{ThreadID: "thread", Workspace: "/repo"}
-	p.setInfo(PageInfo{ID: p.id, URL: "file://renderer.host/report.pdf"})
+	ownThreads(m)
+	access := m.Bind(Caller{ThreadID: "thread", Workspace: "/repo"})
+	p.commitInfo(pageUpdate{Location: &pageLocation{URL: "file://renderer.host/report.pdf"}})
 	if err := m.RevealPageFile(context.Background(), access, p.id); err != nil {
 		t.Fatalf("reveal = %v", err)
 	}

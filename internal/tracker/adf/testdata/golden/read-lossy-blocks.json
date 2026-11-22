@@ -1,0 +1,213 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "extension",
+      "attrs": {
+        "extensionKey": "toc",
+        "extensionType": "com.atlassian.confluence.macro.core"
+      }
+    },
+    {
+      "type": "bodiedExtension",
+      "attrs": {
+        "extensionKey": "section",
+        "extensionType": "com.atlassian.confluence.macro.core"
+      },
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "inside macro"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "layoutSection",
+      "content": [
+        {
+          "type": "layoutColumn",
+          "attrs": {
+            "width": 50
+          },
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "left"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "layoutColumn",
+          "attrs": {
+            "width": 50
+          },
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "right"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "decisionList",
+      "attrs": {
+        "localId": "d1"
+      },
+      "content": [
+        {
+          "type": "decisionItem",
+          "attrs": {
+            "localId": "d2",
+            "state": "DECIDED"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "use goldmark"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "blockCard",
+      "attrs": {
+        "url": "https://example.com/card"
+      }
+    },
+    {
+      "type": "mediaGroup",
+      "content": [
+        {
+          "type": "media",
+          "attrs": {
+            "type": "file",
+            "id": "g-1",
+            "collection": ""
+          }
+        },
+        {
+          "type": "media",
+          "attrs": {
+            "type": "file",
+            "id": "g-2",
+            "collection": "",
+            "alt": "notes.txt"
+          }
+        }
+      ]
+    },
+    {
+      "type": "mediaSingle",
+      "attrs": {
+        "layout": "align-start",
+        "width": 400,
+        "widthType": "pixel"
+      },
+      "content": [
+        {
+          "type": "media",
+          "attrs": {
+            "type": "file",
+            "id": "img-9",
+            "collection": "",
+            "alt": "shot.png",
+            "width": 800,
+            "height": 600
+          }
+        }
+      ]
+    },
+    {
+      "type": "panel",
+      "attrs": {
+        "panelType": "custom",
+        "panelColor": "#ffeeee"
+      },
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "custom panel"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "marks": [
+        {
+          "type": "alignment",
+          "attrs": {
+            "align": "center"
+          }
+        }
+      ],
+      "content": [
+        {
+          "type": "text",
+          "text": "centered"
+        }
+      ]
+    },
+    {
+      "type": "embedCard",
+      "attrs": {
+        "url": "https://example.com/embed",
+        "layout": "center"
+      }
+    },
+    {
+      "type": "futureBlock",
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "child of unknown"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "futureEmpty"
+    },
+    {
+      "type": "paragraph"
+    },
+    {
+      "type": "rule",
+      "marks": [
+        {
+          "type": "breakout",
+          "attrs": {
+            "mode": "wide"
+          }
+        }
+      ]
+    }
+  ]
+}

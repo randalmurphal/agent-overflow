@@ -127,8 +127,8 @@ describe('<AddProjectModal>', () => {
     setBindingMock('ListProjects', async () => [
       { project: existing, threadCount: 0, lastActive: 0 },
     ]);
-    const { refreshProjects } = await import('../../../stores/projects.svelte');
-    await refreshProjects();
+    const { readSidebarCatalogs } = await import('../../../../test/helpers/sidebarCatalogs');
+    await readSidebarCatalogs();
 
     setBindingMock('CreateProject', async () => {
       throw new Error('project path already in use');
@@ -163,8 +163,8 @@ describe('<AddProjectModal>', () => {
     const local = { id: 'local', path: '/repo', name: 'repo', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false };
     const remote = { ...local, id: 'remote' };
     setBindingMock('ListProjects', async () => [{ project: local, threadCount: 0 }]);
-    const { refreshProjects } = await import('../../../stores/projects.svelte');
-    await refreshProjects();
+    const { readSidebarCatalogs } = await import('../../../../test/helpers/sidebarCatalogs');
+    await readSidebarCatalogs();
     noteProject(local.id, '');
     setBindingMock('CreateProject', async (path) => {
       expect(takePinnedBackend()).toBe('gpu');

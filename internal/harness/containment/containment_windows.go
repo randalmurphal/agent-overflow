@@ -9,9 +9,10 @@ import (
 	"os/exec"
 	"syscall"
 	"time"
-	"unsafe"
 
 	"golang.org/x/sys/windows"
+
+	"agent-overflow/internal/procutil"
 )
 
 type windowsGroup struct {
@@ -33,14 +34,14 @@ func Prepare(limit uint64) (Group, error) {
 	if err != nil {
 		return nil, fmt.Errorf("CreateJobObject: %w", err)
 	}
-	info := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{
+	info := &windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{
 		BasicLimitInformation: windows.JOBOBJECT_BASIC_LIMIT_INFORMATION{
 			LimitFlags: windows.JOB_OBJECT_LIMIT_JOB_MEMORY |
 				windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 		},
 		JobMemoryLimit: uintptr(limit),
 	}
-	if _, err := windows.SetInformationJobObject(job, windows.JobObjectExtendedLimitInformation, uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info))); err != nil {
+	if err := procutil.SetJobInformation(job, windows.JobObjectExtendedLimitInformation, info); err != nil {
 		_ = windows.CloseHandle(job)
 		return nil, fmt.Errorf("SetInformationJobObject(memory): %w", err)
 	}
@@ -132,9 +133,8 @@ func (g *windowsGroup) Wait(timeout time.Duration) error {
 	}
 	deadline := time.Now().Add(timeout)
 	for {
-		var info jobBasicAccountingInformation
-		var returned uint32
-		if err := windows.QueryInformationJobObject(g.handle, windows.JobObjectBasicAccountingInformation, uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info)), &returned); err != nil {
+		info := new(jobBasicAccountingInformation)
+		if err := procutil.QueryJobInformation(g.handle, windows.JobObjectBasicAccountingInformation, info); err != nil {
 			return fmt.Errorf("QueryInformationJobObject: %w", err)
 		}
 		if info.ActiveProcesses == 0 {

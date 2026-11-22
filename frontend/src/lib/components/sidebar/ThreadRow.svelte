@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isLocalEnter } from '../../utils/localEnter';
   import ForkPendingRow from './ForkPendingRow.svelte';
   import {
     getJumpHintsVisible,
@@ -16,7 +17,7 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { getThreadById, getThreadLiveActivityAt } from '../../stores/threads.svelte';
   import {
-    threadMachineUnreachable,
+    threadMachineUnreachableSettled,
     unreachableThreadMachineName,
   } from '../../stores/attachedBackends.svelte';
   import { getMinuteNow } from '../../stores/minuteClock.svelte';
@@ -46,6 +47,7 @@
   import SidebarRowMenuButton from './SidebarRowMenuButton.svelte';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import { roleButtonKeys } from '../../utils/roleButtonKeys';
+  import { activationIntent, type ActivationIntent } from '../../utils/modClick';
   import {
     archiveThreadAction,
     deleteThreadAction,
@@ -81,7 +83,8 @@
   } from '../../utils/sidebarRowMetrics';
   import { threadBackend } from '../../transport/entityIndex';
   import { HOME_BACKEND } from '../../transport/backendKey';
-  import { threadHasScope } from '../../transport/entityScopes';
+  import { threadScopeGrant } from '../../transport/entityScopes';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
 
   let {
     thread,
@@ -186,30 +189,27 @@
   let rowEl: HTMLDivElement | undefined = $state(undefined);
   let ctxOpen = $state(false);
 
-  function handleClick(e?: MouseEvent) {
+  /**
+   * The row's one activation, from a click or from Enter or Space: the
+   * intent's modifier opens a new pane; `range` (a shift-click) extends a
+   * selection when the list keeps one.
+   */
+  function activate(intent: ActivationIntent, range = false) {
     if (editing) return;
-    // A mouse click is an unambiguous "I'm picking THIS thread" — drop
+    // Picking a row is an unambiguous "I'm picking THIS thread": drop
     // the visual cursor so it doesn't drift from where the user is.
     clearSidebarCursor();
-    if (e && (e.metaKey || e.ctrlKey)) {
+    if (intent.openInNewPane) {
       void openThreadInNewPane(thread);
       return;
     }
-    if (onSelectClick && e) {
-      const modifier: 'toggle' | 'range' | 'single' | null = e.shiftKey
-        ? 'range'
-        : null;
-      if (modifier !== null) {
-        const handled = onSelectClick(modifier);
-        if (handled) return;
-      }
-    }
+    if (range && onSelectClick?.('range')) return;
     if (pane) void openThreadFromNavigation(thread, pane);
     else void openThreadFromNavigation(thread);
   }
 
   // Enter and Space open the row as they would a native button.
-  const rowKeys = roleButtonKeys(() => handleClick());
+  const rowKeys = roleButtonKeys((intent) => activate(intent));
 
   function startRename() {
     editing = true;
@@ -243,8 +243,8 @@
   function handleRenameKeydown(e: KeyboardEvent) {
     // Enter confirms the IME candidate while composing a CJK title; committing
     // the rename here would save the pre-composition text and exit edit mode.
-    if (e.key === 'Enter' && isImeComposingEvent(e)) return;
-    if (e.key === 'Enter') {
+    if (isLocalEnter(e) && isImeComposingEvent(e)) return;
+    if (isLocalEnter(e)) {
       e.preventDefault();
       saveRename();
     } else if (e.key === 'Escape') {
@@ -283,9 +283,9 @@
   // The pin, archive and delete controls write the row; inert with a reason
   // when the session lacks the grant, the same treatment the context menu
   // gives its rows.
-  let operateUngranted = $derived(!threadHasScope('threads:operate', thread.id, thread.projectId));
+  let operateGrant = $derived(threadScopeGrant('threads:operate', thread.id, thread.projectId));
   // StartNextAssistantThread rides threads:autonomy.
-  let nextThreadUngranted = $derived(!threadHasScope('threads:autonomy', thread.id, thread.projectId));
+  let nextThreadGrant = $derived(threadScopeGrant('threads:autonomy', thread.id, thread.projectId));
   let isJumpTarget = $derived(
     !inGroup && !isAgent && sidebarPinGroup(thread) === 'front',
   );
@@ -388,10 +388,10 @@
   // Inside a group the pin centres under the group's folder glyph.
   let pinSlotLeftPx = $derived(inGroup ? GROUP_MEMBER_PIN_SLOT_LEFT_PX : 0);
 
-  // A thread on an attached machine this client cannot reach right now
-  // dims in place and stays readable from the replica (spec §10). Home is
-  // never dimmed here: its drop is the transport banner's.
-  let machineUnreachable = $derived(threadMachineUnreachable(thread.id, thread.projectId));
+  // A thread on an attached machine this client has not reached for a
+  // while dims in place and stays readable from the replica (spec §10); a
+  // drop shorter than that changes nothing here.
+  let machineUnreachable = $derived(threadMachineUnreachableSettled(thread.id, thread.projectId));
   // A status from an unreachable computer is its last report: shown, but
   // still, and labelled as such.
   let unreachableMachine = $derived(unreachableThreadMachineName(thread.id, thread.projectId));
@@ -429,7 +429,7 @@
 <!-- Keyboard activation lives on the focusable row inside. -->
 <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
 <div
-  onclick={(e) => handleClick(e)}
+  onclick={(e) => activate(activationIntent(e), e.shiftKey)}
   ondblclick={startRename}
   oncontextmenu={handleContextMenu}
   ondragstart={handleDragStart}
@@ -490,7 +490,7 @@
       <ThreadRowPinButton
         {isPinned}
         pinGroup={thread.pinGroup}
-        disabled={operateUngranted}
+        grant={operateGrant}
         onToggle={() => { if (isPinned) void unpinThreadAction(ctx()); else void pinThreadAction(ctx()); }}
         onCycleBurner={() => void setThreadPinGroupAction(
           ctx(),
@@ -588,9 +588,9 @@
         <button
           type="button"
           onclick={(e) => { e.stopPropagation(); void nextAssistantThreadAction(ctx()); }}
-          disabled={nextThreadUngranted}
+          disabled={nextThreadGrant !== 'granted'}
           aria-label="New Thread, Same Assistant"
-          title={nextThreadUngranted ? 'Not granted to this device' : 'New Thread, Same Assistant'}
+          title={grantBlockedTitle(nextThreadGrant) ?? 'New Thread, Same Assistant'}
           data-testid="thread-row-next-thread"
           class="flex items-center justify-center h-5 w-5 compact:h-9 compact:w-9 rounded-[var(--radius-field)] shrink-0 cursor-pointer text-fg-subtle hover:text-fg hover:bg-surface-2/40 opacity-0 pointer-events-none transition-opacity duration-150 group-hover/thread-item:opacity-100 group-hover/thread-item:pointer-events-auto group-has-[:focus-visible]/thread-row:opacity-100 group-has-[:focus-visible]/thread-row:pointer-events-auto compact:opacity-100 compact:pointer-events-auto focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
         >
@@ -652,7 +652,7 @@
             <ThreadRowActions
               onArchive={isTerminal ? undefined : handleArchive}
               onDelete={isTerminal ? handleDelete : undefined}
-              disabled={operateUngranted}
+              grant={operateGrant}
             />
           </div>
         {/if}

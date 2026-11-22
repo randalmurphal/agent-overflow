@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -11,11 +12,16 @@ import (
 )
 
 func (m *Manager) Pointer(ctx context.Context, access Access, opts PointerOptions) (PageInfo, error) {
+	if err := m.bound(access); err != nil {
+		return PageInfo{}, err
+	}
 	p, _, err := m.lookupOrSelectPage(ctx, access, opts.PageID)
 	if err != nil {
 		return PageInfo{}, err
 	}
-	p.mu.Lock()
+	if err := m.lockPageForOperation(ctx, p); err != nil {
+		return PageInfo{}, err
+	}
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	defer cancel()
@@ -34,6 +40,9 @@ func (m *Manager) Pointer(ctx context.Context, access Access, opts PointerOption
 }
 
 func (m *Manager) DOMAction(ctx context.Context, access Access, opts DOMActionOptions) (any, error) {
+	if err := m.bound(access); err != nil {
+		return nil, err
+	}
 	if len(opts.Text) > maxBrowserInputBytes {
 		return nil, fmt.Errorf("browser: input text exceeds %d bytes", maxBrowserInputBytes)
 	}
@@ -46,7 +55,9 @@ func (m *Manager) DOMAction(ctx context.Context, access Access, opts DOMActionOp
 		if lookupErr != nil {
 			return nil, lookupErr
 		}
-		p.mu.Lock()
+		if err := m.lockPageForOperation(ctx, p); err != nil {
+			return nil, err
+		}
 		defer p.mu.Unlock()
 		opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 		defer cancel()
@@ -90,7 +101,9 @@ func (m *Manager) scrollNodeReference(ctx context.Context, p *managedPage, ref n
 	if err := validateScrollDelta(x, y); err != nil {
 		return PageInfo{}, err
 	}
-	p.mu.Lock()
+	if err := m.lockPageForOperation(ctx, p); err != nil {
+		return PageInfo{}, err
+	}
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	defer cancel()
@@ -101,6 +114,9 @@ func (m *Manager) scrollNodeReference(ctx context.Context, p *managedPage, ref n
 }
 
 func (m *Manager) Clipboard(ctx context.Context, access Access, opts ClipboardOptions) (any, error) {
+	if err := m.bound(access); err != nil {
+		return nil, err
+	}
 	p, _, err := m.lookupOrSelectPage(ctx, access, opts.PageID)
 	if err != nil {
 		return nil, err
@@ -166,11 +182,16 @@ func cloneClipboard(items []ClipboardItem) []ClipboardItem {
 }
 
 func (m *Manager) WaitAdvanced(ctx context.Context, access Access, opts WaitOptions) (PageInfo, error) {
+	if err := m.bound(access); err != nil {
+		return PageInfo{}, err
+	}
 	p, _, err := m.lookupOrSelectPage(ctx, access, opts.PageID)
 	if err != nil {
 		return PageInfo{}, err
 	}
-	p.mu.Lock()
+	if err := m.lockPageForOperation(ctx, p); err != nil {
+		return PageInfo{}, err
+	}
 	defer p.mu.Unlock()
 	timeout, err := boundedTimeout(opts.TimeoutMS)
 	if err != nil {
@@ -240,27 +261,113 @@ func (m *Manager) waitForPage(ctx context.Context, p *managedPage, urlPattern, l
 	}
 }
 
-func (m *Manager) waitForNavigation(ctx context.Context, p *managedPage, before navigationMark, urlPattern, loadState string) error {
+// pageNavigation tells p's navigations apart: its engine's mark and the
+// documents its main frame committed (docEpoch), which a reload advances
+// where an engine's mark (WebKit's address and history length) stays.
+type pageNavigation struct {
+	mark    navigationMark
+	commits uint64
+}
+
+// readNavigation reads p's navigation; the commits are read after the mark,
+// so a commit before the read is part of it.
+func readNavigation(ctx context.Context, p *managedPage) (pageNavigation, error) {
+	mark, err := p.driver.NavigationMark(ctx)
+	if err != nil {
+		return pageNavigation{}, err
+	}
+	return pageNavigation{mark: mark, commits: p.docEpoch.Load()}, nil
+}
+
+// movedFrom reports whether a navigation happened between before and n.
+func (n pageNavigation) movedFrom(before pageNavigation) bool {
+	if n.commits != before.commits || n.mark.URL != before.mark.URL {
+		return true
+	}
+	return before.mark.Loader != "" && n.mark.Loader != "" && n.mark.Loader != before.mark.Loader
+}
+
+// navigatedNotReady is an expected navigation that happened while the page
+// did not reach the load state or address the caller waited for before
+// the deadline: the navigation is a fact, the wait's failure another.
+type navigatedNotReady struct {
+	loadState, urlPattern string
+	err                   error
+}
+
+func (e *navigatedNotReady) Error() string {
+	state := strings.ToLower(strings.TrimSpace(e.loadState))
+	if state == "" {
+		state = "load"
+	}
+	target := fmt.Sprintf("the load state %q", state)
+	if e.urlPattern != "" {
+		target += fmt.Sprintf(" at an address matching %q", e.urlPattern)
+	}
+	return fmt.Sprintf("the page navigated but did not reach %s: %v", target, e.err)
+}
+
+func (e *navigatedNotReady) Unwrap() error { return e.err }
+
+// waitForNavigation waits until p has navigated since before, then for its
+// load state and address (waitForPage), and answers whether it navigated:
+// a navigation known to have happened is reported whatever the load wait
+// answers, which a navigatedNotReady error carries. The Manager's own
+// count of main-frame commits is read first, free and final: a commit it
+// counted is a navigation whatever the engine's mark answers. The mark is
+// read only while the count has not moved, and the count again after it,
+// since a mark read can take the rest of the deadline, and once more as
+// the deadline ends the wait. A wait for the commit alone ends on the
+// navigation, with no read of the page (navigationIsAll). A failed mark
+// read is no evidence either way: the wait reads again, and a wait that
+// ends on one says so.
+func (m *Manager) waitForNavigation(ctx context.Context, p *managedPage, before pageNavigation, urlPattern, loadState string) (bool, error) {
 	ticker := time.NewTicker(25 * time.Millisecond)
 	defer ticker.Stop()
+	committed := func() bool { return p.docEpoch.Load() != before.commits }
+	var readErr error
 	for {
-		// A mark the engine cannot read is empty, not an error: an unreadable
-		// location differs from the one recorded before the action, which is
-		// itself evidence the page moved.
-		current, _ := p.driver.NavigationMark(ctx)
-		changed := current.URL != before.URL
-		if before.Loader != "" && current.Loader != "" && current.Loader != before.Loader {
-			changed = true
+		moved := committed()
+		if !moved {
+			current, err := readNavigation(ctx, p)
+			readErr = err
+			moved = committed() || err == nil && current.movedFrom(before)
 		}
-		if changed {
-			return m.waitForPage(ctx, p, urlPattern, loadState)
+		if moved {
+			if navigationIsAll(urlPattern, loadState) {
+				return true, nil
+			}
+			if err := m.waitForPage(ctx, p, urlPattern, loadState); err != nil {
+				return true, &navigatedNotReady{loadState: loadState, urlPattern: urlPattern, err: err}
+			}
+			return true, nil
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			if committed() {
+				// Committed since the last read: the whole of a wait
+				// for the commit alone, and otherwise a navigation with
+				// no time left to see its load state.
+				if navigationIsAll(urlPattern, loadState) {
+					return true, nil
+				}
+				return true, &navigatedNotReady{loadState: loadState, urlPattern: urlPattern, err: ctx.Err()}
+			}
+			if readErr != nil {
+				return false, errors.Join(ctx.Err(), fmt.Errorf("read the page's navigation: %w", readErr))
+			}
+			return false, ctx.Err()
 		case <-ticker.C:
 		}
 	}
+}
+
+// navigationIsAll reports whether a wait for a navigation with this
+// address pattern and load state asks for nothing beyond the navigation
+// itself: the load state "commit" at any address, which matchStatus
+// answers for any page.
+func navigationIsAll(urlPattern, loadState string) bool {
+	return strings.TrimSpace(urlPattern) == "" && strings.ToLower(strings.TrimSpace(loadState)) == "commit"
 }
 
 func globMatcher(pattern string) (*regexp.Regexp, error) {

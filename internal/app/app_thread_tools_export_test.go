@@ -18,6 +18,7 @@ import (
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/rpcclient"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/transport"
 )
@@ -284,26 +285,35 @@ func TestAPeerExportIsServedUnderWhatItsRenderRecorded(t *testing.T) {
 func TestAPairingThatEndsMidCopyEndsTheCopy(t *testing.T) {
 	t.Parallel()
 	for _, ending := range []struct {
-		name  string
-		apply func(*testing.T, *reachPair) error
+		name string
+		// apply runs on the destination's handler goroutine, so it takes
+		// the subtest's StepBudget and answers its error, never t.Fatal.
+		apply func(t *testing.T, pair *reachPair, budget func() (time.Duration, error)) error
 		code  string
 	}{
-		{"forgotten", func(_ *testing.T, pair *reachPair) error { return pair.source.RemoveBackend(pair.computer, true) }, "remote_not_paired"},
-		{"paired again", func(t *testing.T, pair *reachPair) error {
-			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		{"forgotten", func(_ *testing.T, pair *reachPair, _ func() (time.Duration, error)) error {
+			return pair.source.RemoveBackend(pair.computer, true)
+		}, "remote_not_paired"},
+		{"paired again", func(t *testing.T, pair *reachPair, budget func() (time.Duration, error)) error {
+			wait, err := budget()
+			if err != nil {
+				return err
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), wait)
 			defer cancel()
 			invite, _ := pair.destWire.mintLink(t, "full")
-			_, err := pair.manager.Add(ctx, invite.URL)
+			_, err = pair.manager.Add(ctx, invite.URL)
 			return err
 		}, "remote_pairing_replaced"},
 	} {
 		t.Run(ending.name, func(t *testing.T) {
 			t.Parallel()
 			pair, faults, threadID := newExportPair(t, 3*remoteArtifactChunkBytes)
+			budget := testutil.StepBudget(t)
 			var served atomic.Int32
 			faults.exportChunk = func(context.Context, int64, *RemoteArtifactChunk) {
 				if served.Add(1) == 1 {
-					if err := ending.apply(t, pair); err != nil {
+					if err := ending.apply(t, pair, budget); err != nil {
 						t.Errorf("end the pairing mid-copy: %v", err)
 					}
 				}

@@ -7,9 +7,11 @@
 // answer would leave a catalog that has not loaded with no read to load it.
 //
 // Mutations are pure transforms of a computer's rows, recorded only for the
-// computers whose rows they touch. A journal lives as long as its RPC, which
-// the transport bounds, and is dropped when the read ends or its computer
-// detaches.
+// computers whose rows they touch. A read is released when it ends or a newer
+// read of its catalog begins, whichever is first: it stops recording, holds
+// no mutation (so none of the rows they capture) and runs its `onRelease`
+// once. A superseded read can never commit, so nothing replays it. A read
+// whose computer detaches keeps its journal until it ends.
 import { onBackendDetached } from '../transport/backends';
 import type { BackendKey } from '../transport/backendKey';
 import type { CatalogKind } from '../replica/catalog';
@@ -19,16 +21,19 @@ export type CatalogMutation<T> = (rows: T[]) => T[];
 export interface CatalogRead<T> {
   /** False once a newer read of the same computer's catalog has begun. */
   current(): boolean;
-  /** `rows` with every mutation recorded since the read began applied in order. */
+  /** `rows` with every mutation recorded since the read began applied in order. Throws once released. */
   replay(rows: T[]): T[];
-  /** Stop recording. Idempotent. */
+  /** How many mutations the read has recorded; 0 once released. */
+  changes(): number;
+  /** Release the read, unless a newer read already did. Idempotent. */
   end(): void;
 }
 
 type Journal = CatalogMutation<unknown>[];
 interface ComputerReads {
   revision: Partial<Record<CatalogKind, number>>;
-  journals: Partial<Record<CatalogKind, Set<Journal>>>;
+  /** The reads recording, by their journal, with what releases each. */
+  journals: Partial<Record<CatalogKind, Map<Journal, () => void>>>;
 }
 
 const computers = new Map<BackendKey, ComputerReads>();
@@ -40,22 +45,37 @@ function readsOf(backend: BackendKey): ComputerReads {
   return reads;
 }
 
-export function beginCatalogRead<T>(backend: BackendKey, kind: CatalogKind): CatalogRead<T> {
+/**
+ * Begin a read of `backend`'s `kind` catalog, superseding and releasing every
+ * older one. `onRelease` runs once, when this read ends or is superseded.
+ */
+export function beginCatalogRead<T>(backend: BackendKey, kind: CatalogKind, onRelease: () => void = () => {}): CatalogRead<T> {
   const reads = readsOf(backend);
+  const open = reads.journals[kind] ??= new Map();
   const revision = reads.revision[kind] = ++next;
-  const journal: Journal = [];
-  const open = reads.journals[kind] ??= new Set();
-  open.add(journal);
+  for (const releaseOlder of open.values()) releaseOlder();
+  let journal: Journal | null = [];
+  const release = () => {
+    if (journal === null) return;
+    open.delete(journal);
+    journal = null;
+    onRelease();
+  };
+  open.set(journal, release);
   return {
     current: () => revision === catalogRevision(backend, kind),
-    replay: (rows) => (journal as CatalogMutation<T>[]).reduce((acc, mutation) => mutation(acc), rows),
-    end: () => { open.delete(journal); },
+    replay: (rows) => {
+      if (journal === null) throw new Error(`A ${kind} read replayed its journal after it was released.`);
+      return (journal as CatalogMutation<T>[]).reduce((acc, mutation) => mutation(acc), rows);
+    },
+    changes: () => journal?.length ?? 0,
+    end: release,
   };
 }
 
 /** Record a local mutation for every read of `backend`'s catalog in flight. */
 export function recordCatalogMutation<T>(backend: BackendKey, kind: CatalogKind, mutation: CatalogMutation<T>): void {
-  for (const journal of computers.get(backend)?.journals[kind] ?? []) journal.push(mutation as CatalogMutation<unknown>);
+  for (const journal of computers.get(backend)?.journals[kind]?.keys() ?? []) journal.push(mutation as CatalogMutation<unknown>);
 }
 
 /** The newest read's revision; 0 before any. */
@@ -69,3 +89,8 @@ export function openCatalogReadsForTest(backend: BackendKey, kind: CatalogKind):
 }
 
 onBackendDetached(({ backendId }) => { computers.delete(backendId); });
+
+/** Test seam: forget every read, as if every computer had detached. */
+export function resetCatalogReadsForTest(): void {
+  computers.clear();
+}

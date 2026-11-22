@@ -134,10 +134,9 @@ func TestDispatchLineRawSpawnOutputMapsAgentIDForSubagentNotification(t *testing
 
 	var notif *provider.ProviderEvent
 	for i := range events {
-		switch events[i].Kind {
-		case provider.EventSubagentNotification:
+		if events[i].Kind == provider.EventSubagentNotification {
 			notif = &events[i]
-		case provider.EventUserText:
+		} else if events[i].Kind == provider.EventUserText {
 			if strings.Contains(events[i].Content, "subagent_notification") {
 				t.Fatalf("subagent notification carrier emitted as user text: %+v", events[i])
 			}
@@ -197,10 +196,9 @@ func TestDispatchLineRawSpawnOutputMapsAgentIDForRawUserSubagentNotification(t *
 
 	var notif *provider.ProviderEvent
 	for i := range events {
-		switch events[i].Kind {
-		case provider.EventSubagentNotification:
+		if events[i].Kind == provider.EventSubagentNotification {
 			notif = &events[i]
-		case provider.EventUserText:
+		} else if events[i].Kind == provider.EventUserText {
 			if strings.Contains(events[i].Content, "subagent_notification") {
 				t.Fatalf("raw user subagent carrier emitted as user text: %+v", events[i])
 			}

@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { projectHasScope } from '../../transport/entityScopes';
+  import { projectScopeGrant } from '../../transport/entityScopes';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
   // New run (UI-SPEC §5.1). Project · Goal · Workflow · Base branch · the
   // workflow's own fields · step mode. The footer's primary is `Start`: rev 2
   // has no queue, so there is no position to show and nothing to predict.
@@ -31,7 +32,8 @@
   // Every control here drives the workflow engine, which is `threads:autonomy`.
   let projects = $derived(getProjects());
   let projectId = $state('');
-  let ungranted = $derived(!projectHasScope('threads:autonomy', projectId));
+  let grant = $derived(projectScopeGrant('threads:autonomy', projectId));
+  let ungranted = $derived(grant !== 'granted');
   let goal = $state('');
   let workflowId = $state('');
   let seeds = $state<Record<string, unknown>>({});
@@ -227,6 +229,7 @@
       testId="workflow-intake-submit"
       onclick={() => { void submit(); }}
       disabled={ungranted || Boolean(validationError) || submitting}
+      title={grantBlockedTitle(grant)}
       loading={submitting}
     >
       {#snippet children()}{submitting ? 'Starting…' : 'Start'}{/snippet}

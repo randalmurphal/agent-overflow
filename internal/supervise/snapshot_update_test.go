@@ -216,7 +216,7 @@ func TestARestoreEndsTheUpdatesLastAttempt(t *testing.T) {
 	t.Run("a marked restore finished later", func(t *testing.T) {
 		layout, dataDir, db := setup(t)
 		writeFile(t, layout.MarkerPath(), `{"updateId":"u1","dataDir":`+quote(dataDir)+`,"reason":"x","writtenAtMs":1}`)
-		if _, resumed, err := ResumeRestore(layout, nil); err != nil || !resumed {
+		if _, resumed, err := ResumeRestore(layout, RestoreOptions{}); err != nil || !resumed {
 			t.Fatalf("ResumeRestore = %v, %v", resumed, err)
 		}
 		ended(t, layout, dataDir, db)

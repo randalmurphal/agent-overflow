@@ -24,35 +24,47 @@ import (
 // The digest never leaves this process. Credential bytes remain owned by the
 // provider-native store and are discarded immediately after hashing or copying
 // into another provider-native credential slot.
-func (m *Manager) reconcileExternalProviderAccount(providerName string) error {
+//
+// ctx bounds the admission, the wait for the provider's reconcile lock and
+// the start of the identity probe; a probe that has started runs to its end.
+func (m *Manager) reconcileExternalProviderAccount(ctx context.Context, providerName string) error {
 	if m.store == nil || m.credentials == nil {
 		return nil
 	}
 	if providerName != string(provider.Claude) && providerName != string(provider.Codex) {
 		return nil
 	}
-	endWork, err := m.beginWork(m.context())
+	endWork, err := m.beginWork(ctx)
 	if err != nil {
 		return err
 	}
 	defer endWork()
 	reconcileMu := m.reconcileMutex(providerName)
-	reconcileMu.Lock()
+	if err := reconcileMu.LockContext(ctx); err != nil {
+		return fmt.Errorf("wait for the %s account lock to check for an outside login: %w", providerName, err)
+	}
 	defer reconcileMu.Unlock()
-	return m.reconcileExternalProviderAccountWithMutexHeld(providerName)
+	return m.reconcileExternalProviderAccountWithMutexHeld(ctx, providerName)
 }
 
 // ReconcileExternalProviderAccount adopts a provider-native login completed
 // outside Agent Overflow under the provider-specific reconcile transaction.
 func (m *Manager) ReconcileExternalProviderAccount(providerName string) error {
-	return m.reconcileExternalProviderAccount(providerName)
+	return m.reconcileExternalProviderAccount(m.context(), providerName)
+}
+
+// ReconcileExternalProviderAccountContext is ReconcileExternalProviderAccount
+// for a caller with its own bound, such as the usage poll.
+func (m *Manager) ReconcileExternalProviderAccountContext(ctx context.Context, providerName string) error {
+	return m.reconcileExternalProviderAccount(ctx, providerName)
 }
 
 // reconcileExternalProviderAccountWithMutexHeld is the reconciliation body for
 // managed account mutations that must keep provider identity probes and usage
 // refreshes ordered through their canonical credential write. The caller holds
-// reconcileMutex(providerName).
+// reconcileMutex(providerName). ctx bounds the start of the identity probe.
 func (m *Manager) reconcileExternalProviderAccountWithMutexHeld(
+	ctx context.Context,
 	providerName string,
 ) error {
 	// A rotation another store's sweep recovered into the selected slot
@@ -104,6 +116,7 @@ func (m *Manager) reconcileExternalProviderAccountWithMutexHeld(
 	// provider legitimately rotating the token while its probe initializes.
 	binary := m.providerBinaryPath(providerName)
 	info, credential, err := m.runStableAccountProbe(
+		ctx,
 		providerName,
 		m.canonicalProviderAccountProbe(providerName, binary),
 		m.identifyClaudeCredential,
@@ -251,6 +264,12 @@ func (m *Manager) reconcileObservedAccountLocked(
 	if !found {
 		target.ID = uuid.NewString()
 		target.Provider = providerName
+	}
+	if !hasActive || target.ID != active.ID {
+		// The observed login is another account's: its adoption moves the
+		// selection. A use that writes a refreshed login as it ends fails the
+		// stability check below, and the next reconciliation reads it.
+		m.selectionChanging(providerName)
 	}
 	var previous []byte
 	if found {

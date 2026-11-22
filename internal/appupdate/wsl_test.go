@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -286,6 +287,14 @@ func TestWSLUpdateFlowStagesAndHandsOff(t *testing.T) {
 	}
 	if a.busySnapshot() {
 		t.Fatal("the download fence must be released once the artifact is staged")
+	}
+	// The framework's download is not needed once staged: the launcher
+	// ends this backend without the framework's Restart, which would
+	// remove it.
+	if folder, ok := selfupdate.FrameworkDownloadFolder(a.updater.handle.DownloadedPath(), os.TempDir()); !ok {
+		t.Fatalf("download %s is not in a framework download folder", a.updater.handle.DownloadedPath())
+	} else if _, err := os.Stat(folder); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("framework download folder %s outlived the staging: %v", folder, err)
 	}
 
 	// Hand off.
@@ -1369,6 +1378,50 @@ func TestConfigureWSLNamesTheLauncherReason(t *testing.T) {
 	want := "Update to 0.0.11 didn't apply: the trial did not finish within 30m0s. Still running 0.0.10."
 	if got := a.ApplyFailure(); got != want {
 		t.Fatalf("ApplyFailure = %q, want %q", got, want)
+	}
+}
+
+// The install marker names the update this boot follows, which the boot
+// times: applied when this boot runs its version, as after the direct
+// swap, and not applied otherwise. A boot without a marker follows none.
+func TestConfigureWSLNamesTheUpdateThisBootFollows(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		expected string
+		to       string
+		applied  bool
+	}{
+		{"applied", "0.0.10", "0.0.10", true},
+		{"did not apply", "0.0.11", "0.0.11", false},
+		{"no marker", "", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			markerDir := t.TempDir()
+			if tc.expected != "" {
+				if err := selfupdate.SaveMarker(markerDir, selfupdate.Marker{
+					ExpectedVersion: tc.expected, PriorVersion: "0.0.9", StagedAt: time.Now(),
+				}); err != nil {
+					t.Fatalf("save marker: %v", err)
+				}
+			}
+			a := New("0.0.10", Deps{})
+			if to, applied := a.UpdateThisBootFollows(); to != "" || applied {
+				t.Fatalf("before ConfigureWSL = %q, %t", to, applied)
+			}
+			if err := a.ConfigureWSL(WSLConfig{
+				CurrentVersion: "0.0.10", Arch: "amd64", StagingRoot: t.TempDir(), MarkerDir: markerDir,
+				Provider: wslTestProvider(t),
+			}); err != nil {
+				t.Fatalf("ConfigureWSL: %v", err)
+			}
+			if to, applied := a.UpdateThisBootFollows(); to != tc.to || applied != tc.applied {
+				t.Fatalf("UpdateThisBootFollows = %q, %t; want %q, %t", to, applied, tc.to, tc.applied)
+			}
+		})
+	}
+	var none *Service
+	if to, applied := none.UpdateThisBootFollows(); to != "" || applied {
+		t.Fatalf("a nil service = %q, %t", to, applied)
 	}
 }
 

@@ -19,7 +19,11 @@ import { OBSERVE_SCOPES, pairWithScopes, resetToLocalPage } from '../../test/hel
 import { __resetScopesForTest } from '../transport/scopes';
 import { setHostWindowFromBootstrap } from '../transport/pageHost';
 import { resetBrowserCompanionForTest } from '../stores/browserCompanion.svelte';
+import { getToasts, resetToastsForTest } from '../stores/toast.svelte';
 import { noteThread, __resetEntityIndexForTest } from '../transport/entityIndex';
+import { __setTransportHelloForTest } from '../stores/transportStatus.svelte';
+import { applySettingsSnapshot, resetSettingsForTest } from '../stores/settings.svelte';
+import { setCompactLayoutForTest } from '../stores/layoutMode.svelte';
 
 describe('safeExternalURL', () => {
   beforeEach(() => {
@@ -486,16 +490,24 @@ describe('mod+click on an ordinary external link', () => {
     resetRunMode();
     resetToLocalPage();
     resetBrowserCompanionForTest();
+    resetToastsForTest();
     __resetEntityIndexForTest();
     originalOpen = window.open;
     window.open = vi.fn();
     document.body.innerHTML = '';
+    // The home backend has a browser engine; the browser is on by default.
+    __setTransportHelloForTest({ protocolVersion: 1, capabilities: ['browser'],
+      backendId: '', backendName: '', serverTimeMs: 0, clockSkewMs: 0,
+      bundleId: '', bundleVersion: '', minShellBuild: 0 });
     cleanup = installExternalLinkDelegate();
   });
 
   afterEach(() => {
     cleanup();
     cleanup = () => {};
+    __setTransportHelloForTest(null);
+    resetSettingsForTest();
+    setCompactLayoutForTest(false);
     resetBrowserCompanionForTest();
     __resetEntityIndexForTest();
     window.open = originalOpen;
@@ -505,33 +517,30 @@ describe('mod+click on an ordinary external link', () => {
     document.body.innerHTML = '';
   });
 
-  it('opens a new companion tab on that address, on host', async () => {
+  it('opens a new companion tab on that address in one request, on host', async () => {
     const systemOpen = setBindingMock('OpenExternalURL', vi.fn(async () => undefined));
     const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => ({
       threadId: 'thread-1',
       kind: 'state',
       pages: [{ id: 'page-1' }],
       activePageId: 'page-1',
+      pageId: 'page-1',
     })));
 
     expect(modClick(linkInThread())).toBe(false);
-    await waitFor(() => expect(act).toHaveBeenCalledTimes(2));
-    expect(act.mock.calls[0][1]).toMatchObject({ kind: 'new' });
-    expect(act.mock.calls[1][1]).toMatchObject({
-      kind: 'navigate',
-      pageId: 'page-1',
-      address: 'https://example.com/docs',
-    });
+    await waitFor(() => expect(act).toHaveBeenCalledTimes(1));
+    // The address rides the `new`, so no other tab is ever navigated.
+    expect(act.mock.calls[0][1]).toMatchObject({ kind: 'new', address: 'https://example.com/docs' });
     expect(systemOpen).not.toHaveBeenCalled();
   });
 
-  it('does not navigate when the new tab was refused', async () => {
+  it('reports a refused new tab in a toast when no pane carries a banner', async () => {
     const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => {
       throw new Error('browser manager unavailable');
     }));
 
     expect(modClick(linkInThread())).toBe(false);
-    await waitFor(() => expect(act).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(getToasts().map((toast) => toast.message)).toContain('browser manager unavailable'));
     expect(act).toHaveBeenCalledTimes(1);
   });
 
@@ -585,6 +594,29 @@ describe('mod+click on an ordinary external link', () => {
     );
     expect(act).not.toHaveBeenCalled();
   });
+
+  // The click can show no tab: no engine on the home backend, the browser
+  // turned off, or a compact layout, which shows no browser pane. The link
+  // still opens, the ordinary way.
+  for (const [name, arrange] of [
+    ['with no browser engine', () => __setTransportHelloForTest({ protocolVersion: 1, capabilities: [],
+      backendId: '', backendName: '', serverTimeMs: 0, clockSkewMs: 0,
+      bundleId: '', bundleVersion: '', minShellBuild: 0 })],
+    ['with the browser turned off', () => applySettingsSnapshot({ browserEnabled: false })],
+    ['under compact layout', () => setCompactLayoutForTest(true)],
+  ] as const) {
+    it(`falls back to the plain behaviour ${name}`, async () => {
+      arrange();
+      const systemOpen = setBindingMock('OpenExternalURL', vi.fn(async () => undefined));
+      const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => ({ threadId: 'thread-1', kind: 'state', pages: [] })));
+
+      expect(modClick(linkInThread())).toBe(false);
+      await waitFor(() =>
+        expect(openedExternally(systemOpen, 'https://example.com/docs')).toBe(true),
+      );
+      expect(act).not.toHaveBeenCalled();
+    });
+  }
 
   it('falls back to the plain behaviour for a link outside any thread', async () => {
     const systemOpen = setBindingMock('OpenExternalURL', vi.fn(async () => undefined));

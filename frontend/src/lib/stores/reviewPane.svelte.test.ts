@@ -40,7 +40,7 @@ import { persistScope } from './reviewPaneScope';
 import { removeThread } from './threads.svelte';
 import { createThreadPane } from './thread.svelte';
 import { registerComposerDraft, resetComposerDraftRegistryForTest } from './composerDraftRegistry.svelte';
-import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
+import { demotePane, promotePane, resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
 import type { DiffReviewComment, PRDetail, PRReviewSubmitOutcome, ReviewThread, Thread } from '../types/models';
 import type { GitStatus, WorkspaceRef } from '../types/git';
 import { diffSourceKey } from '../utils/diffSourceKey';
@@ -5058,6 +5058,39 @@ describe('reviewPane store — the conflict view\'s permit follows the mounted p
     await flushPane();
     applyPRUpdatedEvent({ prKey: PR_KEY, detail: prDetailStub({ headSHA: 'sha-b' }), threads: [], headSHA: 'sha-b', seq: 42 });
     await vi.waitFor(() => expect(conflicts).toHaveBeenCalledTimes(2));
+  });
+
+  it('on the desktop, gives the permit up while another pane is promoted over the strip', async () => {
+    setPaneLayoutItemsForTest([
+      { id: 'pane-1', paneId: 'pane-1', kind: 'thread', widthPx: 400 },
+      { id: 'companion-1', paneId: 'companion-1', kind: 'review', sourcePaneId: 'pane-1', widthPx: 400 },
+      { id: 'pane-2', paneId: 'pane-2', kind: 'thread', widthPx: 400 },
+    ]);
+    installPRMocks();
+    const conflicts = installConflictTree();
+    const state = reviewStateForPane('pane-1', prSubject());
+    state.attachSurface('companion-1');
+    await waitLoaded(state);
+    await state.setScope('pr');
+    await state.openConflictView();
+    expect(heads(conflicts)).toEqual([['sha-a', true]]);
+
+    expect(promotePane('pane-2')).toBe(true);
+    await flushPane();
+    applyPRUpdatedEvent({ prKey: PR_KEY, detail: prDetailStub({ headSHA: 'sha-b' }), threads: [], headSHA: 'sha-b', seq: 43 });
+    await flushPane();
+    expect(conflicts).toHaveBeenCalledTimes(1);
+
+    // Restoring the strip shows the review again, which catches up.
+    demotePane();
+    await vi.waitFor(() => expect(conflicts).toHaveBeenCalledTimes(2));
+    expect(heads(conflicts)[1]).toEqual(['sha-b', false]);
+
+    // The review's own pane promoted keeps it on screen.
+    expect(promotePane('companion-1')).toBe(true);
+    applyPRUpdatedEvent({ prKey: PR_KEY, detail: prDetailStub({ headSHA: 'sha-c' }), threads: [], headSHA: 'sha-c', seq: 44 });
+    await vi.waitFor(() => expect(conflicts).toHaveBeenCalledTimes(3));
+    demotePane();
   });
 
   it('a reopen of a PR that moved while the view was closed is the person\'s read', async () => {

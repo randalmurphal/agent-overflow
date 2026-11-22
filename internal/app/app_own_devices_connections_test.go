@@ -18,6 +18,7 @@ import (
 	"agent-overflow/internal/network"
 	"agent-overflow/internal/owndevices"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 	"github.com/google/uuid"
 )
 
@@ -32,7 +33,7 @@ func ownConnectionBackend(t *testing.T) ownConnectionHost {
 	backend := newPairedBackend(t)
 	backend.app.storeIdentity.Store(&store.Identity{BackendID: uuid.NewString(), ReplicaGeneration: uuid.NewString()})
 	profile := t.TempDir()
-	manager, err := attachedbackends.New(profile, "Own device", "linux")
+	manager, err := newTestBackends(t, profile, "Own device", "linux")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +59,7 @@ func pairOwnConnection(t *testing.T, target ownConnectionHost, source *attachedb
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 	defer cancel()
 	if _, err = source.Add(ctx, invite.URL); err != nil {
 		t.Fatal(err)
@@ -73,7 +74,7 @@ func pairOwnConnection(t *testing.T, target ownConnectionHost, source *attachedb
 
 func reconcileOwnConnection(t *testing.T, host ownConnectionHost) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 	defer cancel()
 	host.app.backends.ReconcileOwnDevices(ctx, host.app.ownDeviceHooks())
 	rows, err := host.app.backends.List()
@@ -109,13 +110,13 @@ func TestOwnDeviceConnectionsJoinThreeHostsAndControllerWithoutPermanentHub(t *t
 		}
 	}
 
-	controller, err := attachedbackends.New(t.TempDir(), "Screen only", "linux")
+	controller, err := newTestBackends(t, t.TempDir(), "Screen only", "linux")
 	if err != nil {
 		t.Fatal(err)
 	}
 	controller.SetNetwork(nil, dialOwnFixture)
 	pairOwnConnection(t, a, controller, true)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 	defer cancel()
 	hooks := controller.FrontendOwnDeviceHooks()
 	controller.ReconcileOwnDevices(ctx, hooks)
@@ -158,7 +159,7 @@ func TestOwnDeviceLocalRemovalSurvivesReconciliationAndRestart(t *testing.T) {
 	if err := b.app.backends.Remove(a.id); err != nil {
 		t.Fatal(err)
 	}
-	manager, err := attachedbackends.New(b.profile, "Restarted", "linux")
+	manager, err := newTestBackends(t, b.profile, "Restarted", "linux")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +197,7 @@ func TestOwnDeviceConnectionsRetryOfflineMemberUpgradeLegacyAndPropagateRemoval(
 	}
 	offline.Store(true)
 	pairOwnConnection(t, b, c.app.backends, true)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 	defer cancel()
 	c.app.backends.ReconcileOwnDevices(ctx, c.app.ownDeviceHooks())
 	rows, err := c.app.backends.List()
@@ -285,7 +286,7 @@ func TestOwnDeviceConnectionsMergePreviouslySeparateGroups(t *testing.T) {
 	reconcileOwnConnection(t, a)
 	reconcileOwnConnection(t, c)
 	pairOwnConnection(t, c, a.app.backends, true)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 	defer cancel()
 	for range 3 {
 		for _, host := range []ownConnectionHost{a, b, c, d} {
@@ -308,7 +309,7 @@ func TestOwnDeviceConnectionsReconcileWithoutAWindowAndStopWithHost(t *testing.T
 	ownConnectionNetwork(t)
 	a, b := ownConnectionBackend(t), ownConnectionBackend(t)
 	pairOwnConnection(t, b, a.app.backends, true)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 	t.Cleanup(func() { cancel(); a.app.backends.WaitOwnDevices(); b.app.backends.WaitOwnDevices() })
 	for _, host := range []ownConnectionHost{a, b} {
 		host.app.backends.StartOwnDevices(ctx, host.app.ownDeviceHooks())

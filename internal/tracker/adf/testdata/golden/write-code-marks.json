@@ -1,0 +1,56 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "marks": [
+            {
+              "type": "code"
+            }
+          ],
+          "text": "bold code"
+        },
+        {
+          "type": "text",
+          "text": " and "
+        },
+        {
+          "type": "text",
+          "marks": [
+            {
+              "type": "code"
+            }
+          ],
+          "text": "italic code"
+        },
+        {
+          "type": "text",
+          "text": " and "
+        },
+        {
+          "type": "text",
+          "marks": [
+            {
+              "type": "link",
+              "attrs": {
+                "href": "https://example.com"
+              }
+            },
+            {
+              "type": "code"
+            }
+          ],
+          "text": "linked code"
+        },
+        {
+          "type": "text",
+          "text": "."
+        }
+      ]
+    }
+  ]
+}

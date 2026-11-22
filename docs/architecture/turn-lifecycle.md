@@ -1168,7 +1168,8 @@ working indicator clears and the user gets actionable copy:
    `expect_turn_complete` opt-in (Codex doesn't follow up with a
    `result` envelope), so the synthetic truncated turn-complete fires.
 5. **Error `result` with no open round and no open turn** (pre-init
-   startup failure, e.g. an unusable `--resume-session-at` cursor, where
+   startup failure, e.g. a pinned fork start's unusable
+   `--resume-session-at` cursor, where
    the process emits only the error result and lingers):
    `handleTurnComplete`'s orphan branch persists an error item
    attributed to the first pending send that has not opened a turn (the send that
@@ -1181,8 +1182,10 @@ working indicator clears and the user gets actionable copy:
    writes nothing (`claimOrphanError`). The app layer additionally
    reaps the never-inited session (`teardownDeadPreInitSession`,
    Claude-only, since the lingering-process failure mode is the Claude
-   CLI's; token- and epoch-guarded so a racing user retry's
-   replacement session is never torn down) after restoring any queued
+   CLI's; run whole under the thread action lock and token- and
+   epoch-guarded, so a racing user retry's replacement session is never
+   torn down and a caller tearing the session down under the lock
+   finishes before the reaper starts) after restoring any queued
    sends to the composer draft, so the next send lazy-starts fresh;
    recovery is a manual retry: the failure mode is deterministic, so
    auto-retry would loop silently. The error-item upsert is the single

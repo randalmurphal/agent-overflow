@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isLocalEnter } from '../../utils/localEnter';
   import Check from '@lucide/svelte/icons/check';
   import Search from '@lucide/svelte/icons/search';
   import Users from '@lucide/svelte/icons/users';
@@ -67,6 +68,7 @@
         active = Math.max(activeIndex - 1, 0);
         break;
       case 'Enter':
+        if (!isLocalEnter(event)) break;
         event.preventDefault();
         if (!event.repeat) toggle(options[activeIndex]);
         break;

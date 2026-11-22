@@ -137,9 +137,10 @@ func (r *Router) handleCommandLifecycle(evt provider.ProviderEvent) error {
 			out.Delivery = classifyCommandDelivery(entry.RoundIDAtQueue, r.openRoundID(evt.ThreadID))
 		}
 		r.noteSendStarted(evt.ThreadID, evt.SessionToken, meta.CommandUUID)
+	case provider.CommandCompleted, provider.CommandCancelled, provider.CommandDiscarded:
+		// Terminal: release the correlation in the same step that reports it.
+		fallthrough
 	default:
-		// completed / cancelled / discarded are terminal: release the
-		// correlation in the same step that reports it.
 		entry, ok := r.takeCommandLifecycle(evt.ThreadID, meta.CommandUUID)
 		if ok {
 			out.UserItemID = entry.UserItemID

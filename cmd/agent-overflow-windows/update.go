@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/selfupdate"
+	"agent-overflow/internal/supervise"
 	"agent-overflow/internal/wsldistro"
 	"agent-overflow/internal/wsllauncher"
 
@@ -94,7 +95,7 @@ func (a *launcherApp) handleUpdateInstall(directive selfupdate.InstallDirective)
 // returns nil only once the swap helper is running and the app is quitting —
 // after that point the process is on its way out and there is nothing left to
 // report.
-func (a *launcherApp) installStagedUpdate(directive selfupdate.InstallDirective) error {
+func (a *launcherApp) installStagedUpdate(directive selfupdate.InstallDirective) (err error) {
 	dir, ok := wsldistro.WSLConfigDir()
 	if !ok {
 		return errors.New(`resolve %APPDATA%\agent-overflow`)
@@ -137,16 +138,24 @@ func (a *launcherApp) installStagedUpdate(directive selfupdate.InstallDirective)
 	}
 
 	// A target that runs the trial takes over from here. One that predates
-	// it, or the running version again, is swapped in as before.
-	if err := a.beginTrialUpdate(directive, staged, digest); !errors.Is(err, errLegacyTarget) {
+	// it, or the running version again, is swapped in as before; swap times
+	// that branch, and a failure on it ends with its summary.
+	swap := supervise.NewSwapTiming(log.Printf, directive.Version, nil)
+	if err := a.beginTrialUpdate(directive, staged, digest, swap); !errors.Is(err, errLegacyTarget) {
 		return err
 	}
 	log.Printf("updater: %s predates trial updates; replacing the launcher directly", directive.Version)
+	defer func() {
+		if err != nil {
+			swap.End(err)
+		}
+	}()
 
 	// A fresh Updater per attempt: Init is one-shot (ErrAlreadyConfigured), and
 	// directives arrive at runtime and repeat after a failure, so the
 	// application's app.Updater singleton cannot serve them. Each attempt gets
 	// an immutable provider built around its own directive.
+	verifying := swap.Phases().Begin("verify")
 	u := updater.New(&launcherUpdaterHost{app: a})
 	if err := u.Init(updater.Config{
 		CurrentVersion: payloadVersion,
@@ -158,7 +167,9 @@ func (a *launcherApp) installStagedUpdate(directive selfupdate.InstallDirective)
 		Arch:      runtime.GOARCH,
 		Window:    updater.WindowNone,
 	}); err != nil {
-		return fmt.Errorf("configure updater: %w", err)
+		err = fmt.Errorf("configure updater: %w", err)
+		verifying.End(err)
+		return err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), updateInstallTimeout)
@@ -169,19 +180,36 @@ func (a *launcherApp) installStagedUpdate(directive selfupdate.InstallDirective)
 	// between staging and now, so re-verifying here is the point, and a
 	// separate pre-hash would only read the bytes twice.
 	if err := u.CheckAndInstall(ctx); err != nil {
-		return fmt.Errorf("verify staged update: %w", err)
+		err = fmt.Errorf("verify staged update: %w", err)
+		verifying.End(err)
+		return err
 	}
 	if u.DownloadedPath() == "" {
-		return errors.New("updater staged nothing to restart into")
+		err := errors.New("updater staged nothing to restart into")
+		verifying.End(err)
+		return err
 	}
+	verifying.End(nil)
 
-	disarm := armUpdateExitWatchdog(updateRestartExitWatchdogDelay)
-	if err := u.Restart(ctx); err != nil {
+	disarm := armUpdateExitWatchdog(updateRestartExitWatchdogDelay, swap)
+	// Recorded before the restart, whose quit runs OnShutdown, which begins
+	// the shutdown that run ends, before Restart returns.
+	a.mu.Lock()
+	a.updateSwap = swap
+	a.mu.Unlock()
+	swap.Swapping()
+	restartErr := u.Restart(ctx)
+	if restartErr != nil {
 		// The helper never spawned; we stay alive on the current version, so
 		// the force-exit must not fire.
 		disarm()
-		return fmt.Errorf("restart into staged update: %w", err)
+		a.mu.Lock()
+		a.updateSwap = nil
+		a.mu.Unlock()
+		swap.End(restartErr)
+		return fmt.Errorf("restart into staged update: %w", restartErr)
 	}
+	swap.Quitting()
 	return nil
 }
 
@@ -202,10 +230,12 @@ func (a *launcherApp) reportUpdateInstallStatus(stage, version, message string) 
 // function. SQLite in the WSL backend runs WAL and the Job Object tears the
 // child down on our exit either way, so a hard exit that lets the swap proceed
 // strictly beats a wedged shutdown that cancels it and leaves the user with a
-// windowless process to kill by hand.
-func armUpdateExitWatchdog(delay time.Duration) (disarm func()) {
+// windowless process to kill by hand. A firing ends swap, the timing of a
+// framework swap (nil for a trial's handoff), with its shutdown failed.
+func armUpdateExitWatchdog(delay time.Duration, swap *supervise.SwapTiming) (disarm func()) {
 	timer := time.AfterFunc(delay, func() {
 		log.Printf("updater: graceful shutdown did not finish within %s of the update restart — force-exiting so the swap helper can proceed", delay)
+		swap.End(fmt.Errorf("the shutdown did not finish within %s", delay))
 		os.Exit(0)
 	})
 	return func() { timer.Stop() }

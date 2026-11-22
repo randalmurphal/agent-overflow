@@ -20,6 +20,7 @@ import (
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
@@ -79,14 +80,21 @@ func (p *agentPeerPair) listRows(t *testing.T) ThreadAgentRows {
 
 // listRowsUntil reads the listing until done holds of it: a spawn's rows on
 // the paired computer arrive with a read after the background call returns.
+// It waits the shared test budget (testutil.WaitBudget): every app in a test
+// opens a fresh store, whose statements compile on first use, and in a
+// parallel run those compiles queue on the SQLite driver's process-wide
+// allocator lock, so a pass that takes milliseconds alone can take seconds.
 func (p *agentPeerPair) listRowsUntil(t *testing.T, done func(ThreadAgentRows) bool) ThreadAgentRows {
 	t.Helper()
-	var listing ThreadAgentRows
-	waitUntil(t, 10*time.Second, func() bool {
-		listing = p.listRows(t)
-		return done(listing)
-	})
-	return listing
+	for deadline := time.Now().Add(testutil.WaitBudget(t)); ; time.Sleep(10 * time.Millisecond) {
+		listing := p.listRows(t)
+		if done(listing) {
+			return listing
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the rows never read as wanted: hidden %v, rows %+v", listing.Hidden, listing.Rows)
+		}
+	}
 }
 
 func agentRowByToken(rows []ThreadAgentRow, token string) (ThreadAgentRow, bool) {

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isLocalEnter } from '../../utils/localEnter';
   import { navigateToThreadItem } from '../../stores/threadItemNavigation';
   import Modal from '../primitives/Modal.svelte';
   import { SearchThreadMessages, type ThreadMessageHit } from '../../stores/bindings';
@@ -166,7 +167,7 @@
       activeIndex = (activeIndex - 1 + hits.length) % hits.length;
       return;
     }
-    if (e.key === 'Enter') {
+    if (isLocalEnter(e)) {
       // Mid-IME-composition Enter confirms the candidate in the search input;
       // opening the highlighted hit would navigate on a half-typed query.
       if (isImeComposingEvent(e)) return;

@@ -24,8 +24,9 @@
   import MenuItem from '../primitives/MenuItem.svelte';
   import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
   import {
-    canSaveMenuImage,
+    saveMenuImageGrant,
     copyLocalImageMarkdown,
     copyLocalImagePath,
     copyMenuImage,
@@ -47,7 +48,7 @@
   };
 
   let menu = $state<MenuState | null>(null);
-  const saveGranted = $derived(menu ? canSaveMenuImage(menu.target) : true);
+  const saveGrant = $derived(menu ? saveMenuImageGrant(menu.target) : 'granted');
   const saveLabel = $derived(menu ? saveMenuImageLabel(menu.target) : 'Save Image');
 
   // Set by a press outside a menu raised over a dialog; spent by the click
@@ -198,8 +199,8 @@
     {/if}
     <MenuItem
       label={saveLabel}
-      disabled={!saveGranted}
-      title={saveGranted ? undefined : 'Not granted to this device'}
+      disabled={saveGrant !== 'granted'}
+      title={grantBlockedTitle(saveGrant)}
       onSelect={saveImage}
     />
   </ContextMenu>

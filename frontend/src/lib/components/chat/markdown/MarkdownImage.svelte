@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isLocalEnter } from '../../../utils/localEnter';
   // One local or forge image in rendered markdown, painted from a display
   // tier of its bytes (utils/imageTiers.ts) and opened in the lightbox on
   // click.
@@ -306,7 +307,7 @@
   }
 
   function handleKeydown(event: KeyboardEvent): void {
-    if (event.key !== 'Enter' && event.key !== ' ') return;
+    if (!isLocalEnter(event) && event.key !== ' ') return;
     event.preventDefault();
     openLightbox();
   }

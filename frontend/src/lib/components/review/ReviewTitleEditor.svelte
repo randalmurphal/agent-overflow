@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isLocalEnter } from '../../utils/localEnter';
   import Check from '@lucide/svelte/icons/check';
   import X from '@lucide/svelte/icons/x';
   import Popover from '../primitives/Popover.svelte';
@@ -47,7 +48,7 @@
   // while saving Escape passes on (Back goes to its next step).
   function onKeydown(event: KeyboardEvent): void {
     if (isImeComposingEvent(event)) return;
-    if (event.key === 'Enter') {
+    if (isLocalEnter(event)) {
       event.preventDefault();
       if (event.repeat || blocked !== null) return;
       void manage.saveTitle();

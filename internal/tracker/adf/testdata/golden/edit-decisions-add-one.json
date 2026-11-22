@@ -1,0 +1,84 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "Outcomes"
+        }
+      ]
+    },
+    {
+      "type": "decisionList",
+      "attrs": {
+        "localId": "bc9e6a29-da39-4951-ac24-7bdf046a5412"
+      },
+      "content": [
+        {
+          "type": "decisionItem",
+          "attrs": {
+            "localId": "d-1",
+            "state": "DECIDED"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Ship the March release"
+            }
+          ]
+        },
+        {
+          "type": "decisionItem",
+          "attrs": {
+            "localId": "d-2",
+            "state": "DECIDED"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Freeze the schema"
+            }
+          ]
+        },
+        {
+          "type": "decisionItem",
+          "attrs": {
+            "localId": "9f012014-5774-42a2-af54-42c0fc139208",
+            "state": "DECIDED"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Keep the old API"
+            }
+          ]
+        },
+        {
+          "type": "decisionItem",
+          "attrs": {
+            "localId": "d-3",
+            "state": "DECIDED"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Hire a second reviewer"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "End"
+        }
+      ]
+    }
+  ]
+}

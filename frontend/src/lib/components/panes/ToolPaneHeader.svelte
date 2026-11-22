@@ -15,6 +15,8 @@
   import PaneHeaderLine from './PaneHeaderLine.svelte';
   import PaneHeaderIconButton from './PaneHeaderIconButton.svelte';
   import PaneCloseButton from './PaneCloseButton.svelte';
+  import PanePromoteButton from './PanePromoteButton.svelte';
+  import { togglePanePromotion } from '../../stores/panes.svelte';
   import { isCompactLayout, showCompactList } from '../../stores/layoutMode.svelte';
   import type { ToolPaneKind } from '../../stores/paneLayout.svelte';
   import { toolPaneMeta } from './toolPaneMeta';
@@ -64,6 +66,7 @@
     type="button"
     draggable={onPaneDragStart != null && !compact}
     ondragstart={(event) => onPaneDragStart?.(event)}
+    ondblclick={() => { if (!compact) togglePanePromotion(paneId); }}
     data-testid="tool-pane-title"
     class={[
       'shrink-0 truncate rounded-[var(--radius-field)] border-none bg-transparent px-1.5 py-0.5 text-left text-sm font-medium text-fg transition-colors hover:bg-surface-2/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 compact:select-none compact:py-1.5 compact:text-base',
@@ -74,6 +77,7 @@
     {@render children?.()}
   </div>
   {#if !compact}
+    <PanePromoteButton {paneId} />
     <PaneCloseButton {paneId} />
   {/if}
 </div>

@@ -12,6 +12,7 @@ import {
   awaitGate,
   awaitToolAnswer,
   awaitTurnCompleted,
+  releaseAfterBackgrounded,
   setScenario,
   threadToolsScenario,
   type ProviderName,
@@ -166,10 +167,8 @@ export async function runAgentFlow(harness: HarnessApp, provider: ProviderName, 
 
   await harness.rpc('StartSession', lead);
   await harness.rpc('SendMessage', lead, LEAD_ASK, null);
-  const spawn = await awaitToolAnswer<{ thread_id: string }>(harness, { tool: 'thread_spawn', timeoutMs: 60_000 });
-  expect(spawn.isError, spawn.text).toBe(false);
-  const auditMock = await awaitGate(harness, 'hold-audit', auditProject.path);
-  await advanceGate(harness, auditMock.mockId, 'hold-audit');
+  const spawn = await awaitToolAnswer<{ thread_id: string; outcome: string }>(harness, { tool: 'thread_spawn', timeoutMs: 60_000 });
+  await releaseAfterBackgrounded(spawn, { harness, gate: 'hold-audit', cwd: auditProject.path });
   const send = await awaitToolAnswer<{ token: string }>(harness, { tool: 'thread_send', timeoutMs: 60_000 });
   expect(send.isError, send.text).toBe(false);
   const replyMock = hold ? null : await awaitGate(harness, 'hold-reply', busyProject.path);
@@ -509,6 +508,105 @@ export async function runQueuedRequest(harness: HarnessApp, tag: string): Promis
     },
     release: () => advanceGate(harness, targetMock.mockId, 'hold-target'),
   };
+}
+
+export const REVIEWER = 'Rule 5 lookup review';
+export const REVIEW_LEAD = 'Review lead';
+export const REVIEW_PROMPT = 'Review the rule 5 lookup.';
+export const REVIEW_ANSWER = 'No findings.';
+export const REVIEW_SUMMARY = 'The review found nothing to fix.';
+export const REVIEW_SPAWNED = 'A reviewer is on it.';
+
+/**
+ * Work, a spawned thread's reply, more work: the lead's first turn spawns a
+ * reviewer and ends on that tool call with no prose, the reviewer answers
+ * with thread_reply once the lead is at rest, and the reply opens the lead's
+ * next turn, which calls another tool before it answers. The reply sits
+ * between tool rows, so they share one activity run.
+ */
+export function runReplyMidWork(harness: HarnessApp, provider: ProviderName, tag: string): Promise<{ lead: string }> {
+  return runReviewReply(harness, provider, tag, [
+    { steps: [spawnReviewer()] },
+    { steps: [{ call: { tool: 'thread_status', args: {} } }], text: REVIEW_SUMMARY },
+  ]);
+}
+
+/**
+ * A reply with prose on both sides: the lead's first turn spawns a reviewer
+ * and says so, the reply opens the lead's next turn, which answers with
+ * prose and no tool. The reply is an activity run of its own.
+ */
+export function runLoneReply(harness: HarnessApp, provider: ProviderName, tag: string): Promise<{ lead: string }> {
+  return runReviewReply(harness, provider, tag, [
+    { steps: [spawnReviewer()], text: REVIEW_SPAWNED },
+    { text: REVIEW_SUMMARY },
+  ]);
+}
+
+function spawnReviewer() {
+  return {
+    call: {
+      tool: 'thread_spawn',
+      args: { prompt: REVIEW_PROMPT, title: REVIEWER, project_id: '${REVIEW_PROJECT}', wait_seconds: 0 },
+    },
+  };
+}
+
+async function runReviewReply(
+  harness: HarnessApp,
+  provider: ProviderName,
+  tag: string,
+  leadTurns: Parameters<typeof threadToolsScenario>[0]['turns'],
+): Promise<{ lead: string }> {
+  const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [
+      { name: `${tag}-lead`, repo: {}, threads: [{ title: REVIEW_LEAD, provider }] },
+      { name: `${tag}-review`, repo: {}, threads: [] },
+    ],
+  });
+  const [leadProject, reviewProject] = seed.projects;
+  const lead = leadProject.threadIds[0];
+  await setScenario(
+    harness,
+    reviewProject.path,
+    threadToolsScenario({
+      name: `${tag}-review-script`,
+      provider,
+      turns: [{
+        steps: [
+          // Held until the lead's spawning turn has ended, so the reply
+          // opens a turn of its own instead of riding into that one.
+          { gate: 'hold-review' },
+          { capture: { var: 'TOKEN', from: '${USER_INPUT}', pattern: FOOTER_TOKEN_PATTERN } },
+          { call: { tool: 'thread_reply', args: { token: '${TOKEN}', text: REVIEW_ANSWER } } },
+        ],
+        text: 'Replied.',
+      }],
+      afterTurns: 'silent',
+    }),
+  );
+  const turns = JSON.parse(JSON.stringify(leadTurns).replaceAll('${REVIEW_PROJECT}', reviewProject.projectId)) as typeof leadTurns;
+  await setScenario(
+    harness,
+    leadProject.path,
+    threadToolsScenario({ name: `${tag}-lead-script`, provider, echoUserMessage: true, turns, afterTurns: 'silent' }),
+  );
+
+  await harness.rpc('StartSession', lead);
+  const spawned = awaitTurnCompleted(harness, lead);
+  await harness.rpc('SendMessage', lead, 'have a thread review the rule 5 lookup', null);
+  const spawn = await awaitToolAnswer(harness, { tool: 'thread_spawn', timeoutMs: 60_000 });
+  expect(spawn.isError, spawn.text).toBe(false);
+  await spawned;
+  const review = await awaitGate(harness, 'hold-review', reviewProject.path);
+  const answered = awaitTurnCompleted(harness, lead);
+  await advanceGate(harness, review.mockId, 'hold-review');
+  const reply = await awaitToolAnswer(harness, { tool: 'thread_reply', timeoutMs: 60_000 });
+  expect(reply.isError, reply.text).toBe(false);
+  await answered;
+  const items = await harness.rpc<TimelineItem[]>('ListItems', lead, true);
+  expect(items.some((item) => (item.summary ?? '').includes(REVIEW_SUMMARY))).toBe(true);
+  return { lead };
 }
 
 export const BUILDER = 'Builder';

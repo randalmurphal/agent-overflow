@@ -249,7 +249,7 @@ describe('<ChatHeader>', () => {
     // through runTerminalToggle, which latches the focus intent the drawer
     // consumes on mount. consumeTerminalFocusRequest is read-and-clear, so the
     // open click must have set it exactly once.
-    expect(pane.consumeTerminalFocusRequest()).toBe(true);
+    expect(pane.consumeTerminalFocusRequest()?.current).toBe(true);
     await fireEvent.click(getByTestId('terminal-toggle'));
     expect(pane.showTerminal).toBe(false);
     // Plain clicks must never spawn a new pane — that path is modifier-gated.

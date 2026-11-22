@@ -103,6 +103,12 @@ func newReachPairServedBy(t *testing.T, serve func(*testing.T, *App) *pairedBack
 	// A life a test can end, as shutdown does, set before anything reads it.
 	source.appCtx, source.appCancel = context.WithCancel(context.Background())
 	t.Cleanup(source.appCancel)
+	// What its archive or delete reports is what the destination did, which
+	// a busy machine must not turn into "did not answer in time". The bound
+	// is owned by TestADoorWhoseCallIsNotAnsweredInTimeReportsItPending (a
+	// door's own call) and TestADoorWhoseWaitRunsOutLeavesItsOperationToTheSweep
+	// (a door waiting for an earlier attempt), which set their own.
+	source.ownerOpReachOverride = time.Minute
 	source.configDir = t.TempDir()
 	source.installThreadRequestObserver()
 	sourceID := uuid.NewString()
@@ -158,11 +164,11 @@ func (p *reachPair) pairWith(t *testing.T, label string) *attachedbackends.Manag
 // pairWithIn is pairWith over the device profile directory dir.
 func (p *reachPair) pairWithIn(t *testing.T, dir, label string) *attachedbackends.Manager {
 	t.Helper()
-	manager, err := attachedbackends.New(dir, label, "test")
+	manager, err := newTestBackends(t, dir, label, "test")
 	if err != nil {
 		t.Fatalf("attachedbackends.New: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 	defer cancel()
 	invite, _ := p.destWire.mintLink(t, "full")
 	peer, err := manager.Add(ctx, invite.URL)
@@ -730,7 +736,7 @@ func serveFaultyApp(t *testing.T, app *App, configure ...func(*transport.Config)
 // id the source's pairings give it.
 func attachDestination(t *testing.T, pair *reachPair, wire *pairedBackend, dest *App) string {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 	defer cancel()
 	invite, _ := wire.mintLink(t, "full")
 	peer, err := pair.manager.Add(ctx, invite.URL)
@@ -2248,9 +2254,9 @@ func TestAStopFromAnotherComputerNamesItByThisComputersPairing(t *testing.T) {
 	}
 }
 
-// A spawn's first message there tells a worker its spawner owns that its
-// questions and approvals go to the spawner, as a spawn on one computer
-// does; one given a sidebar row there is told nothing of the kind.
+// A spawn's first message there tells its worker that its questions and
+// approvals go to the spawner, as a spawn on one computer does: owned, and
+// given a sidebar row there, whose spawn's run the message opens.
 func TestARemoteSpawnsFooterSaysItsSpawnerTakesTheWorkersPrompts(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
@@ -2279,7 +2285,7 @@ func TestARemoteSpawnsFooterSaysItsSpawnerTakesTheWorkersPrompts(t *testing.T) {
 			}
 			return false
 		})
-		if strings.Contains(first, routes) != (placement == "") {
+		if !strings.Contains(first, routes) {
 			t.Fatalf("placement %q: the spawn's message there reads\n%s", placement, first)
 		}
 		if placement != "" {

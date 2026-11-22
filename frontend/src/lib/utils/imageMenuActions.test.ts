@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DOWNLOAD_URL_LIFETIME_MS } from './blobDownload';
 import {
   attachmentImageMenuTag,
-  canSaveMenuImage,
+  saveMenuImageGrant,
   copyLocalImageMarkdown,
   copyLocalImagePath,
   copyMenuImage,
@@ -50,16 +50,18 @@ vi.mock('../transport/pageHost', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../transport/pageHost')>()),
   isWebviewHosted: () => webviewHosted.value,
 }));
+const scopeHeld = vi.hoisted(() => (scope: string) =>
+  scope === 'host'
+    ? scopes.host
+    : scope === 'attachments:write'
+      ? scopes.write
+      : scope === 'files:read'
+        ? scopes.files
+        : scope === 'git:operate' && scopes.git);
 vi.mock('../transport/scopes', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../transport/scopes')>()),
-  hasScope: (scope: string) =>
-    scope === 'host'
-      ? scopes.host
-      : scope === 'attachments:write'
-        ? scopes.write
-        : scope === 'files:read'
-          ? scopes.files
-          : scope === 'git:operate' && scopes.git,
+  hasScope: scopeHeld,
+  scopeGrant: (scope: string) => (scopeHeld(scope) ? 'granted' : 'refused'),
 }));
 vi.mock('./forgeAttachmentCache', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./forgeAttachmentCache')>()),
@@ -313,12 +315,12 @@ describe('whether this page may save', () => {
   it('needs attachments:write only where the backend writes the file', () => {
     // Connected browser: a download reads through the same route the
     // lightbox does, so no write grant is involved.
-    expect(canSaveMenuImage(REF)).toBe(true);
+    expect(saveMenuImageGrant(REF)).toBe('granted');
     // Phone shell or webview on another computer: the backend writes.
     nativeShell.value = true;
-    expect(canSaveMenuImage(REF)).toBe(false);
+    expect(saveMenuImageGrant(REF)).toBe('refused');
     scopes.write = true;
-    expect(canSaveMenuImage(REF)).toBe(true);
+    expect(saveMenuImageGrant(REF)).toBe('granted');
   });
 });
 
@@ -432,12 +434,12 @@ describe('forge images', () => {
   it('needs git:operate only where the owning computer writes the file', () => {
     scopes.git = false;
     // Connected browser: an ordinary download of the bytes already held.
-    expect(canSaveMenuImage(FORGE)).toBe(true);
+    expect(saveMenuImageGrant(FORGE)).toBe('granted');
     // On the owning computer: SaveForgeAttachment, which is git:operate.
     scopes.host = true;
-    expect(canSaveMenuImage(FORGE)).toBe(false);
+    expect(saveMenuImageGrant(FORGE)).toBe('refused');
     scopes.git = true;
-    expect(canSaveMenuImage(FORGE)).toBe(true);
+    expect(saveMenuImageGrant(FORGE)).toBe('granted');
   });
 
   it('says Open on the forge where the action opens the browser instead of saving', () => {
@@ -446,7 +448,7 @@ describe('forge images', () => {
     expect(saveMenuImageLabel(FORGE)).toBe('Open on GitHub');
     // Opening a page needs no grant.
     scopes.git = false;
-    expect(canSaveMenuImage(FORGE)).toBe(true);
+    expect(saveMenuImageGrant(FORGE)).toBe('granted');
     // A thread attachment has no forge page: its save is always a save.
     expect(saveMenuImageLabel(REF)).toBe('Save Image');
   });
@@ -707,12 +709,12 @@ describe('local images', () => {
     it('needs files:read only where the owning computer writes the file', () => {
       scopes.files = false;
       // Connected browser: a download reads through the route the timeline does.
-      expect(canSaveMenuImage(LOCAL)).toBe(true);
+      expect(saveMenuImageGrant(LOCAL)).toBe('granted');
       // On the owning computer: SaveLocalImage, which is files:read.
       scopes.host = true;
-      expect(canSaveMenuImage(LOCAL)).toBe(false);
+      expect(saveMenuImageGrant(LOCAL)).toBe('refused');
       scopes.files = true;
-      expect(canSaveMenuImage(LOCAL)).toBe(true);
+      expect(saveMenuImageGrant(LOCAL)).toBe('granted');
     });
 
     it('is always labelled Save Image: a local file has no page to open instead', () => {
@@ -920,16 +922,16 @@ describe('repository images', () => {
 
     it('needs files:read only where the owning computer writes the file', () => {
       scopes.files = false;
-      expect(canSaveMenuImage(REPOSITORY)).toBe(true);
+      expect(saveMenuImageGrant(REPOSITORY)).toBe('granted');
       scopes.host = true;
-      expect(canSaveMenuImage(REPOSITORY)).toBe(false);
+      expect(saveMenuImageGrant(REPOSITORY)).toBe('refused');
       scopes.files = true;
-      expect(canSaveMenuImage(REPOSITORY)).toBe(true);
+      expect(saveMenuImageGrant(REPOSITORY)).toBe('granted');
       // Opening the forge page needs no grant.
       scopes.files = false;
       scopes.host = false;
       nativeShell.value = true;
-      expect(canSaveMenuImage(REPOSITORY)).toBe(true);
+      expect(saveMenuImageGrant(REPOSITORY)).toBe('granted');
     });
   });
 });

@@ -30,6 +30,10 @@ import { clearAllThreadSizePriorsForTest } from '../lib/utils/virtual/priors';
 import { __resetSizePriorsStorageForTest } from '../lib/utils/virtual/priorsStorage';
 import { __setTransportStatusForTest } from '../lib/stores/transportStatus.svelte';
 import { resetCatalogLoadForTest } from '../lib/stores/catalogLoad.svelte';
+import { resetSidebarCatalogsForTest } from '../lib/stores/sidebarCatalogs';
+import { resetSidebarEntryContinuityForTest, startSidebarEntryContinuity } from '../lib/stores/sidebarEntryContinuity.svelte';
+import { resetCatalogReadsForTest } from '../lib/stores/computerCatalogReads';
+import { resetCatalogWritesForTest } from '../lib/stores/computerCatalogWriter';
 import { __resetGitStatusStoreForTest } from '../lib/stores/gitStatusStore.svelte';
 import { __resetPRReviewStoreForTest } from '../lib/stores/prReviewStore.svelte';
 import { __resetMcpServersStoreForTest } from '../lib/stores/mcpServers.svelte';
@@ -229,6 +233,8 @@ if (typeof globalThis.window !== 'undefined') {
 }
 
 beforeEach(() => {
+  // App starts the sidebar rows' continuity at boot; so does every test.
+  startSidebarEntryContinuity();
   // The unit suite has no transport, so the wsClient's module-load snapshot
   // is `disconnected` — a state no test means to exercise, and one that
   // suspends every connection-gated store. Pin it connected; a test that
@@ -286,6 +292,13 @@ afterEach(() => {
   // Catalog load state is per computer and module-level, and a failed read
   // holds a retry timer that would call the next test's binding mocks.
   resetCatalogLoadForTest();
+  // The thread list's reads in flight and listings are module-level too.
+  resetSidebarCatalogsForTest();
+  // The sidebar rows' continuity runs for the app's life, as App starts it;
+  // each test gets its own effect and none of the last test's rows.
+  resetSidebarEntryContinuityForTest();
+  resetCatalogReadsForTest();
+  resetCatalogWritesForTest();
   // Computers a test staged stay attached in the module-level registry, and
   // a second attached computer makes every unowned entity ambiguous.
   resetStagedBackends();

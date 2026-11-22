@@ -1,8 +1,14 @@
-// Package netisolate runs a command inside new user and network namespaces
-// that hold only loopback and a private LAN interface (LANName at LANAddress)
-// with no route off it. Test suites run there so a test that binds every
+// Package netisolate runs a command inside new user, network and mount
+// namespaces. The network holds only loopback and a private LAN interface
+// (LANName at LANAddress) with no route off it, so a test that binds every
 // interface, dials out or probes the LAN reaches nothing beyond the
-// namespace, whatever the host's networking mode.
+// namespace, whatever the host's networking mode. TMPDIR names a private
+// temp directory (TempDir): a size-capped tmpfs when the host has the
+// memory for one beside the other runs' at launch, so temp files cost no
+// disk writes and vanish with the namespace however the run ends, and
+// otherwise a per-run directory on disk.
+// The command runs at the lowest CPU priority (nice 19), and so does
+// everything it starts, and it gets SIGTERM when its launcher dies.
 //
 // An executable that isolates commands must dispatch HelperArg before
 // anything else in main (and in TestMain for tests):
@@ -12,7 +18,11 @@
 //	}
 package netisolate
 
-import "net"
+import (
+	"fmt"
+	"io"
+	"net"
+)
 
 // HelperArg is argv[1] when an executable re-runs itself as the first
 // process inside the namespaces.
@@ -23,6 +33,16 @@ const HelperArg = "__ao-netisolate-helper"
 // target, so the target and its descendants can prove they run in the
 // namespace Command built rather than on a host that merely looks like one.
 const EnvNamespace = "AO_NETISOLATE_NS"
+
+// EnvHostTempDir names the variable the helper sets to the temp directory
+// the target would have had without the namespace, when it points TMPDIR
+// at the private temp directory. A file that must outlive the run, such as a data
+// root kept for diagnosis, goes there.
+const EnvHostTempDir = "AO_NETISOLATE_HOST_TMPDIR"
+
+// Niceness is the CPU priority the isolated command runs at: the lowest,
+// so test runs yield to the developer's own processes.
+const Niceness = 19
 
 // containedInterfaces reports whether ifaces are the namespace Command
 // builds: loopback plus lanName carrying lanAddress and nothing routable
@@ -62,4 +82,10 @@ func containedInterfaces(ifaces []net.Interface, addrs func(net.Interface) ([]ne
 		lan = true
 	}
 	return lan
+}
+
+// warn writes a diagnostic line to stderr. A failed write to stderr has
+// nowhere better to be reported, so it changes no outcome.
+func warn(stderr io.Writer, args ...any) {
+	_, _ = fmt.Fprintln(stderr, args...)
 }

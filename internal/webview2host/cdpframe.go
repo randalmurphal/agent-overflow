@@ -61,6 +61,10 @@ const TunnelChunkBytes = 32 << 10
 // ErrShortDataFrame reports a binary frame with no room for the stream id.
 var ErrShortDataFrame = errors.New("cdp tunnel data frame is shorter than its stream id prefix")
 
+// ErrEmptyDataFrame reports a binary frame that carries no data: both ends
+// send only data they read, so it is refused, never queued for a stream.
+var ErrEmptyDataFrame = errors.New("cdp tunnel data frame carries no data")
+
 // EncodeTunnelData writes id's prefix into dst[:4] and returns the frame
 // slice. dst must have room for the prefix plus payload; callers reuse
 // one buffer per stream so the hot path allocates nothing.
@@ -74,11 +78,15 @@ func EncodeTunnelData(dst []byte, id uint32, payload []byte) []byte {
 	return dst
 }
 
-// DecodeTunnelData splits a binary frame into its stream id and payload.
-// The payload aliases frame; callers that keep it must copy.
+// DecodeTunnelData splits a binary frame into its stream id and payload,
+// which is never empty. The payload aliases frame; callers that keep it
+// must copy.
 func DecodeTunnelData(frame []byte) (uint32, []byte, error) {
-	if len(frame) < 4 {
+	switch {
+	case len(frame) < 4:
 		return 0, nil, fmt.Errorf("%w: %d bytes", ErrShortDataFrame, len(frame))
+	case len(frame) == 4:
+		return 0, nil, fmt.Errorf("%w: stream %d", ErrEmptyDataFrame, binary.BigEndian.Uint32(frame))
 	}
 	return binary.BigEndian.Uint32(frame[:4]), frame[4:], nil
 }

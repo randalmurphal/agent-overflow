@@ -1,7 +1,6 @@
 package app
 
 import (
-	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/identity"
@@ -12,7 +11,7 @@ import (
 func TestLegacyFullSessionCannotJoinOrIntroduceOwnDevices(t *testing.T) {
 	t.Parallel()
 	b := newPairedBackend(t)
-	manager, e := attachedbackends.New(t.TempDir(), "Host", "test")
+	manager, e := newTestBackends(t, t.TempDir(), "Host", "test")
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -53,7 +52,7 @@ func TestPersonalPhoneEnrollmentReadsOwnCatalogOverRealTLS(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
 	b := newPairedBackend(t)
-	manager, e := attachedbackends.New(t.TempDir(), "Host", "test")
+	manager, e := newTestBackends(t, t.TempDir(), "Host", "test")
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -72,7 +71,7 @@ func TestPersonalPhoneEnrollmentReadsOwnCatalogOverRealTLS(t *testing.T) {
 	if payload.Purpose != "own-device" {
 		t.Fatal("invitation omitted intent")
 	}
-	client, _, e := deviceclient.Pair(context.Background(), t.TempDir(), payload, "Pixel", "android")
+	client, _, e := pairTestDevice(t, t.TempDir(), payload, "Pixel", "android")
 	if e != nil {
 		t.Fatal(e)
 	}

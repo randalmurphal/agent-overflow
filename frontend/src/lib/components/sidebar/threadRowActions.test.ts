@@ -28,10 +28,6 @@ import {
   prependThread,
   removeThread,
 } from '../../stores/threads.svelte';
-import {
-  collapseProject,
-  isProjectExpanded,
-} from '../../stores/sidebar.svelte';
 import type { Thread } from '../../types/models';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { makeSettings } from '../../../test/helpers/settings';
@@ -39,6 +35,7 @@ import { resetStagedBackends, stageBackend } from '../../../test/helpers/backend
 import { getPinnedBackend } from '../../transport/backends';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import { __resetEntityIndexForTest, noteThread } from '../../transport/entityIndex';
+import { entryRecordForTest, setEntryExpanded } from '../../stores/sidebarEntryContinuity.svelte';
 
 function makeCtx(thread: Partial<Thread>): ThreadActionCtx {
   const t: Thread = {
@@ -72,7 +69,7 @@ describe('forkThreadAction', () => {
   beforeEach(async () => {
     resetBindingMocks();
     clearThreadsForTest();
-    collapseProject('project-1');
+    setEntryExpanded('project-1', false);
     for (const toast of getToasts()) removeToast(toast.id);
     setBindingMock('GetSettings', async () => makeSettings());
     await loadSettings();
@@ -106,7 +103,7 @@ describe('forkThreadAction', () => {
     expect(pin).toHaveBeenCalledWith('fork-1');
     const ids = getThreads().map((t) => t.id);
     expect(ids[0]).toBe('fork-1');
-    expect(isProjectExpanded('project-1')).toBe(true);
+    expect(entryRecordForTest('project-1').expanded).toBe(true);
     expect(ctx.switchPane).toHaveBeenCalledTimes(1);
     expect((ctx.switchPane as ReturnType<typeof vi.fn>).mock.calls[0][0]).toEqual(pinned);
 

@@ -43,6 +43,7 @@ import {
   revealPane,
 } from '../../stores/panes.svelte';
 import {
+  demotePane,
   movePaneLayoutItemToIndex,
   paneBlockRangeAt,
   type PaneLayoutItem,
@@ -175,6 +176,8 @@ export function createPaneThreadDrag(options: PaneThreadDragOptions) {
     if (isPlacingDrag(event)) {
       sessionSeen = false;
       setShield(true, overStrip);
+      // Placing a pane needs the strip's slots on screen.
+      demotePane();
     } else {
       endDrag();
     }
@@ -230,11 +233,13 @@ export function createPaneThreadDrag(options: PaneThreadDragOptions) {
     return event.dataTransfer?.types.includes(TOOL_PANE_DRAG_MIME) ?? false;
   }
 
+  // A promoted pane's extent is its slot: the placeholder that precedes
+  // its section (PaneHost).
   function paneExtent(paneId: string): Extent | null {
     const host = options.getHostEl();
     if (!host) return null;
     for (const child of host.children) {
-      if (child instanceof HTMLElement && child.dataset.paneId === paneId) {
+      if (child instanceof HTMLElement && (child.dataset.paneSlot ?? child.dataset.paneId) === paneId) {
         const rect = child.getBoundingClientRect();
         return { left: rect.left, right: rect.right };
       }

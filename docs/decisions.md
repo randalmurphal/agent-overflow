@@ -73,10 +73,37 @@ Mechanism in
 
 ## Startup
 
-- A boot never shows an empty catalog. Until a computer's threads and
-  projects have answered, the sidebar shows a loading row for it, naming its
-  boot phase while it is starting, or its error with Retry. The empty-list
-  message appears only once both have loaded; rows already held stay visible.
+- A boot never shows an empty catalog while a computer may still answer.
+  Until this computer's threads and projects have answered, the sidebar shows
+  a loading row for it, naming its boot phase while it is starting, or its
+  error with Retry, while a load can make progress; while this computer is
+  unreachable the row is gone, since the banner says so and carries Retry.
+  The empty-list message appears once every visible computer has loaded or
+  been unreachable for 30 seconds; rows already held stay visible.
+- A paired computer's connection and load state show only in the Projects
+  menu, one plain line per computer: connected, connecting, offline with when
+  it was last reached, or the reason its lists could not load with Retry.
+  With the menu closed, the Projects section shows nothing about a paired
+  computer but its rows, so one that is off or keeps dropping adds no line,
+  spinner or color there. Its thread rows dim, and its banner shows, only
+  after it has been unreachable for 30 seconds without a break, and both
+  clear when it is reached; the composer in one of its threads says at once
+  that a message cannot be sent (ruling 2026-11-21).
+- A computer's projects, the threads under them and their groups list in the
+  sidebar as one set, with no exception. A computer that has never listed a
+  complete tree shows no project header, no project row and no New Thread
+  button, only its error with Retry. A computer that has listed one keeps
+  that tree, with its error beside it while a read fails. Nothing from a
+  failing attempt reaches the sidebar. A complete tree is all three catalogs
+  answered in one round, or, for a computer whose reads all fail, the last
+  tree it answered together plus the changes pushed since. The replica
+  keeps only that tree across a restart: rows answered apart, rows of a
+  partial round and pushed changes alone never make one and are never
+  written over it. The replica writes a computer's three catalogs
+  together, so the three it holds, an older build's included, list as that
+  computer's tree. The price is accepted: a computer whose thread list keeps failing
+  shows none of its projects, which a half-arranged list would show and then
+  rearrange (ruling 2026-11-21).
 - Readiness reports progress. A starting backend names its phase, step and
   elapsed time, and a boot right after an in-app update reads as finishing
   that update. The launcher's loading page, the startup screen and the
@@ -287,6 +314,17 @@ Mechanism in
   thread an Agents row opened; closing it never deletes the thread.
   Nothing is shared across clients. The browser pane follows its backend
   state instead (`frontend/src/lib/stores/companionStash.ts`).
+- Any pane (thread, companion, tool) can be promoted to fill the pane
+  area as if it were the only pane, and demoted back to its slot: its
+  header's maximize control, a double-click on its title, or
+  `alt+shift+enter`. Per client, never persisted; compact ignores it.
+  Nothing remounts or reloads: the pane keeps its element, its slot holds
+  its place so no other pane moves, and a clip reveal of about 180 ms
+  (none under reduced motion) animates both ways. The strip does not
+  scroll under a promoted pane. Focusing or revealing another pane, or
+  starting a drag that places a pane, demotes first, so the pane asked for
+  is always shown; closing the promoted pane ends the promotion. Escape
+  does not demote: in a thread pane it interrupts a turn.
 - Thread groups, pins, and auto-pin rulings: `docs/specs/sidebar-thread-groups.md`
   and `internal/store/AGENTS.md`. Re-pin-to-bump is deliberately dead.
 - Assistants (standing agents) are records with a name, a home and one
@@ -346,12 +384,23 @@ Mechanism in
   it. Threads selected together are one delete per computer. Placement
   is organization only: the spawn record, the reply path and the read
   mark on an answer do not change. An assistant row never joins a group.
+- The sidebar row is the only thing that changes whose a spawned thread
+  is (owner ruling 2026-11-19,
+  [owned workers](specs/standing-agents.md#owned-workers)). An owned
+  worker is its spawner's sub-agent in every run: a message the person or
+  another thread sends it is a nudge, whose work is one run of the
+  spawner's row, holds the spawner and delivers it nothing at its end; its
+  prompts go to the spawner whoever started the run, and one the spawner
+  cannot take now waits for it, never for the person. A worker with a
+  sidebar row is the spawner's only in a run the spawner started. Each
+  rule applies as the placement stands when the thing happens.
 - Ownership crosses paired computers (owner rulings 2026-11-17,
   [standing agents](specs/standing-agents.md#owned-workers)): a worker a
   thread spawns on another computer is owned there through the receipt's
   link, with no sidebar row in any window. Its prompts go to the spawner,
-  pulled by the spawner's computer, and reach the person there when the
-  spawner's computer has not said it holds them for two minutes. The
+  pulled by the spawner's computer, by the rule of a local worker's (the
+  sidebar row decides it): in every run while the link owns it, and with
+  a sidebar row in a run the spawner started. The
   spawner's computer owes it the spawner's archive and delete, and that
   computer admits them through its own archive and delete. An archive or
   delete that computer refuses or cannot receive stands here, is named as
@@ -502,7 +551,9 @@ Mechanism in
   agent message stay user-role on the wire and
   `user_text` rows in the store, and render as a folded agent row naming
   the sender, never as the user bubble; their footer is shown as facts,
-  never raw. They are not navigator ticks, composer recall or send-queue
+  never raw. Such a row is the thread tools' traffic and an activity-run
+  member as a tool row is, wherever it lands, alone a run of one; the
+  person's messages end a run (ruling 2026-11-19). They are not navigator ticks, composer recall or send-queue
   preview entries, and the thread tools label them `agent` with their
   sender. A Claude join holding the person's composer message stays the
   person's, and so do a workflow phase prompt, which is a phase thread's
@@ -599,6 +650,18 @@ Mechanism in
   (`opus`, `sonnet`) is refused as input with the offered IDs, and a Codex
   slug is passed as written for Codex to judge. An alias the CLI reports back
   is read only through its own model list (`internal/provider/AGENTS.md`).
+  An agent profile's model and `thread_spawn` `model` also accept a family
+  named without a version (`claude-opus`, `gpt-sol`), which runs the newest
+  model of it the target computer lists, by a version rule AO states per
+  provider; a slug the computer offers as written is that model (ruling
+  2026-11-21). The seeded profiles name families, and text generation
+  with no model set runs the newest of its default family (`claude-haiku`,
+  `gpt-luna`) the computer lists. On Claude that list is the CLI's report
+  for the account in use, live or restored for it; the list another account
+  on the binary reported does not count. Text generation waits for it as long
+  as the account probe that makes it may take (`claude.DefaultProbeTimeout`),
+  then fails saying Claude has not reported its models, and the other
+  provider is tried.
 - A sign-in in Agent Overflow never switches accounts: it renews the saved
   account its login belongs to or adds a new one at the bottom. Only the
   first account on a machine becomes active by signing in. Saved accounts
@@ -738,6 +801,61 @@ and anti-changes that live only here:
 - A browser page fills the pane at 1:1 and reflows with it, like a tab in
   any browser. A fixed page size is an explicit `browser_viewport set`,
   never a default the pane scales down.
+- Browser tabs are the backend's state, never invented by the client: a new
+  tab shows as opening, a failed one the user opened stays with its error,
+  and a closed one leaves at once while the engine finishes in the
+  background. A failure of that teardown is shown, never only logged. A new
+  tab the user opened focuses the address bar; an agent's never takes focus.
+  A tab whose page process died stays, failed with the reason, until the
+  user reloads it at its address; selecting it does not reload it. A tab
+  marks the time an agent tool works on its page, and the user's own
+  actions on that page are never blocked. A tab the user closed can be
+  reopened at its place for the life of the app (the last 10 per thread);
+  an agent's close is not reopenable. Clearing site
+  data, a jar switch or the thread's deletion forgets them, and a private
+  jar keeps none. `docs/architecture/browser-tools.md`.
+- The browser pane's chrome behaves like a desktop browser's (tab sizing,
+  select-all address, stop, the usual chords while the pane is focused). A
+  Windows or `\\wsl` path typed into it opens the file it names or fails
+  naming the path, never a web search; a file can also be picked from the
+  workspace without knowing its path.
+- The browser's address suggests only from this thread: its open tabs, its
+  dev servers and the addresses its pages recently opened. No network
+  suggestions or search queries while typing, and no inline completion: the
+  typed text is the user's until a row is chosen. Recent addresses are kept
+  in memory only, never for a private jar, and are forgotten by a jar
+  switch, Clear site data, turning the browser off and closing the thread.
+- Each thread's browser chooses its cookie jar: this worktree (default),
+  the whole project, this browser only, or private. A jar shares sign-ins
+  and site data only; file and navigation permissions and finished
+  downloads stay with the thread's workspace, and a popup keeps its opener's. A
+  private jar is never part of a persistent profile and is discarded when
+  its last tab closes. Switching with tabs open asks first, then suspends
+  the tabs into the new jar, where they load again when used; page state is
+  not carried over. Agents read the jar but cannot change it.
+  `docs/architecture/browser-tools.md`.
+- A file downloaded in the browser pane is visible to the user: a downloads
+  button in the address row shows running downloads' progress in steps and
+  lists the thread's downloads with cancel, Show in folder, and open in a
+  tab for a type a tab shows. A finished download is announced once with
+  Show in folder, a failed one with its reason. Clearing the list deletes
+  no file. Downloads never open with the system's default app.
+- A pane download goes to the Downloads folder of the machine that runs the
+  page's engine, as in any browser there; there is no setting.
+  AO applies no quota, cap or pruning there and deletes or replaces no
+  file it did not put there; an engine in AO's process downloads into AO's
+  private staging folder inside Downloads and AO moves the finished file
+  beside it without copying or replacing. A missing
+  Downloads folder is created; one that cannot be created or written fails
+  the download with its reason rather than falling back.
+  Headless Chromium in serve mode alone keeps AO's artifact directories,
+  quotas, caps and pruning. An agent may open a finished download of its
+  workspace's, never the folder around it. On WebView2 the mark of the web
+  stays. A popup is a tab on every engine, so its downloads are listed like
+  any other, and one that never becomes a tab leaves them in its nearest
+  opener's tab; the download dialog WebView2 opens by itself for a popup whose
+  first navigation is a download is closed as it opens.
+  `docs/architecture/browser-tools.md`.
 - Every thread/workspace event reaches any client with visibility; channel
   audience is by data class, loopback-only is for host directives only. A
   mutation that persists without emitting is a bug.
@@ -753,8 +871,10 @@ and anti-changes that live only here:
   mode for unattended work.
 - Agent profiles (2026-11-16): the person's roster of named agents, each
   with a use-for line, is how a thread picks another agent. A spawn
-  still inherits by default. The guide names only the profiles this
-  computer runs; use-for lines and choosing notes are in
+  still inherits by default. The guide names every profile whose
+  provider this computer offers and checks no model, because it is fixed
+  when the session starts; `thread_options` and the spawn check the model
+  and refuse with the reason. Use-for lines and choosing notes are in
   `thread_options`, paid for only by a thread that is choosing. A
   profile, note or listing never points at a provider the computer does
   not run: availability is the provider switch plus a binary that

@@ -151,7 +151,7 @@
     fights the anchor-hold, which is the difference between a fold that holds
     still and one that fights you.
   -->
-  <div class="min-h-0 flex-1 overflow-y-auto [overflow-anchor:none] focus:outline-none" tabindex="-1" bind:this={bodyEl} data-testid="workflows-pane-body">
+  <div class="min-h-0 flex-1 overflow-y-auto [overflow-anchor:none] focus:outline-none" tabindex="-1" bind:this={bodyEl} data-pane-scroller data-testid="workflows-pane-body">
     {#if getWorkflowLoadError() && !isWorkflowOverlayLoaded()}
       <p class="px-4 py-6 text-xs text-error" data-testid="workflows-load-error">{getWorkflowLoadError()}</p>
     {:else if !isWorkflowOverlayLoaded() && isWorkflowLoading()}

@@ -15,7 +15,16 @@ import (
 	"testing"
 
 	"agent-overflow/internal/harness/forgefake"
+	"agent-overflow/internal/testutil"
 )
+
+// forgeOriginDataRoot is a data root as the boot hands it over: canonical,
+// which a temporary directory is not where the system one is a symbolic
+// link (macOS).
+func forgeOriginDataRoot(t *testing.T) string {
+	t.Helper()
+	return testutil.CanonicalPath(t, t.TempDir())
+}
 
 // forgeOriginRepo creates project's origin through origins, as
 // HarnessForgeOrigin does, and pushes to it as publishPullRequest does:
@@ -88,7 +97,7 @@ func forgeOriginPush(t *testing.T, work, bare, forge string, number int) (func(a
 // the repository lacks, gets none.
 func TestForgeOriginCommit(t *testing.T) {
 	t.Parallel()
-	origins := newForgeOrigins(t.TempDir())
+	origins := newForgeOrigins(forgeOriginDataRoot(t))
 	commit := origins.commit
 	for _, forge := range []string{"github", "gitlab"} {
 		project := "acme/" + forge
@@ -242,7 +251,7 @@ func TestForgeOriginCommitWritesOnlyToItsOwnOrigins(t *testing.T) {
 		head    string // the head both share
 	}
 	setup := func(t *testing.T) rig {
-		origins := newForgeOrigins(t.TempDir())
+		origins := newForgeOrigins(forgeOriginDataRoot(t))
 		// The origin root exists and grp/s is the project under attack.
 		other, err := origins.create("grp/other")
 		if err != nil {
@@ -376,7 +385,7 @@ func TestForgeOriginCommitWritesOnlyToItsOwnOrigins(t *testing.T) {
 // commit to its own origin: the objects and refs land there and the
 // repository they name is untouched.
 func TestForgeOriginCommitIgnoresTheEnvironmentsGitVariables(t *testing.T) {
-	origins := newForgeOrigins(t.TempDir())
+	origins := newForgeOrigins(forgeOriginDataRoot(t))
 	victim := filepath.Join(t.TempDir(), "victim.git")
 	if err := os.MkdirAll(victim, 0o755); err != nil {
 		t.Fatal(err)
@@ -413,7 +422,7 @@ func TestForgeOriginCommitIgnoresTheEnvironmentsGitVariables(t *testing.T) {
 // origins and the commit land under the data root.
 func TestForgeOriginRootIsCreatedNotFound(t *testing.T) {
 	t.Parallel()
-	dataRoot, outside := t.TempDir(), t.TempDir()
+	dataRoot, outside := forgeOriginDataRoot(t), t.TempDir()
 	if err := os.Symlink(outside, filepath.Join(dataRoot, "forge-origin")); err != nil {
 		t.Fatal(err)
 	}

@@ -27,7 +27,9 @@ func TestPRActionRefreshPollsTheLivePump(t *testing.T) {
 	if pump == nil {
 		t.Fatal("no live pump after subscribe")
 	}
-	pump.paused.Store(true)
+	if err := app.SetPRUpdatesActive(sub.ID, false); err != nil {
+		t.Fatalf("hide the pane: %v", err)
+	}
 	before := len(script.calls())
 	// The scripted fetch answers head-a every time; the refresh's own
 	// poll is told apart by its count, and the frame by a changed head.
@@ -92,10 +94,9 @@ func TestPRActionRefreshPollsInteractively(t *testing.T) {
 	if len(got) < 3 || !got[0] || slices.Contains(got[1:], true) {
 		t.Fatalf("polls interactive = %v, want the subscribe's alone", got)
 	}
-	app.prUpdates.mu.Lock()
-	pump := app.livePRUpdatePumpLocked(sub.PRKey)
-	app.prUpdates.mu.Unlock()
-	pump.paused.Store(true)
+	if err := app.SetPRUpdatesActive(sub.ID, false); err != nil {
+		t.Fatalf("hide the pane: %v", err)
+	}
 	if _, err := app.settlePRAction(context.Background(), testPR, gitops.ActionMerge, nil); err != nil {
 		t.Fatalf("settle: %v", err)
 	}
@@ -119,7 +120,9 @@ func TestPRActionFailureIsExplained(t *testing.T) {
 	if pump == nil {
 		t.Fatal("no live pump after subscribe")
 	}
-	pump.paused.Store(true)
+	if err := app.SetPRUpdatesActive(sub.ID, false); err != nil {
+		t.Fatalf("hide the pane: %v", err)
+	}
 	// A tick in flight when the pump was parked finishes first.
 	time.Sleep(20 * time.Millisecond)
 	before := len(script.calls())
@@ -231,10 +234,9 @@ func TestPRActionWhoseRefreshFailedAnswersNoSequence(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			app, script, _, sub := newScriptedPump(t, ok)
-			app.prUpdates.mu.Lock()
-			pump := app.livePRUpdatePumpLocked(sub.PRKey)
-			app.prUpdates.mu.Unlock()
-			pump.paused.Store(true)
+			if err := app.SetPRUpdatesActive(sub.ID, false); err != nil {
+				t.Fatalf("hide the pane: %v", err)
+			}
 			time.Sleep(20 * time.Millisecond)
 			script.mu.Lock()
 			script.steps = []func() error{fails(failure)}

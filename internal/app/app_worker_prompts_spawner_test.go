@@ -185,9 +185,9 @@ func TestAnOrdinarySpawnersWithdrawnWakeHandsThePromptBack(t *testing.T) {
 // asks the user.
 func TestAWorkerPromptRoutesOneSpawnUpUnlessTheSpawnerIsArchived(t *testing.T) {
 	t.Parallel()
-	a, _ := newAppForFlushQueueRPC(t)
+	a, path := newTestAppWithStorePath(t)
+	wireLinkedWorkersApp(a)
 	a.startSessionFn = func(string) error { return errors.New("the provider binary is missing") }
-	a.triage.SetPromptRouter(a.routeWorkerPrompt)
 	lead := noticeTestThread(t, a, "route-lead")
 	worker := noticeTestThread(t, a, "route-worker")
 	grand := noticeTestThread(t, a, "route-grand")
@@ -252,12 +252,18 @@ func TestAWorkerPromptRoutesOneSpawnUpUnlessTheSpawnerIsArchived(t *testing.T) {
 		*route != (provider.PromptRoute{ThreadID: "desk-lead", Title: "the desk lead", ComputerID: "desk", ComputerName: "Desk"}) {
 		t.Fatalf("a worker a paired computer owns asks %+v, want the desk lead on Desk", route)
 	}
-	// Shown in the sidebar here, it asks the user.
+	// Shown in the sidebar here, it asks its spawner there in its spawn's
+	// run, and the user once that run ended.
 	if _, err := a.store.SetThreadPlacement([]string{remote.ID}, store.PlacementStandalone); err != nil {
 		t.Fatal(err)
 	}
-	if route := ask(remote.ID, "remote-2"); route != nil {
-		t.Fatalf("a worker with a sidebar row here asks %+v, want the user", route)
+	if route := ask(remote.ID, "remote-2"); route == nil || route.ThreadID != "desk-lead" {
+		t.Fatalf("a worker with a sidebar row here asks %+v in its spawn's run, want the desk lead on Desk", route)
+	}
+	execOnStore(t, path, `UPDATE thread_request_receipts SET state = 'finished', settled_at = 20,
+		run_open = 0, run_tool_calls = 0, run_tokens = 0, run_turn_ms = 0 WHERE token = 'remote-spawn'`)
+	if route := ask(remote.ID, "remote-3"); route != nil {
+		t.Fatalf("a worker with a sidebar row here asks %+v after its spawn's run, want the user", route)
 	}
 }
 

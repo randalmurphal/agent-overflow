@@ -1,0 +1,18 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        {"type": "text", "text": "x ", "marks": [{"type": "strong"}, {"type": "underline"}]},
+        {"type": "text", "text": "value, "},
+        {"type": "text", "text": "low", "marks": [{"type": "em"}, {"type": "subsup", "attrs": {"type": "sub"}}]},
+        {"type": "text", "text": "er and "},
+        {"type": "text", "text": "a ", "marks": [{"type": "strong"}]},
+        {"type": "text", "text": "b", "marks": [{"type": "strong"}, {"type": "underline"}]},
+        {"type": "text", "text": "c"}
+      ]
+    }
+  ]
+}

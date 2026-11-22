@@ -210,6 +210,12 @@ const (
 	ScopeSettingsWrite Scope = "settings:write"
 	// ScopeAccessAdmin covers the device list, revocation, and audit read.
 	ScopeAccessAdmin Scope = "access:admin"
+	// ScopeTrackerRead covers reads of the issue tracker connections,
+	// never a token.
+	ScopeTrackerRead Scope = "tracker:read"
+	// ScopeTrackerOperate covers adding, changing, verifying and removing
+	// tracker connections.
+	ScopeTrackerOperate Scope = "tracker:operate"
 )
 
 // Scopes is every declared scope, in the order the spec's table lists
@@ -218,7 +224,7 @@ var Scopes = []Scope{
 	ScopeThreadsRead, ScopeFilesRead, ScopeThreadsOperate, ScopeApprovalsRespond,
 	ScopeThreadsAutonomy, ScopeTerminalOperate, ScopePreviewOpen, ScopeGitOperate,
 	ScopeAttachmentsWrite, ScopeSettingsRead, ScopeSettingsWrite,
-	ScopeAccessAdmin,
+	ScopeAccessAdmin, ScopeTrackerRead, ScopeTrackerOperate,
 }
 
 // ObserveScopes is the read-only subset: the grant set a device paired
@@ -231,7 +237,7 @@ var Scopes = []Scope{
 // two are pinned together by `internal/app`'s
 // TestObserveScopesAreTheObserveTier, so a scope added to that tier has
 // to join this set or fail.
-var ObserveScopes = []Scope{ScopeThreadsRead, ScopeFilesRead, ScopeSettingsRead}
+var ObserveScopes = []Scope{ScopeThreadsRead, ScopeFilesRead, ScopeSettingsRead, ScopeTrackerRead}
 
 // Valid reports whether s is a declared scope.
 func (s Scope) Valid() bool { return slices.Contains(Scopes, s) }

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { settingsComputer } from './settingsComputer';
-  const { backend, hasScope } = settingsComputer();
+  const { backend, scopeGrant } = settingsComputer();
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
   // Per-project settings. Today that is one thing — the worktree setup recipe
   // — so the section is a project picker over a single editor rather than a
   // nested tab set.
@@ -10,8 +11,7 @@
   // standing grant reaches it from a remote session. The picker says so instead of
   // rendering an editor whose every save would fail.
 
-  import { onMount } from 'svelte';
-  import { getProjects, isLoaded, refreshProjects } from '../../stores/projects.svelte';
+  import { getProjects, isLoaded } from '../../stores/projects.svelte';
   import { disambiguatedPathLabels, formatPathLabel } from '../../utils/pathDisplay';
 
   import SettingsField from './SettingsField.svelte';
@@ -24,12 +24,16 @@
   let labels = $derived(disambiguatedPathLabels(projects.map((row) => row.project)));
   let loaded = $derived(isLoaded());
   // The editable half is the worktree setup command, which runs in a PTY.
-  let ungranted = $derived(!hasScope('terminal:operate'));
+  let grant = $derived(scopeGrant('terminal:operate'));
+  let ungranted = $derived(grant !== 'granted');
   let selectedId = $state('');
 
-  onMount(() => {
-    if (!isLoaded()) void refreshProjects();
-  });
+  // No read of its own. The projects are one tree with the threads under
+  // them (stores/sidebarCatalogs.ts), read from boot and from every hello
+  // and gap, and this page opens only from a control in an already mounted
+  // surface, so a round has always begun before it mounts. A failed round
+  // is retried by the catalog state, and `loaded` shows its loading row
+  // meanwhile.
 
   // Keep the selection valid without stealing it: only fall back to the first
   // project when the current pick is gone (or was never made).
@@ -47,7 +51,7 @@
 <div class="settings-sections">
   {#if ungranted}
     <p class="text-[0.75rem] text-fg-muted" data-testid="settings-projects-local-only">
-      This connection does not have permission to configure projects on this computer.
+      {grant === 'refused' ? 'This connection does not have permission to configure projects on this computer.' : grantBlockedTitle(grant)}
     </p>
   {:else if loaded && projects.length === 0}
     <p class="text-[0.75rem] text-fg-muted" data-testid="settings-projects-empty">

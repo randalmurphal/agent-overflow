@@ -699,19 +699,21 @@ export const coverageAllowlist: CoverageAllowance[] = [
   { table: 'flush_queue_items', reason: 'pending-send rows a turn flushes before it rests; empty once every turn is at rest' },
   { table: 'pending_background_task_terminals', reason: 'a background task whose terminal notification outran its tool row; cleared when the row lands' },
 
-  // Identity: paired devices, browser sign-ins and passkeys, which the
-  // harness page does not go through.
-  { table: 'auth_audit', columns: ['reason', 'device_id', 'session_id', 'peer'], values: { outcome: ['refused'] }, reason: 'a refused or device-bound sign-in; the harness page signs in locally' },
-  { table: 'devices', columns: ['key_thumbprint', 'passkey_credential_id', 'last_seen_at', 'revoked_at', 'proof_kind'], values: { class: ['browser', 'phone', 'cli', 'backend-peer'] }, reason: 'rows the pairing flow writes for a browser, phone, CLI or peer backend' },
-  { table: 'own_devices', reason: 'this backend seen as a device by a peer it paired with' },
-  { table: 'own_device_sessions', reason: 'sessions a peer backend opened on this one' },
-  { table: 'pairing_links', reason: 'a minted pairing link (MintDevicePairing)' },
+  // Identity: browser sign-ins, passkeys and devices other than the one
+  // paired computer the top-up pairs with.
+  { table: 'auth_audit', columns: ['reason'], values: { outcome: ['refused'] }, reason: "a refused sign-in; the harness page signs in locally and the top-up's paired computer is admitted" },
+  { table: 'devices', columns: ['passkey_credential_id', 'last_seen_at', 'revoked_at'], values: { class: ['browser', 'phone', 'cli', 'backend-peer'] }, reason: "rows the pairing flow writes for a browser, phone, CLI or a peer backend another computer introduced, and a revoked or passkey device; the top-up pairs one computer of the person's own" },
+  { table: 'own_devices', values: { removed: [1] }, reason: "a paired computer of the person's own they removed; the top-up keeps its pairing" },
+  {
+    table: 'pairing_links', columns: ['canceled_at', 'expected_key', 'sponsor_key'],
+    values: { binding_class: ['loopback-only', 'public'], device_class: ['browser', 'phone', 'cli', 'backend-peer'], purpose: ['', 'own-introduction'] },
+    reason: "a link minted for a browser, phone, CLI or peer backend, a canceled link and an introduction one computer sponsors for another; the top-up redeems one link between two computers of the person's own",
+  },
   { table: 'passkeys', reason: 'a WebAuthn registration from a browser' },
   { table: 'push_sender', reason: 'the push credential a paired phone registers' },
   { table: 'push_tokens', reason: 'push tokens paired phones register' },
-  { table: 'refresh_secrets', reason: 'refresh secrets of device-bound sessions' },
   { table: 'recovery_codes', columns: ['consumed_at', 'consumed_by'], reason: 'a recovery code a sign-in consumed' },
-  { table: 'sessions', columns: ['expires_at', 'revoked_at', 'last_seen_at'], values: { binding_class: ['device-bound', 'public'] }, reason: 'sessions a paired device or a public link opens' },
+  { table: 'sessions', columns: ['revoked_at', 'last_seen_at'], values: { binding_class: ['public'] }, reason: 'sessions a public link opens, and a revoked or seen session' },
   { table: 'users', columns: ['disabled_at', 'webauthn_user_handle'], values: { role: ['member'] }, reason: 'a second (member) user, a disabled user or a passkey holder' },
 
   // Connected computers and the agent thread tools, which need a second
@@ -732,7 +734,6 @@ export const coverageAllowlist: CoverageAllowance[] = [
     values: {
       kind: ['ask'],
       state: ['unconfirmed', 'accepted', 'running', 'errored', 'cancelled', 'expired', 'refused'],
-      answer_kind: [''],
       delivered_how: ['draft'],
       late_delivered_how: ['inline', 'queued', 'draft'],
       lineage_only: [1],
@@ -748,8 +749,8 @@ export const coverageAllowlist: CoverageAllowance[] = [
     columns: ['late_reply', 'late_reply_at', 'answer_agent', 'answer_agent_role', 'late_reply_agent', 'late_reply_agent_role', 'lineage_only'],
     values: {
       kind: ['ask', 'remind'],
-      state: ['accepted', 'running', 'errored', 'cancelled', 'expired'],
-      answer_kind: ['', 'note'],
+      state: ['accepted', 'errored', 'cancelled', 'expired'],
+      answer_kind: ['note'],
       answer_agent: [1],
       late_reply_agent: [1],
       lineage_only: [1],
@@ -758,19 +759,14 @@ export const coverageAllowlist: CoverageAllowance[] = [
   },
   {
     table: 'thread_request_receipts',
-    columns: ['spawn_link', 'owner_op_seq'],
-    values: { spawn_link: [1] },
-    reason: "the link of a paired computer's owned spawn and the owner operations it admitted (v158), which need a second computer",
+    columns: ['owner_op_seq'],
+    reason: "the owner operations a paired computer's spawn admitted (v158): the top-up's paired spawns are never archived, deleted or released",
   },
   {
     table: 'thread_requests',
     columns: ['owner_op_seq', 'ack_owed', 'late_reply_expired', 'target_computer_name'],
     values: { late_reply_expired: [1] },
     reason: "the owner operations owed for a spawn on a paired computer, an acknowledgement owed to one, a late reply one dropped before it was collected, and the computer name a request there was admitted under (v158), which need a second computer",
-  },
-  {
-    table: 'thread_request_receipts', columns: ['track_spawn'], values: { track_spawn: [1] },
-    reason: 'tracking starts when a paired owner spawns a worker (TestOwnerRecoversRenamedWorkerWithoutReadingPane)',
   },
   {
     table: 'thread_requests', columns: ['link_end', 'contact_due'], values: { link_end: ['released', 'detached', 'gone'] },
@@ -807,6 +803,25 @@ export const coverageAllowlist: CoverageAllowance[] = [
   { table: 'diff_review_comments', columns: ['claim_settles'], values: { claim_settles: ['row', 'confirm'] }, reason: "a sent draft's claim waits for its message's row or the provider's confirmation, and settles before the turn rests" },
   { table: 'thread_pull_requests', columns: ['merged_at', 'handled_at', 'removal_failed_at', 'outcome'], values: { forge: ['gitlab'], outcome: ['removed', 'kept', 'gone', 'closed', 'skipped'] }, reason: "the top-up's pull request stays open, so no merge cleanup runs; one forge's pull request proves the table" },
   { table: 'pr_list_projects', reason: "the Pull requests list's stored copy of a forge project's read; the top-up's one forge-origin project names a repository the fake forge does not have, so its read fails and nothing is stored" },
+  { table: 'tracker_connections', reason: 'an issue tracker connection (v162); no app method writes the tracker tables yet' },
+  { table: 'project_tracker_boards', reason: 'the tracker boards a project lists (v162); no app method writes the tracker tables yet' },
+  { table: 'thread_tickets', reason: 'the ticket a thread is linked to (v162); no app method writes the tracker tables yet' },
+  { table: 'tracker_cache_roots', reason: 'the root of a tracker mirror (v162); no app method syncs a tracker yet' },
+  { table: 'tracker_cache_users', reason: 'a tracker user a mirror holds (v162); no app method syncs a tracker yet' },
+  { table: 'tracker_cache_statuses', reason: 'a tracker status a mirror holds (v162); no app method syncs a tracker yet' },
+  { table: 'tracker_cache_boards', reason: 'a tracker board\'s structure (v162); no app method syncs a tracker yet' },
+  { table: 'tracker_cache_board_columns', reason: 'a tracker board\'s column (v162); no app method syncs a tracker yet' },
+  { table: 'tracker_cache_board_column_statuses', reason: 'the statuses of a tracker board\'s column (v162); no app method syncs a tracker yet' },
+  { table: 'tracker_cache_sprints', reason: 'a tracker board\'s sprint (v162); no app method syncs a tracker yet' },
+  { table: 'tracker_cache_board_unexplained', reason: 'a reference a tracker board\'s complete structure did not explain (v162); no app method syncs a tracker yet' },
+  { table: 'tracker_cache_issues', reason: 'a tracker issue\'s card (v162); no app method syncs a tracker yet' },
+  { table: 'tracker_cache_board_issues', reason: 'a tracker issue\'s row on a board (v162); no app method syncs a tracker yet' },
+  { table: 'tracker_cache_issue_sprints', reason: 'the sprints a tracker issue is in (v162); no app method syncs a tracker yet' },
+  { table: 'tracker_cache_changes', reason: 'a tracker issue\'s status, sprint, estimate or assignee change (v162); no app method syncs a tracker yet' },
+  { table: 'tracker_cache_issue_details', reason: 'the detail of a recently opened tracker issue (v162); no app method syncs a tracker yet' },
+  { table: 'tracker_cache_worklogs', reason: 'time logged in a tracker (v162); no app method syncs a tracker yet' },
+  { table: 'tracker_cache_worklog_days', reason: 'the latest read of a day of a tracker author\'s worklogs (v162); no app method syncs a tracker yet' },
+  { table: 'tracker_cache_sync', reason: 'a tracker mirror scope\'s sync state (v162); no app method syncs a tracker yet' },
   { table: 'chat_bar_favorites', values: { provider: ['codex', 'claude-tui'] }, reason: 'favorites of other providers; one favorite proves the table' },
   { table: 'chat_model_profiles', values: { provider: ['claude-tui'], reasoning_effort: ['none', 'minimal', 'low', 'high', 'xhigh'], runtime_mode: ['read-only', 'approval-required', 'auto-accept-edits'] }, reason: 'one remembered profile per provider and model holds the settings used last; the claude-tui provider has no mock' },
 
@@ -825,7 +840,6 @@ export const coverageAllowlist: CoverageAllowance[] = [
   { table: 'items', values: { kind: ['compaction_reasoning', 'workflow_proposal', 'command_result', 'terminal_interaction', 'api_retry'], status: ['streaming', 'killed', 'parked'], decision: ['approved', 'amended', 'lost'] }, reason: 'compaction reasoning, API retry, terminal and workflow-proposal rows need scenarios no library entry provides; the approval scenarios raise their request without a toolUseId, so an allowed decision is not matched to the tool row that follows, and an amended or lost one needs an edited or abandoned request; streaming, killed and parked are mid-turn states' },
   { table: 'threads', columns: ['history_bulk_load', 'fork_preparing', 'fork_cut_turn_index', 'deleting', 'delete_claim', 'created_remote_url', 'worktree_setup_state'], reason: 'fork-in-progress, delete-in-progress and worktree-setup-in-progress markers, which rest at their defaults; the remote a thread was created from needs a forge remote' },
   { table: 'threads', values: { reasoning_effort: ['none', 'minimal'] }, reason: 'efforts no catalog model declares' },
-  { table: 'threads', columns: ['spawn_level'], reason: "the level a paired computer's spawn carries, which needs a second computer" },
   { table: 'threads', values: { attention_kind: ['decision', 'problem'] }, reason: "the other kinds of an agent's thread_attention flag; the top-up's one flag is a review" },
   { table: 'subagent_aggregates', columns: ['state', 'transcript_count', 'transcript_newest_turn', 'transcript_newest_item'], reason: 'a subagent still running or failed when its thread rested, and transcript cursors of Codex children' },
   { table: 'work_items', columns: ['wake_signature', 'pending_guidance', 'auto_resume_at', 'budget', 'triage_thread_id', 'origin_thread_id', 'disposition', 'parent_item_id', 'parent_phase_id', 'parent_unit_id', 'parent_attempt', 'call_depth', 'soft_stop', 'source_ref', 'reports_owed'], values: { state: ['running', 'needs-human', 'failed'], workflow_scope: ['shared'], source: ['agent', 'call'], reason: ['gate', 'question', 'stuck', 'stalled', 'budget-exhausted', 'retries-exhausted', 'provider-retries-exhausted', 'provider-usage-limited', 'loop-limit-exhausted', 'check-failed-genuine', 'agent-error', 'wiring-error', 'disposition', 'setup-failed', 'taken-over', 'unit-failed', 'child-failed', 'paused', 'checkpoint'] }, reason: 'running and needs-human are states a run passes through; the rest are failures, budgets, child runs, shared-scope and agent-started runs the top-up does not stage; source_ref is set only on a run a phase started or a call phase invoked; reports_owed counts rests whose wake jobs have not ended, none once a run settles' },

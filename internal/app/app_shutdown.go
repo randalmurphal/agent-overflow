@@ -78,6 +78,13 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// further step begins, and the one running finishes before anything it
 	// uses is torn down.
 	a.activation.stop()
+	// The attached computers' network waits end before the drain, so a call
+	// waiting on one (an introduction's redemption or rotation, a pairing's
+	// first steps) returns inside it. A person's pairing whose redemption has
+	// been sent still finishes (attachedbackends.Manager.BeginClose).
+	if a.backends != nil {
+		a.backends.BeginClose()
+	}
 	// Step 0 (pre-shutdown): drain the transport server while every
 	// subsystem is still alive. Without this, a webview WS client that
 	// fires an RPC during the window between the App's subsystem-close
@@ -439,6 +446,12 @@ func (a *App) Shutdown(ctx context.Context) error {
 	if a.git != nil && a.git.ForgeAPI() != nil {
 		a.git.ForgeAPI().Close()
 		record("close forge API transport", nil)
+	}
+	// The tracker service closes its clients, which ends their calls in
+	// flight, and joins its calls before the store closes.
+	if a.trackers != nil {
+		a.trackers.Stop()
+		record("stop tracker connections", nil)
 	}
 
 	// Step 6: close PTYs. Must happen after provider sessions because

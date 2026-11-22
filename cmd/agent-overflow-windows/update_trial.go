@@ -51,10 +51,15 @@ var errLegacyTarget = errors.New("the new launcher predates trial updates")
 // beginTrialUpdate is steps 2 and 3 of the Windows sequence: stage the new
 // launcher, have it stage and check its payload, record the update durably,
 // start the new launcher and quit. It returns errLegacyTarget when the target
-// cannot run the trial, and nil only once the app is quitting.
-func (a *launcherApp) beginTrialUpdate(directive selfupdate.InstallDirective, staged string, digest []byte) error {
+// cannot run the trial, and nil only once the app is quitting. The handoff
+// is the update's first timed phase; this launcher's shutdown follows it.
+// Choosing the swap is logged on swap, as the branch taken: skipped for the
+// running version, and for a target that writes no preflight answer the
+// handoff's time with branch=swap, never a failed handoff.
+func (a *launcherApp) beginTrialUpdate(directive selfupdate.InstallDirective, staged string, digest []byte, swap *supervise.SwapTiming) (err error) {
 	// The same version has the same schema: nothing for a trial to prove.
 	if directive.Version == payloadVersion {
+		swap.Phases().Skip("handoff", "the target is the running version")
 		return errLegacyTarget
 	}
 	a.mu.Lock()
@@ -75,6 +80,14 @@ func (a *launcherApp) beginTrialUpdate(directive selfupdate.InstallDirective, st
 	if err != nil {
 		return err
 	}
+	handing := supervise.NewPhaseLog(log.Printf, "updater: update "+id, nil).Begin("handoff")
+	defer func() {
+		if errors.Is(err, errLegacyTarget) {
+			swap.Declined(handing)
+			return
+		}
+		handing.End(err)
+	}()
 	launcherPath := wsllauncher.StagedLauncherPath(dir, id)
 	// StageCopy verifies the digest of the bytes it writes, so the file the
 	// new launcher runs from is the one the backend verified.
@@ -138,7 +151,7 @@ func (a *launcherApp) beginTrialUpdate(directive selfupdate.InstallDirective, st
 		return fmt.Errorf("start the new launcher: %w", err)
 	}
 	log.Printf("updater: update %s to %s handed to %s", id, directive.Version, launcherPath)
-	armUpdateExitWatchdog(updateRestartExitWatchdogDelay)
+	armUpdateExitWatchdog(updateRestartExitWatchdogDelay, nil)
 	a.wails.Quit()
 	return nil
 }
@@ -206,9 +219,13 @@ func (preflightHost) InstallEmbeddedPayload(ctx context.Context, distro, staged 
 // waitForParentLauncher waits for the launcher that started this one to
 // exit, so this one can claim the single-instance identity. The wait holds
 // a handle to the process whose creation time matches, so a reused process
-// id is never waited on.
+// id is never waited on. The wait is the previous launcher's shutdown, an
+// update's phase, so it is timed.
 func waitForParentLauncher(parent supervise.ProcessRef) error {
-	if err := supervise.WaitForExit(context.Background(), parent, updateParentExitTimeout); err != nil {
+	waiting := supervise.NewPhaseLog(log.Printf, "launcher", nil).Begin("wait-previous")
+	err := supervise.WaitForExit(context.Background(), parent, updateParentExitTimeout)
+	waiting.End(err, "pid", parent.PID)
+	if err != nil {
 		return fmt.Errorf("the previous launcher (pid %d): %w", parent.PID, err)
 	}
 	return nil
@@ -447,6 +464,13 @@ func (a *launcherApp) reconcileUpdate(distro string, transient bool) bool {
 		return false
 	}
 	switch decision.Action {
+	case wsllauncher.ReconcileLaunch:
+	case wsllauncher.ReconcileJoin:
+		// The loop above joins until the applier settles the record.
+		log.Printf("updater: update %s still answers join after its applier settled", decision.Record.Update.ID)
+		a.showUpdateFailure("Agent Overflow could not read its update record.",
+			"Nothing was started, so the data is left as it is. Details are in the launcher log.")
+		return false
 	case wsllauncher.ReconcileHandOff:
 		log.Printf("updater: resuming update %s with %s", decision.Record.Update.ID, decision.Record.StagedLauncher)
 		if err := startApplier(sequence.RecordPath, decision.Record.StagedLauncher, decision.Record.Update.ID, distro, transient); err != nil {
@@ -692,7 +716,7 @@ type fileStandardInfo struct {
 // fileAllocatedBytes is the space path occupies on its drive, which for a
 // sparse file is less than its length. WSL holds the disk open while the
 // distro runs, so it is opened for its attributes only.
-func fileAllocatedBytes(path string) (uint64, error) {
+func fileAllocatedBytes(path string) (_ uint64, err error) {
 	pathPtr, err := windows.UTF16PtrFromString(path)
 	if err != nil {
 		return 0, err
@@ -702,7 +726,11 @@ func fileAllocatedBytes(path string) (uint64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("open %s: %w", path, err)
 	}
-	defer windows.CloseHandle(handle)
+	defer func() {
+		if closeErr := windows.CloseHandle(handle); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close %s: %w", path, closeErr))
+		}
+	}()
 	var info fileStandardInfo
 	if err := windows.GetFileInformationByHandleEx(handle, windows.FileStandardInfo, (*byte)(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info))); err != nil {
 		return 0, fmt.Errorf("read the size of %s: %w", path, err)

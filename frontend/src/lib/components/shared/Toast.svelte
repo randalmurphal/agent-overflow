@@ -5,6 +5,7 @@
   import XCircle from '@lucide/svelte/icons/x-circle';
   import ToastItem from './ToastItem.svelte';
   import { getToasts, type ToastType } from '../../stores/toast.svelte';
+  import { airspaceSurface } from '../../utils/paneAirspace.svelte';
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   type IconComponent = any;
@@ -30,8 +31,12 @@
   }
 </script>
 
+<!-- The stack paints over whatever pane sits in the corner, and a native
+     browser view there paints over the page, so the stack registers as an
+     airspace layer: the view yields while a toast covers it. A layer, not an
+     overlay: a toast takes no keyboard, so the pane's commands stay live. -->
 {#if toasts.length > 0}
-  <div class="fixed bottom-4 compact:bottom-[max(1rem,env(safe-area-inset-bottom))] right-4 z-[80] flex flex-col gap-2 max-w-[min(24rem,calc(100vw-2rem))]" aria-live="polite" aria-relevant="additions">
+  <div use:airspaceSurface={{ overlay: false }} class="fixed bottom-4 compact:bottom-[max(1rem,env(safe-area-inset-bottom))] right-4 z-[80] flex flex-col gap-2 max-w-[min(24rem,calc(100vw-2rem))]" aria-live="polite" aria-relevant="additions">
     {#each toasts as toast (toast.id)}
       <ToastItem {toast} icon={iconForType(toast.type)} colorClasses={colorClasses(toast.type)} />
     {/each}

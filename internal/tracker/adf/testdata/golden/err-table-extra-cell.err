@@ -1,0 +1,1 @@
+line 3: table row has 3 cells but the header has 2; escape a literal | as \| (GFM splits cells at every unescaped |, even inside `code`)

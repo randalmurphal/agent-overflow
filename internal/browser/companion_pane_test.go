@@ -1,9 +1,14 @@
 package browser
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"agent-overflow/internal/browser/ids"
 )
 
 // The pane presentation contract every paneHost engine is built against
@@ -21,6 +26,15 @@ type recordingPaneHost struct {
 	mu       sync.Mutex
 	calls    []string
 	onBounds func(PanePlacement)
+	// onBase, when set, sees every SetPageBase. Bases are not in calls.
+	onBase func(handle, color string)
+	// onShow, when set, sees every ShowPage after it is recorded.
+	onShow func(handle string)
+	// onHide, when set, sees every HidePage after it is recorded.
+	onHide func(handle string)
+	// focusErr answers FocusPage, and lastFocus is the request it was asked.
+	focusErr  error
+	lastFocus focusRequest
 }
 
 func (e *recordingPaneHost) record(call string) {
@@ -29,15 +43,55 @@ func (e *recordingPaneHost) record(call string) {
 	e.mu.Unlock()
 }
 
-func (e *recordingPaneHost) ShowPage(handle string) { e.record("show:" + handle) }
-func (e *recordingPaneHost) HidePage(handle string) { e.record("hide:" + handle) }
-func (e *recordingPaneHost) SetPageBounds(handle string, placement PanePlacement) {
-	e.record("bounds:" + handle)
+func (e *recordingPaneHost) ShowPage(handle ids.PageHandle) {
+	e.record("show:" + string(handle))
+	e.mu.Lock()
+	onShow := e.onShow
+	e.mu.Unlock()
+	if onShow != nil {
+		onShow(string(handle))
+	}
+}
+func (e *recordingPaneHost) HidePage(handle ids.PageHandle) {
+	e.record("hide:" + string(handle))
+	e.mu.Lock()
+	onHide := e.onHide
+	e.mu.Unlock()
+	if onHide != nil {
+		onHide(string(handle))
+	}
+}
+
+// FocusPage records the request; focusErr, when set, is its answer.
+func (e *recordingPaneHost) FocusPage(handle ids.PageHandle, req focusRequest) (focusResult, error) {
+	e.record("focus:" + string(handle))
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.lastFocus = req
+	if e.focusErr != nil {
+		return focusNotPresented, e.focusErr
+	}
+	return focusMoved, nil
+}
+
+var _ paneHost = (*recordingPaneHost)(nil)
+
+func (e *recordingPaneHost) SetPageBounds(handle ids.PageHandle, placement PanePlacement) {
+	e.record("bounds:" + string(handle))
 	e.mu.Lock()
 	onBounds := e.onBounds
 	e.mu.Unlock()
 	if onBounds != nil {
 		onBounds(placement)
+	}
+}
+
+func (e *recordingPaneHost) SetPageBase(handle ids.PageHandle, color string) {
+	e.mu.Lock()
+	onBase := e.onBase
+	e.mu.Unlock()
+	if onBase != nil {
+		onBase(string(handle), color)
 	}
 }
 
@@ -58,12 +112,12 @@ func newPaneHostManager(t *testing.T) (*Manager, *recordingPaneHost, Access, str
 	t.Cleanup(func() { manager.Close() })
 	engine := &recordingPaneHost{fakeEngine: manager.engine.(*fakeEngine)}
 	manager.engine = engine
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	access := manager.Bind(Caller{ThreadID: "thread", Workspace: t.TempDir()})
 	first, err := manager.Open(t.Context(), access, "https://example.test/first", OpenOptions{})
 	if err != nil {
 		t.Fatalf("open first page: %v", err)
 	}
-	second, err := manager.NewCompanionPage(t.Context(), access)
+	second, err := manager.NewCompanionPage(t.Context(), access, "")
 	if err != nil {
 		t.Fatalf("open second page: %v", err)
 	}
@@ -71,8 +125,14 @@ func newPaneHostManager(t *testing.T) (*Manager, *recordingPaneHost, Access, str
 	return manager, engine, access, first.ID, second.ID
 }
 
+// paneHandle is the engine handle of a page as the recording pane host
+// records it.
 func paneHandle(m *Manager, access Access, pageID string) string {
-	p, _, err := m.lookupOwnedPage(access, pageID)
+	return string(driverHandle(m, access, pageID))
+}
+
+func driverHandle(m *Manager, access Access, pageID string) ids.PageHandle {
+	p, _, err := m.lookupOwnedPage(access, PageID(pageID))
 	if err != nil {
 		panic(err)
 	}
@@ -85,17 +145,26 @@ func TestPanePresentationHidesOthersThenSendsBoundsBeforeShow(t *testing.T) {
 	secondHandle := paneHandle(manager, access, secondID)
 
 	show := true
-	if _, err := manager.Visibility(t.Context(), access, &show, secondID); err != nil {
+	if _, err := manager.Visibility(t.Context(), access, &show, PageID(secondID)); err != nil {
 		t.Fatalf("visibility: %v", err)
 	}
-	mount, err := manager.AttachPane(access)
+	mount, err := manager.AttachPane(access.Caller())
 	if err != nil {
 		t.Fatalf("attach pane: %v", err)
 	}
 	engine.take()
+	// The rect resizes the thread viewport, so the active page is laid out at
+	// it before it is shown: the presentation lands after the drain pass.
+	applied := make(chan string, 8)
+	manager.viewportApplied = func(threadID ThreadID) { applied <- string(threadID) }
 	rect := PaneRect{X: 10, Y: 20, Width: 800, Height: 600, ViewportWidth: 1920, ViewportHeight: 1080, Visible: true}
-	if err := manager.SetPaneRect(mount.ID, rect); err != nil {
+	if err := manager.SetPaneRect(MountID(mount.ID), rect); err != nil {
 		t.Fatalf("set pane rect: %v", err)
+	}
+	select {
+	case <-applied:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the pane size was never applied")
 	}
 
 	calls := engine.take()
@@ -117,10 +186,10 @@ func TestPanePresentationHidesOthersThenSendsBoundsBeforeShow(t *testing.T) {
 func TestPanePresentationStaysHiddenWithoutAPaintableRect(t *testing.T) {
 	manager, engine, access, _, secondID := newPaneHostManager(t)
 	show := true
-	if _, err := manager.Visibility(t.Context(), access, &show, secondID); err != nil {
+	if _, err := manager.Visibility(t.Context(), access, &show, PageID(secondID)); err != nil {
 		t.Fatalf("visibility: %v", err)
 	}
-	mount, err := manager.AttachPane(access)
+	mount, err := manager.AttachPane(access.Caller())
 	if err != nil {
 		t.Fatalf("attach pane: %v", err)
 	}
@@ -133,7 +202,7 @@ func TestPanePresentationStaysHiddenWithoutAPaintableRect(t *testing.T) {
 		{X: 1, Y: 1, Width: 800, Height: 600, ViewportWidth: 1920, ViewportHeight: 1080, Visible: false},
 		{X: 1, Y: 1, Width: 0, Height: 600, ViewportWidth: 1920, ViewportHeight: 1080, Visible: true},
 	} {
-		if err := manager.SetPaneRect(mount.ID, rect); err != nil {
+		if err := manager.SetPaneRect(MountID(mount.ID), rect); err != nil {
 			t.Fatalf("set pane rect: %v", err)
 		}
 		for _, call := range engine.take() {
@@ -150,10 +219,10 @@ func TestPanePresentationStaysHiddenWithoutAPaintableRect(t *testing.T) {
 func TestPaneRectClipDefaultsAndEmptyClipHides(t *testing.T) {
 	manager, engine, access, _, secondID := newPaneHostManager(t)
 	show := true
-	if _, err := manager.Visibility(t.Context(), access, &show, secondID); err != nil {
+	if _, err := manager.Visibility(t.Context(), access, &show, PageID(secondID)); err != nil {
 		t.Fatalf("visibility: %v", err)
 	}
-	mount, err := manager.AttachPane(access)
+	mount, err := manager.AttachPane(access.Caller())
 	if err != nil {
 		t.Fatalf("attach pane: %v", err)
 	}
@@ -167,7 +236,7 @@ func TestPaneRectClipDefaultsAndEmptyClipHides(t *testing.T) {
 	var got []PanePlacement
 	engine.onBounds = func(placement PanePlacement) { got = append(got, placement) }
 	rect := PaneRect{X: 10, Y: 20, Width: 800, Height: 600, ViewportWidth: 1920, ViewportHeight: 1080, Visible: true}
-	if err := manager.SetPaneRect(mount.ID, rect); err != nil {
+	if err := manager.SetPaneRect(MountID(mount.ID), rect); err != nil {
 		t.Fatalf("set pane rect: %v", err)
 	}
 	if len(got) == 0 {
@@ -189,7 +258,7 @@ func TestPaneRectClipDefaultsAndEmptyClipHides(t *testing.T) {
 	engine.take()
 	clipped := rect
 	clipped.ClipX, clipped.ClipY, clipped.ClipWidth, clipped.ClipHeight = 10, 20, 800, 0.5
-	if err := manager.SetPaneRect(mount.ID, clipped); err != nil {
+	if err := manager.SetPaneRect(MountID(mount.ID), clipped); err != nil {
 		t.Fatalf("set clipped pane rect: %v", err)
 	}
 	for _, call := range engine.take() {
@@ -203,12 +272,12 @@ func TestPaneDetachHidesThePresentedView(t *testing.T) {
 	manager, engine, access, _, secondID := newPaneHostManager(t)
 	secondHandle := paneHandle(manager, access, secondID)
 	show := true
-	if _, err := manager.Visibility(t.Context(), access, &show, secondID); err != nil {
+	if _, err := manager.Visibility(t.Context(), access, &show, PageID(secondID)); err != nil {
 		t.Fatalf("visibility: %v", err)
 	}
 	mount := attachSizedPane(t, manager, engine, access)
 
-	manager.DetachPane(mount)
+	manager.DetachPane(MountID(mount))
 	var hidden bool
 	for _, call := range engine.take() {
 		if call == "hide:"+secondHandle {
@@ -229,20 +298,47 @@ func TestPaneDetachHidesThePresentedView(t *testing.T) {
 func attachSizedPane(t *testing.T, manager *Manager, engine *recordingPaneHost, access Access) string {
 	t.Helper()
 	applied := make(chan string, 16)
-	manager.viewportApplied = func(threadID string) { applied <- threadID }
-	mount, err := manager.AttachPane(access)
+	manager.viewportApplied = func(threadID ThreadID) { applied <- string(threadID) }
+	mount, err := manager.AttachPane(access.Caller())
 	if err != nil {
 		t.Fatalf("attach pane: %v", err)
 	}
 	rect := PaneRect{X: 10, Y: 20, Width: 800, Height: 600, ViewportWidth: 1920, ViewportHeight: 1080, Visible: true}
-	if err := manager.SetPaneRect(mount.ID, rect); err != nil {
+	if err := manager.SetPaneRect(MountID(mount.ID), rect); err != nil {
 		t.Fatalf("set pane rect: %v", err)
 	}
-	if got := <-applied; got != access.ThreadID {
-		t.Fatalf("viewport applied for %q, want %q", got, access.ThreadID)
+	if got := <-applied; ThreadID(got) != access.ThreadID() {
+		t.Fatalf("viewport applied for %q, want %q", got, access.ThreadID())
+	}
+	// The drain may owe another pass (a presentation pass that saw the page
+	// lag asks for one); a pass left running would race the caller's.
+	awaitViewportIdle(t, manager, string(access.ThreadID()))
+	for len(applied) > 0 {
+		<-applied
 	}
 	engine.take()
 	return mount.ID
+}
+
+// awaitViewportIdle waits until the thread's viewport drain has neither a
+// pass queued nor one running, and no presentation pass runs.
+func awaitViewportIdle(t *testing.T, manager *Manager, threadID string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		manager.mu.Lock()
+		st := manager.viewportSyncLocked(ThreadID(threadID))
+		_, presenting := manager.presenting[ThreadID(threadID)]
+		busy := st.busy || st.dirty || presenting
+		manager.mu.Unlock()
+		if !busy {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the viewport drain never went idle")
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 // Presentation passes of a thread never overlap: a pass asked for while one
@@ -252,7 +348,7 @@ func TestPanePresentationPassesNeverOverlap(t *testing.T) {
 	manager, engine, access, _, secondID := newPaneHostManager(t)
 	secondHandle := paneHandle(manager, access, secondID)
 	show := true
-	if _, err := manager.Visibility(t.Context(), access, &show, secondID); err != nil {
+	if _, err := manager.Visibility(t.Context(), access, &show, PageID(secondID)); err != nil {
 		t.Fatalf("visibility: %v", err)
 	}
 	mount := attachSizedPane(t, manager, engine, access)
@@ -269,10 +365,10 @@ func TestPanePresentationPassesNeverOverlap(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		manager.syncPanePresentation(access.ThreadID)
+		manager.syncPanePresentation(access.ThreadID())
 	}()
 	<-entered
-	manager.DetachPane(mount)
+	manager.DetachPane(MountID(mount))
 	close(release)
 	<-done
 	last := ""
@@ -283,5 +379,49 @@ func TestPanePresentationPassesNeverOverlap(t *testing.T) {
 	}
 	if last != "hide:"+secondHandle {
 		t.Fatalf("after a detach during a presentation pass the page's last call is %q, want it hidden", last)
+	}
+}
+
+// A placement whose one visible CSS pixel rounds away in the overlay's
+// pixels (the SPA at 50% zoom) shows nothing in the overlay, where an
+// unclipped view would cover the pane.
+func TestAnOverlayPlacementWithNoPixelLeftIsHidden(t *testing.T) {
+	placement := PanePlacement{
+		Rect: PaneRect{
+			X: 0, Y: 0, Width: 400, Height: 300,
+			ClipX: 1, ClipY: 0, ClipWidth: 1, ClipHeight: 300,
+			ViewportWidth: 1280, ViewportHeight: 720,
+		},
+		Scale: 1,
+	}
+	if layout, _, ok := overlayPaneLayout(placement, 640, 360); ok {
+		t.Fatalf("a placement with no overlay pixel lays out as %+v", layout)
+	}
+}
+
+// devToolsPaneHost is a pane host with an inspector whose open answers err.
+type devToolsPaneHost struct {
+	*recordingPaneHost
+	err error
+}
+
+func (e *devToolsPaneHost) OpenPageDevTools(context.Context, ids.PageHandle) error { return e.err }
+
+// The devtools request answers what the engine's open answered, and an
+// engine with no inspector refuses.
+func TestOpenPaneDevToolsAnswersTheEngine(t *testing.T) {
+	manager, engine, access, first, _ := newPaneHostManager(t)
+	inspector := &devToolsPaneHost{recordingPaneHost: engine, err: errors.New("the inspector would not open")}
+	manager.engine = inspector
+	if err := manager.OpenPaneDevTools(t.Context(), access, PageID(first)); !errors.Is(err, inspector.err) {
+		t.Fatalf("a failed open answered %v", err)
+	}
+	inspector.err = nil
+	if err := manager.OpenPaneDevTools(t.Context(), access, PageID(first)); err != nil {
+		t.Fatalf("an open answered %v", err)
+	}
+	manager.engine = engine
+	if err := manager.OpenPaneDevTools(t.Context(), access, PageID(first)); err == nil {
+		t.Fatal("an engine with no inspector opened devtools")
 	}
 }

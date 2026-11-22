@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isLocalEnter } from '../../utils/localEnter';
   import Modal from '../primitives/Modal.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { Thread } from '../../types/models';
@@ -122,7 +123,7 @@
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
       activeIndex = (activeIndex - 1 + hits.length) % hits.length;
-    } else if (e.key === 'Enter') {
+    } else if (isLocalEnter(e)) {
       // Mid-IME-composition Enter confirms the candidate in the search input;
       // opening the highlighted thread would jump on a half-typed query.
       if (isImeComposingEvent(e)) return;
