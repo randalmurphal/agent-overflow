@@ -17,8 +17,11 @@ import (
 )
 
 // A worker's question goes to the thread that spawned it (standing agents,
-// ruling 19), whoever that is. A thread another thread on this computer
-// spawned does not stop at the user while its spawner is not archived:
+// ruling 19), whoever that is, while it works in a run that thread started;
+// in any other run it is the person's (store.SpawnOwnerOf, the one place
+// that decides, for approvals, questions and async questions alike). A
+// thread another thread on this computer spawned does not stop at the user
+// while its spawner is not archived and its run is open:
 // triage stamps each of its approval and user-input prompts with the
 // spawner (routeWorkerPrompt), the emit tap queues the prompt to the
 // spawner as a badged wake, and the spawner's agent answers it with
@@ -65,8 +68,9 @@ const workerPromptSendIDRoot = "agent-ask:"
 const workerAnswerSendIDRoot = "agent-answer:"
 
 // routeWorkerPrompt is triage's prompt router: the thread that owns
-// threadID (store.SpawnOwnerOf), here or on the paired computer whose
-// spawn's link owns it, or nil when the prompt is the user's.
+// threadID with a run of its open there (store.SpawnOwnerOf), here or on
+// the paired computer whose spawn's link owns it, or nil when the prompt is
+// the user's.
 func (a *App) routeWorkerPrompt(threadID string) *provider.PromptRoute {
 	owner, found, err := a.store.SpawnOwnerOf(threadID)
 	if err != nil {
@@ -85,7 +89,9 @@ func (a *App) routeWorkerPrompt(threadID string) *provider.PromptRoute {
 // reconciles its async question prompts, and so does every thread frame but
 // a patch: a thread made, copied, moved here or forked, an archive or an
 // unarchive, a delete, a placement, a handoff; and so does a transfer that
-// moves a thread away.
+// moves a thread away. Such a frame also routes the thread's open prompts
+// again (routeWorkerPromptsAgain), and a turn's start puts to the thread
+// the prompts parked for it (redeliverParkedPrompts).
 func (a *App) tapWorkerPrompt(name eventchan.Channel, data any) {
 	if event, ok := data.(triage.ThreadUpdateEvent); ok {
 		if event.Action != triage.ThreadActionPatch {
@@ -94,10 +100,25 @@ func (a *App) tapWorkerPrompt(name eventchan.Channel, data any) {
 				id = event.Thread.ID
 			}
 			a.syncAsyncQuestionPrompts(id)
+			if id != "" && !a.shuttingDown.Load() {
+				a.workerPrompts.run(func() { a.routeWorkerPromptsAgain(id) })
+			}
 		}
 		return
 	}
 	switch name {
+	case eventchan.ProviderTurnStarted:
+		event, ok := data.(triage.TurnStartedEvent)
+		if !ok {
+			return
+		}
+		if a.workerPrompts.hasParked(event.ThreadID) {
+			a.workerPrompts.run(func() { a.redeliverParkedPrompts(event.ThreadID) })
+		}
+		if a.workerPrompts.remote.hasParked(event.ThreadID) {
+			a.workerPrompts.run(func() { a.redeliverParkedRemotePrompts(event.ThreadID) })
+		}
+		return
 	case eventchan.ProviderAsyncQuestionsChanged:
 		if event, ok := data.(map[string]string); ok {
 			a.syncAsyncQuestionPrompts(event["threadId"])
@@ -284,14 +305,15 @@ func (a *App) withdrawWorkerPromptWake(prompt workerPrompt) {
 }
 
 // handBackWorkerPrompt moves on the prompt registered under token, which its
-// agent could not take: to where the worker's prompts route now, the
-// assistant's current thread when New Thread, Same Assistant superseded the
-// agent's, and otherwise the user. Only that registration is settled: one
-// that is already closed, or that a later registration of the same prompt
-// replaced, moves nothing.
+// agent could not take: an owned worker's stays its agent's while its
+// prompts route there (parkWorkerPrompt); any other goes to where the
+// worker's prompts route now, the assistant's current thread when New
+// Thread, Same Assistant superseded the agent's, and otherwise the user.
+// Only that registration is settled: one that is already closed, or that a
+// later registration of the same prompt replaced, moves nothing.
 func (a *App) handBackWorkerPrompt(token string) {
 	prompt, settled := a.workerPrompts.settleToken(token)
-	if !settled {
+	if !settled || a.parkWorkerPrompt(prompt) {
 		return
 	}
 	moved := false
@@ -304,6 +326,118 @@ func (a *App) handBackWorkerPrompt(token string) {
 	if moved {
 		log.Printf("worker prompts: %s of %s moved on: %s could not take it", prompt.requestID, prompt.workerID, prompt.agentID)
 	}
+}
+
+// parkWorkerPrompt keeps the prompt of an owned worker that its agent did
+// not take routed to that agent, while the worker's prompts route there:
+// the worker reads as waiting on its spawner, nothing is started or woken
+// for it, and the agent's next turn puts it to the agent again
+// (redeliverParkedPrompts). It reports whether it parked the prompt.
+func (a *App) parkWorkerPrompt(prompt workerPrompt) bool {
+	if prompt.remote != nil {
+		return false
+	}
+	if route, open := a.workerPromptRoute(prompt); !open || route == nil || route.ThreadID != prompt.agentID || route.ComputerID != "" {
+		return false
+	}
+	worker, err := a.store.GetThread(prompt.workerID)
+	if err != nil {
+		log.Printf("worker prompts: read worker %s: %v", prompt.workerID, err)
+		return false
+	}
+	if worker.Placement != store.PlacementOwned {
+		return false
+	}
+	if now := a.routeWorkerPrompt(prompt.workerID); now == nil || now.ThreadID != prompt.agentID || now.ComputerID != "" {
+		return false
+	}
+	a.workerPrompts.park(prompt, a.workerPromptOpen)
+	log.Printf("worker prompts: %s of %s waits for %s's next turn", prompt.requestID, prompt.workerID, prompt.agentID)
+	return true
+}
+
+// redeliverParkedPrompts puts agentID's parked prompts to it again, each
+// still open and routed to it, under a fresh registration and wake. It runs
+// on the prompts' serial queue when agentID's turn starts.
+func (a *App) redeliverParkedPrompts(agentID string) {
+	for _, prompt := range a.workerPrompts.takeParked(agentID) {
+		route, open := a.workerPromptRoute(prompt)
+		if !open || route == nil || route.ThreadID != agentID || route.ComputerID != "" {
+			continue
+		}
+		prompt.state, prompt.closedAt, prompt.answer, prompt.handBack = workerPromptRouted, time.Time{}, "", false
+		a.deliverWorkerPrompt(*route, prompt)
+	}
+}
+
+// routeWorkerPromptsAgain reconciles workerID's open prompts with where its
+// prompts route now, after a change of its placement: Show in Sidebar gives
+// a prompt asked outside its spawner's runs to the person, and Remove from
+// Sidebar puts the person's to the spawner. A prompt of a worker with a
+// sidebar row that is the person's stays the person's, one being answered
+// is left to its answer's end, and a worker being deleted keeps its
+// prompts until they end with it. A spawner on a paired computer is
+// one by the same rule: its hold there moves with the announcement
+// (deliverWorkerPrompt, settleWorkerPrompt). A worker asking nothing costs
+// no store read.
+func (a *App) routeWorkerPromptsAgain(workerID string) {
+	if !a.workerAsks(workerID) {
+		return
+	}
+	worker, err := a.store.GetThread(workerID)
+	if err != nil {
+		// Its prompts stay where they are until its next thread frame.
+		log.Printf("worker prompts: read %s to route its prompts for its placement: %v", workerID, err)
+		return
+	}
+	// A worker a delete claimed takes no placement move, and its prompts end
+	// with it: its spawn reads as gone meanwhile, which routes nowhere.
+	claim, committed, err := a.store.ThreadDeleteClaim(workerID)
+	if err != nil {
+		log.Printf("worker prompts: read the delete of %s to route its prompts for its placement: %v", workerID, err)
+		return
+	}
+	if claim != "" || committed {
+		return
+	}
+	owned := worker.Placement == store.PlacementOwned
+	moved := a.routeAsyncQuestionsAgain(workerID, owned)
+	if a.triage != nil {
+		moved += a.triage.RouteThreadPrompts(workerID, owned, a.workerPromptAnswering)
+	}
+	if moved > 0 {
+		log.Printf("worker prompts: %d prompts of %s moved with its placement", moved, workerID)
+	}
+}
+
+// workerPromptAnswering reports whether the agent's answer to the prompt
+// ref names is being written: every transition but its own end skips it
+// (endPromptAnswer).
+func (a *App) workerPromptAnswering(ref triage.PromptRef) bool {
+	w := &a.workerPrompts
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	prompt := w.byToken[w.current[workerPromptKey{workerID: ref.ThreadID, requestID: ref.RequestID}]]
+	return prompt != nil && prompt.state == workerPromptAnswering && prompt.occurrence == ref.Occurrence
+}
+
+// workerAsks reports whether workerID has an open prompt or async
+// question prompt.
+func (a *App) workerAsks(workerID string) bool {
+	if a.triage != nil {
+		if pending := a.triage.PendingInteractiveRequests(workerID); len(pending.Approvals)+len(pending.UserInputs) > 0 {
+			return true
+		}
+	}
+	routes := &a.workerPrompts.async
+	routes.mu.Lock()
+	defer routes.mu.Unlock()
+	for key := range routes.open {
+		if key.workerID == workerID {
+			return true
+		}
+	}
+	return false
 }
 
 // reroutePromptsFrom reconciles every open prompt routed to threadID, which
@@ -405,12 +539,12 @@ func (a *App) drainWorkerPrompts(ctx context.Context, timeout time.Duration) err
 }
 
 // closeWorkerPrompts is shutdown's join of the prompts' queue, before
-// SQLite closes: nothing queued from here on runs, and what was queued
-// finishes.
+// SQLite closes: nothing queued from here on runs, what was queued
+// finishes, and no timer to offer a prompt again is left armed.
 func (a *App) closeWorkerPrompts(ctx context.Context, timeout time.Duration) error {
 	a.workerPrompts.gate.Lock()
 	a.workerPrompts.closed = true
 	a.workerPrompts.gate.Unlock()
-	a.workerPrompts.stopLeases()
+	a.workerPrompts.stopOffers()
 	return a.drainWorkerPrompts(ctx, timeout)
 }

@@ -25,6 +25,7 @@ import {
   type ReplicaIndexEntry,
 } from './idb';
 import type { Item } from '../types/models';
+import { AGENT_MESSAGES_ABSORBED_RULE } from '../utils/activityRunSpans';
 
 installFakeIndexedDB();
 
@@ -102,7 +103,7 @@ function body(overrides: Partial<ReplicaBody> = {}): ReplicaBody {
     newestCursor: null,
     hasMoreOlder: false,
     hasMoreNewer: false,
-    latestSettledTurn: null,
+    latestSettledTurn: null, activityRunRule: AGENT_MESSAGES_ABSORBED_RULE,
     runs: [],
     ...overrides,
   };

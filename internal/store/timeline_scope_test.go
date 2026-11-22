@@ -27,7 +27,7 @@ func TestScopedTimelineTraversesAllHistoryAndRunMembers(t *testing.T) {
 	}
 	seedChildItem(t, s, "scope", "foreign-child", 0, 2502, "other", "wrong scope", "completed")
 	selection := TimelineSelection{ScopeRootID: "agent"}
-	page, err := s.ListThreadSliceAround(context.Background(), "scope", "", 40, 10, selection)
+	page, err := s.ListThreadSliceAround(context.Background(), "scope", "", 40, 10, selection, AgentMessagesAreMembers)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +47,7 @@ func TestScopedTimelineTraversesAllHistoryAndRunMembers(t *testing.T) {
 		}
 		for _, run := range page.Runs {
 			for run.UnshippedBefore > 0 {
-				members, err := s.ListActivityRunMembers(context.Background(), "scope", ActivityRunMembersRequest{Selection: selection, RunFirstItemID: run.FirstItemID, LoadedFirstItemID: run.LoadedFirstItemID, LoadedLastItemID: run.LoadedLastItemID, Direction: ActivityRunMembersBefore, Limit: 20})
+				members, err := s.ListActivityRunMembers(context.Background(), "scope", ActivityRunMembersRequest{Selection: selection, RunFirstItemID: run.FirstItemID, LoadedFirstItemID: run.LoadedFirstItemID, LoadedLastItemID: run.LoadedLastItemID, Direction: ActivityRunMembersBefore, Limit: 20}, AgentMessagesAreMembers)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -64,7 +64,7 @@ func TestScopedTimelineTraversesAllHistoryAndRunMembers(t *testing.T) {
 			break
 		}
 		previous := page.OldestCursor
-		page, err = s.ListItemsBeforeCursor(context.Background(), "scope", previous, 40, 10, selection)
+		page, err = s.ListItemsBeforeCursor(context.Background(), "scope", previous, 40, 10, selection, AgentMessagesAreMembers)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -75,10 +75,10 @@ func TestScopedTimelineTraversesAllHistoryAndRunMembers(t *testing.T) {
 	if len(seen) != 2500 {
 		t.Fatalf("reached %d rows, want 2500", len(seen))
 	}
-	if _, err := s.ListThreadSliceAround(context.Background(), "scope", "foreign-child", 40, 10, selection); err == nil {
+	if _, err := s.ListThreadSliceAround(context.Background(), "scope", "foreign-child", 40, 10, selection, AgentMessagesAreMembers); err == nil {
 		t.Fatal("a foreign scope anchor was accepted")
 	}
-	_, err = s.ListActivityRunMembers(context.Background(), "scope", ActivityRunMembersRequest{Selection: TimelineSelection{ScopeRootID: "other"}, RunFirstItemID: "child-0001", Direction: ActivityRunMembersBefore, Limit: 10})
+	_, err = s.ListActivityRunMembers(context.Background(), "scope", ActivityRunMembersRequest{Selection: TimelineSelection{ScopeRootID: "other"}, RunFirstItemID: "child-0001", Direction: ActivityRunMembersBefore, Limit: 10}, AgentMessagesAreMembers)
 	if !errors.Is(err, ErrActivityRunStale) {
 		t.Fatalf("cross-scope run: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestScopedTimelineEmptyToolsAndContextOnlyChange(t *testing.T) {
 	}
 	seedAnchorItem(t, s, "scope", "agent", 0, 0)
 	selection := TimelineSelection{ScopeRootID: "agent"}
-	page, err := s.ListThreadSliceAround(context.Background(), "scope", "", 40, 10, selection)
+	page, err := s.ListThreadSliceAround(context.Background(), "scope", "", 40, 10, selection, AgentMessagesAreMembers)
 	if err != nil || len(page.Items) != 0 || page.Scope == nil {
 		t.Fatalf("empty scope: %+v %v", page, err)
 	}
@@ -99,11 +99,11 @@ func TestScopedTimelineEmptyToolsAndContextOnlyChange(t *testing.T) {
 	seedToolChildItem(t, s, "scope", "tool", 0, 2, "agent", "tool", "completed")
 	seedChildItem(t, s, "scope", "answer", 0, 3, "agent", "answer", "completed")
 	tools := TimelineSelection{ScopeRootID: "agent", Tools: true}
-	page, err = s.ListThreadSliceAround(context.Background(), "scope", "", 40, 10, tools)
+	page, err = s.ListThreadSliceAround(context.Background(), "scope", "", 40, 10, tools, AgentMessagesAreMembers)
 	if err != nil || len(page.Items) != 1 || page.Items[0].ID != "tool" {
 		t.Fatalf("tool selection: %+v %v", page, err)
 	}
-	synced, err := s.SyncThreadWindow(context.Background(), "scope", "", 40, 10, UnknownHistoryStamp(), nil, selection)
+	synced, err := s.SyncThreadWindow(context.Background(), "scope", "", 40, 10, UnknownHistoryStamp(), nil, selection, AgentMessagesAreMembers)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,11 +115,11 @@ func TestScopedTimelineEmptyToolsAndContextOnlyChange(t *testing.T) {
 	if err := insertCarded(s, Item{ID: "complete:agent:turn:second", ThreadID: "scope", TurnIndex: 0, ItemIndex: 4, Kind: "tool_completion", ToolName: "Task", Role: "assistant", Status: "completed", CompletionOf: "agent", CreatedAt: 10}); err != nil {
 		t.Fatal(err)
 	}
-	synced, err = s.SyncThreadWindow(context.Background(), "scope", "", 40, 10, synced.Stamp, held, selection)
+	synced, err = s.SyncThreadWindow(context.Background(), "scope", "", 40, 10, synced.Stamp, held, selection, AgentMessagesAreMembers)
 	if err != nil || synced.Status != SyncFresh || synced.Scope == nil || synced.Scope.Completion == nil || synced.Scope.Completion.ID != "complete:agent:turn:second" {
 		t.Fatalf("context-only update: %+v %v", synced, err)
 	}
-	if _, err := s.ListThreadSliceAround(context.Background(), "scope", "", 40, 10, TimelineSelection{ScopeRootID: "missing"}); !errors.Is(err, ErrTimelineScopeGone) {
+	if _, err := s.ListThreadSliceAround(context.Background(), "scope", "", 40, 10, TimelineSelection{ScopeRootID: "missing"}, AgentMessagesAreMembers); !errors.Is(err, ErrTimelineScopeGone) {
 		t.Fatalf("missing root: %v", err)
 	}
 }
@@ -171,7 +171,7 @@ func TestScopedTimelineImportedAndLocalHistoryAgree(t *testing.T) {
 			}
 		}
 		selection := TimelineSelection{ScopeRootID: "root"}
-		page, err := s.ListThreadSliceAround(context.Background(), threadID, "", 40, 10, selection)
+		page, err := s.ListThreadSliceAround(context.Background(), threadID, "", 40, 10, selection, AgentMessagesAreMembers)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -181,7 +181,7 @@ func TestScopedTimelineImportedAndLocalHistoryAgree(t *testing.T) {
 		if page.Scope.Lifecycle.ID != "resume" || page.Scope.Completion.ID != "second-done" {
 			t.Fatalf("latest lifecycle: %+v", page.Scope)
 		}
-		canonical, err := s.ListThreadSliceAround(context.Background(), threadID, "", 40, 10, TimelineSelection{ScopeRootID: "resume"})
+		canonical, err := s.ListThreadSliceAround(context.Background(), threadID, "", 40, 10, TimelineSelection{ScopeRootID: "resume"}, AgentMessagesAreMembers)
 		if err != nil || canonical.Scope.Root.ID != "root" {
 			t.Fatalf("canonical scope: %+v %v", canonical, err)
 		}

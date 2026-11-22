@@ -112,7 +112,7 @@ func sortedNonEmpty(values map[string]struct{}) []string {
 // from the lowest tier to the highest, so the listing shows the ladder. A
 // use-for line names only profiles of its own provider: a computer with one
 // provider must never be pointed at the other's. A model the computer does
-// not offer leaves its profile out of what an agent is shown there.
+// not offer leaves its profile out of thread_options there.
 var defaultAgentProfiles = []AgentProfile{
 	{
 		Name: "Luna", Provider: "codex", Model: "gpt-5.6-luna", Effort: "high",

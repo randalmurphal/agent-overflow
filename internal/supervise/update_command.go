@@ -81,18 +81,20 @@ func (c UpdateCommand) Snapshot(ctx context.Context, host *HostDisk) UpdateEvent
 	if err != nil {
 		return failedEvent(UpdateOutcomeRefused, err)
 	}
-	release, result, ok := c.lockAndPrepare(ctx, relay)
+	phases := c.phases()
+	release, result, ok := c.lockAndPrepare(ctx, relay, phases, "snapshot")
 	if !ok {
 		return result
 	}
 	defer release()
-	schema := c.readSchemaVersion()
+	schema := c.readSchemaVersion(phases)
 	relay.step("update.snapshot", "Backing up the database")
 	_, err = TakeSnapshot(layout, c.DataDir, c.now(), SnapshotOptions{
 		UpdateID:  c.UpdateID,
 		Host:      host,
 		ReadSpace: c.ReadSpace,
 		Progress:  relay.copyProgress("update.snapshot", "Backing up the database"),
+		Phases:    phases,
 	})
 	if err != nil {
 		var space *InsufficientSpaceError
@@ -109,12 +111,16 @@ func (c UpdateCommand) Snapshot(ctx context.Context, host *HostDisk) UpdateEvent
 
 // readSchemaVersion is the live database's migration version, read under
 // the lock before the snapshot copies it; 0 when it cannot be read, which
-// only costs remembering a failed trial and is logged.
-func (c UpdateCommand) readSchemaVersion() int {
+// only costs remembering a failed trial and is logged. The read can
+// checkpoint a WAL an unclean shutdown left, so it is a timed phase.
+func (c UpdateCommand) readSchemaVersion(phases *PhaseLog) int {
 	if c.SchemaVersion == nil {
+		phases.Skip("snapshot.schema", "this command has no schema reader")
 		return 0
 	}
+	reading := phases.Begin("snapshot.schema")
 	schema, err := c.SchemaVersion()
+	reading.End(err, "schema", schema)
 	if err != nil {
 		c.log("supervise: update %s: read the database's schema version: %v", c.UpdateID, err)
 		return 0
@@ -132,19 +138,19 @@ func (c UpdateCommand) Space(host *HostDisk) UpdateEvent {
 	if err != nil {
 		return failedEvent(UpdateOutcomeRefused, err)
 	}
+	checking := c.phases().Begin("space")
 	plan, found, err := PlanSnapshot(layout, c.DataDir)
-	if err != nil {
-		return failedEvent(UpdateOutcomeFailed, err)
-	}
 	// No database is the snapshot step's refusal to make, with its reason.
-	if found {
-		if err := plan.Check(c.DataDir, host, c.ReadSpace); err != nil {
-			var space *InsufficientSpaceError
-			if errors.As(err, &space) {
-				return failedEvent(UpdateOutcomeRefused, err)
-			}
-			return failedEvent(UpdateOutcomeFailed, err)
+	if err == nil && found {
+		err = plan.Check(c.DataDir, host, c.ReadSpace)
+	}
+	checking.End(err, "bytes", plan.DatabaseBytes)
+	if err != nil {
+		var space *InsufficientSpaceError
+		if found && errors.As(err, &space) {
+			return failedEvent(UpdateOutcomeRefused, err)
 		}
+		return failedEvent(UpdateOutcomeFailed, err)
 	}
 	return UpdateEvent{Type: UpdateEventResult, Outcome: UpdateOutcomeOK}
 }
@@ -162,20 +168,26 @@ func (c UpdateCommand) TrialRun(ctx context.Context, opts TrialRunOptions) Updat
 	if err != nil {
 		return failedEvent(UpdateOutcomeRefused, err)
 	}
-	lock, release, result, ok := c.lockAndPrepareFile(ctx, relay)
+	phases := c.phases()
+	lock, release, result, ok := c.lockAndPrepareFile(ctx, relay, phases, "trial")
 	if !ok {
 		return result
 	}
 	defer release()
+	checking := phases.Begin("trial.check")
 	if event, ok := c.requireSnapshot(layout); !ok {
+		checking.End(errors.New(event.Reason))
 		return event
 	}
-	if event, ok := c.checkBeforeAttempt(layout, relay, opts.Attempt); !ok {
+	if event, ok := c.checkBeforeAttempt(layout, relay, phases, opts.Attempt); !ok {
+		checking.End(errors.New(event.Reason))
 		return event
 	}
 	if err := RecordAttempt(layout, c.DataDir, opts.Attempt, false); err != nil {
+		checking.End(err)
 		return failedEvent(UpdateOutcomeRefused, err)
 	}
+	checking.End(nil, "attempt", opts.Attempt)
 	// ended records the database a trial that stopped without failing
 	// left. A restore records its own end, including one a later process
 	// finishes from the marker.
@@ -197,6 +209,7 @@ func (c UpdateCommand) TrialRun(ctx context.Context, opts TrialRunOptions) Updat
 		OnProgress:    relay.forward,
 		OnStopping:    func() { relay.step(phaseTrialStop, "Stopping the trial") },
 		Log:           c.log,
+		Phases:        phases,
 	})
 	if trialErr == nil {
 		ended()
@@ -210,7 +223,7 @@ func (c UpdateCommand) TrialRun(ctx context.Context, opts TrialRunOptions) Updat
 	c.log("supervise: trial of update %s failed: %s", c.UpdateID, failed.Reason)
 	relay.step(phaseRestore, "Restoring the database")
 	if err := RestoreSnapshot(layout, c.DataDir, c.UpdateID, failed.Reason, c.now(),
-		RestoreOptions{Progress: relay.copyProgress(phaseRestore, "Restoring the database")}); err != nil {
+		RestoreOptions{Progress: relay.copyProgress(phaseRestore, "Restoring the database"), Phases: phases}); err != nil {
 		return UpdateEvent{Type: UpdateEventResult, Outcome: UpdateOutcomeFailed, Step: failed.Step,
 			Reason: fmt.Sprintf("%s, and the database backup could not be restored: %v", failed.Reason, err)}
 	}
@@ -221,14 +234,14 @@ func (c UpdateCommand) TrialRun(ctx context.Context, opts TrialRunOptions) Updat
 // recorded its end is undone first: its database holds writes no record
 // vouches for, so the snapshot is restored, which ends that attempt, and
 // this one runs on the snapshot.
-func (c UpdateCommand) checkBeforeAttempt(layout Layout, relay *commandRelay, attempt int) (UpdateEvent, bool) {
+func (c UpdateCommand) checkBeforeAttempt(layout Layout, relay *commandRelay, phases *PhaseLog, attempt int) (UpdateEvent, bool) {
 	err := CheckLiveBeforeAttempt(layout, c.DataDir)
 	var unended *UnendedAttemptError
 	if errors.As(err, &unended) {
 		c.log("supervise: update %s: %v; restoring the database backup before attempt %d", c.UpdateID, err, attempt)
 		relay.step(phaseRestore, "Restoring the database")
 		if err := RestoreSnapshot(layout, c.DataDir, c.UpdateID, err.Error(), c.now(),
-			RestoreOptions{Progress: relay.copyProgress(phaseRestore, "Restoring the database")}); err != nil {
+			RestoreOptions{Progress: relay.copyProgress(phaseRestore, "Restoring the database"), Phases: phases}); err != nil {
 			return failedEvent(UpdateOutcomeFailed, fmt.Errorf("%v, and the database backup could not be restored: %w", unended, err)), false
 		}
 		err = CheckLiveBeforeAttempt(layout, c.DataDir)
@@ -255,7 +268,8 @@ func (c UpdateCommand) Restore(ctx context.Context, reason string) UpdateEvent {
 	}
 	// lockAndPrepare finishes a marked restore, which is this command's
 	// whole job when one is marked.
-	release, result, ok := c.lockAndPrepare(ctx, relay)
+	phases := c.phases()
+	release, result, ok := c.lockAndPrepare(ctx, relay, phases, "restore")
 	if !ok {
 		return result
 	}
@@ -265,7 +279,7 @@ func (c UpdateCommand) Restore(ctx context.Context, reason string) UpdateEvent {
 	}
 	relay.step(phaseRestore, "Restoring the database")
 	if err := RestoreSnapshot(layout, c.DataDir, c.UpdateID, reason, c.now(),
-		RestoreOptions{Progress: relay.copyProgress(phaseRestore, "Restoring the database")}); err != nil {
+		RestoreOptions{Progress: relay.copyProgress(phaseRestore, "Restoring the database"), Phases: phases}); err != nil {
 		return failedEvent(UpdateOutcomeFailed, err)
 	}
 	return UpdateEvent{Type: UpdateEventResult, Outcome: UpdateOutcomeOK}
@@ -285,7 +299,10 @@ func (c UpdateCommand) Discard(ctx context.Context) UpdateEvent {
 		return UpdateEvent{Type: UpdateEventResult, Outcome: UpdateOutcomeRefused,
 			Reason: "a restore of the database is not finished, so its backup is kept"}
 	}
-	if err := DiscardSnapshot(layout); err != nil {
+	discarding := c.phases().Begin("discard")
+	err = DiscardSnapshot(layout)
+	discarding.End(err)
+	if err != nil {
 		return failedEvent(UpdateOutcomeFailed, err)
 	}
 	return UpdateEvent{Type: UpdateEventResult, Outcome: UpdateOutcomeOK}
@@ -309,24 +326,31 @@ func (c UpdateCommand) requireSnapshot(layout Layout) (UpdateEvent, bool) {
 	return UpdateEvent{}, true
 }
 
-func (c UpdateCommand) lockAndPrepare(ctx context.Context, relay *commandRelay) (func(), UpdateEvent, bool) {
-	_, release, result, ok := c.lockAndPrepareFile(ctx, relay)
+func (c UpdateCommand) lockAndPrepare(ctx context.Context, relay *commandRelay, phases *PhaseLog, step string) (func(), UpdateEvent, bool) {
+	_, release, result, ok := c.lockAndPrepareFile(ctx, relay, phases, step)
 	return release, result, ok
 }
 
-// lockAndPrepareFile takes the lock and runs PrepareDataRoot under it.
-func (c UpdateCommand) lockAndPrepareFile(ctx context.Context, relay *commandRelay) (*os.File, func(), UpdateEvent, bool) {
+// lockAndPrepareFile takes the lock and runs PrepareDataRoot under it,
+// timed as the phases <step>.lock and <step>.prepare. Waiting for the lock
+// is waiting for the previous backend to stop.
+func (c UpdateCommand) lockAndPrepareFile(ctx context.Context, relay *commandRelay, phases *PhaseLog, step string) (*os.File, func(), UpdateEvent, bool) {
 	relay.step("update.lock", "Waiting for the previous version to stop")
+	locking := phases.Begin(step + ".lock")
 	lock, release, err := c.AcquireLock(ctx, UpdateLockWait)
+	locking.End(err)
 	if err != nil {
 		return nil, nil, failedEvent(UpdateOutcomeRefused,
 			fmt.Errorf("the database is still in use by another Agent Overflow backend: %w", err)), false
 	}
+	preparing := phases.Begin(step + ".prepare")
 	err = PrepareDataRoot(c.DataDir, PrepareOptions{
 		OwnsAppLayout: c.OwnsAppLayout,
 		Progress:      relay.copyProgress(phaseRestore, "Finishing an interrupted restore"),
+		Phases:        phases,
 		Log:           c.log,
 	})
+	preparing.End(err)
 	if err != nil {
 		release()
 		outcome := UpdateOutcomeFailed
@@ -349,6 +373,11 @@ func (c UpdateCommand) log(format string, args ...any) {
 	if c.Log != nil {
 		c.Log(format, args...)
 	}
+}
+
+// phases logs the phases this command runs, in its own log.
+func (c UpdateCommand) phases() *PhaseLog {
+	return NewPhaseLog(c.log, "supervise: update "+c.UpdateID, c.now)
 }
 
 func failedEvent(outcome UpdateOutcome, err error) UpdateEvent {

@@ -629,8 +629,14 @@ func TestUpgradeSupersededSpawnOwnsNothing(t *testing.T) {
 	owners := func(when, want string) {
 		t.Helper()
 		for _, id := range []string{"w", "tie"} {
-			spawner, _, found, err := localSpawnerOf(s, id)
-			if err != nil || spawner != want || found != (want != "") {
+			linked, err := queryIDs(s.db, `SELECT link.caller_thread_id FROM thread_requests AS link
+				 WHERE `+agentSpawnLinkSQL("link")+` AND link.target_thread_id = ?`, id)
+			matches := slices.Equal(linked, []string{want}) || (want == "" && len(linked) == 0)
+			if err != nil || !matches {
+				t.Errorf("%s: %s's link names %q, %v; want %q", when, id, linked, err, want)
+			}
+			// An owned worker's prompts are its owner's, whatever its runs.
+			if spawner, _, found, err := localSpawnerOf(s, id); err != nil || found != (want != "") || spawner != want {
 				t.Errorf("%s: SpawnOwnerOf(%s) = %q, %v, %v; want %q", when, id, spawner, found, err, want)
 			}
 			row, err := s.GetThread(id)

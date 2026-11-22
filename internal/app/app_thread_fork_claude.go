@@ -138,10 +138,12 @@ func (c claudeMidTurnCut) degenerate() bool {
 // writes.
 //
 // The leaf comes from the live session's stdout tracker
-// (CanonicalLeafUUID). When no session is registered — an open turn row
-// with a dead process, the crash window before the boot sweep settles
-// it — the cold scan over the on-disk file answers instead; that is
-// exactly what ScanSessionLeaf is for.
+// (CanonicalLeafUUID). The cold scan over the on-disk file answers
+// instead when the tracker has none: no session is registered (an open
+// turn row with a dead process, the crash window before the boot sweep
+// settles it), or a resumed session has not emitted a top-level row yet
+// (an ordinary resume starts with no cursor, so its tracker starts
+// empty).
 //
 // Exactly three shapes are allowed to answer "no cut", and each is a
 // genuinely-early state rather than a failure:
@@ -191,9 +193,7 @@ func (a *App) captureClaudeMidTurnCut(source store.Thread) (claudeMidTurnCut, er
 			return cut, nil
 		}
 	}
-	// The cold scan is deliberately the fallback: it re-reads the whole
-	// file, and the live tracker answers on the overwhelmingly common
-	// path.
+	// The cold scan is the fallback because it re-reads the whole file.
 	leaf, err := a.scanClaudeSessionLeaf(op, cut)
 	if err != nil {
 		return claudeMidTurnCut{}, err

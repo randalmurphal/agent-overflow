@@ -187,9 +187,10 @@ func TestAStopSettlesEveryRequestOnTheThread(t *testing.T) {
 
 // A thread with no session is brought to rest too: the messages the app
 // queued for it are taken back, its loops cancelled and its reminders
-// dropped, and nothing starts it. A thread with a message queued is not at
-// rest, so its finished spawn's Stop reports it stopped and tells the
-// spawner; a second Stop finds it at rest and tells nothing more.
+// dropped, and nothing starts it. The Stop of its finished spawn, whose run
+// ended, leaves the message someone else queued there; the Stop of its
+// spawner's later send, whose run it opens, rests the thread. A second Stop
+// finds it at rest.
 func TestAStopRestsAThreadWithNoSession(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
@@ -226,13 +227,29 @@ func TestAStopRestsAThreadWithNoSession(t *testing.T) {
 	if durable, _ := queuedSendIDs(t, f.app, target); len(durable) == 0 {
 		t.Fatal("the outside send is not queued; the test proves nothing")
 	}
+	f.awaitRunEnded(t, ack.Token)
+	ended, err := f.app.StopThreadAgentRow(t.Context(), f.caller.ID, ack.Token)
+	if err != nil || ended.Outcome != threadAgentEnded || len(ended.Failures) != 0 {
+		t.Fatalf("the spawn's Stop = %+v, %v; want its ended run reported ended", ended, err)
+	}
+	if durable, _ := queuedSendIDs(t, f.app, target); len(durable) == 0 {
+		t.Fatal("the spawn's Stop took back a message its run did not send")
+	}
+	send, err := f.adapter().Send(t.Context(), f.callerIdentity(), threadtools.SendCall{ThreadID: target, Message: "one more thing", Notify: true})
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if row := f.request(t, send.Token); !row.RunOpen() {
+		t.Fatalf("the spawner's send %+v opens no run", row)
+	}
+	f.app.waitAgentNoticeWork()
 	mu.Lock()
 	startsBefore := starts
 	mu.Unlock()
 
-	stop, err := f.app.StopThreadAgentRow(t.Context(), f.caller.ID, ack.Token)
+	stop, err := f.app.StopThreadAgentRow(t.Context(), f.caller.ID, send.Token)
 	if err != nil || stop.Outcome != threadAgentStopped || len(stop.Failures) != 0 {
-		t.Fatalf("StopThreadAgentRow = %+v, %v; want the finished spawn's thread with a queued message stopped", stop, err)
+		t.Fatalf("StopThreadAgentRow = %+v, %v; want the send's thread with queued messages stopped", stop, err)
 	}
 	f.app.waitAgentNoticeWork()
 	if durable, memory := queuedSendIDs(t, f.app, target); len(durable)+len(memory) != 0 {
@@ -250,12 +267,12 @@ func TestAStopRestsAThreadWithNoSession(t *testing.T) {
 	}
 	mu.Unlock()
 
-	again, err := f.app.StopThreadAgentRow(t.Context(), f.caller.ID, ack.Token)
+	again, err := f.app.StopThreadAgentRow(t.Context(), f.caller.ID, send.Token)
 	if err != nil || again.Outcome != threadAgentEnded || len(again.Failures) != 0 {
 		t.Fatalf("a second Stop = %+v, %v", again, err)
 	}
-	if got := workerStoppedMessages(t, f.app, f.caller.ID, ack.Token); got != 1 {
-		t.Fatalf("the spawner was told %d times, want once", got)
+	if got := workerStoppedMessages(t, f.app, f.caller.ID, ack.Token); got != 0 {
+		t.Fatalf("the spawner was told %d times of its spawn's worker, want never: its run had ended", got)
 	}
 }
 

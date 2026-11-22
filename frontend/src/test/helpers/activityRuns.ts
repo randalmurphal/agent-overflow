@@ -8,6 +8,7 @@ import { createThreadActivityRuns } from '../../lib/stores/threadActivityRuns.sv
 import type { ThreadActivityRunsOptions } from '../../lib/stores/threadActivityRuns.svelte';
 import type { PaneScrollController } from '../../lib/stores/threadPaneShared';
 import type { Item } from '../../lib/types/models';
+import { AGENT_MESSAGE_MEMBERS_RULE } from '../../lib/utils/activityRunSpans';
 
 export type ActivityRunRegistry = ReturnType<typeof createThreadActivityRuns>;
 
@@ -38,9 +39,12 @@ export function registry(
     mountRunMembers?: ThreadActivityRunsOptions['mountRunMembers'];
     reloadWindow?: ThreadActivityRunsOptions['reloadWindow'];
     reportFetchFailure?: ThreadActivityRunsOptions['reportFetchFailure'];
+    /** Default the member-on-sight rule, this backend's. */
+    activityRunRule?: ThreadActivityRunsOptions['activityRunRule'];
   } = {},
 ): ActivityRunRegistry {
   return createThreadActivityRuns({
+    activityRunRule: overrides.activityRunRule ?? (() => AGENT_MESSAGE_MEMBERS_RULE),
     defaultCollapsed: () => overrides.defaultCollapsed ?? false,
     windowRows: () => overrides.windowRows ?? 30,
     windowVerified: overrides.windowVerified ?? (() => true),

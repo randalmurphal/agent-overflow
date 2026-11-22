@@ -17,6 +17,7 @@ import {
 } from './session';
 import { replicaDatabaseName } from './purge';
 import type { ReplicaBody } from './envelope';
+import { AGENT_MESSAGES_ABSORBED_RULE } from '../utils/activityRunSpans';
 
 installFakeIndexedDB();
 
@@ -44,7 +45,7 @@ function body(): ReplicaBody {
     newestCursor: { turnIndex: 0, itemIndex: 0, itemId: 'i-1' },
     hasMoreOlder: false,
     hasMoreNewer: false,
-    latestSettledTurn: null,
+    latestSettledTurn: null, activityRunRule: AGENT_MESSAGES_ABSORBED_RULE,
     runs: [],
   };
 }

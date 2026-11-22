@@ -131,7 +131,7 @@ func TestRestartExitWatchdogFiresAfterDelay(t *testing.T) {
 	fired := make(chan int, 1)
 	a := New("dev", Deps{Exit: func(code int) { fired <- code }})
 
-	disarm := a.armRestartExitWatchdog(10 * time.Millisecond)
+	disarm := a.armRestartExitWatchdog(10*time.Millisecond, nil)
 	defer disarm()
 
 	select {
@@ -151,7 +151,7 @@ func TestRestartExitWatchdogDisarmPreventsExit(t *testing.T) {
 	fired := make(chan int, 1)
 	a := New("dev", Deps{Exit: func(code int) { fired <- code }})
 
-	disarm := a.armRestartExitWatchdog(20 * time.Millisecond)
+	disarm := a.armRestartExitWatchdog(20*time.Millisecond, nil)
 	disarm()
 
 	select {
@@ -168,7 +168,7 @@ func TestRestartWithExitWatchdogDisarmsOnSpawnFailure(t *testing.T) {
 	fired := make(chan int, 1)
 	a := New("dev", Deps{Exit: func(code int) { fired <- code }})
 
-	err := a.restartWithExitWatchdog(func(context.Context) error {
+	err := a.restartWithExitWatchdog(nil, func(context.Context) error {
 		return errors.New("spawn helper: boom")
 	})
 	if err == nil || !strings.Contains(err.Error(), "restart to update") {
@@ -193,7 +193,7 @@ func TestRestartWithExitWatchdogStaysArmedOnSuccess(t *testing.T) {
 	// exists (we cannot wait 25s here; armRestartExitWatchdog's own tests
 	// cover the firing behavior with short delays).
 	a := New("dev", Deps{Exit: func(int) {}})
-	if err := a.restartWithExitWatchdog(func(context.Context) error { return nil }); err != nil {
+	if err := a.restartWithExitWatchdog(nil, func(context.Context) error { return nil }); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

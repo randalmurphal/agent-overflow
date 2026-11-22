@@ -14,6 +14,11 @@ import { captureAgentMessage } from './wake-rows-helpers.js';
 import { assistantRow, assistantShell } from './sidebar-sections-helpers.js';
 import { assistantHome, awaitMockInput, awaitToolAnswer, awaitTurnCompleted, releaseAfterBackgrounded, setScenario, threadRows, threadToolsScenario, type ProviderName } from './thread-tools-helpers.js';
 
+test.beforeEach(async ({ harness }) => {
+  // These assertions read agent message rows, which sit inside activity runs.
+  await harness.rpc('UpdateSettings', { activityRunDefault: 'expanded' });
+});
+
 const ROLE = 'Watch the nightly build and tell me when it breaks.';
 
 /** The next input a mock takes whose text includes `contains`, in cwd when one is named. */

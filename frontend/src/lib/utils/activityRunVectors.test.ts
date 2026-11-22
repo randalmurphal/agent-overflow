@@ -8,7 +8,8 @@
 // Two claims per case:
 //
 //  1. The client's physical run classification (`groupActivityRunSpans`)
-//     finds the same runs the server does.
+//     finds the same runs the server does, under every rule the case
+//     names (`rules`).
 //  2. For every shipped span the fixture states, the header the client
 //     builds from (loaded rows + stub) reports the same TOTALS as the
 //     header it would build with every row loaded. A collapsed run must
@@ -18,7 +19,12 @@
 // stub's two launch lists cover every pair the shipped span splits.
 import { describe, expect, it } from 'vitest';
 import vectors from '../../test/fixtures/activityRunVectors.json';
-import { groupActivityRunSpans } from './activityRunSpans';
+import {
+  AGENT_MESSAGES_ABSORBED_RULE,
+  AGENT_MESSAGE_MEMBERS_RULE,
+  groupActivityRunSpans,
+  type ActivityRunRule,
+} from './activityRunSpans';
 import {
   activityRunSummary,
   type ActivityRunSummary,
@@ -64,11 +70,13 @@ interface VectorRun {
 interface VectorCase {
   name: string;
   why: string;
+  rules: ActivityRunRule[];
   items: VectorItem[];
   runs: VectorRun[];
 }
 
 const cases = vectors.cases as unknown as VectorCase[];
+const RULES: readonly ActivityRunRule[] = [AGENT_MESSAGE_MEMBERS_RULE, AGENT_MESSAGES_ABSORBED_RULE];
 
 /** One fixture row as the pane holds it: a visible top-level item. */
 function itemOf(row: VectorItem, index: number): Item {
@@ -117,8 +125,12 @@ function countsOf(summary: ActivityRunSummary): { total: number; byLabel: Record
 }
 
 describe('activity-run shared vectors', () => {
-  it('carries cases', () => {
-    expect(cases.length).toBeGreaterThan(0);
+  it('carries cases for every rule, and names no other', () => {
+    for (const rule of RULES) expect(cases.some(vector => vector.rules.includes(rule))).toBe(true);
+    for (const vector of cases) {
+      expect(vector.rules.length).toBeGreaterThan(0);
+      for (const rule of vector.rules) expect(RULES).toContain(rule);
+    }
   });
 
   for (const vector of cases) {
@@ -126,8 +138,8 @@ describe('activity-run shared vectors', () => {
       const items = vector.items.map(itemOf);
       const itemById = new Map(items.map((item) => [item.id, item]));
 
-      it('classifies the same runs the server does', () => {
-        const spans = groupActivityRunSpans(items);
+      it.each(vector.rules)('classifies the same runs the server does under %s', (rule) => {
+        const spans = groupActivityRunSpans(items, rule);
         expect(
           spans.map((span) => ({
             firstItemId: span.firstItemId,

@@ -25,6 +25,11 @@ import { captureAgentMessage, captureAgentMessageInView } from './wake-rows-help
 import { timelineOf } from './timeline-follow-helpers.js';
 import { agentsBody, openAgents } from './agents-tray-helpers.js';
 
+test.beforeEach(async ({ harness }) => {
+  // These assertions read agent message rows, which sit inside activity runs.
+  await harness.rpc('UpdateSettings', { activityRunDefault: 'expanded' });
+});
+
 const REQUEST = 'Look at the flaky test as well.';
 const ANSWER = 'The flaky test waits on a timer.';
 

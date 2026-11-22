@@ -153,15 +153,6 @@ func TestAStopPausesTheWorkflowRunTheThreadStarted(t *testing.T) {
 		row, err := f.app.store.GetThread(member)
 		return err == nil && row.SessionRef == "stall"
 	})
-	row, err := f.app.store.GetThread(member)
-	if err != nil {
-		t.Fatal(err)
-	}
-	writeTranscriptContent(t, testProviderHome(t, f.app), row.WorkspacePath, "stall",
-		`{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"stall","message":{"role":"user","content":"hold"}}
-{"type":"assistant","uuid":"a0","parentUuid":"u0","sessionId":"stall","message":{"role":"assistant","content":[{"type":"text","text":"holding"}]}}
-`)
-
 	if stop := f.stop(t); len(stop.Failures) != 0 {
 		t.Fatalf("the Stop failed: %q", stop.Failures)
 	}

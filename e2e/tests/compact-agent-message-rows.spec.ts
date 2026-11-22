@@ -2,7 +2,9 @@
 // (docs/specs/agent-thread-tools.md, "How agent messages appear"): the
 // flow of agent-message-rows.spec.ts on both mock providers, then each row
 // kind folded and tapped open, its facts clear of the composer, and the
-// sender opened from the header with a tap. The phone has no message
+// sender opened from the header with a tap; a reply inside an activity run
+// taps open and opens its sender there too, and a lone reply's run names
+// it in its collapsed header clear of the composer. The phone has no message
 // navigator; the send-queue preview is the same component on both layouts
 // and is checked on desktop.
 import type { Locator, Page } from '@playwright/test';
@@ -20,10 +22,20 @@ import {
   LEAD_ASK,
   REPLY,
   REQUEST,
+  REVIEW_ANSWER,
+  REVIEW_LEAD,
+  REVIEWER,
   SPAWN_PROMPT,
   runAgentFlow,
+  runLoneReply,
+  runReplyMidWork,
   seedInbox,
 } from './agent-message-rows-helpers.js';
+
+test.beforeEach(async ({ harness }) => {
+  // These assertions read agent message rows, which sit inside activity runs.
+  await harness.rpc('UpdateSettings', { activityRunDefault: 'expanded' });
+});
 
 const openThread = async (page: Page, title: string) => {
   if ((await page.locator('html').getAttribute('data-compact-screen')) === 'thread') {
@@ -106,5 +118,51 @@ for (const provider of ['claude', 'codex'] as const) {
     await open(page, joined, 'Do the task.');
     await expect(joined.getByTestId('agent-message-part-source-sender')).toHaveText(JOINED_SENDERS);
     await keep(timelineOf(joined), `compact-${provider}-joined-senders-expanded.png`, joined);
+  });
+
+  test(`compact ${provider}: a reply inside an activity run opens with a tap`, async ({ harness, page }) => {
+    test.setTimeout(180_000);
+    await runReplyMidWork(harness, provider, `camr-midwork-${provider}`);
+    await harness.open(page);
+    await openThread(page, REVIEW_LEAD);
+    const run = page.getByTestId('activity-run');
+    await expect(run).toHaveCount(1);
+    await expect(run.getByTestId('activity-run-header-counts')).toContainText('1 agent message');
+    if ((await run.getAttribute('data-collapsed')) === 'true') await run.getByTestId('activity-run-header').tap();
+    await expect(run).toHaveAttribute('data-collapsed', 'false');
+    const reply = run.locator('[data-testid="agent-message-row"][data-agent-message-kind="reply"]');
+    await expect(reply.getByTestId('agent-message-first-line')).toHaveText(REVIEW_ANSWER);
+    await expectUncovered(reply.getByTestId('agent-message-toggle'));
+    await open(page, reply, REVIEW_ANSWER);
+    await keep(timelineOf(run), `compact-${provider}-reply-in-run-expanded.png`, run);
+    await reply.getByTestId('agent-message-sender').tap();
+    await expect(page.getByTestId('chat-header-title')).toHaveText(REVIEWER);
+  });
+
+  test(`compact ${provider}: a lone reply's run names it collapsed and opens with taps`, async ({ harness, page }) => {
+    test.setTimeout(180_000);
+    // Settings outlive a test in the worker; this one is about the collapsed shape.
+    await harness.rpc('UpdateSettings', { activityRunDefault: 'collapsed' });
+    await runLoneReply(harness, provider, `camr-lone-${provider}`);
+    await harness.open(page);
+    await openThread(page, REVIEW_LEAD);
+    // Two runs: the spawn's, and the reply's own between the two proses.
+    const runs = page.getByTestId('activity-run');
+    await expect(runs).toHaveCount(2);
+    const run = runs.nth(1);
+    await expect(run).toHaveAttribute('data-collapsed', 'true');
+    await expect(run.getByTestId('activity-run-header-message-kind')).toHaveText('Reply');
+    await expect(run.getByTestId('activity-run-header-message-sender')).toHaveText(REVIEWER);
+    await expect(run.getByTestId('activity-run-header-message-first-line')).toHaveText(REVIEW_ANSWER);
+    await expectUncovered(run.getByTestId('activity-run-header-message-first-line'));
+    await keep(timelineOf(run), `compact-${provider}-lone-reply-collapsed.png`, run);
+    await run.getByTestId('activity-run-header').tap();
+    await expect(run).toHaveAttribute('data-collapsed', 'false');
+    const reply = run.locator('[data-testid="agent-message-row"][data-agent-message-kind="reply"]');
+    await expectUncovered(reply.getByTestId('agent-message-toggle'));
+    await open(page, reply, REVIEW_ANSWER);
+    await keep(timelineOf(run), `compact-${provider}-lone-reply-expanded.png`, run);
+    await reply.getByTestId('agent-message-sender').tap();
+    await expect(page.getByTestId('chat-header-title')).toHaveText(REVIEWER);
   });
 }

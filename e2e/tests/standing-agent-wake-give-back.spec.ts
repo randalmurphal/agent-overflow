@@ -46,6 +46,7 @@ import {
   wakeInput,
   countInputs,
   completionRows,
+  openRunsFor,
   shoot,
   type NotificationSend,
 } from './standing-agent-wake-helpers.js';
@@ -326,6 +327,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
 
       await harness.open(page);
       await page.getByTestId('thread-row').getByText('Weekly planner', { exact: true }).click();
+      await openRunsFor(page, completionRows(page).last());
       await shoot(
         page,
         `${provider}-boot-returns-a-completion-to-its-watch.png`,
@@ -602,6 +604,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
 
       await harness.open(page);
       await page.getByTestId('thread-row').getByText('Weekly planner', { exact: true }).click();
+      await openRunsFor(page, completionRows(page).last());
       await shoot(
         page,
         `${provider}-death-returns-a-completion-to-its-watch.png`,
@@ -664,6 +667,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
 
       await harness.open(page);
       await page.getByTestId('thread-row').getByText('Weekly planner', { exact: true }).click();
+      await openRunsFor(page, completionRows(page).last());
       await shoot(
         page,
         `${provider}-archive-returns-an-unconfirmed-completion-to-its-watch.png`,
@@ -773,6 +777,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
 
       await app.open(page);
       await page.getByTestId('thread-row').getByText('Weekly planner', { exact: true }).click();
+      await openRunsFor(page, completionRows(page).last());
       await shoot(
         page,
         `${provider}-crash-returns-an-unconfirmed-completion-to-its-watch.png`,
@@ -853,6 +858,7 @@ test('codex: a completion the provider took in before its session died reaches t
     await harness.open(page);
     await page.getByTestId('thread-row').getByText('Weekly planner', { exact: true }).click();
     const completion = completionRows(page);
+    await openRunsFor(page, completion.first());
     await expect(completion).toHaveCount(1);
     await expect(page.getByTestId('composer-root').locator('textarea')).toHaveValue('');
     await shoot(page, 'codex-duplicate-after-death-shows-one-completion.png', completion);
@@ -1371,6 +1377,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
 
       await harness.open(page);
       await page.getByTestId('thread-row').getByText('Remote builder', { exact: true }).click();
+      await openRunsFor(page, completionRows(page).last());
       await shoot(page, `${provider}-stop-returns-a-dropped-remote-completion.png`, completionRows(page).last());
     } finally {
       await breaker?.cleanup();
@@ -1521,6 +1528,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
 
       await harness.open(page);
       await page.getByTestId('thread-row').getByText('Nightly checks', { exact: true }).click();
+      await openRunsFor(page, completionRows(page).last());
       await shoot(page, `${provider}-archive-keeps-finished-remote-job.png`, completionRows(page).last());
     } finally {
       await Promise.allSettled([harness.close(), remote.close()]);

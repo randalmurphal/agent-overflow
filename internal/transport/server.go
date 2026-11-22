@@ -445,6 +445,13 @@ type Config struct {
 	// reach the thread_unsupported refusal.
 	ThreadToolsOlderThan string
 
+	// OmitAgentMessageRunMembers leaves CapabilityAgentMessageRunMembers
+	// out of the hello frame, so this backend stands in for a build that
+	// predates it. Test isolation only: main.go sets it on a harness boot
+	// standing in for v0.0.19 (diagenv.HarnessOlderComputer), whose App
+	// also groups by the absorbed rule (app.IsolationConfig).
+	OmitAgentMessageRunMembers bool
+
 	// CrossOriginIsolate makes every asset response carry
 	// cross-origin isolation headers (COOP/COEP/CORP) so the SPA runs
 	// crossOriginIsolated and measureUserAgentSpecificMemory works.
@@ -2385,7 +2392,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			// Resolved per accept, not at boot: the browser Manager picks
 			// its engine during the App's startup, which runs after this
 			// Config is built.
-			Capabilities: advertisedCapabilities(browserAvailable, s.cfg.ThreadTransfers != nil, s.cfg.FilePreviews, s.cfg.ThreadToolsOlderThan),
+			Capabilities: advertisedCapabilities(browserAvailable, s.cfg.ThreadTransfers != nil, s.cfg.FilePreviews, s.cfg.ThreadToolsOlderThan, s.cfg.OmitAgentMessageRunMembers),
 			BackendID:    backendID,
 			LaunchID:     s.launchID,
 			BackendName:  backendName,

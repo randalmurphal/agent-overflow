@@ -44,14 +44,7 @@ type asyncQuestionFixture struct {
 func newAsyncQuestionFixture(t *testing.T, id string, placement string) asyncQuestionFixture {
 	t.Helper()
 	a, dbPath := newTestAppWithStorePath(t)
-	a.testEmitHook = (&emitRecorder{}).capture
-	a.triage = triage.NewRouter(a.store, a.emit)
-	a.configureTriageQueueCallbacks()
-	a.startSessionFn = func(string) error { return errors.New("the provider binary is missing") }
-	a.triage.SetPromptRouter(a.routeWorkerPrompt)
-	notified := &recordingNotificationSender{}
-	a.osNotifications = notified
-	a.storeIdentity.Store(&store.Identity{BackendID: "backend-under-test"})
+	notified := wireAsyncQuestionApp(a)
 	spawner := noticeTestThread(t, a, id+"-spawner")
 	worker := testThread(id + "-worker")
 	worker.WorkspacePath, worker.Title = t.TempDir(), "Release worker"
@@ -68,6 +61,29 @@ func newAsyncQuestionFixture(t *testing.T, id string, placement string) asyncQue
 		t.Fatal(err)
 	}
 	return asyncQuestionFixture{app: a, dbPath: dbPath, spawner: spawner, worker: worker, notified: notified}
+}
+
+// wireAsyncQuestionApp gives a the fixture's triage, prompt router and
+// failing session starts, and returns the recorder of its notifications.
+func wireAsyncQuestionApp(a *App) *recordingNotificationSender {
+	a.testEmitHook = (&emitRecorder{}).capture
+	a.triage = triage.NewRouter(a.store, a.emit)
+	a.configureTriageQueueCallbacks()
+	a.startSessionFn = func(string) error { return errors.New("the provider binary is missing") }
+	a.triage.SetPromptRouter(a.routeWorkerPrompt)
+	notified := &recordingNotificationSender{}
+	a.osNotifications = notified
+	a.storeIdentity.Store(&store.Identity{BackendID: "backend-under-test"})
+	return notified
+}
+
+// restart is the fixture after a restart: a second App over the same
+// database, whose store is a new run, with nothing in memory. Nothing of
+// its boot has run yet.
+func (f asyncQuestionFixture) restart(t *testing.T) asyncQuestionFixture {
+	t.Helper()
+	a := newTestAppAtStorePath(t, f.dbPath)
+	return asyncQuestionFixture{app: a, dbPath: f.dbPath, spawner: f.spawner, worker: f.worker, notified: wireAsyncQuestionApp(a)}
 }
 
 // drain waits out the prompts, notice starts and settlements begun; a start
@@ -263,13 +279,14 @@ func TestAWorkersAsyncQuestionAnsweredInTheWorkerRefusesTheSpawnersReply(t *test
 	}
 }
 
-// A question the spawner cannot take goes to the person: when its wake is
-// withdrawn from the spawner's queue, the worker's row needs the user and,
-// as the owned worker's turn end raised nothing, the question notifies,
-// until the person answers it.
-func TestAnOwnedWorkersAsyncQuestionTheSpawnerCannotTakeNotifiesThePerson(t *testing.T) {
+// A question an owned worker's spawner did not take stays the spawner's:
+// when its wake is withdrawn from the spawner's queue, the worker's row reads
+// blocked on the spawner, nothing needs the user or notifies, and the
+// spawner's next turn puts the question to it again under a new token. The
+// person can still answer it in the worker.
+func TestAnOwnedWorkersAsyncQuestionItsSpawnerDidNotTakeWaitsForItsNextTurn(t *testing.T) {
 	t.Parallel()
-	f := newAsyncQuestionFixture(t, "async-handed-back", store.PlacementOwned)
+	f := newAsyncQuestionFixture(t, "async-parked", store.PlacementOwned)
 	f.ask(t, "question:ask", `{"delivery":"async","questions":[{"title":"Which scope?"}]}`)
 	token, _ := f.wake(t, f.spawner.ID)
 	stop, err := f.app.StopThreadAgentIncoming(t.Context(), f.spawner.ID, workerPromptSendIDRoot+token)
@@ -278,26 +295,85 @@ func TestAnOwnedWorkersAsyncQuestionTheSpawnerCannotTakeNotifiesThePerson(t *tes
 	}
 	f.drain(t)
 	if tokens := workerPromptTokens(t, f.app, f.spawner.ID); len(tokens) != 0 {
-		t.Fatalf("the spawner was given the question again: %q", tokens)
+		t.Fatalf("the spawner was given the question again before its next turn: %q", tokens)
 	}
 	row, summary := f.row(t)
-	if row.Worker != workerBlocked || row.BlockedOn != "question" || row.BlockedRoutedTo != "" || summary.NeedYou != 1 {
-		t.Fatalf("the worker's row = %+v, summary %+v; want it blocked on the user", row, summary)
+	if row.Worker != workerBlocked || row.BlockedOn != "question" || row.BlockedRoutedTo != f.spawner.Title || summary.NeedYou != 0 {
+		t.Fatalf("the worker's row = %+v, summary %+v; want it blocked on its spawner", row, summary)
 	}
-	sends := f.questionSends("question:ask")
-	if len(sends) == 0 || sends[len(sends)-1].Retract || sends[len(sends)-1].Body != "Waiting for your answer" ||
-		sends[len(sends)-1].Target.ThreadID != f.worker.ID {
-		t.Fatalf("question notifications = %+v, want the last one raised for the worker", sends)
+	if sends := f.questionSends("question:ask"); len(sends) != 0 && !sends[len(sends)-1].Retract {
+		t.Fatalf("question notifications = %+v, want none raised", sends)
 	}
-	if _, _, err := f.app.answerWorkerPrompt(t.Context(), threadtools.Caller{ThreadID: f.spawner.ID}, threadtools.ReplyCall{Token: token, Text: "One"}); !errors.Is(err, errWorkerPromptClosed) {
-		t.Fatalf("the spawner's late reply: %v, want the prompt closed", err)
+
+	workerEvent(t, f.app, f.spawner.ID, provider.ProviderEvent{Kind: provider.EventTurnStart, TurnID: f.spawner.ID + ":next"}, nil)
+	f.drain(t)
+	again, _ := f.wake(t, f.spawner.ID)
+	if again == token {
+		t.Fatalf("the question was put to the spawner again under its old token %s", token)
 	}
 	if err := f.app.SubmitAsyncAnswers(t.Context(), f.worker.ID, "person", []store.AsyncQuestionAnswer{{ItemID: "question:ask", Index: 0, Answer: "One"}}); err != nil {
 		t.Fatal(err)
 	}
 	f.drain(t)
-	if sends := f.questionSends("question:ask"); !sends[len(sends)-1].Retract {
-		t.Fatalf("question notifications = %+v, want the last one retracted", sends)
+	if tokens := workerPromptTokens(t, f.app, f.spawner.ID); len(tokens) != 0 {
+		t.Fatalf("the person's answer left the spawner's wake %q", tokens)
+	}
+}
+
+// A question an earlier run of the app recorded holds nothing for an owned
+// worker: the restarted app reads the worker at rest, records it as no live
+// worker and reads nothing open below its spawner; the question stays open
+// in the worker. A sidebar worker's such question is the person's and still
+// keeps the worker from rest.
+func TestAQuestionFromAnEarlierRunHoldsNothingForAnOwnedWorker(t *testing.T) {
+	t.Parallel()
+	for _, placement := range []string{store.PlacementOwned, store.PlacementStandalone} {
+		t.Run(placement, func(t *testing.T) {
+			t.Parallel()
+			f := newAsyncQuestionFixture(t, "async-earlier-"+placement, placement)
+			f.ask(t, "question:old", `{"delivery":"async","questions":[{"title":"Which scope?"}]}`)
+			// Its spawn answered, so only the worker's own state is left to read.
+			if _, err := f.app.store.SettleThreadRequest("async-earlier-"+placement+"-spawn", []string{store.ThreadRequestRunning}, store.ThreadRequestSettlement{
+				State: store.ThreadRequestFinished, Answer: []byte("done"), AnswerKind: store.ThreadAnswerFinal,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			after := f.restart(t)
+			after.app.restoreDurableFlushQueueAtBoot()
+			after.app.recoverThreadRequestsAtBoot()
+			after.drain(t)
+			waitUntil(t, 10*time.Second, func() bool {
+				after.app.threadRequests.mu.Lock()
+				defer after.app.threadRequests.mu.Unlock()
+				return !after.app.threadRequests.rest.barred
+			})
+			sources, err := after.app.store.ReadThreadRestSources(after.worker.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			threads, err := after.app.store.ThreadsWithUnansweredAsyncQuestions()
+			if err != nil {
+				t.Fatal(err)
+			}
+			rest, err := after.app.workerUnrest(after.worker.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if placement == store.PlacementOwned {
+				if sources.Asking || slices.Contains(threads, after.worker.ID) || rest.unrest != "" || after.app.liveWorker(after.worker.ID) {
+					t.Fatalf("asking %v, boot lists %q, worker reads %+v, live %v; want the earlier question to hold nothing",
+						sources.Asking, threads, rest, after.app.liveWorker(after.worker.ID))
+				}
+				if spawner, err := after.app.threadRest(after.spawner.ID); err != nil || spawner.unrest != "" {
+					t.Fatalf("the spawner reads %+v, %v; want nothing below it open", spawner, err)
+				}
+			} else if !sources.Asking || !slices.Contains(threads, after.worker.ID) || rest.unrest != workerBlocked {
+				t.Fatalf("asking %v, boot lists %q, worker reads %+v; want the person's question to keep it from rest", sources.Asking, threads, rest)
+			}
+			if questions, err := after.app.store.ListAsyncQuestions(after.worker.ID, "question:old"); err != nil || len(questions) != 1 || questions[0].State != "unanswered" {
+				t.Fatalf("the question = %+v, %v; want it left unanswered", questions, err)
+			}
+		})
 	}
 }
 
@@ -405,37 +481,138 @@ func TestAStopOfAWorkerDismissesItsAsyncQuestions(t *testing.T) {
 	}
 }
 
-// After a restart the app has forgotten every registration and discarded
-// the wakes it quit with; the boot routes the open question again under a
-// new token, and the old one answers nothing.
-func TestAWorkersOpenAsyncQuestionIsRoutedAgainAtBoot(t *testing.T) {
+// A question a worker asked before this run of the app started is the
+// person's: neither the boot nor a later reconcile of the worker puts it to
+// the spawner, starts a session or raises a notification, and the worker
+// does not wait on it. The person can still answer it. A question asked in
+// this run goes to the spawner.
+func TestAQuestionAskedBeforeTheRestartIsThePersons(t *testing.T) {
 	t.Parallel()
 	f := newAsyncQuestionFixture(t, "async-boot", store.PlacementOwned)
-	f.ask(t, "question:ask", `{"delivery":"async","questions":[{"title":"Which scope?"}]}`)
-	old, _ := f.wake(t, f.spawner.ID)
-	// The restart: memory goes, the queue is restored as the boot does.
-	f.app.workerPrompts.mu.Lock()
-	f.app.workerPrompts.byToken, f.app.workerPrompts.current = nil, nil
-	f.app.workerPrompts.mu.Unlock()
-	f.app.workerPrompts.async.mu.Lock()
-	f.app.workerPrompts.async.open = nil
-	f.app.workerPrompts.async.mu.Unlock()
-	f.app.restoreDurableFlushQueueAtBoot()
-	if tokens := workerPromptTokens(t, f.app, f.spawner.ID); len(tokens) != 0 {
-		t.Fatalf("the boot kept prompt wakes %q", tokens)
+	// Asked in the run before the restart, and put to the spawner in it.
+	if _, err := f.app.store.RecordAsyncQuestions(store.Item{
+		ID: "question:old", ThreadID: f.worker.ID, Kind: "assistant_text", Role: "assistant", Status: "completed",
+		Meta: `{"delivery":"async","questions":[{"title":"Which scope?"}]}`, CreatedAt: time.Now().Add(-14 * 24 * time.Hour).UnixMilli(),
+	}); err != nil {
+		t.Fatal(err)
 	}
-	f.app.seedAsyncQuestionPrompts()
+	f.app.emit(eventchan.ProviderAsyncQuestionsChanged, map[string]string{"threadId": f.worker.ID})
 	f.drain(t)
-	token, _ := f.wake(t, f.spawner.ID)
-	if token == old {
-		t.Fatal("the boot reused the old token")
+	f.wake(t, f.spawner.ID)
+
+	after := f.restart(t)
+	var mu sync.Mutex
+	var started []string
+	after.app.startSessionFn = func(threadID string) error {
+		mu.Lock()
+		started = append(started, threadID)
+		mu.Unlock()
+		return errors.New("the provider binary is missing")
 	}
-	if _, handled, _ := f.app.answerWorkerPrompt(t.Context(), threadtools.Caller{ThreadID: f.spawner.ID}, threadtools.ReplyCall{Token: old, Text: "One"}); handled {
-		t.Fatal("the token from before the restart is still a prompt's")
+	after.app.restoreDurableFlushQueueAtBoot()
+	after.app.recoverThreadRequestsAtBoot()
+	after.drain(t)
+	// A later frame of the worker reconciles its questions again.
+	after.app.syncAsyncQuestionPrompts(after.worker.ID)
+	after.drain(t)
+	tokens := workerPromptTokens(t, after.app, after.spawner.ID)
+	if len(tokens) != 0 {
+		t.Errorf("the restart put the question to the spawner under %q", tokens)
 	}
-	if row, _ := f.row(t); row.Worker != workerBlocked || row.BlockedRoutedTo != f.spawner.Title {
-		t.Fatalf("the worker's row after the boot = %+v", row)
+	if waiting := after.app.threadWaitingOn(after.worker.ID); waiting.on == "question" {
+		t.Errorf("the worker waits on %q (%q)", waiting.on, waiting.detail)
 	}
+	if _, _, asking := after.app.asyncQuestionBlocked(after.worker.ID); asking {
+		t.Error("the question from before the restart is open to an agent")
+	}
+	caller := threadtools.Caller{ThreadID: after.spawner.ID}
+	// The spawner answers whatever it was given, as its agent would.
+	for _, token := range tokens {
+		if _, _, err := after.app.answerWorkerPrompt(t.Context(), caller, threadtools.ReplyCall{Token: token, Text: "One"}); err != nil {
+			t.Errorf("the spawner's answer: %v", err)
+		}
+	}
+	after.drain(t)
+	mu.Lock()
+	if len(started) != 0 {
+		t.Errorf("the restart started the sessions of %q", started)
+	}
+	mu.Unlock()
+	if sends := after.notified.snapshot(); len(sends) != 0 {
+		t.Errorf("the restart notified %+v", sends)
+	}
+
+	after.ask(t, "question:new", `{"delivery":"async","questions":[{"title":"Which board?"}]}`)
+	if !slices.ContainsFunc(durableQueueRows(t, after.app, after.spawner.ID), func(row store.FlushQueueItem) bool {
+		return strings.HasPrefix(row.SendID, workerPromptSendIDRoot) && strings.Contains(row.Message, "Which board?")
+	}) {
+		t.Error("the question asked after the restart was not put to the spawner")
+	}
+	if detail, route, asking := after.app.asyncQuestionBlocked(after.worker.ID); !asking || detail != "Which board?" || promptRouteTitle(route) != after.spawner.Title {
+		t.Fatalf("after the new question the worker asks %q of %q (%v), want its spawner", detail, promptRouteTitle(route), asking)
+	}
+
+	if err := after.app.SubmitAsyncAnswers(t.Context(), after.worker.ID, "person", []store.AsyncQuestionAnswer{{ItemID: "question:old", Index: 0, Answer: "Two"}}); err != nil {
+		t.Fatalf("the person's answer: %v", err)
+	}
+	if questions, err := after.app.store.ListAsyncQuestions(after.worker.ID, "question:old"); err != nil || len(questions) != 1 || questions[0].State != "submitted" || questions[0].Answer != "Two" {
+		t.Fatalf("the old question = %+v, %v; want the person's answer submitted", questions, err)
+	}
+}
+
+// A question this run recorded is this run's whatever time its provider
+// event carries: one stamped two weeks ago goes to the spawner.
+func TestAQuestionThisRunRecordedWithAnOldTimeGoesToTheSpawner(t *testing.T) {
+	t.Parallel()
+	f := newAsyncQuestionFixture(t, "async-old-time", store.PlacementOwned)
+	f.askAt(t, "question:old-time", `{"delivery":"async","questions":[{"title":"Which scope?"}]}`, time.Now().Add(-14*24*time.Hour))
+	if _, body := f.wake(t, f.spawner.ID); !strings.Contains(body, "Which scope?") {
+		t.Fatalf("the spawner's wake asks:\n%s\nwant the question this run recorded", body)
+	}
+	if detail, route, asking := f.app.asyncQuestionBlocked(f.worker.ID); !asking || detail != "Which scope?" || promptRouteTitle(route) != f.spawner.Title {
+		t.Fatalf("the worker asks %q of %q (%v), want its spawner", detail, promptRouteTitle(route), asking)
+	}
+}
+
+// A question an earlier run recorded is the person's whatever time its
+// provider event carries: one stamped a day ahead goes to no agent after
+// the restart and is not what the worker waits on.
+func TestAQuestionAnEarlierRunRecordedWithALaterTimeIsThePersons(t *testing.T) {
+	t.Parallel()
+	f := newAsyncQuestionFixture(t, "async-later-time", store.PlacementOwned)
+	f.askAt(t, "question:later-time", `{"delivery":"async","questions":[{"title":"Which scope?"}]}`, time.Now().Add(24*time.Hour))
+	f.wake(t, f.spawner.ID)
+
+	after := f.restart(t)
+	after.app.restoreDurableFlushQueueAtBoot()
+	after.drain(t)
+	after.app.syncAsyncQuestionPrompts(after.worker.ID)
+	after.drain(t)
+	if tokens := workerPromptTokens(t, after.app, after.spawner.ID); len(tokens) != 0 {
+		t.Fatalf("the restart put the earlier run's question to the spawner under %q", tokens)
+	}
+	if _, _, asking := after.app.asyncQuestionBlocked(after.worker.ID); asking {
+		t.Fatal("the earlier run's question is open to an agent")
+	}
+	if waiting := after.app.threadWaitingOn(after.worker.ID); waiting.on == "question" {
+		t.Fatalf("the worker waits on %q (%q)", waiting.on, waiting.detail)
+	}
+	if sends := after.notified.snapshot(); len(sends) != 0 {
+		t.Fatalf("the restart notified %+v", sends)
+	}
+}
+
+// askAt is ask with the time the provider event stamped on the item.
+func (f asyncQuestionFixture) askAt(t *testing.T, itemID, meta string, at time.Time) {
+	t.Helper()
+	if _, err := f.app.store.RecordAsyncQuestions(store.Item{
+		ID: itemID, ThreadID: f.worker.ID, Kind: "assistant_text", Role: "assistant", Status: "completed", Meta: meta,
+		CreatedAt: at.UnixMilli(), UpdatedAt: at.UnixMilli(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.app.emit(eventchan.ProviderAsyncQuestionsChanged, map[string]string{"threadId": f.worker.ID})
+	f.drain(t)
 }
 
 // answered has the spawner answer the worker's one question with "One" and
@@ -484,6 +661,18 @@ func (f asyncQuestionFixture) requireRoutedAgain(t *testing.T, sendID string) {
 	}
 }
 
+// requireThePersons fails unless the worker's question, returned at a
+// restart, is put to no agent and is not what the worker waits on.
+func (f asyncQuestionFixture) requireThePersons(t *testing.T) {
+	t.Helper()
+	if tokens := workerPromptTokens(t, f.app, f.spawner.ID); len(tokens) != 0 {
+		t.Fatalf("the spawner was given the question again under %q", tokens)
+	}
+	if detail, route, asking := f.app.asyncQuestionBlocked(f.worker.ID); asking {
+		t.Fatalf("the worker asks %q of %q, want its question the person's", detail, promptRouteTitle(route))
+	}
+}
+
 // A person withdrawing the spawner's queued answer from the worker's
 // Incoming rows overrules the agent: the question is unanswered again and
 // the person's, as a hand-back leaves it, and the person can answer it.
@@ -517,26 +706,19 @@ func TestAWithdrawnSpawnerAnswerPutsTheQuestionToThePerson(t *testing.T) {
 }
 
 // An answer still queued when the app quits is the question's again at the
-// boot, never the worker's composer text, and goes to the spawner again
-// under a new token.
+// boot, never the worker's composer text, and the question, asked before
+// the restart, is the person's.
 func TestASpawnerAnswerQueuedAtQuitIsReturnedAtBoot(t *testing.T) {
 	t.Parallel()
 	f := newAsyncQuestionFixture(t, "async-answer-boot", store.PlacementOwned)
 	sendID := f.answered(t)
-	f.app.workerPrompts.mu.Lock()
-	f.app.workerPrompts.byToken, f.app.workerPrompts.current = nil, nil
-	f.app.workerPrompts.mu.Unlock()
-	f.app.workerPrompts.async.mu.Lock()
-	f.app.workerPrompts.async.open = nil
-	f.app.workerPrompts.async.mu.Unlock()
-	f.app.triage = triage.NewRouter(f.app.store, f.app.emit)
-	f.app.configureTriageQueueCallbacks()
-	f.app.restoreDurableFlushQueueAtBoot()
-	f.drain(t)
-	f.requireReturned(t, sendID)
-	f.app.seedAsyncQuestionPrompts()
-	f.drain(t)
-	f.requireRoutedAgain(t, sendID)
+	after := f.restart(t)
+	after.app.restoreDurableFlushQueueAtBoot()
+	after.drain(t)
+	after.requireReturned(t, sendID)
+	after.app.syncAsyncQuestionPrompts(after.worker.ID)
+	after.drain(t)
+	after.requireThePersons(t)
 }
 
 // A session that ends with the spawner's answer still queued gives it back

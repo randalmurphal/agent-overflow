@@ -23,7 +23,7 @@ function fixture() {
   const fetcher = createActivityRunMemberFetch({
     threadId: () => 'thread', records: () => records,
     shape: () => ({ inlinePreviews: true, runWindowRows: 30, maxBytes: 10000 }),
-    mountMembers: vi.fn(() => []), reloadWindow, reportFailure, onStubApplied,
+    mountMembers: vi.fn(() => []), reloadWindow, reportFailure, onStubApplied, answerApplies: () => true,
   });
   return { records, record, stub, fetcher, reloadWindow, onStubApplied, reportFailure };
 }
@@ -234,7 +234,7 @@ it('keeps a requested member page when concurrent metadata describes the same lo
   foldPageStub(f.records, { ...f.stub }, null);
   result.resolve({ items: [], stub: f.stub });
   await pending;
-  expect(f.onStubApplied).toHaveBeenCalledExactlyOnceWith(f.stub);
+  expect(f.onStubApplied).toHaveBeenCalledExactlyOnceWith(f.stub, expect.any(String));
   f.fetcher.dispose();
 });
 
@@ -303,7 +303,7 @@ it.each([
   f.fetcher.scheduleRefresh();
   await vi.advanceTimersByTimeAsync(5000);
   expect(rpc).toHaveBeenCalledOnce();
-  expect(f.onStubApplied).toHaveBeenCalledExactlyOnceWith(answer);
+  expect(f.onStubApplied).toHaveBeenCalledExactlyOnceWith(answer, expect.any(String));
   expect(f.record.refusedThrough).toBeNull();
   expect(f.reloadWindow).toHaveBeenCalledTimes(reloads);
   expect(f.reportFailure.mock.calls.map(call => [call[0], call[2]]))

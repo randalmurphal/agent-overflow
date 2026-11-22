@@ -240,6 +240,19 @@ func (t threadToolsApp) Send(ctx context.Context, caller threadtools.Caller, cal
 	// The target is a thread here that already exists, so the request and
 	// its acceptance are one write: the source row, already accepted, and
 	// the receipt. A paired computer's send is accepted by acceptSend.
+	// A send to a worker at rest starts a run of its own: a run of the
+	// caller's the rest pass has not ended yet ends first, so the send does
+	// not join it.
+	if open, err := t.app.store.CallerRunOpen(caller.ThreadID, "", target.ID); err != nil {
+		return threadtools.RequestAck{}, err
+	} else if open {
+		if err := t.app.awaitRestRecovered(ctx); err != nil {
+			return threadtools.RequestAck{}, err
+		}
+		if err := t.app.endRunsAtRest(target.ID); err != nil {
+			return threadtools.RequestAck{}, err
+		}
+	}
 	hold, release := t.holdNewRequest(ctx, caller)
 	defer release()
 	token := hold.token

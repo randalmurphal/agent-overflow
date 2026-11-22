@@ -19,6 +19,7 @@ import {
   type ToolAnswer,
 } from './thread-tools-helpers.js';
 import { doneEnvelope, doneResult } from './workflows-helpers.js';
+import { openRunsFor } from './standing-agent-wake-helpers.js';
 
 export const WORKFLOW_TOOLS_SERVER = 'ao-workflow-tools';
 
@@ -425,12 +426,7 @@ export async function captureRunFromThread(
     await page.getByTestId('compact-back').click();
   }
   await page.getByTestId('thread-row').filter({ hasText: title }).click();
-  await expect(page.getByText(`Run "${runId}"`).last()).toBeAttached({ timeout: 30_000 });
-  const runs = page.getByTestId('activity-run');
-  for (let index = 0; index < (await runs.count()); index++) {
-    const run = runs.nth(index);
-    if ((await run.getAttribute('data-collapsed')) === 'true') await run.getByTestId('activity-run-header').click();
-  }
+  await openRunsFor(page, page.getByText(`Run "${runId}"`).last());
   await expect(page.getByTestId('tool-call-card').filter({ hasText: 'migrator' }).first()).toBeAttached();
   await page.evaluate(() => {
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);

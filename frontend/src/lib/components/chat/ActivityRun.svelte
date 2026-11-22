@@ -31,7 +31,7 @@
   // of them can use.
 
   import type { Snippet } from 'svelte';
-  import { tick, untrack } from 'svelte';
+  import { getContext, tick, untrack } from 'svelte';
   import type {
     PaneSession,
     RevealRead,
@@ -73,6 +73,7 @@
   import OverlayScrollbar from '../shared/OverlayScrollbar.svelte';
   import ActivityRunBoundary from './ActivityRunBoundary.svelte';
   import ActivityRunHeader from './ActivityRunHeader.svelte';
+  import { PENDING_CUT_DIM_CLASS, PENDING_CUT_ROWS_CONTEXT, type PendingCutRows } from './pendingCutRows';
 
   let {
     pane,
@@ -202,6 +203,17 @@
   let mountedChildren = $derived(
     run.children.slice(run.mountedFrom, run.mountedFrom + run.mountedRows),
   );
+
+  // An edit-and-resend revert in flight whose cut goes THROUGH this run (a
+  // Codex turn cut, where the run absorbed the agent message that opened
+  // the anchor's turn): its doomed members dim here, and the header with
+  // them, since its counts are about to change. A run the cut takes whole
+  // is dimmed by the timeline's row wrapper instead (`pendingCutRows.ts`).
+  const pendingCut = getContext<PendingCutRows | undefined>(PENDING_CUT_ROWS_CONTEXT);
+  let cutThrough = $derived.by(() => {
+    if (!pendingCut || run.children.length === 0) return false;
+    return !pendingCut.isCut(run.children[0]) && pendingCut.isCut(run.children[run.children.length - 1]);
+  });
   let hiddenEarlier = $derived(mountedFrom + run.unshippedBefore);
   let hiddenLater = $derived(
     run.children.length - run.mountedFrom - run.mountedRows + run.unshippedAfter,
@@ -959,7 +971,7 @@
     {clipId}
     expanded={!collapsed}
     onToggle={toggle}
-    class="pl-[8.5px]"
+    class={cutThrough ? `pl-[8.5px] ${PENDING_CUT_DIM_CLASS}` : 'pl-[8.5px]'}
   />
   {#if !collapsed}
     <!-- Rail offsets match what the per-row wrapper used to apply:
@@ -1032,7 +1044,12 @@
                  plain div, so row margins keep collapsing exactly as they
                  did when these rows were the virtualizer's own. -->
             {#each mountedChildren as child, i (timelineNodeKey(child))}
-              <div data-run-child={mountedFrom + i} data-run-key={timelineNodeKey(child)}>
+              <div
+                data-run-child={mountedFrom + i}
+                data-run-key={timelineNodeKey(child)}
+                class={cutThrough && pendingCut?.isCut(child) ? PENDING_CUT_DIM_CLASS : undefined}
+                data-pending-cut={cutThrough && pendingCut?.isCut(child) ? 'true' : undefined}
+              >
                 {@render renderNode(child, depth)}
               </div>
             {/each}

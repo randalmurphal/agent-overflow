@@ -230,7 +230,9 @@ test('a command running when the computer is paired again finishes under the new
   await home.open(page);
   await page.getByTestId('thread-row-title').getByText('Replaced builder', { exact: true }).click();
   const timeline = page.getByRole('log', { name: 'Message History' });
-  await expect(timeline.getByTestId('agent-message-sender').getByText(`release build on ${live.name}`, { exact: true })).toBeVisible();
+  // The completion is a run of its own, named in its collapsed header; the
+  // call that started the job is in the run before it.
+  await expect(timeline.getByTestId('activity-run-header-message-sender').getByText(`release build on ${live.name}`, { exact: true })).toBeVisible();
   await timeline.getByRole('button', { name: /Expand 1 activity row/ }).click();
   const card = timeline.getByTestId('tool-call-card').filter({ hasText: 'build.release' }).first();
   await expect(card.locator('[data-machine]').first()).toHaveText(`(${live.name})`);

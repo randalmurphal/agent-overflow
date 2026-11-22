@@ -381,7 +381,7 @@ func TestRemoteOwnershipReadsUseTheirIndexes(t *testing.T) {
 		"owner op moment": {`SELECT MIN(next_at) FROM thread_owner_ops`, "idx_thread_owner_ops_due", nil},
 		"forget":          {forgetOwnerOpsSQL, "idx_thread_owner_ops_computer", []any{"pc"}},
 		"remote spawn":    {remoteSpawnLinkToSQL, "idx_thread_requests_remote_spawn_target", []any{"pc", "w"}},
-		"remote owner":    {spawnOwnerRemoteSQL, "idx_thread_request_receipts_spawn_link", []any{"w"}},
+		"remote owner":    {spawnOwnerRemoteSQL, "idx_thread_request_receipts_target", []any{"w"}},
 		"spawned on":      {`SELECT ` + spawnedByComputerSQL("?"), "idx_thread_request_receipts_spawn_link", []any{"w"}},
 		"spawn link":      {`SELECT ` + spawnLinkSQL, "idx_thread_request_receipts_spawn_link", []any{"w"}},
 		"stale links":     {`SELECT 1 FROM thread_request_receipts WHERE ` + staleSpawnLinkSQL, "idx_thread_request_receipts_owner_seen", []any{1, 1}},

@@ -24,19 +24,23 @@ import (
 //
 //   - A listed prompt not registered is registered and its wake queued to
 //     its holder: the spawn's caller now (a handoff moves it), while that
-//     thread can take a prompt (store.RemotePromptHolder). One that cannot
+//     thread can hold a prompt (store.RemotePromptHolder). One that cannot
 //     is given back at once (agent_prompt_return), unless the spawner's
 //     archive or delete is on its way to the worker, which ends it there;
 //     either way it is kept as returned until that computer stops listing
 //     it.
 //   - A registered prompt no longer listed is closed and its wake
-//     withdrawn: the person answered it there, the worker stopped waiting,
-//     or that computer's lease gave it to the person.
+//     withdrawn: the person answered it there, or the worker stopped
+//     waiting.
+//   - A wake that is dropped or withdrawn is not taken: the prompt moves to
+//     the spawn's caller now when that changed, and otherwise waits for its
+//     holder's next turn (parked), which delivers it again; the worker
+//     there is owned and its prompts are its spawner's. A wake whose session
+//     start fails stays queued for the holder's next session.
 //   - Every agent_rows call names the prompts held here (heldRemotePrompts),
-//     which renews their lease there: those whose wake is queued for, or
-//     was taken in by, a holder that can answer. A wake that is dropped,
-//     withdrawn or whose session start fails ends its hold, and the prompt
-//     moves to the spawn's caller now when that changed, or goes back.
+//     which renews their lease on a computer on an older version that keeps
+//     one: those whose wake is queued for, or was taken in by, their
+//     holder, or that wait for its next turn.
 //   - thread_reply from the holder answers it there (agent_prompt_reply).
 //   - A handoff, an archive, a delete, a rest or a pause of the holder
 //     reconciles its prompts as a local prompt's are (reroutePromptsFrom):
@@ -83,8 +87,12 @@ type remoteWorkerPrompt struct {
 	// holder is the thread its current wake went to, and delivery that
 	// wake's identity; both empty before its first delivery.
 	holder, delivery string
-	// held says its wake reached the queue and nothing has ended it since.
+	// held says its wake reached the queue and nothing has ended it since,
+	// or it waits for its holder's next turn (parked).
 	held bool
+	// parked says its holder did not take its wake: it is delivered again
+	// when the holder's next turn starts (redeliverParkedRemotePrompts).
+	parked bool
 	// rejected marks a delivery its holder did not take while it answered:
 	// an answer that does not land moves the prompt on then
 	// (endRemoteAnswer).
@@ -272,7 +280,7 @@ func (a *App) deliverRemotePrompt(key remotePromptKey) error {
 		r.boot = entityid.New()
 	}
 	r.next++
-	prompt.holder, prompt.delivery, prompt.held = holder, r.boot+"-"+strconv.FormatUint(r.next, 10), false
+	prompt.holder, prompt.delivery, prompt.held, prompt.parked = holder, r.boot+"-"+strconv.FormatUint(r.next, 10), false, false
 	current := *prompt
 	r.mu.Unlock()
 	if replaced.delivery != "" {
@@ -305,10 +313,9 @@ func (a *App) deliverRemotePrompt(key remotePromptKey) error {
 		},
 		// A wake keep withdraws is no longer the prompt's current delivery,
 		// so its withdrawal moves nothing on.
-		keep:   func() (bool, error) { return live(), nil },
-		failed: func() { a.remotePromptNotTaken(key, current.delivery) },
+		keep: func() (bool, error) { return live(), nil },
 		startFailed: func(err error) string {
-			return fmt.Sprintf("Thread %q on %s is waiting on this thread's answer, but this thread's agent could not start: %v. The prompt goes back to the person there.",
+			return fmt.Sprintf("Thread %q on %s is waiting on this thread's answer, but this thread's agent could not start: %v. Its prompt stays queued here.",
 				current.prompt.Title, current.computerName, err)
 		},
 	})
@@ -368,5 +375,51 @@ func (r *remoteWorkerPrompts) moveTo(key remotePromptKey, delivery, threadID str
 	defer r.mu.Unlock()
 	if prompt := r.byKey[key]; prompt != nil && prompt.delivery == delivery {
 		prompt.holder = threadID
+	}
+}
+
+// park records that delivery's holder did not take it: the prompt stays
+// held for that holder, with no wake, until its next turn. It reports
+// whether delivery was still the prompt's current one.
+func (r *remoteWorkerPrompts) park(key remotePromptKey, delivery string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	prompt := r.byKey[key]
+	if prompt == nil || prompt.state != remotePromptRouted || (delivery != "" && prompt.delivery != delivery) {
+		return false
+	}
+	prompt.held, prompt.parked = true, true
+	return true
+}
+
+// hasParked reports whether holder has a parked prompt.
+func (r *remoteWorkerPrompts) hasParked(holder string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, prompt := range r.byKey {
+		if prompt.parked && prompt.state == remotePromptRouted && prompt.holder == holder {
+			return true
+		}
+	}
+	return false
+}
+
+// redeliverParkedRemotePrompts delivers again the prompts parked for
+// holder, whose turn started. It runs on the prompts' serial queue.
+func (a *App) redeliverParkedRemotePrompts(holder string) {
+	r := &a.workerPrompts.remote
+	r.mu.Lock()
+	var keys []remotePromptKey
+	for key, prompt := range r.byKey {
+		if prompt.parked && prompt.state == remotePromptRouted && prompt.holder == holder {
+			prompt.parked, prompt.held = false, false
+			keys = append(keys, key)
+		}
+	}
+	r.mu.Unlock()
+	for _, key := range keys {
+		if err := a.deliverRemotePrompt(key); err != nil {
+			a.emitErrorToThread(holder, err.Error())
+		}
 	}
 }

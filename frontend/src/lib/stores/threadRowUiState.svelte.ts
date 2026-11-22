@@ -784,10 +784,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
       for (const groupKey of subagentGroupKeysFor(itemId)) {
         if (subagentGroupExpanded.has(groupKey)) return true;
       }
-      // A user message can never be an activity run's child, so this branch
-      // cannot fire for today's only caller. It is here because the
-      // contract above is stated over ITEMS, not over run membership: a
-      // future caller asking about a user_text id must get the truth.
+      // An agent message inside a run: the reader opened its body.
       if (messageUi.isExpanded(itemId)) return true;
       const files = diffCardExpandedOverrides.get(itemId);
       if (files) {

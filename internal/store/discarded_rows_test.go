@@ -65,7 +65,7 @@ func TestDiscardedRowsReadMarkedWithoutTheRecordOnThePage(t *testing.T) {
 	seedAbandonedResponse(t, s, true)
 	recordID := AbandonedBlocksRecordID(0, "", "msg_1")
 
-	page, err := s.ListThreadSliceAround(context.Background(), "t", "u0", 3, 10, TimelineSelection{})
+	page, err := s.ListThreadSliceAround(context.Background(), "t", "u0", 3, 10, TimelineSelection{}, AgentMessagesAreMembers)
 	if err != nil {
 		t.Fatalf("slice: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestDiscardedRowsReadMarkedWithoutTheRecordOnThePage(t *testing.T) {
 		t.Errorf("a1 (block 0, kept) discardedBy = %q, want unmarked", marks["a1"])
 	}
 
-	tail, err := s.ListThreadSliceAround(context.Background(), "t", "", 10, 10, TimelineSelection{})
+	tail, err := s.ListThreadSliceAround(context.Background(), "t", "", 10, 10, TimelineSelection{}, AgentMessagesAreMembers)
 	if err != nil {
 		t.Fatalf("tail: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestDiscardedRowsReadMarkedWithoutTheRecordOnThePage(t *testing.T) {
 func TestDiscardedRowsStayUnmarkedWithoutARecord(t *testing.T) {
 	s := newTestStore(t)
 	seedAbandonedResponse(t, s, false)
-	page, err := s.ListThreadSliceAround(context.Background(), "t", "", 10, 10, TimelineSelection{})
+	page, err := s.ListThreadSliceAround(context.Background(), "t", "", 10, 10, TimelineSelection{}, AgentMessagesAreMembers)
 	if err != nil {
 		t.Fatalf("tail: %v", err)
 	}

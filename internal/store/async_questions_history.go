@@ -31,6 +31,9 @@ func cutAsyncQuestionsTx(tx *sql.Tx, threadID string, fromTurn int, predicate st
 	return err
 }
 
+// insertAsyncQuestionStateTx writes a copy of a question into threadID with
+// the mark q carries (AsyncQuestion.run): a fork's carries its source's, and
+// a transfer's carries none, since the mark is on no wire.
 func insertAsyncQuestionStateTx(tx *sql.Tx, threadID string, q AsyncQuestion) error {
 	if q.ItemID == "" || q.Index < 0 {
 		return fmt.Errorf("invalid question identity")
@@ -54,6 +57,20 @@ func insertAsyncQuestionStateTx(tx *sql.Tx, threadID string, q AsyncQuestion) er
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(`INSERT INTO async_questions(thread_id,`+asyncQuestionColumns+`) VALUES(?,?,?,?,?,?,?,?,?,?)`, threadID, q.ItemID, q.Index, q.Title, string(options), q.State, q.Answer, q.SendID, q.UserItemID, q.CreatedAt)
+	_, err = tx.Exec(`INSERT INTO async_questions(thread_id,`+asyncQuestionColumns+`,run_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, threadID, q.ItemID, q.Index, q.Title, string(options), q.State, q.Answer, q.SendID, q.UserItemID, q.CreatedAt, q.run)
 	return err
+}
+
+// scanAsyncQuestionWithRun reads a row selected as asyncQuestionColumns
+// followed by run_id.
+func scanAsyncQuestionWithRun(row rowScanner) (AsyncQuestion, error) {
+	var q AsyncQuestion
+	var options string
+	if err := row.Scan(&q.ItemID, &q.Index, &q.Title, &options, &q.State, &q.Answer, &q.SendID, &q.UserItemID, &q.CreatedAt, &q.run); err != nil {
+		return q, err
+	}
+	if err := json.Unmarshal([]byte(options), &q.Options); err != nil {
+		return q, fmt.Errorf("decode question options: %w", err)
+	}
+	return q, nil
 }

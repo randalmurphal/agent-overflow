@@ -26,10 +26,11 @@ var ErrSetupFailed = errors.New("workflow setup failed")
 // reason, the same reason a gate that matched nothing parks with.
 var ErrWiringFailed = errors.New("workflow wiring failed")
 
-// ErrProviderContextUnavailable means a runner proved that a selected prior
-// provider context no longer exists. It is not an agent failure: the engine
+// ErrProviderContextUnavailable means a runner could not prove that a selected
+// prior provider context is there. It is not an agent failure: the engine
 // supersedes the unsent continuation or warm reuse and reconstructs its logical
-// round in a fresh provider session with a full prompt.
+// round in a fresh provider session with a full prompt. The wrapped error names
+// the cause.
 var ErrProviderContextUnavailable = errors.New("workflow provider context unavailable")
 
 type State string

@@ -14,9 +14,10 @@ import (
 )
 
 // remotePromptNotTaken is a delivery whose wake did not reach its holder,
-// or was dropped, withdrawn or never started: its hold ends, and the
-// prompt moves on (rerouteRemotePrompt). A delivery a later one replaced
-// changes nothing.
+// or was dropped, withdrawn or never started: the prompt moves to the
+// spawn's caller now when that changed, and otherwise waits for its
+// holder's next turn (rerouteRemotePrompt). A delivery a later one
+// replaced changes nothing.
 func (a *App) remotePromptNotTaken(key remotePromptKey, delivery string) {
 	r := &a.workerPrompts.remote
 	r.mu.Lock()
@@ -51,10 +52,11 @@ func (a *App) handBackRemotePromptWake(wake workerPromptWake) {
 }
 
 // rerouteRemotePrompt reconciles a routed prompt with its spawn's caller
-// now: a different thread that can take it gets a new delivery, the same
-// one keeps it unless it could not take it (reject), and otherwise it goes
-// back. A non-empty delivery names the delivery this is about; a later
-// one changes nothing. It runs on the prompts' serial queue.
+// now: a different thread that can hold it gets a new delivery, the same
+// one keeps it, parked until its next turn when it did not take it
+// (reject), and with no thread that can hold it the prompt goes back. A
+// non-empty delivery names the delivery this is about; a later one changes
+// nothing. It runs on the prompts' serial queue.
 func (a *App) rerouteRemotePrompt(key remotePromptKey, delivery string, reject bool) {
 	r := &a.workerPrompts.remote
 	r.mu.Lock()
@@ -74,6 +76,10 @@ func (a *App) rerouteRemotePrompt(key remotePromptKey, delivery string, reject b
 			log.Printf("retry routed prompt %s: %v", key.token, err)
 		}
 	case found && !reject:
+	case found:
+		if a.workerPrompts.remote.park(key, delivery) {
+			log.Printf("worker prompts: %s of %s waits for %s's next turn", key.token, key.computerID, holder)
+		}
 	default:
 		if err := a.returnRemotePrompt(key, delivery); err != nil {
 			a.emitErrorToThread(from, err.Error())
@@ -100,15 +106,13 @@ func (a *App) rerouteRemotePromptsFrom(threadID string) {
 	}
 }
 
-// returnRemotePrompt gives a routed prompt back to the computer that holds
-// its worker, which puts it to the person there, and withdraws its wake
-// here. The prompt is kept as returned until that computer stops listing
-// it. The return is best effort: a prompt this computer no longer names as
-// held goes back there when its lease runs out. Nothing is sent for a
-// worker this computer owes an archive or delete (owesWorkerEnd): that
-// operation ends the prompt with the worker, so the person there is not
-// asked about a worker on its way out, and the lease covers one that
-// cannot arrive.
+// returnRemotePrompt gives a routed prompt no thread here can hold back to
+// the computer that holds its worker, which puts it to the person there,
+// and withdraws its wake here. The return says so (peerPromptNoHolder): a
+// prompt a thread here did not take now is parked, never returned. The
+// prompt is kept as returned until that computer stops listing it. Nothing is sent for a worker this computer owes an archive or delete
+// (owesWorkerEnd): that operation ends the prompt with the worker, so the
+// person there is not asked about a worker on its way out.
 func (a *App) returnRemotePrompt(key remotePromptKey, delivery string) error {
 	r := &a.workerPrompts.remote
 	r.mu.Lock()
@@ -136,7 +140,7 @@ func (a *App) returnRemotePrompt(key remotePromptKey, delivery string) error {
 		ctx, cancel := context.WithTimeout(a.lifeCtx(), remotePromptCallTimeout)
 		defer cancel()
 		if err := a.callPeerPrompt(ctx, returned.spawn, threadAgentPeerPromptReturn,
-			threadPromptPeerArgs{Spawn: returned.spawn.Token, Token: key.token}, &struct{}{}); err != nil {
+			threadPromptPeerArgs{Spawn: returned.spawn.Token, Token: key.token, Reason: peerPromptNoHolder}, &struct{}{}); err != nil {
 			log.Printf("worker prompts: give %s back to %s: %v", key.token, key.computerID, err)
 		}
 	})

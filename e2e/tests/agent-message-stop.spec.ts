@@ -16,6 +16,11 @@ import { captureAgentMessageInView } from './wake-rows-helpers.js';
 import { timelineOf } from './timeline-follow-helpers.js';
 import { awaitGate, awaitToolAnswer, setScenario, threadToolsScenario, type TurnStep } from './thread-tools-helpers.js';
 
+test.beforeEach(async ({ harness }) => {
+  // These assertions read agent message rows, which sit inside activity runs.
+  await harness.rpc('UpdateSettings', { activityRunDefault: 'expanded' });
+});
+
 const openThread = async (page: Page, title: string) => {
   await page.getByTestId('thread-row-title').filter({ hasText: title }).first().click();
   await expect(page.getByTestId('chat-header-title').filter({ hasText: title })).toBeVisible();

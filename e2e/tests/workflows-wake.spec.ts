@@ -22,6 +22,11 @@ import {
   type WorkflowDetail,
 } from './workflows-helpers.js';
 
+test.beforeEach(async ({ harness }) => {
+  // These assertions read agent message rows, which sit inside activity runs.
+  await harness.rpc('UpdateSettings', { activityRunDefault: 'expanded' });
+});
+
 // Thread binding, wake, pause/resume, and discard (spec §5, decisions D17/D23)
 // over the real engine and real git checkouts. Every surface here is RPC-only:
 // a run reports back into a conversation thread, a human can stop and continue
