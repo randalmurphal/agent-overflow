@@ -32,7 +32,8 @@
     openTerminalThread,
   } from '../../stores/threadCreation.svelte';
   import { openSessionImport } from '../../stores/sessionImport.svelte';
-  import { hasScope } from '../../transport/scopes';
+  import { scopeGrant } from '../../transport/scopes';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
   import History from '@lucide/svelte/icons/history';
   import Plus from '@lucide/svelte/icons/plus';
   import IconButton from '../primitives/IconButton.svelte';
@@ -47,8 +48,9 @@
     hasMultipleBackends,
     threadMachine,
   } from '../../stores/attachedBackends.svelte';
-  import { CATALOG_KINDS, catalogLoadState } from '../../stores/catalogLoad.svelte';
-  import { catalogTreeListed, loadSidebarCatalogs } from '../../stores/sidebarCatalogs';
+  import { catalogTreeListed, computerCatalogPending, loadSidebarCatalogs } from '../../stores/sidebarCatalogs';
+  import { backendUnreachableSettled, getTransportStatusFor } from '../../stores/transportStatus.svelte';
+  import { isTerminalConnectionStatus } from '../../transport/connectionRefusal';
   import CatalogStatusRow from './CatalogStatusRow.svelte';
   import ProjectList from './ProjectList.svelte';
   import { bucketSidebarThreads } from './sidebarBuckets';
@@ -72,7 +74,7 @@
   let flashProjectId: string | null = $state(null);
 
   // Session import walks the provider homes and writes threads.
-  let importUngranted = $derived(!hasScope('threads:operate', selectedBackend()));
+  let importGrant = $derived(scopeGrant('threads:operate', selectedBackend()));
 
   // Normalise the search query once per derivation so every filter path
   // uses the same lowercase form.
@@ -153,22 +155,30 @@
   let projectsShown = $derived(isSidebarSectionShown('projects', query !== ''));
 
   // Visible computers with a catalog that has not loaded, or whose thread
-  // list is still held, each with a status row naming the first such
-  // catalog. While any remains, what the list shows is incomplete, so it is
-  // never presented as empty.
+  // list is still held.
   let pendingCatalogs = $derived.by(() => getAttachedBackends().flatMap((entry) => {
     if (!sidebarBackendVisible(entry.id)) return [];
-    const loads = CATALOG_KINDS.map((kind) => ({ kind, load: catalogLoadState(entry.id, kind) }));
-    const unloaded = loads.find(({ load }) => load.phase !== 'loaded');
-    if (unloaded === undefined && catalogTreeListed(entry.id)) return [];
-    const failed = loads.find(({ load }) => load.phase === 'failed');
-    return [{
-      backend: entry.id,
-      name: hasMultipleBackends() ? backendDisplayName(entry) : '',
-      kind: unloaded?.kind ?? 'threads',
-      error: failed === undefined ? null : failed.load.error,
-    }];
+    const pending = computerCatalogPending(entry.id);
+    if (pending === null) return [];
+    return [{ backend: entry.id, name: hasMultipleBackends() ? backendDisplayName(entry) : '', ...pending }];
   }));
+
+  // Only this computer's own pending lists get a line, and only while a load
+  // can make progress: the computer is starting, dialing for the first time,
+  // or connected and reading. While it is unreachable the banner says so and
+  // carries Retry. A paired computer's connection and load state live in
+  // the Projects menu (SidebarDeviceFilter.svelte), so a computer that is
+  // off or keeps dropping changes nothing here but its own rows.
+  let homeStatus = $derived(getTransportStatusFor(HOME_BACKEND).status);
+  let homeLine = $derived(homeStatus === 'reconnecting' || isTerminalConnectionStatus(homeStatus)
+    ? undefined
+    : pendingCatalogs.find((pending) => pending.backend === HOME_BACKEND));
+
+  // While a pending computer may still answer, what the list shows is
+  // incomplete, so it is never presented as empty. One unreachable for
+  // UNREACHABLE_SETTLE_MS no longer holds the empty state off: a person
+  // with no projects is not left with a blank list while a computer is off.
+  let awaitingCatalogs = $derived(pendingCatalogs.some((pending) => !backendUnreachableSettled(pending.backend)));
 
   // Visible projects: respect search (name match OR thread match) and
   // the current sort mode. Three modes:
@@ -361,9 +371,9 @@
       <ProjectSortMenu />
       <IconButton
         label="Import Sessions"
-        title={importUngranted ? 'Not granted to this device' : undefined}
+        title={grantBlockedTitle(importGrant)}
         size="sm"
-        disabled={importUngranted}
+        disabled={importGrant !== 'granted'}
         onClick={() => openSessionImport()}
       >
         {#snippet children()}
@@ -387,14 +397,12 @@
 
     {#if projectsShown}
       <div data-flashing-project={flashProjectId}>
-        {#if pendingCatalogs.length > 0}
+        {#if homeLine}
           <div class="px-2 pt-1" data-testid="sidebar-catalog-status">
-            {#each pendingCatalogs as pending (pending.backend)}
-              <CatalogStatusRow backend={pending.backend} name={pending.name} kind={pending.kind} error={pending.error} />
-            {/each}
+            <CatalogStatusRow backend={homeLine.backend} name={homeLine.name} kind={homeLine.kind} error={homeLine.error} />
           </div>
         {/if}
-        {#if visibleProjects.length > 0 || pendingCatalogs.length === 0}
+        {#if visibleProjects.length > 0 || !awaitingCatalogs}
           <ProjectList
             entries={visibleProjects}
             onSetExpanded={setRowExpanded}

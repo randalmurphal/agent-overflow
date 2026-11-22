@@ -3,8 +3,8 @@ import { companionSubjectKey } from './companionSubject';
 import { withBackendTarget } from '../transport/backends';
 import type { BackendKey } from '../transport/backendKey';
 import { composeWorkspaceKey } from '../utils/workspaceKey';
-import { threadHasScope } from '../transport/entityScopes';
-import { hasScope } from '../transport/scopes';
+import { threadHasScope, threadScopeGrant } from '../transport/entityScopes';
+import { hasScope, scopeGrant, type EntityScopeGrant } from '../transport/scopes';
 import {
   createPRDiffReviewComment,
   deletePRDiffReviewComment,
@@ -223,10 +223,10 @@ export interface ReviewPaneState extends ReviewCommentActionsState, ReviewCommen
    * stays `pr`, there is no chat to send to, and drafts post as a PR
    * review. */
   readonly pinned: boolean;
-  /** The session holds the grant the comment writes need on this
+  /** Whether the session holds the grant the comment writes need on this
    * review's computer: `threads:operate` for a thread's drafts,
    * `git:operate` for a pinned review's forge submission. */
-  readonly commentsGranted: boolean;
+  readonly commentsGrant: EntityScopeGrant;
   /** Line comments have a home here: the thread row, or for a pinned
    * review the PR's full diff (a picked commit's line numbers would
    * misanchor against the head diff, and there is no agent to send them to). */
@@ -1527,8 +1527,8 @@ export function createReviewPaneState(
     if (pinnedDraftKey !== null) return getPRDiffReviewComments(pinnedDraftKey, scope, sourceKey);
     return threadId === null ? EMPTY_COMMENTS : getDiffReviewComments(threadId, scope, sourceKey);
   });
-  const commentsGranted = $derived(
-    pinned ? hasScope('git:operate', backend) : threadHasScope('threads:operate', threadId, workspace.projectId),
+  const commentsGrant = $derived(
+    pinned ? scopeGrant('git:operate', backend) : threadScopeGrant('threads:operate', threadId, workspace.projectId),
   );
   const canDraftComments = $derived(pinned ? scope === 'pr' && (selectedCommitSHA === null || headRange) : threadId !== null);
   const drafts = $derived(comments.filter((comment) => comment.status === 'draft'));
@@ -1552,9 +1552,9 @@ export function createReviewPaneState(
     entityKey: () => prEntityKey,
     launch: () => backendLaunch,
     updateFailing: () => prUpdateError !== null,
-    forgeGranted: () => (pinned ? hasScope('git:operate', backend) : threadHasScope('git:operate', threadId, workspace.projectId)),
+    forgeGrant: () => (pinned ? scopeGrant('git:operate', backend) : threadScopeGrant('git:operate', threadId, workspace.projectId)),
     prWithheld: () => mergeWithheldReason,
-    canDraft: () => canDraftComments && commentsGranted,
+    canDraft: () => canDraftComments && commentsGrant === 'granted',
     drafts: () => drafts,
     threads: () => prThreads,
     threadsLoaded: () => prSnapshot !== null,
@@ -3684,7 +3684,7 @@ export function createReviewPaneState(
     rowId,
     get scope() { return scope; },
     pinned: pinned !== null,
-    get commentsGranted() { return commentsGranted; },
+    get commentsGrant() { return commentsGrant; },
     get canDraftComments() { return canDraftComments; },
     backend,
     get baseBranch() { return baseBranch; },

@@ -36,6 +36,9 @@ vi.mock('../../stores/transportStatus.svelte', async (importOriginal) => ({
 
 import TransportStatusBanner from './TransportStatusBanner.svelte';
 import ComputerTransportStatus from './ComputerTransportStatus.svelte';
+import { __setBackendStatusForTest, UNREACHABLE_SETTLE_MS } from '../../stores/transportStatus.svelte';
+import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
+import { formatCalendarDate, formatTimeOfDay } from '../../utils/format';
 import {
   __resetBundleNoticeForTest,
   clearBundleNotice,
@@ -375,6 +378,123 @@ describe('<TransportStatusBanner>', () => {
     expect(banner.textContent).toContain('Offline. Checking every 5 minutes.');
     expect(banner.textContent).not.toContain('Last seen');
     expect(banner.textContent).not.toContain('Reconnecting in');
+  });
+
+  // A paired computer that is off keeps its ladder dialing for as long as it
+  // is off. Its strip states when it was last reached, and that sentence
+  // does not change from one attempt to the next.
+  it("says a paired computer is offline in one still sentence, through its attempts", async () => {
+    const laptop = stageBackend();
+    try {
+      const lastConnectedAt = Date.now() - 60_000;
+      const down = (nextAttemptAt: number): void => __setBackendStatusForTest('laptop', {
+        status: 'reconnecting', nextAttemptAt, dormant: false, lastConnectedAt,
+      });
+      down(Date.now() + 4_000);
+      const { getByTestId, queryByTestId } = render(ComputerTransportStatus, { backend: 'laptop' });
+      await settleBootGrace();
+      // A drop shows only once it has lasted the settle time.
+      expect(queryByTestId('transport-status-banner')).toBeNull();
+      await vi.advanceTimersByTimeAsync(UNREACHABLE_SETTLE_MS);
+      const banner = getByTestId('transport-status-banner');
+      const said = `Offline since ${formatTimeOfDay(lastConnectedAt)}.`;
+      expect(banner).toHaveTextContent(said);
+      for (let attempt = 0; attempt < 3; attempt++) {
+        await vi.advanceTimersByTimeAsync(4_000);
+        down(Date.now() + 8_000);
+        await tick();
+        expect(banner).toHaveTextContent(said);
+        expect(banner.textContent).not.toContain('Reconnecting in');
+      }
+      await fireEvent.click(getByTestId('transport-status-retry'));
+      expect(laptop.reconnect).toHaveBeenCalledOnce();
+    } finally {
+      resetStagedBackends();
+    }
+  });
+
+  // The strip's clock is the 1 Hz interval this computer's countdown and
+  // last-seen sentence read. A paired computer's strip reads neither, so it
+  // installs none; this computer's strip, shown the same way, does.
+  it("runs no clock for a paired computer's strip, and one for this computer's", async () => {
+    stageBackend();
+    const setInterval = vi.spyOn(globalThis, 'setInterval');
+    try {
+      const ticks = () => setInterval.mock.calls.filter(([, ms]) => ms === 1000).length;
+      __setBackendStatusForTest('laptop', { status: 'reconnecting', nextAttemptAt: Date.now() + 4_000, lastConnectedAt: Date.now() - 60_000 });
+      const paired = render(ComputerTransportStatus, { backend: 'laptop' });
+      await vi.advanceTimersByTimeAsync(UNREACHABLE_SETTLE_MS);
+      expect(paired.getByTestId('transport-status-banner')).toBeInTheDocument();
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(ticks()).toBe(0);
+      paired.unmount();
+
+      h.snapshot = { status: 'reconnecting', nextAttemptAt: Date.now() + 4_000 };
+      const home = render(TransportStatusBanner);
+      await settleBootGrace();
+      expect(home.getByTestId('transport-status-banner')).toBeInTheDocument();
+      expect(ticks()).toBe(1);
+    } finally {
+      setInterval.mockRestore();
+      resetStagedBackends();
+    }
+  });
+
+  // A resume check runs while the socket is still open, on every return to
+  // the app. A paired computer's strip waits for the settle time for that
+  // reason too; this computer's says it is checking at once.
+  it('shows no resume check for a paired computer, and shows it for this computer', async () => {
+    stageBackend();
+    try {
+      __setBackendStatusForTest('laptop', { status: 'connected', nextAttemptAt: null, checkingConnection: true });
+      const paired = render(ComputerTransportStatus, { backend: 'laptop' });
+      await vi.advanceTimersByTimeAsync(UNREACHABLE_SETTLE_MS * 2);
+      expect(paired.queryByTestId('transport-status-banner')).toBeNull();
+      paired.unmount();
+
+      h.snapshot = { status: 'connected', nextAttemptAt: null, checkingConnection: true };
+      const home = render(TransportStatusBanner);
+      await settleBootGrace();
+      expect(home.getByTestId('transport-status-banner')).toHaveTextContent('Checking connection…');
+    } finally {
+      resetStagedBackends();
+    }
+  });
+
+  it('names the day a paired computer was last reached once it is not today, and nothing it never had', async () => {
+    stageBackend();
+    try {
+      const lastConnectedAt = Date.now() - 3 * 86_400_000;
+      __setBackendStatusForTest('laptop', { status: 'reconnecting', nextAttemptAt: Date.now() + 4_000, lastConnectedAt });
+      const { getByTestId } = render(ComputerTransportStatus, { backend: 'laptop' });
+      await vi.advanceTimersByTimeAsync(UNREACHABLE_SETTLE_MS);
+      expect(getByTestId('transport-status-banner'))
+        .toHaveTextContent(`Offline since ${formatCalendarDate(lastConnectedAt)}, ${formatTimeOfDay(lastConnectedAt)}.`);
+      __setBackendStatusForTest('laptop', { status: 'reconnecting', nextAttemptAt: Date.now() + 4_000, lastConnectedAt: null });
+      await tick();
+      expect(getByTestId('transport-status-banner').textContent).toMatch(/Offline\.(?! since)/);
+    } finally {
+      resetStagedBackends();
+    }
+  });
+
+  // The strip leaves when the paired computer is reached; catching up after
+  // the drop is not one more thing shown and hidden.
+  it("shows nothing for a paired computer's resync after a reconnect", async () => {
+    stageBackend();
+    try {
+      __setBackendStatusForTest('laptop', { status: 'reconnecting', nextAttemptAt: null });
+      const { queryByTestId } = render(ComputerTransportStatus, { backend: 'laptop' });
+      await vi.advanceTimersByTimeAsync(UNREACHABLE_SETTLE_MS);
+      expect(queryByTestId('transport-status-banner')).not.toBeNull();
+      __setBackendStatusForTest('laptop', { status: 'connected', nextAttemptAt: null });
+      recover('laptop', 'start', true);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(queryByTestId('transport-status-banner')).toBeNull();
+      recover('laptop', 'complete', true);
+    } finally {
+      resetStagedBackends();
+    }
   });
 
   it('forces a reconnect when Retry is clicked', async () => {

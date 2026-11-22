@@ -77,7 +77,7 @@ import type { BackendKey } from '../transport/backendKey';
 import { ReadDeadlineError } from '../utils/readBeforeDeadline';
 import type { ProjectWithCounts, Thread, ThreadGroup } from '../types/models';
 import {
-  catalogFailureShown, catalogTreeOf, markCatalogTree, PARTIAL_PROVENANCE, registerCatalogReader,
+  CATALOG_KINDS, catalogFailureShown, catalogLoadState, catalogTreeOf, markCatalogTree, PARTIAL_PROVENANCE, registerCatalogReader,
 } from './catalogLoad.svelte';
 import { getReplicaTree, type KeptTree } from '../replica/session';
 import type { CatalogKind, CatalogRows } from '../replica/catalog';
@@ -186,6 +186,27 @@ const threadsKnown = new Set<BackendKey>();
  */
 export function catalogTreeListed(backend: BackendKey): boolean {
   return listed.get(backend);
+}
+
+/** What a computer's sidebar lists are still waiting on (`computerCatalogPending`). */
+export interface CatalogPending {
+  /** The first catalog that has not loaded: projects before threads. */
+  kind: CatalogKind;
+  /** The failed load's message, or null while it is loading. */
+  error: string | null;
+}
+
+/**
+ * What keeps `backend`'s rows from being its whole tree: a catalog that has
+ * not loaded, or a thread list still held. Null once the tree is listed.
+ * Reactive on that computer alone.
+ */
+export function computerCatalogPending(backend: BackendKey): CatalogPending | null {
+  const loads = CATALOG_KINDS.map((kind) => ({ kind, load: catalogLoadState(backend, kind) }));
+  const unloaded = loads.find(({ load }) => load.phase !== 'loaded');
+  if (unloaded === undefined && catalogTreeListed(backend)) return null;
+  const failed = loads.find(({ load }) => load.phase === 'failed');
+  return { kind: unloaded?.kind ?? 'threads', error: failed === undefined ? null : failed.load.error };
 }
 
 // Every part of a read, in commit order, for the rules that treat them alike.

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { settingsComputer } from './settingsComputer';
-  const { backend, hasScope } = settingsComputer();
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
+  const { backend, scopeGrant } = settingsComputer();
   // The Accounts section of a provider's settings page. The account
   // logic itself lives in stores/providerAccounts.svelte.ts — shared with the
   // account-switcher picker, so a switch made in either surface is the same
@@ -52,8 +53,9 @@
   // Every credential write here (StartProviderLogin, SwitchProviderAccount,
   // RefreshProviderAccountUsage, RemoveProviderAccount) rides `access:admin`
   // on this computer. The cards still list; their controls go inert.
-  let admin = $derived(hasScope('access:admin'));
-  let ungrantedTitle = $derived(admin ? undefined : 'Not granted to this device');
+  let adminGrant = $derived(scopeGrant('access:admin'));
+  let admin = $derived(adminGrant === 'granted');
+  let ungrantedTitle = $derived(grantBlockedTitle(adminGrant));
   let accounts = $derived(getProviderAccountsFor(provider, backend));
   let loading = $derived(isProviderAccountsLoading(backend));
   let actions = $derived(getProviderAccountActions(provider, backend));

@@ -1301,4 +1301,70 @@ describe('architecture', () => {
       'Pass threadId (the item or pane thread the markdown belongs to) beside workspacePath.',
     );
   });
+
+  // A control a grant switches off says why through `grantBlockedTitle`
+  // (transport/scopeRefusal.ts), given the three-way `ScopeGrant`, so a
+  // computer that has not answered in this window is never described as
+  // having refused this device. The parameter type keeps a boolean out; a
+  // type cannot keep out a string literal written into a title, nor a call
+  // made only on one side of a two-way check, so this scan does.
+  it('says why a grant switches a control off only through grantBlockedTitle', () => {
+    const owner = 'lib/transport/scopeRefusal.ts';
+    const offenders = new Map<string, string[]>();
+    let ownerCalls = 0;
+    for (const file of scannedSources(SOURCE_EXTENSIONS)) {
+      if (repoPath(file) === owner) continue;
+      const findings: string[] = [];
+      readFileSync(file, 'utf8').split('\n').forEach((line, index) => {
+        if (/granted to this device/i.test(line)) findings.push(`line ${index + 1}: writes the refusal sentence itself`);
+        for (const call of line.matchAll(/(\?\s*)?\bgrantBlockedTitle\(\s*(['"`])?/g)) {
+          ownerCalls += 1;
+          if (call[2]) findings.push(`line ${index + 1}: passes grantBlockedTitle a literal grant`);
+          else if (call[1]) findings.push(`line ${index + 1}: calls grantBlockedTitle on one side of a two-way check`);
+        }
+      });
+      if (findings.length > 0) offenders.set(repoPath(file), findings);
+    }
+    expect(ownerCalls, 'the scan found no grantBlockedTitle calls; it would pass vacuously').toBeGreaterThan(30);
+    expectAllowlistExact(
+      offenders,
+      {},
+      'New violations.',
+      'Derive the ScopeGrant (scopeGrant, threadScopeGrant, projectScopeGrant, workflowItemScopeGrant) and'
+      + ' set the title to grantBlockedTitle(grant) ?? <the title the control has when granted>.',
+    );
+  });
+
+  // A component holds only the grant (`scopeGrant` and the entity
+  // `…ScopeGrant`), never the yes/no answer, so a control it switches off
+  // has its reason in hand: the yes/no answer is false for a refusal, for a
+  // computer that has not answered, and for an item no computer is known to
+  // hold, and a title built from it says the wrong one. Stores keep the
+  // yes/no helpers for gates that show nothing. TypeScript cannot keep an
+  // export out of one directory, so this scan does.
+  it('keeps the yes/no grant helpers out of components', () => {
+    const offenders = new Map<string, string[]>();
+    let grantReads = 0;
+    for (const file of scannedSources(SOURCE_EXTENSIONS)) {
+      if (!repoPath(file).startsWith('lib/components/')) continue;
+      const findings: string[] = [];
+      readFileSync(file, 'utf8').split('\n').forEach((line, index) => {
+        if (/ScopeGrant\(|\bscopeGrant\(/.test(line)) grantReads += 1;
+        if (/\b(?:threadHasScope|projectHasScope|workflowItemHasScope)\b/.test(line)) {
+          findings.push(`line ${index + 1}: uses an entity's yes/no grant helper`);
+        } else if (/\bhasScope\(\s*(?!['"]host['"])/.test(line)) {
+          findings.push(`line ${index + 1}: asks hasScope for a grant`);
+        }
+      });
+      if (findings.length > 0) offenders.set(repoPath(file), findings);
+    }
+    expect(grantReads, 'the scan found no grant reads in components; it would pass vacuously').toBeGreaterThan(30);
+    expectAllowlistExact(
+      offenders,
+      {},
+      'New violations.',
+      'Read the grant (scopeGrant, threadScopeGrant, projectScopeGrant, workflowItemScopeGrant). A control it'
+      + " switches off takes grantBlockedTitle(grant) as its reason; a gate that shows nothing compares it with 'granted'.",
+    );
+  });
 });

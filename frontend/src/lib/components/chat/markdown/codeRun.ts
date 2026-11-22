@@ -4,7 +4,9 @@
 // host and the settled block's static overlay so both decide the same way.
 import { isShellRunActive, runShellCommand } from '../../../stores/shellCommands.svelte';
 import { addErrorToast, addToast } from '../../../stores/toast.svelte';
-import { threadHasScope } from '../../../transport/entityScopes';
+import { threadScopeGrant } from '../../../transport/entityScopes';
+import { grantBlockedTitle } from '../../../transport/scopeRefusal';
+import { allOfGrants } from '../../../transport/scopes';
 
 export const CODE_RUN_LABEL = 'Run and send the output to the agent';
 
@@ -34,8 +36,9 @@ export async function runCodeBlock(origin: Element, text: string): Promise<void>
   if (!threadId || !command) return;
   // Both grants the backend asks for: running a command here, and sending
   // its output to the thread.
-  if (!threadHasScope('terminal:operate', threadId) || !threadHasScope('threads:operate', threadId)) {
-    addToast('warning', 'This session cannot run commands');
+  const grant = allOfGrants([threadScopeGrant('terminal:operate', threadId), threadScopeGrant('threads:operate', threadId)]);
+  if (grant !== 'granted') {
+    addToast('warning', grant === 'refused' ? 'This session cannot run commands' : grantBlockedTitle(grant) ?? '');
     return;
   }
   if (isShellRunActive(threadId)) {

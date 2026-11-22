@@ -3,7 +3,11 @@
 import { onBackendIdentity } from '../transport/backendIdentity';
 import type { BackendKey } from '../transport/backendKey';
 import type { Thread } from '../types/models';
-import { backendDisplayName, getAttachedBackends, threadMachine } from './attachedBackends.svelte';
+import { backendDisplayName, backendOfflineLabel, getAttachedBackends, threadMachine } from './attachedBackends.svelte';
+import { computerCatalogPending } from './sidebarCatalogs';
+import { catalogReadServable } from './computerRows';
+import { getTransportStatusFor } from './transportStatus.svelte';
+import { startupStatusText } from '../transport/startupProgress';
 import { onFrontendValueChanged, readFrontendValue, writeFrontendValue } from './frontendStorage';
 import { remoteAccessAvailable } from '../transport/buildVariant';
 
@@ -35,11 +39,51 @@ const devices = $derived.by(() => {
     const key = id || `unknown:${entry.id}`;
     if (seen.has(key)) return [];
     seen.add(key);
-    return [{ key, id, name: backendDisplayName(entry), visible: !id || !hidden.has(id) }];
+    return [{ key, id, backend: entry.id, name: backendDisplayName(entry), visible: !id || !hidden.has(id) }];
   });
 });
 
 export function sidebarDevices() { return devices; }
+
+/** A computer's state as its row in the Projects menu says it. */
+export interface SidebarDeviceStatus {
+  text: string;
+  /**
+   * Its lists failed to load while it can serve a read again: the failure
+   * is the row's text, and Retry applies.
+   */
+  failed: boolean;
+}
+
+/**
+ * What the Projects menu says about one computer: the one place the sidebar
+ * names a computer's connection and load state. Plain text, so nothing in
+ * the open menu moves. Reactive on that computer alone.
+ */
+export function sidebarDeviceStatus(backend: BackendKey): SidebarDeviceStatus {
+  const pending = computerCatalogPending(backend);
+  const status = getTransportStatusFor(backend);
+  // The connection comes first: a load error kept from before the
+  // computer went offline, or was refused, is not why its lists are
+  // missing now, and its Retry would be rejected without a call.
+  if (pending !== null && pending.error !== null && catalogReadServable(status.status)) {
+    return { text: pending.error, failed: true };
+  }
+  switch (status.status) {
+    case 'connected':
+      return { text: pending === null ? 'Connected' : 'Loading…', failed: false };
+    case 'starting':
+      return { text: status.startup ? startupStatusText(status.startup) : 'Starting…', failed: false };
+    case 'disconnected':
+      return { text: 'Connecting…', failed: false };
+    case 'reconnecting':
+      return { text: backendOfflineLabel(backend), failed: false };
+    case 'unauthorized':
+    case 'pairing-required':
+      return { text: 'Not connected', failed: false };
+  }
+  return status.status satisfies never;
+}
 export function sidebarDeviceFilterActive(): boolean { return hiddenRoutes.size > 0; }
 export function sidebarBackendVisible(key: BackendKey | undefined): boolean {
   return key === undefined || !hiddenRoutes.has(key);

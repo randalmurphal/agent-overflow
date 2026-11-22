@@ -20,6 +20,7 @@ import { resetSidebarForTest } from '../../stores/sidebar.svelte';
 import { projectTurnStarted, resetForTest as resetThreadStatuses } from '../../stores/threadStatuses.svelte';
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 import { __resetEntityIndexForTest, noteProject, noteThread } from '../../transport/entityIndex';
+import { UNREACHABLE_SETTLE_MS } from '../../stores/transportStatus.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import type { Thread } from '../../types/models';
 import { setEntryExpanded } from '../../stores/sidebarEntryContinuity.svelte';
@@ -90,6 +91,34 @@ describe('ProjectItem create controls', () => {
     const newGroup = getByTestId('project-item-new-group') as HTMLButtonElement;
     expect(newGroup.disabled).toBe(true);
     expect(newGroup.title).toBe('Not granted to this device');
+  });
+
+  // A paired computer that has not answered in this window (offline, or
+  // still connecting) has refused nothing.
+  it('says the computer has to connect, not that it refused, until its grant arrives', async () => {
+    stageBackend({ id: 'laptop', backendId: 'laptop-id', name: 'Laptop' });
+    listCatalogTreesForTest();
+    try {
+      const p = makeProject('ck-laptop', 'app-laptop', '/laptop/app');
+      noteProject(p.id, 'laptop');
+      addProjectLocal(p);
+      const { getByTestId } = renderItem(p);
+      const newThread = getByTestId('project-item-new-thread') as HTMLButtonElement;
+      expect(newThread.disabled).toBe(true);
+      expect(newThread.title).toBe('Unavailable until this computer connects');
+      await grantBackendScopes('laptop', ['threads:read']);
+      await tick();
+      expect(newThread.disabled).toBe(true);
+      expect(newThread.title).toBe('Not granted to this device');
+      await grantBackendScopes('laptop', ['threads:read', 'threads:operate']);
+      await tick();
+      expect(newThread.disabled).toBe(false);
+      expect(newThread.title).toBe('New Thread in This Project');
+    } finally {
+      revokeBackendScopes('laptop');
+      __resetEntityIndexForTest();
+      resetStagedBackends();
+    }
   });
 });
 
@@ -457,17 +486,19 @@ describe('ProjectItem action target', () => {
   });
 });
 
-// A collapsed project's rollup dot carries its threads' status; one from an
-// unreachable computer is its last report, shown still.
+// A collapsed project's rollup dot carries its threads' status; one from a
+// computer unreachable for a while is its last report, shown still.
 describe('ProjectItem status rollup', () => {
   afterEach(() => {
     resetStagedBackends();
     __resetEntityIndexForTest();
     resetThreadStatuses();
     resetSidebarForTest();
+    vi.useRealTimers();
   });
 
-  it("stops the motion while the thread's computer is unreachable", async () => {
+  it("stops the motion once the thread's computer has been unreachable a while", async () => {
+    vi.useFakeTimers();
     const p = makeProject('a', 'web', '/work/web');
     addProjectLocal(p);
     setEntryExpanded(p.id, false);
@@ -485,6 +516,11 @@ describe('ProjectItem status rollup', () => {
     });
     const dot = () => getByTestId('project-item-status-dot').firstElementChild;
     expect(getByTestId('project-item-status-dot')).toHaveAttribute('data-status', 'running');
+    vi.advanceTimersByTime(UNREACHABLE_SETTLE_MS - 1);
+    await tick();
+    expect(dot()).toHaveClass('animate-pulse');
+    vi.advanceTimersByTime(1);
+    await tick();
     expect(dot()).not.toHaveClass('animate-pulse');
 
     staged.setStatus('connected');

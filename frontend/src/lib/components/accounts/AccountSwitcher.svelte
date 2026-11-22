@@ -41,7 +41,7 @@
   import { getProviderRateLimits } from '../../stores/rateLimitsInfo.svelte';
   import { openSettingsOverlay } from '../../stores/settingsOverlay.svelte';
   import { PROVIDER_SETTINGS_ORDER } from '../../providers/catalog';
-  import { hasScope } from '../../transport/scopes';
+  import { scopeGrant } from '../../transport/scopes';
   import type { ProviderID } from '../../types/providers';
   import { isImeComposingEvent } from '../../utils/imeComposition';
 
@@ -116,7 +116,7 @@
   // browser can reach this effect before the bootstrap manifest resolves the
   // answer, and a refused RPC would surface as a raw failure toast.
   $effect(() => {
-    if (!open || !hasScope('access:admin', backend)) return;
+    if (!open || scopeGrant('access:admin', backend) !== 'granted') return;
     activeIndex = 0;
     void loadProviderAccounts(backend);
     requestAnimationFrame(() => listEl?.focus());

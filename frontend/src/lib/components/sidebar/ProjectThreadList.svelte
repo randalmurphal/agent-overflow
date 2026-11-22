@@ -5,7 +5,8 @@
   // background ungroups one).
   import { pendingForks } from '../../stores/forkPreparation.svelte';
   import ForkPendingRow from './ForkPendingRow.svelte';
-  import { projectHasScope } from '../../transport/entityScopes';
+  import { projectScopeGrant } from '../../transport/entityScopes';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
   import type { Thread, ThreadGroup } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import {
@@ -50,7 +51,7 @@
   let lastNewThreadContextMenuAt = 0;
   // Creating a thread rides `threads:operate`. The empty-state control is
   // the whole content of an empty project, so it stays and goes inert.
-  let newThreadUngranted = $derived(!projectHasScope('threads:operate', projectId));
+  let newThreadGrant = $derived(projectScopeGrant('threads:operate', projectId));
 
   function handleEmptyNewThreadClick(e: MouseEvent): void {
     if (Date.now() - lastNewThreadContextMenuAt < 500) return;
@@ -195,8 +196,8 @@
     type="button"
     onclick={handleEmptyNewThreadClick}
     oncontextmenu={handleEmptyNewThreadContextMenu}
-    disabled={newThreadUngranted}
-    title={newThreadUngranted ? 'Not granted to this device' : undefined}
+    disabled={newThreadGrant !== 'granted'}
+    title={grantBlockedTitle(newThreadGrant)}
     data-testid="project-thread-list-empty"
     class="mr-2 my-1 inline-flex items-center gap-1 rounded-[var(--radius-field)] px-2 py-1 compact:py-2 text-[0.6875rem] text-fg-hint hover:bg-surface-2/30 hover:text-fg cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-surface-2/0 disabled:hover:text-fg-hint"
   >

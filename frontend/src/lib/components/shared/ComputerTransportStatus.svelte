@@ -53,8 +53,9 @@
   import { hasHomeEndpoint } from '../../transport/homeEndpoint';
   import { errString } from '../../utils/errors';
   import { startupMetaText, startupStatusText } from '../../transport/startupProgress';
-  import { relativeTime } from '../../utils/format';
+  import { formatCalendarDate, formatTimeOfDay, relativeTime } from '../../utils/format';
   import {
+    backendUnreachableSettled,
     getTransportStatus,
     getTransportStatusFor,
     redialAfterSignIn,
@@ -74,6 +75,7 @@
   import { isBackendResyncing, onBackendRecovery } from '../../stores/transportRecovery';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import { installTapHold } from '../../utils/tapHold';
+  import { transportBannerReason } from './transportBannerReason';
 
   // Tick once per second so the countdown stays in sync. We only mount
   // when the banner is visible; on a steady-state connection the
@@ -134,23 +136,27 @@
       if (id === target) resyncing = isBackendResyncing(target);
     });
   });
-  let checking = $derived(snapshot.status === 'connected' && snapshot.checkingConnection === true);
-  let syncing = $derived(snapshot.status === 'connected' && resyncing);
-  let showingBootFailure = $derived(snapshot.status === 'connected' && !checking && !syncing && bootFailure !== '');
-
-  // A connection problem outranks a connected notice (a failed boot phase
-  // or a bundle notice): it is happening now. The notice keeps the strip
-  // up on its own once the transport is healthy again.
-  //
-  // A backend that is starting is not a problem, and before this page
-  // first connects its boot is shown by the startup screen and the
-  // sidebar's catalog rows. The strip reports it only for a backend this
-  // page was already using, which is a restart.
+  // Whether the strip shows, and why, is `transportBannerReason`'s rule
+  // alone: a paired computer's connection problems wait for the settle
+  // time that dims its thread rows, this computer's do not. A connection
+  // problem outranks a connected notice (a failed boot phase or a bundle
+  // notice): it is happening now. The notice keeps the strip up on its own
+  // once the transport is healthy again.
   let starting = $derived(snapshot.status === 'starting');
-  let visible = $derived(
-    (snapshot.status !== 'connected' && (starting ? hasEverConnected : hasEverConnected || bootGraceExpired))
-      || checking || syncing || connectedNotice !== '',
-  );
+  let reason = $derived(transportBannerReason({
+    paired: backend !== HOME_BACKEND && !removed,
+    status: snapshot.status,
+    checking: snapshot.checkingConnection === true,
+    resyncing,
+    unreachableSettled: backendUnreachableSettled(backend),
+    hasEverConnected,
+    bootGraceExpired,
+    notice: connectedNotice !== '',
+  }));
+  let visible = $derived(reason !== null);
+  let checking = $derived(reason === 'checking');
+  let syncing = $derived(reason === 'syncing');
+  let showingBootFailure = $derived(reason === 'notice' && bootFailure !== '');
 
   // A page that mounted while the transport was TERMINAL loaded nothing.
   // Every store's first fetch was refused by the latched client, and only
@@ -189,8 +195,10 @@
     if (first && sawTerminal && backend === HOME_BACKEND && !isNativeShell() && attachedBackendCount() === 1) location.reload();
   });
 
+  // A paired computer's strip says one still sentence while it is down
+  // (`pairedOffline`), so only this page's own computer needs the tick.
   $effect(() => {
-    if (!visible) {
+    if (!visible || backend !== HOME_BACKEND) {
       if (timer !== null) {
         clearInterval(timer);
         timer = null;
@@ -260,6 +268,17 @@
 
   let dormant = $derived(snapshot.status === 'reconnecting' && snapshot.dormant === true);
 
+  // A paired computer that is down is a fact about that computer, not a
+  // countdown: its ladder keeps dialing for as long as it is off, and a
+  // number counting down to each attempt, repeated by the alert region,
+  // is noise the person can do nothing about. The strip names when it was
+  // last reached as a clock time, which stays true without ticking.
+  let pairedOffline = $derived.by(() => {
+    if (backend === HOME_BACKEND || snapshot.status !== 'reconnecting') return null;
+    const at = snapshot.lastConnectedAt ?? null;
+    return at === null ? 'Offline.' : `Offline since ${offlineSince(at)}.`;
+  });
+
   let message = $derived.by(() => {
     if (removed) return 'This computer was removed. Choose another computer.';
     if (checking) return 'Checking connection…';
@@ -271,6 +290,7 @@
       const meta = startupMetaText(startup);
       return meta ? `${startupStatusText(startup)} (${meta})` : startupStatusText(startup);
     }
+    if (pairedOffline !== null) return pairedOffline;
     if (snapshot.status === 'reconnecting') {
       if (dormant) {
         return lastSeen === null
@@ -287,6 +307,12 @@
     }
     return 'Disconnected from the agent backend.';
   });
+
+  // The clock time, with the date once it is not today's.
+  function offlineSince(at: number): string {
+    const time = formatTimeOfDay(at);
+    return new Date(at).toDateString() === new Date().toDateString() ? time : `${formatCalendarDate(at)}, ${time}`;
+  }
 
   function handleRetry(): void {
     if (backend === HOME_BACKEND) retryTransport();
@@ -306,7 +332,7 @@
   // for the rest of the session, eating its taps (found on the first
   // real-phone run, 2026-09-04). Dismissing a boot failure leaves any
   // bundle notice it outranked.
-  let dismissable = $derived(snapshot.status === 'connected' && !checking && !syncing && connectedNotice !== '');
+  let dismissable = $derived(reason === 'notice');
 
   function handleDismiss(): void {
     if (bootFailure !== '') dismissBootFailureNotice(backend);
