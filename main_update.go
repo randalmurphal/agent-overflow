@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -10,10 +11,13 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	appservice "agent-overflow/internal/app"
+	"agent-overflow/internal/appupdate"
 	"agent-overflow/internal/platform"
 	"agent-overflow/internal/startupprogress"
 	"agent-overflow/internal/store"
@@ -27,6 +31,96 @@ import (
 // lines on stdout, the last one the result. The steps live in
 // internal/supervise; this file owns argv, the lock, signals and the exit
 // code.
+
+// processStarted is when this process started, as near as Go code can
+// tell: package variables initialize before main.
+var processStarted = time.Now()
+
+// updateBoot times the boot that follows an update, the update's last
+// phase: the new version's real boot after a commit, or the previous
+// version's after a rollback or failure, from when this process's own work
+// starts until it is ready for clients or fails to start. It ends once,
+// whichever exit comes first. A nil *updateBoot is a boot that follows no
+// update.
+type updateBoot struct {
+	phase supervise.Phase
+	after string
+	once  sync.Once
+}
+
+// activeUpdateBoot is the boot fatalf ends: a process can exit through
+// fatalf from many places, and the boot's phase ends there too.
+var activeUpdateBoot atomic.Pointer[updateBoot]
+
+// beginUpdateBoot times the boot that follows the update to `to` from
+// started, which committed says applied; nil when to is "".
+func beginUpdateBoot(logf func(string, ...any), to string, committed bool, started time.Time) *updateBoot {
+	if to == "" {
+		return nil
+	}
+	after := "unsuccessful"
+	if committed {
+		after = "committed"
+	}
+	b := &updateBoot{
+		phase: supervise.NewPhaseLog(logf, "updater: update to "+to, nil).BeginAt("first-boot", started),
+		after: after,
+	}
+	activeUpdateBoot.Store(b)
+	return b
+}
+
+// end ends the boot with err, nil once it is ready for clients. Only the
+// first call logs.
+func (b *updateBoot) end(err error) {
+	if b == nil {
+		return
+	}
+	b.once.Do(func() {
+		activeUpdateBoot.CompareAndSwap(b, nil)
+		b.phase.End(err, "after", b.after)
+	})
+}
+
+// followedUpdate is the update a WSL backend's boot follows, and whether
+// it applied: the launcher's record names a committed one (--updating-to)
+// or one that did not apply (--update-failed-to); otherwise the install
+// marker names one that took the direct swap, applied or not
+// (appupdate.Service.UpdateThisBootFollows).
+func followedUpdate(updatingTo string, failure appupdate.LauncherFailure, markerTo string, markerApplied bool) (to string, committed bool) {
+	switch {
+	case updatingTo != "":
+		return updatingTo, true
+	case failure.To != "":
+		return failure.To, false
+	}
+	return markerTo, markerApplied
+}
+
+// endActiveUpdateBoot ends the boot in progress, if any, with err: the
+// process is exiting.
+func endActiveUpdateBoot(err error) {
+	activeUpdateBoot.Load().end(err)
+}
+
+// shutDownAfterRun shuts a desktop window's transport down once its app
+// loop has returned, logging a failure as "<prefix>: shutdown: <err>", then
+// ends the shutdown of a restart that took the framework's swap
+// (appupdate.Service.EndRestart) with the loop's error and the transport's.
+// shutdown is nil when no transport started. The caller still exits on
+// runErr alone.
+func shutDownAfterRun(runErr error, prefix string, shutdown func(context.Context) error, endRestart func(error)) {
+	var shutdownErr error
+	if shutdown != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), transportShutdownTimeout)
+		if err := shutdown(ctx); err != nil {
+			log.Printf("%s: shutdown: %v", prefix, err)
+			shutdownErr = fmt.Errorf("%s shutdown: %w", prefix, err)
+		}
+		cancel()
+	}
+	endRestart(errors.Join(runErr, shutdownErr))
+}
 
 func isUpdateCommand(name string) bool {
 	switch name {
@@ -123,6 +217,9 @@ func runUpdateCommand(name string, args []string) int {
 		},
 		Log: log.Printf,
 	}
+	// The command's own duration: the launcher's wait for it, in its
+	// summary, also counts starting it through wsl.exe.
+	running := supervise.NewPhaseLog(log.Printf, "update: "+name+" "+flags.id, nil).Begin("command")
 	if err := supervise.WriteUpdateEvent(out, command.Started()); err != nil {
 		log.Printf("update: %s: report start: %v", name, err)
 	}
@@ -130,14 +227,17 @@ func runUpdateCommand(name string, args []string) int {
 	if err := supervise.WriteUpdateEvent(out, result); err != nil {
 		log.Printf("update: %s: report the result: %v", name, err)
 	}
-	log.Printf("update: %s %s: %s %s", name, flags.id, result.Outcome, result.Reason)
+	// Every outcome but the two that succeed fails the command with its
+	// reason.
+	code, failure := 1, errors.New(result.Reason)
 	switch result.Outcome {
 	case supervise.UpdateOutcomeOK, supervise.UpdateOutcomePrepared:
-		return 0
+		code, failure = 0, nil
 	case supervise.UpdateOutcomeRolledBack, supervise.UpdateOutcomeRefused, supervise.UpdateOutcomeChanged,
 		supervise.UpdateOutcomeNoSnapshot, supervise.UpdateOutcomeFailed:
 	}
-	return 1
+	running.End(failure, "outcome", result.Outcome)
+	return code
 }
 
 func runUpdateStep(ctx context.Context, name string, flags updateCommandFlags, command supervise.UpdateCommand) supervise.UpdateEvent {
@@ -289,6 +389,13 @@ func runTrialProtocol(newBackend func(observe func(startupprogress.Progress)) tr
 		return conn.Send(supervise.Message{Type: supervise.MsgProgress, Progress: &p})
 	})
 	backend := newBackend(progress.Report)
+	// The shutdown closes the store, whose close-time WAL checkpoint the
+	// trial's parent waits on (trial.stop).
+	shutdown := func() {
+		stopping := supervise.NewPhaseLog(log.Printf, "update trial", nil).Begin("shutdown")
+		backend.shutdown()
+		stopping.End(nil)
+	}
 	bootCtx, bootCancel := context.WithCancel(context.Background())
 	defer bootCancel()
 	cancelBootOnShutdownRequest(bootCtx, bootCancel, stopRequested)
@@ -302,7 +409,7 @@ func runTrialProtocol(newBackend func(observe func(startupprogress.Progress)) tr
 			reason = "the trial was stopped before it finished starting"
 		}
 		code := fail(reason)
-		backend.shutdown()
+		shutdown()
 		return code
 	}
 	if err := conn.Send(supervise.Message{Type: supervise.MsgPrepared, UpdateID: opening.UpdateID}); err != nil {
@@ -310,7 +417,7 @@ func runTrialProtocol(newBackend func(observe func(startupprogress.Progress)) tr
 	}
 	log.Printf("update trial: prepared; waiting to be stopped")
 	<-stopRequested
-	backend.shutdown()
+	shutdown()
 	return 0
 }
 

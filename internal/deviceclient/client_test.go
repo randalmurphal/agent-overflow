@@ -230,8 +230,9 @@ func TestAuthorize_MintsAProofForTheRequestItRidesOn(t *testing.T) {
 func TestAuthorize_RefusesWithNoSession(t *testing.T) {
 	be := newBackend(t)
 	client, _ := openAgainst(t, be, nil)
-	if err := client.Forget(); err != nil {
-		t.Fatalf("Forget: %v", err)
+	client.Retire()
+	if err := ForgetSession(client.dir, "backend-a"); err != nil {
+		t.Fatalf("ForgetSession: %v", err)
 	}
 	req, err := http.NewRequest(http.MethodPost, be.URL+"/auth/ticket", nil)
 	if err != nil {

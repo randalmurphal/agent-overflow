@@ -9,6 +9,7 @@ import { makeItem } from '../../../test/helpers/chat';
 import { createThreadActivityRuns } from '../../stores/threadActivityRuns.svelte';
 import { createTimelineActivityRunAutoCollapse } from './timelineActivityRunAutoCollapse';
 import { createTimelineQuietWork, QUIET_WORK_MIN_INTERVAL_MS } from './timelineQuietWork';
+import { AGENT_MESSAGE_MEMBERS_RULE } from '../../utils/activityRunSpans';
 
 // The gate over a REAL registry — release semantics are the point — with the
 // pane and engine reduced to exactly what the gate reads, and the pass
@@ -39,6 +40,7 @@ interface Harness {
 
 function harness(): Harness {
   const runs = createThreadActivityRuns({
+    activityRunRule: () => AGENT_MESSAGE_MEMBERS_RULE,
     defaultCollapsed: () => true,
     windowRows: () => 30,
     windowVerified: () => true,

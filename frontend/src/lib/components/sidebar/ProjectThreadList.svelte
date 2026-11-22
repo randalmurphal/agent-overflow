@@ -25,10 +25,17 @@
     moveThreadsToGroupAction,
     removeThreadsFromGroupAction,
   } from './threadGroupActions';
+  import type { SidebarTopLevelList } from '../../stores/sidebar.svelte';
 
   interface Props {
-    /** The project entry this list is. */
+    /** The project an action in this list targets: the entry's
+     *  representative. */
     projectId: string;
+    /** The key this list's disclosure is persisted by: the entry's. */
+    listKey: string;
+    /** How many rows the list shows, as the entry read it. */
+    listLimit: number;
+
     threads: Thread[];
     /** The project's groups, already search-filtered by ProjectsSection. */
     groups?: readonly ThreadGroup[];
@@ -37,7 +44,9 @@
     onNewThread?: ProjectNewThreadHandler;
   }
 
-  let { projectId, threads, groups = [], pane, onNewThread }: Props = $props();
+  let { projectId, listKey, listLimit, threads, groups = [], pane, onNewThread }: Props = $props();
+  // This list's top level pages under the entry, in the projects' own record.
+  let list = $derived<SidebarTopLevelList>({ kind: 'project', entryKey: listKey, limit: listLimit });
   let lastNewThreadContextMenuAt = 0;
   // Creating a thread rides `threads:operate`. The empty-state control is
   // the whole content of an empty project, so it stays and goes inert.
@@ -209,6 +218,6 @@
     ondrop={handleContainerDrop}
     ondragend={clearDropState}
   >
-    <SidebarTreeList {threads} {groups} listKey={projectId} {pane} {drops} />
+    <SidebarTreeList {threads} {groups} {list} {pane} {drops} />
   </div>
 {/if}

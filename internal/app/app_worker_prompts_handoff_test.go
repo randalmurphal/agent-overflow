@@ -115,6 +115,14 @@ type workerPromptFixture struct {
 
 func newWorkerPromptFixture(t *testing.T, id string, standing bool) workerPromptFixture {
 	t.Helper()
+	return newPlacedWorkerPromptFixture(t, id, standing, store.PlacementStandalone, false)
+}
+
+// newPlacedWorkerPromptFixture is newWorkerPromptFixture with the worker in
+// placement and, when settled, its spawn settled before it asks, so no run
+// of its spawner's is open on it: the spawn tracks none.
+func newPlacedWorkerPromptFixture(t *testing.T, id string, standing bool, placement string, settled bool) workerPromptFixture {
+	t.Helper()
 	a, _ := newAppForFlushQueueRPC(t)
 	a.triage = triage.NewRouter(a.store, a.emit)
 	a.configureTriageQueueCallbacks()
@@ -130,6 +138,16 @@ func newWorkerPromptFixture(t *testing.T, id string, standing bool) workerPrompt
 		Kind: store.ThreadRequestSpawn, State: store.ThreadRequestRunning,
 	}); err != nil {
 		t.Fatalf("record the spawn: %v", err)
+	}
+	if _, err := a.store.SetThreadPlacement([]string{worker.ID}, placement); err != nil {
+		t.Fatal(err)
+	}
+	if settled {
+		if _, err := a.store.SettleThreadRequest(id+"-spawn", []string{store.ThreadRequestRunning}, store.ThreadRequestSettlement{
+			State: store.ThreadRequestFinished, Answer: []byte("done"), AnswerKind: store.ThreadAnswerFinal,
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	request := provider.ApprovalRequest{RequestID: "approval-1", ThreadID: worker.ID, ToolName: "Bash", Description: "make deploy", Kind: "command"}
 	meta, err := json.Marshal(request)

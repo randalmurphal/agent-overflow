@@ -84,6 +84,27 @@ func Write(path string, data []byte) error {
 	return SyncDir(dir)
 }
 
+// Remove deletes path and then fsyncs its directory, Write's counterpart for
+// a deletion: without the sync the unlink is only in the page cache, and a
+// power loss can bring the file back. A path that does not exist is not an
+// error, and is still synced, so a deletion that an earlier call made and
+// did not sync becomes durable. A failed sync is returned as Write returns
+// one: the file may be gone all the same.
+func Remove(path string) error {
+	if path == "" {
+		return errors.New("atomicfile: empty path")
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("atomicfile: remove %s: %w", path, err)
+	}
+	dir := filepath.Dir(path)
+	if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
+		// No directory, no entry to make durable.
+		return nil
+	}
+	return SyncDir(dir)
+}
+
 // SyncDir fsyncs a directory so entries created, renamed or removed inside it
 // survive a power loss. Exported because the callers that write more than one
 // file into a directory — a staged version tree, a database snapshot — need to

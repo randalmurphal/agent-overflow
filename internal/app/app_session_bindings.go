@@ -359,18 +359,25 @@ func (a *App) releaseReconnect(threadID string) {
 // runSessionStart. Callers with no cancellation of their own pass
 // context.Background().
 func (a *App) startSession(ctx context.Context, threadID string) error {
+	_, err := a.startRegisteredSession(ctx, threadID)
+	return err
+}
+
+// startRegisteredSession is startSession that also returns the session the
+// start registered.
+func (a *App) startRegisteredSession(ctx context.Context, threadID string) (session, error) {
 	if a.shuttingDown.Load() {
-		return ErrShuttingDown
+		return session{}, ErrShuttingDown
 	}
 	// No door starts a paused assistant's thread (app_assistants_switch.go),
 	// except a person's operation admitted before the pause, which the pause
 	// stops once it has the action lock.
 	if !personAdmitted(ctx, threadID) {
 		if err := a.refusePausedAssistantThread(threadID); err != nil {
-			return err
+			return session{}, err
 		}
 	}
-	return a.runSessionStart(ctx, threadID, func() error {
+	return a.runRegisteredSessionStart(ctx, threadID, func() error {
 		start := a.startSessionNow
 		if a.startSessionFn != nil {
 			start = a.startSessionFn

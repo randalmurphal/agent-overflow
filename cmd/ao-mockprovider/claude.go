@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -116,9 +117,11 @@ func claudeInitializeResponsePayload() string {
 }
 
 // claudeContextUsageResponsePayload is the inner response payload for a
-// control_request{subtype:"get_context_usage"} ack. Static: the mock has no
-// conversation to tokenize, and the surface under test (the meter's
-// breakdown popover) only needs a well-formed answer to render.
+// control_request{subtype:"get_context_usage"} ack. Its categories are
+// static: the mock has no conversation to tokenize, and the meter's
+// breakdown popover only needs a well-formed answer to render. A session
+// adds the conversation's `messageBreakdown` (contextUsagePayload); the
+// account probe answers with this alone.
 //
 // Shaped after the real 2.1.219 capture in
 // docs/references/fixtures/claude/context_usage_control_20260803.summary.json,
@@ -186,6 +189,10 @@ type claudeAdapter struct {
 	// which is the linkage AO verifies a user message against, so a turn
 	// that wrote tool frames must not chain the echo past them.
 	leafUUID string
+	// userRows counts the user envelopes this process recorded, under
+	// leafMu: the conversation's user messages when no transcript home
+	// keeps them (claudeUserMessageRows).
+	userRows int
 
 	// tasks follows the background tasks this process announced, for the
 	// terminals an interrupt owes them (claude_tasks.go).
@@ -387,6 +394,12 @@ func (a *claudeAdapter) handleLine(line []byte) {
 			for _, frame := range a.tasks.killForInterrupt(time.Now()) {
 				a.w.writeLine(frame, 0, 0)
 			}
+		case "get_context_usage":
+			// The breakdown counts the conversation's user messages, which a
+			// workflow resume reads to tell a loaded conversation from an
+			// empty one (claude-wire.md §Start outcome before the first input).
+			writeClaudeControlSuccess(a.w, env.RequestID, a.contextUsagePayload())
+			return
 		case "stop_task":
 			// The named task's kill frames precede the ack; an awaited
 			// agent's launch answers after it (claude_tasks.go).
@@ -691,6 +704,9 @@ func (a *claudeAdapter) recordUserEnvelope(line []byte) {
 		env["parentUuid"] = json.RawMessage(mustJSON(leaf))
 	}
 	transcriptLine := mustJSON(env)
+	a.leafMu.Lock()
+	a.userRows++
+	a.leafMu.Unlock()
 	// Durability precedes visibility, matching the invariant the real provider
 	// transcript gives crash recovery: once AO can observe the prompt, a cold
 	// restart must already be able to find its leaf.
@@ -800,6 +816,72 @@ func (a *claudeAdapter) echoDrainedEnvelope(line []byte) {
 func (a *claudeAdapter) transcriptPath() string {
 	home := strings.TrimSpace(os.Getenv(control.EnvTranscriptHome))
 	return filepath.Join(home, ".claude", "projects", "mock", a.e.currentVars()["SESSION_ID"]+".jsonl")
+}
+
+// contextUsagePayload is claudeContextUsageResponsePayload with the
+// `messageBreakdown` the CLI reports, its user-message tokens counted from
+// the conversation's user rows (claudeUserTokensPerRow each).
+func (a *claudeAdapter) contextUsagePayload() string {
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(claudeContextUsageResponsePayload), &payload); err != nil {
+		log.Fatalf("claude: decode the context usage payload: %v", err)
+	}
+	payload["messageBreakdown"] = json.RawMessage(mustJSON(map[string]any{
+		"toolCallTokens": 0, "toolResultTokens": 0, "attachmentTokens": 0,
+		"assistantMessageTokens":  0,
+		"userMessageTokens":       a.claudeUserMessageRows() * claudeUserTokensPerRow,
+		"redirectedContextTokens": 0, "unattributedTokens": 0,
+		"toolCallsByType": []any{}, "attachmentsByType": []any{},
+	}))
+	return mustJSON(payload)
+}
+
+// claudeUserTokensPerRow is the mock's token count for one user message.
+const claudeUserTokensPerRow = 4
+
+// claudeUserMessageRows is how many user messages the conversation holds:
+// the user rows of its session file under a harness transcript home, which a
+// resumed process loads, or else the ones this process recorded. The file is
+// looked up by session id in every project folder: the mock records under
+// `mock`, and AO moves a session it resumes under the workspace's own folder
+// before it starts the CLI there.
+func (a *claudeAdapter) claudeUserMessageRows() int {
+	home := strings.TrimSpace(os.Getenv(control.EnvTranscriptHome))
+	if home == "" {
+		a.leafMu.Lock()
+		defer a.leafMu.Unlock()
+		return a.userRows
+	}
+	sessionID := a.e.currentVars()["SESSION_ID"]
+	if sessionID == "" || filepath.Base(sessionID) != sessionID || strings.ContainsAny(sessionID, "/\\*?[") || strings.ContainsRune(sessionID, '\x00') {
+		log.Fatalf("claude: unsafe transcript session id %q", sessionID)
+	}
+	paths, err := filepath.Glob(filepath.Join(home, ".claude", "projects", "*", sessionID+".jsonl"))
+	if err != nil {
+		log.Fatalf("claude: find mock transcript: %v", err)
+	}
+	rows := 0
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			log.Fatalf("claude: read mock transcript: %v", err)
+		}
+		fileRows := 0
+		for line := range bytes.SplitSeq(data, []byte("\n")) {
+			var row struct {
+				Type string `json:"type"`
+			}
+			if json.Unmarshal(line, &row) == nil && row.Type == "user" {
+				fileRows++
+			}
+		}
+		// Copies of one conversation: the fullest is what a resume loads.
+		rows = max(rows, fileRows)
+	}
+	return rows
 }
 
 func (a *claudeAdapter) persistTranscript(line string) {

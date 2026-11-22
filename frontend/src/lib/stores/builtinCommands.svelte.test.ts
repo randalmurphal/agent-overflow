@@ -2019,8 +2019,8 @@ describe('thread.fork command', () => {
     // Reset the persisted "expanded projects" set so the assertion
     // proves the command did the expansion (not a leftover from an
     // earlier test).
-    const sidebar = await import('./sidebar.svelte');
-    sidebar.collapseProject('project-fork');
+    const continuity = await import('./sidebarEntryContinuity.svelte');
+    continuity.setEntryExpanded('project-fork', false);
 
     setBindingMock('ListItems', async () => []);
     setBindingMock('SwitchThread', async () => ({
@@ -2059,7 +2059,7 @@ describe('thread.fork command', () => {
 
     await command.run(makeCommandContext(pane, {}));
 
-    const isExpanded = sidebar.isProjectExpanded('project-fork');
+    const isExpanded = continuity.entryRecordForTest('project-fork').expanded;
     expect(isExpanded).toBe(true);
   });
 });

@@ -228,15 +228,10 @@ func (m *Manager) reconcileOwnPeer(ctx context.Context, id string, hooks OwnDevi
 		if member.Removed || member.BackendID == "" || member.KeyThumbprint == key || member.BackendID == id {
 			continue
 		}
-		if excluded, err := m.ownDeviceExcluded(member.BackendID); err != nil {
+		if wanted, err := m.introductionWanted(member.BackendID); err != nil {
 			return err
-		} else if excluded {
+		} else if !wanted {
 			continue
-		}
-		if session, err := deviceclient.LoadSession(m.dir, member.BackendID); err == nil && session.OwnDevice {
-			continue
-		} else if err != nil && !errors.Is(err, deviceclient.ErrNoSession) {
-			return err
 		}
 		var invitation struct {
 			URL string `json:"url"`
@@ -355,28 +350,4 @@ func (m *Manager) pruneOwnProfiles(snapshot owndevices.List) (bool, error) {
 		}
 	}
 	return changed, nil
-}
-
-// retireOwnProfile forgets one own-device profile the way a tombstone does,
-// if it still holds the session named (any session when sessionID is empty),
-// and announces it as SetRemoved, as every removal is. Ordinary limited
-// shares are separate grants and are never touched.
-func (m *Manager) retireOwnProfile(id, sessionID string) (bool, error) {
-	unlock := m.profiles.Lock(id)
-	defer unlock()
-	current, err := deviceclient.LoadSession(m.dir, id)
-	if err != nil {
-		if errors.Is(err, deviceclient.ErrNoSession) {
-			err = nil
-		}
-		return false, err
-	}
-	if !current.OwnDevice || (sessionID != "" && current.SessionID != sessionID) {
-		return false, nil
-	}
-	if err := m.forgetLocked(id); err != nil {
-		return false, err
-	}
-	m.notifyChanged(SetChange{Action: SetRemoved, ID: id})
-	return true, nil
 }

@@ -44,7 +44,7 @@ func settleAsNarration(t *testing.T, s *Store, threadID, itemID string) Item {
 
 func tailPage(t *testing.T, s *Store, threadID string) PagedItems {
 	t.Helper()
-	page, err := s.ListThreadSliceAround(context.Background(), threadID, "", 60, 30, TimelineSelection{})
+	page, err := s.ListThreadSliceAround(context.Background(), threadID, "", 60, 30, TimelineSelection{}, AgentMessagesAreMembers)
 	if err != nil {
 		t.Fatalf("tail slice: %v", err)
 	}
@@ -106,19 +106,19 @@ func TestNarrationSettleMovesTheRowOutOfItsActivityRun(t *testing.T) {
 	_, err := s.ListActivityRunMembers(context.Background(), "t", ActivityRunMembersRequest{
 		RunFirstItemID: ids[1], LoadedFirstItemID: ids[1], LoadedLastItemID: ids[5],
 		Direction: ActivityRunMembersBefore, Limit: 2,
-	})
+	}, AgentMessagesAreMembers)
 	if !errors.Is(err, ErrActivityRunStale) {
 		t.Fatalf("members of the old run: err = %v, want ErrActivityRunStale", err)
 	}
 	_, err = s.ListActivityRunMembers(context.Background(), "t", ActivityRunMembersRequest{
 		RunFirstItemID: thinkingID, Direction: ActivityRunMembersBefore, Limit: 2,
-	})
+	}, AgentMessagesAreMembers)
 	if !errors.Is(err, ErrActivityRunStale) {
 		t.Fatalf("members of a run named by the prose row: err = %v, want ErrActivityRunStale", err)
 	}
 	members, err := s.ListActivityRunMembers(context.Background(), "t", ActivityRunMembersRequest{
 		RunFirstItemID: ids[4], Direction: ActivityRunMembersAround, AroundItemID: ids[5], Limit: 2,
-	})
+	}, AgentMessagesAreMembers)
 	if err != nil || members.Stub.MemberCount != 2 || members.Stub.FirstItemID != ids[4] {
 		t.Fatalf("members of the newer run = %+v, %v", members.Stub, err)
 	}

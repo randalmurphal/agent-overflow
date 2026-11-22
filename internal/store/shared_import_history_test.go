@@ -149,7 +149,7 @@ func TestSharedImportHistoryPagingAndSubagentExpansionUseLogicalTimeline(t *test
 		t.Fatalf("apply import: %v", err)
 	}
 
-	page, err := s.ListThreadSliceAround(context.Background(), "shared-window", "", 200, testRunWindowRows, TimelineSelection{})
+	page, err := s.ListThreadSliceAround(context.Background(), "shared-window", "", 200, testRunWindowRows, TimelineSelection{}, AgentMessagesAreMembers)
 	if err != nil {
 		t.Fatalf("list slice: %v", err)
 	}

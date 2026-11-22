@@ -1,3 +1,4 @@
+import { readSidebarCatalogs } from '../../../../test/helpers/sidebarCatalogs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
@@ -10,11 +11,11 @@ import {
   setProjectSortMode,
 } from '../../../stores/sidebar.svelte';
 import {
-  refreshProjects,
   resetProjectsForTest,
   touchProjectActivity,
+  updateProjectLocal,
 } from '../../../stores/projects.svelte';
-import { catalogTreeListed, loadThreadCatalogs, resetThreadCatalogsForTest } from '../../../stores/threadCatalogs';
+import { catalogTreeListed, loadSidebarCatalogs, resetSidebarCatalogsForTest } from '../../../stores/sidebarCatalogs';
 import {
   ensureMainPane,
   getAllPanes,
@@ -27,6 +28,7 @@ import { setBindingMock } from '../../../../test/mocks/bindings-app';
 import { normalizedTextContent } from '../../../../test/helpers/textContent';
 import { makeThread } from '../../../../test/helpers/chat';
 import { HOME_BACKEND } from '../../../transport/backendKey';
+import { takePinnedBackend } from '../../../transport/backends';
 import type { Project, ProjectWithCounts, Thread, ThreadGroup } from '../../../types/models';
 import { setThreadFilterQuery } from '../../../stores/threadFilter.svelte';
 import {
@@ -35,9 +37,11 @@ import {
 } from '../../../stores/threadGroups.svelte';
 import { createThreadGroupAction } from '../threadGroupActions';
 import { resetCatalogLoadForTest } from '../../../stores/catalogLoad.svelte';
+import { applyProjectUpdated } from '../../../stores/eventsProjectRows';
 import { __setTransportStatusForTest } from '../../../stores/transportStatus.svelte';
 import { DisconnectedError, TransportError } from '../../../transport/wsClient';
 import { observeBackendGeneration, setBackendIdentityFromBootstrap } from '../../../transport/backendIdentity';
+import { entryRecordForTest, setEntryExpanded, setEntryListLimit } from '../../../stores/sidebarEntryContinuity.svelte';
 
 function mkProject(id: string, overrides: Partial<Project> = {}): Project {
   return {
@@ -52,6 +56,10 @@ function mkProject(id: string, overrides: Partial<Project> = {}): Project {
   };
 }
 
+async function settleTicks(): Promise<void> {
+  for (let i = 0; i < 4; i++) await tick();
+}
+
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (error: unknown) => void } {
   let resolve!: (value: T) => void;
   let reject!: (error: unknown) => void;
@@ -61,7 +69,7 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reje
 
 async function seedProjects(items: ProjectWithCounts[]): Promise<void> {
   setBindingMock('ListProjects', async () => items);
-  await refreshProjects();
+  await readSidebarCatalogs();
 }
 
 describe('<ProjectsSection>', () => {
@@ -89,8 +97,8 @@ describe('<ProjectsSection>', () => {
     // into the next. The reads also settle HOME's catalogs as loaded and
     // its thread and group reads as finished, so the list renders instead
     // of its loading row.
-    await loadThreadCatalogs();
-    await refreshProjects();
+    await loadSidebarCatalogs();
+    await readSidebarCatalogs();
   });
 
   it('renders the PROJECTS header and control icons', async () => {
@@ -150,29 +158,28 @@ describe('<ProjectsSection>', () => {
     beforeEach(() => {
       // Back to a computer that has not answered yet.
       resetCatalogLoadForTest();
-      resetThreadCatalogsForTest();
+      resetSidebarCatalogsForTest();
     });
 
-    it('shows a loading row and never the empty hint until both catalogs load', async () => {
+    it('shows a loading row naming each catalog of one round, and never the empty hint until the tree loads', async () => {
+      const threads = deferred<Thread[]>();
+      const groups = deferred<ThreadGroup[]>();
+      setBindingMock('ListThreads', () => threads.promise);
+      setBindingMock('ListThreadGroups', () => groups.promise);
       const { getByTestId, queryByTestId } = render(ProjectsSection, { props: { pane: null } });
       await tick();
       expect(getByTestId('sidebar-catalog-loading-label')).toHaveTextContent('Loading projects…');
       expect(queryByTestId('sidebar-projects-empty')).toBeNull();
 
-      await refreshProjects();
-      await tick();
-      // Threads have not answered: still incomplete, still not empty, and
-      // the row names the list it is waiting for.
+      // One round reads the three. Its project answer commits for the rest
+      // of the app, and the row names the next list it waits for.
+      void loadSidebarCatalogs().catch(() => {});
+      await vi.waitFor(() => expect(getByTestId('sidebar-catalog-loading-label')).toHaveTextContent('Loading threads…'));
       expect(getByTestId('sidebar-catalog-loading')).toBeInTheDocument();
-      expect(getByTestId('sidebar-catalog-loading-label')).toHaveTextContent('Loading threads…');
       expect(queryByTestId('sidebar-projects-empty')).toBeNull();
 
-      const groups = deferred<ThreadGroup[]>();
-      setBindingMock('ListThreadGroups', () => groups.promise);
-      // The round answers the boot once the threads are in.
-      await loadThreadCatalogs();
-      await tick();
-      expect(getByTestId('sidebar-catalog-loading-label')).toHaveTextContent('Loading groups…');
+      threads.resolve([]);
+      await vi.waitFor(() => expect(getByTestId('sidebar-catalog-loading-label')).toHaveTextContent('Loading groups…'));
       expect(queryByTestId('sidebar-projects-empty')).toBeNull();
 
       groups.resolve([]);
@@ -213,8 +220,8 @@ describe('<ProjectsSection>', () => {
       setBindingMock('ListProjects', async () => {
         throw new TransportError('method_error', 'list projects: database disk image is malformed');
       });
-      await refreshProjects();
-      await loadThreadCatalogs();
+      await readSidebarCatalogs();
+      await loadSidebarCatalogs();
       const { getByTestId, queryByTestId, findByTestId } = render(ProjectsSection, { props: { pane: null } });
       await tick();
       expect(normalizedTextContent(getByTestId('sidebar-catalog-failed'))).toMatch(/database disk image is malformed/i);
@@ -335,6 +342,152 @@ describe('<ProjectsSection>', () => {
     expect(ids).toEqual(['p-b', 'p-c', 'p-a']);
   });
 
+  function itemIds(container: HTMLElement): string[] {
+    return Array.from(container.querySelectorAll('[data-testid="project-item"]'))
+      .map((el) => el.getAttribute('data-project-id') ?? '');
+  }
+
+  // Showing the list costs what the list is long, not its square. The gate
+  // this replaced asked, per entry, which computers held that entry's
+  // members, and the question reached a scan of every row; each rendered row
+  // asks the same question for its identity errors. Doubling the list
+  // doubles the row reads while the cost is linear, and quadruples them if
+  // any of those scans returns.
+  async function rowReadsFor(count: number): Promise<number> {
+    let reads = 0;
+    const rows: ProjectWithCounts[] = Array.from({ length: count }, (_, i) => {
+      const id = `p-${String(i).padStart(3, '0')}`;
+      return {
+        project: { ...mkProject(id), get id() { reads++; return id; } },
+        threadCount: 0,
+        lastActive: 0,
+      };
+    });
+    await seedProjects(rows);
+    const { container, unmount } = render(ProjectsSection, { props: { pane: null } });
+    await tick();
+    expect(itemIds(container)).toHaveLength(count);
+    unmount();
+    return reads;
+  }
+
+  it('reads the project rows a number of times linear in the list length', async () => {
+    const small = await rowReadsFor(50);
+    resetProjectsForTest();
+    resetSidebarForTest();
+    const large = await rowReadsFor(100);
+    expect(large / small).toBeLessThan(2.6);
+  });
+
+  // A refused reorder is undone from the rows it replaced. It cannot wait for
+  // the read that follows: the projects are read only beside the threads
+  // under them, so a round whose thread half fails withholds the project
+  // answer and would leave the rejected order on screen.
+  it('puts the previous order back when the reorder write is refused and the read after it fails', async () => {
+    await seedProjects([
+      { project: mkProject('p-a', { name: 'A', sortPosition: 0 }), threadCount: 0, lastActive: 0 },
+      { project: mkProject('p-b', { name: 'B', sortPosition: 1 }), threadCount: 0, lastActive: 0 },
+    ]);
+    setProjectSortMode('manual');
+    const { container } = render(ProjectsSection, { props: { pane: null } });
+    await tick();
+    expect(itemIds(container)).toEqual(['p-a', 'p-b']);
+
+    const write = vi.fn(async () => { throw new Error('refused'); });
+    setBindingMock('UpdateProjectSortPositions', write);
+    // The computer would answer the new order if the round ever listed it.
+    setBindingMock('ListProjects', async () => [
+      { project: mkProject('p-b', { name: 'B', sortPosition: 0 }), threadCount: 0, lastActive: 0 },
+      { project: mkProject('p-a', { name: 'A', sortPosition: 1 }), threadCount: 0, lastActive: 0 },
+    ]);
+    setBindingMock('ListThreads', async () => { throw new Error('offline'); });
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const items = container.querySelectorAll('[data-testid="project-item"]');
+      const dataTransfer = { effectAllowed: '', dropEffect: '', setData: vi.fn(), getData: () => '' };
+      // jsdom has no DragEvent, so each event carries its own dataTransfer.
+      const drag = async (type: string, target: Element, props: Record<string, unknown> = {}): Promise<void> => {
+        const event = new Event(type, { bubbles: true, cancelable: true });
+        Object.defineProperty(event, 'dataTransfer', { value: dataTransfer });
+        for (const [key, value] of Object.entries(props)) Object.defineProperty(event, key, { value });
+        await fireEvent(target, event);
+      };
+      // The drag starts on the header, the drop lands on the whole row.
+      // An empty rect puts the cursor past the row's midpoint: dropped after it.
+      const header = items[0].querySelector('[aria-expanded]');
+      expect(header).not.toBeNull();
+      await drag('dragstart', header!);
+      await drag('dragover', items[1], { clientY: 1 });
+      await drag('drop', items[1]);
+      // The write went out with the dropped order, so the optimistic reorder
+      // this undoes really happened.
+      await vi.waitFor(() => expect(write).toHaveBeenCalledWith(['p-b', 'p-a']));
+      await settleTicks();
+      expect(itemIds(container)).toEqual(['p-a', 'p-b']);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  // The dropped order is an overlay the list sorts by, dropped when the
+  // write settles. What makes that safe is the order on the wire: the
+  // computer broadcasts one project:updated frame per row it moved before
+  // it returns (internal/app/app_projects.go#UpdateProjectSortPositions),
+  // the connection gets every event queued before a reply ahead of that
+  // reply (internal/transport/conn.go#writeReply, pinned by
+  // TestReplyFollowsEventsEmittedBeforeIt), and this client applies a
+  // frame as it arrives (transport/wsClient.ts#handleFrame). So the rows
+  // carry the order by the time the overlay goes, and the list never shows
+  // the order the user dragged away from.
+  it('never shows the order dropped away from, from the drop to the computer\'s frames', async () => {
+    await seedProjects([
+      { project: mkProject('p-a', { name: 'A', sortPosition: 0 }), threadCount: 0, lastActive: 0 },
+      { project: mkProject('p-b', { name: 'B', sortPosition: 1 }), threadCount: 0, lastActive: 0 },
+    ]);
+    setProjectSortMode('manual');
+    const { container } = render(ProjectsSection, { props: { pane: null } });
+    await tick();
+    expect(itemIds(container)).toEqual(['p-a', 'p-b']);
+
+    const settlement = deferred<Project[]>();
+    const write = vi.fn(() => settlement.promise);
+    setBindingMock('UpdateProjectSortPositions', write);
+    const items = container.querySelectorAll('[data-testid="project-item"]');
+    const dataTransfer = { effectAllowed: '', dropEffect: '', setData: vi.fn(), getData: () => '' };
+    const drag = async (type: string, target: Element, props: Record<string, unknown> = {}): Promise<void> => {
+      const event = new Event(type, { bubbles: true, cancelable: true });
+      Object.defineProperty(event, 'dataTransfer', { value: dataTransfer });
+      for (const [key, value] of Object.entries(props)) Object.defineProperty(event, key, { value });
+      await fireEvent(target, event);
+    };
+    const sampled: string[][] = [];
+    const sample = async (times: number): Promise<void> => {
+      for (let i = 0; i < times; i += 1) {
+        sampled.push(itemIds(container));
+        await tick();
+      }
+    };
+
+    // B dropped above A.
+    await drag('dragstart', items[1].querySelector('[aria-expanded]')!);
+    await drag('dragover', items[0], { clientY: -1 });
+    await drag('drop', items[0]);
+    await sample(4);
+    await vi.waitFor(() => expect(write).toHaveBeenCalledWith(['p-b', 'p-a']));
+    await sample(2);
+
+    // The frames, then the reply: the order the transport guarantees.
+    applyProjectUpdated({ action: 'full', project: mkProject('p-b', { name: 'B', sortPosition: 0 }) });
+    applyProjectUpdated({ action: 'full', project: mkProject('p-a', { name: 'A', sortPosition: 1 }) });
+    await sample(2);
+    settlement.resolve([]);
+    await settleTicks();
+    await sample(3);
+
+    expect(sampled).toEqual(sampled.map(() => ['p-b', 'p-a']));
+    expect(itemIds(container)).toEqual(['p-b', 'p-a']);
+  });
+
   it('opens the inline rename on the row a group create just mounted', async () => {
     // Why the request lives INSIDE createThreadGroupAction: the store write
     // schedules the flush that mounts the row, and that flush runs before the
@@ -408,10 +561,11 @@ describe('<ProjectsSection> threads and their groups', () => {
     setThreadFilterQuery('');
     setBindingMock('ListThreads', async () => []);
     setBindingMock('ListThreadGroups', async () => []);
-    await loadThreadCatalogs();
-    resetCatalogLoadForTest();
-    resetThreadCatalogsForTest();
+    // The project rows this suite's threads hang from, then back to a
+    // computer whose tree has not listed: each case is its first listing.
     await seedProjects([{ project: mkProject('p1', { name: 'Project One' }), threadCount: 3, lastActive: 0 }]);
+    resetCatalogLoadForTest();
+    resetSidebarCatalogsForTest();
   });
   afterEach(() => { vi.useRealTimers(); });
 
@@ -422,7 +576,7 @@ describe('<ProjectsSection> threads and their groups', () => {
       setBindingMock('ListThreads', () => threads.promise);
       setBindingMock('ListThreadGroups', () => groups.promise);
       const { container, getByTestId } = render(ProjectsSection, { props: { pane: null } });
-      const round = loadThreadCatalogs();
+      const round = loadSidebarCatalogs();
       if (first === 'threads') threads.resolve(after); else groups.resolve([group('g2')]);
       await settle();
       expect(arrangement(container)).toEqual([]);
@@ -441,7 +595,7 @@ describe('<ProjectsSection> threads and their groups', () => {
     setBindingMock('ListThreads', async () => after);
     setBindingMock('ListThreadGroups', () => groups.promise);
     const { container } = render(ProjectsSection, { props: { pane: null } });
-    const round = loadThreadCatalogs();
+    const round = loadSidebarCatalogs();
     await vi.advanceTimersByTimeAsync(2500);
     expect((await round).map((thread) => thread.id).sort()).toEqual(['a', 'b', 'c', 'outside']);
     await settle();
@@ -453,11 +607,751 @@ describe('<ProjectsSection> threads and their groups', () => {
     expect(arrangement(container)).toEqual(AFTER);
   });
 
+  // The project headers are held by the same gate as the rows under them,
+  // so a computer's whole tree appears in one step.
+  function headers(container: HTMLElement): string[] {
+    return Array.from(container.querySelectorAll('[data-project-id]'))
+      .map((el) => el.getAttribute('data-project-id') ?? '');
+  }
+
+  for (const held of ['projects', 'threads'] as const) {
+    it(`shows no project header until the whole tree lists, when the ${held} answer last`, async () => {
+      const projects = deferred<ProjectWithCounts[]>();
+      const threads = deferred<Thread[]>();
+      setBindingMock('ListProjects', () => projects.promise);
+      setBindingMock('ListThreads', () => threads.promise);
+      setBindingMock('ListThreadGroups', async () => [group('g2')]);
+      const { container, getByTestId } = render(ProjectsSection, { props: { pane: null } });
+      const round = loadSidebarCatalogs();
+
+      // The catalog that answers first is in the store and still shows
+      // nothing: no header with an empty "New Thread" button under it.
+      if (held === 'projects') threads.resolve(after);
+      else projects.resolve([{ project: mkProject('p1', { name: 'Project One' }), threadCount: 3, lastActive: 0 }]);
+      await settle();
+      expect(headers(container)).toEqual([]);
+      expect(arrangement(container)).toEqual([]);
+      expect(getByTestId('sidebar-catalog-loading')).toBeInTheDocument();
+      expect(container.querySelector('[data-testid="project-thread-list-empty"]')).toBeNull();
+
+      if (held === 'projects') projects.resolve([{ project: mkProject('p1', { name: 'Project One' }), threadCount: 3, lastActive: 0 }]);
+      else threads.resolve(after);
+      await round;
+      await settle();
+      expect(headers(container)).toEqual(['p1']);
+      expect(arrangement(container)).toEqual(AFTER);
+    });
+  }
+
+  // Each computer's tree is held on its own: one held computer must not
+  // take another's headers off the list.
+  it("lists a listed computer's projects while another computer's tree is held", async () => {
+    const { stageBackend, resetStagedBackends } = await import('../../../../test/helpers/backends');
+    const { takePinnedBackend } = await import('../../../transport/backends');
+    stageBackend({ id: 'gpu' });
+    try {
+      const gpuThreads = deferred<Thread[]>();
+      setBindingMock('ListProjects', async () => (takePinnedBackend() === 'gpu'
+        ? [{ project: mkProject('p2', { name: 'GPU Project', path: '/repo/p2' }), threadCount: 0, lastActive: 0 }]
+        : [{ project: mkProject('p1', { name: 'Project One' }), threadCount: 3, lastActive: 0 }]));
+      setBindingMock('ListThreads', () => (takePinnedBackend() === 'gpu' ? gpuThreads.promise : Promise.resolve(after)));
+      setBindingMock('ListThreadGroups', async () => (takePinnedBackend() === 'gpu' ? [] : [group('g2')]));
+      const { container } = render(ProjectsSection, { props: { pane: null } });
+      const round = loadSidebarCatalogs();
+      await round;
+      await settle();
+      expect(catalogTreeListed(HOME_BACKEND)).toBe(true);
+      expect(catalogTreeListed('gpu')).toBe(false);
+      expect(headers(container)).toEqual(['p1']);
+      expect(arrangement(container)).toEqual(AFTER);
+
+      gpuThreads.resolve([]);
+      await vi.waitFor(() => expect(catalogTreeListed('gpu')).toBe(true));
+      await settle();
+      expect(headers(container).sort()).toEqual(['p1', 'p2']);
+    } finally {
+      resetStagedBackends();
+    }
+  });
+
+  // A held computer must not feed the grouping either: its member would
+  // raise the entry's activity and re-sort the list before its rows exist,
+  // and move the list again when they arrive.
+  const repoProject = (id: string, repo: string, path: string) =>
+    mkProject(id, { name: `Repo ${repo}`, path, repositoryID: `github:github.com:${repo}` });
+
+  it("leaves a held computer out of a merged entry's activity, so the order changes once", async () => {
+    const { stageBackend, resetStagedBackends } = await import('../../../../test/helpers/backends');
+    const { takePinnedBackend } = await import('../../../transport/backends');
+    stageBackend({ id: 'gpu' });
+    try {
+      const gpuThreads = deferred<Thread[]>();
+      setBindingMock('ListProjects', async () => (takePinnedBackend() === 'gpu'
+        // The GPU checkout of repository A carries the newest activity in
+        // the entry it merges into.
+        ? [{ project: repoProject('a-gpu', 'A', '/gpu/a'), threadCount: 1, lastActive: 300 }]
+        : [
+          { project: repoProject('a-home', 'A', '/repo/a'), threadCount: 1, lastActive: 100 },
+          { project: repoProject('b-home', 'B', '/repo/b'), threadCount: 1, lastActive: 200 },
+        ]));
+      setBindingMock('ListThreads', () => (takePinnedBackend() === 'gpu'
+        ? gpuThreads.promise
+        : Promise.resolve([makeThread({ id: 'ta', projectId: 'a-home' }), makeThread({ id: 'tb', projectId: 'b-home' })])));
+      setBindingMock('ListThreadGroups', async () => []);
+      const { container } = render(ProjectsSection, { props: { pane: null } });
+      await loadSidebarCatalogs();
+      await settle();
+      expect(catalogTreeListed('gpu')).toBe(false);
+      // B is still the newer entry: the held member's 300 is not folded in.
+      expect(headers(container)).toEqual(['b-home', 'a-home']);
+
+      gpuThreads.resolve([]);
+      await vi.waitFor(() => expect(catalogTreeListed('gpu')).toBe(true));
+      await settle();
+      // One change, and it is the whole change: the member joins its entry
+      // and the entry takes the top in the same step.
+      expect(headers(container)).toEqual(['a-home', 'b-home']);
+    } finally {
+      resetStagedBackends();
+    }
+  });
+
+  // One member has to pass both the listing test and the device filter for
+  // its entry to show, or a filter that hides the only listed computer
+  // leaves an empty header behind.
+  it('shows no header when the device filter hides the only computer whose tree lists', async () => {
+    const { stageBackend, resetStagedBackends } = await import('../../../../test/helpers/backends');
+    const { takePinnedBackend } = await import('../../../transport/backends');
+    const { setSidebarDeviceVisible, showAllSidebarDevices } = await import('../../../stores/sidebarDevices.svelte');
+    stageBackend({ id: 'mac', backendId: 'mac-uuid' });
+    stageBackend({ id: 'gpu', backendId: 'gpu-uuid' });
+    try {
+      const gpuThreads = deferred<Thread[]>();
+      setBindingMock('ListProjects', async () => {
+        const computer = takePinnedBackend();
+        if (computer === 'mac') return [{ project: repoProject('a-mac', 'A', '/mac/a'), threadCount: 0, lastActive: 100 }];
+        if (computer === 'gpu') return [{ project: repoProject('a-gpu', 'A', '/gpu/a'), threadCount: 0, lastActive: 0 }];
+        return [];
+      });
+      setBindingMock('ListThreads', () => (takePinnedBackend() === 'gpu' ? gpuThreads.promise : Promise.resolve([])));
+      setBindingMock('ListThreadGroups', async () => []);
+      const { container } = render(ProjectsSection, { props: { pane: null } });
+      await loadSidebarCatalogs();
+      await settle();
+      expect(headers(container)).toEqual(['a-mac']);
+
+      // Hide the Mac: the entry's only remaining member is the GPU one,
+      // whose tree is held, so the entry has nothing to show.
+      setSidebarDeviceVisible('mac-uuid', false);
+      await settle();
+      expect(headers(container)).toEqual([]);
+
+      gpuThreads.resolve([]);
+      await vi.waitFor(() => expect(catalogTreeListed('gpu')).toBe(true));
+      await settle();
+      // The entry comes back showing the GPU checkout and still targeting
+      // the Mac's: filtering never changes where an action executes.
+      expect(headers(container)).toEqual(['a-mac']);
+    } finally {
+      showAllSidebarDevices();
+      resetStagedBackends();
+    }
+  });
+
+  // An entry counts the members the filter shows, and is targeted,
+  // persisted and rendered by what the filter cannot move: actions by its
+  // listed representative, the collapse set and the show-more limit by its
+  // key, the each by its rowKey.
+  const mergedRepoMocks = (homeRows: ProjectWithCounts[], gpuRows: ProjectWithCounts[]) => {
+    setBindingMock('ListProjects', async () => (takePinnedBackend() === 'gpu' ? gpuRows : homeRows));
+  };
+  const chevron = (container: HTMLElement, id: string): HTMLElement => {
+    const el = container.querySelector(`[data-project-id="${id}"] [data-testid="project-item-chevron"]`);
+    if (!(el instanceof HTMLElement)) throw new Error(`no chevron for ${id}`);
+    return el;
+  };
+  const expandedOf = (container: HTMLElement, id: string): string | null =>
+    container.querySelector(`[data-project-id="${id}"] [aria-expanded]`)?.getAttribute('aria-expanded') ?? null;
+
+  it("keeps a collapsed entry's row, and its show-more limit, when the filter hides its home member", async () => {
+    const { stageBackend, resetStagedBackends } = await import('../../../../test/helpers/backends');
+    const { setSidebarDeviceVisible, showAllSidebarDevices } = await import('../../../stores/sidebarDevices.svelte');
+    const { projectEntryKey } = await import('../../../stores/projects.svelte');
+    stageBackend({ id: 'gpu', backendId: 'gpu-id' });
+    setBackendIdentityFromBootstrap('home-id', 'gen-1', 'Mac', HOME_BACKEND);
+    try {
+      mergedRepoMocks(
+        [{ project: repoProject('a-home', 'A', '/home/a'), threadCount: 1, lastActive: 1 }],
+        [{ project: repoProject('a-gpu', 'A', '/gpu/a'), threadCount: 12, lastActive: 2 }],
+      );
+      setBindingMock('ListThreads', async () => (takePinnedBackend() === 'gpu'
+        ? Array.from({ length: 12 }, (_, i) => makeThread({ id: `g${i}`, projectId: 'a-gpu' }))
+        : [makeThread({ id: 'h0', projectId: 'a-home' })]));
+      setBindingMock('ListThreadGroups', async () => []);
+      const { container } = render(ProjectsSection, { props: { pane: null } });
+      await loadSidebarCatalogs();
+      await settle();
+      expect(headers(container)).toEqual(['a-home']);
+
+      await fireEvent.click(chevron(container, 'a-home'));
+      setEntryListLimit(projectEntryKey('a-home'), 10);
+      await settle();
+      expect(expandedOf(container, 'a-home')).toBe('false');
+
+      const row = container.querySelector('[data-testid="project-item"]');
+      setSidebarDeviceVisible('home-id', false);
+      await settle();
+      // The row now shows the GPU checkout's threads and is the same row,
+      // still collapsed, with the limit the user revealed to: its key is the
+      // repository's whichever checkout the filter shows.
+      expect(headers(container)).toEqual(['a-home']);
+      expect(container.querySelector('[data-testid="project-item"]')).toBe(row);
+      expect(expandedOf(container, 'a-home')).toBe('false');
+      expect(entryRecordForTest(projectEntryKey('a-gpu')).listLimit).toBe(10);
+
+      await fireEvent.click(chevron(container, 'a-home'));
+      await settle();
+      expect(arrangement(container)).toHaveLength(10);
+    } finally {
+      showAllSidebarDevices();
+      setBackendIdentityFromBootstrap('', '', '', HOME_BACKEND);
+      resetStagedBackends();
+    }
+  });
+
+  // A computer verifies a checkout's repository identity on its own
+  // schedule, so a project can be listed before its identity is known and
+  // answered again with it. That changes what the row persists under, and a
+  // keyed each remounting on it leaves the row it replaced on screen for the
+  // length of its exit: the project, and every thread under it, twice.
+  it('keeps the row and its one thread when the identity lands after the listing', async () => {
+    setBindingMock('ListProjects', async () => [
+      { project: mkProject('p', { name: 'Repo' }), threadCount: 1, lastActive: 1 },
+    ]);
+    setBindingMock('ListThreads', async () => [makeThread({ id: 't0', projectId: 'p' })]);
+    setBindingMock('ListThreadGroups', async () => []);
+    const { container } = render(ProjectsSection, { props: { pane: null } });
+    await loadSidebarCatalogs();
+    await settle();
+    const row = container.querySelector('[data-testid="project-item"]');
+    expect(row).not.toBeNull();
+
+    updateProjectLocal(mkProject('p', { name: 'Repo', repositoryID: 'github:github.com:1' }));
+    await settle();
+
+    expect(container.querySelectorAll('[data-testid="project-item"]')).toHaveLength(1);
+    expect(container.querySelectorAll('[data-sidebar-thread-id="t0"]')).toHaveLength(1);
+    // The same row, not a replacement: a remounted row is what puts the one
+    // it replaced on screen beside it.
+    expect(container.querySelector('[data-testid="project-item"]')).toBe(row);
+  });
+
+  // The fold follows the row through its key moving, and nothing on screen
+  // ever shows it unfolded on the way: the projection reads the record where
+  // it lives until the move is committed.
+  describe('a collapsed row whose identity lands after the listing', () => {
+    const REPO_KEY = 'forge:github:github.com:1';
+
+    async function listCollapsed(): Promise<{ container: HTMLElement; unmount(): void }> {
+      setBindingMock('ListProjects', async () => [
+        { project: mkProject('p', { name: 'Repo' }), threadCount: 1, lastActive: 1 },
+      ]);
+      setBindingMock('ListThreads', async () => [makeThread({ id: 't0', projectId: 'p' })]);
+      setBindingMock('ListThreadGroups', async () => []);
+      const view = render(ProjectsSection, { props: { pane: null } });
+      await loadSidebarCatalogs();
+      await settle();
+      await fireEvent.click(view.container.querySelector('[data-testid="project-item-chevron"]')!);
+      await settle();
+      expect(expandedOf(view.container, 'p')).toBe('false');
+      return { container: view.container, unmount: () => view.unmount() };
+    }
+
+    /** Every value the row's header is given for aria-expanded from now on. */
+    function recordExpanded(container: HTMLElement): { values: string[]; stop(): void } {
+      const values: string[] = [];
+      const observer = new MutationObserver((records) => {
+        for (const record of records) {
+          const target = record.target as Element;
+          if (record.type === 'attributes' && target.getAttribute('role') === 'button') {
+            values.push(target.getAttribute('aria-expanded') ?? '');
+          }
+          for (const node of Array.from(record.addedNodes)) {
+            if (!(node instanceof Element)) continue;
+            for (const header of Array.from(node.querySelectorAll('[role="button"][aria-expanded]'))) {
+              values.push(header.getAttribute('aria-expanded') ?? '');
+            }
+          }
+        }
+      });
+      observer.observe(container, { subtree: true, childList: true, attributes: true, attributeFilter: ['aria-expanded'] });
+      return { values, stop: () => observer.disconnect() };
+    }
+
+    it('never shows the row unfolded, while the move waits or after it commits', async () => {
+      const continuity = await import('../../../stores/sidebarEntryContinuity.svelte');
+      const { appStorageGet } = await import('../../../stores/appStorage');
+      const { container } = await listCollapsed();
+      const row = container.querySelector('[data-testid="project-item"]');
+      const seen = recordExpanded(container);
+      try {
+        // Hold the commit off, so the row renders while the move waits.
+        continuity.stopSidebarEntryContinuity();
+        updateProjectLocal(mkProject('p', { name: 'Repo', repositoryID: 'github:github.com:1' }));
+        await settle();
+        expect(expandedOf(container, 'p')).toBe('false');
+        expect(appStorageGet('sidebar:collapsedProjectEntries')).toBe(JSON.stringify(['p']));
+
+        continuity.startSidebarEntryContinuity();
+        await settle();
+        expect(appStorageGet('sidebar:collapsedProjectEntries')).toBe(JSON.stringify([REPO_KEY]));
+        expect(container.querySelector('[data-testid="project-item"]')).toBe(row);
+        await Promise.resolve();
+        expect(seen.values.filter((value) => value !== 'false')).toEqual([]);
+      } finally {
+        seen.stop();
+      }
+    });
+
+    // A search unfolds a collapsed row whose thread matched and folds it back
+    // when the search clears, under the key the row has by then.
+    it('folds a row a search unfolded back under the key it moved to during the search', async () => {
+      const { appStorageGet } = await import('../../../stores/appStorage');
+      const { container } = await listCollapsed();
+      setBindingMock('ListThreads', async () => [makeThread({ id: 't0', projectId: 'p', title: 'needle' })]);
+      await loadSidebarCatalogs();
+      setThreadFilterQuery('needle');
+      await settle();
+      expect(expandedOf(container, 'p')).toBe('true');
+
+      updateProjectLocal(mkProject('p', { name: 'Repo', repositoryID: 'github:github.com:1' }));
+      await settle();
+      setThreadFilterQuery('');
+      await settle();
+
+      expect(expandedOf(container, 'p')).toBe('false');
+      expect(appStorageGet('sidebar:collapsedProjectEntries')).toBe(JSON.stringify([REPO_KEY]));
+    });
+
+    it('folds it back under the new key when the key moves in the same step the search clears', async () => {
+      const { appStorageGet } = await import('../../../stores/appStorage');
+      const { container } = await listCollapsed();
+      setBindingMock('ListThreads', async () => [makeThread({ id: 't0', projectId: 'p', title: 'needle' })]);
+      await loadSidebarCatalogs();
+      setThreadFilterQuery('needle');
+      await settle();
+      expect(expandedOf(container, 'p')).toBe('true');
+
+      updateProjectLocal(mkProject('p', { name: 'Repo', repositoryID: 'github:github.com:1' }));
+      setThreadFilterQuery('');
+      await settle();
+
+      expect(expandedOf(container, 'p')).toBe('false');
+      expect(appStorageGet('sidebar:collapsedProjectEntries')).toBe(JSON.stringify([REPO_KEY]));
+    });
+
+    it('commits the move while the sidebar is folded to its rail, so the next boot finds it', async () => {
+      const continuity = await import('../../../stores/sidebarEntryContinuity.svelte');
+      const view = await listCollapsed();
+      // The rail: ProjectsSection is not mounted.
+      view.unmount();
+
+      updateProjectLocal(mkProject('p', { name: 'Repo', repositoryID: 'github:github.com:1' }));
+      await settle();
+
+      // A restart: nothing remembered about the rows, the records read back.
+      continuity.resetSidebarEntryContinuityForTest();
+      continuity.syncSidebarEntryDisclosureFromAppStorage();
+      continuity.startSidebarEntryContinuity();
+      const { container } = render(ProjectsSection, { props: { pane: null } });
+      await settle();
+      expect(expandedOf(container, 'p')).toBe('false');
+    });
+  });
+
+  // A search opens the rows its threads matched in, for as long as it is
+  // open, and writes nothing a later session or a later row reads: what the
+  // user folded stays folded underneath it.
+  describe('a search opening a collapsed row', () => {
+    const REPO = 'forge:github:github.com:A';
+
+    async function collapsedMergedRow(): Promise<{ container: HTMLElement }> {
+      const { stageBackend } = await import('../../../../test/helpers/backends');
+      stageBackend({ id: 'gpu', backendId: 'gpu-id' });
+      mergedRepoMocks(
+        [{ project: repoProject('a-home', 'A', '/home/a'), threadCount: 1, lastActive: 1 }],
+        [{ project: repoProject('a-gpu', 'A', '/gpu/a'), threadCount: 1, lastActive: 2 }],
+      );
+      setBindingMock('ListThreads', async () => (takePinnedBackend() === 'gpu'
+        ? [makeThread({ id: 'g0', projectId: 'a-gpu', title: 'needle on the gpu' })]
+        : [makeThread({ id: 'h0', projectId: 'a-home', title: 'needle at home' })]));
+      setBindingMock('ListThreadGroups', async () => []);
+      const { container } = render(ProjectsSection, { props: { pane: null } });
+      await loadSidebarCatalogs();
+      await settle();
+      expect(headers(container)).toEqual(['a-home']);
+      await fireEvent.click(chevron(container, 'a-home'));
+      await settle();
+      expect(expandedOf(container, 'a-home')).toBe('false');
+      return { container };
+    }
+
+    const collapsedKeys = async (): Promise<string[]> => {
+      const { appStorageGet } = await import('../../../stores/appStorage');
+      return (JSON.parse(appStorageGet('sidebar:collapsedProjectEntries') ?? '[]') as string[]).sort();
+    };
+
+    afterEach(async () => {
+      const { resetStagedBackends } = await import('../../../../test/helpers/backends');
+      resetStagedBackends();
+    });
+
+    it('keeps the fold persisted while the search shows the row open', async () => {
+      const { container } = await collapsedMergedRow();
+      setThreadFilterQuery('needle');
+      await settle();
+      expect(expandedOf(container, 'a-home')).toBe('true');
+      // What a client closed now would boot with.
+      expect(await collapsedKeys()).toEqual([REPO]);
+      setThreadFilterQuery('');
+      await settle();
+      expect(expandedOf(container, 'a-home')).toBe('false');
+    });
+
+    it('leaves both halves folded when a checkout splits off during the search', async () => {
+      const { container } = await collapsedMergedRow();
+      setThreadFilterQuery('needle');
+      await settle();
+      expect(expandedOf(container, 'a-home')).toBe('true');
+
+      // The GPU's checkout loses its identity: it splits off with a copy of
+      // the row's record.
+      updateProjectLocal({ ...repoProject('a-gpu', 'A', '/gpu/a'), repositoryID: '' });
+      await settle();
+      expect(headers(container).sort()).toEqual(['a-gpu', 'a-home']);
+      setThreadFilterQuery('');
+      await settle();
+
+      expect(expandedOf(container, 'a-home')).toBe('false');
+      expect(expandedOf(container, 'a-gpu')).toBe('false');
+      expect(await collapsedKeys()).toEqual(['a-gpu', REPO].sort());
+    });
+
+    it('keeps a search-opened row folded when the user folds it during the search, and after', async () => {
+      const { container } = await collapsedMergedRow();
+      setThreadFilterQuery('needle');
+      await settle();
+      await fireEvent.click(chevron(container, 'a-home'));
+      await settle();
+      expect(expandedOf(container, 'a-home')).toBe('false');
+      setThreadFilterQuery('needle at');
+      await settle();
+      expect(expandedOf(container, 'a-home')).toBe('false');
+      setThreadFilterQuery('');
+      await settle();
+      expect(expandedOf(container, 'a-home')).toBe('false');
+      expect(await collapsedKeys()).toEqual([REPO]);
+    });
+
+    it('keeps a row open that the user opened during the search', async () => {
+      const { container } = await collapsedMergedRow();
+      setThreadFilterQuery('needle');
+      await settle();
+      await fireEvent.click(chevron(container, 'a-home'));
+      await settle();
+      await fireEvent.click(chevron(container, 'a-home'));
+      await settle();
+      expect(expandedOf(container, 'a-home')).toBe('true');
+      setThreadFilterQuery('');
+      await settle();
+      expect(expandedOf(container, 'a-home')).toBe('true');
+      expect(await collapsedKeys()).toEqual([]);
+    });
+
+    it('lets the user fold a matched row that was open before the search', async () => {
+      const { container } = await collapsedMergedRow();
+      await fireEvent.click(chevron(container, 'a-home'));
+      await settle();
+      expect(expandedOf(container, 'a-home')).toBe('true');
+      setThreadFilterQuery('needle');
+      await settle();
+      await fireEvent.click(chevron(container, 'a-home'));
+      await settle();
+      expect(expandedOf(container, 'a-home')).toBe('false');
+      setThreadFilterQuery('');
+      await settle();
+      expect(expandedOf(container, 'a-home')).toBe('false');
+    });
+
+    it('opens the row again when a narrowed search matches it again', async () => {
+      const { container } = await collapsedMergedRow();
+      setThreadFilterQuery('needle');
+      await settle();
+      expect(expandedOf(container, 'a-home')).toBe('true');
+      setThreadFilterQuery('needle nowhere');
+      await settle();
+      setThreadFilterQuery('needle');
+      await settle();
+      expect(expandedOf(container, 'a-home')).toBe('true');
+    });
+
+    it('opens a row the user folded in an earlier search when the next search matches it', async () => {
+      const { container } = await collapsedMergedRow();
+      setThreadFilterQuery('needle');
+      await settle();
+      await fireEvent.click(chevron(container, 'a-home'));
+      await settle();
+      expect(expandedOf(container, 'a-home')).toBe('false');
+      setThreadFilterQuery('');
+      await settle();
+      setThreadFilterQuery('needle');
+      await settle();
+      expect(expandedOf(container, 'a-home')).toBe('true');
+    });
+  });
+
+  it("keeps the row it rendered, and its disclosure, through a held member's commit and its listing", async () => {
+    const { stageBackend, resetStagedBackends } = await import('../../../../test/helpers/backends');
+    const { projectEntryKey } = await import('../../../stores/projects.svelte');
+    stageBackend({ id: 'gpu', backendId: 'gpu-id' });
+    try {
+      // The user collapsed the entry and revealed more of it while GPU was
+      // the only computer showing it, under the entry's own key: repository
+      // A's, which is the key whatever checkout represents it.
+      const keyOfA = 'forge:github:github.com:A';
+      setEntryExpanded(keyOfA, false);
+      setEntryListLimit(keyOfA, 10);
+      const homeProjects = deferred<ProjectWithCounts[]>();
+      const homeThreads = deferred<Thread[]>();
+      setBindingMock('ListProjects', () => (takePinnedBackend() === 'gpu'
+        ? Promise.resolve([{ project: repoProject('a-gpu', 'A', '/gpu/a'), threadCount: 1, lastActive: 2 }])
+        : homeProjects.promise));
+      setBindingMock('ListThreads', () => (takePinnedBackend() === 'gpu'
+        ? Promise.resolve([makeThread({ id: 'g0', projectId: 'a-gpu' })])
+        : homeThreads.promise));
+      setBindingMock('ListThreadGroups', async () => []);
+      vi.useFakeTimers();
+      const { container } = render(ProjectsSection, { props: { pane: null } });
+      void loadSidebarCatalogs();
+      // GPU's answers wait on the round's windows, which the startup
+      // deadline closes while Home's reads are still out.
+      await vi.advanceTimersByTimeAsync(2500);
+      await settle();
+      expect(catalogTreeListed('gpu')).toBe(true);
+      expect(headers(container)).toEqual(['a-gpu']);
+      expect(expandedOf(container, 'a-gpu')).toBe('false');
+      expect(projectEntryKey('a-gpu')).toBe(keyOfA);
+      expect(entryRecordForTest(keyOfA).listLimit).toBe(10);
+      const row = container.querySelector('[data-testid="project-item"]');
+
+      // Home's project row commits at its own window while Home's threads
+      // are still out. Nothing of the entry on screen may move for it.
+      homeProjects.resolve([{ project: repoProject('a-home', 'A', '/home/a'), threadCount: 1, lastActive: 1 }]);
+      await vi.advanceTimersByTimeAsync(0);
+      await settle();
+      expect(catalogTreeListed(HOME_BACKEND)).toBe(false);
+      expect(headers(container)).toEqual(['a-gpu']);
+      expect(expandedOf(container, 'a-gpu')).toBe('false');
+      expect(entryRecordForTest(projectEntryKey('a-gpu')).listLimit).toBe(10);
+      expect(container.querySelector('[data-testid="project-item"]')).toBe(row);
+
+      // At Home's listing the entry changes hands, by design. Its key does
+      // not, so the row is the same row and keeps its disclosure.
+      homeThreads.resolve([makeThread({ id: 'h0', projectId: 'a-home' })]);
+      await vi.advanceTimersByTimeAsync(0);
+      await settle();
+      expect(catalogTreeListed(HOME_BACKEND)).toBe(true);
+      expect(headers(container)).toEqual(['a-home']);
+      expect(container.querySelector('[data-testid="project-item"]')).toBe(row);
+      expect(expandedOf(container, 'a-home')).toBe('false');
+      expect(entryRecordForTest(projectEntryKey('a-home')).listLimit).toBe(10);
+    } finally {
+      resetStagedBackends();
+    }
+  });
+
+  it('gives a second checkout on one computer its own row, and keeps the first one when a computer attaches', async () => {
+    const { stageBackend, resetStagedBackends } = await import('../../../../test/helpers/backends');
+    const { projectEntryKey } = await import('../../../stores/projects.svelte');
+    const homeRows = [
+      { project: { ...repoProject('a1', 'A', '/home/a1'), createdAt: 1 }, threadCount: 0, lastActive: 200 },
+      { project: { ...repoProject('a2', 'A', '/home/a2'), createdAt: 2 }, threadCount: 0, lastActive: 100 },
+    ];
+    setBindingMock('ListProjects', async () => (takePinnedBackend() === 'gpu'
+      ? [{ project: { ...repoProject('a-gpu', 'A', '/gpu/a'), createdAt: 3 }, threadCount: 0, lastActive: 50 }]
+      : homeRows));
+    setBindingMock('ListThreads', async () => []);
+    setBindingMock('ListThreadGroups', async () => []);
+    const { container } = render(ProjectsSection, { props: { pane: null } });
+    await loadSidebarCatalogs();
+    await settle();
+    // One repository, two checkouts on one computer: two entries, so two
+    // keys. The repository key belongs to the computer's chosen checkout.
+    expect(headers(container)).toEqual(['a1', 'a2']);
+    setEntryExpanded(projectEntryKey('a1'), false);
+    await settle();
+    expect(expandedOf(container, 'a1')).toBe('false');
+    expect(expandedOf(container, 'a2')).toBe('true');
+    const first = container.querySelector('[data-project-id="a1"]');
+
+    // Two rows of one repository re-sort past each other and keep their
+    // own row and their own disclosure, which two blocks under one key
+    // cannot.
+    touchProjectActivity('a2', 500);
+    await settle();
+    expect(headers(container)).toEqual(['a2', 'a1']);
+    expect(expandedOf(container, 'a1')).toBe('false');
+    expect(expandedOf(container, 'a2')).toBe('true');
+    expect(container.querySelector('[data-project-id="a1"]')).toBe(first);
+
+    try {
+      stageBackend({ id: 'gpu', backendId: 'gpu-id' });
+      await loadSidebarCatalogs();
+      await settle();
+      // The GPU checkout merges into the chosen one, whose key was already
+      // the repository's, so its row is the same row.
+      expect(headers(container)).toEqual(['a2', 'a1']);
+      expect(container.querySelector('[data-project-id="a1"]')).toBe(first);
+      expect(expandedOf(container, 'a1')).toBe('false');
+      expect(expandedOf(container, 'a2')).toBe('true');
+    } finally {
+      resetStagedBackends();
+    }
+  });
+
+  it('dates a merged entry by the members it shows, not by one the filter hides', async () => {
+    const { stageBackend, resetStagedBackends } = await import('../../../../test/helpers/backends');
+    const { setSidebarDeviceVisible, showAllSidebarDevices } = await import('../../../stores/sidebarDevices.svelte');
+    stageBackend({ id: 'gpu', backendId: 'gpu-id' });
+    setBackendIdentityFromBootstrap('home-id', 'gen-1', 'Mac', HOME_BACKEND);
+    try {
+      setBindingMock('ListProjects', async () => (takePinnedBackend() === 'gpu'
+        ? [
+          { project: repoProject('a-gpu', 'A', '/gpu/a'), threadCount: 0, lastActive: 100 },
+          { project: repoProject('b-gpu', 'B', '/gpu/b'), threadCount: 0, lastActive: 200 },
+        ]
+        : [{ project: repoProject('a-home', 'A', '/home/a'), threadCount: 0, lastActive: 100 }]));
+      setBindingMock('ListThreads', async () => []);
+      setBindingMock('ListThreadGroups', async () => []);
+      const { container } = render(ProjectsSection, { props: { pane: null } });
+      await loadSidebarCatalogs();
+      await settle();
+      setSidebarDeviceVisible('home-id', false);
+      await settle();
+      // Repository A's row targets Home's checkout and shows the GPU's.
+      expect(headers(container)).toEqual(['b-gpu', 'a-home']);
+
+      // A member on a computer the filter hides: not this entry's activity.
+      touchProjectActivity('a-home', 400);
+      await settle();
+      expect(headers(container)).toEqual(['b-gpu', 'a-home']);
+
+      // The member it shows: its beat is the entry's.
+      touchProjectActivity('a-gpu', 300);
+      await settle();
+      expect(headers(container)).toEqual(['a-home', 'b-gpu']);
+    } finally {
+      showAllSidebarDevices();
+      setBackendIdentityFromBootstrap('', '', '', HOME_BACKEND);
+      resetStagedBackends();
+    }
+  });
+
+  it('reorders by the ids of the computer that holds them while the filter hides it', async () => {
+    const { stageBackend, resetStagedBackends } = await import('../../../../test/helpers/backends');
+    const { setSidebarDeviceVisible, showAllSidebarDevices } = await import('../../../stores/sidebarDevices.svelte');
+    stageBackend({ id: 'gpu', backendId: 'gpu-id' });
+    setBackendIdentityFromBootstrap('home-id', 'gen-1', 'Mac', HOME_BACKEND);
+    try {
+      mergedRepoMocks(
+        [
+          { project: { ...repoProject('a-home', 'A', '/home/a'), sortPosition: 0 }, threadCount: 0, lastActive: 0 },
+          { project: { ...repoProject('b-home', 'B', '/home/b'), sortPosition: 1 }, threadCount: 0, lastActive: 0 },
+        ],
+        [
+          { project: { ...repoProject('a-gpu', 'A', '/gpu/a'), sortPosition: 0 }, threadCount: 0, lastActive: 0 },
+          { project: { ...repoProject('b-gpu', 'B', '/gpu/b'), sortPosition: 1 }, threadCount: 0, lastActive: 0 },
+        ],
+      );
+      setBindingMock('ListThreads', async () => []);
+      setBindingMock('ListThreadGroups', async () => []);
+      setProjectSortMode('manual');
+      const write = vi.fn(async () => []);
+      setBindingMock('UpdateProjectSortPositions', write);
+      const { container } = render(ProjectsSection, { props: { pane: null } });
+      await loadSidebarCatalogs();
+      await settle();
+      setSidebarDeviceVisible('home-id', false);
+      await settle();
+      // The rows show the GPU checkouts and target Home's, in the order
+      // this computer saves.
+      expect(headers(container)).toEqual(['a-home', 'b-home']);
+
+      const items = container.querySelectorAll('[data-testid="project-item"]');
+      const dataTransfer = { effectAllowed: '', dropEffect: '', setData: vi.fn(), getData: () => '' };
+      const drag = async (type: string, target: Element, props: Record<string, unknown> = {}): Promise<void> => {
+        const event = new Event(type, { bubbles: true, cancelable: true });
+        Object.defineProperty(event, 'dataTransfer', { value: dataTransfer });
+        for (const [key, value] of Object.entries(props)) Object.defineProperty(event, key, { value });
+        await fireEvent(target, event);
+      };
+      await drag('dragstart', items[1].querySelector('[aria-expanded]')!);
+      await drag('dragover', items[0], { clientY: -1 });
+      await drag('drop', items[0]);
+      // Home's ids, which Home holds and can save, though Home is hidden.
+      await vi.waitFor(() => expect(write).toHaveBeenCalledWith(['b-home', 'a-home']));
+    } finally {
+      showAllSidebarDevices();
+      setBackendIdentityFromBootstrap('', '', '', HOME_BACKEND);
+      resetStagedBackends();
+    }
+  });
+
+  // What a header says about its members comes from the same projection
+  // that decided the header: a member with no row yet is not one of them.
+  it('leaves a held member out of the header\'s identity warning and out of its recheck', async () => {
+    const { stageBackend, resetStagedBackends } = await import('../../../../test/helpers/backends');
+    stageBackend({ id: 'gpu', backendId: 'gpu-id' });
+    try {
+      const gpuThreads = deferred<Thread[]>();
+      mergedRepoMocks(
+        [{ project: { ...repoProject('a-home', 'A', '/home/a'), identityError: 'home reason' }, threadCount: 0, lastActive: 0 }],
+        [{ project: { ...repoProject('a-gpu', 'A', '/gpu/a'), identityError: 'gpu reason' }, threadCount: 0, lastActive: 0 }],
+      );
+      setBindingMock('ListThreads', () => (takePinnedBackend() === 'gpu' ? gpuThreads.promise : Promise.resolve([])));
+      setBindingMock('ListThreadGroups', async () => []);
+      const refresh = vi.fn(async (id: string) => ({ ...repoProject(id, 'A', '/home/a'), identityError: '' }));
+      setBindingMock('RefreshProjectIdentity', refresh);
+      const { container, getByTestId, queryByTestId } = render(ProjectsSection, { props: { pane: null } });
+      await loadSidebarCatalogs();
+      await settle();
+      expect(headers(container)).toEqual(['a-home']);
+      expect(getByTestId('project-item-identity-error').getAttribute('title'))
+        .toBe('Could not fully verify /home/a: home reason');
+
+      await fireEvent.click(getByTestId('project-item-identity-error'));
+      // Only the member with a row: the held one is never asked.
+      await vi.waitFor(() => expect(refresh).toHaveBeenCalledWith('a-home'));
+      expect(refresh).toHaveBeenCalledTimes(1);
+      await vi.waitFor(() => expect(queryByTestId('project-item-identity-error')).toBeNull());
+
+      // The held member joins the header's account of itself when its own
+      // row exists, and not before.
+      gpuThreads.resolve([]);
+      await vi.waitFor(() => expect(catalogTreeListed('gpu')).toBe(true));
+      await settle();
+      expect(getByTestId('project-item-identity-error').getAttribute('title'))
+        .toBe('Could not fully verify /gpu/a: gpu reason');
+    } finally {
+      resetStagedBackends();
+    }
+  });
+
   it('holds a computer that was offline with nothing cached until both answers of its first connection', async () => {
     setBindingMock('ListThreads', async () => { throw new DisconnectedError('Computer is offline.'); });
     setBindingMock('ListThreadGroups', async () => { throw new DisconnectedError('Computer is offline.'); });
     const { container } = render(ProjectsSection, { props: { pane: null } });
-    await expect(loadThreadCatalogs()).rejects.toBeInstanceOf(DisconnectedError);
+    await expect(loadSidebarCatalogs()).rejects.toBeInstanceOf(DisconnectedError);
     expect(catalogTreeListed(HOME_BACKEND)).toBe(false);
 
     // The first hello reads both again; the threads answer first.
@@ -465,7 +1359,7 @@ describe('<ProjectsSection> threads and their groups', () => {
     const groups = deferred<ThreadGroup[]>();
     setBindingMock('ListThreads', () => threads.promise);
     setBindingMock('ListThreadGroups', () => groups.promise);
-    const hello = loadThreadCatalogs();
+    const hello = loadSidebarCatalogs();
     threads.resolve(after);
     await settle();
     expect(arrangement(container)).toEqual([]);
@@ -480,7 +1374,7 @@ describe('<ProjectsSection> threads and their groups', () => {
       setBindingMock('ListThreads', async () => before);
       setBindingMock('ListThreadGroups', async () => []);
       const { container } = render(ProjectsSection, { props: { pane: null } });
-      await loadThreadCatalogs();
+      await loadSidebarCatalogs();
       await settle();
       expect(arrangement(container)).toEqual(BEFORE);
 
@@ -488,7 +1382,7 @@ describe('<ProjectsSection> threads and their groups', () => {
       const groups = deferred<ThreadGroup[]>();
       setBindingMock('ListThreads', () => threads.promise);
       setBindingMock('ListThreadGroups', () => groups.promise);
-      const reconnect = loadThreadCatalogs();
+      const reconnect = loadSidebarCatalogs();
       if (first === 'threads') threads.resolve(after); else groups.resolve([group('g2')]);
       await settle();
       expect(arrangement(container)).toEqual(BEFORE);
@@ -507,12 +1401,12 @@ describe('<ProjectsSection> threads and their groups', () => {
     setBindingMock('ListThreads', async () => before);
     setBindingMock('ListThreadGroups', async () => []);
     const { container } = render(ProjectsSection, { props: { pane: null } });
-    await loadThreadCatalogs();
+    await loadSidebarCatalogs();
     vi.useFakeTimers();
     const groups = deferred<ThreadGroup[]>();
     setBindingMock('ListThreads', async () => after);
     setBindingMock('ListThreadGroups', () => groups.promise);
-    const round = loadThreadCatalogs();
+    const round = loadSidebarCatalogs();
     await vi.advanceTimersByTimeAsync(2500);
     expect((await round).map((thread) => thread.id).sort()).toEqual(['a', 'b', 'c', 'outside']);
     await settle();
@@ -528,12 +1422,12 @@ describe('<ProjectsSection> threads and their groups', () => {
     setBindingMock('ListThreads', async () => before);
     setBindingMock('ListThreadGroups', async () => []);
     const { container } = render(ProjectsSection, { props: { pane: null } });
-    await loadThreadCatalogs();
+    await loadSidebarCatalogs();
     vi.useFakeTimers();
     const threads = deferred<Thread[]>();
     setBindingMock('ListThreads', () => threads.promise);
     setBindingMock('ListThreadGroups', async () => [group('g2')]);
-    const round = loadThreadCatalogs();
+    const round = loadSidebarCatalogs();
     await vi.advanceTimersByTimeAsync(2500);
     await round;
     await settle();
@@ -553,10 +1447,10 @@ describe('<ProjectsSection> threads and their groups', () => {
     setBindingMock('ListThreads', async () => before);
     setBindingMock('ListThreadGroups', async () => []);
     const { container, getByTestId, queryByTestId } = render(ProjectsSection, { props: { pane: null } });
-    await loadThreadCatalogs();
+    await loadSidebarCatalogs();
     await settle();
     setBindingMock('ListThreads', async () => { throw new TransportError('method_error', 'list threads: disk I/O error'); });
-    await loadThreadCatalogs();
+    await loadSidebarCatalogs();
     await settle();
     expect(normalizedTextContent(getByTestId('sidebar-catalog-failed'))).toMatch(/disk I\/O error/i);
     expect(arrangement(container)).toEqual(BEFORE);
@@ -570,7 +1464,7 @@ describe('<ProjectsSection> threads and their groups', () => {
     setBindingMock('ListThreads', async () => before);
     setBindingMock('ListThreadGroups', async () => []);
     const { container, getByTestId } = render(ProjectsSection, { props: { pane: null } });
-    await loadThreadCatalogs();
+    await loadSidebarCatalogs();
     await settle();
     expect(arrangement(container)).toEqual(BEFORE);
 
@@ -583,7 +1477,7 @@ describe('<ProjectsSection> threads and their groups', () => {
     observer.observe(container, { childList: true, subtree: true, attributes: true });
     setBindingMock('ListThreads', async () => { throw new TransportError('method_error', 'list threads: disk I/O error'); });
     setBindingMock('ListThreadGroups', async () => [group('g2')]);
-    await loadThreadCatalogs().catch(() => {});
+    await loadSidebarCatalogs().catch(() => {});
     await vi.advanceTimersByTimeAsync(0);
     await settle();
     expect(normalizedTextContent(getByTestId('sidebar-catalog-failed'))).toMatch(/disk I\/O error/i);
@@ -603,7 +1497,7 @@ describe('<ProjectsSection> threads and their groups', () => {
     setBindingMock('ListThreads', async () => before);
     setBindingMock('ListThreadGroups', async () => []);
     const { container, getByTestId } = render(ProjectsSection, { props: { pane: null } });
-    await loadThreadCatalogs();
+    await loadSidebarCatalogs();
     await settle();
     expect(arrangement(container)).toEqual(BEFORE);
 
@@ -616,7 +1510,7 @@ describe('<ProjectsSection> threads and their groups', () => {
     observer.observe(container, { childList: true, subtree: true, attributes: true });
     const threads = setBindingMock('ListThreads', async () => { throw new TransportError('method_error', 'list threads: disk I/O error'); });
     setBindingMock('ListThreadGroups', async () => [group('g2')]);
-    await loadThreadCatalogs().catch(() => {});
+    await loadSidebarCatalogs().catch(() => {});
     await vi.advanceTimersByTimeAsync(0);
     await settle();
     expect(normalizedTextContent(getByTestId('sidebar-catalog-failed'))).toMatch(/disk I\/O error/i);
@@ -642,7 +1536,7 @@ describe('<ProjectsSection> threads and their groups', () => {
     setBindingMock('ListThreads', async () => before);
     setBindingMock('ListThreadGroups', async () => []);
     const { container, getByTestId, queryByTestId } = render(ProjectsSection, { props: { pane: null } });
-    await loadThreadCatalogs();
+    await loadSidebarCatalogs();
     await settle();
     const threads = deferred<Thread[]>();
     setBindingMock('ListThreads', () => threads.promise);
@@ -663,19 +1557,19 @@ describe('<ProjectsSection> threads and their groups', () => {
     setBindingMock('ListThreads', async () => before);
     setBindingMock('ListThreadGroups', async () => []);
     const { container } = render(ProjectsSection, { props: { pane: null } });
-    await loadThreadCatalogs();
+    await loadSidebarCatalogs();
     await settle();
 
     const olderThreads = deferred<Thread[]>();
     setBindingMock('ListThreads', () => olderThreads.promise);
     setBindingMock('ListThreadGroups', async () => [group('g2')]);
-    const older = loadThreadCatalogs();
+    const older = loadSidebarCatalogs();
     await settle();
     const newerThreads = deferred<Thread[]>();
     const newerGroups = deferred<ThreadGroup[]>();
     setBindingMock('ListThreads', () => newerThreads.promise);
     setBindingMock('ListThreadGroups', () => newerGroups.promise);
-    const newer = loadThreadCatalogs();
+    const newer = loadSidebarCatalogs();
     await settle();
     expect(arrangement(container)).toEqual(BEFORE);
     olderThreads.resolve(after);

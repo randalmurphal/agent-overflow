@@ -45,6 +45,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -117,6 +118,10 @@ type wslUpdateMode struct {
 	// launcherFailure is the update the launcher's record settled as rolled
 	// back or failed, which the launcher passed on this backend's argv.
 	launcherFailure LauncherFailure
+	// followed is the install this boot's marker named, and applied whether
+	// this boot runs its version (UpdateThisBootFollows).
+	followed string
+	applied  bool
 	// ackTimeout and backstopTimeout are the two install deadlines
 	// (wslInstallACKTimeout / wslInstallBackstopTimeout in production; tests
 	// inject short ones so both paths are asserted rather than slept through).
@@ -224,6 +229,7 @@ func reconcileWSLUpdateMarker(a *Service, currentVersion string, mode *wslUpdate
 	if marker == nil {
 		return // nothing pending: the ordinary boot
 	}
+	mode.followed, mode.applied = marker.ExpectedVersion, marker.ExpectedVersion == currentVersion
 	if marker.ExpectedVersion == currentVersion {
 		log.Printf("updater: update to %s applied", currentVersion)
 		clearWSLUpdateResidue(mode)
@@ -237,6 +243,17 @@ func reconcileWSLUpdateMarker(a *Service, currentVersion string, mode *wslUpdate
 	}
 	a.setUpdateApplyFailure(unsuccessfulUpdateNotice(marker.ExpectedVersion, reason, currentVersion))
 	clearWSLUpdateResidue(mode)
+}
+
+// UpdateThisBootFollows is the install the WSL boot's marker named, which
+// this boot follows, and whether it applied; "" when the marker named none
+// or the WSL updater is not configured. The boot that follows an update
+// times its phase by it (docs/specs/app-update.md, "What an update logs").
+func (a *Service) UpdateThisBootFollows() (to string, applied bool) {
+	if a == nil || a.updater.wsl == nil {
+		return "", false
+	}
+	return a.updater.wsl.followed, a.updater.wsl.applied
 }
 
 // unsuccessfulUpdateNotice is the boot notice for an update to `to` that
@@ -312,6 +329,10 @@ func (a *Service) stageWSLUpdate(rel *updater.Release) (terminal func()) {
 	if src == "" {
 		return a.failWSLStaging(errors.New("updater: the download reported success but staged no file"))
 	}
+	// The launcher installs the staged copy and ends this backend without
+	// the framework's Restart, which is what removes the download
+	// otherwise. A failed copy is retried by a new download.
+	defer removeFrameworkDownload(src)
 
 	// One staged artifact at a time. The directive names a bare filename the
 	// launcher resolves inside this directory, so a previous download's .exe
@@ -339,6 +360,20 @@ func (a *Service) stageWSLUpdate(rel *updater.Release) (terminal func()) {
 	// EventUpdateReady, because it means the same thing to the frontend: the
 	// bytes are in place and the only step left is the user's restart.
 	return func() { a.emit(updaterReadyChannel, rel) }
+}
+
+// removeFrameworkDownload removes the folder the framework downloaded src
+// into. Only a folder the framework named, directly under the temp
+// directory, is removed.
+func removeFrameworkDownload(src string) {
+	folder, ok := selfupdate.FrameworkDownloadFolder(src, os.TempDir())
+	if !ok {
+		log.Printf("updater: %s is not in a download folder of the updater; its folder is left as it is", src)
+		return
+	}
+	if err := os.RemoveAll(folder); err != nil {
+		log.Printf("updater: remove the download folder %s: %v", folder, err)
+	}
 }
 
 // failWSLStaging records a staging failure and returns the terminal event that

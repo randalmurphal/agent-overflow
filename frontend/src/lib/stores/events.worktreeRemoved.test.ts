@@ -3,7 +3,7 @@ import { setupEventListeners } from './events';
 import { applyTransportGap } from './eventsTransportGap';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import type { RecoveryPhase } from './transportRecovery';
-import { loadThreadCatalogs } from './threadCatalogs';
+import { loadSidebarCatalogs } from './sidebarCatalogs';
 import { createThreadPane } from './thread.svelte';
 import { registerPaneForTest, resetPanesForTest } from './panes.svelte';
 import {
@@ -52,7 +52,7 @@ beforeEach(async () => {
   resetBindingMocks();
   resetWorktreeIntent();
   setBindingMock('ListThreads', async () => []);
-  await loadThreadCatalogs();
+  await loadSidebarCatalogs();
   cleanupEvents = setupEventListeners();
 });
 

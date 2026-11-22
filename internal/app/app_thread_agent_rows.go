@@ -60,6 +60,10 @@ const (
 	threadAgentStopsInFlight = 8
 )
 
+// threadAgentKindNudge is the Kind of the row that records a nudge's run
+// (store.StartNudgeRun): work the spawner did not ask for, with no answer.
+const threadAgentKindNudge = "nudge"
+
 // ThreadAgentRow is one request a thread made of another thread, with that
 // thread as it stands.
 type ThreadAgentRow struct {
@@ -67,7 +71,8 @@ type ThreadAgentRow struct {
 	// CallerThreadID made the request: the listed thread for a depth-0 row,
 	// the thread a nested row's parent spawned otherwise.
 	CallerThreadID string `json:"callerThreadId"`
-	// Kind is spawn, send or ask.
+	// Kind is spawn, send or ask, or nudge for the run of an owned worker
+	// the person's or another thread's message started (threadAgentKindNudge).
 	Kind string `json:"kind"`
 	// ThreadID is the target; for an ask, the hidden copy that answers it.
 	ThreadID string `json:"threadId,omitempty"`
@@ -86,8 +91,10 @@ type ThreadAgentRow struct {
 	// Placement and Archived are the placement and archive state of the
 	// thread a spawn made, as the computer that holds the thread reported
 	// it: this one's store for a local spawn, the agent_rows answer of a
-	// paired computer for one there, nested rows included. Empty and false
-	// for every other row and from a computer that does not report them.
+	// paired computer for one there, nested rows included. A send to a
+	// thread its caller spawned, which counts a run of that worker, carries
+	// them too. Empty and false for every other row and from a computer that
+	// does not report them.
 	// Placement is empty too for a thread that takes none (an assistant's
 	// helper, outside every project), so no sidebar row is offered for it.
 	Placement string `json:"placement,omitempty"`
@@ -100,11 +107,12 @@ type ThreadAgentRow struct {
 	// replied, finished, errored, cancelled, interrupted, expired, refused,
 	// and the accepted and unconfirmed states before the work starts.
 	State string `json:"state"`
-	// Worker is why the thread a spawn made is not at rest, whatever State
-	// says: blocked, running, queued, or waiting on what it started
-	// (background work, a loop, watch or reminder, a provider timer) or on
-	// its own workers, open work at any depth below it; empty while it is
-	// at rest, and for every other kind. A spawn whose worker is not at
+	// Worker is why the thread a spawn made, or a send's run is on, is not
+	// at rest while the row's run is open, whatever State says: blocked,
+	// running, queued, or waiting on what it started (background work, a
+	// loop, watch or reminder, a provider timer) or on its own workers,
+	// open work at any depth below it; empty while it is at rest, once the
+	// run ended, and for every other row. A row whose worker is not at
 	// rest is open: one that replied and keeps working shows its reply and
 	// this.
 	Worker string `json:"worker,omitempty"`
@@ -223,6 +231,45 @@ type ThreadAgentRows struct {
 	// computer's spawn thread, answered by agent_rows for a call that names
 	// the spawn whose link owns the thread (peerPromptsOf).
 	Prompts []ThreadAgentPrompt `json:"prompts,omitempty"`
+	// RunEnd is the listed thread's figures over its life when the asking
+	// thread's last run on it ended, answered by agent_rows when that
+	// thread's requests there track runs and none is open
+	// (store.ReceiptRunOf). The asking computer ends its runs on the thread
+	// with them, whoever runs the thread since (endRemoteRunsAtRest). Nil
+	// while a run is open, and from a computer that predates it.
+	RunEnd *ThreadAgentRunEnd `json:"runEnd,omitempty"`
+	// RunOpen says a run of the asking thread's on the listed thread is open
+	// there, its requests' or a nudge's: the asking computer then ends none
+	// of its runs on the thread for Open alone (endRemoteRunsAtRest). False
+	// from a computer that predates it, which reads as before.
+	RunOpen bool `json:"runOpen,omitempty"`
+	// Nudges is the nudge runs of the listed thread's link to the asking
+	// spawn that the asking computer has not taken (store.ReceiptRunOf):
+	// the open one first, then the ended ones oldest first, a bounded
+	// number. The asking computer records each as its nudge row
+	// (store.RecordRemoteNudgeRun) and names the ended ones it recorded in
+	// its next read (threadAgentPeerArgs.NudgesTaken), after which they are
+	// not reported again. Empty when there is none, and from a computer
+	// that predates it, whose nudges show no row.
+	Nudges []ThreadAgentNudge `json:"nudges,omitempty"`
+}
+
+// ThreadAgentNudge is a nudge's run on a paired computer's worker: its
+// token, when it began on that computer's clock, what the worker had done
+// over its life then, and once it ended, what it had done then.
+type ThreadAgentNudge struct {
+	Token     string             `json:"token"`
+	StartedAt int64              `json:"startedAt"`
+	Base      ThreadAgentRunEnd  `json:"base"`
+	End       *ThreadAgentRunEnd `json:"end,omitempty"`
+}
+
+// ThreadAgentRunEnd is what a thread had done over its life when a run on it
+// ended.
+type ThreadAgentRunEnd struct {
+	ToolCalls int64 `json:"toolCalls"`
+	Tokens    int64 `json:"tokens"`
+	RuntimeMs int64 `json:"runtimeMs"`
 }
 
 // ThreadAgentRowChange is one `thread:agent_rows_changed` frame: the request
@@ -394,10 +441,22 @@ func (a *App) threadAgentTreeDepth(ctx context.Context, view threadAgentView, th
 		request := &requests[index].ThreadRequest
 		entries = append(entries, threadAgentEntry{request: request})
 		depth := requests[index].Depth
+		// A row in a spawn's place on a paired computer nests that spawn's
+		// thread there, whichever of its caller's requests the row shows.
+		spawn := *request
+		if node := requests[index].Node; node != "" && node != request.Token && request.TargetComputerID != "" {
+			row, found, err := a.store.GetThreadRequest(node)
+			if err != nil {
+				return ThreadAgentRows{}, nil, err
+			}
+			if found {
+				spawn = row
+			}
+		}
 		// A remote spawn at the last level still reads its thread's state;
 		// it nests none of its rows.
-		if request.RemoteListingReach() {
-			remote = append(remote, threadAgentRemoteSlot{index: index, depth: depth + 1, spawn: *request})
+		if spawn.RemoteListingReach() {
+			remote = append(remote, threadAgentRemoteSlot{index: index, depth: depth + 1, spawn: spawn, shown: *request, ended: remoteSpawnEnded(spawn, *request)})
 		}
 	}
 	answers := a.remoteAgentAnswers(ctx, remote, maxDepth, peers)
@@ -415,6 +474,15 @@ func (a *App) threadAgentTreeDepth(ctx context.Context, view threadAgentView, th
 		out.Rows, entries, out.Hidden = out.Rows[:threadAgentRowLimit], entries[:threadAgentRowLimit], true
 	}
 	return out, entries, nil
+}
+
+// remoteSpawnEnded reports whether a paired computer's spawn no longer
+// carries its worker into the listing, as the store reads a local spawn's
+// link (spawnActiveSQL): its own run ended, and the request its row shows
+// is no send of its caller's whose run is open there.
+func remoteSpawnEnded(spawn, shown store.ThreadRequest) bool {
+	openSend := shown.Kind == store.ThreadRequestSend && shown.RunOpen()
+	return spawn.RunEnded() && !openSend
 }
 
 // withholdApprovalDetail clears what an approval asks from the listing's

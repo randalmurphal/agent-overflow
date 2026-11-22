@@ -73,6 +73,17 @@ function normalizeSystemPath(value: string): string {
 }
 
 /**
+ * Where an owned data root is created: the temp directory, which in the
+ * test namespace is a private tmpfs gone with the run. A root
+ * AO_E2E_KEEP_FAILED_ROOT may keep goes in the host's temp directory
+ * (internal/netisolate EnvHostTempDir) so it outlives the run.
+ */
+function dataRootParent(): string {
+  const host = process.env.AO_NETISOLATE_HOST_TMPDIR;
+  return process.env.AO_E2E_KEEP_FAILED_ROOT === '1' && host ? host : tmpdir();
+}
+
+/**
  * Launch a harness-mode backend and connect to its event wire. Every step
  * runs under its own bound (harness-launch-step.ts), so a launch that stalls
  * fails naming the step within `launchBudgetMs`.
@@ -90,7 +101,7 @@ export async function launchHarness(opts: LaunchOptions = {}): Promise<HarnessAp
   }
   const requestedDataDir =
     opts.dataDir ??
-    (await launchStep('create data dir', LAUNCH_STEP_MS, () => mkdtemp(path.join(tmpdir(), 'ao-harness-'))));
+    (await launchStep('create data dir', LAUNCH_STEP_MS, () => mkdtemp(path.join(dataRootParent(), 'ao-harness-'))));
   const dataDir = normalizeSystemPath(requestedDataDir);
 
   const args = ['--harness', '--data-dir', dataDir];

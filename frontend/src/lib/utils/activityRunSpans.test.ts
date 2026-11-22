@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { groupActivityRunSpans, isActivityRailRow, spanHolding } from './activityRunSpans';
 import { makeItem } from '../../test/helpers/chat';
 import type { Item } from '../types/models';
+import { AGENT_MESSAGE_MEMBERS_RULE } from './activityRunSpans';
 
 let index = 0;
 function row(id: string, overrides: Partial<Item> = {}): Item {
@@ -31,13 +32,13 @@ describe('isActivityRailRow', () => {
 describe('groupActivityRunSpans', () => {
   it('finds maximal stretches and absorbs a trailing bell', () => {
     const items = [prose('p0'), row('t0'), row('t1'), row('n0', { kind: 'notification' }), prose('p1'), row('t2')];
-    expect(groupActivityRunSpans(items).map((span) => span.items.map((item) => item.id)))
+    expect(groupActivityRunSpans(items, AGENT_MESSAGE_MEMBERS_RULE).map((span) => span.items.map((item) => item.id)))
       .toEqual([['t0', 't1', 'n0'], ['t2']]);
   });
 
   it('does not absorb a bell with no member before it', () => {
     const items = [prose('p0'), row('n0', { kind: 'notification' }), row('t0')];
-    expect(groupActivityRunSpans(items).map((span) => span.items.map((item) => item.id)))
+    expect(groupActivityRunSpans(items, AGENT_MESSAGE_MEMBERS_RULE).map((span) => span.items.map((item) => item.id)))
       .toEqual([['t0']]);
   });
 
@@ -50,16 +51,16 @@ describe('groupActivityRunSpans', () => {
       row('pu', { kind: 'notification', toolName: 'plan_update' }),
       row('t1'),
     ];
-    expect(groupActivityRunSpans(items).map((span) => span.items.map((item) => item.id)))
+    expect(groupActivityRunSpans(items, AGENT_MESSAGE_MEMBERS_RULE).map((span) => span.items.map((item) => item.id)))
       .toEqual([['t0', 't1']]);
   });
 
   it('allocates nothing for a prose-only window', () => {
-    expect(groupActivityRunSpans([prose('p0'), prose('p1')])).toEqual([]);
+    expect(groupActivityRunSpans([prose('p0'), prose('p1')], AGENT_MESSAGE_MEMBERS_RULE)).toEqual([]);
   });
 
   it('finds the span holding an id', () => {
-    const spans = groupActivityRunSpans([row('t0'), prose('p0'), row('t1'), row('t2')]);
+    const spans = groupActivityRunSpans([row('t0'), prose('p0'), row('t1'), row('t2')], AGENT_MESSAGE_MEMBERS_RULE);
     expect(spanHolding(spans, 't2')?.firstItemId).toBe('t1');
     expect(spanHolding(spans, 'p0')).toBeNull();
     expect(spanHolding(spans, '')).toBeNull();

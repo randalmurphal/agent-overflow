@@ -3,8 +3,9 @@
 // mock providers.
 //
 // Coverage: an ordinary thread's finished workers leave the open list and
-// are counted and listed under Past, newest settled first, 8 and then the
-// rest per "Show N more…"; a thread_ask shows while it runs, and its click
+// are counted beside the word Past and listed under it, newest settled
+// first, 8 and then the rest per "Show N more…", and Show less goes back to
+// the first 8; a thread_ask shows while it runs, and its click
 // opens its copy beside the thread with a composer that takes no message
 // and no Keep; once its copy answered, the copy's pane goes and the row
 // lingers, leaves and is first in Past, where its click goes to the
@@ -41,6 +42,7 @@ import {
   agentsBody,
   companionPane,
   expectAskCopyReadOnly,
+  expectPastCountBesideLabel,
   failAgentReads,
   ledgerRequests,
   openAgentRow,
@@ -132,6 +134,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await expect(openAgentRow(page, held.token).getByTestId('agent-tray-row-state')).toHaveText('running');
     await expect(pastToggle(page)).toHaveAttribute('aria-expanded', 'false');
     await expect(agentsBody(page).getByTestId('activity-rail-agents-past-count')).toHaveText(String(WORKERS));
+    await expectPastCountBesideLabel(page);
     await capture(page, `agents-past-${provider}-open-and-collapsed.png`, agentsBody(page));
 
     // While it runs the ask's row opens its copy, its worker, beside the
@@ -182,7 +185,9 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await expect(list.getByTestId('agent-tray-row-stop')).toHaveCount(0);
     await expect(rows.nth(2).getByTestId('agent-tray-row-provider')).toHaveAttribute('data-provider', provider);
     const more = agentsBody(page).getByTestId('activity-rail-agents-past-more');
+    const less = agentsBody(page).getByTestId('activity-rail-agents-past-less');
     await expect(more).toHaveText(`Show ${WORKERS + 2 - 8} more…`);
+    await expect(less).toHaveCount(0);
     await capture(page, `agents-past-${provider}-expanded.png`, agentsBody(page));
 
     // The ask's copy is gone: its row's click goes to the answer, which
@@ -220,6 +225,17 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await expect(sidebarRow).toBeVisible({ timeout: 30_000 });
     await expect(show).toHaveCount(0);
     expect((await harness.rpc<{ placement: string }>('GetThread', workers[0].targetThreadId)).placement).toBe('standalone');
+
+    // Show less goes back to the first page; Show more pages on from it again.
+    await less.click();
+    await expect(rows).toHaveCount(8);
+    await expect(rows.nth(0)).toHaveAttribute('data-token', held.token);
+    await expect(less).toHaveCount(0);
+    await expect(more).toHaveText(`Show ${WORKERS + 2 - 8} more…`);
+    await more.click();
+    await expect(rows).toHaveCount(WORKERS + 2);
+    await expect(less).toBeVisible();
+    await expect(agentsBody(page).getByTestId('activity-rail-agents-past-count')).toHaveText(String(WORKERS + 2));
 
     // Collapsing drops the rows; the count stays.
     await pastToggle(page).click();

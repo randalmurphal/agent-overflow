@@ -18,9 +18,13 @@ import {
   scrollTimelineToTop,
   showTextUncovered,
 } from './standing-agent-home-contents-helpers.js';
+import { openRunsFor } from './standing-agent-wake-helpers.js';
 
 test('compact: the agent session and the worker first message fit the phone', async ({ harness, page }) => {
   test.setTimeout(240_000);
+  // Settings outlive a test in the worker. Collapsed runs keep the agent's
+  // earlier prose inside the timeline's window on the phone.
+  await harness.rpc('UpdateSettings', { activityRunDefault: 'collapsed' });
   const run = await runHomeContents(harness, 'claude', 'compact-home-contents');
 
   await harness.open(page);
@@ -39,6 +43,7 @@ test('compact: the agent session and the worker first message fit the phone', as
   await harness.rpc('SetThreadPlacement', [run.worker], 'standalone');
   await page.getByTestId('thread-row').getByText('Parser review', { exact: true }).tap();
   const first = page.locator('[data-testid="agent-message-row"][data-agent-message-kind="spawn"]');
+  await openRunsFor(page, first);
   await expect(first).toHaveCount(1);
   await expect(first.getByTestId('agent-message-first-line')).toHaveText(ATTACHED_OPENING);
   // Expanded, and scrolled to the facts naming the agent.

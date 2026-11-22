@@ -5,6 +5,7 @@
 import type { Project } from '../types/models';
 import {
   listProjectLocal,
+  deleteProjectLocal,
   removeProjectLocal,
   updateProjectLocal,
 } from './projects.svelte';
@@ -39,7 +40,7 @@ export function applyProjectUpdated(evt: ProjectUpdateEvent): void {
       // what closes their panes. A draft placeholder has no thread row, so
       // this frame closes it. The deleting client receives this frame too.
       if (!evt.id) return;
-      removeProjectLocal(evt.id);
+      deleteProjectLocal(evt.id);
       closeDraftPlaceholderPanes([evt.id]);
       return;
     }

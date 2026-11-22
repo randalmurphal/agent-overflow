@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { test, expect, type HarnessMockEvent } from './fixtures.js';
 import type { HarnessApp } from '../src/harness.js';
 import { captureAgentMessageInView } from './wake-rows-helpers.js';
+import { timelineOf } from './timeline-follow-helpers.js';
 import {
   assistantText,
   callChildren,
@@ -20,6 +21,11 @@ import {
   waitForWorkflowState,
   type WorkflowDetail,
 } from './workflows-helpers.js';
+
+test.beforeEach(async ({ harness }) => {
+  // These assertions read agent message rows, which sit inside activity runs.
+  await harness.rpc('UpdateSettings', { activityRunDefault: 'expanded' });
+});
 
 // Thread binding, wake, pause/resume, and discard (spec §5, decisions D17/D23)
 // over the real engine and real git checkouts. Every surface here is RPC-only:
@@ -196,7 +202,7 @@ test('a bound run wakes its origin thread when it rests', async ({ harness, page
   const body = row.getByTestId('agent-message-body');
   await expect(body).toContainText('"verdict": "true"');
   await expect(body).not.toContainText('untrusted run data');
-  await captureAgentMessageInView(page, 'workflow-wake-row.png', row);
+  await captureAgentMessageInView(timelineOf(row), 'workflow-wake-row.png', row);
 
   // Unbinding is the off switch: the next resting transition reports nowhere.
   const unbound = await harness.rpc<{ originThreadId?: string }>(

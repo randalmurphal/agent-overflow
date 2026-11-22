@@ -134,13 +134,21 @@ type sessionStart = sessionruntime.Start
 //     IO inside start(), which deliberately stays uncancellable — a
 //     cancelled spawn/send is indistinguishable from a delivered one.)
 func (a *App) runSessionStart(ctx context.Context, threadID string, start func() error) error {
+	_, err := a.runRegisteredSessionStart(ctx, threadID, start)
+	return err
+}
+
+// runRegisteredSessionStart is runSessionStart that also returns, to the
+// leader and every joiner, the session the start registered: a session that
+// failed before it initialized may already have left the registry.
+func (a *App) runRegisteredSessionStart(ctx context.Context, threadID string, start func() error) (session, error) {
 	startState, leader := a.sessionManager().beginStart(threadID)
 	if !leader {
 		select {
 		case <-startState.Done:
-			return startState.Err
+			return startState.Registered, startState.Err
 		case <-ctx.Done():
-			return fmt.Errorf("waiting for in-flight session start of thread %s: %w", threadID, ctx.Err())
+			return session{}, fmt.Errorf("waiting for in-flight session start of thread %s: %w", threadID, ctx.Err())
 		}
 	}
 
@@ -156,7 +164,7 @@ func (a *App) runSessionStart(ctx context.Context, threadID string, start func()
 	}()
 	startState.Err = start()
 	completed = true
-	return startState.Err
+	return startState.Registered, startState.Err
 }
 
 // revokeSessionMCP retires the AO tool URLs one provider session was issued.

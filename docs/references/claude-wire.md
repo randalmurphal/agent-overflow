@@ -597,9 +597,13 @@ with the user's own and run beside them:
   with no source, then the contexts joined by newlines (2.1.261 to
   2.1.283, read from the bundle). The transcript keeps every earlier
   run's block, so a request after a resume carries the start's block too.
-- A print-mode process yields its first `system/init` before it reads
-  any input. A print-mode resume adds its hooks' messages to the loaded
-  conversation in memory, not to the transcript (read from the bundle).
+- A print-mode process runs its start's hooks before it answers any
+  control request (2.1.88 awaits them inside its resume load; on 2.1.325
+  a 5 s hook delays the first answer by 5 s); its first `system/init`
+  comes with its first input
+  ([§Start outcome](#start-outcome-before-the-first-input)). A print-mode
+  resume adds its hooks' messages to the loaded conversation in memory,
+  not to the transcript (read from the bundle).
 - Each run also writes `attachment` rows to the session JSONL: a
   `hook_success` per hook (`hookName` `SessionStart:<source>`) and one
   `hook_additional_context` holding the contexts. They stay in the
@@ -5371,6 +5375,77 @@ resume) is therefore not a hazard.
 
 ---
 
+## Start outcome before the first input
+
+Spike-verified on 2.1.325 (2026-11-19, throwaway home, no credentials, no
+prompt sent) unless a line says it is read from the 2.1.88 source or the
+2.1.325 bundle.
+
+- A print-mode `--resume` writes no `system/init` before its first
+  input. Source: 2.1.88 yields init only inside `submitMessage`
+  (`QueryEngine.ts:540`), once per input; the 2.1.325 bundle yields it
+  before input processing only for an orphaned permission or a
+  handed-off turn.
+- The CLI answers control requests only once its resume load returned.
+  An `mcp_status` written at start is answered 0.75 to 5.2 s after
+  start, and 5.2 to 12.2 s with a 200 MB transcript, whose reads always
+  ended before the answer. A SessionStart hook that sleeps 5 s delays the
+  answer by its whole run; a slow MCP server does not (the answer arrives
+  with that server pending). Source: 2.1.88 awaits `loadInitialMessages`
+  (`cli/print.ts:686`) before `runHeadlessStreaming` (`:864`) starts the
+  structured-input loop (`:2816`).
+- A load that finds no conversation writes a stderr line and
+  `result{subtype:"error_during_execution", is_error:true, num_turns:0,
+  errors:["No conversation found with session ID: <id>"]}`, then closes
+  stdout and stderr and exits 1 about 0.17 s later, with no input. An
+  `mcp_status` written at start is never answered. 2.1.88 exits the same
+  way (source: `gracefulShutdownSync(1)`, `cli/print.ts:5100`).
+- `get_context_usage` is answered before any input, about 0.7 s after it
+  is written, without an API call. Its `messageBreakdown` counts the
+  loaded conversation by kind; the table gives the counts. A chain that
+  ends on a user-side row counts 12 assistant tokens, probably a
+  synthetic reply the CLI appends (not verified). `messageBreakdown` is
+  optional in the 2.1.88 schema, and a CLI that lacks a subtype answers
+  an error, `Unsupported control request subtype: <subtype>` (source:
+  `cli/print.ts:4022`).
+
+| Transcript | CLI behavior | `messageBreakdown` | AO outcome |
+|---|---|---|---|
+| No file, an empty file, or furniture rows only (`custom-title`, `mode`, `last-prompt`, `queue-operation`) | `No conversation found`, then exit 1 | none | Unavailable |
+| An id that is no session id | `--resume requires a valid session ID or session title ...` (source, not spiked) | none | Unavailable |
+| `system` and `attachment` rows only | Loads and answers | attachment 61, assistant 12, user 0 | Unavailable |
+| One whitespace-only assistant row, no user row | Loads and answers | all 0 | Unavailable |
+| Crash tail: a user prompt, then an assistant row with a dangling `tool_use` | Loads; the `tool_use` is kept | user 4, tool call 23, tool result 68, assistant 12 | Reusable |
+| A compact boundary and its summary row | Loads | user 29, assistant 12 | Reusable |
+| The deferred `api_error` fixture shape | Loads | user 13, tool call 21, tool result 18, assistant 12 (assistant count medium confidence) | Reusable |
+
+AO enforcement: `Session.AwaitStart` resolves from the read loop. A
+`system/init` on the session `--resume` named, or the CLI's answer to an
+`mcp_status` control request it sends, proves the load. A pre-init error
+`result` is a startup failure, which the read loop marks
+`FailureReasonStartup` for the App to reap the session; only the two "not
+found" messages are `ErrSessionNotFound`. The frame decides, not the exit
+after it: the read loop drains stdout to EOF before it ends. A resume the
+probe answer proved is then read once with `get_context_usage`: only a
+nonzero `userMessageTokens` proves it, zero is `ErrConversationEmpty`, and
+an error answer, an answer without `messageBreakdown` or the count, and an
+unreadable one are `ErrContentUnproven`. The count is the resumed
+conversation's only before the first input, so the caller holds every input
+off the process until the proof returns (the App holds the thread action
+lock). What was written to stdin decides before the count does: a prompt
+write in flight or failed is `ErrContentUnproven` (a failed write may have
+reached stdin in part); a completed prompt write is proven only by the
+CLI's acceptance, the first `system/init` read after the write began, and
+the process ending before it is an error; a start an init resolved with
+nothing written is proven without the count. A command AO writes on its
+own (`/effort`, `/fast`, `/rename`) without that lock, with no completed
+prompt, before the count or while it is out, may be counted (not verified)
+and is `ErrContentUnproven`. `AwaitStart`'s contract is the rule.
+Every wait is bounded only by its caller's context; the workflow runner's
+start deadline bounds it there.
+
+---
+
 ## Session JSONL: active-branch semantics (`--resume` / `--resume-session-at`)
 
 Not a wire shape, but the on-disk contract for
@@ -5415,14 +5490,16 @@ More spike-verified behavior (A1, B):
 - Plain `--resume` with no cursor uses the CLI's own default leaf, so
   omitting `--resume-session-at` is always safe, never wrong-branch.
 
-AO enforcement is described in the active-branch and resume-filter sections
-above. `sessionfork` re-chains deferred
-api_error tails so fork output keeps its writable tail on-branch;
-`ScanSessionLeaf` validates its file-order pick against a branch index
-and repairs picks the CLI would reject (off-branch OR filter-dropped,
-next section); `resolveClaudeResumeAt` passes that repaired pick at
-spawn. `internal/provider/claude/sessionleaf_branch.go` mirrors the row
-table above via `sessionfork.TranscriptTypes`.
+AO enforcement: an ordinary resume passes `--resume` alone and reads
+nothing from the transcript, so the CLI's own default leaf decides. Only
+a pinned fork start passes a cursor, which `ResolveForkResumeCursor`
+validates against a branch index and repairs when the CLI would reject
+it (off-branch OR filter-dropped, next section). `ScanSessionLeaf`
+applies the same repair to the leaf it reports for a mid-turn fork cut.
+`sessionfork` re-chains deferred
+api_error tails so fork output keeps its writable tail on-branch.
+`internal/provider/claude/sessionleaf_branch.go` mirrors the row table
+above via `sessionfork.TranscriptTypes`.
 
 ## Session JSONL: resume deserialization filters (crash tails)
 
@@ -5458,12 +5535,13 @@ The filters, in order (source: `utils/messages.ts`, 2.1.219):
    when the head is non-meta; meta-headed runs depend on the
    HISTORY_SNIP feature flag).
 
-AO enforcement: `sessionleaf_resumefilters.go` mirrors the three
-filters over the active chain; `repairLeafForActiveBranch` substitutes
-the deepest surviving row (or no cursor at all, always safe). The
-mirror is deliberately conservative. See the file header
-for the containment argument around
-`recoverOrphanedParallelToolResults`.
+AO enforcement: an ordinary resume passes no cursor, so these filters
+cannot fail it. For a pinned fork start's cursor and a scanned leaf,
+`sessionleaf_resumefilters.go` mirrors the three filters over the
+active chain and the repair substitutes the deepest surviving row
+(`repairLeafForActiveBranch`, `ResolveForkResumeCursor`). The mirror is
+deliberately conservative. See the file header for the containment
+argument around `recoverOrphanedParallelToolResults`.
 
 ## Orphaned server-side tool calls (`server_tool_use` without a result)
 
@@ -5478,7 +5556,8 @@ The CLI repairs this itself. `ensureToolResultPairing`
 (`services/api/claude.ts`) strips every `server_tool_use` or
 `mcp_tool_use` block without a matching result from each API request,
 live or resumed, so the next request and a later live user send both
-succeed. AO keeps these rows out of resume and fork cursors
+succeed, and an ordinary resume, which passes no cursor, needs nothing
+from AO. AO keeps these rows out of fork cursors and scanned leaves
 (`UnresolvedServerToolUUIDs`); a live session needs no restart. An
 interrupt cannot split an advisor call from its result in practice:
 both reach stdout within milliseconds of each other.
@@ -5530,8 +5609,10 @@ bypass. Fixture:
 AO countermeasures: `sessionfork/rechain.go` forces each deferred
 api_error row's fork parent to its file predecessor (subtype-scoped, since
 compact-boundary system rows are legitimate `parentUuid:null` roots and
-are never touched); the branch-aware leaf scan + spawn validation cover
-unforked files.
+are never touched). An ordinary resume of an unforked file passes no
+cursor, so it starts; it still resumes the CLI's active branch, which
+omits the bypassed tail. A pinned fork start's cursor and a scanned leaf
+are repaired onto the active branch by the branch-aware scan.
 
 ## Session JSONL: compact_boundary ordering
 

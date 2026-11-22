@@ -36,8 +36,9 @@ const (
 // sessions, with args) selects: revoked at at, or deleted. It then releases
 // the links of their devices, and of devices, that no unrevoked session
 // pairs with this computer any longer. It returns the ended sessions and the
-// released threads, sorted. where is a constant per call site, so each
-// statement compiles once.
+// released threads, sorted. The nudge runs kept for those devices' links,
+// which no device left can take, go with them. where is a constant per call
+// site, so each statement compiles once.
 func endSessionsTx(tx *sql.Tx, end sessionEnd, at int64, devices []string, where string, args ...any) (ids, released []string, err error) {
 	var rows *sql.Rows
 	switch end {
@@ -69,6 +70,7 @@ func endSessionsTx(tx *sql.Tx, end sessionEnd, at int64, devices []string, where
 	}
 	for _, statement := range []string{
 		`UPDATE thread_request_receipts SET track_spawn = 0 WHERE track_spawn = 1 AND ` + unreachableDeviceLinksSQL,
+		`DELETE FROM thread_receipt_nudges WHERE link_token IN (SELECT token FROM thread_request_receipts WHERE ` + unreachableDeviceLinksSQL + `)`,
 		`DELETE FROM spawn_revisions WHERE owner_device_id IN (SELECT value FROM json_each(?))
 		  AND NOT EXISTS (SELECT 1 FROM sessions WHERE device_id = spawn_revisions.owner_device_id AND revoked_at IS NULL)`,
 	} {

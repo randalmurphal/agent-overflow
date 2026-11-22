@@ -22,7 +22,10 @@
   } from '../../stores/threadPaneRoles';
   import { compositeKey } from '../../utils/compositeKey';
   import type { ActivityRunNode } from '../../utils/subagentGrouping';
+  import { agentMessageFromItem } from '../../utils/agentMessage';
+  import { threadMachine } from '../../stores/attachedBackends.svelte';
   import { activityRunSummary } from './activityRunSummary';
+  import { agentSenderLabel } from './agentThreadOrigin';
   import { TOOL_KIND_COLOR_CLASS } from './toolCardHeader';
   import Indicator from './Indicator.svelte';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
@@ -116,9 +119,26 @@
       colorClass: TOOL_KIND_COLOR_CLASS[entry.icon],
     })),
   );
+  // A collapsed run of one agent message names it the way its row's folded
+  // line does (kind, sender, first line), so the reader learns who wrote
+  // and what without opening the run; a count would say neither. Opened,
+  // the row itself shows that line, and the header counts like any run's.
+  // Read reactively: the message's facts can be served again by a meta
+  // patch, which moves none of the summary's inputs.
+  let loneMessage = $derived.by(() => {
+    if (expanded || summary.loneAgentMessageId === null) return null;
+    const item = pane.getItemById(summary.loneAgentMessageId);
+    if (!item) return null;
+    const message = agentMessageFromItem(item);
+    if (!message) return null;
+    const sender = agentSenderLabel(message.sender, message.senderThread, threadMachine(item.threadId, null));
+    return { kindLabel: message.kindLabel, kindTitle: message.kindTitle, sender, firstLine: message.firstLine };
+  });
   let ariaLabel = $derived(
-    `${expanded ? 'Collapse' : 'Expand'} ${summary.counts.total} activity `
-      + `${summary.counts.total === 1 ? 'row' : 'rows'}`,
+    loneMessage
+      ? `Expand ${loneMessage.kindTitle} from ${loneMessage.sender}`
+      : `${expanded ? 'Collapse' : 'Expand'} ${summary.counts.total} activity `
+        + `${summary.counts.total === 1 ? 'row' : 'rows'}`,
   );
 </script>
 
@@ -131,14 +151,22 @@
   class={['py-0.5', className].filter(Boolean).join(' ')}
 >
   {#snippet children()}
-    <!-- One text run, no gaps: the separators are literal text so the line
-         truncates mid-term like the plain string it replaced. -->
-    <span class="min-w-0 flex-1 truncate text-[0.75rem] text-fg-muted" data-testid="activity-run-header-counts">
-      {#each terms as term, i (term.key)}{i > 0 ? ', ' : ''}{term.count}{' '}<span
-          class={term.colorClass}
-          data-tool-term={term.label}
-        >{term.label}</span>{/each}
-    </span>
+    {#if loneMessage}
+      <span class="flex min-w-0 flex-1 items-baseline gap-1.5 text-[0.75rem]" data-testid="activity-run-header-message">
+        <span class="shrink-0 text-fg-hint" data-testid="activity-run-header-message-kind" title={loneMessage.kindTitle}>{loneMessage.kindLabel}</span>
+        <span class="max-w-[45%] shrink-0 truncate font-medium text-fg-muted" data-testid="activity-run-header-message-sender">{loneMessage.sender}</span>
+        <span class="min-w-0 flex-1 truncate text-fg-muted/75" data-testid="activity-run-header-message-first-line">{loneMessage.firstLine}</span>
+      </span>
+    {:else}
+      <!-- One text run, no gaps: the separators are literal text so the line
+           truncates mid-term like the plain string it replaced. -->
+      <span class="min-w-0 flex-1 truncate text-[0.75rem] text-fg-muted" data-testid="activity-run-header-counts">
+        {#each terms as term, i (term.key)}{i > 0 ? ', ' : ''}{term.count}{' '}<span
+            class={term.colorClass}
+            data-tool-term={term.label}
+          >{term.label}</span>{/each}
+      </span>
+    {/if}
     {#if summary.hasFailure}
       <span class="flex shrink-0 items-center" data-testid="activity-run-header-failure">
         <Indicator state="error" ariaLabel="Contains a failure" />

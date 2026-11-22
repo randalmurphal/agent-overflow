@@ -120,7 +120,10 @@ func TestRenewalCannotResurrectRemovedOrReplacedProfileAndKeepsConcurrentName(t 
 			<-held.arrived
 			switch action {
 			case "forget":
-				if err := client.Forget(); err != nil {
+				// What a manager's Forget does: retire the owner, then drop
+				// whatever is stored.
+				client.Retire()
+				if err := ForgetSession(dir, "backend-a"); err != nil {
 					t.Fatal(err)
 				}
 			case "replace":
@@ -153,11 +156,11 @@ func TestRenewalCannotResurrectRemovedOrReplacedProfileAndKeepsConcurrentName(t 
 				if loadErr != nil || stored.Credential != "replacement-credential" {
 					t.Fatalf("replacement lost: %+v %v", stored, loadErr)
 				}
-				if err := client.Forget(); err != nil {
-					t.Fatal(err)
+				if err := client.SetNickname("stale"); !errors.Is(err, ErrSessionEnded) {
+					t.Fatalf("retired client's write: %v", err)
 				}
-				if _, err := LoadSession(dir, "backend-a"); err != nil {
-					t.Fatal("retired client deleted its replacement")
+				if kept, err := LoadSession(dir, "backend-a"); err != nil || kept.Nickname != "" {
+					t.Fatal("retired client changed its replacement")
 				}
 			case "rename":
 				if loadErr != nil || stored.Nickname != "GPU workstation" {

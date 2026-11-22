@@ -21,7 +21,7 @@ const MaxAgentComputers = 16
 // computer never implicitly gives its agents access to that computer.
 func (m *Manager) AgentAccess() (map[string]bool, error) {
 	access := map[string]bool{}
-	_, err := atomicfile.ReadJSON(filepath.Join(m.dir, "agent-access.json"), &access)
+	_, err := atomicfile.ReadJSON(filepath.Join(m.dir, agentAccessFile), &access)
 	if access == nil {
 		access = map[string]bool{}
 	}
@@ -36,48 +36,6 @@ func (m *Manager) AgentAccess() (map[string]bool, error) {
 		}
 	}
 	return access, err
-}
-
-func (m *Manager) SetAgentAccess(id string, enabled bool) error {
-	if !entityid.Valid(id) {
-		return errors.New("invalid computer identity")
-	}
-	unlock := m.profiles.Lock(id)
-	defer unlock()
-	if enabled {
-		if _, err := deviceclient.LoadSession(m.dir, id); err != nil {
-			return err
-		}
-	}
-	return m.writeAgentAccess(id, enabled)
-}
-
-func (m *Manager) writeAgentAccess(id string, enabled bool) error {
-	unlock := m.profiles.Lock("agent-access")
-	defer unlock()
-	access, err := m.AgentAccess()
-	if err != nil {
-		return err
-	}
-	if enabled {
-		// A revoked credential can disappear without a Manager.Remove call.
-		// Prune those opt-ins when writing, not on every command or UI read.
-		for peer := range access {
-			if _, err := deviceclient.LoadSession(m.dir, peer); errors.Is(err, deviceclient.ErrNoSession) {
-				delete(access, peer)
-			}
-		}
-		if !access[id] && len(access) >= MaxAgentComputers {
-			return errors.New("at most 16 computers can be enabled for agent commands")
-		}
-		access[id] = true
-	} else {
-		if !access[id] {
-			return nil
-		}
-		delete(access, id)
-	}
-	return atomicfile.WriteJSON(filepath.Join(m.dir, "agent-access.json"), access)
 }
 
 // CallAgentPeer makes one authenticated RPC call using the carrier's

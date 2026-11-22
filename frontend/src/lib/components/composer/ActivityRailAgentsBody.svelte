@@ -342,8 +342,8 @@
           data-testid="activity-rail-agents-past-toggle"
         >
           <span class="flex size-3.5 shrink-0 items-center justify-center" class:rotate-90={past.expanded}><Icon icon={ChevronRight} size={12} strokeWidth={2} /></span>
-          <span class="flex-1">Past</span>
-          <span class="shrink-0 min-w-5 text-right text-[0.625rem] tabular-nums text-fg-hint" data-testid="activity-rail-agents-past-count">{past.total}</span>
+          <span>Past</span>
+          <span class="shrink-0 text-[0.625rem] tabular-nums text-fg-hint" data-testid="activity-rail-agents-past-count">{past.total}</span>
         </button>
       </li>
     {/if}
@@ -372,16 +372,30 @@
             </li>
           {/each}
         </ul>
-        {#if past.moreCount > 0}
-          <button
-            type="button"
-            class="ml-6 {activityRailRevealClasses}"
-            onclick={() => past.showMore()}
-            disabled={past.loadingMore}
-            data-testid="activity-rail-agents-past-more"
-          >
-            Show {past.moreCount} more…
-          </button>
+        {#if past.moreCount > 0 || past.canShowLess}
+          <div class="ml-6 flex items-center gap-1">
+            {#if past.moreCount > 0}
+              <button
+                type="button"
+                class={activityRailRevealClasses}
+                onclick={() => past.showMore()}
+                disabled={past.loadingMore}
+                data-testid="activity-rail-agents-past-more"
+              >
+                Show {past.moreCount} more{past.hiddenCount > past.moreCount ? ` of ${past.hiddenCount}` : ''}…
+              </button>
+            {/if}
+            {#if past.canShowLess}
+              <button
+                type="button"
+                class={activityRailRevealClasses}
+                onclick={() => past.showLess()}
+                data-testid="activity-rail-agents-past-less"
+              >
+                Show less
+              </button>
+            {/if}
+          </div>
         {/if}
       </li>
     {/if}

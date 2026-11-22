@@ -19,8 +19,9 @@ const (
 	maxClaudeSessionLeafRows      = 500_000
 )
 
-// SessionLeafState is the Claude transcript continuation state AO needs
-// before resuming a session. CanonicalLeafUUID is the latest settled
+// SessionLeafState is the Claude transcript continuation state a cold
+// scan reports: where a fork may cut the transcript, and whether it holds
+// a resumable row at all. CanonicalLeafUUID is the latest settled
 // top-level transcript row. UnresolvedServerToolUUIDs are assistant rows
 // that contain server-side tool calls without a matching server-side
 // result; they are transcript history, but not valid continuation leaves.
@@ -129,9 +130,9 @@ func (t *claudeLeafTracker) ingestRow(row claudeSessionRow) {
 // envelope with `parent_tool_use_id: null`). Without the gate a
 // subagent's tool_result envelope became the canonical leaf for the
 // whole duration of a Task, and every consumer that resolves that leaf
-// against the FILE — cold resume-at, the mid-turn fork slice, both of
-// which filter sidechains before searching — was looking for a uuid
-// that provably is not there.
+// against the FILE (the fork pin repair and the fork's
+// `--resume-session-at`, both of which filter sidechains before
+// searching) was looking for a uuid that provably is not there.
 func (t *claudeLeafTracker) ingestUserLocked(uuid, parentToolUseID string) {
 	uuid = strings.TrimSpace(uuid)
 	if uuid == "" || strings.TrimSpace(parentToolUseID) != "" || t.alreadySeenLocked(uuid) {
@@ -260,8 +261,9 @@ func sortedServerToolUUIDs(refs map[string]map[string]struct{}) []string {
 }
 
 // ScanSessionLeaf reconstructs the canonical settled leaf for a Claude
-// session JSONL. It is intended for cold start/recovery only; live sessions
-// use claudeLeafTracker fed directly from stdout.
+// session JSONL from the file alone. A live session's leaf comes from the
+// claudeLeafTracker fed from its stdout; a cold scan answers when there is
+// no live session, or when a resumed session has not emitted a row yet.
 func ScanSessionLeaf(projectsDir, sessionID, workspacePath string) (SessionLeafState, error) {
 	path, err := sessionfork.LocateSessionFile(projectsDir, sessionID, workspacePath)
 	if err != nil {
@@ -300,7 +302,7 @@ func scanSessionLeafReader(r io.Reader) (SessionLeafState, error) {
 	// a crash mid-tool-execution leaves a dangling tool_use leaf, an
 	// interrupted stream can leave orphaned thinking-only or
 	// whitespace-only rows. Repair to the deepest surviving branch row
-	// so cold resume never targets a uuid claude is about to discard.
+	// so a fork cut never targets a uuid claude is about to discard.
 	return repairLeafForActiveBranch(tracker.stateForColdResume(), branch), nil
 }
 

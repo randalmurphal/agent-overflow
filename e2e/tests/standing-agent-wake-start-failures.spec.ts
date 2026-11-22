@@ -46,6 +46,7 @@ import {
   threadSend,
   wakeBubble,
   completionRows,
+  openRunsFor,
   shoot,
   dbWakes,
   brokenWatchNotifiesUntilFixed,
@@ -836,6 +837,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
 
       await harness.open(page);
       await page.getByTestId('thread-row').getByText('Remote builder', { exact: true }).click();
+      await openRunsFor(page, completionRows(page).last());
       await shoot(
         page,
         `${provider}-archive-keeps-held-remote-completion.png`,

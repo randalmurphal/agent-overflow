@@ -18,10 +18,12 @@ import {
   getBindingMock,
 } from '../../../test/mocks/bindings-app';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
-import type { ProjectWithCounts } from '../../types/models';
+import type { ProjectTarget } from './sidebarEntries';
+import { createProjectActions } from './projectActions.svelte';
+import { HOME_BACKEND } from '../../transport/backendKey';
 import type { ProjectDeletionPreview, ProjectDeletionResult } from '../../types/workflow';
 import { setPageGrantsFromBootstrap } from '../../transport/scopes';
-import { isProjectExpanded, resetSidebarForTest } from '../../stores/sidebar.svelte';
+import { resetSidebarForTest } from '../../stores/sidebar.svelte';
 import {
   consumePendingGroupRename,
   getThreadGroupById,
@@ -31,19 +33,20 @@ import {
   getThreadFilterQuery,
   setThreadFilterQuery,
 } from '../../stores/threadFilter.svelte';
+import { entryRecordForTest } from '../../stores/sidebarEntryContinuity.svelte';
+import { addProjectDeletedObserver } from '../../stores/projects.svelte';
 
-function makeProject(): ProjectWithCounts {
+// The menu takes the project frozen at the gesture that opened it, never a
+// row it could read again.
+function makeTarget(): ProjectTarget {
   return {
-    project: {
-      id: 'project-1',
-      path: '/tmp/repo',
-      name: 'Repo',
-      sortPosition: 0,
-      createdAt: 0,
-      updatedAt: 0,
-      archived: false,
-    },
+    id: 'project-1',
+    name: 'Repo',
+    path: '/tmp/repo',
+    backend: HOME_BACKEND,
+    label: 'Repo',
     threadCount: 2,
+    scope: { kind: 'whole' },
   };
 }
 
@@ -85,19 +88,35 @@ function emptyResult(): ProjectDeletionResult {
   return { threadIds: [], retainedWorktrees: [] };
 }
 
-function renderMenu() {
+function renderMenu(target: ProjectTarget = makeTarget()) {
   const anchor = document.createElement('div');
   document.body.appendChild(anchor);
-  return render(ProjectContextMenu, {
+  // The row's runs, which its inline rename shares: a test that acts on the
+  // row while a call is out holds them the way ProjectItem does.
+  const actions = createProjectActions();
+  const view = render(ProjectContextMenu, {
     props: {
-      project: makeProject(),
-      labelText: 'Repo',
+      target,
+      actions,
       anchor,
       open: true,
       onClose: () => {},
       onRename: () => {},
     },
   });
+  return Object.assign(view, { actions });
+}
+
+/** A promise a test resolves or rejects when it chooses. */
+function deferred<T>(): { promise: Promise<T>; reject: (err: unknown) => void } {
+  let reject!: (err: unknown) => void;
+  const promise = new Promise<T>((_resolve, rejectFn) => {
+    reject = rejectFn;
+  });
+  // Nothing awaits this copy; it only keeps an unhandled rejection quiet
+  // until the component's own catch runs.
+  void promise.catch(() => {});
+  return { promise, reject };
 }
 
 async function selectDelete(baseElement: HTMLElement): Promise<void> {
@@ -151,6 +170,97 @@ describe('<ProjectContextMenu> delete flow', () => {
 
     await waitFor(() => {
       expect(getBindingMock('DeleteProject')).toHaveBeenCalledWith('project-1');
+    });
+  });
+
+  it('tells what keeps state by entry key that a confirmed delete deleted the project, and an archive did not', async () => {
+    const deleted: string[] = [];
+    const stop = addProjectDeletedObserver((key) => deleted.push(key));
+    try {
+      setBindingMock('ArchiveProject', async () => undefined);
+      const archive = renderMenu();
+      const archiveItem = Array.from(archive.baseElement.querySelectorAll('[role="menuitem"]'))
+        .find((el) => el.textContent?.trim() === 'Archive Project');
+      await fireEvent.click(archiveItem as Element);
+      await waitFor(() => expect(archive.baseElement.querySelector('[role="dialog"]')).not.toBeNull());
+      await fireEvent.click(Array.from(archive.baseElement.querySelectorAll('button'))
+        .find((el) => el.textContent?.trim() === 'Archive') as Element);
+      await waitFor(() => expect(toastMessages()).toContain('Archived project "Repo".'));
+      expect(deleted).toEqual([]);
+      archive.unmount();
+
+      setBindingMock('ProjectDeletionPreview', async () => emptyPreview());
+      const { baseElement } = renderMenu();
+      await selectDelete(baseElement);
+      await waitFor(() => expect(baseElement.textContent).toContain('Permanently delete "Repo"'));
+      await fireEvent.click(Array.from(baseElement.querySelectorAll('button'))
+        .find((el) => el.textContent?.trim() === 'Delete') as Element);
+      await waitFor(() => expect(deleted).toEqual(['project-1']));
+    } finally {
+      stop();
+    }
+  });
+
+  // What a confirmation promises is what the one call affects.
+  describe('what the confirmations say the call affects', () => {
+    const oneOfSeveral = (): ProjectTarget => ({
+      ...makeTarget(),
+      label: 'app',
+      threadCount: 3,
+      scope: { kind: 'oneOfSeveral', computerName: 'Laptop' },
+    });
+    const normalized = (el: Element | null) => (el?.textContent ?? '').replace(/\s+/g, ' ').trim();
+
+    async function openDelete(target: ProjectTarget, preview: ProjectDeletionPreview): Promise<HTMLElement> {
+      setBindingMock('ProjectDeletionPreview', async () => preview);
+      const { baseElement } = renderMenu(target);
+      await selectDelete(baseElement);
+      await waitFor(() => expect(baseElement.querySelector('[role="dialog"]')).not.toBeNull());
+      return baseElement;
+    }
+
+    async function openArchive(target: ProjectTarget): Promise<HTMLElement> {
+      const { baseElement } = renderMenu(target);
+      const item = Array.from(baseElement.querySelectorAll('[role="menuitem"]'))
+        .find((el) => el.textContent?.trim() === 'Archive Project');
+      await fireEvent.click(item as Element);
+      await waitFor(() => expect(baseElement.querySelector('[role="dialog"]')).not.toBeNull());
+      return baseElement;
+    }
+
+    it('names the one checkout a delete removes, and its own threads, when the entry has others', async () => {
+      const page = await openDelete(oneOfSeveral(), emptyPreview());
+      expect(normalized(page.querySelector('[role="dialog"]'))).toContain(
+        'Permanently delete "app" on Laptop and all 3 threads it contains there. Checkouts on other computers are not affected. This cannot be undone.',
+      );
+    });
+
+    it('says the same in the dialog for a project with workflow work', async () => {
+      const page = await openDelete(oneOfSeveral(), workPreview());
+      expect(normalized(page.querySelector('[data-testid="project-delete-dialog"]'))).toContain(
+        'Permanently delete "app" on Laptop and all 3 threads it contains there. Checkouts on other computers are not affected.',
+      );
+    });
+
+    it("keeps today's delete text for an entry with one checkout", async () => {
+      const page = await openDelete(makeTarget(), emptyPreview());
+      expect(normalized(page.querySelector('[role="dialog"]'))).toContain(
+        'Permanently delete "Repo" and all 2 threads it contains. This cannot be undone.',
+      );
+    });
+
+    it('names the one checkout an archive hides when the entry has others', async () => {
+      const page = await openArchive(oneOfSeveral());
+      expect(normalized(page.querySelector('[role="dialog"]'))).toContain(
+        'Archive "app" on Laptop. Its threads there remain and it can be unarchived from Settings. Checkouts on other computers are not affected.',
+      );
+    });
+
+    it("keeps today's archive text for an entry with one checkout", async () => {
+      const page = await openArchive(makeTarget());
+      expect(normalized(page.querySelector('[role="dialog"]'))).toContain(
+        'Hide "Repo" from the sidebar. Threads remain and the project can be unarchived from Settings.',
+      );
     });
   });
 
@@ -219,6 +329,106 @@ describe('<ProjectContextMenu> delete flow', () => {
     expect(warning?.message).toContain('2 uncommitted or untracked files');
   });
 
+  // A delete that fails leaves the dialog the user is looking at in place,
+  // so the retry is one click. The run that failed is spent, so that retry
+  // is a run of its own carrying the same project and the same answer.
+  it('keeps the preview dialog up when the delete fails, and retries from it', async () => {
+    setBindingMock('ProjectDeletionPreview', async () => workPreview());
+    const del = setBindingMock('DeleteProject', vi.fn(async () => {
+      throw new Error('project is busy');
+    }));
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { baseElement } = renderMenu();
+
+    await selectDelete(baseElement);
+    await waitFor(() => {
+      expect(baseElement.querySelector('[data-testid="project-delete-dialog"]')).not.toBeNull();
+    });
+    const confirmButton = (): Element => {
+      const button = baseElement.querySelector('[data-testid="project-delete-confirm"]');
+      if (button === null) throw new Error('the dialog has no confirm button');
+      return button;
+    };
+
+    await fireEvent.click(confirmButton());
+    await waitFor(() => {
+      expect(toastMessages().join(' ')).toContain('Project is busy');
+    });
+    // Still there, with what the computer answered about the project, and
+    // no longer saying a deletion is under way.
+    const dialog = baseElement.querySelector('[data-testid="project-delete-dialog"]');
+    expect(dialog).not.toBeNull();
+    expect(baseElement.querySelector('[data-testid="project-delete-work"]')?.textContent)
+      .toContain('3 workflow runs');
+
+    await fireEvent.click(confirmButton());
+    await waitFor(() => expect(del).toHaveBeenCalledTimes(2));
+    expect(del).toHaveBeenNthCalledWith(2, 'project-1');
+    consoleError.mockRestore();
+  });
+
+  // A delete that fails after the user has moved on must leave the row as
+  // they left it: its catch answers for a project they are no longer
+  // looking at, and a dialog raised from it would be that project's.
+  it('brings nothing back when the delete fails after the dialog was cancelled', async () => {
+    setBindingMock('ProjectDeletionPreview', async () => workPreview());
+    const call = deferred<ProjectDeletionResult>();
+    setBindingMock('DeleteProject', () => call.promise);
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { baseElement, actions } = renderMenu();
+
+    await selectDelete(baseElement);
+    await waitFor(() => {
+      expect(baseElement.querySelector('[data-testid="project-delete-dialog"]')).not.toBeNull();
+    });
+    await fireEvent.click(baseElement.querySelector('[data-testid="project-delete-confirm"]')!);
+
+    // The user gives up on it while the call is out.
+    const cancel = Array.from(baseElement.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Cancel',
+    );
+    await fireEvent.click(cancel!);
+    await tick();
+    expect(baseElement.querySelector('[data-testid="project-delete-dialog"]')).toBeNull();
+
+    call.reject(new Error('project is busy'));
+    await waitFor(() => {
+      expect(toastMessages().join(' ')).toContain('Project is busy');
+    });
+    expect(baseElement.querySelector('[data-testid="project-delete-dialog"]')).toBeNull();
+    expect(actions.current).toBeNull();
+    consoleError.mockRestore();
+  });
+
+  it('leaves the newer action alone when the delete fails behind it', async () => {
+    setBindingMock('ProjectDeletionPreview', async () => workPreview());
+    const call = deferred<ProjectDeletionResult>();
+    setBindingMock('DeleteProject', () => call.promise);
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { baseElement, actions } = renderMenu();
+
+    await selectDelete(baseElement);
+    await waitFor(() => {
+      expect(baseElement.querySelector('[data-testid="project-delete-dialog"]')).not.toBeNull();
+    });
+    await fireEvent.click(baseElement.querySelector('[data-testid="project-delete-confirm"]')!);
+
+    // A newer gesture on the row, which owns it from here on.
+    const archive = actions.start('archive', { ...makeTarget(), id: 'project-2', label: 'Other' });
+    archive.confirm();
+    await tick();
+    expect(baseElement.textContent).toContain('Hide "Other"');
+
+    call.reject(new Error('project is busy'));
+    await waitFor(() => {
+      expect(toastMessages().join(' ')).toContain('Project is busy');
+    });
+    expect(baseElement.querySelector('[data-testid="project-delete-dialog"]')).toBeNull();
+    expect(baseElement.textContent).toContain('Hide "Other"');
+    expect(actions.current).toBe(archive);
+    consoleError.mockRestore();
+  });
+
   it('stops at the preview failure instead of deleting anything', async () => {
     setBindingMock('ProjectDeletionPreview', async () => {
       throw new Error('git is unavailable');
@@ -275,7 +485,7 @@ describe('<ProjectContextMenu> New Group…', () => {
 
     expect(create).toHaveBeenCalledWith('project-1', 'New Group');
     expect(getThreadGroupById('g-new')).toBeTruthy();
-    expect(isProjectExpanded('project-1')).toBe(true);
+    expect(entryRecordForTest('project-1').expanded).toBe(true);
     // The row that has not mounted yet owes the inline rename.
     expect(consumePendingGroupRename('g-new')).toBe(true);
   });
@@ -312,8 +522,8 @@ describe('<ProjectContextMenu> compact create items', () => {
   function renderMenu(extra: Record<string, unknown> = {}) {
     return render(ProjectContextMenu, {
       props: {
-        project: makeProject(),
-        labelText: 'Repo',
+        target: makeTarget(),
+        actions: createProjectActions(),
         anchor: document.body,
         open: true,
         onClose: vi.fn(),
@@ -375,7 +585,8 @@ describe('<ProjectContextMenu> New Assistant…', () => {
     noteProject('project-1', 'laptop');
     try {
       applySettingsSnapshot(makeSettings({ assistantsEnabled: false }));
-      const view = renderMenu();
+      // The target carries the computer, captured when the row opened the menu.
+      const view = renderMenu({ ...makeTarget(), backend: 'laptop' });
       expect(view.queryByRole('menuitem', { name: 'New Assistant…' })).not.toBeNull();
       applySettingsSnapshot(makeSettings({ assistantsEnabled: true }));
       applySettingsSnapshot(makeSettings({ assistantsEnabled: false }), 'laptop');

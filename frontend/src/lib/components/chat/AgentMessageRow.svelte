@@ -43,7 +43,7 @@
   } from '../../utils/agentMessage';
   import type { UserMessageOriginThread } from '../../utils/userMessageMeta';
   import Icon from '../primitives/Icon.svelte';
-  import { agentThreadOriginChip } from './agentThreadOrigin';
+  import { agentSenderLabel, agentThreadOpener } from './agentThreadOrigin';
   import { preservePaneScrollAnchor } from './preserveScrollAnchor';
   import ToolHeaderMeta from './ToolHeaderMeta.svelte';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
@@ -117,9 +117,7 @@
    */
   function senderOf(name: string, thread: UserMessageOriginThread | null, computer = ''): Sender {
     if (!thread) return { label: computer ? `${name} on ${computer}` : name, open: null };
-    const chip = agentThreadOriginChip(thread, viewer);
-    const named = `from ${thread.title || 'another thread'}`;
-    return { label: name + (chip.label.startsWith(named) ? chip.label.slice(named.length) : ''), open: chip.open };
+    return { label: agentSenderLabel(name, thread, viewer), open: agentThreadOpener(thread, viewer).open };
   }
 
   interface Fact {

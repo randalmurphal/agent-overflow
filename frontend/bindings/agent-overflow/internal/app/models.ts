@@ -340,8 +340,9 @@ export class ActivityRunMembersRequest {
 
     /**
      * Shape applies as it does to a page: InlinePreviews projects the
-     * rows, MaxBytes bounds them. RunWindowRows has no meaning here — the
-     * caller names the count it wants with Limit.
+     * rows, MaxBytes bounds them, AgentMessageMembers names the rule the
+     * run is found by. RunWindowRows has no meaning here — the caller
+     * names the count it wants with Limit.
      */
     "shape": PageShape;
 
@@ -4306,6 +4307,12 @@ export class OwnerLinkRead {
      */
     "held"?: string[];
 
+    /**
+     * NudgesTaken lists the ended nudge runs the caller recorded
+     * (threadAgentPeerArgs.NudgesTaken).
+     */
+    "nudgesTaken"?: string[];
+
     /** Creates a new OwnerLinkRead instance. */
     constructor($$source: Partial<OwnerLinkRead> = {}) {
         if (!("token" in $$source)) {
@@ -4323,9 +4330,13 @@ export class OwnerLinkRead {
      */
     static createFrom($$source: any = {}): OwnerLinkRead {
         const $$createField2_0 = $$createType8;
+        const $$createField3_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("held" in $$parsedSource) {
             $$parsedSource["held"] = $$createField2_0($$parsedSource["held"]);
+        }
+        if ("nudgesTaken" in $$parsedSource) {
+            $$parsedSource["nudgesTaken"] = $$createField3_0($$parsedSource["nudgesTaken"]);
         }
         return new OwnerLinkRead($$parsedSource as Partial<OwnerLinkRead>);
     }
@@ -5379,7 +5390,7 @@ export class PRUpdateSubscriptionResult {
  * 
  * It rides `ListThreadSliceAround`, `ListItemsBeforeCursor`,
  * `ListItemsAfterCursor` and `ListActivityRunMembers` as a parameter, and
- * `SyncThreadWindow` as three fields of its flat JSON request body.
+ * `SyncThreadWindow` as fields of its flat JSON request body.
  */
 export class PageShape {
     /**
@@ -5404,6 +5415,16 @@ export class PageShape {
      * to it.
      */
     "maxBytes"?: number;
+
+    /**
+     * AgentMessageMembers asks for agent messages grouped as activity-run
+     * members on sight (store.AgentMessagesAreMembers). A client sets it
+     * exactly when this backend advertised
+     * transport.CapabilityAgentMessageRunMembers; a request without it,
+     * which is every older client's, is grouped by
+     * store.AgentMessagesAbsorbed, the rule that client applies.
+     */
+    "agentMessageMembers"?: boolean;
 
     /** Creates a new PageShape instance. */
     constructor($$source: Partial<PageShape> = {}) {
@@ -8229,6 +8250,12 @@ export class SyncThreadWindowRequest {
     "maxBytes"?: number;
 
     /**
+     * AgentMessageMembers is PageShape.AgentMessageMembers: the run
+     * membership rule the page is grouped by.
+     */
+    "agentMessageMembers"?: boolean;
+
+    /**
      * HaveWindow describes the ROWS the caller already holds, and is nil
      * when it holds none. It is the answer to the case the stamps cannot
      * serve: a turn on the open thread moves the thread's rev, so the
@@ -8265,13 +8292,13 @@ export class SyncThreadWindowRequest {
      */
     static createFrom($$source: any = {}): SyncThreadWindowRequest {
         const $$createField0_0 = $$createType9;
-        const $$createField8_0 = $$createType146;
+        const $$createField9_0 = $$createType146;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("selection" in $$parsedSource) {
             $$parsedSource["selection"] = $$createField0_0($$parsedSource["selection"]);
         }
         if ("haveWindow" in $$parsedSource) {
-            $$parsedSource["haveWindow"] = $$createField8_0($$parsedSource["haveWindow"]);
+            $$parsedSource["haveWindow"] = $$createField9_0($$parsedSource["haveWindow"]);
         }
         return new SyncThreadWindowRequest($$parsedSource as Partial<SyncThreadWindowRequest>);
     }
@@ -8474,6 +8501,49 @@ export class TerminalReplay {
 }
 
 /**
+ * ThreadAgentNudge is a nudge's run on a paired computer's worker: its
+ * token, when it began on that computer's clock, what the worker had done
+ * over its life then, and once it ended, what it had done then.
+ */
+export class ThreadAgentNudge {
+    "token": string;
+    "startedAt": number;
+    "base": ThreadAgentRunEnd;
+    "end"?: ThreadAgentRunEnd | null;
+
+    /** Creates a new ThreadAgentNudge instance. */
+    constructor($$source: Partial<ThreadAgentNudge> = {}) {
+        if (!("token" in $$source)) {
+            this["token"] = "";
+        }
+        if (!("startedAt" in $$source)) {
+            this["startedAt"] = 0;
+        }
+        if (!("base" in $$source)) {
+            this["base"] = (new ThreadAgentRunEnd());
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ThreadAgentNudge instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ThreadAgentNudge {
+        const $$createField2_0 = $$createType151;
+        const $$createField3_0 = $$createType152;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("base" in $$parsedSource) {
+            $$parsedSource["base"] = $$createField2_0($$parsedSource["base"]);
+        }
+        if ("end" in $$parsedSource) {
+            $$parsedSource["end"] = $$createField3_0($$parsedSource["end"]);
+        }
+        return new ThreadAgentNudge($$parsedSource as Partial<ThreadAgentNudge>);
+    }
+}
+
+/**
  * ThreadAgentPrompt is one prompt of the thread an agent_rows call lists,
  * routed to the calling device's spawn thread: what that computer puts to
  * its thread, and the token it answers with.
@@ -8508,8 +8578,8 @@ export class ThreadAgentPrompt {
      * Creates a new ThreadAgentPrompt instance from a string or object.
      */
     static createFrom($$source: any = {}): ThreadAgentPrompt {
-        const $$createField2_0 = $$createType152;
-        const $$createField3_0 = $$createType154;
+        const $$createField2_0 = $$createType154;
+        const $$createField3_0 = $$createType156;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("approval" in $$parsedSource) {
             $$parsedSource["approval"] = $$createField2_0($$parsedSource["approval"]);
@@ -8561,7 +8631,8 @@ export class ThreadAgentRow {
     "callerThreadId": string;
 
     /**
-     * Kind is spawn, send or ask.
+     * Kind is spawn, send or ask, or nudge for the run of an owned worker
+     * the person's or another thread's message started (threadAgentKindNudge).
      */
     "kind": string;
 
@@ -8595,8 +8666,10 @@ export class ThreadAgentRow {
      * Placement and Archived are the placement and archive state of the
      * thread a spawn made, as the computer that holds the thread reported
      * it: this one's store for a local spawn, the agent_rows answer of a
-     * paired computer for one there, nested rows included. Empty and false
-     * for every other row and from a computer that does not report them.
+     * paired computer for one there, nested rows included. A send to a
+     * thread its caller spawned, which counts a run of that worker, carries
+     * them too. Empty and false for every other row and from a computer that
+     * does not report them.
      * Placement is empty too for a thread that takes none (an assistant's
      * helper, outside every project), so no sidebar row is offered for it.
      */
@@ -8618,11 +8691,12 @@ export class ThreadAgentRow {
     "state": string;
 
     /**
-     * Worker is why the thread a spawn made is not at rest, whatever State
-     * says: blocked, running, queued, or waiting on what it started
-     * (background work, a loop, watch or reminder, a provider timer) or on
-     * its own workers, open work at any depth below it; empty while it is
-     * at rest, and for every other kind. A spawn whose worker is not at
+     * Worker is why the thread a spawn made, or a send's run is on, is not
+     * at rest while the row's run is open, whatever State says: blocked,
+     * running, queued, or waiting on what it started (background work, a
+     * loop, watch or reminder, a provider timer) or on its own workers,
+     * open work at any depth below it; empty while it is at rest, once the
+     * run ended, and for every other row. A row whose worker is not at
      * rest is open: one that replied and keeps working shows its reply and
      * this.
      */
@@ -8793,7 +8867,7 @@ export class ThreadAgentRowRead {
      * Creates a new ThreadAgentRowRead instance from a string or object.
      */
     static createFrom($$source: any = {}): ThreadAgentRowRead {
-        const $$createField1_0 = $$createType155;
+        const $$createField1_0 = $$createType157;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("row" in $$parsedSource) {
             $$parsedSource["row"] = $$createField1_0($$parsedSource["row"]);
@@ -8873,6 +8947,36 @@ export class ThreadAgentRows {
      */
     "prompts"?: ThreadAgentPrompt[];
 
+    /**
+     * RunEnd is the listed thread's figures over its life when the asking
+     * thread's last run on it ended, answered by agent_rows when that
+     * thread's requests there track runs and none is open
+     * (store.ReceiptRunOf). The asking computer ends its runs on the thread
+     * with them, whoever runs the thread since (endRemoteRunsAtRest). Nil
+     * while a run is open, and from a computer that predates it.
+     */
+    "runEnd"?: ThreadAgentRunEnd | null;
+
+    /**
+     * RunOpen says a run of the asking thread's on the listed thread is open
+     * there, its requests' or a nudge's: the asking computer then ends none
+     * of its runs on the thread for Open alone (endRemoteRunsAtRest). False
+     * from a computer that predates it, which reads as before.
+     */
+    "runOpen"?: boolean;
+
+    /**
+     * Nudges is the nudge runs of the listed thread's link to the asking
+     * spawn that the asking computer has not taken (store.ReceiptRunOf):
+     * the open one first, then the ended ones oldest first, a bounded
+     * number. The asking computer records each as its nudge row
+     * (store.RecordRemoteNudgeRun) and names the ended ones it recorded in
+     * its next read (threadAgentPeerArgs.NudgesTaken), after which they are
+     * not reported again. Empty when there is none, and from a computer
+     * that predates it, whose nudges show no row.
+     */
+    "nudges"?: ThreadAgentNudge[];
+
     /** Creates a new ThreadAgentRows instance. */
     constructor($$source: Partial<ThreadAgentRows> = {}) {
         if (!("rows" in $$source)) {
@@ -8887,7 +8991,9 @@ export class ThreadAgentRows {
      */
     static createFrom($$source: any = {}): ThreadAgentRows {
         const $$createField1_0 = $$createType94;
-        const $$createField18_0 = $$createType157;
+        const $$createField18_0 = $$createType159;
+        const $$createField19_0 = $$createType152;
+        const $$createField21_0 = $$createType161;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("rows" in $$parsedSource) {
             $$parsedSource["rows"] = $$createField1_0($$parsedSource["rows"]);
@@ -8895,7 +9001,46 @@ export class ThreadAgentRows {
         if ("prompts" in $$parsedSource) {
             $$parsedSource["prompts"] = $$createField18_0($$parsedSource["prompts"]);
         }
+        if ("runEnd" in $$parsedSource) {
+            $$parsedSource["runEnd"] = $$createField19_0($$parsedSource["runEnd"]);
+        }
+        if ("nudges" in $$parsedSource) {
+            $$parsedSource["nudges"] = $$createField21_0($$parsedSource["nudges"]);
+        }
         return new ThreadAgentRows($$parsedSource as Partial<ThreadAgentRows>);
+    }
+}
+
+/**
+ * ThreadAgentRunEnd is what a thread had done over its life when a run on it
+ * ended.
+ */
+export class ThreadAgentRunEnd {
+    "toolCalls": number;
+    "tokens": number;
+    "runtimeMs": number;
+
+    /** Creates a new ThreadAgentRunEnd instance. */
+    constructor($$source: Partial<ThreadAgentRunEnd> = {}) {
+        if (!("toolCalls" in $$source)) {
+            this["toolCalls"] = 0;
+        }
+        if (!("tokens" in $$source)) {
+            this["tokens"] = 0;
+        }
+        if (!("runtimeMs" in $$source)) {
+            this["runtimeMs"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ThreadAgentRunEnd instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ThreadAgentRunEnd {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ThreadAgentRunEnd($$parsedSource as Partial<ThreadAgentRunEnd>);
     }
 }
 
@@ -9022,7 +9167,7 @@ export class ThreadContextUsage {
      * Creates a new ThreadContextUsage instance from a string or object.
      */
     static createFrom($$source: any = {}): ThreadContextUsage {
-        const $$createField6_0 = $$createType159;
+        const $$createField6_0 = $$createType163;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("categories" in $$parsedSource) {
             $$parsedSource["categories"] = $$createField6_0($$parsedSource["categories"]);
@@ -9170,10 +9315,10 @@ export class ThreadLiveActivity {
      * Creates a new ThreadLiveActivity instance from a string or object.
      */
     static createFrom($$source: any = {}): ThreadLiveActivity {
-        const $$createField1_0 = $$createType161;
+        const $$createField1_0 = $$createType165;
         const $$createField2_0 = $$createType8;
         const $$createField3_0 = $$createType8;
-        const $$createField4_0 = $$createType163;
+        const $$createField4_0 = $$createType167;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("activeTurn" in $$parsedSource) {
             $$parsedSource["activeTurn"] = $$createField1_0($$parsedSource["activeTurn"]);
@@ -9291,14 +9436,14 @@ export class ThreadLiveState {
      * Creates a new ThreadLiveState instance from a string or object.
      */
     static createFrom($$source: any = {}): ThreadLiveState {
-        const $$createField0_0 = $$createType165;
-        const $$createField1_0 = $$createType167;
-        const $$createField5_0 = $$createType161;
-        const $$createField6_0 = $$createType169;
-        const $$createField7_0 = $$createType171;
-        const $$createField9_0 = $$createType172;
-        const $$createField10_0 = $$createType174;
-        const $$createField11_0 = $$createType176;
+        const $$createField0_0 = $$createType169;
+        const $$createField1_0 = $$createType171;
+        const $$createField5_0 = $$createType165;
+        const $$createField6_0 = $$createType173;
+        const $$createField7_0 = $$createType175;
+        const $$createField9_0 = $$createType176;
+        const $$createField10_0 = $$createType178;
+        const $$createField11_0 = $$createType180;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("codexAgents" in $$parsedSource) {
             $$parsedSource["codexAgents"] = $$createField0_0($$parsedSource["codexAgents"]);
@@ -9557,9 +9702,9 @@ export class ThreadPeerCall {
      * Creates a new ThreadPeerCall instance from a string or object.
      */
     static createFrom($$source: any = {}): ThreadPeerCall {
-        const $$createField3_0 = $$createType177;
-        const $$createField5_0 = $$createType179;
-        const $$createField6_0 = $$createType180;
+        const $$createField3_0 = $$createType181;
+        const $$createField5_0 = $$createType183;
+        const $$createField6_0 = $$createType184;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("source" in $$parsedSource) {
             $$parsedSource["source"] = $$createField3_0($$parsedSource["source"]);
@@ -9656,12 +9801,12 @@ export class ThreadPeerPoll {
      * Creates a new ThreadPeerPoll instance from a string or object.
      */
     static createFrom($$source: any = {}): ThreadPeerPoll {
-        const $$createField1_0 = $$createType182;
-        const $$createField2_0 = $$createType182;
-        const $$createField3_0 = $$createType184;
+        const $$createField1_0 = $$createType186;
+        const $$createField2_0 = $$createType186;
+        const $$createField3_0 = $$createType188;
         const $$createField4_0 = $$createType8;
-        const $$createField5_0 = $$createType186;
-        const $$createField6_0 = $$createType186;
+        const $$createField5_0 = $$createType190;
+        const $$createField6_0 = $$createType190;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("links" in $$parsedSource) {
             $$parsedSource["links"] = $$createField1_0($$parsedSource["links"]);
@@ -9712,8 +9857,8 @@ export class ThreadPeerPollReply {
      * Creates a new ThreadPeerPollReply instance from a string or object.
      */
     static createFrom($$source: any = {}): ThreadPeerPollReply {
-        const $$createField0_0 = $$createType188;
-        const $$createField1_0 = $$createType190;
+        const $$createField0_0 = $$createType192;
+        const $$createField1_0 = $$createType194;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("links" in $$parsedSource) {
             $$parsedSource["links"] = $$createField0_0($$parsedSource["links"]);
@@ -9755,7 +9900,7 @@ export class ThreadPeerReply {
      * Creates a new ThreadPeerReply instance from a string or object.
      */
     static createFrom($$source: any = {}): ThreadPeerReply {
-        const $$createField0_0 = $$createType191;
+        const $$createField0_0 = $$createType195;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("request" in $$parsedSource) {
             $$parsedSource["request"] = $$createField0_0($$parsedSource["request"]);
@@ -9912,9 +10057,9 @@ export class ThreadPeerRequest {
      * Creates a new ThreadPeerRequest instance from a string or object.
      */
     static createFrom($$source: any = {}): ThreadPeerRequest {
-        const $$createField10_0 = $$createType193;
-        const $$createField24_0 = $$createType179;
-        const $$createField25_0 = $$createType179;
+        const $$createField10_0 = $$createType197;
+        const $$createField24_0 = $$createType183;
+        const $$createField25_0 = $$createType183;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("cause" in $$parsedSource) {
             $$parsedSource["cause"] = $$createField10_0($$parsedSource["cause"]);
@@ -9962,7 +10107,7 @@ export class ThreadPeerResolve {
      * Creates a new ThreadPeerResolve instance from a string or object.
      */
     static createFrom($$source: any = {}): ThreadPeerResolve {
-        const $$createField1_0 = $$createType177;
+        const $$createField1_0 = $$createType181;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("source" in $$parsedSource) {
             $$parsedSource["source"] = $$createField1_0($$parsedSource["source"]);
@@ -10311,7 +10456,7 @@ export class ThreadWorkerSummaryPage {
      * Creates a new ThreadWorkerSummaryPage instance from a string or object.
      */
     static createFrom($$source: any = {}): ThreadWorkerSummaryPage {
-        const $$createField0_0 = $$createType195;
+        const $$createField0_0 = $$createType199;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("summaries" in $$parsedSource) {
             $$parsedSource["summaries"] = $$createField0_0($$parsedSource["summaries"]);
@@ -10347,6 +10492,16 @@ export class TimelinePageOptions {
      * to it.
      */
     "maxBytes"?: number;
+
+    /**
+     * AgentMessageMembers asks for agent messages grouped as activity-run
+     * members on sight (store.AgentMessagesAreMembers). A client sets it
+     * exactly when this backend advertised
+     * transport.CapabilityAgentMessageRunMembers; a request without it,
+     * which is every older client's, is grouped by
+     * store.AgentMessagesAbsorbed, the rule that client applies.
+     */
+    "agentMessageMembers"?: boolean;
     "selection"?: store$0.TimelineSelection;
 
     /** Creates a new TimelinePageOptions instance. */
@@ -10359,10 +10514,10 @@ export class TimelinePageOptions {
      * Creates a new TimelinePageOptions instance from a string or object.
      */
     static createFrom($$source: any = {}): TimelinePageOptions {
-        const $$createField3_0 = $$createType9;
+        const $$createField4_0 = $$createType9;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("selection" in $$parsedSource) {
-            $$parsedSource["selection"] = $$createField3_0($$parsedSource["selection"]);
+            $$parsedSource["selection"] = $$createField4_0($$parsedSource["selection"]);
         }
         return new TimelinePageOptions($$parsedSource as Partial<TimelinePageOptions>);
     }
@@ -10455,7 +10610,7 @@ export class UnsavedThreadRowsEvent {
      * Creates a new UnsavedThreadRowsEvent instance from a string or object.
      */
     static createFrom($$source: any = {}): UnsavedThreadRowsEvent {
-        const $$createField1_0 = $$createType197;
+        const $$createField1_0 = $$createType201;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("rows" in $$parsedSource) {
             $$parsedSource["rows"] = $$createField1_0($$parsedSource["rows"]);
@@ -10579,7 +10734,7 @@ export class UserMessageRevertedEvent {
      * Creates a new UserMessageRevertedEvent instance from a string or object.
      */
     static createFrom($$source: any = {}): UserMessageRevertedEvent {
-        const $$createField2_0 = $$createType198;
+        const $$createField2_0 = $$createType202;
         const $$createField7_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("replacement" in $$parsedSource) {
@@ -10622,7 +10777,7 @@ export class VerifyEditDiffsRequest {
      * Creates a new VerifyEditDiffsRequest instance from a string or object.
      */
     static createFrom($$source: any = {}): VerifyEditDiffsRequest {
-        const $$createField2_0 = $$createType200;
+        const $$createField2_0 = $$createType204;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("files" in $$parsedSource) {
             $$parsedSource["files"] = $$createField2_0($$parsedSource["files"]);
@@ -10849,7 +11004,7 @@ export class WorkflowDefinitionCatalog {
      * Creates a new WorkflowDefinitionCatalog instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkflowDefinitionCatalog {
-        const $$createField1_0 = $$createType202;
+        const $$createField1_0 = $$createType206;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("workflows" in $$parsedSource) {
             $$parsedSource["workflows"] = $$createField1_0($$parsedSource["workflows"]);
@@ -10886,7 +11041,7 @@ export class WorkflowDefinitionInput {
      * Creates a new WorkflowDefinitionInput instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkflowDefinitionInput {
-        const $$createField3_0 = $$createType203;
+        const $$createField3_0 = $$createType207;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("enum" in $$parsedSource) {
             $$parsedSource["enum"] = $$createField3_0($$parsedSource["enum"]);
@@ -10948,8 +11103,8 @@ export class WorkflowDefinitionListing {
      * Creates a new WorkflowDefinitionListing instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkflowDefinitionListing {
-        const $$createField5_0 = $$createType205;
-        const $$createField6_0 = $$createType207;
+        const $$createField5_0 = $$createType209;
+        const $$createField6_0 = $$createType211;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("phases" in $$parsedSource) {
             $$parsedSource["phases"] = $$createField5_0($$parsedSource["phases"]);
@@ -11029,7 +11184,7 @@ export class WorkflowDiscardPreview {
     static createFrom($$source: any = {}): WorkflowDiscardPreview {
         const $$createField1_0 = $$createType8;
         const $$createField2_0 = $$createType8;
-        const $$createField3_0 = $$createType209;
+        const $$createField3_0 = $$createType213;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("members" in $$parsedSource) {
             $$parsedSource["members"] = $$createField1_0($$parsedSource["members"]);
@@ -11198,7 +11353,7 @@ export class WorkflowDiscardWorktree {
      */
     static createFrom($$source: any = {}): WorkflowDiscardWorktree {
         const $$createField7_0 = $$createType8;
-        const $$createField9_0 = $$createType211;
+        const $$createField9_0 = $$createType215;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("dirtyFiles" in $$parsedSource) {
             $$parsedSource["dirtyFiles"] = $$createField7_0($$parsedSource["dirtyFiles"]);
@@ -11246,7 +11401,7 @@ export class WorkflowDispositionReceipt {
      * Creates a new WorkflowDispositionReceipt instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkflowDispositionReceipt {
-        const $$createField6_0 = $$createType213;
+        const $$createField6_0 = $$createType217;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("discarded" in $$parsedSource) {
             $$parsedSource["discarded"] = $$createField6_0($$parsedSource["discarded"]);
@@ -11330,15 +11485,15 @@ export class WorkflowItemDetailView {
      * Creates a new WorkflowItemDetailView instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkflowItemDetailView {
-        const $$createField0_0 = $$createType214;
+        const $$createField0_0 = $$createType218;
         const $$createField1_0 = $$createType8;
         const $$createField2_0 = $$createType8;
-        const $$createField3_0 = $$createType216;
-        const $$createField4_0 = $$createType218;
-        const $$createField5_0 = $$createType219;
-        const $$createField6_0 = $$createType221;
-        const $$createField7_0 = $$createType222;
-        const $$createField8_0 = $$createType223;
+        const $$createField3_0 = $$createType220;
+        const $$createField4_0 = $$createType222;
+        const $$createField5_0 = $$createType223;
+        const $$createField6_0 = $$createType225;
+        const $$createField7_0 = $$createType226;
+        const $$createField8_0 = $$createType227;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("item" in $$parsedSource) {
             $$parsedSource["item"] = $$createField0_0($$parsedSource["item"]);
@@ -11831,11 +11986,11 @@ export class WorkflowRunMapRun {
      * Creates a new WorkflowRunMapRun instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkflowRunMapRun {
-        const $$createField13_0 = $$createType225;
-        const $$createField17_0 = $$createType227;
-        const $$createField18_0 = $$createType229;
-        const $$createField19_0 = $$createType230;
-        const $$createField20_0 = $$createType232;
+        const $$createField13_0 = $$createType229;
+        const $$createField17_0 = $$createType231;
+        const $$createField18_0 = $$createType233;
+        const $$createField19_0 = $$createType234;
+        const $$createField20_0 = $$createType236;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("skeleton" in $$parsedSource) {
             $$parsedSource["skeleton"] = $$createField13_0($$parsedSource["skeleton"]);
@@ -12007,8 +12162,8 @@ export class WorkflowRunMapView {
      * Creates a new WorkflowRunMapView instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkflowRunMapView {
-        const $$createField1_0 = $$createType234;
-        const $$createField2_0 = $$createType236;
+        const $$createField1_0 = $$createType238;
+        const $$createField2_0 = $$createType240;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("runs" in $$parsedSource) {
             $$parsedSource["runs"] = $$createField1_0($$parsedSource["runs"]);
@@ -12128,7 +12283,7 @@ export class WorkspaceActivity {
      * Creates a new WorkspaceActivity instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkspaceActivity {
-        const $$createField2_0 = $$createType238;
+        const $$createField2_0 = $$createType242;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("busyThreads" in $$parsedSource) {
             $$parsedSource["busyThreads"] = $$createField2_0($$parsedSource["busyThreads"]);
@@ -12164,7 +12319,7 @@ export class WorkspaceFileSearchResult {
      * Creates a new WorkspaceFileSearchResult instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkspaceFileSearchResult {
-        const $$createField0_0 = $$createType240;
+        const $$createField0_0 = $$createType244;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("files" in $$parsedSource) {
             $$parsedSource["files"] = $$createField0_0($$parsedSource["files"]);
@@ -12275,8 +12430,8 @@ export class WorktreeRemoval {
      * Creates a new WorktreeRemoval instance from a string or object.
      */
     static createFrom($$source: any = {}): WorktreeRemoval {
-        const $$createField0_0 = $$createType241;
-        const $$createField1_0 = $$createType243;
+        const $$createField0_0 = $$createType245;
+        const $$createField1_0 = $$createType247;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("workspace" in $$parsedSource) {
             $$parsedSource["workspace"] = $$createField0_0($$parsedSource["workspace"]);
@@ -12318,7 +12473,7 @@ export class WorktreeSetupConfig {
      */
     static createFrom($$source: any = {}): WorktreeSetupConfig {
         const $$createField0_0 = $$createType8;
-        const $$createField1_0 = $$createType244;
+        const $$createField1_0 = $$createType248;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("copy" in $$parsedSource) {
             $$parsedSource["copy"] = $$createField0_0($$parsedSource["copy"]);
@@ -12392,7 +12547,7 @@ export class WorktreeSetupRunState {
      * Creates a new WorktreeSetupRunState instance from a string or object.
      */
     static createFrom($$source: any = {}): WorktreeSetupRunState {
-        const $$createField3_0 = $$createType246;
+        const $$createField3_0 = $$createType250;
         const $$createField4_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("steps" in $$parsedSource) {
@@ -12665,99 +12820,103 @@ const $$createType147 = store$0.PagedItems.createFrom;
 const $$createType148 = $Create.Nullable($$createType147);
 const $$createType149 = store$0.TimelineScopeContext.createFrom;
 const $$createType150 = $Create.Nullable($$createType149);
-const $$createType151 = ThreadAgentPromptApproval.createFrom;
+const $$createType151 = ThreadAgentRunEnd.createFrom;
 const $$createType152 = $Create.Nullable($$createType151);
-const $$createType153 = provider$0.UserInputQuestion.createFrom;
-const $$createType154 = $Create.Array($$createType153);
-const $$createType155 = $Create.Nullable($$createType93);
-const $$createType156 = ThreadAgentPrompt.createFrom;
-const $$createType157 = $Create.Array($$createType156);
-const $$createType158 = ThreadContextUsageCategory.createFrom;
+const $$createType153 = ThreadAgentPromptApproval.createFrom;
+const $$createType154 = $Create.Nullable($$createType153);
+const $$createType155 = provider$0.UserInputQuestion.createFrom;
+const $$createType156 = $Create.Array($$createType155);
+const $$createType157 = $Create.Nullable($$createType93);
+const $$createType158 = ThreadAgentPrompt.createFrom;
 const $$createType159 = $Create.Array($$createType158);
-const $$createType160 = LiveStateActiveTurn.createFrom;
-const $$createType161 = $Create.Nullable($$createType160);
-const $$createType162 = provider$0.PromptRoute.createFrom;
-const $$createType163 = $Create.Map($Create.Any, $$createType162);
-const $$createType164 = store$0.Item.createFrom;
-const $$createType165 = $Create.Array($$createType164);
-const $$createType166 = triage$0.SubagentProgressEvent.createFrom;
-const $$createType167 = $Create.Array($$createType166);
-const $$createType168 = flushqueue$0.QueuedItem.createFrom;
+const $$createType160 = ThreadAgentNudge.createFrom;
+const $$createType161 = $Create.Array($$createType160);
+const $$createType162 = ThreadContextUsageCategory.createFrom;
+const $$createType163 = $Create.Array($$createType162);
+const $$createType164 = LiveStateActiveTurn.createFrom;
+const $$createType165 = $Create.Nullable($$createType164);
+const $$createType166 = provider$0.PromptRoute.createFrom;
+const $$createType167 = $Create.Map($Create.Any, $$createType166);
+const $$createType168 = store$0.Item.createFrom;
 const $$createType169 = $Create.Array($$createType168);
-const $$createType170 = QueueFlushedItem.createFrom;
+const $$createType170 = triage$0.SubagentProgressEvent.createFrom;
 const $$createType171 = $Create.Array($$createType170);
-const $$createType172 = provider$0.PendingInteractiveRequests.createFrom;
-const $$createType173 = LiveStateTodo.createFrom;
-const $$createType174 = $Create.Nullable($$createType173);
-const $$createType175 = ProviderSessionAccountEvent.createFrom;
-const $$createType176 = $Create.Nullable($$createType175);
-const $$createType177 = threadtools$0.Caller.createFrom;
-const $$createType178 = ThreadPeerAgent.createFrom;
-const $$createType179 = $Create.Nullable($$createType178);
-const $$createType180 = threadtools$0.SpawnDefaults.createFrom;
-const $$createType181 = OwnerLinkRead.createFrom;
-const $$createType182 = $Create.Array($$createType181);
-const $$createType183 = store$0.SpawnRevisionAck.createFrom;
-const $$createType184 = $Create.Array($$createType183);
-const $$createType185 = ThreadPeerAck.createFrom;
+const $$createType172 = flushqueue$0.QueuedItem.createFrom;
+const $$createType173 = $Create.Array($$createType172);
+const $$createType174 = QueueFlushedItem.createFrom;
+const $$createType175 = $Create.Array($$createType174);
+const $$createType176 = provider$0.PendingInteractiveRequests.createFrom;
+const $$createType177 = LiveStateTodo.createFrom;
+const $$createType178 = $Create.Nullable($$createType177);
+const $$createType179 = ProviderSessionAccountEvent.createFrom;
+const $$createType180 = $Create.Nullable($$createType179);
+const $$createType181 = threadtools$0.Caller.createFrom;
+const $$createType182 = ThreadPeerAgent.createFrom;
+const $$createType183 = $Create.Nullable($$createType182);
+const $$createType184 = threadtools$0.SpawnDefaults.createFrom;
+const $$createType185 = OwnerLinkRead.createFrom;
 const $$createType186 = $Create.Array($$createType185);
-const $$createType187 = OwnerLinkState.createFrom;
+const $$createType187 = store$0.SpawnRevisionAck.createFrom;
 const $$createType188 = $Create.Array($$createType187);
-const $$createType189 = ThreadPeerRequest.createFrom;
+const $$createType189 = ThreadPeerAck.createFrom;
 const $$createType190 = $Create.Array($$createType189);
-const $$createType191 = $Create.Nullable($$createType189);
-const $$createType192 = ThreadPeerCause.createFrom;
-const $$createType193 = $Create.Nullable($$createType192);
-const $$createType194 = ThreadWorkerSummary.createFrom;
-const $$createType195 = $Create.Array($$createType194);
-const $$createType196 = UnsavedThreadRow.createFrom;
-const $$createType197 = $Create.Array($$createType196);
-const $$createType198 = $Create.Nullable($$createType164);
-const $$createType199 = EditDiffVerifyFile.createFrom;
-const $$createType200 = $Create.Array($$createType199);
-const $$createType201 = WorkflowDefinitionListing.createFrom;
-const $$createType202 = $Create.Array($$createType201);
-const $$createType203 = $Create.Array($Create.Any);
-const $$createType204 = WorkflowDefinitionPhase.createFrom;
-const $$createType205 = $Create.Array($$createType204);
-const $$createType206 = WorkflowDefinitionInput.createFrom;
-const $$createType207 = $Create.Array($$createType206);
-const $$createType208 = WorkflowDiscardWorktree.createFrom;
+const $$createType191 = OwnerLinkState.createFrom;
+const $$createType192 = $Create.Array($$createType191);
+const $$createType193 = ThreadPeerRequest.createFrom;
+const $$createType194 = $Create.Array($$createType193);
+const $$createType195 = $Create.Nullable($$createType193);
+const $$createType196 = ThreadPeerCause.createFrom;
+const $$createType197 = $Create.Nullable($$createType196);
+const $$createType198 = ThreadWorkerSummary.createFrom;
+const $$createType199 = $Create.Array($$createType198);
+const $$createType200 = UnsavedThreadRow.createFrom;
+const $$createType201 = $Create.Array($$createType200);
+const $$createType202 = $Create.Nullable($$createType168);
+const $$createType203 = EditDiffVerifyFile.createFrom;
+const $$createType204 = $Create.Array($$createType203);
+const $$createType205 = WorkflowDefinitionListing.createFrom;
+const $$createType206 = $Create.Array($$createType205);
+const $$createType207 = $Create.Array($Create.Any);
+const $$createType208 = WorkflowDefinitionPhase.createFrom;
 const $$createType209 = $Create.Array($$createType208);
-const $$createType210 = gitdiff$0.Commit.createFrom;
+const $$createType210 = WorkflowDefinitionInput.createFrom;
 const $$createType211 = $Create.Array($$createType210);
-const $$createType212 = WorkflowDiscardResult.createFrom;
-const $$createType213 = $Create.Nullable($$createType212);
-const $$createType214 = WorkflowItemView.createFrom;
-const $$createType215 = WorkflowItemPhaseView.createFrom;
-const $$createType216 = $Create.Array($$createType215);
-const $$createType217 = WorkflowItemUnitView.createFrom;
-const $$createType218 = $Create.Array($$createType217);
-const $$createType219 = $Create.Map($Create.Any, $Create.Any);
-const $$createType220 = WorkflowArtifact.createFrom;
-const $$createType221 = $Create.Array($$createType220);
-const $$createType222 = store$0.WorkItemUsage.createFrom;
-const $$createType223 = WorkflowRunSpend.createFrom;
-const $$createType224 = WorkflowRunMapSkeletonPhase.createFrom;
+const $$createType212 = WorkflowDiscardWorktree.createFrom;
+const $$createType213 = $Create.Array($$createType212);
+const $$createType214 = gitdiff$0.Commit.createFrom;
+const $$createType215 = $Create.Array($$createType214);
+const $$createType216 = WorkflowDiscardResult.createFrom;
+const $$createType217 = $Create.Nullable($$createType216);
+const $$createType218 = WorkflowItemView.createFrom;
+const $$createType219 = WorkflowItemPhaseView.createFrom;
+const $$createType220 = $Create.Array($$createType219);
+const $$createType221 = WorkflowItemUnitView.createFrom;
+const $$createType222 = $Create.Array($$createType221);
+const $$createType223 = $Create.Map($Create.Any, $Create.Any);
+const $$createType224 = WorkflowArtifact.createFrom;
 const $$createType225 = $Create.Array($$createType224);
-const $$createType226 = WorkflowRunMapPhaseAttempt.createFrom;
-const $$createType227 = $Create.Array($$createType226);
-const $$createType228 = WorkflowRunMapUnit.createFrom;
+const $$createType226 = store$0.WorkItemUsage.createFrom;
+const $$createType227 = WorkflowRunSpend.createFrom;
+const $$createType228 = WorkflowRunMapSkeletonPhase.createFrom;
 const $$createType229 = $Create.Array($$createType228);
-const $$createType230 = $Create.Nullable($$createType223);
-const $$createType231 = WorkflowAgentRunBudget.createFrom;
-const $$createType232 = $Create.Nullable($$createType231);
-const $$createType233 = WorkflowRunMapRun.createFrom;
-const $$createType234 = $Create.Array($$createType233);
-const $$createType235 = WorkflowRunMapRefusal.createFrom;
+const $$createType230 = WorkflowRunMapPhaseAttempt.createFrom;
+const $$createType231 = $Create.Array($$createType230);
+const $$createType232 = WorkflowRunMapUnit.createFrom;
+const $$createType233 = $Create.Array($$createType232);
+const $$createType234 = $Create.Nullable($$createType227);
+const $$createType235 = WorkflowAgentRunBudget.createFrom;
 const $$createType236 = $Create.Nullable($$createType235);
-const $$createType237 = BusyThread.createFrom;
+const $$createType237 = WorkflowRunMapRun.createFrom;
 const $$createType238 = $Create.Array($$createType237);
-const $$createType239 = workspacefiles$0.WorkspaceFile.createFrom;
-const $$createType240 = $Create.Array($$createType239);
-const $$createType241 = GitWorkspaceState.createFrom;
-const $$createType242 = store$0.Thread.createFrom;
-const $$createType243 = $Create.Array($$createType242);
-const $$createType244 = $Create.Array($$createType8);
-const $$createType245 = WorktreeSetupStep.createFrom;
-const $$createType246 = $Create.Array($$createType245);
+const $$createType239 = WorkflowRunMapRefusal.createFrom;
+const $$createType240 = $Create.Nullable($$createType239);
+const $$createType241 = BusyThread.createFrom;
+const $$createType242 = $Create.Array($$createType241);
+const $$createType243 = workspacefiles$0.WorkspaceFile.createFrom;
+const $$createType244 = $Create.Array($$createType243);
+const $$createType245 = GitWorkspaceState.createFrom;
+const $$createType246 = store$0.Thread.createFrom;
+const $$createType247 = $Create.Array($$createType246);
+const $$createType248 = $Create.Array($$createType8);
+const $$createType249 = WorktreeSetupStep.createFrom;
+const $$createType250 = $Create.Array($$createType249);

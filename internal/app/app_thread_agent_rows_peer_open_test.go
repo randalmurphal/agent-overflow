@@ -8,6 +8,7 @@ package app
 
 import (
 	"fmt"
+	"path/filepath"
 	"slices"
 	"testing"
 	"time"
@@ -57,16 +58,26 @@ func paneShowsTheRemoteSpawnOpen(t *testing.T, pair *reachPair, token string, do
 	return row
 }
 
-// A remote worker at rest whose only open work is a worker of its own that
-// its listing has no room for, past 128 rows settled since, stays open: its
-// computer's answer says so whatever rows it returns, so the source keeps
-// the spawn waiting, counted and out of Past.
+// A remote worker with nothing of its own left whose only open work is a
+// worker it started in its spawn's run, which its listing has no room for
+// past 128 rows settled since, stays open: its computer's answer says so
+// whatever rows it returns, so the source keeps the spawn waiting, counted
+// and out of Past.
 func TestARemoteWorkersOpenWorkPastItsListingsLimitKeepsItOpen(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
-	spawn, child := remoteRestedWorker(t, pair)
+	gate := filepath.Join(t.TempDir(), "spawn-turn")
+	installMockClaudeTurns(t, pair.dest, [][]string{gatedTurn(gate, "Handing it on.")})
+	ack := pair.spawnThere(t, "do the first pass", nil)
+	child := pair.receipt(t, ack.Token).TargetThreadID
+	waitUntil(t, 10*time.Second, func() bool {
+		return threadToolsLiveState(pair.dest.triage.LiveStateSnapshotForThread(child)).ActiveTurn
+	})
 	late := remoteWorkerStartsOneOfItsOwn(t, pair, child)
+	release(t, gate)
+	waitUntil(t, 10*time.Second, func() bool { return pair.dest.restHeld(child, ack.Token) })
+	spawn := pair.request(t, ack.Token)
 	// Answering for the caller one level deep, as for a computer that asked
 	// about it, this computer has the spawn at its last level: the first
 	// answer shows it waiting on the work there, with more nested below.
@@ -202,8 +213,29 @@ func TestARemoteChainPastTheDepthBoundStaysOpenAndIsNotListedPastIt(t *testing.T
 		return listing.Rows[len(listing.Rows)-1].NestedHidden
 	}
 	var listing ThreadAgentRows
-	waitUntil(t, 20*time.Second, func() bool {
-		listing = read()
+	// seen is the listing as a failed wait reports it.
+	seen := func() string {
+		at, err := c.entryAt(0, c.spawns[0])
+		out := fmt.Sprintf("hidden %v, first answer %s after the reset (%v);", listing.Hidden, at.Sub(reset).Round(time.Millisecond), err)
+		for _, row := range listing.Rows {
+			out += fmt.Sprintf(" [%d: %s worker %s open %v nested hidden %v %q]", slices.Index(c.spawns, row.Token),
+				row.State, row.Worker, row.open(), row.NestedHidden, row.NestedUnavailable)
+		}
+		return out
+	}
+	await := func(what string, done func() bool) {
+		t.Helper()
+		for deadline := time.Now().Add(peerRowsWait); ; time.Sleep(10 * time.Millisecond) {
+			listing = read()
+			if done() {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: %s", what, seen())
+			}
+		}
+	}
+	await("the chain never read open", func() bool {
 		at, _ := c.entryAt(0, c.spawns[0])
 		return at.After(reset) && open(listing)
 	})
@@ -231,15 +263,15 @@ func TestARemoteChainPastTheDepthBoundStaysOpenAndIsNotListedPastIt(t *testing.T
 		}
 	}
 
-	// A later answer finds the same.
+	// A later answer finds the same. The listing that carries it is the one
+	// judged: a read after it can outrun a computer's answer, which shows
+	// that computer as not answering.
 	before, _ := c.entryAt(0, c.spawns[0])
-	waitUntil(t, 20*time.Second, func() bool {
-		listing = read()
+	later := false
+	await("after a later answer the chain did not read open", func() bool {
 		at, _ := c.entryAt(0, c.spawns[0])
-		return at.After(before)
+		later = later || at.After(before)
+		return later && open(listing)
 	})
-	if listing = read(); !open(listing) {
-		t.Fatalf("after a later answer the rows = %+v; want each still open", listing.Rows)
-	}
 	expectBoundedAsking()
 }

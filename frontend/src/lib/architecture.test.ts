@@ -513,6 +513,69 @@ function parseImports(source: string): ParsedImport[] {
   return imports;
 }
 
+interface ParsedExports {
+  /** Exported name → the specifier and name it is re-exported from ('*' for a namespace). */
+  readonly reexports: ReadonlyMap<string, { readonly specifier: string; readonly name: string }>;
+  /** `export * from` specifiers. */
+  readonly stars: readonly string[];
+  /** Names this module declares and exports itself. */
+  readonly declares: ReadonlySet<string>;
+}
+
+const REEXPORT_NAMED = /(?:^|[;{}\n])\s*export\s*(type\s+)?\{([^}]*)\}\s*from\s*(['"])([^'"]+)\3/g;
+const REEXPORT_STAR = /(?:^|[;{}\n])\s*export\s*\*\s*(?:as\s+([A-Za-z_$][\w$]*)\s*)?from\s*(['"])([^'"]+)\2/g;
+const EXPORT_LOCAL = /(?:^|[;{}\n])\s*export\s*(type\s+)?\{([^}]*)\}(?!\s*from)/g;
+const EXPORT_DECLARED = /(?:^|[;{}\n])\s*export\s+(?:declare\s+)?(?:async\s+)?(?:function\*?|const|let|var|class|enum)\s+([A-Za-z_$][\w$]*)/g;
+const IMPORT_BINDINGS = /(?:^|[;{}\n])\s*import\s+(?!type\s)([^;]*?)\s+from\s*(['"])([^'"]+)\2/g;
+
+/** `a as b` pieces of a brace list, type-only pieces dropped: [local, exported]. */
+function bracePieces(list: string): [string, string][] {
+  const out: [string, string][] = [];
+  for (const raw of list.split(',')) {
+    const piece = raw.trim();
+    if (!piece || /^type\s/.test(piece)) continue;
+    const [local, exported] = piece.split(/\s+as\s+/).map((part) => part.trim());
+    if (local) out.push([local, exported ?? local]);
+  }
+  return out;
+}
+
+function parseExports(source: string): ParsedExports {
+  const reexports = new Map<string, { specifier: string; name: string }>();
+  const stars: string[] = [];
+  const declares = new Set<string>();
+  for (const match of source.matchAll(REEXPORT_NAMED)) {
+    if (match[1]) continue;
+    for (const [local, exported] of bracePieces(match[2]!)) reexports.set(exported, { specifier: match[4]!, name: local });
+  }
+  for (const match of source.matchAll(REEXPORT_STAR)) {
+    if (match[1]) reexports.set(match[1], { specifier: match[3]!, name: '*' });
+    else stars.push(match[3]!);
+  }
+  // A binding this module imported and exports again is a re-export too.
+  const imported = new Map<string, { specifier: string; name: string }>();
+  for (const match of source.matchAll(IMPORT_BINDINGS)) {
+    const clause = match[1]!.trim();
+    const specifier = match[3]!;
+    const namespace = clause.match(/\*\s+as\s+([A-Za-z_$][\w$]*)/);
+    if (namespace) imported.set(namespace[1]!, { specifier, name: '*' });
+    const braces = clause.match(/\{([\s\S]*)\}/);
+    if (braces) for (const [name, local] of bracePieces(braces[1]!)) imported.set(local, { specifier, name });
+    const fallback = clause.match(/^([A-Za-z_$][\w$]*)\s*(?:,|$)/);
+    if (fallback) imported.set(fallback[1]!, { specifier, name: 'default' });
+  }
+  for (const match of source.matchAll(EXPORT_LOCAL)) {
+    if (match[1]) continue;
+    for (const [local, exported] of bracePieces(match[2]!)) {
+      const from = imported.get(local);
+      if (from) reexports.set(exported, from);
+      else declares.add(exported);
+    }
+  }
+  for (const match of source.matchAll(EXPORT_DECLARED)) declares.add(match[1]!);
+  return { reexports, stars, declares };
+}
+
 function parseClause(clause: string): { names: string[]; wholeModule: boolean } {
   const trimmed = clause.trim();
   if (/(^|,)\s*\*\s+as\s+/.test(trimmed)) return { names: [], wholeModule: true };
@@ -544,6 +607,100 @@ function resolveLocalModule(fromFile: string, specifier: string): string | null 
   return path.replace(/\.(ts|js|svelte)$/, '');
 }
 
+// Rule: under components/sidebar/, only the entry projection reads the
+// projects store and the sidebar's entry continuity.
+//
+// A repository checked out on several computers is one sidebar row, so what
+// that row shows is a fact about the entry and not about any one checkout.
+// `sidebarEntries.ts` builds the entry value from those two stores, and a
+// new fact about a row is added to that value instead of derived beside it.
+// The rule is by module and default-deny: from either store a file here may
+// import only the names listed below for it, and everything else, a name
+// added later included, fails. Each import is resolved through re-exports
+// (`export { x } from`, `export *`, and an imported binding exported again)
+// to the module that declares it, so another module re-exporting a read
+// does not open a way around. What the rule does not see is a function in
+// another module that calls a read and returns its answer.
+const SIDEBAR_DIR = join(SRC_ROOT, 'lib', 'components', 'sidebar');
+const PROJECTS_STORE = join(STORES_DIR, 'projects');
+const ENTRY_CONTINUITY_STORE = join(STORES_DIR, 'sidebarEntryContinuity');
+const SIDEBAR_ENTRY_OWNER = 'lib/components/sidebar/sidebarEntries.ts';
+const ANY_SIDEBAR_FILE = '*';
+// Fenced module → name → the files under components/sidebar that may import
+// it, or ANY_SIDEBAR_FILE. Writers only: none of them answers a question
+// about a row.
+const SIDEBAR_FENCED_IMPORTS: ReadonlyMap<string, Readonly<Record<string, string>>> = new Map<string, Readonly<Record<string, string>>>([
+  [PROJECTS_STORE, {
+    updateProjectLocal: ANY_SIDEBAR_FILE,
+    removeProjectLocal: ANY_SIDEBAR_FILE,
+    // The delete action confirms a deletion, which forgets the entry's disclosure.
+    deleteProjectLocal: 'lib/components/sidebar/ProjectContextMenu.svelte',
+    reorderProjects: ANY_SIDEBAR_FILE,
+  }],
+  [ENTRY_CONTINUITY_STORE, {
+    revealProject: ANY_SIDEBAR_FILE,
+    // A row reports a toggle to the list that has the entry rather than
+    // writing its disclosure itself.
+    setEntryExpanded: 'lib/components/sidebar/ProjectsSection.svelte',
+    setEntryListLimit: 'lib/components/sidebar/SidebarTreeList.svelte',
+    resetEntryListLimit: 'lib/components/sidebar/SidebarTreeList.svelte',
+  }],
+]);
+// Shrink-only. Project-level surfaces that happen to live in this directory,
+// not readers of the sidebar tree.
+const SIDEBAR_PROJECT_READ_ALLOWLIST: Record<string, string> = {
+  'lib/components/sidebar/AssistantProjectsPicker.svelte':
+    'ticks the projects one assistant serves, which is a list of projects and not the sidebar tree',
+  'lib/components/sidebar/AssistantsSection.svelte':
+    "labels the projects an assistant serves on its card, which is not a project row's label",
+};
+
+// Rule: under components/sidebar/, a group's and the Assistants section's list
+// sizes are read and written by the list that renders them.
+//
+// A row reports a "Show more" or "Show less" to the list, which owns the
+// limit it renders by. Resolved through re-exports like the rule above. A
+// project's own list sizes and folds are the next rule's.
+const THREAD_LIST_SIZES: Record<string, string> = {
+  getThreadListVisibleLimit: 'lib/components/sidebar/SidebarTreeList.svelte',
+  setThreadListVisibleLimit: 'lib/components/sidebar/SidebarTreeList.svelte',
+  collapseThreadList: 'lib/components/sidebar/SidebarTreeList.svelte',
+};
+const SIDEBAR_STORE = join(STORES_DIR, 'sidebar');
+// Shrink-only, and empty.
+const SIDEBAR_LIST_SIZE_ALLOWLIST: Record<string, string> = {};
+
+// Rule: a disclosure record is made only by the store that keeps it.
+//
+// A record constructor takes any storage key, so a module that made one
+// under a key another store keeps would write over that store's record. The
+// sidebar store makes the groups', the sections' and the Assistants' records;
+// the entry continuity store makes a project entry's. Default-deny over every
+// source outside tests: only the continuity store may import a constructor,
+// resolved through re-exports like the rules above, and a whole-module import
+// that reaches the sidebar store is refused anywhere else. What the rule does
+// not see is a write through appStorage under the same key.
+const RECORD_CONSTRUCTORS = new Set(['keySetRecord', 'listLimitRecord']);
+const RECORD_CONSTRUCTOR_IMPORTER = 'lib/stores/sidebarEntryContinuity.svelte.ts';
+// Shrink-only, and empty.
+const RECORD_CONSTRUCTOR_ALLOWLIST: Record<string, string> = {};
+
+// Rule: a computer's kept catalog records are written only by its write queue.
+//
+// Every write of the three records is the computer's whole tree, made by the
+// one queue per computer (stores/computerCatalogWriter.ts), which writes only
+// while the computer's three catalogs are one tree and only under the stamps
+// this window holds. A second caller could write catalogs that were never
+// held together, or a request the queue is still holding. Default-deny over
+// every source outside tests: only the queue may import the write, resolved
+// through re-exports like the rules above, and a whole-module import that
+// reaches the replica session is refused anywhere else.
+const REPLICA_CATALOG_WRITES = new Set(['putReplicaTree']);
+const REPLICA_SESSION = join(SRC_ROOT, 'lib', 'replica', 'session');
+const REPLICA_CATALOG_WRITER = 'lib/stores/computerCatalogWriter.ts';
+// Shrink-only, and empty.
+const REPLICA_CATALOG_WRITE_ALLOWLIST: Record<string, string> = {};
+
 // A call, not the words: the comments in lib/transport/ discuss `Events.On`
 // by name and must not read as subscriptions.
 const EVENTS_ON_CALL = /\bEvents\s*\.\s*On\s*\(/;
@@ -558,6 +715,7 @@ describe('architecture', () => {
       file,
       path: repoPath(file),
       imports: parseImports(text),
+      exports: parseExports(text),
       callsEventsOn: EVENTS_ON_CALL.test(text),
       callsRandomUUID: RANDOM_UUID_CALL.test(text),
       namesSendOptionsType: SEND_OPTIONS_TYPE.test(text),
@@ -595,6 +753,219 @@ describe('architecture', () => {
       ENTITY_BINDING_ALLOWLIST,
       'New violations.',
       'Read the entity through its store instead of re-fetching it; see frontend/CLAUDE.md → State Boundaries.',
+    );
+  });
+
+  // Every module's exports, by its extensionless path, for resolving an
+  // import to the module that declares it.
+  const exportsByModule = new Map(sources.map((source) => [
+    source.file.replace(/(\.svelte)?\.(ts|js|svelte)$/, ''),
+    { file: source.file, ...source.exports },
+  ]));
+
+  /** The module that declares `name` as `module` exports it, through re-exports. */
+  function originOf(module: string, name: string, seen = new Set<string>()): { module: string; name: string } {
+    const key = `${module}#${name}`;
+    if (seen.has(key)) return { module, name };
+    seen.add(key);
+    const info = exportsByModule.get(module);
+    if (info === undefined) return { module, name };
+    const named = info.reexports.get(name);
+    if (named !== undefined) {
+      const target = resolveLocalModule(info.file, named.specifier);
+      if (target === null) return { module, name };
+      return named.name === '*' ? { module: target, name: '*' } : originOf(target, named.name, seen);
+    }
+    if (info.declares.has(name)) return { module, name };
+    for (const specifier of info.stars) {
+      const target = resolveLocalModule(info.file, specifier);
+      if (target === null) continue;
+      const found = originOf(target, name, seen);
+      if (found.module !== target || exportsByModule.get(target)?.declares.has(name)) return found;
+    }
+    return { module, name };
+  }
+
+  /** Which of `fenced` a whole-module import of `module` reaches. */
+  function reachedBehind(module: string, fenced: ReadonlySet<string>, seen = new Set<string>()): string[] {
+    if (fenced.has(module)) return [module];
+    if (seen.has(module)) return [];
+    seen.add(module);
+    const info = exportsByModule.get(module);
+    if (info === undefined) return [];
+    const reached = new Set<string>();
+    for (const name of info.reexports.keys()) {
+      const origin = originOf(module, name);
+      if (fenced.has(origin.module)) reached.add(origin.module);
+    }
+    for (const specifier of info.stars) {
+      const target = resolveLocalModule(info.file, specifier);
+      if (target !== null) for (const found of reachedBehind(target, fenced, seen)) reached.add(found);
+    }
+    return [...reached];
+  }
+  const FENCED_STORES = new Set(SIDEBAR_FENCED_IMPORTS.keys());
+
+  it('keeps every read of the projects and their entries in the sidebar entry projection', () => {
+    const offenders = new Map<string, string[]>();
+    const ownerReads = new Set<string>();
+    for (const source of sources) {
+      if (!source.file.startsWith(SIDEBAR_DIR + sep)) continue;
+      const reasons: string[] = [];
+      for (const parsed of source.imports) {
+        const module = resolveLocalModule(source.file, parsed.specifier);
+        if (module === null) continue;
+        if (parsed.wholeModule) {
+          for (const fenced of reachedBehind(module, FENCED_STORES)) {
+            if (source.path === SIDEBAR_ENTRY_OWNER) ownerReads.add(fenced);
+            else reasons.push(`imports the whole of ${parsed.specifier}, which reaches ${repoPath(fenced)}`);
+          }
+          continue;
+        }
+        for (const name of parsed.names) {
+          const origin = originOf(module, name);
+          const allowed = SIDEBAR_FENCED_IMPORTS.get(origin.module);
+          if (allowed === undefined) continue;
+          if (source.path === SIDEBAR_ENTRY_OWNER) {
+            ownerReads.add(origin.module);
+            continue;
+          }
+          const who = allowed[origin.name];
+          if (who === ANY_SIDEBAR_FILE || who === source.path) continue;
+          reasons.push(who === undefined
+            ? `${name} (${repoPath(origin.module)}#${origin.name}) is not one of the names this directory may import from there`
+            : `${name} (${repoPath(origin.module)}#${origin.name}) is ${who}'s to import`);
+        }
+      }
+      if (reasons.length > 0) offenders.set(source.path, reasons);
+    }
+    // The projection must still be what reads both stores: with its reads
+    // gone the rule would hold over a directory that had found another way.
+    expect([...ownerReads].map(repoPath).sort(), `${SIDEBAR_ENTRY_OWNER} reads the stores it projects`)
+      .toEqual([...SIDEBAR_FENCED_IMPORTS.keys()].map(repoPath).sort());
+    expectAllowlistExact(
+      offenders,
+      SIDEBAR_PROJECT_READ_ALLOWLIST,
+      'New violations.',
+      'Take the fact off the SidebarEntry the component is given (components/sidebar/sidebarEntries.ts); add it there if it is missing.',
+    );
+  });
+
+  it("keeps a group's and the Assistants section's list sizes with the list that renders them", () => {
+    const sidebarStore = new Set([SIDEBAR_STORE]);
+    const offenders = new Map<string, string[]>();
+    const owners = new Set<string>();
+    for (const source of sources) {
+      if (!source.file.startsWith(SIDEBAR_DIR + sep)) continue;
+      const reasons: string[] = [];
+      for (const parsed of source.imports) {
+        const module = resolveLocalModule(source.file, parsed.specifier);
+        if (module === null) continue;
+        if (parsed.wholeModule) {
+          if (reachedBehind(module, sidebarStore).length > 0) {
+            reasons.push(`imports the whole of ${parsed.specifier}, which reaches the list sizes`);
+          }
+          continue;
+        }
+        for (const name of parsed.names) {
+          const origin = originOf(module, name);
+          if (origin.module !== SIDEBAR_STORE) continue;
+          const owner = THREAD_LIST_SIZES[origin.name];
+          if (owner === undefined) continue;
+          if (owner === source.path) {
+            owners.add(origin.name);
+            continue;
+          }
+          reasons.push(`${name} (${repoPath(origin.module)}#${origin.name}) is ${owner}'s to read and write`);
+        }
+      }
+      if (reasons.length > 0) offenders.set(source.path, reasons);
+    }
+    // The list still holds its names: with nothing importing them, this rule
+    // would hold over a directory that had moved the sizes somewhere else.
+    expect([...owners].sort()).toEqual(Object.keys(THREAD_LIST_SIZES).sort());
+    expectAllowlistExact(
+      offenders,
+      SIDEBAR_LIST_SIZE_ALLOWLIST,
+      'New violations.',
+      'Report the change to the list that renders the rows (SidebarTreeList.svelte).',
+    );
+  });
+
+  it('makes each disclosure record only in the store that keeps it', () => {
+    const sidebarStore = new Set([SIDEBAR_STORE]);
+    const offenders = new Map<string, string[]>();
+    const imported = new Set<string>();
+    for (const source of sources) {
+      const reasons: string[] = [];
+      for (const parsed of source.imports) {
+        const module = resolveLocalModule(source.file, parsed.specifier);
+        if (module === null) continue;
+        if (parsed.wholeModule) {
+          if (source.path !== RECORD_CONSTRUCTOR_IMPORTER && reachedBehind(module, sidebarStore).length > 0) {
+            reasons.push(`imports the whole of ${parsed.specifier}, which reaches the record constructors`);
+          }
+          continue;
+        }
+        for (const name of parsed.names) {
+          const origin = originOf(module, name);
+          if (origin.module !== SIDEBAR_STORE || !RECORD_CONSTRUCTORS.has(origin.name)) continue;
+          if (source.path === RECORD_CONSTRUCTOR_IMPORTER) {
+            imported.add(origin.name);
+            continue;
+          }
+          reasons.push(`${name} (${repoPath(origin.module)}#${origin.name}) makes a record only its keeper may make`);
+        }
+      }
+      if (reasons.length > 0) offenders.set(source.path, reasons);
+    }
+    // The continuity store still makes its records with them: with its
+    // imports gone the rule would hold over records made some other way.
+    expect([...imported].sort()).toEqual([...RECORD_CONSTRUCTORS].sort());
+    expectAllowlistExact(
+      offenders,
+      RECORD_CONSTRUCTOR_ALLOWLIST,
+      'New violations.',
+      'Read or write the disclosure through the store that keeps the record (sidebar.svelte.ts or sidebarEntryContinuity.svelte.ts).',
+    );
+  });
+
+  it("writes a computer's kept catalogs only through its write queue", () => {
+    const session = new Set([REPLICA_SESSION]);
+    const offenders = new Map<string, string[]>();
+    const imported = new Set<string>();
+    for (const source of sources) {
+      if (source.path === repoPath(`${REPLICA_SESSION}.ts`)) continue;
+      const reasons: string[] = [];
+      for (const parsed of source.imports) {
+        const module = resolveLocalModule(source.file, parsed.specifier);
+        if (module === null) continue;
+        if (parsed.wholeModule) {
+          if (source.path !== REPLICA_CATALOG_WRITER && reachedBehind(module, session).length > 0) {
+            reasons.push(`imports the whole of ${parsed.specifier}, which reaches the catalog writes`);
+          }
+          continue;
+        }
+        for (const name of parsed.names) {
+          const origin = originOf(module, name);
+          if (origin.module !== REPLICA_SESSION || !REPLICA_CATALOG_WRITES.has(origin.name)) continue;
+          if (source.path === REPLICA_CATALOG_WRITER) {
+            imported.add(origin.name);
+            continue;
+          }
+          reasons.push(`${name} (${repoPath(origin.module)}#${origin.name}) writes a kept catalog outside its computer's queue`);
+        }
+      }
+      if (reasons.length > 0) offenders.set(source.path, reasons);
+    }
+    // The queue still writes through them: with its imports gone the rule
+    // would hold over records written some other way.
+    expect([...imported].sort()).toEqual([...REPLICA_CATALOG_WRITES].sort());
+    expectAllowlistExact(
+      offenders,
+      REPLICA_CATALOG_WRITE_ALLOWLIST,
+      'New violations.',
+      "Change a catalog through its store's writer, or ask for a tree with persistCatalogTree (computerCatalogWriter.ts).",
     );
   });
 

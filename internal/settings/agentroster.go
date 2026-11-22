@@ -118,7 +118,7 @@ func sortedNonEmpty(values map[string]struct{}) []string {
 // computer lists. A use-for line names only profiles of its own provider: a
 // computer with one provider must never be pointed at the other's. A
 // computer that lists no model of a profile's family leaves the profile
-// out of what an agent is shown there.
+// out of thread_options there.
 var defaultAgentProfiles = []AgentProfile{
 	{
 		Name: "Luna", Provider: "codex", Model: "gpt-luna", Effort: "high",

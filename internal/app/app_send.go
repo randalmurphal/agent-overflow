@@ -477,6 +477,14 @@ func (a *App) sendMessageWithOptions(
 		}
 	}
 
+	// Work this message starts on a thread at rest is a run of its own, and
+	// on an owned worker the person's or another thread's is its spawner's.
+	workDone, err := a.beginWork(ctx, threadID)
+	if err != nil {
+		return store.Item{}, fmt.Errorf("send message: %w", err)
+	}
+	defer workDone()
+
 	// Per-thread critical section: only one Send per thread at a time.
 	// This keeps the runtime-mode update, turn-index read, optimistic
 	// user-item persist, lazy session start, pending-send registration, and
@@ -513,7 +521,15 @@ func (a *App) sendMessageLocked(
 	// send here (RevertConversationAndResendMessage) would otherwise
 	// bypass a test's stub and drive a real provider session.
 	if a.sendMessageFn != nil {
-		return store.Item{}, a.sendMessageFn(threadID, content, opts.AttachmentIDs)
+		nudge, err := a.beginNudge(threadID, opts)
+		if err != nil {
+			return store.Item{}, fmt.Errorf("send message: %w", err)
+		}
+		if err := a.sendMessageFn(threadID, content, opts.AttachmentIDs); err != nil {
+			return store.Item{}, err
+		}
+		nudge.accepted(a)
+		return store.Item{}, nil
 	}
 	// The operation journal outlives the provider process and the frontend
 	// that requested a move. Check under the action lock before any new send
@@ -561,6 +577,17 @@ func (a *App) sendMessageLocked(
 			return store.Item{}, err
 		}
 	}
+	// A nudge's run is recorded once its message is accepted, queued or
+	// written to the provider, and never for a repeated frame (above).
+	nudge, err := a.beginNudge(threadID, opts)
+	if err != nil {
+		return store.Item{}, fmt.Errorf("send message: %w", err)
+	}
+	defer func() {
+		if err == nil {
+			nudge.accepted(a)
+		}
+	}()
 
 	intent := messageDirect
 	if opts.QueueIfActive {

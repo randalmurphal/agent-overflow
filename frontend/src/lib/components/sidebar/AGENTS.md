@@ -32,9 +32,72 @@ which adds the project's empty state and drop targets.
   decides a thread has a row: never archived, never `placement` owned.
   The buckets put an assistant in the Assistants section and every other
   listed thread in its project.
-- A computer's project threads and groups list only while
-  `catalogTreeListed` says so; until then it shows the loading row. The
-  rule is in [stores/AGENTS.md](../../stores/AGENTS.md#computer-owned-and-frontend-owned-state).
+- A computer's project headers, its project threads and its groups list
+  only while `catalogTreeListed` says so; until then it shows the loading
+  row alone, with no header and no New Thread button. The headers are held
+  by `stores/sidebarEntryContinuity.svelte.ts`, which groups only listed
+  computers' rows, and the threads and groups by `treeListed` in
+  `ProjectsSection.svelte`; the loading row reads the gate itself. The rule is in
+  [stores/AGENTS.md](../../stores/AGENTS.md#computer-owned-and-frontend-owned-state).
+- A sidebar row is one `SidebarEntry` value, built by `buildSidebarEntries`
+  in `sidebarEntries.ts` and taken whole by the components. From
+  `stores/projects.svelte.ts` and `stores/sidebarEntryContinuity.svelte.ts`
+  a file here may import only the writers `lib/architecture.test.ts` lists
+  for it, resolved through re-exports; `sidebarEntries.ts` is the exception,
+  so a new fact about an entry is added to the value rather than derived
+  beside it.
+- Which listed rows form an entry, and which earlier row an entry
+  continues, is decided once, in `stores/sidebarEntryContinuity.svelte.ts`,
+  with the device filter ignored; `buildSidebarEntries` adds only what the
+  filter decides.
+- The ids the entry separates. Its `key` is the repository key of the
+  computer's chosen checkout, else the project id: what the row's disclosure
+  is persisted under. The key moves when a computer verifies a checkout's
+  repository identity after listing it, or loses it. Its `rowKey` is what
+  the each block and the thread buckets key on, carried from the previous
+  entry through a member the row kept, whatever the filter shows; a keyed
+  each that remounts a row leaves the old one on screen for the length of
+  its exit, so the project and every thread under it render twice. Its `id`
+  is the representative of every listed member with the filter ignored,
+  because filtering never changes where an action executes
+  ([connected computers](../../../../../docs/specs/connected-computers.md)):
+  what an action on the row targets, the order it is saved and dragged under,
+  and its name, path and creation date. Its `members` are what the filter
+  shows, and everything the entry counts, dates (`rankOf`) and says about its
+  members, its identity warning and its recheck included, comes from them.
+- An action's target counts its own threads, and its scope is decided over
+  every checkout the client holds (`projectSpansBackends`), a computer whose
+  tree is still held included, so a confirmation never promises to hide a
+  row that comes back when that computer lists.
+- An action is one run (`projectActions.svelte.ts`): it owns the target it
+  took at its gesture and everything derived from it, its confirmation text
+  and its deletion preview included, and the call it ends in is gated on
+  `beginSubmit`. A row has one run at a time, archive, delete and rename
+  alike. A run is live once: it stops being live when it is replaced, when
+  it is ended and when it takes itself for its call, so nothing but the
+  row's current run can act and nothing can act twice. A failed delete
+  leaves its dialog up as a new run on the same project and answer
+  (`reraiseDelete`, which does nothing unless the failed run still owns the
+  row; a preview is the only thing a run collects that outlives its call). Every menu action, rename included, takes
+  the target the menu was opened on, never the row's current one.
+- A row's label is disambiguated by `ProjectList.svelte` over the entries it
+  renders, so a query that hides one of two same-named projects drops the
+  other's prefix; the entry carries the name and path, not the label.
+- An entry's collapse and the show-more limit of its own list belong to
+  `stores/sidebarEntryContinuity.svelte.ts`, which moves them with the row
+  when its key moves and creates their records; no other module may import
+  the record constructors (`lib/architecture.test.ts`). The entry carries both (`expanded`, `listLimit`); a list's top
+  level names which record it pages in (`SidebarTopLevelList`), since a
+  group's and the Assistants section's sizes share the older one.
+  `ProjectsSection.svelte` writes collapse with `setEntryExpanded` and
+  `SidebarTreeList.svelte` writes the limit; a row reports a toggle through
+  `onSetExpanded` instead of writing one. Anything that wants a project's
+  rows revealed calls `revealProject` in that store.
+- A search shows open every row whose threads or groups matched, as
+  `ProjectsSection.svelte`'s view of the search (`searchOpened`), and never
+  writes a fold. A row the user folds or unfolds during the search is
+  written as always and stops being opened by the search until it stops
+  matching or the search clears.
 - A row's worker count and needs-you badge read
   `stores/threadWorkerSummaries.svelte.ts`.
 - `threadRowActions.ts` and `threadGroupActions.ts` own mutations from this
@@ -81,8 +144,10 @@ Synchronizing one project's tree must not remove another project's state.
   confirms it.
 - Computer filters affect sidebar visibility only. They do not change transport
   subscriptions, execution routing, or mounted panes.
-- Apply computer visibility before search and group projection. A hidden clone
-  must not hide a visible checkout of the same repository on another computer.
+- Apply computer visibility by member, before search and before an entry's
+  aggregates, and never by regrouping the rows that pass. A hidden clone must
+  not hide a visible checkout of the same repository on another computer, and
+  must not change which entry that checkout belongs to.
 - Usage and system statistics retain explicit computer identity. Do not present
   cached offline data as current totals or combine separately priced account
   reports as one host-local value.

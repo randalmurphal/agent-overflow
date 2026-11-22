@@ -43,11 +43,27 @@ import (
 // restart's original all-exported wiring, not a design choice.
 //
 // `SessionActive` is a bare liveness question rather than the App's session
-// handle: both callers here discard the handle and read only the boolean, so
-// the seam asks exactly what the runner decides on.
+// handle: its caller, a takeover deciding whether a schema-attached process
+// is running, reads only the boolean.
+//
+// `EnsureProvenSession` leaves the thread with a session the provider proved
+// holds the conversation the thread continues, or with none. Under the
+// thread's action lock, held until the proof returns so no input reaches the
+// process first, it proves the session registered for the thread, or calls
+// beforeStart, starts one and proves that; started reports the second. The
+// proof is the provider's own report of how that process's start ended: a
+// Claude process that loaded the session it resumed and counts a user
+// message in it, or that reported taking a prompt written to it
+// (`claude.Session.AwaitStart`), or the failure that stopped it
+// first (`claude.IsConversationUnproven` when the conversation is gone,
+// empty or its content unproven). Codex proves the same thing inside the
+// start, with its synchronous `thread/resume`; a live claude-tui session is
+// accepted. A failed proof stops the session it proved. A beforeStart error
+// is returned as it is.
 type SessionHost interface {
 	StartSession(ctx context.Context, threadID string) error
 	StartSessionTakingLock(ctx context.Context, threadID string) error
+	EnsureProvenSession(ctx context.Context, threadID string, beforeStart func() error) (started bool, err error)
 	StopSession(threadID string) error
 	SessionActive(threadID string) bool
 }
@@ -117,15 +133,6 @@ type ProcessLifetime interface {
 	ProcessReaper() procutil.Reaper
 }
 
-// ProviderHomeSource answers where the process's provider state lives. It is a
-// capability of the process, not of this package: an isolated boot (--harness /
-// --soak) and a test fixture both pin a provider home that is not $HOME, and a
-// runner that resolved `~/.claude/projects` itself would read the developer's
-// real transcripts there. See App.providerHome.
-type ProviderHomeSource interface {
-	ClaudeProjectsDir() (string, error)
-}
-
 // Host composes the seams above into the single field the runner holds.
 // Composition rather than one flat interface is what keeps each capability
 // nameable on its own, and is what the move of the runner into this package
@@ -139,7 +146,6 @@ type Host interface {
 	EventEmitter
 	EngineSource
 	ProcessLifetime
-	ProviderHomeSource
 }
 
 // DispatchIdentity is the credential identity held stable across one provider

@@ -61,12 +61,11 @@ import "strings"
 //	                      2.1.236+). AO's resume-filter mirror
 //	                      (claude/sessionleaf_resumefilters.go) does not
 //	                      model that pass, so under this variable it would
-//	                      bless a `--resume-session-at` cursor the CLI is
-//	                      about to discard — the pre-init "No message found
-//	                      with message.uuid of:" brick that leaves a thread
-//	                      unresumable (incident 2026-08-03). Refusing the
-//	                      save is the honest answer until the mirror grows
-//	                      the pass.
+//	                      bless a pinned fork start's `--resume-session-at`
+//	                      cursor the CLI is about to discard, and the start
+//	                      fails pre-init with "No message found with
+//	                      message.uuid of:". Refusing the save is the
+//	                      honest answer until the mirror grows the pass.
 //	CLAUDE_CODE_HARBOR_KITE
 //	                    — exported "1" by claude.NewSession when the
 //	                      cross-session messaging setting is on

@@ -40,8 +40,11 @@ const clearLineagePayloadSQL = `UPDATE thread_requests
 // (idx_thread_requests_age), a receipt past it
 // (idx_thread_request_receipts_age), and a lineage row whose spawned thread
 // is gone (idx_thread_requests_lineage, idx_thread_request_receipts_lineage). An open row is in neither age
-// index: it is still work, and waits for its own settlement. A spawn whose
-// thread is here waits the same way until that thread reads at rest: past
+// index: it is still work, and waits for its own settlement. A settled send
+// whose run is open is still work too, a nudge's row, settled when
+// written, among them: the age sets leave it out (runOpenSQL, run_open),
+// read through the same index, until its worker rests. A spawn whose
+// thread is here waits for that thread's rest by the rule below: past
 // the floor, a spawn, its request or its receipt, whose thread is here is
 // cleared only when that thread is among ?2 (a JSON array, the threads the
 // sweep's RestGuard read at rest inside its transaction), so the Agents
@@ -62,13 +65,20 @@ const clearLineagePayloadSQL = `UPDATE thread_requests
 // 5 us with none and 1.8 ms with 5,000, once per sweep.
 var (
 	requestPastFloorSQL = `lineage_only = 0 AND state NOT IN ('unconfirmed','accepted','running')
-	    AND COALESCE(settled_at, due_at, created_at) < ?1 AND NOT (` + nestedRemoteSpawnSQL("thread_requests") + `)
+	    AND COALESCE(settled_at, due_at, created_at) < ?1 AND NOT (kind <> 'spawn' AND ` + runOpenSQL("thread_requests") + `)
+	    AND NOT (` + nestedRemoteSpawnSQL("thread_requests") + `)
 	    AND NOT (` + agentSpawnLinkSQL("thread_requests") + ` AND thread_requests.target_thread_id NOT IN (SELECT value FROM json_each(?2))
 	             AND EXISTS (SELECT 1 FROM threads WHERE threads.id = thread_requests.target_thread_id))`
 	receiptPastFloorSQL = `lineage_only = 0 AND state NOT IN ('accepted','running') AND COALESCE(settled_at, created_at) < ?1
+	    AND NOT (kind <> 'spawn' AND run_open IS 1)
 	    AND NOT (kind = 'spawn' AND COALESCE(thread_request_receipts.target_thread_id, '') NOT IN (SELECT value FROM json_each(?2))
 	             AND EXISTS (SELECT 1 FROM threads WHERE threads.id = thread_request_receipts.target_thread_id))`
 )
+
+// nudgePastFloorSQL matches, over idx_thread_receipt_nudges_ended, a nudge
+// run kept for a paired computer's link that ended before the floor ?1 and
+// that computer never took (TakeNudgeRuns). An open one is never past it.
+const nudgePastFloorSQL = `run_open = 0 AND ended_at < ?1`
 
 const orphanLineageSQL = `lineage_only = 1 AND target_computer_id = ''
 	    AND NOT EXISTS (SELECT 1 FROM threads WHERE threads.id = thread_requests.target_thread_id)`
@@ -114,7 +124,8 @@ func (s *Store) SpawnThreadsPastFloor(cutoff int64) ([]string, error) {
 //
 // Two rows survive the floor whatever their age. An OPEN row is still work:
 // deleting it would leave a receipt nobody can settle or cancel, so the row
-// waits for its own settlement first. And a row's age is measured from the
+// waits for its own settlement first, and a settled send whose run is
+// open waits for its worker's rest. And a row's age is measured from the
 // moment it finished, not from when it was made: a reminder armed for next
 // month is due in the future and older than the floor at the same time, and
 // an answer written yesterday on a request made last year has been readable
@@ -179,7 +190,8 @@ func (s *Store) DeleteThreadRequestsBefore(cutoff int64, rest *RestGuard) (swept
 	    OR EXISTS (SELECT 1 FROM thread_request_receipts WHERE `+receiptPastFloorSQL+`)
 	    OR EXISTS (SELECT 1 FROM thread_requests WHERE `+orphan+`)
 	    OR EXISTS (SELECT 1 FROM thread_request_receipts WHERE `+orphanReceiptLineageSQL+`)
-	    OR EXISTS (SELECT 1 FROM thread_request_receipts WHERE `+staleSpawnLinkSQL+`)`,
+	    OR EXISTS (SELECT 1 FROM thread_request_receipts WHERE `+staleSpawnLinkSQL+`)
+	    OR EXISTS (SELECT 1 FROM thread_receipt_nudges WHERE `+nudgePastFloorSQL+`)`,
 		cutoff, threads, eligible, outstanding, unpaired, cutoff, cutoff).Scan(&due); err != nil {
 		return 0, nil, fmt.Errorf("store: read whether thread requests are past %d: %w", cutoff, err)
 	}
@@ -193,7 +205,7 @@ func (s *Store) DeleteThreadRequestsBefore(cutoff int64, rest *RestGuard) (swept
 	defer rollbackTx(tx, "store: thread request retention sweep", &err)
 	// The roots read at rest again with the writer held: a thread that took
 	// work since keeps its spawns whole.
-	rested, err := rest.atRestTx(tx)
+	rested, err := rest.atRestTx(tx, s.run)
 	if err != nil {
 		return 0, nil, fmt.Errorf("store: sweep thread requests past %d: %w", cutoff, err)
 	}
@@ -216,6 +228,7 @@ func (s *Store) DeleteThreadRequestsBefore(cutoff int64, rest *RestGuard) (swept
 		// The step before kept the lineage, which the floor's set leaves out.
 		{"sweep thread_request_receipts", `DELETE FROM thread_request_receipts WHERE ` + receiptPastFloorSQL, floor},
 		{"sweep lineage thread_request_receipts", `DELETE FROM thread_request_receipts WHERE ` + orphanReceiptLineageSQL, nil},
+		{"sweep thread_receipt_nudges", `DELETE FROM thread_receipt_nudges WHERE ` + nudgePastFloorSQL, floor[:1]},
 	}
 	for _, step := range steps {
 		result, err := tx.Exec(step.query, step.args...)

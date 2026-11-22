@@ -8,6 +8,7 @@
 import { test, expect } from '@playwright/test';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { headlessPairing } from './headless-pairing-helpers.js';
+import { expandRow } from './ao-tool-rows-helpers.js';
 import { aoRow, openThread } from './ao-tool-rows-more-helpers.js';
 import { awaitToolAnswer, setScenario, threadToolsScenario } from './thread-tools-helpers.js';
 
@@ -89,8 +90,7 @@ test('a wait reads a thread a down computer may hold as unresolved beside the th
 
   await openThread(home, page, 'Unanswered watch caller');
   const row = aoRow(page, 'thread_status').first();
-  await row.getByTestId('tool-call-card-toggle').click();
-  await expect(row.getByTestId('tool-call-card-toggle')).toHaveAttribute('aria-expanded', 'true');
+  await expandRow(row);
   const lines = row.getByTestId('tool-call-card-ao-line');
   await expect(lines).toHaveCount(2);
   await expect(lines.nth(0)).toContainText('Watched here');
