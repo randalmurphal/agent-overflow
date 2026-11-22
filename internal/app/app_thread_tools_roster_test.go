@@ -347,7 +347,7 @@ func TestTheSpawnShapeNamesProfilesByOfferedProviderAndReadsNoModels(t *testing.
 		by, _ := ctx.Value(lookupBy{}).(string)
 		entered <- by
 		<-asked
-		// The shipped catalog has no gpt-6-astra, Astra's model.
+		// The shipped catalog has no model of gpt-astra, Astra's family.
 		return provider.CodexModels, nil
 	}, time.Now)
 	roster := append(slices.Clone(f.app.currentSettings().AgentProfiles),
@@ -449,7 +449,7 @@ func TestTheSpawnShapeNamesProfilesByOfferedProviderAndReadsNoModels(t *testing.
 		t.Errorf("thread_options lists %v, want Sol and Opus and neither Astra nor Ghost", listed)
 	}
 	for profile, reason := range map[string]string{
-		"Astra": `Agent profile "Astra" cannot run: Codex does not offer model "gpt-6-astra" on this computer.`,
+		"Astra": `Agent profile "Astra" cannot run: Codex offers no gpt-astra model on this computer.`,
 		"Ghost": `Agent profile "Ghost" cannot run: Claude Code does not offer model "claude-ghost-9" on this computer.`,
 	} {
 		_, err := server.Call(t.Context(), who, "thread_spawn", json.RawMessage(`{"prompt":"work","profile":"`+profile+`"}`))
