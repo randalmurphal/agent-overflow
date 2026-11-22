@@ -28,7 +28,7 @@ import {
   doneFlowYaml,
   otherProvider,
 } from './workflows-agent-tools-helpers.js';
-import { expectRowTextWhole, pressToggle, shootRow } from './ao-tool-rows-helpers.js';
+import { expandRow, expectRowTextWhole, shootRow } from './ao-tool-rows-helpers.js';
 import { timelineOf } from './timeline-follow-helpers.js';
 
 export const MORE_LEAD_TITLE = 'Lead thread';
@@ -267,10 +267,12 @@ export async function readRow(page: Page, tool: string, shot: (name: string) => 
     return el.getBoundingClientRect().top + (clip?.scrollTop ?? 0);
   });
   const timelineTop = () => timelineOf(row).evaluate((el) => Math.round(el.scrollTop));
-  const placedBefore = await placed();
-  const timelineBefore = await timelineTop();
-  await pressToggle(row);
-  await expect(row.getByTestId('tool-call-card-toggle')).toHaveAttribute('aria-expanded', 'true');
+  let placedBefore = 0;
+  let timelineBefore = 0;
+  await expandRow(row, async () => {
+    placedBefore = await placed();
+    timelineBefore = await timelineTop();
+  });
   const body = row.getByTestId('tool-call-card-body');
   await expect(body).toBeVisible();
   expect(Math.abs((await placed()) - placedBefore), `${tool} row moved when it opened; timeline scrollTop ${timelineBefore} -> ${await timelineTop()}`).toBeLessThanOrEqual(1);

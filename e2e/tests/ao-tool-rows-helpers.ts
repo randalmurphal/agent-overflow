@@ -171,28 +171,25 @@ function touchScreen(page: Page): Promise<boolean> {
 }
 
 /**
- * Presses a row's toggle as a person on this device does: a tap on a touch
- * screen, a mouse click otherwise.
+ * Opens a row as a person on this device does, a tap on a touch screen and
+ * a mouse click otherwise, and waits for it to read as open. Every spec
+ * opens a tool row through it. A mouse click is made on the row placed as
+ * `placeRow` places it. Playwright presses the toggle's center cut to
+ * 0.01 px; with that point less than a pixel above the "Jump to bottom"
+ * chip, Chromium sends the mouse press to the chip and the release to the
+ * surface behind it, so nothing gets a click, while Playwright's covering
+ * check still finds the toggle there. A tap at that point opens the row, so
+ * a tap is made where the row is. `beforePress` runs once the row is where
+ * it will be pressed, for a caller that measures what opening moves.
  */
-export async function pressToggle(row: Locator): Promise<void> {
+export async function expandRow(row: Locator, beforePress?: () => Promise<void>): Promise<void> {
   const toggle = row.getByTestId('tool-call-card-toggle');
-  if (await touchScreen(row.page())) await toggle.tap();
+  const touch = await touchScreen(row.page());
+  if (!touch) await placeRow(row);
+  await beforePress?.();
+  if (touch) await toggle.tap();
   else await toggle.click();
-}
-
-/**
- * Opens a row with `pressToggle` and waits for it to read as open. A mouse
- * click is made on the row placed as `placeRow` places it. Playwright
- * presses the toggle's center cut to 0.01 px; with that point less than a
- * pixel above the "Jump to bottom" chip, Chromium sends the mouse press to
- * the chip and the release to the surface behind it, so nothing gets a
- * click, while Playwright's covering check still finds the toggle there. A
- * tap at that point opens the row, so a tap is made where the row is.
- */
-export async function expandRow(row: Locator): Promise<void> {
-  if (!(await touchScreen(row.page()))) await placeRow(row);
-  await pressToggle(row);
-  await expect(row.getByTestId('tool-call-card-toggle')).toHaveAttribute('aria-expanded', 'true');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
 }
 
 /**
