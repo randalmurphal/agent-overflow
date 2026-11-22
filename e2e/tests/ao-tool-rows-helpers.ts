@@ -226,15 +226,15 @@ export async function atOverlayEdge(row: Locator, overlay: Locator, press: () =>
   const x = Math.trunc((toggleBox.x + toggleBox.width / 2) * 100) / 100;
   // The first y, in 1/64 px steps, where elementFromPoint at the press's x
   // finds the overlay; the overlay floats over the row, so the row's own
-  // position does not move it.
-  const hitTop = await overlay.evaluate((el, at) => {
+  // position does not move it. Only the tap leg aims from it.
+  const hitTop = !touch ? null : await overlay.evaluate((el, at) => {
     const top = el.getBoundingClientRect().top;
     for (let y = Math.floor(top) - 2; y <= top + 1; y += 1 / 64) {
       if (el.contains(document.elementFromPoint(at, y))) return y;
     }
     return null;
   }, x);
-  expect(hitTop, `elementFromPoint finds the overlay nowhere near its top at x ${x}`).not.toBeNull();
+  if (touch) expect(hitTop, `elementFromPoint finds the overlay nowhere near its top at x ${x}`).not.toBeNull();
   const want = touch ? hitTop! - 1 / 4 : (await overlay.boundingBox())!.y - 1 + 1 / 64;
   await row.evaluate(async (card, want) => {
     const button = card.querySelector('[data-testid="tool-call-card-toggle"]')!;
@@ -261,7 +261,7 @@ export async function atOverlayEdge(row: Locator, overlay: Locator, press: () =>
     const box = (await toggle.boundingBox())!;
     const edge = (await overlay.boundingBox())!;
     const at = { x: Math.trunc((box.x + box.width / 2) * 100) / 100, y: Math.trunc((box.y + box.height / 2) * 100) / 100 };
-    const where = `press at ${at.x},${at.y}; overlay at ${edge.x},${edge.y} ${edge.width}x${edge.height}, hit from y ${hitTop}`;
+    const where = `press at ${at.x},${at.y}; overlay at ${edge.x},${edge.y} ${edge.width}x${edge.height}${touch ? `, hit from y ${hitTop}` : ''}`;
     if (!touch) {
       expect(at.y, where).toBeGreaterThan(edge.y - 1);
       expect(at.y, where).toBeLessThan(edge.y);
