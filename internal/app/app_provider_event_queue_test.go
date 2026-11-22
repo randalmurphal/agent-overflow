@@ -345,51 +345,121 @@ func TestProviderEventDrainWaitsOnlyForEventsQueuedBeforeIt(t *testing.T) {
 	}
 }
 
-// A stall returns once the events queued ahead of it are handled, so the
-// pending count read right after it is the stall alone, and it grows only by
-// the events queued behind the stall.
-func TestProviderEventStallReturnsOnceTheEventsAheadOfItAreHandled(t *testing.T) {
-	t.Parallel()
-	const threadID = "thread-stall-ahead"
-	var qs providerEventQueues
+// stallCase is a queue whose worker is held by a gated event, with a stall
+// being acquired behind it.
+type stallCase struct {
+	qs       *providerEventQueues
+	threadID string
+	openGate func()
+	stalled  chan error
+}
+
+// startStallBehindGate queues a gated event, waits until the worker is
+// inside it, and starts acquiring a stall behind it. Its cleanup opens the
+// gate and releases a stall still held, before any assertion can fail.
+func startStallBehindGate(t *testing.T, qs *providerEventQueues, threadID string) *stallCase {
+	t.Helper()
 	started := make(chan struct{})
-	finish := make(chan struct{})
-	enqueueWithin(t, &qs, threadID, seqEvent(0, 0), func(provider.ProviderEvent) {
+	gate := make(chan struct{})
+	c := &stallCase{qs: qs, threadID: threadID, openGate: sync.OnceFunc(func() { close(gate) }), stalled: make(chan error, 1)}
+	t.Cleanup(func() {
+		c.openGate()
+		qs.mu.Lock()
+		_, held := qs.stalls[threadID]
+		qs.mu.Unlock()
+		if held {
+			if err := qs.releaseStall(threadID); err != nil {
+				t.Error(err)
+			}
+		}
+	})
+	enqueueWithin(t, qs, threadID, seqEvent(0, 0), func(provider.ProviderEvent) {
 		close(started)
-		<-finish
+		<-gate
 	})
 	<-started
+	go func() { c.stalled <- qs.stall(threadID) }()
+	waitForCondition(t, "the stall is queued behind the gated event", func() bool { return qs.pending(threadID) == 2 })
+	return c
+}
 
-	stalled := make(chan error, 1)
-	go func() { stalled <- qs.stall(threadID) }()
-	if !waitForQueueWaiter(&qs, threadID) {
-		t.Fatal("stall never waited for the event ahead of it")
-	}
+func (c *stallCase) result(t *testing.T) error {
+	t.Helper()
 	select {
-	case err := <-stalled:
-		t.Fatalf("stall returned (%v) while the event ahead of it was being handled", err)
-	default:
-	}
-	close(finish)
-	select {
-	case err := <-stalled:
-		if err != nil {
-			t.Fatalf("stall: %v", err)
-		}
+	case err := <-c.stalled:
+		return err
 	case <-time.After(5 * time.Second):
-		t.Fatal("stall did not return once the event ahead of it was handled")
+		t.Fatal("stall did not return")
+		return nil
 	}
-	t.Cleanup(func() {
-		if err := qs.releaseStall(threadID); err != nil {
-			t.Error(err)
-		}
-	})
-	if got := qs.pending(threadID); got != 1 {
+}
+
+// A stall returns once the worker holds it, so the pending count read right
+// after it is the stall alone, and it grows only by the events queued behind
+// the stall.
+func TestProviderEventStallReturnsOnceTheEventsAheadOfItAreHandled(t *testing.T) {
+	t.Parallel()
+	qs := &providerEventQueues{}
+	c := startStallBehindGate(t, qs, "thread-stall-ahead")
+	select {
+	case err := <-c.stalled:
+		t.Fatalf("stall returned (%v) while the event ahead of it was being handled", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	c.openGate()
+	if err := c.result(t); err != nil {
+		t.Fatalf("stall: %v", err)
+	}
+	if got := qs.pending(c.threadID); got != 1 {
 		t.Fatalf("pending after the stall = %d, want 1 (the stall alone)", got)
 	}
-	enqueueWithin(t, &qs, threadID, seqEvent(1, 0), func(provider.ProviderEvent) {})
-	if got := qs.pending(threadID); got != 2 {
+	enqueueWithin(t, qs, c.threadID, seqEvent(1, 0), func(provider.ProviderEvent) {})
+	if got := qs.pending(c.threadID); got != 2 {
 		t.Fatalf("pending after one event queued behind the stall = %d, want 2", got)
+	}
+}
+
+// A stall the worker does not reach within its bound fails holding nothing:
+// its marker no longer holds the worker, and the next stall is taken.
+func TestProviderEventStallThatTimesOutHoldsNothing(t *testing.T) {
+	t.Parallel()
+	qs := &providerEventQueues{stallAcquire: 50 * time.Millisecond}
+	c := startStallBehindGate(t, qs, "thread-stall-timeout")
+	err := c.result(t)
+	if err == nil || !strings.Contains(err.Error(), "did not reach the stall") {
+		t.Fatalf("stall error = %v, want the bound's failure", err)
+	}
+	c.openGate()
+	if err := qs.drain(c.threadID); err != nil {
+		t.Fatalf("the timed-out stall still holds the worker: %v", err)
+	}
+	if err := qs.stall(c.threadID); err != nil {
+		t.Fatalf("second stall: %v", err)
+	}
+	if got := qs.pending(c.threadID); got != 1 {
+		t.Fatalf("pending after the second stall = %d, want 1", got)
+	}
+}
+
+// A release while the stall waits for the worker ends the acquisition with
+// an error, and its marker passes when the worker reaches it.
+func TestProviderEventStallReleasedDuringAcquisitionHoldsNothing(t *testing.T) {
+	t.Parallel()
+	qs := &providerEventQueues{}
+	c := startStallBehindGate(t, qs, "thread-stall-released")
+	if err := qs.releaseStall(c.threadID); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	err := c.result(t)
+	if err == nil || !strings.Contains(err.Error(), "released before the worker reached the stall") {
+		t.Fatalf("stall error = %v, want the release's outcome", err)
+	}
+	c.openGate()
+	if err := qs.drain(c.threadID); err != nil {
+		t.Fatalf("the released stall still holds the worker: %v", err)
+	}
+	if got := qs.pending(c.threadID); got != 0 {
+		t.Fatalf("pending after the drain = %d, want 0", got)
 	}
 }
 
