@@ -110,7 +110,6 @@ func (h *testHost) ConnectedClients() (int, bool) {
 	}
 	return h.eventBus.SubscriberCount(), true
 }
-func (h *testHost) SessionEnv(string) map[string]string { return nil }
 func (h *testHost) ListVisibleThreads() ([]store.Thread, error) {
 	return h.store.ListThreads()
 }

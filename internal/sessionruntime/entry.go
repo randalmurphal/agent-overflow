@@ -9,7 +9,6 @@ import (
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/claudetui"
 	"agent-overflow/internal/provider/codex"
-	"agent-overflow/internal/transport"
 )
 
 // Entry is one live provider process. It is process-local runtime state and is
@@ -24,9 +23,6 @@ type Entry struct {
 	Codex                *codex.Session
 	ClaudeTUI            *claudetui.Session
 	LaunchOptions        provider.SessionOptions
-	AOToken              string
-	AOScope              transport.CallerScope
-	AOEnv                map[string]string
 	Liveness             *Liveness
 	// MemoryPlan is the memory the session's SessionStart hook delivers,
 	// which a compaction delivers again; nil for none.

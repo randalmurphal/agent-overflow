@@ -1247,16 +1247,6 @@ var Routes = []Route{
 			"hop.",
 	},
 	{
-		Pattern:    "/rpc",
-		Listener:   "app transport",
-		Credential: CredPageSession,
-		Posture:    PostureStructured,
-		Why: "One-shot HTTP RPC for the `ao` CLI, registered only when " +
-			"Config.ScopedTokens is set. Its token is scoped to a subset " +
-			"of methods rather than being a page credential, so a CLI " +
-			"token cannot be replayed as a page.",
-	},
-	{
 		Pattern:    "/",
 		Listener:   "app transport",
 		Credential: CredPageSession,
@@ -1624,7 +1614,7 @@ var Registries = []Registry{
 	{
 		Name:      "RPC methods",
 		Listener:  "app transport",
-		Routes:    []string{"/ws", "/rpc"},
+		Routes:    []string{"/ws"},
 		Source:    "internal/transport/methods_gen.go",
 		Symbol:    "GeneratedMethods",
 		RowFields: []string{"Name", "ID", "Scope", "Route"},

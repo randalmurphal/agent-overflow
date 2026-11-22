@@ -525,10 +525,6 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		},
 		// Read through the installation name shared by pairing and push.
 		BackendNameGetter: func() string { return appservice.DeviceDisplayName(appService.App) },
-		// The `ao` CLI's scoped-token registry. The App owns it because a
-		// token's lifetime is a provider session's lifetime; the transport
-		// only asks what a presented token is allowed to do.
-		ScopedTokens: appService,
 		// Identity boots during ServiceStartup, after this config is built.
 		// Session admission reads the current identity service on each call.
 		Sessions: appservice.SessionAuthority(appService.App),

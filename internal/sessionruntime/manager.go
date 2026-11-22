@@ -9,7 +9,6 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
-	"agent-overflow/internal/transport"
 )
 
 // Start tracks one single-flighted provider start.
@@ -74,7 +73,6 @@ type Manager struct {
 	mu sync.Mutex
 
 	sessions                            map[string]Entry
-	aoTokens                            map[string]transport.CallerScope
 	starting                            map[string]*Start
 	reconnecting                        map[string]bool
 	autoReconnectAttempted              map[string]bool
@@ -99,7 +97,6 @@ type Manager struct {
 func New() *Manager {
 	return &Manager{
 		sessions:                   make(map[string]Entry),
-		aoTokens:                   make(map[string]transport.CallerScope),
 		starting:                   make(map[string]*Start),
 		reconnecting:               make(map[string]bool),
 		autoReconnectAttempted:     make(map[string]bool),
@@ -161,11 +158,9 @@ func (m *Manager) Account(threadID string) (AccountSnapshot, bool) {
 func (m *Manager) Put(threadID string, entry Entry) {
 	m.mu.Lock()
 	if displaced, ok := m.sessions[threadID]; ok {
-		m.revokeAOToken(displaced)
 		m.purgeClaudeLiveConfigState(displaced.Token)
 	}
 	m.sessions[threadID] = entry
-	m.registerAOToken(entry)
 	m.mu.Unlock()
 }
 
@@ -192,54 +187,7 @@ func (m *Manager) Unregister(threadID, sessionToken string) (Entry, bool) {
 
 func (m *Manager) remove(threadID string, entry Entry) {
 	delete(m.sessions, threadID)
-	m.revokeAOToken(entry)
 	m.purgeClaudeLiveConfigState(entry.Token)
-}
-
-// registerAOToken resolves the session's credential to its scope, naming
-// the session it belongs to (CallerScope.Session).
-func (m *Manager) registerAOToken(entry Entry) {
-	if entry.AOToken != "" {
-		scope := entry.AOScope
-		scope.Session = entry.Token
-		m.aoTokens[entry.AOToken] = scope
-	}
-}
-
-func (m *Manager) revokeAOToken(entry Entry) {
-	if entry.AOToken != "" {
-		delete(m.aoTokens, entry.AOToken)
-	}
-}
-
-func (m *Manager) ResolveAOToken(token string) (transport.CallerScope, bool) {
-	if token == "" {
-		return transport.CallerScope{}, false
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	scope, ok := m.aoTokens[token]
-	return scope, ok
-}
-
-func (m *Manager) AOTokenCount() int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return len(m.aoTokens)
-}
-
-func (m *Manager) AOEnv(threadID string) map[string]string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	entry, ok := m.sessions[threadID]
-	if !ok || len(entry.AOEnv) == 0 {
-		return nil
-	}
-	env := make(map[string]string, len(entry.AOEnv))
-	for name, value := range entry.AOEnv {
-		env[name] = value
-	}
-	return env
 }
 
 func (m *Manager) BeginStart(threadID string) (*Start, bool) {
@@ -506,7 +454,6 @@ func (m *Manager) SnapshotAndClear() map[string]Entry {
 	result := make(map[string]Entry, len(m.sessions))
 	for threadID, entry := range m.sessions {
 		result[threadID] = entry
-		m.revokeAOToken(entry)
 		m.purgeClaudeLiveConfigState(entry.Token)
 	}
 	m.sessions = make(map[string]Entry)

@@ -36,7 +36,6 @@ type Host interface {
 	Shutdown(context.Context) error
 	ExpectedOrigin() string
 	ConnectedClients() (count int, available bool)
-	SessionEnv(threadID string) map[string]string
 	ListVisibleThreads() ([]store.Thread, error)
 	Emit(eventchan.Channel, any)
 	Notify(title, body string, target notify.Target) error

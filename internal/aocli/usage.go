@@ -6,35 +6,12 @@ import (
 	"agent-overflow/internal/buildvariant"
 )
 
-const remoteUsage = `Usage: agent-overflow remote <command> [options]
-
-  list                     List enabled computers and registered projects
-  run --computer <uuid> --project <uuid> [--workspace <path>]
-      [--id <request-uuid>] [--timeout <seconds>] -- <command> [arguments...]
-  status --computer <uuid> <request-uuid>
-  cancel --computer <uuid> <request-uuid>
-
-Replies are JSON. Commands run on the destination with its environment and
-survive frontend disconnection. Output retains the last 128 KiB. The default
-time limit is one hour; the maximum is seven days. Up to four commands may run
-per computer. There is no implicit queue or automatic retry.
-
-Enable agent access for the destination in the originating computer's settings.
-Workflow phases additionally require the remote-commands grant. Status and
-cancellation are restricted to the conversation that started the command.
-
-A request UUID is printed before run sends its request. After a lost reply,
-inspect status or retry the identical command with that same --id. A computer
-restart marks unfinished work interrupted; it never reruns it automatically.
-`
-
 // Every usage string the binary prints. They live together so the command tree
 // is readable in one place, and so adding a subcommand without documenting it is
 // an obvious omission rather than a hidden one.
 
 // rootUsage is the root help text. A build without remote access
-// (internal/buildvariant) omits the host commands and `remote`, which it
-// refuses.
+// (internal/buildvariant) omits the host commands, which it refuses.
 var rootUsage = rootUsageFor(buildvariant.RemoteAccess)
 
 func rootUsageFor(remoteAccess bool) string {
@@ -44,9 +21,6 @@ func rootUsageFor(remoteAccess bool) string {
 		b.WriteString(rootUsageHostCommands)
 	}
 	b.WriteString(rootUsageLocalCommands)
-	if remoteAccess {
-		b.WriteString(rootUsageSessionCommands)
-	}
 	b.WriteString(rootUsageFooter)
 	return b.String()
 }
@@ -71,11 +45,6 @@ const rootUsageLocalCommands = `Local commands (run on the computer the thread i
 
 `
 
-const rootUsageSessionCommands = `Session commands (run inside an Agent Overflow agent session):
-  remote             Run and inspect commands on enabled paired computers
-
-`
-
 const rootUsageFooter = `Exit codes: 0 success, 1 the asked-about thing said no (a service that is not
 running), 2 error.
 
@@ -83,8 +52,9 @@ Put --config-root after the subcommand ("thread send --config-root ..."): the
 app binary routes to these commands by their leading verb, so an invocation that
 starts with a flag never reaches them.
 
-Workflow runs, definitions and campaign memory are not commands: agent sessions
-reach them through the ao-workflow-tools MCP server.
+Workflow runs, definitions, campaign memory and remote commands are not CLI
+commands: agent sessions reach them through the ao-workflow-tools and
+ao-remote-tools MCP servers.
 `
 
 const serviceUsage = `Usage: agent-overflow service <command> [options]

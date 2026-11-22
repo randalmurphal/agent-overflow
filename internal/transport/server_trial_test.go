@@ -63,7 +63,7 @@ func TestTrialKeepsEveryClientRouteOutsideTheRollbackBoundary(t *testing.T) {
 			t.Fatal("request did not reach the trial gate")
 		}
 	}
-	for _, path := range []string{BootstrapPath, WSPath, ScopedRPCPath, AuthTokenPath, AuthPairPath, AuthTicketPath, ThreadTransferPrefix + "operation", "/"} {
+	for _, path := range []string{BootstrapPath, WSPath, AuthTokenPath, AuthPairPath, AuthTicketPath, ThreadTransferPrefix + "operation", "/"} {
 		for _, method := range []string{http.MethodGet, http.MethodPost, http.MethodOptions} {
 			canceled, cancel := context.WithCancel(ctx)
 			done := request(canceled, method, path)

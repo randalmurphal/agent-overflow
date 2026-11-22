@@ -138,7 +138,7 @@ func (a *App) mcpDeps() mcpapp.Deps {
 		},
 		ProviderBinary: a.providerBinaryPath,
 		SessionProcessEnv: func(providerName string) map[string]string {
-			return a.sessionProcessEnv(providerName, nil, aoSessionCredential{})
+			return a.sessionProcessEnv(providerName, nil)
 		},
 		ClaudeRetention:      a.claudeRetention,
 		ReadClaudeCredential: a.readClaudeMCPCredential,

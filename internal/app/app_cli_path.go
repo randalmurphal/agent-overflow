@@ -92,7 +92,8 @@ func ensureCLISymlink(configDir, executable string) (string, error) {
 	// The pid suffix keeps two app processes booting at once from fighting over
 	// one staging name; the rename makes whichever lands last the winner. Which
 	// build wins does not matter to a caller: the CLI carries no state about the
-	// app it belongs to, it POSTs to whatever AO_ENDPOINT its session env names.
+	// app it belongs to and locates the running backend via the local control
+	// file.
 	staging := link + ".staging." + strconv.Itoa(os.Getpid())
 	if err := os.Remove(staging); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return "", fmt.Errorf("publish CLI command: clear %s: %w", staging, err)

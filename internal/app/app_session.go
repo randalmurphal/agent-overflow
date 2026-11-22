@@ -10,6 +10,7 @@ import (
 	"slices"
 	"time"
 
+	"agent-overflow/internal/aocli"
 	"agent-overflow/internal/chatmodel"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
@@ -284,14 +285,6 @@ func (a *App) startSessionNow(threadID string) error {
 	// on the resolution above (which already knows whether the override won
 	// the prompt) and never fatal to the spawn.
 	a.ensureClaudeMemoryDir(t, opts.WorkDir, promptOverride)
-	// The `ao` credential is minted here, before the spawn, because the
-	// process env is what carries it. It only becomes usable when the session
-	// is registered (sessionManager.put), so a failed spawn leaves nothing
-	// behind. See app_session_runtime.go.
-	credential, err := a.mintAOCredential(t)
-	if err != nil {
-		return fmt.Errorf("start session: %w", err)
-	}
 
 	// Retire runtime state owned by the prior Codex app-server before a new
 	// subprocess can replay or emit lifecycle events. Child ownership stays
@@ -314,7 +307,7 @@ func (a *App) startSessionNow(threadID string) error {
 	if err != nil {
 		return fmt.Errorf("start session: %w", err)
 	}
-	newSess, err := a.spawnProviderSession(threadID, sessionToken, t, opts, browserServers, credential, agent, mem, place, onEvent)
+	newSess, err := a.spawnProviderSession(threadID, sessionToken, t, opts, browserServers, agent, mem, place, onEvent)
 	if err != nil {
 		if codex.IsThreadNotFound(err) && agent.Block != "" {
 			// An assistant's Codex thread the provider no longer has.
@@ -492,24 +485,19 @@ func (a *App) stopExistingSessionLocked(threadID string) error {
 }
 
 // sessionProcessEnv is the ONE place a provider subprocess's environment is
-// assembled, so anything the app injects reaches Claude and Codex identically:
+// assembled, so anything the app injects reaches every provider identically:
 // the user's custom environment for that provider (settings, applied at spawn),
 // the boot-mode overrides (providerExtraEnv — the harness's mock-control
-// credentials), the session's CLI credential (AO_ENDPOINT / AO_TOKEN /
-// AO_THREAD_ID), and the
+// credentials), the static in-session marker (AO_IN_SESSION=1 so the binary
+// refuses to boot a second app instance from inside a session), and the
 // PATH entry that makes `agent-overflow` resolve to this executable (D30).
 //
 // Precedence is provider config < user custom env < boot-mode overrides < AO
-// credential. The user's environment outranks the provider config because it
-// is a deliberate override of AO's defaults; it sits below the last two because
-// those are contracts, not preferences — the AO names are how the CLI finds its
-// own app, and the harness's mock control channel must not be reconfigurable
-// from user settings. In practice the layers cannot collide: every name AO
-// injects is reserved at the settings boundary (settings.providerenv.go), so a
-// user value that would have been shadowed here is refused on save instead of
-// vanishing at spawn. The contract itself — which variable is set for which
-// kind of session, and what the CLI does when one is missing — lives in
-// internal/aocli/AGENTS.md, next to the code that reads it.
+// session marker. The user's environment outranks the provider config because
+// it is a deliberate override of AO's defaults; it sits below the last two
+// because those are contracts, not preferences. Every AO_* name is reserved at
+// the settings boundary (settings.providerenv.go), so a user value that would
+// have been shadowed here is refused on save instead of vanishing at spawn.
 //
 // PATH is the one entry that merges rather than wins: whatever a provider
 // config or boot-mode override put there is kept, with the CLI's directory in
@@ -518,17 +506,13 @@ func (a *App) stopExistingSessionLocked(threadID string) error {
 func (a *App) sessionProcessEnv(
 	providerName string,
 	env map[string]string,
-	credential aoSessionCredential,
 ) map[string]string {
 	custom := a.providerCustomEnv(providerName)
-	if len(custom) == 0 && len(a.providerExtraEnv) == 0 && len(credential.env) == 0 && a.cliBinDir == "" {
-		return env
-	}
-	merged := make(map[string]string, max(len(env), len(custom), len(a.providerExtraEnv), len(credential.env)))
+	merged := make(map[string]string, len(env)+len(custom)+len(a.providerExtraEnv)+2)
 	maps.Copy(merged, env)
 	maps.Copy(merged, custom)
 	maps.Copy(merged, a.providerExtraEnv)
-	maps.Copy(merged, credential.env)
+	merged[aocli.EnvInSession] = "1"
 	if a.cliBinDir != "" {
 		prependCLIBinDir(merged, a.cliBinDir)
 	}
@@ -545,7 +529,6 @@ func (a *App) spawnProviderSession(
 	t store.Thread,
 	opts provider.SessionOptions,
 	mcpServers map[string]any,
-	credential aoSessionCredential,
 	agent standingAgentSession,
 	mem sessionMemory,
 	place subThreadPlace,
@@ -583,7 +566,7 @@ func (a *App) spawnProviderSession(
 		cfg.SessionStartForget = mem.Forget
 		cfg.NativeMemoryOff = mem.OwnMemoryOff
 		cfg.InstalledCLIVersion = a.installedProviderVersion(t.Provider)
-		cfg.Env = a.sessionProcessEnv(t.Provider, cfg.Env, credential)
+		cfg.Env = a.sessionProcessEnv(t.Provider, cfg.Env)
 		if mcpServers[remoteMCPName] != nil {
 			cfg.Env = withRemoteMCPClaudeEnv(cfg.Env)
 		}
@@ -627,16 +610,13 @@ func (a *App) spawnProviderSession(
 			CredentialAccount:    accountSelection.Account,
 			Claude:               sess,
 			LaunchOptions:        opts,
-			AOToken:              credential.token,
-			AOScope:              credential.scope,
-			AOEnv:                credential.env,
 			Liveness:             liveness,
 		}, nil
 
 	case string(provider.Codex):
 		cfg := codex.ConfigFromOptions(opts)
 		cfg.Binary = a.providerBinaryPath(t.Provider)
-		cfg.Env = a.sessionProcessEnv(t.Provider, cfg.Env, credential)
+		cfg.Env = a.sessionProcessEnv(t.Provider, cfg.Env)
 		cfg.EventLogger = a.logger
 		cfg.Reaper = a.groupReaper("codex session")
 		cfg.MCPServers = mcpServers
@@ -767,14 +747,11 @@ func (a *App) spawnProviderSession(
 			CredentialAccount:    accountSelection.Account,
 			Codex:                sess,
 			LaunchOptions:        opts,
-			AOToken:              credential.token,
-			AOScope:              credential.scope,
-			AOEnv:                credential.env,
 			Liveness:             liveness,
 		}, nil
 
 	case string(provider.ClaudeTUI):
-		cfg, err := a.claudeTUISessionConfig(threadID, opts, prompts.claudeAppend, mcpServers, credential, mem)
+		cfg, err := a.claudeTUISessionConfig(threadID, opts, prompts.claudeAppend, mcpServers, mem)
 		if err != nil {
 			return session{}, err
 		}
@@ -787,9 +764,6 @@ func (a *App) spawnProviderSession(
 			Token:         sessionToken,
 			ClaudeTUI:     sess,
 			LaunchOptions: opts,
-			AOToken:       credential.token,
-			AOScope:       credential.scope,
-			AOEnv:         credential.env,
 			Liveness:      liveness,
 		}, nil
 
@@ -805,7 +779,6 @@ func (a *App) claudeTUISessionConfig(
 	opts provider.SessionOptions,
 	appGuide string,
 	mcpServers map[string]any,
-	credential aoSessionCredential,
 	mem sessionMemory,
 ) (claudetui.Config, error) {
 	cfg := claudetui.ConfigFromOptions(opts)
@@ -838,7 +811,7 @@ func (a *App) claudeTUISessionConfig(
 	// matches the headless spawn: custom env over the setting over an
 	// inherited value.
 	cfg.Env = provider.BuildEnvironment(claude.WithCommandTimeoutEnv(
-		a.sessionProcessEnv(string(provider.ClaudeTUI), nil, credential),
+		a.sessionProcessEnv(string(provider.ClaudeTUI), nil),
 		opts.ClaudeMaxCommandTimeoutHours,
 	))
 	cfg.AdditionalDirs = a.claudeAdditionalDirs()

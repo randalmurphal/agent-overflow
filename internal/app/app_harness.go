@@ -131,10 +131,6 @@ func (h *harnessHost) ConnectedClients() (int, bool) {
 	return bus.SubscriberCount(), true
 }
 
-func (h *harnessHost) SessionEnv(threadID string) map[string]string {
-	return h.app.sessionAOEnv(threadID)
-}
-
 // ListVisibleThreads reads the sidebar's rows without the bound method, so
 // a harness call is not taken for a client's first catalog read.
 func (h *harnessHost) ListVisibleThreads() ([]store.Thread, error) {
