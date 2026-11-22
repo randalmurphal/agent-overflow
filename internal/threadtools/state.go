@@ -13,10 +13,8 @@ package threadtools
 //     person reports that whatever else is true, which is also what ends
 //     a wait early.
 //  2. running, from a live round or a send that has not echoed yet.
-//  3. error, from a turn that ended and whose end the store has not
-//     taken: its row still reads open, and nothing runs.
-//  4. running, from the newest turn row still open.
-//  5. the durable fallbacks, in the reference's order: a failed worktree
+//  3. running, from the newest turn row still open for a running turn.
+//  4. the durable fallbacks, in the reference's order: a failed worktree
 //     setup names a concrete repair, then a failed turn, then an
 //     interrupted one, then an actionable plan.
 //
@@ -25,18 +23,18 @@ package threadtools
 // reader of it never sees a turn between the two. The live round holds
 // until right before provider:turn_completed, after that write, so the two
 // overlap and the absence of a round never makes a thread interrupted. An
-// interruption is the row's recorded stop reason. When the write fails,
-// or the boot sweep fails to settle a row the previous instance left
-// open, triage holds that turn as ended (TurnEndUnrecorded) and nothing
-// writes the end again; the thread reads as error and rests until a later
-// turn starts or a later boot's sweep records the row as interrupted.
+// interruption is the row's recorded stop reason. An open row whose turn
+// nothing in this process runs (its end write failed, a failed boot sweep
+// left it) reaches State as the next boot's sweep will record it: not
+// open, and interrupted while the thread is unread (Thread.HasOpenTurn).
 //
 // The frontend's live 'error' and 'interrupted' registries have no Go
 // equivalent; the two durable columns below carry the same facts, which is
 // what the reference falls back to once the live status is idle. The
 // frontend has no HasOpenTurn: its live registry holds a turn until
-// provider:turn_completed. It reads TurnEndUnrecorded from both live-state
-// snapshots and provider:turn_end_unrecorded.
+// provider:turn_completed, and its live 'interrupted' registry takes an
+// unread ended turn from provider:turn_end_unrecorded and both live-state
+// snapshots.
 //
 // internal/threadtools/testdata/thread_states.json is the shared table for
 // this function (state_test.go) and for the reference's own test
@@ -50,8 +48,6 @@ func State(thread Thread, live LiveState) string {
 		return StateAwaitingInput
 	case live.ActiveTurn || live.PendingSends:
 		return StateRunning
-	case live.TurnEndUnrecorded:
-		return StateError
 	case thread.HasOpenTurn:
 		return StateRunning
 	case thread.WorktreeSetupState == "failed":

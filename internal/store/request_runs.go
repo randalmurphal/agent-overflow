@@ -120,20 +120,31 @@ func doneRowSQL(alias string) string {
 
 // tallyFiguresSQL is the three figures of the tally of the thread id names
 // at now (milliseconds), as ThreadTallies reads them: its running turn is
-// its newest turn row while that row is open (turn_newest.go).
+// its newest turn row while that row is open (turn_newest.go), counted to
+// now.
 func tallyFiguresSQL(id, now string) [3]string {
-	return tallyFiguresOpenSQL(id, now, newestTurnSQL(id, `CASE WHEN `+turnOpenSQL+` THEN nt.started_at END`))
+	return tallyFiguresSpanSQL(id, newestTurnSQL(id, `CASE WHEN `+turnOpenSQL+` THEN MAX(0, `+now+` - nt.started_at) END`))
 }
 
-// tallyFiguresOpenSQL is tallyFiguresSQL with open the start of the
-// thread's running turn, NULL for none, read by the caller.
-func tallyFiguresOpenSQL(id, now, open string) [3]string {
+// tallyFiguresAtRestSQL is tallyFiguresSQL for a thread at rest: an open
+// newest row there is a turn that ended with its end unrecorded
+// (Router.TurnEnded), counted to its last activity as the boot sweep will
+// record it (turnLastActivitySQL), not to now. A run that ends at its
+// worker's rest keeps these figures, so they agree with what the rest
+// decision read and with the worker's live row.
+func tallyFiguresAtRestSQL(id, now string) [3]string {
+	return tallyFiguresSpanSQL(id, newestTurnSQL(id, `CASE WHEN `+turnOpenSQL+` THEN MAX(0, `+turnLastActivitySQL("nt", now)+` - nt.started_at) END`))
+}
+
+// tallyFiguresSpanSQL is the three figures with span the time the thread's
+// open newest turn has run, NULL for none, read by the caller.
+func tallyFiguresSpanSQL(id, span string) [3]string {
 	return [3]string{
 		`COALESCE((SELECT tool_calls FROM thread_tallies WHERE thread_id = ` + id + `), 0)`,
 		`(COALESCE((SELECT tokens FROM thread_tallies WHERE thread_id = ` + id + `), 0)
 		  + COALESCE((SELECT SUM(` + usageSpendSQLPlain + `) FROM usage_pending WHERE thread_id = ` + id + `), 0))`,
 		`(COALESCE((SELECT turn_ms FROM thread_tallies WHERE thread_id = ` + id + `), 0)
-		  + COALESCE(MAX(0, ` + now + ` - ` + open + `), 0))`,
+		  + COALESCE(` + span + `, 0))`,
 	}
 }
 
@@ -181,7 +192,7 @@ type endedRun struct {
 // (endReceiptRunsTx).
 func endThreadRunsTx(tx *sql.Tx, threadID string) ([]endedRun, error) {
 	now := nowMillis()
-	tally := tallyFiguresSQL("?1", "?2")
+	tally := tallyFiguresAtRestSQL("?1", "?2")
 	runs, err := endRunsTx(tx, `target_computer_id = '' AND target_thread_id = ?1`,
 		[3]string{tally[0], tally[1], tally[2]}, threadID, now)
 	if err != nil {
@@ -323,10 +334,10 @@ func nudgeLinkSQL(thread, by string) string {
 func endNudgeRunsTx(tx *sql.Tx, threadID string) ([]endedRun, error) {
 	now := nowMillis()
 	const unowned = `NOT EXISTS (SELECT 1 FROM threads nw WHERE nw.id = ?1 AND nw.placement = 'owned')`
-	if err := endReceiptNudgesTx(tx, ` AND `+unowned, threadID, now); err != nil {
+	tally := tallyFiguresSQL("?1", "?2")
+	if err := endReceiptNudgesTx(tx, tally, ` AND `+unowned, threadID, now); err != nil {
 		return nil, err
 	}
-	tally := tallyFiguresSQL("?1", "?2")
 	return endRunsTx(tx, `target_computer_id = '' AND target_thread_id = ?1 AND nudge = 1 AND `+unowned,
 		[3]string{tally[0], tally[1], tally[2]}, threadID, now)
 }

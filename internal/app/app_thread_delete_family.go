@@ -307,9 +307,6 @@ func (op *familyDelete) commit() error {
 		}
 		member := op.members[i]
 		op.members[i].Committed = true
-		// No reader lists it now, and its destroy removes its turn rows,
-		// with any whose end the store did not hold.
-		op.app.triage.ForgetUnrecordedTurnEnds(member.ThreadID)
 		if member.Holder {
 			// No client lists a holder.
 			continue

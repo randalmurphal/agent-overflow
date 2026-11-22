@@ -37,13 +37,13 @@ import {
   endSendsPendingRead,
   getActiveTurn,
   hydrateSendsPending,
-  hydrateTurnEndUnrecorded,
+  hydrateTurnEndedUnread,
   interactiveRequestsRevision,
   projectTurnCompleted,
   projectTurnStarted,
   replaceInteractiveRequestsForThread,
   sameActiveTurn,
-  turnEndUnrecordedRevision,
+  endedUnreadRevision,
   type ActiveTurn,
 } from './threadStatuses.svelte';
 
@@ -62,7 +62,7 @@ interface ActivityGuard {
   interactive: number;
   compacting: number;
   sessionLive: number;
-  turnEndUnrecorded: number;
+  endedUnread: number;
 }
 function captureActivity(threadId: string): ActivityGuard {
   return {
@@ -70,7 +70,7 @@ function captureActivity(threadId: string): ActivityGuard {
     interactive: interactiveRequestsRevision(threadId),
     compacting: compactingRevision(threadId),
     sessionLive: sessionLiveRevision(threadId),
-    turnEndUnrecorded: turnEndUnrecordedRevision(threadId),
+    endedUnread: endedUnreadRevision(threadId),
   };
 }
 function applyRow(row: ThreadLiveActivity, guard: ActivityGuard, sendsPendingChanged: ReadonlySet<string>): void {
@@ -90,7 +90,7 @@ function applyRow(row: ThreadLiveActivity, guard: ActivityGuard, sendsPendingCha
   hydrateCompactingState(row.threadId, row.compactingSinceUnixMs ?? 0, guard.compacting);
   hydrateSendsPending(row.threadId, row.sendsPending === true, sendsPendingChanged);
   hydrateSessionLive(row.threadId, row.sessionLive === true, guard.sessionLive);
-  hydrateTurnEndUnrecorded(row.threadId, row.turnEndUnrecorded === true, guard.turnEndUnrecorded);
+  hydrateTurnEndedUnread(row.threadId, row.turnEndedUnread === true, guard.endedUnread);
 }
 
 // Per computer, the read in flight and the one queued behind it. A request
@@ -167,7 +167,7 @@ async function readThreadLiveActivity(backend: BackendKey, own: Reads): Promise<
     else if (owner !== backend) continue;
     applyRow(
       row,
-      atRequest.get(row.threadId) ?? { turn: null, interactive: 0, compacting: 0, sessionLive: 0, turnEndUnrecorded: 0 },
+      atRequest.get(row.threadId) ?? { turn: null, interactive: 0, compacting: 0, sessionLive: 0, endedUnread: 0 },
       sendsPendingChanged,
     );
   }

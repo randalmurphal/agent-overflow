@@ -3606,8 +3606,8 @@ export function ListThreadGroups(): $CancellablePromise<store$0.ThreadGroup[]> {
 /**
  * ListThreadLiveActivity returns every thread on this computer with live
  * activity: an open wire round, pending approvals or questions, an open
- * compacting window, sends pending, a provider session, or a turn whose end
- * the store does not hold. Idle threads are omitted, so the
+ * compacting window, sends pending, a provider session, or an unread turn
+ * that ended unrecorded. Idle threads are omitted, so the
  * answer is authoritative for the whole computer: a client reconciles every
  * thread it attributes to this computer against it and clears the ones not
  * named.

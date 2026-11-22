@@ -11,11 +11,14 @@ import (
 )
 
 // A worker whose turn end the store refused has ended: its row rests with
-// the turn's time up to its end, not a turn that runs on, and thread_status
-// reads it as error at rest. The worker's next turn starts cleanly: the row
+// the turn's time up to its end as the boot sweep will record it, not a
+// turn that runs on, and thread_status reads it as error at rest, from the
+// error row that says why. The worker's next turn starts cleanly: the row
 // runs for the new turn alone, not for the open row before it, and rests
-// on the new turn's end with that turn's time; the refused turn's row stays
-// open for the next boot's sweep, so its time is in no tally.
+// on the new turn's end with that turn's time. The refused turn's row stays
+// open for the next boot's sweep, so the worker's tally loses its time once
+// the next turn starts, as on a failed write before: a limit of this
+// change, not a design of it.
 func TestAWorkerWhoseTurnEndIsUnrecordedRests(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
@@ -39,12 +42,12 @@ func TestAWorkerWhoseTurnEndIsUnrecordedRests(t *testing.T) {
 	}
 	execOnStore(t, f.dbPath, refuseTurnEnds)
 	workerEvent(t, f.app, worker.ID, provider.ProviderEvent{Kind: provider.EventTurnComplete, TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "end_turn"}}, nil)
-	endedAt, unrecorded := f.app.triage.UnrecordedTurnEnd(worker.ID, first.TurnID)
-	if !unrecorded {
-		t.Fatal("the refused end is not held unrecorded")
+	ended, ok := f.app.endedTurn(worker.ID)
+	if !ok || ended.TurnID != first.TurnID {
+		t.Fatalf("endedTurn = %+v, %v; want the refused turn ended", ended, ok)
 	}
 	f.expectRested(t, "unrecorded-spawn")
-	ran := endedAt - first.StartedAt
+	ran := ended.EndedAt - first.StartedAt
 	if row := past(); row.TurnOpen || row.TurnStartedAt != 0 || row.RuntimeMs != ran {
 		t.Fatalf("row of the worker whose end is unrecorded %+v; want at rest with its turn's %dms", row, ran)
 	}
@@ -78,44 +81,6 @@ func TestAWorkerWhoseTurnEndIsUnrecordedRests(t *testing.T) {
 	status, err = f.app.threadTools().threadStateNow(t.Context(), worker.ID)
 	if err != nil || status.State != threadtools.StateIdle || !status.Resting {
 		t.Fatalf("thread_status once the second turn ended = %+v, %v; want idle at rest", status, err)
-	}
-}
-
-// A turn end triage stops holding can change with no turn frame (a retired
-// session's turn start writes its row and opens no round): the change
-// itself reassesses the worker, so the spawner's row of it is framed again,
-// and a client re-reading it finds the open turn running.
-func TestAWorkerIsReframedWhenItsUnrecordedEndIsForgotten(t *testing.T) {
-	t.Parallel()
-	f := newRequestFixture(t)
-	f.watchAgentRows()
-	worker := f.settledSpawn(t, "forgotten-spawn", f.caller.ID)
-	workerEvent(t, f.app, worker.ID, provider.ProviderEvent{Kind: provider.EventTurnStart, TurnID: worker.ID + ":t1"}, nil)
-	f.awaitWorker(t, f.caller.ID, "forgotten-spawn", workerRunning)
-	execOnStore(t, f.dbPath, refuseTurnEnds)
-	workerEvent(t, f.app, worker.ID, provider.ProviderEvent{Kind: provider.EventTurnComplete, TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "end_turn"}}, nil)
-	f.expectRested(t, "forgotten-spawn")
-	waitAgentEmitsIdle(t, f.app)
-
-	framed := make(chan struct{}, 64)
-	emit := f.app.testEmitHook
-	f.app.testEmitHook = func(name string, data any) {
-		emit(name, data)
-		if change, ok := data.(ThreadAgentRowChange); ok && name == string(eventchan.ThreadAgentRowsChanged) && change.ID == "forgotten-spawn" {
-			framed <- struct{}{}
-		}
-	}
-	f.app.triage.ForgetUnrecordedTurnEnds(worker.ID)
-	waitAgentEmitsIdle(t, f.app)
-	if len(framed) == 0 {
-		t.Fatal("no frame of the worker's row once its turn end was forgotten")
-	}
-	page, err := f.app.ListThreadPastAgentRows(t.Context(), f.caller.ID, store.PastAgentRowsCursor{}, 8)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if row, _ := agentRowByToken(page.Rows, "forgotten-spawn"); !row.TurnOpen {
-		t.Fatalf("row once the turn end was forgotten %+v; want its open turn running", row)
 	}
 }
 

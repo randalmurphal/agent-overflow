@@ -1202,10 +1202,12 @@ describe('setupEventListeners', () => {
     expect(getThreadStatus('thread-1')).toBe('error');
   });
 
-  it('reads a thread Failed from provider:turn_end_unrecorded until it is cleared', () => {
-    emitWailsEvent('provider:turn_end_unrecorded', { threadId: 'thread-unrecorded', unrecorded: true });
-    expect(getThreadStatus('thread-unrecorded')).toBe('error');
-    emitWailsEvent('provider:turn_end_unrecorded', { threadId: 'thread-unrecorded', unrecorded: false });
+  it('reads a thread interrupted from provider:turn_end_unrecorded until its next turn starts', () => {
+    emitWailsEvent('provider:turn_end_unrecorded', { threadId: 'thread-unrecorded' });
+    expect(getThreadStatus('thread-unrecorded')).toBe('interrupted');
+    emitWailsEvent('provider:turn_started', { threadId: 'thread-unrecorded', turnId: 'round-next', turnIndex: 1, startedAt: 10 });
+    expect(getThreadStatus('thread-unrecorded')).toBe('running');
+    emitWailsEvent('provider:turn_completed', { threadId: 'thread-unrecorded', turnId: 'round-next', turnIndex: 1 });
     expect(getThreadStatus('thread-unrecorded')).toBe('idle');
   });
 

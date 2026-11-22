@@ -563,9 +563,10 @@ export function setupEventListeners(): () => void {
     applySessionLive,
   );
 
-  // provider:turn_end_unrecorded: whether a turn of the thread ended with
-  // the store not holding its end, which the thread's status reads as
-  // Failed. The snapshot legs are both live-state reads.
+  // provider:turn_end_unrecorded: the thread's newest turn ended with the
+  // store not holding its end, and the thread was not read since, which
+  // the thread's status reads as an unread interruption. The snapshot legs
+  // are both live-state reads.
   const cancelTurnEndUnrecorded = wailsEventOn<TurnEndUnrecordedPayload>(
     'provider:turn_end_unrecorded',
     applyTurnEndUnrecorded,

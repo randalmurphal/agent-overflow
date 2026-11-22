@@ -209,9 +209,10 @@ func TestThreadStateAfterLateCompletion(t *testing.T) {
 	}
 }
 
-// A turn the app crashed in leaves its row open with no provider round:
-// it reads as running, not interrupted, until the boot sweep records the
-// interruption, and as idle once the user has read the thread.
+// A turn the app crashed in leaves its row open with no provider round and
+// nothing in this instance running it: it reads as the boot sweep will
+// record it, interrupted and resting, before the sweep and after, and as
+// idle once the user has read the thread.
 func TestThreadStateOfCrashLeftTurn(t *testing.T) {
 	f := newRequestFixture(t)
 	tools := f.app.threadTools()
@@ -225,7 +226,8 @@ func TestThreadStateOfCrashLeftTurn(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("InsertTurn: %v", err)
 	}
-	wantThreadState(ctx, t, tools, thread.ID, threadtools.StateRunning, false)
+	wantThreadState(ctx, t, tools, thread.ID, threadtools.StateInterrupted, true)
+	wantTurnEndedUnread(t, f.app, thread.ID, true)
 	if _, err := f.app.triage.RecoverCrashedTurns(); err != nil {
 		t.Fatalf("RecoverCrashedTurns: %v", err)
 	}
@@ -243,8 +245,9 @@ const (
 )
 
 // A completion whose end the store refuses has still ended the turn: the
-// thread reads as error at once on every reader, the tools, both live-state
-// reads and so the sidebar, and a wait on it returns, though its row stays
+// thread reads Failed on the tools, from the error row that says why, and
+// as an unread interruption on both live-state reads a client hydrates
+// from, under that row's Failed; a wait on it returns, though its row stays
 // open. Nothing writes the end again once the store takes writes: the row
 // waits for the next boot's sweep, as on a failed write before.
 func TestThreadStateWhenSettleWriteFails(t *testing.T) {
@@ -260,7 +263,7 @@ func TestThreadStateWhenSettleWriteFails(t *testing.T) {
 		t.Fatalf("GetActiveTurn = %v, %v; want the refused turn's row still open", found, err)
 	}
 	wantThreadState(ctx, t, tools, q.target.ID, threadtools.StateError, true)
-	liveState, row := wantTurnEndUnrecorded(t, q.f.app, q.target.ID, true)
+	liveState, row := wantTurnEndedUnread(t, q.f.app, q.target.ID, true)
 	checkLiveSnapshotFixture(t, turnEndUnrecordedSnapshotFixture, []string{
 		"GetThreadLiveState and the thread's ListThreadLiveActivity row once the",
 		"store refused a turn's end, captured by TestThreadStateWhenSettleWriteFails",
@@ -285,9 +288,33 @@ func TestThreadStateWhenSettleWriteFails(t *testing.T) {
 	wantThreadState(ctx, t, tools, q.target.ID, threadtools.StateError, true)
 }
 
+// A completion whose end the store refuses, and whose error row it refuses
+// too, has ended the turn all the same: with no row to say it failed, the
+// thread reads as the boot sweep will record it, an unread interruption
+// that rests, and idle once the user has read it.
+func TestThreadStateWhenSettleAndItsErrorRowFail(t *testing.T) {
+	q := newQueuedRequests(t)
+	tools := q.f.app.threadTools()
+	ctx := t.Context()
+	execOnStore(t, q.f.dbPath, refuseTurnEnds)
+	execOnStore(t, q.f.dbPath, `CREATE TRIGGER refuse_error_rows BEFORE INSERT ON items
+		WHEN NEW.kind = 'error' BEGIN SELECT RAISE(ABORT, 'injected error row failure'); END`)
+	q.handle(t, "turn 0 complete", provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "end_turn"},
+	})
+	wantThreadState(ctx, t, tools, q.target.ID, threadtools.StateInterrupted, true)
+	wantTurnEndedUnread(t, q.f.app, q.target.ID, true)
+	if _, _, err := q.f.app.store.MarkThreadReadNow(ctx, q.target.ID); err != nil {
+		t.Fatalf("MarkThreadReadNow: %v", err)
+	}
+	wantThreadState(ctx, t, tools, q.target.ID, threadtools.StateIdle, true)
+	wantTurnEndedUnread(t, q.f.app, q.target.ID, false)
+}
+
 // A boot sweep that fails leaves the previous instance's row open: the
-// thread reads as error and rests, not as running, on every reader,
-// though no session ever ran it in this instance.
+// thread reads as the next sweep will record it, an unread interruption
+// that rests, not as running, on every reader, though no session ever ran
+// it in this instance.
 func TestThreadStateWhenTheBootSweepFails(t *testing.T) {
 	f := newRequestFixture(t)
 	tools := f.app.threadTools()
@@ -305,12 +332,12 @@ func TestThreadStateWhenTheBootSweepFails(t *testing.T) {
 	if _, err := f.app.triage.RecoverCrashedTurns(); err == nil {
 		t.Fatal("the sweep reported no failure")
 	}
-	wantThreadState(ctx, t, tools, thread.ID, threadtools.StateError, true)
-	wantTurnEndUnrecorded(t, f.app, thread.ID, true)
+	wantThreadState(ctx, t, tools, thread.ID, threadtools.StateInterrupted, true)
+	wantTurnEndedUnread(t, f.app, thread.ID, true)
 }
 
-// Deleting a thread whose turn end the store does not hold takes that fact
-// with it: no live-activity row names the deleted thread afterward.
+// Deleting a thread whose turn ended unrecorded takes its open row with
+// it: no live-activity row names the deleted thread afterward.
 func TestADeletedThreadLeavesNoUnrecordedTurnEnd(t *testing.T) {
 	f := newRequestFixture(t)
 	thread, err := createTestThread(t, f.app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", threadmode.ModeChat)
@@ -326,7 +353,7 @@ func TestADeletedThreadLeavesNoUnrecordedTurnEnd(t *testing.T) {
 	if _, err := f.app.triage.RecoverCrashedTurns(); err == nil {
 		t.Fatal("the sweep reported no failure")
 	}
-	wantTurnEndUnrecorded(t, f.app, thread.ID, true)
+	wantTurnEndedUnread(t, f.app, thread.ID, true)
 	if result, err := f.app.DeleteThread(thread.ID); err != nil || len(result.WorkersNotDeleted) > 0 {
 		t.Fatalf("DeleteThread = %+v, %v", result, err)
 	}
@@ -339,15 +366,12 @@ func TestADeletedThreadLeavesNoUnrecordedTurnEnd(t *testing.T) {
 			t.Fatalf("live activity after the delete names the deleted thread: %+v", row)
 		}
 	}
-	if _, unrecorded := f.app.triage.UnrecordedTurnEnd(thread.ID, "crashed-turn"); unrecorded {
-		t.Fatal("triage still holds the deleted thread's turn end")
-	}
 }
 
-// wantTurnEndUnrecorded checks that both live-state reads a client
-// hydrates from say whether threadID has a turn whose end the store does
-// not hold, and returns them.
-func wantTurnEndUnrecorded(t *testing.T, a *App, threadID string, want bool) (ThreadLiveState, ThreadLiveActivity) {
+// wantTurnEndedUnread checks that both live-state reads a client hydrates
+// from say whether threadID's newest turn ended unrecorded and unread, and
+// returns them.
+func wantTurnEndedUnread(t *testing.T, a *App, threadID string, want bool) (ThreadLiveState, ThreadLiveActivity) {
 	t.Helper()
 	live, err := a.GetThreadLiveState(threadID)
 	if err != nil {
@@ -363,8 +387,8 @@ func wantTurnEndUnrecorded(t *testing.T, a *App, threadID string, want bool) (Th
 			row = r
 		}
 	}
-	if live.TurnEndUnrecorded != want || row.TurnEndUnrecorded != want {
-		t.Errorf("turn end unrecorded: GetThreadLiveState %v, ListThreadLiveActivity %v; want %v", live.TurnEndUnrecorded, row.TurnEndUnrecorded, want)
+	if live.TurnEndedUnread != want || row.TurnEndedUnread != want {
+		t.Errorf("turn ended unread: GetThreadLiveState %v, ListThreadLiveActivity %v; want %v", live.TurnEndedUnread, row.TurnEndedUnread, want)
 	}
 	return live, row
 }

@@ -692,13 +692,14 @@ type Thread struct {
 	// HasIncompleteTurn is derived from the newest turn row: it settled
 	// with stop_reason='interrupted' (an interrupt, a provider's death, or
 	// a crash RecoverCrashedTurns settled at boot) after the user last read
-	// the thread. An open row is a running turn, never this
-	// (turn_newest.go). It is not a persisted threads column.
+	// the thread. An open row is never this (turn_newest.go). It is not a
+	// persisted threads column.
 	HasIncompleteTurn bool `json:"hasIncompleteTurn"`
 	// HasOpenTurn is derived from the newest turn row: it is still in
-	// flight (completed_at=NULL), the record of a running turn until its
-	// settle (turn_newest.go). The frontend learns a running turn from its
-	// live events instead. It is not a persisted threads column.
+	// flight (completed_at=NULL), a running turn until its settle unless
+	// its turn ended unrecorded (turn_newest.go). The frontend learns a
+	// running turn from its live events instead. It is not a persisted
+	// threads column.
 	HasOpenTurn bool `json:"-"`
 	// HasFailedTurn is derived from the newest turn: it is true when that
 	// turn settled with stop_reason='error' or when an `error` item was

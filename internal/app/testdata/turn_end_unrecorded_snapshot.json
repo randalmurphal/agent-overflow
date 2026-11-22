@@ -9,7 +9,7 @@
     "threadId": "settling-thread",
     "approvalRequestIds": [],
     "userInputRequestIds": [],
-    "turnEndUnrecorded": true
+    "turnEndedUnread": true
   },
   "liveState": {
     "codexAgents": [],
@@ -22,6 +22,6 @@
       "approvals": [],
       "userInputs": []
     },
-    "turnEndUnrecorded": true
+    "turnEndedUnread": true
   }
 }

@@ -48,9 +48,9 @@ type ThreadLiveState struct {
 	// `provider:compacting` push channel for refresh/reconnect — the
 	// window can span minutes of wire silence, so no push will restate it.
 	CompactingSinceUnixMs int64 `json:"compactingSinceUnixMs,omitempty"`
-	// TurnEndUnrecorded is ThreadLiveActivity's: provider:turn_end_unrecorded
+	// TurnEndedUnread is ThreadLiveActivity's: provider:turn_end_unrecorded
 	// for refresh and reconnect.
-	TurnEndUnrecorded bool `json:"turnEndUnrecorded,omitempty"`
+	TurnEndedUnread bool `json:"turnEndedUnread,omitempty"`
 	// SessionCLIVersion / InstalledCLIVersion mirror the `binary_stale`
 	// provider:status push for refresh/reconnect: the build this thread's
 	// live process is running versus the build now on disk. Both empty
@@ -142,7 +142,9 @@ func (a *App) GetThreadLiveState(threadID string) (ThreadLiveState, error) {
 	state.EffectiveModel = live.EffectiveModel
 	state.EffectiveModelRevision = live.EffectiveModelRevision
 	state.CompactingSinceUnixMs = live.CompactingSinceUnixMs
-	state.TurnEndUnrecorded = live.TurnEndUnrecorded
+	if ended, ok := a.endedTurn(threadID); ok {
+		state.TurnEndedUnread = ended.Unread
+	}
 	if live.ActiveTurn != nil {
 		state.ActiveTurn = &LiveStateActiveTurn{
 			ThreadID:  live.ActiveTurn.ThreadID,
@@ -195,16 +197,17 @@ type ThreadLiveActivity struct {
 	// SessionLive says the thread has a provider session live or
 	// starting (provider:session_live).
 	SessionLive bool `json:"sessionLive,omitempty"`
-	// TurnEndUnrecorded says a turn of the thread ended with the store not
-	// holding its end (provider:turn_end_unrecorded): the thread failed,
-	// and its open turn row is no running turn.
-	TurnEndUnrecorded bool `json:"turnEndUnrecorded,omitempty"`
+	// TurnEndedUnread says the thread's newest turn ended with its end
+	// unrecorded and the thread was not read since
+	// (provider:turn_end_unrecorded): it reads as an interruption the user
+	// has not read, as the next boot's sweep will record it.
+	TurnEndedUnread bool `json:"turnEndedUnread,omitempty"`
 }
 
 // ListThreadLiveActivity returns every thread on this computer with live
 // activity: an open wire round, pending approvals or questions, an open
-// compacting window, sends pending, a provider session, or a turn whose end
-// the store does not hold. Idle threads are omitted, so the
+// compacting window, sends pending, a provider session, or an unread turn
+// that ended unrecorded. Idle threads are omitted, so the
 // answer is authoritative for the whole computer: a client reconciles every
 // thread it attributes to this computer against it and clears the ones not
 // named.
@@ -227,6 +230,10 @@ func (a *App) ListThreadLiveActivity() ([]ThreadLiveActivity, error) {
 	}
 	sendsPending := a.sendsPendingThreads()
 	sessionLive := a.sessionLiveThreads()
+	endedUnread, err := a.endedUnreadThreads()
+	if err != nil {
+		return nil, err
+	}
 	for _, live := range a.triage.LiveActivitySnapshot() {
 		row := ThreadLiveActivity{
 			ThreadID:              live.ThreadID,
@@ -234,7 +241,6 @@ func (a *App) ListThreadLiveActivity() ([]ThreadLiveActivity, error) {
 			UserInputRequestIDs:   slicesx.OrEmpty(live.UserInputRequestIDs),
 			PromptRoutes:          live.PromptRoutes,
 			CompactingSinceUnixMs: live.CompactingSinceUnixMs,
-			TurnEndUnrecorded:     live.TurnEndUnrecorded,
 		}
 		if _, pending := sendsPending[live.ThreadID]; pending {
 			row.SendsPending = true
@@ -243,6 +249,10 @@ func (a *App) ListThreadLiveActivity() ([]ThreadLiveActivity, error) {
 		if _, session := sessionLive[live.ThreadID]; session {
 			row.SessionLive = true
 			delete(sessionLive, live.ThreadID)
+		}
+		if _, ended := endedUnread[live.ThreadID]; ended {
+			row.TurnEndedUnread = true
+			delete(endedUnread, live.ThreadID)
 		}
 		if live.ActiveTurn != nil {
 			row.ActiveTurn = &LiveStateActiveTurn{
@@ -259,18 +269,40 @@ func (a *App) ListThreadLiveActivity() ([]ThreadLiveActivity, error) {
 		rest = map[string]struct{}{}
 	}
 	maps.Copy(rest, sessionLive)
+	maps.Copy(rest, endedUnread)
 	for _, threadID := range slices.Sorted(maps.Keys(rest)) {
 		_, pending := sendsPending[threadID]
 		_, session := sessionLive[threadID]
+		_, ended := endedUnread[threadID]
 		rows = append(rows, ThreadLiveActivity{
 			ThreadID:            threadID,
 			ApprovalRequestIDs:  []string{},
 			UserInputRequestIDs: []string{},
 			SendsPending:        pending,
 			SessionLive:         session,
+			TurnEndedUnread:     ended,
 		})
 	}
 	return rows, nil
+}
+
+// endedUnreadThreads is the threads whose newest turn ended unrecorded
+// (App.endedTurn) and that were not read since. It lists the open newest
+// turn rows first (store.ListOpenNewestTurns), one per running turn and
+// per turn that ended unrecorded, and asks triage of each, with no router
+// lock held across the list.
+func (a *App) endedUnreadThreads() (map[string]struct{}, error) {
+	open, err := a.store.ListOpenNewestTurns()
+	if err != nil {
+		return nil, fmt.Errorf("list thread live activity: %w", err)
+	}
+	out := map[string]struct{}{}
+	for _, turn := range open {
+		if ended, ok := a.endedTurn(turn.ThreadID); ok && ended.Unread {
+			out[turn.ThreadID] = struct{}{}
+		}
+	}
+	return out, nil
 }
 
 // liveTodoAutoHideMillis is how long an all-completed todo list stays worth

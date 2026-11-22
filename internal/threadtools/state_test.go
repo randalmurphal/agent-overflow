@@ -23,7 +23,6 @@ type stateFixture struct {
 		Live struct {
 			ActiveTurn        bool `json:"activeTurn"`
 			PendingSends      bool `json:"pendingSends"`
-			TurnEndUnrecorded bool `json:"turnEndUnrecorded"`
 			PendingApprovals  int  `json:"pendingApprovals"`
 			PendingUserInputs int  `json:"pendingUserInputs"`
 		} `json:"live"`
@@ -62,7 +61,6 @@ func TestStateFixture(t *testing.T) {
 			live := LiveState{
 				ActiveTurn:        testCase.Live.ActiveTurn,
 				PendingSends:      testCase.Live.PendingSends,
-				TurnEndUnrecorded: testCase.Live.TurnEndUnrecorded,
 				PendingApprovals:  testCase.Live.PendingApprovals,
 				PendingUserInputs: testCase.Live.PendingUserInputs,
 			}
@@ -89,28 +87,19 @@ func liveStatusOf(live LiveState) string {
 		return StateAwaitingInput
 	case live.ActiveTurn || live.PendingSends:
 		return StateRunning
-	case live.TurnEndUnrecorded:
-		return StateError
 	default:
 		return StateIdle
 	}
 }
 
 // TestStateReadsAnOpenRow covers what only Go reads, the newest turn row:
-// open with no live round, it is a running turn, unless triage holds the
-// turn's end unrecorded, which is an error at rest. The frontend has no
+// open with no live round, it is a running turn. The frontend has no
 // open-row input; its live registry holds a turn until
-// provider:turn_completed.
+// provider:turn_completed. An open row whose turn has ended reaches State
+// already read as the boot sweep will record it (Thread.HasOpenTurn).
 func TestStateReadsAnOpenRow(t *testing.T) {
-	open := Thread{HasOpenTurn: true}
-	if got := State(open, LiveState{}); got != StateRunning {
+	if got := State(Thread{HasOpenTurn: true}, LiveState{}); got != StateRunning {
 		t.Errorf("an open row with no live round = %q, want running", got)
-	}
-	if got := State(open, LiveState{TurnEndUnrecorded: true}); got != StateError {
-		t.Errorf("an open row whose end is unrecorded = %q, want error", got)
-	}
-	if got := State(open, LiveState{ActiveTurn: true, TurnEndUnrecorded: true}); got != StateRunning {
-		t.Errorf("a live round over an unrecorded end = %q, want running", got)
 	}
 }
 

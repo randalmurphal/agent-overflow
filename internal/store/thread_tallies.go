@@ -155,8 +155,7 @@ func addOwnSpendTx(tx *sql.Tx, spend OwnSpend) error {
 // TurnStartedAt that turn's start as this computer recorded it: which turn
 // it is, so a reader can tell a later read of the same open turn from one
 // of the next. The turn is the thread's newest row while it is open
-// (turn_newest.go), and OpenTurnID its turn id, which the app reads to
-// tell a turn whose end triage holds unrecorded from a running one
+// (turn_newest.go); the app reads one whose turn ended unrecorded as ended
 // (App.liveTally).
 type ThreadTally struct {
 	ToolCalls     int64
@@ -164,23 +163,21 @@ type ThreadTally struct {
 	RuntimeMs     int64
 	Running       bool
 	TurnStartedAt int64
-	OpenTurnID    string
 }
 
 // threadTallySQL is the tally of the thread id names, with now in
-// milliseconds as the parameter now names: six columns (tool calls, tokens,
-// runtime, whether a turn runs, when it started and its turn id) and the
-// join they read the running turn through, which the caller puts in its
-// FROM clause after the table id names a column of. One probe of
-// thread_tallies per column that reads it, one of the running turn's
-// usage_pending rows, and one of the newest turn row (newestOpenTurnJoinSQL).
+// milliseconds as the parameter now names: five columns (tool calls,
+// tokens, runtime, whether a turn runs and when it started) and the join
+// they read the running turn through, which the caller puts in its FROM
+// clause after the table id names a column of. One probe of thread_tallies
+// per column that reads it, one of the running turn's usage_pending rows,
+// and one of the newest turn row (newestOpenTurnJoinSQL).
 func threadTallySQL(id, now string) (columns, join string) {
 	const open = "tally_open"
-	figures := tallyFiguresOpenSQL(id, now, open+`.started_at`)
+	figures := tallyFiguresSpanSQL(id, `MAX(0, `+now+` - `+open+`.started_at)`)
 	columns = figures[0] + `, ` + figures[1] + `, ` + figures[2] + `,
 		` + open + `.turn_id IS NOT NULL,
-		COALESCE(` + open + `.started_at, 0),
-		COALESCE(` + open + `.turn_id, '')`
+		COALESCE(` + open + `.started_at, 0)`
 	return columns, newestOpenTurnJoinSQL(id, open)
 }
 
@@ -205,7 +202,7 @@ func (s *Store) ThreadTallies(threadIDs []string, now time.Time) (map[string]Thr
 	for rows.Next() {
 		var id string
 		var tally ThreadTally
-		if err := rows.Scan(&id, &tally.ToolCalls, &tally.Tokens, &tally.RuntimeMs, &tally.Running, &tally.TurnStartedAt, &tally.OpenTurnID); err != nil {
+		if err := rows.Scan(&id, &tally.ToolCalls, &tally.Tokens, &tally.RuntimeMs, &tally.Running, &tally.TurnStartedAt); err != nil {
 			return nil, fmt.Errorf("store: scan thread tally: %w", err)
 		}
 		if tally != (ThreadTally{}) {

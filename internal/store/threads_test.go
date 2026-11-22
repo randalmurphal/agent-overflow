@@ -2006,15 +2006,22 @@ func TestListThreadsWithItemsReadsOpenNewestTurnAsRunning(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ReadThreadRestSources(): %v", err)
 		}
-		if src.OpenTurnID != wantID {
-			t.Fatalf("%s: rest sources OpenTurnID %q, want %q", what, src.OpenTurnID, wantID)
+		if src.TurnOpen != open {
+			t.Fatalf("%s: rest sources TurnOpen %v, want %v", what, src.TurnOpen, open)
 		}
 		tallies, err := s.ThreadTallies([]string{thread.ID}, time.UnixMilli(startedAt+50))
 		if err != nil {
 			t.Fatalf("ThreadTallies(): %v", err)
 		}
-		if tally := tallies[thread.ID]; tally.Running != open || tally.OpenTurnID != wantID {
-			t.Fatalf("%s: tally Running %v OpenTurnID %q, want %v %q", what, tally.Running, tally.OpenTurnID, open, wantID)
+		if tally := tallies[thread.ID]; tally.Running != open {
+			t.Fatalf("%s: tally Running %v, want %v", what, tally.Running, open)
+		}
+		newest, found, err := s.NewestOpenTurn(thread.ID, startedAt+50)
+		if err != nil {
+			t.Fatalf("NewestOpenTurn(): %v", err)
+		}
+		if found != open || newest.TurnID != wantID {
+			t.Fatalf("%s: NewestOpenTurn %+v, %v; want %q", what, newest, found, wantID)
 		}
 	}
 	wantNewestTurn("open, never read", "turn-1", false)

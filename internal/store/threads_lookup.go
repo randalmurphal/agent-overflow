@@ -305,7 +305,7 @@ func (s *Store) ThreadNames(ids []string, now time.Time) (_ map[string]ThreadNam
 	for rows.Next() {
 		var id string
 		var name ThreadName
-		if err := rows.Scan(&id, &name.Title, &name.Provider, &name.Placement, &name.Archived, &name.Tally.ToolCalls, &name.Tally.Tokens, &name.Tally.RuntimeMs, &name.Tally.Running, &name.Tally.TurnStartedAt, &name.Tally.OpenTurnID); err != nil {
+		if err := rows.Scan(&id, &name.Title, &name.Provider, &name.Placement, &name.Archived, &name.Tally.ToolCalls, &name.Tally.Tokens, &name.Tally.RuntimeMs, &name.Tally.Running, &name.Tally.TurnStartedAt); err != nil {
 			return nil, fmt.Errorf("store: scan a thread name: %w", err)
 		}
 		out[id] = name

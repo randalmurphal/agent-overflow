@@ -286,7 +286,7 @@ func TestThreadTallyRunsOnlyAnOpenNewestTurn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if tally := got["worker"]; tally.Running || tally.OpenTurnID != "" || tally.RuntimeMs != 500 {
+	if tally := got["worker"]; tally.Running || tally.RuntimeMs != 500 {
 		t.Fatalf("tally %+v; want the settled newest turn's 500 ms, not running", tally)
 	}
 	// A run's start and end read the same tally (tallyFiguresSQL).

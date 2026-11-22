@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -172,7 +173,7 @@ func (a *App) ownRest(threadID string, src store.ThreadRestSources) workerRest {
 	if unrest := a.workerHeldUnrest(threadID); unrest != "" {
 		return workerRest{unrest: unrest}
 	}
-	if a.turnRuns(threadID, src.OpenTurnID) {
+	if a.turnRuns(threadID, src.TurnOpen) {
 		return workerRest{unrest: workerRunning}
 	}
 	if waits.unrest != "" {
@@ -181,34 +182,47 @@ func (a *App) ownRest(threadID string, src store.ThreadRestSources) workerRest {
 	return a.workerTimerUnrest(threadID)
 }
 
-// turnRuns is the one rule for whether threadID's open newest turn row,
-// openTurnID ("" for none), is a running turn: it is, unless the turn has
-// ended with the store not holding its end (triage.UnrecordedTurnEnd). A
-// reader of the row that decides running or rest reads it through here or
-// liveTally.
-func (a *App) turnRuns(threadID, openTurnID string) bool {
-	if openTurnID == "" {
+// endedTurn is threadID's open newest turn row when its turn ended
+// unrecorded (triage.Router.TurnEnded), as the next boot's sweep will
+// record it. A failed read is logged and the row read as a running turn's,
+// as it reads before a reader asks.
+func (a *App) endedTurn(threadID string) (store.EndedTurn, bool) {
+	turn, ended, err := a.triage.TurnEnded(threadID)
+	if err != nil {
+		log.Printf("app: read whether the turn of %s ended: %v", threadID, err)
+		return store.EndedTurn{}, false
+	}
+	return turn, ended
+}
+
+// turnRuns is the one rule for whether threadID's newest turn row, read
+// open (rowOpen) or not, is a running turn: an open row is, unless its
+// turn ended unrecorded (endedTurn). A reader of the row that decides
+// running or rest reads it through here, liveTally or the thread tools'
+// projection (threadProjector.thread).
+func (a *App) turnRuns(threadID string, rowOpen bool) bool {
+	if !rowOpen {
 		return false
 	}
-	_, unrecorded := a.triage.UnrecordedTurnEnd(threadID, openTurnID)
-	return !unrecorded
+	_, ended := a.endedTurn(threadID)
+	return !ended
 }
 
 // liveTally is threadID's tally read at now as the Agents rows show it: a
-// turn whose end the store does not hold has ended, so it does not run and
-// its time is its span to that end (none for a turn a failed boot sweep
-// left open) rather than to now.
+// turn that ended unrecorded does not run, and its time is its span to its
+// end as the boot sweep will record it, the figure a run that ends at the
+// worker's rest keeps (store tallyFiguresAtRestSQL), rather than to now.
 func (a *App) liveTally(threadID string, tally store.ThreadTally, now time.Time) store.ThreadTally {
 	if !tally.Running {
 		return tally
 	}
-	endedAt, unrecorded := a.triage.UnrecordedTurnEnd(threadID, tally.OpenTurnID)
-	if !unrecorded {
+	ended, ok := a.endedTurn(threadID)
+	if !ok {
 		return tally
 	}
 	tally.RuntimeMs -= max(0, now.UnixMilli()-tally.TurnStartedAt)
-	tally.RuntimeMs += max(0, endedAt-tally.TurnStartedAt)
-	tally.Running, tally.TurnStartedAt, tally.OpenTurnID = false, 0, ""
+	tally.RuntimeMs += max(0, ended.EndedAt-ended.StartedAt)
+	tally.Running, tally.TurnStartedAt = false, 0
 	return tally
 }
 

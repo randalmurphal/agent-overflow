@@ -96,11 +96,11 @@ type Router struct {
 	// the window in which the turn has ended on the wire and not in the
 	// store. Read under mu. Nil in production.
 	turnSettleGate func(threadID string)
-	// unrecordedEnds holds, by thread and turn id, the turns that ended
-	// with the store not holding their end (unrecorded_turn_ends.go).
-	// Guarded by mu; endsPublish serializes each change with its frame.
-	unrecordedEnds map[string]map[string]unrecordedEnd
-	endsPublish    sync.Mutex
+	// turnEndedReadGate is a test-only hook (SetTurnEndedReadGate) called
+	// by TurnEnded after it found the thread with no live mark and before
+	// it reads the thread's newest turn row. Read under mu. Nil in
+	// production.
+	turnEndedReadGate func(threadID string)
 	// delays holds the router's debounce and throttle intervals, the
 	// production values from NewRouter. A same-package test lengthens
 	// one so its timer cannot fire inside a window that asserts what a
@@ -228,6 +228,11 @@ type Router struct {
 	// turnOpening is the app-layer observer told that a thread marked a
 	// turn opening (SetTurnOpeningObserver); called under r.mu.
 	turnOpening func(threadID string)
+	// turnEnded is the app-layer observer told that a thread's last live
+	// mark dropped with its newest turn row still open: the turn ended
+	// with its end unrecorded (SetTurnEndedObserver, turn_ended.go).
+	// Called with no router lock held.
+	turnEnded func(threadID string)
 	// assistantTextDelta and assistantTextEnd are app-layer observers of
 	// a streaming assistant_text row. Delta receives every piece of text
 	// the row emits, in order, just before it is emitted (possibly on the
@@ -499,6 +504,16 @@ func (r *Router) SetTurnRowWrittenGate(gate func(threadID string)) {
 func (r *Router) SetTurnSettleGate(gate func(threadID string)) {
 	r.mu.Lock()
 	r.turnSettleGate = gate
+	r.mu.Unlock()
+}
+
+// SetTurnEndedReadGate installs a test-only hook that TurnEnded calls
+// after it found the thread with no live mark and before it reads the
+// thread's newest turn row, so a test can start a turn in that window.
+// Production code must leave this nil. Pass nil to clear.
+func (r *Router) SetTurnEndedReadGate(gate func(threadID string)) {
+	r.mu.Lock()
+	r.turnEndedReadGate = gate
 	r.mu.Unlock()
 }
 

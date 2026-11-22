@@ -9,6 +9,9 @@ import {
   getThreadStatus,
   projectApprovalRequest,
   projectApprovalResolution,
+  projectSendResolved,
+  projectSendStarted,
+  projectThreadViewed,
   projectTurnCompleted,
   projectTurnStarted,
   resetForTest,
@@ -365,40 +368,61 @@ describe('the row of a settling turn', () => {
 
 // The row ListThreadLiveActivity gives once the store refused a turn's end
 // (internal/app/testdata/turn_end_unrecorded_snapshot.json): a client that
-// connects later, or recovers from a gap, shows the thread Failed.
+// connects later, or recovers from a gap, shows the thread as an
+// interruption the user has not read, which ends as any interruption does.
 describe('the row of a turn whose end was not recorded', () => {
   const row = unrecorded.liveActivity;
   const { threadId } = row;
   beforeEach(() => noteThread(threadId, 'gpu'));
 
-  it('reads the thread Failed, and idle once a later answer omits it', async () => {
+  it('reads the thread interrupted until it is viewed, whatever a later answer omits', async () => {
     setBindingMock('ListThreadLiveActivity', async () => [row]);
     await reconcileThreadLiveActivity('gpu');
-    expect(getThreadStatus(threadId)).toBe('error');
+    expect(getThreadStatus(threadId)).toBe('interrupted');
     setBindingMock('ListThreadLiveActivity', async () => []);
     await reconcileThreadLiveActivity('gpu');
+    expect(getThreadStatus(threadId)).toBe('interrupted');
+    projectThreadViewed(threadId);
     expect(getThreadStatus(threadId)).toBe('idle');
   });
 
-  it('yields to a frame that cleared it while the read was out', async () => {
+  it.each([
+    {
+      name: 'a turn that started and ended',
+      end: () => {
+        projectTurnStarted(row.threadId, 'round-next', 1, 10);
+        projectTurnCompleted(row.threadId, 'round-next');
+      },
+    },
+    {
+      name: 'a send that resolved',
+      end: () => {
+        projectSendStarted(row.threadId);
+        projectSendResolved(row.threadId);
+      },
+    },
+    { name: 'a view', end: () => projectThreadViewed(row.threadId) },
+  ])('yields to $name while the read was out', async ({ end }) => {
     let answer!: (rows: unknown[]) => void;
     setBindingMock('ListThreadLiveActivity', () => new Promise<unknown[]>((resolve) => { answer = resolve; }));
     const pending = reconcileThreadLiveActivity('gpu');
-    applyTurnEndUnrecorded({ threadId, unrecorded: false });
+    end();
     answer([row]);
     await pending;
     expect(getThreadStatus(threadId)).toBe('idle');
   });
 
-  it('follows the frames of a connected client', () => {
-    applyTurnEndUnrecorded({ threadId, unrecorded: true });
-    expect(getThreadStatus(threadId)).toBe('error');
-    applyTurnEndUnrecorded({ threadId, unrecorded: false });
+  it('follows the frames of a connected client, and a turn start ends it', () => {
+    applyTurnEndUnrecorded({ threadId });
+    expect(getThreadStatus(threadId)).toBe('interrupted');
+    projectTurnStarted(threadId, 'round-next', 1, 10);
+    expect(getThreadStatus(threadId)).toBe('running');
+    projectTurnCompleted(threadId, 'round-next');
     expect(getThreadStatus(threadId)).toBe('idle');
   });
 
   it('reads as before from a backend that does not send the field', async () => {
-    const { turnEndUnrecorded: _, ...older } = row;
+    const { turnEndedUnread: _, ...older } = row;
     setBindingMock('ListThreadLiveActivity', async () => [older]);
     await reconcileThreadLiveActivity('gpu');
     expect(getThreadStatus(threadId)).toBe('idle');

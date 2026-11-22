@@ -115,6 +115,10 @@ type Thread struct {
 	// The derived columns State reads. The last four are named as the
 	// frontend's reference implementation names them; HasOpenTurn has no
 	// frontend twin, which learns a running turn from its live events.
+	// HasOpenTurn is a running turn's open newest row: an open row whose
+	// turn has ended (triage's Router.TurnEnded) reads as the boot sweep
+	// will record it, HasOpenTurn false and HasIncompleteTurn by the
+	// unread rule.
 	HasOpenTurn               bool   `json:"-"`
 	HasIncompleteTurn         bool   `json:"-"`
 	HasFailedTurn             bool   `json:"-"`
@@ -178,10 +182,6 @@ type LiveState struct {
 	// ActiveTurn is true while the provider's round runs, and while the
 	// turn the round ends is settled, until provider:turn_completed.
 	ActiveTurn bool
-	// TurnEndUnrecorded is true while a turn of the thread has ended and
-	// the store has not taken its end, so its row still reads open
-	// (Thread.HasOpenTurn) though nothing runs.
-	TurnEndUnrecorded bool
 	// PendingSends is true while a queued or flushed message has not yet
 	// produced its provider-visible echo. It keeps a thread reported as
 	// running across the gap between send and turn start.

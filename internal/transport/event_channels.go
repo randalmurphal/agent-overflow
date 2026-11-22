@@ -1020,10 +1020,11 @@ var channelPolicies = []ChannelPolicy{
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Scope:     ScopeThreadsRead,
-		Why: "{threadId, unrecorded} only: whether a turn of the thread ended " +
-			"with the store not holding its end, which every sidebar shows as " +
-			"Failed instead of running. No content, so the sidebar audience of " +
-			"provider:turn_completed. Keyed per thread: never latest-only.",
+		Why: "{threadId} only: the thread's newest turn ended with the store " +
+			"not holding its end, and the thread was not read since, which " +
+			"every sidebar shows as Interrupted instead of running. No " +
+			"content, so the sidebar audience of provider:turn_completed. " +
+			"Keyed per thread: never latest-only.",
 	},
 	{
 		Channel:   eventchan.ProviderTurnStarted,

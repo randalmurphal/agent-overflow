@@ -240,13 +240,6 @@ func (a *App) tapThreadAgentRows(name eventchan.Channel, data any) {
 			a.forgetThreadAgentActivity(event.ThreadID)
 			a.noteWorkerLiveness(event.ThreadID)
 		}
-	case eventchan.ProviderTurnEndUnrecorded:
-		// Whether the thread's open turn row is a running turn changed
-		// (turnRuns), with no turn frame when a failed boot sweep sets it
-		// or a retired session's turn start writes a row and opens no round.
-		if event, ok := data.(triage.TurnEndUnrecordedEvent); ok {
-			a.noteWorkerLiveness(event.ThreadID)
-		}
 	case eventchan.ProviderApproval:
 		if event, ok := data.(provider.ApprovalEvent); ok {
 			threadID := event.ThreadID

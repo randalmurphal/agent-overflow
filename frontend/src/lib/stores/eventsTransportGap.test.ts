@@ -115,13 +115,13 @@ describe('transport gap', () => {
     await vi.waitFor(() => expect(getBindingMock('ListThreads')).toHaveBeenCalled());
   });
 
-  it('re-reads live activity on a turn_end_unrecorded gap, which restates a Failed row', async () => {
+  it('re-reads live activity on a turn_end_unrecorded gap, which restates an unread interruption', async () => {
     noteThread('gap-unrecorded', HOME_BACKEND);
     setBindingMock('ListThreadLiveActivity', async () => [
-      { threadId: 'gap-unrecorded', approvalRequestIds: [], userInputRequestIds: [], turnEndUnrecorded: true },
+      { threadId: 'gap-unrecorded', approvalRequestIds: [], userInputRequestIds: [], turnEndedUnread: true },
     ]);
     applyTransportGap({ channel: 'provider:turn_end_unrecorded', seq: 3 });
-    await vi.waitFor(() => expect(getThreadStatus('gap-unrecorded')).toBe('error'));
+    await vi.waitFor(() => expect(getThreadStatus('gap-unrecorded')).toBe('interrupted'));
     // The status is the registry's: no sidebar or pane refresh is owed.
     expect(getBindingMock('ListThreads')).not.toHaveBeenCalled();
   });

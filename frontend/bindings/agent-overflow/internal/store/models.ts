@@ -2041,8 +2041,8 @@ export class Thread {
      * HasIncompleteTurn is derived from the newest turn row: it settled
      * with stop_reason='interrupted' (an interrupt, a provider's death, or
      * a crash RecoverCrashedTurns settled at boot) after the user last read
-     * the thread. An open row is a running turn, never this
-     * (turn_newest.go). It is not a persisted threads column.
+     * the thread. An open row is never this (turn_newest.go). It is not a
+     * persisted threads column.
      */
     "hasIncompleteTurn": boolean;
 

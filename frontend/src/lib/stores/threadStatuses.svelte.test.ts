@@ -32,7 +32,7 @@ import {
   restoreRefusedTurnStop,
   sameActiveTurn,
   settleTurnStopRequest,
-  turnEndUnrecordedRevision,
+  endedUnreadRevision,
 } from './threadStatuses.svelte';
 import {
   confirmFlushedByUserItemId,
@@ -665,17 +665,32 @@ describe('threadStatuses store', () => {
       const status = probeReactivity(() => getThreadStatus('thread-1'));
       try {
         expect(status.latest).toBe('idle');
-        applyTurnEndUnrecorded({ threadId: 'thread-1', unrecorded: true });
+        applyTurnEndUnrecorded({ threadId: 'thread-1' });
         flushSync();
-        expect(status.latest).toBe('error');
+        expect(status.latest).toBe('interrupted');
 
         clearThreadStatus('thread-1');
         flushSync();
         expect(status.latest).toBe('idle');
-        expect(turnEndUnrecordedRevision('thread-1')).toBe(0);
+        expect(endedUnreadRevision('thread-1')).toBe(0);
       } finally {
         status.dispose();
       }
+    });
+
+    it('an unrecorded turn end under a failed one reads Failed, as a recorded interruption does', () => {
+      projectTurnStarted('thread-1', 'round-1', 0, 10);
+      applyTurnEndUnrecorded({ threadId: 'thread-1' });
+      projectTurnCompleted('thread-1', 'round-1', { errorMessage: 'provider failed' });
+      expect(getThreadStatus('thread-1')).toBe('error');
+    });
+
+    it('an unrecorded turn end the completion follows stays an interruption', () => {
+      projectTurnStarted('thread-1', 'round-1', 0, 10);
+      applyTurnEndUnrecorded({ threadId: 'thread-1' });
+      expect(getThreadStatus('thread-1')).toBe('running');
+      projectTurnCompleted('thread-1', 'round-1');
+      expect(getThreadStatus('thread-1')).toBe('interrupted');
     });
   });
 
