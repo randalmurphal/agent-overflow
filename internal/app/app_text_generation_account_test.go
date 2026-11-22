@@ -145,11 +145,13 @@ printf '%s\n' '{"structured_output":{"title":"From Claude"}}'`
 			mu.Lock()
 			ran = append(ran, model)
 			mu.Unlock()
+			// The process has exited when this runs. It is marked before the
+			// release, which is what lets the switch return.
 			return func() {
-				release()
 				if model == "claude-haiku-6" {
 					close(firstExited)
 				}
+				release()
 			}, nil
 		}
 		spec.Binary = "/bin/sh"
