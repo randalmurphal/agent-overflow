@@ -103,10 +103,17 @@ export function computerHasSetting(key: keyof Settings, backend: BackendKey = HO
 
 /** What a page or control for settings `lacks` says on a computer whose release has none. */
 export function olderComputerNote(backend: BackendKey, lacks: string): string {
+  return `${settingsComputerName(backend) || 'This computer'} runs an older version: it has no ${lacks}.`;
+}
+
+/**
+ * The name a settings page gives its computer: empty when only one
+ * computer is attached, where the page says "this computer".
+ */
+export function settingsComputerName(backend: BackendKey): string {
   const attached = getAttachedBackends();
   const entry = attached.find((candidate) => candidate.id === backend);
-  const named = entry && attached.length > 1 ? backendDisplayName(entry) : '';
-  return `${named || 'This computer'} runs an older version: it has no ${lacks}.`;
+  return entry && attached.length > 1 ? backendDisplayName(entry) : '';
 }
 
 function namedKeys(result: object): ReadonlySet<string> {

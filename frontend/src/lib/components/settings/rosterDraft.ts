@@ -155,18 +155,54 @@ export function takeTheirs<T extends object>(draft: Draft<T>, index: number): vo
 }
 
 /**
+ * The one Restore in flight, if any. Restore waits on the computer for the
+ * roster it starts with, and its answer replaces both lists' drafts and
+ * saves them. Anything newer retires it: an edit, a save or a replacement
+ * of either draft (DraftRevision), another Restore, or the page closing. A
+ * retired restore does nothing when its answer arrives.
+ */
+export class RestoreInFlight {
+  #gesture: symbol | null = null;
+
+  /** Begins a restore, retiring any earlier one. */
+  begin(): symbol {
+    this.#gesture = Symbol('restore');
+    return this.#gesture;
+  }
+
+  /** Retires the restore in flight. */
+  retire(): void {
+    this.#gesture = null;
+  }
+
+  /** Whether the restore begun as `gesture` may still act; ends it if so. */
+  finish(gesture: symbol): boolean {
+    if (this.#gesture !== gesture) return false;
+    this.#gesture = null;
+    return true;
+  }
+}
+
+/**
  * The revision of one list's draft, which every save and every replacement
  * of the draft advances: a save may write only the revision it began with,
  * so a check still running when the draft is replaced (restored, the other
  * version taken, a change saved elsewhere applied) or a newer save begins
- * never writes the draft it checked.
+ * never writes the draft it checked. Either one also retires a restore in
+ * flight.
  */
 export class DraftRevision {
   #current = 0;
   #saving = false;
+  readonly #restoring: RestoreInFlight;
+
+  constructor(restoring: RestoreInFlight) {
+    this.#restoring = restoring;
+  }
 
   /** Begins a save of the draft as it is now. */
   beginSave(): number {
+    this.#restoring.retire();
     this.#current += 1;
     this.#saving = true;
     return this.#current;
@@ -185,6 +221,7 @@ export class DraftRevision {
    * the draft that replaced it.
    */
   replace(): boolean {
+    this.#restoring.retire();
     const dropped = this.#saving;
     this.#current += 1;
     this.#saving = false;

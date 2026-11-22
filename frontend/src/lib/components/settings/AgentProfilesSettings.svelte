@@ -11,7 +11,7 @@
   // computer on a release before the roster gets none of it.
   import { onMount, untrack } from 'svelte';
   import { settingsComputer } from './settingsComputer';
-  import { computerHasSetting, olderComputerNote } from '../../stores/settings.svelte';
+  import { computerHasSetting, olderComputerNote, settingsComputerName } from '../../stores/settings.svelte';
   import SettingsOlderComputer from './SettingsOlderComputer.svelte';
   import SettingsField from './SettingsField.svelte';
   import SettingsHeader from './SettingsHeader.svelte';
@@ -35,6 +35,7 @@
   } from './agentRoster';
   import {
     DraftRevision,
+    RestoreInFlight,
     draftOf,
     keepMine,
     markSaved,
@@ -93,8 +94,9 @@
   let notes = $state<Draft<AgentNote>>(draftOf(getSettings().agentNotes));
   let followedProfiles = JSON.stringify(getSettings().agentProfiles);
   let followedNotes = JSON.stringify(getSettings().agentNotes);
-  const profilesRevision = new DraftRevision();
-  const notesRevision = new DraftRevision();
+  const restoring = new RestoreInFlight();
+  const profilesRevision = new DraftRevision(restoring);
+  const notesRevision = new DraftRevision(restoring);
   $effect(() => {
     const saved = settings.agentProfiles;
     const key = JSON.stringify(saved);
@@ -132,22 +134,25 @@
   let checks = $state<Record<string, ProfileCheck>>({});
   const checkKey = (profile: AgentProfile) => JSON.stringify([profile.provider, profile.model.trim(), profile.effort]);
 
+  // Why the last check could not tell whether the profiles run on this
+  // computer. While it stands, a save writes nothing.
+  let checkFailure = $state('');
+
   /**
-   * Checks `list` and records the results; false when a profile cannot
-   * run, null when the computer could not check (an older one, or the call
-   * failed), so the save goes ahead and UpdateSettings decides.
+   * Checks `list` and records the results. True when every profile can
+   * run; false when one cannot, or when the check could not tell
+   * (checkFailure says why), so the draft stays unsaved.
    */
-  async function checkProfiles(list: AgentProfile[]): Promise<boolean | null> {
+  async function checkProfiles(list: AgentProfile[]): Promise<boolean> {
     let results: ProfileCheck[];
     try {
-      const answer = await call(() => CheckAgentProfiles(list));
-      // An older computer has no check (bindings.ts, CheckAgentProfiles).
-      if (answer === null) return null;
-      results = await holdFamiliesBack(list, answer as ProfileCheck[]);
+      results = await profileChecks(list);
     } catch (err) {
-      console.warn('Could not check the agent profiles against this computer:', err);
-      return null;
+      const reason = err instanceof Error ? err.message : String(err);
+      checkFailure = `Could not check the profiles against ${settingsComputerName(backend) || 'this computer'}: ${reason} A change to them is not saved until the check answers.`;
+      return false;
     }
+    checkFailure = '';
     const next = { ...checks };
     list.forEach((profile, index) => {
       next[checkKey(profile)] = results[index] ?? {};
@@ -157,21 +162,28 @@
   }
 
   /**
-   * `results` with a problem on each family the computer lacks when it
-   * predates model families (no AgentRosterSeeds): it reads the family as
-   * an exact model ID it does not offer, so the profile would never run
-   * there. Which models are families is read from this window's own
-   * computer, which owns the version rules; a profile the computer runs
-   * as written is left alone.
+   * What this computer makes of each profile, with a problem on each
+   * family it cannot run because it predates model families: one with no
+   * check of its own (CheckAgentProfiles answers null), or one whose check
+   * finds the family missing and that has no AgentRosterSeeds. Such a
+   * computer reads a family as an exact model ID it does not offer. Which
+   * models are families is read from this window's own computer, which
+   * owns the version rules; a profile the computer runs as written is left
+   * alone. Throws when a lookup the answer needs fails or has no answer.
    */
-  async function holdFamiliesBack(list: AgentProfile[], results: ProfileCheck[]): Promise<ProfileCheck[]> {
-    if (!results.some((result) => result?.missing)) return results;
-    if ((await call(() => AgentRosterSeeds())) !== null) return results;
-    const read = (await CheckAgentProfiles(list)) as ProfileCheck[] | null;
+  async function profileChecks(list: AgentProfile[]): Promise<ProfileCheck[]> {
+    const there = (await call(() => CheckAgentProfiles(list))) as ProfileCheck[] | null;
+    if (there !== null && !there.some((result) => result?.missing)) return there;
+    if (there !== null && (await call(() => AgentRosterSeeds())) !== null) return there;
+    const families = (await CheckAgentProfiles(list)) as ProfileCheck[] | null;
+    if (families === null) throw new Error("this window's computer cannot tell which models are families.");
     const lacks = olderComputerNote(backend, 'model families');
-    return results.map((result, index) =>
-      result?.missing && read?.[index]?.family ? { ...result, problem: `${lacks} ${result.missing}` } : result,
-    );
+    return list.map((_, index) => {
+      const result = there?.[index] ?? {};
+      if (!families[index]?.family) return result;
+      if (there === null) return { ...result, problem: lacks };
+      return result.missing ? { ...result, problem: `${lacks} ${result.missing}` } : result;
+    });
   }
 
   // A list with an entry marked as changed elsewhere too is not saved: a
@@ -183,7 +195,7 @@
     const entries = [...profiles.entries];
     const sent = entries.map((entry) => trimProfile($state.snapshot(entry.value) as AgentProfile));
     const runnable = await checkProfiles(sent);
-    if (!profilesRevision.finishSave(revision) || runnable === false) return;
+    if (!profilesRevision.finishSave(revision) || !runnable) return;
     markSaved(profiles, entries, sent);
     void updateSetting('agentProfiles', sent);
   }
@@ -219,6 +231,7 @@
     if (unsaved(notes, trimNote)) saveNotes();
   }
   function addProfile(): void {
+    restoring.retire();
     profiles.entries.push({
       value: { name: '', useFor: '', provider: '', model: '', effort: '', runtimeMode: '', instructions: '' },
       origin: null,
@@ -230,6 +243,7 @@
     void saveProfiles();
   }
   function addNote(): void {
+    restoring.retire();
     notes.entries.push({ value: { text: '', when: '' }, origin: null });
   }
   function deleteNote(index: number): void {
@@ -238,17 +252,21 @@
     saveNotes();
   }
   // Restore writes back the roster the computer itself starts with, which
-  // only it knows; one that cannot say keeps its roster and says why.
+  // only it knows; one that cannot say keeps its roster and says why. The
+  // answer acts only if nothing newer happened while it was asked for
+  // (RestoreInFlight).
   let restoreRefusal = $state('');
   async function restore(): Promise<void> {
+    const gesture = restoring.begin();
     restoreRefusal = '';
     let seeds: Awaited<ReturnType<typeof AgentRosterSeeds>>;
     try {
       seeds = await call(() => AgentRosterSeeds());
     } catch (err) {
-      addErrorToast('Could not read the starting roster', err);
+      if (restoring.finish(gesture)) addErrorToast('Could not read the starting roster', err);
       return;
     }
+    if (!restoring.finish(gesture)) return;
     if (seeds === null) {
       restoreRefusal = olderComputerNote(backend, 'starting roster of its own to restore');
       return;
@@ -267,6 +285,7 @@
 
   onMount(() => {
     if (!older) void checkProfiles(getSettings().agentProfiles.map(trimProfile));
+    return () => restoring.retire();
   });
 </script>
 
@@ -324,12 +343,17 @@
       title="Profiles"
       description="Agents a thread can open a sub-thread with by name, choosing by what each is for. Inherit takes the spawning thread's own choice."
     />
+    <!-- Typing in any field is an edit, which retires a Restore in flight. -->
     <div
       class="flex flex-col gap-3"
       data-settings-field="agent-profiles.profiles"
       data-settings-label="Profiles"
       data-testid="agent-profiles-list"
+      oninput={() => restoring.retire()}
     >
+      {#if checkFailure}
+        <p class="text-[0.71875rem] text-error" role="alert" data-testid="agent-profiles-check-failure">{checkFailure}</p>
+      {/if}
       {#if profiles.entries.length === 0}
         <p class="text-[0.71875rem] text-fg-hint">No profiles. Threads spawn with their own provider and model.</p>
       {/if}
@@ -490,6 +514,7 @@
       data-settings-field="agent-profiles.notes"
       data-settings-label="Choosing notes"
       data-testid="agent-notes-list"
+      oninput={() => restoring.retire()}
     >
       {#each notes.entries as entry, index (index)}
         {@const note = entry.value}

@@ -247,6 +247,120 @@ describe('<AgentProfilesSettings>', () => {
     }
   });
 
+  // Restore belongs to the gesture that started it: while the computer
+  // answers with its starting roster, anything newer the person does, or
+  // the page closing, retires it, and its late answer writes nothing.
+  describe('a Restore waiting on the starting roster', () => {
+    async function restoreWaiting() {
+      await seed({ agentProfiles: [PROFILE], agentNotes: [NOTE] });
+      const answers: (() => void)[] = [];
+      setBindingMock('AgentRosterSeeds', () => new Promise((resolve) => answers.push(() => resolve(SEEDS))));
+      const view = render(AgentProfilesSettings);
+      await settle();
+      await fireEvent.click(view.getByTestId('agent-profiles-restore'));
+      await settle();
+      return { view, answers };
+    }
+
+    it('keeps an edit made meanwhile and writes nothing', async () => {
+      const { view, answers } = await restoreWaiting();
+      const name = view.getByLabelText('Name') as HTMLInputElement;
+      await fireEvent.input(name, { target: { value: 'Typed meanwhile' } });
+      answers[0]();
+      await settle();
+
+      expect(name.value).toBe('Typed meanwhile');
+      expect(getBindingMock('UpdateSettings')!.mock.calls).toHaveLength(0);
+    });
+
+    it('keeps a save made meanwhile and writes nothing over it', async () => {
+      const { view, answers } = await restoreWaiting();
+      const name = view.getByLabelText('Name') as HTMLInputElement;
+      await fireEvent.input(name, { target: { value: 'Saved meanwhile' } });
+      await fireEvent.change(name);
+      const note = view.getByLabelText('Note') as HTMLTextAreaElement;
+      await fireEvent.input(note, { target: { value: 'A note saved meanwhile.' } });
+      await fireEvent.change(note);
+      await settle();
+      answers[0]();
+      await settle();
+
+      const writes = getBindingMock('UpdateSettings')!.mock.calls.map((call) => call[0]);
+      expect(writes).toHaveLength(2);
+      expect(writes).toEqual(expect.arrayContaining([
+        { agentNotes: [{ text: 'A note saved meanwhile.', when: '' }] },
+        { agentProfiles: [{ ...PROFILE, name: 'Saved meanwhile' }] },
+      ]));
+      expect((view.getByLabelText('Name') as HTMLInputElement).value).toBe('Saved meanwhile');
+      expect((view.getByLabelText('Note') as HTMLTextAreaElement).value).toBe('A note saved meanwhile.');
+    });
+
+    it('keeps a menu choice whose save is still checking, and writes nothing over it', async () => {
+      const { view, answers } = await restoreWaiting();
+      let checked: () => void = () => {};
+      setBindingMock('CheckAgentProfiles', (profiles: AgentProfile[]) =>
+        new Promise((resolve) => {
+          checked = () => resolve(profiles.map(() => ({})));
+        }),
+      );
+      await fireEvent.change(view.getByLabelText('Effort'), { target: { value: 'low' } });
+      await settle();
+      answers[0]();
+      await settle();
+      checked();
+      await settle();
+
+      expect(getBindingMock('UpdateSettings')!.mock.calls.map((call) => call[0])).toEqual([
+        { agentProfiles: [{ ...PROFILE, effort: 'low' }] },
+      ]);
+    });
+
+    it('keeps a profile added meanwhile', async () => {
+      const { view, answers } = await restoreWaiting();
+      await fireEvent.click(view.getByRole('button', { name: 'Add profile' }));
+      answers[0]();
+      await settle();
+
+      expect(view.getAllByTestId('agent-profile')).toHaveLength(2);
+      expect(getBindingMock('UpdateSettings')!.mock.calls).toHaveLength(0);
+    });
+
+    it('keeps a roster saved elsewhere meanwhile', async () => {
+      const { view, answers } = await restoreWaiting();
+      savedElsewhere({ agentProfiles: [{ ...PROFILE, name: 'From elsewhere' }] });
+      await settle();
+      answers[0]();
+      await settle();
+
+      expect((view.getByLabelText('Name') as HTMLInputElement).value).toBe('From elsewhere');
+      expect(getBindingMock('UpdateSettings')!.mock.calls).toHaveLength(0);
+    });
+
+    it('writes once, for the later of two Restores', async () => {
+      const { view, answers } = await restoreWaiting();
+      await fireEvent.click(view.getByTestId('agent-profiles-restore'));
+      await settle();
+      answers[0]();
+      await settle();
+      expect(getBindingMock('UpdateSettings')!.mock.calls).toHaveLength(0);
+      answers[1]();
+      await settle();
+
+      expect(getBindingMock('UpdateSettings')!.mock.calls.map((call) => call[0])).toEqual([
+        { agentProfiles: SEEDS.profiles, agentNotes: SEEDS.notes },
+      ]);
+    });
+
+    it('writes nothing once the page is closed', async () => {
+      const { view, answers } = await restoreWaiting();
+      view.unmount();
+      answers[0]();
+      await settle();
+
+      expect(getBindingMock('UpdateSettings')!.mock.calls).toHaveLength(0);
+    });
+  });
+
   // A computer with a roster but without AgentRosterSeeds predates model
   // families: Restore there writes nothing and says why, and a family typed
   // there that it does not offer is held back with the reason. An exact
@@ -416,24 +530,108 @@ describe('<AgentProfilesSettings>', () => {
     expect(lastPatch()).toEqual({ agentProfiles: [PROFILE] });
   });
 
-  // The check is what UpdateSettings checks too, so a computer that cannot
-  // run it (an older one) leaves the decision to the save.
-  it('saves when the computer cannot check', async () => {
-    await seed({ agentProfiles: [PROFILE] });
-    setBindingMock('CheckAgentProfiles', async () => {
-      throw new Error('unknown method');
-    });
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const view = render(AgentProfilesSettings);
-    await settle();
+  // Whether a family runs on a computer takes up to three lookups: that
+  // computer's check, whether it reads families (AgentRosterSeeds), and
+  // which models are families (this window's own check). When one the
+  // answer needs fails, or has no answer where one is needed, the profiles
+  // stay unsaved and the page says why; a later check that answers clears
+  // it.
+  describe('when a lookup the check needs fails', () => {
+    type Lookup = 'answers' | 'rejects' | 'older';
+    const LACKS = 'Claude Code does not offer model "claude-opus" on this computer.';
+    const familyWrites = () =>
+      getBindingMock('UpdateSettings')!.mock.calls.filter((call) =>
+        (call[0] as Partial<Settings>).agentProfiles?.some((profile) => profile.model === 'claude-opus'),
+      );
 
-    const name = view.getByLabelText('Name') as HTMLInputElement;
-    await fireEvent.input(name, { target: { value: 'Critic' } });
-    await fireEvent.change(name);
-    await settle();
-    expect(lastPatch()).toEqual({ agentProfiles: [{ ...PROFILE, name: 'Critic' }] });
-    expect(warn).toHaveBeenCalled();
-    warn.mockRestore();
+    async function typeFamily(lookups: { check?: Lookup; seeds?: Lookup; families?: Lookup }) {
+      await seed({ agentProfiles: [PROFILE], agentNotes: [] });
+      stageBackend();
+      applySettingsSnapshot(makeSettings({ agentProfiles: [PROFILE], agentNotes: [] }), 'laptop');
+      const answer = (lookup: Lookup | undefined) => {
+        if (lookup === 'rejects') throw new Error('the connection dropped');
+        if (lookup === 'older') throw methodNotFound();
+      };
+      setBindingMock('AgentRosterSeeds', async () => {
+        if (takePinnedBackend() === 'laptop') answer(lookups.seeds ?? 'older');
+        return SEEDS;
+      });
+      setBindingMock('CheckAgentProfiles', async (profiles: AgentProfile[]) => {
+        const there = takePinnedBackend() === 'laptop';
+        answer(there ? lookups.check : lookups.families);
+        return profiles.map((profile) =>
+          there ? (profile.model === 'claude-opus' ? { missing: LACKS } : {}) : { family: profile.model === 'claude-opus' },
+        );
+      });
+      const view = render(ComputerSettingsPage, { props: { backend: 'laptop', Page: AgentProfilesSettings, needsComputer: false } });
+      await settle();
+      await fireEvent.change(view.getByLabelText('Provider'), { target: { value: 'claude' } });
+      const model = view.getByLabelText('Model') as HTMLInputElement;
+      await fireEvent.input(model, { target: { value: 'claude-opus' } });
+      await fireEvent.change(model);
+      await settle();
+      return view;
+    }
+
+    const cases: { lookups: { check?: Lookup; seeds?: Lookup; families?: Lookup }; says: string }[] = [
+      { lookups: { check: 'rejects' }, says: 'the connection dropped' },
+      { lookups: { seeds: 'rejects' }, says: 'the connection dropped' },
+      { lookups: { seeds: 'older', families: 'rejects' }, says: 'the connection dropped' },
+      { lookups: { seeds: 'older', families: 'older' }, says: 'cannot tell which models are families' },
+      { lookups: { check: 'older', families: 'rejects' }, says: 'the connection dropped' },
+      { lookups: { check: 'older', families: 'older' }, says: 'cannot tell which models are families' },
+    ];
+    for (const { lookups, says } of cases) {
+      it(`keeps the family unsaved and says why (${JSON.stringify(lookups)})`, async () => {
+        try {
+          const view = await typeFamily(lookups);
+          expect(familyWrites()).toHaveLength(0);
+          const failure = view.getByTestId('agent-profiles-check-failure').textContent ?? '';
+          expect(failure).toContain('Could not check the profiles against Laptop');
+          expect(failure).toContain(says);
+          expect((view.getByLabelText('Model') as HTMLInputElement).value).toBe('claude-opus');
+        } finally {
+          resetStagedBackends();
+          resetSettingsForTest();
+        }
+      });
+    }
+
+    it('saves once the check answers again, and stops saying it could not check', async () => {
+      try {
+        const lookups: { check?: Lookup; seeds?: Lookup } = { check: 'rejects' };
+        const view = await typeFamily(lookups);
+        expect(view.getByTestId('agent-profiles-check-failure')).toBeTruthy();
+        lookups.check = 'answers';
+        lookups.seeds = 'answers';
+        await fireEvent.change(view.getByLabelText('Model'));
+        await settle();
+        expect(view.queryByTestId('agent-profiles-check-failure')).toBeNull();
+        expect(lastPatch()).toEqual({ agentProfiles: [{ ...PROFILE, provider: 'claude', model: 'claude-opus' }] });
+      } finally {
+        resetStagedBackends();
+        resetSettingsForTest();
+      }
+    });
+
+    it('holds back a family on a computer with no check, and saves an exact model there', async () => {
+      try {
+        const view = await typeFamily({ check: 'older', families: 'answers' });
+        expect(familyWrites()).toHaveLength(0);
+        expect(view.queryByTestId('agent-profiles-check-failure')).toBeNull();
+        expect(view.getByTestId('agent-profile-error').textContent).toBe('Laptop runs an older version: it has no model families.');
+
+        const model = view.getByLabelText('Model') as HTMLInputElement;
+        await fireEvent.input(model, { target: { value: 'claude-opus-5' } });
+        await fireEvent.change(model);
+        await settle();
+        expect(view.queryByTestId('agent-profile-error')).toBeNull();
+        expect(lastPatch()).toEqual({ agentProfiles: [{ ...PROFILE, provider: 'claude', model: 'claude-opus-5' }] });
+      } finally {
+        resetStagedBackends();
+        resetSettingsForTest();
+      }
+    });
   });
 
   // v0.0.19's settings name no profiles, notes or levels: the page says

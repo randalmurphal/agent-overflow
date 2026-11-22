@@ -1472,7 +1472,7 @@ export function AgentRosterSeeds(): Promise<AgentRosterSeedsAnswer | null> {
   return orOlder(() => AgentRosterSeedsRaw(), () => null);
 }
 
-/** Null when the computer cannot check profiles; the save goes ahead and UpdateSettings decides. */
+/** Null when the computer cannot check profiles: it predates model families too. */
 export function CheckAgentProfiles(profiles: AgentProfile[]): Promise<AgentProfileCheck[] | null> {
   return orOlder(() => CheckAgentProfilesRaw(profiles), () => null);
 }

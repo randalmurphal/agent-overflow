@@ -472,7 +472,11 @@ computer for (`AgentRosterSeeds`); the frontend holds no copy of them. A
 computer with a roster but without that method predates model families:
 Restore there writes nothing and says so, and a family typed there that
 it does not offer is held back with the reason, read as a family by the
-window's own computer (`CheckAgentProfiles` `family`).
+window's own computer (`CheckAgentProfiles` `family`). When a lookup that
+decision needs fails or has no answer, the profiles stay unsaved and the
+page says it could not check them. A Restore acts only if nothing newer
+happened while the computer answered: an edit, a save, a change saved
+elsewhere, another Restore or closing the page retires it.
 
 The settings page edits the profiles and the notes as two drafts, each
 saved whole when a control commits. A change saved elsewhere replaces
