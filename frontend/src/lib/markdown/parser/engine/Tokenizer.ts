@@ -498,7 +498,7 @@ export class Tokenizer {
         if (!list.loose) {
           // Check if list should be loose
           const spacers = list.items[i].tokens.filter(t => t.type === 'space');
-          const hasMultipleLineBreaks = spacers.length > 0 && spacers.some(t => this.rules.other.anyLine.test(t.raw));
+          const hasMultipleLineBreaks = spacers.some(t => this.rules.other.anyLine.test(t.raw));
 
           list.loose = hasMultipleLineBreaks;
         }
@@ -917,8 +917,8 @@ export class Tokenizer {
   }
 
   url(src: string): Tokens.Link | undefined {
-    let cap;
-    if (cap = this.rules.inline.url.exec(src)) {
+    const cap = this.rules.inline.url.exec(src);
+    if (cap) {
       // Same as `autolink`: the bare-email alternative is removed from the
       // rule, so only the extended `protocol://` / `www.` forms reach here.
       const www = cap[1] === 'www.';

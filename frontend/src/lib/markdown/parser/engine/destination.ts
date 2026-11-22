@@ -44,6 +44,7 @@ export interface BareUrlRule {
   readonly end: (run: string) => string;
 }
 
+// eslint-disable-next-line no-control-regex -- the URL parser strips these from a URL's ends.
 const EDGE_CONTROLS = /^[\x00-\x20]+|[\x00-\x20]+$/g;
 const TAB_OR_NEWLINE = /[\t\n\r]/g;
 const HTTP_SCHEME = /^https?:/i;

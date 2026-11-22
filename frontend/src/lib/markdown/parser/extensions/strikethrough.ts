@@ -121,7 +121,7 @@ const pairsOf = (runs: readonly Run[], dead: ReadonlySet<Run>): Pairs => {
 	const strikes = new Map<number, number>();
 	const paired = new Set<Run>();
 	const stack: Opener[] = [];
-	const bottom: number[] = new Array(KINDS).fill(0);
+	const bottom: number[] = Array.from({ length: KINDS }, () => 0);
 	const truncate = (height: number) => {
 		stack.length = height;
 		for (let kind = 0; kind < KINDS; kind++) if (bottom[kind] > height) bottom[kind] = height;

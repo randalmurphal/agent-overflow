@@ -379,10 +379,10 @@ function splitTableRows(
     previousRow: WorkingRow | null,
     maxColspan: number | null
 ): WorkingRow[] {
-    const processed: WorkingRow[] = new Array(rows.length);
+    const processed: WorkingRow[] = [];
     for (let i = 0; i < rows.length; i++) {
         const previous = i > 0 ? processed[i - 1] : previousRow;
-        processed[i] = splitCells(rows[i], colCount, previous, maxColspan);
+        processed.push(splitCells(rows[i], colCount, previous, maxColspan));
     }
     return processed;
 }
@@ -398,10 +398,10 @@ function tableRowTokens<Header extends boolean>(
     header: Header,
     eager: boolean
 ): Header extends true ? THeadRow[] : TRow[] {
-    const result = new Array(rows.length);
+    const result: unknown[] = [];
     for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
         const row = rows[rowIndex];
-        const cells: Array<TH | TD> = new Array(row.length);
+        const cells: Array<TH | TD> = [];
         for (let cellIndex = 0; cellIndex < row.length; cellIndex++) {
             const working = row[cellIndex];
             const cellAlignment = working.position !== undefined ? alignment[working.position] : null;
@@ -413,11 +413,11 @@ function tableRowTokens<Header extends boolean>(
             cell.tokens = eager
                 ? lexer.inlineTokens(cell.text, run)
                 : lexer.inline(cell.text, run);
-            cells[cellIndex] = cell;
+            cells.push(cell);
         }
-        result[rowIndex] = { type: 'tr', tokens: cells };
+        result.push({ type: 'tr', tokens: cells });
     }
-    return result;
+    return result as Header extends true ? THeadRow[] : TRow[];
 }
 // Process table rows and add inline tokens to cells
 function processRows(

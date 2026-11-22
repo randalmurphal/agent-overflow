@@ -117,7 +117,7 @@ const safeGetContext = (): StreamdownContext | null => {
     try {
         return getContext<StreamdownContext | undefined>('streamdown') ?? null;
     }
-    catch (e) {
+    catch {
         return null;
     }
 };

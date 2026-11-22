@@ -472,6 +472,15 @@ func imageFact(key string, image BlobImage) ForgeFact {
 // factGit runs one read-only git command of the facts reads: under ctx
 // and localFactsTimeout, with lazy fetching off.
 func (c *Core) factGit(ctx context.Context, cwd string, spec commandSpec) (commandResult, error) {
+	result, err := c.factGitRun(ctx, cwd, spec)
+	if err == nil && result.exitCode != 0 {
+		err = commandFailure("git "+spec.args[0], result)
+	}
+	return result, err
+}
+
+// factGitRun is factGit that leaves a non-zero exit to its caller.
+func (c *Core) factGitRun(ctx context.Context, cwd string, spec commandSpec) (commandResult, error) {
 	spec.binary, spec.cwd, spec.ctx = "git", cwd, ctx
 	spec.extraEnv = append(spec.extraEnv, "GIT_NO_LAZY_FETCH=1")
 	if spec.timeout == 0 {
@@ -480,45 +489,77 @@ func (c *Core) factGit(ctx context.Context, cwd string, spec commandSpec) (comma
 	if hook := c.beforeFactGit; hook != nil {
 		hook(spec.args)
 	}
-	result, err := c.runSpec(spec)
-	if err == nil && result.exitCode != 0 {
-		err = commandFailure("git "+spec.args[0], result)
-	}
-	return result, err
+	return c.runSpec(spec)
 }
 
-// batchCheck answers each query's object in one `git cat-file
+// batchCheckProbe leads every batch-check's input: a name git answers
+// (missing) without reading an object, so a run that printed nothing
+// failed before it read any query.
+const batchCheckProbe = "refs/agent-overflow/batch-check-probe"
+
+// gitDied is the exit status of git's die.
+const gitDied = 128
+
+// batchCheck answers each query's object with `git cat-file
 // --batch-check`: a query git cannot resolve (missing, ambiguous, or not
 // local) answers missing.
+//
+// It is one run where git answers a promised object that is not local as
+// missing (2.52 does, under GIT_NO_LAZY_FETCH). Git 2.43 as Ubuntu 24.04
+// ships it tries the fetch, is refused, and dies at that query with the
+// ones before it answered; that query answers missing and the rest are
+// asked again, so such a git costs one more run per object that is not
+// local.
 func (c *Core) batchCheck(ctx context.Context, cwd string, queries []string) (map[string]objectInfo, error) {
-	result, err := c.factGit(ctx, cwd, commandSpec{
-		stdin:    strings.Join(queries, "\n") + "\n",
-		maxBytes: int64(len(queries))*(gitdiff.MaxEntryPathBytes/16) + 1<<20,
-		args:     []string{"cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"},
-	})
-	if err != nil {
-		return nil, err
-	}
-	lines := strings.Split(strings.TrimSuffix(result.stdout, "\n"), "\n")
-	if len(lines) != len(queries) {
-		return nil, fmt.Errorf("cat-file --batch-check answered %d of %d objects", len(lines), len(queries))
-	}
 	objects := make(map[string]objectInfo, len(queries))
-	for i, line := range lines {
-		query := queries[i]
-		if line == query+" missing" || line == query+" ambiguous" {
-			objects[query] = objectInfo{missing: true}
-			continue
+	deaths, lastDeath := 0, ""
+	for rest := queries; len(rest) > 0; {
+		result, err := c.factGitRun(ctx, cwd, commandSpec{
+			stdin:    batchCheckProbe + "\n" + strings.Join(rest, "\n") + "\n",
+			maxBytes: int64(len(rest)+1)*(gitdiff.MaxEntryPathBytes/16) + 1<<20,
+			args:     []string{"cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"},
+		})
+		if err != nil {
+			return nil, err
 		}
-		fields := strings.Fields(line)
-		if len(fields) != 3 || !gitdiff.IsFullOID(fields[0]) {
-			return nil, fmt.Errorf("cat-file --batch-check: malformed answer %q", stringsx.ClipRunes(line, 200))
+		// Whole lines: a run that died can have cut its last one.
+		lines := strings.Split(result.stdout, "\n")
+		lines = lines[:len(lines)-1]
+		died := result.exitCode == gitDied && len(lines) > 0 && len(lines) <= len(rest)
+		switch {
+		case died:
+		case result.exitCode != 0:
+			return nil, commandFailure("git cat-file", result)
+		case len(lines) != len(rest)+1:
+			return nil, fmt.Errorf("cat-file --batch-check answered %d of %d objects", max(len(lines)-1, 0), len(rest))
 		}
-		size, err := strconv.ParseInt(fields[2], 10, 64)
-		if err != nil || size < 0 {
-			return nil, fmt.Errorf("cat-file --batch-check: malformed size %q", fields[2])
+		for i, line := range lines[1:] {
+			query := rest[i]
+			if line == query+" missing" || line == query+" ambiguous" {
+				objects[query] = objectInfo{missing: true}
+				continue
+			}
+			fields := strings.Fields(line)
+			if len(fields) != 3 || !gitdiff.IsFullOID(fields[0]) {
+				return nil, fmt.Errorf("cat-file --batch-check: malformed answer %q", stringsx.ClipRunes(line, 200))
+			}
+			size, err := strconv.ParseInt(fields[2], 10, 64)
+			if err != nil || size < 0 {
+				return nil, fmt.Errorf("cat-file --batch-check: malformed size %q", fields[2])
+			}
+			objects[query] = objectInfo{oid: fields[0], kind: fields[1], size: size}
 		}
-		objects[query] = objectInfo{oid: fields[0], kind: fields[1], size: size}
+		if !died {
+			break
+		}
+		at := len(lines) - 1
+		objects[rest[at]] = objectInfo{missing: true}
+		rest = rest[at+1:]
+		deaths++
+		lastDeath = result.stderr
+	}
+	if deaths > 0 {
+		log.Printf("local facts: cat-file --batch-check died on %d of %d objects, read as not local: %s", deaths, len(queries), stringsx.ClipRunes(strings.TrimSpace(lastDeath), 300))
 	}
 	return objects, nil
 }

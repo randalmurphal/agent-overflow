@@ -1103,7 +1103,11 @@ logged once with its operation and no titles.
 | Every local key held | no git; with `fresh`, a held abbreviated `commit:` is read as if not held | same |
 
 Every git read sets `GIT_NO_LAZY_FETCH=1`: in a partial clone a path
-whose blob is not local is `unavailable`, never fetched.
+whose blob is not local is `unavailable`, never fetched. Git 2.52
+answers such an object missing in the one batch-check. Git 2.43 as
+Ubuntu 24.04 ships it refuses the fetch and dies at that query, so the
+batch-check is run again from the next query: one more run per object
+that is not local.
 
 A pointer's object is read from the local LFS store only, never through
 git-lfs or the network (`local_lfs.go`): the store is `lfs.storage`

@@ -406,6 +406,51 @@ func TestLocalFactsPartialCloneDoesNotFetch(t *testing.T) {
 	}
 }
 
+// A git that tries the fetch of a promised object (2.43 as Ubuntu 24.04
+// ships it, where the fetch GIT_NO_LAZY_FETCH refuses ends the whole
+// batch-check) costs only the keys of the objects that are not local.
+// The git here is this machine's with the variable dropped and the
+// promisor remote gone, which dies the same way.
+func TestLocalFactsWhereGitDiesOnAPromisedObject(t *testing.T) {
+	real, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := newFactsRepo(t)
+	testutil.RunGit(t, r.dir, "config", "uploadpack.allowFilter", "true")
+	clone := filepath.Join(t.TempDir(), "clone")
+	testutil.RunGit(t, t.TempDir(), "clone", "-q", "--no-checkout", "--filter=blob:none", "file://"+r.dir, clone)
+	testutil.RunGit(t, clone, "remote", "set-url", "origin", "file://"+filepath.Join(t.TempDir(), "gone"))
+	installMockGit(t, "#!/bin/sh\nunset GIT_NO_LAZY_FETCH\nexec '"+real+"' \"$@\"\n")
+	core := NewCore()
+	calls := countFactGit(core)
+	keys := map[string]string{
+		"image:head:docs/head.png": FactUnavailable, "lines:" + r.head + ":code.go:1-1": FactUnavailable,
+		"image:head:docs/none.png": FactAbsent, "commit:" + r.head[:8]: FactFound,
+		"image:base:docs/base.png": FactUnavailable, "commit:" + r.base[:8]: FactFound,
+	}
+	got := resolveLocal(t, core, clone, r.rev(), slices.Collect(maps.Keys(keys))...)
+	for key, want := range keys {
+		if got[key].Status != want {
+			t.Errorf("%s = %+v, want %s", key, got[key], want)
+		}
+	}
+	if got["commit:"+r.head[:8]].Title == "" {
+		t.Errorf("the head commit has no subject: %+v", got["commit:"+r.head[:8]])
+	}
+	// One run per object git died on, and one more unless the last query
+	// was one of the three.
+	checks := 0
+	for _, run := range calls.take() {
+		if strings.HasPrefix(run, "cat-file --batch-check") {
+			checks++
+		}
+	}
+	if checks != 3 && checks != 4 {
+		t.Errorf("%d batch-checks ran, want 3 or 4: git did not die on each promised object", checks)
+	}
+}
+
 // A header read reads at most the header of a large image, and at most
 // factImageHeaderMax of one whose header it cannot find.
 func TestBlobImageHeaderReadIsBounded(t *testing.T) {

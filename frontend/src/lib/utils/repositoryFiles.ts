@@ -38,6 +38,7 @@ export interface RepositoryFile {
 
 const SCHEME = /^[A-Za-z][A-Za-z0-9+.-]*:/;
 const FULL_OID = /^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$/;
+// eslint-disable-next-line no-control-regex -- a repository path holds no control character.
 const CONTROL = /[\u0000-\u001f\\]/;
 const RAW_GITHUB_HOST = 'raw.githubusercontent.com';
 

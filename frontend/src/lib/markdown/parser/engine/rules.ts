@@ -65,7 +65,7 @@ try {
 
 export const other = {
   codeRemoveIndent: /^(?: {1,4}| {0,3}\t)/gm,
-  outputLinkReplace: /\\([\[\]])/g,
+  outputLinkReplace: /\\([[\]])/g,
   indentCodeCompensation: /^(\s+)(?:```)/,
   beginningSpace: /^\s+/,
   endingHash: /#$/,
@@ -100,7 +100,7 @@ export const other = {
   endAngleBracket: />$/,
   pedanticHrefTitle: /^([^'"]*[^\s])\s+(['"])(.*)\2/,
   unicodeAlphaNumeric: /[\p{L}\p{N}]/u,
-  caret: /(^|[^\[])\^/g,
+  caret: /(^|[^[])\^/g,
   findPipe: /\|/g,
   splitPipe: / \|/,
   slashPipe: /\\\|/g,
@@ -144,11 +144,11 @@ const lheadingGfm = edit(lheadingCore)
   .replace(/blockquote/g, / {0,3}>/) // blockquote can interrupt
   .replace(/heading/g, / {0,3}#{1,6}/) // ATX heading can interrupt
   .replace(/html/g, / {0,3}<[^\n>]+>\n/) // block html can interrupt
-  .replace(/table/g, / {0,3}\|?(?:[:\- ]*\|)+[\:\- ]*\n/) // table can interrupt
+  .replace(/table/g, / {0,3}\|?(?:[:\- ]*\|)+[:\- ]*\n/) // table can interrupt
   .getRegex();
 const _paragraph = /^([^\n]+(?:\n(?!hr|heading|lheading|blockquote|fences|list|html|table| +\n)[^\n]+)*)/;
 const blockText = /^[^\n]+/;
-const _blockLabel = /(?!\s*\])(?:\\[\s\S]|[^\[\]\\])+/;
+const _blockLabel = /(?!\s*\])(?:\\[\s\S]|[^[\]\\])+/;
 const def = edit(/^ {0,3}\[(label)\]: *(?:\n[ \t]*)?([^<\s][^\s]*|<.*?>)(?:(?: +(?:\n[ \t]*)?| *\n[ \t]*)(title))? *(?:\n+|$)/)
   .replace('label', _blockLabel)
   .replace('title', /(?:"(?:\\"?|[^"\\])*"|'[^'\n]*(?:\n[^'\n]+)*\n?'|\([^()]*\))/)
@@ -301,10 +301,10 @@ const blockPedantic: Record<BlockKeys, RegExp> = {
  * Inline-Level Grammar
  */
 
-const escape = /^\\([!"#$%&'()*+,\-./:;<=>?@\[\]\\^_`{|}~])/;
+const escape = /^\\([!"#$%&'()*+,\-./:;<=>?@[\]\\^_`{|}~])/;
 const inlineCode = /^(`+)([^`]|[^`][\s\S]*?[^`])\1(?!`)/;
 const br = /^( {2,}|\\)\n(?!\s*$)/;
-const inlineText = /^(`+|[^`])(?:(?= {2,}\n)|[\s\S]*?(?:(?=[\\<!\[`*_]|\b_|$)|[^ ](?= {2,}\n)))/;
+const inlineText = /^(`+|[^`])(?:(?= {2,}\n)|[\s\S]*?(?:(?=[\\<![`*_]|\b_|$)|[^ ](?= {2,}\n)))/;
 
 // list of unicode punctuation marks, plus any missing characters from CommonMark spec
 const _punctuation = /[\p{P}\p{S}]/u;
@@ -320,7 +320,7 @@ const _notPunctuationOrSpaceGfmStrongEm = /(?:[^\s\p{P}\p{S}]|~)/u;
 
 // sequences em should skip over [title](link), `code`, <html>
 const blockSkip = edit(/link|precode-code|html/, 'g')
-  .replace('link', /\[(?:[^\[\]`]|(?<a>`+)[^`]+\k<a>(?!`))*?\]\((?:\\[\s\S]|[^\\\(\)]|\((?:\\[\s\S]|[^\\\(\)])*\))*\)/)
+  .replace('link', /\[(?:[^[\]`]|(?<a>`+)[^`]+\k<a>(?!`))*?\]\((?:\\[\s\S]|[^\\()]|\((?:\\[\s\S]|[^\\()])*\))*\)/)
   .replace('precode-', supportsLookbehind ? '(?<!`)()' : '(^^|[^`])')
   .replace('code', /(?<b>`+)[^`]+\k<b>(?!`)/)
   .replace('html', /<(?! )[^<>]*?>/)
@@ -381,6 +381,7 @@ const anyPunctuation = edit(/\\(punct)/, 'gu')
 // an email address, the renderer rejected the resulting `mailto:` URL, and a
 // visible `[blocked]` marker landed mid-sentence. Scheme autolinks are
 // untouched. Applies to every grammar, so it is baked into the base rule.
+// eslint-disable-next-line no-control-regex -- an autolink holds no control character.
 const autolink = edit(/^<(scheme:[^\s\x00-\x1f<>]*)>/)
   .replace('scheme', /[a-zA-Z][a-zA-Z0-9+.-]{1,31}/)
   .getRegex();
@@ -400,7 +401,7 @@ const tag = edit(
 // PORTED from marked 17.0.5 (#3918): catastrophic backtracking on an unclosed
 // link label containing backticks. The backtick alternative now refuses to
 // start mid-run, and a trailing run directly before `]` gets its own branch.
-const _inlineLabel = /(?:\[(?:\\[\s\S]|[^\[\]\\])*\]|\\[\s\S]|`+(?!`)[^`]*?`+(?!`)|``+(?=\])|[^\[\]\\`])*?/;
+const _inlineLabel = /(?:\[(?:\\[\s\S]|[^[\]\\])*\]|\\[\s\S]|`+(?!`)[^`]*?`+(?!`)|``+(?=\])|[^[\]\\`])*?/;
 
 // PORTED from marked 17.0.4 (#3902), the title separator: `[ \t]*` let the
 // title group be probed at every backtrack position of the greedy href group,
@@ -412,6 +413,7 @@ const _inlineLabel = /(?:\[(?:\\[\s\S]|[^\[\]\\])*\]|\\[\s\S]|`+(?!`)[^`]*?`+(?!
 // language without the ambiguity.
 const link = edit(/^!?\[(label)\]\(\s*(href)(?:(?:[ \t]+(?:\n[ \t]*)?|\n[ \t]*)(title))?\s*\)/)
   .replace('label', _inlineLabel)
+  // eslint-disable-next-line no-control-regex -- a bare destination holds no control character.
   .replace('href', /<(?:\\.|[^\n<>\\])+>|[^ \t\n\x00-\x1f]+|(?=\))/)
   .replace('title', /"(?:\\"?|[^"\\])*"|'(?:\\'?|[^'\\])*'|\((?:\\\)?|[^)\\])*\)/)
   .getRegex();
@@ -485,7 +487,7 @@ const inlineGfm: Record<InlineKeys, RegExp> = {
   // APP OVERRIDE: the bare-email alternative is dropped here too — see
   // `autolink` above. Only the scheme/`www.` forms remain, which is why
   // `Tokenizer.url` can never see an `@` capture.
-  url: edit(/^((?:protocol):\/\/|www\.)(?:[a-zA-Z0-9\-]+\.?)+[^\s<]*/)
+  url: edit(/^((?:protocol):\/\/|www\.)(?:[a-zA-Z0-9-]+\.?)+[^\s<]*/)
     .replace('protocol', _caseInsensitiveProtocol)
     .getRegex(),
   _backpedal: /(?:[^?!.,:;*_'"~()&]+|\([^)]*\)|&(?![a-zA-Z0-9]+;$)|[?!.,:;*_'"~)]+(?!$))+/,
@@ -499,7 +501,7 @@ const inlineGfm: Record<InlineKeys, RegExp> = {
   // mis-paired onto a later backtick, leaving a stray pill mid-line). Split
   // into homogeneous runs so a backtick is never consumed as part of a tilde
   // run. Mirrors the `del` override above.
-  text: edit(/^(`+|~+|[^`~])(?:(?= {2,}\n)|(?=[a-zA-Z0-9.!#$%&'*+\/=?_`{\|}~-]+@)|[\s\S]*?(?:(?=[\\<!\[`*~_]|\b_|protocol:\/\/|www\.|$)|[^ ](?= {2,}\n)|[^a-zA-Z0-9.!#$%&'*+\/=?_`{\|}~-](?=[a-zA-Z0-9.!#$%&'*+\/=?_`{\|}~-]+@)))/)
+  text: edit(/^(`+|~+|[^`~])(?:(?= {2,}\n)|(?=[a-zA-Z0-9.!#$%&'*+/=?_`{|}~-]+@)|[\s\S]*?(?:(?=[\\<![`*~_]|\b_|protocol:\/\/|www\.|$)|[^ ](?= {2,}\n)|[^a-zA-Z0-9.!#$%&'*+/=?_`{|}~-](?=[a-zA-Z0-9.!#$%&'*+/=?_`{|}~-]+@)))/)
     .replace('protocol', _caseInsensitiveProtocol)
     .getRegex(),
 };
