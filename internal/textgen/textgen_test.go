@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider/claude"
 )
 
@@ -162,7 +163,7 @@ func TestExecCLI_StreamsExitCodeWithoutError(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	res, err := ExecCLI(ctx, CLISpec{
+	res, err := ExecCLI(ctx, procutiltest.Reaper(), CLISpec{
 		Binary: "sh",
 		Args:   []string{"-c", "echo hello; exit 3"},
 	})
@@ -183,7 +184,7 @@ func TestExecCLI_TimeoutSurfacesCtxErr(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	_, err := ExecCLI(ctx, CLISpec{
+	_, err := ExecCLI(ctx, procutiltest.Reaper(), CLISpec{
 		Binary: "sh",
 		Args:   []string{"-c", "sleep 1"},
 	})
@@ -622,7 +623,7 @@ func TestRunCodex_DropsAnInheritedCodexHome(t *testing.T) {
 func TestExecCLI_RefusedAdmissionStartsNothing(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "started")
 	refused := errors.New("refused")
-	_, err := ExecCLI(context.Background(), CLISpec{
+	_, err := ExecCLI(context.Background(), procutiltest.Reaper(), CLISpec{
 		Binary: "/bin/sh",
 		Args:   []string{"-c", `: > "$0"`, marker},
 		Admit:  func(context.Context, func(error)) (func(), error) { return nil, refused },
@@ -641,7 +642,7 @@ func TestExecCLI_RefusedAdmissionStartsNothing(t *testing.T) {
 func TestExecCLI_HoldsTheAdmissionUntilTheProcessExits(t *testing.T) {
 	exited := filepath.Join(t.TempDir(), "exited")
 	released := 0
-	result, err := ExecCLI(context.Background(), CLISpec{
+	result, err := ExecCLI(context.Background(), procutiltest.Reaper(), CLISpec{
 		Binary: "/bin/sh",
 		Args:   []string{"-c", `sleep 0.2; echo ran; : > "$0"`, exited},
 		Admit: func(context.Context, func(error)) (func(), error) {
@@ -664,7 +665,7 @@ func TestExecCLI_HoldsTheAdmissionUntilTheProcessExits(t *testing.T) {
 // A process that fails to start releases its admission all the same.
 func TestExecCLI_ReleasesTheAdmissionWhenTheStartFails(t *testing.T) {
 	released := 0
-	_, err := ExecCLI(context.Background(), CLISpec{
+	_, err := ExecCLI(context.Background(), procutiltest.Reaper(), CLISpec{
 		Binary: filepath.Join(t.TempDir(), "missing"),
 		Admit: func(context.Context, func(error)) (func(), error) {
 			return func() { released++ }, nil
@@ -691,7 +692,7 @@ func TestExecCLI_TheAdmissionsStopEndsTheRunWithItsCause(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		_, err := ExecCLI(ctx, CLISpec{
+		_, err := ExecCLI(ctx, procutiltest.Reaper(), CLISpec{
 			Binary: "/bin/sh",
 			Args:   []string{"-c", `: > "$0"; while :; do sleep 0.05; done`, started},
 			Admit: func(_ context.Context, stop func(error)) (func(), error) {
@@ -767,7 +768,7 @@ func TestRunners_PassTheAdmissionToTheExecutor(t *testing.T) {
 func TestExecCLI_DropsUnsetEnv(t *testing.T) {
 	t.Setenv("CLAUDE_CONFIG_DIR", "/alternate")
 	t.Setenv("AO_TEXTGEN_KEPT", "kept")
-	result, err := ExecCLI(context.Background(), CLISpec{
+	result, err := ExecCLI(context.Background(), procutiltest.Reaper(), CLISpec{
 		Binary:   "/bin/sh",
 		Args:     []string{"-c", `printf '%s|%s' "${CLAUDE_CONFIG_DIR-unset}" "${AO_TEXTGEN_KEPT-unset}"`},
 		UnsetEnv: []string{"CLAUDE_CONFIG_DIR"},

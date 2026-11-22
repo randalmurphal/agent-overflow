@@ -425,5 +425,8 @@ func (a *App) resolveTextGenerationExecutor() textgen.CLIExecutor {
 			)
 		}
 	}
-	return textgen.ExecCLI
+	reaper := a.groupReaper("text generation")
+	return func(ctx context.Context, spec textgen.CLISpec) (textgen.CLIResult, error) {
+		return textgen.ExecCLI(ctx, reaper, spec)
+	}
 }

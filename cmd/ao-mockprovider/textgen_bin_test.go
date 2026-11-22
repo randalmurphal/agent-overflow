@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/commitmsg"
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/textgen"
 	"agent-overflow/internal/threadtitle"
@@ -47,7 +48,9 @@ func textGenConfig() textgen.Config {
 		Binary:          mockBin,
 		Model:           "mock-model",
 		ClaudeRetention: func(string) claude.Retention { return claude.UserHomeRetention(90) },
-		Exec:            textgen.ExecCLI,
+		Exec: func(ctx context.Context, spec textgen.CLISpec) (textgen.CLIResult, error) {
+			return textgen.ExecCLI(ctx, procutiltest.Reaper(), spec)
+		},
 	}
 }
 

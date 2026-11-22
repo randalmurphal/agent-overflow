@@ -84,7 +84,7 @@ lifetime starts nothing.
 | Headless Chromium (`browser/headless_process*.go`) | Ends with the backend | Reaper. Its renderer, GPU, network and storage processes are in its group and write into the profile until they die |
 | `caffeinate` (`power`, macOS) | Ends with the backend | `-w <backend pid>` |
 | Bounded one-shots: git, `gh`/`glab` token reads, version and MCP status probes, the login-shell probe, `ssh` setup, `security`, `lsof`, `systemctl`/`launchctl`, `wslpath` | Finishes on its own | Each runs under a timeout or ends at EOF; none is watched |
-| Text generation (`textgen`) | Finishes on its own | Deliberately not killed abruptly: the CLI may be writing a refreshed OAuth token |
+| Text generation (`textgen`) | Finishes within its deadline, or ends with the backend | Reaper. A stop is SIGTERM to the group first, since the CLI may be writing a refreshed OAuth token |
 | Editor, external URL, desktop app and update helper launches | Outlives the backend | Started detached in a new session on purpose |
 
 Not backend children: the desktop supervisor's backend child and preflight

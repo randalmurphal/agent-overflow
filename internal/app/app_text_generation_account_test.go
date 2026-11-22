@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/claudecatalog"
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provideraccounts"
@@ -149,7 +150,7 @@ printf '%s\n' '{"structured_output":{"title":"From Claude"}}'`
 		}
 		spec.Binary = "/bin/sh"
 		spec.Args = []string{"-c", script, dir, model}
-		return textgen.ExecCLI(ctx, spec)
+		return textgen.ExecCLI(ctx, procutiltest.Reaper(), spec)
 	}
 
 	type outcome struct {
