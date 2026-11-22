@@ -12,8 +12,14 @@ import (
 // statements and row writes pinned here. Each tick runs twice; the second
 // is the steady state. Each writes only read times: a board's read and
 // cursor, a redelivered row's and its card's read, each card's read (a
-// Jira round), an open detail's read (Linear). A round's statements do not
-// grow with its tickets; its row writes are each ticket's read time. A board tick while an issue's
+// Jira round), an open detail's read and its card's (Linear). A round's
+// statements do not grow with its tickets; its row writes are each
+// ticket's read times. A Linear round writes two per ticket because its
+// card's read time must move with the document's: the card rule
+// (mirrorCardSupersededSQL) orders two cards of one update by the card's
+// read time alone, so an earlier-begun read of a renamed key would
+// otherwise replace the identical card this round read, and no reader
+// orders cards by the document's read time. A board tick while an issue's
 // history waits until a read can be final for it is an idle tick: the sync
 // state reports no history due, so the tick runs no history unit.
 func TestIdleTickStatements(t *testing.T) {
@@ -28,7 +34,7 @@ func TestIdleTickStatements(t *testing.T) {
 	docs := func(n int) []MirrorDetailDoc {
 		var out []MirrorDetailDoc
 		for _, id := range tickets[:n] {
-			out = append(out, MirrorDetailDoc{IssueID: id, Data: []byte(`{}`)})
+			out = append(out, heldDoc(t, s, root, id, []byte(`{}`)))
 		}
 		return out
 	}
@@ -71,6 +77,7 @@ func TestIdleTickStatements(t *testing.T) {
 			cards[i] = webCard(id, 5)
 		}
 		cards[0] = webCard("10001", 5, "21")
+		open := docs(n)
 		rounds = append(rounds, idleTick{fmt.Sprintf("a Jira round of %d tickets", n), func() {
 			call("GetMirrorSync", syncState(""))
 			call("ListMirrorDetailStates", func() error { _, err := s.ListMirrorDetailStates(root, tickets[:n]); return err })
@@ -81,10 +88,10 @@ func TestIdleTickStatements(t *testing.T) {
 		}, 9, map[string]int{"tracker_cache_issues": n}, nil}, idleTick{fmt.Sprintf("a Linear round of %d tickets", n), func() {
 			call("GetMirrorSync", syncState(""))
 			call("StoreMirrorDetails", func() error {
-				_, err := s.StoreMirrorDetails(root, sweep, docs(n), 0, at)
+				_, err := s.StoreMirrorDetails(root, sweep, open, 0, at)
 				return err
 			})
-		}, 4, map[string]int{"tracker_cache_issue_details": n}, nil})
+		}, 9, map[string]int{"tracker_cache_issue_details": n, "tracker_cache_issues": n}, nil})
 	}
 	// The tick whose history waits runs last: it moves issue 10001's update
 	// time.

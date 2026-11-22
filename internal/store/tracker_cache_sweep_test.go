@@ -23,7 +23,7 @@ func TestMirrorSweepFencesReadsOutsideABoard(t *testing.T) {
 			return err
 		}},
 		{"detail", `tracker_cache_issue_details`, func(s *Store, root, sweep int64) error {
-			_, err := s.StoreMirrorDetail(root, sweep, "10001", 9, 9, []byte(`{}`))
+			_, err := storeDetail(t, s, root, sweep, "10001", 9, 9, []byte(`{}`))
 			return err
 		}},
 		{"history", `tracker_cache_changes`, func(s *Store, root, sweep int64) error {

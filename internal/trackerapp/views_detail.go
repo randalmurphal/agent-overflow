@@ -412,9 +412,10 @@ func (sd shownDetail) view(mirrored catalogNames) DetailView {
 // the same issue, when m is the version c shows: the same update time and
 // status. Otherwise it is unknown (0): the mirror's time belongs to
 // another status, or to an earlier or a later stay in this one. The store
-// alone decides the time a card keeps (mirrorStatusSinceSQL); a document
-// read ahead of the mirror's card shows none until a card read stores
-// that version.
+// alone decides the time a card keeps (mirrorStatusSinceSQL); a
+// document's card is stored with the document (StoreMirrorDetails), so
+// only a document of an issue the mirror does not keep, or one a later
+// read already superseded, shows none.
 func statusSinceOf(m store.MirrorCard, c tracker.Card) int64 {
 	if m.StatusID != string(c.Status) || m.UpdatedAt != millis(c.Updated) {
 		return 0

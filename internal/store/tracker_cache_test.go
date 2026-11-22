@@ -193,7 +193,8 @@ func mirrorWriters(s *Store) map[string]func(root int64) error {
 			return err
 		},
 		"StoreMirrorDetails": func(root int64) error {
-			_, err := s.StoreMirrorDetails(root, currentSweep(s, root), []MirrorDetailDoc{{IssueID: "10001", Data: []byte(`{"v":2}`)}, {IssueID: "10002", Data: []byte(`{}`)}}, 9, 9)
+			_, err := s.StoreMirrorDetails(root, currentSweep(s, root), []MirrorDetailDoc{
+				{IssueID: "10001", Data: []byte(`{"v":2}`), Card: webCard("10001", 5, "21")}, {IssueID: "10002", Data: []byte(`{}`), Card: webCard("10002", 5)}}, 9, 9)
 			return err
 		},
 		"ConfirmMirrorDetail": func(root int64) error {
@@ -209,11 +210,11 @@ func mirrorWriters(s *Store) map[string]func(root int64) error {
 			return err
 		},
 		"StoreMirrorDetail": func(root int64) error {
-			_, err := s.StoreMirrorDetail(root, currentSweep(s, root), "10001", 0, 9, []byte(`{}`))
+			_, err := s.StoreMirrorDetail(root, currentSweep(s, root), MirrorDetailDoc{IssueID: "10001", Data: []byte(`{}`), Card: webCard("10001", 5, "21")}, 0, 9)
 			return err
 		},
 		"StoreMirrorDetail opened": func(root int64) error {
-			_, err := s.StoreMirrorDetail(root, currentSweep(s, root), "10001", 20, 7, []byte(`{}`))
+			_, err := s.StoreMirrorDetail(root, currentSweep(s, root), MirrorDetailDoc{IssueID: "10001", Data: []byte(`{}`), Card: webCard("10001", 5, "21")}, 20, 7)
 			return err
 		},
 		"ReplaceMirrorWorklogs": func(root int64) error {

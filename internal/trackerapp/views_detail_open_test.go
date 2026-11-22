@@ -178,13 +178,15 @@ func (m *mirrorFixture) evictUntold(t *testing.T) Changes {
 	var docs []store.MirrorDetailDoc
 	for i := 1; i <= 200; i++ {
 		id := fmt.Sprintf("%05d", 40000+i)
-		data, err := mirrorDetail(tracker.Detail{Card: card(id, 1_799_000_000_000)})
+		d := tracker.Detail{Card: card(id, 1_799_000_000_000)}
+		data, err := mirrorDetail(d)
 		if err != nil {
 			t.Fatal(err)
 		}
-		docs = append(docs, store.MirrorDetailDoc{IssueID: id, Data: data})
+		c := must[store.MirrorCard](t)(mirrorCard(d.Card))
+		docs = append(docs, store.MirrorDetailDoc{IssueID: id, Data: data, Card: c})
 	}
-	at := m.now().UnixMilli()
+	at := m.svc.readAtNext()
 	written, err := m.st.StoreMirrorDetails(m.root(), m.sync("").Sweep, docs, at, at)
 	if err != nil {
 		t.Error(err)
@@ -235,7 +237,12 @@ func TestADetailDroppedDuringItsCheckIsReadAgain(t *testing.T) {
 // a document or none: a write that is no opening stores only into one.
 func (m *mirrorFixture) heldDetail(t *testing.T, issue string) bool {
 	t.Helper()
-	w := must[store.MirrorDetailWrite](t)(m.st.StoreMirrorDetail(m.root(), m.sync("").Sweep, issue, 0, m.now().UnixMilli(), []byte(`{}`)))
+	c := store.MirrorCard{IssueID: issue, Key: issue, UpdatedAt: 1}
+	if held := must[[]store.MirrorCard](t)(m.st.ListMirrorCards(m.root(), []string{issue})); len(held) == 1 {
+		c, c.StatusSince = held[0], 0
+	}
+	doc := store.MirrorDetailDoc{IssueID: issue, Data: []byte(`{}`), Card: c}
+	w := must[store.MirrorDetailWrite](t)(m.st.StoreMirrorDetail(m.root(), m.sync("").Sweep, doc, 0, m.svc.readAtNext()))
 	return w.Stored
 }
 
@@ -310,7 +317,7 @@ func TestACheckShowsTheLinkedIssuesAsTheMirrorHasThem(t *testing.T) {
 	before, _, _ := m.storedDetail(t, "10001")
 	link := card("10002", 1_799_000_000_000)
 	link.Title, link.Status, link.Updated = "Issue 10002, renamed", "s2", link.Updated.Add(time.Minute)
-	must[store.MirrorChanges](t)(m.st.UpsertMirrorCards(m.root(), m.sync("").Sweep, []store.MirrorCard{must[store.MirrorCard](t)(mirrorCard(link))}, store.MirrorCatalog{}, m.now().UnixMilli()))
+	must[store.MirrorChanges](t)(m.st.UpsertMirrorCards(m.root(), m.sync("").Sweep, []store.MirrorCard{must[store.MirrorCard](t)(mirrorCard(link))}, store.MirrorCatalog{}, m.svc.readAtNext()))
 	var asked [][]tracker.IssueID
 	m.p.updatedMovesWithDetail(func(ids []tracker.IssueID) (tracker.Cards, error) {
 		asked = append(asked, ids)
@@ -350,7 +357,10 @@ func TestAStoredDetailPastTheAgeBoundIsRead(t *testing.T) {
 	m.p.detail = func(tracker.IssueID) (tracker.Detail, error) { return detailOfCard(c), nil }
 	m.openDetail(t, "10001")
 	m.p.updatedMovesWithDetail(cardsAnswering(&c))
-	read := m.now()
+	// When the stored detail's read began, by the service's one counter of
+	// read begins, which the board's seeding moved past the frozen clock.
+	stored, _, _ := m.storedDetail(t, "10001")
+	read := time.UnixMilli(stored.ReadAt)
 	at := func(d time.Duration) { m.svc.now = func() time.Time { return read.Add(d) } }
 	at(detailMaxAge)
 	m.openDetail(t, "10001")
@@ -403,7 +413,7 @@ func TestADetailTheMirrorKnowsIsStaleIsRead(t *testing.T) {
 	m.openDetail(t, "10001")
 	c.Updated = c.Updated.Add(time.Minute)
 	newer := must[store.MirrorCard](t)(mirrorCard(c))
-	must[store.MirrorChanges](t)(m.st.UpsertMirrorCards(m.root(), m.sync("").Sweep, []store.MirrorCard{newer}, store.MirrorCatalog{}, m.now().UnixMilli()))
+	must[store.MirrorChanges](t)(m.st.UpsertMirrorCards(m.root(), m.sync("").Sweep, []store.MirrorCard{newer}, store.MirrorCatalog{}, m.svc.readAtNext()))
 	if v, _ := m.openDetail(t, "10001"); v.Card.Updated != millis(c.Updated) || m.p.count("Cards") != 0 || m.p.count("Details") != 2 {
 		t.Fatalf("a newer mirror card: updated %d, %d card reads, %d detail reads", v.Card.Updated, m.p.count("Cards"), m.p.count("Details"))
 	}

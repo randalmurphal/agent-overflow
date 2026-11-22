@@ -18,13 +18,13 @@ func TestStoreMirrorDetailsStoresEachInOneTransaction(t *testing.T) {
 	s, _, root := newMirror(t)
 	writeMirrorBoard(t, s, root, "10", mirrorRows(10001, 4, "a"))
 	sweep := currentSweep(s, root)
-	got, err := s.StoreMirrorDetails(root, sweep, []MirrorDetailDoc{{"10001", []byte(`{"v":1}`)}, {"10002", []byte(`{"v":1}`)}}, 10, 10)
+	got, err := s.StoreMirrorDetails(root, sweep, heldDocs(t, s, root, []MirrorDetailDoc{{IssueID: "10001", Data: []byte(`{"v":1}`)}, {IssueID: "10002", Data: []byte(`{"v":1}`)}}), 10, 10)
 	if err != nil || !reflect.DeepEqual(got, MirrorDetailWrites{Docs: []MirrorDetailWrite{{Stored: true, Changed: true}, {Stored: true, Changed: true}}}) {
 		t.Fatalf("opened: %+v, %v", got, err)
 	}
-	got, err = s.StoreMirrorDetails(root, sweep, []MirrorDetailDoc{
-		{"10001", []byte(`{"v":1}`)}, {"10002", []byte(`{"v":2}`)}, {"10003", []byte(`{"v":1}`)}, {"10009", []byte(`{"v":1}`)},
-	}, 0, 20)
+	got, err = s.StoreMirrorDetails(root, sweep, heldDocs(t, s, root, []MirrorDetailDoc{
+		{IssueID: "10001", Data: []byte(`{"v":1}`)}, {IssueID: "10002", Data: []byte(`{"v":2}`)}, {IssueID: "10003", Data: []byte(`{"v":1}`)}, {IssueID: "10009", Data: []byte(`{"v":1}`)},
+	}), 0, 20)
 	want := MirrorDetailWrites{Docs: []MirrorDetailWrite{{Stored: true}, {Stored: true, Changed: true}, {}, {}}}
 	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("a round's write: %+v, %v; want %+v", got, err, want)
@@ -33,8 +33,8 @@ func TestStoreMirrorDetailsStoresEachInOneTransaction(t *testing.T) {
 		(SELECT * FROM tracker_cache_issue_details ORDER BY issue_id)`, "10001 10 20 1, 10002 10 20 2")
 	for name, docs := range map[string][]MirrorDetailDoc{
 		"none":           nil,
-		"an issue twice": {{"10001", []byte(`{}`)}, {"10003", []byte(`{}`)}, {"10001", []byte(`{}`)}},
-		"no issue":       {{"", []byte(`{}`)}},
+		"an issue twice": {{IssueID: "10001", Data: []byte(`{}`)}, {IssueID: "10003", Data: []byte(`{}`)}, {IssueID: "10001", Data: []byte(`{}`)}},
+		"no issue":       {{IssueID: "", Data: []byte(`{}`)}},
 	} {
 		if _, err := s.StoreMirrorDetails(root, sweep, docs, 30, 30); !errors.Is(err, ErrInvalidTrackerCache) {
 			t.Errorf("%s: %v", name, err)
@@ -51,11 +51,11 @@ func TestListMirrorDetailStates(t *testing.T) {
 	s, _, root := newMirror(t)
 	writeMirrorBoard(t, s, root, "10", mirrorRows(10001, 4, "a"))
 	sweep := currentSweep(s, root)
-	if _, err := s.StoreMirrorDetails(root, sweep, []MirrorDetailDoc{{"10001", []byte(`{"v":1}`)}, {"10002", []byte(`{"v":1}`)}}, 10, 10); err != nil {
+	if _, err := s.StoreMirrorDetails(root, sweep, heldDocs(t, s, root, []MirrorDetailDoc{{IssueID: "10001", Data: []byte(`{"v":1}`)}, {IssueID: "10002", Data: []byte(`{"v":1}`)}}), 10, 10); err != nil {
 		t.Fatal(err)
 	}
 	// An opening whose read began earlier holds no document.
-	if _, err := s.StoreMirrorDetail(root, sweep, "10003", 30, 20, []byte(`{}`)); err != nil {
+	if _, err := storeDetail(t, s, root, sweep, "10003", 30, 20, []byte(`{}`)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Missing: []string{"10002"}, ReadAt: 40})); err != nil {
@@ -96,14 +96,14 @@ func TestListMirrorDetailStates(t *testing.T) {
 // same batch drops is not Stored, and Dropped names the details held
 // before the batch that it dropped, a held document of the batch
 // included, and never a new one, which was never held. The eviction is
-// the batch's only statement beyond the root's read and each document's
-// read and write.
+// the batch's only statement beyond the root's read, the cards' and each
+// document's read and write.
 func TestMirrorDetailBatchReportsTheCommittedState(t *testing.T) {
 	s, _, root := newMirror(t)
 	writeMirrorBoard(t, s, root, "10", mirrorRows(10001, mirrorDetailCap+3, "a"))
 	sweep := currentSweep(s, root)
 	for i := range mirrorDetailCap - 1 {
-		if _, err := s.StoreMirrorDetail(root, sweep, fmt.Sprint(10004+i), 100, 100, []byte(`{}`)); err != nil {
+		if _, err := storeDetail(t, s, root, sweep, fmt.Sprint(10004+i), 100, 100, []byte(`{}`)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -111,7 +111,7 @@ func TestMirrorDetailBatchReportsTheCommittedState(t *testing.T) {
 		t.Helper()
 		docs := make([]MirrorDetailDoc, len(issues))
 		for i, issue := range issues {
-			docs[i] = MirrorDetailDoc{IssueID: issue, Data: []byte(`{}`)}
+			docs[i] = heldDoc(t, s, root, issue, []byte(`{}`))
 		}
 		var got MirrorDetailWrites
 		var err error
@@ -119,9 +119,10 @@ func TestMirrorDetailBatchReportsTheCommittedState(t *testing.T) {
 		if err != nil || !reflect.DeepEqual(got, want) {
 			t.Fatalf("%s = %+v, %v; want %+v", what, got, err, want)
 		}
-		// The sweep check, the documents' states, a write each and the
-		// eviction.
-		if want := 2 + len(issues) + 1; statements != want {
+		// The sweep check, the documents' states, the cards' five (their
+		// states, the three card statements and their read time, each read
+		// beginning later than its card's), a write each and the eviction.
+		if want := 2 + 5 + len(issues) + 1; statements != want {
 			t.Fatalf("%s ran %d statements; want %d", what, statements, want)
 		}
 		for i, issue := range issues {
@@ -157,7 +158,7 @@ func mustDetailWrite(t *testing.T, what string, got MirrorDetailWrite, err error
 // requires its outcome and the details the write dropped.
 func mustDetailStore(t *testing.T, s *Store, root int64, what, issue string, openedAt, readAt int64, want MirrorDetailWrite, dropped ...string) {
 	t.Helper()
-	got, err := s.StoreMirrorDetails(root, currentSweep(s, root), []MirrorDetailDoc{{IssueID: issue, Data: []byte(`{}`)}}, openedAt, readAt)
+	got, err := s.StoreMirrorDetails(root, currentSweep(s, root), []MirrorDetailDoc{heldDoc(t, s, root, issue, []byte(`{}`))}, openedAt, readAt)
 	if wantAll := (MirrorDetailWrites{Docs: []MirrorDetailWrite{want}, Dropped: dropped}); err != nil || !reflect.DeepEqual(got, wantAll) {
 		t.Fatalf("%s = %+v, %v; want %+v", what, got, err, wantAll)
 	}
@@ -180,27 +181,27 @@ func TestMirrorDetailFollowsItsReadOrder(t *testing.T) {
 		}
 		return at
 	}
-	got, err := s.StoreMirrorDetail(root, currentSweep(s, root), "10001", 100, 90, []byte(`{"v":0}`))
+	got, err := storeDetail(t, s, root, currentSweep(s, root), "10001", 100, 90, []byte(`{"v":0}`))
 	mustDetailWrite(t, "first opening, its read earlier", got, err, MirrorDetailWrite{Stored: true, Superseded: true})
 	if _, ok, err := s.GetMirrorDetail(root, "10001"); err != nil || ok {
 		t.Fatalf("a detail with no document reads: %v, %v", ok, err)
 	}
-	got, err = s.StoreMirrorDetail(root, currentSweep(s, root), "10001", 50, 40, []byte(`{"v":0}`))
+	got, err = storeDetail(t, s, root, currentSweep(s, root), "10001", 50, 40, []byte(`{"v":0}`))
 	mustDetailWrite(t, "earlier opening", got, err, MirrorDetailWrite{Stored: true, Superseded: true})
 	if at := opened(); at != "100 100" {
 		t.Fatalf("after an earlier opening: %s", at)
 	}
-	got, err = s.StoreMirrorDetail(root, currentSweep(s, root), "10001", 0, 180, []byte(`{"v":1}`))
+	got, err = storeDetail(t, s, root, currentSweep(s, root), "10001", 0, 180, []byte(`{"v":1}`))
 	mustDetailWrite(t, "document", got, err, MirrorDetailWrite{Stored: true, Changed: true})
-	got, err = s.StoreMirrorDetail(root, currentSweep(s, root), "10001", 0, 170, []byte(`{"v":0}`))
+	got, err = storeDetail(t, s, root, currentSweep(s, root), "10001", 0, 170, []byte(`{"v":0}`))
 	mustDetailWrite(t, "earlier document", got, err, MirrorDetailWrite{Stored: true, Superseded: true})
-	got, err = s.StoreMirrorDetail(root, currentSweep(s, root), "10001", 0, 170, []byte(`{"v":1}`))
+	got, err = storeDetail(t, s, root, currentSweep(s, root), "10001", 0, 170, []byte(`{"v":1}`))
 	mustDetailWrite(t, "identical earlier document", got, err, MirrorDetailWrite{Stored: true})
 	if d, ok, err := s.GetMirrorDetail(root, "10001"); err != nil || !ok || !reflect.DeepEqual(d, MirrorDetail{IssueID: "10001", OpenedAt: 100, ReadAt: 180,
 		Data: []byte(`{"v":1}`), CardUpdatedAt: 5, row: d.row, sweep: currentSweep(s, root)}) || d.row <= 0 {
 		t.Fatalf("detail = %+v, %v, %v", d, ok, err)
 	}
-	got, err = s.StoreMirrorDetail(root, currentSweep(s, root), "10001", 0, 190, []byte(`{"v":2}`))
+	got, err = storeDetail(t, s, root, currentSweep(s, root), "10001", 0, 190, []byte(`{"v":2}`))
 	mustDetailWrite(t, "later document", got, err, MirrorDetailWrite{Stored: true, Changed: true})
 	d, _, err := s.GetMirrorDetail(root, "10001")
 	if err != nil {
@@ -212,9 +213,9 @@ func TestMirrorDetailFollowsItsReadOrder(t *testing.T) {
 		t.Fatalf("after a later opening: %s", at)
 	}
 
-	got, err = s.StoreMirrorDetail(root, currentSweep(s, root), "10009", 300, 300, []byte(`{}`))
+	got, err = storeDetail(t, s, root, currentSweep(s, root), "10009", 300, 300, []byte(`{}`))
 	mustDetailWrite(t, "opening of an unkept issue", got, err, MirrorDetailWrite{})
-	got, err = s.StoreMirrorDetail(root, currentSweep(s, root), "10009", 0, 300, []byte(`{}`))
+	got, err = storeDetail(t, s, root, currentSweep(s, root), "10009", 0, 300, []byte(`{}`))
 	mustDetailWrite(t, "document of an unkept issue", got, err, MirrorDetailWrite{})
 	if _, err := s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Missing: []string{"10001"}, ReadAt: 2})); err != nil {
 		t.Fatal(err)
@@ -229,10 +230,10 @@ func TestMirrorDetailFollowsItsReadOrder(t *testing.T) {
 			return err
 		}(),
 		"document with no time": func() error {
-			_, err := s.StoreMirrorDetail(root, currentSweep(s, root), "10001", 0, 0, nil)
+			_, err := storeDetail(t, s, root, currentSweep(s, root), "10001", 0, 0, nil)
 			return err
 		}(),
-		"document with no issue": func() error { _, err := s.StoreMirrorDetail(root, currentSweep(s, root), "", 0, 1, nil); return err }(),
+		"document with no issue": func() error { _, err := storeDetail(t, s, root, currentSweep(s, root), "", 0, 1, nil); return err }(),
 	} {
 		if !errors.Is(err, ErrInvalidTrackerCache) {
 			t.Errorf("%s: %v", name, err)
@@ -248,7 +249,7 @@ func TestMirrorDetailKeepsTheMostRecentlyOpened(t *testing.T) {
 	s, _, root := newMirror(t)
 	writeMirrorBoard(t, s, root, "10", mirrorRows(10000, mirrorDetailCap+2, "a"))
 	for i := range mirrorDetailCap {
-		got, err := s.StoreMirrorDetail(root, currentSweep(s, root), fmt.Sprint(10000+i), int64(100+i), int64(100+i), []byte(`{}`))
+		got, err := storeDetail(t, s, root, currentSweep(s, root), fmt.Sprint(10000+i), int64(100+i), int64(100+i), []byte(`{}`))
 		mustDetailWrite(t, fmt.Sprint("opening ", i), got, err, MirrorDetailWrite{Stored: true, Changed: true})
 	}
 	oldest, _, err := s.GetMirrorDetail(root, "10000")
@@ -294,7 +295,7 @@ func TestConfirmMirrorDetail(t *testing.T) {
 		got, err := s.ConfirmMirrorDetail(root, d, openedAt)
 		mustDetailWrite(t, what, got, err, want)
 	}
-	got, err := s.StoreMirrorDetail(root, currentSweep(s, root), "10000", 100, 100, []byte(`{"v":1}`))
+	got, err := storeDetail(t, s, root, currentSweep(s, root), "10000", 100, 100, []byte(`{"v":1}`))
 	mustDetailWrite(t, "first read", got, err, MirrorDetailWrite{Stored: true, Changed: true})
 	d := read("10000")
 	if d.CardUpdatedAt != 5 {
@@ -307,7 +308,7 @@ func TestConfirmMirrorDetail(t *testing.T) {
 	}
 
 	// A later read replaced the document: refused, nothing written.
-	got, err = s.StoreMirrorDetail(root, currentSweep(s, root), "10000", 0, 200, []byte(`{"v":3}`))
+	got, err = storeDetail(t, s, root, currentSweep(s, root), "10000", 0, 200, []byte(`{"v":3}`))
 	mustDetailWrite(t, "a later read", got, err, MirrorDetailWrite{Stored: true, Changed: true})
 	confirm("a replaced document", d, 300, MirrorDetailWrite{})
 	if at := state("10000"); at != "150 200 3" {
@@ -318,7 +319,7 @@ func TestConfirmMirrorDetail(t *testing.T) {
 	// another.
 	d = read("10000")
 	for i := range mirrorDetailCap {
-		if _, err := s.StoreMirrorDetail(root, currentSweep(s, root), fmt.Sprint(10001+i), int64(1000+i), int64(1000+i), []byte(`{"v":1}`)); err != nil {
+		if _, err := storeDetail(t, s, root, currentSweep(s, root), fmt.Sprint(10001+i), int64(1000+i), int64(1000+i), []byte(`{"v":1}`)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -328,7 +329,7 @@ func TestConfirmMirrorDetail(t *testing.T) {
 	assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_issue_details`, fmt.Sprint(mirrorDetailCap))
 
 	// An issue no longer kept: refused.
-	got, err = s.StoreMirrorDetail(root, currentSweep(s, root), "10001", 6000, 6000, []byte(`{"v":4}`))
+	got, err = storeDetail(t, s, root, currentSweep(s, root), "10001", 6000, 6000, []byte(`{"v":4}`))
 	mustDetailWrite(t, "a read of another issue", got, err, MirrorDetailWrite{Stored: true, Changed: true})
 	d = read("10001")
 	if _, err := s.WriteMirrorRows(root, currentPage(s, root, MirrorRowPage{BoardID: "10", Missing: []string{"10001"}, ReadAt: 2})); err != nil {
@@ -362,7 +363,7 @@ func TestConfirmMirrorDetailRefusesADocumentFromBeforeASweep(t *testing.T) {
 		if _, err := s.UpsertMirrorCards(root, currentSweep(s, root), []MirrorCard{webCard("10001", 5)}, MirrorCatalog{}, 1); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.StoreMirrorDetail(root, currentSweep(s, root), "10001", 100, 100, []byte(`{"v":1}`)); err != nil {
+		if _, err := storeDetail(t, s, root, currentSweep(s, root), "10001", 100, 100, []byte(`{"v":1}`)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -388,4 +389,79 @@ func TestConfirmMirrorDetailRefusesADocumentFromBeforeASweep(t *testing.T) {
 	assertRows(t, s.db, `SELECT opened_at || ' ' || (data ->> 'v') FROM tracker_cache_issue_details WHERE issue_id = '10001'`, "100 1")
 	got, err = s.ConfirmMirrorDetail(root, after, 200)
 	mustDetailWrite(t, "the document after it", got, err, MirrorDetailWrite{Stored: true})
+}
+
+// A detail document's card is stored in the document's write by the rule
+// every card write follows, whatever becomes of the document: a newer card
+// replaces the mirror's and is reported, an older one is not stored, one
+// of the same update replaces it only from a read that began later, an
+// identical one from a later read moves the card's read time, and the
+// card of an issue the mirror does not keep is not stored. A linked issue
+// with no card yet gets its card and its document.
+func TestAMirrorDetailStoresItsCard(t *testing.T) {
+	t.Parallel()
+	s, _, root := newMirror(t)
+	writeMirrorBoard(t, s, root, "10", []MirrorRow{webRow("10001", 5, "a", "21")})
+	sweep := currentSweep(s, root)
+	write := func(what string, card MirrorCard, openedAt, readAt int64, cards ...string) {
+		t.Helper()
+		got, err := s.StoreMirrorDetails(root, sweep, []MirrorDetailDoc{{IssueID: card.IssueID, Data: []byte(`{}`), Card: card}}, openedAt, readAt)
+		if err != nil || !slices.Equal(got.Cards, cards) {
+			t.Fatalf("%s: changed the cards of %v, %v; want %v", what, got.Cards, err, cards)
+		}
+	}
+	held := func(what, issue, wantKey string, wantUpdated, wantReadAt int64) {
+		t.Helper()
+		var key string
+		var updated, readAt int64
+		err := s.db.QueryRow(`SELECT issue_key, updated_at, read_at FROM tracker_cache_issues WHERE root_id = ? AND issue_id = ?`, root, issue).
+			Scan(&key, &updated, &readAt)
+		if err != nil || key != wantKey || updated != wantUpdated || readAt != wantReadAt {
+			t.Fatalf("%s: the mirror's card is %s updated %d read %d, %v; want %s updated %d read %d", what, key, updated, readAt, err,
+				wantKey, wantUpdated, wantReadAt)
+		}
+	}
+	newer := webCard("10001", 6, "21")
+	write("a newer card", newer, 10, 10, "10001")
+	held("a newer card", "10001", "WEB-10001", 6, 10)
+	write("an older card", webCard("10001", 5, "21"), 0, 20)
+	held("an older card", "10001", "WEB-10001", 6, 10)
+	renamed := newer
+	renamed.Key = "APP-10001"
+	write("a renamed card from an earlier read", renamed, 0, 8)
+	held("a renamed card from an earlier read", "10001", "WEB-10001", 6, 10)
+	write("a renamed card from a later read", renamed, 0, 30, "10001")
+	held("a renamed card from a later read", "10001", "APP-10001", 6, 30)
+	write("the same card from a later read", renamed, 0, 40)
+	held("the same card from a later read", "10001", "APP-10001", 6, 40)
+
+	write("an unkept issue's card", webCard("10009", 5), 50, 50)
+	assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_issues WHERE issue_id = '10009'`, "0")
+
+	linkIssue(t, s, "linked", "10005")
+	got, err := s.StoreMirrorDetails(root, sweep, []MirrorDetailDoc{{IssueID: "10005", Data: []byte(`{"v":1}`), Card: webCard("10005", 5)}}, 60, 60)
+	if want := (MirrorDetailWrites{Docs: []MirrorDetailWrite{{Stored: true, Changed: true}}, Cards: []string{"10005"}}); err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("a linked issue's first document: %+v, %v; want %+v", got, err, want)
+	}
+	held("a linked issue's first document", "10005", "WEB-10005", 5, 60)
+	if _, ok, err := s.GetMirrorDetail(root, "10005"); err != nil || !ok {
+		t.Fatalf("a linked issue's detail held %v, %v", ok, err)
+	}
+
+	for name, doc := range map[string]MirrorDetailDoc{
+		"another issue's card": {IssueID: "10001", Data: []byte(`{}`), Card: webCard("10002", 5)},
+		"no card":              {IssueID: "10001", Data: []byte(`{}`)},
+	} {
+		if _, err := s.StoreMirrorDetail(root, sweep, doc, 0, 70); !errors.Is(err, ErrInvalidTrackerCache) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	docs := make([]MirrorDetailDoc, mirrorMaxPageRows+1)
+	for i := range docs {
+		id := fmt.Sprint(20000 + i)
+		docs[i] = MirrorDetailDoc{IssueID: id, Data: []byte(`{}`), Card: webCard(id, 5)}
+	}
+	if _, err := s.StoreMirrorDetails(root, sweep, docs, 0, 70); !errors.Is(err, ErrInvalidTrackerCache) {
+		t.Errorf("%d documents: %v", len(docs), err)
+	}
 }

@@ -35,14 +35,16 @@ type MirrorDetailWrite struct {
 }
 
 // MirrorDetailWrites is what StoreMirrorDetails did, as its transaction
-// committed: each document's outcome, in the order of its documents, and
-// the issues whose details it dropped to keep the mirrorDetailCap most
-// recently opened, sorted. Dropped names only details held before the
-// write: a new detail the cap drops in the same write was never held, and
-// its outcome says so (Stored false).
+// committed: each document's outcome, in the order of its documents, the
+// issues whose details it dropped to keep the mirrorDetailCap most
+// recently opened, sorted, and the issues whose card or sprints the
+// documents' cards changed, sorted. Dropped names only details held
+// before the write: a new detail the cap drops in the same write was never
+// held, and its outcome says so (Stored false).
 type MirrorDetailWrites struct {
 	Docs    []MirrorDetailWrite
 	Dropped []string
+	Cards   []string
 }
 
 // mirrorDetailEvictSQL drops the details of a root beyond the
@@ -165,17 +167,20 @@ func (s *Store) ConfirmMirrorDetail(rootID int64, d MirrorDetail, openedAt int64
 	return result, nil
 }
 
-// MirrorDetailDoc is one issue's detail document as a read found it.
+// MirrorDetailDoc is one issue's detail document as a read found it, with
+// the card the document shows, which the write stores as the issue's card
+// by the rule every card write follows (mirrorCardSupersededSQL).
 type MirrorDetailDoc struct {
 	IssueID string
 	Data    []byte
+	Card    MirrorCard
 }
 
 // StoreMirrorDetail is StoreMirrorDetails of one document, returning its
 // outcome alone: a caller that must learn which other details the write
 // dropped calls StoreMirrorDetails.
-func (s *Store) StoreMirrorDetail(rootID, sweep int64, issueID string, openedAt, readAt int64, data []byte) (MirrorDetailWrite, error) {
-	out, err := s.StoreMirrorDetails(rootID, sweep, []MirrorDetailDoc{{IssueID: issueID, Data: data}}, openedAt, readAt)
+func (s *Store) StoreMirrorDetail(rootID, sweep int64, doc MirrorDetailDoc, openedAt, readAt int64) (MirrorDetailWrite, error) {
+	out, err := s.StoreMirrorDetails(rootID, sweep, []MirrorDetailDoc{doc}, openedAt, readAt)
 	if err != nil {
 		return MirrorDetailWrite{}, err
 	}
@@ -193,21 +198,40 @@ func (s *Store) StoreMirrorDetail(rootID, sweep int64, issueID string, openedAt,
 // that starts it stores its document only when its read began no earlier
 // than the opening (Superseded otherwise), so a document read before its
 // detail was dropped (the cap) or swept does not come back. sweep is the
-// root's sweep captured before the read (ErrTrackerCacheSwept). One
-// statement reads every document's state, one moves the read times of
-// the documents found the same, and each other document costs at most
-// one write; a write that started a detail then drops, in one statement
+// root's sweep captured before the read (ErrTrackerCacheSwept).
+//
+// Each document's card is stored first, for every document of an issue
+// the mirror keeps whatever becomes of the document, as a card read with
+// no board is (storeLinkedCardsTx) and with no names: the mirror's card
+// is then the document's version or a later one, so the card a ticket
+// shows and the status time read from it describe the same read, and a
+// linked issue's first document has the card row it needs. Its read time
+// moves as any card's does, because the card's order is read only by the
+// card rule, which no document's read time enters.
+//
+// One statement reads every document's state, the cards take theirs
+// (a state read, the card statements, and one statement moving the read
+// time of the cards found the same), one moves the read times of the
+// documents found the same, and each other document costs at most one
+// write; a write that started a detail then drops, in one statement
 // after every document is written, those beyond the mirrorDetailCap most
 // recently opened, and the outcomes are of the committed state: a
 // document the cap dropped, by an opening of the same write or another,
 // is not Stored.
 func (s *Store) StoreMirrorDetails(rootID, sweep int64, docs []MirrorDetailDoc, openedAt, readAt int64) (out MirrorDetailWrites, err error) {
-	if len(docs) == 0 || readAt <= 0 || openedAt < 0 || sweep <= 0 {
-		return MirrorDetailWrites{}, fmt.Errorf("%w: a detail write needs documents, the time their read began and the root's sweep", ErrInvalidTrackerCache)
+	if len(docs) == 0 || readAt <= 0 || openedAt < 0 || sweep <= 0 || len(docs) > mirrorMaxPageRows {
+		return MirrorDetailWrites{}, fmt.Errorf("%w: a detail write needs at most %d documents, the time their read began and the root's sweep",
+			ErrInvalidTrackerCache, mirrorMaxPageRows)
 	}
 	for i, d := range docs {
 		if d.IssueID == "" || slices.ContainsFunc(docs[:i], func(o MirrorDetailDoc) bool { return o.IssueID == d.IssueID }) {
 			return MirrorDetailWrites{}, fmt.Errorf("%w: a detail write names each of its issues once", ErrInvalidTrackerCache)
+		}
+		if d.Card.IssueID != d.IssueID {
+			return MirrorDetailWrites{}, fmt.Errorf("%w: the document of issue %s shows the card of %q", ErrInvalidTrackerCache, d.IssueID, d.Card.IssueID)
+		}
+		if err := d.Card.check(); err != nil {
+			return MirrorDetailWrites{}, err
 		}
 	}
 	action := fmt.Sprintf("store: store tracker mirror %d details of %d issues", rootID, len(docs))
@@ -215,6 +239,9 @@ func (s *Store) StoreMirrorDetails(rootID, sweep int64, docs []MirrorDetailDoc, 
 		out = MirrorDetailWrites{Docs: make([]MirrorDetailWrite, len(docs))}
 		states, err := readMirrorDetailStatesTx(tx, rootID, docs)
 		if err != nil {
+			return err
+		}
+		if out.Cards, err = storeMirrorDetailCardsTx(tx, rootID, docs, states, readAt); err != nil {
 			return err
 		}
 		started := make([]bool, len(docs))
@@ -263,6 +290,30 @@ func (s *Store) StoreMirrorDetails(rootID, sweep int64, docs []MirrorDetailDoc, 
 		return MirrorDetailWrites{}, err
 	}
 	return out, nil
+}
+
+// storeMirrorDetailCardsTx stores the cards of docs whose issue the mirror
+// keeps, by their states, read from readAt, and returns the issues whose
+// card or sprints changed, sorted; no statement when it keeps none.
+func storeMirrorDetailCardsTx(tx *sql.Tx, rootID int64, docs []MirrorDetailDoc, states []mirrorDetailState, readAt int64) ([]string, error) {
+	rows := make([]mirrorCardRow, 0, len(docs))
+	for i, d := range docs {
+		if states[i].kept {
+			rows = append(rows, newMirrorCardRow(d.Card))
+		}
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	encoded, err := encodeMirrorJSON(rows)
+	if err != nil {
+		return nil, err
+	}
+	_, changed, err := storeLinkedCardsTx(tx, rootID, encoded, readAt, nil)
+	if err != nil {
+		return nil, fmt.Errorf("store the documents' cards: %w", err)
+	}
+	return changed, nil
 }
 
 // storeMirrorDetailTx is StoreMirrorDetails of one document, whose detail

@@ -247,7 +247,7 @@ func scalePaths(t *testing.T, s *Store, root int64, size benchMirrorSize, rec *m
 	docs := func(ids []string, rev int) []MirrorDetailDoc {
 		out := make([]MirrorDetailDoc, len(ids))
 		for i, id := range ids {
-			out[i] = MirrorDetailDoc{IssueID: id, Data: doc(id, rev)}
+			out[i] = heldDoc(t, s, root, id, doc(id, rev))
 		}
 		return out
 	}

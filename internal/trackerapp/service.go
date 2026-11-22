@@ -155,8 +155,8 @@ type Service struct {
 	// digestSeed keys the digests an open ticket keeps of the view it last
 	// published (ticketPump.digest).
 	digestSeed maphash.Seed
-	// detailReadAt is the last time a detail read began (detailReadAtNext).
-	detailReadAt atomic.Int64
+	// readAtLast is the last time a read of the tracker began (readAtNext).
+	readAtLast atomic.Int64
 
 	// subMu is the one lock of the subscriptions, their pumps and the
 	// linked loop (subscriptions.go). It is held for map and flag work and

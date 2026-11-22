@@ -255,9 +255,9 @@ func (r *run) finish() { r.stop() }
 // window is the start of the history window now.
 func (r *run) window() time.Time { return r.s.now().Add(-HistoryWindow) }
 
-// readAt is now as the store orders reads: the time a read begins, taken
-// before its request.
-func (r *run) readAt() int64 { return r.s.now().UnixMilli() }
+// readAt is the time a read begins, taken before its request, from the
+// service's one counter of read begins (Service.readAtNext).
+func (r *run) readAt() int64 { return r.s.readAtNext() }
 
 // steadyAt is now by the clock the history wait is measured on
 // (Service.steady), in Unix ms.

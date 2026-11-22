@@ -2,6 +2,7 @@ package trackerapp
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -93,8 +94,10 @@ func TestIssueDetail(t *testing.T) {
 	if held := must[IssueView](t)(m.svc.Issue(m.conn.ID, "10001")); held.Card.Updated != millis(c.Updated) || held.Card.Title != "Renamed" {
 		t.Fatalf("the mirror's card %+v", held.Card)
 	}
-	if d, ok, err := m.st.GetMirrorDetail(m.root(), "10001"); err != nil || !ok || d.OpenedAt != later.UnixMilli() || d.ReadAt != later.UnixMilli() {
-		t.Fatalf("the detail read again: opened %d, read %d, want %d: %v", d.OpenedAt, d.ReadAt, later.UnixMilli(), err)
+	// The detail's read began after the check's, which began at later: a
+	// millisecond after it on the frozen clock (Service.readAtNext).
+	if d, ok, err := m.st.GetMirrorDetail(m.root(), "10001"); err != nil || !ok || d.OpenedAt != later.UnixMilli()+1 || d.ReadAt != later.UnixMilli()+1 {
+		t.Fatalf("the detail read again: opened %d, read %d, want %d: %v", d.OpenedAt, d.ReadAt, later.UnixMilli()+1, err)
 	}
 	// A card the tracker does not return is no check: the detail is read.
 	m.p.set(func(p *scripted) {
@@ -382,5 +385,66 @@ func TestDetailReadBoundsItsHistory(t *testing.T) {
 		if err != nil || len(v.History) != maxDetailEvents || v.HistoryFrom != millis(base.Add(10*time.Minute)) {
 			t.Fatalf("mirror's copy %v: %d events from %d, %v", mirrored, len(v.History), v.HistoryFrom, err)
 		}
+	}
+}
+
+// A detail read that began before a board read stores its card only when
+// no later read stored another version: a delta that read the issue's key
+// renamed at the same update time while the detail was in flight keeps
+// the renamed card, because both reads take their begin time from the
+// service's one counter (Service.readAtNext), even when the clock does not
+// move between them.
+func TestADetailReadDoesNotRollBackALaterBoardRead(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixture(t)
+	m.seedBoard(t)
+	// The seeded card of 10001, as the detail read finds it.
+	seeded := row("10001", 1_799_000_000_000, "a")
+	seeded.Card.Sprints, seeded.Card.Parent = []tracker.SprintID{"1"}, "10004"
+	seeded.Card.Priority = tracker.Choice{ID: "3", Name: "Medium"}
+	seeded.Card.Labels = []tracker.Choice{{ID: "frontend", Name: "frontend"}}
+	arrived, release := make(chan struct{}), make(chan struct{})
+	m.p.set(func(p *scripted) {
+		p.detail = func(tracker.IssueID) (tracker.Detail, error) { return detailOfCard(seeded.Card), nil }
+		p.block = func(_ context.Context, name string) error {
+			if name == "Details" {
+				close(arrived)
+				<-release
+			}
+			return nil
+		}
+	})
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := m.svc.IssueDetail(t.Context(), m.conn.ID, "10001", Interactive)
+		done <- err
+	}()
+	select {
+	case <-arrived:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the detail read never reached the tracker")
+	}
+	renamed := seeded
+	renamed.Card.Key = "APP-1"
+	m.p.set(func(p *scripted) {
+		p.block = nil
+		p.changedRows = func(tracker.DeltaQuery) (tracker.RowPage, error) {
+			return tracker.RowPage{Rows: []tracker.Row{renamed}, Next: cursorAfter("10001")}, nil
+		}
+	})
+	if out := must[Outcome](t)(m.svc.tickDelta(t.Context(), m.scope(), Background)); !slices.Equal(out.Changes().Cards, ids("10001")) {
+		t.Fatalf("the delta changed %+v", out.Changes())
+	}
+	close(release)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the detail read never ended")
+	}
+	if v := must[IssueView](t)(m.svc.Issue(m.conn.ID, "10001")); v.Card.Key != "APP-1" {
+		t.Fatalf("the mirror's card is %s after the earlier detail read landed; want the delta's APP-1", v.Card.Key)
 	}
 }

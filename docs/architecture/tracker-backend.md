@@ -407,10 +407,16 @@ with one stores no cursor, and a read by ID reads it once more
 (`MirrorChanges.Refused`). A card is ordered by its update time and, for
 one update time, by its `read_at`, the latest read admitted for the card
 or its sprints, identical or not: a project key rename changes every key
-and moves no update time. An issue's row on a board records whether a
-listing has named it (`listed`): a delta page, which is a search of the
-same index, or a listing a reconcile was given. A
-section page carries the board's revision; continuing it at another
+and moves no update time. Every card write follows that one rule
+(`mirrorCardSupersededSQL`): a board's rows, cards read with no board,
+and a detail document's card, which is stored with the document in its
+transaction whatever becomes of the document. A read's begin time comes
+from the service's one counter (`Service.readAtNext`): now, or a
+millisecond after the last read's when that is later, so two reads of one
+process are ordered as they began whatever their path. An issue's row on
+a board records whether a listing has named it (`listed`): a delta page,
+which is a search of the same index, or a listing a reconcile was given.
+A section page carries the board's revision; continuing it at another
 revision fails with `ErrTrackerCacheStale`. A board view's first paint
 reads structure, totals, first pages and what their cards name (statuses,
 users and parents) in one snapshot (`ReadMirrorBoardView`), so its totals,
@@ -422,12 +428,13 @@ the time stands as long as the card keeps its status and is unknown once
 the status changes: an edit to another field does not blank it. An issue
 that left its status and came back between two reads of its card shows
 the earlier stay's time until that history is stored. A ticket shows the
-time only when the mirror's card is the version its document shows: a
-Jira round's check stores the card before it reads the ticket in full, so
-the time stands across an edit, and a document read ahead of the mirror's
-card (a refresh, a write's re-read, every Linear ticket read) shows none
-until a card read stores that version. A detail's read time starts at its opening, so a document read
-before the opening is superseded.
+time only when the mirror's card is the version its document shows. The
+document's card is stored with the document, so the time stands across
+an edit on every read of a kept issue: a Jira round's check, a full read,
+a refresh, a write's re-read and every Linear ticket read. A ticket of an
+issue the mirror does not keep shows none, since its card is not stored.
+A detail's read time starts at its opening, so a document read before the
+opening is superseded.
 
 A board's backlog is its rows in no future or active sprint of that board
 whose status is not in the done or canceled group, by the group the mirror
@@ -659,14 +666,19 @@ connection's shown tickets:
 | Shown board | 1 | 2 | 3 | 1 |
 | Shown board, the delta's overlap redelivering one identical row | 1 | 3 | 11 | 4 |
 | Jira round of N tickets (N up to 100) | 1 | 3 | 9 | N |
-| Linear round of N tickets | one per 10 tickets, plus each read a ticket's states, history or labels need past their first page | 2 | 4 | N |
+| Linear round of N tickets | one per 10 tickets, plus each read a ticket's states, history or labels need past their first page | 2 | 9 | 2N |
 
 A Jira round checks every ticket with one cards read, decodes no stored
 document, reads none in full and moves the read time of the unchanged
 cards in one statement; a Linear round reads every ticket in
 full, stores them in one transaction, which reads every document's state
-in one statement and moves the read times of the unchanged ones in one
-more. A ticket that changed adds its own full read.
+in one statement, stores the documents' cards in five (their state, the
+three card statements and the read time of the unchanged ones) and moves
+the read times of the unchanged documents in one more. The card's read
+time moves with the document's because the card rule orders two cards of
+one update by the card's read time alone: left behind, it would let a
+read that began earlier replace the card this round read. A ticket that
+changed adds its own full read.
 
 A changed row is redelivered by the delta's overlap of one minute
 (`tracker.DeltaOverlap`), so about six Jira ticks after a change take the

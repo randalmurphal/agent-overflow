@@ -146,15 +146,19 @@ func (s *Service) ticketViews(root int64, reads []*ticketRead) {
 	}
 }
 
-// detailReadAtNext is when a detail read begins as the store orders the
-// documents (StoreMirrorDetails): now, or a millisecond after the last such
-// time when that is later, so two reads that begin in one millisecond are
-// ordered as they began and the store keeps the later one's document.
-func (s *Service) detailReadAtNext() int64 {
+// readAtNext is when a read of the tracker begins, as the store orders
+// what it stores (a card, a row, a document, a listing): now, or a
+// millisecond after the last such time when that is later, so two reads
+// that begin in one millisecond are ordered as they began. It is the one
+// source of a read's begin time (run.readAt): the store's card rule
+// (store mirrorCardSupersededSQL) compares the begin times of reads made
+// through every path, so one path on another clock could order an older
+// answer after a newer one.
+func (s *Service) readAtNext() int64 {
 	for {
-		last, now := s.detailReadAt.Load(), millis(s.now())
+		last, now := s.readAtLast.Load(), millis(s.now())
 		next := max(now, last+1)
-		if s.detailReadAt.CompareAndSwap(last, next) {
+		if s.readAtLast.CompareAndSwap(last, next) {
 			return next
 		}
 	}
@@ -326,14 +330,14 @@ func (r *run) priorCheck(rd *ticketRead) error {
 }
 
 // details reads the details of reads in full, together (Provider.Details),
-// and stores each document the mirror keeps, read when the read began, in
-// one write; a person's opening (openedAt set) is recorded as when this
-// read began, the read that serves it. A document the mirror does not
-// store, because it does not keep the issue or holds no opening of it, is
-// held by the read's check. A ticket the tracker did not return fails with
-// ErrIssueNotFound.
+// and stores each document the mirror keeps, with its card, read when the
+// read began, in one write; a person's opening (openedAt set) is recorded
+// as when this read began, the read that serves it. A document the mirror
+// does not store, because it does not keep the issue or holds no opening
+// of it, is held by the read's check. A ticket the tracker did not return
+// fails with ErrIssueNotFound.
 func (r *run) details(reads []*ticketRead, openedAt int64) (Changes, error) {
-	readAt := r.s.detailReadAtNext()
+	readAt := r.readAt()
 	if openedAt > 0 {
 		openedAt = readAt
 	}
@@ -372,7 +376,11 @@ func (r *run) details(reads []*ticketRead, openedAt int64) (Changes, error) {
 		if err != nil {
 			return Changes{}, err
 		}
-		docs = append(docs, store.MirrorDetailDoc{IssueID: string(d.Card.ID), Data: data})
+		c, err := mirrorCard(d.Card)
+		if err != nil {
+			return Changes{}, err
+		}
+		docs = append(docs, store.MirrorDetailDoc{IssueID: string(d.Card.ID), Data: data, Card: c})
 		read = append(read, rd)
 		rd.err, rd.detail = nil, d
 		rd.check = detailCheck{readAt: readAt, updated: millis(d.Card.Updated), doc: maphash.Bytes(r.s.digestSeed, data)}
@@ -397,6 +405,7 @@ func (r *run) details(reads []*ticketRead, openedAt int64) (Changes, error) {
 		return Changes{}, fmt.Errorf("trackerapp: store the details of %d issues: %w", len(docs), err)
 	}
 	out.Dropped = issueIDs(written.Dropped)
+	out.Cards = issueIDs(written.Cards)
 	for i, w := range written.Docs {
 		rd := read[i]
 		rd.answered = true

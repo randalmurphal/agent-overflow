@@ -73,6 +73,40 @@ func webRow(id string, updated int64, order string, sprints ...string) MirrorRow
 	return MirrorRow{Card: webCard(id, updated, sprints...), OrderKey: order}
 }
 
+// heldDoc is issue's detail document with data, showing the card the
+// mirror keeps for issue, or the least card when it keeps none, so a test
+// of the documents leaves the mirror's cards as they were.
+func heldDoc(t *testing.T, s *Store, root int64, issue string, data []byte) MirrorDetailDoc {
+	t.Helper()
+	cards, err := s.ListMirrorCards(root, []string{issue})
+	if err != nil {
+		t.Fatal(err)
+	}
+	card := MirrorCard{IssueID: issue, Key: issue, UpdatedAt: 1}
+	if len(cards) == 1 {
+		card = cards[0]
+		card.StatusSince = 0
+	}
+	return MirrorDetailDoc{IssueID: issue, Data: data, Card: card}
+}
+
+// heldDocs is heldDoc of each of docs' issues and data.
+func heldDocs(t *testing.T, s *Store, root int64, docs []MirrorDetailDoc) []MirrorDetailDoc {
+	t.Helper()
+	out := make([]MirrorDetailDoc, len(docs))
+	for i, d := range docs {
+		out[i] = heldDoc(t, s, root, d.IssueID, d.Data)
+	}
+	return out
+}
+
+// storeDetail stores issue's detail document with data and the card the
+// mirror keeps (heldDoc).
+func storeDetail(t *testing.T, s *Store, root, sweep int64, issue string, openedAt, readAt int64, data []byte) (MirrorDetailWrite, error) {
+	t.Helper()
+	return s.StoreMirrorDetail(root, sweep, heldDoc(t, s, root, issue, data), openedAt, readAt)
+}
+
 // webPage is a page of board's rows read at 1.
 func webPage(board string, rows ...MirrorRow) MirrorRowPage {
 	return MirrorRowPage{BoardID: board, Rows: rows, ReadAt: 1}
@@ -251,7 +285,7 @@ func seedFullMirror(t *testing.T, s *Store, root int64) {
 	if _, err := replaceHistory(s, root, MirrorHistory{IssueID: "10001", Changes: []MirrorChange{{Kind: MirrorChangeStatus, At: 2, From: "1", To: "3"}}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.StoreMirrorDetail(root, currentSweep(s, root), "10001", 7, 7, []byte(`{}`)); err != nil {
+	if _, err := storeDetail(t, s, root, currentSweep(s, root), "10001", 7, 7, []byte(`{}`)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.ReplaceMirrorWorklogs(root, "acc-user1", "2026-01-05", "2026-01-05", 1, []MirrorWorklog{

@@ -120,13 +120,18 @@ func (c MirrorCard) check() error {
 	return nil
 }
 
-// mirrorCardSupersededSQL is the rule that orders a card's versions, in
-// one place: the card with update time updated, read from readAt, is
+// mirrorCardSupersededSQL is the one rule that orders any two writes of a
+// card: the card with update time updated, read from readAt, is
 // superseded by the stored issue i when i is of a later update, or of the
 // same update and admitted from a read that began later (read_at, which
 // an identical card from a later read moves too). A project key rename
-// changes every key and moves no update time. i, updated and readAt are
-// SQL expressions.
+// changes every key and moves no update time. A read's begin time is the
+// caller's one counter of read begins (trackerapp Service.readAtNext), so
+// two reads of one process are ordered as they began. Every card writer
+// (a board's rows, cards read with no board, a detail document's card)
+// stores through storeMirrorCardsTx, whose statements apply this rule;
+// TestCardWritesGoThroughTheOrderingRule fails for a statement that
+// writes a card outside them. i, updated and readAt are SQL expressions.
 func mirrorCardSupersededSQL(i, updated, readAt string) string {
 	return `(` + i + `.updated_at > ` + updated + ` OR ` + i + `.updated_at = ` + updated + ` AND ` + i + `.read_at > ` + readAt + `)`
 }
@@ -345,38 +350,49 @@ func (s *Store) UpsertMirrorCards(rootID, sweep int64, cards []MirrorCard, catal
 			WHERE NOT `+mirrorIssueKept("?1", "c.value ->> 'i'"), rootID, encoded); err != nil {
 			return fmt.Errorf("find unkept cards: %w", err)
 		}
-		var advancing []string
-		err = scanMirrorRows(tx, mirrorLinkedCardsStateSQL, []any{rootID, encoded, readAt}, func(r rowScanner) error {
-			var id string
-			var refused, advances bool
-			if err := r.Scan(&id, &refused, &advances); err != nil {
-				return err
-			}
-			if refused {
-				changes.Superseded = append(changes.Superseded, id)
-			}
-			if advances {
-				advancing = append(advancing, id)
-			}
-			return nil
-		})
-		if err != nil {
-			return fmt.Errorf("find superseded cards: %w", err)
-		}
-		// Sorted here rather than by the statements, which would sort in a
+		// Sorted here rather than by the statement, which would sort in a
 		// temporary b-tree.
 		slices.Sort(changes.Unkept)
-		slices.Sort(changes.Superseded)
-		slices.Sort(advancing)
-		advancing = slices.DeleteFunc(advancing, func(id string) bool {
-			_, unkept := slices.BinarySearch(changes.Unkept, id)
-			return unkept
-		})
-		changes.Cards, err = storeMirrorCardsTx(tx, mirrorLinkedCards, rootID, encoded, readAt, advancing)
+		changes.Superseded, changes.Cards, err = storeLinkedCardsTx(tx, rootID, encoded, readAt, changes.Unkept)
 		return err
 	})
 	if err != nil {
 		return MirrorChanges{}, err
 	}
 	return changes, nil
+}
+
+// storeLinkedCardsTx stores cards read with no board, encoded, read from
+// readAt, of the issues the mirror keeps; unkept (sorted) are those of
+// them the caller found it does not keep, whose read time it leaves. It
+// returns the issues whose stored card refused one of the cards
+// (MirrorChanges.Superseded) and those whose card or sprints changed, each
+// sorted: one statement reads the stored cards, then storeMirrorCardsTx.
+func storeLinkedCardsTx(tx *sql.Tx, rootID int64, encoded string, readAt int64, unkept []string) (superseded, changed []string, err error) {
+	var advancing []string
+	err = scanMirrorRows(tx, mirrorLinkedCardsStateSQL, []any{rootID, encoded, readAt}, func(r rowScanner) error {
+		var id string
+		var refused, advances bool
+		if err := r.Scan(&id, &refused, &advances); err != nil {
+			return err
+		}
+		if refused {
+			superseded = append(superseded, id)
+		}
+		if advances {
+			advancing = append(advancing, id)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("find superseded cards: %w", err)
+	}
+	slices.Sort(superseded)
+	slices.Sort(advancing)
+	advancing = slices.DeleteFunc(advancing, func(id string) bool {
+		_, out := slices.BinarySearch(unkept, id)
+		return out
+	})
+	changed, err = storeMirrorCardsTx(tx, mirrorLinkedCards, rootID, encoded, readAt, advancing)
+	return superseded, changed, err
 }

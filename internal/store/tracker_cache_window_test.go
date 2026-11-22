@@ -17,21 +17,21 @@ func TestMirrorReopenedDetailRefusesReadsFromBeforeTheOpening(t *testing.T) {
 	s, _, root := newMirror(t)
 	writeMirrorBoard(t, s, root, "10", mirrorRows(10000, mirrorDetailCap+2, "a"))
 	sweep := currentSweep(s, root)
-	got, err := s.StoreMirrorDetail(root, sweep, "10000", 10, 50, []byte(`{"v":"new"}`))
+	got, err := storeDetail(t, s, root, sweep, "10000", 10, 50, []byte(`{"v":"new"}`))
 	mustDetailWrite(t, "first opening", got, err, MirrorDetailWrite{Stored: true, Changed: true})
 	for i := range mirrorDetailCap {
-		if _, err := s.StoreMirrorDetail(root, sweep, fmt.Sprint(10001+i), int64(100+i), int64(100+i), []byte(`{}`)); err != nil {
+		if _, err := storeDetail(t, s, root, sweep, fmt.Sprint(10001+i), int64(100+i), int64(100+i), []byte(`{}`)); err != nil {
 			t.Fatal(err)
 		}
 	}
 	assertRows(t, s.db, `SELECT count(*) FROM tracker_cache_issue_details WHERE issue_id = '10000'`, "0")
 	mustDetailStore(t, s, root, "opened again, its read earlier", "10000", 400, 300, MirrorDetailWrite{Stored: true, Superseded: true}, "10001")
-	got, err = s.StoreMirrorDetail(root, sweep, "10000", 0, 20, []byte(`{"v":"old"}`))
+	got, err = storeDetail(t, s, root, sweep, "10000", 0, 20, []byte(`{"v":"old"}`))
 	mustDetailWrite(t, "a read from before the eviction", got, err, MirrorDetailWrite{Stored: true, Superseded: true})
 	if d, ok, err := s.GetMirrorDetail(root, "10000"); err != nil || ok {
 		t.Fatalf("detail after a superseded read = %+v, %v, %v; want none", d, ok, err)
 	}
-	got, err = s.StoreMirrorDetail(root, sweep, "10000", 0, 400, []byte(`{"v":"now"}`))
+	got, err = storeDetail(t, s, root, sweep, "10000", 0, 400, []byte(`{"v":"now"}`))
 	mustDetailWrite(t, "a read from the opening", got, err, MirrorDetailWrite{Stored: true, Changed: true})
 	assertRows(t, s.db, `SELECT opened_at || ' ' || read_at || ' ' || (data ->> 'v') FROM tracker_cache_issue_details WHERE issue_id = '10000'`, "400 400 now")
 
