@@ -3,6 +3,7 @@ package orphanreaper
 import (
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -44,44 +45,43 @@ func Spawn() (*Client, error) {
 	}
 	cmd := sidecarCommand(script, r, killGracePeriod)
 	startErr := cmd.Start()
-	// The child holds its own copies of both read ends now, or never started;
-	// drop ours so the control pipe has exactly one reader (child) and one
-	// writer (this parent).
+	// The child holds its own copies of the script and the control pipe's
+	// read end now, or never started; drop ours so the control pipe has
+	// exactly one reader (child) and one writer (this parent).
 	closeErr := errors.Join(script.Close(), r.Close())
 	if startErr != nil {
 		return nil, errors.Join(fmt.Errorf("orphanreaper: start sidecar: %w", startErr), closeErr, w.Close())
 	}
 	if closeErr != nil {
 		// The sidecar runs and guards this process; only the fds leak.
-		log.Printf("orphanreaper: close this process's copies of the sidecar's pipes: %v", closeErr)
+		log.Printf("orphanreaper: close this process's copies of the sidecar's script and control pipe: %v", closeErr)
 	}
 	return &Client{cmd: cmd, w: w}, nil
 }
 
-// scriptInput returns the read end of a pipe that already holds all of
-// script, its write end closed. A Stdin that is not a file would be copied
-// to the shell by a goroutine of this process after the shell starts, and a
-// parent killed before that goroutine ran would leave the sidecar an empty
-// script: it would exit at once and reap nothing.
-//
-// Nothing reads the pipe yet, so the script must fit in the pipe's buffer,
-// and a script that does not is refused rather than waited on. Linux gives
-// a pipe at least one page. macOS guarantees only PIPE_BUF, 512 bytes, which
-// sidecarScript exceeds, so there it relies on the capacity the pipe
-// actually has.
+// scriptInput returns a file, open at its start and already removed from its
+// directory, that holds all of script. A Stdin that is not a file would be
+// copied to the shell by a goroutine of this process after the shell starts,
+// and a parent killed before that goroutine ran would leave the sidecar an
+// empty script: it would exit at once and reap nothing. A file takes a
+// script of any size with no reader, which a pipe filled ahead would not.
 func scriptInput(script string) (*os.File, error) {
-	r, w, err := os.Pipe()
+	f, err := os.CreateTemp("", SidecarName+"-*.sh")
 	if err != nil {
-		return nil, fmt.Errorf("orphanreaper: script pipe: %w", err)
+		return nil, fmt.Errorf("orphanreaper: script file: %w", err)
 	}
-	written, writeErr := writeWithoutWaiting(w, script)
-	if err := errors.Join(writeErr, w.Close()); err != nil {
-		return nil, errors.Join(fmt.Errorf("orphanreaper: write the sidecar script: %w", err), r.Close())
+	// The open file keeps the script; its name is not needed again.
+	err = os.Remove(f.Name())
+	if err == nil {
+		_, err = f.WriteString(script)
 	}
-	if written < len(script) {
-		return nil, errors.Join(fmt.Errorf("orphanreaper: the sidecar script is %d bytes, and its pipe holds only %d", len(script), written), r.Close())
+	if err == nil {
+		_, err = f.Seek(0, io.SeekStart)
 	}
-	return r, nil
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("orphanreaper: write the sidecar script: %w", err), f.Close())
+	}
+	return f, nil
 }
 
 // sidecarCommand builds the sidecar process: the shell reads script from

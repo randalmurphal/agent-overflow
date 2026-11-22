@@ -4,7 +4,6 @@ package orphanreaper
 
 import (
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -19,45 +18,34 @@ import (
 // The sidecar's stdin holds the whole script before the sidecar starts:
 // reading it to EOF needs nothing else to write, so nothing this process
 // does after the start, or fails to do because it died, can cut it short.
-// Spawn's script fitting the pipe on this platform is part of the check.
+// A script larger than a pipe would hold is handed over the same way, and
+// the file leaves no name behind.
 func TestTheSidecarsInputHoldsItsWholeScriptBeforeTheStart(t *testing.T) {
-	input, err := scriptInput(sidecarScript)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = input.Close() })
-	cmd := sidecarCommand(input, nil, time.Second)
-	if cmd.Stdin != input {
-		t.Fatalf("stdin = %T, want the script's pipe", cmd.Stdin)
-	}
-	got, err := io.ReadAll(input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != sidecarScript {
-		t.Fatalf("the input holds %d bytes, want the script's %d", len(got), len(sidecarScript))
-	}
-}
-
-// A script that does not fit its pipe is refused, naming both sizes, rather
-// than left waiting for a reader that only the sidecar's start would bring.
-func TestAScriptLargerThanItsPipeIsRefused(t *testing.T) {
-	script := strings.Repeat("#", 2<<20) // Linux pipes default to 64 KiB.
-	refused := make(chan error, 1)
-	go func() {
-		input, err := scriptInput(script)
-		if err == nil {
-			err = errors.Join(errors.New("accepted"), input.Close())
-		}
-		refused <- err
-	}()
-	select {
-	case err := <-refused:
-		if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("the sidecar script is %d bytes, and its pipe holds only", len(script))) {
-			t.Fatalf("scriptInput = %v, want the refusal with both sizes", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("scriptInput blocked on a script larger than its pipe")
+	for name, script := range map[string]string{
+		"the sidecar's script":        sidecarScript,
+		"a script larger than a pipe": strings.Repeat("#", 2<<20), // Linux pipes default to 64 KiB.
+	} {
+		t.Run(name, func(t *testing.T) {
+			input, err := scriptInput(script)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = input.Close() })
+			if _, err := os.Stat(input.Name()); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("the script file is still named %s: %v", input.Name(), err)
+			}
+			cmd := sidecarCommand(input, nil, time.Second)
+			if cmd.Stdin != input {
+				t.Fatalf("stdin = %T, want the script's file", cmd.Stdin)
+			}
+			got, err := io.ReadAll(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != script {
+				t.Fatalf("the input holds %d bytes, want the script's %d", len(got), len(script))
+			}
+		})
 	}
 }
 
