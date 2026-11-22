@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1317,30 +1318,55 @@ func TestHTTPOfflineDropsTheConnectionWithoutAReply(t *testing.T) {
 
 // A request the client gives up while sending its body (a cancelled call)
 // is recorded as aborted. It is not a call the fake fails to implement.
-func TestHTTPRequestTheClientAbortsMidBodyIsRecordedAsAborted(t *testing.T) {
+// An offline forge and a wrong token still read as they do for a whole
+// request.
+func TestHTTPRequestCutShortMidBodyIsRecordedAsAborted(t *testing.T) {
 	t.Parallel()
-	recorded := make(chan Invocation, 1)
-	e, _ := seeded(t, Options{OnInvocation: func(inv Invocation) { recorded <- inv }})
-	srv := testServer(t, e)
-	conn, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", srv.Listener.Addr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	head := "POST /github/graphql HTTP/1.1\r\nHost: github.com\r\nAuthorization: Bearer " + testAPIToken +
-		"\r\nContent-Type: application/json\r\nContent-Length: 4096\r\n\r\n{\"query\":"
-	if _, err := io.WriteString(conn, head); err != nil {
-		t.Fatal(err)
-	}
-	if err := conn.Close(); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case inv := <-recorded:
-		if inv.Unhandled || inv.Route != "aborted" || inv.Via != ViaHTTP {
-			t.Fatalf("invocation = %+v, want an aborted http request that is not unhandled", inv)
-		}
-	case <-t.Context().Done():
-		t.Fatal("the aborted request was never recorded")
+	for _, tc := range []struct {
+		name, token string
+		offline     bool
+		route       string
+		unhandled   bool
+		reply       string
+	}{
+		{name: "the forge transport's request", token: testAPIToken, route: "aborted"},
+		{name: "while the forge is offline", token: testAPIToken, offline: true, route: "offline"},
+		{name: "with a wrong token", token: "not-the-token", unhandled: true, reply: "HTTP/1.1 401 "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			e, _ := seeded(t, Options{})
+			srv := testServer(t, e)
+			e.SetOffline(tc.offline)
+			conn, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", srv.Listener.Addr().String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = conn.Close() }()
+			if err := conn.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			head := "POST /github/graphql HTTP/1.1\r\nHost: github.com\r\nAuthorization: Bearer " + tc.token +
+				"\r\nContent-Type: application/json\r\nContent-Length: 4096\r\n\r\n{\"query\":"
+			if _, err := io.WriteString(conn, head); err != nil {
+				t.Fatal(err)
+			}
+			// The send side ends short of the declared body; the read side
+			// stays open, so a reply would arrive.
+			if err := conn.(*net.TCPConn).CloseWrite(); err != nil {
+				t.Fatal(err)
+			}
+			reply, err := io.ReadAll(conn)
+			if err != nil && !errors.Is(err, syscall.ECONNRESET) {
+				t.Fatalf("read the reply: %v", err)
+			}
+			if !strings.HasPrefix(string(reply), tc.reply) || (tc.reply == "" && len(reply) != 0) {
+				t.Fatalf("reply = %q, want prefix %q", reply, tc.reply)
+			}
+			if inv := lastInvocation(t, e); inv.Unhandled != tc.unhandled || inv.Route != tc.route || inv.Via != ViaHTTP {
+				t.Fatalf("invocation = %+v, want route %q, unhandled %t", inv, tc.route, tc.unhandled)
+			}
+		})
 	}
 }
 

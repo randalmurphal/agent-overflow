@@ -74,16 +74,9 @@ func (e *Engine) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		host, _, _ := strings.Cut(rest, "/")
 		inv.Host = strings.ToLower(host)
 	}
-	if readErr != nil && r.Context().Err() != nil {
-		// The client gave the request up before its body arrived, as a
-		// cancelled call does. There is no reply to send and nothing the
-		// fake lacks.
-		inv.Route = "aborted"
-		inv.Detail = "the client closed the request before its body arrived: " + readErr.Error()
-		e.mu.Lock()
-		e.record(inv)
-		panic(http.ErrAbortHandler)
-	}
+	// The connection ended before the body the request declared arrived, as
+	// a cancelled call's does.
+	cutShort := readErr != nil && r.Context().Err() != nil
 	switch {
 	case readErr != nil:
 		reason = "read request body: " + readErr.Error()
@@ -97,6 +90,14 @@ func (e *Engine) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// connections on going offline, so every request lands here.
 		inv.Route = "offline"
 		inv.Detail = "connection dropped: the forge is offline"
+		e.record(inv)
+		panic(http.ErrAbortHandler)
+	}
+	if cutShort && e.authorized(r) {
+		// The forge transport's own request, given up mid-send: no reply
+		// goes out and the fake lacks nothing.
+		inv.Route = "aborted"
+		inv.Detail = "the request ended before its body arrived: " + readErr.Error()
 		e.record(inv)
 		panic(http.ErrAbortHandler)
 	}
