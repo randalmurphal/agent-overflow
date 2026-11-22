@@ -184,7 +184,7 @@ func SVGDisplaySize(data []byte) DisplaySize {
 	if !widthOK || !heightOK || !ratioOK || !aspectOK {
 		return DisplaySize{}
 	}
-	if !keepsRatio && !(widthDefinite && heightDefinite) {
+	if !keepsRatio && (!widthDefinite || !heightDefinite) {
 		return DisplaySize{}
 	}
 	hasRatio := ratioW > 0

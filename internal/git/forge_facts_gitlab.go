@@ -430,7 +430,9 @@ func factColor(color string) string {
 		return ""
 	}
 	for _, r := range c[1:] {
-		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') {
+		switch {
+		case r >= '0' && r <= '9', r >= 'a' && r <= 'f':
+		default:
 			return ""
 		}
 	}

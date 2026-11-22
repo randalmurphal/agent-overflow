@@ -221,11 +221,10 @@ func ghFacts(slots int) func(e *Engine, c *call, v graphQLVars) response {
 			}
 			if ref {
 				r := e.repoOn("github", c.http.host, owner+"/"+name)
-				switch {
-				case r == nil:
+				if r == nil {
 					data["r"+n] = nil
 					notFound([]string{"r" + n}, fmt.Sprintf("Could not resolve to a Repository with the name '%s/%s'.", owner, name))
-				default:
+				} else {
 					item := ghFactItem(r, number)
 					data["r"+n] = map[string]any{"issueOrPullRequest": item}
 					if item == nil {

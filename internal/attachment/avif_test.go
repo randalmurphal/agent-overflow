@@ -358,7 +358,7 @@ func TestAVIFSizeRefusesDeclaredSizesPastTheData(t *testing.T) {
 		if len(tc.data) > avifMetaMax {
 			limit = 3 * avifMetaMax
 		}
-		if allocated := bytesPerCall(func() { AVIFSize(bytes.NewReader(tc.data)) }); allocated > limit {
+		if allocated := bytesPerCall(func() { _, _ = AVIFSize(bytes.NewReader(tc.data)) }); allocated > limit {
 			t.Errorf("%s: allocated %d bytes a call, want at most %d", tc.name, allocated, limit)
 		}
 	}
@@ -388,7 +388,7 @@ func TestAVIFSizeWorkload(t *testing.T) {
 	}
 	real := fixture(t, "solid-8x3.avif")
 	// The meta buffer (a few hundred bytes) and the readers around it.
-	if allocated := bytesPerCall(func() { AVIFSize(bytes.NewReader(real)) }); allocated > 1<<10 {
+	if allocated := bytesPerCall(func() { _, _ = AVIFSize(bytes.NewReader(real)) }); allocated > 1<<10 {
 		t.Fatalf("a real file costs %d bytes a call, want at most 1 KiB", allocated)
 	}
 }
