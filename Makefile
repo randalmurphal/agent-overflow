@@ -192,8 +192,19 @@ go-prefetch = go list -e -deps -test $(1) tool > /dev/null
 GO_TEST_PKGS ?= $(GO_PACKAGE_ROOTS)
 GO_TEST_FLAGS ?=
 
+# go-build-tool builds a tool into bin/ and replaces the file only when its
+# bytes changed, so an unchanged tool keeps its time. `go build -o` rewrites
+# its output on every run, and Go keys a cached test result by the times of
+# the entries of every directory a test lists, so a test that lists bin/
+# would rerun after each `make go-test` otherwise. The build goes to a
+# directory outside bin/, so an unchanged tool leaves bin/'s listing as it
+# was. Without VCS stamping the bytes change only with the tool's code, and
+# the build runs no `git status` (see the go-test GOFLAGS below).
+go-build-tool = tmp=$$(mktemp -d) && trap 'rm -rf "$$tmp"' EXIT && go build -buildvcs=false -o "$$tmp/tool" $(2) && \
+	{ cmp -s "$$tmp/tool" $(1) || { mkdir -p $(dir $(1)) && cp "$$tmp/tool" $(1).new && mv -f $(1).new $(1); }; }
+
 netns-tool:
-	go build -o bin/ao-netns ./cmd/ao-netns
+	@$(call go-build-tool,bin/ao-netns,./cmd/ao-netns)
 
 # gocache-trim caps the Go build cache (cmd/ao-gocache-trim; off in CI).
 # go-build, go-test and test-race run a pass before their build or test and
@@ -204,7 +215,7 @@ netns-tool:
 # `make gocache-trim` fails on either.
 GOCACHE_TRIM := $(CURDIR)/bin/ao-gocache-trim
 gocache-trim-tool:
-	@[ -n "$$CI" ] || go build -o bin/ao-gocache-trim ./cmd/ao-gocache-trim
+	@[ -n "$$CI" ] || { $(call go-build-tool,bin/ao-gocache-trim,./cmd/ao-gocache-trim); }
 
 gocache-trim: gocache-trim-tool
 	@[ -n "$$CI" ] || $(GOCACHE_TRIM)
@@ -221,6 +232,14 @@ gocache-trim-around = $(gocache-trim-pass); trap 'status=$$?; $(gocache-trim-pas
 # ./internal/app alone runs past 10 minutes. A -timeout in GO_TEST_FLAGS
 # replaces it.
 GO_TEST_EXCLUDE ?=
+# The targets that run cached tests turn VCS stamping off for every Go
+# command they start, the tests' own included. With it on, `go list` and
+# `go build` of a main package run `git status`, which refreshes the index
+# through .git/index.lock and so changes .git's entry in the checkout root's
+# listing; Go keys a cached test result by that listing, so every test that
+# lists the root would rerun after any other package's run. Test binaries
+# carry no VCS stamp either way.
+go-test go-test-noremote test-race: override GOFLAGS := $(filter-out -buildvcs=false,$(GOFLAGS)) -buildvcs=false
 go-test: netns-tool gocache-trim-tool
 	@set -e; $(gocache-trim-around); \
 	packages=$$(go list $(GO_TEST_PKGS)); \
