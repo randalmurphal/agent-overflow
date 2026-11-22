@@ -101,7 +101,10 @@ type Config struct {
 	// sweep, so it carries what a session in that workspace does
 	// (claude/retention.go). A Claude run refuses to start without it.
 	ClaudeRetention func(workspace string) claude.Retention
-	Exec            CLIExecutor
+	// Admit orders the CLI's start against state the caller read while
+	// building this config (CLISpec.Admit).
+	Admit func() (release func(), err error)
+	Exec  CLIExecutor
 }
 
 // CLIExecutor is the seam tests use to stub out Codex/Claude CLI
@@ -126,6 +129,11 @@ type CLISpec struct {
 	// UnsetEnv names inherited variables removed from the child's
 	// environment.
 	UnsetEnv []string
+	// Admit, when set, runs immediately before the process starts. The
+	// process starts only if it returns nil, and release runs as soon as the
+	// start has returned, never after the run: whatever Admit holds is held
+	// across the start alone.
+	Admit func() (release func(), err error)
 }
 
 // CLIResult is the observable outcome of a provider-CLI invocation.
@@ -170,7 +178,10 @@ func ExecCLI(ctx context.Context, spec CLISpec) (CLIResult, error) {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err := cmd.Run()
+	err := startAdmitted(cmd, spec.Admit)
+	if err == nil {
+		err = cmd.Wait()
+	}
 	result := CLIResult{
 		Stdout: stdout.String(),
 		Stderr: stderr.String(),
@@ -188,6 +199,20 @@ func ExecCLI(ctx context.Context, spec CLISpec) (CLIResult, error) {
 		return result, err
 	}
 	return result, nil
+}
+
+// startAdmitted starts cmd once admit allows it, releasing what admit holds
+// as soon as the start returns.
+func startAdmitted(cmd *exec.Cmd, admit func() (func(), error)) error {
+	if admit == nil {
+		return cmd.Start()
+	}
+	release, err := admit()
+	if err != nil {
+		return err
+	}
+	defer release()
+	return cmd.Start()
 }
 
 type cappedOutput struct {
@@ -400,6 +425,7 @@ func RunCodex(
 		// AO owns Codex's home: the run authenticates from the one every
 		// other Codex launch uses.
 		UnsetEnv: []string{"CODEX_HOME"},
+		Admit:    cfg.Admit,
 	})
 	if err != nil {
 		return nil, TranslateCLINotFound("codex", timeout, err)
@@ -463,6 +489,7 @@ func RunClaude(
 		// The run uses the config home every other Claude launch uses, the
 		// one its retention period was resolved against.
 		UnsetEnv: line.UnsetEnv(),
+		Admit:    cfg.Admit,
 	})
 	if err != nil {
 		return nil, TranslateCLINotFound("claude", timeout, err)

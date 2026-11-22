@@ -59,6 +59,7 @@ func (a *App) resolveTextGenerationConfig(ctx context.Context) (textgen.Config, 
 	cfg := textgen.Config{
 		Provider: chosen,
 		Effort:   effort,
+		Admit:    a.textGenerationAdmission(chosen),
 		Exec:     a.resolveTextGenerationExecutor(),
 	}
 
@@ -115,6 +116,7 @@ func (a *App) resolveTextGenerationConfigFor(ctx context.Context, providerName s
 		Provider: providerName,
 		Effort:   effort,
 		Env:      a.providerCustomEnv(providerName),
+		Admit:    a.textGenerationAdmission(providerName),
 		Exec:     a.resolveTextGenerationExecutor(),
 	}
 	switch providerName {
@@ -281,11 +283,30 @@ func runTextGenWithFallback[T any](
 	budget time.Duration,
 	runOnce func(cfg textgen.Config, deadline time.Time) (T, error),
 ) (T, error) {
-	var result T
-	primary, err := a.resolveTextGenerationConfig(ctx)
-	if err == nil {
-		result, err = runOnce(primary, time.Now().Add(budget))
+	// run runs runOnce on the config resolve returns, each run with a fresh
+	// budget. A run whose admission found the account selection moved since
+	// the config was resolved started no CLI, and is resolved and run again:
+	// the model a CLI starts with is always the one chosen for the account it
+	// starts under. A failed resolve still returns its config, which names
+	// the provider. runOnce is called here and not handed on, so the budget
+	// walk (TestEveryMethodReachingALongStepDeclaresItsBudget) follows each
+	// caller's runOnce to its own run.
+	run := func(resolve func() (textgen.Config, error)) (textgen.Config, T, error) {
+		for {
+			cfg, err := resolve()
+			if err != nil {
+				var zero T
+				return cfg, zero, err
+			}
+			result, err := runOnce(cfg, time.Now().Add(budget))
+			if !errors.Is(err, errTextGenerationSelectionMoved) {
+				return cfg, result, err
+			}
+		}
 	}
+	primary, result, err := run(func() (textgen.Config, error) {
+		return a.resolveTextGenerationConfig(ctx)
+	})
 	if err == nil {
 		return result, nil
 	}
@@ -304,11 +325,16 @@ func runTextGenWithFallback[T any](
 	if altName == "" {
 		return result, err
 	}
-	altCfg, ok := a.resolveTextGenerationConfigFor(ctx, altName)
-	if !ok {
+	altCfg, altResult, altErr := run(func() (textgen.Config, error) {
+		cfg, ok := a.resolveTextGenerationConfigFor(ctx, altName)
+		if !ok {
+			return cfg, errNoTextGenerationAlternate
+		}
+		return cfg, nil
+	})
+	if errors.Is(altErr, errNoTextGenerationAlternate) {
 		return result, err
 	}
-	altResult, altErr := runOnce(altCfg, time.Now().Add(budget))
 	if altErr != nil {
 		// No budget in the line: a timeout error from textgen already
 		// names the CLI and the duration it was given.
@@ -319,6 +345,32 @@ func runTextGenWithFallback[T any](
 		return result, err
 	}
 	return altResult, nil
+}
+
+var (
+	errTextGenerationSelectionMoved = errors.New("the provider account changed after the text-generation model was chosen")
+	errNoTextGenerationAlternate    = errors.New("no alternate text-generation provider")
+)
+
+// textGenerationAdmission is a text-generation config's textgen.Admit for
+// providerName. The selection generation is read before the config's model
+// is, so any switch that could have changed the model moves it. At the start
+// the admission takes the selection lease, the read side account switches
+// order against as a thread send does, and refuses when the generation has
+// moved. The lease is held across the CLI's start alone, so a switch waits
+// for at most one process start and never for a running generation.
+func (a *App) textGenerationAdmission(providerName string) func() (func(), error) {
+	resolving := a.providerAccountSelectionLease(providerName)
+	resolvedUnder := resolving.Selection.Generation
+	resolving.Release()
+	return func() (func(), error) {
+		lease := a.providerAccountSelectionLease(providerName)
+		if lease.Selection.Generation != resolvedUnder {
+			lease.Release()
+			return nil, errTextGenerationSelectionMoved
+		}
+		return lease.Release, nil
+	}
 }
 
 // otherProvider returns the two-provider universe's complement. Trivial,

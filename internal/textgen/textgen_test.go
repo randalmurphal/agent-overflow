@@ -618,6 +618,83 @@ func TestRunCodex_DropsAnInheritedCodexHome(t *testing.T) {
 	}
 }
 
+// A refused admission starts no process, and its error is the run's.
+func TestExecCLI_RefusedAdmissionStartsNothing(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "started")
+	refused := errors.New("refused")
+	_, err := ExecCLI(context.Background(), CLISpec{
+		Binary: "/bin/sh",
+		Args:   []string{"-c", `: > "$0"`, marker},
+		Admit:  func() (func(), error) { return nil, refused },
+	})
+	if !errors.Is(err, refused) {
+		t.Fatalf("ExecCLI = %v, want the admission's refusal", err)
+	}
+	if _, statErr := os.Stat(marker); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("the process ran after a refused admission (stat: %v)", statErr)
+	}
+}
+
+// What an admission holds is released once the process has started, not
+// once it has exited: the process here exits only after the release.
+func TestExecCLI_ReleasesTheAdmissionOnceStarted(t *testing.T) {
+	gate := filepath.Join(t.TempDir(), "released")
+	released := 0
+	// The bound only ends a failing run: a release held until exit
+	// never comes, and the process would wait for it forever.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	result, err := ExecCLI(ctx, CLISpec{
+		Binary: "/bin/sh",
+		Args:   []string{"-c", `while [ ! -e "$0" ]; do sleep 0.01; done; echo ran`, gate},
+		Admit: func() (func(), error) {
+			return func() {
+				released++
+				if err := os.WriteFile(gate, nil, 0o600); err != nil {
+					t.Error(err)
+				}
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("ExecCLI: %v", err)
+	}
+	if released != 1 || strings.TrimSpace(result.Stdout) != "ran" {
+		t.Fatalf("released %d times, stdout %q; want one release and the run's output", released, result.Stdout)
+	}
+}
+
+// Both runners hand the config's admission to the executor.
+func TestRunners_PassTheAdmissionToTheExecutor(t *testing.T) {
+	admitted := 0
+	cfg := Config{
+		Binary:          "cli",
+		Model:           "m",
+		ClaudeRetention: userHome,
+		Admit:           func() (func(), error) { admitted++; return func() {}, nil },
+		Exec: func(_ context.Context, spec CLISpec) (CLIResult, error) {
+			if spec.Admit == nil {
+				return CLIResult{}, errors.New("no admission in the spec")
+			}
+			release, err := spec.Admit()
+			if err != nil {
+				return CLIResult{}, err
+			}
+			release()
+			return CLIResult{Stdout: "{}"}, nil
+		},
+	}
+	if _, err := RunClaude(context.Background(), cfg, t.TempDir(), "{}", nil, "", time.Second); err != nil {
+		t.Fatalf("RunClaude: %v", err)
+	}
+	if _, err := RunCodex(context.Background(), cfg, t.TempDir(), "{}", nil, "", time.Second); err != nil {
+		t.Fatalf("RunCodex: %v", err)
+	}
+	if admitted != 2 {
+		t.Fatalf("admitted %d starts, want one per runner", admitted)
+	}
+}
+
 // ExecCLI removes the variables a spec names from the child's environment.
 func TestExecCLI_DropsUnsetEnv(t *testing.T) {
 	t.Setenv("CLAUDE_CONFIG_DIR", "/alternate")
