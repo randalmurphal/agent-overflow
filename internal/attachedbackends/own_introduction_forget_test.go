@@ -39,8 +39,21 @@ type introducedPeer struct {
 	holdRotation      chan struct{}
 	rotationArrived   chan struct{}
 	rotationAbandoned chan struct{}
-	redeemed          atomic.Bool
-	rotations         atomic.Int32
+	// holdPair, when set, holds redemption number heldPair (the first when
+	// zero) until it closes or the request ends; pairArrived closes when it
+	// arrives and pairAbandoned when the client gave the request up.
+	// refusePair refuses every redemption.
+	holdPair      chan struct{}
+	heldPair      int32
+	pairArrived   chan struct{}
+	pairAbandoned chan struct{}
+	refusePair    atomic.Bool
+	redeemed      atomic.Bool
+	redemptions   atomic.Int32
+	rotations     atomic.Int32
+	// personRaw is a person's pairing link to this computer, where raw is
+	// an introduction.
+	personRaw string
 }
 
 const introducedBackendID = "6f0c8a2e-3b4d-4c5e-9f60-7a8b9c0d1e2f"
@@ -48,9 +61,13 @@ const introducedBackendID = "6f0c8a2e-3b4d-4c5e-9f60-7a8b9c0d1e2f"
 func newIntroducedPeer(t *testing.T, configure func(*introducedPeer)) *introducedPeer {
 	t.Helper()
 	p := &introducedPeer{backendID: introducedBackendID, healthArrived: make(chan struct{}),
-		rotationArrived: make(chan struct{}), rotationAbandoned: make(chan struct{})}
+		rotationArrived: make(chan struct{}), rotationAbandoned: make(chan struct{}),
+		pairArrived: make(chan struct{}), pairAbandoned: make(chan struct{})}
 	if configure != nil {
 		configure(p)
+	}
+	if p.heldPair == 0 {
+		p.heldPair = 1
 	}
 	var healthOnce, arrivedOnce atomic.Bool
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -73,6 +90,23 @@ func newIntroducedPeer(t *testing.T, configure func(*introducedPeer)) *introduce
 			}
 			_ = json.NewEncoder(w).Encode(map[string]string{"backendId": p.backendID})
 		case "/auth/pair":
+			number := p.redemptions.Add(1)
+			// Read to the end so the server notices when the client hangs up.
+			_, _ = io.Copy(io.Discard, r.Body)
+			if p.holdPair != nil && number == p.heldPair {
+				close(p.pairArrived)
+				select {
+				case <-p.holdPair:
+				case <-r.Context().Done():
+					close(p.pairAbandoned)
+					return
+				}
+			}
+			if p.refusePair.Load() {
+				w.WriteHeader(http.StatusUnauthorized)
+				_ = json.NewEncoder(w).Encode(map[string]string{"reason": "unknown_credential"})
+				return
+			}
 			p.redeemed.Store(true)
 			introducedGrant(w, "refresh-0")
 		case "/auth/token/recover":
@@ -104,6 +138,9 @@ func newIntroducedPeer(t *testing.T, configure func(*introducedPeer)) *introduce
 	if p.holdRotation != nil {
 		t.Cleanup(func() { closeOnce(p.holdRotation) })
 	}
+	if p.holdPair != nil {
+		t.Cleanup(func() { closeOnce(p.holdPair) })
+	}
 	route, err := computerroute.Normalize(computerroute.Route{Endpoint: server.URL, CertFingerprint: servercert.Fingerprint(server.Certificate().Raw)})
 	if err != nil {
 		t.Fatal(err)
@@ -114,6 +151,12 @@ func newIntroducedPeer(t *testing.T, configure func(*introducedPeer)) *introduce
 		t.Fatal(err)
 	}
 	p.route, p.raw = route, deviceclient.LinkFragmentPrefix+base64.RawURLEncoding.EncodeToString(encoded)
+	person, err := json.Marshal(deviceclient.Link{Version: deviceclient.LinkVersion, BackendID: p.backendID,
+		Endpoint: route.Endpoint, CertFingerprint: route.CertFingerprint, Token: "pairing"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.personRaw = deviceclient.LinkFragmentPrefix + base64.RawURLEncoding.EncodeToString(person)
 	return p
 }
 

@@ -145,7 +145,10 @@ func (c *carrier) openRPC(ctx context.Context, capability string) (*rpcclient.Cl
 // The destination independently binds redemption to our key.
 //
 // It reports added once the pairing is saved and published, even when the
-// rotation that follows fails; the error then says why.
+// rotation that follows fails; the error then says why. ctx bounds route
+// selection and the wait for that rotation. The redemption between them is
+// an enrollment (enroll), which Forget and the start of shutdown cancel and
+// ctx does not.
 func (m *Manager) AcceptOwnDeviceIntroduction(ctx context.Context, raw string, routes []computerroute.Route) (bool, error) {
 	link, err := deviceclient.DecodeLink(raw)
 	if err != nil {
@@ -161,19 +164,27 @@ func (m *Manager) AcceptOwnDeviceIntroduction(ctx context.Context, raw string, r
 	if m.selfID != nil && link.BackendID == m.selfID() {
 		return false, errors.New("cannot connect a computer to itself")
 	}
-	// Checked here so a refused introduction probes nothing, and again under
-	// the profile lock, which route selection must not hold.
+	// Checked here so a refused introduction probes nothing, and again by
+	// the enrollment before its redemption and under the profile lock.
 	if wanted, err := m.introductionWanted(link.BackendID); err != nil || !wanted {
 		return false, err
 	}
-	route, err := deviceclient.SelectPairingRoute(ctx, link.BackendID, routes, deviceclient.WithDialContext(m.dial))
+	probe, stop := m.untilShutdown(ctx)
+	route, err := deviceclient.SelectPairingRoute(probe, link.BackendID, routes, deviceclient.WithDialContext(m.dial))
+	stop()
 	if err != nil {
 		return false, err
 	}
 	link.Endpoint, link.CertFingerprint = route.Endpoint, route.CertFingerprint
-	held, err := m.enrollIntroduction(ctx, link)
-	if err != nil || held == nil {
+	_, held, err := m.enroll(link, introductionByPeer, false)
+	if errors.Is(err, errNotWanted) {
+		return false, nil
+	}
+	if err != nil {
 		return false, err
+	}
+	if held == nil {
+		return false, ErrClosed
 	}
 	// Desktop clients watch the profile set, not the public membership
 	// catalog. Publish this edge before reconciliation sees it as present.
@@ -203,27 +214,6 @@ func (m *Manager) introductionWanted(id string) (bool, error) {
 		return false, err
 	}
 	return true, nil
-}
-
-// enrollIntroduction spends the introduction under the destination's profile
-// lock. A nil carrier with no error is an introduction no longer wanted.
-func (m *Manager) enrollIntroduction(ctx context.Context, link deviceclient.Link) (*carrier, error) {
-	unlock, err := m.profiles.LockCtx(ctx, link.BackendID)
-	if err != nil {
-		return nil, err
-	}
-	defer unlock()
-	if wanted, err := m.introductionWanted(link.BackendID); err != nil || !wanted {
-		return nil, err
-	}
-	_, held, err := m.addLinkLocked(ctx, link)
-	if err != nil {
-		return nil, err
-	}
-	if held == nil {
-		return nil, ErrClosed
-	}
-	return held, nil
 }
 
 func (m *Manager) ConnectedOwnDeviceIDs() ([]string, error) {

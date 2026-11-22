@@ -5,10 +5,12 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -24,29 +26,46 @@ import (
 	"github.com/google/uuid"
 )
 
-// introducingComputer is another own computer that answers an
-// introduction's redemption and then either drops every connection (gone)
-// or holds the rotation that acknowledges it until the request ends.
+// introducingComputer is another own computer. After an introduction's
+// redemption it either drops every connection (introducingGone) or holds
+// the rotation that acknowledges it until the request ends
+// (introducingHoldsRotation); introducingHoldsRedemption holds the
+// redemption itself instead, until release or the request ends.
 type introducingComputer struct {
 	backendID       string
 	invitation      string
-	gone            bool
+	personLink      string
+	mode            introducingMode
 	redeemed        atomic.Bool
 	rotationArrived chan struct{}
-	// rotationAbandoned is set when the client gave the held rotation up.
+	pairArrived     chan struct{}
+	// rotationAbandoned and pairAbandoned are set when the client gave the
+	// held request up.
 	rotationAbandoned atomic.Bool
+	pairAbandoned     atomic.Bool
+	release           func()
 }
+
+type introducingMode int
+
+const (
+	introducingHoldsRotation introducingMode = iota
+	introducingGone
+	introducingHoldsRedemption
+)
 
 // newIntroducingComputer stands the computer up and enters it in host's
 // catalog as an active own device with its route, the way a sponsor's sync
 // would.
-func newIntroducingComputer(t *testing.T, host ownConnectionHost, gone bool) *introducingComputer {
+func newIntroducingComputer(t *testing.T, host ownConnectionHost, mode introducingMode) *introducingComputer {
 	t.Helper()
-	c := &introducingComputer{backendID: uuid.NewString(), gone: gone, rotationArrived: make(chan struct{})}
-	var arrived atomic.Bool
+	c := &introducingComputer{backendID: uuid.NewString(), mode: mode, rotationArrived: make(chan struct{}), pairArrived: make(chan struct{})}
+	var arrived, pairArrived atomic.Bool
 	released := make(chan struct{})
+	var once sync.Once
+	c.release = func() { once.Do(func() { close(released) }) }
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if c.gone && c.redeemed.Load() {
+		if c.mode == introducingGone && c.redeemed.Load() {
 			if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
 				_ = conn.Close()
 			}
@@ -57,6 +76,17 @@ func newIntroducingComputer(t *testing.T, host ownConnectionHost, gone bool) *in
 		case "/healthz":
 			_ = json.NewEncoder(w).Encode(map[string]string{"backendId": c.backendID})
 		case "/auth/pair":
+			// Read to the end so the server notices when the client hangs up.
+			_, _ = io.Copy(io.Discard, r.Body)
+			if c.mode == introducingHoldsRedemption && pairArrived.CompareAndSwap(false, true) {
+				close(c.pairArrived)
+				select {
+				case <-r.Context().Done():
+					c.pairAbandoned.Store(true)
+					return
+				case <-released:
+				}
+			}
 			c.redeemed.Store(true)
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"sessionId": "session-1", "credential": "ao1.issued", "expiresAtMs": time.Now().Add(time.Hour).UnixMilli(),
@@ -79,8 +109,8 @@ func newIntroducingComputer(t *testing.T, host ownConnectionHost, gone bool) *in
 		}
 	}))
 	t.Cleanup(server.Close)
-	// Runs before server.Close, so a rotation still held does not wedge it.
-	t.Cleanup(func() { close(released) })
+	// Runs before server.Close, so a request still held does not wedge it.
+	t.Cleanup(c.release)
 	route, err := computerroute.Normalize(computerroute.Route{Endpoint: server.URL, CertFingerprint: servercert.Fingerprint(server.Certificate().Raw)})
 	if err != nil {
 		t.Fatal(err)
@@ -102,7 +132,107 @@ func newIntroducingComputer(t *testing.T, host ownConnectionHost, gone bool) *in
 		t.Fatal(err)
 	}
 	c.invitation = deviceclient.LinkFragmentPrefix + base64.RawURLEncoding.EncodeToString(encoded)
+	person, err := json.Marshal(deviceclient.Link{Version: deviceclient.LinkVersion, BackendID: c.backendID,
+		Endpoint: route.Endpoint, CertFingerprint: route.CertFingerprint, Token: "pairing"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.personLink = deviceclient.LinkFragmentPrefix + base64.RawURLEncoding.EncodeToString(person)
 	return c
+}
+
+// callOverTheWire makes one host RPC with the launch credential, the way a
+// page or a peer does, so the transport's drain waits for it.
+func callOverTheWire(t *testing.T, host ownConnectionHost, method string, params ...any) <-chan error {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+	conn, _, err := websocket.Dial(ctx, fmt.Sprintf("ws://%s/ws?token=launch-credential-under-test", host.srv.Addr()), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.CloseNow() })
+	called := make(chan error, 1)
+	go func() { called <- rpcclient.New(conn).Call(ctx, method, nil, params...) }()
+	return called
+}
+
+// awaitArrival waits for a held request to reach the other computer.
+func awaitArrival(t *testing.T, what string, arrived <-chan struct{}, called <-chan error) {
+	t.Helper()
+	select {
+	case <-arrived:
+	case err := <-called:
+		t.Fatalf("the call returned %v before %s", err, what)
+	case <-time.After(10 * time.Second):
+		t.Fatalf("%s never happened", what)
+	}
+}
+
+// Quit while an introduction asked for over the wire waits on its
+// redemption, which the other computer never answers: the start of shutdown
+// cancels it, so shutdown finishes inside the drain and nothing is saved.
+func TestQuitDuringAnIntroductionsRedemptionFinishesWithinTheDrain(t *testing.T) {
+	remotetest.Require(t)
+	t.Parallel()
+	host := ownConnectionBackend(t)
+	other := newIntroducingComputer(t, host, introducingHoldsRedemption)
+	called := callOverTheWire(t, host, "AcceptOwnDeviceIntroduction", other.invitation)
+	awaitArrival(t, "the redemption reaching the other computer", other.pairArrived, called)
+
+	started := time.Now()
+	shutdown := make(chan error, 1)
+	go func() { shutdown <- host.app.Shutdown(context.Background()) }()
+	select {
+	case <-shutdown:
+	case <-time.After(transportShutdownDrainTimeout + 2*time.Second):
+		t.Fatalf("shutdown with an introduction's redemption in flight did not finish within %s", transportShutdownDrainTimeout+2*time.Second)
+	}
+	if took := time.Since(started); took > transportShutdownDrainTimeout {
+		t.Fatalf("shutdown took %s, past the transport's %s drain deadline", took, transportShutdownDrainTimeout)
+	}
+	for deadline := time.Now().Add(2 * time.Second); !other.pairAbandoned.Load(); time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the redemption was still waiting on the other computer after shutdown")
+		}
+	}
+	if _, err := deviceclient.LoadSession(host.profile, other.backendID); !errors.Is(err, deviceclient.ErrNoSession) {
+		t.Fatalf("saved session after a cancelled introduction = %v; want none", err)
+	}
+}
+
+// Quit while a person's pairing waits on a redemption already sent: a spent
+// link for a person does not heal, so shutdown waits for the redemption,
+// past the drain, and the pairing is saved once the other computer answers.
+// The HTTP client's timeout bounds that wait
+// (deviceclient.TestARedemptionIsBoundedByTheHTTPTimeout).
+func TestQuitDuringAPersonsRedemptionLetsItFinishAndSave(t *testing.T) {
+	remotetest.Require(t)
+	t.Parallel()
+	host := ownConnectionBackend(t)
+	other := newIntroducingComputer(t, host, introducingHoldsRedemption)
+	called := callOverTheWire(t, host, "AddBackend", other.personLink)
+	awaitArrival(t, "the redemption reaching the other computer", other.pairArrived, called)
+
+	shutdown := make(chan error, 1)
+	go func() { shutdown <- host.app.Shutdown(context.Background()) }()
+	select {
+	case err := <-shutdown:
+		t.Fatalf("shutdown returned %v with a person's redemption still unanswered", err)
+	case <-time.After(transportShutdownDrainTimeout + 500*time.Millisecond):
+	}
+	if other.pairAbandoned.Load() {
+		t.Fatal("shutdown gave up a person's redemption already sent")
+	}
+	other.release()
+	select {
+	case <-shutdown:
+	case <-time.After(5 * time.Second):
+		t.Fatal("shutdown did not finish once the redemption was answered")
+	}
+	if saved, err := deviceclient.LoadSession(host.profile, other.backendID); err != nil || saved.SessionID != "session-1" {
+		t.Fatalf("saved session after quit = %+v, %v; want the redeemed pairing", saved, err)
+	}
 }
 
 // Quit while an introduction asked for over the wire waits for its
@@ -114,7 +244,7 @@ func TestQuitDuringAnIntroductionsRotationFinishesWithinTheDrain(t *testing.T) {
 	remotetest.Require(t)
 	t.Parallel()
 	host := ownConnectionBackend(t)
-	other := newIntroducingComputer(t, host, false)
+	other := newIntroducingComputer(t, host, introducingHoldsRotation)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -164,7 +294,7 @@ func TestAnIntroductionWhoseRotationFailedIsStillAnnounced(t *testing.T) {
 	remotetest.Require(t)
 	t.Parallel()
 	host := ownConnectionBackend(t)
-	other := newIntroducingComputer(t, host, true)
+	other := newIntroducingComputer(t, host, introducingGone)
 	var announced atomic.Int32
 	host.app.testEmitHook = func(name string, _ any) {
 		if name == string(eventchan.OwnDevicesChanged) {

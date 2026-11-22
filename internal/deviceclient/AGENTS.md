@@ -4,6 +4,11 @@
 Production code imports neither identity nor transport; wire spellings are
 pinned by tests. Credential requests never follow redirects.
 
+A redemption spends a single-use link. `Redeem` honors its context and
+returns the session unsaved, so its owner decides whether to keep it; `Pair`
+detaches it and saves, for a caller that must not lose the link. Neither is
+sent once the owner's lifetime has ended.
+
 Confirmation waits poll renewal, not socket tickets. Pending confirmation is
 read-only on the server and preserves the saved renewal operation; approval
 performs one successful rotation. Terminal refusal ends promptly and retires

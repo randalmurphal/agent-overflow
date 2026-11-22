@@ -158,7 +158,36 @@ type Pairing struct {
 	Scopes    []string
 }
 
-// Pair spends a pairing link and enrolls this installation as a device.
+// Pair spends a pairing link, saves the session it issued, and returns the
+// client that owns it. It is Redeem followed by Save with the redemption
+// detached from ctx: once sent, the redemption spends the single-use link on
+// the far side, so it and the save finish whatever the caller does, and a
+// caller that stopped waiting cannot burn the link with nothing stored. The
+// HTTP client's timeout bounds it.
+//
+// The returned credential is real and admits nothing yet. Every
+// presentation refuses until the owner matches Pairing.VerificationNumber,
+// which is what AwaitActivation waits for.
+func Pair(ctx context.Context, dir string, link Link, label, platform string, opts ...Option) (*Client, Pairing, error) {
+	redeemed, err := Redeem(context.WithoutCancel(ctx), dir, link, label, platform, opts...)
+	if err != nil {
+		return nil, Pairing{}, err
+	}
+	return redeemed.Save()
+}
+
+// Redemption is a pairing link this installation has spent, with the
+// session the far side issued for it not saved yet (Redeem). Save stores
+// it. A redemption that is dropped leaves that session on the far side with
+// nobody holding it, until it expires or that computer ends it.
+type Redemption struct {
+	client  *Client
+	session Session
+	pairing Pairing
+}
+
+// Redeem spends a pairing link and enrolls this installation as a device,
+// returning the issued session unsaved.
 //
 // The order is the mechanism, and it is `internal/identity`'s rather than
 // this package's: the key is generated and persisted FIRST, the redemption
@@ -167,17 +196,17 @@ type Pairing struct {
 // demonstrated it holds. There is no separate "register the key" step that
 // could be skipped, and a link read off a screen buys nothing without it.
 //
-// The returned credential is real and admits nothing yet. Every
-// presentation refuses until the owner matches Pairing.VerificationNumber,
-// which is what AwaitActivation waits for.
-func Pair(ctx context.Context, dir string, link Link, label, platform string, opts ...Option) (*Client, Pairing, error) {
+// ctx ends the redemption at any point, its exchange included; a caller
+// that must not burn the link with nothing stored detaches it (Pair). The
+// owner's lifetime (WithLifetime) ends it only before the exchange is sent.
+func Redeem(ctx context.Context, dir string, link Link, label, platform string, opts ...Option) (*Redemption, error) {
 	key, err := EnrollDeviceKey(dir)
 	if err != nil {
-		return nil, Pairing{}, err
+		return nil, err
 	}
 	base, err := dialBase(link.Endpoint, link.CertFingerprint)
 	if err != nil {
-		return nil, Pairing{}, err
+		return nil, err
 	}
 	client := newClient(dir, key, base, link.CertFingerprint, Session{}, opts)
 
@@ -192,45 +221,51 @@ func Pair(ctx context.Context, dir string, link Link, label, platform string, op
 		Platform string `json:"platform,omitempty"`
 	}{Token: link.Token, Label: label, Platform: platform})
 	if err != nil {
-		return nil, Pairing{}, fmt.Errorf("deviceclient: encode the redemption: %w", err)
+		return nil, fmt.Errorf("deviceclient: encode the redemption: %w", err)
 	}
-
-	// The redemption spends the single-use link on the far side, so it and
-	// the save below finish once sent: a caller that stopped waiting would
-	// otherwise burn the link with nothing stored. The HTTP client's
-	// timeout bounds it.
-	issued, err := client.exchange(context.WithoutCancel(ctx), authPairPath, body, nil)
+	if client.lifetime != nil && client.lifetime.Err() != nil {
+		return nil, fmt.Errorf("deviceclient: the redemption was not sent: %w", context.Cause(client.lifetime))
+	}
+	issued, err := client.exchange(ctx, authPairPath, body, nil)
 	if err != nil {
-		return nil, Pairing{}, err
+		return nil, err
 	}
-
-	session := Session{
-		OwnDevice:          link.Purpose == "own-device" || link.Purpose == "own-introduction",
-		RefreshRecovery:    &issued.refreshRecovery,
-		BackendID:          link.BackendID,
-		BackendName:        link.BackendName,
-		Endpoint:           link.Endpoint,
-		CertFingerprint:    link.CertFingerprint,
-		SessionID:          issued.SessionID,
-		Credential:         issued.Credential,
-		ExpiresAtMs:        issued.ExpiresAtMs,
-		RefreshSecret:      issued.RefreshSecret,
-		RefreshExpiresAtMs: issued.RefreshExpiresAtMs,
-		Scopes:             issued.Scopes,
-		Label:              label,
-	}
-	if err := SaveSession(dir, session); err != nil {
-		return nil, Pairing{}, err
-	}
-	client.session = session
-	client.installRoutes()
-	return client, Pairing{
-		BackendName:        link.BackendName,
-		Endpoint:           link.Endpoint,
-		VerificationNumber: issued.VerificationNumber,
-		SessionID:          issued.SessionID,
-		Scopes:             issued.Scopes,
+	return &Redemption{
+		client: client,
+		session: Session{
+			OwnDevice:          link.Purpose == "own-device" || link.Purpose == "own-introduction",
+			RefreshRecovery:    &issued.refreshRecovery,
+			BackendID:          link.BackendID,
+			BackendName:        link.BackendName,
+			Endpoint:           link.Endpoint,
+			CertFingerprint:    link.CertFingerprint,
+			SessionID:          issued.SessionID,
+			Credential:         issued.Credential,
+			ExpiresAtMs:        issued.ExpiresAtMs,
+			RefreshSecret:      issued.RefreshSecret,
+			RefreshExpiresAtMs: issued.RefreshExpiresAtMs,
+			Scopes:             issued.Scopes,
+			Label:              label,
+		},
+		pairing: Pairing{
+			BackendName:        link.BackendName,
+			Endpoint:           link.Endpoint,
+			VerificationNumber: issued.VerificationNumber,
+			SessionID:          issued.SessionID,
+			Scopes:             issued.Scopes,
+		},
 	}, nil
+}
+
+// Save stores the redeemed session and returns the client that owns it. It
+// waits only for the profile's local file lock.
+func (r *Redemption) Save() (*Client, Pairing, error) {
+	if err := SaveSession(r.client.dir, r.session); err != nil {
+		return nil, Pairing{}, err
+	}
+	r.client.session = r.session
+	r.client.installRoutes()
+	return r.client, r.pairing, nil
 }
 
 // Open builds a client over a session this installation already holds.

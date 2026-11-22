@@ -28,7 +28,6 @@ const attachedBackendsPkgPath = "agent-overflow/internal/attachedbackends"
 // reason given. Every other call that takes one is a wait the lock's other
 // callers would sit behind.
 var lockedContextCalls = map[string]string{
-	"agent-overflow/internal/deviceclient.Pair":            "one redemption, bounded by its HTTP timeout and finished whatever the caller does",
 	"agent-overflow/internal/deviceclient.WithProfileLock": "a local file lock, bounded by the caller's short timeout",
 	"agent-overflow/internal/deviceclient.WithLifetime":    "records the manager's lifetime on a client it builds; waits on nothing",
 }

@@ -20,8 +20,7 @@ import (
 )
 
 // heldIntroduction is an own-device introduction whose redemption the far
-// side holds: the manager holds the destination's profile lock until the
-// test releases the redemption.
+// side holds until the test releases it.
 type heldIntroduction struct {
 	m         *Manager
 	backendID string
