@@ -118,30 +118,26 @@ func ProbeCatalogOnConn(ctx context.Context, conn *acp.Conn, workDir string) ([]
 	}
 
 	defaultModelID := modelOpt.CurrentValue
+	currentOpts := openRes.ConfigOptions
+	currentSize := DefaultContextWindow
 	out := make([]provider.ModelInfo, 0, len(modelOpt.Options))
 	for _, choice := range modelOpt.Options {
-		opts := openRes.ConfigOptions
-		var ctxSize int
-
 		stopCap := conn.CaptureSessionUpdates(sessionID, 32)
-		if choice.Value != currentOptionValue(opts, "model") {
+		if choice.Value != currentOptionValue(currentOpts, "model") {
 			updated, setErr := conn.SetConfigOption(ctx, sessionID, "model", choice.Value)
 			if setErr == nil && len(updated) > 0 {
-				opts = updated
+				currentOpts = updated
 			}
 		}
 		updates := stopCap()
 		for _, u := range updates {
 			if u.SessionUpdate == "usage_update" && u.Size > 0 {
-				ctxSize = u.Size
+				currentSize = u.Size
 			}
-		}
-		if ctxSize <= 0 {
-			ctxSize = DefaultContextWindow
 		}
 
 		var efforts []provider.ReasoningEffortOption
-		if thoughtOpt, hasThought := findConfigOption(opts, "thought_level"); hasThought {
+		if thoughtOpt, hasThought := findConfigOption(currentOpts, "thought_level"); hasThought {
 			for _, tChoice := range thoughtOpt.Options {
 				efforts = append(efforts, provider.NewReasoningEffortOptionWithLabel(
 					tChoice.Value,
@@ -160,7 +156,7 @@ func ProbeCatalogOnConn(ctx context.Context, conn *acp.Conn, workDir string) ([]
 			Name:             name,
 			Provider:         string(provider.Agy),
 			IsDefault:        choice.Value == defaultModelID,
-			ContextWindows:   agyContextWindowOptions(ctxSize),
+			ContextWindows:   agyContextWindowOptions(currentSize),
 			ReasoningEfforts: efforts,
 		})
 	}

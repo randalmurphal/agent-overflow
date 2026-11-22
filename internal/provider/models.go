@@ -322,6 +322,13 @@ var AgyModels = []ModelInfo{
 		ReasoningEfforts: claudeEffortOptions("high", EffortLow, EffortMedium, EffortHigh),
 	},
 	{
+		Slug:             "gemini-4-hydrogen",
+		Name:             "Gemini 4 Hydrogen",
+		Provider:         string(Agy),
+		ContextWindows:   agyDefaultContextOptions(),
+		ReasoningEfforts: claudeEffortOptions("high", EffortLow, EffortMedium, EffortHigh, EffortXHigh),
+	},
+	{
 		Slug:             "gemini-3.8-flash",
 		Name:             "Gemini 3.8 Flash",
 		Provider:         string(Agy),
@@ -520,6 +527,8 @@ func providerDefaultReasoningEffort(providerName string) ReasoningEffort {
 	case string(Codex):
 		return EffortHigh
 	case string(Claude), string(ClaudeTUI):
+		return EffortHigh
+	case string(Agy):
 		return EffortHigh
 	default:
 		return DefaultReasoningEffort

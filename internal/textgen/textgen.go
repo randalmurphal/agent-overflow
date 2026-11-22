@@ -45,7 +45,7 @@ const (
 	FallbackClaudeModel = "claude-haiku-4-5"
 	// DefaultAgyModel is the default Antigravity model for short structured
 	// text generation runs.
-	DefaultAgyModel = "gemini-3.8-flash"
+	DefaultAgyModel = "gemini-4-hydrogen"
 )
 
 // PickAvailableProviderOrdered returns preferred when its binary resolves,

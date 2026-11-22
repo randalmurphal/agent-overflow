@@ -281,7 +281,7 @@ export const PROVIDER_DEFINITIONS: Record<ProviderID, ProviderDefinition> = {
     shortLabel: 'A',
     badgeClass: 'bg-provider-agy/10 text-provider-agy',
     installActionLabel: 'Install Antigravity CLI',
-    textGenerationDefaultModel: 'gemini-3.8-flash',
+    textGenerationDefaultModel: 'gemini-4-hydrogen',
     textGenerationEffortOptions: [
       { value: 'low', label: 'Low' },
       { value: 'medium', label: 'Medium' },
