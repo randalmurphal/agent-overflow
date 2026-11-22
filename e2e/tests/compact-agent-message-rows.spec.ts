@@ -134,7 +134,7 @@ for (const provider of ['claude', 'codex'] as const) {
     await expect(reply.getByTestId('agent-message-first-line')).toHaveText(REVIEW_ANSWER);
     await expectUncovered(reply.getByTestId('agent-message-toggle'));
     await open(page, reply, REVIEW_ANSWER);
-    await keep(page, `compact-${provider}-reply-in-run-expanded.png`, run);
+    await keep(timelineOf(run), `compact-${provider}-reply-in-run-expanded.png`, run);
     await reply.getByTestId('agent-message-sender').tap();
     await expect(page.getByTestId('chat-header-title')).toHaveText(REVIEWER);
   });
@@ -155,13 +155,13 @@ for (const provider of ['claude', 'codex'] as const) {
     await expect(run.getByTestId('activity-run-header-message-sender')).toHaveText(REVIEWER);
     await expect(run.getByTestId('activity-run-header-message-first-line')).toHaveText(REVIEW_ANSWER);
     await expectUncovered(run.getByTestId('activity-run-header-message-first-line'));
-    await keep(page, `compact-${provider}-lone-reply-collapsed.png`, run);
+    await keep(timelineOf(run), `compact-${provider}-lone-reply-collapsed.png`, run);
     await run.getByTestId('activity-run-header').tap();
     await expect(run).toHaveAttribute('data-collapsed', 'false');
     const reply = run.locator('[data-testid="agent-message-row"][data-agent-message-kind="reply"]');
     await expectUncovered(reply.getByTestId('agent-message-toggle'));
     await open(page, reply, REVIEW_ANSWER);
-    await keep(page, `compact-${provider}-lone-reply-expanded.png`, run);
+    await keep(timelineOf(run), `compact-${provider}-lone-reply-expanded.png`, run);
     await reply.getByTestId('agent-message-sender').tap();
     await expect(page.getByTestId('chat-header-title')).toHaveText(REVIEWER);
   });
