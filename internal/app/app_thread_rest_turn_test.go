@@ -94,23 +94,24 @@ func TestACommittedOpenTurnBelowHoldsTheRequest(t *testing.T) {
 	f.expectHeld(t, worker, token, "though a thread below has an open turn row")
 }
 
-// A thread whose latest turn row is open reads running, with nothing in
-// memory of it, and the thread above it does not read at rest: the first
-// read applies the rule the write's check does.
-func TestAnOpenTurnRowReadsRunning(t *testing.T) {
+// A thread whose latest turn row is open with nothing in this process
+// running its turn has ended (triage.Router.TurnEnded): it reads at rest,
+// not running for good, and the first read of a rest decision reads the
+// thread above it at rest.
+func TestAnOpenTurnRowNothingRunsReadsAtRest(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
 	worker, child := f.restTree(t)
 	if err := f.app.store.InsertTurn(store.Turn{TurnID: child.ID + ":1", ThreadID: child.ID, TurnIndex: 1, StartedAt: time.Now().UnixMilli()}); err != nil {
 		t.Fatal(err)
 	}
-	if rest, err := f.app.threadRest(child.ID); err != nil || rest.unrest != workerRunning {
-		t.Fatalf("a thread with an open turn row reads %+v, %v; want running", rest, err)
+	if rest, err := f.app.threadRest(child.ID); err != nil || rest.unrest != "" {
+		t.Fatalf("a thread with an open turn row nothing runs reads %+v, %v; want at rest", rest, err)
 	}
 	decision, err := f.app.readRest([]string{worker.ID})
 	defer decision.done()
-	if err != nil || decision.rests(worker.ID) {
-		t.Fatalf("the thread above an open turn row reads at rest %v, %v; want not", decision.rests(worker.ID), err)
+	if err != nil || !decision.rests(worker.ID) {
+		t.Fatalf("the thread above an open turn row nothing runs reads at rest %v, %v; want at rest", decision.rests(worker.ID), err)
 	}
 }
 
