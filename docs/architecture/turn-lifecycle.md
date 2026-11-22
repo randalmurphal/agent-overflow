@@ -842,7 +842,8 @@ restarts is `stop_reason='interrupted'`, the only thing the sidebar's
 boot pill (`Thread.HasIncompleteTurn`) reads: an unseen settled
 interruption. A row whose settle write fails stays open and reads as
 running until the next boot's sweep records it
-(`internal/store/turn_newest.go`).
+(`internal/store/turn_newest.go`); triage gives the thread an error row at
+that turn, which the sidebar shows as Failed once the round has ended.
 
 The frontend still shows no active-turn spinner for any of this
 (spinner requires a live `activeTurn` push, not a DB row), and we do

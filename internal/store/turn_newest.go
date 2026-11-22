@@ -12,9 +12,10 @@ import "strconv"
 // never inferred from a live provider round having ended.
 //
 // The row stays open when nothing will settle it at runtime: its settle
-// write failed, or the boot sweep failed. It reads as running until the next
-// boot's sweep records it as interrupted, as GetActiveTurn reads it for send
-// placement and revert, so a wait on that thread runs to its timeout.
+// write failed (triage gives the thread an error row that says so), or the
+// boot sweep failed (a failed boot phase). It reads as running until the
+// next boot's sweep records it as interrupted, as GetActiveTurn reads it for
+// send placement and revert, so a wait on that thread runs to its timeout.
 
 // newestTurnSQL selects expr from thread's newest turn row, one probe of
 // turns_thread_index; NULL when the thread has no turn. expr reads the row

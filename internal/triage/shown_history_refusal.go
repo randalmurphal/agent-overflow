@@ -1,6 +1,7 @@
 package triage
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"log"
@@ -48,5 +49,34 @@ func (r *Router) providerWriteFailed(threadID, what string, err error) {
 	log.Printf("triage: %s: %v", what, err)
 	if reportErr := r.reportShownHistoryRefusal(threadID, err); reportErr != nil {
 		log.Printf("triage: %s: %v", what, reportErr)
+	}
+}
+
+// TurnSettleFailureSummary is the thread error row of a turn whose end was
+// not recorded.
+func TurnSettleFailureSummary(err error) string {
+	return "This turn's end could not be recorded, so it shows as running until the app restarts: " + err.Error()
+}
+
+// turnSettleFailed reports a failed write of a turn's end: the turn row
+// stays open, which every reader takes for a running turn until the next
+// boot's sweep (store/turn_newest.go), so the thread gets an error row at
+// that turn whatever the failure, the refusal's own row for a refusal.
+// A turn with no row (a completion with no turn start, settleTurnRow) is
+// left open nowhere, so only the log keeps it. The row's dedup
+// (persistProviderErrorItem) keeps a repeated report of one turn to one
+// row.
+func (r *Router) turnSettleFailed(threadID string, turnIndex int, turnID string, err error, now int64) {
+	what := "settle turn " + turnID
+	log.Printf("triage: %s: %v", what, err)
+	if errors.Is(err, sql.ErrNoRows) {
+		return
+	}
+	summary := TurnSettleFailureSummary(err)
+	if store.IsShownHistoryRefusal(err) {
+		summary = ShownHistoryRefusalSummary(err)
+	}
+	if reportErr := r.persistProviderErrorItem(threadID, turnIndex, summary, nil, "", "", now); reportErr != nil {
+		log.Printf("triage: %s: report: %v", what, reportErr)
 	}
 }

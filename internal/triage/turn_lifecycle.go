@@ -913,7 +913,7 @@ func (r *Router) settleTurnRow(evt provider.ProviderEvent, turnIndex int, now in
 	settled := true
 	if err := r.store.UpdateTurnCompleted(fields.logicalTurnID, now, fields.stopReason, fields.assistantMessageID, usageJSON, fields.errorMessage); err != nil {
 		settled = false
-		r.providerWriteFailed(evt.ThreadID, "update turn "+fields.logicalTurnID, err)
+		r.turnSettleFailed(evt.ThreadID, turnIndex, fields.logicalTurnID, err, now)
 	}
 	usageErr := r.appendUsageLedger(evt, fields.logicalTurnID, meta, now)
 	if quiet {
@@ -1590,7 +1590,7 @@ func (r *Router) settleQueuedEchoPredecessor(threadID string, turnIndex int, com
 	}
 	turnID := r.persistedTurnID(provider.ProviderEvent{ThreadID: threadID}, turnIndex)
 	if err := r.store.UpdateTurnCompleted(turnID, completedAt, stopReason, "", "", ""); err != nil {
-		log.Printf("triage: settle queued-echo predecessor turn %s: %v", turnID, err)
+		r.turnSettleFailed(threadID, turnIndex, turnID, err, completedAt)
 		persistErr = errors.Join(persistErr, err)
 	}
 	r.finishTurnSpan(threadID, completedTurnOutcome(turnCompleteMeta{

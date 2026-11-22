@@ -264,7 +264,7 @@ func (r *Router) endFoldEmptiedTurn(threadID string, turnIndex int, now int64) {
 		return
 	}
 	if err := r.store.UpdateTurnCompleted(turn.TurnID, now, "end_turn", "", "", ""); err != nil {
-		r.providerWriteFailed(threadID, "end a turn a merge fold emptied", err)
+		r.turnSettleFailed(threadID, turnIndex, turn.TurnID, err, now)
 	}
 }
 

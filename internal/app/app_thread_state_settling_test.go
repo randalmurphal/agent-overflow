@@ -147,7 +147,9 @@ func TestThreadStateOfCrashLeftTurn(t *testing.T) {
 
 // A completion whose settle write fails leaves the row open: the thread
 // reads as running, and a wait on it does not rest, until the next boot's
-// sweep records the turn as interrupted (store/turn_newest.go).
+// sweep records the turn (store/turn_newest.go). The failure is the
+// thread's error row, which the sidebar shows as Failed once the round has
+// ended and which outranks the sweep's interruption until it is read.
 func TestThreadStateWhenSettleWriteFails(t *testing.T) {
 	q := newQueuedRequests(t)
 	tools := q.f.app.threadTools()
@@ -161,11 +163,22 @@ func TestThreadStateWhenSettleWriteFails(t *testing.T) {
 		t.Fatal("the completion left its round open")
 	}
 	wantThreadState(ctx, t, tools, q.target.ID, threadtools.StateRunning, false)
+	row, err := q.f.app.store.GetThread(q.target.ID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if !row.HasFailedTurn {
+		t.Fatal("the failed settle left the thread row without a failure the sidebar shows")
+	}
 	execOnStore(t, q.f.dbPath, `DROP TRIGGER refuse_turn_settle`)
 	if _, err := q.f.app.triage.RecoverCrashedTurns(); err != nil {
 		t.Fatalf("RecoverCrashedTurns: %v", err)
 	}
-	wantThreadState(ctx, t, tools, q.target.ID, threadtools.StateInterrupted, true)
+	wantThreadState(ctx, t, tools, q.target.ID, threadtools.StateError, true)
+	if _, _, err := q.f.app.store.MarkThreadReadNow(ctx, q.target.ID); err != nil {
+		t.Fatalf("MarkThreadReadNow: %v", err)
+	}
+	wantThreadState(ctx, t, tools, q.target.ID, threadtools.StateIdle, true)
 }
 
 // wantThreadState checks threadID's state as thread_status and thread_show
