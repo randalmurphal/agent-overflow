@@ -1,6 +1,6 @@
 // AO tool rows under the compact layout, on both mock providers: every
 // row ao-tool-rows.spec.ts reads on the desktop renders its sentence header
-// inside the phone-width thread screen, opens by touch to its decoded
+// inside the phone-width thread screen, opens when pressed to its decoded
 // result, and the refusal shows its message and code. Screenshots of every
 // row collapsed and expanded go to the test's output directory. A row whose
 // toggle sits at the edge of the "Jump to bottom" chip still opens.
