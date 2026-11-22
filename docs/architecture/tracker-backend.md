@@ -621,7 +621,12 @@ A ticket's view is built from its document and from what the mirror
 holds of other things: the mirror's card of the issue and its status
 time, the cards of the issues the view shows (its parent, the issues it
 links) and whether the mirror keeps them, and the connection's users and
-statuses. Reads settle documents in the order they began; the funnel
+statuses. A full read stores its card before its document
+(`run.details`), so the mirror's card of an issue is never behind a
+document read of it: the store alone decides the status time, and the
+issue's history is due for the card the ticket shows. A document the
+ticket settled last, or of the version the round's check just stored the
+card of, brings no card to store. Reads settle documents in the order they began; the funnel
 orders changes to the other inputs. A view is installed only when it was
 built from the document the pump holds now, after the last change to the
 other inputs; one that misses that is built again, so a delayed read or
@@ -661,7 +666,8 @@ document, reads none in full and moves the read time of the unchanged
 cards in one statement; a Linear round reads every ticket in
 full, stores them in one transaction, which reads every document's state
 in one statement and moves the read times of the unchanged ones in one
-more. A ticket that changed adds its own full read.
+more. A ticket that changed adds its own full read, and on Linear the
+store call that writes its card.
 
 A changed row is redelivered by the delta's overlap of one minute
 (`tracker.DeltaOverlap`), so about six Jira ticks after a change take the

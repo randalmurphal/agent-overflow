@@ -236,7 +236,7 @@ func (s *Service) detailView(root int64, d tracker.Detail) (DetailView, error) {
 
 // detailViews is each of ds as a view, its names from its own catalog and,
 // for the IDs that leaves out, the mirror's, with when its status began
-// (only when the mirror's card has its status and is no later a version,
+// (only when the mirror's card describes the version it shows,
 // statusSinceOf), its parent's key and title, and each linked issue's key,
 // title and status from the mirror's card of it when the mirror keeps one
 // (else from the detail). The cards of every detail are read in one
@@ -409,13 +409,13 @@ func (sd shownDetail) view(mirrored catalogNames) DetailView {
 }
 
 // statusSinceOf is when c's status began, from m, the mirror's card of
-// the same issue: the time the mirror would hold once it stored c
-// (the store's mirrorStatusSinceSQL), which is m's when c has m's status
-// and is m's version or a later one. Otherwise it is unknown (0): the
-// mirror's time belongs to another status, or c is an earlier version and
-// the time may be a later stay's.
+// the same issue, when m is the version c shows: the same update time and
+// status. A read stores its card before its document (run.details), so m
+// is c's version unless the mirror has since stored a later one; then the
+// time is unknown (0), as it may be a later stay's, until the ticket is
+// read again. The store alone decides the time (mirrorStatusSinceSQL).
 func statusSinceOf(m store.MirrorCard, c tracker.Card) int64 {
-	if m.StatusID != string(c.Status) || millis(c.Updated) < m.UpdatedAt {
+	if m.StatusID != string(c.Status) || m.UpdatedAt != millis(c.Updated) {
 		return 0
 	}
 	return m.StatusSince

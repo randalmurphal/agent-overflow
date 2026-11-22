@@ -136,23 +136,32 @@ func (r *run) cardsOf(batch []tracker.IssueID) ([]tracker.Card, Changes, error) 
 	if err != nil {
 		return nil, Changes{}, fmt.Errorf("trackerapp: read %d cards: %w", len(batch), call(err))
 	}
-	cards := make([]store.MirrorCard, 0, len(read.Cards))
-	for _, c := range read.Cards {
+	ch, err := r.storeCards(read.Cards, read.Catalog, readAt)
+	return read.Cards, ch, err
+}
+
+// storeCards stores cards read with no board, and the users and statuses
+// their read named, from a read that began at readAt: those of the issues
+// the mirror keeps. It is the one writer of a card that comes with no
+// board row.
+func (r *run) storeCards(read []tracker.Card, named tracker.Catalog, readAt int64) (Changes, error) {
+	cards := make([]store.MirrorCard, 0, len(read))
+	for _, c := range read {
 		m, err := mirrorCard(c)
 		if err != nil {
-			return nil, Changes{}, err
+			return Changes{}, err
 		}
 		cards = append(cards, m)
 	}
-	catalog, err := mirrorCatalog(read.Catalog)
+	catalog, err := mirrorCatalog(named)
 	if err != nil {
-		return nil, Changes{}, err
+		return Changes{}, err
 	}
 	stored, err := r.s.store.UpsertMirrorCards(r.root, r.state.Sweep, cards, catalog, readAt)
 	if err != nil {
-		return nil, Changes{}, fmt.Errorf("trackerapp: store %d cards: %w", len(cards), err)
+		return Changes{}, fmt.Errorf("trackerapp: store %d cards: %w", len(cards), err)
 	}
-	return read.Cards, changesOf(stored), nil
+	return changesOf(stored), nil
 }
 
 // againIfSwept runs read, a read of content outside a board and its

@@ -321,6 +321,93 @@ func TestDetailShowsStatusSinceOnlyOfItsOwnCard(t *testing.T) {
 	}
 }
 
+// A ticket takes when its status began from the mirror's card only when
+// that card is the version it shows.
+func TestStatusSinceOf(t *testing.T) {
+	t.Parallel()
+	m := store.MirrorCard{StatusID: "s1", UpdatedAt: 1_799_000_000_000, StatusSince: 7}
+	for name, tc := range map[string]struct {
+		updated int64
+		status  tracker.StatusID
+		want    int64
+	}{
+		"the mirror's version":      {m.UpdatedAt, "s1", 7},
+		"another status":            {m.UpdatedAt, "s2", 0},
+		"an earlier version":        {m.UpdatedAt - 1, "s1", 0},
+		"a version not stored yet":  {m.UpdatedAt + 1, "s1", 0},
+		"a later one, other status": {m.UpdatedAt + 1, "s2", 0},
+	} {
+		c := card("10001", tc.updated)
+		c.Status = tc.status
+		if got := statusSinceOf(m, c); got != tc.want {
+			t.Errorf("%s: %d; want %d", name, got, tc.want)
+		}
+	}
+}
+
+// A full read of a ticket stores its card before its document, on a
+// tracker whose cards are checked first and on one whose are not, so the
+// mirror's card is the version the ticket shows and the store decides
+// when its status began: a ticket read that sees the issue leave its
+// status shows no time, and one that sees it come back shows none either,
+// until the history read for the card it stored gives the new stay's.
+func TestATicketReadStoresTheCardItShows(t *testing.T) {
+	t.Parallel()
+	for _, checksCards := range []bool{false, true} {
+		t.Run(map[bool]string{false: "cards not checked", true: "a refresh past the check"}[checksCards], func(t *testing.T) {
+			t.Parallel()
+			m := newMirrorFixture(t)
+			m.seedBoard(t)
+			m.p.caps.DetailMovesUpdated = checksCards
+			since := time.UnixMilli(1_798_500_000_000).UTC()
+			m.p.history = func(q tracker.HistoryQuery) (tracker.History, error) {
+				var h tracker.History
+				for _, id := range q.Issues {
+					h.Issues = append(h.Issues, tracker.IssueHistory{Issue: id, CompleteTo: m.now(),
+						Status: []tracker.StatusChange{{Change: tracker.Change{At: since}, From: "s2", To: "s1"}}})
+				}
+				return h, nil
+			}
+			must[Outcome](t)(m.svc.tickHistory(t.Context(), m.scope(), Background))
+			read := func() DetailView {
+				t.Helper()
+				detail := m.svc.IssueDetail
+				if checksCards {
+					detail = m.svc.RefreshIssueDetail
+				}
+				v, _, err := detail(t.Context(), m.conn.ID, "10001", Interactive)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return v
+			}
+			for i, status := range []tracker.StatusID{"s2", "s1"} {
+				updated := 1_799_000_100_000 + int64(i)*100_000
+				m.p.detail = func(tracker.IssueID) (tracker.Detail, error) {
+					c := card("10001", updated)
+					c.Status = status
+					return tracker.Detail{Card: c}, nil
+				}
+				if v := read(); v.Card.StatusSince != 0 {
+					t.Fatalf("the ticket read in %s shows its status since %d; want none", status, v.Card.StatusSince)
+				}
+				if c := must[IssueView](t)(m.svc.Issue(m.conn.ID, "10001")).Card; c.Updated != updated || c.Status.ID != string(status) || c.StatusSince != 0 {
+					t.Fatalf("the mirror's card after the read in %s: updated %d, status %s, since %d", status, c.Updated, c.Status.ID, c.StatusSince)
+				}
+			}
+			since = time.UnixMilli(1_799_000_200_000).UTC()
+			reads := m.p.count("History")
+			must[Outcome](t)(m.svc.tickHistory(t.Context(), m.scope(), Background))
+			if got := m.p.count("History") - reads; got != 1 {
+				t.Fatalf("%d history reads for the card the ticket stored; want 1", got)
+			}
+			if v, _, err := m.svc.MirroredDetail(m.conn.ID, "10001"); err != nil || v.Card.StatusSince != since.UnixMilli() {
+				t.Fatalf("the ticket shows its status since %d, %v; the history says %d", v.Card.StatusSince, err, since.UnixMilli())
+			}
+		})
+	}
+}
+
 // A card whose blob this version cannot read shows its columns and is
 // listed as stale.
 func TestAStaleCardShowsItsColumns(t *testing.T) {

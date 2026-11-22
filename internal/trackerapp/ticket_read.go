@@ -34,6 +34,9 @@ type ticketRead struct {
 	issue tracker.IssueID
 	prior *detailCheck
 	full  bool
+	// carded is the update time of the ticket's card that this run's check
+	// read and stored (checkDetails), zero for none.
+	carded int64
 
 	// check is the ticket's check after the read; detail is the document
 	// when the read read or decoded it, nil when the check confirmed the
@@ -235,7 +238,11 @@ func (r *run) checkDetails(reads []*ticketRead, openedAt int64, out *Changes) ([
 			return nil, err
 		}
 		for _, rd := range batch {
-			if i := slices.IndexFunc(cards, func(c tracker.Card) bool { return c.ID == rd.issue }); i < 0 || millis(cards[i].Updated) != rd.check.updated {
+			i := slices.IndexFunc(cards, func(c tracker.Card) bool { return c.ID == rd.issue })
+			if i >= 0 {
+				rd.carded = millis(cards[i].Updated)
+			}
+			if i < 0 || rd.carded != rd.check.updated {
 				toRead = append(toRead, rd)
 				continue
 			}
@@ -332,7 +339,16 @@ func (r *run) priorCheck(rd *ticketRead) error {
 // store, because it does not keep the issue or holds no opening of it, is
 // held by the read's check. A ticket the tracker did not return fails with
 // ErrIssueNotFound.
+//
+// A document's card is stored first, as a cards read's is (storeCards),
+// so the mirror's card of an issue is never behind a document read of it
+// and the store alone derives what follows from the card: when its status
+// began, and that its history is due. Two documents bring no card to
+// store: the one its ticket settled last, whose card that settlement
+// stored, and one of the version the run's check just stored the card of
+// (ticketRead.carded), once: a retry after a sweep stores it.
 func (r *run) details(reads []*ticketRead, openedAt int64) (Changes, error) {
+	cardsAt := r.readAt()
 	readAt := r.s.detailReadAtNext()
 	if openedAt > 0 {
 		openedAt = readAt
@@ -360,6 +376,8 @@ func (r *run) details(reads []*ticketRead, openedAt int64) (Changes, error) {
 	}
 	docs := make([]store.MirrorDetailDoc, 0, len(got.Details))
 	read := make([]*ticketRead, 0, len(got.Details))
+	var cards []tracker.Card
+	var named tracker.Catalog
 	for i := range got.Details {
 		d := &got.Details[i]
 		rd := readOf(d.Card.ID)
@@ -376,6 +394,11 @@ func (r *run) details(reads []*ticketRead, openedAt int64) (Changes, error) {
 		read = append(read, rd)
 		rd.err, rd.detail = nil, d
 		rd.check = detailCheck{readAt: readAt, updated: millis(d.Card.Updated), doc: maphash.Bytes(r.s.digestSeed, data)}
+		if (rd.prior == nil || rd.prior.doc != rd.check.doc) && rd.carded != rd.check.updated {
+			cards = append(cards, d.Card)
+			named.Users, named.Statuses = append(named.Users, d.Users...), append(named.Statuses, d.Statuses...)
+		}
+		rd.carded = 0
 	}
 	for _, rd := range reads {
 		if rd.err == nil && !slices.Contains(read, rd) {
@@ -392,9 +415,15 @@ func (r *run) details(reads []*ticketRead, openedAt int64) (Changes, error) {
 	if len(docs) == 0 {
 		return out, nil
 	}
+	if len(cards) > 0 {
+		var err error
+		if out, err = r.storeCards(cards, named, cardsAt); err != nil {
+			return Changes{}, err
+		}
+	}
 	written, err := r.s.store.StoreMirrorDetails(r.root, r.state.Sweep, docs, openedAt, readAt)
 	if err != nil {
-		return Changes{}, fmt.Errorf("trackerapp: store the details of %d issues: %w", len(docs), err)
+		return out, fmt.Errorf("trackerapp: store the details of %d issues: %w", len(docs), err)
 	}
 	out.Dropped = issueIDs(written.Dropped)
 	for i, w := range written.Docs {

@@ -301,7 +301,7 @@ func TestHistoryDetailAndViewCosts(t *testing.T) {
 		}},
 		{"detail, none stored", detail, costOf{
 			map[string]int{"Details": 1},
-			with(plus(view, map[string]int{"GetMirrorDetail": 1, "StoreMirrorDetails": 1})),
+			with(plus(view, map[string]int{"GetMirrorDetail": 1, "UpsertMirrorCards": 1, "StoreMirrorDetails": 1})),
 		}},
 		// The mirror keeps none of the linked issues: they show what the
 		// detail holds.
@@ -345,7 +345,7 @@ func TestHistoryDetailAndViewCosts(t *testing.T) {
 			detail(t)
 		}, costOf{
 			map[string]int{"Details": 1},
-			with(plus(view, map[string]int{"GetMirrorDetail": 1, "StoreMirrorDetails": 1})),
+			with(plus(view, map[string]int{"GetMirrorDetail": 1, "UpsertMirrorCards": 1, "StoreMirrorDetails": 1})),
 		}},
 		{"detail, older than the age bound", func(t *testing.T) {
 			sd, _, _ := m.storedDetail(t, string(issue))
@@ -354,7 +354,7 @@ func TestHistoryDetailAndViewCosts(t *testing.T) {
 			detail(t)
 		}, costOf{
 			map[string]int{"Details": 1},
-			with(plus(view, map[string]int{"GetMirrorDetail": 1, "StoreMirrorDetails": 1})),
+			with(plus(view, map[string]int{"GetMirrorDetail": 1, "UpsertMirrorCards": 1, "StoreMirrorDetails": 1})),
 		}},
 		// A person's refresh reads no stored detail first.
 		{"detail, forced refresh", func(t *testing.T) {
@@ -363,7 +363,7 @@ func TestHistoryDetailAndViewCosts(t *testing.T) {
 			}
 		}, costOf{
 			map[string]int{"Details": 1},
-			with(plus(view, map[string]int{"StoreMirrorDetails": 1})),
+			with(plus(view, map[string]int{"UpsertMirrorCards": 1, "StoreMirrorDetails": 1})),
 		}},
 		// No run: no sync state read, no client.
 		{"detail, the mirror's copy", func(t *testing.T) {
@@ -381,7 +381,7 @@ func TestHistoryDetailAndViewCosts(t *testing.T) {
 			detail(t)
 		}, costOf{
 			map[string]int{"Details": 1},
-			with(plus(view, map[string]int{"StoreMirrorDetails": 1})),
+			with(plus(view, map[string]int{"UpsertMirrorCards": 1, "StoreMirrorDetails": 1})),
 		}},
 		{"board view, three sections", func(t *testing.T) {
 			must[BoardView](t)(m.svc.Board(scope, []Section{{Kind: SectionColumn}, {Kind: SectionColumn, Column: 1}, {Kind: SectionColumn, Column: 2}}))
