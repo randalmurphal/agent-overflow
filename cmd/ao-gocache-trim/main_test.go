@@ -382,6 +382,25 @@ func TestAPassLeavesTheWorkToOneHoldingTheLock(t *testing.T) {
 	}
 }
 
+// TestAPassThatReadAStaleStampAfterAnotherWalkedDoesNotWalk: a pass reads the
+// stamp before it takes the lock, so another pass can walk, stamp and
+// release in between. Holding the lock, it reads the stamp again.
+func TestAPassThatReadAStaleStampAfterAnotherWalkedDoesNotWalk(t *testing.T) {
+	dir := newCache(t)
+	for i := range 200 {
+		writeEntry(t, dir, fmt.Sprintf("%02x/e%d-a", i%256, i), 1000, 30*24*time.Hour)
+	}
+	first, err := trim(dir, 100_000, testNow)
+	if err != nil || !first.walked || first.removed != 120 {
+		t.Fatalf("the first pass = %+v, %v; want a walk removing 120", first, err)
+	}
+	// The second pass found the stamp stale before the first wrote it.
+	second, err := walkUnderLock(dir, filepath.Join(dir, stampName), 100_000, testNow)
+	if err != nil || second.walked {
+		t.Fatalf("the pass behind it = %+v, %v; want no second walk", second, err)
+	}
+}
+
 // TestConcurrentPassesWalkOnce: of passes started together, as parallel
 // sessions start them, one walks; the rest find the stamp it wrote first
 // or the lock it holds.

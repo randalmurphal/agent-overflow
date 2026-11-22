@@ -222,6 +222,14 @@ func trim(dir string, capBytes int64, now time.Time) (trimResult, error) {
 	if err := verifyGoCache(dir); err != nil {
 		return result, err
 	}
+	return walkUnderLock(dir, stamp, capBytes, now)
+}
+
+// walkUnderLock is the pass of a trim that found the stamp stale: it walks
+// under the trim lock unless the stamp is fresh by then, and leaves the
+// work to a pass that holds the lock.
+func walkUnderLock(dir, stamp string, capBytes int64, now time.Time) (trimResult, error) {
+	var result trimResult
 	lock, err := filelock.Open(filepath.Join(dir, lockName))
 	if err != nil {
 		return result, fmt.Errorf("open the trim lock: %w", err)
@@ -233,7 +241,12 @@ func trim(dir string, capBytes int64, now time.Time) (trimResult, error) {
 	if !locked {
 		return result, lock.Close() // another pass is walking
 	}
-	err = walkAndTrim(dir, stamp, capBytes, now, &result)
+	// A pass that walked and released between this one's read of the stamp
+	// and its lock wrote the stamp under the lock.
+	fresh, err := stampFresh(stamp, now)
+	if err == nil && !fresh {
+		err = walkAndTrim(dir, stamp, capBytes, now, &result)
+	}
 	return result, errors.Join(err, filelock.Release(lock))
 }
 
