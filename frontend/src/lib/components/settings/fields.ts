@@ -519,7 +519,7 @@ const STATIC_FIELDS = [
     id: 'browser.enabled',
     section: 'browser',
     label: 'Built-in browser tools',
-    hint: 'Give Claude and Codex a browser in a companion pane.',
+    hint: 'Give agents a browser in a companion pane.',
     keywords: ['web', 'playwright', 'companion pane'],
   },
   {
@@ -557,7 +557,7 @@ const STATIC_FIELDS = [
     id: 'thread-tools.enabled',
     section: 'thread-tools',
     label: 'Built-in thread tools',
-    hint: "Let Claude and Codex read, start and answer this computer's other conversations.",
+    hint: "Let agents read, start and answer this computer's other conversations.",
     keywords: ['ao-thread-tools', 'threads', 'agents', 'mcp'],
   },
 
@@ -605,7 +605,7 @@ const STATIC_FIELDS = [
     id: 'agent-guide.enabled',
     section: 'agent-guide',
     label: 'Append the app guide',
-    hint: 'Tell Claude and Codex what Agent Overflow renders and which built-in tools are on. Applies to sessions started after a change.',
+    hint: 'Tell agents what Agent Overflow renders and which built-in tools are on. Applies to sessions started after a change.',
     keywords: ['system prompt', 'append', 'guide', 'mcp'],
   },
 

@@ -98,20 +98,24 @@
     editError = undefined;
   }
 
-  function isCommandTool(toolName: string): boolean {
+  function isCommandTool(toolName: string, kind?: string): boolean {
+    if (kind === 'command') return true;
     return toolName === 'Bash' || toolName === 'bash'
-      || toolName === 'execute_command' || toolName === 'shell';
+      || toolName === 'execute_command' || toolName === 'shell' || toolName === 'run_command';
   }
 
-  function isFileTool(toolName: string): boolean {
+  function isFileTool(toolName: string, kind?: string): boolean {
+    if (kind === 'file-change' || kind === 'file-read') return true;
     return toolName === 'Read' || toolName === 'Write' || toolName === 'Edit'
-      || toolName === 'read_file' || toolName === 'write_file' || toolName === 'edit_file';
+      || toolName === 'read_file' || toolName === 'write_file' || toolName === 'edit_file'
+      || toolName === 'view_file' || toolName === 'write_to_file'
+      || toolName === 'replace_file_content' || toolName === 'multi_replace_file_content';
   }
 
   const preview: { label: string; content: string } | null = $derived.by(() => {
     if (!approval.input) return null;
     if (typeof approval.input === 'string') {
-      return isCommandTool(approval.toolName) || approval.toolName === 'command'
+      return isCommandTool(approval.toolName, approval.kind) || approval.toolName === 'command'
         ? { label: 'Command', content: approval.input }
         : null;
     }
@@ -129,12 +133,12 @@
       ].filter(Boolean).join('\n');
       return details ? { label: 'Terminal input', content: details } : null;
     }
-    if (isCommandTool(approval.toolName)) {
-      const cmd = input.command ?? input.cmd ?? '';
+    if (isCommandTool(approval.toolName, approval.kind)) {
+      const cmd = input.command ?? input.cmd ?? input.CommandLine ?? '';
       return cmd ? { label: 'Command', content: String(cmd) } : null;
     }
-    if (isFileTool(approval.toolName)) {
-      const path = input.file_path ?? input.path ?? input.filePath ?? '';
+    if (isFileTool(approval.toolName, approval.kind)) {
+      const path = input.file_path ?? input.path ?? input.filePath ?? input.TargetFile ?? input.AbsolutePath ?? input.Path ?? '';
       return path ? { label: 'File', content: String(path) } : null;
     }
     return null;

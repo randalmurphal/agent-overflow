@@ -126,7 +126,7 @@
   );
 
   function contextLabel(tokens: number): string {
-    if (tokens === 1_050_000 || tokens === 1_000_000) return '1M';
+    if (tokens === 1_050_000 || tokens === 1_048_576 || tokens === 1_000_000) return '1M';
     if (tokens === 272_000) return '272k';
     if (tokens === 128_000) return '128k';
     if (tokens === 200_000) return '200k';

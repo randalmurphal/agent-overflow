@@ -205,9 +205,6 @@ Entities in SQLite are authoritative data, not cache (see §12):
   Cover "new phone, dead laptop, away from home". SSH-to-host CLI mint
   is the last-resort path; document both.
 
-The `ao` CLI's scoped tokens (`internal/transport/scopedtoken.go`)
-remain a separate, narrower credential class, unchanged.
-
 ## 4. Authentication
 
 ### Personal-device enrollment
@@ -670,9 +667,8 @@ Scope, StepUp}` table, and **fails the build on an unannotated method**,
 replacing the test-only `wireSafeMethods` completeness gate. `host`
 becomes a scope *value*, so the "host-only residue" is just
 `scope: host`, not a parallel map. `InternalServiceMethods` stays (never
-registered). `ScopedTokenMethods` stays (grants are a genuinely
-different axis), with a CI cross-check that every entry exists in the
-generated table.
+registered). (The earlier per-session `ScopedTokenMethods` grant table
+was removed when the `ao remote` CLI was retired.)
 
 `LocalOnlyMethods` becomes **derived** from the scope table on day one
 of phase 3 (privileged scope ⇒ local-only), so only one hand-edited

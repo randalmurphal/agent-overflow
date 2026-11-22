@@ -386,6 +386,8 @@ connection.
 
 ## Identity
 
+> Note: the `agent-overflow remote` CLI and per-session `AO_ENDPOINT` / `AO_TOKEN` / `AO_THREAD_ID` credentials described in this historical section were subsequently retired. Provider processes no longer receive `AO_*` credentials in either the spawn environment or `shell_environment_policy`.
+
 At stage 1 the `ao` credential stays in the spawn environment, as today:
 the key holds one thread per process, so the environment is still that
 thread's own. At stage 2, `AO_ENDPOINT`, `AO_TOKEN` and `AO_THREAD_ID`

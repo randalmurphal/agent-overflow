@@ -16,6 +16,9 @@ export function displayModelLabel(provider: ModelProvider, slug: string, name?: 
   if (provider === PROVIDER_DEFINITIONS.codex.id) {
     return displayCodexModelLabel(slug, name);
   }
+  if (provider === PROVIDER_DEFINITIONS.agy.id) {
+    return displayAgyModelLabel(slug, name);
+  }
   return name?.trim() || slug;
 }
 
@@ -61,6 +64,32 @@ function displayCodexModelLabel(slug: string, name?: string): string {
   return parts.length > 0 ? ['GPT', ...parts].join(' ') : 'GPT';
 }
 
+function displayAgyModelLabel(slug: string, name?: string): string {
+  const trimmedName = name?.trim() ?? '';
+  if (trimmedName !== '') return trimmedName;
+  const trimmedSlug = slug.trim();
+  if (/^claude-/i.test(trimmedSlug)) {
+    return 'Claude ' + displayClaudeModelLabel(trimmedSlug);
+  }
+  if (/^gpt-/i.test(trimmedSlug)) {
+    return displayCodexModelLabel(trimmedSlug);
+  }
+  if (/^gemini-/i.test(trimmedSlug)) {
+    return formatGeminiSlug(trimmedSlug);
+  }
+  return trimmedSlug || slug;
+}
+
+function formatGeminiSlug(slug: string): string {
+  const parts = slug.trim().split('-').filter(Boolean);
+  if (parts.length === 0) return slug;
+  return parts.map((part, idx) => {
+    if (idx === 0) return 'Gemini';
+    if (/^\d+(?:\.\d+)*$/.test(part)) return part;
+    return capitalizeWord(part);
+  }).join(' ');
+}
+
 /**
  * Display label for a model slug coming out of the usage ledger, where
  * the provider isn't carried alongside the slug. Claude slugs get the
@@ -87,6 +116,9 @@ export function displayUsageModelLabel(slug: string): string {
   const gptMatch = /^gpt-([^-]+)(.*)$/i.exec(base);
   if (gptMatch) {
     return displayCodexModelLabel(base) + tierSuffix;
+  }
+  if (/^gemini-/i.test(base)) {
+    return formatGeminiSlug(base) + tierSuffix;
   }
   return trimmed;
 }

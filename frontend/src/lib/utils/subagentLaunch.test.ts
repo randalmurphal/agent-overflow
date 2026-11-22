@@ -650,6 +650,30 @@ describe('completionAnswerPreview', () => {
     expect(completionAnswerPreview(claudeAgent, { ...completion, meta: '' })).toBe('');
   });
 
+  it('identifies Antigravity Agent launches via meta.provider or threadProvider and shows their completion preview', () => {
+    const agyStamped = mkItem({
+      id: 'agy-agent-1',
+      toolName: 'Agent',
+      meta: meta({ provider: 'agy', input: { subagent_type: 'research', description: 'Check bindings' } }),
+    });
+    const agyUnstamped = mkItem({
+      id: 'agy-agent-2',
+      toolName: 'Agent',
+      meta: meta({ input: { subagent_type: 'research' } }),
+    });
+    const completion = mkItem({
+      id: 'complete:agy-agent-1',
+      kind: 'tool_completion',
+      completionOf: 'agy-agent-1',
+      payloadMeta: meta({ preview: '  Bindings verified.  ' }),
+    });
+
+    expect(subagentLaunchInfo(agyStamped, NO_CHILDREN)?.provider).toBe('agy');
+    expect(subagentLaunchInfo(agyUnstamped, { hasChildren: () => false, threadProvider: 'agy' })?.provider).toBe('agy');
+    expect(completionAnswerPreview(agyStamped, completion)).toBe('Bindings verified.');
+    expect(completionAnswerPreview(agyUnstamped, completion, 'agy')).toBe('Bindings verified.');
+  });
+
   it('is empty without a launch, a completion, or a preview', () => {
     const bare = mkItem({ id: 'complete:spawn-1', kind: 'tool_completion', completionOf: 'spawn-1' });
     expect(completionAnswerPreview(codexSpawn, bare)).toBe('');

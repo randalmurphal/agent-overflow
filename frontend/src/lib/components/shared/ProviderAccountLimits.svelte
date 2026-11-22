@@ -22,6 +22,15 @@
     if (limit.windowMins <= 0) return name || 'Usage limit';
     const window = rateLimitWindowLabel(limit.windowMins);
     if (!name || name.toLowerCase() === window.toLowerCase()) return window;
+    // Avoid duplicating the window when the provider's LimitName already
+    // embeds it (e.g. Antigravity's "Gemini · 5-hour" / "Gemini · Weekly").
+    const lower = name.toLowerCase();
+    if (
+      (limit.windowMins === 300 && (lower.includes('5-hour') || lower.includes('5h'))) ||
+      (limit.windowMins === 10080 && (lower.includes('weekly') || lower.includes('7d')))
+    ) {
+      return name;
+    }
     return `${name} · ${window}`;
   }
 </script>

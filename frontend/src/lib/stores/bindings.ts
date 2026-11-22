@@ -912,7 +912,7 @@ export interface CreateThreadOptions {
   projectId: string;
   groupId?: string;
   title?: string;
-  provider?: 'claude' | 'codex' | string;
+  provider?: 'claude' | 'claude-tui' | 'codex' | 'agy' | string;
   model?: string;
   mode?: 'chat' | 'plan' | string;
   // `| string` keeps a slug this build does not know from failing to
@@ -946,7 +946,7 @@ export function UpdateThreadContextSettings(
 
 export interface NewThreadDefaultsUpdateInput {
   projectId: string;
-  provider?: 'claude' | 'codex' | string;
+  provider?: 'claude' | 'claude-tui' | 'codex' | 'agy' | string;
   model?: string;
   reasoningEffort?: string;
   fastMode?: boolean | null;

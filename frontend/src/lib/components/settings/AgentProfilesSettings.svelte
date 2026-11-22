@@ -76,8 +76,8 @@
   ];
   const NOTE_WHENS: { value: AgentNoteWhen; label: string }[] = [
     { value: '', label: 'Always' },
-    { value: 'both_providers', label: 'When Claude and Codex both run here' },
-    { value: 'one_provider', label: 'When only one of them runs here' },
+    { value: 'both_providers', label: 'When multiple providers run here' },
+    { value: 'one_provider', label: 'When only one provider runs here' },
   ];
   const LEVELS = [1, 2, 3, 4];
 

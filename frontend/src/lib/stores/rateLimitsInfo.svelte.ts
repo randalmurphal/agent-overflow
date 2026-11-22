@@ -160,10 +160,14 @@ function defaultLimit(provider: ProviderID, entries: RateLimitEntry[]): RateLimi
     }) ?? null;
   }
   if (provider === 'agy') {
-    return entries.find((entry) => {
+    const geminiPrimary = entries.find((entry) => {
       const id = entry.limitId.toLowerCase();
       return id === 'gemini-5h' || id === 'gemini-weekly' || id === 'gemini-quota';
-    }) ?? entries[0] ?? null;
+    });
+    if (geminiPrimary) return geminiPrimary;
+    // Prefer any Gemini family bucket (e.g. gemini-argon-5h) over shared 3P buckets.
+    const anyGemini = entries.find((entry) => entry.limitId.toLowerCase().startsWith('gemini-'));
+    return anyGemini ?? entries[0] ?? null;
   }
   return null;
 }

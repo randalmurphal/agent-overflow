@@ -180,13 +180,13 @@ function nativeToolPresentation(
   provider: ProviderID | null | undefined,
 ): { label: string; icon: ToolKindIcon } {
   switch (provider) {
-    case 'codex':
-    case 'agy': {
+    case 'codex': {
       const visual = classifyToolName(rawName);
       return { label: capitalizedHeaderLabel(visual.label), icon: visual.icon };
     }
     case 'claude':
     case 'claude-tui':
+    case 'agy':
     case null:
     case undefined:
       return {

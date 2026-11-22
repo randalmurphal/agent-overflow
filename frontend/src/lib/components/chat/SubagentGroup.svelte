@@ -182,7 +182,9 @@
   let statusItem = $derived(completionItem ?? parent);
   // The report line, read off the stop this card sits at (Codex
   // FINAL_ANSWER, Claude output-file report, a parked stop's report head).
-  let completionAnswer = $derived(completionAnswerPreview(parent, completionItem));
+  let completionAnswer = $derived(
+    completionAnswerPreview(parent, completionItem, pane?.thread?.provider),
+  );
   let parkedStop = $derived(parkedStopFromItem(completionItem));
   // The main timeline holds no child rows, so a collapsed card's count and
   // preview come from the backend decoration on the live anchor, which
@@ -216,20 +218,24 @@
   // the predicate (cannot happen for the kinds the grouping mints, but the
   // type allows it) falls back to a plain foreground agent presentation
   // rather than a blank header.
-  const launchCtx: SubagentLaunchContext = {
+  let launchCtx = $derived<SubagentLaunchContext>({
     hasChildren: () => group.children.length > 0 || descendantCount > 0,
-  };
+    threadProvider: pane?.thread?.provider,
+  });
   let identityItem = $derived(parent.toolName === 'collab_agent' && completionItem
     ? { ...parent, meta: completionItem.meta } : parent);
   let launchInfo = $derived(subagentLaunchInfo(identityItem, launchCtx));
+  let effectiveProvider = $derived(
+    pane?.thread?.provider === 'agy' ? 'agy' : (launchInfo?.provider ?? 'claude'),
+  );
   let kindLabel = $derived(launchInfo?.kind ?? 'agent');
   let agentTitle = $derived(launchInfo?.name ?? (parentToolName || 'Agent'));
   // The model and the effort it runs at ("Opus 4.7 · xHigh"). Codex reports
-  // the child's own; a Claude launch names them, or the child inherits the
-  // session's.
+  // the child's own; a Claude or Antigravity launch names them, or inherits
+  // the session's.
   let modelLabel = $derived.by(() => {
-    if (launchInfo?.provider === 'codex') {
-      if (!launchInfo.model) return '';
+    if (effectiveProvider === 'codex') {
+      if (!launchInfo?.model) return '';
       return joinLabelParts(
         displayModelLabel('codex', launchInfo.model),
         subagentEffortLabel('codex', launchInfo.reasoningEffort ?? '', undefined),
@@ -237,12 +243,20 @@
     }
     const model = launchInfo?.model
       || deriveClaudeSubagentModel(inputObject, parentMeta, parentToolName)
-      || (launchInfo?.provider === 'claude' ? pane?.effectiveModel || pane?.thread?.model || '' : '');
+      || (effectiveProvider === 'claude' || effectiveProvider === 'agy'
+        ? pane?.effectiveModel || pane?.thread?.model || ''
+        : '');
     if (!model) return '';
     const carrier = isClaudeResumeCarrierItem(parent) ? claudeResumeCarrierIdentity(parent) : null;
     const effort = carrier
       ? carrier.effort
       : deriveClaudeSubagentEffort(inputObject, parentMeta, parentToolName);
+    if (effectiveProvider === 'agy') {
+      return joinLabelParts(
+        displayModelLabel('agy', model),
+        subagentEffortLabel('agy', effort, undefined),
+      );
+    }
     const alternatives = carrier
       ? carrier.effortAlternatives
       : deriveClaudeSubagentEffortAlternatives(inputObject, parentMeta, parentToolName);
@@ -295,6 +309,7 @@
   // rides `threads:operate`; a session without it gets no button.
   let canBackground = $derived(
     pane !== undefined
+      && effectiveProvider === 'claude'
       && isRunning
       && !isBackgroundNode
       && threadHasScope('threads:operate', parent.threadId)

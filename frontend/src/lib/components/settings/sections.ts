@@ -115,7 +115,7 @@ export const SETTINGS_SECTIONS = [
     label: 'Antigravity',
     group: 'Agents',
     description:
-      'The Antigravity CLI (agy): binary, models, environment and prompt overrides applied to Antigravity threads.',
+      'The Antigravity CLI (agy): binary, accounts, models, environment and prompt overrides applied to Antigravity threads.',
   },
   {
     id: 'commit-messages',

@@ -100,7 +100,7 @@
       onmouseleave={popover.scheduleClose}
       class="relative bg-surface-1 border border-border-subtle rounded-[var(--radius-control)] shadow-menu px-3 py-2 min-w-[190px]"
     >
-      {#if thread}
+      {#if thread && providerHasFeature(thread.provider, 'autoCompact')}
         <button
           type="button"
           onclick={openContextSettings}

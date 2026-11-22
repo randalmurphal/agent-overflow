@@ -228,6 +228,34 @@ describe('<ToolApprovalPanel>', () => {
     expect(response.decisionValue).toEqual(decision);
   });
 
+  it('renders ACP run_command and file tool previews from native input keys', () => {
+    const cmdView = render(ToolApprovalPanel, {
+      props: {
+        approval: bashApproval({
+          kind: 'command',
+          toolName: 'run_command',
+          input: { CommandLine: 'pnpm test' },
+        }),
+        onResolve: makeResolver(),
+      },
+    });
+    expect(cmdView.getByText('pnpm test')).toBeInTheDocument();
+    expect(cmdView.getByText('Command')).toBeInTheDocument();
+
+    const fileView = render(ToolApprovalPanel, {
+      props: {
+        approval: bashApproval({
+          kind: 'file-change',
+          toolName: 'replace_file_content',
+          input: { TargetFile: '/repo/src/app.ts' },
+        }),
+        onResolve: makeResolver(),
+      },
+    });
+    expect(fileView.getByText('/repo/src/app.ts')).toBeInTheDocument();
+    expect(fileView.getByText('File')).toBeInTheDocument();
+  });
+
   it('renders write-stdin details and never offers input editing', () => {
     const { getByText, queryByTestId } = render(ToolApprovalPanel, {
       props: {
