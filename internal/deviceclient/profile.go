@@ -265,7 +265,7 @@ func (h *HeldSession) Write(session Session) error {
 // retires itself.
 func (h *HeldSession) Remove() error {
 	return h.hold(func(s *heldSession) error {
-		err := removeSessionFile(s.path)
+		err := atomicfile.Remove(s.path)
 		s.stored, s.err = readSession(s.path)
 		if err != nil {
 			return fmt.Errorf("deviceclient: forget the session for %s: %w", s.backendID, err)
@@ -289,7 +289,7 @@ func (h *HeldSession) Restore() (restored bool, err error) {
 			if s.initialFound {
 				writeErr = atomicfile.Write(s.path, s.initial)
 			} else {
-				writeErr = removeSessionFile(s.path)
+				writeErr = atomicfile.Remove(s.path)
 			}
 		}
 		restored = s.holdsInitial()
@@ -443,14 +443,19 @@ func endpointAuthority(endpoint string) string {
 // spelling of it. Real backend ids are UUIDs and pass unchanged; anything
 // else is refused loudly, because a profile filed under a name this client
 // cannot reproduce is one it could never load again.
+//
+// The file name is also checked with filepath.IsLocal at the join, the
+// check CodeQL's path-injection query recognizes; every read, write, lock
+// and delete of the file takes its path from here.
 func sessionPath(dir, backendID string) (string, error) {
 	if dir == "" {
 		return "", errors.New("deviceclient: no profile directory to keep sessions in")
 	}
-	if !validBackendID(backendID) {
+	name := backendID + ".json"
+	if !validBackendID(backendID) || !filepath.IsLocal(name) {
 		return "", fmt.Errorf("%w: %q", ErrInvalidBackendID, backendID)
 	}
-	return filepath.Join(dir, SessionsDirName, backendID+".json"), nil
+	return filepath.Join(dir, SessionsDirName, name), nil
 }
 
 // maxBackendIDLen bounds the id at far more than a UUID needs and far less

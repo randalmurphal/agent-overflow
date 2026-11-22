@@ -51,15 +51,22 @@ import (
 //
 // A client's mutex is only ever taken before a session file's lock
 // (deviceclient's sessionTransaction), so a transition calls no client
-// method that takes it (TestNoTransitionUsesAClient): carriers it replaces
-// or drops are retired, and the carrier it installs starts renewing, after
-// the session file is released.
+// method that takes it (TestNoTransitionUsesAClient).
 //
 // Writes within a transition are ordered so that a crash between two leaves
 // the safe side. A transition that fails after its first write attempt is
 // rolled back by transact to the three files as it found them (rollBack):
 // with every lock held throughout, no other transition can have read or
 // written them meanwhile.
+//
+// The cache follows the files: a transition only records which carrier
+// leaves (drop) and which arrives (install), and transact applies that once
+// the session file is released, if and only if the transition committed. A
+// failed or rolled-back transition leaves the cached carrier and its
+// connections as they were. Applying under the profile lock is what fences
+// a leaving carrier's verdict path: its client can see the new file only
+// after the session file is released, and its endSession waits for the
+// profile lock, by when it is no longer the cached carrier.
 
 // computerTx is one computer's local pairing state held for one transition.
 type computerTx struct {
@@ -69,18 +76,27 @@ type computerTx struct {
 	// exclusions and access are the shared files as the transaction found
 	// them.
 	exclusions, access sharedFile
-	// wrote is set before the first write is attempted.
-	wrote bool
-	// leaving are the carriers this transition took out of the cache, each
-	// with the verdict its connections close with; arriving is the one it
-	// installed.
-	leaving  []leavingCarrier
+	// wrote is set before the first write is attempted; committed once the
+	// transition returned with its writes standing.
+	wrote, committed bool
+	// What transact applies to this process's cache if the transition
+	// commits: the cached carrier leaves with dropping as its verdict, or is
+	// replaced by arriving; verdict is the name an ended pairing leaves
+	// (TakeVerdict).
+	dropping error
 	arriving *carrier
+	verdict  *string
 }
 
-type leavingCarrier struct {
-	carrier *carrier
-	verdict error
+// txOutcome is what a transaction did, apart from the error it answers: a
+// transition can commit and its locks still fail to release.
+type txOutcome struct {
+	// committed is whether the transition's writes stand, and so whether
+	// its cache changes were applied.
+	committed bool
+	// installed is whether the carrier it installed is cached and renewing,
+	// which it is not after Close.
+	installed bool
 }
 
 // sharedFile is one shared file as a transaction found it: its bytes, or
@@ -94,29 +110,53 @@ type sharedFile struct {
 // sharedFileLockTimeout bounds the wait for both shared files' OS locks.
 const sharedFileLockTimeout = 5 * time.Second
 
-// transact runs transition on id's local pairing state (computerTx).
-func (m *Manager) transact(id string, transition func(*computerTx) error) error {
+// transact runs transition on id's local pairing state (computerTx). Its
+// error is the transition's, or its locks' release; the outcome says
+// whether the transition committed whichever it was.
+func (m *Manager) transact(id string, transition func(*computerTx) error) (txOutcome, error) {
 	unlock := m.profiles.Lock(id)
 	defer unlock()
 	tx := &computerTx{m: m, id: id}
-	err := deviceclient.WithSession(m.dir, id, func(held *deviceclient.HeldSession) error {
+	err := errors.Join(deviceclient.WithSession(m.dir, id, func(held *deviceclient.HeldSession) error {
 		tx.held = held
 		return m.withSharedFiles(func() error { return tx.run(transition) })
-	})
+	}), m.releaseFault)
+	if !tx.committed {
+		return txOutcome{}, err
+	}
 	// Still under the profile lock, so no lookup builds another owner from
 	// the file meanwhile.
-	for _, gone := range tx.leaving {
-		gone.carrier.leave(gone.verdict)
-		gone.carrier.client.Retire()
+	return txOutcome{committed: true, installed: m.applyCache(tx)}, err
+}
+
+// applyCache applies a committed transition's cache changes and reports
+// whether the carrier it installed is cached.
+func (m *Manager) applyCache(tx *computerTx) (installed bool) {
+	var leaving *carrier
+	verdict := tx.dropping
+	m.mu.Lock()
+	if tx.dropping != nil || tx.arriving != nil {
+		leaving = m.carriers[tx.id]
+		delete(m.carriers, tx.id)
+	}
+	if tx.verdict != nil {
+		m.verdicts[tx.id] = *tx.verdict
 	}
 	if tx.arriving != nil {
-		m.mu.Lock()
-		if !m.closed && m.carriers[id] == tx.arriving {
-			m.wire(tx.arriving, id)
+		verdict = errPairingReplaced
+		delete(m.verdicts, tx.id)
+		if !m.closed {
+			m.wire(tx.arriving, tx.id)
+			m.carriers[tx.id] = tx.arriving
+			installed = true
 		}
-		m.mu.Unlock()
 	}
-	return err
+	m.mu.Unlock()
+	if leaving != nil {
+		leaving.leave(verdict)
+		leaving.client.Retire()
+	}
+	return installed
 }
 
 // withSharedFiles runs fn holding both shared files' locks, in the order
@@ -143,10 +183,14 @@ func (tx *computerTx) run(transition func(*computerTx) error) error {
 	if tx.access, err = readSharedFile(filepath.Join(tx.m.dir, agentAccessFile)); err != nil {
 		return err
 	}
-	if err = transition(tx); err != nil && tx.wrote {
-		return errors.Join(err, tx.rollBack())
+	if err = transition(tx); err != nil {
+		if tx.wrote {
+			return errors.Join(err, tx.rollBack())
+		}
+		return err
 	}
-	return err
+	tx.committed = true
+	return nil
 }
 
 func readSharedFile(path string) (sharedFile, error) {
@@ -189,8 +233,8 @@ func (tx *computerTx) restoreShared(f sharedFile) error {
 	var err error
 	if f.found {
 		err = atomicfile.Write(f.path, f.data)
-	} else if removeErr := os.Remove(f.path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-		err = removeErr
+	} else {
+		err = atomicfile.Remove(f.path)
 	}
 	if !holds() {
 		return errors.Join(fmt.Errorf("attachedbackends: %s could not be put back", f.path), err)
@@ -220,35 +264,17 @@ func (tx *computerTx) cached() *carrier {
 	return tx.m.carriers[tx.id]
 }
 
-// install caches built in place of whatever carrier was cached, which
-// leaves once the session file is released; built starts renewing then
-// (transact). After Close nothing is cached and built is not installed.
-func (tx *computerTx) install(built *carrier) bool {
-	tx.m.mu.Lock()
-	defer tx.m.mu.Unlock()
-	if old := tx.m.carriers[tx.id]; old != nil {
-		tx.leaving = append(tx.leaving, leavingCarrier{old, errPairingReplaced})
-		delete(tx.m.carriers, tx.id)
-	}
-	delete(tx.m.verdicts, tx.id)
-	if tx.m.closed {
-		return false
-	}
-	tx.m.carriers[tx.id] = built
-	tx.arriving = built
-	return true
-}
+// install has built replace whatever carrier is cached, and start
+// renewing, if the transition commits (applyCache).
+func (tx *computerTx) install(built *carrier) { tx.arriving = built }
 
-// drop takes the cached carrier out of the cache; it leaves with verdict
-// once the session file is released.
-func (tx *computerTx) drop(verdict error) {
-	tx.m.mu.Lock()
-	defer tx.m.mu.Unlock()
-	if old := tx.m.carriers[tx.id]; old != nil {
-		tx.leaving = append(tx.leaving, leavingCarrier{old, verdict})
-		delete(tx.m.carriers, tx.id)
-	}
-}
+// drop has the cached carrier leave with verdict if the transition commits
+// (applyCache).
+func (tx *computerTx) drop(verdict error) { tx.dropping = verdict }
+
+// recordVerdict keeps name as the ended pairing's, for TakeVerdict, if the
+// transition commits (applyCache).
+func (tx *computerTx) recordVerdict(name string) { tx.verdict = &name }
 
 // excluded reports whether the computer is excluded as an own device.
 func (tx *computerTx) excluded() (bool, error) { return tx.m.ownDeviceExcluded(tx.id) }
@@ -273,12 +299,6 @@ func (tx *computerTx) setExcluded(excluded bool) error {
 	}
 	tx.wrote = true
 	return atomicfile.WriteJSON(filepath.Join(tx.m.dir, ownExclusionsFile), entries)
-}
-
-// agentAccess reports whether the computer's agent opt-in is on.
-func (tx *computerTx) agentAccess() (bool, error) {
-	access, err := tx.m.AgentAccess()
-	return access[tx.id], err
 }
 
 // setAgentAccess turns the computer's agent opt-in on or off. It is the one
@@ -325,17 +345,17 @@ const (
 // cancelled, its caller has left, or the computer is not wanted any more
 // (beginCommit, admitEnrollment), all decided in the transaction, so neither
 // a forget nor a pairing another manager wrote since the check before the
-// redemption is overwritten. The carrier is swapped only once every write
-// has succeeded (savePairing): until then, and after a refusal or a
-// failure, the cached carrier and its connections stay as they were. The
-// swap happens under the session file's lock, which is what fences the old
-// carrier's verdict path: a rotation it has in flight sees the replacement
-// only after the lock is released, by when it is no longer the cached
-// carrier (endSession).
+// redemption is overwritten. The carrier is swapped only once the
+// transition committed (applyCache): after a refusal or a failure the
+// cached carrier and its connections stay as they were.
+//
+// A commit whose locks then fail to release answers that error with the
+// attachment and the carrier installed: the pairing is saved, and the
+// carrier is cached and renewing.
 func (m *Manager) commitEnrollment(e *enrollment, link deviceclient.Link, redeemed *deviceclient.Redemption) (Attachment, *carrier, error) {
 	var attachment Attachment
-	var installed *carrier
-	err := m.transact(link.BackendID, func(tx *computerTx) error {
+	var built *carrier
+	outcome, err := m.transact(link.BackendID, func(tx *computerTx) error {
 		if err := m.beginCommit(e); err != nil {
 			return err
 		}
@@ -344,7 +364,9 @@ func (m *Manager) commitEnrollment(e *enrollment, link deviceclient.Link, redeem
 			m.moveEnrollment(e, enrollmentCommitted, enrollmentFailed)
 			return err
 		}
-		built, pairing, err := m.savePairing(tx, e.purpose == introductionByPeer, redeemed, stored, loadErr)
+		var pairing deviceclient.Pairing
+		var err error
+		built, pairing, err = m.savePairing(tx, e.purpose == introductionByPeer, redeemed, stored, loadErr)
 		if err != nil {
 			m.moveEnrollment(e, enrollmentCommitted, enrollmentFailed)
 			return err
@@ -354,9 +376,7 @@ func (m *Manager) commitEnrollment(e *enrollment, link deviceclient.Link, redeem
 			m.moveEnrollment(e, enrollmentCommitted, enrollmentFailed)
 			return err
 		}
-		if tx.install(built) {
-			installed = built
-		}
+		tx.install(built)
 		attachment = Attachment{
 			ID:                 link.BackendID,
 			Name:               displayName(saved),
@@ -365,7 +385,13 @@ func (m *Manager) commitEnrollment(e *enrollment, link deviceclient.Link, redeem
 		}
 		return nil
 	})
-	return attachment, installed, err
+	if !outcome.committed {
+		return Attachment{}, nil, err
+	}
+	if !outcome.installed {
+		built = nil
+	}
+	return attachment, built, err
 }
 
 // savePairing makes an enrollment's writes and builds its carrier, in
@@ -421,11 +447,12 @@ func (m *Manager) savePairing(tx *computerTx, introduction bool, redeemed *devic
 // Its writes, in order: the exclusion, agent access off, the session
 // deleted. A crash between them leaves the computer forgotten or still
 // paired, never paired with the exclusion gone. A removal that fails is
-// rolled back by its transaction, and its old owner is retired all the
-// same, so the lookup that rebuilds a carrier never has two.
+// rolled back by its transaction and leaves the cached carrier working. A
+// removal that committed is announced even if its locks then fail to
+// release, and that error is returned.
 func (m *Manager) Remove(id string) error {
 	m.cancelEnrollment(id, errPairingForgotten)
-	err := m.transact(id, func(tx *computerTx) error {
+	outcome, err := m.transact(id, func(tx *computerTx) error {
 		if err := tx.setExcluded(true); err != nil {
 			return err
 		}
@@ -435,11 +462,10 @@ func (m *Manager) Remove(id string) error {
 		tx.drop(errPairingForgotten)
 		return tx.removeSession()
 	})
-	if err != nil {
-		return err
+	if outcome.committed {
+		m.notifyChanged(SetChange{Action: SetRemoved, ID: id})
 	}
-	m.notifyChanged(SetChange{Action: SetRemoved, ID: id})
-	return nil
+	return err
 }
 
 // retireOwnProfile forgets one own-device profile the way a tombstone does,
@@ -447,10 +473,11 @@ func (m *Manager) Remove(id string) error {
 // announces it as SetRemoved, as every removal is. Ordinary limited shares
 // are separate grants and are never touched, and neither is a pairing
 // another manager saved in place of the named one. Its writes, in order:
-// agent access off, the session deleted.
+// agent access off, the session deleted. It reports whether it forgot the
+// profile, which it may have done and still answer a lock-release error.
 func (m *Manager) retireOwnProfile(id, sessionID string) (bool, error) {
 	dropped := false
-	err := m.transact(id, func(tx *computerTx) error {
+	outcome, err := m.transact(id, func(tx *computerTx) error {
 		stored, err := tx.stored()
 		if errors.Is(err, deviceclient.ErrNoSession) {
 			return nil
@@ -468,11 +495,11 @@ func (m *Manager) retireOwnProfile(id, sessionID string) (bool, error) {
 		dropped = true
 		return nil
 	})
-	if err != nil || !dropped {
+	if !outcome.committed || !dropped {
 		return false, err
 	}
 	m.notifyChanged(SetChange{Action: SetRemoved, ID: id})
-	return true, nil
+	return true, err
 }
 
 // SetAgentAccess turns one computer's agent opt-in on or off. Turning it
@@ -481,7 +508,7 @@ func (m *Manager) SetAgentAccess(id string, enabled bool) error {
 	if !entityid.Valid(id) {
 		return errors.New("invalid computer identity")
 	}
-	return m.transact(id, func(tx *computerTx) error {
+	_, err := m.transact(id, func(tx *computerTx) error {
 		if enabled {
 			if _, err := tx.stored(); err != nil {
 				return err
@@ -489,6 +516,7 @@ func (m *Manager) SetAgentAccess(id string, enabled bool) error {
 		}
 		return tx.setAgentAccess(enabled)
 	})
+	return err
 }
 
 // endSession is the verdict path: the far side stopped honouring one
@@ -503,7 +531,7 @@ func (m *Manager) SetAgentAccess(id string, enabled bool) error {
 func (m *Manager) endSession(id string, held *carrier) {
 	name := strings.Join(strings.Fields(displayName(held.client.Session())), " ")
 	removed := false
-	err := m.transact(id, func(tx *computerTx) error {
+	outcome, err := m.transact(id, func(tx *computerTx) error {
 		if tx.cached() != held {
 			return nil
 		}
@@ -511,9 +539,7 @@ func (m *Manager) endSession(id string, held *carrier) {
 		if _, err := tx.stored(); !errors.Is(err, deviceclient.ErrNoSession) {
 			return err
 		}
-		m.mu.Lock()
-		m.verdicts[id] = name
-		m.mu.Unlock()
+		tx.recordVerdict(name)
 		removed = true
 		return tx.setAgentAccess(false)
 	})
@@ -521,7 +547,7 @@ func (m *Manager) endSession(id string, held *carrier) {
 		// Nobody is waiting on a verdict; the log is where it surfaces.
 		log.Printf("attachedbackends: end the pairing with %s: %v", id, err)
 	}
-	if removed {
+	if outcome.committed && removed {
 		m.notifyChanged(SetChange{Action: SetRemoved, ID: id, Reason: RemovedByComputer})
 	}
 }

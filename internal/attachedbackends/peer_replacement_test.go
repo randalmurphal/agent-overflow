@@ -31,10 +31,11 @@ func TestReplacingPairingAllowsManagerReadsDuringCarrierRetirement(t *testing.T)
 					finished <- err
 				} else {
 					// What a re-pairing's save does to the carrier it replaces.
-					finished <- m.transact(id, func(tx *computerTx) error {
+					_, err := m.transact(id, func(tx *computerTx) error {
 						tx.drop(errPairingReplaced)
 						return nil
 					})
+					finished <- err
 				}
 			}()
 			<-leaving

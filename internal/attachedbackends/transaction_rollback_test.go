@@ -220,16 +220,18 @@ func TestAnInstalledCarrierRenewsOnlyAfterTheSessionFileIsReleased(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := m.transact(p.backendID, func(tx *computerTx) error {
-		if !tx.install(built) {
-			t.Fatal("the carrier was not installed")
-		}
-		if built.onEnded != nil {
-			t.Error("the installed carrier was wired and renewing inside the transaction")
+	outcome, err := m.transact(p.backendID, func(tx *computerTx) error {
+		tx.install(built)
+		if built.onEnded != nil || tx.cached() == built {
+			t.Error("the carrier was cached or renewing inside the transaction")
 		}
 		return nil
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatal(err)
+	}
+	if !outcome.installed || cachedCarrier(m, p.backendID) != built {
+		t.Fatal("the carrier was not installed once the transaction committed")
 	}
 	if built.onEnded == nil {
 		t.Fatal("the installed carrier was not wired once the transaction ended")

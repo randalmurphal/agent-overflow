@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+
+	"agent-overflow/internal/atomicfile"
 )
 
 // RefreshRecoveryHeader is additive; absence means a legacy server. Keep its
@@ -140,7 +142,7 @@ func (c *Client) rotate(ctx context.Context, observed Session) (err error) {
 			if !renewalRefusalEndsSession(refusal.Reason) {
 				return exchangeErr
 			}
-			if err := removeSessionFile(path); err != nil {
+			if err := atomicfile.Remove(path); err != nil {
 				return err
 			}
 			c.retireLocked()

@@ -395,24 +395,6 @@ func TestForgetDropsAPairingAnotherManagerSaved(t *testing.T) {
 	}
 }
 
-// unchangedCarrier fails unless id's cached carrier is still want, working,
-// and the stored session is still before.
-func unchangedCarrier(t *testing.T, m *Manager, id string, want *carrier, before deviceclient.Session) {
-	t.Helper()
-	m.mu.Lock()
-	cached := m.carriers[id]
-	m.mu.Unlock()
-	if cached != want || want.client.Retired() {
-		t.Fatalf("cached carrier is the one before %t, retired %t; want it kept and working", cached == want, want.client.Retired())
-	}
-	if verdict := want.peers.verdict(); verdict != nil {
-		t.Fatalf("the kept carrier's connections were closed: %v", verdict)
-	}
-	if after, err := deviceclient.LoadSession(m.dir, id); err != nil || after.SessionID != before.SessionID || after.Credential != before.Credential {
-		t.Fatalf("stored session = %+v, %v; want %+v", after, err, before)
-	}
-}
-
 // An introduction refused in its transaction leaves the carrier this
 // manager cached for another manager's own-device pairing as it was.
 func TestARefusedIntroductionLeavesTheCarrierCachedForAnotherManagersPairing(t *testing.T) {

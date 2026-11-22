@@ -145,7 +145,8 @@ func (c *carrier) openRPC(ctx context.Context, capability string) (*rpcclient.Cl
 // The destination independently binds redemption to our key.
 //
 // It reports added once the pairing is saved and published, even when the
-// rotation that follows fails; the error then says why. ctx is the caller's
+// rotation that follows fails or the save's locks fail to release; the
+// error then says why. ctx is the caller's
 // (App.AcceptOwnDeviceIntroduction is caller-bound). It bounds route
 // selection, the wait for another enrollment with the computer, the
 // redemption and the wait for that rotation; once the save has begun its
@@ -183,15 +184,17 @@ func (m *Manager) AcceptOwnDeviceIntroduction(ctx context.Context, raw string, r
 		return false, err
 	}
 	link.Endpoint, link.CertFingerprint = route.Endpoint, route.CertFingerprint
+	// A saved introduction whose locks then failed to release still has its
+	// carrier: it is announced and acknowledged, and the error returned.
 	_, held, err := m.enroll(probe, link, introductionByPeer, false)
 	if errors.Is(err, errNotWanted) {
 		return false, nil
 	}
-	if err != nil {
-		return false, err
-	}
 	if held == nil {
-		return false, ErrClosed
+		if err == nil {
+			err = ErrClosed
+		}
+		return false, err
 	}
 	// Desktop clients watch the profile set, not the public membership
 	// catalog. Publish this edge before reconciliation sees it as present.
@@ -203,10 +206,10 @@ func (m *Manager) AcceptOwnDeviceIntroduction(ctx context.Context, raw string, r
 	// secret is spent, that computer's next introduction of this device
 	// revokes the session (store.RetireOwnIntroductions). ctx bounds only this
 	// caller's wait; Forget and the manager's life end the rotation itself.
-	if err := held.client.Renew(ctx); err != nil {
-		return true, fmt.Errorf("attachedbackends: acknowledge the introduction to %s: %w", link.BackendID, err)
+	if renewErr := held.client.Renew(ctx); renewErr != nil {
+		err = errors.Join(err, fmt.Errorf("attachedbackends: acknowledge the introduction to %s: %w", link.BackendID, renewErr))
 	}
-	return true, nil
+	return true, err
 }
 
 // introductionWanted reports whether an introduction to id may enroll: the

@@ -202,6 +202,7 @@ var sharedFileReaders = []string{"AgentAccess", "ownDeviceExcluded", "ExcludedOw
 
 // fileWriters are the calls that write or remove a file.
 var fileWriters = []string{
+	"agent-overflow/internal/atomicfile.Remove",
 	"agent-overflow/internal/atomicfile.Write",
 	"agent-overflow/internal/atomicfile.WriteJSON",
 	"os.Remove",
@@ -222,7 +223,8 @@ var heldSessionWriters = []string{
 // TestOnlyTheComputerTransactionWritesItsState holds what the types already
 // arrange (computer_state.go): a computerTx is built only by transact, only
 // transact holds a session file, only computerTx's methods write it or name
-// a shared file other than to read it, and the readers write nothing.
+// a shared file other than to read it, the readers write nothing, and
+// nothing deletes a file except through atomicfile.Remove.
 func TestOnlyTheComputerTransactionWritesItsState(t *testing.T) {
 	t.Parallel()
 	reporoot.ObserveGoSources(t)
@@ -286,6 +288,8 @@ func TestOnlyTheComputerTransactionWritesItsState(t *testing.T) {
 							found = append(found, pos(n.Pos())+": only computerTx's methods write a held session")
 						case slices.Contains(fileWriters, full) && reader:
 							found = append(found, pos(n.Pos())+": a shared file reader writes")
+						case full == "os.Remove" || full == "os.RemoveAll":
+							found = append(found, pos(n.Pos())+": delete through atomicfile.Remove, which makes the delete durable")
 						}
 					}
 					return true
@@ -328,15 +332,37 @@ var transitionFunctionValues = map[string]string{
 }
 
 // TestNoTransitionUsesAClient type-checks this package and walks every
-// transition (the function literals passed to transact, and the one transact
-// passes to deviceclient.WithSession), following calls into this package's
-// functions and the function-valued fields in transitionFunctionValues. It
-// fails on a call to a deviceclient.Client method outside
-// lockFreeClientMethods: a client's mutex is taken before a session file's
-// lock (computer_state.go), so a transition that takes it can wait on a
-// renewal that waits on the transition. Goroutines are not walked.
+// transition (walkTransitions). It fails on a call to a deviceclient.Client
+// method outside lockFreeClientMethods: a client's mutex is taken before a
+// session file's lock (computer_state.go), so a transition that takes it
+// can wait on a renewal that waits on the transition.
 func TestNoTransitionUsesAClient(t *testing.T) {
 	t.Parallel()
+	c := walkTransitions(t)
+	if len(c.found) > 0 {
+		t.Fatalf("a transition calls a client method that may take its mutex:\n%s", strings.Join(c.found, "\n"))
+	}
+}
+
+// TestNoTransitionChangesTheCache walks every transition (walkTransitions)
+// and fails on a write of Manager.carriers or Manager.verdicts: a
+// transition only records its cache changes, and transact applies them once
+// it committed (applyCache), so a failed or rolled-back one changes none.
+func TestNoTransitionChangesTheCache(t *testing.T) {
+	t.Parallel()
+	c := walkTransitions(t)
+	if len(c.cacheWrites) > 0 {
+		t.Fatalf("a transition changes the cache before it committed:\n%s", strings.Join(c.cacheWrites, "\n"))
+	}
+}
+
+// walkTransitions type-checks this package and walks every transition: the
+// function literals passed to transact, and the one transact passes to
+// deviceclient.WithSession, following calls into this package's functions
+// and the function-valued fields in transitionFunctionValues. Goroutines
+// are not walked.
+func walkTransitions(t *testing.T) *clientChecker {
+	t.Helper()
 	reporoot.ObserveGoSources(t)
 	_, fset, files, info := typeCheckAttachedBackends(t)
 	c := &clientChecker{fset: fset, info: info, decls: map[string]*ast.FuncDecl{}, visited: map[*ast.FuncDecl]bool{}}
@@ -370,11 +396,9 @@ func TestNoTransitionUsesAClient(t *testing.T) {
 		})
 	}
 	if regions == 0 {
-		c.found = append(c.found, "no transitions found")
+		t.Fatal("no transitions found")
 	}
-	if len(c.found) > 0 {
-		t.Fatalf("a transition calls a client method that may take its mutex:\n%s", strings.Join(c.found, "\n"))
-	}
+	return c
 }
 
 type clientChecker struct {
@@ -383,6 +407,8 @@ type clientChecker struct {
 	decls   map[string]*ast.FuncDecl
 	visited map[*ast.FuncDecl]bool
 	found   []string
+	// cacheWrites are the writes of a cache map a transition makes.
+	cacheWrites []string
 }
 
 func (c *clientChecker) callee(call *ast.CallExpr) string {
@@ -401,11 +427,31 @@ func (c *clientChecker) walk(node ast.Node, where string) {
 		switch n := n.(type) {
 		case *ast.GoStmt:
 			return false
+		case *ast.AssignStmt:
+			for _, lhs := range n.Lhs {
+				if index, ok := ast.Unparen(lhs).(*ast.IndexExpr); ok && c.cacheMap(index.X) {
+					c.cacheWrites = append(c.cacheWrites, fmt.Sprintf("%s: transition; %s writes the cache", where, c.position(n.Pos())))
+				}
+			}
 		case *ast.CallExpr:
+			if ident, ok := ast.Unparen(n.Fun).(*ast.Ident); ok && ident.Name == "delete" && len(n.Args) > 0 && c.cacheMap(n.Args[0]) {
+				c.cacheWrites = append(c.cacheWrites, fmt.Sprintf("%s: transition; %s deletes from the cache", where, c.position(n.Pos())))
+			}
 			c.check(n, where)
 		}
 		return true
 	})
+}
+
+// cacheMap reports whether expr is Manager.carriers or Manager.verdicts.
+func (c *clientChecker) cacheMap(expr ast.Expr) bool {
+	sel, ok := ast.Unparen(expr).(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	field, ok := c.info.Uses[sel.Sel].(*types.Var)
+	return ok && field.IsField() && field.Pkg() != nil && field.Pkg().Path() == attachedBackendsPkgPath &&
+		(field.Name() == "carriers" || field.Name() == "verdicts")
 }
 
 func (c *clientChecker) check(call *ast.CallExpr, where string) {

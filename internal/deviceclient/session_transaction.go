@@ -3,7 +3,6 @@ package deviceclient
 import (
 	"context"
 	"errors"
-	"os"
 	"path/filepath"
 )
 
@@ -48,13 +47,6 @@ func (c *Client) sessionTransaction(ctx context.Context, change func(string, *Se
 		return err
 	}
 	c.session = latest
-	return nil
-}
-
-func removeSessionFile(path string) error {
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
 	return nil
 }
 

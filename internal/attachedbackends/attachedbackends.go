@@ -101,6 +101,10 @@ type Manager struct {
 	// buildCarrier builds a carrier over a client (newCarrier); a test
 	// makes it fail.
 	buildCarrier func(*deviceclient.Client, string) (*carrier, error)
+	// releaseFault is joined to every transaction's error (transact); a test
+	// sets it to stand for locks that fail to release after the transition
+	// ran, which deviceclient's own tests inject at the release itself.
+	releaseFault error
 	// closed refuses new carriers once Close has begun, and renewals joins
 	// the renewal goroutine each carrier runs.
 	closed   bool
