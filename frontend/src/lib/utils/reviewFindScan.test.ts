@@ -47,8 +47,11 @@ type Scanned = ReviewFindHit & ReviewFindFileSpot & { fileIndex: number };
 // The scan's hits with where it read each, which the resolver, asked
 // with nothing recorded, must find the same: placed at the same line, and
 // present at the same element and painter's index (its index among the
-// element's matches in scan order).
-async function scan(source: ReviewFindContent, query: string, limit = 1000): Promise<{ hits: Scanned[]; capped: boolean; pauses: number }> {
+// element's matches in scan order). `resolves` picks the hits to resolve
+// (all of them by default); resolving one recounts its row from the start.
+async function scan(
+  source: ReviewFindContent, query: string, limit = 1000, resolves: (index: number) => boolean = () => true,
+): Promise<{ hits: Scanned[]; capped: boolean; pauses: number }> {
   const hits: Scanned[] = [];
   let pauses = 0;
   const capped = await scanReviewFind(source, query, {
@@ -58,11 +61,12 @@ async function scan(source: ReviewFindContent, query: string, limit = 1000): Pro
     pause: async () => { pauses += 1; },
   });
   const perRow = new Map<string, number>();
-  for (const hit of hits) {
-    forgetReviewFindSpotsForTest(source.files[hit.fileIndex]);
-    expect(placeReviewFindHit(source, hit), hit.identity).toEqual({ fileIndex: hit.fileIndex, line: hit.line });
+  for (const [index, hit] of hits.entries()) {
     const ordinal = perRow.get(hit.rowKey) ?? 0;
     perRow.set(hit.rowKey, ordinal + 1);
+    if (!resolves(index)) continue;
+    forgetReviewFindSpotsForTest(source.files[hit.fileIndex]);
+    expect(placeReviewFindHit(source, hit), hit.identity).toEqual({ fileIndex: hit.fileIndex, line: hit.line });
     let resolved = resolveReviewFindHit(shownOf(source), hit, findNeedle(query));
     // Text the patch budget evicted is judged once it is read back.
     if (resolved.kind === 'evicted') {
@@ -242,9 +246,14 @@ describe('scanReviewFind', () => {
     const long = files(['diff --git a/l b/l', '--- a/l', '+++ b/l', '@@ -0,0 +1,1 @@', `+${body}`, ''].join('\n'));
     const { hits } = await scan({ files: long, drafts: [], prThreads: [], commentText: (b) => [{ text: b, shown: true }] }, 'needle');
     expect(hits.map((hit) => hit.occurrence)).toEqual([0, 1, 2, 3]);
-    // Overlapping candidates count left to right without overlap.
+    // Overlapping candidates count left to right without overlap. Hit k
+    // starts at 1 + 2k of the line's text; the hits at and beside the slice
+    // edges at 16384 and 32768 are resolved, with the first and the last.
+    // Each resolve counts the whole row's matches, so resolving all 20,000
+    // made this case quadratic and checked the same count each time.
     const repeat = files(['diff --git a/r b/r', '--- a/r', '+++ b/r', '@@ -0,0 +1,1 @@', `+b${'a'.repeat(40_001)}`, ''].join('\n'));
-    expect((await scan({ files: repeat, drafts: [], prThreads: [], commentText: (b) => [{ text: b, shown: true }] }, 'aa', 100_000)).hits).toHaveLength(20_000);
+    const nearEdge = (index: number) => [0, 8191, 16383, 19_999].some((at) => Math.abs(index - at) <= 2);
+    expect((await scan({ files: repeat, drafts: [], prThreads: [], commentText: (b) => [{ text: b, shown: true }] }, 'aa', 100_000, nearEdge)).hits).toHaveLength(20_000);
   });
 
   it('searches a PR comment as its markdown renders, never its markup', async () => {
