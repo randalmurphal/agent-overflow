@@ -781,7 +781,7 @@ func (c *Conn) readLoop() {
 			delete(c.deferredChildDeadlines, tid)
 		}
 		c.deferredChild = nil
-		c.loaded = nil
+		c.loaded = make(map[string]struct{})
 		sessions := make([]*Session, 0, len(c.allSessions))
 		for s := range c.allSessions {
 			sessions = append(sessions, s)

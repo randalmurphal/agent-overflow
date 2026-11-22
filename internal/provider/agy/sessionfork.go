@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,7 +32,10 @@ func ForkConversation(appDataDir, srcSessionID string, cutIdx int) (newSessionID
 		return "", nil, errors.New("agy fork: source session id is required")
 	}
 
-	srcPath := conversationDBPath(appDataDir, srcSessionID)
+	srcPath, err := conversationDBPath(appDataDir, srcSessionID)
+	if err != nil {
+		return "", nil, fmt.Errorf("agy fork: %w", err)
+	}
 	srcDB, err := openConversationDBReadOnly(srcPath)
 	if err != nil {
 		return "", nil, fmt.Errorf("agy fork: open source conversation %s: %w", srcSessionID, err)
@@ -45,7 +47,10 @@ func ForkConversation(appDataDir, srcSessionID string, cutIdx int) (newSessionID
 	}
 
 	newSessionID = uuid.NewString()
-	dstPath := conversationDBPath(appDataDir, newSessionID)
+	dstPath, err := conversationDBPath(appDataDir, newSessionID)
+	if err != nil {
+		return "", nil, fmt.Errorf("agy fork: %w", err)
+	}
 	if err := os.MkdirAll(filepath.Dir(dstPath), 0o700); err != nil {
 		return "", nil, fmt.Errorf("agy fork: ensure conversations dir: %w", err)
 	}
@@ -67,18 +72,24 @@ func ForkConversation(appDataDir, srcSessionID string, cutIdx int) (newSessionID
 		return errors.Join(errs...)
 	}
 
-	dstDSN := strings.ReplaceAll(fmt.Sprintf("file:%s?_pragma=busy_timeout(200)", url.PathEscape(dstPath)), "%2F", "/")
-	dstDB, err := sql.Open("sqlite", dstDSN)
-	if err != nil {
+	if err := rewriteClonedConversationDB(dstPath, newSessionID, cutIdx); err != nil {
 		_ = removeDst()
-		return "", nil, fmt.Errorf("agy fork: open cloned conversation: %w", err)
+		return "", nil, err
+	}
+
+	return newSessionID, removeDst, nil
+}
+
+func rewriteClonedConversationDB(dstPath, newSessionID string, cutIdx int) error {
+	dstDB, err := sql.Open("sqlite", sqliteFileDSN(dstPath, "_pragma=busy_timeout(200)"))
+	if err != nil {
+		return fmt.Errorf("agy fork: open cloned conversation: %w", err)
 	}
 	defer dstDB.Close()
 
 	tx, err := dstDB.Begin()
 	if err != nil {
-		_ = removeDst()
-		return "", nil, fmt.Errorf("agy fork: begin mutation tx: %w", err)
+		return fmt.Errorf("agy fork: begin mutation tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
@@ -86,31 +97,26 @@ func ForkConversation(appDataDir, srcSessionID string, cutIdx int) (newSessionID
 		for _, table := range []string{"steps", "gen_metadata", "executor_metadata"} {
 			hasTable, checkErr := tableExists(tx, table)
 			if checkErr != nil {
-				_ = removeDst()
-				return "", nil, fmt.Errorf("agy fork: check table %s: %w", table, checkErr)
+				return fmt.Errorf("agy fork: check table %s: %w", table, checkErr)
 			}
 			if !hasTable {
 				continue
 			}
 			if _, delErr := tx.Exec(fmt.Sprintf(`DELETE FROM %s WHERE idx > ?`, table), cutIdx); delErr != nil {
-				_ = removeDst()
-				return "", nil, fmt.Errorf("agy fork: slice %s at idx %d: %w", table, cutIdx, delErr)
+				return fmt.Errorf("agy fork: slice %s at idx %d: %w", table, cutIdx, delErr)
 			}
 		}
 	}
 
 	newTrajID := uuid.NewString()
 	if _, err := tx.Exec(`UPDATE trajectory_meta SET trajectory_id = ?, cascade_id = ?`, newTrajID, newSessionID); err != nil {
-		_ = removeDst()
-		return "", nil, fmt.Errorf("agy fork: rewrite trajectory_meta: %w", err)
+		return fmt.Errorf("agy fork: rewrite trajectory_meta: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
-		_ = removeDst()
-		return "", nil, fmt.Errorf("agy fork: commit cloned conversation: %w", err)
+		return fmt.Errorf("agy fork: commit cloned conversation: %w", err)
 	}
-
-	return newSessionID, removeDst, nil
+	return nil
 }
 
 // FindCutIndexBeforeUserTurn returns the highest step `idx` strictly before the
@@ -120,7 +126,11 @@ func FindCutIndexBeforeUserTurn(appDataDir, sessionID string, beforeUserTurnInde
 	if beforeUserTurnIndex <= 0 {
 		return -1, false, nil
 	}
-	db, err := openConversationDBReadOnly(conversationDBPath(appDataDir, sessionID))
+	dbPath, err := conversationDBPath(appDataDir, sessionID)
+	if err != nil {
+		return -1, false, fmt.Errorf("agy fork: %w", err)
+	}
+	db, err := openConversationDBReadOnly(dbPath)
 	if err != nil {
 		return -1, false, fmt.Errorf("agy fork: open conversation %s: %w", sessionID, err)
 	}

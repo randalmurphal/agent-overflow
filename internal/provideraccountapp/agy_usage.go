@@ -58,28 +58,33 @@ func (m *Manager) identifyAgyCredential(
 	if len(credential) == 0 {
 		return info
 	}
-	identified, err := agy.IdentifyAccount(ctx, m.providerHTTPClient(), credential)
-	if err != nil {
-		return info
+	if identified, err := agy.IdentifyAccount(ctx, m.providerHTTPClient(), credential); err == nil {
+		if identified.Email != "" {
+			info.Email = identified.Email
+		}
+		if identified.DisplayName != "" {
+			info.DisplayName = identified.DisplayName
+		}
+		if identified.OrgID != "" {
+			info.OrgID = identified.OrgID
+		}
+		if identified.OrgNameReported {
+			info.OrgName = identified.OrgName
+			info.OrgNameReported = true
+		}
+		if identified.TokenSource != "" {
+			info.TokenSource = identified.TokenSource
+		}
+		if identified.APIProvider != "" {
+			info.APIProvider = identified.APIProvider
+		}
 	}
-	if identified.Email != "" {
-		info.Email = identified.Email
-	}
-	if identified.DisplayName != "" {
-		info.DisplayName = identified.DisplayName
-	}
-	if identified.OrgID != "" {
-		info.OrgID = identified.OrgID
-	}
-	if identified.OrgNameReported {
-		info.OrgName = identified.OrgName
-		info.OrgNameReported = true
-	}
-	if identified.TokenSource != "" {
-		info.TokenSource = identified.TokenSource
-	}
-	if identified.APIProvider != "" {
-		info.APIProvider = identified.APIProvider
+	// Offline / network-failure fallback: agy persists id_token_email inside
+	// the OAuth token payload itself.
+	if info.Email == "" {
+		if cred, err := agy.ParseCredential(credential); err == nil && cred.Email != "" {
+			info.Email = cred.Email
+		}
 	}
 	return info
 }

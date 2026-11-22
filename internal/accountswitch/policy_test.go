@@ -390,4 +390,7 @@ func TestAgyQuotaBucketPolicyAndAutoSwitch(t *testing.T) {
 	if dGemini.to.ID != "" {
 		t.Fatalf("agy gemini-4-neon unexpectedly switched to %q when only 3p-5h was exhausted", dGemini.to.ID)
 	}
+	if got := providerTitle("agy"); got != "Antigravity" {
+		t.Fatalf("providerTitle(agy) = %q, want Antigravity", got)
+	}
 }

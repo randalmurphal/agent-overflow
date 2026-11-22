@@ -1124,3 +1124,77 @@ func TestRefreshRefusesACodexRolloutWhoseFirstRecordOutgrewTheHeadRead(t *testin
 		t.Fatalf("items = %d, want the imported %d — the replacement's tail was spliced in", got, itemsBefore)
 	}
 }
+
+func TestAgyRefreshAppendsNewReplayedTurns(t *testing.T) {
+	st := newTestStore(t)
+	homes := newProviderHomes(t)
+	dbFile := filepath.Join(t.TempDir(), "agy-conv-1.db")
+	if err := os.WriteFile(dbFile, []byte("placeholder"), 0o600); err != nil {
+		t.Fatalf("write agy db placeholder: %v", err)
+	}
+
+	turn1 := []provider.ProviderEvent{
+		{Kind: provider.EventTurnStart},
+		{Kind: provider.EventUserText, Role: "user", Content: "hello"},
+		{Kind: provider.EventTextDelta, Role: "assistant", Content: "hi there"},
+		{Kind: provider.EventTurnComplete, TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "end_turn"}},
+	}
+	replayed := turn1
+	d := homes.deps(st)
+	d.AgyListSessions = func(context.Context) ([]AgySessionSummary, error) {
+		return []AgySessionSummary{{
+			SessionID:   "agy-conv-1",
+			Title:       "Agy chat",
+			WorkDir:     homes.workspace,
+			UpdatedAtMs: 1_000,
+			SourcePath:  dbFile,
+		}}, nil
+	}
+	d.AgyReplaySession = func(context.Context, string, string) ([]provider.ProviderEvent, error) {
+		return replayed, nil
+	}
+
+	outcome := importFixtureRow(t, d, scanOne(t, d, ProviderAgy))
+	threadID := outcome.Threads[0].ID
+	assertTurnCount(t, d, threadID, 1)
+
+	// No new turns yet -> up-to-date.
+	update, err := PlanUpdate(context.Background(), d, threadID)
+	if err != nil {
+		t.Fatalf("PlanUpdate (no change): %v", err)
+	}
+	if update.Status != UpdateUpToDate {
+		t.Fatalf("status = %q, want up-to-date", update.Status)
+	}
+
+	// Append a second turn to the replayed ACP session.
+	replayed = append(append([]provider.ProviderEvent(nil), turn1...),
+		provider.ProviderEvent{Kind: provider.EventTurnStart},
+		provider.ProviderEvent{Kind: provider.EventUserText, Role: "user", Content: "follow up"},
+		provider.ProviderEvent{Kind: provider.EventTextDelta, Role: "assistant", Content: "second reply"},
+		provider.ProviderEvent{Kind: provider.EventTurnComplete, TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "end_turn"}},
+	)
+	update, err = PlanUpdate(context.Background(), d, threadID)
+	if err != nil {
+		t.Fatalf("PlanUpdate (appended): %v", err)
+	}
+	if update.Status != UpdateAvailable || update.NewTurns != 1 {
+		t.Fatalf("status=%q newTurns=%d, want updates-available/1 (%s)", update.Status, update.NewTurns, update.Detail)
+	}
+	if _, err := ApplyUpdate(d, update); err != nil {
+		t.Fatalf("ApplyUpdate: %v", err)
+	}
+	assertTurnCount(t, d, threadID, 2)
+
+	// Deleting the source conversation DB reports source-missing cleanly.
+	if err := os.Remove(dbFile); err != nil {
+		t.Fatalf("remove db: %v", err)
+	}
+	missing, err := PlanUpdate(context.Background(), d, threadID)
+	if err != nil {
+		t.Fatalf("PlanUpdate (missing): %v", err)
+	}
+	if missing.Status != UpdateSourceMissing {
+		t.Fatalf("status = %q, want source-missing", missing.Status)
+	}
+}

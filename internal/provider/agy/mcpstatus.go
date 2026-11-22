@@ -45,7 +45,9 @@ func (f *MCPStatusFetcher) Fetch(ctx context.Context, _ mcpstatus.Provider) ([]m
 	launchEnv, unset := LaunchEnv(f.Env, nil)
 	cmd.Env = provider.BuildEnvironment(launchEnv, unset...)
 	cmd.Cancel = func() error {
-		_ = cmd.Process.Signal(syscall.SIGTERM)
+		if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+			return cmd.Process.Kill()
+		}
 		return nil
 	}
 	cmd.WaitDelay = 2 * time.Second

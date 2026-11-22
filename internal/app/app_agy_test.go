@@ -118,6 +118,16 @@ func TestAgyPoolSharesOneACPServerAcrossThreadsAndAppliesLiveConfig(t *testing.T
 			tokenBefore, sessAAfter.Token, pidA, sessAAfter.ACP.PID())
 	}
 
+	// UpdateThreadMode must also apply live on an active ACP session (e.g.
+	// toggling Plan -> Chat from the composer or Implement Plan).
+	if _, err := app.UpdateThreadMode(threadA.ID, "chat"); err != nil {
+		t.Fatalf("UpdateThreadMode(chat): %v", err)
+	}
+	sessAfterMode, ok := app.sessionManager().get(threadA.ID)
+	if !ok || sessAfterMode.Token != tokenBefore || sessAfterMode.ACP.PID() != pidA {
+		t.Fatalf("UpdateThreadMode unexpectedly restarted ACP session")
+	}
+
 	wireBytes, err := os.ReadFile(logPath)
 	if err != nil {
 		t.Fatalf("read wire log: %v", err)
@@ -128,6 +138,9 @@ func TestAgyPoolSharesOneACPServerAcrossThreadsAndAppliesLiveConfig(t *testing.T
 	}
 	if !strings.Contains(wire, `"method":"session/set_mode"`) || !strings.Contains(wire, `"plan"`) {
 		t.Errorf("wire log missing live mode update:\n%s", wire)
+	}
+	if !strings.Contains(wire, `"modeId":"ask"`) {
+		t.Errorf("wire log missing UpdateThreadMode live switch back to ask mode:\n%s", wire)
 	}
 
 	// Send a turn on thread A and verify the response lands on the timeline.

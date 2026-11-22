@@ -42,6 +42,8 @@ func providerTitle(prov string) string {
 		return "Claude"
 	case providerCodex:
 		return "Codex"
+	case providerAgy:
+		return "Antigravity"
 	}
 	return prov
 }

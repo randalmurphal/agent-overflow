@@ -49,9 +49,9 @@ func codexPoolKey(
 	for _, k := range keys {
 		writePart("env:"+k, env[k])
 	}
-	// Prefix includes provider, normalized binary, and account id so
-	// DrainPrefix and BorrowMatching can filter without storing side maps.
-	return fmt.Sprintf("codex|%s|%s|%s", strings.TrimSpace(binary), accountSelection.AccountID, hex.EncodeToString(h.Sum(nil)[:16]))
+	// Prefix places provider and account id before the hash so DrainPrefix and
+	// BorrowMatching never misparse binary paths containing '|'.
+	return fmt.Sprintf("codex|%s|%s", accountSelection.AccountID, hex.EncodeToString(h.Sum(nil)[:16]))
 }
 
 // acquireCodexConn returns a shared *codex.Conn for this thread's pool key,
@@ -95,7 +95,7 @@ func (a *App) acquireCodexConn(
 			}
 			if accountSelection.AccountID != "" {
 				accountCtx, cancelAccountRead := context.WithTimeout(
-					a.lifeCtx(),
+					dialCtx,
 					codexAccountReadTimeout,
 				)
 				accountInfo, accountErr := conn.AccountInfo(accountCtx)
@@ -184,8 +184,8 @@ func (a *App) borrowCodexConnForAccount(accountID string) (*codex.Conn, func()) 
 		if _, isCodex := c.(*codex.Conn); !isCodex {
 			return false
 		}
-		parts := strings.SplitN(key, "|", 4)
-		return len(parts) >= 3 && parts[0] == "codex" && parts[2] == accountID
+		parts := strings.SplitN(key, "|", 3)
+		return len(parts) == 3 && parts[0] == "codex" && parts[1] == accountID
 	})
 	if !ok {
 		return nil, nil

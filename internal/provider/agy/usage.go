@@ -320,7 +320,7 @@ func parseAvailableModelsQuota(body []byte) ([]provider.RateLimitEntry, error) {
 			mins   int
 			quota  *modelQuota
 		}{
-			{"quota", "Reported quota", 0, model.QuotaInfo},
+			{"quota", "5-hour", 5 * 60, model.QuotaInfo},
 			{"weekly", "Weekly", 7 * 24 * 60, model.WeeklyQuotaInfo},
 		} {
 			if pair.quota == nil || pair.quota.RemainingFraction == nil {

@@ -34,9 +34,7 @@ const (
 
 // ensureCLIBinDir publishes this executable under its canonical name and
 // returns the directory to prepend to a session's PATH. An empty return means
-// the command is not reachable — sessions then run without it, which the
-// `/workflow` composer block reports rather than leaving the agent to discover
-// as "command not found".
+// the command is not reachable on PATH for agent shells.
 //
 // Failure is loud but never fatal: an app that cannot write one symlink is
 // still an app, and refusing to boot over it would trade a degraded feature

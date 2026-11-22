@@ -393,7 +393,7 @@ func (a *App) Shutdown(ctx context.Context) error {
 	sessions := a.sessionManager().snapshotAndClear()
 	sessionErrs := closeSessionsParallel(a, sessions, sessionShutdownTimeout)
 	if a.sessionRuntime != nil {
-		if poolErr := a.sessionRuntime.Connections().CloseAll(); poolErr != nil {
+		if poolErr := a.sessionRuntime.Connections().CloseAllWithTimeout(sessionShutdownTimeout); poolErr != nil {
 			sessionErrs = append(sessionErrs, poolErr)
 		}
 	}

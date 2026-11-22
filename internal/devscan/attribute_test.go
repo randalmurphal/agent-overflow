@@ -110,3 +110,34 @@ func TestAttributeBreaksSharedProcessTiesByWorkDir(t *testing.T) {
 		t.Fatalf("expected tied WorkDir attribution to decline, got %q", got)
 	}
 }
+
+// When two threads share a PGID (e.g. sibling terminals under a shared shell
+// group) but have distinct PIDs, an unresolved PGID tie-break must fall through
+// to the PID ancestor walk rather than failing outright.
+func TestAttributeFallsThroughFromAmbiguousPGIDToPIDWalk(t *testing.T) {
+	owners := []Owner{
+		{ThreadID: "thread-a", PID: 301, PGID: 300, WorkDir: "/work/repo"},
+		{ThreadID: "thread-b", PID: 302, PGID: 300, WorkDir: "/work/repo"},
+	}
+	parents := map[int]int{500: 400, 400: 302, 302: 300}
+
+	got, ok := attribute(listener{Port: 5177, PID: 500, PGID: 300}, owners, parents)
+	if !ok || got != "thread-b" {
+		t.Fatalf("attribute = %q/%v, want thread-b/true", got, ok)
+	}
+}
+
+func TestNormalizePathForMatchPreservesPrefixBoundaries(t *testing.T) {
+	if got := normalizePathForMatch("/private/tmp/work"); got != "/tmp/work" {
+		t.Fatalf("normalizePathForMatch(/private/tmp/work) = %q, want /tmp/work", got)
+	}
+	if got := normalizePathForMatch("/private/tmp"); got != "/tmp" {
+		t.Fatalf("normalizePathForMatch(/private/tmp) = %q, want /tmp", got)
+	}
+	if got := normalizePathForMatch("/private/tmpfoo/bar"); got != "/private/tmpfoo/bar" {
+		t.Fatalf("normalizePathForMatch(/private/tmpfoo/bar) = %q, want unchanged", got)
+	}
+	if got := normalizePathForMatch("/private/varfoo/bar"); got != "/private/varfoo/bar" {
+		t.Fatalf("normalizePathForMatch(/private/varfoo/bar) = %q, want unchanged", got)
+	}
+}

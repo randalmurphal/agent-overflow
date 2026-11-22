@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -43,7 +42,10 @@ func TransferFiles(ctx context.Context, appDataDir, sessionID, scratchDir string
 		return nil, errors.New("agy transfer: appDataDir is required")
 	}
 
-	srcPath := conversationDBPath(appDataDir, sessionID)
+	srcPath, err := conversationDBPath(appDataDir, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("agy transfer: %w", err)
+	}
 	srcDB, err := openConversationDBReadOnly(srcPath)
 	if err != nil {
 		return nil, fmt.Errorf("agy transfer: open conversation %s: %w", sessionID, err)
@@ -199,16 +201,21 @@ func cloneAndRewriteTransferDB(ctx context.Context, srcPath, dstPath, newTrajID,
 		return fmt.Errorf("agy transfer copy: clone db: %w", err)
 	}
 
-	dstDSN := strings.ReplaceAll(fmt.Sprintf("file:%s?_pragma=busy_timeout(200)", url.PathEscape(dstPath)), "%2F", "/")
-	dstDB, err := sql.Open("sqlite", dstDSN)
-	if err != nil {
+	if err := rewriteTransferTrajectoryMeta(ctx, dstPath, newTrajID, newSessionID); err != nil {
 		_ = os.Remove(dstPath)
+		return err
+	}
+	return nil
+}
+
+func rewriteTransferTrajectoryMeta(ctx context.Context, dstPath, newTrajID, newSessionID string) error {
+	dstDB, err := sql.Open("sqlite", sqliteFileDSN(dstPath, "_pragma=busy_timeout(200)"))
+	if err != nil {
 		return fmt.Errorf("agy transfer copy: open cloned db: %w", err)
 	}
 	defer dstDB.Close()
 
 	if _, err := dstDB.ExecContext(ctx, `UPDATE trajectory_meta SET trajectory_id = ?, cascade_id = ?`, newTrajID, newSessionID); err != nil {
-		_ = os.Remove(dstPath)
 		return fmt.Errorf("agy transfer copy: rewrite trajectory_meta: %w", err)
 	}
 	return nil

@@ -16,9 +16,18 @@ import (
 // permanently closed for shutdown.
 var ErrConnPoolClosed = errors.New("sessionruntime: connection pool is closed")
 
+type dialResult struct {
+	conn    provider.Connection
+	release func()
+	err     error
+	retry   bool
+}
+
 type connDial struct {
-	done chan struct{}
-	err  error
+	cancel  context.CancelFunc
+	stale   bool
+	done    bool
+	waiters []chan dialResult
 }
 
 type pooledConn struct {
@@ -28,6 +37,7 @@ type pooledConn struct {
 	draining     bool
 	idleGrace    time.Duration
 	idleTimer    *time.Timer
+	idleGen      uint64
 	closeStarted atomic.Bool
 	closeOnce    sync.Once
 	closeErr     error
@@ -70,6 +80,7 @@ type ConnPool struct {
 	active   map[string]*pooledConn
 	draining map[*pooledConn]struct{}
 	dialing  map[string]*connDial
+	dialWG   sync.WaitGroup
 	closed   bool
 }
 
@@ -99,6 +110,9 @@ func (p *ConnPool) Acquire(
 	}
 
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
 		p.mu.Lock()
 		if p.closed {
 			p.mu.Unlock()
@@ -109,6 +123,7 @@ func (p *ConnPool) Acquire(
 				if pc.idleTimer != nil {
 					pc.idleTimer.Stop()
 					pc.idleTimer = nil
+					pc.idleGen++
 				}
 				pc.refs++
 				p.mu.Unlock()
@@ -116,78 +131,146 @@ func (p *ConnPool) Acquire(
 			}
 			delete(p.active, key)
 		}
-		if inflight, ok := p.dialing[key]; ok {
+
+		waiter := make(chan dialResult, 1)
+		lead, ok := p.dialing[key]
+		if ok {
+			lead.waiters = append(lead.waiters, waiter)
 			p.mu.Unlock()
-			select {
-			case <-inflight.done:
-				if inflight.err != nil {
-					return nil, nil, inflight.err
-				}
-				continue
-			case <-ctx.Done():
-				return nil, nil, ctx.Err()
+		} else {
+			dialCtx, dialCancel := context.WithCancel(context.Background())
+			lead = &connDial{
+				cancel:  dialCancel,
+				waiters: []chan dialResult{waiter},
 			}
+			p.dialing[key] = lead
+			p.dialWG.Add(1)
+			p.mu.Unlock()
+			go p.runDial(dialCtx, key, idleGrace, dial, lead)
 		}
 
-		// Lead the dial for this key.
-		lead := &connDial{done: make(chan struct{})}
-		p.dialing[key] = lead
-		p.mu.Unlock()
-
-		var (
-			conn provider.Connection
-			err  error
-		)
-		completed := false
-		func() {
-			defer func() {
-				if !completed {
-					err = fmt.Errorf("sessionruntime: dial for key %q panicked", key)
+		select {
+		case res := <-waiter:
+			if res.retry {
+				continue
+			}
+			return res.conn, res.release, res.err
+		case <-ctx.Done():
+			p.mu.Lock()
+			removed := false
+			if !lead.done {
+				for i, ch := range lead.waiters {
+					if ch == waiter {
+						lead.waiters = append(lead.waiters[:i], lead.waiters[i+1:]...)
+						removed = true
+						break
+					}
 				}
-			}()
-			conn, err = dial(ctx)
-			completed = true
+				if removed && len(lead.waiters) == 0 {
+					lead.cancel()
+				}
+			}
+			p.mu.Unlock()
+			if !removed {
+				// Dial finished right before we acquired mu; release the ref
+				// delivered to our buffered channel so it never leaks.
+				if res := <-waiter; res.release != nil {
+					res.release()
+				}
+			}
+			return nil, nil, ctx.Err()
+		}
+	}
+}
+
+func (p *ConnPool) runDial(
+	dialCtx context.Context,
+	key string,
+	idleGrace time.Duration,
+	dial func(context.Context) (provider.Connection, error),
+	lead *connDial,
+) {
+	defer p.dialWG.Done()
+	defer lead.cancel()
+
+	var (
+		conn provider.Connection
+		err  error
+	)
+	completed := false
+	func() {
+		defer func() {
+			if !completed {
+				err = fmt.Errorf("sessionruntime: dial for key %q panicked", key)
+			}
 		}()
+		conn, err = dial(dialCtx)
+		completed = true
+	}()
 
-		p.mu.Lock()
-		if p.dialing[key] == lead {
-			delete(p.dialing, key)
-		}
-		if err != nil {
-			lead.err = err
-			p.mu.Unlock()
-			close(lead.done)
-			return nil, nil, err
-		}
-		if conn == nil {
-			lead.err = errors.New("sessionruntime: connection dialer returned nil connection")
-			p.mu.Unlock()
-			close(lead.done)
-			return nil, nil, lead.err
-		}
-		if p.closed {
-			lead.err = ErrConnPoolClosed
-			p.mu.Unlock()
-			close(lead.done)
-			_ = conn.Close()
-			return nil, nil, ErrConnPoolClosed
-		}
+	p.mu.Lock()
+	if p.dialing[key] == lead {
+		delete(p.dialing, key)
+	}
+	lead.done = true
+	waiters := lead.waiters
+	lead.waiters = nil
 
-		pc := &pooledConn{
-			key:       key,
-			conn:      conn,
-			refs:      1,
-			idleGrace: idleGrace,
-		}
-		p.active[key] = pc
+	if err != nil {
 		p.mu.Unlock()
-
-		if doneCh := conn.Done(); doneCh != nil {
-			go p.watchDead(pc, doneCh)
+		for _, ch := range waiters {
+			ch <- dialResult{err: err}
 		}
+		return
+	}
+	if conn == nil {
+		nilErr := errors.New("sessionruntime: connection dialer returned nil connection")
+		p.mu.Unlock()
+		for _, ch := range waiters {
+			ch <- dialResult{err: nilErr}
+		}
+		return
+	}
+	if p.closed {
+		p.mu.Unlock()
+		for _, ch := range waiters {
+			ch <- dialResult{err: ErrConnPoolClosed}
+		}
+		_ = conn.Close()
+		return
+	}
+	if lead.stale {
+		p.mu.Unlock()
+		for _, ch := range waiters {
+			ch <- dialResult{retry: true}
+		}
+		_ = conn.Close()
+		return
+	}
+	if len(waiters) == 0 {
+		p.mu.Unlock()
+		_ = conn.Close()
+		return
+	}
 
-		close(lead.done)
-		return conn, p.makeRelease(pc), nil
+	pc := &pooledConn{
+		key:       key,
+		conn:      conn,
+		refs:      len(waiters),
+		idleGrace: idleGrace,
+	}
+	p.active[key] = pc
+	releases := make([]func(), len(waiters))
+	for i := range waiters {
+		releases[i] = p.makeRelease(pc)
+	}
+	p.mu.Unlock()
+
+	if doneCh := conn.Done(); doneCh != nil {
+		go p.watchDead(pc, doneCh)
+	}
+	for i, ch := range waiters {
+		ch <- dialResult{conn: conn, release: releases[i]}
 	}
 }
 
@@ -210,6 +293,7 @@ func (p *ConnPool) Borrow(key string) (provider.Connection, func(), bool) {
 	if pc.idleTimer != nil {
 		pc.idleTimer.Stop()
 		pc.idleTimer = nil
+		pc.idleGen++
 	}
 	pc.refs++
 	return pc.conn, p.makeRelease(pc), true
@@ -234,6 +318,7 @@ func (p *ConnPool) BorrowMatching(match func(key string, conn provider.Connectio
 		if pc.idleTimer != nil {
 			pc.idleTimer.Stop()
 			pc.idleTimer = nil
+			pc.idleGen++
 		}
 		pc.refs++
 		return pc.conn, p.makeRelease(pc), true
@@ -241,12 +326,16 @@ func (p *ConnPool) BorrowMatching(match func(key string, conn provider.Connectio
 	return nil, nil, false
 }
 
-// DrainKey marks the active connection for key as draining so subsequent
-// Acquires dial a fresh connection. If it has no active references, it closes
-// immediately.
+// DrainKey marks the active connection (and any in-flight dial) for key as
+// draining so subsequent Acquires dial a fresh connection. If it has no active
+// references, it closes immediately.
 func (p *ConnPool) DrainKey(key string) {
 	var toClose *pooledConn
 	p.mu.Lock()
+	if lead, ok := p.dialing[key]; ok {
+		lead.stale = true
+		delete(p.dialing, key)
+	}
 	if pc, ok := p.active[key]; ok {
 		toClose = p.markDrainingLocked(pc)
 	}
@@ -256,11 +345,18 @@ func (p *ConnPool) DrainKey(key string) {
 	}
 }
 
-// DrainPrefix marks every active connection whose pool key starts with prefix
-// as draining. Connections with zero active references close immediately.
+// DrainPrefix marks every active connection and in-flight dial whose pool key
+// starts with prefix as draining. Connections with zero active references close
+// immediately.
 func (p *ConnPool) DrainPrefix(prefix string) {
 	var toClose []*pooledConn
 	p.mu.Lock()
+	for key, lead := range p.dialing {
+		if strings.HasPrefix(key, prefix) {
+			lead.stale = true
+			delete(p.dialing, key)
+		}
+	}
 	for key, pc := range p.active {
 		if strings.HasPrefix(key, prefix) {
 			if closedNow := p.markDrainingLocked(pc); closedNow != nil {
@@ -300,28 +396,41 @@ func (p *ConnPool) ActiveCount() int {
 	return len(p.active)
 }
 
-// Reset closes every active and draining connection and waits for them to
-// close, leaving the pool open for subsequent Acquires (used by HarnessReset).
+// Reset closes every active and draining connection, cancels in-flight dials,
+// and waits for them to finish, leaving the pool open for subsequent Acquires
+// (used by HarnessReset).
 func (p *ConnPool) Reset() error {
-	return p.closeAll(false)
+	return p.closeAll(false, 0)
 }
 
 // CloseAll permanently closes the pool and every active and draining
 // connection in parallel (used by App.Shutdown).
 func (p *ConnPool) CloseAll() error {
-	return p.closeAll(true)
+	return p.closeAll(true, 0)
 }
 
-func (p *ConnPool) closeAll(markClosed bool) error {
+// CloseAllWithTimeout permanently closes the pool and bounds how long shutdown
+// waits for hung connection closes or in-flight dials before returning.
+func (p *ConnPool) CloseAllWithTimeout(timeout time.Duration) error {
+	return p.closeAll(true, timeout)
+}
+
+func (p *ConnPool) closeAll(markClosed bool, timeout time.Duration) error {
 	p.mu.Lock()
 	if markClosed {
 		p.closed = true
+	}
+	for key, lead := range p.dialing {
+		lead.stale = true
+		lead.cancel()
+		delete(p.dialing, key)
 	}
 	conns := make([]*pooledConn, 0, len(p.active)+len(p.draining))
 	for key, pc := range p.active {
 		if pc.idleTimer != nil {
 			pc.idleTimer.Stop()
 			pc.idleTimer = nil
+			pc.idleGen++
 		}
 		pc.draining = true
 		conns = append(conns, pc)
@@ -331,25 +440,40 @@ func (p *ConnPool) closeAll(markClosed bool) error {
 		if pc.idleTimer != nil {
 			pc.idleTimer.Stop()
 			pc.idleTimer = nil
+			pc.idleGen++
 		}
 		conns = append(conns, pc)
 		delete(p.draining, pc)
 	}
 	p.mu.Unlock()
 
-	if len(conns) == 0 {
-		return nil
-	}
 	errs := make([]error, len(conns))
-	var wg sync.WaitGroup
-	for i, pc := range conns {
-		wg.Add(1)
-		go func(idx int, target *pooledConn) {
-			defer wg.Done()
-			errs[idx] = target.closeConn()
-		}(i, pc)
+	done := make(chan struct{})
+	go func() {
+		var wg sync.WaitGroup
+		for i, pc := range conns {
+			wg.Add(1)
+			go func(idx int, target *pooledConn) {
+				defer wg.Done()
+				errs[idx] = target.closeConn()
+			}(i, pc)
+		}
+		wg.Wait()
+		p.dialWG.Wait()
+		close(done)
+	}()
+
+	if timeout > 0 {
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		select {
+		case <-done:
+			return errors.Join(errs...)
+		case <-timer.C:
+			return fmt.Errorf("sessionruntime: timed out closing pooled connections after %s", timeout)
+		}
 	}
-	wg.Wait()
+	<-done
 	return errors.Join(errs...)
 }
 
@@ -361,6 +485,7 @@ func (p *ConnPool) markDrainingLocked(pc *pooledConn) *pooledConn {
 	if pc.idleTimer != nil {
 		pc.idleTimer.Stop()
 		pc.idleTimer = nil
+		pc.idleGen++
 	}
 	if pc.refs <= 0 {
 		delete(p.draining, pc)
@@ -394,11 +519,14 @@ func (p *ConnPool) release(pc *pooledConn) {
 			if pc.idleTimer != nil {
 				pc.idleTimer.Stop()
 				pc.idleTimer = nil
+				pc.idleGen++
 			}
 			closeNow = true
 		} else if pc.idleTimer == nil && p.active[pc.key] == pc {
+			pc.idleGen++
+			gen := pc.idleGen
 			pc.idleTimer = time.AfterFunc(pc.idleGrace, func() {
-				p.expireIdle(pc)
+				p.expireIdle(pc, gen)
 			})
 		}
 	}
@@ -409,13 +537,14 @@ func (p *ConnPool) release(pc *pooledConn) {
 	}
 }
 
-func (p *ConnPool) expireIdle(pc *pooledConn) {
+func (p *ConnPool) expireIdle(pc *pooledConn, gen uint64) {
 	var closeNow bool
 	p.mu.Lock()
-	if pc.refs == 0 && p.active[pc.key] == pc {
+	if pc.idleGen == gen && pc.refs == 0 && p.active[pc.key] == pc {
 		delete(p.active, pc.key)
 		pc.draining = true
 		pc.idleTimer = nil
+		pc.idleGen++
 		closeNow = true
 	}
 	p.mu.Unlock()
@@ -434,9 +563,13 @@ func (p *ConnPool) watchDead(pc *pooledConn, doneCh <-chan struct{}) {
 	if pc.idleTimer != nil {
 		pc.idleTimer.Stop()
 		pc.idleTimer = nil
+		pc.idleGen++
 	}
 	pc.draining = true
 	p.mu.Unlock()
+	// Close the dead connection handle so its stdin pipe FD and cancel func
+	// are released even when the connection crashed while idle (refs == 0).
+	pc.closeConnIfFirst()
 }
 
 func isConnDead(conn provider.Connection) bool {

@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"agent-overflow/internal/importir"
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
 
@@ -58,6 +60,31 @@ func scanAgy(ctx context.Context, d Deps, known map[store.ProviderSessionRef]str
 	return rows, nil, nil
 }
 
+// agyEventsToIR converts replayed ACP ProviderEvents into importir.Events with
+// deterministic synthetic source coordinates and a usable row clock. ACP
+// `session/load` notifications do not carry per-message timestamps, so each
+// event is stamped monotonically from baseTimeMs (the session's reported
+// activity time or source file mtime).
+func agyEventsToIR(sessionID string, events []provider.ProviderEvent, baseTimeMs int64) []importir.Event {
+	if baseTimeMs <= 0 {
+		baseTimeMs = time.Now().UnixMilli()
+	}
+	irEvents := make([]importir.Event, 0, len(events))
+	for i, ev := range events {
+		if ev.Timestamp.IsZero() {
+			ev.Timestamp = time.UnixMilli(baseTimeMs + int64(i))
+		}
+		if ev.Kind == provider.EventTurnComplete && ev.TurnComplete == nil {
+			ev.TurnComplete = &provider.WireTurnCompleteMeta{StopReason: "end_turn"}
+		}
+		irEvents = append(irEvents, importir.Event{
+			ProviderEvent: ev,
+			SourceUUID:    fmt.Sprintf("acp:%s:%d", sessionID, i),
+		})
+	}
+	return irEvents
+}
+
 func importAgy(ctx context.Context, d Deps, row Row, proj store.Project) (ImportOutcome, error) {
 	if d.AgyReplaySession == nil {
 		return ImportOutcome{}, fmt.Errorf("sessionimport: Antigravity replay unavailable")
@@ -66,13 +93,11 @@ func importAgy(ctx context.Context, d Deps, row Row, proj store.Project) (Import
 	if err != nil {
 		return ImportOutcome{}, fmt.Errorf("sessionimport: replay agy session %s: %w", row.SessionID, err)
 	}
-	irEvents := make([]importir.Event, 0, len(events))
-	for i, ev := range events {
-		irEvents = append(irEvents, importir.Event{
-			ProviderEvent: ev,
-			SourceUUID:    fmt.Sprintf("acp:%s:%d", row.SessionID, i),
-		})
+	baseTimeMs := row.LastActivityAt
+	if baseTimeMs <= 0 {
+		baseTimeMs = row.CreatedAt
 	}
+	irEvents := agyEventsToIR(row.SessionID, events, baseTimeMs)
 	im := newSessionImporter(d.Store, row, proj)
 	if len(irEvents) == 0 {
 		return im.outcome(), nil

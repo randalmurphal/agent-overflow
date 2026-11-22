@@ -70,11 +70,21 @@ func (a *App) providerDiscoveryService() *providerdiscoveryapp.Service {
 					defer release()
 					return agy.ProbeCatalogOnConn(ctx, conn, providerProbeWorkDir())
 				}
+				env := a.sessionProcessEnv(string(provider.Agy), nil)
+				if a.hasManagedAgyCredentialFile() {
+					merged := make(map[string]string, len(env)+2)
+					for k, v := range env {
+						merged[k] = v
+					}
+					merged["AGY_ACP_FORCE_FILE_STORAGE"] = "1"
+					merged["SSH_CONNECTION"] = "127.0.0.1 0 127.0.0.1 0"
+					env = merged
+				}
 				return agy.ProbeCatalog(
 					ctx,
 					binary,
 					providerProbeWorkDir(),
-					a.providerCustomEnv(string(provider.Agy)),
+					env,
 					a.groupReaper("agy model catalog"),
 				)
 			},

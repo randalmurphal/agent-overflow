@@ -5,6 +5,7 @@ import (
 	"log"
 	"maps"
 	"os"
+	"strings"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/agy"
@@ -212,7 +213,9 @@ func (m *Manager) agyProbeConfig(binary, geminiDir, appDataSubdir string, pins m
 		AppDataSubdir: appDataSubdir,
 		Env:           m.providerProbeEnv(string(provider.Agy), pins),
 		Reaper:        m.deps.Reaper,
-		ForceFileAuth: true,
+		// Only force file-backed auth for isolated ephemeral homes; canonical
+		// probes must respect the OS Keychain when agy stores its login there.
+		ForceFileAuth: strings.TrimSpace(geminiDir) != "",
 	}
 }
 

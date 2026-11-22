@@ -12,11 +12,11 @@ import (
 )
 
 type fakeConn struct {
-	pid       int
-	done      chan struct{}
-	closeOnce sync.Once
-	closed    atomic.Bool
-	closeErr  error
+	pid      int
+	done     chan struct{}
+	doneOnce sync.Once
+	closed   atomic.Bool
+	closeErr error
 }
 
 func newFakeConn(pid int) *fakeConn {
@@ -29,15 +29,15 @@ func newFakeConn(pid int) *fakeConn {
 func (c *fakeConn) PID() int              { return c.pid }
 func (c *fakeConn) Done() <-chan struct{} { return c.done }
 func (c *fakeConn) Close() error {
-	c.closeOnce.Do(func() {
-		c.closed.Store(true)
+	c.closed.Store(true)
+	c.doneOnce.Do(func() {
 		close(c.done)
 	})
 	return c.closeErr
 }
 
 func (c *fakeConn) crash() {
-	c.closeOnce.Do(func() {
+	c.doneOnce.Do(func() {
 		close(c.done)
 	})
 }
@@ -315,4 +315,119 @@ func TestConnPoolCloseAllDoesNotDeadlockOnReentrantRelease(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("CloseAll deadlocked on re-entrant release")
 	}
+}
+
+func TestConnPoolSingleFlightCancelDoesNotPoisonSiblingWaiter(t *testing.T) {
+	t.Parallel()
+	pool := NewConnPool()
+	started := make(chan struct{})
+	releaseDial := make(chan struct{})
+	fc := newFakeConn(801)
+
+	ctxA, cancelA := context.WithCancel(context.Background())
+	errChA := make(chan error, 1)
+	go func() {
+		_, _, err := pool.Acquire(ctxA, "agy:sf", time.Minute, func(dialCtx context.Context) (provider.Connection, error) {
+			close(started)
+			select {
+			case <-releaseDial:
+				return fc, nil
+			case <-dialCtx.Done():
+				return nil, dialCtx.Err()
+			}
+		})
+		errChA <- err
+	}()
+	<-started
+
+	type resB struct {
+		conn provider.Connection
+		rel  func()
+		err  error
+	}
+	chB := make(chan resB, 1)
+	go func() {
+		c, rel, err := pool.Acquire(context.Background(), "agy:sf", time.Minute, func(context.Context) (provider.Connection, error) {
+			t.Error("sibling should join in-flight dial, not start a second dial")
+			return nil, errors.New("unexpected")
+		})
+		chB <- resB{c, rel, err}
+	}()
+	time.Sleep(25 * time.Millisecond)
+
+	// Cancelling caller A must fail A without cancelling B's shared dial.
+	cancelA()
+	if err := <-errChA; !errors.Is(err, context.Canceled) {
+		t.Fatalf("caller A err = %v, want context.Canceled", err)
+	}
+	close(releaseDial)
+	b := <-chB
+	if b.err != nil || b.conn != fc {
+		t.Fatalf("caller B = (%v, %v), want (fc, nil)", b.conn, b.err)
+	}
+	b.rel()
+	_ = pool.CloseAll()
+}
+
+func TestConnPoolWatchDeadClosesIdleConnHandle(t *testing.T) {
+	t.Parallel()
+	pool := NewConnPool()
+	fc := newFakeConn(802)
+	_, rel, err := pool.Acquire(context.Background(), "agy:dead-idle", time.Minute, func(context.Context) (provider.Connection, error) {
+		return fc, nil
+	})
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	rel() // idle in pool
+	fc.crash()
+	deadline := time.Now().Add(2 * time.Second)
+	for !fc.closed.Load() && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !fc.closed.Load() {
+		t.Fatal("watchDead did not invoke Close() on crashed idle connection")
+	}
+}
+
+func TestConnPoolDrainPrefixMarksInFlightDialStale(t *testing.T) {
+	t.Parallel()
+	pool := NewConnPool()
+	started := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	staleConn := newFakeConn(803)
+	freshConn := newFakeConn(804)
+	var dials atomic.Int32
+
+	resCh := make(chan provider.Connection, 1)
+	relCh := make(chan func(), 1)
+	go func() {
+		c, rel, err := pool.Acquire(context.Background(), "agy|k", time.Minute, func(context.Context) (provider.Connection, error) {
+			if dials.Add(1) == 1 {
+				close(started)
+				<-releaseFirst
+				return staleConn, nil
+			}
+			return freshConn, nil
+		})
+		if err != nil {
+			t.Errorf("Acquire: %v", err)
+		}
+		resCh <- c
+		relCh <- rel
+	}()
+	<-started
+	pool.DrainPrefix("agy|")
+	close(releaseFirst)
+
+	got := <-resCh
+	rel := <-relCh
+	if got != freshConn {
+		t.Fatalf("got conn %v, want freshConn after DrainPrefix invalidated in-flight dial", got)
+	}
+	if !staleConn.closed.Load() {
+		t.Fatal("stale in-flight connection was not closed")
+	}
+	rel()
+	_ = pool.CloseAll()
 }

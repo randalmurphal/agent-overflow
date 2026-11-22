@@ -58,10 +58,13 @@ func attribute(l listener, owners []Owner, parents map[int]int) (string, bool) {
 
 	// The group first: it is one map probe and it is the rule that holds
 	// in both shapes, since a process that has NOT reparented is still in
-	// its group.
+	// its group. If a shared group cannot be disambiguated by CWD, fall
+	// through to the PID ancestor walk which may identify a unique child.
 	if l.PGID > 0 {
 		if candidates := byPGID[l.PGID]; len(candidates) > 0 {
-			return pickOwner(l.CWD, candidates)
+			if owner, ok := pickOwner(l.CWD, candidates); ok {
+				return owner, true
+			}
 		}
 	}
 
@@ -133,7 +136,8 @@ func normalizePathForMatch(p string) string {
 	cleaned := filepath.Clean(p)
 	// On macOS, /var and /tmp symlink to /private/var and /private/tmp;
 	// lsof often reports /private/... while thread WorkDir holds /tmp/...
-	if strings.HasPrefix(cleaned, "/private/") && (strings.HasPrefix(cleaned, "/private/tmp") || strings.HasPrefix(cleaned, "/private/var")) {
+	if cleaned == "/private/tmp" || strings.HasPrefix(cleaned, "/private/tmp/") ||
+		cleaned == "/private/var" || strings.HasPrefix(cleaned, "/private/var/") {
 		cleaned = strings.TrimPrefix(cleaned, "/private")
 	}
 	return cleaned

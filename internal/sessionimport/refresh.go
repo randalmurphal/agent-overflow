@@ -194,6 +194,8 @@ func PlanUpdate(ctx context.Context, d Deps, threadID string) (Update, error) {
 		tail, err = claudeTail(state)
 	case ProviderCodex:
 		tail, err = codexTail(ctx, d, state, thread.Model == "")
+	case ProviderAgy:
+		tail, err = agyTail(ctx, d, state, thread.WorkspacePath)
 	default:
 		err = fmt.Errorf("sessionimport: thread %s records unknown import provider %q", threadID, state.Provider)
 	}
@@ -540,6 +542,51 @@ func codexTail(
 		profile:   profile,
 		identity:  identity,
 	}, nil
+}
+
+// agyTail replays the Antigravity ACP conversation and returns the events
+// strictly following the last imported event's synthetic cursor UUID.
+func agyTail(
+	ctx context.Context, d Deps, state store.ThreadImportState, workspacePath string,
+) (tailResult, error) {
+	var baseTimeMs int64
+	if state.SourcePath != "" && !strings.HasPrefix(state.SourcePath, "acp:") {
+		info, err := os.Stat(state.SourcePath)
+		if err != nil {
+			return tailResult{}, missingf(state.SourcePath)
+		}
+		baseTimeMs = info.ModTime().UnixMilli()
+	}
+	if d.AgyReplaySession == nil {
+		return tailResult{}, missingf(state.SourcePath)
+	}
+	replayed, err := d.AgyReplaySession(ctx, state.SourceSessionID, workspacePath)
+	if err != nil {
+		return tailResult{}, fmt.Errorf("sessionimport: replay agy session %s: %w", state.SourceSessionID, err)
+	}
+	if baseTimeMs <= 0 {
+		baseTimeMs = state.RefreshedAt
+	}
+	if baseTimeMs <= 0 {
+		baseTimeMs = state.ImportedAt
+	}
+	irEvents := agyEventsToIR(state.SourceSessionID, replayed, baseTimeMs)
+	cursor := strings.TrimSpace(state.LastSourceUUID)
+	if cursor == "" {
+		return tailResult{events: irEvents}, nil
+	}
+	last := -1
+	for i := range irEvents {
+		if irEvents[i].SourceUUID == cursor {
+			last = i
+		}
+	}
+	if last < 0 {
+		return tailResult{}, divergedf(
+			"The last imported message is no longer in %s — the Antigravity session has changed since the import.",
+			state.SourcePath)
+	}
+	return tailResult{events: irEvents[last+1:]}, nil
 }
 
 // codexIdentityForRefresh turns an identity read into the value the rest of

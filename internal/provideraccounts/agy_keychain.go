@@ -147,7 +147,9 @@ func (s securityAgyKeychain) write(configHome string, active bool, data []byte) 
 	}
 	// Remove any leftover file-backed active token so agy reads the newly
 	// updated Keychain item cleanly without requiring AGY_ACP_FORCE_FILE_STORAGE.
-	_ = fileAgyKeychain{}.remove(configHome, true)
+	if err := (fileAgyKeychain{}).remove(configHome, true); err != nil {
+		return fmt.Errorf("provideraccounts: remove stale Antigravity file token after Keychain write: %w", err)
+	}
 	return nil
 }
 

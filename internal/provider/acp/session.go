@@ -115,33 +115,37 @@ type Session struct {
 	onEvent   func(provider.ProviderEvent)
 	approvals provider.ApprovalRegistry
 
-	mu                   sync.Mutex
-	sessionID            string
-	model                string
-	reasoningEffort      string
-	runtimeMode          provider.RuntimeMode
-	interactionMode      provider.InteractionMode
-	permissionPolicy     PermissionPolicy
-	availableModes       []SessionMode
-	configOptions        []ConfigOption
-	currentModeID        string
-	lastRequestedModeID  string
-	lastContextSize      int
-	inFlightPrompts      int
-	turnOpen             bool
-	spontaneousTurnOpen  bool
-	turnSeq              int
-	activeTurnID         string
-	promptUsage          provider.TokenUsage
-	promptUsageSeen      bool
-	promptHadOutput      bool
-	startedTools         map[string]NormalizedToolStart
-	outlivingTools       map[string]struct{}
-	pendingPerms         map[string]pendingPermission
-	pendingToolQuestions map[string]pendingToolQuestion
-	chunk                chunkBuffer
-	promptWG             sync.WaitGroup
+	mu                    sync.Mutex
+	sessionID             string
+	model                 string
+	reasoningEffort       string
+	runtimeMode           provider.RuntimeMode
+	interactionMode       provider.InteractionMode
+	permissionPolicy      PermissionPolicy
+	availableModes        []SessionMode
+	configOptions         []ConfigOption
+	currentModeID         string
+	lastRequestedModeID   string
+	lastContextSize       int
+	inFlightPrompts       int
+	turnOpen              bool
+	spontaneousTurnOpen   bool
+	turnSeq               int
+	activeTurnID          string
+	promptUsage           provider.TokenUsage
+	promptUsageSeen       bool
+	promptHadOutput       bool
+	turnHasOutputSchema   bool
+	turnLastAssistantText strings.Builder
+	startedTools          map[string]NormalizedToolStart
+	outlivingTools        map[string]struct{}
+	pendingPerms          map[string]pendingPermission
+	pendingToolQuestions  map[string]pendingToolQuestion
+	chunk                 chunkBuffer
+	promptWG              sync.WaitGroup
 
+	sessionCtx      context.Context
+	sessionCancel   context.CancelFunc
 	closing         atomic.Bool
 	teardownEmitted atomic.Bool
 	readDone        chan struct{}
@@ -199,6 +203,7 @@ func (c *Conn) open(
 		imMode = provider.ModeChat
 	}
 
+	sessionCtx, sessionCancel := context.WithCancel(context.Background())
 	s := &Session{
 		conn:                 c,
 		ownsConn:             ownsConn,
@@ -215,6 +220,8 @@ func (c *Conn) open(
 		outlivingTools:       make(map[string]struct{}),
 		pendingPerms:         make(map[string]pendingPermission),
 		pendingToolQuestions: make(map[string]pendingToolQuestion),
+		sessionCtx:           sessionCtx,
+		sessionCancel:        sessionCancel,
 		readDone:             make(chan struct{}),
 	}
 
@@ -412,6 +419,7 @@ func (s *Session) applyConfigAxes(
 
 	var errs []error
 	if applyModel && model != "" {
+		modelApplied := true
 		if currentConfigValue(opts, "model") != model {
 			newOpts, err := s.conn.SetConfigOption(ctx, sessionID, "model", model)
 			if err != nil {
@@ -423,9 +431,11 @@ func (s *Session) applyConfigAxes(
 					})
 					if legacyErr != nil {
 						errs = append(errs, legacyErr)
+						modelApplied = false
 					}
 				} else {
 					errs = append(errs, err)
+					modelApplied = false
 				}
 			} else if len(newOpts) > 0 {
 				opts = newOpts
@@ -434,16 +444,20 @@ func (s *Session) applyConfigAxes(
 				s.mu.Unlock()
 			}
 		}
-		s.mu.Lock()
-		s.model = model
-		s.mu.Unlock()
+		if modelApplied {
+			s.mu.Lock()
+			s.model = model
+			s.mu.Unlock()
+		}
 	}
 
 	if applyEffort && effort != "" {
+		effortApplied := true
 		if optionOffered(opts, "thought_level", effort) && currentConfigValue(opts, "thought_level") != effort {
 			newOpts, err := s.conn.SetConfigOption(ctx, sessionID, "thought_level", effort)
 			if err != nil {
 				errs = append(errs, err)
+				effortApplied = false
 			} else if len(newOpts) > 0 {
 				opts = newOpts
 				s.mu.Lock()
@@ -451,19 +465,16 @@ func (s *Session) applyConfigAxes(
 				s.mu.Unlock()
 			}
 		}
-		s.mu.Lock()
-		s.reasoningEffort = effort
-		s.mu.Unlock()
+		if effortApplied {
+			s.mu.Lock()
+			s.reasoningEffort = effort
+			s.mu.Unlock()
+		}
 	}
 
 	if applyMode {
 		targetModeID, policy := s.flavor.MapRuntimeMode(rt, im, availableModes)
-		s.mu.Lock()
-		s.runtimeMode = rt
-		s.interactionMode = im
-		s.permissionPolicy = policy
-		s.mu.Unlock()
-
+		modeApplied := true
 		if targetModeID != "" && targetModeID != currentMode {
 			s.mu.Lock()
 			s.lastRequestedModeID = targetModeID
@@ -472,14 +483,27 @@ func (s *Session) applyConfigAxes(
 				SessionID: sessionID,
 				ModeID:    targetModeID,
 			}); err != nil {
+				s.mu.Lock()
+				if s.lastRequestedModeID == targetModeID {
+					s.lastRequestedModeID = ""
+				}
+				s.mu.Unlock()
 				if !IsMethodNotFound(err) {
 					errs = append(errs, err)
+					modeApplied = false
 				}
 			} else {
 				s.mu.Lock()
 				s.currentModeID = targetModeID
 				s.mu.Unlock()
 			}
+		}
+		if modeApplied {
+			s.mu.Lock()
+			s.runtimeMode = rt
+			s.interactionMode = im
+			s.permissionPolicy = policy
+			s.mu.Unlock()
 		}
 	}
 
@@ -514,15 +538,20 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 		"reply": {content},
 	})
 
-	blocks := buildPromptBlocks(content, opts.Attachments)
+	hasOutputSchema := len(opts.OutputSchema) > 0
+	promptText := content
+	if hasOutputSchema {
+		promptText = appendOutputSchemaInstruction(content, opts.OutputSchema)
+	}
+	blocks := buildPromptBlocks(promptText, opts.Attachments)
 	if len(blocks) == 0 {
 		return errors.New("acp: cannot send empty prompt")
 	}
 
-	return s.dispatchPrompt(ctx, blocks)
+	return s.dispatchPrompt(ctx, blocks, hasOutputSchema)
 }
 
-func (s *Session) dispatchPrompt(ctx context.Context, blocks []ContentBlock) error {
+func (s *Session) dispatchPrompt(ctx context.Context, blocks []ContentBlock, hasOutputSchema bool) error {
 	s.mu.Lock()
 	sessionID := s.sessionID
 	s.mu.Unlock()
@@ -552,7 +581,11 @@ func (s *Session) dispatchPrompt(ctx context.Context, blocks []ContentBlock) err
 		s.promptUsage = provider.TokenUsage{}
 		s.promptUsageSeen = false
 		s.promptHadOutput = false
+		s.turnHasOutputSchema = hasOutputSchema
+		s.turnLastAssistantText.Reset()
 		openTurnID = s.activeTurnID
+	} else if hasOutputSchema {
+		s.turnHasOutputSchema = true
 	}
 	s.mu.Unlock()
 
@@ -568,7 +601,7 @@ func (s *Session) dispatchPrompt(ctx context.Context, blocks []ContentBlock) err
 	s.promptWG.Add(1)
 	go func() {
 		defer s.promptWG.Done()
-		rawResp, waitErr := wait(context.Background())
+		rawResp, waitErr := wait(s.sessionCtx)
 		s.finishPrompt(rawResp, waitErr, beforeToken)
 	}()
 
@@ -597,11 +630,17 @@ func (s *Session) finishPrompt(rawResp json.RawMessage, waitErr error, beforeTok
 	remaining := s.inFlightPrompts
 	turnID := s.activeTurnID
 	var totalUsage *provider.TokenUsage
+	var structuredOutput json.RawMessage
 	if remaining == 0 {
 		if s.promptUsageSeen {
 			u := s.promptUsage
 			totalUsage = &u
 		}
+		if s.turnHasOutputSchema {
+			structuredOutput = extractStructuredJSONObject(s.turnLastAssistantText.String())
+		}
+		s.turnHasOutputSchema = false
+		s.turnLastAssistantText.Reset()
 		s.turnOpen = false
 		s.spontaneousTurnOpen = false
 	}
@@ -710,11 +749,12 @@ func (s *Session) finishPrompt(rawResp json.RawMessage, waitErr error, beforeTok
 		})
 	}
 	s.emitEvent(provider.ProviderEvent{
-		Kind:         provider.EventTurnComplete,
-		ThreadID:     s.threadID,
-		TurnID:       turnID,
-		Timestamp:    time.Now(),
-		TurnComplete: meta,
+		Kind:             provider.EventTurnComplete,
+		ThreadID:         s.threadID,
+		TurnID:           turnID,
+		Timestamp:        time.Now(),
+		TurnComplete:     meta,
+		StructuredOutput: structuredOutput,
 	})
 }
 
@@ -845,7 +885,7 @@ func (s *Session) RespondToUserInput(ctx context.Context, resp provider.UserInpu
 	} else if isToolQ {
 		replyText := formatToolQuestionAnswer(pendingQ.questions, resp.Answers, decision)
 		if replyText != "" {
-			if err := s.dispatchPrompt(ctx, []ContentBlock{{Type: "text", Text: replyText}}); err != nil {
+			if err := s.dispatchPrompt(ctx, []ContentBlock{{Type: "text", Text: replyText}}, false); err != nil {
 				return err
 			}
 		}
@@ -875,6 +915,9 @@ func (s *Session) RespondToUserInput(ctx context.Context, resp provider.UserInpu
 // Conn) or closes the dedicated Conn when ownsConn is true.
 func (s *Session) Close() error {
 	s.closing.Store(true)
+	if s.sessionCancel != nil {
+		s.sessionCancel()
+	}
 	s.stopChunkTimer()
 
 	var err error
@@ -915,6 +958,7 @@ func (s *Session) Close() error {
 	if sessionID != "" {
 		s.conn.unregisterSession(sessionID, s)
 	}
+	s.promptWG.Wait()
 	s.emitTeardownOnce(nil, true)
 	s.finishReadDone()
 	s.releasePoolRef()
@@ -922,6 +966,9 @@ func (s *Session) Close() error {
 }
 
 func (s *Session) onConnClosed(exitMeta json.RawMessage, connClosing bool) {
+	if s.sessionCancel != nil {
+		s.sessionCancel()
+	}
 	s.stopChunkTimer()
 	s.drainPendingApprovals("lost", true)
 	s.emitTeardownOnce(exitMeta, connClosing || s.closing.Load())
@@ -1019,11 +1066,21 @@ func (s *Session) handleUpdate(u SessionUpdate) {
 			return
 		}
 		s.ensureSpontaneousTurnOpen()
+		s.mu.Lock()
+		if s.turnHasOutputSchema {
+			s.turnLastAssistantText.WriteString(block.Text)
+		}
+		s.mu.Unlock()
 		s.bufferChunk(provider.EventTextDelta, block.Text)
 
 	case "tool_call":
 		s.flushChunks()
 		s.ensureSpontaneousTurnOpen()
+		s.mu.Lock()
+		if s.turnHasOutputSchema {
+			s.turnLastAssistantText.Reset()
+		}
+		s.mu.Unlock()
 		tc := u.toToolCallUpdate()
 		s.handleToolCallStart(&tc)
 
@@ -1157,6 +1214,9 @@ func (s *Session) flushChunks() {
 	s.chunk.buf.Reset()
 	s.mu.Unlock()
 
+	if s.closing.Load() {
+		return
+	}
 	s.emitChunk(kind, turnID, text)
 }
 
@@ -1197,29 +1257,7 @@ func (s *Session) handleToolCallStart(tc *ToolCallUpdate) {
 	turnID := s.activeTurnID
 	s.mu.Unlock()
 
-	metaFields := map[string]any{
-		"toolName": norm.ToolName,
-	}
-	if len(norm.Input) > 0 {
-		metaFields["input"] = norm.Input
-	}
-	if norm.SubagentLaunch {
-		metaFields[provider.MetaSubagentLaunchKey] = true
-	}
-	if norm.Description != "" {
-		metaFields["description"] = norm.Description
-	}
-	if norm.SubagentType != "" {
-		metaFields["subagent_type"] = norm.SubagentType
-	}
-	if norm.IsBackground {
-		metaFields["is_background"] = true
-	}
-	for k, v := range norm.ExtraMeta {
-		metaFields[k] = v
-	}
-	meta, _ := json.Marshal(metaFields)
-
+	meta := buildToolStartMeta(norm)
 	s.emitEvent(provider.ProviderEvent{
 		Kind:      provider.EventToolStart,
 		ThreadID:  s.threadID,
@@ -1291,6 +1329,39 @@ func (s *Session) handleToolCallComplete(tc *ToolCallUpdate) {
 
 	norm := s.flavor.NormalizeToolComplete(tc, started)
 	now := time.Now()
+	for _, evt := range buildToolCompleteEvents(s.threadID, turnID, tc.ToolCallID, norm, now) {
+		s.emitEvent(evt)
+	}
+}
+
+func buildToolStartMeta(norm NormalizedToolStart) json.RawMessage {
+	metaFields := map[string]any{
+		"toolName": norm.ToolName,
+	}
+	if len(norm.Input) > 0 {
+		metaFields["input"] = norm.Input
+	}
+	if norm.SubagentLaunch {
+		metaFields[provider.MetaSubagentLaunchKey] = true
+	}
+	if norm.Description != "" {
+		metaFields["description"] = norm.Description
+	}
+	if norm.SubagentType != "" {
+		metaFields["subagent_type"] = norm.SubagentType
+	}
+	if norm.IsBackground {
+		metaFields["is_background"] = true
+	}
+	for k, v := range norm.ExtraMeta {
+		metaFields[k] = v
+	}
+	meta, _ := json.Marshal(metaFields)
+	return meta
+}
+
+func buildToolCompleteEvents(threadID, turnID, toolCallID string, norm NormalizedToolComplete, now time.Time) []provider.ProviderEvent {
+	var events []provider.ProviderEvent
 
 	// File-change tool rows carry structured item.changes on EventToolComplete
 	// so triage.ExtractFileChangeToolResult builds exact ToolInlineDiff previews
@@ -1302,11 +1373,11 @@ func (s *Session) handleToolCallComplete(tc *ToolCallUpdate) {
 			"filePath": norm.DiffFilePath,
 			"toolName": norm.ToolName,
 		})
-		s.emitEvent(provider.ProviderEvent{
+		events = append(events, provider.ProviderEvent{
 			Kind:      provider.EventDiff,
-			ThreadID:  s.threadID,
+			ThreadID:  threadID,
 			TurnID:    turnID,
-			ItemID:    tc.ToolCallID,
+			ItemID:    toolCallID,
 			ItemType:  "file_change",
 			Content:   norm.DiffPatch,
 			Meta:      diffMeta,
@@ -1327,11 +1398,11 @@ func (s *Session) handleToolCallComplete(tc *ToolCallUpdate) {
 			cmdMeta["durationMs"] = *norm.DurationMs
 		}
 		encoded, _ := json.Marshal(cmdMeta)
-		s.emitEvent(provider.ProviderEvent{
+		events = append(events, provider.ProviderEvent{
 			Kind:      provider.EventCommandOutput,
-			ThreadID:  s.threadID,
+			ThreadID:  threadID,
 			TurnID:    turnID,
-			ItemID:    tc.ToolCallID,
+			ItemID:    toolCallID,
 			ItemType:  "command_execution",
 			Content:   norm.CommandOut,
 			Meta:      encoded,
@@ -1340,11 +1411,11 @@ func (s *Session) handleToolCallComplete(tc *ToolCallUpdate) {
 		})
 	}
 	if norm.ProposedPlan != "" {
-		s.emitEvent(provider.ProviderEvent{
+		events = append(events, provider.ProviderEvent{
 			Kind:      provider.EventProposedPlan,
-			ThreadID:  s.threadID,
+			ThreadID:  threadID,
 			TurnID:    turnID,
-			ItemID:    tc.ToolCallID + ":plan",
+			ItemID:    toolCallID + ":plan",
 			ItemType:  "plan",
 			Content:   norm.ProposedPlan,
 			Timestamp: now,
@@ -1382,7 +1453,7 @@ func (s *Session) handleToolCallComplete(tc *ToolCallUpdate) {
 			})
 		}
 		metaFields["item"] = map[string]any{
-			"id":      tc.ToolCallID,
+			"id":      toolCallID,
 			"type":    "file_change",
 			"status":  norm.ItemStatus,
 			"changes": changes,
@@ -1392,17 +1463,56 @@ func (s *Session) handleToolCallComplete(tc *ToolCallUpdate) {
 		metaFields[k] = v
 	}
 	meta, _ := json.Marshal(metaFields)
-	s.emitEvent(provider.ProviderEvent{
+	events = append(events, provider.ProviderEvent{
 		Kind:           provider.EventToolComplete,
-		ThreadID:       s.threadID,
+		ThreadID:       threadID,
 		TurnID:         turnID,
-		ItemID:         tc.ToolCallID,
+		ItemID:         toolCallID,
 		ItemType:       norm.ItemType,
 		Content:        norm.Content,
 		ContentPresent: norm.Content != "",
 		Meta:           meta,
 		Timestamp:      now,
 	})
+	return events
+}
+
+func appendOutputSchemaInstruction(content string, schema json.RawMessage) string {
+	trimmedSchema := strings.TrimSpace(string(schema))
+	if trimmedSchema == "" {
+		return content
+	}
+	instruction := "\n\n<structured-output-schema>\nRespond in your final assistant message with ONLY a single valid JSON object matching this JSON Schema (no markdown fences, no commentary before or after):\n" + trimmedSchema + "\n</structured-output-schema>"
+	return content + instruction
+}
+
+// extractStructuredJSONObject extracts a single JSON object from assistant text
+// (accepting raw JSON, fenced ```json blocks, or a trailing JSON object).
+func extractStructuredJSONObject(text string) json.RawMessage {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return nil
+	}
+	if strings.HasPrefix(trimmed, "```") {
+		if nl := strings.IndexByte(trimmed, '\n'); nl >= 0 {
+			body := trimmed[nl+1:]
+			if end := strings.LastIndex(body, "```"); end >= 0 {
+				trimmed = strings.TrimSpace(body[:end])
+			}
+		}
+	}
+	if strings.HasPrefix(trimmed, "{") && json.Valid([]byte(trimmed)) {
+		return json.RawMessage(trimmed)
+	}
+	start := strings.IndexByte(trimmed, '{')
+	end := strings.LastIndexByte(trimmed, '}')
+	if start >= 0 && end > start {
+		candidate := strings.TrimSpace(trimmed[start : end+1])
+		if json.Valid([]byte(candidate)) {
+			return json.RawMessage(candidate)
+		}
+	}
+	return nil
 }
 
 func (s *Session) handlePlanUpdate(entries []PlanEntry) {

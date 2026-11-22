@@ -64,9 +64,15 @@ func (a *App) acquireAgyConn(
 	binary string,
 	workDir string,
 	env map[string]string,
+	accountSelection *providerAccountSelection,
 ) (*acp.Conn, func(), string, error) {
 	identity, _ := a.resolveProviderBinaryIdentity(string(provider.Agy))
-	selection := a.captureProviderAccountSelection(string(provider.Agy))
+	var selection providerAccountSelection
+	if accountSelection != nil {
+		selection = *accountSelection
+	} else {
+		selection = a.captureProviderAccountSelection(string(provider.Agy))
+	}
 	isolateThreadID := ""
 	idleGrace := agyConnIdleGrace
 	connWorkDir := providerProbeWorkDir()
@@ -110,8 +116,11 @@ func (a *App) acquireAgyConn(
 }
 
 func (a *App) hasManagedAgyCredentialFile() bool {
-	appData := a.agyAppDataDir()
-	if appData == "" {
+	return hasManagedAgyCredentialFileAt(a.agyAppDataDir())
+}
+
+func hasManagedAgyCredentialFileAt(appData string) bool {
+	if strings.TrimSpace(appData) == "" {
 		return false
 	}
 	info, err := os.Stat(filepath.Join(appData, "antigravity-oauth-token"))
@@ -156,16 +165,33 @@ func (a *App) agyAppDataDir() string {
 	return filepath.Join(home, ".gemini", agy.DefaultAppDataName)
 }
 
-func (a *App) withAgyImportConn(ctx context.Context, fn func(*acp.Conn) error) error {
+func (a *App) withAgyImportConn(ctx context.Context, appDataDir string, fn func(*acp.Conn) error) error {
 	binary := a.providerBinaryPath(string(provider.Agy))
-	if conn, release := a.borrowAgyConnForBinary(binary); conn != nil {
-		defer release()
-		return fn(conn)
+	canonicalDir := a.agyAppDataDir()
+	useCanonical := appDataDir == "" || (canonicalDir != "" && filepath.Clean(appDataDir) == filepath.Clean(canonicalDir))
+	if useCanonical {
+		if conn, release := a.borrowAgyConnForBinary(binary); conn != nil {
+			defer release()
+			return fn(conn)
+		}
 	}
-	env, unset := agy.LaunchEnv(a.providerCustomEnv(string(provider.Agy)), nil)
+	var geminiDir, appDataSubdir string
+	if !useCanonical || strings.TrimSpace(a.credentialHomeOverride) != "" {
+		cleaned := filepath.Clean(appDataDir)
+		geminiDir = filepath.Dir(cleaned)
+		appDataSubdir = filepath.Base(cleaned)
+	}
+	var extra map[string]string
+	if geminiDir != "" || hasManagedAgyCredentialFileAt(appDataDir) {
+		extra = map[string]string{
+			"AGY_ACP_FORCE_FILE_STORAGE": "1",
+			"SSH_CONNECTION":             "127.0.0.1 0 127.0.0.1 0",
+		}
+	}
+	env, unset := agy.LaunchEnv(a.sessionProcessEnv(string(provider.Agy), nil), extra)
 	conn, err := acp.Dial(ctx, acp.ConnConfig{
 		Binary:       agy.ResolveBinary(binary),
-		Args:         agy.LaunchArgs("", ""),
+		Args:         agy.LaunchArgs(geminiDir, appDataSubdir),
 		WorkDir:      providerProbeWorkDir(),
 		Env:          env,
 		UnsetEnv:     unset,
@@ -181,7 +207,7 @@ func (a *App) withAgyImportConn(ctx context.Context, fn func(*acp.Conn) error) e
 
 func (a *App) listAgyImportSessions(ctx context.Context, appDataDir string) ([]sessionimport.AgySessionSummary, error) {
 	var summaries []sessionimport.AgySessionSummary
-	err := a.withAgyImportConn(ctx, func(conn *acp.Conn) error {
+	err := a.withAgyImportConn(ctx, appDataDir, func(conn *acp.Conn) error {
 		items, listErr := conn.ListSessions(ctx, "")
 		if listErr != nil {
 			return listErr
@@ -210,7 +236,7 @@ func (a *App) listAgyImportSessions(ctx context.Context, appDataDir string) ([]s
 
 func (a *App) replayAgyImportSession(ctx context.Context, appDataDir, sessionID, workDir string) ([]provider.ProviderEvent, error) {
 	var events []provider.ProviderEvent
-	err := a.withAgyImportConn(ctx, func(conn *acp.Conn) error {
+	err := a.withAgyImportConn(ctx, appDataDir, func(conn *acp.Conn) error {
 		res, replayErr := conn.ReplayLoad(ctx, acp.SessionLoadParams{
 			SessionID:  sessionID,
 			CWD:        workDir,

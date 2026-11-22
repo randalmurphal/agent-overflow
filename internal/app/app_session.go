@@ -28,9 +28,8 @@ import (
 // --- Session bindings and spawn helpers ---
 //
 // These methods own the provider-session lifecycle seen by Wails
-// bindings. Start/stop plumbing that coordinates multiple in-flight
-// start attempts lives in app_session_runtime.go; thin wire façades live
-// in app_session_bindings.go. Everything in this file
+// bindings. Session runtime coordination lives in internal/sessionruntime;
+// thin wire façades live in app_session_bindings.go. Everything in this file
 // runs the actual spawn and shutdown of a provider subprocess for a
 // given thread.
 
@@ -671,7 +670,7 @@ func (a *App) spawnProviderSession(
 			cfg.ResumeHasUnresolvedSubagents = len(cfg.ResumeCollabLaunches) > 0
 		}
 		conn, releaseConn, poolKey, err := a.acquireCodexConn(
-			context.Background(),
+			a.lifeCtx(),
 			threadID,
 			cfg.Binary,
 			cfg.WorkDir,
@@ -681,7 +680,7 @@ func (a *App) spawnProviderSession(
 		if err != nil {
 			return session{}, err
 		}
-		sess, err := conn.OpenPooled(context.Background(), threadID, cfg, onEvent, releaseConn)
+		sess, err := conn.OpenPooled(a.lifeCtx(), threadID, cfg, onEvent, releaseConn)
 		if err != nil {
 			return session{}, err
 		}
@@ -725,11 +724,12 @@ func (a *App) spawnProviderSession(
 		binary := a.providerBinaryPath(t.Provider)
 		env := a.sessionProcessEnv(t.Provider, nil)
 		conn, releaseConn, poolKey, err := a.acquireAgyConn(
-			context.Background(),
+			a.lifeCtx(),
 			threadID,
 			binary,
 			opts.WorkDir,
 			env,
+			&accountSelection,
 		)
 		if err != nil {
 			return session{}, err
@@ -742,12 +742,12 @@ func (a *App) spawnProviderSession(
 			InteractionMode:       opts.Mode,
 			RuntimeMode:           opts.RuntimeMode,
 			SystemPrompt:          opts.SystemPrompt,
-			AppendSystemPrompt:    prompts.claudeAppend,
+			AppendSystemPrompt:    joinPromptParts(prompts.claudeAppend, memoryPromptText(mem)),
 			AdditionalDirectories: mem.Dirs,
 			MCPServers:            agy.TranslateMCPServers(mcpServers),
 			Flavor:                agy.NewFlavor(a.agyAppDataDir()),
 		}
-		sess, err := conn.OpenPooled(context.Background(), threadID, sessCfg, onEvent, releaseConn)
+		sess, err := conn.OpenPooled(a.lifeCtx(), threadID, sessCfg, onEvent, releaseConn)
 		if err != nil {
 			return session{}, err
 		}

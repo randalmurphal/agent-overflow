@@ -231,9 +231,11 @@ func (a *App) UpdateSettings(ctx context.Context, patch map[string]any) (setting
 	}
 	if _, ok := patch["codexBinaryPath"]; ok {
 		a.invalidateDefaultCodexBinary()
+		a.drainCodexConnections()
 		a.refreshCodexModelCatalog()
 	}
 	if _, ok := patch["agyBinaryPath"]; ok {
+		a.drainAgyConnections()
 		a.refreshAgyModelCatalog()
 	}
 	if _, ok := patch["gitlabSelfHostedHosts"]; ok {

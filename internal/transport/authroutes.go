@@ -20,8 +20,7 @@ import (
 // whether a refresh secret was already spent, and what a reason code
 // stands for belong to internal/identity, which this package must not
 // import. The seam is AuthEndpoints below, declared here and satisfied by
-// an app-side adapter — the same direction as ScopedTokens, and the same
-// reason: transport stays store-free.
+// an app-side adapter so transport stays store-free.
 //
 // The owner-facing half of pairing — minting a link, reading the
 // verification number, confirming or cancelling — is deliberately NOT

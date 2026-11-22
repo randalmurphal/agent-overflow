@@ -332,6 +332,10 @@ func (f *Flavor) NormalizeToolStart(u *acp.ToolCallUpdate) acp.NormalizedToolSta
 		norm.ToolName = "Agent"
 		norm.ItemType = "Agent"
 		norm.SubagentLaunch = true
+		if norm.ExtraMeta == nil {
+			norm.ExtraMeta = map[string]any{}
+		}
+		norm.ExtraMeta["provider"] = string(provider.Agy)
 		var params struct {
 			TypeName string `json:"TypeName"`
 			Role     string `json:"Role"`
@@ -496,6 +500,15 @@ func (f *Flavor) ClassifyPermission(threadID, turnID, requestID string, req acp.
 	}
 	cls := f.DefaultFlavor.ClassifyPermission(threadID, turnID, requestID, req, policy)
 	if cls.Action == acp.PermissionAskUser {
+		// Normalize tool name and input into AO's canonical shapes (Bash/Edit/Write/MCP)
+		// so approval cards display command previews and file paths cleanly.
+		norm := f.NormalizeToolStart(&req.ToolCall)
+		if norm.ToolName != "" {
+			cls.Approval.ToolName = norm.ToolName
+		}
+		if len(norm.Input) > 0 {
+			cls.Approval.Input = norm.Input
+		}
 		// Surface option._meta["agy.security.warning"] if present on any allow option.
 		for _, opt := range req.Options {
 			if len(opt.Meta) == 0 {

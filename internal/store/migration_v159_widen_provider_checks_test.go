@@ -10,7 +10,7 @@ func TestMigrationV159WidensProviderChecksAndPreservesSchemaObjects(t *testing.T
 	t.Parallel()
 	db := migrateThrough(t, widenProviderChecksMigrationVersion-1)
 
-	// Seed rows across all six rebuilt tables before migrating.
+	// Seed rows across all five rebuilt tables before migrating.
 	mustExec(t, db, `INSERT INTO projects (id, path, name, created_at, updated_at)
 		VALUES ('p-v159', '/tmp/p-v159', 'P159', 1, 1)`)
 	mustExec(t, db, `INSERT INTO threads (id, project_id, title, provider, model, workspace_path, created_at, updated_at, delete_claim, spawn_instructions, spawn_level)
@@ -21,6 +21,10 @@ func TestMigrationV159WidensProviderChecksAndPreservesSchemaObjects(t *testing.T
 		VALUES ('model', 'claude', 'claude-sonnet-4-6', 'Sonnet', 40)`)
 	mustExec(t, db, `INSERT INTO thread_import_state (thread_id, provider, source_path, source_session_id, imported_at, source_parent_session_id, source_meta_hash, source_history_mode)
 		VALUES ('t-v159', 'claude', '/tmp/src.jsonl', 'sess-1', 60, 'parent-1', 'hash-1', 'full')`)
+	mustExec(t, db, `INSERT INTO thread_transfers (id, thread_id, target_thread_id, peer_backend_id, project_id, kind, direction, phase, activation_hash, private_state, created_at, updated_at)
+		VALUES ('xf-v159', 't-v159', 't-v159', 'peer-1', 'p-v159', 'move', 'outgoing', 'preparing', 'hash', X'7B7D', 70, 70)`)
+	mustExec(t, db, `INSERT INTO thread_transfer_sessions (transfer_id, provider, session_ref)
+		VALUES ('xf-v159', 'claude', 'sess-1')`)
 
 	beforeObjects := snapshotSchemaObjectNames(t, db)
 	beforeCols := make(map[string][]string, 5)
@@ -65,7 +69,15 @@ func TestMigrationV159WidensProviderChecksAndPreservesSchemaObjects(t *testing.T
 		t.Fatalf("preserved import state = (%q, %q)", metaHash, histMode)
 	}
 
-	// New provider names now pass SQLite CHECKs on all six tables, while blank provider names fail.
+	var xfProvider, xfRef string
+	if err := db.QueryRow(`SELECT provider, session_ref FROM thread_transfer_sessions WHERE transfer_id = 'xf-v159'`).Scan(&xfProvider, &xfRef); err != nil {
+		t.Fatalf("read preserved transfer session: %v", err)
+	}
+	if xfProvider != "claude" || xfRef != "sess-1" {
+		t.Fatalf("preserved transfer session = (%q, %q)", xfProvider, xfRef)
+	}
+
+	// New provider names now pass SQLite CHECKs on all five tables, while blank provider names fail.
 	mustExec(t, db, `INSERT INTO threads (id, project_id, title, provider, model, workspace_path, reasoning_effort, import_source, created_at, updated_at)
 		VALUES ('t-new-prov', 'p-v159', 'NewProv', 'agy', 'gemini-3', '/tmp/p-v159', 'high', 'agy', 100, 100)`)
 	mustExec(t, db, `INSERT INTO chat_model_profiles (provider, model, reasoning_effort, fast_mode, context_window, runtime_mode, updated_at)
@@ -74,6 +86,8 @@ func TestMigrationV159WidensProviderChecksAndPreservesSchemaObjects(t *testing.T
 		VALUES ('model', 'agy', 'gemini-3', 'Gemini 3', 100)`)
 	mustExec(t, db, `INSERT INTO thread_import_state (thread_id, provider, source_path, source_session_id, imported_at)
 		VALUES ('t-new-prov', 'agy', '/tmp/conv.db', 'conv-1', 100)`)
+	mustExec(t, db, `INSERT INTO thread_transfer_sessions (transfer_id, provider, session_ref)
+		VALUES ('xf-v159', 'agy', 'conv-1')`)
 
 	if _, err := db.Exec(`INSERT INTO threads (id, project_id, title, provider, workspace_path, created_at, updated_at)
 		VALUES ('t-blank', 'p-v159', 'Blank', '   ', '/tmp/p-v159', 1, 1)`); err == nil {

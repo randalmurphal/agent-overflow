@@ -177,7 +177,11 @@ func TestForkConversationSlicesAndVerifiesSchema(t *testing.T) {
 	}
 	defer func() { _ = cleanup() }()
 
-	dstDB, err := sql.Open("sqlite", conversationDBPath(appDataDir, dstID))
+	dstPath, err := conversationDBPath(appDataDir, dstID)
+	if err != nil {
+		t.Fatalf("conversationDBPath(dst): %v", err)
+	}
+	dstDB, err := sql.Open("sqlite", dstPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +201,10 @@ func TestForkConversationSlicesAndVerifiesSchema(t *testing.T) {
 
 	// Schema guard must reject an incompatible DB without producing a corrupt clone.
 	badID := "sess-bad-schema"
-	badPath := conversationDBPath(appDataDir, badID)
+	badPath, err := conversationDBPath(appDataDir, badID)
+	if err != nil {
+		t.Fatalf("conversationDBPath(bad): %v", err)
+	}
 	badDB, err := sql.Open("sqlite", badPath)
 	if err != nil {
 		t.Fatal(err)
@@ -650,5 +657,43 @@ broken  http   failed    https://broken.example/mcp
 	}
 	if empty := ParseMCPListOutput("No MCP servers configured.\n", time.Now()); len(empty) != 0 {
 		t.Fatalf("expected empty slice for no servers, got %+v", empty)
+	}
+}
+
+func TestSQLiteFileDSNPreservesWindowsDriveAndEscapesDelimiters(t *testing.T) {
+	t.Parallel()
+	if got := sqliteFileDSN(`C:/Users/me/dir with space/a#1?b%2.db`, "mode=ro"); got != "file:C:/Users/me/dir with space/a%231%3Fb%252.db?mode=ro" {
+		t.Fatalf("sqliteFileDSN = %q", got)
+	}
+}
+
+func TestClassifyPermissionNormalizesToolNameAndInput(t *testing.T) {
+	t.Parallel()
+	f := NewFlavor("")
+	cls := f.ClassifyPermission("t1", "turn-1", "req-1", acp.RequestPermissionParams{
+		ToolCall: acp.ToolCallUpdate{
+			ToolCallID: "call-1",
+			Name:       "run_command",
+			Title:      "Run echo",
+			Kind:       "execute",
+			RawInput:   json.RawMessage(`{"CommandLine":"echo hello","Cwd":"/repo"}`),
+		},
+		Options: []acp.PermissionOption{
+			{OptionID: "allow", Name: "Allow", Kind: "allow_once"},
+			{OptionID: "deny", Name: "Deny", Kind: "reject_once"},
+		},
+	}, acp.PolicyPrompt)
+	if cls.Action != acp.PermissionAskUser {
+		t.Fatalf("Action = %v, want PermissionAskUser", cls.Action)
+	}
+	if cls.Approval.ToolName != "Bash" {
+		t.Fatalf("Approval.ToolName = %q, want Bash", cls.Approval.ToolName)
+	}
+	var in map[string]any
+	if err := json.Unmarshal(cls.Approval.Input, &in); err != nil {
+		t.Fatalf("unmarshal input: %v", err)
+	}
+	if in["command"] != "echo hello" || in["cwd"] != "/repo" {
+		t.Fatalf("Approval.Input = %s, want normalized command & cwd", string(cls.Approval.Input))
 	}
 }

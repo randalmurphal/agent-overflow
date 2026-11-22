@@ -3,7 +3,6 @@ package agy
 import (
 	"database/sql"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -28,24 +27,48 @@ var (
 	reHumanReadableASCII = regexp.MustCompile(`[ -~]{6,}`)
 )
 
-func conversationDBPath(appDataDir, sessionID string) string {
-	return filepath.Join(appDataDir, "conversations", sessionID+".db")
+func validateConversationSessionID(sessionID string) error {
+	trimmed := strings.TrimSpace(sessionID)
+	if trimmed == "" || trimmed != sessionID ||
+		trimmed == "." || trimmed == ".." ||
+		strings.ContainsAny(trimmed, `/\`) ||
+		strings.Contains(trimmed, "..") {
+		return fmt.Errorf("invalid conversation session id %q", sessionID)
+	}
+	return nil
+}
+
+func conversationDBPath(appDataDir, sessionID string) (string, error) {
+	if err := validateConversationSessionID(sessionID); err != nil {
+		return "", err
+	}
+	return filepath.Join(appDataDir, "conversations", sessionID+".db"), nil
+}
+
+var sqliteDSNEscaper = strings.NewReplacer("%", "%25", "?", "%3F", "#", "%23")
+
+// sqliteFileDSN builds a cross-platform SQLite file URI DSN that preserves
+// Windows drive letters (e.g. file:C:/Users/...) while escaping URI delimiters.
+func sqliteFileDSN(path, query string) string {
+	slashed := filepath.ToSlash(path)
+	return "file:" + sqliteDSNEscaper.Replace(slashed) + "?" + query
 }
 
 func openConversationDBReadOnly(path string) (*sql.DB, error) {
 	if _, err := os.Stat(path); err != nil {
 		return nil, err
 	}
-	dsn := fmt.Sprintf("file:%s?mode=ro&_pragma=busy_timeout(100)", url.PathEscape(path))
-	// Preserve slashes in file URI paths.
-	dsn = strings.ReplaceAll(dsn, "%2F", "/")
-	return sql.Open("sqlite", dsn)
+	return sql.Open("sqlite", sqliteFileDSN(path, "mode=ro&_pragma=busy_timeout(100)"))
 }
 
 // readMaxStepIndex returns the highest `idx` in `steps` before a prompt starts,
 // or (0, false) if the conversation DB does not exist yet or cannot be read.
 func readMaxStepIndex(appDataDir, sessionID string) (int, bool) {
-	db, err := openConversationDBReadOnly(conversationDBPath(appDataDir, sessionID))
+	dbPath, err := conversationDBPath(appDataDir, sessionID)
+	if err != nil {
+		return 0, false
+	}
+	db, err := openConversationDBReadOnly(dbPath)
 	if err != nil {
 		return 0, false
 	}
@@ -64,7 +87,11 @@ func readMaxStepIndex(appDataDir, sessionID string) (int, bool) {
 // inspectTurnErrorStep checks whether agy wrote a CORTEX_STEP_TYPE_ERROR_MESSAGE
 // (step_type = 17) row with idx > sinceIdx during the prompt that just ended.
 func inspectTurnErrorStep(appDataDir, sessionID string, sinceIdx int) *acp.PromptOutcomeOverride {
-	db, err := openConversationDBReadOnly(conversationDBPath(appDataDir, sessionID))
+	dbPath, err := conversationDBPath(appDataDir, sessionID)
+	if err != nil {
+		return nil
+	}
+	db, err := openConversationDBReadOnly(dbPath)
 	if err != nil {
 		return nil
 	}

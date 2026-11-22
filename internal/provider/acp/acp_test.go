@@ -898,3 +898,87 @@ func TestPlanLiveUpdateAllowsLifecycleDriftAndLiveAxes(t *testing.T) {
 		}
 	}
 }
+
+func TestExtractStructuredJSONObject(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"raw", `{"status":"done","outputs":{"ok":true}}`, `{"status":"done","outputs":{"ok":true}}`},
+		{"fenced", "```json\n{\"status\":\"done\"}\n```", `{"status":"done"}`},
+		{"prose-wrapped", "Here is the result:\n{\"status\":\"stuck\",\"reason\":\"blocked\"}\nThanks!", `{"status":"stuck","reason":"blocked"}`},
+		{"invalid", "not json at all", ""},
+	}
+	for _, tc := range cases {
+		got := string(extractStructuredJSONObject(tc.in))
+		if got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestReplayUpdatesToEventsPreservesRichToolMetadata(t *testing.T) {
+	t.Parallel()
+	exitZero := 0
+	rawIn, _ := json.Marshal(map[string]any{"command": "echo hi"})
+	rawOut, _ := json.Marshal(map[string]any{"output": "hi\n", "exit_code": exitZero, "duration_ms": 42})
+	updates := []SessionUpdate{
+		{
+			SessionUpdate: "user_message_chunk",
+			Content:       json.RawMessage(`{"type":"text","text":"run it"}`),
+		},
+		{
+			SessionUpdate: "tool_call",
+			ToolCallID:    "cmd-1",
+			Name:          "Bash",
+			Kind:          "execute",
+			RawInput:      rawIn,
+		},
+		{
+			SessionUpdate: "tool_call_update",
+			ToolCallID:    "cmd-1",
+			Name:          "Bash",
+			Kind:          "execute",
+			Status:        "completed",
+			RawInput:      rawIn,
+			RawOutput:     rawOut,
+		},
+		{
+			SessionUpdate: "tool_call",
+			ToolCallID:    "edit-1",
+			Name:          "Edit",
+			Kind:          "edit",
+		},
+		{
+			SessionUpdate: "tool_call_update",
+			ToolCallID:    "edit-1",
+			Name:          "Edit",
+			Kind:          "edit",
+			Status:        "completed",
+			Content:       json.RawMessage(`[{"type":"diff","path":"/repo/a.txt","oldText":"old\n","newText":"new\n"}]`),
+		},
+	}
+	events := ReplayUpdatesToEvents(updates, DefaultFlavor{Kind: provider.Agy})
+	var sawCmdOut, sawFileChangeMeta bool
+	for _, ev := range events {
+		if ev.Kind == provider.EventCommandOutput && ev.ItemID == "cmd-1" && ev.Content == "hi\n" {
+			sawCmdOut = true
+		}
+		if ev.Kind == provider.EventToolComplete && ev.ItemID == "edit-1" {
+			var meta map[string]any
+			if json.Unmarshal(ev.Meta, &meta) == nil {
+				if item, ok := meta["item"].(map[string]any); ok && item["type"] == "file_change" {
+					sawFileChangeMeta = true
+				}
+			}
+		}
+	}
+	if !sawCmdOut {
+		t.Fatalf("ReplayUpdatesToEvents did not emit EventCommandOutput: %+v", events)
+	}
+	if !sawFileChangeMeta {
+		t.Fatalf("ReplayUpdatesToEvents did not emit structured file_change item meta: %+v", events)
+	}
+}

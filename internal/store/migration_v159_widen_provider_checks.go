@@ -10,7 +10,7 @@ package store
 // Provider allowlists and per-provider effort legality are enforced in Go
 // (`internal/store/threads.go` + `internal/provider`) and cross-checked by
 // `TestReasoningEffortSetsMatchProvider`, so adding a new provider never
-// requires a six-table SQLite rebuild.
+// requires a five-table SQLite rebuild.
 const widenProviderChecksMigrationVersion = 159
 
 const widenProviderChecksV159SQL = `DROP VIEW owned_threads;
