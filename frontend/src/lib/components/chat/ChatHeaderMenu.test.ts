@@ -22,6 +22,7 @@ import {
 import { focusPane, getFocusedPaneId, resetPanesForTest } from '../../stores/panes.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
 import { addProjectLocal, resetProjectsForTest } from '../../stores/projects.svelte';
+import { createThreadPane } from '../../stores/thread.svelte';
 import { openTerminalThread } from '../../stores/threadCreation.svelte';
 import {
   applyThreadTitleGeneration,
@@ -101,11 +102,17 @@ async function reopen(view: { getByTestId: (id: string) => HTMLElement }): Promi
   await flush();
 }
 
+// A row that toggles something is a menuitemcheckbox; the rest are menuitems.
 const rows = (): string[] =>
-  within(document.body).queryAllByRole('menuitem').map((row) => row.textContent?.trim() ?? '');
-const row = (name: string | RegExp): HTMLElement => within(document.body).getByRole('menuitem', { name });
+  [...document.body.querySelectorAll('[data-menuitem]')].map((row) => row.textContent?.trim() ?? '');
 const queryRow = (name: string | RegExp): HTMLElement | null =>
-  within(document.body).queryByRole('menuitem', { name });
+  within(document.body).queryByRole('menuitem', { name })
+    ?? within(document.body).queryByRole('menuitemcheckbox', { name });
+const row = (name: string | RegExp): HTMLElement => {
+  const found = queryRow(name);
+  if (!found) throw new Error(`no menu row named ${String(name)}`);
+  return found;
+};
 
 describe('<ChatHeaderMenu> on desktop', () => {
   beforeEach(() => {
@@ -285,6 +292,9 @@ describe('<ChatHeaderMenu> on desktop', () => {
   it('Terminal opens the drawer with focus latched, marks it open, and closes it again', async () => {
     const view = await renderOpen();
     const { pane } = view;
+    // The row says whether the drawer is open, as the button it replaced did.
+    expect(row('Terminal').getAttribute('role')).toBe('menuitemcheckbox');
+    expect(row('Terminal').getAttribute('aria-checked')).toBe('false');
     await fireEvent.click(row('Terminal'));
     await flush();
     expect(pane.showTerminal).toBe(true);
@@ -295,9 +305,12 @@ describe('<ChatHeaderMenu> on desktop', () => {
 
     await reopen(view);
     expect(row(/^Terminal/).textContent).toContain('✓');
+    expect(row(/^Terminal/).getAttribute('aria-checked')).toBe('true');
     await fireEvent.click(row(/^Terminal/));
     await flush();
     expect(pane.showTerminal).toBe(false);
+    await reopen(view);
+    expect(row('Terminal').getAttribute('aria-checked')).toBe('false');
     expect(vi.mocked(openTerminalThread)).not.toHaveBeenCalled();
   });
 
@@ -368,6 +381,69 @@ describe('<ChatHeaderMenu> on desktop', () => {
     expect(row('Regenerate title').getAttribute('aria-disabled')).toBeNull();
   });
 
+  it('offers New terminal pane on the phone only where the sidebar would list the terminal', async () => {
+    // A thread outside every project (an assistant's): its terminal would
+    // have no sidebar row, the phone's only way back to a pane.
+    const desktop = await renderOpen(makeThread({ projectId: undefined }));
+    expect(queryRow('New terminal pane')).not.toBeNull();
+    desktop.unmount();
+
+    setCompactLayoutForTest(true);
+    const phone = await renderOpen(makeThread({ projectId: undefined }));
+    expect(queryRow('Terminal')).not.toBeNull();
+    expect(queryRow('New terminal pane')).toBeNull();
+    phone.unmount();
+
+    await renderOpen(makeThread());
+    expect(queryRow('New terminal pane')).not.toBeNull();
+  });
+
+  it('has no Regenerate title row on a draft, and gains it once the thread is persisted', async () => {
+    const project = {
+      id: 'proj-1', path: '/tmp/proj', name: 'Alpha', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false,
+    };
+    const pane = createThreadPane({ paneId: 'draft-menu' });
+    pane.startDraftPlaceholder(project, 'chat');
+    expect(pane.threadId).toBeNull();
+    const view = render(ChatHeaderMenu, { props: { pane } });
+    await flush();
+    await fireEvent.click(view.getByTestId('chat-header-more'));
+    await flush();
+    // A draft has no conversation to title from; its other rows are there.
+    expect(queryRow('Regenerate title')).toBeNull();
+    expect(queryRow('Terminal')).not.toBeNull();
+
+    pane.adoptMaterializedDraftThread(makeThread());
+    await flush();
+    expect(pane.threadId).toBe('thread-1');
+    expect(row('Regenerate title').getAttribute('aria-disabled')).toBeNull();
+  });
+
+  it('reads the selection on a press only for a pane with a find to seed', async () => {
+    const pane = await buildPane(makeThread());
+    const view = render(ChatHeaderMenu, { props: { pane } });
+    await flush();
+    const button = view.getByTestId('chat-header-more');
+    // The pane's element, where a selection would be read from.
+    setPaneLayoutItemsForTest([{ id: pane.paneId, paneId: pane.paneId, kind: 'thread', widthPx: 600 }]);
+    const section = document.createElement('section');
+    section.dataset.paneId = pane.paneId;
+    document.body.append(section);
+    const selection = vi.spyOn(window, 'getSelection');
+    try {
+      await fireEvent.pointerDown(button);
+      expect(selection).not.toHaveBeenCalled();
+
+      registerPaneFindProvider(pane.paneId, findProvider());
+      await flush();
+      await fireEvent.pointerDown(button);
+      expect(selection).toHaveBeenCalled();
+    } finally {
+      selection.mockRestore();
+      section.remove();
+    }
+  });
+
   it('renders Regenerate title inert with the reason in a view-only session', async () => {
     await pairViewOnly();
     const regenerate = setBindingMock('RegenerateThreadTitle', async () => undefined);
@@ -379,15 +455,36 @@ describe('<ChatHeaderMenu> on desktop', () => {
     expect(regenerate).not.toHaveBeenCalled();
   });
 
-  it('names the one installed editor and opens the project root in the default', async () => {
+  it('names the one installed editor and opens the project root in it', async () => {
     addProject();
     await seedEditors([ed('code', 'Visual Studio Code')]);
     const open = setBindingMock('OpenInEditor', async () => undefined);
     await renderOpen();
     await fireEvent.click(row('Open in Visual Studio Code'));
     await vi.waitFor(() => expect(open).toHaveBeenCalledTimes(1));
-    // Empty editor id: the backend resolves the saved default.
-    expect(open.mock.calls[0]).toEqual(['/tmp/proj', 0, 0, '', '']);
+    // The row names an editor, so it opens that one, whatever the host's
+    // default is by the time the call lands.
+    expect(open.mock.calls[0]).toEqual(['/tmp/proj', 0, 0, '', 'code']);
+  });
+
+  it('keeps keyboard focus on the editor row when the catalog arrives under the open menu', async () => {
+    addProject();
+    let deliver: (editors: EditorInfo[]) => void = () => {};
+    setBindingMock('ListAvailableEditors', () => new Promise<EditorInfo[]>((resolve) => { deliver = resolve; }));
+    const open = setBindingMock('OpenInEditor', async () => undefined);
+    await renderOpen();
+    const before = row('Open in editor');
+    before.focus();
+    expect(document.activeElement).toBe(before);
+
+    deliver([ed('code', 'Visual Studio Code'), ed('cursor', 'Cursor')]);
+    await vi.waitFor(() => expect(queryRow('Open in Cursor')).not.toBeNull());
+    // The default's row is the same row, renamed: focus never left the menu.
+    expect(document.activeElement).toBe(row('Open in Visual Studio Code'));
+    expect(row('Open in Visual Studio Code')).toBe(before);
+    await fireEvent.click(before);
+    await vi.waitFor(() => expect(open).toHaveBeenCalledTimes(1));
+    expect(open.mock.calls[0]).toEqual(['/tmp/proj', 0, 0, '', 'code']);
   });
 
   it('lists every installed editor, the default first, and opens a picked one by id', async () => {

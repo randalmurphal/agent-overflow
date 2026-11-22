@@ -241,8 +241,9 @@ export interface OpenTerminalThreadOptions {
 /**
  * Create a `mode:'terminal'` thread and open it in a fresh pane.
  * Every terminal entry point routes here — the per-project `+terminal`
- * button, the `mod+shift+~` chord, and the ChatHeader ctrl/cmd-click — so a
- * terminal always lands in its own new pane (locked decision: always fresh).
+ * button, the `mod+shift+~` chord, and the chat header menu's New terminal
+ * pane row — so a terminal always lands in its own new pane (locked
+ * decision: always fresh).
  *
  * `StartTerminal` writes the SQLite row (sentinel provider; `workspacePath` =
  * resolved cwd — project root when `projectId` is set, else home) but does NOT

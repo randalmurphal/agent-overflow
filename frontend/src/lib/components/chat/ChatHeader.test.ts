@@ -506,7 +506,7 @@ describe('<ChatHeader>', () => {
     // until real content creates the row.
     expect(getByTestId('review-toggle')).toBeTruthy();
     await fireEvent.click(getByTestId('chat-header-more'));
-    expect(await findByRole('menuitem', { name: 'Terminal' })).toBeInTheDocument();
+    expect(await findByRole('menuitemcheckbox', { name: 'Terminal' })).toBeInTheDocument();
     expect(await findByRole('menuitem', { name: 'Open in editor' })).toBeInTheDocument();
   });
 
@@ -524,7 +524,7 @@ describe('<ChatHeader>', () => {
     expect(pane.showTerminal).toBe(false);
 
     await fireEvent.click(getByTestId('chat-header-more'));
-    await fireEvent.click(await findByRole('menuitem', { name: 'Terminal' }));
+    await fireEvent.click(await findByRole('menuitemcheckbox', { name: 'Terminal' }));
 
     await tick();
 

@@ -937,7 +937,10 @@ and anti-changes that live only here:
   actions menu at the end of the cluster, on desktop and on the phone. Find
   in thread opens that pane's own find bar (the `find.in-pane` chord's);
   the search across every thread is a row on the phone only, which has no
-  chord for it. A desktop row names its command's chord. The desktop
+  chord for it. A desktop row names its command's chord. A draft has no
+  title regeneration row, and the phone offers a new terminal pane only
+  for a thread in a project, whose sidebar section is its way back to that
+  pane. The desktop
   cluster keeps the PR and diff badges, git, and the assistant,
   take-control and browser buttons; the phone keeps the diff badge and the
   assistant button, and its menu also carries review, the PR, take-control

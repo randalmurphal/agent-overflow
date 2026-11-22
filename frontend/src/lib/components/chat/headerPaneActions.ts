@@ -2,10 +2,37 @@
 // cluster (ChatHeaderActions) and a row of the Thread actions menu
 // (ChatHeaderMenu).
 
-import { toggleCompanion } from '../../stores/companionPanes.svelte';
+import { isCompanionOpen, toggleCompanion } from '../../stores/companionPanes.svelte';
 import { openReviewCompanion, reviewSubjectForPane } from '../../stores/reviewPane.svelte';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import { addToast } from '../../stores/toast.svelte';
+import { threadScopeGrant } from '../../transport/entityScopes';
+import type { EntityScopeGrant } from '../../transport/scopes';
+
+/**
+ * The grant the pane's terminal controls ride. The drawer terminal, a
+ * fresh terminal thread and the take-control mirror all open a PTY on the
+ * thread's computer under `terminal:operate`, the gate the palette's
+ * terminal commands read. A control it switches off stays, inert and
+ * saying why.
+ */
+export function terminalGrant(pane: ThreadPane): EntityScopeGrant {
+  return threadScopeGrant('terminal:operate', pane.threadId, pane.thread?.projectId);
+}
+
+/**
+ * Take control for the pane, as its button and its menu row both show it.
+ * It mirrors a live claude-tui session in a paired terminal pane, so no
+ * other provider offers it (an unsupported control is not shown rather
+ * than shown disabled), and it rides the terminal grant.
+ */
+export function takeControlState(pane: ThreadPane): { offered: boolean; grant: EntityScopeGrant; open: boolean } {
+  return {
+    offered: pane.thread?.provider === 'claude-tui',
+    grant: terminalGrant(pane),
+    open: isCompanionOpen(pane.paneId, 'take-control'),
+  };
+}
 
 export function toggleWorkspaceReview(pane: ThreadPane): void {
   if (pane.showReviewPane) {
@@ -31,10 +58,13 @@ export function openPrReview(pane: ThreadPane): boolean {
 
 /**
  * Toggle the paired terminal pane that mirrors a claude-tui session's live
- * PTY. It needs a persisted thread row: a draft placeholder has no session
- * to mirror.
+ * PTY. Nothing happens for a pane whose control is not offered or is
+ * switched off by the grant: the control already says so. It needs a
+ * persisted thread row: a draft placeholder has no session to mirror.
  */
 export function toggleTakeControl(pane: ThreadPane): void {
+  const state = takeControlState(pane);
+  if (!state.offered || state.grant !== 'granted') return;
   if (!pane.threadId) {
     addToast('info', 'Start the thread before opening this panel.');
     return;

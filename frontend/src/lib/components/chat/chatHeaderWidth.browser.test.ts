@@ -14,6 +14,7 @@ import { addProjectLocal, resetProjectsForTest } from '../../stores/projects.sve
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { __resetGitStatusStoreForTest, __seedGitStatusForTest } from '../../stores/gitStatusStore.svelte';
 import { PANE_DENSITY_MIN_WIDTHS } from '../../utils/paneWidths';
+import { TransportError } from '../../transport/wsClient';
 
 const PROJECT = 'agent-overflow';
 const LONG_PROJECT = 'a-project-with-a-very-long-descriptive-name-indeed';
@@ -178,6 +179,31 @@ it('keeps the rename editor at the title floor, with the cluster where it was', 
   await tick();
   const restored = host.querySelector<HTMLElement>('[data-testid="chat-header-title"]')!;
   expect(prBadge.getBoundingClientRect().top).toBeGreaterThanOrEqual(restored.getBoundingClientRect().bottom);
+  expectNothingPastTheHeader(header);
+});
+
+it('keeps a refused rename beside its editor, with the cluster where it was', async () => {
+  setBindingMock('RenameThread', async () => {
+    throw new TransportError('assistant_name_taken', 'The assistant "Ops" already has that name; names are unique on this computer.');
+  });
+  addProject(LONG_PROJECT);
+  const { header, title, prBadge } = await mountHeader(640);
+  const input = await startRename(title);
+  const before = header.getBoundingClientRect().height;
+  input.value = 'ops';
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+  await expect.poll(() => host.querySelector('[data-testid="pane-title-rename-error"]')).not.toBeNull();
+  const error = host.querySelector<HTMLElement>('[data-testid="pane-title-rename-error"]')!;
+  const inputBox = input.getBoundingClientRect();
+  const errorBox = error.getBoundingClientRect();
+  // One row for the editor and its refusal, the refusal cut to what is left.
+  expect(errorBox.top).toBeLessThan(inputBox.bottom);
+  expect(errorBox.left).toBeGreaterThanOrEqual(inputBox.right);
+  expect(errorBox.width).toBeGreaterThan(0);
+  expect(inputBox.width).toBeGreaterThanOrEqual(64);
+  expect(prBadge.getBoundingClientRect().top).toBeGreaterThanOrEqual(inputBox.bottom);
+  expect(header.getBoundingClientRect().height, 'the refusal adds no row').toBe(before);
   expectNothingPastTheHeader(header);
 });
 

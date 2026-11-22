@@ -399,7 +399,7 @@ describe('<ChatHeaderActions> compact header menu', () => {
   });
 
   const menuRows = (): string[] =>
-    within(document.body).getAllByRole('menuitem').map((row) => row.querySelector('.truncate')?.textContent?.trim() ?? '');
+    [...document.body.querySelectorAll('[data-menuitem]')].map((row) => row.querySelector('.truncate')?.textContent?.trim() ?? '');
 
   it('ends the cluster on both layouts, and under compact carries the controls the cluster drops', async () => {
     installSubscribeMock(status({ openPrUrl: 'https://github.com/o/r/pull/7', openPrNumber: 7 }));
@@ -441,7 +441,7 @@ describe('<ChatHeaderActions> compact header menu', () => {
     await flush();
     await fireEvent.click(getByTestId('chat-header-more'));
     await flush();
-    const terminal = within(document.body).getByRole('menuitem', { name: 'Terminal' });
+    const terminal = within(document.body).getByRole('menuitemcheckbox', { name: 'Terminal' });
     await fireEvent.click(terminal);
     await flush();
     expect(pane.showTerminal).toBe(true);
@@ -524,12 +524,14 @@ describe('<ChatHeaderActions> terminal controls without terminal:operate', () =>
     await flush();
     await fireEvent.click(getByTestId('chat-header-more'));
     await flush();
-    for (const name of ['Terminal', 'New terminal pane', 'Take control']) {
-      const row = within(document.body).getByRole('menuitem', { name });
+    for (const [role, name] of [['menuitemcheckbox', 'Terminal'], ['menuitem', 'New terminal pane'], ['menuitemcheckbox', 'Take control']]) {
+      const row = within(document.body).getByRole(role, { name });
       expect(row.getAttribute('aria-disabled'), name).toBe('true');
       expect(row.getAttribute('title'), name).toBe(INERT);
+      // A toggle row says its state whether or not it can be pressed.
+      if (role === 'menuitemcheckbox') expect(row.getAttribute('aria-checked'), name).toBe('false');
     }
-    await fireEvent.click(within(document.body).getByRole('menuitem', { name: 'Terminal' }));
+    await fireEvent.click(within(document.body).getByRole('menuitemcheckbox', { name: 'Terminal' }));
     await flush();
     expect(pane.showTerminal).toBe(false);
   });

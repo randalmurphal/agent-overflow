@@ -68,9 +68,11 @@ test('an offline paired computer logs once per outage and a draft pane is never 
     const localRow = page.getByTestId('thread-row').filter({ hasText: 'Local conversation' }).first();
     const laptopRow = page.getByTestId('thread-row').filter({ hasText: 'Laptop conversation' }).first();
     // The Regenerate title row of the open thread's header menu, read while
-    // the menu is open.
+    // the menu is open. Opened from the keyboard: the offline banner lies
+    // over the header's controls.
     const withRegenerateRow = async (check: (row: Locator) => Promise<void>) => {
-      await page.getByTestId('chat-header-more').click();
+      await page.getByTestId('chat-header-more').focus();
+      await page.keyboard.press('Enter');
       await check(page.locator('[data-popover]').getByRole('menuitem', { name: 'Regenerate title' }));
       await page.keyboard.press('Escape');
       await expect(page.locator('[data-popover]')).toHaveCount(0);
@@ -92,7 +94,7 @@ test('an offline paired computer logs once per outage and a draft pane is never 
       await expect(input).toHaveAttribute('placeholder', / is offline$/);
       // No control on the thread says the laptop refused this device.
       await withRegenerateRow(async (row) => {
-        await expect(row).toBeVisible();
+        await expect(row).toHaveCount(1);
         await expect(row).not.toHaveAttribute('title', 'Not granted to this device');
       });
     };

@@ -23,7 +23,6 @@
   import { openMessageSearch } from '../../stores/messageSearch.svelte';
   import { hasPaneFindProvider } from '../../stores/paneFind.svelte';
   import { openInEditor } from '../../stores/openInEditor';
-  import { isCompanionOpen } from '../../stores/companionPanes.svelte';
   import { getProject } from '../../stores/projects.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { openTerminalThread } from '../../stores/threadCreation.svelte';
@@ -46,7 +45,7 @@
   import MenuItem from '../primitives/MenuItem.svelte';
   import Popover from '../primitives/Popover.svelte';
   import { runTerminalToggle } from '../terminal/terminalToggle';
-  import { openPrReview, toggleTakeControl, toggleWorkspaceReview } from './headerPaneActions';
+  import { openPrReview, takeControlState, terminalGrant, toggleTakeControl, toggleWorkspaceReview } from './headerPaneActions';
 
   let { pane }: { pane: ThreadPane } = $props();
 
@@ -82,18 +81,22 @@
     action();
   }
 
-  // The drawer terminal, a fresh terminal thread and the take-control
-  // mirror all open a PTY on the thread's computer under `terminal:operate`:
-  // the same gate the palette's terminal commands read. Inert with a reason
-  // rather than absent, like every other ungranted control.
-  let terminalGrant = $derived(threadScopeGrant('terminal:operate', pane.threadId, pane.thread?.projectId));
-  let terminalUngranted = $derived(terminalGrant !== 'granted');
-  let terminalTitle = $derived(grantBlockedTitle(terminalGrant));
+  // The terminal rows and Take control ride one grant (terminalGrant).
+  let terminalAccess = $derived(terminalGrant(pane));
+  let terminalUngranted = $derived(terminalAccess !== 'granted');
+  let terminalTitle = $derived(grantBlockedTitle(terminalAccess));
   // A row names its command's chord, read from the loaded keybindings. The
   // phone has no chords, so its rows name none.
   function chordFor(commandId: string): string | undefined {
     return compact ? undefined : (chordHintForCommand(commandId) ?? undefined);
   }
+
+  // A new terminal pane roots at the thread's project, which is also what
+  // lists it in the sidebar. The phone reaches a pane only through that
+  // list, so there a thread outside every project (an assistant's) has no
+  // row: its terminal would be a live shell with no way back to it.
+  let newTerminalPaneOffered = $derived(!compact || Boolean(pane.thread?.projectId));
+  let takeControl = $derived(takeControlState(pane));
 
   function openNewTerminalPane(): void {
     void openTerminalThread({
@@ -113,8 +116,13 @@
   // the press reads it (`pressSeed`) and the click that press ends in hands
   // it to the menu it opens (`openSeed`, set on every open). A menu opened
   // from the keyboard has none and reads the selection when the row runs.
+  // A pane with no find has no row to seed, so its press reads nothing.
   let pressSeed: string | undefined;
   let openSeed: string | undefined;
+
+  function readPressSeed(): void {
+    pressSeed = findAvailable ? paneFindSeed(pane.paneId) : undefined;
+  }
 
   function findInThread(): void {
     const seed = openSeed;
@@ -125,7 +133,8 @@
   // outlives this menu and its completion arrives as an event, so the row
   // stays inert until then and ChatHeader shows the spinner beside the
   // title. RegenerateThreadTitle runs provider CLIs on the host under
-  // `threads:operate`.
+  // `threads:operate`. A draft has no conversation to title from, so it
+  // has no row.
   let regeneratePending = $derived(pane.threadId ? titleGenerationPending(pane.threadId) : false);
   let regenerateGrant = $derived(threadScopeGrant('threads:operate', pane.threadId, pane.thread?.projectId));
 
@@ -135,9 +144,11 @@
 
   // Open in editor acts on the host desktop, at the project root. One row
   // per installed editor, the default first; picking another opens there
-  // this once and leaves the saved default (Settings) alone. The row works
-  // before the catalog loads: an empty editor id lets the backend resolve
-  // the default itself.
+  // this once and leaves the saved default (Settings) alone. The default's
+  // row is there before the catalog loads, with an empty editor id that
+  // lets the backend resolve the default itself; once the row names an
+  // editor it opens that one. It keeps one key through the load, so a
+  // catalog that arrives under an open menu leaves keyboard focus on it.
   //
   // projectId is a primitive first so the project lookup re-runs only when
   // the id changes, not on every row sync that mints a new thread object.
@@ -145,17 +156,20 @@
   let projectPath = $derived(projectId ? (getProject(projectId)?.project.path ?? null) : null);
   let backend = $derived(threadMachine(pane.threadId ?? '', pane.thread?.projectId));
   let canOpenInEditor = $derived(projectPath !== null && hasScope('host', backend));
-  let editorRows = $derived.by((): { id: string; label: string }[] => {
+  let editorRows = $derived.by((): { key: string; id: string; label: string }[] => {
     if (!canOpenInEditor) return [];
-    const available = getAvailableEditors(backend);
     const resolved = getResolvedEditor(backend);
-    if (available.length < 2) {
-      return [{ id: '', label: resolved ? `Open in ${resolved.name}` : 'Open in editor' }];
+    const rows = [{
+      key: 'default',
+      id: resolved?.id ?? '',
+      label: resolved ? `Open in ${resolved.name}` : 'Open in editor',
+    }];
+    for (const editor of getAvailableEditors(backend)) {
+      if (editor.id !== resolved?.id) {
+        rows.push({ key: `editor:${editor.id}`, id: editor.id, label: `Open in ${editor.name}` });
+      }
     }
-    return [
-      ...available.filter((editor) => editor.id === resolved?.id),
-      ...available.filter((editor) => editor.id !== resolved?.id),
-    ].map((editor) => ({ id: editor.id, label: `Open in ${editor.name}` }));
+    return rows;
   });
 
   $effect(() => {
@@ -190,7 +204,6 @@
       ? `${labels.noun} ${labels.numberSigil}${gitStatus.openPrNumber}`
       : labels.noun;
   });
-  let isClaudeTui = $derived(pane.thread?.provider === 'claude-tui');
 </script>
 
 {#if compact}
@@ -206,7 +219,7 @@
   aria-haspopup="menu"
   aria-expanded={open}
   title="Thread actions"
-  onpointerdown={() => (pressSeed = paneFindSeed(pane.paneId))}
+  onpointerdown={readPressSeed}
   onclick={toggle}
   data-testid="chat-header-more"
   class={buttonClasses({ variant: 'secondary', size: 'xs', pressed: open, class: 'shrink-0 w-6 compact:w-9 px-0' })}
@@ -220,6 +233,7 @@
         <MenuItem
           label="Review changes"
           suffix={diffSuffix}
+          checkbox
           checked={pane.showReviewPane}
           onSelect={() => pick(() => toggleWorkspaceReview(pane))}
         />
@@ -235,24 +249,28 @@
       <MenuItem
         label="Terminal"
         kbd={chordFor('terminal.toggle')}
+        checkbox
         checked={pane.showTerminal}
         disabled={terminalUngranted}
         title={terminalTitle}
         onSelect={() => pick(() => runTerminalToggle(pane))}
       />
-      <MenuItem
-        label="New terminal pane"
-        kbd={chordFor('terminal.newPane')}
-        disabled={terminalUngranted}
-        title={terminalTitle}
-        onSelect={() => pick(openNewTerminalPane)}
-      />
-      {#if compact && isClaudeTui}
+      {#if newTerminalPaneOffered}
         <MenuItem
-          label="Take control"
-          checked={isCompanionOpen(pane.paneId, 'take-control')}
+          label="New terminal pane"
+          kbd={chordFor('terminal.newPane')}
           disabled={terminalUngranted}
           title={terminalTitle}
+          onSelect={() => pick(openNewTerminalPane)}
+        />
+      {/if}
+      {#if compact && takeControl.offered}
+        <MenuItem
+          label="Take control"
+          checkbox
+          checked={takeControl.open}
+          disabled={takeControl.grant !== 'granted'}
+          title={grantBlockedTitle(takeControl.grant)}
           onSelect={() => pick(() => toggleTakeControl(pane))}
         />
       {/if}
@@ -270,15 +288,17 @@
       {#if compact}
         <MenuItem label="Search messages" onSelect={() => pick(() => openMessageSearch(pane.paneId))} />
       {/if}
-      <MenuItem
-        label="Regenerate title"
-        disabled={regeneratePending || regenerateGrant !== 'granted'}
-        title={grantBlockedTitle(regenerateGrant)}
-        onSelect={() => pick(regenerateTitle)}
-      />
+      {#if pane.threadId}
+        <MenuItem
+          label="Regenerate title"
+          disabled={regeneratePending || regenerateGrant !== 'granted'}
+          title={grantBlockedTitle(regenerateGrant)}
+          onSelect={() => pick(regenerateTitle)}
+        />
+      {/if}
       {#if editorRows.length > 0}
         <MenuDivider />
-        {#each editorRows as editor (editor.id)}
+        {#each editorRows as editor (editor.key)}
           <MenuItem label={editor.label} onSelect={() => pick(() => void openIn(editor.id))} />
         {/each}
       {/if}

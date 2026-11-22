@@ -20,7 +20,6 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import { chordHintForCommand } from '../../stores/keybindings.svelte';
-  import { isCompanionOpen } from '../../stores/companionPanes.svelte';
   import { threadScopeGrant } from '../../transport/entityScopes';
   import { grantBlockedTitle } from '../../transport/scopeRefusal';
   import { attachGitStatus } from '../../stores/gitStatusStore.svelte';
@@ -29,7 +28,7 @@
   import PrBadge from '../git/PrBadge.svelte';
   import WorkspaceDiffBadge from '../git/WorkspaceDiffBadge.svelte';
   import ChatHeaderMenu from './ChatHeaderMenu.svelte';
-  import { openPrReview, toggleTakeControl, toggleWorkspaceReview } from './headerPaneActions';
+  import { openPrReview, takeControlState, toggleTakeControl, toggleWorkspaceReview } from './headerPaneActions';
   import Button from '../primitives/Button.svelte';
   import Icon from '../primitives/Icon.svelte';
   import ProviderIcon from '../shared/ProviderIcon.svelte';
@@ -62,14 +61,9 @@
     });
   }
 
-  // Take-control is a claude-tui-only affordance: it opens a paired terminal
-  // pane mirroring the live TUI session. Absent for other providers (an
-  // unsupported control should not be shown rather than shown-and-disabled).
-  // It opens a PTY on the thread's computer under `terminal:operate`: inert
-  // with a reason rather than absent, like every other ungranted control.
-  let isClaudeTui = $derived(pane.thread?.provider === 'claude-tui');
-  let takeControlOpen = $derived(isCompanionOpen(pane.paneId, 'take-control'));
-  let takeControlGrant = $derived(threadScopeGrant('terminal:operate', pane.threadId, pane.thread?.projectId));
+  // Take control: a button on the desktop, a row of the menu under compact,
+  // both from one definition (takeControlState).
+  let takeControl = $derived(takeControlState(pane));
 
   let reviewToggleChord = $derived(chordHintForCommand('diff.panel.toggle'));
 
@@ -173,16 +167,16 @@
     </Button>
   {/if}
 
-  {#if !compact && isClaudeTui}
+  {#if !compact && takeControl.offered}
     <!-- The terminal-green Claude glyph ties the button to the TUI
          provider. -->
     <Button
       variant="secondary"
       size="xs"
-      pressed={takeControlOpen}
-      disabled={takeControlGrant !== 'granted'}
+      pressed={takeControl.open}
+      disabled={takeControl.grant !== 'granted'}
       ariaLabel="Toggle take-control terminal"
-      title={grantBlockedTitle(takeControlGrant) ?? 'Take control — open the live Claude TUI terminal'}
+      title={grantBlockedTitle(takeControl.grant) ?? 'Take control — open the live Claude TUI terminal'}
       onclick={() => toggleTakeControl(pane)}
       testId="take-control-toggle"
       class="shrink-0 w-6 compact:w-9 px-0"

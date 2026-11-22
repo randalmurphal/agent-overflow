@@ -27,7 +27,7 @@ export async function replayOf(host: HarnessApp, threadId: string, index = 0): P
 /** The drawer terminal's toggle: the Terminal row of the chat header's actions menu. */
 export async function toggleTerminal(page: Page): Promise<void> {
   await page.getByTestId('chat-header-more').click();
-  await page.locator('[data-popover]').getByRole('menuitem', { name: 'Terminal', exact: true }).click();
+  await page.locator('[data-popover]').getByRole('menuitemcheckbox', { name: 'Terminal', exact: true }).click();
 }
 
 export async function openDrawerThread(page: Page, title: string): Promise<TerminalFindSetup> {

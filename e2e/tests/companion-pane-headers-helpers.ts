@@ -62,6 +62,7 @@ export async function expectHeadersShareTheWidth(panes: Locator[]): Promise<void
       if (narrow) {
         await expect(crumb, 'a narrow header leaves the crumb out').toBeHidden();
       } else if (await crumb.count() > 0) {
+        await expect(crumb, 'a header with room shows the crumb').toBeVisible();
         // The row never shrinks the crumb: its name is whole, or it is a
         // name past the cap, which holds the cap's width.
         const shown = await crumb.evaluate((el) => {
@@ -86,24 +87,29 @@ export async function expectHeadersShareTheWidth(panes: Locator[]): Promise<void
           return childStyle.display !== 'none' && childStyle.position !== 'absolute';
         });
         const cluster = inFlow[inFlow.length - 1];
+        // What the cluster needs to sit on one row: its laid-out width says
+        // nothing, since a cluster capped at the pane's width wraps inside it.
+        const controls = ([...cluster.children] as HTMLElement[]).filter((child) => child.getBoundingClientRect().width > 0);
+        const clusterGap = parseFloat(getComputedStyle(cluster).columnGap) || 0;
+        const clusterNeeded = controls.reduce((sum, child) => sum + child.getBoundingClientRect().width, 0)
+          + clusterGap * Math.max(0, controls.length - 1);
         const needed = inFlow.reduce((sum, child) => sum + (child === titleEl
           ? Math.min(floor, titleEl.scrollWidth)
           : child.getBoundingClientRect().width), 0) + gap * (inFlow.length - 1);
         return {
           spare: room - needed,
           wrapped: cluster.getBoundingClientRect().top >= titleBottom - 1,
-          clusterRows: new Set(([...cluster.children] as HTMLElement[])
-            .filter((child) => child.getBoundingClientRect().width > 0)
+          clusterRows: new Set(controls
             .map((child) => Math.round(child.getBoundingClientRect().top + child.getBoundingClientRect().height / 2))).size,
-          clusterFits: cluster.getBoundingClientRect().width <= room + 1,
+          clusterSpare: room - clusterNeeded,
         };
       }, TITLE_FLOOR_PX);
       // Within a pixel of the boundary either placement is a rounding call.
       if (Math.abs(rows.spare) > 1) {
         expect(rows.wrapped, 'the cluster takes a second row only when it cannot fit beside the title at its floor').toBe(rows.spare < 0);
       }
-      if (rows.clusterFits) {
-        expect(rows.clusterRows, 'a cluster that fits the pane stays whole').toBe(1);
+      if (Math.abs(rows.clusterSpare) > 1) {
+        expect(rows.clusterRows > 1, 'the cluster wraps inside itself only in a pane narrower than its controls').toBe(rows.clusterSpare < 0);
       }
     }
     const paneBox = (await pane.boundingBox())!;

@@ -179,7 +179,10 @@
 {#if pane.thread}
   {#if editing}
     <!-- The editor takes the header's spare width from an 8rem floor, so a
-         wrapping host (ChatHeader) places it as it places a long title. -->
+         wrapping host (ChatHeader) places it as it places a long title. A
+         refusal shares the editor's place: on its own it would be one more
+         item for the host to find a row for. -->
+    <span class="flex min-w-0 grow basis-[8rem] items-center gap-2">
     <input
       bind:this={inputEl}
       type="text"
@@ -191,11 +194,12 @@
       aria-label="Rename Thread"
       aria-invalid={renameError !== null}
       oninput={() => { renameError = null; }}
-      class="text-sm compact:text-base font-medium text-fg bg-surface-2/60 rounded-[var(--radius-field)] px-1.5 py-0.5 min-w-0 grow basis-[8rem] outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-60"
+      class="text-sm compact:text-base font-medium text-fg bg-surface-2/60 rounded-[var(--radius-field)] px-1.5 py-0.5 min-w-[4rem] flex-1 outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-60"
     />
     {#if renameError}
       <span role="alert" class="min-w-0 shrink truncate text-[0.6875rem] text-error" title={renameError} data-testid="pane-title-rename-error">{renameError}</span>
     {/if}
+    </span>
   {:else}
     <!-- Title is the pane drag-handle. Right-click renames; mousedown + drag
          reorders the pane. Left-click is reserved for the drag gesture so a

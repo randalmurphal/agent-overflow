@@ -1,6 +1,6 @@
 // Orchestration tests for openTerminalThread — the create helper every
 // terminal entry point (the per-project +terminal button, the mod+shift+~
-// chord, the ChatHeader ctrl/cmd-click) routes through.
+// chord, the chat header menu's New terminal pane row) routes through.
 //
 // We replace the four collaborators (StartTerminal, revealProject,
 // openEmptyPane, mountThreadInPane) over the real modules so the test pins the

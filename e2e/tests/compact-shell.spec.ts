@@ -380,7 +380,10 @@ test('the chat header rolls its actions into one dropdown at the button', async 
   await expect(menu.getByRole('menuitem', { name: 'Regenerate title' })).toBeVisible();
   await expect(menu.getByRole('menuitem', { name: 'Find in thread' })).toBeVisible();
   await expect(menu.getByRole('menuitem', { name: 'Search messages' })).toBeVisible();
-  await menu.getByRole('menuitem', { name: /Review changes/ }).tap();
+  // A row that toggles a pane says whether it is open.
+  const review = menu.getByRole('menuitemcheckbox', { name: /Review changes/ });
+  await expect(review).toHaveAttribute('aria-checked', 'false');
+  await review.tap();
   await expect(menu).toHaveCount(0);
   await expect(page.locator('section[data-pane-kind="review"]')).toBeVisible();
 });
