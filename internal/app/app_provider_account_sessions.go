@@ -77,7 +77,7 @@ func (a *App) ensureProviderAccountSelectionReadyForSendLocked(
 		// still queued for it: a whole turn that started a command can be
 		// waiting there. Handle what was read before deciding.
 		if err := a.providerEvents.drain(thread.ID); err != nil {
-			return fmt.Errorf("Codex account switch is pending for this thread until its provider events are handled: %w", err)
+			return fmt.Errorf("switch Codex account for this thread: its provider events are still being handled: %w", err)
 		}
 		// The session's own counter follows the wire, so it leads triage
 		// for a turn that is ending and trails it for one that is starting.
