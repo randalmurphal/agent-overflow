@@ -9,7 +9,7 @@ import { expect, type Locator, type Page } from '@playwright/test';
 
 import type { HarnessApp } from '../src/harness.js';
 import type { SeedResult } from './fixtures.js';
-import { escapeTimelineFollow } from './timeline-follow-helpers.js';
+import { escapeTimelineFollow, timelineOf } from './timeline-follow-helpers.js';
 import {
   RESULT_TOKEN_PATTERN,
   awaitToolAnswer,
@@ -165,28 +165,114 @@ export function toolRow(page: Page, label: string, preview: string | RegExp): Lo
     .filter({ has: page.getByTestId('tool-call-card-preview').filter({ hasText: preview }) });
 }
 
-/** Expands a row and waits for its decoded result. */
-export async function expandRow(row: Locator): Promise<void> {
-  await row.getByTestId('tool-call-card-toggle').click();
-  await expect(row.getByTestId('tool-call-card-toggle')).toHaveAttribute('aria-expanded', 'true');
+/** Whether the page's primary pointer is coarse: a touch screen, as on the compact project. */
+function touchScreen(page: Page): Promise<boolean> {
+  return page.evaluate(() => matchMedia('(pointer: coarse)').matches);
 }
 
 /**
- * Screenshots a row centred in the timeline once nothing is moving it. A
- * row merely scrolled into view can sit under the composer, which floats
- * over the timeline's bottom edge, and a timeline following a live tail
- * pulls a script-scrolled row away again: the follow is left as a reader
- * leaves it, then the row is centred and must hold still on screen.
+ * Opens a row as a person on this device does, a tap on a touch screen and
+ * a mouse click otherwise, and waits for it to read as open. Every spec
+ * opens a tool row through it. A mouse click is made on the row placed as
+ * `placeRow` places it. Playwright presses the toggle's center cut to
+ * 0.01 px; with that point less than a pixel above the "Jump to bottom"
+ * chip, Chromium sends the mouse press to the chip and the release to the
+ * surface behind it, so nothing gets a click, while Playwright's covering
+ * check still finds the toggle there. A tap at that point opens the row, so
+ * a tap is made where the row is. `beforePress` runs once the row is where
+ * it will be pressed, for a caller that measures what opening moves.
  */
+export async function expandRow(row: Locator, beforePress?: () => Promise<void>): Promise<void> {
+  const toggle = row.getByTestId('tool-call-card-toggle');
+  const touch = await touchScreen(row.page());
+  if (!touch) await placeRow(row);
+  await beforePress?.();
+  if (touch) await toggle.tap();
+  else await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+}
+
+/**
+ * Runs `press` with the row's toggle center, cut to 0.01 px as Playwright
+ * presses it, less than a pixel above the top of its timeline's "Jump to
+ * bottom" chip and inside the chip's width, then gives the row back to its
+ * timeline's layout. Whole pixels come from scrolling the timeline, or the
+ * row's activity run clip where the timeline stops; the fraction from
+ * offsetting the row.
+ */
+export async function atJumpChipEdge(row: Locator, press: () => Promise<void>): Promise<void> {
+  const toggle = row.getByTestId('tool-call-card-toggle');
+  const chip = timelineOf(row).locator('xpath=..').getByTestId('scroll-to-bottom');
+  await placeRow(row);
+  await expect(chip).toBeVisible();
+  await row.evaluate(async (card, want) => {
+    const button = card.querySelector('[data-testid="tool-call-card-toggle"]')!;
+    const timeline = card.closest<HTMLElement>('[data-testid="message-timeline-scroll"]')!;
+    const clip = card.closest<HTMLElement>('[data-testid="activity-run-clip"]');
+    const short = () => {
+      const box = button.getBoundingClientRect();
+      return want - (box.top + box.height / 2);
+    };
+    const frames = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    for (let attempt = 0; attempt < 4 && !(short() >= 0 && short() < 1); attempt++) {
+      const move = Math.floor(short());
+      const before = timeline.scrollTop;
+      timeline.scrollTop = before - move;
+      const moved = before - timeline.scrollTop;
+      if (clip && moved !== move) clip.scrollTop -= move - moved;
+      await frames();
+    }
+    card.style.position = 'relative';
+    card.style.top = `${short()}px`;
+    await frames();
+  }, (await chip.boundingBox())!.y - 1 + 1 / 64);
+  try {
+    const box = (await toggle.boundingBox())!;
+    const chipBox = (await chip.boundingBox())!;
+    const at = { x: Math.trunc((box.x + box.width / 2) * 100) / 100, y: Math.trunc((box.y + box.height / 2) * 100) / 100 };
+    const where = `press at ${at.x},${at.y}; chip at ${chipBox.x},${chipBox.y} ${chipBox.width}x${chipBox.height}`;
+    expect(at.y, where).toBeGreaterThan(chipBox.y - 1);
+    expect(at.y, where).toBeLessThan(chipBox.y);
+    expect(at.x, where).toBeGreaterThan(chipBox.x);
+    expect(at.x, where).toBeLessThan(chipBox.x + chipBox.width);
+    const hit = await toggle.evaluate((button, { x, y }) => {
+      const found = document.elementFromPoint(x, y);
+      return { inside: found !== null && button.contains(found), testId: found?.closest('[data-testid]')?.getAttribute('data-testid') };
+    }, at);
+    expect(hit.inside, `elementFromPoint at the ${where} finds ${hit.testId}, not the toggle`).toBe(true);
+    await press();
+  } finally {
+    await row.evaluate((card) => {
+      card.style.position = '';
+      card.style.top = '';
+    });
+  }
+}
+
+/** Screenshots a row placed as `placeRow` places it. */
 export async function shootRow(row: Locator, path: string): Promise<void> {
+  await placeRow(row);
+  await row.screenshot({ path, animations: 'disabled' });
+}
+
+/**
+ * Centers a row in its timeline and waits until nothing is moving it. A
+ * row merely scrolled into view can sit under the composer or the "Jump to
+ * bottom" chip, which float over the timeline's bottom edge, and a timeline
+ * following a live tail pulls a script-scrolled row away again: the follow
+ * is left as a reader leaves it, then the row is centered and must hold
+ * still on screen.
+ */
+async function placeRow(row: Locator): Promise<void> {
   const page = row.page();
-  await escapeTimelineFollow(page);
+  const timeline = timelineOf(row);
+  await escapeTimelineFollow(timeline);
   await row.evaluate((element) => element.scrollIntoView({ block: 'center' }));
   let last = '';
   await expect(async () => {
     const box = await row.boundingBox();
     const viewport = page.viewportSize()!;
-    const scrollTop = await page.getByTestId('message-timeline-scroll').evaluate((el) => el.scrollTop);
+    const scrollTop = await timeline.evaluate((el) => el.scrollTop);
     const onScreen = box !== null && box.y >= 0 && box.y + box.height <= viewport.height;
     const at = onScreen ? `${Math.round(box.x)},${Math.round(box.y)},${Math.round(box.height)}` : '';
     const still = at !== '' && at === last;
@@ -194,7 +280,6 @@ export async function shootRow(row: Locator, path: string): Promise<void> {
     const where = box ? `y ${Math.round(box.y)}, height ${Math.round(box.height)}` : 'no box';
     expect(still, `row ${where} in a ${viewport.width}x${viewport.height} viewport, timeline scrollTop ${Math.round(scrollTop)}`).toBe(true);
   }).toPass({ intervals: [150], timeout: 10_000 });
-  await row.screenshot({ path, animations: 'disabled' });
 }
 
 /** Whether an element's first text runs to its end inside the element's own box. */

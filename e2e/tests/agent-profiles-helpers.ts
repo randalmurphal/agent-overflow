@@ -13,6 +13,7 @@ import { expect, type Page } from '@playwright/test';
 
 import type { SeedResult } from './fixtures.js';
 import type { HarnessApp } from '../src/harness.js';
+import { expandRow } from './ao-tool-rows-helpers.js';
 import { sessionConfigs } from './workflows-helpers.js';
 import {
   THREAD_TOOLS_SERVER,
@@ -175,7 +176,7 @@ async function spawnRowInstructions(harness: HarnessApp, page: Page) {
   const row = page.getByTestId('tool-call-card')
     .filter({ has: page.getByTestId('tool-call-card-label').filter({ hasText: /^spawn$/ }) })
     .first();
-  await row.getByTestId('tool-call-card-toggle').click();
+  await expandRow(row);
   return row.locator('[data-testid="tool-call-card-ao-result-fact"][data-fact="instructions"]');
 }
 
