@@ -8,8 +8,10 @@ import {
   PROVIDER_MODEL_MENU_ORDER,
   PROVIDER_SETTINGS_ORDER,
   providerCliLabel,
+  providerHasFeature,
   providerIsEnabled,
   providerSupports,
+  standaloneProvidersWithFeature,
   type ProviderCapabilities,
   type ProviderEnablementSettings,
 } from './catalog';
@@ -149,5 +151,24 @@ describe('provider catalog', () => {
     expect(getProviderDefinition('unknown')).toBeNull();
     expect(providerCliLabel('unknown')).toBe('unknown');
     expect(providerCliLabel(null)).toBe('Provider');
+  });
+
+  it('keeps provider feature gates total and fail-closed for unknown providers', () => {
+    for (const id of PROVIDER_IDS) {
+      const def = PROVIDER_DEFINITIONS[id];
+      expect(def.features).toBeDefined();
+      if (def.features.autoCompact) {
+        expect(def.settings.standardCompactKey).toBeDefined();
+        expect(def.settings.extendedCompactKey).toBeDefined();
+      }
+    }
+    expect(standaloneProvidersWithFeature('accounts')).toEqual(['claude', 'codex']);
+    expect(standaloneProvidersWithFeature('textGeneration')).toEqual(['claude', 'codex']);
+    expect(providerHasFeature('claude', 'transfer')).toBe(true);
+    expect(providerHasFeature('codex', 'transfer')).toBe(true);
+    expect(providerHasFeature('claude-tui', 'transfer')).toBe(false);
+    expect(providerHasFeature('unknown', 'accounts')).toBe(false);
+    expect(providerHasFeature('unknown', 'transfer')).toBe(false);
+    expect(providerHasFeature(null, 'ownMemory')).toBe(false);
   });
 });

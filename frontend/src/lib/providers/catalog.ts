@@ -16,6 +16,25 @@ export type ProviderBackgroundStop =
   | 'codex-background-terminals'
   | 'none';
 
+export type ProviderRollbackGranularity = 'turn' | 'item' | 'none';
+
+export type ProviderSlashSource = 'claude' | 'codex' | 'acp' | 'none';
+
+// Provider-level feature gates that default CLOSED (false/'none') for unknown
+// providers, decoupling settings sections, account management, text generation,
+// slash-command sources, and conversation transfers from PROVIDER_SETTINGS_ORDER.
+export interface ProviderFeatures {
+  accounts: boolean;
+  autoCompact: boolean;
+  promptOverrides: boolean;
+  disabledTools: boolean;
+  textGeneration: boolean;
+  ownMemory: boolean;
+  transfer: boolean;
+  rollbackGranularity: ProviderRollbackGranularity;
+  slashSource: ProviderSlashSource;
+}
+
 export interface ProviderEffortOption {
   value: ReasoningEffort;
   label: string;
@@ -99,16 +118,18 @@ export interface ProviderDefinition {
     // dependent provider's parent flag cannot be forgotten at a call site.
     enabledKey: 'claudeEnabled' | 'codexEnabled' | 'claudeTuiEnabled';
     pathKey: 'claudeBinaryPath' | 'codexBinaryPath';
-    standardCompactKey:
+    standardCompactKey?:
       | 'claudeAutoCompactStandardPercent'
       | 'codexAutoCompactStandardPercent';
-    extendedCompactKey:
+    extendedCompactKey?:
       | 'claudeAutoCompactExtendedPercent'
       | 'codexAutoCompactExtendedPercent';
     customEnvKey: 'claudeCustomEnv' | 'codexCustomEnv';
   };
+  customEnvPlaceholder?: string;
   backgroundStop: ProviderBackgroundStop;
   capabilities: ProviderCapabilities;
+  features: ProviderFeatures;
 }
 
 export const PROVIDER_DEFINITIONS: Record<ProviderID, ProviderDefinition> = {
@@ -138,8 +159,20 @@ export const PROVIDER_DEFINITIONS: Record<ProviderID, ProviderDefinition> = {
       extendedCompactKey: 'claudeAutoCompactExtendedPercent',
       customEnvKey: 'claudeCustomEnv',
     },
+    customEnvPlaceholder: 'ANTHROPIC_BASE_URL',
     backgroundStop: 'claude-task',
     capabilities: FULL_CAPABILITIES,
+    features: {
+      accounts: true,
+      autoCompact: true,
+      promptOverrides: true,
+      disabledTools: true,
+      textGeneration: true,
+      ownMemory: true,
+      transfer: true,
+      rollbackGranularity: 'item',
+      slashSource: 'claude',
+    },
   },
   codex: {
     id: 'codex',
@@ -170,8 +203,20 @@ export const PROVIDER_DEFINITIONS: Record<ProviderID, ProviderDefinition> = {
       extendedCompactKey: 'codexAutoCompactExtendedPercent',
       customEnvKey: 'codexCustomEnv',
     },
+    customEnvPlaceholder: 'HTTPS_PROXY',
     backgroundStop: 'codex-background-terminals',
     capabilities: FULL_CAPABILITIES,
+    features: {
+      accounts: true,
+      autoCompact: true,
+      promptOverrides: true,
+      disabledTools: true,
+      textGeneration: true,
+      ownMemory: true,
+      transfer: true,
+      rollbackGranularity: 'turn',
+      slashSource: 'codex',
+    },
   },
   // claude-tui reuses claude's binary, auth, model catalog, effort set, and
   // context tiers — the only difference is the interactive PTY surface. So its
@@ -214,8 +259,20 @@ export const PROVIDER_DEFINITIONS: Record<ProviderID, ProviderDefinition> = {
       extendedCompactKey: 'claudeAutoCompactExtendedPercent',
       customEnvKey: 'claudeCustomEnv',
     },
+    customEnvPlaceholder: 'ANTHROPIC_BASE_URL',
     backgroundStop: 'none',
     capabilities: TUI_CAPABILITIES,
+    features: {
+      accounts: false,
+      autoCompact: true,
+      promptOverrides: true,
+      disabledTools: true,
+      textGeneration: false,
+      ownMemory: true,
+      transfer: false,
+      rollbackGranularity: 'none',
+      slashSource: 'claude',
+    },
   },
 };
 
@@ -321,4 +378,22 @@ export function providerSupports(
 ): boolean {
   const definition = getProviderDefinition(provider);
   return definition ? definition.capabilities[capability] : true;
+}
+
+type BooleanProviderFeature = {
+  [K in keyof ProviderFeatures]: ProviderFeatures[K] extends boolean ? K : never;
+}[keyof ProviderFeatures];
+
+export function providerHasFeature(
+  provider: string | null | undefined,
+  feature: BooleanProviderFeature,
+): boolean {
+  const definition = getProviderDefinition(provider);
+  return definition ? definition.features[feature] : false;
+}
+
+export function standaloneProvidersWithFeature(
+  feature: BooleanProviderFeature,
+): ProviderID[] {
+  return PROVIDER_SETTINGS_ORDER.filter((id) => PROVIDER_DEFINITIONS[id].features[feature]);
 }

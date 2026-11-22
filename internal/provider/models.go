@@ -500,9 +500,9 @@ func FindModel(providerName, model string) (ModelInfo, bool) {
 }
 
 func CoerceReasoningEffortForModel(providerName, model string, effort ReasoningEffort) ReasoningEffort {
-	// Stored Codex choices have already been accepted. Availability is checked
-	// by the provider on execution, not by this static projection.
-	if providerName == string(Codex) {
+	// Stored choices for live-catalog providers have already been accepted.
+	// Availability is checked by the provider on execution, not by this static projection.
+	if CapabilitiesForProvider(providerName).ModelCatalog.IsLive() {
 		return NormalizeReasoningEffort(string(effort))
 	}
 	if ReasoningEffortSupportedForModel(providerName, model, string(effort)) {
@@ -603,8 +603,8 @@ func ContextTierForModelWindow(providerName, model string, tokens int) string {
 }
 
 func extendedContextWindowForProvider(providerName string) int {
-	if providerName == string(Codex) {
-		return CodexExtendedContextWindow
+	if tokens := CapabilitiesForProvider(providerName).ExtendedContextWindow; tokens > 0 {
+		return tokens
 	}
 	return ClaudeExtendedContextWindow
 }
@@ -643,8 +643,8 @@ func DefaultContextWindowForModel(providerName, model string, fallback int) int 
 	if fallback > 0 {
 		return fallback
 	}
-	if providerName == string(Codex) {
-		return CodexStandardContextWindow
+	if tokens := CapabilitiesForProvider(providerName).StandardContextWindow; tokens > 0 {
+		return tokens
 	}
 	return ClaudeStandardContextWindow
 }

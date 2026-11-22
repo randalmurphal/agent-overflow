@@ -11,6 +11,7 @@
   // Memory says why. Shown on an assistant's current thread only, never on
   // its workers or an ordinary thread. ChatView gives it a row of its own
   // above the conversation.
+  import { getProviderDefinition } from '../../providers/catalog';
   import { threadMachine } from '../../stores/attachedBackends.svelte';
   import { providerMemory, watchProviderMemory } from '../../stores/providerMemory.svelte';
   import { computerHasSetting, getSettings } from '../../stores/settings.svelte';
@@ -21,12 +22,15 @@
   let { thread }: { thread: Thread | null } = $props();
 
   let backend = $derived(thread ? threadMachine(thread.id, thread.projectId) : null);
+  let supportsOwnMemory = $derived(getProviderDefinition(thread?.provider)?.features.ownMemory ?? false);
   // claude-tui runs the same Claude Code, with the same memory.
-  let codex = $derived(thread?.provider === 'codex');
-  let key = $derived(codex ? 'codexOwnMemoryOff' as const : 'claudeOwnMemoryOff' as const);
-  let providerName = $derived(codex ? 'Codex' : 'Claude');
+  let memoryFamily = $derived<'claude' | 'codex' | null>(
+    !supportsOwnMemory ? null : thread?.provider === 'codex' ? 'codex' : thread?.provider === 'claude' || thread?.provider === 'claude-tui' ? 'claude' : null,
+  );
+  let key = $derived(memoryFamily === 'codex' ? 'codexOwnMemoryOff' as const : 'claudeOwnMemoryOff' as const);
+  let providerName = $derived(memoryFamily === 'codex' ? 'Codex' : 'Claude');
   let never = $derived(
-    !!thread?.agentId && backend !== null && computerHasSetting(key, backend) && getSettings(backend)[key] === 'never',
+    memoryFamily !== null && !!thread?.agentId && backend !== null && computerHasSetting(key, backend) && getSettings(backend)[key] === 'never',
   );
 
   $effect(() => {
@@ -35,9 +39,9 @@
   });
 
   let shown = $derived.by(() => {
-    if (!never || backend === null) return false;
+    if (!never || backend === null || memoryFamily === null) return false;
     const status = providerMemory(backend)?.status;
-    const own = codex ? status?.codex : status?.claude;
+    const own = memoryFamily === 'codex' ? status?.codex : status?.claude;
     return !!own?.on;
   });
 </script>

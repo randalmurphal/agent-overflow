@@ -903,15 +903,16 @@ func (s Settings) HiddenModelsForProvider(provider string) []string {
 }
 
 // AutoCompactPercents returns the per-tier compact thresholds for the
-// given provider as (standard, extended). Unknown providers fall back
-// to the Claude pair so a stale provider string can't strand a session
-// with 0/0 (which would disable auto-compact entirely).
+// given provider as (standard, extended), or (0, 0) for providers that do
+// not configure auto-compact thresholds.
 func (s Settings) AutoCompactPercents(provider string) (standard, extended int) {
 	switch provider {
+	case "claude", "claude-tui":
+		return s.ClaudeAutoCompactStandardPercent, s.ClaudeAutoCompactExtendedPercent
 	case "codex":
 		return s.CodexAutoCompactStandardPercent, s.CodexAutoCompactExtendedPercent
 	default:
-		return s.ClaudeAutoCompactStandardPercent, s.ClaudeAutoCompactExtendedPercent
+		return 0, 0
 	}
 }
 

@@ -109,9 +109,14 @@ func (a *App) receivesMemory(current settings.Settings, lineage string, assistan
 // Overflow memory (receivesMemory): a session that does uses that memory,
 // whether or not its mode lets it write.
 func ownMemoryOff(current settings.Settings, providerName string, receives bool) bool {
-	when := current.ClaudeOwnMemoryOff
-	if providerName == string(provider.Codex) {
+	var when string
+	switch providerName {
+	case string(provider.Claude), string(provider.ClaudeTUI):
+		when = current.ClaudeOwnMemoryOff
+	case string(provider.Codex):
 		when = current.CodexOwnMemoryOff
+	default:
+		return false
 	}
 	switch when {
 	case settings.OwnMemoryOffAlways:

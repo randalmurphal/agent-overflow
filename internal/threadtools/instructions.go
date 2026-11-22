@@ -121,13 +121,24 @@ func instructionsDefaults(shape Shape) string {
 func readOnlyEffect(shape Shape) string {
 	claude := slices.Contains(shape.Spawn.Providers, "claude")
 	codex := slices.Contains(shape.Spawn.Providers, "codex")
+	other := false
+	for _, p := range shape.Spawn.Providers {
+		if p != "claude" && p != "codex" {
+			other = true
+			break
+		}
+	}
 	switch {
-	case shape.Paired() || claude == codex:
+	case shape.Paired() || (claude && codex):
 		return "it blocks every shell command on Claude Code, so no git, build, test or grep, and sandboxes commands on Codex"
+	case other && !claude && !codex:
+		return "it denies write and shell permissions"
 	case claude:
 		return "it blocks every shell command, so no git, build, test or grep"
-	default:
+	case codex:
 		return "it sandboxes every command, so nothing it runs can write"
+	default:
+		return "it blocks every shell command on Claude Code, so no git, build, test or grep, and sandboxes commands on Codex"
 	}
 }
 

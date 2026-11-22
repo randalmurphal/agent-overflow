@@ -38,16 +38,13 @@
   import PromptOverrideEntry from './PromptOverrideEntry.svelte';
   import PromptPlaceholderLegend from './PromptPlaceholderLegend.svelte';
   import SettingsField from './SettingsField.svelte';
-  import type { ProviderFieldId } from './fields';
+  import { providerFieldId, type ProviderFieldId, type SettingsProvider } from './fields';
   import { SECONDARY_BUTTON_CLASS } from './styles';
 
   let { provider }: { provider: ProviderDefinition } = $props();
 
-  // ProviderDefinition.id spans every provider; the field index only covers
-  // the two that have a page, and this section only ever renders on one of
-  // them. The ternary narrows without a cast.
   let fieldId = $derived<ProviderFieldId>(
-    provider.id === 'codex' ? 'codex.system-prompt' : 'claude.system-prompt',
+    providerFieldId(provider.id as SettingsProvider, 'system-prompt'),
   );
 
   let settings = $derived(getSettings());

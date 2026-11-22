@@ -115,10 +115,14 @@ func restoreStoredPromptTexts(patch map[string]any, current Settings, patched *S
 
 // promptOverrideList answers the field behind one override key.
 func (s *Settings) promptOverrideList(key string) *[]PromptOverride {
-	if key == "codexPromptOverrides" {
+	switch key {
+	case "claudePromptOverrides":
+		return &s.ClaudePromptOverrides
+	case "codexPromptOverrides":
 		return &s.CodexPromptOverrides
+	default:
+		return nil
 	}
-	return &s.ClaudePromptOverrides
 }
 
 // Limits on the override lists. They exist to keep a hand-edited or
@@ -328,38 +332,49 @@ func canonicalPromptOverrideID(raw string) (string, error) {
 	return parsed.String(), nil
 }
 
-// claudePromptOverrideIDs answers the ids the Claude list uses.
-func claudePromptOverrideIDs(current Settings) map[string]bool {
-	ids := make(map[string]bool, len(current.ClaudePromptOverrides))
-	for _, entry := range current.ClaudePromptOverrides {
-		if entry.ID != "" {
-			ids[entry.ID] = true
-		}
-	}
-	return ids
-}
-
-// validatePromptOverrideIDsAcrossProviders rejects an id both lists use.
-// The lists share one prompts directory, so a shared id would be two
-// entries over one file.
+// validatePromptOverrideIDsAcrossProviders rejects an id reused across
+// provider override lists. Every list shares one prompts directory, so a
+// shared id would be two entries over one file.
 func validatePromptOverrideIDsAcrossProviders(current Settings) error {
-	claude := claudePromptOverrideIDs(current)
-	for i, entry := range current.CodexPromptOverrides {
-		if entry.ID != "" && claude[entry.ID] {
-			return fmt.Errorf("codexPromptOverrides[%d].id %q is also used by a Claude entry", i, entry.ID)
+	seen := make(map[string]string)
+	for _, key := range promptOverrideKeys {
+		list := current.promptOverrideList(key)
+		if list == nil {
+			continue
+		}
+		for i, entry := range *list {
+			if entry.ID == "" {
+				continue
+			}
+			if owner, dup := seen[entry.ID]; dup && owner != key {
+				return fmt.Errorf("%s[%d].id %q is also used by %s", key, i, entry.ID, owner)
+			}
+			seen[entry.ID] = key
 		}
 	}
 	return nil
 }
 
 // sanitizePromptOverrideIDsAcrossProviders is the lenient counterpart: the
-// Codex entry loses its id, and with it the claim on the file, with a log.
+// later entry loses its id, and with it the claim on the file, with a log.
 func sanitizePromptOverrideIDsAcrossProviders(current *Settings) {
-	claude := claudePromptOverrideIDs(*current)
-	for i, entry := range current.CodexPromptOverrides {
-		if entry.ID != "" && claude[entry.ID] {
-			log.Printf("settings: codexPromptOverrides[%d].id %q is also used by a Claude entry; clearing it", i, entry.ID)
-			current.CodexPromptOverrides[i].ID = ""
+	seen := make(map[string]string)
+	for _, key := range promptOverrideKeys {
+		list := current.promptOverrideList(key)
+		if list == nil {
+			continue
+		}
+		entries := *list
+		for i, entry := range entries {
+			if entry.ID == "" {
+				continue
+			}
+			if owner, dup := seen[entry.ID]; dup && owner != key {
+				log.Printf("settings: %s[%d].id %q is also used by %s; clearing it", key, i, entry.ID, owner)
+				entries[i].ID = ""
+				continue
+			}
+			seen[entry.ID] = key
 		}
 	}
 }

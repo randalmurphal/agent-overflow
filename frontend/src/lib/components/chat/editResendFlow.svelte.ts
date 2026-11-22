@@ -2,6 +2,7 @@ import { conversationMutationReconciler } from '../../stores/reconcileConversati
 import type { UserMessageRevertedEvent } from '../../types/messageRevert';
 import { beginThreadInterrupt, finishThreadInterrupt } from '../../stores/threadInterruptState.svelte';
 import { buildSendOptions } from '../../utils/sendOptions';
+import { getProviderDefinition } from '../../providers/catalog';
 // The edit-and-resend flow, from the pencil click to the destructive
 // RPC's outcome. Extracted from `ChatView.svelte` the same way the
 // scroll-session modules were extracted from `MessageTimeline.svelte`:
@@ -531,7 +532,8 @@ export function createEditResendFlow(opts: EditResendFlowOptions): EditResendFlo
   const pendingCutAfter = $derived.by<PendingCutPosition | null>(() => {
     const current = flow;
     if (current?.stage !== 'executing') return null;
-    return { turnIndex: current.item.turnIndex, itemIndex: pane.thread?.provider === 'codex' ? -1 : current.item.itemIndex };
+    const granularity = getProviderDefinition(pane.thread?.provider)?.features.rollbackGranularity;
+    return { turnIndex: current.item.turnIndex, itemIndex: granularity === 'turn' ? -1 : current.item.itemIndex };
   });
 
   const confirmDescription = $derived.by(() => {

@@ -279,7 +279,8 @@ func (s *Service) Hydrate() {
 	}
 	var repairs []repair
 	s.cacheMu.Lock()
-	for _, providerName := range []string{string(provider.Claude), string(provider.Codex)} {
+	for _, kind := range provider.StandaloneProviders() {
+		providerName := string(kind)
 		for _, account := range s.deps.Accounts.List(providerName) {
 			if account.RateLimits == nil {
 				continue

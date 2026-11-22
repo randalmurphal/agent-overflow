@@ -243,8 +243,7 @@ func refuseInstructionsUnappended(providerName, instructions string) error {
 	if instructions == "" {
 		return nil
 	}
-	switch providerName {
-	case string(provider.Claude), string(provider.ClaudeTUI), string(provider.Codex):
+	if provider.CapabilitiesForProvider(providerName).SupportsAppendSystemPrompt {
 		return nil
 	}
 	return errorsx.Public(threadtools.CodeInvalidRequest, fmt.Sprintf(

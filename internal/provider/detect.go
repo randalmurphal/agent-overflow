@@ -39,7 +39,6 @@ type ProviderStatus struct {
 // DetectProvider checks whether a provider binary exists on PATH (or at the
 // given binaryPath) and attempts to retrieve its version.
 //
-// name must be "claude" or "codex" — it selects the version-parsing function.
 // If the binary is found but the version command fails, the provider is
 // reported as installed-but-unusable with Status="error".
 func DetectProvider(name, binaryPath string) ProviderStatus {
@@ -54,17 +53,7 @@ func DetectProvider(name, binaryPath string) ProviderStatus {
 		}
 	}
 
-	var version string
-	var versionErr error
-
-	switch name {
-	case string(Claude):
-		version, versionErr = detectClaudeVersion(resolvedPath)
-	case string(Codex):
-		version, versionErr = detectCodexVersion(resolvedPath)
-	default:
-		version, versionErr = runVersionCommand(resolvedPath, "--version")
-	}
+	version, versionErr := runVersionCommand(resolvedPath, "--version")
 
 	status := ProviderStatus{
 		Provider:   name,
@@ -89,16 +78,6 @@ func DetectProvider(name, binaryPath string) ProviderStatus {
 	}
 
 	return status
-}
-
-// detectClaudeVersion runs "<binaryPath> --version" and returns the trimmed output.
-func detectClaudeVersion(binaryPath string) (string, error) {
-	return runVersionCommand(binaryPath, "--version")
-}
-
-// detectCodexVersion runs "<binaryPath> --version" and returns the trimmed output.
-func detectCodexVersion(binaryPath string) (string, error) {
-	return runVersionCommand(binaryPath, "--version")
 }
 
 // runVersionCommand executes a binary with the given args under a 5-second timeout

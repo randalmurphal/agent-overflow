@@ -16,6 +16,13 @@ const (
 	ClaudeProbeEnrichedCatalog ModelCatalogSource = "claude_probe"
 )
 
+// IsLive reports whether the provider's model catalog is fetched live from the
+// provider runtime (so remembered user choices outlive temporary catalog
+// unavailability instead of being coerced against a static list).
+func (s ModelCatalogSource) IsLive() bool {
+	return s == CodexLiveModelCatalog
+}
+
 type BackgroundTerminalCleaner string
 
 const (
@@ -51,6 +58,18 @@ const (
 	ClaudeProjectsTranscript ResumeTranscript = "claude_projects"
 )
 
+// RollbackGranularity describes the unit at which a provider can truncate its
+// native conversation history during revert / edit-and-resend.
+type RollbackGranularity string
+
+const (
+	RollbackNone RollbackGranularity = ""
+	// RollbackTurn truncates on a turn boundary (Codex thread/revert & fork).
+	RollbackTurn RollbackGranularity = "turn"
+	// RollbackItem truncates at an exact user message item (Claude JSONL slice).
+	RollbackItem RollbackGranularity = "item"
+)
+
 // Capabilities names provider-level behavior that app code can depend on.
 // Concrete protocol routing still belongs at the call site or in
 // provider-specific code, so fields that require provider-specific plumbing use
@@ -72,16 +91,51 @@ type Capabilities struct {
 	// ResumeTranscript says how a start can tell, before it stops anything,
 	// that the provider no longer has the session it resumes.
 	ResumeTranscript ResumeTranscript
+	// UsageFamily normalizes dependent provider surfaces (like claude-tui) to
+	// their parent billing/usage family.
+	UsageFamily ProviderKind
+	// StandardContextWindow and ExtendedContextWindow are the provider-level
+	// fallback context windows when a model has no explicit window options.
+	StandardContextWindow int
+	ExtendedContextWindow int
+	// SupportsAppManagedMCP reports whether the provider accepts AO's
+	// loopback HTTP MCP servers (browser, remote tools, thread tools).
+	SupportsAppManagedMCP bool
+	// SupportsWorkflowMCP reports whether the provider accepts ao-workflow-tools.
+	SupportsWorkflowMCP bool
+	// SupportsAppendSystemPrompt reports whether the provider can append
+	// instructions / agent guide text to its system prompt.
+	SupportsAppendSystemPrompt bool
+	// SupportsOwnMemory reports whether the provider has a native memory
+	// feature that AO can toggle off for assistants.
+	SupportsOwnMemory bool
+	// RollbackGranularity reports whether and at what granularity the provider
+	// supports anchored conversation rollback.
+	RollbackGranularity RollbackGranularity
+}
+
+// SupportsConversationRollback reports whether the provider supports anchored
+// conversation revert / edit-and-resend.
+func (c Capabilities) SupportsConversationRollback() bool {
+	return c.RollbackGranularity != RollbackNone
 }
 
 func CapabilitiesForProvider(providerName string) Capabilities {
 	switch providerName {
 	case string(Codex):
 		return Capabilities{
-			ModelCatalog:              CodexLiveModelCatalog,
-			BackgroundTerminalCleaner: CodexBackgroundTerminalCleaner,
-			ImageIngestion:            PathImageIngestion,
-			EnforcesRuntimeMode:       true,
+			ModelCatalog:               CodexLiveModelCatalog,
+			BackgroundTerminalCleaner:  CodexBackgroundTerminalCleaner,
+			ImageIngestion:             PathImageIngestion,
+			EnforcesRuntimeMode:        true,
+			UsageFamily:                Codex,
+			StandardContextWindow:      CodexStandardContextWindow,
+			ExtendedContextWindow:      CodexExtendedContextWindow,
+			SupportsAppManagedMCP:      true,
+			SupportsWorkflowMCP:        true,
+			SupportsAppendSystemPrompt: true,
+			SupportsOwnMemory:          true,
+			RollbackGranularity:        RollbackTurn,
 		}
 	case string(ClaudeTUI):
 		// Same model catalog as headless claude (one binary, one login, so the
@@ -91,18 +145,32 @@ func CapabilitiesForProvider(providerName string) Capabilities {
 		// resume / effort from the shared options — permission flags never reach
 		// the TUI, which owns approvals itself — so RuntimeMode is inert here.
 		return Capabilities{
-			ModelCatalog:     ClaudeProbeEnrichedCatalog,
-			ImageIngestion:   PathImageIngestion,
-			ResumeTranscript: ClaudeProjectsTranscript,
+			ModelCatalog:               ClaudeProbeEnrichedCatalog,
+			ImageIngestion:             PathImageIngestion,
+			ResumeTranscript:           ClaudeProjectsTranscript,
+			UsageFamily:                Claude,
+			StandardContextWindow:      ClaudeStandardContextWindow,
+			ExtendedContextWindow:      ClaudeExtendedContextWindow,
+			SupportsWorkflowMCP:        true,
+			SupportsAppendSystemPrompt: true,
+			SupportsOwnMemory:          true,
 		}
 	case string(Claude):
 		// Headless: base64-inlines image bytes (the zero-value ingestion); named
 		// explicitly so it reads as a known provider rather than a default
 		// fall-through.
 		return Capabilities{
-			ModelCatalog:        ClaudeProbeEnrichedCatalog,
-			EnforcesRuntimeMode: true,
-			ResumeTranscript:    ClaudeProjectsTranscript,
+			ModelCatalog:               ClaudeProbeEnrichedCatalog,
+			EnforcesRuntimeMode:        true,
+			ResumeTranscript:           ClaudeProjectsTranscript,
+			UsageFamily:                Claude,
+			StandardContextWindow:      ClaudeStandardContextWindow,
+			ExtendedContextWindow:      ClaudeExtendedContextWindow,
+			SupportsAppManagedMCP:      true,
+			SupportsWorkflowMCP:        true,
+			SupportsAppendSystemPrompt: true,
+			SupportsOwnMemory:          true,
+			RollbackGranularity:        RollbackItem,
 		}
 	default:
 		return Capabilities{}

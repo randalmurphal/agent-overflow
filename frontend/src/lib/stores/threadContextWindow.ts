@@ -150,9 +150,10 @@ export function activeAutoCompactPercent(
   if (override > 0) return override;
 
   const settings = getSettings(threadMachine(nextThread.id, nextThread.projectId));
-  const providerSettings = getProviderDefinition(nextThread.provider).settings;
-  const providerSetting = isExtended
-    ? settings[providerSettings.extendedCompactKey]
-    : settings[providerSettings.standardCompactKey];
+  const providerSettings = getProviderDefinition(nextThread.provider)?.settings;
+  const compactKey = isExtended
+    ? providerSettings?.extendedCompactKey
+    : providerSettings?.standardCompactKey;
+  const providerSetting = compactKey ? settings[compactKey] : 0;
   return providerSetting > 0 ? providerSetting : 90;
 }

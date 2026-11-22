@@ -29,8 +29,10 @@ func (a *App) GetProviderStatuses() ([]provider.ProviderStatus, error) {
 	// A status read reports what is installed now, not what the last tick
 	// saw: the settings page reads it after the user installs or moves codex.
 	a.invalidateDefaultCodexBinary()
-	identities := make(map[string]providerBinaryIdentity, 2)
-	for _, providerName := range []string{string(provider.Claude), string(provider.Codex)} {
+	standalone := provider.StandaloneProviders()
+	identities := make(map[string]providerBinaryIdentity, len(standalone))
+	for _, kind := range standalone {
+		providerName := string(kind)
 		if identity, ok := a.resolveProviderBinaryIdentity(providerName); ok {
 			identities[providerName] = identity
 		}

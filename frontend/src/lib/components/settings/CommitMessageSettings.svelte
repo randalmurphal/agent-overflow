@@ -12,14 +12,14 @@
   import type { CommitMessageStyle, ReasoningEffort } from '../../types/settings';
   import {
     getProviderDefinition,
-    PROVIDER_SETTINGS_ORDER,
+    standaloneProvidersWithFeature,
     type ProviderDefinition,
     type ProviderID,
   } from '../../providers/catalog';
   import SettingsField from './SettingsField.svelte';
   import { INPUT_CLASS, SELECT_CLASS } from './styles';
 
-  const PROVIDERS: ProviderDefinition[] = PROVIDER_SETTINGS_ORDER.map((provider) =>
+  const PROVIDERS: ProviderDefinition[] = standaloneProvidersWithFeature('textGeneration').map((provider) =>
     getProviderDefinition(provider),
   );
 

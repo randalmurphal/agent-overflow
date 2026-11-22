@@ -385,8 +385,8 @@ func (h *harnessHost) CancelProviderLogins() {
 	if h.app.providerAccounts == nil {
 		return
 	}
-	for _, name := range []string{string(provider.Claude), string(provider.Codex)} {
-		h.app.providerAccounts.CancelProviderLogin(name)
+	for _, kind := range provider.StandaloneProviders() {
+		h.app.providerAccounts.CancelProviderLogin(string(kind))
 	}
 }
 

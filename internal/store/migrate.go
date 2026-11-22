@@ -1772,6 +1772,7 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 		},
 	},
 	{Version: remoteOwnershipMigrationVersion, Name: "remote_ownership", SQL: remoteOwnershipV158SQL},
+	{Version: widenProviderChecksMigrationVersion, Name: "widen_provider_checks", SQL: widenProviderChecksV159SQL, Rebuild: true},
 }
 
 // MigrationStep describes one pending migration as it begins, or a

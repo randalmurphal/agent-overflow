@@ -24,6 +24,12 @@
        surface a boxed/outlined glyph reads as a muddy hollow shape at icon sizes,
        so the solid green starburst is cleaner and unmistakably Claude. -->
   <ClaudeIcon {size} class="text-provider-claude-tui opacity-95 {className}" />
-{:else}
+{:else if providerID === 'claude'}
   <ClaudeIcon {size} class="text-provider-claude opacity-95 {className}" />
+{:else}
+  <span
+    class="inline-flex items-center justify-center rounded-sm bg-surface-2 text-[0.625rem] font-semibold uppercase text-fg-muted {className}"
+    style="width: {size}px; height: {size}px;"
+    aria-hidden="true"
+  >{(provider ?? '?').slice(0, 1)}</span>
 {/if}

@@ -17,6 +17,7 @@
 //    itself. Selection inserts text; nothing is expanded on this side.
 
 import type { SlashCommand } from '../../stores/bindings';
+import { getProviderDefinition } from '../../providers/catalog';
 import { SLASH_COMMANDS, slashCommandWord, type SlashCommand as AOCommand } from './slashCommands';
 
 export type ComposerCommandKind = 'ao' | 'intercepted' | 'provider' | 'skill';
@@ -317,7 +318,8 @@ export function buildCommandSections(sources: CommandMenuSources): ComposerComma
   if (!sources.atStart) return sections;
 
   const providerId = (sources.provider ?? '').trim();
-  if (providerId === 'codex') {
+  const slashSource = getProviderDefinition(providerId)?.features.slashSource ?? (providerId === '' ? 'claude' : 'none');
+  if (slashSource === 'codex') {
     pushSection(
       'skills',
       'Codex skills',
@@ -326,14 +328,27 @@ export function buildCommandSections(sources: CommandMenuSources): ComposerComma
     return sections;
   }
 
-  const staticCommands = mergeStaticClaudeCommands(sources.probeCommands, sources.claudeSkills);
-  pushSection(
-    'provider',
-    'Provider commands',
-    unionProviderCommands(sources.sessionCommands, staticCommands)
-      .filter((command) => !shadowed.has(command.name) && !isHiddenProviderCommand(command.name))
-      .map(providerCommandEntry),
-  );
+  if (slashSource === 'claude') {
+    const staticCommands = mergeStaticClaudeCommands(sources.probeCommands, sources.claudeSkills);
+    pushSection(
+      'provider',
+      'Provider commands',
+      unionProviderCommands(sources.sessionCommands, staticCommands)
+        .filter((command) => !shadowed.has(command.name) && !isHiddenProviderCommand(command.name))
+        .map(providerCommandEntry),
+    );
+    return sections;
+  }
+
+  if (slashSource === 'acp') {
+    pushSection(
+      'provider',
+      'Provider commands',
+      (sources.sessionCommands ?? [])
+        .filter((command) => !shadowed.has(command.name) && !isHiddenProviderCommand(command.name))
+        .map(providerCommandEntry),
+    );
+  }
   return sections;
 }
 

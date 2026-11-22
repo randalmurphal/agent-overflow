@@ -35,8 +35,8 @@
   // save, so mirror effects reading the fields off it directly would
   // re-run on any unrelated save — snapping a thumb mid-drag back to the
   // persisted value.
-  let standardSetting = $derived(settings[standardKey]);
-  let extendedSetting = $derived(settings[extendedKey]);
+  let standardSetting = $derived(standardKey ? settings[standardKey] : 0);
+  let extendedSetting = $derived(extendedKey ? settings[extendedKey] : 0);
 
   $effect(() => {
     standardLive = standardSetting;
@@ -45,7 +45,8 @@
     extendedLive = extendedSetting;
   });
 
-  function commit(key: keyof Settings, value: number): void {
+  function commit(key: keyof Settings | undefined, value: number): void {
+    if (!key) return;
     const clamped = Math.max(1, Math.min(90, Math.round(value)));
     void updateSetting(key, clamped);
   }

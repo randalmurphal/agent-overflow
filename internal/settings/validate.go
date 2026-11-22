@@ -735,8 +735,10 @@ func allowedTextGenerationEfforts(provider string) map[string]struct{} {
 	switch provider {
 	case "claude":
 		return allowedClaudeTextGenerationEfforts
-	default:
+	case "codex":
 		return allowedCodexTextGenerationEfforts
+	default:
+		return nil
 	}
 }
 
@@ -1098,9 +1100,10 @@ func truncateRuneSafe(s string, maxBytes int) string {
 
 func joinAllowedValues(values map[string]struct{}) string {
 	options := make([]string, 0, len(values))
-	// Ordered candidate list so error messages render deterministically.
-	// Any value in `values` not in this list is skipped — new enums must
-	// be appended here.
+	seen := make(map[string]struct{}, len(values))
+	// Ordered candidate list so error messages render deterministically; any
+	// remaining value not listed here is still appended sorted rather than
+	// silently dropped.
 	candidates := []string{
 		"system", "light", "dark",
 		"locale", "12-hour", "24-hour",
@@ -1114,7 +1117,16 @@ func joinAllowedValues(values map[string]struct{}) string {
 	for _, candidate := range candidates {
 		if _, ok := values[candidate]; ok {
 			options = append(options, candidate)
+			seen[candidate] = struct{}{}
 		}
 	}
+	var extras []string
+	for value := range values {
+		if _, ok := seen[value]; !ok {
+			extras = append(extras, value)
+		}
+	}
+	sort.Strings(extras)
+	options = append(options, extras...)
 	return strings.Join(options, ", ")
 }

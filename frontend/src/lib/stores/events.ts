@@ -3,6 +3,7 @@ import { invalidateClaudeProbeCommands } from './providerCommands.svelte';
 import { applyDictationSourcesChanged } from './dictation.svelte';
 import { applyReadAloudSourceChanged } from './readAloudSource.svelte';
 import { refreshProviderMemory } from './providerMemory.svelte';
+import { providerLabel } from '../providers/catalog';
 import { installComputerHydration } from './computerHydration';
 import { applyProviderUpdatesEvent, type ProviderUpdateStatus } from './providerUpdates.svelte';
 // Composition root for backend event wiring. `setupEventListeners()` is the
@@ -324,7 +325,7 @@ export function setupEventListeners(): () => void {
     'provider:account_usage_error',
     (evt) => {
       if (!evt?.provider || !evt.accountId) return;
-      const label = evt.provider === 'claude' ? 'Claude' : 'Codex';
+      const label = providerLabel(evt.provider);
       addToast('warning', evt.message || `${label} connected, but usage could not be refreshed.`);
     },
   );
