@@ -14,6 +14,7 @@ import (
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/store/storetest"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/transferwire"
 )
 
@@ -177,7 +178,7 @@ func TestTransferJobsRecoverParkedIncomingWorkAfterRestart(t *testing.T) {
 	})
 	j := testJobs(t, st, runner, runner, nil)
 	nextJobSignal(t, started)
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := testutil.WaitDeadline(t)
 	for {
 		jobs, err := st.NextThreadTransferJobs(1)
 		if err != nil {
