@@ -19,13 +19,15 @@ import (
 // the enriched answer.
 func (s *Service) ProbeClaudeAccount() (provider.AccountInfo, error) {
 	if s == nil || s.deps.ProviderBinary == nil || s.deps.Selection == nil ||
-		s.deps.ProbeKey == nil || s.deps.RunAccountProbe == nil || s.deps.ClaudeConfig == nil {
+		s.deps.RunAccountProbe == nil || s.deps.ClaudeProbe == nil {
 		return provider.AccountInfo{}, fmt.Errorf("provider discovery: Claude probe unavailable")
 	}
 	providerName := string(provider.Claude)
 	binary := s.deps.ProviderBinary(providerName)
 	selection := s.deps.Selection(providerName)
-	key := s.deps.ProbeKey(providerName, binary, selection.AccountID)
+	// The key and the configuration are read together, before the probe
+	// waits for the account lock, and the probe runs with that configuration.
+	key, cfg := s.deps.ClaudeProbe(binary, selection.AccountID)
 
 	var wire claudecatalog.ModelCapture
 	var wireCommands claudecatalog.CommandCapture
@@ -34,7 +36,6 @@ func (s *Service) ProbeClaudeAccount() (provider.AccountInfo, error) {
 		Cache:        s.caches.Claude,
 		Key:          key,
 		Probe: func(ctx context.Context) (provider.AccountInfo, error) {
-			cfg := s.deps.ClaudeConfig(binary)
 			cfg.OnModels = wire.Capture
 			cfg.OnCommands = wireCommands.Capture
 			return s.deps.ProbeClaude(ctx, cfg)
