@@ -1,6 +1,6 @@
 import { TransportError } from './wsClient';
 import { passkeysUsable } from './passkey';
-import { isScope, type Scope } from './scopes';
+import { isScope, type Scope, type ScopeGrant } from './scopes';
 
 /**
  * The client-side half of the AUTHORIZATION refusal vocabulary — the
@@ -130,6 +130,21 @@ export const STEP_UP_PASSKEY_REFUSAL: ScopeRefusalPresentation = {
  */
 function stepUpRefusal(): ScopeRefusalPresentation {
   return passkeysUsable() ? STEP_UP_PASSKEY_REFUSAL : STEP_UP_REFUSAL;
+}
+
+/**
+ * The hover title of a control that a grant switches off, and the only
+ * place either sentence is written: `undefined` when `grant` allows the
+ * control. A refusal is said only when a known grant refuses; a computer
+ * that has not answered in this window (offline, or still connecting) is
+ * never described as having refused this device.
+ */
+export function grantBlockedTitle(grant: ScopeGrant): string | undefined {
+  switch (grant) {
+    case 'granted': return undefined;
+    case 'refused': return 'Not granted to this device';
+    case 'unknown': return 'Unavailable until this computer connects';
+  }
 }
 
 /** Whether this call was refused for want of a capability. */

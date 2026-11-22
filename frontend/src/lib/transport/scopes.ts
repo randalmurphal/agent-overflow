@@ -384,6 +384,27 @@ export function scopeGrant(scope: Exclude<Scope, 'host'>, backendId: BackendKey)
 }
 
 /**
+ * The grant of an action that needs every one of `grants`, such as one
+ * action applied to several selected threads: refused when any is known
+ * to refuse, otherwise unknown while any has not answered.
+ */
+export function allOfGrants(grants: readonly ScopeGrant[]): ScopeGrant {
+  if (grants.includes('refused')) return 'refused';
+  return grants.includes('unknown') ? 'unknown' : 'granted';
+}
+
+/**
+ * The grant of an action that any one of `grants` allows, such as a
+ * control that acts on whichever computer the person then picks: granted
+ * when any grants, otherwise unknown while any has not answered. No
+ * candidate at all is a refusal.
+ */
+export function anyOfGrants(grants: readonly ScopeGrant[]): ScopeGrant {
+  if (grants.includes('granted')) return 'granted';
+  return grants.includes('unknown') ? 'unknown' : 'refused';
+}
+
+/**
  * The whole resolved answer, for diagnostics and for a caller that needs
  * to explain WHY rather than only whether. Reactive on the same
  * subscription `hasScope` uses.

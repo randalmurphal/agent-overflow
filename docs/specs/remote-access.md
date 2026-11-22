@@ -119,9 +119,13 @@ Rules:
   root-caused: the app mounted on redial REQUEST, not readiness —
   `redialAfterPairing` now retires the pre-pairing socket detached
   (its close settles only its own attempt) and resolves when the
-  transport is usable, bounded at 5s; `main.ts` awaits it. Ungranted
-  tooltip vocabulary is "Not granted to this device"; "Local only"
-  survives only on host-presence gates. Adjudicated against retier:
+  transport is usable, bounded at 5s; `main.ts` awaits it. An inert
+  control's reason comes from `grantBlockedTitle`
+  (`frontend/src/lib/transport/scopeRefusal.ts`) and the three-way
+  grant: "Not granted to this device" only for a known refusal, "Unavailable
+  until this computer connects" while that computer's grant has not
+  arrived in this window; "Local only" survives only on host-presence
+  gates. Adjudicated against retier:
   `GetThreadLiveState` stays threads:operate — its snapshot embeds
   queued drafts and pending approvals, both above read tier; a
   view-only thread open hydrates from the threads:read channels.

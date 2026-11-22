@@ -39,7 +39,8 @@
   import AgentTrayRowDigest from './AgentTrayRowDigest.svelte';
   import AgentMetrics from './AgentMetrics.svelte';
   import { activityRailIconActionClasses } from './activityRailClasses';
-  import { TRAY_WRITE_UNGRANTED } from './trayWrites';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
+  import type { ScopeGrant } from '../../transport/scopes';
 
   interface Props {
     row: ThreadAgentRow;
@@ -60,10 +61,10 @@
      * so Show in Sidebar can place it there.
      */
     canPlace: boolean;
-    /** This device may stop the row (trayWrites.ts). */
-    stopGranted: boolean;
-    /** This device may place the row's thread on its computer (trayWrites.ts). */
-    placeGranted: boolean;
+    /** Whether this device may stop the row (trayWrites.ts). */
+    stopGrant: ScopeGrant;
+    /** Whether this device may place the row's thread on its computer (trayWrites.ts). */
+    placeGrant: ScopeGrant;
     onToggleExpanded: (row: ThreadAgentRow) => void;
     onActivate: (row: ThreadAgentRow) => void;
     onOpenPane: (row: ThreadAgentRow) => void;
@@ -72,7 +73,7 @@
   }
 
   let {
-    row, now, isStopping, stopError, expanded, past = false, viewer, isPlacing = false, canPlace, stopGranted, placeGranted,
+    row, now, isStopping, stopError, expanded, past = false, viewer, isPlacing = false, canPlace, stopGrant, placeGrant,
     onToggleExpanded, onActivate, onOpenPane, onShowInSidebar, onStop,
   }: Props = $props();
 
@@ -195,8 +196,8 @@
         type="button"
         class={activityRailIconActionClasses}
         onclick={() => onShowInSidebar(row)}
-        disabled={isPlacing || !placeGranted}
-        title={placeGranted ? 'Show in sidebar' : TRAY_WRITE_UNGRANTED}
+        disabled={isPlacing || placeGrant !== 'granted'}
+        title={grantBlockedTitle(placeGrant) ?? 'Show in sidebar'}
         aria-label="Show in Sidebar"
         data-testid="agent-tray-row-show-in-sidebar"
       >
@@ -221,8 +222,8 @@
         type="button"
         class={actionClasses}
         onclick={() => onStop(row)}
-        disabled={isStopping || !stopGranted}
-        title={stopGranted ? degraded || undefined : TRAY_WRITE_UNGRANTED}
+        disabled={isStopping || stopGrant !== 'granted'}
+        title={grantBlockedTitle(stopGrant) ?? (degraded || undefined)}
         aria-label={`Stop: ${row.title}`}
         data-testid="agent-tray-row-stop"
       >{isStopping ? 'Stopping…' : 'Stop'}</button>

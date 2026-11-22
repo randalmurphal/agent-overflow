@@ -92,6 +92,34 @@ describe('ProjectItem create controls', () => {
     expect(newGroup.disabled).toBe(true);
     expect(newGroup.title).toBe('Not granted to this device');
   });
+
+  // A paired computer that has not answered in this window (offline, or
+  // still connecting) has refused nothing.
+  it('says the computer has to connect, not that it refused, until its grant arrives', async () => {
+    stageBackend({ id: 'laptop', backendId: 'laptop-id', name: 'Laptop' });
+    listCatalogTreesForTest();
+    try {
+      const p = makeProject('ck-laptop', 'app-laptop', '/laptop/app');
+      noteProject(p.id, 'laptop');
+      addProjectLocal(p);
+      const { getByTestId } = renderItem(p);
+      const newThread = getByTestId('project-item-new-thread') as HTMLButtonElement;
+      expect(newThread.disabled).toBe(true);
+      expect(newThread.title).toBe('Unavailable until this computer connects');
+      await grantBackendScopes('laptop', ['threads:read']);
+      await tick();
+      expect(newThread.disabled).toBe(true);
+      expect(newThread.title).toBe('Not granted to this device');
+      await grantBackendScopes('laptop', ['threads:read', 'threads:operate']);
+      await tick();
+      expect(newThread.disabled).toBe(false);
+      expect(newThread.title).toBe('New Thread in This Project');
+    } finally {
+      revokeBackendScopes('laptop');
+      __resetEntityIndexForTest();
+      resetStagedBackends();
+    }
+  });
 });
 
 // The label is disambiguated by the list over the rows it renders, so these

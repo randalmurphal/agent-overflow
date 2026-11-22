@@ -8,7 +8,7 @@ import { HOME_BACKEND, type BackendKey } from '../../transport/backendKey';
 import { withBackendTarget } from '../../transport/backends';
 import { passkeysUsable } from '../../transport/passkey';
 import { STEP_UP_REFUSAL } from '../../transport/scopeRefusal';
-import { hasScope, type Scope } from '../../transport/scopes';
+import { hasScope, scopeGrant, type Scope } from '../../transport/scopes';
 
 /**
  * The reason a host-tier control shows while it is inert. The step-up
@@ -28,6 +28,7 @@ export function settingsComputer() {
     backend,
     call: <T>(operation: () => T): T => withBackendTarget(backend, operation),
     hasScope: (scope: Scope) => hasScope(scope, backend),
+    scopeGrant: (scope: Exclude<Scope, 'host'>) => scopeGrant(scope, backend),
     /**
      * Whether a host-tier key (internal/settings/tier.go) can be written
      * from this page. The backend takes such a write only under a step-up

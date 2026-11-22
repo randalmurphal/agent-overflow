@@ -12,11 +12,12 @@ import { mockAttachmentDownload, mockLocalImage } from '../../../test/mocks/atta
 import type { ThreadPane } from '../../stores/thread.svelte';
 import type { Attachment } from '../../types/attachment';
 import type { ImagePreviewItem } from '../../utils/attachmentPreview.svelte';
+import type { ScopeGrant } from '../../transport/scopes';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
 import { closeImageLightbox, imageLightbox } from '../../stores/imageLightbox.svelte';
 import {
   attachmentImageMenuTag,
-  canSaveMenuImage,
+  saveMenuImageGrant,
   copyLocalImageMarkdown,
   copyLocalImagePath,
   copyMenuImage,
@@ -40,7 +41,7 @@ vi.mock('../../utils/imageMenuActions', async (importOriginal) => ({
   copyLocalImagePath: vi.fn(async () => {}),
   copyLocalImageMarkdown: vi.fn(async () => {}),
   saveMenuImage: vi.fn(async () => {}),
-  canSaveMenuImage: vi.fn(() => true),
+  saveMenuImageGrant: vi.fn((): ScopeGrant => 'granted'),
   saveMenuImageLabel: vi.fn(() => 'Save Image'),
 }));
 
@@ -125,7 +126,7 @@ describe('<ImageMenuHost>', () => {
     vi.mocked(copyLocalImagePath).mockReset().mockResolvedValue(undefined);
     vi.mocked(copyLocalImageMarkdown).mockReset().mockResolvedValue(undefined);
     vi.mocked(saveMenuImage).mockReset().mockResolvedValue(undefined);
-    vi.mocked(canSaveMenuImage).mockReset().mockReturnValue(true);
+    vi.mocked(saveMenuImageGrant).mockReset().mockReturnValue('granted');
     vi.mocked(saveMenuImageLabel).mockReset().mockReturnValue('Save Image');
     for (const t of Array.from(getToasts())) removeToast(t.id);
   });
@@ -245,7 +246,7 @@ describe('<ImageMenuHost>', () => {
     });
 
     it('Save is inert and says why when this device may not write there', async () => {
-      vi.mocked(canSaveMenuImage).mockReturnValue(false);
+      vi.mocked(saveMenuImageGrant).mockReturnValue('refused');
       await openOnTile();
       const save = item('Save Image');
       expect(save.getAttribute('aria-disabled')).toBe('true');
@@ -326,7 +327,7 @@ describe('<ImageMenuHost>', () => {
       await rightClick(document.querySelector('img')!);
       await fireEvent.click(item('Save Image'));
       expect(saveMenuImage).toHaveBeenCalledWith(LOCAL);
-      expect(canSaveMenuImage).toHaveBeenCalledWith(LOCAL);
+      expect(saveMenuImageGrant).toHaveBeenCalledWith(LOCAL);
     });
 
     // HOME is the empty key: the attribute is present and empty, which the

@@ -82,6 +82,8 @@ test('an offline paired computer logs once per outage and a draft pane is never 
       const input = page.getByLabel('Message Input');
       await expect(input).toBeDisabled();
       await expect(input).toHaveAttribute('placeholder', / is offline$/);
+      // No control on the thread says the laptop refused this device.
+      await expect(page.getByTestId('thread-title-regenerate')).not.toHaveAttribute('title', 'Not granted to this device');
     };
     // The tray's own refresh trigger for the open thread.
     const poke = async () => {
@@ -161,8 +163,12 @@ test('an offline paired computer logs once per outage and a draft pane is never 
     expect(boot).toMatchObject({ preparationFailed: 1, ensureConnected: 0, ownerUnknown: 0, errors: [] });
 
     // The same after the reload, where this window has never heard the
-    // laptop's grant: still offline, never "read-only".
+    // laptop's grant: still offline, never "read-only", and a control that
+    // grant switches off says the laptop has to connect.
     await expectLaptopThreadSaysOffline();
+    const regenerate = page.getByTestId('thread-title-regenerate');
+    await expect(regenerate).toBeDisabled();
+    await expect(regenerate).toHaveAttribute('title', 'Unavailable until this computer connects');
   } finally {
     await page.close();
     await remote?.close();

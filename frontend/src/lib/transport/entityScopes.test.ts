@@ -2,7 +2,9 @@ import { afterEach, beforeEach, expect, it } from 'vitest';
 import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
 import { __resetEntityIndexForTest, noteProject, noteThread, noteWorkflowItem } from './entityIndex';
 import { __resetScopesForTest, setCarriedSessionScopes } from './scopes';
-import { projectHasScope, threadHasScope, threadScopeGrant, workflowItemHasScope } from './entityScopes';
+import {
+  projectHasScope, projectScopeGrant, threadHasScope, threadScopeGrant, workflowItemHasScope, workflowItemScopeGrant,
+} from './entityScopes';
 import { draftPlaceholderId } from '../stores/draftPlaceholderId';
 
 beforeEach(() => {
@@ -21,6 +23,18 @@ it('refuses ambiguous unknown entities instead of borrowing HOME permissions', (
   expect(workflowItemHasScope('threads:autonomy', 'unknown')).toBe(false);
   // Holding nothing there is not a known refusal.
   expect(threadScopeGrant('threads:operate', 'unknown')).toBe('unknown');
+  expect(projectScopeGrant('git:operate', 'unknown')).toBe('unknown');
+  expect(workflowItemScopeGrant('threads:autonomy', 'unknown')).toBe('unknown');
+});
+
+it('says which of granted, refused and unknown a project\'s and a run\'s computer answers', () => {
+  for (const [computer, grant] of [['writable', 'granted'], ['readonly', 'refused'], ['silent', 'unknown']] as const) {
+    noteProject(`project-${computer}`, computer);
+    noteWorkflowItem(`run-${computer}`, computer);
+    expect(projectScopeGrant('git:operate', `project-${computer}`)).toBe(grant);
+    expect(workflowItemScopeGrant('threads:autonomy', `run-${computer}`)).toBe(grant);
+    expect(projectHasScope('git:operate', `project-${computer}`)).toBe(grant === 'granted');
+  }
 });
 
 // The answer a surface may describe: refused only for a grant known to lack

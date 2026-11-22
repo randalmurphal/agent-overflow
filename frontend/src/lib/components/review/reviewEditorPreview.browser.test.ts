@@ -97,7 +97,7 @@ describe('the description and summary editors\' Preview', () => {
     const previews = createEditorPreviews(() => new Set(['summary']), HOME_BACKEND);
     stopPreviews = previews.dispose;
     const review = {
-      drafts: [], scope: 'pr', selectedCommitSHA: null, pinned: true, commentsGranted: true, sendingComments: false,
+      drafts: [], scope: 'pr', selectedCommitSHA: null, pinned: true, commentsGrant: 'granted', sendingComments: false,
       effectiveSubmitTarget: 'pr', isTurnActive: false, prRef: null, prDetail: null, verdict: 'comment', setVerdict: () => {},
       summaryBody: 'Looks **good**.', setSummaryBody: () => {}, editorPreviews: previews,
     } as never;

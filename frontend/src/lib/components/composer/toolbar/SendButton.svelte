@@ -22,6 +22,7 @@
   import Menu from '../../primitives/Menu.svelte';
   import MenuItem from '../../primitives/MenuItem.svelte';
   import type { SendButtonAction } from './sendButtonTypes';
+  import { grantBlockedTitle } from '../../../transport/scopeRefusal';
 
   interface Props {
     canSend: boolean;
@@ -333,13 +334,13 @@
         <MenuItem
           label="Interrupt"
           disabled={!turnRunning || sessionGrant !== 'granted'}
-          title={sessionGrant === 'refused' ? 'Not granted to this device' : undefined}
+          title={grantBlockedTitle(sessionGrant)}
           onSelect={handleMenuInterrupt}
         />
         <MenuItem
           label="End Session"
           disabled={sessionLive === false || sessionGrant !== 'granted'}
-          title={sessionGrant === 'refused' ? 'Not granted to this device' : sessionLive === false ? 'No session is running' : undefined}
+          title={grantBlockedTitle(sessionGrant) ?? (sessionLive === false ? 'No session is running' : undefined)}
           onSelect={handleEndSession}
         />
       </Menu>

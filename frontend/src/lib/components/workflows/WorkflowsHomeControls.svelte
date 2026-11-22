@@ -7,14 +7,15 @@
   // triage-agent spawners.
   //
   // Remote posture (§10): every control here mutates, so all of them disable
-  // with a "Not granted to this device" tooltip in a view-only session; the project filter is
-  // pure view state and stays live.
+  // with the reason (`grantBlockedTitle`) in a view-only session; the project
+  // filter is pure view state and stays live.
 
   import { WorkflowSetGlobalPause } from '../../stores/bindings';
   import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import { userFacingError } from '../../utils/userFacingError';
   import { getProjectLabelText, getProjects } from '../../stores/projects.svelte';
-  import { hasScope } from '../../transport/scopes';
+  import { anyOfGrants, hasScope, scopeGrant } from '../../transport/scopes';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
   import { isWorkflowEnginePaused, resyncWorkflowEngineState } from '../../stores/workflowRuns.svelte';
   import {
     getWorkflowProjectFilter,
@@ -24,14 +25,15 @@
 
   // Every control here drives the workflow engine, which is `threads:autonomy`.
   let computers = $derived(getAttachedBackends());
-  let ungranted = $derived(!computers.some((entry) => hasScope('threads:autonomy', entry.id)));
+  let grant = $derived(anyOfGrants(computers.map((entry) => scopeGrant('threads:autonomy', entry.id))));
+  let ungranted = $derived(grant !== 'granted');
   let pauseUngrant = $derived(computers.length === 0 || computers.some((entry) => !hasScope('threads:autonomy', entry.id)));
   let paused = $derived(isWorkflowEnginePaused());
   let projects = $derived(getProjects());
   let filter = $derived(getWorkflowProjectFilter());
   let pausing = $state(false);
 
-  const ungrantedTitle = $derived(ungranted ? 'Not granted to this device' : undefined);
+  const ungrantedTitle = $derived(grantBlockedTitle(grant));
 
   async function togglePause(): Promise<void> {
     if (pauseUngrant || pausing) return;

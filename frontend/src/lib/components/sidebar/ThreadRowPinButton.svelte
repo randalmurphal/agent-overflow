@@ -15,6 +15,8 @@
   import Pin from '@lucide/svelte/icons/pin';
   import Icon from '../primitives/Icon.svelte';
   import { PIN_GROUP_BACK } from './threadRowActions';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
+  import type { ScopeGrant } from '../../transport/scopes';
 
   interface Props {
     isPinned: boolean;
@@ -23,9 +25,9 @@
     onToggle: () => void;
     /** Right-click on a pinned affordance: front burner ⇄ back burner. */
     onCycleBurner: () => void;
-    /** The session lacks `threads:operate` for the row's computer: the
-     *  affordance stays where it is, inert, and says why. */
-    disabled?: boolean;
+    /** Whether the session holds `threads:operate` for the row's computer.
+     *  Without it the affordance stays where it is, inert, and says why. */
+    grant?: ScopeGrant;
   }
 
   let {
@@ -33,19 +35,20 @@
     pinGroup,
     onToggle,
     onCycleBurner,
-    disabled = false,
+    grant = 'granted',
   }: Props = $props();
+
+  let disabled = $derived(grant !== 'granted');
 
   let isBackBurner = $derived(isPinned && pinGroup === PIN_GROUP_BACK);
   let label = $derived(isPinned ? 'Unpin Thread' : 'Pin Thread');
   // The hover text teaches the right-click burner toggle, which nothing
   // else on screen reveals.
   let hoverText = $derived(
-    disabled
-      ? 'Not granted to this device'
-      : !isPinned
+    grantBlockedTitle(grant)
+      ?? (!isPinned
         ? 'Pin Thread\nOnce pinned, right-click toggles front/back burner'
-        : `Unpin Thread\nRight-click to move to ${isBackBurner ? 'front' : 'back'} burner`,
+        : `Unpin Thread\nRight-click to move to ${isBackBurner ? 'front' : 'back'} burner`),
   );
 
   function handleToggle(e: MouseEvent): void {

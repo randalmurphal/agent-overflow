@@ -27,7 +27,8 @@
   import { runTerminalToggle } from '../terminal/terminalToggle';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import { hasScope } from '../../transport/scopes';
-  import { threadHasScope } from '../../transport/entityScopes';
+  import { threadScopeGrant } from '../../transport/entityScopes';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
   import { openInEditor } from '../../stores/openInEditor';
   import { errString } from '../../utils/errors';
   import { forgeLabels } from '../../utils/forgeLabels';
@@ -66,7 +67,7 @@
   // its computer has assistants on.
   let isAssistant = $derived(Boolean(pane.thread?.agentId) && !pane.thread?.archived && pane.threadId !== null && assistantsOn(threadComputer(pane.threadId)));
   // StartNextAssistantThread rides threads:autonomy.
-  let nextThreadUngranted = $derived(!threadHasScope('threads:autonomy', pane.threadId, pane.thread?.projectId));
+  let nextThreadGrant = $derived(threadScopeGrant('threads:autonomy', pane.threadId, pane.thread?.projectId));
   function startNextAssistantThread(): void {
     const thread = pane.thread;
     if (!thread) return;
@@ -95,8 +96,9 @@
   // mirror all open a PTY on the thread's computer under `terminal:operate`:
   // the same gate the palette's terminal.toggle command reads. Inert with a
   // reason rather than absent, like every other ungranted control.
-  let terminalUngranted = $derived(!threadHasScope('terminal:operate', pane.threadId, pane.thread?.projectId));
-  let terminalUngrantedTitle = $derived(terminalUngranted ? 'Not granted to this device' : undefined);
+  let terminalGrant = $derived(threadScopeGrant('terminal:operate', pane.threadId, pane.thread?.projectId));
+  let terminalUngranted = $derived(terminalGrant !== 'granted');
+  let terminalUngrantedTitle = $derived(grantBlockedTitle(terminalGrant));
 
   // Attach deps as $derived primitives so the effect re-runs only when the
   // values actually change — pane.replaceThread() fires for unrelated metadata
@@ -258,9 +260,9 @@
   <Button
     variant="secondary"
     size="xs"
-    disabled={nextThreadUngranted}
+    disabled={nextThreadGrant !== 'granted'}
     ariaLabel="New Thread, Same Assistant"
-    title={nextThreadUngranted ? 'Not granted to this device' : 'New Thread, Same Assistant'}
+    title={grantBlockedTitle(nextThreadGrant) ?? 'New Thread, Same Assistant'}
     onclick={startNextAssistantThread}
     testId="chat-header-next-thread"
     class="shrink-0 w-6 compact:w-9 px-0"

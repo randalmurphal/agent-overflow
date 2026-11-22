@@ -6,19 +6,21 @@
   import Archive from '@lucide/svelte/icons/archive';
   import X from '@lucide/svelte/icons/x';
   import Icon from '../primitives/Icon.svelte';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
+  import type { ScopeGrant } from '../../transport/scopes';
 
   let {
     onArchive,
     onDelete,
-    disabled = false,
+    grant = 'granted',
   }: {
     onArchive?: (e: MouseEvent) => void;
     onDelete?: (e: MouseEvent) => void;
-    /** The session lacks the write; the button stays, inert, and says why. */
-    disabled?: boolean;
+    /** Whether the session holds the write; without it the button stays, inert, and says why. */
+    grant?: ScopeGrant;
   } = $props();
 
-  const UNGRANTED = 'Not granted to this device';
+  let disabled = $derived(grant !== 'granted');
 
   const btnClass =
     'flex items-center justify-center h-5 w-5 rounded-[var(--radius-field)] shrink-0 ' +
@@ -34,7 +36,7 @@
     data-testid="thread-row-delete"
     class={btnClass}
     aria-label="Delete Terminal"
-    title={disabled ? UNGRANTED : 'Delete Terminal'}
+    title={grantBlockedTitle(grant) ?? 'Delete Terminal'}
   >
     <Icon icon={X} size={12} strokeWidth={2} class="opacity-90" />
   </button>
@@ -46,7 +48,7 @@
     data-testid="thread-row-archive"
     class={btnClass}
     aria-label="Archive Thread"
-    title={disabled ? UNGRANTED : 'Archive Thread'}
+    title={grantBlockedTitle(grant) ?? 'Archive Thread'}
   >
     <Icon icon={Archive} size={12} strokeWidth={2} class="opacity-90" />
   </button>

@@ -7,6 +7,8 @@
   import { ReviewDiffSource, type ReviewDiffRead } from '../../stores/reviewDiffStream';
   import type { CommitFile, WorkspaceRef } from '../../types/git';
   import { userFacingError } from '../../utils/userFacingError';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
+  import type { ScopeGrant } from '../../transport/scopes';
   import { changeKey, rowPaths } from './commitFiles';
 
   // The uncommitted patch of the commit dialog's active row. One file is
@@ -18,10 +20,11 @@
     /** The computer that serves the workspace's diffs. */
     backend: BackendKey;
     file: CommitFile | null;
-    /** This device may not read workspace files. */
-    ungranted: boolean;
+    /** Whether this device may read workspace files. */
+    grant: ScopeGrant;
   }
-  let { workspace, backend, file, ungranted }: Props = $props();
+  let { workspace, backend, file, grant }: Props = $props();
+  let blocked = $derived(grantBlockedTitle(grant));
 
   let read: ReviewDiffRead | null = null;
   let shown = $state.raw<ReviewFile | null>(null);
@@ -31,7 +34,7 @@
   let loadedKey = '';
 
   $effect(() => {
-    const key = file && !ungranted
+    const key = file && grant === 'granted'
       ? `${workspace.projectId}\n${workspace.workspacePath}\n${changeKey(file)}`
       : '';
     if (key === loadedKey) return;
@@ -89,8 +92,8 @@
     <p class="m-auto px-4 text-center text-[0.75rem] text-fg-muted" role={error ? 'alert' : undefined}>
       {#if !file}
         Select a file to see its changes.
-      {:else if ungranted}
-        Not granted to this device
+      {:else if blocked}
+        {blocked}
       {:else if error}
         {error}
       {:else if loading || !loaded}

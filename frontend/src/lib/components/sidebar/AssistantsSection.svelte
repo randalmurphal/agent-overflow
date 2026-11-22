@@ -19,7 +19,8 @@
   import { getProjectLabelText } from '../../stores/projects.svelte';
   import { selectedBackend } from '../../stores/selectedBackend.svelte';
   import { assistantsOffOn, assistantsOn } from '../../stores/assistants.svelte';
-  import { hasScope } from '../../transport/scopes';
+  import { scopeGrant } from '../../transport/scopes';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
   import IconButton from '../primitives/IconButton.svelte';
   import Icon from '../primitives/Icon.svelte';
   import SidebarSectionToggle from './SidebarSectionToggle.svelte';
@@ -36,7 +37,7 @@
 
   let { assistants, pane, searching }: Props = $props();
   let shown = $derived(isSidebarSectionShown('assistants', searching));
-  let createUngranted = $derived(!hasScope('threads:autonomy', selectedBackend()));
+  let createGrant = $derived(scopeGrant('threads:autonomy', selectedBackend()));
   // New Assistant creates on the selected computer, which may have its
   // assistants off while another computer's show here.
   let createOff = $derived(!assistantsOn(selectedBackend()));
@@ -63,9 +64,9 @@
     </h2>
     <IconButton
       label="New Assistant"
-      title={createUngranted ? 'Not granted to this device' : createOff ? assistantsOffOn(selectedBackend()) : undefined}
+      title={grantBlockedTitle(createGrant) ?? (createOff ? assistantsOffOn(selectedBackend()) : undefined)}
       size="sm"
-      disabled={createUngranted || createOff}
+      disabled={createGrant !== 'granted' || createOff}
       onClick={(e) => openNewAssistantDialog({ targetPane: pane, openInNewPane: shouldOpenProjectThreadInNewPane(e) })}
     >
       {#snippet children()}

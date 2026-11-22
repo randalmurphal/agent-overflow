@@ -4,6 +4,8 @@ import { getTransportHelloFor } from './transportStatus.svelte';
 import { commentWriteKey, createCommentWrites, threadWhere, type CommentWrites } from './reviewCommentWrites.svelte';
 import type { ReviewPRIdentity } from './reviewPRIdentity.svelte';
 import type { BackendKey } from '../transport/backendKey';
+import { grantBlockedTitle } from '../transport/scopeRefusal';
+import type { ScopeGrant } from '../transport/scopes';
 import { prReferenceWire, type PRRef } from '../utils/prReference';
 import { threadRange } from '../utils/reviewRange';
 import type { CommentAnchor } from '../utils/reviewRows';
@@ -83,8 +85,8 @@ export interface ReviewCommentActionsHost {
   entityKey(): string | null;
   launch(): string;
   updateFailing(): boolean;
-  /** This device may write to the forge here (`git:operate`). */
-  forgeGranted(): boolean;
+  /** Whether this device may write to the forge here (`git:operate`). */
+  forgeGrant(): ScopeGrant;
   /** Why acting on the PR is withheld now (the merge actions' gates). */
   prWithheld(): string | null;
   /** Drafts can be saved here and this device may save them. */
@@ -151,7 +153,7 @@ export function createReviewCommentActions(host: ReviewCommentActionsHost): Revi
   const sentCommentActions = $derived(capable && host.scope() === 'pr' && host.ref() !== null);
   const canPostNow = $derived(sentCommentActions && host.selectedCommitSHA() === null);
   const canHoldReply = $derived(canPostNow && host.canDraft());
-  const nowWithheldReason = $derived(host.forgeGranted() ? host.prWithheld() : 'Not granted to this device');
+  const nowWithheldReason = $derived(grantBlockedTitle(host.forgeGrant()) ?? host.prWithheld());
   const primaryCommentAction = $derived<'now' | 'draft'>(host.drafts().length === 0 ? 'now' : 'draft');
   // A thread's held replies, oldest first. A recovered delivery can leave
   // several; each shows.

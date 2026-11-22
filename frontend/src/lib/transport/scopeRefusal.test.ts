@@ -4,17 +4,38 @@ import {
   SESSION_REFUSAL,
   STEP_UP_REFUSAL,
   UNKNOWN_SCOPE_REFUSAL,
+  grantBlockedTitle,
   isScopeRefusal,
   isStepUpRefusal,
   presentScope,
   scopeRefusalMessage,
   scopeRefusalPresentation,
 } from './scopeRefusal';
-import { SCOPES } from './scopes';
+import { SCOPES, allOfGrants, anyOfGrants } from './scopes';
 
 function refusal(scope?: string): TransportError {
   return new TransportError('scope_required', 'not authorized', { scope });
 }
+
+describe('grantBlockedTitle', () => {
+  it('says a control is not granted only when a known grant refuses it', () => {
+    expect(grantBlockedTitle('granted')).toBeUndefined();
+    expect(grantBlockedTitle('refused')).toBe('Not granted to this device');
+    expect(grantBlockedTitle('unknown')).toBe('Unavailable until this computer connects');
+  });
+
+  it('judges a control that needs every grant and one that needs any', () => {
+    // A bulk action over threads on two computers.
+    expect(allOfGrants(['granted', 'granted'])).toBe('granted');
+    expect(allOfGrants(['granted', 'unknown'])).toBe('unknown');
+    expect(allOfGrants(['unknown', 'refused'])).toBe('refused');
+    // A control that acts on whichever computer the person picks.
+    expect(anyOfGrants(['refused', 'granted'])).toBe('granted');
+    expect(anyOfGrants(['refused', 'unknown'])).toBe('unknown');
+    expect(anyOfGrants(['refused'])).toBe('refused');
+    expect(anyOfGrants([])).toBe('refused');
+  });
+});
 
 describe('scopeRefusal', () => {
   it('names the capability the backend named', () => {

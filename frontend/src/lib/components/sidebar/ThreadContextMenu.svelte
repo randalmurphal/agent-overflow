@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { threadHasScope } from '../../transport/entityScopes';
+  import { threadScopeGrant } from '../../transport/entityScopes';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
   // Popover-anchored right-click menu for a thread row. Mirrors the
   // ProjectContextMenu composition: Popover anchors to the row element,
   // Menu owns keyboard nav, MenuItem renders each action. Confirm
@@ -66,7 +67,7 @@
   import { openThreadFromNavigation, openThreadInNewPane } from '../../stores/panes.svelte';
   import { addErrorToast } from '../../stores/toast.svelte';
   import { getSettings } from '../../stores/settings.svelte';
-  import { hasScope } from '../../transport/scopes';
+  import { allOfGrants, hasScope } from '../../transport/scopes';
   import { countNoun } from '../../utils/format';
   import { canOfferConversationTransfer } from '../../stores/conversationTransfers.svelte';
   import {
@@ -202,14 +203,16 @@
   // Every write here rides `threads:operate`, judged per thread on the
   // computer that owns it. A bulk menu is inert when ANY selected row
   // lacks it: the walk would otherwise succeed on some and refuse the rest.
-  let operateUngranted = $derived(
+  let operateGrant = $derived(
     inBulkContext
-      ? selectedThreads.some((t) => !threadHasScope('threads:operate', t.id, t.projectId))
-      : !threadHasScope('threads:operate', thread.id, thread.projectId),
+      ? allOfGrants(selectedThreads.map((t) => threadScopeGrant('threads:operate', t.id, t.projectId)))
+      : threadScopeGrant('threads:operate', thread.id, thread.projectId),
   );
-  let ungrantedTitle = $derived(operateUngranted ? 'Not granted to this device' : undefined);
+  let operateUngranted = $derived(operateGrant !== 'granted');
+  let ungrantedTitle = $derived(grantBlockedTitle(operateGrant));
   // StartNextAssistantThread and SetAssistantProjects ride threads:autonomy.
-  let nextThreadUngranted = $derived(!threadHasScope('threads:autonomy', thread.id, thread.projectId));
+  let nextThreadGrant = $derived(threadScopeGrant('threads:autonomy', thread.id, thread.projectId));
+  let nextThreadUngranted = $derived(nextThreadGrant !== 'granted');
 
   /**
    * Run an async per-thread action across the selection sequentially —
@@ -496,7 +499,7 @@
             <MenuItem
               label="New Thread, Same Assistant"
               disabled={nextThreadUngranted}
-              title={nextThreadUngranted ? 'Not granted to this device' : undefined}
+              title={grantBlockedTitle(nextThreadGrant)}
               onSelect={() => {
                 onClose();
                 void nextAssistantThreadAction(ctx());
@@ -505,7 +508,7 @@
             <MenuItem
               label="Projects…"
               disabled={nextThreadUngranted}
-              title={nextThreadUngranted ? 'Not granted to this device' : undefined}
+              title={grantBlockedTitle(nextThreadGrant)}
               onSelect={() => {
                 onClose();
                 openAssistantProjectsDialog(thread);

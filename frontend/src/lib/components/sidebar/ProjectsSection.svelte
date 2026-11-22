@@ -32,7 +32,8 @@
     openTerminalThread,
   } from '../../stores/threadCreation.svelte';
   import { openSessionImport } from '../../stores/sessionImport.svelte';
-  import { hasScope } from '../../transport/scopes';
+  import { scopeGrant } from '../../transport/scopes';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
   import History from '@lucide/svelte/icons/history';
   import Plus from '@lucide/svelte/icons/plus';
   import IconButton from '../primitives/IconButton.svelte';
@@ -73,7 +74,7 @@
   let flashProjectId: string | null = $state(null);
 
   // Session import walks the provider homes and writes threads.
-  let importUngranted = $derived(!hasScope('threads:operate', selectedBackend()));
+  let importGrant = $derived(scopeGrant('threads:operate', selectedBackend()));
 
   // Normalise the search query once per derivation so every filter path
   // uses the same lowercase form.
@@ -370,9 +371,9 @@
       <ProjectSortMenu />
       <IconButton
         label="Import Sessions"
-        title={importUngranted ? 'Not granted to this device' : undefined}
+        title={grantBlockedTitle(importGrant)}
         size="sm"
-        disabled={importUngranted}
+        disabled={importGrant !== 'granted'}
         onClick={() => openSessionImport()}
       >
         {#snippet children()}

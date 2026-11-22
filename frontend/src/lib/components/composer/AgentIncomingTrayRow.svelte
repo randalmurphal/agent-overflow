@@ -17,7 +17,8 @@
   import type { IncomingAgentMessage } from './activityRailAgents.svelte';
   import Icon from '../primitives/Icon.svelte';
   import Inbox from '@lucide/svelte/icons/inbox';
-  import { TRAY_WRITE_UNGRANTED } from './trayWrites';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
+  import type { ScopeGrant } from '../../transport/scopes';
 
   interface Props {
     message: IncomingAgentMessage;
@@ -26,14 +27,14 @@
     /** The rail's clock, Unix milliseconds. */
     now: number;
     isStopping: boolean;
-    /** This device may withdraw it (trayWrites.ts). */
-    stopGranted: boolean;
+    /** Whether this device may withdraw it (trayWrites.ts). */
+    stopGrant: ScopeGrant;
     onStop: (message: IncomingAgentMessage) => void;
     /** Where the sending thread opens, made on each click. */
     place: PlaceThread;
   }
 
-  let { message, viewer, now, isStopping, stopGranted, onStop, place }: Props = $props();
+  let { message, viewer, now, isStopping, stopGrant, onStop, place }: Props = $props();
 
   let originThread = $derived(userMessageOriginThread(message.item));
   let chip = $derived(originThread ? agentThreadOriginChip(originThread, viewer, place) : null);
@@ -75,8 +76,8 @@
       type="button"
       class="shrink-0 rounded-[var(--radius-field)] border border-border-subtle px-1.5 py-0.5 text-[0.6875rem] font-medium text-text-secondary transition-colors hover:bg-surface-2/40 hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-50 compact:min-h-9 compact:select-none"
       onclick={() => onStop(message)}
-      disabled={isStopping || !stopGranted}
-      title={stopGranted ? "Withdraw it from the queue before this thread's agent reads it" : TRAY_WRITE_UNGRANTED}
+      disabled={isStopping || stopGrant !== 'granted'}
+      title={grantBlockedTitle(stopGrant) ?? "Withdraw it from the queue before this thread's agent reads it"}
       aria-label={`Withdraw incoming ${message.kind}: ${sender}`}
       data-testid="agent-incoming-row-stop"
     >{isStopping ? 'Stopping…' : 'Stop'}</button>

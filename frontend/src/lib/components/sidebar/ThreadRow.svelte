@@ -83,7 +83,8 @@
   } from '../../utils/sidebarRowMetrics';
   import { threadBackend } from '../../transport/entityIndex';
   import { HOME_BACKEND } from '../../transport/backendKey';
-  import { threadHasScope } from '../../transport/entityScopes';
+  import { threadScopeGrant } from '../../transport/entityScopes';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
 
   let {
     thread,
@@ -282,9 +283,9 @@
   // The pin, archive and delete controls write the row; inert with a reason
   // when the session lacks the grant, the same treatment the context menu
   // gives its rows.
-  let operateUngranted = $derived(!threadHasScope('threads:operate', thread.id, thread.projectId));
+  let operateGrant = $derived(threadScopeGrant('threads:operate', thread.id, thread.projectId));
   // StartNextAssistantThread rides threads:autonomy.
-  let nextThreadUngranted = $derived(!threadHasScope('threads:autonomy', thread.id, thread.projectId));
+  let nextThreadGrant = $derived(threadScopeGrant('threads:autonomy', thread.id, thread.projectId));
   let isJumpTarget = $derived(
     !inGroup && !isAgent && sidebarPinGroup(thread) === 'front',
   );
@@ -489,7 +490,7 @@
       <ThreadRowPinButton
         {isPinned}
         pinGroup={thread.pinGroup}
-        disabled={operateUngranted}
+        grant={operateGrant}
         onToggle={() => { if (isPinned) void unpinThreadAction(ctx()); else void pinThreadAction(ctx()); }}
         onCycleBurner={() => void setThreadPinGroupAction(
           ctx(),
@@ -587,9 +588,9 @@
         <button
           type="button"
           onclick={(e) => { e.stopPropagation(); void nextAssistantThreadAction(ctx()); }}
-          disabled={nextThreadUngranted}
+          disabled={nextThreadGrant !== 'granted'}
           aria-label="New Thread, Same Assistant"
-          title={nextThreadUngranted ? 'Not granted to this device' : 'New Thread, Same Assistant'}
+          title={grantBlockedTitle(nextThreadGrant) ?? 'New Thread, Same Assistant'}
           data-testid="thread-row-next-thread"
           class="flex items-center justify-center h-5 w-5 compact:h-9 compact:w-9 rounded-[var(--radius-field)] shrink-0 cursor-pointer text-fg-subtle hover:text-fg hover:bg-surface-2/40 opacity-0 pointer-events-none transition-opacity duration-150 group-hover/thread-item:opacity-100 group-hover/thread-item:pointer-events-auto group-has-[:focus-visible]/thread-row:opacity-100 group-has-[:focus-visible]/thread-row:pointer-events-auto compact:opacity-100 compact:pointer-events-auto focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
         >
@@ -651,7 +652,7 @@
             <ThreadRowActions
               onArchive={isTerminal ? undefined : handleArchive}
               onDelete={isTerminal ? handleDelete : undefined}
-              disabled={operateUngranted}
+              grant={operateGrant}
             />
           </div>
         {/if}

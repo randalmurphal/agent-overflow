@@ -1301,4 +1301,37 @@ describe('architecture', () => {
       'Pass threadId (the item or pane thread the markdown belongs to) beside workspacePath.',
     );
   });
+
+  // A control a grant switches off says why through `grantBlockedTitle`
+  // (transport/scopeRefusal.ts), given the three-way `ScopeGrant`, so a
+  // computer that has not answered in this window is never described as
+  // having refused this device. The parameter type keeps a boolean out; a
+  // type cannot keep out a string literal written into a title, nor a call
+  // made only on one side of a two-way check, so this scan does.
+  it('says why a grant switches a control off only through grantBlockedTitle', () => {
+    const owner = 'lib/transport/scopeRefusal.ts';
+    const offenders = new Map<string, string[]>();
+    let ownerCalls = 0;
+    for (const file of scannedSources(SOURCE_EXTENSIONS)) {
+      if (repoPath(file) === owner) continue;
+      const findings: string[] = [];
+      readFileSync(file, 'utf8').split('\n').forEach((line, index) => {
+        if (/granted to this device/i.test(line)) findings.push(`line ${index + 1}: writes the refusal sentence itself`);
+        for (const call of line.matchAll(/(\?\s*)?\bgrantBlockedTitle\(\s*(['"`])?/g)) {
+          ownerCalls += 1;
+          if (call[2]) findings.push(`line ${index + 1}: passes grantBlockedTitle a literal grant`);
+          else if (call[1]) findings.push(`line ${index + 1}: calls grantBlockedTitle on one side of a two-way check`);
+        }
+      });
+      if (findings.length > 0) offenders.set(repoPath(file), findings);
+    }
+    expect(ownerCalls, 'the scan found no grantBlockedTitle calls; it would pass vacuously').toBeGreaterThan(30);
+    expectAllowlistExact(
+      offenders,
+      {},
+      'New violations.',
+      'Derive the ScopeGrant (scopeGrant, threadScopeGrant, projectScopeGrant, workflowItemScopeGrant) and'
+      + ' set the title to grantBlockedTitle(grant) ?? <the title the control has when granted>.',
+    );
+  });
 });

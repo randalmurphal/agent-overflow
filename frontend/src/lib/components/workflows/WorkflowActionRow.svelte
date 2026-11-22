@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { workflowItemHasScope } from '../../transport/entityScopes';
+  import { workflowItemScopeGrant } from '../../transport/entityScopes';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
   // The fixed action-row footer (UI-SPEC §4.3), primary first, each button
   // carrying the key §8 binds it to. Every mutation on the run detail goes
   // through here, which is why this is also where the §8 key target is
@@ -53,8 +54,9 @@
   }: Props = $props();
 
   // Every action on this row resolves a workflow run.
-  let ungranted = $derived(!workflowItemHasScope('threads:autonomy', item.id));
-  const ungrantedTitle = $derived(ungranted ? 'Not granted to this device' : undefined);
+  let grant = $derived(workflowItemScopeGrant('threads:autonomy', item.id));
+  let ungranted = $derived(grant !== 'granted');
+  const ungrantedTitle = $derived(grantBlockedTitle(grant));
   let kind = $derived(workflowResolutionKind(item));
   // A stop request only exists where a boundary exists to honour it: the ROOT
   // of a tree, whose workflow has a call phase. Offering it anywhere else would

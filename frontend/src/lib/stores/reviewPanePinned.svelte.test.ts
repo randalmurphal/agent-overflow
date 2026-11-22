@@ -414,7 +414,7 @@ describe('pinned routing and grants', () => {
     const state = pinned(5);
     await settle();
     expect(subscribe).not.toHaveBeenCalled();
-    expect(state.commentsGranted).toBe(false);
+    expect(state.commentsGrant).toBe('refused');
   });
 
   it('routes and checks the computer that listed the PR, not this page\'s home', async () => {
@@ -427,7 +427,7 @@ describe('pinned routing and grants', () => {
     expect(subscribe).toHaveBeenCalledTimes(1);
     expect(routed).toEqual(['laptop']);
     expect(state.backend).toBe('laptop');
-    expect(state.commentsGranted).toBe(true);
+    expect(state.commentsGrant).toBe('granted');
     await commentOn(state, { filePath: 'src/app.ts', newLine: 2, side: 'new', selectedText: 'line 2' }, 'here');
     expect(new Set(drafts.routed)).toEqual(new Set(['laptop']));
     revokeBackendScopes('laptop');
@@ -440,8 +440,20 @@ describe('pinned routing and grants', () => {
     const state = pinned(5, 'laptop');
     await settle();
     expect(subscribe).not.toHaveBeenCalled();
-    expect(state.commentsGranted).toBe(false);
+    expect(state.commentsGrant).toBe('refused');
+    expect(state.nowWithheldReason).toBe('Not granted to this device');
     revokeBackendScopes('laptop');
+  });
+
+  // Offline, or still connecting: the computer has refused nothing.
+  it('says the computer has to connect while its grant has not arrived', async () => {
+    stageBackend();
+    const { subscribe } = installPRMocks();
+    const state = pinned(5, 'laptop');
+    await settle();
+    expect(subscribe).not.toHaveBeenCalled();
+    expect(state.commentsGrant).toBe('unknown');
+    expect(state.nowWithheldReason).toBe('Unavailable until this computer connects');
   });
 });
 
