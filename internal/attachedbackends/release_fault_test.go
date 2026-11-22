@@ -115,8 +115,9 @@ func TestACommittedTransitionWhoseLocksFailToReleaseStands(t *testing.T) {
 		p := newIntroducedPeer(t, nil)
 		m, _ := newManager(t)
 		m.releaseFault = errReleaseRefused
-		if got := within(t, "the pairing", 5*time.Second, p.pair(m)); !errors.Is(got.err, errReleaseRefused) {
-			t.Fatalf("pairing = %v; want the release's error", got.err)
+		attachment, err := m.Add(context.Background(), p.personRaw)
+		if err != nil || attachment.ID != p.backendID || attachment.VerificationNumber != introducedVerificationNumber {
+			t.Fatalf("pairing = %+v, %v; want the attachment with its number and no error", attachment, err)
 		}
 		if built := enrolled(t, m, p.backendID); built.onEnded == nil {
 			t.Fatal("the saved pairing's carrier is not renewing")

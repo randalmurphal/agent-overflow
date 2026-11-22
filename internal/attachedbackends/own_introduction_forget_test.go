@@ -169,11 +169,14 @@ func newIntroducedPeer(t *testing.T, configure func(*introducedPeer)) *introduce
 	return p
 }
 
+// introducedVerificationNumber is the number every grant of the peer carries.
+const introducedVerificationNumber = "314159"
+
 func introducedGrant(w http.ResponseWriter, refresh string) {
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"sessionId": "session-1", "credential": "ao1.issued-" + refresh, "expiresAtMs": time.Now().Add(time.Hour).UnixMilli(),
 		"refreshSecret": refresh, "refreshExpiresAtMs": time.Now().Add(24 * time.Hour).UnixMilli(),
-		"scopes": []string{"threads:read"},
+		"scopes": []string{"threads:read"}, "verificationNumber": introducedVerificationNumber,
 	})
 }
 

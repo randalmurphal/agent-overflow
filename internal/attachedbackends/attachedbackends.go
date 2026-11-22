@@ -445,8 +445,12 @@ func (m *Manager) Add(ctx context.Context, pairingLink string) (Attachment, erro
 		return Attachment{}, errors.New("this is the computer you are already using")
 	}
 	attachment, _, err := m.enroll(ctx, link, pairingByPerson, addressPairing)
-	if err != nil {
+	if err != nil && attachment.ID == "" {
 		return Attachment{}, err
+	}
+	if err != nil {
+		// Saved, so the attachment finishes the operation; a lock really stuck fails this computer's next transition at its lock wait.
+		log.Printf("attachedbackends: the pairing with %s is saved and its locks did not release: %v", attachment.ID, err)
 	}
 	if comparison != "" {
 		attachment.VerificationNumber = comparison

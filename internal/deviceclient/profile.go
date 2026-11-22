@@ -451,8 +451,11 @@ func sessionPath(dir, backendID string) (string, error) {
 	if dir == "" {
 		return "", errors.New("deviceclient: no profile directory to keep sessions in")
 	}
+	if !validBackendID(backendID) {
+		return "", fmt.Errorf("%w: %q", ErrInvalidBackendID, backendID)
+	}
 	name := backendID + ".json"
-	if !validBackendID(backendID) || !filepath.IsLocal(name) {
+	if !filepath.IsLocal(name) {
 		return "", fmt.Errorf("%w: %q", ErrInvalidBackendID, backendID)
 	}
 	return filepath.Join(dir, SessionsDirName, name), nil
