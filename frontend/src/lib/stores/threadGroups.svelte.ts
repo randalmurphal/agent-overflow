@@ -114,7 +114,17 @@ export function groupCatalogPart(): CatalogPart<ThreadGroup> {
   };
 }
 
-/** Insert or replace one row. Used by every group RPC's response reconcile. */
+/**
+ * Replace a row this client holds with a call's answer. A row it no longer
+ * holds stays gone: the group was deleted while the call was out, and its
+ * deletion forgot which computer owned it.
+ */
+export function replaceThreadGroup(group: ThreadGroup): void {
+  if (!group?.id) return;
+  catalogWriter.mutate(threadGroupBackend(group.id), (rows) => rows.map((existing) => existing.id === group.id ? group : existing));
+}
+
+/** Insert or replace one row: a frame's, or the answer of the call that created it. */
 export function upsertThreadGroup(group: ThreadGroup): void {
   if (!group?.id) return;
   catalogWriter.mutate(threadGroupBackend(group.id), (rows) => {

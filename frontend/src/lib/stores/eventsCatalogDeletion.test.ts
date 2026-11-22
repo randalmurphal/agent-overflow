@@ -20,6 +20,7 @@ import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app
 import { readSidebarCatalogs } from '../../test/helpers/sidebarCatalogs';
 import { takePinnedBackend } from '../transport/backends';
 import { resetSidebarCatalogsForTest } from './sidebarCatalogs';
+import { renameThreadGroupAction } from '../components/sidebar/threadGroupActions';
 
 const LAPTOP = 'laptop';
 const project = (id: string): Project => ({ id, name: id, path: `/repo/${id}`, sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false });
@@ -162,5 +163,23 @@ describe("a deletion frame while that computer's read is out", () => {
     release();
     await read;
     expect(getThreadGroups()).toEqual([]);
+  });
+});
+
+describe("a call's answer for a row deleted while the call was out", () => {
+  it('does not bring back a group renamed on one screen and deleted on another before the rename answered', async () => {
+    holdTrees();
+    await laptopWrite();
+    writes = [];
+    let answer!: (group: ThreadGroup) => void;
+    setBindingMock('RenameThreadGroup', () => new Promise<ThreadGroup>((resolve) => { answer = resolve; }));
+    const rename = renameThreadGroupAction(group('g'), 'Renamed');
+    emitWailsEvent('thread-group:updated', { action: 'delete', group: group('g') }, 'laptop-id');
+    answer({ ...group('g'), name: 'Renamed' });
+    await rename;
+
+    expect(getThreadGroups()).toEqual([]);
+    expect((await laptopWrite()).groups).toEqual([]);
+    expect(writes.filter((write) => write.backend === HOME_BACKEND && write.groups.length > 0)).toEqual([]);
   });
 });

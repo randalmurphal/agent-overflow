@@ -24,6 +24,7 @@ import {
 } from '../../stores/bindings';
 import {
   deleteThreadGroupLocal,
+  replaceThreadGroup,
   requestGroupRename,
   upsertThreadGroup,
 } from '../../stores/threadGroups.svelte';
@@ -127,7 +128,7 @@ export async function renameThreadGroupAction(
   if (!trimmed || trimmed === group.name) return null;
   try {
     const renamed = await RenameThreadGroup(group.id, trimmed) as ThreadGroup;
-    upsertThreadGroup(renamed);
+    replaceThreadGroup(renamed);
     return renamed;
   } catch (err) {
     reportGroupFailure('rename thread group', err);
