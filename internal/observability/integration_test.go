@@ -49,10 +49,9 @@ func TestObs_TracingDisabledEmitsNoSpans(t *testing.T) {
 func TestObs_ReplayWriterWritesRecordToJsonl(t *testing.T) {
 	dir := t.TempDir()
 	m := replay.NewManager(replay.ManagerConfig{
-		RootDir:      dir,
-		QueueSize:    16,
-		WriterConfig: replay.WriterConfig{FsyncEvery: 1},
-		Enabled:      true,
+		RootDir:   dir,
+		QueueSize: 16,
+		Enabled:   true,
 	})
 	t.Cleanup(func() {
 		_ = m.Shutdown(context.Background())
@@ -113,15 +112,7 @@ func TestObs_ReplayWriterBoundedChannelDropsOverflow(t *testing.T) {
 		}
 	}
 
-	// Wait up to 2s for the drain to settle so drops stabilise.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if drops.Load() > 0 && m.QueueLen() == 0 {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-
+	// Enqueue counts a drop before it returns, so both counts are final.
 	if drops.Load() == 0 {
 		t.Errorf("expected at least one drop when flooding a size-2 queue with %d records", flood)
 	}
@@ -232,11 +223,10 @@ func TestObs_ReplayRotationPreservesOrder(t *testing.T) {
 func TestObs_ReplayManagerCachesWriters(t *testing.T) {
 	dir := t.TempDir()
 	m := replay.NewManager(replay.ManagerConfig{
-		RootDir:      dir,
-		QueueSize:    16,
-		WriterConfig: replay.WriterConfig{FsyncEvery: 1},
-		IdleTimeout:  10 * time.Second,
-		Enabled:      true,
+		RootDir:     dir,
+		QueueSize:   16,
+		IdleTimeout: 10 * time.Second,
+		Enabled:     true,
 	})
 	t.Cleanup(func() {
 		_ = m.Shutdown(context.Background())
@@ -284,11 +274,10 @@ func TestObs_ReplayManagerReapIdleWriters(t *testing.T) {
 	dir := t.TempDir()
 	// Short idle timeout so test finishes fast.
 	m := replay.NewManager(replay.ManagerConfig{
-		RootDir:      dir,
-		QueueSize:    16,
-		WriterConfig: replay.WriterConfig{FsyncEvery: 1},
-		IdleTimeout:  5 * time.Millisecond,
-		Enabled:      true,
+		RootDir:     dir,
+		QueueSize:   16,
+		IdleTimeout: 5 * time.Millisecond,
+		Enabled:     true,
 	})
 	t.Cleanup(func() {
 		_ = m.Shutdown(context.Background())
@@ -307,21 +296,20 @@ func TestObs_ReplayManagerReapIdleWriters(t *testing.T) {
 	// eviction happens at the documented interval is covered by the
 	// manager_test.go white-box test.
 	//
-	// Positive check: file was flushed to disk because FsyncEvery=1.
+	// A written record is readable before any Sync.
 	content, err := os.ReadFile(filepath.Join(dir, "idle-thread.jsonl"))
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
 	if len(content) == 0 {
-		t.Error("idle-thread.jsonl is empty after write (fsync missed?)")
+		t.Error("idle-thread.jsonl is empty after the drain")
 	}
 
 	// Now Shutdown — that should flush and close every writer. After the
 	// shutdown, we should still be able to read the file but not write
-	// through the manager.
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if err := m.Shutdown(shutdownCtx); err != nil {
+	// through the manager. Its Close syncs, so nothing bounds it but go
+	// test's own timeout.
+	if err := m.Shutdown(context.Background()); err != nil {
 		t.Errorf("Shutdown: %v", err)
 	}
 
@@ -334,49 +322,44 @@ func TestObs_ReplayManagerReapIdleWriters(t *testing.T) {
 func TestObs_ReplayManagerGracefulShutdown(t *testing.T) {
 	dir := t.TempDir()
 	m := replay.NewManager(replay.ManagerConfig{
-		RootDir:      dir,
-		QueueSize:    128,
-		WriterConfig: replay.WriterConfig{FsyncEvery: 1},
-		IdleTimeout:  10 * time.Second,
-		Enabled:      true,
+		RootDir:     dir,
+		QueueSize:   128,
+		IdleTimeout: 10 * time.Second,
+		Enabled:     true,
 	})
 
-	// Enqueue a moderate burst.
-	for i := 0; i < 50; i++ {
+	// Enqueue a moderate burst, which the queue holds whole.
+	const burst = 50
+	for i := 0; i < burst; i++ {
 		rec, _ := replay.NewRecord(time.Unix(0, int64(i)*int64(time.Millisecond)), "shut", "k", map[string]int{"i": i})
-		m.Enqueue(rec)
+		if !m.Enqueue(rec) {
+			t.Fatalf("Enqueue %d refused", i)
+		}
 	}
 
-	start := time.Now()
+	// Shutdown drains the queue before it closes the writers, and its
+	// Close syncs, so nothing bounds it but go test's own timeout.
 	if err := m.Shutdown(context.Background()); err != nil {
 		t.Fatalf("Shutdown: %v", err)
 	}
-	elapsed := time.Since(start)
-	if elapsed > 3*time.Second {
-		t.Errorf("Shutdown took %v, want < 3s", elapsed)
-	}
 
-	// Post-shutdown: all buffered records should have been drained to disk.
+	// Post-shutdown: every buffered record is on disk.
 	content, err := os.ReadFile(filepath.Join(dir, "shut.jsonl"))
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
-	lines := strings.Split(strings.TrimRight(string(content), "\n"), "\n")
-	// We can't promise all 50 made it (queue may have dropped some under
-	// congestion), but we must see at least some of them.
-	if len(lines) == 0 {
-		t.Error("expected some records on disk after graceful shutdown")
+	if lines := strings.Count(string(content), "\n"); lines != burst {
+		t.Errorf("%d records on disk after graceful shutdown, want %d", lines, burst)
 	}
 }
 
 func TestObs_ReplayRespectsThreadScope(t *testing.T) {
 	dir := t.TempDir()
 	m := replay.NewManager(replay.ManagerConfig{
-		RootDir:      dir,
-		QueueSize:    16,
-		WriterConfig: replay.WriterConfig{FsyncEvery: 1},
-		IdleTimeout:  10 * time.Second,
-		Enabled:      true,
+		RootDir:     dir,
+		QueueSize:   16,
+		IdleTimeout: 10 * time.Second,
+		Enabled:     true,
 	})
 	t.Cleanup(func() {
 		_ = m.Shutdown(context.Background())
@@ -479,12 +462,10 @@ func TestObs_ReplayWriterConcurrentEnqueuesSafe(t *testing.T) {
 	}
 	wg.Wait()
 
-	// Shutdown drains the queue synchronously. A nil error means every
-	// accepted record is on disk; one that ran out of time says so rather
-	// than leaving the drain writing behind it.
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := m.Shutdown(shutdownCtx); err != nil {
+	// Shutdown drains the queue synchronously, so a nil error means every
+	// accepted record is on disk. The drain syncs every 64 writes and the
+	// Close syncs again, so nothing bounds it but go test's own timeout.
+	if err := m.Shutdown(context.Background()); err != nil {
 		t.Fatalf("Shutdown: %v", err)
 	}
 
@@ -539,21 +520,15 @@ func TestObs_ReplayRotationFilenames(t *testing.T) {
 	}
 }
 
-// waitForFile waits until the given file exists and the replay manager's
-// internal queue has drained. Used to eliminate timing races in assertions
-// about file contents.
+// waitForFile waits until every record enqueued so far is written, then
+// requires the file. A record counts as written once its Write, Sync
+// included, returns, so nothing bounds the wait but go test's own timeout.
 func waitForFile(t *testing.T, m *replay.Manager, path string) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if m.QueueLen() == 0 {
-			if _, err := os.Stat(path); err == nil {
-				// Extra 2ms buffer so the fsync'ed contents are visible.
-				time.Sleep(5 * time.Millisecond)
-				return
-			}
-		}
-		time.Sleep(2 * time.Millisecond)
+	if err := m.WaitForDrain(context.Background()); err != nil {
+		t.Fatalf("WaitForDrain: %v", err)
 	}
-	t.Fatalf("file %s did not appear within deadline", path)
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("file %s missing after the drain: %v", path, err)
+	}
 }

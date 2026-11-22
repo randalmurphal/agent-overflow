@@ -432,18 +432,20 @@ func (t threadToolsApp) forkSpawnOptions(ctx context.Context, origin threadReque
 // applySpawnModel resolves provider, model and effort with the one
 // resolution thread_options lists profiles by (threadtools.ResolveSpawn):
 // opts' own as the spawner's, the call's as the choice, against what this
-// computer offers.
+// computer offers, which is the read the thread is created with. The call's
+// model is read by the provider the thread runs on (threadtools.CallChoice):
+// a family runs the newest member this computer lists now. This is the
+// spawn's only resolution and only refusal; the caller resolves first only
+// for a paired computer that predates families (checkSpawnChoice).
 func (t threadToolsApp) applySpawnModel(ctx context.Context, opts *CreateThreadOptions, call threadtools.SpawnCall) error {
 	catalog, err := t.Catalog(ctx, threadtools.CatalogQuery{What: threadtools.OptionsModels})
 	if err != nil {
 		return err
 	}
-	resolved, err := threadtools.ResolveSpawn(
-		threadtools.SpawnDefaults{Provider: opts.Provider, Model: opts.Model, Effort: opts.ReasoningEffort},
-		threadtools.SpawnChoice{Provider: call.Provider, Model: call.Model, Effort: call.Effort},
-		catalog.Providers, "this computer")
+	spawner := threadtools.SpawnDefaults{Provider: opts.Provider, Model: opts.Model, Effort: opts.ReasoningEffort}
+	resolved, err := threadtools.ResolveSpawn(spawner, threadtools.CallChoice(call, nil, spawner), catalog.Providers, "this computer")
 	if err != nil {
-		return errorsx.Public(threadtools.CodeInvalidRequest, err.Error()+" thread_options lists what it offers.", err)
+		return threadtools.RefuseSpawnChoice(call.Profile, err)
 	}
 	opts.Provider, opts.Model, opts.ReasoningEffort = resolved.Provider, resolved.Model, resolved.Effort
 	return nil

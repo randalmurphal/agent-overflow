@@ -25,7 +25,7 @@
   import { getSettings } from '../../../stores/settings.svelte';
   import { addErrorToast, addToast } from '../../../stores/toast.svelte';
   import { errString } from '../../../utils/errors';
-  import { hiddenModelSlugs } from '../../../utils/hiddenModels';
+  import { hiddenModelSlugs, pickerOffers } from '../../../utils/hiddenModels';
   import { displayModelLabel } from '../../../utils/modelLabels';
   import Popover from '../../primitives/Popover.svelte';
   import Menu from '../../primitives/Menu.svelte';
@@ -162,7 +162,7 @@
       if (hidden.has(fav.value)) return false;
       // A model the provider stopped listing leaves Favorites the same way it
       // leaves the submenu; the star returns if the provider lists it again.
-      if (getModels(provider).some((model) => model.slug === fav.value && model.unlisted)) return false;
+      if (getModels(provider).some((model) => model.slug === fav.value && !pickerOffers(model))) return false;
       // A starred model is reachable exactly when its provider's own
       // submenu is — one rule, so a favorite can never be the back door
       // onto a provider the picker is not offering.

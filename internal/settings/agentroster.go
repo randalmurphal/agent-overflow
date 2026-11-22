@@ -28,8 +28,12 @@ type AgentProfile struct {
 	Name string `json:"name"`
 	// UseFor is the line an agent reads when it chooses: what the profile
 	// is good at, what it costs, and what not to use it for.
-	UseFor      string `json:"useFor"`
-	Provider    string `json:"provider"`
+	UseFor   string `json:"useFor"`
+	Provider string `json:"provider"`
+	// Model is an exact model ID, or a family named without a version
+	// (`claude-opus`, `gpt-sol`) that runs the newest model of it the
+	// target computer lists. The provider's grammar decides which it is
+	// (internal/provider/modelfamily.go), so nothing here reads it.
 	Model       string `json:"model"`
 	Effort      string `json:"effort"`
 	RuntimeMode string `json:"runtimeMode"`
@@ -107,43 +111,45 @@ func sortedNonEmpty(values map[string]struct{}) []string {
 	return out
 }
 
-// The seeded roster: one profile per model the owner described, in the
-// owner's words made neutral, grouped by provider and ordered within each
-// from the lowest tier to the highest, so the listing shows the ladder. A
-// use-for line names only profiles of its own provider: a computer with one
-// provider must never be pointed at the other's. A model the computer does
-// not offer leaves its profile out of thread_options there.
+// The seeded roster: one profile per model family the owner described, in
+// the owner's words made neutral, grouped by provider and ordered within
+// each from the lowest tier to the highest, so the listing shows the
+// ladder. Each names its family, so it runs the newest model of it a
+// computer lists. A use-for line names only profiles of its own provider: a
+// computer with one provider must never be pointed at the other's. A
+// computer that lists no model of a profile's family leaves the profile
+// out of thread_options there.
 var defaultAgentProfiles = []AgentProfile{
 	{
-		Name: "Luna", Provider: "codex", Model: "gpt-5.6-luna", Effort: "high",
+		Name: "Luna", Provider: "codex", Model: "gpt-luna", Effort: "high",
 		UseFor: "Mechanical changes that sweep across many files, fanned out to many threads, with little or no judgment; or a search for something specific.",
 	},
 	{
-		Name: "Terra", Provider: "codex", Model: "gpt-5.6-terra", Effort: "high",
+		Name: "Terra", Provider: "codex", Model: "gpt-terra", Effort: "high",
 		UseFor: "A clear task where speed and cost matter and no problems are expected. Tell it to ask you before any major decision. The best value for its cost.",
 	},
 	{
-		Name: "Sol", Provider: "codex", Model: "gpt-5.6-sol", Effort: "high",
+		Name: "Sol", Provider: "codex", Model: "gpt-sol", Effort: "high",
 		UseFor: "Code review, including adversarial review: detail-oriented and thorough. Faster and cheaper than Astra and the better reviewer of the two.",
 	},
 	{
-		Name: "Astra", Provider: "codex", Model: "gpt-6-astra", Effort: "high",
+		Name: "Astra", Provider: "codex", Model: "gpt-astra", Effort: "high",
 		UseFor: "Architecture and big-picture design discussion; the strongest reasoner. Also a careful, detail-oriented reviewer, though Sol reviews as well for less. Expensive and slow. Do not use it to implement or to make the final call: it is unreliable at both.",
 	},
 	{
-		Name: "Haiku", Provider: "claude", Model: "claude-haiku-5-5", Effort: "high",
+		Name: "Haiku", Provider: "claude", Model: "claude-haiku", Effort: "high",
 		UseFor: "Mechanical changes that sweep across many files, fanned out to many threads, with little or no judgment; or a search for something specific.",
 	},
 	{
-		Name: "Sonnet", Provider: "claude", Model: "claude-sonnet-5", Effort: "high",
+		Name: "Sonnet", Provider: "claude", Model: "claude-sonnet", Effort: "high",
 		UseFor: "A clear task where speed and cost matter and no problems are expected. Tell it to ask you before any major decision.",
 	},
 	{
-		Name: "Opus", Provider: "claude", Model: "claude-opus-5", Effort: "high",
+		Name: "Opus", Provider: "claude", Model: "claude-opus", Effort: "high",
 		UseFor: "Implementation: the dependable workhorse when the work needs decisions about a clean design.",
 	},
 	{
-		Name: "Fable", Provider: "claude", Model: "claude-fable-5", Effort: "high",
+		Name: "Fable", Provider: "claude", Model: "claude-fable", Effort: "high",
 		UseFor: "Design and product taste, and common-sense judgment on a plan or a result. Very expensive; moderate speed. Not for routine implementation.",
 	},
 }

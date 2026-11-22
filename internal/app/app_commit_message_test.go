@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/claudecatalog"
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/textgen"
@@ -27,6 +28,7 @@ func newCommitMsgTestApp(t *testing.T) *App {
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	resetProviderBinarySettings(t, app)
+	listCodexModels(app, provider.CodexModels)
 	return app
 }
 
@@ -105,8 +107,8 @@ func TestGenerateCommitMessage_CodexPathHappy(t *testing.T) {
 		t.Errorf("codex args missing '--model'; got %v", gotSpec.Args)
 	}
 	// Default model for codex text generation is Sol.
-	if modelArg := nextArgAfter(gotSpec.Args, "--model"); modelArg != textgen.DefaultCodexModel {
-		t.Errorf("codex model arg = %q, want %q", modelArg, textgen.DefaultCodexModel)
+	if modelArg := nextArgAfter(gotSpec.Args, "--model"); modelArg != shippedNewestLuna {
+		t.Errorf("codex model arg = %q, want %q", modelArg, shippedNewestLuna)
 	}
 	// Default reasoning effort is "low".
 	if !argsContainSubstring(gotSpec.Args, `model_reasoning_effort="low"`) {
@@ -140,6 +142,7 @@ func TestGenerateCommitMessage_ClaudePathHappy(t *testing.T) {
 
 	ref := testWorkspaceRef(t, app, workspace)
 
+	claudeReportsModels(app)
 	got, err := app.GenerateCommitMessage(ref, CommitSelection{All: true})
 	if err != nil {
 		t.Fatalf("happy path: %v", err)
@@ -154,12 +157,12 @@ func TestGenerateCommitMessage_ClaudePathHappy(t *testing.T) {
 	if !argsContain(gotSpec.Args, "--dangerously-skip-permissions") {
 		t.Errorf("claude args missing '--dangerously-skip-permissions'; got %v", gotSpec.Args)
 	}
-	// No probe has listed DefaultClaudeModel, so the fallback runs. It is
+	// No probe has reported the CLI's models, so the fallback runs. It is
 	// Haiku 4.5, which the CLI's own model list says has no reasoning tiers,
 	// so the flag is omitted rather than coerced up to the provider default.
 	// See provider.ModelDeclaresNoReasoningEffort.
-	if modelArg := nextArgAfter(gotSpec.Args, "--model"); modelArg != textgen.FallbackClaudeModel {
-		t.Errorf("claude model arg = %q, want %q", modelArg, textgen.FallbackClaudeModel)
+	if modelArg := nextArgAfter(gotSpec.Args, "--model"); modelArg != reportedHaiku {
+		t.Errorf("claude model arg = %q, want %q", modelArg, reportedHaiku)
 	}
 	if argsContain(gotSpec.Args, "--effort") {
 		t.Errorf("claude args must omit --effort for a model without reasoning tiers; got %v", gotSpec.Args)
@@ -179,16 +182,16 @@ func TestGenerateCommitMessage_ClaudeDefaultFollowsTheCLIModelList(t *testing.T)
 		{
 			name: "cli lists haiku 5.5",
 			wire: []claude.WireModel{
-				{Value: "haiku", ResolvedModel: "claude-haiku-5-5"},
+				{Value: "haiku", ResolvedModel: "claude-haiku-5-5", SupportsEffort: true, SupportedEffortLevels: []string{"low", "medium", "high"}},
 				{Value: "claude-haiku-4-5-20251001", ResolvedModel: "claude-haiku-4-5-20251001"},
 			},
-			wantModel:  textgen.DefaultClaudeModel,
+			wantModel:  "claude-haiku-5-5",
 			wantEffort: settings.DefaultSettings.TextGenerationReasoningEffort,
 		},
 		{
 			name:      "cli predates haiku 5.5",
 			wire:      []claude.WireModel{{Value: "haiku", ResolvedModel: "claude-haiku-4-5-20251001"}},
-			wantModel: textgen.FallbackClaudeModel,
+			wantModel: reportedHaiku,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -265,6 +268,7 @@ func TestGenerateCommitMessage_RoutingRespectsSettings(t *testing.T) {
 				}, nil
 			}
 
+			claudeReportsModels(app)
 			if _, err := app.GenerateCommitMessage(ref, CommitSelection{All: true}); err != nil {
 				t.Fatalf("generate: %v", err)
 			}
@@ -434,6 +438,7 @@ func TestGenerateCommitMessage_Layer2PrimaryFailsAlternateSucceeds(t *testing.T)
 		}, nil
 	}
 
+	claudeReportsModels(app)
 	got, err := app.GenerateCommitMessage(ref, CommitSelection{All: true})
 	if err != nil {
 		t.Fatalf("commit message: %v", err)

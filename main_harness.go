@@ -401,7 +401,7 @@ type isolationOptions struct {
 func olderComputerSurface() (absent map[string]bool, reshape map[string]func(json.RawMessage) (json.RawMessage, error)) {
 	absent = map[string]bool{}
 	for _, name := range []string{
-		"CancelThreadWake", "CheckAgentProfiles", "CreateAssistant", "DeleteThreads",
+		"AgentRosterSeeds", "CancelThreadWake", "CheckAgentProfiles", "CreateAssistant", "DeleteThreads",
 		"GetDeleteDependents", "GetNativeMemoryStatus", "GetStandingAgent",
 		"GetThreadAgentRows", "GetThreadRequestStates", "GetThreadWakeDetail",
 		"GetThreadWorkerSummary", "ListAssistantPastThreads", "ListStandingAgentWakes",

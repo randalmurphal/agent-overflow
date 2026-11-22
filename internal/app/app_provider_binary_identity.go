@@ -36,7 +36,12 @@ type providerBinaryIdentity struct {
 // banner, and neither the upgrade watch nor the catalog seed has anything to
 // say about it.
 func (a *App) resolveProviderBinaryIdentity(providerName string) (providerBinaryIdentity, bool) {
-	configured := a.providerBinaryPath(providerName)
+	return resolveBinaryIdentity(providerName, a.providerBinaryPath(providerName))
+}
+
+// resolveBinaryIdentity is resolveProviderBinaryIdentity for a configured
+// path the caller already holds, such as the one a probe ran.
+func resolveBinaryIdentity(providerName, configured string) (providerBinaryIdentity, bool) {
 	if configured == "" {
 		return providerBinaryIdentity{}, false
 	}

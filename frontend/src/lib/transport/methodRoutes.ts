@@ -22,6 +22,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2233479686: 'selected', // AgentRemoteFetchLog
 	1273975760: 'selected', // AgentRemoteStart
 	1365876070: 'selected', // AgentRemoteStatus
+	2808669817: 'home', // AgentRosterSeeds
 	4007046465: 'selected', // AllowPreviewPort
 	2190095592: 'thread', // AnswerThreadShellCommand
 	2562809680: 'selected', // AppendLiveDictation

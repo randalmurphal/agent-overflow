@@ -302,6 +302,7 @@ func TestTextGenerationCarriesTheChosenProvidersCustomEnv(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
 	resetProviderBinarySettings(t, app)
+	listCodexModels(app, provider.CodexModels)
 	if _, err := app.SetProviderCustomEnvVar(context.Background(), "claude", "ANTHROPIC_BASE_URL", "https://claude.test", false); err != nil {
 		t.Fatal(err)
 	}
@@ -313,7 +314,8 @@ func TestTextGenerationCarriesTheChosenProvidersCustomEnv(t *testing.T) {
 	}
 
 	app.lookPathFn = func(string) error { return nil }
-	cfg := app.resolveTextGenerationConfig()
+	claudeReportsModels(app)
+	cfg := textGenConfig(t, app)
 	if cfg.Provider != string(provider.Claude) {
 		t.Fatalf("provider = %q, want claude", cfg.Provider)
 	}
@@ -329,7 +331,7 @@ func TestTextGenerationCarriesTheChosenProvidersCustomEnv(t *testing.T) {
 		}
 		return nil
 	}
-	cfg = app.resolveTextGenerationConfig()
+	cfg = textGenConfig(t, app)
 	if cfg.Provider != string(provider.Codex) {
 		t.Fatalf("provider = %q, want the codex substitution", cfg.Provider)
 	}
@@ -341,7 +343,7 @@ func TestTextGenerationCarriesTheChosenProvidersCustomEnv(t *testing.T) {
 	}
 
 	// The explicit-provider builder (the layer-2 retry) agrees.
-	explicit, ok := app.resolveTextGenerationConfigFor(string(provider.Codex))
+	explicit, ok := app.resolveTextGenerationConfigFor(context.Background(), string(provider.Codex))
 	if !ok {
 		t.Fatal("resolveTextGenerationConfigFor(codex) reported unavailable")
 	}

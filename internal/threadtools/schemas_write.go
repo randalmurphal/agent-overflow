@@ -59,7 +59,7 @@ func spawnSchema(shape Shape) map[string]any {
 		},
 		"model": map[string]any{
 			"type":        "string",
-			"description": spawnDefaultText("Model slug for the new thread", defaults.Model) + " A model the target computer does not offer is refused with the list it does; thread_options lists them per provider.",
+			"description": spawnDefaultText("Model slug for the new thread", defaults.Model) + " A family named without a version, such as claude-opus or gpt-sol, runs the newest model of that family the target computer lists; a slug it offers as written is that model. A model or family the target computer does not offer is refused with the list it does; thread_options lists them per provider.",
 		},
 		"effort": map[string]any{
 			"type":        "string",
