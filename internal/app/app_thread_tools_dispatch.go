@@ -58,6 +58,9 @@ func (t threadToolsApp) startRemoteRequest(
 		return threadtools.RequestAck{}, err
 	}
 	defer done()
+	if hook := t.app.remoteRequestAdmittedForTest; hook != nil {
+		hook(row.Token)
+	}
 	read := t.app.ownerReads.start(ctx, computerID, []string{row.Token})
 	defer read.close()
 	reply, sent, err := t.app.callThreadPeerRequest(ctx, peer.Computer(), ThreadPeerCall{

@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/errorsx"
@@ -428,12 +429,15 @@ func TestForgettingAComputerSettlesEveryOpenRequest(t *testing.T) {
 // A request being admitted to a computer while the person forgets it is
 // either refused for want of the pairing or settled by the forget with the
 // person's choice: admission checks the pairing and writes its row inside
-// the fence the forget takes.
+// the fence the forget takes. The call there, refused unsent once the
+// pairing is gone, records its refusal inside the fence too, so it cannot
+// take the row between the pairing's removal and the end of its work.
 func TestARequestAdmittedWhileAComputerIsForgottenIsSettledByTheForget(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
 	installMockClaudeTurns(t, pair.dest, [][]string{{mockClaudeInitLine}})
+	fence := "computer:" + pair.computer
 	entered, release := make(chan struct{}), make(chan struct{})
 	pair.source.admitWorkForTest = func(threadID string) {
 		if threadID == pair.caller.ID {
@@ -441,8 +445,45 @@ func TestARequestAdmittedWhileAComputerIsForgottenIsSettledByTheForget(t *testin
 			<-release
 		}
 	}
+	// The call leaves only once the forget has removed the pairing, and the
+	// forget ends the computer's work only once the call's refusal has been
+	// written or is waiting on the fence.
+	admitted, removed, spawnDone := make(chan string, 1), make(chan struct{}), make(chan struct{})
+	pair.source.remoteRequestAdmittedForTest = func(token string) {
+		admitted <- token
+		<-removed
+	}
+	requestOpen := func(token string) bool {
+		row, found, err := pair.source.store.GetThreadRequest(token)
+		if err != nil || !found {
+			t.Errorf("read the request admitted during the forget: found=%v err=%v", found, err)
+			return false
+		}
+		return slices.Contains(store.ThreadRequestOpenStates(), row.State)
+	}
+	pair.manager.SetChanged(func(change attachedbackends.SetChange) {
+		if change.Action == attachedbackends.SetRemoved && change.ID == pair.computer {
+			var token string
+			select {
+			case token = <-admitted:
+			case <-spawnDone:
+			}
+			close(removed)
+		refused:
+			for token != "" && pair.source.remoteStartLocks().Refs(fence) < 2 && requestOpen(token) {
+				select {
+				case <-spawnDone:
+					break refused
+				default:
+					runtime.Gosched()
+				}
+			}
+		}
+		pair.source.backendSetChanged(change)
+	})
 	spawned := make(chan error, 1)
 	go func() {
+		defer close(spawnDone)
 		_, err := pair.adapter().Spawn(context.Background(), pair.callerIdentity(), threadtools.SpawnCall{
 			Prompt: "admitted while the computer is forgotten", ComputerID: pair.computer, ProjectID: pair.project,
 		})
@@ -456,7 +497,6 @@ func TestARequestAdmittedWhileAComputerIsForgottenIsSettledByTheForget(t *testin
 	}()
 	// The forget is parked on the fence once the fence has two holders: the
 	// admission inside it and the forget waiting for it.
-	fence := "computer:" + pair.computer
 	parked := make(chan struct{})
 	go func() {
 		defer close(parked)
@@ -479,7 +519,9 @@ func TestARequestAdmittedWhileAComputerIsForgottenIsSettledByTheForget(t *testin
 	if err := <-forgot; err != nil {
 		t.Fatalf("forget the computer: %v", err)
 	}
-	<-spawned
+	if err := <-spawned; err == nil {
+		t.Fatal("a spawn on a computer forgotten before its call left succeeded")
+	}
 	rows, err := pair.source.store.ListThreadRequestsByCaller(pair.caller.ID, 10, 0)
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("the caller's requests: %d, %v", len(rows), err)
