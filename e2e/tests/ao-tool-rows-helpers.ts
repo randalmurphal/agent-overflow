@@ -173,38 +173,46 @@ function touchScreen(page: Page): Promise<boolean> {
 /**
  * Opens a row as a person on this device does, a tap on a touch screen and
  * a mouse click otherwise, and waits for it to read as open. Every spec
- * opens a tool row through it. A mouse click is made on the row placed as
- * `placeRow` places it. Playwright presses the toggle's center cut to
- * 0.01 px; with that point less than a pixel above the "Jump to bottom"
- * chip, Chromium sends the mouse press to the chip and the release to the
- * surface behind it, so nothing gets a click, while Playwright's covering
- * check still finds the toggle there. A tap at that point opens the row, so
- * a tap is made where the row is. `beforePress` runs once the row is where
- * it will be pressed, for a caller that measures what opening moves.
+ * opens a tool row through it. The press is made on the row placed as
+ * `placeRow` places it, clear of the composer and the "Jump to bottom"
+ * chip. Playwright presses the toggle's center cut to 0.01 px and checks
+ * with elementsFromPoint that the toggle is there, but Chromium hit-tests
+ * the press at another point: a mouse press less than a pixel above the
+ * chip goes to the chip and its release to the surface behind it, and a
+ * tap goes to what is at the nearest whole pixel, the composer when the
+ * center sits in the half pixel above it. Either way the row stays closed
+ * and Playwright reports no interception. `beforePress` runs once the row
+ * is where it will be pressed, for a caller that measures what opening
+ * moves.
  */
 export async function expandRow(row: Locator, beforePress?: () => Promise<void>): Promise<void> {
   const toggle = row.getByTestId('tool-call-card-toggle');
-  const touch = await touchScreen(row.page());
-  if (!touch) await placeRow(row);
+  await placeRow(row);
   await beforePress?.();
-  if (touch) await toggle.tap();
+  if (await touchScreen(row.page())) await toggle.tap();
   else await toggle.click();
   await expect(toggle).toHaveAttribute('aria-expanded', 'true');
 }
 
+/** The "Jump to bottom" chip of the timeline that holds `row`. */
+export function jumpChipOf(row: Locator): Locator {
+  return timelineOf(row).locator('xpath=..').getByTestId('scroll-to-bottom');
+}
+
 /**
  * Runs `press` with the row's toggle center, cut to 0.01 px as Playwright
- * presses it, less than a pixel above the top of its timeline's "Jump to
- * bottom" chip and inside the chip's width, then gives the row back to its
- * timeline's layout. Whole pixels come from scrolling the timeline, or the
- * row's activity run clip where the timeline stops; the fraction from
- * offsetting the row.
+ * presses it, less than a pixel above the top of `overlay` (the "Jump to
+ * bottom" chip or the composer, which float over the timeline's bottom)
+ * and inside its width, then gives the row back to its timeline's layout.
+ * There a mouse press reaches the chip, and a tap the composer, while
+ * elementFromPoint finds the toggle. Whole pixels come from scrolling the
+ * timeline, or the row's activity run clip where the timeline stops; the
+ * fraction from offsetting the row.
  */
-export async function atJumpChipEdge(row: Locator, press: () => Promise<void>): Promise<void> {
+export async function atOverlayEdge(row: Locator, overlay: Locator, press: () => Promise<void>): Promise<void> {
   const toggle = row.getByTestId('tool-call-card-toggle');
-  const chip = timelineOf(row).locator('xpath=..').getByTestId('scroll-to-bottom');
   await placeRow(row);
-  await expect(chip).toBeVisible();
+  await expect(overlay).toBeVisible();
   await row.evaluate(async (card, want) => {
     const button = card.querySelector('[data-testid="tool-call-card-toggle"]')!;
     const timeline = card.closest<HTMLElement>('[data-testid="message-timeline-scroll"]')!;
@@ -225,16 +233,16 @@ export async function atJumpChipEdge(row: Locator, press: () => Promise<void>): 
     card.style.position = 'relative';
     card.style.top = `${short()}px`;
     await frames();
-  }, (await chip.boundingBox())!.y - 1 + 1 / 64);
+  }, (await overlay.boundingBox())!.y - 1 + 1 / 64);
   try {
     const box = (await toggle.boundingBox())!;
-    const chipBox = (await chip.boundingBox())!;
+    const edge = (await overlay.boundingBox())!;
     const at = { x: Math.trunc((box.x + box.width / 2) * 100) / 100, y: Math.trunc((box.y + box.height / 2) * 100) / 100 };
-    const where = `press at ${at.x},${at.y}; chip at ${chipBox.x},${chipBox.y} ${chipBox.width}x${chipBox.height}`;
-    expect(at.y, where).toBeGreaterThan(chipBox.y - 1);
-    expect(at.y, where).toBeLessThan(chipBox.y);
-    expect(at.x, where).toBeGreaterThan(chipBox.x);
-    expect(at.x, where).toBeLessThan(chipBox.x + chipBox.width);
+    const where = `press at ${at.x},${at.y}; overlay at ${edge.x},${edge.y} ${edge.width}x${edge.height}`;
+    expect(at.y, where).toBeGreaterThan(edge.y - 1);
+    expect(at.y, where).toBeLessThan(edge.y);
+    expect(at.x, where).toBeGreaterThan(edge.x);
+    expect(at.x, where).toBeLessThan(edge.x + edge.width);
     const hit = await toggle.evaluate((button, { x, y }) => {
       const found = document.elementFromPoint(x, y);
       return { inside: found !== null && button.contains(found), testId: found?.closest('[data-testid]')?.getAttribute('data-testid') };
