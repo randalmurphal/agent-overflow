@@ -210,8 +210,8 @@ func (d *restDecision) guard(roots ...string) *store.RestGuard {
 // rest by its durable sources (no open turn row that runs, turnRuns; no
 // source restWaits counts) with no open work and no open send or ask the
 // first read did not check for a parked call, and kept its revision. Of
-// memory it reads only the revision record and triage's unrecorded turn
-// ends, both leaf locks.
+// memory it reads only the revision record and triage's turns whose end
+// the store does not hold.
 func (d *restDecision) stillAtRest(subtree store.SubtreeRest) []string {
 	moved := d.app.restRevisions.moved(d.noted)
 	var out []string
@@ -224,7 +224,7 @@ func (d *restDecision) stillAtRest(subtree store.SubtreeRest) []string {
 			_, read := d.noted[id]
 			src := subtree.Sources[id]
 			waits, _ := restWaits(src, memoryWaits{}, nil)
-			at = read && !moved[id] && !d.app.turnRuns(src.OpenTurnID) && !src.OpenWork && waits.unrest == ""
+			at = read && !moved[id] && !d.app.turnRuns(id, src.OpenTurnID) && !src.OpenWork && waits.unrest == ""
 			for _, token := range src.Unarmed {
 				at = at && d.unarmed[id][token]
 			}

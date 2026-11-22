@@ -150,7 +150,10 @@ applies as it arrives, except a checkout answer, which stands down when any
 status landed during the call.
 
 Live turn, approval, user-input, compacting, sends-pending and session
-state is backend state, never derived from items or rows. Whether a
+state is backend state, never derived from items or rows. So is a turn
+whose end its computer's store did not hold (`provider:turn_end_unrecorded`,
+`threadStatuses.svelte.ts`), which reads Failed whether or not the error
+row explaining it was saved. Whether a
 thread has a session (`provider:session_live`, capability
 `session-live.v1`) lives in `threadSessionLive.svelte.ts`; a computer
 without the capability gives no answer. Sends pending

@@ -36,6 +36,7 @@ type LiveStateSnapshot struct {
 	// TurnEndUnrecorded is whether a turn of the thread has ended and the
 	// store does not hold its end (unrecorded_turn_ends.go): the thread's
 	// newest row still reads open, and the turn is not running.
+	// provider:turn_end_unrecorded announces each change.
 	TurnEndUnrecorded bool
 }
 
@@ -70,9 +71,9 @@ func (r *Router) LiveStateSnapshotForThread(threadID string) LiveStateSnapshot {
 	if id := r.identityIfPresent(threadID); id != nil {
 		snapshot.EffectiveModelRevision = id.effectiveModelRevision
 	}
-	// r.ends.mu is a leaf lock under r.mu. A thread whose crashed turn a
-	// failed boot sweep left open has no router state at all.
-	snapshot.TurnEndUnrecorded = r.ends.any(threadID)
+	// Read before the thread's state: a thread whose crashed turn a failed
+	// boot sweep left open has none.
+	snapshot.TurnEndUnrecorded = len(r.unrecordedEnds[threadID]) > 0
 	st := r.threadStateIfPresent(threadID)
 	if st == nil {
 		return snapshot
@@ -162,9 +163,10 @@ func (r *Router) LiveStateSnapshotForThread(threadID string) LiveStateSnapshot {
 
 // ThreadLiveActivity is the sidebar-grade live state of one thread: what a
 // client connected for the whole session would have learned from
-// provider:turn_started, provider:approval, provider:user_input and
-// provider:compacting. Ids and timestamps only; the requests' prose stays
-// on LiveStateSnapshotForThread, whose RPC carries the higher scope.
+// provider:turn_started, provider:approval, provider:user_input,
+// provider:compacting and provider:turn_end_unrecorded. Ids and timestamps
+// only; the requests' prose stays on LiveStateSnapshotForThread, whose RPC
+// carries the higher scope.
 type ThreadLiveActivity struct {
 	ThreadID            string
 	ActiveTurn          *ActiveTurnSnapshot
@@ -174,6 +176,8 @@ type ThreadLiveActivity struct {
 	// prompt went to instead of the user. Nil when none was routed.
 	PromptRoutes          map[string]provider.PromptRoute
 	CompactingSinceUnixMs int64
+	// TurnEndUnrecorded is LiveStateSnapshot's.
+	TurnEndUnrecorded bool
 }
 
 // LiveActivitySnapshot lists every thread with live activity, copied under
@@ -187,11 +191,21 @@ func (r *Router) LiveActivitySnapshot() []ThreadLiveActivity {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var out []ThreadLiveActivity
+	// A thread whose crashed turn a failed boot sweep left open has no
+	// state; it is listed for that alone.
+	for threadID := range r.unrecordedEnds {
+		if r.threads[threadID] == nil {
+			out = append(out, ThreadLiveActivity{ThreadID: threadID, TurnEndUnrecorded: true})
+		}
+	}
 	for threadID, st := range r.threads {
 		if st == nil {
 			continue
 		}
-		entry := ThreadLiveActivity{ThreadID: threadID, CompactingSinceUnixMs: st.compactingSince}
+		entry := ThreadLiveActivity{
+			ThreadID: threadID, CompactingSinceUnixMs: st.compactingSince,
+			TurnEndUnrecorded: len(r.unrecordedEnds[threadID]) > 0,
+		}
 		if round, ok := st.liveRoundLocked(); ok {
 			entry.ActiveTurn = &round
 		}
@@ -217,7 +231,7 @@ func (r *Router) LiveActivitySnapshot() []ThreadLiveActivity {
 			}
 		}
 		if entry.ActiveTurn == nil && len(entry.ApprovalRequestIDs) == 0 &&
-			len(entry.UserInputRequestIDs) == 0 && entry.CompactingSinceUnixMs == 0 {
+			len(entry.UserInputRequestIDs) == 0 && entry.CompactingSinceUnixMs == 0 && !entry.TurnEndUnrecorded {
 			continue
 		}
 		out = append(out, entry)

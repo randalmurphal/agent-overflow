@@ -3,7 +3,7 @@
     "GetThreadLiveState and the thread's ListThreadLiveActivity row while a",
     "turn's end is written, captured by TestThreadStateWhileTurnSettles",
     "(internal/app/app_thread_state_settling_test.go) under fixed names.",
-    "Regenerate with UPDATE_TURN_SETTLING_SNAPSHOT=1."
+    "Regenerate with UPDATE_LIVE_SNAPSHOT_FIXTURES=1."
   ],
   "liveActivity": {
     "threadId": "settling-thread",

@@ -4,6 +4,7 @@ import { getBindingMock, setBindingMock } from '../../test/mocks/bindings-app';
 import { __resetEntityIndexForTest, noteThread, threadBackend } from '../transport/entityIndex';
 import {
   applySendsPendingFrame,
+  applyTurnEndUnrecorded,
   getActiveTurn,
   getThreadStatus,
   projectApprovalRequest,
@@ -13,6 +14,7 @@ import {
   resetForTest,
 } from './threadStatuses.svelte';
 import settling from '../../../../internal/app/testdata/turn_settling_snapshot.json';
+import unrecorded from '../../../../internal/app/testdata/turn_end_unrecorded_snapshot.json';
 import { applyCompactingState, isThreadCompacting } from './compactingState.svelte';
 import { applySessionLive, threadSessionLive } from './threadSessionLive.svelte';
 import { hasScope } from '../transport/scopes';
@@ -357,6 +359,48 @@ describe('the row of a settling turn', () => {
     expect(getThreadStatus(threadId)).toBe('running');
     projectTurnCompleted(threadId, activeTurn.turnId);
     expect(getActiveTurn(threadId)).toBeNull();
+    expect(getThreadStatus(threadId)).toBe('idle');
+  });
+});
+
+// The row ListThreadLiveActivity gives once the store refused a turn's end
+// (internal/app/testdata/turn_end_unrecorded_snapshot.json): a client that
+// connects later, or recovers from a gap, shows the thread Failed.
+describe('the row of a turn whose end was not recorded', () => {
+  const row = unrecorded.liveActivity;
+  const { threadId } = row;
+  beforeEach(() => noteThread(threadId, 'gpu'));
+
+  it('reads the thread Failed, and idle once a later answer omits it', async () => {
+    setBindingMock('ListThreadLiveActivity', async () => [row]);
+    await reconcileThreadLiveActivity('gpu');
+    expect(getThreadStatus(threadId)).toBe('error');
+    setBindingMock('ListThreadLiveActivity', async () => []);
+    await reconcileThreadLiveActivity('gpu');
+    expect(getThreadStatus(threadId)).toBe('idle');
+  });
+
+  it('yields to a frame that cleared it while the read was out', async () => {
+    let answer!: (rows: unknown[]) => void;
+    setBindingMock('ListThreadLiveActivity', () => new Promise<unknown[]>((resolve) => { answer = resolve; }));
+    const pending = reconcileThreadLiveActivity('gpu');
+    applyTurnEndUnrecorded({ threadId, unrecorded: false });
+    answer([row]);
+    await pending;
+    expect(getThreadStatus(threadId)).toBe('idle');
+  });
+
+  it('follows the frames of a connected client', () => {
+    applyTurnEndUnrecorded({ threadId, unrecorded: true });
+    expect(getThreadStatus(threadId)).toBe('error');
+    applyTurnEndUnrecorded({ threadId, unrecorded: false });
+    expect(getThreadStatus(threadId)).toBe('idle');
+  });
+
+  it('reads as before from a backend that does not send the field', async () => {
+    const { turnEndUnrecorded: _, ...older } = row;
+    setBindingMock('ListThreadLiveActivity', async () => [older]);
+    await reconcileThreadLiveActivity('gpu');
     expect(getThreadStatus(threadId)).toBe('idle');
   });
 });

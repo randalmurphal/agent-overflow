@@ -9097,6 +9097,13 @@ export class ThreadLiveActivity {
      */
     "sessionLive"?: boolean;
 
+    /**
+     * TurnEndUnrecorded says a turn of the thread ended with the store not
+     * holding its end (provider:turn_end_unrecorded): the thread failed,
+     * and its open turn row is no running turn.
+     */
+    "turnEndUnrecorded"?: boolean;
+
     /** Creates a new ThreadLiveActivity instance. */
     constructor($$source: Partial<ThreadLiveActivity> = {}) {
         if (!("threadId" in $$source)) {
@@ -9177,6 +9184,12 @@ export class ThreadLiveState {
      * window can span minutes of wire silence, so no push will restate it.
      */
     "compactingSinceUnixMs"?: number;
+
+    /**
+     * TurnEndUnrecorded is ThreadLiveActivity's: provider:turn_end_unrecorded
+     * for refresh and reconnect.
+     */
+    "turnEndUnrecorded"?: boolean;
 
     /**
      * SessionCLIVersion / InstalledCLIVersion mirror the `binary_stale`

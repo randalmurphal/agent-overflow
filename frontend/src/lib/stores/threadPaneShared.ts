@@ -414,6 +414,7 @@ export function loadOlderResult(
 
 export interface LiveStateHydrationGuard {
   compactingRevisionAtRequest: number;
+  turnEndUnrecordedRevisionAtRequest: number;
   shellRunRevisionAtRequest: number;
   codexAgentRevisionAtRequest: number;
   subagentProgressRevisionAtRequest: number;

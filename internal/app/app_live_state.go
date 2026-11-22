@@ -48,6 +48,9 @@ type ThreadLiveState struct {
 	// `provider:compacting` push channel for refresh/reconnect — the
 	// window can span minutes of wire silence, so no push will restate it.
 	CompactingSinceUnixMs int64 `json:"compactingSinceUnixMs,omitempty"`
+	// TurnEndUnrecorded is ThreadLiveActivity's: provider:turn_end_unrecorded
+	// for refresh and reconnect.
+	TurnEndUnrecorded bool `json:"turnEndUnrecorded,omitempty"`
 	// SessionCLIVersion / InstalledCLIVersion mirror the `binary_stale`
 	// provider:status push for refresh/reconnect: the build this thread's
 	// live process is running versus the build now on disk. Both empty
@@ -139,6 +142,7 @@ func (a *App) GetThreadLiveState(threadID string) (ThreadLiveState, error) {
 	state.EffectiveModel = live.EffectiveModel
 	state.EffectiveModelRevision = live.EffectiveModelRevision
 	state.CompactingSinceUnixMs = live.CompactingSinceUnixMs
+	state.TurnEndUnrecorded = live.TurnEndUnrecorded
 	if live.ActiveTurn != nil {
 		state.ActiveTurn = &LiveStateActiveTurn{
 			ThreadID:  live.ActiveTurn.ThreadID,
@@ -191,11 +195,16 @@ type ThreadLiveActivity struct {
 	// SessionLive says the thread has a provider session live or
 	// starting (provider:session_live).
 	SessionLive bool `json:"sessionLive,omitempty"`
+	// TurnEndUnrecorded says a turn of the thread ended with the store not
+	// holding its end (provider:turn_end_unrecorded): the thread failed,
+	// and its open turn row is no running turn.
+	TurnEndUnrecorded bool `json:"turnEndUnrecorded,omitempty"`
 }
 
 // ListThreadLiveActivity returns every thread on this computer with live
 // activity: an open wire round, pending approvals or questions, an open
-// compacting window, sends pending, or a provider session. Idle threads are omitted, so the
+// compacting window, sends pending, a provider session, or a turn whose end
+// the store does not hold. Idle threads are omitted, so the
 // answer is authoritative for the whole computer: a client reconciles every
 // thread it attributes to this computer against it and clears the ones not
 // named.
@@ -203,7 +212,7 @@ type ThreadLiveActivity struct {
 // This is the snapshot leg of the threads:read push channels
 // (provider:turn_started / turn_completed, provider:approval,
 // provider:user_input, provider:compacting, provider:sends_pending,
-// provider:session_live). A
+// provider:session_live, provider:turn_end_unrecorded). A
 // client that connects, reloads, or drops frames mid-turn has no other way
 // to learn that a thread it has no pane on is running or blocked on the
 // user; GetThreadLiveState is per thread and rides threads:operate because
@@ -225,6 +234,7 @@ func (a *App) ListThreadLiveActivity() ([]ThreadLiveActivity, error) {
 			UserInputRequestIDs:   slicesx.OrEmpty(live.UserInputRequestIDs),
 			PromptRoutes:          live.PromptRoutes,
 			CompactingSinceUnixMs: live.CompactingSinceUnixMs,
+			TurnEndUnrecorded:     live.TurnEndUnrecorded,
 		}
 		if _, pending := sendsPending[live.ThreadID]; pending {
 			row.SendsPending = true

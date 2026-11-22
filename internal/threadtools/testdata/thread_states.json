@@ -24,12 +24,12 @@
     "(all but hasOpenTurn) to resolveEffectiveThreadStatus. Both must",
     "produce want. liveStatus is derived from the live fields the frontend",
     "also receives, by the order the Go function uses: pending-approval,",
-    "awaiting-input, running for activeTurn or pendingSends, else idle.",
-    "turnEndUnrecorded and hasOpenTurn are Go's alone; the frontend learns",
-    "of an unrecorded turn end from the thread's error notice, which sets",
-    "hasFailedTurn. An open row with no live round is a Go-only case",
-    "(state_test.go). hasIncompleteTurn is a settled interruption the user",
-    "has not read; an open row never sets it, so the two never hold together."
+    "awaiting-input, running for activeTurn or pendingSends, error for",
+    "turnEndUnrecorded (provider:turn_end_unrecorded and both live-state",
+    "snapshots), else idle. hasOpenTurn is Go's alone: an open row with no",
+    "live round is a Go-only case (state_test.go). hasIncompleteTurn is a",
+    "settled interruption the user has not read; an open row never sets it,",
+    "so the two never hold together."
   ],
   "cases": [
     {
@@ -131,15 +131,15 @@
       "want": "running"
     },
     {
-      "name": "a turn whose end the store did not take is error",
-      "thread": {"hasOpenTurn": true, "hasIncompleteTurn": false, "hasFailedTurn": true, "hasActionableProposedPlan": false, "worktreeSetupState": ""},
+      "name": "a turn whose end the store did not take is error, saved error row or not",
+      "thread": {"hasOpenTurn": true, "hasIncompleteTurn": false, "hasFailedTurn": false, "hasActionableProposedPlan": false, "worktreeSetupState": ""},
       "live": {"activeTurn": false, "pendingSends": false, "turnEndUnrecorded": true, "pendingApprovals": 0, "pendingUserInputs": 0},
-      "liveStatus": "idle",
+      "liveStatus": "error",
       "want": "error"
     },
     {
       "name": "a turn running after an unrecorded end is running",
-      "thread": {"hasOpenTurn": true, "hasIncompleteTurn": false, "hasFailedTurn": true, "hasActionableProposedPlan": false, "worktreeSetupState": ""},
+      "thread": {"hasOpenTurn": true, "hasIncompleteTurn": false, "hasFailedTurn": false, "hasActionableProposedPlan": false, "worktreeSetupState": ""},
       "live": {"activeTurn": true, "pendingSends": false, "turnEndUnrecorded": true, "pendingApprovals": 0, "pendingUserInputs": 0},
       "liveStatus": "running",
       "want": "running"

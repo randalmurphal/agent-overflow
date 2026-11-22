@@ -170,7 +170,7 @@ func (a *App) ownRest(threadID string, src store.ThreadRestSources) workerRest {
 	if unrest := a.workerHeldUnrest(threadID); unrest != "" {
 		return workerRest{unrest: unrest}
 	}
-	if a.turnRuns(src.OpenTurnID) {
+	if a.turnRuns(threadID, src.OpenTurnID) {
 		return workerRest{unrest: workerRunning}
 	}
 	if waits.unrest != "" {
@@ -179,28 +179,28 @@ func (a *App) ownRest(threadID string, src store.ThreadRestSources) workerRest {
 	return a.workerTimerUnrest(threadID)
 }
 
-// turnRuns is the one rule for whether a thread's open newest turn row,
+// turnRuns is the one rule for whether threadID's open newest turn row,
 // openTurnID ("" for none), is a running turn: it is, unless the turn has
-// ended and triage holds the end the store did not take
-// (triage.UnrecordedTurnEnd). A reader of the row that decides running or
-// rest reads it through here or liveTally.
-func (a *App) turnRuns(openTurnID string) bool {
+// ended with the store not holding its end (triage.UnrecordedTurnEnd). A
+// reader of the row that decides running or rest reads it through here or
+// liveTally.
+func (a *App) turnRuns(threadID, openTurnID string) bool {
 	if openTurnID == "" {
 		return false
 	}
-	_, unrecorded := a.triage.UnrecordedTurnEnd(openTurnID)
+	_, unrecorded := a.triage.UnrecordedTurnEnd(threadID, openTurnID)
 	return !unrecorded
 }
 
-// liveTally is a tally read at now as the Agents rows show it: a turn whose
-// end triage holds unrecorded has ended, so it does not run and its time is
-// its span to that end (none for a crashed turn, whose end the sweep's rule
-// decides) rather than to now.
-func (a *App) liveTally(tally store.ThreadTally, now time.Time) store.ThreadTally {
+// liveTally is threadID's tally read at now as the Agents rows show it: a
+// turn whose end the store does not hold has ended, so it does not run and
+// its time is its span to that end (none for a turn a failed boot sweep
+// left open) rather than to now.
+func (a *App) liveTally(threadID string, tally store.ThreadTally, now time.Time) store.ThreadTally {
 	if !tally.Running {
 		return tally
 	}
-	endedAt, unrecorded := a.triage.UnrecordedTurnEnd(tally.OpenTurnID)
+	endedAt, unrecorded := a.triage.UnrecordedTurnEnd(threadID, tally.OpenTurnID)
 	if !unrecorded {
 		return tally
 	}

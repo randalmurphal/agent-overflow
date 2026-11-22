@@ -152,22 +152,24 @@ type ThreadTally struct {
 	OpenTurnID    string
 }
 
-// threadTallyColumnsSQL is the six columns of the tally of the thread id
-// names, tool calls, tokens, runtime, whether a turn runs, when it started
-// and its turn id, with now in milliseconds as the parameter now names: one
-// probe of thread_tallies per column that reads it, one of the running
-// turn's usage_pending rows, and one index probe of the newest turn row
-// (newestTurnSQL) per column that reads it.
-func threadTallyColumnsSQL(id, now string) string {
-	open := newestTurnSQL(id, `CASE WHEN `+turnOpenSQL+` THEN nt.started_at END`)
-	return `COALESCE((SELECT tool_calls FROM thread_tallies WHERE thread_id = ` + id + `), 0),
+// threadTallySQL is the tally of the thread id names, with now in
+// milliseconds as the parameter now names: six columns (tool calls, tokens,
+// runtime, whether a turn runs, when it started and its turn id) and the
+// join they read the running turn through, which the caller puts in its
+// FROM clause after the table id names a column of. One probe of
+// thread_tallies per column that reads it, one of the running turn's
+// usage_pending rows, and one of the newest turn row (newestOpenTurnJoinSQL).
+func threadTallySQL(id, now string) (columns, join string) {
+	const open = "tally_open"
+	columns = `COALESCE((SELECT tool_calls FROM thread_tallies WHERE thread_id = ` + id + `), 0),
 		COALESCE((SELECT tokens FROM thread_tallies WHERE thread_id = ` + id + `), 0)
 		+ COALESCE((SELECT SUM(` + usageSpendSQLPlain + `) FROM usage_pending WHERE thread_id = ` + id + `), 0),
 		COALESCE((SELECT turn_ms FROM thread_tallies WHERE thread_id = ` + id + `), 0)
-		+ COALESCE(MAX(0, ` + now + ` - ` + open + `), 0),
-		` + open + ` IS NOT NULL,
-		COALESCE(` + open + `, 0),
-		COALESCE(` + newestTurnSQL(id, openTurnIDSQL) + `, '')`
+		+ COALESCE(MAX(0, ` + now + ` - ` + open + `.started_at), 0),
+		` + open + `.turn_id IS NOT NULL,
+		COALESCE(` + open + `.started_at, 0),
+		COALESCE(` + open + `.turn_id, '')`
+	return columns, newestOpenTurnJoinSQL(id, open)
 }
 
 // ThreadTallies reads the tallies of threadIDs at now, keyed by thread; a
@@ -181,8 +183,9 @@ func (s *Store) ThreadTallies(threadIDs []string, now time.Time) (map[string]Thr
 	if err != nil {
 		return nil, fmt.Errorf("store: read thread tallies: %w", err)
 	}
-	rows, err := s.reader().Query(`SELECT ids.value, `+threadTallyColumnsSQL("ids.value", "?2")+`
-		  FROM (SELECT DISTINCT value FROM json_each(?1)) AS ids`, string(ids), now.UnixMilli())
+	columns, join := threadTallySQL("ids.value", "?2")
+	rows, err := s.reader().Query(`SELECT ids.value, `+columns+`
+		  FROM (SELECT DISTINCT value FROM json_each(?1)) AS ids `+join, string(ids), now.UnixMilli())
 	if err != nil {
 		return nil, fmt.Errorf("store: read thread tallies: %w", err)
 	}

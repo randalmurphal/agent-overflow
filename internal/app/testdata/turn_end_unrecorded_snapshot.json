@@ -1,0 +1,27 @@
+{
+  "comment": [
+    "GetThreadLiveState and the thread's ListThreadLiveActivity row once the",
+    "store refused a turn's end, captured by TestThreadStateWhenSettleWriteFails",
+    "(internal/app/app_thread_state_settling_test.go) under fixed names.",
+    "Regenerate with UPDATE_LIVE_SNAPSHOT_FIXTURES=1."
+  ],
+  "liveActivity": {
+    "threadId": "settling-thread",
+    "approvalRequestIds": [],
+    "userInputRequestIds": [],
+    "turnEndUnrecorded": true
+  },
+  "liveState": {
+    "codexAgents": [],
+    "subagentProgress": [],
+    "threadId": "settling-thread",
+    "queueItems": [],
+    "flushedItems": [],
+    "flushedThrough": 0,
+    "interactive": {
+      "approvals": [],
+      "userInputs": []
+    },
+    "turnEndUnrecorded": true
+  }
+}

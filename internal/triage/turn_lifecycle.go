@@ -61,9 +61,6 @@ func (r *Router) startTurn(evt provider.ProviderEvent, resolve func() (int, erro
 	if open, ok := r.openTurnIndex(evt.ThreadID); ok && open != turnIndex {
 		r.settleQueuedEchoPredecessor(evt.ThreadID, open, startedAt, r.predecessorStopReason(evt.ThreadID, open, -1), evt.SessionToken)
 	}
-	// An earlier turn's end the store did not take is written before this
-	// turn's row: until it is, that row reads as the running turn.
-	r.retryUnrecordedEnds(evt.ThreadID)
 
 	// The turns row is reconciled BEFORE any router state is seeded on
 	// the index. upsertTurnRow can move the turn to a free index when a
@@ -81,6 +78,10 @@ func (r *Router) startTurn(evt provider.ProviderEvent, resolve func() (int, erro
 		// masquerade as a provider id there.
 		ProviderTurnID: strings.TrimSpace(evt.TurnID),
 	})
+	// This turn's row is the thread's newest now, or this turn runs on the
+	// open row it adopted: an end the store did not take is no longer what
+	// the thread's newest row stands for.
+	r.forgetUnrecordedEnds(evt.ThreadID, "")
 
 	r.mu.Lock()
 	gate := r.turnRowWrittenGate
@@ -468,12 +469,14 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 		defer func() {
 			event := r.buildRoundCompletedEvent(evt, round.TurnID, emitIndex, now, meta)
 			event.Quiet = quiet
-			r.emit(eventchan.ProviderTurnCompleted, event)
-			// After the emit: a snapshot taken between the two still
-			// names the round, and a client that has applied the emit
-			// drops it, because its round changed while the read was out
-			// or because the round's id is one it saw complete.
+			// The round ends before its announcement, so whatever the
+			// announcement starts (a worker's reassessment, a wait's
+			// read) finds it ended. The settle writes are done by now,
+			// and a turn whose end they did not record is already kept
+			// as such, so a snapshot taken between the two reads the turn
+			// as it is.
 			r.endRound(evt.ThreadID, round.TurnID)
+			r.emit(eventchan.ProviderTurnCompleted, event)
 		}()
 	}
 
@@ -587,9 +590,6 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 			if hasRound {
 				roundCompletedAt = now
 			}
-			// The fold extends the end the first settle wrote, so that end
-			// is written first when the store did not take it.
-			r.retryUnrecordedEnds(evt.ThreadID)
 			foldErr := r.persistLateTurnPayload(evt, turnIndex, meta, roundCompletedAt)
 			lateErr = errors.Join(lateErr, foldErr)
 			// A later round of a quiet turn is as quiet: a read thread
@@ -764,9 +764,8 @@ func (r *Router) reopenSoftClosedTurn(evt provider.ProviderEvent) (bool, error) 
 
 	turnID := r.persistedTurnID(evt, turnIndex)
 	// The turn runs again: the soft close's end, if the store did not take
-	// it, is no longer the turn's end, and a write of it in flight lands
-	// before the reopen.
-	r.dropUnrecordedEnd(turnID)
+	// it, is no longer the turn's end.
+	r.forgetUnrecordedEnds(evt.ThreadID, turnID)
 	err := r.store.ReopenTurn(turnID)
 	if err != nil {
 		err = fmt.Errorf("reopen soft-closed turn %s/%d: %w", evt.ThreadID, turnIndex, err)
@@ -1762,8 +1761,9 @@ func (r *Router) takeOpenRound(threadID, sessionToken string) (ActiveTurnSnapsho
 	return round, true
 }
 
-// endRound clears the ending round once its provider:turn_completed is
-// out, unless a later round took the slot.
+// endRound clears the ending round once the turn's settle writes are done,
+// right before its provider:turn_completed, unless a later round took the
+// slot.
 func (r *Router) endRound(threadID, roundID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -2028,9 +2028,10 @@ func stoppedSummary(summary string) string {
 // read.
 //
 // When the sweep fails, the rows it left open are the previous instance's
-// all the same: they are kept as unrecorded ends (oweCrashedTurns), which
-// the thread tools read as error, and settled by the sweep's rule once the
-// store takes writes. A failure to list them is returned with the sweep's.
+// all the same: they are kept as turns whose end the store does not hold
+// (noteCrashedTurns), which every reader reads as error at rest, not as
+// running, until a later boot's sweep settles them. A failure to list them
+// is returned with the sweep's.
 //
 // Returns the count of settled turns.
 func (r *Router) RecoverCrashedTurns() (int, error) {
@@ -2043,7 +2044,7 @@ func (r *Router) RecoverCrashedTurns() (int, error) {
 	if listErr != nil {
 		return len(crashed), errors.Join(err, fmt.Errorf("triage: list the turns the sweep left open: %w", listErr))
 	}
-	r.oweCrashedTurns(open)
+	r.noteCrashedTurns(open)
 	return len(crashed), err
 }
 

@@ -70,7 +70,7 @@ func (v threadAgentView) rows(requests []store.ThreadAgentRequest) ([]ThreadAgen
 		return nil, err
 	}
 	for id, name := range names {
-		name.Tally = v.app.liveTally(name.Tally, now)
+		name.Tally = v.app.liveTally(id, name.Tally, now)
 		names[id] = name
 	}
 	out := make([]ThreadAgentRow, 0, len(requests))

@@ -1200,6 +1200,13 @@ describe('setupEventListeners', () => {
     expect(getThreadStatus('thread-1')).toBe('error');
   });
 
+  it('reads a thread Failed from provider:turn_end_unrecorded until it is cleared', () => {
+    emitWailsEvent('provider:turn_end_unrecorded', { threadId: 'thread-unrecorded', unrecorded: true });
+    expect(getThreadStatus('thread-unrecorded')).toBe('error');
+    emitWailsEvent('provider:turn_end_unrecorded', { threadId: 'thread-unrecorded', unrecorded: false });
+    expect(getThreadStatus('thread-unrecorded')).toBe('idle');
+  });
+
   it('projects provider:sends_pending onto a thread this client has no pane for', () => {
     __setTransportHelloForTest({
       protocolVersion: 1, capabilities: ['sends-pending.v1'], backendId: '', backendName: '',

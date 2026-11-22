@@ -12,13 +12,12 @@ import "strconv"
 // never inferred from a live provider round having ended.
 //
 // The row stays open when the write of a turn's end fails, or the boot
-// sweep fails to settle it. Triage then holds the end it could not record
-// and writes it again until the store takes it
-// (triage/unrecorded_turn_ends.go); until then the app does not read the
-// open row as a running turn (App.turnRuns), which is why readers that
-// decide that take the open row's turn id (openTurnIDSQL). GetActiveTurn
-// still reads it as active, and send placement writes the end again before
-// it asks.
+// sweep fails to settle it, until a later boot's sweep records it as
+// interrupted. Triage keeps the fact that such a turn has ended
+// (triage/unrecorded_turn_ends.go), and the app does not read its open row
+// as a running turn (App.turnRuns), which is why readers that decide that
+// take the open row's turn id (openTurnIDSQL). GetActiveTurn still reads
+// it as active.
 
 // newestTurnSQL selects expr from thread's newest turn row, one probe of
 // turns_thread_index; NULL when the thread has no turn. expr reads the row
@@ -26,6 +25,14 @@ import "strconv"
 func newestTurnSQL(thread, expr string) string {
 	return `(SELECT ` + expr + ` FROM turns AS nt INDEXED BY turns_thread_index
 	          WHERE nt.thread_id = ` + thread + ` ORDER BY nt.turn_index DESC LIMIT 1)`
+}
+
+// newestOpenTurnJoinSQL joins, as alias, thread's newest turn row while it
+// is in flight, and no row once it settled: one probe of
+// turns_thread_index and one of the primary key, however many columns read
+// alias.
+func newestOpenTurnJoinSQL(thread, alias string) string {
+	return `LEFT JOIN turns AS ` + alias + ` ON ` + alias + `.turn_id = ` + newestTurnSQL(thread, openTurnIDSQL)
 }
 
 // turnOpenSQL is true for a newest turn row that is still in flight.

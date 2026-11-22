@@ -26,6 +26,8 @@ import {
   resetForTest as resetSendQueueForTest,
 } from './sendQueue.svelte';
 import { applyQueueStateChanged } from './eventsQueue';
+import { getThreadStatus } from './threadStatuses.svelte';
+import { noteThread } from '../transport/entityIndex';
 
 import { threadItemCache } from './threadItemCache';
 import { registerTimelineSurface } from './timelineSurfaces';
@@ -110,6 +112,17 @@ describe('transport gap', () => {
     // The burst shares the read in flight and one read after it.
     await vi.waitFor(() => expect(getBindingMock('ListThreadLiveActivity')).toHaveBeenCalledTimes(4));
     await vi.waitFor(() => expect(getBindingMock('ListThreads')).toHaveBeenCalled());
+  });
+
+  it('re-reads live activity on a turn_end_unrecorded gap, which restates a Failed row', async () => {
+    noteThread('gap-unrecorded', HOME_BACKEND);
+    setBindingMock('ListThreadLiveActivity', async () => [
+      { threadId: 'gap-unrecorded', approvalRequestIds: [], userInputRequestIds: [], turnEndUnrecorded: true },
+    ]);
+    applyTransportGap({ channel: 'provider:turn_end_unrecorded', seq: 3 });
+    await vi.waitFor(() => expect(getThreadStatus('gap-unrecorded')).toBe('error'));
+    // The status is the registry's: no sidebar or pane refresh is owed.
+    expect(getBindingMock('ListThreads')).not.toHaveBeenCalled();
   });
 
   it('re-reads which flushed messages are settled on a sends-pending gap', async () => {

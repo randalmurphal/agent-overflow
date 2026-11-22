@@ -157,11 +157,12 @@ type threadState struct {
 	currentRound     ActiveTurnSnapshot
 	currentRoundOpen bool
 	// endingRound is the round handleTurnComplete took (takeOpenRound)
-	// and has not announced the end of yet: provider:turn_completed
-	// follows the turn's settle writes. The live-state snapshots report it
-	// as the active round (liveRoundLocked), so a snapshot says what the
-	// push stream says until that announcement. Nothing else reads it;
-	// the claim of the round stays takeOpenRound's.
+	// while it writes the turn's end: provider:turn_completed follows the
+	// settle writes. The live-state snapshots report it as the active
+	// round (liveRoundLocked), so a snapshot taken while the turn's end is
+	// written reads the turn running, as the push stream does. endRound
+	// clears it right before the announcement. Nothing else reads it; the
+	// claim of the round stays takeOpenRound's.
 	endingRound    ActiveTurnSnapshot
 	endingRoundSet bool
 

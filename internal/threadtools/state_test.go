@@ -80,7 +80,7 @@ func TestStateFixture(t *testing.T) {
 
 // liveStatusOf is what the frontend's getThreadStatus derives from the
 // live fields it also receives, so the fixture's two input columns cannot
-// disagree. TurnEndUnrecorded is not one of them.
+// disagree.
 func liveStatusOf(live LiveState) string {
 	switch {
 	case live.PendingApprovals > 0:
@@ -89,6 +89,8 @@ func liveStatusOf(live LiveState) string {
 		return StateAwaitingInput
 	case live.ActiveTurn || live.PendingSends:
 		return StateRunning
+	case live.TurnEndUnrecorded:
+		return StateError
 	default:
 		return StateIdle
 	}
@@ -97,7 +99,8 @@ func liveStatusOf(live LiveState) string {
 // TestStateReadsAnOpenRow covers what only Go reads, the newest turn row:
 // open with no live round, it is a running turn, unless triage holds the
 // turn's end unrecorded, which is an error at rest. The frontend has no
-// such input; its live registry holds a turn until provider:turn_completed.
+// open-row input; its live registry holds a turn until
+// provider:turn_completed.
 func TestStateReadsAnOpenRow(t *testing.T) {
 	open := Thread{HasOpenTurn: true}
 	if got := State(open, LiveState{}); got != StateRunning {

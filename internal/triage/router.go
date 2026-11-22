@@ -92,14 +92,15 @@ type Router struct {
 	// state is read again (woke true). Read under mu. Nil in production.
 	interruptWaitHook func(threadID string, woke bool)
 	// turnSettleGate is a test-only hook (SetTurnSettleGate) called right
-	// before each write of a turn's end: settleTurnRow's, after the round
-	// is taken, which is the window in which the turn has ended on the wire
-	// and not in the store, and each write of an unrecorded end again.
-	// Read under mu. Nil in production.
+	// before settleTurnRow writes a turn's end, after the round is taken:
+	// the window in which the turn has ended on the wire and not in the
+	// store. Read under mu. Nil in production.
 	turnSettleGate func(threadID string)
-	// ends holds the turn ends triage knows and the store does not
-	// (unrecorded_turn_ends.go).
-	ends unrecordedEnds
+	// unrecordedEnds holds, by thread and turn id, the turns that ended
+	// with the store not holding their end (unrecorded_turn_ends.go).
+	// Guarded by mu; endsPublish serializes each change with its frame.
+	unrecordedEnds map[string]map[string]unrecordedEnd
+	endsPublish    sync.Mutex
 	// delays holds the router's debounce and throttle intervals, the
 	// production values from NewRouter. A same-package test lengthens
 	// one so its timer cannot fire inside a window that asserts what a
@@ -417,7 +418,6 @@ func NewRouter(st *store.Store, emit func(eventchan.Channel, any)) *Router {
 			streamPersist:        streamPersistInterval,
 			commandOutputPersist: commandOutputPersistInterval,
 			usageEmit:            usageEmitMinInterval,
-			endRetry:             firstEndRetryDelay,
 		},
 	}
 	r.announcer = NewThreadAnnouncer(
@@ -442,10 +442,6 @@ type routerDelays struct {
 	streamPersist        time.Duration
 	commandOutputPersist time.Duration
 	usageEmit            time.Duration
-	// endRetry is the first wait before an unrecorded turn end is written
-	// again (unrecorded_turn_ends.go); each failed pass doubles it up to
-	// maxEndRetryDelay.
-	endRetry time.Duration
 }
 
 // SetTelemetry wires tracer + metric instruments. Safe to call with nil
@@ -496,10 +492,10 @@ func (r *Router) SetTurnRowWrittenGate(gate func(threadID string)) {
 	r.mu.Unlock()
 }
 
-// SetTurnSettleGate installs a test-only hook called right before each
-// write of a turn's end, so a test can hold a completion in the window
-// between the round's end and the row's, or a write of an unrecorded end
-// in flight. Production code must leave this nil. Pass nil to clear.
+// SetTurnSettleGate installs a test-only hook called right before
+// settleTurnRow writes a turn's end, so a test can hold a completion in the
+// window between the round's end and the row's. Production code must leave
+// this nil. Pass nil to clear.
 func (r *Router) SetTurnSettleGate(gate func(threadID string)) {
 	r.mu.Lock()
 	r.turnSettleGate = gate
@@ -1485,9 +1481,8 @@ func (r *Router) emitThreadRow(threadID string) {
 }
 
 // ThreadErrorNoticeEvent announces that a row of kind `error` was
-// emitted for a thread, or refused by the store and shown as unsaved. Ids
-// only: the prose is on the item itself, or on the unsaved row, which the
-// panes that want it already receive.
+// persisted and emitted for a thread. Ids only: the prose is on the item
+// itself, which the panes that want it already receive.
 type ThreadErrorNoticeEvent struct {
 	ThreadID string `json:"threadId"`
 	ItemID   string `json:"itemId"`
@@ -1498,8 +1493,7 @@ type ThreadErrorNoticeEvent struct {
 // watching. Called from the ONE persist funnel that carries error rows —
 // every no-turn_completed error class (non-fatal wire errors, orphan error
 // results, ambiguous-turn-start timeout, flush-dispatch failure, steer
-// failure) reaches the store through PersistItem. An error row the store
-// refuses notifies too: the thread failed whether or not its row saved.
+// failure) reaches the store through PersistItem.
 //
 // Two exclusions are behavior, not omission:
 //
@@ -1641,11 +1635,6 @@ func (r *Router) persistItemWithEmit(item store.Item, payload *store.Payload, in
 	})
 	if err != nil {
 		r.reportUnsavedRow(item, err)
-		// The unsaved row reaches a pane on the thread; the notice is what
-		// every client's sidebar learns of it.
-		if emit {
-			r.emitErrorNotice(item)
-		}
 		return store.Item{}, err
 	}
 	r.reportSavedRow(persisted)

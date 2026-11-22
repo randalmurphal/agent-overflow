@@ -23,20 +23,20 @@ package threadtools
 // Whether a turn runs or has ended, and how, is the newest turn row's
 // (store/turn_newest.go): one write moves it from open to settled, so a
 // reader of it never sees a turn between the two. The live round holds
-// until provider:turn_completed, after that write, so the two overlap and
-// the absence of a round never makes a thread interrupted. An
+// until right before provider:turn_completed, after that write, so the two
+// overlap and the absence of a round never makes a thread interrupted. An
 // interruption is the row's recorded stop reason. When the write fails,
 // or the boot sweep fails to settle a row the previous instance left
-// open, triage keeps the end it could not record (TurnEndUnrecorded) and
-// writes it again until the store takes it; until then the thread reads
-// as error and rests.
+// open, triage holds that turn as ended (TurnEndUnrecorded) and nothing
+// writes the end again; the thread reads as error and rests until a later
+// turn starts or a later boot's sweep records the row as interrupted.
 //
 // The frontend's live 'error' and 'interrupted' registries have no Go
 // equivalent; the two durable columns below carry the same facts, which is
 // what the reference falls back to once the live status is idle. The
-// frontend has neither HasOpenTurn nor TurnEndUnrecorded: its live
-// registry holds a turn until provider:turn_completed, and a turn end the
-// store refused reaches it as the thread's error notice.
+// frontend has no HasOpenTurn: its live registry holds a turn until
+// provider:turn_completed. It reads TurnEndUnrecorded from both live-state
+// snapshots and provider:turn_end_unrecorded.
 //
 // internal/threadtools/testdata/thread_states.json is the shared table for
 // this function (state_test.go) and for the reference's own test

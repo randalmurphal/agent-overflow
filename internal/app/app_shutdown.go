@@ -515,9 +515,6 @@ func (a *App) Shutdown(ctx context.Context) error {
 		settleCtx, settleCancel := contextWithTimeout(ctx, 5*time.Second)
 		drained := make(chan struct{})
 		go func() {
-			// First: a retry pass of an unrecorded turn end writes and
-			// starts a settle of its own.
-			a.triage.StopTurnEndRetries()
 			a.triage.WaitForPendingSettles()
 			a.triage.DrainWireItemRefresh()
 			close(drained)

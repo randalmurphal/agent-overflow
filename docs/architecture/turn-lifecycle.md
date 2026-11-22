@@ -831,8 +831,8 @@ delivered) each run in their own boot phase. A sweep that fails
 does not stop the boot: it is reported as a failed boot phase, which
 every client shows ([startup readiness](transport.md#startup-readiness)),
 and the next start runs it again. When the crashed-turn sweep fails,
-triage also keeps the rows it left open as unrecorded turn ends and
-settles each by the sweep's rule once the store takes writes (below).
+triage also keeps the rows it left open as turns whose end the store
+does not hold (below).
 
 Post-sweep, a `completed_at=null` row during an app run means
 genuinely live provider work, and every durable reader reads it as
@@ -840,24 +840,27 @@ running (`Thread.HasOpenTurn`, `GetActiveTurn`, the rest sources). The
 row is open until `UpdateTurnCompleted` settles it. The live round
 outlasts that write: triage takes the round when the completion
 arrives and reports it as the ending round in both live-state
-snapshots until `provider:turn_completed` follows the write, so a
-reader sees the turn running throughout. The durable "interrupted"
+snapshots while the turn's end is written, so a reader sees the turn
+running throughout. The round ends right before
+`provider:turn_completed` goes out, so what that frame starts (a
+worker's reassessment, a wait's read) finds it ended. The durable "interrupted"
 signal that survives restarts is `stop_reason='interrupted'`, the only
 thing the sidebar's boot pill (`Thread.HasIncompleteTurn`) reads: an
 unseen settled interruption.
 
-When the write of a turn's end fails, the turn has still ended. Triage
-keeps the end it could not write (`internal/triage/unrecorded_turn_ends.go`):
-the thread gets an error row that says so, whose error notice reaches
-every client's sidebar even when the row itself is refused; the thread
-tools read the thread as `error` at rest and the Agents rows stop its
-runtime at the end. The end is written again before the thread's next
-turn opens, before a late completion of the turn folds, when a send is
-placed on the thread, and on a backoff timer (1 s doubling to 60 s), so
-the row settles with the turn's own outcome once the database takes
-writes again. A turn the model continues after a soft close drops its
-unrecorded end first. A refusal for a fork's sake
-(`store.IsShownHistoryRefusal`) is not written again.
+When the write of a turn's end fails, or the boot sweep fails, the turn
+has still ended. Triage keeps that fact by thread and turn
+(`internal/triage/unrecorded_turn_ends.go`). Both live-state snapshots
+carry it (`turnEndUnrecorded`) and `provider:turn_end_unrecorded`
+announces each change, so the thread tools read the thread as `error`
+at rest, every sidebar shows Failed, and the Agents rows stop its
+runtime at the end, whether or not the error row that explains the
+failure was saved. Nothing writes the end again: the row stays open
+until a later boot's sweep records it as interrupted, so the turn's own
+stop reason, usage and message id are lost, and `GetActiveTurn` still
+reads the row as active (send placement queues behind it, revert
+refuses). The fact is dropped when the thread starts a turn, when a
+soft-closed turn is continued, and when the thread is deleted.
 
 The frontend still shows no active-turn spinner for any of this
 (spinner requires a live `activeTurn` push, not a DB row), and we do

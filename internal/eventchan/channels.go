@@ -168,6 +168,7 @@ const (
 	ProviderTerminalOutput         Channel = "provider:terminal_output"
 	ProviderTodoUpdate             Channel = "provider:todo_update"
 	ProviderTurnCompleted          Channel = "provider:turn_completed"
+	ProviderTurnEndUnrecorded      Channel = "provider:turn_end_unrecorded"
 	ProviderTurnStarted            Channel = "provider:turn_started"
 	ProviderUpdates                Channel = "provider:updates"
 	ProviderUsage                  Channel = "provider:usage"

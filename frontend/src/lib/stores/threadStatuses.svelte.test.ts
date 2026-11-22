@@ -3,6 +3,7 @@ import { confirmBackgroundKill, pendingBackgroundKillConfirmation } from './back
 import { flushSync } from 'svelte';
 import { probeReactivity } from '../../test/helpers/reactivity.svelte';
 import {
+  applyTurnEndUnrecorded,
   beginThreadLiveStateHydration,
   clearPendingSend,
   clearThreadStatus,
@@ -31,6 +32,7 @@ import {
   restoreRefusedTurnStop,
   sameActiveTurn,
   settleTurnStopRequest,
+  turnEndUnrecordedRevision,
 } from './threadStatuses.svelte';
 import {
   confirmFlushedByUserItemId,
@@ -656,6 +658,23 @@ describe('threadStatuses store', () => {
         expect(turn.latest?.turnId).toBe('turn-2');
       } finally {
         turn.dispose();
+      }
+    });
+
+    it('a reader of the status follows an unrecorded turn end, and clearThreadStatus forgets it', () => {
+      const status = probeReactivity(() => getThreadStatus('thread-1'));
+      try {
+        expect(status.latest).toBe('idle');
+        applyTurnEndUnrecorded({ threadId: 'thread-1', unrecorded: true });
+        flushSync();
+        expect(status.latest).toBe('error');
+
+        clearThreadStatus('thread-1');
+        flushSync();
+        expect(status.latest).toBe('idle');
+        expect(turnEndUnrecordedRevision('thread-1')).toBe(0);
+      } finally {
+        status.dispose();
       }
     });
   });

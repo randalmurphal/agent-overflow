@@ -262,7 +262,7 @@ func (a *App) answerThreadAgentRows(ctx context.Context, owner, source string, a
 		return ThreadAgentRows{}, fmt.Errorf("read what thread %s did: %w", args.ThreadID, err)
 	}
 	// As this computer's own row of it reads (threadAgentView.row).
-	tally := a.liveTally(tallies[args.ThreadID], now)
+	tally := a.liveTally(args.ThreadID, tallies[args.ThreadID], now)
 	listing.ToolCalls, listing.Tokens = tally.ToolCalls, tally.Tokens
 	listing.RuntimeMs, listing.TurnOpen = tally.RuntimeMs, tally.Running
 	if tally.Running {

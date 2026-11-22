@@ -263,8 +263,8 @@ func (r *Router) endFoldEmptiedTurn(threadID string, turnIndex int, now int64) {
 	if !found || turn.CompletedAt != nil {
 		return
 	}
-	// A failure is kept as an unrecorded end; the log and the thread's error
-	// row carry it.
+	// writeTurnEnd keeps a failure as a turn whose end the store does not
+	// hold, and logs and reports it.
 	_ = r.writeTurnEnd(threadID, turnIndex, turn.TurnID, turnEnd{completedAt: now, stopReason: "end_turn"})
 }
 

@@ -231,6 +231,17 @@ const activeTurns = createKeyedSignalRegistry<ActiveTurn | null>(null);
 const completedTurnIDsByThread = new Map<string, Set<string>>();
 const errorThreads = new Set<string>();
 const interruptedThreads = new Set<string>();
+// Whether a turn of the thread ended with its computer's store not holding
+// the end, from `provider:turn_end_unrecorded` and the `turnEndUnrecorded`
+// field of both live-state snapshots (threadLiveActivity.ts,
+// threadLiveStateHydration.ts). The thread reads Failed, not running, until
+// the backend clears it, whether or not the thread's error row was saved. A
+// backend that does not send the field leaves it unset. getThreadStatus
+// reads it, a signal, directly. Revisions tell a snapshot that crossed a
+// frame from one that did not.
+const turnEndUnrecordedThreads = createKeyedSignalRegistry<boolean>(false);
+const turnEndUnrecordedRevisions = new Map<string, number>();
+let turnEndUnrecordedRevisionCounter = 0;
 const liveStateHydrationTokenByThread = new Map<string, number>();
 // The turn a Stop optimistically cleared while its interrupt RPC is
 // unanswered, so a background-kill refusal can put it back. Any canonical
@@ -308,7 +319,7 @@ export function getThreadStatus(threadId: string): ThreadLiveStatus {
     return 'awaiting-input';
   }
   if (showsThreadRunning(threadId)) return 'running';
-  if (errorThreads.has(threadId) || stored === 'error') return 'error';
+  if (errorThreads.has(threadId) || turnEndUnrecordedThreads.get(threadId) || stored === 'error') return 'error';
   if (interruptedThreads.has(threadId) || stored === 'interrupted') return 'interrupted';
   return 'idle';
 }
@@ -402,6 +413,8 @@ export function clearThreadStatus(threadId: string): void {
   interactiveRevisions.delete(threadId);
   errorThreads.delete(threadId);
   interruptedThreads.delete(threadId);
+  turnEndUnrecordedThreads.drop(threadId);
+  turnEndUnrecordedRevisions.delete(threadId);
   liveStateHydrationTokenByThread.delete(threadId);
   liveStateHydratingThreads.drop(threadId);
   clearSendQueueForThread(threadId);
@@ -586,6 +599,33 @@ export function beginSendsPendingRead(): ReadonlySet<string> {
 
 export function endSendsPendingRead(read: ReadonlySet<string>): void {
   sendsPendingReads.delete(read as Set<string>);
+}
+
+export interface TurnEndUnrecordedPayload {
+  threadId: string;
+  unrecorded: boolean;
+}
+
+export function turnEndUnrecordedRevision(threadId: string): number {
+  return turnEndUnrecordedRevisions.get(threadId) ?? 0;
+}
+
+function setTurnEndUnrecorded(threadId: string, unrecorded: boolean): void {
+  turnEndUnrecordedRevisions.set(threadId, ++turnEndUnrecordedRevisionCounter);
+  if (unrecorded) turnEndUnrecordedThreads.set(threadId, true);
+  else turnEndUnrecordedThreads.drop(threadId);
+}
+
+/** Apply a `provider:turn_end_unrecorded` frame. */
+export function applyTurnEndUnrecorded(evt: TurnEndUnrecordedPayload | null | undefined): void {
+  if (!evt?.threadId) return;
+  setTurnEndUnrecorded(evt.threadId, evt.unrecorded === true);
+}
+
+/** Apply a snapshot's answer unless a frame landed since `expectedRevision` was read. */
+export function hydrateTurnEndUnrecorded(threadId: string, unrecorded: boolean, expectedRevision: number): void {
+  if (!threadId || turnEndUnrecordedRevision(threadId) !== expectedRevision) return;
+  setTurnEndUnrecorded(threadId, unrecorded);
 }
 
 /** Apply a snapshot's answer unless the thread's answer changed during the read. */
@@ -1057,6 +1097,8 @@ export function resetForTest(): void {
   waitingOnAgents.reset();
   errorThreads.clear();
   interruptedThreads.clear();
+  turnEndUnrecordedThreads.reset();
+  turnEndUnrecordedRevisions.clear();
   liveStateHydrationTokenByThread.clear();
   resetSendQueueForTest();
   resetFastModeStateForTest();
