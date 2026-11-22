@@ -173,18 +173,24 @@ func Pair(ctx context.Context, dir string, link Link, label, platform string, op
 	if err != nil {
 		return nil, Pairing{}, err
 	}
-	return redeemed.Save()
+	return redeemed.Save(nil)
 }
 
 // Redemption is a pairing link this installation has spent, with the
 // session the far side issued for it not saved yet (Redeem). Save stores
-// it. A redemption that is dropped leaves that session on the far side with
-// nobody holding it, until it expires or that computer ends it.
+// it, once. A redemption that is dropped leaves that session on the far side
+// with nobody holding it, until it expires or that computer ends it.
 type Redemption struct {
 	client  *Client
 	session Session
 	pairing Pairing
+	// spent is set by the first Save, whatever it answers.
+	mu    sync.Mutex
+	spent bool
 }
+
+// errRedemptionSpent answers a Save after the first.
+var errRedemptionSpent = errors.New("deviceclient: this redemption was already saved once; pair again for a new session")
 
 // Redeem spends a pairing link and enrolls this installation as a device,
 // returning the issued session unsaved.
@@ -257,14 +263,46 @@ func Redeem(ctx context.Context, dir string, link Link, label, platform string, 
 	}, nil
 }
 
-// Save stores the redeemed session and returns the client that owns it. It
-// waits only for the profile's local file lock.
-func (r *Redemption) Save() (*Client, Pairing, error) {
-	if err := SaveSession(r.client.dir, r.session); err != nil {
+// Save stores the redeemed session if admit accepts it, and returns the
+// client that owns it. admit runs on the session stored for the computer
+// now, as LoadSession answers it, under the session file's lock
+// (decideSession), and the write follows in the same hold; an error from
+// admit is Save's answer and nothing is written. A nil admit accepts
+// anything. It waits only for that local file lock.
+//
+// The saved session replaces the stored one whole. A re-pairing starts
+// without the stored nickname, routes and last endpoint: its endpoint and
+// pin come from the link, routes stored under the old pairing were verified
+// against the old pin, and the new client learns the computer's routes again
+// on its first authenticated connection.
+//
+// Save is single use: every call after the first, concurrent ones included,
+// writes nothing and answers errRedemptionSpent.
+func (r *Redemption) Save(admit func(stored Session, err error) error) (*Client, Pairing, error) {
+	r.mu.Lock()
+	spent := r.spent
+	r.spent = true
+	r.mu.Unlock()
+	if spent {
+		return nil, Pairing{}, errRedemptionSpent
+	}
+	err := decideSession(r.client.dir, r.session.BackendID, func(path string, stored Session, err error) error {
+		if admit != nil {
+			if err := admit(stored, err); err != nil {
+				return err
+			}
+		}
+		return writeSession(path, r.session)
+	})
+	if err != nil {
 		return nil, Pairing{}, err
 	}
+	// Nobody holds the client until Save returns it; the lock is for the
+	// readers that will.
+	r.client.mu.Lock()
 	r.client.session = r.session
 	r.client.installRoutes()
+	r.client.mu.Unlock()
 	return r.client, r.pairing, nil
 }
 
@@ -503,24 +541,6 @@ func (c *Client) SetNickname(nickname string) error {
 	})
 }
 
-// Forget retires this owner and deletes only the pairing it still owns.
-func (c *Client) Forget() error {
-	ctx, cancel := context.WithTimeout(context.Background(), profileWriteTimeout)
-	defer cancel()
-	err := c.sessionTransaction(ctx, func(path string, latest *Session) error {
-		if err := removeSessionFile(path); err != nil {
-			return err
-		}
-		c.retireLocked()
-		*latest = Session{BackendID: latest.BackendID, Endpoint: latest.Endpoint}
-		return nil
-	})
-	if errors.Is(err, ErrSessionEnded) {
-		return nil
-	}
-	return err
-}
-
 // Retired reports whether this owner can never authorize or write again:
 // the backend refused its session for good, or a replacement now owns the
 // profile. A cache holding one has a miss, not a client.
@@ -531,7 +551,8 @@ func (c *Client) Retired() bool {
 }
 
 // Retire closes this in-memory owner before a replacement writes the same
-// profile. It preserves the file so a failed new pairing can still recover.
+// profile or the profile is forgotten (ForgetSession), so a rotation in
+// flight cannot write it back. It leaves the file alone.
 func (c *Client) Retire() {
 	c.mu.Lock()
 	defer c.mu.Unlock()

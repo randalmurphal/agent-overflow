@@ -277,59 +277,6 @@ func TestShutdownRefusesANewEnrollment(t *testing.T) {
 	}
 }
 
-// A second enrollment for a computer whose redemption is in flight, or was
-// cancelled and has not returned yet, declines at once: an introduction as
-// not added with no error, a person's pairing with an error that says so.
-func TestASecondEnrollmentDeclinesWhileOneIsInFlight(t *testing.T) {
-	t.Parallel()
-	declines := func(t *testing.T, p *introducedPeer, m *Manager, redemptions int32) {
-		t.Helper()
-		got := within(t, "a second introduction", 2*time.Second, p.introduce(context.Background(), m))
-		if got.added || got.err != nil {
-			t.Fatalf("second introduction = added %t, %v; want not added with no error", got.added, got.err)
-		}
-		got = within(t, "a second person's pairing", 2*time.Second, p.pair(m))
-		if got.added || !errors.Is(got.err, errEnrollmentInProgress) {
-			t.Fatalf("second person's pairing = added %t, %v; want %v", got.added, got.err, errEnrollmentInProgress)
-		}
-		if n := p.redemptions.Load(); n != redemptions {
-			t.Fatalf("%d redemptions; want %d", n, redemptions)
-		}
-	}
-	t.Run("redeeming", func(t *testing.T) {
-		t.Parallel()
-		p := newIntroducedPeer(t, func(p *introducedPeer) { p.holdPair = make(chan struct{}) })
-		m, _ := newManager(t)
-		first := p.pair(m)
-		within(t, "the redemption reaching the other computer", 5*time.Second, p.pairArrived)
-		declines(t, p, m, 1)
-		closeOnce(p.holdPair)
-		if got := within(t, "the first pairing", 2*time.Second, first); !got.added || got.err != nil {
-			t.Fatalf("first pairing = added %t, %v; want it saved", got.added, got.err)
-		}
-		enrolled(t, m, p.backendID)
-	})
-	t.Run("cancelled", func(t *testing.T) {
-		t.Parallel()
-		p := newIntroducedPeer(t, nil)
-		m, _ := newManager(t)
-		unlock := m.profiles.Lock(p.backendID)
-		first := p.pair(m)
-		waitForProfileRefs(t, m, p.backendID, 2)
-		removed := removeAsync(m, p.backendID)
-		waitForProfileRefs(t, m, p.backendID, 3)
-		declines(t, p, m, 1)
-		unlock()
-		if err := within(t, "Forget", 2*time.Second, removed); err != nil {
-			t.Fatalf("Remove: %v", err)
-		}
-		if got := within(t, "the first pairing", 2*time.Second, first); !errors.Is(got.err, errPairingForgotten) {
-			t.Fatalf("first pairing = %v; want forgotten", got.err)
-		}
-		nothingEnrolled(t, m, p.backendID)
-	})
-}
-
 // After an enrollment committed, an introduction to the same computer is
 // not wanted and redeems nothing, while a person may pair it again.
 func TestAnEnrollmentAfterOneCommitted(t *testing.T) {
@@ -347,28 +294,6 @@ func TestAnEnrollmentAfterOneCommitted(t *testing.T) {
 		t.Fatalf("person's pairing after an introduction = added %t, %v after %d redemptions; want it saved", got.added, got.err, p.redemptions.Load())
 	}
 	enrolled(t, m, p.backendID)
-}
-
-// The save checks again, under the profile lock, that the computer is still
-// wanted. Another controller sharing this profile directory can pair it
-// meanwhile; the introduction then saves nothing and leaves that pairing.
-func TestTheSaveChecksAgainThatTheComputerIsStillWanted(t *testing.T) {
-	t.Parallel()
-	p := newIntroducedPeer(t, nil)
-	m, dir := newManager(t)
-	unlock := m.profiles.Lock(p.backendID)
-	answer := p.introduce(context.Background(), m)
-	waitForProfileRefs(t, m, p.backendID, 2)
-	other := deviceclient.Session{OwnDevice: true, BackendID: p.backendID, Endpoint: p.route.Endpoint, CertFingerprint: p.route.CertFingerprint,
-		SessionID: "another-controller", Credential: "c", RefreshSecret: "r", ExpiresAtMs: time.Now().Add(time.Hour).UnixMilli()}
-	seed(t, dir, other)
-	unlock()
-	if got := within(t, "the introduction", 2*time.Second, answer); got.added || got.err != nil {
-		t.Fatalf("introduction to a computer paired meanwhile = added %t, %v; want not added with no error", got.added, got.err)
-	}
-	if saved, err := deviceclient.LoadSession(dir, p.backendID); err != nil || saved.SessionID != "another-controller" {
-		t.Fatalf("saved session = %+v, %v; want the other controller's kept", saved, err)
-	}
 }
 
 // A re-pairing leaves the old pairing working while its redemption is in

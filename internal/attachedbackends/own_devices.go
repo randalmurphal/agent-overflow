@@ -148,7 +148,10 @@ func (c *carrier) openRPC(ctx context.Context, capability string) (*rpcclient.Cl
 // rotation that follows fails; the error then says why. ctx bounds route
 // selection and the wait for that rotation. The redemption between them is
 // an enrollment (enroll), which Forget and the start of shutdown cancel and
-// ctx does not.
+// ctx does not. While another enrollment with the computer is in flight it
+// waits for that one to end, within ctx and until shutdown begins, then
+// decides on what that one left: not added, with no error, once an
+// own-device pairing is stored or the computer was forgotten.
 func (m *Manager) AcceptOwnDeviceIntroduction(ctx context.Context, raw string, routes []computerroute.Route) (bool, error) {
 	link, err := deviceclient.DecodeLink(raw)
 	if err != nil {
@@ -165,18 +168,20 @@ func (m *Manager) AcceptOwnDeviceIntroduction(ctx context.Context, raw string, r
 		return false, errors.New("cannot connect a computer to itself")
 	}
 	// Checked here so a refused introduction probes nothing, and again by
-	// the enrollment before its redemption and under the profile lock.
+	// the enrollment before its redemption and in its save.
 	if wanted, err := m.introductionWanted(link.BackendID); err != nil || !wanted {
 		return false, err
 	}
+	// Route selection and the wait for another enrollment with the same
+	// computer end with ctx and when shutdown begins.
 	probe, stop := m.untilShutdown(ctx)
+	defer stop()
 	route, err := deviceclient.SelectPairingRoute(probe, link.BackendID, routes, deviceclient.WithDialContext(m.dial))
-	stop()
 	if err != nil {
 		return false, err
 	}
 	link.Endpoint, link.CertFingerprint = route.Endpoint, route.CertFingerprint
-	_, held, err := m.enroll(link, introductionByPeer, false)
+	_, held, err := m.enroll(probe, link, introductionByPeer, false)
 	if errors.Is(err, errNotWanted) {
 		return false, nil
 	}
@@ -205,13 +210,20 @@ func (m *Manager) AcceptOwnDeviceIntroduction(ctx context.Context, raw string, r
 // introductionWanted reports whether an introduction to id may enroll: the
 // person has not forgotten it here, and no own-device pairing with it exists.
 func (m *Manager) introductionWanted(id string) (bool, error) {
+	stored, err := deviceclient.LoadSession(m.dir, id)
+	return m.introductionWantedFor(id, stored, err)
+}
+
+// introductionWantedFor is introductionWanted given the session stored for
+// id as LoadSession answers it.
+func (m *Manager) introductionWantedFor(id string, stored deviceclient.Session, loadErr error) (bool, error) {
 	if excluded, err := m.ownDeviceExcluded(id); err != nil || excluded {
 		return false, err
 	}
-	if session, err := deviceclient.LoadSession(m.dir, id); err == nil && session.OwnDevice {
+	if loadErr == nil && stored.OwnDevice {
 		return false, nil
-	} else if err != nil && !errors.Is(err, deviceclient.ErrNoSession) {
-		return false, err
+	} else if loadErr != nil && !errors.Is(loadErr, deviceclient.ErrNoSession) {
+		return false, loadErr
 	}
 	return true, nil
 }

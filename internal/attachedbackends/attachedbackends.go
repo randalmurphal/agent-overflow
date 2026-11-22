@@ -87,7 +87,8 @@ type Manager struct {
 	mu       sync.Mutex
 	carriers map[string]*carrier
 	// enrollments is the one pairing link being spent per computer
-	// (enrollment). Remove cancels the one for the computer it forgets.
+	// (enrollment). Remove cancels the one for the computer it forgets; an
+	// introduction, Rename and RepairAddress wait for it (awaitEnrollment).
 	enrollments map[string]*enrollment
 	// verdicts holds, per computer whose last pairing it ended with its
 	// verdict (endSession), the name that pairing gave it, until a pairing
@@ -453,7 +454,7 @@ func (m *Manager) Add(ctx context.Context, pairingLink string) (Attachment, erro
 	if m.selfID != nil && link.BackendID == m.selfID() {
 		return Attachment{}, errors.New("this is the computer you are already using")
 	}
-	attachment, _, err := m.enroll(link, pairingByPerson, addressPairing)
+	attachment, _, err := m.enroll(ctx, link, pairingByPerson, addressPairing)
 	if err != nil {
 		return Attachment{}, err
 	}
@@ -495,14 +496,18 @@ func (m *Manager) Await(ctx context.Context, id string) error {
 	return nil
 }
 
-// Remove forgets one machine. The device key survives: it names this
-// DEVICE, and the far side adopts its row by thumbprint if this
-// installation ever pairs with it again.
+// Remove forgets one machine, whichever pairing with it is stored, also one
+// another manager over the same profile directory saved. The device key
+// survives: it names this DEVICE, and the far side adopts its row by
+// thumbprint if this installation ever pairs with it again.
 //
 // A pairing or introduction with the computer still in flight is cancelled
 // first, without waiting for it: whatever its redemption answers is not
 // saved (enrollment). Forgetting is the decision, so it stays cancelled
-// even if the removal below fails.
+// even if the removal below fails. The exclusion is written before the
+// session is deleted, so another manager's save, which reads the exclusion
+// and writes under the session file's lock, either lands before the delete
+// or refuses.
 func (m *Manager) Remove(id string) error {
 	m.cancelEnrollment(id, errPairingForgotten)
 	unlock := m.profiles.Lock(id)
@@ -510,7 +515,7 @@ func (m *Manager) Remove(id string) error {
 	if err := m.excludeOwnDevice(id, true); err != nil {
 		return err
 	}
-	if err := m.forgetLocked(id); err != nil {
+	if _, err := m.forgetLocked(id, func() (bool, error) { return true, deviceclient.ForgetSession(m.dir, id) }); err != nil {
 		// The pairing stays, so neither does its exclusion.
 		return errors.Join(err, m.excludeOwnDevice(id, false))
 	}
@@ -518,39 +523,36 @@ func (m *Manager) Remove(id string) error {
 	return nil
 }
 
-// forgetLocked drops one profile; the caller holds its profile lock. The
-// live owner, when there is one, deletes the pairing it still owns under
-// the session transaction fence and retires, so a renewal already in flight
-// cannot write the credential back. It leaves the cache before that call
-// rather than during it: m.mu is not held across the OS lock, and the
-// caller's profile lock is what keeps a second owner from being built from
-// the file in the meantime. A removal that failed retires the old owner
-// all the same, so the retry that rebuilds a carrier never has two, and
-// gives back the agent opt-in it took, since the pairing stays.
-func (m *Manager) forgetLocked(id string) error {
+// forgetLocked drops one profile with drop, which reports whether it
+// removed the stored session; the caller holds its profile lock. The live
+// owner, when there is one, leaves the cache and retires first, so a
+// renewal already in flight cannot write the credential back, and the
+// caller's profile lock keeps a second owner from being built from the
+// file in the meantime. A removal that failed or did not happen leaves the
+// old owner retired all the same, so the lookup that rebuilds a carrier
+// never has two, and gives back the agent opt-in it took, since the pairing
+// stays.
+func (m *Manager) forgetLocked(id string, drop func() (bool, error)) (bool, error) {
 	access, err := m.AgentAccess()
 	if err != nil {
-		return err
+		return false, err
 	}
 	if err := m.writeAgentAccess(id, false); err != nil {
-		return err
+		return false, err
 	}
 	m.mu.Lock()
 	held := m.carriers[id]
 	delete(m.carriers, id)
 	m.mu.Unlock()
-	if held == nil {
-		err = deviceclient.ForgetSession(m.dir, id)
-	} else {
+	if held != nil {
 		held.leave(errPairingForgotten)
-		if err = held.client.Forget(); err != nil {
-			held.client.Retire()
-		}
+		held.client.Retire()
 	}
-	if err != nil && access[id] {
-		return errors.Join(err, m.writeAgentAccess(id, true))
+	dropped, err := drop()
+	if (err != nil || !dropped) && access[id] {
+		err = errors.Join(err, m.writeAgentAccess(id, true))
 	}
-	return err
+	return dropped, err
 }
 
 // Rename sets the owner's own label for one machine, or clears it when
@@ -559,8 +561,14 @@ func (m *Manager) forgetLocked(id string) error {
 // Written through the live client rather than straight to the file,
 // because a rotation is replacing that same file whenever the credential
 // comes due — and a rename that raced one would either lose the nickname
-// or roll the credential back.
+// or roll the credential back. A rename during a pairing or introduction
+// with the computer waits for it (awaitEnrollment) and applies to the
+// pairing it leaves, since a re-pairing replaces the stored nickname. That
+// wait ends when shutdown begins.
 func (m *Manager) Rename(id, nickname string) error {
+	if _, err := m.awaitEnrollment(m.life, id); err != nil {
+		return err
+	}
 	held, err := m.carrier(m.life, id)
 	if err != nil {
 		return err
@@ -574,7 +582,15 @@ func (m *Manager) Rename(id, nickname string) error {
 
 // RepairAddress adds a verified replacement address to an
 // existing pairing. The live client owns the profile write and route change.
+// A repair during a pairing or introduction with the computer waits for it,
+// as Rename does; that wait also ends with ctx.
 func (m *Manager) RepairAddress(ctx context.Context, id, endpoint string) (string, error) {
+	wait, stop := m.untilShutdown(ctx)
+	_, err := m.awaitEnrollment(wait, id)
+	stop()
+	if err != nil {
+		return "", err
+	}
 	held, err := m.carrier(ctx, id)
 	if err != nil {
 		return "", err

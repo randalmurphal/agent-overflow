@@ -328,7 +328,8 @@ func TestARemovalThatFailsLeavesThePairingUnexcluded(t *testing.T) {
 }
 
 // A removal whose profile cannot be deleted gives back the agent opt-in it
-// took first: the pairing stays, and so does what it was allowed.
+// took first: the pairing stays, and so does what it was allowed. Its old
+// owner is retired all the same, so the next lookup builds the one owner.
 func TestARemovalThatFailsKeepsTheAgentOptIn(t *testing.T) {
 	manager, dir := newManager(t)
 	const id = "0f6f8d3e-6f8b-4c39-9d5e-3a8f8f3f1c11"
@@ -338,6 +339,15 @@ func TestARemovalThatFailsKeepsTheAgentOptIn(t *testing.T) {
 	if err := manager.SetAgentAccess(id, true); err != nil {
 		t.Fatal(err)
 	}
+	held, err := manager.carrier(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if !held.client.Retired() {
+			t.Error("the failed removal left its old owner live")
+		}
+	})
 	sessions := filepath.Join(dir, deviceclient.SessionsDirName)
 	if err := os.Chmod(sessions, 0o500); err != nil {
 		t.Fatal(err)

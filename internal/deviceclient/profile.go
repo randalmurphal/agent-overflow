@@ -95,7 +95,7 @@ type Session struct {
 	// Kept in the session file rather than beside it because it belongs
 	// to the same thing the file names, and a rotation carries it (see
 	// Client.rotate, which copies the held session before replacing the
-	// credential fields).
+	// credential fields). A re-pairing does not (Redemption.Save).
 	Nickname string `json:"nickname,omitempty"`
 }
 
@@ -113,19 +113,10 @@ func LoadSession(dir, backendID string) (Session, error) {
 // Atomic by construction: a rotation that crashed mid-write would leave a
 // credential pair whose two halves came from different exchanges, and the
 // refresh half of that pair reads as reuse the next time it is presented.
-func SaveSession(dir string, session Session) (err error) {
-	path, err := sessionPath(dir, session.BackendID)
-	if err != nil {
-		return err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), profileWriteTimeout)
-	defer cancel()
-	release, err := lockProfile(ctx, dir, filepath.Base(path))
-	if err != nil {
-		return err
-	}
-	defer func() { err = errors.Join(err, release()) }()
-	return writeSession(path, session)
+func SaveSession(dir string, session Session) error {
+	return decideSession(dir, session.BackendID, func(path string, _ Session, _ error) error {
+		return writeSession(path, session)
+	})
 }
 
 func writeSession(path string, session Session) error {
@@ -155,10 +146,22 @@ func readSession(path string) (Session, error) {
 	return session, nil
 }
 
-// ForgetSession drops one backend's stored session. The device key
-// survives: it names the DEVICE, and the backend adopts its row by
-// thumbprint when this installation pairs again.
-func ForgetSession(dir, backendID string) (err error) {
+// decideSession runs decide on one backend's stored session, and decide makes
+// its change through path, under one hold of that session file's OS lock.
+// That lock is the per-computer fence across processes: SaveSession,
+// ForgetSession, ForgetSessionIf, Redemption.Save and every client's
+// sessionTransaction take it, so a decision about the stored session and the
+// write it leads to cannot have another process's write between them.
+// decide receives the session as LoadSession answers it: the session, or
+// ErrNoSession, or the error reading the file.
+//
+// Lock order: a caller may hold its in-process lock for the computer
+// (attachedbackends' profile lock) and takes this one after it. A client's
+// mutex is taken before this lock (sessionTransaction), never inside it, so
+// decide neither takes a client's mutex nor waits on anything whose holder
+// may: it reads and writes local files and takes no other OS lock. The wait
+// for the lock is bounded by profileWriteTimeout.
+func decideSession(dir, backendID string, decide func(path string, stored Session, err error) error) (err error) {
 	path, err := sessionPath(dir, backendID)
 	if err != nil {
 		return err
@@ -170,8 +173,45 @@ func ForgetSession(dir, backendID string) (err error) {
 		return err
 	}
 	defer func() { err = errors.Join(err, release()) }()
+	stored, readErr := readSession(path)
+	return decide(path, stored, readErr)
+}
 
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+// ForgetSession drops one backend's stored session, whichever pairing it
+// holds and whether or not it can be read. The device key survives: it
+// names the DEVICE, and the backend adopts its row by thumbprint when this
+// installation pairs again. A client built from the session it drops is
+// retired by its owner first (Client.Retire); one that is not finds the file
+// gone at its next write and retires itself.
+func ForgetSession(dir, backendID string) error {
+	return decideSession(dir, backendID, func(path string, _ Session, _ error) error {
+		return forgetSessionFile(path, backendID)
+	})
+}
+
+// ForgetSessionIf drops one backend's stored session if forget, run on it
+// under the session file's lock, says to, and reports whether it dropped
+// one. A file that is absent or cannot be read is left as it is.
+func ForgetSessionIf(dir, backendID string, forget func(Session) bool) (bool, error) {
+	forgotten := false
+	err := decideSession(dir, backendID, func(path string, stored Session, err error) error {
+		if errors.Is(err, ErrNoSession) {
+			return nil
+		}
+		if err != nil || !forget(stored) {
+			return err
+		}
+		if err := forgetSessionFile(path, backendID); err != nil {
+			return err
+		}
+		forgotten = true
+		return nil
+	})
+	return forgotten, err
+}
+
+func forgetSessionFile(path, backendID string) error {
+	if err := removeSessionFile(path); err != nil {
 		return fmt.Errorf("deviceclient: forget the session for %s: %w", backendID, err)
 	}
 	return nil

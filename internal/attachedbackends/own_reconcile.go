@@ -355,10 +355,15 @@ func (m *Manager) pruneOwnProfiles(snapshot owndevices.List) (bool, error) {
 // retireOwnProfile forgets one own-device profile the way a tombstone does,
 // if it still holds the session named (any session when sessionID is empty),
 // and announces it as SetRemoved, as every removal is. Ordinary limited
-// shares are separate grants and are never touched.
+// shares are separate grants and are never touched. The check is decided
+// again under the session file's lock (deviceclient.ForgetSessionIf), so a
+// pairing another manager saved since the check here is kept.
 func (m *Manager) retireOwnProfile(id, sessionID string) (bool, error) {
 	unlock := m.profiles.Lock(id)
 	defer unlock()
+	tombstoned := func(session deviceclient.Session) bool {
+		return session.OwnDevice && (sessionID == "" || session.SessionID == sessionID)
+	}
 	current, err := deviceclient.LoadSession(m.dir, id)
 	if err != nil {
 		if errors.Is(err, deviceclient.ErrNoSession) {
@@ -366,10 +371,11 @@ func (m *Manager) retireOwnProfile(id, sessionID string) (bool, error) {
 		}
 		return false, err
 	}
-	if !current.OwnDevice || (sessionID != "" && current.SessionID != sessionID) {
+	if !tombstoned(current) {
 		return false, nil
 	}
-	if err := m.forgetLocked(id); err != nil {
+	dropped, err := m.forgetLocked(id, func() (bool, error) { return deviceclient.ForgetSessionIf(m.dir, id, tombstoned) })
+	if err != nil || !dropped {
 		return false, err
 	}
 	m.notifyChanged(SetChange{Action: SetRemoved, ID: id})

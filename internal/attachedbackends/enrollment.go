@@ -10,8 +10,9 @@ import (
 // enrollment is one pairing link being spent for a computer: a person's
 // pairing (Add) or an own-device introduction. At most one exists per
 // computer (Manager.enrollments). Its redemption runs with no profile lock
-// held; the lock is taken once the redemption has answered, only to check
-// the computer is still wanted and commit the session.
+// held; the profile lock is taken once the redemption has answered, and the
+// session is saved only if, under the session file's lock, the computer is
+// still wanted (commitEnrollment).
 type enrollment struct {
 	purpose enrollmentPurpose
 	// unpairedOnly is a person's pairing by address, which must not replace
@@ -23,6 +24,9 @@ type enrollment struct {
 	// cancelled, with the reason as its cause.
 	ctx    context.Context
 	cancel context.CancelCauseFunc
+	// done is closed once the enrollment has left Manager.enrollments.
+	// awaitEnrollment waits on it.
+	done chan struct{}
 }
 
 // enrollmentPurpose is who asked for an enrollment, which decides what
@@ -48,12 +52,12 @@ const (
 //	redeeming -> cancelled  Forget, or for an introduction the start of
 //	                        shutdown. The redemption's context ends; an
 //	                        answer that still arrives is not saved.
-//	redeeming -> failed     The redemption failed, or the computer was no
-//	                        longer wanted. Nothing was saved.
-//	redeeming -> committed  The redemption answered and, under the
-//	                        profile lock, the computer is still wanted.
-//	                        Nothing cancels it from here.
-//	committed -> failed     The session could not be saved.
+//	redeeming -> failed     The redemption failed, or the computer was not
+//	                        wanted before it was sent. Nothing was saved.
+//	redeeming -> committed  The redemption answered, and the profile lock is
+//	                        held for the save. Nothing cancels it from here.
+//	committed -> failed     The save refused the computer as no longer
+//	                        wanted (admitEnrollment), or failed.
 //
 // cancelled and failed are final. An enrollment leaves Manager.enrollments
 // when the call that began it returns.
@@ -82,22 +86,57 @@ var (
 	errAlreadyConnected = errors.New("this computer is already connected; use its existing connection")
 )
 
-// beginEnrollment claims id for one enrollment, and refuses while another
-// enrollment for id is in flight. One begun after shutdown began is not
+// beginEnrollment claims id for one enrollment. While another enrollment for
+// id is in flight, a person's pairing is refused and an introduction waits
+// for it to end (awaitEnrollment), then claims id and decides on what it
+// left. A waiting introduction holds no claim, so nothing waits on it; its
+// wait ends with ctx, which its caller ends at shutdown. One whose wait
+// ended in a Forget is not wanted. One begun after shutdown began is not
 // cancelled by it; its redemption is never sent (deviceclient.Redeem).
-func (m *Manager) beginEnrollment(id string, purpose enrollmentPurpose, unpairedOnly bool) (*enrollment, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.enrollments[id] != nil {
-		if purpose == introductionByPeer {
+func (m *Manager) beginEnrollment(ctx context.Context, id string, purpose enrollmentPurpose, unpairedOnly bool) (*enrollment, error) {
+	for {
+		m.mu.Lock()
+		if m.enrollments[id] == nil {
+			ctx, cancel := context.WithCancelCause(context.Background())
+			e := &enrollment{purpose: purpose, unpairedOnly: unpairedOnly, state: enrollmentRedeeming, ctx: ctx, cancel: cancel, done: make(chan struct{})}
+			m.enrollments[id] = e
+			m.mu.Unlock()
+			return e, nil
+		}
+		m.mu.Unlock()
+		if purpose == pairingByPerson {
+			return nil, errEnrollmentInProgress
+		}
+		ended, err := m.awaitEnrollment(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if ended != nil && errors.Is(context.Cause(ended.ctx), errPairingForgotten) {
 			return nil, errNotWanted
 		}
-		return nil, errEnrollmentInProgress
 	}
-	ctx, cancel := context.WithCancelCause(context.Background())
-	e := &enrollment{purpose: purpose, unpairedOnly: unpairedOnly, state: enrollmentRedeeming, ctx: ctx, cancel: cancel}
-	m.enrollments[id] = e
-	return e, nil
+}
+
+// awaitEnrollment waits until no enrollment for id is in flight, or ctx
+// ends, and returns the last one it waited for. Each is bounded by its
+// redemption (the HTTP timeout) and its save's lock waits; Forget and, for
+// an introduction, the start of shutdown end it sooner.
+func (m *Manager) awaitEnrollment(ctx context.Context, id string) (*enrollment, error) {
+	var ended *enrollment
+	for {
+		m.mu.Lock()
+		e := m.enrollments[id]
+		m.mu.Unlock()
+		if e == nil {
+			return ended, nil
+		}
+		select {
+		case <-e.done:
+			ended = e
+		case <-ctx.Done():
+			return nil, context.Cause(ctx)
+		}
+	}
 }
 
 // finishEnrollment releases id's claim once the call that began e returns.
@@ -108,6 +147,7 @@ func (m *Manager) finishEnrollment(id string, e *enrollment) {
 	}
 	m.mu.Unlock()
 	e.cancel(nil)
+	close(e.done)
 }
 
 // moveEnrollment moves e from one state to another and reports whether e
@@ -144,33 +184,37 @@ func (m *Manager) cancelEnrollmentLocked(e *enrollment, cause error) {
 	}
 }
 
-// admitEnrollment says whether e's computer may be enrolled. It is checked
-// before the redemption and again under the profile lock, and reads only
-// local files.
-func (m *Manager) admitEnrollment(id string, e *enrollment) error {
+// admitEnrollment says whether e's computer may be enrolled, given the
+// session stored for it as LoadSession answers it. It decides inside the
+// save (commitEnrollment), where another process cannot write between it
+// and the write, and runs once before the redemption so a computer already
+// refused spends no link. It reads only local files.
+func (m *Manager) admitEnrollment(id string, e *enrollment, stored deviceclient.Session, loadErr error) error {
 	if e.purpose == introductionByPeer {
-		wanted, err := m.introductionWanted(id)
+		wanted, err := m.introductionWantedFor(id, stored, loadErr)
 		if err == nil && !wanted {
 			err = errNotWanted
 		}
 		return err
 	}
-	if _, err := deviceclient.LoadSession(m.dir, id); e.unpairedOnly && err == nil {
+	if e.unpairedOnly && loadErr == nil {
 		return errAlreadyConnected
 	}
 	return nil
 }
 
 // enroll spends link for one enrollment of purpose and commits what it
-// returns (admitEnrollment). The carrier is the one installed, nil after
-// Close.
-func (m *Manager) enroll(link deviceclient.Link, purpose enrollmentPurpose, unpairedOnly bool) (Attachment, *carrier, error) {
-	e, err := m.beginEnrollment(link.BackendID, purpose, unpairedOnly)
+// returns (admitEnrollment). ctx bounds only an introduction's wait for
+// another enrollment with the same computer (beginEnrollment). The carrier
+// is the one installed, nil after Close.
+func (m *Manager) enroll(ctx context.Context, link deviceclient.Link, purpose enrollmentPurpose, unpairedOnly bool) (Attachment, *carrier, error) {
+	e, err := m.beginEnrollment(ctx, link.BackendID, purpose, unpairedOnly)
 	if err != nil {
 		return Attachment{}, nil, err
 	}
 	defer m.finishEnrollment(link.BackendID, e)
-	if err := m.admitEnrollment(link.BackendID, e); err != nil {
+	stored, loadErr := deviceclient.LoadSession(m.dir, link.BackendID)
+	if err := m.admitEnrollment(link.BackendID, e, stored, loadErr); err != nil {
 		m.moveEnrollment(e, enrollmentRedeeming, enrollmentFailed)
 		return Attachment{}, nil, err
 	}
@@ -190,35 +234,42 @@ func (m *Manager) enroll(link deviceclient.Link, purpose enrollmentPurpose, unpa
 }
 
 // commitEnrollment saves an answered redemption under the destination's
-// profile lock, unless the enrollment was cancelled or the computer is no
-// longer wanted, and swaps the old carrier for the new one at the save:
-// until then the old one keeps working. A person's pairing is a new grant:
+// profile lock, unless the enrollment was cancelled, and swaps the old
+// carrier for the new one at the save: until then the old one keeps
+// working. The save decides admission again under the session file's lock
+// (deviceclient.Redemption.Save), which another manager over the same
+// profile directory takes for its Forget and its own save, so neither a
+// forget nor an own-device pairing that manager wrote since the check
+// before the redemption is overwritten. A person's pairing is a new grant:
 // it starts with agent access off and clears a forget of the computer as an
 // own device.
+//
+// The old carrier retires before the save, never after: a rotation it has
+// in flight would otherwise find the replacement, end as a verdict, and
+// report the computer removed (endSession). It retires only once nothing
+// in this process can cancel the save, so a save the other manager refuses
+// is the only way to lose it, and then that manager has forgotten or
+// replaced its session already.
 func (m *Manager) commitEnrollment(e *enrollment, link deviceclient.Link, redeemed *deviceclient.Redemption) (Attachment, *carrier, error) {
 	unlock := m.profiles.Lock(link.BackendID)
 	defer unlock()
-	if err := m.admitEnrollment(link.BackendID, e); err != nil {
-		if !m.moveEnrollment(e, enrollmentRedeeming, enrollmentFailed) {
-			return Attachment{}, nil, context.Cause(e.ctx)
-		}
-		return Attachment{}, nil, err
-	}
 	if !m.moveEnrollment(e, enrollmentRedeeming, enrollmentCommitted) {
 		return Attachment{}, nil, context.Cause(e.ctx)
 	}
-	if e.purpose == pairingByPerson {
-		// Do not revive an old agent opt-in after revocation or an
-		// incomplete pairing; the explicit enable follows it. An
-		// introduction that upgrades an already-paired computer to a group
-		// session keeps a live opt-in.
-		if err := m.writeAgentAccess(link.BackendID, false); err != nil {
-			m.moveEnrollment(e, enrollmentCommitted, enrollmentFailed)
-			return Attachment{}, nil, err
-		}
-	}
 	m.retireCarrier(link.BackendID)
-	client, pairing, err := redeemed.Save()
+	client, pairing, err := redeemed.Save(func(stored deviceclient.Session, loadErr error) error {
+		if err := m.admitEnrollment(link.BackendID, e, stored, loadErr); err != nil {
+			return err
+		}
+		if e.purpose == pairingByPerson {
+			// Do not revive an old agent opt-in after revocation or an
+			// incomplete pairing; the explicit enable follows it. An
+			// introduction that upgrades an already-paired computer to a
+			// group session keeps a live opt-in.
+			return m.writeAgentAccess(link.BackendID, false)
+		}
+		return nil
+	})
 	if err != nil {
 		m.moveEnrollment(e, enrollmentCommitted, enrollmentFailed)
 		return Attachment{}, nil, err

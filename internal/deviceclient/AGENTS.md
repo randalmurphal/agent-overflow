@@ -7,7 +7,14 @@ pinned by tests. Credential requests never follow redirects.
 A redemption spends a single-use link. `Redeem` honors its context and
 returns the session unsaved, so its owner decides whether to keep it; `Pair`
 detaches it and saves, for a caller that must not lose the link. Neither is
-sent once the owner's lifetime has ended.
+sent once the owner's lifetime has ended. `Redemption.Save` is single use and
+runs its owner's admission on the stored session under the session file's
+lock, then writes in the same hold. That lock is the one per-computer fence
+across processes (`decideSession` states its order): every decision about a
+stored session and the write it leads to goes through it, so another process
+cannot write between them. Forgetting drops whatever is stored
+(`ForgetSession`, after the owner retires its client) or only what a check on
+the stored session names (`ForgetSessionIf`).
 
 Confirmation waits poll renewal, not socket tickets. Pending confirmation is
 read-only on the server and preserves the saved renewal operation; approval
@@ -85,7 +92,7 @@ Automatic own-device introductions select among the target member's bounded trus
 before redemption. Credential-free health probes verify both TLS trust and
 backend identity; the first verified route wins without waiting for a dead LAN
 or cold VPN alternative. Selection never sends the invitation token or a device
-proof. Pair then performs one redemption only: a lost reply cannot safely retry
+proof. The redemption is then performed once only: a lost reply cannot safely retry
 an invitation that may already have been spent.
 
 

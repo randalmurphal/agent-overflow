@@ -42,12 +42,15 @@ type introducedPeer struct {
 	// holdPair, when set, holds redemption number heldPair (the first when
 	// zero) until it closes or the request ends; pairArrived closes when it
 	// arrives and pairAbandoned when the client gave the request up.
-	// refusePair refuses every redemption.
+	// refusePair refuses every redemption, refusedPair only that one, and
+	// droppedPair drops that one's connection with no answer.
 	holdPair      chan struct{}
 	heldPair      int32
 	pairArrived   chan struct{}
 	pairAbandoned chan struct{}
 	refusePair    atomic.Bool
+	refusedPair   int32
+	droppedPair   int32
 	redeemed      atomic.Bool
 	redemptions   atomic.Int32
 	rotations     atomic.Int32
@@ -102,7 +105,13 @@ func newIntroducedPeer(t *testing.T, configure func(*introducedPeer)) *introduce
 					return
 				}
 			}
-			if p.refusePair.Load() {
+			if number == p.droppedPair {
+				if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+					_ = conn.Close()
+				}
+				return
+			}
+			if p.refusePair.Load() || number == p.refusedPair {
 				w.WriteHeader(http.StatusUnauthorized)
 				_ = json.NewEncoder(w).Encode(map[string]string{"reason": "unknown_credential"})
 				return
