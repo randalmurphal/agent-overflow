@@ -73,7 +73,11 @@ func (a *App) ensureProviderAccountSelectionReadyForSendLocked(
 		a.emitProviderSessionAccount(thread.ID)
 		return nil
 	case string(provider.Codex):
-		if sess.Liveness != nil && sess.Liveness.ActiveTurns.Load() > 0 {
+		// The session's own counter follows the wire, ahead of the events
+		// still queued for triage. A turn triage has open may yet start
+		// background work the count below cannot see.
+		if (sess.Liveness != nil && sess.Liveness.ActiveTurns.Load() > 0) ||
+			(a.triage != nil && a.triage.HasInFlightTurnOrRound(thread.ID)) {
 			return fmt.Errorf("Codex account switch is pending for this thread until its active turn finishes")
 		}
 		running, err := a.hasRunningBackgroundTasks(thread.ID)

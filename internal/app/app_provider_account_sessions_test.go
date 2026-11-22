@@ -124,6 +124,39 @@ func TestCodexAccountSwitchWaitsForBackgroundWork(t *testing.T) {
 	}
 }
 
+// The session's turn counter follows the wire and can read zero while
+// triage still has the turn's events to process. The switch waits for the
+// turn triage has open.
+func TestCodexAccountSwitchWaitsForATurnTriageStillHasOpen(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithTriage(t)
+	thread := testThread("codex-account-triage-turn")
+	thread.Provider = string(provider.Codex)
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatal(err)
+	}
+	installTestProviderAccounts(t, app, string(provider.Codex))
+	app.sessionManager().put(thread.ID, session{
+		Provider:             string(provider.Codex),
+		Token:                "old-process",
+		CredentialGeneration: 1,
+		Liveness:             newSessionLiveness(time.Now()),
+	})
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: thread.ID, TurnID: thread.ID + ":turn", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+
+	err := app.ensureProviderAccountReadyForSendLocked(thread)
+	if err == nil || !strings.Contains(err.Error(), "active turn finishes") {
+		t.Fatalf("error = %v, want active-turn pending message", err)
+	}
+	if got, _ := app.sessionManager().get(thread.ID); got.Token != "old-process" || got.CredentialGeneration != 1 {
+		t.Fatalf("the Codex session was modified: %+v", got)
+	}
+}
+
 // A running Codex command exists only in the router. The switch waits for
 // it as it does for a stored launch.
 func TestCodexAccountSwitchWaitsForWorkOnlyTheRouterHolds(t *testing.T) {

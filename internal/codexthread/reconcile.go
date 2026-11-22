@@ -119,10 +119,21 @@ func (a *Service) ReconcileOnReopen(ctx context.Context, threadID string) (Recon
 	if a.isShuttingDown() {
 		return ReconcileResult{}, a.shutdownError()
 	}
-
 	sess, ok := a.session(threadID)
 	if !ok {
 		return ReconcileResult{}, fmt.Errorf("app: reconcile codex: no active session for thread %s", threadID)
+	}
+	return a.reconcileSession(ctx, threadID, sess)
+}
+
+// reconcileSession is ReconcileOnReopen for one session of the thread. The
+// verdict is about that session: what it asks for is done only while the
+// session is still the thread's (whileThreadSession). A session that
+// replaced it retired the prior runtime state at its own start and runs
+// its own reconcile.
+func (a *Service) reconcileSession(ctx context.Context, threadID string, sess LiveSession) (ReconcileResult, error) {
+	if a.isShuttingDown() {
+		return ReconcileResult{}, a.shutdownError()
 	}
 	if sess.Session == nil {
 		return ReconcileResult{}, fmt.Errorf("app: reconcile codex: thread %s is not a Codex thread", threadID)
@@ -162,37 +173,43 @@ func (a *Service) ReconcileOnReopen(ctx context.Context, threadID string) (Recon
 		// the subprocess has since failed on, or a row inserted
 		// post-spawn that immediately became unreachable. Either way,
 		// use the same transition so the summary suffix stays idempotent.
-		flipped, flipErr := a.retireCodexBackgroundRuntimeForReconcile(threadID)
-		if flipErr != nil {
-			return result, flipErr
-		}
-		result.Flipped = flipped
-		return result, nil
 
 	default:
 		log.Printf("app: reconcile codex: unknown thread status %q; treating as systemError", probe.Status)
-		flipped, flipErr := a.retireCodexBackgroundRuntimeForReconcile(threadID)
-		if flipErr != nil {
-			return result, flipErr
-		}
-		result.Flipped = flipped
-		return result, nil
 	}
+	err = a.whileThreadSession(ctx, threadID, sess, func() error {
+		retired, err := a.store.RetireCodexBackgroundRuntime(threadID, codexghost.GhostSummary, time.Now().UnixMilli())
+		if err != nil {
+			return fmt.Errorf("app: reconcile Codex runtime retirement: %w", err)
+		}
+		for _, item := range retired {
+			if item.Status == "errored" {
+				result.Flipped++
+			}
+		}
+		a.emitRetiredItems(retired)
+		return nil
+	})
+	return result, err
 }
 
-func (a *Service) retireCodexBackgroundRuntimeForReconcile(threadID string) (int, error) {
-	retired, err := a.store.RetireCodexBackgroundRuntime(threadID, codexghost.GhostSummary, time.Now().UnixMilli())
+// whileThreadSession runs act under the thread lock if sess is still the
+// thread's session, and does nothing otherwise. A restart holds that lock
+// from its stop through its start, so act never runs against the thread
+// of a session that replaced sess.
+func (a *Service) whileThreadSession(ctx context.Context, threadID string, sess LiveSession, act func() error) error {
+	if a.deps.LockThread == nil {
+		return fmt.Errorf("app: reconcile codex: no thread lock for %s", threadID)
+	}
+	unlock, err := a.deps.LockThread(ctx, threadID)
 	if err != nil {
-		return 0, fmt.Errorf("app: reconcile Codex runtime retirement: %w", err)
+		return fmt.Errorf("app: reconcile codex: lock thread %s: %w", threadID, err)
 	}
-	flipped := 0
-	for _, item := range retired {
-		if item.Status == "errored" {
-			flipped++
-		}
+	defer unlock()
+	if current, ok := a.session(threadID); !ok || current != sess {
+		return nil
 	}
-	a.emitRetiredItems(retired)
-	return flipped, nil
+	return act()
 }
 
 // ReconcileResult is the caller-facing summary of a single reconcile
@@ -206,12 +223,13 @@ type ReconcileResult struct {
 	NeedsResume bool                   `json:"needsResume"` // true when status=notLoaded
 }
 
-// ReconcileAfterStart performs the bounded post-start probe and rehydrates a
-// provider thread that Codex reports as not loaded.
-func (a *Service) ReconcileAfterStart(threadID string) {
+// ReconcileAfterStart performs the bounded post-start probe of the session a
+// start registered and rehydrates a provider thread that Codex reports as
+// not loaded.
+func (a *Service) ReconcileAfterStart(threadID string, started LiveSession) {
 	ctx, cancel := context.WithTimeout(a.lifeCtx(), reopenReconcileTimeout)
 	defer cancel()
-	result, err := a.ReconcileOnReopen(ctx, threadID)
+	result, err := a.reconcileSession(ctx, threadID, started)
 	if err != nil {
 		log.Printf("app: reconcile codex on reopen for %s: %v", threadID, err)
 		return
@@ -219,11 +237,7 @@ func (a *Service) ReconcileAfterStart(threadID string) {
 	if !result.NeedsResume {
 		return
 	}
-	sess, ok := a.session(threadID)
-	if !ok || sess.Session == nil {
-		return
-	}
-	if err := sess.Session.Resume(ctx); err != nil {
+	if err := a.whileThreadSession(ctx, threadID, started, func() error { return started.Session.Resume(ctx) }); err != nil {
 		log.Printf("app: reconcile codex resume for %s: %v", threadID, err)
 	}
 }
