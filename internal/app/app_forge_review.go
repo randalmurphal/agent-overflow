@@ -237,12 +237,16 @@ func (a *App) GetPRDetail(ctx context.Context, pr gitops.PRReference) (gitops.PR
 //
 //ao:scope git:operate
 func (a *App) OpenPRDiff(ctx context.Context, ws WorkspaceRef, pr gitops.PRReference, rev gitops.PRRevision, ignoreWhitespace, userInitiated bool) (ReviewDiffOpened, error) {
+	conn, err := callerConnection(ctx)
+	if err != nil {
+		return ReviewDiffOpened{}, err
+	}
 	const action = "open PR diff"
 	workspace, err := a.prRevisionWorkspace(action, ws, pr, rev, userInitiated)
 	if err != nil {
 		return ReviewDiffOpened{}, err
 	}
-	return a.openReviewDiff(ctx, action, transport.ScopeGitOperate, gitdiff.Options{IgnoreWhitespace: ignoreWhitespace}, func(string) (*gitdiff.Sides, error) {
+	return a.openReviewDiff(ctx, conn, action, transport.ScopeGitOperate, gitdiff.Options{IgnoreWhitespace: ignoreWhitespace}, func(string) (*gitdiff.Sides, error) {
 		return gitdiff.MergeBaseSides(ctx, workspace, rev.BaseSHA, rev.HeadSHA)
 	})
 }
@@ -272,12 +276,16 @@ func (a *App) ListPRCommits(ws WorkspaceRef, pr gitops.PRReference, rev gitops.P
 //
 //ao:scope git:operate
 func (a *App) OpenPRCommitDiff(ctx context.Context, ws WorkspaceRef, pr gitops.PRReference, rev gitops.PRRevision, firstSHA, lastSHA string, ignoreWhitespace, userInitiated bool) (ReviewDiffOpened, error) {
+	conn, err := callerConnection(ctx)
+	if err != nil {
+		return ReviewDiffOpened{}, err
+	}
 	const action = "open PR commit diff"
 	workspace, err := a.prRevisionWorkspace(action, ws, pr, rev, userInitiated)
 	if err != nil {
 		return ReviewDiffOpened{}, err
 	}
-	return a.openReviewDiff(ctx, action, transport.ScopeGitOperate, gitdiff.Options{IgnoreWhitespace: ignoreWhitespace}, func(string) (*gitdiff.Sides, error) {
+	return a.openReviewDiff(ctx, conn, action, transport.ScopeGitOperate, gitdiff.Options{IgnoreWhitespace: ignoreWhitespace}, func(string) (*gitdiff.Sides, error) {
 		return gitdiff.CommitRangeSides(ctx, workspace, rev.BaseSHA, rev.HeadSHA, firstSHA, lastSHA)
 	})
 }
@@ -483,6 +491,10 @@ func (a *App) SetPRThreadResolved(ctx context.Context, pr gitops.PRReference, th
 //ao:scope git:operate
 //ao:route selected
 func (a *App) SubscribePRUpdates(ctx context.Context, pr gitops.PRReference) (PRUpdateSubscriptionResult, error) {
+	conn, err := callerConnection(ctx)
+	if err != nil {
+		return PRUpdateSubscriptionResult{}, err
+	}
 	if a.shuttingDown.Load() {
 		return PRUpdateSubscriptionResult{}, ErrShuttingDown
 	}
@@ -532,14 +544,8 @@ func (a *App) SubscribePRUpdates(ctx context.Context, pr gitops.PRReference) (PR
 		a.prUpdates.wg.Go(func() { a.pumpPRUpdates(start) })
 	}
 
-	if state := transport.ConnStateFromContext(ctx); state != nil {
-		// A false return means the connection is already tearing down —
-		// the safety net it would have provided is gone, so release the
-		// reference now rather than leak a pump until shutdown.
-		if !state.BindCleanup(prUpdatesCleanupKey(ref.id), func() { a.unsubscribePRUpdates(ref.id) }) {
-			a.unsubscribePRUpdates(ref.id)
-			return PRUpdateSubscriptionResult{}, fmt.Errorf("pr updates: connection closing")
-		}
+	if err := conn.bindRelease(prUpdatesCleanupKey(ref.id), func() { a.unsubscribePRUpdates(ref.id) }); err != nil {
+		return PRUpdateSubscriptionResult{}, fmt.Errorf("pr updates: %w", err)
 	}
 
 	return PRUpdateSubscriptionResult{

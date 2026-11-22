@@ -38,14 +38,15 @@ func (d *closingReviewDiff) Close() error {
 }
 
 // Shutdown ends the git process and removes the snapshot of every diff
-// still open, whether a connection holds it or an in-process caller does,
-// and leaves nothing that would take another.
+// still open, though the connections holding them are still open, and
+// leaves nothing that would take another.
 func TestShutdownClosesHeldReviewDiffs(t *testing.T) {
 	t.Parallel()
 	app := newReviewDiffTestApp(t)
 	ref, _ := largeWorkspace(t, app)
-	ctx, _ := reviewDiffConn(t)
-	for name, callCtx := range map[string]context.Context{"a connection": ctx, "an in-process caller": context.Background()} {
+	first, _ := reviewDiffConn(t)
+	second, _ := reviewDiffConn(t)
+	for name, callCtx := range map[string]context.Context{"one connection": first, "another connection": second} {
 		opened, err := app.OpenWorkspaceDiff(callCtx, ref, false)
 		if err != nil || opened.ID == "" {
 			t.Fatalf("OpenWorkspaceDiff for %s: %+v, %v", name, opened.ID, err)
@@ -71,7 +72,7 @@ func TestShutdownClosesHeldReviewDiffs(t *testing.T) {
 		t.Fatal("a file record was reserved after shutdown")
 	}
 	late := &closingReviewDiff{}
-	if _, err := app.holdReviewDiff(context.Background(), late, transport.ScopeFilesRead); !errors.Is(err, ErrShuttingDown) {
+	if _, err := app.holdReviewDiff(testCallerConn(t, connCtx(t)), late, transport.ScopeFilesRead); !errors.Is(err, ErrShuttingDown) {
 		t.Fatalf("hold after shutdown: err = %v, want ErrShuttingDown", err)
 	}
 }
@@ -101,7 +102,7 @@ func TestCloseReviewDiffsReportsACloseFailureAndRefusesNewHandles(t *testing.T) 
 	app := newReviewDiffTestApp(t)
 	failure := errors.New("snapshot not removed")
 	held := &closingReviewDiff{err: failure}
-	if _, err := app.holdReviewDiff(context.Background(), held, transport.ScopeFilesRead); err != nil {
+	if _, err := app.holdReviewDiff(testCallerConn(t, connCtx(t)), held, transport.ScopeFilesRead); err != nil {
 		t.Fatalf("holdReviewDiff: %v", err)
 	}
 	if err := app.closeReviewDiffs(); !errors.Is(err, failure) {
@@ -112,7 +113,7 @@ func TestCloseReviewDiffsReportsACloseFailureAndRefusesNewHandles(t *testing.T) 
 	}
 
 	late := &closingReviewDiff{}
-	if _, err := app.holdReviewDiff(context.Background(), late, transport.ScopeFilesRead); !errors.Is(err, ErrShuttingDown) {
+	if _, err := app.holdReviewDiff(testCallerConn(t, connCtx(t)), late, transport.ScopeFilesRead); !errors.Is(err, ErrShuttingDown) {
 		t.Fatalf("hold after shutdown closed the diffs: err = %v, want ErrShuttingDown", err)
 	}
 	if n := late.closes.Load(); n != 1 {
@@ -133,7 +134,7 @@ func TestCloseReviewDiffsWaitsForACloseAConnectionStarted(t *testing.T) {
 	app := newReviewDiffTestApp(t)
 	ctx, conn := reviewDiffConn(t)
 	diff := &closingReviewDiff{entered: make(chan struct{}), release: make(chan struct{})}
-	if _, err := app.holdReviewDiff(ctx, diff, transport.ScopeFilesRead); err != nil {
+	if _, err := app.holdReviewDiff(testCallerConn(t, ctx), diff, transport.ScopeFilesRead); err != nil {
 		t.Fatalf("holdReviewDiff: %v", err)
 	}
 	conn.RunCleanups()

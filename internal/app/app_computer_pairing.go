@@ -71,9 +71,16 @@ type computerPairingState struct {
 //ao:stepup
 //ao:remote
 func (a *App) OpenComputerPairing(ctx context.Context, networkChoice, access string) (ComputerPairingWindow, error) {
-	return a.openComputerPairing(ctx, networkChoice, access, "")
+	conn, err := callerConnection(ctx)
+	if err != nil {
+		return ComputerPairingWindow{}, err
+	}
+	return a.openComputerPairing(conn, networkChoice, access, "")
 }
-func (a *App) openComputerPairing(ctx context.Context, networkChoice, access, purpose string) (ComputerPairingWindow, error) {
+
+// openComputerPairing opens the window for conn, which owns it: the
+// connection's end closes it.
+func (a *App) openComputerPairing(conn callerConn, networkChoice, access, purpose string) (ComputerPairingWindow, error) {
 	if networkChoice != "lan" && networkChoice != "tailnet" {
 		return ComputerPairingWindow{}, errors.New("choose Local network or Tailscale")
 	}
@@ -114,22 +121,21 @@ func (a *App) openComputerPairing(ctx context.Context, networkChoice, access, pu
 		invite, err := a.mintDevicePairingPurpose("desktop", access, choice, purpose)
 		return pairbootstrap.Invitation{LinkID: invite.LinkID, URL: invite.URL}, err
 	})
-	conn := transport.ConnStateFromContext(ctx)
 	state.mu.Lock()
-	state.windowID, state.owner, state.discoveryError = view.WindowID, conn, ""
-	arm := conn != nil && !state.armed[conn]
+	state.windowID, state.owner, state.discoveryError = view.WindowID, conn.state, ""
+	arm := !state.armed[conn.state]
 	if arm {
 		if state.armed == nil {
 			state.armed = make(map[*transport.ConnState]bool)
 		}
-		state.armed[conn] = true
+		state.armed[conn.state] = true
 	}
 	state.mu.Unlock()
 	if arm {
 		cleanup := func() {
 			state.mu.Lock()
-			delete(state.armed, conn)
-			id, owned := state.windowID, state.owner == conn
+			delete(state.armed, conn.state)
+			id, owned := state.windowID, state.owner == conn.state
 			if owned {
 				state.owner = nil
 			}
@@ -138,9 +144,8 @@ func (a *App) openComputerPairing(ctx context.Context, networkChoice, access, pu
 				a.closeComputerPairingWindow(id)
 			}
 		}
-		if !conn.RegisterCleanup(cleanup) {
-			cleanup()
-			return ComputerPairingWindow{}, errors.New("the pairing screen disconnected")
+		if err := conn.registerRelease(cleanup); err != nil {
+			return ComputerPairingWindow{}, err
 		}
 	}
 	if a.currentSettings().Network.BindAll && !nativeLAN {

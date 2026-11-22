@@ -99,6 +99,10 @@ func (a *App) fetchPipeline(ctx context.Context, repo gitops.RepoReference, id s
 //ao:scope git:operate
 //ao:route selected
 func (a *App) SubscribePipeline(ctx context.Context, repo gitops.RepoReference, id string) (PipelineSubscriptionResult, error) {
+	conn, err := callerConnection(ctx)
+	if err != nil {
+		return PipelineSubscriptionResult{}, err
+	}
 	if a.shuttingDown.Load() {
 		return PipelineSubscriptionResult{}, ErrShuttingDown
 	}
@@ -127,11 +131,8 @@ func (a *App) SubscribePipeline(ctx context.Context, repo gitops.RepoReference, 
 			a.prUpdates.wg.Go(func() { a.pumpPipeline(start) })
 		}
 	}
-	if state := transport.ConnStateFromContext(ctx); state != nil {
-		if !state.BindCleanup(pipelineCleanupKey(result.ID), func() { a.unsubscribePipeline(result.ID) }) {
-			a.unsubscribePipeline(result.ID)
-			return PipelineSubscriptionResult{}, errors.New("pipelines: connection closing")
-		}
+	if err := conn.bindRelease(pipelineCleanupKey(result.ID), func() { a.unsubscribePipeline(result.ID) }); err != nil {
+		return PipelineSubscriptionResult{}, fmt.Errorf("pipelines: %w", err)
 	}
 	return result, nil
 }

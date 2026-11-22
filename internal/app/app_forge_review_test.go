@@ -216,7 +216,7 @@ func TestPRUpdatePollingEmitsOnlyOnSnapshotChange(t *testing.T) {
 	}
 	events := capturePRUpdates(t, app)
 
-	sub, err := app.SubscribePRUpdates(context.Background(), testPR)
+	sub, err := app.SubscribePRUpdates(connCtx(t), testPR)
 	if err != nil {
 		t.Fatalf("SubscribePRUpdates: %v", err)
 	}
@@ -256,11 +256,11 @@ func TestPRUpdatePumpIsSharedPerPRKey(t *testing.T) {
 	}
 	events := capturePRUpdates(t, app)
 
-	subA, err := app.SubscribePRUpdates(context.Background(), testPR)
+	subA, err := app.SubscribePRUpdates(connCtx(t), testPR)
 	if err != nil {
 		t.Fatalf("subscribe A: %v", err)
 	}
-	subB, err := app.SubscribePRUpdates(context.Background(), testPR)
+	subB, err := app.SubscribePRUpdates(connCtx(t), testPR)
 	if err != nil {
 		t.Fatalf("subscribe B: %v", err)
 	}
@@ -335,7 +335,7 @@ func TestSubscribePRUpdatesJoinerDoesNotFetch(t *testing.T) {
 		}}, nil
 	}
 
-	first, err := app.SubscribePRUpdates(context.Background(), testPR)
+	first, err := app.SubscribePRUpdates(connCtx(t), testPR)
 	if err != nil {
 		t.Fatalf("subscribe A: %v", err)
 	}
@@ -343,7 +343,7 @@ func TestSubscribePRUpdatesJoinerDoesNotFetch(t *testing.T) {
 		t.Fatalf("the pump-creating subscribe made %d fetches, want 1", got)
 	}
 
-	second, err := app.SubscribePRUpdates(context.Background(), testPR)
+	second, err := app.SubscribePRUpdates(connCtx(t), testPR)
 	if err != nil {
 		t.Fatalf("subscribe B: %v", err)
 	}
@@ -384,7 +384,7 @@ func TestCreatePRUpdatePumpReconcilesAConcurrentPump(t *testing.T) {
 			ciPolled <- struct{}{}
 		}
 	}
-	winner, err := app.SubscribePRUpdates(context.Background(), testPR)
+	winner, err := app.SubscribePRUpdates(connCtx(t), testPR)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -507,7 +507,7 @@ func TestPRUpdatePollingPausesWhileInactiveAndCatchesUpOnResume(t *testing.T) {
 	}
 	events := capturePRUpdates(t, app)
 
-	sub, err := app.SubscribePRUpdates(context.Background(), testPR)
+	sub, err := app.SubscribePRUpdates(connCtx(t), testPR)
 	if err != nil {
 		t.Fatalf("SubscribePRUpdates: %v", err)
 	}
@@ -581,11 +581,11 @@ func TestSetPRUpdatesActiveComposesAcrossSubscribers(t *testing.T) {
 		return calls.Load() == before
 	}
 
-	subA, err := app.SubscribePRUpdates(context.Background(), testPR)
+	subA, err := app.SubscribePRUpdates(connCtx(t), testPR)
 	if err != nil {
 		t.Fatalf("subscribe A: %v", err)
 	}
-	subB, err := app.SubscribePRUpdates(context.Background(), testPR)
+	subB, err := app.SubscribePRUpdates(connCtx(t), testPR)
 	if err != nil {
 		t.Fatalf("subscribe B: %v", err)
 	}
@@ -671,7 +671,7 @@ func TestSubscribingToAPausedPumpWakesIt(t *testing.T) {
 	}
 	events := capturePRUpdates(t, app)
 
-	subA, err := app.SubscribePRUpdates(context.Background(), testPR)
+	subA, err := app.SubscribePRUpdates(connCtx(t), testPR)
 	if err != nil {
 		t.Fatalf("subscribe A: %v", err)
 	}
@@ -683,7 +683,7 @@ func TestSubscribingToAPausedPumpWakesIt(t *testing.T) {
 
 	changed.Store(true)
 	woke := time.Now()
-	subB, err := app.SubscribePRUpdates(context.Background(), testPR)
+	subB, err := app.SubscribePRUpdates(connCtx(t), testPR)
 	if err != nil {
 		t.Fatalf("subscribe B onto a paused pump: %v", err)
 	}
@@ -716,7 +716,7 @@ func TestSubscribePRUpdatesRefusesADyingPump(t *testing.T) {
 		return prUpdateSnapshot{Detail: gitops.PRDetail{Number: got.Number, HeadSHA: "head-a"}}, nil
 	}
 
-	first, err := app.SubscribePRUpdates(context.Background(), testPR)
+	first, err := app.SubscribePRUpdates(connCtx(t), testPR)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -732,7 +732,7 @@ func TestSubscribePRUpdatesRefusesADyingPump(t *testing.T) {
 	dying.StopLocked()
 	app.prUpdates.mu.Unlock()
 
-	second, err := app.SubscribePRUpdates(context.Background(), testPR)
+	second, err := app.SubscribePRUpdates(connCtx(t), testPR)
 	if err != nil {
 		t.Fatalf("subscribe onto a dying pump: %v", err)
 	}
@@ -797,7 +797,7 @@ func TestPollPRUpdateStoresNothingOnADeadPump(t *testing.T) {
 		return prUpdateSnapshot{Detail: gitops.PRDetail{Number: got.Number, HeadSHA: head}}, nil
 	}
 
-	sub, err := app.SubscribePRUpdates(context.Background(), testPR)
+	sub, err := app.SubscribePRUpdates(connCtx(t), testPR)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -878,13 +878,13 @@ func TestSubscribePRUpdatesCapsOutstandingHandles(t *testing.T) {
 	}()
 
 	for i := 0; i < maxPRUpdateHandles; i++ {
-		sub, err := app.SubscribePRUpdates(context.Background(), testPR)
+		sub, err := app.SubscribePRUpdates(connCtx(t), testPR)
 		if err != nil {
 			t.Fatalf("subscribe %d: %v", i, err)
 		}
 		ids = append(ids, sub.ID)
 	}
-	if _, err := app.SubscribePRUpdates(context.Background(), testPR); !errors.Is(err, ErrTooManyPRUpdateSubscriptions) {
+	if _, err := app.SubscribePRUpdates(connCtx(t), testPR); !errors.Is(err, ErrTooManyPRUpdateSubscriptions) {
 		t.Fatalf("subscribe past the cap = %v, want ErrTooManyPRUpdateSubscriptions", err)
 	}
 
@@ -894,7 +894,7 @@ func TestSubscribePRUpdatesCapsOutstandingHandles(t *testing.T) {
 	// let a capped caller keep paying full price on every retry.
 	fresh := gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "owner", Repo: "repo", Number: 10}
 	before := fetches.Load()
-	if _, err := app.SubscribePRUpdates(context.Background(), fresh); !errors.Is(err, ErrTooManyPRUpdateSubscriptions) {
+	if _, err := app.SubscribePRUpdates(connCtx(t), fresh); !errors.Is(err, ErrTooManyPRUpdateSubscriptions) {
 		t.Fatalf("cold subscribe past the cap = %v, want ErrTooManyPRUpdateSubscriptions", err)
 	}
 	if got := fetches.Load() - before; got != 0 {
@@ -907,7 +907,7 @@ func TestSubscribePRUpdatesCapsOutstandingHandles(t *testing.T) {
 		t.Fatalf("unsubscribe: %v", err)
 	}
 	ids = ids[1:]
-	sub, err := app.SubscribePRUpdates(context.Background(), testPR)
+	sub, err := app.SubscribePRUpdates(connCtx(t), testPR)
 	if err != nil {
 		t.Fatalf("subscribe after releasing one: %v", err)
 	}
@@ -927,7 +927,7 @@ func TestPRUpdateResumeWithoutMissedTickDoesNotPoll(t *testing.T) {
 		}, nil
 	}
 
-	sub, err := app.SubscribePRUpdates(context.Background(), testPR)
+	sub, err := app.SubscribePRUpdates(connCtx(t), testPR)
 	if err != nil {
 		t.Fatalf("SubscribePRUpdates: %v", err)
 	}
@@ -972,7 +972,7 @@ func TestPRUpdateFetchFailureSurfacesOnTheEvent(t *testing.T) {
 	}
 	events := capturePRUpdates(t, app)
 
-	sub, err := app.SubscribePRUpdates(context.Background(), testPR)
+	sub, err := app.SubscribePRUpdates(connCtx(t), testPR)
 	if err != nil {
 		t.Fatalf("SubscribePRUpdates: %v", err)
 	}
@@ -1026,7 +1026,7 @@ func TestPRUpdateJoinCarriesTheActivePumpError(t *testing.T) {
 	}
 	events := capturePRUpdates(t, app)
 
-	first, err := app.SubscribePRUpdates(context.Background(), testPR)
+	first, err := app.SubscribePRUpdates(connCtx(t), testPR)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -1036,7 +1036,7 @@ func TestPRUpdateJoinCarriesTheActivePumpError(t *testing.T) {
 
 	failing.Store(true)
 	evt := awaitPRUpdate(t, events, "fetch failure emit")
-	joined, err := app.SubscribePRUpdates(context.Background(), testPR)
+	joined, err := app.SubscribePRUpdates(connCtx(t), testPR)
 	if err != nil {
 		t.Fatalf("subscribe during outage: %v", err)
 	}
@@ -1057,7 +1057,7 @@ func TestPRUpdateJoinCarriesTheActivePumpError(t *testing.T) {
 	if recovered := awaitPRUpdate(t, events, "recovery emit"); recovered.Error != "" {
 		t.Fatalf("recovery event = %+v", recovered)
 	}
-	third, err := app.SubscribePRUpdates(context.Background(), testPR)
+	third, err := app.SubscribePRUpdates(connCtx(t), testPR)
 	if err != nil {
 		t.Fatalf("subscribe after recovery: %v", err)
 	}
@@ -1095,7 +1095,7 @@ func TestPRUpdateJoinCarriesThePumpSequence(t *testing.T) {
 	}
 	events := capturePRUpdates(t, app)
 
-	first, err := app.SubscribePRUpdates(context.Background(), testPR)
+	first, err := app.SubscribePRUpdates(connCtx(t), testPR)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -1112,7 +1112,7 @@ func TestPRUpdateJoinCarriesThePumpSequence(t *testing.T) {
 	// A joiner is handed the state that emit published, stamped with the
 	// same sequence — so replaying that frame over it would be a no-op, and
 	// the guard skips it.
-	joined, err := app.SubscribePRUpdates(context.Background(), testPR)
+	joined, err := app.SubscribePRUpdates(connCtx(t), testPR)
 	if err != nil {
 		t.Fatalf("join: %v", err)
 	}
@@ -1189,7 +1189,7 @@ func TestPRUpdatePumpRetriesUntilTheBaseTipArrives(t *testing.T) {
 	}
 	events := capturePRUpdates(t, app)
 
-	sub, err := app.SubscribePRUpdates(context.Background(), testPR)
+	sub, err := app.SubscribePRUpdates(connCtx(t), testPR)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -1242,7 +1242,7 @@ func TestSubscribePRUpdatesSurvivesAFailingFirstFetch(t *testing.T) {
 	}
 	events := capturePRUpdates(t, app)
 
-	sub, err := app.SubscribePRUpdates(context.Background(), testPR)
+	sub, err := app.SubscribePRUpdates(connCtx(t), testPR)
 	if err != nil {
 		t.Fatalf("a failing first fetch failed the subscribe: %v", err)
 	}
@@ -1260,7 +1260,7 @@ func TestSubscribePRUpdatesSurvivesAFailingFirstFetch(t *testing.T) {
 	expectNoPRUpdate(t, events, "repeated identical first failure")
 
 	// A joiner during the outage sees the same failure.
-	joined, err := app.SubscribePRUpdates(context.Background(), testPR)
+	joined, err := app.SubscribePRUpdates(connCtx(t), testPR)
 	if err != nil {
 		t.Fatalf("join during outage: %v", err)
 	}
@@ -1278,7 +1278,7 @@ func TestSubscribePRUpdatesSurvivesAFailingFirstFetch(t *testing.T) {
 	if elapsed := time.Since(started); elapsed >= app.prUpdates.interval {
 		t.Fatalf("recovery took %v, want under the %v poll interval", elapsed, app.prUpdates.interval)
 	}
-	third, err := app.SubscribePRUpdates(context.Background(), testPR)
+	third, err := app.SubscribePRUpdates(connCtx(t), testPR)
 	if err != nil {
 		t.Fatalf("subscribe after recovery: %v", err)
 	}

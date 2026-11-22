@@ -1,0 +1,279 @@
+package app
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"sort"
+	"sync"
+	"testing"
+
+	gitops "agent-overflow/internal/git"
+	"agent-overflow/internal/transport"
+)
+
+// newTestConnection opens a client connection with principal for a test:
+// the context a call over it carries and its state. Its cleanups run when
+// the test ends, as a closed socket's do.
+func newTestConnection(t testing.TB, principal transport.ConnPrincipal) (context.Context, *transport.ConnState) {
+	t.Helper()
+	ctx, state := transport.WithConnState(context.Background(), principal)
+	t.Cleanup(state.RunCleanups)
+	return ctx, state
+}
+
+// testConnections holds the connection each test's calls arrive on when it
+// does not name one.
+var testConnections sync.Map // testing.TB -> context.Context
+
+// connCtx is the context of the one connection a test's calls arrive on
+// when the test does not name one, opened by newTestConnection on first
+// use: every call a test makes through it comes from the same client.
+func connCtx(t testing.TB) context.Context {
+	t.Helper()
+	if ctx, ok := testConnections.Load(t); ok {
+		return ctx.(context.Context)
+	}
+	ctx, _ := newTestConnection(t, transport.ConnPrincipal{})
+	if prior, loaded := testConnections.LoadOrStore(t, ctx); loaded {
+		return prior.(context.Context)
+	}
+	t.Cleanup(func() { testConnections.Delete(t) })
+	return ctx
+}
+
+// testCallerConn is the callerConn of ctx's connection, for a test that
+// calls below the bound method.
+func testCallerConn(t testing.TB, ctx context.Context) callerConn {
+	t.Helper()
+	conn, err := callerConnection(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return conn
+}
+
+// connectionRefusal calls one method that arms a resource for its
+// connection, and reports whether anything it arms was created; created is
+// nil where the App holds nothing it could create.
+type connectionRefusal struct {
+	call    func(*App, context.Context) error
+	created func(*App) bool
+}
+
+func ignoreResult[T any](_ T, err error) error { return err }
+
+// callerConnectionRefusals is every method that opens with callerConnection
+// (TestArmingMethodsAreTiedToTheirConnection keeps the two lists equal).
+var callerConnectionRefusals = map[string]connectionRefusal{
+	"SubscribePRUpdates": {
+		call: func(a *App, ctx context.Context) error {
+			return ignoreResult(a.SubscribePRUpdates(ctx, gitops.PRReference{}))
+		},
+		created: func(a *App) bool { return a.prUpdates.pumps != nil || a.prUpdates.handles != nil },
+	},
+	"SubscribePRList": {
+		call:    func(a *App, ctx context.Context) error { return ignoreResult(a.SubscribePRList(ctx)) },
+		created: func(a *App) bool { return a.prUpdates.list != nil || a.prUpdates.listHandles != nil },
+	},
+	"SubscribePipeline": {
+		call: func(a *App, ctx context.Context) error {
+			return ignoreResult(a.SubscribePipeline(ctx, gitops.RepoReference{}, ""))
+		},
+		created: func(a *App) bool { return a.prUpdates.pipelines != nil || a.prUpdates.pipelineHandles != nil },
+	},
+	"GitStatusSubscribe": {
+		call: func(a *App, ctx context.Context) error {
+			return ignoreResult(a.GitStatusSubscribe(ctx, WorkspaceRef{}))
+		},
+		created: func(a *App) bool { return a.gitApp != nil },
+	},
+	"BrowserCompanionPaneAttach": {
+		call: func(a *App, ctx context.Context) error {
+			return ignoreResult(a.BrowserCompanionPaneAttach(ctx, "thread"))
+		},
+		// The App has no browser manager to mount in: a step past the
+		// refusal fails with "browser manager unavailable".
+	},
+	"BeginDictation": {
+		call:    func(a *App, ctx context.Context) error { return ignoreResult(a.BeginDictation(ctx, "audio/webm")) },
+		created: func(a *App) bool { return a.dictation != nil },
+	},
+	"BeginLiveDictation": {
+		call:    func(a *App, ctx context.Context) error { return ignoreResult(a.BeginLiveDictation(ctx)) },
+		created: func(a *App) bool { return a.liveDictation != nil },
+	},
+	"ProviderTerminalAttach": {
+		call: func(a *App, ctx context.Context) error {
+			return ignoreResult(a.ProviderTerminalAttach(ctx, "thread"))
+		},
+		created: func(a *App) bool { return a.providerTerminals.byCaller != nil || a.providerTerminals.armed != nil },
+	},
+	"WatchBackgroundTaskOutput": {
+		call: func(a *App, ctx context.Context) error {
+			return ignoreResult(a.WatchBackgroundTaskOutput(ctx, "thread", "launch"))
+		},
+		created: func(a *App) bool { return a.taskOutput.bindings != nil || a.taskOutput.tailer.Load() != nil },
+	},
+	"GetNativeNetworkConfig": {
+		call: func(a *App, ctx context.Context) error { return ignoreResult(a.GetNativeNetworkConfig(ctx)) },
+		created: func(a *App) bool {
+			return a.nativeNetwork.seen || a.nativeNetwork.owner != nil || a.nativeNetwork.armed != nil
+		},
+	},
+	"OpenComputerPairing": {
+		call: func(a *App, ctx context.Context) error {
+			return ignoreResult(a.OpenComputerPairing(ctx, "lan", "full"))
+		},
+		created: computerPairingCreated,
+	},
+	"OpenOwnComputerPairing": {
+		call:    func(a *App, ctx context.Context) error { return ignoreResult(a.OpenOwnComputerPairing(ctx, "lan")) },
+		created: computerPairingCreated,
+	},
+	"OpenPRDiff": {
+		call: func(a *App, ctx context.Context) error {
+			return ignoreResult(a.OpenPRDiff(ctx, WorkspaceRef{}, gitops.PRReference{}, gitops.PRRevision{}, false, true))
+		},
+		created: reviewDiffCreated,
+	},
+	"OpenPRCommitDiff": {
+		call: func(a *App, ctx context.Context) error {
+			return ignoreResult(a.OpenPRCommitDiff(ctx, WorkspaceRef{}, gitops.PRReference{}, gitops.PRRevision{}, "", "", false, true))
+		},
+		created: reviewDiffCreated,
+	},
+	"OpenCommitFileDiff": {
+		call: func(a *App, ctx context.Context) error {
+			return ignoreResult(a.OpenCommitFileDiff(ctx, WorkspaceRef{}, []string{"file"}))
+		},
+		created: reviewDiffCreated,
+	},
+	"OpenWorkspaceDiff": {
+		call: func(a *App, ctx context.Context) error {
+			return ignoreResult(a.OpenWorkspaceDiff(ctx, WorkspaceRef{}, false))
+		},
+		created: reviewDiffCreated,
+	},
+	"OpenBranchBaseDiff": {
+		call: func(a *App, ctx context.Context) error {
+			return ignoreResult(a.OpenBranchBaseDiff(ctx, WorkspaceRef{}, "main", false))
+		},
+		created: reviewDiffCreated,
+	},
+	"OpenCommitDiff": {
+		call: func(a *App, ctx context.Context) error {
+			return ignoreResult(a.OpenCommitDiff(ctx, WorkspaceRef{}, "HEAD", false))
+		},
+		created: reviewDiffCreated,
+	},
+	"OpenEditDiff": {
+		call: func(a *App, ctx context.Context) error {
+			return ignoreResult(a.OpenEditDiff(ctx, "thread", "payload"))
+		},
+		created: reviewDiffCreated,
+	},
+	"OpenTurnEditsDiff": {
+		call: func(a *App, ctx context.Context) error {
+			return ignoreResult(a.OpenTurnEditsDiff(ctx, "thread", 0))
+		},
+		created: reviewDiffCreated,
+	},
+	"ThreadOwnerChanges": {
+		call: func(a *App, ctx context.Context) error {
+			return ignoreResult(a.ThreadOwnerChanges(ctx, OwnerCursor{}))
+		},
+		created: func(a *App) bool { return a.ownerActivity.devices != nil },
+	},
+}
+
+func computerPairingCreated(a *App) bool {
+	return a.computerPairing.book != nil || a.computerPairing.windowID != "" || a.computerPairing.armed != nil
+}
+
+func reviewDiffCreated(a *App) bool {
+	return a.reviewDiffs.diffs != nil || a.reviewDiffFiles.len() != 0
+}
+
+// Every method that arms a resource for its connection refuses a call that
+// came over none before it does anything else. Each runs on an App with no
+// dependencies, so any step taken before the refusal (a forge fetch, a
+// pump, a file watch, a dial, a mount, a slot) panics or fails another way,
+// and what it would have created is checked to be absent.
+func TestArmingMethodsRefuseACallWithNoConnection(t *testing.T) {
+	t.Parallel()
+	names := make([]string, 0, len(callerConnectionRefusals))
+	for name := range callerConnectionRefusals {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		refusal := callerConnectionRefusals[name]
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			a := &App{}
+			err := func() (err error) {
+				defer func() {
+					if r := recover(); r != nil {
+						err = fmt.Errorf("ran past the refusal and panicked: %v", r)
+					}
+				}()
+				return refusal.call(a, context.Background())
+			}()
+			if !errors.Is(err, errNoCallerConnection) {
+				t.Fatalf("%s with no connection: err = %v, want errNoCallerConnection", name, err)
+			}
+			if refusal.created != nil && refusal.created(a) {
+				t.Fatalf("%s with no connection created what it arms", name)
+			}
+		})
+	}
+}
+
+// The tie releases with the connection, and at once when the connection is
+// already closing, failing the call.
+func TestCallerConnectionTiesReleaseToTheConnection(t *testing.T) {
+	t.Parallel()
+	if _, err := callerConnection(context.Background()); !errors.Is(err, errNoCallerConnection) {
+		t.Fatalf("callerConnection with no connection: err = %v", err)
+	}
+	for _, tie := range []struct {
+		name string
+		tie  func(callerConn, func()) error
+	}{
+		{"bindRelease", func(conn callerConn, release func()) error { return conn.bindRelease("key", release) }},
+		{"registerRelease", func(conn callerConn, release func()) error { return conn.registerRelease(release) }},
+	} {
+		t.Run(tie.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, state := transport.WithConnState(context.Background(), transport.ConnPrincipal{})
+			conn, err := callerConnection(ctx)
+			if err != nil || conn.state != state {
+				t.Fatalf("callerConnection = %v, %v; want the call's connection", conn.state, err)
+			}
+			released := 0
+			if err := tie.tie(conn, func() { released++ }); err != nil {
+				t.Fatalf("tie on an open connection: %v", err)
+			}
+			if released != 0 {
+				t.Fatal("the tie released on an open connection")
+			}
+			state.RunCleanups()
+			if released != 1 {
+				t.Fatalf("the connection's end released %d times, want 1", released)
+			}
+
+			late := 0
+			if err := tie.tie(conn, func() { late++ }); !errors.Is(err, errCallerConnectionClosing) {
+				t.Fatalf("tie on a closed connection: err = %v, want errCallerConnectionClosing", err)
+			}
+			if late != 1 {
+				t.Fatalf("a tie refused by a closed connection released %d times, want 1 at once", late)
+			}
+			state.RunCleanups()
+			if late != 1 {
+				t.Fatal("a refused tie was kept and released again")
+			}
+		})
+	}
+}

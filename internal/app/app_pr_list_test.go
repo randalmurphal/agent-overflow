@@ -174,7 +174,7 @@ func prListPumpLive(app *App) bool {
 
 func subscribePRList(t *testing.T, app *App) PRListSubscriptionResult {
 	t.Helper()
-	sub, err := app.SubscribePRList(context.Background())
+	sub, err := app.SubscribePRList(connCtx(t))
 	if err != nil {
 		t.Fatalf("SubscribePRList: %v", err)
 	}
@@ -263,7 +263,7 @@ func TestPRListSubscribeAnswersFromTheStoreBeforeAnyForgeCall(t *testing.T) {
 	events := capturePRList(t, app)
 	answered := make(chan PRListSubscriptionResult, 1)
 	go func() {
-		sub, err := app.SubscribePRList(context.Background())
+		sub, err := app.SubscribePRList(connCtx(t))
 		if err != nil {
 			t.Errorf("SubscribePRList: %v", err)
 		}
@@ -419,7 +419,7 @@ func TestPRListPumpHoldsNothingAfterTheLastUnsubscribe(t *testing.T) {
 		f.rows[prListRepoA.Key()] = []gitops.PRListRow{prListRow(prListRepoA, 1, nil)}
 	})
 	events := capturePRList(t, app)
-	sub, err := app.SubscribePRList(context.Background())
+	sub, err := app.SubscribePRList(connCtx(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -939,7 +939,7 @@ func TestPRListStoppedPumpLosesTheCopyToAPrefetch(t *testing.T) {
 		}
 		prefetched <- stored
 	}
-	sub, err := app.SubscribePRList(context.Background())
+	sub, err := app.SubscribePRList(connCtx(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -987,7 +987,7 @@ func TestPRListStoppedPumpStoresNothing(t *testing.T) {
 			close(left)
 		}
 	}
-	sub, err := app.SubscribePRList(context.Background())
+	sub, err := app.SubscribePRList(connCtx(t))
 	if err != nil {
 		t.Fatal(err)
 	}

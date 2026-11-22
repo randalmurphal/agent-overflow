@@ -75,6 +75,11 @@ func TestAWSLBootAdvertisesNoAddressBeforeItsLauncherReports(t *testing.T) {
 	if routes := ComputerRoutes(wsl.app); len(routes) != 0 {
 		t.Fatalf("the WSL boot advertised %+v before its launcher reported", routes)
 	}
+	// Until a launcher's connection takes the channel nobody may report,
+	// a call that came over no connection included.
+	if err := wsl.app.ReportNativeNetworkState(context.Background(), nativenetwork.State{}); err == nil {
+		t.Fatal("a report with no connection was accepted before any launcher took the channel")
+	}
 	ctx, conn := transport.WithConnState(context.Background(), transport.ConnPrincipal{})
 	defer conn.RunCleanups()
 	cfg, err := wsl.app.GetNativeNetworkConfig(ctx)

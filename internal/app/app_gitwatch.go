@@ -66,6 +66,10 @@ type GitStatusEvent struct {
 //
 //ao:scope git:operate
 func (a *App) GitStatusSubscribe(ctx context.Context, ws WorkspaceRef) (GitStatusSubscriptionResult, error) {
+	conn, err := callerConnection(ctx)
+	if err != nil {
+		return GitStatusSubscriptionResult{}, err
+	}
 	if a.shuttingDown.Load() {
 		return GitStatusSubscriptionResult{}, ErrShuttingDown
 	}
@@ -76,11 +80,8 @@ func (a *App) GitStatusSubscribe(ctx context.Context, ws WorkspaceRef) (GitStatu
 		}
 		return GitStatusSubscriptionResult{}, err
 	}
-	if state := transport.ConnStateFromContext(ctx); state != nil {
-		if !state.BindCleanup(gitStatusCleanupKey(result.ID), func() { a.gitApplication().Unsubscribe(result.ID) }) {
-			a.gitApplication().Unsubscribe(result.ID)
-			return GitStatusSubscriptionResult{}, fmt.Errorf("gitwatch: connection closing")
-		}
+	if err := conn.bindRelease(gitStatusCleanupKey(result.ID), func() { a.gitApplication().Unsubscribe(result.ID) }); err != nil {
+		return GitStatusSubscriptionResult{}, fmt.Errorf("gitwatch: %w", err)
 	}
 	return GitStatusSubscriptionResult(result), nil
 }

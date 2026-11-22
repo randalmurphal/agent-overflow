@@ -18,7 +18,7 @@ func TestBrowserCompanionFindRunsOnTheThreadsShownPage(t *testing.T) {
 	t.Cleanup(func() { _ = manager.Close() })
 	thread := makeWorkspaceThread(t, app, "thread-companion-find")
 	other := makeWorkspaceThread(t, app, "thread-companion-find-other")
-	ctx := t.Context()
+	ctx, _ := newTestConnection(t, transport.ConnPrincipal{HostWindow: true})
 	if _, err := app.BrowserCompanionDo(ctx, thread.ID, BrowserCompanionAction{Kind: "new", Address: "https://example.test/alpha-beta-alpha"}); err != nil {
 		t.Fatal(err)
 	}

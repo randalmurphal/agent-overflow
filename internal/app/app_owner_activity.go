@@ -82,7 +82,10 @@ func (o *ownerActivity) dropDevice(id string) {
 }
 
 // watchLocked ties the log to the latest connection that asked for it. When that
-// connection ends, the next listener starts with a full reconciliation.
+// connection ends, the next listener starts with a full reconciliation. It binds
+// on the connection itself rather than through callerConn.bindRelease: the release
+// takes o.mu, which the caller holds, and a connection already closing is
+// tied to nothing here, so there is nothing to release at once.
 func (o *ownerActivity) watchLocked(id string, socket *transport.ConnState) (*deviceActivity, bool, error) {
 	if o.devices == nil {
 		o.devices = make(map[string]*deviceActivity)
@@ -180,7 +183,7 @@ func (o *ownerActivity) snapshot(d *deviceActivity, launch string, cursor OwnerC
 
 // Authentication and installation share the revocation lock so a call admitted
 // before revocation cannot reinstall the device after its log is discarded.
-func (a *App) watchOwnerConnection(ctx context.Context, conn *transport.ConnState) (string, *deviceActivity, bool, error) {
+func (a *App) watchOwnerConnection(ctx context.Context, conn callerConn) (string, *deviceActivity, bool, error) {
 	o := &a.ownerActivity
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -191,7 +194,7 @@ func (a *App) watchOwnerConnection(ctx context.Context, conn *transport.ConnStat
 	if device == threadReceiptLocalOwner {
 		return "", nil, false, fmt.Errorf("owner changes require a paired connection")
 	}
-	d, first, err := o.watchLocked(device, conn)
+	d, first, err := o.watchLocked(device, conn.state)
 	return device, d, first, err
 }
 
@@ -202,9 +205,12 @@ func (a *App) watchOwnerConnection(ctx context.Context, conn *transport.ConnStat
 //ao:budget 1m
 //ao:callerbound
 func (a *App) ThreadOwnerChanges(ctx context.Context, cursor OwnerCursor) (OwnerChanges, error) {
-	conn := transport.ConnStateFromContext(ctx)
+	conn, err := callerConnection(ctx)
+	if err != nil {
+		return OwnerChanges{}, err
+	}
 	server := a.transportServer.Load()
-	if conn == nil || server == nil {
+	if server == nil {
 		return OwnerChanges{}, fmt.Errorf("owner changes require a paired connection")
 	}
 	ctx, cancel := context.WithTimeout(ctx, ownerWaitBound)

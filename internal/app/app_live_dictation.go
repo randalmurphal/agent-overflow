@@ -2,14 +2,13 @@ package app
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
 	"agent-overflow/internal/dictation"
 	"agent-overflow/internal/openai"
 	"agent-overflow/internal/openaikey"
-	"agent-overflow/internal/transport"
 )
 
 // Live dictation: with Settings > Voice's OpenAI API switch on and a key in
@@ -69,6 +68,10 @@ func (a *App) liveDictationOptions() openai.LiveTranscriptionOptions {
 //ao:scope threads:operate
 //ao:route selected
 func (a *App) BeginLiveDictation(ctx context.Context) (string, error) {
+	conn, err := callerConnection(ctx)
+	if err != nil {
+		return "", err
+	}
 	// The revision is read before the switch, so any write that switches
 	// it after this check carries a later one and revokes this session
 	// (dictation.Live).
@@ -98,18 +101,15 @@ func (a *App) BeginLiveDictation(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if state := transport.ConnStateFromContext(ctx); state != nil {
-		key := liveDictationCleanupKey(id)
-		if !state.BindCleanup(key, func() { sessions.Cancel(id) }) {
-			sessions.Cancel(id)
-			return "", errors.New("dictation: connection closing")
-		}
-		// The connection owns the session until it is released, however
-		// that happens.
-		if err := sessions.OnRelease(id, func() { state.UnbindCleanup(key) }); err != nil {
-			state.UnbindCleanup(key)
-			return "", err
-		}
+	key := liveDictationCleanupKey(id)
+	if err := conn.bindRelease(key, func() { sessions.Cancel(id) }); err != nil {
+		return "", fmt.Errorf("dictation: %w", err)
+	}
+	// The connection owns the session until it is released, however that
+	// happens.
+	if err := sessions.OnRelease(id, func() { conn.state.UnbindCleanup(key) }); err != nil {
+		conn.state.UnbindCleanup(key)
+		return "", err
 	}
 	return id, nil
 }

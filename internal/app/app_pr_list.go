@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"time"
 
@@ -134,6 +135,10 @@ func prListCleanupKey(id string) string { return "pr-list:" + id }
 //ao:route selected
 //ao:callerbound
 func (a *App) SubscribePRList(ctx context.Context) (PRListSubscriptionResult, error) {
+	conn, err := callerConnection(ctx)
+	if err != nil {
+		return PRListSubscriptionResult{}, err
+	}
 	if a.shuttingDown.Load() {
 		return PRListSubscriptionResult{}, ErrShuttingDown
 	}
@@ -146,11 +151,8 @@ func (a *App) SubscribePRList(ctx context.Context) (PRListSubscriptionResult, er
 		// the stored copy is read, on every path out.
 		defer a.prUpdates.wg.Go(func() { a.pumpPRList(pump) })
 	}
-	if state := transport.ConnStateFromContext(ctx); state != nil {
-		if !state.BindCleanup(prListCleanupKey(id), func() { a.unsubscribePRList(id) }) {
-			a.unsubscribePRList(id)
-			return PRListSubscriptionResult{}, errors.New("pr list: connection closing")
-		}
+	if err := conn.bindRelease(prListCleanupKey(id), func() { a.unsubscribePRList(id) }); err != nil {
+		return PRListSubscriptionResult{}, fmt.Errorf("pr list: %w", err)
 	}
 	if published != nil {
 		return PRListSubscriptionResult{ID: id, Snapshot: *published}, nil

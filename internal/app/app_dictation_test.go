@@ -113,12 +113,12 @@ func TestDictationNeedsAChatGPTSignIn(t *testing.T) {
 	if err != nil || sources.Subscription || sources.ChatGPTSignIn {
 		t.Fatalf("DictationSources = %+v, %v; want none", sources, err)
 	}
-	id, err := app.BeginDictation(context.Background(), "audio/webm")
+	id, err := app.BeginDictation(connCtx(t), "audio/webm")
 	if err != nil {
 		t.Fatal(err)
 	}
 	uploadDictation(t, app, id, "frames")
-	if _, err := app.FinishDictation(context.Background(), id, 1); !errors.Is(err, provideraccountapp.ErrNoCodexChatGPTLogin) {
+	if _, err := app.FinishDictation(connCtx(t), id, 1); !errors.Is(err, provideraccountapp.ErrNoCodexChatGPTLogin) {
 		t.Fatalf("FinishDictation err = %v, want ErrNoCodexChatGPTLogin", err)
 	}
 }
@@ -144,6 +144,16 @@ func TestDictationRecordingsBelongToTheirConnection(t *testing.T) {
 	}
 	if err := app.CancelDictation(other, id); !errors.Is(err, dictation.ErrUnknownRecording) {
 		t.Fatalf("another connection cancelled the recording: %v", err)
+	}
+	// A call that came over no connection cannot have opened it either.
+	if _, err := app.MintDictationChunkTicket(context.Background(), id, 0, 4); !errors.Is(err, dictation.ErrUnknownRecording) {
+		t.Fatalf("a call with no connection minted a ticket: %v", err)
+	}
+	if _, err := app.FinishDictation(context.Background(), id, 0); !errors.Is(err, dictation.ErrUnknownRecording) {
+		t.Fatalf("a call with no connection finished the recording: %v", err)
+	}
+	if err := app.CancelDictation(context.Background(), id); !errors.Is(err, dictation.ErrUnknownRecording) {
+		t.Fatalf("a call with no connection cancelled the recording: %v", err)
 	}
 	if app.dictationRecordings().Open() != 1 {
 		t.Fatal("another connection's calls changed the recording")
@@ -222,12 +232,12 @@ func TestDictationRefreshesARefusedSignInOnce(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			id, err := app.BeginDictation(context.Background(), "audio/webm")
+			id, err := app.BeginDictation(connCtx(t), "audio/webm")
 			if err != nil {
 				t.Fatal(err)
 			}
 			uploadDictation(t, app, id, "frames")
-			text, err := app.FinishDictation(context.Background(), id, 1)
+			text, err := app.FinishDictation(connCtx(t), id, 1)
 			if tc.refreshed {
 				if err != nil || text != "Heard 6 bytes of audio/webm" {
 					t.Fatalf("FinishDictation = %q, %v", text, err)

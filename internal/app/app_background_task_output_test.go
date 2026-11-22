@@ -80,6 +80,14 @@ func TestWatchBackgroundTaskOutputIsOwnedByItsConnection(t *testing.T) {
 	if got := tailer.Watching(); got != 1 {
 		t.Fatalf("another connection's release must not land; watching %d", got)
 	}
+	// Nor a call that came over no connection: it leaves the watch and the
+	// owner's record of it.
+	if err := app.UnwatchBackgroundTaskOutput(context.Background(), "thread-tail-owner", snap.WatchID); err != nil {
+		t.Fatalf("unwatch with no connection: %v", err)
+	}
+	if got := tailer.Watching(); got != 1 || !app.taskOutput.has(snap.WatchID) {
+		t.Fatalf("a release with no connection landed; watching %d, record kept %v", got, app.taskOutput.has(snap.WatchID))
+	}
 	if err := app.UnwatchBackgroundTaskOutput(ctxA, "thread-tail-owner", snap.WatchID); err != nil {
 		t.Fatalf("unwatch: %v", err)
 	}

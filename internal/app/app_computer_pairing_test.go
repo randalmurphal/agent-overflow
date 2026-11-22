@@ -301,7 +301,7 @@ func TestComputerPairingReplacementRequiresDurableCancellation(t *testing.T) {
 	if _, err := raw.Exec(`CREATE TRIGGER reject_pairing_cancel BEFORE UPDATE OF canceled_at ON pairing_links BEGIN SELECT RAISE(ABORT, 'test cancellation failure'); END`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.OpenComputerPairing(context.Background(), "lan", "full"); err == nil {
+	if _, err := a.OpenComputerPairing(connCtx(t), "lan", "full"); err == nil {
 		t.Fatal("replacement discarded unresolved invitation fence")
 	}
 	if s.book.Snapshot(w.WindowID).Open {
@@ -316,7 +316,7 @@ func TestComputerPairingReplacementRequiresDurableCancellation(t *testing.T) {
 	if _, err := raw.Exec(`DROP TRIGGER reject_pairing_cancel`); err != nil {
 		t.Fatal(err)
 	}
-	next, err := a.OpenComputerPairing(context.Background(), "lan", "full")
+	next, err := a.OpenComputerPairing(connCtx(t), "lan", "full")
 	if err != nil {
 		t.Fatal("replacement did not recover after storage recovered", err)
 	}
@@ -409,7 +409,7 @@ func TestComputerPairingReportsDiscoveryFailureOnTheWindow(t *testing.T) {
 	}
 	// No multicast-capable interface: the responders cannot start.
 	nearby.Interfaces = func() ([]net.Interface, error) { return nil, nil }
-	w, err := a.OpenComputerPairing(context.Background(), "lan", "full")
+	w, err := a.OpenComputerPairing(connCtx(t), "lan", "full")
 	if err != nil {
 		t.Fatalf("a discovery failure closed the typed-address path: %v", err)
 	}

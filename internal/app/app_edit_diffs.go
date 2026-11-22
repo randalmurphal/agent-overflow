@@ -151,6 +151,10 @@ func (a *App) ListThreadEditDiffs(threadID string) (EditDiffList, error) {
 //ao:scope threads:read
 //ao:callerbound
 func (a *App) OpenEditDiff(ctx context.Context, threadID string, payloadID string) (ReviewDiffOpened, error) {
+	conn, err := callerConnection(ctx)
+	if err != nil {
+		return ReviewDiffOpened{}, err
+	}
 	const action = "open edit diff"
 	if _, err := a.store.GetThread(threadID); err != nil {
 		return ReviewDiffOpened{}, fmt.Errorf("%s: %w", action, err)
@@ -161,7 +165,7 @@ func (a *App) OpenEditDiff(ctx context.Context, threadID string, payloadID strin
 	if _, err := a.getThreadPayloadMeta(threadID, payloadID); err != nil {
 		return ReviewDiffOpened{}, fmt.Errorf("%s: %w", action, err)
 	}
-	return a.openEditsDiff(ctx, action, threadID, []string{payloadID})
+	return a.openEditsDiff(ctx, conn, action, threadID, []string{payloadID})
 }
 
 // OpenTurnEditsDiff opens one turn's edit diffs joined in item order, the
@@ -172,6 +176,10 @@ func (a *App) OpenEditDiff(ctx context.Context, threadID string, payloadID strin
 //ao:scope threads:read
 //ao:callerbound
 func (a *App) OpenTurnEditsDiff(ctx context.Context, threadID string, turnIndex int) (ReviewDiffOpened, error) {
+	conn, err := callerConnection(ctx)
+	if err != nil {
+		return ReviewDiffOpened{}, err
+	}
 	const action = "open turn edits diff"
 	if _, err := a.store.GetThread(threadID); err != nil {
 		return ReviewDiffOpened{}, fmt.Errorf("%s: %w", action, err)
@@ -183,15 +191,15 @@ func (a *App) OpenTurnEditsDiff(ctx context.Context, threadID string, turnIndex 
 	if err != nil {
 		return ReviewDiffOpened{}, fmt.Errorf("%s: %w", action, err)
 	}
-	return a.openEditsDiff(ctx, action, threadID, payloadIDs)
+	return a.openEditsDiff(ctx, conn, action, threadID, payloadIDs)
 }
 
-func (a *App) openEditsDiff(ctx context.Context, action, threadID string, payloadIDs []string) (ReviewDiffOpened, error) {
+func (a *App) openEditsDiff(ctx context.Context, conn callerConn, action, threadID string, payloadIDs []string) (ReviewDiffOpened, error) {
 	diff, err := newEditsDiff(ctx, a.store, threadID, payloadIDs)
 	if err != nil {
 		return ReviewDiffOpened{}, fmt.Errorf("%s: %w", action, err)
 	}
-	opened, err := a.holdOpenedReviewDiff(ctx, action, transport.ScopeThreadsRead, diff)
+	opened, err := a.holdOpenedReviewDiff(ctx, conn, action, transport.ScopeThreadsRead, diff)
 	if err != nil {
 		return ReviewDiffOpened{}, err
 	}

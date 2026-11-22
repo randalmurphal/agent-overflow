@@ -92,6 +92,10 @@ func (a *App) invalidateNativeNetwork() {
 //ao:scope host
 //ao:route home
 func (a *App) GetNativeNetworkConfig(ctx context.Context) (nativenetwork.Config, error) {
+	conn, err := callerConnection(ctx)
+	if err != nil {
+		return nativenetwork.Config{}, err
+	}
 	if a.netReach.LoopbackOnly() {
 		// The launcher would bind the Windows LAN and send multicast for an
 		// instance confined to this machine. It gets a disabled config and
@@ -106,17 +110,16 @@ func (a *App) GetNativeNetworkConfig(ctx context.Context) (nativenetwork.Config,
 	s := &a.nativeNetwork
 	s.mu.Lock()
 	s.seen = true
-	conn := transport.ConnStateFromContext(ctx)
-	if s.owner != conn {
+	if s.owner != conn.state {
 		s.invalidate()
 	}
-	s.owner = conn
-	arm := conn != nil && !s.armed[conn]
+	s.owner = conn.state
+	arm := !s.armed[conn.state]
 	if arm {
 		if s.armed == nil {
 			s.armed = make(map[*transport.ConnState]bool)
 		}
-		s.armed[conn] = true
+		s.armed[conn.state] = true
 	}
 	var scanID uint64
 	if s.scan != nil {
@@ -129,16 +132,15 @@ func (a *App) GetNativeNetworkConfig(ctx context.Context) (nativenetwork.Config,
 			defer a.publishComputerRoutes()
 			s.mu.Lock()
 			defer s.mu.Unlock()
-			delete(s.armed, conn)
-			if s.owner == conn {
+			delete(s.armed, conn.state)
+			if s.owner == conn.state {
 				s.owner = nil
 				s.invalidate()
 				s.err = "Windows local network access is unavailable. Reopen the Windows app."
 			}
 		}
-		if !conn.RegisterCleanup(cleanup) {
-			cleanup()
-			return nativenetwork.Config{}, errors.New("the Windows app disconnected")
+		if err := conn.registerRelease(cleanup); err != nil {
+			return nativenetwork.Config{}, err
 		}
 	}
 	id, _ := a.backendIdentity()
@@ -193,7 +195,9 @@ func (a *App) ReportNativeNetworkState(ctx context.Context, report nativenetwork
 	s := &a.nativeNetwork
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.seen || s.owner != transport.ConnStateFromContext(ctx) {
+	// Only the connection GetNativeNetworkConfig last tied the channel to
+	// reports; with no owner nobody does, a call with no connection included.
+	if conn := transport.ConnStateFromContext(ctx); !s.seen || s.owner == nil || s.owner != conn {
 		return errors.New("this Windows network connection was replaced")
 	}
 	if report.Generation != s.generation {

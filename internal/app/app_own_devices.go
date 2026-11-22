@@ -294,13 +294,17 @@ func (a *App) MintOwnDevicePairingOnNetwork(ctx context.Context, deviceClass, ne
 //ao:stepup
 //ao:remote
 func (a *App) OpenOwnComputerPairing(ctx context.Context, networkChoice string) (ComputerPairingWindow, error) {
+	conn, err := callerConnection(ctx)
+	if err != nil {
+		return ComputerPairingWindow{}, err
+	}
 	if err := a.ownPairingAdmin(ctx); err != nil {
 		return ComputerPairingWindow{}, err
 	}
 	if e := a.enableOwnDevices(); e != nil {
 		return ComputerPairingWindow{}, e
 	}
-	return a.openComputerPairing(ctx, networkChoice, "full", "own-device")
+	return a.openComputerPairing(conn, networkChoice, "full", "own-device")
 }
 
 //ao:scope session

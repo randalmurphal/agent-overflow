@@ -160,10 +160,11 @@ func SessionFromContext(ctx context.Context) string {
 }
 
 // ConnStateFromContext extracts the per-connection ConnState if one was
-// installed by the transport. Returns nil when called from a context
-// not derived from a transport connection (e.g. unit tests, Wails
-// in-process bindings) — handlers should treat nil as "no per-conn
-// cleanup is available; skip the registration".
+// installed by the transport. Returns nil when the call came over no
+// connection (a unit test, a background task, the Wails runtime route).
+// The principal readers above treat nil as anonymous. A handler that arms a
+// resource for its connection refuses a nil state instead of arming what
+// nothing would release (internal/app callerConnection).
 func ConnStateFromContext(ctx context.Context) *ConnState {
 	state, _ := ctx.Value(connStateKey{}).(*ConnState)
 	return state

@@ -264,8 +264,8 @@ func TestBrowserCompanionPaneDetachUnbindsItsConnectionTie(t *testing.T) {
 
 // Only the host's own window mounts a browser pane: the native view lives
 // there. A connection that is not it (a browser tab on this machine with the
-// same launch credential) is refused and mounts nothing; an in-process
-// caller is the host.
+// same launch credential) is refused and mounts nothing, and so is a call
+// that came over no connection, which nothing would detach.
 func TestBrowserCompanionPaneAttachIsTheHostWindowsAlone(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
@@ -281,25 +281,25 @@ func TestBrowserCompanionPaneAttachIsTheHostWindowsAlone(t *testing.T) {
 		t.Fatalf("open page: %v", err)
 	}
 	for _, tc := range []struct {
-		name  string
-		ctx   func() context.Context
-		mount bool
+		name    string
+		ctx     func() context.Context
+		refusal error
 	}{
 		{"the host window", func() context.Context {
 			ctx, _ := transport.WithConnState(t.Context(), transport.ConnPrincipal{HostWindow: true})
 			return ctx
-		}, true},
+		}, nil},
 		{"another client with the launch credential", func() context.Context {
 			ctx, _ := transport.WithConnState(t.Context(), transport.ConnPrincipal{})
 			return ctx
-		}, false},
-		{"an in-process caller", func() context.Context { return t.Context() }, true},
+		}, errBrowserPaneNotHostWindow},
+		{"a call over no connection", func() context.Context { return t.Context() }, errNoCallerConnection},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pane, err := app.BrowserCompanionPaneAttach(tc.ctx(), thread.ID)
-			if !tc.mount {
-				if !errors.Is(err, errBrowserPaneNotHostWindow) || pane.ID != "" {
-					t.Fatalf("attach = %+v, %v; want the host-window refusal", pane, err)
+			if tc.refusal != nil {
+				if !errors.Is(err, tc.refusal) || pane.ID != "" {
+					t.Fatalf("attach = %+v, %v; want %v", pane, err, tc.refusal)
 				}
 				return
 			}

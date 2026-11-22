@@ -51,7 +51,7 @@ func newPipelineFixture(t *testing.T) *pipelineFixture {
 
 func (f *pipelineFixture) subscribe(t *testing.T, id string) PipelineSubscriptionResult {
 	t.Helper()
-	sub, err := f.app.SubscribePipeline(context.Background(), testPR.Repository(), id)
+	sub, err := f.app.SubscribePipeline(connCtx(t), testPR.Repository(), id)
 	if err != nil {
 		t.Fatalf("SubscribePipeline: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestPipelinePumpIsSharedPerPipelineAndReadsOnSubscribe(t *testing.T) {
 	f := newPipelineFixture(t)
 	f.publish(pipelineWith(gitops.CIStatusSuccess, gitops.CIJob{ID: "7", Name: "unit", Status: gitops.CIStatusSuccess}), nil)
 
-	if _, err := f.app.SubscribePipeline(context.Background(), testPR.Repository(), "../1"); err == nil {
+	if _, err := f.app.SubscribePipeline(connCtx(t), testPR.Repository(), "../1"); err == nil {
 		t.Fatal("a pipeline id that is no id was accepted")
 	}
 	a := f.subscribe(t, "41")

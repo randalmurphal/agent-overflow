@@ -126,10 +126,14 @@ func (a *App) BrowserCompanionThreadState(threadID string) (appbrowser.Companion
 //ao:scope host
 //ao:route home
 func (a *App) BrowserCompanionPaneAttach(ctx context.Context, threadID string) (appbrowser.CompanionSubscription, error) {
+	conn, err := callerConnection(ctx)
+	if err != nil {
+		return appbrowser.CompanionSubscription{}, err
+	}
 	if a.browser.manager == nil {
 		return appbrowser.CompanionSubscription{}, fmt.Errorf("browser manager unavailable")
 	}
-	if !transport.ConnStateFromContext(ctx).HostWindow() {
+	if !conn.state.HostWindow() {
 		return appbrowser.CompanionSubscription{}, errBrowserPaneNotHostWindow
 	}
 	caller, err := a.browserCaller(threadID)
@@ -140,11 +144,8 @@ func (a *App) BrowserCompanionPaneAttach(ctx context.Context, threadID string) (
 	if err != nil {
 		return appbrowser.CompanionSubscription{}, err
 	}
-	if state := transport.ConnStateFromContext(ctx); state != nil {
-		if !state.BindCleanup(companionPaneCleanupKey(result.ID), func() { a.browser.manager.DetachPane(appbrowser.MountID(result.ID)) }) {
-			a.browser.manager.DetachPane(appbrowser.MountID(result.ID))
-			return appbrowser.CompanionSubscription{}, fmt.Errorf("browser: connection closing")
-		}
+	if err := conn.bindRelease(companionPaneCleanupKey(result.ID), func() { a.browser.manager.DetachPane(appbrowser.MountID(result.ID)) }); err != nil {
+		return appbrowser.CompanionSubscription{}, fmt.Errorf("browser: %w", err)
 	}
 	return result, nil
 }
