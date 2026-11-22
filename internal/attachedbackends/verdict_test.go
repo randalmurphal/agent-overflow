@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -327,32 +328,60 @@ func TestARemovalThatFailsLeavesThePairingUnexcluded(t *testing.T) {
 	}
 }
 
-// A removal whose profile cannot be deleted gives back the agent opt-in it
-// took first: the pairing stays, and so does what it was allowed.
+// A removal whose session file cannot be deleted, or whose deletion cannot
+// be made durable, fails and gives back what it took first: the pairing
+// stays, and so do its agent opt-in, its exclusion, and the carrier cached
+// for it, still working. Nothing announces it as removed.
 func TestARemovalThatFailsKeepsTheAgentOptIn(t *testing.T) {
-	manager, dir := newManager(t)
-	const id = "0f6f8d3e-6f8b-4c39-9d5e-3a8f8f3f1c11"
-	seed(t, dir, deviceclient.Session{
-		BackendID: id, Endpoint: "https://mini.local:8443", SessionID: "s1", Credential: "c1",
-	})
-	if err := manager.SetAgentAccess(id, true); err != nil {
-		t.Fatal(err)
-	}
-	sessions := filepath.Join(dir, deviceclient.SessionsDirName)
-	if err := os.Chmod(sessions, 0o500); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(sessions, 0o700) })
-	if err := manager.Remove(id); err == nil {
-		t.Fatal("a removal whose profile cannot be deleted succeeded")
-	}
-	if err := os.Chmod(sessions, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := deviceclient.LoadSession(dir, id); err != nil {
-		t.Fatalf("the failed removal took the profile: %v", err)
-	}
-	if access, err := manager.AgentAccess(); err != nil || !access[id] {
-		t.Fatalf("the failed removal left agent access %v (%v), want it kept", access, err)
+	for _, tc := range []struct {
+		name string
+		// mode is the sessions directory's: 0500 refuses the unlink, 0300
+		// allows it and refuses the directory sync after it.
+		mode os.FileMode
+		want string
+	}{
+		{name: "the unlink refused", mode: 0o500, want: "remove"},
+		{name: "the sync refused", mode: 0o300, want: "sync dir"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			manager, dir := newManager(t)
+			const id = "0f6f8d3e-6f8b-4c39-9d5e-3a8f8f3f1c11"
+			before := deviceclient.Session{BackendID: id, Endpoint: "https://mini.local:8443", SessionID: "s1", Credential: "c1"}
+			seed(t, dir, before)
+			if err := manager.SetAgentAccess(id, true); err != nil {
+				t.Fatal(err)
+			}
+			held, err := manager.carrier(context.Background(), id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// A carrier taken out of the cache and left running would keep
+			// Close waiting on its renewal; stop it before Close runs.
+			t.Cleanup(func() { held.leave(errPairingForgotten) })
+			var announced []SetChange
+			manager.SetChanged(func(change SetChange) { announced = append(announced, change) })
+			sessions := filepath.Join(dir, deviceclient.SessionsDirName)
+			if err := os.Chmod(sessions, tc.mode); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(sessions, 0o700) })
+			err = manager.Remove(id)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Remove = %v; want it to fail naming %q", err, tc.want)
+			}
+			if err := os.Chmod(sessions, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			unchangedCarrier(t, manager, id, held, before)
+			if access, err := manager.AgentAccess(); err != nil || !access[id] {
+				t.Fatalf("the failed removal left agent access %v (%v), want it kept", access, err)
+			}
+			if excluded, err := manager.ownDeviceExcluded(id); err != nil || excluded {
+				t.Fatalf("the failed removal left the computer excluded=%v (%v)", excluded, err)
+			}
+			if len(announced) != 0 {
+				t.Fatalf("the failed removal announced %+v", announced)
+			}
+		})
 	}
 }

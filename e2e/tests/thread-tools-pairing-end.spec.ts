@@ -16,7 +16,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test, expect } from '@playwright/test';
 import { launchHarness, type HarnessApp, type HarnessMockEventData } from '../src/harness.js';
-import { headlessPairing } from './headless-pairing-helpers.js';
+import { connectedAfterConfirm, headlessPairing } from './headless-pairing-helpers.js';
 import { startTogether } from './launch-helpers.js';
 import { solePairedDevice } from './offhost-helpers.js';
 import { openAgents, openPast, pastRow } from './agents-tray-helpers.js';
@@ -27,6 +27,8 @@ test.describe.configure({ mode: 'serial' });
 let home: HarnessApp;
 let remote: HarnessApp;
 let remoteID = '';
+/** This computer's id on the other one, from the reverse connection. */
+let homeID = '';
 let homeDataDir = '';
 
 test.beforeAll(async () => {
@@ -41,6 +43,12 @@ test.beforeAll(async () => {
     pairing.close();
   }
   await home.rpc('RenameBackend', remoteID, 'GPU computer');
+  // Own-device enrollment introduces the reverse connection after this
+  // computer first reaches that one, so it arrives after the confirm.
+  await connectedAfterConfirm({ home, remote }, (wait) => expect
+    .poll(async () => (await remote.rpc<Array<{ id: string }>>('ListAgentComputers')).length, wait)
+    .toBe(1));
+  [{ id: homeID }] = await remote.rpc<Array<{ id: string }>>('ListAgentComputers');
   await enableRemoteCommands();
 });
 
@@ -128,7 +136,6 @@ test('a late reply the other computer dropped before it was collected reads as e
   // A late reply arrived there an hour ago, while this computer was away,
   // and its hold ran out before this computer asked again: the late reply's
   // revision, then the retention pass's expiry (ExpireThreadRequestAnswers).
-  const [{ id: homeID }] = await remote.rpc<Array<{ id: string }>>('ListAgentComputers');
   expect(await home.stop()).toBe(true);
   const arrived = Date.now() - 3_600_000;
   const db = new DatabaseSync(storePath(remote));

@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"agent-overflow/internal/computerroute"
-	"agent-overflow/internal/ctxutil"
 	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/logging"
 	"agent-overflow/internal/owndevices"
@@ -144,6 +143,18 @@ func (c *carrier) openRPC(ctx context.Context, capability string) (*rpcclient.Cl
 // The caller must first resolve the destination and its routes from active
 // membership. The invitation cannot introduce a different address or pin.
 // The destination independently binds redemption to our key.
+//
+// It reports added once the pairing is saved and published, even when the
+// rotation that follows fails or the save's locks fail to release; the
+// error then says why. ctx is the caller's
+// (App.AcceptOwnDeviceIntroduction is caller-bound). It bounds route
+// selection, the wait for another enrollment with the computer, the
+// redemption and the wait for that rotation; once the save has begun its
+// end changes nothing but this caller's answer. The redemption is an
+// enrollment (enroll), which Forget and the start of shutdown also cancel.
+// While another enrollment with the computer is in flight it waits for that
+// one to end, then decides on what that one left: not added, with no error,
+// once an own-device pairing is stored or the computer was forgotten.
 func (m *Manager) AcceptOwnDeviceIntroduction(ctx context.Context, raw string, routes []computerroute.Route) (bool, error) {
 	link, err := deviceclient.DecodeLink(raw)
 	if err != nil {
@@ -159,50 +170,66 @@ func (m *Manager) AcceptOwnDeviceIntroduction(ctx context.Context, raw string, r
 	if m.selfID != nil && link.BackendID == m.selfID() {
 		return false, errors.New("cannot connect a computer to itself")
 	}
-	unlock, err := m.profiles.LockCtx(ctx, link.BackendID)
-	if err != nil {
+	// Checked here so a refused introduction probes nothing, and again by
+	// the enrollment before its redemption and in its save.
+	if wanted, err := m.introductionWanted(link.BackendID); err != nil || !wanted {
 		return false, err
 	}
-	defer unlock()
-	if excluded, err := m.ownDeviceExcluded(link.BackendID); err != nil || excluded {
-		return false, err
-	}
-	if session, err := deviceclient.LoadSession(m.dir, link.BackendID); err == nil && session.OwnDevice {
-		return false, nil
-	} else if err != nil && !errors.Is(err, deviceclient.ErrNoSession) {
-		return false, err
-	}
-	route, err := deviceclient.SelectPairingRoute(ctx, link.BackendID, routes, deviceclient.WithDialContext(m.dial))
+	// Route selection and the wait for another enrollment with the same
+	// computer end with ctx and when shutdown begins.
+	probe, stop := m.untilShutdown(ctx)
+	defer stop()
+	route, err := deviceclient.SelectPairingRoute(probe, link.BackendID, routes, deviceclient.WithDialContext(m.dial))
 	if err != nil {
 		return false, err
 	}
 	link.Endpoint, link.CertFingerprint = route.Endpoint, route.CertFingerprint
-	// From the redemption on, the enrollment finishes and is published
-	// whether or not the caller still waits; Close still ends it.
-	ctx, release := ctxutil.Detach(ctx, m.life)
-	defer release()
-	if _, err := m.addLinkLocked(ctx, link); err != nil {
-		return false, err
-	}
-	// Introductions are already approved and must not create a human
-	// confirmation wait. Their activation still verifies the issued session.
-	m.mu.Lock()
-	held, closed := m.carriers[link.BackendID], m.closed
-	m.mu.Unlock()
-	if closed {
-		return false, ErrClosed
+	// A saved introduction whose locks then failed to release still has its
+	// carrier: it is announced and acknowledged, and the error returned.
+	_, held, err := m.enroll(probe, link, introductionByPeer, false)
+	if errors.Is(err, errNotWanted) {
+		return false, nil
 	}
 	if held == nil {
-		// The far side ended the new session before this read.
-		return false, fmt.Errorf("attachedbackends: the pairing with %s ended before it activated", link.BackendID)
-	}
-	if err := held.client.AwaitActivation(ctx); err != nil {
+		if err == nil {
+			err = ErrClosed
+		}
 		return false, err
 	}
 	// Desktop clients watch the profile set, not the public membership
 	// catalog. Publish this edge before reconciliation sees it as present.
 	m.notifyMembershipChanged()
-	m.WakeOwnDevices()
+	defer m.WakeOwnDevices()
+	// The introduction is confirmed before its redemption is answered, so no
+	// person is waited for. This one rotation is what tells the other
+	// computer the introduction completed: until its redemption's refresh
+	// secret is spent, that computer's next introduction of this device
+	// revokes the session (store.RetireOwnIntroductions). ctx bounds only this
+	// caller's wait; Forget and the manager's life end the rotation itself.
+	if renewErr := held.client.Renew(ctx); renewErr != nil {
+		err = errors.Join(err, fmt.Errorf("attachedbackends: acknowledge the introduction to %s: %w", link.BackendID, renewErr))
+	}
+	return true, err
+}
+
+// introductionWanted reports whether an introduction to id may enroll: the
+// person has not forgotten it here, and no own-device pairing with it exists.
+func (m *Manager) introductionWanted(id string) (bool, error) {
+	stored, err := deviceclient.LoadSession(m.dir, id)
+	return m.introductionWantedFor(id, stored, err)
+}
+
+// introductionWantedFor is introductionWanted given the session stored for
+// id as LoadSession answers it.
+func (m *Manager) introductionWantedFor(id string, stored deviceclient.Session, loadErr error) (bool, error) {
+	if excluded, err := m.ownDeviceExcluded(id); err != nil || excluded {
+		return false, err
+	}
+	if loadErr == nil && stored.OwnDevice {
+		return false, nil
+	} else if loadErr != nil && !errors.Is(loadErr, deviceclient.ErrNoSession) {
+		return false, loadErr
+	}
 	return true, nil
 }
 
