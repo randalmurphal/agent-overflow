@@ -982,3 +982,61 @@ func TestReplayUpdatesToEventsPreservesRichToolMetadata(t *testing.T) {
 		t.Fatalf("ReplayUpdatesToEvents did not emit structured file_change item meta: %+v", events)
 	}
 }
+
+func TestReplayUpdatesToEventsCompletesInlineTerminalToolCalls(t *testing.T) {
+	t.Parallel()
+	// Mirror real agy 1.5.14 `session/load` replay: each tool call arrives as a
+	// single `tool_call` update already carrying status="completed" and output.
+	updates := []SessionUpdate{
+		{
+			SessionUpdate: "user_message_chunk",
+			Content:       json.RawMessage(`{"type":"text","text":"run echo"}`),
+		},
+		{
+			SessionUpdate: "tool_call",
+			ToolCallID:    "cmd-inline",
+			Name:          "Bash",
+			Kind:          "execute",
+			Status:        "completed",
+			RawInput:      json.RawMessage(`{"command":"echo ok"}`),
+			RawOutput:     json.RawMessage(`{"stdout":"ok\n","exitCode":0}`),
+		},
+		// A redundant follow-up tool_call_update must not duplicate completion.
+		{
+			SessionUpdate: "tool_call_update",
+			ToolCallID:    "cmd-inline",
+			Name:          "Bash",
+			Kind:          "execute",
+			Status:        "completed",
+			RawOutput:     json.RawMessage(`{"stdout":"ok\n","exitCode":0}`),
+		},
+		{
+			SessionUpdate: "agent_message_chunk",
+			Content:       json.RawMessage(`{"type":"text","text":"done"}`),
+		},
+	}
+	events := ReplayUpdatesToEvents(updates, DefaultFlavor{Kind: provider.Agy})
+	var starts, completes, cmdOuts int
+	for _, ev := range events {
+		switch ev.Kind {
+		case provider.EventToolStart:
+			starts++
+		case provider.EventToolComplete:
+			completes++
+		case provider.EventCommandOutput:
+			if ev.Content == "ok\n" {
+				cmdOuts++
+			}
+		}
+	}
+	if starts != 1 || completes != 1 || cmdOuts != 1 {
+		t.Fatalf("got starts=%d completes=%d cmdOuts=%d, want 1/1/1: %+v", starts, completes, cmdOuts, events)
+	}
+	if len(events) < 2 || events[0].Kind != provider.EventTurnStart || events[1].Kind != provider.EventUserText {
+		t.Fatalf("expected EventTurnStart before EventUserText, got: %+v", events[:min(3, len(events))])
+	}
+	last := events[len(events)-1]
+	if last.Kind != provider.EventTurnComplete || last.TurnComplete == nil {
+		t.Fatalf("expected typed EventTurnComplete last, got %+v", last)
+	}
+}

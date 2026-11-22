@@ -110,14 +110,14 @@ func seedFakeConversationDB(t *testing.T, appDataDir, sessionID string) string {
 
 	stmts := []string{
 		`CREATE TABLE trajectory_meta (trajectory_id TEXT, cascade_id TEXT)`,
-		`CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, data BLOB)`,
+		`CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, error_details BLOB, step_payload BLOB)`,
 		`CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)`,
 		`CREATE TABLE executor_metadata (idx INTEGER PRIMARY KEY, data BLOB)`,
 		`INSERT INTO trajectory_meta (trajectory_id, cascade_id) VALUES ('orig-traj', '` + sessionID + `')`,
-		`INSERT INTO steps (idx, step_type, data) VALUES (0, 1, 'turn 0 user')`,
-		`INSERT INTO steps (idx, step_type, data) VALUES (1, 2, 'turn 0 reply')`,
-		`INSERT INTO steps (idx, step_type, data) VALUES (2, 1, 'turn 1 user')`,
-		`INSERT INTO steps (idx, step_type, data) VALUES (3, 2, 'turn 1 reply')`,
+		`INSERT INTO steps (idx, step_type, step_payload) VALUES (0, 14, 'turn 0 user')`,
+		`INSERT INTO steps (idx, step_type, step_payload) VALUES (1, 15, 'turn 0 reply')`,
+		`INSERT INTO steps (idx, step_type, step_payload) VALUES (2, 14, 'turn 1 user')`,
+		`INSERT INTO steps (idx, step_type, step_payload) VALUES (3, 15, 'turn 1 reply')`,
 		`INSERT INTO gen_metadata (idx, data) VALUES (1, 'g1'), (3, 'g3')`,
 		`INSERT INTO executor_metadata (idx, data) VALUES (1, 'e1'), (3, 'e3')`,
 	}
@@ -149,7 +149,7 @@ func TestTurnOutcomeDetectsStepType17Errors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO steps (idx, step_type, data) VALUES (4, 17, ?)`, []byte("\x0a\x1eQUOTA_EXHAUSTED: try again later")); err != nil {
+	if _, err := db.Exec(`INSERT INTO steps (idx, step_type, error_details) VALUES (4, 17, ?)`, []byte("\x0a\x1eQUOTA_EXHAUSTED: try again later")); err != nil {
 		t.Fatal(err)
 	}
 	_ = db.Close()
@@ -220,15 +220,18 @@ func TestForkConversationSlicesAndVerifiesSchema(t *testing.T) {
 func TestProbeCatalogZeroTokenModelMatrix(t *testing.T) {
 	t.Parallel()
 	script := `#!/usr/bin/env python3
-import json, sys
+import json, sys, time
 
 def send(obj):
     sys.stdout.write(json.dumps(obj) + "\n")
     sys.stdout.flush()
 
 model = "gemini-4-neon"
+last_size = None
 matrix = {
     "gemini-4-neon": (1048576, "high", [("low","Low"),("medium","Medium"),("high","High"),("xhigh","xHigh")]),
+    "claude-opus-5-5": (1000000, "medium", [("low","Low"),("medium","Medium"),("high","High")]),
+    "claude-sonnet-5-5": (1000000, "medium", [("low","Low"),("medium","Medium"),("high","High")]),
     "gpt-oss-120b-medium": (131072, "", []),
 }
 
@@ -238,6 +241,8 @@ def opts(m):
         "id": "model", "name": "Model", "type": "select", "currentValue": m,
         "options": [
             {"value": "gemini-4-neon", "name": "Gemini 4 Neon"},
+            {"value": "claude-opus-5-5", "name": "Claude Opus 5.5"},
+            {"value": "claude-sonnet-5-5", "name": "Claude Sonnet 5.5"},
             {"value": "gpt-oss-120b-medium", "name": "GPT-OSS 120B (Medium)"},
         ],
     }]
@@ -256,14 +261,21 @@ for line in sys.stdin:
     m = msg.get("method")
     p = msg.get("params") or {}
     if m == "initialize":
-        send({"jsonrpc":"2.0","id":mid,"result":{"protocolVersion":1,"agentCapabilities":{},"agentInfo":{"name":"Fake Agy","version":"1.5.13"}}})
+        send({"jsonrpc":"2.0","id":mid,"result":{"protocolVersion":1,"agentCapabilities":{},"agentInfo":{"name":"Fake Agy","version":"1.5.14"}}})
     elif m == "session/new":
         send({"jsonrpc":"2.0","id":mid,"result":{"sessionId":"probe-1","configOptions":opts(model)}})
-        send({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"probe-1","update":{"sessionUpdate":"usage_update","used":0,"size":matrix[model][0]}}})
+        last_size = matrix[model][0]
+        send({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"probe-1","update":{"sessionUpdate":"usage_update","used":0,"size":last_size}}})
     elif m == "session/set_config_option":
         model = p["value"]
-        send({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"probe-1","update":{"sessionUpdate":"usage_update","used":0,"size":matrix[model][0]}}})
+        # Mirror real agy 1.5.14 wire order: reply first, then emit usage_update
+        # asynchronously only when the context window size actually changes.
         send({"jsonrpc":"2.0","id":mid,"result":{"configOptions":opts(model)}})
+        new_size = matrix[model][0]
+        if new_size != last_size:
+            last_size = new_size
+            time.sleep(0.015)
+            send({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"probe-1","update":{"sessionUpdate":"usage_update","used":0,"size":new_size}}})
     elif m == "session/close":
         send({"jsonrpc":"2.0","id":mid,"result":{}})
 `
@@ -275,14 +287,20 @@ for line in sys.stdin:
 	if err != nil {
 		t.Fatalf("ProbeCatalog: %v", err)
 	}
-	if len(models) != 2 {
-		t.Fatalf("len(models) = %d, want 2: %+v", len(models), models)
+	if len(models) != 4 {
+		t.Fatalf("len(models) = %d, want 4: %+v", len(models), models)
 	}
 	if models[0].Slug != "gemini-4-neon" || !models[0].IsDefault || len(models[0].ReasoningEfforts) != 4 || models[0].ContextWindows[0].Tokens != 1048576 {
 		t.Fatalf("unexpected model 0: %+v", models[0])
 	}
-	if models[1].Slug != "gpt-oss-120b-medium" || len(models[1].ReasoningEfforts) != 0 || models[1].ContextWindows[0].Tokens != 131072 {
+	if models[1].Slug != "claude-opus-5-5" || models[1].ContextWindows[0].Tokens != 1000000 {
 		t.Fatalf("unexpected model 1: %+v", models[1])
+	}
+	if models[2].Slug != "claude-sonnet-5-5" || models[2].ContextWindows[0].Tokens != 1000000 {
+		t.Fatalf("unexpected model 2: %+v", models[2])
+	}
+	if models[3].Slug != "gpt-oss-120b-medium" || len(models[3].ReasoningEfforts) != 0 || models[3].ContextWindows[0].Tokens != 131072 {
+		t.Fatalf("unexpected model 3: %+v", models[3])
 	}
 }
 

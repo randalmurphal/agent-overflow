@@ -165,14 +165,21 @@ func (a *App) agyAppDataDir() string {
 	return filepath.Join(home, ".gemini", agy.DefaultAppDataName)
 }
 
-func (a *App) withAgyImportConn(ctx context.Context, appDataDir string, fn func(*acp.Conn) error) error {
+func (a *App) withAgyImportConn(ctx context.Context, appDataDir, avoidSessionID string, fn func(*acp.Conn) error) error {
 	binary := a.providerBinaryPath(string(provider.Agy))
 	canonicalDir := a.agyAppDataDir()
 	useCanonical := appDataDir == "" || (canonicalDir != "" && filepath.Clean(appDataDir) == filepath.Clean(canonicalDir))
 	if useCanonical {
 		if conn, release := a.borrowAgyConnForBinary(binary); conn != nil {
-			defer release()
-			return fn(conn)
+			if avoidSessionID != "" && conn.HasActiveSession(avoidSessionID) {
+				// Never issue `session/load` for a session that is currently
+				// live on this pooled server: use an isolated one-shot conn
+				// instead so live session state is never perturbed.
+				release()
+			} else {
+				defer release()
+				return fn(conn)
+			}
 		}
 	}
 	var geminiDir, appDataSubdir string
@@ -207,7 +214,7 @@ func (a *App) withAgyImportConn(ctx context.Context, appDataDir string, fn func(
 
 func (a *App) listAgyImportSessions(ctx context.Context, appDataDir string) ([]sessionimport.AgySessionSummary, error) {
 	var summaries []sessionimport.AgySessionSummary
-	err := a.withAgyImportConn(ctx, appDataDir, func(conn *acp.Conn) error {
+	err := a.withAgyImportConn(ctx, appDataDir, "", func(conn *acp.Conn) error {
 		items, listErr := conn.ListSessions(ctx, "")
 		if listErr != nil {
 			return listErr
@@ -236,7 +243,7 @@ func (a *App) listAgyImportSessions(ctx context.Context, appDataDir string) ([]s
 
 func (a *App) replayAgyImportSession(ctx context.Context, appDataDir, sessionID, workDir string) ([]provider.ProviderEvent, error) {
 	var events []provider.ProviderEvent
-	err := a.withAgyImportConn(ctx, appDataDir, func(conn *acp.Conn) error {
+	err := a.withAgyImportConn(ctx, appDataDir, sessionID, func(conn *acp.Conn) error {
 		res, replayErr := conn.ReplayLoad(ctx, acp.SessionLoadParams{
 			SessionID:  sessionID,
 			CWD:        workDir,

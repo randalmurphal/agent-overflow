@@ -314,6 +314,39 @@ func TestResetUsageEmitThrottleAllowsImmediateNextEmit(t *testing.T) {
 	}
 }
 
+func TestAgyContextWindowDisablesAutoCompactThreshold(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	if err := st.CreateThread(store.Thread{
+		ID:            "t-agy-cw",
+		Title:         "Agy context window",
+		Provider:      string(provider.Agy),
+		Mode:          "chat",
+		Model:         "gemini-4-neon",
+		ContextWindow: provider.AgyStandardContextWindow,
+		WorkspacePath: "/tmp/ws",
+		CreatedAt:     time.Now().UnixMilli(),
+		UpdatedAt:     time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTokenUsage,
+		ThreadID:  "t-agy-cw",
+		Meta:      mustMarshalContextWindow(t, provider.ContextWindow{UsedTokens: 42000, MaxTokens: 1048576}),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	usageEmits := filterEmissions(emissions.snapshot(), "provider:usage")
+	if len(usageEmits) != 1 {
+		t.Fatalf("expected 1 usage emission, got %d", len(usageEmits))
+	}
+	got := usageEmits[0].data.(provider.UsageEvent)
+	if got.AutoCompactPercent != 0 || got.AutoCompactTokenLimit != 0 {
+		t.Fatalf("agy UsageEvent carried auto-compact threshold: %+v", got)
+	}
+}
+
 // Compile-time guard so the imports stay flagged as used even if a test
 // is removed.
 var _ = json.RawMessage{}

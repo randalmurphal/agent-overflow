@@ -98,7 +98,7 @@ func inspectTurnErrorStep(appDataDir, sessionID string, sinceIdx int) *acp.Promp
 	defer db.Close()
 
 	rows, err := db.Query(
-		`SELECT idx, step_type, data FROM steps WHERE idx > ? AND step_type = ? ORDER BY idx DESC LIMIT 1`,
+		`SELECT idx, step_type, COALESCE(error_details, X''), COALESCE(step_payload, X'') FROM steps WHERE idx > ? AND step_type = ? ORDER BY idx DESC LIMIT 1`,
 		sinceIdx, cortexStepTypeErrorMessage,
 	)
 	if err != nil {
@@ -110,9 +110,13 @@ func inspectTurnErrorStep(appDataDir, sessionID string, sinceIdx int) *acp.Promp
 		return nil
 	}
 	var idx, stepType int
-	var raw []byte
-	if err := rows.Scan(&idx, &stepType, &raw); err != nil {
+	var errDetails, stepPayload []byte
+	if err := rows.Scan(&idx, &stepType, &errDetails, &stepPayload); err != nil {
 		return nil
+	}
+	raw := errDetails
+	if len(raw) == 0 {
+		raw = stepPayload
 	}
 	return classifyErrorStepPayload(raw)
 }

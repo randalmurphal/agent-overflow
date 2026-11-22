@@ -13,8 +13,8 @@ import (
 )
 
 // cortexStepTypeUserInput is agy's CORTEX_STEP_TYPE_USER_INPUT enum value.
-// Verified in W6.B against agy 1.5.13 conversations/<id>.db.
-const cortexStepTypeUserInput = 1
+// Verified against live agy 1.5.14 conversations/<id>.db (`steps.step_type`).
+const cortexStepTypeUserInput = 14
 
 // ForkConversation clones `<appDataDir>/conversations/<srcSessionID>.db` into a
 // new conversation UUID using SQLite VACUUM INTO (WAL-safe), verifies the schema
@@ -94,7 +94,7 @@ func rewriteClonedConversationDB(dstPath, newSessionID string, cutIdx int) error
 	defer func() { _ = tx.Rollback() }()
 
 	if cutIdx >= 0 {
-		for _, table := range []string{"steps", "gen_metadata", "executor_metadata"} {
+		for _, table := range []string{"steps", "gen_metadata", "executor_metadata", "parent_references", "battle_mode_infos"} {
 			hasTable, checkErr := tableExists(tx, table)
 			if checkErr != nil {
 				return fmt.Errorf("agy fork: check table %s: %w", table, checkErr)

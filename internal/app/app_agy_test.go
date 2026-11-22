@@ -200,8 +200,8 @@ func TestAgyNativeSQLiteForkClonesConversation(t *testing.T) {
 	_, err = db.Exec(`
 		CREATE TABLE trajectory_meta (trajectory_id TEXT, cascade_id TEXT);
 		INSERT INTO trajectory_meta VALUES ('old-traj', '` + srcRef + `');
-		CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, data BLOB);
-		INSERT INTO steps VALUES (0, 1, X'01'), (1, 2, X'02'), (2, 1, X'03'), (3, 2, X'04');
+		CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, error_details BLOB, step_payload BLOB);
+		INSERT INTO steps (idx, step_type, step_payload) VALUES (0, 14, X'01'), (1, 15, X'02'), (2, 14, X'03'), (3, 15, X'04');
 	`)
 	_ = db.Close()
 	if err != nil {

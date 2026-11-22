@@ -120,18 +120,26 @@ func ProbeCatalogOnConn(ctx context.Context, conn *acp.Conn, workDir string) ([]
 	defaultModelID := modelOpt.CurrentValue
 	currentOpts := openRes.ConfigOptions
 	currentSize := DefaultContextWindow
+	isUsageSize := func(u acp.SessionUpdate) bool {
+		return u.SessionUpdate == "usage_update" && u.Size > 0
+	}
 	out := make([]provider.ModelInfo, 0, len(modelOpt.Options))
 	for _, choice := range modelOpt.Options {
-		stopCap := conn.CaptureSessionUpdates(sessionID, 32)
+		cap := conn.StartUpdateCapture(sessionID, 32)
 		if choice.Value != currentOptionValue(currentOpts, "model") {
 			updated, setErr := conn.SetConfigOption(ctx, sessionID, "model", choice.Value)
 			if setErr == nil && len(updated) > 0 {
 				currentOpts = updated
 			}
+			// Real agy emits `usage_update` asynchronously right after the
+			// `session/set_config_option` reply whenever the model's context
+			// window size changes. Wait briefly so the size is attributed to
+			// this model rather than spilling into the next iteration.
+			cap.WaitFor(ctx, isUsageSize, 80*time.Millisecond)
 		}
-		updates := stopCap()
+		updates := cap.Stop()
 		for _, u := range updates {
-			if u.SessionUpdate == "usage_update" && u.Size > 0 {
+			if isUsageSize(u) {
 				currentSize = u.Size
 			}
 		}

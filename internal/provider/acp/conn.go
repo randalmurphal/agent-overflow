@@ -62,16 +62,87 @@ type replayCapture struct {
 	maxCount  int
 	updates   []SessionUpdate
 	truncated bool
+	notify    chan struct{}
 }
 
 func (r *replayCapture) add(u SessionUpdate) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if r.maxCount > 0 && len(r.updates) >= r.maxCount {
 		r.truncated = true
+		r.mu.Unlock()
 		return
 	}
 	r.updates = append(r.updates, u)
+	ch := r.notify
+	r.mu.Unlock()
+	if ch != nil {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// UpdateCapture observes session/update notifications for one sessionId until
+// Stop is called.
+type UpdateCapture struct {
+	conn      *Conn
+	sessionID string
+	cap       *replayCapture
+}
+
+// WaitFor blocks until an already-captured or newly arriving update matches
+// pred, timeout elapses, or ctx is cancelled.
+func (u *UpdateCapture) WaitFor(ctx context.Context, pred func(SessionUpdate) bool, timeout time.Duration) bool {
+	if u == nil || u.cap == nil || pred == nil {
+		return false
+	}
+	check := func() bool {
+		u.cap.mu.Lock()
+		defer u.cap.mu.Unlock()
+		for _, upd := range u.cap.updates {
+			if pred(upd) {
+				return true
+			}
+		}
+		return false
+	}
+	if check() {
+		return true
+	}
+	if timeout <= 0 {
+		return false
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	for {
+		select {
+		case <-u.cap.notify:
+			if check() {
+				return true
+			}
+		case <-timer.C:
+			return check()
+		case <-ctx.Done():
+			return check()
+		}
+	}
+}
+
+// Stop unregisters the capture and returns all observed updates in order.
+func (u *UpdateCapture) Stop() []SessionUpdate {
+	if u == nil || u.conn == nil || u.cap == nil {
+		return nil
+	}
+	u.conn.routesMu.Lock()
+	if u.conn.replays[u.sessionID] == u.cap {
+		delete(u.conn.replays, u.sessionID)
+	}
+	u.conn.routesMu.Unlock()
+	u.cap.mu.Lock()
+	out := append([]SessionUpdate(nil), u.cap.updates...)
+	u.cap.mu.Unlock()
+	return out
 }
 
 // Conn hosts one multiplexed ACP server subprocess and demultiplexes many
@@ -378,25 +449,37 @@ func (c *Conn) CloseRawSession(ctx context.Context, sessionID string) error {
 	return err
 }
 
+// HasActiveSession reports whether sessionID is currently bound to a live
+// Session on this connection.
+func (c *Conn) HasActiveSession(sessionID string) bool {
+	if strings.TrimSpace(sessionID) == "" {
+		return false
+	}
+	c.routesMu.Lock()
+	_, ok := c.sessions[sessionID]
+	c.routesMu.Unlock()
+	return ok
+}
+
+// StartUpdateCapture installs a temporary update observer for sessionID with
+// WaitFor/Stop controls (used by zero-token catalog probes to observe
+// usage_update notifications emitted asynchronously after set_config_option).
+func (c *Conn) StartUpdateCapture(sessionID string, maxUpdates int) *UpdateCapture {
+	cap := &replayCapture{
+		maxCount: maxUpdates,
+		notify:   make(chan struct{}, 1),
+	}
+	c.routesMu.Lock()
+	c.replays[sessionID] = cap
+	c.routesMu.Unlock()
+	return &UpdateCapture{conn: c, sessionID: sessionID, cap: cap}
+}
+
 // CaptureSessionUpdates installs a temporary update observer for sessionID
 // (used by zero-token catalog probes to observe usage_update.size). Returns an
 // unsubscribe function that returns all captured updates.
 func (c *Conn) CaptureSessionUpdates(sessionID string, maxUpdates int) func() []SessionUpdate {
-	cap := &replayCapture{maxCount: maxUpdates}
-	c.routesMu.Lock()
-	c.replays[sessionID] = cap
-	c.routesMu.Unlock()
-	return func() []SessionUpdate {
-		c.routesMu.Lock()
-		if c.replays[sessionID] == cap {
-			delete(c.replays, sessionID)
-		}
-		c.routesMu.Unlock()
-		cap.mu.Lock()
-		out := append([]SessionUpdate(nil), cap.updates...)
-		cap.mu.Unlock()
-		return out
-	}
+	return c.StartUpdateCapture(sessionID, maxUpdates).Stop
 }
 
 func (c *Conn) sendRequest(ctx context.Context, method string, params any) (json.RawMessage, error) {
@@ -678,6 +761,7 @@ func (c *Conn) dispatchLine(line []byte) {
 		c.routesMu.Unlock()
 		if replay != nil {
 			replay.add(params.Update)
+			return
 		}
 		if sess != nil {
 			sess.handleUpdate(params.Update)

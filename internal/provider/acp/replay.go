@@ -17,6 +17,7 @@ func ReplayUpdatesToEvents(updates []SessionUpdate, flavor Flavor) []provider.Pr
 	var textKind provider.EventKind
 	var textBuf strings.Builder
 	startedTools := make(map[string]NormalizedToolStart)
+	completedTools := make(map[string]bool)
 	now := time.Now()
 	flush := func() {
 		if textBuf.Len() == 0 {
@@ -108,7 +109,6 @@ func ReplayUpdatesToEvents(updates []SessionUpdate, flavor Flavor) []provider.Pr
 				continue
 			}
 			norm := flavor.NormalizeToolStart(&tc)
-			startedTools[tc.ToolCallID] = norm
 			events = append(events, provider.ProviderEvent{
 				Kind:      provider.EventToolStart,
 				ItemID:    tc.ToolCallID,
@@ -116,6 +116,16 @@ func ReplayUpdatesToEvents(updates []SessionUpdate, flavor Flavor) []provider.Pr
 				Meta:      buildToolStartMeta(norm),
 				Timestamp: now,
 			})
+			// In real ACP `session/load` replay, providers like `agy` emit a
+			// single `tool_call` frame already carrying its terminal status and
+			// rawOutput/content without a separate `tool_call_update`.
+			if tc.Status == "completed" || tc.Status == "failed" || tc.Status == "cancelled" {
+				doneNorm := flavor.NormalizeToolComplete(&tc, norm)
+				events = append(events, buildToolCompleteEvents("", "", tc.ToolCallID, doneNorm, now)...)
+				completedTools[tc.ToolCallID] = true
+			} else {
+				startedTools[tc.ToolCallID] = norm
+			}
 		case "tool_call_update":
 			flush()
 			tc := u.toToolCallUpdate()
@@ -125,8 +135,12 @@ func ReplayUpdatesToEvents(updates []SessionUpdate, flavor Flavor) []provider.Pr
 			if tc.Status != "completed" && tc.Status != "failed" && tc.Status != "cancelled" {
 				continue
 			}
+			if completedTools[tc.ToolCallID] {
+				continue
+			}
 			started := startedTools[tc.ToolCallID]
 			delete(startedTools, tc.ToolCallID)
+			completedTools[tc.ToolCallID] = true
 			norm := flavor.NormalizeToolComplete(&tc, started)
 			events = append(events, buildToolCompleteEvents("", "", tc.ToolCallID, norm, now)...)
 		case "usage_update":
