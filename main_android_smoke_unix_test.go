@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -22,9 +23,31 @@ import (
 // holds no APK, beside a fake SDK, so no case can restamp frontend/dist,
 // build bin/ao-android-harness or reach a real device, emulator or launcher.
 type smokeFixture struct {
-	dir, smoke, log string
-	env             []string
+	dir, smoke, log, probe string
+	env                    []string
 }
+
+// substitutionProbe is sourced through BASH_ENV by every run of the two
+// scripts. While a script's INT, TERM and HUP handlers are set, it records
+// each command of the script's own shell that expands $(...), <(...) or
+// >(...): in bash 4.4 through 5.2, a signal pending when such an expansion
+// starts runs its handler in the substitution's parser state, where the
+// handler fails to parse and the signal is lost. A case that sets a DEBUG trap of
+// its own calls ao_probe from it.
+const substitutionProbe = `[[ $0 == */android-smoke.sh || $0 == */android-emulator.sh ]] || return 0
+set -o functrace
+ao_probe() {
+  if [[ $BASHPID != "$$" ]]; then return 0; fi
+  case $BASH_COMMAND in
+    "trap '' "*) ao_handled="" ;;
+    "trap "*" INT") ao_handled=1 ;;
+  esac
+  if [[ -n ${ao_handled:-} ]] && [[ $BASH_COMMAND == *'$('[!\(]* || $BASH_COMMAND == *'<('* || $BASH_COMMAND == *'>('* ]]; then
+    printf '%s: %s\n' "${0##*/}" "$BASH_COMMAND" >>"$AO_TEST_PROBE"
+  fi
+}
+trap ao_probe DEBUG
+`
 
 func newSmokeFixture(t *testing.T) smokeFixture {
 	t.Helper()
@@ -45,15 +68,36 @@ func newSmokeFixture(t *testing.T) smokeFixture {
 			t.Fatal(err)
 		}
 	}
-	f := smokeFixture{dir: dir, smoke: filepath.Join(scripts, "android-smoke.sh"), log: filepath.Join(dir, "calls.log")}
+	f := smokeFixture{dir: dir, smoke: filepath.Join(scripts, "android-smoke.sh"), log: filepath.Join(dir, "calls.log"), probe: filepath.Join(dir, "substitution-probe.bash")}
+	if err := os.WriteFile(f.probe, []byte(substitutionProbe), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	found := filepath.Join(dir, "substitutions.log")
+	t.Cleanup(func() {
+		body, err := os.ReadFile(found)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Error(err)
+		}
+		if len(body) > 0 {
+			t.Errorf("a script expanded a substitution while its signal handlers were set:\n%s", body)
+		}
+	})
 	// The fake adb lists $AO_TEST_ADB_DEVICES, answers the emulator probe,
-	// and records every call; installs and PIN changes succeed silently.
+	// reports a completed boot under AO_TEST_BOOT_COMPLETED=1, and records
+	// every call. `install -r` fails with $AO_TEST_ADB_INSTALL_FAILURE when
+	// it is set; other installs and PIN changes succeed silently.
 	mockexec.WriteIn(t, filepath.Join(dir, "platform-tools"), "adb", `#!/usr/bin/env bash
 echo "adb $*" >>"$AO_TEST_LOG"
 if [[ "$1" == devices ]]; then
   printf 'List of devices attached\n%s\n' "$AO_TEST_ADB_DEVICES"
 elif [[ "$*" == *'getprop ro.kernel.qemu' ]]; then
   [[ "$2" == emulator-* ]] && echo 1 || echo 0
+elif [[ "$*" == 'shell getprop sys.boot_completed' ]]; then
+  if [[ "${AO_TEST_BOOT_COMPLETED:-}" == 1 ]]; then printf '1\r\n'; fi
+elif [[ "$*" == *' install -r '* && -n "${AO_TEST_ADB_INSTALL_FAILURE:-}" ]]; then
+  echo "Performing Streamed Install"
+  echo "adb: failed to install: $AO_TEST_ADB_INSTALL_FAILURE"
+  exit 1
 fi
 `)
 	// systemctl stands in for the user manager: the emulator scope is
@@ -65,7 +109,7 @@ if [[ "$*" == *is-active* ]]; then [[ "${AO_TEST_SCOPE_ACTIVE:-}" == 1 ]]; fi
 `)
 	for _, kv := range os.Environ() {
 		name, _, _ := strings.Cut(kv, "=")
-		if name == "PATH" || name == "XDG_CACHE_HOME" || name == netisolate.EnvNamespace || strings.HasPrefix(name, "AO_ANDROID_") || strings.HasPrefix(name, "AO_EMULATOR_") {
+		if name == "PATH" || name == "XDG_CACHE_HOME" || name == "BASH_ENV" || name == netisolate.EnvNamespace || strings.HasPrefix(name, "AO_ANDROID_") || strings.HasPrefix(name, "AO_EMULATOR_") {
 			continue
 		}
 		f.env = append(f.env, kv)
@@ -77,6 +121,8 @@ if [[ "$*" == *is-active* ]]; then [[ "${AO_TEST_SCOPE_ACTIVE:-}" == 1 ]]; fi
 		"XDG_CACHE_HOME="+filepath.Join(dir, "cache"),
 		"AO_EMULATOR_LOCK="+filepath.Join(dir, "lock", "ao-emulator.lock"),
 		"AO_TEST_LOG="+f.log,
+		"BASH_ENV="+f.probe,
+		"AO_TEST_PROBE="+found,
 	)
 	return f
 }
@@ -94,15 +140,15 @@ echo "emulator $1" >>"$AO_TEST_LOG"
 // command after it forks one matching the glob fork while its positional
 // arguments match the glob args: the moment between a fork and reading `$!`,
 // which no signal from outside can be timed to hit. It returns the BASH_ENV
-// entry that arms it.
+// entry that arms it, which keeps the substitution probe.
 func (f smokeFixture) signalAfterFork(t *testing.T, script, fork, args string) string {
 	t.Helper()
 	path := filepath.Join(f.dir, "signal-after-fork.bash")
-	body := `[[ $0 == */` + script + ` ]] || return 0
+	body := `source ` + shellQuote(f.probe) + `
+[[ $0 == */` + script + ` ]] || return 0
 ao_fork=` + shellQuote(fork) + `
 ao_args=` + shellQuote(args) + `
-set -o functrace
-trap 'if [[ -n ${ao_forked:-} ]]; then trap - DEBUG; kill -TERM $$; fi; [[ $BASH_COMMAND == $ao_fork && $* == $ao_args ]] && ao_forked=1' DEBUG
+trap 'ao_probe; if [[ -n ${ao_forked:-} ]]; then trap ao_probe DEBUG; kill -TERM $$; fi; [[ $BASH_COMMAND == $ao_fork && $* == $ao_args ]] && ao_forked=1' DEBUG
 `
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
@@ -420,11 +466,12 @@ func TestAndroidSmokeRecognizesItsInheritedLock(t *testing.T) {
 	}
 }
 
-// A signal during boot undoes the launch whether or not the scope exists
-// yet: the launcher is stopped and joined, so it cannot make the scope after
-// the cleanup, and a scope it already made is stopped. Scope creation is
-// held behind a barrier so each order is deterministic.
-func TestAndroidEmulatorStartUndoesAnInterruptedLaunch(t *testing.T) {
+// startFixture adds what `android-emulator.sh start` reads: an AVD, a
+// runtime, a launcher that makes the scope only once barrier exists and then
+// runs as the emulator would, and a systemctl that reports and stops that
+// scope.
+func startFixture(t *testing.T) (f smokeFixture, barrier, scope string) {
+	t.Helper()
 	if runtime.GOOS != "linux" {
 		t.Skip("the emulator path is Linux-only")
 	}
@@ -439,6 +486,92 @@ func TestAndroidEmulatorStartUndoesAnInterruptedLaunch(t *testing.T) {
 			t.Skip(need + " unavailable")
 		}
 	}
+	f = newSmokeFixture(t)
+	barrier = filepath.Join(f.dir, "barrier")
+	scope = filepath.Join(f.dir, "scope")
+	bin := filepath.Join(f.dir, "bin")
+	mockexec.WriteIn(t, bin, "bwrap", "#!/bin/sh\nexit 0\n")
+	mockexec.WriteIn(t, bin, "systemd-run", `#!/usr/bin/env bash
+echo "launcher started" >>"$AO_TEST_LOG"
+while [[ ! -e "$AO_TEST_BARRIER" ]]; do sleep 0.02; done
+echo "scope created" >>"$AO_TEST_LOG"
+touch "$AO_TEST_SCOPE"
+exec sleep 300
+`)
+	mockexec.WriteIn(t, bin, "systemctl", `#!/usr/bin/env bash
+case "$*" in
+  *is-active*) [[ -e "$AO_TEST_SCOPE" ]] ;;
+  *stop*) echo "scope stopped" >>"$AO_TEST_LOG"; rm -f "$AO_TEST_SCOPE" ;;
+esac
+`)
+	mockexec.WriteIn(t, filepath.Join(f.dir, "emulator"), "emulator", "#!/bin/sh\nexit 0\n")
+	for _, dir := range []string{filepath.Join(f.dir, "avd", "ao.avd"), filepath.Join(f.dir, "cache", "agent-overflow", "emulator-rootfs")} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(f.dir, "cache", "agent-overflow", "emulator-rootfs", ".ao-runtime"), []byte("test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return f, barrier, scope
+}
+
+// startCommand runs `android-emulator.sh start` in its own process group,
+// inside this test's network namespace.
+func (f smokeFixture) startCommand(t *testing.T, barrier, scope string, env ...string) *exec.Cmd {
+	t.Helper()
+	cmd := exec.Command("bash", filepath.Join(filepath.Dir(f.smoke), "android-emulator.sh"), "start")
+	cmd.Env = append(append([]string{}, f.env...),
+		netisolate.EnvNamespace+"="+os.Getenv(netisolate.EnvNamespace),
+		"AO_TEST_BARRIER="+barrier,
+		"AO_TEST_SCOPE="+scope,
+	)
+	cmd.Env = append(cmd.Env, env...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	t.Cleanup(func() {
+		if cmd.Process != nil {
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+	})
+	return cmd
+}
+
+// A confirmed boot is the caller's to keep: start reports how long it took
+// and the emulator's adb serial, and leaves the scope running.
+func TestAndroidEmulatorStartKeepsABootedEmulator(t *testing.T) {
+	f, barrier, scope := startFixture(t)
+	if err := os.WriteFile(barrier, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := f.startCommand(t, barrier, scope,
+		"AO_TEST_BOOT_COMPLETED=1",
+		"AO_TEST_ADB_DEVICES=emulator-5554\tdevice\nemulator-5556\tdevice",
+	)
+	// A file, not a pipe: the launcher start leaves running holds a pipe open.
+	output, err := os.Create(filepath.Join(f.dir, "start.out"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = output.Close() })
+	cmd.Stdout, cmd.Stderr = output, output
+	err = cmd.Run()
+	printed, _ := os.ReadFile(output.Name())
+	if err != nil {
+		t.Fatalf("start failed on a booted emulator: %v\n%s\n%s", err, printed, f.calls(t))
+	}
+	if !regexp.MustCompile(`(?m)^==> booted in \d+s; adb serial emulator-5554$`).Match(printed) {
+		t.Fatalf("want the boot time and the first emulator's serial, got:\n%s", printed)
+	}
+	if calls := f.calls(t); strings.Contains(calls, "scope stopped") {
+		t.Fatalf("start stopped the emulator it booted:\n%s", calls)
+	}
+}
+
+// A signal during boot undoes the launch whether or not the scope exists
+// yet: the launcher is stopped and joined, so it cannot make the scope after
+// the cleanup, and a scope it already made is stopped. Scope creation is
+// held behind a barrier so each order is deterministic.
+func TestAndroidEmulatorStartUndoesAnInterruptedLaunch(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
 		scopeCreated bool
@@ -460,48 +593,16 @@ func TestAndroidEmulatorStartUndoesAnInterruptedLaunch(t *testing.T) {
 		{name: "when a second signal arrives while it waits for the mark", held: true, again: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f := newSmokeFixture(t)
-			barrier := filepath.Join(f.dir, "barrier")
-			scope := filepath.Join(f.dir, "scope")
-			bin := filepath.Join(f.dir, "bin")
-			mockexec.WriteIn(t, bin, "bwrap", "#!/bin/sh\nexit 0\n")
-			// The launcher makes the scope only once the barrier exists, then
-			// runs as the emulator would.
-			mockexec.WriteIn(t, bin, "systemd-run", `#!/usr/bin/env bash
-echo "launcher started" >>"$AO_TEST_LOG"
-while [[ ! -e "$AO_TEST_BARRIER" ]]; do sleep 0.02; done
-echo "scope created" >>"$AO_TEST_LOG"
-touch "$AO_TEST_SCOPE"
-exec sleep 300
-`)
-			mockexec.WriteIn(t, bin, "systemctl", `#!/usr/bin/env bash
-case "$*" in
-  *is-active*) [[ -e "$AO_TEST_SCOPE" ]] ;;
-  *stop*) echo "scope stopped" >>"$AO_TEST_LOG"; rm -f "$AO_TEST_SCOPE" ;;
-esac
-`)
-			mockexec.WriteIn(t, filepath.Join(f.dir, "emulator"), "emulator", "#!/bin/sh\nexit 0\n")
+			f, barrier, scope := startFixture(t)
 			hold := ""
 			if tc.held {
 				hold = f.holdStartMark(t, 1)
 			}
-			for _, dir := range []string{filepath.Join(f.dir, "avd", "ao.avd"), filepath.Join(f.dir, "cache", "agent-overflow", "emulator-rootfs")} {
-				if err := os.MkdirAll(dir, 0o700); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if err := os.WriteFile(filepath.Join(f.dir, "cache", "agent-overflow", "emulator-rootfs", ".ao-runtime"), []byte("test\n"), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			cmd := exec.Command("bash", filepath.Join(filepath.Dir(f.smoke), "android-emulator.sh"), "start")
-			cmd.Env = append(append([]string{}, f.env...),
-				netisolate.EnvNamespace+"="+os.Getenv(netisolate.EnvNamespace),
-				"AO_TEST_BARRIER="+barrier,
-				"AO_TEST_SCOPE="+scope,
-			)
+			var env []string
 			if tc.afterFork {
-				cmd.Env = append(cmd.Env, f.signalAfterFork(t, "android-emulator.sh", `"$BASH" -c *systemd-run *`, "*"))
+				env = append(env, f.signalAfterFork(t, "android-emulator.sh", `"$BASH" -c *systemd-run *`, "*"))
 			}
+			cmd := f.startCommand(t, barrier, scope, env...)
 			// A file, not a pipe: a killed launcher's held touch outlives it
 			// and would keep a pipe open.
 			output, err := os.Create(filepath.Join(f.dir, "start.out"))
@@ -514,11 +615,9 @@ esac
 				return string(body)
 			}
 			cmd.Stdout, cmd.Stderr = output, output
-			cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 			if err := cmd.Start(); err != nil {
 				t.Fatal(err)
 			}
-			t.Cleanup(func() { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) })
 			waitFor := func(what string) {
 				t.Helper()
 				deadline := time.Now().Add(30 * time.Second)
@@ -1212,9 +1311,11 @@ while :; do sleep 0.05; done
 	}
 }
 
-// The host phase hands over to the device phase with exec, which runs no
-// exit cleanup: its mark directory is gone before that.
-func TestAndroidSmokeHostPhaseLeavesNoMarks(t *testing.T) {
+// hostPhaseFixture adds what the emulator run's host phase reads: an SDK
+// with an emulator and an AVD, the debug APK, recording node and pnpm, and
+// an ao-netns that only records the handover to the device phase.
+func hostPhaseFixture(t *testing.T) (f smokeFixture, apk string) {
+	t.Helper()
 	if runtime.GOOS != "linux" {
 		t.Skip("the emulator path is Linux-only")
 	}
@@ -1224,16 +1325,15 @@ func TestAndroidSmokeHostPhaseLeavesNoMarks(t *testing.T) {
 	if _, err := os.Stat("/dev/kvm"); err != nil {
 		t.Skip("the host phase requires /dev/kvm")
 	}
-	f := newSmokeFixture(t)
+	f = newSmokeFixture(t)
 	f.fakeEmulator(t)
 	bin := filepath.Join(f.dir, "bin")
 	for _, tool := range []string{"node", "pnpm"} {
-		mockexec.WriteIn(t, bin, tool, "#!/usr/bin/env bash\necho \""+tool+" $*\" >>\"$AO_TEST_LOG\"\n")
+		mockexec.WriteIn(t, bin, tool, "#!/usr/bin/env bash\necho \""+tool+" $*\" >>\"$AO_TEST_LOG\"\ncat >/dev/null\n")
 	}
 	mockexec.WriteIn(t, filepath.Join(f.dir, "emulator"), "emulator", "#!/bin/sh\nexit 0\n")
-	// The device phase is not run: its launcher only records the handover.
 	mockexec.WriteIn(t, filepath.Join(f.dir, "repo", "bin"), "ao-netns", "#!/usr/bin/env bash\necho \"netns $AO_ANDROID_SMOKE_PHASE\" >>\"$AO_TEST_LOG\"\n")
-	apk := filepath.Join(f.dir, "repo", "mobile", "android", "app", "build", "outputs", "apk", "debug", "app-debug.apk")
+	apk = filepath.Join(f.dir, "repo", "mobile", "android", "app", "build", "outputs", "apk", "debug", "app-debug.apk")
 	for _, dir := range []string{filepath.Join(f.dir, "avd", "ao.avd"), filepath.Dir(apk)} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)
@@ -1242,6 +1342,13 @@ func TestAndroidSmokeHostPhaseLeavesNoMarks(t *testing.T) {
 	if err := os.WriteFile(apk, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	return f, apk
+}
+
+// The host phase hands over to the device phase with exec, which runs no
+// exit cleanup: its mark directory is gone before that.
+func TestAndroidSmokeHostPhaseLeavesNoMarks(t *testing.T) {
+	f, _ := hostPhaseFixture(t)
 	marks := filepath.Join(f.dir, "marks")
 	if err := os.MkdirAll(marks, 0o700); err != nil {
 		t.Fatal(err)
@@ -1258,5 +1365,132 @@ func TestAndroidSmokeHostPhaseLeavesNoMarks(t *testing.T) {
 	}
 	if left, _ := filepath.Glob(filepath.Join(marks, "*")); len(left) > 0 {
 		t.Fatalf("the host phase left its start marks behind: %v", left)
+	}
+}
+
+// A signed-release run checks the APK it was given before it builds
+// anything: the package must be Agent Overflow's and must not be
+// debuggable.
+func TestAndroidSmokeChecksTheReleaseManifest(t *testing.T) {
+	for _, tc := range []struct {
+		name, badging, want string
+	}{
+		{name: "another package", badging: "package: name='com.example.other' versionCode='1'\nsdkVersion:'24'", want: "must be an Agent Overflow APK"},
+		{name: "debuggable", badging: "package: name='dev.agentoverflow.app' versionCode='1'\napplication-debuggable\nsdkVersion:'24'", want: "must be a non-debuggable signed release APK"},
+		{name: "release", badging: "package: name='dev.agentoverflow.app' versionCode='1'\nsdkVersion:'24'"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, apk := hostPhaseFixture(t)
+			tools := filepath.Join(f.dir, "build-tools", "36.0.0")
+			mockexec.WriteIn(t, tools, "apksigner", "#!/bin/sh\nexit 0\n")
+			mockexec.WriteIn(t, tools, "aapt", "#!/usr/bin/env bash\nprintf '%s\\n' \"$AO_TEST_BADGING\"\n")
+			mockexec.WriteIn(t, filepath.Join(f.dir, "bin"), "unzip", "#!/bin/sh\necho '{}'\n")
+			out, err := f.command("AO_ANDROID_RELEASE_APK="+apk, "AO_TEST_BADGING="+tc.badging).CombinedOutput()
+			if tc.want == "" {
+				if err != nil || !strings.Contains(f.calls(t), "netns device") {
+					t.Fatalf("a release APK did not reach the device phase: %v\n%s\n%s", err, out, f.calls(t))
+				}
+				return
+			}
+			if err == nil || !strings.Contains(string(out), tc.want) {
+				t.Fatalf("want %q, got %v:\n%s", tc.want, err, out)
+			}
+			if calls := f.calls(t); strings.Contains(calls, "node ") || strings.Contains(calls, "pnpm ") {
+				t.Fatalf("the run went on with a refused APK:\n%s", calls)
+			}
+		})
+	}
+}
+
+// Without an emulator the smoke prints how to set one up, for the system
+// image that matches the host.
+func TestAndroidSmokeSetupHintNamesTheHostImage(t *testing.T) {
+	f := newSmokeFixture(t)
+	out, err := f.command().CombinedOutput()
+	if err != nil {
+		t.Fatalf("a host without an emulator is a skip, got %v:\n%s", err, out)
+	}
+	abi := "x86_64"
+	if runtime.GOARCH == "arm64" {
+		abi = "arm64-v8a"
+	}
+	if want := `sdkmanager "system-images;android-36;google_apis;` + abi + `"`; !strings.Contains(string(out), want) {
+		t.Fatalf("want %s in the hint, got:\n%s", want, out)
+	}
+}
+
+// deviceRun runs the device phase against the fake emulator and a suite
+// that passes.
+func (f smokeFixture) deviceRun(t *testing.T, env ...string) ([]byte, error) {
+	t.Helper()
+	if _, err := exec.LookPath("flock"); err != nil {
+		t.Skip("flock unavailable")
+	}
+	f.fakeEmulator(t)
+	mockexec.WriteIn(t, filepath.Join(f.dir, "repo", "bin"), "ao-harness-e2e", "#!/usr/bin/env bash\necho \"suite $*\" >>\"$AO_TEST_LOG\"\n")
+	return f.command(append([]string{"AO_ANDROID_SMOKE_PHASE=device"}, env...)...).CombinedOutput()
+}
+
+// An emulator that booted but that adb does not list as ready is not run
+// against, and is stopped.
+func TestAndroidSmokeRefusesAnEmulatorAdbDoesNotList(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the emulator path is Linux-only")
+	}
+	f := newSmokeFixture(t)
+	out, err := f.deviceRun(t, "AO_TEST_ADB_DEVICES=emulator-5554\toffline")
+	if err == nil || !strings.Contains(string(out), "adb lists no ready emulator") {
+		t.Fatalf("want the refusal, got %v:\n%s", err, out)
+	}
+	if calls := f.calls(t); strings.Contains(calls, "install") || !strings.Contains(calls, "emulator stop") {
+		t.Fatalf("want no install and a stopped emulator:\n%s", calls)
+	}
+}
+
+// An installation signed differently is replaced only on the disposable
+// emulator; on a phone, and for any other failure, adb's output is shown
+// and the run stops.
+func TestAndroidSmokeReplacesAnIncompatibleInstallOnlyOnTheEmulator(t *testing.T) {
+	const incompatible = "INSTALL_FAILED_UPDATE_INCOMPATIBLE: signatures do not match"
+	for _, tc := range []struct {
+		name, failure string
+		phone         bool
+		replaced      bool
+	}{
+		{name: "emulator", failure: incompatible, replaced: true},
+		{name: "phone", failure: incompatible, phone: true},
+		{name: "another failure", failure: "INSTALL_FAILED_INSUFFICIENT_STORAGE"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if !tc.phone && runtime.GOOS != "linux" {
+				t.Skip("the emulator path is Linux-only")
+			}
+			f := newSmokeFixture(t)
+			serial := "emulator-5554"
+			env := []string{"AO_TEST_ADB_INSTALL_FAILURE=" + tc.failure}
+			if tc.phone {
+				serial = "pixel"
+				env = append(env, "AO_ANDROID_HUMAN_LOCK=1", "AO_ANDROID_SERIAL="+serial)
+			}
+			env = append(env, "AO_TEST_ADB_DEVICES="+serial+"\tdevice")
+			out, err := f.deviceRun(t, env...)
+			calls := f.calls(t)
+			if !strings.Contains(string(out), "==> device "+serial) {
+				t.Fatalf("the run did not pick %s:\n%s", serial, out)
+			}
+			uninstalled := strings.Contains(calls, "adb -s "+serial+" uninstall dev.agentoverflow.app")
+			if tc.replaced {
+				if err != nil || !uninstalled || !strings.Contains(calls, "suite ") {
+					t.Fatalf("want the installation replaced and the suite run, got %v:\n%s\n%s", err, out, calls)
+				}
+				return
+			}
+			if err == nil || uninstalled || strings.Contains(calls, "suite ") {
+				t.Fatalf("want the run stopped with the installation kept, got %v:\n%s\n%s", err, out, calls)
+			}
+			if !strings.Contains(string(out), "adb: failed to install: "+tc.failure) {
+				t.Fatalf("adb's output was not shown:\n%s", out)
+			}
+		})
 	}
 }

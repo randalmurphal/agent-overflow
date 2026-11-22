@@ -194,6 +194,12 @@ abandon() {
   fi
   rm -rf "$started"
 }
+# Bash 4.4 through 5.2 runs a pending signal handler when it starts to
+# parse a command substitution it is expanding, in that substitution's
+# parser state: the handler fails with a syntax error and the signal is
+# lost. So
+# while these handlers are set, nothing here expands $(...), <(...) or
+# >(...); abandon may, once it has ignored the signals.
 trap abandon EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
@@ -210,15 +216,16 @@ trap 'exit 129' HUP
   >"$log" 2>&1 &
 
 echo "==> booting $avd as $unit (memory cap $memory)"
-start=$(date +%s)
-until [[ "$("$adb" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" == 1 ]]; do
-  if (( $(date +%s) - start > 5 )) && ! systemctl --user is-active -q "$unit"; then
+SECONDS=0
+until "$adb" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' | grep -qx 1; do
+  if (( SECONDS > 5 )) && ! systemctl --user is-active -q "$unit"; then
     echo "emulator exited during boot:" >&2
     grep -v '^DEBUG' "$log" | tail -20 >&2
     exit 1
   fi
-  if (( $(date +%s) - start > 400 )); then echo "boot timed out" >&2; exit 1; fi
+  if (( SECONDS > 400 )); then echo "boot timed out" >&2; exit 1; fi
   sleep 3
 done
 booted=1
-echo "==> booted in $(( $(date +%s) - start ))s; adb serial $("$adb" devices | awk '/^emulator-/ { print $1; exit }')"
+printf '==> booted in %ss; adb serial ' "$SECONDS"
+"$adb" devices | awk '/^emulator-/ && serial == "" { serial = $1 } END { print serial }'

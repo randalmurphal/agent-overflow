@@ -57,6 +57,7 @@ apk="${AO_ANDROID_RELEASE_APK:-$repo/mobile/android/app/build/outputs/apk/debug/
 emulator="$repo/e2e/scripts/android-emulator.sh"
 human="${AO_ANDROID_HUMAN_LOCK:-}"
 lock="${AO_EMULATOR_LOCK:-/run/user/$(id -u)/ao-emulator.lock}"
+lock_dir="$(dirname "$lock")"
 
 # A device line is "<serial>\t<state>"; only `device` is ready. Anything
 # else (offline, unauthorized, a booting emulator) is not something to run
@@ -69,7 +70,7 @@ ready_devices() { "$adb" devices | tail -n +2 | awk '$2 == "device" { print $1 }
 # here when the device phase was started directly. Only the holder may
 # start or stop the emulator.
 hold_lock() {
-  mkdir -p "$(dirname "$lock")"
+  mkdir -p "$lock_dir"
   if [[ ! "/proc/$$/fd/9" -ef "$lock" ]]; then
     exec 9>>"$lock"
   fi
@@ -102,6 +103,8 @@ stop_jobs() {
   wait $running 2>/dev/null || true
 }
 started="$(mktemp -d)"
+# A command's output that the script reads back.
+output="$(mktemp)"
 
 # Long steps run as supervised children: a signal is passed on to the
 # child and waited out before the exit cleanup runs, so nothing the step
@@ -123,6 +126,10 @@ on_signal() {
   stop_jobs
   exit $((128 + $(kill -l "$1")))
 }
+# While these handlers are set, nothing here expands $(...), <(...) or
+# >(...), which would lose a signal (see the handlers in
+# android-emulator.sh); a command's output is read back from $output
+# instead. on_signal may, once it has ignored the signals.
 trap 'on_signal INT' INT
 trap 'on_signal TERM' TERM
 trap 'on_signal HUP' HUP
@@ -141,18 +148,18 @@ on_exit() {
     "$adb" kill-server >/dev/null 2>&1 || true
     "$emulator" stop >/dev/null || true
   fi
-  rm -rf "$started"
+  rm -rf "$started" "$output"
 }
 trap on_exit EXIT
 
 # A real phone is named, never chosen: every case clears the app's data.
+# Sets serial.
 human_serial() {
-  local serial="${AO_ANDROID_SERIAL:-}"
+  serial="${AO_ANDROID_SERIAL:-}"
   if [[ -z "$serial" ]] || ! ready_devices | awk -v wanted="$serial" '$0 == wanted { found=1 } END { exit !found }'; then
     echo "AO_ANDROID_HUMAN_LOCK=1 needs AO_ANDROID_SERIAL naming an attached, ready phone" >&2
     exit 1
   fi
-  echo "$serial"
 }
 
 # ---- the device phase: in the namespace, or on the host for a phone ----
@@ -160,7 +167,7 @@ human_serial() {
 device_phase() {
   local serial
   if [[ "$human" == 1 ]]; then
-    serial="$(human_serial)"
+    human_serial
   else
     "$emulator" inside || {
       echo "the emulator phase runs inside the test network namespace; run make e2e-android" >&2
@@ -175,7 +182,8 @@ device_phase() {
     # emulator and this namespace's adb server are the run's own from here.
     own_emulator=1
     supervise "$emulator" start
-    serial="$(ready_devices | awk '/^emulator-/ { print; exit }')"
+    ready_devices | awk '/^emulator-/ { print; exit }' >"$output"
+    read -r serial <"$output" || true
     if [[ -z "$serial" ]]; then
       echo "the emulator booted but adb lists no ready emulator" >&2
       exit 1
@@ -184,11 +192,12 @@ device_phase() {
   echo "==> device $serial"
 
   echo "==> installing"
-  if ! install_output="$("$adb" -s "$serial" install -r "$apk" 2>&1)"; then
+  if ! "$adb" -s "$serial" install -r "$apk" >"$output" 2>&1; then
     # Release and debug signatures differ. Only the disposable emulator may
     # replace that installation; every case clears its app data anyway.
-    if [[ "$install_output" != *INSTALL_FAILED_UPDATE_INCOMPATIBLE* || "$("$adb" -s "$serial" shell getprop ro.kernel.qemu | tr -d '\r')" != 1 ]]; then
-      echo "$install_output" >&2
+    if ! grep -q INSTALL_FAILED_UPDATE_INCOMPATIBLE "$output" ||
+      ! "$adb" -s "$serial" shell getprop ro.kernel.qemu | tr -d '\r' | grep -qx 1; then
+      cat "$output" >&2
       exit 1
     fi
     "$adb" -s "$serial" uninstall dev.agentoverflow.app
@@ -245,8 +254,10 @@ setup_hint() {
   # The system image must match the host: the emulator runs an arm64
   # guest on Apple Silicon and an x86_64 one everywhere else, and the
   # other one either fails to install or boots at a crawl.
-  local abi=x86_64
-  case "$(uname -m)" in arm64 | aarch64) abi=arm64-v8a ;; esac
+  local abi=x86_64 machine
+  uname -m >"$output"
+  read -r machine <"$output"
+  case "$machine" in arm64 | aarch64) abi=arm64-v8a ;; esac
   cat <<MSG
 $1, so the shell smoke is skipped.
 
@@ -275,8 +286,8 @@ if [[ "$human" == 1 ]]; then
     echo "The release lifecycle test changes network radios and requires the emulator." >&2
     exit 1
   fi
-  phone="$(human_serial)"
-  echo "==> phone $phone"
+  human_serial
+  echo "==> phone $serial"
 else
   [[ -x "$ANDROID_HOME/emulator/emulator" ]] || skip "No emulator in $ANDROID_HOME"
   [[ -d "$ANDROID_AVD_HOME/${AO_EMULATOR_AVD:-ao}.avd" ]] || skip "No AVD '${AO_EMULATOR_AVD:-ao}' under $ANDROID_AVD_HOME"
@@ -292,12 +303,13 @@ if [[ -n "${AO_ANDROID_RELEASE_APK:-}" ]]; then
   # apksigner runs `java` from PATH, not JAVA_HOME.
   export PATH="$JAVA_HOME/bin:$PATH"
   "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify "$apk"
-  manifest="$("$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk")"
-  if [[ "$manifest" != "package: name='dev.agentoverflow.app'"* ]]; then
+  "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" >"$output"
+  IFS= read -r package <"$output" || true
+  if [[ "$package" != "package: name='dev.agentoverflow.app'"* ]]; then
     echo "AO_ANDROID_RELEASE_APK must be an Agent Overflow APK." >&2
     exit 1
   fi
-  if [[ "$manifest" == *application-debuggable* ]]; then
+  if grep -q application-debuggable "$output"; then
     echo "AO_ANDROID_RELEASE_APK must be a non-debuggable signed release APK." >&2
     exit 1
   fi
@@ -333,5 +345,5 @@ hold_lock
 supervise "$emulator" prepare
 # The device phase is another process with marks of its own, and exec runs
 # no exit cleanup.
-rm -rf "$started"
+rm -rf "$started" "$output"
 exec env AO_ANDROID_SMOKE_PHASE=device "$repo/bin/ao-netns" "$repo/e2e/scripts/android-smoke.sh" "$@"
