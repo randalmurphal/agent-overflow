@@ -672,8 +672,8 @@ func TestGitLabMissingGlabIsReported(t *testing.T) {
 
 func TestParseGitLabProject(t *testing.T) {
 	valid := map[string]gitlabSource{
-		"gitlab.com/fortressinfosec/agent-overflow": {host: "gitlab.com", project: "fortressinfosec/agent-overflow"},
-		"GitLab.Example.com/a/b_c/d.e":              {host: "gitlab.example.com", project: "a/b_c/d.e"},
+		"gitlab.com/example-group/agent-overflow": {host: "gitlab.com", project: "example-group/agent-overflow"},
+		"GitLab.Example.com/a/b_c/d.e":            {host: "gitlab.example.com", project: "a/b_c/d.e"},
 	}
 	for raw, want := range valid {
 		got, err := parseGitLabProject(raw)
