@@ -539,21 +539,17 @@ func TestObs_ReplayRotationFilenames(t *testing.T) {
 	}
 }
 
-// waitForFile waits until the given file exists and the replay manager's
-// internal queue has drained. Used to eliminate timing races in assertions
-// about file contents.
+// waitForFile waits until every record enqueued so far is written, then
+// requires the file. The bound only ends a drain that never happens: these
+// writers Sync after every write, so how long a drain takes is the disk's.
 func waitForFile(t *testing.T, m *replay.Manager, path string) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if m.QueueLen() == 0 {
-			if _, err := os.Stat(path); err == nil {
-				// Extra 2ms buffer so the fsync'ed contents are visible.
-				time.Sleep(5 * time.Millisecond)
-				return
-			}
-		}
-		time.Sleep(2 * time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := m.WaitForDrain(ctx); err != nil {
+		t.Fatalf("WaitForDrain: %v", err)
 	}
-	t.Fatalf("file %s did not appear within deadline", path)
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("file %s missing after the drain: %v", path, err)
+	}
 }

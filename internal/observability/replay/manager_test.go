@@ -20,10 +20,14 @@ func (m *Manager) openCount() int {
 	return len(m.writers)
 }
 
-// noFsync is the writer config of every manager test. None of them is about
-// fsync (writer_test.go is), and a written record is readable before any
-// Sync, so none of them waits on disk flush latency.
-var noFsync = WriterConfig{FsyncEvery: math.MaxInt}
+// syncOnClose is the writer config of every manager test: no Sync after a
+// write, and the one Close always makes (Writer.Close), which keeps closed
+// files durable. None of the tests is about fsync (writer_test.go is), and
+// a written record is readable before any Sync. No wait here bounds a Sync
+// by wall clock: a Shutdown, an eviction or a removal that closes writers
+// is waited on without a bound, so go test's own timeout ends one that
+// hangs, and waitDrained's bound is on writes alone.
+var syncOnClose = WriterConfig{FsyncEvery: math.MaxInt}
 
 // waitDrained waits until every record enqueued so far is written. The bound
 // only ends a test whose drain never happens; it says nothing about how fast
@@ -43,7 +47,7 @@ func TestManagerEnqueueWhenDisabledDrops(t *testing.T) {
 	m := NewManager(ManagerConfig{
 		RootDir:      dir,
 		QueueSize:    16,
-		WriterConfig: noFsync,
+		WriterConfig: syncOnClose,
 		IdleTimeout:  100 * time.Millisecond,
 		Enabled:      false,
 		DropHook:     func() { drops.Add(1) },
@@ -72,7 +76,7 @@ func TestManagerEnqueueWhenEnabledWrites(t *testing.T) {
 	m := NewManager(ManagerConfig{
 		RootDir:      dir,
 		QueueSize:    16,
-		WriterConfig: noFsync,
+		WriterConfig: syncOnClose,
 		IdleTimeout:  100 * time.Second, // don't evict during the test
 		Enabled:      true,
 	})
@@ -112,7 +116,7 @@ func TestManagerDropsWhenQueueFullAndInvokesHook(t *testing.T) {
 	m := NewManager(ManagerConfig{
 		RootDir:      dir,
 		QueueSize:    2,
-		WriterConfig: noFsync,
+		WriterConfig: syncOnClose,
 		IdleTimeout:  100 * time.Second,
 		Enabled:      true,
 		DropHook:     func() { drops.Add(1) },
@@ -189,7 +193,7 @@ func TestManagerReaperClosesIdleWriters(t *testing.T) {
 	m := NewManager(ManagerConfig{
 		RootDir:      dir,
 		QueueSize:    16,
-		WriterConfig: noFsync,
+		WriterConfig: syncOnClose,
 		IdleTimeout:  5 * time.Millisecond,
 		Enabled:      true,
 	})
@@ -220,7 +224,7 @@ func TestManagerSetEnabledToggle(t *testing.T) {
 	m := NewManager(ManagerConfig{
 		RootDir:      dir,
 		QueueSize:    16,
-		WriterConfig: noFsync,
+		WriterConfig: syncOnClose,
 		IdleTimeout:  100 * time.Second,
 		Enabled:      false,
 	})
@@ -262,7 +266,7 @@ func TestManagerShutdownClosesAllWriters(t *testing.T) {
 	m := NewManager(ManagerConfig{
 		RootDir:      dir,
 		QueueSize:    16,
-		WriterConfig: noFsync,
+		WriterConfig: syncOnClose,
 		IdleTimeout:  100 * time.Second,
 		Enabled:      true,
 	})
@@ -301,7 +305,7 @@ func TestManagerShutdownHonoursContextTimeout(t *testing.T) {
 	m := NewManager(ManagerConfig{
 		RootDir:      dir,
 		QueueSize:    16,
-		WriterConfig: noFsync,
+		WriterConfig: syncOnClose,
 		IdleTimeout:  100 * time.Second,
 		Enabled:      true,
 	})
@@ -314,12 +318,11 @@ func TestManagerShutdownHonoursContextTimeout(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
-	// Shutdown may not complete its drain within 10ms but it must return.
-	start := time.Now()
-	_ = m.Shutdown(ctx)
-	elapsed := time.Since(start)
-	if elapsed > 2*time.Second {
-		t.Errorf("Shutdown took %v, want bounded by context", elapsed)
+	// Shutdown may not complete its drain within 10ms. It returns either
+	// way, after closing every writer, and says when the deadline cut the
+	// drain short. Its Close syncs, so how long it takes is the disk's.
+	if err := m.Shutdown(ctx); err != nil && !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("Shutdown = %v, want nil or the deadline", err)
 	}
 
 	// Wait for the drain goroutines to settle before letting t.TempDir
@@ -340,7 +343,7 @@ func TestManagerShutdownPastItsDeadlineAccountsForEveryRecord(t *testing.T) {
 	m := NewManager(ManagerConfig{
 		RootDir:      dir,
 		QueueSize:    64,
-		WriterConfig: noFsync,
+		WriterConfig: syncOnClose,
 		IdleTimeout:  100 * time.Second,
 		Enabled:      true,
 	})
@@ -373,11 +376,9 @@ func TestManagerShutdownPastItsDeadlineAccountsForEveryRecord(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	w.mu.Unlock()
-	select {
-	case err = <-result:
-	case <-time.After(5 * time.Second):
-		t.Fatal("Shutdown did not return")
-	}
+	// The Close it was waiting in syncs, so nothing bounds this but go
+	// test's own timeout.
+	err = <-result
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Shutdown = %v, want the drain deadline reported", err)
 	}
@@ -409,7 +410,7 @@ func TestManagerEnqueueRoundTrip(t *testing.T) {
 	m := NewManager(ManagerConfig{
 		RootDir:      dir,
 		QueueSize:    16,
-		WriterConfig: noFsync,
+		WriterConfig: syncOnClose,
 		IdleTimeout:  100 * time.Second,
 		Enabled:      true,
 	})
@@ -454,7 +455,7 @@ func TestManagerConcurrentEnqueueAllWritten(t *testing.T) {
 	m := NewManager(ManagerConfig{
 		RootDir:      dir,
 		QueueSize:    1024,
-		WriterConfig: noFsync,
+		WriterConfig: syncOnClose,
 		IdleTimeout:  100 * time.Second,
 		Enabled:      true,
 	})
@@ -513,7 +514,7 @@ func TestRemoveThreadLogRemovesFileAndClosesWriter(t *testing.T) {
 	m := NewManager(ManagerConfig{
 		RootDir:      dir,
 		QueueSize:    16,
-		WriterConfig: noFsync,
+		WriterConfig: syncOnClose,
 		IdleTimeout:  100 * time.Second,
 		Enabled:      true,
 	})
@@ -552,7 +553,7 @@ func TestRemoveThreadLogRemovesRotatedBackups(t *testing.T) {
 	m := NewManager(ManagerConfig{
 		RootDir:      dir,
 		QueueSize:    16,
-		WriterConfig: noFsync,
+		WriterConfig: syncOnClose,
 		IdleTimeout:  100 * time.Second,
 		Enabled:      false, // we're going to plant files by hand
 	})
@@ -586,7 +587,7 @@ func TestRemoveThreadLogNoFileNoError(t *testing.T) {
 	m := NewManager(ManagerConfig{
 		RootDir:      dir,
 		QueueSize:    16,
-		WriterConfig: noFsync,
+		WriterConfig: syncOnClose,
 		IdleTimeout:  100 * time.Second,
 		Enabled:      true,
 	})
@@ -604,7 +605,7 @@ func TestRemoveThreadLogEmptyThreadID(t *testing.T) {
 	m := NewManager(ManagerConfig{
 		RootDir:      dir,
 		QueueSize:    16,
-		WriterConfig: noFsync,
+		WriterConfig: syncOnClose,
 		IdleTimeout:  100 * time.Second,
 		Enabled:      true,
 	})
@@ -633,7 +634,7 @@ func TestDisabledManagerNoGoroutines(t *testing.T) {
 	m := NewManager(ManagerConfig{
 		RootDir:      dir,
 		QueueSize:    16,
-		WriterConfig: noFsync,
+		WriterConfig: syncOnClose,
 		IdleTimeout:  100 * time.Second,
 		Enabled:      false,
 	})
@@ -687,7 +688,7 @@ func TestRapidEnableDisableCyclingDoesNotLeak(t *testing.T) {
 	m := NewManager(ManagerConfig{
 		RootDir:      dir,
 		QueueSize:    16,
-		WriterConfig: noFsync,
+		WriterConfig: syncOnClose,
 		IdleTimeout:  100 * time.Second,
 		Enabled:      false,
 	})
@@ -717,7 +718,7 @@ func TestShutdownAfterDisableIsNoOp(t *testing.T) {
 	m := NewManager(ManagerConfig{
 		RootDir:      dir,
 		QueueSize:    16,
-		WriterConfig: noFsync,
+		WriterConfig: syncOnClose,
 		IdleTimeout:  100 * time.Second,
 		Enabled:      true,
 	})

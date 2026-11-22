@@ -306,19 +306,16 @@ func TestDeleteThreadRemovesReplayLog(t *testing.T) {
 	if !app.replay.Enqueue(rec) {
 		t.Fatal("Enqueue dropped event on enabled manager")
 	}
-	// Wait for the writer to flush by polling for the file. The manager
-	// has no public waitForDrain, so we rely on FsyncEvery:1 + a short
-	// retry window.
-	replayPath := filepath.Join(replayDir, thread.ID+".jsonl")
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(replayPath); err == nil {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
+	// The bound only ends a drain that never happens: the writer Syncs
+	// after every write, so how long the drain takes is the disk's.
+	drained, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := app.replay.WaitForDrain(drained); err != nil {
+		t.Fatalf("WaitForDrain: %v", err)
 	}
+	replayPath := filepath.Join(replayDir, thread.ID+".jsonl")
 	if _, err := os.Stat(replayPath); err != nil {
-		t.Fatalf("replay file did not appear within deadline: %v", err)
+		t.Fatalf("replay file missing after the drain: %v", err)
 	}
 
 	if err := app.deleteThread(thread.ID); err != nil {
