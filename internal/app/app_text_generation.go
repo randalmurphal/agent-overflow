@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -14,6 +15,7 @@ import (
 
 	"agent-overflow/internal/claudecatalog"
 	"agent-overflow/internal/claudemodels"
+	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provideraccountapp"
@@ -300,6 +302,16 @@ func runTextGenWithFallback[T any](
 				return cfg, zero, err
 			}
 			result, err := runOnce(cfg, time.Now().Add(budget))
+			if errors.Is(err, procutil.ErrGroupSurvived) {
+				// Logged here, once per run: a run an account change ended is
+				// run again and a primary's failure gives way to a fallback
+				// that succeeds, and either drops this error. One line: the
+				// error joins the run's cause with the survivor.
+				log.Printf(
+					"textgen: a %s text-generation CLI (%s) could not be stopped and is still running: %s",
+					cfg.Provider, filepath.Base(cfg.Binary), strings.ReplaceAll(textgen.RedactError(err), "\n", "; "),
+				)
+			}
 			if !errors.Is(err, errTextGenerationSelectionMoved) {
 				return cfg, result, err
 			}

@@ -2,18 +2,22 @@ package app
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/claudecatalog"
+	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provideraccounts"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/textgen"
 	"agent-overflow/internal/threadtitle"
 )
@@ -179,5 +183,34 @@ printf '%s\n' '{"structured_output":{"title":"From Claude"}}'`
 	defer mu.Unlock()
 	if !slices.Equal(ran, []string{"claude-haiku-6", "claude-haiku-5-5"}) {
 		t.Fatalf("CLIs ran with %v, want first's claude-haiku-6 ended and then second's claude-haiku-5-5", ran)
+	}
+}
+
+// A run that an account change ended is run again, so its error is dropped;
+// a CLI group that outlived its stop is logged once, naming the provider and
+// the CLI, so the process still running is seen. Not parallel: the standard
+// logger and the Claude catalog are process-wide.
+func TestATextGenerationCLIThatOutlivesItsStopIsLoggedOnce(t *testing.T) {
+	app := twoAccountTitleApp(t)
+	logs := testutil.CaptureLogOutput(t)
+	runs := 0
+	got, err := runTextGenWithFallback(context.Background(), app, time.Minute, func(cfg textgen.Config, _ time.Time) (string, error) {
+		runs++
+		if runs == 1 {
+			return "", errors.Join(errTextGenerationSelectionMoved, procutil.ErrGroupSurvived)
+		}
+		return "title", nil
+	})
+	if err != nil || got != "title" || runs != 2 {
+		t.Fatalf("runTextGenWithFallback = %q, %v after %d runs; want the second run's title", got, err, runs)
+	}
+	var lines []string
+	for _, line := range strings.Split(logs.String(), "\n") {
+		if strings.Contains(line, "could not be stopped and is still running") {
+			lines = append(lines, line)
+		}
+	}
+	if len(lines) != 1 || !strings.Contains(lines[0], "a claude text-generation CLI") {
+		t.Fatalf("logged %q, want one line naming the claude CLI", lines)
 	}
 }
