@@ -20,6 +20,7 @@ import { resetSidebarForTest } from '../../stores/sidebar.svelte';
 import { projectTurnStarted, resetForTest as resetThreadStatuses } from '../../stores/threadStatuses.svelte';
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 import { __resetEntityIndexForTest, noteProject, noteThread } from '../../transport/entityIndex';
+import { UNREACHABLE_SETTLE_MS } from '../../stores/transportStatus.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import type { Thread } from '../../types/models';
 import { setEntryExpanded } from '../../stores/sidebarEntryContinuity.svelte';
@@ -457,17 +458,19 @@ describe('ProjectItem action target', () => {
   });
 });
 
-// A collapsed project's rollup dot carries its threads' status; one from an
-// unreachable computer is its last report, shown still.
+// A collapsed project's rollup dot carries its threads' status; one from a
+// computer unreachable for a while is its last report, shown still.
 describe('ProjectItem status rollup', () => {
   afterEach(() => {
     resetStagedBackends();
     __resetEntityIndexForTest();
     resetThreadStatuses();
     resetSidebarForTest();
+    vi.useRealTimers();
   });
 
-  it("stops the motion while the thread's computer is unreachable", async () => {
+  it("stops the motion once the thread's computer has been unreachable a while", async () => {
+    vi.useFakeTimers();
     const p = makeProject('a', 'web', '/work/web');
     addProjectLocal(p);
     setEntryExpanded(p.id, false);
@@ -485,6 +488,11 @@ describe('ProjectItem status rollup', () => {
     });
     const dot = () => getByTestId('project-item-status-dot').firstElementChild;
     expect(getByTestId('project-item-status-dot')).toHaveAttribute('data-status', 'running');
+    vi.advanceTimersByTime(UNREACHABLE_SETTLE_MS - 1);
+    await tick();
+    expect(dot()).toHaveClass('animate-pulse');
+    vi.advanceTimersByTime(1);
+    await tick();
     expect(dot()).not.toHaveClass('animate-pulse');
 
     staged.setStatus('connected');

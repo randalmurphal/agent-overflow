@@ -2861,10 +2861,13 @@ surfaces in exactly three places:
   thread (§7).
 - **Reachability is ambient, not modal.** Per-backend status lives
   where the backend is chosen: the composer's machine picker dims an
-  unreachable entry in place, and Settings → Systems carries the
-  detail. Threads on an unreachable backend dim and stay readable
-  from the replica. The full-width transport banner is reserved for
-  the visible thread's own backend dropping.
+  unreachable entry in place, the sidebar's Projects menu names each
+  computer's state, and Settings → Systems carries the detail. Threads
+  on a backend that has been unreachable for 30 seconds without a break
+  dim and stay readable from the replica; a shorter drop changes
+  nothing on them. The full-width transport banner is reserved for
+  the visible thread's own backend dropping; for a paired backend it
+  says when the backend was last reached, without a countdown.
 
 Ruled 2026-09-01 (user), phase 7 UI: the machine picker is one more
 dropdown in the composer's existing project / worktree / branch strip,

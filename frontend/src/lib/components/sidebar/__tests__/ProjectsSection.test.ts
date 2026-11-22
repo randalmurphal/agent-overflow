@@ -36,7 +36,7 @@ import {
   resetThreadGroupsForTest,
 } from '../../../stores/threadGroups.svelte';
 import { createThreadGroupAction } from '../threadGroupActions';
-import { resetCatalogLoadForTest } from '../../../stores/catalogLoad.svelte';
+import { CATALOG_RETRY_MAX_MS, resetCatalogLoadForTest } from '../../../stores/catalogLoad.svelte';
 import { applyProjectUpdated } from '../../../stores/eventsProjectRows';
 import { __setTransportStatusForTest } from '../../../stores/transportStatus.svelte';
 import { DisconnectedError, TransportError } from '../../../transport/wsClient';
@@ -1581,5 +1581,104 @@ describe('<ProjectsSection> threads and their groups', () => {
     await Promise.all([older, newer]);
     await settle();
     expect(arrangement(container)).toEqual(AFTER);
+  });
+});
+
+// A paired computer's connection and load state live in the Projects menu.
+// With the menu closed, the section is the same whether that computer is
+// reachable, connecting, off or failing to load: its own rows are the only
+// difference, and nothing in the section moves or repeats while it retries.
+describe('<ProjectsSection> while a paired computer is not loaded', () => {
+  type GpuState = 'reachable' | 'connecting' | 'offline' | 'failed';
+  const homeRows = (): ProjectWithCounts[] => [{ project: mkProject('p1', { name: 'Project One' }), threadCount: 0, lastActive: 0 }];
+  const never = new Promise<never>(() => {});
+
+  async function settle(): Promise<void> {
+    for (let i = 0; i < 4; i++) await tick();
+  }
+
+  // Answers a paired computer in `gpu` state; this computer answers `home`,
+  // or never when it is null.
+  async function renderWith(gpu: GpuState, home: ProjectWithCounts[] | null = homeRows()) {
+    resetSidebarForTest();
+    resetProjectsForTest();
+    resetPanesForTest();
+    resetThreadGroupsForTest();
+    resetCatalogLoadForTest();
+    resetSidebarCatalogsForTest();
+    resetStagedBackends();
+    __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
+    stageBackend({
+      id: 'gpu', backendId: 'gpu-uuid', name: 'GPU',
+      status: gpu === 'connecting' ? 'disconnected' : gpu === 'offline' ? 'reconnecting' : 'connected',
+    });
+    const gpuAnswer = <T,>(rows: T[]): Promise<T[]> => {
+      if (gpu === 'connecting') return never;
+      if (gpu === 'offline') return Promise.reject(new DisconnectedError('Computer is offline.'));
+      return Promise.resolve(rows);
+    };
+    setBindingMock('ListProjects', async () => {
+      if (takePinnedBackend() !== 'gpu') return home ?? never;
+      if (gpu === 'failed') throw new TransportError('method_error', 'list projects: database disk image is malformed');
+      return gpuAnswer<ProjectWithCounts>([]);
+    });
+    setBindingMock('ListThreads', async () => (takePinnedBackend() === 'gpu' ? gpuAnswer<Thread>([]) : []));
+    setBindingMock('ListThreadGroups', async () => (takePinnedBackend() === 'gpu' ? gpuAnswer<ThreadGroup>([]) : []));
+    const view = render(ProjectsSection, { props: { pane: null } });
+    void loadSidebarCatalogs().catch(() => {});
+    await vi.advanceTimersByTimeAsync(3_000);
+    await settle();
+    return view;
+  }
+
+  let stageBackend: typeof import('../../../../test/helpers/backends').stageBackend;
+  let resetStagedBackends: () => void;
+  beforeEach(async () => {
+    ({ stageBackend, resetStagedBackends } = await import('../../../../test/helpers/backends'));
+    vi.useFakeTimers();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    resetStagedBackends();
+    resetCatalogLoadForTest();
+    resetSidebarCatalogsForTest();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  for (const state of ['connecting', 'offline', 'failed'] as const) {
+    it(`shows the section a reachable computer with no projects gives while it is ${state}, through its retries`, async () => {
+      const reachable = await renderWith('reachable');
+      expect(catalogTreeListed('gpu')).toBe(true);
+      const expected = reachable.container.innerHTML;
+      expect(reachable.getAllByTestId('project-item').map((el) => el.getAttribute('data-project-id'))).toEqual(['p1']);
+      reachable.unmount();
+
+      const view = await renderWith(state);
+      expect(catalogTreeListed('gpu')).toBe(false);
+      expect(view.queryByTestId('sidebar-catalog-status')).toBeNull();
+      expect(view.container.querySelector('[aria-busy="true"], [role="status"], [class*="animate-"]')).toBeNull();
+      expect(view.container.innerHTML).toBe(expected);
+      // Past several of its retries: still nothing new in the section.
+      await vi.advanceTimersByTimeAsync(CATALOG_RETRY_MAX_MS * 3);
+      await settle();
+      expect(view.container.innerHTML).toBe(expected);
+    });
+  }
+
+  it("keeps this computer's own loading line, and only that one", async () => {
+    const view = await renderWith('offline', null);
+    expect(view.getAllByTestId('sidebar-catalog-loading').map((el) => el.getAttribute('data-backend'))).toEqual([HOME_BACKEND]);
+  });
+
+  it('shows a blank list, with no line and no empty hint, while this computer has no projects and a paired one has not loaded', async () => {
+    const view = await renderWith('offline', []);
+    expect(view.queryByTestId('sidebar-catalog-status')).toBeNull();
+    expect(view.queryByTestId('sidebar-projects-empty')).toBeNull();
+    expect(view.queryAllByTestId('project-item')).toHaveLength(0);
+    view.unmount();
+    // Once it lists, an empty list says so.
+    const loaded = await renderWith('reachable', []);
+    expect(loaded.getByTestId('sidebar-projects-empty')).toBeInTheDocument();
   });
 });

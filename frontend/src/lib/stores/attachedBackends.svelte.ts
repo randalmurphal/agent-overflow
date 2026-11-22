@@ -24,7 +24,7 @@ import { projectBackend } from '../transport/entityIndex';
 import { threadClaimant, threadOwner } from '../transport/threadOwner';
 import { hasScope } from '../transport/scopes';
 import { relativeTime } from '../utils/format';
-import { getTransportStatusFor } from './transportStatus.svelte';
+import { backendUnreachableSettled, getTransportStatusFor } from './transportStatus.svelte';
 import { onFrontendValueChanged, readFrontendValue, writeFrontendValue } from './frontendStorage';
 
 const NICKNAMES_KEY = 'computer-nicknames';
@@ -214,11 +214,23 @@ export function threadMachineUnreachable(threadId: string, projectId: string | n
 }
 
 /**
- * The display name of a thread's machine while it is unreachable
- * (`threadMachineUnreachable`), or null while it can be reached.
+ * Whether a thread's machine has been unreachable long enough for its rows
+ * to say so (`backendUnreachableSettled`), on a client with several
+ * computers. Thread rows and pickers dim and relabel by this, so a spotty
+ * connection does not flip them; the open thread's composer asks
+ * `threadMachineUnreachable`, which answers at once.
+ */
+export function threadMachineUnreachableSettled(threadId: string, projectId: string | null | undefined): boolean {
+  if (list.length < 2) return false;
+  return backendUnreachableSettled(threadMachine(threadId, projectId));
+}
+
+/**
+ * The display name of a thread's machine once its rows say it is
+ * unreachable (`threadMachineUnreachableSettled`), or null otherwise.
  */
 export function unreachableThreadMachineName(threadId: string, projectId: string | null | undefined): string | null {
-  if (!threadMachineUnreachable(threadId, projectId)) return null;
+  if (!threadMachineUnreachableSettled(threadId, projectId)) return null;
   const entry = attachedBackendEntry(threadMachine(threadId, projectId));
   return entry ? backendDisplayName(entry) : '';
 }

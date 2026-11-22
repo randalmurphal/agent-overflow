@@ -17,7 +17,7 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { getThreadById, getThreadLiveActivityAt } from '../../stores/threads.svelte';
   import {
-    threadMachineUnreachable,
+    threadMachineUnreachableSettled,
     unreachableThreadMachineName,
   } from '../../stores/attachedBackends.svelte';
   import { getMinuteNow } from '../../stores/minuteClock.svelte';
@@ -387,10 +387,10 @@
   // Inside a group the pin centres under the group's folder glyph.
   let pinSlotLeftPx = $derived(inGroup ? GROUP_MEMBER_PIN_SLOT_LEFT_PX : 0);
 
-  // A thread on an attached machine this client cannot reach right now
-  // dims in place and stays readable from the replica (spec §10). Home is
-  // never dimmed here: its drop is the transport banner's.
-  let machineUnreachable = $derived(threadMachineUnreachable(thread.id, thread.projectId));
+  // A thread on an attached machine this client has not reached for a
+  // while dims in place and stays readable from the replica (spec §10); a
+  // drop shorter than that changes nothing here.
+  let machineUnreachable = $derived(threadMachineUnreachableSettled(thread.id, thread.projectId));
   // A status from an unreachable computer is its last report: shown, but
   // still, and labelled as such.
   let unreachableMachine = $derived(unreachableThreadMachineName(thread.id, thread.projectId));

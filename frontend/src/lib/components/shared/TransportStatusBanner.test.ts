@@ -36,6 +36,9 @@ vi.mock('../../stores/transportStatus.svelte', async (importOriginal) => ({
 
 import TransportStatusBanner from './TransportStatusBanner.svelte';
 import ComputerTransportStatus from './ComputerTransportStatus.svelte';
+import { __setBackendStatusForTest } from '../../stores/transportStatus.svelte';
+import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
+import { formatCalendarDate, formatTimeOfDay } from '../../utils/format';
 import {
   __resetBundleNoticeForTest,
   clearBundleNotice,
@@ -375,6 +378,57 @@ describe('<TransportStatusBanner>', () => {
     expect(banner.textContent).toContain('Offline. Checking every 5 minutes.');
     expect(banner.textContent).not.toContain('Last seen');
     expect(banner.textContent).not.toContain('Reconnecting in');
+  });
+
+  // A paired computer that is off keeps its ladder dialing for as long as it
+  // is off. Its strip states when it was last reached, and that sentence
+  // does not change from one attempt to the next.
+  it("says a paired computer is offline in one still sentence, through its attempts", async () => {
+    const laptop = stageBackend();
+    try {
+      const lastConnectedAt = Date.now() - 60_000;
+      const down = (nextAttemptAt: number): void => __setBackendStatusForTest('laptop', {
+        status: 'reconnecting', nextAttemptAt, dormant: false, lastConnectedAt,
+      });
+      down(Date.now() + 4_000);
+      // The timers already armed before the strip mounts.
+      const armed = vi.getTimerCount();
+      const { getByTestId } = render(ComputerTransportStatus, { backend: 'laptop' });
+      await settleBootGrace();
+      const banner = getByTestId('transport-status-banner');
+      const said = `Offline since ${formatTimeOfDay(lastConnectedAt)}.`;
+      expect(banner).toHaveTextContent(said);
+      for (let attempt = 0; attempt < 3; attempt++) {
+        await vi.advanceTimersByTimeAsync(4_000);
+        down(Date.now() + 8_000);
+        await tick();
+        expect(banner).toHaveTextContent(said);
+        expect(banner.textContent).not.toContain('Reconnecting in');
+      }
+      // Nothing re-renders it each second: the strip runs no clock.
+      expect(vi.getTimerCount()).toBe(armed);
+      await fireEvent.click(getByTestId('transport-status-retry'));
+      expect(laptop.reconnect).toHaveBeenCalledOnce();
+    } finally {
+      resetStagedBackends();
+    }
+  });
+
+  it('names the day a paired computer was last reached once it is not today, and nothing it never had', async () => {
+    stageBackend();
+    try {
+      const lastConnectedAt = Date.now() - 3 * 86_400_000;
+      __setBackendStatusForTest('laptop', { status: 'reconnecting', nextAttemptAt: Date.now() + 4_000, lastConnectedAt });
+      const { getByTestId } = render(ComputerTransportStatus, { backend: 'laptop' });
+      await settleBootGrace();
+      expect(getByTestId('transport-status-banner'))
+        .toHaveTextContent(`Offline since ${formatCalendarDate(lastConnectedAt)}, ${formatTimeOfDay(lastConnectedAt)}.`);
+      __setBackendStatusForTest('laptop', { status: 'reconnecting', nextAttemptAt: Date.now() + 4_000, lastConnectedAt: null });
+      await tick();
+      expect(getByTestId('transport-status-banner').textContent).toMatch(/Offline\.(?! since)/);
+    } finally {
+      resetStagedBackends();
+    }
   });
 
   it('forces a reconnect when Retry is clicked', async () => {

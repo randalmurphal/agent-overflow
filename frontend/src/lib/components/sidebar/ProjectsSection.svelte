@@ -47,8 +47,7 @@
     hasMultipleBackends,
     threadMachine,
   } from '../../stores/attachedBackends.svelte';
-  import { CATALOG_KINDS, catalogLoadState } from '../../stores/catalogLoad.svelte';
-  import { catalogTreeListed, loadSidebarCatalogs } from '../../stores/sidebarCatalogs';
+  import { catalogTreeListed, computerCatalogPending, loadSidebarCatalogs } from '../../stores/sidebarCatalogs';
   import CatalogStatusRow from './CatalogStatusRow.svelte';
   import ProjectList from './ProjectList.svelte';
   import { bucketSidebarThreads } from './sidebarBuckets';
@@ -153,22 +152,20 @@
   let projectsShown = $derived(isSidebarSectionShown('projects', query !== ''));
 
   // Visible computers with a catalog that has not loaded, or whose thread
-  // list is still held, each with a status row naming the first such
-  // catalog. While any remains, what the list shows is incomplete, so it is
-  // never presented as empty.
+  // list is still held. While any remains, what the list shows is
+  // incomplete, so it is never presented as empty. Only this computer's
+  // own gets a status row in the list: a paired computer's connection and
+  // load state live in the Projects menu (SidebarDeviceFilter.svelte), so
+  // a paired computer that is off or keeps dropping changes nothing here
+  // but its own rows.
   let pendingCatalogs = $derived.by(() => getAttachedBackends().flatMap((entry) => {
     if (!sidebarBackendVisible(entry.id)) return [];
-    const loads = CATALOG_KINDS.map((kind) => ({ kind, load: catalogLoadState(entry.id, kind) }));
-    const unloaded = loads.find(({ load }) => load.phase !== 'loaded');
-    if (unloaded === undefined && catalogTreeListed(entry.id)) return [];
-    const failed = loads.find(({ load }) => load.phase === 'failed');
-    return [{
-      backend: entry.id,
-      name: hasMultipleBackends() ? backendDisplayName(entry) : '',
-      kind: unloaded?.kind ?? 'threads',
-      error: failed === undefined ? null : failed.load.error,
-    }];
+    const pending = computerCatalogPending(entry.id);
+    if (pending === null) return [];
+    return [{ backend: entry.id, name: hasMultipleBackends() ? backendDisplayName(entry) : '', ...pending }];
   }));
+
+  let statusRows = $derived(pendingCatalogs.filter((pending) => pending.backend === HOME_BACKEND));
 
   // Visible projects: respect search (name match OR thread match) and
   // the current sort mode. Three modes:
@@ -387,9 +384,9 @@
 
     {#if projectsShown}
       <div data-flashing-project={flashProjectId}>
-        {#if pendingCatalogs.length > 0}
+        {#if statusRows.length > 0}
           <div class="px-2 pt-1" data-testid="sidebar-catalog-status">
-            {#each pendingCatalogs as pending (pending.backend)}
+            {#each statusRows as pending (pending.backend)}
               <CatalogStatusRow backend={pending.backend} name={pending.name} kind={pending.kind} error={pending.error} />
             {/each}
           </div>

@@ -53,7 +53,7 @@
   import { hasHomeEndpoint } from '../../transport/homeEndpoint';
   import { errString } from '../../utils/errors';
   import { startupMetaText, startupStatusText } from '../../transport/startupProgress';
-  import { relativeTime } from '../../utils/format';
+  import { formatCalendarDate, formatTimeOfDay, relativeTime } from '../../utils/format';
   import {
     getTransportStatus,
     getTransportStatusFor,
@@ -189,8 +189,10 @@
     if (first && sawTerminal && backend === HOME_BACKEND && !isNativeShell() && attachedBackendCount() === 1) location.reload();
   });
 
+  // A paired computer's strip says one still sentence while it is down
+  // (`pairedOffline`), so only this page's own computer needs the tick.
   $effect(() => {
-    if (!visible) {
+    if (!visible || backend !== HOME_BACKEND) {
       if (timer !== null) {
         clearInterval(timer);
         timer = null;
@@ -260,6 +262,17 @@
 
   let dormant = $derived(snapshot.status === 'reconnecting' && snapshot.dormant === true);
 
+  // A paired computer that is down is a fact about that computer, not a
+  // countdown: its ladder keeps dialing for as long as it is off, and a
+  // number counting down to each attempt, repeated by the alert region,
+  // is noise the person can do nothing about. The strip names when it was
+  // last reached as a clock time, which stays true without ticking.
+  let pairedOffline = $derived.by(() => {
+    if (backend === HOME_BACKEND || snapshot.status !== 'reconnecting') return null;
+    const at = snapshot.lastConnectedAt ?? null;
+    return at === null ? 'Offline.' : `Offline since ${offlineSince(at)}.`;
+  });
+
   let message = $derived.by(() => {
     if (removed) return 'This computer was removed. Choose another computer.';
     if (checking) return 'Checking connection…';
@@ -271,6 +284,7 @@
       const meta = startupMetaText(startup);
       return meta ? `${startupStatusText(startup)} (${meta})` : startupStatusText(startup);
     }
+    if (pairedOffline !== null) return pairedOffline;
     if (snapshot.status === 'reconnecting') {
       if (dormant) {
         return lastSeen === null
@@ -287,6 +301,12 @@
     }
     return 'Disconnected from the agent backend.';
   });
+
+  // The clock time, with the date once it is not today's.
+  function offlineSince(at: number): string {
+    const time = formatTimeOfDay(at);
+    return new Date(at).toDateString() === new Date().toDateString() ? time : `${formatCalendarDate(at)}, ${time}`;
+  }
 
   function handleRetry(): void {
     if (backend === HOME_BACKEND) retryTransport();
