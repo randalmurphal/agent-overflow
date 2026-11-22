@@ -421,7 +421,12 @@ of either. While no final history read for the card's update is stored,
 the time stands as long as the card keeps its status and is unknown once
 the status changes: an edit to another field does not blank it. An issue
 that left its status and came back between two reads of its card shows
-the earlier stay's time until that history is stored. A detail's read time starts at its opening, so a document read
+the earlier stay's time until that history is stored. A ticket shows the
+time only when the mirror's card is the version its document shows: a
+Jira round's check stores the card before it reads the ticket in full, so
+the time stands across an edit, and a document read ahead of the mirror's
+card (a refresh, a write's re-read, every Linear ticket read) shows none
+until a card read stores that version. A detail's read time starts at its opening, so a document read
 before the opening is superseded.
 
 A board's backlog is its rows in no future or active sprint of that board
@@ -621,12 +626,7 @@ A ticket's view is built from its document and from what the mirror
 holds of other things: the mirror's card of the issue and its status
 time, the cards of the issues the view shows (its parent, the issues it
 links) and whether the mirror keeps them, and the connection's users and
-statuses. A full read stores its card before its document
-(`run.details`), so the mirror's card of an issue is never behind a
-document read of it: the store alone decides the status time, and the
-issue's history is due for the card the ticket shows. A document the
-ticket settled last, or of the version the round's check just stored the
-card of, brings no card to store. Reads settle documents in the order they began; the funnel
+statuses. Reads settle documents in the order they began; the funnel
 orders changes to the other inputs. A view is installed only when it was
 built from the document the pump holds now, after the last change to the
 other inputs; one that misses that is built again, so a delayed read or
@@ -666,8 +666,7 @@ document, reads none in full and moves the read time of the unchanged
 cards in one statement; a Linear round reads every ticket in
 full, stores them in one transaction, which reads every document's state
 in one statement and moves the read times of the unchanged ones in one
-more. A ticket that changed adds its own full read, and on Linear the
-store call that writes its card.
+more. A ticket that changed adds its own full read.
 
 A changed row is redelivered by the delta's overlap of one minute
 (`tracker.DeltaOverlap`), so about six Jira ticks after a change take the
@@ -723,7 +722,7 @@ named rows.
 | Patch read, 1 or 100 changed, totals held | 5 | 0.07 to 0.73 ms | 0.07 to 0.76 ms |
 | Ticket open, stored | 14 | 0.29 ms | 0.33 ms |
 | Jira round, 100 tickets, 10 changed | 21 | 5.4 ms | 5.5 ms |
-| Linear round, 100 tickets, 10 changed | 20 | 4.2 ms | 4.2 ms |
+| Linear round, 100 tickets, 10 changed | 14 | 2.9 ms | 2.7 ms |
 | `New` | 0 | 13.8 ms | 15.2 ms |
 
 A reconcile whose listing leaves out a quarter of the board removes

@@ -410,10 +410,11 @@ func (sd shownDetail) view(mirrored catalogNames) DetailView {
 
 // statusSinceOf is when c's status began, from m, the mirror's card of
 // the same issue, when m is the version c shows: the same update time and
-// status. A read stores its card before its document (run.details), so m
-// is c's version unless the mirror has since stored a later one; then the
-// time is unknown (0), as it may be a later stay's, until the ticket is
-// read again. The store alone decides the time (mirrorStatusSinceSQL).
+// status. Otherwise it is unknown (0): the mirror's time belongs to
+// another status, or to an earlier or a later stay in this one. The store
+// alone decides the time a card keeps (mirrorStatusSinceSQL); a document
+// read ahead of the mirror's card shows none until a card read stores
+// that version.
 func statusSinceOf(m store.MirrorCard, c tracker.Card) int64 {
 	if m.StatusID != string(c.Status) || m.UpdatedAt != millis(c.Updated) {
 		return 0
