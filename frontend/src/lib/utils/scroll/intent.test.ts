@@ -22,12 +22,12 @@ import { registerNestedScroller } from './wheelAttribution';
 import { observedScrollTopFromEvent } from './eventObservation';
 
 // The deferred scroll-intent pass runs behind a 1ms timer so a concurrent
-// RO callback can stamp its resize classification first. Real timers plus a
-// short wait is more honest here than faking the clock: the machine also
-// reads `performance.now()` for its down-intent window, and the two would
-// have to be faked in lockstep.
+// RO callback can stamp its resize classification first, and the machine
+// reads `performance.now()` for its down-intent window. One fake clock
+// drives both in lockstep (see beforeEach), so waits cost no wall time.
 const DEFERRED_PASS_MS = 8;
-const settleDeferredPass = () => new Promise((r) => setTimeout(r, DEFERRED_PASS_MS));
+const elapse = (ms: number) => vi.advanceTimersByTimeAsync(ms);
+const settleDeferredPass = () => elapse(DEFERRED_PASS_MS);
 
 interface Harness {
   intent: ScrollIntent;
@@ -175,6 +175,7 @@ function pointerDown(
 let active: Harness | null = null;
 
 beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
   resetScrollIntentModuleStateForTest();
 });
 
@@ -184,6 +185,7 @@ afterEach(() => {
   active?.intent.detach();
   active?.scrollEl.remove();
   active = null;
+  vi.useRealTimers();
 });
 
 function build(geometry?: { scrollHeight?: number; clientHeight?: number }): Harness {
@@ -786,7 +788,7 @@ describe('deferred scroll pass', () => {
     // A loaded host can deliver the landing scroll event long after the
     // wheel; the window is 250 ms.
     const PAST_WINDOW_MS = 300;
-    const pastWindow = () => new Promise((r) => setTimeout(r, PAST_WINDOW_MS));
+    const pastWindow = () => elapse(PAST_WINDOW_MS);
 
     // The wheel asks for `deltaY` px; the view sits 100 px above the bottom.
     function wheeledDownWhileEscaped(deltaY = 100): Harness {
@@ -1118,7 +1120,7 @@ describe('deferred scroll pass', () => {
         // The first event a stalled main thread delivers is mid-animation;
         // the next is the end of the same gesture.
         landAt(h, 40, 460);
-        await new Promise((r) => setTimeout(r, 16));
+        await elapse(16);
         landAt(h, 0, 500);
         await settleDeferredPass();
 
