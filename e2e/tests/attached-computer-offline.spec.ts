@@ -144,6 +144,15 @@ test('an offline paired computer logs once per outage and a draft pane is never 
     const boot = drain();
     expect(boot.http503).toBeGreaterThanOrEqual(1);
     expect(boot).toMatchObject({ preparationFailed: 1, ensureConnected: 0, ownerUnknown: 0, errors: [] });
+
+    // A thread on the laptop, opened once the drop has lasted the settle
+    // time: the banner says the laptop is offline, with no countdown, and
+    // the composer takes no message.
+    await laptopRow.click();
+    const banner = page.getByTestId('transport-status-banner');
+    await expect(banner).toContainText('Offline');
+    await expect(banner).not.toContainText('Reconnecting in');
+    await expect(page.getByLabel('Message Input')).toBeDisabled();
   } finally {
     await page.close();
     await remote?.close();

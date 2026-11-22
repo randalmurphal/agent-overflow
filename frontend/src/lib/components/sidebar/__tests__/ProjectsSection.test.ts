@@ -38,7 +38,7 @@ import {
 import { createThreadGroupAction } from '../threadGroupActions';
 import { CATALOG_RETRY_MAX_MS, resetCatalogLoadForTest } from '../../../stores/catalogLoad.svelte';
 import { applyProjectUpdated } from '../../../stores/eventsProjectRows';
-import { __setTransportStatusForTest } from '../../../stores/transportStatus.svelte';
+import { __setTransportStatusForTest, UNREACHABLE_SETTLE_MS } from '../../../stores/transportStatus.svelte';
 import { DisconnectedError, TransportError } from '../../../transport/wsClient';
 import { observeBackendGeneration, setBackendIdentityFromBootstrap } from '../../../transport/backendIdentity';
 import { entryRecordForTest, setEntryExpanded, setEntryListLimit } from '../../../stores/sidebarEntryContinuity.svelte';
@@ -1589,7 +1589,7 @@ describe('<ProjectsSection> threads and their groups', () => {
 // reachable, connecting, off or failing to load: its own rows are the only
 // difference, and nothing in the section moves or repeats while it retries.
 describe('<ProjectsSection> while a paired computer is not loaded', () => {
-  type GpuState = 'reachable' | 'connecting' | 'offline' | 'failed';
+  type GpuState = 'reachable' | 'loading' | 'connecting' | 'offline' | 'failed';
   const homeRows = (): ProjectWithCounts[] => [{ project: mkProject('p1', { name: 'Project One' }), threadCount: 0, lastActive: 0 }];
   const never = new Promise<never>(() => {});
 
@@ -1613,7 +1613,7 @@ describe('<ProjectsSection> while a paired computer is not loaded', () => {
       status: gpu === 'connecting' ? 'disconnected' : gpu === 'offline' ? 'reconnecting' : 'connected',
     });
     const gpuAnswer = <T,>(rows: T[]): Promise<T[]> => {
-      if (gpu === 'connecting') return never;
+      if (gpu === 'connecting' || gpu === 'loading') return never;
       if (gpu === 'offline') return Promise.reject(new DisconnectedError('Computer is offline.'));
       return Promise.resolve(rows);
     };
@@ -1642,6 +1642,7 @@ describe('<ProjectsSection> while a paired computer is not loaded', () => {
     resetStagedBackends();
     resetCatalogLoadForTest();
     resetSidebarCatalogsForTest();
+    __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
     vi.useRealTimers();
     vi.restoreAllMocks();
   });
@@ -1671,14 +1672,60 @@ describe('<ProjectsSection> while a paired computer is not loaded', () => {
     expect(view.getAllByTestId('sidebar-catalog-loading').map((el) => el.getAttribute('data-backend'))).toEqual([HOME_BACKEND]);
   });
 
-  it('shows a blank list, with no line and no empty hint, while this computer has no projects and a paired one has not loaded', async () => {
-    const view = await renderWith('offline', []);
-    expect(view.queryByTestId('sidebar-catalog-status')).toBeNull();
+  for (const state of ['connecting', 'offline'] as const) {
+    it(`shows a blank list while this computer has no projects and a paired one is ${state}, and the empty hint once that one has been unreachable the settle time`, async () => {
+      const view = await renderWith(state, []);
+      expect(view.queryByTestId('sidebar-catalog-status')).toBeNull();
+      expect(view.queryByTestId('sidebar-projects-empty')).toBeNull();
+      expect(view.queryAllByTestId('project-item')).toHaveLength(0);
+      // renderWith has already run 3 s of the settle time.
+      await vi.advanceTimersByTimeAsync(UNREACHABLE_SETTLE_MS - 3_000 - 1);
+      await settle();
+      expect(view.queryByTestId('sidebar-projects-empty')).toBeNull();
+      await vi.advanceTimersByTimeAsync(1);
+      await settle();
+      expect(view.getByTestId('sidebar-projects-empty')).toBeInTheDocument();
+      expect(view.queryByTestId('sidebar-catalog-status')).toBeNull();
+    });
+  }
+
+  it('keeps the list blank while a paired computer that is reachable is still loading', async () => {
+    const view = await renderWith('loading', []);
+    await vi.advanceTimersByTimeAsync(UNREACHABLE_SETTLE_MS * 2);
+    await settle();
     expect(view.queryByTestId('sidebar-projects-empty')).toBeNull();
-    expect(view.queryAllByTestId('project-item')).toHaveLength(0);
-    view.unmount();
-    // Once it lists, an empty list says so.
+    expect(view.queryByTestId('sidebar-catalog-status')).toBeNull();
+  });
+
+  it('shows the empty hint at once when every computer has loaded', async () => {
     const loaded = await renderWith('reachable', []);
     expect(loaded.getByTestId('sidebar-projects-empty')).toBeInTheDocument();
+  });
+
+  // This computer's own line, while a load cannot make progress: the
+  // banner says the computer is unreachable and carries Retry.
+  for (const status of ['reconnecting', 'unauthorized'] as const) {
+    it(`shows no line and no spinner while this computer is ${status}, and the line again once it is reached`, async () => {
+      const view = await renderWith('reachable', null);
+      expect(view.getAllByTestId('sidebar-catalog-loading').map((el) => el.getAttribute('data-backend'))).toEqual([HOME_BACKEND]);
+      __setTransportStatusForTest({ status, nextAttemptAt: null });
+      await settle();
+      expect(view.queryByTestId('sidebar-catalog-status')).toBeNull();
+      expect(view.container.querySelector('[aria-busy="true"], [class*="animate-"]')).toBeNull();
+      __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
+      await settle();
+      expect(view.getByTestId('sidebar-catalog-loading-label')).toHaveTextContent('Loading projects…');
+    });
+  }
+
+  it('shows the empty hint once this computer itself has been unreachable the settle time with nothing listed', async () => {
+    const view = await renderWith('reachable', null);
+    __setTransportStatusForTest({ status: 'reconnecting', nextAttemptAt: null });
+    await vi.advanceTimersByTimeAsync(UNREACHABLE_SETTLE_MS - 1);
+    await settle();
+    expect(view.queryByTestId('sidebar-projects-empty')).toBeNull();
+    await vi.advanceTimersByTimeAsync(1);
+    await settle();
+    expect(view.getByTestId('sidebar-projects-empty')).toBeInTheDocument();
   });
 });

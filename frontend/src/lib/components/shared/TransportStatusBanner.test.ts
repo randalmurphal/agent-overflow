@@ -36,7 +36,7 @@ vi.mock('../../stores/transportStatus.svelte', async (importOriginal) => ({
 
 import TransportStatusBanner from './TransportStatusBanner.svelte';
 import ComputerTransportStatus from './ComputerTransportStatus.svelte';
-import { __setBackendStatusForTest } from '../../stores/transportStatus.svelte';
+import { __setBackendStatusForTest, UNREACHABLE_SETTLE_MS } from '../../stores/transportStatus.svelte';
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 import { formatCalendarDate, formatTimeOfDay } from '../../utils/format';
 import {
@@ -391,11 +391,14 @@ describe('<TransportStatusBanner>', () => {
         status: 'reconnecting', nextAttemptAt, dormant: false, lastConnectedAt,
       });
       down(Date.now() + 4_000);
-      // The timers already armed before the strip mounts.
-      const armed = vi.getTimerCount();
-      const { getByTestId } = render(ComputerTransportStatus, { backend: 'laptop' });
+      const { getByTestId, queryByTestId } = render(ComputerTransportStatus, { backend: 'laptop' });
       await settleBootGrace();
+      // A drop shows only once it has lasted the settle time.
+      expect(queryByTestId('transport-status-banner')).toBeNull();
+      await vi.advanceTimersByTimeAsync(UNREACHABLE_SETTLE_MS);
       const banner = getByTestId('transport-status-banner');
+      // The timers armed once the strip shows.
+      const armed = vi.getTimerCount();
       const said = `Offline since ${formatTimeOfDay(lastConnectedAt)}.`;
       expect(banner).toHaveTextContent(said);
       for (let attempt = 0; attempt < 3; attempt++) {
@@ -420,12 +423,31 @@ describe('<TransportStatusBanner>', () => {
       const lastConnectedAt = Date.now() - 3 * 86_400_000;
       __setBackendStatusForTest('laptop', { status: 'reconnecting', nextAttemptAt: Date.now() + 4_000, lastConnectedAt });
       const { getByTestId } = render(ComputerTransportStatus, { backend: 'laptop' });
-      await settleBootGrace();
+      await vi.advanceTimersByTimeAsync(UNREACHABLE_SETTLE_MS);
       expect(getByTestId('transport-status-banner'))
         .toHaveTextContent(`Offline since ${formatCalendarDate(lastConnectedAt)}, ${formatTimeOfDay(lastConnectedAt)}.`);
       __setBackendStatusForTest('laptop', { status: 'reconnecting', nextAttemptAt: Date.now() + 4_000, lastConnectedAt: null });
       await tick();
       expect(getByTestId('transport-status-banner').textContent).toMatch(/Offline\.(?! since)/);
+    } finally {
+      resetStagedBackends();
+    }
+  });
+
+  // The strip leaves when the paired computer is reached; catching up after
+  // the drop is not one more thing shown and hidden.
+  it("shows nothing for a paired computer's resync after a reconnect", async () => {
+    stageBackend();
+    try {
+      __setBackendStatusForTest('laptop', { status: 'reconnecting', nextAttemptAt: null });
+      const { queryByTestId } = render(ComputerTransportStatus, { backend: 'laptop' });
+      await vi.advanceTimersByTimeAsync(UNREACHABLE_SETTLE_MS);
+      expect(queryByTestId('transport-status-banner')).not.toBeNull();
+      __setBackendStatusForTest('laptop', { status: 'connected', nextAttemptAt: null });
+      recover('laptop', 'start', true);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(queryByTestId('transport-status-banner')).toBeNull();
+      recover('laptop', 'complete', true);
     } finally {
       resetStagedBackends();
     }

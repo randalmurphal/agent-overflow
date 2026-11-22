@@ -2866,8 +2866,10 @@ surfaces in exactly three places:
   on a backend that has been unreachable for 30 seconds without a break
   dim and stay readable from the replica; a shorter drop changes
   nothing on them. The full-width transport banner is reserved for
-  the visible thread's own backend dropping; for a paired backend it
-  says when the backend was last reached, without a countdown.
+  the visible thread's own backend dropping. For a paired backend it
+  shows only once the drop has lasted the same 30 seconds, says when the
+  backend was last reached without a countdown, and leaves on reconnect;
+  the composer says at once that a message cannot be sent.
 
 Ruled 2026-09-01 (user), phase 7 UI: the machine picker is one more
 dropdown in the composer's existing project / worktree / branch strip,

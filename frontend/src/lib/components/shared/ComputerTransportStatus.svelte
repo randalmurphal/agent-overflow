@@ -55,6 +55,7 @@
   import { startupMetaText, startupStatusText } from '../../transport/startupProgress';
   import { formatCalendarDate, formatTimeOfDay, relativeTime } from '../../utils/format';
   import {
+    backendUnreachableSettled,
     getTransportStatus,
     getTransportStatusFor,
     redialAfterSignIn,
@@ -134,8 +135,16 @@
       if (id === target) resyncing = isBackendResyncing(target);
     });
   });
+  // A paired computer's drop is shown only once it has lasted
+  // UNREACHABLE_SETTLE_MS, by the same answer that dims its thread rows, so
+  // a connection that drops and returns sooner never shows, hides or
+  // resizes anything. The composer in an open thread of that computer says
+  // at once that a message cannot be sent. Its resync after a reconnect is
+  // not shown either: the strip leaves when the computer is reached. A
+  // removed computer is a fact to act on, not a drop, and shows at once.
+  let paired = $derived(backend !== HOME_BACKEND && !removed);
   let checking = $derived(snapshot.status === 'connected' && snapshot.checkingConnection === true);
-  let syncing = $derived(snapshot.status === 'connected' && resyncing);
+  let syncing = $derived(snapshot.status === 'connected' && resyncing && !paired);
   let showingBootFailure = $derived(snapshot.status === 'connected' && !checking && !syncing && bootFailure !== '');
 
   // A connection problem outranks a connected notice (a failed boot phase
@@ -147,9 +156,11 @@
   // sidebar's catalog rows. The strip reports it only for a backend this
   // page was already using, which is a restart.
   let starting = $derived(snapshot.status === 'starting');
+  let outageShown = $derived(
+    paired ? backendUnreachableSettled(backend) : starting ? hasEverConnected : hasEverConnected || bootGraceExpired,
+  );
   let visible = $derived(
-    (snapshot.status !== 'connected' && (starting ? hasEverConnected : hasEverConnected || bootGraceExpired))
-      || checking || syncing || connectedNotice !== '',
+    (snapshot.status !== 'connected' && outageShown) || checking || syncing || connectedNotice !== '',
   );
 
   // A page that mounted while the transport was TERMINAL loaded nothing.

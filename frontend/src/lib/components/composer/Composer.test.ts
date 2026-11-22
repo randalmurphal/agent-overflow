@@ -12,7 +12,7 @@ import { applyThreadUpdated } from '../../stores/eventsThreadRows';
 import { buildPane, makeItem, makeThread as makeTestThread } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { mockAttachmentUpload, mockAttachmentDownload } from '../../../test/mocks/attachmentTransfer';
-import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
+import { grantBackendScopes, pairViewOnly, resetToLocalPage, revokeBackendScopes } from '../../../test/helpers/scopes';
 import type { Attachment } from '../../types/attachment';
 import { classifyAttachment } from './attachmentHelpers';
 import {
@@ -59,7 +59,7 @@ import { UsageBucket } from '../../stores/bindings';
 import { resetThreadInterruptStateForTest } from '../../stores/threadInterruptState.svelte';
 import { resetDirectSendsForTest } from '../../stores/threadInterrupt.svelte';
 import { resetResendRevertMarkersForTest } from '../../stores/eventsMessageRevert';
-import { __setTransportHelloForTest } from '../../stores/transportStatus.svelte';
+import { __setTransportHelloForTest, UNREACHABLE_SETTLE_MS } from '../../stores/transportStatus.svelte';
 import { applySessionLive } from '../../stores/threadSessionLive.svelte';
 import { DisconnectedError, TransportError } from '../../transport/wsClient';
 import { getToasts, resetToastsForTest } from '../../stores/toast.svelte';
@@ -71,6 +71,10 @@ import {
 } from '../../stores/shellCommands.svelte';
 import { probeReactivity } from '../../../test/helpers/reactivity.svelte';
 import { untrack } from 'svelte';
+import TransportStatusBanner from '../shared/TransportStatusBanner.svelte';
+import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
+import { __resetEntityIndexForTest, noteThread } from '../../transport/entityIndex';
+import { selectedBackend } from '../../stores/selectedBackend.svelte';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import type { ComposerDraftStore } from '../../stores/composerDraft.svelte';
 
@@ -303,6 +307,73 @@ describe('<Composer>', () => {
 
     expect((getByLabelText('Message Input') as HTMLTextAreaElement).disabled).toBe(true);
     expect((getByTestId('composer-send') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  // With a thread of a paired computer focused, a drop shorter than the
+  // settle time changes only this composer's notice: the banner neither
+  // shows nor hides, so on compact no row comes and goes. A drop past it
+  // shows the banner once, and the reconnect removes it.
+  for (const compact of [false, true]) it(`answers a paired computer's short drops in the composer alone (${compact ? 'phone' : 'desktop'})`, async () => {
+    setCompactLayoutForTest(compact);
+    const laptop = stageBackend({ name: 'Laptop' });
+    let observer: MutationObserver | null = null;
+    try {
+      await grantBackendScopes('laptop', ['threads:read', 'threads:operate']);
+      vi.useFakeTimers();
+      noteThread('thread-1', 'laptop', 0);
+      const pane = createThreadPane({ paneId: 'main' });
+      pane.replaceThread(makeTestThread({ id: 'thread-1' }));
+      registerPaneForTest('main', pane);
+      focusPane('main');
+      expect(selectedBackend()).toBe('laptop');
+      const draft = await buildDraft('thread-1');
+      const { getByLabelText } = render(Composer, { props: { pane, draft } });
+      const banner = render(TransportStatusBanner);
+      const placeholder = () => getByLabelText('Message Input').getAttribute('placeholder');
+      const shown = () => banner.queryByTestId('transport-status-banner') !== null;
+      let mounts = 0;
+      observer = new MutationObserver((records) => {
+        for (const record of records) for (const node of record.addedNodes) {
+          if (node instanceof Element && (node.matches('[data-testid="transport-status-banner"]')
+            || node.querySelector('[data-testid="transport-status-banner"]'))) mounts++;
+        }
+      });
+      observer.observe(document.body, { childList: true, subtree: true });
+      await tick();
+      const online = placeholder();
+      expect(online).not.toBe('Laptop is offline');
+
+      for (let drop = 0; drop < 4; drop++) {
+        laptop.setStatus('reconnecting');
+        await tick();
+        expect(placeholder()).toBe('Laptop is offline');
+        await vi.advanceTimersByTimeAsync(UNREACHABLE_SETTLE_MS - 5_000);
+        expect(shown()).toBe(false);
+        laptop.setStatus('connected');
+        await tick();
+        expect(placeholder()).toBe(online);
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(shown()).toBe(false);
+      }
+      expect(mounts).toBe(0);
+
+      laptop.setStatus('reconnecting');
+      await vi.advanceTimersByTimeAsync(UNREACHABLE_SETTLE_MS);
+      expect(shown()).toBe(true);
+      expect(mounts).toBe(1);
+      laptop.setStatus('connected');
+      await vi.advanceTimersByTimeAsync(500);
+      expect(shown()).toBe(false);
+      expect(mounts).toBe(1);
+      expect(placeholder()).toBe(online);
+    } finally {
+      observer?.disconnect();
+      revokeBackendScopes('laptop');
+      resetStagedBackends();
+      __resetEntityIndexForTest();
+      setCompactLayoutForTest(false);
+      vi.useRealTimers();
+    }
   });
 
   it('materializes a placeholder and sends through the same draft store', async () => {

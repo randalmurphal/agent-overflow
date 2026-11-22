@@ -73,19 +73,22 @@ Mechanism in
 
 ## Startup
 
-- A boot never shows an empty catalog. Until this computer's threads and
-  projects have answered, the sidebar shows a loading row for it, naming its
-  boot phase while it is starting, or its error with Retry. The empty-list
-  message appears only once every visible computer's have loaded; rows
-  already held stay visible.
+- A boot never shows an empty catalog while a computer may still answer.
+  Until this computer's threads and projects have answered, the sidebar shows
+  a loading row for it, naming its boot phase while it is starting, or its
+  error with Retry, while a load can make progress; while this computer is
+  unreachable the row is gone, since the banner says so and carries Retry.
+  The empty-list message appears once every visible computer has loaded or
+  been unreachable for 30 seconds; rows already held stay visible.
 - A paired computer's connection and load state show only in the Projects
   menu, one plain line per computer: connected, connecting, offline with when
   it was last reached, or the reason its lists could not load with Retry.
   With the menu closed, the Projects section shows nothing about a paired
   computer but its rows, so one that is off or keeps dropping adds no line,
-  spinner or color there. Its thread rows dim only after it has been
-  unreachable for 30 seconds without a break, and clear when it is reached
-  (ruling 2026-11-21).
+  spinner or color there. Its thread rows dim, and its banner shows, only
+  after it has been unreachable for 30 seconds without a break, and both
+  clear when it is reached; the composer in one of its threads says at once
+  that a message cannot be sent (ruling 2026-11-21).
 - A computer's projects, the threads under them and their groups list in the
   sidebar as one set, with no exception. A computer that has never listed a
   complete tree shows no project header, no project row and no New Thread

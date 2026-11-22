@@ -85,10 +85,13 @@ const backendStatusListeners = new Set<BackendStatusListener>();
 // Whether each attached computer has been unreachable for
 // UNREACHABLE_SETTLE_MS without a break, counted from when its status left
 // `connected`, or from when this window began watching one that has not
-// connected yet. Rows that dim or relabel a computer's threads wait for it,
-// so a connection that drops for a moment, or keeps dropping and coming
-// back, changes nothing on them. The composer does not wait: a message
-// cannot be sent the moment the computer is unreachable.
+// connected yet. Everything that shows a computer as unreachable without
+// being asked waits for it: the rows that dim or relabel its threads, a
+// paired computer's banner, and the Projects list, which stops waiting for
+// that computer's lists before it says it is empty. So a connection that
+// drops for a moment, or keeps dropping and coming back, changes nothing on
+// screen. The composer does not wait: a message cannot be sent the moment
+// the computer is unreachable.
 //
 // Thirty seconds is the reconnect ladder's own measure of a connection
 // that held (BACKOFF_RESET_AFTER_MS) and its longest wait between attempts

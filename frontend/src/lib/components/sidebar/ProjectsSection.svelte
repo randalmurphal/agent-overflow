@@ -48,6 +48,8 @@
     threadMachine,
   } from '../../stores/attachedBackends.svelte';
   import { catalogTreeListed, computerCatalogPending, loadSidebarCatalogs } from '../../stores/sidebarCatalogs';
+  import { backendUnreachableSettled, getTransportStatusFor } from '../../stores/transportStatus.svelte';
+  import { isTerminalConnectionStatus } from '../../transport/connectionRefusal';
   import CatalogStatusRow from './CatalogStatusRow.svelte';
   import ProjectList from './ProjectList.svelte';
   import { bucketSidebarThreads } from './sidebarBuckets';
@@ -152,12 +154,7 @@
   let projectsShown = $derived(isSidebarSectionShown('projects', query !== ''));
 
   // Visible computers with a catalog that has not loaded, or whose thread
-  // list is still held. While any remains, what the list shows is
-  // incomplete, so it is never presented as empty. Only this computer's
-  // own gets a status row in the list: a paired computer's connection and
-  // load state live in the Projects menu (SidebarDeviceFilter.svelte), so
-  // a paired computer that is off or keeps dropping changes nothing here
-  // but its own rows.
+  // list is still held.
   let pendingCatalogs = $derived.by(() => getAttachedBackends().flatMap((entry) => {
     if (!sidebarBackendVisible(entry.id)) return [];
     const pending = computerCatalogPending(entry.id);
@@ -165,7 +162,22 @@
     return [{ backend: entry.id, name: hasMultipleBackends() ? backendDisplayName(entry) : '', ...pending }];
   }));
 
-  let statusRows = $derived(pendingCatalogs.filter((pending) => pending.backend === HOME_BACKEND));
+  // Only this computer's own pending lists get a line, and only while a load
+  // can make progress: the computer is starting, dialing for the first time,
+  // or connected and reading. While it is unreachable the banner says so and
+  // carries Retry. A paired computer's connection and load state live in
+  // the Projects menu (SidebarDeviceFilter.svelte), so a computer that is
+  // off or keeps dropping changes nothing here but its own rows.
+  let homeStatus = $derived(getTransportStatusFor(HOME_BACKEND).status);
+  let homeLine = $derived(homeStatus === 'reconnecting' || isTerminalConnectionStatus(homeStatus)
+    ? undefined
+    : pendingCatalogs.find((pending) => pending.backend === HOME_BACKEND));
+
+  // While a pending computer may still answer, what the list shows is
+  // incomplete, so it is never presented as empty. One unreachable for
+  // UNREACHABLE_SETTLE_MS no longer holds the empty state off: a person
+  // with no projects is not left with a blank list while a computer is off.
+  let awaitingCatalogs = $derived(pendingCatalogs.some((pending) => !backendUnreachableSettled(pending.backend)));
 
   // Visible projects: respect search (name match OR thread match) and
   // the current sort mode. Three modes:
@@ -384,14 +396,12 @@
 
     {#if projectsShown}
       <div data-flashing-project={flashProjectId}>
-        {#if statusRows.length > 0}
+        {#if homeLine}
           <div class="px-2 pt-1" data-testid="sidebar-catalog-status">
-            {#each statusRows as pending (pending.backend)}
-              <CatalogStatusRow backend={pending.backend} name={pending.name} kind={pending.kind} error={pending.error} />
-            {/each}
+            <CatalogStatusRow backend={homeLine.backend} name={homeLine.name} kind={homeLine.kind} error={homeLine.error} />
           </div>
         {/if}
-        {#if visibleProjects.length > 0 || pendingCatalogs.length === 0}
+        {#if visibleProjects.length > 0 || !awaitingCatalogs}
           <ProjectList
             entries={visibleProjects}
             onSetExpanded={setRowExpanded}
