@@ -11,37 +11,69 @@ import (
 	"agent-overflow/internal/provider"
 )
 
-// beginRefreshingUse admits a credential use under the provider's current
-// generation that stands in for a CLI which refreshed its login: once ended,
-// it runs onEnd, writes rotated into the canonical store and then releases,
-// as the CLI writes its refreshed token on the way out. finish stands in for
-// the process exiting on its own, for a change that never ended it, and
-// returns once the use has released.
-func beginRefreshingUse(t *testing.T, manager *Manager, rotated []byte, onEnd func()) (finish func()) {
+// trackedUse is a credential use standing in for a running CLI.
+type trackedUse struct {
+	// ended closes when a change ends the use; selectedAtEnd is the account
+	// selected at that moment, read before the use releases.
+	ended         chan struct{}
+	selectedAtEnd string
+	release       func()
+	exited        chan struct{}
+	endOnce       sync.Once
+}
+
+// beginUse admits a use of the Claude credential under the current
+// generation. Once ended it records the selection, runs onEnd (a CLI writing
+// its refreshed login as it exits) and releases.
+func beginUse(t *testing.T, manager *Manager, onEnd func()) *trackedUse {
 	t.Helper()
 	claudeName := string(provider.Claude)
-	ended := make(chan struct{})
-	var endOnce sync.Once
-	end := func() { endOnce.Do(func() { close(ended) }) }
-	release, err := manager.BeginCredentialUse(t.Context(), claudeName, manager.Generation(claudeName), end)
+	use := &trackedUse{ended: make(chan struct{}), exited: make(chan struct{})}
+	release, err := manager.BeginCredentialUse(t.Context(), claudeName, manager.Generation(claudeName), func() {
+		use.endOnce.Do(func() { close(use.ended) })
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	exited := make(chan struct{})
+	use.release = release
 	go func() {
-		<-ended
-		onEnd()
-		if err := manager.credentials.WriteNativeCredentialForTest(claudeName, rotated); err != nil {
-			t.Error(err)
+		<-use.ended
+		if active, ok := manager.store.Active(claudeName, time.Now()); ok {
+			use.selectedAtEnd = active.ID
+		}
+		if onEnd != nil {
+			onEnd()
 		}
 		release()
 		release()
-		close(exited)
+		close(use.exited)
 	}()
-	return func() {
-		end()
-		<-exited
+	return use
+}
+
+// wantEndedBeforeTheChange fails unless the use was ended while from was
+// still selected.
+func (u *trackedUse) wantEndedBeforeTheChange(t *testing.T, from string) {
+	t.Helper()
+	select {
+	case <-u.exited:
+	default:
+		t.Fatal("the change returned with the use still running")
 	}
+	if u.selectedAtEnd != from {
+		t.Fatalf("the use ended with %q selected, want it ended before the selection left %q", u.selectedAtEnd, from)
+	}
+}
+
+// wantStillRunning fails if the change ended the use, then releases it.
+func (u *trackedUse) wantStillRunning(t *testing.T) {
+	t.Helper()
+	select {
+	case <-u.ended:
+		t.Fatal("a change that kept the selected account ended a running use")
+	default:
+	}
+	u.release()
 }
 
 type admission struct {
@@ -65,69 +97,248 @@ type selectionHook func()
 
 func (h selectionHook) ApplySelection(string, string, Selection) { h() }
 
-// Each path that replaces the canonical credential ends the running uses and
-// waits for them to exit before it reads that credential, so the login a CLI
-// refreshed on its way out is reconciled as the account it belongs to and
-// never lands over the incoming one. A use asked for while the path ends them
-// waits for the change, and then reads the generation the change left.
-func TestAnAccountChangeEndsRunningUsesBeforeItReadsTheCredential(t *testing.T) {
+// emptyClaudeRig is signInManager with nothing selected and the canonical
+// store holding a login of first@example.com.
+func emptyClaudeRig(t *testing.T) *Manager {
+	t.Helper()
+	manager, _, credentials, _ := signInManager(t)
+	if err := credentials.WriteNativeCredentialForTest(string(provider.Claude),
+		claudeLoginAs("first@example.com", "first", time.Now().Add(30*24*time.Hour))); err != nil {
+		t.Fatal(err)
+	}
+	return manager
+}
+
+func outsideLogin(t *testing.T, manager *Manager, email, nonce string) {
+	t.Helper()
+	if err := manager.credentials.WriteNativeCredentialForTest(string(provider.Claude),
+		claudeLoginAs(email, nonce, time.Now().Add(30*24*time.Hour))); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func probeCanonical(t *testing.T, manager *Manager) {
+	t.Helper()
 	claudeName := string(provider.Claude)
-	rotated := claudeLoginAs("current@example.com", "rotated", time.Now().Add(20*24*time.Hour))
-	fresh := claudeLoginAs("current@example.com", "signed-in", time.Now().Add(30*24*time.Hour))
+	if _, err := manager.RunAccountProbe(ProbeRequest{
+		ProviderName: claudeName,
+		Probe:        manager.canonicalProviderAccountProbe(claudeName, manager.providerBinaryPath(claudeName)),
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Every path that moves a provider's selection to another account (or away
+// from the last one) ends the running uses before it moves it.
+func TestEveryChangeOfTheSelectedAccountEndsTheRunningUsesFirst(t *testing.T) {
+	claudeName := string(provider.Claude)
+	fresh := claudeLoginAs("first@example.com", "signed-in", time.Now().Add(30*24*time.Hour))
+	for _, tc := range []struct {
+		name string
+		rig  func(t *testing.T) *Manager
+		// from is the account selected before the change.
+		from   string
+		change func(t *testing.T, manager *Manager)
+	}{
+		{"removing the selected account when it is the last", func(t *testing.T) *Manager {
+			manager, _, _ := selectionRig(t)
+			if err := manager.RemoveProviderAccount(claudeName, "other"); err != nil {
+				t.Fatal(err)
+			}
+			return manager
+		}, "current", func(t *testing.T, manager *Manager) {
+			if err := manager.RemoveProviderAccount(claudeName, "current"); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"the first sign-in", emptyClaudeRig, "", func(t *testing.T, manager *Manager) {
+			if _, err := manager.adoptLogin(completedLogin(t, manager, manager.credentials, fresh)); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"an outside login", func(t *testing.T) *Manager {
+			manager, _, _ := selectionRig(t)
+			outsideLogin(t, manager, "other@example.com", "external")
+			return manager
+		}, "current", func(t *testing.T, manager *Manager) {
+			if err := manager.ReconcileExternalProviderAccount(claudeName); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"a probe that finds an outside login", func(t *testing.T) *Manager {
+			manager, _, _ := selectionRig(t)
+			outsideLogin(t, manager, "other@example.com", "external")
+			return manager
+		}, "current", probeCanonical},
+		{"the first sign-in with no login on disk", func(t *testing.T) *Manager {
+			manager, _, _, _ := signInManager(t)
+			return manager
+		}, "", func(t *testing.T, manager *Manager) {
+			if _, err := manager.adoptLogin(completedLogin(t, manager, manager.credentials, fresh)); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"a probe with nothing selected", emptyClaudeRig, "", probeCanonical},
+		{"a sign-in starting with nothing selected", emptyClaudeRig, "", func(t *testing.T, manager *Manager) {
+			attempt, err := manager.beginLogin(claudeName)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := attempt.cleanup(); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			manager := tc.rig(t)
+			use := beginUse(t, manager, nil)
+			before, _ := manager.store.Active(claudeName, time.Now())
+			tc.change(t, manager)
+			after, _ := manager.store.Active(claudeName, time.Now())
+			if after.ID == before.ID {
+				t.Fatalf("the selection stayed %q; the case does not change it", after.ID)
+			}
+			use.wantEndedBeforeTheChange(t, tc.from)
+		})
+	}
+}
+
+// A probe that adopts a Codex login whose credential names no email, with
+// nothing selected, ends the running Codex uses before it selects the login.
+func TestAProbeAdoptingALoginWithoutAnEmailEndsTheRunningUsesFirst(t *testing.T) {
+	codexName := string(provider.Codex)
+	manager, store, credentials := newTestManager(t)
+	if err := credentials.WriteNativeCredentialForTest(codexName,
+		[]byte(`{"tokens":{"access_token":"anonymous"}}`)); err != nil {
+		t.Fatal(err)
+	}
+	ended := make(chan string, 1)
+	var release func()
+	release, err := manager.BeginCredentialUse(t.Context(), codexName, manager.Generation(codexName), func() {
+		active, _ := store.Active(codexName, time.Now())
+		ended <- active.ID
+		go release()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.RunAccountProbe(ProbeRequest{
+		ProviderName: codexName,
+		Probe: func(context.Context) (provider.AccountInfo, error) {
+			return provider.AccountInfo{}, nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if active, ok := store.Active(codexName, time.Now()); !ok || active.ID == "" {
+		t.Fatal("the probe selected nothing; the case does not change the selection")
+	}
+	select {
+	case selected := <-ended:
+		if selected != "" {
+			t.Fatalf("the use ended with %q selected, want it ended before the probe selected the login", selected)
+		}
+	default:
+		t.Fatal("the probe selected the login with the use still running")
+	}
+}
+
+// A path that keeps the selected account leaves the running uses alone.
+func TestAChangeThatKeepsTheSelectedAccountLeavesTheRunningUses(t *testing.T) {
+	claudeName := string(provider.Claude)
+	soon := time.Now().Add(30 * 24 * time.Hour)
 	for _, tc := range []struct {
 		name   string
-		change func(t *testing.T, manager *Manager) error
-		// installed is the credential the change leaves in the canonical
-		// store.
-		installed func(t *testing.T, manager *Manager) []byte
+		change func(t *testing.T, manager *Manager)
+	}{
+		{"removing an inactive account", func(t *testing.T, manager *Manager) {
+			if err := manager.RemoveProviderAccount(claudeName, "other"); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"signing in to an inactive account", func(t *testing.T, manager *Manager) {
+			login := claudeLoginAs("other@example.com", "other-new", soon)
+			if _, err := manager.adoptLogin(completedLogin(t, manager, manager.credentials, login)); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"a switch to the selected account", func(t *testing.T, manager *Manager) {
+			if _, err := manager.SwitchProviderAccount(claudeName, "current"); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"signing the selected account in again", func(t *testing.T, manager *Manager) {
+			login := claudeLoginAs("current@example.com", "current-new", soon)
+			if _, err := manager.adoptLogin(completedLogin(t, manager, manager.credentials, login)); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"an outside rotation of the selected login", func(t *testing.T, manager *Manager) {
+			outsideLogin(t, manager, "current@example.com", "rotated")
+			if err := manager.ReconcileExternalProviderAccount(claudeName); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"a probe that finds the selected login rotated", func(t *testing.T, manager *Manager) {
+			outsideLogin(t, manager, "current@example.com", "rotated")
+			probeCanonical(t, manager)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			manager, _, _ := selectionRig(t)
+			use := beginUse(t, manager, nil)
+			tc.change(t, manager)
+			if active, _ := manager.store.Active(claudeName, time.Now()); active.ID != "current" {
+				t.Fatalf("selected = %q, want current kept", active.ID)
+			}
+			use.wantStillRunning(t)
+		})
+	}
+}
+
+// A switch and a removal of the selected account end the running uses and
+// wait for them to exit before they read the canonical credential, so the
+// login a CLI refreshed on its way out is reconciled as the account it
+// belongs to and never lands over the incoming one. A use asked for while the
+// path ends them waits for the change, and then reads the generation the
+// change left.
+func TestASwitchReadsTheCredentialOnlyOnceTheRunningUsesHaveExited(t *testing.T) {
+	claudeName := string(provider.Claude)
+	rotated := claudeLoginAs("current@example.com", "rotated", time.Now().Add(20*24*time.Hour))
+	for _, tc := range []struct {
+		name   string
+		change func(manager *Manager) error
 		// preserves is true when the change keeps the outgoing login in the
 		// current account's slot.
 		preserves bool
 	}{
-		{
-			name: "switch",
-			change: func(_ *testing.T, manager *Manager) error {
-				_, err := manager.SwitchProviderAccount(claudeName, "other")
-				return err
-			},
-			installed: func(t *testing.T, manager *Manager) []byte {
-				return readCredential(t, manager.credentials, "other")
-			},
-			preserves: true,
-		},
-		{
-			name: "removing the selected account",
-			change: func(_ *testing.T, manager *Manager) error {
-				return manager.RemoveProviderAccount(claudeName, "current")
-			},
-			installed: func(t *testing.T, manager *Manager) []byte {
-				return readCredential(t, manager.credentials, "other")
-			},
-		},
-		{
-			name: "signing the selected account in again",
-			change: func(t *testing.T, manager *Manager) error {
-				_, err := manager.adoptLogin(completedLogin(t, manager, manager.credentials, fresh))
-				return err
-			},
-			installed: func(*testing.T, *Manager) []byte { return fresh },
-		},
+		{"switch", func(manager *Manager) error {
+			_, err := manager.SwitchProviderAccount(claudeName, "other")
+			return err
+		}, true},
+		{"removing the selected account", func(manager *Manager) error {
+			return manager.RemoveProviderAccount(claudeName, "current")
+		}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			manager, _, _ := selectionRig(t)
+			incoming := readCredential(t, manager.credentials, "other")
 			before := manager.Generation(claudeName)
 			ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 			defer cancel()
 			asked := make(chan (<-chan admission), 1)
-			finish := beginRefreshingUse(t, manager, rotated, func() {
+			use := beginUse(t, manager, func() {
 				asked <- askAdmission(ctx, manager, before)
+				if err := manager.credentials.WriteNativeCredentialForTest(claudeName, rotated); err != nil {
+					t.Error(err)
+				}
 			})
-			if err := tc.change(t, manager); err != nil {
+			if err := tc.change(manager); err != nil {
 				t.Fatal(err)
 			}
-			finish()
-			if got := readCredential(t, manager.credentials, ""); !bytes.Equal(got, tc.installed(t, manager)) {
-				t.Fatalf("canonical credential = %s, want the one the change installed", got)
+			use.wantEndedBeforeTheChange(t, "current")
+			if got := readCredential(t, manager.credentials, ""); !bytes.Equal(got, incoming) {
+				t.Fatalf("canonical credential = %s, want the incoming account's", got)
 			}
 			if tc.preserves {
 				if got := readCredential(t, manager.credentials, "current"); !bytes.Equal(got, rotated) {
@@ -139,6 +350,27 @@ func TestAnAccountChangeEndsRunningUsesBeforeItReadsTheCredential(t *testing.T) 
 				t.Fatalf("a use asked for while the change ended the running ones = %v, want it to read the moved generation", answer.err)
 			}
 		})
+	}
+}
+
+// A switch that finds another account's login outside the app changes the
+// selection twice in one hold of the reconcile lock; a use asked for during
+// the first drain is answered when the switch ends, not left waiting on it.
+func TestAUseAskedForDuringASwitchThatAlsoAdoptsAnOutsideLoginIsAnswered(t *testing.T) {
+	claudeName := string(provider.Claude)
+	manager, _, _ := selectionRig(t)
+	outsideLogin(t, manager, "other@example.com", "external")
+	before := manager.Generation(claudeName)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	asked := make(chan (<-chan admission), 1)
+	use := beginUse(t, manager, func() { asked <- askAdmission(ctx, manager, before) })
+	if _, err := manager.SwitchProviderAccount(claudeName, "other"); err != nil {
+		t.Fatal(err)
+	}
+	use.wantEndedBeforeTheChange(t, "current")
+	if answer := <-<-asked; !errors.Is(answer.err, ErrSelectionMoved) {
+		t.Fatalf("the use asked for during the switch = %v, want ErrSelectionMoved once the switch ended", answer.err)
 	}
 }
 
@@ -170,7 +402,7 @@ func TestAUseAskedForLateInASwitchWaitsForTheSwitchToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	if answeredInside {
-		t.Fatal("a use was answered while the switch was still changing the credential")
+		t.Fatal("a use was answered while the switch was still changing the selection")
 	}
 	if answer := <-stale; !errors.Is(answer.err, ErrSelectionMoved) {
 		t.Fatalf("the use asked for under the old generation = %v, want ErrSelectionMoved", answer.err)
@@ -182,12 +414,36 @@ func TestAUseAskedForLateInASwitchWaitsForTheSwitchToEnd(t *testing.T) {
 	answer.release()
 }
 
+// A use is admitted while the manager's own lock is held: the reconciliation
+// of an outside login ends the running uses holding it, and a use registered
+// just before must reach its release rather than wait on that lock.
+func TestAUseIsAdmittedWhileTheManagerLockIsHeld(t *testing.T) {
+	claudeName := string(provider.Claude)
+	manager, _, _ := selectionRig(t)
+	manager.mu.Lock()
+	answer := askAdmission(t.Context(), manager, manager.store.Generation(claudeName))
+	select {
+	case got := <-answer:
+		manager.mu.Unlock()
+		if got.err != nil {
+			t.Fatalf("BeginCredentialUse = %v, want it admitted", got.err)
+		}
+		got.release()
+	case <-time.After(10 * time.Second):
+		manager.mu.Unlock()
+		<-answer
+		t.Fatal("the admission waited on the manager's lock")
+	}
+}
+
 // A use waiting for a change stops waiting when its context ends.
 func TestAUseStopsWaitingForAChangeWhenItsContextEnds(t *testing.T) {
 	claudeName := string(provider.Claude)
 	manager, _, _ := newTestManager(t)
-	endChange := manager.lockCredentialChange(claudeName)
-	defer endChange()
+	reconcileMu := manager.reconcileMutex(claudeName)
+	reconcileMu.Lock()
+	defer reconcileMu.Unlock()
+	manager.selectionChanging(claudeName)
 	ctx, cancel := context.WithCancel(t.Context())
 	answer := askAdmission(ctx, manager, manager.Generation(claudeName))
 	cancel()
@@ -198,5 +454,23 @@ func TestAUseStopsWaitingForAChangeWhenItsContextEnds(t *testing.T) {
 		}
 	case <-time.After(20 * time.Second):
 		t.Fatal("the use kept waiting after its context ended")
+	}
+}
+
+// The store refuses to move a provider's selection while one of its uses is
+// running: a path that changes it without ending them fails instead.
+func TestTheStoreRefusesToMoveTheSelectionUnderARunningUse(t *testing.T) {
+	claudeName := string(provider.Claude)
+	manager, _, _ := selectionRig(t)
+	use := beginUse(t, manager, nil)
+	if _, err := manager.store.Activate(claudeName, "other"); err == nil {
+		t.Fatal("the store moved the selection with a use running")
+	}
+	if active, _ := manager.store.Active(claudeName, time.Now()); active.ID != "current" {
+		t.Fatalf("selected = %q after the refusal, want current", active.ID)
+	}
+	use.wantStillRunning(t)
+	if _, err := manager.store.Activate(claudeName, "other"); err != nil {
+		t.Fatalf("Activate with no use running: %v", err)
 	}
 }

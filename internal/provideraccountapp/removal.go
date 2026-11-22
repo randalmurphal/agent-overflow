@@ -27,8 +27,14 @@ func (m *Manager) RemoveProviderAccount(providerName, accountID string) error {
 		return err
 	}
 	defer endWork()
-	// Removing the selected account installs its replacement's credential.
-	defer m.lockCredentialChange(providerName)()
+	reconcileMu := m.reconcileMutex(providerName)
+	reconcileMu.Lock()
+	defer reconcileMu.Unlock()
+	// Removing the selected account moves the selection: its uses end
+	// before the check below reads the canonical credential.
+	if active, ok := m.store.Active(providerName, time.Now()); ok && active.ID == accountID {
+		m.selectionChanging(providerName)
+	}
 	if err := m.reconcileExternalProviderAccountWithMutexHeld(m.context(), providerName); err != nil {
 		return fmt.Errorf("check current %s account before removal: %w", providerName, err)
 	}

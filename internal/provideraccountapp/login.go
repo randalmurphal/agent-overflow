@@ -80,6 +80,7 @@ func (m *Manager) adoptLogin(attempt *loginAttempt) (_ ManagedAccount, retErr er
 	providerName := attempt.provider
 	binary := attempt.binary
 	loginHome := attempt.home
+	reconcileMu := m.reconcileMutex(providerName)
 
 	info, err := m.probeProviderAccountAtHome(providerName, binary, loginHome.Path)
 	if err != nil {
@@ -105,9 +106,18 @@ func (m *Manager) adoptLogin(attempt *loginAttempt) (_ ManagedAccount, retErr er
 	if err := attempt.cleanup(); err != nil {
 		return ManagedAccount{}, err
 	}
-	// A login for the selected account installs its credential.
-	endChange := m.lockCredentialChange(providerName)
-	defer endChange()
+	reconcileMu.Lock()
+	reconcileLocked := true
+	defer func() {
+		if reconcileLocked {
+			reconcileMu.Unlock()
+		}
+	}()
+	// A sign-in selects its account only when none is selected; signing in
+	// to the selected one keeps the account and its uses.
+	if _, hasCurrent := m.store.Active(providerName, time.Now()); !hasCurrent {
+		m.selectionChanging(providerName)
+	}
 	if err := m.reconcileExternalProviderAccountWithMutexHeld(m.context(), providerName); err != nil {
 		return ManagedAccount{}, fmt.Errorf(
 			"check current %s account before activation: %w",
@@ -157,7 +167,8 @@ func (m *Manager) adoptLogin(attempt *loginAttempt) (_ ManagedAccount, retErr er
 		generation := m.store.Generation(providerName)
 		m.mu.Unlock()
 		accountLocked = false
-		endChange()
+		reconcileMu.Unlock()
+		reconcileLocked = false
 		m.emitProviderAccountsChanged(providerName)
 		m.emitSignIn(SignIn{Provider: providerName, Account: account, Added: !found, Renewed: found})
 		if err := m.RefreshProviderAccountUsage(providerName, account.ID); err != nil {
@@ -257,7 +268,8 @@ func (m *Manager) adoptLogin(attempt *loginAttempt) (_ ManagedAccount, retErr er
 	generation := m.store.Generation(providerName)
 	m.mu.Unlock()
 	accountLocked = false
-	endChange()
+	reconcileMu.Unlock()
+	reconcileLocked = false
 	m.invalidateProviderAccountProbe(providerName, binary)
 	m.emitProviderAccount(providerName, account, info, generation)
 	// A sign-in adds a card, which no per-account frame can express.

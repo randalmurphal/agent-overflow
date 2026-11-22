@@ -164,6 +164,29 @@ type Store struct {
 	mu    sync.RWMutex
 	path  string
 	state persistedState
+	// guard, when set, may refuse a write that changes a provider's selected
+	// account (GuardSelection).
+	guard func(providerName, from, to string) error
+}
+
+// GuardSelection has every write that changes a provider's selected account
+// ask guard first, under the store's lock; an error refuses the write and is
+// its error. The account manager sets it once, before the store is shared.
+func (s *Store) GuardSelection(guard func(providerName, from, to string) error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.guard = guard
+}
+
+// selectLocked is selectAccount behind the guard: it reports whether the
+// selection changed, or the guard's refusal. The caller holds mu.
+func (s *Store) selectLocked(providerName string, state *ProviderState, accountID string, auto bool) (bool, error) {
+	if state.ActiveAccountID != accountID && s.guard != nil {
+		if err := s.guard(providerName, state.ActiveAccountID, accountID); err != nil {
+			return false, err
+		}
+	}
+	return state.selectAccount(accountID, auto), nil
 }
 
 func NewStore(configDir string) (*Store, error) {
@@ -322,7 +345,11 @@ func (s *Store) upsertAndActivate(
 	} else {
 		state.Accounts = append(state.Accounts, cloneAccount(account))
 	}
-	if state.selectAccount(account.ID, false) || credentialChanged {
+	selected, err := s.selectLocked(account.Provider, &state, account.ID, false)
+	if err != nil {
+		return Account{}, err
+	}
+	if selected || credentialChanged {
 		state.Generation++
 	}
 	s.state.Providers[account.Provider] = state
@@ -433,7 +460,11 @@ func (s *Store) activate(providerName, accountID string, auto bool) (Account, er
 		if state.Accounts[i].ID != accountID {
 			continue
 		}
-		if state.selectAccount(accountID, auto) {
+		selected, err := s.selectLocked(providerName, &state, accountID, auto)
+		if err != nil {
+			return Account{}, err
+		}
+		if selected {
 			state.Generation++
 		}
 		s.state.Providers[providerName] = state
@@ -524,7 +555,9 @@ func (s *Store) Remove(providerName, accountID, replacementAccountID string) err
 				providerName,
 			)
 		}
-		state.selectAccount(replacementAccountID, false)
+		if _, err := s.selectLocked(providerName, &state, replacementAccountID, false); err != nil {
+			return err
+		}
 		state.Generation++
 	}
 

@@ -331,11 +331,22 @@ func (m *Manager) switchProviderAccount(
 		return ManagedAccount{}, err
 	}
 	defer endWork()
-	// The canonical credential changes below: no text-generation CLI may be
-	// alive against it, so one that refreshed it is reconciled as the
-	// outgoing account before activation preserves it.
-	endChange := m.lockCredentialChange(providerName)
-	defer endChange()
+	reconcileMu := m.reconcileMutex(providerName)
+	reconcileMu.Lock()
+	reconcileLocked := true
+	defer func() {
+		if reconcileLocked {
+			reconcileMu.Unlock()
+		}
+	}()
+	// A switch to another account ends the uses of the outgoing one before
+	// the check below reads the canonical credential, so a login one
+	// refreshed on its way out is reconciled as the account it belongs to.
+	// Only selection writers hold the reconcile lock, so the selection read
+	// here is the one the switch changes.
+	if active, _ := m.store.Active(providerName, time.Now()); active.ID != accountID {
+		m.selectionChanging(providerName)
+	}
 	if err := m.reconcileExternalProviderAccountWithMutexHeld(m.context(), providerName); err != nil {
 		return ManagedAccount{}, fmt.Errorf("check current %s account before switch: %w", providerName, err)
 	}
@@ -478,7 +489,8 @@ func (m *Manager) switchProviderAccount(
 	// above carries no `active` flag for the card that just LOST it.
 	m.emitProviderAccountsChanged(providerName)
 	m.applySelection(providerName, generation, currentID, account.ID)
-	endChange()
+	reconcileMu.Unlock()
+	reconcileLocked = false
 	return ManagedAccount{
 		Account:    account,
 		Active:     true,
@@ -676,6 +688,11 @@ func (m *Manager) adoptCurrentProviderAccountLocked(
 	if credential == nil {
 		return provideraccounts.Account{}, SignIn{}, nil
 	}
+	// With nothing selected, adopting the login selects it: the uses running
+	// on the unselected login end before its credential is checked.
+	if _, hasActive := m.store.Active(providerName, time.Now()); !hasActive {
+		m.selectionChanging(providerName)
+	}
 	if err := m.verifyCanonicalProviderCredentialLocked(
 		providerName,
 		credential.Bytes(),
@@ -758,6 +775,8 @@ func (m *Manager) adoptCanonicalProviderAccountLocked(providerName, binary strin
 	if credential == nil {
 		return SignIn{}, nil
 	}
+	// Nothing is selected, so adopting the login selects it.
+	m.selectionChanging(providerName)
 	if err := m.verifyCanonicalProviderCredentialLocked(
 		providerName,
 		credential.Bytes(),

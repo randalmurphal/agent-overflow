@@ -35,6 +35,23 @@ func TestSelectedCodexUsageCredentialRotationAdvancesReconnectGeneration(t *test
 		original,
 	)
 	generation := app.providerAccounts.Generation(string(provider.Codex))
+	// A text generation running on the selected account: the same account's
+	// credential advance keeps it.
+	// Ended, it exits as a stopped CLI would, so a change waiting for it
+	// goes on.
+	useEnded := make(chan struct{})
+	var endOnce sync.Once
+	releaseUse, err := app.providerAccounts.BeginCredentialUse(t.Context(), string(provider.Codex), generation, func() {
+		endOnce.Do(func() { close(useEnded) })
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseUse()
+	go func() {
+		<-useEnded
+		releaseUse()
+	}()
 	app.sessionManager().put("thread", session{
 		Provider:             string(provider.Codex),
 		Token:                "old-process",
@@ -71,6 +88,11 @@ func TestSelectedCodexUsageCredentialRotationAdvancesReconnectGeneration(t *test
 
 	if got := app.providerAccounts.Generation(string(provider.Codex)); got != generation+1 {
 		t.Fatalf("credential generation = %d, want %d", got, generation+1)
+	}
+	select {
+	case <-useEnded:
+		t.Fatal("the same account's credential advance ended a running text generation")
+	default:
 	}
 	current, _ := app.sessionManager().get("thread")
 	if current.Token != "old-process" || current.CredentialGeneration != generation {
