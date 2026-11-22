@@ -427,6 +427,13 @@ describe('defaultBootstrap', () => {
 
   it('fails an attached backend\'s manifest fetch that never answers', async () => {
     vi.useFakeTimers();
+    // AbortSignal.timeout runs on a timer fake timers do not reach; the
+    // same signal on setTimeout runs on the fake clock.
+    const timeout = vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms: number) => {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(new DOMException('The operation timed out.', 'TimeoutError')), ms);
+      return controller.signal;
+    });
     try {
       vi.stubGlobal('fetch', vi.fn((_input: unknown, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
         init?.signal?.addEventListener('abort', () => reject(init.signal!.reason));
@@ -438,8 +445,11 @@ describe('defaultBootstrap', () => {
       await vi.advanceTimersByTimeAsync(BACKEND_MANIFEST_TIMEOUT_MS - 1);
       expect(settled).toBe(false);
       await vi.advanceTimersByTimeAsync(1);
+      expect(settled).toBe(true);
       expect(await result).toMatchObject({ name: 'TimeoutError' });
+      expect(timeout).toHaveBeenCalledWith(BACKEND_MANIFEST_TIMEOUT_MS);
     } finally {
+      timeout.mockRestore();
       vi.useRealTimers();
     }
   });
