@@ -113,10 +113,21 @@ func TestLiveActivitySnapshot_NamesOnlyThreadsWithLiveActivity(t *testing.T) {
 		t.Fatalf("running.ActiveTurn = %+v, want the open round", running.ActiveTurn)
 	}
 
-	// A closed round drops the thread from the list on the next read.
+	// A taken round stays listed until its end is announced (endRound), and
+	// the thread drops from the list on the read after that.
 	if _, ok := router.takeOpenRound("running", ""); !ok {
 		t.Fatal("takeOpenRound(running) = false, want the open round")
 	}
+	listed := false
+	for _, entry := range router.LiveActivitySnapshot() {
+		if entry.ThreadID == "running" {
+			listed = entry.ActiveTurn != nil && entry.ActiveTurn.TurnID == "round-1"
+		}
+	}
+	if !listed {
+		t.Fatal("running dropped from the list before its round's end was announced")
+	}
+	router.endRound("running", "round-1")
 	for _, entry := range router.LiveActivitySnapshot() {
 		if entry.ThreadID == "running" {
 			t.Fatalf("running still listed after its round closed: %+v", entry)

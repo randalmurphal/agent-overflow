@@ -99,7 +99,7 @@ func TestAWorkersOpenAsyncQuestionReadsAlikeEverywhere(t *testing.T) {
 			t.Fatal(err)
 		}
 		row, found := agentRowByToken(listing.Rows, spawn)
-		if !found || row.Worker != workerBlocked || row.BlockedOn != "question" || row.BlockedDetail != "Which scope?" || row.BlockedRoutedTo != routedTo {
+		if !found || row.Worker != string(workerBlocked) || row.BlockedOn != "question" || row.BlockedDetail != "Which scope?" || row.BlockedRoutedTo != routedTo {
 			t.Fatalf("the worker's Agents row = %+v (found %v), want blocked on its question routed to %q", row, found, routedTo)
 		}
 		here, err := (threadToolsApp{app: dest}).threadStateNow(t.Context(), worker.ID)

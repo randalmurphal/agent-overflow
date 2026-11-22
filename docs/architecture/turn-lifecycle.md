@@ -830,20 +830,34 @@ worktree setups and review-comment claims whose message was never
 delivered) each run in their own boot phase. A sweep that fails
 does not stop the boot: it is reported as a failed boot phase, which
 every client shows ([startup readiness](transport.md#startup-readiness)),
-and the next start runs it again.
+and the next start runs it again. When the crashed-turn sweep fails,
+triage also keeps the rows it left open as unrecorded turn ends and
+settles each by the sweep's rule once the store takes writes (below).
 
 Post-sweep, a `completed_at=null` row during an app run means
 genuinely live provider work, and every durable reader reads it as
 running (`Thread.HasOpenTurn`, `GetActiveTurn`, the rest sources). The
-row is open until `UpdateTurnCompleted` settles it, after the live
-round has already ended, so the row and not the round says whether the
-turn still runs. The durable "interrupted" signal that survives
-restarts is `stop_reason='interrupted'`, the only thing the sidebar's
-boot pill (`Thread.HasIncompleteTurn`) reads: an unseen settled
-interruption. A row whose settle write fails stays open and reads as
-running until the next boot's sweep records it
-(`internal/store/turn_newest.go`); triage gives the thread an error row at
-that turn, which the sidebar shows as Failed once the round has ended.
+row is open until `UpdateTurnCompleted` settles it. The live round
+outlasts that write: triage takes the round when the completion
+arrives and reports it as the ending round in both live-state
+snapshots until `provider:turn_completed` follows the write, so a
+reader sees the turn running throughout. The durable "interrupted"
+signal that survives restarts is `stop_reason='interrupted'`, the only
+thing the sidebar's boot pill (`Thread.HasIncompleteTurn`) reads: an
+unseen settled interruption.
+
+When the write of a turn's end fails, the turn has still ended. Triage
+keeps the end it could not write (`internal/triage/unrecorded_turn_ends.go`):
+the thread gets an error row that says so, whose error notice reaches
+every client's sidebar even when the row itself is refused; the thread
+tools read the thread as `error` at rest and the Agents rows stop its
+runtime at the end. The end is written again before the thread's next
+turn opens, before a late completion of the turn folds, when a send is
+placed on the thread, and on a backoff timer (1 s doubling to 60 s), so
+the row settles with the turn's own outcome once the database takes
+writes again. A turn the model continues after a soft close drops its
+unrecorded end first. A refusal for a fork's sake
+(`store.IsShownHistoryRefusal`) is not written again.
 
 The frontend still shows no active-turn spinner for any of this
 (spinner requires a live `activeTurn` push, not a DB row), and we do

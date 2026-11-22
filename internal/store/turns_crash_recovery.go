@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 )
@@ -53,50 +54,102 @@ func (s *Store) RecoverCrashedTurns(summarise func(string) string, now int64) ([
 	if _, err := s.RecoverSubagentCards(context.Background()); err != nil {
 		cardsErr = fmt.Errorf("store: recover subagent cards: %w", err)
 	}
-	crashed, err := s.recoverCrashedTurns(summarise, now)
+	crashed, err := s.recoverCrashedTurns(summarise, now, nil)
 	return crashed, errors.Join(cardsErr, err)
 }
 
 // recoverCrashedTurns stops agents in threads whose cards it does not
 // lock (sweepItemWrites): any card left is flushed first.
-func (s *Store) recoverCrashedTurns(summarise func(string) string, now int64) ([]CrashedTurn, error) {
+func (s *Store) recoverCrashedTurns(summarise func(string) string, now int64, only []string) ([]CrashedTurn, error) {
 	flushErr := s.FlushAllSubagentCards()
-	crashed, err := s.sweepCrashedTurns(summarise, now)
+	crashed, err := s.sweepCrashedTurns(summarise, now, only)
 	return crashed, errors.Join(flushErr, err)
 }
 
-func (s *Store) sweepCrashedTurns(summarise func(string) string, now int64) ([]CrashedTurn, error) {
+// ListCrashedTurns reads the turn rows RecoverCrashedTurns would settle,
+// without settling them: what a failed sweep leaves for its caller to
+// settle later (RecoverCrashedTurnsByID). Same caller rule: only while no
+// provider session exists.
+func (s *Store) ListCrashedTurns() ([]CrashedTurnRow, error) {
+	rows, err := s.reader().Query(crashedTurnsSQL)
+	if err != nil {
+		return nil, fmt.Errorf("store: crashed-turn select: %w", err)
+	}
+	return scanCrashedTurns(rows)
+}
+
+// RecoverCrashedTurnsByID is RecoverCrashedTurns for the rows a failed
+// sweep listed (ListCrashedTurns), safe while sessions run: it settles only
+// those turns, by the same rule, and skips one that is no longer open. The
+// subagent cards are flushed, not recomputed: RecoverSubagentCards reads
+// every running agent as the previous instance's, which only holds at boot.
+func (s *Store) RecoverCrashedTurnsByID(turnIDs []string, summarise func(string) string, now int64) ([]CrashedTurn, error) {
+	if len(turnIDs) == 0 {
+		return nil, nil
+	}
+	return s.recoverCrashedTurns(summarise, now, turnIDs)
+}
+
+// CrashedTurnRow is a turn row a previous instance left open.
+type CrashedTurnRow struct {
+	CrashedTurn
+	TurnID string
+}
+
+// crashedTurnsSQL selects every open turn row, the crash residue at boot,
+// through the partial index idx_turns_inflight.
+const crashedTurnsSQL = `SELECT thread_id, turn_index, turn_id FROM turns
+	  WHERE completed_at IS NULL
+	  ORDER BY thread_id, turn_index`
+
+func scanCrashedTurns(rows *sql.Rows) (out []CrashedTurnRow, err error) {
+	defer func() { err = errors.Join(err, rows.Close()) }()
+	for rows.Next() {
+		var c CrashedTurnRow
+		if err := rows.Scan(&c.ThreadID, &c.TurnIndex, &c.TurnID); err != nil {
+			return nil, fmt.Errorf("store: crashed-turn scan: %w", err)
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: crashed-turn rows err: %w", err)
+	}
+	return out, nil
+}
+
+// sweepCrashedTurns settles the open turn rows: all of them, or with only
+// those of the named turns that are still open.
+func (s *Store) sweepCrashedTurns(summarise func(string) string, now int64, only []string) ([]CrashedTurn, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, fmt.Errorf("store: begin crashed-turn recovery tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
-	rows, err := tx.Query(
-		`SELECT thread_id, turn_index, turn_id FROM turns
-		  WHERE completed_at IS NULL
-		  ORDER BY thread_id, turn_index`,
-	)
+	query, args := crashedTurnsSQL, []any(nil)
+	if only != nil {
+		list, err := json.Marshal(only)
+		if err != nil {
+			return nil, err
+		}
+		query = `SELECT thread_id, turn_index, turn_id FROM turns
+		  WHERE completed_at IS NULL AND turn_id IN (SELECT value FROM json_each(?))
+		  ORDER BY thread_id, turn_index`
+		args = []any{string(list)}
+	}
+	rows, err := tx.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: crashed-turn select: %w", err)
 	}
-	var crashed []CrashedTurn
-	var turnIDs []string
-	for rows.Next() {
-		var c CrashedTurn
-		var turnID string
-		if err := rows.Scan(&c.ThreadID, &c.TurnIndex, &turnID); err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("store: crashed-turn scan: %w", err)
-		}
-		crashed = append(crashed, c)
-		turnIDs = append(turnIDs, turnID)
+	open, err := scanCrashedTurns(rows)
+	if err != nil {
+		return nil, err
 	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return nil, fmt.Errorf("store: crashed-turn rows err: %w", err)
+	crashed := make([]CrashedTurn, len(open))
+	turnIDs := make([]string, len(open))
+	for i, c := range open {
+		crashed[i], turnIDs[i] = c.CrashedTurn, c.TurnID
 	}
-	rows.Close()
 
 	if len(crashed) == 0 {
 		if err := tx.Commit(); err != nil {

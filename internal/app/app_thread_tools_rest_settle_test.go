@@ -465,7 +465,7 @@ func TestASendWaitsForRestOnlyOnTheCallersOwnWorker(t *testing.T) {
 	// Its row reads as its worker waits, on the shell.
 	waitUntil(t, 10*time.Second, func() bool {
 		row, _ := agentRowByToken(f.agentRows(t, f.caller.ID).Rows, own.Token)
-		return row.Worker == workerWaiting && strings.Contains(row.Activity, "deploy.log")
+		return row.Worker == string(workerWaiting) && strings.Contains(row.Activity, "deploy.log")
 	})
 
 	installMockClaudeTurns(t, f.app, [][]string{append(restShellLaunch("bg-5", "task-5", "Tailing for you."), mockClaudeResultLine)})

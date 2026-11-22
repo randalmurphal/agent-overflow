@@ -11,6 +11,7 @@ import {
   getThreadStatus,
   getThreadWaitingOn,
   hasPendingSend,
+  isThreadLiveStateHydrating,
   isThreadLiveStateHydrationCurrent,
   isThreadWorking,
   projectApprovalRequest,
@@ -711,6 +712,27 @@ describe('threadStatuses store', () => {
       }
     });
 
+    it("hydration toggles on one thread do not re-evaluate another thread's hydration reader", () => {
+      const token = beginThreadLiveStateHydration('thread-probe');
+      finishThreadLiveStateHydration('thread-probe', token);
+      const hydrating = probeReactivity(() => isThreadLiveStateHydrating('thread-probe'));
+      try {
+        expect(hydrating.evaluations).toBe(1);
+
+        const otherToken = beginThreadLiveStateHydration('thread-other');
+        flushSync();
+        finishThreadLiveStateHydration('thread-other', otherToken);
+        flushSync();
+        expect(hydrating.evaluations).toBe(1);
+
+        beginThreadLiveStateHydration('thread-probe');
+        flushSync();
+        expect(hydrating.latest).toBe(true);
+      } finally {
+        hydrating.dispose();
+      }
+    });
+
     it("queue and pending-send churn on one thread does not re-evaluate another thread's working reader", () => {
       warmThreadBoxes('thread-probe');
       const working = probeReactivity(() => isThreadWorking('thread-probe'));
@@ -807,10 +829,12 @@ describe('threadStatuses store', () => {
       projectThreadReverted('thread-1');
 
       // The pre-revert snapshot must fail its currency check when it
-      // resolves, and its own finish call no-ops on the mismatch.
+      // resolves, and the hydrating flag must not leak (its own finish
+      // call will no-op on the token mismatch).
       expect(isThreadLiveStateHydrationCurrent('thread-1', token)).toBe(false);
+      expect(isThreadLiveStateHydrating('thread-1')).toBe(false);
       finishThreadLiveStateHydration('thread-1', token);
-      expect(isThreadLiveStateHydrationCurrent('thread-1', token)).toBe(false);
+      expect(isThreadLiveStateHydrating('thread-1')).toBe(false);
     });
   });
 });

@@ -71,12 +71,12 @@ func TestARemoteWorkerContinuedThereReopensForItsSpawner(t *testing.T) {
 			t.Fatal(err)
 		}
 		row, _ = agentRowByToken(listing.Rows, ack.Token)
-		return row.Worker == workerRunning
+		return row.Worker == string(workerRunning)
 	})
 	if row.State != threadtools.RequestFinished {
 		t.Fatalf("row %+v; want the finished spawn open while its worker runs", row)
 	}
-	agentPair.expectRemoteRowOpen(t, row, workerRunning)
+	agentPair.expectRemoteRowOpen(t, row, string(workerRunning))
 
 	if err := pair.dest.StopSession(child); err != nil {
 		t.Fatalf("StopSession there: %v", err)

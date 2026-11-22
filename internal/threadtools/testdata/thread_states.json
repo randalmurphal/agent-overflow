@@ -11,133 +11,150 @@
     "  name: string,",
     "  thread: {hasOpenTurn, hasIncompleteTurn, hasFailedTurn,",
     "    hasActionableProposedPlan: boolean, worktreeSetupState: string},",
-    "  live: {activeTurn, pendingSends: boolean, pendingApprovals,",
-    "    pendingUserInputs: number},   // Go input, threadtools.LiveState",
+    "  live: {activeTurn, pendingSends, turnEndUnrecorded: boolean,",
+    "    pendingApprovals, pendingUserInputs: number},",
+    "                                  // Go input, threadtools.LiveState",
     "  liveStatus: string,             // frontend input, ThreadLiveStatus,",
-    "                                  // what getThreadStatus derives from live",
+    "                                  // what getThreadStatus derives",
     "  want: string                    // the effective state both must return",
     "}",
     "",
-    "liveStatus is derived from live by the same order the Go function uses:",
-    "pending-approval, awaiting-input, running, else idle. running includes",
-    "thread.hasOpenTurn, a newest turn row still open: Go reads it from the",
-    "row, and the frontend's live registry holds the turn until",
-    "provider:turn_completed, which triage emits after the row settles.",
-    "hasIncompleteTurn is a settled interruption the user has not read; an",
-    "open row never sets it, so the two never hold together. The Go test",
-    "feeds thread and live to State; a frontend test feeds liveStatus to",
-    "resolveEffectiveThreadStatus. Both must produce want."
+    "The Go test feeds thread and live to State. The frontend test feeds",
+    "liveStatus and the thread fields a thread row carries to the frontend",
+    "(all but hasOpenTurn) to resolveEffectiveThreadStatus. Both must",
+    "produce want. liveStatus is derived from the live fields the frontend",
+    "also receives, by the order the Go function uses: pending-approval,",
+    "awaiting-input, running for activeTurn or pendingSends, else idle.",
+    "turnEndUnrecorded and hasOpenTurn are Go's alone; the frontend learns",
+    "of an unrecorded turn end from the thread's error notice, which sets",
+    "hasFailedTurn. An open row with no live round is a Go-only case",
+    "(state_test.go). hasIncompleteTurn is a settled interruption the user",
+    "has not read; an open row never sets it, so the two never hold together."
   ],
   "cases": [
     {
       "name": "quiet thread is idle",
       "thread": {"hasOpenTurn": false, "hasIncompleteTurn": false, "hasFailedTurn": false, "hasActionableProposedPlan": false, "worktreeSetupState": ""},
-      "live": {"activeTurn": false, "pendingSends": false, "pendingApprovals": 0, "pendingUserInputs": 0},
+      "live": {"activeTurn": false, "pendingSends": false, "turnEndUnrecorded": false, "pendingApprovals": 0, "pendingUserInputs": 0},
       "liveStatus": "idle",
       "want": "idle"
     },
     {
       "name": "open turn is running",
       "thread": {"hasOpenTurn": true, "hasIncompleteTurn": false, "hasFailedTurn": false, "hasActionableProposedPlan": false, "worktreeSetupState": ""},
-      "live": {"activeTurn": true, "pendingSends": false, "pendingApprovals": 0, "pendingUserInputs": 0},
+      "live": {"activeTurn": true, "pendingSends": false, "turnEndUnrecorded": false, "pendingApprovals": 0, "pendingUserInputs": 0},
       "liveStatus": "running",
       "want": "running"
     },
     {
       "name": "queued send before its echo is running",
       "thread": {"hasOpenTurn": false, "hasIncompleteTurn": false, "hasFailedTurn": false, "hasActionableProposedPlan": false, "worktreeSetupState": ""},
-      "live": {"activeTurn": false, "pendingSends": true, "pendingApprovals": 0, "pendingUserInputs": 0},
+      "live": {"activeTurn": false, "pendingSends": true, "turnEndUnrecorded": false, "pendingApprovals": 0, "pendingUserInputs": 0},
       "liveStatus": "running",
       "want": "running"
     },
     {
       "name": "pending approval outranks an open turn",
       "thread": {"hasOpenTurn": true, "hasIncompleteTurn": false, "hasFailedTurn": false, "hasActionableProposedPlan": false, "worktreeSetupState": ""},
-      "live": {"activeTurn": true, "pendingSends": false, "pendingApprovals": 1, "pendingUserInputs": 0},
+      "live": {"activeTurn": true, "pendingSends": false, "turnEndUnrecorded": false, "pendingApprovals": 1, "pendingUserInputs": 0},
       "liveStatus": "pending-approval",
       "want": "pending-approval"
     },
     {
       "name": "pending approval outranks a question to the user",
       "thread": {"hasOpenTurn": true, "hasIncompleteTurn": false, "hasFailedTurn": false, "hasActionableProposedPlan": false, "worktreeSetupState": ""},
-      "live": {"activeTurn": true, "pendingSends": false, "pendingApprovals": 1, "pendingUserInputs": 2},
+      "live": {"activeTurn": true, "pendingSends": false, "turnEndUnrecorded": false, "pendingApprovals": 1, "pendingUserInputs": 2},
       "liveStatus": "pending-approval",
       "want": "pending-approval"
     },
     {
       "name": "question to the user is awaiting-input",
       "thread": {"hasOpenTurn": true, "hasIncompleteTurn": false, "hasFailedTurn": false, "hasActionableProposedPlan": false, "worktreeSetupState": ""},
-      "live": {"activeTurn": true, "pendingSends": false, "pendingApprovals": 0, "pendingUserInputs": 1},
+      "live": {"activeTurn": true, "pendingSends": false, "turnEndUnrecorded": false, "pendingApprovals": 0, "pendingUserInputs": 1},
       "liveStatus": "awaiting-input",
       "want": "awaiting-input"
     },
     {
       "name": "a blocked provider outranks a failed worktree setup",
       "thread": {"hasOpenTurn": true, "hasIncompleteTurn": false, "hasFailedTurn": false, "hasActionableProposedPlan": false, "worktreeSetupState": "failed"},
-      "live": {"activeTurn": true, "pendingSends": false, "pendingApprovals": 1, "pendingUserInputs": 0},
+      "live": {"activeTurn": true, "pendingSends": false, "turnEndUnrecorded": false, "pendingApprovals": 1, "pendingUserInputs": 0},
       "liveStatus": "pending-approval",
       "want": "pending-approval"
     },
     {
       "name": "failed worktree setup is the first durable fallback",
       "thread": {"hasOpenTurn": false, "hasIncompleteTurn": true, "hasFailedTurn": true, "hasActionableProposedPlan": true, "worktreeSetupState": "failed"},
-      "live": {"activeTurn": false, "pendingSends": false, "pendingApprovals": 0, "pendingUserInputs": 0},
+      "live": {"activeTurn": false, "pendingSends": false, "turnEndUnrecorded": false, "pendingApprovals": 0, "pendingUserInputs": 0},
       "liveStatus": "idle",
       "want": "setup-failed"
     },
     {
       "name": "a running worktree setup is not a fallback",
       "thread": {"hasOpenTurn": false, "hasIncompleteTurn": false, "hasFailedTurn": false, "hasActionableProposedPlan": false, "worktreeSetupState": "running"},
-      "live": {"activeTurn": false, "pendingSends": false, "pendingApprovals": 0, "pendingUserInputs": 0},
+      "live": {"activeTurn": false, "pendingSends": false, "turnEndUnrecorded": false, "pendingApprovals": 0, "pendingUserInputs": 0},
       "liveStatus": "idle",
       "want": "idle"
     },
     {
       "name": "failed turn comes before interrupted",
       "thread": {"hasOpenTurn": false, "hasIncompleteTurn": true, "hasFailedTurn": true, "hasActionableProposedPlan": true, "worktreeSetupState": ""},
-      "live": {"activeTurn": false, "pendingSends": false, "pendingApprovals": 0, "pendingUserInputs": 0},
+      "live": {"activeTurn": false, "pendingSends": false, "turnEndUnrecorded": false, "pendingApprovals": 0, "pendingUserInputs": 0},
       "liveStatus": "idle",
       "want": "error"
     },
     {
       "name": "interrupted comes before plan-ready",
       "thread": {"hasOpenTurn": false, "hasIncompleteTurn": true, "hasFailedTurn": false, "hasActionableProposedPlan": true, "worktreeSetupState": ""},
-      "live": {"activeTurn": false, "pendingSends": false, "pendingApprovals": 0, "pendingUserInputs": 0},
+      "live": {"activeTurn": false, "pendingSends": false, "turnEndUnrecorded": false, "pendingApprovals": 0, "pendingUserInputs": 0},
       "liveStatus": "idle",
       "want": "interrupted"
     },
     {
       "name": "actionable plan is plan-ready",
       "thread": {"hasOpenTurn": false, "hasIncompleteTurn": false, "hasFailedTurn": false, "hasActionableProposedPlan": true, "worktreeSetupState": ""},
-      "live": {"activeTurn": false, "pendingSends": false, "pendingApprovals": 0, "pendingUserInputs": 0},
+      "live": {"activeTurn": false, "pendingSends": false, "turnEndUnrecorded": false, "pendingApprovals": 0, "pendingUserInputs": 0},
       "liveStatus": "idle",
       "want": "plan-ready"
     },
     {
       "name": "a live turn masks every durable fallback",
       "thread": {"hasOpenTurn": true, "hasIncompleteTurn": false, "hasFailedTurn": true, "hasActionableProposedPlan": true, "worktreeSetupState": "failed"},
-      "live": {"activeTurn": true, "pendingSends": false, "pendingApprovals": 0, "pendingUserInputs": 0},
+      "live": {"activeTurn": true, "pendingSends": false, "turnEndUnrecorded": false, "pendingApprovals": 0, "pendingUserInputs": 0},
       "liveStatus": "running",
       "want": "running"
     },
     {
-      "name": "a turn whose round ended is running until its row settles",
+      "name": "a turn whose round ended is running while its row settles",
       "thread": {"hasOpenTurn": true, "hasIncompleteTurn": false, "hasFailedTurn": false, "hasActionableProposedPlan": false, "worktreeSetupState": ""},
-      "live": {"activeTurn": false, "pendingSends": false, "pendingApprovals": 0, "pendingUserInputs": 0},
+      "live": {"activeTurn": true, "pendingSends": false, "turnEndUnrecorded": false, "pendingApprovals": 0, "pendingUserInputs": 0},
+      "liveStatus": "running",
+      "want": "running"
+    },
+    {
+      "name": "a turn whose end the store did not take is error",
+      "thread": {"hasOpenTurn": true, "hasIncompleteTurn": false, "hasFailedTurn": true, "hasActionableProposedPlan": false, "worktreeSetupState": ""},
+      "live": {"activeTurn": false, "pendingSends": false, "turnEndUnrecorded": true, "pendingApprovals": 0, "pendingUserInputs": 0},
+      "liveStatus": "idle",
+      "want": "error"
+    },
+    {
+      "name": "a turn running after an unrecorded end is running",
+      "thread": {"hasOpenTurn": true, "hasIncompleteTurn": false, "hasFailedTurn": true, "hasActionableProposedPlan": false, "worktreeSetupState": ""},
+      "live": {"activeTurn": true, "pendingSends": false, "turnEndUnrecorded": true, "pendingApprovals": 0, "pendingUserInputs": 0},
       "liveStatus": "running",
       "want": "running"
     },
     {
       "name": "a send after an interruption is running",
       "thread": {"hasOpenTurn": false, "hasIncompleteTurn": true, "hasFailedTurn": false, "hasActionableProposedPlan": false, "worktreeSetupState": ""},
-      "live": {"activeTurn": false, "pendingSends": true, "pendingApprovals": 0, "pendingUserInputs": 0},
+      "live": {"activeTurn": false, "pendingSends": true, "turnEndUnrecorded": false, "pendingApprovals": 0, "pendingUserInputs": 0},
       "liveStatus": "running",
       "want": "running"
     },
     {
       "name": "a settled interruption is interrupted",
       "thread": {"hasOpenTurn": false, "hasIncompleteTurn": true, "hasFailedTurn": false, "hasActionableProposedPlan": false, "worktreeSetupState": ""},
-      "live": {"activeTurn": false, "pendingSends": false, "pendingApprovals": 0, "pendingUserInputs": 0},
+      "live": {"activeTurn": false, "pendingSends": false, "turnEndUnrecorded": false, "pendingApprovals": 0, "pendingUserInputs": 0},
       "liveStatus": "idle",
       "want": "interrupted"
     }

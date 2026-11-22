@@ -118,7 +118,7 @@ func TestARemoteWorkerRowCountsWhatItsThreadDid(t *testing.T) {
 	row := agentPair.askAgainUntilRow(t, func(row ThreadAgentRow, listed bool) bool {
 		return listed && row.Activity == line
 	})
-	if row.ToolCalls != 1 || row.Worker != workerRunning {
+	if row.ToolCalls != 1 || row.Worker != string(workerRunning) {
 		t.Fatalf("row %+v; want the worker running with its one tool call and its line", row)
 	}
 	// Its open turn, named as that computer recorded its start.
@@ -126,9 +126,9 @@ func TestARemoteWorkerRowCountsWhatItsThreadDid(t *testing.T) {
 		t.Fatalf("row %+v; want its open turn %+v (%v, %v) named by its start", row, turn, active, err)
 	}
 
-	parent := ThreadAgentRow{Token: agentPair.spawn.Token, Worker: workerRunning}
+	parent := ThreadAgentRow{Token: agentPair.spawn.Token, Worker: string(workerRunning)}
 	pair.source.nestPeerAgentRows(&parent, threadAgentRemoteSlot{spawn: agentPair.spawn},
-		threadAgentPeerAnswer{listing: ThreadAgentRows{Worker: workerRunning}}, threadAgentRowDepth)
+		threadAgentPeerAnswer{listing: ThreadAgentRows{Worker: string(workerRunning)}}, threadAgentRowDepth)
 	if parent.ToolCalls != 0 || parent.Tokens != 0 || parent.Activity != "" {
 		t.Fatalf("row from an answer without counts %+v; want none", parent)
 	}

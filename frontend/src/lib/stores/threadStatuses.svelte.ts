@@ -132,13 +132,14 @@ export type ThreadLiveStatus =
 // reads on mostly-ABSENT keys lives in a per-thread box registry
 // (keyedSignalRegistry.svelte.ts — see its header for the fan-out
 // class and the writer-side-creation / creation-version pitfalls).
-// One thread's status flip or pending-send change
+// One thread's status flip, hydration toggle, or pending-send change
 // must only re-run THAT thread's readers, not every sidebar row plus
 // every collapsed-project tree rollup.
 //
 // `statuses` maps threadId → live status; 'idle' is the empty value,
 // so writing 'idle' is equivalent to clearing the entry.
 const statuses = createKeyedSignalRegistry<ThreadLiveStatus>('idle');
+const liveStateHydratingThreads = createKeyedSignalRegistry<boolean>(false);
 const pendingSendThreads = createKeyedSignalRegistry<boolean>(false);
 // The backend's `provider:sends_pending` answer; only pending threads hold
 // a box. Each snapshot read in flight collects the threads whose answer
@@ -314,26 +315,34 @@ export function getThreadStatus(threadId: string): ThreadLiveStatus {
 
 /**
  * The registry-backed companion to resolveEffectiveThreadStatus: it looks the
- * live status up by id, then defers to the pure resolver for the
- * durable-fallback ordering. Delegation rather than a second copy — two
- * implementations of that ordering would drift the moment a new fallback
- * lands, and the pure one is the tested one.
+ * live status up by id and supplies the hydration guard, then defers to the
+ * pure resolver for the durable-fallback ordering. Delegation rather than a
+ * second copy — two implementations of that ordering would drift the moment a
+ * new fallback lands, and the pure one is the tested one.
  */
 export function getEffectiveThreadStatus(
   thread: Pick<Thread, 'id' | 'hasIncompleteTurn' | 'hasFailedTurn' | 'hasActionableProposedPlan' | 'worktreeSetupState'>,
 ): ThreadLiveStatus {
-  return resolveEffectiveThreadStatus(thread, getThreadStatus(thread.id));
+  return resolveEffectiveThreadStatus(thread, getThreadStatus(thread.id), {
+    suppressDurableInterrupted: isThreadLiveStateHydrating(thread.id),
+  });
 }
 
 /**
  * Mark that the frontend has asked the backend for this thread's live
- * state. Returns a token so a later hydration of the same thread
- * supersedes this one: only the current token's snapshot applies.
+ * state and is waiting on the authoritative answer. During this gap the
+ * sidebar must not promote durable `hasIncompleteTurn` to Interrupted: on
+ * an older paired build the incomplete row may simply be the current
+ * active provider turn (EffectiveThreadStatusOptions).
+ *
+ * Returns a token so overlapping hydrations for the same thread cannot
+ * clear each other's guard out of order.
  */
 export function beginThreadLiveStateHydration(threadId: string): number {
   if (!threadId) return 0;
   const token = (liveStateHydrationTokenByThread.get(threadId) ?? 0) + 1;
   liveStateHydrationTokenByThread.set(threadId, token);
+  liveStateHydratingThreads.set(threadId, true);
   return token;
 }
 
@@ -341,6 +350,12 @@ export function finishThreadLiveStateHydration(threadId: string, token: number):
   if (!threadId || token === 0) return;
   if (liveStateHydrationTokenByThread.get(threadId) !== token) return;
   liveStateHydrationTokenByThread.delete(threadId);
+  liveStateHydratingThreads.set(threadId, false);
+}
+
+export function isThreadLiveStateHydrating(threadId: string | null | undefined): boolean {
+  if (!threadId) return false;
+  return liveStateHydratingThreads.get(threadId);
 }
 
 export function isThreadLiveStateHydrationCurrent(threadId: string, token: number): boolean {
@@ -388,6 +403,7 @@ export function clearThreadStatus(threadId: string): void {
   errorThreads.delete(threadId);
   interruptedThreads.delete(threadId);
   liveStateHydrationTokenByThread.delete(threadId);
+  liveStateHydratingThreads.drop(threadId);
   clearSendQueueForThread(threadId);
   // The provider's fast-mode report, compacting flag, and slash-command
   // list all belong to the thread's session; a thread being
@@ -844,13 +860,15 @@ export function projectThreadReverted(threadId: string): void {
   interactiveRevisions.delete(threadId);
   // Invalidate in-flight live-state hydrations: bump the token so a
   // snapshot requested before the revert fails its currency check on
-  // resolve.
+  // resolve. The hydrating flag clears here because the stale
+  // hydration's own finish call no-ops on the token mismatch.
   if (liveStateHydrationTokenByThread.has(threadId)) {
     liveStateHydrationTokenByThread.set(
       threadId,
       (liveStateHydrationTokenByThread.get(threadId) ?? 0) + 1,
     );
   }
+  liveStateHydratingThreads.set(threadId, false);
   clearSendQueueForThread(threadId);
   recalculateThreadStatus(threadId);
 }
@@ -1048,5 +1066,6 @@ export function resetForTest(): void {
   resetSubagentRunStatesForTest();
   resetBackgroundKillConfirmationForTest();
   resetProviderCommandsForTest();
+  liveStateHydratingThreads.reset();
   statuses.reset();
 }

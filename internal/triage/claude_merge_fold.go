@@ -263,9 +263,9 @@ func (r *Router) endFoldEmptiedTurn(threadID string, turnIndex int, now int64) {
 	if !found || turn.CompletedAt != nil {
 		return
 	}
-	if err := r.store.UpdateTurnCompleted(turn.TurnID, now, "end_turn", "", "", ""); err != nil {
-		r.turnSettleFailed(threadID, turnIndex, turn.TurnID, err, now)
-	}
+	// A failure is kept as an unrecorded end; the log and the thread's error
+	// row carry it.
+	_ = r.writeTurnEnd(threadID, turnIndex, turn.TurnID, turnEnd{completedAt: now, stopReason: "end_turn"})
 }
 
 // resolveMergedFlushRow finds a merged-away member's durable content. The row

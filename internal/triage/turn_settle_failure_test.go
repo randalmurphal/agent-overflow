@@ -58,7 +58,7 @@ func TestAFailedTurnSettleReachesTheThread(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			settlePrefix := TurnSettleFailureSummary(errors.New(""))
+			settlePrefix := TurnEndFailureSummary(errors.New(""))
 			reports := func(turnIndex int) int {
 				t.Helper()
 				n := 0

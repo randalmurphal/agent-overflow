@@ -70,8 +70,16 @@ describe('resolveEffectiveThreadStatus', () => {
     expect(resolveEffectiveThreadStatus(t({ hasActionableProposedPlan: true }), 'error')).toBe('error');
   });
 
-  it('restores interrupted from a recorded interruption when idle', () => {
+  it('restores interrupted from an incomplete latest turn when idle', () => {
     expect(resolveEffectiveThreadStatus(t({ hasIncompleteTurn: true }), 'idle')).toBe('interrupted');
+  });
+
+  it('does not infer interrupted while authoritative live state is hydrating', () => {
+    expect(
+      resolveEffectiveThreadStatus(t({ hasIncompleteTurn: true }), 'idle', {
+        suppressDurableInterrupted: true,
+      }),
+    ).toBe('idle');
   });
 
   it('restores plan-ready from an actionable proposed plan when idle', () => {
@@ -290,9 +298,9 @@ describe('row ring (the attention states)', () => {
 // each case's Go input, this function's `liveStatus` input, and the one
 // effective state both must return.
 describe('resolveEffectiveThreadStatus against the shared Go fixture', () => {
-  // thread.hasOpenTurn is Go's input only; the frontend states an open row
-  // as liveStatus 'running', since its live registry holds the turn until
-  // provider:turn_completed.
+  // Only the fields a thread row carries to the frontend are read here:
+  // thread.hasOpenTurn and the whole live column are Go's inputs, and the
+  // frontend's live input is liveStatus.
   interface FixtureCase {
     name: string;
     thread: {
@@ -313,7 +321,9 @@ describe('resolveEffectiveThreadStatus against the shared Go fixture', () => {
 
   for (const testCase of fixture.cases) {
     it(testCase.name, () => {
-      expect(resolveEffectiveThreadStatus(t(testCase.thread), testCase.liveStatus)).toBe(testCase.want);
+      const { hasIncompleteTurn, hasFailedTurn, hasActionableProposedPlan, worktreeSetupState } = testCase.thread;
+      const thread = t({ hasIncompleteTurn, hasFailedTurn, hasActionableProposedPlan, worktreeSetupState });
+      expect(resolveEffectiveThreadStatus(thread, testCase.liveStatus)).toBe(testCase.want);
     });
   }
 });

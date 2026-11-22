@@ -19,9 +19,12 @@ import (
 
 // ThreadRestSources is what the store holds of one thread's rest.
 type ThreadRestSources struct {
-	// TurnOpen: its latest turn row is open (GetActiveTurn), committed by
-	// the turn's start whether or not its frame has been published.
-	TurnOpen bool
+	// OpenTurnID: the turn id of its latest turn row when that row is open
+	// (GetActiveTurn), committed by the turn's start whether or not its
+	// frame has been published; empty when the row is settled or there is
+	// none. The app reads it as a running turn unless triage holds that
+	// turn's end unrecorded (App.turnRuns).
+	OpenTurnID string
 	// Asking: a question it asked that nobody answered yet.
 	Asking bool
 	// AnswerDue: an answer to a request it made on its way to it
@@ -191,7 +194,7 @@ func readRestSources(q sqlQueryer, threads []string) (_ map[string]ThreadRestSou
 		var src ThreadRestSources
 		var background, workflow, wake, reminder sql.NullString
 		var unarmed string
-		if err := rows.Scan(&id, &src.TurnOpen, &src.Asking, &src.AnswerDue, &background, &workflow, &wake, &reminder, &src.OpenWork, &unarmed); err != nil {
+		if err := rows.Scan(&id, &src.OpenTurnID, &src.Asking, &src.AnswerDue, &background, &workflow, &wake, &reminder, &src.OpenWork, &unarmed); err != nil {
 			return nil, fmt.Errorf("scan the sources: %w", err)
 		}
 		if background.Valid {
@@ -274,7 +277,7 @@ func remoteCommandRunningSQL(alias string) string {
 // probe of turns_thread_index. An accepted reminder is open (settled_at IS NULL),
 // so it is read among the open rows, not the caller's history.
 var threadRestSourcesSQL = `SELECT j.value,
-       COALESCE(` + newestTurnSQL("j.value", turnOpenSQL) + `, 0),
+       COALESCE(` + newestTurnSQL("j.value", openTurnIDSQL) + `, ''),
        EXISTS (SELECT 1 FROM async_questions q INDEXED BY idx_async_questions_pending
                 WHERE q.thread_id = j.value AND q.state IN ('unanswered','submitted','restored') AND q.state = 'unanswered')
          AND EXISTS (SELECT 1 FROM owned_threads t WHERE t.id = j.value AND t.archived = 0),

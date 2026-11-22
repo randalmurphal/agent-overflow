@@ -252,16 +252,17 @@ func (a *App) answerThreadAgentRows(ctx context.Context, owner, source string, a
 		return ThreadAgentRows{}, fmt.Errorf("read whether thread %s is at rest: %w", args.ThreadID, err)
 	}
 	if !rest.below {
-		listing.Worker = rest.unrest
+		listing.Worker = string(rest.unrest)
 	}
 	open := rest.unrest != ""
 	listing.Open = &open
-	tallies, err := a.store.ThreadTallies([]string{args.ThreadID}, time.Now())
+	now := time.Now()
+	tallies, err := a.store.ThreadTallies([]string{args.ThreadID}, now)
 	if err != nil {
 		return ThreadAgentRows{}, fmt.Errorf("read what thread %s did: %w", args.ThreadID, err)
 	}
 	// As this computer's own row of it reads (threadAgentView.row).
-	tally := tallies[args.ThreadID]
+	tally := a.liveTally(tallies[args.ThreadID], now)
 	listing.ToolCalls, listing.Tokens = tally.ToolCalls, tally.Tokens
 	listing.RuntimeMs, listing.TurnOpen = tally.RuntimeMs, tally.Running
 	if tally.Running {

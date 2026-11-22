@@ -158,7 +158,7 @@ func TestAWorkersAsyncQuestionGoesToItsSpawnerAndItsReplyAnswersIt(t *testing.T)
 		}
 	}
 	row, summary := f.row(t)
-	if row.Worker != workerBlocked || row.BlockedOn != "question" || row.BlockedDetail != "Which scope?" || row.BlockedRoutedTo != f.spawner.Title {
+	if row.Worker != string(workerBlocked) || row.BlockedOn != "question" || row.BlockedDetail != "Which scope?" || row.BlockedRoutedTo != f.spawner.Title {
 		t.Fatalf("the worker's row = %+v, want blocked on its question, routed to the spawner", row)
 	}
 	if summary.Open != 1 || summary.NeedYou != 0 {
@@ -258,7 +258,7 @@ func TestAWorkersAsyncQuestionAnsweredInTheWorkerRefusesTheSpawnersReply(t *test
 	if _, _, err := f.app.answerWorkerPrompt(t.Context(), caller, threadtools.ReplyCall{Token: second, Text: "later"}); !errors.Is(err, errWorkerPromptClosed) {
 		t.Fatalf("the second token's reply: %v, want the prompt closed", err)
 	}
-	if row, _ := f.row(t); row.Worker == workerBlocked {
+	if row, _ := f.row(t); row.Worker == string(workerBlocked) {
 		t.Fatalf("the worker's row = %+v after the person answered", row)
 	}
 }
@@ -281,7 +281,7 @@ func TestAnOwnedWorkersAsyncQuestionTheSpawnerCannotTakeNotifiesThePerson(t *tes
 		t.Fatalf("the spawner was given the question again: %q", tokens)
 	}
 	row, summary := f.row(t)
-	if row.Worker != workerBlocked || row.BlockedOn != "question" || row.BlockedRoutedTo != "" || summary.NeedYou != 1 {
+	if row.Worker != string(workerBlocked) || row.BlockedOn != "question" || row.BlockedRoutedTo != "" || summary.NeedYou != 1 {
 		t.Fatalf("the worker's row = %+v, summary %+v; want it blocked on the user", row, summary)
 	}
 	sends := f.questionSends("question:ask")
@@ -377,7 +377,7 @@ func TestAWorkersAsyncQuestionOutlivesItsSessionAndFollowsItsArchive(t *testing.
 	// question is not what holds it while it has work.
 	sendWithin(t, f.app, f.worker.ID, "keep going", 5*time.Second)
 	f.drain(t)
-	if row, _ := f.row(t); row.Worker != workerQueued || row.BlockedOn != "" {
+	if row, _ := f.row(t); row.Worker != string(workerQueued) || row.BlockedOn != "" {
 		t.Fatalf("the worker's row with a message queued = %+v, want queued and not blocked", row)
 	}
 }
@@ -433,7 +433,7 @@ func TestAWorkersOpenAsyncQuestionIsRoutedAgainAtBoot(t *testing.T) {
 	if _, handled, _ := f.app.answerWorkerPrompt(t.Context(), threadtools.Caller{ThreadID: f.spawner.ID}, threadtools.ReplyCall{Token: old, Text: "One"}); handled {
 		t.Fatal("the token from before the restart is still a prompt's")
 	}
-	if row, _ := f.row(t); row.Worker != workerBlocked || row.BlockedRoutedTo != f.spawner.Title {
+	if row, _ := f.row(t); row.Worker != string(workerBlocked) || row.BlockedRoutedTo != f.spawner.Title {
 		t.Fatalf("the worker's row after the boot = %+v", row)
 	}
 }
@@ -479,7 +479,7 @@ func (f asyncQuestionFixture) requireRoutedAgain(t *testing.T, sendID string) {
 	if workerAnswerSendIDRoot+token == sendID {
 		t.Fatal("the returned question went back to the spawner under its old token")
 	}
-	if row, _ := f.row(t); row.Worker != workerBlocked || row.BlockedRoutedTo != f.spawner.Title {
+	if row, _ := f.row(t); row.Worker != string(workerBlocked) || row.BlockedRoutedTo != f.spawner.Title {
 		t.Fatalf("the worker's row = %+v, want blocked on its question, routed to the spawner", row)
 	}
 }
@@ -505,7 +505,7 @@ func TestAWithdrawnSpawnerAnswerPutsTheQuestionToThePerson(t *testing.T) {
 		t.Fatalf("the spawner was given the question again: %q", tokens)
 	}
 	row, summary := f.row(t)
-	if row.Worker != workerBlocked || row.BlockedRoutedTo != "" || summary.NeedYou != 1 {
+	if row.Worker != string(workerBlocked) || row.BlockedRoutedTo != "" || summary.NeedYou != 1 {
 		t.Fatalf("the worker's row = %+v, summary %+v; want it blocked on the person", row, summary)
 	}
 	if sends := f.questionSends("question:ask"); len(sends) == 0 || sends[len(sends)-1].Retract {

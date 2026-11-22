@@ -11,11 +11,14 @@ import "strconv"
 // interruption is what that write recorded (stop_reason 'interrupted'),
 // never inferred from a live provider round having ended.
 //
-// The row stays open when nothing will settle it at runtime: its settle
-// write failed (triage gives the thread an error row that says so), or the
-// boot sweep failed (a failed boot phase). It reads as running until the
-// next boot's sweep records it as interrupted, as GetActiveTurn reads it for
-// send placement and revert, so a wait on that thread runs to its timeout.
+// The row stays open when the write of a turn's end fails, or the boot
+// sweep fails to settle it. Triage then holds the end it could not record
+// and writes it again until the store takes it
+// (triage/unrecorded_turn_ends.go); until then the app does not read the
+// open row as a running turn (App.turnRuns), which is why readers that
+// decide that take the open row's turn id (openTurnIDSQL). GetActiveTurn
+// still reads it as active, and send placement writes the end again before
+// it asks.
 
 // newestTurnSQL selects expr from thread's newest turn row, one probe of
 // turns_thread_index; NULL when the thread has no turn. expr reads the row
@@ -27,6 +30,10 @@ func newestTurnSQL(thread, expr string) string {
 
 // turnOpenSQL is true for a newest turn row that is still in flight.
 const turnOpenSQL = `nt.completed_at IS NULL`
+
+// openTurnIDSQL is the turn id of a newest turn row still in flight, NULL
+// for a settled one.
+const openTurnIDSQL = `CASE WHEN ` + turnOpenSQL + ` THEN nt.turn_id END`
 
 // Newest-turn states, as threadColumns derives them in one probe.
 const (

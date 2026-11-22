@@ -61,6 +61,9 @@ func (r *Router) startTurn(evt provider.ProviderEvent, resolve func() (int, erro
 	if open, ok := r.openTurnIndex(evt.ThreadID); ok && open != turnIndex {
 		r.settleQueuedEchoPredecessor(evt.ThreadID, open, startedAt, r.predecessorStopReason(evt.ThreadID, open, -1), evt.SessionToken)
 	}
+	// An earlier turn's end the store did not take is written before this
+	// turn's row: until it is, that row reads as the running turn.
+	r.retryUnrecordedEnds(evt.ThreadID)
 
 	// The turns row is reconciled BEFORE any router state is seeded on
 	// the index. upsertTurnRow can move the turn to a free index when a
@@ -466,6 +469,11 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 			event := r.buildRoundCompletedEvent(evt, round.TurnID, emitIndex, now, meta)
 			event.Quiet = quiet
 			r.emit(eventchan.ProviderTurnCompleted, event)
+			// After the emit: a snapshot taken between the two still
+			// names the round, and a client that has applied the emit
+			// drops it, because its round changed while the read was out
+			// or because the round's id is one it saw complete.
+			r.endRound(evt.ThreadID, round.TurnID)
 		}()
 	}
 
@@ -579,6 +587,9 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 			if hasRound {
 				roundCompletedAt = now
 			}
+			// The fold extends the end the first settle wrote, so that end
+			// is written first when the store did not take it.
+			r.retryUnrecordedEnds(evt.ThreadID)
 			foldErr := r.persistLateTurnPayload(evt, turnIndex, meta, roundCompletedAt)
 			lateErr = errors.Join(lateErr, foldErr)
 			// A later round of a quiet turn is as quiet: a read thread
@@ -751,7 +762,12 @@ func (r *Router) reopenSoftClosedTurn(evt provider.ProviderEvent) (bool, error) 
 	defer opening()
 	r.mu.Unlock()
 
-	err := r.store.ReopenTurn(r.persistedTurnID(evt, turnIndex))
+	turnID := r.persistedTurnID(evt, turnIndex)
+	// The turn runs again: the soft close's end, if the store did not take
+	// it, is no longer the turn's end, and a write of it in flight lands
+	// before the reopen.
+	r.dropUnrecordedEnd(turnID)
+	err := r.store.ReopenTurn(turnID)
 	if err != nil {
 		err = fmt.Errorf("reopen soft-closed turn %s/%d: %w", evt.ThreadID, turnIndex, err)
 	} else {
@@ -910,11 +926,16 @@ func (r *Router) settleTurnRow(evt provider.ProviderEvent, turnIndex int, now in
 			log.Printf("triage: turn %s/%d settled without a stop reason before its send %s was echoed", evt.ThreadID, turnIndex, head.AOItemID)
 		}
 	}
-	settled := true
-	if err := r.store.UpdateTurnCompleted(fields.logicalTurnID, now, fields.stopReason, fields.assistantMessageID, usageJSON, fields.errorMessage); err != nil {
-		settled = false
-		r.turnSettleFailed(evt.ThreadID, turnIndex, fields.logicalTurnID, err, now)
+	r.mu.Lock()
+	gate := r.turnSettleGate
+	r.mu.Unlock()
+	if gate != nil {
+		gate(evt.ThreadID)
 	}
+	settled := r.writeTurnEnd(evt.ThreadID, turnIndex, fields.logicalTurnID, turnEnd{
+		completedAt: now, stopReason: fields.stopReason, assistantMessageID: fields.assistantMessageID,
+		usageJSON: usageJSON, errorMessage: fields.errorMessage,
+	}) == nil
 	usageErr := r.appendUsageLedger(evt, fields.logicalTurnID, meta, now)
 	if quiet {
 		if settled {
@@ -1589,8 +1610,7 @@ func (r *Router) settleQueuedEchoPredecessor(threadID string, turnIndex int, com
 		}
 	}
 	turnID := r.persistedTurnID(provider.ProviderEvent{ThreadID: threadID}, turnIndex)
-	if err := r.store.UpdateTurnCompleted(turnID, completedAt, stopReason, "", "", ""); err != nil {
-		r.turnSettleFailed(threadID, turnIndex, turnID, err, completedAt)
+	if err := r.writeTurnEnd(threadID, turnIndex, turnID, turnEnd{completedAt: completedAt, stopReason: stopReason}); err != nil {
 		persistErr = errors.Join(persistErr, err)
 	}
 	r.finishTurnSpan(threadID, completedTurnOutcome(turnCompleteMeta{
@@ -1738,7 +1758,27 @@ func (r *Router) takeOpenRound(threadID, sessionToken string) (ActiveTurnSnapsho
 	round := st.currentRound
 	st.currentRound = ActiveTurnSnapshot{}
 	st.currentRoundOpen = false
+	st.endingRound, st.endingRoundSet = round, true
 	return round, true
+}
+
+// endRound clears the ending round once its provider:turn_completed is
+// out, unless a later round took the slot.
+func (r *Router) endRound(threadID, roundID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if st := r.threadStateIfPresent(threadID); st != nil && st.endingRoundSet && st.endingRound.TurnID == roundID {
+		st.endingRound, st.endingRoundSet = ActiveTurnSnapshot{}, false
+	}
+}
+
+// liveRoundLocked is the round the live-state snapshots report: the open
+// round, else the one whose end is not announced yet. Caller holds r.mu.
+func (st *threadState) liveRoundLocked() (ActiveTurnSnapshot, bool) {
+	if st.currentRoundOpen {
+		return st.currentRound, true
+	}
+	return st.endingRound, st.endingRoundSet
 }
 
 // openRoundID returns the active round id for threadID without
@@ -1987,13 +2027,24 @@ func stoppedSummary(summary string) string {
 // client connects, and the repaired rows are what the initial loads
 // read.
 //
+// When the sweep fails, the rows it left open are the previous instance's
+// all the same: they are kept as unrecorded ends (oweCrashedTurns), which
+// the thread tools read as error, and settled by the sweep's rule once the
+// store takes writes. A failure to list them is returned with the sweep's.
+//
 // Returns the count of settled turns.
 func (r *Router) RecoverCrashedTurns() (int, error) {
 	crashed, err := r.store.RecoverCrashedTurns(interruptedSummary, time.Now().UnixMilli())
-	if err != nil {
-		return len(crashed), fmt.Errorf("triage: recover crashed turns: %w", err)
+	if err == nil {
+		return len(crashed), nil
 	}
-	return len(crashed), nil
+	err = fmt.Errorf("triage: recover crashed turns: %w", err)
+	open, listErr := r.store.ListCrashedTurns()
+	if listErr != nil {
+		return len(crashed), errors.Join(err, fmt.Errorf("triage: list the turns the sweep left open: %w", listErr))
+	}
+	r.oweCrashedTurns(open)
+	return len(crashed), err
 }
 
 // StoppedByUser is the stop row of the user's own Stop.

@@ -18,7 +18,10 @@ import {
   projectTurnStarted,
   projectTurnCompleted,
   getThreadStatus,
+  getEffectiveThreadStatus,
+  isThreadLiveStateHydrating,
 } from './threadStatuses.svelte';
+import settling from '../../../../internal/app/testdata/turn_settling_snapshot.json';
 import {
   getFlushedForThread,
   getQueueForThread,
@@ -54,6 +57,56 @@ describe('createThreadPane', () => {
     resolve({ threadId: pane.threadId, activeTurn: { threadId: pane.threadId, turnId: 'finished', turnIndex: 2, startedAt: 10 } });
     await refreshing;
     expect(getActiveTurn(pane.threadId)).toBeNull();
+  });
+
+  // The snapshot GetThreadLiveState gives while a turn's end is written
+  // carries the ending round (internal/app/testdata/turn_settling_snapshot.json,
+  // captured by the Go test that holds a settle). provider:turn_completed
+  // follows the write; whichever reaches the pane first, the turn ends.
+  describe('the snapshot of a settling turn', () => {
+    const { threadId, activeTurn } = settling.liveState;
+    const holdSnapshot = () => {
+      let answer: ((value: unknown) => void) | undefined;
+      setBindingMock('GetThreadLiveState', () => new Promise((resolve) => { answer = resolve; }));
+      return async (value: unknown) => {
+        await vi.waitFor(() => expect(answer).toBeDefined());
+        answer!(value);
+      };
+    };
+
+    it('does not restart a turn whose completion landed while it was in flight', async () => {
+      const pane = await buildPane(makeThread({ id: threadId }));
+      projectTurnStarted(threadId, activeTurn.turnId, activeTurn.turnIndex, activeTurn.startedAt);
+      const answer = holdSnapshot();
+      const refreshing = pane.refreshFromBackend(true);
+      projectTurnCompleted(threadId, activeTurn.turnId);
+      await answer(settling.liveState);
+      await refreshing;
+      expect(getActiveTurn(threadId)).toBeNull();
+      expect(getThreadStatus(threadId)).toBe('idle');
+    });
+
+    it('does not start a turn this client only saw complete', async () => {
+      const pane = await buildPane(makeThread({ id: threadId }));
+      const answer = holdSnapshot();
+      const refreshing = pane.refreshFromBackend(true);
+      projectTurnCompleted(threadId, activeTurn.turnId);
+      await answer(settling.liveState);
+      await refreshing;
+      expect(getActiveTurn(threadId)).toBeNull();
+      expect(getThreadStatus(threadId)).toBe('idle');
+    });
+
+    it('shows the turn running until its completion lands', async () => {
+      const pane = await buildPane(makeThread({ id: threadId }));
+      setBindingMock('GetThreadLiveState', async () => settling.liveState);
+      await pane.refreshFromBackend(true);
+      expect(getActiveTurn(threadId)?.turnId).toBe(activeTurn.turnId);
+      expect(getThreadStatus(threadId)).toBe('running');
+      projectTurnCompleted(threadId, activeTurn.turnId);
+      expect(getActiveTurn(threadId)).toBeNull();
+      expect(getThreadStatus(threadId)).toBe('idle');
+    });
   });
 
   it('keeps newer live activity over an idle reconnect snapshot', async () => {
@@ -127,6 +180,46 @@ describe('createThreadPane', () => {
       }),
     );
     expect(pane.isLocked).toBe(true);
+  });
+
+  it('marks live state as hydrating before the backend switch round-trip returns', async () => {
+    const pane = createThreadPane();
+    let releaseSwitch!: (value: unknown) => void;
+    setBindingMock(
+      'SwitchThread',
+      (threadId: unknown) =>
+        new Promise((resolve) => {
+          releaseSwitch = resolve;
+          void threadId;
+        }),
+    );
+
+    const switching = pane.switchThread(makeThread({ id: 'thread-hydrating' }));
+    expect(isThreadLiveStateHydrating('thread-hydrating')).toBe(true);
+
+    releaseSwitch(makeThread({ id: 'thread-hydrating' }));
+    await switching;
+    expect(isThreadLiveStateHydrating('thread-hydrating')).toBe(false);
+  });
+
+  // hasIncompleteTurn is a recorded interruption on a backend of this build
+  // and, on an older paired build, also an open turn the user has not read.
+  // Nothing tells the two apart, so both read as not interrupted until the
+  // live-state snapshot says whether a turn runs.
+  it.each([
+    { name: "an older build's open unread turn", id: 'older-build-open-turn', running: true, want: 'running' },
+    { name: "this build's recorded interruption", id: 'this-build-interruption', running: false, want: 'interrupted' },
+  ])('reads $name by the snapshot, never as Interrupted before it', async ({ id, running, want }) => {
+    const thread = makeThread({ id, hasIncompleteTurn: true });
+    let answer: ((value: unknown) => void) | undefined;
+    setBindingMock('GetThreadLiveState', () => new Promise((resolve) => { answer = resolve; }));
+    const pane = createThreadPane();
+    const switching = pane.switchThread(thread);
+    await vi.waitFor(() => expect(answer).toBeDefined());
+    expect(getEffectiveThreadStatus(thread)).toBe('idle');
+    answer!({ threadId: id, activeTurn: running ? { threadId: id, turnId: 'round-1', turnIndex: 1, startedAt: 10 } : null });
+    await switching;
+    expect(getEffectiveThreadStatus(thread)).toBe(want);
   });
 
   it('loads items and seeds the context window from thread.lastTokenUsage', async () => {

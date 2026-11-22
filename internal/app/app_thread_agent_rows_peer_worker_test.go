@@ -107,12 +107,12 @@ func TestAFailedReadOfAPairedComputerKeepsItsWorkerOpen(t *testing.T) {
 	var peer *failingAgentsPeer
 	pair := newReachPairServedBy(t, serveFailingAgentsPeer(&peer))
 	agentPair, child := remoteRunningWorker(t, pair)
-	row := agentPair.askAgainUntilRow(t, func(row ThreadAgentRow, listed bool) bool { return listed && row.Worker == workerRunning })
-	agentPair.expectRemoteRowOpen(t, row, workerRunning)
+	row := agentPair.askAgainUntilRow(t, func(row ThreadAgentRow, listed bool) bool { return listed && row.Worker == string(workerRunning) })
+	agentPair.expectRemoteRowOpen(t, row, string(workerRunning))
 
 	peer.fail.Store(true)
 	row = agentPair.askAgainUntilRow(t, func(row ThreadAgentRow, listed bool) bool { return listed && row.NestedUnavailable != "" })
-	agentPair.expectRemoteRowOpen(t, row, workerRunning)
+	agentPair.expectRemoteRowOpen(t, row, string(workerRunning))
 	if want := row.Computer + " did not answer; its agents are not shown"; row.NestedUnavailable != want {
 		t.Fatalf("the row says %q, want %q", row.NestedUnavailable, want)
 	}
@@ -132,15 +132,15 @@ func TestAFailedReadOfAPairedComputerKeepsItsWorkerOpen(t *testing.T) {
 		t.Fatal(err)
 	}
 	row, _ = agentRowByToken(listing.Rows, agentPair.spawn.Token)
-	agentPair.expectRemoteRowOpen(t, row, workerWaiting)
+	agentPair.expectRemoteRowOpen(t, row, string(workerWaiting))
 	row = agentPair.askAgainUntilRow(t, func(row ThreadAgentRow, listed bool) bool { return listed && row.NestedUnavailable != "" })
-	agentPair.expectRemoteRowOpen(t, row, workerWaiting)
+	agentPair.expectRemoteRowOpen(t, row, string(workerWaiting))
 
 	peer.fail.Store(false)
 	row = agentPair.askAgainUntilRow(t, func(row ThreadAgentRow, listed bool) bool {
-		return listed && row.NestedUnavailable == "" && row.Worker == workerRunning
+		return listed && row.NestedUnavailable == "" && row.Worker == string(workerRunning)
 	})
-	agentPair.expectRemoteRowOpen(t, row, workerRunning)
+	agentPair.expectRemoteRowOpen(t, row, string(workerRunning))
 	if err := pair.dest.StopSession(child); err != nil {
 		t.Fatalf("StopSession there: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestARefusalForgetsTheLastWorkerState(t *testing.T) {
 	t.Parallel()
 	c := &threadAgentPeerCache{}
 	spawn := store.ThreadRequest{Token: "gone", TargetComputerID: "elsewhere"}
-	c.noteAnswerLocked(spawn, ThreadAgentRows{Worker: workerRunning}, nil, false)
+	c.noteAnswerLocked(spawn, ThreadAgentRows{Worker: string(workerRunning)}, nil, false)
 	refused := errorsx.Public(threadtools.CodeNotYours, "That thread is not this spawn's.", nil)
 	c.noteAnswerLocked(spawn, ThreadAgentRows{}, refused, false)
 	if entry := c.entries[spawn.Token]; entry.listing.Worker != "" || entry.err == nil {
@@ -243,7 +243,7 @@ func TestARemoteWorkerAtTheListingsLastLevelKeepsItsState(t *testing.T) {
 	var rows []ThreadAgentRow
 	waitUntil(t, 10*time.Second, func() bool {
 		rows = rootRows()
-		return len(rows) == 4 && rows[3].Worker == workerRunning
+		return len(rows) == 4 && rows[3].Worker == string(workerRunning)
 	})
 	remote := rows[3]
 	if remote.Token != agentPair.spawn.Token || remote.Depth != 3 || !remote.open() || remote.ComputerID != pair.computer {
@@ -289,8 +289,8 @@ func TestARemoteSpawnAtTheBoundSaysItsAgentsNestDeeper(t *testing.T) {
 	for _, listed := range [][]ThreadAgentRow{nil, {{Token: "below", Kind: store.ThreadRequestSpawn, State: threadtools.RequestRunning}}} {
 		parent := ThreadAgentRow{Token: "edge", Depth: threadAgentRowDepth - 1}
 		rows, entries := f.app.nestPeerAgentRows(&parent, threadAgentRemoteSlot{depth: threadAgentRowDepth, spawn: spawn},
-			threadAgentPeerAnswer{listing: ThreadAgentRows{Rows: listed, Worker: workerRunning}}, threadAgentRowDepth)
-		if len(rows) != 0 || len(entries) != 0 || parent.Worker != workerRunning || parent.NestedHidden != (len(listed) > 0) {
+			threadAgentPeerAnswer{listing: ThreadAgentRows{Rows: listed, Worker: string(workerRunning)}}, threadAgentRowDepth)
+		if len(rows) != 0 || len(entries) != 0 || parent.Worker != string(workerRunning) || parent.NestedHidden != (len(listed) > 0) {
 			t.Fatalf("with %d rows there: nested %v, parent %+v; want none nested, its state kept, and its rows said to nest deeper", len(listed), rows, parent)
 		}
 	}

@@ -301,6 +301,7 @@ func threadToolsLiveState(snapshot triage.LiveStateSnapshot) threadtools.LiveSta
 	return threadtools.LiveState{
 		ActiveTurn:        snapshot.ActiveTurn != nil,
 		PendingSends:      len(snapshot.QueueItems)+len(snapshot.FlushedItems) > 0 || snapshot.TurnOwed,
+		TurnEndUnrecorded: snapshot.TurnEndUnrecorded,
 		PendingApprovals:  len(snapshot.Interactive.Approvals),
 		PendingUserInputs: len(snapshot.Interactive.UserInputs),
 	}

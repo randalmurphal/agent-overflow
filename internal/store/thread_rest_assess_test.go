@@ -344,7 +344,7 @@ func TestASubtreeReadReachesThroughLinksAndReadsEachSource(t *testing.T) {
 		"a": {AnswerDue: true, Wake: true, WakeKind: AgentWakeLoop, WakeLabel: "board", Reminder: true, ReminderNote: "check the board",
 			OpenWork: true, Unarmed: []string{"quiet-send"}},
 		"b": {Background: true, BackgroundDetail: "deploy", BackgroundComputer: "pc", Unarmed: []string{}},
-		"c": {TurnOpen: true, Workflow: true, WorkflowGoal: "ship it", OpenWork: true, Unarmed: []string{}},
+		"c": {OpenTurnID: "c:2", Workflow: true, WorkflowGoal: "ship it", OpenWork: true, Unarmed: []string{}},
 	}
 	for id, src := range want {
 		if got := read.Sources[id]; fmt.Sprintf("%+v", got) != fmt.Sprintf("%+v", src) {

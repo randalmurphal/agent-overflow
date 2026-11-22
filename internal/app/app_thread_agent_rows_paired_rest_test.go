@@ -64,7 +64,7 @@ func TestAPairedSendHeldForItsWorkersRestReadsWaiting(t *testing.T) {
 		t.Fatal(err)
 	}
 	row, listed := agentRowByToken(rows.Rows, sent.Token)
-	if !listed || row.State != threadtools.RequestRunning || row.Worker != workerWaiting || row.Activity != "Loop · board" || !row.open() {
+	if !listed || row.State != threadtools.RequestRunning || row.Worker != string(workerWaiting) || row.Activity != "Loop · board" || !row.open() {
 		t.Fatalf("row %+v; want it open, waiting on the loop there", row)
 	}
 	report, err := pair.adapter().RequestStates(t.Context(), pair.callerIdentity(), threadtools.StatusCall{Tokens: []string{sent.Token}})

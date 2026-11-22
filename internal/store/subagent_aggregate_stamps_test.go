@@ -2418,7 +2418,7 @@ func TestSubagentCardStopWritesWhatItsAgentKeptLive(t *testing.T) {
 				if err := s.InsertTurn(Turn{TurnID: thread + "-turn-1", ThreadID: thread, TurnIndex: 1, StartedAt: 1}); err != nil {
 					t.Fatal(err)
 				}
-				if crashed, err := s.recoverCrashedTurns(summarise, 9_000); err != nil || len(crashed) != 1 {
+				if crashed, err := s.recoverCrashedTurns(summarise, 9_000, nil); err != nil || len(crashed) != 1 {
 					t.Fatalf("crash sweep: %v, %v", crashed, err)
 				}
 			}},
@@ -2631,7 +2631,7 @@ func TestSubagentCardSweepsRunPastAFailedFlush(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "injected flush failure") || len(retired) != 1 || retired[0].ID != "B" {
 		t.Errorf("Codex recovery past a failed flush: %d rows, %v; want B and the failure", len(retired), err)
 	}
-	crashed, err := s.recoverCrashedTurns(summarise, 9_000)
+	crashed, err := s.recoverCrashedTurns(summarise, 9_000, nil)
 	if err == nil || !strings.Contains(err.Error(), "injected flush failure") || len(crashed) != 1 {
 		t.Errorf("crash sweep past a failed flush: %v, %v; want the Codex turn and the failure", crashed, err)
 	}

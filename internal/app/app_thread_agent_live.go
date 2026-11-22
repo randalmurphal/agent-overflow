@@ -40,13 +40,17 @@ import (
 // settling or the retention sweep clearing a spawn, reads neither it nor
 // the marks: it reads the threads' own sources (readRest).
 
-// Why a worker is not at rest, in the order a row shows them. Waiting is
-// below the rest: background work, a loop, watch or reminder, or a timer.
+// workerState is why a worker is not at rest, in the order a row shows
+// them, or workerAtRest. Waiting is below the rest: background work, a
+// loop, watch or reminder, or a timer. A row carries it as its Worker word.
+type workerState string
+
 const (
-	workerBlocked = "blocked"
-	workerRunning = "running"
-	workerQueued  = "queued"
-	workerWaiting = "waiting"
+	workerAtRest  workerState = ""
+	workerBlocked workerState = "blocked"
+	workerRunning workerState = "running"
+	workerQueued  workerState = "queued"
+	workerWaiting workerState = "waiting"
 )
 
 // liveWorkers is the threads on this computer last found not at rest.
@@ -76,7 +80,7 @@ type liveWorker struct {
 // waits on, in the words of the row's activity line; below marks a thread
 // waiting only on open work below it (threadRest).
 type workerRest struct {
-	unrest string
+	unrest workerState
 	detail string
 	below  bool
 }
@@ -166,7 +170,7 @@ func (a *App) ownRest(threadID string, src store.ThreadRestSources) workerRest {
 	if unrest := a.workerHeldUnrest(threadID); unrest != "" {
 		return workerRest{unrest: unrest}
 	}
-	if src.TurnOpen {
+	if a.turnRuns(src.OpenTurnID) {
 		return workerRest{unrest: workerRunning}
 	}
 	if waits.unrest != "" {
@@ -175,10 +179,41 @@ func (a *App) ownRest(threadID string, src store.ThreadRestSources) workerRest {
 	return a.workerTimerUnrest(threadID)
 }
 
+// turnRuns is the one rule for whether a thread's open newest turn row,
+// openTurnID ("" for none), is a running turn: it is, unless the turn has
+// ended and triage holds the end the store did not take
+// (triage.UnrecordedTurnEnd). A reader of the row that decides running or
+// rest reads it through here or liveTally.
+func (a *App) turnRuns(openTurnID string) bool {
+	if openTurnID == "" {
+		return false
+	}
+	_, unrecorded := a.triage.UnrecordedTurnEnd(openTurnID)
+	return !unrecorded
+}
+
+// liveTally is a tally read at now as the Agents rows show it: a turn whose
+// end triage holds unrecorded has ended, so it does not run and its time is
+// its span to that end (none for a crashed turn, whose end the sweep's rule
+// decides) rather than to now.
+func (a *App) liveTally(tally store.ThreadTally, now time.Time) store.ThreadTally {
+	if !tally.Running {
+		return tally
+	}
+	endedAt, unrecorded := a.triage.UnrecordedTurnEnd(tally.OpenTurnID)
+	if !unrecorded {
+		return tally
+	}
+	tally.RuntimeMs -= max(0, now.UnixMilli()-tally.TurnStartedAt)
+	tally.RuntimeMs += max(0, endedAt-tally.TurnStartedAt)
+	tally.Running, tally.TurnStartedAt, tally.OpenTurnID = false, 0, ""
+	return tally
+}
+
 // workerHeldUnrest is why threadID is not at rest from what the app holds
 // in memory, no store read (threadWaitingOn): waiting on a prompt or an
 // async question, in a turn, or holding messages queued for one.
-func (a *App) workerHeldUnrest(threadID string) string {
+func (a *App) workerHeldUnrest(threadID string) workerState {
 	live := a.threadWaitingOn(threadID).live
 	switch {
 	case live.Blocked():
@@ -188,7 +223,7 @@ func (a *App) workerHeldUnrest(threadID string) string {
 	case live.PendingSends:
 		return workerQueued
 	}
-	return ""
+	return workerAtRest
 }
 
 // workerWaits is threadWaits over threadID's sources read now.

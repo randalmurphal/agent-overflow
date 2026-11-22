@@ -41,7 +41,7 @@ func (f *requestFixture) expectChainOpen(t *testing.T, threads []store.Thread, t
 		t.Fatalf("rows %v; want %v", got, shown)
 	}
 	for i, row := range rows {
-		if !row.open() || row.Worker != workerWaiting || row.Depth != i {
+		if !row.open() || row.Worker != string(workerWaiting) || row.Depth != i {
 			t.Fatalf("row %d = %+v; want it open, waiting on what runs below it", i, row)
 		}
 	}
@@ -52,7 +52,7 @@ func (f *requestFixture) expectChainOpen(t *testing.T, threads []store.Thread, t
 		t.Fatalf("summary %+v; want the %d workers shown counted", got, threadAgentRowDepth)
 	}
 	reads, err := f.app.GetThreadAgentRows(t.Context(), f.caller.ID, tokens[:1])
-	if err != nil || len(reads) != 1 || !reads[0].Listed || reads[0].Row.Worker != workerWaiting {
+	if err != nil || len(reads) != 1 || !reads[0].Listed || reads[0].Row.Worker != string(workerWaiting) {
 		t.Fatalf("named read %+v, %v; want the top link open", reads, err)
 	}
 	callers := append([]store.Thread{f.caller}, threads[:len(threads)-1]...)
@@ -167,7 +167,7 @@ func TestAWorkersRowReadsQueuedWhileAnAnswerIsOnItsWayToIt(t *testing.T) {
 	waitUntil(t, 10*time.Second, func() bool {
 		f.app.threadRequestsWG.Wait()
 		row, _ = agentRowByToken(f.listingAfterWindow(t, f.caller.ID).Rows, "spawn-w")
-		return f.callerAgentFrames(t, f.caller.ID) > frames && row.Worker == workerQueued
+		return f.callerAgentFrames(t, f.caller.ID) > frames && row.Worker == string(workerQueued)
 	})
 	if !row.open() {
 		t.Fatalf("row %+v; want it open while the answer is on its way", row)

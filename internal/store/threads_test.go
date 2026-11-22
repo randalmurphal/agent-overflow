@@ -1995,7 +1995,8 @@ func TestListThreadsWithItemsReadsOpenNewestTurnAsRunning(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("InsertTurn(): %v", err)
 	}
-	wantNewestTurn := func(what string, open, interrupted bool) {
+	wantNewestTurn := func(what, wantID string, interrupted bool) {
+		open := wantID != ""
 		t.Helper()
 		got := mustListSingleThreadWithItems(t, s)
 		if got.HasOpenTurn != open || got.HasIncompleteTurn != interrupted {
@@ -2005,31 +2006,38 @@ func TestListThreadsWithItemsReadsOpenNewestTurnAsRunning(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ReadThreadRestSources(): %v", err)
 		}
-		if src.TurnOpen != open {
-			t.Fatalf("%s: rest sources TurnOpen %v, want %v", what, src.TurnOpen, open)
+		if src.OpenTurnID != wantID {
+			t.Fatalf("%s: rest sources OpenTurnID %q, want %q", what, src.OpenTurnID, wantID)
+		}
+		tallies, err := s.ThreadTallies([]string{thread.ID}, time.UnixMilli(startedAt+50))
+		if err != nil {
+			t.Fatalf("ThreadTallies(): %v", err)
+		}
+		if tally := tallies[thread.ID]; tally.Running != open || tally.OpenTurnID != wantID {
+			t.Fatalf("%s: tally Running %v OpenTurnID %q, want %v %q", what, tally.Running, tally.OpenTurnID, open, wantID)
 		}
 	}
-	wantNewestTurn("open, never read", true, false)
+	wantNewestTurn("open, never read", "turn-1", false)
 	for _, lastReadAt := range []int64{startedAt - 1, startedAt, startedAt + 10} {
 		if _, _, err := s.setThreadLastRead(thread.ID, &lastReadAt); err != nil {
 			t.Fatalf("setThreadLastRead(%d): %v", lastReadAt, err)
 		}
-		wantNewestTurn("open, read", true, false)
+		wantNewestTurn("open, read", "turn-1", false)
 	}
 
 	if err := s.UpdateTurnCompleted("turn-1", startedAt+100, "end_turn", "", "", ""); err != nil {
 		t.Fatalf("UpdateTurnCompleted(): %v", err)
 	}
-	wantNewestTurn("settled end_turn", false, false)
+	wantNewestTurn("settled end_turn", "", false)
 
 	if err := s.InsertTurn(Turn{TurnID: "turn-2", ThreadID: thread.ID, TurnIndex: 1, StartedAt: startedAt + 200}); err != nil {
 		t.Fatalf("InsertTurn(next): %v", err)
 	}
-	wantNewestTurn("next turn open", true, false)
+	wantNewestTurn("next turn open", "turn-2", false)
 	if err := s.UpdateTurnCompleted("turn-2", startedAt+300, "interrupted", "", "", ""); err != nil {
 		t.Fatalf("UpdateTurnCompleted(interrupted): %v", err)
 	}
-	wantNewestTurn("settled interrupted, unread", false, true)
+	wantNewestTurn("settled interrupted, unread", "", true)
 }
 
 func TestListThreadsWithItemsDerivesIncompleteOnlyForNewestTurn(t *testing.T) {

@@ -1358,19 +1358,17 @@ describe('<ThreadRow> live status dot', () => {
     expect(dot.classList.contains('animate-pulse')).toBe(false);
   });
 
-  // hasIncompleteTurn is an interruption the row recorded, never an open
-  // turn, so the dot does not wait for the live-state snapshot.
-  it('renders durable Interrupted while server live state is hydrating', () => {
+  it('does not render durable Interrupted while server live state is hydrating', () => {
     const token = beginThreadLiveStateHydration('t-hydrating');
     try {
       const pane = createThreadPane();
-      const { getByTestId } = render(ThreadRow, {
+      const { queryByTestId } = render(ThreadRow, {
         props: {
           thread: makeThread({ id: 't-hydrating', hasIncompleteTurn: true }),
           pane,
         },
       });
-      expect(getByTestId('thread-row-status-dot').getAttribute('data-status')).toBe('interrupted');
+      expect(queryByTestId('thread-row-status-dot')).toBeNull();
     } finally {
       finishThreadLiveStateHydration('t-hydrating', token);
     }

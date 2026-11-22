@@ -185,6 +185,30 @@ func TestThreadTalliesFollowEveryWrite(t *testing.T) {
 	}
 }
 
+// Whether a turn runs is the newest turn row's, as every reader of it
+// decides (turn_newest.go): an older row left open below a settled one is
+// no running turn and adds no running time.
+func TestThreadTallyRunsOnlyAnOpenNewestTurn(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "worker")
+	if err := s.InsertTurn(Turn{TurnID: "worker:0", ThreadID: "worker", TurnIndex: 0, StartedAt: 1000}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InsertTurn(Turn{TurnID: "worker:1", ThreadID: "worker", TurnIndex: 1, StartedAt: 2000}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateTurnCompleted("worker:1", 2500, "end_turn", "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.ThreadTallies([]string{"worker"}, time.UnixMilli(9000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tally := got["worker"]; tally.Running || tally.OpenTurnID != "" || tally.RuntimeMs != 500 {
+		t.Fatalf("tally %+v; want the settled newest turn's 500 ms, not running", tally)
+	}
+}
+
 // A turn a crash left open ran until the last activity it recorded: the
 // boot ends it there and counts that span, not the hour the app was down,
 // and a later reopen and end of it moves the count by what it moved the

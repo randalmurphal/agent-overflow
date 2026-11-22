@@ -195,9 +195,9 @@ func TestARemoteWorkerAtRestPastTheFloorIsFoundWhenContinued(t *testing.T) {
 			t.Fatal(err)
 		}
 		row, _ = agentRowByToken(listing.Rows, spawn.Token)
-		return row.Worker == workerRunning
+		return row.Worker == string(workerRunning)
 	})
-	(&agentPeerPair{reachPair: pair, spawn: spawn}).expectRemoteRowOpen(t, row, workerRunning)
+	(&agentPeerPair{reachPair: pair, spawn: spawn}).expectRemoteRowOpen(t, row, string(workerRunning))
 	stop, err := pair.source.StopThreadAgentRow(t.Context(), pair.caller.ID, spawn.Token)
 	if err != nil || len(stop.Failures) != 0 || !stop.Interrupted {
 		t.Fatalf("the Stop of the lineage's worker = %+v, %v; want its turn interrupted there", stop, err)

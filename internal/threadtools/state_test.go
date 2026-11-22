@@ -23,6 +23,7 @@ type stateFixture struct {
 		Live struct {
 			ActiveTurn        bool `json:"activeTurn"`
 			PendingSends      bool `json:"pendingSends"`
+			TurnEndUnrecorded bool `json:"turnEndUnrecorded"`
 			PendingApprovals  int  `json:"pendingApprovals"`
 			PendingUserInputs int  `json:"pendingUserInputs"`
 		} `json:"live"`
@@ -61,6 +62,7 @@ func TestStateFixture(t *testing.T) {
 			live := LiveState{
 				ActiveTurn:        testCase.Live.ActiveTurn,
 				PendingSends:      testCase.Live.PendingSends,
+				TurnEndUnrecorded: testCase.Live.TurnEndUnrecorded,
 				PendingApprovals:  testCase.Live.PendingApprovals,
 				PendingUserInputs: testCase.Live.PendingUserInputs,
 			}
@@ -69,7 +71,7 @@ func TestStateFixture(t *testing.T) {
 			}
 			// The frontend input has to agree with the Go input, or the
 			// two tests would be checking different things.
-			if got := liveStatusOf(thread, live); got != testCase.LiveStatus {
+			if got := liveStatusOf(live); got != testCase.LiveStatus {
 				t.Fatalf("liveStatus in the fixture is %q, but live derives %q", testCase.LiveStatus, got)
 			}
 		})
@@ -77,19 +79,35 @@ func TestStateFixture(t *testing.T) {
 }
 
 // liveStatusOf is what the frontend's getThreadStatus derives from the
-// same inputs, so the fixture's two input columns cannot disagree. An open
-// row is running there because the frontend's live registry holds the turn
-// until provider:turn_completed, which follows the settle write.
-func liveStatusOf(thread Thread, live LiveState) string {
+// live fields it also receives, so the fixture's two input columns cannot
+// disagree. TurnEndUnrecorded is not one of them.
+func liveStatusOf(live LiveState) string {
 	switch {
 	case live.PendingApprovals > 0:
 		return StatePendingApproval
 	case live.PendingUserInputs > 0:
 		return StateAwaitingInput
-	case live.ActiveTurn || live.PendingSends || thread.HasOpenTurn:
+	case live.ActiveTurn || live.PendingSends:
 		return StateRunning
 	default:
 		return StateIdle
+	}
+}
+
+// TestStateReadsAnOpenRow covers what only Go reads, the newest turn row:
+// open with no live round, it is a running turn, unless triage holds the
+// turn's end unrecorded, which is an error at rest. The frontend has no
+// such input; its live registry holds a turn until provider:turn_completed.
+func TestStateReadsAnOpenRow(t *testing.T) {
+	open := Thread{HasOpenTurn: true}
+	if got := State(open, LiveState{}); got != StateRunning {
+		t.Errorf("an open row with no live round = %q, want running", got)
+	}
+	if got := State(open, LiveState{TurnEndUnrecorded: true}); got != StateError {
+		t.Errorf("an open row whose end is unrecorded = %q, want error", got)
+	}
+	if got := State(open, LiveState{ActiveTurn: true, TurnEndUnrecorded: true}); got != StateRunning {
+		t.Errorf("a live round over an unrecorded end = %q, want running", got)
 	}
 }
 

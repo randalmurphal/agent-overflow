@@ -175,11 +175,13 @@ func checkPlacement(placement string, group *string) error {
 // needs. Everything here dies with the provider session; the durable
 // fallbacks live on Thread.
 type LiveState struct {
-	// ActiveTurn is true while the provider's round runs. The round ends
-	// when the provider reports the turn complete, before the turn's row
-	// settles, so a turn still settling reads as running from
-	// Thread.HasOpenTurn.
+	// ActiveTurn is true while the provider's round runs, and while the
+	// turn the round ends is settled, until provider:turn_completed.
 	ActiveTurn bool
+	// TurnEndUnrecorded is true while a turn of the thread has ended and
+	// the store has not taken its end, so its row still reads open
+	// (Thread.HasOpenTurn) though nothing runs.
+	TurnEndUnrecorded bool
 	// PendingSends is true while a queued or flushed message has not yet
 	// produced its provider-visible echo. It keeps a thread reported as
 	// running across the gap between send and turn start.

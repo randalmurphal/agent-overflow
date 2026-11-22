@@ -38,6 +38,19 @@ export interface ThreadStatusPill {
   glowClass?: string;
 }
 
+export interface EffectiveThreadStatusOptions {
+  /**
+   * Suppress the durable interrupted fallback while the backend live-state
+   * snapshot is in flight. A backend of this build sets hasIncompleteTurn
+   * only for an interruption its newest turn row recorded, but an older
+   * paired build also sets it for an open turn the user has not read, which
+   * is a running turn. No capability tells the two apart, so the guard
+   * applies to every backend: until the snapshot lands, such a row does not
+   * read as Interrupted.
+   */
+  suppressDurableInterrupted?: boolean;
+}
+
 const RUNNING_SUCCESS = {
   dotClass: 'bg-success',
   pulse: true,
@@ -125,17 +138,16 @@ export function attentionKindOf(attention: ThreadAttention): AttentionKind {
  * naming a concrete failure with a repair the user has to run. Failed comes
  * before Interrupted in the same order the live registry keeps them; both
  * are cleared by the next turn, and Plan Ready is informational.
- * hasIncompleteTurn is an interruption the newest turn row recorded; a row
- * still open never sets it, so no live snapshot has to land first.
  */
 export function resolveEffectiveThreadStatus(
   thread: Pick<Thread, 'hasIncompleteTurn' | 'hasFailedTurn' | 'hasActionableProposedPlan' | 'worktreeSetupState'>,
   liveStatus: ThreadLiveStatus,
+  options: EffectiveThreadStatusOptions = {},
 ): ThreadLiveStatus {
   if (liveStatus !== 'idle') return liveStatus;
   if (thread.worktreeSetupState === 'failed') return 'setup-failed';
   if (thread.hasFailedTurn) return 'error';
-  if (thread.hasIncompleteTurn) return 'interrupted';
+  if (thread.hasIncompleteTurn && !options.suppressDurableInterrupted) return 'interrupted';
   if (thread.hasActionableProposedPlan) return 'plan-ready';
   return 'idle';
 }

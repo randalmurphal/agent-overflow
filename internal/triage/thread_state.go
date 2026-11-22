@@ -156,6 +156,14 @@ type threadState struct {
 	// "user-typed prompt is in flight."
 	currentRound     ActiveTurnSnapshot
 	currentRoundOpen bool
+	// endingRound is the round handleTurnComplete took (takeOpenRound)
+	// and has not announced the end of yet: provider:turn_completed
+	// follows the turn's settle writes. The live-state snapshots report it
+	// as the active round (liveRoundLocked), so a snapshot says what the
+	// push stream says until that announcement. Nothing else reads it;
+	// the claim of the round stays takeOpenRound's.
+	endingRound    ActiveTurnSnapshot
+	endingRoundSet bool
 
 	// tasks is the per-thread mirror of the Claude Task* family task
 	// list. Survives any number of Parser recreations within the process

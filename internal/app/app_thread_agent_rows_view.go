@@ -64,9 +64,14 @@ func (v threadAgentView) rows(requests []store.ThreadAgentRequest) ([]ThreadAgen
 			}
 		}
 	}
-	names, err := v.app.store.ThreadNames(ids, time.Now())
+	now := time.Now()
+	names, err := v.app.store.ThreadNames(ids, now)
 	if err != nil {
 		return nil, err
+	}
+	for id, name := range names {
+		name.Tally = v.app.liveTally(name.Tally, now)
+		names[id] = name
 	}
 	out := make([]ThreadAgentRow, 0, len(requests))
 	for _, request := range requests {
@@ -124,7 +129,7 @@ func (v threadAgentView) row(request store.ThreadAgentRequest, names map[string]
 	out := ThreadAgentRow{
 		Token: row.Token, CallerThreadID: row.CallerThreadID, Kind: row.Kind,
 		ThreadID: row.TargetThreadID, OpenThreadID: row.TargetThreadID,
-		ComputerID: row.TargetComputerID, Title: state.Title, State: state.State, Worker: worker,
+		ComputerID: row.TargetComputerID, Title: state.Title, State: state.State, Worker: string(worker),
 		LateReply: request.HasLateReply, CreatedAt: row.CreatedAt, SettledAt: row.SettledAt,
 		Depth: request.Depth, NestedHidden: request.NestedHidden,
 		RestUnreported: row.RestUnreported, LateReplyExpiredAt: state.LateReplyExpiredAt,

@@ -748,6 +748,10 @@ type App struct {
 	// have been given back to their owners (giveBackToOwners), so a test can
 	// land a watcher pass at that moment.
 	heldReturnedForTest func(threadID string)
+	// threadStateReadForTest, when set, runs in threadStateNow between its
+	// read of the thread's state and its read of the thread's rest, so a
+	// test can start a turn at that moment.
+	threadStateReadForTest func(threadID string)
 	// queueDropReadForTest, when set, runs in a wholesale drop between its
 	// read of the durable queue and its delete (dropDurableFlushQueue), so
 	// a test can queue a message at that moment.

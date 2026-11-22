@@ -50,6 +50,10 @@ func (a *App) resolveUserMessagePlacement(thread store.Thread, intent userMessag
 	var found bool
 	composer := intent == messageComposer || intent == messageLegacyComposer
 	if composer || intent == messageSteer || intent == messageFlush {
+		// A turn whose end the store did not take reads active until it
+		// does; its end is written again first, so a send after the store
+		// recovers is placed as at any turn boundary.
+		a.triage.RetryUnrecordedTurnEnds(thread.ID)
 		var err error
 		active, found, err = a.store.GetActiveTurn(thread.ID)
 		if err != nil {

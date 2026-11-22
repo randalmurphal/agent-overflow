@@ -33,6 +33,10 @@ type LiveStateSnapshot struct {
 	// holds from the send's write until ActiveTurn does, so the thread never
 	// reads as at rest between them; a direct send is never in FlushedItems.
 	TurnOwed bool
+	// TurnEndUnrecorded is whether a turn of the thread has ended and the
+	// store does not hold its end (unrecorded_turn_ends.go): the thread's
+	// newest row still reads open, and the turn is not running.
+	TurnEndUnrecorded bool
 }
 
 // LiveStateSnapshotForThread copies all frontend-visible live state for one
@@ -66,14 +70,16 @@ func (r *Router) LiveStateSnapshotForThread(threadID string) LiveStateSnapshot {
 	if id := r.identityIfPresent(threadID); id != nil {
 		snapshot.EffectiveModelRevision = id.effectiveModelRevision
 	}
+	// r.ends.mu is a leaf lock under r.mu. A thread whose crashed turn a
+	// failed boot sweep left open has no router state at all.
+	snapshot.TurnEndUnrecorded = r.ends.any(threadID)
 	st := r.threadStateIfPresent(threadID)
 	if st == nil {
 		return snapshot
 	}
 
-	if st.currentRoundOpen {
-		activeCopy := st.currentRound
-		snapshot.ActiveTurn = &activeCopy
+	if round, ok := st.liveRoundLocked(); ok {
+		snapshot.ActiveTurn = &round
 	}
 
 	snapshot.EffectiveModel = st.effectiveModel
@@ -186,8 +192,7 @@ func (r *Router) LiveActivitySnapshot() []ThreadLiveActivity {
 			continue
 		}
 		entry := ThreadLiveActivity{ThreadID: threadID, CompactingSinceUnixMs: st.compactingSince}
-		if st.currentRoundOpen {
-			round := st.currentRound
+		if round, ok := st.liveRoundLocked(); ok {
 			entry.ActiveTurn = &round
 		}
 		route := func(requestID string, to *provider.PromptRoute) {

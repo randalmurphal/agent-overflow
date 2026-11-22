@@ -299,7 +299,7 @@ func TestAnExpiredSpawnsNewWorkListsAndStopsUnderItsOwner(t *testing.T) {
 		if got, want := agentRowTokens(rows), []string{"lead-worker", open.Token}; !slices.Equal(got, want) {
 			t.Fatalf("rows %v; want the worker's new spawn under the expired one %v", got, want)
 		}
-		if rows[0].Answer != "" || rows[0].Worker != workerWaiting {
+		if rows[0].Answer != "" || rows[0].Worker != string(workerWaiting) {
 			t.Fatalf("the expired spawn %+v; want no answer, waiting on its worker's spawn", rows[0])
 		}
 		if summary, err := f.app.GetThreadWorkerSummary(t.Context(), f.caller.ID); err != nil || summary.Open != 2 {
