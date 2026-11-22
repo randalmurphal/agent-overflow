@@ -284,11 +284,10 @@ func TestDeleteThreadRemovesReplayLog(t *testing.T) {
 
 	replayDir := t.TempDir()
 	app.replay = replay.NewManager(replay.ManagerConfig{
-		RootDir:      replayDir,
-		QueueSize:    16,
-		WriterConfig: replay.WriterConfig{FsyncEvery: 1},
-		IdleTimeout:  100 * time.Second,
-		Enabled:      true,
+		RootDir:     replayDir,
+		QueueSize:   16,
+		IdleTimeout: 100 * time.Second,
+		Enabled:     true,
 	})
 	t.Cleanup(func() {
 		_ = app.replay.Shutdown(context.Background())
@@ -306,11 +305,9 @@ func TestDeleteThreadRemovesReplayLog(t *testing.T) {
 	if !app.replay.Enqueue(rec) {
 		t.Fatal("Enqueue dropped event on enabled manager")
 	}
-	// The bound only ends a drain that never happens: the writer Syncs
-	// after every write, so how long the drain takes is the disk's.
-	drained, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if err := app.replay.WaitForDrain(drained); err != nil {
+	// Nothing bounds the drain but go test's own timeout: a write can
+	// Sync, and deleteThread's Close does.
+	if err := app.replay.WaitForDrain(context.Background()); err != nil {
 		t.Fatalf("WaitForDrain: %v", err)
 	}
 	replayPath := filepath.Join(replayDir, thread.ID+".jsonl")
