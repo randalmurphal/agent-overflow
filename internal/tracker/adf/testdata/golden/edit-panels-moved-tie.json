@@ -1,0 +1,57 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "expand",
+      "attrs": {
+        "title": "Details"
+      },
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "Inside"
+            }
+          ]
+        },
+        {
+          "type": "panel",
+          "attrs": {
+            "panelType": "custom"
+          },
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Undo it"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "panel",
+          "attrs": {
+            "panelType": "custom"
+          },
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Ship it"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

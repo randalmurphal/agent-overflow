@@ -1,0 +1,39 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "a"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "hardBreak"
+        }
+      ]
+    },
+    {
+      "type": "extension",
+      "attrs": {
+        "extensionKey": "toc",
+        "extensionType": "com.atlassian.confluence.macro.core"
+      }
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "b changed"
+        }
+      ]
+    }
+  ]
+}

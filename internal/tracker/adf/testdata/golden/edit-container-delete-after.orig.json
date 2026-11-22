@@ -1,0 +1,59 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "intro"
+        }
+      ]
+    },
+    {
+      "type": "bodiedExtension",
+      "attrs": {
+        "extensionKey": "details",
+        "extensionType": "com.atlassian.confluence.macro.core",
+        "parameters": {
+          "macroParams": {
+            "id": {
+              "value": "props"
+            }
+          }
+        },
+        "localId": "m1"
+      },
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "inside"
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "more"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "outro"
+        }
+      ]
+    }
+  ]
+}

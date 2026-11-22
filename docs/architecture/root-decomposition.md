@@ -59,6 +59,7 @@ that recreates App's surface moves files without moving authority.
 | workflow provider execution | `internal/workflowhost` |
 | MCP coordination | `internal/mcpapp` |
 | agent thread tool contract and rendering | `internal/threadtools` |
+| issue tracker connections, key files and clients | `internal/trackerapp` |
 
 Consult the nearest package guide before changing an owner boundary.
 

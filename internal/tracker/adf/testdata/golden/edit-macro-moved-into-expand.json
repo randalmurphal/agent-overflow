@@ -1,0 +1,38 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "expand",
+      "attrs": {
+        "title": "More"
+      },
+      "content": [
+        {
+          "type": "extension",
+          "attrs": {
+            "extensionKey": "toc",
+            "extensionType": "com.atlassian.confluence.macro.core",
+            "layout": "default",
+            "parameters": {
+              "macroParams": {
+                "maxLevel": {
+                  "value": "3"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "Inside"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

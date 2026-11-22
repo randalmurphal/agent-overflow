@@ -1,0 +1,76 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "a"
+        }
+      ]
+    },
+    {
+      "type": "bodiedExtension",
+      "attrs": {
+        "extensionKey": "section",
+        "extensionType": "com.atlassian.confluence.macro.core",
+        "localId": "s1",
+        "parameters": {
+          "macroParams": {
+            "border": {
+              "value": "true"
+            }
+          }
+        }
+      },
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "first"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "bodiedExtension",
+      "attrs": {
+        "extensionKey": "section",
+        "extensionType": "com.atlassian.confluence.macro.core",
+        "localId": "s2",
+        "parameters": {
+          "macroParams": {
+            "border": {
+              "value": "true"
+            }
+          }
+        }
+      },
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "second"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "b"
+        }
+      ]
+    }
+  ]
+}

@@ -151,6 +151,9 @@ var (
 		"chatbar:favorites",
 		"keybindings:updated",
 		"provider:accounts_changed",
+		// A payload-less refetch nudge, the same membership as
+		// provider:accounts_changed.
+		"tracker:connections_updated",
 	}
 	// Wave 6d, extended in 6d2. Membership means a watching connection
 	// stops receiving the channel for threads it did not name, so a row

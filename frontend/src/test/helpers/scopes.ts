@@ -28,7 +28,7 @@ const PAYLOAD: PairingPayload = {
  * identity.ObserveScopes, which is pinned to transport's observe tier by
  * `TestObserveScopesAreTheObserveTier`.
  */
-export const OBSERVE_SCOPES = ['threads:read', 'files:read', 'settings:read'] as const;
+export const OBSERVE_SCOPES = ['threads:read', 'files:read', 'settings:read', 'tracker:read'] as const;
 
 /** Put the page in a paired session holding exactly `scopes`. */
 export async function pairWithScopes(scopes: readonly string[]): Promise<void> {

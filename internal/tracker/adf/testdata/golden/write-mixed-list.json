@@ -1,0 +1,78 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "bulletList",
+      "content": [
+        {
+          "type": "listItem",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "plain"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "taskList",
+      "attrs": {
+        "localId": "1a7d3072-00a0-4109-ac02-c5220f27fd8f"
+      },
+      "content": [
+        {
+          "type": "taskItem",
+          "attrs": {
+            "localId": "81ac621f-c538-4b7c-aa77-6a723db61dce",
+            "state": "TODO"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "task"
+            }
+          ]
+        },
+        {
+          "type": "taskItem",
+          "attrs": {
+            "localId": "7f4abca3-99bb-4fab-aea8-3cbdfe866ee5",
+            "state": "DONE"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "done"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "bulletList",
+      "content": [
+        {
+          "type": "listItem",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "plain again"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
