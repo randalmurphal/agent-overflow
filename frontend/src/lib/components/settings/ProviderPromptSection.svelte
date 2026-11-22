@@ -14,7 +14,7 @@
   import ClipboardCopy from '@lucide/svelte/icons/clipboard-copy';
   import Icon from '../primitives/Icon.svelte';
   import { settingsComputer } from './settingsComputer';
-  const { getSettings, updateSettingsPatch, backend, hasScope } = settingsComputer();
+  const { getSettings, updateSettingsPatch, backend, onHost: onThisHost } = settingsComputer();
   import { openInEditor } from '../../stores/openInEditor';
   import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
@@ -111,7 +111,7 @@
   // editor opens on that computer's desktop, so the control is offered only
   // where the page can act there. The path and the copied instructions are
   // shown everywhere: an agent on that computer can still be pointed at them.
-  let canOpenFiles = $derived(hasScope('host'));
+  let canOpenFiles = $derived(onThisHost());
 
   async function openPromptFile(path: string): Promise<void> {
     try {

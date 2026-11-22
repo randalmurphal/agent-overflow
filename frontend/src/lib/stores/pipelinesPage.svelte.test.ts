@@ -351,7 +351,7 @@ describe('the owning computer', () => {
     expect(pipelinesRows(PANE).map((row) => row.id)).toEqual(['3', '2', '1']);
   });
 
-  it('reads nothing until the computer grants git, stops when it is revoked, and the refresh still shows the refusal', async () => {
+  it('reads nothing until the computer grants git, claims a refusal only for a known one, stops when it is revoked, and the refresh still shows the refusal', async () => {
     stageBackend();
     const mocks = installMocks();
     const job = { id: '20', name: 'unit', status: 'running', logsAvailable: true };
@@ -363,6 +363,12 @@ describe('the owning computer', () => {
       logs: Object.fromEntries(jobs.map((jobId) => [jobId, { version: 1, totalLines: 1, totalBytes: 8, stableLines: 0, sections: [], available: true, downloading: false, error: '', seq: 2 }])),
     }));
     attachPipelinesPage(PANE, 'laptop');
+    await settle();
+    // A grant that has not arrived reads nothing and claims no refusal.
+    expect(mocks.projects).not.toHaveBeenCalled();
+    expect(pipelinesError(PANE)).toBeNull();
+    // A grant that leaves git out is the refusal.
+    await grantBackendScopes('laptop', ['threads:read']);
     await settle();
     expect(mocks.projects).not.toHaveBeenCalled();
     expect(pipelinesError(PANE)).toBe(NOT_GRANTED);
@@ -393,7 +399,7 @@ describe('the owning computer', () => {
 
     // Revoked: the reads stop, the subscription goes with the open log,
     // and both say why.
-    revokeBackendScopes('laptop');
+    await grantBackendScopes('laptop', ['threads:read']);
     await settle();
     expect(unsubscribe).toHaveBeenCalledWith('pipe-3');
     expect(selectedPipeline(PANE)?.ci.logView).toBeNull();

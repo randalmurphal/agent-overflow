@@ -13,6 +13,7 @@ import {
   isViewOnlyGrantSet,
   pageGrantsResolved,
   refreshGrantedScopes,
+  scopeGrant,
   setPageGrantsFromBootstrap,
 } from './scopes';
 
@@ -56,6 +57,25 @@ describe('scopes', () => {
     forgetGrantedScopes('gpu');
     expect(hasScope('git:operate', 'gpu')).toBe(false);
   });
+
+  // A computer that was off when this window loaded has answered no
+  // manifest, so its grant is unknown: it holds nothing, but it has refused
+  // nothing either. Its manifest's grant is a known answer, even an empty
+  // one.
+  it('keeps an attached computer with no grant yet as unknown, not refused', () => {
+    refreshGrantedScopes('gpu');
+    expect(grantedScopes('gpu').source).toBe('unknown');
+    expect(hasScope('threads:operate', 'gpu')).toBe(false);
+    expect(scopeGrant('threads:operate', 'gpu')).toBe('pending');
+    setCarriedSessionScopes('gpu', ['threads:read']);
+    expect(scopeGrant('threads:operate', 'gpu')).toBe('refused');
+    setCarriedSessionScopes('gpu', []);
+    expect(scopeGrant('threads:operate', 'gpu')).toBe('refused');
+    setCarriedSessionScopes('gpu', ['threads:read', 'threads:operate']);
+    expect(scopeGrant('threads:operate', 'gpu')).toBe('granted');
+    forgetGrantedScopes('gpu');
+    expect(scopeGrant('threads:operate', 'gpu')).toBe('pending');
+  });
   beforeEach(() => {
     clearPairedSession();
     __resetScopesForTest();
@@ -81,7 +101,7 @@ describe('scopes', () => {
       });
     });
     flushSync();
-    expect(source).toBe('unpaired');
+    expect(source).toBe('unknown');
     expect(held.some(Boolean)).toBe(false);
 
     // The same reader sees the manifest land without being asked again.

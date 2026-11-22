@@ -34,6 +34,7 @@
   import { draftSnapshotMatchesPersistedState } from '../../stores/composerDraftSnapshots';
   import { getActiveTurn } from '../../stores/threadStatuses.svelte';
   import ComposerInputSurface from '../composer/ComposerInputSurface.svelte';
+  import { threadScopeGrant } from '../../transport/entityScopes';
   import type {
     ComposerInputSurfaceHandle,
     ComposerInputValueInfo,
@@ -231,6 +232,7 @@
     value={draft.content}
     disabled={busy}
     placeholder="Edit this message"
+    attachAccess={threadScopeGrant('attachments:write', pane.threadId, pane.thread?.projectId)}
     oninput={handleInputValue}
     onSubmitEnter={submit}
     shouldDeleteAttachmentRecord={(id) => session.sessionUploadedIds.has(id)}

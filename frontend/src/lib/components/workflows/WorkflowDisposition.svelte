@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { workflowItemHasScope } from '../../transport/entityScopes';
+  import { workflowItemScopeGrant } from '../../transport/entityScopes';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
   // The disposition block on a terminal run (UI-SPEC §4.3 "done", §4.7). A
   // manual disposition renders as a receipt; an auto-merge project's receipt
   // also carries the policy that decided it and the one-line undo.
@@ -23,7 +24,8 @@
   let { item, disposition }: Props = $props();
 
   // Every control here drives the workflow engine, which is `threads:autonomy`.
-  let ungranted = $derived(!workflowItemHasScope('threads:autonomy', item.id));
+  let grant = $derived(workflowItemScopeGrant('threads:autonomy', item.id));
+  let ungranted = $derived(grant !== 'granted');
   let base = $derived(disposition.base || item.baseBranch || 'base');
   let mode = $derived(disposition.mode === 'ff' ? 'fast-forward' : disposition.mode === 'merge' ? 'merge commit' : 'merged');
   let headline = $derived(
@@ -94,14 +96,14 @@
         class="rounded-md border border-border-subtle px-2.5 py-1 text-fg-muted hover:text-fg disabled:cursor-not-allowed disabled:opacity-50"
         onclick={() => { void openPRThread('review'); }}
         disabled={ungranted || busy !== '' || reviewCount === null}
-        title={ungranted ? 'Not granted to this device' : reviewError || undefined}
+        title={grantBlockedTitle(grant) ?? (reviewError || undefined)}
         data-testid="workflow-pr-review-comments"
       >Review comments ({reviewError ? '–' : reviewCount ?? '…'})</button>
       <button
         class="rounded-md border border-border-subtle px-2.5 py-1 text-fg-muted hover:text-fg disabled:cursor-not-allowed disabled:opacity-50"
         onclick={() => { void openPRThread('discuss'); }}
         disabled={ungranted || busy !== ''}
-        title={ungranted ? 'Not granted to this device' : undefined}
+        title={grantBlockedTitle(grant)}
         data-testid="workflow-pr-discuss"
       >Discuss this PR</button>
     </div>

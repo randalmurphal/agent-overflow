@@ -1,6 +1,7 @@
 <script lang="ts">
   import { threadMachine } from '../../stores/attachedBackends.svelte';
-  import { threadHasScope } from '../../transport/entityScopes';
+  import { threadScopeGrant } from '../../transport/entityScopes';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
   import { onDestroy, onMount, untrack } from 'svelte';
   import Send from '@lucide/svelte/icons/send';
   import X from '@lucide/svelte/icons/x';
@@ -50,7 +51,8 @@
   let sidebarRoot: HTMLElement | undefined = $state(undefined);
   let threadId = $derived(ctx.threadId);
   // SendPlanRevisionComments writes the thread under `threads:operate`.
-  let operateUngranted = $derived(!threadHasScope('threads:operate', threadId, ctx.thread?.projectId));
+  let operateGrant = $derived(threadScopeGrant('threads:operate', threadId, ctx.thread?.projectId));
+  let operateUngranted = $derived(operateGrant !== 'granted');
   // Plan derivation reads ONLY from the per-thread plan cache, not pane.items.
   // The cache is kept current synchronously by retainProposedPlanEventListener
   // (see proposedPlans.svelte.ts), so chat streaming chunks no longer reach
@@ -320,7 +322,7 @@
           size="sm"
           loading={sendingDrafts}
           disabled={operateUngranted}
-          title={operateUngranted ? 'Not granted to this device' : undefined}
+          title={grantBlockedTitle(operateGrant)}
           onclick={() => void sendDrafts()}
           testId="plan-comments-send"
         >

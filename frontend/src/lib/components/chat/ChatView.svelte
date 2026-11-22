@@ -1,6 +1,6 @@
 <script lang="ts">
   import { withForkProgress } from '../../stores/forkPreparation.svelte';
-  import { threadHasScope } from '../../transport/entityScopes';
+  import { threadScopeGrant } from '../../transport/entityScopes';
   import { onDestroy, onMount, untrack } from 'svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import MessageTimeline from './MessageTimeline.svelte';
@@ -104,7 +104,7 @@
     !askCopy
       && !assistantsOff
       && providerSupports(pane.thread?.provider, 'fork')
-      && threadHasScope('threads:operate', pane.threadId, pane.thread?.projectId),
+      && threadScopeGrant('threads:operate', pane.threadId, pane.thread?.projectId) === 'granted',
   );
   // Run on a shell code block runs a command here and sends its output to the
   // thread, so it is offered only to a session granted both, and never in an
@@ -112,8 +112,8 @@
   const canRunShell = $derived(
     !askCopy
       && !assistantsOff
-      && threadHasScope('terminal:operate', pane.threadId, pane.thread?.projectId)
-      && threadHasScope('threads:operate', pane.threadId, pane.thread?.projectId),
+      && threadScopeGrant('terminal:operate', pane.threadId, pane.thread?.projectId) === 'granted'
+      && threadScopeGrant('threads:operate', pane.threadId, pane.thread?.projectId) === 'granted',
   );
   // On a phone the edit happens in the composer's slot, where the keyboard
   // already fits: the timeline row would sit behind it. The composer stays
@@ -240,7 +240,7 @@
     // view-only device does, so a session without that grant would issue
     // one refused RPC per thread open and per settling turn. The local
     // read state below still updates; only the durable stamp is skipped.
-    if (!threadHasScope('threads:operate', pane.threadId, pane.thread?.projectId)) return;
+    if (threadScopeGrant('threads:operate', pane.threadId, pane.thread?.projectId) !== 'granted') return;
     const elapsed = Date.now() - lastReadPersistStartedAt;
     const canPersistNow =
       !readPersistInFlight

@@ -7,6 +7,7 @@ import { connectedAfterConfirm, headlessPairing } from './headless-pairing-helpe
 import { startTogether } from './launch-helpers.js';
 import { reloadAtRoot } from './compact-history-helpers.js';
 import { instrument } from './offhost-helpers.js';
+import { expectProjectsMenuSays, watchProjectsQuiet } from './sidebar-quiet-helpers.js';
 import { runSessionCLI } from './session-cli-helpers.js';
 import { randomUUID } from 'node:crypto';
 import { unusedPort } from '../src/ports.js';
@@ -220,6 +221,11 @@ export function connectedComputersFlow(): void {
       await reloadAtRoot(page);
       await expect(page.getByText('already-cloned', { exact: true })).toBeVisible();
       await expect(page.getByText('Mac checkout', { exact: true })).toBeVisible();
+      // Through the first several of its dials, the stopped computer adds
+      // no status line and no animation to the closed Projects section; the
+      // Projects menu says it is offline.
+      expect(await watchProjectsQuiet(page, 8_000)).toMatchObject({ statusLines: [], animations: [] });
+      await expectProjectsMenuSays(page, /Offline/);
       await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).fontSize)).toBe(changedFont);
       expect(errors).toEqual([]);
       expect(surfaced.errorToasts).toEqual([]);

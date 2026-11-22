@@ -43,6 +43,7 @@ import {
 } from '../../../test/helpers/backends';
 import { __resetEntityIndexForTest, noteProject, noteThread } from '../../transport/entityIndex';
 import { resetProjectsForTest } from '../../stores/projects.svelte';
+import { UNREACHABLE_SETTLE_MS } from '../../stores/transportStatus.svelte';
 import { __resetBackendIdentityForTest, setBackendIdentityFromBootstrap } from '../../transport/backendIdentity';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { resetSidebarForTest, setShowProviderIcons } from '../../stores/sidebar.svelte';
@@ -1583,8 +1584,9 @@ describe('<ThreadRow> status is visual only', () => {
 });
 
 describe('<ThreadRow> on an unreachable machine', () => {
-  // Wave 7c: a row whose backend is off-line dims, and home never does —
-  // the page's own outage is the transport banner's job.
+  // A row whose backend has been off-line for a while dims, and home never
+  // does: the page's own outage is the transport banner's job. A shorter
+  // drop changes nothing on the row.
   beforeEach(async () => {
     resetPanesForTest();
     resetPaneLayoutForTest();
@@ -1595,25 +1597,52 @@ describe('<ThreadRow> on an unreachable machine', () => {
     resetKeyboardModifiersForTest();
     resetStagedBackends();
     __resetEntityIndexForTest();
+    vi.useFakeTimers();
   });
 
   afterEach(() => {
     resetStagedBackends();
     __resetEntityIndexForTest();
+    vi.useRealTimers();
   });
 
-  it('dims a row whose machine cannot be reached, and clears when it returns', async () => {
+  it('dims a row once its machine has been unreachable a while, and clears when it returns', async () => {
     const staged = stageBackend({ status: 'reconnecting' });
     noteThread('thread-1', 'laptop');
     const thread = makeThread();
     const pane = createThreadPane();
     const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
     const row = getByTestId('thread-row');
+    vi.advanceTimersByTime(UNREACHABLE_SETTLE_MS - 1);
+    await tick();
+    expect(row).not.toHaveAttribute('data-machine-unreachable');
+    vi.advanceTimersByTime(1);
+    await tick();
     expect(row).toHaveAttribute('data-machine-unreachable', 'true');
 
     staged.setStatus('connected');
     await tick();
     expect(row).not.toHaveAttribute('data-machine-unreachable');
+  });
+
+  it("keeps a working row live through a drop shorter than the settle time", async () => {
+    resetThreadStatuses();
+    const staged = stageBackend();
+    noteThread('thread-1', 'laptop');
+    projectTurnStarted('thread-1', 'turn-1', 0, 0);
+    const { getByTestId } = render(ThreadRow, { props: { thread: makeThread(), pane: createThreadPane() } });
+    const dot = getByTestId('thread-row-status-dot');
+    for (let i = 0; i < 3; i++) {
+      staged.setStatus('reconnecting');
+      vi.advanceTimersByTime(UNREACHABLE_SETTLE_MS - 1);
+      await tick();
+      expect(dot).toHaveClass('animate-pulse');
+      expect(dot).toHaveAttribute('aria-label', 'Working');
+      expect(getByTestId('thread-row')).not.toHaveAttribute('data-machine-unreachable');
+      staged.setStatus('connected');
+      await tick();
+    }
+    resetThreadStatuses();
   });
 
   it("shows the computer's last-known status still, labelled, and live again on reconnect", async () => {
@@ -1623,6 +1652,8 @@ describe('<ThreadRow> on an unreachable machine', () => {
     projectTurnStarted('thread-1', 'turn-1', 0, 0);
     const { getByTestId } = render(ThreadRow, { props: { thread: makeThread(), pane: createThreadPane() } });
     const dot = getByTestId('thread-row-status-dot');
+    vi.advanceTimersByTime(UNREACHABLE_SETTLE_MS);
+    await tick();
     expect(dot).not.toHaveClass('animate-pulse');
     expect(dot.getAttribute('aria-label')).toMatch(/^Last known: Working\. .+ is unreachable$/);
     expect(dot).toHaveAttribute('title', dot.getAttribute('aria-label'));
@@ -1639,6 +1670,8 @@ describe('<ThreadRow> on an unreachable machine', () => {
     const thread = makeThread();
     const pane = createThreadPane();
     const { getByTestId } = render(ThreadRow, { props: { thread, pane } });
+    vi.advanceTimersByTime(UNREACHABLE_SETTLE_MS);
+    await tick();
     expect(getByTestId('thread-row')).not.toHaveAttribute('data-machine-unreachable');
   });
 });

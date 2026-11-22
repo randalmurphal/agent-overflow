@@ -12,6 +12,7 @@
   // (docs/specs/standing-agents.md, "Interrupt and end session").
 
   import ArrowUp from '@lucide/svelte/icons/arrow-up';
+  import type { ControlAccess } from '../../../transport/scopes';
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import Play from '@lucide/svelte/icons/play';
   import Square from '@lucide/svelte/icons/square';
@@ -21,6 +22,7 @@
   import Menu from '../../primitives/Menu.svelte';
   import MenuItem from '../../primitives/MenuItem.svelte';
   import type { SendButtonAction } from './sendButtonTypes';
+  import { grantBlockedTitle } from '../../../transport/scopeRefusal';
 
   interface Props {
     canSend: boolean;
@@ -62,8 +64,11 @@
      * without one. Undefined when the computer does not say.
      */
     sessionLive?: boolean;
-    /** This device lacks `threads:operate` there: both items are inert, saying why. */
-    sessionUngranted?: boolean;
+    /**
+     * This device's `threads:operate` there. Both items are inert unless
+     * `granted`, and say why only when the grant is known to lack it.
+     */
+    sessionAccess?: ControlAccess;
   }
 
   let {
@@ -82,7 +87,7 @@
     interruptLabel = 'Interrupt current turn',
     onEndSession,
     sessionLive,
-    sessionUngranted = false,
+    sessionAccess = 'granted',
   }: Props = $props();
   let menuTriggerEl: HTMLButtonElement | undefined = $state(undefined);
   let menuOpen = $state(false);
@@ -328,14 +333,14 @@
       <Menu ariaLabel="Session" onClose={closeMenu}>
         <MenuItem
           label="Interrupt"
-          disabled={!turnRunning || sessionUngranted}
-          title={sessionUngranted ? 'Not granted to this device' : undefined}
+          disabled={!turnRunning || sessionAccess !== 'granted'}
+          title={grantBlockedTitle(sessionAccess)}
           onSelect={handleMenuInterrupt}
         />
         <MenuItem
           label="End Session"
-          disabled={sessionLive === false || sessionUngranted}
-          title={sessionUngranted ? 'Not granted to this device' : sessionLive === false ? 'No session is running' : undefined}
+          disabled={sessionLive === false || sessionAccess !== 'granted'}
+          title={grantBlockedTitle(sessionAccess) ?? (sessionLive === false ? 'No session is running' : undefined)}
           onSelect={handleEndSession}
         />
       </Menu>

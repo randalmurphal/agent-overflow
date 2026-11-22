@@ -9,6 +9,8 @@
     selected: boolean;
     focused: boolean;
     disabled: boolean;
+    /** Why it is disabled, when something other than an answer in flight holds it. */
+    title?: string;
     tabIndex?: number;
     onSelect: () => void;
     onFocus: () => void;
@@ -22,6 +24,7 @@
     selected,
     focused,
     disabled,
+    title,
     tabIndex = -1,
     onSelect,
     onFocus,
@@ -46,6 +49,7 @@
   aria-pressed={selected ? 'true' : 'false'}
   tabindex={tabIndex}
   {disabled}
+  {title}
   onclick={onSelect}
   onmouseenter={onFocus}
   onfocus={onFocus}

@@ -82,7 +82,7 @@
     formatToolUses,
     resolveSubagentProgress,
   } from '../../utils/subagentProgress';
-  import { threadHasScope } from '../../transport/entityScopes';
+  import { threadScopeGrant } from '../../transport/entityScopes';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
   import ToolRowStatusIndicator from './ToolRowStatusIndicator.svelte';
   import RowError from './RowError.svelte';
@@ -297,7 +297,7 @@
     pane !== undefined
       && isRunning
       && !isBackgroundNode
-      && threadHasScope('threads:operate', parent.threadId)
+      && threadScopeGrant('threads:operate', parent.threadId) === 'granted'
       && (parentToolName === 'Agent' || parentToolName === 'Task'),
   );
   let backgroundError = $state('');

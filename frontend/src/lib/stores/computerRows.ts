@@ -1,4 +1,4 @@
-import { DisconnectedError } from '../transport/wsClient';
+import { DisconnectedError, type TransportStatus } from '../transport/wsClient';
 import { beginCatalogRead, type CatalogRead } from './computerCatalogReads';
 // A failed list read is not an empty computer. Read each computer's share
 // independently and retain only that computer's cached rows on failure.
@@ -160,6 +160,17 @@ export function beginShare<T>(part: CatalogPart<T>, target: BackendEntry): Compu
 }
 
 /**
+ * Whether a list read can go to a computer in this status: its socket is
+ * open, or its first dial is still in flight (the read rides that dial,
+ * under its deadline). Any other status is offline to a read; once the
+ * first attempt has failed the reconnect ladder owns retries, and the
+ * computer's first hello refreshes every list (computerHydration).
+ */
+export function catalogReadServable(status: TransportStatus): boolean {
+  return status === 'connected' || status === 'disconnected';
+}
+
+/**
  * Read one computer's rows. Resolves on time with the answer, the failure,
  * or a late result once `deadlineMs` passed; the late answer or late
  * failure then goes to `late`. A failure with no rows of a known source in
@@ -176,15 +187,10 @@ export async function readShare<T>(
   let error: unknown;
   try {
     // Every saved computer gets its first dial, independently and under
-    // the same deadline: 'disconnected' is the status until an attempt
-    // has failed, and a phone need not have a legacy HOME slot at all.
-    // Once that attempt has failed the reconnect ladder owns retries and
-    // this read treats the computer as offline like any other; its first
-    // hello refreshes every list (computerHydration). Issuing the read
-    // regardless would fire one dial per list per refresh at a computer
-    // that is off.
-    const status = target.status.status;
-    if (status !== 'connected' && status !== 'disconnected') throw new DisconnectedError('Computer is offline.');
+    // the same deadline, and a phone need not have a legacy HOME slot at
+    // all. Issuing the read to a computer that is otherwise not servable
+    // would fire one dial per list per refresh at a computer that is off.
+    if (!catalogReadServable(target.status.status)) throw new DisconnectedError('Computer is offline.');
     const request = withBackendTarget(target.id, part.read);
     const rows = (deadlineMs === null ? await request : await readBeforeDeadline(
       request, deadlineMs,

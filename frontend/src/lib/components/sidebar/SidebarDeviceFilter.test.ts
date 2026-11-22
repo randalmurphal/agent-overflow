@@ -1,5 +1,10 @@
 import { beforeEach, afterEach, expect, it, vi } from 'vitest';
-import { render, fireEvent, waitFor } from '@testing-library/svelte';
+import { render, fireEvent, waitFor, within } from '@testing-library/svelte';
+import { takePinnedBackend } from '../../transport/backends';
+import { TransportError, type TransportStatusSnapshot } from '../../transport/wsClient';
+import { resetCatalogLoadForTest } from '../../stores/catalogLoad.svelte';
+import { __setTransportStatusForTest } from '../../stores/transportStatus.svelte';
+import { normalizedTextContent } from '../../../test/helpers/textContent';
 import { tick } from 'svelte';
 import ProjectsSection from './ProjectsSection.svelte';
 import SidebarDeviceFilter from './SidebarDeviceFilter.svelte';
@@ -9,7 +14,7 @@ import { setBackendIdentityFromBootstrap } from '../../transport/backendIdentity
 import { noteProject, noteThread } from '../../transport/entityIndex';
 import { addProjectLocal, updateProjectLocal, resetProjectsForTest, touchProjectActivity } from '../../stores/projects.svelte';
 import { replaceAllThreads } from '../../stores/threads.svelte';
-import { listCatalogTreesForTest } from '../../stores/sidebarCatalogs';
+import { listCatalogTreesForTest, loadSidebarCatalogs, resetSidebarCatalogsForTest } from '../../stores/sidebarCatalogs';
 import { upsertThreadGroup, resetThreadGroupsForTest } from '../../stores/threadGroups.svelte';
 import { showAllSidebarDevices, setSidebarDeviceVisible, sidebarDevices } from '../../stores/sidebarDevices.svelte';
 import { setProjectSortMode } from '../../stores/sidebar.svelte';
@@ -52,8 +57,8 @@ for (const compact of [false, true]) it(`filters merged projects and search with
   expect(view.container.querySelectorAll('[data-testid="project-item"]')).toHaveLength(1);
   await fireEvent.click(view.getByRole('button', { name: 'Filter projects by computer' }));
   await fireEvent.keyDown(view.getByRole('menuitem', { name: 'All computers' }), { key: 'ArrowDown' });
-  expect(document.activeElement).toBe(view.getByRole('menuitemcheckbox', { name: 'Mac' }));
-  const checkbox = view.getByRole('menuitemcheckbox', { name: 'GPU' });
+  expect(document.activeElement).toBe(view.getByRole('menuitemcheckbox', { name: /^Mac/ }));
+  const checkbox = view.getByRole('menuitemcheckbox', { name: /^GPU/ });
   expect(checkbox).toHaveAttribute('aria-checked', 'true');
   await fireEvent.click(checkbox); await tick();
   expect(checkbox).toHaveAttribute('aria-checked', 'false');
@@ -66,7 +71,7 @@ for (const compact of [false, true]) it(`filters merged projects and search with
   setThreadFilterQuery('GPU work'); await tick();
   expect(view.queryByText('GPU work')).not.toBeInTheDocument();
   setThreadFilterQuery('');
-  await fireEvent.click(view.getByRole('menuitemcheckbox', { name: 'Mac' })); await tick();
+  await fireEvent.click(view.getByRole('menuitemcheckbox', { name: /^Mac/ })); await tick();
   expect(view.getByText('No projects on the selected computers.')).toBeInTheDocument();
   expect(pane.thread?.id).toBe(elsewhere.id);
   await fireEvent.click(view.getByRole('menuitem', { name: 'All computers' })); await tick();
@@ -76,10 +81,10 @@ for (const compact of [false, true]) it(`filters merged projects and search with
   // action on it still executes on this computer's project.
   resetBindingMocks();
   const archive = setBindingMock('ArchiveProject', vi.fn(async () => undefined));
-  if (view.queryByRole('menuitemcheckbox', { name: 'Mac' }) === null) {
+  if (view.queryByRole('menuitemcheckbox', { name: /^Mac/ }) === null) {
     await fireEvent.click(view.getByRole('button', { name: 'Filter projects by computer' }));
   }
-  await fireEvent.click(view.getByRole('menuitemcheckbox', { name: 'Mac' })); await tick();
+  await fireEvent.click(view.getByRole('menuitemcheckbox', { name: /^Mac/ })); await tick();
   await fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
   expect(view.queryByText('Local pinned thread')).not.toBeInTheDocument();
   expect(view.getByTestId('project-item')).toHaveAttribute('data-project-id', 'local-project');
@@ -88,6 +93,93 @@ for (const compact of [false, true]) it(`filters merged projects and search with
   expect(view.getByRole('dialog')).toHaveTextContent('Archive "Shared project" on Mac.');
   await fireEvent.click(view.getByRole('button', { name: 'Archive' }));
   await waitFor(() => expect(archive).toHaveBeenCalledWith('local-project'));
+});
+
+// The menu is where the sidebar says how each computer is: plain text in
+// each row, and Retry on a load that failed for a reason other than reaching
+// the computer. Nothing in the open menu moves.
+for (const compact of [false, true]) it(`names each computer's state in its menu row, with Retry on a failed load (${compact ? 'phone' : 'desktop'})`, async () => {
+  setCompactLayoutForTest(compact);
+  vi.spyOn(console, 'error').mockImplementation(() => {});
+  resetCatalogLoadForTest(); resetSidebarCatalogsForTest();
+  __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
+  const gpu = stageBackend({ id: 'remote', backendId: 'remote-id', name: 'GPU' });
+  let gpuFails = true;
+  setBindingMock('ListProjects', async () => {
+    if (takePinnedBackend() === 'remote' && gpuFails) throw new TransportError('method_error', 'list projects: database disk image is malformed');
+    return [];
+  });
+  setBindingMock('ListThreads', async () => []);
+  setBindingMock('ListThreadGroups', async () => []);
+  try {
+    await loadSidebarCatalogs();
+    const view = render(ProjectsSection, { props: { pane: null } });
+    await tick();
+    expect(view.queryByTestId('sidebar-catalog-status')).toBeNull();
+    await fireEvent.click(view.getByRole('button', { name: 'Filter projects by computer' }));
+    const mac = view.getByTestId('sidebar-device-local-id');
+    // The row's element changes with its Retry, so each check finds it anew.
+    const row = () => view.getByTestId('sidebar-device-remote-id');
+    // Name, status, then the visible check.
+    expect(normalizedTextContent(mac)).toBe('Mac Connected ✓');
+    expect(normalizedTextContent(row())).toBe('GPU Database disk image is malformed. ✓ Retry');
+    expect(row()).toHaveAttribute('title', 'Database disk image is malformed.');
+    expect(within(mac).queryByRole('button')).toBeNull();
+
+    gpuFails = false;
+    await fireEvent.click(within(row()).getByRole('button', { name: 'Retry loading GPU' }));
+    await waitFor(() => expect(normalizedTextContent(row())).toBe('GPU Connected ✓'));
+    expect(within(row()).queryByRole('button')).toBeNull();
+
+    const said: [TransportStatusSnapshot['status'], string][] = [
+      ['reconnecting', 'GPU Offline ✓'], ['disconnected', 'GPU Connecting… ✓'], ['unauthorized', 'GPU Not connected ✓'], ['connected', 'GPU Connected ✓'],
+    ];
+    for (const [status, text] of said) {
+      gpu.setStatus(status); await tick();
+      expect(normalizedTextContent(row())).toBe(text);
+      expect(within(row()).queryByRole('button')).toBeNull();
+      expect(view.queryByTestId('sidebar-catalog-status')).toBeNull();
+      expect(document.querySelector('[role="menu"] [class*="animate-"], [role="menu"] [aria-busy="true"]')).toBeNull();
+    }
+  } finally {
+    resetCatalogLoadForTest(); resetSidebarCatalogsForTest(); resetBindingMocks(); vi.restoreAllMocks();
+  }
+});
+
+// A load error is the row's answer only while the computer can serve its
+// Retry. After the error the computer going offline, refused or asking to
+// pair is what the row says, with no Retry; reached again, the error and
+// its Retry return.
+it('names the connection before a kept load error, and offers Retry only while it can be served', async () => {
+  vi.spyOn(console, 'error').mockImplementation(() => {});
+  resetCatalogLoadForTest(); resetSidebarCatalogsForTest();
+  __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
+  const gpu = stageBackend({ id: 'remote', backendId: 'remote-id', name: 'GPU' });
+  setBindingMock('ListProjects', async () => {
+    if (takePinnedBackend() === 'remote') throw new TransportError('method_error', 'list projects: database disk image is malformed');
+    return [];
+  });
+  setBindingMock('ListThreads', async () => []);
+  setBindingMock('ListThreadGroups', async () => []);
+  try {
+    await loadSidebarCatalogs();
+    const view = render(ProjectsSection, { props: { pane: null } });
+    await tick();
+    await fireEvent.click(view.getByRole('button', { name: 'Filter projects by computer' }));
+    const row = () => view.getByTestId('sidebar-device-remote-id');
+    expect(normalizedTextContent(row())).toBe('GPU Database disk image is malformed. ✓ Retry');
+    for (const [status, text] of [
+      ['reconnecting', 'GPU Offline ✓'], ['unauthorized', 'GPU Not connected ✓'], ['pairing-required', 'GPU Not connected ✓'],
+    ] as const) {
+      gpu.setStatus(status); await tick();
+      expect(normalizedTextContent(row()), status).toBe(text);
+      expect(within(row()).queryByRole('button'), status).toBeNull();
+    }
+    gpu.setStatus('connected'); await tick();
+    expect(normalizedTextContent(row())).toBe('GPU Database disk image is malformed. ✓ Retry');
+  } finally {
+    resetCatalogLoadForTest(); resetSidebarCatalogsForTest(); resetBindingMocks(); vi.restoreAllMocks();
+  }
 });
 
 for (const remote of [true, false]) it(`renders the Projects heading as ${remote ? 'a computer filter' : 'plain text in a build without remote access'}`, () => {
