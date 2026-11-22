@@ -2,6 +2,7 @@ package store
 
 import (
 	"testing"
+	"time"
 )
 
 // v159 adds a request's run columns, a receipt's, and the indexes of open runs. A row from
@@ -218,6 +219,45 @@ func TestAPairedComputersRunIsKeptOnItsReceipts(t *testing.T) {
 	}
 	if threads, any, err := s.OpenRunThreads(); err != nil || any || len(threads) != 0 {
 		t.Fatalf("OpenRunThreads = %v %v, %v; want no run open", threads, any, err)
+	}
+}
+
+// A worker at rest whose newest turn row is open has no turn running it
+// (its end was refused): a paired computer's run that ends at that rest
+// keeps the turn's time to its last item write, as the boot sweep will
+// record its end and the live row reads it, not to the rest.
+func TestAReceiptRunEndedOnAnOpenRowKeepsTheTurnToItsLastActivity(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	mustCreateThread(t, s, "w")
+	if _, _, err := s.AcceptThreadRequestReceipt(ThreadRequestReceipt{
+		Token: "spawn", OwnerDeviceID: "dev", SourceComputerID: "pc", SourceThreadID: "lead", Kind: ThreadRequestSpawn,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if named, _, err := s.SetThreadReceiptTarget("spawn", "w", false); err != nil || !named {
+		t.Fatalf("name the spawn's target: %v %v", named, err)
+	}
+	mustExec(t, s.db, `INSERT INTO thread_tallies (thread_id, tool_calls, tokens, turn_ms) VALUES ('w', 3, 30, 300)
+		ON CONFLICT(thread_id) DO UPDATE SET tool_calls = 3, tokens = 30, turn_ms = 300`)
+	started := time.Now().Add(-10 * time.Second).UnixMilli()
+	if err := s.InsertTurn(makeInflightTurn("w-0", "w", 0, started)); err != nil {
+		t.Fatal(err)
+	}
+	seedItemWithStatus(t, s, "w", "text", 0, 0, "assistant_text", "completed", "Done", false)
+	mustExec(t, s.db, `UPDATE items SET created_at = ?, updated_at = ? WHERE id = 'text'`, started+1000, started+4000)
+	if _, err := s.SettleLocalThreadRequest("spawn", ThreadReceiptOpenStates(), ThreadRequestSettlement{
+		State: ThreadReceiptReplied, Answer: []byte("done"), AnswerKind: ThreadAnswerReply,
+	}, ThreadRequestReplied); err != nil {
+		t.Fatal(err)
+	}
+	rest := &RestGuard{Roots: []string{"w"}, AtRest: func(SubtreeRest) []string { return []string{"w"} }}
+	if ended, err := s.EndThreadRequestRunsAtRest("w", rest); err != nil || !ended {
+		t.Fatalf("EndThreadRequestRunsAtRest = %v, %v", ended, err)
+	}
+	run, err := s.ReceiptRunOf("dev", "lead", "w")
+	if err != nil || run.End == nil || run.End.TurnMs != 300+4000 {
+		t.Fatalf("the run %+v (end %+v), %v; want its turn time 300 ms before the turn plus the turn's 4000 ms to its last item write", run, run.End, err)
 	}
 }
 
