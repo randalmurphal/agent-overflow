@@ -32,7 +32,9 @@ import (
 //  2. its session file's OS lock (deviceclient.WithSession), the
 //     cross-process order;
 //  3. at most one shared file's locks at a time, briefly: its in-process
-//     key in Manager.profiles, then its OS lock (deviceclient.WithProfileLock);
+//     key in Manager.sharedFiles, then its OS lock (deviceclient.WithProfileLock).
+//     Not Manager.profiles: a computer id may spell a shared file's lock
+//     name, and its transition would then wait on its own profile lock;
 //  4. Manager.mu, a leaf: nothing waits while holding it
 //     (TestNothingWaitsUnderTheManagerMutex).
 //
@@ -137,7 +139,7 @@ func (tx *computerTx) excluded() (bool, error) { return tx.m.ownDeviceExcluded(t
 // setExcluded records or clears the computer's own-device exclusion. It is
 // the one writer of excluded-own-devices.json.
 func (tx *computerTx) setExcluded(excluded bool) error {
-	unlock := tx.m.profiles.Lock(ownExclusionsLock)
+	unlock := tx.m.sharedFiles.Lock(ownExclusionsLock)
 	defer unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -171,7 +173,7 @@ func (tx *computerTx) agentAccess() (bool, error) {
 // writer of agent-access.json. Turning one on also prunes the opt-ins of
 // computers with no session stored, which only a verdict leaves behind.
 func (tx *computerTx) setAgentAccess(enabled bool) error {
-	unlock := tx.m.profiles.Lock(agentAccessLock)
+	unlock := tx.m.sharedFiles.Lock(agentAccessLock)
 	defer unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -215,18 +217,12 @@ const (
 // cancelled or the computer is not wanted any more (admitEnrollment), both
 // decided in the transaction, so neither a forget nor a pairing another
 // manager wrote since the check before the redemption is overwritten. The
-// carrier is swapped only once the replacement is saved: until then, and
-// after a refusal or a failure, the cached carrier and its connections stay
-// as they were. The swap happens under the session file's lock, which is
-// what fences the old carrier's verdict path: a rotation it has in flight
-// sees the replacement only after the lock is released, by when it is no
-// longer the cached carrier (endSession).
-//
-// A person's pairing is a new grant. Its writes, in order: agent access
-// off, the session (no nickname), the exclusion cleared. A crash after the
-// session leaves the computer paired and still excluded, so no automatic
-// introduction follows. An introduction keeps agent access and the stored
-// nickname: it upgrades a pairing, it does not grant one.
+// carrier is swapped only once every write has succeeded (savePairing):
+// until then, and after a refusal or a failure, the cached carrier and its
+// connections stay as they were. The swap happens under the session file's
+// lock, which is what fences the old carrier's verdict path: a rotation it
+// has in flight sees the replacement only after the lock is released, by
+// when it is no longer the cached carrier (endSession).
 func (m *Manager) commitEnrollment(e *enrollment, link deviceclient.Link, redeemed *deviceclient.Redemption) (Attachment, *carrier, error) {
 	var attachment Attachment
 	var installed *carrier
@@ -239,33 +235,17 @@ func (m *Manager) commitEnrollment(e *enrollment, link deviceclient.Link, redeem
 			m.moveEnrollment(e, enrollmentCommitted, enrollmentFailed)
 			return err
 		}
-		var client *deviceclient.Client
-		var pairing deviceclient.Pairing
-		var err error
-		if e.purpose == introductionByPeer {
-			nickname := ""
-			if loadErr == nil {
-				nickname = stored.Nickname
-			}
-			client, pairing, err = redeemed.Save(tx.held, nickname)
-		} else {
-			client, pairing, err = m.commitPersonsPairing(tx, redeemed, stored, loadErr)
-		}
+		built, pairing, err := m.savePairing(tx, e.purpose == introductionByPeer, redeemed, stored, loadErr)
 		if err != nil {
 			m.moveEnrollment(e, enrollmentCommitted, enrollmentFailed)
 			return err
-		}
-		built, err := newCarrier(client, link.BackendID)
-		if err != nil {
-			m.moveEnrollment(e, enrollmentCommitted, enrollmentFailed)
-			return errors.Join(err, tx.restore(stored, loadErr))
 		}
 		if tx.install(built) {
 			installed = built
 		}
 		attachment = Attachment{
 			ID:                 link.BackendID,
-			Name:               displayName(client.Session()),
+			Name:               displayName(built.client.Session()),
 			Endpoint:           link.Endpoint,
 			VerificationNumber: pairing.VerificationNumber,
 		}
@@ -274,39 +254,61 @@ func (m *Manager) commitEnrollment(e *enrollment, link deviceclient.Link, redeem
 	return attachment, installed, err
 }
 
-// commitPersonsPairing makes a person's pairing's writes, in the order
-// commitEnrollment states, and rolls them back if one fails.
-func (m *Manager) commitPersonsPairing(tx *computerTx, redeemed *deviceclient.Redemption, stored deviceclient.Session, loadErr error) (*deviceclient.Client, deviceclient.Pairing, error) {
-	granted, err := tx.agentAccess()
-	if err != nil {
-		return nil, deviceclient.Pairing{}, err
-	}
-	wasExcluded, err := tx.excluded()
-	if err != nil {
-		return nil, deviceclient.Pairing{}, err
-	}
-	rollBack := func(err error, session bool) error {
-		if session {
-			err = errors.Join(err, tx.restore(stored, loadErr))
+// savePairing makes an enrollment's writes and builds its carrier, in
+// order, and if any step fails rolls back every write it made to the values
+// read in this transaction (stored, loadErr and its own reads), so a failed
+// commit leaves the session, the exclusion and agent access as they were.
+//
+// A person's pairing is a new grant. Its steps: agent access off, the
+// session (no nickname), the carrier built, the exclusion cleared. A crash
+// after the session leaves the computer paired and still excluded, so no
+// automatic introduction follows. An introduction writes only the session,
+// keeping agent access and the stored nickname: it upgrades a pairing, it
+// does not grant one.
+func (m *Manager) savePairing(tx *computerTx, introduction bool, redeemed *deviceclient.Redemption, stored deviceclient.Session, loadErr error) (built *carrier, pairing deviceclient.Pairing, err error) {
+	var undo []func() error
+	defer func() {
+		if err != nil {
+			for i := len(undo) - 1; i >= 0; i-- {
+				err = errors.Join(err, undo[i]())
+			}
+			built, pairing = nil, deviceclient.Pairing{}
+		}
+	}()
+	nickname, wasExcluded := "", false
+	if introduction {
+		if loadErr == nil {
+			nickname = stored.Nickname
+		}
+	} else {
+		granted, err := tx.agentAccess()
+		if err != nil {
+			return nil, deviceclient.Pairing{}, err
+		}
+		if wasExcluded, err = tx.excluded(); err != nil {
+			return nil, deviceclient.Pairing{}, err
+		}
+		if err := tx.setAgentAccess(false); err != nil {
+			return nil, deviceclient.Pairing{}, err
 		}
 		if granted {
-			err = errors.Join(err, tx.setAgentAccess(true))
+			undo = append(undo, func() error { return tx.setAgentAccess(true) })
 		}
-		return err
 	}
-	if err := tx.setAgentAccess(false); err != nil {
+	client, pairing, err := redeemed.Save(tx.held, nickname)
+	if err != nil {
 		return nil, deviceclient.Pairing{}, err
 	}
-	client, pairing, err := redeemed.Save(tx.held, "")
-	if err != nil {
-		return nil, deviceclient.Pairing{}, rollBack(err, false)
+	undo = append(undo, func() error { return tx.restore(stored, loadErr) })
+	if built, err = m.buildCarrier(client, tx.id); err != nil {
+		return nil, deviceclient.Pairing{}, err
 	}
 	if wasExcluded {
 		if err := tx.setExcluded(false); err != nil {
-			return nil, deviceclient.Pairing{}, rollBack(err, true)
+			return nil, deviceclient.Pairing{}, err
 		}
 	}
-	return client, pairing, nil
+	return built, pairing, nil
 }
 
 // Remove forgets one machine, whichever pairing with it is stored, also one

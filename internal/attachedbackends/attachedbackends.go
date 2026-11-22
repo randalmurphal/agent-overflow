@@ -95,6 +95,12 @@ type Manager struct {
 	// replaces it or the end of its work takes it (TakeVerdict).
 	verdicts map[string]string
 	profiles *keyedlock.Registry
+	// sharedFiles is this process's lock on each shared pairing file, keyed
+	// by the file's lock name (computer_state.go).
+	sharedFiles *keyedlock.Registry
+	// buildCarrier builds a carrier over a client (newCarrier); a test
+	// makes it fail.
+	buildCarrier func(*deviceclient.Client, string) (*carrier, error)
 	// closed refuses new carriers once Close has begun, and renewals joins
 	// the renewal goroutine each carrier runs.
 	closed   bool
@@ -127,7 +133,8 @@ func New(dir, label, platform string) (*Manager, error) {
 	}
 	life, endLife := context.WithCancelCause(context.Background())
 	return &Manager{dir: dir, label: label, platform: platform, carriers: map[string]*carrier{}, enrollments: map[string]*enrollment{},
-		verdicts: map[string]string{}, profiles: keyedlock.New(), life: life, endLife: endLife}, nil
+		verdicts: map[string]string{}, profiles: keyedlock.New(), sharedFiles: keyedlock.New(), buildCarrier: newCarrier,
+		life: life, endLife: endLife}, nil
 }
 
 // Attached implements transport.AttachedBackends.
@@ -201,7 +208,7 @@ func (m *Manager) carrier(ctx context.Context, id string) (*carrier, error) {
 	if err != nil {
 		return nil, err
 	}
-	built, err := newCarrier(client, id)
+	built, err := m.buildCarrier(client, id)
 	if err != nil {
 		return nil, err
 	}
