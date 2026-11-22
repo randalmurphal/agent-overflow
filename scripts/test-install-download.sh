@@ -2,8 +2,11 @@
 set -eu
 
 ROOT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
-TMP_DIR=$(mktemp -d)
-trap 'rm -rf "$TMP_DIR"' EXIT HUP INT TERM
+# Signal handling and temporary files follow main_shell_signals_unix_test.go.
+TMP_PREFIX=${TMPDIR:-/tmp}/ao-test-install-download.$$.
+trap 'rm -rf "$TMP_PREFIX"*' EXIT
+case ${BASH_VERSION:-} in 5.2.*) ;; *) trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM ;; esac
+TMP_DIR=$(mktemp -d "${TMP_PREFIX}XXXXXX")
 
 make_fake_release() {
 	dir=$1

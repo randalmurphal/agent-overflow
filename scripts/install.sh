@@ -14,8 +14,19 @@ SOURCE=""
 REPO=${AO_INSTALL_REPO:-randalmurphal/agent-overflow}
 DOWNLOAD_DIR=""
 ASSET_DIR=""
-CLEANUP_PATHS=""
 GITLAB_TAG=""
+
+# Signal handling and temporary files follow main_shell_signals_unix_test.go.
+# Every temporary path starts with TMP_PREFIX, or with BUNDLE_PREFIX once the
+# macOS install names it, and is removed on exit by that prefix.
+TMP_PREFIX=${TMPDIR:-/tmp}/agent-overflow-install.$$.
+BUNDLE_PREFIX=""
+cleanup() {
+	rm -rf "$TMP_PREFIX"*
+	[ -z "$BUNDLE_PREFIX" ] || rm -rf "$BUNDLE_PREFIX"*
+}
+trap cleanup EXIT
+case ${BASH_VERSION:-} in 5.2.*) ;; *) trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM ;; esac
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." 2>/dev/null && pwd || printf '%s' "$SCRIPT_DIR")
@@ -127,25 +138,6 @@ run() {
 	fi
 }
 
-cleanup() {
-	[ -n "$CLEANUP_PATHS" ] || return 0
-	printf '%s\n' "$CLEANUP_PATHS" | while IFS= read -r path; do
-		[ -n "$path" ] && rm -rf "$path"
-	done
-}
-
-cleanup_and_exit() {
-	cleanup
-	exit 1
-}
-
-register_cleanup_path() {
-	path=$1
-	CLEANUP_PATHS=$(printf '%s\n%s' "$CLEANUP_PATHS" "$path")
-	trap cleanup EXIT
-	trap cleanup_and_exit HUP INT TERM
-}
-
 is_url() {
 		case "$1" in
 			http://*|https://*) return 0 ;;
@@ -213,8 +205,7 @@ download_gitlab() {
 		GITLAB_TAG=$(gitlab_release_tag "$project")
 	fi
 	printf 'Downloading %s from %s release %s\n' "$name" "$project" "$GITLAB_TAG"
-	stage=$(mktemp -d)
-	register_cleanup_path "$stage"
+	stage=$(mktemp -d "${TMP_PREFIX}XXXXXX")
 	glab release download "$GITLAB_TAG" -R "https://$project" -n "$name" -D "$stage" >/dev/null || {
 		echo "ERROR: glab could not download $name from $project release $GITLAB_TAG" >&2
 		exit 1
@@ -390,8 +381,7 @@ verify_checksum() {
 
 prepare_download_artifact() {
 	release_artifact_name=$(artifact_name_for_mode)
-	DOWNLOAD_DIR=$(mktemp -d)
-	register_cleanup_path "$DOWNLOAD_DIR"
+	DOWNLOAD_DIR=$(mktemp -d "${TMP_PREFIX}XXXXXX")
 
 	copy_release_file SHASUMS256 "$DOWNLOAD_DIR/SHASUMS256"
 	copy_release_file "$release_artifact_name" "$DOWNLOAD_DIR/$release_artifact_name"
@@ -432,8 +422,7 @@ write_linux_desktop() {
 		printf '%s\n' "  Icon=$icon"
 		return
 	fi
-	tmp=$(mktemp "${TMPDIR:-/tmp}/agent-overflow-shortcut.XXXXXX.desktop")
-	register_cleanup_path "$tmp"
+	tmp=$(mktemp "${TMP_PREFIX}XXXXXX")
 	cat > "$tmp" <<EOF
 [Desktop Entry]
 Version=1.0
@@ -517,8 +506,9 @@ install_macos() {
 		printf 'Prepare %s and replace %s, retaining any running version\n' "$ARTIFACT" "$dest"
 		return
 	fi
-	tmp=$(mktemp -d "$apps_dir/.ao-bundle.XXXXXX")
-	register_cleanup_path "$tmp"
+	# On the destination's filesystem, so publishing is a rename.
+	BUNDLE_PREFIX=$apps_dir/.ao-bundle.$$.
+	tmp=$(mktemp -d "${BUNDLE_PREFIX}XXXXXX")
 	case "$ARTIFACT" in
 		*.app)
 			app=$tmp/Agent\ Overflow.app

@@ -22,8 +22,11 @@ publish_macos_bundle() (
 			mv "$previous/$name" "$destination"
 		fi
 	}
+	# Signal handling follows main_shell_signals_unix_test.go. A previous
+	# directory that a signal leaves empty is reclaimed with the retired
+	# ones by the next publish.
 	trap rollback EXIT
-	trap 'exit 1' HUP INT TERM
+	case ${BASH_VERSION:-} in 5.2.*) ;; *) trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM ;; esac
 	if [ -d "$destination" ]; then
 		previous=$(mktemp -d "$parent/.$name.previous.XXXXXX")
 		mv "$destination" "$previous/$name"

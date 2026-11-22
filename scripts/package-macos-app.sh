@@ -8,9 +8,12 @@ plist=$2
 destination=$3
 parent=$(dirname -- "$destination")
 mkdir -p "$parent"
-stage=$(mktemp -d "$parent/.ao-bundle.XXXXXX")
-trap 'rm -rf "$stage"' EXIT
-trap 'exit 1' HUP INT TERM
+# Signal handling and temporary files follow main_shell_signals_unix_test.go.
+# The stage is on the destination's filesystem, so publishing is a rename.
+stage_prefix=$parent/.ao-bundle.$$.
+trap 'rm -rf "$stage_prefix"*' EXIT
+case ${BASH_VERSION:-} in 5.2.*) ;; *) trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM ;; esac
+stage=$(mktemp -d "${stage_prefix}XXXXXX")
 app=$stage/$(basename -- "$destination")
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$binary" "$app/Contents/MacOS/agent-overflow"
