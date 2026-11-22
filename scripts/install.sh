@@ -1,4 +1,5 @@
 #!/usr/bin/env sh
+# shellcheck disable=SC2006 # backquotes after the handlers: main_shell_signals_unix_test.go
 set -eu
 
 MODE=""
@@ -16,7 +17,9 @@ DOWNLOAD_DIR=""
 ASSET_DIR=""
 GITLAB_TAG=""
 
-# Signal handling and temporary files follow main_shell_signals_unix_test.go.
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." 2>/dev/null && pwd || printf '%s' "$SCRIPT_DIR")
+
 # Every temporary path starts with TMP_PREFIX, or with BUNDLE_PREFIX once the
 # macOS install names it, and is removed on exit by that prefix.
 TMP_PREFIX=${TMPDIR:-/tmp}/agent-overflow-install.$$.
@@ -26,10 +29,7 @@ cleanup() {
 	[ -z "$BUNDLE_PREFIX" ] || rm -rf "$BUNDLE_PREFIX"*
 }
 trap cleanup EXIT
-case ${BASH_VERSION:-} in 5.2.*) ;; *) trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM ;; esac
-
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." 2>/dev/null && pwd || printf '%s' "$SCRIPT_DIR")
+trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
 
 usage() {
 	cat <<'USAGE'
@@ -173,20 +173,20 @@ gitlab_project() {
 # project's latest release.
 gitlab_release_tag() {
 	project=$1
-	version=$(normalize_version "$VERSION")
+	version=`normalize_version "$VERSION"`
 	if [ "$version" != latest ]; then
 		printf 'v%s\n' "$version"
 		return
 	fi
 	host=${project%%/*}
-	encoded=$(printf '%s' "${project#*/}" | sed 's#/#%2F#g')
-	release=$(glab api --hostname "$host" "projects/$encoded/releases/permalink/latest") || {
+	encoded=`printf '%s' "${project#*/}" | sed 's#/#%2F#g'`
+	release=`glab api --hostname "$host" "projects/$encoded/releases/permalink/latest"` || {
 		echo "ERROR: could not read the latest release of $project; check access with: glab auth login --hostname $host" >&2
 		exit 1
 	}
-	tag=$(printf '%s' "$release" | tr ',' '\n' | sed -n 's/^[{[:space:]]*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)
+	tag=`printf '%s' "$release" | tr ',' '\n' | sed -n 's/^[{[:space:]]*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1`
 	[ -n "$tag" ] || { echo "ERROR: could not find the latest release tag of $project" >&2; exit 1; }
-	version=$(normalize_version "$tag")
+	version=`normalize_version "$tag"`
 	printf 'v%s\n' "$version"
 }
 
@@ -195,17 +195,17 @@ gitlab_release_tag() {
 download_gitlab() {
 	name=$1
 	dst=$2
-	project=$(gitlab_project)
+	project=`gitlab_project`
 	host=${project%%/*}
 	command -v glab >/dev/null 2>&1 || {
 		echo "ERROR: --source gitlab: needs the GitLab CLI; install glab and run: glab auth login --hostname $host" >&2
 		exit 1
 	}
 	if [ -z "$GITLAB_TAG" ]; then
-		GITLAB_TAG=$(gitlab_release_tag "$project")
+		GITLAB_TAG=`gitlab_release_tag "$project"`
 	fi
 	printf 'Downloading %s from %s release %s\n' "$name" "$project" "$GITLAB_TAG"
-	stage=$(mktemp -d "${TMP_PREFIX}XXXXXX")
+	stage=`mktemp -d "${TMP_PREFIX}XXXXXX"`
 	glab release download "$GITLAB_TAG" -R "https://$project" -n "$name" -D "$stage" >/dev/null || {
 		echo "ERROR: glab could not download $name from $project release $GITLAB_TAG" >&2
 		exit 1
@@ -221,7 +221,7 @@ is_inside_wsl() {
 }
 
 detect_mode() {
-	case "$(uname -s)" in
+	case "`uname -s`" in
 		Darwin)
 			printf '%s\n' macos
 			;;
@@ -273,7 +273,7 @@ normalize_version() {
 }
 
 require_amd64() {
-	case "$(uname -m)" in
+	case "`uname -m`" in
 		x86_64|amd64) ;;
 		*) echo "ERROR: $MODE release artifacts are currently published for amd64 only" >&2; exit 1 ;;
 	esac
@@ -302,7 +302,7 @@ artifact_name_for_mode() {
 
 release_base_url() {
 	validate_repo
-	version=$(normalize_version "$VERSION")
+	version=`normalize_version "$VERSION"`
 	if [ "$version" = latest ]; then
 		printf 'https://github.com/%s/releases/latest/download\n' "$REPO"
 	else
@@ -342,7 +342,7 @@ copy_release_file() {
 			cp "$SOURCE/$name" "$dst"
 		fi
 	else
-		base_url=$(release_base_url)
+		base_url=`release_base_url`
 		download_url "$base_url/$name" "$dst"
 	fi
 }
@@ -368,9 +368,9 @@ verify_checksum() {
 	name=$2
 	checksums=$3
 	[ -f "$checksums" ] || { echo "ERROR: missing checksum file: $checksums" >&2; exit 1; }
-	expected=$(awk -v file="$name" '($2 == file || $2 == "./" file) { print $1; exit }' "$checksums")
+	expected=`awk -v file="$name" '($2 == file || $2 == "./" file) { print $1; exit }' "$checksums"`
 	[ -n "$expected" ] || { echo "ERROR: SHASUMS256 has no entry for $name" >&2; exit 1; }
-	actual=$(hash_file "$file")
+	actual=`hash_file "$file"`
 	if [ "$actual" != "$expected" ]; then
 		echo "ERROR: checksum mismatch for $name" >&2
 		echo "       expected $expected" >&2
@@ -380,8 +380,8 @@ verify_checksum() {
 }
 
 prepare_download_artifact() {
-	release_artifact_name=$(artifact_name_for_mode)
-	DOWNLOAD_DIR=$(mktemp -d "${TMP_PREFIX}XXXXXX")
+	release_artifact_name=`artifact_name_for_mode`
+	DOWNLOAD_DIR=`mktemp -d "${TMP_PREFIX}XXXXXX"`
 
 	copy_release_file SHASUMS256 "$DOWNLOAD_DIR/SHASUMS256"
 	copy_release_file "$release_artifact_name" "$DOWNLOAD_DIR/$release_artifact_name"
@@ -406,7 +406,8 @@ copy_mode() {
 	dst=$2
 	mode=$3
 	[ -f "$src" ] || { echo "ERROR: missing source file: $src" >&2; exit 1; }
-	run mkdir -p "$(dirname "$dst")"
+	dst_dir=`dirname "$dst"`
+	run mkdir -p "$dst_dir"
 	run cp "$src" "$dst"
 	run chmod "$mode" "$dst"
 }
@@ -415,14 +416,15 @@ write_linux_desktop() {
 	dst=$1
 	binary=$2
 	icon=$3
-	run mkdir -p "$(dirname "$dst")"
+	dst_dir=`dirname "$dst"`
+	run mkdir -p "$dst_dir"
 	if [ "$DRY_RUN" -eq 1 ]; then
 		printf '%s\n' "write desktop entry $dst"
 		printf '%s\n' "  Exec=$binary"
 		printf '%s\n' "  Icon=$icon"
 		return
 	fi
-	tmp=$(mktemp "${TMP_PREFIX}XXXXXX")
+	tmp=`mktemp "${TMP_PREFIX}XXXXXX"`
 	cat > "$tmp" <<EOF
 [Desktop Entry]
 Version=1.0
@@ -482,10 +484,11 @@ install_linux() {
 
 	[ -n "$ARTIFACT" ] || { echo "ERROR: --linux requires a binary path or --download" >&2; exit 2; }
 	copy_mode "$ARTIFACT" "$binary" 0755
-	copy_mode "$(asset_path appicon.png)" "$icon_file" 0644
+	icon_src=`asset_path appicon.png`
+	copy_mode "$icon_src" "$icon_file" 0644
 	write_linux_desktop "$desktop_file" "$binary" "$icon_file"
-	command -v update-desktop-database >/dev/null 2>&1 && run update-desktop-database "$(dirname "$desktop_file")" || true
-	command -v gtk-update-icon-cache >/dev/null 2>&1 && run gtk-update-icon-cache -q "$(dirname "$(dirname "$(dirname "$icon_file")")")" || true
+	command -v update-desktop-database >/dev/null 2>&1 && run update-desktop-database "$share_dir/applications" || true
+	command -v gtk-update-icon-cache >/dev/null 2>&1 && run gtk-update-icon-cache -q "$share_dir/icons/hicolor" || true
 	printf 'Installed Agent Overflow to %s\n' "$binary"
 }
 
@@ -500,7 +503,8 @@ install_macos() {
 	fi
 
 	[ -n "$ARTIFACT" ] || { echo "ERROR: --macos requires an .app/.zip path or --download" >&2; exit 2; }
-	. "$(asset_path macos-bundle.sh)"
+	bundle_lib=`asset_path macos-bundle.sh`
+	. "$bundle_lib"
 	run mkdir -p "$apps_dir"
 	if [ "$DRY_RUN" -eq 1 ]; then
 		printf 'Prepare %s and replace %s, retaining any running version\n' "$ARTIFACT" "$dest"
@@ -508,7 +512,7 @@ install_macos() {
 	fi
 	# On the destination's filesystem, so publishing is a rename.
 	BUNDLE_PREFIX=$apps_dir/.ao-bundle.$$.
-	tmp=$(mktemp -d "${BUNDLE_PREFIX}XXXXXX")
+	tmp=`mktemp -d "${BUNDLE_PREFIX}XXXXXX"`
 	case "$ARTIFACT" in
 		*.app)
 			app=$tmp/Agent\ Overflow.app
@@ -516,7 +520,7 @@ install_macos() {
 			;;
 		*.zip)
 			unzip -q "$ARTIFACT" -d "$tmp"
-			app=$(find "$tmp" -maxdepth 2 -name '*.app' -type d | head -n 1)
+			app=`find "$tmp" -maxdepth 2 -name '*.app' -type d | head -n 1`
 			[ -n "$app" ] || { echo "ERROR: zip did not contain an .app bundle" >&2; exit 1; }
 			;;
 		*)
@@ -548,22 +552,10 @@ resolve_windows_appdata() {
 	"$cmd_exe" /c 'echo %APPDATA%' 2>/dev/null | tr -d '\r\n'
 }
 
-create_windows_shortcut() {
-	target_win=$1
-	shortcut_win=$2
-	if [ "$DRY_RUN" -eq 1 ]; then
-		printf '%s\n' "create shortcut $shortcut_win -> $target_win"
-		return
-	fi
-
-	powershell_exe=${AO_INSTALL_POWERSHELL:-/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe}
-	[ -x "$powershell_exe" ] || { echo "ERROR: powershell.exe is not reachable; could not create Start Menu shortcut" >&2; exit 1; }
-	command -v iconv >/dev/null 2>&1 || { echo "ERROR: iconv is required to create the Windows Start Menu shortcut" >&2; exit 1; }
-	command -v base64 >/dev/null 2>&1 || { echo "ERROR: base64 is required to create the Windows Start Menu shortcut" >&2; exit 1; }
-
-	target_ps=$(ps_single_quote "$target_win")
-	shortcut_ps=$(ps_single_quote "$shortcut_win")
-ps_script=$(cat <<EOF
+# shortcut_ps_script prints the PowerShell that makes the Start Menu shortcut
+# $shortcut_ps to $target_ps.
+shortcut_ps_script() {
+	cat <<EOF
 \$ErrorActionPreference = 'Stop'
 \$ProgressPreference = 'SilentlyContinue'
 \$target = '$target_ps'
@@ -577,10 +569,27 @@ New-Item -ItemType Directory -Force -Path \$shortcutDir | Out-Null
 \$link.IconLocation = "\$target,0"
 \$link.Save()
 EOF
-)
-	encoded_script=$(printf '%s' "$ps_script" | iconv -f UTF-8 -t UTF-16LE | base64 | tr -d '\n')
+}
+
+create_windows_shortcut() {
+	target_win=$1
+	shortcut_win=$2
+	if [ "$DRY_RUN" -eq 1 ]; then
+		printf '%s\n' "create shortcut $shortcut_win -> $target_win"
+		return
+	fi
+
+	powershell_exe=${AO_INSTALL_POWERSHELL:-/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe}
+	[ -x "$powershell_exe" ] || { echo "ERROR: powershell.exe is not reachable; could not create Start Menu shortcut" >&2; exit 1; }
+	command -v iconv >/dev/null 2>&1 || { echo "ERROR: iconv is required to create the Windows Start Menu shortcut" >&2; exit 1; }
+	command -v base64 >/dev/null 2>&1 || { echo "ERROR: base64 is required to create the Windows Start Menu shortcut" >&2; exit 1; }
+
+	target_ps=`ps_single_quote "$target_win"`
+	shortcut_ps=`ps_single_quote "$shortcut_win"`
+	ps_script=`shortcut_ps_script`
+	encoded_script=`printf '%s' "$ps_script" | iconv -f UTF-8 -t UTF-16LE | base64 | tr -d '\n'`
 	"$powershell_exe" -NoProfile -NonInteractive -OutputFormat Text -ExecutionPolicy Bypass -EncodedCommand "$encoded_script"
-	shortcut_linux=$("$wslpath_bin" -u "$shortcut_win")
+	shortcut_linux=`"$wslpath_bin" -u "$shortcut_win"`
 	[ -f "$shortcut_linux" ] || { echo "ERROR: PowerShell did not create Start Menu shortcut: $shortcut_win" >&2; exit 1; }
 }
 
@@ -588,12 +597,12 @@ install_wsl() {
 	is_inside_wsl || { echo "ERROR: --wsl must be run from inside WSL" >&2; exit 1; }
 	wslpath_bin=${AO_INSTALL_WSLPATH:-wslpath}
 	command -v "$wslpath_bin" >/dev/null 2>&1 || { echo "ERROR: wslpath not found" >&2; exit 1; }
-	localappdata=$(resolve_windows_localappdata)
+	localappdata=`resolve_windows_localappdata`
 	[ -n "$localappdata" ] || { echo "ERROR: could not resolve %LOCALAPPDATA%" >&2; exit 1; }
-	appdata=$(resolve_windows_appdata)
+	appdata=`resolve_windows_appdata`
 	[ -n "$appdata" ] || { echo "ERROR: could not resolve %APPDATA%" >&2; exit 1; }
-	localappdata_linux=$("$wslpath_bin" -u "$localappdata")
-	appdata_linux=$("$wslpath_bin" -u "$appdata")
+	localappdata_linux=`"$wslpath_bin" -u "$localappdata"`
+	appdata_linux=`"$wslpath_bin" -u "$appdata"`
 	install_dir=$localappdata_linux/Programs/Agent\ Overflow
 	exe_path=$install_dir/agent-overflow.exe
 	exe_win=$localappdata\\Programs\\Agent\ Overflow\\agent-overflow.exe
@@ -618,7 +627,7 @@ install_wsl() {
 }
 
 if [ -z "$MODE" ]; then
-	MODE=$(detect_mode)
+	MODE=`detect_mode`
 fi
 
 if [ "$NOREMOTE" -eq 1 ] && [ "$MODE" != wsl ]; then

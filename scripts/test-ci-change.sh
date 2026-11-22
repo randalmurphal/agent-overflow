@@ -2,15 +2,15 @@
 # Checks scripts/ci-change.sh against a pull request whose base branch moved
 # after the branch point: the change it reports must be the files the merge
 # changes (git merge-tree), not everything the base branch gained since.
+# shellcheck disable=SC2006 # backquotes after the handlers: main_shell_signals_unix_test.go
 set -eu
 
 ROOT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 CI_CHANGE=${CI_CHANGE:-$ROOT_DIR/scripts/ci-change.sh}
-# Signal handling and temporary files follow main_shell_signals_unix_test.go.
 TMP_PREFIX=${TMPDIR:-/tmp}/ao-test-ci-change.$$.
 trap 'rm -rf "$TMP_PREFIX"*' EXIT
-case ${BASH_VERSION:-} in 5.2.*) ;; *) trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM ;; esac
-TMP_DIR=$(mktemp -d "${TMP_PREFIX}XXXXXX")
+trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
+TMP_DIR=`mktemp -d "${TMP_PREFIX}XXXXXX"`
 
 export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.invalid
 export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.invalid
@@ -34,13 +34,13 @@ git -C "$remote" add . && git -C "$remote" commit -qm base
 git -C "$remote" checkout -qb feature
 printf 'two\n' >> "$remote/feature.txt"
 git -C "$remote" commit -qam feature
-head_sha=$(git -C "$remote" rev-parse HEAD)
+head_sha=`git -C "$remote" rev-parse HEAD`
 git -C "$remote" checkout -q main
 printf 'two\n' >> "$remote/shared.txt"
 printf 'new\n' > "$remote/base-only.txt"
 git -C "$remote" add . && git -C "$remote" commit -qm 'main moves on'
-main_sha=$(git -C "$remote" rev-parse HEAD)
-merge_base=$(git -C "$remote" merge-base main feature)
+main_sha=`git -C "$remote" rev-parse HEAD`
+merge_base=`git -C "$remote" merge-base main feature`
 git -C "$remote" checkout -q --detach main
 git -C "$remote" merge -q --no-ff -m merge feature
 git -C "$remote" update-ref refs/pull/1/merge HEAD
@@ -48,9 +48,10 @@ git -C "$remote" checkout -q main
 
 # What the merge changes, by git merge-tree.
 expected=$TMP_DIR/expected
-merged_tree=$(git -C "$remote" merge-tree --write-tree "$main_sha" "$head_sha")
+merged_tree=`git -C "$remote" merge-tree --write-tree "$main_sha" "$head_sha"`
 git -C "$remote" diff --name-only "$main_sha" "$merged_tree" > "$expected"
-[ "$(cat "$expected")" = feature.txt ] || fail "merge-tree reports $(tr '\n' ' ' < "$expected")"
+reported=`tr '\n' ' ' < "$expected"`
+[ "$reported" = 'feature.txt ' ] || fail "merge-tree reports $reported"
 
 # gh answers the compare API with the merge base, as GitHub would.
 bin=$TMP_DIR/bin
@@ -75,8 +76,10 @@ check() {
 		PATH="$bin:$PATH" GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$event" \
 			GITHUB_REPOSITORY=example/repo sh "$CI_CHANGE" "$TMP_DIR/$name-out" > /dev/null
 	)
-	cmp -s "$expected" "$TMP_DIR/$name-out/files" ||
-		fail "$name: files are $(tr '\n' ' ' < "$TMP_DIR/$name-out/files"), want $(tr '\n' ' ' < "$expected")"
+	if ! cmp -s "$expected" "$TMP_DIR/$name-out/files"; then
+		files=`tr '\n' ' ' < "$TMP_DIR/$name-out/files"`
+		fail "$name: files are $files, want $reported"
+	fi
 	grep -q '^+++ b/feature.txt' "$TMP_DIR/$name-out/change.diff" ||
 		fail "$name: change.diff does not carry feature.txt"
 	! grep -q 'shared.txt\|base-only.txt' "$TMP_DIR/$name-out/change.diff" ||
