@@ -283,8 +283,13 @@ func Redeem(ctx context.Context, dir string, link Link, label, platform string, 
 // the replacement keeps.
 //
 // Save is single use: every call after the first, concurrent ones included,
-// writes nothing and answers errRedemptionSpent.
+// writes nothing and answers errRedemptionSpent. It refuses a held session
+// of another profile directory: the session's credential is bound to this
+// directory's device key.
 func (r *Redemption) Save(held *HeldSession, nickname string) (*Client, Pairing, error) {
+	if !held.inProfile(r.client.dir) {
+		return nil, Pairing{}, fmt.Errorf("deviceclient: a session redeemed for the device in %s cannot be saved in another profile", r.client.dir)
+	}
 	r.mu.Lock()
 	spent := r.spent
 	r.spent = true

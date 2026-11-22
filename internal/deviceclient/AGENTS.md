@@ -10,11 +10,15 @@ detaches it and saves, for a caller that must not lose the link. Neither is
 sent once the owner's lifetime has ended. The session file's OS lock is the
 one per-computer fence across processes: `WithSession` holds it and hands
 its callback a `HeldSession`, through which the stored session is read,
-written and removed, so another process cannot write between a decision and
-the write it leads to. `WithSession` states the lock order. `Redemption.Save`
-writes through a `HeldSession`, is single use, and takes the nickname its
-caller chooses (a re-pairing starts without one). `ForgetSession` drops
-whatever is stored, after the owner retires its client.
+written, removed and restored to the bytes the lock found, so another
+process cannot write between a decision and the write it leads to. A
+`HeldSession` is a handle whose copies share one state, so none writes after
+the release. A write can take effect and still answer an error (a failed
+directory sync); `Restore` reads the file back to say whether it is as
+found. `WithSession` states the lock order. `Redemption.Save` writes through
+a `HeldSession` of its own profile directory only, is single use, and takes
+the nickname its caller chooses (a re-pairing starts without one).
+`ForgetSession` drops whatever is stored, after the owner retires its client.
 
 Confirmation waits poll renewal, not socket tickets. Pending confirmation is
 read-only on the server and preserves the saved renewal operation; approval

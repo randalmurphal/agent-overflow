@@ -1,6 +1,7 @@
 package deviceclient
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"agent-overflow/internal/atomicfile"
 	"agent-overflow/internal/computerroute"
@@ -132,13 +134,22 @@ func writeSession(path string, session Session) error {
 // that could not be presented is an error naming the file — the state
 // somebody has to be told about rather than have silently ignored.
 func readSession(path string) (Session, error) {
-	var session Session
-	found, err := atomicfile.ReadJSON(path, &session)
-	if err != nil {
-		return Session{}, fmt.Errorf("deviceclient: read %s: %w", path, err)
-	}
-	if !found {
+	data, err := os.ReadFile(path)
+	return decodeSession(path, data, err)
+}
+
+// decodeSession is readSession given the file's bytes as os.ReadFile
+// answered them.
+func decodeSession(path string, data []byte, readErr error) (Session, error) {
+	if errors.Is(readErr, os.ErrNotExist) {
 		return Session{}, ErrNoSession
+	}
+	if readErr != nil {
+		return Session{}, fmt.Errorf("deviceclient: read %s: %w", path, readErr)
+	}
+	var session Session
+	if err := json.Unmarshal(data, &session); err != nil {
+		return Session{}, fmt.Errorf("deviceclient: read %s: decode: %w", path, err)
 	}
 	if session.BackendID == "" || session.SessionID == "" || session.Credential == "" {
 		return Session{}, fmt.Errorf("deviceclient: %s holds no usable credential", path)
@@ -147,14 +158,24 @@ func readSession(path string) (Session, error) {
 }
 
 // HeldSession is one backend's session file while WithSession holds its OS
-// lock. It reads and writes that file and nothing else, and only until the
-// function WithSession ran returns.
-type HeldSession struct {
+// lock. It reads, writes and restores that file and nothing else, and only
+// until the function WithSession ran returns. It is a handle: every copy
+// shares one state, so none can write once the lock is released.
+type HeldSession struct{ s *heldSession }
+
+type heldSession struct {
+	mu        sync.Mutex
+	dir       string
 	backendID string
 	path      string
-	stored    Session
-	err       error
-	released  bool
+	// initial is the file as the lock found it: its bytes, whether it
+	// existed, and the error reading it if neither could be told.
+	initial      []byte
+	initialFound bool
+	initialErr   error
+	stored       Session
+	err          error
+	released     bool
 }
 
 // errSessionReleased answers a HeldSession used after its lock was released.
@@ -186,34 +207,56 @@ func WithSession(dir, backendID string, change func(*HeldSession) error) (err er
 		return err
 	}
 	defer func() { err = errors.Join(err, release()) }()
-	held := &HeldSession{backendID: backendID, path: path}
-	held.stored, held.err = readSession(path)
-	defer func() { held.released = true }()
-	return change(held)
+	s := &heldSession{dir: dir, backendID: backendID, path: path}
+	data, readErr := os.ReadFile(path)
+	switch {
+	case readErr == nil:
+		s.initial, s.initialFound = data, true
+	case !errors.Is(readErr, os.ErrNotExist):
+		s.initialErr = readErr
+	}
+	s.stored, s.err = decodeSession(path, data, readErr)
+	defer func() {
+		s.mu.Lock()
+		s.released = true
+		s.mu.Unlock()
+	}()
+	return change(&HeldSession{s: s})
+}
+
+// hold runs use with the held state locked, or refuses once it is released.
+func (h *HeldSession) hold(use func(*heldSession) error) error {
+	h.s.mu.Lock()
+	defer h.s.mu.Unlock()
+	if h.s.released {
+		return errSessionReleased
+	}
+	return use(h.s)
 }
 
 // Stored is the session in the file now, as LoadSession answers it: the
 // session, ErrNoSession, or the error reading the file.
 func (h *HeldSession) Stored() (Session, error) {
-	if h.released {
-		return Session{}, errSessionReleased
-	}
-	return h.stored, h.err
+	var stored Session
+	err := h.hold(func(s *heldSession) error {
+		stored = s.stored
+		return s.err
+	})
+	return stored, err
 }
 
-// Write replaces the stored session with session.
+// Write replaces the stored session with session. A write whose rename
+// took effect but whose directory sync failed answers that error: the file
+// may hold session all the same (Restore).
 func (h *HeldSession) Write(session Session) error {
-	if h.released {
-		return errSessionReleased
-	}
-	if session.BackendID != h.backendID {
-		return fmt.Errorf("deviceclient: a session for %s cannot be filed under %s", session.BackendID, h.backendID)
-	}
-	if err := writeSession(h.path, session); err != nil {
+	return h.hold(func(s *heldSession) error {
+		if session.BackendID != s.backendID {
+			return fmt.Errorf("deviceclient: a session for %s cannot be filed under %s", session.BackendID, s.backendID)
+		}
+		err := writeSession(s.path, session)
+		s.stored, s.err = readSession(s.path)
 		return err
-	}
-	h.stored, h.err = session, nil
-	return nil
+	})
 }
 
 // Remove drops the stored session, whichever pairing it holds and whether
@@ -221,14 +264,60 @@ func (h *HeldSession) Write(session Session) error {
 // (Client.Retire); one that is not finds the file gone at its next write and
 // retires itself.
 func (h *HeldSession) Remove() error {
-	if h.released {
-		return errSessionReleased
+	return h.hold(func(s *heldSession) error {
+		err := removeSessionFile(s.path)
+		s.stored, s.err = readSession(s.path)
+		if err != nil {
+			return fmt.Errorf("deviceclient: forget the session for %s: %w", s.backendID, err)
+		}
+		return nil
+	})
+}
+
+// Restore puts the file back as the lock found it: the same bytes, or no
+// file. It reports whether the file, read back, now is as it was found,
+// which a write can achieve and still answer an error (a directory sync
+// that failed after the rename); that error is returned too. A file that
+// could not be read when the lock was taken cannot be put back.
+func (h *HeldSession) Restore() (restored bool, err error) {
+	err = h.hold(func(s *heldSession) error {
+		if s.initialErr != nil {
+			return fmt.Errorf("deviceclient: the session file for %s could not be read when it was locked, so it cannot be put back: %w", s.backendID, s.initialErr)
+		}
+		var writeErr error
+		if !s.holdsInitial() {
+			if s.initialFound {
+				writeErr = atomicfile.Write(s.path, s.initial)
+			} else {
+				writeErr = removeSessionFile(s.path)
+			}
+		}
+		restored = s.holdsInitial()
+		s.stored, s.err = readSession(s.path)
+		if writeErr != nil {
+			return fmt.Errorf("deviceclient: restore the session file for %s: %w", s.backendID, writeErr)
+		}
+		if !restored {
+			return fmt.Errorf("deviceclient: the session file for %s still differs from what was stored", s.backendID)
+		}
+		return nil
+	})
+	return restored, err
+}
+
+// holdsInitial reads the file back and reports whether it is as the lock
+// found it.
+func (s *heldSession) holdsInitial() bool {
+	data, err := os.ReadFile(s.path)
+	if !s.initialFound {
+		return errors.Is(err, os.ErrNotExist)
 	}
-	if err := removeSessionFile(h.path); err != nil {
-		return fmt.Errorf("deviceclient: forget the session for %s: %w", h.backendID, err)
-	}
-	h.stored, h.err = Session{}, ErrNoSession
-	return nil
+	return err == nil && bytes.Equal(data, s.initial)
+}
+
+// inProfile reports whether the held file is in profile directory dir.
+func (h *HeldSession) inProfile(dir string) bool {
+	return filepath.Clean(h.s.dir) == filepath.Clean(dir)
 }
 
 // ForgetSession drops one backend's stored session (HeldSession.Remove).

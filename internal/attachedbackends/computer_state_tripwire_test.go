@@ -196,18 +196,47 @@ func (c *mutexChecker) position(pos token.Pos) string {
 	return (&lockChecker{fset: c.fset}).position(pos)
 }
 
+// sharedFileReaders may name a shared file outside computerTx's methods,
+// to read it; none of them writes.
+var sharedFileReaders = []string{"AgentAccess", "ownDeviceExcluded", "ExcludedOwnDeviceIDs"}
+
+// fileWriters are the calls that write or remove a file.
+var fileWriters = []string{
+	"agent-overflow/internal/atomicfile.Write",
+	"agent-overflow/internal/atomicfile.WriteJSON",
+	"os.Remove",
+	"os.RemoveAll",
+	"os.Rename",
+	"os.WriteFile",
+}
+
+// heldSessionWriters write a held session file. Only computerTx's methods
+// call them, which record the write for the rollback (computerTx.wrote).
+var heldSessionWriters = []string{
+	"(*agent-overflow/internal/deviceclient.HeldSession).Write",
+	"(*agent-overflow/internal/deviceclient.HeldSession).Remove",
+	"(*agent-overflow/internal/deviceclient.HeldSession).Restore",
+	"(*agent-overflow/internal/deviceclient.Redemption).Save",
+}
+
 // TestOnlyTheComputerTransactionWritesItsState holds what the types already
-// arrange (computer_state.go): a computerTx is built only by transact, the
-// two shared files are written only by computerTx's methods, and only
-// transact holds a session file.
+// arrange (computer_state.go): a computerTx is built only by transact, only
+// transact holds a session file, only computerTx's methods write it or name
+// a shared file other than to read it, and the readers write nothing.
 func TestOnlyTheComputerTransactionWritesItsState(t *testing.T) {
 	t.Parallel()
 	reporoot.ObserveGoSources(t)
 	_, fset, files, info := typeCheckAttachedBackends(t)
 	pos := func(p token.Pos) string { return (&lockChecker{fset: fset}).position(p) }
+	callee := func(call *ast.CallExpr) string {
+		if fn := (&lockChecker{info: info}).callee(call); fn != nil {
+			return fn.Origin().FullName()
+		}
+		return ""
+	}
 	shared := map[string]bool{agentAccessFile: true, ownExclusionsFile: true}
 	var found []string
-	writers := 0
+	named := map[string]int{}
 	for _, file := range files {
 		for _, decl := range file.Decls {
 			switch decl := decl.(type) {
@@ -230,33 +259,33 @@ func TestOnlyTheComputerTransactionWritesItsState(t *testing.T) {
 				}
 				name := decl.Name.Name
 				onTx := decl.Recv != nil && receiverName(decl) == "computerTx"
+				reader := slices.Contains(sharedFileReaders, name)
 				ast.Inspect(decl.Body, func(n ast.Node) bool {
 					switch n := n.(type) {
 					case *ast.BasicLit:
 						if text, err := strconv.Unquote(n.Value); n.Kind == token.STRING && err == nil && shared[text] {
 							found = append(found, pos(n.Pos())+": spell the shared file by its constant")
 						}
+					case *ast.Ident:
+						if obj, ok := info.Uses[n].(*types.Const); ok && obj.Pkg() != nil && obj.Pkg().Path() == attachedBackendsPkgPath && (obj.Name() == "agentAccessFile" || obj.Name() == "ownExclusionsFile") {
+							named[obj.Name()]++
+							if !onTx && !reader {
+								found = append(found, pos(n.Pos())+": only computerTx's methods and the readers name a shared file")
+							}
+						}
 					case *ast.CompositeLit:
 						if ident, ok := n.Type.(*ast.Ident); ok && ident.Name == "computerTx" && name != "transact" {
 							found = append(found, pos(n.Pos())+": only transact builds a computerTx")
 						}
 					case *ast.CallExpr:
-						fn := (&lockChecker{info: info}).callee(n)
-						if fn == nil {
-							return true
-						}
-						switch fn.Origin().FullName() {
-						case "agent-overflow/internal/deviceclient.WithSession":
-							if name != "transact" {
-								found = append(found, pos(n.Pos())+": only transact holds a session file")
-							}
-						case "agent-overflow/internal/atomicfile.WriteJSON":
-							if writesShared(n, info) {
-								writers++
-								if !onTx {
-									found = append(found, pos(n.Pos())+": only computerTx's methods write the shared files")
-								}
-							}
+						full := callee(n)
+						switch {
+						case full == "agent-overflow/internal/deviceclient.WithSession" && name != "transact":
+							found = append(found, pos(n.Pos())+": only transact holds a session file")
+						case slices.Contains(heldSessionWriters, full) && !onTx:
+							found = append(found, pos(n.Pos())+": only computerTx's methods write a held session")
+						case slices.Contains(fileWriters, full) && reader:
+							found = append(found, pos(n.Pos())+": a shared file reader writes")
 						}
 					}
 					return true
@@ -264,8 +293,10 @@ func TestOnlyTheComputerTransactionWritesItsState(t *testing.T) {
 			}
 		}
 	}
-	if writers != 2 {
-		found = append(found, fmt.Sprintf("found %d writes of the shared files; want the two computerTx methods", writers))
+	for _, constant := range []string{"agentAccessFile", "ownExclusionsFile"} {
+		if named[constant] == 0 {
+			found = append(found, "no use of "+constant+" found; the check would pass with nothing checked")
+		}
 	}
 	if len(found) > 0 {
 		t.Fatalf("a computer's pairing state is written outside its transaction:\n%s", strings.Join(found, "\n"))
@@ -283,20 +314,117 @@ func receiverName(decl *ast.FuncDecl) string {
 	return ""
 }
 
-// writesShared reports whether a WriteJSON call's path names one of the
-// shared files' constants.
-func writesShared(call *ast.CallExpr, info *types.Info) bool {
-	if len(call.Args) == 0 {
-		return false
-	}
-	named := false
-	ast.Inspect(call.Args[0], func(n ast.Node) bool {
-		if ident, ok := n.(*ast.Ident); ok {
-			if obj, ok := info.Uses[ident].(*types.Const); ok && (obj.Name() == "agentAccessFile" || obj.Name() == "ownExclusionsFile") {
-				named = true
+// lockFreeClientMethods are the deviceclient.Client methods a transition may
+// call, each because it takes no lock
+// (deviceclient.TestTheCarrierBuildTakesNoClientLock).
+var lockFreeClientMethods = []string{
+	"(*agent-overflow/internal/deviceclient.Client).WebSocketURL",
+}
+
+// transitionFunctionValues are the function-valued fields a transition
+// calls, with the package function each holds outside tests.
+var transitionFunctionValues = map[string]string{
+	"buildCarrier": "newCarrier",
+}
+
+// TestNoTransitionUsesAClient type-checks this package and walks every
+// transition (the function literals passed to transact, and the one transact
+// passes to deviceclient.WithSession), following calls into this package's
+// functions and the function-valued fields in transitionFunctionValues. It
+// fails on a call to a deviceclient.Client method outside
+// lockFreeClientMethods: a client's mutex is taken before a session file's
+// lock (computer_state.go), so a transition that takes it can wait on a
+// renewal that waits on the transition. Goroutines are not walked.
+func TestNoTransitionUsesAClient(t *testing.T) {
+	t.Parallel()
+	reporoot.ObserveGoSources(t)
+	_, fset, files, info := typeCheckAttachedBackends(t)
+	c := &clientChecker{fset: fset, info: info, decls: map[string]*ast.FuncDecl{}, visited: map[*ast.FuncDecl]bool{}}
+	for _, file := range files {
+		for _, decl := range file.Decls {
+			if fn, ok := decl.(*ast.FuncDecl); ok && fn.Body != nil {
+				if obj, ok := info.Defs[fn.Name].(*types.Func); ok {
+					c.decls[obj.FullName()] = fn
+				}
 			}
+		}
+	}
+	regions := 0
+	for _, file := range files {
+		ast.Inspect(file, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			name := c.callee(call)
+			if name != transactName && name != "agent-overflow/internal/deviceclient.WithSession" {
+				return true
+			}
+			for _, arg := range call.Args {
+				if lit, ok := arg.(*ast.FuncLit); ok {
+					regions++
+					c.walk(lit.Body, c.position(call.Pos()))
+				}
+			}
+			return true
+		})
+	}
+	if regions == 0 {
+		c.found = append(c.found, "no transitions found")
+	}
+	if len(c.found) > 0 {
+		t.Fatalf("a transition calls a client method that may take its mutex:\n%s", strings.Join(c.found, "\n"))
+	}
+}
+
+type clientChecker struct {
+	fset    *token.FileSet
+	info    *types.Info
+	decls   map[string]*ast.FuncDecl
+	visited map[*ast.FuncDecl]bool
+	found   []string
+}
+
+func (c *clientChecker) callee(call *ast.CallExpr) string {
+	if fn := (&lockChecker{info: c.info}).callee(call); fn != nil {
+		return fn.Origin().FullName()
+	}
+	return ""
+}
+
+func (c *clientChecker) position(pos token.Pos) string {
+	return (&lockChecker{fset: c.fset}).position(pos)
+}
+
+func (c *clientChecker) walk(node ast.Node, where string) {
+	ast.Inspect(node, func(n ast.Node) bool {
+		switch n := n.(type) {
+		case *ast.GoStmt:
+			return false
+		case *ast.CallExpr:
+			c.check(n, where)
 		}
 		return true
 	})
-	return named
+}
+
+func (c *clientChecker) check(call *ast.CallExpr, where string) {
+	name := c.callee(call)
+	if name == "" {
+		if sel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr); ok {
+			if held, ok := transitionFunctionValues[sel.Sel.Name]; ok {
+				name = attachedBackendsPkgPath + "." + held
+			}
+		}
+	}
+	if decl := c.decls[name]; decl != nil {
+		if !c.visited[decl] {
+			c.visited[decl] = true
+			c.walk(decl.Body, where)
+		}
+		return
+	}
+	if strings.HasPrefix(name, "(*agent-overflow/internal/deviceclient.Client).") && !slices.Contains(lockFreeClientMethods, name) {
+		c.found = append(c.found, fmt.Sprintf("%s: transition; %s calls %s", where, c.position(call.Pos()), name))
+	}
 }

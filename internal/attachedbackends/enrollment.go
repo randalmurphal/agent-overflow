@@ -23,6 +23,9 @@ type enrollment struct {
 	// cancelled, with the reason as its cause.
 	ctx    context.Context
 	cancel context.CancelCauseFunc
+	// caller is an introduction's caller's context. The commit checks it
+	// (beginCommit); its end also cancels the redemption (enroll).
+	caller context.Context
 	// done is closed once the enrollment has left Manager.enrollments.
 	// awaitEnrollment waits on it.
 	done chan struct{}
@@ -98,8 +101,11 @@ func (m *Manager) beginEnrollment(ctx context.Context, id string, purpose enroll
 	for {
 		m.mu.Lock()
 		if m.enrollments[id] == nil {
-			ctx, cancel := context.WithCancelCause(context.Background())
-			e := &enrollment{purpose: purpose, unpairedOnly: unpairedOnly, state: enrollmentRedeeming, ctx: ctx, cancel: cancel, done: make(chan struct{})}
+			redemption, cancel := context.WithCancelCause(context.Background())
+			e := &enrollment{purpose: purpose, unpairedOnly: unpairedOnly, state: enrollmentRedeeming, ctx: redemption, cancel: cancel, done: make(chan struct{})}
+			if purpose == introductionByPeer {
+				e.caller = ctx
+			}
 			m.enrollments[id] = e
 			m.mu.Unlock()
 			return e, nil
@@ -167,6 +173,23 @@ func (m *Manager) moveEnrollmentLocked(e *enrollment, from, to enrollmentState) 
 	return true
 }
 
+// beginCommit moves e from redeeming to committed, or answers why it was
+// not: e was cancelled, or its caller has left, which it records as the
+// cancellation. One step under Manager.mu, so a caller that left before the
+// commit decided is never committed, whether or not the callback that
+// cancels its redemption (enroll) has run.
+func (m *Manager) beginCommit(e *enrollment) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if e.caller != nil && e.caller.Err() != nil {
+		m.cancelEnrollmentLocked(e, context.Cause(e.caller))
+	}
+	if !m.moveEnrollmentLocked(e, enrollmentRedeeming, enrollmentCommitted) {
+		return context.Cause(e.ctx)
+	}
+	return nil
+}
+
 // cancelEnrollment cancels id's enrollment in flight, if there is one, for
 // cause.
 func (m *Manager) cancelEnrollment(id string, cause error) {
@@ -207,8 +230,8 @@ func (m *Manager) admitEnrollment(id string, e *enrollment, stored deviceclient.
 // enroll spends link for one enrollment of purpose and commits what it
 // returns (commitEnrollment). For an introduction ctx is its caller's: it
 // bounds the wait for another enrollment with the same computer
-// (beginEnrollment), and its end cancels the redemption. A person's pairing
-// ignores it. The carrier is the one installed, nil after Close.
+// (beginEnrollment), its end cancels the redemption, and a commit decided
+// after its end stores nothing (beginCommit). A person's pairing ignores it. The carrier is the one installed, nil after Close.
 func (m *Manager) enroll(ctx context.Context, link deviceclient.Link, purpose enrollmentPurpose, unpairedOnly bool) (Attachment, *carrier, error) {
 	e, err := m.beginEnrollment(ctx, link.BackendID, purpose, unpairedOnly)
 	if err != nil {
