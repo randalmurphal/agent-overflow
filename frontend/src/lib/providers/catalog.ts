@@ -307,7 +307,7 @@ export const PROVIDER_DEFINITIONS: Record<ProviderID, ProviderDefinition> = {
       disabledTools: false,
       textGeneration: true,
       ownMemory: false,
-      transfer: false,
+      transfer: true,
       rollbackGranularity: 'item',
       slashSource: 'acp',
     },

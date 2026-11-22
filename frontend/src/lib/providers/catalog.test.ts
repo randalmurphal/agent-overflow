@@ -168,6 +168,7 @@ describe('provider catalog', () => {
     expect(standaloneProvidersWithFeature('textGeneration')).toEqual(['claude', 'codex', 'agy']);
     expect(providerHasFeature('claude', 'transfer')).toBe(true);
     expect(providerHasFeature('codex', 'transfer')).toBe(true);
+    expect(providerHasFeature('agy', 'transfer')).toBe(true);
     expect(providerHasFeature('claude-tui', 'transfer')).toBe(false);
     expect(providerHasFeature('unknown', 'accounts')).toBe(false);
     expect(providerHasFeature('unknown', 'transfer')).toBe(false);

@@ -403,3 +403,89 @@ func TestAgyFlavorRichToolAndMCPMetadata(t *testing.T) {
 		t.Fatalf("unexpected imgNorm: %+v input=%s", imgNorm, imgNorm.Input)
 	}
 }
+
+func TestAgyTransferSnapshotCopyAndValidate(t *testing.T) {
+	t.Parallel()
+	appDataDir := t.TempDir()
+	srcID := "11111111-2222-3333-4444-555555555555"
+	seedFakeConversationDB(t, appDataDir, srcID)
+
+	// Add a brain artifact file to ensure companion files ride along.
+	artifactPath := filepath.Join(appDataDir, "brain", srcID, "plan.md")
+	if err := os.MkdirAll(filepath.Dir(artifactPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(artifactPath, []byte("# Plan"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	scratchDir := t.TempDir()
+	sources, err := TransferFiles(context.Background(), appDataDir, srcID, scratchDir)
+	if err != nil {
+		t.Fatalf("TransferFiles: %v", err)
+	}
+	if len(sources) != 2 {
+		t.Fatalf("len(sources) = %d, want 2: %+v", len(sources), sources)
+	}
+	if sources[0].Name != "native/agy/conversations/"+srcID+".db" {
+		t.Fatalf("sources[0].Name = %q", sources[0].Name)
+	}
+	if sources[1].Name != "native/agy/brain/"+srcID+"/plan.md" {
+		t.Fatalf("sources[1].Name = %q", sources[1].Name)
+	}
+
+	// CopyTransferFiles mints a deterministic UUID, rewrites trajectory_meta, and remaps brain/.
+	copyDir := t.TempDir()
+	copied1, err := CopyTransferFiles(context.Background(), "op-123", srcID, copyDir, sources)
+	if err != nil {
+		t.Fatalf("CopyTransferFiles: %v", err)
+	}
+	copied2, err := CopyTransferFiles(context.Background(), "op-123", srcID, copyDir, sources)
+	if err != nil {
+		t.Fatalf("CopyTransferFiles retry: %v", err)
+	}
+	if copied1.SessionID == srcID || copied1.SessionID != copied2.SessionID {
+		t.Fatalf("expected deterministic fresh UUID, got src=%q copy1=%q copy2=%q", srcID, copied1.SessionID, copied2.SessionID)
+	}
+	if len(copied1.Files) != 2 || copied1.Files[1].Name != "native/agy/brain/"+copied1.SessionID+"/plan.md" {
+		t.Fatalf("unexpected copied files: %+v", copied1.Files)
+	}
+
+	// Stage the copied files and verify ValidateStagedTransferFiles passes for new ID and rejects wrong ID.
+	stageDir := t.TempDir()
+	dstDB := filepath.Join(stageDir, "conversations", copied1.SessionID+".db")
+	if err := os.MkdirAll(filepath.Dir(dstDB), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rawDB, err := os.ReadFile(filepath.Join(copied1.Files[0].Root, filepath.FromSlash(copied1.Files[0].Path)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dstDB, rawDB, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dstPlan := filepath.Join(stageDir, "brain", copied1.SessionID, "plan.md")
+	if err := os.MkdirAll(filepath.Dir(dstPlan), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dstPlan, []byte("# Plan"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	validated, err := ValidateStagedTransferFiles(context.Background(), stageDir, copied1.SessionID)
+	if err != nil {
+		t.Fatalf("ValidateStagedTransferFiles: %v", err)
+	}
+	if len(validated) != 2 {
+		t.Fatalf("validated = %+v, want 2 files", validated)
+	}
+
+	// Mismatched cascade_id must fail validation.
+	wrongID := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	if err := os.WriteFile(filepath.Join(stageDir, "conversations", wrongID+".db"), rawDB, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ValidateStagedTransferFiles(context.Background(), stageDir, wrongID); err == nil {
+		t.Fatal("ValidateStagedTransferFiles unexpectedly accepted mismatched cascade_id")
+	}
+}

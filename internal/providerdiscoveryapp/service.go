@@ -59,6 +59,7 @@ type Deps struct {
 	ProbeCodex                 func(context.Context, codex.ProbeConfig) (provider.AccountInfo, error)
 	CheckClaudeTransferAccount func(context.Context, string) error
 	CheckCodexTransferAccount  func(context.Context, string) error
+	CheckAgyTransferAccount    func(context.Context, string) error
 	// RememberClaudeCatalog persists one account's probe-reported model
 	// answer so the next cold start serves the enriched picker before its
 	// own probe lands. Optional: a focused test may leave it nil.
