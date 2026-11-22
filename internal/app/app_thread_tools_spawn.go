@@ -434,8 +434,9 @@ func (t threadToolsApp) forkSpawnOptions(ctx context.Context, origin threadReque
 // opts' own as the spawner's, the call's as the choice, against what this
 // computer offers, which is the read the thread is created with. The call's
 // model is read by the provider the thread runs on (threadtools.CallChoice):
-// a family runs the newest member this computer lists now, whatever the
-// caller saw when it checked the spawn.
+// a family runs the newest member this computer lists now. This is the
+// spawn's only resolution and only refusal; the caller resolves first only
+// for a paired computer that predates families (checkSpawnChoice).
 func (t threadToolsApp) applySpawnModel(ctx context.Context, opts *CreateThreadOptions, call threadtools.SpawnCall) error {
 	catalog, err := t.Catalog(ctx, threadtools.CatalogQuery{What: threadtools.OptionsModels})
 	if err != nil {

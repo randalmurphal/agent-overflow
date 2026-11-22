@@ -463,8 +463,11 @@ func TestSpawnByProfileTakesItsSettingsWithOverrides(t *testing.T) {
 	}
 }
 
-// A profile that is not in the roster, or that the target computer cannot
-// run, is refused naming it, and nothing is spawned.
+// A profile that is not in the roster, or whose instructions run too long,
+// is refused naming it, and nothing is spawned. One this computer cannot
+// run reaches the app unread: the app refuses it from the catalog read
+// that would create the thread (TestEveryListedProfileSpawnsWithWhatItLists in
+// the app package), so the caller reads no catalog of its own.
 func TestSpawnByProfileRefusesWhatCannotRun(t *testing.T) {
 	app := newFakeApp("Laptop")
 	app.catalog = Catalog{Reachable: true, Providers: []ProviderOption{claudeOption}}
@@ -476,10 +479,6 @@ func TestSpawnByProfileRefusesWhatCannotRun(t *testing.T) {
 	if !strings.Contains(message, `"Nobody"`) || !strings.Contains(message, "Opus") {
 		t.Errorf("unknown profile refusal = %q", message)
 	}
-	message = callErr(t, server, localCaller(), "thread_spawn", `{"prompt":"x","profile":"Sol"}`, CodeInvalidRequest)
-	if !strings.Contains(message, `"Sol" cannot run: Codex does not run on this computer.`) {
-		t.Errorf("unoffered profile refusal = %q", message)
-	}
 	long := strings.Repeat("i", MaxSpawnInstructionsBytes)
 	message = callErr(t, server, localCaller(), "thread_spawn", `{"prompt":"x","profile":"Sol","instructions":"`+long+`"}`, CodeInvalidRequest)
 	if !strings.Contains(message, "together") {
@@ -488,10 +487,20 @@ func TestSpawnByProfileRefusesWhatCannotRun(t *testing.T) {
 	if len(app.spawns) != 0 {
 		t.Fatalf("refused spawns reached the app: %v", app.spawns)
 	}
+
+	call(t, server, localCaller(), "thread_spawn", `{"prompt":"x","profile":"Sol"}`)
+	if got := app.spawns[0]; got.Profile != "Sol" || got.Provider != "codex" || got.Model != "sol" {
+		t.Fatalf("spawn = %+v, want Sol's choice as the profile names it", got)
+	}
+	if len(app.catalogs) != 0 {
+		t.Errorf("the caller read the catalog %v for a spawn on its own computer", app.catalogs)
+	}
 }
 
 // A spawn to a paired computer resolves the profile against what that
 // computer offers: one this computer lacks the provider for runs there.
+// For a paired computer that predates families, which knows no profiles,
+// the caller refuses one it cannot run, naming the profile.
 func TestSpawnByProfileRunsOnAPairedComputerThatOffersIt(t *testing.T) {
 	p := newPair(t)
 	p.local.catalog = Catalog{Reachable: true, Providers: []ProviderOption{claudeOption}}
@@ -503,6 +512,7 @@ func TestSpawnByProfileRunsOnAPairedComputerThatOffersIt(t *testing.T) {
 	if got := p.local.spawns[0]; got.ComputerID != "studio" || got.Provider != "codex" || got.Model != "sol" || got.Instructions != "Look for bugs." {
 		t.Fatalf("spawn = %+v", got)
 	}
+	p.local.peers["studio"] = exactOnlyPeer{p.peer}
 	message := callErr(t, p.server, localCaller(), "thread_spawn", `{"prompt":"x","profile":"Opus","computer_id":"studio","project_id":"p1"}`, CodeInvalidRequest)
 	if !strings.Contains(message, `"Opus" cannot run: Claude Code does not run on Studio.`) {
 		t.Errorf("refusal = %q", message)
@@ -561,15 +571,31 @@ func TestAFamilySpawnCarriesTheFamilyOnlyToAComputerThatReadsOne(t *testing.T) {
 	}
 }
 
-// A family the target lists no member of refuses the spawn, naming the
-// profile and the computer; with a family as the model and no profile it
-// names the family and the computer. Nothing is spawned.
+// A family that a paired computer predating families lists no member of
+// refuses the spawn on the caller, naming the profile and the computer;
+// with a family as the model and no profile it names the family and the
+// computer. Nothing is spawned. A paired computer that reads families
+// receives the same spawn unresolved, to refuse from the catalog read
+// that would create the thread
+// (TestAFamilyProfileRunsTheNewestModelEachComputerLists in the app
+// package).
 func TestAFamilySpawnTheTargetCannotRunIsRefused(t *testing.T) {
 	p := newPair(t)
 	p.local.catalog = Catalog{Reachable: true, Providers: []ProviderOption{liveClaude}}
 	p.remote.catalog = Catalog{Reachable: true, Providers: []ProviderOption{{ID: "claude", DefaultModel: "claude-haiku-5-5", Models: []ModelOption{{Slug: "claude-haiku-5-5"}}}}}
 	p.local.roster = familyRoster()
 	p.local.addThread(Thread{ID: "caller-thread", Provider: "claude", Model: "claude-opus-5-5"})
+
+	call(t, p.server, localCaller(), "thread_spawn", `{"prompt":"x","profile":"Fable","computer_id":"studio","project_id":"p1"}`)
+	if got := p.local.spawns; len(got) != 1 || got[0].Profile != "Fable" || got[0].Model != "claude-fable" {
+		t.Fatalf("spawns = %+v, want Fable's family carried to the computer that reads one", got)
+	}
+	// The caller asks only for the spawn's provider, to learn the flag.
+	if got := p.remote.catalogs; len(got) != 1 || got[0].Provider != "claude" || got[0].What != OptionsModels {
+		t.Errorf("the paired computer was asked for %+v, want Claude's models alone", got)
+	}
+	p.local.spawns = nil
+	p.local.peers["studio"] = exactOnlyPeer{p.peer}
 
 	message := callErr(t, p.server, localCaller(), "thread_spawn", `{"prompt":"x","profile":"Fable","computer_id":"studio","project_id":"p1"}`, CodeInvalidRequest)
 	if want := `Agent profile "Fable" cannot run: Claude Code offers no claude-fable model on Studio. It offers: claude-haiku-5-5.`; !strings.Contains(message, want) {

@@ -531,17 +531,17 @@ page shows as a note rather than a reason to hold the save. The settings
 page says what a family profile runs on its computer. Every other model
 input is exact ([decisions](../decisions.md)).
 
-The computer that creates the thread resolves its family from the
-catalog read that creates it, so a list that changes after the caller
-checked the spawn runs what it lists then. The caller still checks a
-fresh spawn against the destination's catalog, so a refusal names the
-profile; a fork runs its source's provider, which only the source's
-computer knows, so it is checked and refused there. A paired computer
-whose `thread_options` answer lacks `model_families` predates families
-and reads every model as exact: the caller resolves the family against
-that computer's list and carries the exact ID, and for a fork first asks
-that computer's `thread_show` for the source's provider. That path is
-deleted once no supported release lacks `model_families`.
+The computer that creates the thread is the only one that resolves the
+spawn's model and refuses one it cannot run, from the catalog read that
+creates the thread, so a list that changes after the call was made runs
+what it lists then. The spawn carries its profile's name, so that
+computer's refusal names the profile. A paired computer whose
+`thread_options` answer lacks `model_families` predates families, reads
+every model as exact and knows no profiles: for it alone the caller
+resolves the choice against that computer's list, refuses naming the
+profile, and carries the exact ID a family resolves to, and for a fork
+first asks that computer's `thread_show` for the source's provider. That
+path is deleted once no supported release lacks `model_families`.
 
 `thread_spawn` `profile` names one, compared without case. Explicit
 `provider`, `model`, `effort` and `runtime_mode` override the matching

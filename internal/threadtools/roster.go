@@ -398,21 +398,23 @@ func joinInstructions(parts ...string) string {
 	return strings.Join(kept, "\n\n")
 }
 
-// checkSpawnChoice settles on the caller's computer what only the target's
-// catalog can, reading it here or through the target's peer. A fresh spawn
-// the target cannot run is refused naming the profile. A target that reads
-// model families (ModelFamilies) receives the call's model as written and
-// resolves it where the thread is created (CallChoice, ResolveSpawn), from
-// the catalog read that creates it; a paired computer that predates them
-// receives the exact model the family resolves to on its list. A fork runs
-// its source's provider, which only the source's computer knows without a
-// lookup, so a fork is resolved there and refused there; only for a
-// computer that predates families does the caller look the provider up and
-// resolve the fork's model itself. It also requires a target that adds
-// instructions when the spawn carries any.
+// checkSpawnChoice settles on the caller's computer only what the computer
+// that creates the thread cannot. That computer resolves the model and
+// refuses what it cannot run, from the catalog read that creates the
+// thread (CallChoice, ResolveSpawn), when it is this computer or a paired
+// one that reads model families (ModelFamilies). A paired computer that
+// predates families would read a family as an exact ID and knows no
+// profiles, so for it the caller resolves the choice against its list,
+// refuses naming the profile, and sends the exact model a family resolves
+// to; a fork there is read by its source's provider (resolveExactOnlyFork).
+// A paired computer that predates spawn instructions would drop them, so a
+// spawn carrying any is refused. The peer's thread_options answer is the
+// only way to learn either flag, so the caller asks for it whenever one
+// could matter.
 func (c *session) checkSpawnChoice(ctx context.Context, call *SpawnCall, choice SpawnChoice, spawner SpawnDefaults) error {
 	fork := call.FromThread != ""
-	if call.Profile == "" && call.Instructions == "" && !choice.Model.IsFamily() && (!fork || call.Model == "") {
+	resolves := call.Profile != "" || choice.Model.IsFamily() || (fork && call.Model != "")
+	if call.Instructions == "" && !resolves {
 		return nil
 	}
 	computer, local, ok := c.computerByID(call.ComputerID)
@@ -420,23 +422,23 @@ func (c *session) checkSpawnChoice(ctx context.Context, call *SpawnCall, choice 
 		return publicf(CodeInvalidRequest, "There is no computer %q. thread_options lists the ones you can reach.", call.ComputerID)
 	}
 	if local {
-		if fork || (call.Profile == "" && !choice.Model.IsFamily()) {
-			return nil
-		}
-		catalog, err := c.app.Catalog(ctx, CatalogQuery{What: OptionsModels})
-		if err != nil {
-			return err
-		}
-		if _, err := ResolveSpawn(spawner, choice, catalog.Providers, "this computer"); err != nil {
-			return RefuseSpawnChoice(call.Profile, err)
-		}
 		return nil
 	}
 	peer, err := c.app.Peer(ctx, computer.ID)
 	if err != nil {
 		return err
 	}
-	raw, err := peer.Query(ctx, "thread_options", json.RawMessage(`{"what":"models"}`))
+	// A fresh spawn's provider is known here, so the answer carries that
+	// provider's models alone; a fork's is its source's, known there.
+	query := map[string]string{"what": OptionsModels}
+	if !fork {
+		query["provider"] = choice.runsOn(spawner)
+	}
+	forwarded, err := json.Marshal(query)
+	if err != nil {
+		return err
+	}
+	raw, err := peer.Query(ctx, "thread_options", forwarded)
 	if err != nil {
 		return err
 	}
@@ -448,20 +450,20 @@ func (c *session) checkSpawnChoice(ctx context.Context, call *SpawnCall, choice 
 	if call.Instructions != "" && !row.SpawnInstructions {
 		return publicf(CodeInvalidRequest, "%s runs an older version that cannot add instructions to a thread's system prompt. Spawn there without instructions or a profile that has them, or spawn on this computer.", where)
 	}
+	if row.ModelFamilies || !resolves {
+		return nil
+	}
 	if fork {
-		if row.ModelFamilies || call.Model == "" {
+		if call.Model == "" {
 			return nil
 		}
 		return c.resolveExactOnlyFork(ctx, peer, computer, call, row.Providers)
-	}
-	if call.Profile == "" && !choice.Model.IsFamily() {
-		return nil
 	}
 	resolved, err := ResolveSpawn(spawner, choice, row.Providers, where)
 	if err != nil {
 		return RefuseSpawnChoice(call.Profile, err)
 	}
-	if choice.Model.IsFamily() && !row.ModelFamilies {
+	if choice.Model.IsFamily() {
 		call.Model = resolved.Model
 	}
 	return nil
