@@ -1,0 +1,187 @@
+package tempo
+
+import (
+	"context"
+	"strings"
+
+	"agent-overflow/internal/secret"
+	"errors"
+	"reflect"
+	"slices"
+	"testing"
+	"time"
+
+	"agent-overflow/internal/tracker/tempo/tempotest"
+	"agent-overflow/internal/tracker/trackerapi"
+)
+
+func TestWorklogPagesToTheEnd(t *testing.T) {
+	f := tempotest.NewServer(t, testToken)
+	issues := newIssues()
+	c := testClient(t, f, issues)
+	base := q("from", "2026-11-09", "to", "2026-11-15", "limit", "1000")
+	at := func(offset string) map[string][]string {
+		v := q("offset", offset)
+		for k, vs := range base {
+			v[k] = vs
+		}
+		return v
+	}
+	f.On("GET", "/4/worklogs/user/acc-user1", at("0"), "", 200, pageOf(0, true,
+		wl{id: 1, issue: 10001, author: "acc-user1", date: "2026-11-09", start: "09:00:00", spent: 3600, billable: seconds64(3600), desc: "Review", attrs: [][2]string{{"_Category_", "dev"}}}.json(),
+		wl{id: 2, issue: 10001, author: "acc-user1", date: "2026-11-09", start: "10:00:00", spent: 1800}.json()))
+	f.On("GET", "/4/worklogs/user/acc-user1", at("2"), "", 200, pageOf(2, true,
+		wl{id: 3, issue: 10001, author: "acc-user1", date: "2026-11-10", spent: 900}.json(),
+		wl{id: 4, issue: 99999, author: "acc-user1", date: "2026-11-10", start: "13:15:00", spent: 600}.json()))
+	f.On("GET", "/4/worklogs/user/acc-user1", at("4"), "", 200, pageOf(4, false,
+		wl{id: 5, issue: 20007, author: "acc-user1", date: "2026-11-11", start: "08:00:00", spent: 7200}.json()))
+
+	var sizes []int
+	var all []Worklog
+	err := c.WorklogPages(context.Background(), WorklogQuery{Author: "acc-user1", From: mustDate(t, "2026-11-09"), To: mustDate(t, "2026-11-15")},
+		func(page []Worklog) error {
+			sizes = append(sizes, len(page))
+			all = append(all, page...)
+			return nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(sizes, []int{2, 2, 1}) {
+		t.Fatalf("pages %v", sizes)
+	}
+	// A read names each issue by ID and asks the caller for nothing.
+	if calls := issues.calls(); len(calls) != 0 {
+		t.Errorf("a read looked up keys %v", calls)
+	}
+	first := all[0]
+	want := Worklog{
+		ID: 1, Issue: Issue{ID: 10001}, Author: "acc-user1",
+		Start:    Start{Date: mustDate(t, "2026-11-09"), Time: mustClock(t, "09:00:00")},
+		StartUTC: time.Date(2026, 11, 9, 9, 0, 0, 0, time.UTC),
+		Spent:    time.Hour, Billable: ptr(time.Hour), Description: "Review",
+		Attributes: []AttributeValue{{Key: "_Category_", Value: "dev"}},
+		Created:    time.Date(2026, 11, 2, 8, 0, 0, 0, time.UTC),
+		Updated:    time.Date(2026, 11, 3, 9, 30, 0, 0, time.UTC),
+	}
+	if !reflect.DeepEqual(first, want) {
+		t.Errorf("first worklog\n got %+v\nwant %+v", first, want)
+	}
+	if all[2].Start.Time.IsSet() || all[2].Billable != nil {
+		t.Errorf("worklog 3 without start time or billable: %+v", all[2])
+	}
+}
+
+func TestWorklogsFailureMidPage(t *testing.T) {
+	f := tempotest.NewServer(t, testToken)
+	c := testClient(t, f, newIssues())
+	f.On("GET", "/4/worklogs/user/acc-user1", q("from", "2026-11-09", "to", "2026-11-09", "offset", "0", "limit", "1000"), "", 200,
+		pageOf(0, true, wl{id: 1, issue: 10001, author: "acc-user1", date: "2026-11-09", spent: 60}.json()))
+	f.On("GET", "/4/worklogs/user/acc-user1", q("from", "2026-11-09", "to", "2026-11-09", "offset", "1", "limit", "1000"), "", 400,
+		`{"errors":[{"message":"offset out of range"}]}`)
+	day := mustDate(t, "2026-11-09")
+	var seen int
+	err := c.WorklogPages(context.Background(), WorklogQuery{Author: "acc-user1", From: day, To: day}, func(p []Worklog) error {
+		seen += len(p)
+		return nil
+	})
+	se, ok := errors.AsType[*trackerapi.StatusError](err)
+	if !ok || se.Message != "offset out of range" || seen != 1 {
+		t.Fatalf("seen %d, err %v", seen, err)
+	}
+}
+
+func TestWorklogsRefusesAStalledPage(t *testing.T) {
+	f := tempotest.NewServer(t, testToken)
+	c := testClient(t, f, newIssues())
+	f.On("GET", "/4/worklogs/user/acc-user1", q("from", "2026-11-09", "to", "2026-11-09", "offset", "0", "limit", "1000"), "", 200,
+		pageOf(0, true))
+	day := mustDate(t, "2026-11-09")
+	if _, err := c.Worklogs(context.Background(), WorklogQuery{Author: "acc-user1", From: day, To: day}); err == nil {
+		t.Fatal("a page naming a next page with no results was accepted")
+	}
+}
+
+func TestWorklogPagesCallbackErrorStops(t *testing.T) {
+	f := tempotest.NewServer(t, testToken)
+	c := testClient(t, f, newIssues())
+	f.On("GET", "/4/worklogs/user/acc%2Fuser1", q("from", "2026-11-09", "to", "2026-11-09", "offset", "0", "limit", "1000", "updatedFrom", "2026-11-09T07:00:00Z"), "", 200,
+		pageOf(0, true, wl{id: 1, issue: 10001, author: "acc/user1", date: "2026-11-09", spent: 60}.json()))
+	day := mustDate(t, "2026-11-09")
+	stop := errors.New("stop")
+	err := c.WorklogPages(context.Background(), WorklogQuery{
+		Author: "acc/user1", From: day, To: day,
+		UpdatedFrom: time.Date(2026, 11, 9, 8, 0, 0, 0, time.FixedZone("CET", 3600)),
+	}, func([]Worklog) error { return stop })
+	if err != stop {
+		t.Fatalf("err %v", err)
+	}
+}
+
+func TestWorklogQueryChecks(t *testing.T) {
+	f := tempotest.NewServer(t, testToken)
+	c := testClient(t, f, newIssues())
+	d1, d2 := mustDate(t, "2026-11-09"), mustDate(t, "2026-11-10")
+	for _, query := range []WorklogQuery{
+		{From: d1, To: d2},
+		{Author: "acc-user1", To: d2},
+		{Author: "acc-user1", From: d2, To: d1},
+	} {
+		if _, err := c.Worklogs(context.Background(), query); !isType[*trackerapi.NotSentError](err) {
+			t.Errorf("%+v: %v", query, err)
+		}
+	}
+}
+
+// TestWorklogReadNamesNoKey proves a worklog read names its issue by ID
+// and never asks IssueIDs, so a resolver that fails does not fail it.
+func TestWorklogReadNamesNoKey(t *testing.T) {
+	f := tempotest.NewServer(t, testToken)
+	issues := newIssues()
+	issues.err = errors.New("jira is down")
+	c := testClient(t, f, issues)
+	f.On("GET", "/4/worklogs/42", nil, "", 200, wl{id: 42, issue: 10001, author: "acc-user1", date: "2026-11-09", spent: 60}.json())
+	w, err := c.Worklog(context.Background(), 42)
+	if err != nil || w.Issue != (Issue{ID: 10001}) || len(issues.calls()) != 0 {
+		t.Fatalf("read %+v %v, %d resolver calls", w.Issue, err, len(issues.calls()))
+	}
+}
+
+func TestWorklogRefusesABadRecord(t *testing.T) {
+	f := tempotest.NewServer(t, testToken)
+	c := testClient(t, f, newIssues())
+	f.On("GET", "/4/worklogs/43", nil, "", 200, wl{id: 43, issue: 10001, author: "acc-user1", date: "09/11/2026", spent: 60}.json())
+	if _, err := c.Worklog(context.Background(), 43); err == nil {
+		t.Fatal("a worklog with a bad date was accepted")
+	}
+}
+
+// TestDecodeErrorsAreScrubbed: text an answer supplies that ends up in an
+// error is scrubbed of the credential the request carried.
+func TestDecodeErrorsAreScrubbed(t *testing.T) {
+	f := tempotest.NewServer(t, testToken)
+	c := testClient(t, f, newIssues())
+	f.On("GET", "/4/worklogs/45", nil, "", 200, wl{id: 45, issue: 10001, author: "acc-user1", date: "x" + testToken, spent: 60}.json())
+	f.On("GET", "/4/timesheet-approvals/user/acc-user1", q("from", "2026-11-04", "to", "2026-11-04"), "", 200,
+		`{"period":{"from":"`+testToken+`","to":"2026-11-08"}}`)
+	f.On("GET", "/4/work-attributes", q("offset", "0", "limit", "1000"), "", 200, pageOf(0, false,
+		`{"key":"_Category_","name":"Cat `+testToken+`","type":"STATIC_LIST","required":true,"values":["dev","x`+testToken+`"],"names":{"dev":"Dev `+testToken+`"}}`))
+	f.On("GET", "/4/timesheet-approvals/user/acc-user1", q("from", "2026-11-10", "to", "2026-11-10"), "", 200, approvalJSONFor("2026-11-09", "2026-11-15", "OPEN"))
+	ctx := context.Background()
+	_, err := c.Worklog(ctx, 45)
+	if err == nil || strings.Contains(err.Error(), testToken) || !strings.Contains(err.Error(), secret.Redacted) {
+		t.Errorf("worklog: %v", err)
+	}
+	_, err = c.Approval(ctx, "acc-user1", mustDate(t, "2026-11-04"))
+	if err == nil || strings.Contains(err.Error(), testToken) || !strings.Contains(err.Error(), secret.Redacted) {
+		t.Errorf("approval: %v", err)
+	}
+	reports, err := c.Validate(ctx, []Op{CreateOp(Draft{Issue: Issue{ID: 10001}, Author: "acc-user1", Start: Start{Date: mustDate(t, "2026-11-10")},
+		Spent: time.Hour, Attributes: []AttributeValue{{"_Category_", "lunch"}}})})
+	if err != nil || len(reports[0].Problems) != 1 {
+		t.Fatalf("%+v %v", reports, err)
+	}
+	if msg := reports[0].Problems[0].Message; strings.Contains(msg, testToken) || !strings.Contains(msg, secret.Redacted) {
+		t.Errorf("problem message: %q", msg)
+	}
+}

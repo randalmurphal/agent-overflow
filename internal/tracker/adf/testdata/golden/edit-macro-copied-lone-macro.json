@@ -1,0 +1,47 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "bodiedExtension",
+      "attrs": {
+        "extensionKey": "expand",
+        "extensionType": "com.atlassian.confluence.macro.core",
+        "layout": "default",
+        "parameters": {
+          "macroParams": {
+            "title": {
+              "value": "T"
+            }
+          }
+        }
+      },
+      "content": [
+        {
+          "type": "extension",
+          "attrs": {
+            "extensionKey": "toc",
+            "extensionType": "com.atlassian.confluence.macro.core",
+            "layout": "default",
+            "parameters": {
+              "macroParams": {
+                "maxLevel": {
+                  "value": "1"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "After"
+        }
+      ]
+    }
+  ]
+}

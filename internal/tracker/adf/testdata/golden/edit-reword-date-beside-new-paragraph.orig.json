@@ -1,0 +1,34 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "The release shipped on "
+        },
+        {
+          "type": "date",
+          "attrs": {
+            "timestamp": "1790812800000"
+          }
+        },
+        {
+          "type": "text",
+          "text": " after the final review."
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "Second paragraph stays."
+        }
+      ]
+    }
+  ]
+}

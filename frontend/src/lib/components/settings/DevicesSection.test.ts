@@ -32,7 +32,7 @@ interface MockDevice {
 // The observe tier, as the backend grants it for a `view-only` link
 // (internal/transport/scopes.go). Spelled out rather than imported so the
 // fixture states what the wire carries.
-const OBSERVE: string[] = ['threads:read', 'files:read', 'settings:read'];
+const OBSERVE: string[] = ['threads:read', 'files:read', 'settings:read', 'tracker:read'];
 
 function overview(overrides: {
   devices?: MockDevice[];

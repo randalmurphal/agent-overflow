@@ -1,0 +1,2 @@
+removed a block that had alignment
+line 3: dropped the alignment of "Note", which Markdown can't show

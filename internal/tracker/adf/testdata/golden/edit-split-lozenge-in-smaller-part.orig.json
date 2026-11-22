@@ -1,0 +1,36 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "The build and the tests ran today, and the release is "
+        },
+        {
+          "type": "status",
+          "attrs": {
+            "text": "DONE",
+            "color": "green",
+            "localId": "s1"
+          }
+        },
+        {
+          "type": "text",
+          "text": "."
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "Second paragraph stays."
+        }
+      ]
+    }
+  ]
+}
