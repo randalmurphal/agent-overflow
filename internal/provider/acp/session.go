@@ -131,35 +131,36 @@ type Session struct {
 	// question mid-write or leave an orphaned follow-up prompt.
 	questionActionMu sync.Mutex
 
-	mu                    sync.Mutex
-	sessionID             string
-	model                 string
-	reasoningEffort       string
-	runtimeMode           provider.RuntimeMode
-	interactionMode       provider.InteractionMode
-	permissionPolicy      PermissionPolicy
-	availableModes        []SessionMode
-	configOptions         []ConfigOption
-	currentModeID         string
-	lastRequestedModeID   string
-	lastContextSize       int
-	inFlightPrompts       int
-	solePromptConfirm     *pendingPromptConfirm
-	turnOpen              bool
-	spontaneousTurnOpen   bool
-	turnSeq               int
-	activeTurnID          string
-	promptUsage           provider.TokenUsage
-	promptUsageSeen       bool
-	turnHasOutputSchema   bool
-	turnLastAssistantText strings.Builder
-	startedTools          map[string]NormalizedToolStart
-	trackedSubagents      map[string]SubagentLaunchContext
-	pendingPerms          map[string]pendingPermission
-	pendingToolQuestions  map[string]pendingToolQuestion
-	chunk                 chunkBuffer
-	promptWG              sync.WaitGroup
-	subagentWG            sync.WaitGroup
+	mu                     sync.Mutex
+	sessionID              string
+	model                  string
+	reasoningEffort        string
+	runtimeMode            provider.RuntimeMode
+	interactionMode        provider.InteractionMode
+	permissionPolicy       PermissionPolicy
+	availableModes         []SessionMode
+	configOptions          []ConfigOption
+	currentModeID          string
+	lastRequestedModeID    string
+	lastContextSize        int
+	inFlightPrompts        int
+	solePromptConfirm      *pendingPromptConfirm
+	turnOpen               bool
+	spontaneousTurnOpen    bool
+	turnSeq                int
+	activeTurnID           string
+	promptUsage            provider.TokenUsage
+	promptUsageSeen        bool
+	turnHasOutputSchema    bool
+	turnLastAssistantText  strings.Builder
+	startedTools           map[string]NormalizedToolStart
+	trackedSubagents       map[string]SubagentLaunchContext
+	activeSubagentWatchers int
+	pendingPerms           map[string]pendingPermission
+	pendingToolQuestions   map[string]pendingToolQuestion
+	chunk                  chunkBuffer
+	promptWG               sync.WaitGroup
+	subagentWG             sync.WaitGroup
 
 	sessionCtx      context.Context
 	sessionCancel   context.CancelFunc
@@ -547,7 +548,7 @@ func (s *Session) applyConfigAxes(
 	if applyMode {
 		targetModeID, policy := s.flavor.MapRuntimeMode(rt, im, availableModes)
 		modeApplied := true
-		if targetModeID == "" && len(availableModes) > 0 && (im == provider.ModePlan || strict) {
+		if targetModeID == "" && (im == provider.ModePlan || (len(availableModes) > 0 && strict)) {
 			modeApplied = false
 			errs = append(errs, fmt.Errorf("acp: server does not advertise a mode matching runtime=%s interaction=%s", rt, im))
 		} else if targetModeID != "" && targetModeID != currentMode {
@@ -628,15 +629,18 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 	// fails before writing, restore the detached questions intact.
 	detachedQuestions, detachedTools, detachTurnID := s.detachPendingToolQuestions()
 
-	if err := s.dispatchPrompt(ctx, blocks, hasOutputSchema, strings.TrimSpace(opts.UserMessageUUID), content); err != nil {
-		s.restorePendingToolQuestions(detachedQuestions, detachedTools)
-		return err
+	var emitDetached func()
+	if len(detachedQuestions) > 0 {
+		emitDetached = func() {
+			s.emitResolvedDetachedToolQuestions(detachedQuestions, detachTurnID, "answered", map[string]provider.UserInputAnswer{
+				"reply": {content},
+			})
+		}
 	}
 
-	if len(detachedQuestions) > 0 {
-		s.emitResolvedDetachedToolQuestions(detachedQuestions, detachTurnID, "answered", map[string]provider.UserInputAnswer{
-			"reply": {content},
-		})
+	if err := s.dispatchPrompt(ctx, blocks, hasOutputSchema, strings.TrimSpace(opts.UserMessageUUID), content, emitDetached); err != nil {
+		s.restorePendingToolQuestions(detachedQuestions, detachedTools)
+		return err
 	}
 	return nil
 }
@@ -685,7 +689,7 @@ func (s *Session) confirmSolePrompt() {
 	s.emitPromptConfirmation(c)
 }
 
-func (s *Session) dispatchPrompt(ctx context.Context, blocks []ContentBlock, hasOutputSchema bool, userMsgUUID, userContent string) error {
+func (s *Session) dispatchPrompt(ctx context.Context, blocks []ContentBlock, hasOutputSchema bool, userMsgUUID, userContent string, beforeWait func()) error {
 	s.mu.Lock()
 	sessionID := s.sessionID
 	s.mu.Unlock()
@@ -709,14 +713,15 @@ func (s *Session) dispatchPrompt(ctx context.Context, blocks []ContentBlock, has
 	//
 	// Only arm solePromptConfirm when the session is completely quiescent
 	// (no prior in-flight prompt, no open spontaneous wake turn, and no
-	// unfinished background tool calls or tracked subagents). Otherwise, delayed
-	// updates from earlier activity must NEVER confirm this prompt; it is
-	// confirmed only when its own RPC completes without error.
+	// unfinished background tool calls, tracked subagents, or active subagent
+	// watchers). Otherwise, delayed updates from earlier activity must NEVER
+	// confirm this prompt; it is confirmed only when its own RPC completes
+	// without error.
 	var openTurnID string
 	var prevOutputSchema bool
 	s.mu.Lock()
 	priorInFlight := s.inFlightPrompts
-	quiescent := priorInFlight == 0 && !s.spontaneousTurnOpen && len(s.startedTools) == 0 && len(s.trackedSubagents) == 0
+	quiescent := priorInFlight == 0 && !s.spontaneousTurnOpen && len(s.startedTools) == 0 && len(s.trackedSubagents) == 0 && s.activeSubagentWatchers == 0
 	s.inFlightPrompts++
 	if !s.turnOpen {
 		s.turnSeq++
@@ -767,6 +772,9 @@ func (s *Session) dispatchPrompt(ctx context.Context, blocks []ContentBlock, has
 			TurnID:    openTurnID,
 			Timestamp: time.Now(),
 		})
+	}
+	if beforeWait != nil {
+		beforeWait()
 	}
 
 	s.promptWG.Add(1)
@@ -1883,11 +1891,17 @@ func (s *Session) handleToolCallComplete(tc *ToolCallUpdate) {
 	delete(s.startedTools, tc.ToolCallID)
 	trackedLaunch, wasTracked := s.trackedSubagents[tc.ToolCallID]
 	delete(s.trackedSubagents, tc.ToolCallID)
+	watchSubagent := wasTracked && tc.Status == "completed" && !s.closing.Load()
+	if watchSubagent {
+		// Transfer ownership from trackedSubagents to activeSubagentWatchers
+		// under s.mu so there is no quiescent gap between launch completion
+		// and background watcher completion.
+		s.activeSubagentWatchers++
+	}
 	turnID := s.activeTurnID
 	s.mu.Unlock()
 
 	norm := s.flavor.NormalizeToolComplete(tc, started)
-	watchSubagent := wasTracked && tc.Status == "completed" && !s.closing.Load()
 	if watchSubagent {
 		if norm.ExtraMeta == nil {
 			norm.ExtraMeta = map[string]any{}
@@ -1901,7 +1915,14 @@ func (s *Session) handleToolCallComplete(tc *ToolCallUpdate) {
 	if watchSubagent {
 		s.subagentWG.Add(1)
 		go func() {
-			defer s.subagentWG.Done()
+			defer func() {
+				s.mu.Lock()
+				if s.activeSubagentWatchers > 0 {
+					s.activeSubagentWatchers--
+				}
+				s.mu.Unlock()
+				s.subagentWG.Done()
+			}()
 			s.flavor.WatchSubagent(s.sessionCtx, trackedLaunch)
 		}()
 	}

@@ -581,14 +581,18 @@ func TestClassifyPermissionAutoAllowsAOMCPServers(t *testing.T) {
 		t.Fatalf("colliding third-party server still auto-approved single-underscore tool: %v", clsCollide.Action)
 	}
 
-	// Global mcp_config.json with exact "ao_thread_tools" spelling or corrupt JSON
-	// must fail closed and disable single-underscore auto-approval.
+	// Global mcp_config.json with exact "ao_thread_tools", shorter prefix "ao",
+	// or corrupt JSON must fail closed and disable auto-approval (both single-
+	// and double-underscore forms).
 	for _, tc := range []struct {
-		name string
-		body string
+		name     string
+		body     string
+		toolName string
 	}{
-		{"exact_underscore_global", `{"mcpServers":{"ao_thread_tools":{"command":"evil"}}}`},
-		{"corrupt_global_config", `{not-valid-json`},
+		{"exact_underscore_global", `{"mcpServers":{"ao_thread_tools":{"command":"evil"}}}`, "mcp_ao_thread_tools_thread_spawn"},
+		{"exact_double_underscore_global", `{"mcpServers":{"ao-thread-tools":{"command":"evil"}}}`, "mcp__ao-thread-tools__thread_spawn"},
+		{"shorter_prefix_global", `{"mcpServers":{"ao":{"command":"evil"}}}`, "mcp_ao_thread_tools_thread_spawn"},
+		{"corrupt_global_config", `{not-valid-json`, "mcp_ao_thread_tools_thread_spawn"},
 	} {
 		homeDir := t.TempDir()
 		appData := filepath.Join(homeDir, ".gemini", "antigravity-cli")
@@ -604,7 +608,7 @@ func TestClassifyPermissionAutoAllowsAOMCPServers(t *testing.T) {
 			MCPServers: []acp.MCPServerConfig{{Name: "ao-thread-tools"}},
 		})
 		clsG := fGlobal.ClassifyPermission("t1", "turn1", "req-g", acp.RequestPermissionParams{
-			ToolCall: acp.ToolCallUpdate{ToolCallID: "c-g", Name: "mcp_ao_thread_tools_thread_spawn", Kind: "other"},
+			ToolCall: acp.ToolCallUpdate{ToolCallID: "c-g", Name: tc.toolName, Kind: "other"},
 			Options:  opts,
 		}, acp.PolicyPrompt)
 		if clsG.Action != acp.PermissionAskUser {

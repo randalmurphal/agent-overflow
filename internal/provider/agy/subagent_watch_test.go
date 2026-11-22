@@ -251,16 +251,26 @@ func TestWatchSubagentParallelAndResumedSession(t *testing.T) {
 	// New turn spawns two parallel subagents.
 	childA := "child-A"
 	childB := "child-B"
+	childALog := transcriptPathForSession(appDataDir, childA)
+	childBLog := transcriptPathForSession(appDataDir, childB)
+	createdA, _ := json.Marshal(map[string]any{
+		"step_index": 3, "source": "MODEL", "type": "GENERIC", "status": "DONE",
+		"content": "Created the following subagent:\n{\"conversationId\":\"" + childA + "\",\"logAbsoluteUri\":\"file://" + filepath.ToSlash(childALog) + "\"}",
+	})
+	createdB, _ := json.Marshal(map[string]any{
+		"step_index": 4, "source": "MODEL", "type": "GENERIC", "status": "DONE",
+		"content": "Created the following subagent:\n{\"conversationId\":\"" + childB + "\",\"logAbsoluteUri\":\"file://" + filepath.ToSlash(childBLog) + "\"}",
+	})
 	writeJSONL(t, parentLog,
 		`{"step_index":2,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","tool_calls":[{"name":"invoke_subagent","args":{"Role":"\"Alpha\"","TypeName":"\"research\"","Prompt":"\"Task A\""}},{"name":"invoke_subagent","args":{"Role":"\"Beta\"","TypeName":"\"research\"","Prompt":"\"Task B\""}}]}`,
-		`{"step_index":3,"source":"MODEL","type":"GENERIC","status":"DONE","content":"Created the following subagent:\n{\"conversationId\":\"child-A\"}"}`,
-		`{"step_index":4,"source":"MODEL","type":"GENERIC","status":"DONE","content":"Created the following subagent:\n{\"conversationId\":\"child-B\"}"}`,
+		string(createdA),
+		string(createdB),
 	)
-	writeJSONL(t, transcriptPathForSession(appDataDir, childA),
+	writeJSONL(t, childALog,
 		`{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","model":"gemini-4-neon-tiered-high","input_tokens":100,"output_tokens":20,"content":"Alpha done"}`,
 	)
-	writeJSONL(t, transcriptPathForSession(appDataDir, childB),
-		`{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","model":"gemini-4-hydrogen-tiered-low","input_tokens":50,"output_tokens":10,"content":"Beta done"}`,
+	writeJSONL(t, childBLog,
+		`{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","model":"gemini-4-hydrogen-tiered-low","input_tokens":50,"output_tokens":20,"content":"Beta done"}`,
 	)
 
 	var mu sync.Mutex
@@ -419,6 +429,7 @@ func TestSubagentPathContainmentAndClaimRoleMismatch(t *testing.T) {
 	for _, bogus := range []string{
 		`{"conversationId":"unrelated-conv-99","status":"ok"}`,
 		`{"note":"subagent check","conversationId":"unrelated-conv-99","logAbsoluteUri":"file:///tmp/x"}`,
+		"Created the following subagent:\n{\"conversationId\":\"no-uri-conv\"}",
 	} {
 		if cid, _ := parseCreatedSubagentResult(bogus, appDataDir); cid != "" {
 			t.Fatalf("unrelated GENERIC payload %q was admitted: %q", bogus, cid)

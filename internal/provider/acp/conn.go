@@ -467,7 +467,11 @@ func (c *Conn) NewRawSession(ctx context.Context, params SessionNewParams) (Sess
 	if params.MCPServers == nil {
 		params.MCPServers = []MCPServerConfig{}
 	}
-	raw, err := c.sendRequest(ctx, "session/new", params)
+	wait, err := c.startRequestWithSessionOpen("session/new", params, c.requestTimeout, nil, true)
+	if err != nil {
+		return SessionOpenResult{}, err
+	}
+	raw, err := wait(ctx)
 	if err != nil {
 		return SessionOpenResult{}, err
 	}
@@ -528,7 +532,7 @@ func (c *Conn) StartUpdateCapture(sessionID string, maxUpdates int) *UpdateCaptu
 		notify:   make(chan struct{}, 1),
 	}
 	c.routesMu.Lock()
-	if c.replays[sessionID] != nil {
+	if c.replays[sessionID] != nil || c.sessions[sessionID] != nil {
 		c.routesMu.Unlock()
 		return &UpdateCapture{conn: c, sessionID: sessionID, cap: cap}
 	}
@@ -557,7 +561,7 @@ func (c *Conn) sendRequest(ctx context.Context, method string, params any) (json
 // preventing immediate post-open notifications (such as
 // available_commands_update) from being dropped before open() returns.
 func (c *Conn) sendSessionNewRequest(ctx context.Context, params SessionNewParams, sess *Session) (json.RawMessage, error) {
-	wait, err := c.startRequestWithSessionOpen("session/new", params, c.requestTimeout, sess)
+	wait, err := c.startRequestWithSessionOpen("session/new", params, c.requestTimeout, sess, true)
 	if err != nil {
 		return nil, err
 	}
@@ -568,15 +572,15 @@ func (c *Conn) sendSessionNewRequest(ctx context.Context, params SessionNewParam
 // A timeout <= 0 waits indefinitely until ctx cancels, the response arrives, or
 // the connection closes (used for long-running session/prompt RPCs).
 func (c *Conn) startRequestWithTimeout(method string, params any, timeout time.Duration) (func(context.Context) (json.RawMessage, error), error) {
-	return c.startRequestWithSessionOpen(method, params, timeout, nil)
+	return c.startRequestWithSessionOpen(method, params, timeout, nil, false)
 }
 
-func (c *Conn) startRequestWithSessionOpen(method string, params any, timeout time.Duration, openSess *Session) (func(context.Context) (json.RawMessage, error), error) {
+func (c *Conn) startRequestWithSessionOpen(method string, params any, timeout time.Duration, openSess *Session, trackOrphanClose bool) (func(context.Context) (json.RawMessage, error), error) {
 	id := c.nextID.Add(1)
 	ch := make(chan json.RawMessage, 1)
 
 	var openEntry *pendingOpenEntry
-	if openSess != nil {
+	if openSess != nil || trackOrphanClose {
 		openEntry = &pendingOpenEntry{sess: openSess}
 	}
 	c.pendingMu.Lock()

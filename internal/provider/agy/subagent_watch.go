@@ -819,14 +819,16 @@ func parseCreatedSubagentResult(content, appDataDir string) (conversationID, log
 		return "", ""
 	}
 	conversationID = strings.TrimSpace(obj.ConversationID)
-	if uri := strings.TrimSpace(obj.LogAbsoluteURI); uri != "" {
-		childRoot := filepath.Join(appDataDir, "brain", conversationID)
-		logPath = resolveTranscriptURI(uri, childRoot)
-		if logPath == "" {
-			// Reject a creation payload whose logAbsoluteUri points outside
-			// brain/<conversationID>.
-			return "", ""
-		}
+	uri := strings.TrimSpace(obj.LogAbsoluteURI)
+	if uri == "" {
+		// Real agy invoke_subagent results always provide logAbsoluteUri inside
+		// brain/<conversationId>; reject banner text without a contained URI.
+		return "", ""
+	}
+	childRoot := filepath.Join(appDataDir, "brain", conversationID)
+	logPath = resolveTranscriptURI(uri, childRoot)
+	if logPath == "" {
+		return "", ""
 	}
 	return conversationID, logPath
 }

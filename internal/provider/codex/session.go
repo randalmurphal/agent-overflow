@@ -600,11 +600,20 @@ type Session struct {
 	// bound the thread to this Session. earlyFramesMu is a leaf mutex protecting
 	// ONLY the queue and earlyFlushing flag (never held during dispatch), so
 	// re-entrant child-route registration during replay cannot deadlock while
-	// preserving strict FIFO wire order.
-	earlyFramesMu sync.Mutex
-	earlyPending  atomic.Bool
-	earlyFlushing bool
-	earlyFrames   []deferredChildWireEvent
+	// preserving strict FIFO wire order. earlyFramesCond bounds live reader
+	// buffering to deferredChildWireMaxEvents via backpressure.
+	earlyFramesMu   sync.Mutex
+	earlyFramesCond *sync.Cond
+	earlyPending    atomic.Bool
+	earlyFlushing   bool
+	earlyFrames     []deferredChildWireEvent
+}
+
+func (s *Session) earlyFramesCondLocked() *sync.Cond {
+	if s.earlyFramesCond == nil {
+		s.earlyFramesCond = sync.NewCond(&s.earlyFramesMu)
+	}
+	return s.earlyFramesCond
 }
 
 func (s *Session) enqueueEarlyFrames(frames []deferredChildWireEvent) {
@@ -617,15 +626,23 @@ func (s *Session) enqueueEarlyFrames(frames []deferredChildWireEvent) {
 	s.earlyFramesMu.Unlock()
 }
 
+// earlyFramesMaxBuffered caps live frames queued behind an active replay drain
+// so a stalled dispatch backpressures the reader instead of growing unboundedly.
+const earlyFramesMaxBuffered = 64
+
 // enqueueFrameIfPending appends ev to earlyFrames when an early-frame drain is
-// pending, preserving strict FIFO wire ordering. Returns true if ev was queued
-// (either another goroutine is already draining it, or this call drained it).
+// pending, preserving strict FIFO wire ordering. If another goroutine is
+// draining and earlyFrames has reached earlyFramesMaxBuffered, this waits
+// for a batch pop so live frames cannot grow earlyFrames unboundedly.
 func (s *Session) enqueueFrameIfPending(ev deferredChildWireEvent) bool {
 	if !s.earlyPending.Load() {
 		return false
 	}
 	s.earlyFramesMu.Lock()
-	if !s.earlyPending.Load() {
+	for s.earlyPending.Load() && s.earlyFlushing && len(s.earlyFrames) >= earlyFramesMaxBuffered && !s.closing.Load() {
+		s.earlyFramesCondLocked().Wait()
+	}
+	if !s.earlyPending.Load() || s.closing.Load() {
 		s.earlyFramesMu.Unlock()
 		return false
 	}
@@ -652,11 +669,17 @@ func (s *Session) flushEarlyFrames() {
 			// earlyFramesMu, so no live reader frame can overtake replay.
 			s.earlyPending.Store(false)
 			s.earlyFlushing = false
+			if s.earlyFramesCond != nil {
+				s.earlyFramesCond.Broadcast()
+			}
 			s.earlyFramesMu.Unlock()
 			return
 		}
 		frames := s.earlyFrames
 		s.earlyFrames = nil
+		if s.earlyFramesCond != nil {
+			s.earlyFramesCond.Broadcast()
+		}
 		s.earlyFramesMu.Unlock()
 
 		for _, ev := range frames {
@@ -1082,6 +1105,13 @@ func (s *Session) Close() error {
 	s.collabAsyncMu.Lock()
 	s.collabAsyncClosing = true
 	s.collabAsyncMu.Unlock()
+	// Wake any reader goroutine backpressured on earlyFrames BEFORE closeShared
+	// sends unsubscribe RPCs that rely on readLoop delivering thread/closed.
+	s.earlyFramesMu.Lock()
+	if s.earlyFramesCond != nil {
+		s.earlyFramesCond.Broadcast()
+	}
+	s.earlyFramesMu.Unlock()
 
 	var err error
 	switch {
@@ -1150,6 +1180,9 @@ func (s *Session) Close() error {
 	s.earlyFrames = nil
 	s.earlyFlushing = false
 	s.earlyPending.Store(false)
+	if s.earlyFramesCond != nil {
+		s.earlyFramesCond.Broadcast()
+	}
 	s.earlyFramesMu.Unlock()
 	s.mu.Unlock()
 	return err

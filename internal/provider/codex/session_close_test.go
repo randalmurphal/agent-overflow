@@ -169,6 +169,7 @@ var sessionCloseFieldDispositions = map[string]string{
 	"approvals":           "provider.ApprovalRegistry; Close drains it via clearPendingApprovals",
 	"childLifecycleMu":    "lock",
 	"earlyFramesMu":       "leaf mutex guarding earlyFrames queue and earlyFlushing",
+	"earlyFramesCond":     "condvar waking backpressured readers on pop or Close",
 	"earlyPending":        "atomic flag cleared by Close",
 	"earlyFlushing":       "drain-loop guard cleared by Close under earlyFramesMu",
 	"earlyFrames":         "bounded early-frame slice cleared by Close",

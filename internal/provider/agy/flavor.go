@@ -663,7 +663,10 @@ func isAOMCPNameOrPrefix(name string) bool {
 	if norm == "" {
 		return false
 	}
-	return strings.HasPrefix(norm, "ao_thread_tools") || strings.HasPrefix(norm, "ao_workflow_tools")
+	return strings.HasPrefix(norm, "ao_thread_tools") ||
+		strings.HasPrefix("ao_thread_tools", norm) ||
+		strings.HasPrefix(norm, "ao_workflow_tools") ||
+		strings.HasPrefix("ao_workflow_tools", norm)
 }
 
 func (f *Flavor) recordSessionMCPTrust(servers []acp.MCPServerConfig) {
@@ -721,7 +724,6 @@ func (f *Flavor) isTrustedAOMCPTool(rawName string) bool {
 	if !ok {
 		return false
 	}
-	isDoubleUnderscore := strings.HasPrefix(trimmed, "mcp__")
 	f.mcpTrustMu.Lock()
 	configured := f.mcpConfigured
 	registered := f.registeredAOMCP[server]
@@ -730,9 +732,10 @@ func (f *Flavor) isTrustedAOMCPTool(rawName string) bool {
 	if configured && !registered {
 		return false
 	}
-	if !isDoubleUnderscore && colliding {
-		// Single-underscore encoding is ambiguous when a third-party server
-		// shares the AO prefix; require explicit user approval instead.
+	if colliding {
+		// Any colliding third-party server (either prefix-overlapping on
+		// single-underscore or exact-name colliding in global mcp_config.json)
+		// disables automatic approval; require explicit user approval instead.
 		return false
 	}
 	switch server {
