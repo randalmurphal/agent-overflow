@@ -101,9 +101,14 @@ func testASeededFeed(t *testing.T, codex providerupdate.Binary) {
 		for _, note := range notes.Releases {
 			versions = append(versions, note.Version)
 		}
+		wantVersions := []string{"99.1.0", "99.0.1"}
+		if status.Provider == providerupdate.ProviderAgy {
+			// Antigravity serves a single Markdown changelog section for the latest release.
+			wantVersions = []string{"99.1.0"}
+		}
 		// 99.1.0-beta.1 is listed and has a release, and is filtered out.
-		if !slices.Equal(versions, []string{"99.1.0", "99.0.1"}) || notes.Omitted != 0 {
-			t.Errorf("%s notes = %v (omitted %d)", status.Provider, versions, notes.Omitted)
+		if !slices.Equal(versions, wantVersions) || notes.Omitted != 0 {
+			t.Errorf("%s notes = %v (omitted %d), want %v", status.Provider, versions, notes.Omitted, wantVersions)
 		}
 	}
 

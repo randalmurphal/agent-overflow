@@ -82,6 +82,8 @@
      and the shared pairing border. Bright here so it reads against dark
      surfaces. */
   --provider-claude-tui: oklch(0.82 0.2 145);
+  /* Antigravity indigo-blue identity for dark surfaces. */
+  --provider-agy: oklch(0.72 0.16 255);
   /* VOCABULARY, and the two are not interchangeable: --overlay is the
      backdrop that dims APP CHROME behind a modal or sheet, so it varies
      with the theme (60% black here, a lighter 28% wash in light mode).
@@ -210,6 +212,7 @@ html.light {
   /* Light-mode terminal green: deeper so the glyph/text reads against the light
      surface tier. */
   --provider-claude-tui: oklch(0.55 0.16 145);
+  --provider-agy: oklch(0.52 0.17 255);
   --overlay: oklch(0.22 0.01 255 / 28%);
 
   /* Light-mode icon palette. Same hues, lower lightness so the icons
@@ -321,6 +324,7 @@ html.light {
   --color-provider-codex: var(--provider-codex);
   --color-provider-claude: var(--provider-claude);
   --color-provider-claude-tui: var(--provider-claude-tui);
+  --color-provider-agy: var(--provider-agy);
   --color-overlay: var(--overlay);
   /* Media-overlay pair — see the :root note. Used with opacity
      modifiers: bg-scrim/88, text-scrim-fg, ring-scrim-fg/70. */

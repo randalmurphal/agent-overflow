@@ -150,6 +150,8 @@ External repos and tools we track, and how to use them. Under
 | [`claude-wire.md`](references/claude-wire.md) | Canonical Claude Code NDJSON shapes + pinned citations into the Python SDK. Single source of truth for parser work. |
 | [`codex.md`](references/codex.md) | Codex source + CodexMonitor: how to use them when touching Codex code. |
 | [`codex-wire.md`](references/codex-wire.md) | Canonical Codex JSON-RPC shapes + collab-agent lifecycle. Single source of truth for Codex parser work. |
+| [`acp-wire.md`](references/acp-wire.md) | Generic multiplexed ACP v1 JSON-RPC client contract (`internal/provider/acp`). |
+| [`agy-wire.md`](references/agy-wire.md) | Antigravity CLI (`agy acp`) wire contract, live config, SQLite error watcher, and fork/revert. |
 | [`codex-instructions-tools.md`](references/codex-instructions-tools.md) | Codex's own instruction blocks and tool surface, as an appendix to `codex.md`. |
 | [`codex-browser-parity.md`](references/codex-browser-parity.md) | Exact map from the bundled Codex browser skill API to AO's built-in browser MCP tools and validation. |
 | [`claude-api-error-upstream-report.md`](references/claude-api-error-upstream-report.md) | Draft upstream bug report for a Claude Code API-error shape, still unfiled. |

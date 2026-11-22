@@ -116,15 +116,15 @@ export interface ProviderDefinition {
     // The provider's OWN enable flag — the key its Settings toggle writes.
     // Reads go through `providerIsEnabled`, never this key directly, so a
     // dependent provider's parent flag cannot be forgotten at a call site.
-    enabledKey: 'claudeEnabled' | 'codexEnabled' | 'claudeTuiEnabled';
-    pathKey: 'claudeBinaryPath' | 'codexBinaryPath';
+    enabledKey: 'claudeEnabled' | 'codexEnabled' | 'claudeTuiEnabled' | 'agyEnabled';
+    pathKey: 'claudeBinaryPath' | 'codexBinaryPath' | 'agyBinaryPath';
     standardCompactKey?:
       | 'claudeAutoCompactStandardPercent'
       | 'codexAutoCompactStandardPercent';
     extendedCompactKey?:
       | 'claudeAutoCompactExtendedPercent'
       | 'codexAutoCompactExtendedPercent';
-    customEnvKey: 'claudeCustomEnv' | 'codexCustomEnv';
+    customEnvKey: 'claudeCustomEnv' | 'codexCustomEnv' | 'agyCustomEnv';
   };
   customEnvPlaceholder?: string;
   backgroundStop: ProviderBackgroundStop;
@@ -274,17 +274,55 @@ export const PROVIDER_DEFINITIONS: Record<ProviderID, ProviderDefinition> = {
       slashSource: 'claude',
     },
   },
+  agy: {
+    id: 'agy',
+    label: 'Antigravity',
+    cliLabel: 'Antigravity CLI',
+    shortLabel: 'A',
+    badgeClass: 'bg-provider-agy/10 text-provider-agy',
+    installActionLabel: 'Install Antigravity CLI',
+    textGenerationDefaultModel: 'gemini-3-flash',
+    textGenerationEffortOptions: [
+      { value: 'low', label: 'Low' },
+      { value: 'medium', label: 'Medium' },
+      { value: 'high', label: 'High' },
+      { value: 'xhigh', label: 'xHigh' },
+    ],
+    contextLabels: {
+      standard: '1m',
+      extended: '1m',
+    },
+    settings: {
+      enabledKey: 'agyEnabled',
+      pathKey: 'agyBinaryPath',
+      customEnvKey: 'agyCustomEnv',
+    },
+    customEnvPlaceholder: 'HTTPS_PROXY',
+    backgroundStop: 'none',
+    capabilities: FULL_CAPABILITIES,
+    features: {
+      accounts: false,
+      autoCompact: false,
+      promptOverrides: true,
+      disabledTools: false,
+      textGeneration: false,
+      ownMemory: false,
+      transfer: false,
+      rollbackGranularity: 'item',
+      slashSource: 'acp',
+    },
+  },
 };
 
 // The providers that get a settings SECTION of their own — binary path, model
 // catalog, accounts, context budgets. claude-tui is intentionally absent: it
 // has none of those (it reuses claude's), and its one setting, the enable
 // flag, renders inside claude's section via `dependentProviders`.
-export const PROVIDER_SETTINGS_ORDER: ProviderID[] = ['claude', 'codex'];
+export const PROVIDER_SETTINGS_ORDER: ProviderID[] = ['claude', 'codex', 'agy'];
 // claude-tui follows claude in the model picker so the two Claude surfaces read
 // as a pair. Membership here is layout only — whether an entry is actually
 // OFFERED is `providerIsEnabled`.
-export const PROVIDER_MODEL_MENU_ORDER: ProviderID[] = ['codex', 'claude', 'claude-tui'];
+export const PROVIDER_MODEL_MENU_ORDER: ProviderID[] = ['codex', 'claude', 'claude-tui', 'agy'];
 
 export function getProviderDefinition(provider: ProviderID): ProviderDefinition;
 export function getProviderDefinition(

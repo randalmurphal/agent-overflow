@@ -6,7 +6,10 @@ import type { Settings } from '../types/settings';
 // unknown providers hide nothing. Capability/effort lookups must keep
 // using the full catalog — existing threads can ride a hidden model.
 
-export type HiddenModelsSettingsKey = 'claudeHiddenModels' | 'codexHiddenModels';
+export type HiddenModelsSettingsKey =
+  | 'claudeHiddenModels'
+  | 'codexHiddenModels'
+  | 'agyHiddenModels';
 
 /**
  * Settings key holding the hide-list for a provider, or null for
@@ -23,6 +26,8 @@ export function hiddenModelsSettingsKey(
       return 'claudeHiddenModels';
     case 'codex':
       return 'codexHiddenModels';
+    case 'agy':
+      return 'agyHiddenModels';
     default:
       return null;
   }

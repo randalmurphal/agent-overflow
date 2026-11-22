@@ -14,13 +14,16 @@ const (
 	// lookup list and decides which rows pickers offer; rows it omits stay for
 	// capability lookup, marked Unlisted. See internal/claudemodels.
 	ClaudeProbeEnrichedCatalog ModelCatalogSource = "claude_probe"
+	// ACPLiveModelCatalog — discovered live over ACP configOptions (zero-token
+	// probe on the live or ephemeral ACP connection).
+	ACPLiveModelCatalog ModelCatalogSource = "acp_live"
 )
 
 // IsLive reports whether the provider's model catalog is fetched live from the
 // provider runtime (so remembered user choices outlive temporary catalog
 // unavailability instead of being coerced against a static list).
 func (s ModelCatalogSource) IsLive() bool {
-	return s == CodexLiveModelCatalog
+	return s == CodexLiveModelCatalog || s == ACPLiveModelCatalog
 }
 
 type BackgroundTerminalCleaner string
@@ -170,6 +173,18 @@ func CapabilitiesForProvider(providerName string) Capabilities {
 			SupportsWorkflowMCP:        true,
 			SupportsAppendSystemPrompt: true,
 			SupportsOwnMemory:          true,
+			RollbackGranularity:        RollbackItem,
+		}
+	case string(Agy):
+		return Capabilities{
+			ModelCatalog:               ACPLiveModelCatalog,
+			EnforcesRuntimeMode:        true,
+			UsageFamily:                Agy,
+			StandardContextWindow:      AgyStandardContextWindow,
+			ExtendedContextWindow:      AgyStandardContextWindow,
+			SupportsAppManagedMCP:      true,
+			SupportsWorkflowMCP:        true,
+			SupportsAppendSystemPrompt: true,
 			RollbackGranularity:        RollbackItem,
 		}
 	default:

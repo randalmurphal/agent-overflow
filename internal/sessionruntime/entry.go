@@ -6,6 +6,7 @@ import (
 
 	"agent-overflow/internal/memory"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/acp"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/claudetui"
 	"agent-overflow/internal/provider/codex"
@@ -22,6 +23,7 @@ type Entry struct {
 	Claude               *claude.Session
 	Codex                *codex.Session
 	ClaudeTUI            *claudetui.Session
+	ACP                  *acp.Session
 	// Session holds the provider-agnostic handle for providers whose
 	// app-layer interactions stay on provider.Session (such as ACP / agy).
 	Session       provider.Session
@@ -39,6 +41,8 @@ func (e Entry) ProviderSession() provider.Session {
 	switch {
 	case e.Session != nil:
 		return e.Session
+	case e.ACP != nil:
+		return e.ACP
 	case e.Claude != nil:
 		return e.Claude
 	case e.Codex != nil:

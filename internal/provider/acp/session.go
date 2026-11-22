@@ -54,11 +54,13 @@ type LiveUpdate struct {
 // PlanLiveUpdate compares launch options against target options and returns
 // (update, true) when every difference can be applied live over ACP, or
 // (zero, false) when a spawn-only axis changed and a restart is required.
+//
+// Resume, ResumeAt, and ForkSession are session lifecycle state, not config:
+// a fresh thread records its SessionRef after EventInit, so those fields
+// legitimately drift from LaunchOptions and are excluded from the comparison.
 func PlanLiveUpdate(from, to provider.SessionOptions) (LiveUpdate, bool) {
 	if from.WorkDir != to.WorkDir ||
-		from.Resume != to.Resume ||
 		from.SystemPrompt != to.SystemPrompt ||
-		from.ForkSession != to.ForkSession ||
 		!slices.Equal(from.DisabledTools, to.DisabledTools) {
 		return LiveUpdate{}, false
 	}
@@ -340,6 +342,14 @@ func (s *Session) PID() int {
 		return 0
 	}
 	return s.conn.PID()
+}
+
+// ServerVersion returns the ACP agentInfo.version reported during initialize.
+func (s *Session) ServerVersion() string {
+	if s == nil || s.conn == nil {
+		return ""
+	}
+	return s.conn.AgentInfo().Version
 }
 
 func (s *Session) Connection() provider.Connection {

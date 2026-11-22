@@ -277,6 +277,7 @@ const OPTIONAL_KEYS = new Set<string>([
   'provider-codex',
   'provider-claude',
   'provider-claude-tui',
+  'provider-agy',
   'scrim',
   'scrim-fg',
   'card',

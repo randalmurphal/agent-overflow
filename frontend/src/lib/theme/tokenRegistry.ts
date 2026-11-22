@@ -266,6 +266,12 @@ const COLOR_ENTRIES: readonly TokenEntry[] = [
     'provider-claude-tui',
     'claude-tui provider identity: the phosphor green of a CRT terminal.',
   ),
+  entry(
+    'colors',
+    'app.css',
+    'provider-agy',
+    'Antigravity provider identity.',
+  ),
   entry('colors', 'app.css', 'overlay', 'Backdrop dimming app chrome behind a modal or sheet. Varies with the mode.'),
   entry(
     'colors',

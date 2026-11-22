@@ -7,7 +7,7 @@
 // has no binary/path/account settings of its own. Its one setting is the
 // `claudeTuiEnabled` flag, which defaults OFF and renders inside Claude's
 // settings section; see `providerIsEnabled` in providers/catalog.ts.
-export const PROVIDER_IDS = ['claude', 'codex', 'claude-tui'] as const;
+export const PROVIDER_IDS = ['claude', 'codex', 'claude-tui', 'agy'] as const;
 
 export type ProviderID = (typeof PROVIDER_IDS)[number];
 

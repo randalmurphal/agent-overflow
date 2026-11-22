@@ -18,6 +18,7 @@ import UpdatesSettings from './UpdatesSettings.svelte';
 import VoiceSettings from './VoiceSettings.svelte';
 import ClaudeSettings from './ClaudeSettings.svelte';
 import CodexSettings from './CodexSettings.svelte';
+import AgySettings from './AgySettings.svelte';
 import CommitMessageSettings from './CommitMessageSettings.svelte';
 import BrowserSettings from './BrowserSettings.svelte';
 import ThreadToolsSettings from './ThreadToolsSettings.svelte';
@@ -48,6 +49,7 @@ export const SETTINGS_PAGES: Record<SettingsSection, Component> = {
   updates: UpdatesSettings,
   claude: ClaudeSettings,
   codex: CodexSettings,
+  agy: AgySettings,
   'commit-messages': CommitMessageSettings,
   browser: BrowserSettings,
   'thread-tools': ThreadToolsSettings,

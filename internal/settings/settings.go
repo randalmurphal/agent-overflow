@@ -193,8 +193,10 @@ type Settings struct {
 	AutoPinNewThreads bool   `json:"autoPinNewThreads"`
 	ClaudeBinaryPath  string `json:"claudeBinaryPath"`
 	CodexBinaryPath   string `json:"codexBinaryPath"`
+	AgyBinaryPath     string `json:"agyBinaryPath"`
 	ClaudeEnabled     bool   `json:"claudeEnabled"`
 	CodexEnabled      bool   `json:"codexEnabled"`
+	AgyEnabled        bool   `json:"agyEnabled"`
 
 	// ClaudeTUIEnabled surfaces the claude-tui provider — the real
 	// interactive Claude TUI driven inside a PTY — in the model/provider
@@ -229,6 +231,7 @@ type Settings struct {
 	// hidden Codex model survives the live catalog being offline.
 	ClaudeHiddenModels []string `json:"claudeHiddenModels,omitempty"`
 	CodexHiddenModels  []string `json:"codexHiddenModels,omitempty"`
+	AgyHiddenModels    []string `json:"agyHiddenModels,omitempty"`
 
 	// ClaudeCustomEnv / CodexCustomEnv are user-defined environment
 	// variables applied to the provider processes Agent Overflow spawns
@@ -244,6 +247,7 @@ type Settings struct {
 	// encrypted on disk (see the SECURITY NOTE below).
 	ClaudeCustomEnv []ProviderEnvVar `json:"claudeCustomEnv,omitempty"`
 	CodexCustomEnv  []ProviderEnvVar `json:"codexCustomEnv,omitempty"`
+	AgyCustomEnv    []ProviderEnvVar `json:"agyCustomEnv,omitempty"`
 
 	// ClaudePromptOverrides / CodexPromptOverrides replace the provider's
 	// own system prompt for the models each entry names — Claude via
@@ -260,6 +264,7 @@ type Settings struct {
 	// the row (promptfiles.go).
 	ClaudePromptOverrides []PromptOverride `json:"claudePromptOverrides,omitempty"`
 	CodexPromptOverrides  []PromptOverride `json:"codexPromptOverrides,omitempty"`
+	AgyPromptOverrides    []PromptOverride `json:"agyPromptOverrides,omitempty"`
 
 	// ClaudeDisabledTools / CodexDisabledTools remove built-in tool
 	// schemas from the model's context. Provider-wide (not model-scoped)
@@ -736,8 +741,10 @@ var DefaultSettings = Settings{
 	AutoPinNewThreads:      true,
 	ClaudeBinaryPath:       "claude",
 	CodexBinaryPath:        "codex",
+	AgyBinaryPath:          "agy",
 	ClaudeEnabled:          true,
 	CodexEnabled:           true,
+	AgyEnabled:             true,
 	DefaultThreadEnvMode:   "local",
 	WorktreeBranchPrefix:   "ao-",
 	PaneDensity:            "compact",
@@ -897,6 +904,8 @@ func (s Settings) HiddenModelsForProvider(provider string) []string {
 		return s.ClaudeHiddenModels
 	case "codex":
 		return s.CodexHiddenModels
+	case "agy":
+		return s.AgyHiddenModels
 	default:
 		return nil
 	}
@@ -1077,7 +1086,7 @@ func (s *Service) Update(patch map[string]any) (Settings, error) {
 }
 
 func (s *Service) update(bucket string, class DeviceClass, patch map[string]any) (Settings, error) {
-	for _, key := range []string{"claudeCustomEnv", "codexCustomEnv"} {
+	for _, key := range []string{"claudeCustomEnv", "codexCustomEnv", "agyCustomEnv"} {
 		if _, ok := patch[key]; ok {
 			// GetSettings redacts sensitive values, so a read-mutate-write
 			// round trip through this path would persist the redaction and

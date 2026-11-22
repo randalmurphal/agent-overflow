@@ -62,10 +62,13 @@ var tierByKey = map[string]Tier{
 	"network":          TierHost,
 	"claudeBinaryPath": TierHost,
 	"codexBinaryPath":  TierHost,
+	"agyBinaryPath":    TierHost,
 	"claudeCustomEnv":  TierHost,
 	"codexCustomEnv":   TierHost,
+	"agyCustomEnv":     TierHost,
 	"claudeEnabled":    TierHost,
 	"codexEnabled":     TierHost,
+	"agyEnabled":       TierHost,
 	"claudeTuiEnabled": TierHost,
 	// Shared memory makes the memory folders writable roots of every
 	// session: an authority granted to a provider session.
@@ -122,6 +125,7 @@ var tierByKey = map[string]Tier{
 	"textGenerationReasoningEffort":    TierUser,
 	"claudeHiddenModels":               TierUser,
 	"codexHiddenModels":                TierUser,
+	"agyHiddenModels":                  TierUser,
 	"defaultThreadEnvMode":             TierUser,
 	"worktreeBranchPrefix":             TierUser,
 	"claudeAutoCompactStandardPercent": TierUser,
@@ -143,6 +147,7 @@ var tierByKey = map[string]Tier{
 	"codexDisabledTools":          TierUser,
 	"claudePromptOverrides":       TierUser,
 	"codexPromptOverrides":        TierUser,
+	"agyPromptOverrides":          TierUser,
 	"agentGuideEnabled":           TierUser,
 	// Assistants on or off is the person's choice of how they work, like
 	// the guide and the profiles beside it. Backend behavior reads it (the

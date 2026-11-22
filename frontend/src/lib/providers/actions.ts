@@ -21,6 +21,8 @@ export async function recheckProviderAccount(
       return await withBackendTarget(backend, () => RecheckClaudeAccount()) as ProviderAccountInfo;
     case 'codex':
       return await withBackendTarget(backend, () => RecheckCodexAccount()) as ProviderAccountInfo;
+    case 'agy':
+      return {};
   }
 }
 

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/agy"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/provideraccountapp"
@@ -58,6 +59,19 @@ func (a *App) providerDiscoveryService() *providerdiscoveryapp.Service {
 				return a.ensureProviderAccountManager().CheckCodexTransferAccount(ctx, binary)
 			},
 			RememberClaudeCatalog: a.rememberClaudeCatalog,
+			ProbeAgyModels: func(ctx context.Context, binary string) ([]provider.ModelInfo, error) {
+				if conn, release := a.borrowAgyConnForBinary(binary); conn != nil {
+					defer release()
+					return agy.ProbeCatalogOnConn(ctx, conn, providerProbeWorkDir())
+				}
+				return agy.ProbeCatalog(
+					ctx,
+					binary,
+					providerProbeWorkDir(),
+					a.providerCustomEnv(string(provider.Agy)),
+					a.groupReaper("agy model catalog"),
+				)
+			},
 		}, caches)
 	})
 	return a.providerDiscovery

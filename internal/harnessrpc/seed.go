@@ -348,9 +348,12 @@ func (h *Harness) seedThread(projectID string, spec HarnessSeedThread, spawnerID
 	}
 	model := spec.Model
 	if model == "" {
-		if providerName == "codex" {
+		switch providerName {
+		case "codex":
 			model = "gpt-5.2-codex"
-		} else {
+		case "agy":
+			model = "gemini-3.1-pro-high"
+		default:
 			model = "claude-opus-4-7"
 		}
 	}
@@ -877,7 +880,7 @@ func (h *Harness) HarnessReset() (err error) {
 	// these trees survives. The empty-path guard covers test fixtures
 	// that build a Harness without a provider home.
 	if h.config.CredentialHome != "" {
-		for _, name := range []string{".claude", ".claude.json", ".codex"} {
+		for _, name := range []string{".claude", ".claude.json", ".codex", ".gemini"} {
 			p := filepath.Join(h.config.CredentialHome, name)
 			if err := os.RemoveAll(p); err != nil {
 				return fmt.Errorf("remove provider home state %q: %w", p, err)

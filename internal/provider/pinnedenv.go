@@ -168,6 +168,12 @@ func ReservedEnvNames(providerName string) []string {
 		)
 	case string(Codex):
 		return append(shared, "CODEX_HOME")
+	case string(Agy):
+		return append(shared,
+			"GEMINI_HOME",
+			"AGY_ACP_FORCE_FILE_STORAGE",
+			"AGY_CLI_DISABLE_AUTO_UPDATE",
+		)
 	default:
 		return shared
 	}

@@ -203,6 +203,13 @@ func legalEffortForProvider(providerName, effort string) bool {
 		default:
 			return false
 		}
+	case "agy":
+		switch effort {
+		case "low", "medium", "high", "xhigh":
+			return true
+		default:
+			return false
+		}
 	default:
 		return false
 	}
@@ -212,18 +219,17 @@ var legalProviders = map[string]struct{}{
 	"claude":     {},
 	"codex":      {},
 	"claude-tui": {},
+	"agy":        {},
 }
 
 func validContextWindow(tokens int) bool {
 	return tokens > 0
 }
 
-// validImportSource mirrors the migration v50 CHECK. Only the two
-// importable providers are legal: claude-tui shares claude's binary but has
-// no session files of its own to import from.
+// validImportSource validates thread import provenance.
 func validImportSource(source string) bool {
 	switch source {
-	case "", "claude", "codex":
+	case "", "claude", "codex", "agy":
 		return true
 	default:
 		return false

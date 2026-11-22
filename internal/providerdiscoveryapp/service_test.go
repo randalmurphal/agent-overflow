@@ -235,7 +235,7 @@ func TestProviderStatusesEmitsOnlyFailures(t *testing.T) {
 	}, testCaches())
 
 	statuses := service.ProviderStatuses()
-	if len(statuses) != 2 || len(emitted) != 1 || emitted[0].Provider != string(provider.Codex) {
+	if len(statuses) != len(provider.StandaloneProviders()) || len(emitted) != 1 || emitted[0].Provider != string(provider.Codex) {
 		t.Fatalf("statuses = %+v, emitted = %+v", statuses, emitted)
 	}
 }

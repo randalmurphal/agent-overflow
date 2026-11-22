@@ -57,6 +57,7 @@
     { value: '', label: 'Inherit' },
     { value: 'claude', label: 'Claude' },
     { value: 'codex', label: 'Codex' },
+    { value: 'agy', label: 'Antigravity' },
   ];
   const EFFORTS: { value: AgentProfile['effort']; label: string }[] = [
     { value: '', label: 'Inherit' },

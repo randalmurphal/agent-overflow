@@ -164,6 +164,18 @@ func (a *App) rollbackConversationLocked(args rollbackConversationLockedArgs) (c
 		if err := a.rollbackClaudeThreadToMessage(args.thread, args.anchor, args.userItem); err != nil {
 			return revertedConversationCut{}, fmt.Errorf("%s: %w", args.errorPrefix, err)
 		}
+	case string(provider.Agy):
+		if args.clearRunningBackgroundTasks {
+			if err := a.markConfirmedBackgroundTasksInactiveAfterProviderCleanup(args.thread.ID, args.errorPrefix); err != nil {
+				return revertedConversationCut{}, err
+			}
+		}
+		if err := a.stopSession(args.thread.ID); err != nil {
+			return revertedConversationCut{}, fmt.Errorf("%s: stop session: %w", args.errorPrefix, err)
+		}
+		if err := a.rollbackAgyThreadToMessage(args.thread, args.anchor, args.userItem); err != nil {
+			return revertedConversationCut{}, fmt.Errorf("%s: %w", args.errorPrefix, err)
+		}
 	default:
 		return cut, fmt.Errorf("%s: provider %q does not support conversation rollback", args.errorPrefix, args.thread.Provider)
 	}

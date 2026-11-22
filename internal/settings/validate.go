@@ -116,6 +116,7 @@ func validateSettings(current Settings) (Settings, error) {
 
 	current.ClaudeBinaryPath = normalizeBinaryPath(current.ClaudeBinaryPath, DefaultSettings.ClaudeBinaryPath)
 	current.CodexBinaryPath = normalizeBinaryPath(current.CodexBinaryPath, DefaultSettings.CodexBinaryPath)
+	current.AgyBinaryPath = normalizeBinaryPath(current.AgyBinaryPath, DefaultSettings.AgyBinaryPath)
 	current.RecentWorkspaces = normalizeRecentWorkspaces(current.RecentWorkspaces)
 	current.ObservabilityOtlpEndpoint = strings.TrimSpace(current.ObservabilityOtlpEndpoint)
 
@@ -281,8 +282,15 @@ func validateSettings(current Settings) (Settings, error) {
 			len(current.CodexHiddenModels), MaxHiddenModels,
 		)
 	}
+	if len(current.AgyHiddenModels) > MaxHiddenModels {
+		return Settings{}, fmt.Errorf(
+			"agyHiddenModels has %d entries, max is %d",
+			len(current.AgyHiddenModels), MaxHiddenModels,
+		)
+	}
 	current.ClaudeHiddenModels = dedupeTrimmed(current.ClaudeHiddenModels, MaxHiddenModels)
 	current.CodexHiddenModels = dedupeTrimmed(current.CodexHiddenModels, MaxHiddenModels)
+	current.AgyHiddenModels = dedupeTrimmed(current.AgyHiddenModels, MaxHiddenModels)
 
 	current.ClaudeCustomEnv, err = validateProviderEnvVars("claude", current.ClaudeCustomEnv)
 	if err != nil {
@@ -292,12 +300,20 @@ func validateSettings(current Settings) (Settings, error) {
 	if err != nil {
 		return Settings{}, err
 	}
+	current.AgyCustomEnv, err = validateProviderEnvVars("agy", current.AgyCustomEnv)
+	if err != nil {
+		return Settings{}, err
+	}
 
 	current.ClaudePromptOverrides, err = validatePromptOverrides("claudePromptOverrides", current.ClaudePromptOverrides)
 	if err != nil {
 		return Settings{}, err
 	}
 	current.CodexPromptOverrides, err = validatePromptOverrides("codexPromptOverrides", current.CodexPromptOverrides)
+	if err != nil {
+		return Settings{}, err
+	}
+	current.AgyPromptOverrides, err = validatePromptOverrides("agyPromptOverrides", current.AgyPromptOverrides)
 	if err != nil {
 		return Settings{}, err
 	}
@@ -405,12 +421,18 @@ func sanitizeLoadedSettings(current Settings) Settings {
 		current.CodexBinaryPath,
 		DefaultSettings.CodexBinaryPath,
 	)
+	current.AgyBinaryPath = sanitizeBinaryPath(
+		"agyBinaryPath",
+		current.AgyBinaryPath,
+		DefaultSettings.AgyBinaryPath,
+	)
 	current.RecentWorkspaces = normalizeRecentWorkspaces(current.RecentWorkspaces)
 	current.BrowserChromiumPath = sanitizeChromiumPath(current.BrowserChromiumPath)
 	current.GitLabSelfHostedHosts = sanitizeGitLabHosts(current.GitLabSelfHostedHosts)
 	current.Network = sanitizeNetwork(current.Network)
 	current.ClaudeHiddenModels = dedupeTrimmed(current.ClaudeHiddenModels, MaxHiddenModels)
 	current.CodexHiddenModels = dedupeTrimmed(current.CodexHiddenModels, MaxHiddenModels)
+	current.AgyHiddenModels = dedupeTrimmed(current.AgyHiddenModels, MaxHiddenModels)
 	current.ObservabilityOtlpEndpoint = strings.TrimSpace(current.ObservabilityOtlpEndpoint)
 
 	current.DefaultThreadEnvMode = sanitizeOption(
@@ -515,8 +537,10 @@ func sanitizeLoadedSettings(current Settings) Settings {
 	)
 	current.ClaudeCustomEnv = sanitizeProviderEnvVars("claude", current.ClaudeCustomEnv)
 	current.CodexCustomEnv = sanitizeProviderEnvVars("codex", current.CodexCustomEnv)
+	current.AgyCustomEnv = sanitizeProviderEnvVars("agy", current.AgyCustomEnv)
 	current.ClaudePromptOverrides = sanitizePromptOverrides("claudePromptOverrides", current.ClaudePromptOverrides)
 	current.CodexPromptOverrides = sanitizePromptOverrides("codexPromptOverrides", current.CodexPromptOverrides)
+	current.AgyPromptOverrides = sanitizePromptOverrides("agyPromptOverrides", current.AgyPromptOverrides)
 	sanitizePromptOverrideIDsAcrossProviders(&current)
 	current.ClaudeDisabledTools = sanitizeDisabledTools("claudeDisabledTools", current.ClaudeDisabledTools)
 	current.CodexDisabledTools = sanitizeDisabledTools("codexDisabledTools", current.CodexDisabledTools)
@@ -1107,7 +1131,7 @@ func joinAllowedValues(values map[string]struct{}) string {
 	candidates := []string{
 		"system", "light", "dark",
 		"locale", "12-hour", "24-hour",
-		"claude", "codex",
+		"claude", "codex", "agy",
 		"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
 		"local", "worktree",
 		"compact", "comfortable", "spacious",

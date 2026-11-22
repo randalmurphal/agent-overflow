@@ -10,6 +10,7 @@ import (
 
 	"agent-overflow/internal/editor"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/agy"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/transport"
 )
@@ -105,8 +106,10 @@ func (a *App) GetSettings(ctx context.Context) (settings.Settings, error) {
 func (a *App) settingsForCaller(ctx context.Context, current settings.Settings) settings.Settings {
 	current.ClaudeCustomEnv = settings.RedactProviderEnvVars(current.ClaudeCustomEnv)
 	current.CodexCustomEnv = settings.RedactProviderEnvVars(current.CodexCustomEnv)
+	current.AgyCustomEnv = settings.RedactProviderEnvVars(current.AgyCustomEnv)
 	current.ClaudePromptOverrides = settings.PromptOverridesForWire(current.ClaudePromptOverrides)
 	current.CodexPromptOverrides = settings.PromptOverridesForWire(current.CodexPromptOverrides)
+	current.AgyPromptOverrides = settings.PromptOverridesForWire(current.AgyPromptOverrides)
 	if !a.callerHolds(ctx, transport.ScopeAccessAdmin) {
 		current.Network = settings.NetworkSettings{}
 		current.ObservabilityOtlpEndpoint = ""
@@ -230,6 +233,9 @@ func (a *App) UpdateSettings(ctx context.Context, patch map[string]any) (setting
 		a.invalidateDefaultCodexBinary()
 		a.refreshCodexModelCatalog()
 	}
+	if _, ok := patch["agyBinaryPath"]; ok {
+		a.refreshAgyModelCatalog()
+	}
 	if _, ok := patch["gitlabSelfHostedHosts"]; ok {
 		// The forge classifier reads from a Core-held snapshot; push
 		// the new list and drop every cached cwd classification so
@@ -332,6 +338,10 @@ func (a *App) refreshCodexModelCatalog() {
 	a.providerDiscoveryService().RefreshCodexModelCatalog()
 }
 
+func (a *App) refreshAgyModelCatalog() {
+	a.providerDiscoveryService().RefreshAgyModelCatalog()
+}
+
 func (a *App) codexModelsForBinary(ctx context.Context, binary string) ([]provider.ModelInfo, error) {
 	return a.providerDiscoveryService().CodexModelsForBinary(ctx, binary)
 }
@@ -361,6 +371,14 @@ func (a *App) providerBinaryPath(providerName string) string {
 		return settings.DefaultSettings.ClaudeBinaryPath
 	case string(provider.Codex):
 		return a.codexBinary().Path
+	case string(provider.Agy):
+		if path := strings.TrimSpace(cfg.AgyBinaryPath); path != "" && path != settings.DefaultSettings.AgyBinaryPath {
+			return path
+		}
+		if a.defaultProviderBinaryOverride != "" {
+			return a.defaultProviderBinaryOverride
+		}
+		return agy.ResolveBinary(settings.DefaultSettings.AgyBinaryPath)
 	default:
 		return ""
 	}

@@ -13,6 +13,8 @@ import (
 	"agent-overflow/internal/aocli"
 	"agent-overflow/internal/chatmodel"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/acp"
+	"agent-overflow/internal/provider/agy"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/claudetui"
 	"agent-overflow/internal/provider/codex"
@@ -715,6 +717,47 @@ func (a *App) spawnProviderSession(
 			Provider:      string(provider.ClaudeTUI),
 			Token:         sessionToken,
 			ClaudeTUI:     sess,
+			LaunchOptions: opts,
+			Liveness:      liveness,
+		}, nil
+
+	case string(provider.Agy):
+		binary := a.providerBinaryPath(t.Provider)
+		env := a.sessionProcessEnv(t.Provider, nil)
+		conn, releaseConn, poolKey, err := a.acquireAgyConn(
+			context.Background(),
+			threadID,
+			binary,
+			opts.WorkDir,
+			env,
+		)
+		if err != nil {
+			return session{}, err
+		}
+		sessCfg := acp.SessionConfig{
+			WorkDir:               opts.WorkDir,
+			ResumeSessionID:       opts.Resume,
+			Model:                 opts.Model,
+			ReasoningEffort:       string(opts.ReasoningEffort),
+			InteractionMode:       opts.Mode,
+			RuntimeMode:           opts.RuntimeMode,
+			SystemPrompt:          opts.SystemPrompt,
+			AppendSystemPrompt:    prompts.claudeAppend,
+			AdditionalDirectories: mem.Dirs,
+			MCPServers:            agy.TranslateMCPServers(mcpServers),
+			Flavor:                agy.NewFlavor(a.agyAppDataDir()),
+		}
+		sess, err := conn.OpenPooled(context.Background(), threadID, sessCfg, onEvent, releaseConn)
+		if err != nil {
+			return session{}, err
+		}
+		return session{
+			Provider:      string(provider.Agy),
+			Token:         sessionToken,
+			ACP:           sess,
+			Session:       sess,
+			Conn:          conn,
+			PoolKey:       poolKey,
 			LaunchOptions: opts,
 			Liveness:      liveness,
 		}, nil

@@ -25,6 +25,7 @@ func TestReservedEnvNamesMatchTheProviderPins(t *testing.T) {
 		string(provider.Claude),
 		string(provider.ClaudeTUI),
 		string(provider.Codex),
+		string(provider.Agy),
 	} {
 		t.Run(providerName, func(t *testing.T) {
 			pinned := upperSet(provider.ReservedEnvNames(providerName))

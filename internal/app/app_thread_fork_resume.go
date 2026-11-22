@@ -50,6 +50,8 @@ func (a *App) resolveForkResumeState(ctx context.Context, source store.Thread, a
 		return forkResumeState{SessionRef: ref}, nil
 	case string(provider.Claude):
 		return a.forkClaudeThread(source, atTurnIndex, midTurnCut)
+	case string(provider.Agy):
+		return a.forkAgyThread(source, atTurnIndex)
 	default:
 		return forkResumeState{}, fmt.Errorf("fork thread: unsupported provider %q", source.Provider)
 	}
@@ -73,6 +75,8 @@ func (a *App) resolveMessageForkResumeState(ctx context.Context, source store.Th
 		return forkResumeState{SessionRef: ref}, nil
 	case string(provider.Claude):
 		return a.forkClaudeThreadBeforeMessage(source, anchor, anchorItem)
+	case string(provider.Agy):
+		return a.forkAgyThreadBeforeMessage(source, anchor, anchorItem)
 	default:
 		return forkResumeState{}, fmt.Errorf("fork thread from message: unsupported provider %q", source.Provider)
 	}

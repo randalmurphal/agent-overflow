@@ -50,7 +50,7 @@ func TestAFixtureWithoutItsSettingsResolvesNoProviderOnPath(t *testing.T) {
 	if got := app.currentSettings().CodexBinaryPath; got != settings.DefaultSettings.CodexBinaryPath {
 		t.Fatalf("settings without their directory read codexBinaryPath %q, want the default", got)
 	}
-	for _, name := range []string{string(provider.Claude), string(provider.Codex)} {
+	for _, name := range []string{string(provider.Claude), string(provider.Codex), string(provider.Agy)} {
 		if got := app.providerBinaryPath(name); !filepath.IsAbs(got) {
 			t.Fatalf("providerBinaryPath(%s) = %q at the default setting, want the fixture's poisoned binary", name, got)
 		}
@@ -107,6 +107,7 @@ func isolateE2EProviderSpawns(t *testing.T, app *App) {
 		Claude:      defaultCaches.Claude,
 		Codex:       defaultCaches.Codex,
 		CodexModels: kerneltest.DisabledCodexModelCatalog(),
+		AgyModels:   kerneltest.DisabledAgyModelCatalog(),
 	}
 
 	// Text generation (thread titles, commit messages) shells out to a real

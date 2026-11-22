@@ -851,3 +851,48 @@ func TestRedactOutboundACPFrameMasksMCPSecrets(t *testing.T) {
 		t.Fatalf("inbound frame should not be modified")
 	}
 }
+
+func TestPlanLiveUpdateAllowsLifecycleDriftAndLiveAxes(t *testing.T) {
+	t.Parallel()
+	base := provider.SessionOptions{
+		WorkDir:         "/repo",
+		Model:           "gemini-3.1-pro-high",
+		ReasoningEffort: provider.EffortHigh,
+		RuntimeMode:     provider.RuntimeAuto,
+		Mode:            provider.ModeChat,
+	}
+
+	// Recording a newly assigned SessionRef or ForkSession flag on the thread
+	// row must not force a restart when updating live-appliable axes.
+	target := base
+	target.Resume = "acp-sess-1"
+	target.ForkSession = true
+	target.Model = "gemini-3-flash"
+	target.ReasoningEffort = provider.EffortLow
+	target.RuntimeMode = provider.RuntimeApprovalRequired
+	target.Mode = provider.ModePlan
+
+	u, ok := PlanLiveUpdate(base, target)
+	if !ok {
+		t.Fatal("PlanLiveUpdate returned false when only lifecycle state + live axes changed")
+	}
+	if !u.HasModel || u.Model != "gemini-3-flash" ||
+		!u.HasEffort || u.ReasoningEffort != "low" ||
+		!u.HasRuntimeMode || u.RuntimeMode != provider.RuntimeApprovalRequired ||
+		!u.HasInteraction || u.InteractionMode != provider.ModePlan {
+		t.Fatalf("unexpected LiveUpdate: %+v", u)
+	}
+
+	// Spawn-only changes (WorkDir, SystemPrompt, DisabledTools) still require restart.
+	for _, mutate := range []func(*provider.SessionOptions){
+		func(o *provider.SessionOptions) { o.WorkDir = "/other" },
+		func(o *provider.SessionOptions) { o.SystemPrompt = "custom" },
+		func(o *provider.SessionOptions) { o.DisabledTools = []string{"bash"} },
+	} {
+		changed := base
+		mutate(&changed)
+		if _, ok := PlanLiveUpdate(base, changed); ok {
+			t.Fatalf("PlanLiveUpdate unexpectedly allowed spawn-only change: %+v", changed)
+		}
+	}
+}

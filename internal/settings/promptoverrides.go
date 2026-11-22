@@ -89,7 +89,7 @@ func dropClientPromptFields(patch map[string]any, patched *Settings) {
 // starts with an empty file.
 func restoreStoredPromptTexts(patch map[string]any, current Settings, patched *Settings) {
 	stored := make(map[string]string)
-	for _, entries := range [][]PromptOverride{current.ClaudePromptOverrides, current.CodexPromptOverrides} {
+	for _, entries := range [][]PromptOverride{current.ClaudePromptOverrides, current.CodexPromptOverrides, current.AgyPromptOverrides} {
 		for _, entry := range entries {
 			if entry.ID != "" {
 				stored[entry.ID] = entry.Prompt
@@ -120,6 +120,8 @@ func (s *Settings) promptOverrideList(key string) *[]PromptOverride {
 		return &s.ClaudePromptOverrides
 	case "codexPromptOverrides":
 		return &s.CodexPromptOverrides
+	case "agyPromptOverrides":
+		return &s.AgyPromptOverrides
 	default:
 		return nil
 	}
@@ -170,6 +172,8 @@ func (s Settings) PromptOverridesForProvider(provider string) []PromptOverride {
 		return s.ClaudePromptOverrides
 	case "codex":
 		return s.CodexPromptOverrides
+	case "agy":
+		return s.AgyPromptOverrides
 	default:
 		return nil
 	}

@@ -12,6 +12,7 @@ import (
 	"agent-overflow/internal/codexmodels"
 	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/agy"
 	"agent-overflow/internal/providerupdate"
 	"agent-overflow/internal/textgen"
 )
@@ -115,7 +116,14 @@ var (
 		"HOME", "USERPROFILE",
 		"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "APPDATA", "LOCALAPPDATA",
 	}
-	providerHomeOverrideVars = []string{"CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR", "CODEX_HOME"}
+	providerHomeOverrideVars = []string{
+		"CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR", "CODEX_HOME",
+		"GEMINI_HOME", "AGY_APP_DATA_DIR",
+	}
+	providerIsolationEnv = map[string]string{
+		"AGY_ACP_FORCE_FILE_STORAGE":  "1",
+		"AGY_CLI_DISABLE_AUTO_UPDATE": "1",
+	}
 )
 
 // detachEnv applies the DetachHome environment through setenv. Each override
@@ -132,6 +140,11 @@ func detachEnv(home string, setenv func(key, value string) error) error {
 		}
 		if err := os.Unsetenv(key); err != nil {
 			return fmt.Errorf("unset %s: %w", key, err)
+		}
+	}
+	for key, val := range providerIsolationEnv {
+		if err := setenv(key, val); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -234,14 +247,22 @@ func writeExecutable(name string, data []byte) error {
 	return os.WriteFile(name, data, 0o755)
 }
 
-// ProviderBinarySettings is the settings patch that points both provider
-// binaries at the poison script. One helper so no fixture can poison Claude
-// and forget Codex.
+// ProviderBinarySettings is the settings patch that points all provider
+// binaries at the poison script. One helper so no fixture can poison one
+// provider and forget another.
 func ProviderBinarySettings(poison string) map[string]any {
 	return map[string]any{
 		"claudeBinaryPath": poison,
 		"codexBinaryPath":  poison,
+		"agyBinaryPath":    poison,
 	}
+}
+
+// DisabledAgyModelCatalog returns an Antigravity model catalog cache whose
+// live probes are disabled so tests fall back to shipped models without
+// spawning agy.
+func DisabledAgyModelCatalog() *agy.CatalogCache {
+	return agy.NewDisabledCatalogCache()
 }
 
 // DisabledCodexModelCatalog returns a Codex model catalog whose lookups fail

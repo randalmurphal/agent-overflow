@@ -12,6 +12,8 @@ const (
 	// reconstructs the normalized event stream from outside the process
 	// (wire gateway + hooks). Full-access only; additive to Claude headless.
 	ClaudeTUI ProviderKind = "claude-tui"
+	// Agy runs Google Antigravity (`agy acp`) over multiplexed ACP v1 stdio.
+	Agy ProviderKind = "agy"
 )
 
 var (
@@ -19,10 +21,12 @@ var (
 		Claude,
 		Codex,
 		ClaudeTUI,
+		Agy,
 	}
 	standaloneProviders = []ProviderKind{
 		Claude,
 		Codex,
+		Agy,
 	}
 )
 
@@ -58,6 +62,8 @@ func ProviderDisplayName(name string) string {
 		return "Codex"
 	case ClaudeTUI:
 		return "Claude TUI"
+	case Agy:
+		return "Antigravity"
 	default:
 		return name
 	}

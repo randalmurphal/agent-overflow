@@ -206,8 +206,13 @@ func (a *App) savedFastModeStands(providerName, model string) bool {
 func (a *App) modelInfoForProvider(providerName, model string) (info provider.ModelInfo, found bool) {
 	providerName = strings.TrimSpace(providerName)
 	model = provider.NormalizeModelSlug(providerName, strings.TrimSpace(model))
-	if provider.CapabilitiesForProvider(providerName).ModelCatalog == provider.CodexLiveModelCatalog {
+	switch provider.CapabilitiesForProvider(providerName).ModelCatalog {
+	case provider.CodexLiveModelCatalog:
 		if candidate, ok := a.providerDiscoveryService().KnownCodexModel(a.providerBinaryPath(providerName), model); ok {
+			return candidate, true
+		}
+	case provider.ACPLiveModelCatalog:
+		if candidate, ok := a.providerDiscoveryService().KnownAgyModel(a.providerBinaryPath(providerName), model); ok {
 			return candidate, true
 		}
 	}

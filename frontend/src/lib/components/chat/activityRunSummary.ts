@@ -180,7 +180,8 @@ function nativeToolPresentation(
   provider: ProviderID | null | undefined,
 ): { label: string; icon: ToolKindIcon } {
   switch (provider) {
-    case 'codex': {
+    case 'codex':
+    case 'agy': {
       const visual = classifyToolName(rawName);
       return { label: capitalizedHeaderLabel(visual.label), icon: visual.icon };
     }

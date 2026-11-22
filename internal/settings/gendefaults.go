@@ -54,6 +54,7 @@ var frontendDefaultsDenied = map[string]string{
 	// materialized zero value would be a different answer than no answer.
 	"claudePromptOverrides":       "optional; absent means no override, not an empty override list",
 	"codexPromptOverrides":        "optional; absent means no override, not an empty override list",
+	"agyPromptOverrides":          "optional; absent means no override, not an empty override list",
 	"claudeDisabledTools":         "optional; absent means the provider's own tool set",
 	"codexDisabledTools":          "optional; absent means the provider's own tool set",
 	"claudeTodoRemindersDisabled": "optional; absent means the CLI's own nudge behavior",
@@ -82,7 +83,7 @@ func FrontendDefaultsSource() string {
 	b.WriteString("export const FRONTEND_SETTINGS_KEYS = [\n")
 	var keys []string
 	for key, tier := range tierByKey {
-		if tier == TierDevice || key == "confirmArchive" || key == "confirmDelete" || key == "autoPinNewThreads" || key == "projectSortMode" || key == "defaultThreadEnvMode" || key == "claudeHiddenModels" || key == "codexHiddenModels" {
+		if tier == TierDevice || key == "confirmArchive" || key == "confirmDelete" || key == "autoPinNewThreads" || key == "projectSortMode" || key == "defaultThreadEnvMode" || key == "claudeHiddenModels" || key == "codexHiddenModels" || key == "agyHiddenModels" {
 			keys = append(keys, key)
 		}
 	}

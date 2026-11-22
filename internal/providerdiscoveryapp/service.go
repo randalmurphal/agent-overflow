@@ -8,6 +8,7 @@ import (
 	"agent-overflow/internal/codexmodels"
 	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/agy"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/provideraccounts"
@@ -62,16 +63,20 @@ type Deps struct {
 	// answer so the next cold start serves the enriched picker before its
 	// own probe lands. Optional: a focused test may leave it nil.
 	RememberClaudeCatalog func(accountID string, snapshot claudemodels.Snapshot)
+	// ProbeAgyModels performs a live zero-token model catalog probe against
+	// the given Antigravity binary (borrowing a pooled *acp.Conn when live).
+	ProbeAgyModels func(ctx context.Context, binary string) ([]provider.ModelInfo, error)
 }
 
 // Caches is the bounded process-wide discovery cache set. Probe answers are
-// keyed by every environment dimension and expire; Codex model rows are TTL'd
-// by binary. Sharing them avoids duplicate subprocesses when tests or startup
-// glue briefly construct more than one App in one process.
+// keyed by every environment dimension and expire; Codex and Agy model rows are
+// TTL'd by binary. Sharing them avoids duplicate subprocesses when tests or
+// startup glue briefly construct more than one App in one process.
 type Caches struct {
 	Claude      *provider.ProbeCache
 	Codex       *provider.ProbeCache
 	CodexModels *codexmodels.Cache
+	AgyModels   *agy.CatalogCache
 }
 
 var (
@@ -104,6 +109,7 @@ func NewCaches() *Caches {
 		Claude:      provider.NewProbeCache(claude.DefaultProbeTTL),
 		Codex:       provider.NewProbeCache(codex.DefaultProbeTTL),
 		CodexModels: codexmodels.New(),
+		AgyModels:   agy.NewCatalogCache(),
 	}
 }
 
