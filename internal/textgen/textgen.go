@@ -45,7 +45,7 @@ const (
 	FallbackClaudeModel = "claude-haiku-4-5"
 	// DefaultAgyModel is the default Antigravity model for short structured
 	// text generation runs.
-	DefaultAgyModel = "gemini-3-flash"
+	DefaultAgyModel = "gemini-3.8-flash"
 )
 
 // PickAvailableProviderOrdered returns preferred when its binary resolves,
@@ -517,11 +517,13 @@ func RunClaude(
 	return []byte(result.Stdout), nil
 }
 
-// RunAgy drives `agy -p --output-format json --json-schema ...` for one-shot
-// structured output. `--disable-slash-commands` prevents prompt text starting
-// with `/` from expanding as a slash command or skill, and
-// AGY_CLI_DISABLE_AUTO_UPDATE=1 keeps background self-updates off during the
-// run.
+// RunAgy drives `agy --output-format json --json-schema ... --print=<prompt>`
+// for one-shot structured output. `agy`'s `-p`/`--print` flag takes the prompt
+// as its value rather than reading stdin; passing `--print=<prompt>` avoids
+// flag-parsing ambiguity for prompts starting with `-`.
+// `--disable-slash-commands` prevents prompt text starting with `/` from
+// expanding as a slash command or skill, and AGY_CLI_DISABLE_AUTO_UPDATE=1
+// keeps background self-updates off during the run.
 func RunAgy(
 	ctx context.Context,
 	cfg Config,
@@ -531,8 +533,10 @@ func RunAgy(
 	stdin string,
 	timeout time.Duration,
 ) ([]byte, error) {
+	if strings.TrimSpace(stdin) == "" {
+		return nil, fmt.Errorf("agy: empty prompt")
+	}
 	args := []string{
-		"-p",
 		"--output-format", "json",
 		"--json-schema", schemaJSON,
 		"--disable-slash-commands",
@@ -544,6 +548,7 @@ func RunAgy(
 		args = append(args, "--effort", cfg.Effort)
 	}
 	args = append(args, extraArgs...)
+	args = append(args, "--print="+stdin)
 
 	env := make(map[string]string, len(cfg.Env)+1)
 	for k, v := range cfg.Env {
@@ -557,7 +562,6 @@ func RunAgy(
 		Binary: cfg.Binary,
 		Args:   args,
 		Cwd:    workspace,
-		Stdin:  stdin,
 		Env:    env,
 	})
 	if err != nil {

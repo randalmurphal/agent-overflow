@@ -447,7 +447,7 @@ func (f *Flavor) NormalizeToolComplete(u *acp.ToolCallUpdate, started acp.Normal
 							if patch := acp.BuildUnifiedDiff(path, "", content); patch != "" {
 								norm.DiffPatch = patch
 								norm.DiffFilePath = path
-								norm.DiffChanges = []acp.FileDiffChange{{Path: path, Kind: "add", Diff: patch}}
+								norm.DiffChanges = []acp.FileDiffChange{{Path: path, Kind: "add", Diff: content}}
 							}
 						}
 					case "edit_file":
@@ -455,7 +455,9 @@ func (f *Flavor) NormalizeToolComplete(u *acp.ToolCallUpdate, started acp.Normal
 							if patch := acp.BuildUnifiedDiff(path, params.Target, params.Replacement); patch != "" {
 								norm.DiffPatch = patch
 								norm.DiffFilePath = path
-								norm.DiffChanges = []acp.FileDiffChange{{Path: path, Kind: "update", Diff: patch}}
+								if hunks := acp.BuildUnifiedDiffHunks(params.Target, params.Replacement); hunks != "" {
+									norm.DiffChanges = []acp.FileDiffChange{{Path: path, Kind: "update", Diff: hunks}}
+								}
 							}
 						}
 					}
@@ -478,6 +480,20 @@ func (f *Flavor) NormalizeToolComplete(u *acp.ToolCallUpdate, started acp.Normal
 }
 
 func (f *Flavor) ClassifyPermission(threadID, turnID, requestID string, req acp.RequestPermissionParams, policy acp.PermissionPolicy) acp.PermissionClassification {
+	// Auto-approve AO's own coordination MCP servers (ao-thread-tools and
+	// ao-workflow-tools), matching Claude's --allowedTools and Codex's
+	// default_tools_approval_mode="approve".
+	if server, _, ok := parseAgyMCPToolName(strings.TrimSpace(req.ToolCall.Name)); ok &&
+		(server == "ao-thread-tools" || server == "ao-workflow-tools") {
+		for _, opt := range req.Options {
+			if opt.Kind == "allow_once" || opt.Kind == "allow_always" {
+				return acp.PermissionClassification{
+					Action:   acp.PermissionAutoAllow,
+					OptionID: opt.OptionID,
+				}
+			}
+		}
+	}
 	cls := f.DefaultFlavor.ClassifyPermission(threadID, turnID, requestID, req, policy)
 	if cls.Action == acp.PermissionAskUser {
 		// Surface option._meta["agy.security.warning"] if present on any allow option.

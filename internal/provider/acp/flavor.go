@@ -234,17 +234,25 @@ func (DefaultFlavor) NormalizeToolComplete(u *ToolCallUpdate, started Normalized
 				if out.DiffFilePath == "" {
 					out.DiffFilePath = item.Path
 				}
-				changeKind := "update"
 				if item.OldText == "" && item.NewText != "" {
-					changeKind = "add"
+					out.DiffChanges = append(out.DiffChanges, FileDiffChange{
+						Path: item.Path,
+						Kind: "add",
+						Diff: item.NewText,
+					})
 				} else if item.OldText != "" && item.NewText == "" {
-					changeKind = "delete"
+					out.DiffChanges = append(out.DiffChanges, FileDiffChange{
+						Path: item.Path,
+						Kind: "delete",
+						Diff: item.OldText,
+					})
+				} else if hunks := BuildUnifiedDiffHunks(item.OldText, item.NewText); hunks != "" {
+					out.DiffChanges = append(out.DiffChanges, FileDiffChange{
+						Path: item.Path,
+						Kind: "update",
+						Diff: hunks,
+					})
 				}
-				out.DiffChanges = append(out.DiffChanges, FileDiffChange{
-					Path: item.Path,
-					Kind: changeKind,
-					Diff: patch,
-				})
 			}
 		case "content":
 			if item.Content != nil && item.Content.Text != "" {
@@ -528,4 +536,28 @@ func BuildUnifiedDiff(path, oldText, newText string) string {
 		return ""
 	}
 	return prefix + body
+}
+
+// BuildUnifiedDiffHunks returns only the `@@ ... @@` unified diff hunks without
+// `diff --git` / `---` / `+++` file headers, matching the shape
+// triage.ExtractFileChangeToolResult expects on `update` FileDiffChange rows so
+// triage can attach workspace-relative headers without rejecting absolute paths.
+func BuildUnifiedDiffHunks(oldText, newText string) string {
+	if oldText == newText {
+		return ""
+	}
+	ud := difflib.UnifiedDiff{
+		A:       difflib.SplitLines(oldText),
+		B:       difflib.SplitLines(newText),
+		Context: 3,
+	}
+	body, err := difflib.GetUnifiedDiffString(ud)
+	if err != nil || body == "" {
+		return ""
+	}
+	// Strip any empty header lines difflib may emit before the first @@ hunk.
+	if idx := strings.Index(body, "@@"); idx >= 0 {
+		return body[idx:]
+	}
+	return body
 }

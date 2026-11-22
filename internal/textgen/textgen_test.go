@@ -713,10 +713,13 @@ func TestRunAgyAndDecodeStructured(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunAgy: %v", err)
 	}
-	for _, want := range []string{"-p", "--output-format", "json", "--json-schema", "--disable-slash-commands", "--model", DefaultAgyModel, "--effort", "low"} {
+	for _, want := range []string{"--output-format", "json", "--json-schema", "--disable-slash-commands", "--model", DefaultAgyModel, "--effort", "low", "--print=prompt"} {
 		if !slices.Contains(got.Args, want) {
 			t.Errorf("agy args missing %q: %v", want, got.Args)
 		}
+	}
+	if got.Stdin != "" {
+		t.Errorf("agy stdin = %q, want empty (prompt rides --print=...)", got.Stdin)
 	}
 	if got.Env["AGY_CLI_DISABLE_AUTO_UPDATE"] != "1" {
 		t.Errorf("AGY_CLI_DISABLE_AUTO_UPDATE = %q, want 1", got.Env["AGY_CLI_DISABLE_AUTO_UPDATE"])

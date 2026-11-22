@@ -614,7 +614,7 @@ func TestACPMultiplexedSessionsLiveConfigAndCloseIsolation(t *testing.T) {
 	toolCompA := evA.waitFor(t, 2*time.Second, func(e provider.ProviderEvent) bool {
 		return e.Kind == provider.EventToolComplete && e.ItemType == "file_change"
 	})
-	if !strings.Contains(string(toolCompA.Meta), "--- a/foo.txt") || !strings.Contains(string(toolCompA.Meta), "+b") || !strings.Contains(string(toolCompA.Meta), `"changes"`) {
+	if !strings.Contains(string(toolCompA.Meta), "@@") || !strings.Contains(string(toolCompA.Meta), "+b") || !strings.Contains(string(toolCompA.Meta), `"changes"`) {
 		t.Fatalf("unexpected file_change tool_complete meta: %s", string(toolCompA.Meta))
 	}
 

@@ -752,14 +752,17 @@ func (a *App) spawnProviderSession(
 			return session{}, err
 		}
 		return session{
-			Provider:      string(provider.Agy),
-			Token:         sessionToken,
-			ACP:           sess,
-			Session:       sess,
-			Conn:          conn,
-			PoolKey:       poolKey,
-			LaunchOptions: opts,
-			Liveness:      liveness,
+			Provider:             string(provider.Agy),
+			Token:                sessionToken,
+			CredentialGeneration: accountSelection.Generation,
+			CredentialAccountID:  accountSelection.AccountID,
+			CredentialAccount:    accountSelection.Account,
+			ACP:                  sess,
+			Session:              sess,
+			Conn:                 conn,
+			PoolKey:              poolKey,
+			LaunchOptions:        opts,
+			Liveness:             liveness,
 		}, nil
 
 	default:

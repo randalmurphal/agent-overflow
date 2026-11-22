@@ -14,6 +14,7 @@ import (
 	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/acp"
+	"agent-overflow/internal/triage"
 )
 
 func TestAgyFlavorUsageToolsAndMCPTranslation(t *testing.T) {
@@ -487,5 +488,140 @@ func TestAgyTransferSnapshotCopyAndValidate(t *testing.T) {
 	}
 	if _, err := ValidateStagedTransferFiles(context.Background(), stageDir, wrongID); err == nil {
 		t.Fatal("ValidateStagedTransferFiles unexpectedly accepted mismatched cascade_id")
+	}
+}
+
+func TestClassifyPermissionAutoAllowsAOMCPServers(t *testing.T) {
+	t.Parallel()
+	f := NewFlavor("")
+	opts := []acp.PermissionOption{
+		{OptionID: "allow", Name: "Allow", Kind: "allow_once"},
+		{OptionID: "deny", Name: "Deny", Kind: "reject_once"},
+	}
+
+	for _, name := range []string{
+		"mcp_ao-thread-tools_thread_options",
+		"mcp__ao-thread-tools__spawn_thread",
+		"mcp_ao-workflow-tools_workflow_run",
+	} {
+		cls := f.ClassifyPermission("t1", "turn1", "req1", acp.RequestPermissionParams{
+			ToolCall: acp.ToolCallUpdate{ToolCallID: "c1", Name: name, Kind: "other"},
+			Options:  opts,
+		}, acp.PolicyPrompt)
+		if cls.Action != acp.PermissionAutoAllow || cls.OptionID != "allow" {
+			t.Fatalf("%s: got action=%v option=%q, want AutoAllow/allow", name, cls.Action, cls.OptionID)
+		}
+	}
+
+	for _, name := range []string{
+		"mcp_ao-remote-tools_run_command",
+		"mcp_github_create_issue",
+		"run_command",
+	} {
+		cls := f.ClassifyPermission("t1", "turn1", "req2", acp.RequestPermissionParams{
+			ToolCall: acp.ToolCallUpdate{ToolCallID: "c2", Name: name, Kind: "other"},
+			Options:  opts,
+		}, acp.PolicyPrompt)
+		if cls.Action != acp.PermissionAskUser {
+			t.Fatalf("%s: got action=%v, want PermissionAskUser", name, cls.Action)
+		}
+	}
+}
+
+func TestFileChangeDiffChangesFeedTriageExactPatch(t *testing.T) {
+	t.Parallel()
+	f := NewFlavor("")
+	workDir := t.TempDir()
+	helloPath := filepath.Join(workDir, "hello.txt")
+	newPath := filepath.Join(workDir, "created.txt")
+	delPath := filepath.Join(workDir, "removed.txt")
+
+	encodeToolCompleteMeta := func(tc *acp.ToolCallUpdate) json.RawMessage {
+		started := f.NormalizeToolStart(tc)
+		comp := f.NormalizeToolComplete(tc, started)
+		changes := make([]map[string]any, 0, len(comp.DiffChanges))
+		for _, ch := range comp.DiffChanges {
+			changes = append(changes, map[string]any{
+				"path": ch.Path,
+				"kind": map[string]any{"type": ch.Kind},
+				"diff": ch.Diff,
+			})
+		}
+		meta, err := json.Marshal(map[string]any{
+			"toolName": comp.ToolName,
+			"item": map[string]any{
+				"id":      tc.ToolCallID,
+				"type":    "file_change",
+				"status":  "completed",
+				"changes": changes,
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return meta
+	}
+
+	// 1. Edit existing file -> exact_patch (+1 -1).
+	editMeta := encodeToolCompleteMeta(&acp.ToolCallUpdate{
+		ToolCallID: "call-edit",
+		Name:       "edit_file",
+		Kind:       "edit",
+		Status:     "completed",
+		Content: []acp.ToolContentItem{{
+			Type:    "diff",
+			Path:    helloPath,
+			OldText: "line 1\nline 2\nline 3\n",
+			NewText: "line 1\nline 2 edited\nline 3\n",
+		}},
+	})
+	editRes, editDiff, ok := triage.ExtractFileChangeToolResult(editMeta, workDir)
+	if !ok || editRes.InlineDiff == nil {
+		t.Fatalf("edit ExtractFileChangeToolResult failed: ok=%v res=%+v", ok, editRes)
+	}
+	if editRes.InlineDiff.Availability != "exact_patch" || editRes.InlineDiff.Insertions != 1 || editRes.InlineDiff.Deletions != 1 || len(editDiff) == 0 {
+		t.Fatalf("edit inline diff = %+v (bytes=%d), want exact_patch (+1 -1)", editRes.InlineDiff, len(editDiff))
+	}
+
+	// 2. Write new file -> exact_patch (+2 -0) with kind=added.
+	writeMeta := encodeToolCompleteMeta(&acp.ToolCallUpdate{
+		ToolCallID: "call-write",
+		Name:       "write_file",
+		Kind:       "edit",
+		Status:     "completed",
+		Content: []acp.ToolContentItem{{
+			Type:    "diff",
+			Path:    newPath,
+			OldText: "",
+			NewText: "alpha\nbeta\n",
+		}},
+	})
+	writeRes, writeDiff, ok := triage.ExtractFileChangeToolResult(writeMeta, workDir)
+	if !ok || writeRes.InlineDiff == nil {
+		t.Fatalf("write ExtractFileChangeToolResult failed: ok=%v res=%+v", ok, writeRes)
+	}
+	if writeRes.InlineDiff.Availability != "exact_patch" || writeRes.InlineDiff.Insertions != 2 || writeRes.InlineDiff.Deletions != 0 || writeRes.InlineDiff.Files[0].Kind != "added" || len(writeDiff) == 0 {
+		t.Fatalf("write inline diff = %+v (bytes=%d), want exact_patch added (+2 -0)", writeRes.InlineDiff, len(writeDiff))
+	}
+
+	// 3. Delete file -> exact_patch (+0 -2) with kind=deleted.
+	delMeta := encodeToolCompleteMeta(&acp.ToolCallUpdate{
+		ToolCallID: "call-del",
+		Name:       "edit_file",
+		Kind:       "edit",
+		Status:     "completed",
+		Content: []acp.ToolContentItem{{
+			Type:    "diff",
+			Path:    delPath,
+			OldText: "old 1\nold 2\n",
+			NewText: "",
+		}},
+	})
+	delRes, delDiff, ok := triage.ExtractFileChangeToolResult(delMeta, workDir)
+	if !ok || delRes.InlineDiff == nil {
+		t.Fatalf("delete ExtractFileChangeToolResult failed: ok=%v res=%+v", ok, delRes)
+	}
+	if delRes.InlineDiff.Availability != "exact_patch" || delRes.InlineDiff.Insertions != 0 || delRes.InlineDiff.Deletions != 2 || delRes.InlineDiff.Files[0].Kind != "deleted" || len(delDiff) == 0 {
+		t.Fatalf("delete inline diff = %+v (bytes=%d), want exact_patch deleted (+0 -2)", delRes.InlineDiff, len(delDiff))
 	}
 }

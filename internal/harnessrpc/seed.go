@@ -352,7 +352,7 @@ func (h *Harness) seedThread(projectID string, spec HarnessSeedThread, spawnerID
 		case "codex":
 			model = "gpt-5.2-codex"
 		case "agy":
-			model = "gemini-3.1-pro-high"
+			model = "gemini-4-neon"
 		default:
 			model = "claude-opus-4-7"
 		}

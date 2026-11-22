@@ -95,6 +95,7 @@ func (a *App) resolveTextGenerationConfig() textgen.Config {
 		if cfg.Model == "" {
 			cfg.Model = textgen.DefaultAgyModel
 		}
+		cfg.Env = a.agyTextGenEnv(cfg.Env)
 	}
 
 	coerceTextGenerationEffort(&cfg)
@@ -142,11 +143,25 @@ func (a *App) resolveTextGenerationConfigFor(providerName string) (textgen.Confi
 			return textgen.Config{}, false
 		}
 		cfg.Model = textgen.DefaultAgyModel
+		cfg.Env = a.agyTextGenEnv(cfg.Env)
 	default:
 		return textgen.Config{}, false
 	}
 	coerceTextGenerationEffort(&cfg)
 	return cfg, true
+}
+
+func (a *App) agyTextGenEnv(base map[string]string) map[string]string {
+	if !a.hasManagedAgyCredentialFile() {
+		return base
+	}
+	out := make(map[string]string, len(base)+2)
+	for k, v := range base {
+		out[k] = v
+	}
+	out["AGY_ACP_FORCE_FILE_STORAGE"] = "1"
+	out["SSH_CONNECTION"] = "127.0.0.1 0 127.0.0.1 0"
+	return out
 }
 
 // defaultClaudeTextGenerationModel is textgen.DefaultClaudeModel when the
