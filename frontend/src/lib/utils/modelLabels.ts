@@ -68,6 +68,10 @@ function displayAgyModelLabel(slug: string, name?: string): string {
   const trimmedName = name?.trim() ?? '';
   if (trimmedName !== '') return trimmedName;
   const trimmedSlug = slug.trim();
+  const alias = trimmedSlug.toLowerCase();
+  if (alias === 'flash') return 'Flash';
+  if (alias === 'flash_lite' || alias === 'flash-lite') return 'Flash Lite';
+  if (alias === 'pro') return 'Pro';
   if (/^claude-/i.test(trimmedSlug)) {
     return 'Claude ' + displayClaudeModelLabel(trimmedSlug);
   }
@@ -81,7 +85,11 @@ function displayAgyModelLabel(slug: string, name?: string): string {
 }
 
 function formatGeminiSlug(slug: string): string {
-  const parts = slug.trim().split('-').filter(Boolean);
+  const parts = slug
+    .trim()
+    .replace(/-tiered\b/gi, '')
+    .split('-')
+    .filter(Boolean);
   if (parts.length === 0) return slug;
   return parts.map((part, idx) => {
     if (idx === 0) return 'Gemini';

@@ -49,11 +49,15 @@ describe('displayModelLabel', () => {
   it('formats Antigravity slugs and catalog names cleanly', () => {
     expect(displayModelLabel('agy', 'gemini-4-neon')).toBe('Gemini 4 Neon');
     expect(displayModelLabel('agy', 'gemini-4-hydrogen')).toBe('Gemini 4 Hydrogen');
+    expect(displayModelLabel('agy', 'gemini-4-hydrogen-tiered')).toBe('Gemini 4 Hydrogen');
     expect(displayModelLabel('agy', 'gemini-3.1-pro-high')).toBe('Gemini 3.1 Pro High');
     expect(displayModelLabel('agy', 'gemini-3.1-pro-high', 'Gemini 3.1 Pro (High)')).toBe('Gemini 3.1 Pro (High)');
     expect(displayModelLabel('agy', 'gemini-3-flash')).toBe('Gemini 3 Flash');
     expect(displayModelLabel('agy', 'gemini-4-neon', 'Gemini 4 Neon')).toBe('Gemini 4 Neon');
     expect(displayModelLabel('agy', 'claude-sonnet-4-6')).toBe('Claude Sonnet 4.6');
+    expect(displayModelLabel('agy', 'flash')).toBe('Flash');
+    expect(displayModelLabel('agy', 'flash_lite')).toBe('Flash Lite');
+    expect(displayModelLabel('agy', 'pro')).toBe('Pro');
   });
 });
 

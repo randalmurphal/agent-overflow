@@ -92,6 +92,19 @@ type PromptOutcomeOverride struct {
 	Failure      *provider.FailureMeta
 }
 
+// SubagentLaunchContext carries the parent session context for a flavor that
+// tracks an asynchronous subagent out of band (for example, agy writing child
+// transcript.jsonl files outside the parent ACP stream).
+type SubagentLaunchContext struct {
+	SessionID  string
+	ThreadID   string
+	TurnID     string
+	ToolCallID string
+	RawInput   json.RawMessage
+	Started    NormalizedToolStart
+	Emit       func(provider.ProviderEvent)
+}
+
 // Flavor isolates provider-specific ACP conventions (metadata extensions,
 // usage math, mode names, tool shapes, and out-of-band error detection) from
 // the spec-standard ACP v1 client.
@@ -108,6 +121,8 @@ type Flavor interface {
 	BeforePrompt(ctx context.Context, sessionID string) any
 	AfterPrompt(ctx context.Context, sessionID string, stopReason string, beforeToken any) *PromptOutcomeOverride
 	ShouldHoldSpontaneousWakeClose(ctx context.Context, sessionID string) bool
+	CanTrackSubagent(sessionID string) bool
+	WatchSubagent(ctx context.Context, launch SubagentLaunchContext)
 }
 
 // DefaultFlavor implements spec-standard ACP v1 behavior for all Flavor hooks.
@@ -208,11 +223,17 @@ func (DefaultFlavor) NormalizeToolStart(u *ToolCallUpdate) NormalizedToolStart {
 }
 
 func (DefaultFlavor) NormalizeToolComplete(u *ToolCallUpdate, started NormalizedToolStart) NormalizedToolComplete {
+	itemStatus := u.Status
+	if itemStatus == "cancelled" {
+		// Map ACP "cancelled" to AO's "killed" status so triage renders a
+		// stopped badge instead of falling through to completed.
+		itemStatus = "killed"
+	}
 	out := NormalizedToolComplete{
 		ToolName:   started.ToolName,
 		ItemType:   started.ItemType,
 		IsError:    u.Status == "failed",
-		ItemStatus: u.Status,
+		ItemStatus: itemStatus,
 	}
 	if out.ToolName == "" {
 		out.ToolName = strings.TrimSpace(u.Name)
@@ -439,6 +460,12 @@ func (DefaultFlavor) AfterPrompt(context.Context, string, string, any) *PromptOu
 func (DefaultFlavor) ShouldHoldSpontaneousWakeClose(context.Context, string) bool {
 	return false
 }
+
+func (DefaultFlavor) CanTrackSubagent(string) bool {
+	return false
+}
+
+func (DefaultFlavor) WatchSubagent(context.Context, SubagentLaunchContext) {}
 
 func findPermissionOption(options []PermissionOption, preferredKind, fallbackKind string) string {
 	for _, opt := range options {

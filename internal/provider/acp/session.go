@@ -115,34 +115,37 @@ type Session struct {
 	onEvent   func(provider.ProviderEvent)
 	approvals provider.ApprovalRegistry
 
-	mu                    sync.Mutex
-	sessionID             string
-	model                 string
-	reasoningEffort       string
-	runtimeMode           provider.RuntimeMode
-	interactionMode       provider.InteractionMode
-	permissionPolicy      PermissionPolicy
-	availableModes        []SessionMode
-	configOptions         []ConfigOption
-	currentModeID         string
-	lastRequestedModeID   string
-	lastContextSize       int
-	inFlightPrompts       int
-	turnOpen              bool
-	spontaneousTurnOpen   bool
-	turnSeq               int
-	activeTurnID          string
-	promptUsage           provider.TokenUsage
-	promptUsageSeen       bool
-	promptHadOutput       bool
-	turnHasOutputSchema   bool
-	turnLastAssistantText strings.Builder
-	startedTools          map[string]NormalizedToolStart
-	outlivingTools        map[string]struct{}
-	pendingPerms          map[string]pendingPermission
-	pendingToolQuestions  map[string]pendingToolQuestion
-	chunk                 chunkBuffer
-	promptWG              sync.WaitGroup
+	mu                     sync.Mutex
+	sessionID              string
+	model                  string
+	reasoningEffort        string
+	runtimeMode            provider.RuntimeMode
+	interactionMode        provider.InteractionMode
+	permissionPolicy       PermissionPolicy
+	availableModes         []SessionMode
+	configOptions          []ConfigOption
+	currentModeID          string
+	lastRequestedModeID    string
+	lastContextSize        int
+	inFlightPrompts        int
+	answeringToolQuestions int
+	turnOpen               bool
+	spontaneousTurnOpen    bool
+	turnSeq                int
+	activeTurnID           string
+	promptUsage            provider.TokenUsage
+	promptUsageSeen        bool
+	promptHadOutput        bool
+	turnHasOutputSchema    bool
+	turnLastAssistantText  strings.Builder
+	startedTools           map[string]NormalizedToolStart
+	trackedSubagents       map[string]SubagentLaunchContext
+	outlivingTools         map[string]struct{}
+	pendingPerms           map[string]pendingPermission
+	pendingToolQuestions   map[string]pendingToolQuestion
+	chunk                  chunkBuffer
+	promptWG               sync.WaitGroup
+	subagentWG             sync.WaitGroup
 
 	sessionCtx      context.Context
 	sessionCancel   context.CancelFunc
@@ -217,6 +220,7 @@ func (c *Conn) open(
 		runtimeMode:          rtMode,
 		interactionMode:      imMode,
 		startedTools:         make(map[string]NormalizedToolStart),
+		trackedSubagents:     make(map[string]SubagentLaunchContext),
 		outlivingTools:       make(map[string]struct{}),
 		pendingPerms:         make(map[string]pendingPermission),
 		pendingToolQuestions: make(map[string]pendingToolQuestion),
@@ -629,9 +633,17 @@ func (s *Session) finishPrompt(rawResp json.RawMessage, waitErr error, beforeTok
 	}
 	remaining := s.inFlightPrompts
 	turnID := s.activeTurnID
+	// When the server ends a prompt solely to pause for a pending ask_question
+	// tool (e.g. agy emitting tool_call(status="pending") + end_turn before the
+	// user's answer prompt), hold the logical turn open so triage keeps
+	// pendingUserInputs alive and does not force-close AskUserQuestion as errored.
+	holdForToolQuestion := remaining == 0 &&
+		waitErr == nil &&
+		(res.StopReason == "" || res.StopReason == "end_turn") &&
+		(len(s.pendingToolQuestions) > 0 || s.answeringToolQuestions > 0)
 	var totalUsage *provider.TokenUsage
 	var structuredOutput json.RawMessage
-	if remaining == 0 {
+	if remaining == 0 && !holdForToolQuestion {
 		if s.promptUsageSeen {
 			u := s.promptUsage
 			totalUsage = &u
@@ -645,6 +657,10 @@ func (s *Session) finishPrompt(rawResp json.RawMessage, waitErr error, beforeTok
 		s.spontaneousTurnOpen = false
 	}
 	s.mu.Unlock()
+
+	if holdForToolQuestion {
+		return
+	}
 
 	// Another steered prompt is still running for this logical turn; let its
 	// completion settle the turn with the combined usage.
@@ -780,9 +796,39 @@ func buildModelUsage(model string, total *provider.TokenUsage) []provider.ModelT
 func (s *Session) Interrupt(_ context.Context) error {
 	s.mu.Lock()
 	sessionID := s.sessionID
+	heldForQuestion := s.turnOpen && s.inFlightPrompts == 0 && len(s.pendingToolQuestions) > 0
+	turnID := s.activeTurnID
+	model := s.model
+	var totalUsage *provider.TokenUsage
+	if heldForQuestion {
+		if s.promptUsageSeen {
+			u := s.promptUsage
+			totalUsage = &u
+		}
+		s.turnOpen = false
+		s.spontaneousTurnOpen = false
+		s.turnHasOutputSchema = false
+		s.turnLastAssistantText.Reset()
+	}
 	s.mu.Unlock()
 	if sessionID == "" {
 		return nil
+	}
+	if heldForQuestion {
+		s.resolvePendingToolQuestions("declined", nil)
+		s.emitEvent(provider.ProviderEvent{
+			Kind:      provider.EventTurnComplete,
+			ThreadID:  s.threadID,
+			TurnID:    turnID,
+			Timestamp: time.Now(),
+			TurnComplete: &provider.WireTurnCompleteMeta{
+				UsageScope: s.usageScope(),
+				StopReason: "cancelled",
+				Usage:      totalUsage,
+				ModelUsage: buildModelUsage(model, totalUsage),
+				OwnUsage:   totalUsage,
+			},
+		})
 	}
 	s.drainPendingApprovals("lost", false)
 	return s.conn.writeNotification("session/cancel", SessionCancelParams{
@@ -860,10 +906,32 @@ func (s *Session) RespondToUserInput(ctx context.Context, resp provider.UserInpu
 		delete(s.pendingPerms, resp.RequestID)
 	}
 	pendingQ, isToolQ := s.pendingToolQuestions[resp.RequestID]
+	turnID := s.activeTurnID
 	if isToolQ {
 		delete(s.pendingToolQuestions, resp.RequestID)
+		delete(s.startedTools, pendingQ.toolCallID)
+		s.answeringToolQuestions++
 	}
 	s.mu.Unlock()
+	if isToolQ {
+		defer func() {
+			s.mu.Lock()
+			if s.answeringToolQuestions > 0 {
+				s.answeringToolQuestions--
+			}
+			s.mu.Unlock()
+		}()
+	}
+
+	resolvedDecision := "answered"
+	if decision == "decline" {
+		resolvedDecision = "declined"
+	}
+	meta, _ := json.Marshal(map[string]any{
+		"requestId": resp.RequestID,
+		"decision":  resolvedDecision,
+		"answers":   resp.Answers,
+	})
 
 	if isPerm {
 		var result RequestPermissionResult
@@ -882,24 +950,17 @@ func (s *Session) RespondToUserInput(ctx context.Context, resp provider.UserInpu
 		if err := s.conn.writeResponse(pendingPerm.rpcID, result); err != nil {
 			return err
 		}
-	} else if isToolQ {
-		replyText := formatToolQuestionAnswer(pendingQ.questions, resp.Answers, decision)
-		if replyText != "" {
-			if err := s.dispatchPrompt(ctx, []ContentBlock{{Type: "text", Text: replyText}}, false); err != nil {
-				return err
-			}
-		}
+		s.emitEvent(provider.ProviderEvent{
+			Kind:             provider.EventUserInputResolved,
+			ThreadID:         s.threadID,
+			ItemID:           resp.RequestID,
+			Meta:             meta,
+			Timestamp:        time.Now(),
+			PromptOccurrence: resp.Occurrence,
+		})
+		return nil
 	}
 
-	resolvedDecision := "answered"
-	if decision == "decline" {
-		resolvedDecision = "declined"
-	}
-	meta, _ := json.Marshal(map[string]any{
-		"requestId": resp.RequestID,
-		"decision":  resolvedDecision,
-		"answers":   resp.Answers,
-	})
 	s.emitEvent(provider.ProviderEvent{
 		Kind:             provider.EventUserInputResolved,
 		ThreadID:         s.threadID,
@@ -908,6 +969,35 @@ func (s *Session) RespondToUserInput(ctx context.Context, resp provider.UserInpu
 		Timestamp:        time.Now(),
 		PromptOccurrence: resp.Occurrence,
 	})
+
+	if isToolQ {
+		replyText := formatToolQuestionAnswer(pendingQ.questions, resp.Answers, decision)
+		itemStatus := "completed"
+		if decision == "decline" {
+			itemStatus = "declined"
+		}
+		completeMeta, _ := json.Marshal(map[string]any{
+			"toolName":    "AskUserQuestion",
+			"item_status": itemStatus,
+			"answers":     resp.Answers,
+		})
+		s.emitEvent(provider.ProviderEvent{
+			Kind:           provider.EventToolComplete,
+			ThreadID:       s.threadID,
+			TurnID:         turnID,
+			ItemID:         pendingQ.toolCallID,
+			ItemType:       "AskUserQuestion",
+			Content:        replyText,
+			ContentPresent: replyText != "",
+			Meta:           completeMeta,
+			Timestamp:      time.Now(),
+		})
+		if replyText != "" {
+			if err := s.dispatchPrompt(ctx, []ContentBlock{{Type: "text", Text: replyText}}, false); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 
@@ -926,6 +1016,7 @@ func (s *Session) Close() error {
 		err = s.conn.Close()
 		<-s.readDone
 		s.promptWG.Wait()
+		s.subagentWG.Wait()
 		return err
 	}
 
@@ -959,6 +1050,7 @@ func (s *Session) Close() error {
 		s.conn.unregisterSession(sessionID, s)
 	}
 	s.promptWG.Wait()
+	s.subagentWG.Wait()
 	s.emitTeardownOnce(nil, true)
 	s.finishReadDone()
 	s.releasePoolRef()
@@ -1025,16 +1117,23 @@ func (s *Session) resolvePendingToolQuestions(decision string, answers map[strin
 		return
 	}
 	ids := make([]string, 0, len(s.pendingToolQuestions))
+	turnID := s.activeTurnID
 	for id := range s.pendingToolQuestions {
 		ids = append(ids, id)
 		delete(s.pendingToolQuestions, id)
+		delete(s.startedTools, id)
 	}
 	s.mu.Unlock()
 
+	itemStatus := "completed"
+	if decision == "declined" || decision == "decline" {
+		itemStatus = "declined"
+	}
 	for _, id := range ids {
 		if !s.approvals.Claim(id, provider.EventUserInputResolved) {
 			continue
 		}
+		now := time.Now()
 		meta, _ := json.Marshal(map[string]any{
 			"requestId": id,
 			"decision":  decision,
@@ -1045,7 +1144,21 @@ func (s *Session) resolvePendingToolQuestions(decision string, answers map[strin
 			ThreadID:  s.threadID,
 			ItemID:    id,
 			Meta:      meta,
-			Timestamp: time.Now(),
+			Timestamp: now,
+		})
+		completeMeta, _ := json.Marshal(map[string]any{
+			"toolName":    "AskUserQuestion",
+			"item_status": itemStatus,
+			"answers":     answers,
+		})
+		s.emitEvent(provider.ProviderEvent{
+			Kind:      provider.EventToolComplete,
+			ThreadID:  s.threadID,
+			TurnID:    turnID,
+			ItemID:    id,
+			ItemType:  "AskUserQuestion",
+			Meta:      completeMeta,
+			Timestamp: now,
 		})
 	}
 }
@@ -1087,11 +1200,14 @@ func (s *Session) handleUpdate(u SessionUpdate) {
 	case "tool_call_update":
 		s.flushChunks()
 		tc := u.toToolCallUpdate()
-		if tc.Status == "completed" || tc.Status == "failed" {
+		switch tc.Status {
+		case "completed", "failed", "cancelled":
 			s.ensureSpontaneousTurnOpen()
 			s.handleToolCallComplete(&tc)
-		} else if tc.Status == "pending" {
+		case "pending":
 			s.handleToolCallPending(&tc)
+		case "in_progress":
+			s.handleToolCallInProgress(&tc)
 		}
 
 	case "plan":
@@ -1109,6 +1225,12 @@ func (s *Session) handleUpdate(u SessionUpdate) {
 		s.mu.Lock()
 		if len(u.ConfigOptions) > 0 {
 			s.configOptions = append([]ConfigOption(nil), u.ConfigOptions...)
+			if m := currentConfigValue(s.configOptions, "model"); m != "" {
+				s.model = m
+			}
+			if e := currentConfigValue(s.configOptions, "thought_level"); e != "" {
+				s.reasoningEffort = e
+			}
 		}
 		s.mu.Unlock()
 
@@ -1250,11 +1372,24 @@ func (s *Session) handleToolCallStart(tc *ToolCallUpdate) {
 	outlives := s.flavor.ToolOutlivesPrompt(tc)
 
 	s.mu.Lock()
+	sessionID := s.sessionID
+	turnID := s.activeTurnID
+	if norm.SubagentLaunch && s.flavor.CanTrackSubagent(sessionID) {
+		norm.IsBackground = true
+		s.trackedSubagents[tc.ToolCallID] = SubagentLaunchContext{
+			SessionID:  sessionID,
+			ThreadID:   s.threadID,
+			TurnID:     turnID,
+			ToolCallID: tc.ToolCallID,
+			RawInput:   append(json.RawMessage(nil), tc.EffectiveInput()...),
+			Started:    norm,
+			Emit:       s.emitEvent,
+		}
+	}
 	s.startedTools[tc.ToolCallID] = norm
 	if outlives {
 		s.outlivingTools[tc.ToolCallID] = struct{}{}
 	}
-	turnID := s.activeTurnID
 	s.mu.Unlock()
 
 	meta := buildToolStartMeta(norm)
@@ -1271,6 +1406,39 @@ func (s *Session) handleToolCallStart(tc *ToolCallUpdate) {
 	if tc.Status == "pending" {
 		s.handleToolCallPending(tc)
 	}
+}
+
+func (s *Session) handleToolCallInProgress(tc *ToolCallUpdate) {
+	if tc.ToolCallID == "" {
+		return
+	}
+	s.mu.Lock()
+	started := s.startedTools[tc.ToolCallID]
+	turnID := s.activeTurnID
+	s.mu.Unlock()
+
+	if tc.Kind != "execute" && started.ItemType != "command_execution" {
+		return
+	}
+	norm := s.flavor.NormalizeToolComplete(tc, started)
+	if norm.CommandOut == "" {
+		return
+	}
+	cmdMeta, _ := json.Marshal(map[string]any{
+		"command":  norm.CommandLine,
+		"toolName": norm.ToolName,
+	})
+	s.emitEvent(provider.ProviderEvent{
+		Kind:      provider.EventCommandOutput,
+		ThreadID:  s.threadID,
+		TurnID:    turnID,
+		ItemID:    tc.ToolCallID,
+		ItemType:  "command_execution",
+		Content:   norm.CommandOut,
+		Meta:      cmdMeta,
+		Replace:   true,
+		Timestamp: time.Now(),
+	})
 }
 
 func (s *Session) handleToolCallPending(tc *ToolCallUpdate) {
@@ -1324,14 +1492,41 @@ func (s *Session) handleToolCallComplete(tc *ToolCallUpdate) {
 	started := s.startedTools[tc.ToolCallID]
 	delete(s.startedTools, tc.ToolCallID)
 	delete(s.outlivingTools, tc.ToolCallID)
+	trackedLaunch, wasTracked := s.trackedSubagents[tc.ToolCallID]
+	delete(s.trackedSubagents, tc.ToolCallID)
 	turnID := s.activeTurnID
 	s.mu.Unlock()
 
 	norm := s.flavor.NormalizeToolComplete(tc, started)
+	watchSubagent := wasTracked && tc.Status == "completed" && !s.closing.Load()
+	if watchSubagent {
+		if norm.ExtraMeta == nil {
+			norm.ExtraMeta = map[string]any{}
+		}
+		norm.ExtraMeta["is_background"] = true
+	}
 	now := time.Now()
 	for _, evt := range buildToolCompleteEvents(s.threadID, turnID, tc.ToolCallID, norm, now) {
 		s.emitEvent(evt)
 	}
+	if watchSubagent {
+		s.subagentWG.Add(1)
+		go func() {
+			defer s.subagentWG.Done()
+			s.flavor.WatchSubagent(s.sessionCtx, trackedLaunch)
+		}()
+	}
+}
+
+// BuildToolStartMeta encodes normalized tool-start metadata for EventToolStart.
+func BuildToolStartMeta(norm NormalizedToolStart) json.RawMessage {
+	return buildToolStartMeta(norm)
+}
+
+// BuildToolCompleteEvents constructs the companion heavy-payload events and
+// terminal EventToolComplete for a normalized tool completion.
+func BuildToolCompleteEvents(threadID, turnID, toolCallID string, norm NormalizedToolComplete, now time.Time) []provider.ProviderEvent {
+	return buildToolCompleteEvents(threadID, turnID, toolCallID, norm, now)
 }
 
 func buildToolStartMeta(norm NormalizedToolStart) json.RawMessage {

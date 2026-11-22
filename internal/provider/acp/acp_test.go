@@ -747,6 +747,9 @@ func TestACPRuntimeModePermissionsAndQuestions(t *testing.T) {
 		t.Fatalf("RespondToUserInput ask_question: %v", err)
 	}
 	evFA.waitFor(t, 5*time.Second, func(e provider.ProviderEvent) bool {
+		return e.Kind == provider.EventToolComplete && e.ItemID == "call_q_1"
+	})
+	evFA.waitFor(t, 5*time.Second, func(e provider.ProviderEvent) bool {
 		return e.Kind == provider.EventTextDelta && strings.Contains(e.Content, ": 2")
 	})
 	_ = sessFA.Close()
@@ -1038,5 +1041,78 @@ func TestReplayUpdatesToEventsCompletesInlineTerminalToolCalls(t *testing.T) {
 	last := events[len(events)-1]
 	if last.Kind != provider.EventTurnComplete || last.TurnComplete == nil {
 		t.Fatalf("expected typed EventTurnComplete last, got %+v", last)
+	}
+}
+
+func TestSessionConfigSyncAndToolUpdateStreamingAndCancel(t *testing.T) {
+	t.Parallel()
+	var events []provider.ProviderEvent
+	s := &Session{
+		threadID:         "t-sync",
+		flavor:           DefaultFlavor{Kind: provider.Agy},
+		onEvent:          func(e provider.ProviderEvent) { events = append(events, e) },
+		startedTools:     make(map[string]NormalizedToolStart),
+		trackedSubagents: make(map[string]SubagentLaunchContext),
+		outlivingTools:   make(map[string]struct{}),
+		model:            "gemini-4-neon",
+		reasoningEffort:  "medium",
+		activeTurnID:     "turn-1",
+		turnOpen:         true,
+	}
+
+	// 1. config_option_update syncs model and reasoningEffort live.
+	s.handleUpdate(SessionUpdate{
+		SessionUpdate: "config_option_update",
+		ConfigOptions: []ConfigOption{
+			{ID: "model", CurrentValue: "gemini-4-hydrogen"},
+			{ID: "thought_level", CurrentValue: "high"},
+		},
+	})
+	if s.model != "gemini-4-hydrogen" || s.reasoningEffort != "high" {
+		t.Fatalf("config_option_update sync = (%q, %q), want (gemini-4-hydrogen, high)", s.model, s.reasoningEffort)
+	}
+
+	// 2. tool_call -> in_progress streaming output -> cancelled terminal (mapped to killed).
+	s.handleUpdate(SessionUpdate{
+		SessionUpdate: "tool_call",
+		ToolCallID:    "cmd-1",
+		Name:          "Bash",
+		Kind:          "execute",
+		Status:        "in_progress",
+		RawInput:      json.RawMessage(`{"command":"sleep 10"}`),
+	})
+	s.handleUpdate(SessionUpdate{
+		SessionUpdate: "tool_call_update",
+		ToolCallID:    "cmd-1",
+		Name:          "Bash",
+		Kind:          "execute",
+		Status:        "in_progress",
+		RawOutput:     json.RawMessage(`{"stdout":"partial line\n"}`),
+	})
+	s.handleUpdate(SessionUpdate{
+		SessionUpdate: "tool_call_update",
+		ToolCallID:    "cmd-1",
+		Name:          "Bash",
+		Kind:          "execute",
+		Status:        "cancelled",
+	})
+
+	var sawStreamOut, sawKilled bool
+	for _, ev := range events {
+		if ev.Kind == provider.EventCommandOutput && ev.ItemID == "cmd-1" && ev.Content == "partial line\n" {
+			sawStreamOut = true
+		}
+		if ev.Kind == provider.EventToolComplete && ev.ItemID == "cmd-1" {
+			var meta map[string]any
+			if json.Unmarshal(ev.Meta, &meta) == nil && meta["item_status"] == "killed" {
+				sawKilled = true
+			}
+		}
+	}
+	if !sawStreamOut {
+		t.Fatalf("expected streaming EventCommandOutput during in_progress: %+v", events)
+	}
+	if !sawKilled {
+		t.Fatalf("expected cancelled tool_call_update to emit item_status=killed: %+v", events)
 	}
 }

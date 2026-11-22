@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/attachment"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil/mockexec"
@@ -227,5 +228,70 @@ func TestAgyNativeSQLiteForkClonesConversation(t *testing.T) {
 		if err := forkState.Cleanup(); err != nil {
 			t.Fatalf("fork cleanup failed: %v", err)
 		}
+	}
+}
+
+func TestAgyGeneratedImageImportContainment(t *testing.T) {
+	t.Parallel()
+	app, _ := setupE2EApp(t)
+	attStore, err := attachment.NewStore(attachment.Config{RootDir: filepath.Join(t.TempDir(), "attachments")}, app.store)
+	if err != nil {
+		t.Fatalf("attachment.NewStore: %v", err)
+	}
+	app.attachments = attStore
+	ws := t.TempDir()
+	thread, err := createTestThread(t, app, string(provider.Agy), ws, "gemini-4-neon", "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Minimal valid 1x1 PNG header+IHDR+IDAT+IEND bytes.
+	pngBytes := []byte{
+		0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+		0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+		0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
+		0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41,
+		0x54, 0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00,
+		0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
+		0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE,
+		0x42, 0x60, 0x82,
+	}
+
+	// 1. Image inside <appDataDir>/brain/<session>/ is allowed.
+	brainImg := filepath.Join(app.agyAppDataDir(), "brain", "sess-1", "nebula.png")
+	if err := os.MkdirAll(filepath.Dir(brainImg), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(brainImg, pngBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	imported, err := app.importCodexGeneratedImage(thread.ID, brainImg)
+	if err != nil {
+		t.Fatalf("import brain image failed: %v", err)
+	}
+	if imported.AttachmentID == "" || imported.MimeType != "image/png" {
+		t.Fatalf("unexpected imported brain image: %+v", imported)
+	}
+
+	// 2. Image inside thread workspace is allowed.
+	wsImg := filepath.Join(ws, "out.png")
+	if err := os.WriteFile(wsImg, pngBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	importedWS, err := app.importCodexGeneratedImage(thread.ID, wsImg)
+	if err != nil {
+		t.Fatalf("import workspace image failed: %v", err)
+	}
+	if importedWS.AttachmentID == "" {
+		t.Fatalf("unexpected imported workspace image: %+v", importedWS)
+	}
+
+	// 3. Image outside both brain and workspace is rejected.
+	outsideImg := filepath.Join(t.TempDir(), "secret.png")
+	if err := os.WriteFile(outsideImg, pngBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.importCodexGeneratedImage(thread.ID, outsideImg); err == nil {
+		t.Fatal("expected outside image path to be rejected")
 	}
 }

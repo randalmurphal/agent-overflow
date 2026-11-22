@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/acp"
@@ -17,8 +20,17 @@ import (
 type Flavor struct {
 	acp.DefaultFlavor
 	// AppDataDir is `<geminiDir>/antigravity-cli`, used for read-only
-	// step_type=17 error detection and pending high-priority wake checks.
+	// step_type=17 error detection, pending high-priority wake checks, and
+	// out-of-band subagent transcript tracking.
 	AppDataDir string
+
+	subagentMu      sync.Mutex
+	subagentParents map[string]*parentSubagentCoordinator
+
+	// Optional overrides for deterministic unit tests (zero uses defaults).
+	subagentPollInterval     time.Duration
+	subagentDiscoveryTimeout time.Duration
+	subagentSettleGrace      time.Duration
 }
 
 // NewFlavor constructs an Antigravity ACP flavor bound to appDataDir.
@@ -137,12 +149,31 @@ func (f *Flavor) NormalizeToolStart(u *acp.ToolCallUpdate) acp.NormalizedToolSta
 			TargetContent      string `json:"TargetContent"`
 			Replacement        string `json:"Replacement"`
 			ReplacementContent string `json:"ReplacementContent"`
+			ReplacementChunks  []struct {
+				TargetContent      string `json:"TargetContent"`
+				ReplacementContent string `json:"ReplacementContent"`
+			} `json:"ReplacementChunks"`
 		}
 		if len(rawIn) > 0 && json.Unmarshal(rawIn, &params) == nil {
-			if oldStr := firstNonEmpty(params.Target, params.TargetContent); oldStr != "" {
+			oldStr := firstNonEmpty(params.Target, params.TargetContent)
+			newStr := firstNonEmpty(params.Replacement, params.ReplacementContent)
+			if oldStr == "" && newStr == "" && len(params.ReplacementChunks) > 0 {
+				var oldParts, newParts []string
+				for _, ch := range params.ReplacementChunks {
+					if ch.TargetContent != "" {
+						oldParts = append(oldParts, ch.TargetContent)
+					}
+					if ch.ReplacementContent != "" {
+						newParts = append(newParts, ch.ReplacementContent)
+					}
+				}
+				oldStr = strings.Join(oldParts, "\n")
+				newStr = strings.Join(newParts, "\n")
+			}
+			if oldStr != "" {
 				fields["old_string"] = oldStr
 			}
-			if newStr := firstNonEmpty(params.Replacement, params.ReplacementContent); newStr != "" {
+			if newStr != "" {
 				fields["new_string"] = newStr
 			}
 		}
@@ -385,7 +416,8 @@ func (f *Flavor) NormalizeToolStart(u *acp.ToolCallUpdate) acp.NormalizedToolSta
 		norm.ToolName = "AskUserQuestion"
 		norm.ItemType = "AskUserQuestion"
 		if questions, ok := f.ExtractPendingQuestion(u); ok {
-			if reshaped, err := json.Marshal(map[string]any{"questions": questions}); err == nil {
+			normalized := provider.NormalizeUserInputQuestions(questions)
+			if reshaped, err := json.Marshal(map[string]any{"questions": normalized}); err == nil {
 				norm.Input = reshaped
 			}
 		}
@@ -412,6 +444,80 @@ func (f *Flavor) NormalizeToolStart(u *acp.ToolCallUpdate) acp.NormalizedToolSta
 				}
 			}
 		}
+
+	case "manage_task":
+		var params struct {
+			Action string `json:"Action"`
+			TaskID string `json:"TaskId"`
+		}
+		if len(rawIn) > 0 && json.Unmarshal(rawIn, &params) == nil {
+			desc := strings.TrimSpace(params.Action)
+			if params.TaskID != "" {
+				desc = strings.TrimSpace(desc + " " + params.TaskID)
+			}
+			if desc != "" {
+				if reshaped, err := json.Marshal(map[string]any{"description": desc, "action": params.Action, "task_id": params.TaskID}); err == nil {
+					norm.Input = reshaped
+				}
+			}
+		}
+
+	case "schedule":
+		var params struct {
+			CronExpression  string `json:"CronExpression"`
+			DurationSeconds int    `json:"DurationSeconds"`
+			Prompt          string `json:"Prompt"`
+		}
+		if len(rawIn) > 0 && json.Unmarshal(rawIn, &params) == nil {
+			desc := strings.TrimSpace(params.Prompt)
+			if params.CronExpression != "" {
+				desc = strings.TrimSpace(params.CronExpression + " " + desc)
+			} else if params.DurationSeconds > 0 {
+				desc = strings.TrimSpace(fmt.Sprintf("%ds %s", params.DurationSeconds, desc))
+			}
+			if desc != "" {
+				if reshaped, err := json.Marshal(map[string]any{"description": desc, "prompt": params.Prompt}); err == nil {
+					norm.Input = reshaped
+				}
+			}
+		}
+
+	case "define_subagent":
+		var params struct {
+			Name        string `json:"Name"`
+			Description string `json:"Description"`
+		}
+		if len(rawIn) > 0 && json.Unmarshal(rawIn, &params) == nil {
+			desc := firstNonEmpty(params.Name, params.Description)
+			if desc != "" {
+				if reshaped, err := json.Marshal(map[string]any{"description": desc, "name": params.Name}); err == nil {
+					norm.Input = reshaped
+				}
+			}
+		}
+
+	case "manage_subagents":
+		var params struct {
+			Action string `json:"Action"`
+		}
+		if len(rawIn) > 0 && json.Unmarshal(rawIn, &params) == nil && strings.TrimSpace(params.Action) != "" {
+			if reshaped, err := json.Marshal(map[string]any{"description": strings.TrimSpace(params.Action), "action": params.Action}); err == nil {
+				norm.Input = reshaped
+			}
+		}
+
+	case "run_workflow":
+		var params struct {
+			Description string `json:"Description"`
+			ScriptPath  string `json:"ScriptPath"`
+		}
+		if len(rawIn) > 0 && json.Unmarshal(rawIn, &params) == nil {
+			if desc := firstNonEmpty(params.Description, params.ScriptPath); desc != "" {
+				if reshaped, err := json.Marshal(map[string]any{"description": desc, "script_path": params.ScriptPath}); err == nil {
+					norm.Input = reshaped
+				}
+			}
+		}
 	}
 
 	return norm
@@ -422,22 +528,30 @@ func (f *Flavor) NormalizeToolComplete(u *acp.ToolCallUpdate, started acp.Normal
 	rawName := strings.ToLower(strings.TrimSpace(u.Name))
 	rawIn := u.EffectiveInput()
 
-	// Plan-mode artifact write_file/edit_file carries ArtifactMetadata.RequestFeedback=true.
-	if rawName == "write_file" || rawName == "write_to_file" || rawName == "edit_file" {
+	// Plan-mode artifact write_file/edit_file carries ArtifactMetadata.RequestFeedback=true,
+	// and edit/write/replace tools get a fallback inline diff when ACP omitted content[{type:"diff"}].
+	if rawName == "write_file" || rawName == "write_to_file" || rawName == "edit_file" ||
+		rawName == "replace_file_content" || rawName == "multi_replace_file_content" {
 		var params struct {
-			Path             string `json:"Path"`
-			TargetFile       string `json:"TargetFile"`
-			Content          string `json:"Content"`
-			CodeContent      string `json:"CodeContent"`
-			Target           string `json:"Target"`
-			Replacement      string `json:"Replacement"`
+			Path               string `json:"Path"`
+			TargetFile         string `json:"TargetFile"`
+			Content            string `json:"Content"`
+			CodeContent        string `json:"CodeContent"`
+			Target             string `json:"Target"`
+			TargetContent      string `json:"TargetContent"`
+			Replacement        string `json:"Replacement"`
+			ReplacementContent string `json:"ReplacementContent"`
+			ReplacementChunks  []struct {
+				TargetContent      string `json:"TargetContent"`
+				ReplacementContent string `json:"ReplacementContent"`
+			} `json:"ReplacementChunks"`
 			ArtifactMetadata *struct {
 				RequestFeedback bool `json:"RequestFeedback"`
 				UserFacing      bool `json:"UserFacing"`
 			} `json:"ArtifactMetadata"`
 		}
 		if len(rawIn) > 0 && json.Unmarshal(rawIn, &params) == nil {
-			body := firstNonEmpty(params.Content, params.CodeContent, params.Replacement)
+			body := firstNonEmpty(params.Content, params.CodeContent, params.Replacement, params.ReplacementContent)
 			if params.ArtifactMetadata != nil && params.ArtifactMetadata.RequestFeedback && strings.TrimSpace(body) != "" {
 				norm.ProposedPlan = body
 			}
@@ -454,19 +568,60 @@ func (f *Flavor) NormalizeToolComplete(u *acp.ToolCallUpdate, started acp.Normal
 								norm.DiffChanges = []acp.FileDiffChange{{Path: path, Kind: "add", Diff: content}}
 							}
 						}
-					case "edit_file":
-						if params.Target != "" || params.Replacement != "" {
-							if patch := acp.BuildUnifiedDiff(path, params.Target, params.Replacement); patch != "" {
+					case "edit_file", "replace_file_content":
+						oldStr := firstNonEmpty(params.Target, params.TargetContent)
+						newStr := firstNonEmpty(params.Replacement, params.ReplacementContent)
+						if oldStr != "" || newStr != "" {
+							if patch := acp.BuildUnifiedDiff(path, oldStr, newStr); patch != "" {
 								norm.DiffPatch = patch
 								norm.DiffFilePath = path
-								if hunks := acp.BuildUnifiedDiffHunks(params.Target, params.Replacement); hunks != "" {
+								if hunks := acp.BuildUnifiedDiffHunks(oldStr, newStr); hunks != "" {
 									norm.DiffChanges = []acp.FileDiffChange{{Path: path, Kind: "update", Diff: hunks}}
 								}
+							}
+						}
+					case "multi_replace_file_content":
+						var patchParts, hunkParts []string
+						for _, ch := range params.ReplacementChunks {
+							if ch.TargetContent == "" && ch.ReplacementContent == "" {
+								continue
+							}
+							if p := acp.BuildUnifiedDiff(path, ch.TargetContent, ch.ReplacementContent); p != "" {
+								patchParts = append(patchParts, p)
+							}
+							if h := acp.BuildUnifiedDiffHunks(ch.TargetContent, ch.ReplacementContent); h != "" {
+								hunkParts = append(hunkParts, h)
+							}
+						}
+						if len(patchParts) > 0 {
+							norm.DiffPatch = strings.Join(patchParts, "\n")
+							norm.DiffFilePath = path
+							if len(hunkParts) > 0 {
+								norm.DiffChanges = []acp.FileDiffChange{{Path: path, Kind: "update", Diff: strings.Join(hunkParts, "\n")}}
 							}
 						}
 					}
 				}
 			}
+		}
+	}
+
+	// Preserve generated image path and prompt on EventToolComplete so triage's
+	// generated-image importer can attach the picture inline beside assistant prose.
+	if rawName == "generate_image" || started.ToolName == "ImageGeneration" {
+		imgPath, imgPrompt := extractGeneratedImageFields(rawIn, started.Input, u.RawOutput, norm.Content)
+		if imgPath != "" || imgPrompt != "" {
+			if norm.ExtraMeta == nil {
+				norm.ExtraMeta = map[string]any{}
+			}
+			inputFields := map[string]any{}
+			if imgPath != "" {
+				inputFields["path"] = imgPath
+			}
+			if imgPrompt != "" {
+				inputFields["prompt"] = imgPrompt
+			}
+			norm.ExtraMeta["input"] = inputFields
 		}
 	}
 
@@ -601,6 +756,7 @@ func (f *Flavor) BeforePrompt(_ context.Context, sessionID string) any {
 	if f.AppDataDir == "" || sessionID == "" {
 		return nil
 	}
+	f.seedExistingSubagents(sessionID)
 	maxIdx, ok := readMaxStepIndex(f.AppDataDir, sessionID)
 	if !ok {
 		return nil
@@ -850,4 +1006,70 @@ func extractConversationID(rawOut json.RawMessage, content string) string {
 		}
 	}
 	return ""
+}
+
+var imageFilePathRe = regexp.MustCompile(`(?i)(?:file://)?((?:/|[A-Za-z]:[\\/])[^\s"'` + "`" + `<>)\]]+\.(?:png|jpe?g|webp|gif))`)
+
+func extractGeneratedImageFields(rawIn, startedIn, rawOut json.RawMessage, content string) (path, prompt string) {
+	readInput := func(raw json.RawMessage) (p, pr string) {
+		if len(raw) == 0 {
+			return "", ""
+		}
+		var obj map[string]any
+		if json.Unmarshal(raw, &obj) != nil {
+			return "", ""
+		}
+		for _, k := range []string{"Prompt", "prompt"} {
+			if s, ok := obj[k].(string); ok && strings.TrimSpace(s) != "" {
+				pr = strings.TrimSpace(s)
+				break
+			}
+		}
+		for _, k := range []string{"Path", "path"} {
+			if s, ok := obj[k].(string); ok && strings.TrimSpace(s) != "" && filepath.IsAbs(strings.TrimSpace(s)) {
+				p = strings.TrimSpace(s)
+				break
+			}
+		}
+		return p, pr
+	}
+
+	inPath, inPrompt := readInput(rawIn)
+	stPath, stPrompt := readInput(startedIn)
+	prompt = firstNonEmpty(inPrompt, stPrompt)
+
+	if len(rawOut) > 0 {
+		var obj map[string]any
+		if json.Unmarshal(rawOut, &obj) == nil {
+			for _, k := range []string{
+				"path", "Path", "saved_path", "savedPath",
+				"file_path", "filePath", "output_path", "outputPath",
+				"image_path", "imagePath",
+			} {
+				if s, ok := obj[k].(string); ok && strings.TrimSpace(s) != "" {
+					path = strings.TrimSpace(s)
+					break
+				}
+			}
+			if path == "" {
+				for _, k := range []string{"paths", "saved_paths", "savedPaths"} {
+					if arr, ok := obj[k].([]any); ok && len(arr) > 0 {
+						if s, ok := arr[0].(string); ok && strings.TrimSpace(s) != "" {
+							path = strings.TrimSpace(s)
+							break
+						}
+					}
+				}
+			}
+		}
+	}
+	if path == "" && content != "" {
+		if m := imageFilePathRe.FindStringSubmatch(content); len(m) > 1 {
+			path = strings.TrimSpace(m[1])
+		}
+	}
+	if path == "" {
+		path = firstNonEmpty(inPath, stPath)
+	}
+	return path, prompt
 }
