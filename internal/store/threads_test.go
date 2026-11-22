@@ -2037,6 +2037,14 @@ func TestListThreadsWithItemsReadsOpenNewestTurnAsRunning(t *testing.T) {
 		t.Fatalf("UpdateTurnCompleted(interrupted): %v", err)
 	}
 	wantNewestTurn("settled interrupted, unread", false, true)
+
+	if err := s.InsertTurn(Turn{TurnID: "turn-3", ThreadID: thread.ID, TurnIndex: 2, StartedAt: startedAt + 400}); err != nil {
+		t.Fatalf("InsertTurn(third): %v", err)
+	}
+	if err := s.UpdateTurnCompleted("turn-3", startedAt+500, "error", "", "", ""); err != nil {
+		t.Fatalf("UpdateTurnCompleted(error): %v", err)
+	}
+	wantNewestTurn("settled error, unread", false, false)
 }
 
 func TestListThreadsWithItemsDerivesIncompleteOnlyForNewestTurn(t *testing.T) {
