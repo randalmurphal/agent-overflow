@@ -6,15 +6,15 @@ import (
 
 // ReachSpawnLink reads a spawn's receipt for its own device and source
 // thread alone, lineage included, and records the owner's contact with a
-// standing link whatever its thread's placement; Owned holds only while the
-// thread is owned.
+// standing link whatever its thread's placement. Whose its thread's prompts
+// are is SpawnOwnerOf's to say.
 func TestReachSpawnLink(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "worker")
 	acceptLink(t, s, "tok", "dev", "worker", 1000)
 	at := int64(1000 + 2*spawnLinkTouchGap)
 	reach, found, err := s.ReachSpawnLink("tok", "dev", "lead-tok", at)
-	if err != nil || !found || !reach.Linked || !reach.Owned || !reach.Open() || reach.TargetThreadID != "worker" {
+	if err != nil || !found || !reach.Linked || !reach.Open() || reach.TargetThreadID != "worker" {
 		t.Fatalf("the owner's reach = %+v, %v, %v", reach, found, err)
 	}
 	if seen := receiptLink(t, s, "tok").OwnerSeenAt; seen != at {
@@ -34,7 +34,7 @@ func TestReachSpawnLink(t *testing.T) {
 	}
 
 	// Given a sidebar row and kept as lineage: still the owner's link, its
-	// contact still recorded, and no longer owning its thread.
+	// contact still recorded.
 	if _, err := s.SetThreadPlacement([]string{"worker"}, PlacementStandalone); err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestReachSpawnLink(t *testing.T) {
 	}
 	later := at + 2*spawnLinkTouchGap
 	reach, found, err = s.ReachSpawnLink("tok", "dev", "lead-tok", later)
-	if err != nil || !found || !reach.Linked || reach.Owned || reach.Open() || reach.TargetThreadID != "worker" {
+	if err != nil || !found || !reach.Linked || reach.Open() || reach.TargetThreadID != "worker" {
 		t.Fatalf("the placed lineage's reach = %+v, %v, %v", reach, found, err)
 	}
 	var seen int64

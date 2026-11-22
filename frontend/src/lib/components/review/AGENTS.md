@@ -24,7 +24,7 @@ PR stores; components own presentation and interaction.
   requests page). A pinned review's workspace is the project root, its
   scope stays `pr`, and its PR, computer and `git:operate` check are the
   ones it was opened with, never the owner pane's git status, thread or
-  composer. Its gates read the state (`pinned`, `commentsGranted`,
+  composer. Its gates read the state (`pinned`, `commentsGrant`,
   `canDraftComments`), not `ctx`: no scope selector, Edits, Send to chat
   or agent target. Its drafts have no thread row, so they are the PR's
   (`stores/prDiffReviewComments.svelte.ts`, persisted under the PR on its

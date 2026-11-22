@@ -8,7 +8,7 @@
   import CommitFilePreview from './CommitFilePreview.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { threadMachine } from '../../stores/attachedBackends.svelte';
-  import { projectHasScope } from '../../transport/entityScopes';
+  import { projectScopeGrant } from '../../transport/entityScopes';
   import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import { FIELD_CLASS, FIELD_ACTION_CLASS } from './dialogFieldClass';
   import { createCommitDialogState, type CommitDialogState } from './commitDialogState.svelte';
@@ -162,7 +162,7 @@
                 {workspace}
                 backend={threadMachine(pane.threadId ?? '', workspace.projectId)}
                 file={activeFile}
-                ungranted={!projectHasScope('files:read', workspace.projectId)}
+                grant={projectScopeGrant('files:read', workspace.projectId)}
               />
             {/if}
           </div>

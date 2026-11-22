@@ -21,7 +21,7 @@ type TrackerBoardRef struct {
 	BoardID      string
 }
 
-// ProjectTrackerBoard is one board an app project lists (migration v159).
+// ProjectTrackerBoard is one board an app project lists (migration v162).
 // A project's list is ordered as its board picker shows it, and at most
 // one board opens first.
 type ProjectTrackerBoard struct {

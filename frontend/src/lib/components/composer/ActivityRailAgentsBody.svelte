@@ -38,7 +38,9 @@
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import { activityRailIconActionClasses, activityRailRevealClasses } from './activityRailClasses';
-  import { TRAY_WRITE_UNGRANTED, trayWriteGranted } from './trayWrites';
+  import { trayWriteGrant } from './trayWrites';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
+  import type { EntityScopeGrant } from '../../transport/scopes';
   import type { AgentController, IncomingAgentMessage } from './activityRailAgents.svelte';
 
   interface Props {
@@ -243,10 +245,11 @@
   }
 
   let canStopAll = $derived(agents.count > 0);
-  let stopGranted = $derived(!!threadId && trayWriteGranted({ threadId, projectId: pane.thread?.projectId }));
-  const placeGranted = (row: ThreadAgentRow) => {
+  // No thread, or no computer to place on, has no computer to ask.
+  let stopGrant = $derived<EntityScopeGrant>(threadId ? trayWriteGrant({ threadId, projectId: pane.thread?.projectId }) : 'unrouted');
+  const placeGrant = (row: ThreadAgentRow): EntityScopeGrant => {
     const backend = placementBackend(row);
-    return backend !== null && trayWriteGranted({ computer: backend });
+    return backend === null ? 'unrouted' : trayWriteGrant({ computer: backend });
   };
 </script>
 
@@ -280,8 +283,8 @@
         type="button"
         class="ml-auto rounded-[var(--radius-field)] border border-border-subtle bg-surface-0/60 px-2 py-0.5 text-[0.6875rem] font-medium text-text-secondary transition-colors hover:bg-surface-2/40 hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-50 compact:min-h-9 compact:select-none"
         onclick={onStopAll}
-        disabled={stopAllInFlight || !stopGranted}
-        title={stopGranted ? undefined : TRAY_WRITE_UNGRANTED}
+        disabled={stopAllInFlight || stopGrant !== 'granted'}
+        title={grantBlockedTitle(stopGrant)}
         data-testid="activity-rail-agents-stop-all"
         aria-label="Stop All Agents"
       >
@@ -303,8 +306,8 @@
           expanded={expanded.has(row.token)}
           isPlacing={!!row.threadId && placing.has(row.threadId)}
           canPlace={placementBackend(row) !== null}
-          {stopGranted}
-          placeGranted={placeGranted(row)}
+          {stopGrant}
+          placeGrant={placeGrant(row)}
           {onToggleExpanded}
           {onActivate}
           {onOpenPane}
@@ -325,7 +328,7 @@
           {viewer}
           {now}
           isStopping={stopping.has(message.item.sendId ?? '') || stopAllInFlight}
-          {stopGranted}
+          {stopGrant}
           onStop={onStopIncoming}
           place={placeInCompanion}
         />
@@ -342,8 +345,8 @@
           data-testid="activity-rail-agents-past-toggle"
         >
           <span class="flex size-3.5 shrink-0 items-center justify-center" class:rotate-90={past.expanded}><Icon icon={ChevronRight} size={12} strokeWidth={2} /></span>
-          <span class="flex-1">Past</span>
-          <span class="shrink-0 min-w-5 text-right text-[0.625rem] tabular-nums text-fg-hint" data-testid="activity-rail-agents-past-count">{past.total}</span>
+          <span>Past</span>
+          <span class="shrink-0 text-[0.625rem] tabular-nums text-fg-hint" data-testid="activity-rail-agents-past-count">{past.total}</span>
         </button>
       </li>
     {/if}
@@ -361,8 +364,8 @@
                 expanded={expanded.has(pastKey(row))}
                 isPlacing={!!row.threadId && placing.has(row.threadId)}
                 canPlace={placementBackend(row) !== null}
-                {stopGranted}
-                placeGranted={placeGranted(row)}
+                {stopGrant}
+                placeGrant={placeGrant(row)}
                 onToggleExpanded={onTogglePastExpanded}
                 onActivate={onActivatePast}
                 {onOpenPane}
@@ -372,16 +375,30 @@
             </li>
           {/each}
         </ul>
-        {#if past.moreCount > 0}
-          <button
-            type="button"
-            class="ml-6 {activityRailRevealClasses}"
-            onclick={() => past.showMore()}
-            disabled={past.loadingMore}
-            data-testid="activity-rail-agents-past-more"
-          >
-            Show {past.moreCount} more…
-          </button>
+        {#if past.moreCount > 0 || past.canShowLess}
+          <div class="ml-6 flex items-center gap-1">
+            {#if past.moreCount > 0}
+              <button
+                type="button"
+                class={activityRailRevealClasses}
+                onclick={() => past.showMore()}
+                disabled={past.loadingMore}
+                data-testid="activity-rail-agents-past-more"
+              >
+                Show {past.moreCount} more{past.hiddenCount > past.moreCount ? ` of ${past.hiddenCount}` : ''}…
+              </button>
+            {/if}
+            {#if past.canShowLess}
+              <button
+                type="button"
+                class={activityRailRevealClasses}
+                onclick={() => past.showLess()}
+                data-testid="activity-rail-agents-past-less"
+              >
+                Show less
+              </button>
+            {/if}
+          </div>
         {/if}
       </li>
     {/if}

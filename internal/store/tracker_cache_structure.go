@@ -7,7 +7,7 @@ import (
 	"strconv"
 )
 
-// Mirror enumerations, aligned with the CHECKs of migration v159.
+// Mirror enumerations, aligned with the CHECKs of migration v162.
 const (
 	// Status groups.
 	MirrorGroupBacklog    = 1

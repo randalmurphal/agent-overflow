@@ -389,9 +389,10 @@ type Settings struct {
 	// validation layer.
 	TextGenerationProvider string `json:"textGenerationProvider"`
 
-	// TextGenerationModel is the model id the text-generation CLI uses.
-	// Empty string means "use the per-provider default" (codex ->
-	// gpt-6-luna, claude -> claude-haiku-5-5). We avoid forcing a
+	// TextGenerationModel is the model id the text-generation CLI uses,
+	// passed as written. Empty string means "use the per-provider
+	// default": the newest model the computer lists of the provider's
+	// TextGenerationDefaultFamily (gpt-luna, claude-haiku). We avoid forcing a
 	// concrete default on the field itself because the right model
 	// depends on which provider is selected, and a cross-provider
 	// default would be wrong half the time.

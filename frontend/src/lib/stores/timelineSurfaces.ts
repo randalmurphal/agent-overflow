@@ -49,11 +49,15 @@ export function applyTimelineMutation(threadId: string, mutation: TimelineMutati
   for (const surface of surfaces) if (surface.threadId === threadId) surface.apply(mutation);
 }
 
-/** Refresh every surface, or only the surfaces showing `threads` when given. */
-export function refreshTimelineSurfaces(threads?: ReadonlySet<string>): void {
+/**
+ * Refresh every surface, or only the surfaces showing `threads`, or owned
+ * by `backend`, when given.
+ */
+export function refreshTimelineSurfaces(which: { threads?: ReadonlySet<string>; backend?: BackendKey } = {}): void {
   for (const surface of surfaces) {
-    if (threads && !threads.has(surface.threadId)) continue;
+    if (which.threads && !which.threads.has(surface.threadId)) continue;
     const owner = surface.backend();
+    if (which.backend !== undefined && owner !== which.backend) continue;
     const work = surface.refresh();
     if (owner !== undefined) holdBackendRecovery(owner, work);
     void work.catch(error => reportFrontendDiagnostic('Timeline recovery failed', errString(error)));

@@ -531,9 +531,11 @@ func TestTrialRunCommandChecksEachRetryAgainstWhatTheLastAttemptLeft(t *testing.
 		if !strings.Contains(strings.Join(logged, "\n"), "restoring the database backup before attempt 2") {
 			t.Fatalf("log %q does not say the retry restored", logged)
 		}
-		if !strings.Contains(r.out.details(t), "Restoring the database") {
-			t.Fatal("the restore reported no progress")
-		}
+		// The output carries the latest report, and the trial's start can
+		// replace the restore's before it is written when the restore is
+		// quick, as it is on a RAM temp directory. The restore's report is
+		// checked where nothing follows it
+		// (TestTrialRunCommandRestoresTheSnapshotWhenTheTrialFails).
 		snapshot, _, err := ReadSnapshot(r.layout)
 		if err != nil || snapshot.Left == nil || snapshot.Left.Attempt != 2 || !snapshot.Left.Ended {
 			t.Fatalf("manifest = %+v, %v; want attempt 2 ended", snapshot.Left, err)

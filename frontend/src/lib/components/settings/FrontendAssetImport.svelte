@@ -3,7 +3,8 @@
   import { copyAppearanceFiles, usesFrontendAssetLibrary } from '../../stores/appearanceFiles';
   import { backendDisplayName, backendReachable, getAttachedBackends } from '../../stores/attachedBackends.svelte';
   import { selectedBackend } from '../../stores/selectedBackend.svelte';
-  import { hasScope } from '../../transport/scopes';
+  import { scopeGrant } from '../../transport/scopes';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
   import { remoteAccessAvailable } from '../../transport/buildVariant';
   import { userFacingError } from '../../utils/userFacingError';
   import SettingsField from './SettingsField.svelte';
@@ -18,7 +19,9 @@
   const label = $derived(kind === 'themes' ? 'Copy themes' : 'Copy animations');
   const computers = $derived(getAttachedBackends());
   const selected = $derived(chosen ?? (computers.some((computer) => computer.id === selectedBackend()) ? selectedBackend() : computers[0]?.id ?? null));
-  const available = $derived(selected !== null && computers.some((computer) => computer.id === selected) && backendReachable(selected) && hasScope('settings:read', selected));
+  const listed = $derived(selected !== null && computers.some((computer) => computer.id === selected));
+  const blocked = $derived(selected === null || !listed ? undefined : grantBlockedTitle(backendReachable(selected) ? scopeGrant('settings:read', selected) : 'offline'));
+  const available = $derived(listed && blocked === undefined);
 
   async function copy(): Promise<void> {
     if (!available || selected === null || busy) return;
@@ -51,7 +54,7 @@
         {/each}
       </select>
       <button type="button" class={SECONDARY_BUTTON_CLASS}
-        disabled={busy || !available} onclick={copy}>{busy ? 'Copying…' : 'Copy'}</button>
+        disabled={busy || !available} title={blocked} onclick={copy}>{busy ? 'Copying…' : 'Copy'}</button>
     </div>
   </SettingsField>
   {#if copied}<p class="px-1 text-xs text-fg-muted" role="status">{kind === 'themes' ? 'Themes copied.' : 'Animations copied.'}</p>{/if}

@@ -501,9 +501,16 @@ func TestHelperLeavesTheRecordOfAnAppThatDidNotExit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := waitForReplacedApp(running, 200*time.Millisecond); err == nil ||
+	var logged []string
+	phases := supervise.NewPhaseLog(func(format string, args ...any) {
+		logged = append(logged, fmt.Sprintf(format, args...))
+	}, "updater: update "+id, nil)
+	if err := waitForReplacedApp(running, 200*time.Millisecond, phases); err == nil ||
 		!errors.Is(err, supervise.ErrProcessRunning) {
 		t.Fatalf("waiting on a running app = %v", err)
+	}
+	if timed, failed := phaseCounts(t, strings.Join(logged, "\n")); timed["wait-previous"] != 1 || failed["wait-previous"] != 1 {
+		t.Fatalf("logged %q; want the wait logged once as failed", logged)
 	}
 	loaded, _, err := supervise.LoadDesktopRecord(r.layout())
 	if err != nil || loaded.Update.State != supervise.UpdatePending || loaded.Update.Attempts != 0 {
@@ -521,8 +528,12 @@ func TestHelperLeavesTheRecordOfAnAppThatDidNotExit(t *testing.T) {
 	}
 	_ = sleeper.Wait()
 	started := time.Now()
-	if err := waitForReplacedApp(running, 10*time.Second); err != nil || time.Since(started) > 5*time.Second {
+	logged = nil
+	if err := waitForReplacedApp(running, 10*time.Second, phases); err != nil || time.Since(started) > 5*time.Second {
 		t.Fatalf("waiting on an exited app = %v after %s", err, time.Since(started))
+	}
+	if timed, failed := phaseCounts(t, strings.Join(logged, "\n")); timed["wait-previous"] != 1 || failed["wait-previous"] != 0 {
+		t.Fatalf("logged %q; want the wait logged once", logged)
 	}
 }
 

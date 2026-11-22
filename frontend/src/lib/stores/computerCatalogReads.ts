@@ -23,6 +23,8 @@ export interface CatalogRead<T> {
   current(): boolean;
   /** `rows` with every mutation recorded since the read began applied in order. Throws once released. */
   replay(rows: T[]): T[];
+  /** How many mutations the read has recorded; 0 once released. */
+  changes(): number;
   /** Release the read, unless a newer read already did. Idempotent. */
   end(): void;
 }
@@ -66,6 +68,7 @@ export function beginCatalogRead<T>(backend: BackendKey, kind: CatalogKind, onRe
       if (journal === null) throw new Error(`A ${kind} read replayed its journal after it was released.`);
       return (journal as CatalogMutation<T>[]).reduce((acc, mutation) => mutation(acc), rows);
     },
+    changes: () => journal?.length ?? 0,
     end: release,
   };
 }

@@ -11,7 +11,8 @@ func TestReplacingPairingAllowsManagerReadsDuringCarrierRetirement(t *testing.T)
 	for _, retired := range []bool{false, true} {
 		t.Run(map[bool]string{false: "re-pair", true: "retired profile"}[retired], func(t *testing.T) {
 			const id = "remote"
-			m, err := New(t.TempDir(), "Computer", "linux")
+			dir := t.TempDir()
+			m, err := New(dir, "Computer", "linux")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -22,8 +23,6 @@ func TestReplacingPairingAllowsManagerReadsDuringCarrierRetirement(t *testing.T)
 			if retired {
 				held.client.Retire()
 			}
-			stop := errors.New("stop before redemption")
-			m.SetLabelGetter(func() (string, error) { return "", stop })
 			held.peers.mu.Lock()
 			finished := make(chan error, 1)
 			go func() {
@@ -31,7 +30,11 @@ func TestReplacingPairingAllowsManagerReadsDuringCarrierRetirement(t *testing.T)
 					_, err := m.carrier(t.Context(), id)
 					finished <- err
 				} else {
-					_, err := m.addLinkLocked(t.Context(), deviceclient.Link{BackendID: id})
+					// What a re-pairing's save does to the carrier it replaces.
+					_, err := m.transact(id, func(tx *computerTx) error {
+						tx.drop(errPairingReplaced)
+						return nil
+					})
 					finished <- err
 				}
 			}()
@@ -42,7 +45,7 @@ func TestReplacingPairingAllowsManagerReadsDuringCarrierRetirement(t *testing.T)
 				t.Error("manager locked while the old carrier waits for its observation to commit")
 			}
 			held.peers.mu.Unlock()
-			if err := <-finished; !errors.Is(err, stop) && !errors.Is(err, deviceclient.ErrNoSession) {
+			if err := <-finished; err != nil && !errors.Is(err, deviceclient.ErrNoSession) {
 				t.Fatal(err)
 			}
 		})

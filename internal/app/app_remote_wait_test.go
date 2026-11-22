@@ -16,11 +16,11 @@ import (
 	"testing"
 	"time"
 
-	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/remotejobs"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 	"github.com/google/uuid"
 )
 
@@ -40,13 +40,13 @@ func newRemoteWaitFixture(t *testing.T) *remoteWaitFixture {
 	t.Helper()
 	f := &remoteWaitFixture{receiver: newPairedBackend(t), source: identityApp(t), release: make(chan struct{})}
 	f.source.configDir = t.TempDir()
-	manager, err := attachedbackends.New(t.TempDir(), "source", "test")
+	manager, err := newTestBackends(t, t.TempDir(), "source", "test")
 	if err != nil {
 		t.Fatal(err)
 	}
 	f.source.backends = manager
 	t.Cleanup(func() { _ = f.source.remoteMCPServer().Close() })
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 	t.Cleanup(cancel)
 	invite, _ := f.receiver.mintLink(t, "full")
 	peer, err := manager.Add(ctx, invite.URL)

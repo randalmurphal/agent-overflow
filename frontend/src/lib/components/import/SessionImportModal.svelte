@@ -66,7 +66,8 @@
   } from '../../stores/sessionImportFilter';
   import { resolveImportCta } from './sessionImportCta';
   import { resolveImportKeyAction } from './sessionImportKeyboard';
-  import { hasScope } from '../../transport/scopes';
+  import { scopeGrant } from '../../transport/scopes';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
   import { formatPayloadSize } from '../../utils/payloadExpansion.svelte';
   import { randomId } from '../../utils/randomId';
 
@@ -84,7 +85,8 @@
   let run = $derived(getSessionImportRun());
   let runActive = $derived(run?.active === true);
   // Importing walks the provider homes and writes the threads it finds.
-  let ungranted = $derived(!hasScope('threads:operate', getSessionImportBackend()));
+  let grant = $derived(scopeGrant('threads:operate', getSessionImportBackend()));
+  let ungranted = $derived(grant !== 'granted');
 
   let providerFilter = $derived(getImportProviderFilter());
   let projectFilter = $derived(getImportProjectFilter());
@@ -329,7 +331,7 @@
       variant="primary"
       size="sm"
       testId="session-import-confirm"
-      title={ungranted ? 'Not granted to this device' : undefined}
+      title={grantBlockedTitle(grant)}
       disabled={!cta.enabled}
       loading={runActive}
       onclick={runImport}

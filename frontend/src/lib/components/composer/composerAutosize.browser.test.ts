@@ -86,6 +86,7 @@ async function mountSurface() {
     value: '',
     disabled: false,
     placeholder: 'Message',
+    attachAccess: 'granted' as const,
     oninput: vi.fn(),
     onSubmitEnter: vi.fn(),
   };

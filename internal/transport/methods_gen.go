@@ -66,7 +66,7 @@ type MethodMeta struct {
 // dispatcher allow-list from this set; the Scope column is what
 // AuthorizeSessionMethod compares a session's grants against.
 var GeneratedMethods = []MethodMeta{
-	{Name: "AcceptOwnDeviceIntroduction", ID: 2097968437, Scope: "session", Route: "home", Remote: true},                                     // main.App.AcceptOwnDeviceIntroduction
+	{Name: "AcceptOwnDeviceIntroduction", ID: 2097968437, Scope: "session", Route: "home", Remote: true, CallerBound: true},                  // main.App.AcceptOwnDeviceIntroduction
 	{Name: "AddBackend", ID: 2629313140, Scope: "host", Route: "home", Remote: true},                                                         // main.App.AddBackend
 	{Name: "AddTrackerConnection", ID: 1508517752, Scope: "tracker:operate", Route: "selected"},                                              // main.App.AddTrackerConnection
 	{Name: "AgentRemoteCancel", ID: 1158138718, Scope: "terminal:operate", Route: "selected"},                                                // main.App.AgentRemoteCancel
@@ -75,6 +75,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "AgentRemoteFetchLog", ID: 2233479686, Scope: "terminal:operate", Route: "selected", Budget: 20 * time.Minute},                    // main.App.AgentRemoteFetchLog
 	{Name: "AgentRemoteStart", ID: 1273975760, Scope: "terminal:operate", Route: "selected", Remote: true},                                   // main.App.AgentRemoteStart
 	{Name: "AgentRemoteStatus", ID: 1365876070, Scope: "terminal:operate", Route: "selected"},                                                // main.App.AgentRemoteStatus
+	{Name: "AgentRosterSeeds", ID: 2808669817, Scope: "settings:read", Route: "home"},                                                        // main.App.AgentRosterSeeds
 	{Name: "AllowPreviewPort", ID: 4007046465, Scope: "access:admin", Route: "selected", Remote: true},                                       // main.App.AllowPreviewPort
 	{Name: "AnswerThreadShellCommand", ID: 2190095592, Scope: "terminal:operate", Route: "thread"},                                           // main.App.AnswerThreadShellCommand
 	{Name: "AppendLiveDictation", ID: 2562809680, Scope: "threads:operate", Route: "selected"},                                               // main.App.AppendLiveDictation

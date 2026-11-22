@@ -13,11 +13,14 @@ import (
 // edges, these shipped rows, these stubs".
 //
 // The membership rule is asymmetric, which is what the two walkers here
-// are about. A rail row is a member on sight. A notification is a member
-// only when the row IMMEDIATELY BEFORE it is one (an absorbed bell), so
-// walking backward means holding a chain of undecided bells until a rail
-// row admits them or a prose row refuses them, while walking forward can
-// decide every row as it arrives.
+// are about. A member (activityScanRow.isMember: a rail row, or an agent
+// message under AgentMessagesAreMembers) is one on sight. An absorbed row
+// (activityScanRow.isAbsorbed: a notification, or an agent message under
+// AgentMessagesAbsorbed) is a member only when the row IMMEDIATELY BEFORE
+// it is one, so walking backward means holding a chain of undecided
+// absorbed rows until a member admits them or a prose row refuses them,
+// while walking forward can decide every row as it arrives. Every walk
+// carries the rule its read was asked for (activityScanWalk.rule).
 
 // pageUnit is one unit of a page with the members this page ships.
 type pageUnit struct {
@@ -123,10 +126,10 @@ func errRunTooLong(threadID string, first activityScanRow) error {
 // position. ok=false means the walk reached the start of history.
 //
 // A run is accumulated newest-first: each round looks past a chain of
-// undecided notifications for a rail row, and admits the whole chain only
-// when it finds one. A chain that ends at prose or at the start of
-// history is not absorbed, and the first of those bells is a unit of its
-// own.
+// undecided absorbed rows (activityScanRow.isAbsorbed) for a member, and
+// admits the whole chain only when it finds one. A chain that ends at prose
+// or at the start of history is not absorbed, and the first of those rows
+// is a unit of its own.
 func nextOlderUnit(w *activityScanWalk) (pageUnit, bool, error) {
 	first, ok, err := w.peekAt(0)
 	if err != nil || !ok {
@@ -134,32 +137,32 @@ func nextOlderUnit(w *activityScanWalk) (pageUnit, bool, error) {
 	}
 	var members []activityScanRow
 	for {
-		bells := 0
+		absorbed := 0
 		admit := false
 		for {
-			row, ok, err := w.peekAt(bells)
+			row, ok, err := w.peekAt(absorbed)
 			if err != nil {
 				return pageUnit{}, false, err
 			}
 			if !ok {
 				break
 			}
-			if row.isRailRow() {
+			if row.isMember(w.rule) {
 				admit = true
 				break
 			}
-			if !row.isBell() {
+			if !row.isAbsorbed(w.rule) {
 				break
 			}
-			bells++
-			if bells+len(members) > maxActivityRunScanRows {
+			absorbed++
+			if absorbed+len(members) > maxActivityRunScanRows {
 				return pageUnit{}, false, errRunTooLong(w.threadID, first)
 			}
 		}
 		if !admit {
 			break
 		}
-		for i := 0; i <= bells; i++ {
+		for i := 0; i <= absorbed; i++ {
 			row, ok, err := w.peekAt(0)
 			if err != nil {
 				return pageUnit{}, false, err
@@ -185,7 +188,7 @@ func nextOlderUnit(w *activityScanWalk) (pageUnit, bool, error) {
 
 // nextNewerUnit consumes the unit immediately newer than the walk's
 // position. `prevIsMember` is whether the row before the walk's first row
-// is a run member, which is the only thing a leading notification's
+// is a run member, which is the only thing a leading absorbed row's
 // membership depends on.
 func nextNewerUnit(w *activityScanWalk, prevIsMember bool) (pageUnit, bool, error) {
 	first, ok, err := w.peekAt(0)
@@ -193,7 +196,8 @@ func nextNewerUnit(w *activityScanWalk, prevIsMember bool) (pageUnit, bool, erro
 		return pageUnit{}, false, err
 	}
 	w.take(1)
-	if !first.isRailRow() && !(prevIsMember && first.isBell()) {
+	joinsRun := first.isMember(w.rule) || (prevIsMember && first.isAbsorbed(w.rule))
+	if !joinsRun {
 		return pageUnit{rows: []activityScanRow{first}}, true, nil
 	}
 	unit := pageUnit{rows: []activityScanRow{first}, run: true}
@@ -203,9 +207,9 @@ func nextNewerUnit(w *activityScanWalk, prevIsMember bool) (pageUnit, bool, erro
 	return unit, true, nil
 }
 
-// absorbNewerMembers extends a run forward over the walk: every rail row
-// joins, and so does every notification, because a bell whose predecessor
-// is a member is absorbed and stays absorbed once prose settles the run.
+// absorbNewerMembers extends a run forward over the walk: every member
+// joins, and so does every absorbed row, because one whose predecessor is
+// a member is absorbed and stays absorbed once prose settles the run.
 func absorbNewerMembers(w *activityScanWalk, unit *pageUnit) error {
 	for {
 		row, ok, err := w.peekAt(0)
@@ -215,7 +219,7 @@ func absorbNewerMembers(w *activityScanWalk, unit *pageUnit) error {
 		if !ok {
 			return nil
 		}
-		if !row.isRailRow() && !row.isBell() {
+		if !row.isMember(w.rule) && !row.isAbsorbed(w.rule) {
 			return nil
 		}
 		unit.rows = append(unit.rows, row)
@@ -238,13 +242,14 @@ func unitAtOrBefore(
 	threadID string,
 	at TimelineCursor,
 	scope timelineScope,
+	rule ActivityRunRule,
 ) (unit pageUnit, older *activityScanWalk, newer *activityScanWalk, found bool, err error) {
-	older = newActivityScanWalk(q, threadID, inclusiveOlderBound(at), false, scope)
+	older = newActivityScanWalk(q, threadID, inclusiveOlderBound(at), false, scope, rule)
 	unit, found, err = nextOlderUnit(older)
 	if err != nil || !found {
 		return pageUnit{}, nil, nil, false, err
 	}
-	newer = newActivityScanWalk(q, threadID, unit.newest().cursor(), true, scope)
+	newer = newActivityScanWalk(q, threadID, unit.newest().cursor(), true, scope, rule)
 	if unit.run {
 		if err := absorbNewerMembers(newer, &unit); err != nil {
 			return pageUnit{}, nil, nil, false, err
@@ -267,17 +272,18 @@ func firstNewerUnit(
 	threadID string,
 	after TimelineCursor,
 	scope timelineScope,
+	rule ActivityRunRule,
 ) (unit pageUnit, newer *activityScanWalk, found bool, err error) {
-	newer = newActivityScanWalk(q, threadID, after, true, scope)
+	newer = newActivityScanWalk(q, threadID, after, true, scope, rule)
 	first, ok, err := newer.peekAt(0)
 	if err != nil || !ok {
 		return pageUnit{}, nil, false, err
 	}
-	if !first.isRailRow() && !first.isBell() {
+	if !first.isMember(rule) && !first.isAbsorbed(rule) {
 		newer.take(1)
 		return pageUnit{rows: []activityScanRow{first}}, newer, true, nil
 	}
-	older := newActivityScanWalk(q, threadID, inclusiveOlderBound(after), false, scope)
+	older := newActivityScanWalk(q, threadID, inclusiveOlderBound(after), false, scope, rule)
 	previous, hasPrevious, err := nextOlderUnit(older)
 	if err != nil {
 		return pageUnit{}, nil, false, err
@@ -304,14 +310,15 @@ func lastOlderUnit(
 	threadID string,
 	before TimelineCursor,
 	scope timelineScope,
+	rule ActivityRunRule,
 ) (unit pageUnit, older *activityScanWalk, found bool, err error) {
-	older = newActivityScanWalk(q, threadID, before, false, scope)
+	older = newActivityScanWalk(q, threadID, before, false, scope, rule)
 	unit, found, err = nextOlderUnit(older)
 	if err != nil || !found {
 		return pageUnit{}, nil, false, err
 	}
 	if unit.run {
-		newer := newActivityScanWalk(q, threadID, unit.newest().cursor(), true, scope)
+		newer := newActivityScanWalk(q, threadID, unit.newest().cursor(), true, scope, rule)
 		if err := absorbNewerMembers(newer, &unit); err != nil {
 			return pageUnit{}, nil, false, err
 		}

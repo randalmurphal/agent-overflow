@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -598,8 +599,9 @@ func TestAFailedRunDoesNotRemoveAnotherRunsCapture(t *testing.T) {
 	t.Parallel()
 	rec := &recorder{}
 	service := newService(t, rec, nil)
-	// The first run ends only once the second has started, however slow
-	// the machine is.
+	// The first run ends only once the second has failed, however slow the
+	// machine is. Start returns once the second run is registered; it meets
+	// the first run's capture later, on its own goroutine.
 	release := filepath.Join(t.TempDir(), "release")
 	first := shellRequest(t, "run-shared", "echo first; until [ -e "+release+" ]; do sleep 0.05; done; echo done")
 	if _, err := service.Start(first); err != nil {
@@ -610,6 +612,23 @@ func TestAFailedRunDoesNotRemoveAnotherRunsCapture(t *testing.T) {
 	second.ThreadID = "thread-2"
 	if _, err := service.Start(second); err != nil {
 		t.Fatal(err)
+	}
+	secondEnded := time.Now().Add(15 * time.Second)
+	for {
+		events, _, _ := rec.snapshot()
+		index := slices.IndexFunc(events, func(event Event) bool {
+			return event.ThreadID == "thread-2" && event.Phase == PhaseFinished
+		})
+		if index >= 0 {
+			if events[index].State != StateFailed {
+				t.Fatalf("the second run ended %s, want failed: %+v", events[index].State, events[index])
+			}
+			break
+		}
+		if time.Now().After(secondEnded) {
+			t.Fatal("the second run never ended")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	if err := os.WriteFile(release, nil, 0o600); err != nil {
 		t.Fatal(err)

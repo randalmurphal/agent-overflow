@@ -176,7 +176,7 @@ func TestABatchLandingWhileAnotherWaitsForTheDecisionIsSent(t *testing.T) {
 				close(proceed)
 				within(t, "B's handoff's end", drained)
 				quietAtGates(t, f.app)
-				if n := len(recordedUserEnvelopes(t, f.stdin)); n != 0 {
+				if n := len(settledUserEnvelopes(t, f.stdin)); n != 0 {
 					t.Errorf("a claimed thread's provider was written %d messages", n)
 				}
 			})

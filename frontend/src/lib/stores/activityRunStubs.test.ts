@@ -26,6 +26,7 @@ import { groupActivityRunSpans } from '../utils/activityRunSpans';
 import { makeItem } from '../../test/helpers/chat';
 import type { Item } from '../types/models';
 import type { ActivityRunStub } from '../../../bindings/agent-overflow/internal/store/models';
+import { AGENT_MESSAGE_MEMBERS_RULE } from '../utils/activityRunSpans';
 
 function row(id: string, index: number, overrides: Partial<Item> = {}): Item {
   return makeItem({
@@ -40,7 +41,7 @@ function row(id: string, index: number, overrides: Partial<Item> = {}): Item {
 }
 
 function span(items: Item[]) {
-  return groupActivityRunSpans(items)[0];
+  return groupActivityRunSpans(items, AGENT_MESSAGE_MEMBERS_RULE)[0];
 }
 
 function stub(overrides: Partial<ActivityRunStub> = {}): ActivityRunStub {

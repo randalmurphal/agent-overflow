@@ -118,6 +118,9 @@ type App struct {
 	// resting holds the threads being brought to rest, which take no
 	// app-written message and start no work meanwhile (app_thread_rest_fence.go).
 	resting threadRestFence
+	// workStarts holds the threads a message is starting work on, whose
+	// runs no rest ends meanwhile (beginWork).
+	workStarts workStarts
 	// push is the PHONE half of the same path: its own ordered queue, the
 	// sender this backend wakes phones through, and the standing fault the
 	// owner reads. Its own queue because a send to Google can hang for its
@@ -629,6 +632,9 @@ type App struct {
 	// providerDiscoveryCaches is a test-only cache injection. Production leaves
 	// it nil and providerDiscoveryService uses the bounded process-wide set.
 	providerDiscoveryCaches *providerdiscoveryapp.Caches
+	// unreadableModels logs the listed models a provider's version rule
+	// cannot read, once per change (app_settings.go).
+	unreadableModels unreadableModelLog
 	// providerBinaries is the provider-binary upgrade watcher's concern
 	// (`app_provider_binary_watch.go`): the last version each binary
 	// reported and the live threads flagged stale against it. Zero value
@@ -710,6 +716,10 @@ type App struct {
 	// Tests install a fake so they can simulate "only claude installed"
 	// without touching $PATH.
 	lookPathFn func(string) error
+	// claudeModelsWaitForTest replaces claude.DefaultProbeTimeout as how
+	// long text generation waits for the Claude CLI's first model list
+	// (awaitClaudeModels). Production leaves it zero.
+	claudeModelsWaitForTest time.Duration
 	// codexLookPathFn replaces exec.LookPath when the default `codex`
 	// setting is resolved to the binary it runs (defaultCodexBinary).
 	// Production leaves it nil; test fixtures install one so the default
@@ -781,6 +791,10 @@ type App struct {
 	// remoteReplySettledForTest, when set, runs in a parked remote call's
 	// after-response work between the dismissal and the end of its wait.
 	remoteReplySettledForTest func()
+	// peerAgentsReachedForTest, when set, runs in a paired computer's agents
+	// call after its reach check and before its answer
+	// (serveThreadAgentPeer), so a test can delete the thread at that moment.
+	peerAgentsReachedForTest func(threadID string)
 	// agentWakeClaimedForTest, when set, runs in a fire between its claim
 	// and its run's registration (fireAgentWake), under the wake lifecycle
 	// lock, so a test can cancel the row at that moment.
@@ -847,6 +861,14 @@ type App struct {
 	// and before the decision is written (readRest), so a test can admit
 	// work there.
 	restReadForTest func(roots []string)
+	// runEndsHeldForTest names threads whose runs no rest ends
+	// (endRunsAtRest), keyed by thread id: a test that settles a spawn while
+	// its worker is at rest and then gives the worker work in that run holds
+	// the state the rest pass leaves only at the worker's next rest.
+	runEndsHeldForTest sync.Map
+	// restRecoveryWaitOverride, when positive, replaces restRecoveryWait,
+	// how long a message waits for the boot's recovery of rest.
+	restRecoveryWaitOverride time.Duration
 	// sweepSleepForTest, when set, is the request sweep's clock: the sweep
 	// sleeps until the channel it returns for the delay asked sends
 	// (sweepSleep).
@@ -855,6 +877,10 @@ type App struct {
 	// its authentication and before its admission, so a test can hold it
 	// there while the thread is brought to rest.
 	admitWorkForTest func(threadID string)
+	// remoteRequestAdmittedForTest, when set, runs in a remote request
+	// between its admission, out of its computer's fence, and its call
+	// there (startRemoteRequest), so a test can end the pairing first.
+	remoteRequestAdmittedForTest func(token string)
 	// asyncQuestionsReadForTest, when set, runs in a reconcile of threadID's
 	// async questions between its store read and what it registers
 	// (reconcileAsyncQuestions), so a test can change the thread at that
@@ -968,10 +994,6 @@ type App struct {
 	// end-to-end test (IsolationConfig). Zero keeps the product intervals.
 	threadPollOverride   time.Duration
 	transferPendingRetry time.Duration
-	// workerPromptLeaseOverride shortens the lease of a prompt routed to a
-	// paired computer (workerPromptLease) for a test. Zero keeps the
-	// product lease.
-	workerPromptLeaseOverride time.Duration
 	// ownerOpReachOverride replaces the bound on a door's attempt at what
 	// it owes paired computers (ownerOpReach) for a test. Zero keeps the
 	// product bound.
@@ -979,6 +1001,11 @@ type App struct {
 	// ownerOpsOmitted answers agent_owner_op as a build before owner
 	// operations does (IsolationConfig.OmitOwnerOps). False serves them.
 	ownerOpsOmitted bool
+	// agentMessageRunMembersOmitted groups every history read by the
+	// absorbed rule, as a build before the agent-message membership rule
+	// does (IsolationConfig.OmitAgentMessageRunMembers). False serves the
+	// rule a request asks for.
+	agentMessageRunMembersOmitted bool
 	// remoteWatchPoll replaces the remote-job watcher's cadence for a
 	// running job (IsolationConfig.RemoteWatchPoll). Zero keeps the
 	// product cadence.

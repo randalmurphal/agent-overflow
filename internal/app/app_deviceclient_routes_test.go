@@ -8,14 +8,13 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"agent-overflow/internal/backendproxy"
 	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/computerroute"
-	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/identity"
 	"agent-overflow/internal/servercert"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/transport"
 	"github.com/coder/websocket"
 )
@@ -52,10 +51,10 @@ func TestPairedProxySwitchesListenersWithoutChangingComputerOrSession(t *testing
 	})
 	alternate := alternatePairedListener(t, backend)
 	advertised.Store([]computerroute.Route{alternate})
-	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), testutil.WaitBudget(t))
 	defer cancel()
 	invite, link := backend.mintLink(t, string(identity.PairingAccessFull))
-	client, pairing, err := deviceclient.Pair(ctx, t.TempDir(), link, "route test", "linux")
+	client, pairing, err := pairTestDevice(t, t.TempDir(), link, "route test", "linux")
 	if err != nil {
 		t.Fatal(err)
 	}

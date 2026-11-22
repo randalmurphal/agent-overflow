@@ -38,30 +38,153 @@ func (arm agentArm) first(limit string) string {
         ORDER BY a.created_at, a.token LIMIT ` + limit
 }
 
-// agentRowArms are the requests of caller the listing keeps as five
+// agentRowArms are the requests of caller the listing keeps as six
 // disjoint arms, each read through the index whose predicate it states:
 // open (idx_thread_requests_open_created, in tree order); settled inside
 // the window (idx_thread_requests_caller_settled); a local spawn settled
 // before it with open work under it, stored (idx_thread_requests_open_below)
 // or only held in memory, a parked request or a live thread (`held`, by
 // token); a spawn on another computer that last reported open work
-// (idx_thread_requests_nested_caller). None reads the caller's settled
-// history, and only the open arm can hold many rows. The stored and remote
-// arms are held to their index, and the held arm's other terms are kept
-// off theirs: otherwise the planner reads them through
+// (idx_thread_requests_nested_caller); a send whose run is open on a thread
+// not at rest (idx_thread_requests_run_open). Each arm takes one request
+// per run (runFirstUnsettledSQL, runLastSettledSQL), so a run of many
+// requests takes one place in an arm's limit. None reads the caller's
+// settled history, and only the open arm can hold many rows. The stored and
+// remote arms are held to their index, and the held arm's other terms are
+// kept off theirs: otherwise the planner reads them through
 // idx_thread_requests_caller_settled from the history's settled_at range
 // (TestThreadAgentTreeSearchesItsArms).
 func agentRowArms(alias, caller string) []agentArm {
 	a := alias + "."
 	by := a + `caller_thread_id = ` + caller + ` AND `
 	return []agentArm{
-		{"idx_thread_requests_open_created", false, by + a + `lineage_only = 0 AND ` + a + `settled_at IS NULL`},
-		{"idx_thread_requests_caller_settled", false, by + a + `lineage_only = 0 AND ` + a + `settled_at >= ` + agentWindowSQL},
-		{"idx_thread_requests_open_below", true, by + agentSpawnLinkSQL(alias) + ` AND ` + agentOpenBelowSQL(alias) + ` AND ` + a + `settled_at < ` + agentWindowSQL},
+		{"idx_thread_requests_open_created", false, by + a + `lineage_only = 0 AND ` + a + `settled_at IS NULL AND ` + runFirstUnsettledSQL(alias)},
+		{"idx_thread_requests_caller_settled", false, by + a + `lineage_only = 0 AND ` + a + `settled_at >= ` + agentWindowSQL + ` AND ` + runLastSettledSQL(alias)},
+		{"idx_thread_requests_open_below", true, by + agentSpawnLinkSQL(alias) + ` AND ` + agentOpenBelowSQL(alias) + ` AND ` + a + `settled_at < ` + agentWindowSQL +
+			` AND ` + spawnActiveSQL(alias)},
 		{"sqlite_autoindex_thread_requests_1", false, a + `token IN (SELECT token FROM held WHERE thread = ` + caller + `) AND +` + a + `caller_thread_id = ` + caller +
-			` AND NOT ` + agentOpenBelowSQL(alias) + ` AND +` + a + `settled_at < ` + agentWindowSQL},
-		{"idx_thread_requests_nested_caller", true, by + nestedRemoteSpawnSQL(alias) + ` AND ` + a + `settled_at < ` + agentWindowSQL},
+			` AND NOT ` + agentOpenBelowSQL(alias) + ` AND +` + a + `settled_at < ` + agentWindowSQL + ` AND ` + spawnActiveSQL(alias)},
+		{"idx_thread_requests_nested_caller", true, by + nestedRemoteSpawnSQL(alias) + ` AND ` + a + `settled_at < ` + agentWindowSQL + ` AND ` + spawnActiveSQL(alias)},
+		{"idx_thread_requests_run_open", true, by + runOpenSQL(alias) + ` AND ` + a + `kind = 'send' AND ` + a + `lineage_only = 0 AND +` + a + `settled_at < ` + agentWindowSQL +
+			` AND ` + sendTargetOpenSQL(alias) + ` AND ` + runLastSettledSQL(alias)},
 	}
+}
+
+// runFirstUnsettledSQL matches an unsettled request alias that is its run's
+// oldest unsettled request, or tracks no run: the one request the open arm
+// reads of a run (idx_thread_requests_run_token).
+func runFirstUnsettledSQL(alias string) string {
+	a := alias + "."
+	return `(` + a + `run_token IS NULL OR NOT EXISTS (SELECT 1 FROM thread_requests ru INDEXED BY idx_thread_requests_run_token
+	          WHERE ru.run_token = ` + a + `run_token AND ru.settled_at IS NULL
+	            AND (ru.created_at, ru.token) < (` + a + `created_at, ` + a + `token)))`
+}
+
+// runLastSettledSQL matches a settled request alias that stands for its
+// run once every request of it settled: the newest settled, ties by token,
+// with none unsettled; or one that tracks no run. Each term is one search
+// of idx_thread_requests_run_token.
+func runLastSettledSQL(alias string) string {
+	a := alias + "."
+	member := `SELECT 1 FROM thread_requests rs INDEXED BY idx_thread_requests_run_token WHERE rs.run_token = ` + a + `run_token AND `
+	return `(` + a + `run_token IS NULL OR (NOT EXISTS (` + member + `rs.settled_at IS NULL)
+	          AND NOT EXISTS (` + member + `rs.settled_at > ` + a + `settled_at)
+	          AND NOT EXISTS (` + member + `rs.settled_at = ` + a + `settled_at AND rs.token > ` + a + `token)))`
+}
+
+// agentNodeSQL is the token of the listing's row that request alias falls
+// in: for a send to a thread its caller spawned that tracks a run of the
+// caller's, or that tracks none (written before runs were kept) and is
+// open, that spawn, here (idx_thread_requests_spawn_link) or on another
+// computer (idx_thread_requests_remote_spawn_target), so a worker the
+// caller spawned is one row in its spawn's place; else the request itself.
+// A settled send that tracks no run is a row of its own.
+func agentNodeSQL(alias string) string {
+	a := alias + "."
+	return `(CASE WHEN ` + a + `kind = 'send' AND (` + a + `run_token IS NOT NULL OR ` + a + `settled_at IS NULL) THEN COALESCE(CASE
+	      WHEN ` + a + `target_computer_id = '' THEN (SELECT nl.token FROM thread_requests nl INDEXED BY idx_thread_requests_spawn_link
+	            WHERE ` + agentSpawnLinkSQL("nl") + ` AND nl.target_thread_id = ` + a + `target_thread_id
+	              AND nl.caller_thread_id = ` + a + `caller_thread_id)
+	      ELSE (SELECT nr.token FROM thread_requests nr INDEXED BY idx_thread_requests_remote_spawn_target
+	            WHERE nr.kind = 'spawn' AND nr.target_computer_id <> '' AND nr.target_computer_id = ` + a + `target_computer_id
+	              AND nr.target_thread_id = ` + a + `target_thread_id AND nr.caller_thread_id = ` + a + `caller_thread_id
+	            ORDER BY nr.created_at DESC LIMIT 1) END, ` + a + `token)
+	    ELSE ` + a + `token END)`
+}
+
+// agentShownSQL is the token of the request the row of node, a request
+// agentNodeSQL names, shows. A spawn's row shows its caller's newest run
+// on its thread (idx_thread_requests_run_heads, a run's first request):
+// that run's oldest unsettled request, else its first while it is open,
+// else its newest settled (idx_thread_requests_run_token). When no run is
+// recorded it shows the spawn while it is open, else the oldest open send
+// of its caller's to its thread that tracks no run (untrackedOpenSendSQL),
+// else the spawn. A spawn not yet given a thread, and any other row, shows
+// its own request.
+func agentShownSQL(node string) string {
+	n := node + "."
+	return `(CASE WHEN ` + n + `kind = 'spawn' AND ` + n + `target_thread_id <> '' THEN COALESCE((SELECT COALESCE(
+	        (SELECT su.token FROM thread_requests su INDEXED BY idx_thread_requests_run_token
+	          WHERE su.run_token = h.token AND su.settled_at IS NULL ORDER BY su.created_at, su.token LIMIT 1),
+	        CASE WHEN h.run_tool_calls IS NULL THEN h.token END,
+	        (SELECT ss.token FROM thread_requests ss INDEXED BY idx_thread_requests_run_token
+	          WHERE ss.run_token = h.token AND ss.settled_at IS NOT NULL ORDER BY ss.settled_at DESC, ss.token DESC LIMIT 1),
+	        h.token)
+	      FROM thread_requests h INDEXED BY idx_thread_requests_run_heads
+	     WHERE h.caller_thread_id = ` + n + `caller_thread_id AND h.target_computer_id = ` + n + `target_computer_id
+	       AND h.target_thread_id = ` + n + `target_thread_id AND h.run_token = h.token
+	     ORDER BY h.created_at DESC LIMIT 1),
+	    CASE WHEN ` + n + `settled_at IS NULL THEN ` + n + `token END,
+	    (SELECT uo.token FROM thread_requests uo INDEXED BY idx_thread_requests_open_created
+	      WHERE ` + untrackedOpenSendSQL("uo", node) + ` ORDER BY uo.created_at, uo.token LIMIT 1),
+	    ` + n + `token)
+	    ELSE ` + n + `token END)`
+}
+
+// untrackedOpenSendSQL matches a request alias that is an open send of the
+// caller of spawn node to its thread that tracks no run, one written before
+// runs were kept, which a listing reads as a row (agentRowKindSQL). The
+// spawn's row stands for it (agentNodeSQL). It states the terms of
+// idx_thread_requests_open_created, the caller's open requests.
+func untrackedOpenSendSQL(alias, node string) string {
+	a, n := alias+".", node+"."
+	return a + `caller_thread_id = ` + n + `caller_thread_id AND ` + a + `lineage_only = 0 AND ` + a + `settled_at IS NULL
+	        AND ` + a + `kind = 'send' AND ` + a + `run_token IS NULL AND ` + a + `target_computer_id = ` + n + `target_computer_id
+	        AND ` + a + `target_thread_id = ` + n + `target_thread_id AND ` + agentRowKindSQL(alias)
+}
+
+// agentNodeListedSQL is agentRowListedSQL for node, a request agentNodeSQL
+// names: the request is listed, or, for a spawn, a send of its caller's
+// newest run on its thread that matches member, alias lm, is
+// (idx_thread_requests_run_heads). That run alone can hold an open
+// request, and its requests settle after every earlier run's, so no
+// earlier run's request is listed without one of it. A spawn is listed for
+// an open send to its thread that tracks no run (untrackedOpenSendSQL) as
+// well, alias lm too, which is always listed. Below a spawn that does not
+// carry its worker the tree reads only done requests, which member states
+// as doneRowSQL("lm").
+func agentNodeListedSQL(node, member string) string {
+	n := node + "."
+	return `(` + agentRowListedSQL(node) + ` OR (` + n + `kind = 'spawn' AND ` + n + `target_thread_id <> '' AND EXISTS (
+	    SELECT 1 FROM thread_requests lm INDEXED BY idx_thread_requests_open_created
+	     WHERE ` + untrackedOpenSendSQL("lm", node) + ` AND ` + member + `)) OR (` + n + `kind = 'spawn' AND ` + n + `target_thread_id <> '' AND EXISTS (
+	    SELECT 1 FROM thread_requests lm INDEXED BY idx_thread_requests_run_token
+	     WHERE lm.run_token = (SELECT h.token FROM thread_requests h INDEXED BY idx_thread_requests_run_heads
+	             WHERE h.caller_thread_id = ` + n + `caller_thread_id AND h.target_computer_id = ` + n + `target_computer_id
+	               AND h.target_thread_id = ` + n + `target_thread_id AND h.run_token = h.token
+	             ORDER BY h.created_at DESC LIMIT 1)
+	       AND lm.kind = 'send' AND ` + agentRowKindSQL("lm") + ` AND ` + agentRowListedSQL("lm") + ` AND ` + member + `)))`
+}
+
+// agentDisplayedSQL is the token of the request the row of node shows
+// where free says whether the row may show open work: every spawn above it
+// carries its worker into the listing (spawnActiveSQL). Below a spawn that
+// does not, every row is done (doneRowSQL), and a row whose shown request
+// is not shows node, which the tree read found done.
+func agentDisplayedSQL(node, free string) string {
+	shown := agentShownSQL(node)
+	return `(CASE WHEN ` + free + ` OR EXISTS (SELECT 1 FROM thread_requests sh WHERE sh.token = ` + shown + ` AND ` + doneRowSQL("sh") + `)
+	    THEN ` + shown + ` ELSE ` + node + `.token END)`
 }
 
 // agentHeldSQL is the `held` table of the tree reads: open work the marks
@@ -76,7 +199,9 @@ func agentRowArms(alias, caller string) []agentArm {
 // caller's link, which no mark counts (idx_thread_requests_open_deep, which
 // holds only such spawns). `held` climbs one spawn a step from each,
 // keyed by the queued thread (idx_thread_requests_spawn_link), up to the
-// root, each spawn held by its caller. Each link has one caller, so a link
+// root, each spawn held by its caller, through a spawn only while a run of
+// its caller's is open on its thread (spawnActiveSQL): work in a run its
+// spawner did not start holds no thread above it. Each link has one caller, so a link
 // enters it once however many seeds lie below it, and a cycle ends: its
 // cost is one search per parked request, live thread and deep spawn, and
 // one per distinct link above them.
@@ -87,33 +212,49 @@ var agentHeldSQL = `held(token, thread) AS (
     UNION
     SELECT ps.token, ps.caller_thread_id
       FROM json_each(?2, '$.live') CROSS JOIN thread_requests ps
-     WHERE ps.target_thread_id = json_each.value AND ` + agentSpawnLinkSQL("ps") + `
+     WHERE ps.target_thread_id = json_each.value AND ` + agentSpawnLinkSQL("ps") + ` AND ` + spawnActiveSQL("ps") + `
     UNION
     SELECT ps.token, ps.caller_thread_id
       FROM thread_requests f INDEXED BY idx_thread_requests_open_deep CROSS JOIN thread_requests ps
      WHERE ` + agentSpawnLinkSQL("f") + ` AND f.open_below_3 > 0
-       AND ps.target_thread_id = f.caller_thread_id AND ` + agentSpawnLinkSQL("ps") + `
+       AND ps.target_thread_id = f.caller_thread_id AND ` + agentSpawnLinkSQL("ps") + ` AND ` + spawnActiveSQL("ps") + `
     UNION
     SELECT ps.token, ps.caller_thread_id
       FROM thread_requests d INDEXED BY idx_thread_requests_answer_due CROSS JOIN thread_requests ps
      WHERE ` + threadAnswerDueSQL("d") + `
-       AND ps.target_thread_id = d.caller_thread_id AND ` + agentSpawnLinkSQL("ps") + `
+       AND ps.target_thread_id = d.caller_thread_id AND ` + agentSpawnLinkSQL("ps") + ` AND ` + spawnActiveSQL("ps") + `
     UNION
     SELECT ps.token, ps.caller_thread_id
       FROM held CROSS JOIN thread_requests ps
-     WHERE ps.target_thread_id = held.thread AND ` + agentSpawnLinkSQL("ps") + `)`
+     WHERE ps.target_thread_id = held.thread AND ` + agentSpawnLinkSQL("ps") + ` AND ` + spawnActiveSQL("ps") + `)`
 
-// agentTargetOpenSQL is whether request alias is a spawn whose thread is
-// not at rest as the ledger and the held work know it: a local spawn's link
-// with open work below its target, counted by its marks or held
-// (agentHeldSQL), its own thread's liveness included, or a remote spawn
-// whose computer last reported open work or its thread live. The tree
-// reads keep a settled spawn for it, its row shows its worker for it, and
+// agentTargetOpenSQL is whether request alias has a run open
+// (ownRunOpenSQL, runOpenSQL) on a thread not at rest as the ledger and the held
+// work know it: a local spawn's link with open work below its target,
+// counted by its marks or held (agentHeldSQL), its own thread's liveness
+// included, a remote spawn whose computer last reported open work or its
+// thread live, or a send whose run is open on such a thread. The tree
+// reads keep a settled row for it, its row shows its worker for it, and
 // Past leaves it out for it.
 func agentTargetOpenSQL(alias string) string {
 	a := alias + "."
-	return `((` + agentSpawnLinkSQL(alias) + ` AND (` + agentOpenBelowSQL(alias) + ` OR ` + a + `token IN (SELECT token FROM held)))
-         OR (` + nestedRemoteSpawnSQL(alias) + `))`
+	return `((` + agentSpawnLinkSQL(alias) + ` AND ` + ownRunOpenSQL(alias) + ` AND (` + agentOpenBelowSQL(alias) + ` OR ` + a + `token IN (SELECT token FROM held)))
+         OR (` + nestedRemoteSpawnSQL(alias) + ` AND ` + ownRunOpenSQL(alias) + `)
+         OR (` + a + `kind = 'send' AND ` + runOpenSQL(alias) + ` AND ` + sendTargetOpenSQL(alias) + `))`
+}
+
+// sendTargetOpenSQL is whether the thread send alias went to is not at rest
+// as agentTargetOpenSQL reads it for that thread's own spawn: its local
+// link counts open work below it or is held, or its remote spawn's
+// computer last reported open work.
+func sendTargetOpenSQL(alias string) string {
+	a := alias + "."
+	return `((` + a + `target_computer_id = '' AND EXISTS (SELECT 1 FROM thread_requests sl
+	           WHERE ` + agentSpawnLinkSQL("sl") + ` AND sl.target_thread_id = ` + a + `target_thread_id
+	             AND (` + agentOpenBelowSQL("sl") + ` OR sl.token IN (SELECT token FROM held))))
+         OR (` + a + `target_computer_id <> '' AND EXISTS (SELECT 1 FROM thread_requests sl
+	           WHERE ` + nestedRemoteSpawnSQL("sl") + ` AND sl.target_computer_id = ` + a + `target_computer_id
+	             AND sl.target_thread_id = ` + a + `target_thread_id)))`
 }
 
 // agentHeldParam encodes the tree reads' ?2, the open work the app holds in
@@ -205,14 +346,17 @@ func agentOpenWorkSQL(alias string) string {
 // agentOpenUnderSQL is whether thread, or a thread up to agentOpenDepth
 // spawns below it, made open work: a request thread made that is open work
 // (agentOpenWorkSQL), or a local spawn it made with open work under that
-// spawn's target (agentOpenBelowSQL). Each arm is read through its index.
+// spawn's target (agentOpenBelowSQL). A spawn counts only while a run of
+// thread's is open on its target (spawnActiveSQL). Each arm is read through
+// its index.
 func agentOpenUnderSQL(thread string) string {
 	return `(EXISTS (SELECT 1 FROM thread_requests o INDEXED BY idx_thread_requests_open_created
               WHERE o.caller_thread_id = ` + thread + ` AND o.lineage_only = 0 AND o.settled_at IS NULL AND ` + agentOpenWorkSQL("o") + `)
            OR EXISTS (SELECT 1 FROM thread_requests o INDEXED BY idx_thread_requests_nested_caller
-              WHERE o.caller_thread_id = ` + thread + ` AND ` + nestedRemoteSpawnSQL("o") + `)
+              WHERE o.caller_thread_id = ` + thread + ` AND ` + nestedRemoteSpawnSQL("o") + ` AND ` + spawnActiveSQL("o") + `)
            OR EXISTS (SELECT 1 FROM thread_requests o INDEXED BY idx_thread_requests_open_below
-              WHERE o.caller_thread_id = ` + thread + ` AND ` + agentSpawnLinkSQL("o") + ` AND ` + agentOpenBelowSQL("o") + `))`
+              WHERE o.caller_thread_id = ` + thread + ` AND ` + agentSpawnLinkSQL("o") + ` AND ` + agentOpenBelowSQL("o") + `
+                AND ` + spawnActiveSQL("o") + `))`
 }
 
 // agentOpenBelowThreadSQL is whether thread has open work at any depth
@@ -229,7 +373,8 @@ func agentOpenBelowThreadSQL(thread string) string {
 func agentRowKindSQL(alias string) string {
 	a := alias + "."
 	return a + `kind IN ('spawn','send','ask')
-       AND (` + a + `kind = 'spawn' OR ` + a + `notify = 1 OR ` + a + `token IN (SELECT value FROM json_each(?2, '$.waiting')))`
+       AND (` + a + `kind = 'spawn' OR ` + a + `notify = 1 OR ` + a + `run_base_tool_calls IS NOT NULL
+            OR ` + a + `token IN (SELECT value FROM json_each(?2, '$.waiting')))`
 }
 
 // agentRowListedSQL is agentRowArms as one predicate, for a row already
@@ -237,6 +382,7 @@ func agentRowKindSQL(alias string) string {
 func agentRowListedSQL(alias string) string {
 	a := alias + "."
 	return `((` + a + `lineage_only = 0 AND (` + a + `settled_at IS NULL OR ` + a + `settled_at >= ` + agentWindowSQL + `))
-         OR (` + a + `kind = 'spawn' AND ` + a + `target_computer_id <> '' AND ` + a + `nested_open = 1)
-         OR (` + agentSpawnLinkSQL(alias) + ` AND (` + agentOpenBelowSQL(alias) + ` OR ` + a + `token IN (SELECT token FROM held))))`
+         OR (` + a + `kind = 'spawn' AND ` + a + `target_computer_id <> '' AND ` + a + `nested_open = 1 AND ` + spawnActiveSQL(alias) + `)
+         OR (` + agentSpawnLinkSQL(alias) + ` AND (` + agentOpenBelowSQL(alias) + ` OR ` + a + `token IN (SELECT token FROM held)) AND ` + spawnActiveSQL(alias) + `)
+         OR (` + a + `kind = 'send' AND ` + a + `lineage_only = 0 AND ` + runOpenSQL(alias) + ` AND ` + sendTargetOpenSQL(alias) + `))`
 }

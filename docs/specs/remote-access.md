@@ -119,9 +119,13 @@ Rules:
   root-caused: the app mounted on redial REQUEST, not readiness —
   `redialAfterPairing` now retires the pre-pairing socket detached
   (its close settles only its own attempt) and resolves when the
-  transport is usable, bounded at 5s; `main.ts` awaits it. Ungranted
-  tooltip vocabulary is "Not granted to this device"; "Local only"
-  survives only on host-presence gates. Adjudicated against retier:
+  transport is usable, bounded at 5s; `main.ts` awaits it. An inert
+  control's reason comes from `grantBlockedTitle`
+  (`frontend/src/lib/transport/scopeRefusal.ts`) and the three-way
+  grant: "Not granted to this device" only for a known refusal, "Unavailable
+  until this computer connects" while that computer's grant has not
+  arrived in this window; "Local only" survives only on host-presence
+  gates. Adjudicated against retier:
   `GetThreadLiveState` stays threads:operate — its snapshot embeds
   queued drafts and pending approvals, both above read tier; a
   view-only thread open hydrates from the threads:read channels.
@@ -2863,10 +2867,15 @@ surfaces in exactly three places:
   thread (§7).
 - **Reachability is ambient, not modal.** Per-backend status lives
   where the backend is chosen: the composer's machine picker dims an
-  unreachable entry in place, and Settings → Systems carries the
-  detail. Threads on an unreachable backend dim and stay readable
-  from the replica. The full-width transport banner is reserved for
-  the visible thread's own backend dropping.
+  unreachable entry in place, the sidebar's Projects menu names each
+  computer's state, and Settings → Systems carries the detail. Threads
+  on a backend that has been unreachable for 30 seconds without a break
+  dim and stay readable from the replica; a shorter drop changes
+  nothing on them. The full-width transport banner is reserved for
+  the visible thread's own backend dropping. For a paired backend it
+  shows only once the drop has lasted the same 30 seconds, says when the
+  backend was last reached without a countdown, and leaves on reconnect;
+  the composer says at once that a message cannot be sent.
 
 Ruled 2026-09-01 (user), phase 7 UI: the machine picker is one more
 dropdown in the composer's existing project / worktree / branch strip,

@@ -1,30 +1,28 @@
-import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
+import { untrack } from 'svelte';
 import { invalidateReplicaCatalog } from '../replica/session';
-import { computerCatalogWriter } from './computerCatalogWriter';
-import { computerCatalog, readComputerRows, retainUnavailableComputerRows, type ComputerRows } from './computerRows';
-import { registerCatalogReader, settleCatalogAnswers } from './catalogLoad.svelte';
+import { computerCatalogWriter, resetCatalogWritesForTest } from './computerCatalogWriter';
+import { computerCatalog, retainUnavailableComputerRows, type CatalogPart, type ComputerRows } from './computerRows';
+import { settleCatalogAnswers } from './catalogLoad.svelte';
 // Sidebar-facing projects store. Mirrors the pattern of threads.svelte.ts:
-// a single reactive $state array driven by an explicit refresh, with
+// a single reactive $state array driven by an explicit read, with
 // optimistic local mutations so the sidebar can reflect a create/rename/
 // delete without round-tripping the server.
 //
-// Callers (Sidebar components, AddProjectModal) refresh once on mount
-// and call the addProjectLocal / updateProjectLocal / removeProjectLocal
-// helpers after a successful RPC so the list stays in sync with the
-// backend. `refreshProjects` is still safe to call any time to resync.
+// The rows are read only as part of the sidebar's tree
+// (./sidebarCatalogs.ts, projectCatalogPart below); callers call the
+// addProjectLocal / updateProjectLocal / removeProjectLocal helpers after a
+// successful RPC so the list stays in sync with the backend.
 
 import type { Project, ProjectWithCounts } from '../types/models';
-import { ListProjects } from './bindings';
-import { addErrorToast } from './toast.svelte';
+import { ListProjects, UpdateProjectSortPositions } from './bindings';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import {
   disambiguatedPathLabels,
   formatPathLabel,
-  type PathLabel,
 } from '../utils/pathDisplay';
 import { groupRepositories } from '../utils/repoKey';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
-import { projectBackend, noteProject } from '../transport/entityIndex';
+import { forgetProject, projectBackend, noteProject } from '../transport/entityIndex';
 import { onBackendDetached } from '../transport/backends';
 import { hasMultipleBackends } from './attachedBackends.svelte';
 
@@ -42,9 +40,14 @@ export function getProjects(): readonly ProjectWithCounts[] {
   return projects;
 }
 
+// Indexed, not scanned: a project row is looked up per rendered row (its
+// entry's members) and per entry of several projections, so a scan here made
+// the cost of showing the list quadratic in its length.
+const rowById = $derived.by(() => new Map(projects.map((row) => [row.project.id, row])));
+
 /** Lookup helper. Returns undefined when the id isn't in the store. */
 export function getProject(id: string): ProjectWithCounts | undefined {
-  return projects.find((p) => p.project.id === id);
+  return rowById.get(id);
 }
 
 // ---------------------------------------------------------------------------
@@ -63,8 +66,8 @@ export function getProject(id: string): ProjectWithCounts | undefined {
 // Computed only while more than one backend is attached: a single-backend
 // app returns the list itself, same array identity, and pays nothing.
 
-interface MergedEntries {
-  entries: ProjectWithCounts[];
+interface MergedProjects {
+  entries: readonly ProjectWithCounts[];
   /** member project id → the entry (representative) id it belongs to. */
   entryOf: Map<string, string>;
   /** representative id → every member, home first. */
@@ -73,7 +76,7 @@ interface MergedEntries {
   repoKeyOf: Map<string, string>;
 }
 
-const NO_MERGE: Pick<MergedEntries, 'entryOf' | 'members' | 'repoKeyOf'> = {
+const NO_MERGE: Pick<MergedProjects, 'entryOf' | 'members' | 'repoKeyOf'> = {
   entryOf: new Map(), members: new Map(), repoKeyOf: new Map(),
 };
 
@@ -91,16 +94,69 @@ function groupRows<T extends { project: Project }>(rows: readonly T[], computers
   return { keyOf, members };
 }
 
-const merged = $derived.by((): MergedEntries => {
-  if (!hasMultipleBackends()) return { entries: projects, ...NO_MERGE };
-  const { keyOf, members: groups } = groupRows(projects);
-  const position = new Map(projects.map((row, index) => [row, index]));
+/**
+ * The member of an entry that wears it: its home member when it has one,
+ * else the first in the order given, and never an archived member while a
+ * live one is there (the sidebar hides an entry by its representative's
+ * archived flag). Home first and then the given order is what keeps an
+ * entry from swapping representative when a computer reconnects; the
+ * sidebar elects over the members whose tree is listed, so for it the
+ * representative can change only at a listing
+ * (components/sidebar/ProjectsSection.svelte).
+ */
+export function representativeOf(members: readonly ProjectWithCounts[]): ProjectWithCounts {
+  const home = members.filter((row) => computerOf(row.project.id) === HOME_BACKEND);
+  const ordered = home.length === 0 || home.length === members.length
+    ? members
+    : [...home, ...members.filter((row) => computerOf(row.project.id) !== HOME_BACKEND)];
+  return ordered.find((row) => !row.project.archived) ?? ordered[0];
+}
+
+// The key a sidebar entry keeps while which of its members represents it
+// may change: the each key, so a representative change neither remounts the
+// row nor loses the animation's identity.
+//
+// `groupRepositories` keeps one checkout per computer in a verified
+// repository, so every member of an entry shares its repository key while a
+// second checkout on the same computer is an entry of its own under that
+// same key. The chosen checkout of a computer therefore wears the
+// repository key and every other row wears its project id, which is unique
+// whatever is attached: the choosing is per computer, so a key cannot
+// change when a computer attaches, detaches or lists. Computed with one
+// computer exactly as with several, because what it keys is persisted and
+// rendered state, not the merge.
+const entryKeys = $derived.by(() => {
+  const wrapped = projects.map((row) => ({ project: row.project, computer: computerOf(row.project.id) }));
+  const keys = new Map(wrapped.map((item) => [item.project.id, item.project.id]));
+  for (const [key, chosen] of groupRepositories(wrapped).members) {
+    for (const item of chosen) keys.set(item.project.id, key);
+  }
+  return keys;
+});
+
+/** The key the sidebar's each block gives the entry `projectId` renders as. */
+export function projectEntryKey(projectId: string): string {
+  return entryKeys.get(projectId) ?? projectId;
+}
+
+/**
+ * Group `rows` into one entry per repository: at most one member per
+ * computer, the entry worn by its home member when there is one, and the
+ * thread count and activity summed over its members.
+ *
+ * Every row the client holds, so an entry's identity and representative do
+ * not depend on what a surface shows. A surface that shows only some members
+ * aggregates those itself over these entries; the sidebar does
+ * (components/sidebar/ProjectsSection.svelte).
+ */
+function mergeProjectRows(rows: readonly ProjectWithCounts[]): MergedProjects {
+  if (!hasMultipleBackends()) return { entries: rows, ...NO_MERGE };
+  const { keyOf, members: groups } = groupRows(rows);
+  const position = new Map(rows.map((row, index) => [row, index]));
   const repoKeyOf = new Map<string, string>();
   const groupOf = new Map<ProjectWithCounts, ProjectWithCounts[]>();
   for (const group of groups) {
     if (group.length < 2) continue;
-    // Home first, then list order — stable, so the entry does not swap its
-    // representative when a machine reconnects.
     group.sort((a, b) => Number(computerOf(b.project.id) === HOME_BACKEND) - Number(computerOf(a.project.id) === HOME_BACKEND)
       || position.get(a)! - position.get(b)!);
     for (const row of group) {
@@ -111,16 +167,14 @@ const merged = $derived.by((): MergedEntries => {
   const entryOf = new Map<string, string>();
   const members = new Map<string, ProjectWithCounts[]>();
   const entries: ProjectWithCounts[] = [];
-  for (const row of projects) {
+  for (const row of rows) {
     const group = groupOf.get(row);
     if (!group) {
       entries.push(row);
       continue;
     }
     if (entryOf.has(row.project.id)) continue;
-    // An archived member never represents a live one: the sidebar hides an
-    // entry by its representative's archived flag.
-    const rep = group.find((member) => !member.project.archived) ?? group[0];
+    const rep = representativeOf(group);
     let threadCount = 0;
     let lastActive = 0;
     for (const member of group) {
@@ -136,7 +190,9 @@ const merged = $derived.by((): MergedEntries => {
     );
   }
   return { entries, entryOf, members, repoKeyOf };
-});
+}
+
+const merged = $derived.by(() => mergeProjectRows(projects));
 
 /** The repository key of the merged entry `projectId` is a member of; ''
  *  when it is in no merged entry. */
@@ -212,12 +268,6 @@ const projectLabels = $derived.by(() => {
   return new Map([...disambiguatedPathLabels(active), ...disambiguatedPathLabels(archived)]);
 });
 
-/** Structured display label for a project (prefix + name). Undefined when
- *  the id isn't in the store. */
-export function getProjectLabel(id: string): PathLabel | undefined {
-  return projectLabels.get(entryIdFor(id));
-}
-
 /** Flat display-label string (`prefix/name` when disambiguated). Falls
  *  back to the empty string for unknown ids — callers with a "(deleted)"
  *  style placeholder should check getProjectLabel themselves. */
@@ -226,21 +276,101 @@ export function getProjectLabelText(id: string): string {
   return label ? formatPathLabel(label) : '';
 }
 
-/** True once refreshProjects has completed at least one successful fetch. */
-export function isLoaded(): boolean {
-  return loaded;
+// Manual reorder.
+//
+// The order the user dragged is an overlay, not a write to the rows: the
+// rows carry the last order a computer accepted and the overlay carries the
+// one still out. A refusal drops the overlay, so there is nothing to undo,
+// nothing to undo onto a row something else changed meanwhile, and no
+// sequence of refusals can leave an order no write accepted.
+//
+// One write at a time and the newest order wins: a request made while a
+// write is out replaces whatever was waiting, which was never sent, and is
+// sent when the write settles.
+//
+// Nothing folds an accepted order into the rows here. The computer that
+// accepted it broadcasts one `project:updated` frame per row it moved
+// (internal/app/app_projects.go#UpdateProjectSortPositions emits them before
+// it returns), and the connection receives every event queued before a reply
+// ahead of that reply (internal/transport/conn.go#writeReply, pinned by
+// TestReplyFollowsEventsEmittedBeforeIt), on one socket whose frames this
+// client applies in order as they arrive (transport/wsClient.ts#handleFrame),
+// which is the same path for the embedded webview and a connected browser.
+// So by the time the write settles the rows carry the positions it sent, and
+// the overlay is dropped onto them. A client that missed the frames has a
+// transport gap, which re-reads the catalog.
+interface OrderRequest {
+  ids: readonly string[];
+  order: ReadonlyMap<string, number>;
+  resolve: () => void;
+  reject: (err: unknown) => void;
 }
 
-/** Refresh each computer independently, preserving its cached rows on failure.
- * Superseded reads neither publish an empty catalog nor mark initial load done. */
-export async function refreshProjects(): Promise<void> {
+let pendingOrder: ReadonlyMap<string, number> | null = $state.raw(null);
+let orderInFlight = false;
+let orderWaiting: OrderRequest | null = null;
+
+/**
+ * The position the sidebar sorts `row` by: the order still out while a
+ * reorder has not settled, else the position the row carries.
+ */
+export function projectOrderPosition(row: ProjectWithCounts): number {
+  return pendingOrder?.get(row.project.id) ?? row.project.sortPosition;
+}
+
+/**
+ * Put the projects `orderedIds` names at those positions: at once for the
+ * sidebar, then on this computer, which holds no other computer's rows and
+ * skips an id it does not hold.
+ *
+ * Rejects with what the write threw. A request made while another is out
+ * supersedes any other that was waiting, and such a superseded request
+ * resolves without being sent, because the order that replaced it is the
+ * one the user is waiting to see.
+ */
+export function reorderProjects(orderedIds: readonly string[]): Promise<void> {
+  const ids = [...orderedIds];
+  const order = new Map(ids.map((id, index) => [id, index]));
+  pendingOrder = order;
+  return new Promise<void>((resolve, reject) => {
+    const request: OrderRequest = { ids, order, resolve, reject };
+    if (orderInFlight) {
+      orderWaiting?.resolve();
+      orderWaiting = request;
+      return;
+    }
+    void driveOrderWrites(request);
+  });
+}
+
+async function driveOrderWrites(first: OrderRequest): Promise<void> {
+  orderInFlight = true;
   try {
-    await readComputerRows<ProjectWithCounts>(listProjectRows, noteProjectRow, commitProjectRows, { catalog: projectCatalog() });
-  } catch (err) {
-    if (isPassiveConnectionFailure(err)) return;
-    console.error('Failed to load projects:', err);
-    addErrorToast('Failed to load projects', err);
+    let request: OrderRequest | null = first;
+    while (request !== null) {
+      let error: unknown = null;
+      try {
+        await UpdateProjectSortPositions([...request.ids]);
+      } catch (err) {
+        error = err;
+      }
+      // Only when the overlay is still the order this write carried: a
+      // newer request has replaced it otherwise, and that order is what
+      // the sidebar must keep showing until its own write settles.
+      if (pendingOrder === request.order) pendingOrder = null;
+      if (error === null) request.resolve();
+      else request.reject(error);
+      request = orderWaiting;
+      orderWaiting = null;
+    }
+  } finally {
+    orderInFlight = false;
   }
+}
+
+/** True once a round has committed at least one computer's project rows. */
+export function isLoaded(): boolean {
+  return loaded;
 }
 
 function listProjectRows(): Promise<ProjectWithCounts[]> {
@@ -252,7 +382,7 @@ function noteProjectRow(row: ProjectWithCounts, backend: BackendKey): void {
 }
 
 function projectCatalog() {
-  return computerCatalog('projects', () => projects, (row) => projectBackend(row.project.id));
+  return computerCatalog('projects');
 }
 
 function commitProjectRows(result: ComputerRows<ProjectWithCounts>): void {
@@ -262,21 +392,20 @@ function commitProjectRows(result: ComputerRows<ProjectWithCounts>): void {
 }
 
 /**
- * Read one computer's projects alone, waiting for the answer rather than
- * the startup deadline: the catalog store's retry, and the re-read after
- * the computer's history changed (./catalogLoad.svelte.ts).
+ * How the project catalog is read from each computer and committed. The
+ * sidebar's project headers are one unit with the threads under them and
+ * the groups that gather those threads, so this catalog is read only beside
+ * the other two, as one round (./sidebarCatalogs.ts). Nothing else reads it:
+ * a second reader would supersede the round's and leave its tree held.
  */
-async function readProjectCatalog(backend: BackendKey): Promise<void> {
-  try {
-    await readComputerRows<ProjectWithCounts>(
-      listProjectRows, noteProjectRow, commitProjectRows, { catalog: projectCatalog(), only: backend, deadlineMs: null });
-  } catch {
-    // readComputerRows settled this computer's failure into the catalog
-    // state, which is where it is shown and retried.
-  }
+export function projectCatalogPart(): CatalogPart<ProjectWithCounts> {
+  return {
+    read: listProjectRows,
+    note: noteProjectRow,
+    commit: commitProjectRows,
+    catalog: projectCatalog(),
+  };
 }
-
-registerCatalogReader(['projects'], readProjectCatalog);
 
 /**
  * Insert a freshly-created project at the head of the list. Accepts a
@@ -330,7 +459,7 @@ export function updateProjectLocal(p: Project): void {
  */
 export function touchProjectActivity(projectId: string | undefined, updatedAt: number): void {
   if (!projectId || !Number.isFinite(updatedAt)) return;
-  const existing = projects.find((p) => p.project.id === projectId);
+  const existing = getProject(projectId);
   if (existing === undefined) return;
   if (getProjectLiveActivityAt(existing) >= updatedAt) return;
   liveActivityAt.set(projectId, updatedAt);
@@ -346,10 +475,41 @@ export function getProjectLiveActivityAt(p: ProjectWithCounts): number {
   return Math.max(p.lastActive ?? 0, liveActivityAt.get(p.project.id));
 }
 
-/** Drop a project row and any related thread counts. */
+let projectDeletedObservers: Array<(key: string) => void> = [];
+
+/**
+ * Run `observer` after every `deleteProjectLocal`, with the entry key the
+ * project wore: state kept by that key must go when nothing wears it now.
+ */
+export function addProjectDeletedObserver(observer: (key: string) => void): () => void {
+  projectDeletedObservers = [...projectDeletedObservers, observer];
+  return () => {
+    projectDeletedObservers = projectDeletedObservers.filter((existing) => existing !== observer);
+  };
+}
+
+/**
+ * The project was deleted, not archived and not left unlisted by its
+ * computer: drop its row, tell what keeps state by its entry key, then
+ * forget which computer owned it. Forgetting comes last so the removal
+ * reaches the owner's catalog.
+ */
+export function deleteProjectLocal(id: string): void {
+  const key = untrack(() => projectEntryKey(id));
+  removeProjectLocal(id);
+  for (const observer of projectDeletedObservers) observer(key);
+  forgetProject(id);
+}
+
+/**
+ * Drop a project row and its live-activity bump, from the catalog of the
+ * computer it is noted under, or home's for a row never noted, which is
+ * where the catalog writer files such a row.
+ */
 export function removeProjectLocal(id: string): void {
-  invalidateReplicaCatalog(projectBackend(id) ?? '', 'projects');
-  catalogWriter.mutate(projectBackend(id), (rows) => rows.filter((p) => p.project.id !== id));
+  const backend = projectBackend(id) ?? HOME_BACKEND;
+  invalidateReplicaCatalog(backend, 'projects');
+  catalogWriter.mutate(backend, (rows) => rows.filter((p) => p.project.id !== id));
   liveActivityAt.drop(id);
 }
 
@@ -371,8 +531,11 @@ export function dropProjectsForDetachedBackend(ids: readonly string[]): void {
 onBackendDetached(({ projectIds }) => dropProjectsForDetachedBackend(projectIds));
 
 export function resetProjectsForTest(): void {
-  catalogWriter.reset();
+  resetCatalogWritesForTest();
   projects = [];
   loaded = false;
   liveActivityAt.reset();
+  pendingOrder = null;
+  orderInFlight = false;
+  orderWaiting = null;
 }

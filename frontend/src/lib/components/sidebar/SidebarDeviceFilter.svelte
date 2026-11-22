@@ -5,7 +5,10 @@
   import MenuItem from '../primitives/MenuItem.svelte';
   import MenuDivider from '../primitives/MenuDivider.svelte';
   import Popover from '../primitives/Popover.svelte';
-  import { sidebarDevices, sidebarDeviceFilterActive, setSidebarDeviceVisible, showAllSidebarDevices } from '../../stores/sidebarDevices.svelte';
+  import {
+    sidebarDevices, sidebarDeviceFilterActive, sidebarDeviceStatus, setSidebarDeviceVisible, showAllSidebarDevices,
+  } from '../../stores/sidebarDevices.svelte';
+  import { retryCatalogLoad } from '../../stores/catalogLoad.svelte';
   import { remoteAccessAvailable } from '../../transport/buildVariant';
 
   // A build without remote access has one computer, so there is nothing to filter.
@@ -35,13 +38,19 @@
       <MenuItem label="All computers" checked={!filtered} onSelect={showAllSidebarDevices} />
       <MenuDivider />
       {#each devices as device (device.key)}
+        {@const status = sidebarDeviceStatus(device.backend)}
         <MenuItem
           label={device.name}
+          description={status.text}
           checkbox
           checked={device.visible}
           disabled={!device.id}
-          title={!device.id ? 'Connect to this computer once to filter it.' : undefined}
+          title={status.failed ? status.text : !device.id ? 'Connect to this computer once to filter it.' : undefined}
+          testId="sidebar-device-{device.key}"
           onSelect={() => setSidebarDeviceVisible(device.id, !device.visible)}
+          actionText={status.failed ? 'Retry' : undefined}
+          actionLabel={status.failed ? `Retry loading ${device.name}` : undefined}
+          onAction={status.failed ? () => retryCatalogLoad(device.backend) : undefined}
         />
       {/each}
     </Menu>

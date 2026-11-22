@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+
+	"agent-overflow/internal/atomicfile"
 )
 
 // RefreshRecoveryHeader is additive; absence means a legacy server. Keep its
@@ -51,7 +53,11 @@ func (c *Client) rotate(ctx context.Context, observed Session) (err error) {
 	if held.RefreshSecret == "" {
 		return ErrSessionEnded
 	}
-	support, err := c.refreshRecoverySupport(ctx, held)
+	// Nothing is spent before the exchange is sent, so the owner's lifetime
+	// ends every wait until then.
+	unspent, endUnspent := c.rotationWait(ctx, true)
+	defer endUnspent()
+	support, err := c.refreshRecoverySupport(unspent, held)
 	if err != nil {
 		return err
 	}
@@ -59,7 +65,7 @@ func (c *Client) rotate(ctx context.Context, observed Session) (err error) {
 		// Old hosts cannot recognize an identical retry. Serialize their exchange
 		// across current client processes with a separate lock; profile transactions
 		// and forgetting/renaming remain available while the network is slow.
-		wait, cancel := context.WithTimeout(ctx, profileWriteTimeout)
+		wait, cancel := context.WithTimeout(unspent, profileWriteTimeout)
 		release, lockErr := lockProfile(wait, c.dir, "legacy-renewal-"+held.BackendID)
 		cancel()
 		if lockErr != nil {
@@ -113,7 +119,12 @@ func (c *Client) rotate(ctx context.Context, observed Session) (err error) {
 	if support {
 		path = authTokenRecoverPath
 	}
-	issued, exchangeErr := c.exchange(ctx, path, body, &held)
+	if err := unspent.Err(); err != nil {
+		return err
+	}
+	exchangeCtx, endExchange := c.rotationWait(ctx, support)
+	issued, exchangeErr := c.exchange(exchangeCtx, c.http, path, body, &held)
+	endExchange()
 	// Compare AFTER the network too. A suspended process's late grant/refusal
 	// cannot roll back a newer generation, delete a re-pairing, or lose a rename.
 	return c.sessionTransaction(ctx, func(path string, latest *Session) error {
@@ -131,10 +142,10 @@ func (c *Client) rotate(ctx context.Context, observed Session) (err error) {
 			if !renewalRefusalEndsSession(refusal.Reason) {
 				return exchangeErr
 			}
-			if err := removeSessionFile(path); err != nil {
+			if err := atomicfile.Remove(path); err != nil {
 				return err
 			}
-			c.retired = true
+			c.retireLocked()
 			c.session = Session{BackendID: latest.BackendID, Endpoint: latest.Endpoint}
 			return fmt.Errorf("%w (%s)", ErrSessionEnded, refusal.Reason)
 		}
@@ -155,6 +166,27 @@ func (c *Client) rotate(ctx context.Context, observed Session) (err error) {
 		}
 		return writeSession(path, *latest)
 	})
+}
+
+// rotationWait is what a rotation's network and lock waits run on. A retired
+// owner never writes the answer, so retirement ends every wait at once. The
+// owner's lifetime (WithLifetime) ends a wait when ownerMayEnd: before the
+// exchange is sent nothing is spent, and a recoverable exchange's successor
+// was saved before sending, so the next rotation, in this process or the
+// next, completes the same operation. A legacy exchange the backend may
+// already have committed runs to completion so its answer is saved.
+func (c *Client) rotationWait(ctx context.Context, ownerMayEnd bool) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(ctx)
+	stops := []func() bool{context.AfterFunc(c.live, cancel)}
+	if ownerMayEnd && c.lifetime != nil {
+		stops = append(stops, context.AfterFunc(c.lifetime, cancel))
+	}
+	return ctx, func() {
+		for _, stop := range stops {
+			stop()
+		}
+		cancel()
+	}
 }
 
 // Unknown future reasons are not evidence that this pairing ended. Keep the

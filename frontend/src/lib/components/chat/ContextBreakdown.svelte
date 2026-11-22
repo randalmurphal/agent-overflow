@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { threadHasScope } from '../../transport/entityScopes';
+  import { threadScopeGrant } from '../../transport/entityScopes';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
   // Claude's canonical `/context` breakdown, read on demand from the live
   // session and rendered inside the context meter's popover.
   //
@@ -53,8 +54,9 @@
     // one possible answer and asking would only spend a refusal to reach
     // it. The popover's own unavailable state says so in place; the meter
     // above keeps rendering the estimate, which is a read.
-    if (!threadHasScope('threads:operate', tid)) {
-      state = { kind: 'unavailable', reason: 'The exact breakdown is not available for this session.' };
+    const grant = threadScopeGrant('threads:operate', tid);
+    if (grant !== 'granted') {
+      state = { kind: 'unavailable', reason: grant === 'refused' ? 'The exact breakdown is not available for this session.' : grantBlockedTitle(grant) ?? '' };
       return;
     }
     GetThreadContextUsage(tid)

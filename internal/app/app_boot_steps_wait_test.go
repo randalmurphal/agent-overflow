@@ -128,6 +128,7 @@ func TestPushWaitsForTheBootStepsBeforeClients(t *testing.T) {
 func TestWorkflowDispositionAndDigestWaitForTheBootStepsBeforeClients(t *testing.T) {
 	t.Parallel()
 	app, _ := setupE2EApp(t)
+	claudeReportsModels(app)
 	finish := holdBootSteps(t, app)
 
 	disposed := make(chan struct{})

@@ -1,16 +1,17 @@
+import { readSidebarCatalogs } from '../../../test/helpers/sidebarCatalogs';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { page } from 'vitest/browser';
 import { render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import '../../../app.css';
-import ProjectThreadList from './ProjectThreadList.svelte';
+import ProjectThreadList from '../../../test/helpers/ProjectThreadListOfEntry.svelte';
 import AssistantsSection from './AssistantsSection.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { registerPaneForTest } from '../../stores/panes.svelte';
 import { getCollapsedGroups, resetSidebarForTest } from '../../stores/sidebar.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { replaceAllThreads, touchThreadActivity } from '../../stores/threads.svelte';
-import { refreshProjects, resetProjectsForTest } from '../../stores/projects.svelte';
+import { resetProjectsForTest } from '../../stores/projects.svelte';
 import { resetThreadWakesForTest } from '../../stores/threadWakes.svelte';
 import { refreshThreadWorkerSummaries, resetThreadWorkerSummariesForTest } from '../../stores/threadWorkerSummaries.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
@@ -86,7 +87,7 @@ it.each([false, true])('keeps the focused member painted while collapsing and ch
   registerPaneForTest('other', other);
   pane.replaceThread(threads[0]);
   other.replaceThread(threads[1]);
-  const view = render(ProjectThreadList, { projectId: 'project', threads, groups: [group], pane });
+  const view = render(ProjectThreadList, { projectId: 'project', listKey: 'project', threads, groups: [group], pane });
   view.container.style.width = '360px';
   await settled(view.container);
 
@@ -146,7 +147,7 @@ it('aligns the group chevron with top-level pins and member pins with the folder
     thread('plain-member', { groupId: group.id }),
     thread('loose', { pinnedAt: 1 }),
   ];
-  const view = render(ProjectThreadList, { projectId: 'project', threads, groups: [group], pane: createThreadPane() });
+  const view = render(ProjectThreadList, { projectId: 'project', listKey: 'project', threads, groups: [group], pane: createThreadPane() });
   view.container.style.width = '360px';
   await settled(view.container);
 
@@ -189,7 +190,7 @@ describe('assistant rows', () => {
       { project: { id: 'p-a', path: '/repo/a', name: 'Alpha', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false }, threadCount: 0 },
       { project: { id: 'p-b', path: '/repo/b', name: 'Beta', sortPosition: 1, createdAt: 0, updatedAt: 0, archived: false }, threadCount: 0 },
     ]);
-    await refreshProjects();
+    await readSidebarCatalogs();
     const agent = thread('agent', { agentId: 'agent', projectId: '', agentProjectIds: ['p-a', 'p-b'], updatedAt: 5 });
     const loose = thread('loose', { pinnedAt: 1 });
     replaceAllThreads([agent, loose]);
@@ -203,7 +204,7 @@ describe('assistant rows', () => {
     const props = (assistant: Thread) => ({ assistants: [assistant], pane: createThreadPane(), searching: false });
     const view = render(AssistantsSection, props(agent));
     view.container.style.width = '360px';
-    const plain = render(ProjectThreadList, { projectId: 'project', threads: [loose], groups: [], pane: createThreadPane() });
+    const plain = render(ProjectThreadList, { projectId: 'project', listKey: 'project', threads: [loose], groups: [], pane: createThreadPane() });
     plain.container.style.width = '360px';
     await waitFor(() => expect(view.queryByTestId('thread-row-agent-state')).not.toBeNull());
     await settled(view.container);
@@ -251,7 +252,7 @@ describe('worker counts', () => {
     replaceAllThreads([spawner]);
     setBindingMock('ListThreadWorkerSummaries', async () => ({ summaries: [{ threadId: 'spawner', open: 12, needYou: 3 }], next: '' }));
     await refreshThreadWorkerSummaries();
-    const view = render(ProjectThreadList, { projectId: 'project', threads: [spawner], groups: [], pane: createThreadPane() });
+    const view = render(ProjectThreadList, { projectId: 'project', listKey: 'project', threads: [spawner], groups: [], pane: createThreadPane() });
     view.container.style.width = '300px';
     await settled(view.container);
 

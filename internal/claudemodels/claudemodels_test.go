@@ -484,7 +484,7 @@ func TestMergeDoesNotMutateTheBaseCatalog(t *testing.T) {
 
 // --- Catalog ---
 
-// modelsFor drops the enriched flag for the tests that only care about the
+// modelsFor drops the backing for the tests that only care about the
 // list. Provenance has its own tests.
 func modelsFor(c *Catalog, key provider.ProbeCacheKey, providerName string) []provider.ModelInfo {
 	models, _ := c.ModelsFor(key, providerName)
@@ -584,35 +584,6 @@ func TestCatalogAliasesFollowTheServedAnswer(t *testing.T) {
 	other := provider.ProbeCacheKey{Binary: "/opt/claude", AccountID: "account-a", WorkDir: "/home/u"}
 	if got := catalog.AliasesFor(other); got != nil {
 		t.Fatalf("AliasesFor(other binary) = %v, want nil", got)
-	}
-}
-
-// TestCatalogReportsModelReadsTheServedWireRows pins that ReportsModel answers
-// from the wire rows behind the served answer, folds spellings onto the slug,
-// and does not count a shipped catalog model the CLI never listed.
-func TestCatalogReportsModelReadsTheServedWireRows(t *testing.T) {
-	catalog := NewCatalog()
-	if catalog.ReportsModel(testKey("account-a"), "claude-haiku-4-5") {
-		t.Fatal("ReportsModel before any probe = true")
-	}
-	catalog.Store(testKey("account-a"), []claude.WireModel{
-		{Value: "haiku", ResolvedModel: "claude-haiku-5-5"},
-		{Value: "claude-haiku-4-5-20251001", ResolvedModel: "claude-haiku-4-5-20251001"},
-	}, nil)
-	for _, slug := range []string{"claude-haiku-5-5", "claude-haiku-4-5"} {
-		if !catalog.ReportsModel(testKey("account-a"), slug) {
-			t.Errorf("ReportsModel(own, %s) = false", slug)
-		}
-		if !catalog.ReportsModel(testKey("account-b"), slug) {
-			t.Errorf("ReportsModel(unprobed, same binary, %s) = false", slug)
-		}
-	}
-	if catalog.ReportsModel(testKey("account-a"), "claude-opus-4-5") {
-		t.Error("a shipped model the CLI did not list was reported")
-	}
-	other := provider.ProbeCacheKey{Binary: "/opt/claude", AccountID: "account-a", WorkDir: "/home/u"}
-	if catalog.ReportsModel(other, "claude-haiku-5-5") {
-		t.Error("another binary's rows were used")
 	}
 }
 
@@ -970,9 +941,9 @@ func TestCatalogSeedReproducesTheProbedEntry(t *testing.T) {
 	seeded.Seed(key, snapshot)
 
 	want, _ := probed.ModelsFor(key, string(provider.Claude))
-	got, enriched := seeded.ModelsFor(key, string(provider.Claude))
-	if !enriched {
-		t.Error("a seeded identity must report an enriched answer")
+	got, backing := seeded.ModelsFor(key, string(provider.Claude))
+	if backing != BackedByIdentity {
+		t.Errorf("a seeded identity is backed by %v, want its own entry", backing)
 	}
 	if !slices.Equal(slugs(got), slugs(want)) {
 		t.Errorf("seeded catalog = %v, want the probed catalog %v", slugs(got), slugs(want))
@@ -1090,7 +1061,7 @@ func TestCatalogSeedIgnoresAnEmptySnapshot(t *testing.T) {
 	if _, ok := catalog.Export(key); ok {
 		t.Error("an empty snapshot must not create an entry")
 	}
-	if _, enriched := catalog.ModelsFor(key, string(provider.Claude)); enriched {
+	if _, backing := catalog.ModelsFor(key, string(provider.Claude)); backing.Enriched() {
 		t.Error("an empty snapshot must not make the answer look probed")
 	}
 }
@@ -1142,8 +1113,8 @@ func TestCatalogExportRequiresTheExactIdentity(t *testing.T) {
 	if _, ok := catalog.Export(testKey("b")); ok {
 		t.Error("Export must not borrow another identity's entry")
 	}
-	if _, enriched := catalog.ModelsFor(testKey("b"), string(provider.Claude)); !enriched {
-		t.Error("ModelsFor still serves the same-binary fallback, and reports it as enriched")
+	if _, backing := catalog.ModelsFor(testKey("b"), string(provider.Claude)); backing != BackedBySameBinary {
+		t.Errorf("ModelsFor still serves the same-binary fallback, and reports it as that; got %v", backing)
 	}
 }
 
@@ -1157,8 +1128,8 @@ func TestCatalogDropBinaryDropsSeededEntries(t *testing.T) {
 	if dropped := catalog.DropBinary(key.Binary); dropped != 1 {
 		t.Fatalf("DropBinary dropped %d entries, want 1", dropped)
 	}
-	models, enriched := catalog.ModelsFor(key, string(provider.Claude))
-	if enriched {
+	models, backing := catalog.ModelsFor(key, string(provider.Claude))
+	if backing.Enriched() {
 		t.Error("a dropped identity must report an un-enriched answer")
 	}
 	if !slices.Equal(slugs(models), slugs(provider.ClaudeModels)) {
@@ -1166,34 +1137,39 @@ func TestCatalogDropBinaryDropsSeededEntries(t *testing.T) {
 	}
 }
 
-// TestCatalogReportsEnrichmentProvenance: the flag is what lets a client tell
-// "no probe has answered yet" from "this is what the binary says", so it must
-// follow entry existence, including through the same-binary fallback.
-func TestCatalogReportsEnrichmentProvenance(t *testing.T) {
+// TestCatalogReportsWhatBacksEachAnswer: the backing is what lets a client
+// tell "no probe has answered yet" from "this is what the binary says" from
+// "this is what this identity's CLI says", so it follows entry existence,
+// and the same-binary fallback is told apart from the identity's own.
+func TestCatalogReportsWhatBacksEachAnswer(t *testing.T) {
 	catalog := NewCatalog()
 	key := testKey("a")
-	if _, enriched := catalog.ModelsFor(key, string(provider.Claude)); enriched {
-		t.Error("an identity with no entry must not claim enrichment")
+	backing := func(key provider.ProbeCacheKey, providerName string) Backing {
+		_, backing := catalog.ModelsFor(key, providerName)
+		return backing
+	}
+	if got := backing(key, string(provider.Claude)); got != BackedByShipped {
+		t.Errorf("an identity with no entry is backed by %v, want the shipped list", got)
 	}
 	catalog.Seed(key, Snapshot{Wire: []claude.WireModel{{Value: "claude-newthing-1"}}})
-	if _, enriched := catalog.ModelsFor(key, string(provider.Claude)); !enriched {
-		t.Error("a seeded identity must claim enrichment")
+	if got := backing(key, string(provider.Claude)); got != BackedByIdentity {
+		t.Errorf("a seeded identity is backed by %v, want its own entry", got)
 	}
-	if _, enriched := catalog.ModelsFor(testKey("b"), string(provider.Claude)); !enriched {
-		t.Error("the same-binary fallback is an enriched answer")
+	if got := backing(testKey("b"), string(provider.Claude)); got != BackedBySameBinary || !got.Enriched() {
+		t.Errorf("another identity on the binary is backed by %v, want the same binary's entry, enriched", got)
 	}
 	other := provider.ProbeCacheKey{Binary: "/opt/claude", AccountID: "a", WorkDir: "/home/u"}
-	if _, enriched := catalog.ModelsFor(other, string(provider.Claude)); enriched {
-		t.Error("a binary that never reported must not claim enrichment")
+	if got := backing(other, string(provider.Claude)); got != BackedByShipped || got.Enriched() {
+		t.Errorf("a binary that never reported is backed by %v, want the shipped list", got)
 	}
-	if _, enriched := catalog.ModelsFor(key, string(provider.Codex)); enriched {
-		t.Error("a provider this catalog does not serve must not claim enrichment")
+	if got := backing(key, string(provider.Codex)); got != BackedByShipped {
+		t.Errorf("a provider this catalog does not serve is backed by %v, want the shipped list", got)
 	}
 }
 
 // The served list follows the CLI's latest answer: listed models in the CLI's
 // order with its default marked, every other catalog row kept after them as
-// Unlisted so threads already on it still resolve capabilities.
+// ProviderUnlisted so threads already on it still resolve capabilities.
 func TestModelsForMarksWhatTheLatestAnswerLists(t *testing.T) {
 	catalog := NewCatalogWith([]provider.ModelInfo{
 		{Slug: "claude-opus-5", Name: "Opus 5", Provider: "claude"},
@@ -1207,17 +1183,17 @@ func TestModelsForMarksWhatTheLatestAnswerLists(t *testing.T) {
 		{Value: "claude-opus-5", ResolvedModel: "claude-opus-5"},
 	}, nil)
 
-	models, enriched := catalog.ModelsFor(testKey("a"), string(provider.Claude))
-	if !enriched {
-		t.Fatal("enriched = false for a probed identity")
+	models, backing := catalog.ModelsFor(testKey("a"), string(provider.Claude))
+	if backing != BackedByIdentity {
+		t.Fatalf("a probed identity is backed by %v, want its own entry", backing)
 	}
 	want := []string{"claude-opus-5-5", "claude-haiku-4-5", "claude-opus-5", "claude-opus-4-5"}
 	if !slices.Equal(slugs(models), want) {
 		t.Fatalf("order = %v, want %v", slugs(models), want)
 	}
 	for _, m := range models {
-		if m.Unlisted != (m.Slug == "claude-opus-4-5") {
-			t.Errorf("%s Unlisted = %v", m.Slug, m.Unlisted)
+		if m.ProviderUnlisted != (m.Slug == "claude-opus-4-5") {
+			t.Errorf("%s ProviderUnlisted = %v", m.Slug, m.ProviderUnlisted)
 		}
 		if m.IsDefault != (m.Slug == "claude-opus-5-5") {
 			t.Errorf("%s IsDefault = %v", m.Slug, m.IsDefault)
@@ -1227,10 +1203,10 @@ func TestModelsForMarksWhatTheLatestAnswerLists(t *testing.T) {
 	// A later answer that drops opus-5 unlists it; nothing remembers it.
 	catalog.Store(testKey("a"), []claude.WireModel{{Value: "opus", ResolvedModel: "claude-opus-5-5"}}, nil)
 	models, _ = catalog.ModelsFor(testKey("a"), string(provider.Claude))
-	if m, _ := findModel(models, "claude-opus-5"); !m.Unlisted {
+	if m, _ := findModel(models, "claude-opus-5"); !m.ProviderUnlisted {
 		t.Error("a model the latest answer dropped stayed listed")
 	}
-	if m, ok := findModel(models, "claude-opus-5-5"); !ok || m.Unlisted || m.IsDefault {
+	if m, ok := findModel(models, "claude-opus-5-5"); !ok || m.ProviderUnlisted || m.IsDefault {
 		t.Errorf("opus-5-5 = %+v, %v; want listed, not default (no default row)", m, ok)
 	}
 }
@@ -1240,16 +1216,16 @@ func TestModelsForMarksWhatTheLatestAnswerLists(t *testing.T) {
 func TestModelsForTreatsAnAnswerWithoutModelsAsUnprobed(t *testing.T) {
 	catalog := NewCatalog()
 	catalog.Store(testKey("a"), nil, nil)
-	models, enriched := catalog.ModelsFor(testKey("a"), string(provider.Claude))
-	if enriched {
-		t.Fatal("enriched = true for an answer with no models")
+	models, backing := catalog.ModelsFor(testKey("a"), string(provider.Claude))
+	if backing.Enriched() {
+		t.Fatalf("an answer with no models is backed by %v, want the shipped list", backing)
 	}
 	if !slices.Equal(slugs(models), slugs(provider.ClaudeModels)) {
 		t.Fatalf("models = %v, want the shipped catalog", slugs(models))
 	}
 	for _, m := range models {
-		if m.Unlisted || m.IsDefault {
-			t.Fatalf("%s marked (Unlisted=%v IsDefault=%v) with no answer", m.Slug, m.Unlisted, m.IsDefault)
+		if m.ProviderUnlisted || m.IsDefault {
+			t.Fatalf("%s marked (ProviderUnlisted=%v IsDefault=%v) with no answer", m.Slug, m.ProviderUnlisted, m.IsDefault)
 		}
 	}
 }
@@ -1264,7 +1240,7 @@ func TestHaiku55TakesItsContextWindowsFromTheShippedEntry(t *testing.T) {
 	}}, nil)
 	models, _ := catalog.ModelsFor(testKey("a"), string(provider.Claude))
 	haiku, ok := findModel(models, "claude-haiku-5-5")
-	if !ok || haiku.Unlisted {
+	if !ok || haiku.ProviderUnlisted {
 		t.Fatalf("haiku 5.5 = %+v, %v; want listed", haiku, ok)
 	}
 	var tokens []int

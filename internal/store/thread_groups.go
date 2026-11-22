@@ -293,7 +293,8 @@ func (s *Store) SetThreadGroup(threadIDs []string, groupID string) ([]ThreadMove
 	if err != nil {
 		return nil, err
 	}
-	if err := setThreadGroupTx(tx, ids, groupID); err != nil {
+	var ended []endedRun
+	if err := setThreadGroupTx(tx, ids, groupID, &ended); err != nil {
 		return nil, err
 	}
 	moves := []ThreadMove{}
@@ -305,14 +306,16 @@ func (s *Store) SetThreadGroup(threadIDs []string, groupID string) ([]ThreadMove
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("store: commit thread group move: %w", err)
 	}
+	s.noteRunsEnded(ended)
 	return moves, nil
 }
 
 // setThreadGroupTx is the move inside the caller's transaction, which is
 // where its refusals belong: ApplyThreadOrganize writes a title and a pin
 // around it under the same all-or-nothing rule, and each caller reads back
-// what it needs.
-func setThreadGroupTx(tx *sql.Tx, threadIDs []string, groupID string) error {
+// what it needs. A worker grouped ends its nudges' runs (endNudgeRunsTx),
+// added to ended, which the caller reports once it commits.
+func setThreadGroupTx(tx *sql.Tx, threadIDs []string, groupID string, ended *[]endedRun) error {
 	ids := uniqueNonEmptyStrings(threadIDs)
 
 	// Every right-hand side reads the row as it was before the UPDATE, so
@@ -363,7 +366,13 @@ func setThreadGroupTx(tx *sql.Tx, threadIDs []string, groupID string) error {
 			if err := threadGroupMoveRefusal(tx, id); err != nil {
 				return fmt.Errorf("store: set thread group for %s: %w", id, err)
 			}
+			continue
 		}
+		runs, err := endNudgeRunsTx(tx, id)
+		if err != nil {
+			return fmt.Errorf("store: end the nudge runs on %s: %w", id, err)
+		}
+		*ended = append(*ended, runs...)
 	}
 	return nil
 }

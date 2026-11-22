@@ -46,7 +46,9 @@ import { noteThread, threadBackend } from '../transport/entityIndex';
 import { attachedBackends } from '../transport/backends';
 import { rememberedIdentity, forgetRememberedIdentity } from '../transport/rememberedIdentity';
 import { currentCatalogStamp, invalidateCatalogStamp, observeCatalogStamp, resetCatalogStampsForTest } from './catalogStamp';
-import { catalogKey, makeCatalogRecord, readCatalogRecord, type CatalogKind, type CatalogRowCache, type CatalogRows } from './catalog';
+import {
+  catalogKey, makeCatalogRecord, readCatalogRecord, type CatalogKind, type CatalogRowCache, type CatalogRows,
+} from './catalog';
 import {
   UNKNOWN_BACKEND_IDENTITY,
   onBackendIdentity,
@@ -78,8 +80,10 @@ import {
   listDatabaseNames,
   openReplicaDb,
   readRecord,
+  readRecords,
   readThreadKeys,
   writeRecord,
+  writeRecords,
   type ReplicaIndexEntry,
 } from './idb';
 import { replicaDatabaseName, unclaimedReplicaDatabases } from './purge';
@@ -695,42 +699,108 @@ export function replicaCatalogStamp(backend: BackendKey, kind: CatalogKind): str
   catch (error) { noteFailure('read catalog stamp', error); return null; }
 }
 
+/**
+ * A read of `backend`'s `kind` that began under `stamp` committed its rows:
+ * this window writes that catalog under `stamp` from now on, unless an
+ * invalidation replaced it since, which leaves the stamp this window holds.
+ */
+export function adoptReplicaCatalogStamp(backend: BackendKey, kind: CatalogKind, stamp: string | null): void {
+  if (!stamp) return;
+  try { if (currentCatalogStamp(backend, kind) === stamp) observeCatalogStamp(backend, kind, stamp); }
+  catch (error) { noteFailure('read catalog stamp', error); }
+}
+
 /** Synchronous fence before an asynchronous metadata rewrite. */
 export function invalidateReplicaCatalog(backend: BackendKey, kind: CatalogKind): void {
   try { invalidateCatalogStamp(backend, kind); }
   catch (error) { noteFailure('invalidate catalog', error); disabled = true; }
 }
 
-/** Sidebar caches use exactly the same connection and cancellation token as history. */
-export async function getReplicaCatalog<K extends CatalogKind>(backend: BackendKey, kind: K): Promise<CatalogRows[K][] | null> {
+const CATALOG_KINDS: readonly CatalogKind[] = ['projects', 'threads', 'groups'];
+
+/**
+ * What the replica keeps of one computer's catalogs: each catalog's rows, or
+ * null where its record is absent or unreadable, and whether the set is a
+ * kept tree. Three records of the right generation under the current stamps,
+ * read in one transaction, are a kept tree. Every write is all three in one
+ * transaction (putReplicaTree), so a tree is three catalogs one window held
+ * together; a set with a record missing, fenced by a newer stamp or invalid
+ * is partial. Three records an older build wrote are a tree like any other.
+ */
+export interface KeptTree {
+  readonly rows: { readonly [K in CatalogKind]: CatalogRows[K][] | null };
+  readonly tree: boolean;
+}
+
+/**
+ * Read `backend`'s three catalog records in one transaction. Each readable
+ * record's stamp becomes the one this window holds. Null when no record can
+ * be read. Sidebar caches use exactly the same connection and cancellation
+ * token as history.
+ */
+export async function getReplicaTree(backend: BackendKey): Promise<KeptTree | null> {
   const token = replicaToken(backend);
-  const stamp = replicaCatalogStamp(backend, kind);
-  if (!stamp) return null;
+  const stamps = CATALOG_KINDS.map((kind) => replicaCatalogStamp(backend, kind));
+  if (stamps.some((stamp) => stamp === null)) return null;
   try {
     const db = await activeDb(token);
     if (!db) return null;
-    const raw = await readRecord<unknown>(db, META_STORE, catalogKey(kind));
+    const raw = await readRecords(db, META_STORE, CATALOG_KINDS.map(catalogKey));
     const session = sessionOf(token);
     if (!session) return null;
-    if (currentCatalogStamp(backend, kind) !== stamp) return null;
-    const rows = readCatalogRecord(raw, session.identity.generation, kind, stamp);
-    if (rows) observeCatalogStamp(backend, kind, stamp);
+    const read = CATALOG_KINDS.map((kind, index) => {
+      const stamp = stamps[index]!;
+      if (currentCatalogStamp(backend, kind) !== stamp) return null;
+      return readCatalogRecord(raw[index], session.identity.generation, kind, stamp);
+    });
     noteSuccess();
-    return rows;
-  } catch (error) { noteFailure('read catalog', error); return null; }
+    if (read.every((rows) => rows === null)) return null;
+    CATALOG_KINDS.forEach((kind, index) => { if (read[index] !== null) observeCatalogStamp(backend, kind, stamps[index]!); });
+    const [projects, threads, groups] = read as [
+      CatalogRows['projects'][] | null, CatalogRows['threads'][] | null, CatalogRows['groups'][] | null,
+    ];
+    return { rows: { projects, threads, groups }, tree: read.every((rows) => rows !== null) };
+  } catch (error) { noteFailure('read catalog tree', error); return null; }
 }
 
-export async function putReplicaCatalog<K extends CatalogKind>(backend: BackendKey, kind: K, rows: readonly CatalogRows[K][], stamp: string | null, token = replicaToken(backend), cache?: CatalogRowCache): Promise<void> {
-  if (!stamp) return;
+/**
+ * How a catalog tree write ended:
+ *   - `written`: the three records landed;
+ *   - `failed`: IndexedDB failed it, and nothing landed;
+ *   - `stale-stamp`: a stamp it carries is not the current one, because this
+ *     window never held one or an invalidation replaced it; nothing landed;
+ *   - `gone`: no live session for the token, or one that may not write.
+ */
+export type CatalogWriteOutcome = 'written' | 'failed' | 'stale-stamp' | 'gone';
+
+/** One catalog of a tree as it is written, under the stamp its rows were read with. */
+export interface TreeCatalog<K extends CatalogKind> {
+  readonly rows: readonly CatalogRows[K][];
+  readonly stamp: string | null;
+  readonly cache?: CatalogRowCache;
+}
+
+/** Write `backend`'s three catalog records in one transaction. */
+export async function putReplicaTree(
+  backend: BackendKey, catalogs: { readonly [K in CatalogKind]: TreeCatalog<K> }, token: number,
+): Promise<CatalogWriteOutcome> {
   try {
     const db = await activeDb(token);
     const session = sessionOf(token);
-    if (!db || !session || session.offline || currentCatalogStamp(backend, kind) !== stamp) return;
-    observeCatalogStamp(backend, kind, stamp);
-    const record = makeCatalogRecord(session.identity.generation, kind, rows, stamp, cache);
-    await writeRecord(db, META_STORE, catalogKey(kind), record);
+    if (!db || !session || session.offline) return 'gone';
+    const entries: [string, unknown][] = [];
+    for (const kind of CATALOG_KINDS) {
+      const { rows, stamp, cache } = catalogs[kind] as TreeCatalog<typeof kind>;
+      if (!stamp || currentCatalogStamp(backend, kind) !== stamp) return 'stale-stamp';
+      entries.push([catalogKey(kind), makeCatalogRecord(session.identity.generation, kind, rows, stamp, cache)]);
+    }
+    await writeRecords(db, META_STORE, entries);
     noteSuccess();
-  } catch (error) { noteFailure('write catalog', error); }
+    return 'written';
+  } catch (error) {
+    noteFailure('write catalog tree', error);
+    return 'failed';
+  }
 }
 
 /**

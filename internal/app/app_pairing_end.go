@@ -21,7 +21,8 @@ import (
 // lockComputerPairing takes one paired computer's fence. Admission to it (a
 // thread request's row, a command's watch) checks the pairing and writes
 // its record inside the fence, the end of a pairing runs inside it, and so
-// does applying what that computer answered about a request, so nothing
+// do applying what that computer answered about a request and refusing a
+// request whose call was never sent (startRemoteRequest), so nothing
 // admitted after an end is touched by it and nothing admitted before it is
 // missed. The fence is held for writes only, never across a call to that
 // computer.

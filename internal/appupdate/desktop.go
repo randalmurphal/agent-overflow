@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 
+	"agent-overflow/internal/supervise"
+
 	"github.com/wailsapp/wails/v3/pkg/updater"
 )
 
@@ -128,7 +130,9 @@ func (a *Service) restartToUpdateDesktop() error {
 	}
 	if !trial {
 		log.Printf("updater: %s does not apply updates with a trial; replacing this version with it", rel.Version)
-		if err := a.restartWithExitWatchdog(a.frameworkRestart); err != nil {
+		swap := supervise.NewSwapTiming(log.Printf, rel.Version, nil)
+		swap.Phases().Skip("handoff", rel.Version+" does not apply updates with a trial")
+		if err := a.restartWithExitWatchdog(swap, a.frameworkRestart); err != nil {
 			release()
 			return err
 		}
@@ -143,7 +147,7 @@ func (a *Service) restartToUpdateDesktop() error {
 	a.updater.mu.Unlock()
 	// The helper waits for this process to exit; a wedged shutdown must not
 	// outlast its wait.
-	a.armRestartExitWatchdog(a.restartWatchdogDelay())
+	a.armRestartExitWatchdog(a.restartWatchdogDelay(), nil)
 	log.Printf("updater: handed the update to %s to its helper; quitting", rel.Version)
 	mode.quit()
 	return nil

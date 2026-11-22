@@ -24,7 +24,7 @@ results carry no computer fields. Add a field or a parameter to both
 shapes, or to neither.
 
 A session's `Shape.Spawn` carries what it can start: the providers this
-computer offers, the profile names it runs, and the session's sub-thread
+computer offers, the names of the profiles on them, and the session's sub-thread
 level and limit. A session at the limit has no `thread_spawn` schema and
 reads no word of it; `Tools` and the guide decide that from one
 `CanSpawn`, and text a model reads names no provider or profile the shape

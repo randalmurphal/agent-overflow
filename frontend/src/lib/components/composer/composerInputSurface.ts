@@ -17,6 +17,7 @@ import type { Snippet } from 'svelte';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import type { ComposerDraftStore } from '../../stores/composerDraft.svelte';
 import type { AttachmentPreviewCache } from '../../utils/attachmentPreview.svelte';
+import type { ControlAccess } from '../../transport/scopes';
 
 /** A textarea selection, as `setSelectionRange` takes it. */
 export interface ComposerInputSelection {
@@ -92,6 +93,13 @@ export interface ComposerInputSurfaceProps {
    * re-decodes every attached image.
    */
   attachmentCache?: AttachmentPreviewCache;
+  /**
+   * The host's answer for uploading here. The attach button shows while
+   * uploading is granted or only the computer's outage stops it, and is
+   * disabled with the reason unless `granted`; a paste, drop or pick is
+   * refused through `blockAttachment`.
+   */
+  attachAccess: ControlAccess;
   /**
    * Host veto for attachment selection, paste and drag events.
    * Return true to refuse the event; the host owns the reason it

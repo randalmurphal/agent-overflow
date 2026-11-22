@@ -4,6 +4,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { IDBFactory } from 'fake-indexeddb';
 import { prepareNativeShell } from './boot';
 import { stageBackend, resetStagedBackends } from '../../test/helpers/backends';
+import { readSidebarCatalogs } from '../../test/helpers/sidebarCatalogs';
 import { makeThread } from '../../test/helpers/chat';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { attachedBackends, backendById, syncAttachedBackends, __attachBackendForTest } from '../transport/backends';
@@ -14,8 +15,7 @@ import { setBackendIdentityFromBootstrap } from '../transport/backendIdentity';
 import { wsClient } from '../transport/wsClient';
 import { resolveThreadBackend } from '../transport/entityIndex';
 import { getThreads } from '../stores/threads.svelte';
-import { loadThreadCatalogs } from '../stores/threadCatalogs';
-import { refreshProjects, getProjects } from '../stores/projects.svelte';
+import { getProjects } from '../stores/projects.svelte';
 import type { ProjectWithCounts } from '../types/models';
 import { __resetSelectedBackendForTest, selectedBackend, setSelectedBackend } from '../stores/selectedBackend.svelte';
 import { __resetScopesForTest, hasScope } from '../transport/scopes';
@@ -136,15 +136,15 @@ async function verifyCatalogsAndDrafts(computers: string[]): Promise<void> {
     project: { id: `${computer}-project`, name: 'repo', path: '/repo', sortPosition: 0,
       createdAt: 0, updatedAt: 0, archived: false }, threadCount: 1,
   }));
-  // Projects and threads both use readComputerRows; each callback consumes
-  // its own pinned target before returning that computer's share.
+  // Each catalog's callback consumes its own pinned target before returning
+  // that computer's share.
   const { takePinnedBackend } = await import('../transport/backends');
   setBindingMock('ListProjects', async () => {
     const computer = takePinnedBackend();
     return projects.filter((row) => row.project.id === `${computer}-project`);
   });
-  await refreshProjects();
-  await loadThreadCatalogs();
+  // The boot's own read: projects, threads and groups as one round.
+  await readSidebarCatalogs();
   expect(getProjects().map((row) => row.project.id)).toEqual(projects.map((row) => row.project.id));
   expect(catalogs).toEqual(computers);
   expect(getThreads().map((thread) => thread.id)).toEqual(computers.map((id) => `${id}-thread`));

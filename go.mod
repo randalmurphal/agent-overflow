@@ -68,6 +68,7 @@ require (
 	golang.org/x/text v0.42.0
 	modernc.org/libc v1.77.1
 	modernc.org/sqlite v1.60.1
+	mvdan.cc/sh/v3 v3.12.0
 	tailscale.com v1.104.1
 )
 
@@ -301,7 +302,6 @@ require (
 	howett.net/plist v1.0.2-0.20250314012144-ee69052608d9 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
-	mvdan.cc/sh/v3 v3.12.0 // indirect
 )
 
 tool github.com/wailsapp/wails/v3/cmd/wails3

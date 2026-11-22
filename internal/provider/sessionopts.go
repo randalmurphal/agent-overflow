@@ -251,9 +251,9 @@ type SessionOptions struct {
 	Resume string
 
 	// ResumeAt carries a provider-native transcript/message UUID inside
-	// Resume. Claude uses this with --resume-session-at to force a resumed
-	// process onto AO's canonical settled leaf. Empty keeps provider default
-	// resume behaviour.
+	// Resume. Claude passes it as --resume-session-at, and only a pinned
+	// fork start sets it, to cut the source session where the fork's
+	// timeline was cut. Empty keeps the provider's default leaf.
 	ResumeAt string
 
 	// ForkSession signals that the next start should branch off Resume

@@ -8,7 +8,10 @@ import (
 // HarnessStallProviderEvents holds the thread's provider event worker the
 // way a handler stuck on a slow write would: every event read from the
 // thread's provider afterwards queues behind it, unhandled, until
-// HarnessReleaseProviderEvents. A session stop's drain gives up on such a
+// HarnessReleaseProviderEvents. It returns once the worker holds the stall,
+// so HarnessPendingProviderEvents then counts the stall and what queued
+// behind it; when the worker does not reach it within 10 s it fails and
+// holds nothing. A session stop's drain gives up on such a
 // worker at its stall bound (the `drain-stall` timing entry), which is how
 // a spec runs a replacement start with the dead session's frames still
 // queued. One stall per thread at a time.

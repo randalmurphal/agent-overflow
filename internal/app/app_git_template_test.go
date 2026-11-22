@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -12,6 +13,7 @@ import (
 	"sync"
 	"testing"
 
+	"agent-overflow/internal/ownedtemp"
 	"agent-overflow/internal/testutil"
 )
 
@@ -36,30 +38,38 @@ type gitSnapshotTemplate struct {
 
 var fixtureTemplateRoot struct {
 	sync.Mutex
-	dir string
+	dir     string
+	release func() error
 }
 
+// fixtureTemplatePrefix names the template roots, one per test process.
+const fixtureTemplatePrefix = "agent-overflow-app-fixture-templates-"
+
 // removeFixtureTemplates deletes the fixture templates, git repositories and
-// databases, built by this test binary. TestMain calls it after the tests
-// finish.
+// databases, built by this test binary, and the template roots of test
+// processes that exited without removing theirs (ownedtemp): killed, timed
+// out, or a helper process that ended in os.Exit. TestMain calls it after
+// the tests finish.
 func removeFixtureTemplates() error {
 	fixtureTemplateRoot.Lock()
 	defer fixtureTemplateRoot.Unlock()
-	if fixtureTemplateRoot.dir == "" {
-		return nil
+	var err error
+	if fixtureTemplateRoot.release != nil {
+		err = fixtureTemplateRoot.release()
+		fixtureTemplateRoot.dir, fixtureTemplateRoot.release = "", nil
 	}
-	return os.RemoveAll(fixtureTemplateRoot.dir)
+	return errors.Join(err, ownedtemp.Sweep("", fixtureTemplatePrefix))
 }
 
 func newFixtureTemplateDir() (string, error) {
 	fixtureTemplateRoot.Lock()
 	defer fixtureTemplateRoot.Unlock()
 	if fixtureTemplateRoot.dir == "" {
-		dir, err := os.MkdirTemp("", "agent-overflow-app-fixture-templates-")
+		dir, release, err := ownedtemp.Make("", fixtureTemplatePrefix)
 		if err != nil {
 			return "", err
 		}
-		fixtureTemplateRoot.dir = dir
+		fixtureTemplateRoot.dir, fixtureTemplateRoot.release = dir, release
 	}
 	return os.MkdirTemp(fixtureTemplateRoot.dir, "repo-")
 }

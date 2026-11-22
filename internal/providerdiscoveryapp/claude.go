@@ -1,10 +1,12 @@
 package providerdiscoveryapp
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 
 	"agent-overflow/internal/claudecatalog"
+	"agent-overflow/internal/claudemodels"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/providerstatus"
@@ -17,13 +19,15 @@ import (
 // the enriched answer.
 func (s *Service) ProbeClaudeAccount() (provider.AccountInfo, error) {
 	if s == nil || s.deps.ProviderBinary == nil || s.deps.Selection == nil ||
-		s.deps.ProbeKey == nil || s.deps.RunAccountProbe == nil || s.deps.ClaudeConfig == nil {
+		s.deps.RunAccountProbe == nil || s.deps.ClaudeProbe == nil {
 		return provider.AccountInfo{}, fmt.Errorf("provider discovery: Claude probe unavailable")
 	}
 	providerName := string(provider.Claude)
 	binary := s.deps.ProviderBinary(providerName)
 	selection := s.deps.Selection(providerName)
-	key := s.deps.ProbeKey(providerName, binary, selection.AccountID)
+	// The key and the configuration are read together, before the probe
+	// waits for the account lock, and the probe runs with that configuration.
+	key, cfg := s.deps.ClaudeProbe(binary, selection.AccountID)
 
 	var wire claudecatalog.ModelCapture
 	var wireCommands claudecatalog.CommandCapture
@@ -32,7 +36,6 @@ func (s *Service) ProbeClaudeAccount() (provider.AccountInfo, error) {
 		Cache:        s.caches.Claude,
 		Key:          key,
 		Probe: func(ctx context.Context) (provider.AccountInfo, error) {
-			cfg := s.deps.ClaudeConfig(binary)
 			cfg.OnModels = wire.Capture
 			cfg.OnCommands = wireCommands.Capture
 			return s.deps.ProbeClaude(ctx, cfg)
@@ -40,29 +43,27 @@ func (s *Service) ProbeClaudeAccount() (provider.AccountInfo, error) {
 		Unauthenticated: providerstatus.ClaudeUnauthenticated,
 		EmitUnauth:      s.EmitClaudeUnauthenticatedStatus,
 		AfterAdopt: func(account provideraccounts.Account) {
-			wire.Store(key)
-			wireCommands.Store(key)
+			// The live entry and the persisted record are filed under the
+			// identity that answered: the key the probe started under, with
+			// the ADOPTED account, the one the selection names once the probe
+			// returns. A first probe runs with no selection at all, and a
+			// login changed outside AO adopts the account that actually
+			// answered. The selection the probe started under is the
+			// fallback for a probe that adopted nothing (no credential to
+			// attribute), where it is the only account the answer can
+			// belong to.
+			filed := key.WithAccount(cmp.Or(account.ID, key.AccountID))
+			wire.Store(filed)
+			wireCommands.Store(filed)
+			if s.deps.RememberClaudeCatalog == nil {
+				return
+			}
 			// Exported from the catalog rather than taken from `wire`
 			// directly: the entry also holds the wire-only models earlier
 			// probes of this binary learned and this one omitted, which is
 			// exactly what the next process must serve again.
-			//
-			// Filed under the ADOPTED account, because that is the account
-			// the next boot will probe as: a first probe runs with no
-			// selection at all, and a login changed outside AO adopts the
-			// account that actually answered. The selection the key was
-			// built from is the fallback for a probe that adopted nothing
-			// (no credential to attribute), where it is the only account
-			// the answer can belong to.
-			if s.deps.RememberClaudeCatalog == nil {
-				return
-			}
-			accountID := account.ID
-			if accountID == "" {
-				accountID = selection.AccountID
-			}
-			if snapshot, ok := claudecatalog.Export(key); ok {
-				s.deps.RememberClaudeCatalog(accountID, snapshot)
+			if snapshot, ok := claudecatalog.Export(filed); ok {
+				s.deps.RememberClaudeCatalog(filed, snapshot)
 			}
 		},
 	})
@@ -90,26 +91,30 @@ func (s *Service) ClaudeModels(providerName string) []provider.ModelInfo {
 
 // ClaudeCatalog is ClaudeModels plus its provenance: CatalogProbed once a
 // probe of this binary has reported (live or restored at boot from the
-// account's persisted record), CatalogShipped until then.
+// account's persisted record), CatalogShipped until then. A list another
+// account on the binary reported counts as probed, so the picker keeps it
+// across an account switch; ClaudeAccountCatalog tells the two apart.
 func (s *Service) ClaudeCatalog(providerName string) provider.ModelCatalog {
-	models, enriched := claudecatalog.Models(s.ClaudeProbeKey(), providerName)
+	catalog, _ := s.ClaudeAccountCatalog(providerName)
+	return catalog
+}
+
+// ClaudeAccountCatalog is ClaudeCatalog and what backs it, so a caller
+// that must run on what the current account's CLI lists can wait for
+// claudemodels.BackedByIdentity.
+func (s *Service) ClaudeAccountCatalog(providerName string) (provider.ModelCatalog, claudemodels.Backing) {
+	models, backing := claudecatalog.Models(s.ClaudeProbeKey(), providerName)
 	provenance := provider.CatalogShipped
-	if enriched {
+	if backing.Enriched() {
 		provenance = provider.CatalogProbed
 	}
-	return provider.ModelCatalog{Models: models, Provenance: provenance}
+	return provider.ModelCatalog{Models: models, Provenance: provenance}, backing
 }
 
 // ClaudeModelAliases returns the current Claude identity's probe-reported
 // alias map, nil until a probe has reported one.
 func (s *Service) ClaudeModelAliases() map[string]string {
 	return claudecatalog.ModelAliases(s.ClaudeProbeKey())
-}
-
-// ClaudeReportsModel reports whether the current Claude identity's probe listed
-// slug, false until a probe has reported.
-func (s *Service) ClaudeReportsModel(slug string) bool {
-	return claudecatalog.ReportsModel(s.ClaudeProbeKey(), slug)
 }
 
 // ClaudeCommands returns the last probe-reported command list for the current

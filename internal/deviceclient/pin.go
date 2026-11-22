@@ -30,7 +30,8 @@ var ErrCertificateMismatch = errors.New(
 // client makes is a small JSON round trip on a LAN, and the one that runs
 // inline on a carried WebSocket upgrade is the reason there is a bound at
 // all: a stalled mint must fail fast enough for the page's reconnect
-// ladder to own the retry.
+// ladder to own the retry. WithRedemptionBound replaces it for a test's
+// redemption alone, whose in-process backend shares a crowded machine.
 const pinTimeout = 10 * time.Second
 
 // dialTimeout bounds one TCP connect for every consumer that brings no
@@ -131,9 +132,31 @@ func NewPinnedTransport(certFingerprint string, opts ...Option) *http.Transport 
 // A credential POST may neither change authority nor be replayed by net/http.
 // Endpoint changes require a separately verified computer route.
 func credentialHTTPClient(fingerprint string, opts ...Option) *http.Client {
-	return &http.Client{Transport: NewPinnedTransport(fingerprint, opts...), Timeout: pinTimeout,
+	var transport http.RoundTripper = NewPinnedTransport(fingerprint, opts...)
+	if wrap := resolveOptions(opts).roundTrip; wrap != nil {
+		transport = wrap(transport)
+	}
+	return &http.Client{Transport: transport, Timeout: pinTimeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
+}
+
+// redemptionHTTP is base with the redemption's bound: pinTimeout, or what
+// bound answers now (WithRedemptionBound).
+func redemptionHTTP(base *http.Client, bound func() (time.Duration, error)) (*http.Client, error) {
+	if bound == nil {
+		return base, nil
+	}
+	timeout, err := bound()
+	if err != nil {
+		return nil, fmt.Errorf("deviceclient: the redemption was not sent: it has no bound: %w", err)
+	}
+	if timeout <= 0 {
+		return nil, fmt.Errorf("deviceclient: the redemption was not sent: its bound %v is not positive", timeout)
+	}
+	redeemer := *base
+	redeemer.Timeout = timeout
+	return &redeemer, nil
 }
 
 func refuseRemoteDial(_ context.Context, network, address string) (net.Conn, error) {

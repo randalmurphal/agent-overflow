@@ -23,9 +23,9 @@
   import SettingsField from './SettingsField.svelte';
   import { settingsComputer } from './settingsComputer';
 
-  const { call, hasScope } = settingsComputer();
+  const { call, onHost: onThisHost } = settingsComputer();
   const clientMode = isClientMode();
-  let localOnly = $derived(clientMode || !hasScope('host'));
+  let localOnly = $derived(clientMode || !onThisHost());
 
   // A saved value that differs from the one this session's launcher started
   // with is waiting on a restart. The backend reports both

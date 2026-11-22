@@ -16,7 +16,6 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadapp"
-	"agent-overflow/internal/triage"
 	"agent-overflow/internal/workflow/wake"
 )
 
@@ -159,7 +158,7 @@ func (f *claimFixture) startedNothing(t *testing.T) {
 	if _, live := f.app.sessionManager().get(f.caller.ID); live {
 		t.Error("a session started on a claimed thread")
 	}
-	if n := len(recordedUserEnvelopes(t, f.stdin)); n != 0 {
+	if n := len(settledUserEnvelopes(t, f.stdin)); n != 0 {
 		t.Errorf("the provider of a claimed thread was written %d messages", n)
 	}
 	// A start the claim turned away is no failure.
@@ -735,24 +734,15 @@ func TestAWorkerAnswerForAClaimedWorkerIsQueuedAndWaitsForTheDecision(t *testing
 			case "restart":
 				crashedDelete(t, f.app, f.worker.ID, during)
 				f.drain(t)
-				// What a restart is to the worker's prompts: the registry and
-				// the in-memory queue are gone, the durable rows stay.
-				f.app.workerPrompts.mu.Lock()
-				f.app.workerPrompts.byToken, f.app.workerPrompts.current = nil, nil
-				f.app.workerPrompts.mu.Unlock()
-				f.app.workerPrompts.async.mu.Lock()
-				f.app.workerPrompts.async.open = nil
-				f.app.workerPrompts.async.mu.Unlock()
-				f.app.triage = triage.NewRouter(f.app.store, f.app.emit)
-				f.app.configureTriageQueueCallbacks()
-				f.app.releaseUndecidedDeletes()
-				untouched(t, f.app, f.worker.ID)
-				f.app.restoreDurableFlushQueueAtBoot()
-				f.drain(t)
-				f.requireReturned(t, sendID)
-				f.app.seedAsyncQuestionPrompts()
-				f.drain(t)
-				f.requireRoutedAgain(t, sendID)
+				// The registry and the in-memory queue are gone with the
+				// restart, the durable rows stay.
+				after := f.restart(t)
+				after.app.releaseUndecidedDeletes()
+				untouched(t, after.app, f.worker.ID)
+				after.app.restoreDurableFlushQueueAtBoot()
+				after.drain(t)
+				after.requireReturned(t, sendID)
+				after.requireThePersons(t)
 			}
 		})
 	}
@@ -970,7 +960,7 @@ func TestALiveSessionsQueueWaitsForTheDecision(t *testing.T) {
 				if ids := queuedSendIDsOf(t, f.app, f.caller.ID, threadWakeSendID("")); len(ids) != 2 {
 					t.Errorf("queued while claimed = %q, want the two not withdrawn", ids)
 				}
-				if n := len(recordedUserEnvelopes(t, f.stdin)); n != 0 {
+				if n := len(settledUserEnvelopes(t, f.stdin)); n != 0 {
 					t.Errorf("a claimed thread's live session was written %d messages", n)
 				}
 			}
@@ -984,7 +974,7 @@ func TestALiveSessionsQueueWaitsForTheDecision(t *testing.T) {
 				})
 				committedDelete(t, f.app, f.caller.ID, during)
 				f.settle(t)
-				if n := len(recordedUserEnvelopes(t, f.stdin)); n != 0 {
+				if n := len(settledUserEnvelopes(t, f.stdin)); n != 0 {
 					t.Fatalf("a committed thread's session was written %d messages", n)
 				}
 				return

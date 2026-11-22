@@ -29,6 +29,6 @@ export const activityRailIconActionClasses =
   'inline-flex shrink-0 rounded p-0.5 text-text-secondary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-50 compact:min-h-9 compact:min-w-9 compact:items-center compact:justify-center';
 
 // A body's "Show N more…" and "Show less" text button: the Todos body's
-// list and the Agents body's Past list.
+// list and the Agents body's Past list, with the compact hit target.
 export const activityRailRevealClasses =
-  'mt-0.5 inline-flex rounded px-1 py-0.5 text-[0.6875rem] text-fg-hint/65 transition-colors hover:bg-surface-2/40 hover:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35';
+  'mt-0.5 inline-flex items-center rounded px-1 py-0.5 text-[0.6875rem] text-fg-hint/65 transition-colors hover:bg-surface-2/40 hover:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 compact:min-h-9 compact:px-2 compact:select-none';

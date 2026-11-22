@@ -1,9 +1,9 @@
 package store
 
-// Migration v159 creates every table of the issue tracker integration
+// Migration v162 creates every table of the issue tracker integration
 // (docs/architecture/tracker-backend.md#tables). While the feature is
 // unshipped the tracker schema stays in this one migration, so a later
-// tracker table amends trackerV159SQL here, with its frozen hash, instead
+// tracker table amends trackerV162SQL here, with its frozen hash, instead
 // of adding a version.
 //
 // The durable records:
@@ -23,7 +23,7 @@ package store
 //     site, not a connection, so a link survives a connection removed and
 //     added again.
 //
-// The mirror (trackerCacheTablesV159SQL) is every table named
+// The mirror (trackerCacheTablesV162SQL) is every table named
 // tracker_cache_*: a cache of what the trackers hold, filled by sync and
 // emptied by a restore. Each row reaches a tracker_cache_roots row through
 // ON DELETE CASCADE keys, the root's link to its connection is the only
@@ -177,11 +177,11 @@ package store
 //   - tracker_cache_sync: one row per scope, an empty board_id being the
 //     root's linked issues. A board scope's row goes when the board's last
 //     listing goes. outcome_at is the time of the last failure or clear.
-const trackerMigrationVersion = 159
+const trackerMigrationVersion = 162
 
-const trackerV159SQL = trackerDurableTablesV159SQL + trackerCacheTablesV159SQL
+const trackerV162SQL = trackerDurableTablesV162SQL + trackerCacheTablesV162SQL
 
-const trackerCacheTablesV159SQL = `
+const trackerCacheTablesV162SQL = `
 CREATE TABLE tracker_cache_roots (
  id INTEGER PRIMARY KEY AUTOINCREMENT,
  connection_id TEXT UNIQUE REFERENCES tracker_connections(id) ON DELETE SET NULL,
@@ -479,7 +479,7 @@ CREATE TRIGGER trg_project_tracker_boards_retire AFTER DELETE ON project_tracker
 END;
 `
 
-const trackerDurableTablesV159SQL = `
+const trackerDurableTablesV162SQL = `
 CREATE TABLE tracker_connections (
  id TEXT PRIMARY KEY,
  kind TEXT NOT NULL CHECK(kind IN ('jira', 'tempo', 'linear')),

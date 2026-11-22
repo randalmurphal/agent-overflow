@@ -12,7 +12,7 @@
   import { setupEventListeners } from './lib/stores/events';
   import { OPEN_GIT_DIALOG_EVENT, type OpenGitDialogDetail } from './lib/stores/eventNames';
   import { getThreads } from './lib/stores/threads.svelte';
-  import { loadThreadCatalogs } from './lib/stores/threadCatalogs';
+  import { loadSidebarCatalogs } from './lib/stores/sidebarCatalogs';
   import { refreshAgentWakes } from './lib/stores/threadWakes.svelte';
   import { markNotificationHydrated } from './lib/stores/eventsNotification';
   import {
@@ -28,6 +28,7 @@
   import { HOME_BACKEND } from './lib/transport/backendKey';
   import { backendReachable } from './lib/stores/attachedBackends.svelte';
   import { syncSidebarFromAppStorage, syncSidebarFromSettings } from './lib/stores/sidebar.svelte';
+  import { startSidebarEntryContinuity, syncSidebarEntryDisclosureFromAppStorage } from './lib/stores/sidebarEntryContinuity.svelte';
   import { syncWorkflowsOverlayFromAppStorage } from './lib/stores/workflowsOverlay.svelte';
   import { installToolPanes, syncToolPanesFromAppStorage } from './lib/stores/toolPanes.svelte';
   import { syncPullsFiltersFromAppStorage } from './lib/stores/pullsPageFilters.svelte';
@@ -418,6 +419,11 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
     refreshScreenPresence();
   });
 
+  // A sidebar row keeps its fold and list limit through its key moving,
+  // whether or not the sidebar is mounted to see it move
+  // (stores/sidebarEntryContinuity.svelte.ts).
+  const stopSidebarEntryContinuity = startSidebarEntryContinuity();
+
   onMount(() => {
     let disposed = false;
     const cleanupEvents = setupEventListeners();
@@ -479,16 +485,17 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
       restoringLayout = true;
       heldForStartingBackend = false;
       try {
-        // The threads and the groups that gather them, read as one round.
-        // A failed group load is not a failed boot: the catalog state shows
-        // and retries it.
-        const threads = await loadThreadCatalogs();
+        // The projects, the threads under them and the groups that gather
+        // those threads, read as one round. A failed project or group load
+        // is not a failed boot: the catalog state shows and retries it.
+        const threads = await loadSidebarCatalogs();
         if (disposed) return;
         void refreshAgentWakes();
         await appStorageReady;
         if (disposed) return;
         syncSidebarLayoutFromAppStorage();
         syncSidebarFromAppStorage();
+        syncSidebarEntryDisclosureFromAppStorage();
         // The workflows stack/filter/sweep cursor and the last-used tool are
         // durable per client (UI-SPEC §2.1), so they adopt the hydrated copy
         // the same way the sidebar's view state does.
@@ -664,6 +671,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
       window.removeEventListener('keydown', handleGlobalKeydown);
     }
     clearCommandRegistry();
+    stopSidebarEntryContinuity();
   });
 </script>
 

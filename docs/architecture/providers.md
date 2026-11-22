@@ -23,6 +23,9 @@ the provider process owns turn state.
 
 - `session_ref` on `threads` records the provider-side session file path
   (`~/.claude/...` or `~/.codex/...`). This is what resume feeds back in.
+  A Claude resume passes it as `--resume` alone; only a pinned fork start
+  adds a `--resume-session-at` cursor
+  ([Start, Resume, Fork](recovery.md#start-resume-fork)).
 - Fork creates a new thread row; `forked_from_thread_id` records the lineage.
   Codex has a native `thread/fork` method. It reads the source out of the
   thread store but loads the CHILD into the app-server that answered, with

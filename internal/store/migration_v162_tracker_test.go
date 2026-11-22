@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// v159 creates the durable tracker tables. Each refused statement below is
+// v162 creates the durable tracker tables. Each refused statement below is
 // valid but for the one rule it names.
 func TestTrackerMigrationCreatesTheDurableTables(t *testing.T) {
 	db := migrateThrough(t, trackerMigrationVersion-1)
@@ -87,7 +87,7 @@ func TestTrackerMigrationCreatesTheDurableTables(t *testing.T) {
 	assertRows(t, db, `SELECT count(*) FROM project_tracker_boards`, "0")
 }
 
-// v159 creates the mirror. Each refused statement below is valid but for
+// v162 creates the mirror. Each refused statement below is valid but for
 // the one rule it names.
 func TestTrackerMigrationCreatesTheMirror(t *testing.T) {
 	db := migrateThrough(t, trackerMigrationVersion)

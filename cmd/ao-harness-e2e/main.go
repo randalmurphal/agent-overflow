@@ -6,7 +6,9 @@
 // On Linux the suite also runs in its own network namespace: loopback plus
 // one private LAN interface and no route off the machine, so LAN-bind specs
 // exercise a real non-loopback listener without reaching a real network.
-// Started inside such a namespace already (ao-netns, as the Android smoke
+// The namespace also gives the suite a private RAM temp directory and the
+// lowest CPU priority (internal/netisolate). Started inside such a
+// namespace already (ao-netns, as the Android smoke
 // does so the emulator and adb share it), it runs there rather than in a
 // new one. --host-network opts out for suites that need host services.
 package main
@@ -20,6 +22,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -67,6 +70,11 @@ func main() {
 }
 
 func run(args []string, stdout, stderr *os.File) int {
+	// The suite's parent-death signal fires when the thread that starts it
+	// exits (configureParentDeath); this one lasts until the suite is
+	// waited for.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	opts, err := parseArgs(args)
 	if err != nil {
 		fmt.Fprintln(stderr, "ao-harness-e2e:", err)
@@ -168,11 +176,20 @@ func run(args []string, stdout, stderr *os.File) int {
 	command.Stdout = stdout
 	command.Stderr = stderr
 	configureProcessGroup(command)
+	configureParentDeath(command)
 	if isolate {
-		if err := netisolate.Command(command); err != nil {
-			fmt.Fprintln(stderr, "ao-harness-e2e: isolate network:", err)
+		release, err := netisolate.Command(command, stderr)
+		if err != nil {
+			warn(stderr, "ao-harness-e2e: isolate the suite:", err)
 			return 1
 		}
+		// run returns once the suite's process tree has been waited for,
+		// a signal's teardown included.
+		defer func() {
+			if err := release(); err != nil {
+				warn(stderr, "ao-harness-e2e:", err)
+			}
+		}()
 	}
 	// Playwright runs in its own process group, so a signal meant for the
 	// suite reaches only this process. Registered before the start so none
@@ -200,10 +217,9 @@ func run(args []string, stdout, stderr *os.File) int {
 	}
 	interrupted := haltOnSignal(ctx, signals, func(sig os.Signal) {
 		stopOnce.Do(func() {
-			// stderr is the only place to report; a failed write has nowhere else to go.
-			_, _ = fmt.Fprintf(stderr, "ao-harness-e2e: stopping contained suite: received %v\n", sig)
+			warn(stderr, fmt.Sprintf("ao-harness-e2e: stopping contained suite: received %v", sig))
 			if err := terminateProcessTreeVerified(command, group, identity); err != nil {
-				_, _ = fmt.Fprintln(stderr, "ao-harness-e2e: terminate contained suite:", err)
+				warn(stderr, "ao-harness-e2e: terminate contained suite:", err)
 			}
 		})
 	})
@@ -275,6 +291,12 @@ func haltOnSignal(ctx context.Context, signals <-chan os.Signal, halt func(os.Si
 		}
 	}()
 	return got
+}
+
+// warn writes a diagnostic line to stderr. A failed write to stderr has
+// nowhere better to be reported, so it changes no outcome.
+func warn(stderr io.Writer, args ...any) {
+	_, _ = fmt.Fprintln(stderr, args...)
 }
 
 // signalExitCode is the status a shell reports for a process a signal ended.

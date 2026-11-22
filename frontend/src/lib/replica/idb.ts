@@ -277,6 +277,31 @@ export function writeRecord(
   });
 }
 
+/** Put every one of `entries` in one transaction: all of them land, or none. */
+export function writeRecords(db: IDBDatabase, store: string, entries: readonly (readonly [key: string, value: unknown])[]): Promise<void> {
+  return withTimeout(`write ${store}`, async () => {
+    const tx = db.transaction(store, 'readwrite');
+    const done = transactionDone(tx);
+    try {
+      for (const [key, value] of entries) tx.objectStore(store).put(value, key);
+    } catch (error) {
+      tx.abort();
+      await done.catch(() => {});
+      throw error;
+    }
+    await done;
+  });
+}
+
+/** Read every one of `keys` in one transaction, in order; an absent key reads as undefined. */
+export function readRecords(db: IDBDatabase, store: string, keys: readonly string[]): Promise<unknown[]> {
+  return withTimeout(`read ${store}`, async () => {
+    const tx = db.transaction(store, 'readonly');
+    const objects = tx.objectStore(store);
+    return await Promise.all(keys.map((key) => requestToPromise<unknown>(objects.get(key))));
+  });
+}
+
 /**
  * Read-modify-write the accounting record and mutate the envelope store
  * in one transaction, so the index can never describe a set of envelopes

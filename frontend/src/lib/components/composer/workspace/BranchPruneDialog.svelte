@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { projectHasScope } from '../../../transport/entityScopes';
+  import { projectScopeGrant } from '../../../transport/entityScopes';
+  import { grantBlockedTitle } from '../../../transport/scopeRefusal';
   // Prune preview: the consent surface for deleting local branches whose
   // remote counterpart is gone. Safe rows (merged into the default
   // branch, or tip exactly matching a merged PR head — the squash case)
@@ -31,7 +32,8 @@
   let { workspace, open, onClose }: Props = $props();
 
   // Listing and deleting branches are both git mutations of the workspace.
-  let ungranted = $derived(!projectHasScope('git:operate', workspace.projectId));
+  let grant = $derived(projectScopeGrant('git:operate', workspace.projectId));
+  let ungranted = $derived(grant !== 'granted');
   let loading = $state(false);
   let deleting = $state(false);
   let loadError = $state('');
@@ -204,7 +206,7 @@
       variant="danger"
       size="sm"
       testId="prune-dialog-confirm"
-      title={ungranted ? 'Not granted to this device' : undefined}
+      title={grantBlockedTitle(grant)}
       disabled={ungranted || loading || checkedCount === 0}
       loading={deleting}
       onclick={confirmDelete}

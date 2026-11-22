@@ -18,6 +18,7 @@ import (
 func seedSettledAgentRow(t *testing.T, a *App, row store.ThreadRequest, settledAt int64, answer string) {
 	t.Helper()
 	row.State = store.ThreadRequestRunning
+	seedSpawnRun(a, &row)
 	if err := a.store.InsertThreadRequest(row); err != nil {
 		t.Fatalf("insert %s: %v", row.Token, err)
 	}
@@ -48,13 +49,14 @@ func TestPastAgentRowsPageTheSettledRowsNewestFirst(t *testing.T) {
 	if _, _, err := a.sweepThreadRequestsBefore(10); err != nil {
 		t.Fatal(err)
 	}
+	// Written before the spawn's run opens, the send counts none.
+	seedSettledAgentRow(t, a, store.ThreadRequest{Token: "told", CallerThreadID: lead.ID, Kind: store.ThreadRequestSend, TargetThreadID: fresh.ID, Notify: true, CreatedAt: 20}, 100, "noted")
 	seedSettledAgentRow(t, a, store.ThreadRequest{Token: "b-shelved", CallerThreadID: lead.ID, Kind: store.ThreadRequestSpawn, TargetThreadID: shelved.ID, CreatedAt: 20}, 300, "shelved it")
 	seedSettledAgentRow(t, a, store.ThreadRequest{Token: "a-fresh", CallerThreadID: lead.ID, Kind: store.ThreadRequestSpawn, TargetThreadID: fresh.ID, CreatedAt: 20}, 300, "fresh one")
 	seedSettledAgentRow(t, a, store.ThreadRequest{
 		Token: "ask", CallerThreadID: lead.ID, Kind: store.ThreadRequestAsk, TargetThreadID: "gone-scratch-copy",
 		TargetThreadTitle: "Asked", OriginThreadID: asked.ID, CreatedAt: 20,
 	}, 200, "it says yes")
-	seedSettledAgentRow(t, a, store.ThreadRequest{Token: "told", CallerThreadID: lead.ID, Kind: store.ThreadRequestSend, TargetThreadID: fresh.ID, Notify: true, CreatedAt: 20}, 100, "noted")
 	seedSettledAgentRow(t, a, store.ThreadRequest{Token: "quiet", CallerThreadID: lead.ID, Kind: store.ThreadRequestSend, TargetThreadID: asked.ID, CreatedAt: 20}, 250, "not owed")
 	if err := a.store.InsertThreadRequest(store.ThreadRequest{
 		Token: "open", CallerThreadID: lead.ID, Kind: store.ThreadRequestSpawn, TargetThreadID: open.ID, State: store.ThreadRequestRunning, CreatedAt: 30,

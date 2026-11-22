@@ -16,7 +16,8 @@
   import { hasMultipleBackends } from '../../stores/attachedBackends.svelte';
   import ComputerSelect from '../primitives/ComputerSelect.svelte';
   import type { BackendKey } from '../../transport/backendKey';
-  import { hasScope } from '../../transport/scopes';
+  import { scopeGrant } from '../../transport/scopes';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
   import { addToast } from '../../stores/toast.svelte';
   import type { Project } from '../../types/models';
 
@@ -54,6 +55,8 @@
   let pendingPath = $state('');
   let dialogGeneration = 0;
   let computer = $state<BackendKey>(untrack(() => initialBackend ?? selectedBackend()));
+  // Adding a project rides `git:operate` on the computer it is added to.
+  let addGrant = $derived(scopeGrant('git:operate', computer));
   let submitting = $state(false);
   let submitError: string | null = $state(null);
   let duplicateOf: string | null = $state(null);
@@ -94,7 +97,7 @@
   }
 
   async function handleAdd(): Promise<void> {
-    if (submitting || !pendingPath.trim() || !hasScope('git:operate', computer)) return;
+    if (submitting || !pendingPath.trim() || addGrant !== 'granted') return;
     submitting = true;
     submitError = null;
     duplicateOf = null;
@@ -181,7 +184,8 @@
       variant="primary"
       size="sm"
       onclick={handleAdd}
-      disabled={!pendingPath.trim() || !hasScope('git:operate', computer)}
+      disabled={!pendingPath.trim() || addGrant !== 'granted'}
+      title={grantBlockedTitle(addGrant)}
       loading={submitting}
       testId="add-project-submit"
     >

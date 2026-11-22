@@ -7,14 +7,16 @@
 // requests until the answers arrive, by a wake or by a status call that
 // collected the answer. The spawn's prompt is over the wire projection's
 // budget, so its header proves the clipped opening survives
-// (internal/itemwire). Screenshots of every row collapsed and expanded go to
-// the test's output directory.
+// (internal/itemwire). expandRow opens a row left with its toggle's center
+// less than a pixel above the "Jump to bottom" chip. Screenshots of every
+// row collapsed and expanded go to the test's output directory.
 
 import { test, expect, type SeedResult } from './fixtures.js';
 import {
   LEAD_TITLE,
   SPAWN_TITLE,
   TARGET_TITLE,
+  atJumpChipEdge,
   driveAoToolRows,
   expandRow,
   openLead,
@@ -30,6 +32,11 @@ import {
   setScenario,
   threadToolsScenario,
 } from './thread-tools-helpers.js';
+
+test.beforeEach(async ({ harness }) => {
+  // These assertions read agent message rows, which sit inside activity runs.
+  await harness.rpc('UpdateSettings', { activityRunDefault: 'expanded' });
+});
 
 for (const provider of ['claude', 'codex'] as const) {
   test(`${provider}: AO tool rows say what the call did and show its result as facts`, async ({ harness, page }) => {
@@ -105,7 +112,10 @@ for (const provider of ['claude', 'codex'] as const) {
     const loop = toolRow(page, 'loop', /^board · every 10m · next /);
     await expect(loop).toHaveCount(1);
     await shot('loop-collapsed', loop);
-    await expandRow(loop);
+    // Left with its toggle's center less than a pixel above the "Jump to
+    // bottom" chip, where a mouse press reaches neither, the row still
+    // opens through expandRow.
+    await atJumpChipEdge(loop, () => expandRow(loop));
     await expect(loop.getByTestId('tool-call-card-ao-outcome')).toContainText('next');
     await shot('loop-expanded', loop);
 

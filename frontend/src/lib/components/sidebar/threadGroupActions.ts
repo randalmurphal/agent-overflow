@@ -23,17 +23,15 @@ import {
   SetThreadPlacement,
 } from '../../stores/bindings';
 import {
-  removeThreadGroup,
+  deleteThreadGroupLocal,
+  replaceThreadGroup,
   requestGroupRename,
   upsertThreadGroup,
 } from '../../stores/threadGroups.svelte';
-import {
-  clearThreadGroupMembership,
-  updateThreadGroupState,
-} from '../../stores/threads.svelte';
+import { updateThreadGroupState } from '../../stores/threads.svelte';
 import { openDraftThreadForProject } from '../../stores/threadCreation.svelte';
 import type { ThreadPane } from '../../stores/thread.svelte';
-import { expandProject } from '../../stores/sidebar.svelte';
+import { revealProject } from '../../stores/sidebarEntryContinuity.svelte';
 import { setThreadFilterQuery } from '../../stores/threadFilter.svelte';
 import { threadRowFrameMark } from '../../stores/threadRowFrames';
 import { addErrorToast, addToast } from '../../stores/toast.svelte';
@@ -113,7 +111,7 @@ export async function createThreadGroupAndMoveAction(
  */
 export async function newThreadGroupInProject(projectId: string): Promise<ThreadGroup | null> {
   setThreadFilterQuery('');
-  expandProject(projectId);
+  revealProject(projectId);
   return createThreadGroupAction(projectId);
 }
 
@@ -130,7 +128,7 @@ export async function renameThreadGroupAction(
   if (!trimmed || trimmed === group.name) return null;
   try {
     const renamed = await RenameThreadGroup(group.id, trimmed) as ThreadGroup;
-    upsertThreadGroup(renamed);
+    replaceThreadGroup(renamed);
     return renamed;
   } catch (err) {
     reportGroupFailure('rename thread group', err);
@@ -147,8 +145,7 @@ export async function renameThreadGroupAction(
 export async function deleteThreadGroupAction(groupId: string): Promise<boolean> {
   try {
     await DeleteThreadGroup(groupId);
-    removeThreadGroup(groupId);
-    clearThreadGroupMembership(groupId);
+    deleteThreadGroupLocal(groupId);
     return true;
   } catch (err) {
     reportGroupFailure('delete thread group', err);

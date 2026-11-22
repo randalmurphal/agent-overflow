@@ -1,5 +1,8 @@
-// Sidebar UI state: which project rows are expanded, and which direction
-// the projects list is sorted.
+// Sidebar UI state: which groups and sections are folded, how far a group's
+// or the Assistants section's list is paged, and which direction the projects
+// list is sorted. A project row's fold and list size belong to its sidebar
+// entry (stores/sidebarEntryContinuity.svelte.ts), which keeps them in records
+// built by the factories here.
 //
 // Persistence follows the kind of state:
 //   - Provider icons persist locally through frontendStorage.
@@ -17,11 +20,9 @@
 //     reads the same order; a per-screen answer is what the device tier
 //     is for, and this is not one.
 //
-// Project expansion uses an inverted set: we persist explicit *collapses*
-// rather than expansions, so an unseen project defaults to expanded
-// (t3-code parity). The public API (isProjectExpanded / expandProject /
-// collapseProject / toggleProject) keeps "expanded" semantics — only the
-// underlying storage flips.
+// Folds use an inverted set: we persist explicit *collapses* rather than
+// expansions, so an unseen row defaults to expanded (t3-code parity). The
+// public API keeps "expanded" semantics; only the underlying storage flips.
 //
 // We deliberately keep this separate from projects.svelte.ts — that store
 // is about data, this one is about view state. They live together on
@@ -35,6 +36,7 @@ import {
   appStorageDelete,
   appStorageGet,
   appStorageSet,
+  isAppStorageHydrated,
 } from './appStorage';
 import { getSettings, updateSettingsPatch } from './settings.svelte';
 import { readFrontendValue, writeFrontendValue, onFrontendValueChanged } from './frontendStorage';
@@ -42,17 +44,28 @@ import { readFrontendValue, writeFrontendValue, onFrontendValueChanged } from '.
 export type { ProjectSortMode };
 
 // appStorage (per-client) keys.
-const COLLAPSED_KEY = 'sidebar:collapsedProjects';
+//
+// Read by nothing: the id-keyed fold from before the entry key. Dropped
+// after hydration rather than at init, because the first write of a boot
+// marks this client migrated (`persist` in ./appStorage.ts) and a boot whose
+// host read then fails must still be able to read the host bucket.
+const RETIRED_COLLAPSED_PROJECTS_KEY = 'sidebar:collapsedProjects';
+// A group's members and the Assistants section's rows, by group id and by
+// ASSISTANTS_LIST_KEY. Untouched by the entry key: neither ever changed key,
+// so this record and its legacy adoption stay as they were. Limits a project
+// id saved here before the entry key are read by nothing.
 const THREAD_LIST_VISIBLE_LIMITS_KEY = 'sidebar:threadListVisibleLimits';
 // Groups default to EXPANDED, so the persisted set holds the COLLAPSED
-// ids — the same inversion collapsedProjects uses, for the same reason:
+// ids — the same inversion a project's fold uses, for the same reason:
 // a group the user has never touched must show its members. No legacy
 // key: the feature never existed before appStorage.
 const COLLAPSED_GROUPS_KEY = 'sidebar:collapsedGroups';
 // The Assistants and Projects sections, each folded whole from its header.
 const COLLAPSED_SECTIONS_KEY = 'sidebar:collapsedSections';
 
-// Pre-appStorage localStorage keys, adopted once at module init.
+// Pre-appStorage localStorage keys. The two project ones are removed, not
+// adopted: both were keyed by a project id. Removing a localStorage key
+// writes nothing to appStorage.
 const LEGACY_COLLAPSED_STORAGE_KEY = 'agent-overflow:sidebar:collapsedProjects';
 const LEGACY_EXPANDED_STORAGE_KEY = 'agent-overflow:sidebar:expandedProjects';
 const LEGACY_EXPANDED_THREAD_LISTS_KEY = 'agent-overflow:sidebar:expandedThreadLists';
@@ -114,15 +127,6 @@ function writeStringSet(key: string, set: ReadonlySet<string>): void {
   appStorageSet(key, JSON.stringify([...set]));
 }
 
-function readCollapsed(): Set<string> {
-  // Drop the pre-inversion legacy "expanded" key so old data doesn't
-  // linger forever. Its contents can't be migrated meaningfully: the
-  // old set listed user-expanded ids, and computing the inverse needs
-  // the full project list, which isn't loaded here.
-  removeLocalStorageKey(LEGACY_EXPANDED_STORAGE_KEY);
-  return stringSetFromStorage(COLLAPSED_KEY, LEGACY_COLLAPSED_STORAGE_KEY);
-}
-
 function readProjectSortMode(): ProjectSortMode {
   if (typeof localStorage === 'undefined') return DEFAULT_PROJECT_SORT_MODE;
   try {
@@ -136,7 +140,7 @@ function readProjectSortMode(): ProjectSortMode {
   }
 }
 
-function parseThreadListVisibleLimits(raw: string): Record<string, number> | null {
+function parseListLimits(raw: string): Record<string, number> | null {
   try {
     const parsed: unknown = JSON.parse(raw);
     if (parsed == null || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
@@ -152,23 +156,152 @@ function parseThreadListVisibleLimits(raw: string): Record<string, number> | nul
   }
 }
 
-function readThreadListVisibleLimits(): Record<string, number> {
-  removeLocalStorageKey(LEGACY_EXPANDED_THREAD_LISTS_KEY);
-  const raw =
-    appStorageGet(THREAD_LIST_VISIBLE_LIMITS_KEY) ??
-    appStorageAdoptLegacyKey(THREAD_LIST_VISIBLE_LIMITS_KEY, LEGACY_THREAD_LIST_LIMITS_KEY, (legacy) =>
-      parseThreadListVisibleLimits(legacy) === null ? null : legacy,
-    );
-  if (raw === null) return {};
-  return parseThreadListVisibleLimits(raw) ?? {};
+/**
+ * How records follow when the keys they are persisted under move. Applied as
+ * one step against the record as it was, so a key that gives its value away
+ * and takes another's in the same change takes the one it was given.
+ */
+export interface RecordKeyChanges {
+  /** Each key, and the key whose value it takes. */
+  readonly copies: ReadonlyMap<string, string>;
+  /** Keys whose value goes, unless a copy writes them. */
+  readonly clears: ReadonlySet<string>;
 }
 
-function writeThreadListVisibleLimits(limits: Record<string, number>): void {
-  if (Object.keys(limits).length === 0) {
-    appStorageDelete(THREAD_LIST_VISIBLE_LIMITS_KEY);
-    return;
+/** A persisted set of keys: the folds of one kind of row. */
+export interface KeySetRecord {
+  has(key: string): boolean;
+  values(): ReadonlySet<string>;
+  set(key: string, present: boolean): void;
+  apply(changes: RecordKeyChanges): void;
+  /** Re-read the record after hydration lands the durable bucket. */
+  reload(): void;
+  /** Test helper: forget the in-memory copy. */
+  resetForTest(): void;
+}
+
+/** The set of keys persisted under `storageKey`, adopting `legacyKey` once. */
+export function keySetRecord(storageKey: string, legacyKey?: string): KeySetRecord {
+  let keys: ReadonlySet<string> = $state.raw(stringSetFromStorage(storageKey, legacyKey));
+
+  function write(next: ReadonlySet<string>): void {
+    keys = next;
+    writeStringSet(storageKey, next);
   }
-  appStorageSet(THREAD_LIST_VISIBLE_LIMITS_KEY, JSON.stringify(limits));
+
+  return {
+    has: (key) => keys.has(key),
+    values: () => keys,
+    set(key, present) {
+      if (keys.has(key) === present) return;
+      const next = new Set(keys);
+      if (present) next.add(key);
+      else next.delete(key);
+      write(next);
+    },
+    apply(changes) {
+      const next = new Set(keys);
+      for (const key of changes.clears) next.delete(key);
+      for (const key of changes.copies.keys()) next.delete(key);
+      for (const [to, from] of changes.copies) if (keys.has(from)) next.add(to);
+      if (!setsEqual(next, keys)) write(next);
+    },
+    reload() {
+      const next = new Set(parseStringArray(appStorageGet(storageKey) ?? '[]') ?? []);
+      if (!setsEqual(next, keys)) keys = next;
+    },
+    resetForTest() {
+      keys = new Set();
+    },
+  };
+}
+
+export interface ListLimitRecord {
+  limitOf(key: string): number;
+  setLimit(key: string, limit: number): void;
+  clear(key: string): void;
+  apply(changes: RecordKeyChanges): void;
+  /** Re-read the record after hydration lands the durable bucket. */
+  reload(): void;
+  /** Test helper: forget the in-memory copy. */
+  resetForTest(): void;
+}
+
+/**
+ * One record of how many rows each list under `storageKey` shows, by
+ * whatever key its caller gives it.
+ *
+ * Every list starts at THREAD_PREVIEW_LIMIT and the default is stored as
+ * nothing at all, so a record holds only the lists the user has revealed
+ * more of, and a limit at or below the preview removes its entry. There are
+ * two records, one for project entries and one for everything else, and this
+ * is the paging rule both keep: the records differ in what may be written to
+ * them, never in how.
+ */
+export function listLimitRecord(storageKey: string, legacyKey?: string): ListLimitRecord {
+  function fromStorage(): Record<string, number> {
+    const raw = appStorageGet(storageKey);
+    return raw === null ? {} : (parseListLimits(raw) ?? {});
+  }
+
+  // Adoption is init-only: a legacy key is read once and removed with it.
+  const adopted =
+    appStorageGet(storageKey) ??
+    (legacyKey === undefined
+      ? null
+      : appStorageAdoptLegacyKey(storageKey, legacyKey, (legacy) =>
+          parseListLimits(legacy) === null ? null : legacy,
+        ));
+  let limits: Record<string, number> = $state(
+    adopted === null ? {} : (parseListLimits(adopted) ?? {}),
+  );
+
+  function commit(next: Record<string, number>): void {
+    limits = next;
+    if (Object.keys(next).length === 0) appStorageDelete(storageKey);
+    else appStorageSet(storageKey, JSON.stringify(next));
+  }
+
+  function clear(key: string): void {
+    if (!(key in limits)) return;
+    const next = { ...limits };
+    delete next[key];
+    commit(next);
+  }
+
+  return {
+    clear,
+    apply(changes: RecordKeyChanges): void {
+      const next = { ...limits };
+      for (const key of changes.clears) delete next[key];
+      for (const key of changes.copies.keys()) delete next[key];
+      for (const [to, from] of changes.copies) {
+        const limit = limits[from];
+        if (limit !== undefined) next[to] = limit;
+      }
+      const keys = Object.keys(next);
+      if (keys.length === Object.keys(limits).length && keys.every((key) => limits[key] === next[key])) return;
+      commit(next);
+    },
+    limitOf(key: string): number {
+      return Math.max(THREAD_PREVIEW_LIMIT, limits[key] ?? THREAD_PREVIEW_LIMIT);
+    },
+    setLimit(key: string, limit: number): void {
+      const roundedLimit = Math.floor(limit);
+      if (!Number.isFinite(roundedLimit) || roundedLimit <= THREAD_PREVIEW_LIMIT) {
+        clear(key);
+        return;
+      }
+      if (limits[key] === roundedLimit) return;
+      commit({ ...limits, [key]: roundedLimit });
+    },
+    reload(): void {
+      limits = fromStorage();
+    },
+    resetForTest(): void {
+      limits = {};
+    },
+  };
 }
 
 function writeProjectSortMode(mode: ProjectSortMode): void {
@@ -189,41 +322,20 @@ function removeLocalStorageKey(key: string): void {
   }
 }
 
-let collapsedProjects: Set<string> = $state(readCollapsed());
-let collapsedGroups: Set<string> = $state(stringSetFromStorage(COLLAPSED_GROUPS_KEY));
-let collapsedSections: Set<string> = $state(stringSetFromStorage(COLLAPSED_SECTIONS_KEY));
-// How many rows each list shows: a project's top level by its entry id, a
-// group's members by the group id, and the Assistants section's rows by
-// ASSISTANTS_LIST_KEY.
-let threadListVisibleLimits: Record<string, number> = $state(readThreadListVisibleLimits());
+removeLocalStorageKey(LEGACY_COLLAPSED_STORAGE_KEY);
+removeLocalStorageKey(LEGACY_EXPANDED_STORAGE_KEY);
+const collapsedGroups = keySetRecord(COLLAPSED_GROUPS_KEY);
+const collapsedSections = keySetRecord(COLLAPSED_SECTIONS_KEY);
+// Dropped rather than adopted: the pre-inversion key listed the thread lists
+// the user had EXPANDED, and the inverse of that needs every list there is.
+removeLocalStorageKey(LEGACY_EXPANDED_THREAD_LISTS_KEY);
+// How many rows a group's members and the Assistants section's rows show,
+// by group id and by ASSISTANTS_LIST_KEY.
+const threadListLimits = listLimitRecord(
+  THREAD_LIST_VISIBLE_LIMITS_KEY,
+  LEGACY_THREAD_LIST_LIMITS_KEY,
+);
 let projectSortMode: ProjectSortMode = $state(readProjectSortMode());
-
-export function isProjectExpanded(id: string): boolean {
-  return !collapsedProjects.has(id);
-}
-
-export function toggleProject(id: string): void {
-  const next = new Set(collapsedProjects);
-  if (next.has(id)) next.delete(id);
-  else next.add(id);
-  collapsedProjects = next;
-  writeStringSet(COLLAPSED_KEY, next);
-}
-
-export function expandProject(id: string): void {
-  if (!collapsedProjects.has(id)) return;
-  const next = new Set(collapsedProjects);
-  next.delete(id);
-  collapsedProjects = next;
-  writeStringSet(COLLAPSED_KEY, next);
-}
-
-export function collapseProject(id: string): void {
-  if (collapsedProjects.has(id)) return;
-  const next = new Set(collapsedProjects).add(id);
-  collapsedProjects = next;
-  writeStringSet(COLLAPSED_KEY, next);
-}
 
 export function getProjectSortMode(): ProjectSortMode {
   return projectSortMode;
@@ -267,24 +379,15 @@ export function syncSidebarFromSettings(): void {
  * just adopts whatever the bucket now holds.
  */
 export function syncSidebarFromAppStorage(): void {
-  const collapsed = new Set(parseStringArray(appStorageGet(COLLAPSED_KEY) ?? '[]') ?? []);
-  if (!setsEqual(collapsed, collapsedProjects)) {
-    collapsedProjects = collapsed;
+  // The id-keyed fold is read by nothing; this is the first point in a boot
+  // where dropping it cannot be mistaken for a migration this client has
+  // already done.
+  if (isAppStorageHydrated() && appStorageGet(RETIRED_COLLAPSED_PROJECTS_KEY) !== null) {
+    appStorageDelete(RETIRED_COLLAPSED_PROJECTS_KEY);
   }
-  const groups = new Set(
-    parseStringArray(appStorageGet(COLLAPSED_GROUPS_KEY) ?? '[]') ?? [],
-  );
-  if (!setsEqual(groups, collapsedGroups)) {
-    collapsedGroups = groups;
-  }
-  const sections = new Set(
-    parseStringArray(appStorageGet(COLLAPSED_SECTIONS_KEY) ?? '[]') ?? [],
-  );
-  if (!setsEqual(sections, collapsedSections)) {
-    collapsedSections = sections;
-  }
-  const rawLimits = appStorageGet(THREAD_LIST_VISIBLE_LIMITS_KEY);
-  threadListVisibleLimits = rawLimits === null ? {} : (parseThreadListVisibleLimits(rawLimits) ?? {});
+  collapsedGroups.reload();
+  collapsedSections.reload();
+  threadListLimits.reload();
 }
 
 function setsEqual(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
@@ -307,15 +410,11 @@ export function isGroupExpanded(id: string): boolean {
 }
 
 export function getCollapsedGroups(): ReadonlySet<string> {
-  return collapsedGroups;
+  return collapsedGroups.values();
 }
 
 export function toggleGroup(id: string): void {
-  const next = new Set(collapsedGroups);
-  if (next.has(id)) next.delete(id);
-  else next.add(id);
-  collapsedGroups = next;
-  writeStringSet(COLLAPSED_GROUPS_KEY, next);
+  collapsedGroups.set(id, !collapsedGroups.has(id));
 }
 
 export type SidebarSectionId = 'assistants' | 'projects';
@@ -335,12 +434,7 @@ export function isSidebarSectionShown(section: SidebarSectionId, searching: bool
 }
 
 export function setSidebarSectionExpanded(section: SidebarSectionId, expanded: boolean): void {
-  if (collapsedSections.has(section) === !expanded) return;
-  const next = new Set(collapsedSections);
-  if (expanded) next.delete(section);
-  else next.add(section);
-  collapsedSections = next;
-  writeStringSet(COLLAPSED_SECTIONS_KEY, next);
+  collapsedSections.set(section, !expanded);
 }
 
 export function toggleSidebarSection(section: SidebarSectionId): void {
@@ -348,59 +442,46 @@ export function toggleSidebarSection(section: SidebarSectionId): void {
 }
 
 /**
- * The key the Assistants section's rows page under in the per-list
- * preview sizes below. A project's list pages under its entry id, a UUID,
- * so the two never meet.
+ * The key the Assistants section's rows page under in the thread-list
+ * preview sizes below, beside the group ids. A project's list pages in a
+ * record of its own.
  */
 export const ASSISTANTS_LIST_KEY = 'assistants';
 
 /**
- * Thread-list preview size, keyed by the list's owner: a project's entry id
- * for its top level, a group id for the group's members (both random entity
- * ids, so they share one map), and ASSISTANTS_LIST_KEY for the Assistants
- * section's rows. A list starts at THREAD_PREVIEW_LIMIT; each "Show more"
- * click reveals up to THREAD_REVEAL_INCREMENT hidden rows, and "Show less"
- * drops it back to the default preview.
+ * What a sidebar list's top level pages under. Its two kinds page in two
+ * records, so the caller names which it is instead of a key alone saying it:
+ * a project's record is keyed by its entry and holds nothing else. A
+ * project's list carries the limit its entry read, since the entry knows
+ * where its record lives while its key moves.
+ *
+ * A list starts at THREAD_PREVIEW_LIMIT; each "Show more" click reveals up
+ * to THREAD_REVEAL_INCREMENT hidden rows, and "Show less" drops it back to
+ * the default preview.
  */
-export function getThreadListVisibleLimit(id: string): number {
-  return threadListVisibleLimits[id] ?? THREAD_PREVIEW_LIMIT;
+export type SidebarTopLevelList =
+  | { readonly kind: 'project'; readonly entryKey: string; readonly limit: number }
+  | { readonly kind: 'assistants' };
+
+export function getThreadListVisibleLimit(key: string): number {
+  return threadListLimits.limitOf(key);
 }
 
-export function setThreadListVisibleLimit(id: string, limit: number): void {
-  const roundedLimit = Math.floor(limit);
-  if (!Number.isFinite(roundedLimit) || roundedLimit <= THREAD_PREVIEW_LIMIT) {
-    collapseThreadList(id);
-    return;
-  }
-  if (getThreadListVisibleLimit(id) === roundedLimit) return;
-  const next = visibleLimitsWith(id, roundedLimit);
-  threadListVisibleLimits = next;
-  writeThreadListVisibleLimits(next);
+export function setThreadListVisibleLimit(key: string, limit: number): void {
+  threadListLimits.setLimit(key, limit);
 }
 
-export function collapseThreadList(id: string): void {
-  if (!(id in threadListVisibleLimits)) return;
-  const next = { ...threadListVisibleLimits };
-  delete next[id];
-  threadListVisibleLimits = next;
-  writeThreadListVisibleLimits(next);
-}
-
-function visibleLimitsWith(id: string, limit: number): Record<string, number> {
-  return {
-    ...threadListVisibleLimits,
-    [id]: limit,
-  };
+export function collapseThreadList(key: string): void {
+  threadListLimits.clear(key);
 }
 
 /** Test helper: clears in-memory state and the sort-mode cache. View
  *  state lives in appStorage — reset that via resetAppStorageForTest. */
 export function resetSidebarForTest(): void {
   showProviderIcons = false;
-  collapsedProjects = new Set();
-  collapsedGroups = new Set();
-  collapsedSections = new Set();
-  threadListVisibleLimits = {};
+  collapsedGroups.resetForTest();
+  collapsedSections.resetForTest();
+  threadListLimits.resetForTest();
   projectSortMode = DEFAULT_PROJECT_SORT_MODE;
   removeLocalStorageKey(SORT_MODE_KEY);
   removeLocalStorageKey(LEGACY_COLLAPSED_STORAGE_KEY);

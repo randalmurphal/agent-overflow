@@ -20,7 +20,8 @@
   } from '../../stores/providerStatus.svelte';
   import { handleExternalURL } from '../../utils/externalLinks';
   import { withBackendTarget } from '../../transport/backends';
-  import { hasScope } from '../../transport/scopes';
+  import { scopeGrant } from '../../transport/scopes';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
   import {
     recheckProviderAccount,
     recheckResultClearsAuthBanner,
@@ -53,8 +54,10 @@
   // rides `access:admin` along with the whole provider-account surface. The
   // banners still render — they explain why a thread is stuck — and only
   // the buttons go inert.
-  let operateUngranted = $derived(!hasScope('threads:operate', backend));
-  let accountsUngranted = $derived(!hasScope('access:admin', backend));
+  let operateGrant = $derived(scopeGrant('threads:operate', backend));
+  let operateUngranted = $derived(operateGrant !== 'granted');
+  let accountsGrant = $derived(scopeGrant('access:admin', backend));
+  let accountsUngranted = $derived(accountsGrant !== 'granted');
 
   // Provider-level status is keyed by the pane's current provider. When
   // the pane has no thread yet (boot, between switches) we stay empty.
@@ -359,7 +362,7 @@
         <button
           onclick={handleReconnect}
           disabled={reconnecting || operateUngranted}
-          title={operateUngranted ? 'Not granted to this device' : undefined}
+          title={grantBlockedTitle(operateGrant)}
           data-testid="provider-status-restart"
           class="text-xs px-2 py-0.5 compact:px-3 compact:py-2 rounded border border-current/30 hover:bg-fg/10 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
         >
@@ -368,7 +371,7 @@
         <button
           onclick={() => void handleDismiss(kind)}
           disabled={dismissing[kind] || operateUngranted}
-          title={operateUngranted ? 'Not granted to this device' : 'Dismiss'}
+          title={grantBlockedTitle(operateGrant) ?? 'Dismiss'}
           data-testid="provider-status-dismiss"
           aria-label="Dismiss"
           class="text-xs hover:opacity-70 cursor-pointer shrink-0 px-1 disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
@@ -408,7 +411,7 @@
       <button
         onclick={() => void handleDismissUnsaved()}
         disabled={dismissingUnsaved || operateUngranted}
-        title={operateUngranted ? 'Not granted to this device' : 'Dismiss'}
+        title={grantBlockedTitle(operateGrant) ?? 'Dismiss'}
         data-testid="unsaved-rows-dismiss"
         aria-label="Dismiss"
         class="text-xs hover:opacity-70 cursor-pointer shrink-0 px-1 compact:px-3 compact:py-2 disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
@@ -433,7 +436,7 @@
         <button
           onclick={handleRecheckBinary}
           disabled={rechecking || accountsUngranted}
-          title={accountsUngranted ? 'Not granted to this device' : undefined}
+          title={grantBlockedTitle(accountsGrant)}
           data-testid="provider-status-recheck"
           class="text-xs px-2 py-0.5 compact:px-3 compact:py-2 rounded border border-current/30 hover:bg-fg/10 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
         >
@@ -444,7 +447,7 @@
         <button
           onclick={() => void handleSignIn()}
           disabled={signingIn || accountsUngranted}
-          title={accountsUngranted ? 'Not granted to this device' : undefined}
+          title={grantBlockedTitle(accountsGrant)}
           data-testid="provider-status-signin"
           class="text-xs px-2 py-0.5 compact:px-3 compact:py-2 rounded border border-current/30 hover:bg-fg/10 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
         >
@@ -455,7 +458,7 @@
         <button
           onclick={handlePrimaryAction}
           disabled={rechecking || accountsUngranted}
-          title={accountsUngranted ? 'Not granted to this device' : undefined}
+          title={grantBlockedTitle(accountsGrant)}
           data-testid="provider-status-action"
           class="text-xs px-2 py-0.5 compact:px-3 compact:py-2 rounded border border-current/30 hover:bg-fg/10 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
         >
@@ -483,7 +486,7 @@
             <button
               onclick={handleReconnect}
               disabled={reconnecting || operateUngranted}
-              title={operateUngranted ? 'Not granted to this device' : undefined}
+              title={grantBlockedTitle(operateGrant)}
               class="text-xs px-2 py-0.5 compact:px-3 compact:py-2 rounded border border-current/30 hover:bg-fg/10 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
             >
               {reconnecting ? 'Reconnecting...' : 'Reconnect'}

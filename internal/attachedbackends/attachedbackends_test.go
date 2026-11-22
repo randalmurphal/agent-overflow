@@ -22,6 +22,28 @@ func seed(t *testing.T, dir string, session deviceclient.Session) {
 	}
 }
 
+// cachedCarrier is the carrier m caches for id, nil if none.
+func cachedCarrier(m *Manager, id string) *carrier {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.carriers[id]
+}
+
+// unchangedCarrier fails unless id's cached carrier is still want, working,
+// and the stored session is still before.
+func unchangedCarrier(t *testing.T, m *Manager, id string, want *carrier, before deviceclient.Session) {
+	t.Helper()
+	if cached := cachedCarrier(m, id); cached != want || want.client.Retired() {
+		t.Fatalf("cached carrier is the one before %t, retired %t; want it kept and working", cached == want, want.client.Retired())
+	}
+	if verdict := want.peers.verdict(); verdict != nil {
+		t.Fatalf("the kept carrier's connections were closed: %v", verdict)
+	}
+	if after, err := deviceclient.LoadSession(m.dir, id); err != nil || after.SessionID != before.SessionID || after.Credential != before.Credential {
+		t.Fatalf("stored session = %+v, %v; want %+v", after, err, before)
+	}
+}
+
 func newManager(t *testing.T) (*Manager, string) {
 	t.Helper()
 	dir := t.TempDir()

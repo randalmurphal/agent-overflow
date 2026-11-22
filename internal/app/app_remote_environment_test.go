@@ -6,11 +6,10 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
-	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/transport"
 	"github.com/google/uuid"
 )
@@ -122,13 +121,13 @@ func TestRemoteDiscoveryKeepsProjectsFromPeerWithoutEnvironmentRPC(t *testing.T)
 		cfg.Dispatcher = dispatcher
 	})
 	source := identityApp(t)
-	manager, err := attachedbackends.New(t.TempDir(), "source", "linux")
+	manager, err := newTestBackends(t, t.TempDir(), "source", "linux")
 	if err != nil {
 		t.Fatal(err)
 	}
 	source.backends = manager
 	invite, _ := backend.mintLink(t, "full")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 	defer cancel()
 	peer, err := manager.Add(ctx, invite.URL)
 	if err != nil {

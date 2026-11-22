@@ -7,7 +7,7 @@ import (
 	"fmt"
 )
 
-// The tracker mirror (migration v159, tracker_cache_*) is a cache of what
+// The tracker mirror (migration v162, tracker_cache_*) is a cache of what
 // a tracker connection's boards hold. A mirror is one tracker_cache_roots
 // row; every accessor takes the root ID its caller captured when its work
 // started, and every write fails with ErrTrackerCacheGone once that root

@@ -18,7 +18,8 @@
   import { assistantsOn, threadComputer } from '../../stores/assistants.svelte';
   import { requireEntityBackend, withBackendTarget } from '../../transport/backends';
   import { threadBackend } from '../../transport/entityIndex';
-  import { threadHasScope } from '../../transport/entityScopes';
+  import { threadScopeGrant } from '../../transport/entityScopes';
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
   import { userFacingError } from '../../utils/userFacingError';
   import AssistantProjectsPicker from './AssistantProjectsPicker.svelte';
 
@@ -31,7 +32,9 @@
   let error: string | null = $state(null);
 
   let backend = $derived(thread ? threadBackend(thread.id) : undefined);
-  let ungranted = $derived(thread !== undefined && !threadHasScope('threads:autonomy', thread.id));
+  // No thread, no Save: `canSave` already holds it off without a reason.
+  let grant = $derived(thread === undefined ? 'granted' : threadScopeGrant('threads:autonomy', thread.id));
+  let ungranted = $derived(grant !== 'granted');
   let canSave = $derived(thread !== undefined && (all || selected.length > 0) && !ungranted && !saving);
 
   // Each opening starts from what the assistant serves. Only the opening
@@ -104,7 +107,7 @@
       onclick={() => void save()}
       disabled={!canSave}
       loading={saving}
-      title={ungranted ? 'Not granted to this device' : undefined}
+      title={grantBlockedTitle(grant)}
       testId="assistant-projects-save"
     >
       {#snippet children()}{saving ? 'Saving…' : 'Save'}{/snippet}

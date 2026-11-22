@@ -189,7 +189,9 @@ default and accepts `--memory-limit-bytes` for machine-specific runs. Direct
 Windows use of `launchHarness` refuses unless this launcher marker is present.
 The suite runs in a process group of its own, so an interrupt (and on Unix
 `SIGTERM` or `SIGHUP`) reaches only the launcher; it stops the owned tree,
-waits for it, and exits with 128 plus the signal number. Each backend
+waits for it, and exits with 128 plus the signal number. On Linux a
+launcher killed outright, which tears nothing down, leaves the suite a
+`SIGTERM` (its parent-death signal). Each backend
 `launchHarness` starts has a process group of its own, out of that
 teardown's reach, so on Unix it is passed `--exit-with-parent` with its
 worker's PID and stops itself once that worker is gone. That stop does
@@ -270,9 +272,9 @@ The CLI's WS client implements the full frame contract
 It is the Go twin of `e2e/src/harness.ts`, kept in `internal/harnessclient`
 so future Go tests can reuse it.
 
-### Network isolation
+### Isolation: network, temp directory and priority
 
-On Linux, `ao-harness-e2e` starts the suite in new user and network
+On Linux, `ao-harness-e2e` starts the suite in new user, network and mount
 namespaces (`internal/netisolate`). The Make test targets run `go test` and
 Vitest in the same kind of namespace through `bin/ao-netns`. The suite sees loopback and one dummy LAN interface, `lan0` at
 `10.203.0.2/24`, multicast-capable like a real LAN interface. There is no
@@ -280,10 +282,67 @@ default route, so a connection to any other address fails with
 `ENETUNREACH`. LAN-bind specs therefore exercise a real non-loopback
 listener, a real non-loopback peer and mDNS discovery without reaching a
 real network. The suite keeps the invoking uid and holds no capabilities:
-`CAP_NET_ADMIN` is ambient only while the launcher's helper builds the
-interfaces, and the helper clears it before it execs Playwright. If the host
-refuses unprivileged user namespaces, the launcher fails before the suite
-starts. It does not fall back to the host network. Ubuntu 23.10 and later
+`CAP_NET_ADMIN` and `CAP_SYS_ADMIN` are ambient only while the launcher's
+helper builds the interfaces and mounts, and the helper clears them before
+it execs the suite.
+
+`TMPDIR` names a private temp directory mounted at `/tmp/aot-<uid>`
+(`netisolate.TempDir`). It is a tmpfs capped at 4 GiB when the run is
+admitted to one, so temp files cost no disk writes or syncs and vanish
+with the namespace, a `SIGKILL` included; a runaway test gets `ENOSPC`.
+The largest measured peak, on 24 cores, is 1.2 GiB, for
+`./internal/store` alone and for the whole tree. A tmpfs reserves nothing
+when mounted, so admission is counted rather than read from free memory:
+each RAM run holds a reservation in `/tmp/aot-<uid>-ram`, and under one
+lock there a launcher counts the live reservations and takes one only
+while their caps together, its own included, stay within half the memory
+it may use (the smaller of `MemTotal` and its cgroup's memory limit; half
+is what the kernel gives a tmpfs mounted without a size), and while
+`MemAvailable` is at least 12 GiB (the cap plus 8 GiB for the developer's
+processes and the run's own). Otherwise, or when those numbers cannot be
+read, the launcher says once that the run's temp directory is on disk and
+why, and mounts a per-run directory on disk at the same path. The path is
+the same on every run because the Go test cache keys a result by the
+`TMPDIR` a test reads, and short because a Unix socket path holds at most
+107 bytes. `/tmp` itself is the host's, so paths a caller passes in stay
+readable. `AO_NETISOLATE_HOST_TMPDIR` names the host's temp directory for
+a file that must outlive the run, such as a data root
+`AO_E2E_KEEP_FAILED_ROOT` keeps.
+
+The go command's work directory, test binaries included, would add
+several GB to the tmpfs, so each run gets one on disk under the host's
+temp directory (`/var/tmp` where that is a tmpfs), mounted at
+`/tmp/aot-<uid>/.ao-go-work` and named only in a Go environment file
+(`GOENV`) that copies the developer's and adds `GOTMPDIR`. A test never sees
+`GOTMPDIR`, which `t.TempDir` would follow back to disk, and every value
+the cache records stays the same.
+
+A run's directories on disk and its RAM reservation (`internal/ownedtemp`)
+are owned by the launcher until it releases them, by every process
+holding the lock descriptor the target inherits (passed on by Go's
+`os/exec` and shells, closed by Node's `child_process`), and by every
+process in the run's mount namespace, which every descendant of the
+target inherits however it was started. So no sweep removes them, and no
+admission counts them free, while any process of the run lives. The
+launcher removes them when the run ends; what a killed launcher left, or
+a process of the run still owned, the first later run that finds it free
+removes. A launcher killed with `SIGKILL` leaves the target a `SIGTERM`
+(its parent-death signal): `go test` and Vitest stop, but whatever they
+started and do not stop keeps running, and keeps the run's directories
+and reservation, until it exits; a Go test binary runs until it finishes
+or reaches its `-test.timeout`.
+
+The suite and everything it starts run at nice 19. The helper lowers its
+priority before it execs the suite; where it cannot, the suite runs at
+normal priority and the helper says so. The Makefile lowers `make` itself
+the same way, so builds, lint and `pnpm` recipes run at nice 19 too, except
+for goals that launch an app for the developer to use (`make dev`,
+`make harness` and the like).
+
+If the host refuses unprivileged user namespaces or the mounts, the
+launcher fails before the suite starts. It does not fall back to the host
+network or disk. Docker refuses the mounts unless the container is
+privileged, as CI's test jobs are. Ubuntu 23.10 and later
 refuse them through AppArmor while
 `kernel.apparmor_restrict_unprivileged_userns` is 1; set it to 0 or give
 `bin/ao-netns` and `bin/ao-harness-e2e` an AppArmor profile that allows
@@ -296,7 +355,9 @@ there instead of in a new one. It judges that by `netisolate.Inside`: the
 namespace's helper records the namespace's identity in `AO_NETISOLATE_NS`,
 and the process must be in that namespace with its interface shape, so a
 host that happens to look alike, or a process that inherited the variable
-elsewhere, gets a namespace of its own. `e2e/scripts/android-smoke.sh` relies on it:
+elsewhere, gets a namespace of its own. `bin/ao-netns` started there makes
+a nested namespace that keeps the outer one's temp directories.
+`e2e/scripts/android-smoke.sh` relies on it:
 it boots the emulator and the adb server under `bin/ao-netns` and starts the
 launcher beside them, so nothing the Android smoke runs listens on the host.
 
@@ -305,7 +366,9 @@ Android smoke on a real phone (`AO_ANDROID_HUMAN_LOCK=1`), which needs the
 host's adb server, and real SSH mode, which reaches its sshd on host
 loopback. The provider smoke targets also stay on the host network because
 they reach the real provider APIs. macOS and Windows run on the host
-network.
+network with the host's temp directory; there only the Makefile lowers the
+priority, and runs create no run directories or reservations, so nothing
+there needs a lock.
 
 An isolated boot (`ConfigureIsolation`) uses its LAN as a LAN only inside
 that namespace (`netisolate.Contained`). Everywhere else, macOS and

@@ -1,7 +1,8 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { settingsComputer } from './settingsComputer';
-  const { call, hasScope } = settingsComputer();
+  const { call, onHost: onThisHost, scopeGrant } = settingsComputer();
+  import { grantBlockedTitle } from '../../transport/scopeRefusal';
 
   import {
     GetNetworkSettings,
@@ -48,8 +49,9 @@
   // this launch's token and both ticket-bearing share URLs are withheld
   // from a caller that is not at the machine, which `shareURLWithheld`
   // below reads off the answer rather than re-deriving.
-  let noAdmin = $derived(!hasScope('access:admin'));
-  let onHost = $derived(hasScope('host'));
+  let adminGrant = $derived(scopeGrant('access:admin'));
+  let noAdmin = $derived(adminGrant !== 'granted');
+  let onHost = $derived(onThisHost());
 
   let settings = $state<NetworkSettings | null>(null);
   let loadError = $state('');
@@ -288,7 +290,7 @@
     </SettingsCallout>
   {/if}
   <section class="rounded-xl border border-border-subtle bg-surface-0 p-4">
-    <SettingsHeader title="Local network" description={noAdmin ? 'This connection cannot change network access.' : 'Use the same Wi-Fi or wired network. Tailscale is optional at home.'} />
+    <SettingsHeader title="Local network" description={adminGrant === 'refused' ? 'This connection cannot change network access.' : grantBlockedTitle(adminGrant) ?? 'Use the same Wi-Fi or wired network. Tailscale is optional at home.'} />
     {#if !noAdmin}
       <div class="flex flex-col gap-1">
         <SettingsField

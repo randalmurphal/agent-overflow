@@ -21,7 +21,7 @@ func TestPointerForkStampsAndHeldWindows(t *testing.T) {
 		}
 	}
 	ctx := context.Background()
-	page, err := s.ListThreadSliceAround(ctx, "F", "", 200, testRunWindowRows, TimelineSelection{})
+	page, err := s.ListThreadSliceAround(ctx, "F", "", 200, testRunWindowRows, TimelineSelection{}, AgentMessagesAreMembers)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func TestPointerForkStampsAndHeldWindows(t *testing.T) {
 			t.Fatalf("%s moved the fork's stamp %+v -> %+v", what, stamp, now)
 		}
 		for name, held := range map[string]*HeldWindow{"no window": nil, "own rows": &tail, "whole window": &whole} {
-			got, err := s.SyncThreadWindow(ctx, "F", "", 200, testRunWindowRows, stamp, held, TimelineSelection{})
+			got, err := s.SyncThreadWindow(ctx, "F", "", 200, testRunWindowRows, stamp, held, TimelineSelection{}, AgentMessagesAreMembers)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -95,7 +95,7 @@ func touchItemForTest(t *testing.T, s *Store, threadID, itemID string) {
 // forkWindow is a thread's decorated window read.
 func forkWindow(t *testing.T, s *Store, threadID string) []Item {
 	t.Helper()
-	page, err := s.ListThreadSliceAround(context.Background(), threadID, "", 200, testRunWindowRows, TimelineSelection{})
+	page, err := s.ListThreadSliceAround(context.Background(), threadID, "", 200, testRunWindowRows, TimelineSelection{}, AgentMessagesAreMembers)
 	if err != nil {
 		t.Fatalf("window of %s: %v", threadID, err)
 	}

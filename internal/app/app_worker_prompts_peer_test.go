@@ -48,12 +48,7 @@ func newLinkedWorkers(t *testing.T, n int) *linkedWorkers {
 func newLinkedWorkersAt(t *testing.T, n int, createdAt int64) *linkedWorkers {
 	t.Helper()
 	a, dbPath := newTestAppWithStorePath(t)
-	events := &emitRecorder{}
-	a.testEmitHook = events.capture
-	a.triage = triage.NewRouter(a.store, a.emit)
-	a.configureTriageQueueCallbacks()
-	a.triage.SetPromptRouter(a.routeWorkerPrompt)
-	a.startSessionFn = func(string) error { return errors.New("no provider in this test") }
+	events := wireLinkedWorkersApp(a)
 	f := &linkedWorkers{app: a, events: events, device: reachableDevice(t, a.store), lead: "6f1c2a4e-9d3b-4c1a-8e2f-0a1b2c3d4e5f", dbPath: dbPath}
 	for i := range n {
 		worker := noticeTestThread(t, a, "linked-worker-"+string(rune('a'+i)))
@@ -79,6 +74,29 @@ func newLinkedWorkersAt(t *testing.T, n int, createdAt int64) *linkedWorkers {
 		t.Fatal(err)
 	}
 	return f
+}
+
+// wireLinkedWorkersApp gives a the fixture's triage, prompt router and
+// failing session starts, and returns the recorder of its events.
+func wireLinkedWorkersApp(a *App) *emitRecorder {
+	events := &emitRecorder{}
+	a.testEmitHook = events.capture
+	a.triage = triage.NewRouter(a.store, a.emit)
+	a.configureTriageQueueCallbacks()
+	a.triage.SetPromptRouter(a.routeWorkerPrompt)
+	a.startSessionFn = func(string) error { return errors.New("no provider in this test") }
+	return events
+}
+
+// restart is the computer after a restart: a second App over the same
+// database, whose store is a new run, with nothing in memory. Nothing of
+// its boot has run yet.
+func (f *linkedWorkers) restart(t *testing.T) *linkedWorkers {
+	t.Helper()
+	after := *f
+	after.app = newTestAppAtStorePath(t, f.dbPath)
+	after.events = wireLinkedWorkersApp(after.app)
+	return &after
 }
 
 func (f *linkedWorkers) drain(t *testing.T) {
@@ -204,59 +222,31 @@ func TestALinkedWorkersPromptIsHeldForItsSpawnerThere(t *testing.T) {
 	}
 }
 
-// A held prompt goes to the person here once its lease runs out after it
-// was registered or last held, with the announcement that notifies them;
-// one the paired computer keeps naming as held stays routed there, and
-// listing it without naming it renews nothing.
-func TestAHeldPromptGoesToThePersonWhenItsLeaseRunsOut(t *testing.T) {
+// A held prompt stays its spawner's there while its link stands, however
+// long that computer goes without asking or without naming it as held: the
+// person here is not asked.
+func TestAHeldPromptStaysWithItsSpawnerThereWhileItsLinkStands(t *testing.T) {
 	t.Parallel()
 	f := newLinkedWorkers(t, 2)
-	kept, lapsed := f.ask(t, 0), f.ask(t, 1)
-	f.shortenLease(2*time.Second, kept, lapsed)
-	deadline := time.Now().Add(15 * time.Second)
-	for f.route(t, f.workers[1].ID) != nil {
-		if time.Now().After(deadline) {
-			t.Fatal("a prompt nobody held is still routed to the spawner there past its lease")
+	named, unnamed := f.ask(t, 0), f.ask(t, 1)
+	f.list(t, 0, named)
+	f.list(t, 1)
+	time.Sleep(3 * time.Second)
+	if err := f.app.drainWorkerPrompts(t.Context(), 10*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	for i, token := range []string{named, unnamed} {
+		if route := f.route(t, f.workers[i].ID); route == nil || route.ThreadID != f.lead {
+			t.Fatalf("the prompt under %s is routed to %+v, want the lead there", token, route)
 		}
-		f.list(t, 0, kept)
-		f.list(t, 1)
-		time.Sleep(50 * time.Millisecond)
+		if f.handedToPerson(f.workers[i].ID) {
+			t.Fatalf("the person was asked about the prompt under %s", token)
+		}
 	}
-	if !f.handedToPerson(f.workers[1].ID) {
-		t.Fatal("the prompt whose lease ran out was not announced to the person")
-	}
-	if route := f.route(t, f.workers[0].ID); route == nil || route.ThreadID != f.lead {
-		t.Fatalf("the prompt held throughout is routed to %+v, want the lead there", route)
-	}
-	// No longer named as held, it goes too.
-	waitUntil(t, 15*time.Second, func() bool { return f.route(t, f.workers[0].ID) == nil })
-}
-
-// shortenLease shortens the lease to lease once the prompts under tokens
-// are registered and checks them against it, so a test that must first see
-// them held does not race the lease.
-func (f *linkedWorkers) shortenLease(lease time.Duration, tokens ...string) {
-	f.app.workerPromptLeaseOverride = lease
-	for _, token := range tokens {
-		f.app.armPromptLease(token, 0)
-	}
-}
-
-// heldAt is when the paired computer last said it holds the prompt under
-// token, zero for never.
-func (f *linkedWorkers) heldAt(t *testing.T, token string) time.Time {
-	t.Helper()
-	f.app.workerPrompts.mu.Lock()
-	defer f.app.workerPrompts.mu.Unlock()
-	prompt := f.app.workerPrompts.byToken[token]
-	if prompt == nil || prompt.remote == nil {
-		t.Fatalf("no prompt is held for a paired computer under %s", token)
-	}
-	return prompt.remote.heldAt
 }
 
 // Only the link's own device, for its own source thread and spawn, may
-// renew, answer or give back a held prompt. Each refusal leaves the prompt
+// answer or give back a held prompt. Each refusal leaves the prompt
 // as it was; the binding's own call gives it back to the person.
 func TestTheBindingAdmitsOnlyTheLinksOwnPrompt(t *testing.T) {
 	t.Parallel()
@@ -299,21 +289,16 @@ func TestTheBindingAdmitsOnlyTheLinksOwnPrompt(t *testing.T) {
 		if prompt, _ := f.app.workerPrompts.get(token); prompt.state != workerPromptRouted {
 			t.Fatalf("prompt %d is %v after the refused calls, want it still routed", i, prompt.state)
 		}
-		// None of the refused renewals renewed.
-		if held := f.heldAt(t, token); !held.IsZero() {
-			t.Fatalf("prompt %d was renewed at %v by a refused call", i, held)
-		}
 	}
 	if route := f.route(t, f.local.ID); route == nil || route.ComputerID != "" {
 		t.Fatalf("the local prompt is routed to %+v after the refused calls", route)
 	}
-	// The link's own renewal renews.
-	f.list(t, 0, first)
-	if f.heldAt(t, first).IsZero() {
-		t.Fatal("the link's own renewal did not renew its prompt")
-	}
 
-	if err := f.call(t, f.device, f.lead, threadAgentPeerPromptReturn, threadPromptPeerArgs{Spawn: f.spawns[0], Token: first}); err != nil {
+	// The link's own return, from a spawner there that no thread can hold
+	// it for, gives it to the person here.
+	if err := f.call(t, f.device, f.lead, threadAgentPeerPromptReturn, threadPromptPeerArgs{
+		Spawn: f.spawns[0], Token: first, Reason: peerPromptNoHolder,
+	}); err != nil {
 		t.Fatalf("the link's own return: %v", err)
 	}
 	if f.route(t, f.workers[0].ID) != nil || !f.handedToPerson(f.workers[0].ID) {
@@ -375,7 +360,7 @@ func TestTheBindingHoldsACallToTheLinkThenAndNow(t *testing.T) {
 
 // A prompt announced routed through a link that no longer routes there by
 // the time it is held, the link replaced or gone, goes to the person at
-// once rather than when its lease runs out.
+// once.
 func TestAPromptRoutedThroughAStaleLinkGoesToThePersonAtOnce(t *testing.T) {
 	t.Parallel()
 	f := newLinkedWorkers(t, 1)
@@ -428,52 +413,56 @@ func TestALinkThatEndsHandsItsPromptsBack(t *testing.T) {
 }
 
 // A linked Codex worker's async questions are one prompt held for its
-// spawner there, routed again when this computer restarts and its lease
-// counted from the boot; the spawner's answer, written through the
-// binding, is the worker's message from the lead on that computer.
-func TestALinkedWorkersAsyncQuestionIsHeldForItsSpawnerAcrossARestart(t *testing.T) {
+// spawner there, and the spawner's answer, written through the binding, is
+// the worker's message from the lead on that computer. A question asked
+// before this computer restarted is the person's: the link holds nothing
+// for it.
+func TestALinkedWorkersAsyncQuestionIsHeldForItsSpawner(t *testing.T) {
 	t.Parallel()
 	f := newLinkedWorkers(t, 1)
 	worker := f.workers[0].ID
-	if _, err := f.app.store.RecordAsyncQuestions(store.Item{
-		ID: "question:ask", ThreadID: worker, Kind: "assistant_text", Role: "assistant", Status: "completed", Meta: twoAsyncQuestions,
-	}); err != nil {
-		t.Fatal(err)
+	record := func(itemID string) {
+		t.Helper()
+		if _, err := f.app.store.RecordAsyncQuestions(store.Item{
+			ID: itemID, ThreadID: worker, Kind: "assistant_text", Role: "assistant", Status: "completed", Meta: twoAsyncQuestions,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		f.app.emit(eventchan.ProviderAsyncQuestionsChanged, map[string]string{"threadId": worker})
+		f.drain(t)
 	}
-	f.app.emit(eventchan.ProviderAsyncQuestionsChanged, map[string]string{"threadId": worker})
+	record("question:old")
+	if listed := f.list(t, 0); len(listed) != 1 {
+		t.Fatalf("before the restart the link lists %+v, want the question", listed)
+	}
+	// record and everything below act on the restarted computer.
+	f = f.restart(t)
+	f.app.restoreDurableFlushQueueAtBoot()
+	f.app.syncAsyncQuestionPrompts(worker)
 	f.drain(t)
+	if listed := f.list(t, 0); len(listed) != 0 {
+		t.Fatalf("after the restart the link lists %+v, want nothing", listed)
+	}
+	if _, route, open := f.app.asyncQuestionBlocked(worker); open {
+		t.Fatalf("after the restart the question is routed to %+v, want it the person's", route)
+	}
+
+	record("question:ask")
 	listed := f.list(t, 0)
 	if len(listed) != 1 || len(listed[0].Questions) != 2 || listed[0].Questions[0].Question != "Which scope?" {
 		t.Fatalf("the link lists %+v, want the two questions as one prompt", listed)
-	}
-	old := listed[0].Token
-	// The restart: memory goes, the queue is restored and the questions
-	// seeded as the boot does.
-	f.app.workerPrompts.mu.Lock()
-	f.app.workerPrompts.byToken, f.app.workerPrompts.current = nil, nil
-	f.app.workerPrompts.mu.Unlock()
-	f.app.workerPrompts.async.mu.Lock()
-	f.app.workerPrompts.async.open = nil
-	f.app.workerPrompts.async.mu.Unlock()
-	booted := time.Now()
-	f.app.restoreDurableFlushQueueAtBoot()
-	f.app.seedAsyncQuestionPrompts()
-	f.drain(t)
-	held := f.app.workerPrompts.heldFor(f.spawns[0], worker)
-	if len(held) != 1 || held[0].token == old || !held[0].async || held[0].remote.registeredAt.Before(booted) {
-		t.Fatalf("after the restart the link holds %+v, want the questions again under a new token, leased from the boot", held)
 	}
 	if detail, route, open := f.app.asyncQuestionBlocked(worker); !open || route == nil || route.ComputerID != linkedLeadComputer || detail != "Which scope?" {
 		t.Fatalf("the questions are routed to %+v (open %v), want the lead on Desk", route, open)
 	}
 	if err := f.call(t, f.device, f.lead, threadAgentPeerPromptReply, threadPromptPeerArgs{
-		Spawn: f.spawns[0], Token: held[0].token, Answers: []string{"One", "tonight"},
+		Spawn: f.spawns[0], Token: listed[0].Token, Answers: []string{"One", "tonight"},
 	}); err != nil {
 		t.Fatalf("the spawner's answer: %v", err)
 	}
 	var payload flushQueuePayload
 	for _, row := range durableQueueRows(t, f.app, worker) {
-		if row.SendID == workerAnswerSendIDRoot+held[0].token {
+		if row.SendID == workerAnswerSendIDRoot+listed[0].Token {
 			if err := json.Unmarshal(row.Payload, &payload); err != nil {
 				t.Fatal(err)
 			}

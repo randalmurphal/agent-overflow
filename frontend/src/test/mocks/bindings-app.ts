@@ -475,6 +475,7 @@ export const ThreadToolResolve = dispatch('ThreadToolResolve');
 export const AgentRemoteComputers = dispatch('AgentRemoteComputers');
 export const AgentRemoteStart = dispatch('AgentRemoteStart');
 export const AgentRemoteStatus = dispatch('AgentRemoteStatus');
+export const AgentRosterSeeds = dispatch('AgentRosterSeeds');
 export const AgentRemoteCancel = dispatch('AgentRemoteCancel');
 export const AgentRemoteFetchArtifact = dispatch('AgentRemoteFetchArtifact');
 export const AgentRemoteFetchLog = dispatch('AgentRemoteFetchLog');

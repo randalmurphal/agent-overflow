@@ -36,7 +36,7 @@ type TicketRef struct {
 	IssueID string
 }
 
-// ThreadTicket is the one ticket a thread is linked to (migration v159).
+// ThreadTicket is the one ticket a thread is linked to (migration v162).
 // IssueKey and IssueTitle are as last seen; LinkedAt is unix milliseconds.
 type ThreadTicket struct {
 	ThreadID   string

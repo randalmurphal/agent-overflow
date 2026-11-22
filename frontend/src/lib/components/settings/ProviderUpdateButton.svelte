@@ -6,7 +6,7 @@
   import type { ComponentProps } from 'svelte';
   import Button from '../primitives/Button.svelte';
   import type { BackendKey } from '../../transport/backendKey';
-  import { hasScope } from '../../transport/scopes';
+  import { scopeGrant } from '../../transport/scopes';
   import {
     hasProviderUpdate,
     providerUpdate,
@@ -28,7 +28,7 @@
     testId: string;
   } = $props();
 
-  let updating = $derived(hasScope('access:admin', backend) && providerUpdateRunning(provider, backend));
+  let updating = $derived(scopeGrant('access:admin', backend) === 'granted' && providerUpdateRunning(provider, backend));
   let offered = $derived(
     hasProviderUpdate(provider, backend) ? (providerUpdate(provider, backend)?.latestVersion ?? '') : '',
   );

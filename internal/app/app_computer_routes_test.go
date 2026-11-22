@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/backendproxy"
 	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/computerroute"
@@ -18,6 +17,7 @@ import (
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/network"
 	"agent-overflow/internal/settings"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/transport"
 	"github.com/coder/websocket"
 )
@@ -74,11 +74,11 @@ func TestOrdinaryPairedClientsLearnNewRoutesThroughLiveBootstrapAndHello(t *test
 	backend := newPairedBackend(t, func(cfg *transport.Config) {
 		cfg.ComputerRoutes = func() []computerroute.Route { return current.Load().([]computerroute.Route) }
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 	defer cancel()
 	invite, link := backend.mintLink(t, "full")
 	dir := t.TempDir()
-	client, _, err := deviceclient.Pair(ctx, dir, link, "Ordinary desktop", "linux")
+	client, _, err := pairTestDevice(t, dir, link, "Ordinary desktop", "linux")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +110,7 @@ func TestOrdinaryPairedClientsLearnNewRoutesThroughLiveBootstrapAndHello(t *test
 	if err != nil || !slices.Equal(saved.Routes, later) {
 		t.Fatalf("live route was not remembered: %v %v", saved.Routes, err)
 	}
-	manager, err := attachedbackends.New(dir, "Ordinary desktop", "linux")
+	manager, err := newTestBackends(t, dir, "Ordinary desktop", "linux")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,11 +143,11 @@ func TestSurvivingSocketRepairsRoutesAfterListenerMoves(t *testing.T) {
 	if _, err := app.settings.SetNetwork(settings.NetworkSettings{BindAll: true}); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitBudget(t))
 	defer cancel()
 	invite, link := backend.mintLink(t, "view-only")
 	dir := t.TempDir()
-	client, _, err := deviceclient.Pair(ctx, dir, link, "Read-only desktop", "linux", deviceclient.WithDialContext(dialOwnFixture))
+	client, _, err := pairTestDevice(t, dir, link, "Read-only desktop", "linux", deviceclient.WithDialContext(dialOwnFixture))
 	if err != nil {
 		t.Fatal(err)
 	}

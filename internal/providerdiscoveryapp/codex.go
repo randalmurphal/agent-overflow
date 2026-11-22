@@ -11,20 +11,21 @@ import (
 // ProbeCodexAccount runs the zero-token Codex identity/rate-limit probe.
 func (s *Service) ProbeCodexAccount() (provider.AccountInfo, error) {
 	if s == nil || s.deps.ProviderBinary == nil || s.deps.Selection == nil ||
-		s.deps.ProbeKey == nil || s.deps.RunAccountProbe == nil || s.deps.CodexConfig == nil {
+		s.deps.RunAccountProbe == nil || s.deps.CodexProbe == nil {
 		return provider.AccountInfo{}, fmt.Errorf("provider discovery: Codex probe unavailable")
 	}
 	providerName := string(provider.Codex)
 	binary := s.deps.ProviderBinary(providerName)
 	selection := s.deps.Selection(providerName)
-	key := s.deps.ProbeKey(providerName, binary, selection.AccountID)
+	// Read together before the probe waits for the account lock; the probe
+	// runs with this configuration.
+	key, cfg := s.deps.CodexProbe(binary, selection.AccountID)
 	var observedSnapshot *provider.RateLimitsSnapshot
 	return s.deps.RunAccountProbe(AccountProbeRequest{
 		ProviderName: providerName,
 		Cache:        s.caches.Codex,
 		Key:          key,
 		Probe: func(ctx context.Context) (provider.AccountInfo, error) {
-			cfg := s.deps.CodexConfig(binary)
 			cfg.OnSnapshot = func(snapshot provider.RateLimitsSnapshot) {
 				copy := cloneRateLimitsSnapshot(snapshot)
 				observedSnapshot = &copy

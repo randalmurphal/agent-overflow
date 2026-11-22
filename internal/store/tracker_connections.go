@@ -32,7 +32,7 @@ var ErrTrackerConnectionExists = errors.New("store: tracker connection already e
 // Tempo connection whose parent is missing or not a Jira connection.
 var ErrInvalidTrackerConnection = errors.New("store: invalid tracker connection")
 
-// TrackerConnection is one credential for one site (migration v159). Site is
+// TrackerConnection is one credential for one site (migration v162). Site is
 // the Jira site URL, the Tempo regional API URL, or the Linear workspace;
 // Account is the Jira account email and empty otherwise. ParentID names the
 // Jira connection a Tempo connection belongs to and is empty otherwise.
