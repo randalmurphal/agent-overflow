@@ -11,6 +11,11 @@
 // name); a note has no identity, so a note changed both places is kept
 // beside the other version. An entry deleted here but changed elsewhere
 // comes back as changed there.
+//
+// A deletion is the deleted entry itself, kept in `removed`: what it deletes
+// is its origin, so a save that carried the entry before it was deleted
+// moves the deletion with it, and an entry added and deleted before its
+// first save deletes nothing unless that save stores it.
 
 export interface DraftEntry<T> {
   /** What the inputs edit. */
@@ -27,8 +32,8 @@ export interface DraftEntry<T> {
 
 export interface Draft<T> {
   entries: DraftEntry<T>[];
-  /** Saved entries deleted here whose deletion is not saved yet. */
-  removed: T[];
+  /** Entries deleted here whose deletion is not saved yet. */
+  removed: DraftEntry<T>[];
 }
 
 function clone<T>(value: T): T {
@@ -92,10 +97,12 @@ export function reconcile<T extends object>(
     }
     added.push({ value: entry.value, origin: null, theirs: null });
   }
-  const removed: T[] = [];
+  const removed: DraftEntry<T>[] = [];
   const skipped = new Set<number>();
   for (const gone of draft.removed) {
-    const at = take(saved, used, (candidate) => same(candidate, gone));
+    const origin = gone.origin;
+    if (origin === null) continue;
+    const at = take(saved, used, (candidate) => same(candidate, origin));
     if (at < 0) continue;
     skipped.add(at);
     removed.push(gone);
@@ -108,17 +115,23 @@ export function reconcile<T extends object>(
   return { entries: [...entries, ...added], removed };
 }
 
+/** Deletes the entry at `index`: it waits in `removed` until a save carries the deletion. */
+export function remove<T extends object>(draft: Draft<T>, index: number): void {
+  const [entry] = draft.entries.splice(index, 1);
+  if (entry) draft.removed.push(entry);
+}
+
 /**
  * The draft once `sent` is saved: each entry the save took has what was sent
- * as its origin and no mark, and the deletions the save carried are no
- * longer pending. Typing that followed the snapshot stays dirty against it;
- * an entry added or deleted since stays unsaved.
+ * as its origin and no mark, deleted since or not, and the deletions the save
+ * carried are no longer pending. Typing that followed the snapshot stays
+ * dirty against it; an entry added or deleted since stays unsaved.
  */
 export function markSaved<T extends object>(
   draft: Draft<T>,
   entries: readonly DraftEntry<T>[],
   sent: readonly T[],
-  removed: readonly T[],
+  removed: readonly DraftEntry<T>[],
 ): void {
   entries.forEach((entry, index) => {
     entry.origin = clone(sent[index]);
@@ -139,7 +152,7 @@ export function marked<T extends object>(draft: Draft<T>): boolean {
 
 /** Whether the draft holds anything the saved list does not. */
 export function unsaved<T extends object>(draft: Draft<T>, trim: (value: T) => T): boolean {
-  return draft.removed.length > 0 || draft.entries.some((entry) => dirty(entry, trim));
+  return draft.removed.some((gone) => gone.origin !== null) || draft.entries.some((entry) => dirty(entry, trim));
 }
 
 /**

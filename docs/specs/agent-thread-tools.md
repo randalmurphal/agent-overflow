@@ -494,12 +494,14 @@ mine, when the other no longer exists) puts it back; either saves what
 waited once no mark is left. A save checks the profiles before writing,
 and writes only the draft revision it checked: a newer save, Restore's
 answer, taking the other version and an outside change each start a new
-revision. Only the newest check's answer shows. The page's own write
-coming back is not an outside change; a write the computer refuses
+revision. Only the newest check's answer shows. Each list has one write
+in flight at a time; a newer save waits for it and is sent when it
+settles. The settings store says how each write ended (`SettingsWrite`):
+a saved write marks what it sent saved, a write the computer refuses
 leaves the person's edits on the page, unsaved, for the next commit to
-send again. Of several writes of a list in flight at once, what the
-computer saved is saved on the page and the edits of the writes it
-refused stay unsaved. One owner orders all of it
+send again, and a write whose computer went away leaves them unsaved
+too. A deletion follows its entry, so deleting a row while an edit of it
+is being saved deletes what that save stored. One owner orders all of it
 (`frontend/src/lib/components/settings/rosterEditor.svelte.ts`).
 
 `thread_options` lists, per computer, the profiles that computer can

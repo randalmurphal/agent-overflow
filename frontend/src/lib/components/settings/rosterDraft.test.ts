@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { draftOf, markSaved, reconcile, takeTheirs, unsaved } from './rosterDraft';
+import { draftOf, markSaved, reconcile, remove, takeTheirs, unsaved } from './rosterDraft';
 
 type Note = { text: string };
 const trim = (note: Note): Note => ({ text: note.text.trim() });
@@ -30,8 +30,7 @@ describe('roster draft', () => {
 
   it('leaves out an entry deleted here, unless it changed elsewhere', () => {
     const draft = draftOf<Note>([{ text: 'a' }, { text: 'b' }]);
-    const [gone] = draft.entries.splice(0, 1);
-    draft.removed.push(gone.origin!);
+    remove(draft, 0);
     expect(values(reconcile(draft, [{ text: 'a' }, { text: 'b' }, { text: 'c' }], trim))).toEqual(['b', 'c']);
     expect(values(reconcile(draft, [{ text: 'a, changed there' }, { text: 'b' }], trim))).toEqual(['a, changed there', 'b']);
   });
@@ -55,12 +54,12 @@ describe('roster draft', () => {
     const draft = draftOf<Note>([{ text: 'a' }, { text: 'b' }]);
     draft.entries[0].value.text = 'mine';
     const marked = reconcile(draft, [{ text: 'theirs' }, { text: 'b' }], trim, () => true);
-    marked.removed.push({ text: 'b' });
+    remove(marked, 1);
     const sent = marked.entries.map((entry) => trim(entry.value));
     markSaved(marked, [...marked.entries], sent, [...marked.removed]);
-    expect(marked.entries.map((entry) => entry.theirs)).toEqual([undefined, undefined]);
+    expect(marked.entries.map((entry) => entry.theirs)).toEqual([undefined]);
     expect(marked.removed).toEqual([]);
-    expect(values(reconcile(marked, sent, trim))).toEqual(['mine', 'b']);
+    expect(values(reconcile(marked, sent, trim))).toEqual(['mine']);
   });
 
   // A save's answer lands after the person went on editing: only what the
@@ -69,13 +68,35 @@ describe('roster draft', () => {
     const draft = draftOf<Note>([{ text: 'a' }, { text: 'b' }, { text: 'c' }]);
     const entries = [...draft.entries];
     const sent = entries.map((entry) => trim(entry.value));
-    const [deleted] = draft.entries.splice(2, 1);
-    draft.removed.push(deleted.origin!);
+    remove(draft, 2);
     draft.entries.push({ value: { text: 'added' }, origin: null });
     draft.entries[0].value.text = 'typed after';
     markSaved(draft, entries, sent, []);
-    expect(draft.removed).toEqual([{ text: 'c' }]);
+    expect(draft.removed.map((gone) => gone.origin)).toEqual([{ text: 'c' }]);
     expect(draft.entries.map((entry) => entry.origin?.text ?? null)).toEqual(['a', 'b', null]);
     expect(unsaved(draft, trim)).toBe(true);
+  });
+
+  // The deletion is the entry: a save that took it before it was deleted
+  // moves what the deletion removes to what that save stored.
+  it('moves a deletion to what a save that carried the entry stored', () => {
+    const draft = draftOf<Note>([{ text: 'a' }, { text: 'b' }]);
+    draft.entries[0].value.text = 'renamed';
+    const entries = [...draft.entries];
+    const sent = entries.map((entry) => trim(entry.value));
+    remove(draft, 0);
+    markSaved(draft, entries, sent, []);
+    expect(values(reconcile(draft, sent, trim))).toEqual(['b']);
+    expect(unsaved(draft, trim)).toBe(true);
+  });
+
+  it('deletes nothing for an entry added and deleted before a save stored it', () => {
+    const draft = draftOf<Note>([{ text: 'a' }]);
+    draft.entries.push({ value: { text: 'new' }, origin: null });
+    remove(draft, 1);
+    expect(unsaved(draft, trim)).toBe(false);
+    const next = reconcile(draft, [{ text: 'a' }], trim);
+    expect(next.removed).toEqual([]);
+    expect(values(next)).toEqual(['a']);
   });
 });

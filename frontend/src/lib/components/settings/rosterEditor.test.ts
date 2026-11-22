@@ -7,6 +7,7 @@ import {
   type ProfileCheck,
   type Roster,
   type RosterPatch,
+  type RosterWrite,
   type RosterSaved,
 } from './rosterEditor.svelte';
 import type { AgentNote, AgentProfile } from '../../types/settings';
@@ -47,10 +48,10 @@ async function flush(): Promise<void> {
 }
 
 /**
- * The settings store as the page sees it: a write shows its patch at once
- * and settles in the order it was sent; a refused write puts back the saved
- * list. Every change it shows is passed to the editor, as the page's
- * effects do.
+ * The settings store as the page sees it: a write shows its patch at once,
+ * settles in the order it was sent and says how it ended; a refused write
+ * puts back the saved list. Every change it shows is passed to the editor,
+ * as the page's effects do.
  */
 class Store {
   saved: RosterSaved;
@@ -81,10 +82,14 @@ class Store {
   holdRefusal = false;
   /** When set, the page hears what a settled write left only after the write resolves. */
   followLate = false;
+  /** When set, a write that settles is dropped: the computer went away before it answered. */
+  drop = false;
+  /** When set, what the computer stores for a write it saves. */
+  storedAs: ((patch: RosterPatch) => RosterPatch) | null = null;
   /** Writes not yet settled, in the order the computer settles them: a held one holds those after it. */
   #queue: { settle: () => void; held: boolean }[] = [];
 
-  write(patch: RosterPatch): Promise<void> {
+  write(patch: RosterPatch): Promise<RosterWrite> {
     this.writes.push(patch);
     this.pending.push(patch);
     const refused = this.holdRefusal;
@@ -93,14 +98,18 @@ class Store {
     return new Promise((resolve) => {
       const settle = () => {
         this.pending = this.pending.filter((p) => p !== patch);
-        if (!this.refuse && !refused) this.saved = { ...this.saved, ...patch };
+        const saved = !this.refuse && !refused && !this.drop;
+        if (saved) this.saved = { ...this.saved, ...(this.storedAs ? this.storedAs(patch) : patch) };
+        const result: RosterWrite = this.drop
+          ? { status: 'dropped' }
+          : { status: saved ? 'saved' : 'refused', saved: this.saved };
         if (this.followLate) {
-          resolve();
+          resolve(result);
           setTimeout(() => this.notify(), 0);
           return;
         }
         this.notify();
-        resolve();
+        resolve(result);
       };
       this.#queue.push({ settle, held: this.manual || refused });
       queueMicrotask(() => this.#drain());
@@ -253,7 +262,8 @@ function outcome(h: ReturnType<typeof harness>): string {
     .map((e) => mark(e as DraftEntry<AgentProfile>, trimProfile, `${e.value.name || '_'}${e.value.useFor === 'Typed.' ? '~' : ''}`))
     .join(',');
   const notes = editor.notes.entries.map((e) => mark(e as DraftEntry<AgentNote>, trimNote, e.value.text)).join(',');
-  const removed = editor.profiles.removed.length ? ` -${names(editor.profiles.removed)}` : '';
+  const deleting = editor.profiles.removed.filter((gone) => gone.origin !== null).map((gone) => gone.origin!);
+  const removed = deleting.length ? ` -${names(deleting)}` : '';
   const restore = editor.restoreRefusal === RESTORE_OVERTAKEN ? ' overtaken' : editor.restoreRefusal ? ` refused` : '';
   const check = editor.checkFailure ? ' checkFailed' : '';
   return `[${writes}] ${profiles}${removed} | ${notes}${restore}${check}`;
@@ -339,8 +349,8 @@ const TABLE: Record<string, string> = {
   "save > takeTheirs, takeTheirs answers first": "[P:Sam,Beta] Sam,Beta | theirs",
   "save > close, save answers first": "[P:Sam,Beta] Sam,Beta | theirs,mine!",
   "save > close, close answers first": "[P:Sam,Beta] Sam,Beta | theirs,mine!",
-  "refused > mount, refused answers first": "[P:Alpha,Ref] Alpha,Ref* | theirs,mine!",
-  "refused > mount, mount answers first": "[P:Alpha,Ref] Alpha,Ref* | theirs,mine!",
+  "refused > mount, refused answers first": "[P:Alpha,Ref] Alpha,Ref* | theirs,mine! checkFailed",
+  "refused > mount, mount answers first": "[P:Alpha,Ref] Alpha,Ref* | theirs,mine! checkFailed",
   "refused > save, refused answers first": "[P:Alpha,Ref P:Sam,Ref] Sam,Ref | theirs,mine!",
   "refused > save, save answers first": "[P:Alpha,Ref P:Sam,Ref] Sam,Ref | theirs,mine!",
   "refused > refused, earlier answers first": "[P:Alpha,Ref P:Alpha,Ref] Alpha,Ref* | theirs,mine!",
@@ -622,11 +632,10 @@ describe('a write the computer refuses', () => {
     expect(h.editor.profiles.entries[0].origin?.name).toBe('Sam');
   });
 
-  // A change saved elsewhere that lands while a save checks drops that save
-  // and saves the reconciled draft. The store putting back a refused write
-  // is such a change, so it re-saves a save that was checking, once: the
-  // re-save's own refusal finds no save checking and stops.
-  it('re-saves a save that was checking once, and does not loop', async () => {
+  // A refusal changes no saved list, so it drops nothing: a save that was
+  // checking writes once its check answers, and nothing re-saves the refused
+  // write on its own.
+  it('lets a save that was checking write once, and re-saves nothing', async () => {
     const h = harness({ agentProfiles: [ALPHA, BETA], agentNotes: [] });
     h.store.manual = true;
     h.store.refuse = true;
@@ -637,13 +646,146 @@ describe('a write the computer refuses', () => {
     const answer = holdingCheck(h, () => h.editor.commit('profiles'), ok);
     h.store.settleNext();
     await flush();
+    expect(h.store.writes).toHaveLength(1);
+    answer();
+    await flush();
     expect(h.store.writes).toHaveLength(2);
     h.store.settleNext();
-    await flush();
-    answer();
     await flush();
 
     expect(h.store.writes).toHaveLength(2);
     expect(outcome(h)).toBe('[P:Sam,Beta P:Sam,Beta] Sam~*,Beta | ');
+  });
+
+  // The computer went away before it answered: how the write ended is
+  // unknown, so nothing is marked saved and the page follows what the store
+  // shows.
+  // The computer stored something other than what was sent: its answer is
+  // what is saved, and the page shows it.
+  it('shows what the computer stored when it differs from what was sent', async () => {
+    const h = harness({ agentProfiles: [], agentNotes: [note('one')] });
+    h.store.storedAs = () => ({ agentNotes: [note('stored')] });
+    h.editor.editNote(0, { text: 'mine' });
+    h.editor.commit('notes');
+    await flush();
+    expect(outcome(h)).toBe('[N:mine]  | stored');
+  });
+
+  it('leaves the edits of a dropped write unsaved', async () => {
+    const h = harness({ agentProfiles: [ALPHA, BETA], agentNotes: [] });
+    h.store.drop = true;
+    h.editor.editProfile(0, { name: 'Sam' });
+    h.editor.commit('profiles');
+    await flush();
+    expect(outcome(h)).toBe('[P:Sam,Beta] Sam*,Beta | ');
+  });
+});
+
+// The store shows a write in flight as the list it sends, so the page can
+// tell its own writes from a change saved elsewhere only with one write of a
+// list in flight at a time.
+describe('one write of a list in flight at a time', () => {
+  it('sends a newer save of a list once the write in flight settles', async () => {
+    const h = harness({ agentProfiles: [ALPHA, BETA], agentNotes: [] });
+    h.store.manual = true;
+    h.editor.editProfile(0, { name: 'Sam' });
+    h.editor.commit('profiles');
+    await flush();
+    h.editor.editProfile(0, { name: 'Sid' });
+    h.editor.commit('profiles');
+    await flush();
+    expect(h.store.writes).toHaveLength(1);
+    h.store.settleNext();
+    await flush();
+    expect(h.store.writes).toHaveLength(2);
+    h.store.settleNext();
+    await flush();
+    expect(outcome(h)).toBe('[P:Sam,Beta P:Sid,Beta] Sid,Beta | ');
+  });
+
+  it('sends Restore\'s write once a write in flight settles', async () => {
+    const h = harness({ agentProfiles: [ALPHA, BETA], agentNotes: [note('one')] });
+    h.store.manual = true;
+    h.editor.editProfile(0, { name: 'Sam' });
+    h.editor.commit('profiles');
+    await flush();
+    void h.editor.restore();
+    h.held.seeds[0].resolve(SEEDS);
+    await flush();
+    expect(h.store.writes).toHaveLength(1);
+    h.store.settleNext();
+    await flush();
+    expect(h.store.writes).toHaveLength(2);
+    h.store.settleNext();
+    await flush();
+    expect(outcome(h)).toBe('[P:Sam,Beta P:Seed+N:seeded] Seed | seeded');
+  });
+});
+
+// The reviewer's sequence: a rename's write is in flight when the row is
+// deleted; the rename is saved and the deletion refused. The deletion
+// follows the entry, so it now deletes the renamed row, still unsaved.
+describe('a deletion made while an edit of the same row is in flight', () => {
+  it('survives the edit being saved and the deletion refused, for profiles', async () => {
+    const h = harness({ agentProfiles: [ALPHA, BETA], agentNotes: [] });
+    h.store.manual = true;
+    h.editor.editProfile(0, { name: 'Sam' });
+    h.editor.commit('profiles');
+    await flush();
+    h.editor.remove('profiles', 0);
+    await flush();
+    h.store.settleNext();
+    await flush();
+    h.store.refuse = true;
+    h.store.settleNext();
+    await flush();
+    expect(outcome(h)).toBe('[P:Sam,Beta P:Beta] Beta -Sam | ');
+
+    h.store.refuse = false;
+    h.store.manual = false;
+    h.editor.commit('profiles');
+    await flush();
+    expect(outcome(h)).toBe('[P:Sam,Beta P:Beta P:Beta] Beta | ');
+  });
+
+  it('survives the edit being saved and the deletion refused, for notes', async () => {
+    const h = harness({ agentProfiles: [], agentNotes: [note('one'), note('two')] });
+    h.store.manual = true;
+    h.editor.editNote(0, { text: 'renamed' });
+    h.editor.commit('notes');
+    await flush();
+    h.editor.remove('notes', 0);
+    await flush();
+    h.store.settleNext();
+    await flush();
+    h.store.refuse = true;
+    h.store.settleNext();
+    await flush();
+    expect(outcome(h)).toBe('[N:renamed,two N:two]  | two');
+    expect(h.editor.notes.removed.map((gone) => gone.origin?.text)).toEqual(['renamed']);
+
+    h.store.refuse = false;
+    h.store.manual = false;
+    h.editor.commit('notes');
+    await flush();
+    expect(h.store.saved.agentNotes.map((n) => n.text)).toEqual(['two']);
+    expect(h.editor.notes.removed).toEqual([]);
+  });
+
+  it('deletes a row added and deleted before its first write settles', async () => {
+    const h = harness({ agentProfiles: [ALPHA], agentNotes: [] });
+    h.store.manual = true;
+    h.editor.addProfile();
+    h.editor.editProfile(1, profile('Added'));
+    h.editor.commit('profiles');
+    await flush();
+    h.editor.remove('profiles', 1);
+    await flush();
+    h.store.settleNext();
+    await flush();
+    h.store.settleNext();
+    await flush();
+    expect(h.store.saved.agentProfiles.map((p) => p.name)).toEqual(['Alpha']);
+    expect(outcome(h)).toBe('[P:Alpha,Added P:Alpha] Alpha | ');
   });
 });

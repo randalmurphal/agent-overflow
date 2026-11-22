@@ -16,15 +16,15 @@
 //   closing retires it silently, and a change saved elsewhere retires it
 //   and says so. A save that finishes while Restore waits writes, and
 //   Restore's write follows it in the computer's queue.
-// - The page follows the saved list as it last knew it: what the store
-//   showed, or what this page sent, set before the write.
-// - While a write of this page is outstanding the store shows the list this
-//   page sent last, so the page learns how its writes of a list ended only
-//   when the last of them settles, and decides it then (#land): the newest
-//   write whose list the store holds was saved and marks its entries saved;
-//   the writes after it were refused and leave their edits on the page,
-//   unsaved, for the next commit to send again. A list that is neither one
-//   this page sent nor the one its first write replaced changed elsewhere.
+// - Each list has at most one write in flight. A newer save of the list
+//   waits as the newest wanted write and is sent when the one in flight
+//   settles; Restore's write of both lists waits until neither has one.
+// - The store says how each write ended (RosterWrite): saved, with the
+//   computer's lists after it, which marks the write's entries saved;
+//   refused, which leaves the person's edits on the page, unsaved, for the
+//   next commit to send again; or dropped, when the computer went away. A
+//   saved list the page did not know, in that answer or shown by the store
+//   while no write of the list is in flight, changed elsewhere.
 import { noteProblems, profileProblems, trimNote, trimProfile } from './agentRoster';
 import {
   draftOf,
@@ -32,6 +32,7 @@ import {
   markSaved,
   marked,
   reconcile,
+  remove,
   sameList,
   takeTheirs,
   unsaved,
@@ -61,6 +62,17 @@ export interface RosterPatch {
   agentNotes?: AgentNote[];
 }
 
+/**
+ * How a write ended, as the settings store reports it (SettingsWrite):
+ * `saved` and `refused` carry the computer's saved lists after it; `local`
+ * says the computer stores no roster.
+ */
+export type RosterWrite =
+  | { status: 'local' }
+  | { status: 'saved'; saved: RosterSaved }
+  | { status: 'refused'; saved: RosterSaved }
+  | { status: 'dropped' };
+
 /** What the page's computer and store do for the owner. */
 export interface RosterDeps {
   /** The saved lists as the store shows them now. */
@@ -75,17 +87,19 @@ export interface RosterDeps {
   noSeeds(): string;
   /** Reports that the starting roster could not be read. */
   seedsFailed(err: unknown): void;
-  /** Writes through the store, which shows the patch at once. */
-  write(patch: RosterPatch): Promise<void>;
+  /** Writes through the store, which shows the patch at once, and says how it ended. */
+  write(patch: RosterPatch): Promise<RosterWrite>;
 }
 
+type ReadonlyEntry<T> = {
+  readonly value: Readonly<T>;
+  readonly origin: Readonly<T> | null;
+  readonly theirs?: Readonly<T> | null;
+};
+
 export type ReadonlyDraft<T> = {
-  readonly entries: readonly {
-    readonly value: Readonly<T>;
-    readonly origin: Readonly<T> | null;
-    readonly theirs?: Readonly<T> | null;
-  }[];
-  readonly removed: readonly Readonly<T>[];
+  readonly entries: readonly ReadonlyEntry<T>[];
+  readonly removed: readonly ReadonlyEntry<T>[];
 };
 
 /** Said where a Restore's refusal is, when a change saved elsewhere retired it. */
@@ -102,23 +116,19 @@ export function checkKey(profile: Readonly<AgentProfile>): string {
 const sameProfile = (origin: AgentProfile, entry: AgentProfile) =>
   origin.name.toLowerCase() === entry.name.toLowerCase();
 
-/** One list's part of a write: what the save took, and what it sent. */
+/**
+ * One list's part of a write: what the save took and what it sends. `pair`
+ * marks Restore's write, whose two parts are sent together.
+ */
 interface Sent<T> {
   list: RosterList;
   entries: DraftEntry<T>[];
-  removed: T[];
+  removed: DraftEntry<T>[];
   sent: T[];
+  pair?: boolean;
 }
 
-/**
- * One list's part of a write of this page whose outcome the page has not
- * decided: what it sent, the list as the page knew it before (as JSON), and
- * whether the write's promise settled.
- */
-interface Outstanding<T> extends Sent<T> {
-  replaced: string;
-  settled: boolean;
-}
+type AnySent = Sent<AgentProfile> | Sent<AgentNote>;
 
 export class RosterEditor {
   readonly #deps: RosterDeps;
@@ -127,12 +137,14 @@ export class RosterEditor {
   #checks = $state<Record<string, ProfileCheck>>({});
   #checkFailure = $state('');
   #restoreRefusal = $state('');
-  /** The saved list as this page last knew it, as JSON. */
+  /** The saved list the store last reported, as JSON: shown while idle, or in a write's answer. */
   readonly #known: Record<RosterList, string>;
-  /** This page's writes of each list, oldest first, until the last of them settles. */
-  readonly #outstanding: { profiles: Outstanding<AgentProfile>[]; notes: Outstanding<AgentNote>[] } = {
-    profiles: [],
-    notes: [],
+  /** Whether the list has a write in flight. */
+  readonly #flight: Record<RosterList, boolean> = { profiles: false, notes: false };
+  /** The newest write of the list waiting for the one in flight. */
+  readonly #next: { profiles: Sent<AgentProfile> | null; notes: Sent<AgentNote> | null } = {
+    profiles: null,
+    notes: null,
   };
   /** Advanced by every save and every replacement of the list's draft. */
   readonly #revision: Record<RosterList, number> = { profiles: 0, notes: 0 };
@@ -178,18 +190,23 @@ export class RosterEditor {
 
   /** The store shows `saved` for `list`. */
   follow(list: RosterList, saved: readonly AgentProfile[] | readonly AgentNote[]): void {
-    // What the store shows while this page's writes are outstanding is their
-    // outcome, which #land decides once the last of them settles.
-    if (this.#outstanding[list].length > 0) return;
+    // While a write of the list is in flight the store shows that write; its
+    // answer says how it ended (#settled).
+    if (this.#flight[list]) return;
+    this.#learn(list, saved);
+  }
+
+  /** The computer's saved `list` is `saved`; a list the page did not know changed elsewhere. */
+  #learn(list: RosterList, saved: readonly AgentProfile[] | readonly AgentNote[]): void {
     const key = JSON.stringify(saved);
     if (key === this.#known[list]) return;
     this.#known[list] = key;
-    this.#changed(list, saved, false);
+    this.#changed(list, saved);
   }
 
-  /** The store holds `saved` for `list`, which this page knew otherwise; `own` when this page's write put it there. */
-  #changed(list: RosterList, saved: readonly AgentProfile[] | readonly AgentNote[], own: boolean): void {
-    if (this.#restore && !own) {
+  /** The saved `list` changed elsewhere to `saved`. */
+  #changed(list: RosterList, saved: readonly AgentProfile[] | readonly AgentNote[]): void {
+    if (this.#restore) {
       this.#restore = null;
       this.#restoreRefusal = RESTORE_OVERTAKEN;
     }
@@ -240,9 +257,7 @@ export class RosterEditor {
 
   remove(list: RosterList, index: number): void {
     this.#retire();
-    const draft = this.#draft(list) as Draft<object>;
-    const [entry] = draft.entries.splice(index, 1);
-    if (entry?.origin) draft.removed.push(entry.origin);
+    remove(this.#draft(list) as Draft<object>, index);
     void this.#save(list);
   }
 
@@ -289,21 +304,21 @@ export class RosterEditor {
     }
     this.#replace('profiles');
     this.#replace('notes');
-    const saved = this.#deps.saved();
-    // The starting roster as an unsaved edit of the saved one: every saved
-    // entry pending deletion and every seed added, saved once the write
-    // settles with them.
+    // The starting roster as an unsaved edit of the saved one: every entry
+    // the page holds, deleted, and every seed added, saved once the write
+    // settles with them. The entries themselves are the deletions, so one
+    // a write in flight stores is deleted as what it stored.
     this.#profiles = {
       entries: seeds.profiles.map((profile) => ({ value: { ...profile }, origin: null })),
-      removed: saved.agentProfiles.map((profile) => ({ ...profile })),
+      removed: [...this.#profiles.entries, ...this.#profiles.removed],
     };
     this.#notes = {
       entries: seeds.notes.map((note) => ({ value: { ...note }, origin: null })),
-      removed: saved.agentNotes.map((note) => ({ ...note })),
+      removed: [...this.#notes.entries, ...this.#notes.removed],
     };
     const profiles = this.#taken(this.#profiles, 'profiles', (profile) => ({ ...profile }));
     const notes = this.#taken(this.#notes, 'notes', (note) => ({ ...note }));
-    this.#send({ agentProfiles: profiles.sent, agentNotes: notes.sent }, [profiles, notes]);
+    this.#request([profiles, notes]);
     void this.#check(profiles.sent.map(trimProfile));
   }
 
@@ -316,11 +331,19 @@ export class RosterEditor {
     this.#restore = null;
   }
 
-  /** Records a replacement of the list's draft; true when it dropped a save still checking. */
+  /**
+   * Records a replacement of the list's draft; true when it dropped a save
+   * still checking or waiting to be sent. A Restore write that loses this
+   * list's part sends the other part alone.
+   */
   #replace(list: RosterList): boolean {
-    const dropped = this.#checking[list] !== 0;
+    const waiting = this.#next[list];
+    const dropped = this.#checking[list] !== 0 || waiting !== null;
     this.#revision[list] += 1;
     this.#checking[list] = 0;
+    this.#next[list] = null;
+    const other = this.#next[list === 'profiles' ? 'notes' : 'profiles'];
+    if (waiting?.pair && other) other.pair = false;
     return dropped;
   }
 
@@ -341,8 +364,7 @@ export class RosterEditor {
     if (list === 'notes') {
       if (noteProblems(this.#notes.entries.map((entry) => entry.value)).size > 0 || marked(this.#notes)) return;
       this.#revision.notes += 1;
-      const notes = this.#taken(this.#notes, 'notes', trimNote);
-      this.#send({ agentNotes: notes.sent }, [notes]);
+      this.#request([this.#taken(this.#notes, 'notes', trimNote)]);
       return;
     }
     if (profileProblems(this.#profiles.entries.map((entry) => entry.value)).size > 0 || marked(this.#profiles)) return;
@@ -353,41 +375,77 @@ export class RosterEditor {
     if (this.#revision.profiles !== revision) return;
     this.#checking.profiles = 0;
     if (!runnable) return;
-    this.#send({ agentProfiles: profiles.sent }, [profiles]);
+    this.#request([profiles]);
   }
 
-  #send(patch: RosterPatch, parts: (Sent<AgentProfile> | Sent<AgentNote>)[]): void {
-    const writes = parts.map((part) => {
-      const write = { ...part, replaced: this.#known[part.list], settled: false };
-      (this.#outstanding[part.list] as Outstanding<object>[]).push(write);
-      this.#known[part.list] = JSON.stringify(part.sent);
-      return write;
-    });
-    void this.#deps.write(patch).then(() => {
-      for (const write of writes) {
-        write.settled = true;
-        if (this.#outstanding[write.list].every((other) => other.settled)) this.#land(write.list);
+  /** Wants `parts` written: each replaces its list's waiting write, and is sent once its list is idle. */
+  #request(parts: AnySent[]): void {
+    for (const part of parts) {
+      const replaced = this.#next[part.list];
+      const other = this.#next[part.list === 'profiles' ? 'notes' : 'profiles'];
+      if (replaced?.pair && other) other.pair = false;
+      const waiting = { ...part, pair: parts.length > 1 };
+      if (waiting.list === 'profiles') this.#next.profiles = waiting as Sent<AgentProfile>;
+      else this.#next.notes = waiting as Sent<AgentNote>;
+    }
+    this.#dispatch();
+  }
+
+  /** Sends each waiting write whose lists have no write in flight. */
+  #dispatch(): void {
+    const { profiles, notes } = this.#next;
+    if (profiles?.pair && notes?.pair) {
+      if (this.#flight.profiles || this.#flight.notes) return;
+      this.#next.profiles = null;
+      this.#next.notes = null;
+      this.#write([profiles, notes]);
+      return;
+    }
+    for (const list of ['profiles', 'notes'] as const) {
+      const waiting = this.#next[list];
+      if (!waiting || this.#flight[list]) continue;
+      this.#next[list] = null;
+      this.#write([waiting]);
+    }
+  }
+
+  #write(parts: AnySent[]): void {
+    const patch: RosterPatch = {};
+    for (const part of parts) {
+      this.#flight[part.list] = true;
+      if (part.list === 'profiles') patch.agentProfiles = part.sent as AgentProfile[];
+      else patch.agentNotes = part.sent as AgentNote[];
+    }
+    void this.#deps.write(patch).then((result) => this.#settled(parts, result));
+  }
+
+  /** A write ended as `result`. */
+  #settled(parts: AnySent[], result: RosterWrite): void {
+    for (const part of parts) this.#flight[part.list] = false;
+    if (result.status === 'local') {
+      throw new Error('The computer stores no agent roster, so the roster was not saved.');
+    }
+    for (const part of parts) {
+      if (result.status === 'dropped') {
+        // How the write ended is unknown; the edits stay unsaved and the page
+        // follows whatever the store shows now.
+        const shown = this.#deps.saved();
+        this.follow(part.list, part.list === 'profiles' ? shown.agentProfiles : shown.agentNotes);
+        continue;
       }
-    });
-  }
-
-  /**
-   * The last of this page's outstanding writes of `list` settled, so the
-   * store shows what it holds. The newest write whose list it holds was
-   * saved, and the writes after it refused; a list that is none of them and
-   * not the one the first write replaced changed elsewhere meanwhile.
-   */
-  #land(list: RosterList): void {
-    const writes = this.#outstanding[list] as Outstanding<object>[];
-    this.#outstanding[list] = [];
-    const shown = this.#deps.saved();
-    const holds = (list === 'profiles' ? shown.agentProfiles : shown.agentNotes) as readonly object[];
-    const saved = [...writes].reverse().find((write) => sameList(holds, write.sent));
-    if (saved) markSaved(this.#draft(list) as Draft<object>, saved.entries, saved.sent, saved.removed);
-    const key = JSON.stringify(holds);
-    if (key === this.#known[list]) return;
-    this.#known[list] = key;
-    this.#changed(list, holds as readonly AgentProfile[] | readonly AgentNote[], saved !== undefined || key === writes[0].replaced);
+      const holds = part.list === 'profiles' ? result.saved.agentProfiles : result.saved.agentNotes;
+      if (result.status === 'saved') {
+        markSaved(this.#draft(part.list) as Draft<object>, part.entries, part.sent, part.removed);
+        // The computer stored this write; a list other than the one sent is
+        // a real difference and is reconciled.
+        if (sameList(holds as readonly object[], part.sent)) {
+          this.#known[part.list] = JSON.stringify(holds);
+          continue;
+        }
+      }
+      this.#learn(part.list, holds);
+    }
+    this.#dispatch();
   }
 
   /**
