@@ -3,7 +3,6 @@ package app
 import (
 	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/testutil/mockexec"
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -34,37 +33,6 @@ func writeClaudeStdinRecorderBinary(t *testing.T, logPath string) string {
 	script := fmt.Sprintf("#!/bin/sh\nset -u\nwhile IFS= read -r line; do\n    printf '%%s\\n' \"$line\" >> '%s'\ndone\n", logPath)
 	mockexec.Write(t, path, script)
 	return path
-}
-
-// recordedUserEnvelopes returns the `type:"user"` lines the fake CLI saw.
-// Control requests (permission mode) share the stream and are ignored. The
-// fake may still be appending: a read can end inside its write of a line,
-// at a page boundary, so only newline-terminated lines are read.
-func recordedUserEnvelopes(t *testing.T, logPath string) []map[string]any {
-	t.Helper()
-	data, err := os.ReadFile(logPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		t.Fatalf("read stdin log: %v", err)
-	}
-	written := string(data[:bytes.LastIndexByte(data, '\n')+1])
-	var out []map[string]any
-	for _, line := range strings.Split(written, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		var envelope map[string]any
-		if err := json.Unmarshal([]byte(line), &envelope); err != nil {
-			t.Fatalf("stdin line is not JSON (%v): %s", err, line)
-		}
-		if kind, _ := envelope["type"].(string); kind == "user" {
-			out = append(out, envelope)
-		}
-	}
-	return out
 }
 
 // waitForRecordedUserEnvelopes polls the log until the fake CLI's shell has
@@ -429,7 +397,7 @@ func TestDispatchFlush_Claude_JoinFailureBeforeWriteRequeuesEveryMember(t *testi
 		})},
 	})
 
-	if envelopes := recordedUserEnvelopes(t, stdinLog); len(envelopes) != 0 {
+	if envelopes := settledUserEnvelopes(t, stdinLog); len(envelopes) != 0 {
 		t.Fatalf("a member failed to resolve but %d envelope(s) reached the provider: %+v", len(envelopes), envelopes)
 	}
 	items, err := app.store.ListTurnItems(thread.ID, 3)

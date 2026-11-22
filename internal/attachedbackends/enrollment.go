@@ -256,7 +256,7 @@ func (m *Manager) enroll(ctx context.Context, link deviceclient.Link, purpose en
 		m.moveEnrollment(e, enrollmentRedeeming, enrollmentFailed)
 		return Attachment{}, nil, err
 	}
-	redeemed, err := deviceclient.Redeem(e.ctx, m.dir, link, label, m.platform, m.clientOptions()...)
+	redeemed, err := deviceclient.Redeem(e.ctx, m.dir, link, label, m.platform, append(m.clientOptions(), deviceclient.WithRedemptionBound(m.pairingBound))...)
 	if err != nil {
 		if !m.moveEnrollment(e, enrollmentRedeeming, enrollmentFailed) {
 			return Attachment{}, nil, errors.Join(context.Cause(e.ctx), err)

@@ -2,47 +2,79 @@ package pairbootstrap
 
 import (
 	"context"
+	"errors"
 	"net/http"
-	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
 
-// The client's bound ends an exchange whose answer never comes, and
-// replaces the wait for one answer too. Zero keeps the product's bounds:
-// 15 s for the exchange and 10 s for one answer.
-func TestTheClientsBoundEndsAHeldExchange(t *testing.T) {
+// The client carries its bound for the exchange and for one answer: zero
+// keeps the product's 15 s and 10 s, a set bound replaces both, and a
+// negative one is refused.
+func TestTheClientCarriesTheExchangesBound(t *testing.T) {
 	t.Parallel()
-	release := make(chan struct{})
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		select {
-		case <-release:
-		case <-r.Context().Done():
+	for _, c := range []struct {
+		bound, exchange, answer time.Duration
+	}{
+		{bound: 0, exchange: 15 * time.Second, answer: 10 * time.Second},
+		{bound: 2 * time.Minute, exchange: 2 * time.Minute, answer: 2 * time.Minute},
+	} {
+		hc, err := NewHTTPClient(nil, c.bound)
+		if err != nil {
+			t.Fatal(err)
 		}
-	}))
-	defer server.Close()
-	defer close(release)
-	const bound = 100 * time.Millisecond
-	hc := NewHTTPClient(nil, bound)
-	defer hc.CloseIdleConnections()
-	started := time.Now()
-	_, _, err := Exchange(context.Background(), hc, server.URL, "Laptop", "darwin")
-	elapsed := time.Since(started)
-	if err == nil {
-		t.Fatal("an exchange whose answer never came succeeded")
+		answer := hc.Transport.(*http.Transport).ResponseHeaderTimeout
+		if hc.Timeout != c.exchange || answer != c.answer {
+			t.Fatalf("a %v bound gives the exchange %v and one answer %v, want %v and %v", c.bound, hc.Timeout, answer, c.exchange, c.answer)
+		}
 	}
-	if elapsed >= responseHeaderTimeout {
-		t.Fatalf("the exchange ended after %v, at the product's wait for an answer, not at the %v bound it was given: %v", elapsed, bound, err)
-	}
-
-	long := NewHTTPClient(nil, 2*time.Minute)
-	if answer := long.Transport.(*http.Transport).ResponseHeaderTimeout; long.Timeout != 2*time.Minute || answer != 2*time.Minute {
-		t.Fatalf("a 2m bound gives the exchange %v and one answer %v, want 2m for both", long.Timeout, answer)
-	}
-
-	product := NewHTTPClient(nil, 0)
-	answer := product.Transport.(*http.Transport).ResponseHeaderTimeout
-	if product.Timeout != 15*time.Second || answer != 10*time.Second {
-		t.Fatalf("the product client waits %v for the exchange and %v for one answer, want 15s and 10s", product.Timeout, answer)
+	if _, err := NewHTTPClient(nil, -time.Second); err == nil || !strings.Contains(err.Error(), "negative") {
+		t.Fatalf("a negative bound = %v, want it refused", err)
 	}
 }
+
+// Exchange sends its first request with the deadline its client's Timeout
+// sets for the whole exchange, or exchangeTimeout for a client without one,
+// and refuses a client with a negative Timeout before it sends anything.
+func TestExchangeBoundsTheWholeExchangeByItsClient(t *testing.T) {
+	t.Parallel()
+	stop := errors.New("stopped after reading the deadline")
+	for _, c := range []struct {
+		timeout, want time.Duration
+	}{
+		{timeout: time.Hour, want: time.Hour},
+		{timeout: 0, want: exchangeTimeout},
+	} {
+		var deadline, sent time.Time
+		var ok bool
+		hc := &http.Client{Timeout: c.timeout, Transport: roundTripper(func(req *http.Request) (*http.Response, error) {
+			deadline, ok = req.Context().Deadline()
+			sent = time.Now()
+			return nil, stop
+		})}
+		began := time.Now()
+		if _, _, err := Exchange(context.Background(), hc, "127.0.0.1:1", "Laptop", "darwin"); !errors.Is(err, stop) {
+			t.Fatalf("a %v client: Exchange = %v, want it stopped at its first request", c.timeout, err)
+		}
+		// Both ends are clock reads around the moment the deadline was set.
+		if !ok || deadline.Before(began.Add(c.want)) || deadline.After(sent.Add(c.want)) {
+			t.Fatalf("a %v client sent its first request with a deadline %v after the exchange began (set %t), want %v", c.timeout, deadline.Sub(began), ok, c.want)
+		}
+	}
+	if exchangeTimeout != 15*time.Second {
+		t.Fatalf("exchangeTimeout = %v, want 15s", exchangeTimeout)
+	}
+	sent := false
+	hc := &http.Client{Timeout: -time.Second, Transport: roundTripper(func(*http.Request) (*http.Response, error) {
+		sent = true
+		return nil, stop
+	})}
+	if _, _, err := Exchange(context.Background(), hc, "127.0.0.1:1", "Laptop", "darwin"); err == nil || !strings.Contains(err.Error(), "negative") || sent {
+		t.Fatalf("a client with a negative Timeout: Exchange = %v (sent %t), want it refused before sending", err, sent)
+	}
+}
+
+type roundTripper func(*http.Request) (*http.Response, error)
+
+func (f roundTripper) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }

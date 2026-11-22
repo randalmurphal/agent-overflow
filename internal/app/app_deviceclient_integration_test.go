@@ -418,7 +418,7 @@ func TestRefreshReuseEndsTheSessionOnBothSides(t *testing.T) {
 	if err := deviceclient.SaveSession(profile, held); err != nil {
 		t.Fatalf("SaveSession: %v", err)
 	}
-	original, err := openTestDevice(t, profile, held)
+	original, err := deviceclient.Open(profile, held)
 	if err != nil {
 		t.Fatalf("Open the original: %v", err)
 	}
@@ -433,7 +433,7 @@ func TestRefreshReuseEndsTheSessionOnBothSides(t *testing.T) {
 	if err := deviceclient.SaveSession(copiedProfile, held); err != nil {
 		t.Fatal(err)
 	}
-	copied, err := openTestDevice(t, copiedProfile, held)
+	copied, err := deviceclient.Open(copiedProfile, held)
 	if err != nil {
 		t.Fatalf("Open the copy: %v", err)
 	}

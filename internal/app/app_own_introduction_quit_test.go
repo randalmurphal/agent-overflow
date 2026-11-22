@@ -398,7 +398,7 @@ func TestTheIntroductionsRotationKeepsItsSessionThroughTheNextIntroduction(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	renewer, err := openTestDevice(t, b.profile, saved, deviceclient.WithDialContext(dialOwnFixture))
+	renewer, err := deviceclient.Open(b.profile, saved, deviceclient.WithDialContext(dialOwnFixture))
 	if err != nil {
 		t.Fatal(err)
 	}

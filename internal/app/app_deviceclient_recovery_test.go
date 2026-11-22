@@ -111,7 +111,7 @@ func testLostCommittedRenewal(t *testing.T, switchRoute bool) {
 	if err := deviceclient.SaveSession(dir, held); err != nil {
 		t.Fatal(err)
 	}
-	remote, err := openTestDevice(t, dir, held)
+	remote, err := deviceclient.Open(dir, held)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func testLostCommittedRenewal(t *testing.T, switchRoute bool) {
 	if switchRoute {
 		relay.Close()
 	}
-	restarted, err := openTestDevice(t, dir, pending)
+	restarted, err := deviceclient.Open(dir, pending)
 	if err != nil {
 		t.Fatal(err)
 	}

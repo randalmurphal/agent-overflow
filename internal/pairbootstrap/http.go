@@ -33,9 +33,13 @@ const (
 // client afterward. Never use this transport for a session, token or invite.
 //
 // bound replaces exchangeTimeout, and the wait for one answer with it; zero
-// keeps both. Only a test sets it: the computer it pairs with runs in its
-// process, where a crowded machine can hold an answer past them.
-func NewHTTPClient(dial func(context.Context, string, string) (net.Conn, error), bound time.Duration) *http.Client {
+// keeps both, and a negative bound is refused. Only a test sets it: the
+// computer it pairs with runs in its process, where a crowded machine can
+// hold an answer past them.
+func NewHTTPClient(dial func(context.Context, string, string) (net.Conn, error), bound time.Duration) (*http.Client, error) {
+	if bound < 0 {
+		return nil, fmt.Errorf("pairbootstrap: the exchange's bound %v is negative", bound)
+	}
 	if dial == nil {
 		dial = (&net.Dialer{Timeout: 5 * time.Second}).DialContext
 	}
@@ -49,7 +53,7 @@ func NewHTTPClient(dial func(context.Context, string, string) (net.Conn, error),
 		Transport:     &http.Transport{DialContext: dial, TLSClientConfig: &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12}, TLSHandshakeTimeout: 5 * time.Second, ResponseHeaderTimeout: answer},
 		Timeout:       bound,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}
+	}, nil
 }
 
 func NormalizeAddress(raw string) (string, error) {
@@ -90,14 +94,19 @@ type Request struct {
 // No redirect, cookie jar, authentication header or implicit mutation retry is
 // allowed. The returned invitation is redeemed by the ordinary pinned client.
 // The transport's Timeout bounds the whole exchange; a transport without one
-// gets exchangeTimeout.
+// gets exchangeTimeout, and one with a negative Timeout is refused.
 func Exchange(ctx context.Context, transport *http.Client, endpoint, label, platform string) (Invitation, string, error) {
 	endpoint, err := NormalizeAddress(endpoint)
 	if err != nil {
 		return Invitation{}, "", err
 	}
 	if transport == nil {
-		transport = NewHTTPClient(nil, 0)
+		if transport, err = NewHTTPClient(nil, 0); err != nil {
+			return Invitation{}, "", err
+		}
+	}
+	if transport.Timeout < 0 {
+		return Invitation{}, "", fmt.Errorf("pairbootstrap: the exchange's bound %v is negative", transport.Timeout)
 	}
 	hc := *transport
 	hc.Jar = nil

@@ -3,6 +3,7 @@ package deviceclient
 import (
 	"context"
 	"net"
+	"net/http"
 	"time"
 )
 
@@ -10,10 +11,12 @@ import (
 // the destination authority, credential scope, or request retry policy.
 type DialContextFunc func(context.Context, string, string) (net.Conn, error)
 type options struct {
-	dial     DialContextFunc
-	probe    time.Duration
-	exchange time.Duration
-	lifetime context.Context
+	dial       DialContextFunc
+	probe      time.Duration
+	redemption func() (time.Duration, error)
+	lifetime   context.Context
+	// roundTrip wraps the credential transport (withRoundTrip).
+	roundTrip func(http.RoundTripper) http.RoundTripper
 }
 type Option func(*options)
 
@@ -30,11 +33,21 @@ func WithProbeInterval(interval time.Duration) Option {
 	return func(o *options) { o.probe = interval }
 }
 
-// WithExchangeTimeout sets the bound on one credential exchange. Zero keeps
-// pinTimeout. Only a test lengthens it: its backend runs in the test process,
-// where a crowded machine can hold a pairing past pinTimeout.
-func WithExchangeTimeout(timeout time.Duration) Option {
-	return func(o *options) { o.exchange = timeout }
+// WithRedemptionBound replaces pinTimeout for the redemption alone (Redeem,
+// Pair). bound is asked when the redemption starts; an error or a
+// non-positive answer refuses the redemption before it is sent. The client
+// the redemption leaves, and every client Open builds, keeps pinTimeout. Nil
+// keeps pinTimeout. Only a test sets it (testutil.StepBudget): its backend
+// runs in the test process, where a crowded machine can hold a redemption
+// past pinTimeout.
+func WithRedemptionBound(bound func() (time.Duration, error)) Option {
+	return func(o *options) { o.redemption = bound }
+}
+
+// withRoundTrip wraps the credential transport, so this package's tests can
+// read the deadline each exchange is sent with.
+func withRoundTrip(wrap func(http.RoundTripper) http.RoundTripper) Option {
+	return func(o *options) { o.roundTrip = wrap }
 }
 
 // WithLifetime is the owner's lifetime. When it ends, a rotation in flight
