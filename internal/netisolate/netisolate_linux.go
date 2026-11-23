@@ -43,9 +43,9 @@ const (
 	// diskTempArg names the directory on disk the helper mounts as the temp
 	// directory instead of a tmpfs (reserveRAMTemp).
 	diskTempArg = "--disk-temp="
-	// diskDirArg names the run's disk directory, which the helper mounts at
-	// DiskDir.
-	diskDirArg = "--disk-dir="
+	// goTmpDirArg tells the helper to name the Go work directory as the go
+	// command's GOTMPDIR (newGoWorkDir).
+	goTmpDirArg = "--go-tmpdir"
 	// ownedArg names a run directory (ownedtemp), one per argument, that
 	// the helper keeps owned while its mount namespace has a process.
 	ownedArg = "--owned="
@@ -105,20 +105,13 @@ func Command(command *exec.Cmd, stderr io.Writer) (release func() error, err err
 		return errors.Join(errs...)
 	}
 	var options helperOptions
-	goWork, err := newGoWorkDir()
+	goWork, goTmpDir, err := newGoWorkDir()
 	if err != nil {
 		return noop, err
 	}
-	if goWork != nil {
-		dirs = append(dirs, goWork)
-		options.goWork = goWork.Dir
-	}
-	diskDir, err := ownedtemp.MakeShared(diskParent(), diskDirPrefix)
-	if err != nil {
-		return noop, errors.Join(fmt.Errorf("create the run's disk directory: %w", err), release())
-	}
-	dirs = append(dirs, diskDir)
-	options.diskDir = diskDir.Dir
+	dirs = append(dirs, goWork)
+	options.goWork = goWork.Dir
+	options.goTmpDir = goTmpDir
 	if reservation, reason := reserveRAMTemp(stderr); reservation != nil {
 		dirs = append(dirs, reservation)
 	} else {
@@ -146,8 +139,8 @@ func Command(command *exec.Cmd, stderr io.Writer) (release func() error, err err
 type helperOptions struct {
 	keepTemp bool
 	goWork   string
+	goTmpDir bool
 	diskTemp string
-	diskDir  string
 	owned    []string
 }
 
@@ -162,8 +155,8 @@ func (o helperOptions) args() []string {
 	if o.diskTemp != "" {
 		args = append(args, diskTempArg+o.diskTemp)
 	}
-	if o.diskDir != "" {
-		args = append(args, diskDirArg+o.diskDir)
+	if o.goTmpDir {
+		args = append(args, goTmpDirArg)
 	}
 	for _, dir := range o.owned {
 		args = append(args, ownedArg+dir)
@@ -181,8 +174,8 @@ func parseHelperOptions(args []string) (helperOptions, []string) {
 			o.goWork = strings.TrimPrefix(args[0], goWorkArg)
 		case strings.HasPrefix(args[0], diskTempArg):
 			o.diskTemp = strings.TrimPrefix(args[0], diskTempArg)
-		case strings.HasPrefix(args[0], diskDirArg):
-			o.diskDir = strings.TrimPrefix(args[0], diskDirArg)
+		case args[0] == goTmpDirArg:
+			o.goTmpDir = true
 		case strings.HasPrefix(args[0], ownedArg):
 			o.owned = append(o.owned, strings.TrimPrefix(args[0], ownedArg))
 		default:
@@ -269,7 +262,7 @@ func RunHelper(args []string, stderr io.Writer) int {
 	// Read before the private temp directory hides a file in the one it
 	// replaces.
 	var userGoEnv []byte
-	if options.goWork != "" {
+	if options.goTmpDir {
 		var err error
 		if userGoEnv, err = goenvfile.Read(); err != nil {
 			warn(stderr, "netisolate:", err)
@@ -283,14 +276,14 @@ func RunHelper(args []string, stderr io.Writer) int {
 		}
 	}
 	if options.goWork != "" {
-		if err := mountGoWork(options.goWork, userGoEnv); err != nil {
+		if err := mountGoWork(options.goWork); err != nil {
 			warn(stderr, "netisolate: mount the Go work directory:", explainMountError(err))
 			return 1
 		}
 	}
-	if options.diskDir != "" {
-		if err := mountDiskDir(options.diskDir); err != nil {
-			warn(stderr, "netisolate: mount the run's disk directory:", explainMountError(err))
+	if options.goTmpDir {
+		if err := writeGoEnv(userGoEnv); err != nil {
+			warn(stderr, "netisolate:", err)
 			return 1
 		}
 	}
@@ -302,7 +295,7 @@ func RunHelper(args []string, stderr io.Writer) int {
 		return 0
 	}
 	if len(args) < 3 || args[1] != "--" {
-		warn(stderr, "netisolate: helper needs `[--keep-temp] [--go-work=DIR] [--disk-temp=DIR] [--disk-dir=DIR] [--owned=DIR...] path -- argv...`")
+		warn(stderr, "netisolate: helper needs `[--keep-temp] [--go-work=DIR] [--go-tmpdir] [--disk-temp=DIR] [--owned=DIR...] path -- argv...`")
 		return 2
 	}
 	if err := unix.Setpriority(unix.PRIO_PROCESS, 0, Niceness); err != nil {
@@ -312,7 +305,7 @@ func RunHelper(args []string, stderr io.Writer) int {
 	if err == nil && !options.keepTemp {
 		err = pointTempDir(TempDir())
 	}
-	if err == nil && options.goWork != "" {
+	if err == nil && options.goTmpDir {
 		err = os.Setenv("GOENV", goEnvPath())
 	}
 	if err == nil {

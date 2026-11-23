@@ -4,6 +4,7 @@ package netisolate
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -31,6 +32,12 @@ import (
 // at a fixed path (goEnvPath) that copies the developer's and adds
 // GOTMPDIR. Tests do not see GOTMPDIR in their environment, and every value
 // the cache records is the same on every run.
+//
+// The same directory is the run's one directory on disk for tests too: a
+// tmpfs temp directory leaves a test whose writes must reach a block device,
+// such as one that measures the I/O a process does, nowhere to put them.
+// DiskDir is a directory inside it, so the run makes, mounts and sweeps one
+// directory for both. It is made even when the developer's GOTMPDIR stays.
 const (
 	// goWorkPrefix names the per-run directories in diskParent (ownedtemp).
 	goWorkPrefix = "ao-gowork-"
@@ -38,35 +45,45 @@ const (
 	// mounted work directory and the Go environment file naming it.
 	goWorkMount = ".ao-go-work"
 	goEnvName   = ".ao-go-env"
+	// diskDirName is DiskDir's name in the Go work directory.
+	diskDirName = "ao-disk"
 )
 
 func goWorkPath() string { return filepath.Join(TempDir(), goWorkMount) }
 
 func goEnvPath() string { return filepath.Join(TempDir(), goEnvName) }
 
-// newGoWorkDir creates the run's Go work directory on disk. It returns nil
-// when the go command has a GOTMPDIR already, from the environment or the
+// DiskDir is, inside a namespace Command built, a directory on disk that
+// the run owns and that goes with it. It is the same path on every run, as
+// TempDir is, so a cached test result that read it holds on the next run.
+// A test makes its own directory inside, with os.MkdirTemp. Outside such a
+// namespace nothing is mounted there.
+func DiskDir() string { return filepath.Join(goWorkPath(), diskDirName) }
+
+// newGoWorkDir creates the run's Go work directory on disk, with DiskDir's
+// directory in it. goTmpDir reports whether the go command is to use it:
+// not when it has a GOTMPDIR already, from the environment or the
 // developer's Go environment file; that one stays.
-func newGoWorkDir() (*ownedtemp.Shared, error) {
+func newGoWorkDir() (dir *ownedtemp.Shared, goTmpDir bool, err error) {
 	given, err := goenvfile.Getenv("GOTMPDIR")
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	if given != "" {
-		return nil, nil
-	}
-	dir, err := ownedtemp.MakeShared(diskParent(), goWorkPrefix)
+	dir, err = ownedtemp.MakeShared(diskParent(), goWorkPrefix)
 	if err != nil {
-		return nil, fmt.Errorf("create the Go work directory: %w", err)
+		return nil, false, fmt.Errorf("create the Go work directory: %w", err)
 	}
-	return dir, nil
+	if err := os.Mkdir(filepath.Join(dir.Dir, diskDirName), 0o700); err != nil {
+		return nil, false, errors.Join(fmt.Errorf("create the run's disk directory: %w", err), dir.Release())
+	}
+	return dir, given == "", nil
 }
 
 // sweepRunDirs removes the directories on disk of earlier runs whose
 // processes have all exited (ownedtemp). What it cannot do goes to stderr.
 func sweepRunDirs(stderr io.Writer) {
 	parent := diskParent()
-	for _, prefix := range []string{goWorkPrefix, diskTempPrefix, diskDirPrefix} {
+	for _, prefix := range []string{goWorkPrefix, diskTempPrefix} {
 		if err := ownedtemp.Sweep(parent, prefix); err != nil {
 			warn(stderr, "netisolate: remove an earlier run's directories:", err)
 		}
@@ -99,10 +116,9 @@ func diskParent() string {
 	return dir
 }
 
-// mountGoWork mounts dir at goWorkPath and writes the Go environment file
-// that names it, after the developer's userEnv. Runs in the helper, after
-// the private temp directory is mounted.
-func mountGoWork(dir string, userEnv []byte) error {
+// mountGoWork mounts dir at goWorkPath. Runs in the helper, after the
+// private temp directory is mounted.
+func mountGoWork(dir string) error {
 	target := goWorkPath()
 	if err := os.Mkdir(target, 0o700); err != nil {
 		return fmt.Errorf("create %s: %w", target, err)
@@ -110,6 +126,13 @@ func mountGoWork(dir string, userEnv []byte) error {
 	if err := unix.Mount(dir, target, "", unix.MS_BIND, ""); err != nil {
 		return fmt.Errorf("mount %s on %s: %w", dir, target, err)
 	}
+	return nil
+}
+
+// writeGoEnv writes the Go environment file that names the mounted Go work
+// directory as GOTMPDIR, after the developer's userEnv.
+func writeGoEnv(userEnv []byte) error {
+	target := goWorkPath()
 	var content bytes.Buffer
 	content.Write(userEnv)
 	if len(userEnv) > 0 && !bytes.HasSuffix(userEnv, []byte("\n")) {

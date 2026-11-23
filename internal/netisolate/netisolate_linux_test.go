@@ -525,19 +525,19 @@ func privateNamespaceWithGoWork(t *testing.T, userEnv string) (isolateCommand fu
 	}
 	t.Setenv("GOENV", userFile)
 	t.Setenv("GOTMPDIR", "")
-	dir, err := newGoWorkDir()
+	dir, goTmpDir, err := newGoWorkDir()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dir == nil {
-		t.Fatal("no Go work directory")
+	if !goTmpDir {
+		t.Fatal("the Go work directory is not GOTMPDIR")
 	}
 	t.Cleanup(func() {
 		if err := dir.Release(); err != nil {
 			t.Error(err)
 		}
 	})
-	return func(command *exec.Cmd) error { return isolate(command, helperOptions{goWork: dir.Dir}) }, dir.Dir
+	return func(command *exec.Cmd) error { return isolate(command, helperOptions{goWork: dir.Dir, goTmpDir: true}) }, dir.Dir
 }
 
 // probeBinary copies this test binary to a directory under /tmp. Under

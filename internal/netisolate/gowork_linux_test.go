@@ -34,12 +34,15 @@ func goWorkTest(t *testing.T, userEnv []byte) (parent string) {
 func TestGoWorkDirIsPerRunAndRemovedOnRelease(t *testing.T) {
 	goWorkTest(t, []byte("GOPROXY=off\n"))
 	parent := diskParent()
-	dir, err := newGoWorkDir()
+	dir, goTmpDir, err := newGoWorkDir()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if filepath.Dir(dir.Dir) != parent || !strings.HasPrefix(filepath.Base(dir.Dir), goWorkPrefix) {
-		t.Fatalf("dir = %q, want %s* under %s", dir.Dir, goWorkPrefix, parent)
+	if filepath.Dir(dir.Dir) != parent || !strings.HasPrefix(filepath.Base(dir.Dir), goWorkPrefix) || !goTmpDir {
+		t.Fatalf("dir = %q, GOTMPDIR %v; want %s* under %s, as GOTMPDIR", dir.Dir, goTmpDir, goWorkPrefix, parent)
+	}
+	if info, err := os.Stat(filepath.Join(dir.Dir, diskDirName)); err != nil || !info.IsDir() {
+		t.Fatalf("the run's disk directory in %s: %v", dir.Dir, err)
 	}
 	// A concurrent run's sweep leaves it alone while it is in use.
 	if err := ownedtemp.Sweep(parent, goWorkPrefix); err != nil {
@@ -48,7 +51,7 @@ func TestGoWorkDirIsPerRunAndRemovedOnRelease(t *testing.T) {
 	if _, err := os.Stat(dir.Dir); err != nil {
 		t.Fatalf("a sweep removed a directory in use: %v", err)
 	}
-	second, err := newGoWorkDir()
+	second, _, err := newGoWorkDir()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,38 +70,35 @@ func TestGoWorkDirIsPerRunAndRemovedOnRelease(t *testing.T) {
 }
 
 // TestGoWorkDirKeepsAGivenGOTMPDIR: a GOTMPDIR the developer set, in the
-// environment or the Go environment file, stays.
+// environment or the Go environment file, stays; the run still gets its
+// directory on disk, for DiskDir.
 func TestGoWorkDirKeepsAGivenGOTMPDIR(t *testing.T) {
-	t.Run("environment", func(t *testing.T) {
-		goWorkTest(t, nil)
-		t.Setenv("GOTMPDIR", "/somewhere/chosen")
-		dir, err := newGoWorkDir()
-		if err != nil || dir != nil {
-			t.Fatalf("newGoWorkDir = %v, %v; want none while GOTMPDIR is set", dir, err)
-		}
-	})
-	t.Run("Go environment file", func(t *testing.T) {
-		goWorkTest(t, []byte("GOFLAGS=-mod=mod\nGOTMPDIR=/somewhere/chosen\n"))
-		dir, err := newGoWorkDir()
-		if err != nil || dir != nil {
-			t.Fatalf("newGoWorkDir = %v, %v; want none while the Go environment file sets GOTMPDIR", dir, err)
-		}
-		if matches, _ := filepath.Glob(filepath.Join(diskParent(), goWorkPrefix+"*")); len(matches) > 0 {
-			t.Fatalf("created %v anyway", matches)
-		}
-	})
-	// The go command ignores a line that does not start with the key, so
-	// the run still needs a work directory of its own.
-	t.Run("line the go command ignores", func(t *testing.T) {
-		goWorkTest(t, []byte(" GOTMPDIR=/somewhere/chosen\nGOTMPDIR =/somewhere/chosen\n"))
-		dir, err := newGoWorkDir()
-		if err != nil || dir == nil {
-			t.Fatalf("newGoWorkDir = %v, %v; want a work directory", dir, err)
-		}
-		if err := dir.Release(); err != nil {
-			t.Fatal(err)
-		}
-	})
+	for _, tc := range []struct {
+		name    string
+		env     string
+		userEnv []byte
+		want    bool
+	}{
+		{name: "environment", env: "/somewhere/chosen"},
+		{name: "Go environment file", userEnv: []byte("GOFLAGS=-mod=mod\nGOTMPDIR=/somewhere/chosen\n")},
+		// The go command ignores a line that does not start with the key,
+		// so the run's directory is its GOTMPDIR.
+		{name: "line the go command ignores", userEnv: []byte(" GOTMPDIR=/somewhere/chosen\nGOTMPDIR =/somewhere/chosen\n"), want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			goWorkTest(t, tc.userEnv)
+			if tc.env != "" {
+				t.Setenv("GOTMPDIR", tc.env)
+			}
+			dir, goTmpDir, err := newGoWorkDir()
+			if err != nil || dir == nil || goTmpDir != tc.want {
+				t.Fatalf("newGoWorkDir = %v, %v, %v; want a directory, as GOTMPDIR %v", dir, goTmpDir, err, tc.want)
+			}
+			if err := dir.Release(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
 }
 
 // TestHostTempDirLooksPastANamespacesOwn: a namespace started from inside

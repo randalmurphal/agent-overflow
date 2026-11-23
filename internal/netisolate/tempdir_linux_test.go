@@ -243,7 +243,7 @@ func TestLowMemoryRunGetsItsTempDirOnDisk(t *testing.T) {
 		if probe.DiskFile == "" || !probe.DiskFS || filepath.Dir(probe.DiskFile) != DiskDir() {
 			t.Fatalf("probe wrote %q in the disk directory (on disk %v; %s), want a file in %s on disk", probe.DiskFile, probe.DiskFS, probe.DiskError, DiskDir())
 		}
-		written, err := filepath.Glob(filepath.Join(diskParent(), diskDirPrefix+"*", filepath.Base(probe.DiskFile)))
+		written, err := filepath.Glob(filepath.Join(diskParent(), goWorkPrefix+"*", diskDirName, filepath.Base(probe.DiskFile)))
 		if err != nil || len(written) != 1 {
 			t.Fatalf("the probe's disk file in %s: %v, %v; want it in the run's directory there", diskParent(), written, err)
 		}
