@@ -13,8 +13,17 @@
 // old, so an mtime says only that the entry was last used after it, or
 // within the hour before it. A go command still running may also need an
 // entry it looked up long ago. Only entries older than recentAge are
-// deleted therefore, and only entries: the names Go's own trim removes, ending -a or -d in the two-hex-digit
-// subdirectories. A linked executable is an entry too, a -d directory
+// deleted therefore, each only if its mtime has not moved since the walk
+// read it, and only entries: the names Go's own trim removes, ending -a or
+// -d in the two-hex-digit subdirectories.
+//
+// That is best effort, not a guarantee. A go command takes no lock this
+// tool could wait on, and records a use only by that hourly mtime, so no
+// pass can know that no running command still holds an entry: one may look
+// it up between the re-read and the unlink, or run past any age (a test
+// binary's timeout is per binary and a caller can raise it; a process can
+// be suspended). The window makes that unlikely, and a deleted entry costs
+// a command a rebuild, or one failed build that a rerun fixes. A linked executable is an entry too, a -d directory
 // holding the binary; it counts as its whole tree, ages by the directory's
 // mtime, which is the one Go refreshes, and goes whole. The files at the
 // cache's top level, README and trim.txt among them, stay. A directory
@@ -73,16 +82,11 @@ const (
 	// goRefreshAge is how old an entry's mtime must be before the go
 	// command sets it again on use (mtimeInterval in cmd/go/internal/cache).
 	goRefreshAge = time.Hour
-	// longestGoCommand bounds how long a go command that looked up an entry
-	// may still read it: the run of the longest Make target. The longest
-	// test timeout a target sets is provider-smoke's 90m, the rest leave
-	// time for the build. TestNoMakeTimeoutOutlastsTheTrimGuard fails when
-	// a target's timeout passes longestGoCommand.
-	longestGoCommand = 2 * time.Hour
-	// recentAge protects every entry a live go command could have selected:
-	// one whose mtime is that old was last used at least recentAge -
-	// goRefreshAge ago, longer than any go command runs.
-	recentAge = goRefreshAge + longestGoCommand
+	// recentAge keeps the entries a running go command may still need: one
+	// whose mtime is that old was last used at least two hours ago (the
+	// mtime plus goRefreshAge), longer than a Make target's go command
+	// usually runs; provider-smoke's test timeout, the longest, is 90m.
+	recentAge = goRefreshAge + 2*time.Hour
 )
 
 func main() {
@@ -319,11 +323,11 @@ func walkAndTrim(dir, stamp string, capBytes int64, now time.Time, result *trimR
 	failures := 0
 	var firstFailure error
 	for _, victim := range selectVictims(entries, total, capBytes, now) {
-		remove := os.Remove
-		if victim.tree {
-			remove = os.RemoveAll
+		removed, err := removeUnmoved(victim)
+		if err == nil && !removed {
+			continue
 		}
-		if err := remove(victim.path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
 			failures++
 			if firstFailure == nil {
 				firstFailure = err
@@ -337,6 +341,22 @@ func walkAndTrim(dir, stamp string, capBytes int64, now time.Time, result *trimR
 		return fmt.Errorf("%d entries could not be removed, the first: %w", failures, firstFailure)
 	}
 	return nil
+}
+
+// removeUnmoved deletes victim unless its mtime moved since the walk read
+// it: a go command used the entry in between. removed is false then.
+func removeUnmoved(victim entry) (removed bool, err error) {
+	info, err := os.Lstat(victim.path)
+	if err != nil {
+		return false, err
+	}
+	if !info.ModTime().Equal(victim.mtime) {
+		return false, nil
+	}
+	if victim.tree {
+		return true, os.RemoveAll(victim.path)
+	}
+	return true, os.Remove(victim.path)
 }
 
 func touch(path string, now time.Time) error {

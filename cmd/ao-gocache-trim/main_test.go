@@ -92,6 +92,28 @@ func TestAnEntryAGoCommandMayStillNeedSurvives(t *testing.T) {
 	}
 }
 
+// TestAnEntryUsedAfterTheWalkStays: a go command that refreshes an entry
+// between the walk that picked it and its removal keeps it.
+func TestAnEntryUsedAfterTheWalkStays(t *testing.T) {
+	dir := newCache(t)
+	path := writeEntry(t, dir, "00/used-a", 100, 30*24*time.Hour)
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	victim := entry{path: path, size: 100, mtime: info.ModTime()}
+	if err := os.Chtimes(path, testNow, testNow); err != nil {
+		t.Fatal(err)
+	}
+	if removed, err := removeUnmoved(victim); err != nil || removed || !exists(t, path) {
+		t.Fatalf("removeUnmoved of a refreshed entry = %v, %v; exists %v", removed, err, exists(t, path))
+	}
+	victim.mtime = testNow
+	if removed, err := removeUnmoved(victim); err != nil || !removed || exists(t, path) {
+		t.Fatalf("removeUnmoved of an unmoved entry = %v, %v; exists %v", removed, err, exists(t, path))
+	}
+}
+
 // TestOverCapDeletesOldestFirstToTheTarget: 1500 bytes over a 1000-byte cap
 // lose the oldest entries until at most 800 (trimTarget) remain.
 func TestOverCapDeletesOldestFirstToTheTarget(t *testing.T) {
