@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { stubScrollController } from '../../test/helpers/chat';
+import { seededRandom } from '../../test/helpers/seededRandom';
 import {
   trimToTailRunes,
   withViewportBottomHeld,
@@ -60,11 +61,7 @@ describe('trimToTailRunes', () => {
   // The reasoning reveal trims its previous summary plus each delta rather
   // than the whole text (threadRevealRouting.ts).
   it('trims incrementally to the same text as trimming the whole', () => {
-    let state = 7;
-    const random = (bound: number): number => {
-      state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
-      return state % bound;
-    };
+    const random = seededRandom(7);
     const pieces = ['word ', '😀', '𝑥', 'é', '\n', 'ab'];
     for (let run = 0; run < 40; run++) {
       const parts: string[] = [];

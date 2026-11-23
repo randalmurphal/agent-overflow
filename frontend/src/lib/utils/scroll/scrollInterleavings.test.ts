@@ -28,6 +28,7 @@
 // sampled ~1/12, but spring.tick is a bounded caller — only snap
 // callers need to be seen, and those are always recorded).
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { seededFraction } from '../../../test/helpers/seededRandom';
 import {
   createUseStickToBottomController,
   type UseStickToBottomController,
@@ -500,21 +501,10 @@ describe('scroll interleavings — ops × states frame invariants', () => {
   // restore-snap clears it; claims stay production-gated so an escaped
   // sequence keeps its escape) and verified against the controller at
   // drain start.
-  function mulberry32(seed: number): () => number {
-    let a = seed >>> 0;
-    return () => {
-      a = (a + 0x6d2b79f5) >>> 0;
-      let t = a;
-      t = Math.imul(t ^ (t >>> 15), t | 1);
-      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-    };
-  }
-
   const FUZZ_SEEDS = Array.from({ length: 25 }, (_, i) => ({ seed: i + 1 }));
 
   it.each(FUZZ_SEEDS)('random op sequence, seed $seed', async ({ seed }) => {
-    const rng = mulberry32(seed);
+    const rng = seededFraction(seed);
     const pick = <T,>(arr: readonly T[]): T => arr[Math.floor(rng() * arr.length)];
     frameProfile = rng() < 0.5 ? STEADY : JITTERED;
     const state = pick(STATES);

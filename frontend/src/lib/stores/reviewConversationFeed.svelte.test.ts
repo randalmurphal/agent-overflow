@@ -9,6 +9,7 @@
 // reader, and a jump shows a hidden thread.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { seededFraction } from '../../test/helpers/seededRandom';
 import { flushSync, tick } from 'svelte';
 import { appStorageGet, reinitAppStorageForTest } from './appStorage';
 import { HIDE_RESOLVED_KEY } from './reviewHideResolved.svelte';
@@ -756,18 +757,6 @@ describe('Hide resolved threads never hides a thread in use', () => {
 });
 
 describe('Hide resolved threads: between decisions the hidden set only shrinks', () => {
-  // A small seeded generator, so a failure names its sequence.
-  function random(seed: number): () => number {
-    let value = seed >>> 0;
-    return () => {
-      value = (value + 0x6d2b79f5) >>> 0;
-      let t = value;
-      t = Math.imul(t ^ (t >>> 15), t | 1);
-      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-    };
-  }
-
   it('a hidden thread unresolved and resolved again stays shown; so does one used and left', async () => {
     const DONE = thread('t-done', 2, { isResolved: true });
     const GONE = thread('t-gone', 4, { isResolved: true });
@@ -786,7 +775,7 @@ describe('Hide resolved threads: between decisions the hidden set only shrinks',
 
   for (const seed of [1, 7, 42, 99, 2026]) {
     it(`no thread shown since the decision is hidden again (seed ${seed})`, async () => {
-      const next = random(seed);
+      const next = seededFraction(seed);
       const initial = Array.from({ length: 6 }, (_, index) => thread(`t-${index}`, index + 1, { isResolved: index % 2 === 0 }));
       const state = await open(initial);
       state.setHideResolved(true);

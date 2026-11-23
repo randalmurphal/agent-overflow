@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { seededFraction } from '../../test/helpers/seededRandom';
 import { ciLogAnswerHits, ciLogFindHits, findCILogKey, placeCILogLine, resolveCILogHit, type CILogFindHit, type CILogResolution } from './ciLogFind';
 import { countFindMatches, findNeedle } from './findMatch';
 import { ansiShownText } from './ansiText';
@@ -7,18 +8,6 @@ import type { CILogSection } from '../types/models';
 
 function section(key: string, start: number, end: number): CILogSection {
   return { key, name: key, status: 'success', start, end, lines: end - start, bytes: 0 };
-}
-
-// A deterministic generator, so a failure names its seed.
-function random(seed: number): () => number {
-  let state = seed >>> 0;
-  return () => {
-    state = (state + 0x6d2b79f5) >>> 0;
-    let t = state;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
 }
 
 describe('ciLogFindHits', () => {
@@ -107,7 +96,7 @@ describe('resolveCILogHit', () => {
       'a\u009b31mb', '\u009d0;ab\u009c', 'a\x00b',
     ];
     for (let seed = 1; seed <= 60; seed += 1) {
-      const next = random(seed);
+      const next = seededFraction(seed);
       const pick = <T>(items: readonly T[]) => items[Math.floor(next() * items.length)];
       let total = 50 + Math.floor(next() * 400);
       const text: string[] = [];

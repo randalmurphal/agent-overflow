@@ -322,10 +322,9 @@ describe('RawJsonFenceFormatter', () => {
       const formatter = new RawJsonFenceFormatter();
       let input = '';
       let offset = 0;
-      let chunkState = (rootIndex + 1) * 0x9e3779b1;
+      const chunk = seededRandom((rootIndex + 1) * 0x9e3779b1);
       while (offset < source.length) {
-        chunkState = (Math.imul(chunkState, 1_103_515_245) + 12_345) >>> 0;
-        const end = Math.min(source.length, offset + 1 + (chunkState % 17));
+        const end = Math.min(source.length, offset + 1 + chunk(17));
         const delta = source.slice(offset, end);
         const append = createProvenAppend(input, delta);
         input = append.next;
