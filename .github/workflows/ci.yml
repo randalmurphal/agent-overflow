@@ -242,23 +242,21 @@ jobs:
   # triage are the next two, and the rest fits beside them. The noremote
   # shard runs, compiled with -tags noremote, every package whose test
   # binary the tag changes (make go-test-noremote: 79 of 263 packages,
-  # store and app among them). Only the shards whose packages link the root
-  # package, which embeds frontend/dist, or compile it (the triage
-  # tripwire's go list -export) set up the bundle. Every shard runs on every change: the Go test
-  # cache, restored from main, reports a package whose code, dependencies
-  # and the files its tests read are unchanged as (cached). Those files'
-  # times are set from their content first (scripts/ci-stable-mtimes.mjs),
-  # after the last step that writes into the checkout.
+  # store and app among them). Every shard but store sets up the bundle,
+  # which the root package embeds: app-triage and noremote test the root
+  # package, and in rest the provider-poison guard lists every test binary,
+  # the root's included (internal/testutil/providerpath). Every shard runs
+  # on every change: the Go test cache, restored from main, reports a
+  # package whose code, dependencies and the files its tests read are
+  # unchanged as (cached). Those files' times are set from their content
+  # first (scripts/ci-stable-mtimes.mjs), after the last step that writes
+  # into the checkout.
   go-test:
     name: Go tests (${{ matrix.shard }})
     needs: toolchain
     if: fromJSON(needs.toolchain.outputs.plan || '{}')['go-test']
     runs-on: ubuntu-latest
     timeout-minutes: 40
-    permissions:
-      contents: read
-      packages: read
-      actions: write
     container:
       image: ${{ needs.toolchain.outputs.image }}
       credentials:
@@ -278,9 +276,9 @@ jobs:
             exclude: ""
             bundle: "true"
           - shard: rest
-            packages: . ./cmd/... ./internal/...
-            exclude: ^agent-overflow(/internal/(store|app|triage)(/.*)?)?$
-            bundle: "false"
+            packages: ./cmd/... ./internal/...
+            exclude: ^agent-overflow/internal/(store|app|triage)(/.*)?$
+            bundle: "true"
           - shard: noremote
             packages: ""
             exclude: ""
