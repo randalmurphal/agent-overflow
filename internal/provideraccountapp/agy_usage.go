@@ -16,9 +16,10 @@ import (
 
 // refreshAgyAccountUsage runs read-only Antigravity quota HTTP probes OUTSIDE
 // the provider-wide reconcile mutex so slow network reads never stall account
-// switches or sibling refreshes. Only canonical token promotion, expired-token
-// CLI refresh (coalesced by canonical credential change), and final commit
-// acquire reconcileMutex, fenced by store generation.
+// switches or sibling refreshes. Only canonical token promotion, the
+// reconciliation of a selected account's unrecorded canonical credential,
+// expired-token CLI refresh (coalesced by canonical credential change), and
+// final commit acquire reconcileMutex, fenced by store generation.
 func (m *Manager) refreshAgyAccountUsage(
 	ctx context.Context,
 	accountID string,
@@ -28,7 +29,12 @@ func (m *Manager) refreshAgyAccountUsage(
 	refreshMu := m.reconcileMutex(providerName)
 
 	// Phase 1: short critical section to check backoff, promote slot, and
-	// snapshot the credential + generation.
+	// snapshot the credential + generation. A selected account's canonical
+	// credential is reconciled first, as every reading's is: the recorded
+	// one costs nothing more, another one is identified, which may move the
+	// selection off this account, and a login reconciliation refuses is the
+	// reading's answer. The record then proves the probed credential is the
+	// account's.
 	if err := refreshMu.LockContext(ctx); err != nil {
 		return fmt.Errorf("wait for the %s account lock to read account %s's usage: %w", providerName, accountID, err)
 	}
@@ -40,37 +46,13 @@ func (m *Manager) refreshAgyAccountUsage(
 		refreshMu.Unlock()
 		return err
 	}
-	m.mu.RLock()
-	account, exists := m.store.Get(providerName, accountID, time.Now())
-	if !exists {
-		m.mu.RUnlock()
-		refreshMu.Unlock()
-		return fmt.Errorf("%s account %q is not saved", providerName, accountID)
-	}
-	active, isActive := m.store.Active(providerName, time.Now())
-	isSelected := isActive && active.ID == accountID
-	generation := m.store.Generation(providerName)
-	var credential, slotAtStart provideraccounts.CredentialSnapshot
-	var err error
-	if isSelected {
-		credential, err = m.credentials.ReadCredentialSnapshot(providerName, "", true)
-		if err == nil {
-			slotAtStart, err = m.credentials.ReadCredentialSnapshot(providerName, accountID, false)
-			if provideraccounts.IsCredentialMissing(err) {
-				err = nil
-			}
-		}
-	} else {
-		credential, err = m.credentials.ReadCredentialSnapshot(providerName, accountID, false)
-	}
-	m.mu.RUnlock()
+	start, _, err := m.reconciledUsageStart(ctx, providerName, accountID)
 	refreshMu.Unlock()
 	if err != nil {
-		return fmt.Errorf("read saved %s credentials for usage refresh: %w", providerName, err)
+		return err
 	}
-	if isSelected && !agyCredentialBelongsToAccount(credential.Bytes(), slotAtStart.Bytes(), account.Email) {
-		return fmt.Errorf("active home Antigravity credentials do not match saved account %q; reconcile accounts before refreshing usage", accountID)
-	}
+	account, isSelected, generation := start.account, start.isSelected, start.generation
+	credential, slotAtStart := start.credential, start.slotAtStart
 
 	refresh := providerUsageRefresh{
 		providerName: providerName,

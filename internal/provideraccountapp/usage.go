@@ -106,33 +106,13 @@ func (m *Manager) usageTransaction(
 		return err
 	}
 
-	start, err := m.readUsageStart(providerName, accountID, nil)
+	// Nothing runs here once a spend's record could exist.
+	start, moved, err := m.reconciledUsageStart(ctx, providerName, accountID)
 	if err != nil {
 		return err
 	}
-	// A selected reading starts from the canonical credential, which an
-	// outside sign-in can replace. It is reconciled first, under the lock this
-	// call already holds: a recorded credential costs nothing more, another
-	// one is identified, which may move the selection. The reading then runs
-	// on exactly the credential reconciliation decided on, never on a later
-	// read of the canonical store, and only when that is the selected
-	// account's login. Nothing runs here once a spend's record could exist.
-	if start.isSelected {
-		state, err := m.reconcileCanonicalWithMutexHeld(ctx, providerName, start.credential)
-		if err != nil {
-			return err
-		}
-		if state.identified {
-			if start, err = m.readUsageStart(providerName, accountID, &state.credential); err != nil {
-				return err
-			}
-			if spend != nil && !start.isSelected {
-				return m.resetSelectionMovedError(providerName, spend)
-			}
-		}
-		if start.isSelected && state.refusal != nil {
-			return mapProviderAccountLoginError(providerName, start.account, state.refusal)
-		}
+	if spend != nil && moved {
+		return m.resetSelectionMovedError(providerName, spend)
 	}
 	account, isSelected, generation, selection := start.account, start.isSelected, start.generation, start.selection
 	credential, slotAtStart := start.credential, start.slotAtStart
@@ -395,6 +375,40 @@ type usageStart struct {
 	selection   Selection
 	credential  provideraccounts.CredentialSnapshot
 	slotAtStart provideraccounts.CredentialSnapshot
+}
+
+// reconciledUsageStart reads the usageStart of a reading of accountID. A
+// selected reading starts from the canonical credential, which an outside
+// sign-in can replace, so it is reconciled first: a recorded credential
+// costs nothing more, another one is identified, which may move the
+// selection. The reading then runs on exactly the credential reconciliation
+// decided on, never on a later read of the canonical store, and only when
+// that is the selected account's login; moved reports that reconciliation
+// moved the selection off accountID, which is then read from its slot. A
+// canonical login reconciliation refuses is the reading's answer while the
+// account stays selected. Caller holds the provider's reconcile lock and no
+// Manager lock.
+func (m *Manager) reconciledUsageStart(ctx context.Context, providerName, accountID string) (start usageStart, moved bool, err error) {
+	start, err = m.readUsageStart(providerName, accountID, nil)
+	if err != nil || !start.isSelected {
+		return start, false, err
+	}
+	state, err := m.reconcileCanonicalWithMutexHeld(ctx, providerName, start.credential)
+	if err != nil {
+		return usageStart{}, false, err
+	}
+	if state.identified {
+		if start, err = m.readUsageStart(providerName, accountID, &state.credential); err != nil {
+			return usageStart{}, false, err
+		}
+	}
+	if !start.isSelected {
+		return start, true, nil
+	}
+	if state.refusal != nil {
+		return usageStart{}, false, mapProviderAccountLoginError(providerName, start.account, state.refusal)
+	}
+	return start, false, nil
 }
 
 // readUsageStart reads one account's usageStart. canonical, when set, is the

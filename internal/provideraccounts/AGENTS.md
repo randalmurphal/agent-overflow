@@ -82,7 +82,9 @@ new structure but never restores older credential bytes.
 
 Never set `CLAUDE_CONFIG_DIR` for a canonical-home run, even to its default.
 Reserve and clear `CLAUDE_SECURESTORAGE_CONFIG_DIR` on every corresponding
-spawn. All macOS `security(1)` calls remain in `claude_keychain.go`.
+spawn. Every macOS `security(1)` command is built by `securityCommand`
+(`claude_keychain.go`), and only the Claude and Antigravity Keychain
+backends (`claude_keychain.go`, `agy_keychain.go`) run one.
 
 A Keychain write too long for `security -i`'s 4096-byte line goes through
 argv, as Claude Code's own write does. The item's ACL trusts only
