@@ -901,14 +901,10 @@ export function resyncPRReviewAfterGap(backend: BackendKey = HOME_BACKEND): void
 
 /**
  * Drop every entry, subscription, and derived cache, as a fresh module load
- * would. suspend() releases every unheld entry; resetAll() then lifts the
- * suspension. An entry that survives both is one a test attached and never
- * released — resetAll re-sources it against the next test's binding mocks,
- * which is exactly the noise that should make the leak findable.
+ * would, calling no backend.
  */
 export function __resetPRReviewStoreForTest(): void {
-  store.suspend();
-  store.resetAll();
+  store.resetForTest();
   for (const key of readyByKey.keys()) rejectReady(key, new Error('store reset'));
   refByKey.clear();
   failureByKey.clear();

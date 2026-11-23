@@ -275,8 +275,7 @@ export function backgroundTaskOutputKeys(): string[] {
 
 /** Test seam: drop every entry and watch, as a fresh module load would. */
 export function __resetBackgroundTaskOutputForTest(): void {
-  store.suspend();
-  store.resetAll();
+  store.resetForTest();
   liveWatches.clear();
   pendingFrames.clear();
 }

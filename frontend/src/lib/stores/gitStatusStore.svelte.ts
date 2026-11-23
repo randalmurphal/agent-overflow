@@ -574,19 +574,14 @@ export function __seedGitStatusErrorForTest(key: string, message: string): void 
  * Test seam: drop every entry, alias, and queued write, as a fresh module
  * load would, and re-arm the `git:status` listener (the shared wails-runtime
  * mock clears every subscriber between tests, and this module registers at
- * load time — which happens once per file).
- *
- * suspend() releases every unheld entry; resetAll() then lifts the
- * suspension. An entry that survives both is one a test attached and never
- * released — resetAll re-sources it against the next test's binding mocks,
- * which is exactly the noise that should make the leak findable.
+ * load time — which happens once per file). Calls no backend: the test
+ * holds' releases come after the drop and do nothing.
  */
 export function __resetGitStatusStoreForTest(): void {
+  store.resetForTest();
   for (const hold of testHolds.values()) hold.release();
   testHolds.clear();
   seedingForTest = false;
-  store.suspend();
-  store.resetAll();
   localKeysByCwd.clear();
   queuedBranchByWorkspace.clear();
   branchPersistRunning = false;

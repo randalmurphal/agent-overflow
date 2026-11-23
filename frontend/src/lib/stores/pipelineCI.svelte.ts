@@ -293,8 +293,7 @@ export function pipelineCIKeys(): string[] {
 }
 
 export function __resetPipelineCIForTest(): void {
-  store.suspend();
-  store.resetAll();
+  store.resetForTest();
   localKeysByWireKey.clear();
   appliedSeqByKey.clear();
   sourceRunByKey.clear();

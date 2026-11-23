@@ -448,9 +448,8 @@ export function detailOpen(paneId: string): boolean {
 // ---------------------------------------------------------------------------
 
 export function __resetPullsPageForTest(): void {
+  listStore.resetForTest();
   for (const paneId of paneEntries.keys()) detachPullsPage(paneId);
-  listStore.suspend();
-  listStore.resetAll();
   appliedSeqByBackend.clear();
   subscriptionByBackend.clear();
   sourceRunByBackend.clear();

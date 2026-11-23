@@ -659,6 +659,5 @@ export function resetBrowserCompanionForTest(): void {
   findCleanupErrors.reset();
   actionErrors.reset();
   stateReads.clear();
-  store.suspend();
-  store.resetAll();
+  store.resetForTest();
 }
