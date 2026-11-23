@@ -49,7 +49,9 @@ func TestTheFixtureTeardownEndsTheProcessOfALeftSession(t *testing.T) {
 // teardown began, and closes the session it registers with the rest. The
 // start is held until the teardown has taken the sessions, or for 200 ms
 // after the teardown began, so a teardown that took the sessions without
-// waiting would take them before the start registers its session.
+// waiting would take them before the start registers its session. The
+// App's context is one the teardown cannot cancel, so the start stands for
+// one already past startSessionNow's admission when the teardown began.
 func TestAppFixtureTeardownClosesTheSessionOfAStartInFlight(t *testing.T) {
 	t.Parallel()
 	const standIn = "stand-in-thread"
@@ -64,6 +66,7 @@ func TestAppFixtureTeardownClosesTheSessionOfAStartInFlight(t *testing.T) {
 		workspace := t.TempDir()
 		binary := testutil.WriteMockClaudeScript(t, t.TempDir(), nil)
 		app, _ = setupE2EApp(t)
+		app.appCancel = nil
 		if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 			t.Fatal(err)
 		}

@@ -347,6 +347,11 @@ func TestAppFixtureTeardownEndsBackgroundWorkAndSessions(t *testing.T) {
 			if open := len(app.sessionManager().runtime.Snapshot()); open != 0 {
 				t.Errorf("the App holds %d sessions after its test ended", open)
 			}
+			// A session start that begins after the teardown's wait is
+			// refused at startSessionNow's admission, by this cancel.
+			if app.lifeCtx().Err() == nil {
+				t.Error("the App's lifetime context is live after its test ended")
+			}
 		})
 	}
 }
@@ -364,7 +369,6 @@ func TestAppFixtureTeardownRefusesTheSessionStartsItSetsOff(t *testing.T) {
 	)
 	t.Run("test", func(t *testing.T) {
 		app, _ := setupE2EApp(t)
-		app.appCtx, app.appCancel = context.WithCancel(context.Background())
 		thread, err := createTestThread(t, app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", "chat")
 		if err != nil {
 			t.Fatal(err)
@@ -439,10 +443,16 @@ func TestWaitForSessionStartsNamesTheThreadsStillStartingAtItsBound(t *testing.T
 // test would run against its removed directories and closed store, and a
 // session left open keeps its provider process writing into them.
 //
+// An App without a lifetime context is given one, as the boot gives it, so
+// the cancel reaches startSessionNow's admission.
+//
 // Every App fixture calls it once, after the cleanups that close its store
 // and remove its directories are registered, so it runs before them.
 func tearDownTestAppAtCleanup(t *testing.T, app *App) {
 	t.Helper()
+	if app.appCtx == nil {
+		app.appCtx, app.appCancel = context.WithCancel(context.Background())
+	}
 	t.Cleanup(func() {
 		app.shuttingDown.Store(true)
 		if app.appCancel != nil {
@@ -469,8 +479,9 @@ const sessionStartsBound = 30 * time.Second
 
 // waitForSessionStarts returns once every session start in flight has
 // finished, or fails at bound naming the threads still starting. One pass
-// is enough once shuttingDown is set: startRegisteredSession, the one way a
-// start begins, refuses every start after it.
+// is enough after the teardown has cancelled the App: a start that passed
+// shuttingDown's check before it was set, and begins after this read,
+// reaches startSessionNow's admission after the cancel and is refused there.
 func waitForSessionStarts(sessions *sessionruntime.Manager, bound time.Duration) error {
 	deadline := time.NewTimer(bound)
 	defer deadline.Stop()
