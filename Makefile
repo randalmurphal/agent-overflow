@@ -225,9 +225,12 @@ gocache-trim: gocache-trim-tool
 gocache-trim-pass = { [ -n "$$CI" ] || $(GOCACHE_TRIM) -warn; }
 gocache-trim-around = $(gocache-trim-pass); trap 'status=$$?; $(gocache-trim-pass) || status=$$?; exit $$status' EXIT
 
-# gotest-tool builds the command go-test runs its tests through.
+# go-test's `go test` line starts with NETNS, so go-test appends the
+# launcher there and it runs that line inside the namespace; override keeps
+# it when NETNS is given on the command line. gotest-tool builds it.
 .PHONY: gotest-tool
 GOTEST := $(CURDIR)/bin/ao-gotest
+go-test: override NETNS += $(GOTEST)
 go-test: gotest-tool
 gotest-tool:
 	go build -o bin/ao-gotest ./cmd/ao-gotest
@@ -244,7 +247,7 @@ go-test: netns-tool gocache-trim-tool
 	if [ -n "$(GO_TEST_EXCLUDE)" ]; then packages=$$(printf '%s\n' $$packages | grep -vE '$(GO_TEST_EXCLUDE)' || true); fi; \
 	if [ -z "$$packages" ]; then echo "ERROR: no Go packages found"; exit 1; fi; \
 	$(call go-prefetch,$(GO_PACKAGE_ROOTS)); \
-	$(NETNS) $(GOTEST) $$packages -- -timeout 30m $(GO_TEST_FLAGS)
+	$(NETNS) go test -timeout 30m $(GO_TEST_FLAGS) $$packages
 
 # Static checks. Each is one CI job (.github/workflows/ci.yml) and runs the
 # same way here. go-lint runs golangci-lint at the pinned version, installed

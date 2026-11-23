@@ -1,18 +1,18 @@
-// Command ao-gotest runs `go test` for `make go-test`, inside the test
-// namespace (bin/ao-netns). Each package whose TestMain calls
-// testshard.Select (internal/testutil/testshard) runs as one `go test` per
-// core, each running the tests whose names hash to it with -parallel 1, and
-// the other packages run in one `go test` beside them.
+// Command ao-gotest runs the `go test` command line it is given, for `make
+// go-test`, inside the test namespace (bin/ao-netns). Each package whose
+// TestMain calls testshard.Select (internal/testutil/testshard) runs as one
+// `go test` per core, each running the tests whose names hash to it with
+// -parallel 1, and the other packages run in one `go test` beside them.
 //
-//	ao-gotest <package>... -- <go test flag>...
+//	ao-gotest <go command> test [go test flag or package]...
 //
 // K, the number of processes a package is split into, is GOMAXPROCS: the
 // cores this process may use, as Go counts them for -p and -parallel. So
 // the run keeps the concurrency one `go test` has, one test per core, but
 // no two of a package's tests share a process.
 //
-// Nothing is split, and this process becomes exactly `go test <flags>
-// <packages>`, when K is 1, when no package calls Select, or when a flag is
+// Nothing is split, and this process becomes exactly the command line it
+// was given, when K is 1, when no package calls Select, or when a flag is
 // outside shardFlags: one that narrows the run (-run, -list, -bench,
 // -fuzz), sets its concurrency (-parallel, -cpu), needs one binary or one
 // process per package (-c, -o, -exec, profiles, coverage, -race) or that
@@ -71,17 +71,14 @@ var shardFlags = map[string]bool{
 // buildFlags are the shardFlags that change what `go test -c` builds.
 var buildFlags = []string{"tags", "vet"}
 
+// invocation is a `go test` command line, argv, read as go test reads it.
 type invocation struct {
+	argv     []string
+	flags    []parsedFlag
 	packages []string
-	flags    []string
-}
-
-func parseArgs(args []string) (invocation, error) {
-	split := slices.Index(args, "--")
-	if split < 1 {
-		return invocation{}, errors.New("usage: ao-gotest <package>... -- <go test flag>...")
-	}
-	return invocation{packages: args[:split], flags: args[split+1:]}, nil
+	// shardable is false when an argument is a flag outside shardFlags,
+	// whose value this command cannot tell from a package.
+	shardable bool
 }
 
 // parsedFlag is one go test flag: its name without dashes and its value,
@@ -91,82 +88,85 @@ type parsedFlag struct {
 	args        []string
 }
 
-// parseFlags reads flags as go test does, -name, --name, -name=value or
-// -name value. ok is false when an argument is not one of shardFlags.
-func parseFlags(args []string) (flags []parsedFlag, ok bool) {
+// parseArgs reads argv, `<go command> test` and its arguments. It reads
+// flags as go test does, -name, --name, -name=value or -name value, and
+// every other argument as a package.
+func parseArgs(argv []string) (invocation, error) {
+	if len(argv) < 2 || argv[1] != "test" {
+		return invocation{}, fmt.Errorf("usage: ao-gotest <go command> test [go test flag or package]...; got %q", argv)
+	}
+	inv := invocation{argv: argv, shardable: true}
+	args := argv[2:]
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if !strings.HasPrefix(arg, "-") {
-			return nil, false
+			inv.packages = append(inv.packages, arg)
+			continue
 		}
 		name, value, hasValue := strings.Cut(strings.TrimPrefix(strings.TrimPrefix(arg, "-"), "-"), "=")
 		takesValue, known := shardFlags[name]
-		if !known {
-			return nil, false
+		if !known || (takesValue && !hasValue && i+1 == len(args)) {
+			inv.shardable = false
+			return inv, nil
 		}
 		taken := []string{arg}
 		if takesValue && !hasValue {
-			if i+1 == len(args) {
-				return nil, false
-			}
 			i++
 			value = args[i]
 			taken = append(taken, value)
 		}
-		flags = append(flags, parsedFlag{name: name, value: value, args: taken})
+		inv.flags = append(inv.flags, parsedFlag{name: name, value: value, args: taken})
 	}
-	return flags, true
+	return inv, nil
 }
 
-func run(args []string, stdout, stderr io.Writer) int {
-	inv, err := parseArgs(args)
+func run(argv []string, stdout, stderr io.Writer) int {
+	inv, err := parseArgs(argv)
 	if err != nil {
 		fmt.Fprintln(stderr, "ao-gotest:", err)
 		return 2
 	}
 	k := runtime.GOMAXPROCS(0)
-	flags, shardable := parseFlags(inv.flags)
-	if k == 1 || !shardable {
-		return passThrough(inv, stderr)
+	if k == 1 || !inv.shardable {
+		return passThrough(inv.argv, stderr)
 	}
-	split, whole, err := optedIn(inv.packages, flags, stderr)
+	split, whole, err := optedIn(inv, stderr)
 	if err != nil {
 		fmt.Fprintln(stderr, "ao-gotest:", err)
 		return 1
 	}
 	if len(split) == 0 {
-		return passThrough(inv, stderr)
+		return passThrough(inv.argv, stderr)
 	}
-	r := newRunner(stdout, stderr)
-	return r.run(plan(inv, flags, split, whole, k))
+	r := newRunner(inv.argv[0], stdout, stderr)
+	return r.run(plan(inv, split, whole, k))
 }
 
-// passThrough replaces this process with the one `go test` of every
+// passThrough replaces this process with argv, the one `go test` of every
 // package, so a run that splits nothing is the command `make go-test` ran
 // before this one existed: its arguments, environment and process tree.
-func passThrough(inv invocation, stderr io.Writer) int {
-	path, err := exec.LookPath("go")
+func passThrough(argv []string, stderr io.Writer) int {
+	path, err := exec.LookPath(argv[0])
 	if err != nil {
 		fmt.Fprintln(stderr, "ao-gotest:", err)
 		return 1
 	}
-	argv := append(append([]string{"go", "test"}, inv.flags...), inv.packages...)
 	err = syscall.Exec(path, argv, os.Environ())
-	fmt.Fprintln(stderr, "ao-gotest: exec go test:", err)
+	fmt.Fprintf(stderr, "ao-gotest: exec %s: %v\n", path, err)
 	return 1
 }
 
-// optedIn splits packages, in order, into those whose test files import
-// testshard, and so call Select, and the rest.
-func optedIn(packages []string, flags []parsedFlag, stderr io.Writer) (split, whole []string, err error) {
+// optedIn splits the packages, in order, into those whose test files
+// import testshard, and so call Select, and the rest.
+func optedIn(inv invocation, stderr io.Writer) (split, whole []string, err error) {
 	args := []string{"list", "-f", "{{.ImportPath}}{{range .TestImports}} {{.}}{{end}}{{range .XTestImports}} {{.}}{{end}}"}
-	for _, f := range flags {
+	for _, f := range inv.flags {
 		if f.name == "tags" {
 			args = append(args, f.args...)
 		}
 	}
 	var out bytes.Buffer
-	list := exec.Command("go", append(args, packages...)...)
+	list := exec.Command(inv.argv[0], append(args, inv.packages...)...)
 	list.Stdout, list.Stderr = &out, stderr
 	if err := list.Run(); err != nil {
 		return nil, nil, fmt.Errorf("go list the packages' test imports: %w", err)
@@ -209,18 +209,19 @@ type runPlan struct {
 	json  bool
 }
 
-func plan(inv invocation, flags []parsedFlag, split, whole []string, k int) runPlan {
+func plan(inv invocation, split, whole []string, k int) runPlan {
 	p := runPlan{k: k}
 	build := []string{"test", "-c", "-o", os.DevNull}
-	for _, f := range flags {
+	test := []string{"test"}
+	for _, f := range inv.flags {
 		if f.name == "json" && f.value != "false" {
 			p.json = true
 		}
 		if slices.Contains(buildFlags, f.name) {
 			build = append(build, f.args...)
 		}
+		test = append(test, f.args...)
 	}
-	test := append([]string{"test"}, inv.flags...)
 	if len(whole) > 0 {
 		p.whole = &job{args: append(slices.Clone(test), whole...)}
 	}
@@ -244,8 +245,8 @@ func plan(inv invocation, flags []parsedFlag, split, whole []string, k int) runP
 
 // runner starts the jobs and serializes their output.
 type runner struct {
-	// goCommand is the go command the jobs run: "go", or a stand-in in
-	// tests.
+	// goCommand is the go command the jobs run, the one the command line
+	// names.
 	goCommand      string
 	stdout, stderr io.Writer
 	// out guards stdout and stderr: one line of the unsplit run, or one
@@ -258,8 +259,8 @@ type runner struct {
 	worst   int
 }
 
-func newRunner(stdout, stderr io.Writer) *runner {
-	return &runner{goCommand: "go", stdout: stdout, stderr: stderr, running: map[*exec.Cmd]bool{}}
+func newRunner(goCommand string, stdout, stderr io.Writer) *runner {
+	return &runner{goCommand: goCommand, stdout: stdout, stderr: stderr, running: map[*exec.Cmd]bool{}}
 }
 
 func (r *runner) run(p runPlan) int {

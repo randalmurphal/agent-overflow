@@ -45,7 +45,7 @@ const fakeLines = 40
 
 func TestMain(m *testing.M) {
 	// The go command's first argument is its subcommand; this command's is
-	// a package.
+	// the go command.
 	if log := os.Getenv(fakeEnv); log != "" && len(os.Args) > 1 && (os.Args[1] == "test" || os.Args[1] == "list") {
 		os.Exit(fakeGo(log, os.Args[1:]))
 	}
@@ -107,41 +107,54 @@ func fakeGo(log string, args []string) int {
 	return 0
 }
 
-func TestParseFlags(t *testing.T) {
+func TestParseArgs(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		args      string
 		shardable bool
+		packages  string
 	}{
-		{"", true},
-		{"-timeout 30m -count=1", true},
-		{"-timeout 30m -count 1 -json -v", true},
-		{"--count=2 --json", true},
-		{"-tags noremote -count=1", true},
-		{"-tags=noremote -vet=off -short -failfast -shuffle on -skip TestX -p 4", true},
-		{"-timeout 30m -run TestX -count=1", false},
-		{"-run=TestX", false},
-		{"-list .", false},
-		{"-bench . -benchtime 1x", false},
-		{"-fuzz FuzzX", false},
-		{"-parallel 4", false},
-		{"-cpu 1,2", false},
-		{"-race", false},
-		{"-cover", false},
-		{"-coverprofile c.out", false},
-		{"-cpuprofile cpu.out", false},
-		{"-memprofile mem.out", false},
-		{"-trace trace.out", false},
-		{"-c", false},
-		{"-o app.test", false},
-		{"-exec echo", false},
-		{"-args -x", false},
-		{"-count", false},
-		{"TestX", false},
+		{"", true, ""},
+		{"./a ./b", true, "./a ./b"},
+		{"-timeout 30m -count=1 ./a", true, "./a"},
+		{"-timeout 30m -count 1 -json -v ./a ./b", true, "./a ./b"},
+		{"./a -count 1 ./b --json", true, "./a ./b"},
+		{"--count=2 --json", true, ""},
+		{"-tags noremote -count=1 ./a", true, "./a"},
+		{"-tags=noremote -vet=off -short -failfast -shuffle on -skip TestX -p 4", true, ""},
+		{"-timeout 30m -run TestX -count=1", false, ""},
+		{"-run=TestX", false, ""},
+		{"-list .", false, ""},
+		{"-bench . -benchtime 1x", false, ""},
+		{"-fuzz FuzzX", false, ""},
+		{"-parallel 4", false, ""},
+		{"-cpu 1,2", false, ""},
+		{"-race", false, ""},
+		{"-cover", false, ""},
+		{"-coverprofile c.out", false, ""},
+		{"-cpuprofile cpu.out", false, ""},
+		{"-memprofile mem.out", false, ""},
+		{"-trace trace.out", false, ""},
+		{"-c", false, ""},
+		{"-o app.test", false, ""},
+		{"-exec echo", false, ""},
+		{"./a -args -x", false, ""},
+		{"-count", false, ""},
 	} {
-		_, ok := parseFlags(strings.Fields(tc.args))
-		if ok != tc.shardable {
-			t.Errorf("parseFlags(%q) shardable = %v; want %v", tc.args, ok, tc.shardable)
+		inv, err := parseArgs(append([]string{"go", "test"}, strings.Fields(tc.args)...))
+		if err != nil {
+			t.Fatalf("parseArgs(go test %s): %v", tc.args, err)
+		}
+		if inv.shardable != tc.shardable {
+			t.Errorf("go test %s: shardable = %v; want %v", tc.args, inv.shardable, tc.shardable)
+		}
+		if got := strings.Join(inv.packages, " "); tc.shardable && got != tc.packages {
+			t.Errorf("go test %s: packages %q; want %q", tc.args, got, tc.packages)
+		}
+	}
+	for _, argv := range [][]string{nil, {"go"}, {"go", "vet", "./a"}, {"./a", "--", "-count=1"}} {
+		if _, err := parseArgs(argv); err == nil || !strings.Contains(err.Error(), "usage:") {
+			t.Errorf("parseArgs(%q) = %v; want the usage error", argv, err)
 		}
 	}
 }
@@ -156,9 +169,7 @@ func fakeRunner(t *testing.T, env ...string) (r *runner, stdout, stderr *lockedW
 		t.Setenv(name, value)
 	}
 	stdout, stderr = &lockedWriter{}, &lockedWriter{}
-	r = newRunner(stdout, stderr)
-	r.goCommand = os.Args[0]
-	return r, stdout, stderr, log
+	return newRunner(os.Args[0], stdout, stderr), stdout, stderr, log
 }
 
 // calls are the fake's logged calls, sorted, without the hold lines.
@@ -174,10 +185,13 @@ func calls(t *testing.T, log string) []string {
 	return got
 }
 
-func testPlan(k int) runPlan {
-	inv := invocation{packages: []string{"example/whole", "example/split"}, flags: []string{"-timeout", "30m", "-count=1"}}
-	flags, _ := parseFlags(inv.flags)
-	return plan(inv, flags, []string{"example/split"}, []string{"example/whole"}, k)
+func testPlan(t *testing.T, k int) runPlan {
+	t.Helper()
+	inv, err := parseArgs([]string{"go", "test", "-timeout", "30m", "-count=1", "example/whole", "example/split"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return plan(inv, []string{"example/split"}, []string{"example/whole"}, k)
 }
 
 // TestASplitRunPrintsWholeLinesAndEachProcessWhole runs a split package's
@@ -186,7 +200,7 @@ func testPlan(k int) runPlan {
 // one block under its header.
 func TestASplitRunPrintsWholeLinesAndEachProcessWhole(t *testing.T) {
 	r, stdout, stderr, log := fakeRunner(t, fakeFailEnv+"=1/3")
-	status := r.run(testPlan(3))
+	status := r.run(testPlan(t, 3))
 	if status != 3 {
 		t.Errorf("status %d; want 3, the failed shard's", status)
 	}
@@ -252,7 +266,7 @@ func checkBlocks(t *testing.T, stream, out, word string, headed bool) {
 // once, and no shard starts.
 func TestAFailedBuildRunsThePackageOnceUnsplit(t *testing.T) {
 	r, _, _, log := fakeRunner(t, fakeBuildEnv+"=1", fakeFailEnv+"=whole")
-	if status := r.run(testPlan(3)); status != 3 {
+	if status := r.run(testPlan(t, 3)); status != 3 {
 		t.Errorf("status %d; want 3, the unsplit runs'", status)
 	}
 	got := calls(t, log)
@@ -274,7 +288,7 @@ func TestASignalReachesEveryRunningProcessAndStartsNoMore(t *testing.T) {
 	done := make(chan int)
 	// Two slots for four shards: two shards are queued when the signal
 	// comes.
-	p := testPlan(4)
+	p := testPlan(t, 4)
 	p.k = 2
 	go func() { done <- r.run(p) }()
 	// The unsplit run and the two shards in the slots hold, each once its
@@ -305,9 +319,8 @@ func TestASignalReachesEveryRunningProcessAndStartsNoMore(t *testing.T) {
 }
 
 // TestARunThatSplitsNothingIsTheOneGoTest runs the command for runs it must
-// not split and checks that each replaced itself with `<wrapper> go test
-// <flags> <packages>`, the command make go-test ran before it, in an
-// environment it did not change.
+// not split and checks that each replaced itself with the `go test` command
+// line it was given, in an environment it did not change.
 func TestARunThatSplitsNothingIsTheOneGoTest(t *testing.T) {
 	reporoot.ObserveGoSources(t)
 	realGo, err := exec.LookPath("go")
@@ -331,15 +344,16 @@ func TestARunThatSplitsNothingIsTheOneGoTest(t *testing.T) {
 		args  []string
 		split bool
 	}{
-		{name: "one core", env: "GOMAXPROCS=1", args: []string{split, "--", "-count=1"}},
-		{name: "a narrowed run", env: "GOMAXPROCS=4", args: []string{split, "--", "-run", "TestX", "-count=1"}},
-		{name: "a profile", env: "GOMAXPROCS=4", args: []string{split, "--", "-cpuprofile", "cpu.out"}},
-		{name: "no package opts in", env: "GOMAXPROCS=4", args: []string{whole, "--", "-count=1"}},
-		{name: "a package opts in", env: "GOMAXPROCS=4", args: []string{split, "--", "-count=1"}, split: true},
+		{name: "one core", env: "GOMAXPROCS=1", args: []string{"-timeout", "30m", "-count=1", split}},
+		{name: "a narrowed run", env: "GOMAXPROCS=4", args: []string{"-timeout", "30m", "-run", "TestX", "-count=1", split}},
+		{name: "a profile", env: "GOMAXPROCS=4", args: []string{"-cpuprofile", "cpu.out", split}},
+		{name: "no package opts in", env: "GOMAXPROCS=4", args: []string{"-timeout", "30m", "-count=1", whole}},
+		{name: "a package opts in", env: "GOMAXPROCS=4", args: []string{"-timeout", "30m", "-count=1", split}, split: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			log := filepath.Join(t.TempDir(), "calls")
-			command := exec.Command(os.Args[0], tc.args...)
+			// The command line make go-test gives it.
+			command := exec.Command(os.Args[0], append([]string{"go", "test"}, tc.args...)...)
 			command.Dir = reporoot.Dir(t)
 			command.Env = append(slices.Clone(env), tc.env, fakeEnv+"="+log)
 			out, err := command.CombinedOutput()
@@ -348,14 +362,13 @@ func TestARunThatSplitsNothingIsTheOneGoTest(t *testing.T) {
 			}
 			got := calls(t, log)
 			if tc.split {
-				if len(got) != 5 || !strings.HasPrefix(got[0], "0/4|go test -count=1 -parallel 1 ") || !strings.HasPrefix(got[4], "|go test -c ") {
+				if len(got) != 5 || got[0] != "0/4|go test -timeout 30m -count=1 -parallel 1 "+split+"|kept" || !strings.HasPrefix(got[4], "|go test -c ") {
 					t.Fatalf("calls %q; want four shards and the build", got)
 				}
 				return
 			}
-			flags := tc.args[slices.Index(tc.args, "--")+1:]
 			// The variable the run was given reaches the one go test.
-			want := "|" + strings.Join(append(append([]string{"go", "test"}, flags...), tc.args[0]), " ") + "|kept"
+			want := "|go test " + strings.Join(tc.args, " ") + "|kept"
 			if len(got) != 1 || got[0] != want {
 				t.Fatalf("calls %q; want [%q]", got, want)
 			}

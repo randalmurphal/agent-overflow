@@ -10,25 +10,12 @@ packages. Test-specific setup stays beside the test that owns it.
   wrapper, so macOS assesses a single file instead of each written script. It
   imports only the standard library and `reporoot/`, so packages that
   `testutil` imports can use it too.
-- `reporoot/` returns the checkout's root and paths under it, lists one
-  directory's files (`Files`) or the whole Go source tree (`GoFiles`), and
-  parses a Go file (`ParseGoFile`), naming each by its slash path from the
-  root. A test reads a file outside its package through it, and no TestMain
-  changes directory: the test cache keys a pass on the files a test opens,
-  resolved against the package directory, so a path resolved against any
-  other directory leaves the file out of the key. A path derived from
-  `runtime.Caller` is module-relative under the Make targets' `-trimpath`. A
-  test that inspects the tree through a child process such as `go list`
-  calls `ObserveGoSources` first; the test cache cannot see what a child
-  reads and would reuse a pass recorded before the tree changed. Standard
-  library only.
-- `testshard/` splits one package's top-level tests across processes, by a
-  hash of each test's name, when `make go-test` (`cmd/ao-gotest`) sets
-  `AO_TEST_SHARD`. A package opts in by calling `testshard.Select(m)` first
-  in its TestMain, which is all it exports; one whose tests open many SQLite
-  stores needs it, because modernc's allocator lock stops one process from
-  using more cores. `shardspec/` holds the variable's format, which
-  `cmd/ao-gotest` shares. Standard library only.
+- `reporoot/` returns the checkout's root and paths under it. Use it to read
+  a repository file from a test; a path derived from `runtime.Caller` is
+  module-relative under the Make targets' `-trimpath`. A test that inspects
+  the tree through a child process such as `go list` calls
+  `ObserveGoSources` first; the test cache cannot see what a child reads and
+  would reuse a pass recorded before the tree changed. Standard library only.
 - `providerpath/` puts poisoned `claude` and `codex` first on PATH from
   TestMain, so a bare provider name never reaches an installed CLI, and fails
   the run naming the caller: the poison holds its caller while TestMain
@@ -39,6 +26,20 @@ packages. Test-specific setup stays beside the test that owns it.
   `TestEveryTestBinaryThatCanStartAProviderInstallsThePoison` fails one that
   does not. It imports only the standard library and internal packages
   that do too.
+- A test reads a file outside its package through `reporoot/`: `Path`,
+  `Files` for one directory, `GoFiles` for the whole Go source tree, and
+  `ParseGoFile`, each naming files by their slash path from the root. No
+  TestMain changes directory. The test cache keys a pass on the files a test
+  opens, resolved against the package directory, so a file opened through a
+  path relative to another directory is left out of the key and a cached
+  pass outlives a change to it.
+- `testshard/` splits one package's top-level tests across processes, by a
+  hash of each test's name, when `make go-test` (`cmd/ao-gotest`) sets
+  `AO_TEST_SHARD`. A package opts in by calling `testshard.Select(m)` first
+  in its TestMain, which is all it exports; one whose tests open many SQLite
+  stores needs it, because modernc's allocator lock stops one process from
+  using more cores. `shardspec/` holds the variable's format, which
+  `cmd/ao-gotest` shares. Standard library only.
 - A per-process directory a shared fixture makes in TestMain (the poison,
   store templates, the detached home) is an `internal/ownedtemp`
   directory, swept again after the run, so one left by a killed test
