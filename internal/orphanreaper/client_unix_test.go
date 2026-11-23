@@ -117,19 +117,7 @@ func TestASidecarEndsTheGroupsOfAParentKilledAsSpawnReturns(t *testing.T) {
 		t.Fatalf("the spawner printed %q (%v) and ended with %v, want its sidecar and SIGKILL", out, readErr, waitErr)
 	}
 	// The sidecar leads its own group, with the sleep of its grace.
-	t.Cleanup(func() {
-		if err := syscall.Kill(-sidecar, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
-			t.Errorf("end the sidecar's group %d: %v", sidecar, err)
-		}
-		deadline := time.Now().Add(15 * time.Second)
-		for syscall.Kill(-sidecar, 0) == nil {
-			if time.Now().After(deadline) {
-				t.Errorf("the sidecar's group %d outlived its SIGKILL", sidecar)
-				return
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
-	})
+	t.Cleanup(func() { helperproc.EndGroup(t, sidecar) })
 
 	select {
 	case err := <-ended:

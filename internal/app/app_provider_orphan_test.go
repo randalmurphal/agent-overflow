@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/orphanreaper"
+	"agent-overflow/internal/orphanreaper/orphanreapertest"
 	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
@@ -159,8 +160,10 @@ func TestABackendsDeathEndsItsProviderSession(t *testing.T) {
 				t.Fatalf("the backend never recorded its provider's group: %v", scanner.Err())
 			}
 			t.Cleanup(func() { _ = procutil.SignalGroup(pgid, syscall.SIGKILL) })
+			// The sidecar waits out its grace after the kill it sends.
+			sidecar := orphanreapertest.Of(t, backend.Process.Pid)
+			t.Cleanup(func() { helperproc.EndGroup(t, sidecar) })
 			if c.sidecarDies {
-				sidecar := sidecarOf(t, backend.Process.Pid)
 				if err := syscall.Kill(sidecar, syscall.SIGKILL); err != nil {
 					t.Fatal(err)
 				}
