@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"agent-overflow/internal/fswatch"
-	"agent-overflow/internal/spinner"
 )
 
 const spinnerDebounce = 250 * time.Millisecond
@@ -33,10 +32,9 @@ func (w *SpinnerWatcher) Close() error {
 	return w.core.Close()
 }
 
+// spinnerFileRelevant admits both halves of a sprite. The generated
+// reference page is a .md file, so the extension keeps it out.
 func spinnerFileRelevant(name string) bool {
 	extension := strings.ToLower(filepath.Ext(name))
-	if extension != ".png" && extension != ".json" {
-		return false
-	}
-	return !strings.EqualFold(name, spinner.ReferenceFileName)
+	return extension == ".png" || extension == ".json"
 }

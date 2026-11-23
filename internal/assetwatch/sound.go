@@ -47,8 +47,7 @@ func (w *SoundWatcher) Close() error {
 }
 
 // soundFileRelevant admits cue files only. The seeded reference page is not
-// one, so it needs no exclusion by name the way themes' schema and spinners'
-// SPINNERS.md do.
+// one, so it needs no exclusion by name the way themes' schema does.
 func soundFileRelevant(name string) bool {
 	return strings.EqualFold(filepath.Ext(name), ".wav")
 }

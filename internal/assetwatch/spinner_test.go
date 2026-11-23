@@ -65,10 +65,6 @@ func TestSpinnerWatcherIgnoresAtomicfileTempNames(t *testing.T) {
 			t.Fatalf("%s is treated as a sprite file; an atomic write would echo back as an external change", name)
 		}
 	}
-	// The generated reference is never a sprite, under any casing.
-	if watcher.core.relevant(filepath.Join(watcher.core.dir, spinner.ReferenceFileName)) {
-		t.Fatal("the generated reference is treated as a sprite file")
-	}
 	// Both halves of a real pair still are.
 	for _, name := range []string{"robo-papers.png", "robo-papers.json", "ORB.PNG"} {
 		if !watcher.core.relevant(filepath.Join(watcher.core.dir, name)) {
