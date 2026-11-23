@@ -61,6 +61,7 @@ import {
 import { isEntityFilteredChannel } from './entityFilteredChannels';
 import { DEFAULT_METHOD_BUDGET_MS, METHOD_ANSWER_MARGIN_MS, METHOD_BUDGETS_MS } from './methodRoutes';
 import {
+  RECONNECT_FLOOR_MS,
   RECONNECT_INITIAL_MS,
   RECONNECT_MAX_LOCAL_MS,
   RECONNECT_MAX_REMOTE_MS,
@@ -111,6 +112,7 @@ function withClientIdentity(wsUrl: string): string {
 // tests derive boundaries from the same source rather than hard-coding
 // numerals.
 export {
+  RECONNECT_FLOOR_MS,
   RECONNECT_INITIAL_MS,
   RECONNECT_MAX_LOCAL_MS,
   RECONNECT_MAX_REMOTE_MS,
@@ -2893,10 +2895,8 @@ export class WSClient {
     } else {
       const cap = this.remoteBackend ? RECONNECT_MAX_REMOTE_MS : RECONNECT_MAX_LOCAL_MS;
       const base = Math.min(RECONNECT_INITIAL_MS * 2 ** attempt, cap);
-      // Full jitter — picked uniformly in [0, base]. Floor protects
-      // against zero-delay reconnect on Math.random() => 0; without it
-      // a degenerate RNG could spin a tight reconnect loop.
-      delay = Math.max(50, Math.floor(Math.random() * base));
+      // Full jitter — picked uniformly in [0, base], never below the floor.
+      delay = Math.max(RECONNECT_FLOOR_MS, Math.floor(Math.random() * base));
       demandFloorMs = base;
     }
     // A dormant client whose whole app is BACKGROUNDED probes nothing at

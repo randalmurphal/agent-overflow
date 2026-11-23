@@ -2,6 +2,8 @@
 // unreachable: the closed Projects section gains no status line and runs no
 // animation, and the Projects menu is where the computer's state is said.
 import { expect, type Page } from '@playwright/test';
+import { stepHeldClockUntil, type HeldPageClock } from '../src/page-clock.js';
+import { RECONNECT_FLOOR_MS, RECONNECT_MAX_REMOTE_MS } from '../../frontend/src/lib/pageTiming.ts';
 
 export interface ProjectsQuiet {
   samples: number;
@@ -95,18 +97,69 @@ export async function watchProjectsQuiet(page: Page, through: () => Promise<unkn
   return probe.seen;
 }
 
+const RECONNECT_COUNTDOWN = /^Reconnecting in (\d+)s/;
+
+// An attempt in flight can wait on the page's own timers, so the held clock
+// is stepped while the spec waits for the ladder to arm or settle. A step
+// shorter than the shortest rung cannot fire the attempt armed after it.
+const LADDER_STEP_MS = RECONNECT_FLOOR_MS / 2;
+// No attempt outlasts the longest rung of the ladder.
+const LADDER_BUDGET_MS = RECONNECT_MAX_REMOTE_MS;
+
 /**
- * Run the reconnect attempt this page's banner counts down to: wait for the
- * countdown, the ladder's armed attempt, and move the page clock to it. The
- * banner rounds the wait up to whole seconds, so the move reaches the
- * attempt and stops short of the one after it, which the ladder arms only
- * once this one fails. The page clock must be installed.
+ * Whether this page's reconnect ladder has an attempt armed now: the
+ * banner's countdown, which shows only while an attempt waits on its rung
+ * and none is in flight.
  */
-export async function runNextReconnect(page: Page): Promise<void> {
-  const countdown = page.getByTestId('transport-status-banner').getByText(/^Reconnecting in \d+s/);
-  await expect(countdown).toBeVisible();
-  const seconds = Number(/(\d+)s/.exec(await countdown.innerText())![1]);
+export function reconnectArmed(page: Page): Promise<boolean> {
+  return page.getByTestId('transport-status-banner').getByText(RECONNECT_COUNTDOWN).isVisible();
+}
+
+/** Wait for this page's reconnect ladder to have an attempt armed, running an attempt in flight to its end. */
+export async function awaitReconnectArmed(clock: HeldPageClock): Promise<void> {
+  await stepHeldClockUntil(clock, 'an armed reconnect attempt', () => reconnectArmed(clock.page), LADDER_STEP_MS, LADDER_BUDGET_MS);
+}
+
+/**
+ * Run the reconnect attempt this page's banner counts down to, and return
+ * once the page has settled it. The clock is held, so the countdown is read
+ * on a still page and nothing fires until the spec moves it. The banner
+ * rounds the wait up to whole seconds, so the move reaches the attempt; the
+ * ladder arms the one after it only once this one ends, after the move. The
+ * pass ends when the page has settled the attempt, stepping the clock for
+ * the attempt's own timers: a new countdown after the attempt cleared the
+ * old one (the next attempt armed), or the banner reporting a connection or
+ * gone.
+ */
+export async function runNextReconnect(clock: HeldPageClock): Promise<void> {
+  const { page } = clock;
+  const countdown = page.getByTestId('transport-status-banner').getByText(RECONNECT_COUNTDOWN);
+  await awaitReconnectArmed(clock);
+  const seconds = Number(RECONNECT_COUNTDOWN.exec(await countdown.innerText())?.[1]);
+  if (!Number.isInteger(seconds)) throw new Error(`the reconnect countdown reads ${await countdown.innerText()}`);
+  await page.evaluate((pattern) => {
+    const countdownShown = (banner: Element | null) =>
+      banner !== null && [...banner.querySelectorAll('*')].some((el) => new RegExp(pattern).test(el.textContent?.trim() ?? ''));
+    const pass = { attempted: false, settled: '' };
+    (window as unknown as { __reconnectPass: typeof pass }).__reconnectPass = pass;
+    const read = () => {
+      const banner = document.querySelector('[data-testid="transport-status-banner"]');
+      if (!pass.attempted) {
+        pass.attempted = !countdownShown(banner);
+        if (!pass.attempted) return;
+      }
+      if (banner === null) pass.settled = 'gone';
+      else if (banner.getAttribute('data-status') === 'connected') pass.settled = 'connected';
+      else if (countdownShown(banner)) pass.settled = 'armed';
+      if (pass.settled !== '') observer.disconnect();
+    };
+    const observer = new MutationObserver(read);
+    observer.observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true });
+  }, RECONNECT_COUNTDOWN.source);
   await page.clock.fastForward(seconds * 1000);
+  await stepHeldClockUntil(clock, 'the page settling its reconnect attempt',
+    () => page.evaluate(() => (window as unknown as { __reconnectPass: { settled: string } }).__reconnectPass.settled !== ''),
+    LADDER_STEP_MS, LADDER_BUDGET_MS);
 }
 
 /**
