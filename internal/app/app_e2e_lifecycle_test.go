@@ -352,10 +352,11 @@ func TestAppFixtureTeardownEndsBackgroundWorkAndSessions(t *testing.T) {
 // its session-starting background work: thread request settlements, wake
 // deliveries, and the flush dispatch workers that start a session for a
 // message queued without one. Then it refuses notice work and waits out what
-// is in flight, closes the sessions the App holds, drains their events and
-// waits for the settlements they started. Work that outlived the test would
-// run against its removed directories and closed store, and a session left
-// open keeps its provider process writing into them.
+// is in flight, closes the sessions the App holds that own a provider
+// process, drains their events and waits for the settlements they started.
+// Work that outlived the test would run against its removed directories and
+// closed store, and a session left open keeps its provider process writing
+// into them.
 //
 // Every App fixture calls it once, after the cleanups that close its store
 // and remove its directories are registered, so it runs before them.
@@ -369,7 +370,9 @@ func tearDownTestAppAtCleanup(t *testing.T, app *App) {
 		}
 		app.sessionManager().snapshotAndClear()
 		for _, s := range sessions {
-			if ps := s.ProviderSession(); ps != nil {
+			// A session a test built by hand to stand in for one owns no
+			// process, and its constructor forbids Close.
+			if ps := s.ProviderSession(); ps != nil && ps.PID() != 0 {
 				_ = ps.Close()
 			}
 		}
