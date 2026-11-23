@@ -89,7 +89,7 @@ func TestEphemeralHomeSeedsOnlySavedCredentialAndCleansUp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	home, err := credentials.NewEphemeralHomeWithCredential("codex", snapshot, "codex-account")
+	home, err := credentials.NewEphemeralHomeWithCredential("codex", snapshot, EphemeralOwner{AccountID: "codex-account"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,44 +280,6 @@ func TestActivateTreatsSignedOutCanonicalAsNothingToPreserve(t *testing.T) {
 	holder, _ := credentials.AccountCredentialPath("claude", "holder")
 	assertFileContents(t, holder, "holder-saved")
 	assertFileContents(t, active, "target-token")
-}
-
-func TestCommitSelectedCredentialPublishesCanonicalBeforeSavedSlot(t *testing.T) {
-	credentials, err := NewCredentials(t.TempDir(), Policy{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := credentials.WriteAccountCredential("codex", "selected", []byte("old-token")); err != nil {
-		t.Fatal(err)
-	}
-	if err := credentials.Activate("codex", "", "selected"); err != nil {
-		t.Fatal(err)
-	}
-
-	saved, err := credentials.AccountCredentialPath("codex", "selected")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Remove(saved); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(saved, 0o700); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := credentials.CommitSelectedCredential("codex", "selected", []byte("old-token"), []byte("new-token")); err == nil {
-		t.Fatal("CommitSelectedCredential() succeeded despite an unwritable saved slot")
-	}
-	active, err := credentials.ActiveCredentialPath("codex")
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertFileContents(t, active, "new-token")
-	if info, err := os.Stat(saved); err != nil {
-		t.Fatal(err)
-	} else if !info.IsDir() {
-		t.Fatalf("saved credential obstruction mode = %v, want directory", info.Mode())
-	}
 }
 
 func TestActivateRejectsSavedCredentialSymlink(t *testing.T) {

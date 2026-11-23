@@ -1,8 +1,6 @@
 package provideraccountapp
 
 import (
-	"crypto/sha256"
-
 	"agent-overflow/internal/provideraccounts"
 )
 
@@ -21,15 +19,15 @@ func (m *Manager) MetadataStoreForTest() *provideraccounts.Store { return m.stor
 func (m *Manager) BlessCredentialForTest(providerName string, credential []byte) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.fingerprints[providerName] = sha256.Sum256(credential)
+	m.recordCanonicalLocked(providerName, credential)
 }
 
 // CredentialFingerprintForTest reads the process-local digest for assertions.
 func (m *Manager) CredentialFingerprintForTest(providerName string) ([32]byte, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	fingerprint, ok := m.fingerprints[providerName]
-	return fingerprint, ok
+	record := m.canonical[providerName]
+	return record.recorded, record.hasRecorded
 }
 
 // SetAuditPathForTest redirects durable audit assertions to a fixture path.

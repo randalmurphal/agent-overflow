@@ -46,7 +46,7 @@ func TestSelectedClaudeUsageRefreshTrustsTheBytesNotTheReportedIdentity(t *testi
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	original := []byte(`{"claudeAiOauth":{"accessToken":"original","refreshToken":"original-rt"}}`)
-	rotated := `{"claudeAiOauth":{"accessToken":"rotated","refreshToken":"rotated-rt"}}`
+	rotated, rotatedBearer := selectedClaudeRotation("rotated")
 	installUsageTestAccounts(t, app, usageTestAccount{"selected", original})
 
 	canonical, err := providerCredentialsForTest(t, app).ActiveCredentialPath(string(provider.Claude))
@@ -64,7 +64,7 @@ func TestSelectedClaudeUsageRefreshTrustsTheBytesNotTheReportedIdentity(t *testi
 	}
 	// Only the rotated bearer is accepted, so the first probe 401s into the
 	// refresh and the retry proves the new pair works.
-	app.rateLimitProbeClientOverride = expiringUsageClient(t, "rotated")
+	app.rateLimitProbeClientOverride = expiringUsageClient(t, rotatedBearer)
 
 	var usage provider.UsageEvent
 	app.testEmitHook = func(name string, data any) {
@@ -110,7 +110,7 @@ func TestSelectedClaudeUsageRefreshKeepsTheRotationWhenTheRetryStill401s(t *test
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	original := []byte(`{"claudeAiOauth":{"accessToken":"original","refreshToken":"original-rt"}}`)
-	rotated := `{"claudeAiOauth":{"accessToken":"rotated","refreshToken":"rotated-rt"}}`
+	rotated, _ := selectedClaudeRotation("rotated")
 	installUsageTestAccounts(t, app, usageTestAccount{"selected", original})
 
 	canonical, err := providerCredentialsForTest(t, app).ActiveCredentialPath(string(provider.Claude))
