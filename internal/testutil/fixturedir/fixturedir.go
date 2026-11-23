@@ -27,13 +27,26 @@ var current struct {
 	sync.Mutex
 	// dir is set while Guard's run runs.
 	dir string
+	// guarded is set by the process's one Guard.
+	guarded bool
 }
 
 // Guard runs run, a TestMain's test run such as m.Run, with the process's
 // fixture directory in place, and removes the directory after it, with
 // those of test processes that exited without removing theirs. A directory
-// it cannot make or remove fails the run.
+// it cannot make or remove fails the run. A process has one Guard: a
+// fixture built under it keeps its path, so a second Guard, nested or
+// after it, would hand out paths in a directory the first removed. A second
+// one fails the run without running it.
 func Guard(run func() int) int {
+	current.Lock()
+	again := current.guarded
+	current.guarded = true
+	current.Unlock()
+	if again {
+		fmt.Fprintln(os.Stderr, "fixturedir: Guard ran a second time in this process; a process has one fixture directory, so its TestMain runs one Guard")
+		return 1
+	}
 	sweep()
 	dir, release, err := ownedtemp.Make("", prefix)
 	if err != nil {
