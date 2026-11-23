@@ -81,8 +81,12 @@ func NewRegistry(path string) *Registry { return &Registry{path: path} }
 // Add records owner's group as c captured its leader, replacing any record
 // of the same group. A corrupt existing file is logged and reset rather
 // than blocking new tracking — losing stale backstop entries is preferable
-// to failing a session start.
+// to failing a session start. A Capture that CaptureLeader did not build
+// (the zero value) is refused.
 func (r *Registry) Add(owner string, c Capture) error {
+	if err := validLeader(c.leader); err != nil {
+		return fmt.Errorf("orphanreaper: add %s: %w", owner, err)
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	recs, err := r.loadLocked()

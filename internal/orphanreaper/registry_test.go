@@ -91,6 +91,17 @@ func TestRegistryEmptyWhenAbsent(t *testing.T) {
 	}
 }
 
+// A Capture CaptureLeader did not build writes nothing.
+func TestRegistryAddRefusesAnEmptyCapture(t *testing.T) {
+	reg, path := newTestRegistry(t)
+	if err := reg.Add("a", Capture{}); err == nil {
+		t.Fatal("Add accepted a capture with no leader")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("the refused Add left a registry file (stat: %v)", err)
+	}
+}
+
 func TestRegistryAddResetsCorruptFile(t *testing.T) {
 	reg, path := newTestRegistry(t)
 	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
