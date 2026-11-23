@@ -95,8 +95,8 @@ func TestAShellCommandIsRecordedForTheOrphanReaperWhileItRuns(t *testing.T) {
 			if record.Owner != "shell command" || record.PGID != record.PID || record.ParentPID != os.Getpid() || !groupRunning(record.PGID) {
 				t.Fatalf("record %+v, want the running group of run %s", record, runID)
 			}
-			if record.CreateUnix == 0 || record.CreateUnix != orphanreaper.CaptureCreateUnix(record.PID) {
-				t.Fatalf("record %+v carries no start time that names the leader", record)
+			if leader, err := orphanreaper.Identify(record.PID); err != nil || record.Identity == nil || *record.Identity != leader {
+				t.Fatalf("record %+v carries no identity that names the leader %+v %v", record, leader, err)
 			}
 			if err := app.StopThreadShellCommand(thread.ID, runID); err != nil {
 				t.Fatal(err)
@@ -224,7 +224,7 @@ func TestABackendsDeathEndsItsShellCommand(t *testing.T) {
 				if !groupRunning(pgid) {
 					t.Fatal("the group ended with the backend; this case needs one that survives it")
 				}
-				if err := orphanreaper.Sweep(registry, orphanreaper.GopsutilProcInfo(), 100*time.Millisecond); err != nil {
+				if err := orphanreaper.Sweep(registry, orphanreaper.SystemProcInfo(), 100*time.Millisecond); err != nil {
 					t.Fatal(err)
 				}
 			}

@@ -3,6 +3,7 @@ package orphanreaper
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -14,8 +15,8 @@ func newTestRegistry(t *testing.T) (*Registry, string) {
 
 func TestRegistryAddLoadRoundTrip(t *testing.T) {
 	reg, _ := newTestRegistry(t)
-	a := Record{Owner: "a", PID: 100, PGID: 100, CreateUnix: 111}
-	b := Record{Owner: "b", PID: 200, PGID: 200, CreateUnix: 222}
+	a := Record{Owner: "a", PID: 100, PGID: 100, Identity: &Identity{Start: "111"}}
+	b := Record{Owner: "b", PID: 200, PGID: 200, Identity: &Identity{Start: "222"}}
 	if err := reg.Add(a); err != nil {
 		t.Fatal(err)
 	}
@@ -31,21 +32,21 @@ func TestRegistryAddLoadRoundTrip(t *testing.T) {
 		t.Fatalf("len = %d, want 2: %+v", len(got), got)
 	}
 	// Sorted by pgid.
-	if got[0] != a || got[1] != b {
+	if !reflect.DeepEqual(got, []Record{a, b}) {
 		t.Errorf("records = %+v, want [%+v %+v]", got, a, b)
 	}
 }
 
 func TestRegistryAddReplacesSamePGID(t *testing.T) {
 	reg, _ := newTestRegistry(t)
-	_ = reg.Add(Record{Owner: "old", PID: 100, PGID: 100, CreateUnix: 111})
-	_ = reg.Add(Record{Owner: "new", PID: 100, PGID: 100, CreateUnix: 999})
+	_ = reg.Add(Record{Owner: "old", PID: 100, PGID: 100, Identity: &Identity{Start: "111"}})
+	_ = reg.Add(Record{Owner: "new", PID: 100, PGID: 100, Identity: &Identity{Start: "999"}})
 
 	got, _ := reg.Load()
 	if len(got) != 1 {
 		t.Fatalf("len = %d, want 1 (dedup by pgid)", len(got))
 	}
-	if got[0].Owner != "new" || got[0].CreateUnix != 999 {
+	if got[0].Owner != "new" || *got[0].Identity != (Identity{Start: "999"}) {
 		t.Errorf("record = %+v, want the replacement", got[0])
 	}
 }
@@ -98,7 +99,7 @@ func TestRegistryAddResetsCorruptFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Add must not fail on a corrupt file — it logs and starts fresh.
-	rec := Record{PID: 300, PGID: 300, CreateUnix: 333}
+	rec := Record{PID: 300, PGID: 300, Identity: &Identity{Start: "333"}}
 	if err := reg.Add(rec); err != nil {
 		t.Fatalf("Add over corrupt file: %v", err)
 	}
@@ -106,7 +107,34 @@ func TestRegistryAddResetsCorruptFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load after reset: %v", err)
 	}
-	if len(got) != 1 || got[0] != rec {
+	if !reflect.DeepEqual(got, []Record{rec}) {
 		t.Errorf("after corrupt-reset add = %+v, want just %+v", got, rec)
+	}
+}
+
+// A record carries its identity and writes no create_unix; one an earlier
+// version wrote reads with its create_unix and no identity, which the sweep
+// compares the old way.
+func TestRegistryRecordShapes(t *testing.T) {
+	reg, path := newTestRegistry(t)
+	if err := reg.Add(Record{Owner: "new", PID: 100, PGID: 100, Identity: &Identity{Boot: "b", Start: "7"}, ParentPID: 9}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `[{"owner":"new","pid":100,"pgid":100,"identity":{"boot":"b","start":"7"},"parent_pid":9}]`; string(data) != want {
+		t.Fatalf("registry file %s, want %s", data, want)
+	}
+	if err := os.WriteFile(path, []byte(`[{"owner":"old","pid":5,"pgid":5,"create_unix":1700000000000,"parent_pid":9}]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := reg.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []Record{{Owner: "old", PID: 5, PGID: 5, CreateUnix: 1_700_000_000_000, ParentPID: 9}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("an earlier version's record reads %+v, want %+v", got, want)
 	}
 }

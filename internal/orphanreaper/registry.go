@@ -12,21 +12,25 @@ import (
 
 // Record identifies a group leader durably enough to re-find it after a
 // crash despite PID reuse: a PID alone is ambiguous once recycled, but
-// PID + start time is not. PGID is the group the sweep kills (== PID,
-// since the leader leads its own group). CreateUnix is the process start
-// time in milliseconds (gopsutil's CreateTime); 0 means it couldn't be
-// captured, in which case the sweep falls back to the orphaned-parent check
-// alone. ParentPID is the process that started the leader; a leader whose
-// parent is no longer that process was orphaned, whichever process it was
-// reparented to: init, launchd, or a subreaper such as systemd's user
-// manager. 0 is a record written before ParentPID existed, which counts as
-// orphaned only under init. Owner names what started the group.
+// PID + Identity is not. PGID is the group the sweep kills (== PID,
+// since the leader leads its own group). Identity is the leader's, read
+// when the group was recorded; this version writes no record without one.
+// CreateUnix was written only by earlier versions, which recorded
+// gopsutil's start time in ms instead of an Identity; the sweep compares it
+// through ProcInfo.LegacyStartMillis, which exists for those records alone.
+// A record with neither is never reaped. ParentPID is the process that
+// started the leader; a leader whose parent is no longer that process was
+// orphaned, whichever process it was reparented to: init, launchd, or a
+// subreaper such as systemd's user manager. 0 is a record written before
+// ParentPID existed, which counts as orphaned only under init. Owner names
+// what started the group.
 type Record struct {
-	Owner      string `json:"owner"`
-	PID        int    `json:"pid"`
-	PGID       int    `json:"pgid"`
-	CreateUnix int64  `json:"create_unix"`
-	ParentPID  int    `json:"parent_pid,omitempty"`
+	Owner      string    `json:"owner"`
+	PID        int       `json:"pid"`
+	PGID       int       `json:"pgid"`
+	Identity   *Identity `json:"identity,omitempty"`
+	CreateUnix int64     `json:"create_unix,omitempty"`
+	ParentPID  int       `json:"parent_pid,omitempty"`
 }
 
 // Registry is a small JSON file tracking live process groups for the

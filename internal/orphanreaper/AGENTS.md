@@ -7,11 +7,19 @@ abnormal app exit on macOS and Linux. What it watches is listed in
 The live sidecar receives `watch <pgid>` and `release <pgid>` over a control
 pipe. EOF means its parent is gone, so it terminates every still-watched group.
 The startup sweep covers a sidecar that also died: its durable registry records
-PID, process group, process creation time and the recording parent, then reaps
+PID, process group, the leader's `Identity` and the recording parent, then reaps
 only a matching process whose current parent is no longer that parent. Under a
-subreaper the orphan's parent is not init.
+subreaper the orphan's parent is not init. It logs every record it leaves, with
+the reason.
 
-Do not replace creation-time and parent checks with PID-only or process-name
+`Identify` is the one reader of an identity, for the recording side and the
+sweep: the start the kernel stores for the process (`instanceinfo.ProcessStart`)
+and, on Linux, the boot id. Never derive it from the wall clock: gopsutil's
+Linux start time adds a boot time that, in a container, it recomputes from the
+clock on every read. `create_unix` was written only by earlier versions;
+`ProcInfo.LegacyStartMillis` exists for those records alone.
+
+Do not replace identity and parent checks with PID-only or process-name
 matching. Process groups are established by the provider launcher, the
 terminal's pty and `procutil.StartGroup`. Registry
 writes are atomic. Read errors are surfaced by explicit reads and sweeps; an

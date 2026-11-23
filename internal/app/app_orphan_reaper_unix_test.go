@@ -43,6 +43,41 @@ func TestTheHeadlessBrowserIsGivenTheOrphanReaper(t *testing.T) {
 	}
 }
 
+// A leader whose identity cannot be read gets no record: the sweep could
+// never reap it. A recorded leader carries its identity.
+func TestAWatchedGroupIsRecordedOnlyWithItsLeadersIdentity(t *testing.T) {
+	t.Parallel()
+	gone := exec.Command("true")
+	if err := gone.Run(); err != nil {
+		t.Fatal(err)
+	}
+	running := exec.Command("sleep", "60")
+	if err := running.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = running.Process.Kill()
+		_ = running.Wait()
+	})
+	a := NewApp()
+	registry := orphanreaper.NewRegistry(filepath.Join(t.TempDir(), "orphan-registry.json"))
+	a.orphanRegistry = registry
+	reaper := a.groupReaper("shell command")
+	reaper.Watch(gone.Process.Pid)
+	reaper.Watch(running.Process.Pid)
+	records, err := registry.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := orphanreaper.Identify(running.Process.Pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].PGID != running.Process.Pid || records[0].Identity == nil || *records[0].Identity != identity {
+		t.Fatalf("records %+v, want only the running leader with identity %+v", records, identity)
+	}
+}
+
 // The services that start provider processes on the app's behalf are given
 // the app's orphan reaper, which records each group under its owner.
 func TestProviderServicesAreGivenTheOrphanReaper(t *testing.T) {

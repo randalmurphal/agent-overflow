@@ -35,7 +35,7 @@ func (a *App) startOrphanReaper(dbDir string) error {
 	reg := orphanreaper.NewRegistry(filepath.Join(dbDir, "orphan-registry.json"))
 	a.orphanRegistry = reg
 
-	if err := orphanreaper.Sweep(reg, orphanreaper.GopsutilProcInfo(), orphanReaperSweepGrace); err != nil {
+	if err := orphanreaper.Sweep(reg, orphanreaper.SystemProcInfo(), orphanReaperSweepGrace); err != nil {
 		return fmt.Errorf("startup sweep: %w", err)
 	}
 
@@ -83,23 +83,31 @@ func (a *App) groupReaper(owner string) procutil.Reaper {
 // The registry Add and sidecar Watch are independent backstops, so a failure
 // of one still leaves the other covering the group. The sidecar hears first:
 // the Add syncs a file, and until the sidecar holds the group a death of this
-// process leaves the group running until the next launch.
+// process leaves the group running until the next launch. A leader whose
+// identity cannot be read gets no record, since the sweep could never reap
+// it; the sidecar still watches its group.
 func (a *App) watchProcessGroup(pgid int, owner string) {
 	if pgid <= 1 {
 		return
 	}
 	a.orphanReaper.Watch(pgid)
-	if a.orphanRegistry != nil {
-		rec := orphanreaper.Record{
-			Owner:      owner,
-			PID:        pgid,
-			PGID:       pgid,
-			CreateUnix: orphanreaper.CaptureCreateUnix(pgid),
-			ParentPID:  os.Getpid(),
-		}
-		if err := a.orphanRegistry.Add(rec); err != nil {
-			log.Printf("orphanreaper: registry add pgid=%d: %v", pgid, err)
-		}
+	if a.orphanRegistry == nil {
+		return
+	}
+	identity, err := orphanreaper.Identify(pgid)
+	if err != nil {
+		log.Printf("orphanreaper: no registry record for pgid=%d (%s): %v", pgid, owner, err)
+		return
+	}
+	rec := orphanreaper.Record{
+		Owner:     owner,
+		PID:       pgid,
+		PGID:      pgid,
+		Identity:  &identity,
+		ParentPID: os.Getpid(),
+	}
+	if err := a.orphanRegistry.Add(rec); err != nil {
+		log.Printf("orphanreaper: registry add pgid=%d: %v", pgid, err)
 	}
 }
 

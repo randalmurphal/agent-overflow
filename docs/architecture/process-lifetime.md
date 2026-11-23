@@ -16,11 +16,15 @@ its children (init, launchd, or a subreaper such as `systemd --user`). It
 then sends SIGTERM to every watched group and SIGKILL two seconds later.
 
 The backend also records each watched group's leader in a registry: pid,
-start time, and its own pid as the parent. The next launch kills a recorded
-group whose leader is alive, has the recorded start time, and is no longer
-the recording backend's child. A start time that differs means the pid was
-reused, and that process is left alone. The registry is the backstop for a
-sidecar that died with the backend.
+identity, and its own pid as the parent. The identity is the start the kernel
+stores for the process and, on Linux, the boot id, so no clock change moves
+it; a leader whose identity cannot be read is not recorded. The next launch
+kills a recorded group whose leader is alive, has the recorded identity, and
+is no longer the recording backend's child. An identity that differs means
+the pid was reused, and that process is left alone. Each group the sweep
+leaves is logged with the reason, including a group whose leader is gone
+while members still run, which the sweep cannot identify. The registry is the
+backstop for a sidecar that died with the backend.
 
 The sidecar hears of a group just after its leader forks, and the registry
 records it after that. A backend that dies in between leaves the group to the

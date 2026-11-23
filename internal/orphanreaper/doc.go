@@ -14,8 +14,8 @@
 //
 //   - A startup sweep reaps anything the sidecar missed (e.g. both app and
 //     sidecar were SIGKILLed, or the machine lost power): a durable
-//     registry records {pid, pgid, start-time, parent} per spawn, and on the
-//     next launch any recorded group still alive, start-time-matched
+//     registry records {pid, pgid, identity, parent} per spawn, and on the
+//     next launch any recorded group still alive, identity-matched
 //     (PID-reuse safe), and no longer the recording parent's child is killed.
 //
 // Process groups come from the provider package's Setpgid, the terminal

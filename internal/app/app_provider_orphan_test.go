@@ -192,7 +192,7 @@ func TestABackendsDeathEndsItsProviderSession(t *testing.T) {
 				if !groupRunning(pgid) {
 					t.Fatal("the group ended with the backend; this case needs one that survives it")
 				}
-				if err := orphanreaper.Sweep(registry, orphanreaper.GopsutilProcInfo(), 100*time.Millisecond); err != nil {
+				if err := orphanreaper.Sweep(registry, orphanreaper.SystemProcInfo(), 100*time.Millisecond); err != nil {
 					t.Fatal(err)
 				}
 			}
