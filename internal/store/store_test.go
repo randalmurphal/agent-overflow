@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"agent-overflow/internal/ownedtemp"
+	"agent-overflow/internal/testutil/fixturedir"
 	"agent-overflow/internal/testutil/providerpath"
 )
 
@@ -21,17 +21,11 @@ import (
 // the threads.project_id FK.
 const defaultTestProjectID = "default-test-project"
 
-var testStoreTemplatePath string
-
-func TestMain(m *testing.M) {
-	sweepStoreTemplates()
-	dir, release, err := ownedtemp.Make("", storeTemplatePrefix)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "create store test template directory: %v\n", err)
-		os.Exit(1)
-	}
-	testStoreTemplatePath = filepath.Join(dir, "template.sqlite")
-	template, err := New(testStoreTemplatePath)
+// testStoreTemplate is the migrated store the tests clone, built by the
+// first clone of a run in its fixture directory, with the default project
+// seeded.
+var testStoreTemplate = fixturedir.New("store-template.sqlite", func(tb testing.TB, path string) {
+	template, err := New(path)
 	if err == nil {
 		_, err = template.CreateProject(Project{
 			ID: defaultTestProjectID, Path: "/tmp/test", Name: "Default Test Project",
@@ -45,40 +39,19 @@ func TestMain(m *testing.M) {
 		err = errors.Join(err, template.Close())
 	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "build store test template: %v\n", err)
-		if cleanupErr := release(); cleanupErr != nil {
-			fmt.Fprintf(os.Stderr, "remove failed store test template: %v\n", cleanupErr)
-		}
-		os.Exit(1)
+		tb.Fatalf("build store test template: %v", err)
 	}
+})
 
-	code := providerpath.Run(m)
-	if report := recompilingReport(recompilingStatements()); report != "" {
-		fmt.Fprint(os.Stderr, report)
-		if code == 0 {
-			code = 1
+func TestMain(m *testing.M) {
+	os.Exit(fixturedir.Guard(func() int {
+		code := providerpath.Run(m)
+		if report := recompilingReport(recompilingStatements()); report != "" {
+			fmt.Fprint(os.Stderr, report)
+			code = max(code, 1)
 		}
-	}
-	if err := release(); err != nil {
-		fmt.Fprintf(os.Stderr, "remove store test template: %v\n", err)
-		if code == 0 {
-			code = 1
-		}
-	}
-	sweepStoreTemplates()
-	os.Exit(code)
-}
-
-// storeTemplatePrefix names the template directories, one per test process.
-const storeTemplatePrefix = "agent-overflow-store-template-"
-
-// sweepStoreTemplates removes the template directories of test processes
-// that exited without removing theirs: killed, timed out, or a helper that
-// ended in os.Exit.
-func sweepStoreTemplates() {
-	if err := ownedtemp.Sweep("", storeTemplatePrefix); err != nil {
-		fmt.Fprintf(os.Stderr, "remove the store test templates of exited test processes: %v\n", err)
-	}
+		return code
+	}))
 }
 
 func newTestStore(t *testing.T) *Store {
@@ -108,47 +81,33 @@ func openTestStore(t *testing.T, path string) *Store {
 func newTestStorePath(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "store.sqlite")
-	if err := copyTestStoreTemplate(path); err != nil {
+	if err := copyTestStoreTemplate(t, path); err != nil {
 		t.Fatalf("clone store template: %v", err)
 	}
 	return path
 }
 
-func copyTestStoreTemplate(destination string) error {
-	return copyStoreFile(testStoreTemplatePath, destination)
+func copyTestStoreTemplate(tb testing.TB, destination string) error {
+	return copyStoreFile(testStoreTemplate.Path(tb), destination)
 }
 
-// fixtures holds the database files fixtureCopy built, by name.
+// fixtures holds the database fixtures fixtureCopy declared, by name.
 var fixtures sync.Map
-
-type fixtureFile struct {
-	once sync.Once
-	path string
-	err  error
-}
 
 // fixtureCopy returns a copy, in a directory of the test's, of the
 // database file build writes at the path it is given. The first test that
-// asks for name builds it in the store template's directory; build must
-// leave the file closed, with no WAL.
+// asks for name builds it in the run's fixture directory; build must leave
+// the file closed, with no WAL.
 func fixtureCopy(t *testing.T, name string, build func(t *testing.T, path string)) string {
 	t.Helper()
-	entry, _ := fixtures.LoadOrStore(name, &fixtureFile{})
-	fixture := entry.(*fixtureFile)
-	fixture.once.Do(func() {
-		fixture.err = fmt.Errorf("the %s fixture build failed in an earlier test", name)
-		path := filepath.Join(filepath.Dir(testStoreTemplatePath), name)
-		build(t, path)
+	entry, _ := fixtures.LoadOrStore(name, fixturedir.New(name, func(tb testing.TB, path string) {
+		build(tb.(*testing.T), path)
 		if info, err := os.Stat(path + "-wal"); err == nil && info.Size() > 0 {
-			t.Fatalf("the %s fixture kept a %d-byte WAL a copy would lose", name, info.Size())
+			tb.Fatalf("the %s fixture kept a %d-byte WAL a copy would lose", name, info.Size())
 		}
-		fixture.path, fixture.err = path, nil
-	})
-	if fixture.err != nil {
-		t.Fatal(fixture.err)
-	}
+	}))
 	path := filepath.Join(t.TempDir(), name)
-	if err := copyStoreFile(fixture.path, path); err != nil {
+	if err := copyStoreFile(entry.(*fixturedir.Lazy).Path(t), path); err != nil {
 		t.Fatalf("copy the %s fixture: %v", name, err)
 	}
 	return path

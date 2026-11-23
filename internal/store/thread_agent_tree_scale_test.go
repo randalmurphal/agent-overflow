@@ -137,7 +137,7 @@ func TestListThreadAgentTreeAtScale(t *testing.T) {
 		// share its base, seeded once and copied.
 		t.Run(shape.String(), func(t *testing.T) {
 			path := fixtureCopy(t, fmt.Sprintf("agent-tree-history-%d.sqlite", shape.history), func(t *testing.T, path string) {
-				if err := copyTestStoreTemplate(path); err != nil {
+				if err := copyTestStoreTemplate(t, path); err != nil {
 					t.Fatal(err)
 				}
 				base, err := New(path)

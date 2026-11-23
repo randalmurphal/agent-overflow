@@ -37,13 +37,9 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		panic(err)
 	}
+	// The store template and the fixture templates are built in the run's
+	// fixture directory, which storetest.Run owns.
 	code := providerpath.Guard(func() int { return storetest.Run(m) })
-	if err := removeFixtureTemplates(); err != nil {
-		fmt.Fprintf(os.Stderr, "remove fixture templates: %v\n", err)
-		if code == 0 {
-			code = 1
-		}
-	}
 	if err := removeHome(); err != nil {
 		fmt.Fprintf(os.Stderr, "remove detached test home: %v\n", err)
 		if code == 0 {

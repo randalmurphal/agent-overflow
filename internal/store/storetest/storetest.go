@@ -6,103 +6,27 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sync"
 	"testing"
 
-	"agent-overflow/internal/ownedtemp"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil/fixturedir"
 )
 
 // template is the migrated database the clones copy, built by the first
-// clone of a run. One run, Run's, owns it at a time.
-var template struct {
-	mu sync.Mutex
-	// running is set while Run's m.Run is.
-	running bool
-	// path is the built template, release removes its directory, and err
-	// is the failed build every later clone reports.
-	path    string
-	release func() error
-	err     error
-}
+// clone of a run in the run's fixture directory.
+var template = fixturedir.New("storetest-template.sqlite", func(tb testing.TB, path string) {
+	if err := buildTemplate(path); err != nil {
+		tb.Fatalf("storetest: build template: %v", err)
+	}
+})
 
-// templatePrefix names the template directories, one per test process.
-const templatePrefix = "agent-overflow-storetest-template-"
-
-// Run runs the package's tests, removes the template directory the first
-// clone built, and removes those of test processes that exited without
-// removing theirs (ownedtemp): killed, timed out, or a helper process that
-// ended in os.Exit. A run with no clone, such as a helper process the
-// package's tests start, migrates nothing. Use it as the whole body of
-// TestMain:
+// Run runs the package's tests with the fixture directory the template is
+// built in (fixturedir.Guard). A run with no clone, such as a helper
+// process the package's tests start, migrates nothing. Use it as the whole
+// body of TestMain:
 //
 //	func TestMain(m *testing.M) { os.Exit(storetest.Run(m)) }
-func Run(m *testing.M) int {
-	sweepTemplates()
-	template.mu.Lock()
-	template.running = true
-	template.mu.Unlock()
-
-	code := m.Run()
-
-	template.mu.Lock()
-	template.running = false
-	release := template.release
-	template.path, template.release, template.err = "", nil, nil
-	template.mu.Unlock()
-	if release != nil {
-		if err := release(); err != nil {
-			fmt.Fprintf(os.Stderr, "storetest: remove template: %v\n", err)
-			if code == 0 {
-				code = 1
-			}
-		}
-	}
-	sweepTemplates()
-	return code
-}
-
-// templateFile is the template's path, built on the first call of a run.
-func templateFile(tb testing.TB) string {
-	tb.Helper()
-	template.mu.Lock()
-	defer template.mu.Unlock()
-	if !template.running {
-		tb.Fatalf("storetest: no template; add to this package:\n\nfunc TestMain(m *testing.M) { os.Exit(storetest.Run(m)) }")
-	}
-	if template.path == "" && template.err == nil {
-		template.path, template.release, template.err = makeTemplate()
-	}
-	if template.err != nil {
-		tb.Fatalf("storetest: %v", template.err)
-	}
-	return template.path
-}
-
-// makeTemplate builds the template in a directory of its own.
-func makeTemplate() (path string, release func() error, err error) {
-	dir, release, err := ownedtemp.Make("", templatePrefix)
-	if err != nil {
-		return "", nil, fmt.Errorf("create template directory: %w", err)
-	}
-	path = filepath.Join(dir, "template.sqlite")
-	if err := buildTemplate(path); err != nil {
-		if removeErr := release(); removeErr != nil {
-			err = errors.Join(err, fmt.Errorf("remove failed template: %w", removeErr))
-		}
-		return "", nil, fmt.Errorf("build template: %w", err)
-	}
-	return path, release, nil
-}
-
-// sweepTemplates removes the template directories of exited test
-// processes. A failure leaves a directory, not a wrong result, so it is
-// reported rather than failing the run.
-func sweepTemplates() {
-	if err := ownedtemp.Sweep("", templatePrefix); err != nil {
-		fmt.Fprintf(os.Stderr, "storetest: remove the templates of exited test processes: %v\n", err)
-	}
-}
+func Run(m *testing.M) int { return fixturedir.Guard(m.Run) }
 
 // buildTemplate opens a store at path (which applies the migration chain) and
 // closes it. Store.Close runs a TRUNCATE checkpoint, so the WAL is merged back
@@ -185,7 +109,7 @@ func rowsStoringServedSubagentKeysAt(path string) ([]string, error) {
 // without opening it, for tests that open (or reopen) the file themselves.
 func ClonePath(tb testing.TB) string {
 	tb.Helper()
-	source := templateFile(tb)
+	source := template.Path(tb)
 	path := filepath.Join(tb.TempDir(), "store.sqlite")
 	if err := copyTemplate(source, path); err != nil {
 		tb.Fatalf("storetest: clone template: %v", err)

@@ -34,10 +34,16 @@ packages. Test-specific setup stays beside the test that owns it.
   path relative to another directory is left out of the key and a cached
   pass outlives a change to it.
 - A per-process directory a shared fixture makes in TestMain (the poison,
-  store templates, the detached home) is an `internal/ownedtemp`
-  directory, swept again after the run, so one left by a killed test
-  binary or a helper process that ended in `os.Exit` does not outlive the
-  next run.
+  the detached home) is an `internal/ownedtemp` directory, swept again
+  after the run, so one left by a killed test binary or a helper process
+  that ended in `os.Exit` does not outlive the next run.
+- A fixture built once and shared across a package's tests (a store
+  template, a repository snapshot, a seeded database) is a
+  `fixturedir.Lazy`, built on first use in the one directory
+  `fixturedir.Guard` makes before the tests run (`storetest.Run` runs it).
+  Never make such a directory on first use: its place would follow the
+  TMPDIR of whichever test came first, and that test's cleanup would
+  remove it.
 - `helperproc/` ties a helper process to the test binary that started it
   (`Tie`, `Hold`), so a helper that stands in for a backend ends when that
   binary is killed or times out, and its temporary files land in its test's
