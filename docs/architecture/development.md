@@ -54,8 +54,8 @@ the lock is gone. Measure again too when internal/app is divided into
 smaller packages: packages already run as separate processes, so the
 split may no longer pay for itself. A bucket's command line is the same
 however many run at once, so its cached result holds at any count. A
-fully cached run costs more split: 33.0 s and 32.5 s against 31.7 s and
-29.9 s for one `go test` per package, on four cores, since each split
+fully cached run costs more split: 29.0 s and 25.9 s against 22.7 s and
+22.9 s for one `go test` per package, on four cores, since each split
 package's test binary is still linked once, by the `go test -list` that
 reads its names.
 
