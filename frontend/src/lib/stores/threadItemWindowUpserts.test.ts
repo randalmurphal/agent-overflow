@@ -161,6 +161,7 @@ describe('threadItemWindow upsert commit', () => {
       const h = harness(selection);
       const next = seededRandom(selection ? 7 : 3);
       let serial = 0;
+      let peak = 0;
       const planUpdate = { kind: 'notification', toolName: 'plan_update' } as const;
       for (let step = 0; step < 300; step += 1) {
         const held = h.window.getItems();
@@ -205,8 +206,10 @@ describe('threadItemWindow upsert commit', () => {
           }
         }
         h.expectConsistent();
+        peak = Math.max(peak, h.window.getItems().length);
       }
-      expect(h.window.getItems().length).toBeGreaterThan(20);
+      // The batches reached a window big enough to place rows between others.
+      expect(peak).toBeGreaterThan(20);
     }
   });
 });
