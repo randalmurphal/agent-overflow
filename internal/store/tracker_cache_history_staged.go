@@ -88,7 +88,7 @@ func (s *Store) replaceStagedHistory(rootID, sweep int64, in mirrorHistoryInput,
 			return fmt.Errorf("%s: %w", action, err)
 		}
 		if probe.identical() {
-			return nil
+			return s.writeIdenticalHistory(rootID, sweep, in, result, action)
 		}
 	}
 	// From here no batch write changes the issue's changes: it stages the
@@ -119,6 +119,44 @@ func (s *Store) replaceStagedHistory(rootID, sweep int64, in mirrorHistoryInput,
 	// issue's history as that write made it.
 	result.Changed, result.Superseded = false, true
 	return s.purgeMirrorHistoryGens(rootID, in.h.IssueID, st.gen, noMirrorPause)
+}
+
+// writeIdenticalHistory writes in, a history whose changes and times the
+// issue's stored history holds, as a batch write writes it
+// (mirrorHistoryTimesSQL): the status result it gives the card, and the
+// receipt advanced, only when that result differs from the stored one. It
+// reads the issue's state again in its transaction, so a write admitted
+// since the probe (which moved the receipt) supersedes it.
+func (s *Store) writeIdenticalHistory(rootID, sweep int64, in mirrorHistoryInput, result *MirrorHistoryResult, action string) error {
+	listed, err := encodeMirrorJSON([]mirrorHistoryRow{in.row})
+	if err != nil {
+		return err
+	}
+	return s.mirrorSweptWrite(rootID, sweep, action, func(tx *sql.Tx) error {
+		states, err := readMirrorHistoryStatesTx(tx, rootID, listed)
+		if err != nil {
+			return err
+		}
+		st, ok := states[in.h.IssueID]
+		switch {
+		case !ok || !st.kept:
+			result.Unkept, result.Superseded = true, false
+			return nil
+		case st.supersedes(in):
+			result.Unkept, result.Superseded = false, true
+			return nil
+		}
+		row, err := encodeMirrorJSON([]mirrorHistoryRow{st.rowOf(in, st.gen)})
+		if err != nil {
+			return err
+		}
+		changed, err := queryIDs(tx, mirrorHistoryTimesSQL, rootID, row)
+		if err != nil {
+			return fmt.Errorf("write history times: %w", err)
+		}
+		result.Changed = len(changed) > 0
+		return nil
+	})
 }
 
 // writeStagedHistory writes in over the issue's stored history st, in
