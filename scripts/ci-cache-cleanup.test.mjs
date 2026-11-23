@@ -3,63 +3,61 @@ import assert from 'node:assert/strict';
 import { plan } from './ci-cache-cleanup.mjs';
 
 const sha = n => String(n).repeat(40).slice(0, 40);
-// main lists its newest commit first.
-const main = [sha(3), sha(2), sha(1)];
 let id = 0;
 const entry = (key, created, size = 1e9, ref = 'refs/heads/main') => ({ id: ++id, key, ref, created_at: created, size_in_bytes: size });
 const keys = list => list.map(cache => cache.key).sort();
+const start = '2026-11-22T10:00:00Z';
 
-test('the newest commit on main stays, older commits of the slot go', () => {
+test('a slot keeps its newest entry and those made since the run started', () => {
   const caches = [
-    entry(`go-build-test-store-Linux-${sha(1)}`, '2026-11-20T10:00:00Z'),
-    entry(`go-build-test-store-Linux-${sha(2)}`, '2026-11-21T10:00:00Z'),
-    entry(`go-build-lint-Linux-${sha(1)}`, '2026-11-20T10:00:00Z'),
+    entry(`ao-ci-go-build-test-store-Linux-${sha(1)}`, '2026-11-20T10:00:00Z'),
+    entry(`ao-ci-go-build-test-store-Linux-${sha(2)}`, '2026-11-21T10:00:00Z'),
+    // A slot this run did not save keeps its one entry.
+    entry(`ao-ci-go-build-lint-Linux-${sha(1)}`, '2026-11-20T10:00:00Z'),
+    // This run's save, and a newer run's beside it, retire everything older.
+    entry(`ao-ci-go-build-harness-Linux-${sha(1)}`, '2026-11-21T10:00:00Z'),
+    entry(`ao-ci-go-build-harness-Linux-${sha(2)}`, '2026-11-22T10:05:00Z'),
+    entry(`ao-ci-go-build-harness-Linux-${sha(3)}`, '2026-11-22T10:06:00Z'),
   ];
-  const result = plan(caches, main, '2026-11-22T10:00:00Z');
-  assert.deepEqual(keys(result.keep), [`go-build-lint-Linux-${sha(1)}`, `go-build-test-store-Linux-${sha(2)}`]);
-  assert.deepEqual(keys(result.remove), [`go-build-test-store-Linux-${sha(1)}`]);
-  assert.equal(result.total, 2e9);
-  assert.equal(result.over, false);
+  const result = plan(caches, start);
+  assert.deepEqual(keys(result.keep), [
+    `ao-ci-go-build-harness-Linux-${sha(2)}`, `ao-ci-go-build-harness-Linux-${sha(3)}`,
+    `ao-ci-go-build-lint-Linux-${sha(1)}`, `ao-ci-go-build-test-store-Linux-${sha(2)}`,
+  ]);
+  assert.deepEqual(keys(result.remove), [`ao-ci-go-build-harness-Linux-${sha(1)}`, `ao-ci-go-build-test-store-Linux-${sha(1)}`]);
 });
 
-test('an older commit saved after a newer one still loses to it, unless this run saved it', () => {
-  // The run for sha(2) finished after the run for sha(3), so its save is the
-  // later one; the commit order decides, and the run start protects saves
-  // made during this run.
+test('legacy shapes are retired, other caches are counted and never touched', () => {
   const caches = [
-    entry(`go-build-harness-Linux-${sha(3)}`, '2026-11-22T10:05:00Z'),
-    entry(`go-build-harness-Linux-${sha(2)}`, '2026-11-22T10:09:00Z'),
+    entry(`go-build-test-noremote-store-triage-Linux-${'a'.repeat(64)}-${sha(1)}`, '2026-11-01T10:00:00Z'),
+    entry(`go-mod-Linux-${'b'.repeat(64)}`, '2026-11-01T10:00:00Z'),
+    entry(`node-cache-Linux-x64-pnpm-${'c'.repeat(64)}`, '2026-11-01T10:00:00Z'),
+    entry('playwright-Linux-chromium webkit-abc', '2026-11-01T10:00:00Z'),
+    entry('setup-go-Linux-x64-ubuntu24-go-1.27.4-abc', '2026-11-01T10:00:00Z', 2e9, 'refs/heads/release'),
+    entry(`ao-ci-go-mod-Linux-${sha(4)}`, '2026-11-21T10:00:00Z'),
   ];
-  assert.deepEqual(keys(plan(caches, main, '2026-11-22T11:00:00Z').remove), [`go-build-harness-Linux-${sha(2)}`]);
-  assert.deepEqual(plan(caches, main, '2026-11-22T10:07:00Z').remove, []);
+  const result = plan(caches, start);
+  assert.equal(result.remove.length, 4);
+  assert.ok(result.remove.every(cache => !cache.key.startsWith('setup-go') && !cache.key.startsWith('ao-ci-')));
+  assert.deepEqual(keys(result.other), ['setup-go-Linux-x64-ubuntu24-go-1.27.4-abc']);
+  assert.deepEqual({ managed: result.managedBytes, other: result.otherBytes }, { managed: 1e9, other: 2e9 });
 });
 
-test('a commit main no longer lists is older than every listed one', () => {
+test('a managed entry from another ref is deleted and named', () => {
+  const result = plan([entry(`ao-ci-go-build-lint-Linux-${sha(1)}`, '2026-11-21T10:00:00Z', 1e9, 'refs/pull/7/merge')], start);
+  assert.equal(result.remove.length, 1);
+  assert.match(result.warnings[0], /refs\/pull\/7\/merge saved ao-ci-go-build-lint/);
+});
+
+test('the budget counts this pipeline and everything else together', () => {
   const caches = [
-    entry(`go-build-checks-Linux-${sha(9)}`, '2026-11-22T10:00:00Z'),
-    entry(`go-build-checks-Linux-${sha(1)}`, '2026-11-01T10:00:00Z'),
+    entry(`ao-ci-go-build-lint-Linux-${sha(1)}`, '2026-11-21T10:00:00Z', 5e9),
+    entry('setup-go-Linux-x64-abc', '2026-11-21T10:00:00Z', 3.5e9, 'refs/heads/release'),
   ];
-  assert.deepEqual(keys(plan(caches, main, '2026-11-23T00:00:00Z').remove), [`go-build-checks-Linux-${sha(9)}`]);
+  assert.equal(plan(caches, start).over, true);
+  assert.equal(plan(caches.slice(0, 1), start).over, false);
 });
 
-test('a lockfile-keyed cache keeps its newest entry', () => {
-  const caches = [
-    entry('pnpm-store-macOS-aaaa', '2026-11-20T10:00:00Z', 2e8),
-    entry('pnpm-store-macOS-bbbb', '2026-11-21T10:00:00Z', 2e8),
-  ];
-  assert.deepEqual(keys(plan(caches, main, '2026-11-22T00:00:00Z').remove), ['pnpm-store-macOS-aaaa']);
-});
-
-test('a cache another ref saved is deleted and named', () => {
-  const caches = [entry('go-mod-Linux-cccc', '2026-11-21T10:00:00Z', 3e8, 'refs/pull/299/merge')];
-  const result = plan(caches, main, '2026-11-22T00:00:00Z');
-  assert.deepEqual(keys(result.remove), ['go-mod-Linux-cccc']);
-  assert.match(result.warnings[0], /refs\/pull\/299\/merge saved go-mod-Linux-cccc/);
-  assert.equal(result.total, 0);
-});
-
-test('entries over the budget fail the cleanup', () => {
-  const caches = [entry(`go-build-lint-Linux-${sha(3)}`, '2026-11-22T10:00:00Z', 5e9), entry(`go-build-test-rest-Linux-${sha(3)}`, '2026-11-22T10:00:00Z', 4e9)];
-  assert.equal(plan(caches, main, '2026-11-22T00:00:00Z').over, true);
-  assert.throws(() => plan([], main, 'yesterday'), /not a time/);
+test('a run start that is not a time fails', () => {
+  assert.throws(() => plan([entry(`ao-ci-go-mod-Linux-${sha(1)}`, '2026-11-21T10:00:00Z')], 'soon'), /not a time/);
 });

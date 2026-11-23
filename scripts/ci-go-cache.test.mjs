@@ -66,3 +66,23 @@ test('backdate sets entries past the hour after which Go refreshes one it uses',
   }
   assert.ok(state.time < now - 60 * 60);
 });
+
+test('an output that a fresh index record names stays, though Go did not touch it', t => {
+  const dir = mkdtempSync(resolve(tmpdir(), 'ao-go-cache-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const action = '1a'.padEnd(64, '1');
+  const output = '2b'.padEnd(64, '2');
+  const stale = '3c'.padEnd(64, '3');
+  for (const shard of ['1a', '2b', '3c']) mkdirSync(join(dir, shard));
+  const record = join(dir, '1a', `${action}-a`);
+  writeFileSync(record, `v1 ${action} ${'0'.repeat(64)} 5 1\n`);
+  writeFileSync(join(dir, '2b', `${output}-d`), 'bytes');
+  writeFileSync(join(dir, '3c', `${stale}-d`), 'stale');
+  const state = backdate(dir);
+  // The run rewrote the index record to name the output it already had.
+  writeFileSync(record, `v1 ${action} ${output} 5 2\n`);
+  const result = prune(dir, state);
+  assert.deepEqual({ kept: result.kept, deleted: result.deleted }, { kept: 2, deleted: 1 });
+  assert.ok(existsSync(join(dir, '2b', `${output}-d`)));
+  assert.ok(!existsSync(join(dir, '3c', `${stale}-d`)));
+});

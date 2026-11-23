@@ -1,97 +1,70 @@
-// Keeps one Actions cache entry per cache name and fails when the entries
-// left pass the budget, so the repository stays under GitHub's 10 GB cap
-// and no cache a job restores is evicted.
+// After a push's jobs saved their caches: retires what each save's own
+// retire could not (scripts/ci-cache.mjs), retires the cache key shapes
+// this pipeline used before its namespace, and fails loudly when the
+// repository's caches pass the budget under GitHub's 10 GB cap, before
+// GitHub starts evicting the caches jobs restore.
 //
 //   node scripts/ci-cache-cleanup.mjs   (CI, a push to main; needs GH_TOKEN
 //                                        with actions: write)
 //
-// A cache key is NAME-VERSION, VERSION being its last dash-separated part:
-// the commit for a Go build cache, a lockfile hash otherwise. Only pushes to
-// main save caches (.github/actions/setup); an entry of any other ref is
-// deleted and named. Of a name's main entries the newest stays: by the
-// commit's place on main when VERSION is a commit, by creation time
-// otherwise. An entry created after this run started also stays, so this
-// run's own saves, or those of a newer run finishing beside it, are never
-// deleted; a later cleanup removes them once superseded.
-import { execFileSync } from 'node:child_process';
+// It deletes only entries in this pipeline's namespace (ci-cache.mjs
+// prefix) and the legacy shapes ci-cache.mjs names. Everything else, such as what
+// another workflow's setup-go saved, is counted and named, never touched.
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { deleteCache, legacyShapes, listCaches, prefix, repositoryAndRun, slotOf, superseded } from './ci-cache.mjs';
 
 // budgetBytes leaves 2 GB of GitHub's 10 GB for the entries a run saves
-// before the cleanup after it deletes the ones they supersede.
+// before their retire, and for caches this pipeline does not own.
 export const budgetBytes = 8e9;
 
-const versionOf = key => key.slice(key.lastIndexOf('-') + 1);
-const nameOf = key => key.slice(0, key.lastIndexOf('-'));
-
-export function plan(caches, mainCommits, runStartedAt, budget = budgetBytes) {
-  const started = Date.parse(runStartedAt);
-  if (Number.isNaN(started)) throw new Error(`run start time is not a time: ${runStartedAt}`);
-  const order = new Map(mainCommits.map((sha, index) => [sha, index]));
+export function plan(caches, runStartedAt, budget = budgetBytes) {
   const remove = [];
   const warnings = [];
-  const groups = new Map();
+  const managed = [];
+  const other = [];
   for (const cache of caches) {
-    if (cache.ref !== 'refs/heads/main') {
+    if (cache.key.startsWith(prefix)) {
+      if (cache.ref !== 'refs/heads/main') {
+        remove.push(cache);
+        warnings.push(`${cache.ref} saved ${cache.key}; only pushes to main save caches`);
+      } else managed.push(cache);
+    } else if (legacyShapes.some(shape => shape.test(cache.key))) {
       remove.push(cache);
-      warnings.push(`${cache.ref} saved ${cache.key}; only pushes to main save caches`);
-      continue;
+    } else {
+      other.push(cache);
     }
-    const name = nameOf(cache.key);
-    if (!groups.has(name)) groups.set(name, []);
-    groups.get(name).push(cache);
   }
-  // newer sorts the newest first: a commit nearer main's head, then the
-  // later creation. A commit main no longer lists sorts after every listed one.
-  const rank = cache => order.get(versionOf(cache.key)) ?? (/^[0-9a-f]{40}$/.test(versionOf(cache.key)) ? Infinity : -1);
-  const newer = (a, b) => (rank(a) - rank(b)) || (Date.parse(b.created_at) - Date.parse(a.created_at));
-  const keep = [];
-  for (const entries of groups.values()) {
-    entries.sort(newer);
-    entries.forEach((cache, index) => {
-      if (index === 0 || Date.parse(cache.created_at) >= started) keep.push(cache);
-      else remove.push(cache);
-    });
+  // A slot keeps its newest entry even when that predates this run (a job
+  // this run skipped saved nothing), and every entry made since the run
+  // started (superseded); the rest are retired.
+  const retired = new Set();
+  for (const slot of new Set(managed.map(cache => slotOf(cache.key)))) {
+    const old = superseded(managed, slot, runStartedAt).sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+    const newer = managed.some(cache => slotOf(cache.key) === slot && !old.includes(cache));
+    for (const cache of newer ? old : old.slice(1)) retired.add(cache);
   }
-  const total = keep.reduce((sum, cache) => sum + cache.size_in_bytes, 0);
-  return { keep, remove, warnings, total, over: total > budget };
+  remove.push(...retired);
+  const keep = managed.filter(cache => !retired.has(cache));
+  const bytes = list => list.reduce((sum, cache) => sum + cache.size_in_bytes, 0);
+  const managedBytes = bytes(keep);
+  const otherBytes = bytes(other);
+  return { keep, other, remove, warnings, managedBytes, otherBytes, over: managedBytes + otherBytes > budget };
 }
 
-const gb = bytes => `${(bytes / 1e9).toFixed(2)} GB`;
-
-function gh(args) {
-  return execFileSync('gh', args, { encoding: 'utf8', maxBuffer: 1 << 26, stdio: ['ignore', 'pipe', 'pipe'] });
-}
+const gb = n => `${(n / 1e9).toFixed(2)} GB`;
 
 function main() {
-  const repository = process.env.GITHUB_REPOSITORY;
-  const run = process.env.GITHUB_RUN_ID;
-  if (!/^[\w.-]+\/[\w.-]+$/.test(repository ?? '') || !/^\d+$/.test(run ?? '')) {
-    throw new Error('needs GITHUB_REPOSITORY and GITHUB_RUN_ID');
-  }
-  const caches = gh(['api', '--paginate', `repos/${repository}/actions/caches?per_page=100`, '--jq', '.actions_caches[]'])
-    .split('\n').filter(Boolean).map(line => JSON.parse(line));
-  const commits = gh(['api', `repos/${repository}/commits?sha=main&per_page=100`, '--jq', '.[].sha']).split('\n').filter(Boolean);
-  const startedAt = gh(['api', `repos/${repository}/actions/runs/${run}`, '--jq', '.run_started_at']).trim();
-  const result = plan(caches, commits, startedAt);
+  const { repository, startedAt } = repositoryAndRun();
+  const result = plan(listCaches(repository), startedAt);
   for (const warning of result.warnings) console.log(`::warning title=Cache saved outside main::${warning}`);
-  for (const cache of result.remove) {
-    try {
-      gh(['api', '-X', 'DELETE', `repos/${repository}/actions/caches/${cache.id}`]);
-      console.log(`deleted ${cache.key} (${gb(cache.size_in_bytes)}, ${cache.ref})`);
-    } catch (error) {
-      // A cleanup finishing beside this one may have deleted it first.
-      if (!String(error.stderr).includes('HTTP 404')) throw new Error(`delete ${cache.key}: ${error.stderr || error.message}`);
-      console.log(`already gone: ${cache.key}`);
-    }
-  }
-  for (const cache of result.keep.sort((a, b) => b.size_in_bytes - a.size_in_bytes)) {
-    console.log(`kept ${cache.key} (${gb(cache.size_in_bytes)})`);
-  }
-  console.log(`ci-cache-cleanup: ${result.keep.length} entries, ${gb(result.total)} of the ${gb(budgetBytes)} budget`);
+  for (const cache of result.remove) deleteCache(repository, cache);
+  for (const cache of result.keep.sort((a, b) => b.size_in_bytes - a.size_in_bytes)) console.log(`kept ${cache.key} (${gb(cache.size_in_bytes)})`);
+  for (const cache of result.other) console.log(`not this pipeline's: ${cache.key} (${gb(cache.size_in_bytes)}, ${cache.ref})`);
+  console.log(`ci-cache-cleanup: this pipeline's ${result.keep.length} entries hold ${gb(result.managedBytes)}, other caches ${gb(result.otherBytes)}, of the ${gb(budgetBytes)} budget`);
   if (result.over) {
-    throw new Error(`the caches total ${gb(result.total)}, over the ${gb(budgetBytes)} budget under GitHub's 10 GB cap; ` +
-      'shrink the largest slots above or drop a slot before GitHub starts evicting the caches jobs restore');
+    throw new Error(`the caches total ${gb(result.managedBytes + result.otherBytes)} (this pipeline's ${gb(result.managedBytes)}, others ${gb(result.otherBytes)}), over the ${gb(budgetBytes)} budget under GitHub's 10 GB cap; ` +
+      'shrink the largest slots above, drop a slot, or remove the other caches before GitHub starts evicting the caches jobs restore');
   }
 }
 

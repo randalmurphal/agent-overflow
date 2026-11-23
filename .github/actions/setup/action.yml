@@ -20,7 +20,7 @@ inputs:
     description: Install frontend dependencies (frontend/).
     default: "false"
   frontend-dist:
-    description: Build frontend/dist, which the Go root package embeds; Go builds, vet and tests need it.
+    description: Provide frontend/dist, which the Go root package embeds, for a job that compiles the root package; restored when a push to main built the same frontend/ tree, built otherwise.
     default: "false"
   e2e-deps:
     description: Install e2e dependencies (e2e/).
@@ -83,142 +83,108 @@ runs:
         go-version-file: go.mod
         cache: false
 
-    # Every cache this action restores follows one rule: every job restores,
-    # and only a push to main saves, through .github/actions/cache-save as
-    # the job's last step. A pull request's own save could serve only that
-    # pull request, and its size would push main's caches out of GitHub's
-    # 10 GB. Each step records its key in the environment for that save.
-    - name: Restore the Go module cache
-      if: inputs.go == 'true' && steps.image.outputs.baked != 'true'
-      id: go-mod
-      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      with:
-        path: ~/go/pkg/mod
-        key: go-mod-${{ runner.os }}-${{ hashFiles('go.sum') }}
-        restore-keys: |
-          go-mod-${{ runner.os }}-
-
-    - name: Record the Go module cache
-      if: inputs.go == 'true' && steps.image.outputs.baked != 'true'
-      shell: bash
-      env:
-        KEY: go-mod-${{ runner.os }}-${{ hashFiles('go.sum') }}
-        HIT: ${{ steps.go-mod.outputs.cache-hit }}
-      run: |
-        {
-          echo "AO_GO_MOD_KEY=$KEY"
-          echo "AO_GO_MOD_PATH=$HOME/go/pkg/mod"
-          echo "AO_GO_MOD_HIT=$HIT"
-        } >> "$GITHUB_ENV"
-
-    # The build cache holds compiled packages and passed test results, so a
-    # warm job rebuilds and retests only what a change touched. Its path
-    # differs per OS (Library/Caches on macOS). A slot's key ends in the
-    # commit; a job restores the newest main entry of its slot.
-    - name: Locate the Go build cache
-      if: inputs.go == 'true'
-      id: go-cache
-      shell: bash
-      env:
-        KEY: go-build-${{ inputs.cache-name }}-${{ runner.os }}-${{ github.sha }}
-      run: |
-        go version
-        path=$(go env GOCACHE)
-        echo "path=$path" >> "$GITHUB_OUTPUT"
-        {
-          echo "AO_GO_CACHE_KEY=$KEY"
-          echo "AO_GO_CACHE_PATH=$path"
-        } >> "$GITHUB_ENV"
-
-    - name: Restore the Go build cache
-      if: inputs.go == 'true'
-      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      with:
-        path: ${{ steps.go-cache.outputs.path }}
-        key: go-build-${{ inputs.cache-name }}-${{ runner.os }}-${{ github.sha }}
-        restore-keys: |
-          go-build-${{ inputs.cache-name }}-${{ runner.os }}-
-
     - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       if: inputs.node == 'true' && steps.image.outputs.baked != 'true'
 
     # setup-node's own pnpm cache saves on every event, so the store is
-    # cached here under the one rule instead.
+    # cached below under the one rule instead.
     - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
       if: inputs.node == 'true' && steps.image.outputs.baked != 'true'
       with:
         node-version-file: frontend/package.json
 
-    - name: Locate the pnpm store
-      if: inputs.node == 'true' && steps.image.outputs.baked != 'true'
-      id: pnpm-store
+    # Every cache this action restores follows one rule: every job restores,
+    # and only a push to main saves, through .github/actions/cache-save as
+    # the job's last step. A pull request's own save could serve only that
+    # pull request, and its size would push main's caches out of GitHub's
+    # 10 GB. scripts/ci-cache.mjs names each cache's key, restore prefix and
+    # path once, into AO_CACHE_<NAME>_KEY, _RESTORE and _PATH, which the
+    # restores here and the saves read. The image carries the module cache
+    # and the pnpm store, so only a job off it caches them.
+    - name: Name the caches
       shell: bash
       env:
-        KEY: pnpm-store-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml', 'e2e/pnpm-lock.yaml') }}
+        GO_BUILD: ${{ inputs.go == 'true' && inputs.cache-name || '' }}
+        GO_MOD: ${{ inputs.go == 'true' && steps.image.outputs.baked != 'true' }}
+        PNPM: ${{ inputs.node == 'true' && steps.image.outputs.baked != 'true' }}
+        FRONTEND_DIST: ${{ inputs.frontend-dist == 'true' }}
       run: |
-        path=$(pnpm --dir frontend store path)
-        echo "path=$path" >> "$GITHUB_OUTPUT"
-        {
-          echo "AO_PNPM_STORE_KEY=$KEY"
-          echo "AO_PNPM_STORE_PATH=$path"
-        } >> "$GITHUB_ENV"
+        set -euo pipefail
+        flags=()
+        if [[ -n "$GO_BUILD" ]]; then flags+=(--go-build "$GO_BUILD"); fi
+        if [[ "$GO_MOD" == true ]]; then flags+=(--go-mod); fi
+        if [[ "$PNPM" == true ]]; then flags+=(--pnpm); fi
+        if [[ "$FRONTEND_DIST" == true ]]; then flags+=(--frontend-dist); fi
+        if [[ ${#flags[@]} -gt 0 ]]; then node scripts/ci-cache.mjs name "${flags[@]}"; fi
+
+    - name: Restore the Go module cache
+      if: env.AO_CACHE_GO_MOD_KEY != ''
+      id: go-mod
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ env.AO_CACHE_GO_MOD_PATH }}
+        key: ${{ env.AO_CACHE_GO_MOD_KEY }}
+        restore-keys: ${{ env.AO_CACHE_GO_MOD_RESTORE }}
+
+    # The build cache holds compiled packages and passed test results, so a
+    # warm job rebuilds and retests only what a change touched. A slot's key
+    # ends in the commit; a job restores the newest main entry of its slot.
+    - name: Restore the Go build cache
+      if: env.AO_CACHE_GO_BUILD_KEY != ''
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ env.AO_CACHE_GO_BUILD_PATH }}
+        key: ${{ env.AO_CACHE_GO_BUILD_KEY }}
+        restore-keys: ${{ env.AO_CACHE_GO_BUILD_RESTORE }}
 
     - name: Restore the pnpm store
-      if: inputs.node == 'true' && steps.image.outputs.baked != 'true'
+      if: env.AO_CACHE_PNPM_KEY != ''
       id: pnpm-restore
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
-        path: ${{ steps.pnpm-store.outputs.path }}
-        key: pnpm-store-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml', 'e2e/pnpm-lock.yaml') }}
-        restore-keys: |
-          pnpm-store-${{ runner.os }}-
+        path: ${{ env.AO_CACHE_PNPM_PATH }}
+        key: ${{ env.AO_CACHE_PNPM_KEY }}
+        restore-keys: ${{ env.AO_CACHE_PNPM_RESTORE }}
 
-    - name: Record the pnpm store
-      if: inputs.node == 'true' && steps.image.outputs.baked != 'true'
+    # The bundle is a function of frontend/ alone, so it is restored only
+    # for the exact git tree of frontend/ that a push to main built. When
+    # this job's frontend/ matches one, the job skips the install and the
+    # build; otherwise it builds as before.
+    - name: Restore the frontend bundle
+      if: env.AO_CACHE_FRONTEND_DIST_KEY != ''
+      id: frontend-dist
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ env.AO_CACHE_FRONTEND_DIST_PATH }}
+        key: ${{ env.AO_CACHE_FRONTEND_DIST_KEY }}
+
+    # The save skips a cache whose exact key this job restored.
+    - name: Record the exact cache hits
       shell: bash
       env:
-        HIT: ${{ steps.pnpm-restore.outputs.cache-hit }}
-      run: echo "AO_PNPM_STORE_HIT=$HIT" >> "$GITHUB_ENV"
+        GO_MOD: ${{ steps.go-mod.outputs.cache-hit }}
+        PNPM: ${{ steps.pnpm-restore.outputs.cache-hit }}
+        FRONTEND_DIST: ${{ steps.frontend-dist.outputs.cache-hit }}
+      run: |
+        {
+          echo "AO_CACHE_GO_MOD_HIT=$GO_MOD"
+          echo "AO_CACHE_PNPM_HIT=$PNPM"
+          echo "AO_CACHE_FRONTEND_DIST_HIT=$FRONTEND_DIST"
+        } >> "$GITHUB_ENV"
 
     # A push saves only the build cache entries the job used
     # (scripts/ci-go-cache.mjs): restored entries are set two hours back
     # here, and the save deletes the ones Go did not refresh.
     - name: Age the restored Go build cache
-      if: inputs.go == 'true' && github.event_name == 'push'
+      if: env.AO_CACHE_GO_BUILD_KEY != '' && github.event_name == 'push'
       shell: bash
-      env:
-        CACHE: ${{ steps.go-cache.outputs.path }}
       run: |
-        mkdir -p "$CACHE"
-        node scripts/ci-go-cache.mjs backdate "$CACHE" "$RUNNER_TEMP/go-cache-state.json"
+        mkdir -p "$AO_CACHE_GO_BUILD_PATH"
+        node scripts/ci-go-cache.mjs backdate "$AO_CACHE_GO_BUILD_PATH" "$RUNNER_TEMP/go-cache-state.json"
 
     # pnpm switches itself to the packageManager pin, so a bumped pin still
     # installs in the image; the baked store answers what the lockfile
     # names and the registry supplies the rest.
-    # The bundle depends only on frontend/ (its sources, bindings, config
-    # and lockfile), so it is restored by an exact hash of that tree and
-    # built, with its dependencies, only when no main run built the same
-    # tree. A change outside frontend/ then installs and builds nothing.
-    - name: Restore the frontend bundle
-      if: inputs.frontend-dist == 'true'
-      id: frontend-dist
-      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      with:
-        path: frontend/dist
-        key: frontend-dist-${{ runner.os }}-${{ hashFiles('frontend/**', '!frontend/node_modules/**', '!frontend/dist/**') }}
-
-    - name: Record the frontend bundle
-      if: inputs.frontend-dist == 'true'
-      shell: bash
-      env:
-        KEY: frontend-dist-${{ runner.os }}-${{ hashFiles('frontend/**', '!frontend/node_modules/**', '!frontend/dist/**') }}
-        HIT: ${{ steps.frontend-dist.outputs.cache-hit }}
-      run: |
-        {
-          echo "AO_FRONTEND_DIST_KEY=$KEY"
-          echo "AO_FRONTEND_DIST_HIT=$HIT"
-        } >> "$GITHUB_ENV"
-
     - name: Install frontend dependencies
       if: inputs.frontend-deps == 'true' || (inputs.frontend-dist == 'true' && steps.frontend-dist.outputs.cache-hit != 'true')
       shell: bash

@@ -10,7 +10,8 @@
 // and the entry count in STATE; prune then deletes the entries still at
 // that time, the ones this run did not use. An entry is a file or directory
 // ending -a or -d in one of the cache's two-hex-digit directories; the
-// cache's own top-level files stay.
+// cache's own top-level files stay, and so does every output a kept index
+// record names.
 //
 // If not one restored entry was refreshed although the run used the cache,
 // Go no longer refreshes as this relies on: prune then keeps everything and
@@ -49,18 +50,30 @@ export function backdate(cache, now = Date.now() / 1000) {
   return { time, entries: all.length };
 }
 
+// outputOf reads the output an index record (-a) names: Go writes
+// "v1 ACTION OUTPUT SIZE TIME" and keeps the output as OUTPUT-d.
+export function outputOf(cache, record) {
+  const fields = readFileSync(record, 'utf8').split(' ');
+  if (fields[0] !== 'v1' || !/^[0-9a-f]{64}$/.test(fields[2] ?? '')) return undefined;
+  return join(cache, fields[2].slice(0, 2), `${fields[2]}-d`);
+}
+
 export function prune(cache, state) {
   let unused = [];
-  let kept = 0;
-  let keptBytes = 0;
+  const used = [];
   for (const path of entries(cache)) {
     if (lstatSync(path).mtimeMs / 1000 <= state.time) unused.push(path);
-    else {
-      kept++;
-      keptBytes += bytes(path);
-    }
+    else used.push(path);
   }
   const refreshed = state.entries - unused.length;
+  // Go writes a fresh index record for an output it already has without
+  // touching the output, so an output a kept record names stays however
+  // old it looks.
+  const named = new Set(used.filter(path => path.endsWith('-a')).map(path => outputOf(cache, path)));
+  const rescued = unused.filter(path => named.has(path));
+  unused = unused.filter(path => !named.has(path));
+  const kept = used.length + rescued.length;
+  const keptBytes = [...used, ...rescued].reduce((sum, path) => sum + bytes(path), 0);
   const unusedBytes = unused.reduce((sum, path) => sum + bytes(path), 0);
   if (state.entries > 0 && refreshed <= 0) {
     return { kept: kept + unused.length, keptBytes: keptBytes + unusedBytes, deleted: 0, deletedBytes: 0, keptAll: true };
