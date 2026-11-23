@@ -48,8 +48,13 @@ func genCrossing(t *testing.T, tick, rename bool) {
 	var board1 BoardSubscription
 	if rename {
 		// The board's pump and the ticket's exist before the run: a rename
-		// makes none.
+		// makes none. The pump's first tick has run once a refresh it serves
+		// after it returned: a first tick still to run would read the
+		// tracker state the run is given and store its change first.
 		board1 = f.subscribe(t, testBoard)
+		if err := f.svc.RefreshSubscription(ctx, board1.ID); err != nil {
+			t.Fatal(err)
+		}
 		must[TicketSubscription](t)(f.svc.SubscribeTicket(f.conn.ID, "10001"))
 		f.events.issueEvents(t, 1)
 		f.settledTickets(t)

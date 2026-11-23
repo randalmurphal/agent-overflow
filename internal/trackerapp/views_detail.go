@@ -334,8 +334,12 @@ func (s *Service) detailViews(root int64, row store.TrackerConnection, docs []ti
 	shown := make([]shownDetail, len(docs))
 	var later idSet
 	for i, doc := range docs {
-		shown[i] = shownDetailOf(doc, wants[i], mirrored)
-		if p := string(shown[i].d.Card.Parent); p != "" && !slices.Contains(wants[i], p) {
+		// The parent shown is the record's card's, when the mirror keeps one.
+		p := string(doc.d.Card.Parent)
+		if m, ok := mirrored[string(doc.d.Card.ID)]; ok {
+			p = m.ParentID
+		}
+		if p != "" && !slices.Contains(wants[i], p) {
 			wants[i] = append(wants[i], p)
 			if !all.seen[p] {
 				later.add(p)

@@ -153,6 +153,24 @@ const (
 // errTooLong is a walk listAll cut short at its page bound.
 var errTooLong = errors.New("linearprovider: the list is longer than its bound")
 
+// ruleFilter is the filter of the team's issues rule lists: every issue
+// of the team for the zero rule.
+func ruleFilter(team tracker.BoardID, rule tracker.Eligibility) linear.IssueFilter {
+	filter := linear.IssueFilter{Teams: []string{string(team)}}
+	if rule.Window.IsZero() && len(rule.Sprints) == 0 {
+		return filter
+	}
+	filter.AnyOf = []linear.IssueFilter{{StateTypes: openStateTypes}, {UpdatedSince: rule.Window}}
+	if len(rule.Sprints) > 0 {
+		ids := make([]string, len(rule.Sprints))
+		for i, c := range rule.Sprints {
+			ids[i] = string(c)
+		}
+		filter.AnyOf = append(filter.AnyOf, linear.IssueFilter{Cycle: linear.Match{IDs: ids}})
+	}
+	return filter
+}
+
 // BoardIssues lists the team's issues that are open (triage, backlog,
 // unstarted or started), updated at or after window (a superset of
 // those completed or canceled since), or in a cycle Structure keeps,
@@ -167,26 +185,22 @@ func (p *Provider) BoardIssues(ctx context.Context, b tracker.BoardID, window ti
 	if b == "" {
 		return tracker.Listing{}, fmt.Errorf("linearprovider: board issues: %w: no board named", tracker.ErrInvalidInput)
 	}
-	filter := linear.IssueFilter{Teams: []string{string(b)}}
+	var rule tracker.Eligibility
 	if !window.IsZero() {
 		cycles, err := p.keptCycles(ctx, string(b), window)
 		if err != nil {
 			return tracker.Listing{}, err
 		}
-		filter.AnyOf = []linear.IssueFilter{{StateTypes: openStateTypes}, {UpdatedSince: window}}
-		if len(cycles) > 0 {
-			ids := make([]string, 0, len(cycles))
-			for _, c := range cycles {
-				ids = append(ids, string(c.ID))
-			}
-			filter.AnyOf = append(filter.AnyOf, linear.IssueFilter{Cycle: linear.Match{IDs: ids}})
+		rule.Window = window
+		for _, c := range cycles {
+			rule.Sprints = append(rule.Sprints, c.ID)
 		}
 	}
-	q := linear.IssueQuery{Filter: filter, Order: linear.OrderCreatedOldest, Limit: listingPage}
+	q := linear.IssueQuery{Filter: ruleFilter(b, rule), Order: linear.OrderCreatedOldest, Limit: listingPage}
 	issues, err := walk(ctx, func(ctx context.Context, after string) (linear.Page[linear.IssuePosition], error) {
 		return p.c.ListIssuePositions(ctx, q, after)
 	}, listingPages)
-	out := tracker.Listing{Complete: true}
+	out := tracker.Listing{Complete: true, Rule: rule}
 	if errors.Is(err, errTooLong) {
 		out.Complete = false
 	} else if err != nil {

@@ -49,9 +49,9 @@ type MirrorBody struct {
 	// identity ConfirmMirrorBody matches.
 	digest []byte
 	Card   MirrorCard
-	// row and sweep name the body for ConfirmMirrorBody: the root's sweep
-	// when it was read.
-	sweep int64
+	// root and sweep name the body for ConfirmMirrorBody: the root it was
+	// read from and that root's sweep when it was read.
+	root, sweep int64
 }
 
 // MirrorTicket is one ticket as a read found it: its card, its body (nil
@@ -125,8 +125,10 @@ type MirrorTicketsWrite struct {
 // refuses the card (mirrorCardRefusedSQL) or admits it from an earlier
 // read (mirrorCardAdvancesSQL), and whether the card names other sprints
 // (mirrorCardSprintsMovedSQL); the record's update time and status time
-// with its finality; its body's bookkeeping; and the earliest bind of an
-// open ticket of the issue (keepOpened, an order time, zero for none).
+// with its finality; its body's bookkeeping; and the latest bind of an
+// open ticket of the issue (keepOpened, an order time, zero for none): the
+// live lifetime's, as a closing pump's keep may stand beside the bind of
+// the ticket opened again.
 type mirrorCardState struct {
 	kept, present, refused, advances bool
 	sprintsMoved                     bool
@@ -144,7 +146,7 @@ var mirrorCardStatesSQL = `SELECT c.key, ` + mirrorIssueKept("?1", "c.value ->> 
 	    coalesce(i.updated_at, 0), coalesce(i.status_since, 0), coalesce(i.status_final_for, 0),
 	    coalesce(i.body_updated_at, 0), coalesce(i.body_read_at, 0), coalesce(i.body_wall, 0), coalesce(i.body_opened_at, 0),
 	    coalesce(i.body_digest, x''),
-	    coalesce((SELECT min(o.opened_at) FROM tracker_cache_open_tickets o WHERE o.root_id = ?1 AND o.issue_id = c.value ->> 'i'), 0)
+	    coalesce((SELECT max(o.opened_at) FROM tracker_cache_open_tickets o WHERE o.root_id = ?1 AND o.issue_id = c.value ->> 'i'), 0)
 	FROM json_each(?2) c LEFT JOIN tracker_cache_issues i ON i.root_id = ?1 AND i.issue_id = c.value ->> 'i'`
 
 // readMirrorCardStatesTx reads the state of each of n encoded cards read
@@ -422,6 +424,13 @@ func (s *Store) StoreMirrorTickets(rootID, sweep int64, tickets []MirrorTicket, 
 			if t.Status != nil && !st.refused {
 				var r mirrorStatusResult
 				r, m.S = mirrorStatusSince(*t.Status)
+				// A body superseded is of a read older than the one whose body
+				// the record holds, which brought its own evidence: a
+				// provisional result of the older read would replace that
+				// read's, so it gives none. A final one still decides.
+				if r == mirrorStatusProvisional && w.Body == MirrorBodySuperseded {
+					r, m.S = 0, 0
+				}
 				m.X, m.V, m.T = int(r), t.Card.UpdatedAt, t.Status.Status
 			}
 			moves = append(moves, m)
@@ -518,7 +527,7 @@ func (s *Store) StoreMirrorTickets(rootID, sweep int64, tickets []MirrorTicket, 
 // GetMirrorBody reads the body the record of an issue the mirror keeps
 // holds, if any, with the record's card, in one statement.
 func (s *Store) GetMirrorBody(rootID int64, issueID string) (MirrorBody, bool, error) {
-	b := MirrorBody{IssueID: issueID}
+	b := MirrorBody{IssueID: issueID, root: rootID}
 	var err error
 	b.Card, err = scanMirrorCard(s.reader().QueryRow(`SELECT `+mirrorCardColumns+`,
 		    r.sweep, i.body_updated_at, i.body_read_at, i.body_wall, i.body_opened_at, i.body_digest, d.data
@@ -537,8 +546,9 @@ func (s *Store) GetMirrorBody(rootID int64, issueID string) (MirrorBody, bool, e
 }
 
 // ConfirmMirrorBody records a person's opening (only forward) of b, a body
-// GetMirrorBody read, when the record still holds it: the body of the same
-// identity (its version, read, wall time and digest), of an issue the
+// GetMirrorBody read from rootID (another root's body is refused,
+// ErrInvalidTrackerCache), when the record still holds it: the body of the
+// same identity (its version, read, wall time and digest), of an issue the
 // mirror keeps, with no sweep since b was read. It
 // reports the confirmation; unconfirmed, nothing is written and the caller
 // reads the body again rather than show b, which may predate a sweep. It
@@ -552,6 +562,9 @@ func (s *Store) ConfirmMirrorBody(rootID int64, b MirrorBody, opened MirrorRead)
 	}
 	if b.IssueID == "" || b.sweep <= 0 || b.ReadAt <= 0 || opening.at <= 0 {
 		return false, fmt.Errorf("%w: a confirmation needs a body GetMirrorBody read and the time it was opened", ErrInvalidTrackerCache)
+	}
+	if b.root != rootID {
+		return false, fmt.Errorf("%w: a body read from tracker mirror %d confirmed in %d", ErrInvalidTrackerCache, b.root, rootID)
 	}
 	action := fmt.Sprintf("store: confirm tracker mirror %d issue %s body", rootID, b.IssueID)
 	held := `root_id = ?1 AND issue_id = ?2 AND body_read_at = ?3 AND body_updated_at = ?5 AND body_wall = ?6 AND body_digest = ?7 AND ` +

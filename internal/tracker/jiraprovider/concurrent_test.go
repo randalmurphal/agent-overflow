@@ -43,7 +43,7 @@ func TestConcurrentUse(t *testing.T) {
 				}
 				errs <- err
 			case 2:
-				rows, err := p.BoardRows(t.Context(), "4", []tracker.IssueID{"10001"})
+				rows, err := p.BoardRows(t.Context(), "4", []tracker.IssueID{"10001"}, tracker.Eligibility{})
 				if err == nil && (len(rows.Rows) != 1 || *rows.Rows[0].Estimate != 7200) {
 					err = errors.New("a row read through the wrong board")
 				}

@@ -153,6 +153,9 @@ func (r *run) reconcile(board tracker.BoardID) (UnitResult, error) {
 type reconcilePass struct {
 	lifetime int64
 	left     []tracker.IssueID
+	// rule is what the pass's listing listed by, which the reads by ID
+	// of its candidates judge by too (tracker.Listing.Rule).
+	rule tracker.Eligibility
 }
 
 // openIn reports whether p is open in board lifetime lifetime.
@@ -184,10 +187,11 @@ func (r *run) reconcileReads(board tracker.BoardID, pass *reconcilePass, log *ch
 			return fmt.Errorf("trackerapp: reconcile board %s: %w", board, err)
 		}
 		pass.left = append(issueIDsInOrder(result.Missing), issueIDsInOrder(result.Unsettled)...)
+		pass.rule = listing.Rule
 	}
 	for i := 0; i < reconcileBatches && len(pass.left) > 0; i++ {
 		batch := pass.left[:min(readBatch, len(pass.left))]
-		ch, _, unread, err := r.boardRows(board, batch)
+		ch, _, unread, err := r.boardRows(board, batch, pass.rule)
 		log.add(ch)
 		if err != nil {
 			// The batch's issues a stored write settled were attempted; the

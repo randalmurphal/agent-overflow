@@ -511,8 +511,13 @@ func TestOpeningAndClosingATicketKeepCosts(t *testing.T) {
 			cs := newCountingStore(s.st)
 			s.svc.store = cs
 			sub := s.openTicket(t, conn, issue)
-			if n := cs.take()["KeepMirrorTicket"]; n != 1 {
-				t.Fatalf("the opening kept the issue %d times; want 1", n)
+			// The opening's first read stores the ticket and builds its view
+			// once: its own write, which no change the funnel let pass the
+			// pump follows, builds no second view.
+			quiet(t, s.svc)
+			const want = "GetMirrorBody:2 GetMirrorCatalog:1 GetMirrorRoot:1 GetMirrorSync:1 KeepMirrorTicket:1 ListMirrorCards:1 StoreMirrorTickets:1"
+			if got := describeCounts(cs.take()); got != want {
+				t.Fatalf("the opening cost %s; want %s", got, want)
 			}
 			s.closeTicket(t, conn, sub, issue)
 			if got := describeCounts(cs.take()); got != "DropMirrorTicket:1" {

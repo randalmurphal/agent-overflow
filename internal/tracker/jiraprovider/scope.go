@@ -38,7 +38,7 @@ import (
 func (p *Provider) onBoard(ctx context.Context, b board, ids []tracker.IssueID, fields ...string) (map[tracker.IssueID]*jira.Issue, error) {
 	listed := map[tracker.IssueID]*jira.Issue{}
 	for chunk := range slices.Chunk(distinct(ids), idChunk) {
-		list, err := p.listByID(ctx, b, chunk, append([]string{"status"}, fields...))
+		list, err := p.listByID(ctx, b, chunk, append([]string{"status"}, fields...), tracker.Eligibility{})
 		if err != nil {
 			return nil, fmt.Errorf("jiraprovider: which issues board %s lists: %w", b.id, err)
 		}

@@ -160,9 +160,10 @@ func (s *Store) writeIdenticalHistory(rootID, sweep int64, in mirrorHistoryInput
 }
 
 // writeStagedHistory writes in over the issue's stored history st, in
-// place or staged; a staged one fails with errStaleReceipt at the switch,
-// leaving its staged changes for the caller to delete, when the issue's
-// receipt moved since st was read.
+// place or staged; either fails with errStaleReceipt when the issue's
+// receipt moved since st was read: in place before it writes anything, a
+// staged one at the switch, leaving its staged changes for the caller to
+// delete.
 func (s *Store) writeStagedHistory(rootID int64, in mirrorHistoryInput, st mirrorHistoryState, action string) error {
 	if st.storedFor == 0 {
 		// No history is stored, so none of it can be kept in place.
@@ -249,9 +250,10 @@ func (s *Store) probeMirrorHistory(rootID int64, in mirrorHistoryInput, gen int6
 // finishMirrorHistoryInPlace adds the missing changes of a history whose
 // stored changes it otherwise holds, writes its times, advances the
 // issue's receipt and clears history_dirty, in one transaction; what it
-// writes is encoded before. It runs right after the admission that
-// followed the staging mark, with the cleanup's lock, so no write moved
-// the receipt since.
+// writes is encoded before. It runs after the admission that followed the
+// staging mark, with the cleanup's lock, so no history write moved the
+// receipt since; a card write may have (mirrorStatusKeptBy), and the
+// transaction then fails with errStaleReceipt before it writes.
 func (s *Store) finishMirrorHistoryInPlace(rootID int64, in mirrorHistoryInput, st mirrorHistoryState, missing []mirrorChangeRow, action string) error {
 	rows, err := encodeMirrorJSON(missing)
 	if err != nil {
@@ -265,6 +267,13 @@ func (s *Store) finishMirrorHistoryInPlace(rootID int64, in mirrorHistoryInput, 
 		return err
 	}
 	return s.mirrorWrite(rootID, action, func(tx *sql.Tx) error {
+		var receipt int64
+		if err := tx.QueryRow(`SELECT history_receipt FROM tracker_cache_issues WHERE root_id = ?1 AND issue_id = ?2`, rootID, in.h.IssueID).Scan(&receipt); err != nil {
+			return fmt.Errorf("read the receipt: %w", err)
+		}
+		if receipt != st.receipt {
+			return errStaleReceipt
+		}
 		if len(missing) > 0 {
 			if _, err := tx.Exec(mirrorChangesUpsertSQL, rootID, rows); err != nil {
 				return fmt.Errorf("add changes: %w", err)

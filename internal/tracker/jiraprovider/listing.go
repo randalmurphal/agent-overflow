@@ -45,40 +45,62 @@ func (p *Provider) BoardIssues(ctx context.Context, id tracker.BoardID, window t
 	if err != nil {
 		return tracker.Listing{}, err
 	}
-	res, err := p.listBoard(ctx, b, window)
+	res, rule, err := p.listBoard(ctx, b, window)
 	if isStatus(err, http.StatusBadRequest) && b.cfg.Type == jira.BoardScrum {
 		p.jira.ForgetBoard(b.cfg.BoardID)
 		if b, err = p.board(ctx, id); err == nil {
-			res, err = p.listBoard(ctx, b, window)
+			res, rule, err = p.listBoard(ctx, b, window)
 		}
 	}
 	if err != nil {
 		return tracker.Listing{}, fmt.Errorf("jiraprovider: issues of board %s: %w", id, err)
 	}
-	out := tracker.Listing{IDs: make([]tracker.IssueID, len(res.Issues)), Complete: res.Complete}
+	out := tracker.Listing{IDs: make([]tracker.IssueID, len(res.Issues)), Complete: res.Complete, Rule: rule}
 	for i, is := range res.Issues {
 		out.IDs[i] = tracker.IssueID(is.ID)
 	}
 	return out, nil
 }
 
-// listBoard lists the IDs of BoardIssues.
-func (p *Provider) listBoard(ctx context.Context, b board, window time.Time) (jira.SearchResult, error) {
-	jql := "statusCategory != Done OR updated >= " + strconv.FormatInt(window.UnixMilli(), 10)
+// listBoard lists the IDs of BoardIssues, and the rule it listed by.
+func (p *Provider) listBoard(ctx context.Context, b board, window time.Time) (jira.SearchResult, tracker.Eligibility, error) {
+	rule := tracker.Eligibility{Window: window}
 	if b.cfg.Type == jira.BoardScrum {
 		sprints, err := p.sprints(ctx, b.id, b.cfg.BoardID, window, false)
 		if err != nil {
-			return jira.SearchResult{}, err
+			return jira.SearchResult{}, rule, err
 		}
-		if len(sprints) > 0 {
-			ids := make([]string, len(sprints))
-			for i, s := range sprints {
-				ids[i] = string(s.ID) // decimal, written by sprints
-			}
-			jql += " OR sprint in (" + strings.Join(ids, ", ") + ")"
+		for _, s := range sprints {
+			rule.Sprints = append(rule.Sprints, s.ID)
 		}
 	}
-	return p.jira.ListAllIssues(ctx, jira.ListQuery{List: jira.BoardIssues(b.cfg.BoardID), JQL: jql, Fields: []string{"id"}, MaxResults: idListPage}, 0)
+	res, err := p.jira.ListAllIssues(ctx, jira.ListQuery{List: jira.BoardIssues(b.cfg.BoardID), JQL: ruleJQL(rule), Fields: []string{"id"}, MaxResults: idListPage}, 0)
+	return res, rule, err
+}
+
+// ruleJQL is the JQL of rule, empty for the zero rule. Its sprint IDs are
+// decimal, as sprints writes them.
+func ruleJQL(rule tracker.Eligibility) string {
+	if rule.Window.IsZero() && len(rule.Sprints) == 0 {
+		return ""
+	}
+	jql := "statusCategory != Done OR updated >= " + strconv.FormatInt(rule.Window.UnixMilli(), 10)
+	if len(rule.Sprints) > 0 {
+		ids := make([]string, len(rule.Sprints))
+		for i, s := range rule.Sprints {
+			ids[i] = string(s)
+		}
+		jql += " OR sprint in (" + strings.Join(ids, ", ") + ")"
+	}
+	return jql
+}
+
+// andRule is jql narrowed to what rule lists.
+func andRule(jql string, rule tracker.Eligibility) string {
+	if r := ruleJQL(rule); r != "" {
+		return "(" + jql + ") AND (" + r + ")"
+	}
+	return jql
 }
 
 // BoardRows reads issues through board, idChunk to a request, each with
@@ -95,20 +117,20 @@ func (p *Provider) listBoard(ctx context.Context, b board, window time.Time) (ji
 // since), the configuration is read again and the rows once more; a board
 // still unjudged fails the read, so that no issue reads as Missing on
 // the list's word alone.
-func (p *Provider) BoardRows(ctx context.Context, id tracker.BoardID, issues []tracker.IssueID) (tracker.Rows, error) {
+func (p *Provider) BoardRows(ctx context.Context, id tracker.BoardID, issues []tracker.IssueID, rule tracker.Eligibility) (tracker.Rows, error) {
 	if err := checkIssues(issues); err != nil {
 		return tracker.Rows{}, err
 	}
-	out, err := p.boardRows(ctx, id, issues)
+	out, err := p.boardRows(ctx, id, issues, rule)
 	if n, unjudged := isUnjudged(err); unjudged {
 		p.jira.ForgetBoard(n)
-		out, err = p.boardRows(ctx, id, issues)
+		out, err = p.boardRows(ctx, id, issues, rule)
 	}
 	return out, err
 }
 
 // boardRows is BoardRows under the board configuration the client holds.
-func (p *Provider) boardRows(ctx context.Context, id tracker.BoardID, issues []tracker.IssueID) (tracker.Rows, error) {
+func (p *Provider) boardRows(ctx context.Context, id tracker.BoardID, issues []tracker.IssueID, rule tracker.Eligibility) (tracker.Rows, error) {
 	b, err := p.board(ctx, id)
 	if err != nil {
 		return tracker.Rows{}, err
@@ -121,7 +143,7 @@ func (p *Provider) boardRows(ctx context.Context, id tracker.BoardID, issues []t
 	var out tracker.Rows
 	found := map[tracker.IssueID]bool{}
 	for chunk := range slices.Chunk(distinct(issues), idChunk) {
-		list, err := p.listByID(ctx, b, chunk, b.rowFields(s))
+		list, err := p.listByID(ctx, b, chunk, b.rowFields(s), rule)
 		if err != nil {
 			return tracker.Rows{}, fmt.Errorf("jiraprovider: rows of board %s: %w", id, err)
 		}
@@ -137,7 +159,7 @@ func (p *Provider) boardRows(ctx context.Context, id tracker.BoardID, issues []t
 		}
 	}
 	if gone := missing(issues, found); len(gone) > 0 {
-		held, err := p.confirmMissing(ctx, b, s, gone, cat)
+		held, err := p.confirmMissing(ctx, b, s, gone, rule, cat)
 		if err != nil {
 			return tracker.Rows{}, fmt.Errorf("jiraprovider: rows of board %s: %w", id, err)
 		}
@@ -151,10 +173,10 @@ func (p *Provider) boardRows(ctx context.Context, id tracker.BoardID, issues []t
 	return out, nil
 }
 
-// listByID lists the issues of ids that b lists, with fields, in full or
-// not at all.
-func (p *Provider) listByID(ctx context.Context, b board, ids []tracker.IssueID, fields []string) ([]*jira.Issue, error) {
-	list, err := p.listIDs(ctx, b, ids, fields)
+// listByID lists the issues of ids that b lists under rule, with fields,
+// in full or not at all.
+func (p *Provider) listByID(ctx context.Context, b board, ids []tracker.IssueID, fields []string, rule tracker.Eligibility) ([]*jira.Issue, error) {
+	list, err := p.listIDs(ctx, b, ids, fields, rule)
 	if err == nil {
 		return list, nil
 	}
@@ -185,21 +207,21 @@ func (p *Provider) listByID(ctx context.Context, b board, ids []tracker.IssueID,
 		// Every issue exists, so the failure is not about a missing one.
 		return nil, err
 	}
-	return p.listIDs(ctx, b, exist, fields)
+	return p.listIDs(ctx, b, exist, fields, rule)
 }
 
 // errIncomplete is a listing Jira attached a warning to.
 var errIncomplete = errors.New("jiraprovider: Jira warned that the listing may be incomplete")
 
-// listIDs lists the issues of ids that b lists, with fields, failing with
-// errIncomplete when Jira warns.
-func (p *Provider) listIDs(ctx context.Context, b board, ids []tracker.IssueID, fields []string) ([]*jira.Issue, error) {
+// listIDs lists the issues of ids that b lists under rule, with fields,
+// failing with errIncomplete when Jira warns.
+func (p *Provider) listIDs(ctx context.Context, b board, ids []tracker.IssueID, fields []string, rule tracker.Eligibility) ([]*jira.Issue, error) {
 	refs := make([]string, len(ids))
 	for i, id := range ids {
 		refs[i] = string(id) // checked decimal
 	}
 	res, err := p.jira.ListAllIssues(ctx, jira.ListQuery{
-		List: jira.BoardIssues(b.cfg.BoardID), JQL: "id in (" + strings.Join(refs, ", ") + ")",
+		List: jira.BoardIssues(b.cfg.BoardID), JQL: andRule("id in ("+strings.Join(refs, ", ")+")", rule),
 		Fields: fields, MaxResults: idChunk,
 	}, 0)
 	if err != nil {

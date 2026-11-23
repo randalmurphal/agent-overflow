@@ -280,6 +280,12 @@ func (r *run) checkDetails(reads []*ticketRead, opening store.MirrorRead) ([]*ti
 			}
 			w := receipts[i]
 			switch {
+			case w.Kept && w.UpdatedAt != rd.check.updated:
+				// The record the write committed is of another version than
+				// the body checked (a board read stored a later one while
+				// the tracker answered this): the body is behind it.
+				toRead = append(toRead, rd)
+				continue
 			case rd.check.held != nil && w.Held.ReadAt == 0:
 			case rd.check.held != nil || !w.Kept || w.Held.ReadAt != rd.check.readAt:
 				toRead = append(toRead, rd)

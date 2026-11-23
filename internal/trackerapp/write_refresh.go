@@ -118,8 +118,17 @@ func (r *run) refreshMirrored(f *refreshed, p refreshPlan) error {
 	// later mirror, which the targets read then refuses.
 	open := r.s.openTickets(r.row.ID, p.details)
 	// The open tickets settle with everything the refresh stored
-	// (Service.write), so its writes are told to them as their own.
+	// (Service.write), so its writes are told to them as their own; a
+	// refresh that stops before its read of them (refreshDetails), which
+	// that settlement follows, tells them what it stored.
 	r.origin = &tickOrigin{tickets: open}
+	var stored Changes
+	r.tell = func(ch Changes) { stored.add(ch) }
+	defer func() {
+		if f.pumps == nil {
+			r.s.tellTickets(r.gen, open, stored)
+		}
+	}()
 	boards := slices.Concat(slices.Collect(maps.Keys(p.rows)), p.structures)
 	var place []tracker.BoardID
 	if p.created.issue != "" {
@@ -218,7 +227,7 @@ func (r *run) refreshRows(f *refreshed, p refreshPlan, t store.MirrorRefreshTarg
 	returned := map[tracker.IssueID]bool{}
 	for _, b := range slices.Sorted(maps.Keys(asked)) {
 		ids := sortedUnique(asked[b])
-		ch, read, unread, err := r.boardRows(b, ids)
+		ch, read, unread, err := r.boardRows(b, ids, tracker.Eligibility{})
 		f.ch.add(ch)
 		for _, id := range read {
 			returned[id] = true

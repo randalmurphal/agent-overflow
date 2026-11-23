@@ -48,7 +48,7 @@ func TestFakeScenario(t *testing.T) {
 	if !listing.Complete || !slices.Equal(listing.IDs, []tracker.IssueID{"10101", "10102", "10103"}) {
 		t.Fatalf("listing %+v", listing)
 	}
-	rows := scenarioMust[tracker.Rows](t)(s.p.BoardRows(s.ctx, "1", listing.IDs))
+	rows := scenarioMust[tracker.Rows](t)(s.p.BoardRows(s.ctx, "1", listing.IDs, listing.Rule))
 	if len(rows.Rows) != 3 || len(rows.Missing) != 0 {
 		t.Fatalf("rows %+v", rows)
 	}

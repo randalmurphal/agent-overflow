@@ -202,7 +202,7 @@ func (e *unjudgedError) Error() string {
 // *unjudgedError, never reading as no issue held: the caller would take
 // the list's miss for an issue gone from the board. A failed match or
 // read fails the call.
-func (p *Provider) confirmMissing(ctx context.Context, b board, s site, ids []tracker.IssueID, cat *catalog) ([]tracker.Row, error) {
+func (p *Provider) confirmMissing(ctx context.Context, b board, s site, ids []tracker.IssueID, rule tracker.Eligibility, cat *catalog) ([]tracker.Row, error) {
 	jql, err := membershipJQL(b.cfg)
 	switch {
 	case err != nil:
@@ -216,7 +216,7 @@ func (p *Provider) confirmMissing(ctx context.Context, b board, s site, ids []tr
 		for i, id := range chunk {
 			refs[i] = string(id)
 		}
-		m, err := p.jira.MatchJQL(ctx, refs, []string{jql})
+		m, err := p.jira.MatchJQL(ctx, refs, []string{andRule(jql, rule)})
 		if err != nil {
 			return nil, fmt.Errorf("confirm %d issues the list left out: %w", len(chunk), err)
 		}

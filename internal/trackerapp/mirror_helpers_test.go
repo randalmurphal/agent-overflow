@@ -169,7 +169,7 @@ func (p *scripted) BoardIssues(ctx context.Context, b tracker.BoardID, window ti
 	return h(b, window)
 }
 
-func (p *scripted) BoardRows(ctx context.Context, b tracker.BoardID, ids []tracker.IssueID) (tracker.Rows, error) {
+func (p *scripted) BoardRows(ctx context.Context, b tracker.BoardID, ids []tracker.IssueID, _ tracker.Eligibility) (tracker.Rows, error) {
 	p.mu.Lock()
 	h := p.boardRows
 	p.mu.Unlock()

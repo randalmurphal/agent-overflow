@@ -120,7 +120,7 @@ func TestFakeDetailCardIsTheReadCard(t *testing.T) {
 			asked := append(slices.Clone(tc.issues), tc.gone...)
 			details := must[tracker.Details](t)(p.Details(t.Context(), asked))
 			cards := must[tracker.Cards](t)(p.Cards(t.Context(), asked))
-			rows := must[tracker.Rows](t)(p.BoardRows(t.Context(), tc.board, tc.issues))
+			rows := must[tracker.Rows](t)(p.BoardRows(t.Context(), tc.board, tc.issues, tracker.Eligibility{}))
 			if len(details.Details) != len(tc.issues) || len(cards.Cards) != len(tc.issues) ||
 				!slices.Equal(details.Missing, tc.gone) || !slices.Equal(cards.Missing, tc.gone) {
 				t.Fatalf("of %d issues, %d details (missing %v) and %d cards (missing %v); want %d each, missing %v",

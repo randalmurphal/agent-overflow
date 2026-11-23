@@ -66,8 +66,8 @@ func (o oneCredential) BoardIssues(ctx context.Context, board BoardID, window ti
 	return trackerapi.Walk(ctx, func(ctx context.Context) (Listing, error) { return o.p.BoardIssues(ctx, board, window) })
 }
 
-func (o oneCredential) BoardRows(ctx context.Context, board BoardID, issues []IssueID) (Rows, error) {
-	return trackerapi.Walk(ctx, func(ctx context.Context) (Rows, error) { return o.p.BoardRows(ctx, board, issues) })
+func (o oneCredential) BoardRows(ctx context.Context, board BoardID, issues []IssueID, rule Eligibility) (Rows, error) {
+	return trackerapi.Walk(ctx, func(ctx context.Context) (Rows, error) { return o.p.BoardRows(ctx, board, issues, rule) })
 }
 
 func (o oneCredential) NewRows(ctx context.Context, issue IssueID, boards []BoardID) (Placement, error) {

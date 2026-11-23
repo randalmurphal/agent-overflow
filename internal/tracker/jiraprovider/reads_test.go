@@ -273,11 +273,11 @@ func TestBoardRowsReadThroughTheBoard(t *testing.T) {
 		}
 		jiratest.Reply(200, `{"matches":[{"matchedIssues":[],"errors":[]}]}`)(w, r, b)
 	})
-	rows3, err := p.BoardRows(t.Context(), "3", []tracker.IssueID{"10001", "10002"})
+	rows3, err := p.BoardRows(t.Context(), "3", []tracker.IssueID{"10001", "10002"}, tracker.Eligibility{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	rows4, err := p.BoardRows(t.Context(), "4", []tracker.IssueID{"10001", "10002"})
+	rows4, err := p.BoardRows(t.Context(), "4", []tracker.IssueID{"10001", "10002"}, tracker.Eligibility{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,7 +324,7 @@ func TestBoardRowsWithDeletedIssues(t *testing.T) {
 			// The deleted issue is matched by no query, with no error
 			// (measured).
 			f.On("POST", matchPath, jiratest.Reply(200, `{"matches":[{"matchedIssues":[],"errors":[]}]}`))
-			rows, err := p.BoardRows(t.Context(), "3", []tracker.IssueID{"10001", "10002", "10009"})
+			rows, err := p.BoardRows(t.Context(), "3", []tracker.IssueID{"10001", "10002", "10009"}, tracker.Eligibility{})
 			if err != nil || len(rows.Rows) != 2 || !slices.Equal(rows.Missing, []tracker.IssueID{"10009"}) {
 				t.Fatalf("got %+v %v", rows, err)
 			}
@@ -334,7 +334,7 @@ func TestBoardRowsWithDeletedIssues(t *testing.T) {
 	f, p := newSite(t)
 	f.On("GET", board3Issues, jiratest.Reply(400, `{"errorMessages":["bad"]}`))
 	f.On("POST", bulkFetchPath, jiratest.Reply(200, page("", issue("10001", "WEB-1", "2026-11-10T10:00:00.000+0000", nil))))
-	if _, err := p.BoardRows(t.Context(), "3", []tracker.IssueID{"10001"}); err == nil {
+	if _, err := p.BoardRows(t.Context(), "3", []tracker.IssueID{"10001"}, tracker.Eligibility{}); err == nil {
 		t.Error("a refused listing of issues that exist read as empty")
 	}
 }

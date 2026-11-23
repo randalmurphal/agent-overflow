@@ -245,8 +245,10 @@ func TestAnUnkeptTicketWithNoStatusChangeShowsItsCreation(t *testing.T) {
 	}
 }
 
-// A round's stored change of one ticket shows, and is told, whatever
-// fails after its transaction: a cards read and the history read after it.
+// A round's stored change of one ticket shows, and is told, though the
+// history read that follows its transaction fails: the documents the
+// round reads are not final (no HistoryTo), so the round's read cannot
+// settle their status times and the round reads their history after it.
 func TestACommittedTicketChangeOutlivesALaterFailure(t *testing.T) {
 	t.Parallel()
 	m, st, issues, subs := newRoundFixture(t, 2, false)
@@ -255,12 +257,15 @@ func TestACommittedTicketChangeOutlivesALaterFailure(t *testing.T) {
 	st.comment(issues[0], "Second")
 	st.edit(issues[1], func(c *tracker.Card) { c.Title = "Edited" })
 	failed := errors.New("test: the tracker failed")
+	histories := m.p.count("History")
 	m.p.set(func(p *scripted) {
-		p.cards = func([]tracker.IssueID) (tracker.Cards, error) { return tracker.Cards{}, failed }
 		p.history = func(tracker.HistoryQuery) (tracker.History, error) { return tracker.History{}, failed }
 	})
-	m.round(t)
+	m.readSoon(issues...)
 	quiet(t, m.svc)
+	if m.p.count("History") == histories {
+		t.Fatal("the round read no history: the failure the change is to outlive did not occur")
+	}
 	v := m.ticketView(t, subs[0].ID)
 	if v.Detail == nil || len(v.Detail.Comments) == 0 || v.Detail.Comments[0].Body != "Second" {
 		t.Fatalf("the first ticket shows %+v; want its new comment", v.Detail)
@@ -735,11 +740,12 @@ func TestATicketsReadNamesOnlyItsCardsUsersAndStatusInTheSharedCatalog(t *testin
 
 // A Jira round's check of an open ticket whose cards read began before a
 // board read stored a newer version (the tracker answered it the version
-// the ticket shows, landing after the board's): the board's write tells
-// the ticket its card changed after the check began, so the ticket stays
-// due at once (readNowLocked, dueLocked) and the next read, finding the
-// record newer than the ticket's body (mirrorMoved), reads it in full and
-// shows that version's body with nothing behind.
+// the ticket shows, landing after the board's): the check's write finds
+// the record of another version than the body (its receipt), so the same
+// read reads the ticket in full and shows that version's body with
+// nothing behind. The board's write told the ticket its card changed after
+// the read began, so the ticket stays due at once (readNowLocked,
+// dueLocked) and its next read is a check, which finds the body current.
 func TestAJiraCheckRacingABoardWriteReadsTheTicketInFull(t *testing.T) {
 	t.Parallel()
 	m, st, issues, subs := newRoundFixture(t, 1, true)
@@ -771,8 +777,69 @@ func TestAJiraCheckRacingABoardWriteReadsTheTicketInFull(t *testing.T) {
 	if v.Detail == nil || v.Detail.Card.Title != "Renamed" || v.Detail.BodyBehind || len(v.Detail.Comments) == 0 || v.Detail.Comments[0].Body != "Second" {
 		t.Fatalf("after the check raced the board write the ticket shows %+v", v.Detail)
 	}
+	if d, c := m.p.count("Details")-details, m.p.count("Cards")-cards; d != 1 || c != 2 {
+		t.Fatalf("the rounds made %d full reads and %d cards reads; want 1 and 2: the check and its full read, then the check the board's write asked", d, c)
+	}
+}
+
+// A direct IssueDetail on Jira, which no pump follows, whose check's cards
+// read is answered the version the stored body is of after a board read
+// stored a newer one: the check's write finds the record newer than the
+// body (its receipt), so the call reads the issue in full and returns the
+// newer version's body, with no other read.
+func TestADirectJiraDetailRacingABoardWriteReturnsTheRecordsVersion(t *testing.T) {
+	t.Parallel()
+	m := newMirrorFixtureWith(t, Cadence{Delta: time.Hour, Ticket: time.Hour, RetryBase: time.Hour})
+	st := &trackerState{cards: map[tracker.IssueID]tracker.Card{}, comments: map[tracker.IssueID]string{},
+		links: map[tracker.IssueID]tracker.IssueID{}, gone: map[tracker.IssueID]bool{}}
+	r := row("10001", 1_799_000_000_000, "a000")
+	id := r.Card.ID
+	st.cards[id], st.comments[id] = r.Card, "First"
+	m.tracks([]tracker.Row{r})
+	must[Outcome](t)(m.svc.tickDelta(t.Context(), m.scope(), Background))
+	m.p.set(func(p *scripted) { p.detail, p.cards = st.detail, st.cardsRead })
+	m.p.updatedMovesWithDetail(st.cardsRead)
+	if _, _, err := m.svc.IssueDetail(t.Context(), m.conn.ID, id, Interactive); err != nil {
+		t.Fatal(err)
+	}
+	shown := st.cards[id]
+	arrived, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	t.Cleanup(func() { once.Do(func() { close(release) }) })
+	m.p.set(func(p *scripted) {
+		p.cards = func(asked []tracker.IssueID) (tracker.Cards, error) {
+			out, err := cardsAnswering(&shown)(asked)
+			close(arrived)
+			<-release
+			return out, err
+		}
+	})
+	details, cards := m.p.count("Details"), m.p.count("Cards")
+	type answer struct {
+		v   DetailView
+		err error
+	}
+	done := make(chan answer, 1)
+	go func() {
+		v, _, err := m.svc.IssueDetail(context.Background(), m.conn.ID, id, Interactive)
+		done <- answer{v, err}
+	}()
+	waitClosed(t, "the check's cards read", arrived)
+	st.edit(id, func(c *tracker.Card) { c.Title = "Renamed" })
+	st.comment(id, "Second")
+	m.tracks([]tracker.Row{{Card: st.cards[id], Order: "a000"}})
+	must[Outcome](t)(m.svc.tickDelta(t.Context(), m.scope(), Background))
+	m.p.set(func(p *scripted) { p.cards = st.cardsRead })
+	once.Do(func() { close(release) })
+	a := <-done
+	if a.err != nil {
+		t.Fatal(a.err)
+	}
+	if a.v.Card.Title != "Renamed" || a.v.BodyBehind || len(a.v.Comments) == 0 || a.v.Comments[0].Body != "Second" {
+		t.Fatalf("the direct detail returned %+v; want the board's version with its body", a.v)
+	}
 	if d, c := m.p.count("Details")-details, m.p.count("Cards")-cards; d != 1 || c != 1 {
-		t.Fatalf("the rounds made %d full reads and %d cards reads; want 1 of each: the check, then the read the board's write asked", d, c)
+		t.Fatalf("the call made %d full reads and %d cards reads; want 1 of each", d, c)
 	}
 }
 

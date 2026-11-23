@@ -52,9 +52,11 @@ type ticketPump struct {
 	// the last request to read it at once (readNowLocked): a read that
 	// began before it neither undoes it nor counts as its read. inputs is
 	// the stamp of the last change to an input of the view other than its
-	// document (ticketInputs).
-	due            time.Time
-	nudged, inputs uint64
+	// document (ticketInputs). judged is the stamp of the last change the
+	// funnel judged by shows (tellTicketLocked), which a view built before
+	// it with other dependencies is checked against (unwatchedLocked).
+	due                    time.Time
+	nudged, inputs, judged uint64
 	// reading counts the reads of the ticket begun and not settled
 	// (ticketReads, settleTickets): while one is in flight, the document a
 	// read stored in the mirror is that read's to settle (rebuildTicket).

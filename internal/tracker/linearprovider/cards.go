@@ -217,15 +217,16 @@ func missing(asked []tracker.IssueID, found map[tracker.IssueID]bool) []tracker.
 	return out
 }
 
-// BoardRows are the rows of the issues the team holds now, read in
-// requests of 250 IDs. Archived and trashed issues, issues of another
-// team and IDs that are not issue IDs are Missing.
-func (p *Provider) BoardRows(ctx context.Context, b tracker.BoardID, ids []tracker.IssueID) (tracker.Rows, error) {
+// BoardRows are the rows of the issues the team holds now that rule
+// lists (ruleFilter, BoardIssues' filter), read in requests of 250 IDs.
+// Archived and trashed issues, issues of another team or that rule
+// leaves out, and IDs that are not issue IDs are Missing.
+func (p *Provider) BoardRows(ctx context.Context, b tracker.BoardID, ids []tracker.IssueID, rule tracker.Eligibility) (tracker.Rows, error) {
 	if b == "" {
 		return tracker.Rows{}, fmt.Errorf("linearprovider: board rows: %w: no board named", tracker.ErrInvalidInput)
 	}
 	valid, _ := issueIDs(ids)
-	issues, err := p.issuesByID(ctx, valid, linear.IssueFilter{Teams: []string{string(b)}}, false)
+	issues, err := p.issuesByID(ctx, valid, ruleFilter(b, rule), false)
 	if err != nil {
 		return tracker.Rows{}, err
 	}

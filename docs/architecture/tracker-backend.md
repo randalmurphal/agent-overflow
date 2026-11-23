@@ -444,11 +444,14 @@ or one on a board not read yet. The row is the ticket's one record of its
 lifetime: a read binds a ticket the mirror does not keep yet before it
 reads it (`trackerapp.bindTickets`), at a read begun on the root's clock
 (`opened_at`) that admits a body from every read that begins after it, so
-a close and a reopen is a new lifetime that no earlier read reaches. The
+a close and a reopen is a new lifetime that no earlier read reaches: the
+latest bind of the issue's rows admits, so a closing pump's row that
+still stands beside the reopened ticket's admits nothing older. The
 pump's goroutine deletes the row as it returns, the one place each end
 of the pump comes to (its last subscription released, its connection
-turned off or removed, `Stop`), and no bind follows; the bind is one
-statement and one row, the delete two statements
+turned off or removed, `Stop`), and no bind follows; the bind is a
+probe of the issue's keep and an insert of one row, the delete two
+statements
 (`TestOpenTicketKeepCosts`). When the delete leaves the issue kept by
 nothing, or a bind keeps a record the mirror held unkept, every view that
 shows it as a parent or a link is told (`Changes.Visibility`). A pump
@@ -598,6 +601,13 @@ and writes share:
   reads the board rows of every listed ID that has no row on this board,
   and reads the same way every row the listing leaves out that a read
   begun no later than the listing stored (`MirrorReconcile.Unsettled`).
+  The listing and the reads by ID that confirm it judge membership by one
+  rule, the one the listing captured (`tracker.Listing.Rule`): an issue
+  that is not done, was updated within the 180-day window, or is in a
+  sprint or cycle the listing kept. A completed issue that ages out of
+  the window leaves the listing and is Missing to the read by ID, so its
+  row goes and no later reconcile reads it
+  (`TestACompletedIssueThatAgesOutLosesItsRow`).
   The listing removes no row itself: a list may miss an issue its index
   has not caught up with (Jira's lists come from its search index, which
   showed a new issue from 0.6 to 23 seconds after its create), and how

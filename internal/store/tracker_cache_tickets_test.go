@@ -133,6 +133,28 @@ func TestAnOpenTicketsBindAdmitsItsBody(t *testing.T) {
 	checkBodiesHeld(t, s, "the reopen")
 }
 
+// A ticket opened again while the closing pump's keep still stands (its
+// read in flight): a read begun under the closed lifetime that lands after
+// the new bind starts no body, as the latest bind is the fence; the new
+// lifetime's read starts it.
+func TestAReadOfAClosedLifetimeStartsNoBodyAfterTheReopen(t *testing.T) {
+	t.Parallel()
+	s, _, root := newMirror(t)
+	writeMirrorBoard(t, s, root, "10", []MirrorRow{webRow("10001", 5, "a")})
+	sweep := currentSweep(s, root)
+	for pump, at := range map[int64]int64{1: 100, 2: 300} {
+		if _, err := s.KeepMirrorTicket(root, "10001", 1, pump, mirrorReadAt(at)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if w, err := storeTicket(t, s, root, sweep, "10001", 0, 200, []byte(`{"v":"closed"}`)); err != nil || w.Body != MirrorBodyNotKept {
+		t.Fatalf("a read of the closed lifetime after the reopen: %+v, %v; want no body started", w, err)
+	}
+	if w, err := storeTicket(t, s, root, sweep, "10001", 0, 310, []byte(`{"v":"reopened"}`)); err != nil || w.Body != MirrorBodyStored {
+		t.Fatalf("a read of the new lifetime: %+v, %v", w, err)
+	}
+}
+
 // The root keeps mirrorBodyCap bodies: those of issues an open ticket
 // keeps first, then the most recently opened. The outcomes are of the
 // committed state: a body the same write started and dropped was never

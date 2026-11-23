@@ -139,7 +139,7 @@ func (f *probedProvider) BoardIssues(ctx context.Context, _ BoardID, _ time.Time
 	f.see(ctx)
 	return Listing{}, nil
 }
-func (f *probedProvider) BoardRows(ctx context.Context, _ BoardID, _ []IssueID) (Rows, error) {
+func (f *probedProvider) BoardRows(ctx context.Context, _ BoardID, _ []IssueID, _ Eligibility) (Rows, error) {
 	f.see(ctx)
 	return Rows{}, nil
 }

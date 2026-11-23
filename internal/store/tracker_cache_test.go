@@ -211,7 +211,7 @@ func mirrorWriters(s *Store) map[string]func(root int64) error {
 			}
 			if !ok {
 				// A gone root holds none: the body as a live root read it.
-				b = MirrorBody{IssueID: "10001", ReadAt: 7, sweep: 1}
+				b = MirrorBody{IssueID: "10001", ReadAt: 7, root: root, sweep: 1}
 			}
 			_, err = s.ConfirmMirrorBody(root, b, mirrorReadOf(root, 9))
 			return err

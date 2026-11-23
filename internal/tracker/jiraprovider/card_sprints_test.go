@@ -41,7 +41,7 @@ func TestACardNamesTheSprintsABoardKeeps(t *testing.T) {
 	if err != nil || len(cards.Cards) != 1 {
 		t.Fatalf("cards %+v, %v", cards, err)
 	}
-	rows, err := r.p.BoardRows(ctx, costBoard, []tracker.IssueID{tracker.IssueID(carried)})
+	rows, err := r.p.BoardRows(ctx, costBoard, []tracker.IssueID{tracker.IssueID(carried)}, tracker.Eligibility{})
 	if err != nil || len(rows.Rows) != 1 {
 		t.Fatalf("rows %+v, %v", rows, err)
 	}

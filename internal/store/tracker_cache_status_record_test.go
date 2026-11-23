@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"slices"
 	"testing"
 )
@@ -59,6 +60,42 @@ func TestARefusedTicketCardGivesNoStatusResult(t *testing.T) {
 	}
 }
 
+// Two overlapping ticket reads of one update see the same card; the later
+// read saw the change to its status (inside the settle margin, so its
+// time is provisional), the earlier did not. Whichever lands first, the
+// record shows the later read's time: the earlier read's body is
+// superseded, and its provisional evidence replaces none of a later read.
+func TestAnOlderReadsProvisionalTimeNeverReplacesANewerOnes(t *testing.T) {
+	t.Parallel()
+	const u = 1_000_000
+	write := func(s *Store, root, read int64, latestTo string, at int64) {
+		t.Helper()
+		card := webCard("10001", u)
+		card.StatusID, card.Data = "1", []byte(`{"title":"Issue"}`)
+		e := MirrorStatusEvidence{Status: "1", CreatedAt: card.CreatedAt, UpdatedAt: u, LatestTo: latestTo, LatestAt: at, Settle: 60_000}
+		if _, err := s.StoreMirrorTickets(root, currentSweep(s, root), []MirrorTicket{{Card: card, Body: []byte(`{}`), Status: &e}},
+			MirrorCatalog{}, mirrorReadAt(read), mirrorReadAt(read)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, order := range map[string][]int64{"the later read first": {20, 10}, "the earlier read first": {10, 20}} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			s, root := statusRecord(t, u)
+			for _, read := range order {
+				if read == 20 {
+					write(s, root, read, "1", u-1_000)
+				} else {
+					write(s, root, read, "", 0)
+				}
+			}
+			if got := statusOf(t, s, root, "10001"); got != "999000 false 1000000" {
+				t.Fatalf("the record's status time: %s; want the later read's 999000, provisional", got)
+			}
+		})
+	}
+}
+
 // Evidence of a change after the version it describes is of a later
 // version: it gives no result, final or not.
 func TestEvidenceOfALaterChangeGivesNoResult(t *testing.T) {
@@ -110,6 +147,38 @@ func TestAStagedHistoryAppliesItsResultOnlyToTheStatusItDescribes(t *testing.T) 
 				t.Fatalf("the issue is due a history read: %v; want %v", got, tc.due)
 			}
 		})
+	}
+}
+
+// A long history that keeps the stored one in place (its changes and one
+// more) is the issue's only while its receipt is the one it was admitted
+// at: a card of the same update in another status that lands between the
+// admission and its transaction (mirrorStatusKeptBy moved the receipt)
+// supersedes it, so the issue stays due a history read.
+func TestAHistoryKeptInPlaceChecksItsReceipt(t *testing.T) {
+	t.Parallel()
+	const u, n = 10_000, 5000
+	s, root := statusRecord(t, u)
+	h := longHistory("10001", n, 1)
+	mustReplaceHistory(t, s, root, h, MirrorWrite{Changed: true})
+	more := h
+	more.Changes = append(slices.Clone(h.Changes), MirrorChange{Kind: MirrorChangeStatus, At: n + 1, To: "1"})
+	more.AnsweredAt++
+	in, err := newMirrorHistoryInput(dueHistories(s, root, []MirrorHistory{more})[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result MirrorHistoryResult
+	st, admitted, err := s.stagedHistoryState(root, in, &result)
+	if err != nil || !admitted {
+		t.Fatalf("admitted %v, %v", admitted, err)
+	}
+	mustExec(t, s.db, `UPDATE tracker_cache_issues SET status_id = '3', `+mirrorStatusKeptBy("'3'", "updated_at")+` WHERE issue_id = '10001'`)
+	if err := s.writeStagedHistory(root, in, st, "test"); !errors.Is(err, errStaleReceipt) {
+		t.Fatalf("the history kept in place after its receipt moved: %v; want its receipt stale", err)
+	}
+	if !dueFor(t, s, root, "10001") {
+		t.Fatal("the issue whose status moved after the history's admission is not due a history read")
 	}
 }
 

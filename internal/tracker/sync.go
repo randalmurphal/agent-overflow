@@ -66,10 +66,22 @@ type RowPage struct {
 // those not done, those done at or after the window's start, and those in
 // a sprint that is open or closed at or after it. Complete is false when
 // the tracker could not list them all; the caller then adds what it
-// lists and removes nothing.
+// lists and removes nothing. Rule is the rule it listed by, which a read
+// of rows by ID that confirms it is given (Provider.BoardRows).
 type Listing struct {
 	IDs      []IssueID
 	Complete bool
+	Rule     Eligibility
+}
+
+// Eligibility is the rule a board listing judged membership by: an issue
+// on the board is listed when it is not done, was updated at or after
+// Window, or is in one of Sprints (the sprints or cycles the listing kept,
+// as it captured them). The zero Eligibility judges by no rule: every
+// issue on the board.
+type Eligibility struct {
+	Window  time.Time
+	Sprints []SprintID
 }
 
 // Rows are a board's rows for a set of issues. Missing are the issues

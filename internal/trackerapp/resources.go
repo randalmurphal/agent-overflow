@@ -37,8 +37,8 @@ func mirrorRows(board tracker.BoardID, rows []tracker.Row, missing []tracker.Iss
 	return page, err
 }
 
-// boardRows reads board's rows of issues and stores them; the issues the
-// board no longer lists lose their row. What the store refused (store
+// boardRows reads board's rows of issues that rule lists and stores them;
+// the issues the board no longer lists under it lose their row. What the store refused (store
 // MirrorChanges.Refused: a new row, because the board lost rows after the
 // read began, or an issue's absence, because a complete listing began
 // after it) is read once more, from after that removal or listing;
@@ -50,7 +50,7 @@ func mirrorRows(board tracker.BoardID, rows []tracker.Row, missing []tracker.Iss
 // the batch that failed, all of it when its first read failed and else
 // those its last stored write refused, then every batch after it, in the
 // order of issues when issues are sorted; none when it returns no error.
-func (r *run) boardRows(board tracker.BoardID, issues []tracker.IssueID) (out Changes, found, unread []tracker.IssueID, _ error) {
+func (r *run) boardRows(board tracker.BoardID, issues []tracker.IssueID, rule tracker.Eligibility) (out Changes, found, unread []tracker.IssueID, _ error) {
 	lifetime, err := r.lifetime(board)
 	if err != nil {
 		return out, nil, issues, err
@@ -66,7 +66,7 @@ func (r *run) boardRows(board tracker.BoardID, issues []tracker.IssueID) (out Ch
 				return out, found, unsettled(), err
 			}
 			r.calls++
-			rows, err := r.p.BoardRows(r.ctx, board, left)
+			rows, err := r.p.BoardRows(r.ctx, board, left, rule)
 			if err != nil {
 				return out, found, unsettled(), fmt.Errorf("trackerapp: read %d rows of board %s: %w", len(left), board, call(err))
 			}

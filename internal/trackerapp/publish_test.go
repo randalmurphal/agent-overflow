@@ -114,6 +114,56 @@ func TestARefreshsStoredRowsAreToldBeforeItsNextCall(t *testing.T) {
 	}
 }
 
+// A write's refresh cancelled during its read through the second board
+// tells the edited issue's open ticket what the first board's write
+// stored: the refresh reaches no read of the ticket, which would have
+// settled it.
+func TestACancelledRefreshTellsTheOpenTicketWhatItStored(t *testing.T) {
+	t.Parallel()
+	f := newWriteFixture(t)
+	f.subscribe(t, testBoard)
+	f.events.boardEvents(t, 1)
+	sub := must[TicketSubscription](t)(f.svc.SubscribeTicket(f.conn.ID, "10001"))
+	f.events.issueEvents(t, 1)
+	f.settledTickets(t)
+	_, issues, _ := f.events.snapshot()
+	told := len(issues)
+	edited := writeRow("10001", 1, "a")
+	edited.Card.Title = "Renamed"
+	f.state.set(testBoard, edited)
+	f.answer(tracker.Result{Parts: []tracker.Part{appliedPart("10001", tracker.StepEdit, tracker.CardOf("10001"), tracker.DetailOf("10001"))}})
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	var mu sync.Mutex
+	rows := 0
+	f.p.set(func(p *scripted) {
+		p.block = func(callCtx context.Context, name string) error {
+			if name != "BoardRows" {
+				return callCtx.Err()
+			}
+			mu.Lock()
+			rows++
+			second := rows == 2
+			mu.Unlock()
+			if second {
+				cancel()
+				return context.Canceled
+			}
+			return nil
+		}
+	})
+	if _, err := f.svc.Edit(ctx, f.conn.ID, EditRequest{Issue: "10001", Fields: []FieldEditInput{{Field: "title", Typed: []string{"Renamed"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	f.p.set(func(p *scripted) { p.block = nil })
+	f.events.waitFor(t, "the open ticket told of the card the first board's read stored", func(_ []BoardEvent, is []IssueEvent, _ []error) bool {
+		return slices.ContainsFunc(is[told:], func(e IssueEvent) bool { return e.Issue == "10001" && e.Changed })
+	})
+	if v := must[TicketView](t)(f.svc.TicketDetail(sub.ID)); v.Detail == nil || v.Detail.Card.Title != "Renamed" {
+		t.Fatalf("after the cancelled refresh the ticket shows %+v", v.Detail)
+	}
+}
+
 // A ticket round that stored an open ticket's changed card tells the
 // ticket that links it (its view shows that card) while the round's
 // history read, which follows, is held: on Jira the check's cards read

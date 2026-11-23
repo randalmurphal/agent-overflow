@@ -56,7 +56,7 @@ func TestMirrorLongHistoryIsStagedWhole(t *testing.T) {
 	}{
 		{"new", longHistory("10001", n, 1), true, 31, n / clearMirrorChunk, "5000 answered 5001 since 5000 other 0 dirty 0"},
 		{"identical", longHistory("10001", n, 1), false, 17, 0, "5000 answered 5001 since 5000 other 0 dirty 0"},
-		{"appended", longHistory("10001", n+100, 1), true, 22, 1, "5100 answered 5101 since 5100 other 0 dirty 0"},
+		{"appended", longHistory("10001", n+100, 1), true, 23, 1, "5100 answered 5101 since 5100 other 0 dirty 0"},
 		{"shortened", longHistory("10001", 10, 6000), true, 34, 0, "10 answered 6010 since 10 other 0 dirty 0"},
 		{"grown again", longHistory("10001", n, 7000), true, 34, 0, "5000 answered 12000 since 5000 other 0 dirty 0"},
 	} {

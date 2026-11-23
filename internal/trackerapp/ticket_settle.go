@@ -282,8 +282,12 @@ func (s *Service) settleTicketLocked(tp *ticketPump, began uint64, rd *ticketRea
 		if rd.view != nil {
 			tp.docs++
 			if began >= tp.inputs {
+				again := s.unwatchedLocked(tp, rd.shows, began)
 				tp.shows = rd.shows
 				s.installViewLocked(tp, rd.view, rd.digest, rd.check.wall, began)
+				if again {
+					s.rebuildAgainLocked(tp)
+				}
 			}
 		}
 		tp.tellFailureLocked(nil)
@@ -402,8 +406,12 @@ func (s *Service) rebuildTicket(tp *ticketPump) {
 			tp.docs++
 			wall = mirrored.wall
 		}
+		again := s.unwatchedLocked(tp, shows, b)
 		tp.shows = shows
 		s.installViewLocked(tp, &v, s.digestOf(v), wall, b)
+		if again {
+			s.rebuildAgainLocked(tp)
+		}
 	}
 	s.flushTicketLocked(tp, false)
 }

@@ -197,7 +197,7 @@ func (s *scenario) detail(t *testing.T, id tracker.IssueID) tracker.Detail {
 
 func (s *scenario) row(t *testing.T, id tracker.IssueID) tracker.Row {
 	t.Helper()
-	rows := scenarioMust[tracker.Rows](t)(s.p.BoardRows(s.ctx, "1", []tracker.IssueID{id}))
+	rows := scenarioMust[tracker.Rows](t)(s.p.BoardRows(s.ctx, "1", []tracker.IssueID{id}, tracker.Eligibility{}))
 	if len(rows.Rows) != 1 {
 		t.Fatalf("rows of %s: %+v", id, rows)
 	}
