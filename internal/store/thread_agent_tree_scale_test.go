@@ -37,8 +37,16 @@ func (shape agentTreeShape) String() string {
 
 func agentTreeSpawnHistory(t *testing.T, s *Store, shape agentTreeShape) (chief string, since int64) {
 	t.Helper()
-	now := time.Now().UnixMilli()
-	chief = "chief"
+	agentTreeSpawnBase(t, s, shape.history)
+	return agentTreeSpawnRest(t, s, shape)
+}
+
+// agentTreeSpawnBase seeds the chief, its three managers and ten workers,
+// and the settled history: the part of a shape most of its rows and bytes
+// are in.
+func agentTreeSpawnBase(t *testing.T, s *Store, history int) {
+	t.Helper()
+	chief := "chief"
 	mustCreateThread(t, s, chief)
 	managers, workers := make([]string, 3), make([]string, 10)
 	created := int64(1)
@@ -54,6 +62,18 @@ func agentTreeSpawnHistory(t *testing.T, s *Store, shape agentTreeShape) (chief 
 		seedAgentRequest(t, s, "spawn-"+workers[i], managers[i%len(managers)], ThreadRequestSpawn, workers[i], false, created)
 		created++
 	}
+	old := time.Now().UnixMilli() - 20*24*time.Hour.Milliseconds()
+	seedAgentTreeBatch(t, s, "old", "'chief'", "send", "printf('worker-%d', i % 10)", history, old, created)
+}
+
+// agentTreeSpawnRest seeds the rest of shape on a store agentTreeSpawnBase
+// seeded, created after the base's rows.
+func agentTreeSpawnRest(t *testing.T, s *Store, shape agentTreeShape) (chief string, since int64) {
+	t.Helper()
+	// The base's 13 spawns and its history, created from 1.
+	created := int64(14 + shape.history)
+	now := time.Now().UnixMilli()
+	chief = "chief"
 	if shape.busy > 0 {
 		list := agentTreeThreadColumns(t, s)
 		mustExec(t, s.db, `WITH RECURSIVE seq(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM seq WHERE i + 1 < ?1)
@@ -67,7 +87,6 @@ func agentTreeSpawnHistory(t *testing.T, s *Store, shape agentTreeShape) (chief 
 		n                            int
 		settled                      any
 	}{
-		{"old", "'chief'", "send", "printf('worker-%d', i % 10)", shape.history, old},
 		{"spawned", "'chief'", "spawn", "printf('spawned-thread-%06d', i)", shape.spawns, old},
 		{"recent", "'chief'", "send", "printf('worker-%d', i % 10)", 300, now - 1_000},
 		{"open", "'chief'", "send", "printf('worker-%d', i % 10)", shape.open, nil},
@@ -75,18 +94,26 @@ func agentTreeSpawnHistory(t *testing.T, s *Store, shape agentTreeShape) (chief 
 		{"deep", "printf('worker-%d', i % 10)", "send", "'chief'", shape.deep, nil},
 		{"busy", "printf('busy-%06d', i)", "send", "'chief'", shape.busy, nil},
 	} {
-		mustExec(t, s.db, `WITH RECURSIVE seq(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM seq WHERE i + 1 < ?1)
-			INSERT INTO thread_requests (token, caller_thread_id, kind, target_thread_id, notify, state, answer, answer_kind,
-				settled_at, delivered_at, delivered_how, confirmed_at, created_at, updated_at)
-			SELECT printf('%s-%06d', ?2, i), `+batch.caller+`, ?3, `+batch.target+`, ?3 <> 'spawn',
-			       CASE WHEN ?4 IS NULL THEN 'running' ELSE 'finished' END,
-			       CASE WHEN ?4 IS NULL THEN NULL ELSE zeroblob(4096) END,
-			       CASE WHEN ?4 IS NULL THEN '' ELSE 'final' END, ?4,
-			       ?4, CASE WHEN ?4 IS NULL THEN '' ELSE 'queued' END, ?4, ?5 + i, ?5 + i FROM seq WHERE ?1 > 0`,
-			batch.n, batch.prefix, batch.kind, batch.settled, created)
+		seedAgentTreeBatch(t, s, batch.prefix, batch.caller, batch.kind, batch.target, batch.n, batch.settled, created)
 		created += int64(batch.n)
 	}
 	return chief, since
+}
+
+// seedAgentTreeBatch inserts n requests of one kind from caller to target,
+// SQL expressions of the row number i, settled at settled or open when it
+// is nil, created from created on. A settled answer is 4 KiB.
+func seedAgentTreeBatch(t *testing.T, s *Store, prefix, caller, kind, target string, n int, settled any, created int64) {
+	t.Helper()
+	mustExec(t, s.db, `WITH RECURSIVE seq(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM seq WHERE i + 1 < ?1)
+		INSERT INTO thread_requests (token, caller_thread_id, kind, target_thread_id, notify, state, answer, answer_kind,
+			settled_at, delivered_at, delivered_how, confirmed_at, created_at, updated_at)
+		SELECT printf('%s-%06d', ?2, i), `+caller+`, ?3, `+target+`, ?3 <> 'spawn',
+		       CASE WHEN ?4 IS NULL THEN 'running' ELSE 'finished' END,
+		       CASE WHEN ?4 IS NULL THEN NULL ELSE zeroblob(4096) END,
+		       CASE WHEN ?4 IS NULL THEN '' ELSE 'final' END, ?4,
+		       ?4, CASE WHEN ?4 IS NULL THEN '' ELSE 'queued' END, ?4, ?5 + i, ?5 + i FROM seq WHERE ?1 > 0`,
+		n, prefix, kind, settled, created)
 }
 
 // The listing and a read of one named row, at the top of the tree or two
@@ -106,10 +133,24 @@ func TestListThreadAgentTreeAtScale(t *testing.T) {
 		{history: 50_000, open: 200, spawns: 5_000, openSpawns: 2_000, deep: 500},
 	} {
 		// A subtest per shape removes each shape's database, a few hundred
-		// MB, before the next is seeded.
+		// MB, before the next is seeded. The shapes of one history size
+		// share its base, seeded once and copied.
 		t.Run(shape.String(), func(t *testing.T) {
-			s := newTestStore(t)
-			chief, since := agentTreeSpawnHistory(t, s, shape)
+			path := fixtureCopy(t, fmt.Sprintf("agent-tree-history-%d.sqlite", shape.history), func(t *testing.T, path string) {
+				if err := copyTestStoreTemplate(path); err != nil {
+					t.Fatal(err)
+				}
+				base, err := New(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				agentTreeSpawnBase(t, base, shape.history)
+				if err := base.Close(); err != nil {
+					t.Fatal(err)
+				}
+			})
+			s := openTestStore(t, path)
+			chief, since := agentTreeSpawnRest(t, s, shape)
 			read := ThreadAgentTreeRead{Root: chief, SettledSince: since, Depth: 4, Limit: 128, AnswerHead: 160}
 			timed := func(call func()) time.Duration {
 				start := time.Now()
