@@ -19,7 +19,7 @@ const markThreadReadTimeout = 5 * time.Second
 
 // StartSession is the Wails-bound entry point for "bring this thread's
 // provider subprocess up." The sendMessage path also calls
-// startSessionNow via runSessionStart when a thread has no active
+// startSessionNow via runRegisteredSessionStart when a thread has no active
 // session yet.
 //
 // Takes the per-thread action lock: an unserialized start racing a
@@ -27,7 +27,7 @@ const markThreadReadTimeout = 5 * time.Second
 // gate mid-revert (MarkThreadActive), and register a session bound to
 // the old provider thread after the revert repointed the row. Internal
 // callers that already hold the lock (sends, deferred config restarts)
-// go through a.startSession / runSessionStart directly.
+// go through a.startSession / runRegisteredSessionStart directly.
 //
 //ao:scope threads:operate
 func (a *App) StartSession(threadID string) error {
@@ -276,8 +276,8 @@ func (a *App) loadThreadForFocus(threadID string) (store.Thread, error) {
 //  1. Single-flight across the stop-then-start pair: a second concurrent
 //     caller returns nil without doing any work. Without the gate, a
 //     second call's stopSession can yank the new session out from under
-//     the first call's in-flight startSession (runSessionStart serialises
-//     starts but not stops). This matters for the auto-reconnect path
+//     the first call's in-flight startSession (runRegisteredSessionStart
+//     serialises starts but not stops). This matters for the auto-reconnect path
 //     racing a manual click on the banner Reconnect button, and it runs
 //     BEFORE the lock so the no-op answer stays immediate.
 //  2. The per-thread action lock, so the stop-then-start pair cannot
@@ -335,7 +335,7 @@ func (a *App) releaseReconnect(threadID string) {
 // startSession brings the thread's provider subprocess up, sharing an
 // in-flight start with any concurrent caller. ctx bounds only the JOIN — the
 // wait for somebody else's start — never the spawn itself; see
-// runSessionStart. Callers with no cancellation of their own pass
+// runRegisteredSessionStart. Callers with no cancellation of their own pass
 // context.Background().
 func (a *App) startSession(ctx context.Context, threadID string) error {
 	_, err := a.startRegisteredSession(ctx, threadID)

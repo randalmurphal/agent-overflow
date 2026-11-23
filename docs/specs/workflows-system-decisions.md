@@ -1180,7 +1180,8 @@ verdict it now is, with what the first attempt got wrong.
     start` (or by `WorkflowBindThread` against an existing thread) still
     injects its digest into that thread on every resting transition.
     Binding never created a thread; only the deleted button did.
-  - **`workflowOpenTriageThread` survives unexported** because
+  - **The triage-thread opener survives unexported** (`workflowapp`'s
+    `OpenTriageThread`, not a bound method) because
     `WorkflowSendPRReviewCommentsToThread` and `WorkflowDiscussPR` (§4.7)
     ride the run's ONE linked thread and this is what makes it one. The
     helper served a removed button and a kept path; the button's entry

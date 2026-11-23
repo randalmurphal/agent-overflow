@@ -1221,7 +1221,7 @@ func (r *Router) drainInterruptQueue(threadID string) {
 ### Turn lifecycle synthesis
 
 Turn boundaries enter the Go triage layer through provider-specific
-signals. `App.sendMessage` persists the user item and registers a
+signals. `App.sendMessageWithOptions` persists the user item and registers a
 pending-send marker before writing to the provider. Claude opens the
 logical turn when its wire `system/init` arrives and `handleInit`
 matches that marker; Codex opens the turn from native `turn/started`.
@@ -1232,7 +1232,7 @@ stays provider-independent.
 thread, not a provider turn id. Provider turn ids (Codex's
 `turn.id`, Claude's per-cycle identifiers) are opaque strings we
 don't mint. `turn_index` counts "send cycles" on our thread, one
-per `sendMessage` call. The two can diverge (e.g., Claude may
+per send. The two can diverge (e.g., Claude may
 internally loop through multiple API cycles under one of our
 turns), and that's fine: our `turn_index` is the UI unit, the
 provider's turn id is the wire unit.

@@ -1574,7 +1574,7 @@ Consequences:
   report) interleaves with pending queued sends. Identity matching,
   not FIFO position, is what keeps those from mispairing.
 - The revert / fork slice must anchor on EITHER shape:
-  `sessionfork.parentUUIDForUserMessageUUIDInTranscript` prefers the
+  `sessionfork.entryForUserMessageUUIDInTranscript` prefers the
   real user entry and falls back to the `queued_command` attachment's
   `source_uuid`. A user-uuid-only matcher silently misses every
   mid-loop-consumed queued message (`ErrMessageNotFound` → refused
@@ -4490,7 +4490,7 @@ the array. Polling callers should treat "missing entry" as
 "keep retrying," not as a terminal state.
 
 **Used by AO** in the OAuth-completion poller at
-`app_mcp_auth.go:pollClaudeMCPAfterOAuth`. Claude emits no
+`internal/mcpapp/auth.go:pollClaudeMCPAfterOAuth`. Claude emits no
 spontaneous post-OAuth wire envelope (`reconnectMcpServerImpl`
 runs inline in `print.ts` and updates state in-process), so AO
 polls `mcp_status` after `TriggerMcpAuth` with a 1+2+3+5+8+13s
