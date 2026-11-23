@@ -13,7 +13,8 @@
 import { describe, expect, it, onTestFinished } from 'vitest';
 import '../../../app.css';
 import { makeItem } from '../../../test/helpers/chat';
-import { raf, revealWithoutWaitingForFrames, wait } from '../../../test/helpers/browserFrames';
+import { raf, wait } from '../../../test/helpers/browserFrames';
+import { revealWithoutWaitingForFrames } from '../../../test/helpers/revealPace';
 import { captureResizeObserverLoopErrors } from '../../../test/helpers/resizeObserverLoopErrors';
 import {
   SEED_COUNT,
