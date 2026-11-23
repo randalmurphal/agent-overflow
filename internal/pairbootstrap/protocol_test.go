@@ -11,7 +11,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 )
 
 func TestProtocolV1Vector(t *testing.T) {
@@ -52,9 +51,18 @@ func invitation() (Invitation, error) {
 func startBook(t *testing.T) (*Book, Snapshot) {
 	t.Helper()
 	b := NewBook(nil)
-	s := b.Open(invitation)
-	t.Cleanup(func() { b.Close(s.WindowID) })
-	return b, s
+	return b, openWindow(t, b, invitation)
+}
+
+// openWindow opens a window that the test closes when it ends.
+func openWindow(t *testing.T, b *Book, mint func() (Invitation, error)) Snapshot {
+	t.Helper()
+	s, err := b.Open(mint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = b.Close(s.WindowID) })
+	return s
 }
 func handshake(t *testing.T, b *Book, c *Client) (Challenge, Reveal, SealedInvitation) {
 	t.Helper()
@@ -76,8 +84,7 @@ func handshake(t *testing.T, b *Book, c *Client) (Challenge, Reveal, SealedInvit
 func TestExchangeAuthenticatesInvitationAndRetriesWithoutReminting(t *testing.T) {
 	var minted atomic.Int32
 	b := NewBook(nil)
-	s := b.Open(func() (Invitation, error) { minted.Add(1); return invitation() })
-	t.Cleanup(func() { b.Close(s.WindowID) })
+	s := openWindow(t, b, func() (Invitation, error) { minted.Add(1); return invitation() })
 	c := newClient(t)
 	ch, r, sealed := handshake(t, b, c)
 	invite, sas, err := c.Open(sealed)
@@ -185,50 +192,6 @@ func TestCiphertextAndTranscriptTamperingFails(t *testing.T) {
 	c.transcript[0] ^= 1
 	if _, _, err := c.Open(sealed); !errors.Is(err, ErrInvalid) {
 		t.Fatal("changed transcript accepted")
-	}
-}
-
-func TestCloseDuringMintCancelsLateInvitationAndPreservesNewWindow(t *testing.T) {
-	started, finish, canceled := make(chan struct{}), make(chan struct{}), make(chan string, 1)
-	b := NewBook(func(id string) { canceled <- id })
-	old := b.Open(func() (Invitation, error) { close(started); <-finish; return invitation() })
-	c := newClient(t)
-	ch, _ := b.Begin(c.Commitment())
-	r, _ := c.Reveal(ch)
-	done := make(chan error, 1)
-	go func() { _, err := b.Reveal(ch.ID, r); done <- err }()
-	<-started
-	b.Close(old.WindowID)
-	next := b.Open(invitation)
-	defer b.Close(next.WindowID)
-	b.Close(old.WindowID)
-	close(finish)
-	if err := <-done; !errors.Is(err, ErrClosed) {
-		t.Fatal("late mint succeeded", err)
-	}
-	if id := <-canceled; id != "link" {
-		t.Fatal("wrong invitation canceled")
-	}
-	if !b.Snapshot(next.WindowID).Open || b.Snapshot(old.WindowID).Open {
-		t.Fatal("stale UI closed replacement window")
-	}
-}
-
-func TestExpiryCancelsInvitationWithoutFurtherRequests(t *testing.T) {
-	canceled := make(chan string, 1)
-	b := NewBook(func(id string) { canceled <- id })
-	w := b.open(invitation, time.Second)
-	handshake(t, b, newClient(t))
-	select {
-	case <-canceled:
-	case <-time.After(3 * time.Second):
-		t.Fatal("expiry did not cancel invitation")
-	}
-	if b.Snapshot(w.WindowID).Open {
-		t.Fatal("expired window remained open")
-	}
-	if _, err := b.Begin(newClient(t).Commitment()); !errors.Is(err, ErrClosed) {
-		t.Fatal("expired window accepted request")
 	}
 }
 

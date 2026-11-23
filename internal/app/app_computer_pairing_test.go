@@ -2,13 +2,13 @@ package app
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,17 +28,171 @@ import (
 // uses the actual TLS listener, HTTP adapter, identity store and paired client.
 func computerPairingBackend(t *testing.T) (*pairedBackend, pairbootstrap.Snapshot) {
 	t.Helper()
-	b := newPairedBackend(t)
-	s := &b.app.computerPairing
-	s.book = pairbootstrap.NewBook(b.app.cancelComputerPairingLink)
-	view := s.book.Open(func() (pairbootstrap.Invitation, error) {
-		invite, err := b.app.mintDevicePairing("browser", "full", "")
+	b, view, _ := computerPairingBackendAt(t)
+	return b, view
+}
+
+// computerPairingBackendAt is computerPairingBackend plus the database
+// path, for a test that makes the store refuse writes.
+func computerPairingBackendAt(t *testing.T) (*pairedBackend, pairbootstrap.Snapshot, string) {
+	t.Helper()
+	b, path := servedIdentityApp(t)
+	b.app.computerPairing.book = pairbootstrap.NewBook(b.app.cancelComputerPairingLink)
+	return b, openTestWindow(t, b.app), path
+}
+
+// servedIdentityApp is newPairedBackend plus the database path.
+func servedIdentityApp(t *testing.T) (*pairedBackend, string) {
+	t.Helper()
+	a, path := newTestAppWithStorePath(t)
+	if err := a.initIdentity("backend-under-test"); err != nil {
+		t.Fatal(err)
+	}
+	return servePairedApp(t, a), path
+}
+
+// openTestWindow opens a window on the host's installed book, minting
+// browser invitations, and closes it when the test ends.
+func openTestWindow(t *testing.T, a *App) pairbootstrap.Snapshot {
+	t.Helper()
+	s := &a.computerPairing
+	book := s.book
+	view, err := book.Open(func() (pairbootstrap.Invitation, error) {
+		invite, err := a.mintDevicePairing("browser", "full", "")
 		return pairbootstrap.Invitation{LinkID: invite.LinkID, URL: invite.URL}, err
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
 	s.windowID = view.WindowID
-	book := s.book
-	t.Cleanup(func() { book.Close(view.WindowID) })
-	return b, view
+	s.mu.Unlock()
+	t.Cleanup(func() { _ = book.Close(view.WindowID) })
+	return view
+}
+
+const rejectPairingCancel = `CREATE TRIGGER reject_pairing_cancel BEFORE UPDATE OF canceled_at ON pairing_links BEGIN SELECT RAISE(ABORT, 'test cancellation failure'); END`
+
+// rejectCancellations makes the store refuse every pairing cancellation
+// while confirmations still write, until the returned func restores it.
+func rejectCancellations(t *testing.T, path string) (restore func()) {
+	t.Helper()
+	execOnStore(t, path, rejectPairingCancel)
+	return func() { execOnStore(t, path, `DROP TRIGGER reject_pairing_cancel`) }
+}
+
+// cancellationLedger counts the cancellation statements the app's book
+// issues per invitation. hold, when set before the book is used, runs
+// before each statement.
+type cancellationLedger struct {
+	mu    sync.Mutex
+	calls map[string]int
+	hold  func(linkID string)
+}
+
+// countCancellations installs the host's book with its production cancel
+// callback, counted.
+func countCancellations(a *App) *cancellationLedger {
+	l := &cancellationLedger{calls: map[string]int{}}
+	s := &a.computerPairing
+	s.mu.Lock()
+	s.book = pairbootstrap.NewBook(func(id string) error {
+		l.mu.Lock()
+		l.calls[id]++
+		hold := l.hold
+		l.mu.Unlock()
+		if hold != nil {
+			hold(id)
+		}
+		return a.cancelComputerPairingLink(id)
+	})
+	s.mu.Unlock()
+	return l
+}
+
+func (l *cancellationLedger) count(id string) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.calls[id]
+}
+
+// testGate holds whatever waits on it until released. The test's cleanup
+// releases it, so a failure cannot leave a goroutine blocked until the
+// package timeout.
+type testGate struct {
+	reached chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func newTestGate(t *testing.T) *testGate {
+	g := &testGate{reached: make(chan struct{}, 1), release: make(chan struct{})}
+	t.Cleanup(g.open)
+	return g
+}
+
+func (g *testGate) wait() {
+	select {
+	case g.reached <- struct{}{}:
+	default:
+	}
+	<-g.release
+}
+
+func (g *testGate) open() { g.once.Do(func() { close(g.release) }) }
+
+// revealOnBook runs one requester's exchange against the book directly,
+// with nothing but the book seeing the invitation it reveals.
+func revealOnBook(t *testing.T, book *pairbootstrap.Book) pairbootstrap.Invitation {
+	t.Helper()
+	c, ch := beginOnBook(t, book)
+	r, err := c.Reveal(ch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := book.Reveal(ch.ID, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invite, _, err := c.Open(sealed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return invite
+}
+
+func beginOnBook(t *testing.T, book *pairbootstrap.Book) (*pairbootstrap.Client, pairbootstrap.Challenge) {
+	t.Helper()
+	c, err := pairbootstrap.Start("desktop", "windows")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch, err := book.Begin(c.Commitment())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c, ch
+}
+
+// redeemOnHost redeems an invitation with the device key named by proof,
+// leaving a pending session that only a confirmation activates.
+func redeemOnHost(t *testing.T, a *App, invite pairbootstrap.Invitation, proof string) {
+	t.Helper()
+	link, err := deviceclient.DecodeLink(invite.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, reason := a.identityState().sessions.RedeemPairing(identity.RedemptionRequest{Token: link.Token, Proof: identity.DeviceProof{Value: proof}}); reason.Refused() {
+		t.Fatal(reason)
+	}
+}
+
+func requireCanceled(t *testing.T, a *App, linkID string) {
+	t.Helper()
+	link, err := a.store.GetPairingLink(linkID)
+	if err != nil || link.CanceledAt == 0 {
+		t.Fatalf("invitation %s is not durably cancelled (%+v, %v)", linkID, link, err)
+	}
 }
 
 func exchangeComputerPairing(t *testing.T, b *pairedBackend) (pairbootstrap.Invitation, string) {
@@ -149,28 +303,33 @@ func TestComputerPairingCancelAndStaleConfirmationAdmitNothing(t *testing.T) {
 func TestComputerPairingClosedWindowCannotConfirmWhileCancellationIsPending(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
-	b, window := computerPairingBackend(t)
+	b, window, path := computerPairingBackendAt(t)
 	invite, _ := exchangeComputerPairing(t, b)
 	client := redeemComputerInvitation(t, b, invite)
-	// Retire the book while its ordinary store cancellation is delayed. This
-	// is the timer/confirmation race: a still-pending five-minute link must
-	// not bypass its bootstrap window's shorter lifetime.
-	s := &b.app.computerPairing
-	s.mu.Lock()
-	old := s.book
-	s.book = pairbootstrap.NewBook(nil)
-	s.mu.Unlock()
-	t.Cleanup(func() { old.Close(window.WindowID) })
-	// A late unauthenticated packet cannot erase the last invitation mapping
-	// and turn the ordinary confirmation route into an expiry bypass.
+	// The store refuses the cancellation: a still-pending five-minute link
+	// must not outlive its bootstrap window's shorter lifetime.
+	restore := rejectCancellations(t, path)
+	if err := b.app.CloseComputerPairing(window.WindowID); err == nil {
+		t.Fatal("a refused cancellation was reported as success")
+	}
+	// A late unauthenticated packet cannot erase the retirement and turn the
+	// ordinary confirmation route into an expiry bypass.
 	_, _ = (authEndpoints{app: b.app}).NearbyPair(context.Background(), b.srv.Addr(), pairbootstrap.Request{Op: "reveal", ID: "late"})
-	if err := b.app.ConfirmDevicePairing(invite.LinkID); err == nil {
-		t.Fatal("stale invitation bypassed retired bootstrap window")
+	if err := b.app.ConfirmDevicePairing(invite.LinkID); !errors.Is(err, identity.ErrPairingRefused) {
+		t.Fatalf("stale invitation confirmation = %v, want refused", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if _, err := client.Ticket(ctx); err == nil {
 		t.Fatal("stale bootstrap credential admitted")
+	}
+	restore()
+	if err := b.app.CloseComputerPairing(window.WindowID); err != nil {
+		t.Fatalf("closing again after storage recovered = %v", err)
+	}
+	requireCanceled(t, b.app, invite.LinkID)
+	if err := b.app.ConfirmDevicePairing(invite.LinkID); err == nil {
+		t.Fatal("a durably cancelled invitation was confirmed")
 	}
 }
 
@@ -218,10 +377,9 @@ func TestComputerPairingRestartRetiresLostComparisonButKeepsExistingDevice(t *te
 	s.mu.Lock()
 	old := s.book
 	s.book = nil
-	s.linkID = ""
 	s.windowID = ""
 	s.mu.Unlock()
-	t.Cleanup(func() { old.Close(window.WindowID) })
+	t.Cleanup(func() { _ = old.Close(window.WindowID) })
 	if err := b.app.initIdentity("backend-under-test"); err != nil {
 		t.Fatal(err)
 	}
@@ -296,107 +454,59 @@ func TestComputerPairingReplacementRequiresDurableCancellation(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
 	a, path := computerPairingHost(t)
-	s := &a.computerPairing
-	s.book = pairbootstrap.NewBook(func(id string) { _ = a.CancelDevicePairing(id) })
-	w := s.book.Open(func() (pairbootstrap.Invitation, error) {
-		invite, err := a.mintDevicePairing("desktop", "full", "")
-		return pairbootstrap.Invitation{LinkID: invite.LinkID, URL: invite.URL}, err
-	})
-	s.windowID = w.WindowID
-	c, err := pairbootstrap.Start("desktop", "windows")
+	countCancellations(a)
+	w, err := a.OpenComputerPairing(connCtx(t), "lan", "full")
 	if err != nil {
 		t.Fatal(err)
 	}
-	ch, err := s.book.Begin(c.Commitment())
-	if err != nil {
-		t.Fatal(err)
-	}
-	r, err := c.Reveal(ch)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sealed, err := s.book.Reveal(ch.ID, r)
-	if err != nil {
-		t.Fatal(err)
-	}
-	invite, _, err := c.Open(sealed)
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.linkID = invite.LinkID
-	link, err := deviceclient.DecodeLink(invite.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, reason := a.identityState().sessions.RedeemPairing(identity.RedemptionRequest{Token: link.Token, Proof: identity.DeviceProof{Value: "desktop-key"}}); reason.Refused() {
-		t.Fatal(reason)
-	}
-	raw, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer raw.Close()
-	if _, err := raw.Exec(`CREATE TRIGGER reject_pairing_cancel BEFORE UPDATE OF canceled_at ON pairing_links BEGIN SELECT RAISE(ABORT, 'test cancellation failure'); END`); err != nil {
-		t.Fatal(err)
-	}
+	book := a.computerPairingBook()
+	invite := revealOnBook(t, book)
+	redeemOnHost(t, a, invite, "desktop-key")
+	restore := rejectCancellations(t, path)
 	if _, err := a.OpenComputerPairing(connCtx(t), "lan", "full"); err == nil {
 		t.Fatal("replacement discarded unresolved invitation fence")
 	}
-	if s.book.Snapshot(w.WindowID).Open {
-		t.Fatal("failed replacement left old comparison active")
+	if book.Snapshot("").Open {
+		t.Fatal("failed replacement left a comparison active")
 	}
-	if err := a.CloseComputerPairing(w.WindowID); err == nil {
+	if err := a.CloseComputerPairing(w.ID); err == nil {
 		t.Fatal("failed durable cancellation was reported as success")
 	}
 	if err := a.ConfirmDevicePairing(invite.LinkID); err == nil {
 		t.Fatal("failed cancellation made old invitation confirmable")
 	}
-	if _, err := raw.Exec(`DROP TRIGGER reject_pairing_cancel`); err != nil {
-		t.Fatal(err)
-	}
+	restore()
 	next, err := a.OpenComputerPairing(connCtx(t), "lan", "full")
 	if err != nil {
 		t.Fatal("replacement did not recover after storage recovered", err)
 	}
 	defer a.CloseComputerPairing(next.ID)
-	old, err := a.store.GetPairingLink(invite.LinkID)
-	if err != nil || old.CanceledAt == 0 || next.ID == w.WindowID {
-		t.Fatal("replacement did not durably retire old invitation", err)
+	requireCanceled(t, a, invite.LinkID)
+	if next.ID == w.ID {
+		t.Fatal("the replacement reused the closed window")
 	}
 }
 
 // TestComputerPairingCloseRetiresTheLinkOnceAndIsIdempotent: closing the
-// window cancels its invitation through the book exactly once and clears
-// the fence; closing the same window again is a no-op, never a second
-// write or an error.
+// window cancels its invitation with exactly one statement; closing the
+// same window again is a no-op, never a second write or an error.
 func TestComputerPairingCloseRetiresTheLinkOnceAndIsIdempotent(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
-	b, window := computerPairingBackend(t)
+	b, _ := servedIdentityApp(t)
+	ledger := countCancellations(b.app)
+	window := openTestWindow(t, b.app)
 	invite, _ := exchangeComputerPairing(t, b)
 	redeemComputerInvitation(t, b, invite)
-	s := &b.app.computerPairing
-	s.mu.Lock()
-	fenced := s.linkID
-	s.mu.Unlock()
-	if fenced != invite.LinkID {
-		t.Fatalf("minted link %q is not fenced (%q)", invite.LinkID, fenced)
-	}
 	for i := range 2 {
 		if err := b.app.CloseComputerPairing(window.WindowID); err != nil {
 			t.Fatalf("close %d: %v", i, err)
 		}
+		if n := ledger.count(invite.LinkID); n != 1 {
+			t.Fatalf("after close %d the invitation had %d cancellation statements, want 1", i, n)
+		}
 	}
-	s.mu.Lock()
-	fenced = s.linkID
-	s.mu.Unlock()
-	if fenced != "" {
-		t.Fatalf("durable cancellation left %q fenced", fenced)
-	}
-	link, err := b.app.store.GetPairingLink(invite.LinkID)
-	if err != nil || link.CanceledAt == 0 {
-		t.Fatal("close did not retire the invitation", err)
-	}
+	requireCanceled(t, b.app, invite.LinkID)
 	entries, err := b.app.store.ListRecentAuthAudit(100)
 	if err != nil {
 		t.Fatal(err)

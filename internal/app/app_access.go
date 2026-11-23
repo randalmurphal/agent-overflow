@@ -10,6 +10,7 @@ import (
 	"agent-overflow/internal/identity"
 	"agent-overflow/internal/network"
 	"agent-overflow/internal/owndevices"
+	"agent-overflow/internal/pairbootstrap"
 	"agent-overflow/internal/slicesx"
 	"agent-overflow/internal/store"
 )
@@ -270,20 +271,26 @@ func (a *App) DevicePairingStatus(linkID string) (PairingStatusView, error) {
 //ao:route home
 //ao:remote
 func (a *App) ConfirmDevicePairing(linkID string) error {
-	// A fenced link whose bootstrap window is gone is refused here; the
-	// store's own settled-state guard decides every interleaving after that.
-	pairing := &a.computerPairing
-	pairing.mu.Lock()
-	fenced, book := pairing.linkID == linkID && linkID != "", pairing.book
-	pairing.mu.Unlock()
-	if fenced && (book == nil || book.Snapshot("").LinkID != linkID) {
-		return identity.ErrPairingRefused
-	}
 	state, err := a.accessState()
 	if err != nil {
 		return err
 	}
-	_, err = state.sessions.ConfirmPairing(linkID)
+	confirm := func() error {
+		_, err := state.sessions.ConfirmPairing(linkID)
+		return err
+	}
+	// A computer pairing window's invitation is refused once its window is
+	// gone, until its cancellation is durable; the book decides that and
+	// orders it against the window's removal. The store's settled-state
+	// guard decides everything else.
+	if book := a.computerPairingBook(); book != nil {
+		err = book.Confirm(linkID, confirm)
+		if errors.Is(err, pairbootstrap.ErrClosed) {
+			err = identity.ErrPairingRefused
+		}
+	} else {
+		err = confirm()
+	}
 	if err == nil {
 		NotifyOwnDevices(a)
 	}

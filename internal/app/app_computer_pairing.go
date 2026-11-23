@@ -35,17 +35,18 @@ type ComputerPairingView struct {
 	DiscoveryError string `json:"discoveryError"`
 }
 
-// computerPairingState is the owner surface's side of one bootstrap window.
+// computerPairingState is the owner surface's side of one bootstrap window:
+// which connection owns it and its LAN advertisement. The book owns the
+// window and the retirement of every invitation a window minted.
 //
 // mu guards the fields and is never held across I/O: SQLite writes, the
-// multicast responders and the book's own lock all run with it released, so
-// the book's cancel callback (which writes) and the connection cleanup can
-// take it without ordering against anything. ops serializes opens, the one
-// multi-step act (retire the old window, fence its link, open, advertise);
-// reads and closes never take it. Expiry is the book's timer. The
-// advertisement is retired when the window is closed, replaced, or its owner
-// disconnects; an expired window answers info with Open:false, which
-// discovery discards.
+// multicast responders and the book's settling calls all run with it
+// released, so the book's callbacks and the connection cleanup can take it
+// without ordering against anything. ops serializes opens, the one
+// multi-step act (close the old window, open, advertise); reads and closes
+// never take it. Expiry is the book's timer. The advertisement is retired
+// when the window is closed, replaced, or its owner disconnects; an expired
+// window answers info with Open:false, which discovery discards.
 type computerPairingState struct {
 	mu             sync.Mutex
 	ops            sync.Mutex
@@ -53,13 +54,10 @@ type computerPairingState struct {
 	advertiser     *nearby.Server
 	discoveryError string
 	network        string
-	// windowID outlives its window: a close whose link retirement failed
-	// answers by this id until the cancellation is durable.
+	// windowID is the last window opened here, which owner and advertiser
+	// belong to.
 	windowID string
-	// linkID fences the last minted invitation against confirmation once its
-	// window is gone, until its cancellation is durable.
-	linkID string
-	owner  *transport.ConnState
+	owner    *transport.ConnState
 }
 
 // OpenComputerPairing opens a short-lived invitation window. Merely discovering
@@ -114,7 +112,9 @@ func (a *App) openComputerPairing(conn *transport.ConnState, networkChoice, acce
 		}
 		state.mu.Unlock()
 		if owned {
-			a.closeComputerPairingWindow(id)
+			// A failed cancellation is logged by the book's callback and
+			// stays refused until a later open or close retires it.
+			_ = a.closeComputerPairingWindow(id)
 		}
 	}); err != nil {
 		return ComputerPairingWindow{}, err
@@ -131,14 +131,13 @@ func (a *App) openComputerPairing(conn *transport.ConnState, networkChoice, acce
 	book, previous := state.book, state.windowID
 	state.network = networkChoice
 	state.mu.Unlock()
-	a.closeComputerPairingWindow(previous)
-	// Keep the last link's denial fence until its retirement is durable. A
-	// failed SQLite cancellation must not become confirmable merely because
-	// the owner opens another window and replaces the ephemeral SAS mapping.
-	if err := a.retireComputerPairingLink(); err != nil {
+	// A window replaces its predecessor only once every earlier invitation's
+	// cancellation is durable: the close answers for the previous window,
+	// and the book's open for any other still unfinished.
+	if err := a.closeComputerPairingWindow(previous); err != nil {
 		return ComputerPairingWindow{}, err
 	}
-	view := book.Open(func() (pairbootstrap.Invitation, error) {
+	view, err := book.Open(func() (pairbootstrap.Invitation, error) {
 		// The HTTP adapter chooses the listener actually used for the reveal.
 		// Both enabled routes enroll the same host; no pin crosses listeners.
 		state.mu.Lock()
@@ -147,6 +146,9 @@ func (a *App) openComputerPairing(conn *transport.ConnState, networkChoice, acce
 		invite, err := a.mintDevicePairingPurpose("desktop", access, choice, purpose)
 		return pairbootstrap.Invitation{LinkID: invite.LinkID, URL: invite.URL}, err
 	})
+	if err != nil {
+		return ComputerPairingWindow{}, err
+	}
 	// The window becomes conn's only while its tie is still bound, checked
 	// in the critical section the tie's release takes: a connection that
 	// ended while the window opened has already run that release, so the
@@ -154,7 +156,8 @@ func (a *App) openComputerPairing(conn *transport.ConnState, networkChoice, acce
 	state.mu.Lock()
 	if !conn.Bound(computerPairingCleanupKey) {
 		state.mu.Unlock()
-		book.Close(view.WindowID)
+		// The callback logs a failed cancellation; the book keeps it.
+		_ = book.Close(view.WindowID)
 		return ComputerPairingWindow{}, transport.ErrConnectionClosing
 	}
 	state.windowID, state.owner, state.discoveryError = view.WindowID, conn, ""
@@ -195,35 +198,34 @@ func (a *App) advertiseComputerPairing(book *pairbootstrap.Book, windowID string
 	}
 }
 
-// CloseComputerPairing retires only the named window, never a replacement.
+// CloseComputerPairing retires only the named window, never a replacement,
+// and answers whether that window's invitation is durably cancelled. A
+// window whose cancellation failed is tried again by closing it again.
 //
 //ao:scope access:admin
 //ao:route home
 func (a *App) CloseComputerPairing(id string) error {
 	state := &a.computerPairing
 	state.mu.Lock()
-	match := state.book != nil && state.windowID == id
-	if match {
+	if state.windowID == id {
 		state.owner = nil
 	}
 	state.mu.Unlock()
-	if !match {
-		return nil
-	}
-	a.closeComputerPairingWindow(id)
-	return a.retireComputerPairingLink()
+	return a.closeComputerPairingWindow(id)
 }
 
-// closeComputerPairingWindow retires one window: the book cancels its
-// invitation through the callback, then the responders that window started
-// are detached under mu and closed outside it.
-func (a *App) closeComputerPairingWindow(id string) {
+// closeComputerPairingWindow retires one window: the book removes it and
+// cancels its invitation, answering for that cancellation, then the
+// responders that window started are detached under mu and closed outside
+// it.
+func (a *App) closeComputerPairingWindow(id string) error {
 	s := &a.computerPairing
 	s.mu.Lock()
 	book := s.book
 	s.mu.Unlock()
+	var err error
 	if book != nil {
-		book.Close(id)
+		err = book.Close(id)
 	}
 	var adv *nearby.Server
 	s.mu.Lock()
@@ -234,54 +236,31 @@ func (a *App) closeComputerPairingWindow(id string) {
 	if adv != nil {
 		_ = adv.Close()
 	}
+	return err
 }
 
 // closeComputerPairing retires the current window on a listener-affecting
-// settings change and at shutdown.
+// settings change and at shutdown. A failed cancellation is logged by the
+// book's callback and stays refused until a later open or close retires it.
 func (a *App) closeComputerPairing() {
 	s := &a.computerPairing
 	s.mu.Lock()
 	id := s.windowID
 	s.mu.Unlock()
-	a.closeComputerPairingWindow(id)
+	_ = a.closeComputerPairingWindow(id)
 }
 
-// cancelComputerPairingLink is the book's cancel callback: window close,
-// expiry, and a mint that finished after its window was gone.
-func (a *App) cancelComputerPairingLink(id string) {
-	if err := a.retireComputerPairingLinkID(id); err != nil {
-		log.Printf("nearby pairing: cancel unfinished invitation: %v", err)
-	}
-}
-
-// retireComputerPairingLink retries the fenced link. Nothing fenced is not
-// an error: the book already retired the link durably, or none was minted.
-func (a *App) retireComputerPairingLink() error {
-	s := &a.computerPairing
-	s.mu.Lock()
-	id := s.linkID
-	s.mu.Unlock()
-	if id == "" {
-		return nil
-	}
-	return a.retireComputerPairingLinkID(id)
-}
-
-// retireComputerPairingLinkID cancels one link and keeps it fenced until the
-// cancellation is durable. A link already settled needs no second write.
-func (a *App) retireComputerPairingLinkID(id string) error {
+// cancelComputerPairingLink is the book's cancel callback, one cancellation
+// statement per call. A link already settled is durable. Every failure is
+// logged here, since the book's expiry has no caller to answer.
+func (a *App) cancelComputerPairingLink(id string) error {
 	err := a.CancelDevicePairing(id)
 	if errors.Is(err, identity.ErrPairingRefused) {
-		err = nil
+		return nil
 	}
-	s := &a.computerPairing
-	s.mu.Lock()
 	if err != nil {
-		s.linkID = id
-	} else if s.linkID == id {
-		s.linkID = ""
+		log.Printf("nearby pairing: cancel unfinished invitation %s: %v", id, err)
 	}
-	s.mu.Unlock()
 	return err
 }
 
@@ -380,16 +359,7 @@ func (e authEndpoints) NearbyPair(_ context.Context, authority string, req pairb
 		s.mu.Lock()
 		s.network = choice
 		s.mu.Unlock()
-		sealed, err := book.Reveal(req.ID, req.Reveal)
-		// Fence the invitation the window now carries. A mint the book
-		// discarded because its window closed meanwhile is canceled through
-		// the callback, which fences it itself if that write fails.
-		if current := book.Snapshot(""); current.LinkID != "" {
-			s.mu.Lock()
-			s.linkID = current.LinkID
-			s.mu.Unlock()
-		}
-		return sealed, err
+		return book.Reveal(req.ID, req.Reveal)
 	default:
 		return nil, pairbootstrap.ErrInvalid
 	}

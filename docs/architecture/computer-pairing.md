@@ -55,7 +55,12 @@ Owner connection loss, cancellation and listener-affecting network settings
 changes retire the window and its unfinished invitation. Expiry is the
 bootstrap book's own timer, which cancels the invitation; the LAN
 advertisement lingers only until the dialog closes, and an expired window
-answers `open:false`, which discovery discards. Startup retires unfinished pairings in one
+answers `open:false`, which discovery discards. `pairbootstrap.Book` owns that
+retirement: a window's invitation is refused confirmation from the moment the
+window is removed until its cancellation is durable. A close answers with its
+own invitation's cancellation result, a refused cancellation is retried by the
+next open or close of that window, and no window opens while one is
+unfinished. Startup retires unfinished pairings in one
 store transaction because an ephemeral comparison cannot survive a restart.
 Confirmed devices retain their existing sessions and renewal policy.
 

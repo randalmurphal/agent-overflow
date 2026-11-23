@@ -819,7 +819,9 @@ export function ClearPushSenderCredential(): $CancellablePromise<void> {
 }
 
 /**
- * CloseComputerPairing retires only the named window, never a replacement.
+ * CloseComputerPairing retires only the named window, never a replacement,
+ * and answers whether that window's invitation is durably cancelled. A
+ * window whose cancellation failed is tried again by closing it again.
  */
 export function CloseComputerPairing(id: string): $CancellablePromise<void> {
     return $Call.ByID(2321581502, id);
