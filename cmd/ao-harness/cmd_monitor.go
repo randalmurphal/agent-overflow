@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -77,8 +78,8 @@ func bindMonitorFlags(e *env, name string, allowMonitors bool) (*monitorOptions,
 	opts := &monitorOptions{asJSON: e.bindJSONFlag(flags), budget: e.bindQueryOutputBudget(flags)}
 	flags.StringVar(&opts.runID, "run-id", "", "monitor run id")
 	flags.Float64Var(&opts.atMs, "at-ms", -1, "explicit non-negative page timestamp")
-	flags.StringVar(&opts.leg, "leg", "", "compatibility leg required by selected monitors")
 	if allowMonitors {
+		flags.StringVar(&opts.leg, "leg", "", "compatibility leg the selected monitors must belong to")
 		flags.Var(&opts.monitor, "monitor", "monitor ID to arm (repeatable; positional IDs are also accepted)")
 		flags.Float64Var(&opts.timeout, "heartbeat-timeout-ms", 0, "heartbeat gap before a run is partial (default 3000)")
 	}
@@ -94,9 +95,6 @@ func (o *monitorOptions) finish(e *env, rest []string) ([]string, error) {
 	}
 	if o.hasTimeout && (!finiteNonNegative(o.timeout) || o.timeout <= 0) {
 		return nil, usagef("--heartbeat-timeout-ms must be positive")
-	}
-	if o.leg != "" && !validMonitorLeg(o.leg) {
-		return nil, usagef("unknown monitor compatibility leg %q", o.leg)
 	}
 	if o.runID != "" && !validMonitorRunID(o.runID) {
 		return nil, usagef("--run-id must be a non-empty identifier without whitespace or control characters (max 128 bytes)")
@@ -119,13 +117,27 @@ func finiteNonNegative(value float64) bool {
 	return !math.IsNaN(value) && !math.IsInf(value, 0) && value >= 0
 }
 
-func validMonitorLeg(value string) bool {
-	switch value {
-	case "clean-renderer", "instrumented-renderer", "functional":
-		return true
-	default:
-		return false
+// monitorCompatibilityLegs are the legs the page's monitor catalog has
+// (MONITOR_COMPATIBILITY_LEGS in frontend/src/lib/harness/monitorTypes.ts;
+// monitorTypes.test.ts there fails when the two lists differ).
+var monitorCompatibilityLegs = []string{"clean-renderer", "instrumented-renderer", "functional"}
+
+// validateMonitorLeg is the check every command that takes a monitor
+// compatibility leg runs on it; flag is the flag as the command spells it.
+// A leg only narrows the monitors a command arms, so one without a monitor
+// would be accepted and ignored.
+func validateMonitorLeg(flag, leg string, monitors []string) error {
+	if leg == "" {
+		return nil
 	}
+	if !slices.Contains(monitorCompatibilityLegs, leg) {
+		return usagef("unknown monitor compatibility leg %s %q (want %s; `ao-harness monitor list` shows each monitor's leg)",
+			flag, leg, strings.Join(monitorCompatibilityLegs, ", "))
+	}
+	if len(monitors) == 0 {
+		return usagef("%s %s selects no monitor: add --monitor <id> of that leg (`ao-harness monitor list`) or drop %s", flag, leg, flag)
+	}
+	return nil
 }
 
 // monitorPageID refuses to guess between attached pages. Explicit page IDs
@@ -208,6 +220,9 @@ func monitorStart(e *env, args []string) error {
 	}
 	if len(opts.monitor) == 0 {
 		return usagef("monitor start needs at least one --monitor ID")
+	}
+	if err := validateMonitorLeg("--leg", opts.leg, opts.monitor); err != nil {
+		return err
 	}
 	seen := make(map[string]struct{}, len(opts.monitor))
 	for _, id := range opts.monitor {

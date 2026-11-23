@@ -60,6 +60,9 @@ func perfStart(e *env, args []string) error {
 	if len(rest) != 0 {
 		return usagef("perf start takes no positional arguments (got %v)", rest)
 	}
+	if err := validateMonitorLeg("--leg", strings.TrimSpace(*compatibilityLeg), monitors); err != nil {
+		return err
+	}
 	budgetsMs, err := parseBudgetsMs(*budgets)
 	if err != nil {
 		return err

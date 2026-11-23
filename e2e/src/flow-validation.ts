@@ -1,4 +1,5 @@
-import { validateMonitorSelection, validateCompatibilityLeg, type CompatibilityLeg, type MonitorId } from './monitor-catalog.ts';
+import type { BuiltinMonitorId } from '../../frontend/src/lib/harness/monitorTypes.ts';
+import { validateMonitorSelection, validateCompatibilityLeg } from './monitor-catalog.ts';
 import {
   FUNCTIONAL_FLOW_VERSION,
   MAX_FLOW_WAIT_MS,
@@ -123,7 +124,7 @@ function parseMonitors(raw: unknown): FlowMonitor[] {
     const intervalMs = value.intervalMs === undefined ? undefined : finiteNumber(value, 'intervalMs', path);
     if (intervalMs !== undefined && (intervalMs <= 0 || intervalMs > MAX_FLOW_WAIT_MS)) throw new Error(`${path}.intervalMs must be between 1 and ${MAX_FLOW_WAIT_MS}`);
     const id = requiredString(value, 'id', path);
-    const monitorId = value.monitorId === undefined ? undefined : requiredString(value, 'monitorId', path) as MonitorId;
+    const monitorId = value.monitorId === undefined ? undefined : requiredString(value, 'monitorId', path) as BuiltinMonitorId;
     if (seen.has(monitorId ?? id)) throw new Error(`${path} duplicates monitor ${JSON.stringify(monitorId ?? id)}`);
     seen.add(monitorId ?? id);
     if (monitorId) {

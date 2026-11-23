@@ -371,6 +371,23 @@ func waitFor(t *testing.T, cond func() bool, what string) {
 	}
 }
 
+// A leg only narrows the monitors a run arms, so one sent without
+// monitors would be accepted and ignored.
+func TestHarnessPerfStartRefusesALegWithNoMonitor(t *testing.T) {
+	h, _ := newPerfHarness(t)
+	_, err := h.HarnessPerfStart(HarnessPerfSpec{CompatibilityLeg: "functional"})
+	if err == nil || !strings.Contains(err.Error(), "selects no monitor") {
+		t.Fatalf("HarnessPerfStart = %v, want a refusal of the monitorless leg", err)
+	}
+	status, err := h.HarnessPerfStatus()
+	if err != nil {
+		t.Fatalf("HarnessPerfStatus: %v", err)
+	}
+	if status.Active {
+		t.Fatal("a refused start must arm no run")
+	}
+}
+
 func TestHarnessPerfStartRefusesASecondRun(t *testing.T) {
 	h, _ := newPerfHarness(t)
 	if _, err := h.HarnessPerfStart(HarnessPerfSpec{}); err != nil {

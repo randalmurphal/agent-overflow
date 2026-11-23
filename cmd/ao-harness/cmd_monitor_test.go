@@ -88,8 +88,6 @@ func TestMonitorOptionParserRejectsUnsafeInputs(t *testing.T) {
 		{"bad run", []string{"--run-id", " bad"}, "identifier"},
 		{"bad timestamp", []string{"--run-id", "run", "--at-ms", "NaN"}, "finite"},
 		{"bad timeout", []string{"--run-id", "run", "--heartbeat-timeout-ms", "0"}, "positive"},
-		{"platform leg", []string{"--run-id", "run", "--leg", "platform"}, "unknown monitor compatibility leg"},
-		{"provider-source leg", []string{"--run-id", "run", "--leg", "provider-source"}, "unknown monitor compatibility leg"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e, _, _ := testEnv(t.TempDir())
@@ -153,5 +151,32 @@ func TestMonitorResultRejectsMalformedOrFuturePayloads(t *testing.T) {
 		if err := e.writeMonitorResult(raw, &queryOutputBudget{maxBytes: 4096}, "start"); err == nil {
 			t.Fatalf("malformed monitor payload was accepted: %s", raw)
 		}
+	}
+}
+
+// Every command that takes a monitor compatibility leg refuses, before it
+// reaches a harness, a leg the page's catalog does not have and a leg with
+// no monitor to narrow; the other monitor verbs take no leg.
+func TestEveryMonitorLegFlagRefusesAnUnknownOrMonitorlessLeg(t *testing.T) {
+	const allowed = "want clean-renderer, instrumented-renderer, functional"
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"monitor start, platform", []string{"monitor", "start", "--monitor", "frame-pacing", "--leg", "platform"}, allowed},
+		{"monitor start, provider-source", []string{"monitor", "start", "--monitor", "frame-pacing", "--leg", "provider-source"}, allowed},
+		{"perf start, platform", []string{"perf", "start", "--monitor", "frame-pacing", "--leg", "platform"}, allowed},
+		{"perf start, no monitor", []string{"perf", "start", "--leg", "functional"}, "--leg functional selects no monitor"},
+		{"bench, platform", []string{"bench", "burst-stream", "--monitor", "frame-pacing", "--monitor-leg", "platform"}, allowed},
+		{"bench, no monitor", []string{"bench", "burst-stream", "--monitor-leg", "functional"}, "--monitor-leg functional selects no monitor"},
+		{"monitor heartbeat", []string{"monitor", "heartbeat", "run-1", "--leg", "functional"}, "flag provided but not defined: -leg"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			code, stdout, stderr := run(t, append(tc.args, "--registry-dir", t.TempDir())...)
+			if code != exitUsage || !strings.Contains(stderr, tc.want) {
+				t.Fatalf("exit = %d, want %d with %q\nstdout: %s\nstderr: %s", code, exitUsage, tc.want, stdout, stderr)
+			}
+		})
 	}
 }

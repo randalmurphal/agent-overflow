@@ -262,6 +262,9 @@ type harnessPerfRun struct {
 // "no frontend attached" fails HERE — loudly, at the call that asked for
 // meters — rather than producing a run of half-empty samples.
 func (h *Harness) HarnessPerfStart(spec HarnessPerfSpec) (HarnessPerfStatusResult, error) {
+	if spec.CompatibilityLeg != "" && len(spec.Monitors) == 0 {
+		return HarnessPerfStatusResult{}, fmt.Errorf("compatibilityLeg %q selects no monitor: pass monitors of that leg or omit it", spec.CompatibilityLeg)
+	}
 	sampleMs := spec.SampleMs
 	if sampleMs <= 0 {
 		sampleMs = harnessPerfDefaultSampleMs

@@ -1,4 +1,4 @@
-import type { CompatibilityLeg } from './monitor-catalog.ts';
+import type { MonitorCompatibilityLeg } from '../../frontend/src/lib/harness/monitorTypes.ts';
 import {
   FUNCTIONAL_FLOW_VERSION,
   type FlowAction,
@@ -23,7 +23,7 @@ export class FunctionalFlowRunner {
   private running = false;
   constructor(private readonly page: OwnedPage, extensions: FunctionalFlowExtension<any>[] = [], private readonly runOptions: {
     runId?: string;
-    compatibilityLeg?: CompatibilityLeg;
+    compatibilityLeg?: MonitorCompatibilityLeg;
     monitorQuery?: (spec: Record<string, unknown>) => Promise<unknown>;
   } = {}) {
     if (!isOwnedPage(page)) throw new Error('FunctionalFlowRunner requires a page created with ownPage()');

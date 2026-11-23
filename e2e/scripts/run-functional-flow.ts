@@ -14,7 +14,7 @@ import {
   parseFunctionalScenario,
   type FunctionalFlowReport,
 } from '../src/functional-flow.ts';
-import type { CompatibilityLeg } from '../src/monitor-catalog.ts';
+import type { MonitorCompatibilityLeg } from '../../frontend/src/lib/harness/monitorTypes.ts';
 import { validateCompatibilityLeg } from '../src/monitor-catalog.ts';
 
 interface Options {
@@ -213,7 +213,7 @@ async function main(options: Options): Promise<number> {
     });
     runner = new FunctionalFlowRunner(ownPage(page), [], {
       runId,
-      compatibilityLeg: options.compatibilityLeg as CompatibilityLeg | undefined,
+      compatibilityLeg: options.compatibilityLeg as MonitorCompatibilityLeg | undefined,
       monitorQuery: async (spec) => {
         const currentOrigin = new URL(page.url()).origin;
         if (currentOrigin !== expectedOrigin) throw new Error(`owned flow page navigated to ${currentOrigin}, expected ${expectedOrigin}`);

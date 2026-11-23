@@ -1,11 +1,12 @@
-import { validateMonitorSelection, type CompatibilityLeg } from './monitor-catalog.ts';
+import type { MonitorCompatibilityLeg } from '../../frontend/src/lib/harness/monitorTypes.ts';
+import { validateMonitorSelection } from './monitor-catalog.ts';
 import type { FlowMonitor, FlowMonitorResult, FlowMonitorSample, FlowTypedMonitorResult } from './flow-model.ts';
 import { MAX_FLOW_SAMPLES } from './flow-model.ts';
 import { SemanticUI } from './flow-ui.ts';
 
 export interface FlowMonitorHost {
   readonly ui: SemanticUI;
-  readonly compatibilityLeg?: CompatibilityLeg;
+  readonly compatibilityLeg?: MonitorCompatibilityLeg;
   readonly monitorQuery?: (spec: Record<string, unknown>) => Promise<unknown>;
 }
 

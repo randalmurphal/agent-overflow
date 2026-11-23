@@ -57,6 +57,30 @@ export const MONITOR_PERTURBATIONS: readonly MeasurementPerturbation[] = [
   'layout-read',
 ];
 
+/** A monitor's contract without its host: what `monitor list` reports. */
+export type MonitorDescriptor = Omit<MonitorSpec, 'v' | 'create'>;
+
+/**
+ * The built-in monitors, the one list of them: the frontend catalog
+ * (monitorCatalog.ts) gives each its browser host, and the e2e functional
+ * flow (e2e/src/monitor-catalog.ts) validates a scenario's monitors
+ * against it. This module imports nothing, so e2e can load it.
+ */
+export const BUILTIN_MONITORS = [
+  { id: 'frame-pacing', title: 'Frame pacing', description: 'Measures frame callback cadence.', compatibilityLeg: 'clean-renderer', perturbation: 'animation-frame', requires: ['animation-frame'] },
+  { id: 'skipped-frames', title: 'Skipped frames', description: 'Counts missed frame opportunities.', compatibilityLeg: 'clean-renderer', perturbation: 'animation-frame', requires: ['animation-frame'] },
+  { id: 'long-task', title: 'Long tasks', description: 'Records main-thread long tasks.', compatibilityLeg: 'instrumented-renderer', perturbation: 'performance-observer', requires: ['performance:longtask'] },
+  { id: 'long-animation-frame', title: 'Long animation frames', description: 'Records long animation frame entries.', compatibilityLeg: 'instrumented-renderer', perturbation: 'performance-observer', requires: ['performance:long-animation-frame'] },
+  { id: 'input-to-render', title: 'Input to render', description: 'Measures input delivery through the next render.', compatibilityLeg: 'instrumented-renderer', perturbation: 'event-listener', requires: ['input', 'animation-frame'] },
+  { id: 'scroll-response', title: 'Scroll response', description: 'Measures scroll input and visual response.', compatibilityLeg: 'instrumented-renderer', perturbation: 'event-listener', requires: ['scroll', 'animation-frame'] },
+  { id: 'layout-shift', title: 'Layout shift', description: 'Records cumulative layout shift entries.', compatibilityLeg: 'instrumented-renderer', perturbation: 'performance-observer', requires: ['performance:layout-shift'] },
+  { id: 'animation-continuity', title: 'Animation continuity', description: 'Checks animation progress across frames.', compatibilityLeg: 'instrumented-renderer', perturbation: 'animation-frame', requires: ['animation-frame'] },
+  { id: 'semantic-dom-stability', title: 'Semantic DOM stability', description: 'Checks semantic row identity and mount stability.', compatibilityLeg: 'functional', perturbation: 'dom-observer', requires: ['dom', 'semantic-dom'] },
+  { id: 'focus-clipping-settledness', title: 'Focus, clipping and settledness', description: 'Checks focus ownership, clipping and post-mutation settling.', compatibilityLeg: 'functional', perturbation: 'layout-read', requires: ['dom', 'focus'] },
+] as const satisfies readonly MonitorDescriptor[];
+
+export type BuiltinMonitorId = (typeof BUILTIN_MONITORS)[number]['id'];
+
 export interface MonitorContext {
   readonly runId: string;
   readonly monitorId: string;
