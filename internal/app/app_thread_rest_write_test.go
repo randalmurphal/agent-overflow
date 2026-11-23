@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -107,16 +108,29 @@ func TestAMemoryChangeBelowVetoesTheSettlement(t *testing.T) {
 	worker, token, gate, below := f.heldWorker(t, 1)
 	letGo := f.holdAgentRowsDrain(t)
 	var changed atomic.Bool
+	// The change only bumps the revision, so the pass the veto starts reads
+	// the subtree at rest and settles; that read waits until the request
+	// has been seen held.
+	seen := make(chan struct{})
+	var seenOnce sync.Once
+	sawHeld := func() { seenOnce.Do(func() { close(seen) }) }
+	t.Cleanup(sawHeld)
 	f.app.restReadForTest = func(roots []string) {
-		if slices.Contains(roots, worker) && changed.CompareAndSwap(false, true) {
-			f.app.noteThreadRestChange(below[0].ID)
+		if !slices.Contains(roots, worker) {
+			return
 		}
+		if changed.CompareAndSwap(false, true) {
+			f.app.noteThreadRestChange(below[0].ID)
+			return
+		}
+		<-seen
 	}
 	f.endWorkerTurn(t, worker, gate)
 	if !changed.Load() {
 		t.Fatal("the turn end never read the worker's rest")
 	}
 	f.expectHeld(t, worker, token, "though memory of a thread below changed before the write")
+	sawHeld()
 	letGo()
 	f.expectFinished(t, token)
 }
