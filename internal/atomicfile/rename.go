@@ -13,10 +13,10 @@ import (
 // Stat followed by os.Rename is not equivalent: another creator can win between
 // them. A sync failure can mean the rename already happened; callers recover by
 // their durable operation identity instead of retrying an unverified overwrite.
-// On a filesystem without an exclusive rename only a file can be published
-// (renameNoReplace).
+// It is ExclusiveRename followed by a sync of both parent directories; on a
+// filesystem without an exclusive rename only a file can be published.
 func RenameNoReplace(from, to string) error {
-	if err := renameNoReplace(from, to); err != nil {
+	if err := ExclusiveRename(from, to); err != nil {
 		return &os.LinkError{Op: "rename", Old: from, New: to, Err: err}
 	}
 	if err := SyncDir(filepath.Dir(to)); err != nil {
@@ -36,8 +36,10 @@ var (
 	removeStagedName = os.Remove
 )
 
-// renameNoReplace moves from to to unless something is at to, which it
-// answers with an error matching os.ErrExist.
+// ExclusiveRename moves from to to on the same filesystem unless something
+// is at to, which it answers with an error matching os.ErrExist. It does
+// not sync either directory, so a crash can undo the move; a caller that
+// needs the move to be durable uses RenameNoReplace.
 //
 // Some filesystems, such as NFS and 9p, refuse the exclusive rename. There
 // a file is published by a hard link from to to, which also fails when
@@ -45,8 +47,10 @@ var (
 // step: a crash between the link and the removal leaves the file under
 // both names. A failed removal is logged, not returned, since the file is
 // published. A directory cannot be hard-linked, so on such a filesystem
-// publishing one fails.
-func renameNoReplace(from, to string) error {
+// moving one fails. That failure wraps both the rename's error and the
+// link's, so a caller can tell by errors.Is that the filesystem refused
+// each.
+func ExclusiveRename(from, to string) error {
 	renameErr := exclusiveRename(from, to)
 	if renameErr == nil || !exclusiveRenameUnsupported(renameErr) {
 		return renameErr
@@ -55,7 +59,7 @@ func renameNoReplace(from, to string) error {
 		if errors.Is(err, os.ErrExist) {
 			return err
 		}
-		return fmt.Errorf("the filesystem refuses a rename that cannot replace (%v), and a hard link, the fallback for a file, failed: %w", renameErr, err)
+		return fmt.Errorf("the filesystem refuses a rename that cannot replace (%w), and a hard link, the fallback for a file, failed: %w", renameErr, err)
 	}
 	if err := removeStagedName(from); err != nil {
 		log.Printf("atomicfile: published %s by a hard link, but its staged name %s remains: %v", to, from, err)

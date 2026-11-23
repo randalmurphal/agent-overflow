@@ -14,6 +14,8 @@ import (
 	"runtime"
 	"strings"
 	"syscall"
+
+	"agent-overflow/internal/atomicfile"
 )
 
 // A pane download on a desktop engine ends up where any browser on this
@@ -167,23 +169,19 @@ func userDirsValue(value, home string) (string, error) {
 // a run directory.
 const maxNameVariants = 1000
 
-// linkDownload is linkFile, renameDownload renameNoReplace and
+// linkDownload is linkFile, renameDownload atomicfile.ExclusiveRename and
 // placeHeldFile placeHeld: test seams for a file appearing at a name as it
 // is taken, for a filesystem without hard links, and for a system where the
 // held file cannot be linked, whose placement is by name.
 var (
 	linkDownload   = linkFile
-	renameDownload = renameNoReplace
+	renameDownload = atomicfile.ExclusiveRename
 	placeHeldFile  = placeHeld
 )
 
 // errNoHeldLink is placeHeld's answer where it cannot link the held source:
 // placeNoReplace then places by name.
 var errNoHeldLink = errors.New("browser: the held file cannot be linked here")
-
-// errNoReplaceRename is renameNoReplace's answer where the platform has no
-// rename that refuses to replace.
-var errNoReplaceRename = errors.New("this platform has no rename that refuses to replace a file")
 
 // publishDownload moves a finished download from its staged file into the
 // Downloads folder its staging directory is in, under the first free name
@@ -389,7 +387,8 @@ func linksRefused(err error) bool {
 }
 
 // noReplaceRenameRefused reports whether a no-replace rename failed because
-// the filesystem or platform does not offer it.
+// the filesystem does not offer it. atomicfile.ExclusiveRename's error
+// wraps the rename's errno even when its hard-link fallback failed too.
 func noReplaceRenameRefused(err error) bool {
-	return errors.Is(err, errNoReplaceRename) || errors.Is(err, syscall.EINVAL) || errors.Is(err, syscall.ENOTSUP) || errors.Is(err, syscall.EOPNOTSUPP) || errors.Is(err, syscall.ENOSYS)
+	return errors.Is(err, syscall.EINVAL) || errors.Is(err, syscall.ENOTSUP) || errors.Is(err, syscall.EOPNOTSUPP) || errors.Is(err, syscall.ENOSYS)
 }

@@ -95,6 +95,14 @@ func TestRenameNoReplaceWithoutTheExclusiveRenameSaysADirectoryCannotBePublished
 		!strings.Contains(err.Error(), "a hard link, the fallback for a file, failed") {
 		t.Fatalf("RenameNoReplace = %v, want both primitives named", err)
 	}
+	// A caller tells the two refusals apart by errors.Is, never by text:
+	// the browser's downloads report "supports neither" from the rename's
+	// errno.
+	err = ExclusiveRename(from, to)
+	var linkErr *os.LinkError
+	if !errors.Is(err, exclusiveRenameUnsupportedErrno) || !errors.As(err, &linkErr) || linkErr.Op != "link" {
+		t.Fatalf("ExclusiveRename = %#v, want it to wrap the rename's errno and the link's error", err)
+	}
 	if _, err := os.Lstat(to); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("destination after a refused publish: %v", err)
 	}

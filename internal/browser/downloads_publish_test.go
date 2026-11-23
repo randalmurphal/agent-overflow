@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/atomicfile"
 )
 
 // A published download takes a name nothing has: the name the site
@@ -97,9 +99,9 @@ func TestALinkRefusedFallsBackToANoReplaceRename(t *testing.T) {
 				t.Errorf("take %s: %v", candidate, err)
 			}
 		}
-		return renameNoReplace(staged, candidate)
+		return atomicfile.ExclusiveRename(staged, candidate)
 	}
-	t.Cleanup(func() { linkDownload, renameDownload = linkFile, renameNoReplace })
+	t.Cleanup(func() { linkDownload, renameDownload = linkFile, atomicfile.ExclusiveRename })
 	var staged string
 	manager.engine.(*fakeEngine).beforeFinishReport = func(file string) { staged = file }
 	startDownload(t, manager, access, page, "moved.bin", 10)
@@ -196,7 +198,6 @@ func TestAPublishThatCannotMoveFailsTheRow(t *testing.T) {
 		reason string
 	}{
 		{"neither", syscall.EPERM, syscall.EINVAL, "supports neither hard links nor renames"},
-		{"no rename on the platform", syscall.EOPNOTSUPP, errNoReplaceRename, "supports neither hard links nor renames"},
 		{"another filesystem", syscall.EXDEV, nil, "cross-device"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -206,7 +207,7 @@ func TestAPublishThatCannotMoveFailsTheRow(t *testing.T) {
 				return &os.LinkError{Op: "link", Old: staged, New: candidate, Err: tc.link}
 			}
 			renameDownload = func(string, string) error { return tc.rename }
-			t.Cleanup(func() { linkDownload, renameDownload = linkFile, renameNoReplace })
+			t.Cleanup(func() { linkDownload, renameDownload = linkFile, atomicfile.ExclusiveRename })
 			var staged string
 			manager.engine.(*fakeEngine).beforeFinishReport = func(file string) { staged = file }
 			startDownload(t, manager, access, page, "stuck.bin", 10)
@@ -437,9 +438,9 @@ func TestAStagedFileSwappedAsItIsPublishedNeverHasAPublicName(t *testing.T) {
 				linkDownload = func(from, to string) error {
 					return &os.LinkError{Op: "link", Old: from, New: to, Err: syscall.EPERM}
 				}
-				renameDownload = move(renameNoReplace)
+				renameDownload = move(atomicfile.ExclusiveRename)
 			}
-			t.Cleanup(func() { linkDownload, renameDownload = linkFile, renameNoReplace })
+			t.Cleanup(func() { linkDownload, renameDownload = linkFile, atomicfile.ExclusiveRename })
 			startDownload(t, manager, access, page, "published.txt", 10)
 			got := threadDownloads(manager, access)[0]
 			if tc.reason == "" {
@@ -561,7 +562,7 @@ func TestAPublishMakesItsPrivateNameBesideItsSource(t *testing.T) {
 				}
 				return linkFile(from, to)
 			}
-			t.Cleanup(func() { linkDownload, renameDownload = linkFile, renameNoReplace })
+			t.Cleanup(func() { linkDownload, renameDownload = linkFile, atomicfile.ExclusiveRename })
 			startDownload(t, manager, access, page, "held.txt", 10)
 			item, err := manager.threadDownload(access, DownloadKey(threadDownloads(manager, access)[0].ID))
 			if err != nil {
@@ -603,7 +604,7 @@ func TestAPublishMakesItsPrivateNameBesideItsSource(t *testing.T) {
 				if placing(to) {
 					private, source = to, from
 				}
-				return renameNoReplace(from, to)
+				return atomicfile.ExclusiveRename(from, to)
 			}
 			startDownload(t, manager, access, page, "report.txt", 10)
 			item, _ = manager.threadDownload(access, DownloadKey(threadDownloads(manager, access)[0].ID))

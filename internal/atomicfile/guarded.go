@@ -74,7 +74,7 @@ func sameVersion(a, b os.FileInfo) bool {
 // a guarantee. The new file is staged first and the check is the last
 // step before the rename, but a writer that replaces the file between that
 // check and the rename is still overwritten. When before is nil the rename
-// cannot replace a file (RenameNoReplace's primitive), so that case has no
+// cannot replace a file (ExclusiveRename), so that case has no
 // such window. On Windows os.SameFile reads both identities from the path
 // when compared, so the identity half of the check adds nothing there; the
 // app runs on Windows through WSL, where this is Linux.
@@ -98,7 +98,7 @@ func WriteIfUnchanged(path string, data []byte, before os.FileInfo) (bool, error
 // still the version before names, and reports whether it did.
 func publishIfUnchanged(tmpPath, path string, before os.FileInfo) (bool, error) {
 	if before == nil {
-		if err := renameNoReplace(tmpPath, path); err != nil {
+		if err := ExclusiveRename(tmpPath, path); err != nil {
 			if errors.Is(err, os.ErrExist) {
 				return false, nil
 			}
