@@ -1,7 +1,7 @@
 // The thread find host: it offers find only for an owner that serves the
 // find contract, re-reads the open find when the transcript's text changes,
 // and drops the hits and searches again across a same-thread reload.
-import { afterEach, beforeEach, expect, it } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { render, waitFor } from '@testing-library/svelte';
 import { flushSync } from 'svelte';
 import ThreadPaneFind from './ThreadPaneFind.svelte';
@@ -29,6 +29,17 @@ function hello(capabilities: string[]) {
 /** A full answer of the store holding these candidate rows. */
 function answer(...items: ReturnType<typeof makeItem>[]) {
   return { since: null, incremental: false, items, changed: [], capped: false };
+}
+
+// The open find's re-read waits for the refresh scheduler, at most its
+// two-second longest wait; this passes that on a fake clock.
+async function passRefreshWait(): Promise<void> {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+  try {
+    await vi.advanceTimersByTimeAsync(2_000);
+  } finally {
+    vi.useRealTimers();
+  }
 }
 
 function mount(pane: ThreadPane) {
@@ -76,7 +87,8 @@ it('re-reads the open find when a row text changes without a structural change',
   search.mockImplementation(async () => answer({ ...row, summary: 'plain with needle' }));
   pane.upsertItem({ ...row, summary: 'plain with needle', updatedAt: row.updatedAt + 1 });
   expect(pane.timelineRevision).toBe(structural);
-  await waitFor(() => expect(search).toHaveBeenCalledTimes(2), { timeout: 3000 });
+  await passRefreshWait();
+  expect(search).toHaveBeenCalledTimes(2);
   await waitFor(() => expect(getPaneFindProvider('main')?.result.count).toBe(1));
 });
 
@@ -94,7 +106,8 @@ it('re-reads the open find for a row the window refuses, and counts nothing once
   const refused = makeItem({ id: 'early', threadId: 'thread-1', turnIndex: 0, summary: 'needle' });
   expect(pane.applyProviderItemUpserts([refused])).toBeNull();
   expect(pane.items.map((item) => item.id)).toEqual(['loaded']);
-  await waitFor(() => expect(search).toHaveBeenCalledTimes(2), { timeout: 3000 });
+  await passRefreshWait();
+  expect(search).toHaveBeenCalledTimes(2);
 
   closePaneFind('main');
   flushSync();
