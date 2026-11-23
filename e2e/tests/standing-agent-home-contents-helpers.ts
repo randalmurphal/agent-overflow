@@ -626,24 +626,28 @@ export async function runHomeHooksOff(harness: HarnessApp, provider: ProviderNam
 export const AGENT_SENTENCE = 'The sender is a standing agent.';
 
 /**
- * Scroll the timeline to its top, polling: a windowed timeline mounts its
- * oldest rows only once the scroll reaches them.
+ * Wheel the timeline to its top, as a reader would, until `until` is
+ * mounted. A windowed timeline mounts its oldest rows only once the scroll
+ * reaches them. Only reader input leaves the bottom follow: a script that
+ * sets scrollTop leaves the timeline following, and the next layout change
+ * pins it back to the bottom.
  */
 export async function scrollTimelineToTop(page: Page, until: Locator): Promise<void> {
+  const scroller = page.getByTestId('message-timeline-scroll').filter({ visible: true }).first();
   await expect
     .poll(
       async () => {
-        await page.getByTestId('message-timeline-scroll').first().evaluate((el) => {
-          el.scrollTop = 0;
-        });
-        return until.count();
+        // Near the top edge: the composer overlay (an open activity rail
+        // among it) covers the lower part of the timeline.
+        const box = await scroller.boundingBox();
+        if (!box) return false;
+        await page.mouse.move(box.x + box.width / 2, box.y + 24);
+        await page.mouse.wheel(0, -5000);
+        return (await until.count()) === 1 && (await scroller.evaluate((el) => el.scrollTop)) === 0;
       },
       { timeout: 15_000 },
     )
-    .toBe(1);
-  await page.getByTestId('message-timeline-scroll').first().evaluate((el) => {
-    el.scrollTop = 0;
-  });
+    .toBe(true);
 }
 
 /** Scroll target to the middle of the timeline. */
