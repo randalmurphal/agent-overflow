@@ -213,16 +213,16 @@ export default defineConfig({
           // Chromium needs none of setup.ts's happy-dom polyfills — only the
           // cross-test resets of module-level stores/caches (see the file).
           setupFiles: ['./src/test/setup.browser.ts'],
+          // The page's server binds the IPv4 loopback, not `localhost`:
+          // where that name is ::1 alone the server does not answer on
+          // 127.0.0.1, and tests load an image from the page's other
+          // loopback name (Chromium reaches `localhost` on either address).
+          api: { host: '127.0.0.1' },
           browser: {
             enabled: true,
             provider: playwright(),
             headless: true,
             instances: [{ browser: 'chromium' }],
-            // Bound to the IPv4 loopback, not `localhost`: where that name
-            // is ::1 the server would not answer on 127.0.0.1, and tests
-            // load an image from the page's other loopback name (Chromium
-            // reaches `localhost` on either address).
-            api: { host: '127.0.0.1' },
             // These are geometry assertions on invisible off-screen divs; a
             // failure screenshot is useless and would litter the tree with
             // `.vitest/attachments/` byproducts.

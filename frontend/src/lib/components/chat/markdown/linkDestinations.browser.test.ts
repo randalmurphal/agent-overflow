@@ -264,6 +264,8 @@ describe('an authored image on the page\'s own origin', () => {
     const other = `${otherOrigin()}${FIXTURE}?other-${++probe}`;
     const root = await mounted(`<div><img alt="badge" src="${other}"></div>`, GITLAB);
     await waitFor(() => expect(root.querySelector('img')?.getAttribute('src')).toBe(other));
+    // The bytes arrive: the test server answers on its other loopback name.
+    await root.querySelector('img')!.decode();
   });
 
   it.each([
