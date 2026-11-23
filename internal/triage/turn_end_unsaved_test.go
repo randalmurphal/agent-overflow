@@ -146,7 +146,9 @@ func TestAnEndWithNoRowIsNotTold(t *testing.T) {
 
 // wantRefusedStartSettled checks that the open a replacement refused left
 // no open turn: its row reads interrupted, the router holds no open turn,
-// and the turn announced only the rounds it announced before the open.
+// the turn announced only the rounds it announced before the open, and the
+// thread's row was announced reading the interruption, so a sidebar with no
+// pane on the thread reads it as the tools do.
 func wantRefusedStartSettled(t *testing.T, router *Router, emissions *emissionLog, turnID string, turnIndex, announced int) {
 	t.Helper()
 	if _, active, err := router.store.GetActiveTurn("t1"); err != nil || active {
@@ -170,6 +172,16 @@ func wantRefusedStartSettled(t *testing.T, router *Router, emissions *emissionLo
 	}
 	if rounds != announced {
 		t.Fatalf("turn %d announced %d rounds, want %d: the refused open announces none", turnIndex, rounds, announced)
+	}
+	rows := threadRowEmissions(t, emissions.snapshot())
+	interrupted := 0
+	for _, row := range rows {
+		if row.HasIncompleteTurn {
+			interrupted++
+		}
+	}
+	if interrupted != 1 || len(rows) == 0 || !rows[len(rows)-1].HasIncompleteTurn {
+		t.Fatalf("thread row frames = %d, %d reading the interruption; want one, and the last frame reading it", len(rows), interrupted)
 	}
 }
 

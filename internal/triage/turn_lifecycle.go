@@ -149,8 +149,13 @@ func (r *Router) endRefusedOpen(threadID string, turnIndex int, wrote string, op
 		}
 	}
 	// The failure is reported to the user and logged inside writeTurnEnd;
-	// the caller returns the start's own error.
-	_ = r.writeTurnEnd(threadID, wrote, time.Now().UnixMilli(), "interrupted", "", "", "", "end the refused open of turn "+wrote)
+	// the caller returns the start's own error. A saved end changes the
+	// row's derived state (hasIncompleteTurn) with no provider:turn_completed
+	// to carry it, since the refused open announced no round, so the row is
+	// announced for a client with no pane on the thread.
+	if r.writeTurnEnd(threadID, wrote, time.Now().UnixMilli(), "interrupted", "", "", "", "end the refused open of turn "+wrote) == nil {
+		r.emitThreadRow(threadID)
+	}
 }
 
 // resolveTurnIndexOnStart picks the right turn index for an incoming
