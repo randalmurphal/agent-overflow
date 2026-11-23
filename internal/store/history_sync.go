@@ -36,11 +36,6 @@ type HistoryStamp struct {
 // UnknownStamp is the sentinel for "no replica / stamp unknown".
 const UnknownStamp int64 = -1
 
-// UnknownHistoryStamp is the HistoryStamp a caller with no replica sends.
-func UnknownHistoryStamp() HistoryStamp {
-	return HistoryStamp{Rev: UnknownStamp, Epoch: UnknownStamp}
-}
-
 // SyncStatus grades a client window against the store's current stamps.
 type SyncStatus string
 

@@ -394,3 +394,8 @@ func TestAgyGeneratedImageWritesInlineAttachmentRow(t *testing.T) {
 		t.Fatalf("expected 1 attachment, got %s", row.Meta)
 	}
 }
+
+// generatedImageMeta is generatedImageMetaForProvider for a Codex row.
+func generatedImageMeta(threadID, toolItemID, prompt string, imported *GeneratedImage, failure string) string {
+	return generatedImageMetaForProvider("codex", threadID, toolItemID, prompt, imported, failure)
+}

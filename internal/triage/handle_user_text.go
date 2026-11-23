@@ -413,12 +413,6 @@ func (m userTextMeta) flag(key string) bool {
 	return value
 }
 
-// readProviderItemIDFromMeta is the one-shot form, for callers that hold only
-// the raw meta (a persisted row's, not a live event's).
-func readProviderItemIDFromMeta(meta json.RawMessage) string {
-	return decodeUserTextMeta(meta).text("provider_item_id")
-}
-
 // crossSessionPeer is the provenance of a message delivered to this
 // session by another Claude session, as the Claude parser reported it.
 type crossSessionPeer struct {

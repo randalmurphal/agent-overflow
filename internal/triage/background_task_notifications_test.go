@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -2812,4 +2813,12 @@ func TestBackgroundTaskNotification_EnrichesACompletionQueuedBehindAStream(t *te
 	if got := decodeItemMetaMap(t, done.Meta)["notification_output_state"]; got != "loaded" {
 		t.Fatalf("stored notification_output_state = %v, want loaded", got)
 	}
+}
+
+// resetAllowedClaudeOutputRootsForTest clears the memoised roots so
+// subsequent calls recompute them. Test-only — production code never
+// calls this.
+func resetAllowedClaudeOutputRootsForTest() {
+	allowedClaudeOutputRootsOnce = sync.Once{}
+	allowedClaudeOutputRootsCache = nil
 }

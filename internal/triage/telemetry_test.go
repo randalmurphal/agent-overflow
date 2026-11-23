@@ -559,3 +559,16 @@ func TestCleanupInvalidatesSpanStartBeforeRegistration(t *testing.T) {
 	}
 	assertTurnMetrics(t, telemetry.metrics, 1, 1, 0)
 }
+
+// activeTurnSpanCountLocked reports how many threads currently hold an
+// open turn span. Test-only helper: with the spans living per-thread
+// there is no single map to len(). Caller holds r.mu.
+func (r *Router) activeTurnSpanCountLocked() int {
+	n := 0
+	for _, st := range r.threads {
+		if st.turnSpan != nil {
+			n++
+		}
+	}
+	return n
+}

@@ -5660,3 +5660,17 @@ func TestMigrationV76ThreadGroupSchema(t *testing.T) {
 		t.Errorf("group_id = %q after the group was deleted, want NULL", after.String)
 	}
 }
+
+// runMigrations is runMigrationsContext with the writer pool's pragmas and
+// no progress report.
+func runMigrations(db *sql.DB) error {
+	return runMigrationsContext(context.Background(), db, writerConnPragmas, nil)
+}
+
+func applyMigration(db *sql.DB, m Migration) error {
+	return applyMigrationContext(context.Background(), db, m)
+}
+
+func applyRebuildMigration(db *sql.DB, m Migration) error {
+	return applyRebuildMigrationSteps(context.Background(), db, m, nil)
+}

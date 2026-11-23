@@ -1832,3 +1832,9 @@ func TestHandleUserText_EagerPersistedDeferredFlush_EchoSettlesItsReviewClaims(t
 		}
 	}
 }
+
+// readProviderItemIDFromMeta reads a row's provider item id from its raw meta
+// (a persisted row's, not a live event's).
+func readProviderItemIDFromMeta(meta json.RawMessage) string {
+	return decodeUserTextMeta(meta).text("provider_item_id")
+}

@@ -530,8 +530,6 @@ func (s *Store) logCheckpoint(moment string, started time.Time, res CheckpointRe
 	}
 }
 
-// runMigrations is defined in migrate.go.
-
 // ThreadOrigin records the branch and commit observed when a thread was created.
 // It is write-once provenance; Thread.Branch tracks the live working tree.
 // Empty fields mean unknown, as for a plain directory or an unborn branch.
